@@ -1,0 +1,10 @@
+node_modules/
+.eve/
+.convex/
+.env
+.env.local
+data/optmem/*
+!data/optmem/.gitkeep
+.DS_Store
+*.log
+.output/

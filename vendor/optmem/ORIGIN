@@ -1,0 +1,2 @@
+https://github.com/VictorTaelin/OptMem
+Vendored `memo` CLI (Python 3, no deps). Per-tenant stores live in data/optmem/<e164>/.
