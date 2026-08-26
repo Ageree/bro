@@ -70,6 +70,33 @@ export async function getTenant(phoneE164: string) {
   });
 }
 
+export async function getTenantByHandle(handle: string) {
+  return await client().query(api.tenants.getByHandle, {
+    secret: secret(),
+    handle,
+  });
+}
+
+export async function getTenantByConversation(conversationId: string) {
+  return await client().query(api.tenants.getByConversation, {
+    secret: secret(),
+    conversationId,
+  });
+}
+
+export async function bindInbound(
+  handle: string,
+  phoneE164: string,
+  inkboxConversationId?: string,
+) {
+  return await client().mutation(api.tenants.bindInbound, {
+    secret: secret(),
+    handle,
+    phoneE164,
+    inkboxConversationId,
+  });
+}
+
 export async function setBrowser(
   phoneE164: string,
   patch: {

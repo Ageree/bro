@@ -87,6 +87,7 @@ export default defineTool({
         await sendBlueIMessage({
           conversationId: conv,
           text: "Ищу, это может занять пару минут. Напиши «ну что», если тишина.",
+          handle: tenant.inkboxHandle,
         });
       } catch (err) {
         console.error("browser start notify failed", err);
