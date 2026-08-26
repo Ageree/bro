@@ -8,7 +8,9 @@
  * @module
  */
 
+import type * as memories from "../memories.js";
 import type * as orders from "../orders.js";
+import type * as secret from "../secret.js";
 import type * as tenants from "../tenants.js";
 
 import type {
@@ -18,7 +20,9 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  memories: typeof memories;
   orders: typeof orders;
+  secret: typeof secret;
   tenants: typeof tenants;
 }>;
 

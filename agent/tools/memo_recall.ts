@@ -1,14 +1,16 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
-import { memoText } from "../lib/optmem";
+import { searchLines } from "../lib/convex";
 import { tenantId } from "../lib/tenant";
 
 export default defineTool({
-  description: "Regex-search every OptMem line ever recorded for this person.",
+  description: "Search this person's memory lines (substring, case-insensitive).",
   inputSchema: z.object({
-    regex: z.string().min(1),
+    needle: z.string().min(1),
   }),
-  execute({ regex }, ctx) {
-    return memoText(tenantId(ctx), ["recall", regex]);
+  execute({ needle }, ctx) {
+    return searchLines(tenantId(ctx), needle).then((rows) =>
+      rows.length ? rows.join("\n") : "no matches",
+    );
   },
 });

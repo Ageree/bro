@@ -8,7 +8,7 @@ export function inkbox(): Inkbox {
 }
 
 export function agentHandle(): string {
-  return process.env.INKBOX_AGENT_HANDLE ?? "bro";
+  return process.env.INKBOX_AGENT_HANDLE ?? "bro-ageree";
 }
 
 export function webhookOk(

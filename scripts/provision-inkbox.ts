@@ -13,7 +13,7 @@ for (const line of readFileSync(envPath, "utf8").split("\n")) {
   if (process.env[k] === undefined) process.env[k] = v;
 }
 
-const handle = process.env.INKBOX_AGENT_HANDLE ?? "bro";
+const handle = process.env.INKBOX_AGENT_HANDLE ?? "bro-ageree";
 
 const inkbox = new Inkbox();
 let identity;

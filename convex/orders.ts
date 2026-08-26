@@ -1,8 +1,9 @@
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
+import { assertSecret } from "./secret";
 
 export const listForTenant = query({
-  args: { tenantId: v.id("tenants") },
+  args: { secret: v.string(), tenantId: v.id("tenants") },
   returns: v.array(
     v.object({
       _id: v.id("orders"),
@@ -19,7 +20,8 @@ export const listForTenant = query({
       ),
     }),
   ),
-  handler: async (ctx, { tenantId }) => {
+  handler: async (ctx, { secret, tenantId }) => {
+    assertSecret(secret);
     return await ctx.db
       .query("orders")
       .withIndex("by_tenant", (q) => q.eq("tenantId", tenantId))
@@ -30,6 +32,7 @@ export const listForTenant = query({
 
 export const record = mutation({
   args: {
+    secret: v.string(),
     tenantId: v.id("tenants"),
     merchant: v.union(v.literal("wb"), v.literal("ozon"), v.literal("other")),
     merchantOrderId: v.string(),
@@ -41,6 +44,7 @@ export const record = mutation({
   },
   returns: v.id("orders"),
   handler: async (ctx, args) => {
+    assertSecret(args.secret);
     return await ctx.db.insert("orders", {
       tenantId: args.tenantId,
       merchant: args.merchant,

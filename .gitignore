@@ -8,3 +8,7 @@ data/optmem/*
 .DS_Store
 *.log
 .output/
+.vercel
+.env
+.env.local
+.env*.local

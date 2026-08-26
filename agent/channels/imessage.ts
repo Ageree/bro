@@ -8,6 +8,7 @@ import {
   sendBlueIMessage,
   webhookOk,
 } from "../lib/inkbox";
+import { upsertTenant } from "../lib/convex";
 
 export default defineChannel({
   turnPolicy: "steer",
@@ -55,6 +56,14 @@ export default defineChannel({
 
       const text = msg.content?.trim();
       if (!text) return new Response(null, { status: 204 });
+
+      if (remote) {
+        try {
+          await upsertTenant(remote, msg.conversation_id);
+        } catch (err) {
+          console.error("tenant upsert failed", err);
+        }
+      }
 
       const ack = (async () => {
         try {

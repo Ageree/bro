@@ -12,11 +12,17 @@ Personal iMessage concierge. **eve** runs the agent. **Convex** holds tenants an
 
 ```bash
 cp .env.example .env.local
-# fill INKBOX_*, AI_GATEWAY_API_KEY, ALLOWED_SENDERS
+# fill INKBOX_*, OPENROUTER_API_KEY (or AI_GATEWAY_API_KEY), ALLOWED_SENDERS
 npm run optmem:check
-npm run dev                 # eve at http://127.0.0.1:2000
+npm run provision:inkbox    # once
+npm run webhooks            # once: signing key + https://<handle>.inkboxwire.com/webhooks/imessage
+npm run dev:local           # eve :2000 + Inkbox tunnel (needed for iMessage)
 ```
 
-Onboard: `npm run provision:inkbox`, then the human texts `connect @bro` to the printed router **as iMessage** (blue). iPhone Settings → Messages → Send as SMS = off.
+Production (you are just a user on iMessage): Convex cloud + `eve deploy` on Vercel. Webhook URL is the Vercel host, not the laptop tunnel.
+
+`npm run dev` is TUI-only (no public URL). Local iMessage still needs the tunnel: `https://bro-ageree.inkboxwire.com`.
+
+Onboard: after provision, the human texts `connect @bro-ageree` to the printed router **as iMessage** (blue). iPhone Settings → Messages → Send as SMS = off.
 
 Memory files: `data/optmem/<E.164>/` (gitignored).

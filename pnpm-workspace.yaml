@@ -1,3 +1,5 @@
-minimumReleaseAgeStrict: true
+minimumReleaseAge: 0
+minimumReleaseAgeStrict: false
 allowBuilds:
   sharp: false
+  esbuild: true

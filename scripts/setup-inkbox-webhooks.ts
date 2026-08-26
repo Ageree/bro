@@ -49,7 +49,9 @@ if (!process.env.INKBOX_WEBHOOK_SECRET) {
 
 upsertEnv("ALLOWED_SENDERS", "+79217818876");
 
-const url = `https://${handle}.inkboxwire.com/webhooks/imessage`;
+const url =
+  process.env.INKBOX_WEBHOOK_URL ??
+  `https://${handle}.inkboxwire.com/webhooks/imessage`;
 const existing = await inkbox.webhooks.subscriptions.list({
   agentIdentityId: identity.id,
 });

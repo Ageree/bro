@@ -6,8 +6,13 @@
     "node": "24.x"
   },
   "scripts": {
+    "build": "eve build",
     "dev": "eve dev",
+    "dev:local": "bash scripts/dev-local.sh",
+    "tunnel": "node --experimental-strip-types scripts/inkbox-tunnel.ts",
+    "webhooks": "node --experimental-strip-types scripts/setup-inkbox-webhooks.ts",
     "optmem:check": "python3 scripts/optmem-check.py",
+    "browser:check": "node --experimental-strip-types scripts/browser-policy-check.ts",
     "provision:inkbox": "node --experimental-strip-types scripts/provision-inkbox.ts"
   },
   "dependencies": {

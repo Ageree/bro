@@ -7,8 +7,16 @@ export default defineSchema({
     displayName: v.optional(v.string()),
     status: v.union(v.literal("active"), v.literal("disabled")),
     inkboxConversationId: v.optional(v.string()),
-    browserProfileId: v.optional(v.string()),
     browserSessionId: v.optional(v.string()),
+    browserLiveUrl: v.optional(v.string()),
+    browserRunId: v.optional(v.string()),
+    browserTask: v.optional(v.string()),
+    browserStatus: v.optional(v.string()),
+  }).index("by_phone", ["phoneE164"]),
+
+  memories: defineTable({
+    phoneE164: v.string(),
+    line: v.string(),
   }).index("by_phone", ["phoneE164"]),
 
   orders: defineTable({
