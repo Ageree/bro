@@ -8,6 +8,7 @@ import {
   makeHandle,
   webhookUrlForHandle,
 } from "./lib/accessPolicy";
+import { mailWebhookUrl } from "./lib/mailPolicy";
 
 const DEFAULT_CAP = 10;
 
@@ -15,6 +16,7 @@ type InkboxIdentity = {
   id?: string;
   agent_handle?: string;
   email_address?: string | null;
+  mailbox?: { id?: string } | null;
 };
 
 type InkboxTriage = {
@@ -214,6 +216,30 @@ export const requestAccess = internalAction({
           code: "error" as const,
           message: err instanceof Error ? err.message : "webhook failed",
         };
+      }
+
+      let mailboxId = identity.mailbox?.id;
+      if (!mailboxId) {
+        try {
+          const full = (await inkbox("GET", `/identities/${gotHandle}`)) as InkboxIdentity;
+          mailboxId = full.mailbox?.id;
+          if (!identity.email_address && full.email_address) {
+            identity.email_address = full.email_address;
+          }
+        } catch (err) {
+          console.error("identity refetch failed", err);
+        }
+      }
+      if (mailboxId) {
+        try {
+          await inkbox("POST", "/webhooks/subscriptions", {
+            mailbox_id: mailboxId,
+            url: mailWebhookUrl(webhookBase(), gotHandle),
+            event_types: ["message.received"],
+          });
+        } catch (err) {
+          console.error("mail webhook failed", err);
+        }
       }
 
       await ctx.runMutation(internal.tenants.insertProvisioned, {

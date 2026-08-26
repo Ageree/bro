@@ -31,3 +31,6 @@ Landing CTA creates a personal Inkbox identity and opens iMessage (`sms_link`).
 `assets/config.js` holds the Convex HTTP site URL (`https://<deployment>.convex.site`).
 Set `INKBOX_API_KEY` and `INKBOX_WEBHOOK_URL` on the Convex deployment.
 Cap is `BRO_IDENTITY_CAP` (default 10).
+
+Bro's Inkbox mailbox is live: inbound `POST /webhooks/mail`, outbound `bro_mail`.
+Long work parks as Convex `jobs` (`npm run jobs:check`). Re-run `npm run webhooks` to subscribe mail.

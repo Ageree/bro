@@ -58,6 +58,23 @@ export const getByConversation = query({
   },
 });
 
+export const getByEmail = query({
+  args: { secret: v.string(), emailAddress: v.string() },
+  returns: v.union(tenantDoc, v.null()),
+  handler: async (ctx, { secret, emailAddress }) => {
+    assertSecret(secret);
+    const email = emailAddress.trim().toLowerCase();
+    if (!email) return null;
+    const rows = await ctx.db
+      .query("tenants")
+      .withIndex("by_email", (q) => q.eq("emailAddress", email))
+      .take(2);
+    // Fail closed: zero or two matches never wake a person.
+    if (rows.length !== 1) return null;
+    return rows[0]!;
+  },
+});
+
 export const upsert = mutation({
   args: {
     secret: v.string(),
@@ -156,10 +173,11 @@ export const insertProvisioned = internalMutation({
       .withIndex("by_handle", (q) => q.eq("inkboxHandle", args.inkboxHandle))
       .unique();
     if (existing) return existing;
+    const email = args.emailAddress?.trim().toLowerCase();
     const id = await ctx.db.insert("tenants", {
       inkboxHandle: args.inkboxHandle,
       inkboxIdentityId: args.inkboxIdentityId,
-      emailAddress: args.emailAddress,
+      emailAddress: email || undefined,
       webhookSigningKey: args.webhookSigningKey,
       displayName: "Bro",
       status: "active",

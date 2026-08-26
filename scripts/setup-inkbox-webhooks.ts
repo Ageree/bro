@@ -1,6 +1,7 @@
-import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { Inkbox } from "@inkbox/sdk";
+import { mailWebhookUrl } from "../convex/lib/mailPolicy.ts";
 
 const envPath = resolve(import.meta.dirname, "../.env.local");
 
@@ -75,5 +76,29 @@ if (same) {
   console.log("webhook created", sub.id, url);
 }
 
+const mailUrl = mailWebhookUrl(url);
+const mailboxId = identity.mailbox?.id;
+if (!mailboxId) {
+  console.log("no mailbox on identity, skip mail webhook");
+} else {
+  const mailSubs = await inkbox.webhooks.subscriptions.list({ mailboxId });
+  const sameMail = mailSubs.find((s) => s.url === mailUrl);
+  if (sameMail) {
+    console.log("mail webhook exists", sameMail.id, sameMail.eventTypes.join(","));
+  } else {
+    const sub = await inkbox.webhooks.subscriptions.create({
+      mailboxId,
+      url: mailUrl,
+      eventTypes: ["message.received"],
+    });
+    if (sub.signingKey) {
+      upsertEnv("INKBOX_WEBHOOK_SECRET", sub.signingKey);
+      console.log("signing key from mail subscription, last4", sub.signingKey.slice(-4));
+    }
+    console.log("mail webhook created", sub.id, mailUrl);
+  }
+}
+
 console.log("allowed sender +79217818876");
 console.log("webhook url", url);
+console.log("mail webhook url", mailUrl);

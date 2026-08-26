@@ -19,7 +19,26 @@ export default defineSchema({
   })
     .index("by_phone", ["phoneE164"])
     .index("by_handle", ["inkboxHandle"])
-    .index("by_conversation", ["inkboxConversationId"]),
+    .index("by_conversation", ["inkboxConversationId"])
+    .index("by_email", ["emailAddress"]),
+
+  jobs: defineTable({
+    tenantId: v.id("tenants"),
+    goal: v.string(),
+    doneWhen: v.string(),
+    status: v.union(
+      v.literal("open"),
+      v.literal("waiting"),
+      v.literal("done"),
+      v.literal("failed"),
+    ),
+    waitingFor: v.optional(
+      v.union(v.literal("human"), v.literal("email"), v.literal("browser")),
+    ),
+    note: v.optional(v.string()),
+    emailThreadId: v.optional(v.string()),
+    emailMessageId: v.optional(v.string()),
+  }).index("by_tenant", ["tenantId"]),
 
   memories: defineTable({
     phoneE164: v.string(),

@@ -1,5 +1,6 @@
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "../../convex/_generated/api";
+import type { Id } from "../../convex/_generated/dataModel";
 
 function client(): ConvexHttpClient {
   const url = process.env.CONVEX_URL;
@@ -111,5 +112,86 @@ export async function setBrowser(
     secret: secret(),
     phoneE164,
     ...patch,
+  });
+}
+
+export async function getTenantByEmail(emailAddress: string) {
+  return await client().query(api.tenants.getByEmail, {
+    secret: secret(),
+    emailAddress,
+  });
+}
+
+export async function jobWakeLines(phoneE164: string): Promise<string[]> {
+  return await client().query(api.jobs.wake, {
+    secret: secret(),
+    phoneE164,
+  });
+}
+
+export async function listOpenJobs(phoneE164: string) {
+  return await client().query(api.jobs.listOpen, {
+    secret: secret(),
+    phoneE164,
+  });
+}
+
+export async function openJob(
+  phoneE164: string,
+  goal: string,
+  doneWhen: string,
+) {
+  return await client().mutation(api.jobs.open, {
+    secret: secret(),
+    phoneE164,
+    goal,
+    doneWhen,
+  });
+}
+
+export async function waitJob(
+  phoneE164: string,
+  jobId: string,
+  waitingFor: "human" | "email" | "browser",
+  extra?: {
+    note?: string;
+    emailThreadId?: string;
+    emailMessageId?: string;
+  },
+) {
+  return await client().mutation(api.jobs.wait, {
+    secret: secret(),
+    phoneE164,
+    jobId: jobId as Id<"jobs">,
+    waitingFor,
+    ...extra,
+  });
+}
+
+export async function finishJob(
+  phoneE164: string,
+  jobId: string,
+  outcome: string,
+  failed?: boolean,
+) {
+  return await client().mutation(api.jobs.finish, {
+    secret: secret(),
+    phoneE164,
+    jobId: jobId as Id<"jobs">,
+    outcome,
+    failed,
+  });
+}
+
+export async function touchJobMail(
+  phoneE164: string,
+  jobId: string,
+  extra: { emailThreadId?: string; emailMessageId?: string },
+) {
+  return await client().mutation(api.jobs.touchMail, {
+    secret: secret(),
+    phoneE164,
+    jobId: jobId as Id<"jobs">,
+    ...extra,
   });
 }

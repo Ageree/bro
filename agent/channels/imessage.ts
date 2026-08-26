@@ -15,6 +15,7 @@ import {
   getTenantByHandle,
   upsertTenant,
 } from "../lib/convex";
+import { ingestInboundMail } from "../lib/mail-inbound";
 import {
   connectCardHtml,
   isConnectDest,
@@ -155,6 +156,35 @@ export default defineChannel({
         },
       });
 
+      return new Response(null, { status: 204 });
+    }),
+    POST("/webhooks/mail", async (request, { from }) => {
+      const got = await ingestInboundMail(request);
+      if ("drop" in got) {
+        if (got.status === 401) return new Response("unauthorized", { status: 401 });
+        if (got.status === 500) {
+          return new Response(got.drop, { status: 500 });
+        }
+        console.log("mail inbound dropped", got.drop);
+        return new Response(null, { status: 204 });
+      }
+      console.log("mail inbound", {
+        remote: got.phone,
+        conversationId: got.conversationId,
+        chars: got.text.length,
+      });
+      await from(got.conversationId).send(got.text, {
+        auth: {
+          authenticator: "inkbox",
+          issuer: "inkbox",
+          principalType: "user",
+          principalId: got.phone,
+          attributes: {
+            conversationId: got.conversationId,
+            inkboxHandle: got.handle,
+          },
+        },
+      });
       return new Response(null, { status: 204 });
     }),
   ],
