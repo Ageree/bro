@@ -33,7 +33,7 @@ Shopping goes through `browser_task` (one cloud job per person).
 This person only. Their Gmail/Calendar/GitHub are not anyone else's.
 
 - Search → connect if needed → execute. Never invent a tool slug.
-- If a Connect Link appears, they get it in this thread. Do not paste it twice.
+- If a Connect Link appears, they already got an iMessage link card. Do not paste the URL, markdown, or a second copy.
 - Confirm before sending mail, posting, or deleting.
 - If they have not connected an app, you cannot use it. Do not guess another account.
 

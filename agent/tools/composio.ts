@@ -1,5 +1,6 @@
 import { defineDynamic, defineTool } from "eve/tools";
 import type { ToolContext } from "eve/tools";
+import { isConnectDest, wrapConnectUrl } from "../lib/connect-link";
 import { sendBlueIMessage } from "../lib/inkbox";
 import { sessionFor } from "../lib/composio";
 import { tenantId } from "../lib/tenant";
@@ -10,11 +11,11 @@ function rec(v: unknown): Record<string, unknown> {
     : {};
 }
 
-function conversationId(ctx: ToolContext): string | undefined {
+function attr(ctx: ToolContext, key: string): string | undefined {
   const attrs =
     ctx.session.auth.current?.attributes ??
     ctx.session.auth.initiator?.attributes;
-  const raw = attrs?.conversationId;
+  const raw = attrs?.[key];
   const id = Array.isArray(raw) ? raw[0] : raw;
   if (typeof id === "string" && id.length > 0) return id;
   return undefined;
@@ -27,13 +28,16 @@ function connectLinks(result: unknown): string[] {
 }
 
 async function sendConnectIfAny(ctx: ToolContext, result: unknown): Promise<void> {
-  const conv = conversationId(ctx);
+  const conv = attr(ctx, "conversationId");
   if (!conv) return;
+  const handle = attr(ctx, "inkboxHandle");
   for (const url of connectLinks(result)) {
+    if (!isConnectDest(url)) continue;
     try {
       await sendBlueIMessage({
         conversationId: conv,
-        text: `Подключи приложение: ${url}`,
+        text: wrapConnectUrl(url),
+        handle,
       });
     } catch (err) {
       console.error("composio connect link send failed", err);

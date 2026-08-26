@@ -17,6 +17,7 @@
     "access:check": "node --experimental-strip-types scripts/access-policy-check.ts",
     "composio:check": "node --env-file=.env.local --experimental-strip-types scripts/composio-check.ts",
     "composio:isolation": "node --env-file=.env.local --experimental-strip-types scripts/composio-isolation.ts",
+    "connect-link:check": "node --experimental-strip-types scripts/connect-link-check.ts",
     "provision:inkbox": "node --experimental-strip-types scripts/provision-inkbox.ts"
   },
   "dependencies": {

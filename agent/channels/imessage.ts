@@ -1,4 +1,4 @@
-import { defineChannel, POST } from "eve/channels";
+import { defineChannel, GET, POST } from "eve/channels";
 import type { IMessageWebhookPayload } from "@inkbox/sdk";
 import {
   agentHandle,
@@ -15,6 +15,11 @@ import {
   getTenantByHandle,
   upsertTenant,
 } from "../lib/convex";
+import {
+  connectCardHtml,
+  isConnectDest,
+  stripConnectUrls,
+} from "../lib/connect-link";
 
 function handleFromRequest(request: Request): string | undefined {
   try {
@@ -29,6 +34,23 @@ function handleFromRequest(request: Request): string | undefined {
 export default defineChannel({
   turnPolicy: "steer",
   routes: [
+    GET("/l", async (request) => {
+      let dest = "";
+      try {
+        dest = new URL(request.url).searchParams.get("to") ?? "";
+      } catch {
+        dest = "";
+      }
+      if (!isConnectDest(dest)) {
+        return new Response("bad link", { status: 400 });
+      }
+      return new Response(connectCardHtml(dest), {
+        headers: {
+          "content-type": "text/html; charset=utf-8",
+          "cache-control": "public, max-age=300",
+        },
+      });
+    }),
     POST("/webhooks/imessage", async (request, { from, waitUntil }) => {
       const handle = handleFromRequest(request);
       const tenant = handle ? await getTenantByHandle(handle).catch(() => null) : null;
@@ -142,9 +164,11 @@ export default defineChannel({
       const conversationId = channel.continuation?.token;
       if (!conversationId) return;
       const tenant = await getTenantByConversation(conversationId).catch(() => null);
+      const text = stripConnectUrls(event.message);
+      if (!text) return;
       await sendBlueIMessage({
         conversationId,
-        text: event.message,
+        text,
         handle: tenant?.inkboxHandle,
       });
     },
