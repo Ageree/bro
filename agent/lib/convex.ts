@@ -56,11 +56,13 @@ export async function forgetLines(
 export async function upsertTenant(
   phoneE164: string,
   inkboxConversationId?: string,
+  emailAddress?: string,
 ) {
   return await client().mutation(api.tenants.upsert, {
     secret: secret(),
     phoneE164,
     inkboxConversationId,
+    emailAddress,
   });
 }
 

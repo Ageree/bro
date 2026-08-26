@@ -80,21 +80,31 @@ export const upsert = mutation({
     secret: v.string(),
     phoneE164: v.string(),
     inkboxConversationId: v.optional(v.string()),
+    emailAddress: v.optional(v.string()),
   },
   returns: tenantDoc,
-  handler: async (ctx, { secret, phoneE164, inkboxConversationId }) => {
+  handler: async (ctx, { secret, phoneE164, inkboxConversationId, emailAddress }) => {
     assertSecret(secret);
+    const email = emailAddress?.trim().toLowerCase();
     const existing = await ctx.db
       .query("tenants")
       .withIndex("by_phone", (q) => q.eq("phoneE164", phoneE164))
       .first();
     if (existing) {
+      const patch: {
+        inkboxConversationId?: string;
+        emailAddress?: string;
+      } = {};
       if (
         inkboxConversationId &&
         existing.inkboxConversationId !== inkboxConversationId
       ) {
-        await ctx.db.patch(existing._id, { inkboxConversationId });
-        return { ...existing, inkboxConversationId };
+        patch.inkboxConversationId = inkboxConversationId;
+      }
+      if (email && existing.emailAddress !== email) patch.emailAddress = email;
+      if (Object.keys(patch).length) {
+        await ctx.db.patch(existing._id, patch);
+        return { ...existing, ...patch };
       }
       return existing;
     }
@@ -102,6 +112,7 @@ export const upsert = mutation({
       phoneE164,
       status: "active",
       inkboxConversationId,
+      emailAddress: email || undefined,
     });
     const created = await ctx.db.get(id);
     if (!created) throw new Error("tenant insert failed");
