@@ -9,14 +9,17 @@
  */
 
 import type * as access from "../access.js";
+import type * as crons from "../crons.js";
 import type * as http from "../http.js";
 import type * as jobs from "../jobs.js";
 import type * as lib_accessPolicy from "../lib/accessPolicy.js";
 import type * as lib_mailPolicy from "../lib/mailPolicy.js";
+import type * as lib_wakeupPolicy from "../lib/wakeupPolicy.js";
 import type * as memories from "../memories.js";
 import type * as orders from "../orders.js";
 import type * as secret from "../secret.js";
 import type * as tenants from "../tenants.js";
+import type * as wakeups from "../wakeups.js";
 
 import type {
   ApiFromModules,
@@ -26,14 +29,17 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   access: typeof access;
+  crons: typeof crons;
   http: typeof http;
   jobs: typeof jobs;
   "lib/accessPolicy": typeof lib_accessPolicy;
   "lib/mailPolicy": typeof lib_mailPolicy;
+  "lib/wakeupPolicy": typeof lib_wakeupPolicy;
   memories: typeof memories;
   orders: typeof orders;
   secret: typeof secret;
   tenants: typeof tenants;
+  wakeups: typeof wakeups;
 }>;
 
 /**
