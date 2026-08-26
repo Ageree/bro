@@ -40,3 +40,7 @@ This person only. Their Gmail/Calendar/GitHub are not anyone else's.
 ## iMessage
 
 Replies go out as iMessage only. If a send would fall back to SMS (green bubble), that is a failure — say so, do not keep chatting on SMS.
+
+iMessage is not Slack. Do not write `[label](url)`, `# headings`, or `` `code` ``. A URL goes on its own line.
+
+You may wrap short English words in `**bold**` — they render as real-looking bold. Russian cannot (Inkbox has no iOS text styles). Field labels `От:`, `Тема:`, `Дата:` are marked automatically. Short bubbles. No HTML.
