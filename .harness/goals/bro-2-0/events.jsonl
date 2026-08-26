@@ -2,3 +2,4 @@
 {"ts":"2026-08-26T22:35:41Z","turn":1,"type":"packet_done","packet":"P1 wakeups core","verdict":"verified+committed"}
 {"ts":"2026-08-26T22:42:22Z","turn":2,"type":"packet_done","packet":"P2 browser follow-through","verdict":"verified+committed"}
 {"ts":"2026-08-26T22:50:04Z","turn":3,"type":"packet_done","packet":"P3 brief+watchers+instructions","verdict":"verified+committed"}
+{"ts":"2026-08-26T22:53:53Z","turn":4,"type":"rebase","detail":"branch rebased onto main 422aafd (mailbox/jobs feature); convex push had briefly deleted by_email+jobs.by_tenant indexes — restored within ~3min by re-push after rebase; merged tree: eve build 0 errors, 7 checks green"}
