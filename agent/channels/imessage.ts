@@ -102,6 +102,11 @@ export default defineChannel({
 
       const text = msg.content?.trim();
       if (!text) return new Response(null, { status: 204 });
+      console.log("imessage inbound", {
+        remote,
+        conversationId: msg.conversation_id,
+        chars: text.length,
+      });
 
       const ack = (async () => {
         try {
