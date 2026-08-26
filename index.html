@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>bro — твой личный ИИ-агент</title>
+  <meta name="description" content="bro — персональный ИИ-агент со своим номером, почтой и памятью. Записи к врачу, брони, поиск — берёт рутину на себя." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --ink: #17271e;          /* deep green-charcoal text */
+      --ink-soft: #3c4d43;     /* muted subline */
+      --cta-bg: #17271e;
+      --cta-fg: #f6faf5;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    html, body { overflow-x: hidden; }
+
+    body {
+      font-family: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+      color: var(--ink);
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* Full-bleed background: generated meadow image, with a sky→meadow
+       gradient as fallback if the image is missing. */
+    .bg {
+      position: fixed;
+      inset: 0;
+      z-index: -2;
+      background:
+        url("assets/meadow.webp") center / cover no-repeat,
+        linear-gradient(180deg, #dff0fb 0%, #eaf6ec 45%, #bfe3c4 100%);
+    }
+    /* Soft light scrim guarantees text contrast over any part of the image. */
+    .scrim {
+      position: fixed;
+      inset: 0;
+      z-index: -1;
+      background: radial-gradient(ellipse 70% 55% at 50% 42%,
+        rgba(255, 255, 255, 0.62) 0%,
+        rgba(255, 255, 255, 0.28) 45%,
+        rgba(255, 255, 255, 0) 72%);
+    }
+
+    .hero {
+      min-height: 100svh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      gap: 1.4rem;
+      padding: 2rem 1.5rem;
+    }
+
+    .wordmark {
+      font-weight: 600;
+      font-size: clamp(4.5rem, 15vw, 11rem);
+      line-height: 0.9;
+      letter-spacing: -0.04em;
+    }
+
+    .tagline {
+      font-weight: 500;
+      font-size: clamp(1.35rem, 4.2vw, 2.15rem);
+      letter-spacing: -0.01em;
+    }
+
+    .subline {
+      font-weight: 400;
+      font-size: clamp(1rem, 2.2vw, 1.15rem);
+      color: var(--ink-soft);
+      max-width: min(34rem, calc(100vw - 3rem));
+      overflow-wrap: break-word;
+      line-height: 1.5;
+    }
+
+    .cta {
+      margin-top: 0.6rem;
+      display: inline-block;
+      background: var(--cta-bg);
+      color: var(--cta-fg);
+      font-size: 1.02rem;
+      font-weight: 500;
+      text-decoration: none;
+      padding: 0.9rem 2.1rem;
+      border-radius: 999px;
+      box-shadow: 0 10px 30px -12px rgba(23, 39, 30, 0.55);
+      transition: transform 0.15s ease, box-shadow 0.15s ease;
+    }
+    .cta:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 16px 38px -12px rgba(23, 39, 30, 0.6);
+    }
+    .cta:focus-visible {
+      outline: 3px solid #17271e;
+      outline-offset: 3px;
+    }
+  </style>
+</head>
+<body>
+  <div class="bg" aria-hidden="true"></div>
+  <div class="scrim" aria-hidden="true"></div>
+
+  <main class="hero">
+    <h1 class="wordmark">bro</h1>
+    <p class="tagline">Твой личный ИИ-агент</p>
+    <p class="subline">Свой номер, своя почта, своя память. Записи к врачу, брони, поиск — берёт рутину на себя.</p>
+    <a class="cta" href="#">Запросить доступ</a>
+  </main>
+</body>
+</html>
