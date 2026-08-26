@@ -112,6 +112,7 @@ export async function setBrowser(
     browserRunId?: string;
     browserTask?: string;
     browserStatus?: string;
+    browserStartedAt?: number;
   },
 ): Promise<void> {
   await client().mutation(api.tenants.setBrowser, {

@@ -1,8 +1,19 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
-import { setBrowser, upsertTenant } from "../lib/convex";
-import { nextBrowserAction } from "../lib/browser-policy";
-import { hydrate, startRun, waitForRun, type BrowserRun } from "../lib/browseruse";
+import {
+  cancelWakeup,
+  scheduleWakeup,
+  setBrowser,
+  upsertTenant,
+} from "../lib/convex";
+import { nextBrowserAction, pollTimedOut } from "../lib/browser-policy";
+import {
+  hydrate,
+  isTerminal,
+  startRun,
+  waitForRun,
+  type BrowserRun,
+} from "../lib/browseruse";
 import { sendBlueIMessage } from "../lib/inkbox";
 import { tenantId } from "../lib/tenant";
 
@@ -17,13 +28,19 @@ function conversationId(ctx: { session: { auth: { current?: { attributes?: Recor
   return fallback;
 }
 
-async function persist(phone: string, run: BrowserRun, task: string): Promise<void> {
+async function persist(
+  phone: string,
+  run: BrowserRun,
+  task: string,
+  extra?: { browserStartedAt?: number },
+): Promise<void> {
   await setBrowser(phone, {
     browserRunId: run.runId,
     browserTask: task,
     browserStatus: run.status,
     ...(run.sessionId ? { browserSessionId: run.sessionId } : {}),
     ...(run.liveUrl ? { browserLiveUrl: run.liveUrl } : {}),
+    ...(extra ?? {}),
   });
 }
 
@@ -37,9 +54,42 @@ function payload(run: BrowserRun, extra?: Record<string, unknown>) {
     hint:
       run.status.toLowerCase() === "completed"
         ? "Send these results to the human now. Do not start another search."
-        : "Still running. Tell the human you're looking and wait for them — the next browser_task will poll this job, not start a new one.",
+        : isTerminal(run.status)
+          ? "Job ended. Tell the human."
+          : "Still running. Bro will message first when this finishes. Tell the human you're looking. Do not ask them to check back.",
     ...extra,
   };
+}
+
+async function settle(
+  phone: string,
+  run: BrowserRun,
+  task: string,
+  extra: Record<string, unknown>,
+  opts: { startedAt?: number; runId?: string | null },
+) {
+  if (isTerminal(run.status)) {
+    await cancelWakeup(phone, { kind: "browser_poll" }).catch(() => {});
+    return payload(run, extra);
+  }
+  if (
+    opts.runId === run.runId &&
+    pollTimedOut(opts.startedAt, Date.now())
+  ) {
+    await cancelWakeup(phone, { kind: "browser_poll" }).catch(() => {});
+    return payload(run, {
+      ...extra,
+      hint: "джоб висит слишком долго, скажи человеку и предложи reset",
+    });
+  }
+  await scheduleWakeup({
+    tenantPhone: phone,
+    at: Date.now() + 2 * 60_000,
+    kind: "browser_poll",
+    payload: task,
+    recurMinutes: 2,
+  }).catch((err) => console.error("browser poll wakeup failed", err));
+  return payload(run, extra);
 }
 
 export default defineTool({
@@ -64,7 +114,10 @@ export default defineTool({
     if (action === "reuse" && tenant.browserRunId) {
       const run = await hydrate(tenant.browserRunId, tenant.browserSessionId);
       await persist(phone, run, tenant.browserTask ?? task);
-      return payload(run, { reused: true });
+      return settle(phone, run, tenant.browserTask ?? task, { reused: true }, {
+        startedAt: tenant.browserStartedAt,
+        runId: tenant.browserRunId,
+      });
     }
 
     if (action === "poll" && tenant.browserRunId) {
@@ -74,19 +127,26 @@ export default defineTool({
         WAIT_MS,
       );
       await persist(phone, run, tenant.browserTask ?? task);
-      return payload(run, { polled: true });
+      return settle(
+        phone,
+        run,
+        tenant.browserTask ?? task,
+        { polled: true },
+        { startedAt: tenant.browserStartedAt, runId: tenant.browserRunId },
+      );
     }
 
     const started = await startRun(
       task,
       reset ? undefined : tenant.browserSessionId,
     );
-    await persist(phone, started, task);
+    const startedAt = Date.now();
+    await persist(phone, started, task, { browserStartedAt: startedAt });
     if (conv) {
       try {
         await sendBlueIMessage({
           conversationId: conv,
-          text: "Ищу, это может занять пару минут. Напиши «ну что», если тишина.",
+          text: "Ищу, это может занять пару минут. Сам напишу, когда будет готово.",
           handle: tenant.inkboxHandle,
         });
       } catch (err) {
@@ -95,6 +155,12 @@ export default defineTool({
     }
     const done = await waitForRun(started.runId, started.sessionId, WAIT_MS);
     await persist(phone, done, task);
-    return payload(done, { started: true, alreadyNotified: Boolean(conv) });
+    return settle(
+      phone,
+      done,
+      task,
+      { started: true, alreadyNotified: Boolean(conv) },
+      { startedAt, runId: started.runId },
+    );
   },
 });

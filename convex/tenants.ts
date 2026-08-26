@@ -18,6 +18,7 @@ export const tenantDoc = v.object({
   browserRunId: v.optional(v.string()),
   browserTask: v.optional(v.string()),
   browserStatus: v.optional(v.string()),
+  browserStartedAt: v.optional(v.number()),
 });
 
 export const getByPhone = query({
@@ -129,6 +130,7 @@ export const setBrowser = mutation({
     browserRunId: v.optional(v.string()),
     browserTask: v.optional(v.string()),
     browserStatus: v.optional(v.string()),
+    browserStartedAt: v.optional(v.number()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -139,11 +141,20 @@ export const setBrowser = mutation({
       .first();
     if (!existing) throw new Error("unknown tenant");
     await ctx.db.patch(existing._id, {
-      browserSessionId: args.browserSessionId,
-      browserLiveUrl: args.browserLiveUrl,
-      browserRunId: args.browserRunId,
-      browserTask: args.browserTask,
-      browserStatus: args.browserStatus,
+      ...(args.browserSessionId !== undefined
+        ? { browserSessionId: args.browserSessionId }
+        : {}),
+      ...(args.browserLiveUrl !== undefined
+        ? { browserLiveUrl: args.browserLiveUrl }
+        : {}),
+      ...(args.browserRunId !== undefined ? { browserRunId: args.browserRunId } : {}),
+      ...(args.browserTask !== undefined ? { browserTask: args.browserTask } : {}),
+      ...(args.browserStatus !== undefined
+        ? { browserStatus: args.browserStatus }
+        : {}),
+      ...(args.browserStartedAt !== undefined
+        ? { browserStartedAt: args.browserStartedAt }
+        : {}),
     });
     return null;
   },

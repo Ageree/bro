@@ -120,7 +120,7 @@ export async function waitForRun(
   return hydrate(runId, last.sessionId);
 }
 
-function isTerminal(status: string): boolean {
+export function isTerminal(status: string): boolean {
   return ["completed", "failed", "cancelled", "canceled", "stopped", "error"].includes(
     status.toLowerCase(),
   );

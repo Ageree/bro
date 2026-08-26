@@ -225,6 +225,9 @@ export default defineChannel({
       if (kind === "watcher") {
         prompt += ` lastSeen=${lastSeen ?? ""}.`;
       }
+      if (kind === "browser_poll") {
+        prompt = `[background wakeup] Проверь статус текущего браузер-джоба вызовом тула browser_task с task=${payload}. Если completed — отправь человеку результаты. Если ещё работает — ответь [SILENT] (wakeup сам повторится). Если failed — коротко скажи об этом.`;
+      }
       await from(conversationId).send(prompt, {
         auth: {
           authenticator: "inkbox",

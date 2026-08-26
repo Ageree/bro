@@ -50,13 +50,17 @@ export const schedule = mutation({
   returns: v.id("wakeups"),
   handler: async (ctx, args) => {
     assertSecret(args.secret);
-    if (args.kind === "brief") {
+    if (args.kind === "brief" || args.kind === "browser_poll") {
       // ponytail: by_tenant isn't status-filtered; 100 is enough until done-rows bury live ones
       const rows = await ctx.db
         .query("wakeups")
         .withIndex("by_tenant", (q) => q.eq("tenantPhone", args.tenantPhone))
         .take(100);
-      const existing = rows.find((w) => w.kind === "brief" && w.status === "scheduled");
+      const existing = rows.find(
+        (w) =>
+          w.kind === args.kind &&
+          (w.status === "scheduled" || w.status === "running"),
+      );
       if (existing) {
         await ctx.db.patch(existing._id, {
           at: args.at,

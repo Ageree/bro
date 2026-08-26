@@ -16,6 +16,7 @@ export default defineSchema({
     browserRunId: v.optional(v.string()),
     browserTask: v.optional(v.string()),
     browserStatus: v.optional(v.string()),
+    browserStartedAt: v.optional(v.number()),
   })
     .index("by_phone", ["phoneE164"])
     .index("by_handle", ["inkboxHandle"])
