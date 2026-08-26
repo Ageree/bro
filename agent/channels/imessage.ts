@@ -4,18 +4,39 @@ import {
   agentHandle,
   allowlisted,
   inkbox,
+  isAccessHandle,
   isBlueIMessage,
   sendBlueIMessage,
   webhookOk,
 } from "../lib/inkbox";
-import { upsertTenant } from "../lib/convex";
+import {
+  bindInbound,
+  getTenantByConversation,
+  getTenantByHandle,
+  upsertTenant,
+} from "../lib/convex";
+
+function handleFromRequest(request: Request): string | undefined {
+  try {
+    const h = new URL(request.url).searchParams.get("h");
+    if (h && isAccessHandle(h)) return h;
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
 
 export default defineChannel({
   turnPolicy: "steer",
   routes: [
     POST("/webhooks/imessage", async (request, { from, waitUntil }) => {
-      const secret = process.env.INKBOX_WEBHOOK_SECRET;
-      if (!secret) return new Response("missing INKBOX_WEBHOOK_SECRET", { status: 500 });
+      const handle = handleFromRequest(request);
+      const tenant = handle ? await getTenantByHandle(handle).catch(() => null) : null;
+      const secret =
+        tenant?.webhookSigningKey || process.env.INKBOX_WEBHOOK_SECRET;
+      if (!secret) {
+        return new Response("missing INKBOX_WEBHOOK_SECRET", { status: 500 });
+      }
 
       const payload = Buffer.from(await request.arrayBuffer());
       if (!webhookOk(payload, request.headers, secret)) {
@@ -54,22 +75,37 @@ export default defineChannel({
         console.error("dropped inbound without remote number");
         return new Response(null, { status: 204 });
       }
-      if (!allowlisted(remote)) {
-        return new Response(null, { status: 204 });
+
+      const identityHandle = handle ?? agentHandle();
+
+      if (handle) {
+        const bound = await bindInbound(handle, remote, msg.conversation_id).catch(
+          (err) => {
+            console.error("bind inbound failed", err);
+            return { ok: false as const, reason: "error" };
+          },
+        );
+        if (!bound.ok) {
+          console.error("dropped inbound", bound.reason, handle, remote);
+          return new Response(null, { status: 204 });
+        }
+      } else {
+        if (!allowlisted(remote)) {
+          return new Response(null, { status: 204 });
+        }
+        try {
+          await upsertTenant(remote, msg.conversation_id);
+        } catch (err) {
+          console.error("tenant upsert failed", err);
+        }
       }
 
       const text = msg.content?.trim();
       if (!text) return new Response(null, { status: 204 });
 
-      try {
-        await upsertTenant(remote, msg.conversation_id);
-      } catch (err) {
-        console.error("tenant upsert failed", err);
-      }
-
       const ack = (async () => {
         try {
-          const identity = await inkbox().getIdentity(agentHandle());
+          const identity = await inkbox().getIdentity(identityHandle);
           await identity.markIMessageConversationRead(msg.conversation_id);
           await identity.sendIMessageTyping(msg.conversation_id);
         } catch (err) {
@@ -85,7 +121,10 @@ export default defineChannel({
           issuer: "inkbox",
           principalType: "user",
           principalId: remote,
-          attributes: { conversationId: msg.conversation_id },
+          attributes: {
+            conversationId: msg.conversation_id,
+            inkboxHandle: identityHandle,
+          },
         },
       });
 
@@ -97,7 +136,12 @@ export default defineChannel({
       if (event.finishReason === "tool-calls" || !event.message) return;
       const conversationId = channel.continuation?.token;
       if (!conversationId) return;
-      await sendBlueIMessage({ conversationId, text: event.message });
+      const tenant = await getTenantByConversation(conversationId).catch(() => null);
+      await sendBlueIMessage({
+        conversationId,
+        text: event.message,
+        handle: tenant?.inkboxHandle,
+      });
     },
   },
 });

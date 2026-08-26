@@ -3,7 +3,11 @@ import { v } from "convex/values";
 
 export default defineSchema({
   tenants: defineTable({
-    phoneE164: v.string(),
+    phoneE164: v.optional(v.string()),
+    inkboxHandle: v.optional(v.string()),
+    inkboxIdentityId: v.optional(v.string()),
+    emailAddress: v.optional(v.string()),
+    webhookSigningKey: v.optional(v.string()),
     displayName: v.optional(v.string()),
     status: v.union(v.literal("active"), v.literal("disabled")),
     inkboxConversationId: v.optional(v.string()),
@@ -12,7 +16,10 @@ export default defineSchema({
     browserRunId: v.optional(v.string()),
     browserTask: v.optional(v.string()),
     browserStatus: v.optional(v.string()),
-  }).index("by_phone", ["phoneE164"]),
+  })
+    .index("by_phone", ["phoneE164"])
+    .index("by_handle", ["inkboxHandle"])
+    .index("by_conversation", ["inkboxConversationId"]),
 
   memories: defineTable({
     phoneE164: v.string(),

@@ -11,6 +11,10 @@ export function agentHandle(): string {
   return process.env.INKBOX_AGENT_HANDLE ?? "bro-ageree";
 }
 
+export function isAccessHandle(h: string): boolean {
+  return /^bro-[a-z0-9]{8}$/.test(h);
+}
+
 export function webhookOk(
   payload: Buffer,
   headers: Headers,
@@ -42,8 +46,9 @@ export function isBlueIMessage(msg: {
 export async function sendBlueIMessage(opts: {
   conversationId: string;
   text: string;
+  handle?: string;
 }): Promise<IMessage> {
-  const identity = await inkbox().getIdentity(agentHandle());
+  const identity = await inkbox().getIdentity(opts.handle ?? agentHandle());
   const sent = await identity.sendIMessage({
     conversationId: opts.conversationId,
     text: opts.text,

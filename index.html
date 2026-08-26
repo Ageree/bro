@@ -112,5 +112,70 @@
     <p class="subline">Свой номер, своя почта, своя память. Записи к врачу, брони, поиск — берёт рутину на себя.</p>
     <a class="cta" href="#">Запросить доступ</a>
   </main>
+  <script src="assets/config.js"></script>
+  <script>
+    (function () {
+      var KEY = "bro.handle";
+      var cta = document.querySelector(".cta");
+      if (!cta) return;
+
+      function isIos() {
+        var ua = navigator.userAgent || "";
+        if (/iPhone|iPad|iPod/i.test(ua)) return true;
+        return navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1;
+      }
+
+      function site() {
+        var s = window.BRO_CONVEX_SITE_URL;
+        return typeof s === "string" ? s.replace(/\/$/, "") : "";
+      }
+
+      function setLabel(t) {
+        cta.textContent = t;
+      }
+
+      cta.addEventListener("click", function (e) {
+        e.preventDefault();
+        if (cta.getAttribute("aria-busy") === "true") return;
+
+        var base = site();
+        if (!base) {
+          setLabel("Сайт ещё не подключён");
+          return;
+        }
+
+        if (!isIos() && !localStorage.getItem(KEY)) {
+          setLabel("Открой на iPhone");
+          return;
+        }
+
+        cta.setAttribute("aria-busy", "true");
+        setLabel("Создаём…");
+        var handle = localStorage.getItem(KEY) || undefined;
+        fetch(base + "/access", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(handle ? { handle: handle } : {}),
+        })
+          .then(function (res) { return res.json(); })
+          .then(function (data) {
+            if (!data.ok) {
+              if (data.code === "not_ios") setLabel("Открой на iPhone");
+              else if (data.code === "closed") setLabel("Пока закрыто");
+              else setLabel("Не вышло, нажми ещё раз");
+              return;
+            }
+            localStorage.setItem(KEY, data.handle);
+            window.location.href = data.smsLink;
+          })
+          .catch(function () {
+            setLabel("Не вышло, нажми ещё раз");
+          })
+          .then(function () {
+            cta.removeAttribute("aria-busy");
+          });
+      });
+    })();
+  </script>
 </body>
 </html>

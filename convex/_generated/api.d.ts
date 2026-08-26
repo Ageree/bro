@@ -8,6 +8,9 @@
  * @module
  */
 
+import type * as access from "../access.js";
+import type * as http from "../http.js";
+import type * as lib_accessPolicy from "../lib/accessPolicy.js";
 import type * as memories from "../memories.js";
 import type * as orders from "../orders.js";
 import type * as secret from "../secret.js";
@@ -20,6 +23,9 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  access: typeof access;
+  http: typeof http;
+  "lib/accessPolicy": typeof lib_accessPolicy;
   memories: typeof memories;
   orders: typeof orders;
   secret: typeof secret;

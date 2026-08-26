@@ -7,12 +7,14 @@
   },
   "scripts": {
     "build": "eve build",
+    "vercel-build": "echo skip",
     "dev": "eve dev",
     "dev:local": "bash scripts/dev-local.sh",
     "tunnel": "node --experimental-strip-types scripts/inkbox-tunnel.ts",
     "webhooks": "node --experimental-strip-types scripts/setup-inkbox-webhooks.ts",
     "optmem:check": "python3 scripts/optmem-check.py",
     "browser:check": "node --experimental-strip-types scripts/browser-policy-check.ts",
+    "access:check": "node --experimental-strip-types scripts/access-policy-check.ts",
     "composio:check": "node --env-file=.env.local --experimental-strip-types scripts/composio-check.ts",
     "composio:isolation": "node --env-file=.env.local --experimental-strip-types scripts/composio-isolation.ts",
     "provision:inkbox": "node --experimental-strip-types scripts/provision-inkbox.ts"

@@ -25,4 +25,9 @@ Production (you are just a user on iMessage): Convex cloud + `eve deploy` on Ver
 
 Onboard: after provision, the human texts `connect @bro-ageree` to the printed router **as iMessage** (blue). iPhone Settings → Messages → Send as SMS = off.
 
-Memory files: `data/optmem/<E.164>/` (gitignored).
+Memory files: `data/optmem/<E.164>/` (gitignored). Runtime memory is Convex.
+
+Landing CTA creates a personal Inkbox identity and opens iMessage (`sms_link`).
+`assets/config.js` holds the Convex HTTP site URL (`https://<deployment>.convex.site`).
+Set `INKBOX_API_KEY` and `INKBOX_WEBHOOK_URL` on the Convex deployment.
+Cap is `BRO_IDENTITY_CAP` (default 10).
