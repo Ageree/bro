@@ -9,3 +9,4 @@ data/optmem/*
 *.log
 .output/
 .vercel
+public/
