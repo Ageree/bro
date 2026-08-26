@@ -189,10 +189,58 @@ export default defineChannel({
       });
       return new Response(null, { status: 204 });
     }),
+    POST("/internal/wakeup", async (request, { from }) => {
+      let body: {
+        secret?: unknown;
+        kind?: unknown;
+        payload?: unknown;
+        conversationId?: unknown;
+        tenantPhone?: unknown;
+        inkboxHandle?: unknown;
+        lastSeen?: unknown;
+      };
+      try {
+        body = (await request.json()) as typeof body;
+      } catch {
+        return new Response("bad json", { status: 400 });
+      }
+      const expected = process.env.BRO_INTERNAL_SECRET;
+      if (!expected || body.secret !== expected) {
+        return new Response("unauthorized", { status: 401 });
+      }
+      const conversationId =
+        typeof body.conversationId === "string" ? body.conversationId : "";
+      const tenantPhone =
+        typeof body.tenantPhone === "string" ? body.tenantPhone : "";
+      if (!conversationId || !tenantPhone) {
+        return new Response("missing fields", { status: 400 });
+      }
+      const kind = typeof body.kind === "string" ? body.kind : "";
+      const payload = typeof body.payload === "string" ? body.payload : "";
+      const inkboxHandle =
+        typeof body.inkboxHandle === "string" ? body.inkboxHandle : undefined;
+      const lastSeen =
+        typeof body.lastSeen === "string" ? body.lastSeen : undefined;
+      let prompt = `[background wakeup] kind=${kind}. Задание: ${payload}. Сейчас ${new Date().toISOString()}. Если сказать человеку нечего или задание неактуально — ответь ровно [SILENT].`;
+      if (kind === "watcher") {
+        prompt += ` lastSeen=${lastSeen ?? ""}.`;
+      }
+      await from(conversationId).send(prompt, {
+        auth: {
+          authenticator: "inkbox",
+          issuer: "inkbox",
+          principalType: "user",
+          principalId: tenantPhone,
+          attributes: { conversationId, inkboxHandle },
+        },
+      });
+      return Response.json({ ok: true });
+    }),
   ],
   events: {
     async "message.completed"(event, channel) {
       if (event.finishReason === "tool-calls" || !event.message) return;
+      if (event.message.trim().startsWith("[SILENT]")) return;
       const conversationId = channel.continuation?.token;
       if (!conversationId) return;
       const tenant = await getTenantByConversation(conversationId).catch(() => null);

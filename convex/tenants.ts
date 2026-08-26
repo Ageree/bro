@@ -170,6 +170,17 @@ export const getByHandleInternal = internalQuery({
   },
 });
 
+export const getByPhoneInternal = internalQuery({
+  args: { phoneE164: v.string() },
+  returns: v.union(tenantDoc, v.null()),
+  handler: async (ctx, { phoneE164 }) => {
+    return await ctx.db
+      .query("tenants")
+      .withIndex("by_phone", (q) => q.eq("phoneE164", phoneE164))
+      .first();
+  },
+});
+
 export const insertProvisioned = internalMutation({
   args: {
     inkboxHandle: v.string(),

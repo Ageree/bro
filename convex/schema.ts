@@ -57,4 +57,30 @@ export default defineSchema({
       v.literal("unknown"),
     ),
   }).index("by_tenant", ["tenantId"]),
+
+  wakeups: defineTable({
+    tenantPhone: v.string(),
+    at: v.number(),
+    kind: v.union(
+      v.literal("reminder"),
+      v.literal("browser_poll"),
+      v.literal("brief"),
+      v.literal("watcher"),
+    ),
+    payload: v.string(),
+    status: v.union(
+      v.literal("scheduled"),
+      v.literal("running"),
+      v.literal("done"),
+      v.literal("cancelled"),
+      v.literal("failed"),
+    ),
+    recurMinutes: v.optional(v.number()),
+    recurDailyHour: v.optional(v.number()),
+    tz: v.optional(v.string()),
+    lastSeen: v.optional(v.string()),
+    attempts: v.optional(v.number()),
+  })
+    .index("by_status_at", ["status", "at"])
+    .index("by_tenant", ["tenantPhone"]),
 });

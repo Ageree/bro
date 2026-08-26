@@ -1,6 +1,10 @@
 import { ConvexHttpClient } from "convex/browser";
+import { anyApi } from "convex/server";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
+
+// ponytail: anyApi до codegen; после convex deploy можно вернуть typed api
+const wakeups = anyApi.wakeups;
 
 function client(): ConvexHttpClient {
   const url = process.env.CONVEX_URL;
@@ -195,5 +199,41 @@ export async function touchJobMail(
     phoneE164,
     jobId: jobId as Id<"jobs">,
     ...extra,
+  });
+}
+
+export async function scheduleWakeup(args: {
+  tenantPhone: string;
+  at: number;
+  kind: "reminder" | "browser_poll" | "brief" | "watcher";
+  payload: string;
+  recurMinutes?: number;
+  recurDailyHour?: number;
+  tz?: string;
+}): Promise<string> {
+  return await client().mutation(wakeups.schedule, {
+    secret: secret(),
+    ...args,
+  });
+}
+
+export async function cancelWakeup(
+  tenantPhone: string,
+  opts: {
+    id?: string;
+    kind?: "reminder" | "browser_poll" | "brief" | "watcher";
+  },
+): Promise<number> {
+  return await client().mutation(wakeups.cancel, {
+    secret: secret(),
+    tenantPhone,
+    ...opts,
+  });
+}
+
+export async function listWakeups(tenantPhone: string) {
+  return await client().query(wakeups.listForTenant, {
+    secret: secret(),
+    tenantPhone,
   });
 }
