@@ -1,6 +1,9 @@
+import { splitSeen } from "../agent/lib/wakeup-text.ts";
 import {
   backoffAt,
   giveUp,
+  isSingletonKind,
+  liveOfKind,
   nextAfterRun,
   nextDailyAt,
   parseWhen,
@@ -53,5 +56,54 @@ assert(
 const daily = nextAfterRun({ recurDailyHour: 8, tz }, now);
 assert(daily !== null && daily > now, "recur daily future");
 assert(nextAfterRun({}, now) === null, "one-shot");
+
+assert(isSingletonKind("brief"), "brief singleton");
+assert(isSingletonKind("watcher"), "watcher singleton");
+assert(isSingletonKind("browser_poll"), "browser_poll singleton");
+assert(!isSingletonKind("reminder"), "reminder not singleton");
+
+const liveRows = [
+  { kind: "watcher", status: "done" },
+  { kind: "watcher", status: "scheduled" },
+  { kind: "brief", status: "running" },
+  { kind: "reminder", status: "scheduled" },
+];
+assert(liveOfKind(liveRows, "watcher")?.status === "scheduled", "live watcher skips done");
+assert(liveOfKind(liveRows, "brief")?.status === "running", "live brief running");
+assert(liveOfKind(liveRows, "browser_poll") === undefined, "no live poll");
+assert(liveOfKind(liveRows, "reminder")?.kind === "reminder", "live reminder");
+
+function assertSeen(
+  text: string,
+  want: { message: string; seen?: string },
+  msg: string,
+): void {
+  const got = splitSeen(text);
+  assert(got.message === want.message, `${msg} message: ${JSON.stringify(got.message)}`);
+  assert(got.seen === want.seen, `${msg} seen: ${JSON.stringify(got.seen)}`);
+}
+
+assertSeen("привет", { message: "привет" }, "no marker");
+assertSeen(
+  "новое письмо\n[SEEN] inbox: 1 from bank",
+  { message: "новое письмо", seen: "inbox: 1 from bank" },
+  "seen at end",
+);
+assertSeen(
+  "[SILENT]\n[SEEN] price=1200",
+  { message: "[SILENT]", seen: "price=1200" },
+  "silent then seen",
+);
+assertSeen(
+  "[SILENT][SEEN] price=1200",
+  { message: "[SILENT]", seen: "price=1200" },
+  "silent seen same line",
+);
+assertSeen(
+  "[SEEN] price=1200\n[SILENT]",
+  { message: "[SILENT]", seen: "price=1200" },
+  "seen then silent",
+);
+assertSeen("[SEEN] только состояние", { message: "", seen: "только состояние" }, "seen only");
 
 console.log("wakeups-check ok");

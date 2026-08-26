@@ -238,3 +238,15 @@ export async function listWakeups(tenantPhone: string) {
     tenantPhone,
   });
 }
+
+export async function setWakeupLastSeen(
+  tenantPhone: string,
+  lastSeen: string,
+): Promise<void> {
+  await client().mutation(wakeups.setLastSeen, {
+    secret: secret(),
+    tenantPhone,
+    kind: "watcher",
+    lastSeen,
+  });
+}

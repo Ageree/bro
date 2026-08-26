@@ -13,6 +13,7 @@ import {
   bindInbound,
   getTenantByConversation,
   getTenantByHandle,
+  setWakeupLastSeen,
   upsertTenant,
 } from "../lib/convex";
 import { ingestInboundMail } from "../lib/mail-inbound";
@@ -22,6 +23,7 @@ import {
   stripConnectUrls,
 } from "../lib/connect-link";
 import { inboundIMessageText, toIMessageBubbles } from "../lib/imessage-text";
+import { splitSeen } from "../lib/wakeup-text";
 
 function handleFromRequest(request: Request): string | undefined {
   try {
@@ -222,10 +224,13 @@ export default defineChannel({
       const lastSeen =
         typeof body.lastSeen === "string" ? body.lastSeen : undefined;
       let prompt = `[background wakeup] kind=${kind}. Задание: ${payload}. Сейчас ${new Date().toISOString()}. Если сказать человеку нечего или задание неактуально — ответь ровно [SILENT].`;
-      if (kind === "watcher") {
-        prompt += ` lastSeen=${lastSeen ?? ""}.`;
-      }
-      if (kind === "browser_poll") {
+      if (kind === "brief") {
+        prompt =
+          "[background wakeup] Утренний бриф. Собери коротко: (1) память об этом человеке — незакрытые дела/напоминания на сегодня; (2) если подключён Gmail/Calendar через Composio — новые важные письма и встречи сегодня; (3) статус браузер-джоба, если был. Если по ВСЕМ пунктам пусто — ответь [SILENT]. Одно короткое сообщение, без воды.";
+      } else if (kind === "watcher") {
+        prompt = `[background wakeup] Сторож: ${payload}.
+Прошлое состояние: ${lastSeen ?? "ничего"}. Проверь текущее состояние (Composio-тулы или browser_task — что уместно). Если НИЧЕГО нового относительно прошлого состояния — ответь ровно [SILENT]. Если есть новое — одно короткое сообщение человеку. В КОНЦЕ ответа добавь строку [SEEN] <краткое текущее состояние в одну строку> — она не уйдёт человеку.`;
+      } else if (kind === "browser_poll") {
         prompt = `[background wakeup] Проверь статус текущего браузер-джоба вызовом тула browser_task с task=${payload}. Если completed — отправь человеку результаты. Если ещё работает — ответь [SILENT] (wakeup сам повторится). Если failed — коротко скажи об этом.`;
       }
       await from(conversationId).send(prompt, {
@@ -243,11 +248,17 @@ export default defineChannel({
   events: {
     async "message.completed"(event, channel) {
       if (event.finishReason === "tool-calls" || !event.message) return;
-      if (event.message.trim().startsWith("[SILENT]")) return;
       const conversationId = channel.continuation?.token;
       if (!conversationId) return;
+      const { message, seen } = splitSeen(event.message);
       const tenant = await getTenantByConversation(conversationId).catch(() => null);
-      const bubbles = toIMessageBubbles(stripConnectUrls(event.message));
+      if (seen !== undefined && tenant?.phoneE164) {
+        await setWakeupLastSeen(tenant.phoneE164, seen).catch((err) => {
+          console.error("setLastSeen failed", err);
+        });
+      }
+      if (!message.trim() || message.trim().startsWith("[SILENT]")) return;
+      const bubbles = toIMessageBubbles(stripConnectUrls(message));
       if (bubbles.length === 0) return;
       for (const text of bubbles) {
         await sendBlueIMessage({

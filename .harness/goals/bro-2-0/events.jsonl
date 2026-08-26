@@ -1,3 +1,4 @@
 {"ts":"2026-08-26T22:23:46Z","turn":0,"type":"spike_outbound","result":"PASS","evidence":"msg bce96f6c outbound delivered imessage wasDowngraded=null; sent via SDK outside webhook context; last inbound 0.5h earlier; no cap error","conclusion":"approach A holds; proactive sends OK"}
 {"ts":"2026-08-26T22:35:41Z","turn":1,"type":"packet_done","packet":"P1 wakeups core","verdict":"verified+committed"}
 {"ts":"2026-08-26T22:42:22Z","turn":2,"type":"packet_done","packet":"P2 browser follow-through","verdict":"verified+committed"}
+{"ts":"2026-08-26T22:50:04Z","turn":3,"type":"packet_done","packet":"P3 brief+watchers+instructions","verdict":"verified+committed"}

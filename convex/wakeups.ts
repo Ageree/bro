@@ -3,7 +3,7 @@ import { v } from "convex/values";
 import { internalAction, internalMutation, mutation, query } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { assertSecret } from "./secret";
-import { backoffAt, giveUp, nextAfterRun } from "./lib/wakeupPolicy";
+import { backoffAt, giveUp, isSingletonKind, liveOfKind, nextAfterRun } from "./lib/wakeupPolicy";
 
 // ponytail: anyApi до codegen; после convex deploy можно вернуть typed api
 const wakeups = anyApi.wakeups;
@@ -50,17 +50,14 @@ export const schedule = mutation({
   returns: v.id("wakeups"),
   handler: async (ctx, args) => {
     assertSecret(args.secret);
-    if (args.kind === "brief" || args.kind === "browser_poll") {
+    if (isSingletonKind(args.kind)) {
+      // ponytail: one watcher per person; if they ask for a second — array
       // ponytail: by_tenant isn't status-filtered; 100 is enough until done-rows bury live ones
       const rows = await ctx.db
         .query("wakeups")
         .withIndex("by_tenant", (q) => q.eq("tenantPhone", args.tenantPhone))
         .take(100);
-      const existing = rows.find(
-        (w) =>
-          w.kind === args.kind &&
-          (w.status === "scheduled" || w.status === "running"),
-      );
+      const existing = liveOfKind(rows, args.kind);
       if (existing) {
         await ctx.db.patch(existing._id, {
           at: args.at,
@@ -188,11 +185,22 @@ export const finish = internalMutation({
   },
 });
 
-export const setLastSeen = internalMutation({
-  args: { id: v.id("wakeups"), lastSeen: v.string() },
+export const setLastSeen = mutation({
+  args: {
+    secret: v.string(),
+    tenantPhone: v.string(),
+    kind: v.literal("watcher"),
+    lastSeen: v.string(),
+  },
   returns: v.null(),
-  handler: async (ctx, { id, lastSeen }) => {
-    await ctx.db.patch(id, { lastSeen });
+  handler: async (ctx, { secret, tenantPhone, kind, lastSeen }) => {
+    assertSecret(secret);
+    const rows = await ctx.db
+      .query("wakeups")
+      .withIndex("by_tenant", (q) => q.eq("tenantPhone", tenantPhone))
+      .take(100);
+    const w = liveOfKind(rows, kind);
+    if (w) await ctx.db.patch(w._id, { lastSeen });
     return null;
   },
 });
@@ -236,9 +244,11 @@ export const dispatchDue = internalAction({
         }
         try {
           const json = (await res.json()) as { lastSeen?: unknown };
-          if (typeof json.lastSeen === "string") {
+          if (typeof json.lastSeen === "string" && w.kind === "watcher") {
             await ctx.runMutation(wakeups.setLastSeen, {
-              id: w._id,
+              secret,
+              tenantPhone: w.tenantPhone,
+              kind: "watcher",
               lastSeen: json.lastSeen,
             });
           }

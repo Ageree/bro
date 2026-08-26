@@ -80,6 +80,22 @@ export function giveUp(attempts: number): boolean {
   return attempts >= 4;
 }
 
+const SINGLETON_KINDS = new Set(["brief", "browser_poll", "watcher"]);
+
+export function isSingletonKind(kind: string): boolean {
+  return SINGLETON_KINDS.has(kind);
+}
+
+/** Live row of this kind, if any. One watcher/brief/browser_poll per person. */
+export function liveOfKind<T extends { kind: string; status: string }>(
+  rows: T[],
+  kind: string,
+): T | undefined {
+  return rows.find(
+    (w) => w.kind === kind && (w.status === "scheduled" || w.status === "running"),
+  );
+}
+
 export function nextAfterRun(
   w: { recurMinutes?: number; recurDailyHour?: number; tz?: string },
   now: number,
