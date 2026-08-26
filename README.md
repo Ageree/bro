@@ -2,6 +2,8 @@
 
 Personal iMessage concierge. **eve** runs the agent. **Convex** holds tenants and orders. **Inkbox** is blue iMessage only (never SMS). **OptMem** is long-term memory, one store per person.
 
+Outbound replies are compiled to iMessage text: markdown is stripped, `**latin**` becomes Unicode math-bold (looks bold on iPhone), Russian field labels get a `▸` mark, long numbered dumps become one bubble per item. Inkbox cannot send native iOS 18 text styles or carousels. Inbound photos/carousels reach the model as URLs. Check: `npm run imessage:check`.
+
 ## Needs
 
 - Node 24 (`nvm use`)

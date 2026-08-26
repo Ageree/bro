@@ -20,6 +20,7 @@ import {
   isConnectDest,
   stripConnectUrls,
 } from "../lib/connect-link";
+import { inboundIMessageText, toIMessageBubbles } from "../lib/imessage-text";
 
 function handleFromRequest(request: Request): string | undefined {
   try {
@@ -122,12 +123,13 @@ export default defineChannel({
         }
       }
 
-      const text = msg.content?.trim();
+      const text = inboundIMessageText(msg);
       if (!text) return new Response(null, { status: 204 });
       console.log("imessage inbound", {
         remote,
         conversationId: msg.conversation_id,
         chars: text.length,
+        messageType: msg.message_type,
       });
 
       const ack = (async () => {
@@ -164,13 +166,15 @@ export default defineChannel({
       const conversationId = channel.continuation?.token;
       if (!conversationId) return;
       const tenant = await getTenantByConversation(conversationId).catch(() => null);
-      const text = stripConnectUrls(event.message);
-      if (!text) return;
-      await sendBlueIMessage({
-        conversationId,
-        text,
-        handle: tenant?.inkboxHandle,
-      });
+      const bubbles = toIMessageBubbles(stripConnectUrls(event.message));
+      if (bubbles.length === 0) return;
+      for (const text of bubbles) {
+        await sendBlueIMessage({
+          conversationId,
+          text,
+          handle: tenant?.inkboxHandle,
+        });
+      }
     },
   },
 });
