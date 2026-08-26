@@ -13,10 +13,14 @@
     "webhooks": "node --experimental-strip-types scripts/setup-inkbox-webhooks.ts",
     "optmem:check": "python3 scripts/optmem-check.py",
     "browser:check": "node --experimental-strip-types scripts/browser-policy-check.ts",
+    "composio:check": "node --env-file=.env.local --experimental-strip-types scripts/composio-check.ts",
+    "composio:isolation": "node --env-file=.env.local --experimental-strip-types scripts/composio-isolation.ts",
     "provision:inkbox": "node --experimental-strip-types scripts/provision-inkbox.ts"
   },
   "dependencies": {
     "@ai-sdk/openai": "^4.0.47",
+    "@composio/core": "^0.17.0",
+    "@composio/experimental": "^0.2.2",
     "@inkbox/sdk": "^0.6.4",
     "@vercel/connect": "1.0.0",
     "ai": "^7.0.58",

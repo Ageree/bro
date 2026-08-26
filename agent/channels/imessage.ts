@@ -50,6 +50,10 @@ export default defineChannel({
       }
 
       const remote = msg.remote_number;
+      if (!remote) {
+        console.error("dropped inbound without remote number");
+        return new Response(null, { status: 204 });
+      }
       if (!allowlisted(remote)) {
         return new Response(null, { status: 204 });
       }
@@ -57,12 +61,10 @@ export default defineChannel({
       const text = msg.content?.trim();
       if (!text) return new Response(null, { status: 204 });
 
-      if (remote) {
-        try {
-          await upsertTenant(remote, msg.conversation_id);
-        } catch (err) {
-          console.error("tenant upsert failed", err);
-        }
+      try {
+        await upsertTenant(remote, msg.conversation_id);
+      } catch (err) {
+        console.error("tenant upsert failed", err);
       }
 
       const ack = (async () => {
@@ -82,7 +84,7 @@ export default defineChannel({
           authenticator: "inkbox",
           issuer: "inkbox",
           principalType: "user",
-          principalId: remote ?? "unknown",
+          principalId: remote,
           attributes: { conversationId: msg.conversation_id },
         },
       });
