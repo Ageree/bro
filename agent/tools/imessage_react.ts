@@ -25,15 +25,14 @@ function attr(ctx: ToolContext, key: string): string | undefined {
 
 export default defineTool({
   description:
-    "Put an iMessage tapback (love/like/dislike/laugh/emphasize/question/eyes) on the latest inbound message instead of a text bubble. After calling, reply [SILENT]. Use for «ок», «спасибо», «понял», and a seen reminder — do not overuse.",
+    "Put an iMessage tapback (love/like/dislike/laugh/emphasize/question/eyes) on the latest inbound message of this thread. The target is fixed — do not pass a message id. After calling, reply [SILENT]. Use for «ок», «спасибо», «понял», and a seen reminder — do not overuse.",
   inputSchema: z.object({
     reaction: z.enum(IMESSAGE_TAPBACKS),
-    messageId: z.string().min(1).optional(),
   }),
-  async execute({ reaction, messageId }, ctx) {
+  async execute({ reaction }, ctx) {
     if (!isIMessageTapback(reaction)) return { error: "unsupported reaction" };
-    const target = reactionTargetId(messageId, attrs(ctx));
-    if (!target) return { error: "no inbound messageId" };
+    const target = reactionTargetId(attrs(ctx));
+    if (!target) return { error: "нет сообщения для реакции" };
     const handle = attr(ctx, "inkboxHandle") ?? agentHandle();
     const sent = await sendIMessageTapback({
       messageId: target,

@@ -183,16 +183,23 @@ assert(isIMessageTapback("love"), "love allowed");
 assert(!isIMessageTapback("custom"), "custom inbound-only");
 assert(!isIMessageTapback("heart"), "unknown reaction");
 assert(
-  reactionTargetId(undefined, { messageId: "msg-from-channel" }) ===
-    "msg-from-channel",
+  reactionTargetId({ messageId: "msg-from-channel" }) === "msg-from-channel",
   "messageId from auth attributes",
 );
 assert(
-  reactionTargetId("  explicit-id  ", { messageId: "msg-from-channel" }) ===
-    "explicit-id",
-  "explicit messageId wins",
+  reactionTargetId({ messageId: "  spaced-id  " }) === "spaced-id",
+  "auth messageId trimmed",
 );
-assert(reactionTargetId(undefined, {}) === undefined, "no messageId");
+assert(reactionTargetId({}) === undefined, "no messageId");
+assert(reactionTargetId(undefined) === undefined, "missing attributes");
+assert(
+  reactionTargetId({ messageId: "" }) === undefined,
+  "empty auth messageId",
+);
+assert(
+  reactionTargetId({ conversationId: "c1", inkboxHandle: "h" }) === undefined,
+  "other attrs are not a target",
+);
 
 assert(toIMessageText(gmailOut) === gmailOut, "idempotent");
 

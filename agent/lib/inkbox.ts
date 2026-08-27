@@ -22,13 +22,10 @@ export function isIMessageTapback(value: string): value is IMessageTapback {
   return (IMESSAGE_TAPBACKS as readonly string[]).includes(value);
 }
 
-/** Prefer an explicit id; else the inbound `messageId` from channel auth attributes. */
+/** Latest inbound id from channel auth attributes. Never take an id from the model. */
 export function reactionTargetId(
-  messageId: string | undefined,
   attributes: Record<string, unknown> | undefined,
 ): string | undefined {
-  const fromArg = messageId?.trim();
-  if (fromArg) return fromArg;
   const raw = attributes?.messageId;
   const fromAuth = Array.isArray(raw) ? raw[0] : raw;
   if (typeof fromAuth === "string" && fromAuth.trim().length > 0) {
