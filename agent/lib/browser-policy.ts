@@ -30,8 +30,8 @@ export function isDoneStatus(status: string | undefined | null): boolean {
 }
 
 const NEW_JOB = /купи|купить|найди|найти|закаж|заказ|wb|wildberries|ozon|озон|wildberries\.|ozon\.ru/i;
-const THREEDS = /3ds|код|sms|mir accept/i;
-const OTP = /(?<!\d)\d{4,8}(?!\d)/;
+const THREEDS = /3ds|mir accept/i;
+const OTP_ONLY = /^\d{4,8}$/;
 
 export function looksLikeNewJob(task: string): boolean {
   const t = task.trim();
@@ -39,14 +39,15 @@ export function looksLikeNewJob(task: string): boolean {
   return NEW_JOB.test(t);
 }
 
-/** OTP / ACS follow-up, not the same stored shopping task. */
+/** OTP / ACS follow-up: instructed 3DS phrase, Mir Accept, or a 4–8 digit-only task. */
 export function looksLike3dsFollowUp(
   task: string,
   storedTask?: string | null,
 ): boolean {
   if (storedTask && normalizeTask(storedTask) === normalizeTask(task)) return false;
-  if (THREEDS.test(task)) return true;
-  return OTP.test(task) && !looksLikeNewJob(task);
+  const t = task.trim();
+  if (THREEDS.test(t)) return true;
+  return OTP_ONLY.test(t);
 }
 
 /** One in-flight cloud job per person. Pings must poll, not spawn a twin search. */

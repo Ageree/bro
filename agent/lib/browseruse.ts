@@ -1,5 +1,13 @@
 const BASE = "https://api.browser-use.com/api/v4";
 
+/** Strip PAN/CVC from API echoes before they become tool errors or logs. */
+export function redactBrowserError(s: string): string {
+  return s
+    .replace(/PAN=\d+/gi, "PAN=REDACTED")
+    .replace(/CVC=\d+/gi, "CVC=REDACTED")
+    .replace(/(?<!\d)\d{13,19}(?!\d)/g, "[pan]");
+}
+
 function key(): string {
   const k = process.env.BROWSER_USE_API_KEY;
   if (!k) throw new Error("BROWSER_USE_API_KEY missing");
@@ -24,10 +32,12 @@ async function bu(
   try {
     body = text ? (JSON.parse(text) as Record<string, unknown>) : {};
   } catch {
-    body = { raw: text.slice(0, 500) };
+    body = { raw: redactBrowserError(text).slice(0, 500) };
   }
   if (!res.ok) {
-    throw new Error(`browser-use ${res.status} ${path}: ${text.slice(0, 400)}`);
+    throw new Error(
+      `browser-use ${res.status} ${path}: ${redactBrowserError(text).slice(0, 400)}`,
+    );
   }
   return body;
 }
@@ -67,7 +77,11 @@ export async function startRun(
     (typeof created.run === "object" && created.run
       ? pick(created.run as Record<string, unknown>, ["id"])
       : undefined);
-  if (!runId) throw new Error(`browser-use create: no id in ${JSON.stringify(created).slice(0, 400)}`);
+  if (!runId) {
+    throw new Error(
+      `browser-use create: no id in ${redactBrowserError(JSON.stringify(created)).slice(0, 400)}`,
+    );
+  }
   const sid =
     pick(created, ["sessionId", "session_id"]) ??
     (typeof created.session === "object" && created.session

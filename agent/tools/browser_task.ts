@@ -1,8 +1,8 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
+import { looksLike3dsFollowUp, nextBrowserAction } from "../lib/browser-policy";
 import { cardForBrowser } from "../lib/card";
 import { setBrowser, upsertTenant } from "../lib/convex";
-import { nextBrowserAction } from "../lib/browser-policy";
 import { hydrate, startRun, waitForRun, type BrowserRun } from "../lib/browseruse";
 import { sendBlueIMessage } from "../lib/inkbox";
 import { tenantId } from "../lib/tenant";
@@ -78,7 +78,8 @@ export default defineTool({
       return payload(run, { polled: true });
     }
 
-    const pay = await cardForBrowser(phone);
+    const otpFollowUp = looksLike3dsFollowUp(task, tenant.browserTask);
+    const pay = otpFollowUp ? null : await cardForBrowser(phone);
     const buTask = pay
       ? `${task}\n\nPAYMENT CARD (fill on checkout, do not speak these digits, do not solve 3DS):\nPAN=${pay.pan} EXP=${String(pay.expMonth).padStart(2, "0")}/${pay.expYear} CVC=${pay.cvc}\nIf a 3DS/Mir Accept form asks for an SMS code, wait; the human will send the code in iMessage and a later browser_task will type it.`
       : task;

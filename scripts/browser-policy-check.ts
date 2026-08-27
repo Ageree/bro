@@ -81,8 +81,15 @@ assert(
   ),
   "3ds helper otp phrase",
 );
-assert(looksLike3dsFollowUp("847291", "обувь на ozon"), "3ds helper digits");
-assert(looksLike3dsFollowUp("введи код", "обувь на ozon"), "3ds helper kod");
+assert(looksLike3dsFollowUp("847291", "обувь на ozon"), "3ds helper digits only");
+assert(looksLike3dsFollowUp("Mir Accept 123456", "обувь на ozon"), "3ds helper mir accept");
+assert(
+  !looksLike3dsFollowUp("введи код", "обувь на ozon"),
+  "3ds helper kod without 3ds",
+);
+assert(!looksLike3dsFollowUp("промокод", "скотч на ozon"), "promocode not 3ds");
+assert(!looksLike3dsFollowUp("код товара", "скотч на ozon"), "sku code not 3ds");
+assert(!looksLike3dsFollowUp("код ПВЗ", "скотч на ozon"), "pvz code not 3ds");
 assert(
   !looksLike3dsFollowUp("ну что", "скотч на ozon"),
   "3ds helper ping is not otp",
@@ -133,6 +140,26 @@ assert(
     incomingTask: "Купить обувь 40 размера до 2000 рублей на Ozon",
   }) === "poll",
   "priced shop while running still polls",
+);
+
+assert(
+  nextBrowserAction({
+    runId: "r1",
+    status: "running",
+    storedTask: "скотч на ozon",
+    incomingTask: "промокод",
+  }) === "poll",
+  "promocode while running polls",
+);
+
+assert(
+  nextBrowserAction({
+    runId: "r1",
+    status: "running",
+    storedTask: "скотч на ozon",
+    incomingTask: "код товара 4412",
+  }) === "poll",
+  "kod tovara while running polls",
 );
 
 console.log("browser-policy-check ok");

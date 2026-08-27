@@ -14,6 +14,7 @@ import {
   parseCardInput,
   splitCardPlain,
 } from "../convex/lib/cardPolicy.ts";
+import { redactBrowserError } from "../agent/lib/browseruse.ts";
 
 function assert(cond: unknown, msg: string): void {
   if (!cond) throw new Error(msg);
@@ -86,4 +87,11 @@ assert(
   modelPayloadHasPan({ ...browserPayload, result: buInject }, pan),
   "browser payload illegal if pan injected into json",
 );
+
+const buErr = `browser-use 400 /runs: {"task":"${buInject}"}`;
+assert(modelPayloadHasPan({ error: buErr }, pan), "raw bu error leaks pan");
+const redacted = redactBrowserError(buErr);
+assert(!modelPayloadHasPan({ error: redacted }, pan), "redacted bu error no pan");
+assert(!redacted.includes(cvc), "redacted bu error no cvc");
+assert(redacted.includes("PAN=REDACTED") && redacted.includes("CVC=REDACTED"), "redact tokens");
 console.log("card-policy-check ok");
