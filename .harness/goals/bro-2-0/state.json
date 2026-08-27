@@ -1,9 +1,10 @@
 {
   "goal_id": "bro-2-0",
-  "status": "open",
+  "status": "done",
   "turn": 0,
   "started_at": "2026-08-26T22:20:11Z",
   "last_turn_at": null,
   "last_audit_at": null,
-  "last_audit_verdict": null
+  "last_audit_verdict": null,
+  "finished_at": "2026-08-27T00:40:42.968Z"
 }
