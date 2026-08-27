@@ -2,8 +2,9 @@ import {
   claimNumberOptions,
   dedicatedClaimIdempotencyKey,
   dedicatedLineEnabled,
-  dedicatedLineFromClaimedNumber,
   dedicatedLineFromIdentityPayload,
+  dedicatedLineFromInventory,
+  dedicatedLineFromInventoryNumber,
   existingIdentityUpdateOptions,
   identityCreateBody,
   sdkCreateIdentityOptions,
@@ -106,6 +107,12 @@ assert(
   "claimNumber only takes idempotencyKey",
 );
 
+const identityLine = dedicatedLineFromIdentityPayload({
+  imessageNumber: { id: "n1", number: "+15551212", type: "dedicated_outbound" },
+});
+assert(identityLine?.number === "+15551212", "IdentityIMessageNumber number");
+assert(identityLine?.id === "n1", "IdentityIMessageNumber id");
+assert(identityLine?.status === undefined, "IdentityIMessageNumber has no status");
 assert(
   dedicatedLineFromIdentityPayload({
     imessage_number: { id: "n1", number: "+15551212", type: "dedicated_outbound" },
@@ -120,27 +127,68 @@ assert(
       type: "dedicated_outbound",
       status: "active",
     },
-  })?.status === "active",
-  "sdk camelCase status",
+  })?.status === undefined,
+  "identity embed status is dropped",
 );
 assert(
   dedicatedLineFromIdentityPayload({ imessage_number: null }) === undefined,
   "null line",
 );
+
+const fromListNumbers = dedicatedLineFromInventoryNumber({
+  id: "n1",
+  number: "+15551212",
+  type: "dedicated_outbound",
+  status: "active",
+  agentIdentityId: "id1",
+  agentHandle: "bro-a1b2c3d4",
+});
+assert(fromListNumbers?.status === "active", "IMessageNumber.status from listNumbers");
 assert(
-  dedicatedLineFromClaimedNumber({
+  dedicatedLineFromInventoryNumber({
     id: "n1",
     number: "+15559999",
     type: "dedicated_outbound",
     status: "paused",
-    agentIdentityId: null,
-    agentHandle: null,
+    agent_identity_id: null,
+    agent_handle: null,
   })?.status === "paused",
-  "claimNumber status",
+  "RawIMessageNumber.status from REST inventory",
 );
 assert(
-  dedicatedLineFromClaimedNumber({ number: "" }) === undefined,
+  dedicatedLineFromInventoryNumber({ number: "" }) === undefined,
   "empty number ignored",
+);
+
+const merged = dedicatedLineFromInventory(identityLine, [
+  {
+    id: "n1",
+    number: "+15551212",
+    type: "dedicated_outbound",
+    status: "active",
+    agentIdentityId: "id1",
+    agentHandle: "bro-a1b2c3d4",
+  },
+], { identityId: "id1", handle: "bro-a1b2c3d4" });
+assert(merged?.number === "+15551212", "merged number");
+assert(merged?.status === "active", "status comes from listNumbers");
+
+const restMerged = dedicatedLineFromInventory(identityLine, [
+  {
+    id: "n1",
+    number: "+15551212",
+    type: "dedicated_outbound",
+    status: "paused",
+    agent_identity_id: "id1",
+    agent_handle: "bro-a1b2c3d4",
+  },
+], { identityId: "id1", handle: "bro-a1b2c3d4" });
+assert(restMerged?.status === "paused", "status from REST /imessage/numbers");
+
+assert(
+  dedicatedLineFromInventory(identityLine, [], { identityId: "id1" })?.status ===
+    undefined,
+  "no inventory keeps number without status",
 );
 
 console.log("dedicated-line-check ok");

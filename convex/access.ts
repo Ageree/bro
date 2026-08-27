@@ -11,6 +11,7 @@ import {
 import {
   dedicatedLineEnabled,
   dedicatedLineFromIdentityPayload,
+  dedicatedLineFromInventory,
   identityCreateBody,
 } from "./lib/dedicatedLinePolicy";
 import { mailWebhookUrl } from "./lib/mailPolicy";
@@ -26,7 +27,6 @@ type InkboxIdentity = {
     id?: string;
     number?: string;
     type?: string;
-    status?: string;
   } | null;
 };
 
@@ -93,6 +93,23 @@ async function triage(identityId: string): Promise<InkboxTriage> {
     "GET",
     `/imessage/triage-number?${q}`,
   )) as InkboxTriage;
+}
+
+/** GET /imessage/numbers — same path as `inkbox.imessages.listNumbers()`. */
+async function listIMessageNumbers(): Promise<unknown> {
+  const res = await fetch("https://inkbox.ai/api/v1/imessage/numbers", {
+    method: "GET",
+    headers: {
+      "X-API-Key": apiKey(),
+      Accept: "application/json",
+    },
+    signal: AbortSignal.timeout(20_000),
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`inkbox ${res.status} /imessage/numbers: ${text.slice(0, 400)}`);
+  }
+  return text ? JSON.parse(text) : [];
 }
 
 const result = v.union(
@@ -257,7 +274,18 @@ export const requestAccess = internalAction({
         }
       }
 
-      const dedicatedLine = dedicatedLineFromIdentityPayload(identity);
+      let dedicatedLine = dedicatedLineFromIdentityPayload(identity);
+      if (dedicatedLine) {
+        try {
+          dedicatedLine = dedicatedLineFromInventory(
+            dedicatedLine,
+            await listIMessageNumbers(),
+            { identityId: id, handle: gotHandle },
+          );
+        } catch (err) {
+          console.error("list iMessage numbers failed", err);
+        }
+      }
       await ctx.runMutation(internal.tenants.insertProvisioned, {
         inkboxHandle: gotHandle,
         inkboxIdentityId: id,

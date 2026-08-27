@@ -77,39 +77,104 @@ export function claimNumberOptions(idempotencyKey: string): {
   return { idempotencyKey };
 }
 
+/** IdentityIMessageNumber is `{ id, number, type }`. Status lives on IMessageNumber. */
 export type DedicatedLineRecord = {
   number: string;
+  id?: string;
   status?: string;
 };
 
-function readNumberish(value: unknown): { number?: unknown; status?: unknown } | undefined {
+function readObject(value: unknown): Record<string, unknown> | undefined {
   if (!value || typeof value !== "object") return undefined;
-  return value as { number?: unknown; status?: unknown };
+  return value as Record<string, unknown>;
 }
 
+function readString(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+/**
+ * Number attached to an identity. Matches `IdentityIMessageNumber` /
+ * `RawIdentityIMessageNumber` (`id`, `number`, `type` only). Status on the
+ * embed is ignored — `parseIdentityIMessageNumber` drops it.
+ */
 export function dedicatedLineFromIdentityPayload(
   payload: unknown,
 ): DedicatedLineRecord | undefined {
-  if (!payload || typeof payload !== "object") return undefined;
-  const rec = payload as {
-    imessageNumber?: unknown;
-    imessage_number?: unknown;
-  };
-  return dedicatedLineFromClaimedNumber(
-    rec.imessageNumber ?? rec.imessage_number,
-  );
+  const rec = readObject(payload);
+  if (!rec) return undefined;
+  const embed = readObject(rec.imessageNumber) ?? readObject(rec.imessage_number);
+  if (!embed) return undefined;
+  const number = readString(embed.number);
+  if (!number) return undefined;
+  const id = readString(embed.id);
+  return id ? { number, id } : { number };
 }
 
-export function dedicatedLineFromClaimedNumber(
+type InventoryRow = {
+  id?: string;
+  number?: string;
+  status?: string;
+  agentIdentityId?: string;
+  agentHandle?: string;
+};
+
+/**
+ * One `IMessageNumber` from `inkbox.imessages.listNumbers()` /
+ * `claimNumber()`, or the REST `/imessage/numbers` row
+ * (`RawIMessageNumber`: `status`, `agent_identity_id`, `agent_handle`).
+ */
+export function dedicatedLineFromInventoryNumber(
   claimed: unknown,
 ): DedicatedLineRecord | undefined {
-  const raw = readNumberish(claimed);
-  if (!raw || typeof raw.number !== "string" || raw.number.length === 0) {
-    return undefined;
-  }
-  const out: DedicatedLineRecord = { number: raw.number };
-  if (typeof raw.status === "string" && raw.status.length > 0) {
-    out.status = raw.status;
-  }
+  const row = readInventoryRow(claimed);
+  if (!row?.number) return undefined;
+  const out: DedicatedLineRecord = { number: row.number };
+  if (row.id) out.id = row.id;
+  if (row.status) out.status = row.status;
   return out;
+}
+
+function readInventoryRow(value: unknown): InventoryRow | undefined {
+  const r = readObject(value);
+  if (!r) return undefined;
+  return {
+    id: readString(r.id),
+    number: readString(r.number),
+    status: readString(r.status),
+    agentIdentityId:
+      readString(r.agentIdentityId) ?? readString(r.agent_identity_id),
+    agentHandle: readString(r.agentHandle) ?? readString(r.agent_handle),
+  };
+}
+
+function inventoryRows(inventory: unknown): InventoryRow[] {
+  if (!Array.isArray(inventory)) return [];
+  const rows: InventoryRow[] = [];
+  for (const item of inventory) {
+    const row = readInventoryRow(item);
+    if (row) rows.push(row);
+  }
+  return rows;
+}
+
+/**
+ * Attach `IMessageNumber.status` from inventory onto an identity line.
+ * Match by number, inventory id, `agentIdentityId`, or `agentHandle`.
+ */
+export function dedicatedLineFromInventory(
+  identityLine: DedicatedLineRecord | undefined,
+  inventory: unknown,
+  match: { identityId?: string; handle?: string },
+): DedicatedLineRecord | undefined {
+  if (!identityLine) return undefined;
+  const hit = inventoryRows(inventory).find((row) => {
+    if (identityLine.number && row.number === identityLine.number) return true;
+    if (identityLine.id && row.id === identityLine.id) return true;
+    if (match.identityId && row.agentIdentityId === match.identityId) return true;
+    if (match.handle && row.agentHandle === match.handle) return true;
+    return false;
+  });
+  if (hit?.status) return { ...identityLine, status: hit.status };
+  return identityLine;
 }

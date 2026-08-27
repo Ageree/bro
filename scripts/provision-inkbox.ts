@@ -4,6 +4,7 @@ import { Inkbox } from "@inkbox/sdk";
 import {
   dedicatedLineEnabled,
   dedicatedLineFromIdentityPayload,
+  dedicatedLineFromInventory,
   existingIdentityUpdateOptions,
   sdkCreateIdentityOptions,
 } from "../convex/lib/dedicatedLinePolicy.ts";
@@ -42,8 +43,17 @@ try {
   console.log("using identity", identity.agentHandle, identity.emailAddress);
 }
 
-const line = dedicatedLineFromIdentityPayload(identity);
+let line = dedicatedLineFromIdentityPayload(identity);
 if (line) {
+  try {
+    line = dedicatedLineFromInventory(
+      line,
+      await inkbox.imessages.listNumbers(),
+      { identityId: identity.id, handle },
+    );
+  } catch (err) {
+    console.error("listNumbers failed", err);
+  }
   console.log("dedicated iMessage line", line.number, line.status ?? "");
 }
 
