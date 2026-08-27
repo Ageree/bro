@@ -96,6 +96,16 @@ assert(
   !isLiveBrowserPoll({ kind: "brief", status: "running" }),
   "brief is not a leftover poll",
 );
+
+const historyPage = Array.from({ length: 100 }, () => ({
+  kind: "reminder" as const,
+  status: "done" as const,
+}));
+const nextPage = [{ kind: "browser_poll" as const, status: "running" as const }];
+assert(
+  [...historyPage, ...nextPage].filter(isLiveBrowserPoll).length === 1,
+  "live browser_poll after 100 history rows must still be cancelled",
+);
 assert(shouldApplyFinish("running") === true, "finish running");
 assert(shouldApplyFinish("scheduled") === true, "finish scheduled");
 assert(

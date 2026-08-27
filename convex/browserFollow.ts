@@ -94,21 +94,28 @@ export const followThrough = workflow.define({
   return { outcome: "timeout" };
 });
 
+const WAKEUP_SCAN_PAGE = 100;
+
 async function cancelLeftoverBrowserPolls(
   ctx: MutationCtx,
   tenantPhone: string,
 ): Promise<void> {
-  const leftover = await ctx.db
-    .query("wakeups")
-    .withIndex("by_tenant", (q) => q.eq("tenantPhone", tenantPhone))
-    .take(100);
-  for (const row of leftover) {
-    if (!isLiveBrowserPoll(row)) continue;
-    await ctx.db.patch(row._id, {
-      status: "cancelled",
-      recurMinutes: undefined,
-      recurDailyHour: undefined,
-    });
+  let cursor: string | null = null;
+  for (;;) {
+    const page = await ctx.db
+      .query("wakeups")
+      .withIndex("by_tenant", (q) => q.eq("tenantPhone", tenantPhone))
+      .paginate({ numItems: WAKEUP_SCAN_PAGE, cursor });
+    for (const row of page.page) {
+      if (!isLiveBrowserPoll(row)) continue;
+      await ctx.db.patch(row._id, {
+        status: "cancelled",
+        recurMinutes: undefined,
+        recurDailyHour: undefined,
+      });
+    }
+    if (page.isDone) break;
+    cursor = page.continueCursor;
   }
 }
 
@@ -133,8 +140,6 @@ export const startFollowThrough = mutation({
       return { error: "stale_run" };
     }
 
-    await cancelLeftoverBrowserPolls(ctx, args.tenantPhone);
-
     if (tenant.browserWorkflowId) {
       const id = tenant.browserWorkflowId as WorkflowId;
       let statusOk = true;
@@ -153,7 +158,10 @@ export const startFollowThrough = mutation({
         runId: args.runId,
       });
       if (next === "retry_later") return { error: "retry_later" };
-      if (next === "reuse") return { workflowId: id, reused: true };
+      if (next === "reuse") {
+        await cancelLeftoverBrowserPolls(ctx, args.tenantPhone);
+        return { workflowId: id, reused: true };
+      }
       if (next === "cancel_then_start") {
         try {
           await workflow.cancel(ctx, id);
@@ -175,6 +183,7 @@ export const startFollowThrough = mutation({
       browserWorkflowId: workflowId,
       browserWorkflowRunId: args.runId,
     });
+    await cancelLeftoverBrowserPolls(ctx, args.tenantPhone);
     return { workflowId, reused: false };
   },
 });
@@ -285,33 +294,43 @@ export const wakeupAgent = internalAction({
     const claimed = await ctx.runMutation(internal.tenants.claimBrowserWakeup, {
       phoneE164: tenantPhone,
       runId,
+      phase,
     });
-    if (claimed.stale) return { ok: false, reason: "stale" };
+    if (!claimed.ok) {
+      if (claimed.reason === "duplicate") return { ok: true, reason: "duplicate" };
+      return { ok: false, reason: claimed.reason };
+    }
     if (!claimed.conversationId) return { ok: false, reason: "no conversation" };
 
-    const again = await ctx.runQuery(internal.tenants.getByPhoneInternal, {
-      phoneE164: tenantPhone,
-    });
-    if (!sameBrowserRun(again?.browserRunId, runId)) {
-      return { ok: false, reason: "stale" };
-    }
-
-    const res = await fetch(`${eveUrl}/internal/wakeup`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        secret,
-        tenantPhone,
-        conversationId: claimed.conversationId,
-        inkboxHandle: claimed.inkboxHandle ?? again?.inkboxHandle,
-        kind: "browser_poll",
-        payload: task,
-        idempotencyKey: wakeupIdempotencyKey(runId, phase),
-      }),
-      signal: AbortSignal.timeout(60_000),
-    });
-    if (!res.ok) {
-      throw new Error(`eve wakeup ${res.status}`);
+    // Residual race: browserRunId can still change during this POST after the
+    // claim write. Accepted limit — eve re-checks runId before starting a turn;
+    // claim key + in-memory dedupe still bound repeats.
+    try {
+      const res = await fetch(`${eveUrl}/internal/wakeup`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          secret,
+          tenantPhone,
+          conversationId: claimed.conversationId,
+          inkboxHandle: claimed.inkboxHandle,
+          kind: "browser_poll",
+          payload: task,
+          runId,
+          idempotencyKey: wakeupIdempotencyKey(runId, phase),
+        }),
+        signal: AbortSignal.timeout(60_000),
+      });
+      if (!res.ok) {
+        throw new Error(`eve wakeup ${res.status}`);
+      }
+    } catch (err) {
+      await ctx.runMutation(internal.tenants.releaseBrowserWakeup, {
+        phoneE164: tenantPhone,
+        runId,
+        phase,
+      });
+      throw err;
     }
     return { ok: true };
   },

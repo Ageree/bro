@@ -19,6 +19,7 @@ export default defineSchema({
     browserStartedAt: v.optional(v.number()),
     browserWorkflowId: v.optional(v.string()),
     browserWorkflowRunId: v.optional(v.string()),
+    browserWakeupClaim: v.optional(v.string()),
     paidUntil: v.optional(v.number()),
     msgsDayKey: v.optional(v.string()),
     msgsDayCount: v.optional(v.number()),

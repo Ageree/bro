@@ -6,7 +6,11 @@ import {
   shouldStartFollowThrough,
 } from "../agent/lib/browser-policy.ts";
 import {
+  browserWakeupClaimKey,
   decideExistingWorkflow,
+  decideWakeupClaim,
+  FOLLOW_RETRY_HINT,
+  followStartRetry,
   maxPollRounds,
   POLL_GIVE_UP_MS,
   POLL_INTERVAL_MS,
@@ -189,5 +193,40 @@ assert(
   }) === "start",
   "completed workflow can start again",
 );
+
+assert(
+  browserWakeupClaimKey("r1", "done") === "r1:done",
+  "claim key run:phase",
+);
+assert(
+  decideWakeupClaim({
+    tenantRunId: "r1",
+    runId: "r1",
+    existingClaim: undefined,
+    claimKey: "r1:done",
+  }) === "ok",
+  "first claim writes",
+);
+assert(
+  decideWakeupClaim({
+    tenantRunId: "r1",
+    runId: "r1",
+    existingClaim: "r1:done",
+    claimKey: "r1:done",
+  }) === "duplicate",
+  "same claim is duplicate",
+);
+assert(
+  decideWakeupClaim({
+    tenantRunId: "r2",
+    runId: "r1",
+    existingClaim: undefined,
+    claimKey: "r1:done",
+  }) === "stale_run",
+  "claim other run refused",
+);
+assert(followStartRetry({ error: "retry_later" }) === true, "retry_later is retry");
+assert(followStartRetry({ error: "stale_run" }) === false, "stale is not retry_later");
+assert(FOLLOW_RETRY_HINT.includes("не подцепилась"), "retry hint");
 
 console.log("browser-policy-check ok");

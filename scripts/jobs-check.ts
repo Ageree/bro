@@ -8,6 +8,9 @@ import {
 } from "../convex/lib/mailPolicy.ts";
 import {
   decideExistingWorkflow,
+  decideWakeupClaim,
+  FOLLOW_RETRY_HINT,
+  followStartRetry,
   maxPollRounds,
   nextFollowDecision,
   POLL_INTERVAL_MS,
@@ -170,6 +173,23 @@ assert(
 assert(
   decideExistingWorkflow({ statusOk: false, runId: "run-a" }) === "retry_later",
   "jobs stay on one workflow — no twin after status error",
+);
+assert(
+  followStartRetry({ error: "retry_later" }) === true,
+  "agent must surface retry_later, not treat job as followed",
+);
+assert(
+  FOLLOW_RETRY_HINT.includes("browser_task"),
+  "retry hint tells agent to ask/retry",
+);
+assert(
+  decideWakeupClaim({
+    tenantRunId: "run-a",
+    runId: "run-b",
+    existingClaim: undefined,
+    claimKey: "run-b:done",
+  }) === "stale_run",
+  "jobs wakeup claim refuses stale run",
 );
 
 console.log("jobs-check ok");

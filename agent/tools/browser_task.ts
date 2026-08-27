@@ -13,6 +13,9 @@ import {
   shouldStartFollowThrough,
 } from "../lib/browser-policy";
 import {
+  FOLLOW_RETRY_HINT,
+} from "../../convex/lib/browserFollowPolicy.ts";
+import {
   hydrate,
   isTerminal,
   startRun,
@@ -91,13 +94,23 @@ async function settle(
       hint: "джоб висит слишком долго, скажи человеку и предложи reset",
     });
   }
-  await startBrowserFollow({
+  const follow = await startBrowserFollow({
     tenantPhone: phone,
     runId: run.runId,
     sessionId: run.sessionId,
     task,
     startedAt: opts.startedAt ?? now,
-  }).catch((err) => console.error("browser follow workflow failed", err));
+  }).catch((err) => {
+    console.error("browser follow workflow failed", err);
+    return { error: "retry_later" };
+  });
+  if ("error" in follow && follow.error) {
+    return payload(run, {
+      ...extra,
+      followUp: "retry",
+      hint: FOLLOW_RETRY_HINT,
+    });
+  }
   return payload(run, extra);
 }
 

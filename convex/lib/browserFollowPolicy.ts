@@ -60,6 +60,30 @@ export function wakeupIdempotencyKey(runId: string, phase: WakeupPhase): string 
   return `browser_poll:${runId}:${phase}`;
 }
 
+export function browserWakeupClaimKey(runId: string, phase: WakeupPhase): string {
+  return `${runId}:${phase}`;
+}
+
+export type WakeupClaimDecision = "ok" | "duplicate" | "stale_run";
+
+export function decideWakeupClaim(opts: {
+  tenantRunId: string | undefined;
+  runId: string;
+  existingClaim: string | undefined;
+  claimKey: string;
+}): WakeupClaimDecision {
+  if (opts.tenantRunId !== opts.runId) return "stale_run";
+  if (opts.existingClaim === opts.claimKey) return "duplicate";
+  return "ok";
+}
+
+export const FOLLOW_RETRY_HINT =
+  "доводка временно не подцепилась — спроси человека или вызови browser_task ещё раз";
+
+export function followStartRetry(result: { error?: string } | null): boolean {
+  return result?.error === "retry_later";
+}
+
 export type ExistingWorkflowAction = "reuse" | "cancel_then_start" | "start" | "retry_later";
 
 /** One in-progress workflow per runId. Status/cancel errors must not start a twin. */
