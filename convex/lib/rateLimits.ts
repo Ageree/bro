@@ -9,7 +9,7 @@ import {
 export const rateLimiter = new RateLimiter(components.rateLimiter);
 
 // Component windows are UTC-ms only. Calendar day/month is the key (Europe/Moscow).
-// 10y period from epoch: next boundary is 2030 — outside any dayKey/monthKey lifetime.
+// Period ~1014y from epoch so the first UTC boundary is centuries away.
 export function periodConfig() {
   return {
     kind: "fixed window" as const,

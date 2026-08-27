@@ -336,7 +336,7 @@ export const countInboundMessage = mutation({
       });
       const count = effectiveUsedCount(
         usedCount(value),
-        legacyUsedForPeriod(tenant.msgsDayKey, tenant.msgsDayCount, key) + 1,
+        legacyUsedForPeriod(tenant.msgsDayKey, tenant.msgsDayCount, key),
       );
       const decision = paywallDecision({
         count,

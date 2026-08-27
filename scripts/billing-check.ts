@@ -227,28 +227,50 @@ assert(legacyUsedForPeriod("d0", 25, "d1") === 0, "legacy other day");
 assert(legacyUsedForPeriod(undefined, 25, "d1") === 0, "legacy missing key");
 assert(legacyUsedForPeriod("d1", undefined, "d1") === 0, "legacy missing count");
 assert(effectiveUsedCount(1, 0) === 1, "component only");
-assert(effectiveUsedCount(1, 25) === 25, "legacy floor");
-assert(effectiveUsedCount(28, 25) === 28, "component ahead");
+assert(effectiveUsedCount(0, 25) === 25, "legacy offset only");
+assert(effectiveUsedCount(1, 25) === 26, "component + legacy");
+assert(effectiveUsedCount(5, 25) === 30, "five new + legacy 25");
+assert(effectiveUsedCount(6, 25) === 31, "sixth new + legacy 25");
 assert(
   paywallDecision({
-    count: effectiveUsedCount(1, legacyUsedForPeriod("d1", 30, "d1") + 1),
+    count: effectiveUsedCount(5, legacyUsedForPeriod("d1", 25, "d1")),
+    allowance: 30,
+    dayKey: "d1",
+  }) === "allow",
+  "legacy 25 + 5 new still allow",
+);
+assert(
+  paywallDecision({
+    count: effectiveUsedCount(6, legacyUsedForPeriod("d1", 25, "d1")),
+    allowance: 30,
+    dayKey: "d1",
+  }) === "paywall",
+  "legacy 25 + 6th new → paywall",
+);
+assert(
+  paywallDecision({
+    count: effectiveUsedCount(1, legacyUsedForPeriod("d1", 30, "d1")),
     allowance: 30,
     dayKey: "d1",
   }) === "paywall",
   "legacy at cap + current → paywall",
 );
-assert(
-  paywallDecision({
-    count: effectiveUsedCount(1, legacyUsedForPeriod("d1", 25, "d1") + 1),
-    allowance: 30,
-    dayKey: "d1",
-  }) === "allow",
-  "legacy under cap + current → allow",
-);
-assert(
-  effectiveUsedCount(0, legacyUsedForPeriod("2026-08", 5, "2026-08")) >= 5,
-  "legacy browser month at cap",
-);
+function browserAllows(
+  componentUsed: number,
+  legacy: number,
+  allowance: number,
+): boolean {
+  return (
+    effectiveUsedCount(
+      componentUsed,
+      legacyUsedForPeriod("2026-08", legacy, "2026-08"),
+    ) < allowance
+  );
+}
+assert(browserAllows(0, 3, 5), "legacy 3/5 first new job");
+assert(browserAllows(1, 3, 5), "legacy 3/5 second new job");
+assert(!browserAllows(2, 3, 5), "legacy 3/5 third new job denied");
+assert(!browserAllows(0, 5, 5), "legacy browser month at cap");
 
 assert(RATE_COUNTER_CAP > ALLOWANCE_MAX, "cap above clamp");
 assert(clampAllowance(30) === 30, "clamp pass");
@@ -262,22 +284,16 @@ assert(
   "env browser clamp",
 );
 
-const twoYears = 2 * 365 * 24 * 60 * 60 * 1000;
+const fiftyYears = 50 * 365 * 24 * 60 * 60 * 1000;
 const boundary = nextWindowBoundary(Date.now());
 assert(
-  boundary - Date.now() > twoYears,
-  "next window boundary > 2y from now",
+  boundary - Date.now() > fiftyYears,
+  "next window boundary > 50y from now",
 );
 assert(RATE_WINDOW_START_MS === 0, "window start epoch");
-assert(
-  RATE_WINDOW_PERIOD_MS === 10 * 365 * 24 * 60 * 60 * 1000,
-  "window period 10y",
-);
-const old400d = 400 * 24 * 60 * 60 * 1000;
-assert(
-  nextWindowBoundary(Date.now(), old400d, 0) - Date.now() < twoYears,
-  "old 400d window would fall inside 2y",
-);
+assert(RATE_WINDOW_PERIOD_MS === 32_000_000_000_000, "window period ~1014y");
+assert(Number.isSafeInteger(RATE_WINDOW_PERIOD_MS), "period is a safe integer");
+assert(Number.isFinite(RATE_WINDOW_PERIOD_MS), "period is finite ms");
 assert(
   browserGateFromResult({ allowed: true }, undefined).allowed === true,
   "browser gate success",

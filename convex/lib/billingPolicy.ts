@@ -46,7 +46,8 @@ export function extendPaidUntil(
 export const RATE_COUNTER_CAP = 1_000_000_000_000;
 export const ALLOWANCE_MAX = 1_000_000_000;
 export const RATE_WINDOW_START_MS = 0;
-export const RATE_WINDOW_PERIOD_MS = 10 * 365 * 24 * 60 * 60 * 1000;
+// ~1014 years; first boundary from epoch is centuries away and safe in IEEE-754.
+export const RATE_WINDOW_PERIOD_MS = 32_000_000_000_000;
 
 function cap(raw: string | undefined, fallback: number): number {
   const n = Number(raw ?? fallback);
@@ -129,9 +130,9 @@ export function legacyUsedForPeriod(
 
 export function effectiveUsedCount(
   componentUsed: number,
-  legacyUsed: number,
+  legacyOffset: number,
 ): number {
-  return Math.max(componentUsed, legacyUsed);
+  return componentUsed + legacyOffset;
 }
 
 export function inboundOnAccountingError(opts: {
