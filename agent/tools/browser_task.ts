@@ -9,6 +9,7 @@ import {
 } from "../lib/convex";
 import { nextBrowserAction, pollTimedOut } from "../lib/browser-policy";
 import {
+  createProfile,
   hydrate,
   isTerminal,
   startRun,
@@ -33,7 +34,7 @@ async function persist(
   phone: string,
   run: BrowserRun,
   task: string,
-  extra?: { browserStartedAt?: number },
+  extra?: { browserStartedAt?: number; browserProfileId?: string },
 ): Promise<void> {
   await setBrowser(phone, {
     browserRunId: run.runId,
@@ -152,12 +153,26 @@ export default defineTool({
       };
     }
 
+    let profileId = tenant.browserProfileId;
+    if (!profileId) {
+      try {
+        profileId = await createProfile(phone);
+      } catch (err) {
+        console.error("browser profile create failed", err);
+      }
+    }
     const started = await startRun(
       task,
       reset ? undefined : tenant.browserSessionId,
+      profileId ? { profileId } : undefined,
     );
     const startedAt = Date.now();
-    await persist(phone, started, task, { browserStartedAt: startedAt });
+    await persist(phone, started, task, {
+      browserStartedAt: startedAt,
+      ...(profileId && !tenant.browserProfileId
+        ? { browserProfileId: profileId }
+        : {}),
+    });
     if (conv) {
       try {
         await sendBlueIMessage({

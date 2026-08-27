@@ -33,6 +33,7 @@ export const tenantDoc = v.object({
   browserTask: v.optional(v.string()),
   browserStatus: v.optional(v.string()),
   browserStartedAt: v.optional(v.number()),
+  browserProfileId: v.optional(v.string()),
   paidUntil: v.optional(v.number()),
   msgsDayKey: v.optional(v.string()),
   msgsDayCount: v.optional(v.number()),
@@ -166,6 +167,7 @@ export const setBrowser = mutation({
     browserTask: v.optional(v.string()),
     browserStatus: v.optional(v.string()),
     browserStartedAt: v.optional(v.number()),
+    browserProfileId: v.optional(v.string()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -189,6 +191,9 @@ export const setBrowser = mutation({
         : {}),
       ...(args.browserStartedAt !== undefined
         ? { browserStartedAt: args.browserStartedAt }
+        : {}),
+      ...(args.browserProfileId !== undefined
+        ? { browserProfileId: args.browserProfileId }
         : {}),
     });
     return null;

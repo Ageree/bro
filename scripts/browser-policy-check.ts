@@ -115,11 +115,12 @@ const wrapped = scaffoldTask(raw);
 assert(wrapped.startsWith("[bro-errand]"), "scaffold starts with marker");
 assert(wrapped.includes(raw), "scaffold contains raw task");
 assert(scaffoldTask(wrapped) === wrapped, "scaffold is idempotent");
+assert(scaffoldTask("x").includes("Работай быстро"), "scaffold skip-slow");
 
 const t0 = Date.parse("2026-08-27T12:00:00.000Z");
 assert(pollTimedOut(t0, t0 + 10 * 60_000) === false, "poll not expired");
-assert(pollTimedOut(t0, t0 + 20 * 60_000) === false, "poll exactly 20min");
-assert(pollTimedOut(t0, t0 + 20 * 60_000 + 1) === true, "poll expired");
+assert(pollTimedOut(t0, t0 + 30 * 60_000) === false, "poll exactly 30min");
+assert(pollTimedOut(t0, t0 + 30 * 60_000 + 1) === true, "poll expired");
 assert(pollTimedOut(undefined, t0) === false, "poll missing start");
 
 console.log("browser-policy-check ok");
