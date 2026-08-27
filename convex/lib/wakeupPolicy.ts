@@ -1,6 +1,6 @@
 const SLACK_MS = 2 * 60_000;
 const MINUTE = 60_000;
-export const DEFAULT_TZ = "Europe/Moscow";
+const DEFAULT_TZ = "Europe/Moscow";
 
 function partsInTz(ms: number, tz: string) {
   const dtf = new Intl.DateTimeFormat("en-US", {
@@ -94,6 +94,18 @@ export function liveOfKind<T extends { kind: string; status: string }>(
   return rows.find(
     (w) => w.kind === kind && (w.status === "scheduled" || w.status === "running"),
   );
+}
+
+export function isLiveBrowserPoll(row: { kind: string; status: string }): boolean {
+  return (
+    row.kind === "browser_poll" &&
+    (row.status === "scheduled" || row.status === "running")
+  );
+}
+
+/** finish() must not revive a row follow-through already cancelled. */
+export function shouldApplyFinish(status: string): boolean {
+  return status === "running" || status === "scheduled";
 }
 
 export function nextAfterRun(

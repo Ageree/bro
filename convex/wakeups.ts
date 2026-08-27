@@ -3,7 +3,14 @@ import { v } from "convex/values";
 import { internalAction, internalMutation, mutation, query } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { assertSecret } from "./secret";
-import { backoffAt, giveUp, isSingletonKind, liveOfKind, nextAfterRun } from "./lib/wakeupPolicy";
+import {
+  backoffAt,
+  giveUp,
+  isSingletonKind,
+  liveOfKind,
+  nextAfterRun,
+  shouldApplyFinish,
+} from "./lib/wakeupPolicy";
 
 // ponytail: anyApi до codegen; после convex deploy можно вернуть typed api
 const wakeups = anyApi.wakeups;
@@ -95,10 +102,18 @@ export const cancel = mutation({
     assertSecret(secret);
     if (id) {
       const row = await ctx.db.get(id);
-      if (!row || row.tenantPhone !== tenantPhone || row.status !== "scheduled") {
+      if (
+        !row ||
+        row.tenantPhone !== tenantPhone ||
+        (row.status !== "scheduled" && row.status !== "running")
+      ) {
         return 0;
       }
-      await ctx.db.patch(id, { status: "cancelled" });
+      await ctx.db.patch(id, {
+        status: "cancelled",
+        recurMinutes: undefined,
+        recurDailyHour: undefined,
+      });
       return 1;
     }
     if (!k) return 0;
@@ -108,10 +123,14 @@ export const cancel = mutation({
       .take(100);
     let n = 0;
     for (const row of rows) {
-      if (row.status === "scheduled" && row.kind === k) {
-        await ctx.db.patch(row._id, { status: "cancelled" });
-        n++;
-      }
+      if (row.status !== "scheduled" && row.status !== "running") continue;
+      if (row.kind !== k) continue;
+      await ctx.db.patch(row._id, {
+        status: "cancelled",
+        recurMinutes: undefined,
+        recurDailyHour: undefined,
+      });
+      n++;
     }
     return n;
   },
@@ -154,6 +173,7 @@ export const finish = internalMutation({
   handler: async (ctx, { id, ok }) => {
     const w = await ctx.db.get(id);
     if (!w) return null;
+    if (!shouldApplyFinish(w.status)) return null;
     const now = Date.now();
     if (ok) {
       const next = nextAfterRun(

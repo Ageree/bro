@@ -1,4 +1,4 @@
-export const DEFAULT_TZ = "Europe/Moscow";
+const DEFAULT_TZ = "Europe/Moscow";
 const MONTH_MS = 30 * 24 * 3600 * 1000;
 const FREE_MSGS = 30;
 const PAID_MSGS = 500;
@@ -30,26 +30,6 @@ export function dayKey(now: number, tz = DEFAULT_TZ): string {
 export function monthKey(now: number, tz = DEFAULT_TZ): string {
   const p = ymd(now, tz);
   return `${p.year}-${p.month}`;
-}
-
-/** Re-key usage under a new tz without lowering already-spent counts. */
-export function carryCountersOnTzChange(opts: {
-  now: number;
-  tz: string;
-  msgsDayCount?: number;
-  browserMonthCount?: number;
-}): {
-  msgsDayKey: string;
-  msgsDayCount: number;
-  browserMonthKey: string;
-  browserMonthCount: number;
-} {
-  return {
-    msgsDayKey: dayKey(opts.now, opts.tz),
-    msgsDayCount: opts.msgsDayCount ?? 0,
-    browserMonthKey: monthKey(opts.now, opts.tz),
-    browserMonthCount: opts.browserMonthCount ?? 0,
-  };
 }
 
 export function isPaid(paidUntil: number | undefined, now: number): boolean {

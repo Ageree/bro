@@ -84,7 +84,7 @@ async function settle(
       }))
   ) {
     await cancelWakeup(phone, { kind: "browser_poll" }).catch(() => {});
-    await cancelBrowserFollow(phone).catch(() => {});
+    await cancelBrowserFollow(phone, run.runId).catch(() => {});
     if (isTerminal(run.status)) return payload(run, extra);
     return payload(run, {
       ...extra,

@@ -18,13 +18,13 @@ export default defineSchema({
     browserStatus: v.optional(v.string()),
     browserStartedAt: v.optional(v.number()),
     browserWorkflowId: v.optional(v.string()),
+    browserWorkflowRunId: v.optional(v.string()),
     paidUntil: v.optional(v.number()),
     msgsDayKey: v.optional(v.string()),
     msgsDayCount: v.optional(v.number()),
     browserMonthKey: v.optional(v.string()),
     browserMonthCount: v.optional(v.number()),
     paywallSentDayKey: v.optional(v.string()),
-    tz: v.optional(v.string()),
   })
     .index("by_phone", ["phoneE164"])
     .index("by_handle", ["inkboxHandle"])

@@ -7,9 +7,11 @@ import {
   normalizeEmail,
 } from "../convex/lib/mailPolicy.ts";
 import {
+  decideExistingWorkflow,
   maxPollRounds,
   nextFollowDecision,
   POLL_INTERVAL_MS,
+  sameBrowserRun,
   shouldStartFollowThrough,
 } from "../convex/lib/browserFollowPolicy.ts";
 
@@ -159,6 +161,15 @@ assert(
     now: t0,
   }) === false,
   "closed browser run does not start follow-through",
+);
+assert(sameBrowserRun("run-a", "run-a") === true, "follow start requires current runId");
+assert(
+  sameBrowserRun("run-a", "run-b") === false,
+  "stale follow start/cancel is a no-op",
+);
+assert(
+  decideExistingWorkflow({ statusOk: false, runId: "run-a" }) === "retry_later",
+  "jobs stay on one workflow — no twin after status error",
 );
 
 console.log("jobs-check ok");

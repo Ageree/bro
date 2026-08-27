@@ -9,9 +9,7 @@ import {
 import { assertSecret } from "./secret";
 import {
   browserAllowance,
-  carryCountersOnTzChange,
   dayKey,
-  DEFAULT_TZ,
   isPaid,
   monthKey,
   msgAllowance,
@@ -36,13 +34,13 @@ export const tenantDoc = v.object({
   browserStatus: v.optional(v.string()),
   browserStartedAt: v.optional(v.number()),
   browserWorkflowId: v.optional(v.string()),
+  browserWorkflowRunId: v.optional(v.string()),
   paidUntil: v.optional(v.number()),
   msgsDayKey: v.optional(v.string()),
   msgsDayCount: v.optional(v.number()),
   browserMonthKey: v.optional(v.string()),
   browserMonthCount: v.optional(v.number()),
   paywallSentDayKey: v.optional(v.string()),
-  tz: v.optional(v.string()),
 });
 
 async function tenantByPhone(ctx: MutationCtx, phoneE164: string) {
@@ -160,38 +158,6 @@ export const upsert = mutation({
   },
 });
 
-export const setTimezone = mutation({
-  args: {
-    secret: v.string(),
-    phoneE164: v.string(),
-    tz: v.string(),
-  },
-  returns: v.null(),
-  handler: async (ctx, { secret, phoneE164, tz }) => {
-    assertSecret(secret);
-    try {
-      new Intl.DateTimeFormat(undefined, { timeZone: tz });
-    } catch {
-      throw new Error("invalid timezone");
-    }
-    const tenant = await tenantByPhone(ctx, phoneE164);
-    const prevTz = tenant.tz ?? DEFAULT_TZ;
-    if (prevTz === tz) {
-      await ctx.db.patch(tenant._id, { tz });
-      return null;
-    }
-    const now = Date.now();
-    const carry = carryCountersOnTzChange({
-      now,
-      tz,
-      msgsDayCount: tenant.msgsDayCount,
-      browserMonthCount: tenant.browserMonthCount,
-    });
-    await ctx.db.patch(tenant._id, { tz, ...carry });
-    return null;
-  },
-});
-
 export const setBrowser = mutation({
   args: {
     secret: v.string(),
@@ -266,17 +232,20 @@ export const getByPhoneInternal = internalQuery({
 export const patchBrowserInternal = internalMutation({
   args: {
     phoneE164: v.string(),
+    runId: v.string(),
     browserStatus: v.optional(v.string()),
     browserSessionId: v.optional(v.string()),
     browserLiveUrl: v.optional(v.string()),
   },
-  returns: v.null(),
+  returns: v.object({ stale: v.boolean() }),
   handler: async (ctx, args) => {
     const existing = await ctx.db
       .query("tenants")
       .withIndex("by_phone", (q) => q.eq("phoneE164", args.phoneE164))
       .first();
-    if (!existing) return null;
+    if (!existing || existing.browserRunId !== args.runId) {
+      return { stale: true };
+    }
     const patch: {
       browserStatus?: string;
       browserSessionId?: string;
@@ -288,7 +257,36 @@ export const patchBrowserInternal = internalMutation({
     }
     if (args.browserLiveUrl !== undefined) patch.browserLiveUrl = args.browserLiveUrl;
     if (Object.keys(patch).length) await ctx.db.patch(existing._id, patch);
-    return null;
+    return { stale: false };
+  },
+});
+
+export const claimBrowserWakeup = internalMutation({
+  args: {
+    phoneE164: v.string(),
+    runId: v.string(),
+  },
+  returns: v.union(
+    v.object({ stale: v.literal(true) }),
+    v.object({
+      stale: v.literal(false),
+      conversationId: v.optional(v.string()),
+      inkboxHandle: v.optional(v.string()),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query("tenants")
+      .withIndex("by_phone", (q) => q.eq("phoneE164", args.phoneE164))
+      .first();
+    if (!existing || existing.browserRunId !== args.runId) {
+      return { stale: true as const };
+    }
+    return {
+      stale: false as const,
+      conversationId: existing.inkboxConversationId,
+      inkboxHandle: existing.inkboxHandle,
+    };
   },
 });
 
@@ -377,7 +375,7 @@ export const countInboundMessage = mutation({
     assertSecret(secret);
     const tenant = await tenantByPhone(ctx, phoneE164);
     const now = Date.now();
-    const key = dayKey(now, tenant.tz);
+    const key = dayKey(now);
     const paid = isPaid(tenant.paidUntil, now);
     const allowance = msgAllowance(paid, {
       free: process.env.BRO_FREE_MSGS_PER_DAY,
@@ -414,7 +412,7 @@ export const countBrowserJobStart = mutation({
     assertSecret(secret);
     const tenant = await tenantByPhone(ctx, phoneE164);
     const now = Date.now();
-    const key = monthKey(now, tenant.tz);
+    const key = monthKey(now);
     const paid = isPaid(tenant.paidUntil, now);
     const allowance = browserAllowance(paid, {
       free: process.env.BRO_FREE_BROWSER_JOBS_PER_MONTH,

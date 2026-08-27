@@ -6,9 +6,12 @@ import {
   shouldStartFollowThrough,
 } from "../agent/lib/browser-policy.ts";
 import {
+  decideExistingWorkflow,
   maxPollRounds,
   POLL_GIVE_UP_MS,
   POLL_INTERVAL_MS,
+  sameBrowserRun,
+  wakeupIdempotencyKey,
 } from "../convex/lib/browserFollowPolicy.ts";
 
 function assert(cond: unknown, msg: string): void {
@@ -142,6 +145,49 @@ assert(
     now: t0 + POLL_GIVE_UP_MS + 1,
   }) === false,
   "no workflow after give-up",
+);
+
+assert(sameBrowserRun("r1", "r1") === true, "same run");
+assert(sameBrowserRun("r1", "r2") === false, "other run is stale");
+assert(sameBrowserRun(undefined, "r1") === false, "missing run is stale");
+assert(
+  wakeupIdempotencyKey("r1", "done") === "browser_poll:r1:done",
+  "idempotency done",
+);
+assert(
+  wakeupIdempotencyKey("r1", "giveup") === "browser_poll:r1:giveup",
+  "idempotency giveup",
+);
+assert(
+  decideExistingWorkflow({
+    statusOk: true,
+    statusType: "inProgress",
+    workflowRunId: "r1",
+    runId: "r1",
+  }) === "reuse",
+  "reuse same run workflow",
+);
+assert(
+  decideExistingWorkflow({
+    statusOk: true,
+    statusType: "inProgress",
+    workflowRunId: "old",
+    runId: "r1",
+  }) === "cancel_then_start",
+  "cancel leftover workflow for new run",
+);
+assert(
+  decideExistingWorkflow({ statusOk: false, runId: "r1" }) === "retry_later",
+  "status error → do not start a twin",
+);
+assert(
+  decideExistingWorkflow({
+    statusOk: true,
+    statusType: "completed",
+    workflowRunId: "r1",
+    runId: "r1",
+  }) === "start",
+  "completed workflow can start again",
 );
 
 console.log("browser-policy-check ok");
