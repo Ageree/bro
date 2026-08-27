@@ -2,6 +2,7 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 import {
   cancelWakeup,
+  countBrowserJobStart,
   scheduleWakeup,
   setBrowser,
   upsertTenant,
@@ -134,6 +135,21 @@ export default defineTool({
         { polled: true },
         { startedAt: tenant.browserStartedAt, runId: tenant.browserRunId },
       );
+    }
+
+    let allowed = true;
+    try {
+      const got = await countBrowserJobStart(phone);
+      allowed = got.allowed;
+    } catch (err) {
+      // ponytail: billing must not block a start if convex is down
+      console.error("billing browser count failed", err);
+    }
+    if (!allowed) {
+      return {
+        status: "limit",
+        hint: "скажи человеку, что лимит браузер-задач на месяц исчерпан, предложи оплату",
+      };
     }
 
     const started = await startRun(

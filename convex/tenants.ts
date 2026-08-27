@@ -1,6 +1,20 @@
 import { v } from "convex/values";
-import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
+import {
+  internalMutation,
+  internalQuery,
+  mutation,
+  query,
+  type MutationCtx,
+} from "./_generated/server";
 import { assertSecret } from "./secret";
+import {
+  browserAllowance,
+  dayKey,
+  isPaid,
+  monthKey,
+  msgAllowance,
+  paywallDecision,
+} from "./lib/billingPolicy";
 
 export const tenantDoc = v.object({
   _id: v.id("tenants"),
@@ -19,7 +33,28 @@ export const tenantDoc = v.object({
   browserTask: v.optional(v.string()),
   browserStatus: v.optional(v.string()),
   browserStartedAt: v.optional(v.number()),
+  paidUntil: v.optional(v.number()),
+  msgsDayKey: v.optional(v.string()),
+  msgsDayCount: v.optional(v.number()),
+  browserMonthKey: v.optional(v.string()),
+  browserMonthCount: v.optional(v.number()),
+  paywallSentDayKey: v.optional(v.string()),
 });
+
+async function tenantByPhone(ctx: MutationCtx, phoneE164: string) {
+  const existing = await ctx.db
+    .query("tenants")
+    .withIndex("by_phone", (q) => q.eq("phoneE164", phoneE164))
+    .first();
+  if (existing) return existing;
+  const id = await ctx.db.insert("tenants", {
+    phoneE164,
+    status: "active",
+  });
+  const created = await ctx.db.get(id);
+  if (!created) throw new Error("tenant insert failed");
+  return created;
+}
 
 export const getByPhone = query({
   args: { secret: v.string(), phoneE164: v.string() },
@@ -260,5 +295,73 @@ export const bindInbound = mutation({
     const next = await ctx.db.get(tenant._id);
     if (!next) return { ok: false as const, reason: "missing" };
     return { ok: true as const, tenant: next };
+  },
+});
+
+export const countInboundMessage = mutation({
+  args: { secret: v.string(), phoneE164: v.string() },
+  returns: v.object({
+    decision: v.union(
+      v.literal("allow"),
+      v.literal("paywall"),
+      v.literal("drop"),
+    ),
+    payUrl: v.optional(v.string()),
+  }),
+  handler: async (ctx, { secret, phoneE164 }) => {
+    assertSecret(secret);
+    const tenant = await tenantByPhone(ctx, phoneE164);
+    const now = Date.now();
+    const key = dayKey(now);
+    const paid = isPaid(tenant.paidUntil, now);
+    const allowance = msgAllowance(paid, {
+      free: process.env.BRO_FREE_MSGS_PER_DAY,
+      paid: process.env.BRO_PAID_MSGS_PER_DAY,
+    });
+    const count =
+      tenant.msgsDayKey === key ? (tenant.msgsDayCount ?? 0) + 1 : 1;
+    const decision = paywallDecision({
+      count,
+      allowance,
+      paywallSentDayKey: tenant.paywallSentDayKey,
+      dayKey: key,
+    });
+    const patch: {
+      msgsDayKey: string;
+      msgsDayCount: number;
+      paywallSentDayKey?: string;
+    } = { msgsDayKey: key, msgsDayCount: count };
+    let payUrl: string | undefined;
+    if (decision === "paywall") {
+      patch.paywallSentDayKey = key;
+      const base = (process.env.BRO_PAY_BASE ?? "").replace(/\/$/, "");
+      if (base) payUrl = `${base}/pay?tid=${tenant._id}`;
+    }
+    await ctx.db.patch(tenant._id, patch);
+    return payUrl ? { decision, payUrl } : { decision };
+  },
+});
+
+export const countBrowserJobStart = mutation({
+  args: { secret: v.string(), phoneE164: v.string() },
+  returns: v.object({ allowed: v.boolean() }),
+  handler: async (ctx, { secret, phoneE164 }) => {
+    assertSecret(secret);
+    const tenant = await tenantByPhone(ctx, phoneE164);
+    const now = Date.now();
+    const key = monthKey(now);
+    const paid = isPaid(tenant.paidUntil, now);
+    const allowance = browserAllowance(paid, {
+      free: process.env.BRO_FREE_BROWSER_JOBS_PER_MONTH,
+      paid: process.env.BRO_PAID_BROWSER_JOBS_PER_MONTH,
+    });
+    const prev =
+      tenant.browserMonthKey === key ? (tenant.browserMonthCount ?? 0) : 0;
+    if (prev >= allowance) return { allowed: false };
+    await ctx.db.patch(tenant._id, {
+      browserMonthKey: key,
+      browserMonthCount: prev + 1,
+    });
+    return { allowed: true };
   },
 });

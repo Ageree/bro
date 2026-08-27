@@ -250,3 +250,22 @@ export async function setWakeupLastSeen(
     lastSeen,
   });
 }
+
+export async function countInboundMessage(phoneE164: string): Promise<{
+  decision: "allow" | "paywall" | "drop";
+  payUrl?: string;
+}> {
+  return await client().mutation(api.tenants.countInboundMessage, {
+    secret: secret(),
+    phoneE164,
+  });
+}
+
+export async function countBrowserJobStart(
+  phoneE164: string,
+): Promise<{ allowed: boolean }> {
+  return await client().mutation(api.tenants.countBrowserJobStart, {
+    secret: secret(),
+    phoneE164,
+  });
+}

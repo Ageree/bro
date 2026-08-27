@@ -11,6 +11,7 @@ import {
 } from "../lib/inkbox";
 import {
   bindInbound,
+  countInboundMessage,
   getTenantByConversation,
   getTenantByHandle,
   setWakeupLastSeen,
@@ -134,6 +135,34 @@ export default defineChannel({
         chars: text.length,
         messageType: msg.message_type,
       });
+
+      let gate: { decision: "allow" | "paywall" | "drop"; payUrl?: string } = {
+        decision: "allow",
+      };
+      try {
+        gate = await countInboundMessage(remote);
+      } catch (err) {
+        // ponytail: billing must not kill chat
+        console.error("billing count failed", err);
+      }
+      if (gate.decision === "drop") {
+        return new Response(null, { status: 204 });
+      }
+      if (gate.decision === "paywall") {
+        const line = gate.payUrl
+          ? `Лимит на сегодня исчерпан 🙈 Полный доступ — 990 ₽/мес: ${gate.payUrl}`
+          : "Лимит на сегодня исчерпан 🙈 Полный доступ — 990 ₽/мес: напиши @оператору";
+        try {
+          await sendBlueIMessage({
+            conversationId: msg.conversation_id,
+            text: line,
+            handle: identityHandle,
+          });
+        } catch (err) {
+          console.error("paywall send failed", err);
+        }
+        return new Response(null, { status: 204 });
+      }
 
       const ack = (async () => {
         try {

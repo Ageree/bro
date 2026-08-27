@@ -1,0 +1,85 @@
+import {
+  browserAllowance,
+  dayKey,
+  extendPaidUntil,
+  isPaid,
+  monthKey,
+  msgAllowance,
+  paywallDecision,
+} from "../convex/lib/billingPolicy.ts";
+
+function assert(cond: unknown, msg: string): void {
+  if (!cond) throw new Error(msg);
+}
+
+assert(/^\d{4}-\d{2}-\d{2}$/.test(dayKey(Date.now())), "dayKey format");
+assert(/^\d{4}-\d{2}$/.test(monthKey(Date.now())), "monthKey format");
+
+// Europe/Moscow is UTC+3 year-round: 21:00Z is 00:00 next day.
+const mskMidnight = Date.parse("2026-08-26T21:00:00.000Z");
+assert(dayKey(mskMidnight) === "2026-08-27", "msk day rollover");
+assert(monthKey(mskMidnight) === "2026-08", "msk month");
+assert(dayKey(mskMidnight - 1) === "2026-08-26", "msk before rollover");
+
+const mskNewYear = Date.parse("2025-12-31T21:00:00.000Z");
+assert(dayKey(mskNewYear) === "2026-01-01", "msk year");
+assert(monthKey(mskNewYear) === "2026-01", "msk month year");
+assert(dayKey(mskNewYear - 1) === "2025-12-31", "msk before year");
+assert(
+  dayKey(Date.parse("2026-01-01T00:00:00.000Z"), "UTC") === "2026-01-01",
+  "utc",
+);
+
+const now = Date.parse("2026-08-27T12:00:00.000Z");
+assert(!isPaid(undefined, now), "unpaid");
+assert(!isPaid(now, now), "not future");
+assert(!isPaid(now - 1, now), "expired");
+assert(isPaid(now + 1, now), "paid");
+
+const month = 30 * 24 * 3600 * 1000;
+assert(extendPaidUntil(undefined, now) === now + month, "from empty");
+assert(extendPaidUntil(now - 1000, now) === now + month, "from past uses now");
+assert(
+  extendPaidUntil(now + 10_000, now) === now + 10_000 + month,
+  "stacks on future",
+);
+
+assert(msgAllowance(false, {}) === 30, "free default");
+assert(msgAllowance(true, {}) === 500, "paid default");
+assert(msgAllowance(false, { free: "12" }) === 12, "free env");
+assert(msgAllowance(true, { paid: "42" }) === 42, "paid env");
+assert(msgAllowance(false, { free: "nope" }) === 30, "free garbage");
+assert(msgAllowance(true, { paid: "0" }) === 500, "paid zero");
+
+assert(browserAllowance(false, {}) === 5, "browser free");
+assert(browserAllowance(true, {}) === 60, "browser paid");
+assert(browserAllowance(false, { free: "2" }) === 2, "browser env");
+
+assert(
+  paywallDecision({ count: 30, allowance: 30, dayKey: "d1" }) === "allow",
+  "at limit still allowed",
+);
+assert(
+  paywallDecision({ count: 31, allowance: 30, dayKey: "d1" }) === "paywall",
+  "first over",
+);
+assert(
+  paywallDecision({
+    count: 31,
+    allowance: 30,
+    paywallSentDayKey: "d1",
+    dayKey: "d1",
+  }) === "drop",
+  "same day drop",
+);
+assert(
+  paywallDecision({
+    count: 31,
+    allowance: 30,
+    paywallSentDayKey: "d1",
+    dayKey: "d2",
+  }) === "paywall",
+  "next day paywall",
+);
+
+console.log("billing-check ok");
