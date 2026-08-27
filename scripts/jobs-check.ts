@@ -11,6 +11,7 @@ import {
   decideWakeupClaim,
   FOLLOW_RETRY_HINT,
   followStartRetry,
+  wakeupCarriesRunId,
   maxPollRounds,
   nextFollowDecision,
   POLL_INTERVAL_MS,
@@ -186,10 +187,15 @@ assert(
   decideWakeupClaim({
     tenantRunId: "run-a",
     runId: "run-b",
+    phase: "done",
     existingClaim: undefined,
-    claimKey: "run-b:done",
+    now: t0,
   }) === "stale_run",
   "jobs wakeup claim refuses stale run",
+);
+assert(
+  wakeupCarriesRunId(undefined) === false,
+  "legacy browser_poll without runId keeps the old wakeup path",
 );
 
 console.log("jobs-check ok");

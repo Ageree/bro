@@ -26,6 +26,7 @@ import {
 } from "../lib/connect-link";
 import { inboundIMessageText, toIMessageBubbles } from "../lib/imessage-text";
 import { splitSeen } from "../lib/wakeup-text";
+import { wakeupCarriesRunId } from "../../convex/lib/browserFollowPolicy.ts";
 import {
   releaseWakeupDelivery,
   takeWakeupDelivery,
@@ -273,12 +274,18 @@ export default defineChannel({
 Прошлое состояние: ${lastSeen ?? "ничего"}. Проверь текущее состояние (Composio-тулы или browser_task — что уместно). Если НИЧЕГО нового относительно прошлого состояния — ответь ровно [SILENT]. Если есть новое — одно короткое сообщение человеку. В КОНЦЕ ответа добавь строку [SEEN] <краткое текущее состояние в одну строку> — она не уйдёт человеку.`;
       } else if (kind === "browser_poll") {
         prompt = `[background wakeup] Проверь статус текущего браузер-джоба вызовом тула browser_task с task=${payload}. Если completed — отправь человеку результаты. Если failed или джоб завис — коротко скажи об этом. Если ещё работает — ответь [SILENT].`;
-        const runId = typeof body.runId === "string" ? body.runId : "";
-        const tenant = await getTenant(tenantPhone).catch(() => null);
-        if (!runId || tenant?.browserRunId !== runId) {
-          return Response.json({ ok: true, skipped: "stale_run" });
+        if (wakeupCarriesRunId(body.runId)) {
+          let tenant;
+          try {
+            tenant = await getTenant(tenantPhone);
+          } catch {
+            return new Response("tenant lookup failed", { status: 503 });
+          }
+          if (tenant?.browserRunId !== body.runId) {
+            return Response.json({ ok: true, skipped: "stale_run" });
+          }
+          // Residual race: browserRunId can change during from().send after this check.
         }
-        // Residual race: browserRunId can change during from().send after this check.
       }
       const idempotencyKey =
         typeof body.idempotencyKey === "string" ? body.idempotencyKey : "";

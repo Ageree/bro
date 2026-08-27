@@ -60,21 +60,74 @@ export function wakeupIdempotencyKey(runId: string, phase: WakeupPhase): string 
   return `browser_poll:${runId}:${phase}`;
 }
 
-export function browserWakeupClaimKey(runId: string, phase: WakeupPhase): string {
-  return `${runId}:${phase}`;
+export const WAKEUP_CLAIM_LEASE_MS = 120_000;
+
+/** `{runId}:{phase}:{claimedAtMs}` — lease, not a permanent lock. */
+export function browserWakeupClaimKey(
+  runId: string,
+  phase: WakeupPhase,
+  claimedAtMs: number,
+): string {
+  return `${runId}:${phase}:${claimedAtMs}`;
+}
+
+export function parseWakeupClaim(claim: string | undefined): {
+  runId: string;
+  phase: string;
+  claimedAtMs: number;
+} | null {
+  if (!claim) return null;
+  const last = claim.lastIndexOf(":");
+  if (last <= 0) return null;
+  const claimedAtMs = Number(claim.slice(last + 1));
+  if (!Number.isFinite(claimedAtMs)) return null;
+  const mid = claim.lastIndexOf(":", last - 1);
+  if (mid <= 0) return null;
+  return {
+    runId: claim.slice(0, mid),
+    phase: claim.slice(mid + 1, last),
+    claimedAtMs,
+  };
+}
+
+export function claimMatchesRunPhase(
+  claim: string | undefined,
+  runId: string,
+  phase: WakeupPhase,
+): boolean {
+  const parsed = parseWakeupClaim(claim);
+  if (parsed) return parsed.runId === runId && parsed.phase === phase;
+  return claim === `${runId}:${phase}`;
 }
 
 export type WakeupClaimDecision = "ok" | "duplicate" | "stale_run";
 
+/**
+ * Fresh same-key claim is duplicate. Expired lease (or legacy key without ts)
+ * can be reclaimed so a crash between claim and POST is not a permanent loss.
+ * Duplicate send inside the lease is covered by eve idempotencyKey.
+ */
 export function decideWakeupClaim(opts: {
   tenantRunId: string | undefined;
   runId: string;
+  phase: WakeupPhase;
   existingClaim: string | undefined;
-  claimKey: string;
+  now: number;
+  leaseMs?: number;
 }): WakeupClaimDecision {
   if (opts.tenantRunId !== opts.runId) return "stale_run";
-  if (opts.existingClaim === opts.claimKey) return "duplicate";
+  const parsed = parseWakeupClaim(opts.existingClaim);
+  if (!parsed || parsed.runId !== opts.runId || parsed.phase !== opts.phase) {
+    return "ok";
+  }
+  const lease = opts.leaseMs ?? WAKEUP_CLAIM_LEASE_MS;
+  if (opts.now - parsed.claimedAtMs < lease) return "duplicate";
   return "ok";
+}
+
+/** Legacy dispatcher wakeups omit runId — skip the stale-run gate. */
+export function wakeupCarriesRunId(runId: unknown): runId is string {
+  return typeof runId === "string" && runId.length > 0;
 }
 
 export const FOLLOW_RETRY_HINT =

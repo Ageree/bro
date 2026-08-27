@@ -15,6 +15,8 @@ import {
   POLL_GIVE_UP_MS,
   POLL_INTERVAL_MS,
   sameBrowserRun,
+  WAKEUP_CLAIM_LEASE_MS,
+  wakeupCarriesRunId,
   wakeupIdempotencyKey,
 } from "../convex/lib/browserFollowPolicy.ts";
 
@@ -195,15 +197,16 @@ assert(
 );
 
 assert(
-  browserWakeupClaimKey("r1", "done") === "r1:done",
-  "claim key run:phase",
+  browserWakeupClaimKey("r1", "done", t0) === `r1:done:${t0}`,
+  "claim key run:phase:ts",
 );
 assert(
   decideWakeupClaim({
     tenantRunId: "r1",
     runId: "r1",
+    phase: "done",
     existingClaim: undefined,
-    claimKey: "r1:done",
+    now: t0,
   }) === "ok",
   "first claim writes",
 );
@@ -211,20 +214,45 @@ assert(
   decideWakeupClaim({
     tenantRunId: "r1",
     runId: "r1",
-    existingClaim: "r1:done",
-    claimKey: "r1:done",
+    phase: "done",
+    existingClaim: `r1:done:${t0}`,
+    now: t0 + 30_000,
   }) === "duplicate",
-  "same claim is duplicate",
+  "fresh claim is duplicate",
+);
+assert(
+  decideWakeupClaim({
+    tenantRunId: "r1",
+    runId: "r1",
+    phase: "done",
+    existingClaim: `r1:done:${t0}`,
+    now: t0 + WAKEUP_CLAIM_LEASE_MS,
+  }) === "ok",
+  "expired lease can be reclaimed",
+);
+assert(
+  decideWakeupClaim({
+    tenantRunId: "r1",
+    runId: "r1",
+    phase: "done",
+    existingClaim: "r1:done",
+    now: t0,
+  }) === "ok",
+  "legacy claim without ts is reclaimable",
 );
 assert(
   decideWakeupClaim({
     tenantRunId: "r2",
     runId: "r1",
+    phase: "done",
     existingClaim: undefined,
-    claimKey: "r1:done",
+    now: t0,
   }) === "stale_run",
   "claim other run refused",
 );
+assert(wakeupCarriesRunId("r1") === true, "explicit runId is checked");
+assert(wakeupCarriesRunId("") === false, "empty runId is legacy");
+assert(wakeupCarriesRunId(undefined) === false, "missing runId is legacy");
 assert(followStartRetry({ error: "retry_later" }) === true, "retry_later is retry");
 assert(followStartRetry({ error: "stale_run" }) === false, "stale is not retry_later");
 assert(FOLLOW_RETRY_HINT.includes("не подцепилась"), "retry hint");

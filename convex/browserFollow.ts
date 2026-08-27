@@ -302,9 +302,10 @@ export const wakeupAgent = internalAction({
     }
     if (!claimed.conversationId) return { ok: false, reason: "no conversation" };
 
-    // Residual race: browserRunId can still change during this POST after the
-    // claim write. Accepted limit — eve re-checks runId before starting a turn;
-    // claim key + in-memory dedupe still bound repeats.
+    // Lease (120s): crash after claim and before POST is not a permanent loss —
+    // the next retry after the lease expires reclaims. A double send inside the
+    // lease is dropped by eve idempotencyKey. Residual race: runId can still
+    // change during this POST; eve re-checks an explicit runId before the turn.
     try {
       const res = await fetch(`${eveUrl}/internal/wakeup`, {
         method: "POST",
