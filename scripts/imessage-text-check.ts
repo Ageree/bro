@@ -1,6 +1,13 @@
 import { stripConnectUrls } from "../agent/lib/connect-link.ts";
 import {
+  IMESSAGE_TAPBACKS,
+  isIMessageTapback,
+  reactionTargetId,
+} from "../agent/lib/inkbox.ts";
+import {
   inboundIMessageText,
+  inboundVoiceLine,
+  isAudioContentType,
   toBold,
   toIMessageBubbles,
   toIMessageText,
@@ -123,6 +130,69 @@ assert(
   "empty carousel marker",
 );
 assert(inboundIMessageText({ content: null, media: null }) === "", "inbound empty");
+
+assert(isAudioContentType("audio/mp4"), "audio/mp4");
+assert(isAudioContentType("Audio/AMR"), "audio case");
+assert(!isAudioContentType("image/jpeg"), "image is not audio");
+assert(!isAudioContentType(null), "null type");
+
+assert(
+  inboundVoiceLine({ content: "  купи молоко  " }) === "[voice] купи молоко",
+  "voice transcript line",
+);
+assert(
+  inboundVoiceLine({ url: "https://media.example/v.m4a" }) ===
+    "[voice message] https://media.example/v.m4a",
+  "voice url line",
+);
+
+assert(
+  inboundIMessageText({
+    content: "купи хлеб",
+    media: [{ url: "https://media.example/v.m4a", content_type: "audio/mp4" }],
+  }) === "[voice] купи хлеб",
+  "inbound audio with transcript",
+);
+assert(
+  inboundIMessageText({
+    content: null,
+    media: [{ url: "https://media.example/v.m4a", content_type: "audio/x-caf" }],
+  }) === "[voice message] https://media.example/v.m4a",
+  "inbound audio url only",
+);
+assert(
+  inboundIMessageText({
+    content: "смотри",
+    media: [
+      { url: "https://media.example/v.m4a", content_type: "audio/mp4" },
+      { url: "https://media.example/p.jpg", content_type: "image/jpeg" },
+    ],
+  }) === "[voice] смотри\nhttps://media.example/p.jpg",
+  "inbound audio+photo keeps photo url",
+);
+
+assert(IMESSAGE_TAPBACKS.includes("love"), "tapback love");
+assert(IMESSAGE_TAPBACKS.includes("like"), "tapback like");
+assert(IMESSAGE_TAPBACKS.includes("dislike"), "tapback dislike");
+assert(IMESSAGE_TAPBACKS.includes("laugh"), "tapback laugh");
+assert(IMESSAGE_TAPBACKS.includes("emphasize"), "tapback emphasize");
+assert(IMESSAGE_TAPBACKS.includes("question"), "tapback question");
+assert(IMESSAGE_TAPBACKS.includes("eyes"), "tapback eyes");
+assert(IMESSAGE_TAPBACKS.length === 7, "seven sendable tapbacks");
+assert(isIMessageTapback("love"), "love allowed");
+assert(!isIMessageTapback("custom"), "custom inbound-only");
+assert(!isIMessageTapback("heart"), "unknown reaction");
+assert(
+  reactionTargetId(undefined, { messageId: "msg-from-channel" }) ===
+    "msg-from-channel",
+  "messageId from auth attributes",
+);
+assert(
+  reactionTargetId("  explicit-id  ", { messageId: "msg-from-channel" }) ===
+    "explicit-id",
+  "explicit messageId wins",
+);
+assert(reactionTargetId(undefined, {}) === undefined, "no messageId");
 
 assert(toIMessageText(gmailOut) === gmailOut, "idempotent");
 
