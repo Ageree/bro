@@ -60,34 +60,65 @@ export function wakeupIdempotencyKey(runId: string, phase: WakeupPhase): string 
   return `browser_poll:${runId}:${phase}`;
 }
 
-export const WAKEUP_CLAIM_LEASE_MS = 120_000;
+export type WakeupClaimStatus = "pending" | "sent";
 
-/** `{runId}:{phase}:{claimedAtMs}` — lease, not a permanent lock. */
+/**
+ * Workpool retry after attempt k: initialBackoffMs * base^(k-1) * jitter(0.5..1.5).
+ * Worst-case wait before attempt 9: 0.5*500*(2^8-1)=63750ms > 60s lease, so a
+ * pending_claim_in_flight throw is retried until the lease expires and reclaim
+ * succeeds. Nominal (no jitter) wait before attempt 8 is already 63500ms.
+ */
+export const WAKEUP_CLAIM_LEASE_MS = 60_000;
+export const WAKEUP_STEP_MAX_ATTEMPTS = 9;
+export const WAKEUP_STEP_INITIAL_BACKOFF_MS = 500;
+export const WAKEUP_STEP_BACKOFF_BASE = 2;
+export const WAKEUP_RETRY_JITTER_MIN = 0.5;
+
+export const wakeupStepRetry = {
+  maxAttempts: WAKEUP_STEP_MAX_ATTEMPTS,
+  initialBackoffMs: WAKEUP_STEP_INITIAL_BACKOFF_MS,
+  base: WAKEUP_STEP_BACKOFF_BASE,
+};
+
+export function wakeupRetryWaitBeforeLastMs(
+  jitter = WAKEUP_RETRY_JITTER_MIN,
+): number {
+  const delays = WAKEUP_STEP_MAX_ATTEMPTS - 1;
+  return (
+    jitter *
+    WAKEUP_STEP_INITIAL_BACKOFF_MS *
+    (WAKEUP_STEP_BACKOFF_BASE ** delays - 1)
+  );
+}
+
+/** `{runId}:{phase}:{claimedAtMs}:{pending|sent}` */
 export function browserWakeupClaimKey(
   runId: string,
   phase: WakeupPhase,
   claimedAtMs: number,
+  status: WakeupClaimStatus,
 ): string {
-  return `${runId}:${phase}:${claimedAtMs}`;
+  return `${runId}:${phase}:${claimedAtMs}:${status}`;
 }
 
 export function parseWakeupClaim(claim: string | undefined): {
   runId: string;
   phase: string;
   claimedAtMs: number;
+  status: WakeupClaimStatus;
 } | null {
   if (!claim) return null;
-  const last = claim.lastIndexOf(":");
-  if (last <= 0) return null;
-  const claimedAtMs = Number(claim.slice(last + 1));
-  if (!Number.isFinite(claimedAtMs)) return null;
-  const mid = claim.lastIndexOf(":", last - 1);
-  if (mid <= 0) return null;
-  return {
-    runId: claim.slice(0, mid),
-    phase: claim.slice(mid + 1, last),
-    claimedAtMs,
-  };
+  const parts = claim.split(":");
+  if (parts.length < 4) return null;
+  const status = parts.at(-1);
+  const claimedRaw = parts.at(-2);
+  const phase = parts.at(-3);
+  if (status !== "pending" && status !== "sent") return null;
+  const claimedAtMs = Number(claimedRaw);
+  if (!Number.isFinite(claimedAtMs) || !phase) return null;
+  const runId = parts.slice(0, -3).join(":");
+  if (!runId) return null;
+  return { runId, phase, claimedAtMs, status };
 }
 
 export function claimMatchesRunPhase(
@@ -100,12 +131,16 @@ export function claimMatchesRunPhase(
   return claim === `${runId}:${phase}`;
 }
 
-export type WakeupClaimDecision = "ok" | "duplicate" | "stale_run";
+export type WakeupClaimDecision =
+  | "ok"
+  | "duplicate"
+  | "stale_run"
+  | "pending_in_flight";
 
 /**
- * Fresh same-key claim is duplicate. Expired lease (or legacy key without ts)
- * can be reclaimed so a crash between claim and POST is not a permanent loss.
- * Duplicate send inside the lease is covered by eve idempotencyKey.
+ * sent → real duplicate (POST already landed).
+ * pending + fresh lease → throw so workflow retries (not a silent success).
+ * pending + expired / legacy → reclaim.
  */
 export function decideWakeupClaim(opts: {
   tenantRunId: string | undefined;
@@ -120,8 +155,9 @@ export function decideWakeupClaim(opts: {
   if (!parsed || parsed.runId !== opts.runId || parsed.phase !== opts.phase) {
     return "ok";
   }
+  if (parsed.status === "sent") return "duplicate";
   const lease = opts.leaseMs ?? WAKEUP_CLAIM_LEASE_MS;
-  if (opts.now - parsed.claimedAtMs < lease) return "duplicate";
+  if (opts.now - parsed.claimedAtMs < lease) return "pending_in_flight";
   return "ok";
 }
 

@@ -19,6 +19,7 @@ import {
   browserWakeupClaimKey,
   claimMatchesRunPhase,
   decideWakeupClaim,
+  parseWakeupClaim,
   type WakeupPhase,
 } from "./lib/browserFollowPolicy";
 
@@ -279,7 +280,11 @@ export const claimBrowserWakeup = internalMutation({
   returns: v.union(
     v.object({
       ok: v.literal(false),
-      reason: v.union(v.literal("stale_run"), v.literal("duplicate")),
+      reason: v.union(
+        v.literal("stale_run"),
+        v.literal("duplicate"),
+        v.literal("pending_in_flight"),
+      ),
     }),
     v.object({
       ok: v.literal(true),
@@ -306,7 +311,7 @@ export const claimBrowserWakeup = internalMutation({
     }
     if (!existing) return { ok: false as const, reason: "stale_run" };
     await ctx.db.patch(existing._id, {
-      browserWakeupClaim: browserWakeupClaimKey(args.runId, phase, now),
+      browserWakeupClaim: browserWakeupClaimKey(args.runId, phase, now, "pending"),
     });
     return {
       ok: true as const,
@@ -333,6 +338,40 @@ export const releaseBrowserWakeup = internalMutation({
       return null;
     }
     await ctx.db.patch(existing._id, { browserWakeupClaim: undefined });
+    return null;
+  },
+});
+
+export const confirmBrowserWakeup = internalMutation({
+  args: {
+    phoneE164: v.string(),
+    runId: v.string(),
+    phase: wakeupPhase,
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query("tenants")
+      .withIndex("by_phone", (q) => q.eq("phoneE164", args.phoneE164))
+      .first();
+    const phase = args.phase as WakeupPhase;
+    const parsed = parseWakeupClaim(existing?.browserWakeupClaim);
+    if (
+      !existing ||
+      !parsed ||
+      parsed.runId !== args.runId ||
+      parsed.phase !== phase
+    ) {
+      return null;
+    }
+    await ctx.db.patch(existing._id, {
+      browserWakeupClaim: browserWakeupClaimKey(
+        args.runId,
+        phase,
+        parsed.claimedAtMs,
+        "sent",
+      ),
+    });
     return null;
   },
 });

@@ -11,6 +11,7 @@ import {
   POLL_INTERVAL_MS,
   sameBrowserRun,
   wakeupIdempotencyKey,
+  wakeupStepRetry,
   type WakeupPhase,
 } from "./lib/browserFollowPolicy";
 import { isLiveBrowserPoll } from "./lib/wakeupPolicy";
@@ -77,7 +78,7 @@ export const followThrough = workflow.define({
         runId: args.runId,
         phase,
       },
-      { retry: true, name: "wakeup" },
+      { retry: wakeupStepRetry, name: "wakeup" },
     );
     return { outcome: decision === "giveup" ? "timeout" : "done" };
   }
@@ -89,7 +90,7 @@ export const followThrough = workflow.define({
       runId: args.runId,
       phase: "giveup",
     },
-    { retry: true, name: "wakeup-giveup" },
+    { retry: wakeupStepRetry, name: "wakeup-giveup" },
   );
   return { outcome: "timeout" };
 });
@@ -298,14 +299,17 @@ export const wakeupAgent = internalAction({
     });
     if (!claimed.ok) {
       if (claimed.reason === "duplicate") return { ok: true, reason: "duplicate" };
+      if (claimed.reason === "pending_in_flight") {
+        throw new Error("pending_claim_in_flight");
+      }
       return { ok: false, reason: claimed.reason };
     }
     if (!claimed.conversationId) return { ok: false, reason: "no conversation" };
 
-    // Lease (120s): crash after claim and before POST is not a permanent loss —
-    // the next retry after the lease expires reclaims. A double send inside the
-    // lease is dropped by eve idempotencyKey. Residual race: runId can still
-    // change during this POST; eve re-checks an explicit runId before the turn.
+    // pending vs sent: a crash after claim must throw, not succeed as duplicate.
+    // Wakeup step retries: 9 attempts, 500ms * 2^(k-1) with jitter 0.5..1.5.
+    // Worst-case wait before last attempt is 63750ms > 60s lease — see
+    // wakeupRetryWaitBeforeLastMs. Failed POST still release()s immediately.
     try {
       const res = await fetch(`${eveUrl}/internal/wakeup`, {
         method: "POST",
@@ -333,6 +337,11 @@ export const wakeupAgent = internalAction({
       });
       throw err;
     }
+    await ctx.runMutation(internal.tenants.confirmBrowserWakeup, {
+      phoneE164: tenantPhone,
+      runId,
+      phase,
+    });
     return { ok: true };
   },
 });

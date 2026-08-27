@@ -18,6 +18,7 @@ import {
   WAKEUP_CLAIM_LEASE_MS,
   wakeupCarriesRunId,
   wakeupIdempotencyKey,
+  wakeupRetryWaitBeforeLastMs,
 } from "../convex/lib/browserFollowPolicy.ts";
 
 function assert(cond: unknown, msg: string): void {
@@ -197,8 +198,8 @@ assert(
 );
 
 assert(
-  browserWakeupClaimKey("r1", "done", t0) === `r1:done:${t0}`,
-  "claim key run:phase:ts",
+  browserWakeupClaimKey("r1", "done", t0, "pending") === `r1:done:${t0}:pending`,
+  "claim key run:phase:ts:pending",
 );
 assert(
   decideWakeupClaim({
@@ -208,27 +209,37 @@ assert(
     existingClaim: undefined,
     now: t0,
   }) === "ok",
-  "first claim writes",
+  "first claim writes pending",
 );
 assert(
   decideWakeupClaim({
     tenantRunId: "r1",
     runId: "r1",
     phase: "done",
-    existingClaim: `r1:done:${t0}`,
+    existingClaim: `r1:done:${t0}:pending`,
     now: t0 + 30_000,
-  }) === "duplicate",
-  "fresh claim is duplicate",
+  }) === "pending_in_flight",
+  "fresh pending must throw, not succeed",
 );
 assert(
   decideWakeupClaim({
     tenantRunId: "r1",
     runId: "r1",
     phase: "done",
-    existingClaim: `r1:done:${t0}`,
+    existingClaim: `r1:done:${t0}:pending`,
     now: t0 + WAKEUP_CLAIM_LEASE_MS,
   }) === "ok",
-  "expired lease can be reclaimed",
+  "expired pending can be reclaimed",
+);
+assert(
+  decideWakeupClaim({
+    tenantRunId: "r1",
+    runId: "r1",
+    phase: "done",
+    existingClaim: `r1:done:${t0}:sent`,
+    now: t0 + 1_000,
+  }) === "duplicate",
+  "sent is a real duplicate",
 );
 assert(
   decideWakeupClaim({
@@ -238,7 +249,11 @@ assert(
     existingClaim: "r1:done",
     now: t0,
   }) === "ok",
-  "legacy claim without ts is reclaimable",
+  "legacy claim without status is reclaimable",
+);
+assert(
+  wakeupRetryWaitBeforeLastMs() >= WAKEUP_CLAIM_LEASE_MS,
+  "worst-case retry wait covers the lease",
 );
 assert(
   decideWakeupClaim({

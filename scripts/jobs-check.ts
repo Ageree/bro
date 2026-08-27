@@ -12,6 +12,8 @@ import {
   FOLLOW_RETRY_HINT,
   followStartRetry,
   wakeupCarriesRunId,
+  wakeupRetryWaitBeforeLastMs,
+  WAKEUP_CLAIM_LEASE_MS,
   maxPollRounds,
   nextFollowDecision,
   POLL_INTERVAL_MS,
@@ -196,6 +198,20 @@ assert(
 assert(
   wakeupCarriesRunId(undefined) === false,
   "legacy browser_poll without runId keeps the old wakeup path",
+);
+assert(
+  decideWakeupClaim({
+    tenantRunId: "run-a",
+    runId: "run-a",
+    phase: "done",
+    existingClaim: `run-a:done:${t0}:pending`,
+    now: t0 + 1_000,
+  }) === "pending_in_flight",
+  "pending claim is not a successful follow-through",
+);
+assert(
+  wakeupRetryWaitBeforeLastMs() >= WAKEUP_CLAIM_LEASE_MS,
+  "jobs wakeup retries outlast the pending lease",
 );
 
 console.log("jobs-check ok");
