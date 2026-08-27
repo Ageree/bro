@@ -51,7 +51,10 @@ assert(identityCapReached(10, 10), "at explicit 10");
 assert(timingSafeEqual("abc", "abc"), "xor equal");
 assert(!timingSafeEqual("abc", "abd"), "xor diff char");
 assert(!timingSafeEqual("abc", "ab"), "xor diff len");
+assert(!timingSafeEqual("ab", "abc"), "xor shorter input");
 assert(!timingSafeEqual("", "x"), "xor empty vs x");
+assert(!timingSafeEqual("x", ""), "xor x vs empty expected");
+assert(timingSafeEqual("", ""), "xor both empty");
 
 const prevSecret = process.env.BRO_INTERNAL_SECRET;
 try {

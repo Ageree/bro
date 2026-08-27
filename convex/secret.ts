@@ -1,11 +1,16 @@
-/** Constant-time compare via XOR fold. No node:crypto (Convex query/mutation runtime). */
-export function timingSafeEqual(a: string, b: string): boolean {
-  const len = Math.max(a.length, b.length);
-  let mismatch = a.length === b.length ? 0 : 1;
-  for (let i = 0; i < len; i++) {
-    mismatch |= (a.charCodeAt(i) || 0) ^ (b.charCodeAt(i) || 0);
+/**
+ * Compare `input` to `expected` in time that depends on input length only.
+ * Length mismatch is one XOR bit; the loop never walks the stored secret.
+ */
+export function timingSafeEqual(input: string, expected: string): boolean {
+  const n = input.length;
+  const m = expected.length;
+  let diff = n ^ m;
+  const wrap = m > 0 ? m : 1;
+  for (let i = 0; i < n; i++) {
+    diff |= input.charCodeAt(i) ^ (expected.charCodeAt(i % wrap) || 0);
   }
-  return mismatch === 0;
+  return diff === 0;
 }
 
 export function assertSecret(secret: string): void {

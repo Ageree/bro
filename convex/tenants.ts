@@ -7,7 +7,6 @@ import {
   type MutationCtx,
 } from "./_generated/server";
 import { assertSecret } from "./secret";
-import { identityCap } from "./lib/accessPolicy";
 import {
   browserAllowance,
   dayKey,
@@ -200,9 +199,14 @@ export const countProvisioned = internalQuery({
   args: {},
   returns: v.number(),
   handler: async (ctx) => {
-    // ponytail: table is capped at BRO_IDENTITY_CAP (~100); scan past the cap.
-    const rows = await ctx.db.query("tenants").take(identityCap() + 1);
-    return rows.filter((r) => r.inkboxHandle).length;
+    // Table is ~BRO_IDENTITY_CAP (~100) plus a few unbound rows. A take(N)
+    // on raw docs undercounts when unbound tenants sit in the first page
+    // (by_handle is optional, so missing handles are not a cheap range).
+    // Full collect + TS filter is enough at this scale.
+    // eslint-disable-next-line @convex-dev/no-query-collect
+    const rows = await ctx.db.query("tenants").collect();
+    return rows.filter((r) => typeof r.inkboxHandle === "string" && r.inkboxHandle.length > 0)
+      .length;
   },
 });
 
