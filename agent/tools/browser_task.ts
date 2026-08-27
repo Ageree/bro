@@ -95,7 +95,7 @@ async function settle(
 
 export default defineTool({
   description:
-    "Cloud browser job for shopping (WB, Ozon, …). Starts a job or polls the current one. Never starts a second search while one is running. Do not pass reset unless the human wants a fresh browser. Send result text to iMessage when status is completed.",
+    "Cloud browser job for any web errand — shopping (WB, Ozon), restaurant/table booking, doctor and service appointments, taxi/delivery orders via web, form filling, searching and comparing. Starts a job or polls the current one. Never starts a second search while one is running. Do not pass reset unless the human wants a fresh browser. Send result text to iMessage when status is completed.",
   inputSchema: z.object({
     task: z.string().min(1).max(4000),
     reset: z.boolean().optional(),

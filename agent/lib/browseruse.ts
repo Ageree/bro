@@ -48,11 +48,24 @@ export type BrowserRun = {
   result?: string;
 };
 
+const ERRAND_MARK = "[bro-errand]";
+
+/** Wrap a raw errand with the cloud-browser operating envelope. Idempotent if already marked. */
+export function scaffoldTask(task: string): string {
+  if (task.startsWith(ERRAND_MARK)) return task;
+  return `${ERRAND_MARK}
+Выполняй поручение на языке сайтов (обычно русский). Задача: ${task}.
+Никогда не вводи номера карт, CVV, пароли или коды из SMS. Если сайт требует логин или оплату — остановись на этом шаге и опиши, что человеку нужно сделать самому (он подключится через live-URL).
+Доводи дело до конца, если оплата/логин не требуются (например: выбрать слот, заполнить форму с известными данными, дойти до финального подтверждения).
+Если данных не хватает (имя, телефон, адрес, время) — не выдумывай; закончи и перечисли, что нужно уточнить.
+В конце верни краткий структурированный итог: что сделано; что нашёл (варианты с ценами/временами, до 5); что нужно от человека.`;
+}
+
 export async function startRun(
   task: string,
   sessionId?: string,
 ): Promise<BrowserRun> {
-  const body: Record<string, unknown> = { task };
+  const body: Record<string, unknown> = { task: scaffoldTask(task) };
   // Cloud JSON accepts both; send both so a session is reused.
   if (sessionId) {
     body.sessionId = sessionId;
