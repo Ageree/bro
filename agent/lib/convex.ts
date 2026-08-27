@@ -277,3 +277,23 @@ export async function countBrowserJobStart(
     phoneE164,
   });
 }
+
+export async function startBrowserFollow(args: {
+  tenantPhone: string;
+  runId: string;
+  sessionId?: string;
+  task: string;
+  startedAt: number;
+}): Promise<{ workflowId: string; reused: boolean } | { error: string }> {
+  return await client().mutation(api.browserFollow.startFollowThrough, {
+    secret: secret(),
+    ...args,
+  });
+}
+
+export async function cancelBrowserFollow(tenantPhone: string): Promise<number> {
+  return await client().mutation(api.browserFollow.cancelFollowThrough, {
+    secret: secret(),
+    tenantPhone,
+  });
+}

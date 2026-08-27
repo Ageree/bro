@@ -35,6 +35,7 @@ export const tenantDoc = v.object({
   browserTask: v.optional(v.string()),
   browserStatus: v.optional(v.string()),
   browserStartedAt: v.optional(v.number()),
+  browserWorkflowId: v.optional(v.string()),
   paidUntil: v.optional(v.number()),
   msgsDayKey: v.optional(v.string()),
   msgsDayCount: v.optional(v.number()),
@@ -259,6 +260,35 @@ export const getByPhoneInternal = internalQuery({
       .query("tenants")
       .withIndex("by_phone", (q) => q.eq("phoneE164", phoneE164))
       .first();
+  },
+});
+
+export const patchBrowserInternal = internalMutation({
+  args: {
+    phoneE164: v.string(),
+    browserStatus: v.optional(v.string()),
+    browserSessionId: v.optional(v.string()),
+    browserLiveUrl: v.optional(v.string()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query("tenants")
+      .withIndex("by_phone", (q) => q.eq("phoneE164", args.phoneE164))
+      .first();
+    if (!existing) return null;
+    const patch: {
+      browserStatus?: string;
+      browserSessionId?: string;
+      browserLiveUrl?: string;
+    } = {};
+    if (args.browserStatus !== undefined) patch.browserStatus = args.browserStatus;
+    if (args.browserSessionId !== undefined) {
+      patch.browserSessionId = args.browserSessionId;
+    }
+    if (args.browserLiveUrl !== undefined) patch.browserLiveUrl = args.browserLiveUrl;
+    if (Object.keys(patch).length) await ctx.db.patch(existing._id, patch);
+    return null;
   },
 });
 

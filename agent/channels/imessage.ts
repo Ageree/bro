@@ -25,6 +25,7 @@ import {
 } from "../lib/connect-link";
 import { inboundIMessageText, toIMessageBubbles } from "../lib/imessage-text";
 import { splitSeen } from "../lib/wakeup-text";
+import { inboundGateFromResult } from "../../convex/lib/billingPolicy";
 
 function handleFromRequest(request: Request): string | undefined {
   try {
@@ -136,14 +137,12 @@ export default defineChannel({
         messageType: msg.message_type,
       });
 
-      let gate: { decision: "allow" | "paywall" | "drop"; payUrl?: string } = {
-        decision: "allow",
-      };
+      let gate: { decision: "allow" | "paywall" | "drop"; payUrl?: string };
       try {
-        gate = await countInboundMessage(remote);
+        gate = inboundGateFromResult(await countInboundMessage(remote), undefined);
       } catch (err) {
-        // ponytail: billing must not kill chat
         console.error("billing count failed", err);
+        gate = inboundGateFromResult(undefined, err);
       }
       if (gate.decision === "drop") {
         return new Response(null, { status: 204 });
@@ -262,7 +261,7 @@ export default defineChannel({
         prompt = `[background wakeup] Сторож: ${payload}.
 Прошлое состояние: ${lastSeen ?? "ничего"}. Проверь текущее состояние (Composio-тулы или browser_task — что уместно). Если НИЧЕГО нового относительно прошлого состояния — ответь ровно [SILENT]. Если есть новое — одно короткое сообщение человеку. В КОНЦЕ ответа добавь строку [SEEN] <краткое текущее состояние в одну строку> — она не уйдёт человеку.`;
       } else if (kind === "browser_poll") {
-        prompt = `[background wakeup] Проверь статус текущего браузер-джоба вызовом тула browser_task с task=${payload}. Если completed — отправь человеку результаты. Если ещё работает — ответь [SILENT] (wakeup сам повторится). Если failed — коротко скажи об этом.`;
+        prompt = `[background wakeup] Проверь статус текущего браузер-джоба вызовом тула browser_task с task=${payload}. Если completed — отправь человеку результаты. Если failed или джоб завис — коротко скажи об этом. Если ещё работает — ответь [SILENT].`;
       }
       await from(conversationId).send(prompt, {
         auth: {

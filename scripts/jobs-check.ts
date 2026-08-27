@@ -6,6 +6,12 @@ import {
   mailWebhookUrl,
   normalizeEmail,
 } from "../convex/lib/mailPolicy.ts";
+import {
+  maxPollRounds,
+  nextFollowDecision,
+  POLL_INTERVAL_MS,
+  shouldStartFollowThrough,
+} from "../convex/lib/browserFollowPolicy.ts";
 
 function assert(cond: unknown, msg: string): void {
   if (!cond) throw new Error(msg);
@@ -109,6 +115,50 @@ assert(
   mailWebhookUrl("https://bro-ageree.inkboxwire.com/webhooks/imessage") ===
     "https://bro-ageree.inkboxwire.com/webhooks/mail",
   "mail url founder",
+);
+
+const t0 = Date.parse("2026-08-27T12:00:00.000Z");
+assert(POLL_INTERVAL_MS === 2 * 60_000, "follow sleep 2min");
+assert(maxPollRounds() === 10, "follow 10 rounds / 20min");
+assert(
+  nextFollowDecision({
+    status: "running",
+    startedAt: t0,
+    now: t0 + POLL_INTERVAL_MS,
+  }) === "sleep",
+  "browser job still waiting → workflow sleeps",
+);
+assert(
+  nextFollowDecision({
+    status: "completed",
+    startedAt: t0,
+    now: t0 + POLL_INTERVAL_MS,
+  }) === "wakeup",
+  "browser job done → wakeup agent, jobs table stays source of truth",
+);
+assert(
+  nextFollowDecision({
+    status: "running",
+    startedAt: t0,
+    now: t0 + 20 * 60_000 + 1,
+  }) === "giveup",
+  "browser job 20min → give-up wakeup",
+);
+assert(
+  shouldStartFollowThrough({
+    status: "waiting",
+    startedAt: t0,
+    now: t0,
+  }) === true,
+  "open/waiting browser job starts follow-through",
+);
+assert(
+  shouldStartFollowThrough({
+    status: "cancelled",
+    startedAt: t0,
+    now: t0,
+  }) === false,
+  "closed browser run does not start follow-through",
 );
 
 console.log("jobs-check ok");

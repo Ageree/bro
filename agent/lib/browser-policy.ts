@@ -60,12 +60,8 @@ export function nextBrowserAction(opts: {
   return "start";
 }
 
-const POLL_GIVE_UP_MS = 20 * 60_000;
-
-export function pollTimedOut(
-  startedAt: number | undefined,
-  now: number,
-): boolean {
-  if (startedAt === undefined) return false;
-  return now - startedAt > POLL_GIVE_UP_MS;
-}
+export {
+  nextFollowDecision,
+  pollGiveUp as pollTimedOut,
+  shouldStartFollowThrough,
+} from "../../convex/lib/browserFollowPolicy.ts";
