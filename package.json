@@ -7,7 +7,7 @@
   },
   "scripts": {
     "build": "eve build",
-    "vercel-build": "mkdir -p public && cp index.html public/ && cp -R assets public/",
+    "vercel-build": "mkdir -p public && cp index.html public/ && cp card.html public/ && cp -R assets public/",
     "dev": "eve dev",
     "dev:local": "bash scripts/dev-local.sh",
     "tunnel": "node --experimental-strip-types scripts/inkbox-tunnel.ts",

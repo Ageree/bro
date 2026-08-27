@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>bro — карта</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --ink: #17271e;
+      --ink-soft: #3c4d43;
+      --cta-bg: #17271e;
+      --cta-fg: #f6faf5;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { overflow-x: hidden; }
+    body {
+      font-family: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+      color: var(--ink);
+      -webkit-font-smoothing: antialiased;
+    }
+    .bg {
+      position: fixed;
+      inset: 0;
+      z-index: -2;
+      background:
+        url("assets/meadow.webp") center / cover no-repeat,
+        linear-gradient(180deg, #dff0fb 0%, #eaf6ec 45%, #bfe3c4 100%);
+    }
+    .scrim {
+      position: fixed;
+      inset: 0;
+      z-index: -1;
+      background: radial-gradient(ellipse 70% 55% at 50% 42%,
+        rgba(255, 255, 255, 0.62) 0%,
+        rgba(255, 255, 255, 0.28) 45%,
+        rgba(255, 255, 255, 0) 72%);
+    }
+    .hero {
+      min-height: 100svh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      gap: 1.1rem;
+      padding: 2rem 1.5rem;
+    }
+    .wordmark {
+      font-weight: 600;
+      font-size: clamp(2.4rem, 8vw, 3.4rem);
+      line-height: 0.9;
+      letter-spacing: -0.04em;
+    }
+    .subline {
+      font-weight: 400;
+      font-size: 1.02rem;
+      color: var(--ink-soft);
+    }
+    form {
+      width: min(22rem, calc(100vw - 3rem));
+      display: grid;
+      gap: 0.7rem;
+      text-align: left;
+    }
+    label {
+      display: grid;
+      gap: 0.28rem;
+      font-size: 0.82rem;
+      font-weight: 500;
+      color: var(--ink-soft);
+    }
+    input {
+      font-family: inherit;
+      font-size: 1.05rem;
+      color: var(--ink);
+      background: rgba(255, 255, 255, 0.78);
+      border: 1px solid rgba(23, 39, 30, 0.18);
+      border-radius: 12px;
+      padding: 0.72rem 0.85rem;
+    }
+    input:focus-visible {
+      outline: 3px solid #17271e;
+      outline-offset: 2px;
+    }
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1.1fr;
+      gap: 0.6rem;
+    }
+    .cta {
+      margin-top: 0.4rem;
+      display: inline-block;
+      width: 100%;
+      background: var(--cta-bg);
+      color: var(--cta-fg);
+      font-size: 1.02rem;
+      font-weight: 500;
+      border: 0;
+      padding: 0.9rem 2.1rem;
+      border-radius: 999px;
+      box-shadow: 0 10px 30px -12px rgba(23, 39, 30, 0.55);
+      cursor: pointer;
+    }
+    .cta:disabled { opacity: 0.55; cursor: default; }
+    .status {
+      min-height: 1.4rem;
+      font-weight: 500;
+      font-size: 1.05rem;
+    }
+    .status[data-kind="ok"] { font-size: 1.25rem; }
+  </style>
+</head>
+<body>
+  <div class="bg" aria-hidden="true"></div>
+  <div class="scrim" aria-hidden="true"></div>
+  <main class="hero">
+    <h1 class="wordmark">bro</h1>
+    <p class="subline">Добавь карту — бро не хранит номер в чате</p>
+    <form id="card-form" autocomplete="on">
+      <label>Номер
+        <input id="pan" name="pan" inputmode="numeric" autocomplete="cc-number" maxlength="23" required />
+      </label>
+      <div class="row">
+        <label>MM
+          <input id="exp-month" name="expMonth" inputmode="numeric" autocomplete="cc-exp-month" maxlength="2" required />
+        </label>
+        <label>YY
+          <input id="exp-year" name="expYear" inputmode="numeric" autocomplete="cc-exp-year" maxlength="2" required />
+        </label>
+        <label>CVC
+          <input id="cvc" name="cvc" inputmode="numeric" autocomplete="cc-csc" maxlength="4" required />
+        </label>
+      </div>
+      <button class="cta" type="submit">Сохранить</button>
+    </form>
+    <p class="status" id="status" role="status"></p>
+  </main>
+  <script src="assets/config.js"></script>
+  <script>
+    (function () {
+      var BRAND = { mir: "МИР", visa: "Visa", mc: "Mastercard" };
+      var form = document.getElementById("card-form");
+      var panEl = document.getElementById("pan");
+      var mmEl = document.getElementById("exp-month");
+      var yyEl = document.getElementById("exp-year");
+      var cvcEl = document.getElementById("cvc");
+      var statusEl = document.getElementById("status");
+      var btn = form.querySelector(".cta");
+      var token = new URLSearchParams(location.search).get("t") || "";
+
+      function site() {
+        var s = window.BRO_CONVEX_SITE_URL;
+        return typeof s === "string" ? s.replace(/\/$/, "") : "";
+      }
+
+      function setStatus(t, kind) {
+        statusEl.textContent = t;
+        if (kind) statusEl.setAttribute("data-kind", kind);
+        else statusEl.removeAttribute("data-kind");
+      }
+
+      function wipeDigits() {
+        panEl.value = "";
+        mmEl.value = "";
+        yyEl.value = "";
+        cvcEl.value = "";
+      }
+
+      if (!token) {
+        form.hidden = true;
+        setStatus("Ссылка недействительна или истекла");
+        return;
+      }
+
+      form.addEventListener("submit", function (e) {
+        e.preventDefault();
+        if (btn.disabled) return;
+        var base = site();
+        if (!base) {
+          wipeDigits();
+          setStatus("Сайт ещё не подключён");
+          return;
+        }
+        var payload = JSON.stringify({
+          token: token,
+          pan: panEl.value,
+          expMonth: Number(mmEl.value),
+          expYear: Number(yyEl.value),
+          cvc: cvcEl.value,
+        });
+        wipeDigits();
+        btn.disabled = true;
+        setStatus("Сохраняем…");
+        fetch(base + "/card", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: payload,
+        })
+          .then(function (res) { return res.json(); })
+          .then(function (data) {
+            payload = "";
+            if (!data || !data.ok) {
+              var err = data && data.error;
+              if (err === "invalid or expired link") setStatus("Ссылка недействительна или истекла");
+              else if (err === "expiry") setStatus("Срок карты не подходит");
+              else if (err === "cvc") setStatus("Проверь CVC");
+              else if (err === "misconfigured") setStatus("Сайт ещё не подключён");
+              else setStatus("Проверь номер карты");
+              btn.disabled = false;
+              return;
+            }
+            var label = BRAND[data.brand] || data.brand;
+            form.remove();
+            setStatus(label + " •••• " + data.last4, "ok");
+          })
+          .catch(function () {
+            payload = "";
+            setStatus("Не вышло, нажми ещё раз");
+            if (btn && btn.isConnected) btn.disabled = false;
+          });
+      });
+    })();
+  </script>
+</body>
+</html>
