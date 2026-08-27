@@ -22,6 +22,15 @@ if [ -n "${CONVEX_DEPLOY_KEY:-}" ]; then
   export CONVEX_DEPLOYMENT CONVEX_URL
 fi
 
+# The live Inkbox webhook subscription is owned by the production Vercel host.
+# Default these to that host so .env.local can never fall back to the
+# `<handle>.inkboxwire.com` tunnel URL. A Cloud Agent has no inbound address, so
+# `npm run webhooks` here must stay a no-op ("webhook exists") and must never
+# re-point the subscription at this process — that would break the live Bro.
+: "${INKBOX_WEBHOOK_URL:=https://bro-agent.vercel.app/webhooks/imessage}"
+: "${EVE_URL:=https://bro-agent.vercel.app}"
+export INKBOX_WEBHOOK_URL EVE_URL
+
 # App-runtime + non-secret config the eve agent and scripts read.
 VARS=(
   OPENROUTER_API_KEY AI_GATEWAY_API_KEY BRO_MODEL
