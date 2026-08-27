@@ -1,9 +1,15 @@
 import { splitSeen } from "../agent/lib/wakeup-text.ts";
 import {
   backoffAt,
+  canClaim,
+  cronName,
+  delayMs,
   giveUp,
+  isLiveStatus,
   isSingletonKind,
+  LIVE_STATUSES,
   liveOfKind,
+  MIN_CRON_INTERVAL_MS,
   nextAfterRun,
   nextDailyAt,
   parseWhen,
@@ -72,6 +78,27 @@ assert(liveOfKind(liveRows, "watcher")?.status === "scheduled", "live watcher sk
 assert(liveOfKind(liveRows, "brief")?.status === "running", "live brief running");
 assert(liveOfKind(liveRows, "browser_poll") === undefined, "no live poll");
 assert(liveOfKind(liveRows, "reminder")?.kind === "reminder", "live reminder");
+
+assert(cronName("jd7abc") === "wakeup:jd7abc", "cron name");
+assert(delayMs(now + 30_000, now) === 30_000, "delay future");
+assert(delayMs(now, now) === MIN_CRON_INTERVAL_MS, "delay now clamps");
+assert(delayMs(now - 60_000, now) === MIN_CRON_INTERVAL_MS, "delay past clamps");
+assert(MIN_CRON_INTERVAL_MS === 1000, "component min interval");
+assert(canClaim("scheduled") === true, "claim scheduled");
+assert(canClaim("running") === false, "no double claim");
+assert(canClaim("done") === false, "no claim done");
+assert(canClaim("cancelled") === false, "no claim cancelled");
+assert(isLiveStatus("scheduled") && isLiveStatus("running"), "live statuses");
+assert(!isLiveStatus("done") && !isLiveStatus("failed"), "done not live");
+assert(LIVE_STATUSES.includes("scheduled") && LIVE_STATUSES.includes("running"), "index statuses");
+
+const manyDone = [
+  ...Array.from({ length: 120 }, () => ({ kind: "reminder", status: "done" })),
+  { kind: "watcher", status: "scheduled" },
+];
+const liveOnly = manyDone.filter((r) => isLiveStatus(r.status));
+assert(liveOfKind(liveOnly, "watcher")?.status === "scheduled", "status index skips buried done");
+assert(liveOfKind(manyDone.filter((r) => r.status === "done"), "watcher") === undefined, "done-only miss");
 
 function assertSeen(
   text: string,

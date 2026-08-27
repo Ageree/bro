@@ -89,5 +89,6 @@ export default defineSchema({
     attempts: v.optional(v.number()),
   })
     .index("by_status_at", ["status", "at"])
-    .index("by_tenant", ["tenantPhone"]),
+    .index("by_tenant", ["tenantPhone"])
+    .index("by_tenant_status", ["tenantPhone", "status"]),
 });
