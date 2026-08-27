@@ -20,6 +20,7 @@
     "connect-link:check": "node --experimental-strip-types scripts/connect-link-check.ts",
     "jobs:check": "node --experimental-strip-types scripts/jobs-check.ts",
     "imessage:check": "node --experimental-strip-types scripts/imessage-text-check.ts",
+    "card:check": "node --experimental-strip-types scripts/card-policy-check.ts",
     "provision:inkbox": "node --experimental-strip-types scripts/provision-inkbox.ts"
   },
   "dependencies": {
