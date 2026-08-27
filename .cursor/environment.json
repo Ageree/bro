@@ -1,0 +1,4 @@
+{
+  "name": "Bro (eve + Convex iMessage concierge)",
+  "install": "bash .cursor/install.sh"
+}
