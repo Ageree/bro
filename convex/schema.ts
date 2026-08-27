@@ -22,6 +22,9 @@ export default defineSchema({
     cardExpYear: v.optional(v.number()),
     cardBlob: v.optional(v.string()),
     cardStatus: v.optional(v.union(v.literal("active"), v.literal("removed"))),
+    // ponytail: already on live tenants from another branch; omit and `convex dev` refuses to push
+    msgsDayCount: v.optional(v.number()),
+    msgsDayKey: v.optional(v.string()),
   })
     .index("by_phone", ["phoneE164"])
     .index("by_handle", ["inkboxHandle"])

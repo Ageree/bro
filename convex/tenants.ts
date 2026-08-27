@@ -24,6 +24,8 @@ export const tenantDoc = v.object({
   cardExpYear: v.optional(v.number()),
   cardBlob: v.optional(v.string()),
   cardStatus: v.optional(v.union(v.literal("active"), v.literal("removed"))),
+  msgsDayCount: v.optional(v.number()),
+  msgsDayKey: v.optional(v.string()),
 });
 
 export const getByPhone = query({
