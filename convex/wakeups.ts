@@ -13,6 +13,7 @@ const kind = v.union(
   v.literal("browser_poll"),
   v.literal("brief"),
   v.literal("watcher"),
+  v.literal("job_check"),
 );
 const status = v.union(
   v.literal("scheduled"),

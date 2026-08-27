@@ -61,6 +61,7 @@ assert(isSingletonKind("brief"), "brief singleton");
 assert(isSingletonKind("watcher"), "watcher singleton");
 assert(isSingletonKind("browser_poll"), "browser_poll singleton");
 assert(!isSingletonKind("reminder"), "reminder not singleton");
+assert(!isSingletonKind("job_check"), "job_check not singleton");
 
 const liveRows = [
   { kind: "watcher", status: "done" },

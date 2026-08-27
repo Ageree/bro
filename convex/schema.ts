@@ -73,6 +73,7 @@ export default defineSchema({
       v.literal("browser_poll"),
       v.literal("brief"),
       v.literal("watcher"),
+      v.literal("job_check"),
     ),
     payload: v.string(),
     status: v.union(

@@ -8,7 +8,7 @@ export default defineTool({
     "Cancel a scheduled wake-up for this person by id, or all scheduled wake-ups of a kind.",
   inputSchema: z.object({
     id: z.string().optional(),
-    kind: z.enum(["reminder", "brief", "watcher"]).optional(),
+    kind: z.enum(["reminder", "brief", "watcher", "job_check"]).optional(),
   }),
   async execute({ id, kind }, ctx) {
     const n = await cancelWakeup(tenantId(ctx), { id, kind });
