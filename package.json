@@ -28,6 +28,7 @@
     "@ai-sdk/openai": "^4.0.47",
     "@composio/core": "^0.17.0",
     "@composio/experimental": "^0.2.2",
+    "@convex-dev/rate-limiter": "^0.3.2",
     "@inkbox/sdk": "^0.6.4",
     "@vercel/connect": "1.0.0",
     "ai": "^7.0.58",

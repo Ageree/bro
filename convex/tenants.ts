@@ -9,12 +9,17 @@ import {
 import { assertSecret } from "./secret";
 import {
   browserAllowance,
+  browserAllowedOnLimitError,
   dayKey,
+  inboundDecisionOnLimitError,
   isPaid,
   monthKey,
   msgAllowance,
   paywallDecision,
+  rateLimitPeriodKey,
+  usedCount,
 } from "./lib/billingPolicy";
+import { periodConfig, rateLimiter } from "./lib/rateLimits";
 
 export const tenantDoc = v.object({
   _id: v.id("tenants"),
@@ -34,6 +39,7 @@ export const tenantDoc = v.object({
   browserStatus: v.optional(v.string()),
   browserStartedAt: v.optional(v.number()),
   paidUntil: v.optional(v.number()),
+  // deprecated: counters live in @convex-dev/rate-limiter
   msgsDayKey: v.optional(v.string()),
   msgsDayCount: v.optional(v.number()),
   browserMonthKey: v.optional(v.string()),
@@ -318,27 +324,31 @@ export const countInboundMessage = mutation({
       free: process.env.BRO_FREE_MSGS_PER_DAY,
       paid: process.env.BRO_PAID_MSGS_PER_DAY,
     });
-    const count =
-      tenant.msgsDayKey === key ? (tenant.msgsDayCount ?? 0) + 1 : 1;
-    const decision = paywallDecision({
-      count,
-      allowance,
-      paywallSentDayKey: tenant.paywallSentDayKey,
-      dayKey: key,
-    });
-    const patch: {
-      msgsDayKey: string;
-      msgsDayCount: number;
-      paywallSentDayKey?: string;
-    } = { msgsDayKey: key, msgsDayCount: count };
-    let payUrl: string | undefined;
-    if (decision === "paywall") {
-      patch.paywallSentDayKey = key;
-      const base = (process.env.BRO_PAY_BASE ?? "").replace(/\/$/, "");
-      if (base) payUrl = `${base}/pay?tid=${tenant._id}`;
+    try {
+      const periodKey = rateLimitPeriodKey(tenant._id, key);
+      const config = periodConfig();
+      await rateLimiter.limit(ctx, "msgsPerDay", { key: periodKey, config });
+      const { value } = await rateLimiter.getValue(ctx, "msgsPerDay", {
+        key: periodKey,
+        config,
+      });
+      const decision = paywallDecision({
+        count: usedCount(value),
+        allowance,
+        paywallSentDayKey: tenant.paywallSentDayKey,
+        dayKey: key,
+      });
+      let payUrl: string | undefined;
+      if (decision === "paywall") {
+        await ctx.db.patch(tenant._id, { paywallSentDayKey: key });
+        const base = (process.env.BRO_PAY_BASE ?? "").replace(/\/$/, "");
+        if (base) payUrl = `${base}/pay?tid=${tenant._id}`;
+      }
+      return payUrl ? { decision, payUrl } : { decision };
+    } catch (err) {
+      console.error("billing count failed", err);
+      return inboundDecisionOnLimitError();
     }
-    await ctx.db.patch(tenant._id, patch);
-    return payUrl ? { decision, payUrl } : { decision };
   },
 });
 
@@ -355,13 +365,22 @@ export const countBrowserJobStart = mutation({
       free: process.env.BRO_FREE_BROWSER_JOBS_PER_MONTH,
       paid: process.env.BRO_PAID_BROWSER_JOBS_PER_MONTH,
     });
-    const prev =
-      tenant.browserMonthKey === key ? (tenant.browserMonthCount ?? 0) : 0;
-    if (prev >= allowance) return { allowed: false };
-    await ctx.db.patch(tenant._id, {
-      browserMonthKey: key,
-      browserMonthCount: prev + 1,
-    });
-    return { allowed: true };
+    try {
+      const periodKey = rateLimitPeriodKey(tenant._id, key);
+      const config = periodConfig();
+      const { value } = await rateLimiter.getValue(ctx, "browserJobsPerMonth", {
+        key: periodKey,
+        config,
+      });
+      if (usedCount(value) >= allowance) return { allowed: false };
+      const { ok } = await rateLimiter.limit(ctx, "browserJobsPerMonth", {
+        key: periodKey,
+        config,
+      });
+      return { allowed: ok };
+    } catch (err) {
+      console.error("billing browser count failed", err);
+      return browserAllowedOnLimitError();
+    }
   },
 });

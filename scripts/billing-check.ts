@@ -1,11 +1,18 @@
 import {
   browserAllowance,
+  browserAllowedOnLimitError,
+  browserGateFromResult,
+  consumeCount,
+  usedCount,
   dayKey,
   extendPaidUntil,
+  inboundDecisionOnLimitError,
+  inboundGateFromResult,
   isPaid,
   monthKey,
   msgAllowance,
   paywallDecision,
+  rateLimitPeriodKey,
 } from "../convex/lib/billingPolicy.ts";
 
 function assert(cond: unknown, msg: string): void {
@@ -80,6 +87,116 @@ assert(
     dayKey: "d2",
   }) === "paywall",
   "next day paywall",
+);
+
+assert(consumeCount(true, 30) === 30, "ok maps to allowance");
+assert(consumeCount(false, 30) === 31, "exceeded maps over allowance");
+assert(usedCount(1_000_000) === 0, "unused counter");
+assert(usedCount(999_999) === 1, "first consume");
+assert(usedCount(1_000_000 - 30) === 30, "at free cap");
+assert(usedCount(1_000_000 - 31) === 31, "first over cap");
+assert(
+  paywallDecision({
+    count: usedCount(1_000_000 - 30),
+    allowance: 30,
+    dayKey: "d1",
+  }) === "allow",
+  "used at cap → allow",
+);
+assert(
+  paywallDecision({
+    count: usedCount(1_000_000 - 31),
+    allowance: 500,
+    dayKey: "d1",
+  }) === "allow",
+  "paid upgrade keeps existing count",
+);
+assert(
+  paywallDecision({
+    count: usedCount(1_000_000 - 5),
+    allowance: 5,
+    dayKey: "d1",
+  }) === "allow",
+  "browser env cap still allow",
+);
+assert(
+  paywallDecision({
+    count: usedCount(1_000_000 - 6),
+    allowance: 5,
+    dayKey: "d1",
+  }) === "paywall",
+  "browser env over → paywall path",
+);
+assert(
+  paywallDecision({
+    count: consumeCount(true, 30),
+    allowance: 30,
+    dayKey: "d1",
+  }) === "allow",
+  "consume ok → allow",
+);
+assert(
+  paywallDecision({
+    count: consumeCount(false, 30),
+    allowance: 30,
+    dayKey: "d1",
+  }) === "paywall",
+  "consume fail first → paywall",
+);
+assert(
+  paywallDecision({
+    count: consumeCount(false, 30),
+    allowance: 30,
+    paywallSentDayKey: "d1",
+    dayKey: "d1",
+  }) === "drop",
+  "consume fail again → drop",
+);
+
+assert(
+  rateLimitPeriodKey("tid", "2026-08-27") === "tid:2026-08-27",
+  "period key day",
+);
+assert(
+  rateLimitPeriodKey("tid", "2026-08") === "tid:2026-08",
+  "period key month",
+);
+
+assert(inboundDecisionOnLimitError().decision === "paywall", "fail-closed inbound");
+assert(browserAllowedOnLimitError().allowed === false, "fail-closed browser");
+assert(
+  inboundGateFromResult({ decision: "allow" }, undefined).decision === "allow",
+  "gate success allow",
+);
+assert(
+  inboundGateFromResult({ decision: "drop" }, undefined).decision === "drop",
+  "gate success drop",
+);
+assert(
+  inboundGateFromResult(undefined, new Error("convex down")).decision ===
+    "paywall",
+  "gate error → paywall",
+);
+assert(
+  inboundGateFromResult({ decision: "allow" }, new Error("boom")).decision ===
+    "paywall",
+  "gate error wins over result",
+);
+assert(
+  browserGateFromResult({ allowed: true }, undefined).allowed === true,
+  "browser gate success",
+);
+assert(
+  browserGateFromResult({ allowed: false }, undefined).allowed === false,
+  "browser gate deny",
+);
+assert(
+  browserGateFromResult(undefined, new Error("convex down")).allowed === false,
+  "browser gate error → deny",
+);
+assert(
+  browserGateFromResult({ allowed: true }, new Error("boom")).allowed === false,
+  "browser error wins over result",
 );
 
 console.log("billing-check ok");

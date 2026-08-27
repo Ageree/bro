@@ -25,6 +25,7 @@ import {
 } from "../lib/connect-link";
 import { inboundIMessageText, toIMessageBubbles } from "../lib/imessage-text";
 import { splitSeen } from "../lib/wakeup-text";
+import { inboundGateFromResult } from "../../convex/lib/billingPolicy";
 
 function handleFromRequest(request: Request): string | undefined {
   try {
@@ -136,14 +137,12 @@ export default defineChannel({
         messageType: msg.message_type,
       });
 
-      let gate: { decision: "allow" | "paywall" | "drop"; payUrl?: string } = {
-        decision: "allow",
-      };
+      let gate: { decision: "allow" | "paywall" | "drop"; payUrl?: string };
       try {
-        gate = await countInboundMessage(remote);
+        gate = inboundGateFromResult(await countInboundMessage(remote), undefined);
       } catch (err) {
-        // ponytail: billing must not kill chat
         console.error("billing count failed", err);
+        gate = inboundGateFromResult(undefined, err);
       }
       if (gate.decision === "drop") {
         return new Response(null, { status: 204 });

@@ -73,3 +73,53 @@ export function paywallDecision(opts: {
   if (opts.paywallSentDayKey !== opts.dayKey) return "paywall";
   return "drop";
 }
+
+export type InboundGate = {
+  decision: "allow" | "paywall" | "drop";
+  payUrl?: string;
+};
+
+export type BrowserGate = { allowed: boolean };
+
+// Rate-limiter windows are UTC-ms only — calendar day/month is the key.
+export function rateLimitPeriodKey(
+  tenantId: string,
+  calendarKey: string,
+): string {
+  return `${tenantId}:${calendarKey}`;
+}
+
+export function consumeCount(ok: boolean, allowance: number): number {
+  return ok ? allowance : allowance + 1;
+}
+
+// Component stores remaining tokens; we keep a large cap so allowance can change mid-period.
+export const RATE_COUNTER_CAP = 1_000_000;
+
+export function usedCount(remaining: number, cap = RATE_COUNTER_CAP): number {
+  return cap - remaining;
+}
+
+export function inboundDecisionOnLimitError(): InboundGate {
+  return { decision: "paywall" };
+}
+
+export function browserAllowedOnLimitError(): BrowserGate {
+  return { allowed: false };
+}
+
+export function inboundGateFromResult(
+  result: InboundGate | undefined,
+  error: unknown,
+): InboundGate {
+  if (error != null || result == null) return inboundDecisionOnLimitError();
+  return result;
+}
+
+export function browserGateFromResult(
+  result: BrowserGate | undefined,
+  error: unknown,
+): BrowserGate {
+  if (error != null || result == null) return browserAllowedOnLimitError();
+  return result;
+}

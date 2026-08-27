@@ -18,6 +18,7 @@ export default defineSchema({
     browserStatus: v.optional(v.string()),
     browserStartedAt: v.optional(v.number()),
     paidUntil: v.optional(v.number()),
+    // deprecated: msgs/day and browser/month counters moved to @convex-dev/rate-limiter
     msgsDayKey: v.optional(v.string()),
     msgsDayCount: v.optional(v.number()),
     browserMonthKey: v.optional(v.string()),
