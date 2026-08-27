@@ -1,5 +1,6 @@
 import {
   isConnectDest,
+  publicOrigin,
   stripConnectUrls,
   wrapConnectUrl,
 } from "../agent/lib/connect-link.ts";
@@ -13,12 +14,15 @@ assert(isConnectDest(good), "allow composio link");
 assert(!isConnectDest("https://evil.example/link/lk_abc"), "reject other host");
 assert(!isConnectDest("https://connect.composio.dev/other"), "reject other path");
 
-process.env.BRO_PUBLIC_URL = "https://bro-agent.vercel.app";
+process.env.BRO_PUBLIC_URL = "https://brobro.tech";
 assert(
   wrapConnectUrl(good) ===
-    "https://bro-agent.vercel.app/l?to=" + encodeURIComponent(good),
+    "https://brobro.tech/l?to=" + encodeURIComponent(good),
   "wrap",
 );
+delete process.env.BRO_PUBLIC_URL;
+delete process.env.VERCEL_PROJECT_PRODUCTION_URL;
+assert(publicOrigin() === "https://brobro.tech", "fallback origin");
 
 assert(
   stripConnectUrls("Открой [Gmail](https://connect.composio.dev/link/lk_x) сейчас") ===

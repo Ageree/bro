@@ -1,0 +1,5 @@
+{
+  "rewrites": [
+    { "source": "/l", "destination": "https://bro-agent.vercel.app/l" }
+  ]
+}

@@ -14,7 +14,7 @@ export function publicOrigin(): string {
   if (raw) return raw.replace(/\/$/, "");
   const host = process.env.VERCEL_PROJECT_PRODUCTION_URL?.trim();
   if (host) return host.startsWith("http") ? host.replace(/\/$/, "") : `https://${host}`;
-  return "https://bro-agent.vercel.app";
+  return "https://brobro.tech";
 }
 
 export function wrapConnectUrl(dest: string): string {
@@ -25,7 +25,7 @@ export function stripConnectUrls(text: string): string {
   return text
     .replace(/\[[^\]]*\]\(https:\/\/(?:connect|dashboard)\.composio\.dev\/[^)]+\)/g, "")
     .replace(/https:\/\/(?:connect|dashboard)\.composio\.dev\/\S+/g, "")
-    .replace(/https:\/\/bro-agent\.vercel\.app\/l\?\S+/g, "")
+    .replace(/https:\/\/(?:brobro\.tech|bro-agent\.vercel\.app)\/l\?\S+/g, "")
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
