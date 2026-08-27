@@ -223,7 +223,9 @@ export default defineChannel({
         typeof body.inkboxHandle === "string" ? body.inkboxHandle : undefined;
       const lastSeen =
         typeof body.lastSeen === "string" ? body.lastSeen : undefined;
-      let prompt = `[background wakeup] kind=${kind}. Задание: ${payload}. Сейчас ${new Date().toISOString()}. Если сказать человеку нечего или задание неактуально — ответь ровно [SILENT].`;
+      // ponytail: у reminder нет [SILENT] — напоминание доставляется всегда,
+      // иначе слабая модель молчит «на всякий случай».
+      let prompt = `[background wakeup] Напоминание для человека: ${payload}. Сейчас ${new Date().toISOString()}. Передай его одним коротким сообщением от своего лица.`;
       if (kind === "brief") {
         prompt =
           "[background wakeup] Утренний бриф. Собери коротко: (1) память об этом человеке — незакрытые дела/напоминания на сегодня; (2) если подключён Gmail/Calendar через Composio — новые важные письма и встречи сегодня; (3) статус браузер-джоба, если был. Если по ВСЕМ пунктам пусто — ответь [SILENT]. Одно короткое сообщение, без воды.";

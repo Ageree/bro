@@ -3,3 +3,4 @@
 {"ts":"2026-08-26T22:42:22Z","turn":2,"type":"packet_done","packet":"P2 browser follow-through","verdict":"verified+committed"}
 {"ts":"2026-08-26T22:50:04Z","turn":3,"type":"packet_done","packet":"P3 brief+watchers+instructions","verdict":"verified+committed"}
 {"ts":"2026-08-26T22:53:53Z","turn":4,"type":"rebase","detail":"branch rebased onto main 422aafd (mailbox/jobs feature); convex push had briefly deleted by_email+jobs.by_tenant indexes — restored within ~3min by re-push after rebase; merged tree: eve build 0 errors, 7 checks green"}
+{"ts":"2026-08-27T00:14:17Z","turn":5,"type":"note","detail":"temp DBG console.log in message.completed for local e2e debug only; MUST be removed before commit (also flagged by security review)"}
