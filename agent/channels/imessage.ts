@@ -12,6 +12,7 @@ import {
 import {
   bindInbound,
   countInboundMessage,
+  markPaywallSent,
   getTenantByConversation,
   getTenantByHandle,
   setWakeupLastSeen,
@@ -142,7 +143,19 @@ export default defineChannel({
         gate = inboundGateFromResult(await countInboundMessage(remote), undefined);
       } catch (err) {
         console.error("billing count failed", err);
-        gate = inboundGateFromResult(undefined, err);
+        try {
+          const marked = await markPaywallSent(remote);
+          gate = inboundGateFromResult(undefined, err, {
+            alreadySentToday: marked.alreadySentToday,
+            marked: true,
+          });
+        } catch (markErr) {
+          console.error("paywallSentDayKey persist failed", markErr);
+          gate = inboundGateFromResult(undefined, err, {
+            alreadySentToday: false,
+            marked: false,
+          });
+        }
       }
       if (gate.decision === "drop") {
         return new Response(null, { status: 204 });

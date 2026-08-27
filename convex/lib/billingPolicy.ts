@@ -43,23 +43,36 @@ export function extendPaidUntil(
   return Math.max(now, paidUntil ?? 0) + MONTH_MS;
 }
 
+export const RATE_COUNTER_CAP = 1_000_000_000_000;
+export const ALLOWANCE_MAX = 1_000_000_000;
+export const RATE_WINDOW_START_MS = 0;
+export const RATE_WINDOW_PERIOD_MS = 10 * 365 * 24 * 60 * 60 * 1000;
+
 function cap(raw: string | undefined, fallback: number): number {
   const n = Number(raw ?? fallback);
   return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+export function clampAllowance(n: number): number {
+  if (n <= ALLOWANCE_MAX) return n;
+  console.warn(`allowance ${n} clamped to ${ALLOWANCE_MAX}`);
+  return ALLOWANCE_MAX;
 }
 
 export function msgAllowance(
   paid: boolean,
   env: { free?: string; paid?: string },
 ): number {
-  return paid ? cap(env.paid, PAID_MSGS) : cap(env.free, FREE_MSGS);
+  return clampAllowance(paid ? cap(env.paid, PAID_MSGS) : cap(env.free, FREE_MSGS));
 }
 
 export function browserAllowance(
   paid: boolean,
   env: { free?: string; paid?: string },
 ): number {
-  return paid ? cap(env.paid, PAID_BROWSER) : cap(env.free, FREE_BROWSER);
+  return clampAllowance(
+    paid ? cap(env.paid, PAID_BROWSER) : cap(env.free, FREE_BROWSER),
+  );
 }
 
 export function paywallDecision(opts: {
@@ -93,15 +106,50 @@ export function consumeCount(ok: boolean, allowance: number): number {
   return ok ? allowance : allowance + 1;
 }
 
-// Component stores remaining tokens; we keep a large cap so allowance can change mid-period.
-export const RATE_COUNTER_CAP = 1_000_000;
-
 export function usedCount(remaining: number, cap = RATE_COUNTER_CAP): number {
   return cap - remaining;
 }
 
-export function inboundDecisionOnLimitError(): InboundGate {
+export function nextWindowBoundary(
+  now: number,
+  periodMs = RATE_WINDOW_PERIOD_MS,
+  startMs = RATE_WINDOW_START_MS,
+): number {
+  const elapsed = Math.floor((now - startMs) / periodMs);
+  return startMs + (elapsed + 1) * periodMs;
+}
+
+export function legacyUsedForPeriod(
+  legacyKey: string | undefined,
+  legacyCount: number | undefined,
+  periodKey: string,
+): number {
+  return legacyKey === periodKey ? (legacyCount ?? 0) : 0;
+}
+
+export function effectiveUsedCount(
+  componentUsed: number,
+  legacyUsed: number,
+): number {
+  return Math.max(componentUsed, legacyUsed);
+}
+
+export function inboundOnAccountingError(opts: {
+  alreadySentToday: boolean;
+  marked: boolean;
+}): InboundGate {
+  if (opts.alreadySentToday || !opts.marked) return { decision: "drop" };
   return { decision: "paywall" };
+}
+
+export function inboundDecisionOnLimitError(opts?: {
+  alreadySentToday?: boolean;
+  marked?: boolean;
+}): InboundGate {
+  return inboundOnAccountingError({
+    alreadySentToday: opts?.alreadySentToday ?? false,
+    marked: opts?.marked ?? false,
+  });
 }
 
 export function browserAllowedOnLimitError(): BrowserGate {
@@ -111,8 +159,13 @@ export function browserAllowedOnLimitError(): BrowserGate {
 export function inboundGateFromResult(
   result: InboundGate | undefined,
   error: unknown,
+  mark?: { alreadySentToday: boolean; marked: boolean },
 ): InboundGate {
-  if (error != null || result == null) return inboundDecisionOnLimitError();
+  if (error != null || result == null) {
+    return inboundOnAccountingError(
+      mark ?? { alreadySentToday: false, marked: false },
+    );
+  }
   return result;
 }
 

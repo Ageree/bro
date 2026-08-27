@@ -11,8 +11,10 @@ import {
   browserAllowance,
   browserAllowedOnLimitError,
   dayKey,
-  inboundDecisionOnLimitError,
+  effectiveUsedCount,
+  inboundOnAccountingError,
   isPaid,
+  legacyUsedForPeriod,
   monthKey,
   msgAllowance,
   paywallDecision,
@@ -332,8 +334,12 @@ export const countInboundMessage = mutation({
         key: periodKey,
         config,
       });
+      const count = effectiveUsedCount(
+        usedCount(value),
+        legacyUsedForPeriod(tenant.msgsDayKey, tenant.msgsDayCount, key) + 1,
+      );
       const decision = paywallDecision({
-        count: usedCount(value),
+        count,
         allowance,
         paywallSentDayKey: tenant.paywallSentDayKey,
         dayKey: key,
@@ -347,8 +353,39 @@ export const countInboundMessage = mutation({
       return payUrl ? { decision, payUrl } : { decision };
     } catch (err) {
       console.error("billing count failed", err);
-      return inboundDecisionOnLimitError();
+      if (tenant.paywallSentDayKey === key) {
+        return inboundOnAccountingError({
+          alreadySentToday: true,
+          marked: false,
+        });
+      }
+      try {
+        await ctx.db.patch(tenant._id, { paywallSentDayKey: key });
+        return inboundOnAccountingError({
+          alreadySentToday: false,
+          marked: true,
+        });
+      } catch (markErr) {
+        console.error("paywallSentDayKey persist failed", markErr);
+        return inboundOnAccountingError({
+          alreadySentToday: false,
+          marked: false,
+        });
+      }
     }
+  },
+});
+
+export const markPaywallSent = mutation({
+  args: { secret: v.string(), phoneE164: v.string() },
+  returns: v.object({ alreadySentToday: v.boolean() }),
+  handler: async (ctx, { secret, phoneE164 }) => {
+    assertSecret(secret);
+    const tenant = await tenantByPhone(ctx, phoneE164);
+    const key = dayKey(Date.now());
+    if (tenant.paywallSentDayKey === key) return { alreadySentToday: true };
+    await ctx.db.patch(tenant._id, { paywallSentDayKey: key });
+    return { alreadySentToday: false };
   },
 });
 
@@ -372,7 +409,15 @@ export const countBrowserJobStart = mutation({
         key: periodKey,
         config,
       });
-      if (usedCount(value) >= allowance) return { allowed: false };
+      const used = effectiveUsedCount(
+        usedCount(value),
+        legacyUsedForPeriod(
+          tenant.browserMonthKey,
+          tenant.browserMonthCount,
+          key,
+        ),
+      );
+      if (used >= allowance) return { allowed: false };
       const { ok } = await rateLimiter.limit(ctx, "browserJobsPerMonth", {
         key: periodKey,
         config,

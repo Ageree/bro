@@ -1,19 +1,21 @@
-import { DAY, RateLimiter } from "@convex-dev/rate-limiter";
+import { RateLimiter } from "@convex-dev/rate-limiter";
 import { components } from "../_generated/api";
-import { RATE_COUNTER_CAP } from "./billingPolicy";
+import {
+  RATE_COUNTER_CAP,
+  RATE_WINDOW_PERIOD_MS,
+  RATE_WINDOW_START_MS,
+} from "./billingPolicy";
 
 export const rateLimiter = new RateLimiter(components.rateLimiter);
 
-// Component fixed windows are UTC-ms; Europe/Moscow calendar day/month lives in the key.
-// Period is longer than any dayKey/monthKey lifetime so the bucket does not reset mid-period.
-const PERIOD_MS = 400 * DAY;
-
+// Component windows are UTC-ms only. Calendar day/month is the key (Europe/Moscow).
+// 10y period from epoch: next boundary is 2030 — outside any dayKey/monthKey lifetime.
 export function periodConfig() {
   return {
     kind: "fixed window" as const,
     rate: RATE_COUNTER_CAP,
-    period: PERIOD_MS,
-    start: 0,
+    period: RATE_WINDOW_PERIOD_MS,
+    start: RATE_WINDOW_START_MS,
     capacity: RATE_COUNTER_CAP,
   };
 }

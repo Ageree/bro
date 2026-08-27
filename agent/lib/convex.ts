@@ -261,6 +261,15 @@ export async function countInboundMessage(phoneE164: string): Promise<{
   });
 }
 
+export async function markPaywallSent(
+  phoneE164: string,
+): Promise<{ alreadySentToday: boolean }> {
+  return await client().mutation(api.tenants.markPaywallSent, {
+    secret: secret(),
+    phoneE164,
+  });
+}
+
 export async function countBrowserJobStart(
   phoneE164: string,
 ): Promise<{ allowed: boolean }> {
