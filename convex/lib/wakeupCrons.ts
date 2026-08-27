@@ -27,13 +27,14 @@ export async function scheduleCron(
   id: Id<"wakeups">,
   at: number,
   now: number,
+  gen: number,
 ): Promise<void> {
   await unscheduleCron(ctx, id);
   await crons.register(
     ctx,
     { kind: "interval", ms: delayMs(at, now) },
     internal.wakeups.dispatchOne,
-    { id },
+    { id, gen },
     cronName(id),
   );
 }

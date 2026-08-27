@@ -19,6 +19,7 @@ import {
   LIVE_STATUSES,
   liveOfKind,
   nextAfterRun,
+  nextGen,
 } from "./lib/wakeupPolicy";
 import { hasCron, scheduleCron, unscheduleCron } from "./lib/wakeupCrons";
 
@@ -48,6 +49,7 @@ const wakeupDoc = v.object({
   tz: v.optional(v.string()),
   lastSeen: v.optional(v.string()),
   attempts: v.optional(v.number()),
+  gen: v.optional(v.number()),
 });
 
 async function liveForTenant(
@@ -70,8 +72,9 @@ async function liveForTenant(
 async function claimRow(
   ctx: MutationCtx,
   row: Doc<"wakeups">,
+  ticket: { gen: number },
 ): Promise<Doc<"wakeups"> | null> {
-  if (!canClaim(row.status)) return null;
+  if (!canClaim(row, ticket)) return null;
   await ctx.db.patch(row._id, { status: "running" });
   await unscheduleCron(ctx, row._id);
   return { ...row, status: "running" };
@@ -145,6 +148,7 @@ export const schedule = mutation({
     if (isSingletonKind(args.kind)) {
       const existing = liveOfKind(await liveForTenant(ctx, args.tenantPhone), args.kind);
       if (existing) {
+        const gen = nextGen(existing.gen);
         await ctx.db.patch(existing._id, {
           at: args.at,
           payload: args.payload,
@@ -152,9 +156,10 @@ export const schedule = mutation({
           recurDailyHour: args.recurDailyHour,
           tz: args.tz,
           attempts: 0,
+          gen,
         });
         if (existing.status === "scheduled") {
-          await scheduleCron(ctx, existing._id, args.at, now);
+          await scheduleCron(ctx, existing._id, args.at, now, gen);
         }
         return existing._id;
       }
@@ -168,8 +173,9 @@ export const schedule = mutation({
       recurMinutes: args.recurMinutes,
       recurDailyHour: args.recurDailyHour,
       tz: args.tz,
+      gen: 0,
     });
-    await scheduleCron(ctx, id, args.at, now);
+    await scheduleCron(ctx, id, args.at, now, 0);
     return id;
   },
 });
@@ -222,12 +228,12 @@ export const listForTenant = query({
 });
 
 export const claimOne = internalMutation({
-  args: { id: v.id("wakeups") },
+  args: { id: v.id("wakeups"), gen: v.number() },
   returns: v.union(wakeupDoc, v.null()),
-  handler: async (ctx, { id }) => {
+  handler: async (ctx, { id, gen }) => {
     const row = await ctx.db.get(id);
     if (!row) return null;
-    return await claimRow(ctx, row);
+    return await claimRow(ctx, row, { gen });
   },
 });
 
@@ -242,7 +248,7 @@ export const claimDue = internalMutation({
       .take(10);
     const out = [];
     for (const row of rows) {
-      const claimed = await claimRow(ctx, row);
+      const claimed = await claimRow(ctx, row, { gen: row.gen ?? 0 });
       if (claimed) out.push(claimed);
     }
     return out;
@@ -262,7 +268,7 @@ export const ensureCrons = internalMutation({
     for (const row of rows) {
       if (row.at <= now) continue;
       if (await hasCron(ctx, row._id)) continue;
-      await scheduleCron(ctx, row._id, row.at, now);
+      await scheduleCron(ctx, row._id, row.at, now, row.gen ?? 0);
       n++;
     }
     return n;
@@ -286,8 +292,9 @@ export const finish = internalMutation({
         now,
       );
       if (next !== null) {
-        await ctx.db.patch(id, { status: "scheduled", at: next, attempts: 0 });
-        await scheduleCron(ctx, id, next, now);
+        const gen = nextGen(w.gen);
+        await ctx.db.patch(id, { status: "scheduled", at: next, attempts: 0, gen });
+        await scheduleCron(ctx, id, next, now, gen);
       } else {
         await ctx.db.patch(id, { status: "done" });
       }
@@ -298,8 +305,9 @@ export const finish = internalMutation({
       await ctx.db.patch(id, { status: "failed", attempts });
     } else {
       const at = backoffAt(attempts, now);
-      await ctx.db.patch(id, { status: "scheduled", at, attempts });
-      await scheduleCron(ctx, id, at, now);
+      const gen = nextGen(w.gen);
+      await ctx.db.patch(id, { status: "scheduled", at, attempts, gen });
+      await scheduleCron(ctx, id, at, now, gen);
     }
     return null;
   },
@@ -339,14 +347,14 @@ export const setLastSeenInternal = internalMutation({
 });
 
 export const dispatchOne = internalAction({
-  args: { id: v.id("wakeups") },
+  args: { id: v.id("wakeups"), gen: v.number() },
   returns: v.null(),
-  handler: async (ctx, { id }) => {
+  handler: async (ctx, { id, gen }) => {
     const eveUrl = process.env.EVE_URL;
     // ponytail: no EVE_URL on this deployment → silent no-op
     if (!eveUrl) return null;
     const secret = process.env.BRO_INTERNAL_SECRET ?? "";
-    const w = await ctx.runMutation(internal.wakeups.claimOne, { id });
+    const w = await ctx.runMutation(internal.wakeups.claimOne, { id, gen });
     if (!w) return null;
     await deliverOne(ctx, w, eveUrl, secret);
     return null;

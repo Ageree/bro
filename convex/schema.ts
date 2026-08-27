@@ -87,6 +87,7 @@ export default defineSchema({
     tz: v.optional(v.string()),
     lastSeen: v.optional(v.string()),
     attempts: v.optional(v.number()),
+    gen: v.optional(v.number()),
   })
     .index("by_status_at", ["status", "at"])
     .index("by_tenant", ["tenantPhone"])

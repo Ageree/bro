@@ -17,8 +17,17 @@ export function delayMs(at: number, now: number): number {
   return Math.max(at - now, MIN_CRON_INTERVAL_MS);
 }
 
-export function canClaim(status: string): boolean {
-  return status === "scheduled";
+export function nextGen(current?: number): number {
+  return (current ?? 0) + 1;
+}
+
+/** Claim only scheduled rows whose gen matches the cron ticket. */
+export function canClaim(
+  row: { status: string; gen?: number },
+  ticket: { gen: number },
+): boolean {
+  if (row.status !== "scheduled") return false;
+  return (row.gen ?? 0) === ticket.gen;
 }
 
 export function isLiveStatus(status: string): status is LiveStatus {

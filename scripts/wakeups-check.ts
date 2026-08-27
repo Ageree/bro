@@ -12,6 +12,7 @@ import {
   MIN_CRON_INTERVAL_MS,
   nextAfterRun,
   nextDailyAt,
+  nextGen,
   parseWhen,
 } from "../convex/lib/wakeupPolicy.ts";
 
@@ -84,10 +85,23 @@ assert(delayMs(now + 30_000, now) === 30_000, "delay future");
 assert(delayMs(now, now) === MIN_CRON_INTERVAL_MS, "delay now clamps");
 assert(delayMs(now - 60_000, now) === MIN_CRON_INTERVAL_MS, "delay past clamps");
 assert(MIN_CRON_INTERVAL_MS === 1000, "component min interval");
-assert(canClaim("scheduled") === true, "claim scheduled");
-assert(canClaim("running") === false, "no double claim");
-assert(canClaim("done") === false, "no claim done");
-assert(canClaim("cancelled") === false, "no claim cancelled");
+assert(canClaim({ status: "scheduled", gen: 0 }, { gen: 0 }) === true, "claim scheduled");
+assert(canClaim({ status: "running", gen: 0 }, { gen: 0 }) === false, "no double claim");
+assert(canClaim({ status: "done", gen: 0 }, { gen: 0 }) === false, "no claim done");
+assert(canClaim({ status: "cancelled", gen: 0 }, { gen: 0 }) === false, "no claim cancelled");
+assert(canClaim({ status: "scheduled" }, { gen: 0 }) === true, "legacy missing gen is 0");
+assert(canClaim({ status: "scheduled" }, { gen: 1 }) === false, "legacy row rejects newer ticket");
+
+const staleAt = now + 5 * 60_000;
+const movedAt = now + 60 * 60_000;
+const beforeMove = { status: "scheduled" as const, gen: 0, at: staleAt };
+const afterMove = { status: "scheduled" as const, gen: 1, at: movedAt };
+assert(canClaim(beforeMove, { gen: 0 }) === true, "original cron matches gen 0");
+assert(canClaim(afterMove, { gen: 0 }) === false, "stale cron rejected after singleton reschedule");
+assert(canClaim(afterMove, { gen: 1 }) === true, "new cron claims moved singleton");
+assert(nextGen(undefined) === 1, "nextGen missing");
+assert(nextGen(0) === 1, "nextGen 0");
+assert(nextGen(1) === 2, "nextGen 1");
 assert(isLiveStatus("scheduled") && isLiveStatus("running"), "live statuses");
 assert(!isLiveStatus("done") && !isLiveStatus("failed"), "done not live");
 assert(LIVE_STATUSES.includes("scheduled") && LIVE_STATUSES.includes("running"), "index statuses");
