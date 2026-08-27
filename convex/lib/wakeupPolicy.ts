@@ -30,6 +30,27 @@ export function canClaim(
   return (row.gen ?? 0) === ticket.gen;
 }
 
+/** Finish only if this run still owns the row. Stale gen → no-op. */
+export function canFinish(
+  row: { gen?: number },
+  ticket: { gen: number },
+): boolean {
+  return (row.gen ?? 0) === ticket.gen;
+}
+
+/** Reschedule a live row (scheduled or running): new gen, back to scheduled, register cron. */
+export function rescheduleLive(
+  row: { gen?: number },
+  at: number,
+): { status: "scheduled"; gen: number; at: number; registerCron: true } {
+  return {
+    status: "scheduled",
+    gen: nextGen(row.gen),
+    at,
+    registerCron: true,
+  };
+}
+
 export function isLiveStatus(status: string): status is LiveStatus {
   return status === "scheduled" || status === "running";
 }

@@ -2,6 +2,7 @@ import { splitSeen } from "../agent/lib/wakeup-text.ts";
 import {
   backoffAt,
   canClaim,
+  canFinish,
   cronName,
   delayMs,
   giveUp,
@@ -14,6 +15,7 @@ import {
   nextDailyAt,
   nextGen,
   parseWhen,
+  rescheduleLive,
 } from "../convex/lib/wakeupPolicy.ts";
 
 function assert(cond: unknown, msg: string): void {
@@ -102,6 +104,21 @@ assert(canClaim(afterMove, { gen: 1 }) === true, "new cron claims moved singleto
 assert(nextGen(undefined) === 1, "nextGen missing");
 assert(nextGen(0) === 1, "nextGen 0");
 assert(nextGen(1) === 2, "nextGen 1");
+
+assert(canFinish({ gen: 1 }, { gen: 1 }) === true, "finish matching gen");
+assert(canFinish({ gen: 2 }, { gen: 1 }) === false, "stale finish no-op");
+assert(canFinish({}, { gen: 0 }) === true, "legacy finish gen 0");
+assert(canFinish({ gen: 1 }, { gen: 0 }) === false, "finish after reschedule no-op");
+
+const running = { status: "running" as const, gen: 0, at: now };
+const fromRunning = rescheduleLive(running, movedAt);
+assert(fromRunning.status === "scheduled", "running reschedule becomes scheduled");
+assert(fromRunning.gen === 1, "running reschedule bumps gen");
+assert(fromRunning.at === movedAt, "running reschedule keeps user at");
+assert(fromRunning.registerCron === true, "running reschedule registers cron");
+assert(canFinish({ gen: fromRunning.gen }, { gen: 0 }) === false, "old finish no-op after running reschedule");
+assert(canClaim(fromRunning, { gen: 0 }) === false, "old cron cannot claim after running reschedule");
+assert(canClaim(fromRunning, { gen: 1 }) === true, "new cron claims after running reschedule");
 assert(isLiveStatus("scheduled") && isLiveStatus("running"), "live statuses");
 assert(!isLiveStatus("done") && !isLiveStatus("failed"), "done not live");
 assert(LIVE_STATUSES.includes("scheduled") && LIVE_STATUSES.includes("running"), "index statuses");

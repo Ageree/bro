@@ -14,12 +14,14 @@ import { assertSecret } from "./secret";
 import {
   backoffAt,
   canClaim,
+  canFinish,
   giveUp,
   isSingletonKind,
   LIVE_STATUSES,
   liveOfKind,
   nextAfterRun,
   nextGen,
+  rescheduleLive,
 } from "./lib/wakeupPolicy";
 import { hasCron, scheduleCron, unscheduleCron } from "./lib/wakeupCrons";
 
@@ -85,13 +87,14 @@ async function deliverOne(
   w: Doc<"wakeups">,
   eveUrl: string,
   secret: string,
+  gen: number,
 ): Promise<void> {
   try {
     const tenant = await ctx.runQuery(internal.tenants.getByPhoneInternal, {
       phoneE164: w.tenantPhone,
     });
     if (!tenant?.inkboxConversationId) {
-      await ctx.runMutation(internal.wakeups.finish, { id: w._id, ok: false });
+      await ctx.runMutation(internal.wakeups.finish, { id: w._id, ok: false, gen });
       return;
     }
     const res = await fetch(`${eveUrl}/internal/wakeup`, {
@@ -110,7 +113,7 @@ async function deliverOne(
       signal: AbortSignal.timeout(60_000),
     });
     if (!res.ok) {
-      await ctx.runMutation(internal.wakeups.finish, { id: w._id, ok: false });
+      await ctx.runMutation(internal.wakeups.finish, { id: w._id, ok: false, gen });
       return;
     }
     try {
@@ -124,9 +127,9 @@ async function deliverOne(
     } catch {
       // 2xx without JSON lastSeen is still success
     }
-    await ctx.runMutation(internal.wakeups.finish, { id: w._id, ok: true });
+    await ctx.runMutation(internal.wakeups.finish, { id: w._id, ok: true, gen });
   } catch {
-    await ctx.runMutation(internal.wakeups.finish, { id: w._id, ok: false });
+    await ctx.runMutation(internal.wakeups.finish, { id: w._id, ok: false, gen });
   }
 }
 
@@ -148,19 +151,18 @@ export const schedule = mutation({
     if (isSingletonKind(args.kind)) {
       const existing = liveOfKind(await liveForTenant(ctx, args.tenantPhone), args.kind);
       if (existing) {
-        const gen = nextGen(existing.gen);
+        const next = rescheduleLive(existing, args.at);
         await ctx.db.patch(existing._id, {
-          at: args.at,
+          at: next.at,
           payload: args.payload,
           recurMinutes: args.recurMinutes,
           recurDailyHour: args.recurDailyHour,
           tz: args.tz,
           attempts: 0,
-          gen,
+          gen: next.gen,
+          status: next.status,
         });
-        if (existing.status === "scheduled") {
-          await scheduleCron(ctx, existing._id, args.at, now, gen);
-        }
+        await scheduleCron(ctx, existing._id, next.at, now, next.gen);
         return existing._id;
       }
     }
@@ -276,11 +278,11 @@ export const ensureCrons = internalMutation({
 });
 
 export const finish = internalMutation({
-  args: { id: v.id("wakeups"), ok: v.boolean() },
+  args: { id: v.id("wakeups"), ok: v.boolean(), gen: v.number() },
   returns: v.null(),
-  handler: async (ctx, { id, ok }) => {
+  handler: async (ctx, { id, ok, gen: ticketGen }) => {
     const w = await ctx.db.get(id);
-    if (!w) return null;
+    if (!w || !canFinish(w, { gen: ticketGen })) return null;
     const now = Date.now();
     if (ok) {
       const next = nextAfterRun(
@@ -356,7 +358,7 @@ export const dispatchOne = internalAction({
     const secret = process.env.BRO_INTERNAL_SECRET ?? "";
     const w = await ctx.runMutation(internal.wakeups.claimOne, { id, gen });
     if (!w) return null;
-    await deliverOne(ctx, w, eveUrl, secret);
+    await deliverOne(ctx, w, eveUrl, secret, gen);
     return null;
   },
 });
@@ -372,7 +374,7 @@ export const dispatchDue = internalAction({
     const secret = process.env.BRO_INTERNAL_SECRET ?? "";
     const due = await ctx.runMutation(internal.wakeups.claimDue, {});
     for (const w of due) {
-      await deliverOne(ctx, w, eveUrl, secret);
+      await deliverOne(ctx, w, eveUrl, secret, w.gen ?? 0);
     }
     return null;
   },
