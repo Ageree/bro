@@ -30,6 +30,20 @@ assert(
   "utc",
 );
 
+// Asia/Vladivostok is UTC+10 year-round: 14:00Z is 00:00 next day.
+const vladTz = "Asia/Vladivostok";
+const vladMidnight = Date.parse("2026-08-26T14:00:00.000Z");
+assert(dayKey(vladMidnight, vladTz) === "2026-08-27", "vlad day rollover");
+assert(monthKey(vladMidnight, vladTz) === "2026-08", "vlad month");
+assert(dayKey(vladMidnight - 1, vladTz) === "2026-08-26", "vlad before rollover");
+const split = Date.parse("2026-08-26T16:00:00.000Z");
+assert(dayKey(split) === "2026-08-26", "msk still 26 at 16:00Z");
+assert(dayKey(split, vladTz) === "2026-08-27", "vlad already 27 at 16:00Z");
+const vladNewYear = Date.parse("2025-12-31T14:00:00.000Z");
+assert(dayKey(vladNewYear, vladTz) === "2026-01-01", "vlad year");
+assert(monthKey(vladNewYear, vladTz) === "2026-01", "vlad month year");
+assert(dayKey(vladNewYear - 1, vladTz) === "2025-12-31", "vlad before year");
+
 const now = Date.parse("2026-08-27T12:00:00.000Z");
 assert(!isPaid(undefined, now), "unpaid");
 assert(!isPaid(now, now), "not future");
