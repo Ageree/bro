@@ -61,4 +61,29 @@ assert(
   modelPayloadHasPan({ hint: "use 4111111111111111" }, "4111111111111111"),
   "leak",
 );
+
+const pan = "4111111111111111";
+const cvc = "123";
+const buInject = `buy tape on ozon\n\nPAYMENT CARD (fill on checkout, do not speak these digits, do not solve 3DS):\nPAN=${pan} EXP=12/2027 CVC=${cvc}\nIf a 3DS/Mir Accept form asks for an SMS code, wait; the human will send the code in iMessage and a later browser_task will type it.`;
+const browserPayload = {
+  status: "completed",
+  runId: "run_1",
+  sessionId: "sess_1",
+  liveUrl: "https://live.example/view",
+  result: "order paid",
+  hint: "Send these results to the human now. Do not start another search.",
+  started: true,
+  alreadyNotified: true,
+  card: "1111",
+};
+assert(!modelPayloadHasPan(browserPayload, pan), "browser payload last4 only");
+assert(
+  !JSON.stringify(browserPayload).includes(cvc) &&
+    !JSON.stringify(browserPayload).includes("PAN="),
+  "browser payload no cvc/inject",
+);
+assert(
+  modelPayloadHasPan({ ...browserPayload, result: buInject }, pan),
+  "browser payload illegal if pan injected into json",
+);
 console.log("card-policy-check ok");

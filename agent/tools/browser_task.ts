@@ -1,5 +1,6 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
+import { cardForBrowser } from "../lib/card";
 import { setBrowser, upsertTenant } from "../lib/convex";
 import { nextBrowserAction } from "../lib/browser-policy";
 import { hydrate, startRun, waitForRun, type BrowserRun } from "../lib/browseruse";
@@ -77,10 +78,15 @@ export default defineTool({
       return payload(run, { polled: true });
     }
 
+    const pay = await cardForBrowser(phone);
+    const buTask = pay
+      ? `${task}\n\nPAYMENT CARD (fill on checkout, do not speak these digits, do not solve 3DS):\nPAN=${pay.pan} EXP=${String(pay.expMonth).padStart(2, "0")}/${pay.expYear} CVC=${pay.cvc}\nIf a 3DS/Mir Accept form asks for an SMS code, wait; the human will send the code in iMessage and a later browser_task will type it.`
+      : task;
     const started = await startRun(
-      task,
+      buTask,
       reset ? undefined : tenant.browserSessionId,
     );
+    // persist the model task, not buTask (PAN)
     await persist(phone, started, task);
     if (conv) {
       try {
@@ -95,6 +101,11 @@ export default defineTool({
     }
     const done = await waitForRun(started.runId, started.sessionId, WAIT_MS);
     await persist(phone, done, task);
-    return payload(done, { started: true, alreadyNotified: Boolean(conv) });
+    const out = payload(done, {
+      started: true,
+      alreadyNotified: Boolean(conv),
+      card: pay ? pay.last4 : null,
+    });
+    return out;
   },
 });

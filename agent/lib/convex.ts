@@ -197,3 +197,31 @@ export async function touchJobMail(
     ...extra,
   });
 }
+
+export async function mintCardLink(phoneE164: string) {
+  return await client().mutation(api.cards.mintLink, {
+    secret: secret(),
+    phoneE164,
+  });
+}
+
+export async function cardLast4(phoneE164: string) {
+  return await client().query(api.cards.last4, {
+    secret: secret(),
+    phoneE164,
+  });
+}
+
+export async function forgetCard(phoneE164: string) {
+  await client().mutation(api.cards.forget, {
+    secret: secret(),
+    phoneE164,
+  });
+}
+
+export async function cardBlobForPay(phoneE164: string) {
+  return await client().query(api.cards.blobForPay, {
+    secret: secret(),
+    phoneE164,
+  });
+}
