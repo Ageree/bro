@@ -150,8 +150,8 @@ export default defineChannel({
       }
       if (gate.decision === "paywall") {
         const line = gate.payUrl
-          ? `Лимит на сегодня исчерпан 🙈 Полный доступ — 990 ₽/мес: ${gate.payUrl}`
-          : "Лимит на сегодня исчерпан 🙈 Полный доступ — 990 ₽/мес: напиши @оператору";
+          ? `Лимит на сегодня исчерпан 🙈 Полный доступ — 2000 ₽/мес: ${gate.payUrl}`
+          : "Лимит на сегодня исчерпан 🙈 Полный доступ — 2000 ₽/мес: напиши @оператору";
         try {
           await sendBlueIMessage({
             conversationId: msg.conversation_id,

@@ -19,8 +19,8 @@ function basic(shopId: string, secret: string): string {
 }
 
 function priceRub(): number {
-  const n = Number(process.env.BRO_PRICE_RUB ?? 990);
-  return Number.isFinite(n) && n > 0 ? Math.round(n) : 990;
+  const n = Number(process.env.BRO_PRICE_RUB ?? 2000);
+  return Number.isFinite(n) && n > 0 ? Math.round(n) : 2000;
 }
 
 export const applyPayment = internalMutation({
