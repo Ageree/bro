@@ -55,3 +55,12 @@ chmod 600 "$ENV_FILE"
 
 count="$(grep -c '=' "$ENV_FILE" || true)"
 echo "setup-env: wrote $ENV_FILE ($count variables present)"
+
+# Diagnostic: the model + Convex keys are the minimum for live agent turns.
+# If they are missing, the panel Secrets were not injected into this VM — a real
+# Cloud Agent (not a Task subagent / draft build) started after the secrets were
+# saved to THIS environment should receive them.
+if [ -z "${OPENROUTER_API_KEY:-}" ] || [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
+  echo "setup-env: WARNING — OPENROUTER_API_KEY and/or CONVEX_DEPLOY_KEY not injected." >&2
+  echo "setup-env: live agent turns need them. Check the Secrets panel (scope: Environment)." >&2
+fi
