@@ -32,23 +32,38 @@ export function monthKey(now: number, tz = DEFAULT_TZ): string {
   return `${p.year}-${p.month}`;
 }
 
-/** Re-key usage under a new tz without lowering already-spent counts. */
+/** Re-key live usage windows under nextTz. Stale keys start the new period at 0. */
 export function carryCountersOnTzChange(opts: {
   now: number;
-  tz: string;
+  prevTz: string;
+  nextTz: string;
+  msgsDayKey?: string;
   msgsDayCount?: number;
+  browserMonthKey?: string;
   browserMonthCount?: number;
+  paywallSentDayKey?: string;
 }): {
   msgsDayKey: string;
   msgsDayCount: number;
   browserMonthKey: string;
   browserMonthCount: number;
+  paywallSentDayKey?: string;
 } {
+  const prevDay = dayKey(opts.now, opts.prevTz);
+  const prevMonth = monthKey(opts.now, opts.prevTz);
+  const nextDay = dayKey(opts.now, opts.nextTz);
+  const nextMonth = monthKey(opts.now, opts.nextTz);
+  const liveDay = opts.msgsDayKey === prevDay;
+  const liveMonth = opts.browserMonthKey === prevMonth;
   return {
-    msgsDayKey: dayKey(opts.now, opts.tz),
-    msgsDayCount: opts.msgsDayCount ?? 0,
-    browserMonthKey: monthKey(opts.now, opts.tz),
-    browserMonthCount: opts.browserMonthCount ?? 0,
+    msgsDayKey: nextDay,
+    msgsDayCount: liveDay ? (opts.msgsDayCount ?? 0) : 0,
+    browserMonthKey: nextMonth,
+    browserMonthCount: liveMonth ? (opts.browserMonthCount ?? 0) : 0,
+    paywallSentDayKey:
+      opts.paywallSentDayKey === prevDay
+        ? nextDay
+        : opts.paywallSentDayKey,
   };
 }
 

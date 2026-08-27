@@ -97,36 +97,64 @@ assert(
   "next day paywall",
 );
 
-// Changing tz re-keys usage windows but must not reset spent counts.
+const msk = "Europe/Moscow";
 const tzFlip = Date.parse("2026-08-26T16:00:00.000Z");
-const fromMsk = carryCountersOnTzChange({
+
+// (b) live windows in prevTz move to nextTz keys; spent counts stay.
+const live = carryCountersOnTzChange({
   now: tzFlip,
-  tz: vladTz,
+  prevTz: msk,
+  nextTz: vladTz,
+  msgsDayKey: "2026-08-26",
   msgsDayCount: 30,
+  browserMonthKey: "2026-08",
   browserMonthCount: 5,
+  paywallSentDayKey: "2026-08-26",
 });
-assert(fromMsk.msgsDayKey === "2026-08-27", "carry day key follows new tz");
-assert(fromMsk.msgsDayCount === 30, "carry keeps msgs spent");
-assert(fromMsk.browserMonthKey === "2026-08", "carry month still august");
-assert(fromMsk.browserMonthCount === 5, "carry keeps browser spent");
-assert(
-  carryCountersOnTzChange({ now: tzFlip, tz: "Europe/Moscow", msgsDayCount: 30 })
-    .msgsDayKey === "2026-08-26",
-  "carry msk day stays 26 at 16:00Z",
-);
-const monthFlip = Date.parse("2026-08-31T16:00:00.000Z");
+assert(live.msgsDayKey === "2026-08-27", "live day key follows next tz");
+assert(live.msgsDayCount === 30, "live msgs count carries");
+assert(live.browserMonthKey === "2026-08", "live month still august");
+assert(live.browserMonthCount === 5, "live browser count carries");
+assert(live.paywallSentDayKey === "2026-08-27", "live paywall rematch same local day");
+
+// (a) stale month (and day) in prevTz start the new period at zero.
+const sept = Date.parse("2026-09-02T12:00:00.000Z");
+const stale = carryCountersOnTzChange({
+  now: sept,
+  prevTz: msk,
+  nextTz: vladTz,
+  msgsDayKey: "2026-08-26",
+  msgsDayCount: 30,
+  browserMonthKey: "2026-08",
+  browserMonthCount: 5,
+  paywallSentDayKey: "2026-08-26",
+});
+assert(stale.browserMonthKey === "2026-09", "stale month key is now");
+assert(stale.browserMonthCount === 0, "stale month count does not carry");
+assert(stale.msgsDayKey === "2026-09-02", "stale day key is now");
+assert(stale.msgsDayCount === 0, "stale day count does not carry");
+assert(stale.paywallSentDayKey === "2026-08-26", "stale paywall does not resurrect");
+
+const monthEdge = Date.parse("2026-08-31T16:00:00.000Z");
 const acrossMonth = carryCountersOnTzChange({
-  now: monthFlip,
-  tz: vladTz,
+  now: monthEdge,
+  prevTz: msk,
+  nextTz: vladTz,
+  msgsDayKey: "2026-08-31",
   msgsDayCount: 12,
+  browserMonthKey: "2026-08",
   browserMonthCount: 5,
 });
-assert(acrossMonth.browserMonthKey === "2026-09", "carry month key follows new tz");
-assert(acrossMonth.browserMonthCount === 5, "carry does not reset at month edge");
-assert(acrossMonth.msgsDayCount === 12, "carry keeps msgs at month edge");
+assert(acrossMonth.browserMonthKey === "2026-09", "live month re-keys at edge");
+assert(acrossMonth.browserMonthCount === 5, "live month count carries at edge");
+assert(acrossMonth.msgsDayCount === 12, "live day count carries at edge");
 assert(
-  carryCountersOnTzChange({ now: tzFlip, tz: vladTz }).msgsDayCount === 0,
-  "carry missing count is zero not undefined",
+  carryCountersOnTzChange({
+    now: tzFlip,
+    prevTz: msk,
+    nextTz: vladTz,
+  }).msgsDayCount === 0,
+  "missing live key starts at zero",
 );
 
 console.log("billing-check ok");

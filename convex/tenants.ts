@@ -182,9 +182,13 @@ export const setTimezone = mutation({
     const now = Date.now();
     const carry = carryCountersOnTzChange({
       now,
-      tz,
+      prevTz,
+      nextTz: tz,
+      msgsDayKey: tenant.msgsDayKey,
       msgsDayCount: tenant.msgsDayCount,
+      browserMonthKey: tenant.browserMonthKey,
       browserMonthCount: tenant.browserMonthCount,
+      paywallSentDayKey: tenant.paywallSentDayKey,
     });
     await ctx.db.patch(tenant._id, { tz, ...carry });
     return null;
