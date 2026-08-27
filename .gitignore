@@ -10,3 +10,4 @@ data/optmem/*
 .output/
 .vercel
 public/
+.env*
