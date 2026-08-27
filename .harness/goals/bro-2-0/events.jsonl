@@ -4,3 +4,5 @@
 {"ts":"2026-08-26T22:50:04Z","turn":3,"type":"packet_done","packet":"P3 brief+watchers+instructions","verdict":"verified+committed"}
 {"ts":"2026-08-26T22:53:53Z","turn":4,"type":"rebase","detail":"branch rebased onto main 422aafd (mailbox/jobs feature); convex push had briefly deleted by_email+jobs.by_tenant indexes — restored within ~3min by re-push after rebase; merged tree: eve build 0 errors, 7 checks green"}
 {"ts":"2026-08-27T00:14:17Z","turn":5,"type":"note","detail":"temp DBG console.log in message.completed for local e2e debug only; MUST be removed before commit (also flagged by security review)"}
+{"ts":"2026-08-27T00:30:31Z","turn":6,"type":"packet_done","packet":"P6 billing YooKassa + limits","verdict":"verified+committed (boundary off-by-one fixed by lead)"}
+{"ts":"2026-08-27T03:35:00+03:00","turn":"lead","event":"fix","note":"SessionInboxWireError: undefined inkboxHandle in auth.attributes rejected by eve wire v1; /internal/wakeup now omits the key; server restarted with P6 build; wakeup jn72tbap scheduled"}

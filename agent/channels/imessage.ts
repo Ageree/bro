@@ -270,7 +270,10 @@ export default defineChannel({
           issuer: "inkbox",
           principalType: "user",
           principalId: tenantPhone,
-          attributes: { conversationId, inkboxHandle },
+          // ponytail: wire v1 не терпит undefined в attributes — ключ опускаем
+          attributes: inkboxHandle
+            ? { conversationId, inkboxHandle }
+            : { conversationId },
         },
       });
       return Response.json({ ok: true });
