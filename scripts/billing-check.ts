@@ -1,5 +1,6 @@
 import {
   browserAllowance,
+  carryCountersOnTzChange,
   dayKey,
   extendPaidUntil,
   isPaid,
@@ -94,6 +95,38 @@ assert(
     dayKey: "d2",
   }) === "paywall",
   "next day paywall",
+);
+
+// Changing tz re-keys usage windows but must not reset spent counts.
+const tzFlip = Date.parse("2026-08-26T16:00:00.000Z");
+const fromMsk = carryCountersOnTzChange({
+  now: tzFlip,
+  tz: vladTz,
+  msgsDayCount: 30,
+  browserMonthCount: 5,
+});
+assert(fromMsk.msgsDayKey === "2026-08-27", "carry day key follows new tz");
+assert(fromMsk.msgsDayCount === 30, "carry keeps msgs spent");
+assert(fromMsk.browserMonthKey === "2026-08", "carry month still august");
+assert(fromMsk.browserMonthCount === 5, "carry keeps browser spent");
+assert(
+  carryCountersOnTzChange({ now: tzFlip, tz: "Europe/Moscow", msgsDayCount: 30 })
+    .msgsDayKey === "2026-08-26",
+  "carry msk day stays 26 at 16:00Z",
+);
+const monthFlip = Date.parse("2026-08-31T16:00:00.000Z");
+const acrossMonth = carryCountersOnTzChange({
+  now: monthFlip,
+  tz: vladTz,
+  msgsDayCount: 12,
+  browserMonthCount: 5,
+});
+assert(acrossMonth.browserMonthKey === "2026-09", "carry month key follows new tz");
+assert(acrossMonth.browserMonthCount === 5, "carry does not reset at month edge");
+assert(acrossMonth.msgsDayCount === 12, "carry keeps msgs at month edge");
+assert(
+  carryCountersOnTzChange({ now: tzFlip, tz: vladTz }).msgsDayCount === 0,
+  "carry missing count is zero not undefined",
 );
 
 console.log("billing-check ok");

@@ -9,7 +9,9 @@ import {
 import { assertSecret } from "./secret";
 import {
   browserAllowance,
+  carryCountersOnTzChange,
   dayKey,
+  DEFAULT_TZ,
   isPaid,
   monthKey,
   msgAllowance,
@@ -172,7 +174,19 @@ export const setTimezone = mutation({
       throw new Error("invalid timezone");
     }
     const tenant = await tenantByPhone(ctx, phoneE164);
-    await ctx.db.patch(tenant._id, { tz });
+    const prevTz = tenant.tz ?? DEFAULT_TZ;
+    if (prevTz === tz) {
+      await ctx.db.patch(tenant._id, { tz });
+      return null;
+    }
+    const now = Date.now();
+    const carry = carryCountersOnTzChange({
+      now,
+      tz,
+      msgsDayCount: tenant.msgsDayCount,
+      browserMonthCount: tenant.browserMonthCount,
+    });
+    await ctx.db.patch(tenant._id, { tz, ...carry });
     return null;
   },
 });
