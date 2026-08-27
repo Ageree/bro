@@ -1,4 +1,5 @@
 {
   "name": "Bro (eve + Convex iMessage concierge)",
-  "install": "bash .cursor/install.sh"
+  "install": "bash .cursor/install.sh",
+  "start": "bash .cursor/setup-env.sh"
 }
