@@ -1,5 +1,30 @@
 const BASE = "https://api.browser-use.com/api/v4";
 
+/** ISO 3166-1 alpha-2 from BROWSERUSE_PROXY_COUNTRY. Unset → undefined (API default US). */
+export function proxyCountryCode(
+  raw: string | undefined = process.env.BROWSERUSE_PROXY_COUNTRY,
+): string | undefined {
+  const c = raw?.trim().toLowerCase();
+  if (!c) return undefined;
+  return /^[a-z]{2}$/.test(c) ? c : undefined;
+}
+
+/**
+ * Browser Use API v4 create-run proxy country.
+ * https://docs.browser-use.com/cloud/browser/proxies
+ * Field: browserSettings.proxyCountryCode (REST/SDK camelCase).
+ */
+export function applyProxyCountry(
+  body: Record<string, unknown>,
+  country: string | undefined = proxyCountryCode(),
+): Record<string, unknown> {
+  if (!country) return body;
+  return {
+    ...body,
+    browserSettings: { proxyCountryCode: country },
+  };
+}
+
 function key(): string {
   const k = process.env.BROWSER_USE_API_KEY;
   if (!k) throw new Error("BROWSER_USE_API_KEY missing");
@@ -52,7 +77,7 @@ export async function startRun(
   task: string,
   sessionId?: string,
 ): Promise<BrowserRun> {
-  const body: Record<string, unknown> = { task };
+  const body: Record<string, unknown> = applyProxyCountry({ task });
   // Cloud JSON accepts both; send both so a session is reused.
   if (sessionId) {
     body.sessionId = sessionId;

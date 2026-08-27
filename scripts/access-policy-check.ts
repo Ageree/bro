@@ -1,4 +1,6 @@
 import {
+  DEFAULT_IDENTITY_CAP,
+  identityCap,
   identityCapReached,
   inboundPhoneAction,
   isIosUserAgent,
@@ -6,6 +8,7 @@ import {
   makeHandle,
   webhookUrlForHandle,
 } from "../convex/lib/accessPolicy.ts";
+import { assertSecret, timingSafeEqual } from "../convex/secret.ts";
 
 function assert(cond: unknown, msg: string): void {
   if (!cond) throw new Error(msg);
@@ -34,9 +37,53 @@ assert(inboundPhoneAction(undefined, "+79001112233") === "bind", "first phone");
 assert(inboundPhoneAction("+79001112233", "+79001112233") === "ok", "same phone");
 assert(inboundPhoneAction("+79001112233", "+79009999999") === "reject", "other phone");
 
-assert(!identityCapReached(9, 10), "under cap");
-assert(identityCapReached(10, 10), "at cap");
-assert(identityCapReached(11, 10), "over cap");
+assert(DEFAULT_IDENTITY_CAP === 100, "default cap 100");
+assert(identityCap(undefined) === 100, "env unset → 100");
+assert(identityCap("250") === 250, "env override");
+assert(identityCap("nope") === 100, "env garbage → 100");
+assert(identityCap("0") === 100, "env zero → 100");
+assert(!identityCapReached(99, DEFAULT_IDENTITY_CAP), "under default cap");
+assert(identityCapReached(100, DEFAULT_IDENTITY_CAP), "at default cap");
+assert(identityCapReached(101, DEFAULT_IDENTITY_CAP), "over default cap");
+assert(!identityCapReached(9, 10), "under explicit 10");
+assert(identityCapReached(10, 10), "at explicit 10");
+
+assert(timingSafeEqual("abc", "abc"), "xor equal");
+assert(!timingSafeEqual("abc", "abd"), "xor diff char");
+assert(!timingSafeEqual("abc", "ab"), "xor diff len");
+assert(!timingSafeEqual("", "x"), "xor empty vs x");
+
+const prevSecret = process.env.BRO_INTERNAL_SECRET;
+try {
+  delete process.env.BRO_INTERNAL_SECRET;
+  let threw = false;
+  try {
+    assertSecret("");
+  } catch {
+    threw = true;
+  }
+  assert(threw, "unset env secret rejects");
+  process.env.BRO_INTERNAL_SECRET = "";
+  threw = false;
+  try {
+    assertSecret("");
+  } catch {
+    threw = true;
+  }
+  assert(threw, "empty env secret rejects");
+  process.env.BRO_INTERNAL_SECRET = "s3cret";
+  assertSecret("s3cret");
+  threw = false;
+  try {
+    assertSecret("s3creT");
+  } catch {
+    threw = true;
+  }
+  assert(threw, "mismatch secret rejects");
+} finally {
+  if (prevSecret === undefined) delete process.env.BRO_INTERNAL_SECRET;
+  else process.env.BRO_INTERNAL_SECRET = prevSecret;
+}
 
 assert(
   webhookUrlForHandle("https://app.example/webhooks/imessage", "bro-a1b2c3d4") ===

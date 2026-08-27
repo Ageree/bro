@@ -3,6 +3,10 @@ import {
   normalizeTask,
   pollTimedOut,
 } from "../agent/lib/browser-policy.ts";
+import {
+  applyProxyCountry,
+  proxyCountryCode,
+} from "../agent/lib/browseruse.ts";
 
 function assert(cond: unknown, msg: string): void {
   if (!cond) throw new Error(msg);
@@ -79,5 +83,21 @@ assert(pollTimedOut(t0, t0 + 10 * 60_000) === false, "poll not expired");
 assert(pollTimedOut(t0, t0 + 20 * 60_000) === false, "poll exactly 20min");
 assert(pollTimedOut(t0, t0 + 20 * 60_000 + 1) === true, "poll expired");
 assert(pollTimedOut(undefined, t0) === false, "poll missing start");
+
+assert(proxyCountryCode(undefined) === undefined, "proxy unset");
+assert(proxyCountryCode("") === undefined, "proxy empty");
+assert(proxyCountryCode("  ") === undefined, "proxy blank");
+assert(proxyCountryCode("ru") === "ru", "proxy ru");
+assert(proxyCountryCode("RU") === "ru", "proxy RU");
+assert(proxyCountryCode(" rus") === undefined, "proxy not alpha-2");
+assert(
+  !("browserSettings" in applyProxyCountry({ task: "x" }, undefined)),
+  "no proxy field when unset",
+);
+assert(
+  JSON.stringify(applyProxyCountry({ task: "x" }, "ru").browserSettings) ===
+    JSON.stringify({ proxyCountryCode: "ru" }),
+  "proxyCountryCode in browserSettings",
+);
 
 console.log("browser-policy-check ok");
