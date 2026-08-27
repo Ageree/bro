@@ -8,7 +8,7 @@ Outbound replies are compiled to iMessage text: markdown is stripped, `**latin**
 
 - Node 24 (`nvm use`)
 - Python 3 (OptMem `vendor/optmem/memo`)
-- Inkbox API key, OpenRouter (`z-ai/glm-5.3-flash`, override with `BRO_MODEL`) or Vercel AI Gateway
+- Inkbox API key, OpenRouter (`z-ai/glm-5.3-flash`, override with `BRO_MODEL` / `BRO_MODEL_CONTEXT_TOKENS`) or Vercel AI Gateway
 
 ## Run
 
