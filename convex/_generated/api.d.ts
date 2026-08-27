@@ -9,9 +9,11 @@
  */
 
 import type * as access from "../access.js";
+import type * as cards from "../cards.js";
 import type * as http from "../http.js";
 import type * as jobs from "../jobs.js";
 import type * as lib_accessPolicy from "../lib/accessPolicy.js";
+import type * as lib_cardPolicy from "../lib/cardPolicy.js";
 import type * as lib_mailPolicy from "../lib/mailPolicy.js";
 import type * as memories from "../memories.js";
 import type * as orders from "../orders.js";
@@ -26,9 +28,11 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   access: typeof access;
+  cards: typeof cards;
   http: typeof http;
   jobs: typeof jobs;
   "lib/accessPolicy": typeof lib_accessPolicy;
+  "lib/cardPolicy": typeof lib_cardPolicy;
   "lib/mailPolicy": typeof lib_mailPolicy;
   memories: typeof memories;
   orders: typeof orders;

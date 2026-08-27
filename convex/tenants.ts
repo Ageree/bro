@@ -18,6 +18,12 @@ export const tenantDoc = v.object({
   browserRunId: v.optional(v.string()),
   browserTask: v.optional(v.string()),
   browserStatus: v.optional(v.string()),
+  cardLast4: v.optional(v.string()),
+  cardBrand: v.optional(v.union(v.literal("mir"), v.literal("visa"), v.literal("mc"))),
+  cardExpMonth: v.optional(v.number()),
+  cardExpYear: v.optional(v.number()),
+  cardBlob: v.optional(v.string()),
+  cardStatus: v.optional(v.union(v.literal("active"), v.literal("removed"))),
 });
 
 export const getByPhone = query({

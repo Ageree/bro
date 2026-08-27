@@ -16,11 +16,24 @@ export default defineSchema({
     browserRunId: v.optional(v.string()),
     browserTask: v.optional(v.string()),
     browserStatus: v.optional(v.string()),
+    cardLast4: v.optional(v.string()),
+    cardBrand: v.optional(v.union(v.literal("mir"), v.literal("visa"), v.literal("mc"))),
+    cardExpMonth: v.optional(v.number()),
+    cardExpYear: v.optional(v.number()),
+    cardBlob: v.optional(v.string()),
+    cardStatus: v.optional(v.union(v.literal("active"), v.literal("removed"))),
   })
     .index("by_phone", ["phoneE164"])
     .index("by_handle", ["inkboxHandle"])
     .index("by_conversation", ["inkboxConversationId"])
     .index("by_email", ["emailAddress"]),
+
+  cardLinks: defineTable({
+    tenantId: v.id("tenants"),
+    token: v.string(),
+    expiresAt: v.number(),
+    used: v.boolean(),
+  }).index("by_token", ["token"]),
 
   jobs: defineTable({
     tenantId: v.id("tenants"),
