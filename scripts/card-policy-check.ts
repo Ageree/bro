@@ -7,14 +7,16 @@ import {
   digitsOnly,
   encryptCard,
   expiryOk,
+  isCardKey,
   linkFresh,
   luhnOk,
   makeCardToken,
   modelPayloadHasPan,
   parseCardInput,
+  scrubPayFromResult,
   splitCardPlain,
 } from "../convex/lib/cardPolicy.ts";
-import { redactBrowserError } from "../agent/lib/browseruse.ts";
+import { redactBrowserError, redactCardTokens } from "../agent/lib/browseruse.ts";
 
 function assert(cond: unknown, msg: string): void {
   if (!cond) throw new Error(msg);
@@ -94,4 +96,46 @@ const redacted = redactBrowserError(buErr);
 assert(!modelPayloadHasPan({ error: redacted }, pan), "redacted bu error no pan");
 assert(!redacted.includes(cvc), "redacted bu error no cvc");
 assert(redacted.includes("PAN=REDACTED") && redacted.includes("CVC=REDACTED"), "redact tokens");
+assert(redacted.includes("EXP=REDACTED"), "redact exp token");
+
+const orderId = "481516234210999";
+const hydrateEcho = `paid PAN=${pan} EXP=12/2027 CVC=${cvc} order ${orderId}`;
+const hydrated = redactCardTokens(hydrateEcho);
+assert(hydrated.includes(orderId), "hydrate tokens keep order id");
+assert(!hydrated.includes(pan) && !hydrated.includes(`CVC=${cvc}`), "hydrate tokens strip pan/cvc");
+assert(hydrated.includes("EXP=REDACTED") && hydrated.includes("PAN=REDACTED"), "hydrate tokens");
+assert(redactBrowserError(orderId).includes("[pan]"), "error path still masks 13-19");
+
+const scrubbed = scrubPayFromResult(`paid ${pan} cvc ${cvc} order ${orderId}`, pan, cvc);
+assert(scrubbed !== null && !scrubbed.includes(pan), "start path strips pan");
+assert(scrubbed.includes(orderId), "start path keeps order id");
+assert(
+  !modelPayloadHasPan({ ...browserPayload, result: scrubbed }, pan),
+  "scrubbed payload no pan",
+);
+assert(
+  scrubPayFromResult(`paid ${pan} leftover ${pan}`, pan, cvc) === "paid [pan] leftover [pan]",
+  "strip all pan copies",
+);
+
+assert(isCardKey(key), "64 hex key");
+assert(isCardKey("AB".repeat(32)), "uppercase hex key");
+assert(!isCardKey(""), "empty key");
+assert(!isCardKey("11".repeat(31)), "short key");
+assert(!isCardKey("z".repeat(64)), "non-hex 64");
+assert(!isCardKey("11".repeat(32) + "aa"), "long key");
+let nonHexThrew = false;
+try {
+  await encryptCard(cardPlain(pan, cvc), "z".repeat(64));
+} catch {
+  nonHexThrew = true;
+}
+assert(nonHexThrew, "encrypt rejects non-hex key");
+let shortThrew = false;
+try {
+  await encryptCard(cardPlain(pan, cvc), "11".repeat(16));
+} catch {
+  shortThrew = true;
+}
+assert(shortThrew, "encrypt rejects short key");
 console.log("card-policy-check ok");

@@ -98,10 +98,16 @@ export function splitCardPlain(s: string): { pan: string; cvc: string } {
   return { pan: s.slice(0, i), cvc: s.slice(i + 1) };
 }
 
+const CARD_KEY_HEX = /^[0-9a-f]{64}$/i;
+
+export function isCardKey(hex: string): boolean {
+  return CARD_KEY_HEX.test(hex);
+}
+
 function hexToBytes(hex: string): Uint8Array {
-  if (hex.length % 2 !== 0) throw new Error("hex length");
-  const out = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < out.length; i++) {
+  if (!isCardKey(hex)) throw new Error("hex");
+  const out = new Uint8Array(32);
+  for (let i = 0; i < 32; i++) {
     out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
   }
   return out;
@@ -158,4 +164,17 @@ export function modelPayloadHasPan(payload: unknown, pan: string): boolean {
   const dig = digitsOnly(pan);
   if (!dig) return false;
   return JSON.stringify(payload).includes(dig);
+}
+
+/** Strip known PAN/CVC from a hydrate result. Drop it if the PAN is still present. */
+export function scrubPayFromResult(
+  result: string | null | undefined,
+  pan: string,
+  cvc: string,
+): string | null {
+  if (result == null) return null;
+  let s = result;
+  if (pan) s = s.replaceAll(pan, "[pan]");
+  if (cvc) s = s.replaceAll(cvc, "[cvc]");
+  return modelPayloadHasPan(s, pan) ? null : s;
 }

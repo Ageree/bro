@@ -1,6 +1,7 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
-import { looksLike3dsFollowUp, nextBrowserAction } from "../lib/browser-policy";
+import { modelPayloadHasPan, scrubPayFromResult } from "../../convex/lib/cardPolicy.ts";
+import { looksLike3dsFollowUp, nextBrowserAction, taskToStore } from "../lib/browser-policy";
 import { cardForBrowser } from "../lib/card";
 import { setBrowser, upsertTenant } from "../lib/convex";
 import { hydrate, startRun, waitForRun, type BrowserRun } from "../lib/browseruse";
@@ -28,19 +29,27 @@ async function persist(phone: string, run: BrowserRun, task: string): Promise<vo
   });
 }
 
-function payload(run: BrowserRun, extra?: Record<string, unknown>) {
-  return {
+function payload(
+  run: BrowserRun,
+  extra?: Record<string, unknown>,
+  pay?: { pan: string; cvc: string } | null,
+) {
+  let result: string | null = run.result ?? null;
+  if (pay) result = scrubPayFromResult(result, pay.pan, pay.cvc);
+  const out = {
     status: run.status,
     runId: run.runId,
     sessionId: run.sessionId,
     liveUrl: run.liveUrl,
-    result: run.result ?? null,
+    result,
     hint:
       run.status.toLowerCase() === "completed"
         ? "Send these results to the human now. Do not start another search."
         : "Still running. Tell the human you're looking and wait for them — the next browser_task will poll this job, not start a new one.",
     ...extra,
   };
+  if (pay && modelPayloadHasPan(out, pay.pan)) return { ...out, result: null };
+  return out;
 }
 
 export default defineTool({
@@ -79,6 +88,7 @@ export default defineTool({
     }
 
     const otpFollowUp = looksLike3dsFollowUp(task, tenant.browserTask);
+    const persistTask = taskToStore(task, tenant.browserTask);
     const pay = otpFollowUp ? null : await cardForBrowser(phone);
     const buTask = pay
       ? `${task}\n\nPAYMENT CARD (fill on checkout, do not speak these digits, do not solve 3DS):\nPAN=${pay.pan} EXP=${String(pay.expMonth).padStart(2, "0")}/${pay.expYear} CVC=${pay.cvc}\nIf a 3DS/Mir Accept form asks for an SMS code, wait; the human will send the code in iMessage and a later browser_task will type it.`
@@ -87,9 +97,9 @@ export default defineTool({
       buTask,
       reset ? undefined : tenant.browserSessionId,
     );
-    // persist the model task, not buTask (PAN)
-    await persist(phone, started, task);
-    if (conv) {
+    // persist the shop task, not buTask (PAN) and not the OTP phrase
+    await persist(phone, started, persistTask);
+    if (conv && !otpFollowUp) {
       try {
         await sendBlueIMessage({
           conversationId: conv,
@@ -101,12 +111,15 @@ export default defineTool({
       }
     }
     const done = await waitForRun(started.runId, started.sessionId, WAIT_MS);
-    await persist(phone, done, task);
-    const out = payload(done, {
-      started: true,
-      alreadyNotified: Boolean(conv),
-      card: pay ? pay.last4 : null,
-    });
-    return out;
+    await persist(phone, done, persistTask);
+    return payload(
+      done,
+      {
+        started: true,
+        alreadyNotified: Boolean(conv) && !otpFollowUp,
+        card: pay ? pay.last4 : null,
+      },
+      pay,
+    );
   },
 });

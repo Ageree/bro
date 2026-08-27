@@ -1,6 +1,6 @@
 import { v } from "convex/values";
 import { internalMutation, mutation, query } from "./_generated/server";
-import { cardLinkUrl, linkFresh, makeCardToken } from "./lib/cardPolicy";
+import { cardLinkUrl, isCardKey, linkFresh, makeCardToken } from "./lib/cardPolicy";
 import { assertSecret } from "./secret";
 
 const LINK_TTL_MS = 15 * 60 * 1000;
@@ -12,6 +12,9 @@ export const mintLink = mutation({
   returns: v.object({ url: v.string(), expiresAt: v.number() }),
   handler: async (ctx, { secret, phoneE164 }) => {
     assertSecret(secret);
+    if (!isCardKey(process.env.BRO_CARD_KEY ?? "")) {
+      throw new Error("BRO_CARD_KEY missing");
+    }
     const origin = process.env.BRO_PUBLIC_ORIGIN?.replace(/\/+$/, "");
     if (!origin) throw new Error("BRO_PUBLIC_ORIGIN is not set");
     const tenant = await ctx.db

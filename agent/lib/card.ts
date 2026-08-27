@@ -1,9 +1,9 @@
-import { decryptCard, splitCardPlain } from "../../convex/lib/cardPolicy.ts";
+import { decryptCard, isCardKey, splitCardPlain } from "../../convex/lib/cardPolicy.ts";
 import * as convex from "./convex";
 
 function cardKey(): string {
-  const k = process.env.BRO_CARD_KEY;
-  if (!k || k.length !== 64) throw new Error("BRO_CARD_KEY missing");
+  const k = process.env.BRO_CARD_KEY ?? "";
+  if (!isCardKey(k)) throw new Error("BRO_CARD_KEY missing");
   return k;
 }
 

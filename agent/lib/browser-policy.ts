@@ -50,6 +50,12 @@ export function looksLike3dsFollowUp(
   return OTP_ONLY.test(t);
 }
 
+/** Persist the shop task across a 3DS OTP start so later pings still poll the order. */
+export function taskToStore(incoming: string, stored?: string | null): string {
+  if (looksLike3dsFollowUp(incoming, stored) && stored) return stored;
+  return incoming;
+}
+
 /** One in-flight cloud job per person. Pings must poll, not spawn a twin search. */
 export function nextBrowserAction(opts: {
   reset?: boolean;

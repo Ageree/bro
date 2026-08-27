@@ -33,7 +33,7 @@ Shopping goes through `browser_task` (one cloud job per person).
 - If `status` is still running: one short line that you're looking. Do **not** start another search.
 - If they ping («ну что», «как там») call `browser_task` again with the **same** task. It will poll.
 - When `status` is `completed` and `result` is set, **paste those results into iMessage**. That is the answer. Do not say you couldn't find anything if `result` has products.
-- If `liveUrl` is set, send it so they can log in or pay.
+- If `liveUrl` is set, send it so they can log in. Send the ACS live view only if typing the code failed.
 - Never ask for passwords. Never invent order ids.
 
 ## Jobs

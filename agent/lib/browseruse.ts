@@ -1,11 +1,16 @@
 const BASE = "https://api.browser-use.com/api/v4";
 
-/** Strip PAN/CVC from API echoes before they become tool errors or logs. */
-export function redactBrowserError(s: string): string {
+/** PAN=/CVC=/EXP= only — do not mask 13–19 digit order ids on success results. */
+export function redactCardTokens(s: string): string {
   return s
     .replace(/PAN=\d+/gi, "PAN=REDACTED")
     .replace(/CVC=\d+/gi, "CVC=REDACTED")
-    .replace(/(?<!\d)\d{13,19}(?!\d)/g, "[pan]");
+    .replace(/EXP=\d{1,2}\/\d{2,4}/gi, "EXP=REDACTED");
+}
+
+/** Strip PAN/CVC from API echoes before they become tool errors or logs. */
+export function redactBrowserError(s: string): string {
+  return redactCardTokens(s).replace(/(?<!\d)\d{13,19}(?!\d)/g, "[pan]");
 }
 
 function key(): string {
@@ -108,13 +113,20 @@ export async function hydrate(
     (typeof session.browser === "object" && session.browser
       ? pick(session.browser as Record<string, unknown>, ["liveUrl", "live_url"])
       : undefined);
-  const result =
+  const resultRaw =
     pick(run, ["result", "output"]) ??
     (typeof run.result === "object" && run.result
       ? JSON.stringify(run.result).slice(0, 2000)
       : undefined);
+  const result = resultRaw ? redactCardTokens(resultRaw) : undefined;
   const status = pick(run, ["status"]) ?? "unknown";
-  return { runId, sessionId: sid, status, liveUrl, result };
+  return {
+    runId,
+    sessionId: sid,
+    status,
+    liveUrl: liveUrl ? redactCardTokens(liveUrl) : undefined,
+    result,
+  };
 }
 
 export async function waitForRun(

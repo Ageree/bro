@@ -2,6 +2,7 @@ import {
   looksLike3dsFollowUp,
   nextBrowserAction,
   normalizeTask,
+  taskToStore,
 } from "../agent/lib/browser-policy.ts";
 
 function assert(cond: unknown, msg: string): void {
@@ -160,6 +161,21 @@ assert(
     incomingTask: "код товара 4412",
   }) === "poll",
   "kod tovara while running polls",
+);
+
+assert(
+  taskToStore("type this code into the 3DS field: 123456", "скотч на ozon") ===
+    "скотч на ozon",
+  "otp start keeps shop task",
+);
+assert(taskToStore("847291", "обувь на ozon") === "обувь на ozon", "digits otp keeps shop task");
+assert(
+  taskToStore("скотч на ozon", undefined) === "скотч на ozon",
+  "fresh shop stores itself",
+);
+assert(
+  taskToStore("скотч на ozon", "обувь на ozon") === "скотч на ozon",
+  "new shop overwrites",
 );
 
 console.log("browser-policy-check ok");

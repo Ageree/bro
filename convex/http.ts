@@ -1,7 +1,7 @@
 import { httpRouter } from "convex/server";
 import { httpAction } from "./_generated/server";
 import { internal } from "./_generated/api";
-import { cardPlain, encryptCard, parseCardInput } from "./lib/cardPolicy";
+import { cardPlain, encryptCard, isCardKey, parseCardInput } from "./lib/cardPolicy";
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
@@ -57,8 +57,8 @@ http.route({
   path: "/card",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
-    const key = process.env.BRO_CARD_KEY;
-    if (!key || key.length !== 64) {
+    const key = process.env.BRO_CARD_KEY ?? "";
+    if (!isCardKey(key)) {
       return new Response(JSON.stringify({ ok: false, error: "misconfigured" }), {
         status: 500,
         headers: { ...cors, "Content-Type": "application/json" },
@@ -85,7 +85,15 @@ http.route({
         headers: { ...cors, "Content-Type": "application/json" },
       });
     }
-    const blob = await encryptCard(cardPlain(parsed.pan, parsed.cvc), key);
+    let blob: string;
+    try {
+      blob = await encryptCard(cardPlain(parsed.pan, parsed.cvc), key);
+    } catch {
+      return new Response(JSON.stringify({ ok: false, error: "misconfigured" }), {
+        status: 500,
+        headers: { ...cors, "Content-Type": "application/json" },
+      });
+    }
     try {
       const saved = await ctx.runMutation(internal.cards.consumeLink, {
         token: String(body.token ?? ""),
