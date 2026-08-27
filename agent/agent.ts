@@ -13,10 +13,17 @@ const openrouter = openrouterKey
     })
   : null;
 
-export default defineAgent({
-  // Host already has OPENROUTER_API_KEY; AI Gateway is optional.
-  model: openrouter
-    ? openrouter.chat(openrouterModel)
-    : "openai/gpt-5.4-mini",
-});
+export default defineAgent(
+  openrouter
+    ? {
+        // Host already has OPENROUTER_API_KEY; AI Gateway is optional.
+        // Custom OpenRouter ids are not in the AI Gateway catalog, so eve
+        // needs an explicit window (GLM-5.3-Flash is 1M on OpenRouter).
+        model: openrouter.chat(openrouterModel),
+        modelContextWindowTokens: 1_000_000,
+      }
+    : {
+        model: "openai/gpt-5.4-mini",
+      },
+);
 
