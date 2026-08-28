@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>bro — кабинет</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --ink: #17271e;
+      --ink-soft: #3c4d43;
+      --cta-bg: #17271e;
+      --cta-fg: #f6faf5;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { overflow-x: hidden; }
+    body {
+      font-family: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+      color: var(--ink);
+      -webkit-font-smoothing: antialiased;
+    }
+    .bg {
+      position: fixed;
+      inset: 0;
+      z-index: -2;
+      background:
+        url("assets/meadow.webp") center / cover no-repeat,
+        linear-gradient(180deg, #dff0fb 0%, #eaf6ec 45%, #bfe3c4 100%);
+    }
+    .scrim {
+      position: fixed;
+      inset: 0;
+      z-index: -1;
+      background: radial-gradient(ellipse 70% 55% at 50% 42%,
+        rgba(255, 255, 255, 0.62) 0%,
+        rgba(255, 255, 255, 0.28) 45%,
+        rgba(255, 255, 255, 0) 72%);
+    }
+    .topbar {
+      position: fixed;
+      top: 0; right: 0; left: 0;
+      z-index: 5;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 1rem 1.3rem;
+    }
+    .word {
+      font-weight: 600;
+      font-size: 1.2rem;
+      letter-spacing: -0.03em;
+      text-decoration: none;
+      color: var(--ink);
+    }
+    .topbar-actions { display: flex; gap: 0.6rem; }
+    .ghost {
+      background: rgba(255, 255, 255, 0.72);
+      border: 1px solid rgba(23, 39, 30, 0.18);
+      color: var(--ink);
+      font: inherit;
+      font-size: 0.95rem;
+      font-weight: 500;
+      text-decoration: none;
+      padding: 0.5rem 1.15rem;
+      border-radius: 999px;
+      cursor: pointer;
+    }
+    .cta {
+      display: inline-block;
+      background: var(--cta-bg);
+      color: var(--cta-fg);
+      font: inherit;
+      font-size: 1rem;
+      font-weight: 500;
+      text-decoration: none;
+      padding: 0.75rem 1.6rem;
+      border-radius: 999px;
+      border: 0;
+      cursor: pointer;
+    }
+    .wrap {
+      max-width: 40rem;
+      margin: 0 auto;
+      padding: 6rem 1.5rem 4rem;
+    }
+    h1 {
+      font-size: clamp(1.8rem, 4vw, 2.4rem);
+      letter-spacing: -0.03em;
+      margin-bottom: 1.4rem;
+    }
+    .card {
+      background: rgba(255, 255, 255, 0.84);
+      border: 1px solid rgba(23, 39, 30, 0.12);
+      border-radius: 1.2rem;
+      padding: 1.4rem 1.5rem;
+      margin-bottom: 1rem;
+    }
+    .card h2 { font-size: 1.02rem; margin-bottom: 0.7rem; }
+    .muted { color: var(--ink-soft); font-size: 0.95rem; line-height: 1.5; }
+    .bar {
+      height: 0.45rem;
+      background: rgba(23, 39, 30, 0.1);
+      border-radius: 999px;
+      overflow: hidden;
+      margin: 0.45rem 0 0.9rem;
+    }
+    .bar > i {
+      display: block;
+      height: 100%;
+      background: #17271e;
+    }
+    .pay { list-style: none; }
+    .pay li { padding: 0.35rem 0; border-top: 1px solid rgba(23, 39, 30, 0.08); }
+    .pay li:first-child { border-top: 0; }
+    .modal {
+      position: fixed;
+      inset: 0;
+      z-index: 10;
+      background: rgba(23, 39, 30, 0.28);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1.2rem;
+    }
+    .modal[hidden] { display: none; }
+    .sheet {
+      width: min(22rem, 100%);
+      background: rgba(255, 255, 255, 0.94);
+      border-radius: 1.2rem;
+      padding: 1.5rem 1.4rem;
+    }
+    .sheet h2 { font-size: 1.15rem; margin-bottom: 0.8rem; }
+    .sheet label { display: block; font-size: 0.85rem; margin: 0.7rem 0 0.3rem; }
+    .sheet input {
+      width: 100%;
+      font: inherit;
+      padding: 0.65rem 0.75rem;
+      border-radius: 0.7rem;
+      border: 1px solid rgba(23, 39, 30, 0.2);
+    }
+    .sheet .row { display: flex; gap: 0.6rem; margin-top: 1rem; }
+    .sheet .row .cta, .sheet .row .ghost { flex: 1; text-align: center; }
+    .sheet .status { min-height: 1.3rem; margin-top: 0.7rem; color: var(--ink-soft); font-size: 0.9rem; }
+  </style>
+</head>
+<body>
+  <div class="bg" aria-hidden="true"></div>
+  <div class="scrim" aria-hidden="true"></div>
+
+  <header class="topbar">
+    <a class="word" href="/">bro</a>
+    <div class="topbar-actions">
+      <a class="ghost" id="cabinet-open" href="/cabinet.html">Кабинет</a>
+      <button class="ghost" id="logout" type="button">Выйти</button>
+      <button class="ghost" id="login-open" type="button" hidden>Войти</button>
+    </div>
+  </header>
+
+  <div class="modal" id="login-modal" hidden>
+    <div class="sheet" role="dialog" aria-labelledby="login-title">
+      <h2 id="login-title">Вход в кабинет</h2>
+      <label for="login-handle">Handle</label>
+      <input id="login-handle" autocomplete="username" placeholder="bro-xxxxxxxx" />
+      <div class="row">
+        <button class="cta" id="login-send" type="button">Получить код</button>
+        <button class="ghost" id="login-cancel" type="button">Закрыть</button>
+      </div>
+      <div id="login-code-row" hidden>
+        <label for="login-code">Код из iMessage</label>
+        <input id="login-code" inputmode="numeric" maxlength="6" autocomplete="one-time-code" />
+        <div class="row">
+          <button class="cta" id="login-verify" type="button">Войти</button>
+        </div>
+      </div>
+      <p class="status" id="login-status"></p>
+    </div>
+  </div>
+
+  <main class="wrap">
+    <h1>Кабинет</h1>
+    <p class="muted" id="boot">Загружаем…</p>
+    <div id="body" hidden></div>
+  </main>
+
+  <script src="assets/config.js"></script>
+  <script src="assets/auth.js"></script>
+  <script>
+    (function () {
+      var TOKEN = "bro.session";
+      function site() {
+        var s = window.BRO_CONVEX_SITE_URL;
+        return typeof s === "string" ? s.replace(/\/$/, "") : "";
+      }
+      function token() { return localStorage.getItem(TOKEN) || ""; }
+      function esc(s) {
+        return String(s).replace(/[&<>"]/g, function (c) {
+          return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c];
+        });
+      }
+      function pct(used, allow) {
+        if (!allow) return 0;
+        return Math.max(0, Math.min(100, Math.round((used / allow) * 100)));
+      }
+      function when(ms) {
+        return new Date(ms).toLocaleString("ru-RU", { timeZone: "Europe/Moscow" });
+      }
+      function statusRu(s) {
+        if (s === "succeeded") return "оплачен";
+        if (s === "pending") return "ожидает";
+        return "отменён";
+      }
+
+      var boot = document.getElementById("boot");
+      var body = document.getElementById("body");
+      var t = token();
+      var base = site();
+      if (!t) {
+        boot.textContent = "Войди, чтобы увидеть оплату и лимиты.";
+        document.getElementById("login-open").click();
+        return;
+      }
+      if (!base) {
+        boot.textContent = "Сайт ещё не подключён";
+        return;
+      }
+
+      fetch(base + "/me", { headers: { Authorization: "Bearer " + t } })
+        .then(function (res) { return res.json().then(function (data) { return { res: res, data: data }; }); })
+        .then(function (got) {
+          if (!got.res.ok || !got.data.ok) {
+            localStorage.removeItem(TOKEN);
+            boot.textContent = "Сессия истекла. Войди снова.";
+            document.getElementById("login-open").hidden = false;
+            document.getElementById("logout").hidden = true;
+            document.getElementById("cabinet-open").hidden = true;
+            return;
+          }
+          var me = got.data.me;
+          var plan = me.plan === "paid" ? "Полный доступ" : "Бесплатный режим";
+          var until = me.paidUntil
+            ? "до " + when(me.paidUntil)
+            : "оплата ещё не оформлена";
+          var phone = me.phoneBound
+            ? "телефон …" + esc(me.phoneLast4 || "")
+            : "телефон ещё не привязан — напиши Bro в iMessage";
+          var pays = (me.payments || []).map(function (p) {
+            return "<li>" + esc(when(p.createdAt)) + " · " + esc(p.amountRub) +
+              " ₽ · " + statusRu(p.status) + "</li>";
+          }).join("");
+          body.innerHTML =
+            '<div class="card"><h2>' + esc(plan) + '</h2>' +
+            '<p class="muted">' + esc(me.handle) + " · " + phone + "</p>" +
+            '<p class="muted">' + until + "</p>" +
+            '<p style="margin-top:1rem"><button class="cta" id="pay-now" type="button">Оплатить месяц</button></p>' +
+            '<p class="muted" id="pay-status"></p></div>' +
+            '<div class="card"><h2>Лимиты</h2>' +
+            '<p class="muted">Сообщения сегодня: ' + me.msgsUsed + " из " + me.msgsAllowance + "</p>" +
+            '<div class="bar"><i style="width:' + pct(me.msgsUsed, me.msgsAllowance) + '%"></i></div>' +
+            '<p class="muted">Браузер-задачи в этом месяце: ' + me.browserUsed + " из " + me.browserAllowance + "</p>" +
+            '<div class="bar"><i style="width:' + pct(me.browserUsed, me.browserAllowance) + '%"></i></div></div>' +
+            '<div class="card"><h2>Оплаты</h2>' +
+            (pays ? '<ul class="pay">' + pays + "</ul>" : '<p class="muted">Пока нет оплат.</p>') +
+            "</div>";
+          boot.hidden = true;
+          body.hidden = false;
+          document.getElementById("pay-now").addEventListener("click", function () {
+            var st = document.getElementById("pay-status");
+            st.textContent = "Открываем ЮKassa…";
+            fetch(base + "/me/pay", {
+              method: "POST",
+              headers: { Authorization: "Bearer " + t },
+            })
+              .then(function (res) { return res.json(); })
+              .then(function (data) {
+                if (data.ok && data.confirmationUrl) {
+                  window.location.href = data.confirmationUrl;
+                  return;
+                }
+                if (data.code === "billing_off") st.textContent = "Оплата скоро";
+                else st.textContent = "Не вышло, нажми ещё раз";
+              })
+              .catch(function () {
+                st.textContent = "Не вышло, нажми ещё раз";
+              });
+          });
+        })
+        .catch(function () {
+          boot.textContent = "Не вышло загрузить кабинет";
+        });
+    })();
+  </script>
+</body>
+</html>

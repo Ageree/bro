@@ -101,6 +101,64 @@
       outline-offset: 3px;
     }
 
+    .topbar {
+      position: fixed;
+      top: 0;
+      right: 0;
+      left: 0;
+      z-index: 5;
+      display: flex;
+      justify-content: flex-end;
+      gap: 0.6rem;
+      padding: 1rem 1.3rem;
+    }
+    .ghost {
+      background: rgba(255, 255, 255, 0.72);
+      border: 1px solid rgba(23, 39, 30, 0.18);
+      color: var(--ink);
+      font: inherit;
+      font-size: 0.95rem;
+      font-weight: 500;
+      text-decoration: none;
+      padding: 0.5rem 1.15rem;
+      border-radius: 999px;
+      cursor: pointer;
+    }
+    .ghost:focus-visible {
+      outline: 3px solid #17271e;
+      outline-offset: 3px;
+    }
+    .modal {
+      position: fixed;
+      inset: 0;
+      z-index: 10;
+      background: rgba(23, 39, 30, 0.28);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1.2rem;
+    }
+    .modal[hidden] { display: none; }
+    .sheet {
+      width: min(22rem, 100%);
+      background: rgba(255, 255, 255, 0.94);
+      border-radius: 1.2rem;
+      padding: 1.5rem 1.4rem;
+      text-align: left;
+    }
+    .sheet h2 { font-size: 1.15rem; margin-bottom: 0.8rem; }
+    .sheet label { display: block; font-size: 0.85rem; margin: 0.7rem 0 0.3rem; }
+    .sheet input {
+      width: 100%;
+      font: inherit;
+      padding: 0.65rem 0.75rem;
+      border-radius: 0.7rem;
+      border: 1px solid rgba(23, 39, 30, 0.2);
+    }
+    .sheet .row { display: flex; gap: 0.6rem; margin-top: 1rem; }
+    .sheet .row .cta, .sheet .row .ghost { flex: 1; text-align: center; border: 0; }
+    .sheet .status { min-height: 1.3rem; margin-top: 0.7rem; color: var(--ink-soft); font-size: 0.9rem; }
+
     .section {
       max-width: 44rem;
       margin: 0 auto;
@@ -156,6 +214,32 @@
   <div class="bg" aria-hidden="true"></div>
   <div class="scrim" aria-hidden="true"></div>
 
+  <header class="topbar">
+    <a class="ghost" id="cabinet-open" href="/cabinet.html" hidden>Кабинет</a>
+    <button class="ghost" id="logout" type="button" hidden>Выйти</button>
+    <button class="ghost" id="login-open" type="button">Войти</button>
+  </header>
+
+  <div class="modal" id="login-modal" hidden>
+    <div class="sheet" role="dialog" aria-labelledby="login-title">
+      <h2 id="login-title">Вход в кабинет</h2>
+      <label for="login-handle">Handle</label>
+      <input id="login-handle" autocomplete="username" placeholder="bro-xxxxxxxx" />
+      <div class="row">
+        <button class="cta" id="login-send" type="button">Получить код</button>
+        <button class="ghost" id="login-cancel" type="button">Закрыть</button>
+      </div>
+      <div id="login-code-row" hidden>
+        <label for="login-code">Код из iMessage</label>
+        <input id="login-code" inputmode="numeric" maxlength="6" autocomplete="one-time-code" />
+        <div class="row">
+          <button class="cta" id="login-verify" type="button">Войти</button>
+        </div>
+      </div>
+      <p class="status" id="login-status"></p>
+    </div>
+  </div>
+
   <main class="hero">
     <h1 class="wordmark">bro</h1>
     <p class="tagline">Твой личный ИИ-агент</p>
@@ -204,6 +288,7 @@
     <p><a href="/oferta.html">Публичная оферта</a></p>
   </footer>
   <script src="assets/config.js"></script>
+  <script src="assets/auth.js"></script>
   <script>
     (function () {
       var KEY = "bro.handle";
@@ -257,6 +342,9 @@
               return;
             }
             localStorage.setItem(KEY, data.handle);
+            if (data.sessionToken && window.broStoreSession) {
+              window.broStoreSession(data.handle, data.sessionToken);
+            }
             window.location.href = data.smsLink;
           })
           .catch(function () {
