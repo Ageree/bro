@@ -40,6 +40,21 @@ for (const hour of [0, 8, 23]) {
   assert(hourInTz(at, tz) === hour, `nextDailyAt ${hour} hour in tz`);
 }
 
+const vladTz = "Asia/Vladivostok";
+for (const hour of [0, 8, 23]) {
+  const at = nextDailyAt(hour, vladTz, now);
+  assert(at > now, `vlad nextDailyAt ${hour} future`);
+  assert(at - now < 24 * 60 * 60_000 + 60_000, `vlad nextDailyAt ${hour} within 24h+1min`);
+  assert(hourInTz(at, vladTz) === hour, `vlad nextDailyAt ${hour} hour in tz`);
+}
+const vladDaily = nextAfterRun({ recurDailyHour: 8, tz: vladTz }, now);
+assert(vladDaily !== null && vladDaily > now, "vlad recur daily future");
+assert(hourInTz(vladDaily!, vladTz) === 8, "vlad recur daily hour");
+assert(
+  nextAfterRun({ recurDailyHour: 8 }, now) === nextDailyAt(8, tz, now),
+  "missing tz falls back to Moscow",
+);
+
 const b0 = backoffAt(0, now);
 const b1 = backoffAt(1, now);
 const b2 = backoffAt(2, now);

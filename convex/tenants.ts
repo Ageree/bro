@@ -9,7 +9,9 @@ import {
 import { assertSecret } from "./secret";
 import {
   browserAllowance,
+  carryCountersOnTzChange,
   dayKey,
+  DEFAULT_TZ,
   isPaid,
   monthKey,
   msgAllowance,
@@ -40,6 +42,7 @@ export const tenantDoc = v.object({
   browserMonthKey: v.optional(v.string()),
   browserMonthCount: v.optional(v.number()),
   paywallSentDayKey: v.optional(v.string()),
+  tz: v.optional(v.string()),
   dedicatedIMessageNumber: v.optional(v.string()),
   dedicatedIMessageNumberStatus: v.optional(v.string()),
 });
@@ -156,6 +159,42 @@ export const upsert = mutation({
     const created = await ctx.db.get(id);
     if (!created) throw new Error("tenant insert failed");
     return created;
+  },
+});
+
+export const setTimezone = mutation({
+  args: {
+    secret: v.string(),
+    phoneE164: v.string(),
+    tz: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, { secret, phoneE164, tz }) => {
+    assertSecret(secret);
+    try {
+      new Intl.DateTimeFormat(undefined, { timeZone: tz });
+    } catch {
+      throw new Error("invalid timezone");
+    }
+    const tenant = await tenantByPhone(ctx, phoneE164);
+    const prevTz = tenant.tz ?? DEFAULT_TZ;
+    if (prevTz === tz) {
+      await ctx.db.patch(tenant._id, { tz });
+      return null;
+    }
+    const now = Date.now();
+    const carry = carryCountersOnTzChange({
+      now,
+      prevTz,
+      nextTz: tz,
+      msgsDayKey: tenant.msgsDayKey,
+      msgsDayCount: tenant.msgsDayCount,
+      browserMonthKey: tenant.browserMonthKey,
+      browserMonthCount: tenant.browserMonthCount,
+      paywallSentDayKey: tenant.paywallSentDayKey,
+    });
+    await ctx.db.patch(tenant._id, { tz, ...carry });
+    return null;
   },
 });
 
@@ -323,7 +362,7 @@ export const countInboundMessage = mutation({
     assertSecret(secret);
     const tenant = await tenantByPhone(ctx, phoneE164);
     const now = Date.now();
-    const key = dayKey(now);
+    const key = dayKey(now, tenant.tz);
     const paid = isPaid(tenant.paidUntil, now);
     const allowance = msgAllowance(paid, {
       free: process.env.BRO_FREE_MSGS_PER_DAY,
@@ -360,7 +399,7 @@ export const countBrowserJobStart = mutation({
     assertSecret(secret);
     const tenant = await tenantByPhone(ctx, phoneE164);
     const now = Date.now();
-    const key = monthKey(now);
+    const key = monthKey(now, tenant.tz);
     const paid = isPaid(tenant.paidUntil, now);
     const allowance = browserAllowance(paid, {
       free: process.env.BRO_FREE_BROWSER_JOBS_PER_MONTH,
