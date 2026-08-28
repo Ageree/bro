@@ -224,6 +224,7 @@ export async function cancelWakeup(
   opts: {
     id?: string;
     kind?: "reminder" | "browser_poll" | "brief" | "watcher" | "job_check";
+    payloadContains?: string;
   },
 ): Promise<number> {
   return await client().mutation(wakeups.cancel, {

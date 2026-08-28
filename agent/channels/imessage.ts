@@ -265,7 +265,7 @@ export default defineChannel({
       } else if (kind === "browser_poll") {
         prompt = `[background wakeup] Проверь статус текущего браузер-джоба вызовом тула browser_task с task=${payload}. Если completed — отправь человеку результаты. Если ещё работает — ответь [SILENT] (wakeup сам повторится). Если failed — коротко скажи об этом.`;
       } else if (kind === "job_check") {
-        prompt = `[background wakeup] Фоновая проверка джоба: ${payload}. Открытые джобы этого человека уже в контексте. Сделай следующий шаг цепочки сам (проверь почту/статус нужным тулом: composio, browser_task, bro_mail). Если есть прогресс — сделай шаг и коротко напиши человеку. Если продвинуться нечем — вызови job_wait с checkInMinutes (разумный интервал, обычно 30–120) чтобы проверить позже, и ответь ровно [SILENT]. Если джоб уже закрыт или отменён — просто [SILENT].`;
+        prompt = `[background wakeup] Фоновая проверка джоба: ${payload}. Открытые джобы этого человека уже в контексте. Сделай следующий шаг цепочки сам (проверь почту/статус нужным тулом: composio, browser_task, bro_mail). Если есть прогресс — сделай шаг и коротко напиши человеку. Если продвинуться нечем — ответь ровно [SILENT]: проверка повторится сама. Если джоб уже закрыт или отменён — вызови cancel_wakeup с kind=job_check и payloadContains «джоб <id>», затем ответь [SILENT].`;
       }
       await from(conversationId).send(prompt, {
         auth: {

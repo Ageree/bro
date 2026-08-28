@@ -40,6 +40,7 @@ export default defineTool({
         at,
         kind: "job_check",
         payload: `джоб ${jobId}: ${goal}`,
+        recurMinutes: checkInMinutes,
       });
       return { ...job, checkAt: new Date(at).toISOString() };
     } catch (err) {
