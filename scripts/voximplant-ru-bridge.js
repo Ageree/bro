@@ -1,6 +1,8 @@
-// Live on Voximplant: app bro-ru-bridge (id 59499143),
-// scenario ru-hairpin (id 3607805), rule inbound-bridge (id 9330638).
-// Bind a purchased DID to this application after top-up.
+// DEPRECATED: Voximplant RU verification needs ИП ЭЦП. Hairpin moved to
+// Zadarma (`POST /zadarma-bridge`, rewrite_forward_number). Keep this only
+// if someone later finishes Vox KYC. Live leftovers: app bro-ru-bridge
+// (59499143), scenario ru-hairpin (3607805), rule inbound-bridge (9330638),
+// Moscow DID +74992816046 (deactivated until 2026-09-11).
 
 const BRIDGE_URL = "https://frugal-dragon-943.convex.site/call-bridge";
 const SECRET = "BRO_INTERNAL_SECRET"; // live scenario has the real secret
