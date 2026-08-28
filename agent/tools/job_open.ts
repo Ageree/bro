@@ -5,7 +5,7 @@ import { tenantId } from "../lib/tenant";
 
 export default defineTool({
   description:
-    "Open a long-running job for this person when the work must wait (email reply, yes/no, browser). goal and doneWhen are one line each. Do not open for ordinary chat.",
+    "Open a long-running job for this person when the work must wait (email reply, yes/no, browser, phone call). goal and doneWhen are one line each. Do not open for ordinary chat.",
   inputSchema: z.object({
     goal: z.string().min(1).max(280),
     doneWhen: z.string().min(1).max(280),

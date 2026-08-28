@@ -95,6 +95,54 @@ export async function sendBlueIMessage(opts: {
   return sent;
 }
 
+const INKBOX_API = "https://inkbox.ai/api/v1";
+
+function readCallId(json: Record<string, unknown>): string {
+  if (typeof json.id === "string" && json.id) return json.id;
+  const call = json.call;
+  if (call && typeof call === "object") {
+    const id = (call as { id?: unknown }).id;
+    if (typeof id === "string" && id) return id;
+  }
+  return "";
+}
+
+/** REST place-call. Do not guess SDK method names. */
+export async function placeCall(
+  body: Record<string, string>,
+): Promise<{ id: string; raw: Record<string, unknown> }> {
+  const key = process.env.INKBOX_API_KEY;
+  if (!key) throw new Error("INKBOX_API_KEY missing");
+  const res = await fetch(`${INKBOX_API}/phone/place-call`, {
+    method: "POST",
+    headers: {
+      "X-API-Key": key,
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(20_000),
+  });
+  const text = await res.text();
+  let json: Record<string, unknown> = {};
+  try {
+    json = text ? (JSON.parse(text) as Record<string, unknown>) : {};
+  } catch {
+    json = { raw: text.slice(0, 400) };
+  }
+  if (!res.ok) {
+    const detail = json.detail ?? json.error ?? json.raw ?? text.slice(0, 400);
+    throw new Error(
+      `inkbox place-call ${res.status}: ${
+        typeof detail === "string" ? detail : JSON.stringify(detail)
+      }`,
+    );
+  }
+  const id = readCallId(json);
+  if (!id) throw new Error("inkbox place-call missing id");
+  return { id, raw: json };
+}
+
 export async function sendIMessageTapback(opts: {
   messageId: string;
   reaction: IMessageTapback;

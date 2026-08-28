@@ -48,12 +48,36 @@ export default defineSchema({
       v.literal("failed"),
     ),
     waitingFor: v.optional(
-      v.union(v.literal("human"), v.literal("email"), v.literal("browser")),
+      v.union(
+        v.literal("human"),
+        v.literal("email"),
+        v.literal("browser"),
+        v.literal("call"),
+      ),
     ),
     note: v.optional(v.string()),
     emailThreadId: v.optional(v.string()),
     emailMessageId: v.optional(v.string()),
+    callDestE164: v.optional(v.string()),
+    callExternalId: v.optional(v.string()),
   }).index("by_tenant", ["tenantId"]),
+
+  callLegs: defineTable({
+    tenantPhone: v.string(),
+    destE164: v.string(),
+    reason: v.string(),
+    route: v.string(),
+    status: v.union(
+      v.literal("pending"),
+      v.literal("claimed"),
+      v.literal("done"),
+    ),
+    jobId: v.optional(v.string()),
+    inkboxCallId: v.optional(v.string()),
+  })
+    .index("by_status", ["status"])
+    .index("by_tenant", ["tenantPhone"])
+    .index("by_inkbox_call", ["inkboxCallId"]),
 
   memories: defineTable({
     phoneE164: v.string(),

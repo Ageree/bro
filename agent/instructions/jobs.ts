@@ -14,7 +14,7 @@ export default defineDynamic({
       }
       return defineInstructions({
         role: "user",
-        content: `Open jobs for this person only. A user message starting with [event:mail] is inbound mail to Bro's mailbox, not the human speaking.\n\n${text}`,
+        content: `Open jobs for this person only. A user message starting with [event:mail] is inbound mail to Bro's mailbox, not the human speaking. A user message starting with [event:call] is the result of an outbound phone call Bro placed, not the human speaking.\n\n${text}`,
       });
     },
   },

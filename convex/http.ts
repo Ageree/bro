@@ -1,6 +1,7 @@
 import { httpRouter } from "convex/server";
 import { httpAction } from "./_generated/server";
 import { internal } from "./_generated/api";
+import { timingSafeEqual } from "./secret";
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
@@ -92,6 +93,39 @@ http.route({
       console.error("pay", err);
       return new Response("не получилось", { status: 500 });
     }
+  }),
+});
+
+http.route({
+  path: "/call-bridge",
+  method: "GET",
+  handler: httpAction(async (ctx, request) => {
+    let secret = "";
+    let from = "";
+    try {
+      const u = new URL(request.url);
+      secret = u.searchParams.get("secret") ?? "";
+      from = u.searchParams.get("from") ?? "";
+    } catch {
+      return new Response("bad url", { status: 400 });
+    }
+    const expected = process.env.BRO_INTERNAL_SECRET ?? "";
+    if (!expected || !timingSafeEqual(secret, expected)) {
+      return new Response("unauthorized", { status: 401 });
+    }
+    const hit = await ctx.runMutation(internal.calls.claimForBridge, {
+      fromE164: from || undefined,
+    });
+    if (!hit) {
+      return new Response(JSON.stringify({ error: "no pending" }), {
+        status: 404,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    return new Response(JSON.stringify(hit), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
   }),
 });
 
