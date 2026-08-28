@@ -18,6 +18,7 @@ import {
 } from "../lib/browseruse";
 import { sendBlueIMessage } from "../lib/inkbox";
 import { tenantId } from "../lib/tenant";
+import { browserGateFromResult } from "../../convex/lib/billingPolicy";
 
 const WAIT_MS = 12_000;
 
@@ -138,13 +139,13 @@ export default defineTool({
       );
     }
 
-    let allowed = true;
+    let allowed = false;
     try {
-      const got = await countBrowserJobStart(phone);
-      allowed = got.allowed;
+      allowed = browserGateFromResult(await countBrowserJobStart(phone), undefined)
+        .allowed;
     } catch (err) {
-      // ponytail: billing must not block a start if convex is down
       console.error("billing browser count failed", err);
+      allowed = browserGateFromResult(undefined, err).allowed;
     }
     if (!allowed) {
       return {

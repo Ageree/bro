@@ -20,6 +20,9 @@ importers:
       '@convex-dev/crons':
         specifier: ^0.2.2
         version: 0.2.2(convex@1.45.0)
+      '@convex-dev/rate-limiter':
+        specifier: ^0.3.2
+        version: 0.3.2(convex@1.45.0)
       '@inkbox/sdk':
         specifier: ^0.6.4
         version: 0.6.4
@@ -92,6 +95,15 @@ packages:
     resolution: {integrity: sha512-V5kLBb0kTb2MA6uN0MgEYEgeW1mp+1oioA0tnuh8yWZcb6FToY+e67MJ5SQ98N1JjY2K0JIofAzLUYe9gEdU2A==}
     peerDependencies:
       convex: ^1.24.8
+
+  '@convex-dev/rate-limiter@0.3.2':
+    resolution: {integrity: sha512-+oBPsBfFbzdxiF/9XaaTQmVnvDlvEfg/c69/v8LxTbw4VLuiflIKlfnPQL8OS0azXQQ11hcPWHmU8ytFmHKDXA==}
+    peerDependencies:
+      convex: ^1.24.8
+      react: ^18.2.0 || ^19.0.0
+    peerDependenciesMeta:
+      react:
+        optional: true
 
   '@esbuild/aix-ppc64@0.27.0':
     resolution: {integrity: sha512-KuZrd2hRjz01y5JK9mEBSD3Vj3mbCvemhT466rSuJYeE/hjuBrHfjjcjMdTm/sz7au+++sdbJZJmuBwQLuw68A==}
@@ -972,6 +984,10 @@ snapshots:
     dependencies:
       convex: 1.45.0
       cron-parser: 4.9.0
+
+  '@convex-dev/rate-limiter@0.3.2(convex@1.45.0)':
+    dependencies:
+      convex: 1.45.0
 
   '@esbuild/aix-ppc64@0.27.0':
     optional: true
