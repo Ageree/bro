@@ -143,6 +143,46 @@ export async function placeCall(
   return { id, raw: json };
 }
 
+const BRO_IDENTITY = "d051f194-1bd9-405b-b6fe-2b3544caec58";
+
+/** Inbound Voice AI has no per-call reason; write the brief onto the identity. */
+export async function setHostedAgentInstructions(
+  instructions: string,
+): Promise<void> {
+  const key = process.env.INKBOX_API_KEY;
+  if (!key) throw new Error("INKBOX_API_KEY missing");
+  const id = process.env.INKBOX_IDENTITY_ID ?? BRO_IDENTITY;
+  const headers = {
+    "X-API-Key": key,
+    Accept: "application/json",
+    "Content-Type": "application/json",
+  };
+  const got = await fetch(
+    `${INKBOX_API}/phone/hosted-agent-config?agent_identity_id=${id}`,
+    { headers, signal: AbortSignal.timeout(15_000) },
+  );
+  const prev = got.ok
+    ? ((await got.json()) as Record<string, unknown>)
+    : {};
+  const res = await fetch(
+    `${INKBOX_API}/phone/hosted-agent-config?agent_identity_id=${id}`,
+    {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({
+        voice: prev.voice ?? null,
+        model: prev.model ?? null,
+        instructions: instructions.trim().slice(0, 2000),
+      }),
+      signal: AbortSignal.timeout(15_000),
+    },
+  );
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`inkbox hosted-agent-config ${res.status}: ${text.slice(0, 300)}`);
+  }
+}
+
 export async function sendIMessageTapback(opts: {
   messageId: string;
   reaction: IMessageTapback;

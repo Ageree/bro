@@ -10,15 +10,16 @@ import {
   attachCallInkbox,
   dropCallLeg,
   parkCallLeg,
+  startVoxCallback,
   upsertTenant,
   waitJob,
 } from "../lib/convex";
-import { placeCall } from "../lib/inkbox";
+import { placeCall, setHostedAgentInstructions } from "../lib/inkbox";
 import { tenantId } from "../lib/tenant";
 
 export default defineTool({
   description:
-    "Place an outbound phone call via Inkbox Voice AI. Russian +7 numbers hairpin through a +1 Zadarma DID so Inkbox never dials +7 directly. Confirm with the human before the first call of a job. After placing, park the job with job_wait waitingFor=call if you did not pass jobId here.",
+    "Place an outbound phone call via Inkbox Voice AI. Russian +7 numbers are bridged by Voximplant: it rings Bro's Inkbox number (Voice AI answers inbound) and the clinic, using a verified personal Caller ID. Confirm with the human before the first call of a job. After placing, park the job with job_wait waitingFor=call if you did not pass jobId here.",
   inputSchema: z.object({
     dest: z
       .string()
@@ -36,11 +37,12 @@ export default defineTool({
   async execute({ dest, task, callerName, jobId }, ctx) {
     const phone = tenantId(ctx);
     await upsertTenant(phone);
-    const decision = decideCallRoute(dest, parseCallEnv(process.env));
+    const env = parseCallEnv(process.env);
+    const decision = decideCallRoute(dest, env);
     if (decision.route === "blocked") {
       return { error: decision.error };
     }
-    const fromE164 = parseCallEnv(process.env).inkboxFromE164;
+    const fromE164 = env.inkboxFromE164;
     if (!fromE164) return { error: "no Inkbox phone number" };
 
     const reason = hostedReason({
@@ -57,15 +59,29 @@ export default defineTool({
     });
     if ("error" in parked) return parked;
 
-    let placed: { id: string };
+    let placedId: string;
     try {
-      placed = await placeCall(
-        inkboxPlaceBody({
-          fromE164,
-          dialE164: decision.dialE164,
-          reason,
-        }),
-      );
+      if (decision.route === "vox_callback") {
+        const cli = env.voxFromE164;
+        if (!cli) throw new Error("VOXIMPLANT_FROM_E164 missing");
+        await setHostedAgentInstructions(reason);
+        const started = await startVoxCallback({
+          destE164: decision.destE164,
+          inkboxE164: fromE164,
+          cliE164: cli,
+        });
+        if ("error" in started) throw new Error(started.error);
+        placedId = started.mediaSessionId;
+      } else {
+        const placed = await placeCall(
+          inkboxPlaceBody({
+            fromE164,
+            dialE164: decision.dialE164,
+            reason,
+          }),
+        );
+        placedId = placed.id;
+      }
     } catch (err) {
       await dropCallLeg(parked._id).catch((dropErr) =>
         console.error("drop call leg failed", dropErr),
@@ -75,7 +91,7 @@ export default defineTool({
       };
     }
 
-    await attachCallInkbox(parked._id, placed.id).catch((err) =>
+    await attachCallInkbox(parked._id, placedId).catch((err) =>
       console.error("attach inkbox call id failed", err),
     );
 
@@ -83,12 +99,12 @@ export default defineTool({
       await waitJob(phone, jobId, "call", {
         note: `звонок ${decision.destE164}`,
         callDestE164: decision.destE164,
-        callExternalId: placed.id,
+        callExternalId: placedId,
       }).catch((err) => console.error("job wait call failed", err));
     }
 
     return {
-      id: placed.id,
+      id: placedId,
       destE164: decision.destE164,
       dialE164: decision.dialE164,
       route: decision.route,

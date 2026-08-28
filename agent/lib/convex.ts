@@ -202,6 +202,17 @@ export async function parkCallLeg(args: {
   });
 }
 
+export async function startVoxCallback(args: {
+  destE164: string;
+  inkboxE164: string;
+  cliE164: string;
+}): Promise<{ mediaSessionId: string } | { error: string }> {
+  return await client().action(api.vox.startCallback, {
+    secret: secret(),
+    ...args,
+  });
+}
+
 export async function attachCallInkbox(legId: string, inkboxCallId: string) {
   return await client().mutation(api.calls.attachInkbox, {
     secret: secret(),

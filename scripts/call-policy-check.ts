@@ -62,6 +62,7 @@ const blocked = decideCallRoute("+74951234567", {
   inkboxRuEnabled: false,
   ruBridgeE164: null,
   inkboxFromE164: "+14155550100",
+  voxFromE164: null,
 });
 assert(blocked.route === "blocked", "no bridge no flag");
 
@@ -69,10 +70,23 @@ const ruBridge = decideCallRoute("+74951234567", {
   inkboxRuEnabled: false,
   ruBridgeE164: "+74992816046",
   inkboxFromE164: "+15189183436",
+  voxFromE164: null,
 });
 assert(ruBridge.route === "blocked", "ru number is CLI not bridge");
 if (ruBridge.route === "blocked") {
-  assert(ruBridge.error.includes("+1"), "explain inkbox dest");
+  assert(ruBridge.error.includes("VOXIMPLANT_FROM_E164"), "ask for verified cli");
+}
+
+const voxCb = decideCallRoute("+74951234567", {
+  inkboxRuEnabled: false,
+  ruBridgeE164: null,
+  inkboxFromE164: "+15189183436",
+  voxFromE164: "+79001234567",
+});
+assert(voxCb.route === "vox_callback", "verified cli hairpin");
+if (voxCb.route === "vox_callback") {
+  assert(voxCb.destE164 === "+74951234567", "clinic dest kept");
+  assert(voxCb.dialE164 === "+15189183436", "vox rings inkbox");
 }
 
 assert(

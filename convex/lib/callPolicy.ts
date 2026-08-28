@@ -1,11 +1,12 @@
 const E164_RE = /^\+[1-9]\d{7,14}$/;
 
-export type CallRoute = "inkbox_direct" | "ru_bridge" | "blocked";
+export type CallRoute = "inkbox_direct" | "ru_bridge" | "vox_callback" | "blocked";
 
 export type CallEnv = {
   inkboxRuEnabled: boolean;
   ruBridgeE164: string | null;
   inkboxFromE164: string | null;
+  voxFromE164: string | null;
 };
 
 export function normalizeE164(raw: string): string | null {
@@ -34,11 +35,13 @@ export function isInkboxDialableE164(e164: string): boolean {
 export function parseCallEnv(env: NodeJS.ProcessEnv): CallEnv {
   const bridge = normalizeE164(env.BRO_RU_BRIDGE_E164 ?? "");
   const from = normalizeE164(env.INKBOX_PHONE_NUMBER ?? "");
+  const voxFrom = normalizeE164(env.VOXIMPLANT_FROM_E164 ?? "");
   const flag = (env.BRO_INKBOX_RU_ENABLED ?? "").trim().toLowerCase();
   return {
     inkboxRuEnabled: flag === "1" || flag === "true" || flag === "yes",
     ruBridgeE164: bridge,
     inkboxFromE164: from,
+    voxFromE164: voxFrom,
   };
 }
 
@@ -48,31 +51,37 @@ export function decideCallRoute(
 ):
   | { route: "inkbox_direct"; destE164: string; dialE164: string }
   | { route: "ru_bridge"; destE164: string; dialE164: string }
+  | { route: "vox_callback"; destE164: string; dialE164: string }
   | { route: "blocked"; destE164?: string; error: string } {
   const dest = normalizeE164(destRaw);
   if (!dest) return { route: "blocked", error: "bad dest number" };
   if (!env.inkboxFromE164) {
     return { route: "blocked", destE164: dest, error: "no Inkbox phone number" };
   }
-  if (dest === env.inkboxFromE164 || dest === env.ruBridgeE164) {
+  if (
+    dest === env.inkboxFromE164 ||
+    dest === env.ruBridgeE164 ||
+    dest === env.voxFromE164
+  ) {
     return { route: "blocked", destE164: dest, error: "cannot call self" };
   }
   if (isRuE164(dest) && !env.inkboxRuEnabled) {
-    if (!env.ruBridgeE164) {
+    if (env.ruBridgeE164 && isInkboxDialableE164(env.ruBridgeE164)) {
+      return { route: "ru_bridge", destE164: dest, dialE164: env.ruBridgeE164 };
+    }
+    if (env.voxFromE164) {
       return {
-        route: "blocked",
+        route: "vox_callback",
         destE164: dest,
-        error: "RU dest needs BRO_RU_BRIDGE_E164 or BRO_INKBOX_RU_ENABLED",
+        dialE164: env.inkboxFromE164,
       };
     }
-    if (!isInkboxDialableE164(env.ruBridgeE164)) {
-      return {
-        route: "blocked",
-        destE164: dest,
-        error: "BRO_RU_BRIDGE_E164 must be +1; Inkbox cannot dial +7",
-      };
-    }
-    return { route: "ru_bridge", destE164: dest, dialE164: env.ruBridgeE164 };
+    return {
+      route: "blocked",
+      destE164: dest,
+      error:
+        "RU dest needs VOXIMPLANT_FROM_E164 (verified mobile) or a +1 BRO_RU_BRIDGE_E164",
+    };
   }
   return { route: "inkbox_direct", destE164: dest, dialE164: dest };
 }
