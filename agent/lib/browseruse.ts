@@ -1,5 +1,30 @@
 const BASE = "https://api.browser-use.com/api/v4";
 
+/** ISO 3166-1 alpha-2 from BROWSERUSE_PROXY_COUNTRY. Unset → undefined (API default US). */
+export function proxyCountryCode(
+  raw: string | undefined = process.env.BROWSERUSE_PROXY_COUNTRY,
+): string | undefined {
+  const c = raw?.trim().toLowerCase();
+  if (!c) return undefined;
+  return /^[a-z]{2}$/.test(c) ? c : undefined;
+}
+
+/**
+ * Browser Use API v4 create-run proxy country.
+ * https://docs.browser-use.com/cloud/browser/proxies
+ * Field: browserSettings.proxyCountryCode (REST/SDK camelCase).
+ */
+export function applyProxyCountry(
+  body: Record<string, unknown>,
+  country: string | undefined = proxyCountryCode(),
+): Record<string, unknown> {
+  if (!country) return body;
+  return {
+    ...body,
+    browserSettings: { proxyCountryCode: country },
+  };
+}
+
 function key(): string {
   const k = process.env.BROWSER_USE_API_KEY;
   if (!k) throw new Error("BROWSER_USE_API_KEY missing");
@@ -48,16 +73,57 @@ export type BrowserRun = {
   result?: string;
 };
 
+const ERRAND_MARK = "[bro-errand]";
+
+/** Wrap a raw errand with the cloud-browser operating envelope. Idempotent if already marked. */
+export function scaffoldTask(task: string): string {
+  if (task.startsWith(ERRAND_MARK)) return task;
+  return `${ERRAND_MARK}
+Выполняй поручение на языке сайтов (обычно русский). Задача: ${task}.
+Никогда не вводи номера карт, CVV, пароли или коды из SMS. Если сайт требует логин или оплату — остановись на этом шаге и опиши, что человеку нужно сделать самому (он подключится через live-URL).
+Доводи дело до конца, если оплата/логин не требуются (например: выбрать слот, заполнить форму с известными данными, дойти до финального подтверждения).
+Если данных не хватает (имя, телефон, адрес, время) — не выдумывай; закончи и перечисли, что нужно уточнить.
+Работай быстро: если сайт медленный, требует капчу или недоступен — пропусти его и возьми другой вариант.
+В конце верни краткий структурированный итог: что сделано; что нашёл (варианты с ценами/временами, до 5); что нужно от человека.`;
+}
+
+export async function createProfile(userId: string): Promise<string> {
+  const created = await bu("/profiles", {
+    method: "POST",
+    body: JSON.stringify({ userId, name: userId }),
+  });
+  const id = pick(created, ["id"]);
+  if (!id) throw new Error(`browser-use profile: no id in ${JSON.stringify(created).slice(0, 400)}`);
+  return id;
+}
+
+function resolveProxyCountry(): string | undefined {
+  const explicit = proxyCountryCode(process.env.BROWSERUSE_PROXY_COUNTRY);
+  if (explicit) return explicit;
+  const fallback = process.env.BRO_BROWSER_PROXY ?? "ru";
+  if (fallback.trim().toLowerCase() === "none") return undefined;
+  return proxyCountryCode(fallback);
+}
+
 export async function startRun(
   task: string,
   sessionId?: string,
+  opts?: { profileId?: string },
 ): Promise<BrowserRun> {
-  const body: Record<string, unknown> = { task };
+  const body: Record<string, unknown> = { task: scaffoldTask(task) };
   // Cloud JSON accepts both; send both so a session is reused.
   if (sessionId) {
     body.sessionId = sessionId;
     body.session_id = sessionId;
   }
+  const country = resolveProxyCountry();
+  body.browserSettings = {
+    ...(country ? { proxyCountryCode: country } : {}),
+    ...(opts?.profileId ? { profileId: opts.profileId } : {}),
+  };
+  const maxCost = Number(process.env.BRO_BROWSER_MAX_COST ?? "1");
+  if (Number.isFinite(maxCost) && maxCost > 0) body.maxCostUsd = maxCost;
+  if (process.env.BRO_BROWSER_MODEL) body.model = process.env.BRO_BROWSER_MODEL;
   const created = await bu("/runs", {
     method: "POST",
     body: JSON.stringify(body),

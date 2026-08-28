@@ -49,6 +49,21 @@ for (const hour of [0, 8, 23]) {
   assert(hourInTz(at, tz) === hour, `nextDailyAt ${hour} hour in tz`);
 }
 
+const vladTz = "Asia/Vladivostok";
+for (const hour of [0, 8, 23]) {
+  const at = nextDailyAt(hour, vladTz, now);
+  assert(at > now, `vlad nextDailyAt ${hour} future`);
+  assert(at - now < 24 * 60 * 60_000 + 60_000, `vlad nextDailyAt ${hour} within 24h+1min`);
+  assert(hourInTz(at, vladTz) === hour, `vlad nextDailyAt ${hour} hour in tz`);
+}
+const vladDaily = nextAfterRun({ recurDailyHour: 8, tz: vladTz }, now);
+assert(vladDaily !== null && vladDaily > now, "vlad recur daily future");
+assert(hourInTz(vladDaily!, vladTz) === 8, "vlad recur daily hour");
+assert(
+  nextAfterRun({ recurDailyHour: 8 }, now) === nextDailyAt(8, tz, now),
+  "missing tz falls back to Moscow",
+);
+
 const b0 = backoffAt(0, now);
 const b1 = backoffAt(1, now);
 const b2 = backoffAt(2, now);
@@ -62,6 +77,10 @@ assert(
   nextAfterRun({ recurMinutes: 30 }, now) === now + 30 * 60_000,
   "recur minutes",
 );
+assert(
+  nextAfterRun({ recurMinutes: 45 }, now) === now + 45 * 60_000,
+  "recur job_check 45",
+);
 const daily = nextAfterRun({ recurDailyHour: 8, tz }, now);
 assert(daily !== null && daily > now, "recur daily future");
 assert(nextAfterRun({}, now) === null, "one-shot");
@@ -70,6 +89,7 @@ assert(isSingletonKind("brief"), "brief singleton");
 assert(isSingletonKind("watcher"), "watcher singleton");
 assert(isSingletonKind("browser_poll"), "browser_poll singleton");
 assert(!isSingletonKind("reminder"), "reminder not singleton");
+assert(!isSingletonKind("job_check"), "job_check not singleton");
 
 const liveRows = [
   { kind: "watcher", status: "done" },

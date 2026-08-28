@@ -9,7 +9,9 @@ import {
 import { assertSecret } from "./secret";
 import {
   browserAllowance,
+  carryCountersOnTzChange,
   dayKey,
+  DEFAULT_TZ,
   isPaid,
   monthKey,
   msgAllowance,
@@ -33,12 +35,16 @@ export const tenantDoc = v.object({
   browserTask: v.optional(v.string()),
   browserStatus: v.optional(v.string()),
   browserStartedAt: v.optional(v.number()),
+  browserProfileId: v.optional(v.string()),
   paidUntil: v.optional(v.number()),
   msgsDayKey: v.optional(v.string()),
   msgsDayCount: v.optional(v.number()),
   browserMonthKey: v.optional(v.string()),
   browserMonthCount: v.optional(v.number()),
   paywallSentDayKey: v.optional(v.string()),
+  tz: v.optional(v.string()),
+  dedicatedIMessageNumber: v.optional(v.string()),
+  dedicatedIMessageNumberStatus: v.optional(v.string()),
 });
 
 async function tenantByPhone(ctx: MutationCtx, phoneE164: string) {
@@ -156,6 +162,42 @@ export const upsert = mutation({
   },
 });
 
+export const setTimezone = mutation({
+  args: {
+    secret: v.string(),
+    phoneE164: v.string(),
+    tz: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, { secret, phoneE164, tz }) => {
+    assertSecret(secret);
+    try {
+      new Intl.DateTimeFormat(undefined, { timeZone: tz });
+    } catch {
+      throw new Error("invalid timezone");
+    }
+    const tenant = await tenantByPhone(ctx, phoneE164);
+    const prevTz = tenant.tz ?? DEFAULT_TZ;
+    if (prevTz === tz) {
+      await ctx.db.patch(tenant._id, { tz });
+      return null;
+    }
+    const now = Date.now();
+    const carry = carryCountersOnTzChange({
+      now,
+      prevTz,
+      nextTz: tz,
+      msgsDayKey: tenant.msgsDayKey,
+      msgsDayCount: tenant.msgsDayCount,
+      browserMonthKey: tenant.browserMonthKey,
+      browserMonthCount: tenant.browserMonthCount,
+      paywallSentDayKey: tenant.paywallSentDayKey,
+    });
+    await ctx.db.patch(tenant._id, { tz, ...carry });
+    return null;
+  },
+});
+
 export const setBrowser = mutation({
   args: {
     secret: v.string(),
@@ -166,6 +208,7 @@ export const setBrowser = mutation({
     browserTask: v.optional(v.string()),
     browserStatus: v.optional(v.string()),
     browserStartedAt: v.optional(v.number()),
+    browserProfileId: v.optional(v.string()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -190,6 +233,9 @@ export const setBrowser = mutation({
       ...(args.browserStartedAt !== undefined
         ? { browserStartedAt: args.browserStartedAt }
         : {}),
+      ...(args.browserProfileId !== undefined
+        ? { browserProfileId: args.browserProfileId }
+        : {}),
     });
     return null;
   },
@@ -199,9 +245,14 @@ export const countProvisioned = internalQuery({
   args: {},
   returns: v.number(),
   handler: async (ctx) => {
-    // ponytail: table is capped at BRO_IDENTITY_CAP (~10); scan is enough.
-    const rows = await ctx.db.query("tenants").take(64);
-    return rows.filter((r) => r.inkboxHandle).length;
+    // Table is ~BRO_IDENTITY_CAP (~100) plus a few unbound rows. A take(N)
+    // on raw docs undercounts when unbound tenants sit in the first page
+    // (by_handle is optional, so missing handles are not a cheap range).
+    // Full collect + TS filter is enough at this scale.
+    // eslint-disable-next-line @convex-dev/no-query-collect
+    const rows = await ctx.db.query("tenants").collect();
+    return rows.filter((r) => typeof r.inkboxHandle === "string" && r.inkboxHandle.length > 0)
+      .length;
   },
 });
 
@@ -233,6 +284,8 @@ export const insertProvisioned = internalMutation({
     inkboxIdentityId: v.string(),
     emailAddress: v.optional(v.string()),
     webhookSigningKey: v.optional(v.string()),
+    dedicatedIMessageNumber: v.optional(v.string()),
+    dedicatedIMessageNumberStatus: v.optional(v.string()),
   },
   returns: tenantDoc,
   handler: async (ctx, args) => {
@@ -247,6 +300,8 @@ export const insertProvisioned = internalMutation({
       inkboxIdentityId: args.inkboxIdentityId,
       emailAddress: email || undefined,
       webhookSigningKey: args.webhookSigningKey,
+      dedicatedIMessageNumber: args.dedicatedIMessageNumber,
+      dedicatedIMessageNumberStatus: args.dedicatedIMessageNumberStatus,
       displayName: "Bro",
       status: "active",
     });
@@ -312,7 +367,7 @@ export const countInboundMessage = mutation({
     assertSecret(secret);
     const tenant = await tenantByPhone(ctx, phoneE164);
     const now = Date.now();
-    const key = dayKey(now);
+    const key = dayKey(now, tenant.tz);
     const paid = isPaid(tenant.paidUntil, now);
     const allowance = msgAllowance(paid, {
       free: process.env.BRO_FREE_MSGS_PER_DAY,
@@ -349,7 +404,7 @@ export const countBrowserJobStart = mutation({
     assertSecret(secret);
     const tenant = await tenantByPhone(ctx, phoneE164);
     const now = Date.now();
-    const key = monthKey(now);
+    const key = monthKey(now, tenant.tz);
     const paid = isPaid(tenant.paidUntil, now);
     const allowance = browserAllowance(paid, {
       free: process.env.BRO_FREE_BROWSER_JOBS_PER_MONTH,

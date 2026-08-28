@@ -1,10 +1,6 @@
 import { ConvexHttpClient } from "convex/browser";
-import { anyApi } from "convex/server";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
-
-// ponytail: anyApi до codegen; после convex deploy можно вернуть typed api
-const wakeups = anyApi.wakeups;
 
 function client(): ConvexHttpClient {
   const url = process.env.CONVEX_URL;
@@ -104,6 +100,14 @@ export async function bindInbound(
   });
 }
 
+export async function setTimezone(phoneE164: string, tz: string): Promise<void> {
+  await client().mutation(api.tenants.setTimezone, {
+    secret: secret(),
+    phoneE164,
+    tz,
+  });
+}
+
 export async function setBrowser(
   phoneE164: string,
   patch: {
@@ -113,6 +117,7 @@ export async function setBrowser(
     browserTask?: string;
     browserStatus?: string;
     browserStartedAt?: number;
+    browserProfileId?: string;
   },
 ): Promise<void> {
   await client().mutation(api.tenants.setBrowser, {
@@ -206,13 +211,13 @@ export async function touchJobMail(
 export async function scheduleWakeup(args: {
   tenantPhone: string;
   at: number;
-  kind: "reminder" | "browser_poll" | "brief" | "watcher";
+  kind: "reminder" | "browser_poll" | "brief" | "watcher" | "job_check";
   payload: string;
   recurMinutes?: number;
   recurDailyHour?: number;
   tz?: string;
 }): Promise<string> {
-  return await client().mutation(wakeups.schedule, {
+  return await client().mutation(api.wakeups.schedule, {
     secret: secret(),
     ...args,
   });
@@ -222,18 +227,20 @@ export async function cancelWakeup(
   tenantPhone: string,
   opts: {
     id?: string;
-    kind?: "reminder" | "browser_poll" | "brief" | "watcher";
+    kind?: "reminder" | "browser_poll" | "brief" | "watcher" | "job_check";
+    payloadContains?: string;
   },
 ): Promise<number> {
-  return await client().mutation(wakeups.cancel, {
+  return await client().mutation(api.wakeups.cancel, {
     secret: secret(),
     tenantPhone,
-    ...opts,
+    id: opts.id as Id<"wakeups"> | undefined,
+    kind: opts.kind,
   });
 }
 
 export async function listWakeups(tenantPhone: string) {
-  return await client().query(wakeups.listForTenant, {
+  return await client().query(api.wakeups.listForTenant, {
     secret: secret(),
     tenantPhone,
   });
@@ -243,7 +250,7 @@ export async function setWakeupLastSeen(
   tenantPhone: string,
   lastSeen: string,
 ): Promise<void> {
-  await client().mutation(wakeups.setLastSeen, {
+  await client().mutation(api.wakeups.setLastSeen, {
     secret: secret(),
     tenantPhone,
     kind: "watcher",

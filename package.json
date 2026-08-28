@@ -15,6 +15,7 @@
     "optmem:check": "python3 scripts/optmem-check.py",
     "browser:check": "node --experimental-strip-types scripts/browser-policy-check.ts",
     "access:check": "node --experimental-strip-types scripts/access-policy-check.ts",
+    "dedicated:check": "node --experimental-strip-types scripts/dedicated-line-check.ts",
     "composio:check": "node --env-file=.env.local --experimental-strip-types scripts/composio-check.ts",
     "composio:isolation": "node --env-file=.env.local --experimental-strip-types scripts/composio-isolation.ts",
     "connect-link:check": "node --experimental-strip-types scripts/connect-link-check.ts",
