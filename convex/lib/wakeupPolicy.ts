@@ -1,6 +1,6 @@
 const SLACK_MS = 2 * 60_000;
 const MINUTE = 60_000;
-const DEFAULT_TZ = "Europe/Moscow";
+export const DEFAULT_TZ = "Europe/Moscow";
 
 function partsInTz(ms: number, tz: string) {
   const dtf = new Intl.DateTimeFormat("en-US", {
