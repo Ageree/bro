@@ -95,9 +95,9 @@
       .then(function (res) { return res.json(); })
       .then(function (data) {
         if (!data.ok) {
-          if (data.code === "unbound") setStatus("Сначала напиши Bro в iMessage");
-          else if (data.code === "cooldown") setStatus("Подожди минуту и нажми ещё раз");
-          else if (data.code === "unknown") setStatus("Такого доступа нет");
+          if (data.code === "unavailable" || data.code === "unbound" || data.code === "unknown") {
+            setStatus("Сначала напиши Bro в iMessage");
+          } else if (data.code === "cooldown") setStatus("Подожди минуту и нажми ещё раз");
           else setStatus("Не вышло, нажми ещё раз");
           return;
         }

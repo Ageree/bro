@@ -126,14 +126,19 @@ http.route({
   handler: httpAction(async (ctx, request) => {
     const body = await jsonBody(request);
     const handle = typeof body.handle === "string" ? body.handle.trim() : "";
-    if (!isValidHandle(handle)) return json({ ok: false, code: "unknown" });
+    if (!isValidHandle(handle)) return json({ ok: false, code: "unavailable" });
     const code = newLoginCode();
     const begun = await ctx.runMutation(internal.cabinet.beginLogin, {
       handle,
       codeHash: await sha256hex(code),
       now: Date.now(),
     });
-    if (!begun.ok) return json(begun);
+    if (!begun.ok) {
+      return json({
+        ok: false,
+        code: begun.code === "cooldown" ? "cooldown" : "unavailable",
+      });
+    }
     try {
       await ctx.runAction(internal.cabinet.sendLoginCode, {
         identityId: begun.identityId,
