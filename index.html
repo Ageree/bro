@@ -140,23 +140,48 @@
     }
     .modal[hidden] { display: none; }
     .sheet {
-      width: min(22rem, 100%);
+      width: min(24rem, 100%);
       background: rgba(255, 255, 255, 0.94);
       border-radius: 1.2rem;
-      padding: 1.5rem 1.4rem;
+      padding: 1.6rem 1.5rem 1.35rem;
       text-align: left;
     }
-    .sheet h2 { font-size: 1.15rem; margin-bottom: 0.8rem; }
-    .sheet label { display: block; font-size: 0.85rem; margin: 0.7rem 0 0.3rem; }
+    .sheet h2 { font-size: 1.15rem; margin-bottom: 0.45rem; }
+    .sheet .hint {
+      color: var(--ink-soft);
+      font-size: 0.9rem;
+      line-height: 1.45;
+      margin-bottom: 0.35rem;
+    }
+    .sheet label { display: block; font-size: 0.85rem; margin: 0.75rem 0 0.3rem; }
     .sheet input {
       width: 100%;
       font: inherit;
-      padding: 0.65rem 0.75rem;
+      padding: 0.7rem 0.8rem;
       border-radius: 0.7rem;
       border: 1px solid rgba(23, 39, 30, 0.2);
     }
-    .sheet .row { display: flex; gap: 0.6rem; margin-top: 1rem; }
-    .sheet .row .cta, .sheet .row .ghost { flex: 1; text-align: center; border: 0; }
+    .sheet .sheet-cta {
+      display: block;
+      width: 100%;
+      margin-top: 1rem;
+      text-align: center;
+      white-space: nowrap;
+      border: 0;
+      cursor: pointer;
+    }
+    .sheet .text-close {
+      display: block;
+      width: 100%;
+      margin-top: 0.85rem;
+      background: none;
+      border: 0;
+      color: var(--ink-soft);
+      font: inherit;
+      font-size: 0.92rem;
+      cursor: pointer;
+      text-align: center;
+    }
     .sheet .status { min-height: 1.3rem; margin-top: 0.7rem; color: var(--ink-soft); font-size: 0.9rem; }
 
     .section {
@@ -223,20 +248,17 @@
   <div class="modal" id="login-modal" hidden>
     <div class="sheet" role="dialog" aria-labelledby="login-title">
       <h2 id="login-title">Вход в кабинет</h2>
+      <p class="hint">Код придёт сообщением от Bro в уже открытый чат iMessage.</p>
       <label for="login-handle">Handle</label>
       <input id="login-handle" autocomplete="username" placeholder="bro-xxxxxxxx" />
-      <div class="row">
-        <button class="cta" id="login-send" type="button">Получить код</button>
-        <button class="ghost" id="login-cancel" type="button">Закрыть</button>
-      </div>
+      <button class="cta sheet-cta" id="login-send" type="button">Получить код</button>
       <div id="login-code-row" hidden>
         <label for="login-code">Код из iMessage</label>
         <input id="login-code" inputmode="numeric" maxlength="6" autocomplete="one-time-code" />
-        <div class="row">
-          <button class="cta" id="login-verify" type="button">Войти</button>
-        </div>
+        <button class="cta sheet-cta" id="login-verify" type="button">Войти</button>
       </div>
       <p class="status" id="login-status"></p>
+      <button class="text-close" id="login-cancel" type="button">Закрыть</button>
     </div>
   </div>
 

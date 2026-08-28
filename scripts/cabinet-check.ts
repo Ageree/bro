@@ -170,6 +170,16 @@ assert(authJs.includes('#login-modal'), "auth binds #login-modal");
 assert(!/\$\("\.login-open"\)/.test(authJs), "auth does not use class login-open");
 
 const landing = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+assert(landing.includes('id="login-send"'), "landing has login send");
+assert(
+  landing.includes('class="cta sheet-cta" id="login-send"'),
+  "login send is a full-width one-line CTA",
+);
+assert(landing.includes("white-space: nowrap"), "login CTA stays on one line");
+assert(
+  landing.includes("Код придёт сообщением от Bro"),
+  "login sheet says where the code arrives",
+);
 assert(landing.includes('id="request-access"'), "landing CTA has id");
 assert(
   landing.includes('querySelector("#request-access")'),
