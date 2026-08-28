@@ -5,17 +5,16 @@ _Date: 2026-08-28_
 ## Проблема
 
 Inkbox Voice AI — правильный мозг (`place-call` + `hosted_agent` + `reason`).
-Его PSTN — AWS Chime, номера только US `local`. `to_number=+7…` ловит
-`destination_country_not_enabled` (D13), пока support не откроет страну.
+Его PSTN — AWS Chime. Живые пробы 2026-08-28: `+1` US/CA набираются,
+`+7` и `+44` падают `502` upstream dial failed (не D13 — тот был бы 422).
 Клинику в Москве всё равно лучше звонить с российского CLI.
 
 ## Решение
 
-Inkbox **никогда не набирает +7**. Он набирает наш US DID (это всегда
-разрешено). DID принадлежит Voximplant/Zadarma: входящий от номера Bro →
-исходящий на настоящий +7 → мост медиа. Voice AI думает, что говорит с
-мостом; в трубке — ресепшн клиники. `reason` на исходящем Inkbox — бриф
-заявки.
+Inkbox **никогда не набирает +7**. Он набирает наш `+1` DID (US или CA).
+DID принадлежит Voximplant: входящий от номера Bro → исходящий на
+настоящий +7 → мост медиа. Voice AI думает, что говорит с мостом; в
+трубке — ресепшн клиники. `reason` на исходящем Inkbox — бриф заявки.
 
 ```
 человек в iMessage
@@ -31,38 +30,59 @@ Inkbox **никогда не набирает +7**. Он набирает наш
 Если Inkbox откроет RU (`BRO_INKBOX_RU_ENABLED=1`) — тот же тул бьёт
 `to_number` напрямую, мост не нужен.
 
+`decideCallRoute` режет hairpin, если `BRO_RU_BRIDGE_E164` сам `+7`:
+это CLI, не dest, который Inkbox умеет набрать.
+
 ## Не делаем
 
 Retell/Vapi как ствол. Shared iMessage voice (это звонок пользователю Bro,
 не в клинику). SIP URI в `to_number` (Inkbox принимает только E.164).
 
-## Ops
+## Live 2026-08-28
 
-Voximplant аккаунт `ageree` (11477486): приложение `bro-ru-bridge`
-(id 59499143), сценарий `ru-hairpin` (3607805), правило `inbound-bridge`
-(9330638, pattern `.*`). Convex `GET /call-bridge` живой на
-`https://frugal-dragon-943.convex.site`. Inkbox `call.ended` подписан на
-`https://bro-agent.vercel.app/webhooks/call`. Voice AI instructions
-стоят на `@bro-ageree`.
+Inkbox `@bro-ageree` (`d051f194-1bd9-405b-b6fe-2b3544caec58`):
+- Developer plan, dedicated PSTN `+15189183436` (NY local, active,
+  `incoming_call_action=hosted_agent`, SMS ещё `pending`)
+- `call.ended` → `https://bro-agent.vercel.app/webhooks/call`
+- Voice AI: cedar / gpt-realtime-2, инструкции на русском
+- Probe: NIST `+13034997111` → 200 ringing, hangup local, не ответили
+- Probe: Toronto `+14163922489` → 200 ringing (значит CA `+1` тоже ок)
+- Probe: `+74992816046`, `+79001234567`, `+447418353977` → 502
 
-Ещё не куплено (блокировки биллинга, не кода):
-- Inkbox `POST /phone/numbers` → 402, план без PSTN. Апгрейд:
-  https://inkbox.ai/console/organizations?tab=billing
-- Voximplant баланс ≈8.6 ₽, US DID ≈157+157 ₽. Пополнить и купить
-  US GEOGRAPHIC, привязать к `bro-ru-bridge`.
+Voximplant `ageree` (11477486), баланс ≈281.60 RUR после покупки:
+- app `bro-ru-bridge` (59499143), scenario `ru-hairpin` (3607805,
+  CLI live `+74992816046`), rule `inbound-bridge` (9330638)
+- куплен Moscow 499 `+74992816046` (phone_id 9051), 427 ₽/мес,
+  bound to `bro-ru-bridge` / `inbound-bridge`
+- `can_be_used: false`, `verification_status: REQUIRED`,
+  `activation_status: DEACTIVATED`, hold до 2026-09-11
+- regulation address пустой — без верификации номер мёртв
+- US GEOGRAPHIC/MOBILE/TOLLFREE stock = 0 (по штатам тоже пусто)
+- GB MOBILE есть (~157+157 ₽), но Inkbox `+44` не набирает
+- CA MOBILE мелькал, list/regulations недоступны (529/581)
 
-1. Купить US `local` PSTN в Inkbox (`INKBOX_PHONE_NUMBER`) и US DID
-   у Voximplant (`BRO_RU_BRIDGE_E164`). RU CLI — `VOXIMPLANT_FROM_E164`
-   в сценарии, не в Bro.
-2. `BRO_INTERNAL_SECRET` на Convex deployment — без него
-   `GET https://<deployment>.convex.site/call-bridge` отвечает 401.
-3. Вставить `scripts/voximplant-ru-bridge.js` в Voximplant, повесить
-   правило на входящие на мостовой DID.
-4. `npm run webhooks` — отдельная identity-подписка `call.ended` на
-   `/webhooks/call` (нельзя смешивать с `imessage.*`).
-5. Если Inkbox support откроет RU: `BRO_INKBOX_RU_ENABLED=1` — тот же
-   тул бьёт `to_number=+7…`, мост не нужен.
+Convex `frugal-dragon-943`: `INKBOX_PHONE_NUMBER=+15189183436`,
+`BRO_RU_BRIDGE_E164=+74992816046` (сейчас это CLI, hairpin заблокирован
+политикой), `BRO_INTERNAL_SECRET` стоит. `GET /call-bridge` —
+401 без секрета, 404 `no pending` с секретом.
 
-Квота Inkbox: 30 мин/номер/мес на Developer/Startup, $0.03/мин оверэйдж.
+Vercel `bro-agent`: те же `INKBOX_*` / `BRO_RU_BRIDGE_E164`, redeploy
+`dpl_2xjyKsP7pZcgizUrXR5jzsMeXyQZ` READY.
+
+## Ещё нужно человеку
+
+1. Верификация RU в кабинете Voximplant (документы / regulation
+   address), иначе `+74992816046` снимут после 2026-09-11.
+   https://manage.voximplant.com/
+2. `+1` DID у Voximplant как настоящий `BRO_RU_BRIDGE_E164`. US сейчас
+   нет в наличии. Когда появится: ≈157+157 ₽, на балансе 281 — не хватает
+   ~33 ₽, плюс привязать к `bro-ru-bridge`.
+3. Либо Inkbox support открывает destination RU — тогда
+   `BRO_INKBOX_RU_ENABLED=1` и мост не нужен (CLI будет американский).
+
+Не покупать номер на каждого пользователя. Один shared Inkbox PSTN +
+один shared Vox bridge + один RU CLI.
+
+Квота Inkbox: 30 мин/орг/мес на Developer, $0.03/мин оверэйдж.
 `hosted_agent` не крутит кастомные тулы mid-call; бриф — `reason` ≤2000.
 41-ФЗ / 152-ФЗ для массовых звонков остаются на проде.

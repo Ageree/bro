@@ -4,7 +4,7 @@
 
 const BRIDGE_URL = "https://frugal-dragon-943.convex.site/call-bridge";
 const SECRET = "BRO_INTERNAL_SECRET"; // live scenario has the real secret
-const CLI = ""; // +7… when purchased; empty uses the DID Inkbox called
+const CLI = ""; // live scenario uses +74992816046; empty falls back to the DID Inkbox called
 
 VoxEngine.addEventListener(AppEvents.CallAlerting, (e) => {
   const from = encodeURIComponent(e.callerid || "");
