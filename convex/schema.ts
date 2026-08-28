@@ -17,6 +17,7 @@ export default defineSchema({
     browserTask: v.optional(v.string()),
     browserStatus: v.optional(v.string()),
     browserStartedAt: v.optional(v.number()),
+    browserProfileId: v.optional(v.string()),
     paidUntil: v.optional(v.number()),
     msgsDayKey: v.optional(v.string()),
     msgsDayCount: v.optional(v.number()),
@@ -75,6 +76,7 @@ export default defineSchema({
       v.literal("browser_poll"),
       v.literal("brief"),
       v.literal("watcher"),
+      v.literal("job_check"),
     ),
     payload: v.string(),
     status: v.union(
