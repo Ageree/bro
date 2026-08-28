@@ -1,4 +1,4 @@
-const DEFAULT_TZ = "Europe/Moscow";
+export const DEFAULT_TZ = "Europe/Moscow";
 const MONTH_MS = 30 * 24 * 3600 * 1000;
 const FREE_MSGS = 30;
 const PAID_MSGS = 500;
@@ -32,6 +32,51 @@ export function monthKey(now: number, tz = DEFAULT_TZ): string {
   return `${p.year}-${p.month}`;
 }
 
+/**
+ * Re-key live usage windows under nextTz.
+ * Effective count = live legacy offset + component used for today/month in prevTz.
+ * Stale stored keys start the new period at 0 (component-today still carries).
+ * Paywall rematches only when it was the live prevTz day — stale paywall
+ * does not resurrect.
+ */
+export function carryCountersOnTzChange(opts: {
+  now: number;
+  prevTz: string;
+  nextTz: string;
+  msgsDayKey?: string;
+  msgsDayCount?: number;
+  browserMonthKey?: string;
+  browserMonthCount?: number;
+  paywallSentDayKey?: string;
+  msgsComponentUsed?: number;
+  browserComponentUsed?: number;
+}): {
+  msgsDayKey: string;
+  msgsDayCount: number;
+  browserMonthKey: string;
+  browserMonthCount: number;
+  paywallSentDayKey?: string;
+} {
+  const prevDay = dayKey(opts.now, opts.prevTz);
+  const prevMonth = monthKey(opts.now, opts.prevTz);
+  const nextDay = dayKey(opts.now, opts.nextTz);
+  const nextMonth = monthKey(opts.now, opts.nextTz);
+  const liveDay = opts.msgsDayKey === prevDay;
+  const liveMonth = opts.browserMonthKey === prevMonth;
+  const msgsLegacy = liveDay ? (opts.msgsDayCount ?? 0) : 0;
+  const browserLegacy = liveMonth ? (opts.browserMonthCount ?? 0) : 0;
+  return {
+    msgsDayKey: nextDay,
+    msgsDayCount: msgsLegacy + (opts.msgsComponentUsed ?? 0),
+    browserMonthKey: nextMonth,
+    browserMonthCount: browserLegacy + (opts.browserComponentUsed ?? 0),
+    paywallSentDayKey:
+      opts.paywallSentDayKey === prevDay
+        ? nextDay
+        : opts.paywallSentDayKey,
+  };
+}
+
 export function isPaid(paidUntil: number | undefined, now: number): boolean {
   return (paidUntil ?? 0) > now;
 }
@@ -43,23 +88,37 @@ export function extendPaidUntil(
   return Math.max(now, paidUntil ?? 0) + MONTH_MS;
 }
 
+export const RATE_COUNTER_CAP = 1_000_000_000_000;
+export const ALLOWANCE_MAX = 1_000_000_000;
+export const RATE_WINDOW_START_MS = 0;
+// ~1014 years; first boundary from epoch is centuries away and safe in IEEE-754.
+export const RATE_WINDOW_PERIOD_MS = 32_000_000_000_000;
+
 function cap(raw: string | undefined, fallback: number): number {
   const n = Number(raw ?? fallback);
   return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+export function clampAllowance(n: number): number {
+  if (n <= ALLOWANCE_MAX) return n;
+  console.warn(`allowance ${n} clamped to ${ALLOWANCE_MAX}`);
+  return ALLOWANCE_MAX;
 }
 
 export function msgAllowance(
   paid: boolean,
   env: { free?: string; paid?: string },
 ): number {
-  return paid ? cap(env.paid, PAID_MSGS) : cap(env.free, FREE_MSGS);
+  return clampAllowance(paid ? cap(env.paid, PAID_MSGS) : cap(env.free, FREE_MSGS));
 }
 
 export function browserAllowance(
   paid: boolean,
   env: { free?: string; paid?: string },
 ): number {
-  return paid ? cap(env.paid, PAID_BROWSER) : cap(env.free, FREE_BROWSER);
+  return clampAllowance(
+    paid ? cap(env.paid, PAID_BROWSER) : cap(env.free, FREE_BROWSER),
+  );
 }
 
 export function paywallDecision(opts: {
@@ -72,4 +131,94 @@ export function paywallDecision(opts: {
   if (opts.count <= opts.allowance) return "allow";
   if (opts.paywallSentDayKey !== opts.dayKey) return "paywall";
   return "drop";
+}
+
+export type InboundGate = {
+  decision: "allow" | "paywall" | "drop";
+  payUrl?: string;
+};
+
+export type BrowserGate = { allowed: boolean };
+
+// Rate-limiter windows are UTC-ms only — calendar day/month is the key.
+export function rateLimitPeriodKey(
+  tenantId: string,
+  calendarKey: string,
+): string {
+  return `${tenantId}:${calendarKey}`;
+}
+
+export function consumeCount(ok: boolean, allowance: number): number {
+  return ok ? allowance : allowance + 1;
+}
+
+export function usedCount(remaining: number, cap = RATE_COUNTER_CAP): number {
+  return cap - remaining;
+}
+
+export function nextWindowBoundary(
+  now: number,
+  periodMs = RATE_WINDOW_PERIOD_MS,
+  startMs = RATE_WINDOW_START_MS,
+): number {
+  const elapsed = Math.floor((now - startMs) / periodMs);
+  return startMs + (elapsed + 1) * periodMs;
+}
+
+export function legacyUsedForPeriod(
+  legacyKey: string | undefined,
+  legacyCount: number | undefined,
+  periodKey: string,
+): number {
+  return legacyKey === periodKey ? (legacyCount ?? 0) : 0;
+}
+
+export function effectiveUsedCount(
+  componentUsed: number,
+  legacyOffset: number,
+): number {
+  return componentUsed + legacyOffset;
+}
+
+export function inboundOnAccountingError(opts: {
+  alreadySentToday: boolean;
+  marked: boolean;
+}): InboundGate {
+  if (opts.alreadySentToday || !opts.marked) return { decision: "drop" };
+  return { decision: "paywall" };
+}
+
+export function inboundDecisionOnLimitError(opts?: {
+  alreadySentToday?: boolean;
+  marked?: boolean;
+}): InboundGate {
+  return inboundOnAccountingError({
+    alreadySentToday: opts?.alreadySentToday ?? false,
+    marked: opts?.marked ?? false,
+  });
+}
+
+export function browserAllowedOnLimitError(): BrowserGate {
+  return { allowed: false };
+}
+
+export function inboundGateFromResult(
+  result: InboundGate | undefined,
+  error: unknown,
+  mark?: { alreadySentToday: boolean; marked: boolean },
+): InboundGate {
+  if (error != null || result == null) {
+    return inboundOnAccountingError(
+      mark ?? { alreadySentToday: false, marked: false },
+    );
+  }
+  return result;
+}
+
+export function browserGateFromResult(
+  result: BrowserGate | undefined,
+  error: unknown,
+): BrowserGate {
+  if (error != null || result == null) return browserAllowedOnLimitError();
+  return result;
 }

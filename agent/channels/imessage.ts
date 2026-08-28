@@ -15,6 +15,7 @@ import {
   getTenant,
   getTenantByConversation,
   getTenantByHandle,
+  markPaywallSent,
   setWakeupLastSeen,
   upsertTenant,
 } from "../lib/convex";
@@ -31,6 +32,7 @@ import {
   releaseWakeupDelivery,
   takeWakeupDelivery,
 } from "../lib/wakeup-dedupe";
+import { inboundGateFromResult } from "../../convex/lib/billingPolicy";
 
 // ponytail: in-memory only — lost on restart, not shared across instances
 const wakeupDelivered = new Map<string, number>();
@@ -145,14 +147,24 @@ export default defineChannel({
         messageType: msg.message_type,
       });
 
-      let gate: { decision: "allow" | "paywall" | "drop"; payUrl?: string } = {
-        decision: "allow",
-      };
+      let gate: { decision: "allow" | "paywall" | "drop"; payUrl?: string };
       try {
-        gate = await countInboundMessage(remote);
+        gate = inboundGateFromResult(await countInboundMessage(remote), undefined);
       } catch (err) {
-        // ponytail: billing must not kill chat
         console.error("billing count failed", err);
+        try {
+          const marked = await markPaywallSent(remote);
+          gate = inboundGateFromResult(undefined, err, {
+            alreadySentToday: marked.alreadySentToday,
+            marked: true,
+          });
+        } catch (markErr) {
+          console.error("paywallSentDayKey persist failed", markErr);
+          gate = inboundGateFromResult(undefined, err, {
+            alreadySentToday: false,
+            marked: false,
+          });
+        }
       }
       if (gate.decision === "drop") {
         return new Response(null, { status: 204 });
@@ -194,6 +206,7 @@ export default defineChannel({
           attributes: {
             conversationId: msg.conversation_id,
             inkboxHandle: identityHandle,
+            messageId: msg.id,
           },
         },
       });
@@ -286,6 +299,8 @@ export default defineChannel({
           }
           // Residual race: browserRunId can change during from().send after this check.
         }
+      } else if (kind === "job_check") {
+        prompt = `[background wakeup] Фоновая проверка джоба: ${payload}. Открытые джобы этого человека уже в контексте. Сделай следующий шаг цепочки сам (проверь почту/статус нужным тулом: composio, browser_task, bro_mail). Если есть прогресс — сделай шаг и коротко напиши человеку. Если продвинуться нечем — ответь ровно [SILENT]: проверка повторится сама. Если джоб уже закрыт или отменён — вызови cancel_wakeup с kind=job_check и payloadContains «джоб <id>», затем ответь [SILENT].`;
       }
       const idempotencyKey =
         typeof body.idempotencyKey === "string" ? body.idempotencyKey : "";

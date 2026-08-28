@@ -29,7 +29,8 @@ export function isDoneStatus(status: string | undefined | null): boolean {
   return DONE.has((status ?? "").trim().toLowerCase());
 }
 
-const NEW_JOB = /купи|купить|найди|найти|закаж|заказ|wb|wildberries|ozon|озон|wildberries\.|ozon\.ru/i;
+const NEW_JOB =
+  /купи|купить|найди|найти|закаж|заказ|wb|wildberries|ozon|озон|wildberries\.|ozon\.ru|забронир|брон|запиш|запис|запись|столик|ресторан|врач|стоматолог|клиник|салон|такси|доставк|отель|билет|вызов|оформ|аренд/i;
 
 export function looksLikeNewJob(task: string): boolean {
   const t = task.trim();
@@ -60,8 +61,17 @@ export function nextBrowserAction(opts: {
   return "start";
 }
 
+const POLL_GIVE_UP_MS = 30 * 60_000;
+
+export function pollTimedOut(
+  startedAt: number | undefined,
+  now: number,
+): boolean {
+  if (startedAt === undefined) return false;
+  return now - startedAt > POLL_GIVE_UP_MS;
+}
+
 export {
   nextFollowDecision,
-  pollGiveUp as pollTimedOut,
   shouldStartFollowThrough,
 } from "../../convex/lib/browserFollowPolicy.ts";

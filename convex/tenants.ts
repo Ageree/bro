@@ -9,11 +9,19 @@ import {
 import { assertSecret } from "./secret";
 import {
   browserAllowance,
+  browserAllowedOnLimitError,
+  carryCountersOnTzChange,
   dayKey,
+  DEFAULT_TZ,
+  effectiveUsedCount,
+  inboundOnAccountingError,
   isPaid,
+  legacyUsedForPeriod,
   monthKey,
   msgAllowance,
   paywallDecision,
+  rateLimitPeriodKey,
+  usedCount,
 } from "./lib/billingPolicy";
 import {
   browserWakeupClaimKey,
@@ -22,6 +30,7 @@ import {
   parseWakeupClaim,
   type WakeupPhase,
 } from "./lib/browserFollowPolicy";
+import { periodConfig, rateLimiter } from "./lib/rateLimits";
 
 export const tenantDoc = v.object({
   _id: v.id("tenants"),
@@ -40,15 +49,20 @@ export const tenantDoc = v.object({
   browserTask: v.optional(v.string()),
   browserStatus: v.optional(v.string()),
   browserStartedAt: v.optional(v.number()),
+  browserProfileId: v.optional(v.string()),
   browserWorkflowId: v.optional(v.string()),
   browserWorkflowRunId: v.optional(v.string()),
   browserWakeupClaim: v.optional(v.string()),
   paidUntil: v.optional(v.number()),
+  // deprecated: counters live in @convex-dev/rate-limiter
   msgsDayKey: v.optional(v.string()),
   msgsDayCount: v.optional(v.number()),
   browserMonthKey: v.optional(v.string()),
   browserMonthCount: v.optional(v.number()),
   paywallSentDayKey: v.optional(v.string()),
+  tz: v.optional(v.string()),
+  dedicatedIMessageNumber: v.optional(v.string()),
+  dedicatedIMessageNumberStatus: v.optional(v.string()),
 });
 
 async function tenantByPhone(ctx: MutationCtx, phoneE164: string) {
@@ -166,6 +180,59 @@ export const upsert = mutation({
   },
 });
 
+export const setTimezone = mutation({
+  args: {
+    secret: v.string(),
+    phoneE164: v.string(),
+    tz: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, { secret, phoneE164, tz }) => {
+    assertSecret(secret);
+    try {
+      new Intl.DateTimeFormat(undefined, { timeZone: tz });
+    } catch {
+      throw new Error("invalid timezone");
+    }
+    const tenant = await tenantByPhone(ctx, phoneE164);
+    const prevTz = tenant.tz ?? DEFAULT_TZ;
+    if (prevTz === tz) {
+      await ctx.db.patch(tenant._id, { tz });
+      return null;
+    }
+    const now = Date.now();
+    const config = periodConfig();
+    const prevDayKey = dayKey(now, prevTz);
+    const prevMonthKey = monthKey(now, prevTz);
+    // Component keys are tz-scoped; read old-window used so a tz flip
+    // does not drop the component half of effectiveUsedCount.
+    const { value: msgsRemaining } = await rateLimiter.getValue(
+      ctx,
+      "msgsPerDay",
+      { key: rateLimitPeriodKey(tenant._id, prevDayKey), config },
+    );
+    const { value: browserRemaining } = await rateLimiter.getValue(
+      ctx,
+      "browserJobsPerMonth",
+      { key: rateLimitPeriodKey(tenant._id, prevMonthKey), config },
+    );
+    const carry = carryCountersOnTzChange({
+      now,
+      prevTz,
+      nextTz: tz,
+      msgsDayKey: tenant.msgsDayKey,
+      msgsDayCount: tenant.msgsDayCount,
+      browserMonthKey: tenant.browserMonthKey,
+      browserMonthCount: tenant.browserMonthCount,
+      paywallSentDayKey: tenant.paywallSentDayKey,
+      msgsComponentUsed: usedCount(msgsRemaining),
+      browserComponentUsed: usedCount(browserRemaining),
+    });
+    await ctx.db.patch(tenant._id, { tz, ...carry });
+    return null;
+  },
+});
+
 export const setBrowser = mutation({
   args: {
     secret: v.string(),
@@ -176,6 +243,7 @@ export const setBrowser = mutation({
     browserTask: v.optional(v.string()),
     browserStatus: v.optional(v.string()),
     browserStartedAt: v.optional(v.number()),
+    browserProfileId: v.optional(v.string()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -200,6 +268,9 @@ export const setBrowser = mutation({
       ...(args.browserStartedAt !== undefined
         ? { browserStartedAt: args.browserStartedAt }
         : {}),
+      ...(args.browserProfileId !== undefined
+        ? { browserProfileId: args.browserProfileId }
+        : {}),
     });
     return null;
   },
@@ -209,9 +280,14 @@ export const countProvisioned = internalQuery({
   args: {},
   returns: v.number(),
   handler: async (ctx) => {
-    // ponytail: table is capped at BRO_IDENTITY_CAP (~10); scan is enough.
-    const rows = await ctx.db.query("tenants").take(64);
-    return rows.filter((r) => r.inkboxHandle).length;
+    // Table is ~BRO_IDENTITY_CAP (~100) plus a few unbound rows. A take(N)
+    // on raw docs undercounts when unbound tenants sit in the first page
+    // (by_handle is optional, so missing handles are not a cheap range).
+    // Full collect + TS filter is enough at this scale.
+    // eslint-disable-next-line @convex-dev/no-query-collect
+    const rows = await ctx.db.query("tenants").collect();
+    return rows.filter((r) => typeof r.inkboxHandle === "string" && r.inkboxHandle.length > 0)
+      .length;
   },
 });
 
@@ -382,6 +458,8 @@ export const insertProvisioned = internalMutation({
     inkboxIdentityId: v.string(),
     emailAddress: v.optional(v.string()),
     webhookSigningKey: v.optional(v.string()),
+    dedicatedIMessageNumber: v.optional(v.string()),
+    dedicatedIMessageNumberStatus: v.optional(v.string()),
   },
   returns: tenantDoc,
   handler: async (ctx, args) => {
@@ -396,6 +474,8 @@ export const insertProvisioned = internalMutation({
       inkboxIdentityId: args.inkboxIdentityId,
       emailAddress: email || undefined,
       webhookSigningKey: args.webhookSigningKey,
+      dedicatedIMessageNumber: args.dedicatedIMessageNumber,
+      dedicatedIMessageNumberStatus: args.dedicatedIMessageNumberStatus,
       displayName: "Bro",
       status: "active",
     });
@@ -461,33 +541,72 @@ export const countInboundMessage = mutation({
     assertSecret(secret);
     const tenant = await tenantByPhone(ctx, phoneE164);
     const now = Date.now();
-    const key = dayKey(now);
+    const key = dayKey(now, tenant.tz);
     const paid = isPaid(tenant.paidUntil, now);
     const allowance = msgAllowance(paid, {
       free: process.env.BRO_FREE_MSGS_PER_DAY,
       paid: process.env.BRO_PAID_MSGS_PER_DAY,
     });
-    const count =
-      tenant.msgsDayKey === key ? (tenant.msgsDayCount ?? 0) + 1 : 1;
-    const decision = paywallDecision({
-      count,
-      allowance,
-      paywallSentDayKey: tenant.paywallSentDayKey,
-      dayKey: key,
-    });
-    const patch: {
-      msgsDayKey: string;
-      msgsDayCount: number;
-      paywallSentDayKey?: string;
-    } = { msgsDayKey: key, msgsDayCount: count };
-    let payUrl: string | undefined;
-    if (decision === "paywall") {
-      patch.paywallSentDayKey = key;
-      const base = (process.env.BRO_PAY_BASE ?? "").replace(/\/$/, "");
-      if (base) payUrl = `${base}/pay?tid=${tenant._id}`;
+    try {
+      const periodKey = rateLimitPeriodKey(tenant._id, key);
+      const config = periodConfig();
+      await rateLimiter.limit(ctx, "msgsPerDay", { key: periodKey, config });
+      const { value } = await rateLimiter.getValue(ctx, "msgsPerDay", {
+        key: periodKey,
+        config,
+      });
+      const count = effectiveUsedCount(
+        usedCount(value),
+        legacyUsedForPeriod(tenant.msgsDayKey, tenant.msgsDayCount, key),
+      );
+      const decision = paywallDecision({
+        count,
+        allowance,
+        paywallSentDayKey: tenant.paywallSentDayKey,
+        dayKey: key,
+      });
+      let payUrl: string | undefined;
+      if (decision === "paywall") {
+        await ctx.db.patch(tenant._id, { paywallSentDayKey: key });
+        const base = (process.env.BRO_PAY_BASE ?? "").replace(/\/$/, "");
+        if (base) payUrl = `${base}/pay?tid=${tenant._id}`;
+      }
+      return payUrl ? { decision, payUrl } : { decision };
+    } catch (err) {
+      console.error("billing count failed", err);
+      if (tenant.paywallSentDayKey === key) {
+        return inboundOnAccountingError({
+          alreadySentToday: true,
+          marked: false,
+        });
+      }
+      try {
+        await ctx.db.patch(tenant._id, { paywallSentDayKey: key });
+        return inboundOnAccountingError({
+          alreadySentToday: false,
+          marked: true,
+        });
+      } catch (markErr) {
+        console.error("paywallSentDayKey persist failed", markErr);
+        return inboundOnAccountingError({
+          alreadySentToday: false,
+          marked: false,
+        });
+      }
     }
-    await ctx.db.patch(tenant._id, patch);
-    return payUrl ? { decision, payUrl } : { decision };
+  },
+});
+
+export const markPaywallSent = mutation({
+  args: { secret: v.string(), phoneE164: v.string() },
+  returns: v.object({ alreadySentToday: v.boolean() }),
+  handler: async (ctx, { secret, phoneE164 }) => {
+    assertSecret(secret);
+    const tenant = await tenantByPhone(ctx, phoneE164);
+    const key = dayKey(Date.now(), tenant.tz);
+    if (tenant.paywallSentDayKey === key) return { alreadySentToday: true };
+    await ctx.db.patch(tenant._id, { paywallSentDayKey: key });
+    return { alreadySentToday: false };
   },
 });
 
@@ -498,19 +617,36 @@ export const countBrowserJobStart = mutation({
     assertSecret(secret);
     const tenant = await tenantByPhone(ctx, phoneE164);
     const now = Date.now();
-    const key = monthKey(now);
+    const key = monthKey(now, tenant.tz);
     const paid = isPaid(tenant.paidUntil, now);
     const allowance = browserAllowance(paid, {
       free: process.env.BRO_FREE_BROWSER_JOBS_PER_MONTH,
       paid: process.env.BRO_PAID_BROWSER_JOBS_PER_MONTH,
     });
-    const prev =
-      tenant.browserMonthKey === key ? (tenant.browserMonthCount ?? 0) : 0;
-    if (prev >= allowance) return { allowed: false };
-    await ctx.db.patch(tenant._id, {
-      browserMonthKey: key,
-      browserMonthCount: prev + 1,
-    });
-    return { allowed: true };
+    try {
+      const periodKey = rateLimitPeriodKey(tenant._id, key);
+      const config = periodConfig();
+      const { value } = await rateLimiter.getValue(ctx, "browserJobsPerMonth", {
+        key: periodKey,
+        config,
+      });
+      const used = effectiveUsedCount(
+        usedCount(value),
+        legacyUsedForPeriod(
+          tenant.browserMonthKey,
+          tenant.browserMonthCount,
+          key,
+        ),
+      );
+      if (used >= allowance) return { allowed: false };
+      const { ok } = await rateLimiter.limit(ctx, "browserJobsPerMonth", {
+        key: periodKey,
+        config,
+      });
+      return { allowed: ok };
+    } catch (err) {
+      console.error("billing browser count failed", err);
+      return browserAllowedOnLimitError();
+    }
   },
 });

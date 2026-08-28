@@ -15,6 +15,7 @@ import {
   type WakeupPhase,
 } from "./lib/browserFollowPolicy";
 import { isLiveBrowserPoll } from "./lib/wakeupPolicy";
+import { unscheduleCron } from "./lib/wakeupCrons";
 import { workflow } from "./workflow";
 
 const startResult = v.object({
@@ -109,6 +110,7 @@ async function cancelLeftoverBrowserPolls(
       .paginate({ numItems: WAKEUP_SCAN_PAGE, cursor });
     for (const row of page.page) {
       if (!isLiveBrowserPoll(row)) continue;
+      await unscheduleCron(ctx, row._id);
       await ctx.db.patch(row._id, {
         status: "cancelled",
         recurMinutes: undefined,

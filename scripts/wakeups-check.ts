@@ -1,13 +1,22 @@
 import { splitSeen } from "../agent/lib/wakeup-text.ts";
 import {
   backoffAt,
+  canClaim,
+  canFinish,
+  cronName,
+  delayMs,
   giveUp,
   isLiveBrowserPoll,
+  isLiveStatus,
   isSingletonKind,
+  LIVE_STATUSES,
   liveOfKind,
+  MIN_CRON_INTERVAL_MS,
   nextAfterRun,
   nextDailyAt,
+  nextGen,
   parseWhen,
+  rescheduleLive,
   shouldApplyFinish,
 } from "../convex/lib/wakeupPolicy.ts";
 import {
@@ -60,6 +69,10 @@ assert(
   nextAfterRun({ recurMinutes: 30 }, now) === now + 30 * 60_000,
   "recur minutes",
 );
+assert(
+  nextAfterRun({ recurMinutes: 45 }, now) === now + 45 * 60_000,
+  "recur job_check 45",
+);
 const daily = nextAfterRun({ recurDailyHour: 8, tz }, now);
 assert(daily !== null && daily > now, "recur daily future");
 assert(nextAfterRun({}, now) === null, "one-shot");
@@ -68,6 +81,7 @@ assert(isSingletonKind("brief"), "brief singleton");
 assert(isSingletonKind("watcher"), "watcher singleton");
 assert(isSingletonKind("browser_poll"), "browser_poll singleton");
 assert(!isSingletonKind("reminder"), "reminder not singleton");
+assert(!isSingletonKind("job_check"), "job_check not singleton");
 
 const liveRows = [
   { kind: "watcher", status: "done" },
@@ -126,6 +140,55 @@ assert(
     takeWakeupDelivery(seen, "old", tSeen) === true,
   "expired key pruned",
 );
+
+assert(cronName("jd7abc") === "wakeup:jd7abc", "cron name");
+assert(delayMs(now + 30_000, now) === 30_000, "delay future");
+assert(delayMs(now, now) === MIN_CRON_INTERVAL_MS, "delay now clamps");
+assert(delayMs(now - 60_000, now) === MIN_CRON_INTERVAL_MS, "delay past clamps");
+assert(MIN_CRON_INTERVAL_MS === 1000, "component min interval");
+assert(canClaim({ status: "scheduled", gen: 0 }, { gen: 0 }) === true, "claim scheduled");
+assert(canClaim({ status: "running", gen: 0 }, { gen: 0 }) === false, "no double claim");
+assert(canClaim({ status: "done", gen: 0 }, { gen: 0 }) === false, "no claim done");
+assert(canClaim({ status: "cancelled", gen: 0 }, { gen: 0 }) === false, "no claim cancelled");
+assert(canClaim({ status: "scheduled" }, { gen: 0 }) === true, "legacy missing gen is 0");
+assert(canClaim({ status: "scheduled" }, { gen: 1 }) === false, "legacy row rejects newer ticket");
+
+const staleAt = now + 5 * 60_000;
+const movedAt = now + 60 * 60_000;
+const beforeMove = { status: "scheduled" as const, gen: 0, at: staleAt };
+const afterMove = { status: "scheduled" as const, gen: 1, at: movedAt };
+assert(canClaim(beforeMove, { gen: 0 }) === true, "original cron matches gen 0");
+assert(canClaim(afterMove, { gen: 0 }) === false, "stale cron rejected after singleton reschedule");
+assert(canClaim(afterMove, { gen: 1 }) === true, "new cron claims moved singleton");
+assert(nextGen(undefined) === 1, "nextGen missing");
+assert(nextGen(0) === 1, "nextGen 0");
+assert(nextGen(1) === 2, "nextGen 1");
+
+assert(canFinish({ gen: 1 }, { gen: 1 }) === true, "finish matching gen");
+assert(canFinish({ gen: 2 }, { gen: 1 }) === false, "stale finish no-op");
+assert(canFinish({}, { gen: 0 }) === true, "legacy finish gen 0");
+assert(canFinish({ gen: 1 }, { gen: 0 }) === false, "finish after reschedule no-op");
+
+const running = { status: "running" as const, gen: 0, at: now };
+const fromRunning = rescheduleLive(running, movedAt);
+assert(fromRunning.status === "scheduled", "running reschedule becomes scheduled");
+assert(fromRunning.gen === 1, "running reschedule bumps gen");
+assert(fromRunning.at === movedAt, "running reschedule keeps user at");
+assert(fromRunning.registerCron === true, "running reschedule registers cron");
+assert(canFinish({ gen: fromRunning.gen }, { gen: 0 }) === false, "old finish no-op after running reschedule");
+assert(canClaim(fromRunning, { gen: 0 }) === false, "old cron cannot claim after running reschedule");
+assert(canClaim(fromRunning, { gen: 1 }) === true, "new cron claims after running reschedule");
+assert(isLiveStatus("scheduled") && isLiveStatus("running"), "live statuses");
+assert(!isLiveStatus("done") && !isLiveStatus("failed"), "done not live");
+assert(LIVE_STATUSES.includes("scheduled") && LIVE_STATUSES.includes("running"), "index statuses");
+
+const manyDone = [
+  ...Array.from({ length: 120 }, () => ({ kind: "reminder", status: "done" })),
+  { kind: "watcher", status: "scheduled" },
+];
+const liveOnly = manyDone.filter((r) => isLiveStatus(r.status));
+assert(liveOfKind(liveOnly, "watcher")?.status === "scheduled", "status index skips buried done");
+assert(liveOfKind(manyDone.filter((r) => r.status === "done"), "watcher") === undefined, "done-only miss");
 
 function assertSeen(
   text: string,

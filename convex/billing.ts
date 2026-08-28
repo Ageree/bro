@@ -1,11 +1,8 @@
-import { anyApi } from "convex/server";
 import { v } from "convex/values";
 import { internalAction, internalMutation } from "./_generated/server";
+import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { extendPaidUntil } from "./lib/billingPolicy";
-
-// ponytail: anyApi до codegen; после convex deploy можно вернуть typed api
-const billing = anyApi.billing;
 
 function shopCreds(): { shopId: string; secret: string } {
   const shopId = process.env.YOOKASSA_SHOP_ID;
@@ -92,7 +89,7 @@ export const verifyAndApply = internalAction({
     if (!res.ok) throw new Error(`yookassa get ${res.status}`);
     const tenantId = json.metadata?.tenantId;
     if (json.status === "succeeded" && typeof tenantId === "string" && tenantId) {
-      await ctx.runMutation(billing.applyPayment, { tenantId });
+      await ctx.runMutation(internal.billing.applyPayment, { tenantId });
     }
     return null;
   },
