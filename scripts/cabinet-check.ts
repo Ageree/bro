@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { timingSafeEqual } from "../convex/secret.ts";
 import {
   buildSnapshot,
@@ -162,5 +163,10 @@ assert(hex.length === 64, "sha256 hex");
 assert(hex === (await sha256hex("secret")), "sha256 stable");
 assert(hex !== (await sha256hex("Secret")), "sha256 distinct");
 assert(timingSafeEqual(hex, hex), "hash compare");
+
+const authJs = readFileSync(new URL("../assets/auth.js", import.meta.url), "utf8");
+assert(authJs.includes('#login-open'), "auth binds #login-open");
+assert(authJs.includes('#login-modal'), "auth binds #login-modal");
+assert(!/\$\("\.login-open"\)/.test(authJs), "auth does not use class login-open");
 
 console.log("cabinet-check ok");

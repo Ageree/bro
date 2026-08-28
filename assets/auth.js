@@ -33,10 +33,10 @@
     return (root || document).querySelector(sel);
   }
 
-  var loginBtn = $(".login-open");
-  var cabinetBtn = $(".cabinet-open");
-  var logoutBtn = $(".logout");
-  var modal = $(".login-modal");
+  var loginBtn = $("#login-open");
+  var cabinetBtn = $("#cabinet-open");
+  var logoutBtn = $("#logout");
+  var modal = $("#login-modal");
   if (!loginBtn || !modal) return;
 
   function painted() {
