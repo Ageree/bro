@@ -169,4 +169,15 @@ assert(authJs.includes('#login-open'), "auth binds #login-open");
 assert(authJs.includes('#login-modal'), "auth binds #login-modal");
 assert(!/\$\("\.login-open"\)/.test(authJs), "auth does not use class login-open");
 
+const landing = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+assert(landing.includes('id="request-access"'), "landing CTA has id");
+assert(
+  landing.includes('querySelector("#request-access")'),
+  "landing CTA script does not grab modal .cta",
+);
+assert(
+  !/var cta = document\.querySelector\("\.cta"\)/.test(landing),
+  "landing does not query first .cta",
+);
+
 console.log("cabinet-check ok");
