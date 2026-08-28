@@ -185,6 +185,7 @@ export default defineChannel({
           attributes: {
             conversationId: msg.conversation_id,
             inkboxHandle: identityHandle,
+            messageId: msg.id,
           },
         },
       });
