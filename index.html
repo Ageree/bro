@@ -244,7 +244,7 @@
     <h1 class="wordmark">bro</h1>
     <p class="tagline">Твой личный ИИ-агент</p>
     <p class="subline">Свой номер, своя почта, своя память. Записи к врачу, брони, поиск — берёт рутину на себя.</p>
-    <a class="cta" href="#">Запросить доступ</a>
+    <a class="cta" id="request-access" href="#">Запросить доступ</a>
   </main>
 
   <section class="section" id="pricing">
@@ -292,7 +292,7 @@
   <script>
     (function () {
       var KEY = "bro.handle";
-      var cta = document.querySelector(".cta");
+      var cta = document.querySelector("#request-access");
       if (!cta) return;
 
       function isIos() {
