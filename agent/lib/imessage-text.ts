@@ -138,6 +138,24 @@ export function toIMessageBubbles(src: string): string[] {
   return chunks.slice(0, 8);
 }
 
+export function isAudioContentType(
+  contentType: string | null | undefined,
+): boolean {
+  return typeof contentType === "string" && contentType.toLowerCase().startsWith("audio/");
+}
+
+/** Voice note for the model. Webhook has no transcript field — use `content` when present. */
+export function inboundVoiceLine(opts: {
+  content?: string | null;
+  url?: string | null;
+}): string {
+  const transcript = opts.content?.trim();
+  if (transcript) return `[voice] ${transcript}`;
+  const url = opts.url?.trim();
+  if (url) return `[voice message] ${url}`;
+  return "";
+}
+
 export function inboundIMessageText(msg: {
   content?: string | null;
   media?: Array<{ url?: string | null; content_type?: string | null }> | null;
@@ -145,8 +163,21 @@ export function inboundIMessageText(msg: {
 }): string {
   const parts: string[] = [];
   const content = msg.content?.trim();
-  if (content) parts.push(content);
-  for (const m of msg.media ?? []) {
+  const media = msg.media ?? [];
+  const audio = media.filter((m) => isAudioContentType(m.content_type));
+  if (audio.length > 0) {
+    if (content) parts.push(inboundVoiceLine({ content }));
+    else {
+      for (const m of audio) {
+        const line = inboundVoiceLine({ url: m.url });
+        if (line) parts.push(line);
+      }
+    }
+  } else if (content) {
+    parts.push(content);
+  }
+  for (const m of media) {
+    if (isAudioContentType(m.content_type)) continue;
     const url = m.url?.trim();
     if (url) parts.push(url);
   }
