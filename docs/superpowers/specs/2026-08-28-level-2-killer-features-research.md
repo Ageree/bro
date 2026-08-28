@@ -112,6 +112,48 @@ iMessage «позвони в клинику X на 20:00»
 **Не строить на Retell/Vapi для RU.** Для EN-exit — Retell как managed
 быстрый старт, Vapi если сами крутим стек.
 
+### Поправка: Inkbox уже голос, Retell не обязателен
+
+Inkbox — не «только iMessage». У identity три поверхности: почта, iMessage,
+опциональный **phone number**. Phone API уже умеет ровно то, что кажется
+«подключить голосовую модель»:
+
+- `POST /place-call` + `mode="hosted_agent"` + `reason` — Inkbox Voice AI
+  сам ведёт звонок, без WebSocket и без Retell
+  ([hosted-call-agent](https://inkbox.ai/docs/capabilities/phone/hosted-call-agent))
+- или `client_websocket_url` — ваш мозг, Inkbox делает STT/TTS
+- `call.ended` вебхук: транскрипт + `outcome` + action items
+
+Bro сегодня **не использует** этот API: провижинится только iMessage
+(`claim_imessage_number`), не `phone_numbers`.
+
+Три линии исходящего, это не одно и то же:
+
+| Origination | Что это | Кому можно звонить |
+|---|---|---|
+| `shared_imessage_number` | скрытая линия роутера | только человеку, уже связанному с агентом в iMessage |
+| `dedicated_imessage_number` | свой iMessage-номер | голос с этой линии, если она voice-enabled |
+| `dedicated_number` | PSTN, `type` только `local`, фильтр `state: "NY"` | произвольный E.164 — **если страна линии включена** |
+
+Ошибка API: `destination_country_not_enabled` (D13) —
+«наберите support, чтобы включить страну». Номера Inkbox — US local;
++7 по умолчанию, скорее всего, выключен. Даже если включат: клиника в
+Москве часто не берёт неизвестный +1, нет 41-ФЗ этикетки, запись/STT
+уходит на инфру Inkbox (152-ФЗ).
+
+`hosted_agent` не крутит ваши тулы mid-call — пакет после трубки.
+IVR «нажмите 1» и живой русский диалог — отдельный вопрос к качеству
+их Voice AI, не к наличию API.
+
+Квота: 30 мин/номер/мес на Developer/Startup, оверэйдж $0.03/мин.
+
+**Вывод:** «номер + голосовая модель» — это нативный путь Inkbox, не
+Retell. Для звонка *пользователю* Bro или US-ресторану — сначала
+`hosted_agent`. Для «позвони в российскую клинику» узкое место не мозг,
+а последняя миля PSTN в +7. Спайк: один `place-call` на +7 и письмо
+в support про RU destination. Если D13 / не берут трубку — Voximplant
+как ствол, eve как мозг.
+
 ---
 
 ## 6. Сторожа 2.0: push вместо поллинга
@@ -407,7 +449,7 @@ Poke на Messages for Business — политический прецедент 
 | Карточка заказа | `jobs.waitingFor: "human"`, `orders` | парсер да/нет + шаблон карточки + TTL |
 | Память 2.0 | `memories`, `wake`/`note`/`search` | embedding + vectorIndex + consolidate action |
 | Сторожа 2.0 | `wakeups.kind: watcher`, `convex/http.ts` | `/webhooks/composio`, таблица `watchers`/`ti_*` |
-| Звонок | jobs + mail-webhook паттерн | `waitingFor: "call"`, `/webhooks/call` |
+| Звонок | jobs + **Inkbox Phone API уже есть, Bro его не зовёт** | `place-call hosted_agent` + `call.ended`; Voximplant только если +7 закрыт |
 | Recipes | wakeups + Composio connect-link | `recipes` + `/r/{slug}` + attribution |
 | Family | `tenants` 1:1 phone | `households` + group thread |
 | RCS / ACP | — | не сейчас |
