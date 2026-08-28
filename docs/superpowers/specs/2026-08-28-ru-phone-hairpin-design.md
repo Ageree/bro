@@ -1,93 +1,39 @@
-# Bro звонит в РФ через Inkbox (hairpin)
+# Bro звонит в РФ без нового кабинета
 
 _Date: 2026-08-28_
 
-## Проблема
+## Почему не Vox RU DID / не Zadarma
 
-Inkbox Voice AI — правильный мозг (`place-call` + `hosted_agent` + `reason`).
-Его PSTN — AWS Chime. Живые пробы 2026-08-28: `+1` US/CA набираются,
-`+7` и `+44` падают `502` upstream dial failed.
-Клинику в Москве лучше звонить с любого рабочего CLI; pickup вторичен.
+- Voximplant RU-номер требует ЭЦП для ИП — слишком долго.
+- Zadarma: с аккаунтом не получилось зарегистрироваться.
+- Twilio/Exolve — ещё одна регистрация плюс карта/договор.
 
-Voximplant отброшен: верификация RU-номера требует ЭЦП для ИП — слишком
-долго. Код сценария оставлен в `scripts/voximplant-ru-bridge.js` как
-архив. Купленный `+74992816046` деактивирован до 2026-09-11.
+Кабинет Voximplant `ageree` уже есть. Покупать номер не надо.
 
-## Решение: Zadarma, не Voximplant
+## Решение: verified Caller ID + StartScenarios
 
-Inkbox **никогда не набирает +7**. Он набирает наш `+1` DID (US или CA)
-у Zadarma. На `NOTIFY_START` Convex отвечает
-`rewrite_forward_number` — PBX на лету подменяет форвард на настоящий
-`+7`. Voice AI думает, что говорит с мостом; в трубке — ресепшн.
-
-Почему Zadarma, а не Twilio/Telnyx:
-
-- оплата в рублях, без иностранной карты;
-- KYC — скан паспорта и адрес, **не ЭЦП**;
-- входящие на купленный DID бесплатные;
-- `NOTIFY_START` умеет `redirect` + `rewrite_forward_number` — тот же
-  контракт, что был у Vox `GET /call-bridge`.
-
-Цена last-mile: Standard ≈ **$0.33/мин** на RU mobile, **$0.22/мин**
-город. Incoming US DID ≈ **$2/мес**. CLI будет американский, пока нет
-отдельного RU DID (тот снова упрётся в документы, но не в ЭЦП).
+Inkbox по-прежнему не набирает `+7`. Voximplant сам звонит на
+`INKBOX_PHONE_NUMBER` (inbound `hosted_agent`) и на клинику, CLI —
+подтверждённый личный мобильный (звонок с кодом, не ЭЦП).
 
 ```
-человек в iMessage
-  → phone_call
-  → Convex callLegs (dest=+7495…, reason)
-  → Inkbox place-call hosted_agent → +1 BRO_RU_BRIDGE_E164
-  → Zadarma NOTIFY_START POST /zadarma-bridge
-  → { redirect: "100", rewrite_forward_number: "7495…", return_timeout: 0 }
-  → мост
-  → Inkbox call.ended → [event:call] в тот же iMessage
+iMessage → phone_call
+  → Convex callLegs
+  → PUT hosted-agent-config (reason на inbound)
+  → Vox StartScenarios rule outbound-callback
+       callPSTN(Inkbox +1518…, cli=+7личный)
+       on Connected: callPSTN(клиника, cli=+7личный)
+  → Inkbox call.ended → [event:call]
 ```
 
-Если Inkbox откроет RU (`BRO_INKBOX_RU_ENABLED=1`) — тот же тул бьёт
-`to_number` напрямую, мост не нужен.
+Live: app `bro-ru-bridge` (59499143), scenario `ru-callback` (3608292),
+rule `outbound-callback` (9331615). Скрипт:
+`scripts/voximplant-ru-callback.js`.
 
-`decideCallRoute` режет hairpin, если `BRO_RU_BRIDGE_E164` сам `+7`.
+`VOXIMPLANT_FROM_E164` ещё не задан — человек должен подтвердить свой
+мобильный в
+https://manage.voximplant.com/settings/caller_ids
+и прислать E.164.
 
-## Не делаем
-
-Retell/Vapi как ствол. Shared iMessage voice. SIP URI в `to_number`.
-Ждать ЭЦП Voximplant.
-
-## Live 2026-08-28
-
-Inkbox `@bro-ageree`: dedicated PSTN `+15189183436` active, Voice AI
-cedar / gpt-realtime-2. `+1` place-call ringing; `+7`/`+44` — 502.
-
-Convex `frugal-dragon-943`:
-- `GET /call-bridge` — старый Vox путь, пусть живёт
-- `GET|POST /zadarma-bridge` — новый путь (`zd_echo` для проверки URL)
-- `ZADARMA_API_SECRET` ещё не задан → POST отвечает 503, пока человек
-  не заведёт кабинет
-
-## Что сделать человеку (без ЭЦП)
-
-1. Зарегистрироваться на https://zadarma.com тариф **Standard** ($0).
-   Пополнить 500–1000 ₽.
-2. Settings → Virtual phone numbers → US (NY или любой local) ≈ $2/мес.
-   Загрузить паспорт + адрес. Активация — часы/дни, не недели ЭЦП.
-3. Включить бесплатную ВАТС. На внутреннем `100` включить
-   **безусловный форвард** на любой свой номер (заглушка). Bro его
-   перепишет на клинику.
-4. Settings → Integrations and API:
-   - создать ключ, **secret** прислать / положить в
-     `npx convex env set ZADARMA_API_SECRET …`
-   - PBX call notifications URL:
-     `https://frugal-dragon-943.convex.site/zadarma-bridge`
-   - Enable.
-5. Написать E.164 купленного `+1`. Bro проставит
-   `BRO_RU_BRIDGE_E164` на Convex и Vercel и передеплоит eve.
-
-Московский Vox `+74992816046` можно не верифицировать. Имеет смысл
-выключить `auto_charge`, чтобы не сняли ещё 427 ₽.
-
-Не покупать номер на каждого пользователя. Один shared Inkbox PSTN +
-один shared Zadarma `+1`.
-
-Квота Inkbox: 30 мин/орг/мес на Developer, $0.03/мин оверэйдж.
-`hosted_agent` не крутит кастомные тулы mid-call; бриф — `reason` ≤2000.
-41-ФЗ / 152-ФЗ для массовых звонков остаются на проде.
+Московский `+74992816046` не нужен, `auto_charge` выключен.
+`POST /zadarma-bridge` живой, но не используется.

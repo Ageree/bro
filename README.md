@@ -42,4 +42,4 @@ Billing is a one-shot YooKassa month. Set `YOOKASSA_SHOP_ID` / `YOOKASSA_SECRET_
 Bro's Inkbox mailbox is live: inbound `POST /webhooks/mail`, outbound `bro_mail`.
 Long work parks as Convex `jobs` (`npm run jobs:check`). Re-run `npm run webhooks` to subscribe mail.
 
-Outbound phone: `phone_call` → Inkbox Voice AI (`hosted_agent`). `+1` dests dial direct. Russian `+7` dests hairpin: Inkbox dials a `+1` Zadarma DID (`BRO_RU_BRIDGE_E164`); Zadarma `NOTIFY_START` hits Convex `POST /zadarma-bridge` and rewrites the PBX forward to the real number. `call.ended` lands as `[event:call]`. Check: `npm run call:check`. Needs an Inkbox dedicated PSTN (`INKBOX_PHONE_NUMBER`), not just the iMessage line. Set `ZADARMA_API_SECRET` on the Convex deployment.
+Outbound phone: `phone_call` → Inkbox Voice AI. `+1` dests dial direct. Russian `+7` dests: Voximplant `StartScenarios` rings the Inkbox PSTN (inbound Voice AI) and the clinic, CLI = verified personal mobile (`VOXIMPLANT_FROM_E164`). No RU DID / no ЭЦП. `call.ended` lands as `[event:call]`. Check: `npm run call:check`. Set Vox API keys on the Convex deployment.
