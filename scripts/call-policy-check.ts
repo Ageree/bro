@@ -13,6 +13,9 @@ import {
   parseCallEnded,
   parseCallEnv,
   pickClaimableLeg,
+  zadarmaBridgeReply,
+  zadarmaForwardNumber,
+  zadarmaNotifyPayload,
 } from "../convex/lib/callPolicy.ts";
 
 function assert(cond: unknown, msg: string): void {
@@ -170,5 +173,20 @@ assert(
   }) === "them: ок",
   "wake transcript",
 );
+
+assert(
+  zadarmaNotifyPayload("15189183436", "14155550999", "2026-08-28 12:00:00") ===
+    "15189183436141555509992026-08-28 12:00:00",
+  "zadarma hmac payload",
+);
+assert(zadarmaForwardNumber("+74951234567") === "74951234567", "zadarma dest");
+assert(zadarmaBridgeReply(null, "100").hangup === 1, "zadarma no pending");
+const fwd = zadarmaBridgeReply("+74951234567", "100");
+assert("rewrite_forward_number" in fwd, "zadarma rewrite");
+if ("rewrite_forward_number" in fwd) {
+  assert(fwd.redirect === "100", "zadarma ext");
+  assert(fwd.rewrite_forward_number === "74951234567", "zadarma dest digits");
+  assert(fwd.return_timeout === 0, "zadarma no bounce");
+}
 
 console.log("call-policy-check ok");

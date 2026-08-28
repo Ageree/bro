@@ -1,6 +1,10 @@
 import { httpRouter } from "convex/server";
 import { httpAction } from "./_generated/server";
 import { internal } from "./_generated/api";
+import {
+  zadarmaBridgeReply,
+  zadarmaNotifyPayload,
+} from "./lib/callPolicy";
 import { timingSafeEqual } from "./secret";
 
 const cors = {
@@ -129,4 +133,133 @@ http.route({
   }),
 });
 
+http.route({
+  path: "/zadarma-bridge",
+  method: "GET",
+  handler: httpAction(async (_ctx, request) => {
+    try {
+      const echo = new URL(request.url).searchParams.get("zd_echo");
+      if (echo !== null) return new Response(echo, { status: 200 });
+    } catch {
+      /* ignore */
+    }
+    return new Response("ok", { status: 200 });
+  }),
+});
+
+http.route({
+  path: "/zadarma-bridge",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    let echo: string | null = null;
+    try {
+      echo = new URL(request.url).searchParams.get("zd_echo");
+    } catch {
+      echo = null;
+    }
+    if (echo !== null) return new Response(echo, { status: 200 });
+
+    const fields = await readZadarmaFields(request);
+    if (fields.zdEcho !== null) return new Response(fields.zdEcho, { status: 200 });
+
+    const secret = process.env.ZADARMA_API_SECRET ?? "";
+    if (!secret) return new Response("zadarma not configured", { status: 503 });
+
+    const sig =
+      request.headers.get("Signature") ?? request.headers.get("signature") ?? "";
+    const expected = await hmacSha1Base64(
+      secret,
+      zadarmaNotifyPayload(fields.callerId, fields.calledDid, fields.callStart),
+    );
+    if (!timingSafeEqual(sig, expected)) {
+      return new Response("unauthorized", { status: 401 });
+    }
+
+    if (fields.event && fields.event !== "NOTIFY_START") {
+      return jsonReply({});
+    }
+
+    const hit = await ctx.runMutation(internal.calls.claimForBridge, {
+      fromE164: fields.callerId || undefined,
+    });
+    const ext = (process.env.ZADARMA_PBX_EXTENSION ?? "100").trim() || "100";
+    return jsonReply(zadarmaBridgeReply(hit?.destE164 ?? null, ext));
+  }),
+});
+
 export default http;
+
+function jsonReply(body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+async function hmacSha1Base64(secret: string, data: string): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-1" },
+    false,
+    ["sign"],
+  );
+  const mac = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    new TextEncoder().encode(data),
+  );
+  const bytes = new Uint8Array(mac);
+  let bin = "";
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin);
+}
+
+async function readZadarmaFields(request: Request): Promise<{
+  event: string;
+  callerId: string;
+  calledDid: string;
+  callStart: string;
+  zdEcho: string | null;
+}> {
+  const empty = {
+    event: "",
+    callerId: "",
+    calledDid: "",
+    callStart: "",
+    zdEcho: null as string | null,
+  };
+  const ctype = request.headers.get("content-type") ?? "";
+  try {
+    if (ctype.includes("application/json")) {
+      const rec = (await request.json()) as Record<string, unknown>;
+      return {
+        event: strField(rec.event),
+        callerId: strField(rec.caller_id),
+        calledDid: strField(rec.called_did),
+        callStart: strField(rec.call_start),
+        zdEcho: rec.zd_echo == null ? null : strField(rec.zd_echo),
+      };
+    }
+    const form = await request.formData();
+    const echo = form.get("zd_echo");
+    return {
+      event: formStr(form, "event"),
+      callerId: formStr(form, "caller_id"),
+      calledDid: formStr(form, "called_did"),
+      callStart: formStr(form, "call_start"),
+      zdEcho: typeof echo === "string" ? echo : null,
+    };
+  } catch {
+    return empty;
+  }
+}
+
+function strField(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function formStr(form: FormData, key: string): string {
+  const v = form.get(key);
+  return typeof v === "string" ? v : "";
+}

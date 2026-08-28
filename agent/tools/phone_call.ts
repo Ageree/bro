@@ -18,7 +18,7 @@ import { tenantId } from "../lib/tenant";
 
 export default defineTool({
   description:
-    "Place an outbound phone call via Inkbox Voice AI. Russian +7 numbers hairpin through a US bridge so Inkbox never dials +7 directly. Confirm with the human before the first call of a job. After placing, park the job with job_wait waitingFor=call if you did not pass jobId here.",
+    "Place an outbound phone call via Inkbox Voice AI. Russian +7 numbers hairpin through a +1 Zadarma DID so Inkbox never dials +7 directly. Confirm with the human before the first call of a job. After placing, park the job with job_wait waitingFor=call if you did not pass jobId here.",
   inputSchema: z.object({
     dest: z
       .string()

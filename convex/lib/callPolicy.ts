@@ -273,3 +273,38 @@ export function callTranscript(body: unknown): string {
   if (!data || typeof data !== "object") return "";
   return flattenTranscript((data as { transcript?: unknown }).transcript);
 }
+
+/** HMAC-SHA1 payload for Zadarma NOTIFY_* Signature header. */
+export function zadarmaNotifyPayload(
+  callerId: string,
+  calledDid: string,
+  callStart: string,
+): string {
+  return `${callerId}${calledDid}${callStart}`;
+}
+
+export function zadarmaForwardNumber(destE164: string): string {
+  return destE164.replace(/^\+/, "");
+}
+
+export type ZadarmaBridgeReply =
+  | { hangup: 1 }
+  | {
+      redirect: string;
+      rewrite_forward_number: string;
+      return_timeout: 0;
+    };
+
+/** PBX extension must already have unconditional forward enabled. */
+export function zadarmaBridgeReply(
+  destE164: string | null,
+  pbxExtension: string,
+): ZadarmaBridgeReply {
+  const ext = pbxExtension.trim() || "100";
+  if (!destE164) return { hangup: 1 };
+  return {
+    redirect: ext,
+    rewrite_forward_number: zadarmaForwardNumber(destE164),
+    return_timeout: 0,
+  };
+}
