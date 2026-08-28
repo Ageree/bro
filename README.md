@@ -27,12 +27,15 @@ Production (you are just a user on iMessage): Convex cloud + `eve deploy` on Ver
 
 Onboard: after provision, the human texts `connect @bro-ageree` to the printed router **as iMessage** (blue). iPhone Settings → Messages → Send as SMS = off.
 
+Shared router pool is the default (inbound-first, ~100 messages/day). To let Bro write first, set `BRO_DEDICATED_LINE=1` before `npm run provision:inkbox` and on the Convex deployment. New identities then pass Inkbox `claimIMessageNumber: true` (create) or `identity.update({ claimIMessageNumber: true, idempotencyKey })` (existing). Unattached inventory is `inkbox.imessages.claimNumber({ idempotencyKey })` — Bro does not call that on the default path. Off by default; shared pool is unchanged. Number/status, when returned, is stored on the tenant. Check: `npm run dedicated:check`.
+
 Memory files: `data/optmem/<E.164>/` (gitignored). Runtime memory is Convex.
 
 Landing CTA creates a personal Inkbox identity and opens iMessage (`sms_link`).
 `assets/config.js` holds the Convex HTTP site URL (`https://<deployment>.convex.site`).
 Set `INKBOX_API_KEY` and `INKBOX_WEBHOOK_URL` on the Convex deployment.
 Cap is `BRO_IDENTITY_CAP` (default 10).
+`BRO_DEDICATED_LINE` on Convex claims a dedicated line at landing provision.
 
 Billing is a one-shot YooKassa month. Set `YOOKASSA_SHOP_ID` / `YOOKASSA_SECRET_KEY` on the Convex deployment; webhook URL is `https://<deployment>.convex.site/yookassa`. Empty keys keep the free beta, with daily message and monthly browser-job limits.
 
