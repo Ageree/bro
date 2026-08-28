@@ -1,12 +1,10 @@
-// Paste into a Voximplant scenario. Inkbox Voice AI dials BRO_RU_BRIDGE_E164
-// (this app's US DID). We look up the real +7 dest and hairpin media.
-//
-// Convex env: BRO_INTERNAL_SECRET must be set on the deployment.
-// Replace the three constants. CLI is what the clinic sees.
+// Live on Voximplant: app bro-ru-bridge (id 59499143),
+// scenario ru-hairpin (id 3607805), rule inbound-bridge (id 9330638).
+// Bind a purchased DID to this application after top-up.
 
-const BRIDGE_URL = "https://YOUR_DEPLOYMENT.convex.site/call-bridge";
-const SECRET = "BRO_INTERNAL_SECRET";
-const CLI = "+79XXXXXXXXX";
+const BRIDGE_URL = "https://frugal-dragon-943.convex.site/call-bridge";
+const SECRET = "BRO_INTERNAL_SECRET"; // live scenario has the real secret
+const CLI = ""; // +7… when purchased; empty uses the DID Inkbox called
 
 VoxEngine.addEventListener(AppEvents.CallAlerting, (e) => {
   const from = encodeURIComponent(e.callerid || "");
@@ -29,7 +27,7 @@ VoxEngine.addEventListener(AppEvents.CallAlerting, (e) => {
         e.call.hangup();
         return;
       }
-      const out = VoxEngine.callPSTN(dest, CLI);
+      const out = VoxEngine.callPSTN(dest, CLI || e.destination || e.callerid);
       VoxEngine.easyProcess(e.call, out);
     },
     { method: "GET" },

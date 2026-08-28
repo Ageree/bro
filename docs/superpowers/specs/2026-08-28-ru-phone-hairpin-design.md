@@ -38,6 +38,19 @@ Retell/Vapi как ствол. Shared iMessage voice (это звонок пол
 
 ## Ops
 
+Voximplant аккаунт `ageree` (11477486): приложение `bro-ru-bridge`
+(id 59499143), сценарий `ru-hairpin` (3607805), правило `inbound-bridge`
+(9330638, pattern `.*`). Convex `GET /call-bridge` живой на
+`https://frugal-dragon-943.convex.site`. Inkbox `call.ended` подписан на
+`https://bro-agent.vercel.app/webhooks/call`. Voice AI instructions
+стоят на `@bro-ageree`.
+
+Ещё не куплено (блокировки биллинга, не кода):
+- Inkbox `POST /phone/numbers` → 402, план без PSTN. Апгрейд:
+  https://inkbox.ai/console/organizations?tab=billing
+- Voximplant баланс ≈8.6 ₽, US DID ≈157+157 ₽. Пополнить и купить
+  US GEOGRAPHIC, привязать к `bro-ru-bridge`.
+
 1. Купить US `local` PSTN в Inkbox (`INKBOX_PHONE_NUMBER`) и US DID
    у Voximplant (`BRO_RU_BRIDGE_E164`). RU CLI — `VOXIMPLANT_FROM_E164`
    в сценарии, не в Bro.
