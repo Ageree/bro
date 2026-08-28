@@ -1,9 +1,6 @@
-import { anyApi, httpRouter } from "convex/server";
+import { httpRouter } from "convex/server";
 import { httpAction } from "./_generated/server";
 import { internal } from "./_generated/api";
-
-// ponytail: anyApi до codegen; после convex deploy можно вернуть typed api
-const billing = anyApi.billing;
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
@@ -60,7 +57,7 @@ http.route({
     }
     if (paymentId) {
       try {
-        await ctx.runAction(billing.verifyAndApply, { paymentId });
+        await ctx.runAction(internal.billing.verifyAndApply, { paymentId });
       } catch (err) {
         console.error("yookassa webhook", err);
       }
@@ -84,7 +81,7 @@ http.route({
     }
     if (!tid) return new Response("нет tid", { status: 400 });
     try {
-      const { confirmationUrl } = await ctx.runAction(billing.createPaymentFor, {
+      const { confirmationUrl } = await ctx.runAction(internal.billing.createPaymentFor, {
         tenantId: tid,
       });
       return new Response(null, {

@@ -9,6 +9,7 @@ import {
 } from "../lib/convex";
 import { nextBrowserAction, pollTimedOut } from "../lib/browser-policy";
 import {
+  createProfile,
   hydrate,
   isTerminal,
   startRun,
@@ -34,7 +35,7 @@ async function persist(
   phone: string,
   run: BrowserRun,
   task: string,
-  extra?: { browserStartedAt?: number },
+  extra?: { browserStartedAt?: number; browserProfileId?: string },
 ): Promise<void> {
   await setBrowser(phone, {
     browserRunId: run.runId,
@@ -96,7 +97,7 @@ async function settle(
 
 export default defineTool({
   description:
-    "Cloud browser job for shopping (WB, Ozon, …). Starts a job or polls the current one. Never starts a second search while one is running. Do not pass reset unless the human wants a fresh browser. Send result text to iMessage when status is completed.",
+    "Cloud browser job for any web errand — shopping (WB, Ozon), restaurant/table booking, doctor and service appointments, taxi/delivery orders via web, form filling, searching and comparing. Starts a job or polls the current one. Never starts a second search while one is running. Do not pass reset unless the human wants a fresh browser. Send result text to iMessage when status is completed.",
   inputSchema: z.object({
     task: z.string().min(1).max(4000),
     reset: z.boolean().optional(),
@@ -153,12 +154,26 @@ export default defineTool({
       };
     }
 
+    let profileId = tenant.browserProfileId;
+    if (!profileId) {
+      try {
+        profileId = await createProfile(phone);
+      } catch (err) {
+        console.error("browser profile create failed", err);
+      }
+    }
     const started = await startRun(
       task,
       reset ? undefined : tenant.browserSessionId,
+      profileId ? { profileId } : undefined,
     );
     const startedAt = Date.now();
-    await persist(phone, started, task, { browserStartedAt: startedAt });
+    await persist(phone, started, task, {
+      browserStartedAt: startedAt,
+      ...(profileId && !tenant.browserProfileId
+        ? { browserProfileId: profileId }
+        : {}),
+    });
     if (conv) {
       try {
         await sendBlueIMessage({

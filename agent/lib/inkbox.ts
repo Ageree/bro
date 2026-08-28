@@ -1,4 +1,38 @@
-import { Inkbox, verifyWebhook, type IMessage } from "@inkbox/sdk";
+import {
+  Inkbox,
+  verifyWebhook,
+  type IMessage,
+  type IMessageReaction,
+} from "@inkbox/sdk";
+
+/** Named tapbacks `sendIMessageReaction` accepts. `custom` is inbound-only. */
+export const IMESSAGE_TAPBACKS = [
+  "love",
+  "like",
+  "dislike",
+  "laugh",
+  "emphasize",
+  "question",
+  "eyes",
+] as const;
+
+export type IMessageTapback = (typeof IMESSAGE_TAPBACKS)[number];
+
+export function isIMessageTapback(value: string): value is IMessageTapback {
+  return (IMESSAGE_TAPBACKS as readonly string[]).includes(value);
+}
+
+/** Latest inbound id from channel auth attributes. Never take an id from the model. */
+export function reactionTargetId(
+  attributes: Record<string, unknown> | undefined,
+): string | undefined {
+  const raw = attributes?.messageId;
+  const fromAuth = Array.isArray(raw) ? raw[0] : raw;
+  if (typeof fromAuth === "string" && fromAuth.trim().length > 0) {
+    return fromAuth.trim();
+  }
+  return undefined;
+}
 
 let client: Inkbox | null = null;
 
@@ -59,4 +93,16 @@ export async function sendBlueIMessage(opts: {
     );
   }
   return sent;
+}
+
+export async function sendIMessageTapback(opts: {
+  messageId: string;
+  reaction: IMessageTapback;
+  handle?: string;
+}): Promise<IMessageReaction> {
+  const identity = await inkbox().getIdentity(opts.handle ?? agentHandle());
+  return identity.sendIMessageReaction({
+    messageId: opts.messageId,
+    reaction: opts.reaction,
+  });
 }

@@ -6,6 +6,7 @@ import {
   browserAllowance,
   browserAllowedOnLimitError,
   browserGateFromResult,
+  carryCountersOnTzChange,
   clampAllowance,
   consumeCount,
   dayKey,
@@ -45,6 +46,20 @@ assert(
   dayKey(Date.parse("2026-01-01T00:00:00.000Z"), "UTC") === "2026-01-01",
   "utc",
 );
+
+// Asia/Vladivostok is UTC+10 year-round: 14:00Z is 00:00 next day.
+const vladTz = "Asia/Vladivostok";
+const vladMidnight = Date.parse("2026-08-26T14:00:00.000Z");
+assert(dayKey(vladMidnight, vladTz) === "2026-08-27", "vlad day rollover");
+assert(monthKey(vladMidnight, vladTz) === "2026-08", "vlad month");
+assert(dayKey(vladMidnight - 1, vladTz) === "2026-08-26", "vlad before rollover");
+const split = Date.parse("2026-08-26T16:00:00.000Z");
+assert(dayKey(split) === "2026-08-26", "msk still 26 at 16:00Z");
+assert(dayKey(split, vladTz) === "2026-08-27", "vlad already 27 at 16:00Z");
+const vladNewYear = Date.parse("2025-12-31T14:00:00.000Z");
+assert(dayKey(vladNewYear, vladTz) === "2026-01-01", "vlad year");
+assert(monthKey(vladNewYear, vladTz) === "2026-01", "vlad month year");
+assert(dayKey(vladNewYear - 1, vladTz) === "2025-12-31", "vlad before year");
 
 const now = Date.parse("2026-08-27T12:00:00.000Z");
 assert(!isPaid(undefined, now), "unpaid");
@@ -309,6 +324,122 @@ assert(
 assert(
   browserGateFromResult({ allowed: true }, new Error("boom")).allowed === false,
   "browser error wins over result",
+);
+
+const msk = "Europe/Moscow";
+const tzFlip = Date.parse("2026-08-26T16:00:00.000Z");
+
+// (b) live windows in prevTz move to nextTz keys; spent counts stay.
+const live = carryCountersOnTzChange({
+  now: tzFlip,
+  prevTz: msk,
+  nextTz: vladTz,
+  msgsDayKey: "2026-08-26",
+  msgsDayCount: 30,
+  browserMonthKey: "2026-08",
+  browserMonthCount: 5,
+  paywallSentDayKey: "2026-08-26",
+});
+assert(live.msgsDayKey === "2026-08-27", "live day key follows next tz");
+assert(live.msgsDayCount === 30, "live msgs count carries");
+assert(live.browserMonthKey === "2026-08", "live month still august");
+assert(live.browserMonthCount === 5, "live browser count carries");
+assert(live.paywallSentDayKey === "2026-08-27", "live paywall rematch same local day");
+
+// (a) stale month (and day) in prevTz start the new period at zero.
+const sept = Date.parse("2026-09-02T12:00:00.000Z");
+const stale = carryCountersOnTzChange({
+  now: sept,
+  prevTz: msk,
+  nextTz: vladTz,
+  msgsDayKey: "2026-08-26",
+  msgsDayCount: 30,
+  browserMonthKey: "2026-08",
+  browserMonthCount: 5,
+  paywallSentDayKey: "2026-08-26",
+});
+assert(stale.browserMonthKey === "2026-09", "stale month key is now");
+assert(stale.browserMonthCount === 0, "stale month count does not carry");
+assert(stale.msgsDayKey === "2026-09-02", "stale day key is now");
+assert(stale.msgsDayCount === 0, "stale day count does not carry");
+assert(stale.paywallSentDayKey === "2026-08-26", "stale paywall does not resurrect");
+
+const monthEdge = Date.parse("2026-08-31T16:00:00.000Z");
+const acrossMonth = carryCountersOnTzChange({
+  now: monthEdge,
+  prevTz: msk,
+  nextTz: vladTz,
+  msgsDayKey: "2026-08-31",
+  msgsDayCount: 12,
+  browserMonthKey: "2026-08",
+  browserMonthCount: 5,
+});
+assert(acrossMonth.browserMonthKey === "2026-09", "live month re-keys at edge");
+assert(acrossMonth.browserMonthCount === 5, "live month count carries at edge");
+assert(acrossMonth.msgsDayCount === 12, "live day count carries at edge");
+assert(
+  carryCountersOnTzChange({
+    now: tzFlip,
+    prevTz: msk,
+    nextTz: vladTz,
+  }).msgsDayCount === 0,
+  "missing live key starts at zero",
+);
+
+// Mid-day tz change: component=5, legacy=0 → new-zone effective stays 5.
+const componentCarry = carryCountersOnTzChange({
+  now: tzFlip,
+  prevTz: msk,
+  nextTz: vladTz,
+  msgsDayKey: "2026-08-26",
+  msgsDayCount: 0,
+  msgsComponentUsed: 5,
+});
+assert(componentCarry.msgsDayKey === "2026-08-27", "component carry re-keys day");
+assert(componentCarry.msgsDayCount === 5, "component 5 + legacy 0 stays 5");
+assert(
+  effectiveUsedCount(
+    0,
+    legacyUsedForPeriod(
+      componentCarry.msgsDayKey,
+      componentCarry.msgsDayCount,
+      "2026-08-27",
+    ),
+  ) === 5,
+  "new zone component=0 + new legacy 5 → effective 5",
+);
+
+const componentPlusLegacy = carryCountersOnTzChange({
+  now: tzFlip,
+  prevTz: msk,
+  nextTz: vladTz,
+  msgsDayKey: "2026-08-26",
+  msgsDayCount: 3,
+  browserMonthKey: "2026-08",
+  browserMonthCount: 1,
+  msgsComponentUsed: 5,
+  browserComponentUsed: 2,
+});
+assert(componentPlusLegacy.msgsDayCount === 8, "component + live legacy msgs");
+assert(componentPlusLegacy.browserMonthCount === 3, "component + live legacy browser");
+
+const stalePlusComponent = carryCountersOnTzChange({
+  now: sept,
+  prevTz: msk,
+  nextTz: vladTz,
+  msgsDayKey: "2026-08-26",
+  msgsDayCount: 30,
+  browserMonthKey: "2026-08",
+  browserMonthCount: 5,
+  paywallSentDayKey: "2026-08-26",
+  msgsComponentUsed: 5,
+  browserComponentUsed: 2,
+});
+assert(stalePlusComponent.msgsDayCount === 5, "stale legacy dropped; today component carries");
+assert(stalePlusComponent.browserMonthCount === 2, "stale month dropped; today component carries");
+assert(
+  stalePlusComponent.paywallSentDayKey === "2026-08-26",
+  "stale paywall still does not resurrect with component",
 );
 
 console.log("billing-check ok");

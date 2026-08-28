@@ -17,6 +17,7 @@ export default defineSchema({
     browserTask: v.optional(v.string()),
     browserStatus: v.optional(v.string()),
     browserStartedAt: v.optional(v.number()),
+    browserProfileId: v.optional(v.string()),
     paidUntil: v.optional(v.number()),
     // deprecated: msgs/day and browser/month counters moved to @convex-dev/rate-limiter
     msgsDayKey: v.optional(v.string()),
@@ -24,6 +25,9 @@ export default defineSchema({
     browserMonthKey: v.optional(v.string()),
     browserMonthCount: v.optional(v.number()),
     paywallSentDayKey: v.optional(v.string()),
+    tz: v.optional(v.string()),
+    dedicatedIMessageNumber: v.optional(v.string()),
+    dedicatedIMessageNumberStatus: v.optional(v.string()),
   })
     .index("by_phone", ["phoneE164"])
     .index("by_handle", ["inkboxHandle"])
@@ -74,6 +78,7 @@ export default defineSchema({
       v.literal("browser_poll"),
       v.literal("brief"),
       v.literal("watcher"),
+      v.literal("job_check"),
     ),
     payload: v.string(),
     status: v.union(
@@ -88,7 +93,9 @@ export default defineSchema({
     tz: v.optional(v.string()),
     lastSeen: v.optional(v.string()),
     attempts: v.optional(v.number()),
+    gen: v.optional(v.number()),
   })
     .index("by_status_at", ["status", "at"])
-    .index("by_tenant", ["tenantPhone"]),
+    .index("by_tenant", ["tenantPhone"])
+    .index("by_tenant_status", ["tenantPhone", "status"]),
 });

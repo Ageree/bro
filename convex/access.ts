@@ -2,21 +2,31 @@ import { v } from "convex/values";
 import { internalAction } from "./_generated/server";
 import { internal } from "./_generated/api";
 import {
+  identityCap,
   identityCapReached,
   isIosUserAgent,
   isValidHandle,
   makeHandle,
   webhookUrlForHandle,
 } from "./lib/accessPolicy";
+import {
+  dedicatedLineEnabled,
+  dedicatedLineFromIdentityPayload,
+  dedicatedLineFromInventory,
+  identityCreateBody,
+} from "./lib/dedicatedLinePolicy";
 import { mailWebhookUrl } from "./lib/mailPolicy";
-
-const DEFAULT_CAP = 10;
 
 type InkboxIdentity = {
   id?: string;
   agent_handle?: string;
   email_address?: string | null;
   mailbox?: { id?: string } | null;
+  imessage_number?: {
+    id?: string;
+    number?: string;
+    type?: string;
+  } | null;
 };
 
 type InkboxTriage = {
@@ -42,8 +52,7 @@ function webhookBase(): string {
 }
 
 function cap(): number {
-  const n = Number(process.env.BRO_IDENTITY_CAP ?? DEFAULT_CAP);
-  return Number.isFinite(n) && n > 0 ? n : DEFAULT_CAP;
+  return identityCap(process.env.BRO_IDENTITY_CAP);
 }
 
 async function inkbox(
@@ -82,6 +91,23 @@ async function triage(identityId: string): Promise<InkboxTriage> {
     "GET",
     `/imessage/triage-number?${q}`,
   )) as InkboxTriage;
+}
+
+/** GET /imessage/numbers — same path as `inkbox.imessages.listNumbers()`. */
+async function listIMessageNumbers(): Promise<unknown> {
+  const res = await fetch("https://inkbox.ai/api/v1/imessage/numbers", {
+    method: "GET",
+    headers: {
+      "X-API-Key": apiKey(),
+      Accept: "application/json",
+    },
+    signal: AbortSignal.timeout(20_000),
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`inkbox ${res.status} /imessage/numbers: ${text.slice(0, 400)}`);
+  }
+  return text ? JSON.parse(text) : [];
 }
 
 const result = v.union(
@@ -165,11 +191,11 @@ export const requestAccess = internalAction({
       const candidate = makeHandle();
       let identity: InkboxIdentity;
       try {
-        identity = (await inkbox("POST", "/identities", {
-          agent_handle: candidate,
-          display_name: "Bro",
-          imessage_enabled: true,
-        })) as InkboxIdentity;
+        identity = (await inkbox("POST", "/identities", identityCreateBody({
+          handle: candidate,
+          displayName: "Bro",
+          dedicatedLine: dedicatedLineEnabled(process.env.BRO_DEDICATED_LINE),
+        }))) as InkboxIdentity;
       } catch (err) {
         const status = (err as Error & { status?: number }).status;
         if (status === 402) {
@@ -219,12 +245,16 @@ export const requestAccess = internalAction({
       }
 
       let mailboxId = identity.mailbox?.id;
-      if (!mailboxId) {
+      const wantDedicated = dedicatedLineEnabled(process.env.BRO_DEDICATED_LINE);
+      if (!mailboxId || (wantDedicated && !identity.imessage_number)) {
         try {
           const full = (await inkbox("GET", `/identities/${gotHandle}`)) as InkboxIdentity;
-          mailboxId = full.mailbox?.id;
+          mailboxId = mailboxId ?? full.mailbox?.id;
           if (!identity.email_address && full.email_address) {
             identity.email_address = full.email_address;
+          }
+          if (!identity.imessage_number && full.imessage_number) {
+            identity.imessage_number = full.imessage_number;
           }
         } catch (err) {
           console.error("identity refetch failed", err);
@@ -242,11 +272,25 @@ export const requestAccess = internalAction({
         }
       }
 
+      let dedicatedLine = dedicatedLineFromIdentityPayload(identity);
+      if (dedicatedLine) {
+        try {
+          dedicatedLine = dedicatedLineFromInventory(
+            dedicatedLine,
+            await listIMessageNumbers(),
+            { identityId: id, handle: gotHandle },
+          );
+        } catch (err) {
+          console.error("list iMessage numbers failed", err);
+        }
+      }
       await ctx.runMutation(internal.tenants.insertProvisioned, {
         inkboxHandle: gotHandle,
         inkboxIdentityId: id,
         emailAddress: identity.email_address ?? undefined,
         webhookSigningKey: signingKey,
+        dedicatedIMessageNumber: dedicatedLine?.number,
+        dedicatedIMessageNumberStatus: dedicatedLine?.status,
       });
 
       try {

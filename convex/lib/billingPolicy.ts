@@ -1,4 +1,4 @@
-const DEFAULT_TZ = "Europe/Moscow";
+export const DEFAULT_TZ = "Europe/Moscow";
 const MONTH_MS = 30 * 24 * 3600 * 1000;
 const FREE_MSGS = 30;
 const PAID_MSGS = 500;
@@ -30,6 +30,51 @@ export function dayKey(now: number, tz = DEFAULT_TZ): string {
 export function monthKey(now: number, tz = DEFAULT_TZ): string {
   const p = ymd(now, tz);
   return `${p.year}-${p.month}`;
+}
+
+/**
+ * Re-key live usage windows under nextTz.
+ * Effective count = live legacy offset + component used for today/month in prevTz.
+ * Stale stored keys start the new period at 0 (component-today still carries).
+ * Paywall rematches only when it was the live prevTz day — stale paywall
+ * does not resurrect.
+ */
+export function carryCountersOnTzChange(opts: {
+  now: number;
+  prevTz: string;
+  nextTz: string;
+  msgsDayKey?: string;
+  msgsDayCount?: number;
+  browserMonthKey?: string;
+  browserMonthCount?: number;
+  paywallSentDayKey?: string;
+  msgsComponentUsed?: number;
+  browserComponentUsed?: number;
+}): {
+  msgsDayKey: string;
+  msgsDayCount: number;
+  browserMonthKey: string;
+  browserMonthCount: number;
+  paywallSentDayKey?: string;
+} {
+  const prevDay = dayKey(opts.now, opts.prevTz);
+  const prevMonth = monthKey(opts.now, opts.prevTz);
+  const nextDay = dayKey(opts.now, opts.nextTz);
+  const nextMonth = monthKey(opts.now, opts.nextTz);
+  const liveDay = opts.msgsDayKey === prevDay;
+  const liveMonth = opts.browserMonthKey === prevMonth;
+  const msgsLegacy = liveDay ? (opts.msgsDayCount ?? 0) : 0;
+  const browserLegacy = liveMonth ? (opts.browserMonthCount ?? 0) : 0;
+  return {
+    msgsDayKey: nextDay,
+    msgsDayCount: msgsLegacy + (opts.msgsComponentUsed ?? 0),
+    browserMonthKey: nextMonth,
+    browserMonthCount: browserLegacy + (opts.browserComponentUsed ?? 0),
+    paywallSentDayKey:
+      opts.paywallSentDayKey === prevDay
+        ? nextDay
+        : opts.paywallSentDayKey,
+  };
 }
 
 export function isPaid(paidUntil: number | undefined, now: number): boolean {
