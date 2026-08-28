@@ -1,39 +1,24 @@
-# Bro звонит в РФ без нового кабинета
+# Bro звонит в РФ
 
 _Date: 2026-08-28_
 
-## Почему не Vox RU DID / не Zadarma
+## Что отбросили
 
-- Voximplant RU-номер требует ЭЦП для ИП — слишком долго.
-- Zadarma: с аккаунтом не получилось зарегистрироваться.
-- Twilio/Exolve — ещё одна регистрация плюс карта/договор.
+- **Voximplant:** RU DID, Caller ID и исходящие завязаны на верификацию
+  личности / ЭЦП для ИП. Кабинет `ageree` есть, но без ЭЦП бесполезен.
+  `+74992816046` — `auto_charge=off`.
+- **Zadarma:** зарегистрироваться не вышло.
+- Личный мобильный как CLI на Vox — кнопки нет, API `AddCallerID` = 104
+  Forbidden.
 
-Кабинет Voximplant `ageree` уже есть. Покупать номер не надо.
+## Что осталось без нового кабинета
 
-## Решение: verified Caller ID + StartScenarios
+Inkbox Developer уже есть, номер `+15189183436` живой, `+1` набирается.
+`+7` пока `502`. Документация Inkbox: support включает destination
+country (`D13` / `destination_country_not_enabled`).
 
-Inkbox по-прежнему не набирает `+7`. Voximplant сам звонит на
-`INKBOX_PHONE_NUMBER` (inbound `hosted_agent`) и на клинику, CLI —
-подтверждённый личный мобильный (звонок с кодом, не ЭЦП).
+Если откроют RU — `BRO_INKBOX_RU_ENABLED=1`, Bro бьёт клинику напрямую
+с американским CLI. Мост не нужен. Pickup вторичен.
 
-```
-iMessage → phone_call
-  → Convex callLegs
-  → PUT hosted-agent-config (reason на inbound)
-  → Vox StartScenarios rule outbound-callback
-       callPSTN(Inkbox +1518…, cli=+7личный)
-       on Connected: callPSTN(клиника, cli=+7личный)
-  → Inkbox call.ended → [event:call]
-```
-
-Live: app `bro-ru-bridge` (59499143), scenario `ru-callback` (3608292),
-rule `outbound-callback` (9331615). Скрипт:
-`scripts/voximplant-ru-callback.js`.
-
-`VOXIMPLANT_FROM_E164` ещё не задан — человек должен подтвердить свой
-мобильный в
-https://manage.voximplant.com/settings/caller_ids
-и прислать E.164.
-
-Московский `+74992816046` не нужен, `auto_charge` выключен.
-`POST /zadarma-bridge` живой, но не используется.
+Письмо / A2A `@support`: включить outbound Russia для
+`+15189183436` / `@bro-ageree`. hello@inkbox.ai

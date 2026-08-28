@@ -74,7 +74,7 @@ const ruBridge = decideCallRoute("+74951234567", {
 });
 assert(ruBridge.route === "blocked", "ru number is CLI not bridge");
 if (ruBridge.route === "blocked") {
-  assert(ruBridge.error.includes("VOXIMPLANT_FROM_E164"), "ask for verified cli");
+  assert(ruBridge.error.includes("Inkbox cannot dial +7"), "explain inkbox dest");
 }
 
 const voxCb = decideCallRoute("+74951234567", {

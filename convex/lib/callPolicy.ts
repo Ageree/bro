@@ -80,7 +80,7 @@ export function decideCallRoute(
       route: "blocked",
       destE164: dest,
       error:
-        "RU dest needs VOXIMPLANT_FROM_E164 (verified mobile) or a +1 BRO_RU_BRIDGE_E164",
+        "RU dest: Inkbox cannot dial +7. Enable via support (BRO_INKBOX_RU_ENABLED) or a +1 BRO_RU_BRIDGE_E164",
     };
   }
   return { route: "inkbox_direct", destE164: dest, dialE164: dest };
