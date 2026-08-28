@@ -156,11 +156,13 @@ export async function openJob(
 export async function waitJob(
   phoneE164: string,
   jobId: string,
-  waitingFor: "human" | "email" | "browser",
+  waitingFor: "human" | "email" | "browser" | "call",
   extra?: {
     note?: string;
     emailThreadId?: string;
     emailMessageId?: string;
+    callDestE164?: string;
+    callExternalId?: string;
   },
 ) {
   return await client().mutation(api.jobs.wait, {
@@ -184,6 +186,48 @@ export async function finishJob(
     jobId: jobId as Id<"jobs">,
     outcome,
     failed,
+  });
+}
+
+export async function parkCallLeg(args: {
+  tenantPhone: string;
+  destE164: string;
+  reason: string;
+  route: string;
+  jobId?: string;
+}) {
+  return await client().mutation(api.calls.park, {
+    secret: secret(),
+    ...args,
+  });
+}
+
+export async function attachCallInkbox(legId: string, inkboxCallId: string) {
+  return await client().mutation(api.calls.attachInkbox, {
+    secret: secret(),
+    legId: legId as Id<"callLegs">,
+    inkboxCallId,
+  });
+}
+
+export async function dropCallLeg(legId: string): Promise<void> {
+  await client().mutation(api.calls.drop, {
+    secret: secret(),
+    legId: legId as Id<"callLegs">,
+  });
+}
+
+export async function getCallLegByInkbox(inkboxCallId: string) {
+  return await client().query(api.calls.getByInkboxCall, {
+    secret: secret(),
+    inkboxCallId,
+  });
+}
+
+export async function finishCallLegByInkbox(inkboxCallId: string) {
+  return await client().mutation(api.calls.finishByInkboxCall, {
+    secret: secret(),
+    inkboxCallId,
   });
 }
 

@@ -11,6 +11,7 @@
 import type * as access from "../access.js";
 import type * as billing from "../billing.js";
 import type * as browserFollow from "../browserFollow.js";
+import type * as calls from "../calls.js";
 import type * as crons from "../crons.js";
 import type * as http from "../http.js";
 import type * as jobs from "../jobs.js";
@@ -18,6 +19,7 @@ import type * as lib_accessPolicy from "../lib/accessPolicy.js";
 import type * as lib_billingPolicy from "../lib/billingPolicy.js";
 import type * as lib_browserFollowPolicy from "../lib/browserFollowPolicy.js";
 import type * as lib_browseruse from "../lib/browseruse.js";
+import type * as lib_callPolicy from "../lib/callPolicy.js";
 import type * as lib_dedicatedLinePolicy from "../lib/dedicatedLinePolicy.js";
 import type * as lib_mailPolicy from "../lib/mailPolicy.js";
 import type * as lib_rateLimits from "../lib/rateLimits.js";
@@ -40,6 +42,7 @@ declare const fullApi: ApiFromModules<{
   access: typeof access;
   billing: typeof billing;
   browserFollow: typeof browserFollow;
+  calls: typeof calls;
   crons: typeof crons;
   http: typeof http;
   jobs: typeof jobs;
@@ -47,6 +50,7 @@ declare const fullApi: ApiFromModules<{
   "lib/billingPolicy": typeof lib_billingPolicy;
   "lib/browserFollowPolicy": typeof lib_browserFollowPolicy;
   "lib/browseruse": typeof lib_browseruse;
+  "lib/callPolicy": typeof lib_callPolicy;
   "lib/dedicatedLinePolicy": typeof lib_dedicatedLinePolicy;
   "lib/mailPolicy": typeof lib_mailPolicy;
   "lib/rateLimits": typeof lib_rateLimits;

@@ -9,6 +9,7 @@ const waitingFor = v.union(
   v.literal("human"),
   v.literal("email"),
   v.literal("browser"),
+  v.literal("call"),
 );
 
 export const jobDoc = v.object({
@@ -27,6 +28,8 @@ export const jobDoc = v.object({
   note: v.optional(v.string()),
   emailThreadId: v.optional(v.string()),
   emailMessageId: v.optional(v.string()),
+  callDestE164: v.optional(v.string()),
+  callExternalId: v.optional(v.string()),
 });
 
 function clip(s: string): string {
@@ -80,6 +83,8 @@ export const wait = mutation({
     note: v.optional(v.string()),
     emailThreadId: v.optional(v.string()),
     emailMessageId: v.optional(v.string()),
+    callDestE164: v.optional(v.string()),
+    callExternalId: v.optional(v.string()),
   },
   returns: v.union(jobDoc, v.object({ error: v.string() })),
   handler: async (ctx, args) => {
@@ -100,6 +105,8 @@ export const wait = mutation({
       note?: string;
       emailThreadId?: string;
       emailMessageId?: string;
+      callDestE164?: string;
+      callExternalId?: string;
     } = {
       status: "waiting",
       waitingFor: args.waitingFor,
@@ -107,6 +114,8 @@ export const wait = mutation({
     if (args.note) patch.note = clip(args.note);
     if (args.emailThreadId) patch.emailThreadId = args.emailThreadId;
     if (args.emailMessageId) patch.emailMessageId = args.emailMessageId;
+    if (args.callDestE164) patch.callDestE164 = args.callDestE164;
+    if (args.callExternalId) patch.callExternalId = args.callExternalId;
     await ctx.db.patch(args.jobId, patch);
     const row = await ctx.db.get(args.jobId);
     if (!row) return { error: "missing" };
@@ -208,7 +217,8 @@ export const wake = query({
         const wait = j.waitingFor ? ` waitingFor=${j.waitingFor}` : "";
         const note = j.note ? ` note=${j.note}` : "";
         const mail = j.emailMessageId ? ` emailMessageId=${j.emailMessageId}` : "";
-        return `id=${j._id} goal="${j.goal}" doneWhen="${j.doneWhen}" status=${j.status}${wait}${note}${mail}`;
+        const call = j.callDestE164 ? ` callDest=${j.callDestE164}` : "";
+        return `id=${j._id} goal="${j.goal}" doneWhen="${j.doneWhen}" status=${j.status}${wait}${note}${mail}${call}`;
       });
   },
 });

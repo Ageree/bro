@@ -19,6 +19,7 @@ import {
   setWakeupLastSeen,
   upsertTenant,
 } from "../lib/convex";
+import { ingestEndedCall } from "../lib/call-inbound";
 import { ingestInboundMail } from "../lib/mail-inbound";
 import {
   connectCardHtml,
@@ -224,6 +225,35 @@ export default defineChannel({
         return new Response(null, { status: 204 });
       }
       console.log("mail inbound", {
+        remote: got.phone,
+        conversationId: got.conversationId,
+        chars: got.text.length,
+      });
+      await from(got.conversationId).send(got.text, {
+        auth: {
+          authenticator: "inkbox",
+          issuer: "inkbox",
+          principalType: "user",
+          principalId: got.phone,
+          attributes: {
+            conversationId: got.conversationId,
+            inkboxHandle: got.handle,
+          },
+        },
+      });
+      return new Response(null, { status: 204 });
+    }),
+    POST("/webhooks/call", async (request, { from }) => {
+      const got = await ingestEndedCall(request);
+      if ("drop" in got) {
+        if (got.status === 401) return new Response("unauthorized", { status: 401 });
+        if (got.status === 500) {
+          return new Response(got.drop, { status: 500 });
+        }
+        console.log("call inbound dropped", got.drop);
+        return new Response(null, { status: 204 });
+      }
+      console.log("call inbound", {
         remote: got.phone,
         conversationId: got.conversationId,
         chars: got.text.length,

@@ -5,13 +5,15 @@ import { tenantId } from "../lib/tenant";
 
 export default defineTool({
   description:
-    "Park a job until the next event: human iMessage, inbound email to Bro's mailbox, or the cloud browser finishing. Include a short note of where you left off.",
+    "Park a job until the next event: human iMessage, inbound email to Bro's mailbox, the cloud browser finishing, or an outbound phone call ending. Include a short note of where you left off.",
   inputSchema: z.object({
     jobId: z.string().min(1),
-    waitingFor: z.enum(["human", "email", "browser"]),
+    waitingFor: z.enum(["human", "email", "browser", "call"]),
     note: z.string().max(280).optional(),
     emailThreadId: z.string().optional(),
     emailMessageId: z.string().optional(),
+    callDestE164: z.string().optional(),
+    callExternalId: z.string().optional(),
     checkInMinutes: z
       .number()
       .min(2)
@@ -22,7 +24,16 @@ export default defineTool({
       ),
   }),
   async execute(
-    { jobId, waitingFor, note, emailThreadId, emailMessageId, checkInMinutes },
+    {
+      jobId,
+      waitingFor,
+      note,
+      emailThreadId,
+      emailMessageId,
+      callDestE164,
+      callExternalId,
+      checkInMinutes,
+    },
     ctx,
   ) {
     const phone = tenantId(ctx);
@@ -30,6 +41,8 @@ export default defineTool({
       note,
       emailThreadId,
       emailMessageId,
+      callDestE164,
+      callExternalId,
     });
     if ("error" in job || !checkInMinutes) return job;
     const goal = job.goal || job.note || jobId;
