@@ -121,6 +121,7 @@ export async function setBrowser(
     browserTask?: string;
     browserStatus?: string;
     browserStartedAt?: number;
+    browserProfileId?: string;
   },
 ): Promise<void> {
   await client().mutation(api.tenants.setBrowser, {
@@ -214,7 +215,7 @@ export async function touchJobMail(
 export async function scheduleWakeup(args: {
   tenantPhone: string;
   at: number;
-  kind: "reminder" | "browser_poll" | "brief" | "watcher";
+  kind: "reminder" | "browser_poll" | "brief" | "watcher" | "job_check";
   payload: string;
   recurMinutes?: number;
   recurDailyHour?: number;
@@ -230,7 +231,8 @@ export async function cancelWakeup(
   tenantPhone: string,
   opts: {
     id?: string;
-    kind?: "reminder" | "browser_poll" | "brief" | "watcher";
+    kind?: "reminder" | "browser_poll" | "brief" | "watcher" | "job_check";
+    payloadContains?: string;
   },
 ): Promise<number> {
   return await client().mutation(wakeups.cancel, {

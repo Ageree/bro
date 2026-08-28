@@ -13,6 +13,7 @@ const kind = v.union(
   v.literal("browser_poll"),
   v.literal("brief"),
   v.literal("watcher"),
+  v.literal("job_check"),
 );
 const status = v.union(
   v.literal("scheduled"),
@@ -89,9 +90,10 @@ export const cancel = mutation({
     tenantPhone: v.string(),
     id: v.optional(v.id("wakeups")),
     kind: v.optional(kind),
+    payloadContains: v.optional(v.string()),
   },
   returns: v.number(),
-  handler: async (ctx, { secret, tenantPhone, id, kind: k }) => {
+  handler: async (ctx, { secret, tenantPhone, id, kind: k, payloadContains }) => {
     assertSecret(secret);
     if (id) {
       const row = await ctx.db.get(id);
@@ -109,6 +111,7 @@ export const cancel = mutation({
     let n = 0;
     for (const row of rows) {
       if (row.status === "scheduled" && row.kind === k) {
+        if (payloadContains && !row.payload.includes(payloadContains)) continue;
         await ctx.db.patch(row._id, { status: "cancelled" });
         n++;
       }

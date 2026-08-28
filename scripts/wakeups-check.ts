@@ -68,6 +68,10 @@ assert(
   nextAfterRun({ recurMinutes: 30 }, now) === now + 30 * 60_000,
   "recur minutes",
 );
+assert(
+  nextAfterRun({ recurMinutes: 45 }, now) === now + 45 * 60_000,
+  "recur job_check 45",
+);
 const daily = nextAfterRun({ recurDailyHour: 8, tz }, now);
 assert(daily !== null && daily > now, "recur daily future");
 assert(nextAfterRun({}, now) === null, "one-shot");
@@ -76,6 +80,7 @@ assert(isSingletonKind("brief"), "brief singleton");
 assert(isSingletonKind("watcher"), "watcher singleton");
 assert(isSingletonKind("browser_poll"), "browser_poll singleton");
 assert(!isSingletonKind("reminder"), "reminder not singleton");
+assert(!isSingletonKind("job_check"), "job_check not singleton");
 
 const liveRows = [
   { kind: "watcher", status: "done" },
