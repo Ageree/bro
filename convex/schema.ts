@@ -24,6 +24,8 @@ export default defineSchema({
     browserMonthKey: v.optional(v.string()),
     browserMonthCount: v.optional(v.number()),
     paywallSentDayKey: v.optional(v.string()),
+    dedicatedIMessageNumber: v.optional(v.string()),
+    dedicatedIMessageNumberStatus: v.optional(v.string()),
   })
     .index("by_phone", ["phoneE164"])
     .index("by_handle", ["inkboxHandle"])

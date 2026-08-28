@@ -40,6 +40,8 @@ export const tenantDoc = v.object({
   browserMonthKey: v.optional(v.string()),
   browserMonthCount: v.optional(v.number()),
   paywallSentDayKey: v.optional(v.string()),
+  dedicatedIMessageNumber: v.optional(v.string()),
+  dedicatedIMessageNumberStatus: v.optional(v.string()),
 });
 
 async function tenantByPhone(ctx: MutationCtx, phoneE164: string) {
@@ -238,6 +240,8 @@ export const insertProvisioned = internalMutation({
     inkboxIdentityId: v.string(),
     emailAddress: v.optional(v.string()),
     webhookSigningKey: v.optional(v.string()),
+    dedicatedIMessageNumber: v.optional(v.string()),
+    dedicatedIMessageNumberStatus: v.optional(v.string()),
   },
   returns: tenantDoc,
   handler: async (ctx, args) => {
@@ -252,6 +256,8 @@ export const insertProvisioned = internalMutation({
       inkboxIdentityId: args.inkboxIdentityId,
       emailAddress: email || undefined,
       webhookSigningKey: args.webhookSigningKey,
+      dedicatedIMessageNumber: args.dedicatedIMessageNumber,
+      dedicatedIMessageNumberStatus: args.dedicatedIMessageNumberStatus,
       displayName: "Bro",
       status: "active",
     });
