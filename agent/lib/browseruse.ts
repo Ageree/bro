@@ -1,5 +1,30 @@
 const BASE = "https://api.browser-use.com/api/v4";
 
+/** ISO 3166-1 alpha-2 from BROWSERUSE_PROXY_COUNTRY. Unset → undefined (API default US). */
+export function proxyCountryCode(
+  raw: string | undefined = process.env.BROWSERUSE_PROXY_COUNTRY,
+): string | undefined {
+  const c = raw?.trim().toLowerCase();
+  if (!c) return undefined;
+  return /^[a-z]{2}$/.test(c) ? c : undefined;
+}
+
+/**
+ * Browser Use API v4 create-run proxy country.
+ * https://docs.browser-use.com/cloud/browser/proxies
+ * Field: browserSettings.proxyCountryCode (REST/SDK camelCase).
+ */
+export function applyProxyCountry(
+  body: Record<string, unknown>,
+  country: string | undefined = proxyCountryCode(),
+): Record<string, unknown> {
+  if (!country) return body;
+  return {
+    ...body,
+    browserSettings: { proxyCountryCode: country },
+  };
+}
+
 function key(): string {
   const k = process.env.BROWSER_USE_API_KEY;
   if (!k) throw new Error("BROWSER_USE_API_KEY missing");
@@ -72,6 +97,14 @@ export async function createProfile(userId: string): Promise<string> {
   return id;
 }
 
+function resolveProxyCountry(): string | undefined {
+  const explicit = proxyCountryCode(process.env.BROWSERUSE_PROXY_COUNTRY);
+  if (explicit) return explicit;
+  const fallback = process.env.BRO_BROWSER_PROXY ?? "ru";
+  if (fallback.trim().toLowerCase() === "none") return undefined;
+  return proxyCountryCode(fallback);
+}
+
 export async function startRun(
   task: string,
   sessionId?: string,
@@ -83,9 +116,9 @@ export async function startRun(
     body.sessionId = sessionId;
     body.session_id = sessionId;
   }
-  const proxy = process.env.BRO_BROWSER_PROXY ?? "ru";
+  const country = resolveProxyCountry();
   body.browserSettings = {
-    ...(proxy !== "none" ? { proxyCountryCode: proxy } : {}),
+    ...(country ? { proxyCountryCode: country } : {}),
     ...(opts?.profileId ? { profileId: opts.profileId } : {}),
   };
   const maxCost = Number(process.env.BRO_BROWSER_MAX_COST ?? "1");

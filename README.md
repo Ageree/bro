@@ -34,7 +34,7 @@ Memory files: `data/optmem/<E.164>/` (gitignored). Runtime memory is Convex.
 Landing CTA creates a personal Inkbox identity and opens iMessage (`sms_link`).
 `assets/config.js` holds the Convex HTTP site URL (`https://<deployment>.convex.site`).
 Set `INKBOX_API_KEY` and `INKBOX_WEBHOOK_URL` on the Convex deployment.
-Cap is `BRO_IDENTITY_CAP` (default 10).
+Cap is `BRO_IDENTITY_CAP` (default 100).
 `BRO_DEDICATED_LINE` on Convex claims a dedicated line at landing provision.
 
 Billing is a one-shot YooKassa month. Set `YOOKASSA_SHOP_ID` / `YOOKASSA_SECRET_KEY` on the Convex deployment; webhook URL is `https://<deployment>.convex.site/yookassa`. Empty keys keep the free beta, with daily message and monthly browser-job limits.

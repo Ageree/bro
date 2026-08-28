@@ -2,6 +2,7 @@ import { v } from "convex/values";
 import { internalAction } from "./_generated/server";
 import { internal } from "./_generated/api";
 import {
+  identityCap,
   identityCapReached,
   isIosUserAgent,
   isValidHandle,
@@ -15,8 +16,6 @@ import {
   identityCreateBody,
 } from "./lib/dedicatedLinePolicy";
 import { mailWebhookUrl } from "./lib/mailPolicy";
-
-const DEFAULT_CAP = 10;
 
 type InkboxIdentity = {
   id?: string;
@@ -53,8 +52,7 @@ function webhookBase(): string {
 }
 
 function cap(): number {
-  const n = Number(process.env.BRO_IDENTITY_CAP ?? DEFAULT_CAP);
-  return Number.isFinite(n) && n > 0 ? n : DEFAULT_CAP;
+  return identityCap(process.env.BRO_IDENTITY_CAP);
 }
 
 async function inkbox(

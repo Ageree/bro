@@ -1,12 +1,14 @@
-import { anyApi } from "convex/server";
 import { v } from "convex/values";
-import { internalAction, internalMutation, mutation, query } from "./_generated/server";
+import {
+  internalAction,
+  internalMutation,
+  mutation,
+  query,
+  type MutationCtx,
+} from "./_generated/server";
 import { internal } from "./_generated/api";
 import { assertSecret } from "./secret";
 import { backoffAt, giveUp, isSingletonKind, liveOfKind, nextAfterRun } from "./lib/wakeupPolicy";
-
-// ponytail: anyApi до codegen; после convex deploy можно вернуть typed api
-const wakeups = anyApi.wakeups;
 
 const kind = v.union(
   v.literal("reminder"),
@@ -188,6 +190,19 @@ export const finish = internalMutation({
   },
 });
 
+async function applyLastSeen(
+  ctx: MutationCtx,
+  tenantPhone: string,
+  lastSeen: string,
+): Promise<void> {
+  const rows = await ctx.db
+    .query("wakeups")
+    .withIndex("by_tenant", (q) => q.eq("tenantPhone", tenantPhone))
+    .take(100);
+  const w = liveOfKind(rows, "watcher");
+  if (w) await ctx.db.patch(w._id, { lastSeen });
+}
+
 export const setLastSeen = mutation({
   args: {
     secret: v.string(),
@@ -196,14 +211,18 @@ export const setLastSeen = mutation({
     lastSeen: v.string(),
   },
   returns: v.null(),
-  handler: async (ctx, { secret, tenantPhone, kind, lastSeen }) => {
+  handler: async (ctx, { secret, tenantPhone, lastSeen }) => {
     assertSecret(secret);
-    const rows = await ctx.db
-      .query("wakeups")
-      .withIndex("by_tenant", (q) => q.eq("tenantPhone", tenantPhone))
-      .take(100);
-    const w = liveOfKind(rows, kind);
-    if (w) await ctx.db.patch(w._id, { lastSeen });
+    await applyLastSeen(ctx, tenantPhone, lastSeen);
+    return null;
+  },
+});
+
+export const setLastSeenInternal = internalMutation({
+  args: { tenantPhone: v.string(), lastSeen: v.string() },
+  returns: v.null(),
+  handler: async (ctx, { tenantPhone, lastSeen }) => {
+    await applyLastSeen(ctx, tenantPhone, lastSeen);
     return null;
   },
 });
@@ -216,14 +235,14 @@ export const dispatchDue = internalAction({
     // ponytail: no EVE_URL on this deployment → silent no-op
     if (!eveUrl) return null;
     const secret = process.env.BRO_INTERNAL_SECRET ?? "";
-    const due = await ctx.runMutation(wakeups.claimDue, {});
+    const due = await ctx.runMutation(internal.wakeups.claimDue, {});
     for (const w of due) {
       try {
         const tenant = await ctx.runQuery(internal.tenants.getByPhoneInternal, {
           phoneE164: w.tenantPhone,
         });
         if (!tenant?.inkboxConversationId) {
-          await ctx.runMutation(wakeups.finish, { id: w._id, ok: false });
+          await ctx.runMutation(internal.wakeups.finish, { id: w._id, ok: false });
           continue;
         }
         const res = await fetch(`${eveUrl}/internal/wakeup`, {
@@ -242,25 +261,23 @@ export const dispatchDue = internalAction({
           signal: AbortSignal.timeout(60_000),
         });
         if (!res.ok) {
-          await ctx.runMutation(wakeups.finish, { id: w._id, ok: false });
+          await ctx.runMutation(internal.wakeups.finish, { id: w._id, ok: false });
           continue;
         }
         try {
           const json = (await res.json()) as { lastSeen?: unknown };
           if (typeof json.lastSeen === "string" && w.kind === "watcher") {
-            await ctx.runMutation(wakeups.setLastSeen, {
-              secret,
+            await ctx.runMutation(internal.wakeups.setLastSeenInternal, {
               tenantPhone: w.tenantPhone,
-              kind: "watcher",
               lastSeen: json.lastSeen,
             });
           }
         } catch {
           // 2xx without JSON lastSeen is still success
         }
-        await ctx.runMutation(wakeups.finish, { id: w._id, ok: true });
+        await ctx.runMutation(internal.wakeups.finish, { id: w._id, ok: true });
       } catch {
-        await ctx.runMutation(wakeups.finish, { id: w._id, ok: false });
+        await ctx.runMutation(internal.wakeups.finish, { id: w._id, ok: false });
       }
     }
     return null;

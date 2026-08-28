@@ -23,6 +23,15 @@ export function inboundPhoneAction(
   return "reject";
 }
 
+export const DEFAULT_IDENTITY_CAP = 100;
+
+export function identityCap(
+  raw: string | undefined = process.env.BRO_IDENTITY_CAP,
+): number {
+  const n = Number(raw ?? DEFAULT_IDENTITY_CAP);
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_IDENTITY_CAP;
+}
+
 export function identityCapReached(count: number, cap: number): boolean {
   return count >= cap;
 }
