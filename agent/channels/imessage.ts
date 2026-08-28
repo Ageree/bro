@@ -12,9 +12,10 @@ import {
 import {
   bindInbound,
   countInboundMessage,
-  markPaywallSent,
+  getTenant,
   getTenantByConversation,
   getTenantByHandle,
+  markPaywallSent,
   setWakeupLastSeen,
   upsertTenant,
 } from "../lib/convex";
@@ -26,7 +27,15 @@ import {
 } from "../lib/connect-link";
 import { inboundIMessageText, toIMessageBubbles } from "../lib/imessage-text";
 import { splitSeen } from "../lib/wakeup-text";
+import { wakeupCarriesRunId } from "../../convex/lib/browserFollowPolicy.ts";
+import {
+  releaseWakeupDelivery,
+  takeWakeupDelivery,
+} from "../lib/wakeup-dedupe";
 import { inboundGateFromResult } from "../../convex/lib/billingPolicy";
+
+// ponytail: in-memory only — lost on restart, not shared across instances
+const wakeupDelivered = new Map<string, number>();
 
 function handleFromRequest(request: Request): string | undefined {
   try {
@@ -242,6 +251,8 @@ export default defineChannel({
         tenantPhone?: unknown;
         inkboxHandle?: unknown;
         lastSeen?: unknown;
+        idempotencyKey?: unknown;
+        runId?: unknown;
       };
       try {
         body = (await request.json()) as typeof body;
@@ -275,22 +286,49 @@ export default defineChannel({
         prompt = `[background wakeup] Сторож: ${payload}.
 Прошлое состояние: ${lastSeen ?? "ничего"}. Проверь текущее состояние (Composio-тулы или browser_task — что уместно). Если НИЧЕГО нового относительно прошлого состояния — ответь ровно [SILENT]. Если есть новое — одно короткое сообщение человеку. В КОНЦЕ ответа добавь строку [SEEN] <краткое текущее состояние в одну строку> — она не уйдёт человеку.`;
       } else if (kind === "browser_poll") {
-        prompt = `[background wakeup] Проверь статус текущего браузер-джоба вызовом тула browser_task с task=${payload}. Если completed — отправь человеку результаты. Если ещё работает — ответь [SILENT] (wakeup сам повторится). Если failed — коротко скажи об этом.`;
+        prompt = `[background wakeup] Проверь статус текущего браузер-джоба вызовом тула browser_task с task=${payload}. Если completed — отправь человеку результаты. Если failed или джоб завис — коротко скажи об этом. Если ещё работает — ответь [SILENT].`;
+        if (wakeupCarriesRunId(body.runId)) {
+          let tenant;
+          try {
+            tenant = await getTenant(tenantPhone);
+          } catch {
+            return new Response("tenant lookup failed", { status: 503 });
+          }
+          if (tenant?.browserRunId !== body.runId) {
+            return Response.json({ ok: true, skipped: "stale_run" });
+          }
+          // Residual race: browserRunId can change during from().send after this check.
+        }
       } else if (kind === "job_check") {
         prompt = `[background wakeup] Фоновая проверка джоба: ${payload}. Открытые джобы этого человека уже в контексте. Сделай следующий шаг цепочки сам (проверь почту/статус нужным тулом: composio, browser_task, bro_mail). Если есть прогресс — сделай шаг и коротко напиши человеку. Если продвинуться нечем — ответь ровно [SILENT]: проверка повторится сама. Если джоб уже закрыт или отменён — вызови cancel_wakeup с kind=job_check и payloadContains «джоб <id>», затем ответь [SILENT].`;
       }
-      await from(conversationId).send(prompt, {
-        auth: {
-          authenticator: "inkbox",
-          issuer: "inkbox",
-          principalType: "user",
-          principalId: tenantPhone,
-          // ponytail: wire v1 не терпит undefined в attributes — ключ опускаем
-          attributes: inkboxHandle
-            ? { conversationId, inkboxHandle }
-            : { conversationId },
-        },
-      });
+      const idempotencyKey =
+        typeof body.idempotencyKey === "string" ? body.idempotencyKey : "";
+      if (
+        idempotencyKey &&
+        !takeWakeupDelivery(wakeupDelivered, idempotencyKey, Date.now())
+      ) {
+        return Response.json({ ok: true, duplicate: true });
+      }
+      try {
+        await from(conversationId).send(prompt, {
+          auth: {
+            authenticator: "inkbox",
+            issuer: "inkbox",
+            principalType: "user",
+            principalId: tenantPhone,
+            // ponytail: wire v1 не терпит undefined в attributes — ключ опускаем
+            attributes: inkboxHandle
+              ? { conversationId, inkboxHandle }
+              : { conversationId },
+          },
+        });
+      } catch (err) {
+        if (idempotencyKey) {
+          releaseWakeupDelivery(wakeupDelivered, idempotencyKey);
+        }
+        throw err;
+      }
       return Response.json({ ok: true });
     }),
   ],

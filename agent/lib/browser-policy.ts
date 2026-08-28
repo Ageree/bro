@@ -70,3 +70,8 @@ export function pollTimedOut(
   if (startedAt === undefined) return false;
   return now - startedAt > POLL_GIVE_UP_MS;
 }
+
+export {
+  nextFollowDecision,
+  shouldStartFollowThrough,
+} from "../../convex/lib/browserFollowPolicy.ts";

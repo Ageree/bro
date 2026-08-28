@@ -1,13 +1,20 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 import {
+  cancelBrowserFollow,
   cancelWakeup,
   countBrowserJobStart,
-  scheduleWakeup,
+  startBrowserFollow,
   setBrowser,
   upsertTenant,
 } from "../lib/convex";
-import { nextBrowserAction, pollTimedOut } from "../lib/browser-policy";
+import {
+  nextBrowserAction,
+  shouldStartFollowThrough,
+} from "../lib/browser-policy";
+import {
+  FOLLOW_RETRY_HINT,
+} from "../../convex/lib/browserFollowPolicy.ts";
 import {
   createProfile,
   hydrate,
@@ -71,27 +78,41 @@ async function settle(
   extra: Record<string, unknown>,
   opts: { startedAt?: number; runId?: string | null },
 ) {
-  if (isTerminal(run.status)) {
-    await cancelWakeup(phone, { kind: "browser_poll" }).catch(() => {});
-    return payload(run, extra);
-  }
+  const now = Date.now();
   if (
-    opts.runId === run.runId &&
-    pollTimedOut(opts.startedAt, Date.now())
+    isTerminal(run.status) ||
+    (opts.runId === run.runId &&
+      !shouldStartFollowThrough({
+        status: run.status,
+        startedAt: opts.startedAt,
+        now,
+      }))
   ) {
     await cancelWakeup(phone, { kind: "browser_poll" }).catch(() => {});
+    await cancelBrowserFollow(phone, run.runId).catch(() => {});
+    if (isTerminal(run.status)) return payload(run, extra);
     return payload(run, {
       ...extra,
       hint: "джоб висит слишком долго, скажи человеку и предложи reset",
     });
   }
-  await scheduleWakeup({
+  const follow = await startBrowserFollow({
     tenantPhone: phone,
-    at: Date.now() + 2 * 60_000,
-    kind: "browser_poll",
-    payload: task,
-    recurMinutes: 2,
-  }).catch((err) => console.error("browser poll wakeup failed", err));
+    runId: run.runId,
+    sessionId: run.sessionId,
+    task,
+    startedAt: opts.startedAt ?? now,
+  }).catch((err) => {
+    console.error("browser follow workflow failed", err);
+    return { error: "retry_later" };
+  });
+  if ("error" in follow && follow.error) {
+    return payload(run, {
+      ...extra,
+      followUp: "retry",
+      hint: FOLLOW_RETRY_HINT,
+    });
+  }
   return payload(run, extra);
 }
 

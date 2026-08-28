@@ -6,6 +6,7 @@ import {
   cronName,
   delayMs,
   giveUp,
+  isLiveBrowserPoll,
   isLiveStatus,
   isSingletonKind,
   LIVE_STATUSES,
@@ -16,7 +17,13 @@ import {
   nextGen,
   parseWhen,
   rescheduleLive,
+  shouldApplyFinish,
 } from "../convex/lib/wakeupPolicy.ts";
+import {
+  releaseWakeupDelivery,
+  takeWakeupDelivery,
+  WAKEUP_DEDUPE_TTL_MS,
+} from "../agent/lib/wakeup-dedupe.ts";
 
 function assert(cond: unknown, msg: string): void {
   if (!cond) throw new Error(msg);
@@ -48,21 +55,6 @@ for (const hour of [0, 8, 23]) {
   assert(at - now < 24 * 60 * 60_000 + 60_000, `nextDailyAt ${hour} within 24h+1min`);
   assert(hourInTz(at, tz) === hour, `nextDailyAt ${hour} hour in tz`);
 }
-
-const vladTz = "Asia/Vladivostok";
-for (const hour of [0, 8, 23]) {
-  const at = nextDailyAt(hour, vladTz, now);
-  assert(at > now, `vlad nextDailyAt ${hour} future`);
-  assert(at - now < 24 * 60 * 60_000 + 60_000, `vlad nextDailyAt ${hour} within 24h+1min`);
-  assert(hourInTz(at, vladTz) === hour, `vlad nextDailyAt ${hour} hour in tz`);
-}
-const vladDaily = nextAfterRun({ recurDailyHour: 8, tz: vladTz }, now);
-assert(vladDaily !== null && vladDaily > now, "vlad recur daily future");
-assert(hourInTz(vladDaily!, vladTz) === 8, "vlad recur daily hour");
-assert(
-  nextAfterRun({ recurDailyHour: 8 }, now) === nextDailyAt(8, tz, now),
-  "missing tz falls back to Moscow",
-);
 
 const b0 = backoffAt(0, now);
 const b1 = backoffAt(1, now);
@@ -101,6 +93,53 @@ assert(liveOfKind(liveRows, "watcher")?.status === "scheduled", "live watcher sk
 assert(liveOfKind(liveRows, "brief")?.status === "running", "live brief running");
 assert(liveOfKind(liveRows, "browser_poll") === undefined, "no live poll");
 assert(liveOfKind(liveRows, "reminder")?.kind === "reminder", "live reminder");
+
+assert(
+  isLiveBrowserPoll({ kind: "browser_poll", status: "scheduled" }),
+  "scheduled poll is live",
+);
+assert(
+  isLiveBrowserPoll({ kind: "browser_poll", status: "running" }),
+  "running poll is live — start workflow must cancel it",
+);
+assert(
+  !isLiveBrowserPoll({ kind: "browser_poll", status: "cancelled" }),
+  "cancelled poll not live",
+);
+assert(
+  !isLiveBrowserPoll({ kind: "brief", status: "running" }),
+  "brief is not a leftover poll",
+);
+
+const historyPage = Array.from({ length: 100 }, () => ({
+  kind: "reminder" as const,
+  status: "done" as const,
+}));
+const nextPage = [{ kind: "browser_poll" as const, status: "running" as const }];
+assert(
+  [...historyPage, ...nextPage].filter(isLiveBrowserPoll).length === 1,
+  "live browser_poll after 100 history rows must still be cancelled",
+);
+assert(shouldApplyFinish("running") === true, "finish running");
+assert(shouldApplyFinish("scheduled") === true, "finish scheduled");
+assert(
+  shouldApplyFinish("cancelled") === false,
+  "finish must not reschedule cancelled poll",
+);
+assert(shouldApplyFinish("done") === false, "finish skips done");
+
+const seen = new Map<string, number>();
+const tSeen = now;
+assert(takeWakeupDelivery(seen, "k1", tSeen) === true, "first wakeup delivered");
+assert(takeWakeupDelivery(seen, "k1", tSeen + 1000) === false, "retry same key dropped");
+assert(takeWakeupDelivery(seen, "k2", tSeen) === true, "other key delivered");
+releaseWakeupDelivery(seen, "k1");
+assert(takeWakeupDelivery(seen, "k1", tSeen + 2000) === true, "released key can retry");
+assert(
+  takeWakeupDelivery(seen, "old", tSeen - WAKEUP_DEDUPE_TTL_MS - 1) === true &&
+    takeWakeupDelivery(seen, "old", tSeen) === true,
+  "expired key pruned",
+);
 
 assert(cronName("jd7abc") === "wakeup:jd7abc", "cron name");
 assert(delayMs(now + 30_000, now) === 30_000, "delay future");

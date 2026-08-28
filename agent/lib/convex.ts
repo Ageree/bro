@@ -100,14 +100,6 @@ export async function bindInbound(
   });
 }
 
-export async function setTimezone(phoneE164: string, tz: string): Promise<void> {
-  await client().mutation(api.tenants.setTimezone, {
-    secret: secret(),
-    phoneE164,
-    tz,
-  });
-}
-
 export async function setBrowser(
   phoneE164: string,
   patch: {
@@ -283,5 +275,29 @@ export async function countBrowserJobStart(
   return await client().mutation(api.tenants.countBrowserJobStart, {
     secret: secret(),
     phoneE164,
+  });
+}
+
+export async function startBrowserFollow(args: {
+  tenantPhone: string;
+  runId: string;
+  sessionId?: string;
+  task: string;
+  startedAt: number;
+}): Promise<{ workflowId: string; reused: boolean } | { error: string }> {
+  return await client().mutation(api.browserFollow.startFollowThrough, {
+    secret: secret(),
+    ...args,
+  });
+}
+
+export async function cancelBrowserFollow(
+  tenantPhone: string,
+  runId: string,
+): Promise<{ cancelled: number; error?: string }> {
+  return await client().mutation(api.browserFollow.cancelFollowThrough, {
+    secret: secret(),
+    tenantPhone,
+    runId,
   });
 }

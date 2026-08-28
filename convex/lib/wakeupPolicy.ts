@@ -1,6 +1,6 @@
 const SLACK_MS = 2 * 60_000;
 const MINUTE = 60_000;
-export const DEFAULT_TZ = "Europe/Moscow";
+const DEFAULT_TZ = "Europe/Moscow";
 
 /** @convex-dev/crons rejects interval schedules under 1s. */
 export const MIN_CRON_INTERVAL_MS = 1000;
@@ -145,6 +145,18 @@ export function liveOfKind<T extends { kind: string; status: string }>(
   kind: string,
 ): T | undefined {
   return rows.find((w) => w.kind === kind && isLiveStatus(w.status));
+}
+
+export function isLiveBrowserPoll(row: { kind: string; status: string }): boolean {
+  return (
+    row.kind === "browser_poll" &&
+    (row.status === "scheduled" || row.status === "running")
+  );
+}
+
+/** finish() must not revive a row follow-through already cancelled. */
+export function shouldApplyFinish(status: string): boolean {
+  return status === "running" || status === "scheduled";
 }
 
 export function nextAfterRun(

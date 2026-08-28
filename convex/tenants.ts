@@ -23,6 +23,13 @@ import {
   rateLimitPeriodKey,
   usedCount,
 } from "./lib/billingPolicy";
+import {
+  browserWakeupClaimKey,
+  claimMatchesRunPhase,
+  decideWakeupClaim,
+  parseWakeupClaim,
+  type WakeupPhase,
+} from "./lib/browserFollowPolicy";
 import { periodConfig, rateLimiter } from "./lib/rateLimits";
 
 export const tenantDoc = v.object({
@@ -43,6 +50,9 @@ export const tenantDoc = v.object({
   browserStatus: v.optional(v.string()),
   browserStartedAt: v.optional(v.number()),
   browserProfileId: v.optional(v.string()),
+  browserWorkflowId: v.optional(v.string()),
+  browserWorkflowRunId: v.optional(v.string()),
+  browserWakeupClaim: v.optional(v.string()),
   paidUntil: v.optional(v.number()),
   // deprecated: counters live in @convex-dev/rate-limiter
   msgsDayKey: v.optional(v.string()),
@@ -300,6 +310,145 @@ export const getByPhoneInternal = internalQuery({
       .query("tenants")
       .withIndex("by_phone", (q) => q.eq("phoneE164", phoneE164))
       .first();
+  },
+});
+
+export const patchBrowserInternal = internalMutation({
+  args: {
+    phoneE164: v.string(),
+    runId: v.string(),
+    browserStatus: v.optional(v.string()),
+    browserSessionId: v.optional(v.string()),
+    browserLiveUrl: v.optional(v.string()),
+  },
+  returns: v.object({ stale: v.boolean() }),
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query("tenants")
+      .withIndex("by_phone", (q) => q.eq("phoneE164", args.phoneE164))
+      .first();
+    if (!existing || existing.browserRunId !== args.runId) {
+      return { stale: true };
+    }
+    const patch: {
+      browserStatus?: string;
+      browserSessionId?: string;
+      browserLiveUrl?: string;
+    } = {};
+    if (args.browserStatus !== undefined) patch.browserStatus = args.browserStatus;
+    if (args.browserSessionId !== undefined) {
+      patch.browserSessionId = args.browserSessionId;
+    }
+    if (args.browserLiveUrl !== undefined) patch.browserLiveUrl = args.browserLiveUrl;
+    if (Object.keys(patch).length) await ctx.db.patch(existing._id, patch);
+    return { stale: false };
+  },
+});
+
+const wakeupPhase = v.union(v.literal("done"), v.literal("giveup"));
+
+export const claimBrowserWakeup = internalMutation({
+  args: {
+    phoneE164: v.string(),
+    runId: v.string(),
+    phase: wakeupPhase,
+  },
+  returns: v.union(
+    v.object({
+      ok: v.literal(false),
+      reason: v.union(
+        v.literal("stale_run"),
+        v.literal("duplicate"),
+        v.literal("pending_in_flight"),
+      ),
+    }),
+    v.object({
+      ok: v.literal(true),
+      conversationId: v.optional(v.string()),
+      inkboxHandle: v.optional(v.string()),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query("tenants")
+      .withIndex("by_phone", (q) => q.eq("phoneE164", args.phoneE164))
+      .first();
+    const now = Date.now();
+    const phase = args.phase as WakeupPhase;
+    const decision = decideWakeupClaim({
+      tenantRunId: existing?.browserRunId,
+      runId: args.runId,
+      phase,
+      existingClaim: existing?.browserWakeupClaim,
+      now,
+    });
+    if (decision !== "ok") {
+      return { ok: false as const, reason: decision };
+    }
+    if (!existing) return { ok: false as const, reason: "stale_run" };
+    await ctx.db.patch(existing._id, {
+      browserWakeupClaim: browserWakeupClaimKey(args.runId, phase, now, "pending"),
+    });
+    return {
+      ok: true as const,
+      conversationId: existing.inkboxConversationId,
+      inkboxHandle: existing.inkboxHandle,
+    };
+  },
+});
+
+export const releaseBrowserWakeup = internalMutation({
+  args: {
+    phoneE164: v.string(),
+    runId: v.string(),
+    phase: wakeupPhase,
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query("tenants")
+      .withIndex("by_phone", (q) => q.eq("phoneE164", args.phoneE164))
+      .first();
+    const phase = args.phase as WakeupPhase;
+    if (!existing || !claimMatchesRunPhase(existing.browserWakeupClaim, args.runId, phase)) {
+      return null;
+    }
+    await ctx.db.patch(existing._id, { browserWakeupClaim: undefined });
+    return null;
+  },
+});
+
+export const confirmBrowserWakeup = internalMutation({
+  args: {
+    phoneE164: v.string(),
+    runId: v.string(),
+    phase: wakeupPhase,
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query("tenants")
+      .withIndex("by_phone", (q) => q.eq("phoneE164", args.phoneE164))
+      .first();
+    const phase = args.phase as WakeupPhase;
+    const parsed = parseWakeupClaim(existing?.browserWakeupClaim);
+    if (
+      !existing ||
+      !parsed ||
+      parsed.runId !== args.runId ||
+      parsed.phase !== phase
+    ) {
+      return null;
+    }
+    await ctx.db.patch(existing._id, {
+      browserWakeupClaim: browserWakeupClaimKey(
+        args.runId,
+        phase,
+        parsed.claimedAtMs,
+        "sent",
+      ),
+    });
+    return null;
   },
 });
 

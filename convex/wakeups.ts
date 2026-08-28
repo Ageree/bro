@@ -22,6 +22,7 @@ import {
   nextAfterRun,
   nextGen,
   rescheduleLive,
+  shouldApplyFinish,
 } from "./lib/wakeupPolicy";
 import { hasCron, scheduleCron, unscheduleCron } from "./lib/wakeupCrons";
 
@@ -196,28 +197,34 @@ export const cancel = mutation({
     assertSecret(secret);
     if (id) {
       const row = await ctx.db.get(id);
-      if (!row || row.tenantPhone !== tenantPhone || row.status !== "scheduled") {
+      if (
+        !row ||
+        row.tenantPhone !== tenantPhone ||
+        (row.status !== "scheduled" && row.status !== "running")
+      ) {
         return 0;
       }
       await unscheduleCron(ctx, id);
-      await ctx.db.patch(id, { status: "cancelled" });
+      await ctx.db.patch(id, {
+        status: "cancelled",
+        recurMinutes: undefined,
+        recurDailyHour: undefined,
+      });
       return 1;
     }
     if (!k) return 0;
-    const rows = await ctx.db
-      .query("wakeups")
-      .withIndex("by_tenant_status", (q) =>
-        q.eq("tenantPhone", tenantPhone).eq("status", "scheduled"),
-      )
-      .collect();
+    const rows = await liveForTenant(ctx, tenantPhone);
     let n = 0;
     for (const row of rows) {
-      if (row.kind === k) {
-        if (payloadContains && !row.payload.includes(payloadContains)) continue;
-        await unscheduleCron(ctx, row._id);
-        await ctx.db.patch(row._id, { status: "cancelled" });
-        n++;
-      }
+      if (row.kind !== k) continue;
+      if (payloadContains && !row.payload.includes(payloadContains)) continue;
+      await unscheduleCron(ctx, row._id);
+      await ctx.db.patch(row._id, {
+        status: "cancelled",
+        recurMinutes: undefined,
+        recurDailyHour: undefined,
+      });
+      n++;
     }
     return n;
   },
@@ -286,6 +293,7 @@ export const finish = internalMutation({
   handler: async (ctx, { id, ok, gen: ticketGen }) => {
     const w = await ctx.db.get(id);
     if (!w || !canFinish(w, { gen: ticketGen })) return null;
+    if (!shouldApplyFinish(w.status)) return null;
     const now = Date.now();
     if (ok) {
       const next = nextAfterRun(

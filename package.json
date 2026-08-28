@@ -31,10 +31,13 @@
     "@composio/experimental": "^0.2.2",
     "@convex-dev/crons": "^0.2.2",
     "@convex-dev/rate-limiter": "^0.3.2",
+    "@convex-dev/workflow": "^0.4.6",
+    "@convex-dev/workpool": "^0.4.10",
     "@inkbox/sdk": "^0.6.4",
     "@vercel/connect": "1.0.0",
     "ai": "^7.0.58",
     "convex": "^1.45.0",
+    "convex-helpers": "^0.1.123",
     "eve": "^0.45.0",
     "zod": "4.4.3"
   }

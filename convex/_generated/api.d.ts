@@ -10,11 +10,14 @@
 
 import type * as access from "../access.js";
 import type * as billing from "../billing.js";
+import type * as browserFollow from "../browserFollow.js";
 import type * as crons from "../crons.js";
 import type * as http from "../http.js";
 import type * as jobs from "../jobs.js";
 import type * as lib_accessPolicy from "../lib/accessPolicy.js";
 import type * as lib_billingPolicy from "../lib/billingPolicy.js";
+import type * as lib_browserFollowPolicy from "../lib/browserFollowPolicy.js";
+import type * as lib_browseruse from "../lib/browseruse.js";
 import type * as lib_dedicatedLinePolicy from "../lib/dedicatedLinePolicy.js";
 import type * as lib_mailPolicy from "../lib/mailPolicy.js";
 import type * as lib_rateLimits from "../lib/rateLimits.js";
@@ -25,6 +28,7 @@ import type * as orders from "../orders.js";
 import type * as secret from "../secret.js";
 import type * as tenants from "../tenants.js";
 import type * as wakeups from "../wakeups.js";
+import type * as workflow from "../workflow.js";
 
 import type {
   ApiFromModules,
@@ -35,11 +39,14 @@ import type {
 declare const fullApi: ApiFromModules<{
   access: typeof access;
   billing: typeof billing;
+  browserFollow: typeof browserFollow;
   crons: typeof crons;
   http: typeof http;
   jobs: typeof jobs;
   "lib/accessPolicy": typeof lib_accessPolicy;
   "lib/billingPolicy": typeof lib_billingPolicy;
+  "lib/browserFollowPolicy": typeof lib_browserFollowPolicy;
+  "lib/browseruse": typeof lib_browseruse;
   "lib/dedicatedLinePolicy": typeof lib_dedicatedLinePolicy;
   "lib/mailPolicy": typeof lib_mailPolicy;
   "lib/rateLimits": typeof lib_rateLimits;
@@ -50,6 +57,7 @@ declare const fullApi: ApiFromModules<{
   secret: typeof secret;
   tenants: typeof tenants;
   wakeups: typeof wakeups;
+  workflow: typeof workflow;
 }>;
 
 /**
@@ -81,4 +89,5 @@ export declare const internal: FilterApi<
 export declare const components: {
   crons: import("@convex-dev/crons/_generated/component.js").ComponentApi<"crons">;
   rateLimiter: import("@convex-dev/rate-limiter/_generated/component.js").ComponentApi<"rateLimiter">;
+  workflow: import("@convex-dev/workflow/_generated/component.js").ComponentApi<"workflow">;
 };
