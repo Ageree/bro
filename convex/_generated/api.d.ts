@@ -29,6 +29,7 @@ import type * as memories from "../memories.js";
 import type * as orders from "../orders.js";
 import type * as secret from "../secret.js";
 import type * as tenants from "../tenants.js";
+import type * as vox from "../vox.js";
 import type * as wakeups from "../wakeups.js";
 import type * as workflow from "../workflow.js";
 
@@ -60,6 +61,7 @@ declare const fullApi: ApiFromModules<{
   orders: typeof orders;
   secret: typeof secret;
   tenants: typeof tenants;
+  vox: typeof vox;
   wakeups: typeof wakeups;
   workflow: typeof workflow;
 }>;
