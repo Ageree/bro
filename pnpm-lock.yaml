@@ -17,6 +17,9 @@ importers:
       '@composio/experimental':
         specifier: ^0.2.2
         version: 0.2.2(@composio/core@0.17.0(ws@8.21.0)(zod@4.4.3))(eve@0.45.0(ai@7.0.79(zod@4.4.3)))
+      '@convex-dev/crons':
+        specifier: ^0.2.2
+        version: 0.2.2(convex@1.45.0)
       '@inkbox/sdk':
         specifier: ^0.6.4
         version: 0.6.4
@@ -84,6 +87,11 @@ packages:
     resolution: {integrity: sha512-Lgz5QlclPsd9mo8FGn/12h3cwTpN6A9aYvucO1umjnuvyetb6nC//nHEu9TDU+BN5Sa0n+qmUUv4Tzd4wI4xeA==}
     peerDependencies:
       zod: '>=3.25.76 <5'
+
+  '@convex-dev/crons@0.2.2':
+    resolution: {integrity: sha512-V5kLBb0kTb2MA6uN0MgEYEgeW1mp+1oioA0tnuh8yWZcb6FToY+e67MJ5SQ98N1JjY2K0JIofAzLUYe9gEdU2A==}
+    peerDependencies:
+      convex: ^1.24.8
 
   '@esbuild/aix-ppc64@0.27.0':
     resolution: {integrity: sha512-KuZrd2hRjz01y5JK9mEBSD3Vj3mbCvemhT466rSuJYeE/hjuBrHfjjcjMdTm/sz7au+++sdbJZJmuBwQLuw68A==}
@@ -474,6 +482,11 @@ packages:
       react:
         optional: true
 
+  cron-parser@4.9.0:
+    resolution: {integrity: sha512-p0SaNjrHOnQeR8/VnfGbmg9te2kfyYSQ7Sc/j/6DtPL3JQvKxmjO9TSjNFpujqV3vEYYBvNNvXSxzyksBWAx1Q==}
+    engines: {node: '>=12.0.0'}
+    deprecated: v4 is no longer maintained, upgrade to v5
+
   cross-spawn@7.0.6:
     resolution: {integrity: sha512-uV2QOWP2nWzsy2aMp8aRibhi9dlzF5Hgh5SHaB9OiTGEyDTiJJyx0uy51QXdyWbtAHNua4XJzUKca3OzKUd3vA==}
     engines: {node: '>= 8'}
@@ -605,6 +618,10 @@ packages:
 
   json-schema@0.4.0:
     resolution: {integrity: sha512-es94M3nTIfsEPisRafak+HDLfHXnKBhV3vU5eqPcS3flIWqcxJWgXHXiey3YrpaNsanY5ei1VoYEbOzijuq9BA==}
+
+  luxon@3.7.2:
+    resolution: {integrity: sha512-vtEhXh/gNjI9Yg1u4jX/0YVPMvxzHuGgCm6tC5kZyb08yjGWGnqAjGJvcXbqQR2P3MyMEFnRbpcdFS6PBcLqew==}
+    engines: {node: '>=12'}
 
   merge-stream@2.0.0:
     resolution: {integrity: sha512-abv/qOcuPfk3URPfDzmZU1LKmuw8kT+0nIHvKrKgFrwifol/doWcdA4ZqsWQ8ENrFKkd67Mfpo/LovbIUsbt3w==}
@@ -951,6 +968,11 @@ snapshots:
     dependencies:
       zod: 4.4.3
 
+  '@convex-dev/crons@0.2.2(convex@1.45.0)':
+    dependencies:
+      convex: 1.45.0
+      cron-parser: 4.9.0
+
   '@esbuild/aix-ppc64@0.27.0':
     optional: true
 
@@ -1232,6 +1254,10 @@ snapshots:
       - bufferutil
       - utf-8-validate
 
+  cron-parser@4.9.0:
+    dependencies:
+      luxon: 3.7.2
+
   cross-spawn@7.0.6:
     dependencies:
       path-key: 3.1.1
@@ -1367,6 +1393,8 @@ snapshots:
   jose@5.10.0: {}
 
   json-schema@0.4.0: {}
+
+  luxon@3.7.2: {}
 
   merge-stream@2.0.0: {}
 

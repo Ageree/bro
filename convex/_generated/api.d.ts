@@ -17,6 +17,7 @@ import type * as lib_accessPolicy from "../lib/accessPolicy.js";
 import type * as lib_billingPolicy from "../lib/billingPolicy.js";
 import type * as lib_dedicatedLinePolicy from "../lib/dedicatedLinePolicy.js";
 import type * as lib_mailPolicy from "../lib/mailPolicy.js";
+import type * as lib_wakeupCrons from "../lib/wakeupCrons.js";
 import type * as lib_wakeupPolicy from "../lib/wakeupPolicy.js";
 import type * as memories from "../memories.js";
 import type * as orders from "../orders.js";
@@ -40,6 +41,7 @@ declare const fullApi: ApiFromModules<{
   "lib/billingPolicy": typeof lib_billingPolicy;
   "lib/dedicatedLinePolicy": typeof lib_dedicatedLinePolicy;
   "lib/mailPolicy": typeof lib_mailPolicy;
+  "lib/wakeupCrons": typeof lib_wakeupCrons;
   "lib/wakeupPolicy": typeof lib_wakeupPolicy;
   memories: typeof memories;
   orders: typeof orders;
@@ -74,4 +76,6 @@ export declare const internal: FilterApi<
   FunctionReference<any, "internal">
 >;
 
-export declare const components: {};
+export declare const components: {
+  crons: import("@convex-dev/crons/_generated/component.js").ComponentApi<"crons">;
+};

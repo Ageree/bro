@@ -2,6 +2,59 @@ const SLACK_MS = 2 * 60_000;
 const MINUTE = 60_000;
 export const DEFAULT_TZ = "Europe/Moscow";
 
+/** @convex-dev/crons rejects interval schedules under 1s. */
+export const MIN_CRON_INTERVAL_MS = 1000;
+
+export const LIVE_STATUSES = ["scheduled", "running"] as const;
+export type LiveStatus = (typeof LIVE_STATUSES)[number];
+
+export function cronName(id: string): string {
+  return `wakeup:${id}`;
+}
+
+/** One-shot delay until `at`. Component interval is now+ms, first fire ≈ at. */
+export function delayMs(at: number, now: number): number {
+  return Math.max(at - now, MIN_CRON_INTERVAL_MS);
+}
+
+export function nextGen(current?: number): number {
+  return (current ?? 0) + 1;
+}
+
+/** Claim only scheduled rows whose gen matches the cron ticket. */
+export function canClaim(
+  row: { status: string; gen?: number },
+  ticket: { gen: number },
+): boolean {
+  if (row.status !== "scheduled") return false;
+  return (row.gen ?? 0) === ticket.gen;
+}
+
+/** Finish only if this run still owns the row. Stale gen → no-op. */
+export function canFinish(
+  row: { gen?: number },
+  ticket: { gen: number },
+): boolean {
+  return (row.gen ?? 0) === ticket.gen;
+}
+
+/** Reschedule a live row (scheduled or running): new gen, back to scheduled, register cron. */
+export function rescheduleLive(
+  row: { gen?: number },
+  at: number,
+): { status: "scheduled"; gen: number; at: number; registerCron: true } {
+  return {
+    status: "scheduled",
+    gen: nextGen(row.gen),
+    at,
+    registerCron: true,
+  };
+}
+
+export function isLiveStatus(status: string): status is LiveStatus {
+  return status === "scheduled" || status === "running";
+}
+
 function partsInTz(ms: number, tz: string) {
   const dtf = new Intl.DateTimeFormat("en-US", {
     timeZone: tz,
@@ -91,9 +144,7 @@ export function liveOfKind<T extends { kind: string; status: string }>(
   rows: T[],
   kind: string,
 ): T | undefined {
-  return rows.find(
-    (w) => w.kind === kind && (w.status === "scheduled" || w.status === "running"),
-  );
+  return rows.find((w) => w.kind === kind && isLiveStatus(w.status));
 }
 
 export function nextAfterRun(
