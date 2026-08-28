@@ -26,6 +26,11 @@ export function isRuE164(e164: string): boolean {
   return e164.startsWith("+7") && e164.length >= 11 && e164.length <= 12;
 }
 
+/** Inkbox Chime PSTN: live probes dial +1 (US/CA) and fail +7 / +44. */
+export function isInkboxDialableE164(e164: string): boolean {
+  return e164.startsWith("+1") && e164.length === 12;
+}
+
 export function parseCallEnv(env: NodeJS.ProcessEnv): CallEnv {
   const bridge = normalizeE164(env.BRO_RU_BRIDGE_E164 ?? "");
   const from = normalizeE164(env.INKBOX_PHONE_NUMBER ?? "");
@@ -58,6 +63,13 @@ export function decideCallRoute(
         route: "blocked",
         destE164: dest,
         error: "RU dest needs BRO_RU_BRIDGE_E164 or BRO_INKBOX_RU_ENABLED",
+      };
+    }
+    if (!isInkboxDialableE164(env.ruBridgeE164)) {
+      return {
+        route: "blocked",
+        destE164: dest,
+        error: "BRO_RU_BRIDGE_E164 must be +1; Inkbox cannot dial +7",
       };
     }
     return { route: "ru_bridge", destE164: dest, dialE164: env.ruBridgeE164 };

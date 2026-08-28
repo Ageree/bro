@@ -7,6 +7,7 @@ import {
   formatCallWake,
   hostedReason,
   inkboxPlaceBody,
+  isInkboxDialableE164,
   isRuE164,
   normalizeE164,
   parseCallEnded,
@@ -24,6 +25,9 @@ assert(normalizeE164("+1 (415) 555-0100") === "+14155550100", "us");
 assert(normalizeE164("not-a-phone") === null, "junk");
 assert(isRuE164("+74951234567"), "ru yes");
 assert(!isRuE164("+14155550100"), "us no");
+assert(isInkboxDialableE164("+14155550999"), "nanp yes");
+assert(!isInkboxDialableE164("+74992816046"), "ru not inkbox dest");
+assert(!isInkboxDialableE164("+447418353977"), "gb not inkbox dest");
 
 const env = parseCallEnv({
   INKBOX_PHONE_NUMBER: "+14155550100",
@@ -57,6 +61,16 @@ const blocked = decideCallRoute("+74951234567", {
   inkboxFromE164: "+14155550100",
 });
 assert(blocked.route === "blocked", "no bridge no flag");
+
+const ruBridge = decideCallRoute("+74951234567", {
+  inkboxRuEnabled: false,
+  ruBridgeE164: "+74992816046",
+  inkboxFromE164: "+15189183436",
+});
+assert(ruBridge.route === "blocked", "ru number is CLI not bridge");
+if (ruBridge.route === "blocked") {
+  assert(ruBridge.error.includes("+1"), "explain inkbox dest");
+}
 
 assert(
   decideCallRoute("+14155550100", env).route === "blocked",
