@@ -7,7 +7,7 @@
   },
   "scripts": {
     "build": "eve build",
-    "vercel-build": "mkdir -p public && cp index.html oferta.html public/ && cp -R assets public/",
+    "vercel-build": "mkdir -p public && cp index.html oferta.html cabinet.html public/ && cp -R assets public/",
     "dev": "eve dev",
     "dev:local": "bash scripts/dev-local.sh",
     "tunnel": "node --experimental-strip-types scripts/inkbox-tunnel.ts",
@@ -22,6 +22,7 @@
     "jobs:check": "node --experimental-strip-types scripts/jobs-check.ts",
     "imessage:check": "node --experimental-strip-types scripts/imessage-text-check.ts",
     "billing:check": "node --experimental-strip-types scripts/billing-check.ts",
+    "cabinet:check": "node --experimental-strip-types scripts/cabinet-check.ts",
     "wakeups:check": "node --experimental-strip-types scripts/wakeups-check.ts",
     "provision:inkbox": "node --experimental-strip-types scripts/provision-inkbox.ts"
   },
