@@ -73,6 +73,37 @@ export default defineSchema({
     ),
   }).index("by_tenant", ["tenantId"]),
 
+  sessions: defineTable({
+    tokenHash: v.string(),
+    tenantId: v.id("tenants"),
+    expiresAt: v.number(),
+  })
+    .index("by_tokenHash", ["tokenHash"])
+    .index("by_tenant", ["tenantId"]),
+
+  loginChallenges: defineTable({
+    handle: v.string(),
+    codeHash: v.string(),
+    expiresAt: v.number(),
+    attempts: v.number(),
+    createdAt: v.number(),
+  }).index("by_handle", ["handle"]),
+
+  payments: defineTable({
+    tenantId: v.id("tenants"),
+    yookassaId: v.string(),
+    amountRub: v.number(),
+    status: v.union(
+      v.literal("pending"),
+      v.literal("succeeded"),
+      v.literal("canceled"),
+    ),
+    createdAt: v.number(),
+    paidUntilAfter: v.optional(v.number()),
+  })
+    .index("by_tenant", ["tenantId"])
+    .index("by_yookassa", ["yookassaId"]),
+
   wakeups: defineTable({
     tenantPhone: v.string(),
     at: v.number(),

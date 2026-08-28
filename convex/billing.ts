@@ -3,6 +3,7 @@ import { internalAction, internalMutation } from "./_generated/server";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { extendPaidUntil } from "./lib/billingPolicy";
+import { paymentApplyDecision } from "./lib/cabinetPolicy";
 
 function shopCreds(): { shopId: string; secret: string } {
   const shopId = process.env.YOOKASSA_SHOP_ID;
@@ -21,13 +22,30 @@ function priceRub(): number {
 }
 
 export const applyPayment = internalMutation({
-  args: { tenantId: v.string() },
+  args: {
+    tenantId: v.string(),
+    yookassaId: v.string(),
+    amountRub: v.number(),
+  },
   returns: v.null(),
-  handler: async (ctx, { tenantId }) => {
+  handler: async (ctx, { tenantId, yookassaId, amountRub }) => {
     const tenant = await ctx.db.get(tenantId as Id<"tenants">);
     if (!tenant) return null;
-    await ctx.db.patch(tenant._id, {
-      paidUntil: extendPaidUntil(tenant.paidUntil, Date.now()),
+    const existing = await ctx.db
+      .query("payments")
+      .withIndex("by_yookassa", (q) => q.eq("yookassaId", yookassaId))
+      .unique();
+    if (paymentApplyDecision(existing !== null) === "skip") return null;
+    const now = Date.now();
+    const paidUntil = extendPaidUntil(tenant.paidUntil, now);
+    await ctx.db.patch(tenant._id, { paidUntil });
+    await ctx.db.insert("payments", {
+      tenantId: tenant._id,
+      yookassaId,
+      amountRub,
+      status: "succeeded",
+      createdAt: now,
+      paidUntilAfter: paidUntil,
     });
     return null;
   },
@@ -85,11 +103,20 @@ export const verifyAndApply = internalAction({
     const json = (await res.json()) as {
       status?: unknown;
       metadata?: { tenantId?: unknown };
+      amount?: { value?: unknown };
     };
     if (!res.ok) throw new Error(`yookassa get ${res.status}`);
     const tenantId = json.metadata?.tenantId;
+    const rawAmount = json.amount?.value;
+    const parsed =
+      typeof rawAmount === "string" ? Number.parseFloat(rawAmount) : Number.NaN;
+    const amountRub = Number.isFinite(parsed) ? parsed : priceRub();
     if (json.status === "succeeded" && typeof tenantId === "string" && tenantId) {
-      await ctx.runMutation(internal.billing.applyPayment, { tenantId });
+      await ctx.runMutation(internal.billing.applyPayment, {
+        tenantId,
+        yookassaId: paymentId,
+        amountRub,
+      });
     }
     return null;
   },

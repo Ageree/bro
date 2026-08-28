@@ -10,12 +10,14 @@
 
 import type * as access from "../access.js";
 import type * as billing from "../billing.js";
+import type * as cabinet from "../cabinet.js";
 import type * as browserFollow from "../browserFollow.js";
 import type * as crons from "../crons.js";
 import type * as http from "../http.js";
 import type * as jobs from "../jobs.js";
 import type * as lib_accessPolicy from "../lib/accessPolicy.js";
 import type * as lib_billingPolicy from "../lib/billingPolicy.js";
+import type * as lib_cabinetPolicy from "../lib/cabinetPolicy.js";
 import type * as lib_browserFollowPolicy from "../lib/browserFollowPolicy.js";
 import type * as lib_browseruse from "../lib/browseruse.js";
 import type * as lib_dedicatedLinePolicy from "../lib/dedicatedLinePolicy.js";
@@ -39,12 +41,14 @@ import type {
 declare const fullApi: ApiFromModules<{
   access: typeof access;
   billing: typeof billing;
+  cabinet: typeof cabinet;
   browserFollow: typeof browserFollow;
   crons: typeof crons;
   http: typeof http;
   jobs: typeof jobs;
   "lib/accessPolicy": typeof lib_accessPolicy;
   "lib/billingPolicy": typeof lib_billingPolicy;
+  "lib/cabinetPolicy": typeof lib_cabinetPolicy;
   "lib/browserFollowPolicy": typeof lib_browserFollowPolicy;
   "lib/browseruse": typeof lib_browseruse;
   "lib/dedicatedLinePolicy": typeof lib_dedicatedLinePolicy;
