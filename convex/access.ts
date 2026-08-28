@@ -16,6 +16,7 @@ import {
   identityCreateBody,
 } from "./lib/dedicatedLinePolicy";
 import { mailWebhookUrl } from "./lib/mailPolicy";
+import { newSessionToken, sha256hex } from "./lib/cabinetPolicy";
 
 type InkboxIdentity = {
   id?: string;
@@ -116,6 +117,7 @@ const result = v.union(
     handle: v.string(),
     smsLink: v.string(),
     connectCommand: v.string(),
+    sessionToken: v.optional(v.string()),
   }),
   v.object({
     ok: v.literal(false),
@@ -302,11 +304,18 @@ export const requestAccess = internalAction({
             message: "no sms_link",
           };
         }
+        const sessionToken = newSessionToken();
+        await ctx.runMutation(internal.cabinet.issueDeviceSession, {
+          handle: gotHandle,
+          tokenHash: await sha256hex(sessionToken),
+          now: Date.now(),
+        });
         return {
           ok: true as const,
           handle: gotHandle,
           smsLink: t.sms_link,
           connectCommand: t.connect_command,
+          sessionToken,
         };
       } catch (err) {
         return {

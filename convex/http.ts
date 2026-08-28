@@ -1,46 +1,61 @@
 import { httpRouter } from "convex/server";
 import { httpAction } from "./_generated/server";
 import { internal } from "./_generated/api";
+import { isValidHandle } from "./lib/accessPolicy";
+import { newLoginCode, newSessionToken, sha256hex } from "./lib/cabinetPolicy";
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
 };
+
+function json(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...cors, "Content-Type": "application/json" },
+  });
+}
+
+function bearer(request: Request): string {
+  const raw = request.headers.get("authorization") ?? "";
+  const m = /^Bearer\s+(\S+)/i.exec(raw);
+  return m?.[1] ?? "";
+}
+
+async function jsonBody(request: Request): Promise<Record<string, unknown>> {
+  try {
+    const body = (await request.json()) as unknown;
+    return body && typeof body === "object" ? (body as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
 
 const http = httpRouter();
 
 http.route({
   path: "/access",
   method: "OPTIONS",
-  handler: httpAction(async () => {
-    return new Response(null, { status: 204, headers: cors });
-  }),
+  handler: httpAction(async () => new Response(null, { status: 204, headers: cors })),
 });
 
 http.route({
   path: "/access",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
-    let handle: string | undefined;
-    try {
-      const body = (await request.json()) as { handle?: unknown };
-      if (typeof body.handle === "string" && body.handle.length > 0) {
-        handle = body.handle;
-      }
-    } catch {
-      handle = undefined;
-    }
+    const body = await jsonBody(request);
+    const handle =
+      typeof body.handle === "string" && body.handle.length > 0
+        ? body.handle
+        : undefined;
     const ua = request.headers.get("user-agent") ?? "";
     const result = await ctx.runAction(internal.access.requestAccess, {
       handle,
       ua,
       create: true,
     });
-    return new Response(JSON.stringify(result), {
-      status: 200,
-      headers: { ...cors, "Content-Type": "application/json" },
-    });
+    return json(result);
   }),
 });
 
@@ -81,9 +96,10 @@ http.route({
     }
     if (!tid) return new Response("нет tid", { status: 400 });
     try {
-      const { confirmationUrl } = await ctx.runAction(internal.billing.createPaymentFor, {
-        tenantId: tid,
-      });
+      const { confirmationUrl } = await ctx.runAction(
+        internal.billing.createPaymentFor,
+        { tenantId: tid },
+      );
       return new Response(null, {
         status: 302,
         headers: { Location: confirmationUrl },
@@ -91,6 +107,137 @@ http.route({
     } catch (err) {
       console.error("pay", err);
       return new Response("не получилось", { status: 500 });
+    }
+  }),
+});
+
+function options() {
+  return httpAction(async () => new Response(null, { status: 204, headers: cors }));
+}
+http.route({ path: "/login/start", method: "OPTIONS", handler: options() });
+http.route({ path: "/login/verify", method: "OPTIONS", handler: options() });
+http.route({ path: "/logout", method: "OPTIONS", handler: options() });
+http.route({ path: "/me", method: "OPTIONS", handler: options() });
+http.route({ path: "/me/pay", method: "OPTIONS", handler: options() });
+
+http.route({
+  path: "/login/start",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const body = await jsonBody(request);
+    const handle = typeof body.handle === "string" ? body.handle.trim() : "";
+    if (!isValidHandle(handle)) return json({ ok: false, code: "unavailable" });
+    const code = newLoginCode();
+    const begun = await ctx.runMutation(internal.cabinet.beginLogin, {
+      handle,
+      codeHash: await sha256hex(code),
+      now: Date.now(),
+    });
+    if (!begun.ok) {
+      return json({
+        ok: false,
+        code: begun.code === "cooldown" ? "cooldown" : "unavailable",
+      });
+    }
+    try {
+      await ctx.runAction(internal.cabinet.sendLoginCode, {
+        identityId: begun.identityId,
+        conversationId: begun.conversationId,
+        code,
+      });
+    } catch (err) {
+      console.error("login send", err);
+      return json({ ok: false, code: "error" }, 500);
+    }
+    return json({ ok: true });
+  }),
+});
+
+http.route({
+  path: "/login/verify",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const body = await jsonBody(request);
+    const handle = typeof body.handle === "string" ? body.handle.trim() : "";
+    const code = typeof body.code === "string" ? body.code.trim() : "";
+    if (!isValidHandle(handle) || !/^\d{6}$/.test(code)) {
+      return json({ ok: false, code: "unknown" });
+    }
+    const now = Date.now();
+    const finished = await ctx.runMutation(internal.cabinet.finishLogin, {
+      handle,
+      codeHash: await sha256hex(code),
+      now,
+    });
+    if (!finished.ok) return json(finished);
+    const token = newSessionToken();
+    await ctx.runMutation(internal.cabinet.issueSession, {
+      tenantId: finished.tenantId,
+      tokenHash: await sha256hex(token),
+      now,
+    });
+    return json({ ok: true, token, handle });
+  }),
+});
+
+http.route({
+  path: "/logout",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const token = bearer(request);
+    if (token) {
+      await ctx.runMutation(internal.cabinet.revokeSession, {
+        tokenHash: await sha256hex(token),
+      });
+    }
+    return json({ ok: true });
+  }),
+});
+
+http.route({
+  path: "/me",
+  method: "GET",
+  handler: httpAction(async (ctx, request) => {
+    const token = bearer(request);
+    if (!token) return json({ ok: false, code: "unauthorized" }, 401);
+    const now = Date.now();
+    const session = await ctx.runQuery(internal.cabinet.getSessionTenant, {
+      tokenHash: await sha256hex(token),
+      now,
+    });
+    if (!session) return json({ ok: false, code: "unauthorized" }, 401);
+    const me = await ctx.runQuery(internal.cabinet.snapshotForTenant, {
+      tenantId: session.tenantId,
+      now,
+    });
+    if (!me) return json({ ok: false, code: "unauthorized" }, 401);
+    return json({ ok: true, me });
+  }),
+});
+
+http.route({
+  path: "/me/pay",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const token = bearer(request);
+    if (!token) return json({ ok: false, code: "unauthorized" }, 401);
+    if (!process.env.YOOKASSA_SHOP_ID || !process.env.YOOKASSA_SECRET_KEY) {
+      return json({ ok: false, code: "billing_off" }, 503);
+    }
+    const session = await ctx.runQuery(internal.cabinet.getSessionTenant, {
+      tokenHash: await sha256hex(token),
+      now: Date.now(),
+    });
+    if (!session) return json({ ok: false, code: "unauthorized" }, 401);
+    try {
+      const { confirmationUrl } = await ctx.runAction(
+        internal.billing.createPaymentFor,
+        { tenantId: session.tenantId },
+      );
+      return json({ ok: true, confirmationUrl });
+    } catch (err) {
+      console.error("me/pay", err);
+      return json({ ok: false, code: "error" }, 500);
     }
   }),
 });

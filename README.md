@@ -39,5 +39,7 @@ Cap is `BRO_IDENTITY_CAP` (default 100).
 
 Billing is a one-shot YooKassa month. Set `YOOKASSA_SHOP_ID` / `YOOKASSA_SECRET_KEY` on the Convex deployment; webhook URL is `https://<deployment>.convex.site/yookassa`. Empty keys keep the free beta, with daily message and monthly browser-job limits.
 
+The landing «Войти» button opens a cabinet. First access still goes through «Запросить доступ». Later logins send a one-time code to the bound iMessage thread. Cabinet reads (`GET /me`) take a session token, never a tenant id. Check: `npm run cabinet:check`.
+
 Bro's Inkbox mailbox is live: inbound `POST /webhooks/mail`, outbound `bro_mail`.
 Long work parks as Convex `jobs` (`npm run jobs:check`). Re-run `npm run webhooks` to subscribe mail.
