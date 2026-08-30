@@ -6,9 +6,14 @@
  */
 const SID = (process.env.TWILIO_ACCOUNT_SID ?? "").trim();
 const TOKEN = (process.env.TWILIO_AUTH_TOKEN ?? "").trim();
-if (!SID || !TOKEN) throw new Error("TWILIO_ACCOUNT_SID + TWILIO_AUTH_TOKEN missing");
+const API_KEY = (process.env.TWILIO_API_KEY ?? "").trim();
+const API_SECRET = (process.env.TWILIO_API_SECRET ?? "").trim();
+if (!SID) throw new Error("TWILIO_ACCOUNT_SID missing");
+const user = API_KEY || SID;
+const pass = API_SECRET || TOKEN;
+if (!pass) throw new Error("TWILIO_AUTH_TOKEN or TWILIO_API_KEY+TWILIO_API_SECRET missing");
 
-const AUTH = `Basic ${Buffer.from(`${SID}:${TOKEN}`).toString("base64")}`;
+const AUTH = `Basic ${Buffer.from(`${user}:${pass}`).toString("base64")}`;
 const API = `https://api.twilio.com/2010-04-01/Accounts/${SID}`;
 
 async function twilio<T>(
