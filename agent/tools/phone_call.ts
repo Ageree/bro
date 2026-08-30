@@ -21,7 +21,7 @@ import { tenantId } from "../lib/tenant";
 
 export default defineTool({
   description:
-    "Place an outbound phone call via Inkbox Voice AI. Russian +7 numbers are bridged by МТС Exolve callback: it rings Bro's Inkbox number (Voice AI answers inbound) and the clinic, CLI = Exolve RU DID. Confirm with the human before the first call of a job. After placing, park the job with job_wait waitingFor=call if you did not pass jobId here.",
+    "Place an outbound phone call via Inkbox Voice AI. Russian +7 numbers go through a Twilio +1 hairpin: Inkbox dials the Twilio DID, TwiML Dial bridges to the clinic. Confirm with the human before the first call of a job. After placing, park the job with job_wait waitingFor=call if you did not pass jobId here.",
   inputSchema: z.object({
     dest: z
       .string()

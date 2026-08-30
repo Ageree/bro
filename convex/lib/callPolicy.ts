@@ -56,21 +56,22 @@ function parseResourceId(raw: string | undefined): number | null {
   return Number.isInteger(n) && n > 0 ? n : null;
 }
 
+function plusOneBridge(raw: string | undefined): string | null {
+  const n = normalizeE164(raw ?? "");
+  return n && isInkboxDialableE164(n) ? n : null;
+}
+
 export function parseCallEnv(env: NodeJS.ProcessEnv): CallEnv {
-  const explicitBridge = normalizeE164(env.BRO_RU_BRIDGE_E164 ?? "");
-  const twilio = normalizeE164(env.TWILIO_NUMBER ?? "");
   const from = normalizeE164(env.INKBOX_PHONE_NUMBER ?? "");
   const voxFrom = normalizeE164(env.VOXIMPLANT_FROM_E164 ?? "");
   const exolveNumber = normalizeE164(env.EXOLVE_NUMBER ?? "");
   const exolveResourceId = parseResourceId(env.EXOLVE_CALLBACK_RESOURCE_ID);
   const exolveKey = (env.EXOLVE_API_KEY ?? "").trim();
   const flag = (env.BRO_INKBOX_RU_ENABLED ?? "").trim().toLowerCase();
-  const ruBridgeE164 =
-    explicitBridge ??
-    (twilio && isInkboxDialableE164(twilio) ? twilio : null);
   return {
     inkboxRuEnabled: flag === "1" || flag === "true" || flag === "yes",
-    ruBridgeE164,
+    ruBridgeE164:
+      plusOneBridge(env.TWILIO_NUMBER) ?? plusOneBridge(env.BRO_RU_BRIDGE_E164),
     inkboxFromE164: from,
     voxFromE164: voxFrom,
     exolveNumberE164: exolveNumber,
@@ -123,7 +124,7 @@ export function decideCallRoute(
       route: "blocked",
       destE164: dest,
       error:
-        "RU dest: Inkbox cannot dial +7. Set EXOLVE_API_KEY + EXOLVE_NUMBER + EXOLVE_CALLBACK_RESOURCE_ID, a +1 BRO_RU_BRIDGE_E164, or BRO_INKBOX_RU_ENABLED after support opens Russia",
+        "RU dest: Inkbox cannot dial +7. Set TWILIO_NUMBER (+1 DID) or EXOLVE_API_KEY + EXOLVE_NUMBER + EXOLVE_CALLBACK_RESOURCE_ID",
     };
   }
   return { route: "inkbox_direct", destE164: dest, dialE164: dest };
@@ -184,6 +185,25 @@ export function twilioDialTwiml(opts: {
 
 export function twilioHangupTwiml(): string {
   return '<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>';
+}
+
+/** Only a +1 we own is a legal Twilio callerId. Leftover +7 CLI would fail. */
+export function twilioCallerId(env: NodeJS.ProcessEnv): string | null {
+  return plusOneBridge(env.TWILIO_NUMBER) ?? plusOneBridge(env.BRO_RU_BRIDGE_E164);
+}
+
+/** Twilio X-Twilio-Signature payload: full URL + sorted POST params. */
+export function twilioSignaturePayload(
+  url: string,
+  params: Record<string, string>,
+): string {
+  return (
+    url +
+    Object.keys(params)
+      .sort()
+      .map((k) => `${k}${params[k] ?? ""}`)
+      .join("")
+  );
 }
 
 function escapeXml(value: string): string {

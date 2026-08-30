@@ -2,8 +2,10 @@ import { httpRouter } from "convex/server";
 import { httpAction } from "./_generated/server";
 import { internal } from "./_generated/api";
 import {
+  twilioCallerId,
   twilioDialTwiml,
   twilioHangupTwiml,
+  twilioSignaturePayload,
   zadarmaBridgeReply,
   zadarmaNotifyPayload,
 } from "./lib/callPolicy";
@@ -191,23 +193,54 @@ http.route({
 
 http.route({
   path: "/twilio-voice",
+  method: "GET",
+  handler: httpAction(async () => {
+    return new Response(twilioHangupTwiml(), {
+      status: 200,
+      headers: { "Content-Type": "text/xml" },
+    });
+  }),
+});
+
+http.route({
+  path: "/twilio-voice",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
+    const token = (process.env.TWILIO_AUTH_TOKEN ?? "").trim();
     const expected = process.env.BRO_INTERNAL_SECRET ?? "";
     let secret = "";
+    let url = request.url;
     try {
-      secret = new URL(request.url).searchParams.get("secret") ?? "";
+      const parsed = new URL(request.url);
+      secret = parsed.searchParams.get("secret") ?? "";
+      url = parsed.toString();
     } catch {
       return new Response("bad url", { status: 400 });
     }
-    if (!expected || !timingSafeEqual(secret, expected)) {
+    const form = await readFormParams(request);
+    const secretOk = Boolean(expected) && timingSafeEqual(secret, expected);
+    if (token) {
+      const sig =
+        request.headers.get("X-Twilio-Signature") ??
+        request.headers.get("x-twilio-signature") ??
+        "";
+      const payload = twilioSignaturePayload(url, form);
+      const good = await hmacSha1Base64(token, payload);
+      const sigOk = Boolean(sig) && timingSafeEqual(sig, good);
+      if (!sigOk && !secretOk) {
+        return new Response("unauthorized", { status: 401 });
+      }
+    } else if (!secretOk) {
       return new Response("unauthorized", { status: 401 });
     }
-    const hit = await ctx.runMutation(internal.calls.claimForBridge, {});
+    const from = form.From ?? form.from ?? "";
+    const hit = await ctx.runMutation(internal.calls.claimForBridge, {
+      fromE164: from || undefined,
+    });
     const xml = hit?.destE164
       ? twilioDialTwiml({
           destE164: hit.destE164,
-          callerId: process.env.TWILIO_NUMBER ?? process.env.BRO_RU_BRIDGE_E164,
+          callerId: twilioCallerId(process.env),
         })
       : twilioHangupTwiml();
     return new Response(xml, {
@@ -292,4 +325,30 @@ function strField(value: unknown): string {
 function formStr(form: FormData, key: string): string {
   const v = form.get(key);
   return typeof v === "string" ? v : "";
+}
+
+async function readFormParams(request: Request): Promise<Record<string, string>> {
+  const ctype = request.headers.get("content-type") ?? "";
+  const out: Record<string, string> = {};
+  try {
+    if (ctype.includes("application/x-www-form-urlencoded")) {
+      const params = new URLSearchParams(await request.text());
+      for (const [k, v] of params) out[k] = v;
+      return out;
+    }
+    if (ctype.includes("application/json")) {
+      const rec = (await request.json()) as Record<string, unknown>;
+      for (const [k, v] of Object.entries(rec)) {
+        if (typeof v === "string") out[k] = v;
+      }
+      return out;
+    }
+    const form = await request.formData();
+    for (const [k, v] of form.entries()) {
+      if (typeof v === "string") out[k] = v;
+    }
+  } catch {
+    /* empty */
+  }
+  return out;
 }

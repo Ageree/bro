@@ -17,8 +17,10 @@ import {
   pickClaimableLeg,
   pickEndedCallLeg,
   pstnDigits,
+  twilioCallerId,
   twilioDialTwiml,
   twilioHangupTwiml,
+  twilioSignaturePayload,
   zadarmaBridgeReply,
   zadarmaForwardNumber,
   zadarmaNotifyPayload,
@@ -135,6 +137,32 @@ assert(twilioBridge.ruBridgeE164 === "+14155550999", "twilio is +1 bridge");
 assert(
   decideCallRoute("+74951234567", twilioBridge).route === "ru_bridge",
   "twilio hairpin wins over missing exolve",
+);
+
+const leftoverRuDid = parseCallEnv({
+  INKBOX_PHONE_NUMBER: "+15189183436",
+  BRO_RU_BRIDGE_E164: "+74992816046",
+  TWILIO_NUMBER: "+14155550999",
+});
+assert(leftoverRuDid.ruBridgeE164 === "+14155550999", "ignore leftover +7 bridge");
+assert(
+  parseCallEnv({
+    INKBOX_PHONE_NUMBER: "+15189183436",
+    BRO_RU_BRIDGE_E164: "+74992816046",
+  }).ruBridgeE164 === null,
+  "+7 leftover is not a hairpin dest",
+);
+assert(
+  twilioCallerId({ TWILIO_NUMBER: "+14155550999", BRO_RU_BRIDGE_E164: "+7499" }) ===
+    "+14155550999",
+  "twilio callerId stays +1",
+);
+assert(
+  twilioSignaturePayload("https://x.example/twilio-voice", {
+    To: "+14155550999",
+    From: "+15189183436",
+  }) === "https://x.example/twilio-voiceFrom+15189183436To+14155550999",
+  "twilio sign payload sorted",
 );
 
 const bodyEx = exolveMakeCallbackBody({
