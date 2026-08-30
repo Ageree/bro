@@ -6,47 +6,46 @@ _Date: 2026-08-30_
 
 - **Voximplant:** RU DID, Caller ID и исходящие завязаны на верификацию
   личности / ЭЦП для ИП. Кабинет `ageree` есть, но без ЭЦП бесполезен.
-  `+74992816046` — `auto_charge=off`.
+  `+74992816046` — `auto_charge=off`. Не использовать как
+  `BRO_RU_BRIDGE_E164`: это `+7`, Inkbox его не наберёт.
 - **Zadarma:** зарегистрироваться не вышло.
-- Личный мобильный как CLI на Vox — кнопки нет, API `AddCallerID` = 104
-  Forbidden.
 
-## Живой путь: МТС Exolve callback + Inkbox Voice AI
+## Живой путь: Twilio +1 hairpin + Inkbox Voice AI
 
-Inkbox **не** набирает `+7` (live `502`). Мозг остаётся Inkbox
-`hosted_agent`. Последняя миля — Exolve `MakeCallback`:
+Inkbox **не** набирает `+7` (live `502`). `+1` набирает. Мозг —
+`hosted_agent` с per-call `reason` (не inbound-конфиг).
 
-1. Bro пишет brief в `PUT /phone/hosted-agent-config`
-2. Convex `exolve.startCallback` → `POST /call/v1/MakeCallback`
-3. Exolve звонит на Inkbox `+15189183436` (line_1), Voice AI берёт трубку
-4. Exolve звонит в клинику `+7` (line_2), CLI = российский DID Exolve
-5. `call.ended` → `[event:call]`
+1. Bro паркует ногу (`dest` = клиника `+7`, `route` = `ru_bridge`)
+2. Inkbox `place-call` на Twilio DID `+1`
+3. Twilio `POST /twilio-voice` → Convex claims the leg
+4. TwiML `<Dial answerOnBridge="true">+7клиника</Dial>`
+5. Клиника видит американский CLI. Pickup вторичен.
+6. `call.ended` → `[event:call]`
 
-Маршрут `exolve_callback` включается, когда на Convex **и** Vercel стоят
-`EXOLVE_API_KEY`, `EXOLVE_NUMBER`, `EXOLVE_CALLBACK_RESOURCE_ID`.
+Включается, когда на Convex **и** Vercel стоит `TWILIO_NUMBER=+1…`.
+Подпись Twilio (`TWILIO_AUTH_TOKEN`) предпочтительнее query-secret.
 
-Физлицо: договор через **Госуслуги**, без КриптоПро / ЭЦП ИП.
-Callback у физлиц «будет ограничено» — для Bro этого хватает.
-SIP ID физлицам недоступен — не нужен.
+Обязательно: Voice Geographic Permissions → Russia/Kazakhstan (+7)
+low-risk. Иначе Twilio `21215`. Trial без апгрейда звонит только на
+верифицированные номера — карта должна быть на аккаунте.
 
-Запасной `+1` hairpin: `TWILIO_NUMBER` / `BRO_RU_BRIDGE_E164` +
-`POST /twilio-voice?secret=`. Inkbox умеет набирать `+1`. Нужна
-иностранная карта.
+Один общий DID, не на пользователя. ~$1.15/мес + ~$0.34–0.43/мин на +7.
 
-Если Inkbox support откроет Russia — `BRO_INKBOX_RU_ENABLED=1`, мост
-не нужен (американский CLI).
+## Запасной путь: МТС Exolve callback
 
-## Кабинет Exolve (сделать один раз)
+Если Twilio geo/карту режут — физлицо через Госуслуги, `MakeCallback`
+на Inkbox inbound + клинику. Маршрут `exolve_callback`.
 
-1. https://exolve.ru — регистрация email или МТС ID
-2. «Получить полный доступ» → правовая форма **Физлицо** →
-   «Онлайн, через Госуслуги» → заполнить → дождаться проверки
-   (обычно ≤1 рабочий день) → подписать одним кликом
-3. Пополнить баланс (тестовые 300 ₽ сгорят после договора)
-4. Создать приложение, скопировать API-ключ
-5. Купить **один** городской или мобильный номер РФ
-6. Прислать ключ + E.164 номера сюда. Ресурс callback Bro создаст
-   сам: `npm run exolve:setup`
+## Кабинет Twilio (сделать один раз)
 
-Не коммитить ключ. Не покупать номер на каждого пользователя —
-один общий DID.
+1. https://www.twilio.com/try-twilio — почта, не РФ-карта
+2. Billing → добавить иностранную карту (это снимает trial-лимит)
+3. Прислать Account SID + Auth Token сюда. Bro сам:
+   купит US Local, пропишет Voice URL на
+   `https://frugal-dragon-943.convex.site/twilio-voice`,
+   включит RU/KZ low-risk (`npm run twilio:setup`)
+4. Либо руками: Phone Numbers → купить US Local Voice;
+   Voice webhook POST на Convex URL; Console → Voice → Settings →
+   Geo permissions → Russia/Kazakhstan (+7) → Low risk On
+
+Не коммитить SID/token.

@@ -42,4 +42,4 @@ Billing is a one-shot YooKassa month. Set `YOOKASSA_SHOP_ID` / `YOOKASSA_SECRET_
 Bro's Inkbox mailbox is live: inbound `POST /webhooks/mail`, outbound `bro_mail`.
 Long work parks as Convex `jobs` (`npm run jobs:check`). Re-run `npm run webhooks` to subscribe mail.
 
-Outbound phone: `phone_call` → Inkbox Voice AI. `+1` dests dial direct. Russian `+7` dests: МТС Exolve `MakeCallback` rings the Inkbox PSTN (inbound Voice AI) and the clinic, CLI = Exolve RU DID. `call.ended` lands as `[event:call]`. Check: `npm run call:check`. Set `EXOLVE_API_KEY`, `EXOLVE_NUMBER`, `EXOLVE_CALLBACK_RESOURCE_ID` on Convex and Vercel. Cabinet setup: `npm run exolve:setup`.
+Outbound phone: `phone_call` → Inkbox Voice AI. `+1` dests dial direct. Russian `+7` dests: Inkbox dials a Twilio `+1` DID, Convex `/twilio-voice` returns TwiML `<Dial>` to the clinic. `call.ended` lands as `[event:call]`. Check: `npm run call:check`. Set `TWILIO_NUMBER` + `TWILIO_AUTH_TOKEN` on Convex and Vercel. Cabinet setup: `npm run twilio:setup`.
