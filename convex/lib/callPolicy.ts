@@ -1,13 +1,32 @@
 const E164_RE = /^\+[1-9]\d{7,14}$/;
 
-export type CallRoute = "inkbox_direct" | "ru_bridge" | "vox_callback" | "blocked";
+export type CallRoute =
+  | "inkbox_direct"
+  | "ru_bridge"
+  | "exolve_callback"
+  | "vox_callback"
+  | "blocked";
+
+export const CALLBACK_ROUTES = ["exolve_callback", "vox_callback"] as const;
 
 export type CallEnv = {
   inkboxRuEnabled: boolean;
   ruBridgeE164: string | null;
   inkboxFromE164: string | null;
   voxFromE164: string | null;
+  exolveNumberE164: string | null;
+  exolveResourceId: number | null;
+  exolveReady: boolean;
 };
+
+export function isCallbackRoute(route: string): boolean {
+  return route === "exolve_callback" || route === "vox_callback";
+}
+
+/** Exolve / most RU CPaaS want digits without '+'. */
+export function pstnDigits(e164: string): string {
+  return e164.replace(/^\+/, "");
+}
 
 export function normalizeE164(raw: string): string | null {
   const digits = raw.replace(/[^\d+]/g, "");
@@ -32,16 +51,31 @@ export function isInkboxDialableE164(e164: string): boolean {
   return e164.startsWith("+1") && e164.length === 12;
 }
 
+function parseResourceId(raw: string | undefined): number | null {
+  const n = Number((raw ?? "").trim());
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
 export function parseCallEnv(env: NodeJS.ProcessEnv): CallEnv {
-  const bridge = normalizeE164(env.BRO_RU_BRIDGE_E164 ?? "");
+  const explicitBridge = normalizeE164(env.BRO_RU_BRIDGE_E164 ?? "");
+  const twilio = normalizeE164(env.TWILIO_NUMBER ?? "");
   const from = normalizeE164(env.INKBOX_PHONE_NUMBER ?? "");
   const voxFrom = normalizeE164(env.VOXIMPLANT_FROM_E164 ?? "");
+  const exolveNumber = normalizeE164(env.EXOLVE_NUMBER ?? "");
+  const exolveResourceId = parseResourceId(env.EXOLVE_CALLBACK_RESOURCE_ID);
+  const exolveKey = (env.EXOLVE_API_KEY ?? "").trim();
   const flag = (env.BRO_INKBOX_RU_ENABLED ?? "").trim().toLowerCase();
+  const ruBridgeE164 =
+    explicitBridge ??
+    (twilio && isInkboxDialableE164(twilio) ? twilio : null);
   return {
     inkboxRuEnabled: flag === "1" || flag === "true" || flag === "yes",
-    ruBridgeE164: bridge,
+    ruBridgeE164,
     inkboxFromE164: from,
     voxFromE164: voxFrom,
+    exolveNumberE164: exolveNumber,
+    exolveResourceId,
+    exolveReady: Boolean(exolveKey && exolveNumber && exolveResourceId),
   };
 }
 
@@ -51,6 +85,7 @@ export function decideCallRoute(
 ):
   | { route: "inkbox_direct"; destE164: string; dialE164: string }
   | { route: "ru_bridge"; destE164: string; dialE164: string }
+  | { route: "exolve_callback"; destE164: string; dialE164: string }
   | { route: "vox_callback"; destE164: string; dialE164: string }
   | { route: "blocked"; destE164?: string; error: string } {
   const dest = normalizeE164(destRaw);
@@ -61,13 +96,21 @@ export function decideCallRoute(
   if (
     dest === env.inkboxFromE164 ||
     dest === env.ruBridgeE164 ||
-    dest === env.voxFromE164
+    dest === env.voxFromE164 ||
+    dest === env.exolveNumberE164
   ) {
     return { route: "blocked", destE164: dest, error: "cannot call self" };
   }
   if (isRuE164(dest) && !env.inkboxRuEnabled) {
     if (env.ruBridgeE164 && isInkboxDialableE164(env.ruBridgeE164)) {
       return { route: "ru_bridge", destE164: dest, dialE164: env.ruBridgeE164 };
+    }
+    if (env.exolveReady) {
+      return {
+        route: "exolve_callback",
+        destE164: dest,
+        dialE164: env.inkboxFromE164,
+      };
     }
     if (env.voxFromE164) {
       return {
@@ -80,10 +123,76 @@ export function decideCallRoute(
       route: "blocked",
       destE164: dest,
       error:
-        "RU dest: Inkbox cannot dial +7. Enable via support (BRO_INKBOX_RU_ENABLED) or a +1 BRO_RU_BRIDGE_E164",
+        "RU dest: Inkbox cannot dial +7. Set EXOLVE_API_KEY + EXOLVE_NUMBER + EXOLVE_CALLBACK_RESOURCE_ID, a +1 BRO_RU_BRIDGE_E164, or BRO_INKBOX_RU_ENABLED after support opens Russia",
     };
   }
   return { route: "inkbox_direct", destE164: dest, dialE164: dest };
+}
+
+/** MakeCallBack: ring Inkbox inbound first, then the clinic, CLI = Exolve DID. */
+export function exolveMakeCallbackBody(opts: {
+  numberE164: string;
+  resourceId: number;
+  inkboxE164: string;
+  destE164: string;
+  requestId?: string;
+}): {
+  request_description: string;
+  number_code: number;
+  callback_resource_id: number;
+  duration: number;
+  line_1: {
+    destinations: { number: string; timeout: number }[];
+    display_number: string;
+  };
+  line_2: {
+    destinations: { number: string; timeout: number }[];
+    display_number: string;
+  };
+} {
+  const cli = pstnDigits(opts.numberE164);
+  return {
+    request_description: (opts.requestId ?? "bro").slice(0, 128),
+    number_code: Number(cli),
+    callback_resource_id: opts.resourceId,
+    duration: 1800,
+    line_1: {
+      destinations: [{ number: pstnDigits(opts.inkboxE164), timeout: 45 }],
+      display_number: cli,
+    },
+    line_2: {
+      destinations: [{ number: pstnDigits(opts.destE164), timeout: 45 }],
+      display_number: cli,
+    },
+  };
+}
+
+export function twilioDialTwiml(opts: {
+  destE164: string;
+  callerId?: string | null;
+}): string {
+  const caller = opts.callerId
+    ? ` callerId="${escapeXml(opts.callerId)}"`
+    : "";
+  return [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    "<Response>",
+    `<Dial answerOnBridge="true" timeout="45"${caller}>${escapeXml(opts.destE164)}</Dial>`,
+    "</Response>",
+  ].join("");
+}
+
+export function twilioHangupTwiml(): string {
+  return '<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>';
+}
+
+function escapeXml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&apos;");
 }
 
 export function inkboxPlaceBody(opts: {
@@ -175,6 +284,46 @@ export function pickClaimableLeg(
     if (!claimId) claimId = row.id;
   }
   return { claimId, staleIds };
+}
+
+/** Match call.ended to a parked inverted-callback leg (no Inkbox place-call id). */
+export function pickEndedCallLeg(
+  rows: {
+    id: string;
+    route: string;
+    status: string;
+    inkboxCallId?: string;
+    createdAt: number;
+  }[],
+  inkboxCallId: string,
+  now: number,
+  staleMs = CALL_LEG_STALE_MS,
+): { matchId: string | null; staleIds: string[] } {
+  const staleIds: string[] = [];
+  let byId: string | null = null;
+  let inbound: string | null = null;
+  let inboundAt = -1;
+  for (const row of rows) {
+    if (row.status === "done") continue;
+    if (now - row.createdAt > staleMs) {
+      staleIds.push(row.id);
+      continue;
+    }
+    if (row.inkboxCallId === inkboxCallId) {
+      byId = row.id;
+      continue;
+    }
+    if (
+      !row.inkboxCallId &&
+      isCallbackRoute(row.route) &&
+      (row.status === "pending" || row.status === "claimed") &&
+      row.createdAt >= inboundAt
+    ) {
+      inbound = row.id;
+      inboundAt = row.createdAt;
+    }
+  }
+  return { matchId: byId ?? inbound, staleIds };
 }
 
 export function hostedReason(opts: {

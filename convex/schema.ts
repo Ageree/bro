@@ -74,6 +74,7 @@ export default defineSchema({
     ),
     jobId: v.optional(v.string()),
     inkboxCallId: v.optional(v.string()),
+    bridgeCallId: v.optional(v.string()),
   })
     .index("by_status", ["status"])
     .index("by_tenant", ["tenantPhone"])

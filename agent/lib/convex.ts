@@ -213,11 +213,30 @@ export async function startVoxCallback(args: {
   });
 }
 
+export async function startExolveCallback(args: {
+  destE164: string;
+  inkboxE164: string;
+  requestId?: string;
+}): Promise<{ callId: string } | { error: string }> {
+  return await client().action(api.exolve.startCallback, {
+    secret: secret(),
+    ...args,
+  });
+}
+
 export async function attachCallInkbox(legId: string, inkboxCallId: string) {
   return await client().mutation(api.calls.attachInkbox, {
     secret: secret(),
     legId: legId as Id<"callLegs">,
     inkboxCallId,
+  });
+}
+
+export async function attachCallBridge(legId: string, bridgeCallId: string) {
+  return await client().mutation(api.calls.attachBridge, {
+    secret: secret(),
+    legId: legId as Id<"callLegs">,
+    bridgeCallId,
   });
 }
 

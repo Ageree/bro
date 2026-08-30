@@ -21,6 +21,7 @@
     "connect-link:check": "node --experimental-strip-types scripts/connect-link-check.ts",
     "jobs:check": "node --experimental-strip-types scripts/jobs-check.ts",
     "call:check": "node --experimental-strip-types scripts/call-policy-check.ts",
+    "exolve:setup": "node --env-file=.env.local --experimental-strip-types scripts/exolve-setup.ts",
     "imessage:check": "node --experimental-strip-types scripts/imessage-text-check.ts",
     "billing:check": "node --experimental-strip-types scripts/billing-check.ts",
     "wakeups:check": "node --experimental-strip-types scripts/wakeups-check.ts",

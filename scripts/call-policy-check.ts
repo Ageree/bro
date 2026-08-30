@@ -3,16 +3,22 @@ import {
   callTranscript,
   callWebhookUrl,
   decideCallRoute,
+  exolveMakeCallbackBody,
   flattenTranscript,
   formatCallWake,
   hostedReason,
   inkboxPlaceBody,
+  isCallbackRoute,
   isInkboxDialableE164,
   isRuE164,
   normalizeE164,
   parseCallEnded,
   parseCallEnv,
   pickClaimableLeg,
+  pickEndedCallLeg,
+  pstnDigits,
+  twilioDialTwiml,
+  twilioHangupTwiml,
   zadarmaBridgeReply,
   zadarmaForwardNumber,
   zadarmaNotifyPayload,
@@ -58,11 +64,18 @@ const directRu = decideCallRoute("+74951234567", {
 });
 assert(directRu.route === "inkbox_direct", "flag skips bridge");
 
+const emptyLastMile = {
+  exolveNumberE164: null,
+  exolveResourceId: null,
+  exolveReady: false,
+};
+
 const blocked = decideCallRoute("+74951234567", {
   inkboxRuEnabled: false,
   ruBridgeE164: null,
   inkboxFromE164: "+14155550100",
   voxFromE164: null,
+  ...emptyLastMile,
 });
 assert(blocked.route === "blocked", "no bridge no flag");
 
@@ -71,6 +84,7 @@ const ruBridge = decideCallRoute("+74951234567", {
   ruBridgeE164: "+74992816046",
   inkboxFromE164: "+15189183436",
   voxFromE164: null,
+  ...emptyLastMile,
 });
 assert(ruBridge.route === "blocked", "ru number is CLI not bridge");
 if (ruBridge.route === "blocked") {
@@ -82,12 +96,96 @@ const voxCb = decideCallRoute("+74951234567", {
   ruBridgeE164: null,
   inkboxFromE164: "+15189183436",
   voxFromE164: "+79001234567",
+  ...emptyLastMile,
 });
 assert(voxCb.route === "vox_callback", "verified cli hairpin");
 if (voxCb.route === "vox_callback") {
   assert(voxCb.destE164 === "+74951234567", "clinic dest kept");
   assert(voxCb.dialE164 === "+15189183436", "vox rings inkbox");
 }
+
+const exolveEnv = parseCallEnv({
+  INKBOX_PHONE_NUMBER: "+15189183436",
+  EXOLVE_API_KEY: "test-key",
+  EXOLVE_NUMBER: "+74951230000",
+  EXOLVE_CALLBACK_RESOURCE_ID: "1657",
+});
+assert(exolveEnv.exolveReady, "exolve ready");
+assert(exolveEnv.exolveNumberE164 === "+74951230000", "exolve did");
+assert(exolveEnv.exolveResourceId === 1657, "exolve resource");
+
+const exolveCb = decideCallRoute("8 495 123-45-67", exolveEnv);
+assert(exolveCb.route === "exolve_callback", "ru uses exolve");
+if (exolveCb.route === "exolve_callback") {
+  assert(exolveCb.destE164 === "+74951234567", "exolve dest kept");
+  assert(exolveCb.dialE164 === "+15189183436", "exolve rings inkbox");
+}
+assert(isCallbackRoute("exolve_callback"), "callback route");
+assert(!isCallbackRoute("inkbox_direct"), "direct not callback");
+assert(
+  decideCallRoute("+74951230000", exolveEnv).route === "blocked",
+  "no self call exolve did",
+);
+
+const twilioBridge = parseCallEnv({
+  INKBOX_PHONE_NUMBER: "+15189183436",
+  TWILIO_NUMBER: "+14155550999",
+});
+assert(twilioBridge.ruBridgeE164 === "+14155550999", "twilio is +1 bridge");
+assert(
+  decideCallRoute("+74951234567", twilioBridge).route === "ru_bridge",
+  "twilio hairpin wins over missing exolve",
+);
+
+const bodyEx = exolveMakeCallbackBody({
+  numberE164: "+74951230000",
+  resourceId: 1657,
+  inkboxE164: "+15189183436",
+  destE164: "+74951234567",
+  requestId: "leg1",
+});
+assert(bodyEx.number_code === 74951230000, "exolve number_code");
+assert(bodyEx.line_1.destinations[0]!.number === "15189183436", "exolve rings inkbox");
+assert(bodyEx.line_2.destinations[0]!.number === "74951234567", "exolve rings clinic");
+assert(bodyEx.line_2.display_number === "74951230000", "clinic sees ru cli");
+assert(pstnDigits("+15189183436") === "15189183436", "digits");
+
+const inbound = pickEndedCallLeg(
+  [
+    {
+      id: "cb",
+      route: "exolve_callback",
+      status: "pending",
+      createdAt: 1_000_000,
+    },
+  ],
+  "inkbox-inbound-9",
+  1_000_000 + 1000,
+);
+assert(inbound.matchId === "cb", "inbound matches parked callback");
+
+const byId = pickEndedCallLeg(
+  [
+    {
+      id: "direct",
+      route: "inkbox_direct",
+      status: "pending",
+      inkboxCallId: "c9",
+      createdAt: 1_000_000,
+    },
+  ],
+  "c9",
+  1_000_000 + 1000,
+);
+assert(byId.matchId === "direct", "ended matches place-call id");
+
+assert(twilioHangupTwiml().includes("Hangup"), "twilio hangup");
+assert(
+  twilioDialTwiml({ destE164: "+74951234567", callerId: "+14155550999" }).includes(
+    "+74951234567",
+  ),
+  "twilio dial dest",
+);
 
 assert(
   decideCallRoute("+14155550100", env).route === "blocked",

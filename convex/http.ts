@@ -2,6 +2,8 @@ import { httpRouter } from "convex/server";
 import { httpAction } from "./_generated/server";
 import { internal } from "./_generated/api";
 import {
+  twilioDialTwiml,
+  twilioHangupTwiml,
   zadarmaBridgeReply,
   zadarmaNotifyPayload,
 } from "./lib/callPolicy";
@@ -184,6 +186,34 @@ http.route({
     });
     const ext = (process.env.ZADARMA_PBX_EXTENSION ?? "100").trim() || "100";
     return jsonReply(zadarmaBridgeReply(hit?.destE164 ?? null, ext));
+  }),
+});
+
+http.route({
+  path: "/twilio-voice",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const expected = process.env.BRO_INTERNAL_SECRET ?? "";
+    let secret = "";
+    try {
+      secret = new URL(request.url).searchParams.get("secret") ?? "";
+    } catch {
+      return new Response("bad url", { status: 400 });
+    }
+    if (!expected || !timingSafeEqual(secret, expected)) {
+      return new Response("unauthorized", { status: 401 });
+    }
+    const hit = await ctx.runMutation(internal.calls.claimForBridge, {});
+    const xml = hit?.destE164
+      ? twilioDialTwiml({
+          destE164: hit.destE164,
+          callerId: process.env.TWILIO_NUMBER ?? process.env.BRO_RU_BRIDGE_E164,
+        })
+      : twilioHangupTwiml();
+    return new Response(xml, {
+      status: 200,
+      headers: { "Content-Type": "text/xml" },
+    });
   }),
 });
 

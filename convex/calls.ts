@@ -4,7 +4,8 @@ import {
   mutation,
   query,
 } from "./_generated/server";
-import { pickClaimableLeg } from "./lib/callPolicy";
+import type { Id } from "./_generated/dataModel";
+import { pickClaimableLeg, pickEndedCallLeg } from "./lib/callPolicy";
 import { assertSecret } from "./secret";
 
 const REASON = 2000;
@@ -23,6 +24,7 @@ const callLegDoc = v.object({
   ),
   jobId: v.optional(v.string()),
   inkboxCallId: v.optional(v.string()),
+  bridgeCallId: v.optional(v.string()),
 });
 
 export const park = mutation({
@@ -72,6 +74,24 @@ export const attachInkbox = mutation({
   },
 });
 
+export const attachBridge = mutation({
+  args: {
+    secret: v.string(),
+    legId: v.id("callLegs"),
+    bridgeCallId: v.string(),
+  },
+  returns: v.union(callLegDoc, v.object({ error: v.string() })),
+  handler: async (ctx, { secret, legId, bridgeCallId }) => {
+    assertSecret(secret);
+    const row = await ctx.db.get(legId);
+    if (!row) return { error: "unknown leg" };
+    await ctx.db.patch(legId, { bridgeCallId });
+    const next = await ctx.db.get(legId);
+    if (!next) return { error: "missing" };
+    return next;
+  },
+});
+
 export const drop = mutation({
   args: {
     secret: v.string(),
@@ -105,28 +125,32 @@ export const finishByInkboxCall = mutation({
   returns: v.union(callLegDoc, v.null()),
   handler: async (ctx, { secret, inkboxCallId }) => {
     assertSecret(secret);
-    let row = await ctx.db
+    const pending = await ctx.db
       .query("callLegs")
-      .withIndex("by_inkbox_call", (q) => q.eq("inkboxCallId", inkboxCallId))
-      .first();
-    if (!row) {
-      const claimed = await ctx.db
-        .query("callLegs")
-        .withIndex("by_status", (q) => q.eq("status", "claimed"))
-        .take(16);
-      row =
-        claimed
-          .filter((r) => !r.inkboxCallId)
-          .sort((a, b) => b._creationTime - a._creationTime)[0] ?? null;
-      if (row) {
-        await ctx.db.patch(row._id, { inkboxCallId, status: "done" });
-        return await ctx.db.get(row._id);
-      }
-      return null;
+      .withIndex("by_status", (q) => q.eq("status", "pending"))
+      .take(32);
+    const claimed = await ctx.db
+      .query("callLegs")
+      .withIndex("by_status", (q) => q.eq("status", "claimed"))
+      .take(32);
+    const { matchId, staleIds } = pickEndedCallLeg(
+      [...pending, ...claimed].map((row) => ({
+        id: row._id,
+        route: row.route,
+        status: row.status,
+        inkboxCallId: row.inkboxCallId,
+        createdAt: row._creationTime,
+      })),
+      inkboxCallId,
+      Date.now(),
+    );
+    for (const id of staleIds) {
+      await ctx.db.patch(id as Id<"callLegs">, { status: "done" });
     }
-    if (row.status !== "done") {
-      await ctx.db.patch(row._id, { status: "done" });
-    }
+    if (!matchId) return null;
+    const row = [...pending, ...claimed].find((r) => r._id === matchId);
+    if (!row) return null;
+    await ctx.db.patch(row._id, { inkboxCallId, status: "done" });
     return await ctx.db.get(row._id);
   },
 });

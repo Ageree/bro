@@ -13,6 +13,7 @@ import type * as billing from "../billing.js";
 import type * as browserFollow from "../browserFollow.js";
 import type * as calls from "../calls.js";
 import type * as crons from "../crons.js";
+import type * as exolve from "../exolve.js";
 import type * as http from "../http.js";
 import type * as jobs from "../jobs.js";
 import type * as lib_accessPolicy from "../lib/accessPolicy.js";
@@ -45,6 +46,7 @@ declare const fullApi: ApiFromModules<{
   browserFollow: typeof browserFollow;
   calls: typeof calls;
   crons: typeof crons;
+  exolve: typeof exolve;
   http: typeof http;
   jobs: typeof jobs;
   "lib/accessPolicy": typeof lib_accessPolicy;

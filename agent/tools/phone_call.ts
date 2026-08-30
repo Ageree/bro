@@ -7,9 +7,11 @@ import {
   parseCallEnv,
 } from "../../convex/lib/callPolicy.ts";
 import {
+  attachCallBridge,
   attachCallInkbox,
   dropCallLeg,
   parkCallLeg,
+  startExolveCallback,
   startVoxCallback,
   upsertTenant,
   waitJob,
@@ -19,7 +21,7 @@ import { tenantId } from "../lib/tenant";
 
 export default defineTool({
   description:
-    "Place an outbound phone call via Inkbox Voice AI. Russian +7 numbers are bridged by Voximplant: it rings Bro's Inkbox number (Voice AI answers inbound) and the clinic, using a verified personal Caller ID. Confirm with the human before the first call of a job. After placing, park the job with job_wait waitingFor=call if you did not pass jobId here.",
+    "Place an outbound phone call via Inkbox Voice AI. Russian +7 numbers are bridged by МТС Exolve callback: it rings Bro's Inkbox number (Voice AI answers inbound) and the clinic, CLI = Exolve RU DID. Confirm with the human before the first call of a job. After placing, park the job with job_wait waitingFor=call if you did not pass jobId here.",
   inputSchema: z.object({
     dest: z
       .string()
@@ -61,7 +63,19 @@ export default defineTool({
 
     let placedId: string;
     try {
-      if (decision.route === "vox_callback") {
+      if (decision.route === "exolve_callback") {
+        await setHostedAgentInstructions(reason);
+        const started = await startExolveCallback({
+          destE164: decision.destE164,
+          inkboxE164: fromE164,
+          requestId: parked._id,
+        });
+        if ("error" in started) throw new Error(started.error);
+        placedId = started.callId;
+        await attachCallBridge(parked._id, placedId).catch((err) =>
+          console.error("attach exolve call id failed", err),
+        );
+      } else if (decision.route === "vox_callback") {
         const cli = env.voxFromE164;
         if (!cli) throw new Error("VOXIMPLANT_FROM_E164 missing");
         await setHostedAgentInstructions(reason);
@@ -72,6 +86,9 @@ export default defineTool({
         });
         if ("error" in started) throw new Error(started.error);
         placedId = started.mediaSessionId;
+        await attachCallBridge(parked._id, placedId).catch((err) =>
+          console.error("attach vox session id failed", err),
+        );
       } else {
         const placed = await placeCall(
           inkboxPlaceBody({
@@ -91,9 +108,14 @@ export default defineTool({
       };
     }
 
-    await attachCallInkbox(parked._id, placedId).catch((err) =>
-      console.error("attach inkbox call id failed", err),
-    );
+    if (
+      decision.route === "inkbox_direct" ||
+      decision.route === "ru_bridge"
+    ) {
+      await attachCallInkbox(parked._id, placedId).catch((err) =>
+        console.error("attach inkbox call id failed", err),
+      );
+    }
 
     if (jobId) {
       await waitJob(phone, jobId, "call", {
