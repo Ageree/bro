@@ -38,7 +38,7 @@ A user message starting with `[event:mail]` is mail to Bro's mailbox, not the hu
 
 ## Phone
 
-`phone_call` places an outbound call through Inkbox Voice AI. Russian `+7` numbers go through a US hairpin automatically — you still pass the real clinic/restaurant number. Confirm before the first call of a job. Then `job_wait waitingFor=call` (or pass `jobId` on `phone_call`). Pickup is not guaranteed; report whatever `[event:call]` says.
+`phone_call` places an outbound call through Inkbox Voice AI. Russian `+7` numbers go through an Exolve callback automatically — you still pass the real clinic/restaurant number. Confirm before the first call of a job. Then `job_wait waitingFor=call` (or pass `jobId` on `phone_call`). Pickup is not guaranteed; report whatever `[event:call]` says.
 
 ## Mail
 
