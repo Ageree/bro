@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>bro — сейф</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --ink: #17271e;
+      --ink-soft: #3c4d43;
+      --cta-bg: #17271e;
+      --cta-fg: #f6faf5;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { overflow-x: hidden; }
+    body {
+      font-family: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+      color: var(--ink);
+      -webkit-font-smoothing: antialiased;
+    }
+    .bg {
+      position: fixed;
+      inset: 0;
+      z-index: -2;
+      background:
+        url("assets/meadow.webp") center / cover no-repeat,
+        linear-gradient(180deg, #dff0fb 0%, #eaf6ec 45%, #bfe3c4 100%);
+    }
+    .scrim {
+      position: fixed;
+      inset: 0;
+      z-index: -1;
+      background: radial-gradient(ellipse 70% 55% at 50% 42%,
+        rgba(255, 255, 255, 0.62) 0%,
+        rgba(255, 255, 255, 0.28) 45%,
+        rgba(255, 255, 255, 0) 72%);
+    }
+    .topbar {
+      position: fixed;
+      top: 0; right: 0; left: 0;
+      z-index: 5;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 1rem 1.3rem;
+    }
+    .word {
+      font-weight: 600;
+      font-size: 1.2rem;
+      letter-spacing: -0.03em;
+      text-decoration: none;
+      color: var(--ink);
+    }
+    .topbar-actions { display: flex; gap: 0.6rem; }
+    .ghost {
+      background: rgba(255, 255, 255, 0.72);
+      border: 1px solid rgba(23, 39, 30, 0.18);
+      color: var(--ink);
+      font: inherit;
+      font-size: 0.95rem;
+      font-weight: 500;
+      text-decoration: none;
+      padding: 0.5rem 1.15rem;
+      border-radius: 999px;
+      cursor: pointer;
+    }
+    .cta {
+      display: inline-block;
+      background: var(--cta-bg);
+      color: var(--cta-fg);
+      font: inherit;
+      font-size: 1rem;
+      font-weight: 500;
+      text-decoration: none;
+      padding: 0.75rem 1.6rem;
+      border-radius: 999px;
+      border: 0;
+      cursor: pointer;
+    }
+    .cta:disabled { opacity: 0.55; cursor: default; }
+    .wrap {
+      max-width: 40rem;
+      margin: 0 auto;
+      padding: 6rem 1.5rem 4rem;
+    }
+    h1 {
+      font-size: clamp(1.8rem, 4vw, 2.4rem);
+      letter-spacing: -0.03em;
+      margin-bottom: 1.4rem;
+    }
+    .card {
+      background: rgba(255, 255, 255, 0.84);
+      border: 1px solid rgba(23, 39, 30, 0.12);
+      border-radius: 1.2rem;
+      padding: 1.4rem 1.5rem;
+      margin-bottom: 1rem;
+    }
+    .card h2 { font-size: 1.02rem; margin-bottom: 0.7rem; }
+    .muted { color: var(--ink-soft); font-size: 0.95rem; line-height: 1.5; }
+    .note { color: var(--ink-soft); font-size: 0.95rem; line-height: 1.5; margin-bottom: 1rem; }
+    .flash {
+      background: rgba(255, 255, 255, 0.84);
+      border: 1px solid rgba(23, 39, 30, 0.12);
+      border-radius: 1.2rem;
+      padding: 1.1rem 1.4rem;
+      margin-bottom: 1rem;
+      font-weight: 500;
+    }
+    .flash[hidden] { display: none; }
+    .card label { display: block; font-size: 0.85rem; margin: 0.75rem 0 0.3rem; }
+    .card input, .card select {
+      width: 100%;
+      font: inherit;
+      padding: 0.7rem 0.8rem;
+      border-radius: 0.7rem;
+      border: 1px solid rgba(23, 39, 30, 0.2);
+      background: #fff;
+    }
+    .card input[readonly] {
+      background: rgba(23, 39, 30, 0.04);
+      color: var(--ink-soft);
+    }
+    .choice {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.55rem 1.1rem;
+      margin: 0.35rem 0 0.4rem;
+    }
+    .choice label {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      margin: 0;
+      font-size: 0.92rem;
+    }
+    .choice input { width: auto; padding: 0; }
+    .row2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.7rem;
+    }
+    .save { margin-top: 1.15rem; }
+    .err { min-height: 1.3rem; margin-top: 0.7rem; color: #7a2e2e; font-size: 0.9rem; }
+    .items { list-style: none; }
+    .items li {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 0.8rem;
+      padding: 0.7rem 0;
+      border-top: 1px solid rgba(23, 39, 30, 0.08);
+    }
+    .items li:first-child { border-top: 0; }
+    .item-meta { flex: 1; min-width: 0; }
+    .item-label { font-weight: 500; margin-bottom: 0.15rem; }
+    .item-kind { color: var(--ink-soft); font-size: 0.85rem; margin-top: 0.15rem; }
+    .item-del { font-size: 0.88rem; padding: 0.4rem 0.9rem; flex-shrink: 0; }
+    .modal {
+      position: fixed;
+      inset: 0;
+      z-index: 10;
+      background: rgba(23, 39, 30, 0.28);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1.2rem;
+    }
+    .modal[hidden] { display: none; }
+    .sheet {
+      width: min(24rem, 100%);
+      background: rgba(255, 255, 255, 0.94);
+      border-radius: 1.2rem;
+      padding: 1.6rem 1.5rem 1.35rem;
+    }
+    .sheet h2 { font-size: 1.15rem; margin-bottom: 0.45rem; }
+    .sheet .hint {
+      color: var(--ink-soft);
+      font-size: 0.9rem;
+      line-height: 1.45;
+      margin-bottom: 0.35rem;
+    }
+    .sheet label { display: block; font-size: 0.85rem; margin: 0.75rem 0 0.3rem; }
+    .sheet input {
+      width: 100%;
+      font: inherit;
+      padding: 0.7rem 0.8rem;
+      border-radius: 0.7rem;
+      border: 1px solid rgba(23, 39, 30, 0.2);
+    }
+    .sheet .sheet-cta {
+      display: block;
+      width: 100%;
+      margin-top: 1rem;
+      text-align: center;
+      white-space: nowrap;
+      border: 0;
+      cursor: pointer;
+    }
+    .sheet .text-close {
+      display: block;
+      width: 100%;
+      margin-top: 0.85rem;
+      background: none;
+      border: 0;
+      color: var(--ink-soft);
+      font: inherit;
+      font-size: 0.92rem;
+      cursor: pointer;
+      text-align: center;
+    }
+    .sheet .status { min-height: 1.3rem; margin-top: 0.7rem; color: var(--ink-soft); font-size: 0.9rem; }
+  </style>
+</head>
+<body>
+  <div class="bg" aria-hidden="true"></div>
+  <div class="scrim" aria-hidden="true"></div>
+
+  <header class="topbar">
+    <a class="word" href="/">bro</a>
+    <div class="topbar-actions">
+      <a class="ghost" id="cabinet-open" href="/cabinet.html">Кабинет</a>
+      <button class="ghost" id="logout" type="button">Выйти</button>
+      <button class="ghost" id="login-open" type="button" hidden>Войти</button>
+    </div>
+  </header>
+
+  <div class="modal" id="login-modal" hidden>
+    <div class="sheet" role="dialog" aria-labelledby="login-title">
+      <h2 id="login-title">Вход в кабинет</h2>
+      <p class="hint">Код придёт сообщением от Bro в уже открытый чат iMessage.</p>
+      <label for="login-handle">Handle</label>
+      <input id="login-handle" autocomplete="username" placeholder="bro-xxxxxxxx" />
+      <button class="cta sheet-cta" id="login-send" type="button">Получить код</button>
+      <div id="login-code-row" hidden>
+        <label for="login-code">Код из iMessage</label>
+        <input id="login-code" inputmode="numeric" maxlength="6" autocomplete="one-time-code" />
+        <button class="cta sheet-cta" id="login-verify" type="button">Войти</button>
+      </div>
+      <p class="status" id="login-status"></p>
+      <button class="text-close" id="login-cancel" type="button">Закрыть</button>
+    </div>
+  </div>
+
+  <main class="wrap">
+    <h1>Сейф</h1>
+    <p class="muted" id="boot">Загружаем…</p>
+    <div id="body" hidden>
+      <p class="note">Bro не видит эти значения — модель их не получает. Они нужны только чтобы заполнить форму в браузере.</p>
+      <p class="flash" id="flash" hidden></p>
+
+      <div class="card">
+        <h2>Сохранённые</h2>
+        <ul class="items" id="items"></ul>
+        <p class="muted" id="items-empty">Пока пусто.</p>
+      </div>
+
+      <div class="card">
+        <h2>Добавить</h2>
+        <form id="add-form" autocomplete="off" method="post">
+          <label for="kind">Тип</label>
+          <select id="kind">
+            <option value="login">вход</option>
+            <option value="payment">карта</option>
+            <option value="address">адрес</option>
+            <option value="contact">контакт</option>
+          </select>
+
+          <label for="label">Метка</label>
+          <input id="label" maxlength="120" autocomplete="off" placeholder="Wildberries" />
+
+          <div id="fields-login">
+            <label for="login-origin">Сайт</label>
+            <input id="login-origin" autocomplete="off" placeholder="https://www.wildberries.ru" />
+
+            <label for="login-ident-type">Тип логина</label>
+            <select id="login-ident-type">
+              <option value="email">почта</option>
+              <option value="phone">телефон</option>
+              <option value="username">логин</option>
+            </select>
+
+            <label for="login-ident">Логин</label>
+            <input id="login-ident" autocomplete="off" />
+
+            <label>Как входить</label>
+            <div class="choice">
+              <label><input type="radio" name="login-auth" value="password" checked /> пароль</label>
+              <label><input type="radio" name="login-auth" value="email_otp" /> код из почты</label>
+              <label><input type="radio" name="login-auth" value="sms_otp" /> код из СМС</label>
+            </div>
+            <div id="login-password-row">
+              <label for="login-password">Пароль</label>
+              <input id="login-password" type="password" autocomplete="off" />
+            </div>
+          </div>
+
+          <div id="fields-payment" hidden>
+            <label for="pay-name">Имя на карте</label>
+            <input id="pay-name" autocomplete="off" />
+
+            <label for="pay-number">Номер карты</label>
+            <input id="pay-number" inputmode="numeric" autocomplete="off" />
+
+            <div class="row2">
+              <div>
+                <label for="pay-month">Месяц</label>
+                <input id="pay-month" inputmode="numeric" maxlength="2" autocomplete="off" placeholder="12" />
+              </div>
+              <div>
+                <label for="pay-year">Год</label>
+                <input id="pay-year" inputmode="numeric" maxlength="4" autocomplete="off" placeholder="2028" />
+              </div>
+            </div>
+
+            <label for="pay-cvv">CVV</label>
+            <input id="pay-cvv" type="password" inputmode="numeric" maxlength="4" autocomplete="off" />
+
+            <label for="pay-postal">Индекс (необязательно)</label>
+            <input id="pay-postal" autocomplete="off" />
+          </div>
+
+          <div id="fields-address" hidden>
+            <label for="addr-name">Получатель</label>
+            <input id="addr-name" autocomplete="off" />
+
+            <label for="addr-line1">Улица</label>
+            <input id="addr-line1" autocomplete="off" />
+
+            <label for="addr-line2">Квартира, офис (необязательно)</label>
+            <input id="addr-line2" autocomplete="off" />
+
+            <label for="addr-city">Город</label>
+            <input id="addr-city" autocomplete="off" />
+
+            <label for="addr-region">Регион (необязательно)</label>
+            <input id="addr-region" autocomplete="off" />
+
+            <label for="addr-postal">Индекс (необязательно)</label>
+            <input id="addr-postal" autocomplete="off" />
+
+            <label for="addr-country">Страна</label>
+            <input id="addr-country" maxlength="2" autocomplete="off" value="RU" />
+          </div>
+
+          <div id="fields-contact" hidden>
+            <label for="contact-name">Имя</label>
+            <input id="contact-name" autocomplete="off" />
+
+            <label for="contact-email">Почта</label>
+            <input id="contact-email" type="email" autocomplete="off" />
+
+            <label for="contact-phone">Телефон</label>
+            <input id="contact-phone" autocomplete="off" />
+          </div>
+
+          <button class="cta save" id="save" type="button">Сохранить</button>
+          <p class="err" id="form-error"></p>
+        </form>
+      </div>
+    </div>
+  </main>
+
+  <script src="assets/config.js"></script>
+  <script src="assets/auth.js"></script>
+  <script src="assets/vault.js"></script>
+</body>
+</html>

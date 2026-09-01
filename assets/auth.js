@@ -62,6 +62,15 @@
     $("#login-status").textContent = t;
   }
 
+  // A vault link from Bro carries the item to add in its query, so logging in
+  // must return to this exact page instead of dropping the person in cabinet.
+  function afterLogin() {
+    if (/\/vault\.html$/.test(location.pathname)) {
+      return location.pathname + location.search;
+    }
+    return "/cabinet.html";
+  }
+
   loginBtn.addEventListener("click", function (e) {
     e.preventDefault();
     openModal();
@@ -132,7 +141,7 @@
         setHandle(data.handle || h);
         setToken(data.token);
         closeModal();
-        window.location.href = "/cabinet.html";
+        window.location.href = afterLogin();
       })
       .catch(function () {
         setStatus("Не вышло, нажми ещё раз");
