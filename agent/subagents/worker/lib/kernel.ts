@@ -52,6 +52,16 @@ export function proxyNameForCountry(country: string): string {
   return `${PROFILE_PREFIX}-residential-${country.toLowerCase()}`;
 }
 
+const REGIONS = ["us-east", "eu-west", "ap-southeast"] as const;
+
+/** Kernel defaults to us-east; eu-west is the closest hop to Russian sites. */
+export function kernelRegion(
+  raw: string | undefined = process.env.BRO_KERNEL_REGION,
+): (typeof REGIONS)[number] | undefined {
+  const value = raw?.trim().toLowerCase();
+  return REGIONS.find((region) => region === value);
+}
+
 export async function ensureTenantProfile(
   phoneE164: string,
   signal?: AbortSignal,
