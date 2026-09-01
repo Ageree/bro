@@ -1,0 +1,14 @@
+{
+  "goal_id": "bro-computer",
+  "status": "in_progress",
+  "phase": 1,
+  "packages": ["p1-maritime-client", "p2-convex-computer", "p3-computer-task"],
+  "started_at": "2026-09-01T19:41:00Z",
+  "spike": {
+    "account": "maritime cursor key, free plan",
+    "agent": "bro-spike-browser (openclaw_browser, externalId spike:lead)",
+    "desktop": "402 seat_limit (paid plan)",
+    "identity": "503 maritime inkbox org limit",
+    "chat": "[blocked] in 31.9s, live-view no_active_session"
+  }
+}
