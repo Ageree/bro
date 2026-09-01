@@ -470,7 +470,7 @@
   });
 
   if (!t) {
-    boot.textContent = "Войди, чтобы открыть сейф. После входа открой ссылку ещё раз.";
+    boot.textContent = "Войди, чтобы открыть сейф.";
     $("login-open").click();
     return;
   }
