@@ -12,7 +12,8 @@
     "dev:local": "bash scripts/dev-local.sh",
     "tunnel": "node --experimental-strip-types scripts/inkbox-tunnel.ts",
     "webhooks": "node --experimental-strip-types scripts/setup-inkbox-webhooks.ts",
-    "optmem:check": "python3 scripts/optmem-check.py",
+    "memory:check": "node --experimental-strip-types scripts/memory-check.ts",
+    "archive:check": "node --experimental-strip-types scripts/archive-check.ts",
     "browser:check": "node --experimental-strip-types scripts/browser-policy-check.ts",
     "access:check": "node --experimental-strip-types scripts/access-policy-check.ts",
     "dedicated:check": "node --experimental-strip-types scripts/dedicated-line-check.ts",
@@ -39,11 +40,12 @@
     "@convex-dev/workpool": "^0.4.10",
     "@inkbox/sdk": "^0.6.4",
     "@onkernel/sdk": "^0.97.0",
+    "@supermemory/eve": "^0.1.1",
     "@vercel/connect": "1.0.0",
     "ai": "^7.0.58",
     "convex": "^1.45.0",
     "convex-helpers": "^0.1.123",
-    "eve": "^0.45.0",
+    "eve": "^0.47.6",
     "zod": "4.4.3"
   },
   "devDependencies": {

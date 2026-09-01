@@ -33,6 +33,7 @@ import {
   takeWakeupDelivery,
 } from "../lib/wakeup-dedupe";
 import { inboundGateFromResult } from "../../convex/lib/billingPolicy";
+import { syncTenantArchive } from "../lib/archive-sync.ts";
 
 // ponytail: in-memory only — lost on restart, not shared across instances
 const wakeupDelivered = new Map<string, number>();
@@ -241,6 +242,34 @@ export default defineChannel({
         },
       });
       return new Response(null, { status: 204 });
+    }),
+    POST("/internal/memory-sync", async (request) => {
+      let body: { secret?: unknown; tenantPhone?: unknown; sinceMs?: unknown };
+      try {
+        body = (await request.json()) as typeof body;
+      } catch {
+        return new Response("bad json", { status: 400 });
+      }
+      const expected = process.env.BRO_INTERNAL_SECRET;
+      if (!expected || body.secret !== expected) {
+        return new Response("unauthorized", { status: 401 });
+      }
+      const tenantPhone =
+        typeof body.tenantPhone === "string" ? body.tenantPhone : "";
+      if (!tenantPhone) {
+        return new Response("missing tenantPhone", { status: 400 });
+      }
+      const sinceMs = typeof body.sinceMs === "number" ? body.sinceMs : undefined;
+      try {
+        const result = await syncTenantArchive(tenantPhone, sinceMs);
+        return Response.json({ ok: true, ...result });
+      } catch (err) {
+        console.error("memory sync failed", tenantPhone, err);
+        return Response.json(
+          { ok: false, error: err instanceof Error ? err.message : String(err) },
+          { status: 500 },
+        );
+      }
     }),
     POST("/internal/wakeup", async (request, { from }) => {
       let body: {

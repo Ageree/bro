@@ -11,6 +11,9 @@
     "jsx": "react-jsx",
     "skipLibCheck": true,
     "allowSyntheticDefaultImports": true,
+    /* Convex runs on its own runtime, but these files read process.env and
+     * Buffer at load time; without explicit node types TS7 rejects them. */
+    "types": ["node"],
 
     /* These compiler options are required by Convex */
     "target": "ESNext",

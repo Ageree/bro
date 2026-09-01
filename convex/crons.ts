@@ -10,4 +10,12 @@ crons.interval(
   internal.wakeups.dispatchDue,
   {},
 );
+// Instinct-style memory: copy each person's connected-app data into their
+// Supermemory archive. The eve route skips people without connections.
+crons.interval(
+  "sync connected-app archives",
+  { hours: 1 },
+  internal.archive.dispatchSyncs,
+  {},
+);
 export default crons;

@@ -1,13 +1,12 @@
 # Bro
 
-Personal iMessage concierge. **eve** runs the agent. **Convex** holds tenants and orders. **Inkbox** is blue iMessage only (never SMS). **OptMem** is long-term memory, one store per person.
+Personal iMessage concierge. **eve** runs the agent. **Convex** holds tenants, orders, and long-term memory (one store per person). **Inkbox** is blue iMessage only (never SMS). **Supermemory** (optional, paid) adds automatic conversation memory.
 
 Outbound replies are compiled to iMessage text: markdown is stripped, `**latin**` becomes Unicode math-bold (looks bold on iPhone), Russian field labels get a `▸` mark, long numbered dumps become one bubble per item. Inkbox cannot send native iOS 18 text styles or carousels. Inbound photos/carousels reach the model as URLs. Check: `npm run imessage:check`.
 
 ## Needs
 
 - Node 24 (`nvm use`)
-- Python 3 (OptMem `vendor/optmem/memo`)
 - Inkbox API key, OpenRouter (`z-ai/glm-5.3-flash`, override with `BRO_MODEL` / `BRO_MODEL_CONTEXT_TOKENS`) or Vercel AI Gateway
 
 ## Run
@@ -15,7 +14,7 @@ Outbound replies are compiled to iMessage text: markdown is stripped, `**latin**
 ```bash
 cp .env.example .env.local
 # fill INKBOX_*, OPENROUTER_API_KEY (or AI_GATEWAY_API_KEY), ALLOWED_SENDERS
-npm run optmem:check
+npm run memory:check
 npm run provision:inkbox    # once
 npm run webhooks            # once: signing key + https://<handle>.inkboxwire.com/webhooks/imessage
 npm run dev:local           # eve :2000 + Inkbox tunnel (needed for iMessage)
@@ -29,7 +28,9 @@ Onboard: after provision, the human texts `connect @bro-ageree` to the printed r
 
 Shared router pool is the default (inbound-first, ~100 messages/day). To let Bro write first, set `BRO_DEDICATED_LINE=1` before `npm run provision:inkbox` and on the Convex deployment. New identities then pass Inkbox `claimIMessageNumber: true` (create) or `identity.update({ claimIMessageNumber: true, idempotencyKey })` (existing). Unattached inventory is `inkbox.imessages.claimNumber({ idempotencyKey })` — Bro does not call that on the default path. Off by default; shared pool is unchanged. Number/status, when returned, is stored on the tenant. Check: `npm run dedicated:check`.
 
-Memory files: `data/optmem/<E.164>/` (gitignored). Runtime memory is Convex.
+Memory is three eve slots, all keyed by the person's E.164. `memo` (always on) is curated facts in the Convex `memories` table: recalled every turn, maintained by the model via `memo__remember` / `memo__search` / `memo__forget`, deduped and capped at 400 lines per person. `recall` mounts only when `SUPERMEMORY_API_KEY` is set: [Supermemory](https://supermemory.ai) then captures completed turns automatically, recalls relevant context before each turn, and adds `recall__search` and friends — no extra setup. Without the key both Supermemory slots are disabled and nothing breaks. Check: `npm run memory:check`.
+
+`archive` is the Instinct-style layer (also Supermemory-gated): a Convex cron POSTs `/internal/memory-sync` hourly per active tenant, the eve route copies fresh Gmail and upcoming Calendar items via Composio into one Supermemory container per person (`bro_archive_<E.164>`, upserts by `customId`), and the slot semantically searches that archive with the current request before every turn. Archived copies survive app disconnects — deletion is the explicit `archive__forget` tool. Check: `npm run archive:check`.
 
 Landing CTA creates a personal Inkbox identity and opens iMessage (`sms_link`).
 `assets/config.js` holds the Convex HTTP site URL (`https://<deployment>.convex.site`).

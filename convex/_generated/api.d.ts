@@ -9,6 +9,7 @@
  */
 
 import type * as access from "../access.js";
+import type * as archive from "../archive.js";
 import type * as billing from "../billing.js";
 import type * as browserFollow from "../browserFollow.js";
 import type * as browsers from "../browsers.js";
@@ -23,6 +24,7 @@ import type * as lib_browseruse from "../lib/browseruse.js";
 import type * as lib_cabinetPolicy from "../lib/cabinetPolicy.js";
 import type * as lib_dedicatedLinePolicy from "../lib/dedicatedLinePolicy.js";
 import type * as lib_mailPolicy from "../lib/mailPolicy.js";
+import type * as lib_memoryPolicy from "../lib/memoryPolicy.js";
 import type * as lib_rateLimits from "../lib/rateLimits.js";
 import type * as lib_vaultPayload from "../lib/vaultPayload.js";
 import type * as lib_wakeupCrons from "../lib/wakeupCrons.js";
@@ -44,6 +46,7 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   access: typeof access;
+  archive: typeof archive;
   billing: typeof billing;
   browserFollow: typeof browserFollow;
   browsers: typeof browsers;
@@ -58,6 +61,7 @@ declare const fullApi: ApiFromModules<{
   "lib/cabinetPolicy": typeof lib_cabinetPolicy;
   "lib/dedicatedLinePolicy": typeof lib_dedicatedLinePolicy;
   "lib/mailPolicy": typeof lib_mailPolicy;
+  "lib/memoryPolicy": typeof lib_memoryPolicy;
   "lib/rateLimits": typeof lib_rateLimits;
   "lib/vaultPayload": typeof lib_vaultPayload;
   "lib/wakeupCrons": typeof lib_wakeupCrons;
