@@ -32,6 +32,7 @@ const kind = v.union(
   v.literal("brief"),
   v.literal("watcher"),
   v.literal("job_check"),
+  v.literal("computer_poll"),
 );
 const status = v.union(
   v.literal("scheduled"),

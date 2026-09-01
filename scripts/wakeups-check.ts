@@ -80,6 +80,7 @@ assert(nextAfterRun({}, now) === null, "one-shot");
 assert(isSingletonKind("brief"), "brief singleton");
 assert(isSingletonKind("watcher"), "watcher singleton");
 assert(isSingletonKind("browser_poll"), "browser_poll singleton");
+assert(isSingletonKind("computer_poll"), "computer_poll singleton");
 assert(!isSingletonKind("reminder"), "reminder not singleton");
 assert(!isSingletonKind("job_check"), "job_check not singleton");
 

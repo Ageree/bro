@@ -120,6 +120,19 @@ export async function setBrowser(
   });
 }
 
+export async function setComputer(phoneE164: string, patch: {
+  computerAgentId?: string; computerProvider?: string; computerStatus?: string;
+  computerLiveUrl?: string; computerLiveAt?: number; computerTask?: string;
+  computerConversationId?: string; computerProvisionedAt?: number;
+  computerStartedAt?: number; clearLive?: boolean; clearStarted?: boolean;
+}): Promise<void> {
+  await client().mutation(api.tenants.setComputer, {
+    secret: secret(),
+    phoneE164,
+    ...patch,
+  });
+}
+
 export async function getTenantByEmail(emailAddress: string) {
   return await client().query(api.tenants.getByEmail, {
     secret: secret(),
@@ -206,7 +219,7 @@ export async function touchJobMail(
 export async function scheduleWakeup(args: {
   tenantPhone: string;
   at: number;
-  kind: "reminder" | "browser_poll" | "brief" | "watcher" | "job_check";
+  kind: "reminder" | "browser_poll" | "brief" | "watcher" | "job_check" | "computer_poll";
   payload: string;
   recurMinutes?: number;
   recurDailyHour?: number;
@@ -222,7 +235,7 @@ export async function cancelWakeup(
   tenantPhone: string,
   opts: {
     id?: string;
-    kind?: "reminder" | "browser_poll" | "brief" | "watcher" | "job_check";
+    kind?: "reminder" | "browser_poll" | "brief" | "watcher" | "job_check" | "computer_poll";
     payloadContains?: string;
   },
 ): Promise<number> {
