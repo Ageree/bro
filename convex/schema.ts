@@ -104,6 +104,46 @@ export default defineSchema({
     .index("by_tenant", ["tenantId"])
     .index("by_yookassa", ["yookassaId"]),
 
+  /** Non-secret metadata. `handle` is the only vault reference the model ever sees. */
+  vaultItems: defineTable({
+    tenantId: v.id("tenants"),
+    handle: v.string(),
+    kind: v.union(
+      v.literal("login"),
+      v.literal("payment"),
+      v.literal("address"),
+      v.literal("contact"),
+    ),
+    label: v.string(),
+    account: v.string(),
+    origin: v.optional(v.string()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_tenant", ["tenantId"])
+    .index("by_handle", ["handle"]),
+
+  /** AES-256-GCM ciphertext, one row per vault item. Never leaves Convex in this form. */
+  vaultSecrets: defineTable({
+    tenantId: v.id("tenants"),
+    handle: v.string(),
+    ciphertext: v.string(),
+    updatedAt: v.number(),
+  })
+    .index("by_tenant", ["tenantId"])
+    .index("by_handle", ["handle"]),
+
+  /** Kernel browser sessions owned by a tenant. Ownership gate for every worker tool. */
+  browserSessions: defineTable({
+    tenantId: v.id("tenants"),
+    sessionId: v.string(),
+    workerSessionId: v.optional(v.string()),
+    saveChanges: v.boolean(),
+    createdAt: v.number(),
+  })
+    .index("by_tenant", ["tenantId"])
+    .index("by_session", ["sessionId"]),
+
   wakeups: defineTable({
     tenantPhone: v.string(),
     at: v.number(),
