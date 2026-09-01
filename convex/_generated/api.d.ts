@@ -9,6 +9,7 @@
  */
 
 import type * as access from "../access.js";
+import type * as archive from "../archive.js";
 import type * as billing from "../billing.js";
 import type * as browserFollow from "../browserFollow.js";
 import type * as browsers from "../browsers.js";
@@ -45,6 +46,7 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   access: typeof access;
+  archive: typeof archive;
   billing: typeof billing;
   browserFollow: typeof browserFollow;
   browsers: typeof browsers;

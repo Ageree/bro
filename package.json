@@ -13,6 +13,7 @@
     "tunnel": "node --experimental-strip-types scripts/inkbox-tunnel.ts",
     "webhooks": "node --experimental-strip-types scripts/setup-inkbox-webhooks.ts",
     "memory:check": "node --experimental-strip-types scripts/memory-check.ts",
+    "archive:check": "node --experimental-strip-types scripts/archive-check.ts",
     "browser:check": "node --experimental-strip-types scripts/browser-policy-check.ts",
     "access:check": "node --experimental-strip-types scripts/access-policy-check.ts",
     "dedicated:check": "node --experimental-strip-types scripts/dedicated-line-check.ts",
