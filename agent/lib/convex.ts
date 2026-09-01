@@ -241,6 +241,40 @@ export async function listWakeups(tenantPhone: string) {
   });
 }
 
+export async function createWatcher(args: {
+  tenantPhone: string;
+  source: "gmail" | "calendar";
+  triggerId: string;
+  triggerSlug: string;
+  about: string;
+  filter?: string;
+}): Promise<string> {
+  return await client().mutation(api.watchers.create, {
+    secret: secret(),
+    ...args,
+  });
+}
+
+export async function listWatchers(
+  tenantPhone: string,
+): Promise<FunctionReturnType<typeof api.watchers.listActive>> {
+  return await client().query(api.watchers.listActive, {
+    secret: secret(),
+    tenantPhone,
+  });
+}
+
+export async function stopWatchers(
+  tenantPhone: string,
+  id?: string,
+): Promise<{ id: string; triggerId: string }[]> {
+  return await client().mutation(api.watchers.stop, {
+    secret: secret(),
+    tenantPhone,
+    id: id as Id<"watchers"> | undefined,
+  });
+}
+
 export async function setWakeupLastSeen(
   tenantPhone: string,
   lastSeen: string,

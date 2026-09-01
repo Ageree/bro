@@ -29,6 +29,7 @@ import type * as lib_rateLimits from "../lib/rateLimits.js";
 import type * as lib_vaultPayload from "../lib/vaultPayload.js";
 import type * as lib_wakeupCrons from "../lib/wakeupCrons.js";
 import type * as lib_wakeupPolicy from "../lib/wakeupPolicy.js";
+import type * as lib_watcherPolicy from "../lib/watcherPolicy.js";
 import type * as memories from "../memories.js";
 import type * as orders from "../orders.js";
 import type * as secret from "../secret.js";
@@ -36,6 +37,7 @@ import type * as tenants from "../tenants.js";
 import type * as vault from "../vault.js";
 import type * as vaultSecrets from "../vaultSecrets.js";
 import type * as wakeups from "../wakeups.js";
+import type * as watchers from "../watchers.js";
 import type * as workflow from "../workflow.js";
 
 import type {
@@ -66,6 +68,7 @@ declare const fullApi: ApiFromModules<{
   "lib/vaultPayload": typeof lib_vaultPayload;
   "lib/wakeupCrons": typeof lib_wakeupCrons;
   "lib/wakeupPolicy": typeof lib_wakeupPolicy;
+  "lib/watcherPolicy": typeof lib_watcherPolicy;
   memories: typeof memories;
   orders: typeof orders;
   secret: typeof secret;
@@ -73,6 +76,7 @@ declare const fullApi: ApiFromModules<{
   vault: typeof vault;
   vaultSecrets: typeof vaultSecrets;
   wakeups: typeof wakeups;
+  watchers: typeof watchers;
   workflow: typeof workflow;
 }>;
 

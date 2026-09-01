@@ -183,4 +183,25 @@ export default defineSchema({
     .index("by_status_at", ["status", "at"])
     .index("by_tenant", ["tenantPhone"])
     .index("by_tenant_status", ["tenantPhone", "status"]),
+
+  watchers: defineTable({
+    tenantPhone: v.string(),
+    source: v.union(v.literal("gmail"), v.literal("calendar")),
+    triggerId: v.string(),
+    triggerSlug: v.string(),
+    about: v.string(),
+    filter: v.optional(v.string()),
+    status: v.union(v.literal("active"), v.literal("stopped")),
+    createdAt: v.number(),
+    lastEventAt: v.optional(v.number()),
+    events: v.optional(v.number()),
+  })
+    .index("by_tenant", ["tenantPhone"])
+    .index("by_tenant_status", ["tenantPhone", "status"])
+    .index("by_trigger", ["triggerId"]),
+
+  /** Webhook dedupe. Composio retries on non-2xx; rows older than 24h are pruned. */
+  composioEvents: defineTable({ eventId: v.string(), receivedAt: v.number() })
+    .index("by_event", ["eventId"])
+    .index("by_receivedAt", ["receivedAt"]),
 });
