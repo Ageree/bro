@@ -18,6 +18,8 @@
     "access:check": "node --experimental-strip-types scripts/access-policy-check.ts",
     "dedicated:check": "node --experimental-strip-types scripts/dedicated-line-check.ts",
     "composio:check": "node --env-file=.env.local --experimental-strip-types scripts/composio-check.ts",
+    "composio:webhook": "node --env-file=.env.local --experimental-strip-types scripts/setup-composio-webhook.ts",
+    "watchers:check": "node --experimental-strip-types scripts/watchers-check.ts",
     "composio:isolation": "node --env-file=.env.local --experimental-strip-types scripts/composio-isolation.ts",
     "connect-link:check": "node --experimental-strip-types scripts/connect-link-check.ts",
     "jobs:check": "node --experimental-strip-types scripts/jobs-check.ts",

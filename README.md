@@ -32,6 +32,8 @@ Memory is three eve slots, all keyed by the person's E.164. `memo` (always on) i
 
 `archive` is the Instinct-style layer (also Supermemory-gated): a Convex cron POSTs `/internal/memory-sync` hourly per active tenant, the eve route copies fresh Gmail and upcoming Calendar items via Composio into one Supermemory container per person (`bro_archive_<E.164>`, upserts by `customId`), and the slot semantically searches that archive with the current request before every turn. Archived copies survive app disconnects — deletion is the explicit `archive__forget` tool. Check: `npm run archive:check`.
 
+Push watchers (`watch_app`): Composio triggers POST Convex `/composio`, then one agent turn per event. Subscribe once with `npm run composio:webhook https://<deployment>.convex.site/composio`. Prices/websites still poll via `schedule_wakeup kind=watcher`. Check: `npm run watchers:check`.
+
 Landing CTA creates a personal Inkbox identity and opens iMessage (`sms_link`).
 `assets/config.js` holds the Convex HTTP site URL (`https://<deployment>.convex.site`).
 Set `INKBOX_API_KEY` and `INKBOX_WEBHOOK_URL` on the Convex deployment.
