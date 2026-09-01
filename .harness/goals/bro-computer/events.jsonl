@@ -1,0 +1,6 @@
+{"at":"2026-09-01T19:46:00Z","kind":"spike_desktop","result":"402 seat_limit","note":"Desktop agents need a paid plan (Starter). Phase 1 runs on openclaw_browser; BRO_COMPUTER_DESKTOP stays env-gated."}
+{"at":"2026-09-01T19:47:00Z","kind":"spike_browser_agent","result":"active in ~20s","note":"bro-spike-browser (openclaw_browser, externalId spike:lead). browser capability = Browserbase (per-agent context); live-view no_active_session without a browser session; exec/files/env ok."}
+{"at":"2026-09-01T19:47:30Z","kind":"spike_identity","result":"503","note":"Inkbox identity via Maritime hit Maritime's own Inkbox org limit (9 numbers). Bro keeps its own Inkbox org."}
+{"at":"2026-09-01T19:48:40Z","kind":"spike_chat_browser","result":"[blocked] in 31.9s","note":"Browser tool blocked by OpenClaw approval wall on free tier; plain chat works (5-10s)."}
+{"at":"2026-09-01T20:06:00Z","kind":"live_e2e_client","result":"ok","note":"provisionAgent reused spike agent (created:false); two chats in one conversation_id kept context (42); liveView no_active_session → decision without url."}
+{"at":"2026-09-01T20:06:30Z","kind":"verify","result":"ok","note":"tsc clean; computer/browser/wakeups/cabinet/worker/imessage/access/billing/jobs/vault checks ok; eve build diagnostics errors=0, computer_task registered."}

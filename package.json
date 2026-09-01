@@ -27,6 +27,7 @@
     "types:check": "tsc --noEmit",
     "vault:check": "node --experimental-strip-types scripts/vault-check.ts",
     "worker:check": "node --experimental-strip-types scripts/worker-check.ts",
+    "computer:check": "node --experimental-strip-types scripts/computer-check.ts",
     "wakeups:check": "node --experimental-strip-types scripts/wakeups-check.ts",
     "provision:inkbox": "node --experimental-strip-types scripts/provision-inkbox.ts"
   },

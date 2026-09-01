@@ -21,6 +21,15 @@ export default defineSchema({
     browserWorkflowId: v.optional(v.string()),
     browserWorkflowRunId: v.optional(v.string()),
     browserWakeupClaim: v.optional(v.string()),
+    computerAgentId: v.optional(v.string()),
+    computerProvider: v.optional(v.string()),
+    computerStatus: v.optional(v.string()),
+    computerLiveUrl: v.optional(v.string()),
+    computerLiveAt: v.optional(v.number()),
+    computerTask: v.optional(v.string()),
+    computerConversationId: v.optional(v.string()),
+    computerProvisionedAt: v.optional(v.number()),
+    computerStartedAt: v.optional(v.number()),
     paidUntil: v.optional(v.number()),
     // deprecated: msgs/day and browser/month counters moved to @convex-dev/rate-limiter
     msgsDayKey: v.optional(v.string()),
@@ -164,6 +173,7 @@ export default defineSchema({
       v.literal("brief"),
       v.literal("watcher"),
       v.literal("job_check"),
+      v.literal("computer_poll"),
     ),
     payload: v.string(),
     status: v.union(

@@ -73,6 +73,15 @@ export type PaymentRow = {
   status: "pending" | "succeeded" | "canceled";
 };
 
+export const COMPUTER_LIVE_FRESH_MS = 30 * 60 * 1000;
+
+export type ComputerView = {
+  status: string;
+  task?: string;
+  liveViewUrl?: string;
+  updatedAt?: number;
+};
+
 export type CabinetSnapshot = {
   handle: string;
   phoneBound: boolean;
@@ -86,7 +95,32 @@ export type CabinetSnapshot = {
   browserAllowance: number;
   browserMonthKey: string;
   payments: PaymentRow[];
+  computer?: ComputerView;
 };
+
+export function computerView(opts: {
+  agentId?: string;
+  status?: string;
+  task?: string;
+  liveUrl?: string;
+  liveAt?: number;
+  startedAt?: number;
+  provisionedAt?: number;
+  now: number;
+}): ComputerView | undefined {
+  if (!opts.agentId) return undefined;
+  const updatedAt = opts.liveAt ?? opts.startedAt ?? opts.provisionedAt;
+  const fresh =
+    opts.liveAt !== undefined &&
+    opts.now - opts.liveAt < COMPUTER_LIVE_FRESH_MS &&
+    Boolean(opts.liveUrl);
+  return {
+    status: opts.status ?? "unknown",
+    ...(opts.task ? { task: opts.task } : {}),
+    ...(fresh && opts.liveUrl ? { liveViewUrl: opts.liveUrl } : {}),
+    ...(updatedAt !== undefined ? { updatedAt } : {}),
+  };
+}
 
 export function phoneLast4(phoneE164: string | undefined): string | undefined {
   if (!phoneE164 || phoneE164.length < 4) return undefined;
@@ -112,9 +146,27 @@ export function buildSnapshot(opts: {
   browserAllowance: number;
   browserMonthKey: string;
   payments: PaymentRow[];
+  computerAgentId?: string;
+  computerStatus?: string;
+  computerTask?: string;
+  computerLiveUrl?: string;
+  computerLiveAt?: number;
+  computerStartedAt?: number;
+  computerProvisionedAt?: number;
+  now?: number;
 }): CabinetSnapshot {
   const phoneBound = Boolean(opts.phoneE164);
   const last4 = phoneLast4(opts.phoneE164);
+  const computer = computerView({
+    agentId: opts.computerAgentId,
+    status: opts.computerStatus,
+    task: opts.computerTask,
+    liveUrl: opts.computerLiveUrl,
+    liveAt: opts.computerLiveAt,
+    startedAt: opts.computerStartedAt,
+    provisionedAt: opts.computerProvisionedAt,
+    now: opts.now ?? 0,
+  });
   return {
     handle: opts.handle,
     phoneBound,
@@ -130,6 +182,7 @@ export function buildSnapshot(opts: {
     browserAllowance: opts.browserAllowance,
     browserMonthKey: opts.browserMonthKey,
     payments: opts.payments,
+    ...(computer ? { computer } : {}),
   };
 }
 

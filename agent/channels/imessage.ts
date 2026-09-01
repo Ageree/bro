@@ -328,6 +328,8 @@ export default defineChannel({
           }
           // Residual race: browserRunId can change during from().send after this check.
         }
+      } else if (kind === "computer_poll") {
+        prompt = `[background wakeup] Проверь, что делает компьютер человека: вызови тул computer_task с task=${payload}. Если done — передай результат человеку. Если blocked — коротко скажи, что нужно от него, и пришли liveUrl, если он есть (никогда не проси вводить пароль по ссылке). Если working или provisioning — ответь ровно [SILENT]: проверка повторится сама. Если error — коротко скажи и предложи reset.`;
       } else if (kind === "job_check") {
         prompt = `[background wakeup] Фоновая проверка джоба: ${payload}. Открытые джобы этого человека уже в контексте. Сделай следующий шаг цепочки сам (проверь почту/статус нужным тулом: composio, browser_task, bro_mail). Если есть прогресс — сделай шаг и коротко напиши человеку. Если продвинуться нечем — ответь ровно [SILENT]: проверка повторится сама. Если джоб уже закрыт или отменён — вызови cancel_wakeup с kind=job_check и payloadContains «джоб <id>», затем ответь [SILENT].`;
       }

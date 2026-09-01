@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { timingSafeEqual } from "../convex/secret.ts";
 import {
   buildSnapshot,
+  computerView,
   challengeExpiry,
   CHALLENGE_TTL_MS,
   loginStartDecision,
@@ -122,6 +123,53 @@ assert(snap.plan === "paid", "paid plan");
 assert(snap.phoneBound && snap.phoneLast4 === "2233", "phone mask");
 assert(snap.paidUntil === now + 1000, "paidUntil shown");
 assert(snap.payments.length === 1, "own payments");
+assert(snap.computer === undefined, "no computer");
+
+assert(computerView({ now }) === undefined, "computerView no agent");
+assert(
+  computerView({ status: "ready", task: "x", now }) === undefined,
+  "computerView status without agent",
+);
+const freshLive = computerView({
+  agentId: "ag_1",
+  status: "ready",
+  task: "купить билет",
+  liveUrl: "https://live.example/view",
+  liveAt: now - 5 * 60_000,
+  startedAt: now - 10 * 60_000,
+  now,
+});
+assert(freshLive?.status === "ready", "status passthrough");
+assert(freshLive?.task === "купить билет", "task passthrough");
+assert(freshLive?.liveViewUrl === "https://live.example/view", "fresh live");
+assert(freshLive?.updatedAt === now - 5 * 60_000, "updatedAt prefers liveAt");
+const staleLive = computerView({
+  agentId: "ag_1",
+  status: "sleeping",
+  liveUrl: "https://live.example/view",
+  liveAt: now - 31 * 60_000,
+  provisionedAt: now - 60 * 60_000,
+  now,
+});
+assert(staleLive?.status === "sleeping", "stale still has status");
+assert(staleLive?.liveViewUrl === undefined, "stale live omitted");
+assert(staleLive?.updatedAt === now - 31 * 60_000, "stale updatedAt");
+const withComputer = buildSnapshot({
+  handle: "bro-a1b2c3d4",
+  paid: false,
+  msgsUsed: 0,
+  msgsAllowance: 30,
+  msgsDayKey: "2026-08-28",
+  browserUsed: 0,
+  browserAllowance: 5,
+  browserMonthKey: "2026-08",
+  payments: [],
+  computerAgentId: "ag_1",
+  computerStatus: "provisioning",
+  now,
+});
+assert(withComputer.computer?.status === "provisioning", "buildSnapshot status");
+assert(withComputer.computer?.liveViewUrl === undefined, "buildSnapshot no live");
 
 const free = buildSnapshot({
   handle: "bro-a1b2c3d4",
@@ -163,6 +211,15 @@ assert(hex.length === 64, "sha256 hex");
 assert(hex === (await sha256hex("secret")), "sha256 stable");
 assert(hex !== (await sha256hex("Secret")), "sha256 distinct");
 assert(timingSafeEqual(hex, hex), "hash compare");
+
+const cabinetHtml = readFileSync(new URL("../cabinet.html", import.meta.url), "utf8");
+assert(cabinetHtml.includes(">Компьютер<"), "cabinet computer heading");
+assert(cabinetHtml.includes("Сейчас: "), "cabinet computer task line");
+assert(cabinetHtml.includes("Вмешаться"), "cabinet intervene");
+assert(cabinetHtml.includes('target="_blank"'), "cabinet live target blank");
+assert(cabinetHtml.includes('rel="noopener"'), "cabinet live noopener");
+assert(cabinetHtml.includes("поднимается"), "cabinet provisioning ru");
+assert(cabinetHtml.includes("me.computer"), "cabinet hides without snapshot.computer");
 
 const authJs = readFileSync(new URL("../assets/auth.js", import.meta.url), "utf8");
 assert(authJs.includes('#login-open'), "auth binds #login-open");

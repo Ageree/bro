@@ -48,6 +48,14 @@ const snapshotValidator = v.object({
       ),
     }),
   ),
+  computer: v.optional(
+    v.object({
+      status: v.string(),
+      task: v.optional(v.string()),
+      liveViewUrl: v.optional(v.string()),
+      updatedAt: v.optional(v.number()),
+    }),
+  ),
 });
 
 function apiKey(): string {
@@ -315,6 +323,14 @@ export const snapshotForTenant = internalQuery({
       }),
       browserMonthKey: month,
       payments,
+      computerAgentId: tenant.computerAgentId,
+      computerStatus: tenant.computerStatus,
+      computerTask: tenant.computerTask,
+      computerLiveUrl: tenant.computerLiveUrl,
+      computerLiveAt: tenant.computerLiveAt,
+      computerStartedAt: tenant.computerStartedAt,
+      computerProvisionedAt: tenant.computerProvisionedAt,
+      now,
     });
   },
 });

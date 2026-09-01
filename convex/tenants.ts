@@ -54,6 +54,15 @@ export const tenantDoc = v.object({
   browserWorkflowId: v.optional(v.string()),
   browserWorkflowRunId: v.optional(v.string()),
   browserWakeupClaim: v.optional(v.string()),
+  computerAgentId: v.optional(v.string()),
+  computerProvider: v.optional(v.string()),
+  computerStatus: v.optional(v.string()),
+  computerLiveUrl: v.optional(v.string()),
+  computerLiveAt: v.optional(v.number()),
+  computerTask: v.optional(v.string()),
+  computerConversationId: v.optional(v.string()),
+  computerProvisionedAt: v.optional(v.number()),
+  computerStartedAt: v.optional(v.number()),
   paidUntil: v.optional(v.number()),
   // deprecated: counters live in @convex-dev/rate-limiter
   msgsDayKey: v.optional(v.string()),
@@ -272,6 +281,65 @@ export const setBrowser = mutation({
       ...(args.browserProfileId !== undefined
         ? { browserProfileId: args.browserProfileId }
         : {}),
+    });
+    return null;
+  },
+});
+
+export const setComputer = mutation({
+  args: {
+    secret: v.string(),
+    phoneE164: v.string(),
+    computerAgentId: v.optional(v.string()),
+    computerProvider: v.optional(v.string()),
+    computerStatus: v.optional(v.string()),
+    computerLiveUrl: v.optional(v.string()),
+    computerLiveAt: v.optional(v.number()),
+    computerTask: v.optional(v.string()),
+    computerConversationId: v.optional(v.string()),
+    computerProvisionedAt: v.optional(v.number()),
+    computerStartedAt: v.optional(v.number()),
+    clearLive: v.optional(v.boolean()),
+    clearStarted: v.optional(v.boolean()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    assertSecret(args.secret);
+    const existing = await ctx.db
+      .query("tenants")
+      .withIndex("by_phone", (q) => q.eq("phoneE164", args.phoneE164))
+      .first();
+    if (!existing) throw new Error("unknown tenant");
+    await ctx.db.patch(existing._id, {
+      ...(args.computerAgentId !== undefined
+        ? { computerAgentId: args.computerAgentId }
+        : {}),
+      ...(args.computerProvider !== undefined
+        ? { computerProvider: args.computerProvider }
+        : {}),
+      ...(args.computerStatus !== undefined
+        ? { computerStatus: args.computerStatus }
+        : {}),
+      ...(args.computerLiveUrl !== undefined
+        ? { computerLiveUrl: args.computerLiveUrl }
+        : {}),
+      ...(args.computerLiveAt !== undefined
+        ? { computerLiveAt: args.computerLiveAt }
+        : {}),
+      ...(args.computerTask !== undefined ? { computerTask: args.computerTask } : {}),
+      ...(args.computerConversationId !== undefined
+        ? { computerConversationId: args.computerConversationId }
+        : {}),
+      ...(args.computerProvisionedAt !== undefined
+        ? { computerProvisionedAt: args.computerProvisionedAt }
+        : {}),
+      ...(args.computerStartedAt !== undefined
+        ? { computerStartedAt: args.computerStartedAt }
+        : {}),
+      ...(args.clearLive
+        ? { computerLiveUrl: undefined, computerLiveAt: undefined }
+        : {}),
+      ...(args.clearStarted ? { computerStartedAt: undefined } : {}),
     });
     return null;
   },

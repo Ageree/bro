@@ -133,7 +133,12 @@ export function giveUp(attempts: number): boolean {
   return attempts >= 4;
 }
 
-const SINGLETON_KINDS = new Set(["brief", "browser_poll", "watcher"]);
+const SINGLETON_KINDS = new Set([
+  "brief",
+  "browser_poll",
+  "computer_poll",
+  "watcher",
+]);
 
 export function isSingletonKind(kind: string): boolean {
   return SINGLETON_KINDS.has(kind);
