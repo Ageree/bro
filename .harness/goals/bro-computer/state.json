@@ -1,14 +1,25 @@
 {
   "goal_id": "bro-computer",
-  "status": "in_progress",
+  "status": "phase1_implemented",
   "phase": 1,
-  "packages": ["p1-maritime-client", "p2-convex-computer", "p3-computer-task"],
+  "packages": {
+    "p1-maritime-client": "done (grok-4.6, lead-reviewed: chatOutcome order fixed)",
+    "p2-convex-computer": "done (grok-4.6, lead-reviewed: clearStarted added)",
+    "p3-computer-task": "done (grok-4.6, lead-reviewed: conversation id per assignment, clearStarted on done, chat timeout → working)"
+  },
   "started_at": "2026-09-01T19:41:00Z",
+  "implemented_at": "2026-09-01T20:07:00Z",
   "spike": {
     "account": "maritime cursor key, free plan",
-    "agent": "bro-spike-browser (openclaw_browser, externalId spike:lead)",
+    "agent": "bro-spike-browser (openclaw_browser, externalId spike:lead) — left running, sleeps after 15 min, $0 hosting",
     "desktop": "402 seat_limit (paid plan)",
     "identity": "503 maritime inkbox org limit",
-    "chat": "[blocked] in 31.9s, live-view no_active_session"
-  }
+    "chat": "browser tool [blocked] in 31.9s; plain chat 5-10s with context"
+  },
+  "next": [
+    "operator: decide on Starter plan to test desktop takeover UX (is takeover URL embeddable in cabinet?)",
+    "operator: apply to Maritime startup program ($1k credits + FDE)",
+    "phase 2: message.reply/agent.* webhooks → Convex http instead of computer_poll",
+    "phase 2: brain migration (eve as custom image) only after 30s /chat window is understood"
+  ]
 }
