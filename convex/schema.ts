@@ -133,6 +133,15 @@ export default defineSchema({
     .index("by_tenant", ["tenantId"])
     .index("by_handle", ["handle"]),
 
+  /** One row per worker assignment that already paid for its browser quota. */
+  browserCharges: defineTable({
+    tenantId: v.id("tenants"),
+    workerSessionId: v.string(),
+    chargedAt: v.number(),
+  })
+    .index("by_tenant", ["tenantId"])
+    .index("by_worker", ["workerSessionId"]),
+
   /** Kernel browser sessions owned by a tenant. Ownership gate for every worker tool. */
   browserSessions: defineTable({
     tenantId: v.id("tenants"),
