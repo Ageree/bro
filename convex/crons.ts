@@ -18,4 +18,6 @@ crons.interval(
   internal.archive.dispatchSyncs,
   {},
 );
+// Drop composioEvents older than EVENT_TTL_MS so the dedupe table stays bounded.
+crons.interval("prune composio events", { hours: 24 }, internal.watchers.pruneEvents, {});
 export default crons;

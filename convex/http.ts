@@ -3,6 +3,11 @@ import { httpAction } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { isValidHandle } from "./lib/accessPolicy";
 import { newLoginCode, newSessionToken, sha256hex } from "./lib/cabinetPolicy";
+import {
+  formatEvent,
+  parseComposioEvent,
+  verifyComposioWebhook,
+} from "./lib/watcherPolicy";
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
@@ -321,6 +326,37 @@ http.route({
       handle,
     });
     return json({ ok: true, deleted });
+  }),
+});
+
+http.route({
+  path: "/composio",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const secret = process.env.COMPOSIO_WEBHOOK_SECRET ?? "";
+    if (!secret) return new Response("COMPOSIO_WEBHOOK_SECRET not set", { status: 500 });
+    const body = await request.text();
+    const h = (name: string) => request.headers.get(name) ?? "";
+    const ok = await verifyComposioWebhook({
+      id: h("webhook-id"),
+      timestamp: h("webhook-timestamp"),
+      signature: h("webhook-signature"),
+      body,
+      secret,
+      nowMs: Date.now(),
+    });
+    if (!ok) return new Response("unauthorized", { status: 401 });
+    const event = parseComposioEvent(body, h("webhook-id"));
+    if (!event) return json({ ok: true, ignored: true });
+    const outcome = await ctx.runMutation(internal.watchers.ingest, {
+      eventId: event.eventId,
+      triggerId: event.triggerId,
+      userId: event.userId,
+      text: formatEvent(event.triggerSlug, event.data),
+      now: Date.now(),
+    });
+    console.log("composio webhook", event.triggerSlug, outcome);
+    return json({ ok: true, outcome });
   }),
 });
 
