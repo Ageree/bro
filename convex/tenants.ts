@@ -1,4 +1,4 @@
-import { v } from "convex/values";
+import { v, type Infer } from "convex/values";
 import {
   internalMutation,
   internalQuery,
@@ -6,6 +6,7 @@ import {
   query,
   type MutationCtx,
 } from "./_generated/server";
+import type { Doc } from "./_generated/dataModel";
 import { assertSecret } from "./secret";
 import {
   browserAllowance,
@@ -347,28 +348,30 @@ export const patchBrowserInternal = internalMutation({
 
 const wakeupPhase = v.union(v.literal("done"), v.literal("giveup"));
 
+const wakeupClaimResult = v.union(
+  v.object({
+    ok: v.literal(false),
+    reason: v.union(
+      v.literal("stale_run"),
+      v.literal("duplicate"),
+      v.literal("pending_in_flight"),
+    ),
+  }),
+  v.object({
+    ok: v.literal(true),
+    conversationId: v.optional(v.string()),
+    inkboxHandle: v.optional(v.string()),
+  }),
+);
+
 export const claimBrowserWakeup = internalMutation({
   args: {
     phoneE164: v.string(),
     runId: v.string(),
     phase: wakeupPhase,
   },
-  returns: v.union(
-    v.object({
-      ok: v.literal(false),
-      reason: v.union(
-        v.literal("stale_run"),
-        v.literal("duplicate"),
-        v.literal("pending_in_flight"),
-      ),
-    }),
-    v.object({
-      ok: v.literal(true),
-      conversationId: v.optional(v.string()),
-      inkboxHandle: v.optional(v.string()),
-    }),
-  ),
-  handler: async (ctx, args) => {
+  returns: wakeupClaimResult,
+  handler: async (ctx, args): Promise<Infer<typeof wakeupClaimResult>> => {
     const existing = await ctx.db
       .query("tenants")
       .withIndex("by_phone", (q) => q.eq("phoneE164", args.phoneE164))
@@ -610,43 +613,88 @@ export const markPaywallSent = mutation({
   },
 });
 
+async function chargeBrowserJob(
+  ctx: MutationCtx,
+  tenant: Doc<"tenants">,
+  now: number,
+): Promise<boolean> {
+  const key = monthKey(now, tenant.tz);
+  const paid = isPaid(tenant.paidUntil, now);
+  const allowance = browserAllowance(paid, {
+    free: process.env.BRO_FREE_BROWSER_JOBS_PER_MONTH,
+    paid: process.env.BRO_PAID_BROWSER_JOBS_PER_MONTH,
+  });
+  try {
+    const periodKey = rateLimitPeriodKey(tenant._id, key);
+    const config = periodConfig();
+    const { value } = await rateLimiter.getValue(ctx, "browserJobsPerMonth", {
+      key: periodKey,
+      config,
+    });
+    const used = effectiveUsedCount(
+      usedCount(value),
+      legacyUsedForPeriod(tenant.browserMonthKey, tenant.browserMonthCount, key),
+    );
+    if (used >= allowance) return false;
+    const { ok } = await rateLimiter.limit(ctx, "browserJobsPerMonth", {
+      key: periodKey,
+      config,
+    });
+    return ok;
+  } catch (err) {
+    console.error("billing browser count failed", err);
+    return browserAllowedOnLimitError().allowed;
+  }
+}
+
 export const countBrowserJobStart = mutation({
   args: { secret: v.string(), phoneE164: v.string() },
   returns: v.object({ allowed: v.boolean() }),
   handler: async (ctx, { secret, phoneE164 }) => {
     assertSecret(secret);
     const tenant = await tenantByPhone(ctx, phoneE164);
+    return { allowed: await chargeBrowserJob(ctx, tenant, Date.now()) };
+  },
+});
+
+const ERRAND_CHARGE_TTL_MS = 30 * 24 * 3600 * 1000;
+
+/**
+ * One worker assignment costs one browser job, however many Kernel browsers it
+ * opens. A login alone needs a second, writable browser, so charging per
+ * browser would eat a free month in a single errand.
+ */
+export const startBrowserErrand = mutation({
+  args: {
+    secret: v.string(),
+    phoneE164: v.string(),
+    workerSessionId: v.string(),
+  },
+  returns: v.object({ allowed: v.boolean() }),
+  handler: async (ctx, { secret, phoneE164, workerSessionId }) => {
+    assertSecret(secret);
+    const tenant = await tenantByPhone(ctx, phoneE164);
+    const charged = await ctx.db
+      .query("browserCharges")
+      .withIndex("by_worker", (q) => q.eq("workerSessionId", workerSessionId))
+      .first();
+    if (charged && charged.tenantId === tenant._id) return { allowed: true };
+
     const now = Date.now();
-    const key = monthKey(now, tenant.tz);
-    const paid = isPaid(tenant.paidUntil, now);
-    const allowance = browserAllowance(paid, {
-      free: process.env.BRO_FREE_BROWSER_JOBS_PER_MONTH,
-      paid: process.env.BRO_PAID_BROWSER_JOBS_PER_MONTH,
+    if (!(await chargeBrowserJob(ctx, tenant, now))) return { allowed: false };
+    await ctx.db.insert("browserCharges", {
+      tenantId: tenant._id,
+      workerSessionId,
+      chargedAt: now,
     });
-    try {
-      const periodKey = rateLimitPeriodKey(tenant._id, key);
-      const config = periodConfig();
-      const { value } = await rateLimiter.getValue(ctx, "browserJobsPerMonth", {
-        key: periodKey,
-        config,
-      });
-      const used = effectiveUsedCount(
-        usedCount(value),
-        legacyUsedForPeriod(
-          tenant.browserMonthKey,
-          tenant.browserMonthCount,
-          key,
-        ),
-      );
-      if (used >= allowance) return { allowed: false };
-      const { ok } = await rateLimiter.limit(ctx, "browserJobsPerMonth", {
-        key: periodKey,
-        config,
-      });
-      return { allowed: ok };
-    } catch (err) {
-      console.error("billing browser count failed", err);
-      return browserAllowedOnLimitError();
+
+    const stale = await ctx.db
+      .query("browserCharges")
+      .withIndex("by_tenant", (q) => q.eq("tenantId", tenant._id))
+      .collect();
+    for (const row of stale) {
+      if (now - row.chargedAt > ERRAND_CHARGE_TTL_MS) await ctx.db.delete(row._id);
     }
+    return { allowed: true };
   },
 });

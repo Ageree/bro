@@ -140,6 +140,7 @@ if (!logId) {
 const preview = titlesFrom(executed.data);
 console.log("tool", used);
 console.log("log_id", logId);
-console.log("successful", executed.successful ?? rec(executed.data)?.success ?? true);
+const successful = (executed as { successful?: unknown }).successful;
+console.log("successful", successful ?? rec(executed.data)?.success ?? true);
 if (preview.length) console.log("preview", preview.join(" | "));
 console.log("ok");

@@ -29,7 +29,17 @@ import { browserGateFromResult } from "../../convex/lib/billingPolicy";
 
 const WAIT_MS = 12_000;
 
-function conversationId(ctx: { session: { auth: { current?: { attributes?: Record<string, unknown> }; initiator?: { attributes?: Record<string, unknown> } } } }, fallback?: string): string | undefined {
+function conversationId(
+  ctx: {
+    session: {
+      auth: {
+        current?: { attributes?: Record<string, unknown> } | null;
+        initiator?: { attributes?: Record<string, unknown> } | null;
+      };
+    };
+  },
+  fallback?: string,
+): string | undefined {
   const attrs =
     ctx.session.auth.current?.attributes ??
     ctx.session.auth.initiator?.attributes;

@@ -119,6 +119,8 @@ http.route({ path: "/login/verify", method: "OPTIONS", handler: options() });
 http.route({ path: "/logout", method: "OPTIONS", handler: options() });
 http.route({ path: "/me", method: "OPTIONS", handler: options() });
 http.route({ path: "/me/pay", method: "OPTIONS", handler: options() });
+http.route({ path: "/vault/items", method: "OPTIONS", handler: options() });
+http.route({ path: "/vault/items/delete", method: "OPTIONS", handler: options() });
 
 http.route({
   path: "/login/start",
@@ -239,6 +241,86 @@ http.route({
       console.error("me/pay", err);
       return json({ ok: false, code: "error" }, 500);
     }
+  }),
+});
+
+http.route({
+  path: "/vault/items",
+  method: "GET",
+  handler: httpAction(async (ctx, request) => {
+    const token = bearer(request);
+    if (!token) return json({ ok: false, code: "unauthorized" }, 401);
+    const session = await ctx.runQuery(internal.cabinet.getSessionTenant, {
+      tokenHash: await sha256hex(token),
+      now: Date.now(),
+    });
+    if (!session) return json({ ok: false, code: "unauthorized" }, 401);
+    const items = await ctx.runQuery(internal.vault.listItems, {
+      tenantId: session.tenantId,
+    });
+    return json({ ok: true, items });
+  }),
+});
+
+http.route({
+  path: "/vault/items",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const token = bearer(request);
+    if (!token) return json({ ok: false, code: "unauthorized" }, 401);
+    const session = await ctx.runQuery(internal.cabinet.getSessionTenant, {
+      tokenHash: await sha256hex(token),
+      now: Date.now(),
+    });
+    if (!session) return json({ ok: false, code: "unauthorized" }, 401);
+    const body = await jsonBody(request);
+    const kind = body.kind;
+    const label = typeof body.label === "string" ? body.label.trim() : "";
+    if (
+      (kind !== "login" &&
+        kind !== "payment" &&
+        kind !== "address" &&
+        kind !== "contact") ||
+      !label ||
+      label.length > 120 ||
+      typeof body.secret !== "string" ||
+      body.secret.length > 20_000
+    ) {
+      return json({ ok: false, code: "invalid" }, 400);
+    }
+    try {
+      const { handle } = await ctx.runAction(internal.vaultSecrets.save, {
+        tenantId: session.tenantId,
+        kind,
+        label,
+        secret: body.secret,
+      });
+      return json({ ok: true, handle });
+    } catch (err) {
+      console.error("vault save", err);
+      return json({ ok: false, code: "invalid" }, 400);
+    }
+  }),
+});
+
+http.route({
+  path: "/vault/items/delete",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const token = bearer(request);
+    if (!token) return json({ ok: false, code: "unauthorized" }, 401);
+    const session = await ctx.runQuery(internal.cabinet.getSessionTenant, {
+      tokenHash: await sha256hex(token),
+      now: Date.now(),
+    });
+    if (!session) return json({ ok: false, code: "unauthorized" }, 401);
+    const body = await jsonBody(request);
+    const handle = typeof body.handle === "string" ? body.handle : "";
+    const deleted = await ctx.runMutation(internal.vault.deleteItemByHandle, {
+      tenantId: session.tenantId,
+      handle,
+    });
+    return json({ ok: true, deleted });
   }),
 });
 

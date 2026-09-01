@@ -1,4 +1,5 @@
 import { ConvexHttpClient } from "convex/browser";
+import type { FunctionReturnType } from "convex/server";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 
@@ -133,7 +134,9 @@ export async function jobWakeLines(phoneE164: string): Promise<string[]> {
   });
 }
 
-export async function listOpenJobs(phoneE164: string) {
+export async function listOpenJobs(
+  phoneE164: string,
+): Promise<FunctionReturnType<typeof api.jobs.listOpen>> {
   return await client().query(api.jobs.listOpen, {
     secret: secret(),
     phoneE164,
@@ -278,6 +281,17 @@ export async function countBrowserJobStart(
   });
 }
 
+/** Charges one browser job for a whole worker assignment, not per browser. */
+export async function startBrowserErrand(args: {
+  phoneE164: string;
+  workerSessionId: string;
+}): Promise<{ allowed: boolean }> {
+  return await client().mutation(api.tenants.startBrowserErrand, {
+    secret: secret(),
+    ...args,
+  });
+}
+
 export async function startBrowserFollow(args: {
   tenantPhone: string;
   runId: string;
@@ -299,5 +313,80 @@ export async function cancelBrowserFollow(
     secret: secret(),
     tenantPhone,
     runId,
+  });
+}
+
+export type VaultKindName = "login" | "payment" | "address" | "contact";
+
+export async function listVaultItems(phoneE164: string): Promise<
+  {
+    handle: string;
+    kind: VaultKindName;
+    label: string;
+    account: string;
+    origin?: string;
+    available: boolean;
+  }[]
+> {
+  return await client().query(api.vault.listForAgent, {
+    secret: secret(),
+    phoneE164,
+  });
+}
+
+export async function readVaultSecret(
+  phoneE164: string,
+  handle: string,
+): Promise<{ kind: VaultKindName; origin?: string; secret: string } | null> {
+  return await client().action(api.vaultSecrets.readForAgent, {
+    secret: secret(),
+    phoneE164,
+    handle,
+  });
+}
+
+export async function registerBrowserSession(args: {
+  phoneE164: string;
+  sessionId: string;
+  workerSessionId?: string;
+  saveChanges: boolean;
+}): Promise<{ ok: true } | { ok: false; reason: "writer_busy"; sessionId: string }> {
+  return await client().mutation(api.browsers.register, {
+    secret: secret(),
+    ...args,
+  });
+}
+
+export async function dropBrowserSession(
+  phoneE164: string,
+  sessionId: string,
+): Promise<void> {
+  await client().mutation(api.browsers.drop, {
+    secret: secret(),
+    phoneE164,
+    sessionId,
+  });
+}
+
+export async function getBrowserSession(
+  phoneE164: string,
+  sessionId: string,
+): Promise<{
+  sessionId: string;
+  workerSessionId?: string;
+  saveChanges: boolean;
+  createdAt: number;
+} | null> {
+  return await client().query(api.browsers.get, {
+    secret: secret(),
+    phoneE164,
+    sessionId,
+  });
+}
+
+export async function listBrowserSessionIds(phoneE164: string): Promise<string[]> {
+  return await client().query(api.browsers.listIds, {
+    secret: secret(),
+    phoneE164,
   });
 }

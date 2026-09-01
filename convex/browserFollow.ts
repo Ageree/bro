@@ -1,4 +1,4 @@
-import { v } from "convex/values";
+import { v, type Infer } from "convex/values";
 import { type WorkflowId } from "@convex-dev/workflow";
 import { internalAction, mutation, type MutationCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
@@ -132,7 +132,10 @@ export const startFollowThrough = mutation({
     startedAt: v.number(),
   },
   returns: v.union(startResult, v.object({ error: v.string() })),
-  handler: async (ctx, args) => {
+  handler: async (
+    ctx,
+    args,
+  ): Promise<Infer<typeof startResult> | { error: string }> => {
     assertSecret(args.secret);
     const tenant = await ctx.db
       .query("tenants")
@@ -245,7 +248,7 @@ export const pollRun = internalAction({
     sessionId: v.optional(v.string()),
   },
   returns: pollReturn,
-  handler: async (ctx, args) => {
+  handler: async (ctx, args): Promise<Infer<typeof pollReturn>> => {
     const tenant = await ctx.runQuery(internal.tenants.getByPhoneInternal, {
       phoneE164: args.tenantPhone,
     });
@@ -289,7 +292,10 @@ export const wakeupAgent = internalAction({
     ok: v.boolean(),
     reason: v.optional(v.string()),
   }),
-  handler: async (ctx, { tenantPhone, task, runId, phase }) => {
+  handler: async (
+    ctx,
+    { tenantPhone, task, runId, phase },
+  ): Promise<{ ok: boolean; reason?: string }> => {
     const eveUrl = process.env.EVE_URL;
     // ponytail: no EVE_URL on this deployment → silent no-op
     if (!eveUrl) return { ok: false, reason: "no EVE_URL" };

@@ -7,7 +7,7 @@
   },
   "scripts": {
     "build": "eve build",
-    "vercel-build": "mkdir -p public && cp index.html oferta.html cabinet.html public/ && cp -R assets public/",
+    "vercel-build": "mkdir -p public && cp index.html oferta.html cabinet.html vault.html public/ && cp -R assets public/",
     "dev": "eve dev",
     "dev:local": "bash scripts/dev-local.sh",
     "tunnel": "node --experimental-strip-types scripts/inkbox-tunnel.ts",
@@ -23,6 +23,9 @@
     "imessage:check": "node --experimental-strip-types scripts/imessage-text-check.ts",
     "billing:check": "node --experimental-strip-types scripts/billing-check.ts",
     "cabinet:check": "node --experimental-strip-types scripts/cabinet-check.ts",
+    "types:check": "tsc --noEmit",
+    "vault:check": "node --experimental-strip-types scripts/vault-check.ts",
+    "worker:check": "node --experimental-strip-types scripts/worker-check.ts",
     "wakeups:check": "node --experimental-strip-types scripts/wakeups-check.ts",
     "provision:inkbox": "node --experimental-strip-types scripts/provision-inkbox.ts"
   },
@@ -35,11 +38,16 @@
     "@convex-dev/workflow": "^0.4.6",
     "@convex-dev/workpool": "^0.4.10",
     "@inkbox/sdk": "^0.6.4",
+    "@onkernel/sdk": "^0.97.0",
     "@vercel/connect": "1.0.0",
     "ai": "^7.0.58",
     "convex": "^1.45.0",
     "convex-helpers": "^0.1.123",
     "eve": "^0.45.0",
     "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.0",
+    "typescript": "^7.0.2"
   }
 }

@@ -147,7 +147,7 @@ export async function hydrate(
   sessionId?: string,
 ): Promise<BrowserRun> {
   const run = await bu(`/runs/${runId}`);
-  const session = sessionId
+  const session: Record<string, unknown> = sessionId
     ? await bu(`/sessions/${sessionId}`).catch(() => ({}))
     : {};
   const sid =
