@@ -46,11 +46,11 @@ try {
 let line = dedicatedLineFromIdentityPayload(identity);
 if (line) {
   try {
-    line = dedicatedLineFromInventory(
-      line,
-      await inkbox.imessages.listNumbers(),
-      { identityId: identity.id, handle },
-    );
+    line =
+      dedicatedLineFromInventory(line, await inkbox.imessages.listNumbers(), {
+        identityId: identity.id,
+        handle,
+      }) ?? line;
   } catch (err) {
     console.error("listNumbers failed", err);
   }

@@ -45,7 +45,7 @@ async function composeWake(
 ): Promise<MailIngest> {
   const jobs = await listOpenJobs(phone).catch((err) => {
     console.error("listOpenJobs failed", err);
-    return [];
+    return [] as Awaited<ReturnType<typeof listOpenJobs>>;
   });
   const jobId = attachMailToJob(
     jobs.map((j) => ({

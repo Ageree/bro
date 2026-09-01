@@ -1,4 +1,4 @@
-import { v } from "convex/values";
+import { v, type Infer } from "convex/values";
 import {
   internalMutation,
   internalQuery,
@@ -347,28 +347,30 @@ export const patchBrowserInternal = internalMutation({
 
 const wakeupPhase = v.union(v.literal("done"), v.literal("giveup"));
 
+const wakeupClaimResult = v.union(
+  v.object({
+    ok: v.literal(false),
+    reason: v.union(
+      v.literal("stale_run"),
+      v.literal("duplicate"),
+      v.literal("pending_in_flight"),
+    ),
+  }),
+  v.object({
+    ok: v.literal(true),
+    conversationId: v.optional(v.string()),
+    inkboxHandle: v.optional(v.string()),
+  }),
+);
+
 export const claimBrowserWakeup = internalMutation({
   args: {
     phoneE164: v.string(),
     runId: v.string(),
     phase: wakeupPhase,
   },
-  returns: v.union(
-    v.object({
-      ok: v.literal(false),
-      reason: v.union(
-        v.literal("stale_run"),
-        v.literal("duplicate"),
-        v.literal("pending_in_flight"),
-      ),
-    }),
-    v.object({
-      ok: v.literal(true),
-      conversationId: v.optional(v.string()),
-      inkboxHandle: v.optional(v.string()),
-    }),
-  ),
-  handler: async (ctx, args) => {
+  returns: wakeupClaimResult,
+  handler: async (ctx, args): Promise<Infer<typeof wakeupClaimResult>> => {
     const existing = await ctx.db
       .query("tenants")
       .withIndex("by_phone", (q) => q.eq("phoneE164", args.phoneE164))
