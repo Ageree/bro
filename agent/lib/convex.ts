@@ -1,6 +1,6 @@
 import { ConvexHttpClient } from "convex/browser";
 import type { FunctionReturnType } from "convex/server";
-import { api } from "../../convex/_generated/api";
+import { api } from "../../convex/_generated/api.js";
 import type { Id } from "../../convex/_generated/dataModel";
 
 function client(): ConvexHttpClient {
