@@ -18,6 +18,8 @@ export default defineSchema({
     browserStatus: v.optional(v.string()),
     browserStartedAt: v.optional(v.number()),
     browserProfileId: v.optional(v.string()),
+    browserCookieDomains: v.optional(v.array(v.string())),
+    browserProfileSyncedAt: v.optional(v.number()),
     browserWorkflowId: v.optional(v.string()),
     browserWorkflowRunId: v.optional(v.string()),
     browserWakeupClaim: v.optional(v.string()),

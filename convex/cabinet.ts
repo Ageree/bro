@@ -1,4 +1,5 @@
 import { v } from "convex/values";
+import { internal } from "./_generated/api";
 import { internalAction, internalMutation, internalQuery } from "./_generated/server";
 import { timingSafeEqual } from "./secret";
 import {
@@ -23,6 +24,12 @@ import {
   type CabinetSnapshot,
   type PaymentRow,
 } from "./lib/cabinetPolicy";
+import {
+  normalizeBrowserProfileId,
+  profileSyncCommand,
+  profileSyncStatus,
+} from "./lib/browserProfilePolicy";
+import { getProfile } from "./lib/browseruse";
 import { periodConfig, rateLimiter } from "./lib/rateLimits";
 
 const snapshotValidator = v.object({
@@ -48,6 +55,14 @@ const snapshotValidator = v.object({
       ),
     }),
   ),
+  browserProfileId: v.optional(v.string()),
+  browserCookieDomains: v.array(v.string()),
+  browserProfileStatus: v.union(
+    v.literal("missing"),
+    v.literal("empty"),
+    v.literal("synced"),
+  ),
+  profileSyncCommand: v.string(),
 });
 
 function apiKey(): string {
@@ -315,7 +330,106 @@ export const snapshotForTenant = internalQuery({
       }),
       browserMonthKey: month,
       payments,
+      browserProfileId: tenant.browserProfileId,
+      browserCookieDomains: tenant.browserCookieDomains ?? [],
+      browserProfileStatus: profileSyncStatus({
+        profileId: tenant.browserProfileId,
+        cookieDomains: tenant.browserCookieDomains,
+      }),
+      profileSyncCommand: profileSyncCommand(),
     });
+  },
+});
+
+export const attachBrowserProfile = internalMutation({
+  args: {
+    tenantId: v.id("tenants"),
+    profileId: v.string(),
+    cookieDomains: v.optional(v.array(v.string())),
+    syncedAt: v.optional(v.number()),
+  },
+  returns: v.object({
+    profileId: v.string(),
+    cookieDomains: v.array(v.string()),
+    status: v.union(
+      v.literal("missing"),
+      v.literal("empty"),
+      v.literal("synced"),
+    ),
+  }),
+  handler: async (ctx, { tenantId, profileId, cookieDomains, syncedAt }) => {
+    const id = normalizeBrowserProfileId(profileId);
+    if (!id) throw new Error("invalid profile id");
+    const tenant = await ctx.db.get(tenantId);
+    if (!tenant) throw new Error("unknown tenant");
+    const domains = cookieDomains ?? tenant.browserCookieDomains ?? [];
+    const at = syncedAt ?? tenant.browserProfileSyncedAt;
+    await ctx.db.patch(tenantId, {
+      browserProfileId: id,
+      browserCookieDomains: domains,
+      ...(at !== undefined ? { browserProfileSyncedAt: at } : {}),
+    });
+    return {
+      profileId: id,
+      cookieDomains: domains,
+      status: profileSyncStatus({ profileId: id, cookieDomains: domains }),
+    };
+  },
+});
+
+export const getTenantBrowserProfile = internalQuery({
+  args: { tenantId: v.id("tenants") },
+  returns: v.object({ profileId: v.union(v.string(), v.null()) }),
+  handler: async (ctx, { tenantId }) => {
+    const tenant = await ctx.db.get(tenantId);
+    return { profileId: tenant?.browserProfileId ?? null };
+  },
+});
+
+type BrowserProfileRefresh = {
+  profileId: string | null;
+  cookieDomains: string[];
+  status: "missing" | "empty" | "synced";
+};
+
+export const refreshBrowserProfile = internalAction({
+  args: { tenantId: v.id("tenants"), profileId: v.optional(v.string()) },
+  returns: v.object({
+    profileId: v.union(v.string(), v.null()),
+    cookieDomains: v.array(v.string()),
+    status: v.union(
+      v.literal("missing"),
+      v.literal("empty"),
+      v.literal("synced"),
+    ),
+  }),
+  handler: async (ctx, { tenantId, profileId }): Promise<BrowserProfileRefresh> => {
+    if (profileId !== undefined && profileId.trim() && !normalizeBrowserProfileId(profileId)) {
+      throw new Error("invalid profile id");
+    }
+    const snap = await ctx.runQuery(internal.cabinet.getTenantBrowserProfile, {
+      tenantId,
+    });
+    const id = normalizeBrowserProfileId(profileId) ?? snap.profileId ?? undefined;
+    if (!id) {
+      return { profileId: null, cookieDomains: [], status: "missing" as const };
+    }
+    const profile = await getProfile(id);
+    const attached: {
+      profileId: string;
+      cookieDomains: string[];
+      status: "missing" | "empty" | "synced";
+    } = await ctx.runMutation(internal.cabinet.attachBrowserProfile, {
+      tenantId,
+      profileId: profile.id,
+      cookieDomains: profile.cookieDomains,
+      syncedAt: Date.now(),
+    });
+    return {
+      profileId: attached.profileId,
+      cookieDomains: attached.cookieDomains,
+      status: attached.status,
+    };
   },
 });
 

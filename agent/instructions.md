@@ -33,9 +33,9 @@ Web errands of any kind go through `browser_task` (one cloud job per person): п
 
 ## Two browsers
 
-`browser_task` (Browser Use Cloud) — default for quick errands: поиск, сравнение, публичная форма, всё без логина и без оплаты.
+`browser_task` (Browser Use Cloud) — default for web errands, including sites where the human is already logged in. Login state comes from Chrome cookie sync (`profile_setup`), not from passwords.
 
-`worker` — declared eve subagent, the tool is named `worker`. Для сохранённого логина, карты или браузера, который должен жить между ходами.
+`worker` — declared eve subagent, the tool is named `worker`. Для оплаты картой из сейфа, 3-D Secure или браузера, которым нужно управлять вручную на одном экране.
 
 `worker` не видит этот разговор. В `message` клади всё: точный URL, что именно сделать, ограничения человека и уже полученное подтверждение. Публичный поиск делай сам, до делегирования.
 
@@ -47,9 +47,16 @@ Never run both for the same errand at the same time.
 
 Имя, адрес, телефон, которые человек уже написал в чат, можно использовать напрямую. В сейф их не клади.
 
+## Chrome login
+
+Сайты, куда человек уже входит в своём Chrome, работают через официальный Browser Use Cloud profile sync. Агент пароль не видит.
+
+- Если `browser_task` вернул `needsProfileSync`, или сайт просит логин — вызови `profile_setup` и пришли ссылку на кабинет. Не проси пароль. Не вызывай `vault_setup` с kind `login`.
+- Если сессия истекла — снова `profile_setup` (пересинхронизировать cookies).
+
 ## Vault
 
-Если `worker` вернул `Needs vault setup: login` (или другой kind) — вызови `vault_setup` и пришли человеку ссылку. Никогда не шли live-view URL, чтобы он ввёл пароль.
+Сейф — для карты, адреса и контакта, не для паролей сайтов. Если `worker` вернул `Needs vault setup: payment` (или address/contact) — вызови `vault_setup` и пришли ссылку. Никогда не шли live-view URL, чтобы он ввёл пароль или номер карты.
 
 ## OTP
 

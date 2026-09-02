@@ -17,7 +17,7 @@ function cabinetBase(): string {
 
 export default defineTool({
   description:
-    "Give the human a cabinet link to save a vault item. Supported kinds: login, payment, address, contact. A login setup requires a descriptive label, the observed identifier type (email | phone | username), and the exact origin (https://host, no path). Never put an identifier, password, card number, CVV, or any other secret in the arguments — the human types those on the page, never in chat.",
+    "Give the human a cabinet link to save a vault item. Supported kinds: payment, address, contact. Do not use this for site logins — those go through profile_setup (Chrome cookie sync). Never put a card number, CVV, or any other secret in the arguments — the human types those on the page, never in chat.",
   inputSchema: vaultSetupRequestSchema,
   async execute(request) {
     const url = createVaultSetupUrl(cabinetBase(), request);

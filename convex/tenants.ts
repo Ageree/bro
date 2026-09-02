@@ -51,6 +51,8 @@ export const tenantDoc = v.object({
   browserStatus: v.optional(v.string()),
   browserStartedAt: v.optional(v.number()),
   browserProfileId: v.optional(v.string()),
+  browserCookieDomains: v.optional(v.array(v.string())),
+  browserProfileSyncedAt: v.optional(v.number()),
   browserWorkflowId: v.optional(v.string()),
   browserWorkflowRunId: v.optional(v.string()),
   browserWakeupClaim: v.optional(v.string()),
@@ -245,6 +247,8 @@ export const setBrowser = mutation({
     browserStatus: v.optional(v.string()),
     browserStartedAt: v.optional(v.number()),
     browserProfileId: v.optional(v.string()),
+    browserCookieDomains: v.optional(v.array(v.string())),
+    browserProfileSyncedAt: v.optional(v.number()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -271,6 +275,12 @@ export const setBrowser = mutation({
         : {}),
       ...(args.browserProfileId !== undefined
         ? { browserProfileId: args.browserProfileId }
+        : {}),
+      ...(args.browserCookieDomains !== undefined
+        ? { browserCookieDomains: args.browserCookieDomains }
+        : {}),
+      ...(args.browserProfileSyncedAt !== undefined
+        ? { browserProfileSyncedAt: args.browserProfileSyncedAt }
         : {}),
     });
     return null;

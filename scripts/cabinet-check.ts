@@ -122,6 +122,8 @@ assert(snap.plan === "paid", "paid plan");
 assert(snap.phoneBound && snap.phoneLast4 === "2233", "phone mask");
 assert(snap.paidUntil === now + 1000, "paidUntil shown");
 assert(snap.payments.length === 1, "own payments");
+assert(snap.browserProfileStatus === "missing", "default profile missing");
+assert(snap.browserCookieDomains.length === 0, "default no domains");
 
 const free = buildSnapshot({
   handle: "bro-a1b2c3d4",
@@ -180,6 +182,12 @@ assert(
   landing.includes("Код придёт сообщением от Bro"),
   "login sheet says where the code arrives",
 );
+const cabinet = readFileSync(new URL("../cabinet.html", import.meta.url), "utf8");
+assert(cabinet.includes('id="chrome"'), "cabinet chrome card");
+assert(cabinet.includes('id="profile-save"'), "cabinet bind profile");
+assert(cabinet.includes("/me/browser-profile"), "cabinet profile endpoint");
+assert(cabinet.includes("browser-use.com/profile.sh"), "cabinet shows official helper");
+
 assert(landing.includes('id="request-access"'), "landing CTA has id");
 assert(
   landing.includes('querySelector("#request-access")'),
