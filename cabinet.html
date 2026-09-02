@@ -341,9 +341,7 @@
               .then(function (res) { return res.json(); })
               .then(function (data) {
                 if (data.ok) {
-                  st.textContent = data.status === "synced"
-                    ? "Готово, Bro уже в этих аккаунтах"
-                    : "Профиль сохранён. Если только что гонял profile.sh — нажми «Обновить статус».";
+                  location.reload();
                   return;
                 }
                 st.textContent = "Не вышло: проверь Profile ID из команды";
@@ -361,12 +359,11 @@
             })
               .then(function (res) { return res.json(); })
               .then(function (data) {
-                if (data.ok && data.status === "synced") {
-                  st.textContent = "Cookies на месте: " + (data.cookieDomains || []).join(", ");
+                if (data.ok) {
+                  location.reload();
                   return;
                 }
-                if (data.ok) st.textContent = "Профиль есть, cookies ещё пустые — прогони profile.sh";
-                else st.textContent = "Не вышло обновить";
+                st.textContent = "Не вышло обновить";
               })
               .catch(function () {
                 st.textContent = "Не вышло, нажми ещё раз";
