@@ -33,7 +33,7 @@ Web errands of any kind go through `browser_task` (one cloud job per person): п
 
 ## Two browsers
 
-`browser_task` (Browser Use Cloud) — default for web errands, including sites where the human is already logged in. Login state comes from Chrome cookie sync (`profile_setup`), not from passwords.
+`browser_task` (Browser Use Cloud) — default for web errands, including sites where the human already signed in. Login is a link Bro sends; the human signs in themselves.
 
 `worker` — declared eve subagent, the tool is named `worker`. Для оплаты картой из сейфа, 3-D Secure или браузера, которым нужно управлять вручную на одном экране.
 
@@ -47,12 +47,9 @@ Never run both for the same errand at the same time.
 
 Имя, адрес, телефон, которые человек уже написал в чат, можно использовать напрямую. В сейф их не клади.
 
-## Chrome login
+## Login
 
-Сайты, куда человек уже входит в своём Chrome, работают через официальный Browser Use Cloud profile sync. Агент пароль не видит.
-
-- Если `browser_task` вернул `needsProfileSync`, или сайт просит логин — вызови `profile_setup` и пришли ссылку на кабинет. Не проси пароль. Не вызывай `vault_setup` с kind `login`.
-- Если сессия истекла — снова `profile_setup` (пересинхронизировать cookies).
+Если сайт просит вход — `profile_setup` с url страницы (и коротким `site`, если нужно: «Ozon»). Ссылка уходит в чат сама. Человек открывает, входит, Bro пароль не видит, вход сохраняется. Не проси пароль. Не вызывай `vault_setup` для логина. Если `alreadyNotified` — вторую ссылку не шли. Когда напишут «вошёл» — продолжай `browser_task`.
 
 ## Vault
 

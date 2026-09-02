@@ -184,9 +184,9 @@ assert(
 );
 const cabinet = readFileSync(new URL("../cabinet.html", import.meta.url), "utf8");
 assert(cabinet.includes('id="chrome"'), "cabinet chrome card");
-assert(cabinet.includes('id="profile-save"'), "cabinet bind profile");
-assert(cabinet.includes("/me/browser-profile"), "cabinet profile endpoint");
-assert(cabinet.includes("browser-use.com/profile.sh"), "cabinet shows official helper");
+assert(cabinet.includes("пришлёт ссылку в чат"), "cabinet login is a chat link");
+assert(!cabinet.includes("profile.sh"), "cabinet has no terminal helper");
+assert(!cabinet.includes('id="profile-save"'), "cabinet does not bind profile ids");
 
 assert(landing.includes('id="request-access"'), "landing CTA has id");
 assert(

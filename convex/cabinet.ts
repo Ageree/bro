@@ -26,7 +26,6 @@ import {
 } from "./lib/cabinetPolicy";
 import {
   normalizeBrowserProfileId,
-  profileSyncCommand,
   profileSyncStatus,
 } from "./lib/browserProfilePolicy";
 import { getProfile } from "./lib/browseruse";
@@ -62,7 +61,6 @@ const snapshotValidator = v.object({
     v.literal("empty"),
     v.literal("synced"),
   ),
-  profileSyncCommand: v.string(),
 });
 
 function apiKey(): string {
@@ -336,7 +334,6 @@ export const snapshotForTenant = internalQuery({
         profileId: tenant.browserProfileId,
         cookieDomains: tenant.browserCookieDomains,
       }),
-      profileSyncCommand: profileSyncCommand(),
     });
   },
 });

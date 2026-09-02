@@ -254,10 +254,11 @@
         if (s === "pending") return "ожидает";
         return "отменён";
       }
-      function profileStatusRu(s) {
-        if (s === "synced") return "Chrome-профиль синхронизирован";
-        if (s === "empty") return "Профиль привязан, cookies ещё не загружены";
-        return "Chrome ещё не синхронизирован";
+      function profileStatusRu(s, domains) {
+        if (s === "synced" && domains && domains.length) {
+          return "Сохранены входы: " + esc(domains.join(", "));
+        }
+        return "Пока нет сохранённых входов — Bro пришлёт ссылку, когда понадобится.";
       }
 
       var boot = document.getElementById("boot");
@@ -309,66 +310,13 @@
             '<p class="muted">Браузер-задачи в этом месяце: ' + me.browserUsed + " из " + me.browserAllowance + "</p>" +
             '<div class="bar"><i style="width:' + pct(me.browserUsed, me.browserAllowance) + '%"></i></div></div>' +
             '<div class="card" id="chrome"><h2>Входы в сайты</h2>' +
-            '<p class="muted">Bro остаётся залогиненным через cookies твоего Chrome. Пароли агент не видит.</p>' +
-            '<p style="margin-top:0.7rem">' + profileStatusRu(me.browserProfileStatus) + "</p>" +
-            (me.browserCookieDomains && me.browserCookieDomains.length
-              ? '<p class="muted">Сайты: ' + esc(me.browserCookieDomains.join(", ")) + "</p>"
-              : "") +
-            '<p class="muted" style="margin-top:0.8rem">На компьютере, где ты уже вошёл в Chrome, выполни официальный helper <span>https://browser-use.com/profile.sh</span>, затем вставь Profile ID:</p>' +
-            '<code class="cmd" id="profile-cmd">' + esc(me.profileSyncCommand || "") + "</code>" +
-            '<div class="row"><input id="profile-id" autocomplete="off" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" value="' +
-              esc(me.browserProfileId || "") + '" /><button class="cta" id="profile-save" type="button">Привязать</button></div>' +
-            '<p style="margin-top:0.6rem"><button class="ghost" id="profile-refresh" type="button">Обновить статус</button></p>' +
-            '<p class="muted" id="profile-status"></p></div>' +
+            '<p class="muted">Когда Bro нужна твоя учётка, он сам пришлёт ссылку в чат. Открой, войди — пароль он не увидит, вход сохранится.</p>' +
+            '<p style="margin-top:0.7rem">' + profileStatusRu(me.browserProfileStatus, me.browserCookieDomains) + "</p></div>" +
             '<div class="card"><h2>Оплаты</h2>' +
             (pays ? '<ul class="pay">' + pays + "</ul>" : '<p class="muted">Пока нет оплат.</p>') +
             "</div>";
           boot.hidden = true;
           body.hidden = false;
-          if (location.hash === "#chrome") {
-            var chromeCard = document.getElementById("chrome");
-            if (chromeCard) chromeCard.scrollIntoView({ behavior: "smooth", block: "start" });
-          }
-          document.getElementById("profile-save").addEventListener("click", function () {
-            var st = document.getElementById("profile-status");
-            var id = document.getElementById("profile-id").value.trim();
-            st.textContent = "Привязываем…";
-            fetch(base + "/me/browser-profile", {
-              method: "POST",
-              headers: { Authorization: "Bearer " + t, "Content-Type": "application/json" },
-              body: JSON.stringify({ profileId: id }),
-            })
-              .then(function (res) { return res.json(); })
-              .then(function (data) {
-                if (data.ok) {
-                  location.reload();
-                  return;
-                }
-                st.textContent = "Не вышло: проверь Profile ID из команды";
-              })
-              .catch(function () {
-                st.textContent = "Не вышло, нажми ещё раз";
-              });
-          });
-          document.getElementById("profile-refresh").addEventListener("click", function () {
-            var st = document.getElementById("profile-status");
-            st.textContent = "Обновляем…";
-            fetch(base + "/me/browser-profile/refresh", {
-              method: "POST",
-              headers: { Authorization: "Bearer " + t },
-            })
-              .then(function (res) { return res.json(); })
-              .then(function (data) {
-                if (data.ok) {
-                  location.reload();
-                  return;
-                }
-                st.textContent = "Не вышло обновить";
-              })
-              .catch(function () {
-                st.textContent = "Не вышло, нажми ещё раз";
-              });
-          });
           document.getElementById("pay-now").addEventListener("click", function () {
             var st = document.getElementById("pay-status");
             st.textContent = "Открываем ЮKassa…";

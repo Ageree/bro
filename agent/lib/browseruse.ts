@@ -1,16 +1,17 @@
 import {
   isBrowserProfileId,
+  LOGIN_MARK,
+  loginWaitTask,
   normalizeBrowserProfileId,
   pickCookieDomains,
-  profileSyncCommand,
 } from "../../convex/lib/browserProfilePolicy.ts";
 
 const BASE = "https://api.browser-use.com/api/v4";
 
 export {
   isBrowserProfileId,
+  loginWaitTask,
   normalizeBrowserProfileId,
-  profileSyncCommand,
 };
 
 /** ISO 3166-1 alpha-2 from BROWSERUSE_PROXY_COUNTRY. Unset → undefined (API default US). */
@@ -105,10 +106,10 @@ export function scaffoldTask(
   task: string,
   opts?: { profileSynced?: boolean },
 ): string {
-  if (task.startsWith(ERRAND_MARK)) return task;
+  if (task.startsWith(ERRAND_MARK) || task.startsWith(LOGIN_MARK)) return task;
   const login = opts?.profileSynced
-    ? "Ты уже в аккаунтах человека через cookies его Chrome-профиля (Browser Use Cloud profile sync). Пароли, номера карт, CVV и коды из SMS никогда не вводи. Если личный кабинет открыт — работай как залогиненный пользователь. Если сайт всё же просит логин (сессия истекла) — остановись и напиши, что нужно заново синхронизировать Chrome; не открывай форму входа и не проси пароль. Если нужна оплата — остановись и дай live-URL."
-    : "Никогда не вводи номера карт, CVV, пароли или коды из SMS. Логин — только через заранее синхронизированные cookies Chrome, не через пароль в чате. Если сайт требует логин, а профиля нет — остановись и скажи, что человеку нужно синхронизировать Chrome (кабинет → Входы в сайты). Если нужна оплата — остановись и дай live-URL.";
+    ? "Ты уже в аккаунтах человека: вход сохранён в Cloud-профиле. Пароли, номера карт, CVV и коды из SMS никогда не вводи. Если личный кабинет открыт — работай как залогиненный пользователь. Если сайт всё же просит логин — остановись; человек получит ссылку и войдёт сам. Если нужна оплата — остановись и дай live-URL."
+    : "Никогда не вводи номера карт, CVV, пароли или коды из SMS. Если сайт просит логин — остановись. Bro пришлёт человеку ссылку, он войдёт сам, вход сохранится. Если нужна оплата — остановись и дай live-URL.";
   return `${ERRAND_MARK}
 Выполняй поручение на языке сайтов (обычно русский). Задача: ${task}.
 ${login}
@@ -255,4 +256,19 @@ export function isTerminal(status: string): boolean {
   return ["completed", "failed", "cancelled", "canceled", "stopped", "error"].includes(
     status.toLowerCase(),
   );
+}
+
+export async function waitForLiveUrl(
+  run: BrowserRun,
+  ms = 12_000,
+): Promise<BrowserRun> {
+  if (run.liveUrl) return run;
+  const start = Date.now();
+  let last = run;
+  while (Date.now() - start < ms) {
+    last = await hydrate(last.runId, last.sessionId);
+    if (last.liveUrl) return last;
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+  return last;
 }

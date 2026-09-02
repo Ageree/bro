@@ -16,6 +16,7 @@ import {
   FOLLOW_RETRY_HINT,
 } from "../../convex/lib/browserFollowPolicy.ts";
 import {
+  createProfile,
   envSyncedProfileId,
   getProfile,
   hydrate,
@@ -133,15 +134,25 @@ async function settle(
   return payload(run, extra);
 }
 
-async function resolveSyncedProfile(tenant: {
-  browserProfileId?: string;
-  browserCookieDomains?: string[];
-}): Promise<{
+async function resolveSyncedProfile(
+  phone: string,
+  tenant: {
+    browserProfileId?: string;
+    browserCookieDomains?: string[];
+  },
+): Promise<{
   profileId?: string;
   cookieDomains: string[];
   synced: boolean;
 }> {
-  const profileId = tenant.browserProfileId ?? envSyncedProfileId();
+  let profileId = tenant.browserProfileId ?? envSyncedProfileId();
+  if (!profileId) {
+    try {
+      profileId = await createProfile(phone);
+    } catch (err) {
+      console.error("browser profile create failed", err);
+    }
+  }
   let cookieDomains = tenant.browserCookieDomains ?? [];
   if (profileId && cookieDomains.length === 0) {
     try {
@@ -170,14 +181,14 @@ function profileExtra(resolved: {
       ? {}
       : {
           needsProfileSync: true,
-          hint: "Сайт может потребовать логин. Вызови profile_setup и пришли человеку ссылку на кабинет — пусть синхронизирует cookies Chrome. Пароль в чат не проси.",
+          hint: "Сайт может потребовать логин. Вызови profile_setup с url страницы входа — ссылка уйдёт человеку в чат, он войдёт сам. Пароль не проси.",
         }),
   };
 }
 
 export default defineTool({
   description:
-    "Cloud browser job for any web errand — shopping (WB, Ozon), restaurant/table booking, doctor and service appointments, taxi/delivery orders via web, form filling, searching and comparing, including sites where the human is already logged in via Chrome cookie sync. Starts a job or polls the current one. Never starts a second search while one is running. Do not pass reset unless the human wants a fresh browser. If needsProfileSync is true, call profile_setup instead of asking for a password. Send result text to iMessage when status is completed.",
+    "Cloud browser job for any web errand — shopping (WB, Ozon), restaurant/table booking, doctor and service appointments, taxi/delivery orders via web, form filling, searching and comparing, including sites where the human already signed in via a login link. Starts a job or polls the current one. Never starts a second search while one is running. Do not pass reset unless the human wants a fresh browser. If needsProfileSync is true, call profile_setup with the site URL instead of asking for a password. Send result text to iMessage when status is completed.",
   inputSchema: z.object({
     task: z.string().min(1).max(4000),
     reset: z.boolean().optional(),
@@ -234,7 +245,7 @@ export default defineTool({
       };
     }
 
-    const resolved = await resolveSyncedProfile(tenant);
+    const resolved = await resolveSyncedProfile(phone, tenant);
     const started = await startRun(
       task,
       reset ? undefined : tenant.browserSessionId,

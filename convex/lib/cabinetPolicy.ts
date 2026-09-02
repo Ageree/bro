@@ -89,7 +89,6 @@ export type CabinetSnapshot = {
   browserProfileId?: string;
   browserCookieDomains: string[];
   browserProfileStatus: "missing" | "empty" | "synced";
-  profileSyncCommand: string;
 };
 
 export function phoneLast4(phoneE164: string | undefined): string | undefined {
@@ -119,7 +118,6 @@ export function buildSnapshot(opts: {
   browserProfileId?: string;
   browserCookieDomains?: string[];
   browserProfileStatus?: "missing" | "empty" | "synced";
-  profileSyncCommand?: string;
 }): CabinetSnapshot {
   const phoneBound = Boolean(opts.phoneE164);
   const last4 = phoneLast4(opts.phoneE164);
@@ -141,7 +139,6 @@ export function buildSnapshot(opts: {
     ...(opts.browserProfileId ? { browserProfileId: opts.browserProfileId } : {}),
     browserCookieDomains: opts.browserCookieDomains ?? [],
     browserProfileStatus: opts.browserProfileStatus ?? "missing",
-    profileSyncCommand: opts.profileSyncCommand ?? "",
   };
 }
 
