@@ -137,6 +137,14 @@ assert(wrapped.startsWith("[bro-errand]"), "scaffold starts with marker");
 assert(wrapped.includes(raw), "scaffold contains raw task");
 assert(scaffoldTask(wrapped) === wrapped, "scaffold is idempotent");
 assert(scaffoldTask("x").includes("Работай быстро"), "scaffold skip-slow");
+assert(
+  scaffoldTask("x", { profileSynced: true }).includes("Cloud-профиле"),
+  "synced scaffold uses saved profile",
+);
+assert(
+  scaffoldTask("x").includes("пришлёт человеку ссылку"),
+  "unsynced scaffold asks for a login link",
+);
 
 const t0 = Date.parse("2026-08-27T12:00:00.000Z");
 assert(pollTimedOut(t0, t0 + 10 * 60_000) === false, "poll not expired");

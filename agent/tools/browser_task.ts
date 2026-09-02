@@ -17,12 +17,15 @@ import {
 } from "../../convex/lib/browserFollowPolicy.ts";
 import {
   createProfile,
+  envSyncedProfileId,
+  getProfile,
   hydrate,
   isTerminal,
   startRun,
   waitForRun,
   type BrowserRun,
 } from "../lib/browseruse";
+import { profileSyncStatus } from "../../convex/lib/browserProfilePolicy.ts";
 import { sendBlueIMessage } from "../lib/inkbox";
 import { tenantId } from "../lib/tenant";
 import { browserGateFromResult } from "../../convex/lib/billingPolicy";
@@ -52,7 +55,12 @@ async function persist(
   phone: string,
   run: BrowserRun,
   task: string,
-  extra?: { browserStartedAt?: number; browserProfileId?: string },
+  extra?: {
+    browserStartedAt?: number;
+    browserProfileId?: string;
+    browserCookieDomains?: string[];
+    browserProfileSyncedAt?: number;
+  },
 ): Promise<void> {
   await setBrowser(phone, {
     browserRunId: run.runId,
@@ -126,9 +134,61 @@ async function settle(
   return payload(run, extra);
 }
 
+async function resolveSyncedProfile(
+  phone: string,
+  tenant: {
+    browserProfileId?: string;
+    browserCookieDomains?: string[];
+  },
+): Promise<{
+  profileId?: string;
+  cookieDomains: string[];
+  synced: boolean;
+}> {
+  let profileId = tenant.browserProfileId ?? envSyncedProfileId();
+  if (!profileId) {
+    try {
+      profileId = await createProfile(phone);
+    } catch (err) {
+      console.error("browser profile create failed", err);
+    }
+  }
+  let cookieDomains = tenant.browserCookieDomains ?? [];
+  if (profileId && cookieDomains.length === 0) {
+    try {
+      cookieDomains = (await getProfile(profileId)).cookieDomains;
+    } catch (err) {
+      console.error("browser profile get failed", err);
+    }
+  }
+  return {
+    ...(profileId ? { profileId } : {}),
+    cookieDomains,
+    synced: profileSyncStatus({ profileId, cookieDomains }) === "synced",
+  };
+}
+
+function profileExtra(resolved: {
+  profileId?: string;
+  cookieDomains: string[];
+  synced: boolean;
+}) {
+  return {
+    profileId: resolved.profileId ?? null,
+    profileSynced: resolved.synced,
+    cookieDomains: resolved.cookieDomains,
+    ...(resolved.synced
+      ? {}
+      : {
+          needsProfileSync: true,
+          hint: "Сайт может потребовать логин. Вызови profile_setup с url страницы входа — ссылка уйдёт человеку в чат, он войдёт сам. Пароль не проси.",
+        }),
+  };
+}
+
 export default defineTool({
   description:
-    "Cloud browser job for any web errand — shopping (WB, Ozon), restaurant/table booking, doctor and service appointments, taxi/delivery orders via web, form filling, searching and comparing. Starts a job or polls the current one. Never starts a second search while one is running. Do not pass reset unless the human wants a fresh browser. Send result text to iMessage when status is completed.",
+    "Cloud browser job for any web errand — shopping (WB, Ozon), restaurant/table booking, doctor and service appointments, taxi/delivery orders via web, form filling, searching and comparing, including sites where the human already signed in via a login link. Starts a job or polls the current one. Never starts a second search while one is running. Do not pass reset unless the human wants a fresh browser. If needsProfileSync is true, call profile_setup with the site URL instead of asking for a password. Send result text to iMessage when status is completed.",
   inputSchema: z.object({
     task: z.string().min(1).max(4000),
     reset: z.boolean().optional(),
@@ -185,24 +245,25 @@ export default defineTool({
       };
     }
 
-    let profileId = tenant.browserProfileId;
-    if (!profileId) {
-      try {
-        profileId = await createProfile(phone);
-      } catch (err) {
-        console.error("browser profile create failed", err);
-      }
-    }
+    const resolved = await resolveSyncedProfile(phone, tenant);
     const started = await startRun(
       task,
       reset ? undefined : tenant.browserSessionId,
-      profileId ? { profileId } : undefined,
+      resolved.profileId
+        ? { profileId: resolved.profileId, profileSynced: resolved.synced }
+        : undefined,
     );
     const startedAt = Date.now();
     await persist(phone, started, task, {
       browserStartedAt: startedAt,
-      ...(profileId && !tenant.browserProfileId
-        ? { browserProfileId: profileId }
+      ...(resolved.profileId && resolved.profileId !== tenant.browserProfileId
+        ? { browserProfileId: resolved.profileId }
+        : {}),
+      ...(resolved.cookieDomains.length > 0
+        ? {
+            browserCookieDomains: resolved.cookieDomains,
+            browserProfileSyncedAt: Date.now(),
+          }
         : {}),
     });
     if (conv) {
@@ -222,7 +283,7 @@ export default defineTool({
       phone,
       done,
       task,
-      { started: true, alreadyNotified: Boolean(conv) },
+      { started: true, alreadyNotified: Boolean(conv), ...profileExtra(resolved) },
       { startedAt, runId: started.runId },
     );
   },

@@ -124,6 +124,8 @@ http.route({ path: "/login/verify", method: "OPTIONS", handler: options() });
 http.route({ path: "/logout", method: "OPTIONS", handler: options() });
 http.route({ path: "/me", method: "OPTIONS", handler: options() });
 http.route({ path: "/me/pay", method: "OPTIONS", handler: options() });
+http.route({ path: "/me/browser-profile", method: "OPTIONS", handler: options() });
+http.route({ path: "/me/browser-profile/refresh", method: "OPTIONS", handler: options() });
 http.route({ path: "/vault/items", method: "OPTIONS", handler: options() });
 http.route({ path: "/vault/items/delete", method: "OPTIONS", handler: options() });
 
@@ -219,6 +221,55 @@ http.route({
     });
     if (!me) return json({ ok: false, code: "unauthorized" }, 401);
     return json({ ok: true, me });
+  }),
+});
+
+http.route({
+  path: "/me/browser-profile",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const token = bearer(request);
+    if (!token) return json({ ok: false, code: "unauthorized" }, 401);
+    const session = await ctx.runQuery(internal.cabinet.getSessionTenant, {
+      tokenHash: await sha256hex(token),
+      now: Date.now(),
+    });
+    if (!session) return json({ ok: false, code: "unauthorized" }, 401);
+    const body = await jsonBody(request);
+    const profileId = typeof body.profileId === "string" ? body.profileId : "";
+    try {
+      const refreshed = await ctx.runAction(internal.cabinet.refreshBrowserProfile, {
+        tenantId: session.tenantId,
+        profileId,
+      });
+      return json({ ok: true, ...refreshed });
+    } catch (err) {
+      console.error("me/browser-profile", err);
+      return json({ ok: false, code: "invalid" }, 400);
+    }
+  }),
+});
+
+http.route({
+  path: "/me/browser-profile/refresh",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const token = bearer(request);
+    if (!token) return json({ ok: false, code: "unauthorized" }, 401);
+    const session = await ctx.runQuery(internal.cabinet.getSessionTenant, {
+      tokenHash: await sha256hex(token),
+      now: Date.now(),
+    });
+    if (!session) return json({ ok: false, code: "unauthorized" }, 401);
+    try {
+      const refreshed = await ctx.runAction(internal.cabinet.refreshBrowserProfile, {
+        tenantId: session.tenantId,
+      });
+      return json({ ok: true, ...refreshed });
+    } catch (err) {
+      console.error("me/browser-profile/refresh", err);
+      return json({ ok: false, code: "error" }, 500);
+    }
   }),
 });
 

@@ -98,6 +98,27 @@
       margin-bottom: 1rem;
     }
     .card h2 { font-size: 1.02rem; margin-bottom: 0.7rem; }
+    .cmd {
+      display: block;
+      margin: 0.8rem 0;
+      padding: 0.75rem 0.9rem;
+      border-radius: 0.75rem;
+      background: #17271e;
+      color: #f6faf5;
+      font: 0.78rem/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+      overflow-x: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    .row { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.8rem; }
+    .row input {
+      flex: 1 1 12rem;
+      min-width: 0;
+      font: inherit;
+      padding: 0.55rem 0.7rem;
+      border-radius: 0.7rem;
+      border: 1px solid rgba(23, 39, 30, 0.18);
+    }
     .muted { color: var(--ink-soft); font-size: 0.95rem; line-height: 1.5; }
     .bar {
       height: 0.45rem;
@@ -233,6 +254,12 @@
         if (s === "pending") return "ожидает";
         return "отменён";
       }
+      function profileStatusRu(s, domains) {
+        if (s === "synced" && domains && domains.length) {
+          return "Сохранены входы: " + esc(domains.join(", "));
+        }
+        return "Пока нет сохранённых входов — Bro пришлёт ссылку, когда понадобится.";
+      }
 
       var boot = document.getElementById("boot");
       var body = document.getElementById("body");
@@ -282,6 +309,9 @@
             '<div class="bar"><i style="width:' + pct(me.msgsUsed, me.msgsAllowance) + '%"></i></div>' +
             '<p class="muted">Браузер-задачи в этом месяце: ' + me.browserUsed + " из " + me.browserAllowance + "</p>" +
             '<div class="bar"><i style="width:' + pct(me.browserUsed, me.browserAllowance) + '%"></i></div></div>' +
+            '<div class="card" id="chrome"><h2>Входы в сайты</h2>' +
+            '<p class="muted">Когда Bro нужна твоя учётка, он сам пришлёт ссылку в чат. Открой, войди — пароль он не увидит, вход сохранится.</p>' +
+            '<p style="margin-top:0.7rem">' + profileStatusRu(me.browserProfileStatus, me.browserCookieDomains) + "</p></div>" +
             '<div class="card"><h2>Оплаты</h2>' +
             (pays ? '<ul class="pay">' + pays + "</ul>" : '<p class="muted">Пока нет оплат.</p>') +
             "</div>";

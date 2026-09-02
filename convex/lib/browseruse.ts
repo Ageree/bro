@@ -1,3 +1,9 @@
+import {
+  isBrowserProfileId,
+  normalizeBrowserProfileId,
+  pickCookieDomains,
+} from "./browserProfilePolicy";
+
 const BASE = "https://api.browser-use.com/api/v4";
 
 function key(): string {
@@ -47,6 +53,25 @@ export type BrowserRun = {
   liveUrl?: string;
   result?: string;
 };
+
+export type ProfileView = {
+  id: string;
+  cookieDomains: string[];
+};
+
+export async function getProfile(profileId: string): Promise<ProfileView> {
+  const id = normalizeBrowserProfileId(profileId);
+  if (!id) throw new Error("browser-use profile: invalid id");
+  const body = await bu(`/profiles/${id}`);
+  const got = pick(body, ["id"]);
+  if (!got || !isBrowserProfileId(got)) {
+    throw new Error(`browser-use profile: no id in ${JSON.stringify(body).slice(0, 400)}`);
+  }
+  return {
+    id: got,
+    cookieDomains: pickCookieDomains(body.cookieDomains ?? body.cookie_domains),
+  };
+}
 
 export async function hydrate(
   runId: string,

@@ -1,4 +1,18 @@
+import {
+  isBrowserProfileId,
+  LOGIN_MARK,
+  loginWaitTask,
+  normalizeBrowserProfileId,
+  pickCookieDomains,
+} from "../../convex/lib/browserProfilePolicy.ts";
+
 const BASE = "https://api.browser-use.com/api/v4";
+
+export {
+  isBrowserProfileId,
+  loginWaitTask,
+  normalizeBrowserProfileId,
+};
 
 /** ISO 3166-1 alpha-2 from BROWSERUSE_PROXY_COUNTRY. Unset → undefined (API default US). */
 export function proxyCountryCode(
@@ -75,13 +89,31 @@ export type BrowserRun = {
 
 const ERRAND_MARK = "[bro-errand]";
 
+export type ProfileView = {
+  id: string;
+  cookieDomains: string[];
+};
+
+/** Chrome cookies already on the Cloud profile — agent never sees passwords. */
+export function envSyncedProfileId(
+  raw: string | undefined = process.env.BROWSER_USE_PROFILE_ID,
+): string | undefined {
+  return normalizeBrowserProfileId(raw);
+}
+
 /** Wrap a raw errand with the cloud-browser operating envelope. Idempotent if already marked. */
-export function scaffoldTask(task: string): string {
-  if (task.startsWith(ERRAND_MARK)) return task;
+export function scaffoldTask(
+  task: string,
+  opts?: { profileSynced?: boolean },
+): string {
+  if (task.startsWith(ERRAND_MARK) || task.startsWith(LOGIN_MARK)) return task;
+  const login = opts?.profileSynced
+    ? "Ты уже в аккаунтах человека: вход сохранён в Cloud-профиле. Пароли, номера карт, CVV и коды из SMS никогда не вводи. Если личный кабинет открыт — работай как залогиненный пользователь. Если сайт всё же просит логин — остановись; человек получит ссылку и войдёт сам. Если нужна оплата — остановись и дай live-URL."
+    : "Никогда не вводи номера карт, CVV, пароли или коды из SMS. Если сайт просит логин — остановись. Bro пришлёт человеку ссылку, он войдёт сам, вход сохранится. Если нужна оплата — остановись и дай live-URL.";
   return `${ERRAND_MARK}
 Выполняй поручение на языке сайтов (обычно русский). Задача: ${task}.
-Никогда не вводи номера карт, CVV, пароли или коды из SMS. Если сайт требует логин или оплату — остановись на этом шаге и опиши, что человеку нужно сделать самому (он подключится через live-URL).
-Доводи дело до конца, если оплата/логин не требуются (например: выбрать слот, заполнить форму с известными данными, дойти до финального подтверждения).
+${login}
+Доводи дело до конца, если оплата не требуется (например: выбрать слот, заполнить форму с известными данными, дойти до финального подтверждения).
 Если данных не хватает (имя, телефон, адрес, время) — не выдумывай; закончи и перечисли, что нужно уточнить.
 Работай быстро: если сайт медленный, требует капчу или недоступен — пропусти его и возьми другой вариант.
 В конце верни краткий структурированный итог: что сделано; что нашёл (варианты с ценами/временами, до 5); что нужно от человека.`;
@@ -97,6 +129,38 @@ export async function createProfile(userId: string): Promise<string> {
   return id;
 }
 
+function asProfile(body: Record<string, unknown>): ProfileView {
+  const id = pick(body, ["id"]);
+  if (!id || !isBrowserProfileId(id)) {
+    throw new Error(`browser-use profile: no id in ${JSON.stringify(body).slice(0, 400)}`);
+  }
+  return { id, cookieDomains: pickCookieDomains(body.cookieDomains ?? body.cookie_domains) };
+}
+
+export async function getProfile(profileId: string): Promise<ProfileView> {
+  const id = normalizeBrowserProfileId(profileId);
+  if (!id) throw new Error("browser-use profile: invalid id");
+  return asProfile(await bu(`/profiles/${id}`));
+}
+
+export async function listProfiles(query?: string): Promise<ProfileView[]> {
+  const q = new URLSearchParams({ pageSize: "20", pageNumber: "1" });
+  if (query?.trim()) q.set("query", query.trim().slice(0, 200));
+  const listed = await bu(`/profiles?${q}`);
+  const items = listed.items;
+  if (!Array.isArray(items)) return [];
+  const out: ProfileView[] = [];
+  for (const item of items) {
+    if (!item || typeof item !== "object") continue;
+    try {
+      out.push(asProfile(item as Record<string, unknown>));
+    } catch {
+      // skip malformed rows
+    }
+  }
+  return out;
+}
+
 function resolveProxyCountry(): string | undefined {
   const explicit = proxyCountryCode(process.env.BROWSERUSE_PROXY_COUNTRY);
   if (explicit) return explicit;
@@ -108,9 +172,11 @@ function resolveProxyCountry(): string | undefined {
 export async function startRun(
   task: string,
   sessionId?: string,
-  opts?: { profileId?: string },
+  opts?: { profileId?: string; profileSynced?: boolean },
 ): Promise<BrowserRun> {
-  const body: Record<string, unknown> = { task: scaffoldTask(task) };
+  const body: Record<string, unknown> = {
+    task: scaffoldTask(task, { profileSynced: opts?.profileSynced }),
+  };
   // Cloud JSON accepts both; send both so a session is reused.
   if (sessionId) {
     body.sessionId = sessionId;
@@ -190,4 +256,19 @@ export function isTerminal(status: string): boolean {
   return ["completed", "failed", "cancelled", "canceled", "stopped", "error"].includes(
     status.toLowerCase(),
   );
+}
+
+export async function waitForLiveUrl(
+  run: BrowserRun,
+  ms = 12_000,
+): Promise<BrowserRun> {
+  if (run.liveUrl) return run;
+  const start = Date.now();
+  let last = run;
+  while (Date.now() - start < ms) {
+    last = await hydrate(last.runId, last.sessionId);
+    if (last.liveUrl) return last;
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+  return last;
 }
