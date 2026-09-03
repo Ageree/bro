@@ -4,6 +4,8 @@ Personal iMessage concierge. **eve** runs the agent. **Convex** holds tenants, o
 
 Outbound replies are compiled to iMessage text: markdown is stripped, `**latin**` becomes Unicode math-bold (looks bold on iPhone), Russian field labels get a `▸` mark, long numbered dumps become one bubble per item. Inkbox cannot send native iOS 18 text styles or carousels. Inbound photos/carousels reach the model as URLs. Check: `npm run imessage:check`.
 
+Voice notes: inbound audio is transcribed via OpenRouter STT before the model sees it (`[voice] …`). iPhone CAF Opus is remuxed to Ogg in TypeScript (no ffmpeg in production). If transcription fails and there is no other text, Bro sends a short Russian retry line and skips the agent. Override with `BRO_STT_MODEL` / `BRO_STT_FALLBACK_MODEL` / `BRO_STT_LANGUAGE`. Check: `npm run voice:check`.
+
 ## Needs
 
 - Node 24 (`nvm use`)

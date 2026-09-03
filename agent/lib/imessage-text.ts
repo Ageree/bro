@@ -3,6 +3,8 @@
  *  Mathematical Sans-Serif Bold (looks bold on iPhone). Cyrillic field
  *  labels get a leading ▸ — mixed-script fake-bold looks broken. */
 
+import { voiceTranscriptLine } from "./voice-policy.ts";
+
 const FENCE = /```[\w+-]*\n?([\s\S]*?)```/g;
 const IMAGE = /!\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)/gi;
 const LINK = /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/gi;
@@ -150,10 +152,84 @@ export function inboundVoiceLine(opts: {
   url?: string | null;
 }): string {
   const transcript = opts.content?.trim();
-  if (transcript) return `[voice] ${transcript}`;
+  if (transcript) return voiceTranscriptLine(transcript);
   const url = opts.url?.trim();
   if (url) return `[voice message] ${url}`;
   return "";
+}
+
+export type InboundVoiceTranscribe = (item: {
+  url: string;
+  contentType: string | null;
+  size: number | null;
+}) => Promise<{ ok: true; text: string } | { ok: false; reason: string }>;
+
+export type InboundWithVoice = {
+  text: string;
+  voice: boolean;
+  allVoiceFailed: boolean;
+};
+
+export async function inboundIMessageTextWithVoice(
+  msg: {
+    content?: string | null;
+    media?: Array<{
+      url?: string | null;
+      content_type?: string | null;
+      size?: number | null;
+    }> | null;
+    message_type?: string | null;
+  },
+  transcribe: InboundVoiceTranscribe,
+): Promise<InboundWithVoice> {
+  const content = msg.content?.trim() ?? "";
+  const media = msg.media ?? [];
+  const audio = media.filter((m) => isAudioContentType(m.content_type));
+  if (audio.length === 0 || content) {
+    return {
+      text: inboundIMessageText(msg),
+      voice: audio.length > 0,
+      allVoiceFailed: false,
+    };
+  }
+
+  const others: string[] = [];
+  for (const m of media) {
+    if (isAudioContentType(m.content_type)) continue;
+    const url = m.url?.trim();
+    if (url) others.push(url);
+  }
+
+  const lines: string[] = [];
+  let anyOk = false;
+  let anyAttempt = false;
+  for (const m of audio) {
+    const url = m.url?.trim();
+    if (!url) continue;
+    anyAttempt = true;
+    const result = await transcribe({
+      url,
+      contentType: m.content_type ?? null,
+      size: m.size ?? null,
+    });
+    if (result.ok && result.text.trim()) {
+      lines.push(voiceTranscriptLine(result.text));
+      anyOk = true;
+    } else {
+      lines.push(inboundVoiceLine({ url }));
+    }
+  }
+
+  const parts = [...lines, ...others];
+  if (msg.message_type === "carousel" && parts.length === 0) {
+    return { text: "[carousel]", voice: true, allVoiceFailed: false };
+  }
+  const allVoiceFailed = anyAttempt && !anyOk && others.length === 0;
+  return {
+    text: parts.join("\n").trim(),
+    voice: true,
+    allVoiceFailed,
+  };
 }
 
 export function inboundIMessageText(msg: {
