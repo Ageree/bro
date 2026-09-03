@@ -1,7 +1,10 @@
 /** OpenRouter STT policy: format map, env, retry, user-facing copy. No I/O. */
 
-export const DEFAULT_STT_MODEL = "openai/gpt-4o-transcribe";
-export const DEFAULT_STT_FALLBACK_MODEL = "openai/whisper-large-v3-turbo";
+/** Bake-off 2026-09-03 on Russian assistant notes (digits, times, brands):
+ *  Qwen3-ASR-Flash 0.011 number-normalized WER, ~1.5 s, $0.001/30 s;
+ *  GPT-4o Transcribe 0.033 as the quality fallback. Both take m4a and ogg. */
+export const DEFAULT_STT_MODEL = "qwen/qwen3-asr-flash-2026-02-10";
+export const DEFAULT_STT_FALLBACK_MODEL = "openai/gpt-4o-transcribe";
 export const DEFAULT_STT_TIMEOUT_MS = 20_000;
 export const DEFAULT_STT_MAX_BYTES = 25 * 1024 * 1024;
 
@@ -156,6 +159,8 @@ export function shouldRetryWithFallback(
   if (status === 401 || status === 402) return false;
   if (status === 429 || status === 408) return true;
   if (status !== undefined && status >= 500 && status < 600) return true;
+  // OpenRouter wraps upstream rejects as a bare "Provider returned 400".
+  if (status === 400) return true;
   if (status !== undefined && status >= 400 && status < 500) {
     const m = errorMessage.toLowerCase();
     return /unsupported|format|model|codec/.test(m);

@@ -4,7 +4,7 @@ Personal iMessage concierge. **eve** runs the agent. **Convex** holds tenants, o
 
 Outbound replies are compiled to iMessage text: markdown is stripped, `**latin**` becomes Unicode math-bold (looks bold on iPhone), Russian field labels get a `▸` mark, long numbered dumps become one bubble per item. Inkbox cannot send native iOS 18 text styles or carousels. Inbound photos/carousels reach the model as URLs. Check: `npm run imessage:check`.
 
-Voice notes: inbound audio is transcribed via OpenRouter STT before the model sees it (`[voice] …`). iPhone CAF Opus is remuxed to Ogg in TypeScript (no ffmpeg in production). If transcription fails and there is no other text, Bro sends a short Russian retry line and skips the agent. Override with `BRO_STT_MODEL` / `BRO_STT_FALLBACK_MODEL` / `BRO_STT_LANGUAGE`. Check: `npm run voice:check`.
+Voice notes: inbound audio is transcribed via OpenRouter STT (`/audio/transcriptions`) before the model sees it (`[voice] …`). Default `qwen/qwen3-asr-flash-2026-02-10` (best digit/time/brand accuracy on Russian in our bake-off, ~1.5 s, ~$0.001 per 30 s), fallback `openai/gpt-4o-transcribe`, language hint `ru`. iPhone CAF Opus is remuxed to Ogg in TypeScript — no provider accepts CAF and there is no ffmpeg on Vercel. If transcription fails and there is no other text, Bro sends a short Russian retry line and skips the agent. Override with `BRO_STT_MODEL` / `BRO_STT_FALLBACK_MODEL` / `BRO_STT_LANGUAGE`. Check: `npm run voice:check`.
 
 ## Needs
 

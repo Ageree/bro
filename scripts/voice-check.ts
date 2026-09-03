@@ -54,7 +54,8 @@ assert(sttFormatFor({ contentType: "text/plain" }) === null, "text null");
 assert(sttFormatFor({}) === null, "empty null");
 
 // --- sttConfig ---
-eq(DEFAULT_STT_MODEL, "openai/gpt-4o-transcribe", "default model const");
+eq(DEFAULT_STT_MODEL, "qwen/qwen3-asr-flash-2026-02-10", "default model const");
+eq(DEFAULT_STT_FALLBACK_MODEL, "openai/gpt-4o-transcribe", "default fallback const");
 const d = sttConfig({});
 eq(d.model, DEFAULT_STT_MODEL, "default model");
 eq(d.fallbackModel, DEFAULT_STT_FALLBACK_MODEL, "default fallback");
@@ -106,7 +107,8 @@ assert(shouldRetryWithFallback(400, "unknown model"), "400 model");
 assert(!shouldRetryWithFallback(401, ""), "401");
 assert(!shouldRetryWithFallback(401, "unsupported format"), "401 wins");
 assert(!shouldRetryWithFallback(402, "credits"), "402");
-assert(!shouldRetryWithFallback(400, "bad request"), "400 generic");
+assert(shouldRetryWithFallback(400, "Provider returned 400"), "400 opaque provider reject");
+assert(!shouldRetryWithFallback(404, "not found"), "404 generic");
 assert(!shouldRetryWithFallback(403, ""), "403");
 
 // --- inboundIMessageTextWithVoice ---
