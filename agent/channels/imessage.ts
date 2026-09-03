@@ -25,7 +25,13 @@ import {
   isConnectDest,
   stripConnectUrls,
 } from "../lib/connect-link";
-import { inboundIMessageText, toIMessageBubbles } from "../lib/imessage-text";
+import {
+  inboundIMessageText,
+  inboundIMessageTextWithVoice,
+  toIMessageBubbles,
+} from "../lib/imessage-text";
+import { transcribeVoiceNote } from "../lib/voice";
+import { VOICE_FAILED_REPLY } from "../lib/voice-policy";
 import { splitSeen } from "../lib/wakeup-text";
 import { wakeupCarriesRunId } from "../../convex/lib/browserFollowPolicy.ts";
 import {
@@ -140,14 +146,8 @@ export default defineChannel({
         }
       }
 
-      const text = inboundIMessageText(msg);
-      if (!text) return new Response(null, { status: 204 });
-      console.log("imessage inbound", {
-        remote,
-        conversationId: msg.conversation_id,
-        chars: text.length,
-        messageType: msg.message_type,
-      });
+      const preview = inboundIMessageText(msg);
+      if (!preview) return new Response(null, { status: 204 });
 
       let gate: { decision: "allow" | "paywall" | "drop"; payUrl?: string };
       try {
@@ -199,7 +199,36 @@ export default defineChannel({
       if (typeof waitUntil === "function") waitUntil(ack);
       else void ack;
 
-      await from(msg.conversation_id).send(text, {
+      const inbound = await inboundIMessageTextWithVoice(msg, transcribeVoiceNote);
+      if (inbound.allVoiceFailed) {
+        console.log("imessage inbound", {
+          remote,
+          conversationId: msg.conversation_id,
+          chars: 0,
+          voice: true,
+          messageType: msg.message_type,
+        });
+        try {
+          await sendBlueIMessage({
+            conversationId: msg.conversation_id,
+            text: VOICE_FAILED_REPLY,
+            handle: identityHandle,
+          });
+        } catch (err) {
+          console.error("voice failed reply failed", err);
+        }
+        return new Response(null, { status: 204 });
+      }
+      if (!inbound.text) return new Response(null, { status: 204 });
+      console.log("imessage inbound", {
+        remote,
+        conversationId: msg.conversation_id,
+        chars: inbound.text.length,
+        voice: inbound.voice,
+        messageType: msg.message_type,
+      });
+
+      await from(msg.conversation_id).send(inbound.text, {
         auth: {
           authenticator: "inkbox",
           issuer: "inkbox",

@@ -29,6 +29,7 @@
     "cabinet:check": "node --experimental-strip-types scripts/cabinet-check.ts",
     "types:check": "tsc --noEmit",
     "vault:check": "node --experimental-strip-types scripts/vault-check.ts",
+    "voice:check": "node --experimental-strip-types scripts/voice-check.ts",
     "worker:check": "node --experimental-strip-types scripts/worker-check.ts",
     "wakeups:check": "node --experimental-strip-types scripts/wakeups-check.ts",
     "provision:inkbox": "node --experimental-strip-types scripts/provision-inkbox.ts"
