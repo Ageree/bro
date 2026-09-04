@@ -12,6 +12,7 @@ export const PAY_ALIASES = {
   expiry: "card_expiry",
   expMonth: "card_exp_month",
   expYear: "card_exp_year",
+  expYearFull: "card_exp_year_full",
   cvc: "card_cvc",
 } as const;
 
@@ -58,7 +59,7 @@ function binding(alias: string, value: string, hosts: readonly string[]): Secret
   };
 }
 
-/** Five secret bindings covering combined and split expiry-field forms. */
+/** Six secret bindings covering combined and split expiry-field forms (2- and 4-digit year). */
 export function cardBindings(
   card: PaymentPayload,
   hosts: readonly string[],
@@ -73,6 +74,7 @@ export function cardBindings(
     binding(PAY_ALIASES.expiry, `${mm}/${yy}`, hosts),
     binding(PAY_ALIASES.expMonth, mm, hosts),
     binding(PAY_ALIASES.expYear, yy, hosts),
+    binding(PAY_ALIASES.expYearFull, String(card.expirationYear), hosts),
     binding(PAY_ALIASES.cvc, card.securityCode, hosts),
   ];
 }
@@ -92,10 +94,10 @@ export function payScaffold(opts: {
       : "";
   return [
     "Карта человека подключена секретами, и ввод делает сервер — ты значения не видишь.",
-    `На форме оплаты сфокусируй поле и попроси ввести секрет по имени: \`${PAY_ALIASES.number}\` — номер карты, \`${PAY_ALIASES.expiry}\` — срок ММ/ГГ (если поля раздельные: \`${PAY_ALIASES.expMonth}\` — месяц, \`${PAY_ALIASES.expYear}\` — год), \`${PAY_ALIASES.cvc}\` — CVV.`,
+    `На форме оплаты сфокусируй поле и попроси ввести секрет по имени: \`${PAY_ALIASES.number}\` — номер карты, \`${PAY_ALIASES.expiry}\` — срок ММ/ГГ (если поля раздельные: \`${PAY_ALIASES.expMonth}\` — месяц, \`${PAY_ALIASES.expYear}\` — год двумя цифрами, \`${PAY_ALIASES.expYearFull}\` — год четырьмя), \`${PAY_ALIASES.cvc}\` — CVV.`,
     `Имя держателя карты (не секрет, можно вводить как обычный текст): ${holder}.`,
     `Карта: ${account}.`,
-    `Секреты работают только на доменах ${domainsLine} — если страница оплаты открылась на другом домене, остановись и назови этот домен.`,
+    `Секреты работают только на доменах ${domainsLine} и их поддоменах (www и прочие) — если страница оплаты открылась на другом домене, остановись и назови этот домен.`,
     "Никогда не читай, не переписывай и не запоминай значения этих полей.",
     "3-D Secure, код из SMS или подтверждение в приложении банка — остановись и дай live-URL.",
     limitLine,

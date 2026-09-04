@@ -213,9 +213,12 @@ export async function startRun(
     method: "POST",
     body: JSON.stringify(body),
   }).catch((err: unknown) => {
-    if (!body.secretBindings) throw err;
-    const status = err instanceof Error ? err.message.match(/^browser-use (\d{3})/)?.[1] : undefined;
-    throw new Error(`browser-use ${status ?? "error"} /runs (paid run, body redacted)`);
+    const status =
+      body.secretBindings && err instanceof Error
+        ? /^browser-use (\d{3})/.exec(err.message)?.[1]
+        : undefined;
+    if (!status) throw err;
+    throw new Error(`browser-use ${status} /runs (paid run, response redacted)`);
   });
   const runId =
     pick(created, ["id", "runId", "run_id"]) ??

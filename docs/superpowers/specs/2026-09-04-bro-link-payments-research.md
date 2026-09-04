@@ -69,8 +69,8 @@ Browser Use: агент видит только алиасы, сервер пе�
 
 1. `browser_task` получает опциональный `pay: { hosts, maxRub?, vaultHandle? }`.
 2. Перед стартом run Bro расшифровывает карту из сейфа (`readForAgent`) и
-   передаёт пять binding'ов — `card_number`, `card_expiry` (ММ/ГГ),
-   `card_exp_month`, `card_exp_year`, `card_cvc` — с `allowedDomains: hosts`.
+   передаёт шесть binding'ов — `card_number`, `card_expiry` (ММ/ГГ),
+   `card_exp_month`, `card_exp_year`, `card_exp_year_full`, `card_cvc` — с `allowedDomains: hosts`.
 3. Подтверждение человека остаётся как сейчас (магазин, товар, количество,
    сумма) — до вызова с `pay`.
 4. В скаффолде задачи: «карта уже подключена под алиасами …, введи их в

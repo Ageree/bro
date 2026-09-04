@@ -70,12 +70,12 @@ const card: PaymentPayload = {
 {
   const hosts = ["wildberries.ru"];
   const bindings = cardBindings(card, hosts);
-  assert(bindings.length === 5, "five bindings");
+  assert(bindings.length === 6, "six bindings");
   const aliases = bindings.map((b) => b.alias).sort();
   assert(
     JSON.stringify(aliases) ===
       JSON.stringify(Object.values(PAY_ALIASES).sort()),
-    "bindings cover all five aliases",
+    "bindings cover all aliases",
   );
   for (const b of bindings) {
     assert(b.source.type === "inline", "source type inline");
@@ -90,6 +90,8 @@ const card: PaymentPayload = {
   assert(month?.source.value === "03", "month padded");
   const year = bindings.find((b) => b.alias === PAY_ALIASES.expYear);
   assert(year?.source.value === "27", "year is two digits");
+  const yearFull = bindings.find((b) => b.alias === PAY_ALIASES.expYearFull);
+  assert(yearFull?.source.value === "2027", "full year is four digits");
   const number = bindings.find((b) => b.alias === PAY_ALIASES.number);
   assert(number?.source.value === "4111111111111111", "number as-is");
   const cvc = bindings.find((b) => b.alias === PAY_ALIASES.cvc);
@@ -186,3 +188,9 @@ const payOpts = {
 }
 
 console.log("browser-pay-check ok");
+
+// --- subdomain wording (a bare host covers www. and other subdomains) ---
+assert(
+  payScaffold({ hosts: ["ozon.ru"], holder: "A", account: "B" }).includes("поддомен"),
+  "payScaffold tells the agent that subdomains are covered",
+);

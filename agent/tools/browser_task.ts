@@ -239,18 +239,23 @@ export default defineTool({
         phone,
         run,
         tenant.browserTask ?? task,
-        { polled: true },
+        pay
+          ? {
+              polled: true,
+              payDeferred: true,
+              hint: "Оплата не началась: предыдущий браузер-job ещё идёт. Дождись его завершения и вызови browser_task с pay ещё раз.",
+            }
+          : { polled: true },
         { startedAt: tenant.browserStartedAt, runId: tenant.browserRunId },
       );
     }
 
-    let payOpts:
-      | { hosts: string[]; holder: string; account: string; maxRub?: number }
-      | undefined;
-    let secretBindings: ReturnType<typeof cardBindings> | undefined;
+    // Cheap part before the billing gate: a missing card must not burn quota.
+    let payHosts: string[] | undefined;
+    let payItem: { handle: string; account: string } | undefined;
     if (pay) {
-      const hosts = normalizePayHosts(pay.hosts);
-      if (hosts.length === 0) {
+      payHosts = normalizePayHosts(pay.hosts);
+      if (payHosts.length === 0) {
         return {
           status: "invalid",
           hint: "pay.hosts must contain at least one valid hostname",
@@ -259,26 +264,16 @@ export default defineTool({
       const items = (await listVaultItems(phone)).filter(
         (i) => i.kind === "payment" && i.available,
       );
-      const item = pay.vaultHandle
+      payItem = pay.vaultHandle
         ? items.find((i) => i.handle === pay.vaultHandle)
         : items[0];
-      if (!item) {
+      if (!payItem) {
         return {
           status: "needs_vault",
           needsVaultSetup: "payment",
           hint: "У человека нет сохранённой карты. Вызови vault_setup с kind=payment и пришли ссылку.",
         };
       }
-      const secretRecord = await readVaultSecret(phone, item.handle);
-      const card = secretRecord ? parsePaymentPayload(secretRecord.secret) : undefined;
-      if (!card) throw new Error("карта в сейфе заполнена не полностью");
-      secretBindings = cardBindings(card, hosts);
-      payOpts = {
-        hosts,
-        holder: card.cardholderName,
-        account: item.account,
-        ...(pay.maxRub !== undefined ? { maxRub: pay.maxRub } : {}),
-      };
     }
 
     let allowed = false;
@@ -293,6 +288,24 @@ export default defineTool({
       return {
         status: "limit",
         hint: "скажи человеку, что лимит браузер-задач на месяц исчерпан, предложи оплату",
+      };
+    }
+
+    // The card is decrypted only once a run is actually going to start.
+    let payOpts:
+      | { hosts: string[]; holder: string; account: string; maxRub?: number }
+      | undefined;
+    let secretBindings: ReturnType<typeof cardBindings> | undefined;
+    if (pay && payHosts && payItem) {
+      const secretRecord = await readVaultSecret(phone, payItem.handle);
+      const card = secretRecord ? parsePaymentPayload(secretRecord.secret) : undefined;
+      if (!card) throw new Error("карта в сейфе заполнена не полностью");
+      secretBindings = cardBindings(card, payHosts);
+      payOpts = {
+        hosts: payHosts,
+        holder: card.cardholderName,
+        account: payItem.account,
+        ...(pay.maxRub !== undefined ? { maxRub: pay.maxRub } : {}),
       };
     }
 
