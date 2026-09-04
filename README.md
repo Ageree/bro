@@ -50,5 +50,7 @@ Site logins: Bro texts a link. The person opens it, signs in on the site, and co
 
 The vault holds per-tenant cards, addresses, and contacts — not site passwords. AES-256-GCM keys are derived from `BRO_VAULT_KEY` (set on the Convex deployment; `openssl rand -base64 32`). Losing or rotating it makes existing items undecryptable. The model only ever receives opaque handles; secrets are injected into the page over CDP and masked in screenshots. The human types them at `/vault.html` behind the cabinet login. Vault links use `BRO_CABINET_BASE`. The `worker` subagent needs `KERNEL_API_KEY` (Kernel cloud browsers); without it `worker` fails with a clear error and `browser_task` keeps working. Proxy: `BRO_KERNEL_PROXY_COUNTRY` (default `ru`, `none` disables) or `BRO_KERNEL_PROXY_ID`; `BRO_KERNEL_REGION` moves the browser VM off Kernel's `us-east` default. One `worker` assignment costs one browser job however many browsers it opens. Check: `npm run vault:check`, `npm run worker:check`, `npm run types:check`.
 
+Bro can also pay with the vault card inside a `browser_task` run itself, via Browser Use Cloud `secretBindings`: the server types the card into the focused field on the allowed hosts, the model never sees the value, and the bindings die with the run. 3-D Secure, SMS codes, and bank-app confirmation still go to the human via live URL. Check: `npm run pay:check`.
+
 Bro's Inkbox mailbox is live: inbound `POST /webhooks/mail`, outbound `bro_mail`.
 Long work parks as Convex `jobs` (`npm run jobs:check`). Re-run `npm run webhooks` to subscribe mail.
