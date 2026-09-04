@@ -65,17 +65,17 @@ while the page it is typing into is on one of `allowedDomains`. Run-scoped».
 
 Это даёт для дефолтного `browser_task` ту же модель, что Link даёт
 Browser Use: агент видит только алиасы, сервер печатает секрет сам, домен
-ограничен. Предлагаемая схема (не реализована, ждёт решения):
+ограничен. Реализовано в этой же ветке (`agent/lib/browser-pay.ts`, `browser_task` с `pay`, проверка `npm run pay:check`):
 
-1. `browser_task` получает опциональный `pay: { vaultHandle, merchantHost }`.
-2. Перед стартом run Bro расшифровывает карту из сейфа (как
-   `readForAgent`) и передаёт три binding'а — `card_number`, `card_expiry`,
-   `card_cvc` — с `allowedDomains: [merchantHost]`.
+1. `browser_task` получает опциональный `pay: { hosts, maxRub?, vaultHandle? }`.
+2. Перед стартом run Bro расшифровывает карту из сейфа (`readForAgent`) и
+   передаёт пять binding'ов — `card_number`, `card_expiry` (ММ/ГГ),
+   `card_exp_month`, `card_exp_year`, `card_cvc` — с `allowedDomains: hosts`.
 3. Подтверждение человека остаётся как сейчас (магазин, товар, количество,
    сумма) — до вызова с `pay`.
 4. В скаффолде задачи: «карта уже подключена под алиасами …, введи их в
    форму оплаты, 3-D Secure — остановись и дай live-URL».
 
-Открытые вопросы: одна ли карта на run (да, run-scoped), как Browser Use
-отдаёт агенту команду «введи алиас» в задаче (проверить на тестовом run),
-не конфликтует ли с текущей политикой «если нужна оплата — остановись».
+Открытый вопрос: точная формулировка, которой cloud-агент просит сервер
+ввести алиас, в документации не зафиксирована («use the secret <alias>» в
+примере с 1Password). Проверить на первом реальном run с тестовой картой.

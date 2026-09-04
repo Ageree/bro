@@ -5,6 +5,7 @@ import {
   normalizeBrowserProfileId,
   pickCookieDomains,
 } from "../../convex/lib/browserProfilePolicy.ts";
+import { payScaffold, type SecretBinding } from "./browser-pay.ts";
 
 const BASE = "https://api.browser-use.com/api/v4";
 
@@ -104,16 +105,21 @@ export function envSyncedProfileId(
 /** Wrap a raw errand with the cloud-browser operating envelope. Idempotent if already marked. */
 export function scaffoldTask(
   task: string,
-  opts?: { profileSynced?: boolean },
+  opts?: { profileSynced?: boolean; pay?: Parameters<typeof payScaffold>[0] },
 ): string {
   if (task.startsWith(ERRAND_MARK) || task.startsWith(LOGIN_MARK)) return task;
+  const payBlock = opts?.pay ? payScaffold(opts.pay) : undefined;
+  const stopForPay = "Если нужна оплата — остановись и дай live-URL.";
   const login = opts?.profileSynced
-    ? "Ты уже в аккаунтах человека: вход сохранён в Cloud-профиле. Пароли, номера карт, CVV и коды из SMS никогда не вводи. Если личный кабинет открыт — работай как залогиненный пользователь. Если сайт всё же просит логин — остановись; человек получит ссылку и войдёт сам. Если нужна оплата — остановись и дай live-URL."
-    : "Никогда не вводи номера карт, CVV, пароли или коды из SMS. Если сайт просит логин — остановись. Bro пришлёт человеку ссылку, он войдёт сам, вход сохранится. Если нужна оплата — остановись и дай live-URL.";
+    ? `Ты уже в аккаунтах человека: вход сохранён в Cloud-профиле. Пароли, номера карт, CVV и коды из SMS никогда не вводи сам. Если личный кабинет открыт — работай как залогиненный пользователь. Если сайт всё же просит логин — остановись; человек получит ссылку и войдёт сам. ${payBlock ?? stopForPay}`
+    : `Никогда не вводи номера карт, CVV, пароли или коды из SMS сам. Если сайт просит логин — остановись. Bro пришлёт человеку ссылку, он войдёт сам, вход сохранится. ${payBlock ?? stopForPay}`;
+  const finish = payBlock
+    ? "Доводи дело до конца, включая оплату подключённой картой."
+    : "Доводи дело до конца, если оплата не требуется (например: выбрать слот, заполнить форму с известными данными, дойти до финального подтверждения).";
   return `${ERRAND_MARK}
 Выполняй поручение на языке сайтов (обычно русский). Задача: ${task}.
 ${login}
-Доводи дело до конца, если оплата не требуется (например: выбрать слот, заполнить форму с известными данными, дойти до финального подтверждения).
+${finish}
 Если данных не хватает (имя, телефон, адрес, время) — не выдумывай; закончи и перечисли, что нужно уточнить.
 Работай быстро: если сайт медленный, требует капчу или недоступен — пропусти его и возьми другой вариант.
 В конце верни краткий структурированный итог: что сделано; что нашёл (варианты с ценами/временами, до 5); что нужно от человека.`;
@@ -172,10 +178,18 @@ function resolveProxyCountry(): string | undefined {
 export async function startRun(
   task: string,
   sessionId?: string,
-  opts?: { profileId?: string; profileSynced?: boolean },
+  opts?: {
+    profileId?: string;
+    profileSynced?: boolean;
+    pay?: Parameters<typeof payScaffold>[0];
+    secretBindings?: SecretBinding[];
+  },
 ): Promise<BrowserRun> {
   const body: Record<string, unknown> = {
-    task: scaffoldTask(task, { profileSynced: opts?.profileSynced }),
+    task: scaffoldTask(task, {
+      profileSynced: opts?.profileSynced,
+      pay: opts?.pay,
+    }),
   };
   // Cloud JSON accepts both; send both so a session is reused.
   if (sessionId) {
@@ -190,9 +204,18 @@ export async function startRun(
   const maxCost = Number(process.env.BRO_BROWSER_MAX_COST ?? "1");
   if (Number.isFinite(maxCost) && maxCost > 0) body.maxCostUsd = maxCost;
   if (process.env.BRO_BROWSER_MODEL) body.model = process.env.BRO_BROWSER_MODEL;
+  if (opts?.secretBindings && opts.secretBindings.length > 0) {
+    body.secretBindings = opts.secretBindings;
+  }
+  // A validation error can echo the offending field back; never let a bound
+  // card value ride along in the thrown message when bindings are attached.
   const created = await bu("/runs", {
     method: "POST",
     body: JSON.stringify(body),
+  }).catch((err: unknown) => {
+    if (!body.secretBindings) throw err;
+    const status = err instanceof Error ? err.message.match(/^browser-use (\d{3})/)?.[1] : undefined;
+    throw new Error(`browser-use ${status ?? "error"} /runs (paid run, body redacted)`);
   });
   const runId =
     pick(created, ["id", "runId", "run_id"]) ??
