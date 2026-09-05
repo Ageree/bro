@@ -2,7 +2,7 @@
 
 Personal iMessage concierge. **eve** runs the agent. **Convex** holds tenants, orders, and long-term memory (one store per person). **Inkbox** is blue iMessage only (never SMS). **Supermemory** (optional, paid) adds automatic conversation memory.
 
-Outbound replies are compiled to iMessage text: markdown is stripped, `**latin**` becomes Unicode math-bold (looks bold on iPhone), Russian field labels get a `▸` mark, long numbered dumps become one bubble per item. Inkbox cannot send native iOS 18 text styles or carousels. Inbound photos/carousels reach the model as URLs. Check: `npm run imessage:check`.
+Outbound replies are compiled to iMessage text: markdown is stripped, `**latin**` becomes Unicode math-bold (looks bold on iPhone), Russian field labels get a `▸` mark, long numbered dumps become one bubble per item. Inkbox cannot send native iOS 18 text styles or carousels. Inbound photos reach the model as image parts (`z-ai/glm-5.3-flash` has vision): bytes are downloaded up to 8 MB so the picture survives the signed URL, larger or failed downloads become a URL part; the URL also stays in the text for `browser_task`. Other attachments stay URLs. Check: `npm run imessage:check`, `npm run image:check`.
 
 Voice notes: inbound audio is transcribed via OpenRouter STT (`/audio/transcriptions`) before the model sees it (`[voice] …`). Default `qwen/qwen3-asr-flash-2026-02-10` (best digit/time/brand accuracy on Russian in our bake-off, ~1.5 s, ~$0.001 per 30 s), fallback `openai/gpt-4o-transcribe`, language hint `ru`. iPhone CAF Opus is remuxed to Ogg in TypeScript — no provider accepts CAF and there is no ffmpeg on Vercel. If transcription fails and there is no other text, Bro sends a short Russian retry line and skips the agent. Override with `BRO_STT_MODEL` / `BRO_STT_FALLBACK_MODEL` / `BRO_STT_LANGUAGE`. Check: `npm run voice:check`.
 
@@ -54,3 +54,7 @@ Bro can also pay with the vault card inside a `browser_task` run itself, via Bro
 
 Bro's Inkbox mailbox is live: inbound `POST /webhooks/mail`, outbound `bro_mail`.
 Long work parks as Convex `jobs` (`npm run jobs:check`). Re-run `npm run webhooks` to subscribe mail.
+
+Convex `returns:` validators reject documents with unknown fields, so every full-document validator (`tenantDoc`, `jobDoc`, …) is `doc(schema, "<table>")` from convex-helpers, never a hand-copied field list. Adding a column to `convex/schema.ts` is enough. Check: `npm run schema:check` (fails on any `v.object({ _id: v.id(…) })` literal in `convex/`). Postmortem 2026-09-05: a hand-copied `tenantDoc` without `archiveSyncedAt` made every tenant read throw once the hourly archive sync wrote that column, and Bro went silent.
+
+A human turn never ends in silence. Every `from().send` is stamped `origin: human | wakeup`; when a human-origin turn fails (`turn.failed`) or the model ends it with no text (tool errors, provider hiccup), the channel sends one short «что-то сломалось» line itself. Background wakeups may still end empty. Check: `npm run silent:check`.

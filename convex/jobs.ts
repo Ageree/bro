@@ -1,4 +1,6 @@
 import { v } from "convex/values";
+import { doc } from "convex-helpers/validators";
+import schema from "./schema";
 import { mutation, query } from "./_generated/server";
 import { assertSecret } from "./secret";
 
@@ -11,23 +13,7 @@ const waitingFor = v.union(
   v.literal("browser"),
 );
 
-export const jobDoc = v.object({
-  _id: v.id("jobs"),
-  _creationTime: v.number(),
-  tenantId: v.id("tenants"),
-  goal: v.string(),
-  doneWhen: v.string(),
-  status: v.union(
-    v.literal("open"),
-    v.literal("waiting"),
-    v.literal("done"),
-    v.literal("failed"),
-  ),
-  waitingFor: v.optional(waitingFor),
-  note: v.optional(v.string()),
-  emailThreadId: v.optional(v.string()),
-  emailMessageId: v.optional(v.string()),
-});
+export const jobDoc = doc(schema, "jobs");
 
 function clip(s: string): string {
   return s.trim().slice(0, LINE);

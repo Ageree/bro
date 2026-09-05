@@ -1,25 +1,12 @@
 import { v } from "convex/values";
+import { doc } from "convex-helpers/validators";
+import schema from "./schema";
 import { mutation, query } from "./_generated/server";
 import { assertSecret } from "./secret";
 
 export const listForTenant = query({
   args: { secret: v.string(), tenantId: v.id("tenants") },
-  returns: v.array(
-    v.object({
-      _id: v.id("orders"),
-      _creationTime: v.number(),
-      tenantId: v.id("tenants"),
-      merchant: v.union(v.literal("wb"), v.literal("ozon"), v.literal("other")),
-      merchantOrderId: v.string(),
-      title: v.string(),
-      priceRub: v.number(),
-      status: v.union(
-        v.literal("placed"),
-        v.literal("cancelled"),
-        v.literal("unknown"),
-      ),
-    }),
-  ),
+  returns: v.array(doc(schema, "orders")),
   handler: async (ctx, { secret, tenantId }) => {
     assertSecret(secret);
     return await ctx.db
