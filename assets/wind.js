@@ -11,6 +11,9 @@
 
   var img = new Image();
   var lost = false;
+  // Each setup() owns one rAF loop; bumping the generation retires the
+  // previous loop even if loss and restore land between two ticks.
+  var gen = 0;
 
   // iOS Safari drops WebGL contexts under memory pressure. On loss, fall back
   // to the static CSS background; on restore, rebuild program, buffer and
@@ -18,6 +21,7 @@
   canvas.addEventListener("webglcontextlost", function (e) {
     e.preventDefault();
     lost = true;
+    gen++;
     canvas.classList.remove("on");
   });
   canvas.addEventListener("webglcontextrestored", function () {
@@ -39,6 +43,7 @@
     powerPreference: "low-power",
   });
   if (!gl || gl.isContextLost()) return;
+  var myGen = ++gen;
 
   var VERT =
     "attribute vec2 p;" +
@@ -142,7 +147,7 @@
   var last = 0;
   var start = 0;
   function frame(now) {
-    if (lost) return;
+    if (lost || myGen !== gen) return;
     requestAnimationFrame(frame);
     if (document.hidden) return;
     // ~30 fps is invisible for motion this slow and halves the GPU work.
