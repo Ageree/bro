@@ -1,7 +1,6 @@
 import { httpRouter } from "convex/server";
 import { httpAction } from "./_generated/server";
 import { internal } from "./_generated/api";
-import { isValidHandle } from "./lib/accessPolicy";
 import { newLoginCode, newSessionToken, sha256hex } from "./lib/cabinetPolicy";
 import {
   formatEvent,
@@ -134,11 +133,12 @@ http.route({
   method: "POST",
   handler: httpAction(async (ctx, request) => {
     const body = await jsonBody(request);
-    const handle = typeof body.handle === "string" ? body.handle.trim() : "";
-    if (!isValidHandle(handle)) return json({ ok: false, code: "unavailable" });
+    const rawLogin = typeof body.login === "string" ? body.login : body.handle;
+    const login = typeof rawLogin === "string" ? rawLogin.trim() : "";
+    if (!login) return json({ ok: false, code: "unavailable" });
     const code = newLoginCode();
     const begun = await ctx.runMutation(internal.cabinet.beginLogin, {
-      handle,
+      login,
       codeHash: await sha256hex(code),
       now: Date.now(),
     });
@@ -153,6 +153,7 @@ http.route({
         identityId: begun.identityId,
         conversationId: begun.conversationId,
         code,
+        handle: begun.handle,
       });
     } catch (err) {
       console.error("login send", err);
@@ -167,14 +168,15 @@ http.route({
   method: "POST",
   handler: httpAction(async (ctx, request) => {
     const body = await jsonBody(request);
-    const handle = typeof body.handle === "string" ? body.handle.trim() : "";
+    const rawLogin = typeof body.login === "string" ? body.login : body.handle;
+    const login = typeof rawLogin === "string" ? rawLogin.trim() : "";
     const code = typeof body.code === "string" ? body.code.trim() : "";
-    if (!isValidHandle(handle) || !/^\d{6}$/.test(code)) {
+    if (!login || !/^\d{6}$/.test(code)) {
       return json({ ok: false, code: "unknown" });
     }
     const now = Date.now();
     const finished = await ctx.runMutation(internal.cabinet.finishLogin, {
-      handle,
+      login,
       codeHash: await sha256hex(code),
       now,
     });
@@ -185,7 +187,7 @@ http.route({
       tokenHash: await sha256hex(token),
       now,
     });
-    return json({ ok: true, token, handle });
+    return json({ ok: true, token, handle: finished.handle });
   }),
 });
 

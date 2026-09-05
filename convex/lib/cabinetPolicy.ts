@@ -168,3 +168,46 @@ export function newLoginCode(): string {
   const n = new DataView(bytes.buffer).getUint32(0) % 1_000_000;
   return n.toString().padStart(6, "0");
 }
+
+export type LoginIdentifier =
+  | { kind: "handle"; handle: string }
+  | { kind: "phone"; phoneE164: string };
+
+export function parseLoginIdentifier(raw: string): LoginIdentifier | null {
+  const trimmed = raw.trim();
+  if (/^bro-[a-z0-9]{8}$/i.test(trimmed)) {
+    return { kind: "handle", handle: trimmed.toLowerCase() };
+  }
+  const hadPlus = trimmed.startsWith("+");
+  const digits = trimmed.replace(/[^\d]/g, "");
+  if (digits.length === 11 && digits.startsWith("8")) {
+    return { kind: "phone", phoneE164: `+7${digits.slice(1)}` };
+  }
+  if (digits.length === 11 && digits.startsWith("7")) {
+    return { kind: "phone", phoneE164: `+${digits}` };
+  }
+  if (digits.length === 10 && digits.startsWith("9")) {
+    return { kind: "phone", phoneE164: `+7${digits}` };
+  }
+  if (hadPlus && digits.length >= 10 && digits.length <= 15) {
+    return { kind: "phone", phoneE164: `+${digits}` };
+  }
+  return null;
+}
+
+export function loginLinkFor(
+  base: string | undefined,
+  handle: string,
+  code: string,
+): string | undefined {
+  if (!base) return undefined;
+  const trimmedBase = base.replace(/\/+$/, "");
+  if (!trimmedBase) return undefined;
+  return `${trimmedBase}/cabinet.html#login=${handle}.${code}`;
+}
+
+export function loginCodeText(code: string, link: string | undefined): string {
+  const first = `Код входа в кабинет bro: ${code}`;
+  if (!link) return first;
+  return `${first}\nИли просто нажми: ${link}`;
+}

@@ -46,6 +46,22 @@
         rgba(255, 255, 255, 0) 72%);
     }
 
+    /* WebGL layer that redraws the same photo with a slow noise-driven wind
+       field: the sky is untouched, the meadow ripples a few pixels. Stays
+       transparent (so the static .bg shows) until wind.js has a frame ready,
+       and never starts under prefers-reduced-motion or without WebGL. */
+    .bg-wind {
+      position: fixed;
+      inset: 0;
+      z-index: -2;
+      width: 100%;
+      height: 100%;
+      opacity: 0;
+      transition: opacity 0.8s ease;
+      pointer-events: none;
+    }
+    .bg-wind.on { opacity: 1; }
+
     .hero {
       min-height: 100svh;
       display: flex;
@@ -139,6 +155,7 @@
       padding: 1.2rem;
     }
     .modal[hidden] { display: none; }
+    [hidden] { display: none !important; }
     .sheet {
       width: min(24rem, 100%);
       background: rgba(255, 255, 255, 0.94);
@@ -237,6 +254,7 @@
 </head>
 <body>
   <div class="bg" aria-hidden="true"></div>
+  <canvas class="bg-wind" id="bg-wind" aria-hidden="true"></canvas>
   <div class="scrim" aria-hidden="true"></div>
 
   <header class="topbar">
@@ -248,22 +266,26 @@
   <div class="modal" id="login-modal" hidden>
     <div class="sheet" role="dialog" aria-labelledby="login-title">
       <h2 id="login-title">Вход в кабинет</h2>
-      <p class="hint">Код придёт сообщением от Bro в уже открытый чат iMessage.</p>
-      <label for="login-handle">Handle</label>
-      <input id="login-handle" autocomplete="username" placeholder="bro-xxxxxxxx" />
-      <button class="cta sheet-cta" id="login-send" type="button">Получить код</button>
+      <p class="hint">Тот номер, с которого ты пишешь Bro. Код придёт сообщением от Bro в iMessage.</p>
+      <div id="login-phone-row">
+        <label for="login-handle">Номер телефона</label>
+        <input id="login-handle" type="tel" autocomplete="tel" placeholder="+7 900 000-00-00" />
+        <button class="cta sheet-cta" id="login-send" type="button">Отправить код</button>
+      </div>
       <div id="login-code-row" hidden>
         <label for="login-code">Код из iMessage</label>
         <input id="login-code" inputmode="numeric" maxlength="6" autocomplete="one-time-code" />
         <button class="cta sheet-cta" id="login-verify" type="button">Войти</button>
+        <button class="text-close" id="login-resend" type="button" hidden>Отправить код ещё раз</button>
       </div>
+      <button class="text-close" id="login-other" type="button" hidden>Войти с другого номера</button>
       <p class="status" id="login-status"></p>
       <button class="text-close" id="login-cancel" type="button">Закрыть</button>
     </div>
   </div>
 
   <main class="hero">
-    <h1 class="wordmark">bro</h1>
+    <h1 class="wordmark">bro.</h1>
     <p class="tagline">Твой личный ИИ-агент</p>
     <p class="subline">Свой номер, своя почта, своя память. Записи к врачу, брони, поиск — берёт рутину на себя.</p>
     <a class="cta" id="request-access" href="#">Запросить доступ</a>
@@ -309,6 +331,7 @@
     <p>Связь: <a href="mailto:solsav1703@gmail.com">solsav1703@gmail.com</a></p>
     <p><a href="/oferta.html">Публичная оферта</a></p>
   </footer>
+  <script src="assets/wind.js" defer></script>
   <script src="assets/config.js"></script>
   <script src="assets/auth.js"></script>
   <script>
