@@ -1,4 +1,6 @@
 import { v } from "convex/values";
+import { doc } from "convex-helpers/validators";
+import schema from "./schema";
 import {
   internalAction,
   internalMutation,
@@ -19,20 +21,7 @@ import {
 
 const source = v.union(v.literal("gmail"), v.literal("calendar"));
 const status = v.union(v.literal("active"), v.literal("stopped"));
-const watcherDoc = v.object({
-  _id: v.id("watchers"),
-  _creationTime: v.number(),
-  tenantPhone: v.string(),
-  source,
-  triggerId: v.string(),
-  triggerSlug: v.string(),
-  about: v.string(),
-  filter: v.optional(v.string()),
-  status,
-  createdAt: v.number(),
-  lastEventAt: v.optional(v.number()),
-  events: v.optional(v.number()),
-});
+const watcherDoc = doc(schema, "watchers");
 
 export const create = mutation({
   args: {

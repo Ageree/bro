@@ -41,9 +41,16 @@ import {
 import { inboundGateFromResult } from "../../convex/lib/billingPolicy";
 import { eventPrompt } from "../../convex/lib/watcherPolicy.ts";
 import { syncTenantArchive } from "../lib/archive-sync.ts";
+import {
+  fallbackForCompleted,
+  fallbackForFailed,
+  takeFallbackSlot,
+  turnOrigin,
+} from "../lib/silent-turn.ts";
 
 // ponytail: in-memory only — lost on restart, not shared across instances
 const wakeupDelivered = new Map<string, number>();
+const fallbackSent = new Map<string, number>();
 
 function handleFromRequest(request: Request): string | undefined {
   try {
@@ -238,6 +245,7 @@ export default defineChannel({
             conversationId: msg.conversation_id,
             inkboxHandle: identityHandle,
             messageId: msg.id,
+            origin: "human",
           },
         },
       });
@@ -268,6 +276,7 @@ export default defineChannel({
           attributes: {
             conversationId: got.conversationId,
             inkboxHandle: got.handle,
+            origin: "human",
           },
         },
       });
@@ -380,8 +389,8 @@ export default defineChannel({
             principalId: tenantPhone,
             // ponytail: wire v1 не терпит undefined в attributes — ключ опускаем
             attributes: inkboxHandle
-              ? { conversationId, inkboxHandle }
-              : { conversationId },
+              ? { conversationId, inkboxHandle, origin: "wakeup" }
+              : { conversationId, origin: "wakeup" },
           },
         });
       } catch (err) {
@@ -394,10 +403,39 @@ export default defineChannel({
     }),
   ],
   events: {
-    async "message.completed"(event, channel) {
-      if (event.finishReason === "tool-calls" || !event.message) return;
+    async "turn.failed"(event, channel, ctx) {
       const conversationId = channel.continuation?.token;
       if (!conversationId) return;
+      console.error("turn failed", { conversationId, code: event.code, message: event.message });
+      const text = fallbackForFailed(turnOrigin(ctx?.session?.auth?.current?.attributes));
+      if (!text) return;
+      if (!takeFallbackSlot(fallbackSent, event.turnId, Date.now())) return;
+      const tenant = await getTenantByConversation(conversationId).catch(() => null);
+      await sendBlueIMessage({ conversationId, text, handle: tenant?.inkboxHandle }).catch(
+        (err) => console.error("turn failed fallback send failed", err),
+      );
+    },
+    async "message.completed"(event, channel, ctx) {
+      if (event.finishReason === "tool-calls") return;
+      const conversationId = channel.continuation?.token;
+      if (!conversationId) return;
+      if (!event.message) {
+        // Model ended a human's turn with nothing (tool errors, refusal,
+        // provider hiccup). Say so instead of leaving them on read.
+        const text = fallbackForCompleted({
+          finishReason: event.finishReason,
+          message: event.message,
+          origin: turnOrigin(ctx?.session?.auth?.current?.attributes),
+        });
+        if (!text) return;
+        console.error("empty turn", { conversationId, finishReason: event.finishReason });
+        if (!takeFallbackSlot(fallbackSent, event.turnId, Date.now())) return;
+        const tenant = await getTenantByConversation(conversationId).catch(() => null);
+        await sendBlueIMessage({ conversationId, text, handle: tenant?.inkboxHandle }).catch(
+          (err) => console.error("empty turn fallback send failed", err),
+        );
+        return;
+      }
       const { message, seen } = splitSeen(event.message);
       const tenant = await getTenantByConversation(conversationId).catch(() => null);
       if (seen !== undefined && tenant?.phoneE164) {

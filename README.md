@@ -54,3 +54,7 @@ Bro can also pay with the vault card inside a `browser_task` run itself, via Bro
 
 Bro's Inkbox mailbox is live: inbound `POST /webhooks/mail`, outbound `bro_mail`.
 Long work parks as Convex `jobs` (`npm run jobs:check`). Re-run `npm run webhooks` to subscribe mail.
+
+Convex `returns:` validators reject documents with unknown fields, so every full-document validator (`tenantDoc`, `jobDoc`, …) is `doc(schema, "<table>")` from convex-helpers, never a hand-copied field list. Adding a column to `convex/schema.ts` is enough. Check: `npm run schema:check` (fails on any `v.object({ _id: v.id(…) })` literal in `convex/`). Postmortem 2026-09-05: a hand-copied `tenantDoc` without `archiveSyncedAt` made every tenant read throw once the hourly archive sync wrote that column, and Bro went silent.
+
+A human turn never ends in silence. Every `from().send` is stamped `origin: human | wakeup`; when a human-origin turn fails (`turn.failed`) or the model ends it with no text (tool errors, provider hiccup), the channel sends one short «что-то сломалось» line itself. Background wakeups may still end empty. Check: `npm run silent:check`.

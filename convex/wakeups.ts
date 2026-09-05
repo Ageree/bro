@@ -1,4 +1,6 @@
 import { v } from "convex/values";
+import { doc } from "convex-helpers/validators";
+import schema from "./schema";
 import {
   internalAction,
   internalMutation,
@@ -40,21 +42,7 @@ const status = v.union(
   v.literal("cancelled"),
   v.literal("failed"),
 );
-const wakeupDoc = v.object({
-  _id: v.id("wakeups"),
-  _creationTime: v.number(),
-  tenantPhone: v.string(),
-  at: v.number(),
-  kind,
-  payload: v.string(),
-  status,
-  recurMinutes: v.optional(v.number()),
-  recurDailyHour: v.optional(v.number()),
-  tz: v.optional(v.string()),
-  lastSeen: v.optional(v.string()),
-  attempts: v.optional(v.number()),
-  gen: v.optional(v.number()),
-});
+const wakeupDoc = doc(schema, "wakeups");
 
 async function liveForTenant(
   ctx: QueryCtx | MutationCtx,

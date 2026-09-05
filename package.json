@@ -29,6 +29,8 @@
     "billing:check": "node --experimental-strip-types scripts/billing-check.ts",
     "cabinet:check": "node --experimental-strip-types scripts/cabinet-check.ts",
     "types:check": "tsc --noEmit",
+    "schema:check": "node --experimental-strip-types scripts/schema-check.ts",
+    "silent:check": "node --experimental-strip-types scripts/silent-turn-check.ts",
     "vault:check": "node --experimental-strip-types scripts/vault-check.ts",
     "voice:check": "node --experimental-strip-types scripts/voice-check.ts",
     "worker:check": "node --experimental-strip-types scripts/worker-check.ts",
