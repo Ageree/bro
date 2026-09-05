@@ -48,7 +48,7 @@
     // Gusts: a broad slow wave travelling left-to-right, so the whole field
     // breathes instead of shimmering uniformly.
     " float gust=0.55+0.45*sin(uv.x*4.0-t*0.55+sin(uv.y*6.0+t*0.3));" +
-    " vec2 q=vec2(uv.x*5.0-t*0.32,uv.y*9.0-t*0.06);" +
+    " vec2 q=vec2(uv.x*5.0-t*0.42,uv.y*9.0-t*0.08);" +
     " float nx=fbm(q)-0.5;" +
     " float ny=fbm(q+vec2(3.7,9.2))-0.5;" +
     " vec2 d=vec2(nx,ny*0.35)*amp*g*gust;" +
@@ -116,7 +116,7 @@
     gl.uniform2f(u.off, (W - dw) / 2, (H - dh) / 2);
     gl.uniform2f(u.size, dw, dh);
     gl.uniform2f(u.res, W, H);
-    gl.uniform1f(u.amp, 7 * dpr);
+    gl.uniform1f(u.amp, 10 * dpr);
   }
 
   var last = 0;
