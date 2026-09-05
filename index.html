@@ -46,63 +46,21 @@
         rgba(255, 255, 255, 0) 72%);
     }
 
-    /* Second copy of the same photo, clipped to the grass and gently
-       swayed so the meadow feels alive while the sky stays still. */
-    .bg-grass {
+    /* WebGL layer that redraws the same photo with a slow noise-driven wind
+       field: the sky is untouched, the meadow ripples a few pixels. Stays
+       transparent (so the static .bg shows) until wind.js has a frame ready,
+       and never starts under prefers-reduced-motion or without WebGL. */
+    .bg-wind {
       position: fixed;
       inset: 0;
       z-index: -2;
-      background: url("assets/meadow.webp") center / cover no-repeat;
-      clip-path: inset(54% 0 0 0);
-      -webkit-mask-image: linear-gradient(to bottom, transparent 0, black 18%);
-      mask-image: linear-gradient(to bottom, transparent 0, black 18%);
-      transform-origin: bottom center;
-    }
-    /* Two tufts of foreground grass in the bottom corners, never behind the
-       hero text. Each blade sways on its own phase. */
-    .tuft {
-      position: fixed;
-      bottom: -3px;
-      width: 240px;
-      height: 150px;
-      z-index: -1;
+      width: 100%;
+      height: 100%;
+      opacity: 0;
+      transition: opacity 0.8s ease;
       pointer-events: none;
-      overflow: visible;
     }
-    .tuft-l { left: -10px; }
-    .tuft-r { right: -10px; transform: scaleX(-1); }
-    .blade { transform-box: fill-box; transform-origin: 50% 100%; }
-    @media (max-width: 600px) {
-      .tuft { width: 150px; height: 100px; }
-    }
-
-    @media (prefers-reduced-motion: no-preference) {
-      .bg-grass {
-        will-change: transform;
-        animation: wind 7s ease-in-out infinite alternate;
-      }
-      .blade {
-        animation: sway 5s ease-in-out infinite alternate;
-        animation-delay: calc(var(--i, 0) * -0.9s);
-        animation-duration: calc(4.2s + var(--i, 0) * 0.45s);
-      }
-      @keyframes sway {
-        from { transform: rotate(-2deg) skewX(-1.5deg); }
-        to   { transform: rotate(2.6deg) skewX(1.5deg); }
-      }
-
-      @keyframes wind {
-        0%   { transform: skewX(-0.6deg) translateX(-4px); }
-        50%  { transform: skewX(0.1deg) translateX(0); }
-        100% { transform: skewX(0.7deg) translateX(4px); }
-      }
-
-      /* Finer wind ripple on the grass photo itself, only where it will
-         actually be noticed: fine-pointer, wide-viewport devices. */
-      @media (hover: hover) and (min-width: 900px) {
-        .bg-grass { filter: url(#wind-ripple); }
-      }
-    }
+    .bg-wind.on { opacity: 1; }
 
     .hero {
       min-height: 100svh;
@@ -295,37 +253,8 @@
 </head>
 <body>
   <div class="bg" aria-hidden="true"></div>
-  <div class="bg-grass" aria-hidden="true"></div>
+  <canvas class="bg-wind" id="bg-wind" aria-hidden="true"></canvas>
   <div class="scrim" aria-hidden="true"></div>
-
-  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
-    <filter id="wind-ripple" x="-10%" y="-10%" width="120%" height="120%">
-      <feTurbulence type="fractalNoise" numOctaves="2" seed="3" result="noise">
-        <animate attributeName="baseFrequency" dur="10s" repeatCount="indefinite"
-          values="0.008 0.02;0.011 0.016;0.008 0.02" />
-      </feTurbulence>
-      <feDisplacementMap in="SourceGraphic" in2="noise" scale="6" xChannelSelector="R" yChannelSelector="G" />
-    </filter>
-  </svg>
-
-  <svg class="tuft tuft-l" viewBox="0 0 240 150" preserveAspectRatio="xMinYMax meet" aria-hidden="true">
-    <path class="blade" style="--i:0" fill="#2f5330" opacity=".82" d="M22 150 C12 118 8 84 26 42 C26 90 30 120 22 150Z"/>
-    <path class="blade" style="--i:1" fill="#3f6b3a" opacity=".85" d="M46 150 C30 110 34 60 62 18 C54 70 58 115 46 150Z"/>
-    <path class="blade" style="--i:2" fill="#4f7e45" opacity=".8" d="M70 150 C64 120 72 80 96 56 C84 92 80 122 70 150Z"/>
-    <path class="blade" style="--i:3" fill="#2f5330" opacity=".8" d="M92 150 C82 112 88 62 118 30 C106 76 104 120 92 150Z"/>
-    <path class="blade" style="--i:4" fill="#4f7e45" opacity=".78" d="M118 150 C114 126 122 96 146 78 C132 104 128 128 118 150Z"/>
-    <path class="blade" style="--i:5" fill="#3f6b3a" opacity=".76" d="M142 150 C136 122 146 84 178 60 C160 96 154 126 142 150Z"/>
-    <path class="blade" style="--i:6" fill="#2f5330" opacity=".7" d="M168 150 C166 130 176 108 200 96 C186 116 180 134 168 150Z"/>
-  </svg>
-  <svg class="tuft tuft-r" viewBox="0 0 240 150" preserveAspectRatio="xMinYMax meet" aria-hidden="true">
-    <path class="blade" style="--i:3" fill="#3f6b3a" opacity=".82" d="M22 150 C12 118 8 84 26 42 C26 90 30 120 22 150Z"/>
-    <path class="blade" style="--i:5" fill="#2f5330" opacity=".85" d="M46 150 C30 110 34 60 62 18 C54 70 58 115 46 150Z"/>
-    <path class="blade" style="--i:1" fill="#4f7e45" opacity=".8" d="M70 150 C64 120 72 80 96 56 C84 92 80 122 70 150Z"/>
-    <path class="blade" style="--i:6" fill="#3f6b3a" opacity=".8" d="M92 150 C82 112 88 62 118 30 C106 76 104 120 92 150Z"/>
-    <path class="blade" style="--i:2" fill="#2f5330" opacity=".78" d="M118 150 C114 126 122 96 146 78 C132 104 128 128 118 150Z"/>
-    <path class="blade" style="--i:4" fill="#4f7e45" opacity=".76" d="M142 150 C136 122 146 84 178 60 C160 96 154 126 142 150Z"/>
-    <path class="blade" style="--i:0" fill="#2f5330" opacity=".7" d="M168 150 C166 130 176 108 200 96 C186 116 180 134 168 150Z"/>
-  </svg>
 
   <header class="topbar">
     <a class="ghost" id="cabinet-open" href="/cabinet.html" hidden>Кабинет</a>
@@ -401,6 +330,7 @@
     <p>Связь: <a href="mailto:solsav1703@gmail.com">solsav1703@gmail.com</a></p>
     <p><a href="/oferta.html">Публичная оферта</a></p>
   </footer>
+  <script src="assets/wind.js" defer></script>
   <script src="assets/config.js"></script>
   <script src="assets/auth.js"></script>
   <script>
