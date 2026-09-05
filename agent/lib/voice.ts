@@ -58,7 +58,7 @@ function sniffAudio(bytes: Uint8Array): "caf" | "m4a" | "ogg" | "wav" | "mp3" | 
   return null;
 }
 
-async function readLimited(
+export async function readLimited(
   res: Response,
   maxBytes: number,
 ): Promise<Uint8Array | { error: string }> {

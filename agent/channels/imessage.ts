@@ -31,6 +31,7 @@ import {
   toIMessageBubbles,
 } from "../lib/imessage-text";
 import { transcribeVoiceNote } from "../lib/voice";
+import { inboundUserContent } from "../lib/inbound-image.ts";
 import { VOICE_FAILED_REPLY } from "../lib/voice-policy";
 import { splitSeen } from "../lib/wakeup-text";
 import { wakeupCarriesRunId } from "../../convex/lib/browserFollowPolicy.ts";
@@ -227,15 +228,17 @@ export default defineChannel({
         return new Response(null, { status: 204 });
       }
       if (!inbound.text) return new Response(null, { status: 204 });
+      const content = await inboundUserContent(inbound.text, msg.media);
       console.log("imessage inbound", {
         remote,
         conversationId: msg.conversation_id,
         chars: inbound.text.length,
         voice: inbound.voice,
+        images: typeof content === "string" ? 0 : content.length - 1,
         messageType: msg.message_type,
       });
 
-      await from(msg.conversation_id).send(inbound.text, {
+      await from(msg.conversation_id).send(content, {
         auth: {
           authenticator: "inkbox",
           issuer: "inkbox",
