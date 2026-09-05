@@ -426,3 +426,16 @@ export async function listBrowserSessionIds(phoneE164: string): Promise<string[]
     phoneE164,
   });
 }
+
+export async function cabinetLoginFor(
+  phoneE164: string,
+): Promise<
+  | { ok: true; handle: string; code: string }
+  | { ok: false; code: "unknown" | "unbound" | "cooldown" }
+> {
+  return await client().action(api.cabinet.linkForPhone, {
+    secret: secret(),
+    phoneE164,
+    now: Date.now(),
+  });
+}

@@ -1,7 +1,12 @@
-import { v } from "convex/values";
+import { v, type Infer } from "convex/values";
 import { internal } from "./_generated/api";
-import { internalAction, internalMutation, internalQuery } from "./_generated/server";
-import { timingSafeEqual } from "./secret";
+import {
+  action,
+  internalAction,
+  internalMutation,
+  internalQuery,
+} from "./_generated/server";
+import { timingSafeEqual, assertSecret } from "./secret";
 import {
   browserAllowance,
   dayKey,
@@ -16,14 +21,22 @@ import {
 import {
   buildSnapshot,
   challengeExpiry,
+  loginCodeText,
+  loginLinkFor,
   loginStartDecision,
   loginVerifyDecision,
+  newLoginCode,
+  parseLoginIdentifier,
   paymentsOwnedBy,
   sessionExpiry,
   sessionLive,
+  sha256hex,
   type CabinetSnapshot,
+  type LoginIdentifier,
   type PaymentRow,
 } from "./lib/cabinetPolicy";
+import type { Doc } from "./_generated/dataModel";
+import type { MutationCtx } from "./_generated/server";
 import {
   normalizeBrowserProfileId,
   profileSyncStatus,
@@ -111,6 +124,64 @@ export const revokeSession = internalMutation({
   },
 });
 
+async function findTenantByLogin(
+  ctx: MutationCtx,
+  id: LoginIdentifier,
+): Promise<Doc<"tenants"> | null> {
+  if (id.kind === "handle") {
+    return await ctx.db
+      .query("tenants")
+      .withIndex("by_handle", (q) => q.eq("inkboxHandle", id.handle))
+      .unique();
+  }
+  return await ctx.db
+    .query("tenants")
+    .withIndex("by_phone", (q) => q.eq("phoneE164", id.phoneE164))
+    .first();
+}
+
+/** Shared by beginLogin and linkForPhone: apply the start decision, replace
+ * any prior challenge, and insert a fresh one keyed by the tenant's handle. */
+async function startChallenge(
+  ctx: MutationCtx,
+  tenant: Doc<"tenants"> | null,
+  codeHash: string,
+  now: number,
+): Promise<
+  | { ok: true; handle: string; identityId: string; conversationId: string }
+  | { ok: false; code: "unknown" | "unbound" | "cooldown" }
+> {
+  const handle = tenant?.inkboxHandle;
+  const prior = handle
+    ? await ctx.db
+        .query("loginChallenges")
+        .withIndex("by_handle", (q) => q.eq("handle", handle))
+        .unique()
+    : null;
+  const decision = loginStartDecision({
+    tenant,
+    lastChallengeAt: prior?.createdAt,
+    now,
+  });
+  if (decision !== "ok" || !tenant || !handle) {
+    return { ok: false as const, code: decision === "ok" ? "unknown" : decision };
+  }
+  if (prior) await ctx.db.delete(prior._id);
+  await ctx.db.insert("loginChallenges", {
+    handle,
+    codeHash,
+    expiresAt: challengeExpiry(now),
+    attempts: 0,
+    createdAt: now,
+  });
+  return {
+    ok: true as const,
+    handle,
+    identityId: tenant.inkboxIdentityId!,
+    conversationId: tenant.inkboxConversationId!,
+  };
+}
+
 const startResult = v.union(
   v.object({
     ok: v.literal(true),
@@ -130,47 +201,25 @@ const startResult = v.union(
 
 export const beginLogin = internalMutation({
   args: {
-    handle: v.string(),
+    login: v.string(),
     codeHash: v.string(),
     now: v.number(),
   },
   returns: startResult,
-  handler: async (ctx, { handle, codeHash, now }) => {
-    const tenant = await ctx.db
-      .query("tenants")
-      .withIndex("by_handle", (q) => q.eq("inkboxHandle", handle))
-      .unique();
-    const prior = await ctx.db
-      .query("loginChallenges")
-      .withIndex("by_handle", (q) => q.eq("handle", handle))
-      .unique();
-    const decision = loginStartDecision({
-      tenant,
-      lastChallengeAt: prior?.createdAt,
-      now,
-    });
-    if (decision !== "ok" || !tenant) {
-      return { ok: false as const, code: decision === "ok" ? "unknown" : decision };
-    }
-    if (prior) await ctx.db.delete(prior._id);
-    await ctx.db.insert("loginChallenges", {
-      handle,
-      codeHash,
-      expiresAt: challengeExpiry(now),
-      attempts: 0,
-      createdAt: now,
-    });
-    return {
-      ok: true as const,
-      identityId: tenant.inkboxIdentityId!,
-      conversationId: tenant.inkboxConversationId!,
-      handle,
-    };
+  handler: async (ctx, { login, codeHash, now }) => {
+    const id = parseLoginIdentifier(login);
+    if (!id) return { ok: false as const, code: "unknown" as const };
+    const tenant = await findTenantByLogin(ctx, id);
+    return await startChallenge(ctx, tenant, codeHash, now);
   },
 });
 
 const verifyResult = v.union(
-  v.object({ ok: v.literal(true), tenantId: v.id("tenants") }),
+  v.object({
+    ok: v.literal(true),
+    tenantId: v.id("tenants"),
+    handle: v.string(),
+  }),
   v.object({
     ok: v.literal(false),
     code: v.union(
@@ -185,21 +234,22 @@ const verifyResult = v.union(
 
 export const finishLogin = internalMutation({
   args: {
-    handle: v.string(),
+    login: v.string(),
     codeHash: v.string(),
     now: v.number(),
   },
   returns: verifyResult,
-  handler: async (ctx, { handle, codeHash, now }) => {
-    const tenant = await ctx.db
-      .query("tenants")
-      .withIndex("by_handle", (q) => q.eq("inkboxHandle", handle))
-      .unique();
-    const challenge = await ctx.db
-      .query("loginChallenges")
-      .withIndex("by_handle", (q) => q.eq("handle", handle))
-      .unique();
-    if (!tenant || !challenge) {
+  handler: async (ctx, { login, codeHash, now }) => {
+    const id = parseLoginIdentifier(login);
+    const tenant = id ? await findTenantByLogin(ctx, id) : null;
+    const handle = tenant?.inkboxHandle;
+    const challenge = handle
+      ? await ctx.db
+          .query("loginChallenges")
+          .withIndex("by_handle", (q) => q.eq("handle", handle))
+          .unique()
+      : null;
+    if (!tenant || !handle || !challenge) {
       return { ok: false as const, code: "unknown" as const };
     }
     const match = timingSafeEqual(codeHash, challenge.codeHash);
@@ -211,7 +261,7 @@ export const finishLogin = internalMutation({
     });
     if (decision.kind === "ok") {
       await ctx.db.delete(challenge._id);
-      return { ok: true as const, tenantId: tenant._id };
+      return { ok: true as const, tenantId: tenant._id, handle };
     }
     if (decision.kind === "wrong") {
       await ctx.db.patch(challenge._id, { attempts: challenge.attempts + 1 });
@@ -231,9 +281,13 @@ export const sendLoginCode = internalAction({
     identityId: v.string(),
     conversationId: v.string(),
     code: v.string(),
+    handle: v.optional(v.string()),
   },
   returns: v.null(),
-  handler: async (_ctx, { identityId, conversationId, code }) => {
+  handler: async (_ctx, { identityId, conversationId, code, handle }) => {
+    const link = handle
+      ? loginLinkFor(process.env.BRO_CABINET_BASE, handle, code)
+      : undefined;
     const q = new URLSearchParams({ agent_identity_id: identityId });
     const res = await fetch(
       `https://inkbox.ai/api/v1/imessage/messages?${q}`,
@@ -246,7 +300,7 @@ export const sendLoginCode = internalAction({
         },
         body: JSON.stringify({
           conversation_id: conversationId,
-          text: `Код входа в кабинет bro: ${code}`,
+          text: loginCodeText(code, link),
         }),
         signal: AbortSignal.timeout(20_000),
       },
@@ -256,6 +310,71 @@ export const sendLoginCode = internalAction({
       throw new Error(`inkbox send ${res.status}: ${text.slice(0, 200)}`);
     }
     return null;
+  },
+});
+
+const linkStartResult = v.union(
+  v.object({ ok: v.literal(true), handle: v.string() }),
+  v.object({
+    ok: v.literal(false),
+    code: v.union(
+      v.literal("unknown"),
+      v.literal("unbound"),
+      v.literal("cooldown"),
+    ),
+  }),
+);
+
+export const beginLoginForPhone = internalMutation({
+  args: {
+    phoneE164: v.string(),
+    codeHash: v.string(),
+    now: v.number(),
+  },
+  returns: linkStartResult,
+  handler: async (ctx, { phoneE164, codeHash, now }) => {
+    const tenant = await findTenantByLogin(ctx, { kind: "phone", phoneE164 });
+    const result = await startChallenge(ctx, tenant, codeHash, now);
+    if (!result.ok) return result;
+    return { ok: true as const, handle: result.handle };
+  },
+});
+
+const linkForPhoneResult = v.union(
+  v.object({ ok: v.literal(true), handle: v.string(), code: v.string() }),
+  v.object({
+    ok: v.literal(false),
+    code: v.union(
+      v.literal("unknown"),
+      v.literal("unbound"),
+      v.literal("cooldown"),
+    ),
+  }),
+);
+
+// Public but secret-guarded: lets the trusted agent (cabinet_link tool) mint
+// a fresh login code + one-tap link for a phone it already has an iMessage
+// thread with, so it can hand the link straight to the person. The plaintext
+// code is returned here and never stored — only its hash lives in the
+// loginChallenges table. This is an action (not a mutation) because it needs
+// sha256hex, which uses crypto.subtle; storage happens via an internal
+// mutation, mirroring how http.ts handles /login/start.
+export const linkForPhone = action({
+  args: { secret: v.string(), phoneE164: v.string(), now: v.number() },
+  returns: linkForPhoneResult,
+  handler: async (
+    ctx,
+    { secret, phoneE164, now },
+  ): Promise<Infer<typeof linkForPhoneResult>> => {
+    assertSecret(secret);
+    const code = newLoginCode();
+    const result = await ctx.runMutation(internal.cabinet.beginLoginForPhone, {
+      phoneE164,
+      codeHash: await sha256hex(code),
+      now,
+    });
+    if (!result.ok) return result;
+    return { ok: true as const, handle: result.handle, code };
   },
 });
 

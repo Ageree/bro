@@ -230,15 +230,19 @@
   <div class="modal" id="login-modal" hidden>
     <div class="sheet" role="dialog" aria-labelledby="login-title">
       <h2 id="login-title">Вход в кабинет</h2>
-      <p class="hint">Код придёт сообщением от Bro в уже открытый чат iMessage.</p>
-      <label for="login-handle">Handle</label>
-      <input id="login-handle" autocomplete="username" placeholder="bro-xxxxxxxx" />
-      <button class="cta sheet-cta" id="login-send" type="button">Получить код</button>
+      <p class="hint">Тот номер, с которого ты пишешь Bro. Код придёт сообщением от Bro в iMessage.</p>
+      <div id="login-phone-row">
+        <label for="login-handle">Номер телефона</label>
+        <input id="login-handle" type="tel" inputmode="tel" autocomplete="tel" placeholder="+7 900 000-00-00" />
+        <button class="cta sheet-cta" id="login-send" type="button">Отправить код</button>
+      </div>
       <div id="login-code-row" hidden>
         <label for="login-code">Код из iMessage</label>
         <input id="login-code" inputmode="numeric" maxlength="6" autocomplete="one-time-code" />
         <button class="cta sheet-cta" id="login-verify" type="button">Войти</button>
+        <button class="text-close" id="login-resend" type="button" hidden>Отправить код ещё раз</button>
       </div>
+      <button class="text-close" id="login-other" type="button" hidden>Войти с другого номера</button>
       <p class="status" id="login-status"></p>
       <button class="text-close" id="login-cancel" type="button">Закрыть</button>
     </div>

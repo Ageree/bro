@@ -44,7 +44,7 @@ Cap is `BRO_IDENTITY_CAP` (default 100).
 
 Billing is a one-shot YooKassa month. Set `YOOKASSA_SHOP_ID` / `YOOKASSA_SECRET_KEY` on the Convex deployment; webhook URL is `https://<deployment>.convex.site/yookassa`. Empty keys keep the free beta, with daily message and monthly browser-job limits.
 
-The landing «Войти» button opens a cabinet. First access still goes through «Запросить доступ». Later logins send a one-time code to the bound iMessage thread. Cabinet reads (`GET /me`) take a session token, never a tenant id. Check: `npm run cabinet:check`.
+The landing «Войти» button opens a cabinet. First access still goes through «Запросить доступ». Later logins accept either the Inkbox handle or the phone number the person texts Bro from — `parseLoginIdentifier` in `convex/lib/cabinetPolicy.ts` normalizes Russian phone formats — and send a one-time code to the bound iMessage thread. When `BRO_CABINET_BASE` is set on the Convex deployment, that message carries a one-tap `cabinet.html#login=...` link alongside the code, so most people never type it. Bro can also send a cabinet link on request, without waiting for the person to ask on the site, via the `cabinet_link` agent tool backed by `linkForPhone`. Cabinet reads (`GET /me`) take a session token, never a tenant id. Check: `npm run cabinet:check`.
 
 Site logins: Bro texts a link. The person opens it, signs in on the site, and cookies stay on their Browser Use Cloud profile. Bro never sees the password. If a session expires, Bro sends another link. Check: `npm run profile:check`.
 
