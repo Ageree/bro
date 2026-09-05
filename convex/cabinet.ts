@@ -360,13 +360,16 @@ const linkForPhoneResult = v.union(
 // sha256hex, which uses crypto.subtle; storage happens via an internal
 // mutation, mirroring how http.ts handles /login/start.
 export const linkForPhone = action({
-  args: { secret: v.string(), phoneE164: v.string(), now: v.number() },
+  args: { secret: v.string(), phoneE164: v.string() },
   returns: linkForPhoneResult,
   handler: async (
     ctx,
-    { secret, phoneE164, now },
+    { secret, phoneE164 },
   ): Promise<Infer<typeof linkForPhoneResult>> => {
     assertSecret(secret);
+    // The clock is ours, never the caller's: a supplied timestamp could
+    // sidestep the cooldown or stretch the challenge TTL.
+    const now = Date.now();
     const code = newLoginCode();
     const result = await ctx.runMutation(internal.cabinet.beginLoginForPhone, {
       phoneE164,

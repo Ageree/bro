@@ -130,7 +130,7 @@
         sending = false;
         btn.removeAttribute("aria-busy");
         if (!data.ok) {
-          if (data.code === "unknown" || data.code === "unbound") {
+          if (data.code === "unavailable" || data.code === "unknown" || data.code === "unbound") {
             if (opts.auto) {
               setAutoMode(false);
               setStatus("");
@@ -304,8 +304,15 @@
   // A tap on the iMessage magic link lands here as #login=<handle>.<code>;
   // verify it right away, before painted() decides which header buttons show.
   var magicMatch = /^#login=(.+)\.(\d{6})$/.exec(location.hash);
+  var mLogin = "";
   if (magicMatch) {
-    var mLogin = decodeURIComponent(magicMatch[1]);
+    try {
+      mLogin = decodeURIComponent(magicMatch[1]);
+    } catch (_) {
+      mLogin = "";
+    }
+  }
+  if (mLogin) {
     var mCode = magicMatch[2];
     var base = site();
     if (base) {
@@ -347,6 +354,7 @@
       painted();
     }
   } else {
+    if (magicMatch) history.replaceState(null, "", location.pathname + location.search);
     painted();
   }
 })();

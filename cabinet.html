@@ -146,6 +146,7 @@
       padding: 1.2rem;
     }
     .modal[hidden] { display: none; }
+    [hidden] { display: none !important; }
     .sheet {
       width: min(24rem, 100%);
       background: rgba(255, 255, 255, 0.94);
@@ -210,7 +211,7 @@
       <p class="hint">Тот номер, с которого ты пишешь Bro. Код придёт сообщением от Bro в iMessage.</p>
       <div id="login-phone-row">
         <label for="login-handle">Номер телефона</label>
-        <input id="login-handle" type="tel" inputmode="tel" autocomplete="tel" placeholder="+7 900 000-00-00" />
+        <input id="login-handle" type="tel" autocomplete="tel" placeholder="+7 900 000-00-00" />
         <button class="cta sheet-cta" id="login-send" type="button">Отправить код</button>
       </div>
       <div id="login-code-row" hidden>

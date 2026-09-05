@@ -436,6 +436,5 @@ export async function cabinetLoginFor(
   return await client().action(api.cabinet.linkForPhone, {
     secret: secret(),
     phoneE164,
-    now: Date.now(),
   });
 }

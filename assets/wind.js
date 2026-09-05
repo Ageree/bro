@@ -9,6 +9,27 @@
   if (!canvas) return;
   if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
 
+  var img = new Image();
+  var lost = false;
+
+  // iOS Safari drops WebGL contexts under memory pressure. On loss, fall back
+  // to the static CSS background; on restore, rebuild program, buffer and
+  // texture from scratch.
+  canvas.addEventListener("webglcontextlost", function (e) {
+    e.preventDefault();
+    lost = true;
+    canvas.classList.remove("on");
+  });
+  canvas.addEventListener("webglcontextrestored", function () {
+    lost = false;
+    setup();
+  });
+
+  img.onload = setup;
+  img.onerror = function () {};
+  img.src = "assets/meadow.webp";
+
+  function setup() {
   var gl = canvas.getContext("webgl", {
     alpha: true,
     antialias: false,
@@ -17,7 +38,7 @@
     preserveDrawingBuffer: false,
     powerPreference: "low-power",
   });
-  if (!gl) return;
+  if (!gl || gl.isContextLost()) return;
 
   var VERT =
     "attribute vec2 p;" +
@@ -95,7 +116,6 @@
     amp: gl.getUniformLocation(prog, "amp"),
   };
 
-  var img = new Image();
   var ready = false;
   var W = 0, H = 0, dpr = 1;
 
@@ -122,6 +142,7 @@
   var last = 0;
   var start = 0;
   function frame(now) {
+    if (lost) return;
     requestAnimationFrame(frame);
     if (document.hidden) return;
     // ~30 fps is invisible for motion this slow and halves the GPU work.
@@ -137,7 +158,7 @@
     }
   }
 
-  img.onload = function () {
+  {
     var tex = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, tex);
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
@@ -148,7 +169,6 @@
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.disable(gl.BLEND);
     requestAnimationFrame(frame);
-  };
-  img.onerror = function () {};
-  img.src = "assets/meadow.webp";
+  }
+  }
 })();
