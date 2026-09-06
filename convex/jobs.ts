@@ -83,18 +83,43 @@ export const wait = mutation({
     const patch: {
       status: "waiting";
       waitingFor: typeof args.waitingFor;
+      waitingSince: number;
       note?: string;
       emailThreadId?: string;
       emailMessageId?: string;
     } = {
       status: "waiting",
       waitingFor: args.waitingFor,
+      waitingSince: Date.now(),
     };
     if (args.note) patch.note = clip(args.note);
     if (args.emailThreadId) patch.emailThreadId = args.emailThreadId;
     if (args.emailMessageId) patch.emailMessageId = args.emailMessageId;
     await ctx.db.patch(args.jobId, patch);
     const row = await ctx.db.get(args.jobId);
+    if (!row) return { error: "missing" };
+    return row;
+  },
+});
+
+export const markNudged = mutation({
+  args: {
+    secret: v.string(),
+    phoneE164: v.string(),
+    jobId: v.id("jobs"),
+  },
+  returns: v.union(jobDoc, v.object({ error: v.string() })),
+  handler: async (ctx, { secret, phoneE164, jobId }) => {
+    assertSecret(secret);
+    const tenant = await ctx.db
+      .query("tenants")
+      .withIndex("by_phone", (q) => q.eq("phoneE164", phoneE164))
+      .first();
+    if (!tenant) return { error: "unknown tenant" };
+    const job = await ctx.db.get(jobId);
+    if (!job || job.tenantId !== tenant._id) return { error: "unknown job" };
+    await ctx.db.patch(jobId, { lastNudgeAt: Date.now() });
+    const row = await ctx.db.get(jobId);
     if (!row) return { error: "missing" };
     return row;
   },
@@ -194,7 +219,11 @@ export const wake = query({
         const wait = j.waitingFor ? ` waitingFor=${j.waitingFor}` : "";
         const note = j.note ? ` note=${j.note}` : "";
         const mail = j.emailMessageId ? ` emailMessageId=${j.emailMessageId}` : "";
-        return `id=${j._id} goal="${j.goal}" doneWhen="${j.doneWhen}" status=${j.status}${wait}${note}${mail}`;
+        const since =
+          j.waitingSince != null ? ` waitingSince=${j.waitingSince}` : "";
+        const nudged =
+          j.lastNudgeAt != null ? ` lastNudgeAt=${j.lastNudgeAt}` : "";
+        return `id=${j._id} goal="${j.goal}" doneWhen="${j.doneWhen}" status=${j.status}${wait}${note}${mail}${since}${nudged}`;
       });
   },
 });

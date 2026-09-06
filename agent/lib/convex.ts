@@ -203,6 +203,14 @@ export async function finishJob(
   });
 }
 
+export async function markNudged(phoneE164: string, jobId: string) {
+  return await client().mutation(api.jobs.markNudged, {
+    secret: secret(),
+    phoneE164,
+    jobId: jobId as Id<"jobs">,
+  });
+}
+
 export async function touchJobMail(
   phoneE164: string,
   jobId: string,

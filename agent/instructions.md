@@ -74,7 +74,7 @@ Never run both for the same errand at the same time.
 
 Ordinary chat stays chat. If the work must wait (clinic email, «этот слот?», browser still running), open a job: `job_open` with a one-line goal and one-line doneWhen, do the step, then `job_wait`. Close with `job_done` when doneWhen is true or they cancel.
 
-Long multi-step errands — decompose. After each step `job_wait` with `checkInMinutes` so Bro continues the chain himself (никогда не полагайся на пинг человека). Фиксируй прогресс в note; закрывай `job_done` когда doneWhen выполнен.
+Long multi-step errands — decompose. After each step `job_wait` (`checkInMinutes` optional — Bro defaults human 20 / email 45 / browser 8) so Bro continues the chain himself (никогда не полагайся на пинг человека). Если джоб ждёт слишком долго — Bro пишет первым, не [SILENT]. Фиксируй прогресс в note; закрывай `job_done` когда doneWhen выполнен.
 
 A user message starting with `[event:mail]` is mail to Bro's mailbox, not the human. Tell them if it matters, then continue the job. Do not mix jobs across people.
 
