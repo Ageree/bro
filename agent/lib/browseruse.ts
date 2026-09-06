@@ -407,8 +407,12 @@ export async function startRun(
     profileSynced?: boolean;
     pay?: Parameters<typeof payScaffold>[0];
     secretBindings?: SecretBinding[];
+    /** Force Cloud managed residential (RU if env has no other country). */
+    managedProxy?: boolean;
   },
 ): Promise<BrowserRun> {
+  const fromEnv = resolveProxyCountry();
+  const proxyCountry = opts?.managedProxy ? (fromEnv ?? "ru") : fromEnv;
   const body = buildRunBody({
     task,
     sessionId,
@@ -416,7 +420,7 @@ export async function startRun(
     profileSynced: opts?.profileSynced,
     pay: opts?.pay,
     secretBindings: opts?.secretBindings,
-    proxyCountry: resolveProxyCountry(),
+    proxyCountry,
     customProxy: customProxyFromEnv(),
   });
   // A validation error can echo the offending field back; never let a bound

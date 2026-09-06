@@ -9,9 +9,11 @@ import {
   createProfile,
   envSyncedProfileId,
   loginWaitTask,
+  customProxyFromEnv,
   startRun,
   waitForLiveUrl,
 } from "../lib/browseruse";
+import { firstHopUsesManagedProxy } from "../../convex/lib/proxyFallback.ts";
 import { countBrowserJobStart, setBrowser, upsertTenant } from "../lib/convex";
 import { sendBlueIMessage } from "../lib/inkbox";
 import { tenantId } from "../lib/tenant";
@@ -86,9 +88,11 @@ export default defineTool({
     }
 
     const task = loginWaitTask(page);
+    const managedProxy = firstHopUsesManagedProxy(`${page} ${site ?? ""}`);
     const started = await startRun(task, undefined, {
       profileId,
       profileSynced: false,
+      ...(managedProxy ? { managedProxy: true } : {}),
     });
     const withLive = await waitForLiveUrl(started);
     await setBrowser(phone, {
@@ -97,6 +101,7 @@ export default defineTool({
       browserStatus: withLive.status,
       browserStartedAt: Date.now(),
       browserProfileId: profileId,
+      browserProxyRetried: Boolean(customProxyFromEnv()) || managedProxy,
       ...(withLive.sessionId ? { browserSessionId: withLive.sessionId } : {}),
       ...(withLive.liveUrl ? { browserLiveUrl: withLive.liveUrl } : {}),
     });

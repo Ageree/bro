@@ -109,3 +109,35 @@ export async function pollStatus(
   if (!status) return hydrate(runId, sessionId);
   return { runId, sessionId, status };
 }
+
+/** Second hop after a proxyless block. Does not re-bind pay secrets. */
+export async function startManagedProxyRun(opts: {
+  task: string;
+  profileId?: string;
+}): Promise<BrowserRun> {
+  const body: Record<string, unknown> = {
+    task: opts.task,
+    model: "gpt-5.6-luna",
+    maxCostUsd: 0.6,
+    modelParams: { reasoning: { effort: "medium" } },
+    browserSettings: {
+      proxyCountryCode: "ru",
+      ...(opts.profileId ? { profileId: opts.profileId } : {}),
+    },
+  };
+  const created = await bu("/runs", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+  const runId = pick(created, ["id", "runId", "run_id"]);
+  if (!runId) {
+    throw new Error(`browser-use create: no id in ${JSON.stringify(created).slice(0, 400)}`);
+  }
+  const sessionId = pick(created, ["sessionId", "session_id"]);
+  return {
+    runId,
+    ...(sessionId ? { sessionId } : {}),
+    status: pick(created, ["status"]) ?? "queued",
+    liveUrl: pick(created, ["liveUrl", "live_url"]),
+  };
+}

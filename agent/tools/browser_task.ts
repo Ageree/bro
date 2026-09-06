@@ -23,10 +23,17 @@ import {
   getProfile,
   hydrate,
   isTerminal,
+  customProxyFromEnv,
   startRun,
   waitForRun,
   type BrowserRun,
 } from "../lib/browseruse";
+import {
+  firstHopUsesManagedProxy,
+  needsProxyRetry,
+  proxyFallbackEnabled,
+  shouldStartWithManagedProxy,
+} from "../../convex/lib/proxyFallback.ts";
 import { profileSyncStatus } from "../../convex/lib/browserProfilePolicy.ts";
 import { sendBlueIMessage } from "../lib/inkbox";
 import { tenantId } from "../lib/tenant";
@@ -64,6 +71,7 @@ async function persist(
     browserProfileId?: string;
     browserCookieDomains?: string[];
     browserProfileSyncedAt?: number;
+    browserProxyRetried?: boolean;
   },
 ): Promise<void> {
   await setBrowser(phone, {
@@ -310,15 +318,21 @@ export default defineTool({
     }
 
     const resolved = await resolveSyncedProfile(phone, tenant);
+    const managedProxy =
+      firstHopUsesManagedProxy(task) ||
+      Boolean(payHosts?.some((h) => shouldStartWithManagedProxy(h)));
+    const proxyDone = Boolean(customProxyFromEnv()) || managedProxy;
     const started = await startRun(task, reset ? undefined : tenant.browserSessionId, {
       ...(resolved.profileId
         ? { profileId: resolved.profileId, profileSynced: resolved.synced }
         : {}),
       ...(payOpts ? { pay: payOpts, secretBindings } : {}),
+      ...(managedProxy ? { managedProxy: true } : {}),
     });
     const startedAt = Date.now();
     await persist(phone, started, task, {
       browserStartedAt: startedAt,
+      browserProxyRetried: proxyDone,
       ...(resolved.profileId && resolved.profileId !== tenant.browserProfileId
         ? { browserProfileId: resolved.profileId }
         : {}),
@@ -340,7 +354,40 @@ export default defineTool({
         console.error("browser start notify failed", err);
       }
     }
-    const done = await waitForRun(started.runId, started.sessionId, WAIT_MS);
+    let done = await waitForRun(started.runId, started.sessionId, WAIT_MS);
+    if (
+      isTerminal(done.status) &&
+      !proxyDone &&
+      !payOpts &&
+      proxyFallbackEnabled() &&
+      needsProxyRetry(done.result)
+    ) {
+      const retried = await startRun(task, undefined, {
+        ...(resolved.profileId
+          ? { profileId: resolved.profileId, profileSynced: resolved.synced }
+          : {}),
+        managedProxy: true,
+      });
+      const retryAt = Date.now();
+      await persist(phone, retried, task, {
+        browserStartedAt: retryAt,
+        browserProxyRetried: true,
+      });
+      done = await waitForRun(retried.runId, retried.sessionId, WAIT_MS);
+      await persist(phone, done, task);
+      return settle(
+        phone,
+        done,
+        task,
+        {
+          started: true,
+          proxyRetry: true,
+          alreadyNotified: Boolean(conv),
+          ...profileExtra(resolved),
+        },
+        { startedAt: retryAt, runId: retried.runId },
+      );
+    }
     await persist(phone, done, task);
     return settle(
       phone,
