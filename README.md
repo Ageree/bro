@@ -24,6 +24,8 @@ npm run dev:local           # eve :2000 + Inkbox tunnel (needed for iMessage)
 
 Production (you are just a user on iMessage): Convex cloud + `eve deploy` on Vercel. Webhook URL is the Vercel host, not the laptop tunnel.
 
+Vercel projects (one team, do not mix them up): `bro-agent` is the eve agent (`eve deploy --project bro-agent`, https://bro-agent.vercel.app, serves webhooks, cabinet and vault pages). `brobro` is this repo's static landing (`npm run vercel-build` → `public/`, domains brobro.tech, www.brobro.tech, bro-imessage.vercel.app; deploy with `vercel deploy --prod` after `vercel link --project brobro`). `sthrip` (formerly named `bro`) belongs to the pentest product from the `cyber-company` repo and owns sthrip.dev / sthrip.com — never deploy Bro there.
+
 `npm run dev` is TUI-only (no public URL). Local iMessage still needs the tunnel: `https://bro-ageree.inkboxwire.com`.
 
 Onboard: after provision, the human texts `connect @bro-ageree` to the printed router **as iMessage** (blue). iPhone Settings → Messages → Send as SMS = off.
