@@ -41,7 +41,7 @@ function asSnap(msg: {
   };
 }
 
-/** Recent inbound on Bro's Inkbox mailbox. Newest first. Does not mark read. */
+/** iterEmails does not mark read. */
 export async function listBroInbox(opts: {
   handle: string;
   sinceMs?: number;
@@ -65,10 +65,7 @@ export async function listBroInbox(opts: {
   return out;
 }
 
-/**
- * Fetch full body only for OTP-looking mail whose snippet has no code.
- * getMessage marks inbound read — keep the cap small.
- */
+/** getMessage marks inbound read — keep the cap small. */
 export async function fillOtpBodies(
   handle: string,
   snaps: readonly InboxSnap[],

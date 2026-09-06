@@ -24,10 +24,6 @@ function mergeSnaps(
   return out;
 }
 
-/**
- * Bro inbox first, then the person's archive. Deterministic extract —
- * the model must not invent a code.
- */
 export async function findFreshOtp(opts: {
   phone: string;
   handle?: string;

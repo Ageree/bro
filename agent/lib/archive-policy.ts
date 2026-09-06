@@ -53,7 +53,6 @@ export function emailToDocument(raw: unknown): ArchiveDocument | null {
   };
 }
 
-/** Inbound letter on Bro's Inkbox mailbox → archive document. */
 export function inkboxMailToDocument(raw: unknown): ArchiveDocument | null {
   const m = rec(raw);
   const id = str(m.id) || str(m.messageId) || str(m.message_id);

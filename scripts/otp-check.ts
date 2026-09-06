@@ -1,4 +1,3 @@
-/** Fails if OTP policy asks in chat before mail, or extracts junk as a code. */
 import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import {
@@ -138,6 +137,20 @@ const stale = pickOtp(
   now,
 );
 assert.equal(stale.status, "missing", "stale-only window is missing");
+assert.equal(
+  pickOtp(
+    [
+      {
+        code: "333333",
+        source: "archive",
+        confidence: "high",
+      },
+    ],
+    now,
+  ).status,
+  "missing",
+  "undated archive hit is not fresh",
+);
 
 const twoHigh = pickOtp(
   [

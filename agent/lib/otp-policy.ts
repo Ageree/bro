@@ -1,9 +1,3 @@
-/**
- * Instinct OTP policy: codes from banks / WB / clinics often land in Bro's
- * mailbox or the person's archive. Pure functions only — the Inkbox / archive
- * clients live in bro-inbox.ts and otp-lookup.ts.
- */
-
 export const OTP_WINDOW_MS = 15 * 60_000;
 export const OTP_CHECK_IN_MINUTES = 3;
 export const OTP_BODY_CHARS = 2000;
@@ -42,7 +36,6 @@ const KNOWN_SENDERS =
 const YEAR = /^(?:19|20)\d{2}$/;
 const ORDERISH = /заказ|order|чек|invoice|сумм|руб|₽|шт/i;
 
-/** Worker / coordinator text that is asking for a one-time code. */
 export function isOtpChallenge(text: string): boolean {
   const t = text.trim();
   if (!t) return false;
@@ -70,7 +63,6 @@ export function looksLikeOtpMail(opts: {
   return KNOWN_SENDERS.test(hay) && extractOtpCodes(hay).length > 0;
 }
 
-/** 4–8 digit tokens that are not years or order/price fragments. */
 export function extractOtpCodes(text: string): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
@@ -130,18 +122,16 @@ function rank(h: OtpCandidate, nowMs: number): number {
   return src * 10 + conf * 3 + age;
 }
 
-/** Prefer Bro inbox / wake over archive; one code wins, two high rivals → ambiguous. */
 export function pickOtp(
   hits: readonly OtpCandidate[],
   nowMs = Date.now(),
 ): OtpPick {
   const fresh = hits.filter(
-    (h) => h.atMs == null || nowMs - h.atMs <= OTP_WINDOW_MS,
+    (h) => h.atMs != null && nowMs - h.atMs <= OTP_WINDOW_MS,
   );
   if (fresh.length === 0) return { status: "missing" };
-  const pool = fresh;
 
-  const sorted = [...pool].sort((a, b) => rank(b, nowMs) - rank(a, nowMs));
+  const sorted = [...fresh].sort((a, b) => rank(b, nowMs) - rank(a, nowMs));
   const best = sorted[0]!;
   const rivals = sorted.filter(
     (h) =>
@@ -168,14 +158,16 @@ export function otpSearchQuery(hint?: string): string {
   return (h ? `${base} ${h}` : base).slice(0, 200);
 }
 
-/** Pull a code out of a `[event:mail]` wake, if the letter is an OTP. */
-export function otpFromEventMail(text: string): OtpPick {
+export function otpFromEventMail(text: string, nowMs = Date.now()): OtpPick {
   if (!/\[event:mail\]/i.test(text)) return { status: "missing" };
   const from = /from:\s*(.+)/i.exec(text)?.[1]?.trim();
   const subject = /subject:\s*(.+)/i.exec(text)?.[1]?.trim();
   const bodyIdx = text.search(/^body:\s*$/m);
   const body = bodyIdx >= 0 ? text.slice(bodyIdx + 5).trim() : text;
-  return pickOtp(candidatesFromMail("event", { from, subject, body }));
+  return pickOtp(
+    candidatesFromMail("event", { from, subject, body, atMs: nowMs }),
+    nowMs,
+  );
 }
 
 export function formatOtpLookup(result: OtpPick): OtpLookupResult {
