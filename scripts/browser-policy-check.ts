@@ -521,6 +521,12 @@ assert(
 assert(shouldStartWithManagedProxy("скотч на ozon") === true, "ozon first hop");
 assert(shouldStartWithManagedProxy("найди на авито") === true, "avito first hop");
 assert(shouldStartWithManagedProxy("скотч на wildberries") === false, "wb proxyless first");
+assert(shouldStartWithManagedProxy("такси до шереметьево") === false, "bare taxi not forced");
+assert(
+  shouldStartWithManagedProxy("закажи яндекс такси до шереметьево") === true,
+  "yandex taxi first hop",
+);
+assert(shouldStartWithManagedProxy("открой go.yandex") === true, "go.yandex first hop");
 assert(
   needsProxyRetry('{"title":"Похоже, нет соединения","what":"disable VPN"}') ===
     true,
@@ -531,6 +537,10 @@ assert(
   "avito ip block retries",
 );
 assert(needsProxyRetry("SmartCaptcha appeared") === true, "ym captcha retries");
+assert(
+  needsProxyRetry("Город Колумбус не поддерживается сервисом такси") === true,
+  "taxi geo retries",
+);
 assert(
   needsProxyRetry("Wildberries homepage shows catalog, 274 ₽") === false,
   "wb success no retry",

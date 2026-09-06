@@ -1,14 +1,15 @@
 /**
  * Proxyless Cloud (AWS US) vs managed RU residential.
  * 2026-09-06 live trial: WB search worked without a proxy; Ozon died
- * ("нет соединения"); Avito IP-blocked; Yandex Market search → SmartCaptcha.
+ * ("нет соединения"); Avito IP-blocked; Yandex Market search → SmartCaptcha;
+ * Yandex Taxi/Go homepage loads, then "Город Колумбус не поддерживается".
  */
 
 const PROXY_FIRST =
-  /ozon(\.ru)?|озон|avito(\.ru)?|авито/i;
+  /ozon(\.ru)?|озон|avito(\.ru)?|авито|taxi\.yandex|go\.yandex|яндекс\s*такси|яндекс\s*go|yandex\s*(go|taxi)/i;
 
 const BLOCK =
-  /нет соединения|нет\s+сети|похож[её],?\s+нет соедин|отключ(и|ите)\s+vpn|выключ(и|ите)\s+vpn|disable(?: your)? vpn|доступ ограничен|проблема с ip|smartcaptcha|я не робот|cloudflare|ddos-guard|access denied|unusual traffic|checking your browser|try disabling/i;
+  /нет соединения|нет\s+сети|похож[её],?\s+нет соедин|отключ(и|ите)\s+vpn|выключ(и|ите)\s+vpn|disable(?: your)? vpn|доступ ограничен|проблема с ip|smartcaptcha|я не робот|cloudflare|ddos-guard|access denied|unusual traffic|checking your browser|try disabling|не поддерживается сервисом|город .{0,60}не поддержива/i;
 
 export function shouldStartWithManagedProxy(task: string): boolean {
   return PROXY_FIRST.test(task);
