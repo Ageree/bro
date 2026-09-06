@@ -189,7 +189,7 @@ export function browserSettingsForRun(opts: {
   country?: string;
   profileId?: string;
   customProxy?: CustomProxy;
-}): Record<string, unknown> | undefined {
+}): Record<string, unknown> {
   const settings: Record<string, unknown> = {};
   if (opts.customProxy) {
     settings.customProxy = {
@@ -206,9 +206,13 @@ export function browserSettingsForRun(opts: {
     settings.proxyCountryCode = null;
   } else if (opts.country) {
     settings.proxyCountryCode = opts.country;
+  } else {
+    // Omitting the field keeps Cloud's US residential ($5/GB). null = proxyless.
+    // https://docs.browser-use.com/cloud/browser/proxies
+    settings.proxyCountryCode = null;
   }
   if (opts.profileId) settings.profileId = opts.profileId;
-  return Object.keys(settings).length > 0 ? settings : undefined;
+  return settings;
 }
 
 export function buildRunBody(opts: {
@@ -240,12 +244,11 @@ export function buildRunBody(opts: {
     body.sessionId = opts.sessionId;
     body.session_id = opts.sessionId;
   }
-  const settings = browserSettingsForRun({
+  body.browserSettings = browserSettingsForRun({
     country: opts.proxyCountry,
     profileId: opts.profileId,
     customProxy: opts.customProxy,
   });
-  if (settings) body.browserSettings = settings;
   const params = modelParamsFor(model, effort);
   if (params) body.modelParams = params;
   if (opts.secretBindings && opts.secretBindings.length > 0) {
@@ -381,11 +384,18 @@ export async function listProfiles(query?: string): Promise<ProfileView[]> {
   return out;
 }
 
-function resolveProxyCountry(): string | undefined {
-  const explicit = proxyCountryCode(process.env.BROWSERUSE_PROXY_COUNTRY);
+/**
+ * Managed residential is opt-in. Unset / `none` → no country (caller sends null).
+ * Cloud's own default if the field is omitted is US residential at $5/GB.
+ */
+export function resolveProxyCountry(
+  explicitRaw: string | undefined = process.env.BROWSERUSE_PROXY_COUNTRY,
+  fallbackRaw: string | undefined = process.env.BRO_BROWSER_PROXY,
+): string | undefined {
+  const explicit = proxyCountryCode(explicitRaw);
   if (explicit) return explicit;
-  const fallback = process.env.BRO_BROWSER_PROXY ?? "ru";
-  if (fallback.trim().toLowerCase() === "none") return undefined;
+  const fallback = (fallbackRaw ?? "none").trim().toLowerCase();
+  if (!fallback || fallback === "none") return undefined;
   return proxyCountryCode(fallback);
 }
 
