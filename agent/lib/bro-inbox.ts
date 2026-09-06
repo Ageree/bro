@@ -1,10 +1,10 @@
 import { MessageDirection } from "@inkbox/sdk";
 import { inkbox } from "./inkbox";
 import {
-  extractOtpCodes,
   looksLikeOtpMail,
   OTP_BODY_CHARS,
   OTP_FETCH_BODY_CAP,
+  snippetHasUsableOtp,
 } from "./otp-policy.ts";
 
 export type InboxSnap = {
@@ -76,11 +76,10 @@ export async function fillOtpBodies(
   const next = snaps.map((s) => ({ ...s }));
   for (let i = 0; i < next.length; i++) {
     const m = next[i]!;
-    const hay = `${m.subject}\n${m.snippet}`;
     if (!looksLikeOtpMail({ from: m.from, subject: m.subject, body: m.snippet })) {
       continue;
     }
-    if (extractOtpCodes(hay).length > 0) continue;
+    if (snippetHasUsableOtp(m.subject, m.snippet)) continue;
     if (fetched >= cap) break;
     try {
       const detail = await identity.getMessage(m.id);

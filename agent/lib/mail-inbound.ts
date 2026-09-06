@@ -1,6 +1,7 @@
 import type { MailWebhookMessage, MailWebhookPayload } from "@inkbox/sdk";
 import { ingestArchiveDocument } from "./archive.ts";
 import { inkboxMailToDocument } from "./archive-policy.ts";
+import { attachOtpToWake, shouldIngestInkboxMail } from "./otp-policy.ts";
 import {
   attachMailToJob,
   formatMailWake,
@@ -25,6 +26,15 @@ async function ingestInkboxArchive(
   msg: MailWebhookMessage,
 ): Promise<void> {
   if (!process.env.SUPERMEMORY_API_KEY?.trim()) return;
+  if (
+    !shouldIngestInkboxMail({
+      from: msg.from_address,
+      subject: msg.subject ?? "",
+      body: msg.body ?? msg.snippet ?? "",
+    })
+  ) {
+    return;
+  }
   const doc = inkboxMailToDocument(msg);
   if (!doc) return;
   await ingestArchiveDocument(phone, doc);
@@ -81,14 +91,16 @@ async function composeWake(
     conversationId,
     phone,
     handle,
-    text: formatMailWake({
-      jobId,
-      messageId: msg.id,
-      threadId: msg.thread_id,
-      from: msg.from_address,
-      subject: msg.subject ?? "",
-      body: (msg.body ?? msg.snippet ?? "").trim(),
-    }),
+    text: attachOtpToWake(
+      formatMailWake({
+        jobId,
+        messageId: msg.id,
+        threadId: msg.thread_id,
+        from: msg.from_address,
+        subject: msg.subject ?? "",
+        body: (msg.body ?? msg.snippet ?? "").trim(),
+      }),
+    ),
   };
 }
 

@@ -2,10 +2,12 @@ import { searchArchive } from "./archive.ts";
 import { fillOtpBodies, listBroInbox, searchBroInbox } from "./bro-inbox.ts";
 import { agentHandle, inkbox } from "./inkbox";
 import {
+  archiveOtpAllowed,
   candidatesFromMail,
   formatOtpLookup,
   otpSearchQuery,
   pickOtp,
+  senderFromArchiveContent,
   type OtpCandidate,
   type OtpLookupResult,
 } from "./otp-policy.ts";
@@ -74,14 +76,16 @@ export async function findFreshOtp(opts: {
   if (process.env.SUPERMEMORY_API_KEY?.trim()) {
     try {
       const docs = await searchArchive(opts.phone, otpSearchQuery(hint), 6);
-      archiveHits = docs.flatMap((d) =>
-        candidatesFromMail("archive", {
-          from: d.app,
-          subject: d.title,
-          body: d.content,
-          atMs: d.date ? Date.parse(d.date) : undefined,
-        }),
-      );
+      archiveHits = docs
+        .filter((d) => archiveOtpAllowed(d))
+        .flatMap((d) =>
+          candidatesFromMail("archive", {
+            from: senderFromArchiveContent(d.content) ?? d.app,
+            subject: d.title,
+            body: d.content,
+            atMs: d.date ? Date.parse(d.date) : undefined,
+          }),
+        );
     } catch (err) {
       console.error("otp archive search failed", err);
     }

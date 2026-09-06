@@ -28,13 +28,13 @@ export type OtpLookupResult = {
 };
 
 const OTP_HINT =
-  /код(?:у|а|ом)?|otp|one[-\s]?time|passcode|верифиц|sms|смс|authentication|verification|одноразов|auth code|login code|код подтвержд/i;
+  /(?<![а-яёa-z])код(?:у|а|ом)?(?![а-яёa-z])|otp|one[-\s]?time|passcode|верифиц|(?<![а-яёa-z])смс(?![а-яёa-z])|sms|authentication|verification|одноразов|auth code|login code/i;
 
 const KNOWN_SENDERS =
   /wildberries|wb\.ru|ozon|tinkoff|тинькофф|sber|сбер|alfa|альфа|vtb|втб|raiffeisen|райф|clinic|клиник|поликлин|лаборатор|invitro|гемотест|банк|bank/i;
 
 const YEAR = /^(?:19|20)\d{2}$/;
-const ORDERISH = /заказ|order|чек|invoice|сумм|руб|₽|шт/i;
+const ORDERISH = /заказ|order|чек|invoice|сумм|руб|₽|шт|промокод|promo\s*code|купон/i;
 
 export function isOtpChallenge(text: string): boolean {
   const t = text.trim();
@@ -61,6 +61,36 @@ export function looksLikeOtpMail(opts: {
   if (!hay.trim()) return false;
   if (OTP_HINT.test(hay)) return true;
   return KNOWN_SENDERS.test(hay) && extractOtpCodes(hay).length > 0;
+}
+
+export function snippetHasUsableOtp(subject: string, snippet: string): boolean {
+  if (!OTP_HINT.test(subject)) return false;
+  return extractOtpCodes(`${subject}\n${snippet}`).some(
+    (c) => c.length === 4 || c.length === 6,
+  );
+}
+
+export function senderFromArchiveContent(content: string): string | undefined {
+  const line = /^От:\s*(.+)$/m.exec(content);
+  return line?.[1]?.trim() || undefined;
+}
+
+export function archiveOtpAllowed(hit: {
+  app: string;
+  title: string;
+  content: string;
+}): boolean {
+  if (hit.app !== "inkbox" && hit.app !== "gmail") return false;
+  const from = senderFromArchiveContent(hit.content) ?? "";
+  return KNOWN_SENDERS.test(from);
+}
+
+export function shouldIngestInkboxMail(opts: {
+  from?: string;
+  subject?: string;
+  body?: string;
+}): boolean {
+  return !looksLikeOtpMail(opts);
 }
 
 export function extractOtpCodes(text: string): string[] {
@@ -168,6 +198,12 @@ export function otpFromEventMail(text: string, nowMs = Date.now()): OtpPick {
     candidatesFromMail("event", { from, subject, body, atMs: nowMs }),
     nowMs,
   );
+}
+
+export function attachOtpToWake(text: string, nowMs = Date.now()): string {
+  const otp = otpFromEventMail(text, nowMs);
+  if (otp.status !== "found") return text;
+  return `${text}\notp: ${otp.hit.code}`;
 }
 
 export function formatOtpLookup(result: OtpPick): OtpLookupResult {

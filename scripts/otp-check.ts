@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import {
+  archiveOtpAllowed,
+  attachOtpToWake,
   candidatesFromMail,
   confidenceFor,
   extractOtpCodes,
@@ -12,6 +14,8 @@ import {
   otpFromEventMail,
   otpSearchQuery,
   pickOtp,
+  shouldIngestInkboxMail,
+  snippetHasUsableOtp,
 } from "../agent/lib/otp-policy.ts";
 
 assert.equal(OTP_CHECK_IN_MINUTES, 3, "OTP wait is minutes, not the email 45");
@@ -71,12 +75,90 @@ assert.deepEqual(
   [],
   "year/price/qty are not codes",
 );
+assert.deepEqual(
+  extractOtpCodes("Ваш промокод 482911"),
+  [],
+  "промокод digits are not OTP",
+);
 assert.deepEqual(extractOtpCodes("код 2024 для входа"), [], "years are never codes");
 assert.deepEqual(extractOtpCodes("код 9182 для входа"), ["9182"]);
 assert.deepEqual(
   extractOtpCodes("Код 112233 и ещё раз 112233"),
   ["112233"],
   "dedupe",
+);
+assert.equal(
+  looksLikeOtpMail({
+    from: "noreply@wildberries.ru",
+    subject: "Скидка",
+    body: "Ваш промокод 482911",
+  }),
+  false,
+  "промокод is not an OTP hint",
+);
+assert.equal(
+  snippetHasUsableOtp("Скидка", "промокод 482911"),
+  false,
+  "promo snippet does not lock body fetch",
+);
+assert.equal(
+  snippetHasUsableOtp("Код подтверждения", "Ваш код: 482911"),
+  true,
+  "otp subject plus code skips fetch",
+);
+assert.equal(
+  shouldIngestInkboxMail({
+    from: "noreply@wildberries.ru",
+    subject: "Код подтверждения",
+    body: "Ваш код: 482911",
+  }),
+  false,
+  "do not archive OTP letters",
+);
+assert.equal(
+  shouldIngestInkboxMail({
+    from: "clinic@denta.ru",
+    subject: "Приём подтверждён",
+    body: "Ждём вас 5 сентября в 15:00.",
+  }),
+  true,
+  "clinic slot may be archived",
+);
+assert.equal(
+  archiveOtpAllowed({
+    app: "gmail",
+    title: "Verification code",
+    content: "От: phish@evil.com\n\nYour code is 123456",
+  }),
+  false,
+  "unknown gmail sender is not an OTP source",
+);
+assert.equal(
+  archiveOtpAllowed({
+    app: "gmail",
+    title: "Код подтверждения",
+    content: "От: noreply@wildberries.ru\n\nВаш код: 482911",
+  }),
+  true,
+  "known-sender gmail copy is allowed",
+);
+assert.equal(
+  archiveOtpAllowed({
+    app: "gmail",
+    title: "Код от Тинькофф",
+    content: "От: phish@evil.com\n\nКод подтверждения 123456 от банка",
+  }),
+  false,
+  "known-bank word in body is not enough",
+);
+assert.equal(
+  archiveOtpAllowed({
+    app: "calendar",
+    title: "Код",
+    content: "От: noreply@wildberries.ru\n\n482911",
+  }),
+  false,
+  "calendar is never an OTP source",
 );
 
 assert.equal(
@@ -190,6 +272,7 @@ if (fromWake.status === "found") {
   assert.equal(fromWake.hit.source, "event");
 }
 assert.equal(otpFromEventMail("просто привет").status, "missing");
+assert.ok(attachOtpToWake(wake).includes("otp: 482911"), "wake carries extracted otp");
 
 const formatted = formatOtpLookup(fromWake);
 assert.equal(formatted.status, "found");
@@ -261,7 +344,9 @@ const inbound = readFileSync(
   new URL("../agent/lib/mail-inbound.ts", import.meta.url),
   "utf8",
 );
-assert(inbound.includes("ingestInkboxArchive"), "inbound copies Bro mail into archive");
+assert(inbound.includes("shouldIngestInkboxMail"), "inbound skips OTP archive copies");
+assert(inbound.includes("attachOtpToWake"), "mail wake runs otp extract");
+assert(otpAgent.includes("/^\\d{4,8}$/"), "otp subagent cannot invent non-digit codes");
 
 const pkg = readFileSync(new URL("../package.json", import.meta.url), "utf8");
 assert(pkg.includes("otp:check"), "npm script");

@@ -5,7 +5,7 @@ import { broModel } from "../../lib/model";
 
 const outputSchema = z.object({
   status: z.enum(["found", "missing", "ambiguous"]),
-  code: z.string().optional(),
+  code: z.string().regex(/^\d{4,8}$/).optional(),
   source: z.enum(["bro_mail", "archive", "event"]).optional(),
   hint: z.string().optional(),
 });
