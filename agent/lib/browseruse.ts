@@ -40,6 +40,196 @@ export function applyProxyCountry(
   };
 }
 
+export type BrowserRunKind = "errand" | "login" | "pay";
+export type ReasoningEffort =
+  | "none"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh"
+  | "max";
+
+/** Cloud's cheapest V4 model. Omitting `model` also picks this, but pin it. */
+export const DEFAULT_BROWSER_MODEL = "gpt-5.6-luna";
+
+/**
+ * Per-kind USD caps. Login only opens a page and waits.
+ * Pay needs a longer checkout. Env `BRO_BROWSER_MAX_COST` overrides all three.
+ */
+export const DEFAULT_MAX_COST_USD: Record<BrowserRunKind, number> = {
+  login: 0.15,
+  errand: 0.45,
+  pay: 0.8,
+};
+
+/**
+ * Cloud defaults Luna to `reasoning.effort: xhigh` when modelParams is omitted.
+ * That burns tokens. `low` is enough for WB/Ozon errands; login needs none.
+ * https://docs.browser-use.com/cloud/agent/thinking-levels
+ */
+export const DEFAULT_REASONING_EFFORT: Record<BrowserRunKind, ReasoningEffort> = {
+  login: "none",
+  errand: "low",
+  pay: "low",
+};
+
+const REASONING_EFFORTS = new Set<string>([
+  "none",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+]);
+
+export function detectRunKind(
+  task: string,
+  opts?: { pay?: unknown },
+): BrowserRunKind {
+  if (opts?.pay != null) return "pay";
+  if (task.startsWith(LOGIN_MARK)) return "login";
+  return "errand";
+}
+
+export function browserModel(
+  raw: string | undefined = process.env.BRO_BROWSER_MODEL,
+): string {
+  const m = raw?.trim();
+  return m || DEFAULT_BROWSER_MODEL;
+}
+
+function positiveUsd(raw: string | undefined, fallback: number): number {
+  if (raw == null || raw.trim() === "") return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+export function maxCostUsd(
+  kind: BrowserRunKind,
+  raw: string | undefined = process.env.BRO_BROWSER_MAX_COST,
+): number {
+  return positiveUsd(raw, DEFAULT_MAX_COST_USD[kind]);
+}
+
+export function reasoningEffort(
+  kind: BrowserRunKind,
+  raw: string | undefined = process.env.BRO_BROWSER_REASONING,
+): ReasoningEffort {
+  const v = raw?.trim().toLowerCase();
+  if (v && REASONING_EFFORTS.has(v)) return v as ReasoningEffort;
+  return DEFAULT_REASONING_EFFORT[kind];
+}
+
+/** gpt-5.5 / gpt-5.6* accept modelParams.reasoning.effort. Others 422. */
+export function acceptsReasoningEffort(model: string): boolean {
+  return /^gpt-5\.(5|6)\b/.test(model.trim());
+}
+
+export function modelParamsFor(
+  model: string,
+  effort: ReasoningEffort,
+): { reasoning: { effort: ReasoningEffort } } | undefined {
+  if (!acceptsReasoningEffort(model)) return undefined;
+  return { reasoning: { effort } };
+}
+
+export type CustomProxy = {
+  host: string;
+  port: number;
+  username?: string;
+  password?: string;
+};
+
+export function customProxyFromEnv(env: {
+  BRO_BROWSER_PROXY_HOST?: string;
+  BRO_BROWSER_PROXY_PORT?: string;
+  BRO_BROWSER_PROXY_USER?: string;
+  BRO_BROWSER_PROXY_PASS?: string;
+} = process.env): CustomProxy | undefined {
+  const host = env.BRO_BROWSER_PROXY_HOST?.trim();
+  const port = Number(env.BRO_BROWSER_PROXY_PORT);
+  if (!host || !Number.isFinite(port) || port < 1 || port > 65535) {
+    return undefined;
+  }
+  const username = env.BRO_BROWSER_PROXY_USER?.trim();
+  const password = env.BRO_BROWSER_PROXY_PASS?.trim();
+  return {
+    host,
+    port,
+    ...(username ? { username } : {}),
+    ...(password ? { password } : {}),
+  };
+}
+
+export function browserSettingsForRun(opts: {
+  country?: string;
+  profileId?: string;
+  customProxy?: CustomProxy;
+}): Record<string, unknown> | undefined {
+  const settings: Record<string, unknown> = {};
+  if (opts.customProxy) {
+    settings.customProxy = {
+      host: opts.customProxy.host,
+      port: opts.customProxy.port,
+      ...(opts.customProxy.username
+        ? { username: opts.customProxy.username }
+        : {}),
+      ...(opts.customProxy.password
+        ? { password: opts.customProxy.password }
+        : {}),
+    };
+    // Custom proxy overrides country; null turns off $5/GB managed residential.
+    settings.proxyCountryCode = null;
+  } else if (opts.country) {
+    settings.proxyCountryCode = opts.country;
+  }
+  if (opts.profileId) settings.profileId = opts.profileId;
+  return Object.keys(settings).length > 0 ? settings : undefined;
+}
+
+export function buildRunBody(opts: {
+  task: string;
+  sessionId?: string;
+  profileId?: string;
+  profileSynced?: boolean;
+  pay?: Parameters<typeof payScaffold>[0];
+  secretBindings?: SecretBinding[];
+  proxyCountry?: string;
+  customProxy?: CustomProxy;
+  model?: string;
+  maxCostUsd?: number;
+  reasoningEffort?: ReasoningEffort;
+}): Record<string, unknown> {
+  const kind = detectRunKind(opts.task, { pay: opts.pay });
+  const model = opts.model ?? browserModel();
+  const effort = opts.reasoningEffort ?? reasoningEffort(kind);
+  const cost = opts.maxCostUsd ?? maxCostUsd(kind);
+  const body: Record<string, unknown> = {
+    task: scaffoldTask(opts.task, {
+      profileSynced: opts.profileSynced,
+      pay: opts.pay,
+    }),
+    model,
+    maxCostUsd: cost,
+  };
+  if (opts.sessionId) {
+    body.sessionId = opts.sessionId;
+    body.session_id = opts.sessionId;
+  }
+  const settings = browserSettingsForRun({
+    country: opts.proxyCountry,
+    profileId: opts.profileId,
+    customProxy: opts.customProxy,
+  });
+  if (settings) body.browserSettings = settings;
+  const params = modelParamsFor(model, effort);
+  if (params) body.modelParams = params;
+  if (opts.secretBindings && opts.secretBindings.length > 0) {
+    body.secretBindings = opts.secretBindings;
+  }
+  return body;
+}
+
 function key(): string {
   const k = process.env.BROWSER_USE_API_KEY;
   if (!k) throw new Error("BROWSER_USE_API_KEY missing");
@@ -111,18 +301,18 @@ export function scaffoldTask(
   const payBlock = opts?.pay ? payScaffold(opts.pay) : undefined;
   const stopForPay = "Если нужна оплата — остановись и дай live-URL.";
   const login = opts?.profileSynced
-    ? `Ты уже в аккаунтах человека: вход сохранён в Cloud-профиле. Пароли, номера карт, CVV и коды из SMS никогда не вводи сам. Если личный кабинет открыт — работай как залогиненный пользователь. Если сайт всё же просит логин — остановись; человек получит ссылку и войдёт сам. ${payBlock ?? stopForPay}`
-    : `Никогда не вводи номера карт, CVV, пароли или коды из SMS сам. Если сайт просит логин — остановись. Bro пришлёт человеку ссылку, он войдёт сам, вход сохранится. ${payBlock ?? stopForPay}`;
+    ? `Уже в аккаунтах: вход в Cloud-профиле. Пароли, карты, CVV, SMS не вводи. Кабинет открыт — работай. Просит логин — остановись. ${payBlock ?? stopForPay}`
+    : `Пароли, карты, CVV, SMS не вводи. Просит логин — остановись. Bro пришлёт человеку ссылку. ${payBlock ?? stopForPay}`;
   const finish = payBlock
     ? "Доводи дело до конца, включая оплату подключённой картой."
-    : "Доводи дело до конца, если оплата не требуется (например: выбрать слот, заполнить форму с известными данными, дойти до финального подтверждения).";
+    : "Доводи дело до конца, если оплата не требуется (слот, форма, подтверждение).";
   return `${ERRAND_MARK}
-Выполняй поручение на языке сайтов (обычно русский). Задача: ${task}.
+Язык сайтов (обычно русский). Задача: ${task}.
 ${login}
 ${finish}
-Если данных не хватает (имя, телефон, адрес, время) — не выдумывай; закончи и перечисли, что нужно уточнить.
-Работай быстро: если сайт медленный, требует капчу или недоступен — пропусти его и возьми другой вариант.
-В конце верни краткий структурированный итог: что сделано; что нашёл (варианты с ценами/временами, до 5); что нужно от человека.`;
+Нет имени/телефона/адреса/времени — не выдумывай, закончи и перечисли, чего не хватает.
+Работай быстро: медленный сайт, капча, недоступен — пропусти и возьми другой. Не листать витрину и не снимать лишние скриншоты.
+Итог коротко: что сделано; до 5 вариантов с ценами/временами; что нужно от человека.`;
 }
 
 export async function createProfile(userId: string): Promise<string> {
@@ -185,28 +375,16 @@ export async function startRun(
     secretBindings?: SecretBinding[];
   },
 ): Promise<BrowserRun> {
-  const body: Record<string, unknown> = {
-    task: scaffoldTask(task, {
-      profileSynced: opts?.profileSynced,
-      pay: opts?.pay,
-    }),
-  };
-  // Cloud JSON accepts both; send both so a session is reused.
-  if (sessionId) {
-    body.sessionId = sessionId;
-    body.session_id = sessionId;
-  }
-  const country = resolveProxyCountry();
-  body.browserSettings = {
-    ...(country ? { proxyCountryCode: country } : {}),
-    ...(opts?.profileId ? { profileId: opts.profileId } : {}),
-  };
-  const maxCost = Number(process.env.BRO_BROWSER_MAX_COST ?? "1");
-  if (Number.isFinite(maxCost) && maxCost > 0) body.maxCostUsd = maxCost;
-  if (process.env.BRO_BROWSER_MODEL) body.model = process.env.BRO_BROWSER_MODEL;
-  if (opts?.secretBindings && opts.secretBindings.length > 0) {
-    body.secretBindings = opts.secretBindings;
-  }
+  const body = buildRunBody({
+    task,
+    sessionId,
+    profileId: opts?.profileId,
+    profileSynced: opts?.profileSynced,
+    pay: opts?.pay,
+    secretBindings: opts?.secretBindings,
+    proxyCountry: resolveProxyCountry(),
+    customProxy: customProxyFromEnv(),
+  });
   // A validation error can echo the offending field back; never let a bound
   // card value ride along in the thrown message when bindings are attached.
   const created = await bu("/runs", {
