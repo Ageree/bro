@@ -36,7 +36,8 @@ function readPhone(value: unknown): string | undefined {
 }
 
 export function normalizeE164(raw: string): string | undefined {
-  const compact = raw.trim().replace(/[\s()-]/g, "");
+  let compact = raw.trim().replace(/[\s()-]/g, "");
+  if (/^8[0-9]{10}$/.test(compact)) compact = `+7${compact.slice(1)}`;
   if (!/^\+?[0-9]{8,16}$/.test(compact)) return undefined;
   return compact.startsWith("+") ? compact : `+${compact}`;
 }
@@ -161,18 +162,17 @@ export function groupTaggedText(senderPhone: string, text: string): string {
   return `[group ${senderPhone}] ${text}`;
 }
 
-export function tagGroupUserContent(
-  senderPhone: string,
-  content: string | Array<{ type: "text"; text: string } | { type: string }>,
-): string | Array<{ type: "text"; text: string } | { type: string }> {
-  const tagged = groupTaggedText(senderPhone, typeof content === "string" ? content : "");
-  if (typeof content === "string") return tagged;
-  return content.map((part) => {
-    if (part.type === "text" && "text" in part) {
-      return { type: "text" as const, text: groupTaggedText(senderPhone, part.text) };
+export function tagGroupUserContent<T>(senderPhone: string, content: T): T {
+  if (typeof content === "string") {
+    return groupTaggedText(senderPhone, content) as T;
+  }
+  if (!Array.isArray(content)) return content;
+  return content.map((part: { type?: string; text?: string }) => {
+    if (part.type === "text" && typeof part.text === "string") {
+      return { ...part, text: groupTaggedText(senderPhone, part.text) };
     }
     return part;
-  });
+  }) as T;
 }
 
 export function parseGroupCreatePhones(

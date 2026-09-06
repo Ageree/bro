@@ -33,7 +33,7 @@ assert(!isGroupMessage({}), "missing is_group is 1:1");
 
 assert(normalizeE164("+79001112233") === "+79001112233", "e164 passthrough");
 assert(normalizeE164("79001112233") === "+79001112233", "bare digits");
-assert(normalizeE164("8 (900) 111-22-33") === undefined, "national 8 dropped");
+assert(normalizeE164("8 (900) 111-22-33") === "+79001112233", "national 8 → +7");
 assert(normalizeE164("not-a-phone") === undefined, "garbage");
 
 assert(
@@ -105,15 +105,13 @@ assert(
   "text tag",
 );
 const taggedParts = tagGroupUserContent("+7900", [
-  { type: "text", text: "фото" },
-  { type: "file" },
+  { type: "text" as const, text: "фото" },
+  { type: "file" as const, mediaType: "image/jpeg", data: "x" },
 ]);
 assert(Array.isArray(taggedParts), "parts stay array");
+const firstPart = taggedParts[0];
 assert(
-  Array.isArray(taggedParts) &&
-    taggedParts[0] &&
-    taggedParts[0].type === "text" &&
-    taggedParts[0].text === "[group +7900] фото",
+  firstPart?.type === "text" && firstPart.text === "[group +7900] фото",
   "text part tagged",
 );
 
