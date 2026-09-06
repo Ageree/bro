@@ -1,23 +1,21 @@
 import { createOpenAI } from "@ai-sdk/openai";
 import { wrapLanguageModel, type LanguageModelMiddleware } from "ai";
+import { parseLlmRoutes } from "./llm-routes.ts";
+import { createRoutedFetch } from "./openrouter-fetch.ts";
+import { DEFAULT_OPENROUTER_MODEL } from "./openrouter-pool.ts";
 
-const DEFAULT_OPENROUTER_MODEL = "z-ai/glm-5.3-flash";
-const DEFAULT_OPENROUTER_CONTEXT_TOKENS = 1_000_000;
+export {
+  DEFAULT_MODEL_FALLBACKS,
+  DEFAULT_OPENROUTER_CONTEXT_TOKENS,
+  DEFAULT_OPENROUTER_MODEL,
+  PAID_GLM_MODEL,
+  parseModelCascade,
+  parseOpenRouterKeys,
+} from "./openrouter-pool.ts";
+export { parseLlmRoutes } from "./llm-routes.ts";
 
 /** Fallback output cap for OpenRouter calls when BRO_MAX_OUTPUT_TOKENS is unset/invalid. */
 export const DEFAULT_MAX_OUTPUT_TOKENS = 8192;
-
-function parseContextTokens(raw: string | undefined): number | undefined {
-  const trimmed = raw?.trim();
-  if (!trimmed) {
-    return undefined;
-  }
-  const tokens = Number(trimmed);
-  if (!Number.isInteger(tokens) || tokens <= 0) {
-    return undefined;
-  }
-  return tokens;
-}
 
 /** Positive integer parsed from BRO_MAX_OUTPUT_TOKENS, else DEFAULT_MAX_OUTPUT_TOKENS. */
 export function parseMaxOutputTokens(raw: string | undefined): number {
@@ -47,32 +45,41 @@ export function outputCapMiddleware(cap: number): LanguageModelMiddleware {
   };
 }
 
-/** Model choice shared by the root agent and the worker subagent. */
-export function broModel() {
-  const model = process.env.BRO_MODEL?.trim() || DEFAULT_OPENROUTER_MODEL;
-  const contextTokens =
-    model === DEFAULT_OPENROUTER_MODEL
-      ? DEFAULT_OPENROUTER_CONTEXT_TOKENS
-      : parseContextTokens(process.env.BRO_MODEL_CONTEXT_TOKENS);
+export type BroModelEnv = NodeJS.ProcessEnv | Record<string, string | undefined>;
 
-  const key = process.env.OPENROUTER_API_KEY;
-  if (!key) {
+/** Model choice shared by the root agent and the worker subagent. */
+export function broModel(env: BroModelEnv = process.env) {
+  const routes = parseLlmRoutes(env);
+  const primary = routes[0];
+
+  if (!primary) {
     // Host already has OPENROUTER_API_KEY; AI Gateway is the fallback.
     return { model: "openai/gpt-5.4-mini" as const };
   }
   const openrouter = createOpenAI({
-    apiKey: key,
-    baseURL: "https://openrouter.ai/api/v1",
+    apiKey: primary.keys[0],
+    baseURL: primary.baseURL,
+    fetch: createRoutedFetch({
+      routes,
+      fetch,
+      onRotate: (event) => {
+        console.warn("llm rotate", {
+          status: event.status,
+          model: event.model,
+          route: event.route,
+        });
+      },
+    }),
   });
-  const cap = parseMaxOutputTokens(process.env.BRO_MAX_OUTPUT_TOKENS);
+  const cap = parseMaxOutputTokens(env.BRO_MAX_OUTPUT_TOKENS);
   const openrouterModel = wrapLanguageModel({
-    model: openrouter.chat(model),
+    model: openrouter.chat(primary.model || DEFAULT_OPENROUTER_MODEL),
     middleware: outputCapMiddleware(cap),
   });
-  return contextTokens !== undefined
+  return primary.contextTokens !== undefined
     ? {
         model: openrouterModel,
-        modelContextWindowTokens: contextTokens,
+        modelContextWindowTokens: primary.contextTokens,
       }
     : { model: openrouterModel };
 }

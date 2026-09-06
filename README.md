@@ -2,20 +2,20 @@
 
 Personal iMessage concierge. **eve** runs the agent. **Convex** holds tenants, orders, and long-term memory (one store per person). **Inkbox** is blue iMessage only (never SMS). **Supermemory** (optional, paid) adds automatic conversation memory.
 
-Outbound replies are compiled to iMessage text: markdown is stripped, `**latin**` becomes Unicode math-bold (looks bold on iPhone), Russian field labels get a `▸` mark, long numbered dumps become one bubble per item. Inkbox cannot send native iOS 18 text styles or carousels. Inbound photos reach the model as image parts (`z-ai/glm-5.3-flash` has vision): bytes are downloaded up to 3 MB and sent as a plain `data:` base64 string so the picture survives the signed URL — never a `Uint8Array`/`URL` object, because eve serialises the turn input into memory-tool closures as JSON and those types break that; larger or failed downloads become the plain URL string instead. The URL also stays in the text for `browser_task`. Other attachments stay URLs. Check: `npm run imessage:check`, `npm run image:check`.
+Outbound replies are compiled to iMessage text: markdown is stripped, `**latin**` becomes Unicode math-bold (looks bold on iPhone), Russian field labels get a `▸` mark, long numbered dumps become one bubble per item. Inkbox cannot send native iOS 18 text styles or carousels. Inbound photos reach the model as image parts (`openrouter/free` picks a free vision model; paid `z-ai/glm-5.3-flash` also has vision): bytes are downloaded up to 3 MB and sent as a plain `data:` base64 string so the picture survives the signed URL — never a `Uint8Array`/`URL` object, because eve serialises the turn input into memory-tool closures as JSON and those types break that; larger or failed downloads become the plain URL string instead. The URL also stays in the text for `browser_task`. Other attachments stay URLs. Check: `npm run imessage:check`, `npm run image:check`.
 
 Voice notes: inbound audio is transcribed via OpenRouter STT (`/audio/transcriptions`) before the model sees it (`[voice] …`). Default `qwen/qwen3-asr-flash-2026-02-10` (best digit/time/brand accuracy on Russian in our bake-off, ~1.5 s, ~$0.001 per 30 s), fallback `openai/gpt-4o-transcribe`, language hint `ru`. iPhone CAF Opus is remuxed to Ogg in TypeScript — no provider accepts CAF and there is no ffmpeg on Vercel. If transcription fails and there is no other text, Bro sends a short Russian retry line and skips the agent. Override with `BRO_STT_MODEL` / `BRO_STT_FALLBACK_MODEL` / `BRO_STT_LANGUAGE`. Check: `npm run voice:check`.
 
 ## Needs
 
 - Node 24 (`nvm use`)
-- Inkbox API key, OpenRouter (`z-ai/glm-5.3-flash`, override with `BRO_MODEL` / `BRO_MODEL_CONTEXT_TOKENS`) or Vercel AI Gateway
+- Inkbox API key, OpenRouter (`openrouter/free` by default, override with `BRO_MODEL` / `BRO_MODEL_CONTEXT_TOKENS`) or Vercel AI Gateway
 
 ## Run
 
 ```bash
 cp .env.example .env.local
-# fill INKBOX_*, OPENROUTER_API_KEY (or AI_GATEWAY_API_KEY), ALLOWED_SENDERS
+# fill INKBOX_*, OPENROUTER_API_KEY (optional OPENROUTER_API_KEYS) or AI_GATEWAY_API_KEY, ALLOWED_SENDERS
 npm run memory:check
 npm run provision:inkbox    # once
 npm run webhooks            # once: signing key + https://<handle>.inkboxwire.com/webhooks/imessage
@@ -61,7 +61,7 @@ Long work parks as Convex `jobs` (`npm run jobs:check`). Re-run `npm run webhook
 
 Convex `returns:` validators reject documents with unknown fields, so every full-document validator (`tenantDoc`, `jobDoc`, …) is `doc(schema, "<table>")` from convex-helpers, never a hand-copied field list. Adding a column to `convex/schema.ts` is enough. Check: `npm run schema:check` (fails on any `v.object({ _id: v.id(…) })` literal in `convex/`). Postmortem 2026-09-05: a hand-copied `tenantDoc` without `archiveSyncedAt` made every tenant read throw once the hourly archive sync wrote that column, and Bro went silent.
 
-Model calls always carry `max_tokens` (default 8192, `BRO_MAX_OUTPUT_TOKENS`): OpenRouter reserves the requested output length against the account balance before running, and without a cap it reserves the model's full 131k, so every turn fails with 402 as soon as credits dip. Postmortem 2026-09-06: `.harness/goals/openrouter-402-rca`. Check: `npm run model:check`.
+Turns try official cheap APIs first, then OpenRouter's free router. Create your own keys (never leaked dumps): Z.AI Flash is permanently $0 (`ZAI_API_KEY` from [z.ai](https://z.ai) — `glm-4.7-flash` + vision `glm-4.6v-flash`); DeepSeek new-user credits (`DEEPSEEK_API_KEY` from [platform.deepseek.com](https://platform.deepseek.com)); Gemini free tier (`GEMINI_API_KEY` from [AI Studio](https://aistudio.google.com/app/apikey)); Groq free Qwen (`GROQ_API_KEY` from [console.groq.com](https://console.groq.com/keys)); then `openrouter/free` and `BRO_MODEL_FALLBACKS`. Extra OpenRouter keys you own go in `OPENROUTER_API_KEYS`. ChatGPT.com / other website chats cannot be wrapped as Bro's tool backend — that is unofficial and unsupported; tools stay on the official APIs. Set `BRO_MODEL=z-ai/glm-5.3-flash` to pay for the old OpenRouter default. Model calls always carry `max_tokens` (default 8192, `BRO_MAX_OUTPUT_TOKENS`). Postmortem 2026-09-06: `.harness/goals/openrouter-402-rca`. Check: `npm run model:check`.
 
 A session that received a photo before #25 keeps `Uint8Array` parts in its eve history, and every memory-tool closure fails on each later turn. One-off cure: `POST /internal/session-clear` with `{ secret: BRO_INTERNAL_SECRET, conversationId }` (drops model history; Convex and Supermemory memory stay).
 
