@@ -88,17 +88,28 @@ export async function getTenantByConversation(conversationId: string) {
   });
 }
 
+export type BindInboundResult =
+  | {
+      ok: true;
+      tenant: NonNullable<FunctionReturnType<typeof api.tenants.getByPhone>>;
+      firstBind: boolean;
+    }
+  | { ok: false; reason: string };
+
 export async function bindInbound(
   handle: string,
   phoneE164: string,
   inkboxConversationId?: string,
-) {
-  return await client().mutation(api.tenants.bindInbound, {
+): Promise<BindInboundResult> {
+  const result = await client().mutation(api.tenants.bindInbound, {
     secret: secret(),
     handle,
     phoneE164,
     inkboxConversationId,
   });
+  if (!result.ok) return result;
+  const firstBind = (result as { firstBind?: unknown }).firstBind === true;
+  return { ok: true, tenant: result.tenant, firstBind };
 }
 
 export async function setBrowser(

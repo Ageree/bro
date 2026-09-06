@@ -479,7 +479,11 @@ export const bindInbound = mutation({
     inkboxConversationId: v.optional(v.string()),
   },
   returns: v.union(
-    v.object({ ok: v.literal(true), tenant: tenantDoc }),
+    v.object({
+      ok: v.literal(true),
+      tenant: tenantDoc,
+      firstBind: v.boolean(),
+    }),
     v.object({ ok: v.literal(false), reason: v.string() }),
   ),
   handler: async (ctx, { secret, handle, phoneE164, inkboxConversationId }) => {
@@ -495,6 +499,7 @@ export const bindInbound = mutation({
     if (tenant.phoneE164 && tenant.phoneE164 !== phoneE164) {
       return { ok: false as const, reason: "wrong phone" };
     }
+    const firstBind = !tenant.phoneE164;
     const patch: {
       phoneE164?: string;
       inkboxConversationId?: string;
@@ -509,7 +514,7 @@ export const bindInbound = mutation({
     if (Object.keys(patch).length) await ctx.db.patch(tenant._id, patch);
     const next = await ctx.db.get(tenant._id);
     if (!next) return { ok: false as const, reason: "missing" };
-    return { ok: true as const, tenant: next };
+    return { ok: true as const, tenant: next, firstBind };
   },
 });
 

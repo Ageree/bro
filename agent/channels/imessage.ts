@@ -7,6 +7,7 @@ import {
   isAccessHandle,
   isBlueIMessage,
   sendBlueIMessage,
+  sendBlueIMessageMedia,
   webhookOk,
 } from "../lib/inkbox";
 import {
@@ -19,6 +20,13 @@ import {
   setWakeupLastSeen,
   upsertTenant,
 } from "../lib/convex";
+import {
+  broVcard,
+  helpText,
+  isHelpAsk,
+  shouldSkipAgentTurn,
+  welcomeText,
+} from "../lib/onboard-policy";
 import { ingestInboundMail } from "../lib/mail-inbound";
 import {
   connectCardHtml,
@@ -53,6 +61,55 @@ import {
 // ponytail: in-memory only — lost on restart, not shared across instances
 const wakeupDelivered = new Map<string, number>();
 const fallbackSent = new Map<string, number>();
+
+async function sendFirstBindOnboard(opts: {
+  conversationId: string;
+  handle: string;
+  email?: string;
+  tel?: string;
+}): Promise<void> {
+  try {
+    const identity = await inkbox().getIdentity(opts.handle);
+    const upload = await identity.uploadIMessageMedia({
+      content: new TextEncoder().encode(
+        broVcard({ email: opts.email, tel: opts.tel }),
+      ),
+      filename: "Bro.vcf",
+      contentType: "text/vcard",
+    });
+    await sendBlueIMessageMedia({
+      conversationId: opts.conversationId,
+      mediaUrls: [upload.mediaUrl],
+      handle: opts.handle,
+    });
+  } catch (err) {
+    console.error("onboard vcard failed", err);
+  }
+  try {
+    await sendBlueIMessage({
+      conversationId: opts.conversationId,
+      text: welcomeText(),
+      handle: opts.handle,
+    });
+  } catch (err) {
+    console.error("onboard welcome failed", err);
+  }
+}
+
+async function sendHelpCatalog(opts: {
+  conversationId: string;
+  handle: string;
+}): Promise<void> {
+  try {
+    await sendBlueIMessage({
+      conversationId: opts.conversationId,
+      text: helpText(),
+      handle: opts.handle,
+    });
+  } catch (err) {
+    console.error("help catalog failed", err);
+  }
+}
 
 function handleFromRequest(request: Request): string | undefined {
   try {
@@ -133,6 +190,8 @@ export default defineChannel({
 
       const identityHandle = handle ?? agentHandle();
 
+      let firstBind = false;
+      let boundTenant = tenant;
       if (handle) {
         const bound = await bindInbound(handle, remote, msg.conversation_id).catch(
           (err) => {
@@ -144,6 +203,8 @@ export default defineChannel({
           console.error("dropped inbound", bound.reason, handle, remote);
           return new Response(null, { status: 204 });
         }
+        firstBind = bound.firstBind;
+        boundTenant = bound.tenant;
       } else {
         if (!allowlisted(remote)) {
           return new Response(null, { status: 204 });
@@ -181,6 +242,14 @@ export default defineChannel({
         return new Response(null, { status: 204 });
       }
       if (gate.decision === "paywall") {
+        if (firstBind) {
+          await sendFirstBindOnboard({
+            conversationId: msg.conversation_id,
+            handle: identityHandle,
+            email: boundTenant?.emailAddress,
+            tel: boundTenant?.dedicatedIMessageNumber,
+          });
+        }
         const line = gate.payUrl
           ? `Лимит на сегодня исчерпан 🙈 Полный доступ — 2000 ₽/мес: ${gate.payUrl}`
           : "Лимит на сегодня исчерпан 🙈 Полный доступ — 2000 ₽/мес: напиши @оператору";
@@ -209,6 +278,14 @@ export default defineChannel({
       else void ack;
 
       const inbound = await inboundIMessageTextWithVoice(msg, transcribeVoiceNote);
+      if (firstBind) {
+        await sendFirstBindOnboard({
+          conversationId: msg.conversation_id,
+          handle: identityHandle,
+          email: boundTenant?.emailAddress,
+          tel: boundTenant?.dedicatedIMessageNumber,
+        });
+      }
       if (inbound.allVoiceFailed) {
         console.log("imessage inbound", {
           remote,
@@ -229,6 +306,15 @@ export default defineChannel({
         return new Response(null, { status: 204 });
       }
       if (!inbound.text) return new Response(null, { status: 204 });
+      if (isHelpAsk(inbound.text)) {
+        await sendHelpCatalog({
+          conversationId: msg.conversation_id,
+          handle: identityHandle,
+        });
+      }
+      if (shouldSkipAgentTurn({ firstBind, text: inbound.text })) {
+        return new Response(null, { status: 204 });
+      }
       const content = await inboundUserContent(inbound.text, msg.media);
       console.log("imessage inbound", {
         remote,
