@@ -4,6 +4,12 @@ import {
   isCaf,
 } from "./caf-opus.ts";
 import {
+  createKeyPool,
+  parseOpenRouterKeys,
+  pickKey,
+  shouldRotateKey,
+} from "./openrouter-pool.ts";
+import {
   parseSttResponse,
   shouldRetryWithFallback,
   sttConfig,
@@ -160,8 +166,10 @@ export async function transcribeVoiceNote(
   const t0 = now();
   const ms = () => Math.max(0, now() - t0);
   const cfg = sttConfig(env);
-  const key = env.OPENROUTER_API_KEY?.trim();
-  if (!key) return { ok: false, reason: "missing OPENROUTER_API_KEY", ms: ms() };
+  const keys = parseOpenRouterKeys(env);
+  if (keys.length === 0) {
+    return { ok: false, reason: "missing OPENROUTER_API_KEY", ms: ms() };
+  }
   if (typeof note.size === "number" && note.size > cfg.maxBytes) {
     return { ok: false, reason: "oversize", ms: ms() };
   }
@@ -215,45 +223,63 @@ export async function transcribeVoiceNote(
     models.push(cfg.fallbackModel);
   }
 
+  const pool = createKeyPool(keys, { now });
   let lastReason = "stt failed";
   let lastModel = models[0]!;
+  let lastStatus: number | undefined;
   for (let i = 0; i < models.length; i++) {
     const model = models[i]!;
     lastModel = model;
-    const result = await sttOnce({
-      fetch: doFetch,
-      key,
-      model,
-      data,
-      format,
-      language: cfg.language,
-      timeoutMs: cfg.timeoutMs,
-    });
-    if (result.ok) {
-      const text = result.text.trim();
-      console.log("voice transcribed", {
+    const attempted = new Set<string>();
+    let modelStatus: number | undefined;
+    let modelError = lastReason;
+    while (attempted.size < pool.size) {
+      const key = pickKey(pool, attempted);
+      if (!key) break;
+      attempted.add(key);
+      const result = await sttOnce({
+        fetch: doFetch,
+        key,
         model,
-        ms: ms(),
-        seconds: result.seconds,
-        cost: result.cost,
-        chars: text.length,
+        data,
+        format,
+        language: cfg.language,
+        timeoutMs: cfg.timeoutMs,
       });
-      const ok: TranscribeOk = { ok: true, text, model, ms: ms() };
-      if (result.cost !== undefined) ok.cost = result.cost;
-      if (result.seconds !== undefined) ok.seconds = result.seconds;
-      return ok;
+      if (result.ok) {
+        pool.markSuccess(key);
+        const text = result.text.trim();
+        console.log("voice transcribed", {
+          model,
+          ms: ms(),
+          seconds: result.seconds,
+          cost: result.cost,
+          chars: text.length,
+        });
+        const ok: TranscribeOk = { ok: true, text, model, ms: ms() };
+        if (result.cost !== undefined) ok.cost = result.cost;
+        if (result.seconds !== undefined) ok.seconds = result.seconds;
+        return ok;
+      }
+      modelError = result.error;
+      modelStatus = result.status;
+      lastReason = result.error;
+      lastStatus = result.status;
+      if (result.status !== undefined && shouldRotateKey(result.status)) {
+        pool.markFailure(key, result.status);
+        continue;
+      }
+      break;
     }
-    lastReason = result.error;
     const retry =
-      i === 0 &&
-      models.length > 1 &&
-      shouldRetryWithFallback(result.status, result.error);
+      i < models.length - 1 && shouldRetryWithFallback(modelStatus, modelError);
     if (!retry) break;
   }
 
   console.error("voice transcription failed", {
     reason: lastReason,
     model: lastModel,
+    status: lastStatus,
   });
   return { ok: false, reason: lastReason, ms: ms() };
 }

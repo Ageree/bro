@@ -437,4 +437,29 @@ function makeFetch(handler: (url: string, init?: RequestInit) => Response | Prom
   assert(!result.ok && result.reason === "missing OPENROUTER_API_KEY", "missing key");
 }
 
+{
+  const auths: string[] = [];
+  const { fetch: f } = makeFetch((url, init) => {
+    if (url.includes("media.example")) {
+      return new Response(new Uint8Array([0x49, 0x44, 0x33, 0x00]));
+    }
+    auths.push(String(new Headers(init?.headers).get("Authorization")));
+    if (auths.length === 1) {
+      return new Response(JSON.stringify({ error: { message: "rate" } }), { status: 429 });
+    }
+    return new Response(JSON.stringify({ text: "со второго ключа" }));
+  });
+  const result = await transcribeVoiceNote(
+    { url: "https://media.example/v.mp3", contentType: "audio/mpeg" },
+    {
+      fetch: f,
+      env: { OPENROUTER_API_KEYS: "dead-key, live-key" },
+    },
+  );
+  assert(result.ok, "second key succeeds after 429");
+  if (result.ok) eq(result.text, "со второго ключа", "pool transcript");
+  eq(auths[0], "Bearer dead-key", "tried first key");
+  eq(auths[1], "Bearer live-key", "rotated to second key");
+}
+
 console.log("voice-check ok");
