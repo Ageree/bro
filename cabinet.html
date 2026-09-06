@@ -298,8 +298,12 @@
         return;
       }
 
+      function validHandle(h) {
+        return /^bro-[a-z0-9]{8}$/.test(h || "");
+      }
       function storedHandle() {
-        return localStorage.getItem(HANDLE) || "";
+        var h = (localStorage.getItem(HANDLE) || "").trim();
+        return validHandle(h) ? h : "";
       }
 
       function memoCard(me) {
@@ -349,7 +353,7 @@
         if (!btn) return;
         btn.addEventListener("click", function () {
           var st = document.getElementById("write-status");
-          var h = storedHandle() || me.handle;
+          var h = storedHandle() || (validHandle(me.handle) ? me.handle : "");
           if (h && !storedHandle()) localStorage.setItem(HANDLE, h);
           if (!h) {
             st.textContent = "Открой сайт на том же iPhone или нажми «Запросить доступ» ещё раз.";

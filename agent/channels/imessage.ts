@@ -217,7 +217,17 @@ export default defineChannel({
       }
 
       const preview = inboundIMessageText(msg);
-      if (!preview) return new Response(null, { status: 204 });
+      if (!preview) {
+        if (firstBind) {
+          await sendFirstBindOnboard({
+            conversationId: msg.conversation_id,
+            handle: identityHandle,
+            email: boundTenant?.emailAddress,
+            tel: boundTenant?.dedicatedIMessageNumber,
+          });
+        }
+        return new Response(null, { status: 204 });
+      }
 
       let gate: { decision: "allow" | "paywall" | "drop"; payUrl?: string };
       try {

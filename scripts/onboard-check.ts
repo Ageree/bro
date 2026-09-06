@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import {
   broVcard,
   helpText,
@@ -127,5 +128,20 @@ const injected = broVcard({
 });
 assert(!injected.includes("\nFN:Nope"), "email cannot inject fields");
 assert(!injected.includes("TEL"), "garbage tel omitted");
+
+const channel = readFileSync(
+  new URL("../agent/channels/imessage.ts", import.meta.url),
+  "utf8",
+);
+assert(channel.includes("if (firstBind)"), "channel sends onboard on firstBind");
+assert(
+  channel.includes("if (!preview)") && channel.includes("sendFirstBindOnboard"),
+  "empty preview still onboards on first bind",
+);
+assert(channel.includes("sendHelpCatalog"), "channel sends canned help");
+assert(
+  channel.includes("shouldSkipAgentTurn") && channel.includes("from("),
+  "help/connect skip agent turn",
+);
 
 console.log("onboard-check ok");

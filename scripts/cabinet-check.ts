@@ -232,6 +232,10 @@ assert(cabinet.includes("Написать Bro"), "cabinet write-bro cta");
 assert(cabinet.includes('id="write-bro"'), "cabinet write-bro id");
 assert(cabinet.includes("/access"), "write-bro reuses POST /access");
 assert(cabinet.includes("smsLink"), "write-bro opens sms_link");
+assert(
+  cabinet.includes("bro-[a-z0-9]{8}"),
+  "write-bro only opens a valid stored handle",
+);
 assert(cabinet.includes("Память"), "cabinet memory card");
 assert(cabinet.includes("Забыть"), "cabinet forget button");
 assert(cabinet.includes("/me/memories/forget"), "forget posts to cabinet route");
