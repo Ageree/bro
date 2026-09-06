@@ -65,6 +65,12 @@ assert(
   "fence",
 );
 
+assert(
+  toIMessageText("Смотри\n\n:::buttons\n[Открыть](https://example.com/z)\n:::") ===
+    "Смотри\n\nОткрыть\nhttps://example.com/z",
+  "button block becomes url lines",
+);
+
 const gmail = `Вот несколько непрочитанных писем в Gmail:
 
 1. **От:** Ageree

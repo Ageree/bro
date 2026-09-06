@@ -30,6 +30,9 @@ export default defineTool({
     reaction: z.enum(IMESSAGE_TAPBACKS),
   }),
   async execute({ reaction }, ctx) {
+    if (attr(ctx, "channel") === "telegram") {
+      return { error: "это Telegram — поставь реакцию через telegram_react" };
+    }
     if (!isIMessageTapback(reaction)) return { error: "unsupported reaction" };
     const target = reactionTargetId(attrs(ctx));
     if (!target) return { error: "нет сообщения для реакции" };

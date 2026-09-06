@@ -28,7 +28,7 @@ import {
   type BrowserRun,
 } from "../lib/browseruse";
 import { profileSyncStatus } from "../../convex/lib/browserProfilePolicy.ts";
-import { sendBlueIMessage } from "../lib/inkbox";
+import { deliverHuman } from "../lib/deliver-human";
 import { tenantId } from "../lib/tenant";
 import { browserGateFromResult } from "../../convex/lib/billingPolicy";
 import { cardBindings, normalizePayHosts } from "../lib/browser-pay.ts";
@@ -331,10 +331,10 @@ export default defineTool({
     });
     if (conv) {
       try {
-        await sendBlueIMessage({
+        await deliverHuman({
+          tenant,
           conversationId: conv,
           text: "Ищу, это может занять пару минут. Сам напишу, когда будет готово.",
-          handle: tenant.inkboxHandle,
         });
       } catch (err) {
         console.error("browser start notify failed", err);

@@ -5,6 +5,9 @@ import { sendBlueIMessage } from "../lib/inkbox";
 import { sessionFor } from "../lib/composio";
 import { tenantId } from "../lib/tenant";
 import { sandboxNetworkViolation } from "../lib/sandbox-policy";
+import { getTenant } from "../lib/convex";
+import { deliverHuman } from "../lib/deliver-human";
+import { lastChannelOf } from "../../convex/lib/telegramPolicy.ts";
 
 function rec(v: unknown): Record<string, unknown> {
   return v !== null && typeof v === "object" && !Array.isArray(v)
@@ -32,14 +35,25 @@ async function sendConnectIfAny(ctx: ToolContext, result: unknown): Promise<void
   const conv = attr(ctx, "conversationId");
   if (!conv) return;
   const handle = attr(ctx, "inkboxHandle");
+  const phone = tenantId(ctx);
+  const tenant = await getTenant(phone).catch(() => null);
   for (const url of connectLinks(result)) {
     if (!isConnectDest(url)) continue;
+    const wrapped = wrapConnectUrl(url);
     try {
-      await sendBlueIMessage({
-        conversationId: conv,
-        text: wrapConnectUrl(url),
-        handle,
-      });
+      if (lastChannelOf(tenant?.lastChannel) === "telegram") {
+        await deliverHuman({
+          tenant,
+          conversationId: conv,
+          text: `Подключи приложение\n\n:::buttons\n[Подключить](${wrapped})\n:::`,
+        });
+      } else {
+        await sendBlueIMessage({
+          conversationId: conv,
+          text: wrapped,
+          handle: tenant?.inkboxHandle ?? handle,
+        });
+      }
     } catch (err) {
       console.error("composio connect link send failed", err);
     }

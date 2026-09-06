@@ -4,6 +4,7 @@ import {
   helpText,
   isConnectOrEmptyInbound,
   isHelpAsk,
+  isTelegramAsk,
   shouldSkipAgentTurn,
   welcomeText,
 } from "../agent/lib/onboard-policy.ts";
@@ -74,6 +75,11 @@ assert(
 assert(shouldSkipAgentTurn({ firstBind: true, text: "" }), "skip first bind empty");
 assert(shouldSkipAgentTurn({ firstBind: true, text: "привет" }), "skip first bind hi");
 assert(shouldSkipAgentTurn({ firstBind: false, text: "помощь" }), "skip later help");
+assert(isTelegramAsk("телеграм"), "telegram ask");
+assert(isTelegramAsk("Telegram"), "telegram ask case");
+assert(isTelegramAsk("тг"), "tg ask");
+assert(!isTelegramAsk("телеграмму напиши"), "telegram in a sentence");
+assert(shouldSkipAgentTurn({ firstBind: false, text: "телеграм" }), "skip telegram ask");
 assert(
   !shouldSkipAgentTurn({ firstBind: true, text: "купи на вб кроссовки" }),
   "first bind errand continues",
@@ -105,6 +111,7 @@ assert(/помн/i.test(help), "help memory");
 assert(/напоминан|сторож/i.test(help), "help wakeups");
 assert(/сейф/i.test(help), "help vault");
 assert(/ящик|письм|почт/i.test(help), "help mailbox");
+assert(/телеграм/i.test(help), "help telegram second channel");
 
 const bare = broVcard({});
 assert(bare.startsWith("BEGIN:VCARD\r\n"), "vcard begin crlf");
