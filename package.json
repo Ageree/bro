@@ -31,6 +31,7 @@
     "onboard:check": "node --experimental-strip-types scripts/onboard-check.ts",
     "billing:check": "node --experimental-strip-types scripts/billing-check.ts",
     "cabinet:check": "node --experimental-strip-types scripts/cabinet-check.ts",
+    "tz:check": "node --experimental-strip-types scripts/tz-check.ts",
     "types:check": "tsc --noEmit",
     "schema:check": "node --experimental-strip-types scripts/schema-check.ts",
     "image:check": "node --experimental-strip-types scripts/inbound-image-check.ts",

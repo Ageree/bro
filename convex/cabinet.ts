@@ -25,6 +25,7 @@ import {
   type CabinetSnapshot,
   type PaymentRow,
 } from "./lib/cabinetPolicy";
+import { browserJobForSnapshot } from "./lib/browserJobPolicy";
 import { lineMatches, SCAN_LINES, WAKE_LINES } from "./lib/memoryPolicy";
 import {
   normalizeBrowserProfileId,
@@ -32,6 +33,7 @@ import {
 } from "./lib/browserProfilePolicy";
 import { getProfile } from "./lib/browseruse";
 import { periodConfig, rateLimiter } from "./lib/rateLimits";
+import { applyTimezoneForTenantId, tzChangeResult } from "./tenants";
 
 const snapshotValidator = v.object({
   handle: v.string(),
@@ -64,6 +66,14 @@ const snapshotValidator = v.object({
     v.literal("synced"),
   ),
   memories: v.array(v.string()),
+  tz: v.optional(v.string()),
+  browserJob: v.object({
+    status: v.string(),
+    label: v.string(),
+    task: v.optional(v.string()),
+    liveUrl: v.optional(v.string()),
+    startedAt: v.optional(v.number()),
+  }),
 });
 
 function apiKey(): string {
@@ -349,6 +359,8 @@ export const snapshotForTenant = internalQuery({
         profileId: tenant.browserProfileId,
         cookieDomains: tenant.browserCookieDomains,
       }),
+      tz: tenant.tz,
+      browserJob: browserJobForSnapshot(tenant),
     });
   },
 });
@@ -466,6 +478,16 @@ export const forgetMemoriesForTenant = internalMutation({
     }
     return n;
   },
+});
+
+export const setTzForSession = internalMutation({
+  args: {
+    tenantId: v.id("tenants"),
+    tz: v.string(),
+    now: v.number(),
+  },
+  returns: tzChangeResult,
+  handler: async (ctx, args) => applyTimezoneForTenantId(ctx, args),
 });
 
 export const issueDeviceSession = internalMutation({
