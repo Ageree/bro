@@ -272,6 +272,7 @@ const tools = [
   "profile_setup.ts",
   "composio.ts",
   "bro_mail.ts",
+  "otp_lookup.ts",
   "watch_app.ts",
   "job_open.ts",
   "job_wait.ts",
@@ -323,6 +324,20 @@ const workerScope = readFileSync(
   "utf8",
 );
 assert(workerScope.includes("groupPersonalBlock"), "worker refuses group personal work");
+
+for (const file of ["lookup.ts", "inbox.ts", "archive_search.ts"]) {
+  const src = readFileSync(
+    new URL(`../agent/subagents/otp/tools/${file}`, import.meta.url),
+    "utf8",
+  );
+  assert(src.includes("groupPersonalBlock"), `otp ${file} refuses group personal work`);
+}
+
+const otpAgent = readFileSync(
+  new URL("../agent/subagents/otp/agent.ts", import.meta.url),
+  "utf8",
+);
+assert(otpAgent.includes("isGroupTurn"), "otp subagent hidden on group turns");
 
 const instructions = readFileSync(
   new URL("../agent/instructions.md", import.meta.url),

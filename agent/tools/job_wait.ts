@@ -7,7 +7,7 @@ import { tenantId } from "../lib/tenant";
 
 export default defineTool({
   description:
-    "Park a job until the next event: human iMessage, inbound email to Bro's mailbox, or the cloud browser finishing. Include a short note of where you left off. Always schedules a job_check; if checkInMinutes is omitted, Bro uses human 20 / email 45 / browser 8.",
+    "Park a job until the next event: human iMessage, inbound email to Bro's mailbox, or the cloud browser finishing. Include a short note of where you left off. Always schedules a job_check; if checkInMinutes is omitted, Bro uses human 20 / email 45 / browser 8. Waiting on an OTP email: pass checkInMinutes=3.",
   inputSchema: z.object({
     jobId: z.string().min(1),
     waitingFor: z.enum(["human", "email", "browser"]),

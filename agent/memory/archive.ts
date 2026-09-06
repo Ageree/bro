@@ -65,7 +65,7 @@ export default defineMemory({
           description:
             "Permanently delete this person's archived copies (whole archive or one app). Destructive: confirm with the human first. Disconnecting an app does NOT delete its archive — this tool does.",
           inputSchema: z.object({
-            app: z.enum(["gmail", "calendar"]).optional(),
+            app: z.enum(["gmail", "calendar", "inkbox"]).optional(),
           }),
           async execute({ app }) {
             const n = await forgetArchive(phone, app);

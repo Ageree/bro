@@ -56,7 +56,7 @@ The vault holds per-tenant cards, addresses, and contacts — not site passwords
 
 Bro can also pay with the vault card inside a `browser_task` run itself, via Browser Use Cloud `secretBindings`: the server types the card into the focused field on the allowed hosts, the model never sees the value, and the bindings die with the run. A buy request or a «купи когда…» watcher pays without a second confirmation of shop/item/qty/total; `maxRub` is only a named budget. 3-D Secure, SMS codes, and bank-app confirmation still go to the human via live URL. Check: `npm run pay:check`, `npm run purchase:check`.
 
-Bro's Inkbox mailbox is live: inbound `POST /webhooks/mail`, outbound `bro_mail`.
+Bro's Inkbox mailbox is live: inbound `POST /webhooks/mail`, outbound `bro_mail`. `bro_mail` action=inbox lists recent inbound. When a worker needs an OTP (bank / WB / clinic), Bro looks in that inbox and the Instinct archive first (`otp` subagent or `otp_lookup`) and only asks in the iMessage thread if the letter is missing. Inbound Bro mail is also copied into the archive when Supermemory is on. Check: `npm run otp:check`.
 Long work parks as Convex `jobs` (`npm run jobs:check`). Re-run `npm run webhooks` to subscribe mail.
 
 Convex `returns:` validators reject documents with unknown fields, so every full-document validator (`tenantDoc`, `jobDoc`, …) is `doc(schema, "<table>")` from convex-helpers, never a hand-copied field list. Adding a column to `convex/schema.ts` is enough. Check: `npm run schema:check` (fails on any `v.object({ _id: v.id(…) })` literal in `convex/`). Postmortem 2026-09-05: a hand-copied `tenantDoc` without `archiveSyncedAt` made every tenant read throw once the hourly archive sync wrote that column, and Bro went silent.
