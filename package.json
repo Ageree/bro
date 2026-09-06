@@ -32,6 +32,7 @@
     "types:check": "tsc --noEmit",
     "schema:check": "node --experimental-strip-types scripts/schema-check.ts",
     "image:check": "node --experimental-strip-types scripts/inbound-image-check.ts",
+    "sandbox:check": "node --experimental-strip-types scripts/sandbox-policy-check.ts",
     "silent:check": "node --experimental-strip-types scripts/silent-turn-check.ts",
     "vault:check": "node --experimental-strip-types scripts/vault-check.ts",
     "voice:check": "node --experimental-strip-types scripts/voice-check.ts",

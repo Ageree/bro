@@ -4,6 +4,7 @@ import { isConnectDest, wrapConnectUrl } from "../lib/connect-link";
 import { sendBlueIMessage } from "../lib/inkbox";
 import { sessionFor } from "../lib/composio";
 import { tenantId } from "../lib/tenant";
+import { sandboxNetworkViolation } from "../lib/sandbox-policy";
 
 function rec(v: unknown): Record<string, unknown> {
   return v !== null && typeof v === "object" && !Array.isArray(v)
@@ -147,7 +148,7 @@ export default defineDynamic({
       }),
       COMPOSIO_REMOTE_WORKBENCH: defineTool({
         description:
-          "Run Python in the remote sandbox for large tool responses. Skip if the data already fits in chat.",
+          "Run Python in the remote sandbox for large tool responses. Skip if the data already fits in chat. No network access: never fetch websites here — use browser_task.",
         inputSchema: {
           type: "object",
           required: ["code_to_execute"],
@@ -157,12 +158,23 @@ export default defineDynamic({
             session_id: { type: "string" },
           },
         },
-        execute: (input, ctx) =>
-          runComposio("COMPOSIO_REMOTE_WORKBENCH", input, ctx),
+        execute: (input, ctx) => {
+          const { code_to_execute } = rec(input);
+          if (typeof code_to_execute === "string") {
+            const violation = sandboxNetworkViolation(code_to_execute);
+            if (violation) {
+              return Promise.resolve({
+                error: violation,
+                hint: "Открой сайт через browser_task — он использует облачный браузер; Ozon, WB и другие магазины блокируют прямые HTTP-запросы.",
+              });
+            }
+          }
+          return runComposio("COMPOSIO_REMOTE_WORKBENCH", input, ctx);
+        },
       }),
       COMPOSIO_REMOTE_BASH_TOOL: defineTool({
         description:
-          "Run bash in the remote sandbox for large files. 3-minute limit.",
+          "Run bash in the remote sandbox for large files. 3-minute limit. No network access: never fetch websites here — use browser_task.",
         inputSchema: {
           type: "object",
           required: ["command"],
@@ -171,8 +183,19 @@ export default defineDynamic({
             session_id: { type: "string" },
           },
         },
-        execute: (input, ctx) =>
-          runComposio("COMPOSIO_REMOTE_BASH_TOOL", input, ctx),
+        execute: (input, ctx) => {
+          const { command } = rec(input);
+          if (typeof command === "string") {
+            const violation = sandboxNetworkViolation(command);
+            if (violation) {
+              return Promise.resolve({
+                error: violation,
+                hint: "Открой сайт через browser_task — он использует облачный браузер; Ozon, WB и другие магазины блокируют прямые HTTP-запросы.",
+              });
+            }
+          }
+          return runComposio("COMPOSIO_REMOTE_BASH_TOOL", input, ctx);
+        },
       }),
     }),
   },

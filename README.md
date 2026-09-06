@@ -36,6 +36,8 @@ Memory is three eve slots, all keyed by the person's E.164. `memo` (always on) i
 
 Push watchers (`watch_app`): Composio triggers POST Convex `/composio`, then one agent turn per event. Subscribe once with `npm run composio:webhook https://<deployment>.convex.site/composio`. Prices/websites still poll via `schedule_wakeup kind=watcher`. Check: `npm run watchers:check`.
 
+Sandbox tools (`COMPOSIO_REMOTE_WORKBENCH`, `COMPOSIO_REMOTE_BASH_TOOL`) have no web access by policy; any site data goes through `browser_task`. Check: `npm run sandbox:check`.
+
 Landing CTA creates a personal Inkbox identity and opens iMessage (`sms_link`).
 `assets/config.js` holds the Convex HTTP site URL (`https://<deployment>.convex.site`).
 Set `INKBOX_API_KEY` and `INKBOX_WEBHOOK_URL` on the Convex deployment.
