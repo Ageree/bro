@@ -76,6 +76,16 @@ import {
   shouldReplyInGroup,
   tagGroupUserContent,
 } from "../../convex/lib/groupChatPolicy.ts";
+import {
+  DEFAULT_SIM_PHONE,
+  isSimConversation,
+  parseSimConversation,
+  parseSimPhone,
+  rememberSimMessage,
+  settleSimTurn,
+  takeSimBubbles,
+  waitSimTurnSettled,
+} from "../lib/sim.ts";
 
 // ponytail: in-memory only — lost on restart, not shared across instances
 const wakeupDelivered = new Map<string, number>();
@@ -87,6 +97,27 @@ async function sendFirstBindOnboard(opts: {
   email?: string;
   tel?: string;
 }): Promise<void> {
+  if (isSimConversation(opts.conversationId)) {
+    try {
+      await sendBlueIMessageMedia({
+        conversationId: opts.conversationId,
+        mediaUrls: ["sim:Bro.vcf"],
+        handle: opts.handle,
+      });
+    } catch (err) {
+      console.error("onboard vcard failed", err);
+    }
+    try {
+      await sendBlueIMessage({
+        conversationId: opts.conversationId,
+        text: welcomeText({ canJoinGroups: Boolean(opts.tel) }),
+        handle: opts.handle,
+      });
+    } catch (err) {
+      console.error("onboard welcome failed", err);
+    }
+    return;
+  }
   try {
     const identity = await inkbox().getIdentity(opts.handle);
     const upload = await identity.uploadIMessageMedia({
@@ -698,6 +729,148 @@ export default defineChannel({
       }
       return Response.json({ ok: true });
     }),
+    POST("/internal/sim", async (request, { from }) => {
+      let body: {
+        secret?: unknown;
+        text?: unknown;
+        phone?: unknown;
+        conversationId?: unknown;
+        reset?: unknown;
+        timeoutMs?: unknown;
+      };
+      try {
+        body = (await request.json()) as typeof body;
+      } catch {
+        return new Response("bad json", { status: 400 });
+      }
+      const expected = process.env.BRO_INTERNAL_SECRET;
+      if (!expected || body.secret !== expected) {
+        return new Response("unauthorized", { status: 401 });
+      }
+      const phone = parseSimPhone(body.phone) ?? DEFAULT_SIM_PHONE;
+      const conversationId = parseSimConversation(body.conversationId, phone);
+      const text = typeof body.text === "string" ? body.text : "";
+      const reset = body.reset === true;
+      const timeoutMs =
+        typeof body.timeoutMs === "number" && body.timeoutMs > 0
+          ? Math.min(body.timeoutMs, 180_000)
+          : 90_000;
+
+      let existing;
+      try {
+        existing = await getTenant(phone);
+      } catch (err) {
+        console.error("sim tenant lookup failed", err);
+        return new Response("tenant lookup failed", { status: 503 });
+      }
+      const firstBind = !existing?.inkboxConversationId;
+      try {
+        await upsertTenant(phone, conversationId);
+      } catch (err) {
+        console.error("sim tenant upsert failed", err);
+        return new Response("tenant upsert failed", { status: 503 });
+      }
+      if (reset) {
+        await from(conversationId).clear();
+      }
+
+      if (firstBind) {
+        await sendFirstBindOnboard({
+          conversationId,
+          handle: "sim",
+          tel: existing?.dedicatedIMessageNumber,
+        });
+      }
+
+      const inboundId = `sim-${crypto.randomUUID()}`;
+      rememberSimMessage(inboundId, conversationId);
+
+      if (!text.trim()) {
+        return Response.json({
+          ok: true,
+          phone,
+          conversationId,
+          skippedAgent: true,
+          bubbles: takeSimBubbles(conversationId),
+        });
+      }
+
+      if (isHelpAsk(text)) {
+        await sendHelpCatalog({
+          conversationId,
+          handle: "sim",
+          canJoinGroups: Boolean(existing?.dedicatedIMessageNumber),
+        });
+      }
+      if (shouldSkipAgentTurn({ firstBind, text })) {
+        return Response.json({
+          ok: true,
+          phone,
+          conversationId,
+          skippedAgent: true,
+          bubbles: takeSimBubbles(conversationId),
+        });
+      }
+
+      const settled = waitSimTurnSettled(conversationId, timeoutMs);
+      try {
+        await from(conversationId).send(text, {
+          auth: {
+            authenticator: "inkbox",
+            issuer: "inkbox",
+            principalType: "user",
+            principalId: phone,
+            attributes: {
+              conversationId,
+              inkboxHandle: "sim",
+              messageId: inboundId,
+              origin: "human",
+            },
+          },
+        });
+      } catch (err) {
+        settleSimTurn(conversationId);
+        console.error("sim send failed", err);
+        return Response.json(
+          {
+            ok: false,
+            phone,
+            conversationId,
+            error: err instanceof Error ? err.message : String(err),
+            bubbles: takeSimBubbles(conversationId),
+          },
+          { status: 500 },
+        );
+      }
+      const finished = await settled;
+      return Response.json({
+        ok: true,
+        phone,
+        conversationId,
+        skippedAgent: false,
+        timedOut: !finished,
+        bubbles: takeSimBubbles(conversationId),
+      });
+    }),
+    GET("/internal/sim", async (request) => {
+      const url = new URL(request.url);
+      const expected = process.env.BRO_INTERNAL_SECRET;
+      if (!expected || url.searchParams.get("secret") !== expected) {
+        return new Response("unauthorized", { status: 401 });
+      }
+      const phone =
+        parseSimPhone(url.searchParams.get("phone")) ?? DEFAULT_SIM_PHONE;
+      const conversationId = parseSimConversation(
+        url.searchParams.get("conversationId"),
+        phone,
+      );
+      return Response.json({
+        ok: true,
+        phone,
+        conversationId,
+        bubbles: takeSimBubbles(conversationId),
+      });
+    }),
   ],
   events: {
     async "turn.failed"(event, channel, ctx) {
@@ -705,12 +878,13 @@ export default defineChannel({
       if (!conversationId) return;
       console.error("turn failed", { conversationId, code: event.code, message: event.message });
       const text = fallbackForFailed(turnOrigin(ctx?.session?.auth?.current?.attributes));
-      if (!text) return;
-      if (!takeFallbackSlot(fallbackSent, event.turnId, Date.now())) return;
-      const tenant = await replyTenant(conversationId);
-      await sendBlueIMessage({ conversationId, text, handle: tenant?.inkboxHandle }).catch(
-        (err) => console.error("turn failed fallback send failed", err),
-      );
+      if (text && takeFallbackSlot(fallbackSent, event.turnId, Date.now())) {
+        const tenant = await replyTenant(conversationId);
+        await sendBlueIMessage({ conversationId, text, handle: tenant?.inkboxHandle }).catch(
+          (err) => console.error("turn failed fallback send failed", err),
+        );
+      }
+      if (isSimConversation(conversationId)) settleSimTurn(conversationId);
     },
     async "message.completed"(event, channel, ctx) {
       if (event.finishReason === "tool-calls") return;
@@ -724,13 +898,14 @@ export default defineChannel({
           message: event.message,
           origin: turnOrigin(ctx?.session?.auth?.current?.attributes),
         });
-        if (!text) return;
-        console.error("empty turn", { conversationId, finishReason: event.finishReason });
-        if (!takeFallbackSlot(fallbackSent, event.turnId, Date.now())) return;
-        const tenant = await replyTenant(conversationId);
-        await sendBlueIMessage({ conversationId, text, handle: tenant?.inkboxHandle }).catch(
-          (err) => console.error("empty turn fallback send failed", err),
-        );
+        if (text && takeFallbackSlot(fallbackSent, event.turnId, Date.now())) {
+          console.error("empty turn", { conversationId, finishReason: event.finishReason });
+          const tenant = await replyTenant(conversationId);
+          await sendBlueIMessage({ conversationId, text, handle: tenant?.inkboxHandle }).catch(
+            (err) => console.error("empty turn fallback send failed", err),
+          );
+        }
+        if (isSimConversation(conversationId)) settleSimTurn(conversationId);
         return;
       }
       const { message, seen } = splitSeen(event.message);
@@ -740,9 +915,15 @@ export default defineChannel({
           console.error("setLastSeen failed", err);
         });
       }
-      if (!message.trim() || message.trim().startsWith("[SILENT]")) return;
+      if (!message.trim() || message.trim().startsWith("[SILENT]")) {
+        if (isSimConversation(conversationId)) settleSimTurn(conversationId);
+        return;
+      }
       const bubbles = toIMessageBubbles(stripConnectUrls(message));
-      if (bubbles.length === 0) return;
+      if (bubbles.length === 0) {
+        if (isSimConversation(conversationId)) settleSimTurn(conversationId);
+        return;
+      }
       for (const text of bubbles) {
         await sendBlueIMessage({
           conversationId,
@@ -750,6 +931,7 @@ export default defineChannel({
           handle: tenant?.inkboxHandle,
         });
       }
+      if (isSimConversation(conversationId)) settleSimTurn(conversationId);
     },
   },
 });

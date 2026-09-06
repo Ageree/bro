@@ -29,6 +29,8 @@
     "connect-link:check": "node --experimental-strip-types scripts/connect-link-check.ts",
     "jobs:check": "node --experimental-strip-types scripts/jobs-check.ts",
     "imessage:check": "node --experimental-strip-types scripts/imessage-text-check.ts",
+    "sim": "node --experimental-strip-types scripts/sim-play.ts",
+    "sim:check": "node --experimental-strip-types scripts/sim-check.ts",
     "onboard:check": "node --experimental-strip-types scripts/onboard-check.ts",
     "group:check": "node --experimental-strip-types scripts/group-chat-check.ts",
     "billing:check": "node --experimental-strip-types scripts/billing-check.ts",
