@@ -59,4 +59,6 @@ Convex `returns:` validators reject documents with unknown fields, so every full
 
 Model calls always carry `max_tokens` (default 8192, `BRO_MAX_OUTPUT_TOKENS`): OpenRouter reserves the requested output length against the account balance before running, and without a cap it reserves the model's full 131k, so every turn fails with 402 as soon as credits dip. Postmortem 2026-09-06: `.harness/goals/openrouter-402-rca`. Check: `npm run model:check`.
 
+A session that received a photo before #25 keeps `Uint8Array` parts in its eve history, and every memory-tool closure fails on each later turn. One-off cure: `POST /internal/session-clear` with `{ secret: BRO_INTERNAL_SECRET, conversationId }` (drops model history; Convex and Supermemory memory stay).
+
 A human turn never ends in silence. Every `from().send` is stamped `origin: human | wakeup`; when a human-origin turn fails (`turn.failed`) or the model ends it with no text (tool errors, provider hiccup), the channel sends one short «что-то сломалось» line itself. Background wakeups may still end empty. Check: `npm run silent:check`.

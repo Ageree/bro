@@ -53,6 +53,20 @@ AI SDK-экземпляре модели.
   `JSON.parse(JSON.stringify())`.
 - README, .env.example.
 
+## Follow-up 2026-09-06 06:06Z (после деплоя #25)
+
+Повтор фото: 402 ушёл, ход прошёл. Но три memory-резолвера снова упали
+«Expected a JSON-serializable value». Причина — история сессии: старые
+ходы (05:19Z) хранят `Uint8Array` фото, `@workflow/serde` возвращает их
+как есть при каждом резюме, и `parseJsonObject({context})` в замыкании
+memory-тулов ловит их из `messages` до конца жизни сессии. Новые
+сообщения тут ни при чём.
+
+Лечение: `POST /internal/session-clear {secret, conversationId}` →
+`from(conversationId).clear()` — история сбрасывается, память в Convex и
+Supermemory остаётся. Нужно один раз для каждой сессии, где фото было до
+#25 (по логам — только один тред).
+
 ## Что не чинится кодом
 
 Баланс OpenRouter. Пополнить: https://openrouter.ai/settings/credits.
