@@ -113,6 +113,7 @@ export async function setBrowser(
     browserProfileId?: string;
     browserCookieDomains?: string[];
     browserProfileSyncedAt?: number;
+    browserProxyRetried?: boolean;
   },
 ): Promise<void> {
   await client().mutation(api.tenants.setBrowser, {

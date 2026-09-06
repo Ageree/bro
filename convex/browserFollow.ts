@@ -3,9 +3,14 @@ import { type WorkflowId } from "@convex-dev/workflow";
 import { internalAction, mutation, type MutationCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { assertSecret } from "./secret";
-import { hydrate, pollStatus } from "./lib/browseruse";
+import { hydrate, pollStatus, startManagedProxyRun } from "./lib/browseruse";
+import {
+  needsProxyRetry,
+  proxyFallbackEnabled,
+} from "./lib/proxyFallback";
 import {
   decideExistingWorkflow,
+  isFollowTerminal,
   maxPollRounds,
   nextFollowDecision,
   POLL_INTERVAL_MS,
@@ -52,18 +57,22 @@ export const followThrough = workflow.define({
   outcome: "done" | "timeout" | "stale";
 }> => {
   const cap = maxPollRounds() + 2;
+  let runId = args.runId;
+  let sessionId = args.sessionId;
   for (let i = 0; i < cap; i++) {
     await step.sleep(POLL_INTERVAL_MS, { name: `wait-${i}` });
     const poll = await step.runAction(
       internal.browserFollow.pollRun,
       {
         tenantPhone: args.tenantPhone,
-        runId: args.runId,
-        sessionId: args.sessionId,
+        runId,
+        sessionId,
       },
       { retry: true, name: `poll-${i}` },
     );
     if (poll.stale) return { outcome: "stale" };
+    if (poll.runId) runId = poll.runId;
+    if (poll.sessionId) sessionId = poll.sessionId;
     const decision = nextFollowDecision({
       status: poll.status,
       startedAt: args.startedAt,
@@ -76,7 +85,7 @@ export const followThrough = workflow.define({
       {
         tenantPhone: args.tenantPhone,
         task: args.task,
-        runId: args.runId,
+        runId,
         phase,
       },
       { retry: wakeupStepRetry, name: "wakeup" },
@@ -88,7 +97,7 @@ export const followThrough = workflow.define({
     {
       tenantPhone: args.tenantPhone,
       task: args.task,
-      runId: args.runId,
+      runId,
       phase: "giveup",
     },
     { retry: wakeupStepRetry, name: "wakeup-giveup" },
@@ -236,6 +245,7 @@ const pollReturn = v.object({
   status: v.string(),
   now: v.number(),
   stale: v.boolean(),
+  runId: v.optional(v.string()),
   sessionId: v.optional(v.string()),
   liveUrl: v.optional(v.string()),
   result: v.optional(v.string()),
@@ -253,7 +263,12 @@ export const pollRun = internalAction({
       phoneE164: args.tenantPhone,
     });
     if (!sameBrowserRun(tenant?.browserRunId, args.runId)) {
-      return { status: tenant?.browserStatus ?? "unknown", now: Date.now(), stale: true };
+      return {
+        status: tenant?.browserStatus ?? "unknown",
+        now: Date.now(),
+        stale: true,
+        runId: tenant?.browserRunId,
+      };
     }
     const cheap = await pollStatus(args.runId, args.sessionId);
     const run =
@@ -268,12 +283,47 @@ export const pollRun = internalAction({
       browserLiveUrl: run.liveUrl,
     });
     if (wrote.stale) {
-      return { status: run.status, now: Date.now(), stale: true };
+      return { status: run.status, now: Date.now(), stale: true, runId: args.runId };
+    }
+    if (
+      isFollowTerminal(run.status) &&
+      !tenant?.browserProxyRetried &&
+      proxyFallbackEnabled() &&
+      needsProxyRetry(run.result)
+    ) {
+      const next = await startManagedProxyRun({
+        task: tenant?.browserTask ?? args.runId,
+        ...(tenant?.browserProfileId
+          ? { profileId: tenant.browserProfileId }
+          : {}),
+      });
+      const swapped = await ctx.runMutation(
+        internal.tenants.replaceBrowserRunInternal,
+        {
+          phoneE164: args.tenantPhone,
+          previousRunId: args.runId,
+          runId: next.runId,
+          sessionId: next.sessionId,
+          status: next.status,
+          liveUrl: next.liveUrl,
+        },
+      );
+      if (!swapped.stale) {
+        return {
+          status: next.status,
+          now: Date.now(),
+          stale: false,
+          runId: next.runId,
+          sessionId: next.sessionId,
+          liveUrl: next.liveUrl,
+        };
+      }
     }
     return {
       status: run.status,
       now: Date.now(),
       stale: false,
+      runId: args.runId,
       sessionId: run.sessionId,
       liveUrl: run.liveUrl,
       result: run.result,

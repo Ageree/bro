@@ -22,6 +22,8 @@ export default defineSchema({
     browserProfileSyncedAt: v.optional(v.number()),
     browserWorkflowId: v.optional(v.string()),
     browserWorkflowRunId: v.optional(v.string()),
+    /** True once this errand already used managed/BYOP proxy — no second hop. */
+    browserProxyRetried: v.optional(v.boolean()),
     browserWakeupClaim: v.optional(v.string()),
     paidUntil: v.optional(v.number()),
     // deprecated: msgs/day and browser/month counters moved to @convex-dev/rate-limiter

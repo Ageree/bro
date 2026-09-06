@@ -40,6 +40,12 @@ import {
   resolveProxyCountry,
   scaffoldTask,
 } from "../agent/lib/browseruse.ts";
+import {
+  firstHopUsesManagedProxy,
+  needsProxyRetry,
+  proxyFallbackEnabled,
+  shouldStartWithManagedProxy,
+} from "../convex/lib/proxyFallback.ts";
 
 function assert(cond: unknown, msg: string): void {
   if (!cond) throw new Error(msg);
@@ -510,6 +516,53 @@ assert(
   JSON.stringify(grokBody.browserSettings) ===
     JSON.stringify({ proxyCountryCode: null }),
   "grok still sends null proxy",
+);
+
+assert(shouldStartWithManagedProxy("скотч на ozon") === true, "ozon first hop");
+assert(shouldStartWithManagedProxy("найди на авито") === true, "avito first hop");
+assert(shouldStartWithManagedProxy("скотч на wildberries") === false, "wb proxyless first");
+assert(shouldStartWithManagedProxy("такси до шереметьево") === false, "bare taxi not forced");
+assert(
+  shouldStartWithManagedProxy("закажи яндекс такси до шереметьево") === true,
+  "yandex taxi first hop",
+);
+assert(shouldStartWithManagedProxy("открой go.yandex") === true, "go.yandex first hop");
+assert(
+  needsProxyRetry('{"title":"Похоже, нет соединения","what":"disable VPN"}') ===
+    true,
+  "ozon block retries",
+);
+assert(
+  needsProxyRetry("Доступ ограничен: проблема с IP") === true,
+  "avito ip block retries",
+);
+assert(needsProxyRetry("SmartCaptcha appeared") === true, "ym captcha retries");
+assert(
+  needsProxyRetry("Город Колумбус не поддерживается сервисом такси") === true,
+  "taxi geo retries",
+);
+assert(
+  needsProxyRetry("Wildberries homepage shows catalog, 274 ₽") === false,
+  "wb success no retry",
+);
+assert(needsProxyRetry(undefined) === false, "empty result no retry");
+assert(proxyFallbackEnabled({}) === true, "fallback on");
+assert(
+  proxyFallbackEnabled({ BRO_BROWSER_PROXY_FALLBACK: "0" }) === false,
+  "fallback off",
+);
+assert(
+  proxyFallbackEnabled({ BRO_BROWSER_PROXY_HOST: "gw.dataimpulse.com" }) ===
+    false,
+  "byop skips fallback",
+);
+assert(
+  firstHopUsesManagedProxy("скотч на ozon", {}) === true,
+  "ozon uses ru immediately",
+);
+assert(
+  firstHopUsesManagedProxy("скотч на wb", {}) === false,
+  "wb stays proxyless",
 );
 
 console.log("browser-policy-check ok");

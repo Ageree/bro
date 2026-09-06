@@ -222,6 +222,7 @@ export const setBrowser = mutation({
     browserProfileId: v.optional(v.string()),
     browserCookieDomains: v.optional(v.array(v.string())),
     browserProfileSyncedAt: v.optional(v.number()),
+    browserProxyRetried: v.optional(v.boolean()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -254,6 +255,9 @@ export const setBrowser = mutation({
         : {}),
       ...(args.browserProfileSyncedAt !== undefined
         ? { browserProfileSyncedAt: args.browserProfileSyncedAt }
+        : {}),
+      ...(args.browserProxyRetried !== undefined
+        ? { browserProxyRetried: args.browserProxyRetried }
         : {}),
     });
     return null;
@@ -325,6 +329,35 @@ export const patchBrowserInternal = internalMutation({
     }
     if (args.browserLiveUrl !== undefined) patch.browserLiveUrl = args.browserLiveUrl;
     if (Object.keys(patch).length) await ctx.db.patch(existing._id, patch);
+    return { stale: false };
+  },
+});
+
+export const replaceBrowserRunInternal = internalMutation({
+  args: {
+    phoneE164: v.string(),
+    previousRunId: v.string(),
+    runId: v.string(),
+    sessionId: v.optional(v.string()),
+    status: v.string(),
+    liveUrl: v.optional(v.string()),
+  },
+  returns: v.object({ stale: v.boolean() }),
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query("tenants")
+      .withIndex("by_phone", (q) => q.eq("phoneE164", args.phoneE164))
+      .first();
+    if (!existing || existing.browserRunId !== args.previousRunId) {
+      return { stale: true };
+    }
+    await ctx.db.patch(existing._id, {
+      browserRunId: args.runId,
+      browserStatus: args.status,
+      browserProxyRetried: true,
+      ...(args.sessionId !== undefined ? { browserSessionId: args.sessionId } : {}),
+      ...(args.liveUrl !== undefined ? { browserLiveUrl: args.liveUrl } : {}),
+    });
     return { stale: false };
   },
 });
