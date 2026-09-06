@@ -2,7 +2,7 @@ import { v } from "convex/values";
 import { internalAction, internalMutation } from "./_generated/server";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
-import { extendPaidUntil } from "./lib/billingPolicy";
+import { extendPaidUntil, payReturnUrl } from "./lib/billingPolicy";
 import { paymentApplyDecision } from "./lib/cabinetPolicy";
 
 function shopCreds(): { shopId: string; secret: string } {
@@ -68,8 +68,11 @@ export const createPaymentFor = internalAction({
         capture: true,
         confirmation: {
           type: "redirect",
-          return_url:
-            process.env.BRO_PAY_RETURN_URL ?? "https://bro-agent.vercel.app",
+          return_url: payReturnUrl({
+            BRO_PAY_RETURN_URL: process.env.BRO_PAY_RETURN_URL,
+            BRO_CABINET_BASE: process.env.BRO_CABINET_BASE,
+            BRO_PAY_BASE: process.env.BRO_PAY_BASE,
+          }),
         },
         description: "Bro — месяц",
         metadata: { tenantId },

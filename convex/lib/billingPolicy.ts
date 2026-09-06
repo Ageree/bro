@@ -222,3 +222,23 @@ export function browserGateFromResult(
   if (error != null || result == null) return browserAllowedOnLimitError();
   return result;
 }
+
+/**
+ * YooKassa confirmation return_url after pay.
+ * Use BRO_PAY_RETURN_URL only when it already points at vault.html.
+ * A bare homepage override still lands on vault — that is the product change.
+ */
+export function payReturnUrl(env: {
+  BRO_PAY_RETURN_URL?: string;
+  BRO_CABINET_BASE?: string;
+  BRO_PAY_BASE?: string;
+}): string {
+  const override = (env.BRO_PAY_RETURN_URL ?? "").trim();
+  if (override.includes("vault.html")) return override;
+  const base = (
+    (env.BRO_CABINET_BASE ?? "").trim() ||
+    (env.BRO_PAY_BASE ?? "").trim() ||
+    "https://bro-agent.vercel.app"
+  ).replace(/\/$/, "");
+  return `${base}/vault.html`;
+}

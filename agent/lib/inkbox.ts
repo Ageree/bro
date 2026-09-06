@@ -95,6 +95,27 @@ export async function sendBlueIMessage(opts: {
   return sent;
 }
 
+export async function sendBlueIMessageMedia(opts: {
+  conversationId: string;
+  mediaUrls: string[];
+  handle?: string;
+  text?: string;
+}): Promise<IMessage> {
+  const identity = await inkbox().getIdentity(opts.handle ?? agentHandle());
+  const text = opts.text?.trim();
+  const sent = await identity.sendIMessage({
+    conversationId: opts.conversationId,
+    mediaUrls: opts.mediaUrls,
+    ...(text ? { text } : {}),
+  });
+  if (!isBlueIMessage(sent)) {
+    throw new Error(
+      `refusing SMS/RCS fallback (service=${sent.service} downgraded=${sent.wasDowngraded})`,
+    );
+  }
+  return sent;
+}
+
 export async function sendIMessageTapback(opts: {
   messageId: string;
   reaction: IMessageTapback;

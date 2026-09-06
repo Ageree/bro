@@ -231,8 +231,10 @@
     <div class="sheet" role="dialog" aria-labelledby="login-title">
       <h2 id="login-title">Вход в кабинет</h2>
       <p class="hint">Код придёт сообщением от Bro в уже открытый чат iMessage.</p>
-      <label for="login-handle">Handle</label>
-      <input id="login-handle" autocomplete="username" placeholder="bro-xxxxxxxx" />
+      <div id="login-handle-row" hidden>
+        <label for="login-handle">Handle</label>
+        <input id="login-handle" autocomplete="username" placeholder="bro-xxxxxxxx" />
+      </div>
       <button class="cta sheet-cta" id="login-send" type="button">Получить код</button>
       <div id="login-code-row" hidden>
         <label for="login-code">Код из iMessage</label>

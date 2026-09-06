@@ -7,6 +7,7 @@ import {
   isAccessHandle,
   isBlueIMessage,
   sendBlueIMessage,
+  sendBlueIMessageMedia,
   webhookOk,
 } from "../lib/inkbox";
 import {
@@ -19,6 +20,13 @@ import {
   setWakeupLastSeen,
   upsertTenant,
 } from "../lib/convex";
+import {
+  broVcard,
+  helpText,
+  isHelpAsk,
+  shouldSkipAgentTurn,
+  welcomeText,
+} from "../lib/onboard-policy";
 import { ingestInboundMail } from "../lib/mail-inbound";
 import {
   connectCardHtml,
@@ -34,6 +42,7 @@ import { transcribeVoiceNote } from "../lib/voice";
 import { inboundUserContent } from "../lib/inbound-image.ts";
 import { VOICE_FAILED_REPLY } from "../lib/voice-policy";
 import { splitSeen } from "../lib/wakeup-text";
+import { watcherWakeupPrompt } from "../lib/purchase-policy";
 import { wakeupCarriesRunId } from "../../convex/lib/browserFollowPolicy.ts";
 import {
   releaseWakeupDelivery,
@@ -52,6 +61,55 @@ import {
 // ponytail: in-memory only — lost on restart, not shared across instances
 const wakeupDelivered = new Map<string, number>();
 const fallbackSent = new Map<string, number>();
+
+async function sendFirstBindOnboard(opts: {
+  conversationId: string;
+  handle: string;
+  email?: string;
+  tel?: string;
+}): Promise<void> {
+  try {
+    const identity = await inkbox().getIdentity(opts.handle);
+    const upload = await identity.uploadIMessageMedia({
+      content: new TextEncoder().encode(
+        broVcard({ email: opts.email, tel: opts.tel }),
+      ),
+      filename: "Bro.vcf",
+      contentType: "text/vcard",
+    });
+    await sendBlueIMessageMedia({
+      conversationId: opts.conversationId,
+      mediaUrls: [upload.mediaUrl],
+      handle: opts.handle,
+    });
+  } catch (err) {
+    console.error("onboard vcard failed", err);
+  }
+  try {
+    await sendBlueIMessage({
+      conversationId: opts.conversationId,
+      text: welcomeText(),
+      handle: opts.handle,
+    });
+  } catch (err) {
+    console.error("onboard welcome failed", err);
+  }
+}
+
+async function sendHelpCatalog(opts: {
+  conversationId: string;
+  handle: string;
+}): Promise<void> {
+  try {
+    await sendBlueIMessage({
+      conversationId: opts.conversationId,
+      text: helpText(),
+      handle: opts.handle,
+    });
+  } catch (err) {
+    console.error("help catalog failed", err);
+  }
+}
 
 function handleFromRequest(request: Request): string | undefined {
   try {
@@ -132,6 +190,8 @@ export default defineChannel({
 
       const identityHandle = handle ?? agentHandle();
 
+      let firstBind = false;
+      let boundTenant = tenant;
       if (handle) {
         const bound = await bindInbound(handle, remote, msg.conversation_id).catch(
           (err) => {
@@ -143,6 +203,8 @@ export default defineChannel({
           console.error("dropped inbound", bound.reason, handle, remote);
           return new Response(null, { status: 204 });
         }
+        firstBind = bound.firstBind;
+        boundTenant = bound.tenant;
       } else {
         if (!allowlisted(remote)) {
           return new Response(null, { status: 204 });
@@ -155,7 +217,17 @@ export default defineChannel({
       }
 
       const preview = inboundIMessageText(msg);
-      if (!preview) return new Response(null, { status: 204 });
+      if (!preview) {
+        if (firstBind) {
+          await sendFirstBindOnboard({
+            conversationId: msg.conversation_id,
+            handle: identityHandle,
+            email: boundTenant?.emailAddress,
+            tel: boundTenant?.dedicatedIMessageNumber,
+          });
+        }
+        return new Response(null, { status: 204 });
+      }
 
       let gate: { decision: "allow" | "paywall" | "drop"; payUrl?: string };
       try {
@@ -180,6 +252,14 @@ export default defineChannel({
         return new Response(null, { status: 204 });
       }
       if (gate.decision === "paywall") {
+        if (firstBind) {
+          await sendFirstBindOnboard({
+            conversationId: msg.conversation_id,
+            handle: identityHandle,
+            email: boundTenant?.emailAddress,
+            tel: boundTenant?.dedicatedIMessageNumber,
+          });
+        }
         const line = gate.payUrl
           ? `Лимит на сегодня исчерпан 🙈 Полный доступ — 2000 ₽/мес: ${gate.payUrl}`
           : "Лимит на сегодня исчерпан 🙈 Полный доступ — 2000 ₽/мес: напиши @оператору";
@@ -208,6 +288,14 @@ export default defineChannel({
       else void ack;
 
       const inbound = await inboundIMessageTextWithVoice(msg, transcribeVoiceNote);
+      if (firstBind) {
+        await sendFirstBindOnboard({
+          conversationId: msg.conversation_id,
+          handle: identityHandle,
+          email: boundTenant?.emailAddress,
+          tel: boundTenant?.dedicatedIMessageNumber,
+        });
+      }
       if (inbound.allVoiceFailed) {
         console.log("imessage inbound", {
           remote,
@@ -228,6 +316,15 @@ export default defineChannel({
         return new Response(null, { status: 204 });
       }
       if (!inbound.text) return new Response(null, { status: 204 });
+      if (isHelpAsk(inbound.text)) {
+        await sendHelpCatalog({
+          conversationId: msg.conversation_id,
+          handle: identityHandle,
+        });
+      }
+      if (shouldSkipAgentTurn({ firstBind, text: inbound.text })) {
+        return new Response(null, { status: 204 });
+      }
       const content = await inboundUserContent(inbound.text, msg.media);
       console.log("imessage inbound", {
         remote,
@@ -379,8 +476,7 @@ export default defineChannel({
         prompt =
           "[background wakeup] Утренний бриф. Собери коротко: (1) память об этом человеке — незакрытые дела/напоминания на сегодня; (2) если подключён Gmail/Calendar через Composio — новые важные письма и встречи сегодня; (3) статус браузер-джоба, если был. Если по ВСЕМ пунктам пусто — ответь [SILENT]. Одно короткое сообщение, без воды.";
       } else if (kind === "watcher") {
-        prompt = `[background wakeup] Сторож: ${payload}.
-Прошлое состояние: ${lastSeen ?? "ничего"}. Проверь текущее состояние (Composio-тулы или browser_task — что уместно). Если НИЧЕГО нового относительно прошлого состояния — ответь ровно [SILENT]. Если есть новое — одно короткое сообщение человеку. В КОНЦЕ ответа добавь строку [SEEN] <краткое текущее состояние в одну строку> — она не уйдёт человеку.`;
+        prompt = watcherWakeupPrompt(payload, lastSeen);
       } else if (kind === "browser_poll") {
         prompt = `[background wakeup] Проверь статус текущего браузер-джоба вызовом тула browser_task с task=${payload}. Если completed — отправь человеку результаты. Если failed или джоб завис — коротко скажи об этом. Если ещё работает — ответь [SILENT].`;
         if (wakeupCarriesRunId(body.runId)) {
