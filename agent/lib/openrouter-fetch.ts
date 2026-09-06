@@ -1,3 +1,4 @@
+import { chatCompletionsUrl, type LlmRoute } from "./llm-routes.ts";
 import {
   createKeyPool,
   pickKey,
@@ -12,6 +13,7 @@ export type RotateEvent = {
   key: string;
   model: string | undefined;
   status: number;
+  route?: string;
 };
 
 export type RotatingFetchOpts = {
@@ -20,6 +22,13 @@ export type RotatingFetchOpts = {
   fetch?: typeof fetch;
   now?: () => number;
   pool?: KeyPool;
+  onRotate?: (event: RotateEvent) => void;
+};
+
+export type RoutedFetchOpts = {
+  routes: LlmRoute[];
+  fetch?: typeof fetch;
+  now?: () => number;
   onRotate?: (event: RotateEvent) => void;
 };
 
@@ -94,21 +103,32 @@ function replayResponse(status: number, headers: Headers, text: string): Respons
 }
 
 /**
- * Fetch wrapper that retries across operator-owned keys, then across the
- * cheap model cascade. Success bodies (including streams) are returned
+ * Fetch wrapper that retries across official provider routes, then keys
+ * inside each route. Success bodies (including streams) are returned
  * unread. Error bodies are buffered so the attempt can move on.
  */
-export function createOpenRouterFetch(opts: RotatingFetchOpts): typeof fetch {
-  const pool = opts.pool ?? createKeyPool(opts.keys, { now: opts.now });
+export function createRoutedFetch(opts: RoutedFetchOpts): typeof fetch {
   const doFetch = opts.fetch ?? fetch;
-  const models = opts.models.length > 0 ? opts.models : [undefined];
+  const pools = new Map<string, KeyPool>();
+  function poolFor(route: LlmRoute): KeyPool {
+    const id = `${route.baseURL}\n${route.keys.join("\n")}`;
+    const existing = pools.get(id);
+    if (existing) return existing;
+    const created = createKeyPool(route.keys, { now: opts.now });
+    pools.set(id, created);
+    return created;
+  }
 
   return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const parts = await requestParts(input, init);
+    const canReroute = isChatBody(parts.url, parts.body);
     let last: Response | undefined;
 
-    for (const model of models) {
+    for (const route of opts.routes) {
+      const pool = poolFor(route);
+      if (pool.size === 0) continue;
       const attempted = new Set<string>();
+      const url = canReroute ? chatCompletionsUrl(route.baseURL) : parts.url;
       while (attempted.size < pool.size) {
         const key = pickKey(pool, attempted, opts.now?.());
         if (!key) break;
@@ -124,13 +144,13 @@ export function createOpenRouterFetch(opts: RotatingFetchOpts): typeof fetch {
         }
 
         let body = parts.body;
-        if (model && isChatBody(parts.url, body)) {
-          body = rewriteChatModel(body, model);
+        if (canReroute && body) {
+          body = rewriteChatModel(body, route.model);
         }
 
         let res: Response;
         try {
-          res = await doFetch(parts.url, {
+          res = await doFetch(url, {
             method: parts.method,
             headers,
             body,
@@ -138,7 +158,7 @@ export function createOpenRouterFetch(opts: RotatingFetchOpts): typeof fetch {
           });
         } catch (err) {
           pool.markFailure(key, 503, opts.now?.());
-          opts.onRotate?.({ key, model, status: 503 });
+          opts.onRotate?.({ key, model: route.model, status: 503, route: route.id });
           last = new Response(err instanceof Error ? err.message : String(err), {
             status: 503,
           });
@@ -155,17 +175,43 @@ export function createOpenRouterFetch(opts: RotatingFetchOpts): typeof fetch {
 
         if (shouldRotateKey(res.status)) {
           pool.markFailure(key, res.status, opts.now?.());
-          opts.onRotate?.({ key, model, status: res.status });
+          opts.onRotate?.({
+            key,
+            model: route.model,
+            status: res.status,
+            route: route.id,
+          });
           continue;
         }
         if (shouldAdvanceModel(res.status, text)) {
-          opts.onRotate?.({ key, model, status: res.status });
+          opts.onRotate?.({
+            key,
+            model: route.model,
+            status: res.status,
+            route: route.id,
+          });
           break;
         }
         return last;
       }
     }
 
-    return last ?? new Response("openrouter pool exhausted", { status: 502 });
+    return last ?? new Response("llm routes exhausted", { status: 502 });
   };
+}
+
+export function createOpenRouterFetch(opts: RotatingFetchOpts): typeof fetch {
+  const models = opts.models.length > 0 ? opts.models : [undefined];
+  const routes: LlmRoute[] = models.map((model, index) => ({
+    id: `openrouter:${model ?? index}`,
+    baseURL: "https://openrouter.ai/api/v1",
+    keys: opts.keys,
+    model: model ?? "openrouter/free",
+  }));
+  return createRoutedFetch({
+    routes,
+    fetch: opts.fetch,
+    now: opts.now,
+    onRotate: opts.onRotate,
+  });
 }

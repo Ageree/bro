@@ -5,11 +5,21 @@ import {
   DEFAULT_OPENROUTER_MODEL,
   PAID_GLM_MODEL,
   outputCapMiddleware,
+  parseLlmRoutes,
   parseMaxOutputTokens,
   parseModelCascade,
   parseOpenRouterKeys,
 } from "../agent/lib/model.ts";
-import { createOpenRouterFetch, rewriteChatModel } from "../agent/lib/openrouter-fetch.ts";
+import {
+  DEEPSEEK_FLASH_MODEL,
+  ZAI_FLASH_MODEL,
+  ZAI_VISION_MODEL,
+} from "../agent/lib/llm-routes.ts";
+import {
+  createOpenRouterFetch,
+  createRoutedFetch,
+  rewriteChatModel,
+} from "../agent/lib/openrouter-fetch.ts";
 import {
   KEY_COOLDOWN_402_MS,
   contextTokensFor,
@@ -155,6 +165,58 @@ eq(
   "rewrite replaces model",
 );
 
+{
+  const routes = parseLlmRoutes({
+    ZAI_API_KEY: "zai-key",
+    DEEPSEEK_API_KEY: "ds-key",
+    OPENROUTER_API_KEY: "or-key",
+  });
+  eq(routes[0]?.id, "zai", "Z.AI Flash is first official cheap route");
+  eq(routes[0]?.model, ZAI_FLASH_MODEL, "default Z.AI model");
+  eq(routes[1]?.model, ZAI_VISION_MODEL, "Z.AI vision fallback");
+  eq(routes[2]?.model, DEEPSEEK_FLASH_MODEL, "DeepSeek after Z.AI");
+  assert(routes.some((r) => r.id.startsWith("openrouter:")), "OpenRouter still in cascade");
+}
+
+{
+  const hits: string[] = [];
+  const routed = createRoutedFetch({
+    routes: [
+      {
+        id: "zai",
+        baseURL: "https://api.z.ai/api/paas/v4",
+        keys: ["zai-key"],
+        model: "glm-4.7-flash",
+      },
+      {
+        id: "openrouter:free",
+        baseURL: "https://openrouter.ai/api/v1",
+        keys: ["or-key"],
+        model: "openrouter/free",
+      },
+    ],
+    fetch: (async (url, init) => {
+      const target = String(url);
+      const model = (JSON.parse(String(init?.body)) as { model: string }).model;
+      hits.push(`${target} ${model}`);
+      if (target.includes("api.z.ai")) {
+        return new Response("no endpoints found", { status: 400 });
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }) as typeof fetch,
+  });
+  const res = await routed("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    body: JSON.stringify({ model: "ignored", messages: [] }),
+  });
+  assert(res.ok, "falls from Z.AI to OpenRouter");
+  assert(hits[0]?.includes("api.z.ai") && hits[0]?.includes("glm-4.7-flash"), "tried Z.AI first");
+  assert(
+    hits[1]?.includes("openrouter.ai") && hits[1]?.includes("openrouter/free"),
+    "rewrote URL to OpenRouter",
+  );
+}
+
 // broModel(): OpenRouter branch is wrapped but still exposes a runtime language model
 process.env.OPENROUTER_API_KEY = "test";
 delete process.env.BRO_MODEL;
@@ -189,6 +251,13 @@ assert(
 
 const keysOnly = broModel({ OPENROUTER_API_KEYS: "sk-or-one,sk-or-two" });
 assert(typeof keysOnly.model === "object", "OPENROUTER_API_KEYS alone is enough");
+
+const zaiOnly = broModel({ ZAI_API_KEY: "zai-test" });
+eq(
+  (zaiOnly.model as Extract<typeof zaiOnly.model, object>).modelId,
+  ZAI_FLASH_MODEL,
+  "Z.AI key without OpenRouter uses Flash",
+);
 
 const gateway = broModel({});
 eq(gateway.model, "openai/gpt-5.4-mini", "no keys → AI Gateway fallback");
