@@ -16,9 +16,10 @@ export const GROUP_WELCOME = [
 ].join("\n");
 
 export const GROUP_HOWTO = [
-  "Добавить Bro в группу: сохрани карточку контакта и кинь этот номер в чат.",
+  "Добавить Bro в уже существующий чат можно только если у Bro есть свой номер: сохрани карточку контакта и кинь этот номер в группу.",
+  "Без номера Bro остаётся 1:1 — в общий чат его не добавить.",
   "В группе пиши «бро …» — иначе молчу, чтобы не спамить.",
-  "Новый чат из лички: назови 2–8 номеров, открою сам (нужен номер Bro).",
+  "Новый чат из лички: назови людей, открою сам (2–8 номеров, нужен номер Bro).",
 ].join("\n");
 
 const GROUP_ATTR = "1";
@@ -26,8 +27,15 @@ const GROUP_ATTR = "1";
 export function isGroupMessage(msg: {
   is_group?: unknown;
   isGroup?: unknown;
+  sender_number?: unknown;
+  senderNumber?: unknown;
+  remote_number?: unknown;
+  remoteNumber?: unknown;
+  participants?: unknown;
 }): boolean {
-  return msg.is_group === true || msg.isGroup === true;
+  if (msg.is_group === true || msg.isGroup === true) return true;
+  if (readPhone(msg.sender_number) || readPhone(msg.senderNumber)) return true;
+  return groupParticipantPhones(msg).length >= 2;
 }
 
 function readPhone(value: unknown): string | undefined {

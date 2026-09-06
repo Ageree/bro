@@ -1,10 +1,18 @@
 import { defineDynamic, defineInstructions } from "eve/instructions";
+import { isGroupTurn } from "../lib/group-guard";
 import { jobWakeLines } from "../lib/convex";
 import { tenantId } from "../lib/tenant";
 
 export default defineDynamic({
   events: {
     async "turn.started"(_event, ctx) {
+      if (isGroupTurn(ctx)) {
+        return defineInstructions({
+          role: "user",
+          content:
+            "Group turn. Do not inject or mention this person's private open jobs.",
+        });
+      }
       let text = "No open jobs.";
       try {
         const lines = await jobWakeLines(tenantId(ctx));

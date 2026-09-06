@@ -26,10 +26,16 @@ export default defineTool({
     const tenant = await getTenant(phone);
     const handle = tenant?.inkboxHandle ?? agentHandle();
     const line = tenant?.dedicatedIMessageNumber;
+    const lineStatus = tenant?.dedicatedIMessageNumberStatus;
     if (!line) {
       return `${groupHowtoText()}\n\nСоздать чат сам не могу: нет номера Bro. Сохрани карточку контакта, когда номер появится.`;
     }
-    const parsed = parseGroupCreatePhones(phones ?? [], [line, phone]);
+    if (lineStatus && lineStatus !== "active") {
+      return `Номер Bro ещё не готов (${lineStatus}). Попробуй позже.`;
+    }
+    // Inkbox `to` is the other members; Bro's line is implicit. Keep the
+    // asking owner in the roster so "открой чат с Машей" includes them.
+    const parsed = parseGroupCreatePhones([phone, ...(phones ?? [])], [line]);
     if (!parsed.ok) return parsed.reason;
     const body = text?.trim() || "Я Bro. Пишите «бро …», когда нужна помощь.";
     const sent = await sendBlueIMessageGroup({
@@ -44,13 +50,16 @@ export default defineTool({
     if (!conversationId) {
       return "group created but conversation id missing";
     }
-    await bindGroupInbound({
+    const bound = await bindGroupInbound({
       conversationId,
       senderPhone: phone,
       participants: parsed.to,
-      handle: tenant?.inkboxHandle,
+      handle,
       ownerPhone: phone,
     });
+    if (!bound.ok) {
+      return `opened group ${conversationId}, but bind failed: ${bound.reason}`;
+    }
     return `opened group ${conversationId} with ${parsed.to.join(", ")}`;
   },
 });

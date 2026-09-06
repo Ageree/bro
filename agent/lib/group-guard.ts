@@ -1,10 +1,16 @@
 import { groupPrivateOnlyText, isGroupAuthFlag } from "../../convex/lib/groupChatPolicy.ts";
 
 type AuthBox = {
-  session: {
-    auth: {
-      current?: { attributes?: Record<string, unknown> } | null;
-      initiator?: { attributes?: Record<string, unknown> } | null;
+  session?: {
+    auth?: {
+      current?: {
+        principalId?: string | null;
+        attributes?: Record<string, unknown>;
+      } | null;
+      initiator?: {
+        principalId?: string | null;
+        attributes?: Record<string, unknown>;
+      } | null;
     };
   };
 };
@@ -13,8 +19,8 @@ export function turnAttributes(
   ctx: AuthBox,
 ): Record<string, unknown> | undefined {
   return (
-    ctx.session.auth.current?.attributes ??
-    ctx.session.auth.initiator?.attributes
+    ctx.session?.auth?.current?.attributes ??
+    ctx.session?.auth?.initiator?.attributes
   );
 }
 

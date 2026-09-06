@@ -5,6 +5,7 @@ import { mutation, query } from "./_generated/server";
 import { assertSecret } from "./secret";
 import {
   mergeParticipantPhones,
+  normalizeE164,
   resolveGroupOwner,
   uniquePhones,
 } from "./lib/groupChatPolicy";
@@ -19,7 +20,7 @@ export const getByConversation = query({
     return await ctx.db
       .query("groupChats")
       .withIndex("by_conversation", (q) => q.eq("conversationId", conversationId))
-      .unique();
+      .first();
   },
 });
 
@@ -59,9 +60,20 @@ export const bindInbound = mutation({
     const conversationId = args.conversationId.trim();
     if (!conversationId) return { ok: false as const, reason: "missing conversation" };
 
+    const existing = await ctx.db
+      .query("groupChats")
+      .withIndex("by_conversation", (q) => q.eq("conversationId", conversationId))
+      .first();
+
     let ownerPhone: string | undefined;
     let inkboxHandle = "";
-    if (args.handle) {
+    if (existing) {
+      if (existing.status === "disabled") {
+        return { ok: false as const, reason: "disabled" };
+      }
+      ownerPhone = existing.ownerPhoneE164;
+      inkboxHandle = existing.inkboxHandle;
+    } else if (args.handle) {
       const tenant = await ctx.db
         .query("tenants")
         .withIndex("by_handle", (q) => q.eq("inkboxHandle", args.handle))
@@ -83,25 +95,19 @@ export const bindInbound = mutation({
       });
     }
     if (!ownerPhone) return { ok: false as const, reason: "no owner" };
+    if (!inkboxHandle && args.handle) inkboxHandle = args.handle;
+    if (!existing && !inkboxHandle) {
+      return { ok: false as const, reason: "missing handle" };
+    }
 
     const participants = uniquePhones([
       ownerPhone,
       args.senderPhone,
       ...args.participants,
     ]);
-
-    const existing = await ctx.db
-      .query("groupChats")
-      .withIndex("by_conversation", (q) => q.eq("conversationId", conversationId))
-      .unique();
+    const senderPhone = normalizeE164(args.senderPhone);
 
     if (existing) {
-      if (existing.ownerPhoneE164 !== ownerPhone) {
-        return { ok: false as const, reason: "wrong owner" };
-      }
-      if (existing.status === "disabled") {
-        return { ok: false as const, reason: "disabled" };
-      }
       const nextParticipants = mergeParticipantPhones(
         existing.participants,
         participants,
@@ -114,8 +120,8 @@ export const bindInbound = mutation({
       if (nextParticipants.join("\0") !== existing.participants.join("\0")) {
         patch.participants = nextParticipants;
       }
-      if (args.senderPhone && existing.lastSenderPhone !== args.senderPhone) {
-        patch.lastSenderPhone = args.senderPhone;
+      if (senderPhone && existing.lastSenderPhone !== senderPhone) {
+        patch.lastSenderPhone = senderPhone;
       }
       if (inkboxHandle && existing.inkboxHandle !== inkboxHandle) {
         patch.inkboxHandle = inkboxHandle;
@@ -139,7 +145,7 @@ export const bindInbound = mutation({
       participants,
       status: "active",
       createdAt: Date.now(),
-      lastSenderPhone: args.senderPhone,
+      lastSenderPhone: senderPhone,
       greeted: false,
     });
     const created = await ctx.db.get(id);
@@ -162,7 +168,7 @@ export const markGreeted = mutation({
     const row = await ctx.db
       .query("groupChats")
       .withIndex("by_conversation", (q) => q.eq("conversationId", conversationId))
-      .unique();
+      .first();
     if (row && row.greeted !== true) {
       await ctx.db.patch(row._id, { greeted: true });
     }
