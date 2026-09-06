@@ -235,7 +235,7 @@ for (const st of ["running", "started", "pending", "Running"]) {
   assert(job.label === BROWSER_JOB_RUNNING, `job ${st} running copy`);
   assert(job.status === st.trim(), `job ${st} keeps status`);
   assert(job.task === "оформить заказ", `job ${st} task`);
-  assert(job.liveUrl === undefined, `job ${st} no liveUrl`);
+  assert(job.liveUrl === undefined, `job ${st} no liveUrl when none stored`);
 }
 const queued = browserJobForSnapshot({ browserStatus: "queued" });
 assert(queued.label === BROWSER_JOB_RUNNING, "queued is in-flight copy");
@@ -266,13 +266,13 @@ assert(threeDs.liveUrl === undefined, "3ds without url has no link");
 
 const liveRunning = browserJobForSnapshot({
   browserStatus: "running",
-  browserLiveUrl: "https://live.example/3ds",
+  browserLiveUrl: "https://live.example/session",
   browserTask: "купить кроссовки",
   browserStartedAt: now,
 });
-assert(liveRunning.label === BROWSER_JOB_SECURE, "liveUrl while running is 3ds");
-assert(liveRunning.liveUrl === "https://live.example/3ds", "3ds keeps liveUrl");
-assert(liveRunning.task === "купить кроссовки", "3ds keeps task");
+assert(liveRunning.label === BROWSER_JOB_RUNNING, "live viewer is not 3ds");
+assert(liveRunning.liveUrl === "https://live.example/session", "running keeps liveUrl");
+assert(liveRunning.task === "купить кроссовки", "running keeps task");
 
 assert(
   browserJobForSnapshot({

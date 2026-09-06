@@ -74,7 +74,7 @@ async function persist(
     browserTask: task,
     browserStatus: run.status,
     ...(run.sessionId ? { browserSessionId: run.sessionId } : {}),
-    ...(run.liveUrl ? { browserLiveUrl: run.liveUrl } : {}),
+    browserLiveUrl: run.liveUrl ?? "",
     ...(extra ?? {}),
   });
 }
@@ -115,7 +115,6 @@ async function maybeRecordOrder(
   extra: Record<string, unknown>,
 ): Promise<void> {
   if (run.status.toLowerCase() !== "completed") return;
-  if (extra.reused === true) return;
   if (extra.paying !== true && !taskLooksLikeBuy(task)) return;
   const row = parseOrderFromResult({
     task,

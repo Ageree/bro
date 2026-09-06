@@ -80,7 +80,9 @@ export default defineSchema({
     ),
     createdAt: v.optional(v.number()),
     pickup: v.optional(v.string()),
-  }).index("by_tenant", ["tenantId"]),
+  })
+    .index("by_tenant", ["tenantId"])
+    .index("by_tenant_and_merchant_order", ["tenantId", "merchantOrderId"]),
 
   sessions: defineTable({
     tokenHash: v.string(),

@@ -70,9 +70,8 @@ export function browserJobForSnapshot(
   if (FAILED.has(key)) {
     return { status, label: BROWSER_JOB_FAILED, ...jobExtras(tenant, false) };
   }
-  const liveUrl = tenant.browserLiveUrl?.trim();
-  if (looksLike3ds(status) || liveUrl) {
+  if (looksLike3ds(status)) {
     return { status, label: BROWSER_JOB_SECURE, ...jobExtras(tenant, true) };
   }
-  return { status, label: BROWSER_JOB_RUNNING, ...jobExtras(tenant, false) };
+  return { status, label: BROWSER_JOB_RUNNING, ...jobExtras(tenant, true) };
 }

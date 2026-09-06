@@ -6,10 +6,16 @@ import {
   normalizeTz,
   resolveTenantTz,
   sessionTzChangeDecision,
+  type SessionTzChangeResult,
 } from "../convex/lib/tzPolicy.ts";
 
 function assert(cond: unknown, msg: string): void {
   if (!cond) throw new Error(msg);
+}
+
+function failCode(r: SessionTzChangeResult): "unbound" | "invalid" {
+  if (r.ok) throw new Error("expected tz change to fail");
+  return r.code;
 }
 
 assert(DEFAULT_TZ === "Europe/Moscow", "default Europe/Moscow");
@@ -43,33 +49,32 @@ assert(resolveTenantTz(null) === DEFAULT_TZ, "null tz → default");
 assert(resolveTenantTz("  Asia/Almaty  ") === "Asia/Almaty", "stored trim");
 assert(resolveTenantTz("nope") === DEFAULT_TZ, "garbage stored → default");
 
-const unbound = sessionTzChangeDecision({ tz: "Europe/Moscow" });
-assert(unbound.ok === false && unbound.code === "unbound", "no phone → unbound");
 assert(
-  sessionTzChangeDecision({ phoneE164: "", tz: "Europe/Moscow" }).ok === false &&
-    sessionTzChangeDecision({ phoneE164: "", tz: "Europe/Moscow" }).code ===
-      "unbound",
+  failCode(sessionTzChangeDecision({ tz: "Europe/Moscow" })) === "unbound",
+  "no phone → unbound",
+);
+assert(
+  failCode(sessionTzChangeDecision({ phoneE164: "", tz: "Europe/Moscow" })) ===
+    "unbound",
   "empty phone → unbound",
 );
 assert(
-  sessionTzChangeDecision({ phoneE164: "   ", tz: "Europe/Moscow" }).code ===
+  failCode(sessionTzChangeDecision({ phoneE164: "   ", tz: "Europe/Moscow" })) ===
     "unbound",
   "whitespace phone → unbound",
 );
-
-const unboundWins = sessionTzChangeDecision({ tz: "not-a-zone" });
 assert(
-  unboundWins.ok === false && unboundWins.code === "unbound",
+  failCode(sessionTzChangeDecision({ tz: "not-a-zone" })) === "unbound",
   "unbound wins over invalid tz",
 );
-
-const invalid = sessionTzChangeDecision({
-  phoneE164: "+79001112233",
-  tz: "not-a-zone",
-});
-assert(invalid.ok === false && invalid.code === "invalid", "bound + garbage");
 assert(
-  sessionTzChangeDecision({ phoneE164: "+79001112233", tz: "" }).code ===
+  failCode(
+    sessionTzChangeDecision({ phoneE164: "+79001112233", tz: "not-a-zone" }),
+  ) === "invalid",
+  "bound + garbage",
+);
+assert(
+  failCode(sessionTzChangeDecision({ phoneE164: "+79001112233", tz: "" })) ===
     "invalid",
   "bound + empty tz",
 );
@@ -78,7 +83,8 @@ const ok = sessionTzChangeDecision({
   phoneE164: "+79001112233",
   tz: "  Asia/Yekaterinburg  ",
 });
-assert(ok.ok === true && ok.tz === "Asia/Yekaterinburg", "bound + trimmed IANA");
+if (!ok.ok) throw new Error("bound + trimmed IANA");
+assert(ok.tz === "Asia/Yekaterinburg", "bound + trimmed IANA");
 
 const httpSrc = readFileSync(new URL("../convex/http.ts", import.meta.url), "utf8");
 assert(httpSrc.includes('path: "/me/tz"'), "http /me/tz route");

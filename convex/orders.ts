@@ -58,6 +58,22 @@ export const record = mutation({
   returns: v.id("orders"),
   handler: async (ctx, args) => {
     assertSecret(args.secret);
+    const existing = await ctx.db
+      .query("orders")
+      .withIndex("by_tenant_and_merchant_order", (q) =>
+        q.eq("tenantId", args.tenantId).eq("merchantOrderId", args.merchantOrderId),
+      )
+      .first();
+    if (existing) {
+      await ctx.db.patch(existing._id, {
+        merchant: args.merchant,
+        title: args.title,
+        priceRub: args.priceRub,
+        status: args.status ?? existing.status,
+        ...(args.pickup ? { pickup: args.pickup } : {}),
+      });
+      return existing._id;
+    }
     return await ctx.db.insert("orders", {
       tenantId: args.tenantId,
       merchant: args.merchant,
@@ -93,13 +109,14 @@ export const updateStatus = mutation({
 
     let row = args.orderId ? await ctx.db.get(args.orderId) : null;
     if (row && row.tenantId !== tenant._id) return { error: "unknown order" };
-    if (!row && args.merchantOrderId) {
-      const recent = await ctx.db
+    const merchantOrderId = args.merchantOrderId;
+    if (!row && merchantOrderId) {
+      row = await ctx.db
         .query("orders")
-        .withIndex("by_tenant", (q) => q.eq("tenantId", tenant._id))
-        .order("desc")
-        .take(50);
-      row = recent.find((o) => o.merchantOrderId === args.merchantOrderId) ?? null;
+        .withIndex("by_tenant_and_merchant_order", (q) =>
+          q.eq("tenantId", tenant._id).eq("merchantOrderId", merchantOrderId),
+        )
+        .first();
     }
     if (!row) return { error: "unknown order" };
 

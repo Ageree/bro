@@ -160,6 +160,11 @@ assert(ordersSrc.includes("createdAt: Date.now()"), "record sets createdAt");
 assert(ordersSrc.includes("pickup"), "record pickup");
 assert(ordersSrc.includes(".take(20)"), "listForPhone last 20");
 assert(ordersSrc.includes("phoneE164"), "phone-gated queries");
+assert(
+  ordersSrc.includes("by_tenant_and_merchant_order"),
+  "record upserts by merchant order",
+);
+assert(ordersSrc.includes("ctx.db.patch"), "existing order is patched");
 assert(!ordersSrc.includes("v.any()"), "no any in orders.ts");
 
 const convexSrc = readFileSync(new URL("../agent/lib/convex.ts", import.meta.url), "utf8");
@@ -179,6 +184,10 @@ assert(settleSrc.includes("extra.paying"), "settle checks paying");
 assert(settleSrc.includes("purchaseStance"), "settle uses buy stance");
 assert(settleSrc.includes("record order failed"), "settle swallows record errors");
 assert(settleSrc.includes("maybeRecordOrder"), "record does not replace payload");
+assert(
+  !/if \(extra\.reused === true\) return/.test(settleSrc),
+  "follow-through reuse still records",
+);
 
 const toolSrc = readFileSync(new URL("../agent/tools/list_orders.ts", import.meta.url), "utf8");
 assert(toolSrc.includes("list_orders") || toolSrc.includes("Заказы"), "tool voice");
@@ -207,5 +216,9 @@ const schemaSrc = readFileSync(new URL("../convex/schema.ts", import.meta.url), 
 assert(schemaSrc.includes("orders:"), "schema still has orders");
 assert(schemaSrc.includes('v.literal("wb")'), "schema merchant wb");
 assert(schemaSrc.includes("pickup"), "schema pickup");
+assert(
+  schemaSrc.includes("by_tenant_and_merchant_order"),
+  "schema index tenant+merchantOrderId",
+);
 
 console.log("orders-check ok");
