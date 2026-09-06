@@ -34,6 +34,7 @@ import { transcribeVoiceNote } from "../lib/voice";
 import { inboundUserContent } from "../lib/inbound-image.ts";
 import { VOICE_FAILED_REPLY } from "../lib/voice-policy";
 import { splitSeen } from "../lib/wakeup-text";
+import { watcherWakeupPrompt } from "../lib/purchase-policy";
 import { wakeupCarriesRunId } from "../../convex/lib/browserFollowPolicy.ts";
 import {
   releaseWakeupDelivery,
@@ -379,8 +380,7 @@ export default defineChannel({
         prompt =
           "[background wakeup] Утренний бриф. Собери коротко: (1) память об этом человеке — незакрытые дела/напоминания на сегодня; (2) если подключён Gmail/Calendar через Composio — новые важные письма и встречи сегодня; (3) статус браузер-джоба, если был. Если по ВСЕМ пунктам пусто — ответь [SILENT]. Одно короткое сообщение, без воды.";
       } else if (kind === "watcher") {
-        prompt = `[background wakeup] Сторож: ${payload}.
-Прошлое состояние: ${lastSeen ?? "ничего"}. Проверь текущее состояние (Composio-тулы или browser_task — что уместно). Если НИЧЕГО нового относительно прошлого состояния — ответь ровно [SILENT]. Если есть новое — одно короткое сообщение человеку. В КОНЦЕ ответа добавь строку [SEEN] <краткое текущее состояние в одну строку> — она не уйдёт человеку.`;
+        prompt = watcherWakeupPrompt(payload, lastSeen);
       } else if (kind === "browser_poll") {
         prompt = `[background wakeup] Проверь статус текущего браузер-джоба вызовом тула browser_task с task=${payload}. Если completed — отправь человеку результаты. Если failed или джоб завис — коротко скажи об этом. Если ещё работает — ответь [SILENT].`;
         if (wakeupCarriesRunId(body.runId)) {
