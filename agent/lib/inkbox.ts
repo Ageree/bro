@@ -4,6 +4,13 @@ import {
   type IMessage,
   type IMessageReaction,
 } from "@inkbox/sdk";
+import {
+  conversationForSimMessage,
+  isSimConversation,
+  isSimMessageId,
+  isSimPhone,
+  recordSimBubble,
+} from "./sim.ts";
 
 /** Named tapbacks `sendIMessageReaction` accepts. `custom` is inbound-only. */
 export const IMESSAGE_TAPBACKS = [
@@ -77,11 +84,45 @@ export function isBlueIMessage(msg: {
   return true;
 }
 
+function fakeBlueMessage(opts: {
+  conversationId: string;
+  id: string;
+  text?: string;
+}): IMessage {
+  return {
+    id: opts.id,
+    conversationId: opts.conversationId,
+    conversation_id: opts.conversationId,
+    service: "imessage",
+    wasDowngraded: false,
+    text: opts.text,
+  } as unknown as IMessage;
+}
+
+function shouldSimOutbound(opts: {
+  conversationId?: string;
+  to?: string[];
+}): boolean {
+  if (isSimConversation(opts.conversationId)) return true;
+  return Boolean(opts.to?.some((phone) => isSimPhone(phone)));
+}
+
 export async function sendBlueIMessage(opts: {
   conversationId: string;
   text: string;
   handle?: string;
 }): Promise<IMessage> {
+  if (shouldSimOutbound(opts)) {
+    const recorded = recordSimBubble(opts.conversationId, {
+      kind: "text",
+      text: opts.text,
+    });
+    return fakeBlueMessage({
+      conversationId: opts.conversationId,
+      id: recorded.messageId,
+      text: recorded.text,
+    });
+  }
   const identity = await inkbox().getIdentity(opts.handle ?? agentHandle());
   const sent = await identity.sendIMessage({
     conversationId: opts.conversationId,
@@ -101,6 +142,19 @@ export async function sendBlueIMessageGroup(opts: {
   text: string;
   handle?: string;
 }): Promise<IMessage> {
+  if (shouldSimOutbound({ to: opts.to })) {
+    const conversationId = `sim:group:${crypto.randomUUID()}`;
+    const recorded = recordSimBubble(conversationId, {
+      kind: "group",
+      text: opts.text,
+      to: opts.to,
+    });
+    return fakeBlueMessage({
+      conversationId,
+      id: recorded.messageId,
+      text: recorded.text,
+    });
+  }
   const identity = await inkbox().getIdentity(opts.handle ?? agentHandle());
   const sent = await identity.sendIMessage({
     to: opts.to,
@@ -120,6 +174,18 @@ export async function sendBlueIMessageMedia(opts: {
   handle?: string;
   text?: string;
 }): Promise<IMessage> {
+  if (shouldSimOutbound(opts)) {
+    const recorded = recordSimBubble(opts.conversationId, {
+      kind: "media",
+      text: opts.text?.trim(),
+      media: opts.mediaUrls.join(" "),
+    });
+    return fakeBlueMessage({
+      conversationId: opts.conversationId,
+      id: recorded.messageId,
+      text: recorded.text,
+    });
+  }
   const identity = await inkbox().getIdentity(opts.handle ?? agentHandle());
   const text = opts.text?.trim();
   const sent = await identity.sendIMessage({
@@ -140,6 +206,21 @@ export async function sendIMessageTapback(opts: {
   reaction: IMessageTapback;
   handle?: string;
 }): Promise<IMessageReaction> {
+  if (isSimMessageId(opts.messageId)) {
+    const conversationId = conversationForSimMessage(opts.messageId);
+    const recorded = conversationId
+      ? recordSimBubble(conversationId, {
+          kind: "tapback",
+          reaction: opts.reaction,
+          targetMessageId: opts.messageId,
+        })
+      : undefined;
+    return {
+      id: recorded?.messageId ?? `sim-${crypto.randomUUID()}`,
+      reaction: opts.reaction,
+      targetMessageId: opts.messageId,
+    } as unknown as IMessageReaction;
+  }
   const identity = await inkbox().getIdentity(opts.handle ?? agentHandle());
   return identity.sendIMessageReaction({
     messageId: opts.messageId,
