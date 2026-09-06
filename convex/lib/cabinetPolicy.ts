@@ -67,6 +67,14 @@ export function sessionLive(expiresAt: number, now: number): boolean {
 
 export type PlanKind = "free" | "paid";
 
+export type BrowserJobSnapshot = {
+  status: string;
+  label: string;
+  task?: string;
+  liveUrl?: string;
+  startedAt?: number;
+};
+
 export type PaymentRow = {
   createdAt: number;
   amountRub: number;
@@ -95,6 +103,8 @@ export type CabinetSnapshot = {
   browserCookieDomains: string[];
   browserProfileStatus: "missing" | "empty" | "synced";
   memories: string[];
+  tz?: string;
+  browserJob: BrowserJobSnapshot;
 };
 
 /** Accept only a stored bro-xxxxxxxx handle — typing one is not the login path. */
@@ -139,6 +149,8 @@ export function buildSnapshot(opts: {
   browserCookieDomains?: string[];
   browserProfileStatus?: "missing" | "empty" | "synced";
   memories?: string[];
+  tz?: string;
+  browserJob?: BrowserJobSnapshot;
 }): CabinetSnapshot {
   const phoneBound = Boolean(opts.phoneE164);
   const last4 = phoneLast4(opts.phoneE164);
@@ -161,6 +173,8 @@ export function buildSnapshot(opts: {
     browserCookieDomains: opts.browserCookieDomains ?? [],
     browserProfileStatus: opts.browserProfileStatus ?? "missing",
     memories: opts.memories ?? [],
+    ...(opts.tz ? { tz: opts.tz } : {}),
+    browserJob: opts.browserJob ?? { status: "", label: "Сейчас ничего не делает" },
   };
 }
 
