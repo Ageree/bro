@@ -379,12 +379,15 @@ assert(
   "login effort",
 );
 assert(reasoningEffort("errand", "none") === "none", "effort override");
-assert(reasoningEffort("errand", "wat") === "low", "bad effort");
+assert(
+  reasoningEffort("errand", "wat") === DEFAULT_REASONING_EFFORT.errand,
+  "bad effort",
+);
 assert(acceptsReasoningEffort("gpt-5.6-luna") === true, "luna reasoning");
 assert(acceptsReasoningEffort("minimax-m3") === false, "minimax no reasoning");
 assert(
-  JSON.stringify(modelParamsFor("gpt-5.6-luna", "low")) ===
-    JSON.stringify({ reasoning: { effort: "low" } }),
+  JSON.stringify(modelParamsFor("gpt-5.6-luna", "medium")) ===
+    JSON.stringify({ reasoning: { effort: "medium" } }),
   "luna modelParams",
 );
 assert(modelParamsFor("grok-4.5", "low") === undefined, "grok no modelParams");
@@ -440,14 +443,14 @@ const errandBody = buildRunBody({
   proxyCountry: "ru",
   model: DEFAULT_BROWSER_MODEL,
   maxCostUsd: DEFAULT_MAX_COST_USD.errand,
-  reasoningEffort: "low",
+  reasoningEffort: DEFAULT_REASONING_EFFORT.errand,
 });
 assert(errandBody.model === "gpt-5.6-luna", "errand pins luna");
-assert(errandBody.maxCostUsd === 0.45, "errand cap on body");
+assert(errandBody.maxCostUsd === 0.6, "errand cap on body");
 assert(
   JSON.stringify(errandBody.modelParams) ===
-    JSON.stringify({ reasoning: { effort: "low" } }),
-  "errand not xhigh",
+    JSON.stringify({ reasoning: { effort: "medium" } }),
+  "errand uses OpenAI default medium, not Cloud xhigh",
 );
 assert(
   JSON.stringify(errandBody.browserSettings) ===
@@ -475,11 +478,11 @@ const payBody = buildRunBody({
   maxCostUsd: DEFAULT_MAX_COST_USD.pay,
   reasoningEffort: DEFAULT_REASONING_EFFORT.pay,
 });
-assert(payBody.maxCostUsd === 0.8, "pay higher cap");
+assert(payBody.maxCostUsd === 1, "pay higher cap");
 assert(
   JSON.stringify(payBody.modelParams) ===
-    JSON.stringify({ reasoning: { effort: "low" } }),
-  "pay still low, not xhigh",
+    JSON.stringify({ reasoning: { effort: "high" } }),
+  "pay uses high, not Cloud xhigh",
 );
 
 const grokBody = buildRunBody({

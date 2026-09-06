@@ -55,22 +55,27 @@ export const DEFAULT_BROWSER_MODEL = "gpt-5.6-luna";
 /**
  * Per-kind USD caps. Login only opens a page and waits.
  * Pay needs a longer checkout. Env `BRO_BROWSER_MAX_COST` overrides all three.
+ * Medium/high reasoning spends more output tokens than `low`, so errand/pay
+ * sit above the old 0.45 / 0.80 floors.
  */
 export const DEFAULT_MAX_COST_USD: Record<BrowserRunKind, number> = {
   login: 0.15,
-  errand: 0.45,
-  pay: 0.8,
+  errand: 0.6,
+  pay: 1,
 };
 
 /**
- * Cloud defaults Luna to `reasoning.effort: xhigh` when modelParams is omitted.
- * That burns tokens. `low` is enough for WB/Ozon errands; login needs none.
+ * Cloud defaults Luna to `reasoning.effort: xhigh` when modelParams is omitted
+ * (token furnace). OpenAI's own Luna default is `medium`. `low` is below both
+ * and is the nano-tier's weakest setting — WB/Ozon errands need more.
+ * Login stays `none` (open page, wait). Pay uses `high` (checkout judgment).
  * https://docs.browser-use.com/cloud/agent/thinking-levels
+ * https://developers.openai.com/api/docs/models/gpt-5.6-luna
  */
 export const DEFAULT_REASONING_EFFORT: Record<BrowserRunKind, ReasoningEffort> = {
   login: "none",
-  errand: "low",
-  pay: "low",
+  errand: "medium",
+  pay: "high",
 };
 
 const REASONING_EFFORTS = new Set<string>([
