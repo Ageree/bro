@@ -22,7 +22,7 @@ export default defineDynamic({
       }
       return defineInstructions({
         role: "user",
-        content: `Open jobs for this person only. A user message starting with [event:mail] is inbound mail to Bro's mailbox, not the human speaking.\n\n${text}`,
+        content: `Open jobs for this person only. A user message starting with [event:mail] is inbound mail to Bro's mailbox, not the human speaking. If a worker or job is waiting on a one-time code, extract it from the letter (or call otp / otp_lookup) before asking in the thread.\n\n${text}`,
       });
     },
   },

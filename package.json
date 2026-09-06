@@ -19,6 +19,7 @@
     "pay:check": "node --experimental-strip-types scripts/browser-pay-check.ts",
     "purchase:check": "node --experimental-strip-types scripts/purchase-check.ts",
     "orders:check": "node --experimental-strip-types scripts/orders-check.ts",
+    "otp:check": "node --experimental-strip-types scripts/otp-check.ts",
     "profile:check": "node --experimental-strip-types scripts/profile-sync-check.ts",
     "access:check": "node --experimental-strip-types scripts/access-policy-check.ts",
     "dedicated:check": "node --experimental-strip-types scripts/dedicated-line-check.ts",

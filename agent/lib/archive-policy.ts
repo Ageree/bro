@@ -9,7 +9,7 @@ export interface ArchiveDocument {
   customId: string;
   title: string;
   content: string;
-  metadata: { app: "gmail" | "calendar"; date?: string };
+  metadata: { app: "gmail" | "calendar" | "inkbox"; date?: string };
 }
 
 const TAG_PREFIX = "bro_archive_";
@@ -50,6 +50,33 @@ export function emailToDocument(raw: unknown): ArchiveDocument | null {
     title: subject.slice(0, 200),
     content: `${header ? header + "\n\n" : ""}${text}`.slice(0, CONTENT_CHARS),
     metadata: { app: "gmail", ...(date ? { date } : {}) },
+  };
+}
+
+/** Inbound letter on Bro's Inkbox mailbox → archive document. */
+export function inkboxMailToDocument(raw: unknown): ArchiveDocument | null {
+  const m = rec(raw);
+  const id = str(m.id) || str(m.messageId) || str(m.message_id);
+  if (!id) return null;
+  const subject = str(m.subject) || "(без темы)";
+  const sender =
+    str(m.from_address) || str(m.fromAddress) || str(m.from) || str(m.sender);
+  const date = str(m.created_at) || str(m.createdAt) || str(m.date);
+  const text =
+    str(m.body) ||
+    str(m.bodyText) ||
+    str(m.body_text) ||
+    str(m.snippet) ||
+    str(m.preview);
+  if (!text) return null;
+  const header = [sender && `От: ${sender}`, date && `Дата: ${date}`]
+    .filter(Boolean)
+    .join("\n");
+  return {
+    customId: `inkbox_${id}`,
+    title: subject.slice(0, 200),
+    content: `${header ? header + "\n\n" : ""}${text}`.slice(0, CONTENT_CHARS),
+    metadata: { app: "inkbox", ...(date ? { date } : {}) },
   };
 }
 

@@ -89,7 +89,7 @@ type ListResponse = {
  */
 export async function forgetArchive(
   phone: string,
-  app?: "gmail" | "calendar",
+  app?: "gmail" | "calendar" | "inkbox",
 ): Promise<number> {
   let deleted = 0;
   for (;;) {

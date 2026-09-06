@@ -6,6 +6,7 @@ import {
   eventToDocument,
   formatArchiveRecall,
   gmailQuery,
+  inkboxMailToDocument,
   recallQuery,
 } from "../agent/lib/archive-policy.ts";
 
@@ -45,6 +46,19 @@ assert.equal(event.customId, "gcal_ev1");
 assert.equal(event.metadata.app, "calendar");
 assert.ok(event.content.includes("Место: Тверская 1"));
 assert.equal(eventToDocument({ id: "ev2", summary: "без даты" }), null);
+
+const inkbox = inkboxMailToDocument({
+  id: "msg-otp",
+  from_address: "noreply@wildberries.ru",
+  subject: "Код подтверждения",
+  body: "Ваш код: 482911",
+  created_at: "2026-09-06T12:00:00Z",
+});
+assert.ok(inkbox);
+assert.equal(inkbox.customId, "inkbox_msg-otp");
+assert.equal(inkbox.metadata.app, "inkbox");
+assert.ok(inkbox.content.includes("482911"));
+assert.equal(inkboxMailToDocument({ subject: "no id" }), null);
 
 // Recall query: latest user message text, string or parts, truncated.
 assert.equal(

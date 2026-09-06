@@ -1,4 +1,6 @@
 import type { MailWebhookMessage, MailWebhookPayload } from "@inkbox/sdk";
+import { ingestArchiveDocument } from "./archive.ts";
+import { inkboxMailToDocument } from "./archive-policy.ts";
 import {
   attachMailToJob,
   formatMailWake,
@@ -17,6 +19,16 @@ import {
   listOpenJobs,
   touchJobMail,
 } from "./convex";
+
+async function ingestInkboxArchive(
+  phone: string,
+  msg: MailWebhookMessage,
+): Promise<void> {
+  if (!process.env.SUPERMEMORY_API_KEY?.trim()) return;
+  const doc = inkboxMailToDocument(msg);
+  if (!doc) return;
+  await ingestArchiveDocument(phone, doc);
+}
 
 function handleFromRequest(request: Request): string | undefined {
   try {
@@ -62,6 +74,9 @@ async function composeWake(
       emailMessageId: msg.id,
     }).catch((err) => console.error("touch job mail failed", err));
   }
+  void ingestInkboxArchive(phone, msg).catch((err) =>
+    console.error("inkbox archive ingest failed", err),
+  );
   return {
     conversationId,
     phone,
