@@ -120,6 +120,25 @@
       border: 1px solid rgba(23, 39, 30, 0.18);
     }
     .muted { color: var(--ink-soft); font-size: 0.95rem; line-height: 1.5; }
+    .handle-xl {
+      font-size: clamp(1.6rem, 4vw, 2.2rem);
+      font-weight: 600;
+      letter-spacing: -0.03em;
+      line-height: 1.15;
+      margin-bottom: 0.55rem;
+    }
+    .memos { list-style: none; }
+    .memos li {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 0.8rem;
+      padding: 0.55rem 0;
+      border-top: 1px solid rgba(23, 39, 30, 0.08);
+    }
+    .memos li:first-child { border-top: 0; }
+    .memo-line { flex: 1; min-width: 0; word-break: break-word; line-height: 1.45; }
+    .memo-forget { font-size: 0.88rem; padding: 0.4rem 0.9rem; flex-shrink: 0; }
     .bar {
       height: 0.45rem;
       background: rgba(23, 39, 30, 0.1);
@@ -208,8 +227,10 @@
     <div class="sheet" role="dialog" aria-labelledby="login-title">
       <h2 id="login-title">Вход в кабинет</h2>
       <p class="hint">Код придёт сообщением от Bro в уже открытый чат iMessage.</p>
-      <label for="login-handle">Handle</label>
-      <input id="login-handle" autocomplete="username" placeholder="bro-xxxxxxxx" />
+      <div id="login-handle-row" hidden>
+        <label for="login-handle">Handle</label>
+        <input id="login-handle" autocomplete="username" placeholder="bro-xxxxxxxx" />
+      </div>
       <button class="cta sheet-cta" id="login-send" type="button">Получить код</button>
       <div id="login-code-row" hidden>
         <label for="login-code">Код из iMessage</label>
@@ -261,10 +282,12 @@
         return "Пока нет сохранённых входов — Bro пришлёт ссылку, когда понадобится.";
       }
 
+      var HANDLE = "bro.handle";
       var boot = document.getElementById("boot");
       var body = document.getElementById("body");
       var t = token();
       var base = site();
+      var memoLines = [];
       if (!t) {
         boot.textContent = "Войди, чтобы увидеть оплату и лимиты.";
         document.getElementById("login-open").click();
@@ -275,68 +298,188 @@
         return;
       }
 
-      fetch(base + "/me", { headers: { Authorization: "Bearer " + t } })
-        .then(function (res) { return res.json().then(function (data) { return { res: res, data: data }; }); })
-        .then(function (got) {
-          if (!got.res.ok || !got.data.ok) {
-            localStorage.removeItem(TOKEN);
-            boot.textContent = "Сессия истекла. Войди снова.";
-            document.getElementById("login-open").hidden = false;
-            document.getElementById("logout").hidden = true;
-            document.getElementById("cabinet-open").hidden = true;
+      function storedHandle() {
+        return localStorage.getItem(HANDLE) || "";
+      }
+
+      function memoCard(me) {
+        memoLines = me.memories || [];
+        var items = memoLines.map(function (line, i) {
+          return '<li><span class="memo-line">' + esc(line) + "</span>" +
+            '<button class="ghost memo-forget" type="button" data-i="' + i +
+            '">Забыть</button></li>';
+        }).join("");
+        var empty = me.phoneBound
+          ? "Пока пусто."
+          : "Память появится, когда напишешь Bro в iMessage.";
+        return '<div class="card" id="memory"><h2>Память</h2>' +
+          (items
+            ? '<ul class="memos" id="memos">' + items + "</ul>"
+            : '<p class="muted">' + empty + "</p>") +
+          '<p class="muted" id="memory-status"></p></div>';
+      }
+
+      function bindPay() {
+        var btn = document.getElementById("pay-now");
+        if (!btn) return;
+        btn.addEventListener("click", function () {
+          var st = document.getElementById("pay-status");
+          st.textContent = "Открываем ЮKassa…";
+          fetch(base + "/me/pay", {
+            method: "POST",
+            headers: { Authorization: "Bearer " + t },
+          })
+            .then(function (res) { return res.json(); })
+            .then(function (data) {
+              if (data.ok && data.confirmationUrl) {
+                window.location.href = data.confirmationUrl;
+                return;
+              }
+              if (data.code === "billing_off") st.textContent = "Оплата скоро";
+              else st.textContent = "Не вышло, нажми ещё раз";
+            })
+            .catch(function () {
+              st.textContent = "Не вышло, нажми ещё раз";
+            });
+        });
+      }
+
+      function bindWrite(me) {
+        var btn = document.getElementById("write-bro");
+        if (!btn) return;
+        btn.addEventListener("click", function () {
+          var st = document.getElementById("write-status");
+          var h = storedHandle() || me.handle;
+          if (h && !storedHandle()) localStorage.setItem(HANDLE, h);
+          if (!h) {
+            st.textContent = "Открой сайт на том же iPhone или нажми «Запросить доступ» ещё раз.";
             return;
           }
-          var me = got.data.me;
-          var plan = me.plan === "paid" ? "Полный доступ" : "Бесплатный режим";
-          var until = me.paidUntil
-            ? "до " + when(me.paidUntil)
-            : "оплата ещё не оформлена";
-          var phone = me.phoneBound
-            ? "телефон …" + esc(me.phoneLast4 || "")
-            : "телефон ещё не привязан — напиши Bro в iMessage";
-          var pays = (me.payments || []).map(function (p) {
-            return "<li>" + esc(when(p.createdAt)) + " · " + esc(p.amountRub) +
-              " ₽ · " + statusRu(p.status) + "</li>";
-          }).join("");
-          body.innerHTML =
-            '<div class="card"><h2>' + esc(plan) + '</h2>' +
-            '<p class="muted">' + esc(me.handle) + " · " + phone + "</p>" +
-            '<p class="muted">' + until + "</p>" +
-            '<p style="margin-top:1rem"><button class="cta" id="pay-now" type="button">Оплатить месяц</button></p>' +
-            '<p class="muted" id="pay-status"></p></div>' +
-            '<div class="card"><h2>Лимиты</h2>' +
-            '<p class="muted">Сообщения сегодня: ' + me.msgsUsed + " из " + me.msgsAllowance + "</p>" +
-            '<div class="bar"><i style="width:' + pct(me.msgsUsed, me.msgsAllowance) + '%"></i></div>' +
-            '<p class="muted">Браузер-задачи в этом месяце: ' + me.browserUsed + " из " + me.browserAllowance + "</p>" +
-            '<div class="bar"><i style="width:' + pct(me.browserUsed, me.browserAllowance) + '%"></i></div></div>' +
-            '<div class="card" id="chrome"><h2>Входы в сайты</h2>' +
-            '<p class="muted">Когда Bro нужна твоя учётка, он сам пришлёт ссылку в чат. Открой, войди — пароль он не увидит, вход сохранится.</p>' +
-            '<p style="margin-top:0.7rem">' + profileStatusRu(me.browserProfileStatus, me.browserCookieDomains) + "</p></div>" +
-            '<div class="card"><h2>Оплаты</h2>' +
-            (pays ? '<ul class="pay">' + pays + "</ul>" : '<p class="muted">Пока нет оплат.</p>') +
-            "</div>";
-          boot.hidden = true;
-          body.hidden = false;
-          document.getElementById("pay-now").addEventListener("click", function () {
-            var st = document.getElementById("pay-status");
-            st.textContent = "Открываем ЮKassa…";
-            fetch(base + "/me/pay", {
-              method: "POST",
-              headers: { Authorization: "Bearer " + t },
+          if (btn.getAttribute("aria-busy") === "true") return;
+          btn.setAttribute("aria-busy", "true");
+          st.textContent = "Открываем Messages…";
+          fetch(base + "/access", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ handle: h }),
+          })
+            .then(function (res) { return res.json(); })
+            .then(function (data) {
+              if (data.ok && data.smsLink) {
+                window.location.href = data.smsLink;
+                return;
+              }
+              st.textContent = "Не вышло, нажми ещё раз";
             })
-              .then(function (res) { return res.json(); })
-              .then(function (data) {
-                if (data.ok && data.confirmationUrl) {
-                  window.location.href = data.confirmationUrl;
-                  return;
-                }
-                if (data.code === "billing_off") st.textContent = "Оплата скоро";
-                else st.textContent = "Не вышло, нажми ещё раз";
-              })
-              .catch(function () {
+            .catch(function () {
+              st.textContent = "Не вышло, нажми ещё раз";
+            })
+            .then(function () {
+              btn.removeAttribute("aria-busy");
+            });
+        });
+      }
+
+      function bindForget() {
+        var list = document.getElementById("memos");
+        if (!list) return;
+        list.addEventListener("click", function (e) {
+          var el = e.target;
+          if (!el || !el.closest) return;
+          var btn = el.closest(".memo-forget");
+          if (!btn) return;
+          var i = Number(btn.getAttribute("data-i"));
+          var needle = memoLines[i];
+          if (!needle) return;
+          var st = document.getElementById("memory-status");
+          st.textContent = "Забываем…";
+          fetch(base + "/me/memories/forget", {
+            method: "POST",
+            headers: {
+              Authorization: "Bearer " + t,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ needle: needle }),
+          })
+            .then(function (res) { return res.json(); })
+            .then(function (data) {
+              if (!data.ok) {
                 st.textContent = "Не вышло, нажми ещё раз";
+                return;
+              }
+              return loadMe().then(function (me) {
+                if (!me) return;
+                paint(me);
               });
+            })
+            .catch(function () {
+              st.textContent = "Не вышло, нажми ещё раз";
+            });
+        });
+      }
+
+      function paint(me) {
+        var plan = me.plan === "paid" ? "Полный доступ" : "Бесплатный режим";
+        var until = me.paidUntil
+          ? "до " + when(me.paidUntil)
+          : "оплата ещё не оформлена";
+        var phone = me.phoneBound
+          ? "телефон …" + esc(me.phoneLast4 || "")
+          : "телефон ещё не привязан — напиши Bro в iMessage";
+        var pays = (me.payments || []).map(function (p) {
+          return "<li>" + esc(when(p.createdAt)) + " · " + esc(p.amountRub) +
+            " ₽ · " + statusRu(p.status) + "</li>";
+        }).join("");
+        body.innerHTML =
+          '<div class="card"><p class="handle-xl">' + esc(me.handle) + "</p>" +
+          '<p class="muted">' + esc(plan) + " · " + phone + "</p>" +
+          '<p class="muted">' + until + "</p>" +
+          '<div class="row">' +
+          '<button class="cta" id="write-bro" type="button">Написать Bro</button>' +
+          '<button class="cta" id="pay-now" type="button">Оплатить месяц</button>' +
+          "</div>" +
+          '<p class="muted" id="write-status"></p>' +
+          '<p class="muted" id="pay-status"></p></div>' +
+          '<div class="card"><h2>Лимиты</h2>' +
+          '<p class="muted">Сообщения сегодня: ' + me.msgsUsed + " из " + me.msgsAllowance + "</p>" +
+          '<div class="bar"><i style="width:' + pct(me.msgsUsed, me.msgsAllowance) + '%"></i></div>' +
+          '<p class="muted">Браузер-задачи в этом месяце: ' + me.browserUsed + " из " + me.browserAllowance + "</p>" +
+          '<div class="bar"><i style="width:' + pct(me.browserUsed, me.browserAllowance) + '%"></i></div></div>' +
+          memoCard(me) +
+          '<div class="card" id="chrome"><h2>Входы в сайты</h2>' +
+          '<p class="muted">Когда Bro нужна твоя учётка, он сам пришлёт ссылку в чат. Открой, войди — пароль он не увидит, вход сохранится.</p>' +
+          '<p style="margin-top:0.7rem">' + profileStatusRu(me.browserProfileStatus, me.browserCookieDomains) + "</p></div>" +
+          '<div class="card"><h2>Оплаты</h2>' +
+          (pays ? '<ul class="pay">' + pays + "</ul>" : '<p class="muted">Пока нет оплат.</p>') +
+          "</div>";
+        boot.hidden = true;
+        body.hidden = false;
+        bindWrite(me);
+        bindPay();
+        bindForget();
+      }
+
+      function loadMe() {
+        return fetch(base + "/me", { headers: { Authorization: "Bearer " + t } })
+          .then(function (res) { return res.json().then(function (data) { return { res: res, data: data }; }); })
+          .then(function (got) {
+            if (!got.res.ok || !got.data.ok) {
+              localStorage.removeItem(TOKEN);
+              boot.hidden = false;
+              body.hidden = true;
+              boot.textContent = "Сессия истекла. Войди снова.";
+              document.getElementById("login-open").hidden = false;
+              document.getElementById("logout").hidden = true;
+              document.getElementById("cabinet-open").hidden = true;
+              return null;
+            }
+            return got.data.me;
           });
+      }
+
+      loadMe()
+        .then(function (me) {
+          if (me) paint(me);
         })
         .catch(function () {
           boot.textContent = "Не вышло загрузить кабинет";

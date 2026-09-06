@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { timingSafeEqual } from "../convex/secret.ts";
+import { WAKE_LINES } from "../convex/lib/memoryPolicy.ts";
 import {
   buildSnapshot,
   challengeExpiry,
@@ -7,6 +8,7 @@ import {
   loginStartDecision,
   loginVerifyDecision,
   MAX_VERIFY_ATTEMPTS,
+  memoriesForSnapshot,
   newLoginCode,
   newSessionToken,
   paymentApplyDecision,
@@ -17,6 +19,7 @@ import {
   SESSION_TTL_MS,
   sha256hex,
   START_COOLDOWN_MS,
+  storedHandle,
 } from "../convex/lib/cabinetPolicy.ts";
 
 function assert(cond: unknown, msg: string): void {
@@ -124,6 +127,7 @@ assert(snap.paidUntil === now + 1000, "paidUntil shown");
 assert(snap.payments.length === 1, "own payments");
 assert(snap.browserProfileStatus === "missing", "default profile missing");
 assert(snap.browserCookieDomains.length === 0, "default no domains");
+assert(Array.isArray(snap.memories) && snap.memories.length === 0, "default memories empty");
 
 const free = buildSnapshot({
   handle: "bro-a1b2c3d4",
@@ -138,6 +142,36 @@ const free = buildSnapshot({
 });
 assert(free.plan === "free" && free.paidUntil === undefined, "free hides until");
 assert(!free.phoneBound && free.phoneLast4 === undefined, "unbound phone");
+assert(free.memories.length === 0, "unbound memories empty");
+
+assert(storedHandle("bro-a1b2c3d4") === "bro-a1b2c3d4", "stored handle ok");
+assert(storedHandle("  bro-a1b2c3d4  ") === "bro-a1b2c3d4", "stored handle trim");
+assert(storedHandle(null) === null, "stored handle missing");
+assert(storedHandle("Bro-a1b2c3d4") === null, "stored handle case");
+assert(storedHandle("please-type-me") === null, "typed handle is not the path");
+
+assert(memoriesForSnapshot(["n2", "n1"], WAKE_LINES).join(",") === "n1,n2", "memories oldest first newest last");
+assert(memoriesForSnapshot([], WAKE_LINES).length === 0, "memories empty");
+const newestFirst = Array.from({ length: WAKE_LINES + 5 }, (_, i) => `n${i}`);
+const capped = memoriesForSnapshot(newestFirst, WAKE_LINES);
+assert(capped.length === WAKE_LINES, "memories cap WAKE_LINES");
+assert(capped[0] === `n${WAKE_LINES - 1}`, "cap keeps newest window, oldest of those first");
+assert(capped[capped.length - 1] === "n0", "newest last");
+
+const withMemos = buildSnapshot({
+  handle: "bro-a1b2c3d4",
+  phoneE164: "+79001112233",
+  paid: false,
+  msgsUsed: 0,
+  msgsAllowance: 30,
+  msgsDayKey: "2026-08-28",
+  browserUsed: 0,
+  browserAllowance: 5,
+  browserMonthKey: "2026-08",
+  payments: [],
+  memories: ["old fact", "new fact"],
+});
+assert(withMemos.memories.join("|") === "old fact|new fact", "snapshot keeps memory order");
 
 const a = "ten_a";
 const mixed = paymentsOwnedBy(a, [
@@ -170,6 +204,11 @@ const authJs = readFileSync(new URL("../assets/auth.js", import.meta.url), "utf8
 assert(authJs.includes('#login-open'), "auth binds #login-open");
 assert(authJs.includes('#login-modal'), "auth binds #login-modal");
 assert(!/\$\("\.login-open"\)/.test(authJs), "auth does not use class login-open");
+assert(authJs.includes("bro.handle"), "auth reads stored handle key");
+assert(authJs.includes("login-handle-row"), "auth hides handle row");
+assert(authJs.includes("storedHandle"), "auth sends stored handle");
+assert(authJs.includes("Запросить доступ"), "missing handle points at request access");
+assert(!authJs.includes('$("#login-handle").value'), "auth does not read typed handle");
 
 const landing = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 assert(landing.includes('id="login-send"'), "landing has login send");
@@ -187,6 +226,30 @@ assert(cabinet.includes('id="chrome"'), "cabinet chrome card");
 assert(cabinet.includes("пришлёт ссылку в чат"), "cabinet login is a chat link");
 assert(!cabinet.includes("profile.sh"), "cabinet has no terminal helper");
 assert(!cabinet.includes('id="profile-save"'), "cabinet does not bind profile ids");
+assert(cabinet.includes('id="login-handle-row"'), "cabinet login handle row");
+assert(cabinet.includes("handle-xl"), "cabinet handle is large");
+assert(cabinet.includes("Написать Bro"), "cabinet write-bro cta");
+assert(cabinet.includes('id="write-bro"'), "cabinet write-bro id");
+assert(cabinet.includes("/access"), "write-bro reuses POST /access");
+assert(cabinet.includes("smsLink"), "write-bro opens sms_link");
+assert(cabinet.includes("Память"), "cabinet memory card");
+assert(cabinet.includes("Забыть"), "cabinet forget button");
+assert(cabinet.includes("/me/memories/forget"), "forget posts to cabinet route");
+
+const vault = readFileSync(new URL("../vault.html", import.meta.url), "utf8");
+assert(vault.includes('id="login-handle-row"'), "vault login handle row");
+assert(landing.includes('id="login-handle-row"'), "landing login handle row");
+
+const httpSrc = readFileSync(new URL("../convex/http.ts", import.meta.url), "utf8");
+assert(httpSrc.includes("/me/memories/forget"), "http forget route");
+assert(
+  httpSrc.includes("forgetMemoriesForTenant"),
+  "http forget uses cabinet session mutation",
+);
+assert(
+  !httpSrc.includes("internal.memories.forget"),
+  "http forget does not call secret memories.forget",
+);
 
 assert(landing.includes('id="request-access"'), "landing CTA has id");
 assert(

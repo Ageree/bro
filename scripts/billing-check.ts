@@ -20,10 +20,12 @@ import {
   monthKey,
   msgAllowance,
   nextWindowBoundary,
+  payReturnUrl,
   paywallDecision,
   rateLimitPeriodKey,
   usedCount,
 } from "../convex/lib/billingPolicy.ts";
+import { readFileSync } from "node:fs";
 
 function assert(cond: unknown, msg: string): void {
   if (!cond) throw new Error(msg);
@@ -440,6 +442,52 @@ assert(stalePlusComponent.browserMonthCount === 2, "stale month dropped; today c
 assert(
   stalePlusComponent.paywallSentDayKey === "2026-08-26",
   "stale paywall still does not resurrect with component",
+);
+
+assert(
+  payReturnUrl({}) === "https://bro-agent.vercel.app/vault.html",
+  "pay return default is vault",
+);
+assert(
+  payReturnUrl({ BRO_PAY_RETURN_URL: "https://bro-agent.vercel.app" }) ===
+    "https://bro-agent.vercel.app/vault.html",
+  "bare homepage override still vault",
+);
+assert(
+  payReturnUrl({ BRO_PAY_RETURN_URL: "https://x.example/vault.html" }) ===
+    "https://x.example/vault.html",
+  "vault override kept",
+);
+assert(
+  payReturnUrl({ BRO_CABINET_BASE: "https://cab.example/" }) ===
+    "https://cab.example/vault.html",
+  "cabinet base wins over default",
+);
+assert(
+  payReturnUrl({ BRO_PAY_BASE: "https://pay.example" }) ===
+    "https://pay.example/vault.html",
+  "pay base when cabinet missing",
+);
+assert(
+  payReturnUrl({
+    BRO_CABINET_BASE: "https://cab.example",
+    BRO_PAY_BASE: "https://pay.example",
+  }) === "https://cab.example/vault.html",
+  "cabinet base before pay base",
+);
+assert(
+  payReturnUrl({
+    BRO_PAY_RETURN_URL: "https://old.example/",
+    BRO_CABINET_BASE: "https://cab.example",
+  }) === "https://cab.example/vault.html",
+  "homepage override ignored",
+);
+
+const billingSrc = readFileSync(new URL("../convex/billing.ts", import.meta.url), "utf8");
+assert(billingSrc.includes("payReturnUrl"), "createPaymentFor uses payReturnUrl");
+assert(
+  !billingSrc.includes('?? "https://bro-agent.vercel.app"'),
+  "createPaymentFor no homepage default",
 );
 
 console.log("billing-check ok");

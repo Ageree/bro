@@ -46,11 +46,33 @@
     if (logoutBtn) logoutBtn.hidden = !in_;
   }
 
+  function validHandle(h) {
+    return /^bro-[a-z0-9]{8}$/.test(h);
+  }
+
+  function storedHandle() {
+    var h = (handle() || "").trim();
+    return validHandle(h) ? h : "";
+  }
+
+  var MISSING_HANDLE =
+    "Открой сайт на том же iPhone, с которого запрашивал доступ — или нажми «Запросить доступ» ещё раз.";
+
+  function paintHandleRow() {
+    var row = $("#login-handle-row");
+    var input = $("#login-handle");
+    var sendBtn = $("#login-send");
+    var h = storedHandle();
+    if (row) row.hidden = true;
+    if (input) input.value = h;
+    if (sendBtn) sendBtn.hidden = !h;
+    return h;
+  }
+
   function openModal() {
     modal.hidden = false;
-    var input = $("#login-handle");
-    if (input && !input.value) input.value = handle();
-    $("#login-status").textContent = "";
+    var h = paintHandleRow();
+    $("#login-status").textContent = h ? "" : MISSING_HANDLE;
     $("#login-code-row").hidden = true;
   }
 
@@ -85,13 +107,13 @@
 
   $("#login-send").addEventListener("click", function () {
     var base = site();
-    var h = ($("#login-handle").value || "").trim();
+    var h = storedHandle();
     if (!base) {
       setStatus("Сайт ещё не подключён");
       return;
     }
-    if (!/^bro-[a-z0-9]{8}$/.test(h)) {
-      setStatus("Нужен handle вида bro-xxxxxxxx");
+    if (!h) {
+      setStatus(MISSING_HANDLE);
       return;
     }
     setHandle(h);
@@ -121,8 +143,12 @@
 
   $("#login-verify").addEventListener("click", function () {
     var base = site();
-    var h = ($("#login-handle").value || "").trim();
+    var h = storedHandle();
     var code = ($("#login-code").value || "").trim();
+    if (!h) {
+      setStatus(MISSING_HANDLE);
+      return;
+    }
     setStatus("Проверяем…");
     fetch(base + "/login/verify", {
       method: "POST",
