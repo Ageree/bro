@@ -4,11 +4,23 @@
  *
  *  Bytes are downloaded here so the image stays valid in session history
  *  after the signed URL expires. Oversize or failed downloads fall back to
- *  a URL part, which the provider fetches itself. */
+ *  the plain URL string, which the provider fetches itself.
+ *
+ *  Every part built here MUST stay plain JSON (string/number/boolean/null,
+ *  plain arrays/objects only) — never `Uint8Array` or `URL`. eve hands the
+ *  raw turn input to every memory slot's tool resolver, which serialises it
+ *  with a strict JSON check (`memory-tools.js`: `parseJsonObject`); a
+ *  non-JSON value throws "Expected a JSON-serializable value" and silently
+ *  drops the memo/recall/archive tools for that turn (incident 2026-09-06:
+ *  `data: Uint8Array` / `data: new URL(...)` broke all three memory tools
+ *  on every inbound photo). The AI SDK accepts a plain string for
+ *  `FilePart.data` just as well — a `data:` URL string is split into
+ *  inline base64, any other URL-shaped string becomes a url part — so
+ *  strings are fully equivalent and JSON-safe. */
 
 import { readLimited } from "./voice.ts";
 
-export const IMAGE_MAX_BYTES = 8 * 1024 * 1024;
+export const IMAGE_MAX_BYTES = 3 * 1024 * 1024;
 export const IMAGE_TIMEOUT_MS = 10_000;
 
 export type InboundMediaItem = {
@@ -38,11 +50,13 @@ export function inboundImages(media: InboundMediaItem[] | null | undefined): Inb
   return out;
 }
 
-/** AI SDK `FilePart` for one image: bytes when small enough, else the URL. */
+/** AI SDK `FilePart` for one image: a `data:` base64 string when small
+ *  enough, else the plain URL string. `data` is always a JSON-safe string —
+ *  see the header comment. */
 export type ImagePart = {
   type: "file";
   mediaType: string;
-  data: Uint8Array | URL;
+  data: string;
 };
 
 export async function fetchImagePart(
@@ -52,7 +66,7 @@ export async function fetchImagePart(
   const doFetch = deps.fetch ?? fetch;
   const maxBytes = deps.maxBytes ?? IMAGE_MAX_BYTES;
   const timeoutMs = deps.timeoutMs ?? IMAGE_TIMEOUT_MS;
-  const byUrl: ImagePart = { type: "file", mediaType: image.mediaType, data: new URL(image.url) };
+  const byUrl: ImagePart = { type: "file", mediaType: image.mediaType, data: image.url };
   if (image.size !== null && image.size > maxBytes) return byUrl;
   try {
     const res = await doFetch(image.url, { signal: AbortSignal.timeout(timeoutMs) });
@@ -60,17 +74,39 @@ export async function fetchImagePart(
     const body = await readLimited(res, maxBytes);
     if ("error" in body) return byUrl;
     const mediaType = res.headers.get("content-type")?.split(";")[0].trim() || image.mediaType;
+    const resolvedMediaType = isImageContentType(mediaType) ? mediaType : image.mediaType;
     return {
       type: "file",
-      mediaType: isImageContentType(mediaType) ? mediaType : image.mediaType,
-      data: body,
+      mediaType: resolvedMediaType,
+      data: `data:${resolvedMediaType};base64,${Buffer.from(body).toString("base64")}`,
     };
   } catch {
     return byUrl;
   }
 }
 
-/** Text + image parts, or plain text when there is nothing to see. */
+/** Recursively true only for plain-JSON-serialisable values: null, boolean,
+ *  string, finite number, plain arrays, and plain objects (prototype is
+ *  `Object.prototype` or `null`). Everything else — `Uint8Array`, `URL`,
+ *  `Date`, `Map`, `NaN`, `undefined`, class instances — is false. Used by
+ *  the check script to pin `inboundUserContent`'s output shape; not called
+ *  at runtime in the channel. */
+export function isPlainJson(value: unknown): boolean {
+  if (value === null) return true;
+  const t = typeof value;
+  if (t === "boolean" || t === "string") return true;
+  if (t === "number") return Number.isFinite(value);
+  if (Array.isArray(value)) return value.every(isPlainJson);
+  if (t === "object") {
+    const proto = Object.getPrototypeOf(value);
+    if (proto !== Object.prototype && proto !== null) return false;
+    return Object.values(value as Record<string, unknown>).every(isPlainJson);
+  }
+  return false;
+}
+
+/** Text + image parts, or plain text when there is nothing to see. Always
+ *  plain JSON — see the header comment. */
 export async function inboundUserContent(
   text: string,
   media: InboundMediaItem[] | null | undefined,
