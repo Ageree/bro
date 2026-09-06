@@ -29,6 +29,7 @@ import {
 } from "../lib/browseruse";
 import { profileSyncStatus } from "../../convex/lib/browserProfilePolicy.ts";
 import { sendBlueIMessage } from "../lib/inkbox";
+import { groupPersonalBlock } from "../lib/group-guard";
 import { tenantId } from "../lib/tenant";
 import { browserGateFromResult } from "../../convex/lib/billingPolicy";
 import { cardBindings, normalizePayHosts } from "../lib/browser-pay.ts";
@@ -205,6 +206,8 @@ export default defineTool({
       .optional(),
   }),
   async execute({ task, reset, pay }, ctx) {
+    const blocked = groupPersonalBlock(ctx);
+    if (blocked) return { status: "group", hint: blocked };
     const phone = tenantId(ctx);
     const tenant = await upsertTenant(phone);
     const conv = conversationId(ctx, tenant.inkboxConversationId);

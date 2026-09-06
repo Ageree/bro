@@ -112,6 +112,57 @@ export async function bindInbound(
   return { ok: true, tenant: result.tenant, firstBind };
 }
 
+export type BindGroupResult =
+  | {
+      ok: true;
+      ownerPhoneE164: string;
+      inkboxHandle: string;
+      firstGroup: boolean;
+    }
+  | { ok: false; reason: string };
+
+export async function bindGroupInbound(args: {
+  conversationId: string;
+  senderPhone: string;
+  participants: string[];
+  handle?: string;
+  ownerPhone?: string;
+}): Promise<BindGroupResult> {
+  const result = await client().mutation(api.groupChats.bindInbound, {
+    secret: secret(),
+    ...args,
+  });
+  if (!result.ok) return result;
+  return {
+    ok: true,
+    ownerPhoneE164: result.ownerPhoneE164,
+    inkboxHandle: result.inkboxHandle,
+    firstGroup: result.firstGroup,
+  };
+}
+
+export async function getGroupByConversation(conversationId: string) {
+  return await client().query(api.groupChats.getByConversation, {
+    secret: secret(),
+    conversationId,
+  });
+}
+
+export async function markGroupGreeted(conversationId: string): Promise<void> {
+  await client().mutation(api.groupChats.markGreeted, {
+    secret: secret(),
+    conversationId,
+  });
+}
+
+export async function replyTenant(conversationId: string) {
+  const group = await getGroupByConversation(conversationId).catch(() => null);
+  if (group?.ownerPhoneE164) {
+    return await getTenant(group.ownerPhoneE164).catch(() => null);
+  }
+  return await getTenantByConversation(conversationId).catch(() => null);
+}
+
 export async function setBrowser(
   phoneE164: string,
   patch: {

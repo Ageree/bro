@@ -29,6 +29,7 @@
     "jobs:check": "node --experimental-strip-types scripts/jobs-check.ts",
     "imessage:check": "node --experimental-strip-types scripts/imessage-text-check.ts",
     "onboard:check": "node --experimental-strip-types scripts/onboard-check.ts",
+    "group:check": "node --experimental-strip-types scripts/group-chat-check.ts",
     "billing:check": "node --experimental-strip-types scripts/billing-check.ts",
     "cabinet:check": "node --experimental-strip-types scripts/cabinet-check.ts",
     "types:check": "tsc --noEmit",

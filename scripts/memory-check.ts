@@ -43,6 +43,33 @@ assert.equal(resolveMemoryScope({}, true), null);
 assert.equal(resolveMemoryScope({}, false), "local-dev");
 assert.equal(resolveMemoryScope({ current: { principalId: "eve:app" } }, false), "local-dev");
 
+// Group turns isolate memory from the owner's 1:1 store.
+assert.equal(
+  resolveMemoryScope(
+    {
+      current: {
+        principalId: "+79991234567",
+        attributes: { isGroup: "1", conversationId: "g-conv" },
+      },
+    },
+    true,
+  ),
+  "group:g-conv",
+);
+assert.equal(
+  resolveMemoryScope(
+    {
+      current: {
+        principalId: "+79991234567",
+        attributes: { conversationId: "g-conv" },
+      },
+    },
+    true,
+  ),
+  "+79991234567",
+  "1:1 still uses the phone when isGroup is absent",
+);
+
 // Scope value → phone.
 assert.equal(scopePhone("+79991234567"), "+79991234567");
 assert.equal(scopePhone(["a", "b"]), "a/b");

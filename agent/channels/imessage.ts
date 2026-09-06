@@ -11,12 +11,14 @@ import {
   webhookOk,
 } from "../lib/inkbox";
 import {
+  bindGroupInbound,
   bindInbound,
   countInboundMessage,
   getTenant,
-  getTenantByConversation,
   getTenantByHandle,
+  markGroupGreeted,
   markPaywallSent,
+  replyTenant,
   setWakeupLastSeen,
   upsertTenant,
 } from "../lib/convex";
@@ -57,6 +59,15 @@ import {
   takeFallbackSlot,
   turnOrigin,
 } from "../lib/silent-turn.ts";
+import {
+  groupAuthAttributes,
+  groupParticipantPhones,
+  groupSenderPhone,
+  groupWelcomeText,
+  isGroupMessage,
+  shouldReplyInGroup,
+  tagGroupUserContent,
+} from "../../convex/lib/groupChatPolicy.ts";
 
 // ponytail: in-memory only — lost on restart, not shared across instances
 const wakeupDelivered = new Map<string, number>();
@@ -93,6 +104,22 @@ async function sendFirstBindOnboard(opts: {
     });
   } catch (err) {
     console.error("onboard welcome failed", err);
+  }
+}
+
+async function sendGroupWelcome(opts: {
+  conversationId: string;
+  handle: string;
+}): Promise<void> {
+  try {
+    await sendBlueIMessage({
+      conversationId: opts.conversationId,
+      text: groupWelcomeText(),
+      handle: opts.handle,
+    });
+    await markGroupGreeted(opts.conversationId);
+  } catch (err) {
+    console.error("group welcome failed", err);
   }
 }
 
@@ -182,17 +209,51 @@ export default defineChannel({
         return new Response(null, { status: 204 });
       }
 
-      const remote = msg.remote_number;
+      const group = isGroupMessage(msg);
+      const remote = group ? groupSenderPhone(msg) : msg.remote_number;
       if (!remote) {
         console.error("dropped inbound without remote number");
         return new Response(null, { status: 204 });
       }
 
       const identityHandle = handle ?? agentHandle();
+      const participants = group ? groupParticipantPhones(msg) : [];
 
       let firstBind = false;
+      let firstGroup = false;
       let boundTenant = tenant;
-      if (handle) {
+      let ownerPhone = remote;
+      if (group) {
+        let ownerHint: string | undefined;
+        if (!handle) {
+          const candidate = [remote, ...participants].find((p) => allowlisted(p));
+          if (!candidate) {
+            return new Response(null, { status: 204 });
+          }
+          ownerHint = candidate;
+          try {
+            await upsertTenant(candidate);
+          } catch (err) {
+            console.error("group tenant upsert failed", err);
+          }
+        }
+        const bound = await bindGroupInbound({
+          conversationId: msg.conversation_id,
+          senderPhone: remote,
+          participants,
+          handle: handle ?? undefined,
+          ownerPhone: ownerHint,
+        }).catch((err) => {
+          console.error("bind group inbound failed", err);
+          return { ok: false as const, reason: "error" };
+        });
+        if (!bound.ok) {
+          console.error("dropped group inbound", bound.reason, handle, remote);
+          return new Response(null, { status: 204 });
+        }
+        firstGroup = bound.firstGroup;
+        ownerPhone = bound.ownerPhoneE164;
+      } else if (handle) {
         const bound = await bindInbound(handle, remote, msg.conversation_id).catch(
           (err) => {
             console.error("bind inbound failed", err);
@@ -205,6 +266,7 @@ export default defineChannel({
         }
         firstBind = bound.firstBind;
         boundTenant = bound.tenant;
+        ownerPhone = bound.tenant.phoneE164 ?? remote;
       } else {
         if (!allowlisted(remote)) {
           return new Response(null, { status: 204 });
@@ -226,16 +288,22 @@ export default defineChannel({
             tel: boundTenant?.dedicatedIMessageNumber,
           });
         }
+        if (firstGroup) {
+          await sendGroupWelcome({
+            conversationId: msg.conversation_id,
+            handle: identityHandle,
+          });
+        }
         return new Response(null, { status: 204 });
       }
 
       let gate: { decision: "allow" | "paywall" | "drop"; payUrl?: string };
       try {
-        gate = inboundGateFromResult(await countInboundMessage(remote), undefined);
+        gate = inboundGateFromResult(await countInboundMessage(ownerPhone), undefined);
       } catch (err) {
         console.error("billing count failed", err);
         try {
-          const marked = await markPaywallSent(remote);
+          const marked = await markPaywallSent(ownerPhone);
           gate = inboundGateFromResult(undefined, err, {
             alreadySentToday: marked.alreadySentToday,
             marked: true,
@@ -260,6 +328,12 @@ export default defineChannel({
             tel: boundTenant?.dedicatedIMessageNumber,
           });
         }
+        if (firstGroup) {
+          await sendGroupWelcome({
+            conversationId: msg.conversation_id,
+            handle: identityHandle,
+          });
+        }
         const line = gate.payUrl
           ? `Лимит на сегодня исчерпан 🙈 Полный доступ — 2000 ₽/мес: ${gate.payUrl}`
           : "Лимит на сегодня исчерпан 🙈 Полный доступ — 2000 ₽/мес: напиши @оператору";
@@ -275,17 +349,19 @@ export default defineChannel({
         return new Response(null, { status: 204 });
       }
 
-      const ack = (async () => {
-        try {
-          const identity = await inkbox().getIdentity(identityHandle);
-          await identity.markIMessageConversationRead(msg.conversation_id);
-          await identity.sendIMessageTyping(msg.conversation_id);
-        } catch (err) {
-          console.error("imessage ack failed", err);
-        }
-      })();
-      if (typeof waitUntil === "function") waitUntil(ack);
-      else void ack;
+      if (!group) {
+        const ack = (async () => {
+          try {
+            const identity = await inkbox().getIdentity(identityHandle);
+            await identity.markIMessageConversationRead(msg.conversation_id);
+            await identity.sendIMessageTyping(msg.conversation_id);
+          } catch (err) {
+            console.error("imessage ack failed", err);
+          }
+        })();
+        if (typeof waitUntil === "function") waitUntil(ack);
+        else void ack;
+      }
 
       const inbound = await inboundIMessageTextWithVoice(msg, transcribeVoiceNote);
       if (firstBind) {
@@ -294,6 +370,12 @@ export default defineChannel({
           handle: identityHandle,
           email: boundTenant?.emailAddress,
           tel: boundTenant?.dedicatedIMessageNumber,
+        });
+      }
+      if (firstGroup) {
+        await sendGroupWelcome({
+          conversationId: msg.conversation_id,
+          handle: identityHandle,
         });
       }
       if (inbound.allVoiceFailed) {
@@ -316,6 +398,9 @@ export default defineChannel({
         return new Response(null, { status: 204 });
       }
       if (!inbound.text) return new Response(null, { status: 204 });
+      if (group && !shouldReplyInGroup(inbound.text)) {
+        return new Response(null, { status: 204 });
+      }
       if (isHelpAsk(inbound.text)) {
         await sendHelpCatalog({
           conversationId: msg.conversation_id,
@@ -325,9 +410,14 @@ export default defineChannel({
       if (shouldSkipAgentTurn({ firstBind, text: inbound.text })) {
         return new Response(null, { status: 204 });
       }
-      const content = await inboundUserContent(inbound.text, msg.media);
+      const rawContent = await inboundUserContent(inbound.text, msg.media);
+      const content = group
+        ? tagGroupUserContent(remote, rawContent)
+        : rawContent;
       console.log("imessage inbound", {
         remote,
+        ownerPhone,
+        group,
         conversationId: msg.conversation_id,
         chars: inbound.text.length,
         voice: inbound.voice,
@@ -340,13 +430,22 @@ export default defineChannel({
           authenticator: "inkbox",
           issuer: "inkbox",
           principalType: "user",
-          principalId: remote,
-          attributes: {
-            conversationId: msg.conversation_id,
-            inkboxHandle: identityHandle,
-            messageId: msg.id,
-            origin: "human",
-          },
+          principalId: ownerPhone,
+          attributes: group
+            ? groupAuthAttributes({
+                conversationId: msg.conversation_id,
+                inkboxHandle: identityHandle,
+                messageId: msg.id,
+                origin: "human",
+                senderPhone: remote,
+                ownerPhone,
+              })
+            : {
+                conversationId: msg.conversation_id,
+                inkboxHandle: identityHandle,
+                messageId: msg.id,
+                origin: "human",
+              },
         },
       });
 
@@ -534,7 +633,7 @@ export default defineChannel({
       const text = fallbackForFailed(turnOrigin(ctx?.session?.auth?.current?.attributes));
       if (!text) return;
       if (!takeFallbackSlot(fallbackSent, event.turnId, Date.now())) return;
-      const tenant = await getTenantByConversation(conversationId).catch(() => null);
+      const tenant = await replyTenant(conversationId);
       await sendBlueIMessage({ conversationId, text, handle: tenant?.inkboxHandle }).catch(
         (err) => console.error("turn failed fallback send failed", err),
       );
@@ -554,14 +653,14 @@ export default defineChannel({
         if (!text) return;
         console.error("empty turn", { conversationId, finishReason: event.finishReason });
         if (!takeFallbackSlot(fallbackSent, event.turnId, Date.now())) return;
-        const tenant = await getTenantByConversation(conversationId).catch(() => null);
+        const tenant = await replyTenant(conversationId);
         await sendBlueIMessage({ conversationId, text, handle: tenant?.inkboxHandle }).catch(
           (err) => console.error("empty turn fallback send failed", err),
         );
         return;
       }
       const { message, seen } = splitSeen(event.message);
-      const tenant = await getTenantByConversation(conversationId).catch(() => null);
+      const tenant = await replyTenant(conversationId);
       if (seen !== undefined && tenant?.phoneE164) {
         await setWakeupLastSeen(tenant.phoneE164, seen).catch((err) => {
           console.error("setLastSeen failed", err);

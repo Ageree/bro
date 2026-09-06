@@ -3,6 +3,7 @@ import { z } from "zod";
 import { isEmailAddr } from "../../convex/lib/mailPolicy.ts";
 import { touchJobMail, upsertTenant } from "../lib/convex";
 import { agentHandle, inkbox } from "../lib/inkbox";
+import { groupPersonalBlock } from "../lib/group-guard";
 import { tenantId } from "../lib/tenant";
 
 export default defineTool({
@@ -16,6 +17,8 @@ export default defineTool({
     replyToMessageId: z.string().optional(),
   }),
   async execute({ to, subject, body, jobId, replyToMessageId }, ctx) {
+    const blocked = groupPersonalBlock(ctx);
+    if (blocked) return { error: blocked };
     if (!isEmailAddr(to)) return { error: "bad to address" };
     const phone = tenantId(ctx);
     const tenant = await upsertTenant(phone);

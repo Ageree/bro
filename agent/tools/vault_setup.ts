@@ -3,6 +3,7 @@ import {
   createVaultSetupUrl,
   vaultSetupRequestSchema,
 } from "../../convex/lib/vaultPayload.ts";
+import { groupPersonalBlock } from "../lib/group-guard";
 
 function cabinetBase(): string {
   const raw =
@@ -19,7 +20,9 @@ export default defineTool({
   description:
     "Give the human a cabinet link to save a vault item. Supported kinds: payment, address, contact. Do not use this for site logins — those go through profile_setup (a chat link). Never put a card number, CVV, or any other secret in the arguments — the human types those on the page, never in chat.",
   inputSchema: vaultSetupRequestSchema,
-  async execute(request) {
+  async execute(request, ctx) {
+    const blocked = groupPersonalBlock(ctx);
+    if (blocked) return { error: blocked };
     const url = createVaultSetupUrl(cabinetBase(), request);
     return {
       url,

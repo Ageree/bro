@@ -1,6 +1,7 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { cancelWakeup, finishJob } from "../lib/convex";
+import { groupPersonalBlock } from "../lib/group-guard";
 import { tenantId } from "../lib/tenant";
 
 export default defineTool({
@@ -12,6 +13,8 @@ export default defineTool({
     failed: z.boolean().optional(),
   }),
   async execute({ jobId, outcome, failed }, ctx) {
+    const blocked = groupPersonalBlock(ctx);
+    if (blocked) return { error: blocked };
     const phone = tenantId(ctx);
     const result = await finishJob(phone, jobId, outcome, failed);
     if (!("error" in result)) {

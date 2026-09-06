@@ -1,6 +1,7 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { scheduleWakeup, waitJob } from "../lib/convex";
+import { groupPersonalBlock } from "../lib/group-guard";
 import { tenantId } from "../lib/tenant";
 
 export default defineTool({
@@ -25,6 +26,8 @@ export default defineTool({
     { jobId, waitingFor, note, emailThreadId, emailMessageId, checkInMinutes },
     ctx,
   ) {
+    const blocked = groupPersonalBlock(ctx);
+    if (blocked) return { error: blocked };
     const phone = tenantId(ctx);
     const job = await waitJob(phone, jobId, waitingFor, {
       note,
