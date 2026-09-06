@@ -2,6 +2,7 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { nextDailyAt, parseWhen } from "../../convex/lib/wakeupPolicy";
 import { scheduleWakeup } from "../lib/convex";
+import { groupPersonalBlock } from "../lib/group-guard";
 import { tenantId } from "../lib/tenant";
 
 const TZ = "Europe/Moscow";
@@ -18,6 +19,8 @@ export default defineTool({
     kind: z.enum(["reminder", "brief", "watcher"]).default("reminder"),
   }),
   async execute({ payload, atIso, inMinutes, dailyHour, everyMinutes, kind }, ctx) {
+    const blocked = groupPersonalBlock(ctx);
+    if (blocked) return blocked;
     const now = Date.now();
     let at: number | null = null;
     let recurMinutes: number | undefined;

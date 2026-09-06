@@ -224,25 +224,18 @@ export default defineChannel({
       let boundTenant = tenant;
       let ownerPhone = remote;
       if (group) {
-        let ownerHint: string | undefined;
         if (!handle) {
-          const candidate = [remote, ...participants].find((p) => allowlisted(p));
-          if (!candidate) {
-            return new Response(null, { status: 204 });
-          }
-          ownerHint = candidate;
-          try {
-            await upsertTenant(candidate);
-          } catch (err) {
-            console.error("group tenant upsert failed", err);
-          }
+          console.error("dropped group inbound without handle");
+          return new Response(null, { status: 204 });
+        }
+        if (!allowlisted(remote)) {
+          return new Response(null, { status: 204 });
         }
         const bound = await bindGroupInbound({
           conversationId: msg.conversation_id,
           senderPhone: remote,
           participants,
-          handle: handle ?? undefined,
-          ownerPhone: ownerHint,
+          handle,
         }).catch((err) => {
           console.error("bind group inbound failed", err);
           return { ok: false as const, reason: "error" };

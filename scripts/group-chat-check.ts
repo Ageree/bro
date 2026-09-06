@@ -199,9 +199,16 @@ assert(
   "group bind runs before 1:1 bind",
 );
 assert(
-  channel.includes("upsertTenant(candidate)") ||
-    channel.includes("upsertTenant(candidate);"),
-  "shared group upsert has no conversation id",
+  channel.includes("dropped group inbound without handle"),
+  "shared-pool groups are dropped",
+);
+const groupBranch = channel.slice(
+  channel.indexOf("if (group)"),
+  channel.indexOf("} else if (handle)"),
+);
+assert(
+  groupBranch.includes("if (!allowlisted(remote))"),
+  "group speakers still pass ALLOWED_SENDERS",
 );
 
 const bind = readFileSync(new URL("../convex/groupChats.ts", import.meta.url), "utf8");
@@ -226,6 +233,8 @@ const tools = [
   "job_open.ts",
   "job_wait.ts",
   "job_done.ts",
+  "schedule_wakeup.ts",
+  "cancel_wakeup.ts",
 ];
 for (const file of tools) {
   const src = readFileSync(
