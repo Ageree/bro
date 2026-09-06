@@ -2,6 +2,14 @@ import { readFileSync } from "node:fs";
 import { timingSafeEqual } from "../convex/secret.ts";
 import { WAKE_LINES } from "../convex/lib/memoryPolicy.ts";
 import {
+  BROWSER_JOB_DONE,
+  BROWSER_JOB_FAILED,
+  BROWSER_JOB_IDLE,
+  BROWSER_JOB_RUNNING,
+  BROWSER_JOB_SECURE,
+  browserJobForSnapshot,
+} from "../convex/lib/browserJobPolicy.ts";
+import {
   buildSnapshot,
   challengeExpiry,
   CHALLENGE_TTL_MS,
@@ -128,6 +136,11 @@ assert(snap.payments.length === 1, "own payments");
 assert(snap.browserProfileStatus === "missing", "default profile missing");
 assert(snap.browserCookieDomains.length === 0, "default no domains");
 assert(Array.isArray(snap.memories) && snap.memories.length === 0, "default memories empty");
+assert(snap.tz === undefined, "default tz omitted");
+assert(
+  snap.browserJob.status === "" && snap.browserJob.label === BROWSER_JOB_IDLE,
+  "default browser job idle",
+);
 
 const free = buildSnapshot({
   handle: "bro-a1b2c3d4",
@@ -172,6 +185,109 @@ const withMemos = buildSnapshot({
   memories: ["old fact", "new fact"],
 });
 assert(withMemos.memories.join("|") === "old fact|new fact", "snapshot keeps memory order");
+
+const withTz = buildSnapshot({
+  handle: "bro-a1b2c3d4",
+  paid: false,
+  msgsUsed: 0,
+  msgsAllowance: 30,
+  msgsDayKey: "2026-08-28",
+  browserUsed: 0,
+  browserAllowance: 5,
+  browserMonthKey: "2026-08",
+  payments: [],
+  tz: "Asia/Yekaterinburg",
+  browserJob: browserJobForSnapshot({
+    browserStatus: "running",
+    browserTask: "скотч на ozon",
+    browserStartedAt: now,
+  }),
+});
+assert(withTz.tz === "Asia/Yekaterinburg", "snapshot keeps tz");
+assert(withTz.browserJob.label === BROWSER_JOB_RUNNING, "snapshot keeps browser job");
+assert(withTz.browserJob.task === "скотч на ozon", "snapshot keeps browser task");
+assert(withTz.browserJob.startedAt === now, "snapshot keeps browser startedAt");
+
+assert(browserJobForSnapshot({}).label === BROWSER_JOB_IDLE, "job empty idle");
+assert(browserJobForSnapshot({ browserStatus: "" }).label === BROWSER_JOB_IDLE, "job blank idle");
+assert(
+  browserJobForSnapshot({ browserStatus: "missing" }).label === BROWSER_JOB_IDLE,
+  "job missing idle",
+);
+assert(
+  browserJobForSnapshot({ browserStatus: "empty" }).label === BROWSER_JOB_IDLE,
+  "job empty-status idle",
+);
+assert(
+  browserJobForSnapshot({
+    browserStatus: "missing",
+    browserLiveUrl: "https://live.example/view",
+    browserTask: "old",
+  }).label === BROWSER_JOB_IDLE,
+  "idle wins leftover liveUrl",
+);
+for (const st of ["running", "started", "pending", "Running"]) {
+  const job = browserJobForSnapshot({
+    browserStatus: st,
+    browserTask: "оформить заказ",
+    browserStartedAt: now,
+  });
+  assert(job.label === BROWSER_JOB_RUNNING, `job ${st} running copy`);
+  assert(job.status === st.trim(), `job ${st} keeps status`);
+  assert(job.task === "оформить заказ", `job ${st} task`);
+  assert(job.liveUrl === undefined, `job ${st} no liveUrl when none stored`);
+}
+const queued = browserJobForSnapshot({ browserStatus: "queued" });
+assert(queued.label === BROWSER_JOB_RUNNING, "queued is in-flight copy");
+
+const done = browserJobForSnapshot({
+  browserStatus: "completed",
+  browserTask: "готово",
+  browserLiveUrl: "https://live.example/old",
+  browserStartedAt: now,
+});
+assert(done.label === BROWSER_JOB_DONE, "completed copy");
+assert(done.liveUrl === undefined, "completed hides leftover liveUrl");
+assert(done.task === "готово" && done.startedAt === now, "completed keeps task");
+
+for (const st of ["failed", "error", "cancelled", "canceled", "stopped"]) {
+  assert(
+    browserJobForSnapshot({ browserStatus: st }).label === BROWSER_JOB_FAILED,
+    `job ${st} failed copy`,
+  );
+}
+
+const threeDs = browserJobForSnapshot({
+  browserStatus: "needs_3ds",
+  browserTask: "оплата",
+});
+assert(threeDs.label === BROWSER_JOB_SECURE, "needs_3ds copy");
+assert(threeDs.liveUrl === undefined, "3ds without url has no link");
+
+const liveRunning = browserJobForSnapshot({
+  browserStatus: "running",
+  browserLiveUrl: "https://live.example/session",
+  browserTask: "купить кроссовки",
+  browserStartedAt: now,
+});
+assert(liveRunning.label === BROWSER_JOB_RUNNING, "live viewer is not 3ds");
+assert(liveRunning.liveUrl === "https://live.example/session", "running keeps liveUrl");
+assert(liveRunning.task === "купить кроссовки", "running keeps task");
+
+assert(
+  browserJobForSnapshot({
+    browserStatus: "Needs 3-D Secure",
+    browserLiveUrl: "https://live.example/bank",
+  }).label === BROWSER_JOB_SECURE,
+  "3-D Secure status copy",
+);
+assert(
+  browserJobForSnapshot({
+    browserStatus: "pending",
+    browserLiveUrl: "  https://live.example/pad  ",
+  }).liveUrl === "https://live.example/pad",
+  "liveUrl trimmed",
+);
 
 const a = "ten_a";
 const mixed = paymentsOwnedBy(a, [
@@ -239,6 +355,42 @@ assert(
 assert(cabinet.includes("Память"), "cabinet memory card");
 assert(cabinet.includes("Забыть"), "cabinet forget button");
 assert(cabinet.includes("/me/memories/forget"), "forget posts to cabinet route");
+assert(cabinet.includes('id="now"'), "cabinet now card");
+assert(cabinet.includes("<h2>Сейчас</h2>"), "cabinet now title");
+assert(cabinet.includes("browserJob"), "cabinet reads snapshot browserJob");
+assert(cabinet.includes("Открыть"), "cabinet liveUrl open");
+assert(cabinet.includes('id="tz"'), "cabinet tz card");
+assert(cabinet.includes("<h2>Часовой пояс</h2>"), "cabinet tz title");
+assert(cabinet.includes('id="tz-select"'), "cabinet tz select");
+assert(cabinet.includes("/me/tz"), "tz posts to cabinet route");
+assert(cabinet.includes('JSON.stringify({ tz: tz })'), "tz body is { tz }");
+assert(
+  cabinet.includes('Authorization: "Bearer " + t'),
+  "tz uses bearer session",
+);
+assert(!cabinet.includes("setTimezone"), "tz does not call secret mutation");
+assert(!cabinet.includes("INKBOX_SECRET"), "tz does not send a secret");
+for (const z of [
+  "Europe/Moscow",
+  "Europe/Samara",
+  "Asia/Yekaterinburg",
+  "Asia/Omsk",
+  "Asia/Krasnoyarsk",
+  "Asia/Irkutsk",
+  "Asia/Yakutsk",
+  "Asia/Vladivostok",
+  "Asia/Magadan",
+  "Asia/Kamchatka",
+  "UTC",
+]) {
+  assert(cabinet.includes(`"${z}"`), `cabinet lists ${z}`);
+}
+
+const cabinetSrc = readFileSync(new URL("../convex/cabinet.ts", import.meta.url), "utf8");
+assert(cabinetSrc.includes("tz: v.optional(v.string())"), "snapshot validator has tz");
+assert(cabinetSrc.includes("browserJob:"), "snapshot validator has browserJob");
+assert(cabinetSrc.includes("browserJobForSnapshot"), "snapshotForTenant maps browser job");
+assert(!cabinetSrc.includes("setTimezone"), "cabinet.ts does not add /me/tz mutation");
 
 const vault = readFileSync(new URL("../vault.html", import.meta.url), "utf8");
 assert(vault.includes('id="login-handle-row"'), "vault login handle row");

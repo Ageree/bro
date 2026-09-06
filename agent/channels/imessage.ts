@@ -17,12 +17,19 @@ import {
   getGroupByConversation,
   getTenant,
   getTenantByHandle,
+  listOpenJobs,
   markGroupGreeted,
+  markNudged,
   markPaywallSent,
   replyTenant,
   setWakeupLastSeen,
   upsertTenant,
 } from "../lib/convex";
+import {
+  nudgePrompt,
+  shouldNudge,
+  shouldSpeakNotSilent,
+} from "../../convex/lib/jobNudgePolicy.ts";
 import {
   broVcard,
   helpText,
@@ -622,6 +629,43 @@ export default defineChannel({
         }
       } else if (kind === "job_check") {
         prompt = `[background wakeup] Фоновая проверка джоба: ${payload}. Открытые джобы этого человека уже в контексте. Сделай следующий шаг цепочки сам (проверь почту/статус нужным тулом: composio, browser_task, bro_mail). Если есть прогресс — сделай шаг и коротко напиши человеку. Если продвинуться нечем — ответь ровно [SILENT]: проверка повторится сама. Если джоб уже закрыт или отменён — вызови cancel_wakeup с kind=job_check и payloadContains «джоб <id>», затем ответь [SILENT].`;
+        try {
+          const jobs = await listOpenJobs(tenantPhone);
+          const idMatch = /^джоб\s+(\S+):/.exec(payload);
+          const job =
+            (idMatch?.[1]
+              ? jobs.find((j) => j._id === idMatch[1])
+              : undefined) ?? jobs.find((j) => payload.includes(j._id));
+          const waitingFor = job?.waitingFor;
+          const now = Date.now();
+          if (
+            job &&
+            (waitingFor === "human" ||
+              waitingFor === "email" ||
+              waitingFor === "browser") &&
+            shouldNudge({
+              waitingFor,
+              waitingSince: job.waitingSince,
+              lastNudgeAt: job.lastNudgeAt,
+              now,
+            }) &&
+            shouldSpeakNotSilent(waitingFor)
+          ) {
+            const text = nudgePrompt({
+              waitingFor,
+              goal: job.goal,
+              note: job.note,
+            });
+            try {
+              await markNudged(tenantPhone, job._id);
+            } catch (err) {
+              console.error("markNudged failed", err);
+            }
+            prompt = `[background wakeup] Фоновая проверка джоба: ${payload}. Этот джоб ждёт слишком долго. НЕ отвечай [SILENT] — напиши человеку сейчас: ${text}`;
+          }
+        } catch (err) {
+          console.error("job_check nudge lookup failed", err);
+        }
       } else if (kind === "event") {
         prompt = eventPrompt(payload);
       }

@@ -254,6 +254,14 @@ export async function finishJob(
   });
 }
 
+export async function markNudged(phoneE164: string, jobId: string) {
+  return await client().mutation(api.jobs.markNudged, {
+    secret: secret(),
+    phoneE164,
+    jobId: jobId as Id<"jobs">,
+  });
+}
+
 export async function touchJobMail(
   phoneE164: string,
   jobId: string,
@@ -486,5 +494,61 @@ export async function listBrowserSessionIds(phoneE164: string): Promise<string[]
   return await client().query(api.browsers.listIds, {
     secret: secret(),
     phoneE164,
+  });
+}
+
+export type OrderMerchant = "wb" | "ozon" | "other";
+export type OrderStatus = "placed" | "cancelled" | "unknown";
+
+export type RecordOrderInput = {
+  merchant: OrderMerchant;
+  merchantOrderId: string;
+  title: string;
+  priceRub: number;
+  status: OrderStatus;
+  pickup?: string;
+};
+
+export async function recordOrder(
+  phoneE164: string,
+  row: RecordOrderInput,
+): Promise<string> {
+  const tenant = await getTenant(phoneE164);
+  if (!tenant) throw new Error("unknown tenant");
+  return await client().mutation(api.orders.record, {
+    secret: secret(),
+    tenantId: tenant._id,
+    merchant: row.merchant,
+    merchantOrderId: row.merchantOrderId,
+    title: row.title,
+    priceRub: row.priceRub,
+    status: row.status,
+    ...(row.pickup ? { pickup: row.pickup } : {}),
+  });
+}
+
+export async function listOrders(
+  phoneE164: string,
+): Promise<FunctionReturnType<typeof api.orders.listForPhone>> {
+  return await client().query(api.orders.listForPhone, {
+    secret: secret(),
+    phoneE164,
+  });
+}
+
+export async function updateOrderStatus(
+  phoneE164: string,
+  args: {
+    status: OrderStatus;
+    merchantOrderId?: string;
+    orderId?: string;
+  },
+): Promise<FunctionReturnType<typeof api.orders.updateStatus>> {
+  return await client().mutation(api.orders.updateStatus, {
+    secret: secret(),
+    phoneE164,
+    status: args.status,
+    merchantOrderId: args.merchantOrderId,
+    orderId: args.orderId as Id<"orders"> | undefined,
   });
 }

@@ -57,6 +57,9 @@ export default defineSchema({
     note: v.optional(v.string()),
     emailThreadId: v.optional(v.string()),
     emailMessageId: v.optional(v.string()),
+    /** When the job last entered waiting. Used to nudge without a human ping. */
+    waitingSince: v.optional(v.number()),
+    lastNudgeAt: v.optional(v.number()),
   }).index("by_tenant", ["tenantId"]),
 
   memories: defineTable({
@@ -75,7 +78,11 @@ export default defineSchema({
       v.literal("cancelled"),
       v.literal("unknown"),
     ),
-  }).index("by_tenant", ["tenantId"]),
+    createdAt: v.optional(v.number()),
+    pickup: v.optional(v.string()),
+  })
+    .index("by_tenant", ["tenantId"])
+    .index("by_tenant_and_merchant_order", ["tenantId", "merchantOrderId"]),
 
   sessions: defineTable({
     tokenHash: v.string(),

@@ -127,6 +127,7 @@ http.route({ path: "/me/pay", method: "OPTIONS", handler: options() });
 http.route({ path: "/me/browser-profile", method: "OPTIONS", handler: options() });
 http.route({ path: "/me/browser-profile/refresh", method: "OPTIONS", handler: options() });
 http.route({ path: "/me/memories/forget", method: "OPTIONS", handler: options() });
+http.route({ path: "/me/tz", method: "OPTIONS", handler: options() });
 http.route({ path: "/vault/items", method: "OPTIONS", handler: options() });
 http.route({ path: "/vault/items/delete", method: "OPTIONS", handler: options() });
 
@@ -292,6 +293,30 @@ http.route({
       needle,
     });
     return json({ ok: true, forgotten });
+  }),
+});
+
+http.route({
+  path: "/me/tz",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const token = bearer(request);
+    if (!token) return json({ ok: false, code: "unauthorized" }, 401);
+    const now = Date.now();
+    const session = await ctx.runQuery(internal.cabinet.getSessionTenant, {
+      tokenHash: await sha256hex(token),
+      now,
+    });
+    if (!session) return json({ ok: false, code: "unauthorized" }, 401);
+    const body = await jsonBody(request);
+    const tz = typeof body.tz === "string" ? body.tz : "";
+    const result = await ctx.runMutation(internal.cabinet.setTzForSession, {
+      tenantId: session.tenantId,
+      tz,
+      now,
+    });
+    if (!result.ok) return json({ ok: false, code: result.code }, 400);
+    return json({ ok: true, tz: result.tz });
   }),
 });
 
