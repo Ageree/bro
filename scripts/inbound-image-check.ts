@@ -1,8 +1,10 @@
+import assert_ from "node:assert/strict";
 import {
   fetchImagePart,
   inboundImages,
   inboundUserContent,
   isImageContentType,
+  isPlainJson,
 } from "../agent/lib/inbound-image.ts";
 
 function assert(cond: unknown, msg: string): void {
@@ -34,20 +36,24 @@ const throwFetch: typeof fetch = async () => {
   throw new Error("boom");
 };
 
-// small photo → bytes (survives signed-URL expiry in session history)
+// small photo → data: base64 string (survives signed-URL expiry in session history)
 const p1 = await fetchImagePart(imgs[0], { fetch: okFetch });
 assert(p1.type === "file" && p1.mediaType === "image/jpeg", "file part");
-assert(p1.data instanceof Uint8Array && p1.data.byteLength === bytes.byteLength, "bytes kept");
+assert(typeof p1.data === "string" && p1.data.startsWith("data:image/jpeg;base64,"), "data url string");
+const decoded = Buffer.from(p1.data.slice(p1.data.indexOf(",") + 1), "base64");
+assert(decoded.equals(Buffer.from(bytes)), "base64 decodes back to the same bytes");
 
-// download problems → URL part, never a dropped photo
+// download problems → URL string part, never a dropped photo
 const p2 = await fetchImagePart(imgs[0], { fetch: failFetch });
-assert(p2.data instanceof URL && p2.data.href === imgs[0].url, "403 falls back to url");
+assert(p2.data === imgs[0].url, "403 falls back to url");
 const p3 = await fetchImagePart(imgs[0], { fetch: throwFetch });
-assert(p3.data instanceof URL, "throw falls back to url");
+assert(p3.data === imgs[0].url, "throw falls back to url");
 const p4 = await fetchImagePart({ ...imgs[0], size: 50 * 1024 * 1024 }, { fetch: okFetch });
-assert(p4.data instanceof URL, "declared oversize skips download");
+assert(p4.data === imgs[0].url, "declared oversize (50 MiB) skips download");
+const p4b = await fetchImagePart({ ...imgs[0], size: 4 * 1024 * 1024 }, { fetch: okFetch });
+assert(p4b.data === imgs[0].url, "declared oversize (4 MiB, above the 3 MiB cap) skips download");
 const p5 = await fetchImagePart(imgs[0], { fetch: okFetch, maxBytes: 3 });
-assert(p5.data instanceof URL, "body over cap falls back to url");
+assert(p5.data === imgs[0].url, "body over cap falls back to url");
 
 // server content-type wins only when it is an image
 const htmlFetch: typeof fetch = async () =>
@@ -66,5 +72,25 @@ if (!Array.isArray(rich)) throw new Error("unreachable");
 const [head, ...tail] = rich;
 assert(head.type === "text" && head.text.startsWith("Найди"), "text first");
 assert(tail.every((p) => p.type === "file"), "images after text");
+
+// eve serialises turn.input into memory-tool closures with a strict JSON
+// check — content must round-trip through JSON untouched (incident
+// 2026-09-06: Uint8Array/URL broke this).
+assert(isPlainJson(rich), "rich content is plain JSON");
+assert_.deepEqual(JSON.parse(JSON.stringify(rich)), rich, "content round-trips through JSON");
+
+// isPlainJson negative cases
+assert(!isPlainJson(new Uint8Array(1)), "Uint8Array is not plain JSON");
+assert(!isPlainJson(new URL("https://a.b")), "URL is not plain JSON");
+assert(!isPlainJson(new Date()), "Date is not plain JSON");
+assert(!isPlainJson(NaN), "NaN is not plain JSON");
+assert(!isPlainJson(new Map()), "Map is not plain JSON");
+assert(!isPlainJson(undefined), "undefined is not plain JSON");
+
+// isPlainJson positive cases
+assert(isPlainJson(null), "null is plain JSON");
+assert(isPlainJson(42), "finite number is plain JSON");
+assert(isPlainJson("hi"), "string is plain JSON");
+assert(isPlainJson([1, "a", null, { b: [true, {}] }]), "nested plain arrays/objects are plain JSON");
 
 console.log("inbound-image-check ok");
