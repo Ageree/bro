@@ -37,6 +37,7 @@ import {
   modelParamsFor,
   proxyCountryCode,
   reasoningEffort,
+  resolveProxyCountry,
   scaffoldTask,
 } from "../agent/lib/browseruse.ts";
 
@@ -347,6 +348,10 @@ assert(proxyCountryCode("  ") === undefined, "proxy blank");
 assert(proxyCountryCode("ru") === "ru", "proxy ru");
 assert(proxyCountryCode("RU") === "ru", "proxy RU");
 assert(proxyCountryCode(" rus") === undefined, "proxy not alpha-2");
+assert(resolveProxyCountry(undefined, undefined) === undefined, "proxy opt-in");
+assert(resolveProxyCountry(undefined, "none") === undefined, "proxy none");
+assert(resolveProxyCountry(undefined, "ru") === "ru", "proxy fallback ru");
+assert(resolveProxyCountry("de", "ru") === "de", "explicit country wins");
 assert(
   !("browserSettings" in applyProxyCountry({ task: "x" }, undefined)),
   "no proxy field when unset",
@@ -440,7 +445,6 @@ assert(
 
 const errandBody = buildRunBody({
   task: "скотч на ozon",
-  proxyCountry: "ru",
   model: DEFAULT_BROWSER_MODEL,
   maxCostUsd: DEFAULT_MAX_COST_USD.errand,
   reasoningEffort: DEFAULT_REASONING_EFFORT.errand,
@@ -454,8 +458,14 @@ assert(
 );
 assert(
   JSON.stringify(errandBody.browserSettings) ===
-    JSON.stringify({ proxyCountryCode: "ru" }),
-  "errand keeps ru proxy",
+    JSON.stringify({ proxyCountryCode: null }),
+  "errand is proxyless — omit would keep Cloud US $5/GB",
+);
+assert(
+  JSON.stringify(
+    buildRunBody({ task: "скотч на ozon", proxyCountry: "ru" }).browserSettings,
+  ) === JSON.stringify({ proxyCountryCode: "ru" }),
+  "explicit ru still works",
 );
 
 const loginBody = buildRunBody({
@@ -469,6 +479,11 @@ assert(
   JSON.stringify(loginBody.modelParams) ===
     JSON.stringify({ reasoning: { effort: "none" } }),
   "login no reasoning",
+);
+assert(
+  JSON.stringify(loginBody.browserSettings) ===
+    JSON.stringify({ proxyCountryCode: null }),
+  "login proxyless",
 );
 
 const payBody = buildRunBody({
@@ -491,5 +506,10 @@ const grokBody = buildRunBody({
   maxCostUsd: 0.45,
 });
 assert(grokBody.modelParams === undefined, "non-luna omits modelParams");
+assert(
+  JSON.stringify(grokBody.browserSettings) ===
+    JSON.stringify({ proxyCountryCode: null }),
+  "grok still sends null proxy",
+);
 
 console.log("browser-policy-check ok");
