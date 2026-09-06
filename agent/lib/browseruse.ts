@@ -140,18 +140,37 @@ export type CustomProxy = {
   password?: string;
 };
 
+/**
+ * Vendor gateways (DataImpulse: `__cr.ru;sessttl.30`) encode geo/sticky in the
+ * username. Append `suffix` unless the login already carries it.
+ */
+export function decorateProxyUser(
+  user: string | undefined,
+  suffix: string | undefined,
+): string | undefined {
+  const u = user?.trim();
+  if (!u) return undefined;
+  const s = suffix?.trim();
+  if (!s || u.includes(s)) return u;
+  return `${u}${s}`;
+}
+
 export function customProxyFromEnv(env: {
   BRO_BROWSER_PROXY_HOST?: string;
   BRO_BROWSER_PROXY_PORT?: string;
   BRO_BROWSER_PROXY_USER?: string;
   BRO_BROWSER_PROXY_PASS?: string;
+  BRO_BROWSER_PROXY_USER_SUFFIX?: string;
 } = process.env): CustomProxy | undefined {
   const host = env.BRO_BROWSER_PROXY_HOST?.trim();
   const port = Number(env.BRO_BROWSER_PROXY_PORT);
   if (!host || !Number.isFinite(port) || port < 1 || port > 65535) {
     return undefined;
   }
-  const username = env.BRO_BROWSER_PROXY_USER?.trim();
+  const username = decorateProxyUser(
+    env.BRO_BROWSER_PROXY_USER,
+    env.BRO_BROWSER_PROXY_USER_SUFFIX,
+  );
   const password = env.BRO_BROWSER_PROXY_PASS?.trim();
   return {
     host,

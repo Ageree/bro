@@ -28,6 +28,7 @@ import {
   browserSettingsForRun,
   buildRunBody,
   customProxyFromEnv,
+  decorateProxyUser,
   DEFAULT_BROWSER_MODEL,
   DEFAULT_MAX_COST_USD,
   DEFAULT_REASONING_EFFORT,
@@ -393,13 +394,26 @@ assert(
     undefined,
   "port 0 rejected",
 );
+assert(decorateProxyUser(undefined, "__cr.ru") === undefined, "no user");
+assert(decorateProxyUser("login", undefined) === "login", "no suffix");
+assert(
+  decorateProxyUser("login", "__cr.ru;sessttl.30") === "login__cr.ru;sessttl.30",
+  "dataimpulse ru sticky",
+);
+assert(
+  decorateProxyUser("login__cr.ru;sessttl.30", "__cr.ru;sessttl.30") ===
+    "login__cr.ru;sessttl.30",
+  "suffix not doubled",
+);
 const byop = customProxyFromEnv({
-  BRO_BROWSER_PROXY_HOST: " p.example ",
-  BRO_BROWSER_PROXY_PORT: "8080",
-  BRO_BROWSER_PROXY_USER: "u",
+  BRO_BROWSER_PROXY_HOST: " gw.dataimpulse.com ",
+  BRO_BROWSER_PROXY_PORT: "823",
+  BRO_BROWSER_PROXY_USER: "acct",
   BRO_BROWSER_PROXY_PASS: "s",
+  BRO_BROWSER_PROXY_USER_SUFFIX: "__cr.ru;sessttl.30",
 });
-assert(byop?.host === "p.example" && byop.port === 8080, "custom proxy parsed");
+assert(byop?.host === "gw.dataimpulse.com" && byop.port === 823, "custom proxy parsed");
+assert(byop?.username === "acct__cr.ru;sessttl.30", "suffix applied on env user");
 assert(
   JSON.stringify(
     browserSettingsForRun({
@@ -410,9 +424,9 @@ assert(
   ) ===
     JSON.stringify({
       customProxy: {
-        host: "p.example",
-        port: 8080,
-        username: "u",
+        host: "gw.dataimpulse.com",
+        port: 823,
+        username: "acct__cr.ru;sessttl.30",
         password: "s",
       },
       proxyCountryCode: null,
