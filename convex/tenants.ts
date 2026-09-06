@@ -40,6 +40,20 @@ import {
 } from "./lib/browserFollowPolicy";
 import { periodConfig, rateLimiter } from "./lib/rateLimits";
 
+/** Never write a group conversation onto the 1:1 wakeup/mail lane. */
+async function oneToOneConversationIdOrUndefined(
+  ctx: MutationCtx,
+  conversationId: string | undefined,
+): Promise<string | undefined> {
+  const id = conversationId?.trim();
+  if (!id) return undefined;
+  const group = await ctx.db
+    .query("groupChats")
+    .withIndex("by_conversation", (q) => q.eq("conversationId", id))
+    .first();
+  return group ? undefined : id;
+}
+
 /** Full tenant document. Derived from the schema so a new column (e.g.
  *  `archiveSyncedAt`) can never be missing here: a hand-copied list once
  *  made every tenant read throw `ReturnsValidationError` in production
@@ -131,16 +145,20 @@ export const upsert = mutation({
       .query("tenants")
       .withIndex("by_phone", (q) => q.eq("phoneE164", phoneE164))
       .first();
+    const oneToOneConversationId = await oneToOneConversationIdOrUndefined(
+      ctx,
+      inkboxConversationId,
+    );
     if (existing) {
       const patch: {
         inkboxConversationId?: string;
         emailAddress?: string;
       } = {};
       if (
-        inkboxConversationId &&
-        existing.inkboxConversationId !== inkboxConversationId
+        oneToOneConversationId &&
+        existing.inkboxConversationId !== oneToOneConversationId
       ) {
-        patch.inkboxConversationId = inkboxConversationId;
+        patch.inkboxConversationId = oneToOneConversationId;
       }
       if (email && existing.emailAddress !== email) patch.emailAddress = email;
       if (Object.keys(patch).length) {
@@ -152,7 +170,7 @@ export const upsert = mutation({
     const id = await ctx.db.insert("tenants", {
       phoneE164,
       status: "active",
-      inkboxConversationId,
+      inkboxConversationId: oneToOneConversationId,
       emailAddress: email || undefined,
     });
     const created = await ctx.db.get(id);
@@ -546,16 +564,20 @@ export const bindInbound = mutation({
       return { ok: false as const, reason: "wrong phone" };
     }
     const firstBind = !tenant.phoneE164;
+    const oneToOneConversationId = await oneToOneConversationIdOrUndefined(
+      ctx,
+      inkboxConversationId,
+    );
     const patch: {
       phoneE164?: string;
       inkboxConversationId?: string;
     } = {};
     if (!tenant.phoneE164) patch.phoneE164 = phoneE164;
     if (
-      inkboxConversationId &&
-      tenant.inkboxConversationId !== inkboxConversationId
+      oneToOneConversationId &&
+      tenant.inkboxConversationId !== oneToOneConversationId
     ) {
-      patch.inkboxConversationId = inkboxConversationId;
+      patch.inkboxConversationId = oneToOneConversationId;
     }
     if (Object.keys(patch).length) await ctx.db.patch(tenant._id, patch);
     const next = await ctx.db.get(tenant._id);

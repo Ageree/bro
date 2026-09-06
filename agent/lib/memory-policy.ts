@@ -1,3 +1,8 @@
+import {
+  groupMemoryScope,
+  isGroupAuthFlag,
+} from "../../convex/lib/groupChatPolicy.ts";
+
 /** Principals that would mix people in one memory bucket. */
 const SHARED = new Set(["", "unknown", "default", "eve:app"]);
 
@@ -13,16 +18,30 @@ export function resolveRecallBackend(env: {
   return apiKey ? { kind: "supermemory", apiKey } : { kind: "convex" };
 }
 
-type AuthSide = { principalId?: string | null } | null | undefined;
+type AuthSide = {
+  principalId?: string | null;
+  attributes?: Record<string, unknown>;
+} | null | undefined;
 
 /**
- * iMessage E.164 for this person, `local-dev` outside production, or null
- * (slot disabled) when the caller could mix people. Never from the model.
+ * iMessage E.164 for this person, `group:<conversationId>` in a group
+ * thread, `local-dev` outside production, or null (slot disabled) when
+ * the caller could mix people. Never from the model.
  */
 export function resolveMemoryScope(
   auth: { current?: AuthSide; initiator?: AuthSide },
   production: boolean,
 ): string | null {
+  const side = auth.current ?? auth.initiator;
+  if (isGroupAuthFlag(side?.attributes)) {
+    const raw = side?.attributes?.conversationId;
+    const conversationId = Array.isArray(raw) ? raw[0] : raw;
+    if (typeof conversationId === "string") {
+      const scope = groupMemoryScope(conversationId);
+      if (scope) return scope;
+    }
+    return production ? null : "local-dev";
+  }
   const id = auth.current?.principalId ?? auth.initiator?.principalId;
   if (typeof id === "string" && !SHARED.has(id)) return id;
   return production ? null : "local-dev";

@@ -11,14 +11,17 @@ import {
   webhookOk,
 } from "../lib/inkbox";
 import {
+  bindGroupInbound,
   bindInbound,
   countInboundMessage,
+  getGroupByConversation,
   getTenant,
-  getTenantByConversation,
   getTenantByHandle,
   listOpenJobs,
+  markGroupGreeted,
   markNudged,
   markPaywallSent,
+  replyTenant,
   setWakeupLastSeen,
   upsertTenant,
 } from "../lib/convex";
@@ -64,6 +67,15 @@ import {
   takeFallbackSlot,
   turnOrigin,
 } from "../lib/silent-turn.ts";
+import {
+  groupAuthAttributes,
+  groupParticipantPhones,
+  groupSenderPhone,
+  groupWelcomeText,
+  isGroupMessage,
+  shouldReplyInGroup,
+  tagGroupUserContent,
+} from "../../convex/lib/groupChatPolicy.ts";
 
 // ponytail: in-memory only — lost on restart, not shared across instances
 const wakeupDelivered = new Map<string, number>();
@@ -95,7 +107,7 @@ async function sendFirstBindOnboard(opts: {
   try {
     await sendBlueIMessage({
       conversationId: opts.conversationId,
-      text: welcomeText(),
+      text: welcomeText({ canJoinGroups: Boolean(opts.tel) }),
       handle: opts.handle,
     });
   } catch (err) {
@@ -103,18 +115,78 @@ async function sendFirstBindOnboard(opts: {
   }
 }
 
-async function sendHelpCatalog(opts: {
+async function sendGroupWelcome(opts: {
   conversationId: string;
   handle: string;
 }): Promise<void> {
   try {
     await sendBlueIMessage({
       conversationId: opts.conversationId,
-      text: helpText(),
+      text: groupWelcomeText(),
+      handle: opts.handle,
+    });
+    await markGroupGreeted(opts.conversationId);
+  } catch (err) {
+    console.error("group welcome failed", err);
+  }
+}
+
+async function sendHelpCatalog(opts: {
+  conversationId: string;
+  handle: string;
+  canJoinGroups?: boolean;
+}): Promise<void> {
+  try {
+    await sendBlueIMessage({
+      conversationId: opts.conversationId,
+      text: helpText({ canJoinGroups: opts.canJoinGroups }),
       handle: opts.handle,
     });
   } catch (err) {
     console.error("help catalog failed", err);
+  }
+}
+
+async function inboundOwnerGate(ownerPhone: string): Promise<{
+  decision: "allow" | "paywall" | "drop";
+  payUrl?: string;
+}> {
+  try {
+    return inboundGateFromResult(await countInboundMessage(ownerPhone), undefined);
+  } catch (err) {
+    console.error("billing count failed", err);
+    try {
+      const marked = await markPaywallSent(ownerPhone);
+      return inboundGateFromResult(undefined, err, {
+        alreadySentToday: marked.alreadySentToday,
+        marked: true,
+      });
+    } catch (markErr) {
+      console.error("paywallSentDayKey persist failed", markErr);
+      return inboundGateFromResult(undefined, err, {
+        alreadySentToday: false,
+        marked: false,
+      });
+    }
+  }
+}
+
+async function sendQuotaPaywall(opts: {
+  conversationId: string;
+  handle: string;
+  payUrl?: string;
+}): Promise<void> {
+  const line = opts.payUrl
+    ? `Лимит на сегодня исчерпан 🙈 Полный доступ — 2000 ₽/мес: ${opts.payUrl}`
+    : "Лимит на сегодня исчерпан 🙈 Полный доступ — 2000 ₽/мес: напиши @оператору";
+  try {
+    await sendBlueIMessage({
+      conversationId: opts.conversationId,
+      text: line,
+      handle: opts.handle,
+    });
+  } catch (err) {
+    console.error("paywall send failed", err);
   }
 }
 
@@ -189,17 +261,47 @@ export default defineChannel({
         return new Response(null, { status: 204 });
       }
 
-      const remote = msg.remote_number;
+      const knownGroup = msg.conversation_id
+        ? await getGroupByConversation(msg.conversation_id).catch(() => null)
+        : null;
+      const group = Boolean(knownGroup) || isGroupMessage(msg);
+      const remote = group ? groupSenderPhone(msg) : msg.remote_number;
       if (!remote) {
         console.error("dropped inbound without remote number");
         return new Response(null, { status: 204 });
       }
 
       const identityHandle = handle ?? agentHandle();
+      const participants = group ? groupParticipantPhones(msg) : [];
 
       let firstBind = false;
+      let firstGroup = false;
       let boundTenant = tenant;
-      if (handle) {
+      let ownerPhone = remote;
+      if (group) {
+        if (!handle) {
+          console.error("dropped group inbound without handle");
+          return new Response(null, { status: 204 });
+        }
+        if (!allowlisted(remote)) {
+          return new Response(null, { status: 204 });
+        }
+        const bound = await bindGroupInbound({
+          conversationId: msg.conversation_id,
+          senderPhone: remote,
+          participants,
+          handle,
+        }).catch((err) => {
+          console.error("bind group inbound failed", err);
+          return { ok: false as const, reason: "error" };
+        });
+        if (!bound.ok) {
+          console.error("dropped group inbound", bound.reason, handle, remote);
+          return new Response(null, { status: 204 });
+        }
+        firstGroup = bound.firstGroup;
+        ownerPhone = bound.ownerPhoneE164;
+      } else if (handle) {
         const bound = await bindInbound(handle, remote, msg.conversation_id).catch(
           (err) => {
             console.error("bind inbound failed", err);
@@ -212,6 +314,7 @@ export default defineChannel({
         }
         firstBind = bound.firstBind;
         boundTenant = bound.tenant;
+        ownerPhone = bound.tenant.phoneE164 ?? remote;
       } else {
         if (!allowlisted(remote)) {
           return new Response(null, { status: 204 });
@@ -233,66 +336,48 @@ export default defineChannel({
             tel: boundTenant?.dedicatedIMessageNumber,
           });
         }
-        return new Response(null, { status: 204 });
-      }
-
-      let gate: { decision: "allow" | "paywall" | "drop"; payUrl?: string };
-      try {
-        gate = inboundGateFromResult(await countInboundMessage(remote), undefined);
-      } catch (err) {
-        console.error("billing count failed", err);
-        try {
-          const marked = await markPaywallSent(remote);
-          gate = inboundGateFromResult(undefined, err, {
-            alreadySentToday: marked.alreadySentToday,
-            marked: true,
-          });
-        } catch (markErr) {
-          console.error("paywallSentDayKey persist failed", markErr);
-          gate = inboundGateFromResult(undefined, err, {
-            alreadySentToday: false,
-            marked: false,
-          });
-        }
-      }
-      if (gate.decision === "drop") {
-        return new Response(null, { status: 204 });
-      }
-      if (gate.decision === "paywall") {
-        if (firstBind) {
-          await sendFirstBindOnboard({
+        if (firstGroup) {
+          await sendGroupWelcome({
             conversationId: msg.conversation_id,
             handle: identityHandle,
-            email: boundTenant?.emailAddress,
-            tel: boundTenant?.dedicatedIMessageNumber,
           });
-        }
-        const line = gate.payUrl
-          ? `Лимит на сегодня исчерпан 🙈 Полный доступ — 2000 ₽/мес: ${gate.payUrl}`
-          : "Лимит на сегодня исчерпан 🙈 Полный доступ — 2000 ₽/мес: напиши @оператору";
-        try {
-          await sendBlueIMessage({
-            conversationId: msg.conversation_id,
-            text: line,
-            handle: identityHandle,
-          });
-        } catch (err) {
-          console.error("paywall send failed", err);
         }
         return new Response(null, { status: 204 });
       }
 
-      const ack = (async () => {
-        try {
-          const identity = await inkbox().getIdentity(identityHandle);
-          await identity.markIMessageConversationRead(msg.conversation_id);
-          await identity.sendIMessageTyping(msg.conversation_id);
-        } catch (err) {
-          console.error("imessage ack failed", err);
+      if (!group) {
+        const gate = await inboundOwnerGate(ownerPhone);
+        if (gate.decision === "drop") {
+          return new Response(null, { status: 204 });
         }
-      })();
-      if (typeof waitUntil === "function") waitUntil(ack);
-      else void ack;
+        if (gate.decision === "paywall") {
+          if (firstBind) {
+            await sendFirstBindOnboard({
+              conversationId: msg.conversation_id,
+              handle: identityHandle,
+              email: boundTenant?.emailAddress,
+              tel: boundTenant?.dedicatedIMessageNumber,
+            });
+          }
+          await sendQuotaPaywall({
+            conversationId: msg.conversation_id,
+            handle: identityHandle,
+            payUrl: gate.payUrl,
+          });
+          return new Response(null, { status: 204 });
+        }
+        const ack = (async () => {
+          try {
+            const identity = await inkbox().getIdentity(identityHandle);
+            await identity.markIMessageConversationRead(msg.conversation_id);
+            await identity.sendIMessageTyping(msg.conversation_id);
+          } catch (err) {
+            console.error("imessage ack failed", err);
+          }
+        })();
+        if (typeof waitUntil === "function") waitUntil(ack);
+        else void ack;
+      }
 
       const inbound = await inboundIMessageTextWithVoice(msg, transcribeVoiceNote);
       if (firstBind) {
@@ -303,7 +388,14 @@ export default defineChannel({
           tel: boundTenant?.dedicatedIMessageNumber,
         });
       }
+      if (firstGroup) {
+        await sendGroupWelcome({
+          conversationId: msg.conversation_id,
+          handle: identityHandle,
+        });
+      }
       if (inbound.allVoiceFailed) {
+        if (group) return new Response(null, { status: 204 });
         console.log("imessage inbound", {
           remote,
           conversationId: msg.conversation_id,
@@ -323,18 +415,46 @@ export default defineChannel({
         return new Response(null, { status: 204 });
       }
       if (!inbound.text) return new Response(null, { status: 204 });
+      if (group && !shouldReplyInGroup(inbound.text)) {
+        return new Response(null, { status: 204 });
+      }
+      // Group billing runs only after the mention gate so side chatter
+      // cannot burn the owner's daily quota or paywall the group.
+      if (group) {
+        const gate = await inboundOwnerGate(ownerPhone);
+        if (gate.decision === "drop") {
+          return new Response(null, { status: 204 });
+        }
+        if (gate.decision === "paywall") {
+          await sendQuotaPaywall({
+            conversationId: msg.conversation_id,
+            handle: identityHandle,
+            payUrl: gate.payUrl,
+          });
+          return new Response(null, { status: 204 });
+        }
+      }
       if (isHelpAsk(inbound.text)) {
         await sendHelpCatalog({
           conversationId: msg.conversation_id,
           handle: identityHandle,
+          canJoinGroups: Boolean(
+            boundTenant?.dedicatedIMessageNumber ??
+              tenant?.dedicatedIMessageNumber,
+          ),
         });
       }
       if (shouldSkipAgentTurn({ firstBind, text: inbound.text })) {
         return new Response(null, { status: 204 });
       }
-      const content = await inboundUserContent(inbound.text, msg.media);
+      const rawContent = await inboundUserContent(inbound.text, msg.media);
+      const content = group
+        ? tagGroupUserContent(remote, rawContent)
+        : rawContent;
       console.log("imessage inbound", {
         remote,
+        ownerPhone,
+        group,
         conversationId: msg.conversation_id,
         chars: inbound.text.length,
         voice: inbound.voice,
@@ -347,13 +467,22 @@ export default defineChannel({
           authenticator: "inkbox",
           issuer: "inkbox",
           principalType: "user",
-          principalId: remote,
-          attributes: {
-            conversationId: msg.conversation_id,
-            inkboxHandle: identityHandle,
-            messageId: msg.id,
-            origin: "human",
-          },
+          principalId: ownerPhone,
+          attributes: group
+            ? groupAuthAttributes({
+                conversationId: msg.conversation_id,
+                inkboxHandle: identityHandle,
+                messageId: msg.id,
+                origin: "human",
+                senderPhone: remote,
+                ownerPhone,
+              })
+            : {
+                conversationId: msg.conversation_id,
+                inkboxHandle: identityHandle,
+                messageId: msg.id,
+                origin: "human",
+              },
         },
       });
 
@@ -578,7 +707,7 @@ export default defineChannel({
       const text = fallbackForFailed(turnOrigin(ctx?.session?.auth?.current?.attributes));
       if (!text) return;
       if (!takeFallbackSlot(fallbackSent, event.turnId, Date.now())) return;
-      const tenant = await getTenantByConversation(conversationId).catch(() => null);
+      const tenant = await replyTenant(conversationId);
       await sendBlueIMessage({ conversationId, text, handle: tenant?.inkboxHandle }).catch(
         (err) => console.error("turn failed fallback send failed", err),
       );
@@ -598,14 +727,14 @@ export default defineChannel({
         if (!text) return;
         console.error("empty turn", { conversationId, finishReason: event.finishReason });
         if (!takeFallbackSlot(fallbackSent, event.turnId, Date.now())) return;
-        const tenant = await getTenantByConversation(conversationId).catch(() => null);
+        const tenant = await replyTenant(conversationId);
         await sendBlueIMessage({ conversationId, text, handle: tenant?.inkboxHandle }).catch(
           (err) => console.error("empty turn fallback send failed", err),
         );
         return;
       }
       const { message, seen } = splitSeen(event.message);
-      const tenant = await getTenantByConversation(conversationId).catch(() => null);
+      const tenant = await replyTenant(conversationId);
       if (seen !== undefined && tenant?.phoneE164) {
         await setWakeupLastSeen(tenant.phoneE164, seen).catch((err) => {
           console.error("setLastSeen failed", err);

@@ -213,4 +213,19 @@ export default defineSchema({
   composioEvents: defineTable({ eventId: v.string(), receivedAt: v.number() })
     .index("by_event", ["eventId"])
     .index("by_receivedAt", ["receivedAt"]),
+
+  /** One Inkbox iMessage group. Never store this conversationId on tenants. */
+  groupChats: defineTable({
+    conversationId: v.string(),
+    ownerPhoneE164: v.string(),
+    inkboxHandle: v.string(),
+    participants: v.array(v.string()),
+    status: v.union(v.literal("active"), v.literal("disabled")),
+    createdAt: v.number(),
+    lastSenderPhone: v.optional(v.string()),
+    greeted: v.optional(v.boolean()),
+  })
+    .index("by_conversation", ["conversationId"])
+    .index("by_owner", ["ownerPhoneE164"])
+    .index("by_handle", ["inkboxHandle"]),
 });

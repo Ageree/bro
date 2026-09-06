@@ -3,6 +3,7 @@ import { z } from "zod";
 import { resolveTenantTz } from "../../convex/lib/tzPolicy";
 import { nextDailyAt, parseWhen } from "../../convex/lib/wakeupPolicy";
 import { getTenant, scheduleWakeup, upsertTenant } from "../lib/convex";
+import { groupPersonalBlock } from "../lib/group-guard";
 import { tenantId } from "../lib/tenant";
 
 async function tzForPhone(phone: string): Promise<string> {
@@ -27,6 +28,8 @@ export default defineTool({
     kind: z.enum(["reminder", "brief", "watcher"]).default("reminder"),
   }),
   async execute({ payload, atIso, inMinutes, dailyHour, everyMinutes, kind }, ctx) {
+    const blocked = groupPersonalBlock(ctx);
+    if (blocked) return blocked;
     const now = Date.now();
     const phone = tenantId(ctx);
     const tz = await tzForPhone(phone);

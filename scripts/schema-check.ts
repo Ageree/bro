@@ -86,6 +86,13 @@ assert(
   /export const tenantDoc = doc\(schema, "tenants"\);/.test(tenantsSrc),
   'convex/tenants.ts: tenantDoc must be `doc(schema, "tenants")`',
 );
+const groupChatsSrc = readFileSync(join(convexDir, "groupChats.ts"), "utf8");
+assert(
+  /export const groupChatDoc = doc\(schema, "groupChats"\);/.test(groupChatsSrc),
+  'convex/groupChats.ts: groupChatDoc must be `doc(schema, "groupChats")`',
+);
+const groupChatDoc = doc(schema, "groupChats");
+assertCoversTable("groupChatDoc", groupChatDoc, "groupChats");
 
 // 4. The schema itself stays the single source: doc() picks up new columns.
 const sample = schemaFields("tenants");
