@@ -313,6 +313,31 @@ export default defineChannel({
         );
       }
     }),
+    // Drop a session's model history. Needed once per session that received a
+    // photo before 2026-09-06: eve keeps Uint8Array file parts in history (the
+    // workflow serializer round-trips them) and every memory-tool closure then
+    // fails "Expected a JSON-serializable value" on each later turn. Long-term
+    // memory lives in Convex/Supermemory and survives the clear.
+    POST("/internal/session-clear", async (request, { from }) => {
+      let body: { secret?: unknown; conversationId?: unknown };
+      try {
+        body = (await request.json()) as typeof body;
+      } catch {
+        return new Response("bad json", { status: 400 });
+      }
+      const expected = process.env.BRO_INTERNAL_SECRET;
+      if (!expected || body.secret !== expected) {
+        return new Response("unauthorized", { status: 401 });
+      }
+      const conversationId =
+        typeof body.conversationId === "string" ? body.conversationId : "";
+      if (!conversationId) {
+        return new Response("missing conversationId", { status: 400 });
+      }
+      const result = await from(conversationId).clear();
+      console.log("session cleared", { conversationId, result });
+      return Response.json({ ok: true, result });
+    }),
     POST("/internal/wakeup", async (request, { from }) => {
       let body: {
         secret?: unknown;
