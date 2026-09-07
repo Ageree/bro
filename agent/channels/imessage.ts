@@ -47,10 +47,7 @@ import {
 } from "../lib/imessage-text";
 import { parkTurn } from "../lib/channel-turn.ts";
 import { jobCheckWakePrompt } from "../lib/job-wake.ts";
-import {
-  createTurnDeliveryEvents,
-  imessageOwnsTurn,
-} from "../lib/turn-delivery-events.ts";
+import { imessageDeliveryEvents } from "../lib/turn-delivery-events.ts";
 import { telegramBindLink } from "../../convex/lib/telegramPolicy.ts";
 import { telegramBotUsername } from "../lib/telegram";
 import { transcribeVoiceNote } from "../lib/voice";
@@ -811,5 +808,5 @@ export default defineChannel({
       return Response.json({ ok: true });
     }),
   ],
-  events: createTurnDeliveryEvents({ accept: imessageOwnsTurn }),
+  events: imessageDeliveryEvents,
 });

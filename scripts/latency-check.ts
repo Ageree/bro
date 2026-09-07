@@ -62,8 +62,7 @@ const imessage = readFileSync(
   new URL("../agent/channels/imessage.ts", import.meta.url),
   "utf8",
 );
-assert(imessage.includes("imessageOwnsTurn"), "iMessage skips telegram-stamped turns");
-assert(imessage.includes("createTurnDeliveryEvents"), "iMessage shares delivery events");
+assert(imessage.includes("imessageDeliveryEvents"), "iMessage shares delivery events");
 assert(imessage.includes("prefetchOpenRouter"), "OpenRouter warms during billing, not after first token");
 
 const telegram = readFileSync(
@@ -73,8 +72,7 @@ const telegram = readFileSync(
 assert(telegram.includes("sendTelegramTyping"), "telegram shows typing like iMessage");
 assert(telegram.includes("inboundP"), "telegram STT overlaps photo fetch");
 assert(telegram.includes("parkTurn"), "human telegram turn is not awaited");
-assert(telegram.includes("telegramOwnsTurn"), "telegram events only accept telegram-stamped turns");
-assert(telegram.includes("createTurnDeliveryEvents"), "telegram delivers through shared events");
+assert(telegram.includes("telegramDeliveryEvents"), "telegram events only accept telegram-stamped turns");
 
 const telegramLib = readFileSync(
   new URL("../agent/lib/telegram.ts", import.meta.url),

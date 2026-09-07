@@ -322,10 +322,16 @@ const telegramChannel = readFileSync(
   new URL("../agent/channels/telegram.ts", import.meta.url),
   "utf8",
 );
-assert(channel.includes("createTurnDeliveryEvents"), "imessage uses shared delivery events");
-assert(channel.includes("imessageOwnsTurn"), "imessage skips telegram-stamped turns");
-assert(telegramChannel.includes("createTurnDeliveryEvents"), "telegram uses shared delivery events");
-assert(telegramChannel.includes("telegramOwnsTurn"), "telegram accepts only telegram-stamped turns");
+assert(channel.includes("imessageDeliveryEvents"), "imessage uses shared delivery events");
+assert(telegramChannel.includes("telegramDeliveryEvents"), "telegram uses shared delivery events");
+const hook = readFileSync(
+  new URL("../agent/hooks/telegram-deliver.ts", import.meta.url),
+  "utf8",
+);
+assert(hook.includes("telegramDeliveryEvents"), "hook shares telegram delivery maps");
+assert(hook.includes("defineHook"), "telegram hook observes every channel session");
+assert(delivery.includes("initiator"), "delivery reads initiator auth when current is empty");
+assert(delivery.includes("canTarget"), "telegram can deliver without continuation token");
 assert(delivery.includes("planTurnDelivery"), "shared events use early-deliver planner");
 assert(delivery.includes("planStreamFlush"), "shared events flush streamed complete lines");
 assert(delivery.includes("planPreToolFlush"), "shared events flush when the model starts a tool");

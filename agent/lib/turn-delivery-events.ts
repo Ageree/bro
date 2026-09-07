@@ -41,8 +41,49 @@ type DeliveryChannel = {
 };
 
 type DeliveryCtx = {
-  session?: { auth?: { current?: DeliveryAuth | null } };
+  session?: {
+    auth?: {
+      current?: DeliveryAuth | null;
+      initiator?: DeliveryAuth | null;
+    };
+  };
 };
+
+function recordAttrs(attrs: AuthAttrs): Record<string, unknown> {
+  if (!attrs || typeof attrs !== "object") return {};
+  return { ...attrs };
+}
+
+function authOf(ctx: DeliveryCtx | undefined): DeliveryAuth | undefined {
+  const current = ctx?.session?.auth?.current ?? undefined;
+  const initiator = ctx?.session?.auth?.initiator ?? undefined;
+  if (!current && !initiator) return undefined;
+  return {
+    principalId: current?.principalId ?? initiator?.principalId,
+    attributes: {
+      ...recordAttrs(initiator?.attributes),
+      ...recordAttrs(current?.attributes),
+    },
+  };
+}
+
+function conversationIdOf(
+  channel: DeliveryChannel,
+  attrs: AuthAttrs,
+): string {
+  const token = channel.continuation?.token?.trim();
+  if (token) return token;
+  const raw = attrs?.conversationId;
+  if (typeof raw === "string" && raw.trim()) return raw.trim();
+  if (Array.isArray(raw) && typeof raw[0] === "string" && raw[0].trim()) {
+    return raw[0].trim();
+  }
+  return "";
+}
+
+function canTarget(conversationId: string, attrs: AuthAttrs): boolean {
+  return Boolean(conversationId) || routingFromAuth(attrs).canDeliver;
+}
 
 async function persistSeen(
   phone: string | undefined,
@@ -66,6 +107,7 @@ async function persistSeenFromTurn(
     await persistSeen(phone, seen);
     return;
   }
+  if (!conversationId) return;
   const tenant = await replyTenant(conversationId).catch((err) => {
     console.error("setLastSeen failed", err);
     return null;
@@ -81,13 +123,14 @@ export async function deliverTurnBubble(opts: {
   seen?: string;
 }): Promise<void> {
   const routing = routingFromAuth(opts.attrs);
-  const lookedUp = routing.canDeliver
-    ? null
-    : await replyTenant(opts.conversationId);
+  const lookedUp =
+    routing.canDeliver || !opts.conversationId
+      ? null
+      : await replyTenant(opts.conversationId);
   const tenant = lookedUp ?? routingTenant(routing);
   await deliverHuman({
     tenant,
-    conversationId: opts.conversationId,
+    conversationId: opts.conversationId || undefined,
     text: opts.text,
     channel: routing.channel,
   });
@@ -103,28 +146,22 @@ export function createTurnDeliveryEvents(opts: {
   const fallbackSent = new Map<string, number>();
   const earlySent = new Map<string, EarlySentRow>();
 
-  function authOf(ctx: DeliveryCtx | undefined): DeliveryAuth | undefined {
-    return ctx?.session?.auth?.current ?? undefined;
-  }
-
-  function conversationIdOf(channel: DeliveryChannel): string | undefined {
-    return channel.continuation?.token;
-  }
-
   return {
     async "turn.failed"(
       event: { turnId: string; code?: string; message?: string },
       channel: DeliveryChannel,
       ctx?: DeliveryCtx,
     ) {
-      const conversationId = conversationIdOf(channel);
-      if (!conversationId) return;
+      const auth = authOf(ctx);
+      const conversationId = conversationIdOf(channel, auth?.attributes);
       console.error("turn failed", {
         conversationId,
         code: event.code,
         message: event.message,
+        accept: opts.accept(auth?.attributes),
+        routed: routingFromAuth(auth?.attributes).channel ?? null,
       });
-      const auth = authOf(ctx);
+      if (!canTarget(conversationId, auth?.attributes)) return;
       if (!opts.accept(auth?.attributes)) return;
       const text = fallbackForFailed(turnOrigin(auth?.attributes));
       if (!text) return;
@@ -143,9 +180,9 @@ export function createTurnDeliveryEvents(opts: {
       channel: DeliveryChannel,
       ctx?: DeliveryCtx,
     ) {
-      const conversationId = conversationIdOf(channel);
-      if (!conversationId) return;
       const auth = authOf(ctx);
+      const conversationId = conversationIdOf(channel, auth?.attributes);
+      if (!canTarget(conversationId, auth?.attributes)) return;
       if (!opts.accept(auth?.attributes)) return;
       rememberSoFar(earlySent, event.turnId, event.messageSoFar, Date.now());
       const planned = planStreamFlush({
@@ -154,6 +191,11 @@ export function createTurnDeliveryEvents(opts: {
       });
       if (!planned.send) return;
       recordSent(earlySent, event.turnId, planned.send, Date.now());
+      console.log("turn deliver appended", {
+        conversationId,
+        routed: routingFromAuth(auth?.attributes).channel ?? null,
+        chars: planned.send.length,
+      });
       void deliverTurnBubble({
         conversationId,
         text: stripConnectUrls(planned.send),
@@ -167,9 +209,9 @@ export function createTurnDeliveryEvents(opts: {
       channel: DeliveryChannel,
       ctx?: DeliveryCtx,
     ) {
-      const conversationId = conversationIdOf(channel);
-      if (!conversationId) return;
       const auth = authOf(ctx);
+      const conversationId = conversationIdOf(channel, auth?.attributes);
+      if (!canTarget(conversationId, auth?.attributes)) return;
       if (!opts.accept(auth?.attributes)) return;
       const planned = planPreToolFlush({
         soFar: soFarFor(earlySent, event.turnId),
@@ -177,6 +219,11 @@ export function createTurnDeliveryEvents(opts: {
       });
       if (!planned.send) return;
       recordSent(earlySent, event.turnId, planned.send, Date.now());
+      console.log("turn deliver pre-tool", {
+        conversationId,
+        routed: routingFromAuth(auth?.attributes).channel ?? null,
+        chars: planned.send.length,
+      });
       void deliverTurnBubble({
         conversationId,
         text: stripConnectUrls(planned.send),
@@ -194,10 +241,22 @@ export function createTurnDeliveryEvents(opts: {
       channel: DeliveryChannel,
       ctx?: DeliveryCtx,
     ) {
-      const conversationId = conversationIdOf(channel);
-      if (!conversationId) return;
       const auth = authOf(ctx);
-      if (!opts.accept(auth?.attributes)) return;
+      const conversationId = conversationIdOf(channel, auth?.attributes);
+      if (!canTarget(conversationId, auth?.attributes)) {
+        console.error("deliver skip: no target", {
+          turnId: event.turnId,
+          routed: routingFromAuth(auth?.attributes).channel ?? null,
+        });
+        return;
+      }
+      if (!opts.accept(auth?.attributes)) {
+        console.log("deliver skip: other channel", {
+          turnId: event.turnId,
+          routed: routingFromAuth(auth?.attributes).channel ?? null,
+        });
+        return;
+      }
       const origin = turnOrigin(auth?.attributes);
       const planned = planTurnDelivery({
         finishReason: event.finishReason ?? "",
@@ -207,6 +266,11 @@ export function createTurnDeliveryEvents(opts: {
       });
       if (planned.send) {
         recordSent(earlySent, event.turnId, planned.send, Date.now());
+        console.log("turn deliver completed", {
+          conversationId,
+          routed: routingFromAuth(auth?.attributes).channel ?? null,
+          chars: planned.send.length,
+        });
         await deliverTurnBubble({
           conversationId,
           text: stripConnectUrls(planned.send),
@@ -239,3 +303,11 @@ export function createTurnDeliveryEvents(opts: {
     },
   };
 }
+
+export const telegramDeliveryEvents = createTurnDeliveryEvents({
+  accept: telegramOwnsTurn,
+});
+
+export const imessageDeliveryEvents = createTurnDeliveryEvents({
+  accept: imessageOwnsTurn,
+});

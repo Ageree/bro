@@ -226,7 +226,7 @@ assert(
   "final inbound text warms Instinct after STT",
 );
 assert(imessage.includes("ackIMessageReadAndTyping"), "read+typing is one helper");
-assert(imessage.includes("createTurnDeliveryEvents"), "first bubble leaves through shared events");
+assert(imessage.includes("imessageDeliveryEvents"), "first bubble leaves through shared events");
 assert(turnDelivery.includes("planStreamFlush"), "first bubble can leave on a streamed newline");
 assert(
   earlyDeliver.includes("likelyCompleteVisibleText"),
