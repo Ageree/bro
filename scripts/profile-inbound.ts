@@ -228,7 +228,7 @@ async function measureOpenRouterTtfb(): Promise<Record<string, unknown>> {
             { role: "system", content: instructions },
             { role: "user", content: "ок" },
           ],
-          ...(withTools ? { tools } : {}),
+          ...(withTools ? { tools, tool_choice: "none" } : {}),
         }),
       ),
       signal: AbortSignal.timeout(45_000),
