@@ -238,23 +238,33 @@ assert(
   assert(ackFn.includes("Promise.all"), "read and typing share one identity GET");
 }
 {
+  const afterVoice = imessage.indexOf("const voiceP = inboundIMessageTextWithVoice");
+  const groupLookupAt = imessage.indexOf("getGroupByConversation(msg.conversation_id)");
   const afterIdentity = imessage.indexOf("const identityHandle = handle");
   const bindAt = imessage.indexOf("bindInbound(handle, remote");
-  const earlyOrAt = imessage.indexOf("prefetchOpenRouter()", afterIdentity);
+  const earlyOrAt = imessage.indexOf("prefetchOpenRouter()", afterVoice);
   const earlyAckAt = imessage.indexOf("ackIMessageReadAndTyping(", afterIdentity);
-  const gatePAt = imessage.indexOf("const gateP = inboundOwnerGate");
-  const awaitGateAt = imessage.indexOf("const gate = await gateP");
-  const wakeAt = imessage.indexOf("loadWakeContext(ownerPhone)", gatePAt);
-  const instinctAt = imessage.indexOf("prefetchInstinctRecall(ownerPhone", gatePAt);
+  const remoteWakeAt = imessage.indexOf("prefetchOneToOneStart(remote");
+  const knownOwnerAt = imessage.indexOf("knownOwnerPhone");
+  const earlyGateAt = imessage.indexOf("inboundOwnerGate(knownOwnerPhone)");
+  const awaitGateAt = imessage.indexOf("await (earlyGateP ?? inboundOwnerGate(ownerPhone))");
+  assert(afterVoice > 0 && groupLookupAt > afterVoice, "group lookup stays after inbound parse");
+  assert(
+    earlyOrAt > afterVoice && earlyOrAt < groupLookupAt,
+    "OpenRouter warm starts before group lookup",
+  );
   assert(afterIdentity > 0 && bindAt > afterIdentity, "1:1 bind stays after identity");
-  assert(earlyOrAt > afterIdentity && earlyOrAt < bindAt, "OpenRouter warm starts before 1:1 bind");
   assert(earlyAckAt > afterIdentity && earlyAckAt < bindAt, "1:1 typing starts before bind");
-  assert(gatePAt > 0 && awaitGateAt > gatePAt, "1:1 billing starts before it is awaited");
-  assert(wakeAt > gatePAt && wakeAt < awaitGateAt, "wake prefetch overlaps billing");
-  assert(instinctAt > gatePAt && instinctAt < awaitGateAt, "Instinct prefetch overlaps billing");
+  assert(remoteWakeAt > 0 && remoteWakeAt < bindAt, "wake/Instinct start before bind on 1:1");
+  assert(knownOwnerAt > 0 && earlyGateAt > 0 && earlyGateAt < bindAt, "known-owner billing starts before bind");
+  assert(awaitGateAt > bindAt, "first-bind still bills after bind");
   assert(
     !imessage.slice(awaitGateAt, awaitGateAt + 400).includes("ackIMessageReadAndTyping"),
     "unbound 1:1 does not wait for billing to start typing",
+  );
+  assert(
+    imessage.includes("tenant.status !== \"disabled\""),
+    "disabled tenants do not bill before bind",
   );
 }
 
@@ -328,7 +338,9 @@ console.log(
     conversationRecallSearchOnly: true,
     handleTenantCached: true,
     oneToOneTypingBeforeBind: true,
-    openRouterWarmBeforeBind: true,
+    openRouterWarmBeforeGroupLookup: true,
+    wakeInstinctBeforeBind: true,
+    knownOwnerBillsBeforeBind: true,
     groupPrefetchDuringBilling: true,
     telegramTypingOverlapsBilling: true,
     wakePrefetchDuringBilling: true,

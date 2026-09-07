@@ -46,6 +46,7 @@ import {
 import {
   inboundIMessageText,
   inboundIMessageTextWithVoice,
+  type InboundWithVoice,
 } from "../lib/imessage-text";
 import { deliverHuman } from "../lib/deliver-human";
 import { parkTurn } from "../lib/channel-turn.ts";
@@ -259,6 +260,24 @@ async function sendTelegramInvite(opts: {
   });
 }
 
+function prefetchOneToOneStart(
+  phone: string,
+  preview: string,
+  voiceP: Promise<InboundWithVoice>,
+): void {
+  if (!phone.trim() || !preview) return;
+  void loadWakeContext(phone).catch((err) =>
+    console.error("wake prefetch failed", err),
+  );
+  prefetchInstinctRecall(phone, preview);
+  void voiceP
+    .then((got) => {
+      if (got.text) prefetchInstinctRecall(phone, got.text);
+    })
+    .catch((err) => console.error("instinct voice prefetch failed", err));
+  prefetchOpenRouter();
+}
+
 async function ackIMessageReadAndTyping(
   conversationId: string,
   handle: string,
@@ -396,6 +415,7 @@ export default defineChannel({
         },
         (err) => console.error("inbound image prefetch failed", err),
       );
+      prefetchOpenRouter();
 
       const flaggedGroup = isGroupMessage(msg);
       const boundOneToOne = canSkipInboundBind(
@@ -417,15 +437,29 @@ export default defineChannel({
       const identityHandle = handle ?? agentHandle();
       const participants = group ? groupParticipantPhones(msg) : [];
       const preview = inboundIMessageText(msg);
-      // 1:1: hide bind + billing behind TLS/warm and the first Inkbox
-      // read+typing. Groups must not mark-read or type (side chatter).
-      if (!group && preview && msg.conversation_id) {
-        prefetchOpenRouter();
-        parkTurn(
-          waitUntil,
-          ackIMessageReadAndTyping(msg.conversation_id, identityHandle),
-        );
+      // 1:1: hide bind behind warm, typing, wake, and Instinct. Billing
+      // starts before bind only when this handle already owns `remote`
+      // (conversation-id change). First-bind still bills after bind.
+      // Groups must not mark-read or type (side chatter).
+      if (!group && preview) {
+        prefetchOneToOneStart(remote, preview, voiceP);
+        if (msg.conversation_id) {
+          parkTurn(
+            waitUntil,
+            ackIMessageReadAndTyping(msg.conversation_id, identityHandle),
+          );
+        }
       }
+      const knownOwnerPhone =
+        !group &&
+        tenant?.phoneE164 === remote &&
+        tenant.status !== "disabled"
+          ? tenant.phoneE164
+          : undefined;
+      const earlyGateP =
+        knownOwnerPhone && preview
+          ? inboundOwnerGate(knownOwnerPhone)
+          : undefined;
 
       let firstBind = false;
       let firstGroup = false;
@@ -504,18 +538,8 @@ export default defineChannel({
       }
 
       if (!group) {
-        const gateP = inboundOwnerGate(ownerPhone);
-        void loadWakeContext(ownerPhone).catch((err) =>
-          console.error("wake prefetch failed", err),
-        );
-        prefetchInstinctRecall(ownerPhone, preview);
-        void voiceP
-          .then((got) => {
-            if (got.text) prefetchInstinctRecall(ownerPhone, got.text);
-          })
-          .catch((err) => console.error("instinct voice prefetch failed", err));
-        prefetchOpenRouter();
-        const gate = await gateP;
+        prefetchOneToOneStart(ownerPhone, preview, voiceP);
+        const gate = await (earlyGateP ?? inboundOwnerGate(ownerPhone));
         if (gate.decision === "drop") {
           return new Response(null, { status: 204 });
         }
@@ -538,19 +562,28 @@ export default defineChannel({
       }
 
       const inbound = await voiceP;
+      const continueToAgent =
+        Boolean(inbound.text) && !inbound.allVoiceFailed;
       if (firstBind) {
-        await sendFirstBindOnboard({
+        const onboard = sendFirstBindOnboard({
           conversationId: msg.conversation_id,
           handle: identityHandle,
           email: boundTenant?.emailAddress,
           tel: boundTenant?.dedicatedIMessageNumber,
         });
+        if (continueToAgent) parkTurn(waitUntil, onboard);
+        else await onboard;
       }
       if (firstGroup) {
-        await sendGroupWelcome({
+        const welcome = sendGroupWelcome({
           conversationId: msg.conversation_id,
           handle: identityHandle,
         });
+        if (continueToAgent && shouldReplyInGroup(inbound.text)) {
+          parkTurn(waitUntil, welcome);
+        } else {
+          await welcome;
+        }
       }
       if (inbound.allVoiceFailed) {
         if (group) return new Response(null, { status: 204 });
