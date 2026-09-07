@@ -17,6 +17,7 @@ import {
   getGroupByConversation,
   getTenant,
   getTenantByHandle,
+  loadWakeContext,
   markGroupGreeted,
   markPaywallSent,
   mintTelegramBind,
@@ -491,6 +492,9 @@ export default defineChannel({
         // Bound 1:1: typing overlaps billing so the first Inkbox signal
         // does not wait out countInboundMessage.
         const gateP = inboundOwnerGate(ownerPhone);
+        void loadWakeContext(ownerPhone).catch((err) =>
+          console.error("wake prefetch failed", err),
+        );
         if (boundOneToOne) {
           const ack = ackIMessageReadAndTyping(
             msg.conversation_id,

@@ -24,6 +24,10 @@ assert(convex.includes("api.memories.wakeContext"), "one Convex query for wake c
 assert(convex.includes("wakeInflight"), "parallel turn.started callers coalesce");
 assert(convex.includes("wakeCache"), "sequential memo then jobs reuse the snapshot");
 assert(convex.includes("WAKE_CONTEXT_TTL_MS"), "wake snapshot is same-turn only");
+assert(convex.includes("WAKE_CONTEXT_TTL_MS = 8_000"), "wake TTL outlasts Instinct searches");
+assert(convex.includes("if (tenant) rememberHandleTenant"), "handle cache skips null");
+assert(convex.includes("if (tenant) rememberTelegramTenant"), "telegram cache skips null");
+assert(convex.includes("opts?.fresh"), "mail can bypass the handle cache");
 assert(convex.includes("forgetWake"), "job writes drop the wake snapshot");
 assert(convex.includes("cachedClient"), "Convex HTTP client is reused");
 assert(convex.includes("forgetHandleTenant"), "bind/upsert drop the handle cache");
@@ -77,13 +81,16 @@ assert(imessage.includes("flaggedGroup"), "flagged groups skip the extra Convex 
 assert(imessage.includes("boundOneToOne"), "bound 1:1 skips getGroupByConversation");
 assert(imessage.includes("imageUrlParts"), "photos do not tail-wait after bind");
 assert(imessage.includes("getTenantByHandle"), "HMAC still loads the handle tenant");
+assert(imessage.includes("loadWakeContext"), "1:1 billing prefetches wake context");
 assert(imessage.includes("ackIMessageReadAndTyping"), "read+typing is one helper");
 {
   const gatePAt = imessage.indexOf("const gateP = inboundOwnerGate");
   const awaitGateAt = imessage.indexOf("const gate = await gateP");
   const ackAt = imessage.indexOf("ackIMessageReadAndTyping", gatePAt);
+  const wakeAt = imessage.indexOf("loadWakeContext(ownerPhone)", gatePAt);
   assert(gatePAt > 0 && awaitGateAt > gatePAt, "1:1 billing starts before it is awaited");
   assert(ackAt > gatePAt && ackAt < awaitGateAt, "bound 1:1 typing overlaps billing");
+  assert(wakeAt > gatePAt && wakeAt < awaitGateAt, "wake prefetch overlaps billing");
 }
 
 const inkbox = readFileSync(new URL("../agent/lib/inkbox.ts", import.meta.url), "utf8");
@@ -101,8 +108,13 @@ assert(
   const afterReal = telegram.indexOf("if (!inbound.text && !largestPhoto");
   const typingAt = telegram.indexOf("sendTelegramTyping", afterReal);
   const billAt = telegram.indexOf("countInboundMessage(phone)", afterReal);
+  const wakeAt = telegram.indexOf("loadWakeContext(phone)", afterReal);
   assert(afterReal > 0 && typingAt > afterReal && typingAt < billAt, "telegram typing overlaps billing");
+  assert(wakeAt > afterReal && wakeAt < billAt, "telegram wake prefetch overlaps billing");
 }
+
+const mail = readFileSync(new URL("../agent/lib/mail-inbound.ts", import.meta.url), "utf8");
+assert(mail.includes("fresh: true"), "mail handle lookup is live for disabled/HMAC");
 
 assert(HANDLE_TENANT_TTL_MS === 30_000, "handle tenant cache is short-lived");
 assert(TELEGRAM_TENANT_TTL_MS === 30_000, "telegram tenant cache is short-lived");
@@ -173,5 +185,7 @@ console.log(
     handleTenantCached: true,
     boundTypingOverlapsBilling: true,
     telegramTypingOverlapsBilling: true,
+    wakePrefetchDuringBilling: true,
+    wakeContextTtlMs: 8000,
   }),
 );

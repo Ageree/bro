@@ -3,6 +3,7 @@ import {
   bindTelegram,
   countInboundMessage,
   getTenantByTelegram,
+  loadWakeContext,
   markPaywallSent,
   mintTelegramBind,
   touchLastChannel,
@@ -266,6 +267,9 @@ export default defineChannel({
       );
       if (typeof waitUntil === "function") waitUntil(typing);
       else void typing;
+      void loadWakeContext(phone).catch((err) =>
+        console.error("wake prefetch failed", err),
+      );
 
       let gate: { decision: "allow" | "paywall" | "drop"; payUrl?: string };
       try {

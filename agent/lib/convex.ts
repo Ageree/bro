@@ -44,8 +44,8 @@ export type WakeContext = {
 const wakeInflight = new Map<string, Promise<WakeContext>>();
 const wakeCache = new Map<string, { at: number; value: WakeContext }>();
 
-/** Same-turn reuse: Eve runs memo recall, then jobs instructions. */
-export const WAKE_CONTEXT_TTL_MS = 2_500;
+/** Same-turn reuse: webhook prefetch + memo, then jobs after Instinct searches. */
+export const WAKE_CONTEXT_TTL_MS = 8_000;
 
 function rememberWake(phoneE164: string, value: WakeContext): void {
   wakeCache.set(phoneE164, { at: Date.now(), value });
@@ -166,25 +166,31 @@ function rememberTelegramTenant(
 }
 
 /** HMAC + skip-bind for returning 1:1. Process cache, same-turn coalesce. */
-export async function getTenantByHandle(handle: string): Promise<HandleTenant> {
+export async function getTenantByHandle(
+  handle: string,
+  opts?: { fresh?: boolean },
+): Promise<HandleTenant> {
   const key = handle.trim();
-  const cached = handleTenants.get(key);
-  if (cached.hit) return cached.value;
-  const existing = handleInflight.get(key);
-  if (existing) return existing;
+  if (!opts?.fresh) {
+    const cached = handleTenants.get(key);
+    if (cached.hit) return cached.value;
+    const existing = handleInflight.get(key);
+    if (existing) return existing;
+  }
   const pending = client()
     .query(api.tenants.getByHandle, {
       secret: secret(),
       handle: key,
     })
     .then((tenant) => {
-      rememberHandleTenant(key, tenant);
+      if (tenant) rememberHandleTenant(key, tenant);
+      else forgetHandleTenant(key);
       return tenant;
     })
     .finally(() => {
       handleInflight.delete(key);
     });
-  handleInflight.set(key, pending);
+  if (!opts?.fresh) handleInflight.set(key, pending);
   return pending;
 }
 
@@ -217,7 +223,8 @@ export async function getTenantByTelegram(
       telegramUserId: key,
     })
     .then((tenant) => {
-      rememberTelegramTenant(key, tenant);
+      if (tenant) rememberTelegramTenant(key, tenant);
+      else forgetTelegramTenant(key);
       return tenant;
     })
     .finally(() => {
