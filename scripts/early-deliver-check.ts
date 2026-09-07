@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import {
   bubblesFor,
   firstCompleteLine,
+  isLikelyCompleteBubble,
   markTurnSpoke,
   nextBubble,
   turnSpoke,
@@ -68,6 +69,35 @@ assert(
 assert(
   nextBubble(["Ищу", "Нашёл"], "Ищу\nНашёл\nИтог") === "Итог",
   "single-newline join still yields the last line",
+);
+assert(
+  nextBubble(["Ок."], "Ок. Сейчас гляну джоб") === "Сейчас гляну джоб",
+  "sentence flush remainder does not resend the first bubble",
+);
+assert(
+  nextBubble(["ок"], "окей, сделаю") === "окей, сделаю",
+  "ок is not a prefix of окей",
+);
+
+assert(isLikelyCompleteBubble("Ок!"), "exclaim is complete");
+assert(isLikelyCompleteBubble("Ок."), "ок + period is complete");
+assert(isLikelyCompleteBubble("Принял."), "long word + period is complete");
+assert(isLikelyCompleteBubble("👍"), "emoji-only is complete");
+assert(!isLikelyCompleteBubble("Ищ"), "crumb is not complete");
+assert(!isLikelyCompleteBubble("Ищу ПВЗ на ул."), "abbreviation period is not complete");
+assert(!isLikelyCompleteBubble("Нашёл три варианта"), "unterminated sentence stays");
+
+assert(
+  planStreamFlush({ soFar: "Ок!", alreadySent: [] }).send === "Ок!",
+  "stream flushes a finished short reply without waiting for newline",
+);
+assert(
+  planStreamFlush({ soFar: "Ищу ПВЗ на ул.", alreadySent: [] }).send === null,
+  "stream does not flush an abbreviation",
+);
+assert(
+  planStreamFlush({ soFar: "Ок.", alreadySent: [] }).send === "Ок.",
+  "stream flushes ок with a period",
 );
 
 const streamThenFinal = planTurnDelivery({

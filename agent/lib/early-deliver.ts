@@ -29,6 +29,14 @@ function foldLines(s: string): string {
   return s.replace(/[ \t]+\n/g, "\n").replace(/[ \t]+$/g, "").trim();
 }
 
+function hasPrefixBoundary(cur: string, prefix: string): boolean {
+  if (prefix.length >= cur.length) return true;
+  const last = prefix[prefix.length - 1] ?? "";
+  if (/[.!?…。！？\s]/.test(last)) return true;
+  const next = cur[prefix.length] ?? "";
+  return /[\s.!?…。！？,;:)\]]/.test(next);
+}
+
 /** Finished visible lines (newline-terminated). Leading `\nИ` crumbs stay. */
 export function finishedVisibleText(soFar: string): string | null {
   const raw = typeof soFar === "string" ? soFar : "";
@@ -54,9 +62,76 @@ export function firstCompleteLine(soFar: string): string | null {
   return text?.split("\n")[0]?.trim() || null;
 }
 
+const COMPLETE_TAILS = new Set([
+  "ок",
+  "ok",
+  "okay",
+  "окей",
+  "спасибо",
+  "thanks",
+  "thx",
+  "понял",
+  "поняла",
+  "ясно",
+  "принято",
+  "сделано",
+  "готово",
+  "ищу",
+  "нашел",
+  "нашла",
+  "ага",
+]);
+
+function foldTail(word: string): string {
+  return word
+    .normalize("NFC")
+    .replace(/ё/gi, "е")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, "");
+}
+
+function endsStrong(text: string): boolean {
+  return /[!?…！？]$/u.test(text) || /[\p{Extended_Pictographic}\p{Emoji_Presentation}]$/u.test(text);
+}
+
+/** Finished line, or an unterminated line that already looks like a full bubble. */
+export function isLikelyCompleteBubble(text: string): boolean {
+  const t = text.trim();
+  if (!t || !visibleReply(t)) return false;
+  if (!/\p{L}|\p{N}/u.test(t)) return true;
+  if (endsStrong(t)) return true;
+  if (!/[.。]$/u.test(t)) return false;
+  const word = t.replace(/[.!?…。！？]+$/u, "").trim().split(/\s+/).pop() ?? "";
+  if (word.length >= 4) return true;
+  return COMPLETE_TAILS.has(foldTail(word));
+}
+
+function openVisibleLine(soFar: string): string | null {
+  const raw = typeof soFar === "string" ? soFar : "";
+  const { message } = raw ? splitSeen(raw) : { message: raw };
+  let src = message;
+  if (!src.includes("\n") && raw.includes("\n") && src.trim()) {
+    src = `${src}\n`;
+  }
+  if (src.endsWith("\n")) return null;
+  const open = src.includes("\n") ? (src.split("\n").at(-1) ?? "") : src;
+  return visibleReply(open);
+}
+
+/** Newline-finished lines plus a sentence/emoji-complete open line. */
+export function likelyCompleteVisibleText(soFar: string): string | null {
+  const finished = finishedVisibleText(soFar);
+  const open = openVisibleLine(soFar);
+  if (open && isLikelyCompleteBubble(open)) {
+    return finished ? `${finished}\n${open}` : open;
+  }
+  return finished;
+}
+
 /**
  * Streamed iMessage bubble from `message.appended`.
- * Newline-gated; later complete lines are the remainder after alreadySent.
+ * Newline-finished lines, or a sentence/emoji-complete open line.
+ * Later complete text is the remainder after alreadySent.
  */
 export function planStreamFlush(input: {
   soFar: string;
@@ -64,7 +139,7 @@ export function planStreamFlush(input: {
 }): Pick<TurnDelivery, "send" | "seen"> {
   const raw = typeof input.soFar === "string" ? input.soFar : "";
   const { seen } = raw ? splitSeen(raw) : {};
-  const text = finishedVisibleText(raw);
+  const text = likelyCompleteVisibleText(raw);
   if (!text) return { send: null, ...(seen !== undefined ? { seen } : {}) };
   return {
     send: nextBubble(input.alreadySent, text),
@@ -112,11 +187,15 @@ export function nextBubble(
   const last = sent[sent.length - 1];
   if (last && last.startsWith(cur)) return null;
   const curFold = foldLines(cur);
-  for (const joined of [sent.join("\n\n"), sent.join("\n")]) {
+  for (const joined of [sent.join("\n\n"), sent.join("\n"), sent.join(" ")]) {
     const joinedFold = foldLines(joined);
     if (!joinedFold) continue;
-    if (curFold === joinedFold || curFold.startsWith(`${joinedFold}\n`)) {
-      const rest = curFold.slice(joinedFold.length).replace(/^\n+/, "").trim();
+    if (curFold === joinedFold) return null;
+    if (
+      (curFold.startsWith(`${joinedFold}\n`) ||
+        (curFold.startsWith(joinedFold) && hasPrefixBoundary(curFold, joinedFold)))
+    ) {
+      const rest = curFold.slice(joinedFold.length).replace(/^[\s]+/, "").trim();
       return rest || null;
     }
   }

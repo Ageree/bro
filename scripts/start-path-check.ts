@@ -123,6 +123,10 @@ assert(
   "idle ack forbids a new browser loop",
 );
 assert(
+  shortAckInstruction({ waitingForHuman: false }).includes("punctuation"),
+  "idle ack asks for a punctuated first line so iMessage can flush",
+);
+assert(
   shortAckAttribute("ок").shortAck === "1",
   "channel stamps shortAck on this inbound ок",
 );
@@ -165,6 +169,10 @@ assert(memories.includes("WAKE_LINES"), "combined snapshot still returns 80 memo
 assert(memories.includes("Promise.all"), "wakeContext loads memories and tenant in parallel");
 
 const imessage = readFileSync(new URL("../agent/channels/imessage.ts", import.meta.url), "utf8");
+const earlyDeliver = readFileSync(
+  new URL("../agent/lib/early-deliver.ts", import.meta.url),
+  "utf8",
+);
 assert(imessage.includes("canSkipInboundBind"), "returning users skip no-op bind");
 assert(imessage.includes("prefetchInboundImages"), "photos download during bind/count");
 assert(imessage.includes("voiceP"), "voice STT overlaps bind/count");
@@ -182,6 +190,10 @@ assert(
 );
 assert(imessage.includes("ackIMessageReadAndTyping"), "read+typing is one helper");
 assert(imessage.includes("planStreamFlush"), "first bubble can leave on a streamed newline");
+assert(
+  earlyDeliver.includes("likelyCompleteVisibleText"),
+  "stream flush also sends a sentence/emoji-complete open line",
+);
 assert(imessage.includes("planPreToolFlush"), "first bubble can leave when a tool starts");
 assert(
   imessage.includes("recordSent"),
