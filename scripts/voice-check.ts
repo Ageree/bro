@@ -178,6 +178,28 @@ const mixedOk = await inboundIMessageTextWithVoice(
 );
 eq(mixedOk.text, "[voice] купи хлеб\nhttps://m/p.jpg", "mixed success");
 
+let live = 0;
+let peak = 0;
+const parallel = await inboundIMessageTextWithVoice(
+  {
+    content: null,
+    media: [
+      { url: "https://m/a.m4a", content_type: "audio/mp4" },
+      { url: "https://m/b.m4a", content_type: "audio/mp4" },
+    ],
+  },
+  async ({ url }) => {
+    live++;
+    peak = Math.max(peak, live);
+    await new Promise((r) => setTimeout(r, 20));
+    live--;
+    return { ok: true as const, text: url.endsWith("a.m4a") ? "один" : "два" };
+  },
+);
+assert(peak === 2, "two voice clips transcribe in parallel");
+assert(parallel.text.includes("[voice] один"), "first clip");
+assert(parallel.text.includes("[voice] два"), "second clip");
+
 sttCalls = 0;
 const withContent = await inboundIMessageTextWithVoice(
   {

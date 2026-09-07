@@ -1,10 +1,13 @@
 import assert_ from "node:assert/strict";
 import {
+  assembleInboundContent,
   fetchImagePart,
+  IMAGE_TIMEOUT_MS,
   inboundImages,
-  inboundUserContent,
+  imageUrlParts,
   isImageContentType,
   isPlainJson,
+  prefetchInboundImages,
 } from "../agent/lib/inbound-image.ts";
 
 function assert(cond: unknown, msg: string): void {
@@ -62,11 +65,12 @@ const p6 = await fetchImagePart(imgs[0], { fetch: htmlFetch });
 assert(p6.mediaType === "image/jpeg", "non-image response type ignored");
 
 // channel payload: plain string without photos, text + parts with photos
-const plain = await inboundUserContent("привет", [media[1]], { fetch: okFetch });
+const plain = assembleInboundContent("привет", await prefetchInboundImages([media[1]], { fetch: okFetch }));
 assert(plain === "привет", "no images → plain text");
-const rich = await inboundUserContent("Найди мне эту книгу на озоне\nhttps://cdn.example/a.jpg", media, {
-  fetch: okFetch,
-});
+const rich = assembleInboundContent(
+  "Найди мне эту книгу на озоне\nhttps://cdn.example/a.jpg",
+  await prefetchInboundImages(media, { fetch: okFetch }),
+);
 assert(Array.isArray(rich) && rich.length === 3, "text + 2 image parts");
 if (!Array.isArray(rich)) throw new Error("unreachable");
 const [head, ...tail] = rich;
@@ -92,5 +96,9 @@ assert(isPlainJson(null), "null is plain JSON");
 assert(isPlainJson(42), "finite number is plain JSON");
 assert(isPlainJson("hi"), "string is plain JSON");
 assert(isPlainJson([1, "a", null, { b: [true, {}] }]), "nested plain arrays/objects are plain JSON");
+
+assert(IMAGE_TIMEOUT_MS === 800, "inbound image wait is 800ms — URL fallback after");
+const urls = imageUrlParts(media);
+assert(urls.length === 2 && urls[0]?.data === imgs[0].url, "url parts skip the download");
 
 console.log("inbound-image-check ok");

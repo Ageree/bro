@@ -8,7 +8,7 @@ import { composioUserId, tenantId } from "../lib/tenant";
 
 export default defineTool({
   description:
-    "Push watcher on a connected app (Gmail, Google Calendar): events arrive by webhook, instantly, no polling. start needs source + about (what matters, in the person's words), optional gmailQuery (Gmail search syntax, e.g. from:bank.ru). stop by id or all. list shows active ones. For prices or websites use schedule_wakeup kind=watcher instead.",
+    "Push watcher on Gmail or Google Calendar (webhook, no poll). start needs source + about, optional gmailQuery. stop by id or all. list active. Prices/sites use schedule_wakeup kind=watcher.",
   inputSchema: z.object({
     action: z.enum(["start", "stop", "list"]).default("start"),
     source: z.enum(["gmail", "calendar"]).optional(),

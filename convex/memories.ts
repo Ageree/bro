@@ -8,19 +8,62 @@ import {
   SCAN_LINES,
   WAKE_LINES,
 } from "./lib/memoryPolicy";
+import { formatJobWakeLine } from "./lib/jobWakeLine";
 import { assertSecret } from "./secret";
 
-export const wake = query({
+const waitingFor = v.union(
+  v.literal("human"),
+  v.literal("email"),
+  v.literal("browser"),
+);
+
+const jobWakeRow = v.object({
+  id: v.string(),
+  line: v.string(),
+  goal: v.string(),
+  note: v.optional(v.string()),
+  waitingFor: v.optional(waitingFor),
+  waitingSince: v.optional(v.number()),
+  lastNudgeAt: v.optional(v.number()),
+});
+
+export const wakeContext = query({
   args: { secret: v.string(), phoneE164: v.string() },
-  returns: v.array(v.string()),
+  returns: v.object({
+    memories: v.array(v.string()),
+    jobs: v.array(jobWakeRow),
+  }),
   handler: async (ctx, { secret, phoneE164 }) => {
     assertSecret(secret);
-    const rows = await ctx.db
-      .query("memories")
-      .withIndex("by_phone", (q) => q.eq("phoneE164", phoneE164))
-      .order("desc")
-      .take(WAKE_LINES);
-    return rows.reverse().map((r) => r.line);
+    const [memoryRows, tenant] = await Promise.all([
+      ctx.db
+        .query("memories")
+        .withIndex("by_phone", (q) => q.eq("phoneE164", phoneE164))
+        .order("desc")
+        .take(WAKE_LINES),
+      ctx.db
+        .query("tenants")
+        .withIndex("by_phone", (q) => q.eq("phoneE164", phoneE164))
+        .first(),
+    ]);
+    const memories = memoryRows.reverse().map((r) => r.line);
+    if (!tenant) return { memories, jobs: [] };
+    const jobRows = await ctx.db
+      .query("jobs")
+      .withIndex("by_tenant", (q) => q.eq("tenantId", tenant._id))
+      .take(32);
+    const jobs = jobRows
+      .filter((j) => j.status === "open" || j.status === "waiting")
+      .map((j) => ({
+        id: j._id,
+        line: formatJobWakeLine(j),
+        goal: j.goal,
+        ...(j.note ? { note: j.note } : {}),
+        ...(j.waitingFor ? { waitingFor: j.waitingFor } : {}),
+        ...(j.waitingSince != null ? { waitingSince: j.waitingSince } : {}),
+        ...(j.lastNudgeAt != null ? { lastNudgeAt: j.lastNudgeAt } : {}),
+      }));
+    return { memories, jobs };
   },
 });
 

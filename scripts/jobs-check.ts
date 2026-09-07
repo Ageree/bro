@@ -1,9 +1,21 @@
+import { readFileSync } from "node:fs";
+import {
+  dueJobNudges,
+  isJobCheckWakeup,
+  jobCheckPayload,
+  JOB_CHECK_QUIET,
+  jobCheckWakePrompt,
+  jobNudgeInstruction,
+  jobWakeInstruction,
+  matchWakeJob,
+} from "../agent/lib/job-wake.ts";
 import {
   defaultCheckInMinutes,
   nudgePrompt,
   shouldNudge,
   shouldSpeakNotSilent,
 } from "../convex/lib/jobNudgePolicy.ts";
+import { formatJobWakeLine } from "../convex/lib/jobWakeLine.ts";
 import {
   attachMailToJob,
   formatMailWake,
@@ -310,6 +322,176 @@ assert(
 assert(
   nudgePrompt({ waitingFor: "email", goal: "запись" }).includes("клиник"),
   "email nudge clinic/mail",
+);
+
+assert(jobWakeInstruction([]) === null, "no extra prompt when there are no open jobs");
+const openJobs = jobWakeInstruction(["джоб x: слот"]);
+if (!openJobs) throw new Error("open jobs still land in context");
+assert(openJobs.includes("джоб x: слот"), "open jobs still land in context");
+assert(openJobs.includes("[event:mail]"), "mail/OTP framing stays when a job is open");
+
+const nudgeNow = t0 + 20 * 60_000;
+const due = dueJobNudges(
+  [
+    {
+      id: "j1",
+      line: "id=j1",
+      goal: "слот",
+      waitingFor: "human",
+      waitingSince: t0,
+    },
+  ],
+  nudgeNow,
+);
+assert(due.length === 1 && due[0]?.id === "j1", "due nudge from wake rows");
+const twoDue = [
+  {
+    id: "j1",
+    line: "id=j1",
+    goal: "слот",
+    waitingFor: "human" as const,
+    waitingSince: t0,
+  },
+  {
+    id: "j2",
+    line: "id=j2",
+    goal: "оплата",
+    waitingFor: "human" as const,
+    waitingSince: t0,
+  },
+];
+assert(matchWakeJob(twoDue, "джоб j1: слот")?.id === "j1", "payload prefix match");
+assert(matchWakeJob(twoDue, "other j2 leftover")?.id === "j2", "payload contains id");
+assert(
+  dueJobNudges(twoDue, nudgeNow, { payload: "джоб j1: слот" }).map((j) => j.id).join() ===
+    "j1",
+  "job_check nudge is only the payload job",
+);
+assert(
+  dueJobNudges(twoDue, nudgeNow, { payload: "" }).length === 0,
+  "missing payload does not nudge every due job",
+);
+assert(jobCheckPayload({ wakeupPayload: "джоб j1: слот" }) === "джоб j1: слот", "stamped payload");
+assert(jobCheckPayload({ origin: "wakeup" }) === "", "no payload");
+const nudgeText = jobNudgeInstruction(
+  dueJobNudges(
+    [
+      {
+        id: "j1",
+        line: "id=j1",
+        goal: "слот",
+        waitingFor: "human",
+        waitingSince: t0,
+      },
+    ],
+    nudgeNow,
+  ),
+);
+assert(nudgeText?.includes("Do NOT answer [SILENT]"), "due job_check force-speaks");
+assert(
+  !jobCheckWakePrompt("джоб j1: слот").includes("[SILENT]"),
+  "wakeup user text does not authorize SILENT — turn.started decides",
+);
+assert(JOB_CHECK_QUIET.includes("[SILENT]"), "quiet job_check may stay silent");
+assert(
+  jobNudgeInstruction(
+    dueJobNudges(
+      [
+        {
+          id: "j1",
+          line: "id=j1",
+          goal: "слот",
+          waitingFor: "human",
+          waitingSince: t0,
+        },
+      ],
+      t0 + 1000,
+    ),
+  ) === null,
+  "fresh wait is not a nudge",
+);
+
+assert(
+  formatJobWakeLine({
+    _id: "j1",
+    goal: "слот",
+    doneWhen: "письмо",
+    status: "waiting",
+    waitingFor: "human",
+    note: "ждём ок",
+    emailMessageId: "m1",
+  }) ===
+    'id=j1 goal="слот" doneWhen="письмо" status=waiting waitingFor=human note=ждём ок emailMessageId=m1',
+  "wake line keeps ids and wait state",
+);
+assert(
+  !formatJobWakeLine({
+    _id: "j1",
+    goal: "слот",
+    doneWhen: "письмо",
+    status: "waiting",
+  }).includes("waitingSince"),
+  "epochs stay off the injected line — dueJobNudges reads structured fields",
+);
+{
+  const memoriesSrc = readFileSync(
+    new URL("../convex/memories.ts", import.meta.url),
+    "utf8",
+  );
+  assert(
+    memoriesSrc.includes('from "./lib/jobWakeLine"'),
+    "wakeContext uses the shared job line formatter",
+  );
+  assert(
+    memoriesSrc.includes("waitingSince: j.waitingSince"),
+    "structured wake row still carries waitingSince for nudges",
+  );
+}
+
+const jobsSrc = readFileSync(
+  new URL("../agent/instructions/jobs.ts", import.meta.url),
+  "utf8",
+);
+assert(jobsSrc.includes("return null"), "empty job list injects nothing");
+assert(jobsSrc.includes("Job store unavailable"), "store errors still surface");
+assert(isJobCheckWakeup({ origin: "wakeup", wakeupKind: "job_check" }), "job_check wakeup nudges");
+assert(
+  !isJobCheckWakeup({ origin: "human", wakeupKind: "job_check" }),
+  "stale wakeupKind on a human turn does not nudge",
+);
+assert(!isJobCheckWakeup({ origin: "wakeup", wakeupKind: "brief" }), "brief is not a nudge");
+assert(jobsSrc.includes("isJobCheckWakeup"), "nudge only on job_check wakeups");
+assert(jobsSrc.includes("void Promise.all"), "markNudged does not block turn.started");
+assert(jobsSrc.includes("jobNudgeInstruction"), "nudge copy lives on turn.started");
+assert(jobsSrc.includes("jobCheckPayload"), "nudge scoped to stamped payload");
+assert(jobsSrc.includes("JOB_CHECK_QUIET"), "non-due job_check gets SILENT from instructions");
+assert(jobsSrc.includes("isShortAckTurn"), "human short acks get a steer on turn.started");
+assert(jobsSrc.includes("shortAckInstruction"), "ack steer is not a skipped agent turn");
+assert(
+  !jobsSrc.includes("recallQuery(ctx.messages)"),
+  "ack steer does not use Eve instruction history",
+);
+assert(
+  !jobsSrc.includes('role: "user"'),
+  "job/ack inject is system — user-role instructions stick in Eve history",
+);
+assert(jobsSrc.includes('role: "system"'), "turn.started job text is turn-scoped");
+
+const imessage = readFileSync(
+  new URL("../agent/channels/imessage.ts", import.meta.url),
+  "utf8",
+);
+assert(imessage.includes("jobCheckWakePrompt"), "HTTP path uses shared job_check prompt");
+assert(imessage.includes("parkTurn"), "human iMessage turn is not awaited");
+assert(
+  /await from\(conversationId\)\.send\(prompt/.test(imessage),
+  "Convex wakeups still await send so dispatch sees failures",
+);
+assert(imessage.includes("wakeupKind"), "wakeup stamps kind for job_check nudge");
+assert(imessage.includes("wakeupPayload"), "wakeup stamps job_check payload");
+assert(
+  !imessage.includes("job_check nudge lookup"),
+  "job_check no longer lists jobs on the HTTP path",
 );
 
 console.log("jobs-check ok");

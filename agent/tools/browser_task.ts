@@ -12,6 +12,7 @@ import {
   upsertTenant,
 } from "../lib/convex";
 import {
+  BROWSER_WAIT_MS,
   nextBrowserAction,
   shouldStartFollowThrough,
 } from "../lib/browser-policy";
@@ -31,14 +32,14 @@ import {
   type BrowserRun,
 } from "../lib/browseruse";
 import { profileSyncStatus } from "../../convex/lib/browserProfilePolicy.ts";
-import { deliverHuman } from "../lib/deliver-human";
+import { turnLooking } from "../lib/early-deliver.ts";
+import { attrsFromSession, deliverHumanRouted } from "../lib/deliver-routed";
 import { groupPersonalBlock } from "../lib/group-guard";
 import { tenantId } from "../lib/tenant";
 import { browserGateFromResult } from "../../convex/lib/billingPolicy";
 import { cardBindings, normalizePayHosts } from "../lib/browser-pay.ts";
 import { parsePaymentPayload } from "../../convex/lib/vaultPayload.ts";
 
-const WAIT_MS = 12_000;
 
 function conversationId(
   ctx: {
@@ -233,7 +234,7 @@ function profileExtra(resolved: {
 
 export default defineTool({
   description:
-    "Cloud browser job for any web errand — shopping (WB, Ozon), restaurant/table booking, doctor and service appointments, taxi/delivery orders via web, form filling, searching and comparing, including sites where the human already signed in via a login link. Starts a job or polls the current one. Never starts a second search while one is running. Do not pass reset unless the human wants a fresh browser. If needsProfileSync is true, call profile_setup with the site URL instead of asking for a password. Send result text to iMessage when status is completed. When the errand is a purchase, pass `pay` on the first call — do not wait for a second confirmation of shop, item, quantity, option or total. The card is typed by the Browser Use server via bound secrets; the model never sees it. `pay.hosts` is the bare hostname(s) where the card may be typed (the merchant, plus its payment/acquiring page if you know it). Set `pay.maxRub` only when the human named a budget. If the result has needsVaultSetup, call vault_setup with kind=payment.",
+    "Cloud browser (WB, Ozon, bookings, appointments, taxi, forms, search). Starts or polls the current job — never a second search. reset = fresh browser. needsProfileSync → profile_setup with the login URL, never ask for a password. status=completed → paste result. Buy: pay on first call (hosts = merchant hostnames; maxRub only if they named a ceiling). Card is server-typed. needsVaultSetup → vault_setup kind=payment.",
   inputSchema: z.object({
     task: z.string().min(1).max(4000),
     reset: z.boolean().optional(),
@@ -275,7 +276,7 @@ export default defineTool({
       const run = await waitForRun(
         tenant.browserRunId,
         tenant.browserSessionId,
-        WAIT_MS,
+        BROWSER_WAIT_MS,
       );
       await persist(phone, run, tenant.browserTask ?? task);
       return settle(
@@ -372,19 +373,33 @@ export default defineTool({
           }
         : {}),
     });
-    if (conv) {
-      try {
-        await deliverHuman({
-          tenant,
-          conversationId: conv,
-          text: "Ищу, это может занять пару минут. Сам напишу, когда будет готово.",
-        });
-      } catch (err) {
+    const followKick = startBrowserFollow({
+      tenantPhone: phone,
+      runId: started.runId,
+      sessionId: started.sessionId,
+      task,
+      startedAt,
+    }).catch((err) => {
+      console.error("browser follow workflow failed", err);
+    });
+    const turnId = ctx.session.turn?.id;
+    if (conv && !turnLooking(typeof turnId === "string" ? turnId : undefined)) {
+      void deliverHumanRouted({
+        attrs: attrsFromSession(ctx.session),
+        tenant,
+        conversationId: conv,
+        text: "Ищу, это может занять пару минут. Сам напишу, когда будет готово.",
+      }).catch((err) => {
         console.error("browser start notify failed", err);
-      }
+      });
     }
-    const done = await waitForRun(started.runId, started.sessionId, WAIT_MS);
+    const done = await waitForRun(
+      started.runId,
+      started.sessionId,
+      BROWSER_WAIT_MS,
+    );
     await persist(phone, done, task);
+    await followKick;
     return settle(
       phone,
       done,

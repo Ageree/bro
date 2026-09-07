@@ -3,17 +3,23 @@ import {
   bindTelegram,
   countInboundMessage,
   getTenantByTelegram,
+  loadWakeContext,
   markPaywallSent,
   mintTelegramBind,
   touchLastChannel,
 } from "../lib/convex";
+import { prefetchInstinctRecall } from "../lib/instinct-recall.ts";
+import { prefetchOpenRouter } from "../lib/openrouter-warm.ts";
 import {
   helpText,
   isHelpAsk,
   isTelegramAsk,
   shouldSkipAgentTurn,
 } from "../lib/onboard-policy";
-import { inboundUserContent } from "../lib/inbound-image.ts";
+import {
+  assembleInboundContent,
+  prefetchInboundImages,
+} from "../lib/inbound-image.ts";
 import { transcribeVoiceNote } from "../lib/voice";
 import { inboundVoiceLine } from "../lib/imessage-text";
 import { VOICE_FAILED_REPLY } from "../lib/voice-policy";
@@ -29,6 +35,7 @@ import {
   isPrivateChat,
   largestPhoto,
   sendTelegramMessage,
+  sendTelegramTyping,
   telegramBotUsername,
   telegramFileUrl,
   webhookSecretOk,
@@ -36,6 +43,9 @@ import {
   type TelegramUpdate,
 } from "../lib/telegram";
 import { compileTelegram } from "../lib/telegram-text.ts";
+import { parkTurn } from "../lib/channel-turn.ts";
+import { shortAckAttribute } from "../lib/short-ack.ts";
+import { telegramDeliveryEvents } from "../lib/turn-delivery-events.ts";
 
 function telegramAuthAttrs(opts: {
   conversationId: string;
@@ -43,6 +53,7 @@ function telegramAuthAttrs(opts: {
   telegramUserId: string;
   messageId: string;
   inkboxHandle?: string;
+  text?: string;
 }): Record<string, string> {
   return {
     conversationId: opts.conversationId,
@@ -52,6 +63,7 @@ function telegramAuthAttrs(opts: {
     origin: "human",
     channel: "telegram",
     ...(opts.inkboxHandle ? { inkboxHandle: opts.inkboxHandle } : {}),
+    ...shortAckAttribute(opts.text ?? ""),
   };
 }
 
@@ -107,15 +119,12 @@ async function inboundTelegramText(
   return { text: caption, voice: Boolean(voice), allVoiceFailed: false };
 }
 
-async function inboundTelegramContent(
-  text: string,
-  msg: TelegramMessage,
-): Promise<string | Awaited<ReturnType<typeof inboundUserContent>>> {
+async function inboundTelegramPhotoParts(msg: TelegramMessage) {
   const photo = largestPhoto(msg);
-  if (!photo) return inboundUserContent(text, null);
+  if (!photo) return [];
   try {
     const url = await telegramFileUrl(photo.file_id);
-    return await inboundUserContent(text, [
+    return await prefetchInboundImages([
       {
         url,
         content_type: "image/jpeg",
@@ -124,14 +133,14 @@ async function inboundTelegramContent(
     ]);
   } catch (err) {
     console.error("telegram photo fetch failed", err);
-    return inboundUserContent(text, null);
+    return [];
   }
 }
 
 export default defineChannel({
   turnPolicy: "steer",
   routes: [
-    POST("/webhooks/telegram", async (request, { from }) => {
+    POST("/webhooks/telegram", async (request, { from, waitUntil }) => {
       if (!webhookSecretOk(request)) {
         return new Response("unauthorized", { status: 401 });
       }
@@ -161,24 +170,33 @@ export default defineChannel({
         }
         const data = (cb.data ?? "").trim();
         if (!data) return new Response(null, { status: 204 });
-        await touchLastChannel(tenant.phoneE164, "telegram").catch((err) =>
+        const touch = touchLastChannel(tenant.phoneE164, "telegram").catch((err) =>
           console.error("touch last channel failed", err),
         );
-        await from(tenant.inkboxConversationId).send(`[button] ${data}`, {
-          auth: {
-            authenticator: "telegram",
-            issuer: "telegram",
-            principalType: "user",
-            principalId: tenant.phoneE164,
-            attributes: telegramAuthAttrs({
-              conversationId: tenant.inkboxConversationId,
-              telegramChatId: tenant.telegramChatId ?? chatIdOf(msg),
-              telegramUserId: userId,
-              messageId: String(msg.message_id),
-              inkboxHandle: tenant.inkboxHandle,
-            }),
-          },
-        });
+        parkTurn(waitUntil, touch);
+        const typing = sendTelegramTyping(chatIdOf(msg)).catch((err) =>
+          console.error("telegram typing failed", err),
+        );
+        parkTurn(waitUntil, typing);
+        parkTurn(
+          waitUntil,
+          from(tenant.inkboxConversationId).send(`[button] ${data}`, {
+            auth: {
+              authenticator: "telegram",
+              issuer: "telegram",
+              principalType: "user",
+              principalId: tenant.phoneE164,
+              attributes: telegramAuthAttrs({
+                conversationId: tenant.inkboxConversationId,
+                telegramChatId: tenant.telegramChatId ?? chatIdOf(msg),
+                telegramUserId: userId,
+                messageId: String(msg.message_id),
+                inkboxHandle: tenant.inkboxHandle,
+                text: `[button] ${data}`,
+              }),
+            },
+          }),
+        );
         return new Response(null, { status: 204 });
       }
 
@@ -236,7 +254,9 @@ export default defineChannel({
       const phone = tenant.phoneE164;
       const conversationId = tenant.inkboxConversationId;
 
-      const inbound = await inboundTelegramText(msg);
+      const inboundP = inboundTelegramText(msg);
+      const photoP = inboundTelegramPhotoParts(msg);
+      const inbound = await inboundP;
       if (inbound.allVoiceFailed) {
         await sendHtml(chatId, VOICE_FAILED_REPLY).catch((err) =>
           console.error("telegram voice fail reply", err),
@@ -246,6 +266,16 @@ export default defineChannel({
       if (!inbound.text && !largestPhoto(msg)) {
         return new Response(null, { status: 204 });
       }
+
+      const typing = sendTelegramTyping(chatId).catch((err) =>
+        console.error("telegram typing failed", err),
+      );
+      parkTurn(waitUntil, typing);
+      void loadWakeContext(phone).catch((err) =>
+        console.error("wake prefetch failed", err),
+      );
+      prefetchInstinctRecall(phone, inbound.text);
+      prefetchOpenRouter();
 
       let gate: { decision: "allow" | "paywall" | "drop"; payUrl?: string };
       try {
@@ -300,11 +330,12 @@ export default defineChannel({
         return new Response(null, { status: 204 });
       }
 
-      await touchLastChannel(phone, "telegram").catch((err) =>
+      const touch = touchLastChannel(phone, "telegram").catch((err) =>
         console.error("touch last channel failed", err),
       );
+      parkTurn(waitUntil, touch);
 
-      const content = await inboundTelegramContent(inbound.text, msg);
+      const content = assembleInboundContent(inbound.text, await photoP);
       console.log("telegram inbound", {
         phone,
         conversationId,
@@ -312,23 +343,27 @@ export default defineChannel({
         voice: inbound.voice,
         images: typeof content === "string" ? 0 : content.length - 1,
       });
-
-      await from(conversationId).send(content, {
-        auth: {
-          authenticator: "telegram",
-          issuer: "telegram",
-          principalType: "user",
-          principalId: phone,
-          attributes: telegramAuthAttrs({
-            conversationId,
-            telegramChatId: chatId,
-            telegramUserId: userId,
-            messageId: String(msg.message_id),
-            inkboxHandle: tenant.inkboxHandle,
-          }),
-        },
-      });
+      parkTurn(
+        waitUntil,
+        from(conversationId).send(content, {
+          auth: {
+            authenticator: "telegram",
+            issuer: "telegram",
+            principalType: "user",
+            principalId: phone,
+            attributes: telegramAuthAttrs({
+              conversationId,
+              telegramChatId: chatId,
+              telegramUserId: userId,
+              messageId: String(msg.message_id),
+              inkboxHandle: tenant.inkboxHandle,
+              text: inbound.text,
+            }),
+          },
+        }),
+      );
       return new Response(null, { status: 204 });
     }),
   ],
+  events: telegramDeliveryEvents,
 });

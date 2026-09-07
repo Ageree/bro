@@ -198,32 +198,3 @@ export const listOpen = query({
     return rows.filter((j) => j.status === "open" || j.status === "waiting");
   },
 });
-
-export const wake = query({
-  args: { secret: v.string(), phoneE164: v.string() },
-  returns: v.array(v.string()),
-  handler: async (ctx, { secret, phoneE164 }) => {
-    assertSecret(secret);
-    const tenant = await ctx.db
-      .query("tenants")
-      .withIndex("by_phone", (q) => q.eq("phoneE164", phoneE164))
-      .first();
-    if (!tenant) return [];
-    const rows = await ctx.db
-      .query("jobs")
-      .withIndex("by_tenant", (q) => q.eq("tenantId", tenant._id))
-      .take(32);
-    return rows
-      .filter((j) => j.status === "open" || j.status === "waiting")
-      .map((j) => {
-        const wait = j.waitingFor ? ` waitingFor=${j.waitingFor}` : "";
-        const note = j.note ? ` note=${j.note}` : "";
-        const mail = j.emailMessageId ? ` emailMessageId=${j.emailMessageId}` : "";
-        const since =
-          j.waitingSince != null ? ` waitingSince=${j.waitingSince}` : "";
-        const nudged =
-          j.lastNudgeAt != null ? ` lastNudgeAt=${j.lastNudgeAt}` : "";
-        return `id=${j._id} goal="${j.goal}" doneWhen="${j.doneWhen}" status=${j.status}${wait}${note}${mail}${since}${nudged}`;
-      });
-  },
-});

@@ -14,7 +14,7 @@ import { tenantId } from "../lib/tenant";
 
 export default defineTool({
   description:
-    "Bro's Inkbox mailbox (not the human's Gmail). action=send: outbound mail — confirm before the first send of a job; pass replyToMessageId to reply on a thread. action=inbox: list recent inbound and extract a fresh OTP if the letter has one. For OTP before asking the human, prefer the otp subagent / otp_lookup.",
+    "Bro's Inkbox mailbox, not their Gmail. send: confirm the first outbound of a job; replyToMessageId replies on a thread. inbox: recent inbound + OTP if present. Prefer otp / otp_lookup before asking in chat.",
   inputSchema: z.object({
     action: z.enum(["send", "inbox"]).optional(),
     to: z.string().min(3).max(200).optional(),

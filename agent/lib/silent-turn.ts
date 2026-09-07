@@ -18,7 +18,7 @@ export type TurnOrigin = "human" | "wakeup";
 export const ORIGIN_ATTR = "origin";
 
 export function turnOrigin(
-  attributes: Readonly<Record<string, string | readonly string[]>> | undefined,
+  attributes: Readonly<Record<string, unknown>> | null | undefined,
 ): TurnOrigin | undefined {
   const raw = attributes?.[ORIGIN_ATTR];
   const value = Array.isArray(raw) ? raw[0] : raw;
@@ -26,19 +26,8 @@ export function turnOrigin(
   return undefined;
 }
 
-export type CompletedTurn = {
-  finishReason: string;
-  message: string | null | undefined;
-  origin: TurnOrigin | undefined;
-};
-
-/** Fallback text for a completed turn, or null when the model said enough
- *  (or was allowed to stay quiet). `tool-calls` steps are mid-turn. */
-export function fallbackForCompleted(turn: CompletedTurn): string | null {
-  if (turn.origin !== "human") return null;
-  if (turn.finishReason === "tool-calls") return null;
-  if (turn.message && turn.message.trim()) return null;
-  return TURN_FAILED_REPLY;
+export function isSilentReply(text: string | null | undefined): boolean {
+  return typeof text === "string" && text.trim().startsWith("[SILENT]");
 }
 
 /** Fallback text for a `turn.failed` event, or null for background turns. */

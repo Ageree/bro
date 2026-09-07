@@ -14,14 +14,7 @@ export default defineTool({
     note: z.string().max(280).optional(),
     emailThreadId: z.string().optional(),
     emailMessageId: z.string().optional(),
-    checkInMinutes: z
-      .number()
-      .min(2)
-      .max(10080)
-      .optional()
-      .describe(
-        "schedule a background self-check to continue the chain without the human pinging; omitted → default for waitingFor",
-      ),
+    checkInMinutes: z.number().min(2).max(10080).optional(),
   }),
   async execute(
     { jobId, waitingFor, note, emailThreadId, emailMessageId, checkInMinutes },

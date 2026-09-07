@@ -61,6 +61,8 @@ export function nextBrowserAction(opts: {
   return "start";
 }
 
+export const BROWSER_WAIT_MS = 2_000;
+
 const POLL_GIVE_UP_MS = 30 * 60_000;
 
 export function pollTimedOut(

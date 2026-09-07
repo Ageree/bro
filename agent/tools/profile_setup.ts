@@ -16,8 +16,8 @@ import { countBrowserJobStart, setBrowser, upsertTenant } from "../lib/convex";
 import { sendBlueIMessage } from "../lib/inkbox";
 import { groupPersonalBlock } from "../lib/group-guard";
 import { tenantId } from "../lib/tenant";
+import { attrsFromSession, channelFromAuth } from "../lib/deliver-routed";
 import { deliverHuman } from "../lib/deliver-human";
-import { lastChannelOf } from "../../convex/lib/telegramPolicy.ts";
 
 function conversationId(
   ctx: {
@@ -40,7 +40,7 @@ function conversationId(
 
 export default defineTool({
   description:
-    "Send the human a one-tap link to log into a website. They open it and sign in themselves; cookies save to their Cloud profile. Bro never sees the password. Call with the https page URL when a site needs login. Do not ask for a password and do not use vault_setup for site logins.",
+    "One-tap site login link. They sign in themselves; cookies save to the Cloud profile. Bro never sees the password. Pass the https page URL. Do not ask for a password. Do not use vault_setup for site logins.",
   inputSchema: z.object({
     url: z.string().min(8).max(2000),
     site: z.string().min(1).max(80).optional(),
@@ -116,12 +116,13 @@ export default defineTool({
     const text = loginChatText(withLive.liveUrl, site);
     if (conv) {
       try {
-        if (lastChannelOf(tenant.lastChannel) === "telegram") {
+        if (channelFromAuth(attrsFromSession(ctx.session), tenant.lastChannel) === "telegram") {
           const where = site?.trim() ? ` в ${site.trim()}` : "";
           await deliverHuman({
             tenant,
             conversationId: conv,
             text: `Открой и войди${where}. Bro пароль не увидит — вход сохранится сам.\n\n:::buttons\n[Войти](${withLive.liveUrl})\n:::`,
+            channel: "telegram",
           });
         } else {
           await sendBlueIMessage({

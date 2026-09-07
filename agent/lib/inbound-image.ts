@@ -21,7 +21,7 @@
 import { readLimited } from "./voice.ts";
 
 export const IMAGE_MAX_BYTES = 3 * 1024 * 1024;
-export const IMAGE_TIMEOUT_MS = 10_000;
+export const IMAGE_TIMEOUT_MS = 800;
 
 export type InboundMediaItem = {
   url?: string | null;
@@ -85,12 +85,6 @@ export async function fetchImagePart(
   }
 }
 
-/** Recursively true only for plain-JSON-serialisable values: null, boolean,
- *  string, finite number, plain arrays, and plain objects (prototype is
- *  `Object.prototype` or `null`). Everything else — `Uint8Array`, `URL`,
- *  `Date`, `Map`, `NaN`, `undefined`, class instances — is false. Used by
- *  the check script to pin `inboundUserContent`'s output shape; not called
- *  at runtime in the channel. */
 export function isPlainJson(value: unknown): boolean {
   if (value === null) return true;
   const t = typeof value;
@@ -105,15 +99,27 @@ export function isPlainJson(value: unknown): boolean {
   return false;
 }
 
-/** Text + image parts, or plain text when there is nothing to see. Always
- *  plain JSON — see the header comment. */
-export async function inboundUserContent(
+export function assembleInboundContent(
   text: string,
+  parts: readonly ImagePart[],
+): string | Array<{ type: "text"; text: string } | ImagePart> {
+  if (parts.length === 0) return text;
+  return [{ type: "text", text }, ...parts];
+}
+
+export function imageUrlParts(
+  media: InboundMediaItem[] | null | undefined,
+): ImagePart[] {
+  return inboundImages(media).map((img) => ({
+    type: "file",
+    mediaType: img.mediaType,
+    data: img.url,
+  }));
+}
+
+export function prefetchInboundImages(
   media: InboundMediaItem[] | null | undefined,
   deps: Parameters<typeof fetchImagePart>[1] = {},
-): Promise<string | Array<{ type: "text"; text: string } | ImagePart>> {
-  const images = inboundImages(media);
-  if (images.length === 0) return text;
-  const parts = await Promise.all(images.map((img) => fetchImagePart(img, deps)));
-  return [{ type: "text", text }, ...parts];
+): Promise<ImagePart[]> {
+  return Promise.all(inboundImages(media).map((img) => fetchImagePart(img, deps)));
 }

@@ -1,8 +1,11 @@
 import { createOpenAI } from "@ai-sdk/openai";
 import { wrapLanguageModel, type LanguageModelMiddleware } from "ai";
+import { openRouterChatFetch } from "./openrouter-chat.ts";
 
-const DEFAULT_OPENROUTER_MODEL = "z-ai/glm-5.3-flash";
+export const DEFAULT_OPENROUTER_MODEL = "z-ai/glm-5.3-flash";
 const DEFAULT_OPENROUTER_CONTEXT_TOKENS = 1_000_000;
+
+export const DEFAULT_ROOT_CONTEXT_TOKENS = 131_072;
 
 /** Fallback output cap for OpenRouter calls when BRO_MAX_OUTPUT_TOKENS is unset/invalid. */
 export const DEFAULT_MAX_OUTPUT_TOKENS = 8192;
@@ -47,13 +50,18 @@ export function outputCapMiddleware(cap: number): LanguageModelMiddleware {
   };
 }
 
+export type BroModelOpts = {
+  contextTokens?: number;
+};
+
 /** Model choice shared by the root agent and the worker subagent. */
-export function broModel() {
+export function broModel(opts?: BroModelOpts) {
   const model = process.env.BRO_MODEL?.trim() || DEFAULT_OPENROUTER_MODEL;
   const contextTokens =
-    model === DEFAULT_OPENROUTER_MODEL
+    opts?.contextTokens ??
+    (model === DEFAULT_OPENROUTER_MODEL
       ? DEFAULT_OPENROUTER_CONTEXT_TOKENS
-      : parseContextTokens(process.env.BRO_MODEL_CONTEXT_TOKENS);
+      : parseContextTokens(process.env.BRO_MODEL_CONTEXT_TOKENS));
 
   const key = process.env.OPENROUTER_API_KEY;
   if (!key) {
@@ -63,6 +71,7 @@ export function broModel() {
   const openrouter = createOpenAI({
     apiKey: key,
     baseURL: "https://openrouter.ai/api/v1",
+    ...(model === DEFAULT_OPENROUTER_MODEL ? { fetch: openRouterChatFetch } : {}),
   });
   const cap = parseMaxOutputTokens(process.env.BRO_MAX_OUTPUT_TOKENS);
   const openrouterModel = wrapLanguageModel({

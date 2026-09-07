@@ -239,9 +239,13 @@ export async function hydrate(
   sessionId?: string,
 ): Promise<BrowserRun> {
   const run = await bu(`/runs/${runId}`);
-  const session: Record<string, unknown> = sessionId
-    ? await bu(`/sessions/${sessionId}`).catch(() => ({}))
-    : {};
+  const status = pick(run, ["status"]) ?? "unknown";
+  const runLive =
+    pick(run, ["liveUrl", "live_url"]);
+  const session: Record<string, unknown> =
+    sessionId && (isTerminal(status) || !runLive)
+      ? await bu(`/sessions/${sessionId}`).catch(() => ({}))
+      : {};
   const sid =
     sessionId ??
     pick(run, ["sessionId", "session_id"]) ??
@@ -257,7 +261,6 @@ export async function hydrate(
     (typeof run.result === "object" && run.result
       ? JSON.stringify(run.result).slice(0, 2000)
       : undefined);
-  const status = pick(run, ["status"]) ?? "unknown";
   return { runId, sessionId: sid, status, liveUrl, result };
 }
 
@@ -267,15 +270,17 @@ export async function waitForRun(
   ms = 12_000,
 ): Promise<BrowserRun> {
   const start = Date.now();
-  let last = await hydrate(runId, sessionId);
+  let last: BrowserRun = { runId, sessionId, status: "unknown" };
   while (Date.now() - start < ms) {
     const cheap = await bu(`/runs/${runId}/status`).catch(() => ({}));
     const status = pick(cheap, ["status"]) ?? last.status;
-    if (isTerminal(status)) return hydrate(runId, last.sessionId);
+    if (isTerminal(status)) return hydrate(runId, last.sessionId ?? sessionId);
     last = { ...last, status };
-    await new Promise((r) => setTimeout(r, 2000));
+    const remaining = ms - (Date.now() - start);
+    if (remaining <= 0) break;
+    await new Promise((r) => setTimeout(r, Math.min(2000, remaining)));
   }
-  return hydrate(runId, last.sessionId);
+  return hydrate(runId, last.sessionId ?? sessionId);
 }
 
 export function isTerminal(status: string): boolean {

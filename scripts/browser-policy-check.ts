@@ -1,4 +1,6 @@
+import { readFileSync } from "node:fs";
 import {
+  BROWSER_WAIT_MS,
   nextBrowserAction,
   nextFollowDecision,
   normalizeTask,
@@ -12,6 +14,8 @@ import {
   FOLLOW_RETRY_HINT,
   followStartRetry,
   maxPollRounds,
+  FOLLOW_FIRST_SLEEP_MS,
+  followSleepMs,
   POLL_GIVE_UP_MS,
   POLL_INTERVAL_MS,
   sameBrowserRun,
@@ -153,6 +157,9 @@ assert(pollTimedOut(t0, t0 + 30 * 60_000 + 1) === true, "poll expired");
 assert(pollTimedOut(undefined, t0) === false, "poll missing start");
 
 assert(POLL_INTERVAL_MS === 2 * 60_000, "sleep 2min");
+assert(FOLLOW_FIRST_SLEEP_MS === 20_000, "first re-sleep is 20s");
+assert(followSleepMs(0) === FOLLOW_FIRST_SLEEP_MS, "poll 0 uses first sleep");
+assert(followSleepMs(1) === POLL_INTERVAL_MS, "later polls use 2min");
 assert(POLL_GIVE_UP_MS === 20 * 60_000, "give-up 20min");
 assert(maxPollRounds() === 10, "10 poll rounds");
 assert(
@@ -341,6 +348,53 @@ assert(
   JSON.stringify(applyProxyCountry({ task: "x" }, "ru").browserSettings) ===
     JSON.stringify({ proxyCountryCode: "ru" }),
   "proxyCountryCode in browserSettings",
+);
+
+assert(BROWSER_WAIT_MS === 2_000, "wait is short; follow-through still delivers");
+
+const browserTool = readFileSync(
+  new URL("../agent/tools/browser_task.ts", import.meta.url),
+  "utf8",
+);
+assert(browserTool.includes("BROWSER_WAIT_MS"), "start and poll use shared wait");
+assert(!browserTool.includes("WAIT_MS = 12_000"), "old 12s park is gone");
+const startPath = browserTool.slice(browserTool.indexOf("const started = await startRun"));
+assert(
+  startPath.indexOf("startBrowserFollow") < startPath.indexOf("waitForRun"),
+  "follow-through starts before the in-turn wait",
+);
+assert(browserTool.includes("deliverHumanRouted"), "canned notify uses auth routing");
+assert(
+  browserTool.includes("turnLooking"),
+  "canned ищу skips only when this turn already said ищу",
+);
+
+const follow = readFileSync(
+  new URL("../convex/browserFollow.ts", import.meta.url),
+  "utf8",
+);
+const handler = follow.slice(follow.indexOf("}).handler"));
+const firstPoll = handler.search(/pollRun/);
+const firstSleep = handler.search(/step\.sleep/);
+assert(firstPoll >= 0, "follow-through polls");
+assert(firstSleep >= 0, "follow-through still sleeps between polls");
+assert(firstPoll < firstSleep, "first poll comes before the first sleep");
+assert(handler.includes("followSleepMs"), "first re-sleep is shorter than 2min");
+
+const waitFor = readFileSync(
+  new URL("../agent/lib/browseruse.ts", import.meta.url),
+  "utf8",
+);
+const waitFn = waitFor.slice(waitFor.indexOf("export async function waitForRun"));
+assert(
+  waitFn.indexOf("bu(`/runs/${runId}/status`)") < waitFn.indexOf("return hydrate"),
+  "waitForRun status-polls before hydrating",
+);
+assert(waitFn.includes("Math.min(2000, remaining)"), "waitForRun does not oversleep the budget");
+const hydrateFn = waitFor.slice(waitFor.indexOf("export async function hydrate"));
+assert(
+  hydrateFn.includes("isTerminal(status)") && hydrateFn.includes("/sessions/"),
+  "hydrate skips session GET while the run is live and already has a URL",
 );
 
 console.log("browser-policy-check ok");

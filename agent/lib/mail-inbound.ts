@@ -107,7 +107,7 @@ async function composeWake(
 export async function ingestInboundMail(request: Request): Promise<MailIngest> {
   const handle = handleFromRequest(request);
   const hinted = handle
-    ? await getTenantByHandle(handle).catch((err) => {
+    ? await getTenantByHandle(handle, { fresh: true }).catch((err) => {
         console.error("getTenantByHandle failed", err);
         return null;
       })

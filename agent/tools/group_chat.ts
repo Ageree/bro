@@ -11,7 +11,7 @@ import { tenantId } from "../lib/tenant";
 
 export default defineTool({
   description:
-    "Add Bro to an iMessage group. howto explains saving the contact and adding the number. create opens a new group from Bro's dedicated line with 2–8 E.164 numbers and a first message. Personal errands stay in the 1:1 thread. Do not use create from inside an existing group.",
+    "Add Bro to an iMessage group. howto: save the contact and add the number. create: 2–8 E.164 numbers + first message from Bro's dedicated line. Personal errands stay in 1:1. Do not create from inside a group.",
   inputSchema: z.object({
     action: z.enum(["howto", "create"]).default("howto"),
     phones: z.array(z.string().min(8).max(20)).max(8).optional(),

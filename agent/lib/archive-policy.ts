@@ -108,6 +108,9 @@ export function eventToDocument(raw: unknown): ArchiveDocument | null {
 
 const QUERY_CHARS = 300;
 
+const WAKEUP_ARCHIVE_HINT =
+  /утренний бриф|фоновая проверка|событие пришло|почт|календар|gmail|calendar|письм|встреч|код|otp|inbox/i;
+
 type TurnMessage = {
   role?: unknown;
   content?: unknown;
@@ -132,6 +135,25 @@ export function recallQuery(input: readonly unknown[]): string | null {
   return null;
 }
 
+export const ARCHIVE_RECALL_TIMEOUT_MS = 1_500;
+export const ARCHIVE_TOOL_TIMEOUT_MS = 30_000;
+export const CONVERSATION_RECALL_TIMEOUT_MS = ARCHIVE_RECALL_TIMEOUT_MS;
+
+export function shouldRecallArchive(query: string): boolean {
+  const text = query.trim();
+  if (!text) return false;
+  if (text.startsWith("[event:")) return true;
+  if (text.startsWith("[background wakeup]")) {
+    return WAKEUP_ARCHIVE_HINT.test(text);
+  }
+  return true;
+}
+
+export function shouldRecallConversation(query: string | null): boolean {
+  if (!query?.trim()) return true;
+  return shouldRecallArchive(query);
+}
+
 /** Gmail search window: everything after the last sync, 7 days on first run. */
 export function gmailQuery(sinceMs: number | undefined, nowMs: number): string {
   const floor = nowMs - 7 * 24 * 60 * 60 * 1000;
@@ -144,6 +166,51 @@ export interface ArchiveHit {
   content: string;
   app: string;
   date?: string;
+}
+
+export const ARCHIVE_HIT_CHARS = 600;
+
+function hitText(raw: Record<string, unknown>): string {
+  if (typeof raw.memory === "string" && raw.memory.trim()) return raw.memory;
+  if (typeof raw.chunk === "string" && raw.chunk.trim()) return raw.chunk;
+  const chunks = Array.isArray(raw.chunks) ? raw.chunks : [];
+  return chunks
+    .map((c) => str(rec(c).content))
+    .filter(Boolean)
+    .join("\n");
+}
+
+function hitMeta(raw: Record<string, unknown>): { app: string; date?: string; title: string } {
+  const meta = rec(raw.metadata);
+  const docs = Array.isArray(raw.documents) ? raw.documents : [];
+  const firstDoc = rec(docs[0]);
+  const docMeta = rec(firstDoc.metadata);
+  const title = str(raw.title) || str(firstDoc.title);
+  const app = str(meta.app) || str(docMeta.app) || "app";
+  const date = str(meta.date) || str(docMeta.date);
+  return { title, app, ...(date ? { date } : {}) };
+}
+
+export function archiveHitsFromSearch(
+  raw: unknown,
+  hitChars = ARCHIVE_HIT_CHARS,
+): ArchiveHit[] {
+  const results = rec(raw).results;
+  if (!Array.isArray(results)) return [];
+  const hits: ArchiveHit[] = [];
+  for (const item of results) {
+    const row = rec(item);
+    const content = hitText(row).slice(0, hitChars);
+    if (!content) continue;
+    const meta = hitMeta(row);
+    hits.push({
+      title: meta.title,
+      content,
+      app: meta.app,
+      ...(meta.date ? { date: meta.date } : {}),
+    });
+  }
+  return hits;
 }
 
 /**

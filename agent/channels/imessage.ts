@@ -3,7 +3,7 @@ import type { IMessageWebhookPayload } from "@inkbox/sdk";
 import {
   agentHandle,
   allowlisted,
-  inkbox,
+  inkboxIdentity,
   isAccessHandle,
   isBlueIMessage,
   sendBlueIMessage,
@@ -17,21 +17,16 @@ import {
   getGroupByConversation,
   getTenant,
   getTenantByHandle,
-  listOpenJobs,
+  loadWakeContext,
   markGroupGreeted,
-  markNudged,
   markPaywallSent,
   mintTelegramBind,
-  replyTenant,
-  setWakeupLastSeen,
   touchLastChannel,
   upsertTenant,
 } from "../lib/convex";
-import {
-  nudgePrompt,
-  shouldNudge,
-  shouldSpeakNotSilent,
-} from "../../convex/lib/jobNudgePolicy.ts";
+import { prefetchInstinctRecall } from "../lib/instinct-recall.ts";
+import { prefetchOpenRouter } from "../lib/openrouter-warm.ts";
+import { shortAckAttribute } from "../lib/short-ack.ts";
 import {
   broVcard,
   helpText,
@@ -44,19 +39,25 @@ import { ingestInboundMail } from "../lib/mail-inbound";
 import {
   connectCardHtml,
   isConnectDest,
-  stripConnectUrls,
 } from "../lib/connect-link";
 import {
   inboundIMessageText,
   inboundIMessageTextWithVoice,
+  type InboundWithVoice,
 } from "../lib/imessage-text";
-import { deliverHuman } from "../lib/deliver-human";
+import { parkTurn } from "../lib/channel-turn.ts";
+import { jobCheckWakePrompt } from "../lib/job-wake.ts";
+import { imessageDeliveryEvents } from "../lib/turn-delivery-events.ts";
 import { telegramBindLink } from "../../convex/lib/telegramPolicy.ts";
 import { telegramBotUsername } from "../lib/telegram";
 import { transcribeVoiceNote } from "../lib/voice";
-import { inboundUserContent } from "../lib/inbound-image.ts";
+import {
+  assembleInboundContent,
+  imageUrlParts,
+  prefetchInboundImages,
+} from "../lib/inbound-image.ts";
+import { canSkipInboundBind } from "../lib/inbound-bind.ts";
 import { VOICE_FAILED_REPLY } from "../lib/voice-policy";
-import { splitSeen } from "../lib/wakeup-text";
 import { watcherWakeupPrompt } from "../lib/purchase-policy";
 import { wakeupCarriesRunId } from "../../convex/lib/browserFollowPolicy.ts";
 import {
@@ -67,15 +68,11 @@ import { inboundGateFromResult } from "../../convex/lib/billingPolicy";
 import { eventPrompt } from "../../convex/lib/watcherPolicy.ts";
 import { syncTenantArchive } from "../lib/archive-sync.ts";
 import {
-  fallbackForCompleted,
-  fallbackForFailed,
-  takeFallbackSlot,
-  turnOrigin,
-} from "../lib/silent-turn.ts";
-import {
   groupAuthAttributes,
+  groupMemoryScope,
   groupParticipantPhones,
   groupSenderPhone,
+  groupTaggedText,
   groupWelcomeText,
   isGroupMessage,
   shouldReplyInGroup,
@@ -84,7 +81,6 @@ import {
 
 // ponytail: in-memory only — lost on restart, not shared across instances
 const wakeupDelivered = new Map<string, number>();
-const fallbackSent = new Map<string, number>();
 
 async function sendFirstBindOnboard(opts: {
   conversationId: string;
@@ -93,7 +89,7 @@ async function sendFirstBindOnboard(opts: {
   tel?: string;
 }): Promise<void> {
   try {
-    const identity = await inkbox().getIdentity(opts.handle);
+    const identity = await inkboxIdentity(opts.handle);
     const upload = await identity.uploadIMessageMedia({
       content: new TextEncoder().encode(
         broVcard({ email: opts.email, tel: opts.tel }),
@@ -184,6 +180,39 @@ async function sendTelegramInvite(opts: {
     text,
     handle: opts.handle,
   });
+}
+
+function prefetchOneToOneStart(
+  phone: string,
+  preview: string,
+  voiceP: Promise<InboundWithVoice>,
+): void {
+  if (!phone.trim() || !preview) return;
+  void loadWakeContext(phone).catch((err) =>
+    console.error("wake prefetch failed", err),
+  );
+  prefetchInstinctRecall(phone, preview);
+  void voiceP
+    .then((got) => {
+      if (got.text) prefetchInstinctRecall(phone, got.text);
+    })
+    .catch((err) => console.error("instinct voice prefetch failed", err));
+  prefetchOpenRouter();
+}
+
+async function ackIMessageReadAndTyping(
+  conversationId: string,
+  handle: string,
+): Promise<void> {
+  try {
+    const identity = await inkboxIdentity(handle);
+    await Promise.all([
+      identity.markIMessageConversationRead(conversationId),
+      identity.sendIMessageTyping(conversationId),
+    ]);
+  } catch (err) {
+    console.error("imessage ack failed", err);
+  }
 }
 
 async function inboundOwnerGate(ownerPhone: string): Promise<{
@@ -300,10 +329,27 @@ export default defineChannel({
         return new Response(null, { status: 204 });
       }
 
-      const knownGroup = msg.conversation_id
-        ? await getGroupByConversation(msg.conversation_id).catch(() => null)
-        : null;
-      const group = Boolean(knownGroup) || isGroupMessage(msg);
+      const voiceP = inboundIMessageTextWithVoice(msg, transcribeVoiceNote);
+      let fetchedImages: Awaited<ReturnType<typeof prefetchInboundImages>> | undefined;
+      prefetchInboundImages(msg.media).then(
+        (p) => {
+          fetchedImages = p;
+        },
+        (err) => console.error("inbound image prefetch failed", err),
+      );
+      prefetchOpenRouter();
+
+      const flaggedGroup = isGroupMessage(msg);
+      const boundOneToOne = canSkipInboundBind(
+        tenant,
+        typeof msg.remote_number === "string" ? msg.remote_number : "",
+        msg.conversation_id,
+      );
+      const knownGroup =
+        !flaggedGroup && !boundOneToOne && msg.conversation_id
+          ? await getGroupByConversation(msg.conversation_id).catch(() => null)
+          : null;
+      const group = Boolean(knownGroup) || flaggedGroup;
       const remote = group ? groupSenderPhone(msg) : msg.remote_number;
       if (!remote) {
         console.error("dropped inbound without remote number");
@@ -312,6 +358,26 @@ export default defineChannel({
 
       const identityHandle = handle ?? agentHandle();
       const participants = group ? groupParticipantPhones(msg) : [];
+      const preview = inboundIMessageText(msg);
+      if (!group && preview) {
+        prefetchOneToOneStart(remote, preview, voiceP);
+        if (msg.conversation_id) {
+          parkTurn(
+            waitUntil,
+            ackIMessageReadAndTyping(msg.conversation_id, identityHandle),
+          );
+        }
+      }
+      const knownOwnerPhone =
+        !group &&
+        tenant?.phoneE164 === remote &&
+        tenant.status !== "disabled"
+          ? tenant.phoneE164
+          : undefined;
+      const earlyGateP =
+        knownOwnerPhone && preview
+          ? inboundOwnerGate(knownOwnerPhone)
+          : undefined;
 
       let firstBind = false;
       let firstGroup = false;
@@ -341,19 +407,25 @@ export default defineChannel({
         firstGroup = bound.firstGroup;
         ownerPhone = bound.ownerPhoneE164;
       } else if (handle) {
-        const bound = await bindInbound(handle, remote, msg.conversation_id).catch(
-          (err) => {
-            console.error("bind inbound failed", err);
-            return { ok: false as const, reason: "error" };
-          },
-        );
-        if (!bound.ok) {
-          console.error("dropped inbound", bound.reason, handle, remote);
-          return new Response(null, { status: 204 });
+        if (boundOneToOne) {
+          firstBind = false;
+          boundTenant = tenant;
+          ownerPhone = tenant?.phoneE164 ?? remote;
+        } else {
+          const bound = await bindInbound(handle, remote, msg.conversation_id).catch(
+            (err) => {
+              console.error("bind inbound failed", err);
+              return { ok: false as const, reason: "error" };
+            },
+          );
+          if (!bound.ok) {
+            console.error("dropped inbound", bound.reason, handle, remote);
+            return new Response(null, { status: 204 });
+          }
+          firstBind = bound.firstBind;
+          boundTenant = bound.tenant;
+          ownerPhone = bound.tenant.phoneE164 ?? remote;
         }
-        firstBind = bound.firstBind;
-        boundTenant = bound.tenant;
-        ownerPhone = bound.tenant.phoneE164 ?? remote;
       } else {
         if (!allowlisted(remote)) {
           return new Response(null, { status: 204 });
@@ -365,7 +437,6 @@ export default defineChannel({
         }
       }
 
-      const preview = inboundIMessageText(msg);
       if (!preview) {
         if (firstBind) {
           await sendFirstBindOnboard({
@@ -385,7 +456,8 @@ export default defineChannel({
       }
 
       if (!group) {
-        const gate = await inboundOwnerGate(ownerPhone);
+        prefetchOneToOneStart(ownerPhone, preview, voiceP);
+        const gate = await (earlyGateP ?? inboundOwnerGate(ownerPhone));
         if (gate.decision === "drop") {
           return new Response(null, { status: 204 });
         }
@@ -405,33 +477,31 @@ export default defineChannel({
           });
           return new Response(null, { status: 204 });
         }
-        const ack = (async () => {
-          try {
-            const identity = await inkbox().getIdentity(identityHandle);
-            await identity.markIMessageConversationRead(msg.conversation_id);
-            await identity.sendIMessageTyping(msg.conversation_id);
-          } catch (err) {
-            console.error("imessage ack failed", err);
-          }
-        })();
-        if (typeof waitUntil === "function") waitUntil(ack);
-        else void ack;
       }
 
-      const inbound = await inboundIMessageTextWithVoice(msg, transcribeVoiceNote);
+      const inbound = await voiceP;
+      const continueToAgent =
+        Boolean(inbound.text) && !inbound.allVoiceFailed;
       if (firstBind) {
-        await sendFirstBindOnboard({
+        const onboard = sendFirstBindOnboard({
           conversationId: msg.conversation_id,
           handle: identityHandle,
           email: boundTenant?.emailAddress,
           tel: boundTenant?.dedicatedIMessageNumber,
         });
+        if (continueToAgent) parkTurn(waitUntil, onboard);
+        else await onboard;
       }
       if (firstGroup) {
-        await sendGroupWelcome({
+        const welcome = sendGroupWelcome({
           conversationId: msg.conversation_id,
           handle: identityHandle,
         });
+        if (continueToAgent && shouldReplyInGroup(inbound.text)) {
+          parkTurn(waitUntil, welcome);
+        } else {
+          await welcome;
+        }
       }
       if (inbound.allVoiceFailed) {
         if (group) return new Response(null, { status: 204 });
@@ -457,10 +527,20 @@ export default defineChannel({
       if (group && !shouldReplyInGroup(inbound.text)) {
         return new Response(null, { status: 204 });
       }
-      // Group billing runs only after the mention gate so side chatter
-      // cannot burn the owner's daily quota or paywall the group.
       if (group) {
-        const gate = await inboundOwnerGate(ownerPhone);
+        const gateP = inboundOwnerGate(ownerPhone);
+        const groupScope = groupMemoryScope(msg.conversation_id);
+        if (groupScope) {
+          void loadWakeContext(groupScope).catch((err) =>
+            console.error("group wake prefetch failed", err),
+          );
+          prefetchInstinctRecall(
+            groupScope,
+            groupTaggedText(remote, inbound.text),
+          );
+        }
+        prefetchOpenRouter();
+        const gate = await gateP;
         if (gate.decision === "drop") {
           return new Response(null, { status: 204 });
         }
@@ -497,10 +577,15 @@ export default defineChannel({
       if (shouldSkipAgentTurn({ firstBind, text: inbound.text })) {
         return new Response(null, { status: 204 });
       }
-      await touchLastChannel(remote, "imessage").catch((err) =>
+      if (!group) prefetchInstinctRecall(ownerPhone, inbound.text);
+      const touch = touchLastChannel(remote, "imessage").catch((err) =>
         console.error("touch last channel failed", err),
       );
-      const rawContent = await inboundUserContent(inbound.text, msg.media);
+      parkTurn(waitUntil, touch);
+      const rawContent = assembleInboundContent(
+        inbound.text,
+        fetchedImages ?? imageUrlParts(msg.media),
+      );
       const content = group
         ? tagGroupUserContent(remote, rawContent)
         : rawContent;
@@ -515,29 +600,33 @@ export default defineChannel({
         messageType: msg.message_type,
       });
 
-      await from(msg.conversation_id).send(content, {
-        auth: {
-          authenticator: "inkbox",
-          issuer: "inkbox",
-          principalType: "user",
-          principalId: ownerPhone,
-          attributes: group
-            ? groupAuthAttributes({
-                conversationId: msg.conversation_id,
-                inkboxHandle: identityHandle,
-                messageId: msg.id,
-                origin: "human",
-                senderPhone: remote,
-                ownerPhone,
-              })
-            : {
-                conversationId: msg.conversation_id,
-                inkboxHandle: identityHandle,
-                messageId: msg.id,
-                origin: "human",
-              },
-        },
-      });
+      parkTurn(
+        waitUntil,
+        from(msg.conversation_id).send(content, {
+          auth: {
+            authenticator: "inkbox",
+            issuer: "inkbox",
+            principalType: "user",
+            principalId: ownerPhone,
+            attributes: group
+              ? groupAuthAttributes({
+                  conversationId: msg.conversation_id,
+                  inkboxHandle: identityHandle,
+                  messageId: msg.id,
+                  origin: "human",
+                  senderPhone: remote,
+                  ownerPhone,
+                })
+              : {
+                  conversationId: msg.conversation_id,
+                  inkboxHandle: identityHandle,
+                  messageId: msg.id,
+                  origin: "human",
+                  ...shortAckAttribute(inbound.text),
+                },
+          },
+        }),
+      );
 
       return new Response(null, { status: 204 });
     }),
@@ -681,44 +770,7 @@ export default defineChannel({
           // Residual race: browserRunId can change during from().send after this check.
         }
       } else if (kind === "job_check") {
-        prompt = `[background wakeup] Фоновая проверка джоба: ${payload}. Открытые джобы этого человека уже в контексте. Сделай следующий шаг цепочки сам (проверь почту/статус нужным тулом: composio, browser_task, bro_mail, otp_lookup). Если ждёшь OTP — сначала inbox/archive, в тред только если письма нет. Если есть прогресс — сделай шаг и коротко напиши человеку. Если продвинуться нечем — ответь ровно [SILENT]: проверка повторится сама. Если джоб уже закрыт или отменён — вызови cancel_wakeup с kind=job_check и payloadContains «джоб <id>», затем ответь [SILENT].`;
-        try {
-          const jobs = await listOpenJobs(tenantPhone);
-          const idMatch = /^джоб\s+(\S+):/.exec(payload);
-          const job =
-            (idMatch?.[1]
-              ? jobs.find((j) => j._id === idMatch[1])
-              : undefined) ?? jobs.find((j) => payload.includes(j._id));
-          const waitingFor = job?.waitingFor;
-          const now = Date.now();
-          if (
-            job &&
-            (waitingFor === "human" ||
-              waitingFor === "email" ||
-              waitingFor === "browser") &&
-            shouldNudge({
-              waitingFor,
-              waitingSince: job.waitingSince,
-              lastNudgeAt: job.lastNudgeAt,
-              now,
-            }) &&
-            shouldSpeakNotSilent(waitingFor)
-          ) {
-            const text = nudgePrompt({
-              waitingFor,
-              goal: job.goal,
-              note: job.note,
-            });
-            try {
-              await markNudged(tenantPhone, job._id);
-            } catch (err) {
-              console.error("markNudged failed", err);
-            }
-            prompt = `[background wakeup] Фоновая проверка джоба: ${payload}. Этот джоб ждёт слишком долго. НЕ отвечай [SILENT] — напиши человеку сейчас: ${text}`;
-          }
-        } catch (err) {
-          console.error("job_check nudge lookup failed", err);
-        }
+        prompt = jobCheckWakePrompt(payload);
       } else if (kind === "event") {
         prompt = eventPrompt(payload);
       }
@@ -738,9 +790,13 @@ export default defineChannel({
             principalType: "user",
             principalId: tenantPhone,
             // ponytail: wire v1 не терпит undefined в attributes — ключ опускаем
-            attributes: inkboxHandle
-              ? { conversationId, inkboxHandle, origin: "wakeup" }
-              : { conversationId, origin: "wakeup" },
+            attributes: {
+              conversationId,
+              origin: "wakeup",
+              wakeupKind: kind,
+              ...(kind === "job_check" && payload ? { wakeupPayload: payload } : {}),
+              ...(inkboxHandle ? { inkboxHandle } : {}),
+            },
           },
         });
       } catch (err) {
@@ -752,53 +808,5 @@ export default defineChannel({
       return Response.json({ ok: true });
     }),
   ],
-  events: {
-    async "turn.failed"(event, channel, ctx) {
-      const conversationId = channel.continuation?.token;
-      if (!conversationId) return;
-      console.error("turn failed", { conversationId, code: event.code, message: event.message });
-      const text = fallbackForFailed(turnOrigin(ctx?.session?.auth?.current?.attributes));
-      if (!text) return;
-      if (!takeFallbackSlot(fallbackSent, event.turnId, Date.now())) return;
-      const tenant = await replyTenant(conversationId);
-      await deliverHuman({ tenant, conversationId, text }).catch((err) =>
-        console.error("turn failed fallback send failed", err),
-      );
-    },
-    async "message.completed"(event, channel, ctx) {
-      if (event.finishReason === "tool-calls") return;
-      const conversationId = channel.continuation?.token;
-      if (!conversationId) return;
-      if (!event.message) {
-        // Model ended a human's turn with nothing (tool errors, refusal,
-        // provider hiccup). Say so instead of leaving them on read.
-        const text = fallbackForCompleted({
-          finishReason: event.finishReason,
-          message: event.message,
-          origin: turnOrigin(ctx?.session?.auth?.current?.attributes),
-        });
-        if (!text) return;
-        console.error("empty turn", { conversationId, finishReason: event.finishReason });
-        if (!takeFallbackSlot(fallbackSent, event.turnId, Date.now())) return;
-        const tenant = await replyTenant(conversationId);
-        await deliverHuman({ tenant, conversationId, text }).catch((err) =>
-          console.error("empty turn fallback send failed", err),
-        );
-        return;
-      }
-      const { message, seen } = splitSeen(event.message);
-      const tenant = await replyTenant(conversationId);
-      if (seen !== undefined && tenant?.phoneE164) {
-        await setWakeupLastSeen(tenant.phoneE164, seen).catch((err) => {
-          console.error("setLastSeen failed", err);
-        });
-      }
-      if (!message.trim() || message.trim().startsWith("[SILENT]")) return;
-      await deliverHuman({
-        tenant,
-        conversationId,
-        text: stripConnectUrls(message),
-      });
-    },
-  },
+  events: imessageDeliveryEvents,
 });

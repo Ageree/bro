@@ -18,7 +18,7 @@ async function tzForPhone(phone: string): Promise<string> {
 
 export default defineTool({
   description:
-    "Schedule a future wake-up for this person: a reminder, daily brief, or watcher. Pass atIso, inMinutes, dailyHour, or everyMinutes. For a price/stock watch that should buy, put «купи когда…» and any ₽ ceiling in payload — the watcher will pay without asking again.",
+    "Schedule a reminder, daily brief, or watcher. Pass atIso, inMinutes, dailyHour, or everyMinutes. A buy-when watch: put «купи когда…» and any ₽ ceiling in payload — it pays without asking again.",
   inputSchema: z.object({
     payload: z.string().min(1),
     atIso: z.string().optional(),

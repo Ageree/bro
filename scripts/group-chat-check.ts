@@ -203,22 +203,43 @@ const channel = readFileSync(
 );
 assert(channel.includes("isGroupMessage"), "channel detects groups");
 assert(channel.includes("getGroupByConversation"), "known group overrides missing flag");
+assert(channel.includes("flaggedGroup"), "already-flagged groups skip the extra lookup");
 assert(channel.includes("bindGroupInbound"), "channel binds groups");
 assert(channel.includes("shouldReplyInGroup"), "channel mention gate");
 assert(channel.includes("sendGroupWelcome"), "channel group welcome");
+assert(
+  channel.includes("parkTurn(waitUntil, welcome)"),
+  "first-group welcome does not block a mentioned agent turn",
+);
 assert(channel.includes("tagGroupUserContent"), "channel tags group text");
 assert(channel.includes("groupAuthAttributes"), "channel group auth");
 assert(channel.includes("replyTenant"), "outbound uses group owner");
-assert(
-  channel.includes("Group billing runs only after the mention gate"),
-  "group billing comment",
-);
 const mentionAt = channel.indexOf("group && !shouldReplyInGroup(inbound.text)");
 const firstGate = channel.indexOf("inboundOwnerGate(ownerPhone)");
 const secondGate = channel.indexOf("inboundOwnerGate(ownerPhone)", firstGate + 1);
 assert(mentionAt !== -1 && firstGate !== -1 && secondGate !== -1, "mention and both bills");
 assert(firstGate < mentionAt, "1:1 bills before mention");
 assert(mentionAt < secondGate, "group bills after mention");
+assert(
+  channel.indexOf("groupMemoryScope(msg.conversation_id)") > mentionAt,
+  "group wake/Instinct use the group container, after the mention gate",
+);
+assert(
+  channel.indexOf("prefetchInstinctRecall(", mentionAt) > mentionAt &&
+    channel.indexOf("prefetchInstinctRecall(", mentionAt) <
+      channel.indexOf("const gate = await gateP", secondGate),
+  "group Instinct overlaps group billing",
+);
+assert(
+  channel.includes("groupTaggedText(remote, inbound.text)"),
+  "group Instinct prefetch uses the same tagged query turn.started will search",
+);
+assert(
+  channel.indexOf("prefetchOpenRouter()", mentionAt) > mentionAt &&
+    channel.indexOf("prefetchOpenRouter()", mentionAt) <
+      channel.indexOf("const gate = await gateP", secondGate),
+  "group OpenRouter warm overlaps group billing",
+);
 assert(
   channel.includes("if (inbound.allVoiceFailed)") &&
     channel.includes("if (group) return new Response(null, { status: 204 })"),

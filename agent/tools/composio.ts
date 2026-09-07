@@ -7,8 +7,8 @@ import { groupPersonalBlock } from "../lib/group-guard";
 import { tenantId } from "../lib/tenant";
 import { sandboxNetworkViolation } from "../lib/sandbox-policy";
 import { getTenant } from "../lib/convex";
+import { attrsFromSession, channelFromAuth } from "../lib/deliver-routed";
 import { deliverHuman } from "../lib/deliver-human";
-import { lastChannelOf } from "../../convex/lib/telegramPolicy.ts";
 
 function rec(v: unknown): Record<string, unknown> {
   return v !== null && typeof v === "object" && !Array.isArray(v)
@@ -42,11 +42,12 @@ async function sendConnectIfAny(ctx: ToolContext, result: unknown): Promise<void
     if (!isConnectDest(url)) continue;
     const wrapped = wrapConnectUrl(url);
     try {
-      if (lastChannelOf(tenant?.lastChannel) === "telegram") {
+      if (channelFromAuth(attrsFromSession(ctx.session), tenant?.lastChannel) === "telegram") {
         await deliverHuman({
           tenant,
           conversationId: conv,
           text: `Подключи приложение\n\n:::buttons\n[Подключить](${wrapped})\n:::`,
+          channel: "telegram",
         });
       } else {
         await sendBlueIMessage({
@@ -79,7 +80,7 @@ export default defineDynamic({
     "session.started": () => ({
       COMPOSIO_SEARCH_TOOLS: defineTool({
         description:
-          "Find tools across the user's apps (Gmail, GitHub, Calendar, …). Start here. Never invent a tool slug.",
+          "Find tools across this person's apps (Gmail, GitHub, Calendar, …). Start here. Never invent a tool slug.",
         inputSchema: {
           type: "object",
           required: ["queries"],
@@ -165,7 +166,7 @@ export default defineDynamic({
       }),
       COMPOSIO_REMOTE_WORKBENCH: defineTool({
         description:
-          "Run Python in the remote sandbox for large tool responses. Skip if the data already fits in chat. No network access: never fetch websites here — use browser_task.",
+          "Python in the remote sandbox for large tool responses. Skip if the data fits in chat. No network: never fetch websites — use browser_task.",
         inputSchema: {
           type: "object",
           required: ["code_to_execute"],
@@ -191,7 +192,7 @@ export default defineDynamic({
       }),
       COMPOSIO_REMOTE_BASH_TOOL: defineTool({
         description:
-          "Run bash in the remote sandbox for large files. 3-minute limit. No network access: never fetch websites here — use browser_task.",
+          "Bash in the remote sandbox for large files. 3-minute limit. No network: never fetch websites — use browser_task.",
         inputSchema: {
           type: "object",
           required: ["command"],

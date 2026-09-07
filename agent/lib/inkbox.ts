@@ -35,10 +35,23 @@ export function reactionTargetId(
 }
 
 let client: Inkbox | null = null;
+const identities = new Map<string, Promise<Awaited<ReturnType<Inkbox["getIdentity"]>>>>();
 
 export function inkbox(): Inkbox {
   if (!client) client = new Inkbox();
   return client;
+}
+
+export function inkboxIdentity(handle?: string) {
+  const key = handle ?? agentHandle();
+  const existing = identities.get(key);
+  if (existing) return existing;
+  const pending = inkbox().getIdentity(key);
+  identities.set(key, pending);
+  pending.catch(() => {
+    identities.delete(key);
+  });
+  return pending;
 }
 
 export function agentHandle(): string {
@@ -82,7 +95,7 @@ export async function sendBlueIMessage(opts: {
   text: string;
   handle?: string;
 }): Promise<IMessage> {
-  const identity = await inkbox().getIdentity(opts.handle ?? agentHandle());
+  const identity = await inkboxIdentity(opts.handle);
   const sent = await identity.sendIMessage({
     conversationId: opts.conversationId,
     text: opts.text,
@@ -101,7 +114,7 @@ export async function sendBlueIMessageGroup(opts: {
   text: string;
   handle?: string;
 }): Promise<IMessage> {
-  const identity = await inkbox().getIdentity(opts.handle ?? agentHandle());
+  const identity = await inkboxIdentity(opts.handle);
   const sent = await identity.sendIMessage({
     to: opts.to,
     text: opts.text,
@@ -120,7 +133,7 @@ export async function sendBlueIMessageMedia(opts: {
   handle?: string;
   text?: string;
 }): Promise<IMessage> {
-  const identity = await inkbox().getIdentity(opts.handle ?? agentHandle());
+  const identity = await inkboxIdentity(opts.handle);
   const text = opts.text?.trim();
   const sent = await identity.sendIMessage({
     conversationId: opts.conversationId,
@@ -140,7 +153,7 @@ export async function sendIMessageTapback(opts: {
   reaction: IMessageTapback;
   handle?: string;
 }): Promise<IMessageReaction> {
-  const identity = await inkbox().getIdentity(opts.handle ?? agentHandle());
+  const identity = await inkboxIdentity(opts.handle);
   return identity.sendIMessageReaction({
     messageId: opts.messageId,
     reaction: opts.reaction,

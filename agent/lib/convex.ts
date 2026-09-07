@@ -2,11 +2,22 @@ import { ConvexHttpClient } from "convex/browser";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "../../convex/_generated/api.js";
 import type { Id } from "../../convex/_generated/dataModel";
+import {
+  HANDLE_TENANT_TTL_MS,
+  TELEGRAM_TENANT_TTL_MS,
+  createTtlCache,
+} from "./inbound-path.ts";
+
+let cachedClient: ConvexHttpClient | undefined;
+let cachedClientUrl: string | undefined;
 
 function client(): ConvexHttpClient {
   const url = process.env.CONVEX_URL;
   if (!url) throw new Error("CONVEX_URL missing");
-  return new ConvexHttpClient(url);
+  if (cachedClient && cachedClientUrl === url) return cachedClient;
+  cachedClient = new ConvexHttpClient(url);
+  cachedClientUrl = url;
+  return cachedClient;
 }
 
 function secret(): string {
@@ -15,11 +26,57 @@ function secret(): string {
   return s;
 }
 
+export type JobWakeRow = {
+  id: string;
+  line: string;
+  goal: string;
+  note?: string;
+  waitingFor?: "human" | "email" | "browser";
+  waitingSince?: number;
+  lastNudgeAt?: number;
+};
+
+export type WakeContext = {
+  memories: string[];
+  jobs: JobWakeRow[];
+};
+
+const wakeInflight = new Map<string, Promise<WakeContext>>();
+const wakeCache = new Map<string, { at: number; value: WakeContext }>();
+
+export const WAKE_CONTEXT_TTL_MS = 8_000;
+
+function rememberWake(phoneE164: string, value: WakeContext): void {
+  wakeCache.set(phoneE164, { at: Date.now(), value });
+}
+
+function forgetWake(phoneE164: string): void {
+  wakeCache.delete(phoneE164);
+}
+
+export async function loadWakeContext(phoneE164: string): Promise<WakeContext> {
+  const cached = wakeCache.get(phoneE164);
+  if (cached && Date.now() - cached.at < WAKE_CONTEXT_TTL_MS) return cached.value;
+  const existing = wakeInflight.get(phoneE164);
+  if (existing) return existing;
+  const pending = client()
+    .query(api.memories.wakeContext, {
+      secret: secret(),
+      phoneE164,
+    })
+    .then((value) => {
+      rememberWake(phoneE164, value);
+      return value;
+    })
+    .finally(() => {
+      wakeInflight.delete(phoneE164);
+    });
+  wakeInflight.set(phoneE164, pending);
+  return pending;
+}
+
 export async function wakeLines(phoneE164: string): Promise<string[]> {
-  return await client().query(api.memories.wake, {
-    secret: secret(),
-    phoneE164,
-  });
+  return (await loadWakeContext(phoneE164)).memories;
 }
 
 export async function noteLine(phoneE164: string, line: string): Promise<string> {
@@ -28,6 +85,7 @@ export async function noteLine(phoneE164: string, line: string): Promise<string>
     phoneE164,
     line,
   });
+  forgetWake(phoneE164);
   return "noted";
 }
 
@@ -51,6 +109,7 @@ export async function forgetLines(
     phoneE164,
     needle,
   });
+  forgetWake(phoneE164);
   return `forgot ${n}`;
 }
 
@@ -59,12 +118,15 @@ export async function upsertTenant(
   inkboxConversationId?: string,
   emailAddress?: string,
 ) {
-  return await client().mutation(api.tenants.upsert, {
+  const tenant = await client().mutation(api.tenants.upsert, {
     secret: secret(),
     phoneE164,
     inkboxConversationId,
     emailAddress,
   });
+  if (tenant.inkboxHandle) forgetHandleTenant(tenant.inkboxHandle);
+  if (tenant.telegramUserId) forgetTelegramTenant(tenant.telegramUserId);
+  return tenant;
 }
 
 export async function getTenant(phoneE164: string) {
@@ -74,11 +136,59 @@ export async function getTenant(phoneE164: string) {
   });
 }
 
-export async function getTenantByHandle(handle: string) {
-  return await client().query(api.tenants.getByHandle, {
-    secret: secret(),
-    handle,
-  });
+type HandleTenant = FunctionReturnType<typeof api.tenants.getByHandle>;
+type TelegramTenant = FunctionReturnType<typeof api.tenants.getByTelegram>;
+
+const handleTenants = createTtlCache<HandleTenant>(HANDLE_TENANT_TTL_MS);
+const handleInflight = new Map<string, Promise<HandleTenant>>();
+const telegramTenants = createTtlCache<TelegramTenant>(TELEGRAM_TENANT_TTL_MS);
+const telegramInflight = new Map<string, Promise<TelegramTenant>>();
+
+export function forgetHandleTenant(handle: string): void {
+  handleTenants.forget(handle.trim());
+}
+
+export function forgetTelegramTenant(telegramUserId: string): void {
+  telegramTenants.forget(telegramUserId.trim());
+}
+
+function rememberHandleTenant(handle: string, tenant: HandleTenant): void {
+  handleTenants.set(handle.trim(), tenant);
+}
+
+function rememberTelegramTenant(
+  telegramUserId: string,
+  tenant: TelegramTenant,
+): void {
+  telegramTenants.set(telegramUserId.trim(), tenant);
+}
+
+export async function getTenantByHandle(
+  handle: string,
+  opts?: { fresh?: boolean },
+): Promise<HandleTenant> {
+  const key = handle.trim();
+  if (!opts?.fresh) {
+    const cached = handleTenants.get(key);
+    if (cached.hit) return cached.value;
+    const existing = handleInflight.get(key);
+    if (existing) return existing;
+  }
+  const pending = client()
+    .query(api.tenants.getByHandle, {
+      secret: secret(),
+      handle: key,
+    })
+    .then((tenant) => {
+      if (tenant) rememberHandleTenant(key, tenant);
+      else forgetHandleTenant(key);
+      return tenant;
+    })
+    .finally(() => {
+      handleInflight.delete(key);
+    });
+  if (!opts?.fresh) handleInflight.set(key, pending);
+  return pending;
 }
 
 export async function getTenantByConversation(conversationId: string) {
@@ -96,11 +206,29 @@ export type BindInboundResult =
     }
   | { ok: false; reason: string };
 
-export async function getTenantByTelegram(telegramUserId: string) {
-  return await client().query(api.tenants.getByTelegram, {
-    secret: secret(),
-    telegramUserId,
-  });
+export async function getTenantByTelegram(
+  telegramUserId: string,
+): Promise<TelegramTenant> {
+  const key = telegramUserId.trim();
+  const cached = telegramTenants.get(key);
+  if (cached.hit) return cached.value;
+  const existing = telegramInflight.get(key);
+  if (existing) return existing;
+  const pending = client()
+    .query(api.tenants.getByTelegram, {
+      secret: secret(),
+      telegramUserId: key,
+    })
+    .then((tenant) => {
+      if (tenant) rememberTelegramTenant(key, tenant);
+      else forgetTelegramTenant(key);
+      return tenant;
+    })
+    .finally(() => {
+      telegramInflight.delete(key);
+    });
+  telegramInflight.set(key, pending);
+  return pending;
 }
 
 export async function touchLastChannel(
@@ -146,10 +274,16 @@ export async function bindTelegram(opts: {
   telegramChatId: string;
   telegramUsername?: string;
 }): Promise<BindTelegramResult> {
-  return await client().mutation(api.tenants.bindTelegram, {
+  const result = await client().mutation(api.tenants.bindTelegram, {
     secret: secret(),
     ...opts,
   });
+  forgetTelegramTenant(opts.telegramUserId);
+  if (result.ok) {
+    rememberTelegramTenant(opts.telegramUserId, result.tenant);
+    if (result.tenant.inkboxHandle) forgetHandleTenant(result.tenant.inkboxHandle);
+  }
+  return result;
 }
 
 export async function bindInbound(
@@ -163,7 +297,12 @@ export async function bindInbound(
     phoneE164,
     inkboxConversationId,
   });
+  forgetHandleTenant(handle);
   if (!result.ok) return result;
+  rememberHandleTenant(handle, result.tenant);
+  if (result.tenant.telegramUserId) {
+    forgetTelegramTenant(result.tenant.telegramUserId);
+  }
   const firstBind = (result as { firstBind?: unknown }).firstBind === true;
   return { ok: true, tenant: result.tenant, firstBind };
 }
@@ -247,11 +386,8 @@ export async function getTenantByEmail(emailAddress: string) {
   });
 }
 
-export async function jobWakeLines(phoneE164: string): Promise<string[]> {
-  return await client().query(api.jobs.wake, {
-    secret: secret(),
-    phoneE164,
-  });
+export async function jobWakeRows(phoneE164: string): Promise<JobWakeRow[]> {
+  return (await loadWakeContext(phoneE164)).jobs;
 }
 
 export async function listOpenJobs(
@@ -268,12 +404,14 @@ export async function openJob(
   goal: string,
   doneWhen: string,
 ) {
-  return await client().mutation(api.jobs.open, {
+  const id = await client().mutation(api.jobs.open, {
     secret: secret(),
     phoneE164,
     goal,
     doneWhen,
   });
+  forgetWake(phoneE164);
+  return id;
 }
 
 export async function waitJob(
@@ -286,13 +424,15 @@ export async function waitJob(
     emailMessageId?: string;
   },
 ) {
-  return await client().mutation(api.jobs.wait, {
+  const result = await client().mutation(api.jobs.wait, {
     secret: secret(),
     phoneE164,
     jobId: jobId as Id<"jobs">,
     waitingFor,
     ...extra,
   });
+  forgetWake(phoneE164);
+  return result;
 }
 
 export async function finishJob(
@@ -301,21 +441,25 @@ export async function finishJob(
   outcome: string,
   failed?: boolean,
 ) {
-  return await client().mutation(api.jobs.finish, {
+  const result = await client().mutation(api.jobs.finish, {
     secret: secret(),
     phoneE164,
     jobId: jobId as Id<"jobs">,
     outcome,
     failed,
   });
+  forgetWake(phoneE164);
+  return result;
 }
 
 export async function markNudged(phoneE164: string, jobId: string) {
-  return await client().mutation(api.jobs.markNudged, {
+  const result = await client().mutation(api.jobs.markNudged, {
     secret: secret(),
     phoneE164,
     jobId: jobId as Id<"jobs">,
   });
+  forgetWake(phoneE164);
+  return result;
 }
 
 export async function touchJobMail(
