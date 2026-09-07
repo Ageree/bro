@@ -1,4 +1,10 @@
 import {
+  defaultCheckInMinutes,
+  nudgePrompt,
+  shouldNudge,
+  shouldSpeakNotSilent,
+} from "../convex/lib/jobNudgePolicy.ts";
+import {
   attachMailToJob,
   formatMailWake,
   isEmailAddr,
@@ -212,6 +218,98 @@ assert(
 assert(
   wakeupRetryWaitBeforeLastMs() >= WAKEUP_CLAIM_LEASE_MS,
   "jobs wakeup retries outlast the pending lease",
+);
+
+assert(defaultCheckInMinutes("human") === 20, "human default 20");
+assert(defaultCheckInMinutes("email") === 45, "email default 45");
+assert(defaultCheckInMinutes("browser") === 8, "browser default 8");
+
+assert(
+  shouldNudge({ waitingFor: "human", now: t0 }) === false,
+  "no waitingSince → never nudge",
+);
+assert(
+  shouldNudge({
+    waitingFor: "human",
+    waitingSince: t0,
+    now: t0 + 19 * 60_000,
+  }) === false,
+  "human first nudge not before 20m",
+);
+assert(
+  shouldNudge({
+    waitingFor: "human",
+    waitingSince: t0,
+    now: t0 + 20 * 60_000,
+  }) === true,
+  "human first nudge at 20m",
+);
+assert(
+  shouldNudge({
+    waitingFor: "email",
+    waitingSince: t0,
+    now: t0 + 44 * 60_000,
+  }) === false,
+  "email first nudge not before 45m",
+);
+assert(
+  shouldNudge({
+    waitingFor: "email",
+    waitingSince: t0,
+    now: t0 + 45 * 60_000,
+  }) === true,
+  "email first nudge at 45m",
+);
+assert(
+  shouldNudge({
+    waitingFor: "browser",
+    waitingSince: t0,
+    now: t0 + 7 * 60_000,
+  }) === false,
+  "browser first nudge not before 8m",
+);
+assert(
+  shouldNudge({
+    waitingFor: "browser",
+    waitingSince: t0,
+    now: t0 + 8 * 60_000,
+  }) === true,
+  "browser first nudge at 8m",
+);
+assert(
+  shouldNudge({
+    waitingFor: "human",
+    waitingSince: t0,
+    lastNudgeAt: t0 + 10 * 60_000,
+    now: t0 + 25 * 60_000,
+  }) === false,
+  "re-nudge not sooner than interval",
+);
+assert(
+  shouldNudge({
+    waitingFor: "human",
+    waitingSince: t0,
+    lastNudgeAt: t0 + 10 * 60_000,
+    now: t0 + 30 * 60_000,
+  }) === true,
+  "re-nudge after same interval",
+);
+assert(shouldSpeakNotSilent("human") === true, "human always speak");
+assert(shouldSpeakNotSilent("browser") === true, "browser speak when due");
+assert(shouldSpeakNotSilent("email") === true, "email speak when due");
+assert(
+  nudgePrompt({ waitingFor: "human", goal: "слот", note: "вт 15:00?" }).includes(
+    "ответ",
+  ),
+  "human nudge asks",
+);
+assert(
+  nudgePrompt({ waitingFor: "browser", goal: "оплата" }).includes("3DS"),
+  "browser nudge 3DS",
+);
+assert(
+  nudgePrompt({ waitingFor: "email", goal: "запись" }).includes("клиник"),
+  "email nudge clinic/mail",
 );
 
 console.log("jobs-check ok");

@@ -69,17 +69,25 @@ export function shouldSkipAgentTurn(input: {
   return false;
 }
 
-export function welcomeText(): string {
+export function welcomeText(opts?: { canJoinGroups?: boolean }): string {
+  const card = opts?.canJoinGroups
+    ? "Карточку скинул — сохрани в контакты. Меня можно добавить в групповой чат с этого номера."
+    : "Карточку скинул — сохрани в контакты.";
   return [
     "Я Bro — личный консьерж в iMessage. Пиши как другу: купить, записать, напомнить.",
     "",
-    "Карточку скинул — сохрани в контакты. Банковскую карту в чат не кидай, она в сейфе.",
+    card,
+    "",
+    "Банковскую карту в чат не кидай, она в сейфе.",
     "",
     "Напиши «что ты умеешь», если нужен короткий список.",
   ].join("\n");
 }
 
-export function helpText(): string {
+export function helpText(opts?: { canJoinGroups?: boolean }): string {
+  const groups = opts?.canJoinGroups
+    ? "• Групповые чаты: сохрани контакт и добавь Bro, в группе пиши «бро …»"
+    : "• Групповые чаты: без своего номера Bro остаётся 1:1; в группе пиши «бро …»";
   return [
     "Коротко, что умею:",
     "",
@@ -88,8 +96,9 @@ export function helpText(): string {
     "• Помнить размер, адрес, ПВЗ",
     "• Напоминания и сторожа (цена, почта, календарь)",
     "• Платить картой из сейфа — номер в чат не пиши",
-    "• Письма со своего ящика Bro",
+    "• Письма со своего ящика Bro — коды из почты сам подхватываю",
     "• Тот же Bro в Telegram — напиши «телеграм»",
+    groups,
     "",
     "Пиши обычным текстом.",
   ].join("\n");

@@ -5,12 +5,15 @@
  * from a model argument, so one person's browser and vault stay unreachable
  * from another person's session.
  */
+import { groupPersonalBlock } from "../../../lib/group-guard";
 import { getBrowserSession } from "../../../lib/convex";
 import { tenantId } from "../../../lib/tenant";
 
 type AuthBox = Parameters<typeof tenantId>[0];
 
 export function workerTenant(ctx: AuthBox): string {
+  const blocked = groupPersonalBlock(ctx);
+  if (blocked) throw new Error(blocked);
   return tenantId(ctx);
 }
 

@@ -6,6 +6,7 @@ import {
   countBrowserJobStart,
   listVaultItems,
   readVaultSecret,
+  recordOrder,
   startBrowserFollow,
   setBrowser,
   upsertTenant,
@@ -14,6 +15,8 @@ import {
   nextBrowserAction,
   shouldStartFollowThrough,
 } from "../lib/browser-policy";
+import { parseOrderFromResult } from "../lib/order-policy";
+import { purchaseStance } from "../lib/purchase-policy";
 import {
   FOLLOW_RETRY_HINT,
 } from "../../convex/lib/browserFollowPolicy.ts";
@@ -29,6 +32,7 @@ import {
 } from "../lib/browseruse";
 import { profileSyncStatus } from "../../convex/lib/browserProfilePolicy.ts";
 import { deliverHuman } from "../lib/deliver-human";
+import { groupPersonalBlock } from "../lib/group-guard";
 import { tenantId } from "../lib/tenant";
 import { browserGateFromResult } from "../../convex/lib/billingPolicy";
 import { cardBindings, normalizePayHosts } from "../lib/browser-pay.ts";
@@ -71,7 +75,7 @@ async function persist(
     browserTask: task,
     browserStatus: run.status,
     ...(run.sessionId ? { browserSessionId: run.sessionId } : {}),
-    ...(run.liveUrl ? { browserLiveUrl: run.liveUrl } : {}),
+    browserLiveUrl: run.liveUrl ?? "",
     ...(extra ?? {}),
   });
 }
@@ -93,6 +97,40 @@ function payload(run: BrowserRun, extra?: Record<string, unknown>) {
   };
 }
 
+function extraHosts(extra: Record<string, unknown>): string[] | undefined {
+  const raw = extra.payHosts;
+  if (!Array.isArray(raw)) return undefined;
+  const hosts = raw.filter((h): h is string => typeof h === "string");
+  return hosts.length > 0 ? hosts : undefined;
+}
+
+function taskLooksLikeBuy(task: string): boolean {
+  const stance = purchaseStance(task);
+  return stance === "buy" || stance === "watch_and_buy";
+}
+
+async function maybeRecordOrder(
+  phone: string,
+  run: BrowserRun,
+  task: string,
+  extra: Record<string, unknown>,
+): Promise<void> {
+  if (run.status.toLowerCase() !== "completed") return;
+  if (extra.paying !== true && !taskLooksLikeBuy(task)) return;
+  const row = parseOrderFromResult({
+    task,
+    result: run.result,
+    hosts: extraHosts(extra),
+    pay: extra.paying === true,
+  });
+  if (!row) return;
+  try {
+    await recordOrder(phone, row);
+  } catch (err) {
+    console.error("record order failed", err);
+  }
+}
+
 async function settle(
   phone: string,
   run: BrowserRun,
@@ -112,7 +150,10 @@ async function settle(
   ) {
     await cancelWakeup(phone, { kind: "browser_poll" }).catch(() => {});
     await cancelBrowserFollow(phone, run.runId).catch(() => {});
-    if (isTerminal(run.status)) return payload(run, extra);
+    if (isTerminal(run.status)) {
+      await maybeRecordOrder(phone, run, task, extra);
+      return payload(run, extra);
+    }
     return payload(run, {
       ...extra,
       hint: "джоб висит слишком долго, скажи человеку и предложи reset",
@@ -205,6 +246,8 @@ export default defineTool({
       .optional(),
   }),
   async execute({ task, reset, pay }, ctx) {
+    const blocked = groupPersonalBlock(ctx);
+    if (blocked) return { status: "group", hint: blocked };
     const phone = tenantId(ctx);
     const tenant = await upsertTenant(phone);
     const conv = conversationId(ctx, tenant.inkboxConversationId);

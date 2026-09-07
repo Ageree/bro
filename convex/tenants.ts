@@ -8,7 +8,7 @@ import {
   query,
   type MutationCtx,
 } from "./_generated/server";
-import type { Doc } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import { assertSecret } from "./secret";
 import {
   browserAllowance,
@@ -27,6 +27,11 @@ import {
   usedCount,
 } from "./lib/billingPolicy";
 import {
+  isValidIanaTimeZone,
+  normalizeTz,
+  sessionTzChangeDecision,
+} from "./lib/tzPolicy";
+import {
   browserWakeupClaimKey,
   claimMatchesRunPhase,
   decideWakeupClaim,
@@ -41,6 +46,20 @@ import {
   telegramBindExpiry,
   type HumanChannel,
 } from "./lib/telegramPolicy";
+
+/** Never write a group conversation onto the 1:1 wakeup/mail lane. */
+async function oneToOneConversationIdOrUndefined(
+  ctx: MutationCtx,
+  conversationId: string | undefined,
+): Promise<string | undefined> {
+  const id = conversationId?.trim();
+  if (!id) return undefined;
+  const group = await ctx.db
+    .query("groupChats")
+    .withIndex("by_conversation", (q) => q.eq("conversationId", id))
+    .first();
+  return group ? undefined : id;
+}
 
 /** Full tenant document. Derived from the schema so a new column (e.g.
  *  `archiveSyncedAt`) can never be missing here: a hand-copied list once
@@ -133,16 +152,20 @@ export const upsert = mutation({
       .query("tenants")
       .withIndex("by_phone", (q) => q.eq("phoneE164", phoneE164))
       .first();
+    const oneToOneConversationId = await oneToOneConversationIdOrUndefined(
+      ctx,
+      inkboxConversationId,
+    );
     if (existing) {
       const patch: {
         inkboxConversationId?: string;
         emailAddress?: string;
       } = {};
       if (
-        inkboxConversationId &&
-        existing.inkboxConversationId !== inkboxConversationId
+        oneToOneConversationId &&
+        existing.inkboxConversationId !== oneToOneConversationId
       ) {
-        patch.inkboxConversationId = inkboxConversationId;
+        patch.inkboxConversationId = oneToOneConversationId;
       }
       if (email && existing.emailAddress !== email) patch.emailAddress = email;
       if (Object.keys(patch).length) {
@@ -154,7 +177,7 @@ export const upsert = mutation({
     const id = await ctx.db.insert("tenants", {
       phoneE164,
       status: "active",
-      inkboxConversationId,
+      inkboxConversationId: oneToOneConversationId,
       emailAddress: email || undefined,
     });
     const created = await ctx.db.get(id);
@@ -162,6 +185,71 @@ export const upsert = mutation({
     return created;
   },
 });
+
+export const tzChangeResult = v.union(
+  v.object({ ok: v.literal(true), tz: v.string() }),
+  v.object({
+    ok: v.literal(false),
+    code: v.union(v.literal("unbound"), v.literal("invalid")),
+  }),
+);
+
+/** Counter-carry + patch. Caller already validated IANA and ownership. */
+export async function applyTimezoneChange(
+  ctx: MutationCtx,
+  tenant: Doc<"tenants">,
+  tz: string,
+  now: number,
+): Promise<void> {
+  const prevTz = tenant.tz ?? DEFAULT_TZ;
+  if (prevTz === tz) {
+    await ctx.db.patch(tenant._id, { tz });
+    return;
+  }
+  const config = periodConfig();
+  const prevDayKey = dayKey(now, prevTz);
+  const prevMonthKey = monthKey(now, prevTz);
+  // Component keys are tz-scoped; read old-window used so a tz flip
+  // does not drop the component half of effectiveUsedCount.
+  const { value: msgsRemaining } = await rateLimiter.getValue(
+    ctx,
+    "msgsPerDay",
+    { key: rateLimitPeriodKey(tenant._id, prevDayKey), config },
+  );
+  const { value: browserRemaining } = await rateLimiter.getValue(
+    ctx,
+    "browserJobsPerMonth",
+    { key: rateLimitPeriodKey(tenant._id, prevMonthKey), config },
+  );
+  const carry = carryCountersOnTzChange({
+    now,
+    prevTz,
+    nextTz: tz,
+    msgsDayKey: tenant.msgsDayKey,
+    msgsDayCount: tenant.msgsDayCount,
+    browserMonthKey: tenant.browserMonthKey,
+    browserMonthCount: tenant.browserMonthCount,
+    paywallSentDayKey: tenant.paywallSentDayKey,
+    msgsComponentUsed: usedCount(msgsRemaining),
+    browserComponentUsed: usedCount(browserRemaining),
+  });
+  await ctx.db.patch(tenant._id, { tz, ...carry });
+}
+
+export async function applyTimezoneForTenantId(
+  ctx: MutationCtx,
+  args: { tenantId: Id<"tenants">; tz: string; now: number },
+): Promise<{ ok: true; tz: string } | { ok: false; code: "unbound" | "invalid" }> {
+  const tenant = await ctx.db.get(args.tenantId);
+  if (!tenant) return { ok: false, code: "invalid" };
+  const decision = sessionTzChangeDecision({
+    phoneE164: tenant.phoneE164,
+    tz: args.tz,
+  });
+  if (!decision.ok) return decision;
+  await applyTimezoneChange(ctx, tenant, decision.tz, args.now);
+  return { ok: true, tz: decision.tz };
+}
 
 export const setTimezone = mutation({
   args: {
@@ -172,48 +260,24 @@ export const setTimezone = mutation({
   returns: v.null(),
   handler: async (ctx, { secret, phoneE164, tz }) => {
     assertSecret(secret);
-    try {
-      new Intl.DateTimeFormat(undefined, { timeZone: tz });
-    } catch {
+    const nextTz = normalizeTz(tz);
+    if (!isValidIanaTimeZone(nextTz)) {
       throw new Error("invalid timezone");
     }
     const tenant = await tenantByPhone(ctx, phoneE164);
-    const prevTz = tenant.tz ?? DEFAULT_TZ;
-    if (prevTz === tz) {
-      await ctx.db.patch(tenant._id, { tz });
-      return null;
-    }
-    const now = Date.now();
-    const config = periodConfig();
-    const prevDayKey = dayKey(now, prevTz);
-    const prevMonthKey = monthKey(now, prevTz);
-    // Component keys are tz-scoped; read old-window used so a tz flip
-    // does not drop the component half of effectiveUsedCount.
-    const { value: msgsRemaining } = await rateLimiter.getValue(
-      ctx,
-      "msgsPerDay",
-      { key: rateLimitPeriodKey(tenant._id, prevDayKey), config },
-    );
-    const { value: browserRemaining } = await rateLimiter.getValue(
-      ctx,
-      "browserJobsPerMonth",
-      { key: rateLimitPeriodKey(tenant._id, prevMonthKey), config },
-    );
-    const carry = carryCountersOnTzChange({
-      now,
-      prevTz,
-      nextTz: tz,
-      msgsDayKey: tenant.msgsDayKey,
-      msgsDayCount: tenant.msgsDayCount,
-      browserMonthKey: tenant.browserMonthKey,
-      browserMonthCount: tenant.browserMonthCount,
-      paywallSentDayKey: tenant.paywallSentDayKey,
-      msgsComponentUsed: usedCount(msgsRemaining),
-      browserComponentUsed: usedCount(browserRemaining),
-    });
-    await ctx.db.patch(tenant._id, { tz, ...carry });
+    await applyTimezoneChange(ctx, tenant, nextTz, Date.now());
     return null;
   },
+});
+
+export const setTimezoneForTenantId = internalMutation({
+  args: {
+    tenantId: v.id("tenants"),
+    tz: v.string(),
+    now: v.number(),
+  },
+  returns: tzChangeResult,
+  handler: async (ctx, args) => applyTimezoneForTenantId(ctx, args),
 });
 
 export const setBrowser = mutation({
@@ -507,16 +571,20 @@ export const bindInbound = mutation({
       return { ok: false as const, reason: "wrong phone" };
     }
     const firstBind = !tenant.phoneE164;
+    const oneToOneConversationId = await oneToOneConversationIdOrUndefined(
+      ctx,
+      inkboxConversationId,
+    );
     const patch: {
       phoneE164?: string;
       inkboxConversationId?: string;
     } = {};
     if (!tenant.phoneE164) patch.phoneE164 = phoneE164;
     if (
-      inkboxConversationId &&
-      tenant.inkboxConversationId !== inkboxConversationId
+      oneToOneConversationId &&
+      tenant.inkboxConversationId !== oneToOneConversationId
     ) {
-      patch.inkboxConversationId = inkboxConversationId;
+      patch.inkboxConversationId = oneToOneConversationId;
     }
     if (Object.keys(patch).length) await ctx.db.patch(tenant._id, patch);
     const next = await ctx.db.get(tenant._id);

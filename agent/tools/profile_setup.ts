@@ -14,6 +14,7 @@ import {
 } from "../lib/browseruse";
 import { countBrowserJobStart, setBrowser, upsertTenant } from "../lib/convex";
 import { sendBlueIMessage } from "../lib/inkbox";
+import { groupPersonalBlock } from "../lib/group-guard";
 import { tenantId } from "../lib/tenant";
 import { deliverHuman } from "../lib/deliver-human";
 import { lastChannelOf } from "../../convex/lib/telegramPolicy.ts";
@@ -45,6 +46,8 @@ export default defineTool({
     site: z.string().min(1).max(80).optional(),
   }),
   async execute({ url, site }, ctx) {
+    const blocked = groupPersonalBlock(ctx);
+    if (blocked) return { status: "group", hint: blocked };
     const page = loginPageUrl(url);
     if (!page) {
       return {

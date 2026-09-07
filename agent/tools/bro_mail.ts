@@ -1,25 +1,85 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { isEmailAddr } from "../../convex/lib/mailPolicy.ts";
+import { fillOtpBodies, listBroInbox } from "../lib/bro-inbox.ts";
 import { touchJobMail, upsertTenant } from "../lib/convex";
 import { agentHandle, inkbox } from "../lib/inkbox";
+import { groupPersonalBlock } from "../lib/group-guard";
+import {
+  candidatesFromMail,
+  formatOtpLookup,
+  pickOtp,
+} from "../lib/otp-policy.ts";
 import { tenantId } from "../lib/tenant";
 
 export default defineTool({
   description:
-    "Send email FROM Bro's own Inkbox mailbox (not the human's Gmail). Confirm with the human before the first send of a job. Pass replyToMessageId (Inkbox message uuid from [event:mail] or the job wake line) to reply on a thread.",
+    "Bro's Inkbox mailbox (not the human's Gmail). action=send: outbound mail — confirm before the first send of a job; pass replyToMessageId to reply on a thread. action=inbox: list recent inbound and extract a fresh OTP if the letter has one. For OTP before asking the human, prefer the otp subagent / otp_lookup.",
   inputSchema: z.object({
-    to: z.string().min(3).max(200),
-    subject: z.string().min(1).max(200),
-    body: z.string().min(1).max(4000),
+    action: z.enum(["send", "inbox"]).optional(),
+    to: z.string().min(3).max(200).optional(),
+    subject: z.string().min(1).max(200).optional(),
+    body: z.string().min(1).max(4000).optional(),
     jobId: z.string().optional(),
     replyToMessageId: z.string().optional(),
+    query: z.string().min(1).max(120).optional(),
+    sinceMinutes: z.number().min(1).max(180).optional(),
+    limit: z.number().min(1).max(20).optional(),
   }),
-  async execute({ to, subject, body, jobId, replyToMessageId }, ctx) {
-    if (!isEmailAddr(to)) return { error: "bad to address" };
+  async execute(args, ctx) {
+    const blocked = groupPersonalBlock(ctx);
+    if (blocked) return { error: blocked };
+    const action = args.action ?? "send";
     const phone = tenantId(ctx);
     const tenant = await upsertTenant(phone);
     const handle = tenant.inkboxHandle ?? agentHandle();
+
+    if (action === "inbox") {
+      const sinceMs = Date.now() - (args.sinceMinutes ?? 15) * 60_000;
+      let listed = await listBroInbox({
+        handle,
+        sinceMs,
+        limit: args.limit ?? 8,
+      });
+      listed = await fillOtpBodies(handle, listed);
+      const q = args.query?.trim().toLowerCase();
+      const filtered = q
+        ? listed.filter((m) =>
+            `${m.from} ${m.subject} ${m.snippet} ${m.body ?? ""}`
+              .toLowerCase()
+              .includes(q),
+          )
+        : listed;
+      const otp = formatOtpLookup(
+        pickOtp(
+          filtered.flatMap((m) =>
+            candidatesFromMail("bro_mail", {
+              from: m.from,
+              subject: m.subject,
+              body: m.body ?? m.snippet,
+              atMs: m.createdAtMs,
+            }),
+          ),
+        ),
+      );
+      return {
+        messages: filtered.map((m) => ({
+          id: m.id,
+          threadId: m.threadId,
+          from: m.from,
+          subject: m.subject,
+          snippet: m.snippet,
+          createdAtMs: m.createdAtMs,
+        })),
+        otp,
+      };
+    }
+
+    const { to, subject, body, jobId, replyToMessageId } = args;
+    if (!to || !subject || !body) {
+      return { error: "send needs to, subject, body" };
+    }
+    if (!isEmailAddr(to)) return { error: "bad to address" };
     const identity = await inkbox().getIdentity(handle);
     if (!identity.emailAddress) return { error: "no mailbox" };
 

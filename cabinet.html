@@ -111,13 +111,15 @@
       word-break: break-all;
     }
     .row { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.8rem; }
-    .row input {
+    .row input,
+    .row select {
       flex: 1 1 12rem;
       min-width: 0;
       font: inherit;
       padding: 0.55rem 0.7rem;
       border-radius: 0.7rem;
       border: 1px solid rgba(23, 39, 30, 0.18);
+      background: #fff;
     }
     .muted { color: var(--ink-soft); font-size: 0.95rem; line-height: 1.5; }
     .handle-xl {
@@ -267,8 +269,67 @@
         if (!allow) return 0;
         return Math.max(0, Math.min(100, Math.round((used / allow) * 100)));
       }
-      function when(ms) {
-        return new Date(ms).toLocaleString("ru-RU", { timeZone: "Europe/Moscow" });
+      var DEFAULT_TZ = "Europe/Moscow";
+      var TZ_LIST = [
+        "Europe/Moscow",
+        "Europe/Samara",
+        "Asia/Yekaterinburg",
+        "Asia/Omsk",
+        "Asia/Krasnoyarsk",
+        "Asia/Irkutsk",
+        "Asia/Yakutsk",
+        "Asia/Vladivostok",
+        "Asia/Magadan",
+        "Asia/Kamchatka",
+        "UTC",
+      ];
+      function zoneOf(me) {
+        return (me && me.tz) || DEFAULT_TZ;
+      }
+      function when(ms, tz) {
+        var zone = tz || DEFAULT_TZ;
+        try {
+          return new Date(ms).toLocaleString("ru-RU", { timeZone: zone });
+        } catch (e) {
+          return new Date(ms).toLocaleString("ru-RU", { timeZone: DEFAULT_TZ });
+        }
+      }
+      function safeHttpUrl(u) {
+        try {
+          var x = new URL(u);
+          if (x.protocol === "https:" || x.protocol === "http:") return x.toString();
+        } catch (e) {}
+        return "";
+      }
+      function tzOptions(current) {
+        var list = TZ_LIST.slice();
+        if (current && list.indexOf(current) === -1) list.push(current);
+        return list.map(function (z) {
+          return '<option value="' + esc(z) + '"' +
+            (z === current ? " selected" : "") + ">" + esc(z) + "</option>";
+        }).join("");
+      }
+      function nowCard(me) {
+        var job = me.browserJob || { status: "", label: "Сейчас ничего не делает" };
+        var live = safeHttpUrl(job.liveUrl || "");
+        var bits = '<p>' + esc(job.label) + "</p>";
+        if (job.task) bits += '<p class="muted">' + esc(job.task) + "</p>";
+        if (job.startedAt) {
+          bits += '<p class="muted">' + esc(when(job.startedAt, zoneOf(me))) + "</p>";
+        }
+        if (live) {
+          bits += '<div class="row"><a class="cta" id="browser-live" href="' +
+            esc(live) + '" target="_blank" rel="noopener noreferrer">Открыть</a></div>';
+        }
+        return '<div class="card" id="now"><h2>Сейчас</h2>' + bits + "</div>";
+      }
+      function tzCard(me) {
+        var zone = zoneOf(me);
+        return '<div class="card" id="tz"><h2>Часовой пояс</h2>' +
+          '<p class="muted">Сейчас: ' + esc(zone) + "</p>" +
+          '<div class="row"><select id="tz-select" aria-label="Часовой пояс">' +
+          tzOptions(zone) + "</select></div>" +
+          '<p class="muted" id="tz-status"></p></div>';
       }
       function statusRu(s) {
         if (s === "succeeded") return "оплачен";
@@ -384,6 +445,38 @@
         });
       }
 
+      function bindTz() {
+        var sel = document.getElementById("tz-select");
+        if (!sel) return;
+        sel.addEventListener("change", function () {
+          var tz = sel.value;
+          var st = document.getElementById("tz-status");
+          st.textContent = "Сохраняем…";
+          fetch(base + "/me/tz", {
+            method: "POST",
+            headers: {
+              Authorization: "Bearer " + t,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ tz: tz }),
+          })
+            .then(function (res) { return res.json(); })
+            .then(function (data) {
+              if (!data.ok) {
+                st.textContent = "Не вышло, нажми ещё раз";
+                return;
+              }
+              return loadMe().then(function (me) {
+                if (!me) return;
+                paint(me);
+              });
+            })
+            .catch(function () {
+              st.textContent = "Не вышло, нажми ещё раз";
+            });
+        });
+      }
+
       function bindForget() {
         var list = document.getElementById("memos");
         if (!list) return;
@@ -423,15 +516,16 @@
       }
 
       function paint(me) {
+        var zone = zoneOf(me);
         var plan = me.plan === "paid" ? "Полный доступ" : "Бесплатный режим";
         var until = me.paidUntil
-          ? "до " + when(me.paidUntil)
+          ? "до " + when(me.paidUntil, zone)
           : "оплата ещё не оформлена";
         var phone = me.phoneBound
           ? "телефон …" + esc(me.phoneLast4 || "")
           : "телефон ещё не привязан — напиши Bro в iMessage";
         var pays = (me.payments || []).map(function (p) {
-          return "<li>" + esc(when(p.createdAt)) + " · " + esc(p.amountRub) +
+          return "<li>" + esc(when(p.createdAt, zone)) + " · " + esc(p.amountRub) +
             " ₽ · " + statusRu(p.status) + "</li>";
         }).join("");
         body.innerHTML =
@@ -444,6 +538,7 @@
           "</div>" +
           '<p class="muted" id="write-status"></p>' +
           '<p class="muted" id="pay-status"></p></div>' +
+          nowCard(me) +
           '<div class="card"><h2>Лимиты</h2>' +
           '<p class="muted">Сообщения сегодня: ' + me.msgsUsed + " из " + me.msgsAllowance + "</p>" +
           '<div class="bar"><i style="width:' + pct(me.msgsUsed, me.msgsAllowance) + '%"></i></div>' +
@@ -453,6 +548,7 @@
           '<div class="card" id="chrome"><h2>Входы в сайты</h2>' +
           '<p class="muted">Когда Bro нужна твоя учётка, он сам пришлёт ссылку в чат. Открой, войди — пароль он не увидит, вход сохранится.</p>' +
           '<p style="margin-top:0.7rem">' + profileStatusRu(me.browserProfileStatus, me.browserCookieDomains) + "</p></div>" +
+          tzCard(me) +
           '<div class="card"><h2>Оплаты</h2>' +
           (pays ? '<ul class="pay">' + pays + "</ul>" : '<p class="muted">Пока нет оплат.</p>') +
           "</div>";
@@ -461,6 +557,7 @@
         bindWrite(me);
         bindPay();
         bindForget();
+        bindTz();
       }
 
       function loadMe() {

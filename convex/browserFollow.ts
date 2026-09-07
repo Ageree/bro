@@ -265,7 +265,7 @@ export const pollRun = internalAction({
       runId: args.runId,
       browserStatus: run.status,
       browserSessionId: run.sessionId,
-      browserLiveUrl: run.liveUrl,
+      browserLiveUrl: run.liveUrl ?? "",
     });
     if (wrote.stale) {
       return { status: run.status, now: Date.now(), stale: true };

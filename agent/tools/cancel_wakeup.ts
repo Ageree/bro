@@ -1,6 +1,7 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { cancelWakeup } from "../lib/convex";
+import { groupPersonalBlock } from "../lib/group-guard";
 import { tenantId } from "../lib/tenant";
 
 export default defineTool({
@@ -12,6 +13,8 @@ export default defineTool({
     payloadContains: z.string().optional(),
   }),
   async execute({ id, kind, payloadContains }, ctx) {
+    const blocked = groupPersonalBlock(ctx);
+    if (blocked) return blocked;
     const n = await cancelWakeup(tenantId(ctx), { id, kind, payloadContains });
     return `cancelled ${n}`;
   },

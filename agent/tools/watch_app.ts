@@ -3,6 +3,7 @@ import { z } from "zod";
 import { describeWatcher, triggerSpec } from "../../convex/lib/watcherPolicy.ts";
 import { composio } from "../lib/composio";
 import { createWatcher, listWatchers, stopWatchers } from "../lib/convex";
+import { groupPersonalBlock } from "../lib/group-guard";
 import { composioUserId, tenantId } from "../lib/tenant";
 
 export default defineTool({
@@ -16,6 +17,8 @@ export default defineTool({
     id: z.string().optional(),
   }),
   async execute({ action, source, about, gmailQuery, id }, ctx) {
+    const blocked = groupPersonalBlock(ctx);
+    if (blocked) return blocked;
     const phone = composioUserId(tenantId(ctx));
     if (action === "stop") {
       const rows = await stopWatchers(phone, id);
