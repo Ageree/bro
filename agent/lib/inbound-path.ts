@@ -1,4 +1,4 @@
-/** Planned Convex hops before parkTurn — keep the returning 1:1 path to billing only. */
+/** Short-lived tenant / Instinct caches used on the inbound start path. */
 
 export const HANDLE_TENANT_TTL_MS = 30_000;
 export const TELEGRAM_TENANT_TTL_MS = 30_000;
@@ -43,38 +43,4 @@ export function createTtlCache<T>(ttlMs: number): TtlCache<T> {
       return map.size;
     },
   };
-}
-
-export type InboundConvexHop =
-  | "getTenantByHandle"
-  | "getGroupByConversation"
-  | "bindInbound"
-  | "countInboundMessage";
-
-export type ReturningOneToOneOpts = {
-  handleCached: boolean;
-  skipGroupLookup: boolean;
-  skipBind: boolean;
-};
-
-/** Serial Convex calls a 1:1 iMessage inbound still awaits before parkTurn. */
-export function returningOneToOneConvexHops(
-  opts: ReturningOneToOneOpts,
-): InboundConvexHop[] {
-  const hops: InboundConvexHop[] = [];
-  if (!opts.handleCached) hops.push("getTenantByHandle");
-  if (!opts.skipGroupLookup) hops.push("getGroupByConversation");
-  if (!opts.skipBind) hops.push("bindInbound");
-  hops.push("countInboundMessage");
-  return hops;
-}
-
-export function returningOneToOneConvexRtts(opts: ReturningOneToOneOpts): number {
-  return returningOneToOneConvexHops(opts).length;
-}
-
-export function returningTelegramConvexRtts(opts: {
-  telegramCached: boolean;
-}): number {
-  return (opts.telegramCached ? 0 : 1) + 1;
 }

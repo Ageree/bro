@@ -6,9 +6,6 @@ import {
   HANDLE_TENANT_TTL_MS,
   TELEGRAM_TENANT_TTL_MS,
   createTtlCache,
-  returningOneToOneConvexHops,
-  returningOneToOneConvexRtts,
-  returningTelegramConvexRtts,
 } from "../agent/lib/inbound-path.ts";
 import {
   INSTINCT_RECALL_TTL_MS,
@@ -83,14 +80,18 @@ assert(recall.includes("inner.recall"), "compaction still uses the plugin recall
 assert(recall.includes("abortSignal"), "conversation search joins Eve abort");
 
 const instinct = readFileSync(new URL("../agent/lib/instinct-recall.ts", import.meta.url), "utf8");
-assert(instinct.includes("Promise.all"), "conversation and archive search in parallel");
+assert(instinct.includes("Promise.allSettled"), "conversation and archive search in parallel");
 assert(instinct.includes("searchConversation"), "conversation search stays on the pair");
 assert(instinct.includes("searchArchive"), "archive search stays on the pair");
 assert(instinct.includes("INSTINCT_RECALL_TTL_MS"), "Instinct pair is same-turn cached");
 assert(instinct.includes("instinctInflight"), "parallel hooks coalesce one pair");
 assert(instinct.includes("conversationScope"), "pair is keyed by Eve conversation scope");
 assert(instinct.includes("instinctScopesForPerson"), "prefetch uses Eve digest + phone");
-assert(instinct.includes("conversation.ok && archive.ok"), "failed Instinct searches are not cached");
+assert(
+  instinct.includes('conversation.status === "fulfilled"') &&
+    instinct.includes('archive.status === "fulfilled"'),
+  "failed Instinct searches are not cached",
+);
 assert(instinct.includes("canPrefetchInstinctQuery"), "voice placeholders skip early prefetch");
 
 const openrouterWarm = readFileSync(
@@ -242,40 +243,9 @@ assert(cache.get("h", 1050).hit === false, "ttl cache expires at ttl");
 cache.set("h", "t", 2000);
 cache.forget("h");
 assert(cache.get("h", 2001).hit === false, "forget drops a live entry");
-assert(
-  returningOneToOneConvexRtts({
-    handleCached: true,
-    skipGroupLookup: true,
-    skipBind: true,
-  }) === 1,
-  "warm returning 1:1 is billing only",
-);
-assert(
-  returningOneToOneConvexHops({
-    handleCached: true,
-    skipGroupLookup: true,
-    skipBind: true,
-  }).join(",") === "countInboundMessage",
-  "warm hops are countInbound only",
-);
-assert(
-  returningOneToOneConvexRtts({
-    handleCached: false,
-    skipGroupLookup: true,
-    skipBind: true,
-  }) === 2,
-  "bound but uncached handle still pays HMAC lookup",
-);
-assert(
-  returningOneToOneConvexRtts({
-    handleCached: false,
-    skipGroupLookup: false,
-    skipBind: false,
-  }) === 4,
-  "cold first-bind 1:1 still has four hops",
-);
-assert(returningTelegramConvexRtts({ telegramCached: true }) === 1, "warm telegram is billing only");
-assert(returningTelegramConvexRtts({ telegramCached: false }) === 2, "cold telegram pays lookup");
+const skipGroupAt = imessage.indexOf("!boundOneToOne && msg.conversation_id");
+assert(skipGroupAt > 0 && skipGroupAt < imessage.indexOf("getGroupByConversation", skipGroupAt), "bound 1:1 skips group lookup");
+assert(imessage.indexOf("if (boundOneToOne)") < imessage.indexOf("bindInbound("), "bound 1:1 skips bindInbound");
 
 assert(canSkipInboundBind({ phoneE164: "+1", inkboxConversationId: "c1" }, "+1", "c1"), "bound skip");
 assert(

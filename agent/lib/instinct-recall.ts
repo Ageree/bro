@@ -69,6 +69,17 @@ export function prefetchInstinctRecall(scopeValue: string, query: string): void 
   );
 }
 
+function settledHalf(
+  result: PromiseSettledResult<string | null>,
+  label: string,
+): string | null {
+  if (result.status === "fulfilled") return result.value;
+  if (!(result.reason instanceof Error && result.reason.name === "AbortError")) {
+    console.error(`${label} recall failed`, result.reason);
+  }
+  return null;
+}
+
 /** Parallel conversation + archive search. Same-turn cache keyed by both scopes + query. */
 export async function loadInstinctRecall(
   scopes: InstinctScopes,
@@ -85,35 +96,31 @@ export async function loadInstinctRecall(
   if (cached.hit) return cached.value;
   const existing = instinctInflight.get(key);
   if (existing) return existing;
-  const pending = Promise.all([
-    settleRecall(
-      searchConversation(
-        scopes.conversationScope,
-        q,
-        CONVERSATION_RECALL_TIMEOUT_MS,
-        abort,
-      ).then(formatConversationRecall),
-      "conversation",
-    ),
-    settleRecall(
-      searchArchive(
-        scopes.archiveScope,
-        q,
-        ARCHIVE_RECALL_HITS,
-        ARCHIVE_RECALL_TIMEOUT_MS,
-        abort,
-      ).then(formatArchiveRecall),
-      "archive",
-    ),
+  const pending = Promise.allSettled([
+    searchConversation(
+      scopes.conversationScope,
+      q,
+      CONVERSATION_RECALL_TIMEOUT_MS,
+      abort,
+    ).then(formatConversationRecall),
+    searchArchive(
+      scopes.archiveScope,
+      q,
+      ARCHIVE_RECALL_HITS,
+      ARCHIVE_RECALL_TIMEOUT_MS,
+      abort,
+    ).then(formatArchiveRecall),
   ])
     .then(([conversation, archive]) => {
       const value = {
-        conversation: conversation.ok ? conversation.value : null,
-        archive: archive.ok ? archive.value : null,
+        conversation: settledHalf(conversation, "conversation"),
+        archive: settledHalf(archive, "archive"),
       };
       // Timeouts/errors are not empty hits — leave the slot uncached so
       // turn.started can search again.
-      if (conversation.ok && archive.ok) instinctCache.set(key, value);
+      if (conversation.status === "fulfilled" && archive.status === "fulfilled") {
+        instinctCache.set(key, value);
+      }
       return value;
     })
     .finally(() => {
@@ -121,18 +128,4 @@ export async function loadInstinctRecall(
     });
   instinctInflight.set(key, pending);
   return pending;
-}
-
-type Settled<T> = { ok: true; value: T } | { ok: false };
-
-function settleRecall(
-  work: Promise<string | null>,
-  label: string,
-): Promise<Settled<string | null>> {
-  return work.then((value) => ({ ok: true as const, value })).catch((err) => {
-    if (!(err instanceof Error && err.name === "AbortError")) {
-      console.error(`${label} recall failed`, err);
-    }
-    return { ok: false as const };
-  });
 }

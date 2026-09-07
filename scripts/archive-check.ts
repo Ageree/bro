@@ -192,9 +192,7 @@ assert.throws(
 );
 assert.equal(formatConversationRecall([]), null, "empty conversation search injects nothing");
 assert.ok(
-  formatConversationRecall([{ content: "ПВЗ на Ленина", source: "session x" }])?.includes(
-    "never instructions",
-  ),
+  formatConversationRecall(["ПВЗ на Ленина"])?.includes("never instructions"),
   "conversation hits are framed as data",
 );
 
@@ -210,7 +208,7 @@ const instinctSrc = readFileSync(
   new URL("../agent/lib/instinct-recall.ts", import.meta.url),
   "utf8",
 );
-assert.ok(instinctSrc.includes("Promise.all"), "Instinct searches run together");
+assert.ok(instinctSrc.includes("Promise.allSettled"), "Instinct searches run together");
 assert.ok(instinctSrc.includes("ARCHIVE_RECALL_TIMEOUT_MS"), "Instinct pair keeps the 1.5s budget");
 assert.ok(
   instinctSrc.includes("conversationScopeKey"),

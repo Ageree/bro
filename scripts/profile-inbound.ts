@@ -1,4 +1,4 @@
-/** Local start-path profile: planned Convex RTTs + HTTP timing without iMessage. */
+/** Local start-path profile: HTTP timing without iMessage. */
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,9 +15,6 @@ import {
   HANDLE_TENANT_TTL_MS,
   TELEGRAM_TENANT_TTL_MS,
   createTtlCache,
-  returningOneToOneConvexHops,
-  returningOneToOneConvexRtts,
-  returningTelegramConvexRtts,
 } from "../agent/lib/inbound-path.ts";
 import {
   INSTINCT_RECALL_TTL_MS,
@@ -62,22 +59,6 @@ function nsPerCall(fn: () => void): number {
   for (let i = 0; i < ITER; i++) fn();
   return ((performance.now() - t0) / ITER) * 1e6;
 }
-
-const warmOpts = {
-  handleCached: true,
-  skipGroupLookup: true,
-  skipBind: true,
-} as const;
-const boundUncachedOpts = {
-  handleCached: false,
-  skipGroupLookup: true,
-  skipBind: true,
-} as const;
-const coldOpts = {
-  handleCached: false,
-  skipGroupLookup: false,
-  skipBind: false,
-} as const;
 
 const cache = createTtlCache<string>(HANDLE_TENANT_TTL_MS);
 const bound = { phoneE164: "+15551212", inkboxConversationId: "conv-1", status: "active" };
@@ -269,24 +250,6 @@ const openrouter = await measureOpenRouterTtfb();
 
 const report = {
   measuredAt: new Date().toISOString(),
-  returningOneToOne: {
-    warmHandleCachedBound: {
-      rtts: returningOneToOneConvexRtts(warmOpts),
-      hops: returningOneToOneConvexHops(warmOpts),
-    },
-    boundHandleUncached: {
-      rtts: returningOneToOneConvexRtts(boundUncachedOpts),
-      hops: returningOneToOneConvexHops(boundUncachedOpts),
-    },
-    coldFirstBind: {
-      rtts: returningOneToOneConvexRtts(coldOpts),
-      hops: returningOneToOneConvexHops(coldOpts),
-    },
-  },
-  returningTelegram: {
-    warmRtts: returningTelegramConvexRtts({ telegramCached: true }),
-    coldRtts: returningTelegramConvexRtts({ telegramCached: false }),
-  },
   ttlMs: {
     handleTenant: HANDLE_TENANT_TTL_MS,
     telegramTenant: TELEGRAM_TENANT_TTL_MS,
@@ -301,11 +264,6 @@ const report = {
     canSkipInboundBind: Math.round(
       nsPerCall(() => {
         canSkipInboundBind(bound, bound.phoneE164, bound.inkboxConversationId);
-      }),
-    ),
-    rttPlanner: Math.round(
-      nsPerCall(() => {
-        returningOneToOneConvexRtts(warmOpts);
       }),
     ),
   },
