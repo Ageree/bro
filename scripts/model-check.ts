@@ -69,4 +69,47 @@ assert(agentSrc.includes("DEFAULT_ROOT_CONTEXT_TOKENS"), "root agent uses compac
 assert(agentSrc.includes("compaction"), "root agent enables compaction");
 assert(!agentSrc.includes('reasoning: "low"'), "root reasoning left default — do not dumb Bro down");
 
+const {
+  OPENROUTER_CHAT_PROVIDER_SORT,
+  OPENROUTER_CHAT_REASONING_EFFORT,
+  applyOpenRouterChatDefaults,
+  isOpenRouterChatCompletionsUrl,
+  withOpenRouterChatDefaults,
+} = await import("../agent/lib/openrouter-chat.ts");
+assert(OPENROUTER_CHAT_REASONING_EFFORT === "low", "GLM default max is overridden to low");
+assert(OPENROUTER_CHAT_PROVIDER_SORT === "latency", "chat prefers the fastest OpenRouter provider");
+const filled = withOpenRouterChatDefaults({ model: "z-ai/glm-5.3-flash" }) as {
+  reasoning?: { effort?: string };
+  provider?: { sort?: string };
+};
+assert(filled.reasoning?.effort === "low", "unset reasoning.effort becomes low");
+assert(filled.provider?.sort === "latency", "unset provider.sort becomes latency");
+const kept = withOpenRouterChatDefaults({
+  reasoning: { effort: "high" },
+  provider: { sort: "price" },
+}) as { reasoning?: { effort?: string }; provider?: { sort?: string } };
+assert(kept.reasoning?.effort === "high", "explicit reasoning.effort is left alone");
+assert(kept.provider?.sort === "price", "explicit provider.sort is left alone");
+assert(
+  isOpenRouterChatCompletionsUrl("https://openrouter.ai/api/v1/chat/completions"),
+  "chat URL is recognized",
+);
+assert(
+  !isOpenRouterChatCompletionsUrl("https://openrouter.ai/api/v1/auth/key"),
+  "auth warmup is not rewritten",
+);
+const applied = applyOpenRouterChatDefaults({
+  method: "POST",
+  body: JSON.stringify({ model: "z-ai/glm-5.3-flash" }),
+});
+const appliedBody = JSON.parse(String(applied?.body)) as {
+  reasoning?: { effort?: string };
+};
+assert(appliedBody.reasoning?.effort === "low", "fetch wrapper rewrites JSON chat bodies");
+
+const modelSrc = await import("node:fs").then((fs) =>
+  fs.readFileSync(new URL("../agent/lib/model.ts", import.meta.url), "utf8"),
+);
+assert(modelSrc.includes("openRouterChatFetch"), "default GLM chat uses the OpenRouter extras fetch");
+
 console.log("model:check OK");

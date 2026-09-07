@@ -1,5 +1,6 @@
 import { createOpenAI } from "@ai-sdk/openai";
 import { wrapLanguageModel, type LanguageModelMiddleware } from "ai";
+import { openRouterChatFetch } from "./openrouter-chat.ts";
 
 export const DEFAULT_OPENROUTER_MODEL = "z-ai/glm-5.3-flash";
 const DEFAULT_OPENROUTER_CONTEXT_TOKENS = 1_000_000;
@@ -73,6 +74,7 @@ export function broModel(opts?: BroModelOpts) {
   const openrouter = createOpenAI({
     apiKey: key,
     baseURL: "https://openrouter.ai/api/v1",
+    ...(model === DEFAULT_OPENROUTER_MODEL ? { fetch: openRouterChatFetch } : {}),
   });
   const cap = parseMaxOutputTokens(process.env.BRO_MAX_OUTPUT_TOKENS);
   const openrouterModel = wrapLanguageModel({

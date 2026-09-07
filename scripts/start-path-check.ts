@@ -80,6 +80,15 @@ const openrouterWarm = readFileSync(
   new URL("../agent/lib/openrouter-warm.ts", import.meta.url),
   "utf8",
 );
+const chatExtras = readFileSync(
+  new URL("../agent/lib/openrouter-chat.ts", import.meta.url),
+  "utf8",
+);
+assert(chatExtras.includes('effort = OPENROUTER_CHAT_REASONING_EFFORT'), "chat fills reasoning.effort");
+assert(chatExtras.includes("OPENROUTER_CHAT_PROVIDER_SORT"), "chat fills provider.sort");
+const modelLib = readFileSync(new URL("../agent/lib/model.ts", import.meta.url), "utf8");
+assert(modelLib.includes("openRouterChatFetch"), "default GLM uses OpenRouter chat extras");
+
 assert(openrouterWarm.includes("OPENROUTER_AUTH_URL"), "OpenRouter warm hits /auth/key");
 assert(openrouterWarm.includes("AbortSignal.timeout"), "OpenRouter warm is time-bounded");
 assert(canPrefetchOpenRouter("sk-test"), "OpenRouter warm runs when a key is set");

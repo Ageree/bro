@@ -25,6 +25,7 @@ import {
   loadInstinctRecall,
 } from "../agent/lib/instinct-recall.ts";
 import { DEFAULT_OPENROUTER_MODEL } from "../agent/lib/model.ts";
+import { withOpenRouterChatDefaults } from "../agent/lib/openrouter-chat.ts";
 import { openRouterStreamProgress } from "../agent/lib/openrouter-stream.ts";
 import {
   OPENROUTER_AUTH_URL,
@@ -149,15 +150,17 @@ async function measureOpenRouterTtfb(): Promise<Record<string, unknown>> {
         Authorization: `Bearer ${key}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        model,
-        stream: true,
-        max_tokens: 1024,
-        messages: [
-          { role: "system", content: instructions },
-          { role: "user", content: "ок" },
-        ],
-      }),
+      body: JSON.stringify(
+        withOpenRouterChatDefaults({
+          model,
+          stream: true,
+          max_tokens: 1024,
+          messages: [
+            { role: "system", content: instructions },
+            { role: "user", content: "ок" },
+          ],
+        }),
+      ),
       signal: AbortSignal.timeout(45_000),
     });
     const headersMs = Math.round(performance.now() - t0);
@@ -212,10 +215,11 @@ async function measureOpenRouterTtfb(): Promise<Record<string, unknown>> {
     model,
     instructionChars: instructions.length,
     probeMaxTokens: 1024,
+    productionExtras: withOpenRouterChatDefaults({}),
     prefetchAuth: prefetch,
     streamAfterPrefetch: afterPrefetch,
     streamRepeat: repeat,
-    note: "GLM streams reasoning with empty content first. firstContentMs is the first visible token. No Eve tool schemas. Production maxOutputTokens stays 8192. No iMessage send.",
+    note: "Probe uses production OpenRouter extras (reasoning.effort=low, provider.sort=latency). Eve reasoning stays unset. No Eve tools. Production maxOutputTokens stays 8192. No iMessage send.",
   };
 }
 
