@@ -274,7 +274,9 @@ export async function waitForRun(
     const status = pick(cheap, ["status"]) ?? last.status;
     if (isTerminal(status)) return hydrate(runId, last.sessionId ?? sessionId);
     last = { ...last, status };
-    await new Promise((r) => setTimeout(r, 2000));
+    const remaining = ms - (Date.now() - start);
+    if (remaining <= 0) break;
+    await new Promise((r) => setTimeout(r, Math.min(2000, remaining)));
   }
   return hydrate(runId, last.sessionId ?? sessionId);
 }

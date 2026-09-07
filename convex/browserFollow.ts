@@ -6,9 +6,9 @@ import { assertSecret } from "./secret";
 import { hydrate, pollStatus } from "./lib/browseruse";
 import {
   decideExistingWorkflow,
+  followSleepMs,
   maxPollRounds,
   nextFollowDecision,
-  POLL_INTERVAL_MS,
   sameBrowserRun,
   wakeupIdempotencyKey,
   wakeupStepRetry,
@@ -53,8 +53,8 @@ export const followThrough = workflow.define({
 }> => {
   const cap = maxPollRounds() + 2;
   for (let i = 0; i < cap; i++) {
-    // Poll first: a 20s run must not wait out the 2min interval before
-    // the human hears it. Interval and 20min give-up stay the same.
+    // Poll first, then a short first sleep so a 20s run is heard
+    // around T+20s, not T+2min. Later sleeps stay at 2min; give-up is 20min.
     const poll = await step.runAction(
       internal.browserFollow.pollRun,
       {
@@ -71,7 +71,7 @@ export const followThrough = workflow.define({
       now: poll.now,
     });
     if (decision === "sleep") {
-      await step.sleep(POLL_INTERVAL_MS, { name: `wait-${i}` });
+      await step.sleep(followSleepMs(i), { name: `wait-${i}` });
       continue;
     }
     const phase: WakeupPhase = decision === "giveup" ? "giveup" : "done";

@@ -9,6 +9,7 @@ import {
 import { parkTurn } from "../agent/lib/channel-turn.ts";
 import { TURN_FAILED_REPLY } from "../agent/lib/silent-turn.ts";
 import { routingFromAuth, routingPhone } from "../agent/lib/turn-routing.ts";
+import { channelFromAuth } from "../agent/lib/deliver-routed.ts";
 
 function assert(cond: unknown, msg: string): void {
   if (!cond) throw new Error(msg);
@@ -172,12 +173,27 @@ const group = routingFromAuth({
 });
 assert(routingPhone(group, undefined) === "+7000", "group seen uses ownerPhone");
 assert(routingPhone(group, "+7111") === "+7111", "principal wins over owner");
+assert(
+  channelFromAuth({ origin: "human", channel: "telegram", telegramChatId: "1" }, "imessage") ===
+    "telegram",
+  "tool notify follows auth, not stale lastChannel",
+);
+assert(
+  channelFromAuth({ origin: "wakeup" }, "telegram") === "telegram",
+  "wakeup tool notify still uses lastChannel",
+);
 
 assert(channel.includes("routingFromAuth"), "imessage uses auth routing");
 assert(channel.includes("deliverTurnBubble"), "imessage shares delivery helper");
+const bubbleFn = channel.slice(channel.indexOf("async function deliverTurnBubble"));
 assert(
-  !/await setWakeupLastSeen/.test(channel),
-  "lastSeen is not awaited before the bubble",
+  bubbleFn.indexOf("deliverHuman") < bubbleFn.indexOf("persistSeen"),
+  "lastSeen waits until after the bubble is sent",
+);
+const completed = channel.slice(channel.indexOf('"message.completed"'));
+assert(
+  completed.indexOf("recordSent") < completed.indexOf("await deliverTurnBubble"),
+  "recordSent before deliver closes the overlap window",
 );
 assert(
   !/if \(bubblesFor\(earlySent, event\.turnId\)\.length > 0\) return;/.test(

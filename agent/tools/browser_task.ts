@@ -33,7 +33,7 @@ import {
   type BrowserRun,
 } from "../lib/browseruse";
 import { profileSyncStatus } from "../../convex/lib/browserProfilePolicy.ts";
-import { deliverHuman } from "../lib/deliver-human";
+import { attrsFromSession, deliverHumanRouted } from "../lib/deliver-routed";
 import { groupPersonalBlock } from "../lib/group-guard";
 import { tenantId } from "../lib/tenant";
 import { browserGateFromResult } from "../../convex/lib/billingPolicy";
@@ -373,23 +373,32 @@ export default defineTool({
           }
         : {}),
     });
-    if (conv) {
-      try {
-        await deliverHuman({
+    const followKick = startBrowserFollow({
+      tenantPhone: phone,
+      runId: started.runId,
+      sessionId: started.sessionId,
+      task,
+      startedAt,
+    }).catch((err) => {
+      console.error("browser follow workflow failed", err);
+    });
+    const notify = conv
+      ? deliverHumanRouted({
+          attrs: attrsFromSession(ctx.session),
           tenant,
           conversationId: conv,
           text: "Ищу, это может занять пару минут. Сам напишу, когда будет готово.",
-        });
-      } catch (err) {
-        console.error("browser start notify failed", err);
-      }
-    }
+        }).catch((err) => {
+          console.error("browser start notify failed", err);
+        })
+      : Promise.resolve();
     const done = await waitForRun(
       started.runId,
       started.sessionId,
       BROWSER_START_WAIT_MS,
     );
     await persist(phone, done, task);
+    await followKick;
     return settle(
       phone,
       done,

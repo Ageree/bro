@@ -16,8 +16,8 @@ import { countBrowserJobStart, setBrowser, upsertTenant } from "../lib/convex";
 import { sendBlueIMessage } from "../lib/inkbox";
 import { groupPersonalBlock } from "../lib/group-guard";
 import { tenantId } from "../lib/tenant";
+import { attrsFromSession, channelFromAuth } from "../lib/deliver-routed";
 import { deliverHuman } from "../lib/deliver-human";
-import { lastChannelOf } from "../../convex/lib/telegramPolicy.ts";
 
 function conversationId(
   ctx: {
@@ -116,12 +116,13 @@ export default defineTool({
     const text = loginChatText(withLive.liveUrl, site);
     if (conv) {
       try {
-        if (lastChannelOf(tenant.lastChannel) === "telegram") {
+        if (channelFromAuth(attrsFromSession(ctx.session), tenant.lastChannel) === "telegram") {
           const where = site?.trim() ? ` в ${site.trim()}` : "";
           await deliverHuman({
             tenant,
             conversationId: conv,
             text: `Открой и войди${where}. Bro пароль не увидит — вход сохранится сам.\n\n:::buttons\n[Войти](${withLive.liveUrl})\n:::`,
+            channel: "telegram",
           });
         } else {
           await sendBlueIMessage({

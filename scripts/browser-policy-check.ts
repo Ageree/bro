@@ -15,6 +15,8 @@ import {
   FOLLOW_RETRY_HINT,
   followStartRetry,
   maxPollRounds,
+  FOLLOW_FIRST_SLEEP_MS,
+  followSleepMs,
   POLL_GIVE_UP_MS,
   POLL_INTERVAL_MS,
   sameBrowserRun,
@@ -156,6 +158,9 @@ assert(pollTimedOut(t0, t0 + 30 * 60_000 + 1) === true, "poll expired");
 assert(pollTimedOut(undefined, t0) === false, "poll missing start");
 
 assert(POLL_INTERVAL_MS === 2 * 60_000, "sleep 2min");
+assert(FOLLOW_FIRST_SLEEP_MS === 20_000, "first re-sleep is 20s");
+assert(followSleepMs(0) === FOLLOW_FIRST_SLEEP_MS, "poll 0 uses first sleep");
+assert(followSleepMs(1) === POLL_INTERVAL_MS, "later polls use 2min");
 assert(POLL_GIVE_UP_MS === 20 * 60_000, "give-up 20min");
 assert(maxPollRounds() === 10, "10 poll rounds");
 assert(
@@ -357,6 +362,12 @@ const browserTool = readFileSync(
 assert(browserTool.includes("BROWSER_POLL_WAIT_MS"), "poll uses shared wait");
 assert(browserTool.includes("BROWSER_START_WAIT_MS"), "start uses shared wait");
 assert(!browserTool.includes("WAIT_MS = 12_000"), "old 12s park is gone");
+const startPath = browserTool.slice(browserTool.indexOf("const started = await startRun"));
+assert(
+  startPath.indexOf("startBrowserFollow") < startPath.indexOf("waitForRun"),
+  "follow-through starts before the in-turn wait",
+);
+assert(browserTool.includes("deliverHumanRouted"), "canned notify uses auth routing");
 
 const follow = readFileSync(
   new URL("../convex/browserFollow.ts", import.meta.url),
@@ -367,7 +378,8 @@ const firstPoll = handler.search(/pollRun/);
 const firstSleep = handler.search(/step\.sleep/);
 assert(firstPoll >= 0, "follow-through polls");
 assert(firstSleep >= 0, "follow-through still sleeps between polls");
-assert(firstPoll < firstSleep, "first poll comes before the first 2min sleep");
+assert(firstPoll < firstSleep, "first poll comes before the first sleep");
+assert(handler.includes("followSleepMs"), "first re-sleep is shorter than 2min");
 
 const waitFor = readFileSync(
   new URL("../agent/lib/browseruse.ts", import.meta.url),
@@ -378,5 +390,6 @@ assert(
   waitFn.indexOf("bu(`/runs/${runId}/status`)") < waitFn.indexOf("return hydrate"),
   "waitForRun status-polls before hydrating",
 );
+assert(waitFn.includes("Math.min(2000, remaining)"), "waitForRun does not oversleep the budget");
 
 console.log("browser-policy-check ok");

@@ -96,30 +96,33 @@ const wakeupDelivered = new Map<string, number>();
 const fallbackSent = new Map<string, number>();
 const earlySent = new Map<string, { at: number; bubbles: string[] }>();
 
-function persistSeen(phone: string | undefined, seen: string | undefined): void {
+async function persistSeen(
+  phone: string | undefined,
+  seen: string | undefined,
+): Promise<void> {
   if (!phone || seen === undefined) return;
-  void setWakeupLastSeen(phone, seen).catch((err) => {
+  await setWakeupLastSeen(phone, seen).catch((err) => {
     console.error("setLastSeen failed", err);
   });
 }
 
-function persistSeenFromTurn(
+async function persistSeenFromTurn(
   conversationId: string,
   attrs: Record<string, unknown> | undefined,
   principalId: string | null | undefined,
   seen: string | undefined,
-): void {
+): Promise<void> {
   if (seen === undefined) return;
   const phone = routingPhone(routingFromAuth(attrs), principalId);
   if (phone) {
-    persistSeen(phone, seen);
+    await persistSeen(phone, seen);
     return;
   }
-  void replyTenant(conversationId)
-    .then((tenant) => {
-      if (tenant?.phoneE164) return setWakeupLastSeen(tenant.phoneE164, seen);
-    })
-    .catch((err) => console.error("setLastSeen failed", err));
+  const tenant = await replyTenant(conversationId).catch((err) => {
+    console.error("setLastSeen failed", err);
+    return null;
+  });
+  if (tenant?.phoneE164) await persistSeen(tenant.phoneE164, seen);
 }
 
 async function deliverTurnBubble(opts: {
@@ -140,7 +143,7 @@ async function deliverTurnBubble(opts: {
     text: opts.text,
     channel: routing.channel,
   });
-  persistSeen(
+  await persistSeen(
     routingPhone(routing, opts.principalId) ?? lookedUp?.phoneE164,
     opts.seen,
   );
@@ -847,6 +850,7 @@ export default defineChannel({
         alreadySent: bubblesFor(earlySent, event.turnId),
       });
       if (planned.send) {
+        recordSent(earlySent, event.turnId, planned.send, Date.now());
         await deliverTurnBubble({
           conversationId,
           text: stripConnectUrls(planned.send),
@@ -854,10 +858,9 @@ export default defineChannel({
           principalId: auth?.principalId,
           seen: planned.seen,
         });
-        recordSent(earlySent, event.turnId, planned.send, Date.now());
         return;
       }
-      persistSeenFromTurn(
+      await persistSeenFromTurn(
         conversationId,
         auth?.attributes,
         auth?.principalId,

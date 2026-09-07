@@ -7,8 +7,8 @@ import { groupPersonalBlock } from "../lib/group-guard";
 import { tenantId } from "../lib/tenant";
 import { sandboxNetworkViolation } from "../lib/sandbox-policy";
 import { getTenant } from "../lib/convex";
+import { attrsFromSession, channelFromAuth } from "../lib/deliver-routed";
 import { deliverHuman } from "../lib/deliver-human";
-import { lastChannelOf } from "../../convex/lib/telegramPolicy.ts";
 
 function rec(v: unknown): Record<string, unknown> {
   return v !== null && typeof v === "object" && !Array.isArray(v)
@@ -42,11 +42,12 @@ async function sendConnectIfAny(ctx: ToolContext, result: unknown): Promise<void
     if (!isConnectDest(url)) continue;
     const wrapped = wrapConnectUrl(url);
     try {
-      if (lastChannelOf(tenant?.lastChannel) === "telegram") {
+      if (channelFromAuth(attrsFromSession(ctx.session), tenant?.lastChannel) === "telegram") {
         await deliverHuman({
           tenant,
           conversationId: conv,
           text: `Подключи приложение\n\n:::buttons\n[Подключить](${wrapped})\n:::`,
+          channel: "telegram",
         });
       } else {
         await sendBlueIMessage({
