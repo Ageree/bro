@@ -3,6 +3,7 @@
  *  Mathematical Sans-Serif Bold (looks bold on iPhone). Cyrillic field
  *  labels get a leading ▸ — mixed-script fake-bold looks broken. */
 
+import { stripButtonBlocksForIMessage } from "./telegram-text.ts";
 import { voiceTranscriptLine } from "./voice-policy.ts";
 
 const FENCE = /```[\w+-]*\n?([\s\S]*?)```/g;
@@ -92,7 +93,7 @@ function emphasizeLabels(s: string): string {
 }
 
 export function toIMessageText(src: string): string {
-  let s = src.replace(/\r\n/g, "\n");
+  let s = stripButtonBlocksForIMessage(src.replace(/\r\n/g, "\n"));
 
   s = s.replace(FENCE, (_, body: string) => body.replace(/\n+$/, "\n"));
   s = s.replace(IMAGE, (_, alt: string, url: string) => {

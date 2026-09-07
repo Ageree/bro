@@ -26,6 +26,7 @@ import type * as lib_cabinetPolicy from "../lib/cabinetPolicy.js";
 import type * as lib_dedicatedLinePolicy from "../lib/dedicatedLinePolicy.js";
 import type * as lib_groupChatPolicy from "../lib/groupChatPolicy.js";
 import type * as lib_mailPolicy from "../lib/mailPolicy.js";
+import type * as lib_telegramPolicy from "../lib/telegramPolicy.js";
 import type * as lib_memoryPolicy from "../lib/memoryPolicy.js";
 import type * as lib_rateLimits from "../lib/rateLimits.js";
 import type * as lib_vaultPayload from "../lib/vaultPayload.js";
@@ -67,6 +68,7 @@ declare const fullApi: ApiFromModules<{
   "lib/dedicatedLinePolicy": typeof lib_dedicatedLinePolicy;
   "lib/groupChatPolicy": typeof lib_groupChatPolicy;
   "lib/mailPolicy": typeof lib_mailPolicy;
+  "lib/telegramPolicy": typeof lib_telegramPolicy;
   "lib/memoryPolicy": typeof lib_memoryPolicy;
   "lib/rateLimits": typeof lib_rateLimits;
   "lib/vaultPayload": typeof lib_vaultPayload;

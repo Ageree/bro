@@ -96,6 +96,62 @@ export type BindInboundResult =
     }
   | { ok: false; reason: string };
 
+export async function getTenantByTelegram(telegramUserId: string) {
+  return await client().query(api.tenants.getByTelegram, {
+    secret: secret(),
+    telegramUserId,
+  });
+}
+
+export async function touchLastChannel(
+  phoneE164: string,
+  lastChannel: "imessage" | "telegram",
+): Promise<void> {
+  await client().mutation(api.tenants.touchLastChannel, {
+    secret: secret(),
+    phoneE164,
+    lastChannel,
+  });
+}
+
+export async function mintTelegramBind(phoneE164: string): Promise<
+  | { ok: true; token: string; alreadyLinked: boolean }
+  | { ok: false; reason: "unbound" }
+> {
+  return await client().mutation(api.tenants.mintTelegramBind, {
+    secret: secret(),
+    phoneE164,
+  });
+}
+
+export type BindTelegramResult =
+  | {
+      ok: true;
+      tenant: NonNullable<FunctionReturnType<typeof api.tenants.getByPhone>>;
+      firstBind: boolean;
+    }
+  | {
+      ok: false;
+      reason:
+        | "expired"
+        | "unknown_token"
+        | "unbound_phone"
+        | "already_other_user"
+        | "already_other_tenant";
+    };
+
+export async function bindTelegram(opts: {
+  token: string;
+  telegramUserId: string;
+  telegramChatId: string;
+  telegramUsername?: string;
+}): Promise<BindTelegramResult> {
+  return await client().mutation(api.tenants.bindTelegram, {
+    secret: secret(),
+    ...opts,
+  });
+}
+
 export async function bindInbound(
   handle: string,
   phoneE164: string,

@@ -35,11 +35,21 @@ export default defineSchema({
     dedicatedIMessageNumberStatus: v.optional(v.string()),
     /** Last successful connected-app archive sync (Instinct-style memory). */
     archiveSyncedAt: v.optional(v.number()),
+    telegramUserId: v.optional(v.string()),
+    telegramChatId: v.optional(v.string()),
+    telegramUsername: v.optional(v.string()),
+    telegramBindToken: v.optional(v.string()),
+    telegramBindExpiresAt: v.optional(v.number()),
+    lastChannel: v.optional(
+      v.union(v.literal("imessage"), v.literal("telegram")),
+    ),
   })
     .index("by_phone", ["phoneE164"])
     .index("by_handle", ["inkboxHandle"])
     .index("by_conversation", ["inkboxConversationId"])
-    .index("by_email", ["emailAddress"]),
+    .index("by_email", ["emailAddress"])
+    .index("by_telegram", ["telegramUserId"])
+    .index("by_telegram_bind", ["telegramBindToken"]),
 
   jobs: defineTable({
     tenantId: v.id("tenants"),

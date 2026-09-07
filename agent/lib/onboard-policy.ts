@@ -26,6 +26,13 @@ function visibleInbound(text: string): string {
   return text.replace(VOICE_PREFIX, "").trim();
 }
 
+const TELEGRAM_ASK = new Set(["телеграм", "telegram", "тг", "/telegram"]);
+
+export function isTelegramAsk(text: string): boolean {
+  const folded = foldAsk(text);
+  return TELEGRAM_ASK.has(folded);
+}
+
 function foldAsk(text: string): string {
   return visibleInbound(text)
     .normalize("NFC")
@@ -57,6 +64,7 @@ export function shouldSkipAgentTurn(input: {
   text: string;
 }): boolean {
   if (isHelpAsk(input.text)) return true;
+  if (isTelegramAsk(input.text)) return true;
   if (input.firstBind && isConnectOrEmptyInbound(input.text)) return true;
   return false;
 }
@@ -89,6 +97,7 @@ export function helpText(opts?: { canJoinGroups?: boolean }): string {
     "• Напоминания и сторожа (цена, почта, календарь)",
     "• Платить картой из сейфа — номер в чат не пиши",
     "• Письма со своего ящика Bro — коды из почты сам подхватываю",
+    "• Тот же Bro в Telegram — напиши «телеграм»",
     groups,
     "",
     "Пиши обычным текстом.",

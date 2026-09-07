@@ -21,8 +21,10 @@ import {
   markGroupGreeted,
   markNudged,
   markPaywallSent,
+  mintTelegramBind,
   replyTenant,
   setWakeupLastSeen,
+  touchLastChannel,
   upsertTenant,
 } from "../lib/convex";
 import {
@@ -34,6 +36,7 @@ import {
   broVcard,
   helpText,
   isHelpAsk,
+  isTelegramAsk,
   shouldSkipAgentTurn,
   welcomeText,
 } from "../lib/onboard-policy";
@@ -46,8 +49,10 @@ import {
 import {
   inboundIMessageText,
   inboundIMessageTextWithVoice,
-  toIMessageBubbles,
 } from "../lib/imessage-text";
+import { deliverHuman } from "../lib/deliver-human";
+import { telegramBindLink } from "../../convex/lib/telegramPolicy.ts";
+import { telegramBotUsername } from "../lib/telegram";
 import { transcribeVoiceNote } from "../lib/voice";
 import { inboundUserContent } from "../lib/inbound-image.ts";
 import { VOICE_FAILED_REPLY } from "../lib/voice-policy";
@@ -145,6 +150,40 @@ async function sendHelpCatalog(opts: {
   } catch (err) {
     console.error("help catalog failed", err);
   }
+}
+
+async function sendTelegramInvite(opts: {
+  conversationId: string;
+  handle: string;
+  phone: string;
+}): Promise<void> {
+  const bot = telegramBotUsername();
+  if (!bot) {
+    await sendBlueIMessage({
+      conversationId: opts.conversationId,
+      text: "Telegram у Bro ещё не включён.",
+      handle: opts.handle,
+    });
+    return;
+  }
+  const minted = await mintTelegramBind(opts.phone);
+  if (!minted.ok) {
+    await sendBlueIMessage({
+      conversationId: opts.conversationId,
+      text: "Сначала напиши Bro в этот чат как обычно, потом «телеграм».",
+      handle: opts.handle,
+    });
+    return;
+  }
+  const url = telegramBindLink(bot, minted.token);
+  const text = minted.alreadyLinked
+    ? `Чтобы переподключить Telegram, открой:\n${url}`
+    : `Открой Telegram — тот же Bro, почта и поручения общие:\n${url}`;
+  await sendBlueIMessage({
+    conversationId: opts.conversationId,
+    text,
+    handle: opts.handle,
+  });
 }
 
 async function inboundOwnerGate(ownerPhone: string): Promise<{
@@ -444,9 +483,23 @@ export default defineChannel({
           ),
         });
       }
+      if (isTelegramAsk(inbound.text)) {
+        try {
+          await sendTelegramInvite({
+            conversationId: msg.conversation_id,
+            handle: identityHandle,
+            phone: remote,
+          });
+        } catch (err) {
+          console.error("telegram invite failed", err);
+        }
+      }
       if (shouldSkipAgentTurn({ firstBind, text: inbound.text })) {
         return new Response(null, { status: 204 });
       }
+      await touchLastChannel(remote, "imessage").catch((err) =>
+        console.error("touch last channel failed", err),
+      );
       const rawContent = await inboundUserContent(inbound.text, msg.media);
       const content = group
         ? tagGroupUserContent(remote, rawContent)
@@ -708,8 +761,8 @@ export default defineChannel({
       if (!text) return;
       if (!takeFallbackSlot(fallbackSent, event.turnId, Date.now())) return;
       const tenant = await replyTenant(conversationId);
-      await sendBlueIMessage({ conversationId, text, handle: tenant?.inkboxHandle }).catch(
-        (err) => console.error("turn failed fallback send failed", err),
+      await deliverHuman({ tenant, conversationId, text }).catch((err) =>
+        console.error("turn failed fallback send failed", err),
       );
     },
     async "message.completed"(event, channel, ctx) {
@@ -728,8 +781,8 @@ export default defineChannel({
         console.error("empty turn", { conversationId, finishReason: event.finishReason });
         if (!takeFallbackSlot(fallbackSent, event.turnId, Date.now())) return;
         const tenant = await replyTenant(conversationId);
-        await sendBlueIMessage({ conversationId, text, handle: tenant?.inkboxHandle }).catch(
-          (err) => console.error("empty turn fallback send failed", err),
+        await deliverHuman({ tenant, conversationId, text }).catch((err) =>
+          console.error("empty turn fallback send failed", err),
         );
         return;
       }
@@ -741,15 +794,11 @@ export default defineChannel({
         });
       }
       if (!message.trim() || message.trim().startsWith("[SILENT]")) return;
-      const bubbles = toIMessageBubbles(stripConnectUrls(message));
-      if (bubbles.length === 0) return;
-      for (const text of bubbles) {
-        await sendBlueIMessage({
-          conversationId,
-          text,
-          handle: tenant?.inkboxHandle,
-        });
-      }
+      await deliverHuman({
+        tenant,
+        conversationId,
+        text: stripConnectUrls(message),
+      });
     },
   },
 });

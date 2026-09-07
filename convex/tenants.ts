@@ -39,6 +39,13 @@ import {
   type WakeupPhase,
 } from "./lib/browserFollowPolicy";
 import { periodConfig, rateLimiter } from "./lib/rateLimits";
+import {
+  bindTelegramDecision,
+  lastChannelOf,
+  newTelegramBindToken,
+  telegramBindExpiry,
+  type HumanChannel,
+} from "./lib/telegramPolicy";
 
 /** Never write a group conversation onto the 1:1 wakeup/mail lane. */
 async function oneToOneConversationIdOrUndefined(
@@ -752,5 +759,129 @@ export const startBrowserErrand = mutation({
       if (now - row.chargedAt > ERRAND_CHARGE_TTL_MS) await ctx.db.delete(row._id);
     }
     return { allowed: true };
+  },
+});
+
+export const getByTelegram = query({
+  args: { secret: v.string(), telegramUserId: v.string() },
+  returns: v.union(tenantDoc, v.null()),
+  handler: async (ctx, { secret, telegramUserId }) => {
+    assertSecret(secret);
+    return await ctx.db
+      .query("tenants")
+      .withIndex("by_telegram", (q) => q.eq("telegramUserId", telegramUserId))
+      .unique();
+  },
+});
+
+export const touchLastChannel = mutation({
+  args: {
+    secret: v.string(),
+    phoneE164: v.string(),
+    lastChannel: v.union(v.literal("imessage"), v.literal("telegram")),
+  },
+  returns: v.null(),
+  handler: async (ctx, { secret, phoneE164, lastChannel }) => {
+    assertSecret(secret);
+    const tenant = await ctx.db
+      .query("tenants")
+      .withIndex("by_phone", (q) => q.eq("phoneE164", phoneE164))
+      .first();
+    if (!tenant) return null;
+    if (lastChannelOf(tenant.lastChannel) === lastChannel) return null;
+    await ctx.db.patch(tenant._id, { lastChannel });
+    return null;
+  },
+});
+
+export const mintTelegramBind = mutation({
+  args: { secret: v.string(), phoneE164: v.string() },
+  returns: v.union(
+    v.object({ ok: v.literal(true), token: v.string(), alreadyLinked: v.boolean() }),
+    v.object({ ok: v.literal(false), reason: v.literal("unbound") }),
+  ),
+  handler: async (ctx, { secret, phoneE164 }) => {
+    assertSecret(secret);
+    const tenant = await ctx.db
+      .query("tenants")
+      .withIndex("by_phone", (q) => q.eq("phoneE164", phoneE164))
+      .first();
+    if (!tenant?.phoneE164 || !tenant.inkboxConversationId) {
+      return { ok: false as const, reason: "unbound" as const };
+    }
+    const token = newTelegramBindToken();
+    await ctx.db.patch(tenant._id, {
+      telegramBindToken: token,
+      telegramBindExpiresAt: telegramBindExpiry(Date.now()),
+    });
+    return {
+      ok: true as const,
+      token,
+      alreadyLinked: Boolean(tenant.telegramUserId),
+    };
+  },
+});
+
+export const bindTelegram = mutation({
+  args: {
+    secret: v.string(),
+    token: v.string(),
+    telegramUserId: v.string(),
+    telegramChatId: v.string(),
+    telegramUsername: v.optional(v.string()),
+  },
+  returns: v.union(
+    v.object({
+      ok: v.literal(true),
+      tenant: tenantDoc,
+      firstBind: v.boolean(),
+    }),
+    v.object({
+      ok: v.literal(false),
+      reason: v.union(
+        v.literal("expired"),
+        v.literal("unknown_token"),
+        v.literal("unbound_phone"),
+        v.literal("already_other_user"),
+        v.literal("already_other_tenant"),
+      ),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    assertSecret(args.secret);
+    const token = args.token.trim().toLowerCase();
+    const tenant = await ctx.db
+      .query("tenants")
+      .withIndex("by_telegram_bind", (q) => q.eq("telegramBindToken", token))
+      .unique();
+    const other = await ctx.db
+      .query("tenants")
+      .withIndex("by_telegram", (q) => q.eq("telegramUserId", args.telegramUserId))
+      .unique();
+    const kind = bindTelegramDecision({
+      now: Date.now(),
+      tokenFound: Boolean(tenant),
+      expiresAt: tenant?.telegramBindExpiresAt,
+      tenantPhone: tenant?.phoneE164,
+      tenantTelegramUserId: tenant?.telegramUserId,
+      incomingUserId: args.telegramUserId,
+      otherTenantPhone: other && other._id !== tenant?._id ? other.phoneE164 : undefined,
+    });
+    if (kind !== "ok" || !tenant) {
+      return { ok: false as const, reason: kind === "ok" ? "unknown_token" : kind };
+    }
+    const firstBind = !tenant.telegramUserId;
+    const username = args.telegramUsername?.replace(/^@/, "").trim();
+    await ctx.db.patch(tenant._id, {
+      telegramUserId: args.telegramUserId,
+      telegramChatId: args.telegramChatId,
+      telegramUsername: username || undefined,
+      telegramBindToken: undefined,
+      telegramBindExpiresAt: undefined,
+      lastChannel: "telegram" satisfies HumanChannel,
+    });
+    const next = await ctx.db.get(tenant._id);
+    if (!next) return { ok: false as const, reason: "unknown_token" as const };
+    return { ok: true as const, tenant: next, firstBind };
   },
 });
