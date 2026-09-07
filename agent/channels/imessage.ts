@@ -130,9 +130,10 @@ async function deliverTurnBubble(opts: {
   seen?: string;
 }): Promise<void> {
   const routing = routingFromAuth(opts.attrs);
-  const tenant = routing.canDeliver
-    ? routingTenant(routing)
+  const lookedUp = routing.canDeliver
+    ? null
     : await replyTenant(opts.conversationId);
+  const tenant = lookedUp ?? routingTenant(routing);
   await deliverHuman({
     tenant,
     conversationId: opts.conversationId,
@@ -140,7 +141,7 @@ async function deliverTurnBubble(opts: {
     channel: routing.channel,
   });
   persistSeen(
-    routingPhone(routing, opts.principalId) ?? tenant?.phoneE164,
+    routingPhone(routing, opts.principalId) ?? lookedUp?.phoneE164,
     opts.seen,
   );
 }
