@@ -156,6 +156,16 @@ export function shouldRecallArchive(query: string): boolean {
   return true;
 }
 
+/**
+ * Conversation auto-recall. Empty text is still a human turn (captionless
+ * photo). Wakeups always carry a `[background wakeup]` prompt, so they
+ * still hit `shouldRecallArchive`.
+ */
+export function shouldRecallConversation(query: string | null): boolean {
+  if (!query?.trim()) return true;
+  return shouldRecallArchive(query);
+}
+
 /** Gmail search window: everything after the last sync, 7 days on first run. */
 export function gmailQuery(sinceMs: number | undefined, nowMs: number): string {
   const floor = nowMs - 7 * 24 * 60 * 60 * 1000;

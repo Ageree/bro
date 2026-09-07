@@ -39,6 +39,18 @@ export function jobCheckPayload(attrs: Record<string, unknown> | undefined): str
   return typeof attrs?.wakeupPayload === "string" ? attrs.wakeupPayload : "";
 }
 
+/** Wakeup user text. No [SILENT] here — turn.started decides speak vs quiet. */
+export function jobCheckWakePrompt(payload: string): string {
+  return `[background wakeup] Фоновая проверка джоба: ${payload}. Открытые джобы этого человека уже в контексте. Сделай следующий шаг цепочки сам (проверь почту/статус нужным тулом: composio, browser_task, bro_mail, otp_lookup). Если ждёшь OTP — сначала inbox/archive, в тред только если письма нет. Если есть прогресс — сделай шаг и коротко напиши человеку. Если джоб уже закрыт или отменён — вызови cancel_wakeup с kind=job_check и payloadContains «джоб <id>».`;
+}
+
+export const JOB_CHECK_QUIET =
+  "If you cannot make progress on this job_check, answer exactly [SILENT]. The check will repeat.";
+
+export function jobCheckQuietInstruction(): string {
+  return JOB_CHECK_QUIET;
+}
+
 export function dueJobNudges(
   rows: readonly JobWakeRow[],
   now: number,
@@ -82,7 +94,7 @@ export function jobNudgeInstruction(
         goal: job.goal,
         note: job.note,
       });
-      return `This job has been waiting too long. Do NOT answer [SILENT] — write the human now: ${text}`;
+      return `This job has been waiting too long. Do NOT answer [SILENT] — write the human now: ${text}. Ignore any later line that allows [SILENT].`;
     })
     .join("\n");
 }

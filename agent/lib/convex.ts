@@ -3,10 +3,16 @@ import type { FunctionReturnType } from "convex/server";
 import { api } from "../../convex/_generated/api.js";
 import type { Id } from "../../convex/_generated/dataModel";
 
+let cachedClient: ConvexHttpClient | undefined;
+let cachedClientUrl: string | undefined;
+
 function client(): ConvexHttpClient {
   const url = process.env.CONVEX_URL;
   if (!url) throw new Error("CONVEX_URL missing");
-  return new ConvexHttpClient(url);
+  if (cachedClient && cachedClientUrl === url) return cachedClient;
+  cachedClient = new ConvexHttpClient(url);
+  cachedClientUrl = url;
+  return cachedClient;
 }
 
 function secret(): string {

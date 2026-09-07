@@ -36,16 +36,18 @@ export const wakeContext = query({
   }),
   handler: async (ctx, { secret, phoneE164 }) => {
     assertSecret(secret);
-    const memoryRows = await ctx.db
-      .query("memories")
-      .withIndex("by_phone", (q) => q.eq("phoneE164", phoneE164))
-      .order("desc")
-      .take(WAKE_LINES);
+    const [memoryRows, tenant] = await Promise.all([
+      ctx.db
+        .query("memories")
+        .withIndex("by_phone", (q) => q.eq("phoneE164", phoneE164))
+        .order("desc")
+        .take(WAKE_LINES),
+      ctx.db
+        .query("tenants")
+        .withIndex("by_phone", (q) => q.eq("phoneE164", phoneE164))
+        .first(),
+    ]);
     const memories = memoryRows.reverse().map((r) => r.line);
-    const tenant = await ctx.db
-      .query("tenants")
-      .withIndex("by_phone", (q) => q.eq("phoneE164", phoneE164))
-      .first();
     if (!tenant) return { memories, jobs: [] };
     const jobRows = await ctx.db
       .query("jobs")

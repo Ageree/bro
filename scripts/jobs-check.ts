@@ -3,6 +3,8 @@ import {
   dueJobNudges,
   isJobCheckWakeup,
   jobCheckPayload,
+  jobCheckQuietInstruction,
+  jobCheckWakePrompt,
   jobNudgeInstruction,
   jobWakeInstruction,
   matchWakeJob,
@@ -384,6 +386,11 @@ const nudgeText = jobNudgeInstruction(
 );
 assert(nudgeText?.includes("Do NOT answer [SILENT]"), "due job_check force-speaks");
 assert(
+  !jobCheckWakePrompt("джоб j1: слот").includes("[SILENT]"),
+  "wakeup user text does not authorize SILENT — turn.started decides",
+);
+assert(jobCheckQuietInstruction().includes("[SILENT]"), "quiet job_check may stay silent");
+assert(
   jobNudgeInstruction(
     [
       {
@@ -414,11 +421,13 @@ assert(!isJobCheckWakeup({ origin: "wakeup", wakeupKind: "brief" }), "brief is n
 assert(jobsSrc.includes("isJobCheckWakeup"), "nudge only on job_check wakeups");
 assert(jobsSrc.includes("jobNudgeInstruction"), "nudge copy lives on turn.started");
 assert(jobsSrc.includes("jobCheckPayload"), "nudge scoped to stamped payload");
+assert(jobsSrc.includes("jobCheckQuietInstruction"), "non-due job_check gets SILENT from instructions");
 
 const imessage = readFileSync(
   new URL("../agent/channels/imessage.ts", import.meta.url),
   "utf8",
 );
+assert(imessage.includes("jobCheckWakePrompt"), "HTTP path uses shared job_check prompt");
 assert(imessage.includes("parkTurn"), "human iMessage turn is not awaited");
 assert(
   /await from\(conversationId\)\.send\(prompt/.test(imessage),

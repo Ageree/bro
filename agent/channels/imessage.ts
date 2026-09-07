@@ -45,6 +45,7 @@ import {
 } from "../lib/imessage-text";
 import { deliverHuman } from "../lib/deliver-human";
 import { parkTurn } from "../lib/channel-turn.ts";
+import { jobCheckWakePrompt } from "../lib/job-wake.ts";
 import {
   routingFromAuth,
   routingPhone,
@@ -742,7 +743,7 @@ export default defineChannel({
           // Residual race: browserRunId can change during from().send after this check.
         }
       } else if (kind === "job_check") {
-        prompt = `[background wakeup] Фоновая проверка джоба: ${payload}. Открытые джобы этого человека уже в контексте. Сделай следующий шаг цепочки сам (проверь почту/статус нужным тулом: composio, browser_task, bro_mail, otp_lookup). Если ждёшь OTP — сначала inbox/archive, в тред только если письма нет. Если есть прогресс — сделай шаг и коротко напиши человеку. Если продвинуться нечем — ответь ровно [SILENT]: проверка повторится сама. Если джоб уже закрыт или отменён — вызови cancel_wakeup с kind=job_check и payloadContains «джоб <id>», затем ответь [SILENT].`;
+        prompt = jobCheckWakePrompt(payload);
       } else if (kind === "event") {
         prompt = eventPrompt(payload);
       }

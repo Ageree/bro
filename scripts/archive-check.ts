@@ -12,6 +12,7 @@ import {
   inkboxMailToDocument,
   recallQuery,
   shouldRecallArchive,
+  shouldRecallConversation,
 } from "../agent/lib/archive-policy.ts";
 
 // One container per person; E.164 plus stays out of the tag.
@@ -98,6 +99,16 @@ assert.ok(block!.includes("[gmail] (2026-09-05) Приём"));
 
 // Archive skip is only for wakeups that cannot need mail/calendar.
 assert.equal(shouldRecallArchive(""), false, "empty");
+assert.equal(shouldRecallConversation(null), true, "captionless photo still recalls conversation");
+assert.equal(shouldRecallConversation(""), true, "empty human text still recalls conversation");
+assert.equal(shouldRecallConversation("ок"), true, "ack still recalls conversation");
+assert.equal(
+  shouldRecallConversation(
+    "[background wakeup] Проверь статус текущего браузер-джоба вызовом тула browser_task",
+  ),
+  false,
+  "browser_poll skips conversation recall",
+);
 assert.equal(shouldRecallArchive("купи кроссовки на озон"), true, "human errand keeps archive");
 assert.equal(shouldRecallArchive("ок"), true, "ack still keeps archive — may confirm a clinic slot");
 assert.equal(shouldRecallArchive("что в почте"), true, "mail ask");
@@ -139,8 +150,8 @@ const recallMemory = readFileSync(
   "utf8",
 );
 assert.ok(
-  recallMemory.includes("shouldRecallArchive"),
-  "conversation recall uses the same wakeup gate as archive",
+  recallMemory.includes("shouldRecallConversation"),
+  "conversation recall keeps captionless photos and the wakeup gate",
 );
 assert.ok(
   recallMemory.includes("gatedStarted") || recallMemory.includes("turn.started"),

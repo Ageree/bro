@@ -5,6 +5,7 @@ import {
   dueJobNudges,
   isJobCheckWakeup,
   jobCheckPayload,
+  jobCheckQuietInstruction,
   jobNudgeInstruction,
   jobWakeInstruction,
 } from "../lib/job-wake.ts";
@@ -28,14 +29,22 @@ export default defineDynamic({
         const jobCheck = isJobCheckWakeup(attrs);
         const scope = jobCheck ? { payload: jobCheckPayload(attrs) } : undefined;
         const due = scope ? dueJobNudges(rows, now, scope) : [];
-        for (const job of due) {
-          await markNudged(phone, job.id).catch((err) =>
-            console.error("markNudged failed", err),
+        if (due.length > 0) {
+          await Promise.all(
+            due.map((job) =>
+              markNudged(phone, job.id).catch((err) =>
+                console.error("markNudged failed", err),
+              ),
+            ),
           );
         }
         const content = [
           jobWakeInstruction(rows.map((r) => r.line)),
-          scope ? jobNudgeInstruction(rows, now, scope) : null,
+          scope
+            ? due.length > 0
+              ? jobNudgeInstruction(rows, now, scope)
+              : jobCheckQuietInstruction()
+            : null,
         ]
           .filter((part): part is string => Boolean(part))
           .join("\n\n");

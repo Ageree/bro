@@ -1,6 +1,6 @@
 import supermemory from "@supermemory/eve";
 import { defineMemory, type MemoryOperationContext } from "eve/memory";
-import { recallQuery, shouldRecallArchive } from "../lib/archive-policy.ts";
+import { recallQuery, shouldRecallConversation } from "../lib/archive-policy.ts";
 import { resolveMemoryScope, resolveRecallBackend } from "../lib/memory-policy.ts";
 
 /**
@@ -30,13 +30,16 @@ type RecallCtx = MemoryOperationContext & {
   turn?: { input?: readonly unknown[] } | null;
 };
 
-async function gatedStarted(context: RecallCtx) {
-  const query =
-    recallQuery(context.turn?.input ?? []) ?? recallQuery(context.messages);
-  if (!query || !shouldRecallArchive(query)) return null;
-  const started = inner.recall?.["turn.started"];
-  if (typeof started !== "function") return null;
-  return started(context as never);
+function gatedRecall(
+  hook: ((ctx: never) => unknown) | undefined,
+): (context: RecallCtx) => Promise<unknown> | unknown {
+  return (context: RecallCtx) => {
+    const query =
+      recallQuery(context.turn?.input ?? []) ?? recallQuery(context.messages);
+    if (!shouldRecallConversation(query)) return null;
+    if (typeof hook !== "function") return null;
+    return hook(context as never);
+  };
 }
 
 export default defineMemory({
@@ -46,7 +49,8 @@ export default defineMemory({
     ...inner,
     recall: {
       ...inner.recall,
-      "turn.started": gatedStarted,
+      "turn.started": gatedRecall(inner.recall?.["turn.started"]),
+      "compaction.completed": gatedRecall(inner.recall?.["compaction.completed"]),
     },
   },
   scope: (ctx) =>
