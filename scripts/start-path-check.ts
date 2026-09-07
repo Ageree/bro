@@ -13,7 +13,10 @@ import {
   returningOneToOneConvexRtts,
   returningTelegramConvexRtts,
 } from "../agent/lib/inbound-path.ts";
-import { INSTINCT_RECALL_TTL_MS } from "../agent/lib/instinct-recall.ts";
+import {
+  INSTINCT_RECALL_TTL_MS,
+  canPrefetchInstinctQuery,
+} from "../agent/lib/instinct-recall.ts";
 
 function assert(cond: unknown, msg: string): void {
   if (!cond) throw new Error(msg);
@@ -68,6 +71,8 @@ assert(instinct.includes("INSTINCT_RECALL_TTL_MS"), "Instinct pair is same-turn 
 assert(instinct.includes("instinctInflight"), "parallel hooks coalesce one pair");
 assert(instinct.includes("conversationScope"), "pair is keyed by Eve conversation scope");
 assert(instinct.includes("instinctScopesForPerson"), "prefetch uses Eve digest + phone");
+assert(instinct.includes("conversation.ok && archive.ok"), "failed Instinct searches are not cached");
+assert(instinct.includes("canPrefetchInstinctQuery"), "voice placeholders skip early prefetch");
 
 const tenants = readFileSync(new URL("../convex/tenants.ts", import.meta.url), "utf8");
 {
@@ -94,6 +99,10 @@ assert(imessage.includes("imageUrlParts"), "photos do not tail-wait after bind")
 assert(imessage.includes("getTenantByHandle"), "HMAC still loads the handle tenant");
 assert(imessage.includes("loadWakeContext"), "1:1 billing prefetches wake context");
 assert(imessage.includes("prefetchInstinctRecall"), "1:1 billing prefetches Instinct searches");
+assert(
+  imessage.includes("prefetchInstinctRecall(ownerPhone, inbound.text)"),
+  "final inbound text warms Instinct after STT",
+);
 assert(imessage.includes("ackIMessageReadAndTyping"), "read+typing is one helper");
 {
   const gatePAt = imessage.indexOf("const gateP = inboundOwnerGate");
@@ -133,6 +142,11 @@ const mail = readFileSync(new URL("../agent/lib/mail-inbound.ts", import.meta.ur
 assert(mail.includes("fresh: true"), "mail handle lookup is live for disabled/HMAC");
 
 assert(INSTINCT_RECALL_TTL_MS === 8_000, "Instinct pair outlasts Eve session start");
+assert(canPrefetchInstinctQuery("ок"), "human text still prefetches");
+assert(
+  !canPrefetchInstinctQuery("[voice message] https://cdn.example/a"),
+  "voice URL placeholders do not prefetch",
+);
 assert(HANDLE_TENANT_TTL_MS === 30_000, "handle tenant cache is short-lived");
 assert(TELEGRAM_TENANT_TTL_MS === 30_000, "telegram tenant cache is short-lived");
 const cache = createTtlCache<string>(50);

@@ -54,12 +54,18 @@ export function instinctScopesForPerson(scopeValue: string): InstinctScopes {
   };
 }
 
+/** Skip placeholders that will not be the turn query after STT. */
+export function canPrefetchInstinctQuery(query: string): boolean {
+  const q = recallText(query);
+  if (!q || !shouldRecallArchive(q)) return false;
+  return !q.includes("[voice message]");
+}
+
 export function prefetchInstinctRecall(scopeValue: string, query: string): void {
   if (!process.env.SUPERMEMORY_API_KEY?.trim()) return;
-  const q = recallText(query);
-  if (!q || !shouldRecallArchive(q)) return;
-  void loadInstinctRecall(instinctScopesForPerson(scopeValue), q).catch((err) =>
-    console.error("instinct prefetch failed", err),
+  if (!canPrefetchInstinctQuery(query)) return;
+  void loadInstinctRecall(instinctScopesForPerson(scopeValue), recallText(query)).catch(
+    (err) => console.error("instinct prefetch failed", err),
   );
 }
 
@@ -80,35 +86,34 @@ export async function loadInstinctRecall(
   const existing = instinctInflight.get(key);
   if (existing) return existing;
   const pending = Promise.all([
-    searchConversation(
-      scopes.conversationScope,
-      q,
-      CONVERSATION_RECALL_TIMEOUT_MS,
-      abort,
-    )
-      .then(formatConversationRecall)
-      .catch((err) => {
-        if (err instanceof Error && err.name === "AbortError") return null;
-        console.error("conversation recall failed", err);
-        return null;
-      }),
-    searchArchive(
-      scopes.archiveScope,
-      q,
-      ARCHIVE_RECALL_HITS,
-      ARCHIVE_RECALL_TIMEOUT_MS,
-      abort,
-    )
-      .then(formatArchiveRecall)
-      .catch((err) => {
-        if (err instanceof Error && err.name === "AbortError") return null;
-        console.error("archive recall failed", err);
-        return null;
-      }),
+    settleRecall(
+      searchConversation(
+        scopes.conversationScope,
+        q,
+        CONVERSATION_RECALL_TIMEOUT_MS,
+        abort,
+      ).then(formatConversationRecall),
+      "conversation",
+    ),
+    settleRecall(
+      searchArchive(
+        scopes.archiveScope,
+        q,
+        ARCHIVE_RECALL_HITS,
+        ARCHIVE_RECALL_TIMEOUT_MS,
+        abort,
+      ).then(formatArchiveRecall),
+      "archive",
+    ),
   ])
     .then(([conversation, archive]) => {
-      const value = { conversation, archive };
-      instinctCache.set(key, value);
+      const value = {
+        conversation: conversation.ok ? conversation.value : null,
+        archive: archive.ok ? archive.value : null,
+      };
+      // Timeouts/errors are not empty hits — leave the slot uncached so
+      // turn.started can search again.
+      if (conversation.ok && archive.ok) instinctCache.set(key, value);
       return value;
     })
     .finally(() => {
@@ -116,4 +121,18 @@ export async function loadInstinctRecall(
     });
   instinctInflight.set(key, pending);
   return pending;
+}
+
+type Settled<T> = { ok: true; value: T } | { ok: false };
+
+function settleRecall(
+  work: Promise<string | null>,
+  label: string,
+): Promise<Settled<string | null>> {
+  return work.then((value) => ({ ok: true as const, value })).catch((err) => {
+    if (!(err instanceof Error && err.name === "AbortError")) {
+      console.error(`${label} recall failed`, err);
+    }
+    return { ok: false as const };
+  });
 }

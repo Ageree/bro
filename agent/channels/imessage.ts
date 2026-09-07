@@ -614,6 +614,7 @@ export default defineChannel({
       if (shouldSkipAgentTurn({ firstBind, text: inbound.text })) {
         return new Response(null, { status: 204 });
       }
+      if (!group) prefetchInstinctRecall(ownerPhone, inbound.text);
       const touch = touchLastChannel(remote, "imessage").catch((err) =>
         console.error("touch last channel failed", err),
       );
