@@ -81,7 +81,12 @@ const report = {
       }),
     ),
   },
-  note: "Warm returning 1:1 «ок» awaits only countInboundMessage before parkTurn. Handle HMAC tenant is process-cached. Live Inkbox RTT is not included.",
+  instinct: {
+    prefetchDuringBilling: true,
+    parallelConversationAndArchive: true,
+    ttlMs: 8_000,
+  },
+  note: "Warm returning 1:1 «ок» awaits only countInboundMessage before parkTurn. Instinct conversation+archive prefetch during that RTT. Live Inkbox RTT is not included.",
 };
 
 const json = `${JSON.stringify(report, null, 2)}\n`;

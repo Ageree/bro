@@ -18,7 +18,11 @@ async function call(
   path: string,
   init: RequestInit,
   timeoutMs = ARCHIVE_TOOL_TIMEOUT_MS,
+  abort?: AbortSignal,
 ): Promise<unknown> {
+  const signal = abort
+    ? AbortSignal.any([AbortSignal.timeout(timeoutMs), abort])
+    : AbortSignal.timeout(timeoutMs);
   const res = await fetch(`${BASE}${path}`, {
     ...init,
     headers: {
@@ -26,7 +30,7 @@ async function call(
       "Content-Type": "application/json",
       ...init.headers,
     },
-    signal: AbortSignal.timeout(timeoutMs),
+    signal,
   });
   if (!res.ok) {
     throw new Error(`supermemory ${path} failed: ${res.status} ${await res.text()}`);
@@ -65,6 +69,7 @@ export async function searchArchive(
   query: string,
   limit = 5,
   timeoutMs = ARCHIVE_TOOL_TIMEOUT_MS,
+  abort?: AbortSignal,
 ): Promise<ArchiveHit[]> {
   const json = (await call(
     "/search",
@@ -79,6 +84,7 @@ export async function searchArchive(
       }),
     },
     timeoutMs,
+    abort,
   )) as SearchResponse;
   return (json.results ?? []).map((r) => ({
     title: r.title ?? "",

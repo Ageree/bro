@@ -3,12 +3,12 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { forgetArchive, searchArchive } from "../lib/archive.ts";
 import {
-  ARCHIVE_RECALL_TIMEOUT_MS,
   ARCHIVE_TOOL_TIMEOUT_MS,
   formatArchiveRecall,
   recallQuery,
   shouldRecallArchive,
 } from "../lib/archive-policy.ts";
+import { loadInstinctRecall } from "../lib/instinct-recall.ts";
 import {
   resolveMemoryScope,
   resolveRecallBackend,
@@ -16,7 +16,6 @@ import {
 } from "../lib/memory-policy.ts";
 
 const RECALL_ID = "bro-archive-hits";
-const RECALL_HITS = 4;
 
 /**
  * Instinct-style recall over the person's source archive (mail, calendar
@@ -30,15 +29,14 @@ async function recall(
     recallQuery(context.turn?.input ?? []) ?? recallQuery(context.messages);
   if (!query || !shouldRecallArchive(query)) return null;
   try {
-    const hits = await searchArchive(
+    const { archive } = await loadInstinctRecall(
       scopePhone(context.memory.scope.value),
       query,
-      RECALL_HITS,
-      ARCHIVE_RECALL_TIMEOUT_MS,
+      context.abortSignal,
     );
-    const content = formatArchiveRecall(hits);
-    return content ? { messages: [{ id: RECALL_ID, content }] } : null;
+    return archive ? { messages: [{ id: RECALL_ID, content: archive }] } : null;
   } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") return null;
     console.error("archive recall failed", err);
     return null;
   }

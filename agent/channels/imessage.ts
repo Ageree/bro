@@ -26,6 +26,7 @@ import {
   touchLastChannel,
   upsertTenant,
 } from "../lib/convex";
+import { prefetchInstinctRecall } from "../lib/instinct-recall.ts";
 import {
   broVcard,
   helpText,
@@ -495,6 +496,7 @@ export default defineChannel({
         void loadWakeContext(ownerPhone).catch((err) =>
           console.error("wake prefetch failed", err),
         );
+        prefetchInstinctRecall(ownerPhone, preview);
         if (boundOneToOne) {
           const ack = ackIMessageReadAndTyping(
             msg.conversation_id,

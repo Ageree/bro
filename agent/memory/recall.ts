@@ -6,15 +6,11 @@ import {
   type MemoryRecallResult,
 } from "eve/memory";
 import {
-  CONVERSATION_RECALL_TIMEOUT_MS,
   recallQuery,
   shouldRecallConversation,
 } from "../lib/archive-policy.ts";
-import {
-  CONVERSATION_RECALL_ID,
-  formatConversationRecall,
-  searchConversation,
-} from "../lib/conversation-recall.ts";
+import { CONVERSATION_RECALL_ID } from "../lib/conversation-recall.ts";
+import { loadInstinctRecall } from "../lib/instinct-recall.ts";
 import { resolveMemoryScope, resolveRecallBackend } from "../lib/memory-policy.ts";
 
 /**
@@ -59,14 +55,14 @@ async function startedSearch(context: RecallCtx): Promise<MemoryRecallResult> {
     recallQuery(context.turn?.input ?? []) ?? recallQuery(context.messages);
   if (!query?.trim()) return null;
   try {
-    const hits = await searchConversation(
+    const { conversation } = await loadInstinctRecall(
       context.memory.scope.key,
       query,
-      CONVERSATION_RECALL_TIMEOUT_MS,
       context.abortSignal,
     );
-    const content = formatConversationRecall(hits);
-    return content ? { messages: [{ id: CONVERSATION_RECALL_ID, content }] } : null;
+    return conversation
+      ? { messages: [{ id: CONVERSATION_RECALL_ID, content: conversation }] }
+      : null;
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") return null;
     console.error("conversation recall failed", err);

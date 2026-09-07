@@ -163,9 +163,15 @@ assert.ok(
   "conversation recall keeps captionless photos and the wakeup gate",
 );
 assert.ok(
-  recallMemory.includes("searchConversation"),
-  "turn.started conversation recall is one search",
+  recallMemory.includes("loadInstinctRecall"),
+  "turn.started conversation recall uses the Instinct pair",
 );
+const archiveClient = readFileSync(
+  new URL("../agent/lib/archive.ts", import.meta.url),
+  "utf8",
+);
+assert.ok(archiveClient.includes("AbortSignal.any"), "archive search joins Eve abort");
+
 const conversationSrc = readFileSync(
   new URL("../agent/lib/conversation-recall.ts", import.meta.url),
   "utf8",
@@ -195,9 +201,15 @@ const archiveMemory = readFileSync(
   "utf8",
 );
 assert.ok(
-  archiveMemory.includes("ARCHIVE_RECALL_TIMEOUT_MS"),
-  "instinct recall uses the short timeout",
+  archiveMemory.includes("loadInstinctRecall"),
+  "instinct archive recall uses the shared pair",
 );
+const instinctSrc = readFileSync(
+  new URL("../agent/lib/instinct-recall.ts", import.meta.url),
+  "utf8",
+);
+assert.ok(instinctSrc.includes("Promise.all"), "Instinct searches run together");
+assert.ok(instinctSrc.includes("ARCHIVE_RECALL_TIMEOUT_MS"), "Instinct pair keeps the 1.5s budget");
 assert.ok(
   archiveMemory.includes("ARCHIVE_TOOL_TIMEOUT_MS"),
   "archive__search keeps the tool timeout",

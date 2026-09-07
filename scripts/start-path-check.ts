@@ -13,6 +13,7 @@ import {
   returningOneToOneConvexRtts,
   returningTelegramConvexRtts,
 } from "../agent/lib/inbound-path.ts";
+import { INSTINCT_RECALL_TTL_MS } from "../agent/lib/instinct-recall.ts";
 
 function assert(cond: unknown, msg: string): void {
   if (!cond) throw new Error(msg);
@@ -47,16 +48,22 @@ assert(jobs.includes("jobCheckQuietInstruction"), "non-due job_check may stay si
 
 const archive = readFileSync(new URL("../agent/memory/archive.ts", import.meta.url), "utf8");
 assert(archive.includes("shouldRecallArchive"), "archive recall is gated");
-assert(archive.includes("ARCHIVE_RECALL_TIMEOUT_MS"), "archive recall is time-capped");
+assert(archive.includes("loadInstinctRecall"), "archive recall shares the Instinct pair");
 
 const recall = readFileSync(new URL("../agent/memory/recall.ts", import.meta.url), "utf8");
 assert(recall.includes("shouldRecallConversation"), "conversation recall keeps captionless photos");
 assert(recall.includes("compaction.completed"), "compaction recall uses the same gate");
-assert(recall.includes("searchConversation"), "turn.started is one abortable search");
-assert(recall.includes("CONVERSATION_RECALL_TIMEOUT_MS"), "conversation search is time-capped");
+assert(recall.includes("loadInstinctRecall"), "turn.started conversation uses the Instinct pair");
 assert(!recall.includes("loadProfileContext"), "profile dump stays off turn.started");
 assert(recall.includes("inner.recall"), "compaction still uses the plugin recall");
 assert(recall.includes("abortSignal"), "conversation search joins Eve abort");
+
+const instinct = readFileSync(new URL("../agent/lib/instinct-recall.ts", import.meta.url), "utf8");
+assert(instinct.includes("Promise.all"), "conversation and archive search in parallel");
+assert(instinct.includes("searchConversation"), "conversation search stays on the pair");
+assert(instinct.includes("searchArchive"), "archive search stays on the pair");
+assert(instinct.includes("INSTINCT_RECALL_TTL_MS"), "Instinct pair is same-turn cached");
+assert(instinct.includes("instinctInflight"), "parallel hooks coalesce one pair");
 
 const tenants = readFileSync(new URL("../convex/tenants.ts", import.meta.url), "utf8");
 {
@@ -82,15 +89,18 @@ assert(imessage.includes("boundOneToOne"), "bound 1:1 skips getGroupByConversati
 assert(imessage.includes("imageUrlParts"), "photos do not tail-wait after bind");
 assert(imessage.includes("getTenantByHandle"), "HMAC still loads the handle tenant");
 assert(imessage.includes("loadWakeContext"), "1:1 billing prefetches wake context");
+assert(imessage.includes("prefetchInstinctRecall"), "1:1 billing prefetches Instinct searches");
 assert(imessage.includes("ackIMessageReadAndTyping"), "read+typing is one helper");
 {
   const gatePAt = imessage.indexOf("const gateP = inboundOwnerGate");
   const awaitGateAt = imessage.indexOf("const gate = await gateP");
   const ackAt = imessage.indexOf("ackIMessageReadAndTyping", gatePAt);
   const wakeAt = imessage.indexOf("loadWakeContext(ownerPhone)", gatePAt);
+  const instinctAt = imessage.indexOf("prefetchInstinctRecall(ownerPhone", gatePAt);
   assert(gatePAt > 0 && awaitGateAt > gatePAt, "1:1 billing starts before it is awaited");
   assert(ackAt > gatePAt && ackAt < awaitGateAt, "bound 1:1 typing overlaps billing");
   assert(wakeAt > gatePAt && wakeAt < awaitGateAt, "wake prefetch overlaps billing");
+  assert(instinctAt > gatePAt && instinctAt < awaitGateAt, "Instinct prefetch overlaps billing");
 }
 
 const inkbox = readFileSync(new URL("../agent/lib/inkbox.ts", import.meta.url), "utf8");
@@ -109,13 +119,16 @@ assert(
   const typingAt = telegram.indexOf("sendTelegramTyping", afterReal);
   const billAt = telegram.indexOf("countInboundMessage(phone)", afterReal);
   const wakeAt = telegram.indexOf("loadWakeContext(phone)", afterReal);
+  const instinctAt = telegram.indexOf("prefetchInstinctRecall(phone", afterReal);
   assert(afterReal > 0 && typingAt > afterReal && typingAt < billAt, "telegram typing overlaps billing");
   assert(wakeAt > afterReal && wakeAt < billAt, "telegram wake prefetch overlaps billing");
+  assert(instinctAt > afterReal && instinctAt < billAt, "telegram Instinct prefetch overlaps billing");
 }
 
 const mail = readFileSync(new URL("../agent/lib/mail-inbound.ts", import.meta.url), "utf8");
 assert(mail.includes("fresh: true"), "mail handle lookup is live for disabled/HMAC");
 
+assert(INSTINCT_RECALL_TTL_MS === 8_000, "Instinct pair outlasts Eve session start");
 assert(HANDLE_TENANT_TTL_MS === 30_000, "handle tenant cache is short-lived");
 assert(TELEGRAM_TENANT_TTL_MS === 30_000, "telegram tenant cache is short-lived");
 const cache = createTtlCache<string>(50);
@@ -187,5 +200,7 @@ console.log(
     telegramTypingOverlapsBilling: true,
     wakePrefetchDuringBilling: true,
     wakeContextTtlMs: 8000,
+    instinctPrefetchDuringBilling: true,
+    instinctRecallsParallel: true,
   }),
 );

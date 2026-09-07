@@ -8,6 +8,7 @@ import {
   mintTelegramBind,
   touchLastChannel,
 } from "../lib/convex";
+import { prefetchInstinctRecall } from "../lib/instinct-recall.ts";
 import {
   helpText,
   isHelpAsk,
@@ -270,6 +271,7 @@ export default defineChannel({
       void loadWakeContext(phone).catch((err) =>
         console.error("wake prefetch failed", err),
       );
+      prefetchInstinctRecall(phone, inbound.text);
 
       let gate: { decision: "allow" | "paywall" | "drop"; payUrl?: string };
       try {
