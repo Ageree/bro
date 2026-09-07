@@ -11,8 +11,8 @@ Shared pool cannot start a thread. The operator texts first from an iPhone; the 
 3. `export ALLOWED_SENDERS=+<the iPhone E.164>` on the eve process.
 4. `bash scripts/dev-live.sh` — eve + tunnel as `bro-live-bro`.
 5. On the iPhone: Settings → Messages → **Send as SMS = off**. New message to the printed router (`+16504849720` today). Text exactly `connect @bro-live-bro`. The bubble must stay blue.
-6. `npm run live -- wait-connect` — returns when Inkbox shows an assignment (last4 only).
-7. From the phone, text Bro as usual (`привет`, …).
+6. `npm run live -- wait-connect` — returns when Inkbox shows an assignment **and** a real inbound (last4 only). `connect @…` itself is not that inbound.
+7. From the phone, send any ordinary blue text (`привет`). Inkbox then lets Bro reply.
 8. `npm run live -- inbox` / `npm run live -- inbox --wait 90` — Bro’s bubbles (and yours) via Inkbox.
 9. `npm run live -- as-bro "пинг"` — optional outbound as Bro (proves Apple delivery; does not run the model).
 

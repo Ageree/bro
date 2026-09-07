@@ -142,11 +142,25 @@ const listenReady = classifyListen({
   apiKey: "k",
   broExists: true,
   remotes: ["+79217818876"],
+  inboundCount: 1,
   broHandle: DEFAULT_BRO_HANDLE,
   routerNumber: "+16504849720",
 });
 assert(listenReady.ready, "listen ready with assignment");
 assert(listenReady.remotesLast4.includes("8876"), "listen last4");
+const listenAssigned = classifyListen({
+  apiKey: "k",
+  broExists: true,
+  remotes: ["+79217818876"],
+  inboundCount: 0,
+  broHandle: DEFAULT_BRO_HANDLE,
+  routerNumber: "+16504849720",
+});
+assert(
+  listenAssigned.blocker === "awaiting_inbound",
+  "connect is not first inbound",
+);
+assert(listenAssigned.detail?.includes("привет"), "awaiting inbound hint");
 const listenWait = classifyListen({
   apiKey: "k",
   broExists: true,
@@ -229,6 +243,7 @@ assert(agents.includes("npm run live"), "agents.md tells cloud testers to live")
 assert(agents.includes("BRO_LIVE_TESTER_HANDLE"), "agents.md names tester handle");
 assert(agents.includes("provision --listen"), "agents.md documents human-first");
 assert(agents.includes("wait-connect"), "agents.md wait-connect");
+assert(agents.includes("ordinary blue text"), "agents.md first inbound");
 assert(agents.includes("real iMessage"), "agents.md is the live lane");
 
 const envEx = readFileSync(new URL("../.env.example", import.meta.url), "utf8");

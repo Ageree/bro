@@ -134,10 +134,16 @@ async function listenStatus(client: Inkbox): Promise<LiveListenStatus> {
   const broHandle = broHandleFromEnv();
   const bro = await getIdentityOrNull(client, broHandle);
   const remotes = bro ? await assignmentRemotes(bro) : [];
+  const inboundCount = bro
+    ? (await bro.listIMessages({ limit: 50 })).filter(
+        (m) => m.direction === "inbound",
+      ).length
+    : 0;
   return classifyListen({
     apiKey: process.env.INKBOX_API_KEY,
     broExists: Boolean(bro),
     remotes,
+    inboundCount,
     broHandle,
     routerNumber: await routerNumberOf(client),
   });
@@ -414,7 +420,9 @@ async function waitConnect(timeoutMs: number): Promise<void> {
     throw new Error(last.detail ?? "run npm run live -- provision --listen");
   }
   console.log(
-    `waiting for ${last.connectCommand} to ${last.routerNumber ?? "router"}`,
+    last.blocker === "awaiting_inbound"
+      ? `assignment last4 ${last.remotesLast4.join(",")} — waiting for a real inbound (not just connect)`
+      : `waiting for ${last.connectCommand} to ${last.routerNumber ?? "router"}`,
   );
   while (Date.now() < deadline) {
     last = await listenStatus(client);

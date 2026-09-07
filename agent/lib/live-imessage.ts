@@ -22,7 +22,11 @@ export type LiveBlocker =
   | "quota"
   | "identity_cap";
 
-export type ListenBlocker = "no_api_key" | "no_bro" | "no_assignment";
+export type ListenBlocker =
+  | "no_api_key"
+  | "no_bro"
+  | "no_assignment"
+  | "awaiting_inbound";
 
 export type LiveLaneStatus = {
   ready: boolean;
@@ -230,6 +234,7 @@ export function classifyListen(input: {
   apiKey?: string;
   broExists: boolean;
   remotes: string[];
+  inboundCount?: number;
   broHandle: string;
   routerNumber?: string;
 }): LiveListenStatus {
@@ -264,6 +269,15 @@ export function classifyListen(input: {
       ready: false,
       blocker: "no_assignment",
       detail: `on iPhone, Send as SMS = off, text ${connectCommand} to ${input.routerNumber ?? "the router"} as a blue iMessage`,
+    };
+  }
+  if ((input.inboundCount ?? 0) <= 0) {
+    return {
+      ...base,
+      ready: false,
+      blocker: "awaiting_inbound",
+      detail:
+        `assignment last4 ${remotesLast4.join(",")} is live, but Inkbox does not treat ${connectCommand} as the first inbound. Send any ordinary blue iMessage from that iPhone (e.g. привет), then inbox / as-bro`,
     };
   }
   return { ...base, ready: true };
