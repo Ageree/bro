@@ -133,9 +133,18 @@ assert(
   "telegram steers the iMessage eve session",
 );
 assert(
-  telegramWebhook.includes("waitUntil") &&
+  telegramWebhook.includes("await startBroTurn") &&
     telegramWebhook.includes("steerBroTurn(from"),
-  "telegram starts the turn without blocking the webhook",
+  "telegram awaits the same send() path as iMessage",
+);
+const turnEvents = readFileSync(
+  resolve(import.meta.dirname, "../agent/lib/human-turn-events.ts"),
+  "utf8",
+);
+assert(
+  turnEvents.includes('lastChannel: "telegram"') &&
+    turnEvents.includes("telegramChatIdOf"),
+  "telegram replies skip the Convex tenant lookup",
 );
 const imessageChannel = readFileSync(
   resolve(import.meta.dirname, "../agent/channels/imessage.ts"),

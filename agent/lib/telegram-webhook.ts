@@ -151,14 +151,60 @@ function steerBroTurn(
   });
 }
 
+async function telegramInboundGate(phone: string): Promise<{
+  decision: "allow" | "paywall" | "drop";
+  payUrl?: string;
+}> {
+  try {
+    return inboundGateFromResult(await countInboundMessage(phone), undefined);
+  } catch (err) {
+    console.error("billing count failed", err);
+    try {
+      const marked = await markPaywallSent(phone);
+      return inboundGateFromResult(undefined, err, {
+        alreadySentToday: marked.alreadySentToday,
+        marked: true,
+      });
+    } catch (markErr) {
+      console.error("paywallSentDayKey persist failed", markErr);
+      return inboundGateFromResult(undefined, err, {
+        alreadySentToday: false,
+        marked: false,
+      });
+    }
+  }
+}
+
+async function startBroTurn(
+  from: ChannelFrom,
+  opts: {
+    conversationId: string;
+    content: string | UserContent;
+    phone: string;
+    attributes: Record<string, string>;
+  },
+): Promise<void> {
+  const t0 = Date.now();
+  await Promise.all([
+    steerBroTurn(from, opts),
+    touchLastChannel(opts.phone, "telegram").catch((err) =>
+      console.error("touch last channel failed", err),
+    ),
+  ]);
+  console.log("telegram steered", {
+    conversationId: opts.conversationId,
+    ms: Date.now() - t0,
+  });
+}
+
 export async function handleTelegramWebhook(
   request: Request,
   args: {
     from: ChannelFrom;
-    waitUntil: (task: Promise<unknown>) => void;
+    waitUntil?: (task: Promise<unknown>) => void;
   },
 ): Promise<Response> {
-  const { from, waitUntil } = args;
+  const { from } = args;
   if (!webhookSecretOk(request)) {
     return new Response("unauthorized", { status: 401 });
   }
@@ -189,13 +235,9 @@ export async function handleTelegramWebhook(
     const data = (cb.data ?? "").trim();
     if (!data) return new Response(null, { status: 204 });
     const conversationId = tenant.inkboxConversationId;
-    waitUntil(
-      touchLastChannel(tenant.phoneE164, "telegram").catch((err) =>
-        console.error("touch last channel failed", err),
-      ),
-    );
-    waitUntil(
-      steerBroTurn(from, {
+    startTelegramTyping(chatIdOf(msg));
+    try {
+      await startBroTurn(from, {
         conversationId,
         content: `[button] ${data}`,
         phone: tenant.phoneE164,
@@ -206,13 +248,13 @@ export async function handleTelegramWebhook(
           messageId: String(msg.message_id),
           inkboxHandle: tenant.inkboxHandle,
         }),
-      }).catch(async (err) => {
-        console.error("telegram callback turn failed", err);
-        await sendHtml(chatIdOf(msg), TURN_FAILED_REPLY).catch((sendErr) =>
-          console.error("telegram callback fallback failed", sendErr),
-        );
-      }),
-    );
+      });
+    } catch (err) {
+      console.error("telegram callback turn failed", err);
+      await sendHtml(chatIdOf(msg), TURN_FAILED_REPLY).catch((sendErr) =>
+        console.error("telegram callback fallback failed", sendErr),
+      );
+    }
     return new Response(null, { status: 204 });
   }
 
@@ -260,8 +302,10 @@ export async function handleTelegramWebhook(
     return new Response(null, { status: 204 });
   }
 
+  const stopTyping = startTelegramTyping(chatId);
   const tenant = await getTenantByTelegram(userId).catch(() => null);
   if (!tenant?.phoneE164 || !tenant.inkboxConversationId) {
+    stopTyping();
     await sendHtml(chatId, bindRefuseText("unknown_token")).catch((err) =>
       console.error("telegram unbound inbound", err),
     );
@@ -272,36 +316,27 @@ export async function handleTelegramWebhook(
 
   const inbound = await inboundTelegramText(msg);
   if (inbound.allVoiceFailed) {
+    stopTyping();
     await sendHtml(chatId, VOICE_FAILED_REPLY).catch((err) =>
       console.error("telegram voice fail reply", err),
     );
     return new Response(null, { status: 204 });
   }
   if (!inbound.text && !largestPhoto(msg)) {
+    stopTyping();
     return new Response(null, { status: 204 });
   }
 
-  let gate: { decision: "allow" | "paywall" | "drop"; payUrl?: string };
-  try {
-    gate = inboundGateFromResult(await countInboundMessage(phone), undefined);
-  } catch (err) {
-    console.error("billing count failed", err);
-    try {
-      const marked = await markPaywallSent(phone);
-      gate = inboundGateFromResult(undefined, err, {
-        alreadySentToday: marked.alreadySentToday,
-        marked: true,
-      });
-    } catch (markErr) {
-      console.error("paywallSentDayKey persist failed", markErr);
-      gate = inboundGateFromResult(undefined, err, {
-        alreadySentToday: false,
-        marked: false,
-      });
-    }
+  const [gate, content] = await Promise.all([
+    telegramInboundGate(phone),
+    inboundTelegramContent(inbound.text, msg),
+  ]);
+  if (gate.decision === "drop") {
+    stopTyping();
+    return new Response(null, { status: 204 });
   }
-  if (gate.decision === "drop") return new Response(null, { status: 204 });
   if (gate.decision === "paywall") {
+    stopTyping();
     const line = gate.payUrl
       ? `Лимит на сегодня исчерпан 🙈 Полный доступ — 2000 ₽/мес:\n${gate.payUrl}`
       : "Лимит на сегодня исчерпан 🙈 Полный доступ — 2000 ₽/мес: напиши @оператору";
@@ -331,10 +366,10 @@ export async function handleTelegramWebhook(
     }
   }
   if (shouldSkipAgentTurn({ firstBind: false, text: inbound.text || "фото" })) {
+    stopTyping();
     return new Response(null, { status: 204 });
   }
 
-  const content = await inboundTelegramContent(inbound.text, msg);
   console.log("telegram inbound", {
     phone,
     conversationId,
@@ -343,14 +378,8 @@ export async function handleTelegramWebhook(
     images: typeof content === "string" ? 0 : content.length - 1,
   });
 
-  waitUntil(
-    touchLastChannel(phone, "telegram").catch((err) =>
-      console.error("touch last channel failed", err),
-    ),
-  );
-  const stopTyping = startTelegramTyping(chatId);
-  waitUntil(
-    steerBroTurn(from, {
+  try {
+    await startBroTurn(from, {
       conversationId,
       content,
       phone,
@@ -361,14 +390,13 @@ export async function handleTelegramWebhook(
         messageId: String(msg.message_id),
         inkboxHandle: tenant.inkboxHandle,
       }),
-    })
-      .catch(async (err) => {
-        console.error("telegram turn send failed", err);
-        await sendHtml(chatId, TURN_FAILED_REPLY).catch((sendErr) =>
-          console.error("telegram turn fallback failed", sendErr),
-        );
-      })
-      .finally(stopTyping),
-  );
+    });
+  } catch (err) {
+    stopTyping();
+    console.error("telegram turn send failed", err);
+    await sendHtml(chatId, TURN_FAILED_REPLY).catch((sendErr) =>
+      console.error("telegram turn fallback failed", sendErr),
+    );
+  }
   return new Response(null, { status: 204 });
 }

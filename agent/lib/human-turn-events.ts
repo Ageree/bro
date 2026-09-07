@@ -9,6 +9,7 @@ import {
   takeFallbackSlot,
   turnOrigin,
 } from "./silent-turn.ts";
+import { tenantId } from "./tenant";
 import { splitSeen } from "./wakeup-text";
 
 // ponytail: in-memory only — lost on restart, not shared across instances
@@ -28,11 +29,60 @@ function originOf(ctx: {
 }
 
 function telegramChatIdOf(ctx: {
-  session: { auth: { current: { attributes?: Readonly<Record<string, string | readonly string[]>> } | null } };
+  session: {
+    auth: {
+      current?: {
+        attributes?: Readonly<Record<string, string | readonly string[]>>;
+      } | null;
+    };
+  };
 }): string | undefined {
   const raw = ctx.session.auth.current?.attributes?.telegramChatId;
   const value = Array.isArray(raw) ? raw[0] : raw;
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function sessionPhone(ctx: {
+  session: { auth: { current?: { principalId?: string | null } | null } };
+}): string | undefined {
+  const phone = tenantId(ctx);
+  return phone.startsWith("+") ? phone : undefined;
+}
+
+async function deliverTurn(opts: {
+  conversationId: string;
+  text: string;
+  ctx: {
+    session: {
+      auth: {
+        current?: {
+          principalId?: string | null;
+          attributes?: Readonly<Record<string, string | readonly string[]>>;
+        } | null;
+      };
+    };
+  };
+}): Promise<void> {
+  const chatId = telegramChatIdOf(opts.ctx);
+  if (chatId) {
+    await deliverHuman({
+      tenant: {
+        telegramChatId: chatId,
+        lastChannel: "telegram",
+        inkboxConversationId: opts.conversationId,
+        phoneE164: sessionPhone(opts.ctx),
+      },
+      conversationId: opts.conversationId,
+      text: opts.text,
+    });
+    return;
+  }
+  const tenant = await replyTenant(opts.conversationId);
+  await deliverHuman({
+    tenant,
+    conversationId: opts.conversationId,
+    text: opts.text,
+  });
 }
 
 /** Shared outbound for iMessage + Telegram. Eve fires these on the channel
@@ -56,8 +106,7 @@ export const humanTurnEvents: ChannelEvents = {
     const text = fallbackForFailed(originOf(ctx));
     if (!text) return;
     if (!takeFallbackSlot(fallbackSent, event.turnId, Date.now())) return;
-    const tenant = await replyTenant(conversationId);
-    await deliverHuman({ tenant, conversationId, text }).catch((err) =>
+    await deliverTurn({ conversationId, text, ctx }).catch((err) =>
       console.error("turn failed fallback send failed", err),
     );
   },
@@ -77,28 +126,32 @@ export const humanTurnEvents: ChannelEvents = {
         finishReason: event.finishReason,
       });
       if (!takeFallbackSlot(fallbackSent, event.turnId, Date.now())) return;
-      const tenant = await replyTenant(conversationId);
-      await deliverHuman({ tenant, conversationId, text }).catch((err) =>
+      await deliverTurn({ conversationId, text, ctx }).catch((err) =>
         console.error("empty turn fallback send failed", err),
       );
       return;
     }
     const { message, seen } = splitSeen(event.message);
-    const tenant = await replyTenant(conversationId);
-    if (seen !== undefined && tenant?.phoneE164) {
-      await setWakeupLastSeen(tenant.phoneE164, seen).catch((err) => {
-        console.error("setLastSeen failed", err);
-      });
-    }
+    const phone = sessionPhone(ctx);
+    const seenP =
+      seen !== undefined && phone
+        ? setWakeupLastSeen(phone, seen).catch((err) => {
+            console.error("setLastSeen failed", err);
+          })
+        : Promise.resolve();
     if (!message.trim() || message.trim().startsWith("[SILENT]")) {
       const chatId = telegramChatIdOf(ctx);
       if (chatId) stopTelegramTyping(chatId);
+      await seenP;
       return;
     }
-    await deliverHuman({
-      tenant,
-      conversationId,
-      text: stripConnectUrls(message),
-    }).catch((err) => console.error("human turn deliver failed", err));
+    await Promise.all([
+      deliverTurn({
+        conversationId,
+        text: stripConnectUrls(message),
+        ctx,
+      }).catch((err) => console.error("human turn deliver failed", err)),
+      seenP,
+    ]);
   },
 };
