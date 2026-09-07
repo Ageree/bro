@@ -17,6 +17,7 @@ import {
   INSTINCT_RECALL_TTL_MS,
   canPrefetchInstinctQuery,
 } from "../agent/lib/instinct-recall.ts";
+import { openRouterStreamProgress } from "../agent/lib/openrouter-stream.ts";
 import { canPrefetchOpenRouter } from "../agent/lib/openrouter-warm.ts";
 
 function assert(cond: unknown, msg: string): void {
@@ -83,6 +84,23 @@ assert(openrouterWarm.includes("OPENROUTER_AUTH_URL"), "OpenRouter warm hits /au
 assert(openrouterWarm.includes("AbortSignal.timeout"), "OpenRouter warm is time-bounded");
 assert(canPrefetchOpenRouter("sk-test"), "OpenRouter warm runs when a key is set");
 assert(!canPrefetchOpenRouter(""), "OpenRouter warm skips without a key");
+assert(
+  openRouterStreamProgress(
+    'data: {"choices":[{"delta":{"content":"","reasoning":"The"}}]}',
+  ).reasoning,
+  "empty content with reasoning is not a visible token",
+);
+assert(
+  !openRouterStreamProgress(
+    'data: {"choices":[{"delta":{"content":"","reasoning":"The"}}]}',
+  ).content,
+  "reasoning-only chunks are not first-bubble text",
+);
+assert(
+  openRouterStreamProgress('data: {"choices":[{"delta":{"content":"ок"}}]}')
+    .content,
+  "visible content is first-bubble text",
+);
 
 const tenants = readFileSync(new URL("../convex/tenants.ts", import.meta.url), "utf8");
 {

@@ -1,5 +1,5 @@
 /** Local start-path profile: planned Convex RTTs + HTTP timing without iMessage. */
-import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { searchArchive } from "../agent/lib/archive.ts";
@@ -25,6 +25,7 @@ import {
   loadInstinctRecall,
 } from "../agent/lib/instinct-recall.ts";
 import { DEFAULT_OPENROUTER_MODEL } from "../agent/lib/model.ts";
+import { openRouterStreamProgress } from "../agent/lib/openrouter-stream.ts";
 import {
   OPENROUTER_AUTH_URL,
   OPENROUTER_CHAT_URL,
@@ -119,25 +120,6 @@ async function measureInstinctHttp(): Promise<Record<string, unknown>> {
   };
 }
 
-function firstContentDelta(buf: string): string | null {
-  for (const line of buf.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed.startsWith("data:")) continue;
-    const payload = trimmed.slice(5).trim();
-    if (!payload || payload === "[DONE]") continue;
-    try {
-      const ev = JSON.parse(payload) as {
-        choices?: Array<{ delta?: { content?: unknown } }>;
-      };
-      const content = ev.choices?.[0]?.delta?.content;
-      if (typeof content === "string" && content.length > 0) return content;
-    } catch {
-      continue;
-    }
-  }
-  return null;
-}
-
 /** Stream TTFB against the live Bro model. No Eve tools, no Inkbox send. */
 async function measureOpenRouterTtfb(): Promise<Record<string, unknown>> {
   if (!canPrefetchOpenRouter()) {
@@ -170,13 +152,13 @@ async function measureOpenRouterTtfb(): Promise<Record<string, unknown>> {
       body: JSON.stringify({
         model,
         stream: true,
-        max_tokens: 64,
+        max_tokens: 1024,
         messages: [
           { role: "system", content: instructions },
           { role: "user", content: "ок" },
         ],
       }),
-      signal: AbortSignal.timeout(25_000),
+      signal: AbortSignal.timeout(45_000),
     });
     const headersMs = Math.round(performance.now() - t0);
     if (!res.ok || !res.body) {
@@ -191,25 +173,35 @@ async function measureOpenRouterTtfb(): Promise<Record<string, unknown>> {
     const reader = res.body.getReader();
     const dec = new TextDecoder();
     let buf = "";
-    let firstDeltaMs: number | null = null;
+    let firstSseMs: number | null = null;
+    let firstReasoningMs: number | null = null;
+    let firstContentMs: number | null = null;
     try {
-      while (firstDeltaMs === null) {
+      while (firstContentMs === null) {
         const { done, value } = await reader.read();
         if (done) break;
         buf += dec.decode(value, { stream: true });
-        if (firstContentDelta(buf)) {
-          firstDeltaMs = Math.round(performance.now() - t0);
+        const seen = openRouterStreamProgress(buf);
+        if (seen.hasSseData && firstSseMs === null) {
+          firstSseMs = Math.round(performance.now() - t0);
         }
-        if (buf.length > 32_000) break;
+        if (seen.reasoning && firstReasoningMs === null) {
+          firstReasoningMs = Math.round(performance.now() - t0);
+        }
+        if (seen.content) {
+          firstContentMs = Math.round(performance.now() - t0);
+        }
       }
     } finally {
       await reader.cancel().catch(() => undefined);
     }
     return {
-      ok: firstDeltaMs !== null,
+      ok: firstContentMs !== null,
       headersMs,
-      firstDeltaMs,
-      bytesBeforeDelta: buf.length,
+      firstSseMs,
+      firstReasoningMs,
+      firstContentMs,
+      bytesBeforeContent: buf.length,
     };
   }
 
@@ -219,11 +211,11 @@ async function measureOpenRouterTtfb(): Promise<Record<string, unknown>> {
     skipped: false,
     model,
     instructionChars: instructions.length,
-    probeMaxTokens: 64,
+    probeMaxTokens: 1024,
     prefetchAuth: prefetch,
     streamAfterPrefetch: afterPrefetch,
     streamRepeat: repeat,
-    note: "Lower bound: Bro instructions + «ок», no Eve tool schemas or session. Production maxOutputTokens stays 8192. No iMessage send.",
+    note: "GLM streams reasoning with empty content first. firstContentMs is the first visible token. No Eve tool schemas. Production maxOutputTokens stays 8192. No iMessage send.",
   };
 }
 
@@ -245,11 +237,9 @@ async function measureInkboxIdentity(): Promise<Record<string, unknown>> {
   };
 }
 
-const [instinctHttp, openrouter, inkboxIdentityHttp] = await Promise.all([
-  measureInstinctHttp(),
-  measureOpenRouterTtfb(),
-  measureInkboxIdentity(),
-]);
+const inkboxIdentityHttp = await measureInkboxIdentity();
+const instinctHttp = await measureInstinctHttp();
+const openrouter = await measureOpenRouterTtfb();
 
 const report = {
   measuredAt: new Date().toISOString(),
@@ -328,7 +318,7 @@ writeFileSync(tmp, json);
 const outDir = process.env.INBOUND_PATH_PROFILE_DIR ?? "/opt/cursor/artifacts";
 try {
   mkdirSync(outDir, { recursive: true });
-  copyFileSync(tmp, join(outDir, "inbound-path-profile.json"));
+  writeFileSync(join(outDir, "inbound-path-profile.json"), json);
 } catch (err) {
   console.error("profile write failed", err);
 }
