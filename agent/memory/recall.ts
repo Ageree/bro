@@ -1,5 +1,9 @@
 import supermemory from "@supermemory/eve";
-import { defineMemory, type MemoryOperationContext } from "eve/memory";
+import {
+  defineMemory,
+  type MemoryOperationContext,
+  type MemoryRecallHandler,
+} from "eve/memory";
 import { recallQuery, shouldRecallConversation } from "../lib/archive-policy.ts";
 import { resolveMemoryScope, resolveRecallBackend } from "../lib/memory-policy.ts";
 
@@ -30,15 +34,15 @@ type RecallCtx = MemoryOperationContext & {
   turn?: { input?: readonly unknown[] } | null;
 };
 
-function gatedRecall(
-  hook: ((ctx: never) => unknown) | undefined,
-): (context: RecallCtx) => Promise<unknown> | unknown {
-  return (context: RecallCtx) => {
+function gatedRecall<TContext extends RecallCtx>(
+  hook: MemoryRecallHandler<TContext> | undefined,
+): MemoryRecallHandler<TContext> {
+  return (context) => {
     const query =
       recallQuery(context.turn?.input ?? []) ?? recallQuery(context.messages);
     if (!shouldRecallConversation(query)) return null;
     if (typeof hook !== "function") return null;
-    return hook(context as never);
+    return hook(context);
   };
 }
 
