@@ -19,6 +19,7 @@ import {
 } from "../agent/lib/instinct-recall.ts";
 import { openRouterStreamProgress } from "../agent/lib/openrouter-stream.ts";
 import { canPrefetchOpenRouter } from "../agent/lib/openrouter-warm.ts";
+import { isShortAck, shortAckInstruction } from "../agent/lib/short-ack.ts";
 
 function assert(cond: unknown, msg: string): void {
   if (!cond) throw new Error(msg);
@@ -50,6 +51,9 @@ assert(jobs.includes("jobWakeRows"), "jobs read the same snapshot");
 assert(jobs.includes("isJobCheckWakeup"), "job_check nudge is not on the HTTP path");
 assert(jobs.includes("Promise.all"), "due markNudged calls run in parallel");
 assert(jobs.includes("jobCheckQuietInstruction"), "non-due job_check may stay silent");
+assert(jobs.includes("isShortAck"), "short acks get a no-new-tools steer");
+assert(jobs.includes("shortAckInstruction"), "short-ack instruction stays on turn.started");
+assert(jobs.includes("waitingForHuman"), "ack that confirms a waiting job still allows tools");
 
 const archive = readFileSync(new URL("../agent/memory/archive.ts", import.meta.url), "utf8");
 assert(archive.includes("shouldRecallArchive"), "archive recall is gated");
@@ -91,6 +95,19 @@ assert(modelLib.includes("openRouterChatFetch"), "default GLM uses OpenRouter ch
 
 assert(openrouterWarm.includes("OPENROUTER_AUTH_URL"), "OpenRouter warm hits /auth/key");
 assert(openrouterWarm.includes("AbortSignal.timeout"), "OpenRouter warm is time-bounded");
+assert(isShortAck("ок"), "ок is a short ack");
+assert(isShortAck("Спасибо!"), "thanks with punct is a short ack");
+assert(isShortAck("понял"), "понял is a short ack");
+assert(!isShortAck("купи кроссовки"), "errands are not short acks");
+assert(!isShortAck("да"), "bare да is not a short ack — it can be a real answer");
+assert(
+  shortAckInstruction({ waitingForHuman: true }).includes("confirmation"),
+  "ack confirms a waiting job",
+);
+assert(
+  shortAckInstruction({ waitingForHuman: false }).includes("browser_task"),
+  "idle ack forbids a new browser loop",
+);
 assert(canPrefetchOpenRouter("sk-test"), "OpenRouter warm runs when a key is set");
 assert(!canPrefetchOpenRouter(""), "OpenRouter warm skips without a key");
 assert(

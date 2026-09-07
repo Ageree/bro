@@ -42,6 +42,10 @@ assert(
   !existsSync(new URL("../agent/lib/instant-ack.ts", import.meta.url)),
   "no instant-ack skip — ок/спасибо still run the agent (open jobs)",
 );
+assert(
+  existsSync(new URL("../agent/lib/short-ack.ts", import.meta.url)),
+  "short acks steer the model, they do not skip the agent",
+);
 
 const imessage = readFileSync(
   new URL("../agent/channels/imessage.ts", import.meta.url),
@@ -78,6 +82,11 @@ assert(
     instructions.includes("напиши одну короткую") ||
     /write one short line the human can see first/i.test(instructions),
   "instructions ask for a visible line before tools",
+);
+assert(
+  instructions.includes("Short acknowledgements") ||
+    instructions.includes("короткие подтверждения"),
+  "static prompt still tells the model short acks are real turns",
 );
 
 console.log("latency-check ok");

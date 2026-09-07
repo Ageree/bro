@@ -33,7 +33,7 @@ export function isTelegramAsk(text: string): boolean {
   return TELEGRAM_ASK.has(folded);
 }
 
-function foldAsk(text: string): string {
+export function foldAsk(text: string): string {
   return visibleInbound(text)
     .normalize("NFC")
     .replace(/ё/gi, "е")
