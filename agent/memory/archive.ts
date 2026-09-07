@@ -8,7 +8,10 @@ import {
   recallQuery,
   shouldRecallArchive,
 } from "../lib/archive-policy.ts";
-import { loadInstinctRecall } from "../lib/instinct-recall.ts";
+import {
+  instinctScopesForPerson,
+  loadInstinctRecall,
+} from "../lib/instinct-recall.ts";
 import {
   resolveMemoryScope,
   resolveRecallBackend,
@@ -30,7 +33,7 @@ async function recall(
   if (!query || !shouldRecallArchive(query)) return null;
   try {
     const { archive } = await loadInstinctRecall(
-      scopePhone(context.memory.scope.value),
+      instinctScopesForPerson(scopePhone(context.memory.scope.value)),
       query,
       context.abortSignal,
     );

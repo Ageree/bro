@@ -11,7 +11,7 @@ import {
 } from "../lib/archive-policy.ts";
 import { CONVERSATION_RECALL_ID } from "../lib/conversation-recall.ts";
 import { loadInstinctRecall } from "../lib/instinct-recall.ts";
-import { resolveMemoryScope, resolveRecallBackend } from "../lib/memory-policy.ts";
+import { resolveMemoryScope, resolveRecallBackend, scopePhone } from "../lib/memory-policy.ts";
 
 /**
  * Automatic conversation memory via Supermemory (paid, zero-config for users):
@@ -56,7 +56,10 @@ async function startedSearch(context: RecallCtx): Promise<MemoryRecallResult> {
   if (!query?.trim()) return null;
   try {
     const { conversation } = await loadInstinctRecall(
-      context.memory.scope.key,
+      {
+        archiveScope: scopePhone(context.memory.scope.value),
+        conversationScope: context.memory.scope.key,
+      },
       query,
       context.abortSignal,
     );

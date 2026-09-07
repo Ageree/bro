@@ -6,6 +6,11 @@ import {
   formatConversationRecall,
 } from "../agent/lib/conversation-recall.ts";
 import {
+  CONVERSATION_MEMORY_NAMESPACE,
+  conversationScopeKey,
+} from "../agent/lib/eve-scope-key.ts";
+import { createMemoryLock } from "../node_modules/eve/dist/src/shared/memory-state.js";
+import {
   ARCHIVE_RECALL_TIMEOUT_MS,
   ARCHIVE_TOOL_TIMEOUT_MS,
   CONVERSATION_RECALL_TIMEOUT_MS,
@@ -210,6 +215,30 @@ const instinctSrc = readFileSync(
 );
 assert.ok(instinctSrc.includes("Promise.all"), "Instinct searches run together");
 assert.ok(instinctSrc.includes("ARCHIVE_RECALL_TIMEOUT_MS"), "Instinct pair keeps the 1.5s budget");
+assert.ok(
+  instinctSrc.includes("conversationScopeKey"),
+  "prefetch conversation search uses Eve MemoryScope.key",
+);
+{
+  const phone = "+79991234567";
+  const lock = createMemoryLock({
+    namespace: CONVERSATION_MEMORY_NAMESPACE,
+    scope: phone,
+    slot: "recall",
+    turn: { id: "t", input: [], sequence: 0 },
+    visibility: "scope",
+  });
+  assert.equal(
+    conversationScopeKey(phone),
+    lock.scope.key,
+    "prefetch digest matches Eve conversation scope.key",
+  );
+  assert.match(
+    conversationContainerTag(conversationScopeKey(phone)),
+    /^eve_agent_memscope1_/,
+    "conversation prefetch hits the plugin container",
+  );
+}
 assert.ok(
   archiveMemory.includes("ARCHIVE_TOOL_TIMEOUT_MS"),
   "archive__search keeps the tool timeout",

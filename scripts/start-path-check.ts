@@ -54,6 +54,8 @@ const recall = readFileSync(new URL("../agent/memory/recall.ts", import.meta.url
 assert(recall.includes("shouldRecallConversation"), "conversation recall keeps captionless photos");
 assert(recall.includes("compaction.completed"), "compaction recall uses the same gate");
 assert(recall.includes("loadInstinctRecall"), "turn.started conversation uses the Instinct pair");
+assert(recall.includes("conversationScope: context.memory.scope.key"), "conversation hook uses Eve digest");
+assert(recall.includes("archiveScope: scopePhone"), "conversation hook still pairs archive by phone");
 assert(!recall.includes("loadProfileContext"), "profile dump stays off turn.started");
 assert(recall.includes("inner.recall"), "compaction still uses the plugin recall");
 assert(recall.includes("abortSignal"), "conversation search joins Eve abort");
@@ -64,6 +66,8 @@ assert(instinct.includes("searchConversation"), "conversation search stays on th
 assert(instinct.includes("searchArchive"), "archive search stays on the pair");
 assert(instinct.includes("INSTINCT_RECALL_TTL_MS"), "Instinct pair is same-turn cached");
 assert(instinct.includes("instinctInflight"), "parallel hooks coalesce one pair");
+assert(instinct.includes("conversationScope"), "pair is keyed by Eve conversation scope");
+assert(instinct.includes("instinctScopesForPerson"), "prefetch uses Eve digest + phone");
 
 const tenants = readFileSync(new URL("../convex/tenants.ts", import.meta.url), "utf8");
 {
