@@ -15,6 +15,7 @@ import {
   shouldNudge,
   shouldSpeakNotSilent,
 } from "../convex/lib/jobNudgePolicy.ts";
+import { formatJobWakeLine } from "../convex/lib/jobWakeLine.ts";
 import {
   attachMailToJob,
   formatMailWake,
@@ -409,6 +410,43 @@ assert(
   ) === null,
   "fresh wait is not a nudge",
 );
+
+assert(
+  formatJobWakeLine({
+    _id: "j1",
+    goal: "слот",
+    doneWhen: "письмо",
+    status: "waiting",
+    waitingFor: "human",
+    note: "ждём ок",
+    emailMessageId: "m1",
+  }) ===
+    'id=j1 goal="слот" doneWhen="письмо" status=waiting waitingFor=human note=ждём ок emailMessageId=m1',
+  "wake line keeps ids and wait state",
+);
+assert(
+  !formatJobWakeLine({
+    _id: "j1",
+    goal: "слот",
+    doneWhen: "письмо",
+    status: "waiting",
+  }).includes("waitingSince"),
+  "epochs stay off the injected line — dueJobNudges reads structured fields",
+);
+{
+  const memoriesSrc = readFileSync(
+    new URL("../convex/memories.ts", import.meta.url),
+    "utf8",
+  );
+  assert(
+    memoriesSrc.includes('from "./lib/jobWakeLine"'),
+    "wakeContext uses the shared job line formatter",
+  );
+  assert(
+    memoriesSrc.includes("waitingSince: j.waitingSince"),
+    "structured wake row still carries waitingSince for nudges",
+  );
+}
 
 const jobsSrc = readFileSync(
   new URL("../agent/instructions/jobs.ts", import.meta.url),

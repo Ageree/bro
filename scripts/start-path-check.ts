@@ -68,6 +68,10 @@ assert(
 const archive = readFileSync(new URL("../agent/memory/archive.ts", import.meta.url), "utf8");
 assert(archive.includes("shouldRecallArchive"), "archive recall is gated");
 assert(archive.includes("loadInstinctRecall"), "archive recall shares the Instinct pair");
+const archiveClient = readFileSync(new URL("../agent/lib/archive.ts", import.meta.url), "utf8");
+assert(archiveClient.includes("/v4/search"), "Instinct archive search is v4, not v3 documents search");
+assert(archiveClient.includes('searchMode: "hybrid"'), "archive search stays hybrid");
+assert(archiveClient.includes("V3_BASE"), "ingest/forget stay on v3");
 
 const recall = readFileSync(new URL("../agent/memory/recall.ts", import.meta.url), "utf8");
 assert(recall.includes("shouldRecallConversation"), "conversation recall keeps captionless photos");
@@ -169,6 +173,11 @@ const memories = readFileSync(new URL("../convex/memories.ts", import.meta.url),
 assert(memories.includes("wakeContext"), "Convex exposes the combined snapshot");
 assert(memories.includes("WAKE_LINES"), "combined snapshot still returns 80 memo lines");
 assert(memories.includes("Promise.all"), "wakeContext loads memories and tenant in parallel");
+assert(memories.includes("formatJobWakeLine"), "job lines are formatted, not dumped as JSON");
+assert(
+  !memories.includes("waitingSince=${"),
+  "wake line omits epochs — nudge still uses structured waitingSince",
+);
 
 const imessage = readFileSync(new URL("../agent/channels/imessage.ts", import.meta.url), "utf8");
 const earlyDeliver = readFileSync(
