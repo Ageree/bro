@@ -76,3 +76,17 @@ export function broModel() {
       }
     : { model: openrouterModel };
 }
+
+/** Dynamic/durable subagents must pick a serializable model id, not a provider object. */
+export function broDurableModel(): {
+  model: string;
+  modelContextWindowTokens?: number;
+} {
+  if (!process.env.OPENROUTER_API_KEY) {
+    return { model: "openai/gpt-5.4-mini" };
+  }
+  const model = process.env.BRO_MODEL?.trim() || DEFAULT_OPENROUTER_MODEL;
+  return model === DEFAULT_OPENROUTER_MODEL
+    ? { model, modelContextWindowTokens: DEFAULT_OPENROUTER_CONTEXT_TOKENS }
+    : { model };
+}

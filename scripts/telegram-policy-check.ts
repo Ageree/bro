@@ -123,29 +123,27 @@ assert(!canDeliverTelegram(""), "empty chat");
 assert(bindRefuseText("unknown_token").includes("iMessage"), "refuse mentions iMessage");
 assert(telegramWelcomeText().includes("iMessage"), "welcome same agent");
 
-const telegramChannel = readFileSync(
-  resolve(import.meta.dirname, "../agent/channels/telegram.ts"),
+const telegramWebhook = readFileSync(
+  resolve(import.meta.dirname, "../agent/lib/telegram-webhook.ts"),
   "utf8",
 );
 assert(
-  telegramChannel.includes("events: humanTurnEvents"),
-  "telegram channel delivers model replies",
+  telegramWebhook.includes('authenticator: "inkbox"') &&
+    telegramWebhook.includes("from(opts.conversationId).send"),
+  "telegram steers the iMessage eve session",
 );
 assert(
-  telegramChannel.includes("to(imessage,") &&
-    telegramChannel.includes("conversationId"),
-  "telegram turns go through the iMessage session",
+  telegramWebhook.includes("waitUntil") &&
+    telegramWebhook.includes("steerBroTurn(from"),
+  "telegram starts the turn without blocking the webhook",
 );
 const imessageChannel = readFileSync(
   resolve(import.meta.dirname, "../agent/channels/imessage.ts"),
   "utf8",
 );
-assert(imessageChannel.includes("receive:"), "imessage accepts telegram turns");
 assert(
-  telegramChannel.includes("startTelegramTyping") &&
-    telegramChannel.includes("waitUntil(turn)") &&
-    !telegramChannel.includes("await turn"),
-  "telegram webhook returns while the model runs",
+  imessageChannel.includes('POST("/webhooks/telegram"'),
+  "telegram HTTP is on the iMessage channel",
 );
 
 console.log("telegram-policy-check ok");

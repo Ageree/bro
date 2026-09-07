@@ -1,7 +1,7 @@
 import { defineAgent, defineDynamic } from "eve";
 import { z } from "zod";
 import { isGroupTurn } from "../../lib/group-guard";
-import { broModel } from "../../lib/model";
+import { broDurableModel } from "../../lib/model";
 
 const outputSchema = z.object({
   status: z.enum(["found", "missing", "ambiguous"]),
@@ -18,7 +18,7 @@ export default defineDynamic({
         : defineAgent({
             description:
               "Look up a one-time code in Bro's Inkbox inbox and this person's mail archive. Call when worker returned Needs user input for an OTP, before asking the human. Returns found/missing; never chats or writes memory.",
-            ...broModel(),
+            ...broDurableModel(),
             reasoning: "low",
             outputSchema,
           }),

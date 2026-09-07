@@ -37,7 +37,15 @@ assert(uncapped.maxOutputTokens === 100, "explicit maxOutputTokens is left uncha
 
 // broModel(): OpenRouter branch is wrapped but still exposes a runtime language model
 process.env.OPENROUTER_API_KEY = "test";
-const { broModel } = await import("../agent/lib/model.ts");
+const { broModel, broDurableModel } = await import("../agent/lib/model.ts");
+const durable = broDurableModel();
+assert(typeof durable.model === "string", "durable model is a serializable id");
+assert(durable.model === "z-ai/glm-5.3-flash", "durable model keeps the default OpenRouter id");
+assert(
+  durable.modelContextWindowTokens === 1_000_000,
+  "durable default model reports its 1M context window",
+);
+
 const result = broModel();
 const model = result.model;
 assert(typeof model === "object" && model !== null, "OpenRouter branch returns a model object");

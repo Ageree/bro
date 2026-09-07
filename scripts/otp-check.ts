@@ -326,6 +326,8 @@ const otpAgent = readFileSync(
 );
 assert(otpAgent.includes("outputSchema"), "otp returns structured result");
 assert(otpAgent.includes("isGroupTurn"), "otp hidden in groups");
+assert(otpAgent.includes("broDurableModel"), "otp uses a serializable model id");
+assert(!otpAgent.includes("broModel("), "otp does not spread a provider object");
 
 const otpInstr = readFileSync(
   new URL("../agent/subagents/otp/instructions.md", import.meta.url),

@@ -48,6 +48,7 @@ import {
   inboundIMessageTextWithVoice,
 } from "../lib/imessage-text";
 import { humanTurnEvents } from "../lib/human-turn-events";
+import { handleTelegramWebhook } from "../lib/telegram-webhook";
 import { telegramBindLink } from "../../convex/lib/telegramPolicy.ts";
 import { telegramBotUsername } from "../lib/telegram";
 import { transcribeVoiceNote } from "../lib/voice";
@@ -248,6 +249,9 @@ export default defineChannel({
         },
       });
     }),
+    POST("/webhooks/telegram", (request, { from, waitUntil }) =>
+      handleTelegramWebhook(request, { from, waitUntil }),
+    ),
     POST("/webhooks/imessage", async (request, { from, waitUntil }) => {
       const handle = handleFromRequest(request);
       const tenant = handle ? await getTenantByHandle(handle).catch(() => null) : null;
