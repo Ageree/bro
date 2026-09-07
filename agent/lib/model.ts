@@ -4,6 +4,10 @@ import { wrapLanguageModel, type LanguageModelMiddleware } from "ai";
 const DEFAULT_OPENROUTER_MODEL = "z-ai/glm-5.3-flash";
 const DEFAULT_OPENROUTER_CONTEXT_TOKENS = 1_000_000;
 
+/** Root chat window: compact enough that eve will actually summarize long threads,
+ *  without clipping a live job mid-conversation. Worker keeps the full 1M. */
+export const DEFAULT_ROOT_CONTEXT_TOKENS = 131_072;
+
 /** Fallback output cap for OpenRouter calls when BRO_MAX_OUTPUT_TOKENS is unset/invalid. */
 export const DEFAULT_MAX_OUTPUT_TOKENS = 8192;
 
@@ -47,13 +51,19 @@ export function outputCapMiddleware(cap: number): LanguageModelMiddleware {
   };
 }
 
+export type BroModelOpts = {
+  /** Override the advertised context window (root uses a compact 64k). */
+  contextTokens?: number;
+};
+
 /** Model choice shared by the root agent and the worker subagent. */
-export function broModel() {
+export function broModel(opts?: BroModelOpts) {
   const model = process.env.BRO_MODEL?.trim() || DEFAULT_OPENROUTER_MODEL;
   const contextTokens =
-    model === DEFAULT_OPENROUTER_MODEL
+    opts?.contextTokens ??
+    (model === DEFAULT_OPENROUTER_MODEL
       ? DEFAULT_OPENROUTER_CONTEXT_TOKENS
-      : parseContextTokens(process.env.BRO_MODEL_CONTEXT_TOKENS);
+      : parseContextTokens(process.env.BRO_MODEL_CONTEXT_TOKENS));
 
   const key = process.env.OPENROUTER_API_KEY;
   if (!key) {

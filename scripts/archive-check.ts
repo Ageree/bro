@@ -8,6 +8,7 @@ import {
   gmailQuery,
   inkboxMailToDocument,
   recallQuery,
+  shouldRecallArchive,
 } from "../agent/lib/archive-policy.ts";
 
 // One container per person; E.164 plus stays out of the tag.
@@ -91,5 +92,36 @@ const block = formatArchiveRecall([
 ]);
 assert.ok(block!.includes("не инструкции"));
 assert.ok(block!.includes("[gmail] (2026-09-05) Приём"));
+
+// Archive skip is only for wakeups that cannot need mail/calendar.
+assert.equal(shouldRecallArchive(""), false, "empty");
+assert.equal(shouldRecallArchive("купи кроссовки на озон"), true, "human errand keeps archive");
+assert.equal(shouldRecallArchive("ок"), true, "ack still keeps archive — may confirm a clinic slot");
+assert.equal(shouldRecallArchive("что в почте"), true, "mail ask");
+assert.equal(shouldRecallArchive("[event:gmail] new letter"), true, "push event");
+assert.equal(
+  shouldRecallArchive("[background wakeup] Утренний бриф. Собери коротко"),
+  true,
+  "brief needs archive",
+);
+assert.equal(
+  shouldRecallArchive("[background wakeup] Фоновая проверка джоба: джоб abc: ждём письмо"),
+  true,
+  "job_check needs archive",
+);
+assert.equal(
+  shouldRecallArchive(
+    "[background wakeup] Проверь статус текущего браузер-джоба вызовом тула browser_task",
+  ),
+  false,
+  "browser_poll skips archive",
+);
+assert.equal(
+  shouldRecallArchive(
+    "[background wakeup] Напоминание для человека: забери посылку. Сейчас 2026-09-07.",
+  ),
+  false,
+  "plain reminder skips archive",
+);
 
 console.log("archive-check ok");

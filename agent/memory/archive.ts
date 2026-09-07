@@ -5,6 +5,7 @@ import { forgetArchive, searchArchive } from "../lib/archive.ts";
 import {
   formatArchiveRecall,
   recallQuery,
+  shouldRecallArchive,
 } from "../lib/archive-policy.ts";
 import {
   resolveMemoryScope,
@@ -25,7 +26,7 @@ async function recall(
 ) {
   const query =
     recallQuery(context.turn?.input ?? []) ?? recallQuery(context.messages);
-  if (!query) return null;
+  if (!query || !shouldRecallArchive(query)) return null;
   try {
     const hits = await searchArchive(scopePhone(context.memory.scope.value), query, RECALL_HITS);
     const content = formatArchiveRecall(hits);

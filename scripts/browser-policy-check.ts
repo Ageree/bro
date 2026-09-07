@@ -1,4 +1,7 @@
+import { readFileSync } from "node:fs";
 import {
+  BROWSER_POLL_WAIT_MS,
+  BROWSER_START_WAIT_MS,
   nextBrowserAction,
   nextFollowDecision,
   normalizeTask,
@@ -342,5 +345,17 @@ assert(
     JSON.stringify({ proxyCountryCode: "ru" }),
   "proxyCountryCode in browserSettings",
 );
+
+assert(BROWSER_POLL_WAIT_MS === 2_000, "poll wait is short; follow-through still delivers");
+assert(BROWSER_START_WAIT_MS === 8_000, "start wait still tries to finish a fast run in-turn");
+assert(BROWSER_POLL_WAIT_MS < BROWSER_START_WAIT_MS, "poll is cheaper than start");
+
+const browserTool = readFileSync(
+  new URL("../agent/tools/browser_task.ts", import.meta.url),
+  "utf8",
+);
+assert(browserTool.includes("BROWSER_POLL_WAIT_MS"), "poll uses shared wait");
+assert(browserTool.includes("BROWSER_START_WAIT_MS"), "start uses shared wait");
+assert(!browserTool.includes("WAIT_MS = 12_000"), "old 12s park is gone");
 
 console.log("browser-policy-check ok");

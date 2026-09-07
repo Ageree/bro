@@ -12,6 +12,8 @@ import {
   upsertTenant,
 } from "../lib/convex";
 import {
+  BROWSER_POLL_WAIT_MS,
+  BROWSER_START_WAIT_MS,
   nextBrowserAction,
   shouldStartFollowThrough,
 } from "../lib/browser-policy";
@@ -38,7 +40,6 @@ import { browserGateFromResult } from "../../convex/lib/billingPolicy";
 import { cardBindings, normalizePayHosts } from "../lib/browser-pay.ts";
 import { parsePaymentPayload } from "../../convex/lib/vaultPayload.ts";
 
-const WAIT_MS = 12_000;
 
 function conversationId(
   ctx: {
@@ -275,7 +276,7 @@ export default defineTool({
       const run = await waitForRun(
         tenant.browserRunId,
         tenant.browserSessionId,
-        WAIT_MS,
+        BROWSER_POLL_WAIT_MS,
       );
       await persist(phone, run, tenant.browserTask ?? task);
       return settle(
@@ -383,7 +384,11 @@ export default defineTool({
         console.error("browser start notify failed", err);
       }
     }
-    const done = await waitForRun(started.runId, started.sessionId, WAIT_MS);
+    const done = await waitForRun(
+      started.runId,
+      started.sessionId,
+      BROWSER_START_WAIT_MS,
+    );
     await persist(phone, done, task);
     return settle(
       phone,

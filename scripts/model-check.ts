@@ -1,5 +1,6 @@
 import {
   DEFAULT_MAX_OUTPUT_TOKENS,
+  DEFAULT_ROOT_CONTEXT_TOKENS,
   outputCapMiddleware,
   parseMaxOutputTokens,
 } from "../agent/lib/model.ts";
@@ -51,5 +52,21 @@ assert(
   "modelContextWindowTokens" in result && result.modelContextWindowTokens === 1_000_000,
   "default OpenRouter model reports its 1M context window",
 );
+
+const root = broModel({ contextTokens: DEFAULT_ROOT_CONTEXT_TOKENS });
+assert(
+  "modelContextWindowTokens" in root &&
+    root.modelContextWindowTokens === DEFAULT_ROOT_CONTEXT_TOKENS,
+  "root can advertise a compact window without changing the worker default",
+);
+assert(DEFAULT_MAX_OUTPUT_TOKENS === 8192, "output cap stays large enough for product dumps");
+assert(DEFAULT_ROOT_CONTEXT_TOKENS >= 128_000, "root window still holds a live job thread");
+
+const agentSrc = await import("node:fs").then((fs) =>
+  fs.readFileSync(new URL("../agent/agent.ts", import.meta.url), "utf8"),
+);
+assert(agentSrc.includes("DEFAULT_ROOT_CONTEXT_TOKENS"), "root agent uses compact window");
+assert(agentSrc.includes("compaction"), "root agent enables compaction");
+assert(!agentSrc.includes('reasoning: "low"'), "root reasoning left default — do not dumb Bro down");
 
 console.log("model:check OK");

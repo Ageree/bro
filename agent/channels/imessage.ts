@@ -56,7 +56,6 @@ import { telegramBotUsername } from "../lib/telegram";
 import { transcribeVoiceNote } from "../lib/voice";
 import { inboundUserContent } from "../lib/inbound-image.ts";
 import { VOICE_FAILED_REPLY } from "../lib/voice-policy";
-import { splitSeen } from "../lib/wakeup-text";
 import { watcherWakeupPrompt } from "../lib/purchase-policy";
 import { wakeupCarriesRunId } from "../../convex/lib/browserFollowPolicy.ts";
 import {
@@ -67,11 +66,15 @@ import { inboundGateFromResult } from "../../convex/lib/billingPolicy";
 import { eventPrompt } from "../../convex/lib/watcherPolicy.ts";
 import { syncTenantArchive } from "../lib/archive-sync.ts";
 import {
-  fallbackForCompleted,
   fallbackForFailed,
   takeFallbackSlot,
   turnOrigin,
 } from "../lib/silent-turn.ts";
+import {
+  bubblesFor,
+  planTurnDelivery,
+  recordSent,
+} from "../lib/early-deliver.ts";
 import {
   groupAuthAttributes,
   groupParticipantPhones,
@@ -85,6 +88,7 @@ import {
 // ponytail: in-memory only — lost on restart, not shared across instances
 const wakeupDelivered = new Map<string, number>();
 const fallbackSent = new Map<string, number>();
+const earlySent = new Map<string, { at: number; bubbles: string[] }>();
 
 async function sendFirstBindOnboard(opts: {
   conversationId: string;
@@ -497,9 +501,11 @@ export default defineChannel({
       if (shouldSkipAgentTurn({ firstBind, text: inbound.text })) {
         return new Response(null, { status: 204 });
       }
-      await touchLastChannel(remote, "imessage").catch((err) =>
+      const touch = touchLastChannel(remote, "imessage").catch((err) =>
         console.error("touch last channel failed", err),
       );
+      if (typeof waitUntil === "function") waitUntil(touch);
+      else void touch;
       const rawContent = await inboundUserContent(inbound.text, msg.media);
       const content = group
         ? tagGroupUserContent(remote, rawContent)
@@ -757,6 +763,7 @@ export default defineChannel({
       const conversationId = channel.continuation?.token;
       if (!conversationId) return;
       console.error("turn failed", { conversationId, code: event.code, message: event.message });
+      if (bubblesFor(earlySent, event.turnId).length > 0) return;
       const text = fallbackForFailed(turnOrigin(ctx?.session?.auth?.current?.attributes));
       if (!text) return;
       if (!takeFallbackSlot(fallbackSent, event.turnId, Date.now())) return;
@@ -766,39 +773,43 @@ export default defineChannel({
       );
     },
     async "message.completed"(event, channel, ctx) {
-      if (event.finishReason === "tool-calls") return;
       const conversationId = channel.continuation?.token;
       if (!conversationId) return;
-      if (!event.message) {
-        // Model ended a human's turn with nothing (tool errors, refusal,
-        // provider hiccup). Say so instead of leaving them on read.
-        const text = fallbackForCompleted({
-          finishReason: event.finishReason,
-          message: event.message,
-          origin: turnOrigin(ctx?.session?.auth?.current?.attributes),
-        });
-        if (!text) return;
-        console.error("empty turn", { conversationId, finishReason: event.finishReason });
-        if (!takeFallbackSlot(fallbackSent, event.turnId, Date.now())) return;
-        const tenant = await replyTenant(conversationId);
-        await deliverHuman({ tenant, conversationId, text }).catch((err) =>
-          console.error("empty turn fallback send failed", err),
-        );
-        return;
-      }
-      const { message, seen } = splitSeen(event.message);
+      const origin = turnOrigin(ctx?.session?.auth?.current?.attributes);
+      const planned = planTurnDelivery({
+        finishReason: event.finishReason,
+        message: event.message,
+        origin,
+        alreadySent: bubblesFor(earlySent, event.turnId),
+      });
       const tenant = await replyTenant(conversationId);
-      if (seen !== undefined && tenant?.phoneE164) {
-        await setWakeupLastSeen(tenant.phoneE164, seen).catch((err) => {
+      if (planned.seen !== undefined && tenant?.phoneE164) {
+        await setWakeupLastSeen(tenant.phoneE164, planned.seen).catch((err) => {
           console.error("setLastSeen failed", err);
         });
       }
-      if (!message.trim() || message.trim().startsWith("[SILENT]")) return;
+      if (planned.send) {
+        await deliverHuman({
+          tenant,
+          conversationId,
+          text: stripConnectUrls(planned.send),
+        });
+        recordSent(earlySent, event.turnId, planned.send, Date.now());
+        return;
+      }
+      if (!planned.fallback) return;
+      if (event.finishReason !== "tool-calls") {
+        console.error("empty turn", {
+          conversationId,
+          finishReason: event.finishReason,
+        });
+      }
+      if (!takeFallbackSlot(fallbackSent, event.turnId, Date.now())) return;
       await deliverHuman({
         tenant,
         conversationId,
-        text: stripConnectUrls(message),
-      });
+        text: planned.fallback,
+      }).catch((err) => console.error("empty turn fallback send failed", err));
     },
   },
 });

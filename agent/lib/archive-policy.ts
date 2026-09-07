@@ -108,6 +108,10 @@ export function eventToDocument(raw: unknown): ArchiveDocument | null {
 
 const QUERY_CHARS = 300;
 
+/** Background wakeups that need mail/calendar copies in context. */
+const WAKEUP_ARCHIVE_HINT =
+  /утренний бриф|фоновая проверка|событие пришло|почт|календар|gmail|calendar|письм|встреч|код|otp|inbox/i;
+
 type TurnMessage = {
   role?: unknown;
   content?: unknown;
@@ -130,6 +134,22 @@ export function recallQuery(input: readonly unknown[]): string | null {
     if (text) return text.slice(0, QUERY_CHARS);
   }
   return null;
+}
+
+/**
+ * Skip the Supermemory archive search on cheap chat. That HTTP round-trip
+ * sits on `turn.started` and delays the first model token.
+ */
+export function shouldRecallArchive(query: string): boolean {
+  const text = query.trim();
+  if (!text) return false;
+  if (text.startsWith("[event:")) return true;
+  if (text.startsWith("[background wakeup]")) {
+    return WAKEUP_ARCHIVE_HINT.test(text);
+  }
+  // Every human message keeps archive recall. Skipping here would hide
+  // mail/calendar facts on a turn that only "looks" like small talk.
+  return true;
 }
 
 /** Gmail search window: everything after the last sync, 7 days on first run. */

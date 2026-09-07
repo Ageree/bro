@@ -131,7 +131,7 @@ async function inboundTelegramContent(
 export default defineChannel({
   turnPolicy: "steer",
   routes: [
-    POST("/webhooks/telegram", async (request, { from }) => {
+    POST("/webhooks/telegram", async (request, { from, waitUntil }) => {
       if (!webhookSecretOk(request)) {
         return new Response("unauthorized", { status: 401 });
       }
@@ -161,9 +161,11 @@ export default defineChannel({
         }
         const data = (cb.data ?? "").trim();
         if (!data) return new Response(null, { status: 204 });
-        await touchLastChannel(tenant.phoneE164, "telegram").catch((err) =>
+        const touch = touchLastChannel(tenant.phoneE164, "telegram").catch((err) =>
           console.error("touch last channel failed", err),
         );
+        if (typeof waitUntil === "function") waitUntil(touch);
+        else void touch;
         await from(tenant.inkboxConversationId).send(`[button] ${data}`, {
           auth: {
             authenticator: "telegram",
@@ -300,9 +302,11 @@ export default defineChannel({
         return new Response(null, { status: 204 });
       }
 
-      await touchLastChannel(phone, "telegram").catch((err) =>
+      const touch = touchLastChannel(phone, "telegram").catch((err) =>
         console.error("touch last channel failed", err),
       );
+      if (typeof waitUntil === "function") waitUntil(touch);
+      else void touch;
 
       const content = await inboundTelegramContent(inbound.text, msg);
       console.log("telegram inbound", {

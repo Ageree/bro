@@ -61,6 +61,12 @@ export function nextBrowserAction(opts: {
   return "start";
 }
 
+/** In-turn wait after starting a run. Notify already went out; keep this short. */
+export const BROWSER_START_WAIT_MS = 8_000;
+
+/** "ну что" polls should not park the model for 12s — follow-through watches the run. */
+export const BROWSER_POLL_WAIT_MS = 2_000;
+
 const POLL_GIVE_UP_MS = 30 * 60_000;
 
 export function pollTimedOut(
