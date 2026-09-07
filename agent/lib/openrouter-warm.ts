@@ -64,7 +64,10 @@ export function prefetchOpenRouter(): void {
   if (warmInflight) return;
   const key = process.env.OPENROUTER_API_KEY?.trim();
   if (!key) return;
-  warmInflight = Promise.allSettled([warmAuth(key), warmOpenRouterChat(key)])
+  warmInflight = Promise.allSettled([
+    warmAuth(key),
+    Promise.resolve().then(() => warmOpenRouterChat(key)),
+  ])
     .then(() => undefined)
     .finally(() => {
       warmInflight = undefined;

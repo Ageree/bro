@@ -11,7 +11,10 @@ import {
   INSTINCT_RECALL_TTL_MS,
   canPrefetchInstinctQuery,
 } from "../agent/lib/instinct-recall.ts";
-import { canPrefetchOpenRouter } from "../agent/lib/openrouter-warm.ts";
+import {
+  canPrefetchOpenRouter,
+  OPENROUTER_WARM_TIMEOUT_MS,
+} from "../agent/lib/openrouter-warm.ts";
 import {
   isShortAck,
   isShortAckTurn,
@@ -115,11 +118,16 @@ assert(openrouterWarm.includes("OPENROUTER_AUTH_URL"), "OpenRouter warm hits /au
 assert(openrouterWarm.includes("OPENROUTER_CHAT_URL"), "OpenRouter warm also hits chat/completions");
 assert(openrouterWarm.includes("max_tokens: 1"), "chat warm is a 1-token throwaway");
 assert(openrouterWarm.includes("AbortSignal.timeout"), "OpenRouter warm is time-bounded");
+assert(OPENROUTER_WARM_TIMEOUT_MS === 2_000, "chat warm stays 2s — do not block billing");
 assert(openrouterWarm.includes("instructions.md"), "chat warm prefixes the static system prompt");
 assert(openrouterWarm.includes('role: "system"'), "chat warm is production-shaped, not a bare user dot");
 assert(
-  !openrouterWarm.includes('from "./model.ts"') && !openrouterWarm.includes("from \"./model\""),
+  !/from\s+['"]\.\/model(\.ts)?['"]/.test(openrouterWarm),
   "chat warm must not import model.ts — that is a cycle",
+);
+assert(
+  !openrouterWarm.includes("tools:") && !openrouterWarm.includes("tool_choice"),
+  "chat warm is tools-off — a tools-on warm would contend with the real turn",
 );
 assert(isShortAck("ок"), "ок is a short ack");
 assert(isShortAck("Спасибо!"), "thanks with punct is a short ack");
