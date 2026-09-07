@@ -741,5 +741,15 @@ export default defineChannel({
       return Response.json({ ok: true });
     }),
   ],
+  receive: async (input, { from }) => {
+    const conversationId =
+      typeof input.target.conversationId === "string"
+        ? input.target.conversationId
+        : "";
+    if (!conversationId) {
+      throw new Error("imessage receive needs conversationId");
+    }
+    return await from(conversationId).send(input.message, { auth: input.auth });
+  },
   events: humanTurnEvents,
 });

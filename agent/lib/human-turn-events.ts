@@ -80,6 +80,6 @@ export const humanTurnEvents: ChannelEvents = {
       tenant,
       conversationId,
       text: stripConnectUrls(message),
-    });
+    }).catch((err) => console.error("human turn deliver failed", err));
   },
 };

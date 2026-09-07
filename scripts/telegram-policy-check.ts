@@ -131,5 +131,15 @@ assert(
   telegramChannel.includes("events: humanTurnEvents"),
   "telegram channel delivers model replies",
 );
+assert(
+  telegramChannel.includes("to(imessage,") &&
+    telegramChannel.includes("conversationId"),
+  "telegram turns go through the iMessage session",
+);
+const imessageChannel = readFileSync(
+  resolve(import.meta.dirname, "../agent/channels/imessage.ts"),
+  "utf8",
+);
+assert(imessageChannel.includes("receive:"), "imessage accepts telegram turns");
 
 console.log("telegram-policy-check ok");

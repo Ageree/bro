@@ -1,4 +1,5 @@
 import { defineChannel, POST } from "eve/channels";
+import imessage from "./imessage.ts";
 import {
   bindTelegram,
   countInboundMessage,
@@ -28,6 +29,7 @@ import {
   answerCallback,
   isPrivateChat,
   largestPhoto,
+  sendTelegramChatAction,
   sendTelegramMessage,
   telegramBotUsername,
   telegramFileUrl,
@@ -133,7 +135,7 @@ async function inboundTelegramContent(
 export default defineChannel({
   turnPolicy: "steer",
   routes: [
-    POST("/webhooks/telegram", async (request, { from }) => {
+    POST("/webhooks/telegram", async (request, { to, waitUntil }) => {
       if (!webhookSecretOk(request)) {
         return new Response("unauthorized", { status: 401 });
       }
@@ -167,7 +169,9 @@ export default defineChannel({
           console.error("touch last channel failed", err),
         );
         try {
-          await from(tenant.inkboxConversationId).send(`[button] ${data}`, {
+          await to(imessage, {
+            conversationId: tenant.inkboxConversationId,
+          }).send(`[button] ${data}`, {
             auth: {
               authenticator: "telegram",
               issuer: "telegram",
@@ -321,29 +325,36 @@ export default defineChannel({
         voice: inbound.voice,
         images: typeof content === "string" ? 0 : content.length - 1,
       });
+      await sendTelegramChatAction({ chatId }).catch((err) =>
+        console.error("telegram typing failed", err),
+      );
 
-      try {
-        await from(conversationId).send(content, {
-          auth: {
-            authenticator: "telegram",
-            issuer: "telegram",
-            principalType: "user",
-            principalId: phone,
-            attributes: telegramAuthAttrs({
-              conversationId,
-              telegramChatId: chatId,
-              telegramUserId: userId,
-              messageId: String(msg.message_id),
-              inkboxHandle: tenant.inkboxHandle,
-            }),
-          },
-        });
-      } catch (err) {
-        console.error("telegram turn send failed", err);
-        await sendHtml(chatId, TURN_FAILED_REPLY).catch((sendErr) =>
-          console.error("telegram turn fallback failed", sendErr),
-        );
-      }
+      const turn = (async () => {
+        try {
+          await to(imessage, { conversationId }).send(content, {
+            auth: {
+              authenticator: "telegram",
+              issuer: "telegram",
+              principalType: "user",
+              principalId: phone,
+              attributes: telegramAuthAttrs({
+                conversationId,
+                telegramChatId: chatId,
+                telegramUserId: userId,
+                messageId: String(msg.message_id),
+                inkboxHandle: tenant.inkboxHandle,
+              }),
+            },
+          });
+        } catch (err) {
+          console.error("telegram turn send failed", err);
+          await sendHtml(chatId, TURN_FAILED_REPLY).catch((sendErr) =>
+            console.error("telegram turn fallback failed", sendErr),
+          );
+        }
+      })();
+      if (typeof waitUntil === "function") waitUntil(turn);
+      await turn;
       return new Response(null, { status: 204 });
     }),
   ],
