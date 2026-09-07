@@ -21,6 +21,27 @@ function foldLines(s: string): string {
   return s.replace(/[ \t]+\n/g, "\n").replace(/[ \t]+$/g, "").trim();
 }
 
+function foldWs(s: string): string {
+  return s.replace(/\s+/g, " ").trim();
+}
+
+function restAfterPrefix(cur: string, prefix: string): string | null | undefined {
+  if (!prefix) return undefined;
+  if (cur === prefix) return null;
+  if (
+    cur.startsWith(`${prefix}\n`) ||
+    (cur.startsWith(prefix) && hasPrefixBoundary(cur, prefix))
+  ) {
+    return (
+      cur
+        .slice(prefix.length)
+        .replace(/^[\s.!?…。！？,;:]+/u, "")
+        .trim() || null
+    );
+  }
+  return undefined;
+}
+
 function hasPrefixBoundary(cur: string, prefix: string): boolean {
   if (prefix.length >= cur.length) return true;
   const last = prefix[prefix.length - 1] ?? "";
@@ -237,36 +258,36 @@ export function nextBubble(
   const cur = current.trim();
   if (!cur) return null;
   const sent = alreadySent.map((s) => s.trim()).filter(Boolean);
-  if (sent.some((s) => s === cur)) return null;
+  if (sent.some((s) => s === cur || foldWs(s) === foldWs(cur))) return null;
   const last = sent[sent.length - 1];
   if (last && last.startsWith(cur)) return null;
+  if (last && foldWs(last).endsWith(foldWs(cur))) return null;
   const curFold = foldLines(cur);
-  const prefixes = [sent.join("\n\n"), sent.join("\n"), sent.join(" "), last ?? ""];
+  const curWs = foldWs(cur);
+  const prefixes = [
+    sent.join("\n\n"),
+    sent.join("\n"),
+    sent.join(" "),
+    last ?? "",
+  ];
   for (const joined of prefixes) {
-    const joinedFold = foldLines(joined);
-    if (!joinedFold) continue;
-    if (curFold === joinedFold) return null;
-    if (
-      curFold.startsWith(`${joinedFold}\n`) ||
-      (curFold.startsWith(joinedFold) && hasPrefixBoundary(curFold, joinedFold))
-    ) {
-      const rest = curFold
-        .slice(joinedFold.length)
-        .replace(/^[\s.!?…。！？,;:]+/u, "")
-        .trim();
-      return rest || null;
-    }
+    const rest = restAfterPrefix(curFold, foldLines(joined));
+    if (rest !== undefined) return rest;
   }
+  const sentWs = foldWs(sent.join(" "));
+  const restWs = restAfterPrefix(curWs, sentWs);
+  if (restWs !== undefined) return restWs;
   if (last) {
     const bare = foldLines(stripFinalPunct(last));
     if (bare && curFold.startsWith(bare) && curFold.length > bare.length) {
       const next = curFold[bare.length] ?? "";
       if (/[.!?…。！？]/.test(next)) {
-        const rest = curFold
-          .slice(bare.length)
-          .replace(/^[\s.!?…。！？,;:]+/u, "")
-          .trim();
-        return rest || null;
+        return (
+          curFold
+            .slice(bare.length)
+            .replace(/^[\s.!?…。！？,;:]+/u, "")
+            .trim() || null
+        );
       }
     }
   }

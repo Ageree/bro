@@ -78,6 +78,64 @@ assert(
   nextBubble(["ок"], "окей, сделаю") === "окей, сделаю",
   "ок is not a prefix of окей",
 );
+assert(
+  nextBubble(
+    [
+      "Записываю в Инвитро на чекап.",
+      "Открываю браузер — подберу ближайшее время и филиал.",
+      "Здесь упираюсь в лимит браузера: на этот месяц задачи исчерпаны (сайт Инвитро без браузера не открыть).",
+    ],
+    "Записываю в Инвитро на чекап. Открываю браузер — подберу ближайшее время и филиал.\nЗдесь упираюсь в лимит браузера: на этот месяц задачи исчерпаны (сайт Инвитро без браузера не открыть). Два варианта:",
+  ) === "Два варианта:",
+  "sentence peels on one line still yield only the new tail",
+);
+assert(
+  nextBubble(
+    [
+      "Здесь упираюсь в лимит браузера: на этот месяц задачи исчерпаны (сайт Инвитро без браузера не открыть). Два варианта:",
+    ],
+    "Два варианта:",
+  ) === null,
+  "suffix of an already-sent bubble is not resent",
+);
+
+{
+  const sent = new Map<string, { at: number; bubbles: string[] }>();
+  const turn = "invitro";
+  const soFar = [
+    "Записываю в Инвитро на чекап.",
+    "Записываю в Инвитро на чекап. Открываю браузер — подберу ближайшее время и филиал.",
+    "Записываю в Инвитро на чекап. Открываю браузер — подберу ближайшее время и филиал.\nЗдесь упираюсь в лимит браузера: на этот месяц задачи исчерпаны (сайт Инвитро без браузера не открыть). Два варианта:",
+    "Записываю в Инвитро на чекап. Открываю браузер — подберу ближайшее время и филиал.\nЗдесь упираюсь в лимит браузера: на этот месяц задачи исчерпаны (сайт Инвитро без браузера не открыть). Два варианта:\n1. Подключаешь оплату лимита — сразу ищу филиал и время, записываю сам.",
+    "Записываю в Инвитро на чекап. Открываю браузер — подберу ближайшее время и филиал.\nЗдесь упираюсь в лимит браузера: на этот месяц задачи исчерпаны (сайт Инвитро без браузера не открыть). Два варианта:\n1. Подключаешь оплату лимита — сразу ищу филиал и время, записываю сам.\n2. Или я скину ссылку на страницу записи Инвитро, и ты за пару кликов выберешь филиал и время сам — я только напомню и прослежу, чтобы не забыл.\nЧто выбираешь?",
+  ];
+  const flushed: string[] = [];
+  for (const chunk of soFar) {
+    const planned = planStreamFlush({
+      soFar: chunk,
+      alreadySent: bubblesFor(sent, turn),
+    });
+    if (planned.send) {
+      recordSent(sent, turn, planned.send, Date.now());
+      flushed.push(planned.send);
+    }
+  }
+  const final = planTurnDelivery({
+    finishReason: "stop",
+    message: soFar[soFar.length - 1],
+    origin: "human",
+    alreadySent: bubblesFor(sent, turn),
+  });
+  assert(
+    flushed[0] === "Записываю в Инвитро на чекап.",
+    "first status line still leaves early",
+  );
+  assert(
+    !flushed.some((b) => b.includes("Записываю") && b.includes("Два варианта")),
+    "stream must not resend the already-flushed status lines",
+  );
+  assert(final.send === null, "completed must not replay the whole reply");
+}
 
 assert(isLikelyCompleteBubble("Ок!"), "exclaim is complete");
 assert(isLikelyCompleteBubble("Ок."), "ок + period is complete");
