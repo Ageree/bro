@@ -20,11 +20,34 @@ export function jobWakeInstruction(lines: readonly string[]): string | null {
   return `${JOB_FRAMING}\n\n${lines.join("\n")}`;
 }
 
+/** `job_wait` payload: `джоб <id>: <goal>`. Same match as the old HTTP path. */
+export function matchWakeJob(
+  rows: readonly JobWakeRow[],
+  payload: string,
+): JobWakeRow | undefined {
+  const text = payload.trim();
+  if (!text) return undefined;
+  const idMatch = /^джоб\s+(\S+):/.exec(text);
+  if (idMatch?.[1]) {
+    const hit = rows.find((j) => j.id === idMatch[1]);
+    if (hit) return hit;
+  }
+  return rows.find((j) => text.includes(j.id));
+}
+
+export function jobCheckPayload(attrs: Record<string, unknown> | undefined): string {
+  return typeof attrs?.wakeupPayload === "string" ? attrs.wakeupPayload : "";
+}
+
 export function dueJobNudges(
   rows: readonly JobWakeRow[],
   now: number,
+  scope?: { payload: string },
 ): JobWakeRow[] {
-  return rows.filter((row) => {
+  const pool = scope
+    ? [matchWakeJob(rows, scope.payload)].filter((j): j is JobWakeRow => Boolean(j))
+    : rows;
+  return pool.filter((row) => {
     const waitingFor = row.waitingFor;
     if (
       waitingFor !== "human" &&
@@ -47,8 +70,9 @@ export function dueJobNudges(
 export function jobNudgeInstruction(
   rows: readonly JobWakeRow[],
   now: number,
+  scope?: { payload: string },
 ): string | null {
-  const due = dueJobNudges(rows, now);
+  const due = dueJobNudges(rows, now, scope);
   if (due.length === 0) return null;
   return due
     .map((job) => {

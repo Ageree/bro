@@ -762,9 +762,13 @@ export default defineChannel({
             principalType: "user",
             principalId: tenantPhone,
             // ponytail: wire v1 не терпит undefined в attributes — ключ опускаем
-            attributes: inkboxHandle
-              ? { conversationId, inkboxHandle, origin: "wakeup", wakeupKind: kind }
-              : { conversationId, origin: "wakeup", wakeupKind: kind },
+            attributes: {
+              conversationId,
+              origin: "wakeup",
+              wakeupKind: kind,
+              ...(kind === "job_check" && payload ? { wakeupPayload: payload } : {}),
+              ...(inkboxHandle ? { inkboxHandle } : {}),
+            },
           },
         });
       } catch (err) {

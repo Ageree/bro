@@ -2,8 +2,10 @@ import { readFileSync } from "node:fs";
 import {
   dueJobNudges,
   isJobCheckWakeup,
+  jobCheckPayload,
   jobNudgeInstruction,
   jobWakeInstruction,
+  matchWakeJob,
 } from "../agent/lib/job-wake.ts";
 import {
   defaultCheckInMinutes,
@@ -339,6 +341,35 @@ const due = dueJobNudges(
   nudgeNow,
 );
 assert(due.length === 1 && due[0]?.id === "j1", "due nudge from wake rows");
+const twoDue = [
+  {
+    id: "j1",
+    line: "id=j1",
+    goal: "слот",
+    waitingFor: "human" as const,
+    waitingSince: t0,
+  },
+  {
+    id: "j2",
+    line: "id=j2",
+    goal: "оплата",
+    waitingFor: "human" as const,
+    waitingSince: t0,
+  },
+];
+assert(matchWakeJob(twoDue, "джоб j1: слот")?.id === "j1", "payload prefix match");
+assert(matchWakeJob(twoDue, "other j2 leftover")?.id === "j2", "payload contains id");
+assert(
+  dueJobNudges(twoDue, nudgeNow, { payload: "джоб j1: слот" }).map((j) => j.id).join() ===
+    "j1",
+  "job_check nudge is only the payload job",
+);
+assert(
+  dueJobNudges(twoDue, nudgeNow, { payload: "" }).length === 0,
+  "missing payload does not nudge every due job",
+);
+assert(jobCheckPayload({ wakeupPayload: "джоб j1: слот" }) === "джоб j1: слот", "stamped payload");
+assert(jobCheckPayload({ origin: "wakeup" }) === "", "no payload");
 const nudgeText = jobNudgeInstruction(
   [
     {
@@ -382,6 +413,7 @@ assert(
 assert(!isJobCheckWakeup({ origin: "wakeup", wakeupKind: "brief" }), "brief is not a nudge");
 assert(jobsSrc.includes("isJobCheckWakeup"), "nudge only on job_check wakeups");
 assert(jobsSrc.includes("jobNudgeInstruction"), "nudge copy lives on turn.started");
+assert(jobsSrc.includes("jobCheckPayload"), "nudge scoped to stamped payload");
 
 const imessage = readFileSync(
   new URL("../agent/channels/imessage.ts", import.meta.url),
@@ -393,6 +425,7 @@ assert(
   "Convex wakeups still await send so dispatch sees failures",
 );
 assert(imessage.includes("wakeupKind"), "wakeup stamps kind for job_check nudge");
+assert(imessage.includes("wakeupPayload"), "wakeup stamps job_check payload");
 assert(
   !imessage.includes("job_check nudge lookup"),
   "job_check no longer lists jobs on the HTTP path",

@@ -4,6 +4,7 @@ import { jobWakeRows, markNudged } from "../lib/convex";
 import {
   dueJobNudges,
   isJobCheckWakeup,
+  jobCheckPayload,
   jobNudgeInstruction,
   jobWakeInstruction,
 } from "../lib/job-wake.ts";
@@ -23,8 +24,10 @@ export default defineDynamic({
         const phone = tenantId(ctx);
         const rows = await jobWakeRows(phone);
         const now = Date.now();
-        const jobCheck = isJobCheckWakeup(turnAttributes(ctx));
-        const due = jobCheck ? dueJobNudges(rows, now) : [];
+        const attrs = turnAttributes(ctx);
+        const jobCheck = isJobCheckWakeup(attrs);
+        const scope = jobCheck ? { payload: jobCheckPayload(attrs) } : undefined;
+        const due = scope ? dueJobNudges(rows, now, scope) : [];
         for (const job of due) {
           await markNudged(phone, job.id).catch((err) =>
             console.error("markNudged failed", err),
@@ -32,7 +35,7 @@ export default defineDynamic({
         }
         const content = [
           jobWakeInstruction(rows.map((r) => r.line)),
-          jobCheck ? jobNudgeInstruction(rows, now) : null,
+          scope ? jobNudgeInstruction(rows, now, scope) : null,
         ]
           .filter((part): part is string => Boolean(part))
           .join("\n\n");
