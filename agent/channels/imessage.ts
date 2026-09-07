@@ -500,6 +500,11 @@ export default defineChannel({
           console.error("wake prefetch failed", err),
         );
         prefetchInstinctRecall(ownerPhone, preview);
+        void voiceP
+          .then((got) => {
+            if (got.text) prefetchInstinctRecall(ownerPhone, got.text);
+          })
+          .catch((err) => console.error("instinct voice prefetch failed", err));
         prefetchOpenRouter();
         if (boundOneToOne) {
           const ack = ackIMessageReadAndTyping(

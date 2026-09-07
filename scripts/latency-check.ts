@@ -66,7 +66,7 @@ assert(imessage.includes("routingFromAuth"), "first bubble uses auth routing");
 assert(imessage.includes("deliverTurnBubble"), "delivery helper is shared");
 assert(imessage.includes("prefetchOpenRouter"), "OpenRouter warms during billing, not after first token");
 assert(imessage.includes('"message.appended"'), "first iMessage bubble can leave before the step ends");
-assert(imessage.includes("planStreamFlush"), "streamed flush is newline-gated");
+assert(imessage.includes("planStreamFlush"), "streamed flush sends finished lines and sentences");
 assert(imessage.includes("planPreToolFlush"), "pre-tool flush covers a line with no newline");
 assert(imessage.includes("void deliverTurnBubble"), "early iMessage send does not block tools");
 

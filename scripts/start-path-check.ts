@@ -108,6 +108,8 @@ const modelLib = readFileSync(new URL("../agent/lib/model.ts", import.meta.url),
 assert(modelLib.includes("openRouterChatFetch"), "default GLM uses OpenRouter chat extras");
 
 assert(openrouterWarm.includes("OPENROUTER_AUTH_URL"), "OpenRouter warm hits /auth/key");
+assert(openrouterWarm.includes("OPENROUTER_CHAT_URL"), "OpenRouter warm also hits chat/completions");
+assert(openrouterWarm.includes("max_tokens: 1"), "chat warm is a 1-token throwaway");
 assert(openrouterWarm.includes("AbortSignal.timeout"), "OpenRouter warm is time-bounded");
 assert(isShortAck("ок"), "ок is a short ack");
 assert(isShortAck("Спасибо!"), "thanks with punct is a short ack");
@@ -184,6 +186,10 @@ assert(imessage.includes("loadWakeContext"), "1:1 billing prefetches wake contex
 assert(imessage.includes("prefetchInstinctRecall"), "1:1 billing prefetches Instinct searches");
 assert(imessage.includes("shortAckAttribute(inbound.text)"), "1:1 inbound stamps this-turn ack");
 assert(imessage.includes("prefetchOpenRouter"), "1:1 billing warms OpenRouter");
+assert(
+  imessage.includes("instinct voice prefetch failed"),
+  "STT completion prefetches Instinct without waiting for billing",
+);
 assert(
   imessage.includes("prefetchInstinctRecall(ownerPhone, inbound.text)"),
   "final inbound text warms Instinct after STT",
