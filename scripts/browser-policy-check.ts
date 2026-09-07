@@ -364,6 +364,10 @@ assert(
   "follow-through starts before the in-turn wait",
 );
 assert(browserTool.includes("deliverHumanRouted"), "canned notify uses auth routing");
+assert(
+  browserTool.includes("conversationSpokeRecently"),
+  "canned ищу skips when this turn already spoke",
+);
 
 const follow = readFileSync(
   new URL("../convex/browserFollow.ts", import.meta.url),

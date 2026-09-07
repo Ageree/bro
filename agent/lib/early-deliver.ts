@@ -29,8 +29,8 @@ function foldLines(s: string): string {
   return s.replace(/[ \t]+\n/g, "\n").replace(/[ \t]+$/g, "").trim();
 }
 
-/** First visible line terminated by a newline. Leading `\nИ` crumbs stay. */
-export function firstCompleteLine(soFar: string): string | null {
+/** Finished visible lines (newline-terminated). Leading `\nИ` crumbs stay. */
+export function finishedVisibleText(soFar: string): string | null {
   const raw = typeof soFar === "string" ? soFar : "";
   const { message } = raw ? splitSeen(raw) : { message: raw };
   let src = message;
@@ -40,36 +40,48 @@ export function firstCompleteLine(soFar: string): string | null {
   if (!src.includes("\n")) return null;
   const parts = src.split("\n");
   const finished = src.endsWith("\n") ? parts : parts.slice(0, -1);
+  const lines: string[] = [];
   for (const part of finished) {
     const line = part.trim();
-    if (line && visibleReply(line)) return line;
+    if (line && visibleReply(line)) lines.push(line);
   }
-  return null;
+  return lines.length > 0 ? lines.join("\n") : null;
+}
+
+/** First visible line terminated by a newline. */
+export function firstCompleteLine(soFar: string): string | null {
+  const text = finishedVisibleText(soFar);
+  return text?.split("\n")[0]?.trim() || null;
 }
 
 /**
- * First iMessage bubble from a streaming `message.appended`.
- * Newline-gated so we do not send half a word; later appends no-op once spoken.
+ * Streamed iMessage bubble from `message.appended`.
+ * Newline-gated; later complete lines are the remainder after alreadySent.
  */
-export function planFirstLineFlush(input: {
+export function planStreamFlush(input: {
   soFar: string;
   alreadySent: readonly string[];
 }): Pick<TurnDelivery, "send" | "seen"> {
   const raw = typeof input.soFar === "string" ? input.soFar : "";
   const { seen } = raw ? splitSeen(raw) : {};
-  if (input.alreadySent.some((s) => s.trim().length > 0)) {
-    return { send: null, ...(seen !== undefined ? { seen } : {}) };
-  }
-  const line = firstCompleteLine(raw);
-  if (!line) return { send: null, ...(seen !== undefined ? { seen } : {}) };
+  const text = finishedVisibleText(raw);
+  if (!text) return { send: null, ...(seen !== undefined ? { seen } : {}) };
   return {
-    send: nextBubble(input.alreadySent, line),
+    send: nextBubble(input.alreadySent, text),
     ...(seen !== undefined ? { seen } : {}),
   };
 }
 
+/** @deprecated use planStreamFlush */
+export function planFirstLineFlush(input: {
+  soFar: string;
+  alreadySent: readonly string[];
+}): Pick<TurnDelivery, "send" | "seen"> {
+  return planStreamFlush(input);
+}
+
 /**
- * Pre-tool line is done even without a newline. Used on `actions.requested`.
+ * Pre-tool text is done even without a newline. Used on `actions.requested`.
  */
 export function planPreToolFlush(input: {
   soFar: string;
@@ -77,14 +89,10 @@ export function planPreToolFlush(input: {
 }): Pick<TurnDelivery, "send" | "seen"> {
   const raw = typeof input.soFar === "string" ? input.soFar : "";
   const { message, seen } = raw ? splitSeen(raw) : { message: raw };
-  if (input.alreadySent.some((s) => s.trim().length > 0)) {
-    return { send: null, ...(seen !== undefined ? { seen } : {}) };
-  }
-  const line =
-    firstCompleteLine(raw) ?? visibleReply(message)?.split("\n")[0]?.trim() ?? "";
-  if (!line) return { send: null, ...(seen !== undefined ? { seen } : {}) };
+  const text = finishedVisibleText(raw) ?? visibleReply(message);
+  if (!text) return { send: null, ...(seen !== undefined ? { seen } : {}) };
   return {
-    send: nextBubble(input.alreadySent, line),
+    send: nextBubble(input.alreadySent, text),
     ...(seen !== undefined ? { seen } : {}),
   };
 }
@@ -202,4 +210,28 @@ export function soFarFor(
   turnId: string,
 ): string {
   return sent.get(turnId)?.soFar ?? "";
+}
+
+const spokeConv = new Map<string, number>();
+
+export function markConversationSpoke(
+  conversationId: string,
+  now: number,
+  ttlMs = 10 * 60_000,
+): void {
+  if (!conversationId) return;
+  for (const [key, at] of spokeConv) {
+    if (now - at > ttlMs) spokeConv.delete(key);
+  }
+  spokeConv.set(conversationId, now);
+}
+
+export function conversationSpokeRecently(
+  conversationId: string,
+  now: number,
+  windowMs = 120_000,
+): boolean {
+  if (!conversationId) return false;
+  const at = spokeConv.get(conversationId);
+  return at !== undefined && now - at <= windowMs;
 }

@@ -81,8 +81,9 @@ import {
 } from "../lib/silent-turn.ts";
 import {
   bubblesFor,
-  planFirstLineFlush,
+  markConversationSpoke,
   planPreToolFlush,
+  planStreamFlush,
   planTurnDelivery,
   recordSent,
   rememberSoFar,
@@ -145,6 +146,7 @@ async function deliverTurnBubble(opts: {
     ? null
     : await replyTenant(opts.conversationId);
   const tenant = lookedUp ?? routingTenant(routing);
+  markConversationSpoke(opts.conversationId, Date.now());
   await deliverHuman({
     tenant,
     conversationId: opts.conversationId,
@@ -869,20 +871,20 @@ export default defineChannel({
       const conversationId = channel.continuation?.token;
       if (!conversationId) return;
       rememberSoFar(earlySent, event.turnId, event.messageSoFar, Date.now());
-      const planned = planFirstLineFlush({
+      const planned = planStreamFlush({
         soFar: event.messageSoFar,
         alreadySent: bubblesFor(earlySent, event.turnId),
       });
       if (!planned.send) return;
       const auth = ctx?.session?.auth?.current;
       recordSent(earlySent, event.turnId, planned.send, Date.now());
-      await deliverTurnBubble({
+      void deliverTurnBubble({
         conversationId,
         text: stripConnectUrls(planned.send),
         attrs: auth?.attributes,
         principalId: auth?.principalId,
         seen: planned.seen,
-      });
+      }).catch((err) => console.error("streamed bubble send failed", err));
     },
     async "actions.requested"(event, channel, ctx) {
       const conversationId = channel.continuation?.token;
@@ -894,13 +896,13 @@ export default defineChannel({
       if (!planned.send) return;
       const auth = ctx?.session?.auth?.current;
       recordSent(earlySent, event.turnId, planned.send, Date.now());
-      await deliverTurnBubble({
+      void deliverTurnBubble({
         conversationId,
         text: stripConnectUrls(planned.send),
         attrs: auth?.attributes,
         principalId: auth?.principalId,
         seen: planned.seen,
-      });
+      }).catch((err) => console.error("pre-tool bubble send failed", err));
     },
     async "message.completed"(event, channel, ctx) {
       const conversationId = channel.continuation?.token;

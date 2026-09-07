@@ -1,10 +1,13 @@
 import { readFileSync } from "node:fs";
 import {
   bubblesFor,
+  conversationSpokeRecently,
   firstCompleteLine,
+  markConversationSpoke,
   nextBubble,
   planFirstLineFlush,
   planPreToolFlush,
+  planStreamFlush,
   planTurnDelivery,
   recordSent,
   visibleReply,
@@ -49,7 +52,12 @@ const streamAfter = planFirstLineFlush({
   soFar: "Ищу 🔎\n\nНашёл три варианта",
   alreadySent: ["Ищу 🔎"],
 });
-assert(streamAfter.send === null, "later appends do not resend the first line");
+assert(streamAfter.send === null, "unterminated later text does not flush");
+const streamNext = planStreamFlush({
+  soFar: "Ищу 🔎\n\nНашёл три варианта\n",
+  alreadySent: ["Ищу 🔎"],
+});
+assert(streamNext.send === "Нашёл три варианта", "later complete line flushes the remainder");
 
 const streamThenFinal = planTurnDelivery({
   finishReason: "tool-calls",
@@ -153,6 +161,11 @@ const emptyWakeup = planTurnDelivery({
 });
 assert(emptyWakeup.fallback === null, "wakeup may end empty");
 
+markConversationSpoke("c1", 1_000);
+assert(conversationSpokeRecently("c1", 1_500), "spoke inside the window");
+assert(!conversationSpokeRecently("c1", 1_000 + 121_000), "spoke window expires");
+assert(!conversationSpokeRecently("c2", 1_500), "other conversation has not spoken");
+
 const sent = new Map<string, { at: number; bubbles: string[]; soFar?: string }>();
 recordSent(sent, "t1", "Ищу", 1_000);
 assert(bubblesFor(sent, "t1").join("|") === "Ищу", "record first");
@@ -167,10 +180,11 @@ const channel = readFileSync(
   "utf8",
 );
 assert(channel.includes("planTurnDelivery"), "imessage uses early-deliver planner");
-assert(channel.includes("planFirstLineFlush"), "imessage flushes the first streamed line");
+assert(channel.includes("planStreamFlush"), "imessage flushes streamed complete lines");
 assert(channel.includes("planPreToolFlush"), "imessage flushes when the model starts a tool");
 assert(channel.includes('"message.appended"'), "imessage listens for streamed text");
 assert(channel.includes('"actions.requested"'), "imessage listens for the pre-tool boundary");
+assert(channel.includes("void deliverTurnBubble"), "early bubbles do not block the Eve pump");
 assert(
   !/if \(event\.finishReason === ["']tool-calls["']\) return;/.test(channel),
   "imessage no longer drops tool-calls text",
@@ -243,13 +257,20 @@ assert(
 );
 const appended = channel.slice(channel.indexOf('"message.appended"'));
 assert(
-  appended.indexOf("recordSent") < appended.indexOf("await deliverTurnBubble"),
+  appended.indexOf("recordSent") < appended.indexOf("void deliverTurnBubble"),
   "appended recordSent before deliver closes the overlap window",
 );
-const preToolEv = channel.slice(channel.indexOf('"actions.requested"'));
+const preToolEv = channel.slice(
+  channel.indexOf('"actions.requested"'),
+  channel.indexOf('"message.completed"'),
+);
 assert(
-  preToolEv.indexOf("recordSent") < preToolEv.indexOf("await deliverTurnBubble"),
+  preToolEv.indexOf("recordSent") < preToolEv.indexOf("void deliverTurnBubble"),
   "pre-tool recordSent before deliver closes the overlap window",
+);
+assert(
+  !preToolEv.includes("await deliverTurnBubble"),
+  "pre-tool send is not awaited",
 );
 const completed = channel.slice(channel.indexOf('"message.completed"'));
 assert(
