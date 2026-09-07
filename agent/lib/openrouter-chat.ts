@@ -8,10 +8,22 @@
 
 export const OPENROUTER_CHAT_REASONING_EFFORT = "low" as const;
 export const OPENROUTER_CHAT_PROVIDER_SORT = "latency" as const;
+/** Fast GLM-5.3-flash hosts. Z.ai P50 is ~5s; keep it as a fallback, not first. */
+export const OPENROUTER_CHAT_PROVIDER_ORDER = [
+  "parasail",
+  "together",
+  "baseten",
+  "novita",
+] as const;
+export const OPENROUTER_CHAT_PREFERRED_MAX_LATENCY = 1.5;
 
 export type OpenRouterChatBody = {
   reasoning?: { effort?: string };
-  provider?: { sort?: string };
+  provider?: {
+    sort?: string;
+    order?: string[];
+    preferred_max_latency?: number;
+  };
   [key: string]: unknown;
 };
 
@@ -42,6 +54,12 @@ export function withOpenRouterChatDefaults(body: unknown): unknown {
       ? { ...next.provider }
       : {};
   if (provider.sort == null) provider.sort = OPENROUTER_CHAT_PROVIDER_SORT;
+  if (provider.order == null) {
+    provider.order = [...OPENROUTER_CHAT_PROVIDER_ORDER];
+  }
+  if (provider.preferred_max_latency == null) {
+    provider.preferred_max_latency = OPENROUTER_CHAT_PREFERRED_MAX_LATENCY;
+  }
   next.provider = provider;
   return next;
 }

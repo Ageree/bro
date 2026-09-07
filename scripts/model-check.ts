@@ -70,6 +70,8 @@ assert(agentSrc.includes("compaction"), "root agent enables compaction");
 assert(!agentSrc.includes('reasoning: "low"'), "root reasoning left default — do not dumb Bro down");
 
 const {
+  OPENROUTER_CHAT_PREFERRED_MAX_LATENCY,
+  OPENROUTER_CHAT_PROVIDER_ORDER,
   OPENROUTER_CHAT_PROVIDER_SORT,
   OPENROUTER_CHAT_REASONING_EFFORT,
   applyOpenRouterChatDefaults,
@@ -78,12 +80,28 @@ const {
 } = await import("../agent/lib/openrouter-chat.ts");
 assert(OPENROUTER_CHAT_REASONING_EFFORT === "low", "GLM default max is overridden to low");
 assert(OPENROUTER_CHAT_PROVIDER_SORT === "latency", "chat prefers the fastest OpenRouter provider");
+assert(
+  OPENROUTER_CHAT_PROVIDER_ORDER[0] === "parasail",
+  "fast GLM hosts are tried before Z.ai",
+);
+assert(
+  OPENROUTER_CHAT_PREFERRED_MAX_LATENCY <= 1.5,
+  "slow hosts are deprioritized, not required",
+);
 const filled = withOpenRouterChatDefaults({ model: "z-ai/glm-5.3-flash" }) as {
   reasoning?: { effort?: string };
-  provider?: { sort?: string };
+  provider?: { sort?: string; order?: string[]; preferred_max_latency?: number };
 };
 assert(filled.reasoning?.effort === "low", "unset reasoning.effort becomes low");
 assert(filled.provider?.sort === "latency", "unset provider.sort becomes latency");
+assert(
+  filled.provider?.order?.[0] === "parasail",
+  "unset provider.order prefers fast GLM hosts",
+);
+assert(
+  filled.provider?.preferred_max_latency === OPENROUTER_CHAT_PREFERRED_MAX_LATENCY,
+  "unset preferred_max_latency deprioritizes Z.ai-class hosts",
+);
 const kept = withOpenRouterChatDefaults({
   reasoning: { effort: "high" },
   provider: { sort: "price" },
