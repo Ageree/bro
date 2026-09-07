@@ -67,6 +67,10 @@ assert(
   !jobs.includes("isShortAck(latest)"),
   "ack steer uses the stamped inbound flag, not the last history line",
 );
+assert(
+  !jobs.includes('role: "user"'),
+  "job/ack inject must not append to session history",
+);
 
 const archive = readFileSync(new URL("../agent/memory/archive.ts", import.meta.url), "utf8");
 assert(archive.includes("shouldRecallArchive"), "archive recall is gated");

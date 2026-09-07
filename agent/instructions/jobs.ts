@@ -17,7 +17,7 @@ export default defineDynamic({
     async "turn.started"(_event, ctx) {
       if (isGroupTurn(ctx)) {
         return defineInstructions({
-          role: "user",
+          role: "system",
           content:
             "Group turn. Do not inject or mention this person's private open jobs.",
         });
@@ -57,10 +57,10 @@ export default defineDynamic({
           .filter((part): part is string => Boolean(part))
           .join("\n\n");
         if (!content) return null;
-        return defineInstructions({ role: "user", content });
+        return defineInstructions({ role: "system", content });
       } catch (err) {
         return defineInstructions({
-          role: "user",
+          role: "system",
           content: `Job store unavailable: ${err instanceof Error ? err.message : String(err)}`,
         });
       }

@@ -428,6 +428,11 @@ assert(
   !jobsSrc.includes("recallQuery(ctx.messages)"),
   "ack steer does not use Eve instruction history",
 );
+assert(
+  !jobsSrc.includes('role: "user"'),
+  "job/ack inject is system — user-role instructions stick in Eve history",
+);
+assert(jobsSrc.includes('role: "system"'), "turn.started job text is turn-scoped");
 
 const imessage = readFileSync(
   new URL("../agent/channels/imessage.ts", import.meta.url),
