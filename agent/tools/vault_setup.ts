@@ -18,7 +18,7 @@ function cabinetBase(): string {
 
 export default defineTool({
   description:
-    "Give the human a cabinet link to save a vault item. Supported kinds: payment, address, contact. Do not use this for site logins — those go through profile_setup (a chat link). Never put a card number, CVV, or any other secret in the arguments — the human types those on the page, never in chat.",
+    "Cabinet link to save payment, address, or contact. Site logins use profile_setup. Never put a card number, CVV, or secret in the arguments — they type those on the page.",
   inputSchema: vaultSetupRequestSchema,
   async execute(request, ctx) {
     const blocked = groupPersonalBlock(ctx);

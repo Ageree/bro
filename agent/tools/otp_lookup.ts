@@ -8,7 +8,7 @@ import { tenantId } from "../lib/tenant";
 
 export default defineTool({
   description:
-    "Find a fresh one-time code in Bro's Inkbox inbox, then this person's mail archive. Call when worker/browser needs an OTP — before asking in the iMessage thread. Pass the code only to the waiting worker; never quote it in chat.",
+    "Fresh OTP from Bro's Inkbox inbox, then this person's mail archive. Call when worker/browser needs a code — before asking in the thread. Pass the code only to the waiting worker; never quote it.",
   inputSchema: z.object({
     hint: z
       .string()

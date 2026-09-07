@@ -25,7 +25,7 @@ function attr(ctx: ToolContext, key: string): string | undefined {
 
 export default defineTool({
   description:
-    "Put an iMessage tapback (love/like/dislike/laugh/emphasize/question/eyes) on the latest inbound message of this thread. The target is fixed — do not pass a message id. After calling, reply [SILENT]. Use for «ок», «спасибо», «понял», and a seen reminder — do not overuse.",
+    "iMessage tapback (love/like/dislike/laugh/emphasize/question/eyes) on the latest inbound. Do not pass a message id. Then reply [SILENT]. Use for «ок», «спасибо», «понял», a seen reminder — do not overuse.",
   inputSchema: z.object({
     reaction: z.enum(IMESSAGE_TAPBACKS),
   }),

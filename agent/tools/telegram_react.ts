@@ -33,7 +33,7 @@ const NAMES = [
 
 export default defineTool({
   description:
-    "Put a Telegram reaction (love/like/dislike/laugh/emphasize/question/eyes) on the latest inbound Telegram message of this thread. After calling, reply [SILENT]. Use for «ок», «спасибо», «понял» — do not overuse.",
+    "Telegram reaction (love/like/dislike/laugh/emphasize/question/eyes) on the latest inbound. Then reply [SILENT]. Use for «ок», «спасибо», «понял» — do not overuse.",
   inputSchema: z.object({
     reaction: z.enum(NAMES),
   }),

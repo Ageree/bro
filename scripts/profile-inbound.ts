@@ -28,8 +28,73 @@ import {
   OPENROUTER_CHAT_URL,
   canPrefetchOpenRouter,
 } from "../agent/lib/openrouter-warm.ts";
+import {
+  isLikelyCompleteBubble,
+  planStreamFlush,
+} from "../agent/lib/early-deliver.ts";
+import { loadWakeContext } from "../agent/lib/convex.ts";
 
 const ITER = 100_000;
+
+const TOOL_FILES = [
+  "browser_task.ts",
+  "profile_setup.ts",
+  "vault_setup.ts",
+  "composio.ts",
+  "bro_mail.ts",
+  "otp_lookup.ts",
+  "schedule_wakeup.ts",
+  "watch_app.ts",
+  "group_chat.ts",
+  "imessage_react.ts",
+  "telegram_react.ts",
+  "list_orders.ts",
+  "job_open.ts",
+  "job_wait.ts",
+  "job_done.ts",
+  "cancel_wakeup.ts",
+];
+
+function toolDescriptionChars(): { files: number; chars: number } {
+  let chars = 0;
+  for (const file of TOOL_FILES) {
+    const src = readFileSync(new URL(`../agent/tools/${file}`, import.meta.url), "utf8");
+    for (const block of src.matchAll(/description:\s*\n?\s*"([^"]+)"/g)) {
+      chars += block[1]?.length ?? 0;
+    }
+  }
+  return { files: TOOL_FILES.length, chars };
+}
+
+function broToolSchemas(): Array<{
+  type: "function";
+  function: { name: string; description: string; parameters: Record<string, unknown> };
+}> {
+  const descriptions: Array<[string, string]> = [];
+  for (const file of TOOL_FILES) {
+    const src = readFileSync(new URL(`../agent/tools/${file}`, import.meta.url), "utf8");
+    const name = file.replace(/\.ts$/, "");
+    let i = 0;
+    for (const block of src.matchAll(/description:\s*\n?\s*"([^"]+)"/g)) {
+      const desc = block[1] ?? "";
+      const toolName = i === 0 && !file.includes("composio") ? name : `${name}_${i}`;
+      descriptions.push([toolName, desc]);
+      i += 1;
+    }
+  }
+  return descriptions.map(([name, description]) => ({
+    type: "function" as const,
+    function: {
+      name,
+      description,
+      parameters: {
+        type: "object",
+        properties: { task: { type: "string" } },
+        additionalProperties: true,
+      },
+    },
+  }));
+}
 
 /** Scan OpenRouter chat SSE enough to time first reasoning vs first visible token. */
 function openRouterStreamProgress(buf: string) {
@@ -136,6 +201,7 @@ async function measureOpenRouterTtfb(): Promise<Record<string, unknown>> {
     new URL("../agent/instructions.md", import.meta.url),
     "utf8",
   );
+  const tools = broToolSchemas();
   const prefetch = await timed(() =>
     fetch(OPENROUTER_AUTH_URL, {
       headers: { Authorization: `Bearer ${key}` },
@@ -145,7 +211,7 @@ async function measureOpenRouterTtfb(): Promise<Record<string, unknown>> {
     }),
   );
 
-  async function streamOnce(): Promise<Record<string, unknown>> {
+  async function streamOnce(withTools: boolean): Promise<Record<string, unknown>> {
     const t0 = performance.now();
     const res = await fetch(OPENROUTER_CHAT_URL, {
       method: "POST",
@@ -162,6 +228,7 @@ async function measureOpenRouterTtfb(): Promise<Record<string, unknown>> {
             { role: "system", content: instructions },
             { role: "user", content: "ок" },
           ],
+          ...(withTools ? { tools } : {}),
         }),
       ),
       signal: AbortSignal.timeout(45_000),
@@ -211,9 +278,9 @@ async function measureOpenRouterTtfb(): Promise<Record<string, unknown>> {
     };
   }
 
-  async function streamOrTimeout(): Promise<Record<string, unknown>> {
+  async function streamOrTimeout(withTools: boolean): Promise<Record<string, unknown>> {
     try {
-      return await streamOnce();
+      return await streamOnce(withTools);
     } catch (err) {
       return {
         ok: false,
@@ -222,18 +289,49 @@ async function measureOpenRouterTtfb(): Promise<Record<string, unknown>> {
     }
   }
 
-  const afterPrefetch = await streamOrTimeout();
-  const repeat = await streamOrTimeout();
+  const afterPrefetch = await streamOrTimeout(false);
+  const repeat = await streamOrTimeout(false);
+  const withTools = await streamOrTimeout(true);
+  const prefill = toolDescriptionChars();
   return {
     skipped: false,
     model,
     instructionChars: instructions.length,
+    toolDescriptionChars: prefill.chars,
+    toolSchemaCount: tools.length,
     probeMaxTokens: 1024,
     productionExtras: withOpenRouterChatDefaults({}),
     prefetchAuth: prefetch,
     streamAfterPrefetch: afterPrefetch,
     streamRepeat: repeat,
-    note: "Probe uses production OpenRouter extras (reasoning.effort=low, provider.sort=latency). Eve reasoning stays unset. No Eve tools. Production maxOutputTokens stays 8192. No iMessage send.",
+    streamWithBroToolDescriptions: withTools,
+    note: "Probe uses production OpenRouter extras (reasoning.effort=low, provider.sort=latency). Eve reasoning stays unset. Tools-off is the baseline; tools-on uses Bro tool descriptions with stub schemas (not Eve defaults). Production maxOutputTokens stays 8192. No iMessage send.",
+  };
+}
+
+async function measureTurnStartedResidual(): Promise<Record<string, unknown>> {
+  const flushNs = Math.round(
+    nsPerCall(() => {
+      planStreamFlush({ soFar: "Ок!", alreadySent: [] });
+      isLikelyCompleteBubble("Ищу ПВЗ на ул.");
+    }) / 1e3,
+  );
+  if (!process.env.CONVEX_URL?.trim() || !process.env.BRO_INTERNAL_SECRET?.trim()) {
+    return {
+      skipped: true,
+      reason: "CONVEX_URL or BRO_INTERNAL_SECRET missing",
+      streamFlushUs: flushNs,
+    };
+  }
+  const phone = "+15550001999";
+  const first = await timed(() => loadWakeContext(phone));
+  const cached = await timed(() => loadWakeContext(phone));
+  return {
+    skipped: false,
+    streamFlushUs: flushNs,
+    wakeContextMs: first,
+    wakeContextCachedMs: cached,
+    note: "Jobs after memory should be a wake cache hit. Instinct pair is measured separately.",
   };
 }
 
@@ -257,6 +355,7 @@ async function measureInkboxIdentity(): Promise<Record<string, unknown>> {
 
 const inkboxIdentityHttp = await measureInkboxIdentity();
 const instinctHttp = await measureInstinctHttp();
+const turnStarted = await measureTurnStartedResidual();
 const openrouter = await measureOpenRouterTtfb();
 
 const report = {
@@ -297,12 +396,18 @@ const report = {
       "ackIMessageReadAndTyping",
     ],
     remainingAfterParkTurn: [
-      "eve session start",
-      "OpenRouter first tokens (measured here as stream TTFB)",
+      "eve session start (wake/instinct should cache-hit after billing prefetch)",
+      "OpenRouter first tokens (measured here as stream TTFB, tools-off and Bro-tool descriptions)",
       "Inkbox send (not measured — no live conversation)",
     ],
   },
-  note: "No live iMessage send. Warm 1:1 awaits one Convex hop; Instinct and OpenRouter TTFB are live HTTP when keys are present.",
+  turnStarted,
+  firstBubbleWithoutNewline: {
+    "Ок!": planStreamFlush({ soFar: "Ок!", alreadySent: [] }).send,
+    "Ищ": planStreamFlush({ soFar: "Ищ", alreadySent: [] }).send,
+    "Ищу ПВЗ на ул.": planStreamFlush({ soFar: "Ищу ПВЗ на ул.", alreadySent: [] }).send,
+  },
+  note: "No live iMessage send. Warm 1:1 awaits one Convex hop; Instinct and OpenRouter TTFB are live HTTP when keys are present. First iMessage bubble can now leave on a sentence/emoji-complete chunk, not only a newline.",
 };
 
 const json = `${JSON.stringify(report, null, 2)}\n`;

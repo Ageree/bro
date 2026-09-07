@@ -80,7 +80,7 @@ export default defineDynamic({
     "session.started": () => ({
       COMPOSIO_SEARCH_TOOLS: defineTool({
         description:
-          "Find tools across the user's apps (Gmail, GitHub, Calendar, …). Start here. Never invent a tool slug.",
+          "Find tools across this person's apps (Gmail, GitHub, Calendar, …). Start here. Never invent a tool slug.",
         inputSchema: {
           type: "object",
           required: ["queries"],
@@ -166,7 +166,7 @@ export default defineDynamic({
       }),
       COMPOSIO_REMOTE_WORKBENCH: defineTool({
         description:
-          "Run Python in the remote sandbox for large tool responses. Skip if the data already fits in chat. No network access: never fetch websites here — use browser_task.",
+          "Python in the remote sandbox for large tool responses. Skip if the data fits in chat. No network: never fetch websites — use browser_task.",
         inputSchema: {
           type: "object",
           required: ["code_to_execute"],
@@ -192,7 +192,7 @@ export default defineDynamic({
       }),
       COMPOSIO_REMOTE_BASH_TOOL: defineTool({
         description:
-          "Run bash in the remote sandbox for large files. 3-minute limit. No network access: never fetch websites here — use browser_task.",
+          "Bash in the remote sandbox for large files. 3-minute limit. No network: never fetch websites — use browser_task.",
         inputSchema: {
           type: "object",
           required: ["command"],

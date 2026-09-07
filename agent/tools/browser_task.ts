@@ -234,7 +234,7 @@ function profileExtra(resolved: {
 
 export default defineTool({
   description:
-    "Cloud browser for web errands (WB, Ozon, bookings, appointments, taxi, forms, search), including sites the human already opened via a login link. Starts or polls the current job — never a second search. reset only for a fresh browser. needsProfileSync → profile_setup with the login URL, never ask for a password. status=completed → paste result to the human. Purchases: pass pay on the first call (hosts = merchant hostname(s); maxRub only if they named a ceiling). The card is typed by the server; the model never sees it. needsVaultSetup → vault_setup kind=payment.",
+    "Cloud browser (WB, Ozon, bookings, appointments, taxi, forms, search). Starts or polls the current job — never a second search. reset = fresh browser. needsProfileSync → profile_setup with the login URL, never ask for a password. status=completed → paste result. Buy: pay on first call (hosts = merchant hostnames; maxRub only if they named a ceiling). Card is server-typed. needsVaultSetup → vault_setup kind=payment.",
   inputSchema: z.object({
     task: z.string().min(1).max(4000),
     reset: z.boolean().optional(),
