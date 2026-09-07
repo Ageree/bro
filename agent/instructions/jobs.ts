@@ -31,7 +31,7 @@ export default defineDynamic({
         const scope = jobCheck ? { payload: jobCheckPayload(attrs) } : undefined;
         const due = scope ? dueJobNudges(rows, now, scope) : [];
         if (due.length > 0) {
-          await Promise.all(
+          void Promise.all(
             due.map((job) =>
               markNudged(phone, job.id).catch((err) =>
                 console.error("markNudged failed", err),

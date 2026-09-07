@@ -461,6 +461,7 @@ assert(
 );
 assert(!isJobCheckWakeup({ origin: "wakeup", wakeupKind: "brief" }), "brief is not a nudge");
 assert(jobsSrc.includes("isJobCheckWakeup"), "nudge only on job_check wakeups");
+assert(jobsSrc.includes("void Promise.all"), "markNudged does not block turn.started");
 assert(jobsSrc.includes("jobNudgeInstruction"), "nudge copy lives on turn.started");
 assert(jobsSrc.includes("jobCheckPayload"), "nudge scoped to stamped payload");
 assert(jobsSrc.includes("JOB_CHECK_QUIET"), "non-due job_check gets SILENT from instructions");
