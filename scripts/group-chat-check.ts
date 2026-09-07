@@ -208,7 +208,11 @@ assert(channel.includes("shouldReplyInGroup"), "channel mention gate");
 assert(channel.includes("sendGroupWelcome"), "channel group welcome");
 assert(channel.includes("tagGroupUserContent"), "channel tags group text");
 assert(channel.includes("groupAuthAttributes"), "channel group auth");
-assert(channel.includes("replyTenant"), "outbound uses group owner");
+const turnEvents = readFileSync(
+  new URL("../agent/lib/human-turn-events.ts", import.meta.url),
+  "utf8",
+);
+assert(turnEvents.includes("replyTenant"), "outbound uses group owner");
 assert(
   channel.includes("Group billing runs only after the mention gate"),
   "group billing comment",

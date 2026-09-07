@@ -22,8 +22,6 @@ import {
   markNudged,
   markPaywallSent,
   mintTelegramBind,
-  replyTenant,
-  setWakeupLastSeen,
   touchLastChannel,
   upsertTenant,
 } from "../lib/convex";
@@ -44,19 +42,18 @@ import { ingestInboundMail } from "../lib/mail-inbound";
 import {
   connectCardHtml,
   isConnectDest,
-  stripConnectUrls,
 } from "../lib/connect-link";
 import {
   inboundIMessageText,
   inboundIMessageTextWithVoice,
 } from "../lib/imessage-text";
-import { deliverHuman } from "../lib/deliver-human";
+import { humanTurnEvents } from "../lib/human-turn-events";
+import { handleTelegramWebhook } from "../lib/telegram-webhook";
 import { telegramBindLink } from "../../convex/lib/telegramPolicy.ts";
 import { telegramBotUsername } from "../lib/telegram";
 import { transcribeVoiceNote } from "../lib/voice";
 import { inboundUserContent } from "../lib/inbound-image.ts";
 import { VOICE_FAILED_REPLY } from "../lib/voice-policy";
-import { splitSeen } from "../lib/wakeup-text";
 import { watcherWakeupPrompt } from "../lib/purchase-policy";
 import { wakeupCarriesRunId } from "../../convex/lib/browserFollowPolicy.ts";
 import {
@@ -66,12 +63,6 @@ import {
 import { inboundGateFromResult } from "../../convex/lib/billingPolicy";
 import { eventPrompt } from "../../convex/lib/watcherPolicy.ts";
 import { syncTenantArchive } from "../lib/archive-sync.ts";
-import {
-  fallbackForCompleted,
-  fallbackForFailed,
-  takeFallbackSlot,
-  turnOrigin,
-} from "../lib/silent-turn.ts";
 import {
   groupAuthAttributes,
   groupParticipantPhones,
@@ -84,7 +75,6 @@ import {
 
 // ponytail: in-memory only — lost on restart, not shared across instances
 const wakeupDelivered = new Map<string, number>();
-const fallbackSent = new Map<string, number>();
 
 async function sendFirstBindOnboard(opts: {
   conversationId: string;
@@ -259,6 +249,9 @@ export default defineChannel({
         },
       });
     }),
+    POST("/webhooks/telegram", (request, { from, waitUntil }) =>
+      handleTelegramWebhook(request, { from, waitUntil }),
+    ),
     POST("/webhooks/imessage", async (request, { from, waitUntil }) => {
       const handle = handleFromRequest(request);
       const tenant = handle ? await getTenantByHandle(handle).catch(() => null) : null;
@@ -752,53 +745,15 @@ export default defineChannel({
       return Response.json({ ok: true });
     }),
   ],
-  events: {
-    async "turn.failed"(event, channel, ctx) {
-      const conversationId = channel.continuation?.token;
-      if (!conversationId) return;
-      console.error("turn failed", { conversationId, code: event.code, message: event.message });
-      const text = fallbackForFailed(turnOrigin(ctx?.session?.auth?.current?.attributes));
-      if (!text) return;
-      if (!takeFallbackSlot(fallbackSent, event.turnId, Date.now())) return;
-      const tenant = await replyTenant(conversationId);
-      await deliverHuman({ tenant, conversationId, text }).catch((err) =>
-        console.error("turn failed fallback send failed", err),
-      );
-    },
-    async "message.completed"(event, channel, ctx) {
-      if (event.finishReason === "tool-calls") return;
-      const conversationId = channel.continuation?.token;
-      if (!conversationId) return;
-      if (!event.message) {
-        // Model ended a human's turn with nothing (tool errors, refusal,
-        // provider hiccup). Say so instead of leaving them on read.
-        const text = fallbackForCompleted({
-          finishReason: event.finishReason,
-          message: event.message,
-          origin: turnOrigin(ctx?.session?.auth?.current?.attributes),
-        });
-        if (!text) return;
-        console.error("empty turn", { conversationId, finishReason: event.finishReason });
-        if (!takeFallbackSlot(fallbackSent, event.turnId, Date.now())) return;
-        const tenant = await replyTenant(conversationId);
-        await deliverHuman({ tenant, conversationId, text }).catch((err) =>
-          console.error("empty turn fallback send failed", err),
-        );
-        return;
-      }
-      const { message, seen } = splitSeen(event.message);
-      const tenant = await replyTenant(conversationId);
-      if (seen !== undefined && tenant?.phoneE164) {
-        await setWakeupLastSeen(tenant.phoneE164, seen).catch((err) => {
-          console.error("setLastSeen failed", err);
-        });
-      }
-      if (!message.trim() || message.trim().startsWith("[SILENT]")) return;
-      await deliverHuman({
-        tenant,
-        conversationId,
-        text: stripConnectUrls(message),
-      });
-    },
+  receive: async (input, { from }) => {
+    const conversationId =
+      typeof input.target.conversationId === "string"
+        ? input.target.conversationId
+        : "";
+    if (!conversationId) {
+      throw new Error("imessage receive needs conversationId");
+    }
+    return await from(conversationId).send(input.message, { auth: input.auth });
   },
+  events: humanTurnEvents,
 });

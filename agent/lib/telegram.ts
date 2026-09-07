@@ -100,6 +100,50 @@ async function api<T>(
   return json.result as T;
 }
 
+export async function sendTelegramChatAction(opts: {
+  chatId: string | number;
+  action?: "typing" | "upload_photo" | "record_voice";
+}): Promise<void> {
+  await api("sendChatAction", {
+    chat_id: opts.chatId,
+    action: opts.action ?? "typing",
+  });
+}
+
+/** Telegram hides "typing" after ~5s. Repeat until the model reply is sent. */
+export const TELEGRAM_TYPING_EVERY_MS = 4_000;
+export const TELEGRAM_TYPING_MAX_MS = 90_000;
+
+const typingStops = new Map<string, () => void>();
+
+export function startTelegramTyping(chatId: string): () => void {
+  stopTelegramTyping(chatId);
+  const started = Date.now();
+  const tick = () => {
+    void sendTelegramChatAction({ chatId }).catch((err) =>
+      console.error("telegram typing failed", err),
+    );
+  };
+  tick();
+  const timer = setInterval(() => {
+    if (Date.now() - started > TELEGRAM_TYPING_MAX_MS) {
+      stopTelegramTyping(chatId);
+      return;
+    }
+    tick();
+  }, TELEGRAM_TYPING_EVERY_MS);
+  const stop = () => {
+    clearInterval(timer);
+    if (typingStops.get(chatId) === stop) typingStops.delete(chatId);
+  };
+  typingStops.set(chatId, stop);
+  return stop;
+}
+
+export function stopTelegramTyping(chatId: string): void {
+  typingStops.get(chatId)?.();
+}
+
 export async function sendTelegramMessage(opts: {
   chatId: string | number;
   html: string;

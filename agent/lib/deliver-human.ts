@@ -6,7 +6,11 @@ import {
   lastChannelOf,
   type HumanChannel,
 } from "../../convex/lib/telegramPolicy.ts";
-import { sendTelegramMessage, sendTelegramPhoto } from "./telegram.ts";
+import {
+  sendTelegramMessage,
+  sendTelegramPhoto,
+  stopTelegramTyping,
+} from "./telegram.ts";
 import { compileTelegram, type TelegramButton } from "./telegram-text.ts";
 
 export type HumanTenant = {
@@ -31,11 +35,13 @@ export async function deliverHuman(opts: {
   if (prefer === "telegram" && canDeliverTelegram(tenant.telegramChatId)) {
     try {
       await deliverTelegram(tenant.telegramChatId!, text, opts.buttons);
+      stopTelegramTyping(tenant.telegramChatId!);
       return;
     } catch (err) {
       console.error("telegram deliver failed, falling back to iMessage", err);
     }
   }
+  if (tenant.telegramChatId) stopTelegramTyping(tenant.telegramChatId);
   const conversationId = opts.conversationId ?? tenant.inkboxConversationId;
   if (!conversationId) throw new Error("no conversation to deliver");
   const bubbles = toIMessageBubbles(stripConnectUrls(text));

@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import {
   bindRefuseText,
   bindTelegramDecision,
@@ -120,5 +122,37 @@ assert(canDeliverTelegram("99"), "has chat");
 assert(!canDeliverTelegram(""), "empty chat");
 assert(bindRefuseText("unknown_token").includes("iMessage"), "refuse mentions iMessage");
 assert(telegramWelcomeText().includes("iMessage"), "welcome same agent");
+
+const telegramWebhook = readFileSync(
+  resolve(import.meta.dirname, "../agent/lib/telegram-webhook.ts"),
+  "utf8",
+);
+assert(
+  telegramWebhook.includes('authenticator: "inkbox"') &&
+    telegramWebhook.includes("from(opts.conversationId).send"),
+  "telegram steers the iMessage eve session",
+);
+assert(
+  telegramWebhook.includes("await startBroTurn") &&
+    telegramWebhook.includes("steerBroTurn(from"),
+  "telegram awaits the same send() path as iMessage",
+);
+const turnEvents = readFileSync(
+  resolve(import.meta.dirname, "../agent/lib/human-turn-events.ts"),
+  "utf8",
+);
+assert(
+  turnEvents.includes('lastChannel: "telegram"') &&
+    turnEvents.includes("telegramChatIdOf"),
+  "telegram replies skip the Convex tenant lookup",
+);
+const imessageChannel = readFileSync(
+  resolve(import.meta.dirname, "../agent/channels/imessage.ts"),
+  "utf8",
+);
+assert(
+  imessageChannel.includes('POST("/webhooks/telegram"'),
+  "telegram HTTP is on the iMessage channel",
+);
 
 console.log("telegram-policy-check ok");

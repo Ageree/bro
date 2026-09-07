@@ -7,7 +7,11 @@ import {
   splitTelegramHtml,
   toTelegramHtml,
 } from "../agent/lib/telegram-text.ts";
-import { isTelegramReaction, TELEGRAM_REACTIONS } from "../agent/lib/telegram.ts";
+import {
+  isTelegramReaction,
+  TELEGRAM_REACTIONS,
+  TELEGRAM_TYPING_EVERY_MS,
+} from "../agent/lib/telegram.ts";
 
 function assert(cond: unknown, msg: string): void {
   if (!cond) throw new Error(msg);
@@ -80,6 +84,7 @@ assert(
   "connect button strip",
 );
 
+assert(TELEGRAM_TYPING_EVERY_MS === 4_000, "typing refresh before telegram expires");
 assert(TELEGRAM_REACTIONS.love === "❤", "love emoji");
 assert(isTelegramReaction("like"), "like allowed");
 assert(!isTelegramReaction("heart"), "unknown reaction");
