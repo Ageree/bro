@@ -82,6 +82,40 @@ const COMPLETE_TAILS = new Set([
   "ага",
 ]);
 
+const ABBREV_TAILS = new Set([
+  "ул",
+  "г",
+  "д",
+  "к",
+  "корп",
+  "стр",
+  "просп",
+  "пер",
+  "пл",
+  "обл",
+  "тел",
+  "т",
+  "см",
+  "др",
+  "тд",
+  "тп",
+  "млн",
+  "млрд",
+  "тыс",
+  "mr",
+  "mrs",
+  "ms",
+  "dr",
+  "prof",
+  "sr",
+  "jr",
+  "dept",
+  "inc",
+  "ltd",
+  "vs",
+  "etc",
+]);
+
 function foldTail(word: string): string {
   return word
     .normalize("NFC")
@@ -90,8 +124,8 @@ function foldTail(word: string): string {
     .replace(/[^\p{L}\p{N}]+/gu, "");
 }
 
-function endsStrong(text: string): boolean {
-  return /[!?…！？]$/u.test(text) || /[\p{Extended_Pictographic}\p{Emoji_Presentation}]$/u.test(text);
+function stripFinalPunct(s: string): string {
+  return s.replace(/[.!?…。！？]+$/u, "").trim();
 }
 
 /** Finished line, or an unterminated line that already looks like a full bubble. */
@@ -99,11 +133,27 @@ export function isLikelyCompleteBubble(text: string): boolean {
   const t = text.trim();
   if (!t || !visibleReply(t)) return false;
   if (!/\p{L}|\p{N}/u.test(t)) return true;
-  if (endsStrong(t)) return true;
+  if (/[!?…！？]$/u.test(t)) return true;
   if (!/[.。]$/u.test(t)) return false;
-  const word = t.replace(/[.!?…。！？]+$/u, "").trim().split(/\s+/).pop() ?? "";
-  if (word.length >= 4) return true;
-  return COMPLETE_TAILS.has(foldTail(word));
+  const word = stripFinalPunct(t).split(/\s+/).pop() ?? "";
+  const folded = foldTail(word);
+  if (ABBREV_TAILS.has(folded)) return false;
+  if (COMPLETE_TAILS.has(folded)) return true;
+  return word.length >= 4;
+}
+
+/** Earliest finished sentence in an open line (`Ок.` inside `Ок. Сейчас…`). */
+export function firstLikelyCompletePrefix(text: string): string | null {
+  const t = text.trim();
+  if (!t) return null;
+  if (isLikelyCompleteBubble(t)) return t;
+  const re = /[.!?…。！？]/gu;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(t))) {
+    const prefix = t.slice(0, m.index + m[0].length).trim();
+    if (isLikelyCompleteBubble(prefix)) return prefix;
+  }
+  return null;
 }
 
 function openVisibleLine(soFar: string): string | null {
@@ -122,8 +172,9 @@ function openVisibleLine(soFar: string): string | null {
 export function likelyCompleteVisibleText(soFar: string): string | null {
   const finished = finishedVisibleText(soFar);
   const open = openVisibleLine(soFar);
-  if (open && isLikelyCompleteBubble(open)) {
-    return finished ? `${finished}\n${open}` : open;
+  const peeled = open ? firstLikelyCompletePrefix(open) : null;
+  if (peeled) {
+    return finished ? `${finished}\n${peeled}` : peeled;
   }
   return finished;
 }
@@ -187,15 +238,25 @@ export function nextBubble(
   const last = sent[sent.length - 1];
   if (last && last.startsWith(cur)) return null;
   const curFold = foldLines(cur);
-  for (const joined of [sent.join("\n\n"), sent.join("\n"), sent.join(" ")]) {
+  const prefixes = [
+    sent.join("\n\n"),
+    sent.join("\n"),
+    sent.join(" "),
+    last ?? "",
+    last ? stripFinalPunct(last) : "",
+  ];
+  for (const joined of prefixes) {
     const joinedFold = foldLines(joined);
     if (!joinedFold) continue;
     if (curFold === joinedFold) return null;
     if (
-      (curFold.startsWith(`${joinedFold}\n`) ||
-        (curFold.startsWith(joinedFold) && hasPrefixBoundary(curFold, joinedFold)))
+      curFold.startsWith(`${joinedFold}\n`) ||
+      (curFold.startsWith(joinedFold) && hasPrefixBoundary(curFold, joinedFold))
     ) {
-      const rest = curFold.slice(joinedFold.length).replace(/^[\s]+/, "").trim();
+      const rest = curFold
+        .slice(joinedFold.length)
+        .replace(/^[\s.!?…。！？,;:]+/u, "")
+        .trim();
       return rest || null;
     }
   }

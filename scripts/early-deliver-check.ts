@@ -85,7 +85,10 @@ assert(isLikelyCompleteBubble("Принял."), "long word + period is complete"
 assert(isLikelyCompleteBubble("👍"), "emoji-only is complete");
 assert(!isLikelyCompleteBubble("Ищ"), "crumb is not complete");
 assert(!isLikelyCompleteBubble("Ищу ПВЗ на ул."), "abbreviation period is not complete");
+assert(!isLikelyCompleteBubble("Ищу на Невском просп."), "просп. is not complete");
+assert(!isLikelyCompleteBubble("бюджет 2 млрд."), "млрд. is not complete");
 assert(!isLikelyCompleteBubble("Нашёл три варианта"), "unterminated sentence stays");
+assert(!isLikelyCompleteBubble("Ищу 🔎"), "looking line with emoji is not a finished bubble");
 
 assert(
   planStreamFlush({ soFar: "Ок!", alreadySent: [] }).send === "Ок!",
@@ -98,6 +101,18 @@ assert(
 assert(
   planStreamFlush({ soFar: "Ок.", alreadySent: [] }).send === "Ок.",
   "stream flushes ок with a period",
+);
+assert(
+  planStreamFlush({ soFar: "Ок. Сейчас гляну джоб", alreadySent: [] }).send === "Ок.",
+  "batched first sentence peels off the open line",
+);
+assert(
+  nextBubble(["Привет!"], "Привет. Как дела?") === "Как дела?",
+  "punct rewrite still yields the remainder",
+);
+assert(
+  nextBubble(["ok"], "ok, сделаю") === "сделаю",
+  "comma after a flushed ack is stripped",
 );
 
 const streamThenFinal = planTurnDelivery({
