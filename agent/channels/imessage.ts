@@ -822,7 +822,6 @@ export default defineChannel({
       const conversationId = channel.continuation?.token;
       if (!conversationId) return;
       console.error("turn failed", { conversationId, code: event.code, message: event.message });
-      if (bubblesFor(earlySent, event.turnId).length > 0) return;
       const auth = ctx?.session?.auth?.current;
       const text = fallbackForFailed(turnOrigin(auth?.attributes));
       if (!text) return;

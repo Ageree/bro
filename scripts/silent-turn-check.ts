@@ -1,6 +1,7 @@
 import {
   fallbackForCompleted,
   fallbackForFailed,
+  isSilentReply,
   takeFallbackSlot,
   TURN_FAILED_REPLY,
   turnOrigin,
@@ -40,6 +41,9 @@ assert(
 );
 
 // the model said something (incl. [SILENT] after a tapback) → channel handles it
+assert(isSilentReply("[SILENT]") === true, "silent marker");
+assert(isSilentReply("  [SILENT] leftover") === true, "silent prefix");
+assert(isSilentReply("Ищу") === false, "visible is not silent");
 assert(
   fallbackForCompleted({ finishReason: "stop", message: "[SILENT]", origin: "human" }) === null,
   "explicit [SILENT] is not a failure",

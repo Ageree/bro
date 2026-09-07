@@ -78,6 +78,25 @@ const emptyHuman = planTurnDelivery({
 });
 assert(emptyHuman.fallback === TURN_FAILED_REPLY, "empty human turn still fallbacks");
 
+const silentFinal = planTurnDelivery({
+  finishReason: "stop",
+  message: "[SILENT]",
+  origin: "human",
+  alreadySent: [],
+});
+assert(silentFinal.send === null, "final [SILENT] stays hidden");
+assert(silentFinal.fallback === null, "[SILENT] is not a failure — tapback / ок");
+
+const silentSeen = planTurnDelivery({
+  finishReason: "stop",
+  message: "[SILENT]\n[SEEN] price=1",
+  origin: "human",
+  alreadySent: [],
+});
+assert(silentSeen.send === null, "silent+seen stays hidden");
+assert(silentSeen.fallback === null, "silent+seen is not a failure");
+assert(silentSeen.seen === "price=1", "seen still captured on silent");
+
 const emptyWakeup = planTurnDelivery({
   finishReason: "stop",
   message: "",
@@ -159,6 +178,12 @@ assert(channel.includes("deliverTurnBubble"), "imessage shares delivery helper")
 assert(
   !/await setWakeupLastSeen/.test(channel),
   "lastSeen is not awaited before the bubble",
+);
+assert(
+  !/if \(bubblesFor\(earlySent, event\.turnId\)\.length > 0\) return;/.test(
+    channel,
+  ),
+  "turn.failed still speaks after an early bubble",
 );
 
 console.log("early-deliver-check ok");

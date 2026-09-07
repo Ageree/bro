@@ -32,6 +32,11 @@ export type CompletedTurn = {
   origin: TurnOrigin | undefined;
 };
 
+/** Deliberate quiet after a tapback (`imessage_react` / `telegram_react`). */
+export function isSilentReply(text: string | null | undefined): boolean {
+  return typeof text === "string" && text.trim().startsWith("[SILENT]");
+}
+
 /** Fallback text for a completed turn, or null when the model said enough
  *  (or was allowed to stay quiet). `tool-calls` steps are mid-turn. */
 export function fallbackForCompleted(turn: CompletedTurn): string | null {

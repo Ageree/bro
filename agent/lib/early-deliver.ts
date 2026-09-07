@@ -7,7 +7,7 @@
 
 import { splitSeen } from "./wakeup-text.ts";
 import type { TurnOrigin } from "./silent-turn.ts";
-import { TURN_FAILED_REPLY } from "./silent-turn.ts";
+import { isSilentReply, TURN_FAILED_REPLY } from "./silent-turn.ts";
 
 export type TurnDelivery = {
   send: string | null;
@@ -19,8 +19,7 @@ export type TurnDelivery = {
 export function visibleReply(text: string | null | undefined): string | null {
   if (typeof text !== "string") return null;
   const trimmed = text.trim();
-  if (!trimmed) return null;
-  if (trimmed.startsWith("[SILENT]")) return null;
+  if (!trimmed || isSilentReply(trimmed)) return null;
   return trimmed;
 }
 
@@ -70,7 +69,9 @@ export function planTurnDelivery(input: {
       send: null,
       ...(seen !== undefined ? { seen } : {}),
       fallback:
-        input.origin === "human" && !spoke ? TURN_FAILED_REPLY : null,
+        input.origin === "human" && !spoke && !isSilentReply(message)
+          ? TURN_FAILED_REPLY
+          : null,
     };
   }
 
