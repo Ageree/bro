@@ -62,13 +62,9 @@ const imessage = readFileSync(
   new URL("../agent/channels/imessage.ts", import.meta.url),
   "utf8",
 );
-assert(imessage.includes("routingFromAuth"), "first bubble uses auth routing");
-assert(imessage.includes("deliverTurnBubble"), "delivery helper is shared");
+assert(imessage.includes("imessageOwnsTurn"), "iMessage skips telegram-stamped turns");
+assert(imessage.includes("createTurnDeliveryEvents"), "iMessage shares delivery events");
 assert(imessage.includes("prefetchOpenRouter"), "OpenRouter warms during billing, not after first token");
-assert(imessage.includes('"message.appended"'), "first iMessage bubble can leave before the step ends");
-assert(imessage.includes("planStreamFlush"), "streamed flush sends finished lines and sentences");
-assert(imessage.includes("planPreToolFlush"), "pre-tool flush covers a line with no newline");
-assert(imessage.includes("void deliverTurnBubble"), "early iMessage send does not block tools");
 
 const telegram = readFileSync(
   new URL("../agent/channels/telegram.ts", import.meta.url),
@@ -77,14 +73,8 @@ const telegram = readFileSync(
 assert(telegram.includes("sendTelegramTyping"), "telegram shows typing like iMessage");
 assert(telegram.includes("inboundP"), "telegram STT overlaps photo fetch");
 assert(telegram.includes("parkTurn"), "human telegram turn is not awaited");
-assert(
-  !telegram.includes('"message.completed"'),
-  "telegram must not copy delivery events — that would double-send",
-);
-assert(
-  !telegram.includes('"message.appended"'),
-  "telegram must not copy streamed delivery — that would double-send",
-);
+assert(telegram.includes("telegramOwnsTurn"), "telegram events only accept telegram-stamped turns");
+assert(telegram.includes("createTurnDeliveryEvents"), "telegram delivers through shared events");
 
 const telegramLib = readFileSync(
   new URL("../agent/lib/telegram.ts", import.meta.url),

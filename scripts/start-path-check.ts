@@ -202,6 +202,10 @@ const earlyDeliver = readFileSync(
   new URL("../agent/lib/early-deliver.ts", import.meta.url),
   "utf8",
 );
+const turnDelivery = readFileSync(
+  new URL("../agent/lib/turn-delivery-events.ts", import.meta.url),
+  "utf8",
+);
 assert(imessage.includes("canSkipInboundBind"), "returning users skip no-op bind");
 assert(imessage.includes("prefetchInboundImages"), "photos download during bind/count");
 assert(imessage.includes("voiceP"), "voice STT overlaps bind/count");
@@ -222,14 +226,15 @@ assert(
   "final inbound text warms Instinct after STT",
 );
 assert(imessage.includes("ackIMessageReadAndTyping"), "read+typing is one helper");
-assert(imessage.includes("planStreamFlush"), "first bubble can leave on a streamed newline");
+assert(imessage.includes("createTurnDeliveryEvents"), "first bubble leaves through shared events");
+assert(turnDelivery.includes("planStreamFlush"), "first bubble can leave on a streamed newline");
 assert(
   earlyDeliver.includes("likelyCompleteVisibleText"),
   "stream flush also sends a sentence/emoji-complete open line",
 );
-assert(imessage.includes("planPreToolFlush"), "first bubble can leave when a tool starts");
+assert(turnDelivery.includes("planPreToolFlush"), "first bubble can leave when a tool starts");
 assert(
-  imessage.includes("recordSent"),
+  turnDelivery.includes("recordSent"),
   "delivered bubbles record the turn so tools can skip a second ищу",
 );
 {

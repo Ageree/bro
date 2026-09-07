@@ -18,7 +18,7 @@ export type TurnOrigin = "human" | "wakeup";
 export const ORIGIN_ATTR = "origin";
 
 export function turnOrigin(
-  attributes: Readonly<Record<string, string | readonly string[]>> | undefined,
+  attributes: Readonly<Record<string, unknown>> | null | undefined,
 ): TurnOrigin | undefined {
   const raw = attributes?.[ORIGIN_ATTR];
   const value = Array.isArray(raw) ? raw[0] : raw;

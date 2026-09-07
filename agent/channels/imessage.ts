@@ -21,8 +21,6 @@ import {
   markGroupGreeted,
   markPaywallSent,
   mintTelegramBind,
-  replyTenant,
-  setWakeupLastSeen,
   touchLastChannel,
   upsertTenant,
 } from "../lib/convex";
@@ -41,21 +39,18 @@ import { ingestInboundMail } from "../lib/mail-inbound";
 import {
   connectCardHtml,
   isConnectDest,
-  stripConnectUrls,
 } from "../lib/connect-link";
 import {
   inboundIMessageText,
   inboundIMessageTextWithVoice,
   type InboundWithVoice,
 } from "../lib/imessage-text";
-import { deliverHuman } from "../lib/deliver-human";
 import { parkTurn } from "../lib/channel-turn.ts";
 import { jobCheckWakePrompt } from "../lib/job-wake.ts";
 import {
-  routingFromAuth,
-  routingPhone,
-  routingTenant,
-} from "../lib/turn-routing.ts";
+  createTurnDeliveryEvents,
+  imessageOwnsTurn,
+} from "../lib/turn-delivery-events.ts";
 import { telegramBindLink } from "../../convex/lib/telegramPolicy.ts";
 import { telegramBotUsername } from "../lib/telegram";
 import { transcribeVoiceNote } from "../lib/voice";
@@ -76,21 +71,6 @@ import { inboundGateFromResult } from "../../convex/lib/billingPolicy";
 import { eventPrompt } from "../../convex/lib/watcherPolicy.ts";
 import { syncTenantArchive } from "../lib/archive-sync.ts";
 import {
-  fallbackForFailed,
-  takeFallbackSlot,
-  turnOrigin,
-} from "../lib/silent-turn.ts";
-import {
-  bubblesFor,
-  planPreToolFlush,
-  planStreamFlush,
-  planTurnDelivery,
-  recordSent,
-  rememberSoFar,
-  soFarFor,
-  type EarlySentRow,
-} from "../lib/early-deliver.ts";
-import {
   groupAuthAttributes,
   groupMemoryScope,
   groupParticipantPhones,
@@ -104,61 +84,6 @@ import {
 
 // ponytail: in-memory only — lost on restart, not shared across instances
 const wakeupDelivered = new Map<string, number>();
-const fallbackSent = new Map<string, number>();
-const earlySent = new Map<string, EarlySentRow>();
-
-async function persistSeen(
-  phone: string | undefined,
-  seen: string | undefined,
-): Promise<void> {
-  if (!phone || seen === undefined) return;
-  await setWakeupLastSeen(phone, seen).catch((err) => {
-    console.error("setLastSeen failed", err);
-  });
-}
-
-async function persistSeenFromTurn(
-  conversationId: string,
-  attrs: Record<string, unknown> | undefined,
-  principalId: string | null | undefined,
-  seen: string | undefined,
-): Promise<void> {
-  if (seen === undefined) return;
-  const phone = routingPhone(routingFromAuth(attrs), principalId);
-  if (phone) {
-    await persistSeen(phone, seen);
-    return;
-  }
-  const tenant = await replyTenant(conversationId).catch((err) => {
-    console.error("setLastSeen failed", err);
-    return null;
-  });
-  if (tenant?.phoneE164) await persistSeen(tenant.phoneE164, seen);
-}
-
-async function deliverTurnBubble(opts: {
-  conversationId: string;
-  text: string;
-  attrs?: Record<string, unknown>;
-  principalId?: string | null;
-  seen?: string;
-}): Promise<void> {
-  const routing = routingFromAuth(opts.attrs);
-  const lookedUp = routing.canDeliver
-    ? null
-    : await replyTenant(opts.conversationId);
-  const tenant = lookedUp ?? routingTenant(routing);
-  await deliverHuman({
-    tenant,
-    conversationId: opts.conversationId,
-    text: opts.text,
-    channel: routing.channel,
-  });
-  await persistSeen(
-    routingPhone(routing, opts.principalId) ?? lookedUp?.phoneE164,
-    opts.seen,
-  );
-}
 
 async function sendFirstBindOnboard(opts: {
   conversationId: string;
@@ -886,103 +811,5 @@ export default defineChannel({
       return Response.json({ ok: true });
     }),
   ],
-  events: {
-    async "turn.failed"(event, channel, ctx) {
-      const conversationId = channel.continuation?.token;
-      if (!conversationId) return;
-      console.error("turn failed", { conversationId, code: event.code, message: event.message });
-      const auth = ctx?.session?.auth?.current;
-      const text = fallbackForFailed(turnOrigin(auth?.attributes));
-      if (!text) return;
-      if (!takeFallbackSlot(fallbackSent, event.turnId, Date.now())) return;
-      await deliverTurnBubble({
-        conversationId,
-        text,
-        attrs: auth?.attributes,
-        principalId: auth?.principalId,
-      }).catch((err) =>
-        console.error("turn failed fallback send failed", err),
-      );
-    },
-    async "message.appended"(event, channel, ctx) {
-      const conversationId = channel.continuation?.token;
-      if (!conversationId) return;
-      rememberSoFar(earlySent, event.turnId, event.messageSoFar, Date.now());
-      const planned = planStreamFlush({
-        soFar: event.messageSoFar,
-        alreadySent: bubblesFor(earlySent, event.turnId),
-      });
-      if (!planned.send) return;
-      const auth = ctx?.session?.auth?.current;
-      recordSent(earlySent, event.turnId, planned.send, Date.now());
-      void deliverTurnBubble({
-        conversationId,
-        text: stripConnectUrls(planned.send),
-        attrs: auth?.attributes,
-        principalId: auth?.principalId,
-        seen: planned.seen,
-      }).catch((err) => console.error("streamed bubble send failed", err));
-    },
-    async "actions.requested"(event, channel, ctx) {
-      const conversationId = channel.continuation?.token;
-      if (!conversationId) return;
-      const planned = planPreToolFlush({
-        soFar: soFarFor(earlySent, event.turnId),
-        alreadySent: bubblesFor(earlySent, event.turnId),
-      });
-      if (!planned.send) return;
-      const auth = ctx?.session?.auth?.current;
-      recordSent(earlySent, event.turnId, planned.send, Date.now());
-      void deliverTurnBubble({
-        conversationId,
-        text: stripConnectUrls(planned.send),
-        attrs: auth?.attributes,
-        principalId: auth?.principalId,
-        seen: planned.seen,
-      }).catch((err) => console.error("pre-tool bubble send failed", err));
-    },
-    async "message.completed"(event, channel, ctx) {
-      const conversationId = channel.continuation?.token;
-      if (!conversationId) return;
-      const auth = ctx?.session?.auth?.current;
-      const origin = turnOrigin(auth?.attributes);
-      const planned = planTurnDelivery({
-        finishReason: event.finishReason,
-        message: event.message,
-        origin,
-        alreadySent: bubblesFor(earlySent, event.turnId),
-      });
-      if (planned.send) {
-        recordSent(earlySent, event.turnId, planned.send, Date.now());
-        await deliverTurnBubble({
-          conversationId,
-          text: stripConnectUrls(planned.send),
-          attrs: auth?.attributes,
-          principalId: auth?.principalId,
-          seen: planned.seen,
-        });
-        return;
-      }
-      await persistSeenFromTurn(
-        conversationId,
-        auth?.attributes,
-        auth?.principalId,
-        planned.seen,
-      );
-      if (!planned.fallback) return;
-      if (event.finishReason !== "tool-calls") {
-        console.error("empty turn", {
-          conversationId,
-          finishReason: event.finishReason,
-        });
-      }
-      if (!takeFallbackSlot(fallbackSent, event.turnId, Date.now())) return;
-      await deliverTurnBubble({
-        conversationId,
-        text: planned.fallback,
-        attrs: auth?.attributes,
-        principalId: auth?.principalId,
-      }).catch((err) => console.error("empty turn fallback send failed", err));
-    },
-  },
+  events: createTurnDeliveryEvents({ accept: imessageOwnsTurn }),
 });

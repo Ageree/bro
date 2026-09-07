@@ -17,6 +17,10 @@ import { parkTurn } from "../agent/lib/channel-turn.ts";
 import { TURN_FAILED_REPLY } from "../agent/lib/silent-turn.ts";
 import { routingFromAuth, routingPhone } from "../agent/lib/turn-routing.ts";
 import { channelFromAuth } from "../agent/lib/deliver-routed.ts";
+import {
+  imessageOwnsTurn,
+  telegramOwnsTurn,
+} from "../agent/lib/turn-delivery-events.ts";
 
 function assert(cond: unknown, msg: string): void {
   if (!cond) throw new Error(msg);
@@ -310,15 +314,27 @@ const channel = readFileSync(
   new URL("../agent/channels/imessage.ts", import.meta.url),
   "utf8",
 );
-assert(channel.includes("planTurnDelivery"), "imessage uses early-deliver planner");
-assert(channel.includes("planStreamFlush"), "imessage flushes streamed complete lines");
-assert(channel.includes("planPreToolFlush"), "imessage flushes when the model starts a tool");
-assert(channel.includes('"message.appended"'), "imessage listens for streamed text");
-assert(channel.includes('"actions.requested"'), "imessage listens for the pre-tool boundary");
-assert(channel.includes("void deliverTurnBubble"), "early bubbles do not block the Eve pump");
+const delivery = readFileSync(
+  new URL("../agent/lib/turn-delivery-events.ts", import.meta.url),
+  "utf8",
+);
+const telegramChannel = readFileSync(
+  new URL("../agent/channels/telegram.ts", import.meta.url),
+  "utf8",
+);
+assert(channel.includes("createTurnDeliveryEvents"), "imessage uses shared delivery events");
+assert(channel.includes("imessageOwnsTurn"), "imessage skips telegram-stamped turns");
+assert(telegramChannel.includes("createTurnDeliveryEvents"), "telegram uses shared delivery events");
+assert(telegramChannel.includes("telegramOwnsTurn"), "telegram accepts only telegram-stamped turns");
+assert(delivery.includes("planTurnDelivery"), "shared events use early-deliver planner");
+assert(delivery.includes("planStreamFlush"), "shared events flush streamed complete lines");
+assert(delivery.includes("planPreToolFlush"), "shared events flush when the model starts a tool");
+assert(delivery.includes('"message.appended"'), "shared events listen for streamed text");
+assert(delivery.includes('"actions.requested"'), "shared events listen for the pre-tool boundary");
+assert(delivery.includes("void deliverTurnBubble"), "early bubbles do not block the Eve pump");
 assert(
-  !/if \(event\.finishReason === ["']tool-calls["']\) return;/.test(channel),
-  "imessage no longer drops tool-calls text",
+  !/if \(event\.finishReason === ["']tool-calls["']\) return;/.test(delivery),
+  "shared events no longer drop tool-calls text",
 );
 assert(
   !shouldSkipAgentOnAck(channel),
@@ -379,21 +395,31 @@ assert(
   "wakeup tool notify still uses lastChannel",
 );
 
-assert(channel.includes("routingFromAuth"), "imessage uses auth routing");
-assert(channel.includes("deliverTurnBubble"), "imessage shares delivery helper");
-const bubbleFn = channel.slice(channel.indexOf("async function deliverTurnBubble"));
+assert(telegramOwnsTurn({ origin: "human", channel: "telegram", telegramChatId: "1" }), "telegram stamp");
+assert(!telegramOwnsTurn({ origin: "human" }), "human iMessage is not telegram-owned");
+assert(!telegramOwnsTurn({ origin: "wakeup" }), "wakeup is not telegram-owned");
+assert(imessageOwnsTurn({ origin: "human" }), "human iMessage stays on imessage events");
+assert(imessageOwnsTurn({ origin: "wakeup" }), "wakeup stays on imessage events");
+assert(
+  !imessageOwnsTurn({ origin: "human", channel: "telegram", telegramChatId: "1" }),
+  "imessage events skip telegram-stamped turns",
+);
+
+assert(delivery.includes("routingFromAuth"), "shared events use auth routing");
+assert(delivery.includes("deliverTurnBubble"), "shared events share delivery helper");
+const bubbleFn = delivery.slice(delivery.indexOf("export async function deliverTurnBubble"));
 assert(
   bubbleFn.indexOf("deliverHuman") < bubbleFn.indexOf("persistSeen"),
   "lastSeen waits until after the bubble is sent",
 );
-const appended = channel.slice(channel.indexOf('"message.appended"'));
+const appended = delivery.slice(delivery.indexOf('"message.appended"'));
 assert(
   appended.indexOf("recordSent") < appended.indexOf("void deliverTurnBubble"),
   "appended recordSent before deliver closes the overlap window",
 );
-const preToolEv = channel.slice(
-  channel.indexOf('"actions.requested"'),
-  channel.indexOf('"message.completed"'),
+const preToolEv = delivery.slice(
+  delivery.indexOf('"actions.requested"'),
+  delivery.indexOf('"message.completed"'),
 );
 assert(
   preToolEv.indexOf("recordSent") < preToolEv.indexOf("void deliverTurnBubble"),
@@ -403,14 +429,14 @@ assert(
   !preToolEv.includes("await deliverTurnBubble"),
   "pre-tool send is not awaited",
 );
-const completed = channel.slice(channel.indexOf('"message.completed"'));
+const completed = delivery.slice(delivery.indexOf('"message.completed"'));
 assert(
   completed.indexOf("recordSent") < completed.indexOf("await deliverTurnBubble"),
   "recordSent before deliver closes the overlap window",
 );
 assert(
   !/if \(bubblesFor\(earlySent, event\.turnId\)\.length > 0\) return;/.test(
-    channel,
+    delivery,
   ),
   "turn.failed still speaks after an early bubble",
 );
