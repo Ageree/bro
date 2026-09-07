@@ -2,6 +2,7 @@ import type { ChannelEvents } from "eve/channels";
 import { replyTenant, setWakeupLastSeen } from "./convex";
 import { stripConnectUrls } from "./connect-link";
 import { deliverHuman } from "./deliver-human";
+import { startTelegramTyping, stopTelegramTyping } from "./telegram";
 import {
   fallbackForCompleted,
   fallbackForFailed,
@@ -26,13 +27,27 @@ function originOf(ctx: {
   return turnOrigin(ctx.session?.auth?.current?.attributes);
 }
 
+function telegramChatIdOf(ctx: {
+  session: { auth: { current: { attributes?: Readonly<Record<string, string | readonly string[]>> } | null } };
+}): string | undefined {
+  const raw = ctx.session.auth.current?.attributes?.telegramChatId;
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
 /** Shared outbound for iMessage + Telegram. Eve fires these on the channel
  *  that started the turn — Telegram must declare them or the model replies
  *  into a void. */
 export const humanTurnEvents: ChannelEvents = {
+  async "turn.started"(_event, _channel, ctx) {
+    const chatId = telegramChatIdOf(ctx);
+    if (chatId) startTelegramTyping(chatId);
+  },
   async "turn.failed"(event, channel, ctx) {
     const conversationId = conversationToken(channel);
     if (!conversationId) return;
+    const chatId = telegramChatIdOf(ctx);
+    if (chatId) stopTelegramTyping(chatId);
     console.error("turn failed", {
       conversationId,
       code: event.code,
@@ -75,7 +90,11 @@ export const humanTurnEvents: ChannelEvents = {
         console.error("setLastSeen failed", err);
       });
     }
-    if (!message.trim() || message.trim().startsWith("[SILENT]")) return;
+    if (!message.trim() || message.trim().startsWith("[SILENT]")) {
+      const chatId = telegramChatIdOf(ctx);
+      if (chatId) stopTelegramTyping(chatId);
+      return;
+    }
     await deliverHuman({
       tenant,
       conversationId,

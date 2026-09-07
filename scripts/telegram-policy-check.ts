@@ -141,5 +141,11 @@ const imessageChannel = readFileSync(
   "utf8",
 );
 assert(imessageChannel.includes("receive:"), "imessage accepts telegram turns");
+assert(
+  telegramChannel.includes("startTelegramTyping") &&
+    telegramChannel.includes("waitUntil(turn)") &&
+    !telegramChannel.includes("await turn"),
+  "telegram webhook returns while the model runs",
+);
 
 console.log("telegram-policy-check ok");

@@ -29,8 +29,8 @@ import {
   answerCallback,
   isPrivateChat,
   largestPhoto,
-  sendTelegramChatAction,
   sendTelegramMessage,
+  startTelegramTyping,
   telegramBotUsername,
   telegramFileUrl,
   webhookSecretOk,
@@ -325,10 +325,7 @@ export default defineChannel({
         voice: inbound.voice,
         images: typeof content === "string" ? 0 : content.length - 1,
       });
-      await sendTelegramChatAction({ chatId }).catch((err) =>
-        console.error("telegram typing failed", err),
-      );
-
+      const stopTyping = startTelegramTyping(chatId);
       const turn = (async () => {
         try {
           await to(imessage, { conversationId }).send(content, {
@@ -351,10 +348,11 @@ export default defineChannel({
           await sendHtml(chatId, TURN_FAILED_REPLY).catch((sendErr) =>
             console.error("telegram turn fallback failed", sendErr),
           );
+        } finally {
+          stopTyping();
         }
       })();
-      if (typeof waitUntil === "function") waitUntil(turn);
-      await turn;
+      waitUntil(turn);
       return new Response(null, { status: 204 });
     }),
   ],
