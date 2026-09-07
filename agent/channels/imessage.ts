@@ -28,6 +28,7 @@ import {
 } from "../lib/convex";
 import { prefetchInstinctRecall } from "../lib/instinct-recall.ts";
 import { prefetchOpenRouter } from "../lib/openrouter-warm.ts";
+import { shortAckAttribute } from "../lib/short-ack.ts";
 import {
   broVcard,
   helpText,
@@ -664,6 +665,7 @@ export default defineChannel({
                   inkboxHandle: identityHandle,
                   messageId: msg.id,
                   origin: "human",
+                  ...shortAckAttribute(inbound.text),
                 },
           },
         }),

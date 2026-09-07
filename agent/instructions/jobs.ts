@@ -1,5 +1,4 @@
 import { defineDynamic, defineInstructions } from "eve/instructions";
-import { recallQuery } from "../lib/archive-policy.ts";
 import { isGroupTurn, turnAttributes } from "../lib/group-guard";
 import { jobWakeRows, markNudged } from "../lib/convex";
 import {
@@ -10,7 +9,7 @@ import {
   jobNudgeInstruction,
   jobWakeInstruction,
 } from "../lib/job-wake.ts";
-import { isShortAck, shortAckInstruction } from "../lib/short-ack.ts";
+import { isShortAckTurn, shortAckInstruction } from "../lib/short-ack.ts";
 import { tenantId } from "../lib/tenant";
 
 export default defineDynamic({
@@ -40,9 +39,8 @@ export default defineDynamic({
             ),
           );
         }
-        const latest = recallQuery(ctx.messages);
         const ack =
-          !jobCheck && latest && isShortAck(latest)
+          !jobCheck && isShortAckTurn(attrs)
             ? shortAckInstruction({
                 waitingForHuman: rows.some((row) => row.waitingFor === "human"),
               })

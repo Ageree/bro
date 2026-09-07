@@ -46,6 +46,17 @@ assert(
   existsSync(new URL("../agent/lib/short-ack.ts", import.meta.url)),
   "short acks steer the model, they do not skip the agent",
 );
+{
+  const jobs = readFileSync(
+    new URL("../agent/instructions/jobs.ts", import.meta.url),
+    "utf8",
+  );
+  assert(jobs.includes("isShortAckTurn"), "ack steer keys off this-turn stamp");
+  assert(
+    !jobs.includes("recallQuery(ctx.messages)"),
+    "ack steer must not read Eve instruction history",
+  );
+}
 
 const imessage = readFileSync(
   new URL("../agent/channels/imessage.ts", import.meta.url),

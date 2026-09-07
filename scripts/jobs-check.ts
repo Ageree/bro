@@ -422,8 +422,12 @@ assert(jobsSrc.includes("isJobCheckWakeup"), "nudge only on job_check wakeups");
 assert(jobsSrc.includes("jobNudgeInstruction"), "nudge copy lives on turn.started");
 assert(jobsSrc.includes("jobCheckPayload"), "nudge scoped to stamped payload");
 assert(jobsSrc.includes("jobCheckQuietInstruction"), "non-due job_check gets SILENT from instructions");
-assert(jobsSrc.includes("isShortAck"), "human short acks get a steer on turn.started");
+assert(jobsSrc.includes("isShortAckTurn"), "human short acks get a steer on turn.started");
 assert(jobsSrc.includes("shortAckInstruction"), "ack steer is not a skipped agent turn");
+assert(
+  !jobsSrc.includes("recallQuery(ctx.messages)"),
+  "ack steer does not use Eve instruction history",
+);
 
 const imessage = readFileSync(
   new URL("../agent/channels/imessage.ts", import.meta.url),

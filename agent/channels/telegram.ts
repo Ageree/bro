@@ -44,6 +44,7 @@ import {
 } from "../lib/telegram";
 import { compileTelegram } from "../lib/telegram-text.ts";
 import { parkTurn } from "../lib/channel-turn.ts";
+import { shortAckAttribute } from "../lib/short-ack.ts";
 
 function telegramAuthAttrs(opts: {
   conversationId: string;
@@ -51,6 +52,7 @@ function telegramAuthAttrs(opts: {
   telegramUserId: string;
   messageId: string;
   inkboxHandle?: string;
+  text?: string;
 }): Record<string, string> {
   return {
     conversationId: opts.conversationId,
@@ -60,6 +62,7 @@ function telegramAuthAttrs(opts: {
     origin: "human",
     channel: "telegram",
     ...(opts.inkboxHandle ? { inkboxHandle: opts.inkboxHandle } : {}),
+    ...shortAckAttribute(opts.text ?? ""),
   };
 }
 
@@ -190,6 +193,7 @@ export default defineChannel({
                 telegramUserId: userId,
                 messageId: String(msg.message_id),
                 inkboxHandle: tenant.inkboxHandle,
+                text: `[button] ${data}`,
               }),
             },
           }),
@@ -356,6 +360,7 @@ export default defineChannel({
               telegramUserId: userId,
               messageId: String(msg.message_id),
               inkboxHandle: tenant.inkboxHandle,
+              text: inbound.text,
             }),
           },
         }),

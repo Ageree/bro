@@ -19,7 +19,12 @@ import {
 } from "../agent/lib/instinct-recall.ts";
 import { openRouterStreamProgress } from "../agent/lib/openrouter-stream.ts";
 import { canPrefetchOpenRouter } from "../agent/lib/openrouter-warm.ts";
-import { isShortAck, shortAckInstruction } from "../agent/lib/short-ack.ts";
+import {
+  isShortAck,
+  isShortAckTurn,
+  shortAckAttribute,
+  shortAckInstruction,
+} from "../agent/lib/short-ack.ts";
 
 function assert(cond: unknown, msg: string): void {
   if (!cond) throw new Error(msg);
@@ -51,9 +56,17 @@ assert(jobs.includes("jobWakeRows"), "jobs read the same snapshot");
 assert(jobs.includes("isJobCheckWakeup"), "job_check nudge is not on the HTTP path");
 assert(jobs.includes("Promise.all"), "due markNudged calls run in parallel");
 assert(jobs.includes("jobCheckQuietInstruction"), "non-due job_check may stay silent");
-assert(jobs.includes("isShortAck"), "short acks get a no-new-tools steer");
+assert(jobs.includes("isShortAckTurn"), "short acks get a no-new-tools steer");
 assert(jobs.includes("shortAckInstruction"), "short-ack instruction stays on turn.started");
 assert(jobs.includes("waitingForHuman"), "ack that confirms a waiting job still allows tools");
+assert(
+  !jobs.includes("recallQuery(ctx.messages)"),
+  "ack steer does not key off Eve history — that omits this turn",
+);
+assert(
+  !jobs.includes("isShortAck(latest)"),
+  "ack steer uses the stamped inbound flag, not the last history line",
+);
 
 const archive = readFileSync(new URL("../agent/memory/archive.ts", import.meta.url), "utf8");
 assert(archive.includes("shouldRecallArchive"), "archive recall is gated");
@@ -108,6 +121,30 @@ assert(
   shortAckInstruction({ waitingForHuman: false }).includes("browser_task"),
   "idle ack forbids a new browser loop",
 );
+assert(
+  shortAckAttribute("ок").shortAck === "1",
+  "channel stamps shortAck on this inbound ок",
+);
+assert(
+  Object.keys(shortAckAttribute("купи кроссовки")).length === 0,
+  "errands do not stamp shortAck",
+);
+assert(
+  isShortAckTurn({ origin: "human", shortAck: "1" }),
+  "stamped human ack is a short-ack turn",
+);
+assert(
+  !isShortAckTurn({ origin: "human" }),
+  "human errand without the stamp is not a short-ack turn",
+);
+assert(
+  !isShortAckTurn({ origin: "wakeup", shortAck: "1" }),
+  "wakeups never inherit a short-ack steer",
+);
+assert(
+  !isShortAckTurn({ origin: "human", leftover: "ок" }),
+  "leftover history text without the stamp is not a short-ack turn",
+);
 assert(canPrefetchOpenRouter("sk-test"), "OpenRouter warm runs when a key is set");
 assert(!canPrefetchOpenRouter(""), "OpenRouter warm skips without a key");
 assert(
@@ -153,6 +190,7 @@ assert(imessage.includes("imageUrlParts"), "photos do not tail-wait after bind")
 assert(imessage.includes("getTenantByHandle"), "HMAC still loads the handle tenant");
 assert(imessage.includes("loadWakeContext"), "1:1 billing prefetches wake context");
 assert(imessage.includes("prefetchInstinctRecall"), "1:1 billing prefetches Instinct searches");
+assert(imessage.includes("shortAckAttribute(inbound.text)"), "1:1 inbound stamps this-turn ack");
 assert(imessage.includes("prefetchOpenRouter"), "1:1 billing warms OpenRouter");
 assert(
   imessage.includes("prefetchInstinctRecall(ownerPhone, inbound.text)"),
@@ -182,6 +220,7 @@ assert(inkbox.includes("inkboxIdentity"), "Inkbox identity is cached");
 
 const telegram = readFileSync(new URL("../agent/channels/telegram.ts", import.meta.url), "utf8");
 assert(telegram.includes("prefetchOpenRouter"), "telegram billing warms OpenRouter");
+assert(telegram.includes("shortAckAttribute(opts.text"), "telegram stamps this-turn ack");
 assert(telegram.includes("inboundP"), "telegram STT overlaps photo fetch");
 assert(telegram.includes("photoP"), "telegram photo overlaps billing");
 assert(

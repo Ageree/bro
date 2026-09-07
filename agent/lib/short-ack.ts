@@ -1,5 +1,10 @@
 /** Fast path for short human acks. The agent still runs (archive + jobs).
- *  This only steers the model off a new tool loop when nothing is waiting. */
+ *  This only steers the model off a new tool loop when nothing is waiting.
+ *
+ *  Eve's instruction snapshot is history-only (`prepareDynamicInstructionPreamble`
+ *  gets `session.history`, not this turn's input). Never key the steer off
+ *  `ctx.messages` — a previous «ок» would then forbid tools on «купи кроссовки».
+ *  Channels stamp `shortAck` on the inbound auth attributes instead. */
 
 import { foldAsk } from "./onboard-policy.ts";
 
@@ -21,10 +26,27 @@ const SHORT_ACK = new Set([
   "принято",
 ]);
 
+export const SHORT_ACK_ATTR = "shortAck";
+export const SHORT_ACK_VALUE = "1";
+
 export function isShortAck(text: string): boolean {
   const folded = foldAsk(text);
   if (!folded) return false;
   return SHORT_ACK.has(folded);
+}
+
+/** Auth attrs to merge onto a 1:1 human `from().send`. Empty when not an ack. */
+export function shortAckAttribute(text: string): Record<string, string> {
+  return isShortAck(text) ? { [SHORT_ACK_ATTR]: SHORT_ACK_VALUE } : {};
+}
+
+/** True only for a human turn the channel stamped as this inbound ack. */
+export function isShortAckTurn(
+  attrs: Record<string, unknown> | undefined,
+): boolean {
+  if (!attrs || attrs.origin !== "human") return false;
+  const flag = attrs[SHORT_ACK_ATTR];
+  return flag === SHORT_ACK_VALUE || flag === true;
 }
 
 export function shortAckInstruction(opts: {
