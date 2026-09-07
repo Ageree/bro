@@ -57,10 +57,6 @@ export async function ingestArchiveDocument(
   });
 }
 
-/**
- * Instinct/tool search — v4 hybrid in the archive container. Ingest/forget
- * stay on v3 documents; v4 is the low-latency recall path.
- */
 export async function searchArchive(
   phone: string,
   query: string,

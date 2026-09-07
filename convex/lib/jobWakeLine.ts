@@ -1,4 +1,3 @@
-/** Display line for an open/waiting job on `turn.started`. Epochs stay on the structured row. */
 export function formatJobWakeLine(j: {
   _id: string;
   goal: string;

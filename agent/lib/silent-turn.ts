@@ -26,7 +26,6 @@ export function turnOrigin(
   return undefined;
 }
 
-/** Deliberate quiet after a tapback (`imessage_react` / `telegram_react`). */
 export function isSilentReply(text: string | null | undefined): boolean {
   return typeof text === "string" && text.trim().startsWith("[SILENT]");
 }

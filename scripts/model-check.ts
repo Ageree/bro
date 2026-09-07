@@ -9,7 +9,6 @@ function assert(cond: unknown, msg: string): void {
   if (!cond) throw new Error(msg);
 }
 
-// parseMaxOutputTokens: env override or default fallback
 assert(
   parseMaxOutputTokens(undefined) === DEFAULT_MAX_OUTPUT_TOKENS,
   "undefined falls back to default",
@@ -20,7 +19,6 @@ assert(parseMaxOutputTokens("0") === DEFAULT_MAX_OUTPUT_TOKENS, "zero falls back
 assert(parseMaxOutputTokens("-5") === DEFAULT_MAX_OUTPUT_TOKENS, "negative falls back to default");
 assert(parseMaxOutputTokens("4096") === 4096, "valid positive integer is used as-is");
 
-// outputCapMiddleware: only fills maxOutputTokens when the caller left it unset
 const middleware = outputCapMiddleware(4096);
 const capped = await middleware.transformParams!({
   type: "generate",
@@ -36,7 +34,6 @@ const uncapped = await middleware.transformParams!({
 });
 assert(uncapped.maxOutputTokens === 100, "explicit maxOutputTokens is left unchanged");
 
-// broModel(): OpenRouter branch is wrapped but still exposes a runtime language model
 process.env.OPENROUTER_API_KEY = "test";
 const { broModel } = await import("../agent/lib/model.ts");
 const result = broModel();

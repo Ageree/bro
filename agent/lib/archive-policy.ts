@@ -108,7 +108,6 @@ export function eventToDocument(raw: unknown): ArchiveDocument | null {
 
 const QUERY_CHARS = 300;
 
-/** Background wakeups that need mail/calendar copies in context. */
 const WAKEUP_ARCHIVE_HINT =
   /утренний бриф|фоновая проверка|событие пришло|почт|календар|gmail|calendar|письм|встреч|код|otp|inbox/i;
 
@@ -136,16 +135,10 @@ export function recallQuery(input: readonly unknown[]): string | null {
   return null;
 }
 
-/** Instinct auto-recall on `turn.started`. Tools keep the 30s client timeout. */
 export const ARCHIVE_RECALL_TIMEOUT_MS = 1_500;
 export const ARCHIVE_TOOL_TIMEOUT_MS = 30_000;
-/** Conversation auto-recall must not outrun archive on `turn.started`. */
 export const CONVERSATION_RECALL_TIMEOUT_MS = ARCHIVE_RECALL_TIMEOUT_MS;
 
-/**
- * Skip the Supermemory archive search on cheap chat. That HTTP round-trip
- * sits on `turn.started` and delays the first model token.
- */
 export function shouldRecallArchive(query: string): boolean {
   const text = query.trim();
   if (!text) return false;
@@ -153,16 +146,9 @@ export function shouldRecallArchive(query: string): boolean {
   if (text.startsWith("[background wakeup]")) {
     return WAKEUP_ARCHIVE_HINT.test(text);
   }
-  // Every human message keeps archive recall. Skipping here would hide
-  // mail/calendar facts on a turn that only "looks" like small talk.
   return true;
 }
 
-/**
- * Conversation auto-recall. Empty text is still a human turn (captionless
- * photo). Wakeups always carry a `[background wakeup]` prompt, so they
- * still hit `shouldRecallArchive`.
- */
 export function shouldRecallConversation(query: string | null): boolean {
   if (!query?.trim()) return true;
   return shouldRecallArchive(query);
@@ -182,7 +168,6 @@ export interface ArchiveHit {
   date?: string;
 }
 
-/** Visible chars per Instinct/tool hit. Shared by the v4 mapper. */
 export const ARCHIVE_HIT_CHARS = 600;
 
 function hitText(raw: Record<string, unknown>): string {
@@ -206,11 +191,6 @@ function hitMeta(raw: Record<string, unknown>): { app: string; date?: string; ti
   return { title, app, ...(date ? { date } : {}) };
 }
 
-/**
- * Map Supermemory search JSON (v4 hybrid or leftover v3 chunks) to archive
- * hits. Empty/missing content is dropped; title/app/date fall back through
- * result metadata and `include.documents`.
- */
 export function archiveHitsFromSearch(
   raw: unknown,
   hitChars = ARCHIVE_HIT_CHARS,

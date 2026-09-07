@@ -214,10 +214,6 @@ assert(
 assert(channel.includes("tagGroupUserContent"), "channel tags group text");
 assert(channel.includes("groupAuthAttributes"), "channel group auth");
 assert(channel.includes("replyTenant"), "outbound uses group owner");
-assert(
-  channel.includes("Group billing runs only after the mention gate"),
-  "group billing comment",
-);
 const mentionAt = channel.indexOf("group && !shouldReplyInGroup(inbound.text)");
 const firstGate = channel.indexOf("inboundOwnerGate(ownerPhone)");
 const secondGate = channel.indexOf("inboundOwnerGate(ownerPhone)", firstGate + 1);

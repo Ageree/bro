@@ -437,10 +437,6 @@ export default defineChannel({
       const identityHandle = handle ?? agentHandle();
       const participants = group ? groupParticipantPhones(msg) : [];
       const preview = inboundIMessageText(msg);
-      // 1:1: hide bind behind warm, typing, wake, and Instinct. Billing
-      // starts before bind only when this handle already owns `remote`
-      // (conversation-id change). First-bind still bills after bind.
-      // Groups must not mark-read or type (side chatter).
       if (!group && preview) {
         prefetchOneToOneStart(remote, preview, voiceP);
         if (msg.conversation_id) {
@@ -609,8 +605,6 @@ export default defineChannel({
       if (group && !shouldReplyInGroup(inbound.text)) {
         return new Response(null, { status: 204 });
       }
-      // Group billing runs only after the mention gate so side chatter
-      // cannot burn the owner's daily quota or paywall the group.
       if (group) {
         const gateP = inboundOwnerGate(ownerPhone);
         const groupScope = groupMemoryScope(msg.conversation_id);

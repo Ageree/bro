@@ -85,12 +85,6 @@ export async function fetchImagePart(
   }
 }
 
-/** Recursively true only for plain-JSON-serialisable values: null, boolean,
- *  string, finite number, plain arrays, and plain objects (prototype is
- *  `Object.prototype` or `null`). Everything else — `Uint8Array`, `URL`,
- *  `Date`, `Map`, `NaN`, `undefined`, class instances — is false. Used by
- *  the check script to pin `assembleInboundContent`'s output shape; not called
- *  at runtime in the channel. */
 export function isPlainJson(value: unknown): boolean {
   if (value === null) return true;
   const t = typeof value;

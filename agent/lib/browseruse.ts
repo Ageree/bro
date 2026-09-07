@@ -242,7 +242,6 @@ export async function hydrate(
   const status = pick(run, ["status"]) ?? "unknown";
   const runLive =
     pick(run, ["liveUrl", "live_url"]);
-  // Session GET only when the run is done or the run payload has no live URL.
   const session: Record<string, unknown> =
     sessionId && (isTerminal(status) || !runLive)
       ? await bu(`/sessions/${sessionId}`).catch(() => ({}))
@@ -271,7 +270,6 @@ export async function waitForRun(
   ms = 12_000,
 ): Promise<BrowserRun> {
   const start = Date.now();
-  // startRun already hydrated; status-only until terminal or the wait ends.
   let last: BrowserRun = { runId, sessionId, status: "unknown" };
   while (Date.now() - start < ms) {
     const cheap = await bu(`/runs/${runId}/status`).catch(() => ({}));

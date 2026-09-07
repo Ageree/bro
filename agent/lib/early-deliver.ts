@@ -1,10 +1,3 @@
-/** Deliver assistant text as soon as a model step has something to show.
- *
- *  Eve fires `message.completed` after every step, including ones that then
- *  call tools. The channel used to drop those, so a human waited for the
- *  whole tool loop (browser poll, composio, …) before the first bubble.
- */
-
 import { splitSeen } from "./wakeup-text.ts";
 import type { TurnOrigin } from "./silent-turn.ts";
 import { isSilentReply, TURN_FAILED_REPLY } from "./silent-turn.ts";
@@ -15,7 +8,6 @@ export type TurnDelivery = {
   fallback: string | null;
 };
 
-/** Text the human may see. Empty / [SILENT] never leave the channel. */
 export function visibleReply(text: string | null | undefined): string | null {
   if (typeof text !== "string") return null;
   const trimmed = text.trim();
@@ -37,7 +29,6 @@ function hasPrefixBoundary(cur: string, prefix: string): boolean {
   return /[\s.!?…。！？,;:)\]]/.test(next);
 }
 
-/** Finished visible lines (newline-terminated). Leading `\nИ` crumbs stay. */
 export function finishedVisibleText(soFar: string): string | null {
   const raw = typeof soFar === "string" ? soFar : "";
   const { message } = raw ? splitSeen(raw) : { message: raw };
@@ -56,7 +47,6 @@ export function finishedVisibleText(soFar: string): string | null {
   return lines.length > 0 ? lines.join("\n") : null;
 }
 
-/** First visible line terminated by a newline. */
 export function firstCompleteLine(soFar: string): string | null {
   const text = finishedVisibleText(soFar);
   return text?.split("\n")[0]?.trim() || null;
@@ -143,7 +133,6 @@ const ACK_TAILS = new Set([
   "ага",
 ]);
 
-/** Finished line, or an unterminated line that already looks like a full bubble. */
 export function isLikelyCompleteBubble(text: string): boolean {
   const t = text.trim();
   if (!t || !visibleReply(t)) return false;
@@ -171,7 +160,6 @@ export function isLikelyCompleteBubble(text: string): boolean {
   return lastWord.length >= 4;
 }
 
-/** Earliest finished sentence in an open line (`Ок.` inside `Ок. Сейчас…`). */
 export function firstLikelyCompletePrefix(text: string): string | null {
   const t = text.trim();
   if (!t) return null;
@@ -204,7 +192,6 @@ function openVisibleLine(soFar: string): string | null {
   return visibleReply(open);
 }
 
-/** Newline-finished lines plus a sentence/emoji-complete open line. */
 export function likelyCompleteVisibleText(soFar: string): string | null {
   const finished = finishedVisibleText(soFar);
   const open = openVisibleLine(soFar);
@@ -215,11 +202,6 @@ export function likelyCompleteVisibleText(soFar: string): string | null {
   return finished;
 }
 
-/**
- * Streamed iMessage bubble from `message.appended`.
- * Newline-finished lines, or a sentence/emoji-complete open line.
- * Later complete text is the remainder after alreadySent.
- */
 export function planStreamFlush(input: {
   soFar: string;
   alreadySent: readonly string[];
@@ -234,17 +216,6 @@ export function planStreamFlush(input: {
   };
 }
 
-/** @deprecated use planStreamFlush */
-export function planFirstLineFlush(input: {
-  soFar: string;
-  alreadySent: readonly string[];
-}): Pick<TurnDelivery, "send" | "seen"> {
-  return planStreamFlush(input);
-}
-
-/**
- * Pre-tool text is done even without a newline. Used on `actions.requested`.
- */
 export function planPreToolFlush(input: {
   soFar: string;
   alreadySent: readonly string[];
@@ -259,10 +230,6 @@ export function planPreToolFlush(input: {
   };
 }
 
-/**
- * Next bubble given text already sent this turn.
- * Handles both per-step messages and accumulated ones.
- */
 export function nextBubble(
   alreadySent: readonly string[],
   current: string,
@@ -343,7 +310,6 @@ export function planTurnDelivery(input: {
   };
 }
 
-/** In-memory per-turn sent bubbles. Same lifetime as wakeup/fallback maps. */
 function pruneSent(
   sent: Map<string, EarlySentRow>,
   now: number,

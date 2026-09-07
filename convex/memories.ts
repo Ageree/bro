@@ -27,7 +27,6 @@ const jobWakeRow = v.object({
   lastNudgeAt: v.optional(v.number()),
 });
 
-/** One turn-start snapshot: memo lines + open jobs. Avoids two Convex RTTs. */
 export const wakeContext = query({
   args: { secret: v.string(), phoneE164: v.string() },
   returns: v.object({

@@ -1,4 +1,3 @@
-/** Pins the turn.started critical path so serial Convex/HTTP does not creep back. */
 import { readFileSync } from "node:fs";
 import { canSkipInboundBind } from "../agent/lib/inbound-bind.ts";
 import { CONVERSATION_RECALL_TIMEOUT_MS } from "../agent/lib/archive-policy.ts";

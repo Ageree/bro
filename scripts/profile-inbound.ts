@@ -1,4 +1,3 @@
-/** Local start-path profile: HTTP timing without iMessage. */
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -93,7 +92,6 @@ function broToolSchemas(): Array<{
   }));
 }
 
-/** Production-shaped JSON for the tools-on TTFB probe. Eve defaults stay off. */
 function broToolParameters(name: string): Record<string, unknown> {
   if (name === "browser_task") {
     return {
@@ -149,7 +147,6 @@ function broToolParameters(name: string): Record<string, unknown> {
   };
 }
 
-/** Scan OpenRouter chat SSE enough to time first reasoning vs first visible token. */
 function openRouterStreamProgress(buf: string) {
   let reasoning = false;
   let content = false;
@@ -197,7 +194,6 @@ async function timed<T>(
   }
 }
 
-/** Empty throwaway person — measures HTTP RTT, not a real tenant's data. */
 async function measureInstinctHttp(): Promise<Record<string, unknown>> {
   if (!process.env.SUPERMEMORY_API_KEY?.trim()) {
     return { skipped: true, reason: "SUPERMEMORY_API_KEY missing" };
@@ -245,7 +241,6 @@ async function measureInstinctHttp(): Promise<Record<string, unknown>> {
   };
 }
 
-/** Previous Instinct archive path — documents /v3/search. Profile-only. */
 async function searchArchiveV3Documents(phone: string, query: string): Promise<void> {
   const key = process.env.SUPERMEMORY_API_KEY?.trim();
   if (!key) throw new Error("SUPERMEMORY_API_KEY missing");
@@ -269,7 +264,6 @@ async function searchArchiveV3Documents(phone: string, query: string): Promise<v
   await res.json();
 }
 
-/** Stream TTFB against the live Bro model. No Eve tools, no Inkbox send. */
 async function measureOpenRouterTtfb(): Promise<Record<string, unknown>> {
   if (!canPrefetchOpenRouter()) {
     return { skipped: true, reason: "OPENROUTER_API_KEY missing" };

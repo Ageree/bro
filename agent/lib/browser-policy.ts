@@ -61,9 +61,6 @@ export function nextBrowserAction(opts: {
   return "start";
 }
 
-/** In-turn wait after start or poll. Notify already went out; follow-through
- *  watches the run, so this only buys a cheap in-turn complete. "ну что" polls
- *  should not park the model for 12s. */
 export const BROWSER_WAIT_MS = 2_000;
 
 const POLL_GIVE_UP_MS = 30 * 60_000;

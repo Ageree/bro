@@ -7,7 +7,6 @@ import {
   nextBubble,
   turnLooking,
   turnSpoke,
-  planFirstLineFlush,
   planPreToolFlush,
   planStreamFlush,
   planTurnDelivery,
@@ -44,13 +43,13 @@ assert(
   "seen does not block a complete first line",
 );
 
-const streamFirst = planFirstLineFlush({ soFar: "Ищу 🔎\n", alreadySent: [] });
+const streamFirst = planStreamFlush({ soFar: "Ищу 🔎\n", alreadySent: [] });
 assert(streamFirst.send === "Ищу 🔎", "appended flushes the first complete line");
 
-const streamPartial = planFirstLineFlush({ soFar: "Ищ", alreadySent: [] });
+const streamPartial = planStreamFlush({ soFar: "Ищ", alreadySent: [] });
 assert(streamPartial.send === null, "appended does not send a token crumb");
 
-const streamAfter = planFirstLineFlush({
+const streamAfter = planStreamFlush({
   soFar: "Ищу 🔎\n\nНашёл три варианта",
   alreadySent: ["Ищу 🔎"],
 });

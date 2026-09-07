@@ -1,12 +1,3 @@
-/** Route the first bubble from auth attrs so delivery does not wait on Convex.
- *
- *  Telegram human turns already stamp `channel` + `telegramChatId`. iMessage
- *  human turns (including groups) just spoke on this conversation. Wakeups
- *  omit that stamp — `lastChannel` lives on the tenant, so those still look
- *  it up. Awaiting that lookup on every turn races `touchLastChannel` and
- *  can send a Telegram person's first bubble to iMessage.
- */
-
 import type { HumanChannel } from "../../convex/lib/telegramPolicy.ts";
 
 export type AuthAttrs = Readonly<Record<string, unknown>> | null | undefined;
@@ -16,7 +7,6 @@ export type TurnRouting = {
   telegramChatId?: string;
   inkboxHandle?: string;
   ownerPhone?: string;
-  /** Attrs already have enough to send. Wakeups stay false. */
   canDeliver: boolean;
 };
 
@@ -73,7 +63,6 @@ export function routingTenant(routing: TurnRouting): {
   };
 }
 
-/** Phone for `[SEEN]` / tenant writes: principal, then group owner. */
 export function routingPhone(
   routing: TurnRouting,
   principalId?: string | null,

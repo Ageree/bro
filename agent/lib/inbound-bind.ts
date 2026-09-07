@@ -1,5 +1,3 @@
-/** Returning 1:1 users already have phone + conversation on the handle tenant. */
-
 export function canSkipInboundBind(
   tenant:
     | {

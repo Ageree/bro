@@ -44,7 +44,6 @@ export type WakeContext = {
 const wakeInflight = new Map<string, Promise<WakeContext>>();
 const wakeCache = new Map<string, { at: number; value: WakeContext }>();
 
-/** Same-turn reuse: webhook prefetch + memo, then jobs after Instinct searches. */
 export const WAKE_CONTEXT_TTL_MS = 8_000;
 
 function rememberWake(phoneE164: string, value: WakeContext): void {
@@ -55,7 +54,6 @@ function forgetWake(phoneE164: string): void {
   wakeCache.delete(phoneE164);
 }
 
-/** One Convex snapshot for memo + jobs. Coalesces parallel and sequential turn.started callers. */
 export async function loadWakeContext(phoneE164: string): Promise<WakeContext> {
   const cached = wakeCache.get(phoneE164);
   if (cached && Date.now() - cached.at < WAKE_CONTEXT_TTL_MS) return cached.value;
@@ -165,7 +163,6 @@ function rememberTelegramTenant(
   telegramTenants.set(telegramUserId.trim(), tenant);
 }
 
-/** HMAC + skip-bind for returning 1:1. Process cache, same-turn coalesce. */
 export async function getTenantByHandle(
   handle: string,
   opts?: { fresh?: boolean },

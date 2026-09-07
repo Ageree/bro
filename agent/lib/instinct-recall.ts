@@ -1,11 +1,3 @@
-/**
- * One in-flight Instinct pair (conversation + archive). Eve already
- * Promise.all's memory slots; this starts both HTTP searches together and
- * lets the webhook hide them behind billing + session start.
- *
- * Conversation Supermemory lives under `eve_agent_<MemoryScope.key>`.
- * Archive lives under `bro_archive_<scope.value>`. The pair is keyed by both.
- */
 import { searchArchive } from "./archive.ts";
 import {
   ARCHIVE_RECALL_TIMEOUT_MS,
@@ -54,7 +46,6 @@ export function instinctScopesForPerson(scopeValue: string): InstinctScopes {
   };
 }
 
-/** Skip placeholders that will not be the turn query after STT. */
 export function canPrefetchInstinctQuery(query: string): boolean {
   const q = recallText(query);
   if (!q || !shouldRecallArchive(q)) return false;
@@ -80,7 +71,6 @@ function settledHalf(
   return null;
 }
 
-/** Parallel conversation + archive search. Same-turn cache keyed by both scopes + query. */
 export async function loadInstinctRecall(
   scopes: InstinctScopes,
   query: string,
@@ -116,8 +106,6 @@ export async function loadInstinctRecall(
         conversation: settledHalf(conversation, "conversation"),
         archive: settledHalf(archive, "archive"),
       };
-      // Timeouts/errors are not empty hits — leave the slot uncached so
-      // turn.started can search again.
       if (conversation.status === "fulfilled" && archive.status === "fulfilled") {
         instinctCache.set(key, value);
       }

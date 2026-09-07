@@ -9,7 +9,6 @@ const DONE = new Set([
 
 export const POLL_INTERVAL_MS = 2 * 60_000;
 export const POLL_GIVE_UP_MS = 20 * 60_000;
-/** First re-sleep after the immediate poll. Catches 5–30s jobs. */
 export const FOLLOW_FIRST_SLEEP_MS = 20_000;
 
 export function followSleepMs(pollIndex: number): number {

@@ -20,10 +20,6 @@ import { resolveMemoryScope, resolveRecallBackend, scopePhone } from "../lib/mem
  *
  * Without SUPERMEMORY_API_KEY the scope resolves to null, which disables this
  * slot entirely; the curated `memo` slot keeps working on Convex alone.
- *
- * `turn.started` is one abortable search (same 1.5s Instinct budget as archive),
- * not the plugin's profile + documents.list + memories/list dump.
- * Compaction still uses the full plugin recall. Tools stay mounted either way.
  */
 const inner = supermemory({
   apiKey: () => {

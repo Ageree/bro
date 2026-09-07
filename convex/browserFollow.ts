@@ -53,8 +53,6 @@ export const followThrough = workflow.define({
 }> => {
   const cap = maxPollRounds() + 2;
   for (let i = 0; i < cap; i++) {
-    // Poll first, then a short first sleep so a 20s run is heard
-    // around T+20s, not T+2min. Later sleeps stay at 2min; give-up is 20min.
     const poll = await step.runAction(
       internal.browserFollow.pollRun,
       {

@@ -24,7 +24,6 @@ function digest(prefix: string, input: Buffer): string {
   return `${prefix}${createHash("sha256").update(input).digest("base64url")}`;
 }
 
-/** Same `scope.key` Eve gives the conversation recall slot for this person. */
 export function eveMemoryScopeKey(namespace: string, scopeValue: string): string {
   if (!namespace.trim() || !scopeValue.trim()) {
     throw new Error("namespace and scopeValue must be non-empty");

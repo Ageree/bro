@@ -1,6 +1,3 @@
-/** Warm the OpenRouter TLS/HTTP session during billing so the first
- *  model token does not pay a cold handshake after parkTurn. */
-
 import { readFileSync } from "node:fs";
 import { withOpenRouterChatDefaults } from "./openrouter-chat.ts";
 
@@ -28,11 +25,6 @@ function warmAuth(key: string): Promise<void> {
   }).then(() => undefined);
 }
 
-/**
- * 1-token stream with the same static system prompt as a real turn.
- * Do not import model.ts (cycle). Tools stay off — this is a route/prefix
- * warm, not a tools-on completion.
- */
 export function warmOpenRouterChat(key: string): Promise<void> {
   const model = process.env.BRO_MODEL?.trim() || "z-ai/glm-5.3-flash";
   return fetch(OPENROUTER_CHAT_URL, {
@@ -58,7 +50,6 @@ export function warmOpenRouterChat(key: string): Promise<void> {
   });
 }
 
-/** Fire-and-forget /auth/key + a 1-token chat. Later chat calls reuse the socket. */
 export function prefetchOpenRouter(): void {
   if (!canPrefetchOpenRouter()) return;
   if (warmInflight) return;

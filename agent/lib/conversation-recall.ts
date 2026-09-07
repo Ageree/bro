@@ -1,10 +1,3 @@
-/**
- * Fast conversation auto-recall: one abortable Supermemory search in the
- * same container the @supermemory/eve tools use (`eve_agent_<scope.key>`).
- * Profile + documents.list stay off `turn.started` — they are 3×30s HTTP
- * and a huge XML dump. Tools and capture still go through the eve plugin.
- */
-
 export const CONVERSATION_SEARCH_HITS = 5;
 export const CONVERSATION_HIT_CHARS = 500;
 export const CONVERSATION_RECALL_ID = "bro-conversation-hits";
@@ -18,7 +11,6 @@ function apiKey(): string {
   return key.trim();
 }
 
-/** Same tag @supermemory/eve builds from `context.memory.scope.key`. */
 export function conversationContainerTag(scopeKey: string): string {
   const tag = `${TAG_PREFIX}${scopeKey}`;
   if (!/^[a-zA-Z0-9_.-]{1,100}$/.test(tag)) {
@@ -57,7 +49,6 @@ function hitFromResult(
   return content ? content.slice(0, CONVERSATION_HIT_CHARS) : null;
 }
 
-/** One hybrid /v4 search — same endpoint as `@supermemory/eve` auto-search. */
 export async function searchConversation(
   scopeKey: string,
   query: string,

@@ -1,14 +1,6 @@
-/** OpenRouter extras for the default GLM root/worker chat path.
- *
- *  GLM-5.3-flash reasoning cannot be turned off; the provider default is
- *  `max`, which spends ~12s of thinking on «ок» before any visible token.
- *  `effort: "low"` is still reasoning (job confirms, tools, purchases).
- *  Eve `reasoning: "low"` stays unset — this is the OpenRouter body only.
- */
-
+/** GLM-5.3-flash reasoning cannot be turned off; the provider default is `max`. */
 export const OPENROUTER_CHAT_REASONING_EFFORT = "low" as const;
 export const OPENROUTER_CHAT_PROVIDER_SORT = "latency" as const;
-/** Fast GLM-5.3-flash hosts. Z.ai P50 is ~5s; keep it as a fallback, not first. */
 export const OPENROUTER_CHAT_PROVIDER_ORDER = [
   "parasail",
   "together",
@@ -37,7 +29,6 @@ export function isOpenRouterChatCompletionsUrl(input: RequestInfo | URL): boolea
   return url.includes("/chat/completions");
 }
 
-/** Fill reasoning.effort + provider.sort when the caller left them unset. */
 export function withOpenRouterChatDefaults(body: unknown): unknown {
   if (body === null || typeof body !== "object" || Array.isArray(body)) {
     return body;

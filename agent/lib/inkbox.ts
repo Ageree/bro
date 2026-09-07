@@ -42,7 +42,6 @@ export function inkbox(): Inkbox {
   return client;
 }
 
-/** One Inkbox identity GET per handle per process. First-bubble send reuses typing's fetch. */
 export function inkboxIdentity(handle?: string) {
   const key = handle ?? agentHandle();
   const existing = identities.get(key);

@@ -18,7 +18,6 @@ export function attrsFromSession(session: {
   return session.auth?.current?.attributes ?? session.auth?.initiator?.attributes;
 }
 
-/** Same routing as the first bubble: auth attrs win over stale lastChannel. */
 export function channelFromAuth(
   attrs: AuthAttrs,
   lastChannel?: string,

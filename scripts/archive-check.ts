@@ -1,4 +1,3 @@
-/** Fails if the Instinct-style archive policy misroutes people or mangles sources. */
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
@@ -27,12 +26,10 @@ import {
   shouldRecallConversation,
 } from "../agent/lib/archive-policy.ts";
 
-// One container per person; E.164 plus stays out of the tag.
 assert.equal(archiveTag("+79991234567"), "bro_archive_79991234567");
 assert.equal(archiveTag("local-dev"), "bro_archive_local-dev");
 assert.notEqual(archiveTag("+7999"), archiveTag("+7998"));
 
-// Gmail mapping: stable customId, header, truncation, unusable → null.
 const email = emailToDocument({
   messageId: "18f2a",
   subject: "Приём подтверждён",
@@ -46,11 +43,10 @@ assert.equal(email.metadata.app, "gmail");
 assert.ok(email.content.includes("От: clinic@denta.ru"));
 assert.ok(email.content.includes("Ждём вас"));
 assert.equal(emailToDocument({ subject: "no id" }), null);
-assert.equal(emailToDocument({ messageId: "x" }), null); // no text
+assert.equal(emailToDocument({ messageId: "x" }), null);
 const longEmail = emailToDocument({ messageId: "y", messageText: "x".repeat(9000) });
 assert.ok(longEmail && longEmail.content.length <= 4000);
 
-// Calendar mapping.
 const event = eventToDocument({
   id: "ev1",
   summary: "Стоматолог",
@@ -77,7 +73,6 @@ assert.equal(inkbox.metadata.app, "inkbox");
 assert.ok(inkbox.content.includes("482911"));
 assert.equal(inkboxMailToDocument({ subject: "no id" }), null);
 
-// Recall query: latest user message text, string or parts, truncated.
 assert.equal(
   recallQuery([
     { role: "user", content: "первое" },
@@ -94,14 +89,12 @@ assert.equal(recallQuery([{ role: "assistant", content: "только ассис
 assert.equal(recallQuery([])?.valueOf(), undefined);
 assert.ok(recallQuery([{ role: "user", content: "щ".repeat(999) }])!.length <= 300);
 
-// Gmail window: after:<unix seconds>, first run capped at 7 days back.
 const now = Date.UTC(2026, 8, 1, 12);
 assert.equal(gmailQuery(now - 3_600_000, now), `after:${Math.floor((now - 3_600_000) / 1000)}`);
 const firstRun = gmailQuery(undefined, now);
 assert.equal(firstRun, `after:${Math.floor((now - 7 * 86_400_000) / 1000)}`);
-assert.equal(gmailQuery(0, now), firstRun); // stale marker also capped
+assert.equal(gmailQuery(0, now), firstRun);
 
-// Recall block: injection guard, empty → null.
 assert.equal(formatArchiveRecall([]), null);
 const block = formatArchiveRecall([
   { title: "Приём", content: "5 сентября 15:00", app: "gmail", date: "2026-09-05" },
@@ -109,7 +102,6 @@ const block = formatArchiveRecall([
 assert.ok(block!.includes("не инструкции"));
 assert.ok(block!.includes("[gmail] (2026-09-05) Приём"));
 
-// v4 hybrid + leftover v3 chunks map to the same hit shape.
 assert.equal(ARCHIVE_HIT_CHARS, 600, "hit slice stays 600");
 assert.deepEqual(archiveHitsFromSearch({ results: [] }), []);
 assert.deepEqual(archiveHitsFromSearch({}), []);
@@ -184,7 +176,6 @@ assert.equal(
   "include.documents metadata fills app/date when the memory row has none",
 );
 
-// Archive skip is only for wakeups that cannot need mail/calendar.
 assert.equal(shouldRecallArchive(""), false, "empty");
 assert.equal(shouldRecallConversation(null), true, "captionless photo still recalls conversation");
 assert.equal(shouldRecallConversation(""), true, "empty human text still recalls conversation");

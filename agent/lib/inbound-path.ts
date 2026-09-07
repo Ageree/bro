@@ -1,5 +1,3 @@
-/** Short-lived tenant / Instinct caches used on the inbound start path. */
-
 export const HANDLE_TENANT_TTL_MS = 30_000;
 export const TELEGRAM_TENANT_TTL_MS = 30_000;
 
