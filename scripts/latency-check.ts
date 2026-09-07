@@ -43,12 +43,23 @@ assert(
   "no instant-ack skip — ок/спасибо still run the agent (open jobs)",
 );
 
+const imessage = readFileSync(
+  new URL("../agent/channels/imessage.ts", import.meta.url),
+  "utf8",
+);
+assert(imessage.includes("routingFromAuth"), "first bubble uses auth routing");
+assert(imessage.includes("deliverTurnBubble"), "delivery helper is shared");
+
 const telegram = readFileSync(
   new URL("../agent/channels/telegram.ts", import.meta.url),
   "utf8",
 );
 assert(telegram.includes("sendTelegramTyping"), "telegram shows typing like iMessage");
 assert(telegram.includes("parkTurn"), "human telegram turn is not awaited");
+assert(
+  !telegram.includes('"message.completed"'),
+  "telegram must not copy delivery events — that would double-send",
+);
 
 const telegramLib = readFileSync(
   new URL("../agent/lib/telegram.ts", import.meta.url),

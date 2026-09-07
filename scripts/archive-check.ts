@@ -1,6 +1,9 @@
 /** Fails if the Instinct-style archive policy misroutes people or mangles sources. */
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
+  ARCHIVE_RECALL_TIMEOUT_MS,
+  ARCHIVE_TOOL_TIMEOUT_MS,
   archiveTag,
   emailToDocument,
   eventToDocument,
@@ -122,6 +125,26 @@ assert.equal(
   ),
   false,
   "plain reminder skips archive",
+);
+
+assert.equal(ARCHIVE_RECALL_TIMEOUT_MS, 1_500, "instinct recall budget is 1.5s");
+assert.equal(ARCHIVE_TOOL_TIMEOUT_MS, 30_000, "archive tools keep 30s");
+assert.ok(
+  ARCHIVE_RECALL_TIMEOUT_MS < ARCHIVE_TOOL_TIMEOUT_MS,
+  "auto-recall is shorter than the tool path",
+);
+
+const archiveMemory = readFileSync(
+  new URL("../agent/memory/archive.ts", import.meta.url),
+  "utf8",
+);
+assert.ok(
+  archiveMemory.includes("ARCHIVE_RECALL_TIMEOUT_MS"),
+  "instinct recall uses the short timeout",
+);
+assert.ok(
+  archiveMemory.includes("ARCHIVE_TOOL_TIMEOUT_MS"),
+  "archive__search keeps the tool timeout",
 );
 
 console.log("archive-check ok");

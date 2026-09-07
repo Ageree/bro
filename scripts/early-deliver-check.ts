@@ -8,6 +8,7 @@ import {
 } from "../agent/lib/early-deliver.ts";
 import { parkTurn } from "../agent/lib/channel-turn.ts";
 import { TURN_FAILED_REPLY } from "../agent/lib/silent-turn.ts";
+import { routingFromAuth, routingPhone } from "../agent/lib/turn-routing.ts";
 
 function assert(cond: unknown, msg: string): void {
   if (!cond) throw new Error(msg);
@@ -120,5 +121,44 @@ parkTurn((work) => {
 assert(parked === 1, "parkTurn uses waitUntil when present");
 parkTurn(undefined, Promise.resolve());
 assert(parked === 1, "missing waitUntil does not throw");
+
+const telegramHuman = routingFromAuth({
+  origin: "human",
+  channel: "telegram",
+  telegramChatId: "42",
+});
+assert(telegramHuman.canDeliver === true, "telegram attrs deliver without tenant");
+assert(telegramHuman.channel === "telegram", "telegram channel from attrs");
+assert(telegramHuman.telegramChatId === "42", "telegram chat id from attrs");
+
+const imessageHuman = routingFromAuth({
+  origin: "human",
+  inkboxHandle: "+7999",
+});
+assert(imessageHuman.canDeliver === true, "human iMessage delivers without tenant");
+assert(imessageHuman.channel === "imessage", "human iMessage stays on this conversation");
+
+const wakeup = routingFromAuth({
+  origin: "wakeup",
+  conversationId: "c1",
+  inkboxHandle: "+7999",
+});
+assert(wakeup.canDeliver === false, "wakeup still needs tenant lastChannel");
+assert(wakeup.channel === undefined, "wakeup does not guess iMessage from handle");
+
+const group = routingFromAuth({
+  origin: "human",
+  inkboxHandle: "+7999",
+  ownerPhone: "+7000",
+});
+assert(routingPhone(group, undefined) === "+7000", "group seen uses ownerPhone");
+assert(routingPhone(group, "+7111") === "+7111", "principal wins over owner");
+
+assert(channel.includes("routingFromAuth"), "imessage uses auth routing");
+assert(channel.includes("deliverTurnBubble"), "imessage shares delivery helper");
+assert(
+  !/await setWakeupLastSeen/.test(channel),
+  "lastSeen is not awaited before the bubble",
+);
 
 console.log("early-deliver-check ok");

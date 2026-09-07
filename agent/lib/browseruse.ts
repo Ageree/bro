@@ -267,15 +267,16 @@ export async function waitForRun(
   ms = 12_000,
 ): Promise<BrowserRun> {
   const start = Date.now();
-  let last = await hydrate(runId, sessionId);
+  // startRun already hydrated; status-only until terminal or the wait ends.
+  let last: BrowserRun = { runId, sessionId, status: "unknown" };
   while (Date.now() - start < ms) {
     const cheap = await bu(`/runs/${runId}/status`).catch(() => ({}));
     const status = pick(cheap, ["status"]) ?? last.status;
-    if (isTerminal(status)) return hydrate(runId, last.sessionId);
+    if (isTerminal(status)) return hydrate(runId, last.sessionId ?? sessionId);
     last = { ...last, status };
     await new Promise((r) => setTimeout(r, 2000));
   }
-  return hydrate(runId, last.sessionId);
+  return hydrate(runId, last.sessionId ?? sessionId);
 }
 
 export function isTerminal(status: string): boolean {

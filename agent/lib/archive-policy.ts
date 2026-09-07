@@ -136,6 +136,10 @@ export function recallQuery(input: readonly unknown[]): string | null {
   return null;
 }
 
+/** Instinct auto-recall on `turn.started`. Tools keep the 30s client timeout. */
+export const ARCHIVE_RECALL_TIMEOUT_MS = 1_500;
+export const ARCHIVE_TOOL_TIMEOUT_MS = 30_000;
+
 /**
  * Skip the Supermemory archive search on cheap chat. That HTTP round-trip
  * sits on `turn.started` and delays the first model token.

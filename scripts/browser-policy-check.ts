@@ -347,8 +347,8 @@ assert(
 );
 
 assert(BROWSER_POLL_WAIT_MS === 2_000, "poll wait is short; follow-through still delivers");
-assert(BROWSER_START_WAIT_MS === 8_000, "start wait still tries to finish a fast run in-turn");
-assert(BROWSER_POLL_WAIT_MS < BROWSER_START_WAIT_MS, "poll is cheaper than start");
+assert(BROWSER_START_WAIT_MS === 2_000, "start wait is short; follow-through polls immediately");
+assert(BROWSER_START_WAIT_MS === BROWSER_POLL_WAIT_MS, "in-turn start matches poll wait");
 
 const browserTool = readFileSync(
   new URL("../agent/tools/browser_task.ts", import.meta.url),
@@ -357,5 +357,26 @@ const browserTool = readFileSync(
 assert(browserTool.includes("BROWSER_POLL_WAIT_MS"), "poll uses shared wait");
 assert(browserTool.includes("BROWSER_START_WAIT_MS"), "start uses shared wait");
 assert(!browserTool.includes("WAIT_MS = 12_000"), "old 12s park is gone");
+
+const follow = readFileSync(
+  new URL("../convex/browserFollow.ts", import.meta.url),
+  "utf8",
+);
+const handler = follow.slice(follow.indexOf("}).handler"));
+const firstPoll = handler.search(/pollRun/);
+const firstSleep = handler.search(/step\.sleep/);
+assert(firstPoll >= 0, "follow-through polls");
+assert(firstSleep >= 0, "follow-through still sleeps between polls");
+assert(firstPoll < firstSleep, "first poll comes before the first 2min sleep");
+
+const waitFor = readFileSync(
+  new URL("../agent/lib/browseruse.ts", import.meta.url),
+  "utf8",
+);
+const waitFn = waitFor.slice(waitFor.indexOf("export async function waitForRun"));
+assert(
+  waitFn.indexOf("bu(`/runs/${runId}/status`)") < waitFn.indexOf("return hydrate"),
+  "waitForRun status-polls before hydrating",
+);
 
 console.log("browser-policy-check ok");

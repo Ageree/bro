@@ -53,7 +53,8 @@ export const followThrough = workflow.define({
 }> => {
   const cap = maxPollRounds() + 2;
   for (let i = 0; i < cap; i++) {
-    await step.sleep(POLL_INTERVAL_MS, { name: `wait-${i}` });
+    // Poll first: a 20s run must not wait out the 2min interval before
+    // the human hears it. Interval and 20min give-up stay the same.
     const poll = await step.runAction(
       internal.browserFollow.pollRun,
       {
@@ -69,7 +70,10 @@ export const followThrough = workflow.define({
       startedAt: args.startedAt,
       now: poll.now,
     });
-    if (decision === "sleep") continue;
+    if (decision === "sleep") {
+      await step.sleep(POLL_INTERVAL_MS, { name: `wait-${i}` });
+      continue;
+    }
     const phase: WakeupPhase = decision === "giveup" ? "giveup" : "done";
     await step.runAction(
       internal.browserFollow.wakeupAgent,

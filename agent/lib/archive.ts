@@ -1,4 +1,5 @@
 import {
+  ARCHIVE_TOOL_TIMEOUT_MS,
   archiveTag,
   type ArchiveDocument,
   type ArchiveHit,
@@ -13,7 +14,11 @@ function apiKey(): string {
   return key.trim();
 }
 
-async function call(path: string, init: RequestInit): Promise<unknown> {
+async function call(
+  path: string,
+  init: RequestInit,
+  timeoutMs = ARCHIVE_TOOL_TIMEOUT_MS,
+): Promise<unknown> {
   const res = await fetch(`${BASE}${path}`, {
     ...init,
     headers: {
@@ -21,7 +26,7 @@ async function call(path: string, init: RequestInit): Promise<unknown> {
       "Content-Type": "application/json",
       ...init.headers,
     },
-    signal: AbortSignal.timeout(30_000),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   if (!res.ok) {
     throw new Error(`supermemory ${path} failed: ${res.status} ${await res.text()}`);
@@ -59,15 +64,20 @@ export async function searchArchive(
   phone: string,
   query: string,
   limit = 5,
+  timeoutMs = ARCHIVE_TOOL_TIMEOUT_MS,
 ): Promise<ArchiveHit[]> {
-  const json = (await call("/search", {
-    method: "POST",
-    body: JSON.stringify({
-      q: query,
-      containerTags: [archiveTag(phone)],
-      limit,
-    }),
-  })) as SearchResponse;
+  const json = (await call(
+    "/search",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        q: query,
+        containerTags: [archiveTag(phone)],
+        limit,
+      }),
+    },
+    timeoutMs,
+  )) as SearchResponse;
   return (json.results ?? []).map((r) => ({
     title: r.title ?? "",
     content: (r.chunks ?? [])
