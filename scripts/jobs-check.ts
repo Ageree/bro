@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import {
   dueJobNudges,
+  isJobCheckWakeup,
   jobNudgeInstruction,
   jobWakeInstruction,
 } from "../agent/lib/job-wake.ts";
@@ -373,7 +374,13 @@ const jobsSrc = readFileSync(
 );
 assert(jobsSrc.includes("return null"), "empty job list injects nothing");
 assert(jobsSrc.includes("Job store unavailable"), "store errors still surface");
-assert(jobsSrc.includes("wakeupKind"), "nudge only on job_check wakeups");
+assert(isJobCheckWakeup({ origin: "wakeup", wakeupKind: "job_check" }), "job_check wakeup nudges");
+assert(
+  !isJobCheckWakeup({ origin: "human", wakeupKind: "job_check" }),
+  "stale wakeupKind on a human turn does not nudge",
+);
+assert(!isJobCheckWakeup({ origin: "wakeup", wakeupKind: "brief" }), "brief is not a nudge");
+assert(jobsSrc.includes("isJobCheckWakeup"), "nudge only on job_check wakeups");
 assert(jobsSrc.includes("jobNudgeInstruction"), "nudge copy lives on turn.started");
 
 const imessage = readFileSync(

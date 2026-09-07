@@ -6,6 +6,11 @@ import {
   type WaitingFor,
 } from "../../convex/lib/jobNudgePolicy.ts";
 
+/** Nudge/force-speak only on scheduled job_check wakeups, never human chat. */
+export function isJobCheckWakeup(attrs: Record<string, unknown> | undefined): boolean {
+  return attrs?.origin === "wakeup" && attrs?.wakeupKind === "job_check";
+}
+
 const JOB_FRAMING =
   "Open jobs for this person only. A user message starting with [event:mail] is inbound mail to Bro's mailbox, not the human speaking. If a worker or job is waiting on a one-time code, extract it from the letter (or call otp / otp_lookup) before asking in the thread.";
 

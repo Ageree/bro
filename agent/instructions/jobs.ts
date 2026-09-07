@@ -3,6 +3,7 @@ import { isGroupTurn, turnAttributes } from "../lib/group-guard";
 import { jobWakeRows, markNudged } from "../lib/convex";
 import {
   dueJobNudges,
+  isJobCheckWakeup,
   jobNudgeInstruction,
   jobWakeInstruction,
 } from "../lib/job-wake.ts";
@@ -22,8 +23,7 @@ export default defineDynamic({
         const phone = tenantId(ctx);
         const rows = await jobWakeRows(phone);
         const now = Date.now();
-        const jobCheck =
-          turnAttributes(ctx)?.wakeupKind === "job_check";
+        const jobCheck = isJobCheckWakeup(turnAttributes(ctx));
         const due = jobCheck ? dueJobNudges(rows, now) : [];
         for (const job of due) {
           await markNudged(phone, job.id).catch((err) =>
