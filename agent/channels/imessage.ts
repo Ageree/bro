@@ -252,21 +252,19 @@ async function sendTelegramInvite(opts: {
   });
 }
 
-function ackIMessageReadAndTyping(
+async function ackIMessageReadAndTyping(
   conversationId: string,
   handle: string,
 ): Promise<void> {
-  return (async () => {
-    try {
-      const identity = await inkboxIdentity(handle);
-      await Promise.all([
-        identity.markIMessageConversationRead(conversationId),
-        identity.sendIMessageTyping(conversationId),
-      ]);
-    } catch (err) {
-      console.error("imessage ack failed", err);
-    }
-  })();
+  try {
+    const identity = await inkboxIdentity(handle);
+    await Promise.all([
+      identity.markIMessageConversationRead(conversationId),
+      identity.sendIMessageTyping(conversationId),
+    ]);
+  } catch (err) {
+    console.error("imessage ack failed", err);
+  }
 }
 
 async function inboundOwnerGate(ownerPhone: string): Promise<{
@@ -385,16 +383,12 @@ export default defineChannel({
 
       const voiceP = inboundIMessageTextWithVoice(msg, transcribeVoiceNote);
       let fetchedImages: Awaited<ReturnType<typeof prefetchInboundImages>> | undefined;
-      const imagesP = prefetchInboundImages(msg.media)
-        .then((parts) => {
-          fetchedImages = parts;
-          return parts;
-        })
-        .catch((err) => {
-          console.error("inbound image prefetch failed", err);
-          return imageUrlParts(msg.media);
-        });
-      void imagesP;
+      prefetchInboundImages(msg.media).then(
+        (p) => {
+          fetchedImages = p;
+        },
+        (err) => console.error("inbound image prefetch failed", err),
+      );
 
       const flaggedGroup = isGroupMessage(msg);
       const boundOneToOne = canSkipInboundBind(
@@ -444,7 +438,7 @@ export default defineChannel({
         firstGroup = bound.firstGroup;
         ownerPhone = bound.ownerPhoneE164;
       } else if (handle) {
-        if (canSkipInboundBind(tenant, remote, msg.conversation_id)) {
+        if (boundOneToOne) {
           firstBind = false;
           boundTenant = tenant;
           ownerPhone = tenant?.phoneE164 ?? remote;
@@ -507,8 +501,7 @@ export default defineChannel({
             msg.conversation_id,
             identityHandle,
           );
-          if (typeof waitUntil === "function") waitUntil(ack);
-          else void ack;
+          parkTurn(waitUntil, ack);
         }
         const gate = await gateP;
         if (gate.decision === "drop") {
@@ -535,8 +528,7 @@ export default defineChannel({
             msg.conversation_id,
             identityHandle,
           );
-          if (typeof waitUntil === "function") waitUntil(ack);
-          else void ack;
+          parkTurn(waitUntil, ack);
         }
       }
 
@@ -623,8 +615,7 @@ export default defineChannel({
       const touch = touchLastChannel(remote, "imessage").catch((err) =>
         console.error("touch last channel failed", err),
       );
-      if (typeof waitUntil === "function") waitUntil(touch);
-      else void touch;
+      parkTurn(waitUntil, touch);
       const rawContent = assembleInboundContent(
         inbound.text,
         fetchedImages ?? imageUrlParts(msg.media),

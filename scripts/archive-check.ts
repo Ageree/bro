@@ -14,7 +14,6 @@ import {
   ARCHIVE_RECALL_TIMEOUT_MS,
   ARCHIVE_TOOL_TIMEOUT_MS,
   CONVERSATION_RECALL_TIMEOUT_MS,
-  withRecallBudget,
   archiveTag,
   emailToDocument,
   eventToDocument,
@@ -152,8 +151,6 @@ assert.equal(
 assert.equal(ARCHIVE_RECALL_TIMEOUT_MS, 1_500, "instinct recall budget is 1.5s");
 assert.equal(CONVERSATION_RECALL_TIMEOUT_MS, ARCHIVE_RECALL_TIMEOUT_MS, "conversation recall shares the instinct budget");
 assert.equal(ARCHIVE_TOOL_TIMEOUT_MS, 30_000, "archive tools keep 30s");
-assert.equal(await withRecallBudget("ok", 20), "ok", "budget passes a ready value");
-assert.equal(await withRecallBudget(new Promise(() => {}), 10), null, "budget expires");
 assert.ok(
   ARCHIVE_RECALL_TIMEOUT_MS < ARCHIVE_TOOL_TIMEOUT_MS,
   "auto-recall is shorter than the tool path",

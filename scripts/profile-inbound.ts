@@ -26,7 +26,6 @@ import {
 } from "../agent/lib/instinct-recall.ts";
 import { DEFAULT_OPENROUTER_MODEL } from "../agent/lib/model.ts";
 import { withOpenRouterChatDefaults } from "../agent/lib/openrouter-chat.ts";
-import { openRouterStreamProgress } from "../agent/lib/openrouter-stream.ts";
 import {
   OPENROUTER_AUTH_URL,
   OPENROUTER_CHAT_URL,
@@ -34,6 +33,29 @@ import {
 } from "../agent/lib/openrouter-warm.ts";
 
 const ITER = 100_000;
+
+/** Scan OpenRouter chat SSE enough to time first reasoning vs first visible token. */
+function openRouterStreamProgress(buf: string) {
+  let reasoning = false;
+  let content = false;
+  let hasSseData = /(?:^|\n)data:/.test(buf);
+  for (const line of buf.split("\n")) {
+    const t = line.trim();
+    if (!t.startsWith("data:")) continue;
+    hasSseData = true;
+    const payload = t.slice(5).trim();
+    if (!payload || payload === "[DONE]") continue;
+    try {
+      const d = (JSON.parse(payload) as { choices?: Array<{ delta?: Record<string, unknown> }> })
+        .choices?.[0]?.delta;
+      if (typeof d?.reasoning === "string" && d.reasoning) reasoning = true;
+      if (typeof d?.content === "string" && d.content) content = true;
+    } catch {
+      continue;
+    }
+  }
+  return { hasSseData, reasoning, content };
+}
 
 function nsPerCall(fn: () => void): number {
   const t0 = performance.now();

@@ -5,7 +5,7 @@ import {
   dueJobNudges,
   isJobCheckWakeup,
   jobCheckPayload,
-  jobCheckQuietInstruction,
+  JOB_CHECK_QUIET,
   jobNudgeInstruction,
   jobWakeInstruction,
 } from "../lib/job-wake.ts";
@@ -49,8 +49,8 @@ export default defineDynamic({
           jobWakeInstruction(rows.map((r) => r.line)),
           scope
             ? due.length > 0
-              ? jobNudgeInstruction(rows, now, scope)
-              : jobCheckQuietInstruction()
+              ? jobNudgeInstruction(due)
+              : JOB_CHECK_QUIET
             : null,
           ack,
         ]

@@ -1,7 +1,6 @@
 import { readFileSync } from "node:fs";
 import {
-  BROWSER_POLL_WAIT_MS,
-  BROWSER_START_WAIT_MS,
+  BROWSER_WAIT_MS,
   nextBrowserAction,
   nextFollowDecision,
   normalizeTask,
@@ -351,16 +350,14 @@ assert(
   "proxyCountryCode in browserSettings",
 );
 
-assert(BROWSER_POLL_WAIT_MS === 2_000, "poll wait is short; follow-through still delivers");
-assert(BROWSER_START_WAIT_MS === 2_000, "start wait is short; follow-through polls immediately");
-assert(BROWSER_START_WAIT_MS === BROWSER_POLL_WAIT_MS, "in-turn start matches poll wait");
+assert(BROWSER_WAIT_MS === 2_000, "wait is short; follow-through still delivers");
+assert(BROWSER_WAIT_MS !== 12_000, "wait is not 12s");
 
 const browserTool = readFileSync(
   new URL("../agent/tools/browser_task.ts", import.meta.url),
   "utf8",
 );
-assert(browserTool.includes("BROWSER_POLL_WAIT_MS"), "poll uses shared wait");
-assert(browserTool.includes("BROWSER_START_WAIT_MS"), "start uses shared wait");
+assert(browserTool.includes("BROWSER_WAIT_MS"), "start and poll use shared wait");
 assert(!browserTool.includes("WAIT_MS = 12_000"), "old 12s park is gone");
 const startPath = browserTool.slice(browserTool.indexOf("const started = await startRun"));
 assert(

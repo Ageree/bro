@@ -1,12 +1,13 @@
 import assert_ from "node:assert/strict";
 import {
+  assembleInboundContent,
   fetchImagePart,
   IMAGE_TIMEOUT_MS,
   inboundImages,
-  inboundUserContent,
   imageUrlParts,
   isImageContentType,
   isPlainJson,
+  prefetchInboundImages,
 } from "../agent/lib/inbound-image.ts";
 
 function assert(cond: unknown, msg: string): void {
@@ -64,11 +65,12 @@ const p6 = await fetchImagePart(imgs[0], { fetch: htmlFetch });
 assert(p6.mediaType === "image/jpeg", "non-image response type ignored");
 
 // channel payload: plain string without photos, text + parts with photos
-const plain = await inboundUserContent("привет", [media[1]], { fetch: okFetch });
+const plain = assembleInboundContent("привет", await prefetchInboundImages([media[1]], { fetch: okFetch }));
 assert(plain === "привет", "no images → plain text");
-const rich = await inboundUserContent("Найди мне эту книгу на озоне\nhttps://cdn.example/a.jpg", media, {
-  fetch: okFetch,
-});
+const rich = assembleInboundContent(
+  "Найди мне эту книгу на озоне\nhttps://cdn.example/a.jpg",
+  await prefetchInboundImages(media, { fetch: okFetch }),
+);
 assert(Array.isArray(rich) && rich.length === 3, "text + 2 image parts");
 if (!Array.isArray(rich)) throw new Error("unreachable");
 const [head, ...tail] = rich;

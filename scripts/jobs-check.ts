@@ -3,7 +3,7 @@ import {
   dueJobNudges,
   isJobCheckWakeup,
   jobCheckPayload,
-  jobCheckQuietInstruction,
+  JOB_CHECK_QUIET,
   jobCheckWakePrompt,
   jobNudgeInstruction,
   jobWakeInstruction,
@@ -373,25 +373,7 @@ assert(
 assert(jobCheckPayload({ wakeupPayload: "джоб j1: слот" }) === "джоб j1: слот", "stamped payload");
 assert(jobCheckPayload({ origin: "wakeup" }) === "", "no payload");
 const nudgeText = jobNudgeInstruction(
-  [
-    {
-      id: "j1",
-      line: "id=j1",
-      goal: "слот",
-      waitingFor: "human",
-      waitingSince: t0,
-    },
-  ],
-  nudgeNow,
-);
-assert(nudgeText?.includes("Do NOT answer [SILENT]"), "due job_check force-speaks");
-assert(
-  !jobCheckWakePrompt("джоб j1: слот").includes("[SILENT]"),
-  "wakeup user text does not authorize SILENT — turn.started decides",
-);
-assert(jobCheckQuietInstruction().includes("[SILENT]"), "quiet job_check may stay silent");
-assert(
-  jobNudgeInstruction(
+  dueJobNudges(
     [
       {
         id: "j1",
@@ -401,7 +383,29 @@ assert(
         waitingSince: t0,
       },
     ],
-    t0 + 1000,
+    nudgeNow,
+  ),
+);
+assert(nudgeText?.includes("Do NOT answer [SILENT]"), "due job_check force-speaks");
+assert(
+  !jobCheckWakePrompt("джоб j1: слот").includes("[SILENT]"),
+  "wakeup user text does not authorize SILENT — turn.started decides",
+);
+assert(JOB_CHECK_QUIET.includes("[SILENT]"), "quiet job_check may stay silent");
+assert(
+  jobNudgeInstruction(
+    dueJobNudges(
+      [
+        {
+          id: "j1",
+          line: "id=j1",
+          goal: "слот",
+          waitingFor: "human",
+          waitingSince: t0,
+        },
+      ],
+      t0 + 1000,
+    ),
   ) === null,
   "fresh wait is not a nudge",
 );
@@ -421,7 +425,7 @@ assert(!isJobCheckWakeup({ origin: "wakeup", wakeupKind: "brief" }), "brief is n
 assert(jobsSrc.includes("isJobCheckWakeup"), "nudge only on job_check wakeups");
 assert(jobsSrc.includes("jobNudgeInstruction"), "nudge copy lives on turn.started");
 assert(jobsSrc.includes("jobCheckPayload"), "nudge scoped to stamped payload");
-assert(jobsSrc.includes("jobCheckQuietInstruction"), "non-due job_check gets SILENT from instructions");
+assert(jobsSrc.includes("JOB_CHECK_QUIET"), "non-due job_check gets SILENT from instructions");
 assert(jobsSrc.includes("isShortAckTurn"), "human short acks get a steer on turn.started");
 assert(jobsSrc.includes("shortAckInstruction"), "ack steer is not a skipped agent turn");
 assert(

@@ -172,13 +172,11 @@ export default defineChannel({
         const touch = touchLastChannel(tenant.phoneE164, "telegram").catch((err) =>
           console.error("touch last channel failed", err),
         );
-        if (typeof waitUntil === "function") waitUntil(touch);
-        else void touch;
+        parkTurn(waitUntil, touch);
         const typing = sendTelegramTyping(chatIdOf(msg)).catch((err) =>
           console.error("telegram typing failed", err),
         );
-        if (typeof waitUntil === "function") waitUntil(typing);
-        else void typing;
+        parkTurn(waitUntil, typing);
         parkTurn(
           waitUntil,
           from(tenant.inkboxConversationId).send(`[button] ${data}`, {
@@ -271,8 +269,7 @@ export default defineChannel({
       const typing = sendTelegramTyping(chatId).catch((err) =>
         console.error("telegram typing failed", err),
       );
-      if (typeof waitUntil === "function") waitUntil(typing);
-      else void typing;
+      parkTurn(waitUntil, typing);
       void loadWakeContext(phone).catch((err) =>
         console.error("wake prefetch failed", err),
       );
@@ -335,8 +332,7 @@ export default defineChannel({
       const touch = touchLastChannel(phone, "telegram").catch((err) =>
         console.error("touch last channel failed", err),
       );
-      if (typeof waitUntil === "function") waitUntil(touch);
-      else void touch;
+      parkTurn(waitUntil, touch);
 
       const content = assembleInboundContent(inbound.text, await photoP);
       console.log("telegram inbound", {

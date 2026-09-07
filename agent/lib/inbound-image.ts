@@ -89,7 +89,7 @@ export async function fetchImagePart(
  *  string, finite number, plain arrays, and plain objects (prototype is
  *  `Object.prototype` or `null`). Everything else — `Uint8Array`, `URL`,
  *  `Date`, `Map`, `NaN`, `undefined`, class instances — is false. Used by
- *  the check script to pin `inboundUserContent`'s output shape; not called
+ *  the check script to pin `assembleInboundContent`'s output shape; not called
  *  at runtime in the channel. */
 export function isPlainJson(value: unknown): boolean {
   if (value === null) return true;
@@ -128,14 +128,4 @@ export function prefetchInboundImages(
   deps: Parameters<typeof fetchImagePart>[1] = {},
 ): Promise<ImagePart[]> {
   return Promise.all(inboundImages(media).map((img) => fetchImagePart(img, deps)));
-}
-
-/** Text + image parts, or plain text when there is nothing to see. Always
- *  plain JSON — see the header comment. */
-export async function inboundUserContent(
-  text: string,
-  media: InboundMediaItem[] | null | undefined,
-  deps: Parameters<typeof fetchImagePart>[1] = {},
-): Promise<string | Array<{ type: "text"; text: string } | ImagePart>> {
-  return assembleInboundContent(text, await prefetchInboundImages(media, deps));
 }

@@ -389,10 +389,6 @@ export async function getTenantByEmail(emailAddress: string) {
   });
 }
 
-export async function jobWakeLines(phoneE164: string): Promise<string[]> {
-  return (await loadWakeContext(phoneE164)).jobs.map((j) => j.line);
-}
-
 export async function jobWakeRows(phoneE164: string): Promise<JobWakeRow[]> {
   return (await loadWakeContext(phoneE164)).jobs;
 }

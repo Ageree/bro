@@ -47,10 +47,6 @@ export function jobCheckWakePrompt(payload: string): string {
 export const JOB_CHECK_QUIET =
   "If you cannot make progress on this job_check, answer exactly [SILENT]. The check will repeat.";
 
-export function jobCheckQuietInstruction(): string {
-  return JOB_CHECK_QUIET;
-}
-
 export function dueJobNudges(
   rows: readonly JobWakeRow[],
   now: number,
@@ -80,11 +76,8 @@ export function dueJobNudges(
 }
 
 export function jobNudgeInstruction(
-  rows: readonly JobWakeRow[],
-  now: number,
-  scope?: { payload: string },
+  due: readonly JobWakeRow[],
 ): string | null {
-  const due = dueJobNudges(rows, now, scope);
   if (due.length === 0) return null;
   return due
     .map((job) => {

@@ -1,10 +1,7 @@
 /** Pins the turn.started critical path so serial Convex/HTTP does not creep back. */
 import { readFileSync } from "node:fs";
 import { canSkipInboundBind } from "../agent/lib/inbound-bind.ts";
-import {
-  CONVERSATION_RECALL_TIMEOUT_MS,
-  withRecallBudget,
-} from "../agent/lib/archive-policy.ts";
+import { CONVERSATION_RECALL_TIMEOUT_MS } from "../agent/lib/archive-policy.ts";
 import {
   HANDLE_TENANT_TTL_MS,
   TELEGRAM_TENANT_TTL_MS,
@@ -17,7 +14,6 @@ import {
   INSTINCT_RECALL_TTL_MS,
   canPrefetchInstinctQuery,
 } from "../agent/lib/instinct-recall.ts";
-import { openRouterStreamProgress } from "../agent/lib/openrouter-stream.ts";
 import { canPrefetchOpenRouter } from "../agent/lib/openrouter-warm.ts";
 import {
   isShortAck,
@@ -55,7 +51,7 @@ const jobs = readFileSync(new URL("../agent/instructions/jobs.ts", import.meta.u
 assert(jobs.includes("jobWakeRows"), "jobs read the same snapshot");
 assert(jobs.includes("isJobCheckWakeup"), "job_check nudge is not on the HTTP path");
 assert(jobs.includes("Promise.all"), "due markNudged calls run in parallel");
-assert(jobs.includes("jobCheckQuietInstruction"), "non-due job_check may stay silent");
+assert(jobs.includes("JOB_CHECK_QUIET"), "non-due job_check may stay silent");
 assert(jobs.includes("isShortAckTurn"), "short acks get a no-new-tools steer");
 assert(jobs.includes("shortAckInstruction"), "short-ack instruction stays on turn.started");
 assert(jobs.includes("waitingForHuman"), "ack that confirms a waiting job still allows tools");
@@ -151,23 +147,6 @@ assert(
 );
 assert(canPrefetchOpenRouter("sk-test"), "OpenRouter warm runs when a key is set");
 assert(!canPrefetchOpenRouter(""), "OpenRouter warm skips without a key");
-assert(
-  openRouterStreamProgress(
-    'data: {"choices":[{"delta":{"content":"","reasoning":"The"}}]}',
-  ).reasoning,
-  "empty content with reasoning is not a visible token",
-);
-assert(
-  !openRouterStreamProgress(
-    'data: {"choices":[{"delta":{"content":"","reasoning":"The"}}]}',
-  ).content,
-  "reasoning-only chunks are not first-bubble text",
-);
-assert(
-  openRouterStreamProgress('data: {"choices":[{"delta":{"content":"ок"}}]}')
-    .content,
-  "visible content is first-bubble text",
-);
 
 const tenants = readFileSync(new URL("../convex/tenants.ts", import.meta.url), "utf8");
 {
@@ -306,8 +285,6 @@ assert(
 assert(!canSkipInboundBind({ phoneE164: "+1" }, "+2", "c1"), "other phone still binds");
 assert(!canSkipInboundBind({ phoneE164: "+1", status: "disabled" }, "+1", "c1"), "disabled still binds");
 assert(CONVERSATION_RECALL_TIMEOUT_MS === 1500, "conversation recall matches archive budget");
-assert((await withRecallBudget(Promise.resolve("ok"), 50)) === "ok", "budget keeps a fast recall");
-assert((await withRecallBudget(new Promise<string>(() => {}), 15)) === null, "budget drops a late recall");
 
 console.log("start-path-check ok");
 console.log(

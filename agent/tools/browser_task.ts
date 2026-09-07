@@ -12,8 +12,7 @@ import {
   upsertTenant,
 } from "../lib/convex";
 import {
-  BROWSER_POLL_WAIT_MS,
-  BROWSER_START_WAIT_MS,
+  BROWSER_WAIT_MS,
   nextBrowserAction,
   shouldStartFollowThrough,
 } from "../lib/browser-policy";
@@ -276,7 +275,7 @@ export default defineTool({
       const run = await waitForRun(
         tenant.browserRunId,
         tenant.browserSessionId,
-        BROWSER_POLL_WAIT_MS,
+        BROWSER_WAIT_MS,
       );
       await persist(phone, run, tenant.browserTask ?? task);
       return settle(
@@ -395,7 +394,7 @@ export default defineTool({
     const done = await waitForRun(
       started.runId,
       started.sessionId,
-      BROWSER_START_WAIT_MS,
+      BROWSER_WAIT_MS,
     );
     await persist(phone, done, task);
     await followKick;

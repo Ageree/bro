@@ -8,8 +8,26 @@ import {
   SCAN_LINES,
   WAKE_LINES,
 } from "./lib/memoryPolicy";
-import { formatJobWakeLine } from "./lib/jobWake";
 import { assertSecret } from "./secret";
+
+function formatJobWakeLine(j: {
+  _id: string;
+  goal: string;
+  doneWhen: string;
+  status: string;
+  waitingFor?: string;
+  note?: string;
+  emailMessageId?: string;
+  waitingSince?: number;
+  lastNudgeAt?: number;
+}): string {
+  const wait = j.waitingFor ? ` waitingFor=${j.waitingFor}` : "";
+  const note = j.note ? ` note=${j.note}` : "";
+  const mail = j.emailMessageId ? ` emailMessageId=${j.emailMessageId}` : "";
+  const since = j.waitingSince != null ? ` waitingSince=${j.waitingSince}` : "";
+  const nudged = j.lastNudgeAt != null ? ` lastNudgeAt=${j.lastNudgeAt}` : "";
+  return `id=${j._id} goal="${j.goal}" doneWhen="${j.doneWhen}" status=${j.status}${wait}${note}${mail}${since}${nudged}`;
+}
 
 const waitingFor = v.union(
   v.literal("human"),
@@ -60,29 +78,11 @@ export const wakeContext = query({
         line: formatJobWakeLine(j),
         goal: j.goal,
         ...(j.note ? { note: j.note } : {}),
-        ...(j.waitingFor === "human" ||
-        j.waitingFor === "email" ||
-        j.waitingFor === "browser"
-          ? { waitingFor: j.waitingFor }
-          : {}),
+        ...(j.waitingFor ? { waitingFor: j.waitingFor } : {}),
         ...(j.waitingSince != null ? { waitingSince: j.waitingSince } : {}),
         ...(j.lastNudgeAt != null ? { lastNudgeAt: j.lastNudgeAt } : {}),
       }));
     return { memories, jobs };
-  },
-});
-
-export const wake = query({
-  args: { secret: v.string(), phoneE164: v.string() },
-  returns: v.array(v.string()),
-  handler: async (ctx, { secret, phoneE164 }) => {
-    assertSecret(secret);
-    const rows = await ctx.db
-      .query("memories")
-      .withIndex("by_phone", (q) => q.eq("phoneE164", phoneE164))
-      .order("desc")
-      .take(WAKE_LINES);
-    return rows.reverse().map((r) => r.line);
   },
 });
 

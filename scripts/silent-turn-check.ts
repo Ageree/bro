@@ -1,5 +1,4 @@
 import {
-  fallbackForCompleted,
   fallbackForFailed,
   isSilentReply,
   takeFallbackSlot,
@@ -17,51 +16,9 @@ assert(turnOrigin({ origin: ["wakeup"] }) === "wakeup", "origin array");
 assert(turnOrigin({ origin: "bot" }) === undefined, "unknown origin");
 assert(turnOrigin(undefined) === undefined, "no attributes");
 
-// 2026-09-05: human turn, tools threw, model ended with nothing → fallback
-assert(
-  fallbackForCompleted({ finishReason: "stop", message: null, origin: "human" }) ===
-    TURN_FAILED_REPLY,
-  "empty human turn gets a fallback",
-);
-assert(
-  fallbackForCompleted({ finishReason: "error", message: "", origin: "human" }) ===
-    TURN_FAILED_REPLY,
-  "errored human turn gets a fallback",
-);
-assert(
-  fallbackForCompleted({ finishReason: "stop", message: "   ", origin: "human" }) ===
-    TURN_FAILED_REPLY,
-  "whitespace-only counts as empty",
-);
-
-// mid-turn tool steps are not the end
-assert(
-  fallbackForCompleted({ finishReason: "tool-calls", message: null, origin: "human" }) === null,
-  "tool-calls step is silent",
-);
-
-// the model said something (incl. [SILENT] after a tapback) → channel handles it
 assert(isSilentReply("[SILENT]") === true, "silent marker");
 assert(isSilentReply("  [SILENT] leftover") === true, "silent prefix");
 assert(isSilentReply("Ищу") === false, "visible is not silent");
-assert(
-  fallbackForCompleted({ finishReason: "stop", message: "[SILENT]", origin: "human" }) === null,
-  "explicit [SILENT] is not a failure",
-);
-assert(
-  fallbackForCompleted({ finishReason: "stop", message: "Ищу 🔎", origin: "human" }) === null,
-  "real reply needs no fallback",
-);
-
-// background wakeups may end empty
-assert(
-  fallbackForCompleted({ finishReason: "stop", message: null, origin: "wakeup" }) === null,
-  "wakeup may end empty",
-);
-assert(
-  fallbackForCompleted({ finishReason: "stop", message: null, origin: undefined }) === null,
-  "unknown origin stays quiet (never spam)",
-);
 assert(fallbackForFailed("human") === TURN_FAILED_REPLY, "failed human turn");
 assert(fallbackForFailed("wakeup") === null, "failed wakeup stays quiet");
 assert(fallbackForFailed(undefined) === null, "failed unknown stays quiet");

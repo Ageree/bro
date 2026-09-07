@@ -26,24 +26,9 @@ export function turnOrigin(
   return undefined;
 }
 
-export type CompletedTurn = {
-  finishReason: string;
-  message: string | null | undefined;
-  origin: TurnOrigin | undefined;
-};
-
 /** Deliberate quiet after a tapback (`imessage_react` / `telegram_react`). */
 export function isSilentReply(text: string | null | undefined): boolean {
   return typeof text === "string" && text.trim().startsWith("[SILENT]");
-}
-
-/** Fallback text for a completed turn, or null when the model said enough
- *  (or was allowed to stay quiet). `tool-calls` steps are mid-turn. */
-export function fallbackForCompleted(turn: CompletedTurn): string | null {
-  if (turn.origin !== "human") return null;
-  if (turn.finishReason === "tool-calls") return null;
-  if (turn.message && turn.message.trim()) return null;
-  return TURN_FAILED_REPLY;
 }
 
 /** Fallback text for a `turn.failed` event, or null for background turns. */
