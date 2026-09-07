@@ -51,6 +51,11 @@ const jobs = readFileSync(new URL("../agent/instructions/jobs.ts", import.meta.u
 assert(jobs.includes("jobWakeRows"), "jobs read the same snapshot");
 assert(jobs.includes("isJobCheckWakeup"), "job_check nudge is not on the HTTP path");
 assert(jobs.includes("Promise.all"), "due markNudged calls run in parallel");
+assert(jobs.includes("void Promise.all"), "markNudged does not block turn.started");
+assert(
+  !jobs.includes("await Promise.all"),
+  "nudge persist must not sit in front of job instructions",
+);
 assert(jobs.includes("JOB_CHECK_QUIET"), "non-due job_check may stay silent");
 assert(jobs.includes("isShortAckTurn"), "short acks get a no-new-tools steer");
 assert(jobs.includes("shortAckInstruction"), "short-ack instruction stays on turn.started");
@@ -233,17 +238,24 @@ assert(
   assert(ackFn.includes("Promise.all"), "read and typing share one identity GET");
 }
 {
+  const afterIdentity = imessage.indexOf("const identityHandle = handle");
+  const bindAt = imessage.indexOf("bindInbound(handle, remote");
+  const earlyOrAt = imessage.indexOf("prefetchOpenRouter()", afterIdentity);
+  const earlyAckAt = imessage.indexOf("ackIMessageReadAndTyping(", afterIdentity);
   const gatePAt = imessage.indexOf("const gateP = inboundOwnerGate");
   const awaitGateAt = imessage.indexOf("const gate = await gateP");
-  const ackAt = imessage.indexOf("ackIMessageReadAndTyping", gatePAt);
   const wakeAt = imessage.indexOf("loadWakeContext(ownerPhone)", gatePAt);
   const instinctAt = imessage.indexOf("prefetchInstinctRecall(ownerPhone", gatePAt);
-  const orAt = imessage.indexOf("prefetchOpenRouter", gatePAt);
+  assert(afterIdentity > 0 && bindAt > afterIdentity, "1:1 bind stays after identity");
+  assert(earlyOrAt > afterIdentity && earlyOrAt < bindAt, "OpenRouter warm starts before 1:1 bind");
+  assert(earlyAckAt > afterIdentity && earlyAckAt < bindAt, "1:1 typing starts before bind");
   assert(gatePAt > 0 && awaitGateAt > gatePAt, "1:1 billing starts before it is awaited");
-  assert(ackAt > gatePAt && ackAt < awaitGateAt, "bound 1:1 typing overlaps billing");
   assert(wakeAt > gatePAt && wakeAt < awaitGateAt, "wake prefetch overlaps billing");
   assert(instinctAt > gatePAt && instinctAt < awaitGateAt, "Instinct prefetch overlaps billing");
-  assert(orAt > gatePAt && orAt < awaitGateAt, "OpenRouter warm overlaps billing");
+  assert(
+    !imessage.slice(awaitGateAt, awaitGateAt + 400).includes("ackIMessageReadAndTyping"),
+    "unbound 1:1 does not wait for billing to start typing",
+  );
 }
 
 const inkbox = readFileSync(new URL("../agent/lib/inkbox.ts", import.meta.url), "utf8");
@@ -315,7 +327,9 @@ console.log(
     inboundBindSkippedWhenBound: true,
     conversationRecallSearchOnly: true,
     handleTenantCached: true,
-    boundTypingOverlapsBilling: true,
+    oneToOneTypingBeforeBind: true,
+    openRouterWarmBeforeBind: true,
+    groupPrefetchDuringBilling: true,
     telegramTypingOverlapsBilling: true,
     wakePrefetchDuringBilling: true,
     wakeContextTtlMs: 8000,

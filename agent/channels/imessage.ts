@@ -91,6 +91,7 @@ import {
 } from "../lib/early-deliver.ts";
 import {
   groupAuthAttributes,
+  groupMemoryScope,
   groupParticipantPhones,
   groupSenderPhone,
   groupWelcomeText,
@@ -414,6 +415,16 @@ export default defineChannel({
 
       const identityHandle = handle ?? agentHandle();
       const participants = group ? groupParticipantPhones(msg) : [];
+      const preview = inboundIMessageText(msg);
+      // 1:1: hide bind + billing behind TLS/warm and the first Inkbox
+      // read+typing. Groups must not mark-read or type (side chatter).
+      if (!group && preview && msg.conversation_id) {
+        prefetchOpenRouter();
+        parkTurn(
+          waitUntil,
+          ackIMessageReadAndTyping(msg.conversation_id, identityHandle),
+        );
+      }
 
       let firstBind = false;
       let firstGroup = false;
@@ -473,7 +484,6 @@ export default defineChannel({
         }
       }
 
-      const preview = inboundIMessageText(msg);
       if (!preview) {
         if (firstBind) {
           await sendFirstBindOnboard({
@@ -493,8 +503,6 @@ export default defineChannel({
       }
 
       if (!group) {
-        // Bound 1:1: typing overlaps billing so the first Inkbox signal
-        // does not wait out countInboundMessage.
         const gateP = inboundOwnerGate(ownerPhone);
         void loadWakeContext(ownerPhone).catch((err) =>
           console.error("wake prefetch failed", err),
@@ -506,13 +514,6 @@ export default defineChannel({
           })
           .catch((err) => console.error("instinct voice prefetch failed", err));
         prefetchOpenRouter();
-        if (boundOneToOne) {
-          const ack = ackIMessageReadAndTyping(
-            msg.conversation_id,
-            identityHandle,
-          );
-          parkTurn(waitUntil, ack);
-        }
         const gate = await gateP;
         if (gate.decision === "drop") {
           return new Response(null, { status: 204 });
@@ -532,13 +533,6 @@ export default defineChannel({
             payUrl: gate.payUrl,
           });
           return new Response(null, { status: 204 });
-        }
-        if (!boundOneToOne) {
-          const ack = ackIMessageReadAndTyping(
-            msg.conversation_id,
-            identityHandle,
-          );
-          parkTurn(waitUntil, ack);
         }
       }
 
@@ -584,7 +578,16 @@ export default defineChannel({
       // Group billing runs only after the mention gate so side chatter
       // cannot burn the owner's daily quota or paywall the group.
       if (group) {
-        const gate = await inboundOwnerGate(ownerPhone);
+        const gateP = inboundOwnerGate(ownerPhone);
+        const groupScope = groupMemoryScope(msg.conversation_id);
+        if (groupScope) {
+          void loadWakeContext(groupScope).catch((err) =>
+            console.error("group wake prefetch failed", err),
+          );
+          prefetchInstinctRecall(groupScope, inbound.text);
+        }
+        prefetchOpenRouter();
+        const gate = await gateP;
         if (gate.decision === "drop") {
           return new Response(null, { status: 204 });
         }

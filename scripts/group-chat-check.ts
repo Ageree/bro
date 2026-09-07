@@ -221,6 +221,22 @@ assert(mentionAt !== -1 && firstGate !== -1 && secondGate !== -1, "mention and b
 assert(firstGate < mentionAt, "1:1 bills before mention");
 assert(mentionAt < secondGate, "group bills after mention");
 assert(
+  channel.indexOf("groupMemoryScope(msg.conversation_id)") > mentionAt,
+  "group wake/Instinct use the group container, after the mention gate",
+);
+assert(
+  channel.indexOf("prefetchInstinctRecall(groupScope", mentionAt) > mentionAt &&
+    channel.indexOf("prefetchInstinctRecall(groupScope", mentionAt) <
+      channel.indexOf("const gate = await gateP", secondGate),
+  "group Instinct overlaps group billing",
+);
+assert(
+  channel.indexOf("prefetchOpenRouter()", mentionAt) > mentionAt &&
+    channel.indexOf("prefetchOpenRouter()", mentionAt) <
+      channel.indexOf("const gate = await gateP", secondGate),
+  "group OpenRouter warm overlaps group billing",
+);
+assert(
   channel.includes("if (inbound.allVoiceFailed)") &&
     channel.includes("if (group) return new Response(null, { status: 204 })"),
   "groups skip voice-fail noise",

@@ -88,13 +88,65 @@ function broToolSchemas(): Array<{
     function: {
       name,
       description,
-      parameters: {
-        type: "object",
-        properties: { task: { type: "string" } },
-        additionalProperties: true,
-      },
+      parameters: broToolParameters(name),
     },
   }));
+}
+
+/** Production-shaped JSON for the tools-on TTFB probe. Eve defaults stay off. */
+function broToolParameters(name: string): Record<string, unknown> {
+  if (name === "browser_task") {
+    return {
+      type: "object",
+      required: ["task"],
+      properties: {
+        task: { type: "string" },
+        reset: { type: "boolean" },
+        pay: {
+          type: "object",
+          properties: {
+            hosts: { type: "array", items: { type: "string" } },
+            maxRub: { type: "number" },
+            vaultHandle: { type: "string" },
+          },
+          required: ["hosts"],
+        },
+      },
+    };
+  }
+  if (name.startsWith("composio") || name.includes("COMPOSIO") || name.startsWith("composio_")) {
+    return {
+      type: "object",
+      properties: {
+        queries: { type: "array", items: { type: "object" } },
+        tool_slugs: { type: "array", items: { type: "string" } },
+        toolkits: { type: "array", items: { type: "string" } },
+        tools: { type: "array", items: { type: "object" } },
+        code_to_execute: { type: "string" },
+        command: { type: "string" },
+      },
+      additionalProperties: true,
+    };
+  }
+  if (name === "job_wait") {
+    return {
+      type: "object",
+      required: ["jobId", "waitingFor"],
+      properties: {
+        jobId: { type: "string" },
+        waitingFor: { type: "string", enum: ["human", "email", "browser"] },
+        note: { type: "string" },
+        emailThreadId: { type: "string" },
+        emailMessageId: { type: "string" },
+        checkInMinutes: { type: "number" },
+      },
+    };
+  }
+  return {
+    type: "object",
+    properties: { task: { type: "string" } },
+    additionalProperties: true,
+  };
 }
 
 /** Scan OpenRouter chat SSE enough to time first reasoning vs first visible token. */
@@ -337,7 +389,7 @@ async function measureOpenRouterTtfb(): Promise<Record<string, unknown>> {
     streamWithBroToolDescriptions: withTools,
     shapedWarm,
     streamAfterShapedWarm: afterShapedWarm,
-    note: "Probe uses production OpenRouter extras (reasoning.effort=low, provider.sort=latency). Eve reasoning stays unset. Tools-off is the baseline; tools-on uses Bro tool descriptions with stub schemas (not Eve defaults). Production maxOutputTokens stays 8192. No iMessage send.",
+    note: "Probe uses production OpenRouter extras (reasoning.effort=low, provider.sort=latency). Eve reasoning stays unset. Tools-on uses Bro descriptions plus production-shaped parameters (not Eve default tools). Production maxOutputTokens stays 8192. No iMessage send.",
   };
 }
 
