@@ -128,18 +128,46 @@ function stripFinalPunct(s: string): string {
   return s.replace(/[.!?…。！？]+$/u, "").trim();
 }
 
+const ACK_TAILS = new Set([
+  "ок",
+  "ok",
+  "okay",
+  "окей",
+  "спасибо",
+  "thanks",
+  "thx",
+  "понял",
+  "поняла",
+  "ясно",
+  "принято",
+  "ага",
+]);
+
 /** Finished line, or an unterminated line that already looks like a full bubble. */
 export function isLikelyCompleteBubble(text: string): boolean {
   const t = text.trim();
   if (!t || !visibleReply(t)) return false;
   if (!/\p{L}|\p{N}/u.test(t)) return true;
-  if (/[!?…！？]$/u.test(t)) return true;
+  const tokens = stripFinalPunct(t).split(/\s+/).filter(Boolean);
+  const lastWord = tokens[tokens.length - 1] ?? "";
+  const firstFolded = foldTail(tokens[0] ?? "");
+  const lastFolded = foldTail(lastWord);
+  const endsEmoji = /[\p{Extended_Pictographic}\p{Emoji_Presentation}]$/u.test(t);
+  if (
+    ACK_TAILS.has(firstFolded) &&
+    tokens.length <= 2 &&
+    (endsEmoji || /[.!?…。！？]$/u.test(t))
+  ) {
+    return true;
+  }
+  if (/[!?！？]$/u.test(t)) {
+    return Boolean(/\p{L}/u.test(lastWord) && !ABBREV_TAILS.has(lastFolded));
+  }
   if (!/[.。]$/u.test(t)) return false;
-  const word = stripFinalPunct(t).split(/\s+/).pop() ?? "";
-  const folded = foldTail(word);
-  if (ABBREV_TAILS.has(folded)) return false;
-  if (COMPLETE_TAILS.has(folded)) return true;
-  return word.length >= 4;
+  if (ABBREV_TAILS.has(lastFolded)) return false;
+  if (!/\p{L}/u.test(lastWord)) return false;
+  if (COMPLETE_TAILS.has(lastFolded)) return true;
+  return lastWord.length >= 4;
 }
 
 /** Earliest finished sentence in an open line (`Ок.` inside `Ок. Сейчас…`). */
@@ -238,13 +266,7 @@ export function nextBubble(
   const last = sent[sent.length - 1];
   if (last && last.startsWith(cur)) return null;
   const curFold = foldLines(cur);
-  const prefixes = [
-    sent.join("\n\n"),
-    sent.join("\n"),
-    sent.join(" "),
-    last ?? "",
-    last ? stripFinalPunct(last) : "",
-  ];
+  const prefixes = [sent.join("\n\n"), sent.join("\n"), sent.join(" "), last ?? ""];
   for (const joined of prefixes) {
     const joinedFold = foldLines(joined);
     if (!joinedFold) continue;
@@ -258,6 +280,19 @@ export function nextBubble(
         .replace(/^[\s.!?…。！？,;:]+/u, "")
         .trim();
       return rest || null;
+    }
+  }
+  if (last) {
+    const bare = foldLines(stripFinalPunct(last));
+    if (bare && curFold.startsWith(bare) && curFold.length > bare.length) {
+      const next = curFold[bare.length] ?? "";
+      if (/[.!?…。！？]/.test(next)) {
+        const rest = curFold
+          .slice(bare.length)
+          .replace(/^[\s.!?…。！？,;:]+/u, "")
+          .trim();
+        return rest || null;
+      }
     }
   }
   return cur;
@@ -324,6 +359,7 @@ export function recordSent(
   row.bubbles = [...row.bubbles, bubble];
   sent.set(turnId, row);
   markTurnSpoke(turnId, now);
+  if (isLookingBubble(bubble)) markTurnLooking(turnId, now);
   return row.bubbles;
 }
 
@@ -372,5 +408,29 @@ export function markTurnSpoke(
 export function turnSpoke(turnId: string | undefined, now = Date.now()): boolean {
   if (!turnId) return false;
   const at = spokeTurns.get(turnId);
+  return at !== undefined && now - at <= 10 * 60_000;
+}
+
+export function isLookingBubble(text: string): boolean {
+  return /ищу|looking/i.test(text);
+}
+
+const lookingTurns = new Map<string, number>();
+
+export function markTurnLooking(
+  turnId: string,
+  now: number,
+  ttlMs = 10 * 60_000,
+): void {
+  if (!turnId) return;
+  for (const [key, at] of lookingTurns) {
+    if (now - at > ttlMs) lookingTurns.delete(key);
+  }
+  lookingTurns.set(turnId, now);
+}
+
+export function turnLooking(turnId: string | undefined, now = Date.now()): boolean {
+  if (!turnId) return false;
+  const at = lookingTurns.get(turnId);
   return at !== undefined && now - at <= 10 * 60_000;
 }

@@ -5,6 +5,7 @@ import {
   isLikelyCompleteBubble,
   markTurnSpoke,
   nextBubble,
+  turnLooking,
   turnSpoke,
   planFirstLineFlush,
   planPreToolFlush,
@@ -89,6 +90,13 @@ assert(!isLikelyCompleteBubble("Ищу на Невском просп."), "пр�
 assert(!isLikelyCompleteBubble("бюджет 2 млрд."), "млрд. is not complete");
 assert(!isLikelyCompleteBubble("Нашёл три варианта"), "unterminated sentence stays");
 assert(!isLikelyCompleteBubble("Ищу 🔎"), "looking line with emoji is not a finished bubble");
+assert(isLikelyCompleteBubble("Ок 👍"), "ack plus emoji is complete");
+assert(!isLikelyCompleteBubble("Нашёл за 8490."), "price period is not a sentence");
+assert(!isLikelyCompleteBubble("Ищу… кроссовки"), "ellipsis looking line is not peeled");
+assert(
+  nextBubble(["Готово!"], "Готово к отправке") === "Готово к отправке",
+  "bare last word plus space is a new sentence, not a remainder",
+);
 
 assert(
   planStreamFlush({ soFar: "Ок!", alreadySent: [] }).send === "Ок!",
@@ -226,6 +234,9 @@ const sent = new Map<string, { at: number; bubbles: string[]; soFar?: string }>(
 recordSent(sent, "t1", "Ищу", 1_000);
 assert(bubblesFor(sent, "t1").join("|") === "Ищу", "record first");
 assert(turnSpoke("t1", 1_000), "recordSent marks this turn as spoken");
+assert(turnLooking("t1", 1_000), "ищу bubble marks the turn as looking");
+recordSent(sent, "t-ack", "Ок!", 1_000);
+assert(!turnLooking("t-ack", 1_000), "ок bubble is not a looking line");
 recordSent(sent, "t1", "Нашёл", 2_000);
 assert(bubblesFor(sent, "t1").join("|") === "Ищу|Нашёл", "record second");
 assert(bubblesFor(sent, "t2").length === 0, "other turn empty");
