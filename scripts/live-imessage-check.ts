@@ -16,6 +16,7 @@ import {
   isE164,
   parseE164,
   parsePlay,
+  pickListenRemote,
   quietSettled,
   TESTER_CLAIM_KEY,
   testerHandleFromEnv,
@@ -162,6 +163,22 @@ const listenNoBro = classifyListen({
   broHandle: DEFAULT_BRO_HANDLE,
 });
 assert(listenNoBro.blocker === "no_bro", "listen needs QA Bro");
+
+assert(
+  pickListenRemote({ assignmentRemotes: ["+79217818876"] }) === "+79217818876",
+  "pick assignment when no convo",
+);
+assert(
+  pickListenRemote({
+    assignmentRemotes: ["+79217818876"],
+    conversationRemote: "+16500000001",
+  }) === "+16500000001",
+  "pick conversation remote first",
+);
+assert(
+  pickListenRemote({ assignmentRemotes: [] }) === undefined,
+  "pick none",
+);
 
 assert(
   allowlistWithTester("+79217818876", "+16500000001") ===

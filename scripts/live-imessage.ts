@@ -19,7 +19,9 @@ import {
   isE164,
   parseE164,
   parsePlay,
+  pickListenRemote,
   quietSettled,
+  remoteLast4,
   testerHandleFromEnv,
   type LiveBubble,
   type LiveLaneStatus,
@@ -431,19 +433,24 @@ async function waitConnect(timeoutMs: number): Promise<void> {
   throw new Error(last.detail ?? "timed out waiting for the iPhone connect");
 }
 
-async function broConversation(
+async function broTarget(
   bro: AgentIdentity,
-): Promise<{ conversationId: string; remote: string }> {
-  const remotes = new Set(await assignmentRemotes(bro));
+): Promise<{ conversationId?: string; remote: string }> {
+  const remotes = await assignmentRemotes(bro);
   const convos = await bro.listIMessageConversations({ limit: 20 });
+  const assigned = new Set(remotes);
   const hit = convos.find(
-    (c) => typeof c.remoteNumber === "string" && remotes.has(c.remoteNumber),
+    (c) => typeof c.remoteNumber === "string" && assigned.has(c.remoteNumber),
   );
-  if (!hit?.id || !hit.remoteNumber) {
+  const remote = pickListenRemote({
+    assignmentRemotes: remotes,
+    conversationRemote: hit?.remoteNumber,
+  });
+  if (!remote) {
     const listen = await listenStatus(inkbox());
-    throw new Error(listen.detail ?? "no active iMessage conversation");
+    throw new Error(listen.detail ?? "no iMessage assignment");
   }
-  return { conversationId: hit.id, remote: hit.remoteNumber };
+  return { conversationId: hit?.id, remote };
 }
 
 async function printInbox(opts: { waitMs: number; limit: number }): Promise<void> {
@@ -451,10 +458,12 @@ async function printInbox(opts: { waitMs: number; limit: number }): Promise<void
   const listen = await listenStatus(client);
   if (!listen.ready) throw new Error(listen.detail ?? "listen lane not ready");
   const bro = await client.getIdentity(listen.broHandle);
-  const { conversationId } = await broConversation(bro);
+  const { conversationId } = await broTarget(bro);
   const seen = new Set<string>();
   const dump = async (): Promise<LiveBubble[]> => {
-    const msgs = await bro.listIMessages({ conversationId, limit: opts.limit });
+    const msgs = conversationId
+      ? await bro.listIMessages({ conversationId, limit: opts.limit })
+      : await bro.listIMessages({ limit: opts.limit });
     const fresh: LiveBubble[] = [];
     for (const msg of [...msgs].reverse()) {
       if (seen.has(msg.id)) continue;
@@ -480,14 +489,18 @@ async function sendAsBro(text: string): Promise<void> {
   const listen = await listenStatus(client);
   if (!listen.ready) throw new Error(listen.detail ?? "listen lane not ready");
   const bro = await client.getIdentity(listen.broHandle);
-  const { conversationId } = await broConversation(bro);
-  const sent = await bro.sendIMessage({ conversationId, text });
+  const { conversationId, remote } = await broTarget(bro);
+  const sent = await bro.sendIMessage(
+    conversationId ? { conversationId, text } : { to: remote, text },
+  );
   if (sent.wasDowngraded) throw new Error("send was downgraded off iMessage");
   console.log(
     JSON.stringify({
       ok: true,
       id: sent.id,
       conversationId: sent.conversationId,
+      via: conversationId ? "conversation" : "assignment",
+      remoteLast4: remoteLast4(remote),
       service: String(sent.service ?? ""),
       wasDowngraded: sent.wasDowngraded ?? false,
     }),

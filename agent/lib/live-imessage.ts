@@ -269,6 +269,16 @@ export function classifyListen(input: {
   return { ...base, ready: true };
 }
 
+/** After connect, Inkbox may have an assignment before any conversation row. */
+export function pickListenRemote(opts: {
+  assignmentRemotes: string[];
+  conversationRemote?: string | null;
+}): string | undefined {
+  const fromConvo = parseE164(opts.conversationRemote);
+  if (fromConvo) return fromConvo;
+  return opts.assignmentRemotes.find((n) => isE164(n));
+}
+
 export function allowlistWithTester(
   existing: string | undefined,
   testerNumber: string,
