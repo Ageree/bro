@@ -166,6 +166,13 @@ assert.ok(
   recallMemory.includes("searchConversation"),
   "turn.started conversation recall is one search",
 );
+const conversationSrc = readFileSync(
+  new URL("../agent/lib/conversation-recall.ts", import.meta.url),
+  "utf8",
+);
+assert.ok(conversationSrc.includes("/v4/search"), "conversation search uses the plugin v4 API");
+assert.ok(conversationSrc.includes("searchMode: \"hybrid\""), "conversation search is hybrid");
+assert.ok(conversationSrc.includes("rewriteQuery: false"), "conversation search skips query rewrite");
 assert.equal(
   conversationContainerTag("memscope1_abc"),
   "eve_agent_memscope1_abc",

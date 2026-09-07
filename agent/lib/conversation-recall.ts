@@ -9,7 +9,7 @@ export const CONVERSATION_SEARCH_HITS = 5;
 export const CONVERSATION_HIT_CHARS = 500;
 export const CONVERSATION_RECALL_ID = "bro-conversation-hits";
 
-const BASE = "https://api.supermemory.ai/v3";
+const BASE = "https://api.supermemory.ai";
 const TAG_PREFIX = "eve_agent_";
 
 function apiKey(): string {
@@ -73,29 +73,37 @@ function hitFromResult(raw: NonNullable<SearchResponse["results"]>[number]): Con
   };
 }
 
-/** One hybrid search. Throws on HTTP errors so the slot can degrade to null. */
+/** One hybrid /v4 search — same endpoint as `@supermemory/eve` auto-search. */
 export async function searchConversation(
   scopeKey: string,
   query: string,
   timeoutMs: number,
+  abort?: AbortSignal,
 ): Promise<ConversationHit[]> {
   const q = query.trim();
   if (!q) return [];
-  const res = await fetch(`${BASE}/search`, {
+  const signal = abort
+    ? AbortSignal.any([AbortSignal.timeout(timeoutMs), abort])
+    : AbortSignal.timeout(timeoutMs);
+  const res = await fetch(`${BASE}/v4/search`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${apiKey()}`,
       "Content-Type": "application/json",
     },
-    signal: AbortSignal.timeout(timeoutMs),
+    signal,
     body: JSON.stringify({
       q,
-      containerTags: [conversationContainerTag(scopeKey)],
+      containerTag: conversationContainerTag(scopeKey),
+      searchMode: "hybrid",
+      include: { documents: true },
+      rewriteQuery: false,
+      rerank: false,
       limit: CONVERSATION_SEARCH_HITS,
     }),
   });
   if (!res.ok) {
-    throw new Error(`supermemory /search failed: ${res.status} ${await res.text()}`);
+    throw new Error(`supermemory /v4/search failed: ${res.status} ${await res.text()}`);
   }
   const json = (await res.json()) as SearchResponse;
   const hits: ConversationHit[] = [];

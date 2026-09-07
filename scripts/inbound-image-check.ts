@@ -4,6 +4,7 @@ import {
   IMAGE_TIMEOUT_MS,
   inboundImages,
   inboundUserContent,
+  imageUrlParts,
   isImageContentType,
   isPlainJson,
 } from "../agent/lib/inbound-image.ts";
@@ -95,5 +96,7 @@ assert(isPlainJson("hi"), "string is plain JSON");
 assert(isPlainJson([1, "a", null, { b: [true, {}] }]), "nested plain arrays/objects are plain JSON");
 
 assert(IMAGE_TIMEOUT_MS === 800, "inbound image wait is 800ms — URL fallback after");
+const urls = imageUrlParts(media);
+assert(urls.length === 2 && urls[0]?.data === imgs[0].url, "url parts skip the download");
 
 console.log("inbound-image-check ok");

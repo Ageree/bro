@@ -39,6 +39,7 @@ assert(recall.includes("searchConversation"), "turn.started is one abortable sea
 assert(recall.includes("CONVERSATION_RECALL_TIMEOUT_MS"), "conversation search is time-capped");
 assert(!recall.includes("loadProfileContext"), "profile dump stays off turn.started");
 assert(recall.includes("inner.recall"), "compaction still uses the plugin recall");
+assert(recall.includes("abortSignal"), "conversation search joins Eve abort");
 
 const memories = readFileSync(new URL("../convex/memories.ts", import.meta.url), "utf8");
 assert(memories.includes("wakeContext"), "Convex exposes the combined snapshot");
@@ -50,6 +51,8 @@ assert(imessage.includes("canSkipInboundBind"), "returning users skip no-op bind
 assert(imessage.includes("prefetchInboundImages"), "photos download during bind/count");
 assert(imessage.includes("voiceP"), "voice STT overlaps bind/count");
 assert(imessage.includes("flaggedGroup"), "flagged groups skip the extra Convex lookup");
+assert(imessage.includes("boundOneToOne"), "bound 1:1 skips getGroupByConversation");
+assert(imessage.includes("imageUrlParts"), "photos do not tail-wait after bind");
 
 const inkbox = readFileSync(new URL("../agent/lib/inkbox.ts", import.meta.url), "utf8");
 assert(inkbox.includes("inkboxIdentity"), "Inkbox identity is cached");

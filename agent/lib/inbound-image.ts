@@ -113,6 +113,16 @@ export function assembleInboundContent(
   return [{ type: "text", text }, ...parts];
 }
 
+export function imageUrlParts(
+  media: InboundMediaItem[] | null | undefined,
+): ImagePart[] {
+  return inboundImages(media).map((img) => ({
+    type: "file",
+    mediaType: img.mediaType,
+    data: img.url,
+  }));
+}
+
 export function prefetchInboundImages(
   media: InboundMediaItem[] | null | undefined,
   deps: Parameters<typeof fetchImagePart>[1] = {},

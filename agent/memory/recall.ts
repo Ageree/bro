@@ -63,10 +63,12 @@ async function startedSearch(context: RecallCtx): Promise<MemoryRecallResult> {
       context.memory.scope.key,
       query,
       CONVERSATION_RECALL_TIMEOUT_MS,
+      context.abortSignal,
     );
     const content = formatConversationRecall(hits);
     return content ? { messages: [{ id: CONVERSATION_RECALL_ID, content }] } : null;
   } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") return null;
     console.error("conversation recall failed", err);
     return null;
   }

@@ -73,6 +73,8 @@ export async function searchArchive(
       body: JSON.stringify({
         q: query,
         containerTags: [archiveTag(phone)],
+        rewriteQuery: false,
+        rerank: false,
         limit,
       }),
     },

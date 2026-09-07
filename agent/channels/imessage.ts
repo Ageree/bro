@@ -54,7 +54,11 @@ import {
 import { telegramBindLink } from "../../convex/lib/telegramPolicy.ts";
 import { telegramBotUsername } from "../lib/telegram";
 import { transcribeVoiceNote } from "../lib/voice";
-import { assembleInboundContent, prefetchInboundImages } from "../lib/inbound-image.ts";
+import {
+  assembleInboundContent,
+  imageUrlParts,
+  prefetchInboundImages,
+} from "../lib/inbound-image.ts";
 import { canSkipInboundBind } from "../lib/inbound-bind.ts";
 import { VOICE_FAILED_REPLY } from "../lib/voice-policy";
 import { watcherWakeupPrompt } from "../lib/purchase-policy";
@@ -359,11 +363,26 @@ export default defineChannel({
       }
 
       const voiceP = inboundIMessageTextWithVoice(msg, transcribeVoiceNote);
-      const imagesP = prefetchInboundImages(msg.media);
+      let fetchedImages: Awaited<ReturnType<typeof prefetchInboundImages>> | undefined;
+      const imagesP = prefetchInboundImages(msg.media)
+        .then((parts) => {
+          fetchedImages = parts;
+          return parts;
+        })
+        .catch((err) => {
+          console.error("inbound image prefetch failed", err);
+          return imageUrlParts(msg.media);
+        });
+      void imagesP;
 
       const flaggedGroup = isGroupMessage(msg);
+      const boundOneToOne = canSkipInboundBind(
+        tenant,
+        typeof msg.remote_number === "string" ? msg.remote_number : "",
+        msg.conversation_id,
+      );
       const knownGroup =
-        !flaggedGroup && msg.conversation_id
+        !flaggedGroup && !boundOneToOne && msg.conversation_id
           ? await getGroupByConversation(msg.conversation_id).catch(() => null)
           : null;
       const group = Boolean(knownGroup) || flaggedGroup;
@@ -571,7 +590,10 @@ export default defineChannel({
       );
       if (typeof waitUntil === "function") waitUntil(touch);
       else void touch;
-      const rawContent = assembleInboundContent(inbound.text, await imagesP);
+      const rawContent = assembleInboundContent(
+        inbound.text,
+        fetchedImages ?? imageUrlParts(msg.media),
+      );
       const content = group
         ? tagGroupUserContent(remote, rawContent)
         : rawContent;
