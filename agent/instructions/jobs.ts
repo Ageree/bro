@@ -1,7 +1,11 @@
 import { defineDynamic, defineInstructions } from "eve/instructions";
-import { isGroupTurn } from "../lib/group-guard";
-import { jobWakeLines } from "../lib/convex";
-import { jobWakeInstruction } from "../lib/job-wake.ts";
+import { isGroupTurn, turnAttributes } from "../lib/group-guard";
+import { jobWakeRows, markNudged } from "../lib/convex";
+import {
+  dueJobNudges,
+  jobNudgeInstruction,
+  jobWakeInstruction,
+} from "../lib/job-wake.ts";
 import { tenantId } from "../lib/tenant";
 
 export default defineDynamic({
@@ -15,7 +19,23 @@ export default defineDynamic({
         });
       }
       try {
-        const content = jobWakeInstruction(await jobWakeLines(tenantId(ctx)));
+        const phone = tenantId(ctx);
+        const rows = await jobWakeRows(phone);
+        const now = Date.now();
+        const jobCheck =
+          turnAttributes(ctx)?.wakeupKind === "job_check";
+        const due = jobCheck ? dueJobNudges(rows, now) : [];
+        for (const job of due) {
+          await markNudged(phone, job.id).catch((err) =>
+            console.error("markNudged failed", err),
+          );
+        }
+        const content = [
+          jobWakeInstruction(rows.map((r) => r.line)),
+          jobCheck ? jobNudgeInstruction(rows, now) : null,
+        ]
+          .filter((part): part is string => Boolean(part))
+          .join("\n\n");
         if (!content) return null;
         return defineInstructions({ role: "user", content });
       } catch (err) {

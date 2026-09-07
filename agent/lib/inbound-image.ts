@@ -21,7 +21,7 @@
 import { readLimited } from "./voice.ts";
 
 export const IMAGE_MAX_BYTES = 3 * 1024 * 1024;
-export const IMAGE_TIMEOUT_MS = 10_000;
+export const IMAGE_TIMEOUT_MS = 3_000;
 
 export type InboundMediaItem = {
   url?: string | null;

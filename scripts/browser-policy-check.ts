@@ -391,5 +391,10 @@ assert(
   "waitForRun status-polls before hydrating",
 );
 assert(waitFn.includes("Math.min(2000, remaining)"), "waitForRun does not oversleep the budget");
+const hydrateFn = waitFor.slice(waitFor.indexOf("export async function hydrate"));
+assert(
+  hydrateFn.includes("isTerminal(status)") && hydrateFn.includes("/sessions/"),
+  "hydrate skips session GET while the run is live and already has a URL",
+);
 
 console.log("browser-policy-check ok");

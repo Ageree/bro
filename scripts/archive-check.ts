@@ -134,6 +134,19 @@ assert.ok(
   "auto-recall is shorter than the tool path",
 );
 
+const recallMemory = readFileSync(
+  new URL("../agent/memory/recall.ts", import.meta.url),
+  "utf8",
+);
+assert.ok(
+  recallMemory.includes("shouldRecallArchive"),
+  "conversation recall uses the same wakeup gate as archive",
+);
+assert.ok(
+  recallMemory.includes("gatedStarted") || recallMemory.includes("turn.started"),
+  "conversation recall still has a turn.started hook",
+);
+
 const archiveMemory = readFileSync(
   new URL("../agent/memory/archive.ts", import.meta.url),
   "utf8",

@@ -1,5 +1,9 @@
 import { readFileSync } from "node:fs";
-import { jobWakeInstruction } from "../agent/lib/job-wake.ts";
+import {
+  dueJobNudges,
+  jobNudgeInstruction,
+  jobWakeInstruction,
+} from "../agent/lib/job-wake.ts";
 import {
   defaultCheckInMinutes,
   nudgePrompt,
@@ -320,12 +324,57 @@ if (!openJobs) throw new Error("open jobs still land in context");
 assert(openJobs.includes("джоб x: слот"), "open jobs still land in context");
 assert(openJobs.includes("[event:mail]"), "mail/OTP framing stays when a job is open");
 
+const nudgeNow = t0 + 20 * 60_000;
+const due = dueJobNudges(
+  [
+    {
+      id: "j1",
+      line: "id=j1",
+      goal: "слот",
+      waitingFor: "human",
+      waitingSince: t0,
+    },
+  ],
+  nudgeNow,
+);
+assert(due.length === 1 && due[0]?.id === "j1", "due nudge from wake rows");
+const nudgeText = jobNudgeInstruction(
+  [
+    {
+      id: "j1",
+      line: "id=j1",
+      goal: "слот",
+      waitingFor: "human",
+      waitingSince: t0,
+    },
+  ],
+  nudgeNow,
+);
+assert(nudgeText?.includes("Do NOT answer [SILENT]"), "due job_check force-speaks");
+assert(
+  jobNudgeInstruction(
+    [
+      {
+        id: "j1",
+        line: "id=j1",
+        goal: "слот",
+        waitingFor: "human",
+        waitingSince: t0,
+      },
+    ],
+    t0 + 1000,
+  ) === null,
+  "fresh wait is not a nudge",
+);
+
 const jobsSrc = readFileSync(
   new URL("../agent/instructions/jobs.ts", import.meta.url),
   "utf8",
 );
 assert(jobsSrc.includes("return null"), "empty job list injects nothing");
 assert(jobsSrc.includes("Job store unavailable"), "store errors still surface");
+assert(jobsSrc.includes("wakeupKind"), "nudge only on job_check wakeups");
+assert(jobsSrc.includes("jobNudgeInstruction"), "nudge copy lives on turn.started");
 
 const imessage = readFileSync(
   new URL("../agent/channels/imessage.ts", import.meta.url),
@@ -335,6 +384,11 @@ assert(imessage.includes("parkTurn"), "human iMessage turn is not awaited");
 assert(
   /await from\(conversationId\)\.send\(prompt/.test(imessage),
   "Convex wakeups still await send so dispatch sees failures",
+);
+assert(imessage.includes("wakeupKind"), "wakeup stamps kind for job_check nudge");
+assert(
+  !imessage.includes("job_check nudge lookup"),
+  "job_check no longer lists jobs on the HTTP path",
 );
 
 console.log("jobs-check ok");

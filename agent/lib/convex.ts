@@ -15,11 +15,41 @@ function secret(): string {
   return s;
 }
 
+export type JobWakeRow = {
+  id: string;
+  line: string;
+  goal: string;
+  note?: string;
+  waitingFor?: "human" | "email" | "browser";
+  waitingSince?: number;
+  lastNudgeAt?: number;
+};
+
+export type WakeContext = {
+  memories: string[];
+  jobs: JobWakeRow[];
+};
+
+const wakeInflight = new Map<string, Promise<WakeContext>>();
+
+/** One Convex snapshot for memo + jobs. Coalesces parallel turn.started callers. */
+export async function loadWakeContext(phoneE164: string): Promise<WakeContext> {
+  const existing = wakeInflight.get(phoneE164);
+  if (existing) return existing;
+  const pending = client()
+    .query(api.memories.wakeContext, {
+      secret: secret(),
+      phoneE164,
+    })
+    .finally(() => {
+      wakeInflight.delete(phoneE164);
+    });
+  wakeInflight.set(phoneE164, pending);
+  return pending;
+}
+
 export async function wakeLines(phoneE164: string): Promise<string[]> {
-  return await client().query(api.memories.wake, {
-    secret: secret(),
-    phoneE164,
-  });
+  return (await loadWakeContext(phoneE164)).memories;
 }
 
 export async function noteLine(phoneE164: string, line: string): Promise<string> {
@@ -248,10 +278,11 @@ export async function getTenantByEmail(emailAddress: string) {
 }
 
 export async function jobWakeLines(phoneE164: string): Promise<string[]> {
-  return await client().query(api.jobs.wake, {
-    secret: secret(),
-    phoneE164,
-  });
+  return (await loadWakeContext(phoneE164)).jobs.map((j) => j.line);
+}
+
+export async function jobWakeRows(phoneE164: string): Promise<JobWakeRow[]> {
+  return (await loadWakeContext(phoneE164)).jobs;
 }
 
 export async function listOpenJobs(

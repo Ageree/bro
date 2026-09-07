@@ -8,7 +8,67 @@ import {
   SCAN_LINES,
   WAKE_LINES,
 } from "./lib/memoryPolicy";
+import { formatJobWakeLine } from "./lib/jobWake";
 import { assertSecret } from "./secret";
+
+const waitingFor = v.union(
+  v.literal("human"),
+  v.literal("email"),
+  v.literal("browser"),
+);
+
+const jobWakeRow = v.object({
+  id: v.string(),
+  line: v.string(),
+  goal: v.string(),
+  note: v.optional(v.string()),
+  waitingFor: v.optional(waitingFor),
+  waitingSince: v.optional(v.number()),
+  lastNudgeAt: v.optional(v.number()),
+});
+
+/** One turn-start snapshot: memo lines + open jobs. Avoids two Convex RTTs. */
+export const wakeContext = query({
+  args: { secret: v.string(), phoneE164: v.string() },
+  returns: v.object({
+    memories: v.array(v.string()),
+    jobs: v.array(jobWakeRow),
+  }),
+  handler: async (ctx, { secret, phoneE164 }) => {
+    assertSecret(secret);
+    const memoryRows = await ctx.db
+      .query("memories")
+      .withIndex("by_phone", (q) => q.eq("phoneE164", phoneE164))
+      .order("desc")
+      .take(WAKE_LINES);
+    const memories = memoryRows.reverse().map((r) => r.line);
+    const tenant = await ctx.db
+      .query("tenants")
+      .withIndex("by_phone", (q) => q.eq("phoneE164", phoneE164))
+      .first();
+    if (!tenant) return { memories, jobs: [] };
+    const jobRows = await ctx.db
+      .query("jobs")
+      .withIndex("by_tenant", (q) => q.eq("tenantId", tenant._id))
+      .take(32);
+    const jobs = jobRows
+      .filter((j) => j.status === "open" || j.status === "waiting")
+      .map((j) => ({
+        id: j._id,
+        line: formatJobWakeLine(j),
+        goal: j.goal,
+        ...(j.note ? { note: j.note } : {}),
+        ...(j.waitingFor === "human" ||
+        j.waitingFor === "email" ||
+        j.waitingFor === "browser"
+          ? { waitingFor: j.waitingFor }
+          : {}),
+        ...(j.waitingSince != null ? { waitingSince: j.waitingSince } : {}),
+        ...(j.lastNudgeAt != null ? { lastNudgeAt: j.lastNudgeAt } : {}),
+      }));
+    return { memories, jobs };
+  },
+});
 
 export const wake = query({
   args: { secret: v.string(), phoneE164: v.string() },

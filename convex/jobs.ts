@@ -3,6 +3,7 @@ import { doc } from "convex-helpers/validators";
 import schema from "./schema";
 import { mutation, query } from "./_generated/server";
 import { assertSecret } from "./secret";
+import { formatJobWakeLine } from "./lib/jobWake";
 
 const MAX_OPEN = 8;
 const LINE = 280;
@@ -215,15 +216,6 @@ export const wake = query({
       .take(32);
     return rows
       .filter((j) => j.status === "open" || j.status === "waiting")
-      .map((j) => {
-        const wait = j.waitingFor ? ` waitingFor=${j.waitingFor}` : "";
-        const note = j.note ? ` note=${j.note}` : "";
-        const mail = j.emailMessageId ? ` emailMessageId=${j.emailMessageId}` : "";
-        const since =
-          j.waitingSince != null ? ` waitingSince=${j.waitingSince}` : "";
-        const nudged =
-          j.lastNudgeAt != null ? ` lastNudgeAt=${j.lastNudgeAt}` : "";
-        return `id=${j._id} goal="${j.goal}" doneWhen="${j.doneWhen}" status=${j.status}${wait}${note}${mail}${since}${nudged}`;
-      });
+      .map((j) => formatJobWakeLine(j));
   },
 });
