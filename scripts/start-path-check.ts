@@ -115,6 +115,12 @@ assert(openrouterWarm.includes("OPENROUTER_AUTH_URL"), "OpenRouter warm hits /au
 assert(openrouterWarm.includes("OPENROUTER_CHAT_URL"), "OpenRouter warm also hits chat/completions");
 assert(openrouterWarm.includes("max_tokens: 1"), "chat warm is a 1-token throwaway");
 assert(openrouterWarm.includes("AbortSignal.timeout"), "OpenRouter warm is time-bounded");
+assert(openrouterWarm.includes("instructions.md"), "chat warm prefixes the static system prompt");
+assert(openrouterWarm.includes('role: "system"'), "chat warm is production-shaped, not a bare user dot");
+assert(
+  !openrouterWarm.includes('from "./model.ts"') && !openrouterWarm.includes("from \"./model\""),
+  "chat warm must not import model.ts — that is a cycle",
+);
 assert(isShortAck("ок"), "ок is a short ack");
 assert(isShortAck("Спасибо!"), "thanks with punct is a short ack");
 assert(isShortAck("понял"), "понял is a short ack");

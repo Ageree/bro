@@ -27,6 +27,7 @@ import {
   OPENROUTER_AUTH_URL,
   OPENROUTER_CHAT_URL,
   canPrefetchOpenRouter,
+  warmOpenRouterChat,
 } from "../agent/lib/openrouter-warm.ts";
 import {
   isLikelyCompleteBubble,
@@ -319,6 +320,8 @@ async function measureOpenRouterTtfb(): Promise<Record<string, unknown>> {
   const afterPrefetch = await streamOrTimeout(false);
   const repeat = await streamOrTimeout(false);
   const withTools = await streamOrTimeout(true);
+  const shapedWarm = key ? await timed(() => warmOpenRouterChat(key)) : { skipped: true };
+  const afterShapedWarm = await streamOrTimeout(false);
   const prefill = toolDescriptionChars();
   return {
     skipped: false,
@@ -332,6 +335,8 @@ async function measureOpenRouterTtfb(): Promise<Record<string, unknown>> {
     streamAfterPrefetch: afterPrefetch,
     streamRepeat: repeat,
     streamWithBroToolDescriptions: withTools,
+    shapedWarm,
+    streamAfterShapedWarm: afterShapedWarm,
     note: "Probe uses production OpenRouter extras (reasoning.effort=low, provider.sort=latency). Eve reasoning stays unset. Tools-off is the baseline; tools-on uses Bro tool descriptions with stub schemas (not Eve defaults). Production maxOutputTokens stays 8192. No iMessage send.",
   };
 }

@@ -1,6 +1,7 @@
 /** Warm the OpenRouter TLS/HTTP session during billing so the first
  *  model token does not pay a cold handshake after parkTurn. */
 
+import { readFileSync } from "node:fs";
 import { withOpenRouterChatDefaults } from "./openrouter-chat.ts";
 
 export const OPENROUTER_ORIGIN = "https://openrouter.ai";
@@ -9,6 +10,12 @@ export const OPENROUTER_CHAT_URL = `${OPENROUTER_ORIGIN}/api/v1/chat/completions
 export const OPENROUTER_WARM_TIMEOUT_MS = 2_000;
 
 let warmInflight: Promise<void> | undefined;
+let warmSystem: string | undefined;
+
+function warmSystemPrompt(): string {
+  warmSystem ??= readFileSync(new URL("../instructions.md", import.meta.url), "utf8");
+  return warmSystem;
+}
 
 export function canPrefetchOpenRouter(apiKey = process.env.OPENROUTER_API_KEY): boolean {
   return Boolean(apiKey?.trim());
@@ -21,8 +28,12 @@ function warmAuth(key: string): Promise<void> {
   }).then(() => undefined);
 }
 
-/** Tiny streamed chat so the first real turn reuses the completions route, not only /auth/key. */
-function warmChat(key: string): Promise<void> {
+/**
+ * 1-token stream with the same static system prompt as a real turn.
+ * Do not import model.ts (cycle). Tools stay off — this is a route/prefix
+ * warm, not a tools-on completion.
+ */
+export function warmOpenRouterChat(key: string): Promise<void> {
   const model = process.env.BRO_MODEL?.trim() || "z-ai/glm-5.3-flash";
   return fetch(OPENROUTER_CHAT_URL, {
     method: "POST",
@@ -35,7 +46,10 @@ function warmChat(key: string): Promise<void> {
         model,
         stream: true,
         max_tokens: 1,
-        messages: [{ role: "user", content: "." }],
+        messages: [
+          { role: "system", content: warmSystemPrompt() },
+          { role: "user", content: "." },
+        ],
       }),
     ),
     signal: AbortSignal.timeout(OPENROUTER_WARM_TIMEOUT_MS),
@@ -50,7 +64,7 @@ export function prefetchOpenRouter(): void {
   if (warmInflight) return;
   const key = process.env.OPENROUTER_API_KEY?.trim();
   if (!key) return;
-  warmInflight = Promise.allSettled([warmAuth(key), warmChat(key)])
+  warmInflight = Promise.allSettled([warmAuth(key), warmOpenRouterChat(key)])
     .then(() => undefined)
     .finally(() => {
       warmInflight = undefined;
