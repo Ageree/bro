@@ -93,6 +93,12 @@ assert(!isLikelyCompleteBubble("Ищу 🔎"), "looking line with emoji is not a
 assert(isLikelyCompleteBubble("Ок 👍"), "ack plus emoji is complete");
 assert(!isLikelyCompleteBubble("Нашёл за 8490."), "price period is not a sentence");
 assert(!isLikelyCompleteBubble("Ищу… кроссовки"), "ellipsis looking line is not peeled");
+assert(!isLikelyCompleteBubble("Ищу..."), "ascii ellipsis looking line stays");
+assert(
+  planStreamFlush({ soFar: "Ищу... кроссовки", alreadySent: [] }).send === null,
+  "ascii ellipsis does not peel Ищу.",
+);
+assert(!isLikelyCompleteBubble("Нашёл за 8490р."), "8490р. is still a price");
 assert(
   nextBubble(["Готово!"], "Готово к отправке") === "Готово к отправке",
   "bare last word plus space is a new sentence, not a remainder",

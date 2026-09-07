@@ -163,9 +163,10 @@ export function isLikelyCompleteBubble(text: string): boolean {
   if (/[!?！？]$/u.test(t)) {
     return Boolean(/\p{L}/u.test(lastWord) && !ABBREV_TAILS.has(lastFolded));
   }
+  if (/\.{2,}$/.test(t) || /…$/.test(t)) return false;
   if (!/[.。]$/u.test(t)) return false;
   if (ABBREV_TAILS.has(lastFolded)) return false;
-  if (!/\p{L}/u.test(lastWord)) return false;
+  if (!/\p{L}/u.test(lastWord) || /^\d/u.test(lastWord)) return false;
   if (COMPLETE_TAILS.has(lastFolded)) return true;
   return lastWord.length >= 4;
 }
@@ -178,6 +179,13 @@ export function firstLikelyCompletePrefix(text: string): string | null {
   const re = /[.!?…。！？]/gu;
   let m: RegExpExecArray | null;
   while ((m = re.exec(t))) {
+    if (m[0] === ".") {
+      const run = /^\.{2,}/.exec(t.slice(m.index));
+      if (run) {
+        re.lastIndex = m.index + run[0].length;
+        continue;
+      }
+    }
     const prefix = t.slice(0, m.index + m[0].length).trim();
     if (isLikelyCompleteBubble(prefix)) return prefix;
   }
