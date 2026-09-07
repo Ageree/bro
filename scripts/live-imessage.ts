@@ -9,6 +9,7 @@ import {
   broHandleFromEnv,
   bubblesText,
   classifyLane,
+  classifyListen,
   connectCommandFor,
   DEDICATED_UPGRADE_URL,
   DEFAULT_BRO_HANDLE,
@@ -22,6 +23,7 @@ import {
   testerHandleFromEnv,
   type LiveBubble,
   type LiveLaneStatus,
+  type LiveListenStatus,
   type LivePlay,
 } from "../agent/lib/live-imessage.ts";
 import {
@@ -95,16 +97,19 @@ function asBubble(msg: IMessage): LiveBubble {
   };
 }
 
+async function routerNumberOf(client: Inkbox): Promise<string | undefined> {
+  try {
+    const triage = await client.imessages.getTriageNumber();
+    return triage.number;
+  } catch (err) {
+    console.error("triage failed", err instanceof Error ? err.message : err);
+    return undefined;
+  }
+}
+
 async function laneStatus(client: Inkbox): Promise<LiveLaneStatus> {
   const testerHandle = testerHandleFromEnv();
   const broHandle = broHandleFromEnv();
-  let routerNumber: string | undefined;
-  try {
-    const triage = await client.imessages.getTriageNumber();
-    routerNumber = triage.number;
-  } catch (err) {
-    console.error("triage failed", err instanceof Error ? err.message : err);
-  }
   const tester = await getIdentityOrNull(client, testerHandle);
   return classifyLane({
     apiKey: process.env.INKBOX_API_KEY,
@@ -112,8 +117,54 @@ async function laneStatus(client: Inkbox): Promise<LiveLaneStatus> {
     testerNumber: tester ? testerNumberOf(tester) : undefined,
     testerHandle,
     broHandle,
-    routerNumber,
+    routerNumber: await routerNumberOf(client),
   });
+}
+
+async function assignmentRemotes(bro: AgentIdentity): Promise<string[]> {
+  const rows = await bro.listIMessageAssignments({ limit: 50 });
+  return rows
+    .map((row) => row.remoteNumber)
+    .filter((n): n is string => isE164(n));
+}
+
+async function listenStatus(client: Inkbox): Promise<LiveListenStatus> {
+  const broHandle = broHandleFromEnv();
+  const bro = await getIdentityOrNull(client, broHandle);
+  const remotes = bro ? await assignmentRemotes(bro) : [];
+  return classifyListen({
+    apiKey: process.env.INKBOX_API_KEY,
+    broExists: Boolean(bro),
+    remotes,
+    broHandle,
+    routerNumber: await routerNumberOf(client),
+  });
+}
+
+async function ensureQaWebhook(client: Inkbox, bro: AgentIdentity): Promise<void> {
+  const url = `https://${bro.agentHandle}.inkboxwire.com/webhooks/imessage`;
+  const existing = await client.webhooks.subscriptions.list({
+    agentIdentityId: bro.id,
+  });
+  const same = existing.find((s) => s.url === url);
+  if (same) {
+    console.log("qa webhook exists", same.id);
+    return;
+  }
+  const sub = await client.webhooks.subscriptions.create({
+    agentIdentityId: bro.id,
+    url,
+    eventTypes: [
+      "imessage.received",
+      "imessage.delivery_failed",
+      "imessage.sent",
+    ],
+  });
+  console.log("qa webhook created", sub.id, url);
+  if (sub.signingKey) {
+    console.log("qa signing key last4", sub.signingKey.slice(-4));
+    console.log("set INKBOX_WEBHOOK_SECRET to that key on the eve process");
+  }
 }
 
 async function ensureIdentity(
@@ -152,58 +203,49 @@ async function ensureIdentity(
   return identity;
 }
 
-async function provision(opts: { qa: boolean }): Promise<void> {
+async function provision(opts: { qa: boolean; listen: boolean }): Promise<void> {
   const client = inkbox();
-  const testerHandle = testerHandleFromEnv();
-  const broHandle = opts.qa ? broHandleFromEnv() : DEFAULT_BRO_HANDLE;
-  const tester = await ensureIdentity(client, testerHandle, {
-    dedicated: true,
-    displayName: "Bro live tester",
-  });
-  const number = testerNumberOf(tester);
-  if (!number) {
-    throw new Error(
-      `${testerHandle} has no dedicated number. ${DEDICATED_UPGRADE_URL}`,
+  const broHandle = opts.qa || opts.listen ? broHandleFromEnv() : DEFAULT_BRO_HANDLE;
+
+  if (!opts.listen) {
+    const testerHandle = testerHandleFromEnv();
+    const tester = await ensureIdentity(client, testerHandle, {
+      dedicated: true,
+      displayName: "Bro live tester",
+    });
+    const number = testerNumberOf(tester);
+    if (!number) {
+      throw new Error(
+        `${testerHandle} has no dedicated number. ${DEDICATED_UPGRADE_URL}`,
+      );
+    }
+    console.log("tester line", number);
+    console.log(
+      "ALLOWED_SENDERS",
+      allowlistWithTester(process.env.ALLOWED_SENDERS, number),
     );
   }
-  console.log("tester line", number);
-  if (opts.qa) {
+
+  if (opts.qa || opts.listen) {
     const bro = await ensureIdentity(client, broHandle, {
       dedicated: false,
       displayName: "Bro live",
     });
-    const url = `https://${broHandle}.inkboxwire.com/webhooks/imessage`;
-    const existing = await client.webhooks.subscriptions.list({
-      agentIdentityId: bro.id,
-    });
-    const same = existing.find((s) => s.url === url);
-    if (same) {
-      console.log("qa webhook exists", same.id);
-    } else {
-      const sub = await client.webhooks.subscriptions.create({
-        agentIdentityId: bro.id,
-        url,
-        eventTypes: [
-          "imessage.received",
-          "imessage.delivery_failed",
-          "imessage.sent",
-        ],
-      });
-      console.log("qa webhook created", sub.id, url);
-      if (sub.signingKey) {
-        console.log("qa signing key last4", sub.signingKey.slice(-4));
-        console.log("set INKBOX_WEBHOOK_SECRET to that key on the eve process");
-      }
-    }
+    await ensureQaWebhook(client, bro);
   }
+
   const triage = await client.imessages.getTriageNumber();
   console.log("router", triage.number);
   console.log("connect", connectCommandFor(broHandle));
-  console.log(
-    "ALLOWED_SENDERS",
-    allowlistWithTester(process.env.ALLOWED_SENDERS, number),
-  );
   console.log("INKBOX_AGENT_HANDLE", broHandle);
+  if (opts.listen) {
+    console.log(
+      "human-first: iPhone → Send as SMS = off → text the connect line to the router (blue)",
+    );
+    console.log(
+      "ALLOWED_SENDERS should include that iPhone E.164 on the eve process",
+    );
+  }
 }
 
 async function findConvo(
@@ -331,32 +373,136 @@ async function runPlay(play: LivePlay): Promise<void> {
 
 async function printStatus(): Promise<void> {
   const client = inkbox();
-  const status = await laneStatus(client);
+  const originate = await laneStatus(client);
+  const listen = await listenStatus(client);
   console.log(
     JSON.stringify(
       {
-        ready: status.ready,
-        blocker: status.blocker,
-        detail: status.detail,
-        testerHandle: status.testerHandle,
-        broHandle: status.broHandle,
-        testerNumber: status.testerNumber ?? null,
-        routerNumber: status.routerNumber ?? null,
-        connectCommand: status.connectCommand,
+        originate: {
+          ready: originate.ready,
+          blocker: originate.blocker,
+          detail: originate.detail,
+          testerHandle: originate.testerHandle,
+          testerNumber: originate.testerNumber ?? null,
+        },
+        listen: {
+          ready: listen.ready,
+          blocker: listen.blocker,
+          detail: listen.detail,
+          assignmentCount: listen.assignmentCount,
+          remotesLast4: listen.remotesLast4,
+        },
+        broHandle: listen.broHandle,
+        routerNumber: listen.routerNumber ?? originate.routerNumber ?? null,
+        connectCommand: listen.connectCommand,
       },
       null,
       2,
     ),
   );
-  if (!status.ready) process.exitCode = 2;
+  if (!originate.ready && !listen.ready) process.exitCode = 2;
+}
+
+async function waitConnect(timeoutMs: number): Promise<void> {
+  const client = inkbox();
+  const deadline = Date.now() + timeoutMs;
+  let last = await listenStatus(client);
+  if (!last.broHandle) throw new Error("bro handle missing");
+  if (last.blocker === "no_bro") {
+    throw new Error(last.detail ?? "run npm run live -- provision --listen");
+  }
+  console.log(
+    `waiting for ${last.connectCommand} to ${last.routerNumber ?? "router"}`,
+  );
+  while (Date.now() < deadline) {
+    last = await listenStatus(client);
+    if (last.ready) {
+      console.log(
+        JSON.stringify({
+          ready: true,
+          remotesLast4: last.remotesLast4,
+          assignmentCount: last.assignmentCount,
+        }),
+      );
+      return;
+    }
+    await sleep(3_000);
+  }
+  throw new Error(last.detail ?? "timed out waiting for the iPhone connect");
+}
+
+async function broConversation(
+  bro: AgentIdentity,
+): Promise<{ conversationId: string; remote: string }> {
+  const remotes = new Set(await assignmentRemotes(bro));
+  const convos = await bro.listIMessageConversations({ limit: 20 });
+  const hit = convos.find(
+    (c) => typeof c.remoteNumber === "string" && remotes.has(c.remoteNumber),
+  );
+  if (!hit?.id || !hit.remoteNumber) {
+    const listen = await listenStatus(inkbox());
+    throw new Error(listen.detail ?? "no active iMessage conversation");
+  }
+  return { conversationId: hit.id, remote: hit.remoteNumber };
+}
+
+async function printInbox(opts: { waitMs: number; limit: number }): Promise<void> {
+  const client = inkbox();
+  const listen = await listenStatus(client);
+  if (!listen.ready) throw new Error(listen.detail ?? "listen lane not ready");
+  const bro = await client.getIdentity(listen.broHandle);
+  const { conversationId } = await broConversation(bro);
+  const seen = new Set<string>();
+  const dump = async (): Promise<LiveBubble[]> => {
+    const msgs = await bro.listIMessages({ conversationId, limit: opts.limit });
+    const fresh: LiveBubble[] = [];
+    for (const msg of [...msgs].reverse()) {
+      if (seen.has(msg.id)) continue;
+      seen.add(msg.id);
+      fresh.push(asBubble(msg));
+    }
+    return fresh;
+  };
+  const first = await dump();
+  if (first.length) console.log(bubblesText(first));
+  else console.log("(empty)");
+  if (opts.waitMs <= 0) return;
+  const deadline = Date.now() + opts.waitMs;
+  while (Date.now() < deadline) {
+    await sleep(2_000);
+    const more = await dump();
+    if (more.length) console.log(bubblesText(more));
+  }
+}
+
+async function sendAsBro(text: string): Promise<void> {
+  const client = inkbox();
+  const listen = await listenStatus(client);
+  if (!listen.ready) throw new Error(listen.detail ?? "listen lane not ready");
+  const bro = await client.getIdentity(listen.broHandle);
+  const { conversationId } = await broConversation(bro);
+  const sent = await bro.sendIMessage({ conversationId, text });
+  if (sent.wasDowngraded) throw new Error("send was downgraded off iMessage");
+  console.log(
+    JSON.stringify({
+      ok: true,
+      id: sent.id,
+      conversationId: sent.conversationId,
+      service: String(sent.service ?? ""),
+      wasDowngraded: sent.wasDowngraded ?? false,
+    }),
+  );
 }
 
 function usage(): never {
   console.error(`Usage:
   npm run live -- status
-  npm run live -- provision [--qa]
+  npm run live -- provision --listen
+  npm run live -- provision --qa
+  npm run live -- wait-connect
+  npm run live -- inbox [--wait 90]
+  npm run live -- as-bro "<text>"
   npm run live -- "<text>"
-  npm run live -- --bro bro-live-bro -- "<text>"
   npm run live -- --play .harness/plays/live-help.json`);
   process.exit(2);
 }
@@ -368,6 +514,11 @@ async function main(): Promise<void> {
   let playPath: string | undefined;
   let provisionCmd = false;
   let qa = false;
+  let listen = false;
+  let waitConnectCmd = false;
+  let inboxCmd = false;
+  let inboxWaitMs = 0;
+  let asBro: string | undefined;
   const textParts: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -383,8 +534,30 @@ async function main(): Promise<void> {
       provisionCmd = true;
       continue;
     }
+    if (arg === "wait-connect") {
+      waitConnectCmd = true;
+      continue;
+    }
+    if (arg === "inbox") {
+      inboxCmd = true;
+      continue;
+    }
+    if (arg === "as-bro") {
+      asBro = argv[++i];
+      if (!asBro) usage();
+      continue;
+    }
+    if (arg === "--wait") {
+      const next = Number(argv[++i]);
+      inboxWaitMs = Number.isFinite(next) && next > 0 ? next * 1000 : 90_000;
+      continue;
+    }
     if (arg === "--qa") {
       qa = true;
+      continue;
+    }
+    if (arg === "--listen") {
+      listen = true;
       continue;
     }
     if (arg === "--bro") {
@@ -409,7 +582,20 @@ async function main(): Promise<void> {
   }
 
   if (provisionCmd) {
-    await provision({ qa });
+    await provision({ qa, listen });
+    return;
+  }
+  if (waitConnectCmd) {
+    await waitConnect(5 * 60_000);
+    return;
+  }
+  if (inboxCmd) {
+    await printInbox({ waitMs: inboxWaitMs, limit: 30 });
+    return;
+  }
+  if (asBro !== undefined) {
+    const extra = textParts.join(" ").trim();
+    await sendAsBro([asBro, extra].filter(Boolean).join(" "));
     return;
   }
   if (playPath) {

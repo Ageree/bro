@@ -1,8 +1,24 @@
 # Bro — cloud / AI testers
 
-Talk to Bro over **real iMessage** (Inkbox + Apple). Do not ask the operator to exercise Bro from their iPhone. Do not POST a fake inbound to `/internal/sim` for this lane — that never proves delivery, downgrade, or the webhook signature.
+Talk to Bro over **real iMessage** (Inkbox + Apple). Do not POST a fake inbound to `/internal/sim` for this lane — that never proves delivery, downgrade, or the webhook signature.
 
-## Lane
+## Human-first lane ($0)
+
+Shared pool cannot start a thread. The operator texts first from an iPhone; the cloud agent then sees the conversation and can send **as Bro**. Inbound from the “human” still comes from that phone.
+
+1. `npm run live -- provision --listen` — create `bro-live-bro` (not `bro-ageree`) and the tunnel webhook.
+2. Isolated Convex: `CONVEX_AGENT_MODE=anonymous npx convex dev`. Same `BRO_INTERNAL_SECRET` on that deployment and eve.
+3. `export ALLOWED_SENDERS=+<the iPhone E.164>` on the eve process.
+4. `bash scripts/dev-live.sh` — eve + tunnel as `bro-live-bro`.
+5. On the iPhone: Settings → Messages → **Send as SMS = off**. New message to the printed router (`+16504849720` today). Text exactly `connect @bro-live-bro`. The bubble must stay blue.
+6. `npm run live -- wait-connect` — returns when Inkbox shows an assignment (last4 only).
+7. From the phone, text Bro as usual (`привет`, …).
+8. `npm run live -- inbox` / `npm run live -- inbox --wait 90` — Bro’s bubbles (and yours) via Inkbox.
+9. `npm run live -- as-bro "пинг"` — optional outbound as Bro (proves Apple delivery; does not run the model).
+
+`npm run live -- status` is ready when `listen.ready` is true, even if `originate.ready` is false (no dedicated tester line).
+
+## Originate lane (dedicated tester)
 
 1. Secrets already on the cloud environment: `INKBOX_API_KEY`, `INKBOX_WEBHOOK_SECRET`, `BRO_INTERNAL_SECRET`, `OPENROUTER_API_KEY`, `CONVEX_DEPLOY_KEY`.
 2. Isolated Convex for the QA Bro (do not use the operator's production `CONVEX_DEPLOY_KEY` as the default dest): `CONVEX_AGENT_MODE=anonymous npx convex dev`. Set `BRO_INTERNAL_SECRET` on that deployment to match eve.
@@ -22,11 +38,11 @@ Apple delivery (`service=imessage`, refuse downgrade), the live Inkbox webhook s
 
 ## What not to do
 
-- Do not text the operator's real number (`+79217818876`) or dump that thread.
+- Human-first connect is `connect @bro-live-bro`, never `connect @bro-ageree`. Do not dump the production `bro-ageree` thread.
 - Do not run `npm run tunnel` / `dev:local` as `bro-ageree` from a cloud agent.
 - Do not treat a local loopback as live iMessage.
 - Structural checks stay `npm run <area>:check`. `npm run live:check` covers this lane's policy. `npm run live -- status` is the live Inkbox probe.
 
 ## Cursor Cloud
 
-`INKBOX_API_KEY` is injected. `npm run live -- status` works without extra secrets. A send/play needs the dedicated tester line (plan upgrade above) plus `dev-live.sh` and anonymous Convex when judging this checkout rather than production.
+`INKBOX_API_KEY` is injected. `npm run live -- status` and `provision --listen` work without extra secrets. After the operator sends the blue `connect @bro-live-bro`, `wait-connect` / `inbox` / `as-bro` work. Agent replies on that QA identity need `dev-live.sh` plus anonymous Convex. Originating as the human still needs a dedicated tester line.

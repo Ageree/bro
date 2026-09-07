@@ -22,6 +22,8 @@ export type LiveBlocker =
   | "quota"
   | "identity_cap";
 
+export type ListenBlocker = "no_api_key" | "no_bro" | "no_assignment";
+
 export type LiveLaneStatus = {
   ready: boolean;
   blocker?: LiveBlocker;
@@ -31,6 +33,17 @@ export type LiveLaneStatus = {
   testerNumber?: string;
   routerNumber?: string;
   connectCommand?: string;
+};
+
+export type LiveListenStatus = {
+  ready: boolean;
+  blocker?: ListenBlocker;
+  detail?: string;
+  broHandle: string;
+  routerNumber?: string;
+  connectCommand?: string;
+  assignmentCount: number;
+  remotesLast4: string[];
 };
 
 export type LiveBubble = {
@@ -203,6 +216,54 @@ export function classifyLane(input: {
       ready: false,
       blocker: "no_dedicated_line",
       detail: `${input.testerHandle} has no dedicated iMessage number. ${DEDICATED_PLAN_HINT}: ${DEDICATED_UPGRADE_URL}`,
+    };
+  }
+  return { ...base, ready: true };
+}
+
+export function remoteLast4(phone: string): string {
+  const digits = phone.replace(/\D/g, "");
+  return digits.slice(-4).padStart(4, "?");
+}
+
+export function classifyListen(input: {
+  apiKey?: string;
+  broExists: boolean;
+  remotes: string[];
+  broHandle: string;
+  routerNumber?: string;
+}): LiveListenStatus {
+  const connectCommand = connectCommandFor(input.broHandle);
+  const remotesLast4 = input.remotes.filter(isE164).map(remoteLast4);
+  const base = {
+    broHandle: input.broHandle,
+    routerNumber: input.routerNumber,
+    connectCommand,
+    assignmentCount: remotesLast4.length,
+    remotesLast4,
+  };
+  if (!input.apiKey) {
+    return {
+      ...base,
+      ready: false,
+      blocker: "no_api_key",
+      detail: "INKBOX_API_KEY missing",
+    };
+  }
+  if (!input.broExists) {
+    return {
+      ...base,
+      ready: false,
+      blocker: "no_bro",
+      detail: `run npm run live -- provision --listen (creates ${input.broHandle})`,
+    };
+  }
+  if (remotesLast4.length === 0) {
+    return {
+      ...base,
+      ready: false,
+      blocker: "no_assignment",
+      detail: `on iPhone, Send as SMS = off, text ${connectCommand} to ${input.routerNumber ?? "the router"} as a blue iMessage`,
     };
   }
   return { ...base, ready: true };

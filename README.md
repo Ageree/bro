@@ -26,7 +26,7 @@ Production (you are just a user on iMessage): Convex cloud + `eve deploy` on Ver
 
 `npm run dev` is TUI-only (no public URL). Local iMessage still needs the tunnel: `https://bro-ageree.inkboxwire.com`.
 
-Cloud/AI testers talk over **real iMessage**. A dedicated Inkbox line (`bro-live-tester`) plays the human and texts the shared router `connect @bro-live-bro`. Shared-pool identities cannot start a thread — the tester needs a start-capable dedicated number (Inkbox Startup). `npm run live -- status` reports readiness; `npm run live -- provision --qa` claims the line and creates the QA Bro identity (never `bro-ageree` — that handle is production). Then `bash scripts/dev-live.sh` (eve + tunnel as `bro-live-bro`) and `npm run live -- "привет"` (or `--play .harness/plays/live-help.json`). Put the tester E.164 on `ALLOWED_SENDERS` for the eve process. Isolated Convex: `CONVEX_AGENT_MODE=anonymous npx convex dev`. Check: `npm run live:check`.
+Cloud/AI testers talk over **real iMessage**. Cheap path: `npm run live -- provision --listen`, then from an iPhone (Send as SMS = off) text `connect @bro-live-bro` to the router as a blue bubble. The cloud agent waits with `wait-connect`, reads `inbox`, and can `as-bro` into that thread. It cannot type as the human — later inbound still comes from the phone. Dedicated-tester path (`provision --qa` + `npm run live -- "привет"`) needs a start-capable Inkbox line (Startup). Never point the tunnel at `bro-ageree`. Isolated Convex: `CONVEX_AGENT_MODE=anonymous npx convex dev`. Check: `npm run live:check`.
 
 Onboard: after provision, the human texts `connect @bro-ageree` to the printed router **as iMessage** (blue). iPhone Settings → Messages → Send as SMS = off.
 

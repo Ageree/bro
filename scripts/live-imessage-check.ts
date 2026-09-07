@@ -4,6 +4,7 @@ import {
   broHandleFromEnv,
   bubblesText,
   classifyLane,
+  classifyListen,
   connectCommandFor,
   DEDICATED_UPGRADE_URL,
   DEFAULT_BRO_HANDLE,
@@ -11,6 +12,7 @@ import {
   expectMatches,
   inboundText,
   isDedicatedQuotaError,
+  remoteLast4,
   isE164,
   parseE164,
   parsePlay,
@@ -134,6 +136,33 @@ const noKey = classifyLane({
 });
 assert(noKey.blocker === "no_api_key", "missing key");
 
+assert(remoteLast4("+79217818876") === "8876", "last4");
+const listenReady = classifyListen({
+  apiKey: "k",
+  broExists: true,
+  remotes: ["+79217818876"],
+  broHandle: DEFAULT_BRO_HANDLE,
+  routerNumber: "+16504849720",
+});
+assert(listenReady.ready, "listen ready with assignment");
+assert(listenReady.remotesLast4.includes("8876"), "listen last4");
+const listenWait = classifyListen({
+  apiKey: "k",
+  broExists: true,
+  remotes: [],
+  broHandle: DEFAULT_BRO_HANDLE,
+  routerNumber: "+16504849720",
+});
+assert(listenWait.blocker === "no_assignment", "listen waits for iPhone");
+assert(listenWait.detail?.includes("connect @bro-live-bro"), "listen connect hint");
+const listenNoBro = classifyListen({
+  apiKey: "k",
+  broExists: false,
+  remotes: [],
+  broHandle: DEFAULT_BRO_HANDLE,
+});
+assert(listenNoBro.blocker === "no_bro", "listen needs QA Bro");
+
 assert(
   allowlistWithTester("+79217818876", "+16500000001") ===
     "+79217818876,+16500000001",
@@ -181,10 +210,9 @@ assert(readme.includes("dedicated"), "readme names dedicated line");
 const agents = readFileSync(new URL("../AGENTS.md", import.meta.url), "utf8");
 assert(agents.includes("npm run live"), "agents.md tells cloud testers to live");
 assert(agents.includes("BRO_LIVE_TESTER_HANDLE"), "agents.md names tester handle");
-assert(
-  !agents.includes("do not use a phone") || agents.includes("real iMessage"),
-  "agents.md is the live lane, not sim-only",
-);
+assert(agents.includes("provision --listen"), "agents.md documents human-first");
+assert(agents.includes("wait-connect"), "agents.md wait-connect");
+assert(agents.includes("real iMessage"), "agents.md is the live lane");
 
 const envEx = readFileSync(new URL("../.env.example", import.meta.url), "utf8");
 assert(envEx.includes("BRO_LIVE_TESTER_HANDLE"), "env example tester");
@@ -208,6 +236,9 @@ const cli = readFileSync(
 assert(cli.includes("sendIMessage"), "cli sends via Inkbox");
 assert(cli.includes("listIMessages"), "cli polls Inkbox");
 assert(cli.includes("claimIMessageNumber") || cli.includes("dedicated: true"), "cli claims line");
+assert(cli.includes("provision --listen"), "human-first provision");
+assert(cli.includes("wait-connect"), "wait for iPhone connect");
+assert(cli.includes("as-bro"), "send as Bro");
 assert(!cli.includes("/internal/sim"), "live is not the sim loopback");
 assert(!cli.includes("sim:+1555"), "live does not fake +1555");
 
