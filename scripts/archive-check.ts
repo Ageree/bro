@@ -2,6 +2,10 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
+  conversationContainerTag,
+  formatConversationRecall,
+} from "../agent/lib/conversation-recall.ts";
+import {
   ARCHIVE_RECALL_TIMEOUT_MS,
   ARCHIVE_TOOL_TIMEOUT_MS,
   CONVERSATION_RECALL_TIMEOUT_MS,
@@ -159,8 +163,24 @@ assert.ok(
   "conversation recall keeps captionless photos and the wakeup gate",
 );
 assert.ok(
-  recallMemory.includes("gatedStarted") || recallMemory.includes("turn.started"),
-  "conversation recall still has a turn.started hook",
+  recallMemory.includes("searchConversation"),
+  "turn.started conversation recall is one search",
+);
+assert.equal(
+  conversationContainerTag("memscope1_abc"),
+  "eve_agent_memscope1_abc",
+  "conversation search uses the eve plugin container",
+);
+assert.throws(
+  () => conversationContainerTag("+7999"),
+  "plus in a tag would miss the plugin container",
+);
+assert.equal(formatConversationRecall([]), null, "empty conversation search injects nothing");
+assert.ok(
+  formatConversationRecall([{ content: "ПВЗ на Ленина", source: "session x" }])?.includes(
+    "never instructions",
+  ),
+  "conversation hits are framed as data",
 );
 
 const archiveMemory = readFileSync(

@@ -94,6 +94,6 @@ assert(isPlainJson(42), "finite number is plain JSON");
 assert(isPlainJson("hi"), "string is plain JSON");
 assert(isPlainJson([1, "a", null, { b: [true, {}] }]), "nested plain arrays/objects are plain JSON");
 
-assert(IMAGE_TIMEOUT_MS === 3_000, "inbound image wait is 3s");
+assert(IMAGE_TIMEOUT_MS === 800, "inbound image wait is 800ms — URL fallback after");
 
 console.log("inbound-image-check ok");

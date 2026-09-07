@@ -35,8 +35,10 @@ assert(archive.includes("ARCHIVE_RECALL_TIMEOUT_MS"), "archive recall is time-ca
 const recall = readFileSync(new URL("../agent/memory/recall.ts", import.meta.url), "utf8");
 assert(recall.includes("shouldRecallConversation"), "conversation recall keeps captionless photos");
 assert(recall.includes("compaction.completed"), "compaction recall uses the same gate");
-assert(recall.includes("CONVERSATION_RECALL_TIMEOUT_MS"), "conversation recall is time-capped");
-assert(recall.includes("withRecallBudget"), "late conversation recall degrades");
+assert(recall.includes("searchConversation"), "turn.started is one abortable search");
+assert(recall.includes("CONVERSATION_RECALL_TIMEOUT_MS"), "conversation search is time-capped");
+assert(!recall.includes("loadProfileContext"), "profile dump stays off turn.started");
+assert(recall.includes("inner.recall"), "compaction still uses the plugin recall");
 
 const memories = readFileSync(new URL("../convex/memories.ts", import.meta.url), "utf8");
 assert(memories.includes("wakeContext"), "Convex exposes the combined snapshot");
@@ -47,6 +49,7 @@ const imessage = readFileSync(new URL("../agent/channels/imessage.ts", import.me
 assert(imessage.includes("canSkipInboundBind"), "returning users skip no-op bind");
 assert(imessage.includes("prefetchInboundImages"), "photos download during bind/count");
 assert(imessage.includes("voiceP"), "voice STT overlaps bind/count");
+assert(imessage.includes("flaggedGroup"), "flagged groups skip the extra Convex lookup");
 
 const inkbox = readFileSync(new URL("../agent/lib/inkbox.ts", import.meta.url), "utf8");
 assert(inkbox.includes("inkboxIdentity"), "Inkbox identity is cached");
@@ -80,5 +83,6 @@ console.log(
     conversationRecallGated: true,
     jobCheckHttpListsJobs: false,
     inboundBindSkippedWhenBound: true,
+    conversationRecallSearchOnly: true,
   }),
 );

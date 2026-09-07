@@ -361,10 +361,12 @@ export default defineChannel({
       const voiceP = inboundIMessageTextWithVoice(msg, transcribeVoiceNote);
       const imagesP = prefetchInboundImages(msg.media);
 
-      const knownGroup = msg.conversation_id
-        ? await getGroupByConversation(msg.conversation_id).catch(() => null)
-        : null;
-      const group = Boolean(knownGroup) || isGroupMessage(msg);
+      const flaggedGroup = isGroupMessage(msg);
+      const knownGroup =
+        !flaggedGroup && msg.conversation_id
+          ? await getGroupByConversation(msg.conversation_id).catch(() => null)
+          : null;
+      const group = Boolean(knownGroup) || flaggedGroup;
       const remote = group ? groupSenderPhone(msg) : msg.remote_number;
       if (!remote) {
         console.error("dropped inbound without remote number");

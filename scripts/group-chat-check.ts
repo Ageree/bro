@@ -203,6 +203,7 @@ const channel = readFileSync(
 );
 assert(channel.includes("isGroupMessage"), "channel detects groups");
 assert(channel.includes("getGroupByConversation"), "known group overrides missing flag");
+assert(channel.includes("flaggedGroup"), "already-flagged groups skip the extra lookup");
 assert(channel.includes("bindGroupInbound"), "channel binds groups");
 assert(channel.includes("shouldReplyInGroup"), "channel mention gate");
 assert(channel.includes("sendGroupWelcome"), "channel group welcome");

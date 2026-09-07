@@ -3,13 +3,18 @@ import {
   defineMemory,
   type MemoryOperationContext,
   type MemoryRecallHandler,
+  type MemoryRecallResult,
 } from "eve/memory";
 import {
   CONVERSATION_RECALL_TIMEOUT_MS,
   recallQuery,
   shouldRecallConversation,
-  withRecallBudget,
 } from "../lib/archive-policy.ts";
+import {
+  CONVERSATION_RECALL_ID,
+  formatConversationRecall,
+  searchConversation,
+} from "../lib/conversation-recall.ts";
 import { resolveMemoryScope, resolveRecallBackend } from "../lib/memory-policy.ts";
 
 /**
@@ -20,12 +25,9 @@ import { resolveMemoryScope, resolveRecallBackend } from "../lib/memory-policy.t
  * Without SUPERMEMORY_API_KEY the scope resolves to null, which disables this
  * slot entirely; the curated `memo` slot keeps working on Convex alone.
  *
- * Auto-recall on `turn.started` uses the same wakeup gate as the archive
- * slot: human chat, mail events, brief, and job_check still search.
- * `browser_poll` / plain reminders skip the paid HTTP round-trip.
- * The hook itself is time-capped to `CONVERSATION_RECALL_TIMEOUT_MS` so
- * uncapped Supermemory HTTP cannot delay the first token past archive.
- * Tools stay mounted either way.
+ * `turn.started` is one abortable search (same 1.5s Instinct budget as archive),
+ * not the plugin's profile + documents.list + memories/list dump.
+ * Compaction still uses the full plugin recall. Tools stay mounted either way.
  */
 const inner = supermemory({
   apiKey: () => {
@@ -41,20 +43,33 @@ type RecallCtx = MemoryOperationContext & {
   turn?: { input?: readonly unknown[] } | null;
 };
 
-function gatedRecall<TContext extends RecallCtx>(
-  hook: MemoryRecallHandler<TContext> | undefined,
-  timed: boolean,
+function gated<TContext extends RecallCtx>(
+  hook: (context: TContext) => MemoryRecallResult | Promise<MemoryRecallResult>,
 ): MemoryRecallHandler<TContext> {
   return (context) => {
     const query =
       recallQuery(context.turn?.input ?? []) ?? recallQuery(context.messages);
     if (!shouldRecallConversation(query)) return null;
-    if (typeof hook !== "function") return null;
-    const result = hook(context);
-    return timed
-      ? withRecallBudget(result, CONVERSATION_RECALL_TIMEOUT_MS)
-      : result;
+    return hook(context);
   };
+}
+
+async function startedSearch(context: RecallCtx): Promise<MemoryRecallResult> {
+  const query =
+    recallQuery(context.turn?.input ?? []) ?? recallQuery(context.messages);
+  if (!query?.trim()) return null;
+  try {
+    const hits = await searchConversation(
+      context.memory.scope.key,
+      query,
+      CONVERSATION_RECALL_TIMEOUT_MS,
+    );
+    const content = formatConversationRecall(hits);
+    return content ? { messages: [{ id: CONVERSATION_RECALL_ID, content }] } : null;
+  } catch (err) {
+    console.error("conversation recall failed", err);
+    return null;
+  }
 }
 
 export default defineMemory({
@@ -64,8 +79,11 @@ export default defineMemory({
     ...inner,
     recall: {
       ...inner.recall,
-      "turn.started": gatedRecall(inner.recall?.["turn.started"], true),
-      "compaction.completed": gatedRecall(inner.recall?.["compaction.completed"], false),
+      "turn.started": gated(startedSearch),
+      "compaction.completed": gated((ctx) => {
+        const hook = inner.recall?.["compaction.completed"];
+        return typeof hook === "function" ? hook(ctx as never) : null;
+      }),
     },
   },
   scope: (ctx) =>
