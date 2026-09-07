@@ -1,12 +1,14 @@
 import {
+  ARCHIVE_HIT_CHARS,
   ARCHIVE_TOOL_TIMEOUT_MS,
+  archiveHitsFromSearch,
   archiveTag,
   type ArchiveDocument,
   type ArchiveHit,
 } from "./archive-policy.ts";
 
-const BASE = "https://api.supermemory.ai/v3";
-const HIT_CHARS = 600;
+const V3_BASE = "https://api.supermemory.ai/v3";
+const V4_SEARCH = "https://api.supermemory.ai/v4/search";
 
 function apiKey(): string {
   const key = process.env.SUPERMEMORY_API_KEY;
@@ -23,7 +25,7 @@ async function call(
   const signal = abort
     ? AbortSignal.any([AbortSignal.timeout(timeoutMs), abort])
     : AbortSignal.timeout(timeoutMs);
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await fetch(`${V3_BASE}${path}`, {
     ...init,
     headers: {
       Authorization: `Bearer ${apiKey()}`,
@@ -55,15 +57,10 @@ export async function ingestArchiveDocument(
   });
 }
 
-type SearchResponse = {
-  results?: {
-    title?: string;
-    metadata?: { app?: string; date?: string };
-    chunks?: { content?: string }[];
-  }[];
-};
-
-/** Semantic search inside one person's archive. */
+/**
+ * Instinct/tool search — v4 hybrid in the archive container. Ingest/forget
+ * stay on v3 documents; v4 is the low-latency recall path.
+ */
 export async function searchArchive(
   phone: string,
   query: string,
@@ -71,30 +68,32 @@ export async function searchArchive(
   timeoutMs = ARCHIVE_TOOL_TIMEOUT_MS,
   abort?: AbortSignal,
 ): Promise<ArchiveHit[]> {
-  const json = (await call(
-    "/search",
-    {
-      method: "POST",
-      body: JSON.stringify({
-        q: query,
-        containerTags: [archiveTag(phone)],
-        rewriteQuery: false,
-        rerank: false,
-        limit,
-      }),
+  const q = query.trim();
+  if (!q) return [];
+  const signal = abort
+    ? AbortSignal.any([AbortSignal.timeout(timeoutMs), abort])
+    : AbortSignal.timeout(timeoutMs);
+  const res = await fetch(V4_SEARCH, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey()}`,
+      "Content-Type": "application/json",
     },
-    timeoutMs,
-    abort,
-  )) as SearchResponse;
-  return (json.results ?? []).map((r) => ({
-    title: r.title ?? "",
-    content: (r.chunks ?? [])
-      .map((c) => c.content ?? "")
-      .join("\n")
-      .slice(0, HIT_CHARS),
-    app: r.metadata?.app ?? "app",
-    date: r.metadata?.date,
-  }));
+    signal,
+    body: JSON.stringify({
+      q,
+      containerTag: archiveTag(phone),
+      searchMode: "hybrid",
+      include: { documents: true },
+      rewriteQuery: false,
+      rerank: false,
+      limit,
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(`supermemory /v4/search failed: ${res.status} ${await res.text()}`);
+  }
+  return archiveHitsFromSearch(await res.json(), ARCHIVE_HIT_CHARS);
 }
 
 type ListResponse = {

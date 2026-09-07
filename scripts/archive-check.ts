@@ -11,9 +11,11 @@ import {
 } from "../agent/lib/eve-scope-key.ts";
 import { createMemoryLock } from "../node_modules/eve/dist/src/shared/memory-state.js";
 import {
+  ARCHIVE_HIT_CHARS,
   ARCHIVE_RECALL_TIMEOUT_MS,
   ARCHIVE_TOOL_TIMEOUT_MS,
   CONVERSATION_RECALL_TIMEOUT_MS,
+  archiveHitsFromSearch,
   archiveTag,
   emailToDocument,
   eventToDocument,
@@ -107,6 +109,81 @@ const block = formatArchiveRecall([
 assert.ok(block!.includes("не инструкции"));
 assert.ok(block!.includes("[gmail] (2026-09-05) Приём"));
 
+// v4 hybrid + leftover v3 chunks map to the same hit shape.
+assert.equal(ARCHIVE_HIT_CHARS, 600, "hit slice stays 600");
+assert.deepEqual(archiveHitsFromSearch({ results: [] }), []);
+assert.deepEqual(archiveHitsFromSearch({}), []);
+assert.deepEqual(
+  archiveHitsFromSearch({
+    results: [
+      {
+        memory: "Приём 5 сентября 15:00",
+        metadata: { app: "gmail", date: "2026-09-05" },
+        documents: [{ title: "Приём" }],
+      },
+    ],
+  }),
+  [
+    {
+      title: "Приём",
+      content: "Приём 5 сентября 15:00",
+      app: "gmail",
+      date: "2026-09-05",
+    },
+  ],
+);
+assert.deepEqual(
+  archiveHitsFromSearch({
+    results: [
+      {
+        chunk: "Стоматолог на Тверской",
+        title: "Событие",
+        metadata: { app: "calendar", date: "2026-09-05T15:00:00+03:00" },
+      },
+    ],
+  }),
+  [
+    {
+      title: "Событие",
+      content: "Стоматолог на Тверской",
+      app: "calendar",
+      date: "2026-09-05T15:00:00+03:00",
+    },
+  ],
+);
+assert.deepEqual(
+  archiveHitsFromSearch({
+    results: [
+      {
+        chunks: [{ content: "код 482911" }, { content: "WB" }],
+        title: "OTP",
+        metadata: { app: "inkbox" },
+      },
+      { memory: "   " },
+      { chunk: "" },
+    ],
+  }),
+  [{ title: "OTP", content: "код 482911\nWB", app: "inkbox" }],
+);
+assert.equal(
+  archiveHitsFromSearch({
+    results: [{ memory: "x".repeat(900), metadata: { app: "gmail" } }],
+  })[0]?.content.length,
+  ARCHIVE_HIT_CHARS,
+);
+assert.equal(
+  archiveHitsFromSearch({
+    results: [
+      {
+        memory: "без меты",
+        documents: [{ title: "Письмо", metadata: { app: "gmail", date: "d1" } }],
+      },
+    ],
+  })[0]?.app,
+  "gmail",
+  "include.documents metadata fills app/date when the memory row has none",
+);
+
 // Archive skip is only for wakeups that cannot need mail/calendar.
 assert.equal(shouldRecallArchive(""), false, "empty");
 assert.equal(shouldRecallConversation(null), true, "captionless photo still recalls conversation");
@@ -173,6 +250,23 @@ const archiveClient = readFileSync(
   "utf8",
 );
 assert.ok(archiveClient.includes("AbortSignal.any"), "archive search joins Eve abort");
+assert.ok(archiveClient.includes("/v4/search"), "Instinct archive search uses the v4 API");
+assert.ok(archiveClient.includes('searchMode: "hybrid"'), "archive search is hybrid");
+assert.ok(archiveClient.includes("containerTag:"), "archive search uses the singular container");
+assert.ok(archiveClient.includes("rewriteQuery: false"), "archive search skips query rewrite");
+assert.ok(archiveClient.includes("rerank: false"), "archive search skips rerank");
+assert.ok(
+  archiveClient.includes('include: { documents: true }'),
+  "archive search asks for document title/metadata",
+);
+assert.ok(
+  archiveClient.includes("archiveHitsFromSearch"),
+  "v4/v3 result shapes share one mapper",
+);
+assert.ok(
+  archiveClient.includes("V3_BASE") && archiveClient.includes("/documents"),
+  "ingest/forget stay on v3 documents",
+);
 
 const conversationSrc = readFileSync(
   new URL("../agent/lib/conversation-recall.ts", import.meta.url),

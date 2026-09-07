@@ -160,6 +160,7 @@ async function measureInstinctHttp(): Promise<Record<string, unknown>> {
   const conversation = await timed(() =>
     searchConversation(scopes.conversationScope, query, CONVERSATION_RECALL_TIMEOUT_MS),
   );
+  const archiveV3 = await timed(() => searchArchiveV3Documents(phone, query));
   const archive = await timed(() =>
     searchArchive(phone, query, 4, ARCHIVE_RECALL_TIMEOUT_MS),
   );
@@ -178,6 +179,8 @@ async function measureInstinctHttp(): Promise<Record<string, unknown>> {
     conversationScopePrefix: scopes.conversationScope.slice(0, 12),
     digestUs,
     conversationHttp: conversation,
+    archiveV3DocumentsHttp: archiveV3,
+    archiveV4Http: archive,
     archiveHttp: archive,
     parallelHttp: parallel,
     serialSumMs: serialMs,
@@ -185,8 +188,32 @@ async function measureInstinctHttp(): Promise<Record<string, unknown>> {
     loadInstinctRecallMs: firstPair.ms,
     loadInstinctRecallCachedMs: cachedPair.ms,
     budgetMs: ARCHIVE_RECALL_TIMEOUT_MS,
-    note: "Empty throwaway containers. Times are Supermemory RTT, not iMessage.",
+    note: "Empty throwaway containers. Times are Supermemory RTT, not iMessage. archiveV3DocumentsHttp is the previous Instinct path; archiveV4Http is production.",
   };
+}
+
+/** Previous Instinct archive path — documents /v3/search. Profile-only. */
+async function searchArchiveV3Documents(phone: string, query: string): Promise<void> {
+  const key = process.env.SUPERMEMORY_API_KEY?.trim();
+  if (!key) throw new Error("SUPERMEMORY_API_KEY missing");
+  const tag = `bro_archive_${phone.replace(/[^0-9A-Za-z._-]/g, "")}`;
+  const res = await fetch("https://api.supermemory.ai/v3/search", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${key}`,
+      "Content-Type": "application/json",
+    },
+    signal: AbortSignal.timeout(ARCHIVE_RECALL_TIMEOUT_MS),
+    body: JSON.stringify({
+      q: query,
+      containerTags: [tag],
+      rewriteQuery: false,
+      rerank: false,
+      limit: 4,
+    }),
+  });
+  if (!res.ok) throw new Error(`v3 search ${res.status} ${await res.text()}`);
+  await res.json();
 }
 
 /** Stream TTFB against the live Bro model. No Eve tools, no Inkbox send. */

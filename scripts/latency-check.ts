@@ -108,4 +108,15 @@ assert(
   "static prompt still tells the model short acks are real turns",
 );
 
+const archiveClient = readFileSync(
+  new URL("../agent/lib/archive.ts", import.meta.url),
+  "utf8",
+);
+assert(archiveClient.includes("/v4/search"), "archive Instinct search uses v4");
+assert(archiveClient.includes('searchMode: "hybrid"'), "archive Instinct search is hybrid");
+assert(
+  archiveClient.includes("containerTag: archiveTag(phone)"),
+  "archive search uses the singular v4 container",
+);
+
 console.log("latency-check ok");

@@ -182,6 +182,57 @@ export interface ArchiveHit {
   date?: string;
 }
 
+/** Visible chars per Instinct/tool hit. Shared by the v4 mapper. */
+export const ARCHIVE_HIT_CHARS = 600;
+
+function hitText(raw: Record<string, unknown>): string {
+  if (typeof raw.memory === "string" && raw.memory.trim()) return raw.memory;
+  if (typeof raw.chunk === "string" && raw.chunk.trim()) return raw.chunk;
+  const chunks = Array.isArray(raw.chunks) ? raw.chunks : [];
+  return chunks
+    .map((c) => str(rec(c).content))
+    .filter(Boolean)
+    .join("\n");
+}
+
+function hitMeta(raw: Record<string, unknown>): { app: string; date?: string; title: string } {
+  const meta = rec(raw.metadata);
+  const docs = Array.isArray(raw.documents) ? raw.documents : [];
+  const firstDoc = rec(docs[0]);
+  const docMeta = rec(firstDoc.metadata);
+  const title = str(raw.title) || str(firstDoc.title);
+  const app = str(meta.app) || str(docMeta.app) || "app";
+  const date = str(meta.date) || str(docMeta.date);
+  return { title, app, ...(date ? { date } : {}) };
+}
+
+/**
+ * Map Supermemory search JSON (v4 hybrid or leftover v3 chunks) to archive
+ * hits. Empty/missing content is dropped; title/app/date fall back through
+ * result metadata and `include.documents`.
+ */
+export function archiveHitsFromSearch(
+  raw: unknown,
+  hitChars = ARCHIVE_HIT_CHARS,
+): ArchiveHit[] {
+  const results = rec(raw).results;
+  if (!Array.isArray(results)) return [];
+  const hits: ArchiveHit[] = [];
+  for (const item of results) {
+    const row = rec(item);
+    const content = hitText(row).slice(0, hitChars);
+    if (!content) continue;
+    const meta = hitMeta(row);
+    hits.push({
+      title: meta.title,
+      content,
+      app: meta.app,
+      ...(meta.date ? { date: meta.date } : {}),
+    });
+  }
+  return hits;
+}
+
 /**
  * One recalled context block. Copies of app data are untrusted input: the
  * framing must forbid following instructions found inside (Instinct got
