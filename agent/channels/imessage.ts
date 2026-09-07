@@ -3,7 +3,7 @@ import type { IMessageWebhookPayload } from "@inkbox/sdk";
 import {
   agentHandle,
   allowlisted,
-  inkbox,
+  inkboxIdentity,
   isAccessHandle,
   isBlueIMessage,
   sendBlueIMessage,
@@ -54,7 +54,8 @@ import {
 import { telegramBindLink } from "../../convex/lib/telegramPolicy.ts";
 import { telegramBotUsername } from "../lib/telegram";
 import { transcribeVoiceNote } from "../lib/voice";
-import { inboundUserContent } from "../lib/inbound-image.ts";
+import { assembleInboundContent, prefetchInboundImages } from "../lib/inbound-image.ts";
+import { canSkipInboundBind } from "../lib/inbound-bind.ts";
 import { VOICE_FAILED_REPLY } from "../lib/voice-policy";
 import { watcherWakeupPrompt } from "../lib/purchase-policy";
 import { wakeupCarriesRunId } from "../../convex/lib/browserFollowPolicy.ts";
@@ -150,7 +151,7 @@ async function sendFirstBindOnboard(opts: {
   tel?: string;
 }): Promise<void> {
   try {
-    const identity = await inkbox().getIdentity(opts.handle);
+    const identity = await inkboxIdentity(opts.handle);
     const upload = await identity.uploadIMessageMedia({
       content: new TextEncoder().encode(
         broVcard({ email: opts.email, tel: opts.tel }),
@@ -357,6 +358,9 @@ export default defineChannel({
         return new Response(null, { status: 204 });
       }
 
+      const voiceP = inboundIMessageTextWithVoice(msg, transcribeVoiceNote);
+      const imagesP = prefetchInboundImages(msg.media);
+
       const knownGroup = msg.conversation_id
         ? await getGroupByConversation(msg.conversation_id).catch(() => null)
         : null;
@@ -398,19 +402,25 @@ export default defineChannel({
         firstGroup = bound.firstGroup;
         ownerPhone = bound.ownerPhoneE164;
       } else if (handle) {
-        const bound = await bindInbound(handle, remote, msg.conversation_id).catch(
-          (err) => {
-            console.error("bind inbound failed", err);
-            return { ok: false as const, reason: "error" };
-          },
-        );
-        if (!bound.ok) {
-          console.error("dropped inbound", bound.reason, handle, remote);
-          return new Response(null, { status: 204 });
+        if (canSkipInboundBind(tenant, remote, msg.conversation_id)) {
+          firstBind = false;
+          boundTenant = tenant;
+          ownerPhone = tenant?.phoneE164 ?? remote;
+        } else {
+          const bound = await bindInbound(handle, remote, msg.conversation_id).catch(
+            (err) => {
+              console.error("bind inbound failed", err);
+              return { ok: false as const, reason: "error" };
+            },
+          );
+          if (!bound.ok) {
+            console.error("dropped inbound", bound.reason, handle, remote);
+            return new Response(null, { status: 204 });
+          }
+          firstBind = bound.firstBind;
+          boundTenant = bound.tenant;
+          ownerPhone = bound.tenant.phoneE164 ?? remote;
         }
-        firstBind = bound.firstBind;
-        boundTenant = bound.tenant;
-        ownerPhone = bound.tenant.phoneE164 ?? remote;
       } else {
         if (!allowlisted(remote)) {
           return new Response(null, { status: 204 });
@@ -464,7 +474,7 @@ export default defineChannel({
         }
         const ack = (async () => {
           try {
-            const identity = await inkbox().getIdentity(identityHandle);
+            const identity = await inkboxIdentity(identityHandle);
             await identity.markIMessageConversationRead(msg.conversation_id);
             await identity.sendIMessageTyping(msg.conversation_id);
           } catch (err) {
@@ -475,7 +485,7 @@ export default defineChannel({
         else void ack;
       }
 
-      const inbound = await inboundIMessageTextWithVoice(msg, transcribeVoiceNote);
+      const inbound = await voiceP;
       if (firstBind) {
         await sendFirstBindOnboard({
           conversationId: msg.conversation_id,
@@ -559,7 +569,7 @@ export default defineChannel({
       );
       if (typeof waitUntil === "function") waitUntil(touch);
       else void touch;
-      const rawContent = await inboundUserContent(inbound.text, msg.media);
+      const rawContent = assembleInboundContent(inbound.text, await imagesP);
       const content = group
         ? tagGroupUserContent(remote, rawContent)
         : rawContent;

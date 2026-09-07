@@ -13,7 +13,10 @@ import {
   isTelegramAsk,
   shouldSkipAgentTurn,
 } from "../lib/onboard-policy";
-import { inboundUserContent } from "../lib/inbound-image.ts";
+import {
+  assembleInboundContent,
+  prefetchInboundImages,
+} from "../lib/inbound-image.ts";
 import { transcribeVoiceNote } from "../lib/voice";
 import { inboundVoiceLine } from "../lib/imessage-text";
 import { VOICE_FAILED_REPLY } from "../lib/voice-policy";
@@ -109,15 +112,12 @@ async function inboundTelegramText(
   return { text: caption, voice: Boolean(voice), allVoiceFailed: false };
 }
 
-async function inboundTelegramContent(
-  text: string,
-  msg: TelegramMessage,
-): Promise<string | Awaited<ReturnType<typeof inboundUserContent>>> {
+async function inboundTelegramPhotoParts(msg: TelegramMessage) {
   const photo = largestPhoto(msg);
-  if (!photo) return inboundUserContent(text, null);
+  if (!photo) return [];
   try {
     const url = await telegramFileUrl(photo.file_id);
-    return await inboundUserContent(text, [
+    return await prefetchInboundImages([
       {
         url,
         content_type: "image/jpeg",
@@ -126,7 +126,7 @@ async function inboundTelegramContent(
     ]);
   } catch (err) {
     console.error("telegram photo fetch failed", err);
-    return inboundUserContent(text, null);
+    return [];
   }
 }
 
@@ -248,16 +248,14 @@ export default defineChannel({
       const phone = tenant.phoneE164;
       const conversationId = tenant.inkboxConversationId;
 
-      const inbound = await inboundTelegramText(msg);
-      if (inbound.allVoiceFailed) {
-        await sendHtml(chatId, VOICE_FAILED_REPLY).catch((err) =>
-          console.error("telegram voice fail reply", err),
-        );
-        return new Response(null, { status: 204 });
-      }
-      if (!inbound.text && !largestPhoto(msg)) {
-        return new Response(null, { status: 204 });
-      }
+      const typing = sendTelegramTyping(chatId).catch((err) =>
+        console.error("telegram typing failed", err),
+      );
+      if (typeof waitUntil === "function") waitUntil(typing);
+      else void typing;
+
+      const inboundP = inboundTelegramText(msg);
+      const photoP = inboundTelegramPhotoParts(msg);
 
       let gate: { decision: "allow" | "paywall" | "drop"; payUrl?: string };
       try {
@@ -286,6 +284,17 @@ export default defineChannel({
         await sendHtml(chatId, line).catch((err) =>
           console.error("telegram paywall send failed", err),
         );
+        return new Response(null, { status: 204 });
+      }
+
+      const inbound = await inboundP;
+      if (inbound.allVoiceFailed) {
+        await sendHtml(chatId, VOICE_FAILED_REPLY).catch((err) =>
+          console.error("telegram voice fail reply", err),
+        );
+        return new Response(null, { status: 204 });
+      }
+      if (!inbound.text && !largestPhoto(msg)) {
         return new Response(null, { status: 204 });
       }
 
@@ -318,7 +327,7 @@ export default defineChannel({
       if (typeof waitUntil === "function") waitUntil(touch);
       else void touch;
 
-      const content = await inboundTelegramContent(inbound.text, msg);
+      const content = assembleInboundContent(inbound.text, await photoP);
       console.log("telegram inbound", {
         phone,
         conversationId,
@@ -326,12 +335,6 @@ export default defineChannel({
         voice: inbound.voice,
         images: typeof content === "string" ? 0 : content.length - 1,
       });
-
-      const typing = sendTelegramTyping(chatId).catch((err) =>
-        console.error("telegram typing failed", err),
-      );
-      if (typeof waitUntil === "function") waitUntil(typing);
-      else void typing;
       parkTurn(
         waitUntil,
         from(conversationId).send(content, {

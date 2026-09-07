@@ -37,15 +37,33 @@ export type WakeContext = {
 };
 
 const wakeInflight = new Map<string, Promise<WakeContext>>();
+const wakeCache = new Map<string, { at: number; value: WakeContext }>();
 
-/** One Convex snapshot for memo + jobs. Coalesces parallel turn.started callers. */
+/** Same-turn reuse: Eve runs memo recall, then jobs instructions. */
+export const WAKE_CONTEXT_TTL_MS = 2_500;
+
+function rememberWake(phoneE164: string, value: WakeContext): void {
+  wakeCache.set(phoneE164, { at: Date.now(), value });
+}
+
+function forgetWake(phoneE164: string): void {
+  wakeCache.delete(phoneE164);
+}
+
+/** One Convex snapshot for memo + jobs. Coalesces parallel and sequential turn.started callers. */
 export async function loadWakeContext(phoneE164: string): Promise<WakeContext> {
+  const cached = wakeCache.get(phoneE164);
+  if (cached && Date.now() - cached.at < WAKE_CONTEXT_TTL_MS) return cached.value;
   const existing = wakeInflight.get(phoneE164);
   if (existing) return existing;
   const pending = client()
     .query(api.memories.wakeContext, {
       secret: secret(),
       phoneE164,
+    })
+    .then((value) => {
+      rememberWake(phoneE164, value);
+      return value;
     })
     .finally(() => {
       wakeInflight.delete(phoneE164);
@@ -305,12 +323,14 @@ export async function openJob(
   goal: string,
   doneWhen: string,
 ) {
-  return await client().mutation(api.jobs.open, {
+  const id = await client().mutation(api.jobs.open, {
     secret: secret(),
     phoneE164,
     goal,
     doneWhen,
   });
+  forgetWake(phoneE164);
+  return id;
 }
 
 export async function waitJob(
@@ -323,13 +343,15 @@ export async function waitJob(
     emailMessageId?: string;
   },
 ) {
-  return await client().mutation(api.jobs.wait, {
+  const result = await client().mutation(api.jobs.wait, {
     secret: secret(),
     phoneE164,
     jobId: jobId as Id<"jobs">,
     waitingFor,
     ...extra,
   });
+  forgetWake(phoneE164);
+  return result;
 }
 
 export async function finishJob(
@@ -338,21 +360,25 @@ export async function finishJob(
   outcome: string,
   failed?: boolean,
 ) {
-  return await client().mutation(api.jobs.finish, {
+  const result = await client().mutation(api.jobs.finish, {
     secret: secret(),
     phoneE164,
     jobId: jobId as Id<"jobs">,
     outcome,
     failed,
   });
+  forgetWake(phoneE164);
+  return result;
 }
 
 export async function markNudged(phoneE164: string, jobId: string) {
-  return await client().mutation(api.jobs.markNudged, {
+  const result = await client().mutation(api.jobs.markNudged, {
     secret: secret(),
     phoneE164,
     jobId: jobId as Id<"jobs">,
   });
+  forgetWake(phoneE164);
+  return result;
 }
 
 export async function touchJobMail(

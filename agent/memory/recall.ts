@@ -4,7 +4,12 @@ import {
   type MemoryOperationContext,
   type MemoryRecallHandler,
 } from "eve/memory";
-import { recallQuery, shouldRecallConversation } from "../lib/archive-policy.ts";
+import {
+  CONVERSATION_RECALL_TIMEOUT_MS,
+  recallQuery,
+  shouldRecallConversation,
+  withRecallBudget,
+} from "../lib/archive-policy.ts";
 import { resolveMemoryScope, resolveRecallBackend } from "../lib/memory-policy.ts";
 
 /**
@@ -18,6 +23,8 @@ import { resolveMemoryScope, resolveRecallBackend } from "../lib/memory-policy.t
  * Auto-recall on `turn.started` uses the same wakeup gate as the archive
  * slot: human chat, mail events, brief, and job_check still search.
  * `browser_poll` / plain reminders skip the paid HTTP round-trip.
+ * The hook itself is time-capped to `CONVERSATION_RECALL_TIMEOUT_MS` so
+ * uncapped Supermemory HTTP cannot delay the first token past archive.
  * Tools stay mounted either way.
  */
 const inner = supermemory({
@@ -42,7 +49,7 @@ function gatedRecall<TContext extends RecallCtx>(
       recallQuery(context.turn?.input ?? []) ?? recallQuery(context.messages);
     if (!shouldRecallConversation(query)) return null;
     if (typeof hook !== "function") return null;
-    return hook(context);
+    return withRecallBudget(hook(context), CONVERSATION_RECALL_TIMEOUT_MS);
   };
 }
 

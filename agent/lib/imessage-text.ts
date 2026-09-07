@@ -201,25 +201,25 @@ export async function inboundIMessageTextWithVoice(
     if (url) others.push(url);
   }
 
-  const lines: string[] = [];
-  let anyOk = false;
-  let anyAttempt = false;
-  for (const m of audio) {
-    const url = m.url?.trim();
-    if (!url) continue;
-    anyAttempt = true;
-    const result = await transcribe({
-      url,
+  const clips = audio
+    .map((m) => ({
+      url: m.url?.trim() ?? "",
       contentType: m.content_type ?? null,
       size: m.size ?? null,
-    });
-    if (result.ok && result.text.trim()) {
-      lines.push(voiceTranscriptLine(result.text));
-      anyOk = true;
-    } else {
-      lines.push(inboundVoiceLine({ url }));
-    }
-  }
+    }))
+    .filter((m) => m.url);
+  const anyAttempt = clips.length > 0;
+  const transcribed = await Promise.all(
+    clips.map(async (clip) => {
+      const result = await transcribe(clip);
+      if (result.ok && result.text.trim()) {
+        return { line: voiceTranscriptLine(result.text), ok: true };
+      }
+      return { line: inboundVoiceLine({ url: clip.url }), ok: false };
+    }),
+  );
+  const lines = transcribed.map((row) => row.line);
+  const anyOk = transcribed.some((row) => row.ok);
 
   const parts = [...lines, ...others];
   if (msg.message_type === "carousel" && parts.length === 0) {

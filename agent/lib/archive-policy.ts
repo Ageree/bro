@@ -139,6 +139,27 @@ export function recallQuery(input: readonly unknown[]): string | null {
 /** Instinct auto-recall on `turn.started`. Tools keep the 30s client timeout. */
 export const ARCHIVE_RECALL_TIMEOUT_MS = 1_500;
 export const ARCHIVE_TOOL_TIMEOUT_MS = 30_000;
+/** Conversation auto-recall must not outrun archive on `turn.started`. */
+export const CONVERSATION_RECALL_TIMEOUT_MS = ARCHIVE_RECALL_TIMEOUT_MS;
+
+/** First-token budget: keep the hook, drop the result if it is late. */
+export async function withRecallBudget<T>(
+  work: Promise<T> | T,
+  timeoutMs: number,
+): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const timeout = new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), timeoutMs);
+    });
+    return await Promise.race([Promise.resolve(work), timeout]);
+  } catch (err) {
+    console.error("conversation recall failed", err);
+    return null;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
 
 /**
  * Skip the Supermemory archive search on cheap chat. That HTTP round-trip

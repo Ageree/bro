@@ -105,6 +105,21 @@ export function isPlainJson(value: unknown): boolean {
   return false;
 }
 
+export function assembleInboundContent(
+  text: string,
+  parts: readonly ImagePart[],
+): string | Array<{ type: "text"; text: string } | ImagePart> {
+  if (parts.length === 0) return text;
+  return [{ type: "text", text }, ...parts];
+}
+
+export function prefetchInboundImages(
+  media: InboundMediaItem[] | null | undefined,
+  deps: Parameters<typeof fetchImagePart>[1] = {},
+): Promise<ImagePart[]> {
+  return Promise.all(inboundImages(media).map((img) => fetchImagePart(img, deps)));
+}
+
 /** Text + image parts, or plain text when there is nothing to see. Always
  *  plain JSON — see the header comment. */
 export async function inboundUserContent(
@@ -112,8 +127,5 @@ export async function inboundUserContent(
   media: InboundMediaItem[] | null | undefined,
   deps: Parameters<typeof fetchImagePart>[1] = {},
 ): Promise<string | Array<{ type: "text"; text: string } | ImagePart>> {
-  const images = inboundImages(media);
-  if (images.length === 0) return text;
-  const parts = await Promise.all(images.map((img) => fetchImagePart(img, deps)));
-  return [{ type: "text", text }, ...parts];
+  return assembleInboundContent(text, await prefetchInboundImages(media, deps));
 }
