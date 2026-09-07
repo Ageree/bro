@@ -16,7 +16,7 @@ assert(memo.includes("wakeLines"), "memo still injects wake lines");
 
 const jobs = readFileSync(new URL("../agent/instructions/jobs.ts", import.meta.url), "utf8");
 assert(jobs.includes("jobWakeRows"), "jobs read the same snapshot");
-assert(jobs.includes("wakeupKind"), "job_check nudge is not on the HTTP path");
+assert(jobs.includes("isJobCheckWakeup"), "job_check nudge is not on the HTTP path");
 assert(jobs.includes("Promise.all"), "due markNudged calls run in parallel");
 assert(jobs.includes("jobCheckQuietInstruction"), "non-due job_check may stay silent");
 
