@@ -1,4 +1,3 @@
-/** GLM-5.3-flash reasoning cannot be turned off; the provider default is `max`. */
 export const OPENROUTER_CHAT_REASONING_EFFORT = "low" as const;
 export const OPENROUTER_CHAT_PROVIDER_SORT = "latency" as const;
 export const OPENROUTER_CHAT_PROVIDER_ORDER = [
