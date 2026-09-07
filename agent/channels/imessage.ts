@@ -94,6 +94,7 @@ import {
   groupMemoryScope,
   groupParticipantPhones,
   groupSenderPhone,
+  groupTaggedText,
   groupWelcomeText,
   isGroupMessage,
   shouldReplyInGroup,
@@ -584,7 +585,10 @@ export default defineChannel({
           void loadWakeContext(groupScope).catch((err) =>
             console.error("group wake prefetch failed", err),
           );
-          prefetchInstinctRecall(groupScope, inbound.text);
+          prefetchInstinctRecall(
+            groupScope,
+            groupTaggedText(remote, inbound.text),
+          );
         }
         prefetchOpenRouter();
         const gate = await gateP;

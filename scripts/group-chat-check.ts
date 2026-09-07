@@ -225,10 +225,14 @@ assert(
   "group wake/Instinct use the group container, after the mention gate",
 );
 assert(
-  channel.indexOf("prefetchInstinctRecall(groupScope", mentionAt) > mentionAt &&
-    channel.indexOf("prefetchInstinctRecall(groupScope", mentionAt) <
+  channel.indexOf("prefetchInstinctRecall(", mentionAt) > mentionAt &&
+    channel.indexOf("prefetchInstinctRecall(", mentionAt) <
       channel.indexOf("const gate = await gateP", secondGate),
   "group Instinct overlaps group billing",
+);
+assert(
+  channel.includes("groupTaggedText(remote, inbound.text)"),
+  "group Instinct prefetch uses the same tagged query turn.started will search",
 );
 assert(
   channel.indexOf("prefetchOpenRouter()", mentionAt) > mentionAt &&
