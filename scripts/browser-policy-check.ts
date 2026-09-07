@@ -20,9 +20,23 @@ import {
   wakeupIdempotencyKey,
   wakeupRetryWaitBeforeLastMs,
 } from "../convex/lib/browserFollowPolicy.ts";
+import { LOGIN_MARK } from "../convex/lib/browserProfilePolicy.ts";
 import {
+  acceptsReasoningEffort,
   applyProxyCountry,
+  browserModel,
+  browserSettingsForRun,
+  buildRunBody,
+  customProxyFromEnv,
+  decorateProxyUser,
+  DEFAULT_BROWSER_MODEL,
+  DEFAULT_MAX_COST_USD,
+  DEFAULT_REASONING_EFFORT,
+  detectRunKind,
+  maxCostUsd,
+  modelParamsFor,
   proxyCountryCode,
+  reasoningEffort,
   scaffoldTask,
 } from "../agent/lib/browseruse.ts";
 
@@ -342,5 +356,137 @@ assert(
     JSON.stringify({ proxyCountryCode: "ru" }),
   "proxyCountryCode in browserSettings",
 );
+
+assert(detectRunKind("скотч на ozon") === "errand", "kind errand");
+assert(detectRunKind(`${LOGIN_MARK}\nжди`) === "login", "kind login");
+assert(
+  detectRunKind("оплати", { pay: { hosts: ["ozon.ru"] } }) === "pay",
+  "kind pay",
+);
+assert(browserModel("") === DEFAULT_BROWSER_MODEL, "empty model → luna");
+assert(browserModel(" grok-4.5 ") === "grok-4.5", "model override");
+assert(maxCostUsd("errand", undefined) === DEFAULT_MAX_COST_USD.errand, "errand cap");
+assert(maxCostUsd("login", undefined) === DEFAULT_MAX_COST_USD.login, "login cap");
+assert(maxCostUsd("pay", undefined) === DEFAULT_MAX_COST_USD.pay, "pay cap");
+assert(maxCostUsd("errand", "1") === 1, "env cap overrides kind");
+assert(maxCostUsd("errand", "nope") === DEFAULT_MAX_COST_USD.errand, "bad cap");
+assert(
+  reasoningEffort("errand", undefined) === DEFAULT_REASONING_EFFORT.errand,
+  "errand effort",
+);
+assert(
+  reasoningEffort("login", undefined) === DEFAULT_REASONING_EFFORT.login,
+  "login effort",
+);
+assert(reasoningEffort("errand", "none") === "none", "effort override");
+assert(reasoningEffort("errand", "wat") === "low", "bad effort");
+assert(acceptsReasoningEffort("gpt-5.6-luna") === true, "luna reasoning");
+assert(acceptsReasoningEffort("minimax-m3") === false, "minimax no reasoning");
+assert(
+  JSON.stringify(modelParamsFor("gpt-5.6-luna", "low")) ===
+    JSON.stringify({ reasoning: { effort: "low" } }),
+  "luna modelParams",
+);
+assert(modelParamsFor("grok-4.5", "low") === undefined, "grok no modelParams");
+assert(customProxyFromEnv({}) === undefined, "no custom proxy");
+assert(
+  customProxyFromEnv({ BRO_BROWSER_PROXY_HOST: "p.example", BRO_BROWSER_PROXY_PORT: "0" }) ===
+    undefined,
+  "port 0 rejected",
+);
+assert(decorateProxyUser(undefined, "__cr.ru") === undefined, "no user");
+assert(decorateProxyUser("login", undefined) === "login", "no suffix");
+assert(
+  decorateProxyUser("login", "__cr.ru;sessttl.30") === "login__cr.ru;sessttl.30",
+  "dataimpulse ru sticky",
+);
+assert(
+  decorateProxyUser("login__cr.ru;sessttl.30", "__cr.ru;sessttl.30") ===
+    "login__cr.ru;sessttl.30",
+  "suffix not doubled",
+);
+const byop = customProxyFromEnv({
+  BRO_BROWSER_PROXY_HOST: " gw.dataimpulse.com ",
+  BRO_BROWSER_PROXY_PORT: "823",
+  BRO_BROWSER_PROXY_USER: "acct",
+  BRO_BROWSER_PROXY_PASS: "s",
+  BRO_BROWSER_PROXY_USER_SUFFIX: "__cr.ru;sessttl.30",
+});
+assert(byop?.host === "gw.dataimpulse.com" && byop.port === 823, "custom proxy parsed");
+assert(byop?.username === "acct__cr.ru;sessttl.30", "suffix applied on env user");
+assert(
+  JSON.stringify(
+    browserSettingsForRun({
+      country: "ru",
+      customProxy: byop,
+      profileId: "550e8400-e29b-41d4-a716-446655440000",
+    }),
+  ) ===
+    JSON.stringify({
+      customProxy: {
+        host: "gw.dataimpulse.com",
+        port: 823,
+        username: "acct__cr.ru;sessttl.30",
+        password: "s",
+      },
+      proxyCountryCode: null,
+      profileId: "550e8400-e29b-41d4-a716-446655440000",
+    }),
+  "BYOP disables managed residential",
+);
+
+const errandBody = buildRunBody({
+  task: "скотч на ozon",
+  proxyCountry: "ru",
+  model: DEFAULT_BROWSER_MODEL,
+  maxCostUsd: DEFAULT_MAX_COST_USD.errand,
+  reasoningEffort: "low",
+});
+assert(errandBody.model === "gpt-5.6-luna", "errand pins luna");
+assert(errandBody.maxCostUsd === 0.45, "errand cap on body");
+assert(
+  JSON.stringify(errandBody.modelParams) ===
+    JSON.stringify({ reasoning: { effort: "low" } }),
+  "errand not xhigh",
+);
+assert(
+  JSON.stringify(errandBody.browserSettings) ===
+    JSON.stringify({ proxyCountryCode: "ru" }),
+  "errand keeps ru proxy",
+);
+
+const loginBody = buildRunBody({
+  task: `${LOGIN_MARK}\nоткрой https://ozon.ru`,
+  model: DEFAULT_BROWSER_MODEL,
+  maxCostUsd: DEFAULT_MAX_COST_USD.login,
+  reasoningEffort: DEFAULT_REASONING_EFFORT.login,
+});
+assert(loginBody.maxCostUsd === 0.15, "login cheaper cap");
+assert(
+  JSON.stringify(loginBody.modelParams) ===
+    JSON.stringify({ reasoning: { effort: "none" } }),
+  "login no reasoning",
+);
+
+const payBody = buildRunBody({
+  task: "оплати",
+  pay: { hosts: ["ozon.ru"], holder: "A", account: "Visa" },
+  model: DEFAULT_BROWSER_MODEL,
+  maxCostUsd: DEFAULT_MAX_COST_USD.pay,
+  reasoningEffort: DEFAULT_REASONING_EFFORT.pay,
+});
+assert(payBody.maxCostUsd === 0.8, "pay higher cap");
+assert(
+  JSON.stringify(payBody.modelParams) ===
+    JSON.stringify({ reasoning: { effort: "low" } }),
+  "pay still low, not xhigh",
+);
+
+const grokBody = buildRunBody({
+  task: "x",
+  model: "grok-4.5",
+  maxCostUsd: 0.45,
+});
+assert(grokBody.modelParams === undefined, "non-luna omits modelParams");
 
 console.log("browser-policy-check ok");
