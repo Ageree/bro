@@ -36,6 +36,8 @@ import {
   type TelegramUpdate,
 } from "../lib/telegram";
 import { compileTelegram } from "../lib/telegram-text.ts";
+import { humanTurnEvents } from "../lib/human-turn-events";
+import { TURN_FAILED_REPLY } from "../lib/silent-turn.ts";
 
 function telegramAuthAttrs(opts: {
   conversationId: string;
@@ -164,21 +166,28 @@ export default defineChannel({
         await touchLastChannel(tenant.phoneE164, "telegram").catch((err) =>
           console.error("touch last channel failed", err),
         );
-        await from(tenant.inkboxConversationId).send(`[button] ${data}`, {
-          auth: {
-            authenticator: "telegram",
-            issuer: "telegram",
-            principalType: "user",
-            principalId: tenant.phoneE164,
-            attributes: telegramAuthAttrs({
-              conversationId: tenant.inkboxConversationId,
-              telegramChatId: tenant.telegramChatId ?? chatIdOf(msg),
-              telegramUserId: userId,
-              messageId: String(msg.message_id),
-              inkboxHandle: tenant.inkboxHandle,
-            }),
-          },
-        });
+        try {
+          await from(tenant.inkboxConversationId).send(`[button] ${data}`, {
+            auth: {
+              authenticator: "telegram",
+              issuer: "telegram",
+              principalType: "user",
+              principalId: tenant.phoneE164,
+              attributes: telegramAuthAttrs({
+                conversationId: tenant.inkboxConversationId,
+                telegramChatId: tenant.telegramChatId ?? chatIdOf(msg),
+                telegramUserId: userId,
+                messageId: String(msg.message_id),
+                inkboxHandle: tenant.inkboxHandle,
+              }),
+            },
+          });
+        } catch (err) {
+          console.error("telegram callback turn failed", err);
+          await sendHtml(chatIdOf(msg), TURN_FAILED_REPLY).catch((sendErr) =>
+            console.error("telegram callback fallback failed", sendErr),
+          );
+        }
         return new Response(null, { status: 204 });
       }
 
@@ -313,22 +322,30 @@ export default defineChannel({
         images: typeof content === "string" ? 0 : content.length - 1,
       });
 
-      await from(conversationId).send(content, {
-        auth: {
-          authenticator: "telegram",
-          issuer: "telegram",
-          principalType: "user",
-          principalId: phone,
-          attributes: telegramAuthAttrs({
-            conversationId,
-            telegramChatId: chatId,
-            telegramUserId: userId,
-            messageId: String(msg.message_id),
-            inkboxHandle: tenant.inkboxHandle,
-          }),
-        },
-      });
+      try {
+        await from(conversationId).send(content, {
+          auth: {
+            authenticator: "telegram",
+            issuer: "telegram",
+            principalType: "user",
+            principalId: phone,
+            attributes: telegramAuthAttrs({
+              conversationId,
+              telegramChatId: chatId,
+              telegramUserId: userId,
+              messageId: String(msg.message_id),
+              inkboxHandle: tenant.inkboxHandle,
+            }),
+          },
+        });
+      } catch (err) {
+        console.error("telegram turn send failed", err);
+        await sendHtml(chatId, TURN_FAILED_REPLY).catch((sendErr) =>
+          console.error("telegram turn fallback failed", sendErr),
+        );
+      }
       return new Response(null, { status: 204 });
     }),
   ],
+  events: humanTurnEvents,
 });

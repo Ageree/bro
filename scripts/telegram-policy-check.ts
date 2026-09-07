@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import {
   bindRefuseText,
   bindTelegramDecision,
@@ -120,5 +122,14 @@ assert(canDeliverTelegram("99"), "has chat");
 assert(!canDeliverTelegram(""), "empty chat");
 assert(bindRefuseText("unknown_token").includes("iMessage"), "refuse mentions iMessage");
 assert(telegramWelcomeText().includes("iMessage"), "welcome same agent");
+
+const telegramChannel = readFileSync(
+  resolve(import.meta.dirname, "../agent/channels/telegram.ts"),
+  "utf8",
+);
+assert(
+  telegramChannel.includes("events: humanTurnEvents"),
+  "telegram channel delivers model replies",
+);
 
 console.log("telegram-policy-check ok");
