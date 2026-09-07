@@ -26,6 +26,8 @@ Production (you are just a user on iMessage): Convex cloud + `eve deploy` on Ver
 
 `npm run dev` is TUI-only (no public URL). Local iMessage still needs the tunnel: `https://bro-ageree.inkboxwire.com`.
 
+Cloud/AI testers talk over **real iMessage**. A dedicated Inkbox line (`bro-live-tester`) plays the human and texts the shared router `connect @bro-live-bro`. Shared-pool identities cannot start a thread — the tester needs a start-capable dedicated number (Inkbox Startup). `npm run live -- status` reports readiness; `npm run live -- provision --qa` claims the line and creates the QA Bro identity (never `bro-ageree` — that handle is production). Then `bash scripts/dev-live.sh` (eve + tunnel as `bro-live-bro`) and `npm run live -- "привет"` (or `--play .harness/plays/live-help.json`). Put the tester E.164 on `ALLOWED_SENDERS` for the eve process. Isolated Convex: `CONVEX_AGENT_MODE=anonymous npx convex dev`. Check: `npm run live:check`.
+
 Onboard: after provision, the human texts `connect @bro-ageree` to the printed router **as iMessage** (blue). iPhone Settings → Messages → Send as SMS = off.
 
 Group chats (Tomo-style): save the Bro vCard and add that number to an iMessage group, or from the 1:1 thread ask Bro to open a chat with 2–8 numbers (`group_chat`). Inkbox groups need a dedicated line (`BRO_DEDICATED_LINE=1`) and a per-person webhook handle. Shared-pool identities stay 1:1 — group inbound without `?h=` is dropped. Bro answers in a group only when addressed (`бро` / `bro`); personal tools (vault, pay, mail, Composio, browser, wakeups) stay in the private thread. If `ALLOWED_SENDERS` is set, group speakers must be on it. A group never overwrites the tenant's 1:1 `inkboxConversationId`. Check: `npm run group:check`.
