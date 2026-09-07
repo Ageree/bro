@@ -82,6 +82,7 @@ export async function noteLine(phoneE164: string, line: string): Promise<string>
     phoneE164,
     line,
   });
+  forgetWake(phoneE164);
   return "noted";
 }
 
@@ -105,6 +106,7 @@ export async function forgetLines(
     phoneE164,
     needle,
   });
+  forgetWake(phoneE164);
   return `forgot ${n}`;
 }
 

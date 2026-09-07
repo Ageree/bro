@@ -248,14 +248,18 @@ export default defineChannel({
       const phone = tenant.phoneE164;
       const conversationId = tenant.inkboxConversationId;
 
-      const typing = sendTelegramTyping(chatId).catch((err) =>
-        console.error("telegram typing failed", err),
-      );
-      if (typeof waitUntil === "function") waitUntil(typing);
-      else void typing;
-
       const inboundP = inboundTelegramText(msg);
       const photoP = inboundTelegramPhotoParts(msg);
+      const inbound = await inboundP;
+      if (inbound.allVoiceFailed) {
+        await sendHtml(chatId, VOICE_FAILED_REPLY).catch((err) =>
+          console.error("telegram voice fail reply", err),
+        );
+        return new Response(null, { status: 204 });
+      }
+      if (!inbound.text && !largestPhoto(msg)) {
+        return new Response(null, { status: 204 });
+      }
 
       let gate: { decision: "allow" | "paywall" | "drop"; payUrl?: string };
       try {
@@ -287,16 +291,11 @@ export default defineChannel({
         return new Response(null, { status: 204 });
       }
 
-      const inbound = await inboundP;
-      if (inbound.allVoiceFailed) {
-        await sendHtml(chatId, VOICE_FAILED_REPLY).catch((err) =>
-          console.error("telegram voice fail reply", err),
-        );
-        return new Response(null, { status: 204 });
-      }
-      if (!inbound.text && !largestPhoto(msg)) {
-        return new Response(null, { status: 204 });
-      }
+      const typing = sendTelegramTyping(chatId).catch((err) =>
+        console.error("telegram typing failed", err),
+      );
+      if (typeof waitUntil === "function") waitUntil(typing);
+      else void typing;
 
       if (isHelpAsk(inbound.text)) {
         await sendHtml(chatId, helpText()).catch((err) =>

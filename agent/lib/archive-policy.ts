@@ -148,14 +148,15 @@ export async function withRecallBudget<T>(
   timeoutMs: number,
 ): Promise<T | null> {
   let timer: ReturnType<typeof setTimeout> | undefined;
+  const pending = Promise.resolve(work).catch((err) => {
+    console.error("conversation recall failed", err);
+    return null;
+  });
   try {
     const timeout = new Promise<null>((resolve) => {
       timer = setTimeout(() => resolve(null), timeoutMs);
     });
-    return await Promise.race([Promise.resolve(work), timeout]);
-  } catch (err) {
-    console.error("conversation recall failed", err);
-    return null;
+    return await Promise.race([pending, timeout]);
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }

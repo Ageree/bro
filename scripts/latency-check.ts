@@ -55,7 +55,7 @@ const telegram = readFileSync(
   "utf8",
 );
 assert(telegram.includes("sendTelegramTyping"), "telegram shows typing like iMessage");
-assert(telegram.includes("inboundP"), "telegram STT overlaps billing");
+assert(telegram.includes("inboundP"), "telegram STT overlaps photo fetch");
 assert(telegram.includes("parkTurn"), "human telegram turn is not awaited");
 assert(
   !telegram.includes('"message.completed"'),

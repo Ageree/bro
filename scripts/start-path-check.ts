@@ -52,8 +52,13 @@ const inkbox = readFileSync(new URL("../agent/lib/inkbox.ts", import.meta.url), 
 assert(inkbox.includes("inkboxIdentity"), "Inkbox identity is cached");
 
 const telegram = readFileSync(new URL("../agent/channels/telegram.ts", import.meta.url), "utf8");
-assert(telegram.includes("inboundP"), "telegram STT overlaps billing");
+assert(telegram.includes("inboundP"), "telegram STT overlaps photo fetch");
 assert(telegram.includes("photoP"), "telegram photo overlaps billing");
+assert(
+  telegram.indexOf("const inbound = await inboundP") <
+    telegram.indexOf("countInboundMessage(phone)"),
+  "telegram bills only after a real inbound",
+);
 
 assert(canSkipInboundBind({ phoneE164: "+1", inkboxConversationId: "c1" }, "+1", "c1"), "bound skip");
 assert(

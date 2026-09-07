@@ -43,13 +43,17 @@ type RecallCtx = MemoryOperationContext & {
 
 function gatedRecall<TContext extends RecallCtx>(
   hook: MemoryRecallHandler<TContext> | undefined,
+  timed: boolean,
 ): MemoryRecallHandler<TContext> {
   return (context) => {
     const query =
       recallQuery(context.turn?.input ?? []) ?? recallQuery(context.messages);
     if (!shouldRecallConversation(query)) return null;
     if (typeof hook !== "function") return null;
-    return withRecallBudget(hook(context), CONVERSATION_RECALL_TIMEOUT_MS);
+    const result = hook(context);
+    return timed
+      ? withRecallBudget(result, CONVERSATION_RECALL_TIMEOUT_MS)
+      : result;
   };
 }
 
@@ -60,8 +64,8 @@ export default defineMemory({
     ...inner,
     recall: {
       ...inner.recall,
-      "turn.started": gatedRecall(inner.recall?.["turn.started"]),
-      "compaction.completed": gatedRecall(inner.recall?.["compaction.completed"]),
+      "turn.started": gatedRecall(inner.recall?.["turn.started"], true),
+      "compaction.completed": gatedRecall(inner.recall?.["compaction.completed"], false),
     },
   },
   scope: (ctx) =>
