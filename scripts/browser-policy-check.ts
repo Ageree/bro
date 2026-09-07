@@ -351,7 +351,6 @@ assert(
 );
 
 assert(BROWSER_WAIT_MS === 2_000, "wait is short; follow-through still delivers");
-assert(BROWSER_WAIT_MS !== 12_000, "wait is not 12s");
 
 const browserTool = readFileSync(
   new URL("../agent/tools/browser_task.ts", import.meta.url),

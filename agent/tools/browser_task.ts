@@ -381,16 +381,16 @@ export default defineTool({
     }).catch((err) => {
       console.error("browser follow workflow failed", err);
     });
-    const notify = conv
-      ? deliverHumanRouted({
-          attrs: attrsFromSession(ctx.session),
-          tenant,
-          conversationId: conv,
-          text: "Ищу, это может занять пару минут. Сам напишу, когда будет готово.",
-        }).catch((err) => {
-          console.error("browser start notify failed", err);
-        })
-      : Promise.resolve();
+    if (conv) {
+      void deliverHumanRouted({
+        attrs: attrsFromSession(ctx.session),
+        tenant,
+        conversationId: conv,
+        text: "Ищу, это может занять пару минут. Сам напишу, когда будет готово.",
+      }).catch((err) => {
+        console.error("browser start notify failed", err);
+      });
+    }
     const done = await waitForRun(
       started.runId,
       started.sessionId,
