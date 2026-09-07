@@ -1,10 +1,10 @@
 import { readFileSync } from "node:fs";
 import {
   bubblesFor,
-  conversationSpokeRecently,
   firstCompleteLine,
-  markConversationSpoke,
+  markTurnSpoke,
   nextBubble,
+  turnSpoke,
   planFirstLineFlush,
   planPreToolFlush,
   planStreamFlush,
@@ -58,6 +58,17 @@ const streamNext = planStreamFlush({
   alreadySent: ["Ищу 🔎"],
 });
 assert(streamNext.send === "Нашёл три варианта", "later complete line flushes the remainder");
+assert(
+  planStreamFlush({
+    soFar: "Ищу\nНашёл\nИтог\n",
+    alreadySent: ["Ищу", "Нашёл"],
+  }).send === "Итог",
+  "third complete line is only the remainder after two bubbles",
+);
+assert(
+  nextBubble(["Ищу", "Нашёл"], "Ищу\nНашёл\nИтог") === "Итог",
+  "single-newline join still yields the last line",
+);
 
 const streamThenFinal = planTurnDelivery({
   finishReason: "tool-calls",
@@ -161,14 +172,15 @@ const emptyWakeup = planTurnDelivery({
 });
 assert(emptyWakeup.fallback === null, "wakeup may end empty");
 
-markConversationSpoke("c1", 1_000);
-assert(conversationSpokeRecently("c1", 1_500), "spoke inside the window");
-assert(!conversationSpokeRecently("c1", 1_000 + 121_000), "spoke window expires");
-assert(!conversationSpokeRecently("c2", 1_500), "other conversation has not spoken");
+markTurnSpoke("turn-a", 1_000);
+assert(turnSpoke("turn-a", 1_500), "this turn spoke");
+assert(!turnSpoke("turn-b", 1_500), "other turn has not spoken");
+assert(!turnSpoke("turn-a", 1_000 + 11 * 60_000), "turn spoke ttl expires");
 
 const sent = new Map<string, { at: number; bubbles: string[]; soFar?: string }>();
 recordSent(sent, "t1", "Ищу", 1_000);
 assert(bubblesFor(sent, "t1").join("|") === "Ищу", "record first");
+assert(turnSpoke("t1", 1_000), "recordSent marks this turn as spoken");
 recordSent(sent, "t1", "Нашёл", 2_000);
 assert(bubblesFor(sent, "t1").join("|") === "Ищу|Нашёл", "record second");
 assert(bubblesFor(sent, "t2").length === 0, "other turn empty");

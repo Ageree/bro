@@ -365,8 +365,8 @@ assert(
 );
 assert(browserTool.includes("deliverHumanRouted"), "canned notify uses auth routing");
 assert(
-  browserTool.includes("conversationSpokeRecently"),
-  "canned ищу skips when this turn already spoke",
+  browserTool.includes("turnSpoke"),
+  "canned ищу skips only when this turn already spoke",
 );
 
 const follow = readFileSync(

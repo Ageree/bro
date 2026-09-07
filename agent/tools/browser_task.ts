@@ -32,7 +32,7 @@ import {
   type BrowserRun,
 } from "../lib/browseruse";
 import { profileSyncStatus } from "../../convex/lib/browserProfilePolicy.ts";
-import { conversationSpokeRecently } from "../lib/early-deliver.ts";
+import { turnSpoke } from "../lib/early-deliver.ts";
 import { attrsFromSession, deliverHumanRouted } from "../lib/deliver-routed";
 import { groupPersonalBlock } from "../lib/group-guard";
 import { tenantId } from "../lib/tenant";
@@ -382,7 +382,8 @@ export default defineTool({
     }).catch((err) => {
       console.error("browser follow workflow failed", err);
     });
-    if (conv && !conversationSpokeRecently(conv, Date.now())) {
+    const turnId = ctx.session.turn?.id;
+    if (conv && !turnSpoke(typeof turnId === "string" ? turnId : undefined)) {
       void deliverHumanRouted({
         attrs: attrsFromSession(ctx.session),
         tenant,

@@ -111,12 +111,14 @@ export function nextBubble(
   if (sent.some((s) => s === cur)) return null;
   const last = sent[sent.length - 1];
   if (last && last.startsWith(cur)) return null;
-  const joined = sent.join("\n\n");
   const curFold = foldLines(cur);
-  const joinedFold = foldLines(joined);
-  if (joinedFold && (curFold === joinedFold || curFold.startsWith(`${joinedFold}\n`))) {
-    const rest = curFold.slice(joinedFold.length).replace(/^\n+/, "").trim();
-    return rest || null;
+  for (const joined of [sent.join("\n\n"), sent.join("\n")]) {
+    const joinedFold = foldLines(joined);
+    if (!joinedFold) continue;
+    if (curFold === joinedFold || curFold.startsWith(`${joinedFold}\n`)) {
+      const rest = curFold.slice(joinedFold.length).replace(/^\n+/, "").trim();
+      return rest || null;
+    }
   }
   return cur;
 }
@@ -181,6 +183,7 @@ export function recordSent(
   row.at = now;
   row.bubbles = [...row.bubbles, bubble];
   sent.set(turnId, row);
+  markTurnSpoke(turnId, now);
   return row.bubbles;
 }
 
@@ -212,26 +215,22 @@ export function soFarFor(
   return sent.get(turnId)?.soFar ?? "";
 }
 
-const spokeConv = new Map<string, number>();
+const spokeTurns = new Map<string, number>();
 
-export function markConversationSpoke(
-  conversationId: string,
+export function markTurnSpoke(
+  turnId: string,
   now: number,
   ttlMs = 10 * 60_000,
 ): void {
-  if (!conversationId) return;
-  for (const [key, at] of spokeConv) {
-    if (now - at > ttlMs) spokeConv.delete(key);
+  if (!turnId) return;
+  for (const [key, at] of spokeTurns) {
+    if (now - at > ttlMs) spokeTurns.delete(key);
   }
-  spokeConv.set(conversationId, now);
+  spokeTurns.set(turnId, now);
 }
 
-export function conversationSpokeRecently(
-  conversationId: string,
-  now: number,
-  windowMs = 120_000,
-): boolean {
-  if (!conversationId) return false;
-  const at = spokeConv.get(conversationId);
-  return at !== undefined && now - at <= windowMs;
+export function turnSpoke(turnId: string | undefined, now = Date.now()): boolean {
+  if (!turnId) return false;
+  const at = spokeTurns.get(turnId);
+  return at !== undefined && now - at <= 10 * 60_000;
 }

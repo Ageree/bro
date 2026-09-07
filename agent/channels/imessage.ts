@@ -81,7 +81,6 @@ import {
 } from "../lib/silent-turn.ts";
 import {
   bubblesFor,
-  markConversationSpoke,
   planPreToolFlush,
   planStreamFlush,
   planTurnDelivery,
@@ -146,7 +145,6 @@ async function deliverTurnBubble(opts: {
     ? null
     : await replyTenant(opts.conversationId);
   const tenant = lookedUp ?? routingTenant(routing);
-  markConversationSpoke(opts.conversationId, Date.now());
   await deliverHuman({
     tenant,
     conversationId: opts.conversationId,
