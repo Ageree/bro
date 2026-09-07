@@ -67,6 +67,7 @@ assert(imessage.includes("deliverTurnBubble"), "delivery helper is shared");
 assert(imessage.includes("prefetchOpenRouter"), "OpenRouter warms during billing, not after first token");
 assert(imessage.includes('"message.appended"'), "first iMessage bubble can leave before the step ends");
 assert(imessage.includes("planFirstLineFlush"), "streamed flush is newline-gated");
+assert(imessage.includes("planPreToolFlush"), "pre-tool flush covers a line with no newline");
 
 const telegram = readFileSync(
   new URL("../agent/channels/telegram.ts", import.meta.url),

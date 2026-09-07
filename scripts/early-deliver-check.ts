@@ -4,6 +4,7 @@ import {
   firstCompleteLine,
   nextBubble,
   planFirstLineFlush,
+  planPreToolFlush,
   planTurnDelivery,
   recordSent,
   visibleReply,
@@ -30,6 +31,7 @@ assert(nextBubble(["Ищу"], "Нашёл три варианта") === "Наш�
 assert(nextBubble(["Ищу кроссовки"], "Ищу") === null, "shorter prefix of last skipped");
 
 assert(firstCompleteLine("Ищу") === null, "partial first line stays");
+assert(firstCompleteLine("\nИ") === null, "leading newline does not flush a crumb");
 assert(firstCompleteLine("Ищу кроссовки\n") === "Ищу кроссовки", "newline completes the line");
 assert(firstCompleteLine("[SILENT]\n") === null, "silent first line stays hidden");
 assert(
@@ -59,6 +61,18 @@ assert(
   streamThenFinal.send === "Нашёл три варианта",
   "completed still sends the remainder after a streamed first line",
 );
+assert(
+  nextBubble(["Ищу 🔎"], "Ищу 🔎  \n\nНашёл три варианта") === "Нашёл три варианта",
+  "trailing spaces on the flushed line still yield the remainder",
+);
+
+const preTool = planPreToolFlush({ soFar: "Ищу кроссовки", alreadySent: [] });
+assert(preTool.send === "Ищу кроссовки", "tool start flushes a line that never got a newline");
+const preToolAfter = planPreToolFlush({
+  soFar: "Ищу кроссовки",
+  alreadySent: ["Ищу кроссовки"],
+});
+assert(preToolAfter.send === null, "tool start does not resend the streamed line");
 
 const mid = planTurnDelivery({
   finishReason: "tool-calls",
@@ -139,7 +153,7 @@ const emptyWakeup = planTurnDelivery({
 });
 assert(emptyWakeup.fallback === null, "wakeup may end empty");
 
-const sent = new Map<string, { at: number; bubbles: string[] }>();
+const sent = new Map<string, { at: number; bubbles: string[]; soFar?: string }>();
 recordSent(sent, "t1", "Ищу", 1_000);
 assert(bubblesFor(sent, "t1").join("|") === "Ищу", "record first");
 recordSent(sent, "t1", "Нашёл", 2_000);
@@ -154,7 +168,9 @@ const channel = readFileSync(
 );
 assert(channel.includes("planTurnDelivery"), "imessage uses early-deliver planner");
 assert(channel.includes("planFirstLineFlush"), "imessage flushes the first streamed line");
+assert(channel.includes("planPreToolFlush"), "imessage flushes when the model starts a tool");
 assert(channel.includes('"message.appended"'), "imessage listens for streamed text");
+assert(channel.includes('"actions.requested"'), "imessage listens for the pre-tool boundary");
 assert(
   !/if \(event\.finishReason === ["']tool-calls["']\) return;/.test(channel),
   "imessage no longer drops tool-calls text",
@@ -229,6 +245,11 @@ const appended = channel.slice(channel.indexOf('"message.appended"'));
 assert(
   appended.indexOf("recordSent") < appended.indexOf("await deliverTurnBubble"),
   "appended recordSent before deliver closes the overlap window",
+);
+const preToolEv = channel.slice(channel.indexOf('"actions.requested"'));
+assert(
+  preToolEv.indexOf("recordSent") < preToolEv.indexOf("await deliverTurnBubble"),
+  "pre-tool recordSent before deliver closes the overlap window",
 );
 const completed = channel.slice(channel.indexOf('"message.completed"'));
 assert(

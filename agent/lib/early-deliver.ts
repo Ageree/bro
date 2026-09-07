@@ -23,15 +23,28 @@ export function visibleReply(text: string | null | undefined): string | null {
   return trimmed;
 }
 
-/** First visible line once the model has finished it (newline). Token crumbs stay. */
+export type EarlySentRow = { at: number; bubbles: string[]; soFar?: string };
+
+function foldLines(s: string): string {
+  return s.replace(/[ \t]+\n/g, "\n").replace(/[ \t]+$/g, "").trim();
+}
+
+/** First visible line terminated by a newline. Leading `\nИ` crumbs stay. */
 export function firstCompleteLine(soFar: string): string | null {
   const raw = typeof soFar === "string" ? soFar : "";
-  if (!raw.includes("\n")) return null;
-  const { message } = splitSeen(raw);
-  const visible = visibleReply(message);
-  if (!visible) return null;
-  const line = visible.split("\n")[0]?.trim() ?? "";
-  return line || null;
+  const { message } = raw ? splitSeen(raw) : { message: raw };
+  let src = message;
+  if (!src.includes("\n") && raw.includes("\n") && src.trim()) {
+    src = `${src}\n`;
+  }
+  if (!src.includes("\n")) return null;
+  const parts = src.split("\n");
+  const finished = src.endsWith("\n") ? parts : parts.slice(0, -1);
+  for (const part of finished) {
+    const line = part.trim();
+    if (line && visibleReply(line)) return line;
+  }
+  return null;
 }
 
 /**
@@ -56,6 +69,27 @@ export function planFirstLineFlush(input: {
 }
 
 /**
+ * Pre-tool line is done even without a newline. Used on `actions.requested`.
+ */
+export function planPreToolFlush(input: {
+  soFar: string;
+  alreadySent: readonly string[];
+}): Pick<TurnDelivery, "send" | "seen"> {
+  const raw = typeof input.soFar === "string" ? input.soFar : "";
+  const { message, seen } = raw ? splitSeen(raw) : { message: raw };
+  if (input.alreadySent.some((s) => s.trim().length > 0)) {
+    return { send: null, ...(seen !== undefined ? { seen } : {}) };
+  }
+  const line =
+    firstCompleteLine(raw) ?? visibleReply(message)?.split("\n")[0]?.trim() ?? "";
+  if (!line) return { send: null, ...(seen !== undefined ? { seen } : {}) };
+  return {
+    send: nextBubble(input.alreadySent, line),
+    ...(seen !== undefined ? { seen } : {}),
+  };
+}
+
+/**
  * Next bubble given text already sent this turn.
  * Handles both per-step messages and accumulated ones.
  */
@@ -70,8 +104,10 @@ export function nextBubble(
   const last = sent[sent.length - 1];
   if (last && last.startsWith(cur)) return null;
   const joined = sent.join("\n\n");
-  if (joined && (cur === joined || cur.startsWith(`${joined}\n`))) {
-    const rest = cur.slice(joined.length).replace(/^\n+/, "").trim();
+  const curFold = foldLines(cur);
+  const joinedFold = foldLines(joined);
+  if (joinedFold && (curFold === joinedFold || curFold.startsWith(`${joinedFold}\n`))) {
+    const rest = curFold.slice(joinedFold.length).replace(/^\n+/, "").trim();
     return rest || null;
   }
   return cur;
@@ -115,16 +151,24 @@ export function planTurnDelivery(input: {
 }
 
 /** In-memory per-turn sent bubbles. Same lifetime as wakeup/fallback maps. */
+function pruneSent(
+  sent: Map<string, EarlySentRow>,
+  now: number,
+  ttlMs: number,
+): void {
+  for (const [key, row] of sent) {
+    if (now - row.at > ttlMs) sent.delete(key);
+  }
+}
+
 export function recordSent(
-  sent: Map<string, { at: number; bubbles: string[] }>,
+  sent: Map<string, EarlySentRow>,
   turnId: string,
   bubble: string,
   now: number,
   ttlMs = 10 * 60_000,
 ): string[] {
-  for (const [key, row] of sent) {
-    if (now - row.at > ttlMs) sent.delete(key);
-  }
+  pruneSent(sent, now, ttlMs);
   const row = sent.get(turnId) ?? { at: now, bubbles: [] };
   row.at = now;
   row.bubbles = [...row.bubbles, bubble];
@@ -132,9 +176,30 @@ export function recordSent(
   return row.bubbles;
 }
 
+export function rememberSoFar(
+  sent: Map<string, EarlySentRow>,
+  turnId: string,
+  soFar: string,
+  now: number,
+  ttlMs = 10 * 60_000,
+): void {
+  pruneSent(sent, now, ttlMs);
+  const row = sent.get(turnId) ?? { at: now, bubbles: [] };
+  row.at = now;
+  row.soFar = soFar;
+  sent.set(turnId, row);
+}
+
 export function bubblesFor(
-  sent: Map<string, { at: number; bubbles: string[] }>,
+  sent: Map<string, EarlySentRow>,
   turnId: string,
 ): readonly string[] {
   return sent.get(turnId)?.bubbles ?? [];
+}
+
+export function soFarFor(
+  sent: Map<string, EarlySentRow>,
+  turnId: string,
+): string {
+  return sent.get(turnId)?.soFar ?? "";
 }

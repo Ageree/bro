@@ -82,8 +82,12 @@ import {
 import {
   bubblesFor,
   planFirstLineFlush,
+  planPreToolFlush,
   planTurnDelivery,
   recordSent,
+  rememberSoFar,
+  soFarFor,
+  type EarlySentRow,
 } from "../lib/early-deliver.ts";
 import {
   groupAuthAttributes,
@@ -98,7 +102,7 @@ import {
 // ponytail: in-memory only — lost on restart, not shared across instances
 const wakeupDelivered = new Map<string, number>();
 const fallbackSent = new Map<string, number>();
-const earlySent = new Map<string, { at: number; bubbles: string[] }>();
+const earlySent = new Map<string, EarlySentRow>();
 
 async function persistSeen(
   phone: string | undefined,
@@ -864,8 +868,27 @@ export default defineChannel({
     async "message.appended"(event, channel, ctx) {
       const conversationId = channel.continuation?.token;
       if (!conversationId) return;
+      rememberSoFar(earlySent, event.turnId, event.messageSoFar, Date.now());
       const planned = planFirstLineFlush({
         soFar: event.messageSoFar,
+        alreadySent: bubblesFor(earlySent, event.turnId),
+      });
+      if (!planned.send) return;
+      const auth = ctx?.session?.auth?.current;
+      recordSent(earlySent, event.turnId, planned.send, Date.now());
+      await deliverTurnBubble({
+        conversationId,
+        text: stripConnectUrls(planned.send),
+        attrs: auth?.attributes,
+        principalId: auth?.principalId,
+        seen: planned.seen,
+      });
+    },
+    async "actions.requested"(event, channel, ctx) {
+      const conversationId = channel.continuation?.token;
+      if (!conversationId) return;
+      const planned = planPreToolFlush({
+        soFar: soFarFor(earlySent, event.turnId),
         alreadySent: bubblesFor(earlySent, event.turnId),
       });
       if (!planned.send) return;

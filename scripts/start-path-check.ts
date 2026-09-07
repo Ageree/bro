@@ -182,6 +182,7 @@ assert(
 );
 assert(imessage.includes("ackIMessageReadAndTyping"), "read+typing is one helper");
 assert(imessage.includes("planFirstLineFlush"), "first bubble can leave on a streamed newline");
+assert(imessage.includes("planPreToolFlush"), "first bubble can leave when a tool starts");
 {
   const ackFn = imessage.slice(imessage.indexOf("function ackIMessageReadAndTyping"));
   assert(ackFn.includes("Promise.all"), "read and typing share one identity GET");
