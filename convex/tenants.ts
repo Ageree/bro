@@ -606,6 +606,7 @@ export const countInboundMessage = mutation({
   handler: async (ctx, { secret, phoneE164 }) => {
     assertSecret(secret);
     const tenant = await tenantByPhone(ctx, phoneE164);
+    if (tenant.status === "disabled") return { decision: "drop" as const };
     const now = Date.now();
     const key = dayKey(now, tenant.tz);
     const paid = isPaid(tenant.paidUntil, now);

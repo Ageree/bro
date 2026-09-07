@@ -5,6 +5,14 @@ import {
   CONVERSATION_RECALL_TIMEOUT_MS,
   withRecallBudget,
 } from "../agent/lib/archive-policy.ts";
+import {
+  HANDLE_TENANT_TTL_MS,
+  TELEGRAM_TENANT_TTL_MS,
+  createTtlCache,
+  returningOneToOneConvexHops,
+  returningOneToOneConvexRtts,
+  returningTelegramConvexRtts,
+} from "../agent/lib/inbound-path.ts";
 
 function assert(cond: unknown, msg: string): void {
   if (!cond) throw new Error(msg);
@@ -18,6 +26,11 @@ assert(convex.includes("wakeCache"), "sequential memo then jobs reuse the snapsh
 assert(convex.includes("WAKE_CONTEXT_TTL_MS"), "wake snapshot is same-turn only");
 assert(convex.includes("forgetWake"), "job writes drop the wake snapshot");
 assert(convex.includes("cachedClient"), "Convex HTTP client is reused");
+assert(convex.includes("forgetHandleTenant"), "bind/upsert drop the handle cache");
+assert(convex.includes("forgetTelegramTenant"), "telegram bind drops its cache");
+assert(convex.includes("handleTenants"), "returning 1:1 reuses getTenantByHandle");
+assert(convex.includes("telegramTenants"), "returning telegram reuses getByTelegram");
+assert(convex.includes("handleInflight"), "parallel handle lookups coalesce");
 
 const memo = readFileSync(new URL("../agent/lib/convex-memory.ts", import.meta.url), "utf8");
 assert(memo.includes("wakeLines"), "memo still injects wake lines");
@@ -41,6 +54,16 @@ assert(!recall.includes("loadProfileContext"), "profile dump stays off turn.star
 assert(recall.includes("inner.recall"), "compaction still uses the plugin recall");
 assert(recall.includes("abortSignal"), "conversation search joins Eve abort");
 
+const tenants = readFileSync(new URL("../convex/tenants.ts", import.meta.url), "utf8");
+{
+  const countFn = tenants.slice(tenants.indexOf("export const countInboundMessage"));
+  assert(countFn.includes('tenant.status === "disabled"'), "countInbound drops disabled");
+  assert(
+    countFn.indexOf('tenant.status === "disabled"') < countFn.indexOf("rateLimiter.limit"),
+    "disabled drop before the daily increment",
+  );
+}
+
 const memories = readFileSync(new URL("../convex/memories.ts", import.meta.url), "utf8");
 assert(memories.includes("wakeContext"), "Convex exposes the combined snapshot");
 assert(memories.includes("WAKE_LINES"), "combined snapshot still returns 80 memo lines");
@@ -53,6 +76,15 @@ assert(imessage.includes("voiceP"), "voice STT overlaps bind/count");
 assert(imessage.includes("flaggedGroup"), "flagged groups skip the extra Convex lookup");
 assert(imessage.includes("boundOneToOne"), "bound 1:1 skips getGroupByConversation");
 assert(imessage.includes("imageUrlParts"), "photos do not tail-wait after bind");
+assert(imessage.includes("getTenantByHandle"), "HMAC still loads the handle tenant");
+assert(imessage.includes("ackIMessageReadAndTyping"), "read+typing is one helper");
+{
+  const gatePAt = imessage.indexOf("const gateP = inboundOwnerGate");
+  const awaitGateAt = imessage.indexOf("const gate = await gateP");
+  const ackAt = imessage.indexOf("ackIMessageReadAndTyping", gatePAt);
+  assert(gatePAt > 0 && awaitGateAt > gatePAt, "1:1 billing starts before it is awaited");
+  assert(ackAt > gatePAt && ackAt < awaitGateAt, "bound 1:1 typing overlaps billing");
+}
 
 const inkbox = readFileSync(new URL("../agent/lib/inkbox.ts", import.meta.url), "utf8");
 assert(inkbox.includes("inkboxIdentity"), "Inkbox identity is cached");
@@ -65,6 +97,56 @@ assert(
     telegram.indexOf("countInboundMessage(phone)"),
   "telegram bills only after a real inbound",
 );
+{
+  const afterReal = telegram.indexOf("if (!inbound.text && !largestPhoto");
+  const typingAt = telegram.indexOf("sendTelegramTyping", afterReal);
+  const billAt = telegram.indexOf("countInboundMessage(phone)", afterReal);
+  assert(afterReal > 0 && typingAt > afterReal && typingAt < billAt, "telegram typing overlaps billing");
+}
+
+assert(HANDLE_TENANT_TTL_MS === 30_000, "handle tenant cache is short-lived");
+assert(TELEGRAM_TENANT_TTL_MS === 30_000, "telegram tenant cache is short-lived");
+const cache = createTtlCache<string>(50);
+cache.set("h", "t", 1000);
+assert(cache.get("h", 1049).hit === true, "ttl cache hits inside window");
+assert(cache.get("h", 1050).hit === false, "ttl cache expires at ttl");
+cache.set("h", "t", 2000);
+cache.forget("h");
+assert(cache.get("h", 2001).hit === false, "forget drops a live entry");
+assert(
+  returningOneToOneConvexRtts({
+    handleCached: true,
+    skipGroupLookup: true,
+    skipBind: true,
+  }) === 1,
+  "warm returning 1:1 is billing only",
+);
+assert(
+  returningOneToOneConvexHops({
+    handleCached: true,
+    skipGroupLookup: true,
+    skipBind: true,
+  }).join(",") === "countInboundMessage",
+  "warm hops are countInbound only",
+);
+assert(
+  returningOneToOneConvexRtts({
+    handleCached: false,
+    skipGroupLookup: true,
+    skipBind: true,
+  }) === 2,
+  "bound but uncached handle still pays HMAC lookup",
+);
+assert(
+  returningOneToOneConvexRtts({
+    handleCached: false,
+    skipGroupLookup: false,
+    skipBind: false,
+  }) === 4,
+  "cold first-bind 1:1 still has four hops",
+);
+assert(returningTelegramConvexRtts({ telegramCached: true }) === 1, "warm telegram is billing only");
+assert(returningTelegramConvexRtts({ telegramCached: false }) === 2, "cold telegram pays lookup");
 
 assert(canSkipInboundBind({ phoneE164: "+1", inkboxConversationId: "c1" }, "+1", "c1"), "bound skip");
 assert(
@@ -81,11 +163,15 @@ console.log("start-path-check ok");
 console.log(
   JSON.stringify({
     turnStartedConvexRtts: 1,
+    returningOneToOneConvexRttsWarm: 1,
     archiveRecallTimeoutMs: 1500,
     conversationRecallTimeoutMs: CONVERSATION_RECALL_TIMEOUT_MS,
     conversationRecallGated: true,
     jobCheckHttpListsJobs: false,
     inboundBindSkippedWhenBound: true,
     conversationRecallSearchOnly: true,
+    handleTenantCached: true,
+    boundTypingOverlapsBilling: true,
+    telegramTypingOverlapsBilling: true,
   }),
 );

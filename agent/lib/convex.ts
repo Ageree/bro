@@ -2,6 +2,11 @@ import { ConvexHttpClient } from "convex/browser";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "../../convex/_generated/api.js";
 import type { Id } from "../../convex/_generated/dataModel";
+import {
+  HANDLE_TENANT_TTL_MS,
+  TELEGRAM_TENANT_TTL_MS,
+  createTtlCache,
+} from "./inbound-path.ts";
 
 let cachedClient: ConvexHttpClient | undefined;
 let cachedClientUrl: string | undefined;
@@ -115,12 +120,15 @@ export async function upsertTenant(
   inkboxConversationId?: string,
   emailAddress?: string,
 ) {
-  return await client().mutation(api.tenants.upsert, {
+  const tenant = await client().mutation(api.tenants.upsert, {
     secret: secret(),
     phoneE164,
     inkboxConversationId,
     emailAddress,
   });
+  if (tenant.inkboxHandle) forgetHandleTenant(tenant.inkboxHandle);
+  if (tenant.telegramUserId) forgetTelegramTenant(tenant.telegramUserId);
+  return tenant;
 }
 
 export async function getTenant(phoneE164: string) {
@@ -130,11 +138,54 @@ export async function getTenant(phoneE164: string) {
   });
 }
 
-export async function getTenantByHandle(handle: string) {
-  return await client().query(api.tenants.getByHandle, {
-    secret: secret(),
-    handle,
-  });
+type HandleTenant = FunctionReturnType<typeof api.tenants.getByHandle>;
+type TelegramTenant = FunctionReturnType<typeof api.tenants.getByTelegram>;
+
+const handleTenants = createTtlCache<HandleTenant>(HANDLE_TENANT_TTL_MS);
+const handleInflight = new Map<string, Promise<HandleTenant>>();
+const telegramTenants = createTtlCache<TelegramTenant>(TELEGRAM_TENANT_TTL_MS);
+const telegramInflight = new Map<string, Promise<TelegramTenant>>();
+
+export function forgetHandleTenant(handle: string): void {
+  handleTenants.forget(handle.trim());
+}
+
+export function forgetTelegramTenant(telegramUserId: string): void {
+  telegramTenants.forget(telegramUserId.trim());
+}
+
+function rememberHandleTenant(handle: string, tenant: HandleTenant): void {
+  handleTenants.set(handle.trim(), tenant);
+}
+
+function rememberTelegramTenant(
+  telegramUserId: string,
+  tenant: TelegramTenant,
+): void {
+  telegramTenants.set(telegramUserId.trim(), tenant);
+}
+
+/** HMAC + skip-bind for returning 1:1. Process cache, same-turn coalesce. */
+export async function getTenantByHandle(handle: string): Promise<HandleTenant> {
+  const key = handle.trim();
+  const cached = handleTenants.get(key);
+  if (cached.hit) return cached.value;
+  const existing = handleInflight.get(key);
+  if (existing) return existing;
+  const pending = client()
+    .query(api.tenants.getByHandle, {
+      secret: secret(),
+      handle: key,
+    })
+    .then((tenant) => {
+      rememberHandleTenant(key, tenant);
+      return tenant;
+    })
+    .finally(() => {
+      handleInflight.delete(key);
+    });
+  handleInflight.set(key, pending);
+  return pending;
 }
 
 export async function getTenantByConversation(conversationId: string) {
@@ -152,11 +203,28 @@ export type BindInboundResult =
     }
   | { ok: false; reason: string };
 
-export async function getTenantByTelegram(telegramUserId: string) {
-  return await client().query(api.tenants.getByTelegram, {
-    secret: secret(),
-    telegramUserId,
-  });
+export async function getTenantByTelegram(
+  telegramUserId: string,
+): Promise<TelegramTenant> {
+  const key = telegramUserId.trim();
+  const cached = telegramTenants.get(key);
+  if (cached.hit) return cached.value;
+  const existing = telegramInflight.get(key);
+  if (existing) return existing;
+  const pending = client()
+    .query(api.tenants.getByTelegram, {
+      secret: secret(),
+      telegramUserId: key,
+    })
+    .then((tenant) => {
+      rememberTelegramTenant(key, tenant);
+      return tenant;
+    })
+    .finally(() => {
+      telegramInflight.delete(key);
+    });
+  telegramInflight.set(key, pending);
+  return pending;
 }
 
 export async function touchLastChannel(
@@ -202,10 +270,16 @@ export async function bindTelegram(opts: {
   telegramChatId: string;
   telegramUsername?: string;
 }): Promise<BindTelegramResult> {
-  return await client().mutation(api.tenants.bindTelegram, {
+  const result = await client().mutation(api.tenants.bindTelegram, {
     secret: secret(),
     ...opts,
   });
+  forgetTelegramTenant(opts.telegramUserId);
+  if (result.ok) {
+    rememberTelegramTenant(opts.telegramUserId, result.tenant);
+    if (result.tenant.inkboxHandle) forgetHandleTenant(result.tenant.inkboxHandle);
+  }
+  return result;
 }
 
 export async function bindInbound(
@@ -219,7 +293,12 @@ export async function bindInbound(
     phoneE164,
     inkboxConversationId,
   });
+  forgetHandleTenant(handle);
   if (!result.ok) return result;
+  rememberHandleTenant(handle, result.tenant);
+  if (result.tenant.telegramUserId) {
+    forgetTelegramTenant(result.tenant.telegramUserId);
+  }
   const firstBind = (result as { firstBind?: unknown }).firstBind === true;
   return { ok: true, tenant: result.tenant, firstBind };
 }

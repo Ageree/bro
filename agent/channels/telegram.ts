@@ -261,6 +261,12 @@ export default defineChannel({
         return new Response(null, { status: 204 });
       }
 
+      const typing = sendTelegramTyping(chatId).catch((err) =>
+        console.error("telegram typing failed", err),
+      );
+      if (typeof waitUntil === "function") waitUntil(typing);
+      else void typing;
+
       let gate: { decision: "allow" | "paywall" | "drop"; payUrl?: string };
       try {
         gate = inboundGateFromResult(await countInboundMessage(phone), undefined);
@@ -290,12 +296,6 @@ export default defineChannel({
         );
         return new Response(null, { status: 204 });
       }
-
-      const typing = sendTelegramTyping(chatId).catch((err) =>
-        console.error("telegram typing failed", err),
-      );
-      if (typeof waitUntil === "function") waitUntil(typing);
-      else void typing;
 
       if (isHelpAsk(inbound.text)) {
         await sendHtml(chatId, helpText()).catch((err) =>

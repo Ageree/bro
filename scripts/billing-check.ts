@@ -483,6 +483,14 @@ assert(
   "homepage override ignored",
 );
 
+const tenantsSrc = readFileSync(new URL("../convex/tenants.ts", import.meta.url), "utf8");
+const countFn = tenantsSrc.slice(tenantsSrc.indexOf("export const countInboundMessage"));
+assert(countFn.includes('tenant.status === "disabled"'), "countInbound drops disabled");
+assert(
+  countFn.indexOf('tenant.status === "disabled"') < countFn.indexOf("rateLimiter.limit"),
+  "disabled drop before the daily increment",
+);
+
 const billingSrc = readFileSync(new URL("../convex/billing.ts", import.meta.url), "utf8");
 assert(billingSrc.includes("payReturnUrl"), "createPaymentFor uses payReturnUrl");
 assert(

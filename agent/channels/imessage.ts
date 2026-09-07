@@ -248,6 +248,21 @@ async function sendTelegramInvite(opts: {
   });
 }
 
+function ackIMessageReadAndTyping(
+  conversationId: string,
+  handle: string,
+): Promise<void> {
+  return (async () => {
+    try {
+      const identity = await inkboxIdentity(handle);
+      await identity.markIMessageConversationRead(conversationId);
+      await identity.sendIMessageTyping(conversationId);
+    } catch (err) {
+      console.error("imessage ack failed", err);
+    }
+  })();
+}
+
 async function inboundOwnerGate(ownerPhone: string): Promise<{
   decision: "allow" | "paywall" | "drop";
   payUrl?: string;
@@ -473,7 +488,18 @@ export default defineChannel({
       }
 
       if (!group) {
-        const gate = await inboundOwnerGate(ownerPhone);
+        // Bound 1:1: typing overlaps billing so the first Inkbox signal
+        // does not wait out countInboundMessage.
+        const gateP = inboundOwnerGate(ownerPhone);
+        if (boundOneToOne) {
+          const ack = ackIMessageReadAndTyping(
+            msg.conversation_id,
+            identityHandle,
+          );
+          if (typeof waitUntil === "function") waitUntil(ack);
+          else void ack;
+        }
+        const gate = await gateP;
         if (gate.decision === "drop") {
           return new Response(null, { status: 204 });
         }
@@ -493,17 +519,14 @@ export default defineChannel({
           });
           return new Response(null, { status: 204 });
         }
-        const ack = (async () => {
-          try {
-            const identity = await inkboxIdentity(identityHandle);
-            await identity.markIMessageConversationRead(msg.conversation_id);
-            await identity.sendIMessageTyping(msg.conversation_id);
-          } catch (err) {
-            console.error("imessage ack failed", err);
-          }
-        })();
-        if (typeof waitUntil === "function") waitUntil(ack);
-        else void ack;
+        if (!boundOneToOne) {
+          const ack = ackIMessageReadAndTyping(
+            msg.conversation_id,
+            identityHandle,
+          );
+          if (typeof waitUntil === "function") waitUntil(ack);
+          else void ack;
+        }
       }
 
       const inbound = await voiceP;
