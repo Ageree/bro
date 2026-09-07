@@ -207,6 +207,10 @@ assert(channel.includes("flaggedGroup"), "already-flagged groups skip the extra 
 assert(channel.includes("bindGroupInbound"), "channel binds groups");
 assert(channel.includes("shouldReplyInGroup"), "channel mention gate");
 assert(channel.includes("sendGroupWelcome"), "channel group welcome");
+assert(
+  channel.includes("parkTurn(waitUntil, welcome)"),
+  "first-group welcome does not block a mentioned agent turn",
+);
 assert(channel.includes("tagGroupUserContent"), "channel tags group text");
 assert(channel.includes("groupAuthAttributes"), "channel group auth");
 assert(channel.includes("replyTenant"), "outbound uses group owner");

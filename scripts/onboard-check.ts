@@ -151,6 +151,10 @@ assert(
   channel.includes("if (!preview)") && channel.includes("sendFirstBindOnboard"),
   "empty preview still onboards on first bind",
 );
+assert(
+  channel.includes("if (continueToAgent) parkTurn(waitUntil, onboard)"),
+  "first-bind welcome does not block the agent turn",
+);
 assert(channel.includes("sendHelpCatalog"), "channel sends canned help");
 assert(channel.includes("bindGroupInbound"), "channel has group bind");
 assert(channel.includes("sendGroupWelcome"), "channel has group welcome");
