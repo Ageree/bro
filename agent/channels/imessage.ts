@@ -81,6 +81,7 @@ import {
 } from "../lib/silent-turn.ts";
 import {
   bubblesFor,
+  planFirstLineFlush,
   planTurnDelivery,
   recordSent,
 } from "../lib/early-deliver.ts";
@@ -859,6 +860,24 @@ export default defineChannel({
       }).catch((err) =>
         console.error("turn failed fallback send failed", err),
       );
+    },
+    async "message.appended"(event, channel, ctx) {
+      const conversationId = channel.continuation?.token;
+      if (!conversationId) return;
+      const planned = planFirstLineFlush({
+        soFar: event.messageSoFar,
+        alreadySent: bubblesFor(earlySent, event.turnId),
+      });
+      if (!planned.send) return;
+      const auth = ctx?.session?.auth?.current;
+      recordSent(earlySent, event.turnId, planned.send, Date.now());
+      await deliverTurnBubble({
+        conversationId,
+        text: stripConnectUrls(planned.send),
+        attrs: auth?.attributes,
+        principalId: auth?.principalId,
+        seen: planned.seen,
+      });
     },
     async "message.completed"(event, channel, ctx) {
       const conversationId = channel.continuation?.token;

@@ -1,7 +1,9 @@
 import { readFileSync } from "node:fs";
 import {
   bubblesFor,
+  firstCompleteLine,
   nextBubble,
+  planFirstLineFlush,
   planTurnDelivery,
   recordSent,
   visibleReply,
@@ -26,6 +28,37 @@ assert(nextBubble(["Ищу"], "Ищу") === null, "exact dup skipped");
 assert(nextBubble(["Ищу"], "Ищу\n\nНашёл три варианта") === "Нашёл три варианта", "accumulated remainder");
 assert(nextBubble(["Ищу"], "Нашёл три варианта") === "Нашёл три варианта", "new independent bubble");
 assert(nextBubble(["Ищу кроссовки"], "Ищу") === null, "shorter prefix of last skipped");
+
+assert(firstCompleteLine("Ищу") === null, "partial first line stays");
+assert(firstCompleteLine("Ищу кроссовки\n") === "Ищу кроссовки", "newline completes the line");
+assert(firstCompleteLine("[SILENT]\n") === null, "silent first line stays hidden");
+assert(
+  firstCompleteLine("Цена та же\n[SEEN] abc") === "Цена та же",
+  "seen does not block a complete first line",
+);
+
+const streamFirst = planFirstLineFlush({ soFar: "Ищу 🔎\n", alreadySent: [] });
+assert(streamFirst.send === "Ищу 🔎", "appended flushes the first complete line");
+
+const streamPartial = planFirstLineFlush({ soFar: "Ищ", alreadySent: [] });
+assert(streamPartial.send === null, "appended does not send a token crumb");
+
+const streamAfter = planFirstLineFlush({
+  soFar: "Ищу 🔎\n\nНашёл три варианта",
+  alreadySent: ["Ищу 🔎"],
+});
+assert(streamAfter.send === null, "later appends do not resend the first line");
+
+const streamThenFinal = planTurnDelivery({
+  finishReason: "tool-calls",
+  message: "Ищу 🔎\n\nНашёл три варианта",
+  origin: "human",
+  alreadySent: ["Ищу 🔎"],
+});
+assert(
+  streamThenFinal.send === "Нашёл три варианта",
+  "completed still sends the remainder after a streamed first line",
+);
 
 const mid = planTurnDelivery({
   finishReason: "tool-calls",
@@ -120,6 +153,8 @@ const channel = readFileSync(
   "utf8",
 );
 assert(channel.includes("planTurnDelivery"), "imessage uses early-deliver planner");
+assert(channel.includes("planFirstLineFlush"), "imessage flushes the first streamed line");
+assert(channel.includes('"message.appended"'), "imessage listens for streamed text");
 assert(
   !/if \(event\.finishReason === ["']tool-calls["']\) return;/.test(channel),
   "imessage no longer drops tool-calls text",
@@ -189,6 +224,11 @@ const bubbleFn = channel.slice(channel.indexOf("async function deliverTurnBubble
 assert(
   bubbleFn.indexOf("deliverHuman") < bubbleFn.indexOf("persistSeen"),
   "lastSeen waits until after the bubble is sent",
+);
+const appended = channel.slice(channel.indexOf('"message.appended"'));
+assert(
+  appended.indexOf("recordSent") < appended.indexOf("await deliverTurnBubble"),
+  "appended recordSent before deliver closes the overlap window",
 );
 const completed = channel.slice(channel.indexOf('"message.completed"'));
 assert(

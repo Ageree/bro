@@ -211,8 +211,19 @@ async function measureOpenRouterTtfb(): Promise<Record<string, unknown>> {
     };
   }
 
-  const afterPrefetch = await streamOnce();
-  const repeat = await streamOnce();
+  async function streamOrTimeout(): Promise<Record<string, unknown>> {
+    try {
+      return await streamOnce();
+    } catch (err) {
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message.slice(0, 180) : String(err),
+      };
+    }
+  }
+
+  const afterPrefetch = await streamOrTimeout();
+  const repeat = await streamOrTimeout();
   return {
     skipped: false,
     model,

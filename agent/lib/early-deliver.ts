@@ -23,6 +23,38 @@ export function visibleReply(text: string | null | undefined): string | null {
   return trimmed;
 }
 
+/** First visible line once the model has finished it (newline). Token crumbs stay. */
+export function firstCompleteLine(soFar: string): string | null {
+  const raw = typeof soFar === "string" ? soFar : "";
+  if (!raw.includes("\n")) return null;
+  const { message } = splitSeen(raw);
+  const visible = visibleReply(message);
+  if (!visible) return null;
+  const line = visible.split("\n")[0]?.trim() ?? "";
+  return line || null;
+}
+
+/**
+ * First iMessage bubble from a streaming `message.appended`.
+ * Newline-gated so we do not send half a word; later appends no-op once spoken.
+ */
+export function planFirstLineFlush(input: {
+  soFar: string;
+  alreadySent: readonly string[];
+}): Pick<TurnDelivery, "send" | "seen"> {
+  const raw = typeof input.soFar === "string" ? input.soFar : "";
+  const { seen } = raw ? splitSeen(raw) : {};
+  if (input.alreadySent.some((s) => s.trim().length > 0)) {
+    return { send: null, ...(seen !== undefined ? { seen } : {}) };
+  }
+  const line = firstCompleteLine(raw);
+  if (!line) return { send: null, ...(seen !== undefined ? { seen } : {}) };
+  return {
+    send: nextBubble(input.alreadySent, line),
+    ...(seen !== undefined ? { seen } : {}),
+  };
+}
+
 /**
  * Next bubble given text already sent this turn.
  * Handles both per-step messages and accumulated ones.
