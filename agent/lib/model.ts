@@ -1,7 +1,7 @@
 import { createOpenAI } from "@ai-sdk/openai";
 import { wrapLanguageModel, type LanguageModelMiddleware } from "ai";
 
-const DEFAULT_OPENROUTER_MODEL = "z-ai/glm-5.3-flash";
+export const DEFAULT_OPENROUTER_MODEL = "z-ai/glm-5.3-flash";
 const DEFAULT_OPENROUTER_CONTEXT_TOKENS = 1_000_000;
 
 /** Root chat window: compact enough that eve will actually summarize long threads,

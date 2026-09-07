@@ -17,6 +17,7 @@ import {
   INSTINCT_RECALL_TTL_MS,
   canPrefetchInstinctQuery,
 } from "../agent/lib/instinct-recall.ts";
+import { canPrefetchOpenRouter } from "../agent/lib/openrouter-warm.ts";
 
 function assert(cond: unknown, msg: string): void {
   if (!cond) throw new Error(msg);
@@ -74,6 +75,15 @@ assert(instinct.includes("instinctScopesForPerson"), "prefetch uses Eve digest +
 assert(instinct.includes("conversation.ok && archive.ok"), "failed Instinct searches are not cached");
 assert(instinct.includes("canPrefetchInstinctQuery"), "voice placeholders skip early prefetch");
 
+const openrouterWarm = readFileSync(
+  new URL("../agent/lib/openrouter-warm.ts", import.meta.url),
+  "utf8",
+);
+assert(openrouterWarm.includes("OPENROUTER_AUTH_URL"), "OpenRouter warm hits /auth/key");
+assert(openrouterWarm.includes("AbortSignal.timeout"), "OpenRouter warm is time-bounded");
+assert(canPrefetchOpenRouter("sk-test"), "OpenRouter warm runs when a key is set");
+assert(!canPrefetchOpenRouter(""), "OpenRouter warm skips without a key");
+
 const tenants = readFileSync(new URL("../convex/tenants.ts", import.meta.url), "utf8");
 {
   const countFn = tenants.slice(tenants.indexOf("export const countInboundMessage"));
@@ -99,27 +109,35 @@ assert(imessage.includes("imageUrlParts"), "photos do not tail-wait after bind")
 assert(imessage.includes("getTenantByHandle"), "HMAC still loads the handle tenant");
 assert(imessage.includes("loadWakeContext"), "1:1 billing prefetches wake context");
 assert(imessage.includes("prefetchInstinctRecall"), "1:1 billing prefetches Instinct searches");
+assert(imessage.includes("prefetchOpenRouter"), "1:1 billing warms OpenRouter");
 assert(
   imessage.includes("prefetchInstinctRecall(ownerPhone, inbound.text)"),
   "final inbound text warms Instinct after STT",
 );
 assert(imessage.includes("ackIMessageReadAndTyping"), "read+typing is one helper");
 {
+  const ackFn = imessage.slice(imessage.indexOf("function ackIMessageReadAndTyping"));
+  assert(ackFn.includes("Promise.all"), "read and typing share one identity GET");
+}
+{
   const gatePAt = imessage.indexOf("const gateP = inboundOwnerGate");
   const awaitGateAt = imessage.indexOf("const gate = await gateP");
   const ackAt = imessage.indexOf("ackIMessageReadAndTyping", gatePAt);
   const wakeAt = imessage.indexOf("loadWakeContext(ownerPhone)", gatePAt);
   const instinctAt = imessage.indexOf("prefetchInstinctRecall(ownerPhone", gatePAt);
+  const orAt = imessage.indexOf("prefetchOpenRouter", gatePAt);
   assert(gatePAt > 0 && awaitGateAt > gatePAt, "1:1 billing starts before it is awaited");
   assert(ackAt > gatePAt && ackAt < awaitGateAt, "bound 1:1 typing overlaps billing");
   assert(wakeAt > gatePAt && wakeAt < awaitGateAt, "wake prefetch overlaps billing");
   assert(instinctAt > gatePAt && instinctAt < awaitGateAt, "Instinct prefetch overlaps billing");
+  assert(orAt > gatePAt && orAt < awaitGateAt, "OpenRouter warm overlaps billing");
 }
 
 const inkbox = readFileSync(new URL("../agent/lib/inkbox.ts", import.meta.url), "utf8");
 assert(inkbox.includes("inkboxIdentity"), "Inkbox identity is cached");
 
 const telegram = readFileSync(new URL("../agent/channels/telegram.ts", import.meta.url), "utf8");
+assert(telegram.includes("prefetchOpenRouter"), "telegram billing warms OpenRouter");
 assert(telegram.includes("inboundP"), "telegram STT overlaps photo fetch");
 assert(telegram.includes("photoP"), "telegram photo overlaps billing");
 assert(
@@ -136,6 +154,8 @@ assert(
   assert(afterReal > 0 && typingAt > afterReal && typingAt < billAt, "telegram typing overlaps billing");
   assert(wakeAt > afterReal && wakeAt < billAt, "telegram wake prefetch overlaps billing");
   assert(instinctAt > afterReal && instinctAt < billAt, "telegram Instinct prefetch overlaps billing");
+  const orAt = telegram.indexOf("prefetchOpenRouter", afterReal);
+  assert(orAt > afterReal && orAt < billAt, "telegram OpenRouter warm overlaps billing");
 }
 
 const mail = readFileSync(new URL("../agent/lib/mail-inbound.ts", import.meta.url), "utf8");
@@ -220,5 +240,6 @@ console.log(
     wakeContextTtlMs: 8000,
     instinctPrefetchDuringBilling: true,
     instinctRecallsParallel: true,
+    openRouterWarmDuringBilling: true,
   }),
 );

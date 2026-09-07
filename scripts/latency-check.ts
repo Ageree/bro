@@ -49,6 +49,7 @@ const imessage = readFileSync(
 );
 assert(imessage.includes("routingFromAuth"), "first bubble uses auth routing");
 assert(imessage.includes("deliverTurnBubble"), "delivery helper is shared");
+assert(imessage.includes("prefetchOpenRouter"), "OpenRouter warms during billing, not after first token");
 
 const telegram = readFileSync(
   new URL("../agent/channels/telegram.ts", import.meta.url),

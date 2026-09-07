@@ -27,6 +27,7 @@ import {
   upsertTenant,
 } from "../lib/convex";
 import { prefetchInstinctRecall } from "../lib/instinct-recall.ts";
+import { prefetchOpenRouter } from "../lib/openrouter-warm.ts";
 import {
   broVcard,
   helpText,
@@ -257,8 +258,10 @@ function ackIMessageReadAndTyping(
   return (async () => {
     try {
       const identity = await inkboxIdentity(handle);
-      await identity.markIMessageConversationRead(conversationId);
-      await identity.sendIMessageTyping(conversationId);
+      await Promise.all([
+        identity.markIMessageConversationRead(conversationId),
+        identity.sendIMessageTyping(conversationId),
+      ]);
     } catch (err) {
       console.error("imessage ack failed", err);
     }
@@ -497,6 +500,7 @@ export default defineChannel({
           console.error("wake prefetch failed", err),
         );
         prefetchInstinctRecall(ownerPhone, preview);
+        prefetchOpenRouter();
         if (boundOneToOne) {
           const ack = ackIMessageReadAndTyping(
             msg.conversation_id,

@@ -9,6 +9,7 @@ import {
   touchLastChannel,
 } from "../lib/convex";
 import { prefetchInstinctRecall } from "../lib/instinct-recall.ts";
+import { prefetchOpenRouter } from "../lib/openrouter-warm.ts";
 import {
   helpText,
   isHelpAsk,
@@ -272,6 +273,7 @@ export default defineChannel({
         console.error("wake prefetch failed", err),
       );
       prefetchInstinctRecall(phone, inbound.text);
+      prefetchOpenRouter();
 
       let gate: { decision: "allow" | "paywall" | "drop"; payUrl?: string };
       try {
