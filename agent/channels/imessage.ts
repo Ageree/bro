@@ -51,6 +51,7 @@ import {
   inboundIMessageTextWithVoice,
 } from "../lib/imessage-text";
 import { deliverHuman } from "../lib/deliver-human";
+import { parkTurn } from "../lib/channel-turn.ts";
 import { telegramBindLink } from "../../convex/lib/telegramPolicy.ts";
 import { telegramBotUsername } from "../lib/telegram";
 import { transcribeVoiceNote } from "../lib/voice";
@@ -521,29 +522,32 @@ export default defineChannel({
         messageType: msg.message_type,
       });
 
-      await from(msg.conversation_id).send(content, {
-        auth: {
-          authenticator: "inkbox",
-          issuer: "inkbox",
-          principalType: "user",
-          principalId: ownerPhone,
-          attributes: group
-            ? groupAuthAttributes({
-                conversationId: msg.conversation_id,
-                inkboxHandle: identityHandle,
-                messageId: msg.id,
-                origin: "human",
-                senderPhone: remote,
-                ownerPhone,
-              })
-            : {
-                conversationId: msg.conversation_id,
-                inkboxHandle: identityHandle,
-                messageId: msg.id,
-                origin: "human",
-              },
-        },
-      });
+      parkTurn(
+        waitUntil,
+        from(msg.conversation_id).send(content, {
+          auth: {
+            authenticator: "inkbox",
+            issuer: "inkbox",
+            principalType: "user",
+            principalId: ownerPhone,
+            attributes: group
+              ? groupAuthAttributes({
+                  conversationId: msg.conversation_id,
+                  inkboxHandle: identityHandle,
+                  messageId: msg.id,
+                  origin: "human",
+                  senderPhone: remote,
+                  ownerPhone,
+                })
+              : {
+                  conversationId: msg.conversation_id,
+                  inkboxHandle: identityHandle,
+                  messageId: msg.id,
+                  origin: "human",
+                },
+          },
+        }),
+      );
 
       return new Response(null, { status: 204 });
     }),

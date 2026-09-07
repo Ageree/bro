@@ -29,6 +29,7 @@ import {
   isPrivateChat,
   largestPhoto,
   sendTelegramMessage,
+  sendTelegramTyping,
   telegramBotUsername,
   telegramFileUrl,
   webhookSecretOk,
@@ -36,6 +37,7 @@ import {
   type TelegramUpdate,
 } from "../lib/telegram";
 import { compileTelegram } from "../lib/telegram-text.ts";
+import { parkTurn } from "../lib/channel-turn.ts";
 
 function telegramAuthAttrs(opts: {
   conversationId: string;
@@ -166,21 +168,29 @@ export default defineChannel({
         );
         if (typeof waitUntil === "function") waitUntil(touch);
         else void touch;
-        await from(tenant.inkboxConversationId).send(`[button] ${data}`, {
-          auth: {
-            authenticator: "telegram",
-            issuer: "telegram",
-            principalType: "user",
-            principalId: tenant.phoneE164,
-            attributes: telegramAuthAttrs({
-              conversationId: tenant.inkboxConversationId,
-              telegramChatId: tenant.telegramChatId ?? chatIdOf(msg),
-              telegramUserId: userId,
-              messageId: String(msg.message_id),
-              inkboxHandle: tenant.inkboxHandle,
-            }),
-          },
-        });
+        const typing = sendTelegramTyping(chatIdOf(msg)).catch((err) =>
+          console.error("telegram typing failed", err),
+        );
+        if (typeof waitUntil === "function") waitUntil(typing);
+        else void typing;
+        parkTurn(
+          waitUntil,
+          from(tenant.inkboxConversationId).send(`[button] ${data}`, {
+            auth: {
+              authenticator: "telegram",
+              issuer: "telegram",
+              principalType: "user",
+              principalId: tenant.phoneE164,
+              attributes: telegramAuthAttrs({
+                conversationId: tenant.inkboxConversationId,
+                telegramChatId: tenant.telegramChatId ?? chatIdOf(msg),
+                telegramUserId: userId,
+                messageId: String(msg.message_id),
+                inkboxHandle: tenant.inkboxHandle,
+              }),
+            },
+          }),
+        );
         return new Response(null, { status: 204 });
       }
 
@@ -317,21 +327,29 @@ export default defineChannel({
         images: typeof content === "string" ? 0 : content.length - 1,
       });
 
-      await from(conversationId).send(content, {
-        auth: {
-          authenticator: "telegram",
-          issuer: "telegram",
-          principalType: "user",
-          principalId: phone,
-          attributes: telegramAuthAttrs({
-            conversationId,
-            telegramChatId: chatId,
-            telegramUserId: userId,
-            messageId: String(msg.message_id),
-            inkboxHandle: tenant.inkboxHandle,
-          }),
-        },
-      });
+      const typing = sendTelegramTyping(chatId).catch((err) =>
+        console.error("telegram typing failed", err),
+      );
+      if (typeof waitUntil === "function") waitUntil(typing);
+      else void typing;
+      parkTurn(
+        waitUntil,
+        from(conversationId).send(content, {
+          auth: {
+            authenticator: "telegram",
+            issuer: "telegram",
+            principalType: "user",
+            principalId: phone,
+            attributes: telegramAuthAttrs({
+              conversationId,
+              telegramChatId: chatId,
+              telegramUserId: userId,
+              messageId: String(msg.message_id),
+              inkboxHandle: tenant.inkboxHandle,
+            }),
+          },
+        }),
+      );
       return new Response(null, { status: 204 });
     }),
   ],

@@ -43,6 +43,19 @@ assert(
   "no instant-ack skip — ок/спасибо still run the agent (open jobs)",
 );
 
+const telegram = readFileSync(
+  new URL("../agent/channels/telegram.ts", import.meta.url),
+  "utf8",
+);
+assert(telegram.includes("sendTelegramTyping"), "telegram shows typing like iMessage");
+assert(telegram.includes("parkTurn"), "human telegram turn is not awaited");
+
+const telegramLib = readFileSync(
+  new URL("../agent/lib/telegram.ts", import.meta.url),
+  "utf8",
+);
+assert(telegramLib.includes("sendChatAction"), "typing uses Telegram chat action");
+
 const instructions = readFileSync(
   new URL("../agent/instructions.md", import.meta.url),
   "utf8",

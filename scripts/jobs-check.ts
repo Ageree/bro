@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { jobWakeInstruction } from "../agent/lib/job-wake.ts";
 import {
   defaultCheckInMinutes,
   nudgePrompt,
@@ -310,6 +312,29 @@ assert(
 assert(
   nudgePrompt({ waitingFor: "email", goal: "запись" }).includes("клиник"),
   "email nudge clinic/mail",
+);
+
+assert(jobWakeInstruction([]) === null, "no extra prompt when there are no open jobs");
+const openJobs = jobWakeInstruction(["джоб x: слот"]);
+if (!openJobs) throw new Error("open jobs still land in context");
+assert(openJobs.includes("джоб x: слот"), "open jobs still land in context");
+assert(openJobs.includes("[event:mail]"), "mail/OTP framing stays when a job is open");
+
+const jobsSrc = readFileSync(
+  new URL("../agent/instructions/jobs.ts", import.meta.url),
+  "utf8",
+);
+assert(jobsSrc.includes("return null"), "empty job list injects nothing");
+assert(jobsSrc.includes("Job store unavailable"), "store errors still surface");
+
+const imessage = readFileSync(
+  new URL("../agent/channels/imessage.ts", import.meta.url),
+  "utf8",
+);
+assert(imessage.includes("parkTurn"), "human iMessage turn is not awaited");
+assert(
+  /await from\(conversationId\)\.send\(prompt/.test(imessage),
+  "Convex wakeups still await send so dispatch sees failures",
 );
 
 console.log("jobs-check ok");

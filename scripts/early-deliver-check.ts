@@ -6,6 +6,7 @@ import {
   recordSent,
   visibleReply,
 } from "../agent/lib/early-deliver.ts";
+import { parkTurn } from "../agent/lib/channel-turn.ts";
 import { TURN_FAILED_REPLY } from "../agent/lib/silent-turn.ts";
 
 function assert(cond: unknown, msg: string): void {
@@ -110,5 +111,14 @@ assert(
 function shouldSkipAgentOnAck(src: string): boolean {
   return src.includes("instantTapback");
 }
+
+let parked = 0;
+parkTurn((work) => {
+  parked += 1;
+  void work;
+}, Promise.resolve());
+assert(parked === 1, "parkTurn uses waitUntil when present");
+parkTurn(undefined, Promise.resolve());
+assert(parked === 1, "missing waitUntil does not throw");
 
 console.log("early-deliver-check ok");

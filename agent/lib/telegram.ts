@@ -100,6 +100,10 @@ async function api<T>(
   return json.result as T;
 }
 
+export async function sendTelegramTyping(chatId: string | number): Promise<void> {
+  await api("sendChatAction", { chat_id: chatId, action: "typing" });
+}
+
 export async function sendTelegramMessage(opts: {
   chatId: string | number;
   html: string;
