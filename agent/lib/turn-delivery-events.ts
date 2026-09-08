@@ -304,6 +304,9 @@ export function createTurnDeliveryEvents(opts: {
   };
 }
 
+/** Used only by `agent/hooks/telegram-deliver.ts`. Do not also attach these
+ *  to the Telegram channel — Eve bundles hook and channel separately, so
+ *  the Maps would not be shared and every bubble would send twice. */
 export const telegramDeliveryEvents = createTurnDeliveryEvents({
   accept: telegramOwnsTurn,
 });

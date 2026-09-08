@@ -83,6 +83,62 @@ export function webhookSecretOk(request: Request): boolean {
   return got === expected;
 }
 
+/** iOS Telegram ghosts and overlaps cells when several bot messages land
+ *  in the same animation frame. Early-deliver flushes fire `void send`, so
+ *  without a per-chat gate those POSTs race. */
+export const TELEGRAM_SEND_GAP_MS = 280;
+
+type ChatGate = {
+  tail: Promise<void>;
+  lastAt: number;
+};
+
+const chatGates = new Map<string, ChatGate>();
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export function resetTelegramSendGateForTests(): void {
+  chatGates.clear();
+}
+
+export async function enqueueTelegramChat<T>(
+  chatId: string | number,
+  run: () => Promise<T>,
+  opts?: { now?: () => number; gapMs?: number },
+): Promise<T> {
+  const key = String(chatId);
+  const gapMs = opts?.gapMs ?? TELEGRAM_SEND_GAP_MS;
+  const clock = opts?.now ?? Date.now;
+  const gate = chatGates.get(key) ?? { tail: Promise.resolve(), lastAt: 0 };
+  let settle!: (value: T) => void;
+  let reject!: (err: unknown) => void;
+  const result = new Promise<T>((res, rej) => {
+    settle = res;
+    reject = rej;
+  });
+  gate.tail = gate.tail
+    .catch(() => undefined)
+    .then(async () => {
+      const wait = gate.lastAt > 0 ? gate.lastAt + gapMs - clock() : 0;
+      if (wait > 0) await sleep(wait);
+      try {
+        const value = await run();
+        gate.lastAt = clock();
+        settle(value);
+      } catch (err) {
+        reject(err);
+      }
+    })
+    .then(
+      () => undefined,
+      () => undefined,
+    );
+  chatGates.set(key, gate);
+  return result;
+}
+
 async function api<T>(
   method: string,
   body: Record<string, unknown>,
@@ -111,14 +167,16 @@ export async function sendTelegramMessage(opts: {
   replyTo?: number;
 }): Promise<{ message_id: number }> {
   const markup = opts.buttons?.length ? inlineKeyboard(opts.buttons) : undefined;
-  return await api("sendMessage", {
-    chat_id: opts.chatId,
-    text: opts.html,
-    parse_mode: "HTML",
-    disable_web_page_preview: false,
-    ...(opts.replyTo ? { reply_to_message_id: opts.replyTo } : {}),
-    ...(markup ? { reply_markup: markup } : {}),
-  });
+  return await enqueueTelegramChat(opts.chatId, () =>
+    api("sendMessage", {
+      chat_id: opts.chatId,
+      text: opts.html,
+      parse_mode: "HTML",
+      disable_web_page_preview: false,
+      ...(opts.replyTo ? { reply_to_message_id: opts.replyTo } : {}),
+      ...(markup ? { reply_markup: markup } : {}),
+    }),
+  );
 }
 
 export async function sendTelegramPhoto(opts: {
@@ -128,12 +186,14 @@ export async function sendTelegramPhoto(opts: {
   buttons?: TelegramButton[][];
 }): Promise<{ message_id: number }> {
   const markup = opts.buttons?.length ? inlineKeyboard(opts.buttons) : undefined;
-  return await api("sendPhoto", {
-    chat_id: opts.chatId,
-    photo: opts.url,
-    ...(opts.html ? { caption: opts.html.slice(0, 1024), parse_mode: "HTML" } : {}),
-    ...(markup ? { reply_markup: markup } : {}),
-  });
+  return await enqueueTelegramChat(opts.chatId, () =>
+    api("sendPhoto", {
+      chat_id: opts.chatId,
+      photo: opts.url,
+      ...(opts.html ? { caption: opts.html.slice(0, 1024), parse_mode: "HTML" } : {}),
+      ...(markup ? { reply_markup: markup } : {}),
+    }),
+  );
 }
 
 export async function setTelegramReaction(opts: {

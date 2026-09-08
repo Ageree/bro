@@ -189,6 +189,33 @@ assert(
   nextBubble(["ok"], "ok, сделаю") === "сделаю",
   "comma after a flushed ack is stripped",
 );
+assert(
+  nextBubble(
+    [
+      "Хм, у меня пока нет зарегистрированного компьютера — статус пустой, будить нечего.",
+      "Похоже, компьютер ещё не привязан.",
+    ],
+    "Хм, у меня пока нет зарегистрированного компьютера — статус пустой, будить нечего. Похоже, компьютер ещё не привязан. Если есть пакет с компом (типа Maritime) — скажи как получил.",
+  ) === "Если есть пакет с компом (типа Maritime) — скажи как получил.",
+  "completed full reply peels already-flushed telegram bubbles",
+);
+assert(
+  nextBubble(
+    ["Привет!", "Как дела?"],
+    "Привет. Как дела? Что нового?",
+  ) === "Что нового?",
+  "punct rewrite still peels each already-sent bubble in order",
+);
+{
+  const pathA = [
+    "Хм, у меня пока нет зарегистрированного компьютера — статус пустой, будить нечего.",
+    "Похоже, компьютер ещё не привязан.",
+  ];
+  const full =
+    "Хм, у меня пока нет зарегистрированного компьютера — статус пустой, будить нечего. Похоже, компьютер ещё не привязан.";
+  assert(nextBubble(pathA, full) === null, "second path must not resend the joined reply");
+  assert(nextBubble([], full) === full, "empty alreadySent still sends once — hook-only prevents a second empty map");
+}
 
 const streamThenFinal = planTurnDelivery({
   finishReason: "tool-calls",
@@ -323,13 +350,20 @@ const telegramChannel = readFileSync(
   "utf8",
 );
 assert(channel.includes("imessageDeliveryEvents"), "imessage uses shared delivery events");
-assert(telegramChannel.includes("telegramDeliveryEvents"), "telegram uses shared delivery events");
+assert(
+  !telegramChannel.includes("telegramDeliveryEvents"),
+  "telegram channel does not register delivery events — hook is the only path",
+);
 const hook = readFileSync(
   new URL("../agent/hooks/telegram-deliver.ts", import.meta.url),
   "utf8",
 );
-assert(hook.includes("telegramDeliveryEvents"), "hook shares telegram delivery maps");
+assert(hook.includes("telegramDeliveryEvents"), "hook is the telegram delivery path");
 assert(hook.includes("defineHook"), "telegram hook observes every channel session");
+assert(
+  !/events:\s*telegramDeliveryEvents/.test(telegramChannel),
+  "new telegram sessions must not also fire channel delivery events",
+);
 assert(delivery.includes("initiator"), "delivery reads initiator auth when current is empty");
 assert(delivery.includes("canTarget"), "telegram can deliver without continuation token");
 assert(delivery.includes("planTurnDelivery"), "shared events use early-deliver planner");

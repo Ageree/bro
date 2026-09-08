@@ -251,6 +251,46 @@ export function planPreToolFlush(input: {
   };
 }
 
+function peelOneBubble(cur: string, bubble: string): string | null | undefined {
+  const line = restAfterPrefix(foldLines(cur), foldLines(bubble));
+  if (line !== undefined) return line;
+  const ws = restAfterPrefix(foldWs(cur), foldWs(bubble));
+  if (ws !== undefined) return ws;
+  const bare = foldLines(stripFinalPunct(bubble));
+  const curFold = foldLines(cur);
+  if (bare && curFold.startsWith(bare) && curFold.length > bare.length) {
+    const next = curFold[bare.length] ?? "";
+    if (/[.!?…。！？]/.test(next)) {
+      return (
+        curFold
+          .slice(bare.length)
+          .replace(/^[\s.!?…。！？,;:]+/u, "")
+          .trim() || null
+      );
+    }
+  }
+  return undefined;
+}
+
+function peelSentInOrder(
+  current: string,
+  sent: readonly string[],
+): string | null | undefined {
+  if (sent.length === 0) return undefined;
+  let rest: string | null = current;
+  let peeled = 0;
+  for (const bubble of sent) {
+    if (rest === null) return null;
+    const next = peelOneBubble(rest, bubble);
+    if (next === undefined) {
+      return peeled === 0 ? undefined : rest.trim() || null;
+    }
+    peeled += 1;
+    rest = next;
+  }
+  return rest === null ? null : rest.trim() || null;
+}
+
 export function nextBubble(
   alreadySent: readonly string[],
   current: string,
@@ -277,6 +317,8 @@ export function nextBubble(
   const sentWs = foldWs(sent.join(" "));
   const restWs = restAfterPrefix(curWs, sentWs);
   if (restWs !== undefined) return restWs;
+  const sequential = peelSentInOrder(cur, sent);
+  if (sequential !== undefined) return sequential;
   if (last) {
     const bare = foldLines(stripFinalPunct(last));
     if (bare && curFold.startsWith(bare) && curFold.length > bare.length) {
