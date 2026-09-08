@@ -1,53 +1,42 @@
 # Bro — ChatGPT OAuth + личный компьютер
 
-_Date: 2026-09-07 · computer lock: 2026-09-08_
+_Date: 2026-09-07 · computer: box 2026-09-08 · уточнение: Fable 5.1 + eve 0.47.6_
 
 Утверждено оператором: вход через **Codex OAuth**. Если вход есть —
-**весь Bro** (модель eve: корень, worker, otp) думает через этот
-Codex. Если входа нет, карантин или квота кончилась — как сейчас,
-OpenRouter. Компьютер — как у Companion: постоянный Linux на человека.
+**весь Bro** (корень, worker, otp) думает через этот Codex. Если входа
+нет, карантин или квота кончилась — OpenRouter как сейчас. Компьютер —
+постоянный Linux на человека, провайдер **box (ASCII)**.
 
-Провайдер машины (2026-09-08): **box (ASCII)**, не Vercel Sandbox.
-Оператор готов поднять план box до максимального, когда юзеров станет
-много. Референс: [box.ascii.dev](https://box.ascii.dev/),
+Референс продукта: [companion.result.dev](https://companion.result.dev/).
+Референс машины: [box.ascii.dev](https://box.ascii.dev/),
 [docs.ascii.dev/box](https://docs.ascii.dev/box/platform-guide).
-
-Референс продукта: [companion.result.dev](https://companion.result.dev/) —
-тот же жанр (iMessage-агент), но мозг и инструменты живут на
-персональной машине пользователя, а не на общем OpenRouter.
 
 ## Решение
 
 Один Bro, две модели. Тулы те же.
 
-1. **Модель хода.** Перед каждым ходом смотрим тенанта. Есть живой
-   Codex-токен → eve идёт в
-   `chatgpt.com/backend-api/codex/responses` (как `chatgpt()` в eve).
-   Нет входа / карантин / 401 / квота → тот же ход на OpenRouter
-   (`z-ai/glm-5.3-flash`), как сейчас. Человеку одна короткая строка,
-   если только что отвалились с Codex.
-2. **Личный компьютер** — один box на тенанта. Файлы, bash, CLI, MCP.
-   iMessage и Telegram — одна машина. `boxId` живёт в Convex, не в
-   имени сессии eve.
+1. **Модель хода.** На каждом `step.started` смотрим тенанта. Есть живой
+   Codex-токен и ход не групповой → свой Codex-транспорт в
+   `chatgpt.com/backend-api/codex/responses`. Нет входа / карантин /
+   401 / квота / группа → OpenRouter (`z-ai/glm-5.3-flash`). Человеку
+   одна короткая строка, если только что отвалились с Codex.
+2. **Личный компьютер** — один box на Convex-тенанта. `boxId` в Convex.
+   iMessage и Telegram — одна машина. Мозг Bro **не** через
+   `POST /boxes/{id}/prompt`.
 
-Вход тот же: device-code Codex OAuth с телефона. Токены в Convex как
-сейф (AES-256-GCM, subject = tenantId). Тот же токен:
+Имена не путать:
 
-- кормит модель eve (весь Bro: корень, worker, otp);
-- кладётся в `~/.codex/auth.json` на resume машины, чтобы CLI/MCP
-  на диске человека тоже были «его ChatGPT».
+- `phoneE164` — principal eve (`tenantId(ctx)` в `agent/lib/tenant.ts`).
+- `tenantId` — `Id<"tenants">` в Convex. HKDF, AAD, имя бокса, `TENANT_ID`
+  в ASCII — только это. Телефон в ASCII не уходит.
 
-`chatgpt()` из eve читает локальный `codex login` и **в деплое не
-работает**. Нам нужен свой `CodexTokenBroker` на тенанта: `getToken`
-достаёт/рефрешит из Convex. eve уже принимает `broker` в
-`createCodexSubscriptionModel`. Модель — `defineDynamic` на
-`turn.started` (есть в eve), fallback в манифесте — OpenRouter.
+Вход: device-code Codex OAuth с телефона. Токены в Convex тем же AES, что
+сейф (`encryptVaultSecret`, handle `chatgpt:oauth`). Тот же access-токен:
 
-STT голоса остаётся OpenRouter: это не Codex.
+- кормит модель eve через `CodexTokenBroker`;
+- на resume машины пишется в `~/.codex/auth.json` **без `refresh_token`**.
 
-Мозг Bro **не** идёт через `POST /boxes/{id}/prompt`. Это Codex/Claude
-ASCII со своими ключами. Bro остаётся в eve. Box — диск, shell, MCP,
-CLI. `box prompt` не вызываем.
+STT голоса остаётся OpenRouter.
 
 ```
 iMessage / Telegram
@@ -55,230 +44,251 @@ iMessage / Telegram
        модель: Codex этого человека  или  OpenRouter
        ├─ browser_task / worker / composio / vault  — как сейчас
        └─ computer_*  → box (ASCII)  boxId в Convex
-              Ubuntu, /workspace, CLI, MCP, Docker
-              + ~/.codex/auth.json если вход есть
+              /home/user, CLI, MCP, Docker
+              + ~/.codex/auth.json без refresh, если вход есть
 ```
 
 ## Почему не текущий sandbox и не Vercel
 
 Сейчас у Bro нет компьютера человека:
 
-- eve `bash` / `read_file` / `write_file` — эфемерный sandbox
-  **сессии** eve, не тенанта. iMessage и Telegram дали бы две машины.
-- Composio `COMPOSIO_REMOTE_*` — постпроцессор больших ответов,
-  сеть запрещена (`agent/lib/sandbox-policy.ts`).
-- Kernel / Browser Use — облачный браузер, не CLI/файлы/MCP.
+- eve `bash` / `read_file` / `write_file` — эфемерный sandbox **сессии**.
+  iMessage и Telegram уже делят `inkboxConversationId`, но это не продукт.
+- Composio remote — постобработка, сеть запрещена
+  (`agent/lib/sandbox-policy.ts`).
+- Kernel / Browser Use — браузер, не CLI/файлы/MCP.
 
-eve `vercel()` backend умеет named persistent sandbox, но ключ —
-`sessionKey` хода, не `principalId`. Это остаётся **сессионным**
-sandbox eve, не компьютером человека.
+Провайдер компьютера: **box**. Eve и деплой остаются на Vercel. E2B /
+Daytona / Sprites — запасной путь (`provider + remoteId`), на старте нет.
 
-Провайдер компьютера: **box (ASCII)**. Полная Ubuntu VM, свой диск,
-SSH, Docker, IPv4, десктоп, Codex CLI из коробки. HTTP API + TS SDK
-(`@asciidev/box-sdk`). Паттерн «бокс своим юзерам» уже в доке:
-`noEnv`, `TENANT_ID`, fork с шаблона, stop/resume.
+## Модель Bro (eve 0.47.6)
 
-Почему не Vercel Sandbox как комп: сессионный контракт eve, нет
-Docker/SSH/IP, снапшоты **$0.08/GB-мес** (100 дисков сами по себе
-дороже compute), active-CPU + память пока машина жива. Bro уже на
-Vercel — eve и деплой там остаются; компьютер — отдельно.
+`chatgpt()` из `eve/models/openai` читает локальный CLI. `eve deploy`
+такое блокирует. Внутри пакета есть `createCodexSubscriptionModel` +
+`broker` (`CodexTransportOptions`), но **из `exports` не торчит** — только
+`chatgpt()`. Deep-import в `eve/dist` режет exports map.
 
-E2B / Daytona / Sprites — запасной путь, если box упрётся в регион
-или вендора. На старте не берём: дороже на часе и/или пол $150.
+Делаем `agent/lib/codex-model.ts`: тот же транспорт (переписать
+`/v1/responses` → Codex endpoint, заголовки Bearer / Account-Id,
+повтор на 401 через `getToken({ reason: "rejected" })`). Интерфейс
+брокера как в eve `token-broker.d.ts`.
+
+`defineDynamic` модели: **только `step.started`**. Session/turn
+selections в eve — строки id; живой `LanguageModel` (OpenRouter wrap и
+Codex) можно вернуть лишь с шага. Fallback в манифесте нет — резолвер
+каждый шаг возвращает модель. В результате всегда
+`modelContextWindowTokens` (иначе eve лезет в каталог Gateway).
+
+Группа (`isGroupTurn`) → всегда OpenRouter. Иначе чужой Plus.
+
+401 / 402 / 429 **до первого чанка** → карантин тенанта, тот же вызов
+на OpenRouter (`withFallback`). После старта стрима не переключаемся.
+
+`BRO_CODEX_MODEL` default = eve `gpt-5.6-sol`, окно 200k.
+`outputCapMiddleware` — только OpenRouter-ветка. Корень держит
+`DEFAULT_ROOT_CONTEXT_TOKENS`.
+
+`worker` — статический сабагент, та же динамическая модель на
+`step.started`. `otp` сегодня `defineDynamic(turn.started)` +
+`...broModel()` (живой объект). eve пишет: у динамического сабагента
+модель — строка id, вложенный `defineDynamic` нельзя. Перед P2: сделать
+otp статическим, group-guard оставить в тулах; если `eve build` не
+съест динамическую модель у сабагентов — worker/otp остаются на
+OpenRouter, корень на Codex.
 
 ## ChatGPT OAuth
 
-Официального API «третье приложение тратит Plus» нет. Есть
-first-party Codex OAuth (`auth.openai.com`, client
-`app_EMoamEEZ73f0CkXaXp7hrann`). Так ходят OpenClaw / OpenCode /
-Companion. OpenAI это терпит у Codex-клиентов; это не публичный
-продукт. Поэтому:
+Нет официального API «третье приложение тратит Plus». First-party Codex
+OAuth (`auth.openai.com`, client `app_EMoamEEZ73f0CkXaXp7hrann`). Токены
+не пулим. Один subject = один Convex tenant, CAS по `version`. Bro без
+входа полноценный.
 
-- токены **никогда** не пулим и не реселлим;
-- один subject = один tenantId, CAS по `version`;
-- Bro без ChatGPT полноценный (OpenRouter);
-- при `invalid_grant` / 401 — карантин этого тенанта, этот ход и
-  следующие до нового входа — OpenRouter, не чужой ключ.
+Поток (как `codex-rs` device_code_auth):
 
-### Поток
+1. Кабинет или `chatgpt_connect` → `POST /me/chatgpt/start`.
+2. Convex: `POST …/deviceauth/usercode { client_id }` →
+   `device_auth_id`, `user_code`, `interval`.
+3. В чат: `https://auth.openai.com/codex/device` + код.
+4. Поллинг `deviceauth/token` цепочкой `ctx.scheduler` (action ~10 мин,
+   дедлайн 15). 403/404 = ещё не подтвердил, спать `interval`.
+5. Успех → `authorization_code` + PKCE → `POST …/oauth/token`.
+   `account_id` из access JWT, `planType` из id_token.
+6. Шифруем `encryptVaultSecret(master, tenantId, "chatgpt:oauth", json)`.
+   Отдельный `chatgptCrypto.ts` не заводим.
 
-Device-code (телефон, без localhost callback):
+Отключение: кабинет / тул → delete row + на живом боксе `codex logout`
+и стереть `auth.json`. Следующий ход — OpenRouter.
 
-1. Кабинет «Подключить ChatGPT» или фраза в чате →
-   `POST /me/chatgpt/start` (cabinet session) или tool
-   `chatgpt_connect`.
-2. Convex action: `POST auth.openai.com/api/accounts/deviceauth/usercode`.
-3. Bro пишет в iMessage ссылку `https://auth.openai.com/codex/device`
-   и код. Кабинет показывает то же.
-4. Поллинг `deviceauth/token` (5s, slow_down +5s, дедлайн ~15 мин).
-5. Exchange → access + refresh. Шифруем vault-схемой
-   (`BRO_VAULT_KEY`, HKDF на tenant, AAD
-   `tenantId\0chatgpt\0oauth`). Метаданные без секрета:
-   `planType`, `email`, `connectedAt`, `version`, `quarantinedAt`.
-6. Resume компьютера кладёт `~/.codex/auth.json` (mode 600).
-   `codex` на машине сам рефрешит; мы рефрешим в Convex, если
-   пишем файл заново (singleflight + CAS, margin 120s).
+Два рефрешера на один refresh-token нельзя: CLI ротирует refresh.
+На бокс — `id_token`, `access_token`, `account_id`, без refresh.
+Единственный рефрешер — Convex (singleflight + CAS, margin 120 с).
 
-Отключение: кабинет / «отключи chatgpt» → delete row + `codex logout`
-на машине. Следующий ход уже OpenRouter.
-
-Модель токен не видит — только broker на сервере.
-
-Free ChatGPT без Plus: connect может пройти, Codex упрётся в квоту.
-Этот ход падает на OpenRouter. В чат: «ChatGPT закончился, делаю
-как обычно».
+Модель токен не видит. `BOX_API_KEY` и `BRO_VAULT_KEY` на машину не
+идут. OAuth HTTP живёт в Convex actions; агент только брокер
+`tokenForAgent`.
 
 ## Компьютер
 
-### Провайдер и деньги
+### Деньги и TTL
 
-Аккаунт Bro в ASCII, ключ `BOX_API_KEY` только на сервере Bro
-(Vercel / Convex action). На бокс человека ключ не кладём.
+`BOX_API_KEY` только на Vercel (eve). Кабинет и Convex ходят в
+`POST /internal/computer` с `BRO_INTERNAL_SECRET`, как wakeup.
+Convex ключ ASCII не хранит.
 
-Стартовый план **$20/мес** (555 часов default 4/8, 100 concurrent).
-Когда DAU упрётся в старты или часы — апгрейд: $100 / $500 / **$2000**
-(до 1500 concurrent). Оператор это принял. Ставка та же:
-**$0.036/час** default, **$0.018/час** small. Стоп = $0, последний
-снапшот входит (12 / 50 / 70 GB по типу).
+Старт **$20/мес** (555 ч default, 100 concurrent, **150 стартов/день**).
+Рост — $100 / $500 / $2000. Оператор принял максимум. Ставка
+$0.036/ч default, $0.018/ч small. Стоп = $0.
 
-Старты (create / fork / resume) лимитированы планом. На $20 —
-**150 стартов/день**. Поэтому не resume на каждое сообщение: после
-чата держим тёплым **15–30 минут**, потом `stop`. Иначе апгрейд
-плана раньше, чем кончатся часы.
+Старты (create / fork / resume) лимитированы сильнее, чем часы.
+Поэтому idle-stop — **нативный `ttlSeconds`**, default **900**.
+Таймер от старта машины: после `computer_*`, если
+`archiveAfter - now < TTL/2`, `PATCH { ttlSeconds: TTL }`. Своего
+крона на стоп нет. Перед resume: `GET /limits` (`canStart`,
+`starts.day.remaining`).
 
-Регионы box — только EU (DE / FI / FR). Диск и снапшоты там.
+v1 размер: **`small`**. Регионы box — EU. Always-on только если человек
+сказал «не гаси».
 
-v1 размер: **`small`** (2/4), если не упрёмся. Default — если нужен
-Docker/десктоп тяжелее. Не держать флот 24/7.
+Тенантный лимит стартов (поверх ASCII): free **3**/день, paid **20**,
+env `BRO_FREE_COMPUTER_STARTS_PER_DAY` / `BRO_PAID_…`. Резерв аккаунта
+ASCII: 10 стартов.
 
 ### Данные
 
-`computers` (один ряд на тенанта):
+`computers` — один ряд на `Id<"tenants">`: `boxId`, `size`, `lastState`,
+`lastStateAt`, `lastActiveAt`, `resumedAt`, `createdAt`. Индексы
+`by_tenant`, `by_box`. Колонки chatgpt нет.
 
-- `tenantId`, `boxId` (`bx_…`),
-  `boxName` (человекочитаемое, `bro-<tenantId>`),
-  `size` (`small | default | large`),
-  `status` (`missing | provisioning | running | stopped | error`),
-  `lastActiveAt`, `createdAt`,
-  `chatgpt` (`none | connected | quarantined`).
+`chatgptAccounts` — мета без секрета: `accountId`, `email?`, `planType?`,
+`connectedAt`, `version`, `accessExpiresAt`, `quarantinedAt?`.
 
-`chatgptCredentials` (секрет, `"use node"`): ciphertext + version +
-quarantine. Не отдаём в `/me` целиком.
+`chatgptSecrets` (`"use node"`): ciphertext + version.
 
-`computerMcp` (опционально, пакет 2): `tenantId`, `name`, `command`
-или `url`, `envHandle` (секрет в vault). Пишется в
-`~/.codex/config.toml` / MCP json на машине.
+`chatgptLogins` — device-flow: `deviceAuthId`, `userCode`, `interval`,
+`expiresAt`, `status`.
 
-`/me` +: `{ computer: { status, lastActiveAt }, chatgpt: { status, plan?, email? } }`.
-Секретов нет. `boxId` в кабинет не светим как секрет, но и не
-отдаём модели.
+`computerMcp` — P3.
+
+`/me` +: `{ computer: { state, lastActiveAt, archiveAfter? }, chatgpt: { status: none|pending|connected|quarantined, planType?, email? } }`.
+Ни `boxId`, ни `userCode` в снапшоте (`userCode` только у `/me/chatgpt/start`).
+
+Статус в Convex — кэш. Истина: `GET /boxes/{id}`. `archived` → resume;
+`archiving` / `provisioning` / `cloning` → ждать; `ready|idle|running` →
+команда. `409 box_starting` — не слать вслепую.
 
 ### Жизненный цикл
 
-- Шаблон Bro (один на аккаунт): ставим утилиты, `codex` CLI если
-  нет, рабочий `/workspace`. `stop` — снапшот шаблона.
-- Первый компьютер тенанта → `fork` шаблона с
-  `{ noEnv: true, ttlSeconds: null, env: { TENANT_ID } }`.
-  Имя `bro-<tenantId>`. Пишем `boxId` в Convex.
-- Нет шаблона на спайке — `create` с теми же флагами, `onCreate`
-  ставит минимум.
-- Команда: если `stopped` → `resume` (тоже `noEnv`), poll до
-  `ready`/`idle`, затем `POST /commands` или files API.
-- Простой 15–30 мин → `stop` (снапшот, compute = 0). Удаление —
-  явная команда в кабинете («стереть диск»), не logout ChatGPT
-  и не idle-timeout.
-- `409 box_starting` — подождать ready, не слать команду вслепую.
+- Шаблон аккаунта (`BOX_TEMPLATE_ID`): утилиты, `codex` CLI, `gh`,
+  node, python. Собрать скриптом `computer:template`, не в рантайме.
+- Первый комп → `fork` шаблона
+  `{ noEnv: true, ttlSeconds: 900, env: { TENANT_ID: <convexId> } }`
+  + `Idempotency-Key: bro:<tenantId>:v1`. Имя — `PATCH` после создания
+  (`bro-<convexId>`). Нет шаблона на спайке — `create` с теми же флагами.
+- Файлы: корень **`/home/user`** (не `/workspace`). `chmod 600` на
+  `auth.json` отдельной командой.
+- Удаление — кабинет «стереть диск» (`DELETE` + строка Convex), не
+  logout ChatGPT и не TTL.
 
-`BOX_API_KEY`, `BRO_VAULT_KEY`, Inkbox на машину не попадают.
-`noEnv: true` обязателен. На диск — только Codex auth этого
-тенанта и его MCP secrets.
+`noEnv: true` обязателен.
 
-### Тулы (v1)
+### Тулы v1
 
-Имя / boxId от `ctx.session.auth.principalId` / `tenantId(ctx)`,
-никогда из аргументов модели. Group — `groupPersonalBlock`, как vault.
+Principal только из ctx. `groupPersonalBlock`, как vault. Отказ на
+`local-dev` / shared.
 
-- `computer_exec` — bash на машине человека (сеть **разрешена**;
-  сайты для покупок всё ещё `browser_task`).
-- `computer_read` / `computer_write` / `computer_ls` — `/workspace`.
-- `chatgpt_connect` / `chatgpt_status` — старт device-flow и статус.
-- Не подменять Composio sandbox. Тот остаётся без сети для
-  больших JSON.
-- Не звать `box.prompt`.
+- `computer_exec` — bash, сеть разрешена; `cwd?`, `timeoutSeconds` ≤ 240,
+  `detached?` / `processId?`.
+- `computer_read` / `computer_write` — `/home/user`, read ≤ 64 КБ.
+- `computer_power` — `status | stop`. Стереть диск — только кабинет.
+- `chatgpt_connect` / `chatgpt_status` / `chatgpt_disconnect`.
+- `ls` через exec. `box.prompt` не звать.
 
-Инструкции: файлы, скрипты, git, MCP/CLI — компьютер. WB/Ozon/врачи —
-`browser_task`. «Поставь gh / mcp X» — `computer_exec`, не обещать
-из чата, что уже стоит.
+### Маршрутизация
+
+| Нужно | Тул |
+|---|---|
+| Файлы, скрипты, git, CLI, MCP, скачать и сохранить | `computer_*` |
+| Сайты: покупки, брони, врачи | `browser_task` |
+| Один экран / 3-D Secure / OTP, если browser_task не дожал | `worker` |
+| Временные вычисления хода | eve `bash` / files — не диск человека |
+| Постобработка больших ответов Composio | Composio sandbox, без сети |
+| Группа | `computer_*` / `chatgpt_*` блок; модель OpenRouter |
+| Wakeup | как сейчас `browser_task`; computer из wakeup — P3 |
+
+Браузер на боксе для сайтов в v1 не используем — третий браузер.
 
 ### Кабинет
 
-Карточка «Компьютер»: статус, «разбудить», «выключить», «стереть
-диск». Карточка «ChatGPT»: подключить / отключить, plan, email.
-Статический `cabinet.html`, как оплата и память. Без React.
+Карточка «Компьютер»: state, разбудить / выключить / стереть диск.
+Карточка «ChatGPT»: подключить / отключить, plan, email.
+Статический `cabinet.html`. Bearer → `tenantId` из сессии → eve
+`/internal/computer`.
 
 ## Пакеты
 
-Код — тонкие обёртки. Логика в `agent/lib/computer.ts`,
-`agent/lib/chatgpt-oauth.ts`, `convex/lib/computerPolicy.ts`,
-`shared/chatgptCrypto.ts` (тот же AES конверт, другой AAD).
-Клиент box — `agent/lib/boxClient.ts` (обёртка над
-`@asciidev/box-sdk` или `fetch` на `https://ascii.dev/api/box/v1`).
+Тонкие обёртки. Логика: `agent/lib/computer.ts`,
+`agent/lib/boxClient.ts` (fetch на `https://ascii.dev/api/box/v1`),
+`agent/lib/codex-model.ts`, `agent/lib/chatgpt-oauth.ts` (только
+брокер), `convex/lib/computerPolicy.ts`, `convex/lib/chatgptPolicy.ts`,
+`convex/computers.ts`, `convex/chatgpt.ts`, `convex/chatgptSecrets.ts`.
+Крипта — существующий `shared/vaultCrypto.ts`.
 
-**P0 — спайк (обязателен первым).** Один `noEnv` box: create →
-write file → stop → resume → read file. Тот же `boxId`, как будто
-два хода (iMessage, потом Telegram). Без eve session sandbox.
-Check: `npm run computer:spike`. Нужен `BOX_API_KEY` в env агента,
-не в репо.
+**P0 — спайк.** С ключом: `scripts/computer-spike.ts` — create small
+`noEnv` ttl 900 → write → cat → PATCH ttl → stop → resume → cat тот же
+файл → `GET /limits`. Без ключа заранее: клиент + `computerPolicy` +
+`scripts/lib/fake-box.ts` + `npm run computer:check`.
 
-**P1 — компьютер.** Schema `computers`, getOrCreate/fork, три тулы
-файлов/exec, cabinet card, group guard, idle-stop 15–30 мин,
-billing hook (счётчик computer-минут; цифры отдельным коммитом
-когда будут замеры). Check: `npm run computer:check`.
+**P1 — компьютер.** Schema `computers`, `ensureRunning`, тулы, кабинет,
+`/internal/computer`, шаблон, лимит стартов. Check: один resume на два
+параллельных вызова; TTL продлевается только при остатке < TTL/2;
+group / local-dev отказ. Acceptance: iMessage пишет файл, Telegram
+через 20 мин читает после автостопа.
 
-**P2 — ChatGPT connect + модель Bro.** Device-code, шифрование,
-iMessage + кабинет, карантин, `~/.codex/auth.json` на resume.
-`broModel()` становится динамическим: живой токен тенанта →
-`createCodexSubscriptionModel` + tenant broker; иначе сегодняшний
-OpenRouter. То же для worker и otp. Check: `npm run chatgpt:check`,
-`npm run model:check`.
+**P2 — ChatGPT + модель.** Device-code + scheduler, шифрование,
+карантин, `resolveBroModel` на `step.started`, `auth.json` без refresh.
+Checks: `chatgpt:check`, `model:check`, `eve build` / `eve dev` с
+динамической моделью. Acceptance: Plus оператора → лог `codex`;
+disconnect → OpenRouter; голос без изменений.
 
-**P3 — MCP/CLI человека.** `computerMcp` + запись конфига Codex
-на машине. Check: `npm run computer-mcp:check`.
+**P3 — MCP/CLI.** `computerMcp`, `~/.codex/config.toml`, wakeup
+`computer_poll`.
 
 ## Отвергнуто
 
-- BYOK API key как единственный путь — это не Plus.
-- Только Codex без OpenRouter-fallback — ломает Bro без входа.
-- eve `chatgpt()` как есть — читает локальный CLI, в Vercel падает.
-- Один eve-session sandbox на чат — две машины на iMessage+Telegram.
-- **Vercel Sandbox как компьютер человека** — не ноутбук, дорогой
-  диск, сессионный ключ eve. Eve sandbox остаётся собой.
-- `box.prompt` как мозг Bro — чужие ключи ASCII, не вход юзера.
-- Composio workbench как «компьютер» — нет сети, нет persistence
-  как продукта, нет Codex.
-- Browser-login на chatgpt.com — хрупко, против ToS, пароль в
-  Bro-профиле.
-- Пул токенов / «наш Plus на всех».
-- Флот always-on (~$26/бокс/мес) — только если юзер явно просит
-  «не гаси, пусть качается».
+- BYOK API key как единственный путь.
+- Только Codex без OpenRouter-fallback.
+- eve `chatgpt()` как есть; deep-import `createCodexSubscriptionModel`.
+- `defineDynamic` модели на `session.started` / `turn.started`.
+- Один eve-session sandbox как комп человека.
+- Vercel Sandbox как комп; `@asciidev/eve-box` как backend Bro
+  (ключ — sessionKey).
+- `box.prompt` как мозг Bro.
+- Composio workbench как компьютер.
+- Browser-login на chatgpt.com; пул токенов.
+- Флот always-on.
+- `refresh_token` на боксе; `BOX_API_KEY` в Convex.
+- `/workspace` как корень файлов.
+- `computers.chatgpt`; отдельный `chatgptCrypto.ts`.
+- Крон на idle-stop; `computer_ls` как отдельный тул.
+- Браузер/десктоп бокса для сайтов в v1.
 
 ## Риски
 
-- Codex OAuth — first-party client_id. OpenAI может сузить.
-  Fallback: Bro без ChatGPT. Не строить биллинг на чужой квоте.
-- box — молодой вендор, только EU. Запасной путь: Sprites / E2B,
-  тот же `computers.boxId` абстрагировать как `provider + remoteId`.
-- Лимит стартов. Idle-окно обязательно. На росте — план $100–$2000,
-  не always-on.
-- Сеть с машины: пользовательский код и MCP. Не класть
-  `BRO_VAULT_KEY` / Inkbox / `BOX_API_KEY` в env машины. На машину —
-  только Codex auth этого тенанта и его MCP secrets.
-- Group chat не должен видеть диск и ChatGPT.
-- Stop отказан, если снапшот не пишется. Не `force` из idle-job.
+- Codex OAuth — first-party client_id. Не строить биллинг на чужой квоте.
+- box — молодой вендор, только EU.
+- Лимит стартов важнее часов. Длинный TTL дешевле апгрейда плана.
+- Сеть с машины. На диск — только Codex access этого тенанта и его MCP.
+- Group chat не видит диск и ChatGPT.
+- Stop отказан, если снапшот не пишется. Не `force` из idle.
+- eve может не принять динамическую модель у сабагентов — тогда Codex
+  только в корне.
 
 ## Вне скоупа v1
 
-Windows/macOS desktop как ОС человека, маркетплейс ChatGPT Apps
-внутри Bro, биллинг compute в рублях (сначала структурный счётчик).
-STT на Codex. Десктоп/VNC box и `host` URL — можно позже, не блокер
-P0–P2.
+Windows/macOS как ОС человека, ChatGPT Apps внутри Bro, биллинг compute
+в рублях, STT на Codex, VNC/`host` URL как продуктовая фича.
+
+## Дефолты (оператору решать не надо)
+
+TTL 900 с, `small`, free 3 / paid 20 стартов в день, резерв ASCII 10,
+`BRO_CODEX_MODEL` = eve default.
