@@ -156,6 +156,7 @@
     .pay { list-style: none; }
     .pay li { padding: 0.35rem 0; border-top: 1px solid rgba(23, 39, 30, 0.08); }
     .pay li:first-child { border-top: 0; }
+    .vault-kind { color: var(--ink-soft); font-size: 0.88rem; flex-shrink: 0; }
     .modal {
       position: fixed;
       inset: 0;
@@ -220,6 +221,7 @@
     <a class="word" href="/">bro</a>
     <div class="topbar-actions">
       <a class="ghost" id="cabinet-open" href="/cabinet.html">Кабинет</a>
+      <a class="ghost" id="vault-open" href="/vault.html">Сейф</a>
       <button class="ghost" id="logout" type="button">Выйти</button>
       <button class="ghost" id="login-open" type="button" hidden>Войти</button>
     </div>
@@ -382,6 +384,23 @@
           return "Сохранены входы: " + esc(domains.join(", "));
         }
         return "Пока нет сохранённых входов — Bro пришлёт ссылку, когда понадобится.";
+      }
+      function vaultKindRu(k) {
+        if (k === "payment") return "карта";
+        if (k === "address") return "адрес";
+        if (k === "contact") return "контакт";
+        if (k === "login") return "вход";
+        return k || "";
+      }
+      function vaultCard() {
+        return '<div class="card" id="vault"><h2>Сейф</h2>' +
+          '<p class="muted">Bro платит этой картой на сайтах. Номер и CVV он не видит — только заполняет форму оплаты.</p>' +
+          '<ul class="memos" id="vault-items" hidden></ul>' +
+          '<p class="muted" id="vault-empty">Карты ещё нет — добавь, и Bro сможет покупать.</p>' +
+          '<div class="row">' +
+          '<a class="cta" id="vault-add-card" href="/vault.html?kind=payment">Добавить карту</a>' +
+          '<a class="ghost" id="vault-open-page" href="/vault.html">Открыть сейф</a>' +
+          "</div></div>";
       }
 
       var HANDLE = "bro.handle";
@@ -591,6 +610,7 @@
           '<div class="card" id="chrome"><h2>Входы в сайты</h2>' +
           '<p class="muted">Когда Bro нужна твоя учётка, он сам пришлёт ссылку в чат. Открой, войди — пароль он не увидит, вход сохранится.</p>' +
           '<p style="margin-top:0.7rem">' + profileStatusRu(me.browserProfileStatus, me.browserCookieDomains) + "</p></div>" +
+          vaultCard() +
           tzCard(me) +
           '<div class="card"><h2>Оплаты</h2>' +
           (pays ? '<ul class="pay">' + pays + "</ul>" : '<p class="muted">Пока нет оплат.</p>') +
@@ -603,6 +623,50 @@
         bindTz();
         bindComputer();
         bindChatgpt();
+        bindVault();
+      }
+
+      function bindVault() {
+        var list = document.getElementById("vault-items");
+        var empty = document.getElementById("vault-empty");
+        if (!list || !empty) return;
+        fetch(base + "/vault/items", { headers: { Authorization: "Bearer " + t } })
+          .then(function (res) {
+            return res.json().then(function (data) { return { res: res, data: data }; });
+          })
+          .then(function (got) {
+            if (got.res.status === 401 || (got.data && got.data.code === "unauthorized")) {
+              empty.hidden = false;
+              empty.textContent = "Сессия истекла. Войди снова.";
+              return;
+            }
+            if (!got.res.ok || !got.data || !got.data.ok) {
+              empty.hidden = false;
+              empty.textContent = "Не вышло загрузить сейф";
+              return;
+            }
+            var items = got.data.items || [];
+            if (!items.length) {
+              list.hidden = true;
+              empty.hidden = false;
+              empty.textContent = "Карты ещё нет — добавь, и Bro сможет покупать.";
+              return;
+            }
+            empty.hidden = true;
+            list.hidden = false;
+            list.innerHTML = items.map(function (item) {
+              var kind = vaultKindRu(item.kind);
+              var hint = item.account || "";
+              var line = item.label || kind;
+              if (hint && hint !== line) line += " · " + hint;
+              return "<li><span class=\"memo-line\">" + esc(line) +
+                "</span><span class=\"vault-kind\">" + esc(kind) + "</span></li>";
+            }).join("");
+          })
+          .catch(function () {
+            empty.hidden = false;
+            empty.textContent = "Не вышло загрузить сейф";
+          });
       }
 
       function bindComputer() {
@@ -711,6 +775,8 @@
               document.getElementById("login-open").hidden = false;
               document.getElementById("logout").hidden = true;
               document.getElementById("cabinet-open").hidden = true;
+              var vaultNav = document.getElementById("vault-open");
+              if (vaultNav) vaultNav.hidden = true;
               return null;
             }
             return got.data.me;

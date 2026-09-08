@@ -356,8 +356,11 @@ assert(authJs.includes("loginHandle"), "auth prefers stored handle then typed");
 assert(authJs.includes("storedHandle"), "auth sends stored handle");
 assert(authJs.includes("Запросить доступ"), "missing handle points at request access");
 assert(authJs.includes("bro-xxxxxxxx"), "missing handle tells the person to type it");
+assert(authJs.includes("#vault-open") || authJs.includes('vault-open'), "auth shows vault when logged in");
+assert(authJs.includes("vaultBtn"), "auth paints vault nav");
 
 const landing = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+assert(landing.includes('id="vault-open"'), "landing links to vault when logged in");
 assert(landing.includes('id="login-send"'), "landing has login send");
 assert(
   landing.includes('class="cta sheet-cta" id="login-send"'),
@@ -373,6 +376,14 @@ assert(
   "login sheet tells desktop users to type the handle",
 );
 const cabinet = readFileSync(new URL("../cabinet.html", import.meta.url), "utf8");
+assert(cabinet.includes('id="vault"'), "cabinet vault card");
+assert(cabinet.includes("<h2>Сейф</h2>"), "cabinet vault title");
+assert(cabinet.includes('id="vault-add-card"'), "cabinet add-card cta");
+assert(cabinet.includes("/vault.html?kind=payment"), "add-card opens payment form");
+assert(cabinet.includes("/vault/items"), "cabinet lists vault items");
+assert(cabinet.includes("Добавить карту"), "cabinet add-card copy");
+assert(cabinet.includes("Номер и CVV он не видит"), "cabinet vault does not expose secrets");
+assert(cabinet.includes('id="vault-open"'), "cabinet topbar links to vault");
 assert(cabinet.includes('id="chrome"'), "cabinet chrome card");
 assert(cabinet.includes("пришлёт ссылку в чат"), "cabinet login is a chat link");
 assert(!cabinet.includes("profile.sh"), "cabinet has no terminal helper");

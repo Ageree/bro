@@ -35,6 +35,7 @@
 
   var loginBtn = $("#login-open");
   var cabinetBtn = $("#cabinet-open");
+  var vaultBtn = $("#vault-open");
   var logoutBtn = $("#logout");
   var modal = $("#login-modal");
   if (!loginBtn || !modal) return;
@@ -43,6 +44,7 @@
     var in_ = Boolean(token());
     loginBtn.hidden = in_;
     if (cabinetBtn) cabinetBtn.hidden = !in_;
+    if (vaultBtn) vaultBtn.hidden = !in_;
     if (logoutBtn) logoutBtn.hidden = !in_;
   }
 

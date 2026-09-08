@@ -139,6 +139,7 @@
     $("login-open").hidden = false;
     $("logout").hidden = true;
     $("cabinet-open").hidden = true;
+    if ($("vault-open")) $("vault-open").hidden = true;
   }
 
   function buildSecret(kind) {
