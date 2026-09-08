@@ -25,6 +25,7 @@ export type BoxRecord = {
 
 export type BoxLimits = {
   canStart: boolean;
+  startBlockedReason?: string;
   starts?: {
     day?: {
       remaining?: number;
@@ -91,6 +92,7 @@ export type BoxClient = {
 
 export type BoxClientOpts = {
   apiKey?: string;
+  orgId?: string;
   fetch?: typeof fetch;
   baseUrl?: string;
 };
@@ -138,6 +140,13 @@ export function createBoxClient(opts: BoxClientOpts = {}): BoxClient {
     return key.trim();
   }
 
+  function orgId(): string | undefined {
+    const id = opts.orgId ?? process.env.BOX_ORG_ID;
+    if (typeof id !== "string") return undefined;
+    const trimmed = id.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  }
+
   async function request(
     method: string,
     path: string,
@@ -157,6 +166,8 @@ export function createBoxClient(opts: BoxClientOpts = {}): BoxClient {
       Authorization: `Bearer ${apiKey()}`,
       Accept: "application/json",
     };
+    const org = orgId();
+    if (org) headers["X-Box-Org"] = org;
     if (extra?.body !== undefined) {
       headers["Content-Type"] = "application/json";
     }
@@ -406,10 +417,14 @@ function parseLimits(raw: unknown): BoxLimits {
       : Object.keys(day).length > 0
         ? { day }
         : {};
-  return {
+  const limits: BoxLimits = {
     canStart: rec.canStart === true,
     starts,
   };
+  if (typeof rec.startBlockedReason === "string") {
+    limits.startBlockedReason = rec.startBlockedReason;
+  }
+  return limits;
 }
 
 function toBoxHttpError(status: number, body: unknown): BoxHttpError {

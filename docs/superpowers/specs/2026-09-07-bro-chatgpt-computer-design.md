@@ -131,9 +131,10 @@ OAuth (`auth.openai.com`, client `app_EMoamEEZ73f0CkXaXp7hrann`). Токены
 
 ### Деньги и TTL
 
-`BOX_API_KEY` только на Vercel (eve). Кабинет и Convex ходят в
-`POST /internal/computer` с `BRO_INTERNAL_SECRET`, как wakeup.
-Convex ключ ASCII не хранит.
+`BOX_API_KEY` и `BOX_ORG_ID` только на Vercel (eve). Кабинет и Convex
+ходят в `POST /internal/computer` с `BRO_INTERNAL_SECRET`, как wakeup.
+Convex ключ ASCII не хранит. Биллинг на org (`X-Box-Org`), не на
+Personal — без org header `POST /boxes` даёт 402.
 
 Старт **$20/мес** (555 ч default, 100 concurrent, **150 стартов/день**).
 Рост — $100 / $500 / $2000. Оператор принял максимум. Ставка

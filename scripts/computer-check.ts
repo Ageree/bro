@@ -1,4 +1,8 @@
-import { BoxHttpError, type BoxState } from "../agent/lib/boxClient.ts";
+import {
+  BoxHttpError,
+  createBoxClient,
+  type BoxState,
+} from "../agent/lib/boxClient.ts";
 import {
   ComputerError,
   ensureRunning,
@@ -257,6 +261,29 @@ assert((await store2.get("+15555550101")) === null, "cabinet wipe removes row");
 const imessage = await import("node:fs").then((fs) =>
   fs.readFileSync(new URL("../agent/channels/imessage.ts", import.meta.url), "utf8"),
 );
+let seenOrg: string | null = null;
+const headerClient = createBoxClient({
+  apiKey: "fake",
+  orgId: "team_test",
+  fetch: async (_input, init) => {
+    seenOrg = new Headers(init?.headers).get("X-Box-Org");
+    return new Response(
+      JSON.stringify({
+        canStart: true,
+        starts: { day: { remaining: 10, limit: 150 } },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  },
+});
+await headerClient.limits();
+assert(seenOrg === "team_test", "sends X-Box-Org");
+
+const boxClientSrc = await import("node:fs").then((fs) =>
+  fs.readFileSync(new URL("../agent/lib/boxClient.ts", import.meta.url), "utf8"),
+);
+assert(boxClientSrc.includes("BOX_ORG_ID"), "org id from BOX_ORG_ID");
+
 assert(imessage.includes('POST("/internal/computer"'), "eve has /internal/computer");
 assert(imessage.includes("runCabinetComputerAction"), "internal computer uses cabinet helper");
 assert(

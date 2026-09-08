@@ -74,6 +74,17 @@ const spikeStart = Date.now();
 let box: BoxRecord | undefined;
 
 try {
+  const before = await timed("limits_before", () => client.limits());
+  console.log(
+    "canStart",
+    before.canStart,
+    "blocked",
+    before.startBlockedReason ?? "none",
+  );
+  if (!before.canStart) {
+    throw new Error(before.startBlockedReason ?? "billing_required");
+  }
+
   box = await timed("create", () =>
     client.create({
       type: "small",
