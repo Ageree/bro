@@ -288,6 +288,56 @@ assert(
   "second tool-round does not spam the same screenshot paragraph",
 );
 
+const shotCut =
+  "Скриншот снял, но в чат картинку вложить не получается — файл лежит у тебя на компе: /home/user/screens/shot.png (полный размер) (";
+const shotJpg =
+  "Скриншот снял, но в чат картинку вложить не получается — файл лежит у тебя на компе: /home/user/dt5.jpg";
+assert(
+  !isLikelyCompleteBubble(
+    "Скриншот снял, но в чат картинку вложить не получается — файл лежит у тебя на компе: /home/user/screens/shot.",
+  ),
+  "filename period is not a finished sentence",
+);
+assert(
+  planStreamFlush({ soFar: shotCut, alreadySent: [] }).send === null,
+  "do not cut .png into a streamed bubble",
+);
+assert(
+  planPreToolFlush({ soFar: shotCut, alreadySent: [] }).send === null,
+  "do not flush png (",
+);
+{
+  const peeled = nextBubble([shotCut], shotJpg);
+  assert(
+    peeled === null || !peeled.includes("Скриншот снял"),
+    "restatement is not a new full bubble",
+  );
+}
+assert(
+  nextBubble([shotCut, shotJpg], "/home/user/dt5.") === null,
+  "path fragment not resent",
+);
+assert(
+  planTurnDelivery({
+    finishReason: "stop",
+    message: shotJpg,
+    origin: "human",
+    alreadySent: [
+      "Снимаю экран.",
+      "Скриншот снял, но в чат картинку вложить не получается.",
+      "файл лежит у тебя на компе: /home/user/dt5.jpg",
+    ],
+  }).send === null,
+  "completed must not replay after pre-tool remainder",
+);
+assert(
+  nextBubble(
+    [shotJpg],
+    "Скриншот снял, но вложить картинку в чат не получается — файл лежит у тебя на компе: /home/user/dt5.jpg",
+  ) === null,
+  "word-swap restatement is not a new bubble",
+);
+
 const mid = planTurnDelivery({
   finishReason: "tool-calls",
   message: "Ищу 🔎",

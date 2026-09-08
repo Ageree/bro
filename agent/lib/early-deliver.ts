@@ -177,6 +177,10 @@ export function isLikelyCompleteBubble(text: string): boolean {
   if (!/[.。]$/u.test(t)) return false;
   if (ABBREV_TAILS.has(lastFolded)) return false;
   if (!/\p{L}/u.test(lastWord) || /^\d/u.test(lastWord)) return false;
+  const rawLast = t.split(/\s+/).pop() ?? "";
+  if (/\/\S+$/.test(rawLast) || /\.[A-Za-z0-9]{1,5}\.?$/.test(rawLast)) {
+    return false;
+  }
   if (COMPLETE_TAILS.has(lastFolded)) return true;
   return lastWord.length >= 4;
 }
@@ -192,6 +196,9 @@ export function firstLikelyCompletePrefix(text: string): string | null {
       const run = /^\.{2,}/.exec(t.slice(m.index));
       if (run) {
         re.lastIndex = m.index + run[0].length;
+        continue;
+      }
+      if (/^(?:png|jpe?g|gif|webp|mp4|mov|pdf)\b/i.test(t.slice(m.index + 1))) {
         continue;
       }
     }
@@ -228,7 +235,7 @@ export function isIncompleteDraft(text: string): boolean {
   if (!t) return false;
   if (/[:(\/—–-]$/.test(t)) return true;
   if (/\(\s*$/.test(t)) return true;
-  if (/\/home\/user\/\S+\.$/.test(t)) return true;
+  if (/\/(?:home\/user|tmp)\/\S+\.$/.test(t)) return true;
   if (/\b(?:png|jpe?g|gif|webp)\s*\(\s*$/i.test(t)) return true;
   return false;
 }
@@ -297,13 +304,11 @@ function peelSentInOrder(
   for (const bubble of sent) {
     if (rest === null) return null;
     const next = peelOneBubble(rest, bubble);
-    if (next === undefined) {
-      return peeled === 0 ? undefined : rest.trim() || null;
-    }
+    if (next === undefined) continue;
     peeled += 1;
     rest = next;
   }
-  return rest === null ? null : rest.trim() || null;
+  return peeled === 0 ? undefined : rest === null ? null : rest.trim() || null;
 }
 
 export function nextBubble(
@@ -314,6 +319,7 @@ export function nextBubble(
   if (!cur) return null;
   const sent = alreadySent.map((s) => s.trim()).filter(Boolean);
   if (sent.some((s) => s === cur || foldWs(s) === foldWs(cur))) return null;
+  if (pathAlreadyCovered(cur, sent)) return null;
   const last = sent[sent.length - 1];
   if (last && last.startsWith(cur)) return null;
   if (last && foldWs(last).endsWith(foldWs(cur))) return null;
@@ -333,7 +339,9 @@ export function nextBubble(
   const restWs = restAfterPrefix(curWs, sentWs);
   if (restWs !== undefined) return restWs;
   const sequential = peelSentInOrder(cur, sent);
-  if (sequential !== undefined) return sequential;
+  if (sequential !== undefined) {
+    return sequential === null ? null : dropSpamFragment(sequential);
+  }
   if (last) {
     const bare = foldLines(stripFinalPunct(last));
     if (bare && curFold.startsWith(bare) && curFold.length > bare.length) {
@@ -348,9 +356,52 @@ export function nextBubble(
       }
     }
     const restated = peelRestatement(last, cur);
-    if (restated !== undefined) return restated;
+    if (restated !== undefined) return dropSpamFragment(restated);
   }
+  for (let i = sent.length - 1; i >= 0; i -= 1) {
+    const bubble = sent[i];
+    if (!bubble || bubble === last) continue;
+    const restated = peelRestatement(bubble, cur);
+    if (restated !== undefined) return dropSpamFragment(restated);
+    if (isNearDuplicate(bubble, cur)) return null;
+  }
+  if (last && isNearDuplicate(last, cur)) return null;
   return cur;
+}
+
+function dropSpamFragment(text: string | null): string | null {
+  if (!text || isSpamFragment(text)) return null;
+  return text;
+}
+
+function isSpamFragment(text: string): boolean {
+  const t = text.trim();
+  if (!t) return true;
+  if (/^\/(?:home\/user|tmp)\/\S+\.$/.test(t)) return true;
+  if (/^(?:png|jpe?g|gif|webp|mp4)(?:\s*\(\s*)?$/i.test(t)) return true;
+  return false;
+}
+
+function pathAlreadyCovered(cur: string, sent: readonly string[]): boolean {
+  const path = cur.match(/(\/(?:home\/user|tmp)\/[^\s]+)$/)?.[1];
+  if (!path) return false;
+  const stem = path.replace(/\.$/, "").replace(/\.(?:jpg|jpeg|png|gif|webp)$/i, "");
+  if (stem.length < 8) return false;
+  return sent.some((s) => foldWs(s).includes(stem));
+}
+
+function isNearDuplicate(a: string, b: string): boolean {
+  const left = foldWs(a);
+  const right = foldWs(b);
+  if (!left || !right) return false;
+  const lenRatio = Math.min(left.length, right.length) / Math.max(left.length, right.length);
+  if (lenRatio < 0.7) return false;
+  const tokensA = left.toLowerCase().split(/\s+/).filter((w) => w.length > 1);
+  const tokensB = right.toLowerCase().split(/\s+/).filter((w) => w.length > 1);
+  if (tokensA.length < 6 || tokensB.length < 6) return false;
+  const setA = new Set(tokensA);
+  const shared = tokensB.filter((w) => setA.has(w)).length;
+  return shared / Math.min(tokensA.length, tokensB.length) >= 0.75;
 }
 
 function peelRestatement(last: string, cur: string): string | null | undefined {
