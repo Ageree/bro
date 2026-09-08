@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import {
   bubblesFor,
   firstCompleteLine,
+  isIncompleteDraft,
   isLikelyCompleteBubble,
   markTurnSpoke,
   nextBubble,
@@ -239,6 +240,53 @@ const preToolAfter = planPreToolFlush({
   alreadySent: ["Ищу кроссовки"],
 });
 assert(preToolAfter.send === null, "tool start does not resend the streamed line");
+
+const screenshotDraft =
+  "Скриншот снял, но в чат картинку вложить не получается — файл лежит у тебя на компе, открой его там: png (полный размер) (";
+const screenshotRestate =
+  "Скриншот снял, но в чат картинку вложить не получается — файл лежит у тебя на компе, открой его там: /home/user/dt5.jpg (компактная версия, ~28 КБ)";
+assert(isIncompleteDraft(screenshotDraft), "open paren draft is incomplete");
+assert(isIncompleteDraft("/home/user/dt5."), "truncated computer path is incomplete");
+assert(!isIncompleteDraft("Ищу кроссовки"), "plain looking line is flushable");
+assert(
+  planPreToolFlush({ soFar: screenshotDraft, alreadySent: [] }).send === null,
+  "pre-tool does not flush a cut-off screenshot draft",
+);
+assert(
+  planTurnDelivery({
+    finishReason: "tool-calls",
+    message: screenshotDraft,
+    origin: "human",
+    alreadySent: [],
+  }).send === null,
+  "tool-calls does not flush a cut-off screenshot draft",
+);
+assert(
+  planTurnDelivery({
+    finishReason: "tool-calls",
+    message: screenshotRestate,
+    origin: "human",
+    alreadySent: [],
+  }).send === screenshotRestate,
+  "complete restatement still leaves once",
+);
+assert(
+  nextBubble([screenshotDraft], screenshotRestate) !== screenshotRestate,
+  "restated screenshot paragraph is not resent in full",
+);
+assert(
+  nextBubble([screenshotRestate], screenshotRestate) === null,
+  "exact screenshot restatement is skipped",
+);
+assert(
+  planTurnDelivery({
+    finishReason: "tool-calls",
+    message: screenshotRestate,
+    origin: "human",
+    alreadySent: [screenshotRestate],
+  }).send === null,
+  "second tool-round does not spam the same screenshot paragraph",
+);
 
 const mid = planTurnDelivery({
   finishReason: "tool-calls",

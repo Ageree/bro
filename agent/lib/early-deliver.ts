@@ -223,13 +223,28 @@ export function likelyCompleteVisibleText(soFar: string): string | null {
   return finished;
 }
 
+export function isIncompleteDraft(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  if (/[:(\/—–-]$/.test(t)) return true;
+  if (/\(\s*$/.test(t)) return true;
+  if (/\/home\/user\/\S+\.$/.test(t)) return true;
+  if (/\b(?:png|jpe?g|gif|webp)\s*\(\s*$/i.test(t)) return true;
+  return false;
+}
+
+function flushable(text: string | null): string | null {
+  if (!text || isIncompleteDraft(text)) return null;
+  return text;
+}
+
 export function planStreamFlush(input: {
   soFar: string;
   alreadySent: readonly string[];
 }): Pick<TurnDelivery, "send" | "seen"> {
   const raw = typeof input.soFar === "string" ? input.soFar : "";
   const { seen } = raw ? splitSeen(raw) : {};
-  const text = likelyCompleteVisibleText(raw);
+  const text = flushable(likelyCompleteVisibleText(raw));
   if (!text) return { send: null, ...(seen !== undefined ? { seen } : {}) };
   return {
     send: nextBubble(input.alreadySent, text),
@@ -243,7 +258,7 @@ export function planPreToolFlush(input: {
 }): Pick<TurnDelivery, "send" | "seen"> {
   const raw = typeof input.soFar === "string" ? input.soFar : "";
   const { message, seen } = raw ? splitSeen(raw) : { message: raw };
-  const text = finishedVisibleText(raw) ?? visibleReply(message);
+  const text = flushable(finishedVisibleText(raw) ?? visibleReply(message));
   if (!text) return { send: null, ...(seen !== undefined ? { seen } : {}) };
   return {
     send: nextBubble(input.alreadySent, text),
@@ -332,8 +347,29 @@ export function nextBubble(
         );
       }
     }
+    const restated = peelRestatement(last, cur);
+    if (restated !== undefined) return restated;
   }
   return cur;
+}
+
+function peelRestatement(last: string, cur: string): string | null | undefined {
+  const a = foldLines(last);
+  const b = foldLines(cur);
+  if (!a || !b) return undefined;
+  if (a === b) return null;
+  let i = 0;
+  const n = Math.min(a.length, b.length);
+  while (i < n && a[i] === b[i]) i += 1;
+  if (i < n && i > 0 && !/\s/.test(a[i] ?? " ") && !/\s/.test(b[i] ?? " ")) {
+    const ws = b.lastIndexOf(" ", i);
+    if (ws >= 24) i = ws;
+  }
+  const ratio = i / Math.min(a.length, b.length);
+  if (i < 32) return undefined;
+  if (ratio < 0.45) return undefined;
+  const tail = b.slice(i).replace(/^[\s.!?…。！？,;:—–-]+/u, "").trim();
+  return tail || null;
 }
 
 export function planTurnDelivery(input: {
@@ -348,8 +384,9 @@ export function planTurnDelivery(input: {
   const spoke = input.alreadySent.some((s) => s.trim().length > 0);
 
   if (input.finishReason === "tool-calls") {
+    const text = flushable(visible);
     return {
-      send: visible ? nextBubble(input.alreadySent, visible) : null,
+      send: text ? nextBubble(input.alreadySent, text) : null,
       ...(seen !== undefined ? { seen } : {}),
       fallback: null,
     };
