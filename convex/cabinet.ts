@@ -1,6 +1,12 @@
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
-import { internalAction, internalMutation, internalQuery } from "./_generated/server";
+import {
+  internalAction,
+  internalMutation,
+  internalQuery,
+  type QueryCtx,
+} from "./_generated/server";
+import type { Id } from "./_generated/dataModel";
 import { timingSafeEqual } from "./secret";
 import {
   browserAllowance,
@@ -23,8 +29,11 @@ import {
   sessionExpiry,
   sessionLive,
   type CabinetSnapshot,
+  type ChatgptSnapshot,
   type PaymentRow,
 } from "./lib/cabinetPolicy";
+import { computerByTenant } from "./lib/computerStore";
+import { nextLoginStatus, snapshotStatus } from "./lib/chatgptPolicy";
 import { browserJobForSnapshot } from "./lib/browserJobPolicy";
 import { lineMatches, SCAN_LINES, WAKE_LINES } from "./lib/memoryPolicy";
 import {
@@ -73,6 +82,20 @@ const snapshotValidator = v.object({
     task: v.optional(v.string()),
     liveUrl: v.optional(v.string()),
     startedAt: v.optional(v.number()),
+  }),
+  computer: v.object({
+    state: v.string(),
+    lastActiveAt: v.optional(v.number()),
+  }),
+  chatgpt: v.object({
+    status: v.union(
+      v.literal("none"),
+      v.literal("pending"),
+      v.literal("connected"),
+      v.literal("quarantined"),
+    ),
+    planType: v.optional(v.string()),
+    email: v.optional(v.string()),
   }),
 });
 
@@ -272,6 +295,17 @@ export const sendLoginCode = internalAction({
   },
 });
 
+export const sessionPhone = internalQuery({
+  args: { tenantId: v.id("tenants") },
+  returns: v.union(v.object({ phoneE164: v.string() }), v.null()),
+  handler: async (ctx, { tenantId }) => {
+    const tenant = await ctx.db.get(tenantId);
+    const phone = tenant?.phoneE164?.trim();
+    if (!phone) return null;
+    return { phoneE164: phone };
+  },
+});
+
 export const snapshotForTenant = internalQuery({
   args: { tenantId: v.id("tenants"), now: v.number() },
   returns: v.union(snapshotValidator, v.null()),
@@ -361,9 +395,59 @@ export const snapshotForTenant = internalQuery({
       }),
       tz: tenant.tz,
       browserJob: browserJobForSnapshot(tenant),
+      computer: await computerSnapshot(ctx, tenant._id),
+      chatgpt: await chatgptSnapshot(ctx, tenant._id, now),
     });
   },
 });
+
+async function computerSnapshot(
+  ctx: QueryCtx,
+  tenantId: Id<"tenants">,
+): Promise<{ state: string; lastActiveAt?: number }> {
+  const row = await computerByTenant(ctx, tenantId);
+  if (!row) return { state: "none" };
+  return {
+    state: row.lastState || "none",
+    ...(row.lastActiveAt !== undefined ? { lastActiveAt: row.lastActiveAt } : {}),
+  };
+}
+
+async function chatgptSnapshot(
+  ctx: QueryCtx,
+  tenantId: Id<"tenants">,
+  now: number,
+): Promise<ChatgptSnapshot> {
+  const accounts = await ctx.db
+    .query("chatgptAccounts")
+    .withIndex("by_tenant", (q) => q.eq("tenantId", tenantId))
+    .collect();
+  const account = accounts
+    .slice()
+    .sort((a, b) => a.connectedAt - b.connectedAt)[0];
+  const logins = await ctx.db
+    .query("chatgptLogins")
+    .withIndex("by_tenant", (q) => q.eq("tenantId", tenantId))
+    .collect();
+  const login = logins.slice().sort((a, b) => b.expiresAt - a.expiresAt)[0];
+  const loginStatus = login
+    ? nextLoginStatus({
+        status: login.status,
+        expiresAt: login.expiresAt,
+        now,
+      })
+    : undefined;
+  const status = snapshotStatus({
+    hasAccount: account !== undefined,
+    quarantinedAt: account?.quarantinedAt,
+    loginStatus,
+  });
+  return {
+    status,
+    ...(account?.planType ? { planType: account.planType } : {}),
+    ...(account?.email ? { email: account.email } : {}),
+  };
+}
 
 export const attachBrowserProfile = internalMutation({
   args: {

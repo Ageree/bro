@@ -309,6 +309,47 @@
             (z === current ? " selected" : "") + ">" + esc(z) + "</option>";
         }).join("");
       }
+      function computerStateRu(s) {
+        if (!s || s === "none") return "нет компьютера";
+        if (s === "pending") return "создаём";
+        if (s === "ready" || s === "idle" || s === "running") return "работает";
+        if (s === "archived" || s === "stopped" || s === "archiving") return "выключен";
+        return s;
+      }
+      function chatgptStatusRu(s) {
+        if (s === "connected") return "подключён";
+        if (s === "pending") return "ждём вход";
+        if (s === "quarantined") return "нужно войти снова";
+        return "не подключён";
+      }
+      function computerCard(me) {
+        var c = me.computer || { state: "none" };
+        return '<div class="card" id="computer"><h2>Компьютер</h2>' +
+          "<p>" + esc(computerStateRu(c.state)) + "</p>" +
+          '<div class="row">' +
+          '<button class="cta" id="computer-wake" type="button">Разбудить</button>' +
+          '<button class="ghost" id="computer-stop" type="button">Выключить</button>' +
+          '<button class="ghost" id="computer-wipe" type="button">Стереть диск</button>' +
+          "</div>" +
+          '<p class="muted" id="computer-status"></p></div>';
+      }
+      function chatgptCard(me) {
+        var g = me.chatgpt || { status: "none" };
+        var bits = "<p>" + esc(chatgptStatusRu(g.status)) + "</p>";
+        if (g.email) bits += '<p class="muted">' + esc(g.email) + "</p>";
+        if (g.planType) bits += '<p class="muted">' + esc(g.planType) + "</p>";
+        bits += '<div class="row">';
+        if (g.status !== "connected") {
+          bits += '<button class="cta" id="chatgpt-connect" type="button">Подключить</button>';
+        }
+        if (g.status === "connected" || g.status === "quarantined" || g.status === "pending") {
+          bits += '<button class="ghost" id="chatgpt-disconnect" type="button">Отключить</button>';
+        }
+        bits += "</div>" +
+          '<p class="muted" id="chatgpt-status"></p>' +
+          '<p class="cmd" id="chatgpt-code" hidden></p>';
+        return '<div class="card" id="chatgpt"><h2>ChatGPT</h2>' + bits + "</div>";
+      }
       function nowCard(me) {
         var job = me.browserJob || { status: "", label: "Сейчас ничего не делает" };
         var live = safeHttpUrl(job.liveUrl || "");
@@ -539,6 +580,8 @@
           '<p class="muted" id="write-status"></p>' +
           '<p class="muted" id="pay-status"></p></div>' +
           nowCard(me) +
+          computerCard(me) +
+          chatgptCard(me) +
           '<div class="card"><h2>Лимиты</h2>' +
           '<p class="muted">Сообщения сегодня: ' + me.msgsUsed + " из " + me.msgsAllowance + "</p>" +
           '<div class="bar"><i style="width:' + pct(me.msgsUsed, me.msgsAllowance) + '%"></i></div>' +
@@ -558,6 +601,102 @@
         bindPay();
         bindForget();
         bindTz();
+        bindComputer();
+        bindChatgpt();
+      }
+
+      function bindComputer() {
+        function post(action, label) {
+          var st = document.getElementById("computer-status");
+          if (action === "wipe" && !window.confirm("Стереть диск компьютера? Это нельзя отменить.")) {
+            return;
+          }
+          st.textContent = label;
+          fetch(base + "/me/computer", {
+            method: "POST",
+            headers: {
+              Authorization: "Bearer " + t,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ action: action }),
+          })
+            .then(function (res) { return res.json(); })
+            .then(function (data) {
+              if (!data.ok) {
+                st.textContent = "Не вышло, нажми ещё раз";
+                return;
+              }
+              return loadMe().then(function (me) {
+                if (!me) return;
+                paint(me);
+              });
+            })
+            .catch(function () {
+              st.textContent = "Не вышло, нажми ещё раз";
+            });
+        }
+        var wake = document.getElementById("computer-wake");
+        var stop = document.getElementById("computer-stop");
+        var wipe = document.getElementById("computer-wipe");
+        if (wake) wake.addEventListener("click", function () { post("wake", "Будим…"); });
+        if (stop) stop.addEventListener("click", function () { post("stop", "Выключаем…"); });
+        if (wipe) wipe.addEventListener("click", function () { post("wipe", "Стираем диск…"); });
+      }
+
+      function bindChatgpt() {
+        var connect = document.getElementById("chatgpt-connect");
+        var disconnect = document.getElementById("chatgpt-disconnect");
+        var st = document.getElementById("chatgpt-status");
+        var code = document.getElementById("chatgpt-code");
+        if (connect) {
+          connect.addEventListener("click", function () {
+            st.textContent = "Открываем вход…";
+            if (code) { code.hidden = true; code.textContent = ""; }
+            fetch(base + "/me/chatgpt/start", {
+              method: "POST",
+              headers: { Authorization: "Bearer " + t },
+            })
+              .then(function (res) { return res.json(); })
+              .then(function (data) {
+                if (!data.ok || !data.url || !data.userCode) {
+                  st.textContent = "Не вышло, нажми ещё раз";
+                  return;
+                }
+                var href = safeHttpUrl(data.url);
+                st.textContent = "Открой ссылку и введи код. Bro сам проверит вход.";
+                if (code) {
+                  code.hidden = false;
+                  code.textContent = (href || data.url) + "\n" + data.userCode;
+                }
+              })
+              .catch(function () {
+                st.textContent = "Не вышло, нажми ещё раз";
+              });
+          });
+        }
+        if (disconnect) {
+          disconnect.addEventListener("click", function () {
+            st.textContent = "Отключаем…";
+            fetch(base + "/me/chatgpt/disconnect", {
+              method: "POST",
+              headers: { Authorization: "Bearer " + t },
+            })
+              .then(function (res) { return res.json(); })
+              .then(function (data) {
+                if (!data.ok) {
+                  st.textContent = "Не вышло, нажми ещё раз";
+                  return;
+                }
+                return loadMe().then(function (me) {
+                  if (!me) return;
+                  paint(me);
+                });
+              })
+              .catch(function () {
+                st.textContent = "Не вышло, нажми ещё раз";
+              });
+          });
+        }
       }
 
       function loadMe() {
