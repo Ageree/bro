@@ -111,6 +111,17 @@ assert(
 
 assert(toIMessageBubbles("").length === 0, "empty");
 assert(toIMessageBubbles("   **  **").length === 0, "only marks");
+assert(toIMessageBubbles("Тяжёлая артиллерия:").length === 0, "heading-only is not a bubble");
+{
+  const item =
+    "1. " + "Автоматизация браузера и скриптов на твоём Linux-столе ".repeat(3);
+  const item2 =
+    "2. " + "Локальные CLI, git, ffmpeg и пайплайны без ручных кликов ".repeat(3);
+  const split = toIMessageBubbles(`Тяжёлая артиллерия:\n${item}\n${item2}`);
+  assert(split.length >= 2, "long list still splits");
+  assert(!split.some((b) => b === "Тяжёлая артиллерия:"), "heading is not its own bubble");
+  assert(split[0]?.includes("Тяжёлая артиллерия:"), "heading rides with the first item");
+}
 
 assert(
   inboundIMessageText({ content: "  фото  " }) === "фото",

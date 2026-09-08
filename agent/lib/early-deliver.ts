@@ -1,6 +1,7 @@
 import { splitSeen } from "./wakeup-text.ts";
 import type { TurnOrigin } from "./silent-turn.ts";
 import { isSilentReply, TURN_FAILED_REPLY } from "./silent-turn.ts";
+import { isHeadingOnly } from "./bubble-dedupe.ts";
 
 export type TurnDelivery = {
   send: string | null;
@@ -237,6 +238,7 @@ export function isIncompleteDraft(text: string): boolean {
   if (/\(\s*$/.test(t)) return true;
   if (/\/(?:home\/user|tmp)\/\S+\.$/.test(t)) return true;
   if (/\b(?:png|jpe?g|gif|webp)\s*\(\s*$/i.test(t)) return true;
+  if (isHeadingOnly(t)) return true;
   return false;
 }
 
@@ -316,7 +318,7 @@ export function nextBubble(
   current: string,
 ): string | null {
   const cur = current.trim();
-  if (!cur) return null;
+  if (!cur || isHeadingOnly(cur)) return null;
   const sent = alreadySent.map((s) => s.trim()).filter(Boolean);
   if (sent.some((s) => s === cur || foldWs(s) === foldWs(cur))) return null;
   if (pathAlreadyCovered(cur, sent)) return null;
@@ -333,11 +335,11 @@ export function nextBubble(
   ];
   for (const joined of prefixes) {
     const rest = restAfterPrefix(curFold, foldLines(joined));
-    if (rest !== undefined) return rest;
+    if (rest !== undefined) return rest === null ? null : dropSpamFragment(rest);
   }
   const sentWs = foldWs(sent.join(" "));
   const restWs = restAfterPrefix(curWs, sentWs);
-  if (restWs !== undefined) return restWs;
+  if (restWs !== undefined) return restWs === null ? null : dropSpamFragment(restWs);
   const sequential = peelSentInOrder(cur, sent);
   if (sequential !== undefined) {
     return sequential === null ? null : dropSpamFragment(sequential);
@@ -347,11 +349,11 @@ export function nextBubble(
     if (bare && curFold.startsWith(bare) && curFold.length > bare.length) {
       const next = curFold[bare.length] ?? "";
       if (/[.!?…。！？]/.test(next)) {
-        return (
+        return dropSpamFragment(
           curFold
             .slice(bare.length)
             .replace(/^[\s.!?…。！？,;:]+/u, "")
-            .trim() || null
+            .trim() || null,
         );
       }
     }
@@ -379,6 +381,7 @@ function isSpamFragment(text: string): boolean {
   if (!t) return true;
   if (/^\/(?:home\/user|tmp)\/\S+\.$/.test(t)) return true;
   if (/^(?:png|jpe?g|gif|webp|mp4)(?:\s*\(\s*)?$/i.test(t)) return true;
+  if (isHeadingOnly(t)) return true;
   return false;
 }
 

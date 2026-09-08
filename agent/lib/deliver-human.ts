@@ -19,6 +19,7 @@ import {
   sendPhotoToHuman,
   type SendPhotoDeps,
 } from "./send-photo.ts";
+import { claimChatBubble } from "./bubble-dedupe.ts";
 
 export type HumanTenant = {
   phoneE164?: string;
@@ -118,6 +119,14 @@ async function deliverIMessage(opts: {
   const sendText = opts.deps?.sendIMessage ?? sendBlueIMessage;
   const bubbles = toIMessageBubbles(opts.text);
   for (const bubble of bubbles) {
+    if (
+      !claimChatBubble({
+        chatKey: opts.conversationId,
+        text: bubble,
+      })
+    ) {
+      continue;
+    }
     await sendText({
       conversationId: opts.conversationId,
       text: bubble,
@@ -151,19 +160,23 @@ async function deliverTelegram(
       await sendPhoto({ chatId, url: extra });
     }
     for (const chunk of rest) {
+      if (!claimChatBubble({ chatKey: chatId, text: chunk })) continue;
       await sendMessage({ chatId, html: chunk });
     }
     return;
   }
 
   if (html || (buttons && buttons.length > 0)) {
-    await sendMessage({
-      chatId,
-      html: html || " ",
-      buttons,
-    });
+    if (claimChatBubble({ chatKey: chatId, text: html || " " }) || (buttons && buttons.length > 0 && !html)) {
+      await sendMessage({
+        chatId,
+        html: html || " ",
+        buttons,
+      });
+    }
   }
   for (const chunk of rest) {
+    if (!claimChatBubble({ chatKey: chatId, text: chunk })) continue;
     await sendMessage({ chatId, html: chunk });
   }
 }
