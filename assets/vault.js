@@ -139,6 +139,7 @@
     $("login-open").hidden = false;
     $("logout").hidden = true;
     $("cabinet-open").hidden = true;
+    if ($("vault-open")) $("vault-open").hidden = true;
   }
 
   function buildSecret(kind) {
@@ -460,7 +461,10 @@
           return;
         }
         clearSecrets();
-        setFlash("Готово. Вернись в iMessage и напиши Bro.");
+        var fromCabinet = new URLSearchParams(location.search).get("from") === "cabinet";
+        setFlash(fromCabinet
+          ? "Готово. Карта в сейфе — Bro сможет платить."
+          : "Готово. Вернись в iMessage и напиши Bro.");
         return loadItems(base, now);
       })
       .catch(function () {
