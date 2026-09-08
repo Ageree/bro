@@ -123,6 +123,23 @@ assert(toIMessageBubbles("Тяжёлая артиллерия:").length === 0, "
   assert(split[0]?.includes("Тяжёлая артиллерия:"), "heading rides with the first item");
 }
 
+{
+  const dump = [
+    "Вот главное про Канье в РФ: Ye Live Concert Tour 2026, Питер, Газпром Арена.",
+    "10 и 11 октября 2026, начало в 20:00. Билеты на yerussia2026.ru от 21 000 ₽.",
+    "Из Москвы Сапсан от 4600 ₽, обычный поезд от 2200 ₽. Жильё рядом от 2000 ₽.",
+  ].join("\n\n");
+  const paras = toIMessageBubbles(dump);
+  assert(paras.length === 3, `fact dump splits on blank lines, got ${paras.length}`);
+  assert(paras[0]?.includes("Газпром Арена"), "first paragraph is the intro");
+  assert(paras[1]?.includes("yerussia2026.ru"), "second paragraph is tickets");
+  assert(paras[2]?.includes("Сапсан"), "third paragraph is travel");
+  assert(
+    toIMessageBubbles("Коротко.\n\nИ ещё.").length === 1,
+    "short two-liner stays one bubble",
+  );
+}
+
 assert(
   inboundIMessageText({ content: "  фото  " }) === "фото",
   "inbound text",

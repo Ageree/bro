@@ -221,10 +221,162 @@ function openVisibleLine(soFar: string): string | null {
   return visibleReply(open);
 }
 
+function visibleLines(text: string): string[] {
+  return text
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+}
+
+export function isBulletLine(text: string): boolean {
+  return /^[-*•]\s/.test(text.trim());
+}
+
+export function isNumberedLine(text: string): boolean {
+  return /^\d+\.\s/.test(text.trim());
+}
+
+export function isListLine(text: string): boolean {
+  return isBulletLine(text) || isNumberedLine(text);
+}
+
+export function isThinFragment(text: string): boolean {
+  const t = text.trim();
+  if (!t) return true;
+  const lines = visibleLines(t);
+  if (lines.length > 1) return lines.every((line) => isThinLine(line));
+  return isThinLine(t);
+}
+
+function isThinLine(text: string): boolean {
+  const t = text.trim();
+  if (!t) return true;
+  if (/^(?:com|ru|org|net|io|dev)\b/i.test(t) && t.length < 80) return true;
+  const body = t.replace(/^(?:[-*•]|\d+\.)\s+/u, "");
+  if (!/\p{L}|\p{N}/u.test(body)) {
+    if (isListLine(t) || t.startsWith("•")) return true;
+    return !/^[\p{Extended_Pictographic}\p{Emoji_Presentation}\s]+$/u.test(body);
+  }
+  if (isHangingListLead(t)) return true;
+  return false;
+}
+
+export function isHangingListLead(text: string): boolean {
+  const t = text.trim();
+  if (!isListLine(t) && !t.startsWith("•")) return false;
+  const body = t.replace(/^(?:[-*•]|\d+\.)\s+/u, "");
+  const words = body
+    .replace(/[\p{Extended_Pictographic}\p{Emoji_Presentation}]/gu, " ")
+    .split(/\s+/)
+    .filter((w) => /\p{L}|\p{N}/u.test(w));
+  return (
+    words.length <= 1 &&
+    /[\p{Extended_Pictographic}]/u.test(body) &&
+    body.length < 24
+  );
+}
+
+export function isStatusBeat(text: string): boolean {
+  const t = text.trim();
+  if (!t || t.includes("\n")) return false;
+  if (isListLine(t) || isThinFragment(t) || isHeadingOnly(t)) return false;
+  const words = t.split(/\s+/).filter(Boolean);
+  if (isLookingBubble(t) && words.length <= 10) return true;
+  const firstFolded = foldTail(words[0] ?? "");
+  if (ACK_TAILS.has(firstFolded) && words.length <= 3) return true;
+  if (isLikelyCompleteBubble(t) && t.length <= 140 && words.length <= 18) {
+    return true;
+  }
+  return words.length <= 6 && t.length <= 64;
+}
+
+function messageOf(soFar: string): string {
+  const raw = typeof soFar === "string" ? soFar : "";
+  const { message } = raw ? splitSeen(raw) : { message: raw };
+  return message.replace(/\r\n/g, "\n");
+}
+
+function afterLastLine(soFar: string, remainder: string): string {
+  const src = messageOf(soFar);
+  const last = visibleLines(remainder).at(-1);
+  if (!last) return "";
+  const idx = src.lastIndexOf(last);
+  if (idx < 0) return "";
+  return src.slice(idx + last.length);
+}
+
+export function paragraphClosedAfter(soFar: string, remainder: string): boolean {
+  return /^\s*\n\s*\n/.test(afterLastLine(soFar, remainder));
+}
+
+function followingStartsNewNumbered(soFar: string, remainder: string): boolean {
+  return /^\s*\n\s*\d+\.\s/.test(afterLastLine(soFar, remainder));
+}
+
+function lastListItemComplete(line: string): boolean {
+  if (isThinFragment(line) || isHangingListLead(line) || isIncompleteDraft(line)) {
+    return false;
+  }
+  const body = line.replace(/^(?:[-*•]|\d+\.)\s+/u, "").trim();
+  if (body.split(/\s+/).filter(Boolean).length >= 8) return true;
+  return isLikelyCompleteBubble(body) || /[.!?…。！？)]$/.test(body);
+}
+
+const LIST_FLUSH_MIN_ITEMS = 3;
+const LIST_FLUSH_MIN_CHARS = 280;
+
+function isMeatyCompleteList(text: string): boolean {
+  const lines = visibleLines(text).filter(
+    (l) => !isThinFragment(l) && !isHangingListLead(l),
+  );
+  if (lines.length < LIST_FLUSH_MIN_ITEMS) return false;
+  if (text.trim().length < LIST_FLUSH_MIN_CHARS) return false;
+  return lastListItemComplete(visibleLines(text).at(-1) ?? "");
+}
+
+/** Stream may send this remainder now — status beats yes, torn list crumbs no. */
+export function isStreamFlushWorthy(
+  remainder: string | null,
+  soFar: string,
+): boolean {
+  if (!remainder) return false;
+  const t = remainder.trim();
+  if (!t || isThinFragment(t) || isIncompleteDraft(t) || isHeadingOnly(t)) {
+    return false;
+  }
+  const lines = visibleLines(t);
+  const last = lines[lines.length - 1] ?? "";
+  if (isThinFragment(last) || isHangingListLead(last)) return false;
+
+  const hasBullet = lines.some(isBulletLine);
+  const numberedBlock =
+    isNumberedLine(lines[0] ?? "") && !hasBullet;
+
+  if (hasBullet || (lines.some(isListLine) && !numberedBlock)) {
+    if (paragraphClosedAfter(soFar, t)) return true;
+    return isMeatyCompleteList(t);
+  }
+
+  if (numberedBlock) {
+    if (paragraphClosedAfter(soFar, t)) return true;
+    return t.length >= 80 && followingStartsNewNumbered(soFar, t);
+  }
+
+  if (lines.length === 1) {
+    return isStatusBeat(t) || t.length >= 24 || isLikelyCompleteBubble(t);
+  }
+
+  if (paragraphClosedAfter(soFar, t)) return true;
+  return lines.every((line) => isStatusBeat(line));
+}
+
 export function likelyCompleteVisibleText(soFar: string): string | null {
   const finished = finishedVisibleText(soFar);
   const open = openVisibleLine(soFar);
-  const peeled = open ? firstLikelyCompletePrefix(open) : null;
+  const peeled =
+    open && !isListLine(open) && !isHangingListLead(open)
+      ? firstLikelyCompletePrefix(open)
+      : null;
   if (peeled) {
     return finished ? `${finished}\n${peeled}` : peeled;
   }
@@ -234,6 +386,7 @@ export function likelyCompleteVisibleText(soFar: string): string | null {
 export function isIncompleteDraft(text: string): boolean {
   const t = text.trim();
   if (!t) return false;
+  if (isThinFragment(t)) return true;
   if (/[:(\/—–-]$/.test(t)) return true;
   if (/\(\s*$/.test(t)) return true;
   if (/\/(?:home\/user|tmp)\/\S+\.$/.test(t)) return true;
@@ -255,8 +408,12 @@ export function planStreamFlush(input: {
   const { seen } = raw ? splitSeen(raw) : {};
   const text = flushable(likelyCompleteVisibleText(raw));
   if (!text) return { send: null, ...(seen !== undefined ? { seen } : {}) };
+  const send = nextBubble(input.alreadySent, text);
+  if (!isStreamFlushWorthy(send, raw)) {
+    return { send: null, ...(seen !== undefined ? { seen } : {}) };
+  }
   return {
-    send: nextBubble(input.alreadySent, text),
+    send,
     ...(seen !== undefined ? { seen } : {}),
   };
 }
@@ -382,6 +539,7 @@ function isSpamFragment(text: string): boolean {
   if (/^\/(?:home\/user|tmp)\/\S+\.$/.test(t)) return true;
   if (/^(?:png|jpe?g|gif|webp|mp4)(?:\s*\(\s*)?$/i.test(t)) return true;
   if (isHeadingOnly(t)) return true;
+  if (isThinFragment(t)) return true;
   return false;
 }
 

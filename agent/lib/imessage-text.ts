@@ -6,6 +6,7 @@
 import { stripButtonBlocksForIMessage } from "./telegram-text.ts";
 import { voiceTranscriptLine } from "./voice-policy.ts";
 import { isHeadingOnly } from "./bubble-dedupe.ts";
+import { isThinFragment } from "./early-deliver.ts";
 
 const FENCE = /```[\w+-]*\n?([\s\S]*?)```/g;
 const IMAGE = /!\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)/gi;
@@ -142,14 +143,42 @@ export function toIMessageBubbles(src: string): string[] {
     chunks.splice(0, chunks.length, ...rest);
   }
   if (chunks.length < 2) {
-    return isHeadingOnly(text) ? [] : [text];
+    return splitParagraphBubbles(text);
   }
   const numbered = chunks.filter(
     (c) => /^\d+\.\s/.test(c) || /\n\d+\.\s/.test(c),
   );
   const long = numbered.filter((p) => p.length >= 80);
-  if (long.length < 2) return isHeadingOnly(text) ? [] : [text];
-  return chunks.slice(0, 8).filter((c) => !isHeadingOnly(c));
+  if (long.length < 2) return splitParagraphBubbles(text);
+  return chunks.slice(0, 8).filter((c) => !isHeadingOnly(c) && !isThinFragment(c));
+}
+
+/** Fact dumps with blank lines become a few bubbles — not one wall of text. */
+function splitParagraphBubbles(text: string): string[] {
+  if (!text || isHeadingOnly(text) || isThinFragment(text)) return [];
+  const paras = text
+    .split(/\n\s*\n/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+  if (paras.length < 2 || text.length < 180) {
+    return [text];
+  }
+  const out: string[] = [];
+  for (const p of paras) {
+    if (isHeadingOnly(p) || isThinFragment(p)) {
+      if (out.length > 0) out[out.length - 1] = `${out[out.length - 1]}\n${p}`;
+      else out.push(p);
+      continue;
+    }
+    if (out.length > 0 && (isHeadingOnly(out[out.length - 1] ?? "") || isThinFragment(out[out.length - 1] ?? ""))) {
+      out[out.length - 1] = `${out[out.length - 1]}\n${p}`;
+      continue;
+    }
+    out.push(p);
+  }
+  const cleaned = out.filter((c) => !isHeadingOnly(c) && !isThinFragment(c));
+  if (cleaned.length === 0) return [];
+  return cleaned.slice(0, 8);
 }
 
 export function isAudioContentType(

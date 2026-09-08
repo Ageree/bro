@@ -4,6 +4,9 @@ import {
   firstCompleteLine,
   isIncompleteDraft,
   isLikelyCompleteBubble,
+  isStatusBeat,
+  isStreamFlushWorthy,
+  isThinFragment,
   markTurnSpoke,
   nextBubble,
   turnLooking,
@@ -183,6 +186,128 @@ assert(
 assert(
   planStreamFlush({ soFar: "Ок. Сейчас гляну джоб", alreadySent: [] }).send === "Ок.",
   "batched first sentence peels off the open line",
+);
+
+assert(isThinFragment("«"), "lone quote is a crumb");
+assert(isThinFragment("• 🚄"), "emoji-only bullet is a crumb");
+assert(isThinFragment("• 🏨"), "hotel emoji bullet is a crumb");
+assert(isThinFragment("• 📍"), "pin emoji bullet is a crumb");
+assert(isThinFragment("ru — от 21 000 до 50 000 ₽"), "torn TLD leftover is a crumb");
+assert(!isThinFragment("👍"), "emoji ack is not a crumb");
+assert(
+  !isThinFragment("• 📅 10 и 11 октября 2026, начало в 20:00"),
+  "full date bullet is not a crumb",
+);
+assert(isStatusBeat("Ищу 🔎"), "looking line is a status beat");
+assert(isStatusBeat("Нашёл три варианта"), "short found line is a status beat");
+assert(
+  !isStatusBeat("• 📅 10 и 11 октября 2026, начало в 20:00"),
+  "date bullet is not a status beat",
+);
+assert(
+  !isStreamFlushWorthy("• 🚄", "• 🚄\n"),
+  "stream must not send an emoji-only bullet",
+);
+assert(
+  planStreamFlush({ soFar: "• 🚄\n", alreadySent: [] }).send === null,
+  "stream holds a hanging train emoji",
+);
+assert(
+  planStreamFlush({ soFar: "«\n", alreadySent: [] }).send === null,
+  "stream holds a lone opening quote",
+);
+assert(
+  planStreamFlush({
+    soFar: "• 📅 10 и 11 октября 2026, начало в 20:00\n",
+    alreadySent: [],
+  }).send === null,
+  "stream holds a single fact bullet for the rest of the list",
+);
+
+{
+  const intro =
+    "Вот главное про Канье в РФ (подтверждено, официально): Kanye West / Ye — «Ye Live Concert Tour 2026», Питер, «Газпром Арена»";
+  const facts = [
+    "• 📅 10 и 11 октября 2026, начало в 20:00",
+    "• 📍",
+    "«Газпром Арена», Крестовский остров, СПб (не Москва — слухи про Москву не подтвердились)",
+    "• 🎫",
+    "Билеты только на yerussia2026.ru — от 21 000 до 50 000 ₽",
+    "• 🚄",
+    "Добраться из Москвы: «Сапсан» от ~4600–8000 ₽ (на 11 октября мест больше и дешевле), обычный поезд от 2200 ₽ (9–10 часов в пути)",
+    "• 🏨",
+    "Жильё рядом (Петроградский): апартаменты от 2000–3000 ₽, отели 3★ от 5000 ₽ за ночь",
+    "• ⚠️ Билеты, купленные до 23 августа, невозвратные (кроме отмены/переноса концерта)",
+  ];
+  const sent = new Map<string, { at: number; bubbles: string[] }>();
+  const turn = "kanye";
+  const flushed: string[] = [];
+  let soFar = "";
+  const push = (line: string, closed = true) => {
+    soFar = soFar ? `${soFar}\n${line}` : line;
+    const planned = planStreamFlush({
+      soFar: closed ? `${soFar}\n` : soFar,
+      alreadySent: bubblesFor(sent, turn),
+    });
+    if (planned.send) {
+      recordSent(sent, turn, planned.send, Date.now());
+      flushed.push(planned.send);
+    }
+  };
+  push(intro);
+  for (const line of facts) push(line);
+  assert(flushed[0] === intro, "concert intro still leaves as the first bubble");
+  assert(
+    !flushed.some((b) => b === "• 🚄" || b === "• 🏨" || b === "• 📍" || b === "«"),
+    "concert stream must not spam emoji crumbs",
+  );
+  assert(
+    flushed.length <= 2,
+    `concert facts stay grouped while streaming, got ${flushed.length} bubbles`,
+  );
+  const final = planTurnDelivery({
+    finishReason: "stop",
+    message: `${soFar}\n`,
+    origin: "human",
+    alreadySent: bubblesFor(sent, turn),
+  });
+  assert(final.send !== null, "concert remainder leaves once at the end");
+  const all = [...flushed, final.send ?? ""];
+  assert(
+    all.some((b) => b.includes("Сапсан")) &&
+      all.some((b) => b.includes("Жильё рядом")) &&
+      all.some((b) => b.includes("невозвратные")),
+    "travel, stay, and ticket warning still arrive",
+  );
+  assert(
+    all.length <= 3,
+    "concert reply is a few bubbles, not a line-by-line dump",
+  );
+  assert(
+    all.some((b) => b.includes("10 и 11 октября") && b.includes("Сапсан")),
+    "dates and travel stay in one facts bubble",
+  );
+}
+
+{
+  const item1 =
+    "1. От: Ageree\nТема: PR run failed: verify — Wave 14\nДата: 26 августа 2026\nПредварительный текст: Верификация рабочего процесса завершилась неудачно и это достаточно длинная строка.";
+  const soFar = `${item1}\n2. От: Ageree ещё одно длинное письмо`;
+  const planned = planStreamFlush({ soFar, alreadySent: [] });
+  assert(
+    planned.send === item1,
+    "long numbered Gmail item still leaves when the next item starts",
+  );
+}
+
+assert(
+  planStreamFlush({
+    soFar:
+      "• 📅 10 и 11 октября 2026, начало в 20:00\n• 🎤 Формат: купол\n\nДобраться из Москвы поездом",
+    alreadySent: [],
+  }).send ===
+    "• 📅 10 и 11 октября 2026, начало в 20:00\n• 🎤 Формат: купол",
+  "blank line closes a short bullet section",
 );
 assert(
   nextBubble(["Привет!"], "Привет. Как дела?") === "Как дела?",
