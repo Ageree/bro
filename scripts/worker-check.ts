@@ -16,6 +16,7 @@ import {
   proxyCountry,
   proxyNameForCountry,
 } from "../agent/subagents/worker/lib/kernel.ts";
+import { readFileSync } from "node:fs";
 
 function assert(cond: unknown, msg: string): asserts cond {
   if (!cond) throw new Error(msg);
@@ -82,6 +83,12 @@ assert(
   "never fill a new-password field",
 );
 assert(
+  classifyNativeLoginControl(control({ autocomplete: "new-password" }), {
+    allowSignupPassword: true,
+  })?.token === "current-password",
+  "signup path fills new-password",
+);
+assert(
   classifyNativeLoginControl(control({ autocomplete: "one-time-code" })) === null,
   "never fill an OTP field",
 );
@@ -106,6 +113,20 @@ assert(
     control({ label: "Повторите пароль", type: "password" }),
   ) === null,
   "russian repeat password rejected",
+);
+assert(
+  classifyNativeLoginControl(
+    control({ label: "Придумайте пароль", type: "password" }),
+    { allowSignupPassword: true },
+  )?.token === "current-password",
+  "signup path fills russian new password",
+);
+assert(
+  classifyNativeLoginControl(
+    control({ label: "Повторите пароль", type: "password" }),
+    { allowSignupPassword: true },
+  )?.token === "current-password",
+  "signup path fills russian repeat password",
 );
 assert(
   classifyNativeLoginControl(control({ label: "Электронная почта" }))?.token ===
@@ -156,6 +177,38 @@ assert(
 assert(
   selectNativeLoginFills([identifier!], loginClaims).length === 1,
   "identifier-only step is supported",
+);
+const createPassword = classifyNativeLoginControl(
+  control({
+    focused: true,
+    formIndex: 0,
+    index: 2,
+    label: "Придумайте пароль",
+    type: "password",
+  }),
+  { allowSignupPassword: true },
+);
+const confirmPassword = classifyNativeLoginControl(
+  control({
+    formIndex: 0,
+    index: 3,
+    label: "Повторите пароль",
+    type: "password",
+  }),
+  { allowSignupPassword: true },
+);
+assert(
+  createPassword !== null && confirmPassword !== null,
+  "signup passwords classified",
+);
+const signupFills = selectNativeLoginFills(
+  [createPassword!, confirmPassword!],
+  loginClaims,
+);
+assert(signupFills.length === 2, "signup fills password and confirm");
+assert(
+  signupFills.every((fill) => fill.value === "ochen-sekretno"),
+  "signup repeats the same password",
 );
 
 const login = JSON.stringify({
@@ -262,5 +315,18 @@ throws(
 assert(nativeAutofillTokens.payment.includes("cc-csc"), "card tokens");
 assert(nativeAutofillTokens.login.includes("current-password"), "login tokens");
 assert(nativeAutofillTokens.address.includes("postal-code"), "address tokens");
+
+const workerInstr = readFileSync(
+  new URL("../agent/subagents/worker/instructions.md", import.meta.url),
+  "utf8",
+);
+assert(
+  workerInstr.includes("If the assignment includes a username or password"),
+  "worker types a supplied password",
+);
+assert(
+  workerInstr.includes("Needs profile sync"),
+  "worker still falls back to a login link",
+);
 
 console.log("worker ok");

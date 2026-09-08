@@ -149,6 +149,16 @@ assert(
   scaffoldTask("x").includes("пришлёт человеку ссылку"),
   "unsynced scaffold asks for a login link",
 );
+assert(
+  scaffoldTask("x").includes("Если в задаче есть логин или пароль"),
+  "unsynced scaffold types a supplied password",
+);
+assert(
+  scaffoldTask("x", { profileSynced: true }).includes(
+    "Если в задаче есть логин или пароль",
+  ),
+  "synced scaffold still types a supplied password",
+);
 
 const t0 = Date.parse("2026-08-27T12:00:00.000Z");
 assert(pollTimedOut(t0, t0 + 10 * 60_000) === false, "poll not expired");

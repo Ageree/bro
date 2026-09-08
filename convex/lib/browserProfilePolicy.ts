@@ -1,7 +1,7 @@
 /**
- * Browser Use Cloud login: the human opens a live link, signs in themselves,
- * cookies stay on their Cloud profile. The agent never sees the password.
- * https://docs.browser-use.com/cloud/guides/authentication
+ * Browser Use Cloud login fallback: the human opens a live link, signs in
+ * themselves, cookies stay on their Cloud profile. Use this when they did
+ * not give a password in chat. https://docs.browser-use.com/cloud/guides/authentication
  */
 
 export const LOGIN_MARK = "[bro-login]";
@@ -33,7 +33,7 @@ export function loginPageUrl(raw: string | undefined): string | undefined {
   }
 }
 
-/** Cloud-agent instructions: open the page and wait. Never type secrets. */
+/** Cloud-agent instructions: open the page and wait. Fallback path — they type secrets. */
 export function loginWaitTask(url: string): string {
   const page = loginPageUrl(url);
   if (!page) throw new Error("нужна обычная ссылка на сайт");
