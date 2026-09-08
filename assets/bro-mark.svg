@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="bro">
-  <g fill="#15241B">
+  <g fill="#0E0A07">
     <path d="M56 86c0 14-9 23-24 27 8-8 12-17 12-27z"/>
     <circle cx="45" cy="39" r="20"/>
     <circle cx="67" cy="33" r="22"/>
@@ -11,7 +11,7 @@
     <circle cx="34" cy="60" r="22"/>
     <circle cx="64" cy="58" r="32"/>
   </g>
-  <g fill="#F2EFE7">
+  <g fill="#F6F6F3">
     <ellipse cx="52" cy="58" rx="3.6" ry="5.4"/>
     <ellipse cx="76" cy="58" rx="3.6" ry="5.4"/>
     <path d="M55 67.2q9-1.8 18 0 0 6.8-9 6.8t-9-6.8z"/>

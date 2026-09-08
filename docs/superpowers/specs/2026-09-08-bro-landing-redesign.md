@@ -6,7 +6,7 @@ _Date: 2026-09-08. Supersedes `2026-08-26-bro-landing-design.md`._
 
 The first landing was a stock meadow photo with a wordmark on top. Nothing on the
 page came from the product, so it read as a wellness page and the brand was a font
-choice. The redesign gives bro a character and derives the whole system from it.
+choice. The redesign gives bro a character and a system with a point of view.
 
 ## The character — «Бабл»
 
@@ -18,45 +18,79 @@ in your chat. So the character *is* the message.
 - **Personality:** warm and unbothered. He smiles, but he does not chatter — he says
   «сделаю» and gets on with it.
 - **States, without redrawing:** eyes closed → asleep; eyes as dashes → thinking; tail
-  flipped → your turn. One object, endless expression.
-- **Scales:** the silhouette survives at 16 px (favicon) and as a hero at ~170 px.
-  Verified by rendering at 240 / 90 / 42 / 20 px before the shape was frozen.
+  flipped → your turn.
+- **Scales:** verified at 240 / 90 / 42 / 20 px before the shape was frozen. The face
+  survives to favicon size.
 
 The character came from a Higgsfield generation the founder approved. It is **redrawn
 as vector**, not traced: a traced diffusion output carries wobbly, unevenly weighted
-edges that show up badly at hero size and turn to mush at favicon size. The body is
-nine overlapping circles plus a tail path — few and large, so the outline is gently
-scalloped rather than knobbly. An earlier pass used more, smaller lobes and read as
-broccoli.
+edges that show at hero size and turn to mush at favicon size. The body is nine
+overlapping circles plus a tail path — few and large, so the outline stays gently
+scalloped. An earlier pass used more, smaller lobes and read as broccoli.
 
 Source of truth is `assets/bro-mark.svg`. The page inlines the same shapes so CSS can
 animate the eyes — document CSS does not reach into a `<use>` shadow tree. The body
 inherits `currentColor` and the `.bro__face` group takes `--bro-eye`, so he inverts
 cleanly on an ink surface by setting both.
 
+## Where the system comes from
+
+The founder asked to borrow the design system from
+[folk.com/folkways](https://www.folk.com/folkways). What folk actually does, read off
+their stylesheets rather than guessed at:
+
+- warm putty paper (`#e8e3da`) and a warm, brown-biased near-black ink (`#0e0a07`) —
+  no neutral greys anywhere in the palette;
+- **thick ink outlines** as the signature: `--border: 3px solid var(--ink)`, `2px` for
+  the lighter variant;
+- **small radii** on paper — `--radius-card: 6px`, `--radius-soft: 14px` — against
+  fully-round pills;
+- a **letterpress** treatment: a lit top inset edge and a shaded bottom one, so a
+  surface sits *in* the page instead of floating over it;
+- a warm accent family (butter golds, rust `#d4561f`, sage `#95a684`), washi tape;
+- `cubic-bezier(.32, .72, 0, 1)` for motion;
+- Labil Grotesk and Cursor Gothic for type, with Caveat for handwritten notes.
+
+**What was deliberately not borrowed, and why:**
+
+1. **Labil Grotesk and Cursor Gothic are licensed commercial faces.** Pulling their
+   woff2 files off folk's CDN and serving them from bro would be font piracy. The
+   substitute is **Golos Text** (Paratype) — a warm neo-grotesk in the same register
+   with stronger Cyrillic than the Onest this replaces, which matters on a Russian
+   site. **Caveat** is free on Google Fonts and is used the same way folk uses it.
+2. **The butter gold accent.** It is folk's most recognisable colour, and wearing a
+   competitor's hero colour is how you end up looking like their side project. bro's
+   accent is **rust `#d4561f`**, which is in folk's palette but not their signature.
+3. **Washi tape.** Their most costume-y device; it would read as fancy dress on a
+   product about getting errands done.
+
 ## The system
 
-The atom is the bubble. Character, logo, card, price plan and message are the same
-shape at different sizes. Every surface carries the same tail corner
-(`border-bottom-left-radius: var(--r-sm)`), so the whole page reads as things bro said.
+Surfaces follow the tactile-paper idiom: warm ground, ink outline, small radius,
+letterpress highlight, so every block reads as printed stock.
 
-**The page is a conversation** — that is the organising idea, not a decoration.
+**Chat bubbles are the deliberate exception.** They keep soft radii, because that is
+what a message is — and the contrast against hard-edged paper is what makes them read
+as real bubbles lying on the page rather than as more cards. This is the one place the
+borrowed system was bent to fit the product.
 
 | Token | Value | Role |
 | --- | --- | --- |
-| `--paper` | `#f2efe7` | warm ground; never pure white |
-| `--paper-raised` | `#fbfaf6` | cards, the human's bubbles |
-| `--ink` | `#15241b` | bro's voice — his bubbles, the primary button |
-| `--ink-soft` | `#6b7c71` | secondary copy |
-| `--signal` | `#d8913a` | one accent, reserved for "bro acted on his own" |
-| `--r-sm/md/lg/pill` | `.75 / 1.25 / 1.75 rem / 999px` | one radius family — the brand signature |
+| `--paper` | `#e8e3da` | putty ground |
+| `--paper-2` / `--paper-3` | `#f6f6f3` / `#fafaf7` | raised stock, inputs |
+| `--ink` | `#0e0a07` | outlines, bro's bubbles, primary button |
+| `--ink-soft` / `--ink-mute` | `#4a3b3d` / `#6e6260` | secondary copy |
+| `--signal` | `#d4561f` | one job only: bro acted unprompted |
+| `--border` / `--border-3` | `2px` / `3px solid var(--ink)` | the signature |
+| `--r-card` / `--r-soft` / `--r-bubble` | `6px` / `14px` / `1.4rem` | paper is hard, speech is soft |
+| `--press` | lit top inset, shaded bottom | letterpress |
+| `--spring` | `cubic-bezier(.32,.72,0,1)` | all motion |
 
-- **Type:** Onest, not Inter. Inter reads as a system default; Onest has real Cyrillic
-  design and the site is Russian.
-- **Motion budget:** bro blinks, and the demo thread types itself once on scroll.
-  Both respect `prefers-reduced-motion`.
-- **Accent discipline:** `--signal` marks exactly one thing — the unprompted message.
-  Spending it anywhere else costs its meaning.
+- **Type:** Golos Text 400–700, Caveat 600 for margin notes.
+- **Motion budget:** he blinks, the demo thread types itself once on scroll, cards and
+  buttons lift on the spring. All respect `prefers-reduced-motion`.
+- **Accent discipline:** `--signal` marks exactly one thing — the unprompted message,
+  ringed and annotated in a hand. Spending it elsewhere costs its meaning.
 
 Tokens and primitives live in `assets/brand.css` and are page-agnostic on purpose:
 `cabinet.html` and `vault.html` still carry their own inline styles and the old meadow
@@ -65,11 +99,10 @@ background. Porting them onto `brand.css` is the next step, not part of this cha
 ## Page
 
 1. **Hero** — character, wordmark, promise, CTA.
-2. **Как это выглядит** — a real thread that types itself: a booking, a repeat order
-   paid from the vault, and one message bro sends unprompted. Shows the product
-   instead of describing it.
+2. **Как это выглядит** — a thread that types itself: a booking, a repeat order paid
+   from the vault, and one message bro sends unprompted, annotated in Caveat.
 3. **Что он умеет** — six capability cards.
-4. **Тарифы** — unchanged offer, restyled as an ink bubble.
+4. **Тарифы** — unchanged offer, on an ink slab.
 5. **Что вы оплачиваете и как** — kept verbatim; YooKassa requires it.
 6. **Напиши ему первым** — closing CTA. The page previously ended on legal prose.
 7. **Footer** — legal details, unchanged.
@@ -79,7 +112,7 @@ background. Porting them onto `brand.css` is the next step, not part of this cha
 Every id `assets/auth.js` binds (`#login-open`, `#login-modal`, `#login-handle`,
 `#login-send`, `#login-code`, `#login-verify`, `#login-status`, `#login-cancel`,
 `#cabinet-open`, `#vault-open`, `#logout`) and the `POST /access` CTA flow.
-Both CTAs now share one handler via `[data-request-access]` and show the same state.
+Both CTAs share one handler via `[data-request-access]` and show the same state.
 
 `scripts/cabinet-check.ts` pinned the old `class="cta sheet-cta"` string; it now
 asserts the `sheet-cta` class on `#login-send` instead of the whole skin.
@@ -93,11 +126,12 @@ asserts the `sheet-cta` class on `#login-send` instead of the whole skin.
 
 ## Verification
 
-Rendered at 1280×900 and 390×844 with Onest loaded. Checked: no horizontal scroll on
-either viewport, no console or page errors, only «Войти» visible in the topbar when
-logged out, both CTAs wired. `npm run cabinet:check` passes its landing assertions.
+Rendered at 1280×900 and 390×844 with the real fonts loaded. Checked: no horizontal
+scroll on either viewport, no console or page errors, only «Войти» visible in the
+topbar when logged out, both CTAs wired. `npm run cabinet:check` passes its landing
+assertions.
 
 ## Out of scope
 
-Cabinet/vault restyle, an expression sheet for the character, analytics,
-i18n. The `vercel.json` that `cabinet-check.ts` reads is missing on `main` and still is.
+Cabinet/vault restyle, an expression sheet for the character, analytics, i18n.
+The `vercel.json` that `cabinet-check.ts` reads is missing on `main` and still is.

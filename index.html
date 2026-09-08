@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>bro — твой личный ИИ-агент</title>
   <meta name="description" content="bro — персональный ИИ-агент со своим номером, памятью и руками в интернете. Записи к врачу, брони, заказы — просто напиши ему в iMessage." />
-  <meta name="theme-color" content="#f2efe7" />
+  <meta name="theme-color" content="#e8e3da" />
   <link rel="icon" href="/assets/bro-mark.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="/assets/bro-logo.png" />
   <meta property="og:type" content="website" />
@@ -15,7 +15,7 @@
   <meta name="twitter:card" content="summary_large_image" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600;700&family=Caveat:wght@600&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/assets/brand.css" />
   <style>
     /* ---- topbar ---- */
@@ -28,7 +28,7 @@
       justify-content: space-between;
       gap: 0.6rem;
       padding: 0.9rem var(--gutter);
-      background: rgba(242, 239, 231, 0.82);
+      background: rgba(232, 227, 218, 0.86);
       backdrop-filter: blur(12px);
       border-bottom: 1px solid transparent;
     }
@@ -49,7 +49,7 @@
     .hero__word { margin-top: -0.35rem; }
     .hero__sub { max-width: 32rem; }
     .hero__cta { margin-top: 0.7rem; }
-    .hero__fine { font-size: 0.85rem; color: var(--ink-soft); }
+    .hero__fine { font-size: 0.85rem; color: var(--ink-mute); }
 
     /* ---- section heads ---- */
     .head { text-align: center; margin-bottom: clamp(1.75rem, 4vw, 2.75rem); }
@@ -57,15 +57,15 @@
 
     /* ---- capabilities ---- */
     .card h3 { font-size: 1.05rem; font-weight: 600; margin-bottom: 0.4rem; }
-    .card p  { color: var(--ink-soft); font-size: 0.95rem; line-height: 1.5; }
+    .card p  { color: var(--ink-mute); font-size: 0.95rem; line-height: 1.5; }
 
     /* ---- pricing ---- */
     .plans { display: flex; justify-content: center; }
-    .plan { width: min(22rem, 100%); text-align: left; }
+    .plan { width: min(22rem, 100%); text-align: left; padding: 1.6rem 1.7rem 1.8rem; }
     .plan .price { font-size: 2.1rem; font-weight: 600; letter-spacing: -0.03em; margin: 0.35rem 0 1rem; }
-    .plan .price small { font-size: 0.95rem; font-weight: 400; color: rgba(242, 239, 231, 0.66); }
+    .plan .price small { font-size: 0.95rem; font-weight: 400; color: rgba(246, 246, 243, 0.66); }
     .plan ul { list-style: none; display: flex; flex-direction: column; gap: 0.4rem; }
-    .plan li { font-size: 0.95rem; padding-left: 1.1rem; position: relative; color: rgba(242, 239, 231, 0.82); }
+    .plan li { font-size: 0.95rem; padding-left: 1.1rem; position: relative; color: rgba(246, 246, 243, 0.82); }
     .plan li::before {
       content: "";
       position: absolute;
@@ -74,7 +74,7 @@
       border-radius: 50%;
       background: var(--signal);
     }
-    .note { margin-top: 1.4rem; color: var(--ink-soft); font-size: 0.93rem; line-height: 1.6; }
+    .note { margin-top: 1.4rem; color: var(--ink-mute); font-size: 0.93rem; line-height: 1.6; }
 
     /* ---- legal prose ---- */
     .prose { max-width: 40rem; margin-inline: auto; }
@@ -91,8 +91,8 @@
       max-width: 44rem;
       margin-inline: auto;
     }
-    .closing .bro { width: 3.25rem; color: var(--paper); }
-    .closing .t-body { color: rgba(242, 239, 231, 0.72); max-width: 26rem; }
+    .closing .bro { width: 3.25rem; color: var(--paper-2); }
+    .closing .t-body { color: rgba(246, 246, 243, 0.72); max-width: 26rem; }
     .closing .btn { margin-top: 0.4rem; }
 
     /* ---- modal ---- */
@@ -100,7 +100,7 @@
       position: fixed;
       inset: 0;
       z-index: 10;
-      background: rgba(21, 36, 27, 0.35);
+      background: rgba(14, 10, 7, 0.38);
       display: flex;
       align-items: center;
       justify-content: center;
@@ -109,22 +109,24 @@
     .modal[hidden] { display: none; }
     .sheet {
       width: min(24rem, 100%);
-      background: var(--paper-raised);
-      border-radius: var(--r-lg);
+      background: var(--paper-2);
+      border: var(--border);
+      border-radius: var(--r-soft);
       padding: 1.7rem 1.5rem 1.35rem;
       text-align: left;
-      box-shadow: var(--lift);
+      box-shadow: var(--press), var(--shadow-lift);
     }
     .sheet h2 { font-size: 1.15rem; font-weight: 600; margin-bottom: 0.45rem; }
-    .sheet label { display: block; font-size: 0.85rem; color: var(--ink-soft); margin: 0.85rem 0 0.35rem; }
+    .sheet label { display: block; font-size: 0.85rem; color: var(--ink-mute); margin: 0.85rem 0 0.35rem; }
     .sheet input {
       width: 100%;
       font: inherit;
       padding: 0.7rem 0.85rem;
-      border-radius: var(--r-sm);
-      border: 1px solid var(--line-strong);
-      background: var(--paper);
+      border-radius: var(--r-card);
+      border: var(--border);
+      background: var(--paper-3);
       color: var(--ink);
+      box-shadow: var(--press-deep);
     }
     .sheet input:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
     .sheet .sheet-cta { display: flex; width: 100%; margin-top: 1rem; white-space: nowrap; }
@@ -134,13 +136,13 @@
       margin-top: 0.85rem;
       background: none;
       border: 0;
-      color: var(--ink-soft);
+      color: var(--ink-mute);
       font: inherit;
       font-size: 0.92rem;
       cursor: pointer;
       text-align: center;
     }
-    .sheet .status { min-height: 1.3rem; margin-top: 0.7rem; color: var(--ink-soft); font-size: 0.88rem; line-height: 1.4; }
+    .sheet .status { min-height: 1.3rem; margin-top: 0.7rem; color: var(--ink-mute); font-size: 0.88rem; line-height: 1.4; }
 
     /* ---- footer ---- */
     footer {
@@ -148,7 +150,7 @@
       padding: 2.5rem var(--gutter) 3rem;
       text-align: center;
       font-size: 0.85rem;
-      color: var(--ink-soft);
+      color: var(--ink-mute);
       line-height: 1.8;
     }
     footer a { color: var(--ink); }
@@ -362,8 +364,8 @@
           <h2 class="t-h2">Один тариф, без сюрпризов</h2>
         </div>
         <div class="plans">
-          <div class="bubble bubble--ink plan">
-            <h3 class="t-mono-label" style="color: rgba(242,239,231,.6)">Полный доступ</h3>
+          <div class="slab plan">
+            <h3 class="t-mono-label" style="color: rgba(246,246,243,.6)">Полный доступ</h3>
             <p class="price">2000 ₽<small> / месяц</small></p>
             <ul>
               <li>500 сообщений в день</li>
@@ -402,7 +404,7 @@
     </section>
     <section class="section" id="start">
       <div class="wrap">
-        <div class="bubble bubble--ink closing">
+        <div class="slab closing">
           <svg class="bro" viewBox="0 0 128 128" aria-hidden="true" focusable="false" style="--bro-eye: var(--ink)">
             <path d="M56 86c0 14-9 23-24 27 8-8 12-17 12-27z"/>
             <circle cx="45" cy="39" r="20"/>
