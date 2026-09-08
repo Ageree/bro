@@ -140,6 +140,12 @@ class FakeBoxWorld {
       });
     }
 
+    if (method === "DELETE" && action === undefined) {
+      this.boxes.delete(boxId);
+      this.files.delete(boxId);
+      return jsonRes(200, { ok: true, type: "box.deleted", id: boxId });
+    }
+
     if (method === "POST" && action === "stop") {
       return jsonRes(202, {
         ok: true,

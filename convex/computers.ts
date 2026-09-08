@@ -172,6 +172,17 @@ export const setStateForAgent = mutation({
   },
 });
 
+export const deleteForAgent = mutation({
+  args: { secret: v.string(), phoneE164: v.string() },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    assertSecret(args.secret);
+    const tenantId = await tenantByPhone(ctx, args.phoneE164);
+    if (!tenantId) return false;
+    return await deleteComputersForTenant(ctx, tenantId);
+  },
+});
+
 export const touchForAgent = mutation({
   args: {
     secret: v.string(),

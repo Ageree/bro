@@ -798,6 +798,60 @@ export async function setComputerState(
   })) as ComputerRow | null;
 }
 
+export async function deleteComputer(
+  phoneE164: string,
+): Promise<boolean> {
+  return (await client().mutation(anyApi.computers.deleteForAgent, {
+    secret: secret(),
+    phoneE164,
+  })) as boolean;
+}
+
+export async function chatgptStatus(
+  phoneE164: string,
+): Promise<{
+  status: "none" | "pending" | "connected" | "quarantined";
+  email?: string;
+  planType?: string;
+}> {
+  return (await client().query(anyApi.chatgpt.statusForAgent, {
+    secret: secret(),
+    phoneE164,
+    now: Date.now(),
+  })) as {
+    status: "none" | "pending" | "connected" | "quarantined";
+    email?: string;
+    planType?: string;
+  };
+}
+
+export async function chatgptToken(phoneE164: string): Promise<{
+  status: "connected" | "none" | "quarantined";
+  accessToken?: string;
+  accountId?: string;
+}> {
+  return (await client().action(anyApi.chatgptSecrets.tokenForAgent, {
+    secret: secret(),
+    phoneE164,
+  })) as {
+    status: "connected" | "none" | "quarantined";
+    accessToken?: string;
+    accountId?: string;
+  };
+}
+
+export async function chatgptQuarantine(
+  phoneE164: string,
+  reason: string,
+): Promise<boolean> {
+  return (await client().mutation(anyApi.chatgpt.quarantineForAgent, {
+    secret: secret(),
+    phoneE164,
+    now: Date.now(),
+    reason,
+  })) as boolean;
+}
+
 export async function touchComputer(
   phoneE164: string,
   now = Date.now(),

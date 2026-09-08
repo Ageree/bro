@@ -76,6 +76,7 @@ export type BoxClient = {
   get(boxId: string): Promise<BoxRecord>;
   update(boxId: string, input: UpdateBoxInput): Promise<BoxRecord>;
   stop(boxId: string, input?: StopBoxInput): Promise<BoxRecord>;
+  remove(boxId: string): Promise<void>;
   resume(boxId: string, input?: ResumeBoxInput): Promise<BoxRecord>;
   command(boxId: string, input: CommandBoxInput): Promise<BoxCommandResult>;
   readFile(boxId: string, path: string): Promise<string>;
@@ -235,6 +236,10 @@ export function createBoxClient(opts: BoxClientOpts = {}): BoxClient {
     );
   }
 
+  async function remove(boxId: string): Promise<void> {
+    await request("DELETE", boxPath(boxId));
+  }
+
   async function resume(
     boxId: string,
     input?: ResumeBoxInput,
@@ -307,6 +312,7 @@ export function createBoxClient(opts: BoxClientOpts = {}): BoxClient {
     get,
     update,
     stop,
+    remove,
     resume,
     command,
     readFile,

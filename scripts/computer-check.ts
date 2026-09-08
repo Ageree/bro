@@ -1,5 +1,10 @@
 import { BoxHttpError, type BoxState } from "../agent/lib/boxClient.ts";
-import { ensureRunning, type ComputerStore } from "../agent/lib/computer.ts";
+import {
+  ensureRunning,
+  runCabinetComputerAction,
+  wipeDisk,
+  type ComputerStore,
+} from "../agent/lib/computer.ts";
 import type { ComputerRow } from "../agent/lib/convex.ts";
 import {
   BRO_COMPUTER_START_RESERVE,
@@ -170,6 +175,11 @@ function memoryStore(tenantId: string): ComputerStore {
       row = { ...row, lastActiveAt: now };
       return row;
     },
+    async remove() {
+      const had = row !== null;
+      row = null;
+      return had;
+    },
   };
 }
 
@@ -182,5 +192,44 @@ const [a, b] = await Promise.all([
 ]);
 assert(a.boxId === b.boxId, "parallel ensureRunning shares one box");
 assert(parallel.startsToday() === 1, "idempotent create spends one start");
+
+const wiped = await wipeDisk("+15555550100", store, parallel);
+assert(wiped.state === "none", "wipe clears store");
+assert((await store.get("+15555550100")) === null, "wipe removes row");
+
+const store2 = memoryStore("tenants_cabinet");
+const cabinetBox = createFakeBox({ now: () => clock });
+const woken = await runCabinetComputerAction(
+  "+15555550101",
+  "wake",
+  store2,
+  cabinetBox,
+);
+assert(woken.state === "ready", "cabinet wake starts the box");
+const stopped = await runCabinetComputerAction(
+  "+15555550101",
+  "stop",
+  store2,
+  cabinetBox,
+);
+assert(stopped.state === "archiving" || stopped.state === "archived", "cabinet stop");
+const wipedAgain = await runCabinetComputerAction(
+  "+15555550101",
+  "wipe",
+  store2,
+  cabinetBox,
+);
+assert(wipedAgain.state === "none", "cabinet wipe");
+assert((await store2.get("+15555550101")) === null, "cabinet wipe removes row");
+
+const imessage = await import("node:fs").then((fs) =>
+  fs.readFileSync(new URL("../agent/channels/imessage.ts", import.meta.url), "utf8"),
+);
+assert(imessage.includes('POST("/internal/computer"'), "eve has /internal/computer");
+assert(imessage.includes("runCabinetComputerAction"), "internal computer uses cabinet helper");
+assert(
+  !/body\.boxId|boxId\s*:/.test(imessage),
+  "internal computer does not take boxId",
+);
 
 console.log("computer-check ok");

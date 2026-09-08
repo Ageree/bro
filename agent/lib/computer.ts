@@ -9,6 +9,7 @@ import {
 import {
   bindComputer,
   claimComputer,
+  deleteComputer,
   getComputer,
   setComputerState,
   touchComputer,
@@ -55,6 +56,7 @@ export type ComputerStore = {
     now?: number,
   ): Promise<ComputerRow | null>;
   touch(phoneE164: string, now?: number): Promise<ComputerRow | null>;
+  remove(phoneE164: string): Promise<boolean>;
 };
 
 export const convexComputerStore: ComputerStore = {
@@ -63,6 +65,7 @@ export const convexComputerStore: ComputerStore = {
   bind: bindComputer,
   setState: setComputerState,
   touch: touchComputer,
+  remove: deleteComputer,
 };
 
 export type EnsureRunningOpts = {
@@ -408,6 +411,59 @@ export async function stop(
 ): Promise<RunningBox> {
   const box = await client.stop(boxId);
   return { boxId: box.id, state: box.state };
+}
+
+export async function wipeDisk(
+  phoneE164: string,
+  store: ComputerStore = convexComputerStore,
+  client: BoxClient = createBoxClient(),
+): Promise<{ state: "none" }> {
+  const boxId = await boundBoxId(phoneE164, store);
+  if (boxId) {
+    try {
+      await client.remove(boxId);
+    } catch {
+      try {
+        await client.stop(boxId);
+      } catch {
+        // disk gone or already archived
+      }
+    }
+  }
+  await store.remove(phoneE164);
+  return { state: "none" };
+}
+
+export type CabinetComputerAction = "wake" | "stop" | "wipe";
+
+/** Cabinet / eve `/internal/computer`. Never takes a boxId from the caller. */
+export async function runCabinetComputerAction(
+  phoneE164: string,
+  action: CabinetComputerAction,
+  store: ComputerStore = convexComputerStore,
+  client: BoxClient = createBoxClient(),
+): Promise<{ state: string }> {
+  const phone = phoneE164.trim();
+  if (!phone) throw new ComputerError("invalid", "phoneE164 required");
+  if (action !== "wake" && action !== "stop" && action !== "wipe") {
+    throw new ComputerError("invalid", "action must be wake, stop, or wipe");
+  }
+  if (action === "wake") {
+    const running = await ensureRunning({ phoneE164: phone, store }, client);
+    return { state: running.state };
+  }
+  if (action === "wipe") {
+    return await wipeDisk(phone, store, client);
+  }
+  const boxId = await boundBoxId(phone, store);
+  if (!boxId) return { state: "none" };
+  const result = await stop(boxId, client);
+  try {
+    await store.setState(phone, result.state);
+  } catch {
+    // cache write is best-effort
+  }
+  return { state: result.state };
 }
 
 export async function status(
