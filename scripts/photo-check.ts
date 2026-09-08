@@ -11,7 +11,7 @@ import {
   sniffImage,
   stripMarkdownPhotos,
 } from "../agent/lib/outbound-photo.ts";
-import { sendPhotoToHuman } from "../agent/lib/send-photo.ts";
+import { photoTargetFromAuth, sendPhotoToHuman } from "../agent/lib/send-photo.ts";
 import { deliverHuman } from "../agent/lib/deliver-human.ts";
 
 function assert(cond: unknown, msg: string): asserts cond {
@@ -52,12 +52,12 @@ assert(imageMetaFromName("/home/user/screens/shot.png")?.contentType === "image/
 assert(imageMetaFromName("desk.JPEG")?.contentType === "image/jpeg", "jpeg name");
 assert(imageMetaFromName("note.txt") === null, "reject txt name");
 
-assert(parseSendPhotoInput({}).error, "need path or url");
-assert(parseSendPhotoInput({ path: "/a", url: "https://x.example/a.jpg" }).error, "not both");
+assert("error" in parseSendPhotoInput({}), "need path or url");
 assert(
-  parseSendPhotoInput({ url: "http://x.example/a.jpg" }).error,
-  "http rejected",
+  "error" in parseSendPhotoInput({ path: "/a", url: "https://x.example/a.jpg" }),
+  "not both",
 );
+assert("error" in parseSendPhotoInput({ url: "http://x.example/a.jpg" }), "http rejected");
 const parsedUrl = parseSendPhotoInput({ url: "https://img.example/a.jpg" });
 assert(!("error" in parsedUrl) && parsedUrl.kind === "url", "https url ok");
 const parsedPath = parseSendPhotoInput({ path: "/home/user/screens/shot.png" });
@@ -249,6 +249,21 @@ assert(oversize, "oversize fetch rejected");
   assert(photos[0] === "https://img.example/a.jpg", "telegram markdown still sendPhoto");
 }
 
+const telegramTarget = photoTargetFromAuth({
+  channel: "telegram",
+  telegramChatId: "42",
+  conversationId: "conv-tg",
+});
+assert(telegramTarget.channel === "telegram", "auth telegram channel");
+assert(telegramTarget.telegramChatId === "42", "auth telegram chat");
+const imessageTarget = photoTargetFromAuth({
+  origin: "human",
+  conversationId: "conv-im",
+  inkboxHandle: "bro-test",
+});
+assert(imessageTarget.channel === "imessage", "auth iMessage channel");
+assert(imessageTarget.conversationId === "conv-im", "auth iMessage conversation");
+
 const tool = readFileSync(new URL("../agent/tools/send_photo.ts", import.meta.url), "utf8");
 assert(tool.includes("sendPhotoToHuman"), "tool uses shared sender");
 assert(tool.includes("parseSendPhotoInput"), "tool validates path/url");
@@ -261,6 +276,8 @@ const shot = readFileSync(
   "utf8",
 );
 assert(shot.includes("send_photo"), "screenshot tells the model to send the file");
+assert(shot.includes("send=true") || shot.includes("send: z.boolean"), "screenshot can send itself");
+assert(shot.includes("sendPhotoToHuman"), "screenshot send uses the same path");
 
 const deliver = readFileSync(
   new URL("../agent/lib/deliver-human.ts", import.meta.url),

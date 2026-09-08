@@ -221,9 +221,10 @@ export async function sendTelegramPhotoFile(opts: {
   return await enqueueTelegramChat(opts.chatId, () => {
     const form = new FormData();
     form.set("chat_id", String(opts.chatId));
+    const bytes = new Uint8Array(opts.bytes);
     form.set(
       "photo",
-      new File([opts.bytes], opts.filename, { type: opts.contentType }),
+      new File([bytes], opts.filename, { type: opts.contentType }),
     );
     if (opts.html) {
       form.set("caption", opts.html.slice(0, 1024));

@@ -1,5 +1,4 @@
 import { defineTool } from "eve/tools";
-import type { ToolContext } from "eve/tools";
 import { z } from "zod";
 import {
   asPersonal,
@@ -9,22 +8,11 @@ import {
   readBinaryFile,
 } from "../lib/computer.ts";
 import { attrsFromSession } from "../lib/deliver-routed.ts";
-import { routingFromAuth } from "../lib/turn-routing.ts";
 import {
   parseSendPhotoInput,
   photoFromBase64,
 } from "../lib/outbound-photo.ts";
-import { sendPhotoToHuman } from "../lib/send-photo.ts";
-
-function firstAttr(
-  ctx: ToolContext,
-  key: string,
-): string | undefined {
-  const raw = attrsFromSession(ctx.session)?.[key];
-  const value = Array.isArray(raw) ? raw[0] : raw;
-  if (typeof value === "string" && value.trim()) return value.trim();
-  return undefined;
-}
+import { photoTargetFromAuth, sendPhotoToHuman } from "../lib/send-photo.ts";
 
 export default defineTool({
   description:
@@ -57,14 +45,8 @@ export default defineTool({
       source = parsed;
     }
 
-    const routing = routingFromAuth(attrsFromSession(ctx.session));
-    const channel =
-      routing.channel ?? (routing.telegramChatId ? "telegram" : "imessage");
     return await sendPhotoToHuman({
-      channel,
-      conversationId: firstAttr(ctx, "conversationId"),
-      telegramChatId: routing.telegramChatId,
-      handle: routing.inkboxHandle ?? firstAttr(ctx, "inkboxHandle"),
+      ...photoTargetFromAuth(attrsFromSession(ctx.session)),
       caption,
       source,
     });

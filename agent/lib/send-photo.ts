@@ -6,6 +6,7 @@ import {
   fetchPhotoBytes,
   type PhotoBytes,
 } from "./outbound-photo.ts";
+import { routingFromAuth, type AuthAttrs } from "./turn-routing.ts";
 import type { HumanChannel } from "../../convex/lib/telegramPolicy.ts";
 
 export type SendPhotoTarget = {
@@ -15,6 +16,28 @@ export type SendPhotoTarget = {
   handle?: string;
   caption?: string;
 };
+
+function firstAttr(attrs: AuthAttrs, key: string): string | undefined {
+  const raw = attrs?.[key];
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  if (typeof value === "string" && value.trim()) return value.trim();
+  return undefined;
+}
+
+export function photoTargetFromAuth(attrs: AuthAttrs): {
+  channel: HumanChannel;
+  conversationId?: string;
+  telegramChatId?: string;
+  handle?: string;
+} {
+  const routing = routingFromAuth(attrs);
+  return {
+    channel: routing.channel ?? (routing.telegramChatId ? "telegram" : "imessage"),
+    conversationId: firstAttr(attrs, "conversationId"),
+    telegramChatId: routing.telegramChatId,
+    handle: routing.inkboxHandle ?? firstAttr(attrs, "inkboxHandle"),
+  };
+}
 
 export type SendPhotoDeps = {
   fetchPhoto?: (url: string) => Promise<PhotoBytes>;
