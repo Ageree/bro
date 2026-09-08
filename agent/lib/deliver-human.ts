@@ -9,10 +9,16 @@ import {
 import { sendTelegramMessage, sendTelegramPhoto } from "./telegram.ts";
 import { compileTelegram, type TelegramButton } from "./telegram-text.ts";
 import {
+  extractComputerImagePaths,
   extractMarkdownPhotoUrls,
+  stripComputerImagePaths,
   stripMarkdownPhotos,
 } from "./outbound-photo.ts";
-import { sendPhotoToHuman, type SendPhotoDeps } from "./send-photo.ts";
+import {
+  photoFromComputerPath,
+  sendPhotoToHuman,
+  type SendPhotoDeps,
+} from "./send-photo.ts";
 
 export type HumanTenant = {
   phoneE164?: string;
@@ -40,20 +46,48 @@ export async function deliverHuman(opts: {
   if (!text) return;
   const tenant = opts.tenant ?? {};
   const prefer = opts.channel ?? lastChannelOf(tenant.lastChannel);
-  if (prefer === "telegram" && canDeliverTelegram(tenant.telegramChatId)) {
+  const conversationId = opts.conversationId ?? tenant.inkboxConversationId;
+  const telegram =
+    prefer === "telegram" && canDeliverTelegram(tenant.telegramChatId);
+
+  const cleaned = stripConnectUrls(text);
+  const localPaths = extractComputerImagePaths(cleaned);
+  const remaining = stripComputerImagePaths(cleaned);
+  if (localPaths.length > 0 && tenant.phoneE164) {
+    const load = opts.deps?.loadComputerPhoto ?? photoFromComputerPath;
+    for (const path of localPaths) {
+      try {
+        const photo = await load(tenant.phoneE164, path);
+        const sent = await sendPhotoToHuman({
+          channel: telegram ? "telegram" : "imessage",
+          conversationId,
+          telegramChatId: tenant.telegramChatId,
+          handle: tenant.inkboxHandle,
+          source: { kind: "bytes", photo },
+          deps: opts.deps,
+        });
+        if (sent.status !== "ok") {
+          console.error("local photo send failed", path, sent.error);
+        }
+      } catch (err) {
+        console.error("local photo load failed", path, err);
+      }
+    }
+  }
+
+  if (telegram) {
     try {
-      await deliverTelegram(tenant.telegramChatId!, text, opts.buttons, opts.deps);
+      await deliverTelegram(tenant.telegramChatId!, remaining, opts.buttons, opts.deps);
       return;
     } catch (err) {
       console.error("telegram deliver failed, falling back to iMessage", err);
     }
   }
-  const conversationId = opts.conversationId ?? tenant.inkboxConversationId;
   if (!conversationId) throw new Error("no conversation to deliver");
   await deliverIMessage({
     conversationId,
     handle: tenant.inkboxHandle,
-    text,
+    text: remaining,
     deps: opts.deps,
   });
 }
@@ -64,9 +98,8 @@ async function deliverIMessage(opts: {
   text: string;
   deps?: DeliverHumanDeps;
 }): Promise<void> {
-  const cleaned = stripConnectUrls(opts.text);
-  const photos = extractMarkdownPhotoUrls(cleaned);
-  const leftover = stripMarkdownPhotos(cleaned);
+  const photos = extractMarkdownPhotoUrls(opts.text);
+  const leftover = stripMarkdownPhotos(opts.text);
   const caption = leftover ? toIMessageText(leftover) : undefined;
   let attached = 0;
   for (const url of photos) {
@@ -83,7 +116,7 @@ async function deliverIMessage(opts: {
   }
   if (attached > 0) return;
   const sendText = opts.deps?.sendIMessage ?? sendBlueIMessage;
-  const bubbles = toIMessageBubbles(cleaned);
+  const bubbles = toIMessageBubbles(opts.text);
   for (const bubble of bubbles) {
     await sendText({
       conversationId: opts.conversationId,
@@ -99,7 +132,7 @@ async function deliverTelegram(
   extraButtons?: TelegramButton[][],
   deps?: DeliverHumanDeps,
 ): Promise<void> {
-  const compiled = compileTelegram(stripConnectUrls(text));
+  const compiled = compileTelegram(text);
   const buttons =
     extraButtons && extraButtons.length > 0 ? extraButtons : compiled.buttons;
   const html = compiled.chunks[0] ?? compiled.html;

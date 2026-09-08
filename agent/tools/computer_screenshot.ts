@@ -22,45 +22,33 @@ const outputSchema = z.object({
 
 export default defineTool({
   description:
-    "Take a PNG screenshot of this person's Linux desktop (1920x1080). Returns the image to the model and saves it under /home/user/screens. Set send=true to attach it in this iMessage/Telegram chat. Otherwise call send_photo with the path. Not for shopping sites — use browser_task. Group chats cannot use the computer.",
+    "Take a PNG screenshot of this person's Linux desktop (1920x1080) and attach it in this iMessage/Telegram chat. Also returns the image to the model and saves it under /home/user/screens. Not for shopping sites — use browser_task. Group chats cannot use the computer.",
   inputSchema: z.object({
-    send: z.boolean().optional(),
     caption: z.string().max(1024).optional(),
   }),
-  async execute({ send, caption }, ctx) {
+  async execute({ caption }, ctx) {
     const who = asPersonal(ctx);
     if ("status" in who) return who;
     try {
       const running = await ensureSession({ phoneE164: who.phone });
       const shot = await screenshotDesktop(running.boxId);
-      const result: {
-        status: "ok";
-        path: string;
-        bytes: number;
-        mimeType: "image/png";
-        screenshotBase64: string;
-        sent?: boolean;
-        sentError?: string;
-      } = {
+      const delivered = await sendPhotoToHuman({
+        ...photoTargetFromAuth(attrsFromSession(ctx.session)),
+        caption,
+        source: {
+          kind: "bytes",
+          photo: photoFromBase64(shot.base64, shot.path, "image/png"),
+        },
+      });
+      return outputSchema.parse({
         status: "ok",
         path: shot.path,
         bytes: shot.bytes,
         mimeType: "image/png",
         screenshotBase64: shot.base64,
-      };
-      if (send) {
-        const delivered = await sendPhotoToHuman({
-          ...photoTargetFromAuth(attrsFromSession(ctx.session)),
-          caption,
-          source: {
-            kind: "bytes",
-            photo: photoFromBase64(shot.base64, shot.path, "image/png"),
-          },
-        });
-        if (delivered.status === "ok") result.sent = true;
-        else result.sentError = delivered.error;
-      }
-      return outputSchema.parse(result);
+        sent: delivered.status === "ok",
+        ...(delivered.status === "error" ? { sentError: delivered.error } : {}),
+      });
     } catch (err) {
       return computerFailure(err);
     }
@@ -70,10 +58,10 @@ export default defineTool({
       return toolOutput.json(output);
     }
     const sentLine = output.sent
-      ? " Отправил человеку в этот чат."
+      ? " Картинка уже у человека в этом чате."
       : output.sentError
         ? ` В чат не ушло (${output.sentError}) — вызови send_photo с ${output.path}.`
-        : ` Чтобы человек увидел — send_photo с ${output.path} или вызови снова с send=true.`;
+        : ` Вызови send_photo с ${output.path}.`;
     return toolOutput.content([
       toolOutputPart.text(
         `Снял экран компьютера (${output.bytes} байт). Файл: ${output.path}.${sentLine}`,

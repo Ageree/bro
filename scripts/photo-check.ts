@@ -1,14 +1,17 @@
 import { readFileSync, existsSync } from "node:fs";
 import {
   assertPublicPhotoUrl,
+  extractComputerImagePaths,
   extractMarkdownPhotoUrls,
   fetchPhotoBytes,
   imageMetaFromName,
+  imagePathFromCaptureStdout,
   parseSendPhotoInput,
   photoFromBase64,
   photoFromBytes,
   PHOTO_MAX_BYTES,
   sniffImage,
+  stripComputerImagePaths,
   stripMarkdownPhotos,
 } from "../agent/lib/outbound-photo.ts";
 import { photoTargetFromAuth, sendPhotoToHuman } from "../agent/lib/send-photo.ts";
@@ -26,6 +29,26 @@ const WEBP = Uint8Array.from([
 ]);
 
 assert(extractMarkdownPhotoUrls("нет фото").length === 0, "no photos");
+assert(
+  extractComputerImagePaths(
+    "Скриншот снял, файл: /home/user/dt5.jpg (компактная версия)",
+  )[0] === "/home/user/dt5.jpg",
+  "extract computer jpeg path",
+);
+assert(
+  extractComputerImagePaths("обрывок /home/user/dt5.").length === 0,
+  "truncated path is not a photo",
+);
+assert(
+  stripComputerImagePaths("файл лежит: /home/user/dt5.jpg ок") === "файл лежит ок",
+  "strip computer path leaves caption",
+);
+assert(
+  imagePathFromCaptureStdout("scrot /tmp/a.png\n/home/user/dt5.jpg\n") ===
+    "/home/user/dt5.jpg",
+  "exec last-line path is a capture",
+);
+assert(imagePathFromCaptureStdout("ok\n") === null, "plain stdout is not a capture");
 assert(
   extractMarkdownPhotoUrls("смотри\n![книга](https://img.example/a.jpg)")[0] ===
     "https://img.example/a.jpg",
@@ -249,6 +272,39 @@ assert(oversize, "oversize fetch rejected");
   assert(photos[0] === "https://img.example/a.jpg", "telegram markdown still sendPhoto");
 }
 
+{
+  const loaded: string[] = [];
+  const media: string[][] = [];
+  const texts: string[] = [];
+  await deliverHuman({
+    tenant: { phoneE164: "+79990000000", inkboxHandle: "bro-test" },
+    conversationId: "conv-path",
+    text: "Скриншот снял: /home/user/dt5.jpg",
+    channel: "imessage",
+    deps: {
+      loadComputerPhoto: async (phone, path) => {
+        loaded.push(`${phone}:${path}`);
+        return fromPng;
+      },
+      uploadIMessage: async () => "https://inkbox.example/dt5.png",
+      sendIMessageMedia: async (opts) => {
+        media.push(opts.mediaUrls);
+        return { service: "imessage" } as never;
+      },
+      sendIMessage: async (opts) => {
+        texts.push(opts.text);
+        return { service: "imessage" } as never;
+      },
+    },
+  });
+  assert(loaded[0] === "+79990000000:/home/user/dt5.jpg", "loads computer path");
+  assert(media[0]?.[0] === "https://inkbox.example/dt5.png", "attaches computer path");
+  assert(
+    texts.every((t) => !t.includes("/home/user/dt5.jpg")),
+    "path is not pasted as a leftover bubble",
+  );
+}
+
 const telegramTarget = photoTargetFromAuth({
   channel: "telegram",
   telegramChatId: "42",
@@ -275,15 +331,20 @@ const shot = readFileSync(
   new URL("../agent/tools/computer_screenshot.ts", import.meta.url),
   "utf8",
 );
-assert(shot.includes("send_photo"), "screenshot tells the model to send the file");
-assert(shot.includes("send=true") || shot.includes("send: z.boolean"), "screenshot can send itself");
 assert(shot.includes("sendPhotoToHuman"), "screenshot send uses the same path");
+assert(!shot.includes("send: z.boolean"), "screenshot always sends — no optional flag");
+assert(shot.includes("Картинка уже у человека"), "screenshot tells the model it already attached");
+
+const execTool = readFileSync(new URL("../agent/tools/computer_exec.ts", import.meta.url), "utf8");
+assert(execTool.includes("imagePathFromCaptureStdout"), "exec detects a captured image path");
+assert(execTool.includes("sendPhotoToHuman"), "exec attaches the captured image");
 
 const deliver = readFileSync(
   new URL("../agent/lib/deliver-human.ts", import.meta.url),
   "utf8",
 );
 assert(deliver.includes("extractMarkdownPhotoUrls"), "iMessage delivery sends markdown photos");
+assert(deliver.includes("extractComputerImagePaths"), "iMessage delivery attaches computer paths");
 assert(deliver.includes("sendPhotoToHuman"), "iMessage photos share send_photo path");
 
 const telegram = readFileSync(new URL("../agent/lib/telegram.ts", import.meta.url), "utf8");

@@ -4,8 +4,14 @@ import { compileTelegram } from "./telegram-text.ts";
 import {
   clipPhotoCaption,
   fetchPhotoBytes,
+  photoFromBase64,
   type PhotoBytes,
 } from "./outbound-photo.ts";
+import {
+  assertComputerPath,
+  ensureSession,
+  readBinaryFile,
+} from "./computer.ts";
 import { routingFromAuth, type AuthAttrs } from "./turn-routing.ts";
 import type { HumanChannel } from "../../convex/lib/telegramPolicy.ts";
 
@@ -41,6 +47,7 @@ export function photoTargetFromAuth(attrs: AuthAttrs): {
 
 export type SendPhotoDeps = {
   fetchPhoto?: (url: string) => Promise<PhotoBytes>;
+  loadComputerPhoto?: (phoneE164: string, path: string) => Promise<PhotoBytes>;
   uploadIMessage?: (opts: {
     content: Uint8Array;
     filename: string;
@@ -51,6 +58,16 @@ export type SendPhotoDeps = {
   sendTelegramUrl?: typeof sendTelegramPhoto;
   sendTelegramFile?: typeof sendTelegramPhotoFile;
 };
+
+export async function photoFromComputerPath(
+  phoneE164: string,
+  path: string,
+): Promise<PhotoBytes> {
+  const safe = assertComputerPath(path);
+  const running = await ensureSession({ phoneE164 });
+  const file = await readBinaryFile(running.boxId, safe);
+  return photoFromBase64(file.base64, file.path);
+}
 
 export async function sendPhotoToHuman(
   opts: SendPhotoTarget & {

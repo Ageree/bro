@@ -128,16 +128,14 @@ export async function deliverTurnBubble(opts: {
       ? null
       : await replyTenant(opts.conversationId);
   const tenant = lookedUp ?? routingTenant(routing);
+  const phone = routingPhone(routing, opts.principalId) ?? lookedUp?.phoneE164;
   await deliverHuman({
-    tenant,
+    tenant: { ...tenant, ...(phone ? { phoneE164: phone } : {}) },
     conversationId: opts.conversationId || undefined,
     text: opts.text,
     channel: routing.channel,
   });
-  await persistSeen(
-    routingPhone(routing, opts.principalId) ?? lookedUp?.phoneE164,
-    opts.seen,
-  );
+  await persistSeen(phone, opts.seen);
 }
 
 export function createTurnDeliveryEvents(opts: {
