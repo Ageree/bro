@@ -228,6 +228,63 @@ export const spendStartForAgent = mutation({
   },
 });
 
+export const startsTodayForAgent = query({
+  args: {
+    secret: v.string(),
+    phoneE164: v.string(),
+    now: v.number(),
+  },
+  returns: v.object({
+    used: v.number(),
+    allowance: v.number(),
+  }),
+  handler: async (ctx, args) => {
+    assertSecret(args.secret);
+    if (!Number.isFinite(args.now)) throw new Error("now must be finite");
+    const phone = args.phoneE164.trim();
+    if (!phone) throw new Error("phoneE164 required");
+    const tenant = await ctx.db
+      .query("tenants")
+      .withIndex("by_phone", (q) => q.eq("phoneE164", phone))
+      .first();
+    if (!tenant) return { used: 0, allowance: 0 };
+    const paid = isPaid(tenant.paidUntil, args.now);
+    const allowance = computerStartAllowance(paid, {
+      free: process.env.BRO_FREE_COMPUTER_STARTS_PER_DAY,
+      paid: process.env.BRO_PAID_COMPUTER_STARTS_PER_DAY,
+    });
+    const periodKey = rateLimitPeriodKey(tenant._id, dayKey(args.now, tenant.tz));
+    const { value } = await rateLimiter.getValue(ctx, "computerStartsPerDay", {
+      key: periodKey,
+      config: periodConfig(),
+    });
+    return { used: usedCount(value), allowance };
+  },
+});
+
+export const resetStartsForAgent = mutation({
+  args: {
+    secret: v.string(),
+    phoneE164: v.string(),
+    now: v.number(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    assertSecret(args.secret);
+    if (!Number.isFinite(args.now)) throw new Error("now must be finite");
+    const phone = args.phoneE164.trim();
+    if (!phone) throw new Error("phoneE164 required");
+    const tenant = await ctx.db
+      .query("tenants")
+      .withIndex("by_phone", (q) => q.eq("phoneE164", phone))
+      .first();
+    if (!tenant) return null;
+    const periodKey = rateLimitPeriodKey(tenant._id, dayKey(args.now, tenant.tz));
+    await rateLimiter.reset(ctx, "computerStartsPerDay", { key: periodKey });
+    return null;
+  },
+});
+
 export const touchForAgent = mutation({
   args: {
     secret: v.string(),
