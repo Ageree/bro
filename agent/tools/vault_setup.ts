@@ -18,7 +18,7 @@ function cabinetBase(): string {
 
 export default defineTool({
   description:
-    "Cabinet link to save payment, address, or contact. Site logins use profile_setup. Never put a card number, CVV, or secret in the arguments — they type those on the page.",
+    "Cabinet link to save payment, address, or contact. Site logins: password from chat goes in worker / browser_task; otherwise profile_setup. Never put a card number or CVV in the arguments — they type those on the page.",
   inputSchema: vaultSetupRequestSchema,
   async execute(request, ctx) {
     const blocked = groupPersonalBlock(ctx);
@@ -27,7 +27,7 @@ export default defineTool({
     return {
       url,
       message:
-        "Открой ссылку, войди в кабинет и введи данные там. Пароль и номер карты в чат не пиши.",
+        "Открой ссылку, войди в кабинет и введи данные там. Номер карты в чат не пиши.",
     };
   },
 });

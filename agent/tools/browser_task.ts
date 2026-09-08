@@ -227,14 +227,14 @@ function profileExtra(resolved: {
       ? {}
       : {
           needsProfileSync: true,
-          hint: "Сайт может потребовать логин. Вызови profile_setup с url страницы входа — ссылка уйдёт человеку в чат, он войдёт сам. Пароль не проси.",
+          hint: "Сайт может потребовать логин. Если пароль уже в чате — сразу вводи его в task и продолжай. Если нет — один вопрос какой пароль поставить, либо profile_setup с url страницы входа (ссылка, человек войдёт сам).",
         }),
   };
 }
 
 export default defineTool({
   description:
-    "Cloud browser (WB, Ozon, bookings, appointments, taxi, forms, search). Starts or polls the current job — never a second search. reset = fresh browser. needsProfileSync → profile_setup with the login URL, never ask for a password. status=completed → paste result. Buy: pay on first call (hosts = merchant hostnames; maxRub only if they named a ceiling). Card is server-typed. needsVaultSetup → vault_setup kind=payment.",
+    "Cloud browser (WB, Ozon, bookings, appointments, taxi, forms, search). Starts or polls the current job — never a second search. reset = fresh browser. If they gave a password, put it in task and type it (login and signup). needsProfileSync without a password → ask once or profile_setup with the login URL. status=completed → paste result. Buy: pay on first call (hosts = merchant hostnames; maxRub only if they named a ceiling). Card is server-typed. needsVaultSetup → vault_setup kind=payment.",
   inputSchema: z.object({
     task: z.string().min(1).max(4000),
     reset: z.boolean().optional(),

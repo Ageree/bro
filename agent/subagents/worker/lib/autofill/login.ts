@@ -23,18 +23,21 @@ export interface ClassifiedNativeLoginControl extends NativeLoginControlDescript
 }
 
 export function classifyNativeLoginControl(
-  descriptor: NativeLoginControlDescriptor
+  descriptor: NativeLoginControlDescriptor,
+  opts?: { allowSignupPassword?: boolean }
 ): ClassifiedNativeLoginControl | null {
+  const allowSignup = opts?.allowSignupPassword === true;
   const autocompleteTokens = descriptor.autocomplete
     .toLowerCase()
     .split(/\s+/u)
     .filter(Boolean);
-  if (
-    autocompleteTokens.some((token) =>
-      ["new-password", "one-time-code"].includes(token)
-    )
-  ) {
+  if (autocompleteTokens.includes("one-time-code")) {
     return null;
+  }
+  if (autocompleteTokens.includes("new-password")) {
+    return allowSignup
+      ? { ...descriptor, score: 90, token: "current-password" }
+      : null;
   }
 
   for (const token of nativeLoginAutofillTokens) {
@@ -46,17 +49,10 @@ export function classifyNativeLoginControl(
   const searchable = normalizeText(
     [descriptor.name, descriptor.label].filter(Boolean).join(" ")
   );
-  if (/\b(?:new|confirm|create|repeat)\s*password\b/u.test(searchable)) {
-    return null;
-  }
-  if (
-    hasPhrase(searchable, "новый пароль") ||
-    hasPhrase(searchable, "придумайте пароль") ||
-    hasPhrase(searchable, "подтвердите пароль") ||
-    hasPhrase(searchable, "повторите пароль") ||
-    hasPhrase(searchable, "подтверждение пароля")
-  ) {
-    return null;
+  if (isSignupPasswordLabel(searchable)) {
+    return allowSignup
+      ? { ...descriptor, score: 90, token: "current-password" }
+      : null;
   }
   if (descriptor.type === "password") {
     return { ...descriptor, score: 90, token: "current-password" };
@@ -128,11 +124,11 @@ export function selectNativeLoginFills<T extends ClassifiedNativeLoginControl>(
     if (value !== undefined) selected.push({ control: identifier, value });
   }
 
-  const password = sameSurface.find(
+  const passwords = sameSurface.filter(
     (control) =>
       control.token === "current-password" && values.has(control.token)
   );
-  if (password) {
+  for (const password of passwords) {
     const value = values.get(password.token);
     if (value !== undefined) selected.push({ control: password, value });
   }
@@ -200,6 +196,19 @@ function normalizeText(value: string) {
     .toLowerCase()
     .replaceAll(/[^a-z0-9\u0400-\u04FF]+/gu, " ")
     .trim();
+}
+
+function isSignupPasswordLabel(searchable: string): boolean {
+  if (/\b(?:new|confirm|create|repeat)\s*password\b/u.test(searchable)) {
+    return true;
+  }
+  return (
+    hasPhrase(searchable, "новый пароль") ||
+    hasPhrase(searchable, "придумайте пароль") ||
+    hasPhrase(searchable, "подтвердите пароль") ||
+    hasPhrase(searchable, "повторите пароль") ||
+    hasPhrase(searchable, "подтверждение пароля")
+  );
 }
 
 function hasPhrase(searchable: string, phrase: string) {

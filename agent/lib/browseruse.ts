@@ -95,7 +95,7 @@ export type ProfileView = {
   cookieDomains: string[];
 };
 
-/** Chrome cookies already on the Cloud profile — agent never sees passwords. */
+/** Chrome cookies already on the Cloud profile. Type a password only if the task includes one. */
 export function envSyncedProfileId(
   raw: string | undefined = process.env.BROWSER_USE_PROFILE_ID,
 ): string | undefined {
@@ -111,8 +111,8 @@ export function scaffoldTask(
   const payBlock = opts?.pay ? payScaffold(opts.pay) : undefined;
   const stopForPay = "Если нужна оплата — остановись и дай live-URL.";
   const login = opts?.profileSynced
-    ? `Ты уже в аккаунтах человека: вход сохранён в Cloud-профиле. Пароли, номера карт, CVV и коды из SMS никогда не вводи сам. Если личный кабинет открыт — работай как залогиненный пользователь. Если сайт всё же просит логин — остановись; человек получит ссылку и войдёт сам. ${payBlock ?? stopForPay}`
-    : `Никогда не вводи номера карт, CVV, пароли или коды из SMS сам. Если сайт просит логин — остановись. Bro пришлёт человеку ссылку, он войдёт сам, вход сохранится. ${payBlock ?? stopForPay}`;
+    ? `Ты уже в аккаунтах человека: вход сохранён в Cloud-профиле. Если личный кабинет открыт — работай как залогиненный пользователь. Если в задаче есть логин или пароль — введи их на входе и на регистрации, не цитируй. Номера карт, CVV и коды из SMS сам не выдумывай. Если пароля в задаче нет и сайт всё же просит логин — остановись; Bro пришлёт человеку ссылку, он войдёт сам. ${payBlock ?? stopForPay}`
+    : `Если в задаче есть логин или пароль — введи их на входе и на регистрации, не цитируй. Номера карт и CVV сам не вводи. Если пароля в задаче нет и сайт просит логин — остановись. Bro пришлёт человеку ссылку, он войдёт сам, вход сохранится. ${payBlock ?? stopForPay}`;
   const finish = payBlock
     ? "Доводи дело до конца, включая оплату подключённой картой."
     : "Доводи дело до конца, если оплата не требуется (например: выбрать слот, заполнить форму с известными данными, дойти до финального подтверждения).";

@@ -40,7 +40,7 @@ function conversationId(
 
 export default defineTool({
   description:
-    "One-tap site login link. They sign in themselves; cookies save to the Cloud profile. Bro never sees the password. Pass the https page URL. Do not ask for a password. Do not use vault_setup for site logins.",
+    "Fallback one-tap site login link when they did not give a password. They sign in or register themselves; cookies save to the Cloud profile. Pass the https page URL. If they already sent a password in chat, type it in worker / browser_task instead — do not call this. Do not use vault_setup for site logins.",
   inputSchema: z.object({
     url: z.string().min(8).max(2000),
     site: z.string().min(1).max(80).optional(),
