@@ -752,7 +752,7 @@ export type ComputerRow = {
 export async function getComputer(
   phoneE164: string,
 ): Promise<ComputerRow | null> {
-  return (await client().query(anyApi.computers.getForAgent, {
+  return (await client().query(api.computers.getForAgent, {
     secret: secret(),
     phoneE164,
   })) as ComputerRow | null;
@@ -762,7 +762,7 @@ export async function claimComputer(
   phoneE164: string,
   opts?: { size?: ComputerRow["size"]; now?: number },
 ): Promise<ComputerRow | null> {
-  return (await client().mutation(anyApi.computers.claimForAgent, {
+  return (await client().mutation(api.computers.claimForAgent, {
     secret: secret(),
     phoneE164,
     now: opts?.now ?? Date.now(),
@@ -776,7 +776,7 @@ export async function bindComputer(
   lastState: string,
   now = Date.now(),
 ): Promise<ComputerRow | null> {
-  return (await client().mutation(anyApi.computers.bindForAgent, {
+  return (await client().mutation(api.computers.bindForAgent, {
     secret: secret(),
     phoneE164,
     boxId,
@@ -790,7 +790,7 @@ export async function setComputerState(
   lastState: string,
   now = Date.now(),
 ): Promise<ComputerRow | null> {
-  return (await client().mutation(anyApi.computers.setStateForAgent, {
+  return (await client().mutation(api.computers.setStateForAgent, {
     secret: secret(),
     phoneE164,
     lastState,
@@ -801,10 +801,21 @@ export async function setComputerState(
 export async function deleteComputer(
   phoneE164: string,
 ): Promise<boolean> {
-  return (await client().mutation(anyApi.computers.deleteForAgent, {
+  return await client().mutation(api.computers.deleteForAgent, {
     secret: secret(),
     phoneE164,
-  })) as boolean;
+  });
+}
+
+export async function spendComputerStart(
+  phoneE164: string,
+  now = Date.now(),
+): Promise<boolean> {
+  return await client().mutation(api.computers.spendStartForAgent, {
+    secret: secret(),
+    phoneE164,
+    now,
+  });
 }
 
 export async function chatgptStatus(
@@ -814,15 +825,11 @@ export async function chatgptStatus(
   email?: string;
   planType?: string;
 }> {
-  return (await client().query(anyApi.chatgpt.statusForAgent, {
+  return await client().query(api.chatgpt.statusForAgent, {
     secret: secret(),
     phoneE164,
     now: Date.now(),
-  })) as {
-    status: "none" | "pending" | "connected" | "quarantined";
-    email?: string;
-    planType?: string;
-  };
+  });
 }
 
 export async function chatgptToken(phoneE164: string): Promise<{
@@ -830,33 +837,29 @@ export async function chatgptToken(phoneE164: string): Promise<{
   accessToken?: string;
   accountId?: string;
 }> {
-  return (await client().action(anyApi.chatgptSecrets.tokenForAgent, {
+  return await client().action(api.chatgptSecrets.tokenForAgent, {
     secret: secret(),
     phoneE164,
-  })) as {
-    status: "connected" | "none" | "quarantined";
-    accessToken?: string;
-    accountId?: string;
-  };
+  });
 }
 
 export async function chatgptQuarantine(
   phoneE164: string,
   reason: string,
 ): Promise<boolean> {
-  return (await client().mutation(anyApi.chatgpt.quarantineForAgent, {
+  return await client().mutation(api.chatgpt.quarantineForAgent, {
     secret: secret(),
     phoneE164,
     now: Date.now(),
     reason,
-  })) as boolean;
+  });
 }
 
 export async function touchComputer(
   phoneE164: string,
   now = Date.now(),
 ): Promise<ComputerRow | null> {
-  return (await client().mutation(anyApi.computers.touchForAgent, {
+  return (await client().mutation(api.computers.touchForAgent, {
     secret: secret(),
     phoneE164,
     now,

@@ -8,6 +8,7 @@ import {
 import { chatgptQuarantine, chatgptStatus, chatgptToken } from "./convex.ts";
 import { tenantId } from "./tenant.ts";
 import {
+  CodexUnavailableError,
   isCodexFallbackError,
   type CodexTokenBroker,
 } from "./codex-model.ts";
@@ -19,9 +20,16 @@ type TurnCtx = Parameters<typeof tenantId>[0] & Parameters<typeof isGroupTurn>[0
 function convexBroker(phoneE164: string): CodexTokenBroker {
   return {
     async getToken() {
-      const row = await chatgptToken(phoneE164);
+      let row;
+      try {
+        row = await chatgptToken(phoneE164);
+      } catch (err) {
+        throw new CodexUnavailableError(
+          err instanceof Error ? err.message : "chatgpt token unavailable",
+        );
+      }
       if (row.status !== "connected" || !row.accessToken) {
-        throw new Error("chatgpt token unavailable");
+        throw new CodexUnavailableError("chatgpt token unavailable");
       }
       return {
         accessToken: row.accessToken,

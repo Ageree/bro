@@ -40,6 +40,7 @@ assert.match(computersSrc, /export const claimForAgent/, "computers.claimForAgen
 assert.match(computersSrc, /export const bindForAgent/, "computers.bindForAgent");
 assert.match(computersSrc, /export const getForAgent/, "computers.getForAgent");
 assert.match(computersSrc, /export const deleteForAgent/, "computers.deleteForAgent");
+assert.match(computersSrc, /export const spendStartForAgent/, "computers.spendStartForAgent");
 assert.doesNotMatch(
   computersSrc,
   /export const getByPhone/,

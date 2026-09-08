@@ -429,7 +429,9 @@ async function chatgptSnapshot(
     .query("chatgptLogins")
     .withIndex("by_tenant", (q) => q.eq("tenantId", tenantId))
     .collect();
-  const login = logins.slice().sort((a, b) => b.expiresAt - a.expiresAt)[0];
+  const login = logins
+    .slice()
+    .sort((a, b) => (b._creationTime ?? b.expiresAt) - (a._creationTime ?? a.expiresAt))[0];
   const loginStatus = login
     ? nextLoginStatus({
         status: login.status,

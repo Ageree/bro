@@ -96,9 +96,18 @@ export function createCodexFetch(opts: {
     const source = input instanceof Request ? input : undefined;
     const url = rewriteCodexResponsesUrl(requestUrl(input), endpoint);
     const headers = new Headers(init?.headers ?? source?.headers);
-    const first = await broker.getToken({ reason: "request" });
+    let first: CodexBrokerToken;
+    try {
+      first = await broker.getToken({ reason: "request" });
+    } catch (err) {
+      throw err instanceof CodexUnavailableError
+        ? err
+        : new CodexUnavailableError(
+            err instanceof Error ? err.message : "broker failed",
+          );
+    }
     if (typeof first.accessToken !== "string" || first.accessToken.length === 0) {
-      throw new Error("broker returned an empty access token");
+      throw new CodexUnavailableError("broker returned an empty access token");
     }
     applyCodexHeaders(headers, first, broker);
     const requestInit: RequestInit = {
@@ -108,11 +117,27 @@ export function createCodexFetch(opts: {
       redirect: init?.redirect ?? source?.redirect,
       signal: init?.signal ?? source?.signal,
     };
-    const response = await base(url, requestInit);
+    let response: Response;
+    try {
+      response = await base(url, requestInit);
+    } catch (err) {
+      throw new CodexUnavailableError(
+        err instanceof Error ? err.message : "codex fetch failed",
+      );
+    }
     if (response.status !== 401) return response;
-    const retry = await broker.getToken({ reason: "rejected" });
+    let retry: CodexBrokerToken;
+    try {
+      retry = await broker.getToken({ reason: "rejected" });
+    } catch (err) {
+      throw err instanceof CodexUnavailableError
+        ? err
+        : new CodexUnavailableError(
+            err instanceof Error ? err.message : "broker failed",
+          );
+    }
     if (typeof retry.accessToken !== "string" || retry.accessToken.length === 0) {
-      throw new Error("broker returned an empty access token");
+      throw new CodexUnavailableError("broker returned an empty access token");
     }
     const retryHeaders = new Headers(init?.headers ?? source?.headers);
     applyCodexHeaders(retryHeaders, retry, broker);
@@ -146,9 +171,30 @@ function fallbackStatus(error: unknown): number | undefined {
   return undefined;
 }
 
+export class CodexUnavailableError extends Error {
+  constructor(message = "codex unavailable") {
+    super(message);
+    this.name = "CodexUnavailableError";
+  }
+}
+
+export function isCodexUnavailableError(error: unknown): boolean {
+  if (error instanceof CodexUnavailableError) return true;
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "name" in error &&
+    (error as { name?: unknown }).name === "CodexUnavailableError"
+  );
+}
+
 export function isCodexFallbackError(error: unknown): boolean {
   const status = fallbackStatus(error);
   return status !== undefined && FALLBACK_STATUSES.has(status);
+}
+
+export function shouldFallbackFromCodex(error: unknown): boolean {
+  return isCodexFallbackError(error) || isCodexUnavailableError(error);
 }
 
 /** Switch to fallback only when the primary call fails before any chunk. */
@@ -172,7 +218,7 @@ export function withFallback<T extends LanguageModelLike>(
     try {
       return await primary[method](...args);
     } catch (error) {
-      if (!isCodexFallbackError(error)) throw error;
+      if (!shouldFallbackFromCodex(error)) throw error;
       await onFail(error);
       return await fallback[method](...args);
     }
@@ -180,6 +226,10 @@ export function withFallback<T extends LanguageModelLike>(
 
   return {
     ...primary,
+    specificationVersion: primary.specificationVersion,
+    provider: primary.provider,
+    modelId: primary.modelId,
+    supportedUrls: primary.supportedUrls,
     doGenerate: (...args: never[]) => run("doGenerate", args),
     doStream: (...args: never[]) => run("doStream", args),
   };

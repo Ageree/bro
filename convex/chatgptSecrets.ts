@@ -36,7 +36,7 @@ const tokenResult = v.union(
 
 type TokenResult = Infer<typeof tokenResult>;
 
-type ChatgptInternal = {
+type ChatgptApi = {
   secretForTenant: FunctionReference<
     "query",
     "internal",
@@ -137,8 +137,26 @@ type ChatgptInternal = {
   >;
 };
 
-function chatgptInternal(): ChatgptInternal {
-  return (internal as unknown as { chatgpt: ChatgptInternal }).chatgpt;
+function chatgptApi(): ChatgptApi {
+  return internal.chatgpt;
+}
+
+function pollDeviceLoginRef(): FunctionReference<
+  "action",
+  "internal",
+  { tenantId: Id<"tenants">; deviceAuthId: string; deadline: number },
+  null
+> {
+  return internal.chatgptSecrets.pollDeviceLogin;
+}
+
+function saveTokensRef(): FunctionReference<
+  "action",
+  "internal",
+  { tenantId: Id<"tenants">; json: string; version: number; now: number },
+  { ok: boolean; version: number }
+> {
+  return internal.chatgptSecrets.saveTokens;
 }
 
 function requireTenantId(tenantId: Id<"tenants">): Id<"tenants"> {
@@ -195,7 +213,7 @@ export const saveTokens = internalAction({
       CHATGPT_OAUTH_HANDLE,
       json,
     );
-    const api = chatgptInternal();
+    const api = chatgptApi();
     const stored = await ctx.runMutation(api.putSecret, {
       tenantId,
       ciphertext,
@@ -236,7 +254,7 @@ export const tokenForAgent = action({
     const phone = requirePhone(phoneE164);
     const tenantId = await tenantIdForPhone(ctx, phone);
     if (!tenantId) return { status: "none" };
-    const api = chatgptInternal();
+    const api = chatgptApi();
     const stored = await ctx.runQuery(api.secretForTenant, { tenantId });
     if (!stored) return { status: "none" };
     if (stored.quarantinedAt != null) return { status: "quarantined" };
@@ -256,6 +274,23 @@ export const tokenForAgent = action({
       });
       if (!refreshed.ok) {
         if (refreshed.invalidGrant) {
+          const again = await ctx.runQuery(api.secretForTenant, { tenantId });
+          if (again && again.version !== stored.version) {
+            const newer = parseChatgptOAuthJson(
+              decryptVaultSecret(
+                vaultMasterKey(),
+                tenantId,
+                CHATGPT_OAUTH_HANDLE,
+                again.ciphertext,
+              ),
+            );
+            return {
+              status: "connected" as const,
+              accessToken: newer.access_token,
+              ...(newer.account_id ? { accountId: newer.account_id } : {}),
+              accessExpiresAt: newer.expires_at,
+            };
+          }
           await ctx.runMutation(api.quarantine, {
             tenantId,
             now,
@@ -263,7 +298,15 @@ export const tokenForAgent = action({
           });
           return { status: "quarantined" };
         }
-        throw new Error(refreshed.message);
+        if (tokens.access_token && expiresAt !== undefined && expiresAt > now) {
+          return {
+            status: "connected" as const,
+            accessToken: tokens.access_token,
+            ...(tokens.account_id ? { accountId: tokens.account_id } : {}),
+            accessExpiresAt: expiresAt,
+          };
+        }
+        return { status: "none" };
       }
       tokens = refreshed.tokens;
       const nextVersion = stored.version + 1;
@@ -312,7 +355,7 @@ export const disconnect = action({
     const phone = requirePhone(phoneE164);
     const tenantId = await tenantIdForPhone(ctx, phone);
     if (!tenantId) return { status: "none" as const };
-    const api = chatgptInternal();
+    const api = chatgptApi();
     const stored = await ctx.runQuery(api.secretForTenant, { tenantId });
     await ctx.runMutation(api.clearAccount, { tenantId });
     return { status: stored ? ("ok" as const) : ("none" as const) };
@@ -325,7 +368,7 @@ export const disconnectForTenant = internalAction({
     status: v.union(v.literal("ok"), v.literal("none")),
   }),
   handler: async (ctx, { tenantId }) => {
-    const api = chatgptInternal();
+    const api = chatgptApi();
     const stored = await ctx.runQuery(api.secretForTenant, { tenantId });
     await ctx.runMutation(api.clearAccount, { tenantId });
     return { status: stored ? ("ok" as const) : ("none" as const) };
@@ -363,6 +406,46 @@ function jwtClaims(token: string): Record<string, unknown> {
   }
 }
 
+export const startLoginForAgent = action({
+  args: {
+    secret: v.string(),
+    phoneE164: v.string(),
+  },
+  returns: v.union(
+    v.object({
+      ok: v.literal(true),
+      url: v.string(),
+      userCode: v.string(),
+      interval: v.number(),
+      expiresAt: v.number(),
+    }),
+    v.object({ ok: v.literal(false), reason: v.string() }),
+  ),
+  handler: async (ctx, { secret, phoneE164 }) => {
+    assertSecret(secret);
+    const phone = requirePhone(phoneE164);
+    const tenantId = await tenantIdForPhone(ctx, phone);
+    if (!tenantId) return { ok: false as const, reason: "unknown tenant" };
+    const started = await startDeviceAuth();
+    const api = chatgptApi();
+    await ctx.runMutation(api.startLogin, {
+      tenantId,
+      deviceAuthId: started.deviceAuthId,
+      userCode: started.userCode,
+      interval: started.interval,
+      expiresAt: started.expiresAt,
+      now: Date.now(),
+    });
+    return {
+      ok: true as const,
+      url: started.url,
+      userCode: started.userCode,
+      interval: started.interval,
+      expiresAt: started.expiresAt,
+    };
+  },
+});
+
 export const startDeviceLoginForTenant = internalAction({
   args: { tenantId: v.id("tenants") },
   returns: v.object({
@@ -373,7 +456,7 @@ export const startDeviceLoginForTenant = internalAction({
   }),
   handler: async (ctx, { tenantId }) => {
     const started = await startDeviceAuth();
-    const api = chatgptInternal();
+    const api = chatgptApi();
     await ctx.runMutation(api.startLogin, {
       tenantId,
       deviceAuthId: started.deviceAuthId,
@@ -400,7 +483,7 @@ export const pollDeviceLogin = internalAction({
   returns: v.null(),
   handler: async (ctx, args) => {
     const now = Date.now();
-    const api = chatgptInternal();
+    const api = chatgptApi();
     if (now >= args.deadline) {
       await ctx.runMutation(api.expireLogin, {
         tenantId: args.tenantId,
@@ -430,7 +513,7 @@ export const pollDeviceLogin = internalAction({
         });
         return null;
       }
-      await ctx.scheduler.runAfter(wait, pollRef(), {
+      await ctx.scheduler.runAfter(wait, pollDeviceLoginRef(), {
         tenantId: args.tenantId,
         deviceAuthId: args.deviceAuthId,
         deadline: args.deadline,
@@ -476,35 +559,3 @@ export const pollDeviceLogin = internalAction({
   },
 });
 
-function pollRef(): FunctionReference<
-  "action",
-  "internal",
-  { tenantId: Id<"tenants">; deviceAuthId: string; deadline: number },
-  null
-> {
-  return (
-    internal as unknown as {
-      chatgptSecrets: { pollDeviceLogin: FunctionReference<"action", "internal", { tenantId: Id<"tenants">; deviceAuthId: string; deadline: number }, null> };
-    }
-  ).chatgptSecrets.pollDeviceLogin;
-}
-
-function saveTokensRef(): FunctionReference<
-  "action",
-  "internal",
-  { tenantId: Id<"tenants">; json: string; version: number; now: number },
-  { ok: boolean; version: number }
-> {
-  return (
-    internal as unknown as {
-      chatgptSecrets: {
-        saveTokens: FunctionReference<
-          "action",
-          "internal",
-          { tenantId: Id<"tenants">; json: string; version: number; now: number },
-          { ok: boolean; version: number }
-        >;
-      };
-    }
-  ).chatgptSecrets.saveTokens;
-}

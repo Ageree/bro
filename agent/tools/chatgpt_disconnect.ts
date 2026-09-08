@@ -1,7 +1,7 @@
 import { ConvexHttpClient } from "convex/browser";
-import { anyApi } from "convex/server";
 import { defineTool } from "eve/tools";
 import { z } from "zod";
+import { api } from "../../convex/_generated/api.js";
 import { groupPersonalBlock } from "../lib/group-guard";
 import { tenantId } from "../lib/tenant";
 
@@ -29,10 +29,10 @@ export default defineTool({
     }
     try {
       const client = new ConvexHttpClient(url);
-      return (await client.action(anyApi.chatgptSecrets.disconnect, {
+      return await client.action(api.chatgptSecrets.disconnect, {
         secret,
         phoneE164: phone,
-      })) as { status: "ok" | "none" };
+      });
     } catch (err) {
       console.error("chatgpt disconnect failed", err);
       return { status: "ok" as const };

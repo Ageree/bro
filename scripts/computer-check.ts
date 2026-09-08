@@ -1,10 +1,16 @@
 import { BoxHttpError, type BoxState } from "../agent/lib/boxClient.ts";
 import {
+  ComputerError,
   ensureRunning,
   runCabinetComputerAction,
   wipeDisk,
   type ComputerStore,
 } from "../agent/lib/computer.ts";
+import {
+  computerStartAllowance,
+  DEFAULT_FREE_COMPUTER_STARTS_PER_DAY,
+  DEFAULT_PAID_COMPUTER_STARTS_PER_DAY,
+} from "../convex/lib/computerPolicy.ts";
 import type { ComputerRow } from "../agent/lib/convex.ts";
 import {
   BRO_COMPUTER_START_RESERVE,
@@ -70,6 +76,17 @@ assert(
   canSpendStart({ canStart: true, remaining: 3, reserve: 3 }) === true,
   "custom reserve at",
 );
+
+assert(
+  computerStartAllowance(false) === DEFAULT_FREE_COMPUTER_STARTS_PER_DAY,
+  "free starts default 3",
+);
+assert(
+  computerStartAllowance(true) === DEFAULT_PAID_COMPUTER_STARTS_PER_DAY,
+  "paid starts default 20",
+);
+assert(computerStartAllowance(false, { free: "1" }) === 1, "free env override");
+assert(computerStartAllowance(true, { paid: "7" }) === 7, "paid env override");
 
 let clock = 1_700_000_000_000;
 const fake = createFakeBox({ now: () => clock });
@@ -192,6 +209,21 @@ const [a, b] = await Promise.all([
 ]);
 assert(a.boxId === b.boxId, "parallel ensureRunning shares one box");
 assert(parallel.startsToday() === 1, "idempotent create spends one start");
+
+const wipeKeep = memoryStore("tenants_wipe_keep");
+const wipeFake = createFakeBox({ now: () => clock });
+await ensureRunning({ phoneE164: "+15555550109", store: wipeKeep }, wipeFake);
+wipeFake.remove = async () => {
+  throw new BoxHttpError(500, "busy", "busy");
+};
+let wipeFailed = false;
+try {
+  await wipeDisk("+15555550109", wipeKeep, wipeFake);
+} catch (err) {
+  wipeFailed = err instanceof ComputerError;
+}
+assert(wipeFailed, "failed wipe throws");
+assert((await wipeKeep.get("+15555550109")) !== null, "failed wipe keeps the row");
 
 const wiped = await wipeDisk("+15555550100", store, parallel);
 assert(wiped.state === "none", "wipe clears store");

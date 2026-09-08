@@ -1,5 +1,4 @@
 import { v } from "convex/values";
-import type { FunctionReference } from "convex/server";
 import {
   internalMutation,
   internalQuery,
@@ -62,6 +61,7 @@ type ChatgptSecretRow = {
 
 type ChatgptLoginRow = {
   _id: string;
+  _creationTime?: number;
   tenantId: Id<"tenants">;
   deviceAuthId: string;
   userCode: string;
@@ -157,8 +157,12 @@ async function loginsForTenant(
     .collect()) as ChatgptLoginRow[];
 }
 
+function loginRecency(row: ChatgptLoginRow): number {
+  return row._creationTime ?? row.createdAt ?? row.expiresAt;
+}
+
 function latestLogin(rows: ChatgptLoginRow[]): ChatgptLoginRow | undefined {
-  return rows.slice().sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))[0];
+  return rows.slice().sort((a, b) => loginRecency(b) - loginRecency(a))[0];
 }
 
 function statusFromRows(
@@ -345,23 +349,7 @@ async function scheduleDevicePoll(
   },
 ): Promise<void> {
   const delay = Math.max(1000, Math.floor(args.interval * 1000));
-  const poll = (
-    internal as unknown as {
-      chatgptSecrets: {
-        pollDeviceLogin: FunctionReference<
-          "action",
-          "internal",
-          {
-            tenantId: Id<"tenants">;
-            deviceAuthId: string;
-            deadline: number;
-          },
-          null
-        >;
-      };
-    }
-  ).chatgptSecrets.pollDeviceLogin;
-  await ctx.scheduler.runAfter(delay, poll, {
+  await ctx.scheduler.runAfter(delay, internal.chatgptSecrets.pollDeviceLogin, {
     tenantId: args.tenantId,
     deviceAuthId: args.deviceAuthId,
     deadline: args.expiresAt,

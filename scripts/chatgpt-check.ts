@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { APICallError } from "ai";
 import {
   CODEX_RESPONSES_URL,
+  CodexUnavailableError,
   createCodexFetch,
   rewriteCodexResponsesUrl,
   withFallback,
@@ -200,6 +201,40 @@ try {
 assert(threw, "500 does not fall back");
 assert(hardFail === 0, "onFail skipped for non-quota errors");
 
+const getterPrimary: LanguageModelLike = {
+  doGenerate: async () => ({ text: "ok" }),
+  doStream: async () => ({ stream: "ok" }),
+};
+Object.defineProperty(getterPrimary, "provider", {
+  get: () => "chatgpt-codex",
+  enumerable: false,
+});
+Object.defineProperty(getterPrimary, "modelId", {
+  get: () => "gpt-5.6-sol",
+  enumerable: false,
+});
+const keptMeta = withFallback(getterPrimary, fallback, () => undefined);
+assert(keptMeta.provider === "chatgpt-codex", "provider getter survives wrap");
+assert(keptMeta.modelId === "gpt-5.6-sol", "modelId getter survives wrap");
+
+let unavailableFail = 0;
+const missing: LanguageModelLike = {
+  doGenerate: async () => {
+    throw new CodexUnavailableError("broker down");
+  },
+  doStream: async () => {
+    throw new CodexUnavailableError("broker down");
+  },
+};
+const recovered = withFallback(missing, fallback, () => {
+  unavailableFail += 1;
+});
+assert(
+  ((await recovered.doGenerate()) as { text: string }).text === "openrouter",
+  "broker failure falls back",
+);
+assert(unavailableFail === 1, "onFail runs for unavailable");
+
 process.env.BRO_VAULT_KEY = randomBytes(32).toString("base64");
 const master = vaultMasterKey();
 const tenantId = "tenants|chatgpt-check";
@@ -319,6 +354,8 @@ const connectSrc = await import("node:fs").then((fs) =>
   fs.readFileSync(new URL("../agent/tools/chatgpt_connect.ts", import.meta.url), "utf8"),
 );
 assert(connectSrc.includes("Я сам проверю вход"), "connect tool says polling is on");
+assert(connectSrc.includes("startLoginForAgent"), "connect tool starts login in Convex");
+assert(!connectSrc.includes("startDeviceAuth"), "connect tool does not talk to OpenAI");
 assert(!connectSrc.includes("ещё не подключён"), "connect tool no longer says polling is off");
 
 const secretsSrc = await import("node:fs").then((fs) =>
@@ -327,6 +364,7 @@ const secretsSrc = await import("node:fs").then((fs) =>
 assert(secretsSrc.includes("pollDeviceAuth"), "secrets poller talks to deviceauth");
 assert(secretsSrc.includes("exchangeDeviceCode"), "secrets poller exchanges the code");
 assert(secretsSrc.includes("startDeviceLoginForTenant"), "cabinet start is an internal action");
+assert(secretsSrc.includes("startLoginForAgent"), "agent start is a secret-gated action");
 assert(secretsSrc.includes("disconnectForTenant"), "cabinet disconnect is internal");
 
 console.log("chatgpt:check OK");

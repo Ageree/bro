@@ -12,6 +12,7 @@ import {
   deleteComputer,
   getComputer,
   setComputerState,
+  spendComputerStart,
   touchComputer,
   type ComputerRow,
 } from "./convex.ts";
@@ -57,6 +58,7 @@ export type ComputerStore = {
   ): Promise<ComputerRow | null>;
   touch(phoneE164: string, now?: number): Promise<ComputerRow | null>;
   remove(phoneE164: string): Promise<boolean>;
+  spendStart?(phoneE164: string, now?: number): Promise<boolean>;
 };
 
 export const convexComputerStore: ComputerStore = {
@@ -66,6 +68,7 @@ export const convexComputerStore: ComputerStore = {
   setState: setComputerState,
   touch: touchComputer,
   remove: deleteComputer,
+  spendStart: spendComputerStart,
 };
 
 export type EnsureRunningOpts = {
@@ -179,6 +182,7 @@ function storeOf(opts: EnsureRunningOpts): ComputerStore {
 
 function startInput(
   tenantConvexId: string,
+  claimId: string,
   size: ComputerSize = "small",
 ): {
   type: ComputerSize;
@@ -192,7 +196,7 @@ function startInput(
     noEnv: true,
     ttlSeconds: BRO_COMPUTER_TTL_SECONDS,
     env: { TENANT_ID: tenantConvexId },
-    idempotencyKey: `bro:${tenantConvexId}:v1`,
+    idempotencyKey: `bro:${tenantConvexId}:${claimId}`,
   };
 }
 
@@ -206,7 +210,15 @@ async function maybeRenewTtl(
   return await client.update(box.id, { ttlSeconds: BRO_COMPUTER_TTL_SECONDS });
 }
 
-async function assertCanStart(client: BoxClient): Promise<void> {
+async function assertCanStart(
+  client: BoxClient,
+  store: ComputerStore,
+  phoneE164: string,
+): Promise<void> {
+  if (store.spendStart) {
+    const allowed = await store.spendStart(phoneE164);
+    if (!allowed) throw new ComputerError("limit", "computer start limit reached");
+  }
   const limits = await client.limits();
   if (
     !canSpendStart({
@@ -219,7 +231,12 @@ async function assertCanStart(client: BoxClient): Promise<void> {
   }
 }
 
-async function settle(client: BoxClient, box: BoxRecord): Promise<BoxRecord> {
+async function settle(
+  client: BoxClient,
+  box: BoxRecord,
+  store: ComputerStore,
+  phoneE164: string,
+): Promise<BoxRecord> {
   let current = box;
   for (let i = 0; i < SETTLE_ROUNDS; i++) {
     const action = nextCommandAction(current.state);
@@ -227,7 +244,7 @@ async function settle(client: BoxClient, box: BoxRecord): Promise<BoxRecord> {
       return await maybeRenewTtl(client, current);
     }
     if (action === "resume") {
-      await assertCanStart(client);
+      await assertCanStart(client, store, phoneE164);
       current = await client.resume(current.id, {
         noEnv: true,
         ttlSeconds: BRO_COMPUTER_TTL_SECONDS,
@@ -247,10 +264,13 @@ async function settle(client: BoxClient, box: BoxRecord): Promise<BoxRecord> {
 async function startBox(
   client: BoxClient,
   tenantConvexId: string,
-  size: ComputerSize = "small",
+  claimId: string,
+  size: ComputerSize,
+  store: ComputerStore,
+  phoneE164: string,
 ): Promise<BoxRecord> {
-  await assertCanStart(client);
-  const input = startInput(tenantConvexId, size);
+  await assertCanStart(client, store, phoneE164);
+  const input = startInput(tenantConvexId, claimId, size);
   const template = process.env.BOX_TEMPLATE_ID?.trim();
   const created = template
     ? await client.fork(template, input)
@@ -280,7 +300,10 @@ export async function ensureRunning(
     const created = await startBox(
       client,
       claimed.tenantId,
+      claimed._id,
       opts.size ?? "small",
+      store,
+      opts.phoneE164,
     );
     const bound = await store.bind(
       opts.phoneE164,
@@ -299,7 +322,7 @@ export async function ensureRunning(
   }
 
   const got = await client.get(boxId);
-  const ready = await settle(client, got);
+  const ready = await settle(client, got, store, opts.phoneE164);
   await store.setState(opts.phoneE164, ready.state);
   await store.touch(opts.phoneE164);
   return { boxId: ready.id, state: ready.state };
@@ -413,6 +436,10 @@ export async function stop(
   return { boxId: box.id, state: box.state };
 }
 
+function boxGone(err: unknown): boolean {
+  return err instanceof BoxHttpError && (err.status === 404 || err.code === "not_found");
+}
+
 export async function wipeDisk(
   phoneE164: string,
   store: ComputerStore = convexComputerStore,
@@ -422,11 +449,18 @@ export async function wipeDisk(
   if (boxId) {
     try {
       await client.remove(boxId);
-    } catch {
-      try {
-        await client.stop(boxId);
-      } catch {
-        // disk gone or already archived
+    } catch (err) {
+      if (!boxGone(err)) {
+        try {
+          await client.get(boxId);
+        } catch (getErr) {
+          if (boxGone(getErr)) {
+            await store.remove(phoneE164);
+            return { state: "none" };
+          }
+          throw new ComputerError("error", "could not wipe computer");
+        }
+        throw new ComputerError("error", "could not wipe computer");
       }
     }
   }

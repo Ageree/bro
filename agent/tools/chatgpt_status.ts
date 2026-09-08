@@ -1,18 +1,11 @@
 import { ConvexHttpClient } from "convex/browser";
-import { anyApi } from "convex/server";
 import { defineTool } from "eve/tools";
 import { z } from "zod";
+import { api } from "../../convex/_generated/api.js";
 import { groupPersonalBlock } from "../lib/group-guard";
 import { tenantId } from "../lib/tenant";
 
 const SHARED = new Set(["local-dev", "unknown", "default", "eve:app"]);
-
-type StatusRow = {
-  status: "none" | "pending" | "connected" | "quarantined";
-  email?: string;
-  planType?: string;
-  loginStatus?: "pending" | "done" | "expired" | "failed";
-};
 
 export default defineTool({
   description:
@@ -33,12 +26,11 @@ export default defineTool({
     }
     try {
       const client = new ConvexHttpClient(url);
-      const row = (await client.query(anyApi.chatgpt.statusForAgent, {
+      return await client.query(api.chatgpt.statusForAgent, {
         secret,
         phoneE164: phone,
         now: Date.now(),
-      })) as StatusRow;
-      return row;
+      });
     } catch (err) {
       console.error("chatgpt status failed", err);
       return { status: "none" as const };

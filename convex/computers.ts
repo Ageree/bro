@@ -17,6 +17,14 @@ import {
   patchComputerState,
   touchComputerActive,
 } from "./lib/computerStore";
+import { computerStartAllowance } from "./lib/computerPolicy";
+import {
+  dayKey,
+  isPaid,
+  rateLimitPeriodKey,
+  usedCount,
+} from "./lib/billingPolicy";
+import { periodConfig, rateLimiter } from "./lib/rateLimits";
 import type { Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 
@@ -180,6 +188,43 @@ export const deleteForAgent = mutation({
     const tenantId = await tenantByPhone(ctx, args.phoneE164);
     if (!tenantId) return false;
     return await deleteComputersForTenant(ctx, tenantId);
+  },
+});
+
+export const spendStartForAgent = mutation({
+  args: {
+    secret: v.string(),
+    phoneE164: v.string(),
+    now: v.number(),
+  },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    assertSecret(args.secret);
+    if (!Number.isFinite(args.now)) throw new Error("now must be finite");
+    const phone = args.phoneE164.trim();
+    if (!phone) throw new Error("phoneE164 required");
+    const tenant = await ctx.db
+      .query("tenants")
+      .withIndex("by_phone", (q) => q.eq("phoneE164", phone))
+      .first();
+    if (!tenant) return false;
+    const paid = isPaid(tenant.paidUntil, args.now);
+    const allowance = computerStartAllowance(paid, {
+      free: process.env.BRO_FREE_COMPUTER_STARTS_PER_DAY,
+      paid: process.env.BRO_PAID_COMPUTER_STARTS_PER_DAY,
+    });
+    const periodKey = rateLimitPeriodKey(tenant._id, dayKey(args.now, tenant.tz));
+    const config = periodConfig();
+    const { value } = await rateLimiter.getValue(ctx, "computerStartsPerDay", {
+      key: periodKey,
+      config,
+    });
+    if (usedCount(value) >= allowance) return false;
+    await rateLimiter.limit(ctx, "computerStartsPerDay", {
+      key: periodKey,
+      config,
+    });
+    return true;
   },
 });
 

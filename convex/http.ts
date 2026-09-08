@@ -487,16 +487,10 @@ http.route({
     if (!session) return json({ ok: false, code: "unauthorized" }, 401);
     try {
       const started = await ctx.runAction(
-        (
-          internal as unknown as {
-            chatgptSecrets: {
-              startDeviceLoginForTenant: typeof internal.cabinet.sendLoginCode;
-            };
-          }
-        ).chatgptSecrets.startDeviceLoginForTenant as never,
-        { tenantId: session.tenantId } as never,
+        internal.chatgptSecrets.startDeviceLoginForTenant,
+        { tenantId: session.tenantId },
       );
-      return json({ ok: true, ...(started as object) });
+      return json({ ok: true, ...started });
     } catch (err) {
       console.error("me/chatgpt/start", err);
       return json({ ok: false, code: "unavailable" }, 503);
@@ -515,14 +509,9 @@ http.route({
     });
     if (!phone) return json({ ok: false, code: "unbound" }, 400);
     try {
-      await ctx.runAction(
-        (
-          internal as unknown as {
-            chatgptSecrets: { disconnectForTenant: never };
-          }
-        ).chatgptSecrets.disconnectForTenant as never,
-        { tenantId: session.tenantId } as never,
-      );
+      await ctx.runAction(internal.chatgptSecrets.disconnectForTenant, {
+        tenantId: session.tenantId,
+      });
       return json({ ok: true });
     } catch (err) {
       console.error("me/chatgpt/disconnect", err);
