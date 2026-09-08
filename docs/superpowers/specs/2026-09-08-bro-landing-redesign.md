@@ -13,15 +13,26 @@ choice. The redesign gives bro a character and derives the whole system from it.
 bro has no app, no dashboard, no screen of his own. He exists as one thing: a bubble
 in your chat. So the character *is* the message.
 
-- **Form:** a squircle bubble with a tail at the bottom left, two dot eyes, no mouth.
-- **Personality:** calm, deadpan. He says «сделаю» and goes quiet — same as the product.
+- **Form:** a soft cloud bubble with a blunt tail at the bottom left, two oval eyes and
+  a small smile.
+- **Personality:** warm and unbothered. He smiles, but he does not chatter — he says
+  «сделаю» and gets on with it.
 - **States, without redrawing:** eyes closed → asleep; eyes as dashes → thinking; tail
   flipped → your turn. One object, endless expression.
-- **Scales:** the silhouette survives at 16 px (favicon) and as a hero at 140 px.
-  Verified by rendering at 150 / 44 / 18 px before the shape was frozen.
+- **Scales:** the silhouette survives at 16 px (favicon) and as a hero at ~170 px.
+  Verified by rendering at 240 / 90 / 42 / 20 px before the shape was frozen.
 
-Source of truth is `assets/bro-mark.svg`. The page inlines the same four shapes so
-CSS can animate the eyes (document CSS does not reach into a `<use>` shadow tree).
+The character came from a Higgsfield generation the founder approved. It is **redrawn
+as vector**, not traced: a traced diffusion output carries wobbly, unevenly weighted
+edges that show up badly at hero size and turn to mush at favicon size. The body is
+nine overlapping circles plus a tail path — few and large, so the outline is gently
+scalloped rather than knobbly. An earlier pass used more, smaller lobes and read as
+broccoli.
+
+Source of truth is `assets/bro-mark.svg`. The page inlines the same shapes so CSS can
+animate the eyes — document CSS does not reach into a `<use>` shadow tree. The body
+inherits `currentColor` and the `.bro__face` group takes `--bro-eye`, so he inverts
+cleanly on an ink surface by setting both.
 
 ## The system
 
@@ -75,7 +86,7 @@ asserts the `sheet-cta` class on `#login-send` instead of the whole skin.
 
 ## Assets
 
-- `assets/bro-mark.svg` — the mark; favicon.
+- `assets/bro-mark.svg` — the mark; favicon. Standalone, so its fills are literal.
 - `assets/bro-logo.png` — 1024², apple-touch-icon.
 - `assets/bro-og.png` — 1200×630 share card.
 - `assets/meadow.webp` — kept: `cabinet.html` and `vault.html` still use it.
@@ -88,5 +99,5 @@ logged out, both CTAs wired. `npm run cabinet:check` passes its landing assertio
 
 ## Out of scope
 
-Higgsfield-generated illustration of the character, cabinet/vault restyle, analytics,
+Cabinet/vault restyle, an expression sheet for the character, analytics,
 i18n. The `vercel.json` that `cabinet-check.ts` reads is missing on `main` and still is.

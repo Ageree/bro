@@ -1,6 +1,19 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="bro">
-  <path fill="#15241B" d="M56 70c0 16-10 27-30 34 11-10 13-21 13-34z"/>
-  <rect fill="#15241B" x="16" y="16" width="96" height="76" rx="28"/>
-  <circle fill="#F2EFE7" cx="48" cy="53" r="7.5"/>
-  <circle fill="#F2EFE7" cx="82" cy="53" r="7.5"/>
+  <g fill="#15241B">
+    <path d="M56 86c0 14-9 23-24 27 8-8 12-17 12-27z"/>
+    <circle cx="45" cy="39" r="20"/>
+    <circle cx="67" cy="33" r="22"/>
+    <circle cx="88" cy="44" r="20"/>
+    <circle cx="96" cy="62" r="18"/>
+    <circle cx="86" cy="79" r="20"/>
+    <circle cx="62" cy="86" r="21"/>
+    <circle cx="43" cy="80" r="19"/>
+    <circle cx="34" cy="60" r="22"/>
+    <circle cx="64" cy="58" r="32"/>
+  </g>
+  <g fill="#F2EFE7">
+    <ellipse cx="52" cy="58" rx="3.6" ry="5.4"/>
+    <ellipse cx="76" cy="58" rx="3.6" ry="5.4"/>
+    <path d="M55 67.2q9-1.8 18 0 0 6.8-9 6.8t-9-6.8z"/>
+  </g>
 </svg>

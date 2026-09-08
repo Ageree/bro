@@ -83,7 +83,9 @@ body {
 
 /* ============================================================
    The character
-   One shape, one expression, one animation: he blinks.
+   A soft cloud bubble with a face. The body takes `currentColor`
+   so he inverts on ink; the face takes --bro-eye, which is set
+   alongside it. One animation: he blinks.
    ============================================================ */
 .bro {
   display: block;
@@ -91,8 +93,8 @@ body {
   color: var(--ink);
   overflow: visible;
 }
+.bro__face { fill: var(--bro-eye, var(--paper)); }
 .bro__eye {
-  fill: var(--bro-eye, var(--paper));
   transform-box: fill-box;
   transform-origin: center;
   animation: bro-blink 6.5s infinite;
@@ -117,7 +119,7 @@ body {
   text-decoration: none;
   color: var(--ink);
 }
-.lockup .bro { width: 1.65rem; }
+.lockup .bro { width: 1.9rem; }
 .lockup__word {
   font-weight: 600;
   font-size: 1.25rem;
@@ -206,7 +208,7 @@ body {
   transition: opacity 0.5s ease, transform 0.5s cubic-bezier(0.2, 0.8, 0.3, 1);
 }
 .msg.is-in { opacity: 1; transform: none; }
-.msg__avatar { width: 1.75rem; flex: 0 0 auto; margin-bottom: 0.15rem; }
+.msg__avatar { width: 2.1rem; flex: 0 0 auto; margin-bottom: 0.1rem; }
 .msg__avatar .bro { width: 100%; }
 .msg__text {
   border-radius: var(--r-lg);
