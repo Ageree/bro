@@ -10,6 +10,7 @@ import {
 } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { assertSecret } from "./secret";
+import { isValidHandle, makeHandle } from "./lib/accessPolicy";
 import {
   browserAllowance,
   browserAllowedOnLimitError,
@@ -81,6 +82,57 @@ async function tenantByPhone(ctx: MutationCtx, phoneE164: string) {
   if (!created) throw new Error("tenant insert failed");
   return created;
 }
+
+export const attachCabinetLoginForAgent = mutation({
+  args: {
+    secret: v.string(),
+    phoneE164: v.string(),
+    identityId: v.string(),
+    handle: v.optional(v.string()),
+  },
+  returns: v.object({
+    handle: v.string(),
+    attached: v.boolean(),
+  }),
+  handler: async (ctx, args) => {
+    assertSecret(args.secret);
+    const phone = args.phoneE164.trim();
+    const identityId = args.identityId.trim();
+    if (!phone) throw new Error("phoneE164 required");
+    if (!identityId) throw new Error("identityId required");
+    const tenant = await ctx.db
+      .query("tenants")
+      .withIndex("by_phone", (q) => q.eq("phoneE164", phone))
+      .first();
+    if (!tenant) throw new Error("unknown tenant");
+    if (tenant.inkboxHandle && isValidHandle(tenant.inkboxHandle)) {
+      if (!tenant.inkboxIdentityId) {
+        await ctx.db.patch(tenant._id, { inkboxIdentityId: identityId });
+      }
+      return { handle: tenant.inkboxHandle, attached: false };
+    }
+    let handle = args.handle?.trim() || makeHandle();
+    if (!isValidHandle(handle)) throw new Error("invalid handle");
+    for (let i = 0; i < 8; i++) {
+      const taken = await ctx.db
+        .query("tenants")
+        .withIndex("by_handle", (q) => q.eq("inkboxHandle", handle))
+        .unique();
+      if (!taken) break;
+      handle = makeHandle();
+    }
+    const taken = await ctx.db
+      .query("tenants")
+      .withIndex("by_handle", (q) => q.eq("inkboxHandle", handle))
+      .unique();
+    if (taken) throw new Error("handle unavailable");
+    await ctx.db.patch(tenant._id, {
+      inkboxHandle: handle,
+      inkboxIdentityId: tenant.inkboxIdentityId || identityId,
+    });
+    return { handle, attached: true };
+  },
+});
 
 export const getByPhone = query({
   args: { secret: v.string(), phoneE164: v.string() },

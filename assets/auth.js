@@ -56,17 +56,27 @@
   }
 
   var MISSING_HANDLE =
-    "Открой сайт на том же iPhone, с которого запрашивал доступ — или нажми «Запросить доступ» ещё раз.";
+    "Введи handle вида bro-xxxxxxxx — или открой сайт на том же iPhone и нажми «Запросить доступ».";
+
+  function typedHandle() {
+    var input = $("#login-handle");
+    var raw = input ? (input.value || "").trim().toLowerCase() : "";
+    return validHandle(raw) ? raw : "";
+  }
+
+  function loginHandle() {
+    return storedHandle() || typedHandle();
+  }
 
   function paintHandleRow() {
     var row = $("#login-handle-row");
     var input = $("#login-handle");
     var sendBtn = $("#login-send");
     var h = storedHandle();
-    if (row) row.hidden = true;
-    if (input) input.value = h;
-    if (sendBtn) sendBtn.hidden = !h;
-    return h;
+    if (row) row.hidden = false;
+    if (input && !input.value) input.value = h;
+    if (sendBtn) sendBtn.hidden = false;
+    return loginHandle();
   }
 
   function openModal() {
@@ -107,7 +117,7 @@
 
   $("#login-send").addEventListener("click", function () {
     var base = site();
-    var h = storedHandle();
+    var h = loginHandle();
     if (!base) {
       setStatus("Сайт ещё не подключён");
       return;
@@ -143,7 +153,7 @@
 
   $("#login-verify").addEventListener("click", function () {
     var base = site();
-    var h = storedHandle();
+    var h = loginHandle();
     var code = ($("#login-code").value || "").trim();
     if (!h) {
       setStatus(MISSING_HANDLE);
