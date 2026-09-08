@@ -14,9 +14,14 @@ import {
 import { shouldRefresh } from "./lib/chatgptPolicy";
 import {
   CHATGPT_OAUTH_HANDLE,
+  accountIdFromJwt,
+  exchangeDeviceCode,
   parseChatgptOAuthJson,
+  pollDeviceAuth,
   refreshChatgptAccessToken,
+  startDeviceAuth,
 } from "../agent/lib/chatgpt-oauth";
+import { devicePollSleepMs } from "./lib/chatgptPolicy";
 
 const tokenResult = v.union(
   v.object({
@@ -79,6 +84,55 @@ type ChatgptInternal = {
     "mutation",
     "internal",
     { tenantId: Id<"tenants"> },
+    null
+  >;
+  loginByDeviceAuthId: FunctionReference<
+    "query",
+    "internal",
+    { deviceAuthId: string },
+    {
+      tenantId: Id<"tenants">;
+      deviceAuthId: string;
+      userCode: string;
+      interval: number;
+      expiresAt: number;
+      status: "pending" | "done" | "expired" | "failed";
+    } | null
+  >;
+  finishLogin: FunctionReference<
+    "mutation",
+    "internal",
+    { tenantId: Id<"tenants">; deviceAuthId?: string; now: number },
+    boolean
+  >;
+  expireLogin: FunctionReference<
+    "mutation",
+    "internal",
+    { tenantId: Id<"tenants">; deviceAuthId?: string; now: number },
+    boolean
+  >;
+  failLogin: FunctionReference<
+    "mutation",
+    "internal",
+    {
+      tenantId: Id<"tenants">;
+      deviceAuthId?: string;
+      now: number;
+      reason?: string;
+    },
+    boolean
+  >;
+  startLogin: FunctionReference<
+    "mutation",
+    "internal",
+    {
+      tenantId: Id<"tenants">;
+      deviceAuthId: string;
+      userCode: string;
+      interval: number;
+      expiresAt: number;
+      now: number;
+    },
     null
   >;
 };
@@ -153,8 +207,17 @@ export const saveTokens = internalAction({
         tenantId,
         version,
         now: args.now,
-        ...(tokens.account_id ? { accountId: tokens.account_id } : {}),
+        accountId:
+          tokens.account_id ??
+          accountIdFromJwt(tokens.access_token) ??
+          accountIdFromJwt(tokens.id_token ?? ""),
         accessExpiresAt: tokens.expires_at,
+        ...(emailFromJwt(tokens.id_token ?? tokens.access_token)
+          ? { email: emailFromJwt(tokens.id_token ?? tokens.access_token) }
+          : {}),
+        ...(planFromJwt(tokens.id_token ?? tokens.access_token)
+          ? { planType: planFromJwt(tokens.id_token ?? tokens.access_token) }
+          : {}),
       });
     }
     return stored;
@@ -255,3 +318,193 @@ export const disconnect = action({
     return { status: stored ? ("ok" as const) : ("none" as const) };
   },
 });
+
+export const disconnectForTenant = internalAction({
+  args: { tenantId: v.id("tenants") },
+  returns: v.object({
+    status: v.union(v.literal("ok"), v.literal("none")),
+  }),
+  handler: async (ctx, { tenantId }) => {
+    const api = chatgptInternal();
+    const stored = await ctx.runQuery(api.secretForTenant, { tenantId });
+    await ctx.runMutation(api.clearAccount, { tenantId });
+    return { status: stored ? ("ok" as const) : ("none" as const) };
+  },
+});
+
+function emailFromJwt(token: string): string | undefined {
+  const claims = jwtClaims(token);
+  return typeof claims.email === "string" && claims.email.includes("@")
+    ? claims.email
+    : undefined;
+}
+
+function planFromJwt(token: string): string | undefined {
+  const claims = jwtClaims(token);
+  const nested = claims["https://api.openai.com/auth"];
+  const plan =
+    (typeof claims.chatgpt_plan_type === "string" && claims.chatgpt_plan_type) ||
+    (nested && typeof nested === "object" && nested !== null
+      ? (nested as { chatgpt_plan_type?: unknown }).chatgpt_plan_type
+      : undefined);
+  return typeof plan === "string" && plan.length > 0 ? plan : undefined;
+}
+
+function jwtClaims(token: string): Record<string, unknown> {
+  const payload = token.split(".")[1];
+  if (!payload) return {};
+  try {
+    return JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as Record<
+      string,
+      unknown
+    >;
+  } catch {
+    return {};
+  }
+}
+
+export const startDeviceLoginForTenant = internalAction({
+  args: { tenantId: v.id("tenants") },
+  returns: v.object({
+    url: v.string(),
+    userCode: v.string(),
+    interval: v.number(),
+    expiresAt: v.number(),
+  }),
+  handler: async (ctx, { tenantId }) => {
+    const started = await startDeviceAuth();
+    const api = chatgptInternal();
+    await ctx.runMutation(api.startLogin, {
+      tenantId,
+      deviceAuthId: started.deviceAuthId,
+      userCode: started.userCode,
+      interval: started.interval,
+      expiresAt: started.expiresAt,
+      now: Date.now(),
+    });
+    return {
+      url: started.url,
+      userCode: started.userCode,
+      interval: started.interval,
+      expiresAt: started.expiresAt,
+    };
+  },
+});
+
+export const pollDeviceLogin = internalAction({
+  args: {
+    tenantId: v.id("tenants"),
+    deviceAuthId: v.string(),
+    deadline: v.number(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const now = Date.now();
+    const api = chatgptInternal();
+    if (now >= args.deadline) {
+      await ctx.runMutation(api.expireLogin, {
+        tenantId: args.tenantId,
+        deviceAuthId: args.deviceAuthId,
+        now,
+      });
+      return null;
+    }
+    const login = await ctx.runQuery(api.loginByDeviceAuthId, {
+      deviceAuthId: args.deviceAuthId,
+    });
+    if (!login || login.status !== "pending") return null;
+    const polled = await pollDeviceAuth({
+      deviceAuthId: login.deviceAuthId,
+      userCode: login.userCode,
+    });
+    if (polled.status === "pending" || polled.status === "slow_down") {
+      const wait = devicePollSleepMs(
+        login.interval,
+        polled.status === "slow_down" ? 5 : undefined,
+      );
+      if (now + wait >= args.deadline) {
+        await ctx.runMutation(api.expireLogin, {
+          tenantId: args.tenantId,
+          deviceAuthId: args.deviceAuthId,
+          now,
+        });
+        return null;
+      }
+      await ctx.scheduler.runAfter(wait, pollRef(), {
+        tenantId: args.tenantId,
+        deviceAuthId: args.deviceAuthId,
+        deadline: args.deadline,
+      });
+      return null;
+    }
+    if (polled.status === "error") {
+      await ctx.runMutation(api.failLogin, {
+        tenantId: args.tenantId,
+        deviceAuthId: args.deviceAuthId,
+        now,
+        reason: polled.message,
+      });
+      return null;
+    }
+    const tokens = await exchangeDeviceCode({
+      authorizationCode: polled.authorizationCode,
+      codeVerifier: polled.codeVerifier,
+      now,
+    });
+    if (!tokens.account_id) {
+      tokens.account_id =
+        accountIdFromJwt(tokens.access_token) ??
+        accountIdFromJwt(tokens.id_token ?? "") ??
+        `codex:${args.deviceAuthId}`;
+    }
+    const stored = await ctx.runQuery(api.secretForTenant, {
+      tenantId: args.tenantId,
+    });
+    const json = JSON.stringify(tokens);
+    await ctx.runAction(saveTokensRef(), {
+      tenantId: args.tenantId,
+      json,
+      version: stored ? stored.version + 1 : 1,
+      now,
+    });
+    await ctx.runMutation(api.finishLogin, {
+      tenantId: args.tenantId,
+      deviceAuthId: args.deviceAuthId,
+      now,
+    });
+    return null;
+  },
+});
+
+function pollRef(): FunctionReference<
+  "action",
+  "internal",
+  { tenantId: Id<"tenants">; deviceAuthId: string; deadline: number },
+  null
+> {
+  return (
+    internal as unknown as {
+      chatgptSecrets: { pollDeviceLogin: FunctionReference<"action", "internal", { tenantId: Id<"tenants">; deviceAuthId: string; deadline: number }, null> };
+    }
+  ).chatgptSecrets.pollDeviceLogin;
+}
+
+function saveTokensRef(): FunctionReference<
+  "action",
+  "internal",
+  { tenantId: Id<"tenants">; json: string; version: number; now: number },
+  { ok: boolean; version: number }
+> {
+  return (
+    internal as unknown as {
+      chatgptSecrets: {
+        saveTokens: FunctionReference<
+          "action",
+          "internal",
+          { tenantId: Id<"tenants">; json: string; version: number; now: number },
+          { ok: boolean; version: number }
+        >;
+      };
+    }
+  ).chatgptSecrets.saveTokens;
+}

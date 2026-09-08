@@ -11,7 +11,7 @@ type StatusRow = {
   status: "none" | "pending" | "connected" | "quarantined";
   email?: string;
   planType?: string;
-  loginStatus?: "pending" | "authorized" | "expired" | "failed";
+  loginStatus?: "pending" | "done" | "expired" | "failed";
 };
 
 export default defineTool({

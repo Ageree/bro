@@ -56,9 +56,12 @@ assert(
   "pending becomes expired",
 );
 assert(
-  nextLoginStatus({ status: "authorized", expiresAt: 50, now: 100 }) ===
-    "authorized",
-  "authorized is not expired by clock",
+  nextLoginStatus({ status: "authorized", expiresAt: 50, now: 100 }) === "done",
+  "legacy authorized maps to done",
+);
+assert(
+  nextLoginStatus({ status: "done", expiresAt: 50, now: 100 }) === "done",
+  "done is not expired by clock",
 );
 assert(
   nextLoginStatus({ status: "failed", expiresAt: 50, now: 100 }) === "failed",
@@ -304,5 +307,26 @@ assert(
   connected.modelContextWindowTokens === CODEX_CONTEXT_WINDOW_TOKENS,
   "connected + broker uses the 200k Codex window",
 );
+
+const chatgptSrc = await import("node:fs").then((fs) =>
+  fs.readFileSync(new URL("../convex/chatgpt.ts", import.meta.url), "utf8"),
+);
+assert(chatgptSrc.includes("scheduleDevicePoll"), "login start schedules the poller");
+assert(chatgptSrc.includes("pollDeviceLogin"), "poller is the internal ChatGPT action");
+assert(chatgptSrc.includes("status: \"done\""), "finishLogin writes done, not authorized");
+
+const connectSrc = await import("node:fs").then((fs) =>
+  fs.readFileSync(new URL("../agent/tools/chatgpt_connect.ts", import.meta.url), "utf8"),
+);
+assert(connectSrc.includes("Я сам проверю вход"), "connect tool says polling is on");
+assert(!connectSrc.includes("ещё не подключён"), "connect tool no longer says polling is off");
+
+const secretsSrc = await import("node:fs").then((fs) =>
+  fs.readFileSync(new URL("../convex/chatgptSecrets.ts", import.meta.url), "utf8"),
+);
+assert(secretsSrc.includes("pollDeviceAuth"), "secrets poller talks to deviceauth");
+assert(secretsSrc.includes("exchangeDeviceCode"), "secrets poller exchanges the code");
+assert(secretsSrc.includes("startDeviceLoginForTenant"), "cabinet start is an internal action");
+assert(secretsSrc.includes("disconnectForTenant"), "cabinet disconnect is internal");
 
 console.log("chatgpt:check OK");

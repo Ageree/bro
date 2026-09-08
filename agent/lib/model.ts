@@ -154,16 +154,16 @@ export function resolveBroModel(
   });
   if (typeof fallback.model === "string") {
     return {
-      model: primary,
+      model: primary as unknown as typeof fallback.model,
       modelContextWindowTokens: CODEX_CONTEXT_WINDOW_TOKENS,
     };
   }
   return {
     model: withFallback(
-      primary,
+      primary as unknown as LanguageModelLike,
       fallback.model as unknown as LanguageModelLike,
       onFail ?? (() => undefined),
-    ),
+    ) as unknown as typeof fallback.model,
     modelContextWindowTokens: CODEX_CONTEXT_WINDOW_TOKENS,
   };
 }

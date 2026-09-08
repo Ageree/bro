@@ -4,10 +4,12 @@ export const CHATGPT_REFRESH_MARGIN_MS = 120_000;
 
 export type ChatgptLoginStatus =
   | "pending"
-  | "authorized"
   | "done"
   | "expired"
   | "failed";
+
+/** Legacy device-login rows used `authorized`; writers now store `done`. */
+export type ChatgptLoginStatusInput = ChatgptLoginStatus | "authorized";
 
 export type ChatgptSnapshotStatus = "none" | "pending" | "connected" | "quarantined";
 
@@ -48,23 +50,24 @@ export function loginExpired(expiresAt: number, now: number): boolean {
 }
 
 export function nextLoginStatus(input: {
-  status: ChatgptLoginStatus;
+  status: ChatgptLoginStatusInput;
   expiresAt: number;
   now: number;
 }): ChatgptLoginStatus {
   if (typeof input !== "object" || input === null) {
     throw new Error("nextLoginStatus input required");
   }
-  const { status } = input;
+  const raw = input.status;
   if (
-    status !== "pending" &&
-    status !== "authorized" &&
-    status !== "done" &&
-    status !== "expired" &&
-    status !== "failed"
+    raw !== "pending" &&
+    raw !== "authorized" &&
+    raw !== "done" &&
+    raw !== "expired" &&
+    raw !== "failed"
   ) {
     throw new Error("status must be a ChatGPT login status");
   }
+  const status: ChatgptLoginStatus = raw === "authorized" ? "done" : raw;
   if (status === "pending" && loginExpired(input.expiresAt, input.now)) {
     return "expired";
   }
@@ -82,7 +85,7 @@ export function groupUsesOpenRouter(isGroup: boolean): boolean {
 export function snapshotStatus(input: {
   hasAccount: boolean;
   quarantinedAt?: number | null;
-  loginStatus?: ChatgptLoginStatus;
+  loginStatus?: ChatgptLoginStatusInput;
 }): ChatgptSnapshotStatus {
   if (typeof input !== "object" || input === null) {
     throw new Error("snapshotStatus input required");

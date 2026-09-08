@@ -1,4 +1,5 @@
 import { v } from "convex/values";
+import type { FunctionReference } from "convex/server";
 import {
   internalMutation,
   internalQuery,
@@ -7,12 +8,14 @@ import {
   type MutationCtx,
   type QueryCtx,
 } from "./_generated/server";
+import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { assertSecret } from "./secret";
 import {
   nextLoginStatus,
   snapshotStatus,
   type ChatgptLoginStatus,
+  type ChatgptLoginStatusInput,
   type ChatgptSnapshotStatus,
 } from "./lib/chatgptPolicy";
 
@@ -64,7 +67,7 @@ type ChatgptLoginRow = {
   userCode: string;
   interval: number;
   expiresAt: number;
-  status: ChatgptLoginStatus;
+  status: ChatgptLoginStatusInput;
   createdAt?: number;
 };
 
@@ -172,7 +175,9 @@ function statusFromRows(
     login === undefined
       ? undefined
       : now === undefined
-        ? login.status
+        ? login.status === "authorized"
+          ? "done"
+          : login.status
         : nextLoginStatus({
             status: login.status,
             expiresAt: login.expiresAt,
@@ -266,6 +271,12 @@ export const startLogin = internalMutation({
       expiresAt: args.expiresAt,
       status: "pending",
     });
+    await scheduleDevicePoll(ctx, {
+      tenantId,
+      deviceAuthId,
+      interval: args.interval,
+      expiresAt: args.expiresAt,
+    });
     return null;
   },
 });
@@ -314,9 +325,48 @@ export const beginLoginForAgent = mutation({
       expiresAt: args.expiresAt,
       status: "pending",
     });
+    await scheduleDevicePoll(ctx, {
+      tenantId,
+      deviceAuthId,
+      interval: args.interval,
+      expiresAt: args.expiresAt,
+    });
     return { ok: true as const };
   },
 });
+
+async function scheduleDevicePoll(
+  ctx: MutationCtx,
+  args: {
+    tenantId: Id<"tenants">;
+    deviceAuthId: string;
+    interval: number;
+    expiresAt: number;
+  },
+): Promise<void> {
+  const delay = Math.max(1000, Math.floor(args.interval * 1000));
+  const poll = (
+    internal as unknown as {
+      chatgptSecrets: {
+        pollDeviceLogin: FunctionReference<
+          "action",
+          "internal",
+          {
+            tenantId: Id<"tenants">;
+            deviceAuthId: string;
+            deadline: number;
+          },
+          null
+        >;
+      };
+    }
+  ).chatgptSecrets.pollDeviceLogin;
+  await ctx.scheduler.runAfter(delay, poll, {
+    tenantId: args.tenantId,
+    deviceAuthId: args.deviceAuthId,
+    deadline: args.expiresAt,
+  });
+}
 
 async function setLoginStatus(
   ctx: MutationCtx,
@@ -547,6 +597,66 @@ export const deleteSecretsForTenant = internalMutation({
     const secret = await secretForTenantRow(ctx, id);
     if (!secret) return false;
     await chatgptDb(ctx).delete(secret._id);
+    return true;
+  },
+});
+
+export const loginByDeviceAuthId = internalQuery({
+  args: { deviceAuthId: v.string() },
+  returns: v.union(
+    v.object({
+      tenantId: v.id("tenants"),
+      deviceAuthId: v.string(),
+      userCode: v.string(),
+      interval: v.number(),
+      expiresAt: v.number(),
+      status: loginStatus,
+    }),
+    v.null(),
+  ),
+  handler: async (ctx, { deviceAuthId }) => {
+    const id = deviceAuthId.trim();
+    if (!id) throw new Error("deviceAuthId required");
+    const rows = (await chatgptDb(ctx)
+      .query("chatgptLogins")
+      .withIndex("by_deviceAuthId", (q) => q.eq("deviceAuthId", id))
+      .collect()) as ChatgptLoginRow[];
+    const row = rows[0];
+    if (!row) return null;
+    const rawStatus = row.status as ChatgptLoginStatusInput;
+    const status: ChatgptLoginStatus =
+      rawStatus === "authorized" ? "done" : rawStatus;
+    return {
+      tenantId: row.tenantId,
+      deviceAuthId: row.deviceAuthId,
+      userCode: row.userCode,
+      interval: row.interval,
+      expiresAt: row.expiresAt,
+      status,
+    };
+  },
+});
+
+export const quarantineForAgent = mutation({
+  args: {
+    secret: v.string(),
+    phoneE164: v.string(),
+    now: v.number(),
+    reason: v.string(),
+  },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    assertSecret(args.secret);
+    const tenantId = await tenantIdByPhone(ctx, requirePhone(args.phoneE164));
+    if (!tenantId) return false;
+    const existing = await accountForTenant(ctx, tenantId);
+    if (!existing) return false;
+    if (!args.reason.trim()) throw new Error("reason required");
+    if (!Number.isFinite(args.now)) throw new Error("now must be finite");
+    await chatgptDb(ctx).patch(existing._id, {
+      quarantinedAt: args.now,
+      quarantineReason: args.reason.trim(),
+    });
     return true;
   },
 });

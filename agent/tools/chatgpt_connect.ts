@@ -51,7 +51,7 @@ export default defineTool({
       expiresAt: started.expiresAt,
       message:
         `Открой ${started.url} и введи код ${started.userCode}. ` +
-        "Поллинг подтверждения ещё не подключён — напиши, когда код принят.",
+        "Я сам проверю вход.",
     };
   },
 });

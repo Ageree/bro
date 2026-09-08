@@ -64,7 +64,16 @@ const agentSrc = await import("node:fs").then((fs) =>
 );
 assert(agentSrc.includes("DEFAULT_ROOT_CONTEXT_TOKENS"), "root agent uses compact window");
 assert(agentSrc.includes("compaction"), "root agent enables compaction");
+assert(agentSrc.includes("step.started"), "root model resolves on step.started");
+assert(agentSrc.includes("resolveBroModelForTurn"), "root uses the ChatGPT-aware resolver");
+assert(!agentSrc.includes("turn.started"), "root model is not resolved on turn.started");
 assert(!agentSrc.includes('reasoning: "low"'), "root reasoning left default — do not dumb Bro down");
+
+const otpSrc = await import("node:fs").then((fs) =>
+  fs.readFileSync(new URL("../agent/subagents/otp/agent.ts", import.meta.url), "utf8"),
+);
+assert(otpSrc.includes("broModel()"), "otp stays on OpenRouter");
+assert(!otpSrc.includes("resolveBroModelForTurn"), "otp does not use Codex");
 
 const {
   OPENROUTER_CHAT_PREFERRED_MAX_LATENCY,
