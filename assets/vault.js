@@ -461,7 +461,10 @@
           return;
         }
         clearSecrets();
-        setFlash("Готово. Вернись в iMessage и напиши Bro.");
+        var fromCabinet = new URLSearchParams(location.search).get("from") === "cabinet";
+        setFlash(fromCabinet
+          ? "Готово. Карта в сейфе — Bro сможет платить."
+          : "Готово. Вернись в iMessage и напиши Bro.");
         return loadItems(base, now);
       })
       .catch(function () {

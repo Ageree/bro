@@ -379,7 +379,7 @@ const cabinet = readFileSync(new URL("../cabinet.html", import.meta.url), "utf8"
 assert(cabinet.includes('id="vault"'), "cabinet vault card");
 assert(cabinet.includes("<h2>Сейф</h2>"), "cabinet vault title");
 assert(cabinet.includes('id="vault-add-card"'), "cabinet add-card cta");
-assert(cabinet.includes("/vault.html?kind=payment"), "add-card opens payment form");
+assert(cabinet.includes("/vault.html?kind=payment&from=cabinet"), "add-card opens payment form");
 assert(cabinet.includes("/vault/items"), "cabinet lists vault items");
 assert(cabinet.includes("Добавить карту"), "cabinet add-card copy");
 assert(cabinet.includes("Номер и CVV он не видит"), "cabinet vault does not expose secrets");
