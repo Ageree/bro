@@ -127,6 +127,23 @@ export async function sendBlueIMessageGroup(opts: {
   return sent;
 }
 
+export async function uploadIMessagePhoto(opts: {
+  content: Uint8Array;
+  filename: string;
+  contentType: string;
+  handle?: string;
+}): Promise<string> {
+  const identity = await inkboxIdentity(opts.handle);
+  const upload = await identity.uploadIMessageMedia({
+    content: opts.content,
+    filename: opts.filename,
+    contentType: opts.contentType,
+  });
+  const url = upload.mediaUrl?.trim();
+  if (!url) throw new Error("iMessage media upload missing url");
+  return url;
+}
+
 export async function sendBlueIMessageMedia(opts: {
   conversationId: string;
   mediaUrls: string[];

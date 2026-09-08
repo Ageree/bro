@@ -50,6 +50,7 @@ const TOOL_FILES = [
   "group_chat.ts",
   "imessage_react.ts",
   "telegram_react.ts",
+  "send_photo.ts",
   "list_orders.ts",
   "job_open.ts",
   "job_wait.ts",

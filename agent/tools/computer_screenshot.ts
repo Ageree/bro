@@ -17,7 +17,7 @@ const outputSchema = z.object({
 
 export default defineTool({
   description:
-    "Take a PNG screenshot of this person's Linux desktop (1920x1080). Returns the image to the model and saves it under /home/user/screens. Not for shopping sites — use browser_task. Group chats cannot use the computer.",
+    "Take a PNG screenshot of this person's Linux desktop (1920x1080). Returns the image to the model and saves it under /home/user/screens. To show the person that picture, call send_photo with the returned path. Not for shopping sites — use browser_task. Group chats cannot use the computer.",
   inputSchema: z.object({}),
   async execute(_input, ctx) {
     const who = asPersonal(ctx);

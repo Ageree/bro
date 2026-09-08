@@ -1,0 +1,126 @@
+import { uploadIMessagePhoto, sendBlueIMessageMedia } from "./inkbox.ts";
+import { sendTelegramPhoto, sendTelegramPhotoFile } from "./telegram.ts";
+import { compileTelegram } from "./telegram-text.ts";
+import {
+  clipPhotoCaption,
+  fetchPhotoBytes,
+  type PhotoBytes,
+} from "./outbound-photo.ts";
+import type { HumanChannel } from "../../convex/lib/telegramPolicy.ts";
+
+export type SendPhotoTarget = {
+  channel: HumanChannel;
+  conversationId?: string;
+  telegramChatId?: string;
+  handle?: string;
+  caption?: string;
+};
+
+export type SendPhotoDeps = {
+  fetchPhoto?: (url: string) => Promise<PhotoBytes>;
+  uploadIMessage?: (opts: {
+    content: Uint8Array;
+    filename: string;
+    contentType: string;
+    handle?: string;
+  }) => Promise<string>;
+  sendIMessageMedia?: typeof sendBlueIMessageMedia;
+  sendTelegramUrl?: typeof sendTelegramPhoto;
+  sendTelegramFile?: typeof sendTelegramPhotoFile;
+};
+
+export async function sendPhotoToHuman(
+  opts: SendPhotoTarget & {
+    source: { kind: "url"; url: string } | { kind: "bytes"; photo: PhotoBytes };
+    deps?: SendPhotoDeps;
+  },
+): Promise<{ status: "ok"; channel: HumanChannel } | { status: "error"; error: string }> {
+  const caption = clipPhotoCaption(opts.caption);
+  try {
+    if (opts.channel === "telegram") {
+      const chatId = opts.telegramChatId?.trim();
+      if (!chatId) return { status: "error", error: "нет Telegram-чата для фото" };
+      await sendTelegramPhotoSource({
+        chatId,
+        caption,
+        source: opts.source,
+        deps: opts.deps,
+      });
+      return { status: "ok", channel: "telegram" };
+    }
+    const conversationId = opts.conversationId?.trim();
+    if (!conversationId) {
+      return { status: "error", error: "нет iMessage-чата для фото" };
+    }
+    await sendIMessagePhotoSource({
+      conversationId,
+      handle: opts.handle,
+      caption,
+      source: opts.source,
+      deps: opts.deps,
+    });
+    return { status: "ok", channel: "imessage" };
+  } catch (err) {
+    return {
+      status: "error",
+      error: err instanceof Error ? err.message : "не отправил фото",
+    };
+  }
+}
+
+async function sendTelegramPhotoSource(opts: {
+  chatId: string;
+  caption?: string;
+  source: { kind: "url"; url: string } | { kind: "bytes"; photo: PhotoBytes };
+  deps?: SendPhotoDeps;
+}): Promise<void> {
+  const html = opts.caption ? compileTelegram(opts.caption).html || undefined : undefined;
+  if (opts.source.kind === "url") {
+    const sendUrl = opts.deps?.sendTelegramUrl ?? sendTelegramPhoto;
+    try {
+      await sendUrl({ chatId: opts.chatId, url: opts.source.url, html });
+      return;
+    } catch (err) {
+      console.error("telegram photo url failed, uploading bytes", err);
+    }
+  }
+  const photo =
+    opts.source.kind === "bytes"
+      ? opts.source.photo
+      : await (opts.deps?.fetchPhoto ?? fetchPhotoBytes)(opts.source.url);
+  const sendFile = opts.deps?.sendTelegramFile ?? sendTelegramPhotoFile;
+  await sendFile({
+    chatId: opts.chatId,
+    bytes: photo.bytes,
+    filename: photo.filename,
+    contentType: photo.contentType,
+    html,
+  });
+}
+
+async function sendIMessagePhotoSource(opts: {
+  conversationId: string;
+  handle?: string;
+  caption?: string;
+  source: { kind: "url"; url: string } | { kind: "bytes"; photo: PhotoBytes };
+  deps?: SendPhotoDeps;
+}): Promise<void> {
+  const photo =
+    opts.source.kind === "bytes"
+      ? opts.source.photo
+      : await (opts.deps?.fetchPhoto ?? fetchPhotoBytes)(opts.source.url);
+  const upload = opts.deps?.uploadIMessage ?? uploadIMessagePhoto;
+  const mediaUrl = await upload({
+    content: photo.bytes,
+    filename: photo.filename,
+    contentType: photo.contentType,
+    handle: opts.handle,
+  });
+  const sendMedia = opts.deps?.sendIMessageMedia ?? sendBlueIMessageMedia;
+  await sendMedia({
+    conversationId: opts.conversationId,
+    mediaUrls: [mediaUrl],
+    handle: opts.handle,
+    text: opts.caption,
+  });
+}

@@ -149,6 +149,19 @@ async function api<T>(
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(20_000),
   });
+  return readTelegramApi<T>(res, method);
+}
+
+async function apiForm<T>(method: string, form: FormData): Promise<T> {
+  const res = await fetch(`${API}/bot${botToken()}/${method}`, {
+    method: "POST",
+    body: form,
+    signal: AbortSignal.timeout(30_000),
+  });
+  return readTelegramApi<T>(res, method);
+}
+
+async function readTelegramApi<T>(res: Response, method: string): Promise<T> {
   const json = (await res.json()) as { ok?: boolean; description?: string; result?: T };
   if (!res.ok || !json.ok) {
     throw new Error(json.description || `telegram ${method} ${res.status}`);
@@ -194,6 +207,31 @@ export async function sendTelegramPhoto(opts: {
       ...(markup ? { reply_markup: markup } : {}),
     }),
   );
+}
+
+export async function sendTelegramPhotoFile(opts: {
+  chatId: string | number;
+  bytes: Uint8Array;
+  filename: string;
+  contentType: string;
+  html?: string;
+  buttons?: TelegramButton[][];
+}): Promise<{ message_id: number }> {
+  const markup = opts.buttons?.length ? inlineKeyboard(opts.buttons) : undefined;
+  return await enqueueTelegramChat(opts.chatId, () => {
+    const form = new FormData();
+    form.set("chat_id", String(opts.chatId));
+    form.set(
+      "photo",
+      new File([opts.bytes], opts.filename, { type: opts.contentType }),
+    );
+    if (opts.html) {
+      form.set("caption", opts.html.slice(0, 1024));
+      form.set("parse_mode", "HTML");
+    }
+    if (markup) form.set("reply_markup", JSON.stringify(markup));
+    return apiForm<{ message_id: number }>("sendPhoto", form);
+  });
 }
 
 export async function setTelegramReaction(opts: {

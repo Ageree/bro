@@ -330,6 +330,7 @@ const recTool = await import("node:fs").then((fs) =>
 assert(shotTool.includes("asPersonal"), "screenshot is personal-only");
 assert(recTool.includes("asPersonal"), "record is personal-only");
 assert(shotTool.includes("toolOutputPart.file"), "screenshot goes to the model");
+assert(shotTool.includes("send_photo"), "screenshot tells the model how to send the picture");
 assert(!recTool.includes("toolOutputPart.file"), "record does not dump mp4 to the model");
 
 console.log("computer-check ok");
