@@ -350,10 +350,12 @@ assert(authJs.includes('#login-open'), "auth binds #login-open");
 assert(authJs.includes('#login-modal'), "auth binds #login-modal");
 assert(!/\$\("\.login-open"\)/.test(authJs), "auth does not use class login-open");
 assert(authJs.includes("bro.handle"), "auth reads stored handle key");
-assert(authJs.includes("login-handle-row"), "auth hides handle row");
+assert(authJs.includes("login-handle-row"), "auth paints handle row");
+assert(authJs.includes("typedHandle"), "auth reads typed handle on desktop");
+assert(authJs.includes("loginHandle"), "auth prefers stored handle then typed");
 assert(authJs.includes("storedHandle"), "auth sends stored handle");
 assert(authJs.includes("Запросить доступ"), "missing handle points at request access");
-assert(!authJs.includes('$("#login-handle").value'), "auth does not read typed handle");
+assert(authJs.includes("bro-xxxxxxxx"), "missing handle tells the person to type it");
 
 const landing = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 assert(landing.includes('id="login-send"'), "landing has login send");
@@ -365,6 +367,10 @@ assert(landing.includes("white-space: nowrap"), "login CTA stays on one line");
 assert(
   landing.includes("Код придёт сообщением от Bro"),
   "login sheet says where the code arrives",
+);
+assert(
+  landing.includes("На компьютере введи handle"),
+  "login sheet tells desktop users to type the handle",
 );
 const cabinet = readFileSync(new URL("../cabinet.html", import.meta.url), "utf8");
 assert(cabinet.includes('id="chrome"'), "cabinet chrome card");
@@ -463,6 +469,27 @@ assert(
 assert(httpSrc.includes("/me/chatgpt/start"), "http chatgpt start");
 assert(httpSrc.includes("/me/chatgpt/disconnect"), "http chatgpt disconnect");
 assert(httpSrc.includes("/me/computer"), "http computer route");
+const tenantsSrc = readFileSync(new URL("../convex/tenants.ts", import.meta.url), "utf8");
+assert(
+  tenantsSrc.includes("export const attachCabinetLoginForAgent"),
+  "phone-only tenants can get a cabinet handle",
+);
+const pkg = JSON.parse(
+  readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+) as { scripts?: Record<string, string> };
+assert(
+  typeof pkg.scripts?.build === "string" &&
+    pkg.scripts.build.includes("vercel-build"),
+  "eve build copies cabinet.html first",
+);
+const vercelJson = JSON.parse(
+  readFileSync(new URL("../vercel.json", import.meta.url), "utf8"),
+) as { buildCommand?: string };
+assert(
+  typeof vercelJson.buildCommand === "string" &&
+    vercelJson.buildCommand.includes("vercel-build"),
+  "vercel build copies cabinet.html first",
+);
 assert(httpSrc.includes("/internal/computer"), "http computer proxies eve");
 assert(!httpSrc.includes("BOX_API_KEY"), "http does not send BOX_API_KEY");
 
