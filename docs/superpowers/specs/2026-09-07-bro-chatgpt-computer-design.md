@@ -2,9 +2,10 @@
 
 _Date: 2026-09-07_
 
-Утверждено оператором: вход через **Codex OAuth** (опционально; без
-подписки Bro живёт как сейчас на OpenRouter) и **компьютер как у
-Companion** — постоянный Linux на человека, CLI / файлы / свои MCP.
+Утверждено оператором: вход через **Codex OAuth**. Если вход есть —
+**весь Bro** (модель eve: корень, worker, otp) думает через этот
+Codex. Если входа нет, карантин или квота кончилась — как сейчас,
+OpenRouter. Компьютер — как у Companion: постоянный Linux на человека.
 
 Референс: [companion.result.dev](https://companion.result.dev/) — тот же
 жанр (iMessage-агент), но мозг и инструменты живут на персональной
@@ -12,40 +13,42 @@ Companion** — постоянный Linux на человека, CLI / файл
 
 ## Решение
 
-Две плоскости. Не смешивать.
+Один Bro, две модели. Тулы те же.
 
-1. **Bro-консьерж** (eve на Vercel) остаётся собой: iMessage / Telegram,
-   покупки, сейф, Browser Use / Kernel, Composio, wakeups. Модель по
-   умолчанию — OpenRouter (`z-ai/glm-5.3-flash`). Работает без ChatGPT.
+1. **Модель хода.** Перед каждым ходом смотрим тенанта. Есть живой
+   Codex-токен → eve идёт в
+   `chatgpt.com/backend-api/codex/responses` (как `chatgpt()` в eve).
+   Нет входа / карантин / 401 / квота → тот же ход на OpenRouter
+   (`z-ai/glm-5.3-flash`), как сейчас. Человеку одна короткая строка,
+   если только что отвалились с Codex.
 2. **Личный компьютер** — один persistent Vercel Sandbox на тенанта
-   (`bro-computer-<tenantId>`). Файлы, bash, установленные CLI и MCP
-   живут там. iMessage и Telegram смотрят в одну и ту же машину.
+   (`bro-computer-<tenantId>`). Файлы, bash, CLI, MCP. iMessage и
+   Telegram — одна машина.
 
-ChatGPT — надстройка над компьютером, не замена Bro:
+Вход тот же: device-code Codex OAuth с телефона. Токены в Convex как
+сейф (AES-256-GCM, subject = tenantId). Тот же токен:
 
-- человек подключает аккаунт (device-code Codex OAuth);
-- refresh/access лежат в Convex как сейф (AES-256-GCM, subject =
-  tenantId);
-- на resume машины Bro пишет `~/.codex/auth.json` и гоняет
-  **официальный `codex` CLI** на этой машине;
-- модель eve **не** переключается на ChatGPT в v1. Квоту Plus ест
-  Codex на компьютере. Bro без подключения остаётся на OpenRouter.
+- кормит модель eve (весь Bro: корень, worker, otp);
+- кладётся в `~/.codex/auth.json` на resume машины, чтобы CLI/MCP
+  на диске человека тоже были «его ChatGPT».
+
+`chatgpt()` из eve читает локальный `codex login` и **в деплое не
+работает**. Нам нужен свой `CodexTokenBroker` на тенанта: `getToken`
+достаёт/рефрешит из Convex. eve уже принимает `broker` в
+`createCodexSubscriptionModel`. Модель — `defineDynamic` на
+`turn.started` (есть в eve), fallback в манифесте — OpenRouter.
+
+STT голоса остаётся OpenRouter: это не Codex.
 
 ```
 iMessage / Telegram
-  └─ eve Bro (OpenRouter, concierge tools)
+  └─ eve Bro
+       модель: Codex этого человека  или  OpenRouter
        ├─ browser_task / worker / composio / vault  — как сейчас
        └─ computer_*  → Vercel Sandbox bro-computer-<tenant>
-              ├─ /workspace  (файлы человека)
-              ├─ CLI / MCP, которые он поставил
-              └─ codex  (если ChatGPT подключён)
+              /workspace, CLI, MCP
+              + ~/.codex/auth.json если вход есть
 ```
-
-Почему не «токен в eve и chatgpt.com/backend-api»: токен тогда
-держим мы и бьём в недокументированный endpoint. Codex CLI на
-машине человека ближе к Companion и к тому, что OpenAI реально
-поддерживает (`codex login`). Device-code Bro всё равно нужен,
-чтобы логин случился с телефона, а не с localhost CLI.
 
 ## Почему не текущий sandbox
 
@@ -70,16 +73,15 @@ resume, но ключ — `sessionKey` хода, не `principalId`. Для
 
 Официального API «третье приложение тратит Plus» нет. Есть
 first-party Codex OAuth (`auth.openai.com`, client
-`app_EMoamEEZ73f0CkXaXp7hrann`). Такх ходят OpenClaw / OpenCode /
+`app_EMoamEEZ73f0CkXaXp7hrann`). Так ходят OpenClaw / OpenCode /
 Companion. OpenAI это терпит у Codex-клиентов; это не публичный
 продукт. Поэтому:
 
 - токены **никогда** не пулим и не реселлим;
 - один subject = один tenantId, CAS по `version`;
-- Bro без ChatGPT полноценный;
-- при `invalid_grant` / 401 — карантин, не молчаливый fallback в
-  чужой ключ;
-- модель eve в v1 не использует этот токен.
+- Bro без ChatGPT полноценный (OpenRouter);
+- при `invalid_grant` / 401 — карантин этого тенанта, этот ход и
+  следующие до нового входа — OpenRouter, не чужой ключ.
 
 ### Поток
 
@@ -101,11 +103,13 @@ Device-code (телефон, без localhost callback):
    пишем файл заново (singleflight + CAS, margin 120s).
 
 Отключение: кабинет / «отключи chatgpt» → delete row + `codex logout`
-на машине. Модель токен не видит.
+на машине. Следующий ход уже OpenRouter.
 
-Free ChatGPT без Plus: connect может пройти, `codex` упрётся в
-квоту. Bro не падает — консьерж на OpenRouter. В чат: «ChatGPT
-закончился, делаю без него».
+Модель токен не видит — только broker на сервере.
+
+Free ChatGPT без Plus: connect может пройти, Codex упрётся в квоту.
+Этот ход падает на OpenRouter. В чат: «ChatGPT закончился, делаю
+как обычно».
 
 ## Компьютер
 
@@ -180,23 +184,21 @@ quarantine. Не отдаём в `/me` целиком.
 отдельным коммитом когда будут замеры). Check:
 `npm run computer:check`.
 
-**P2 — ChatGPT connect.** Device-code, шифрование, iMessage +
-кабинет, карантин, запись `~/.codex/auth.json` на resume.
-Без смены `broModel()`. Check: `npm run chatgpt:check`.
+**P2 — ChatGPT connect + модель Bro.** Device-code, шифрование,
+iMessage + кабинет, карантин, `~/.codex/auth.json` на resume.
+`broModel()` становится динамическим: живой токен тенанта →
+`createCodexSubscriptionModel` + tenant broker; иначе сегодняшний
+OpenRouter. То же для worker и otp. Check: `npm run chatgpt:check`,
+`npm run model:check`.
 
 **P3 — MCP/CLI человека.** `computerMcp` + запись конфига Codex
-на машине. Bro не становится MCP-хостом в v1: серверы крутятся
-на компьютере, их ест `codex`. Check: `npm run computer-mcp:check`.
-
-**P4 (позже, не в этом разрезе).** Опционально кормить eve через
-Codex Responses тем же токеном. Только если P2 стабилен и
-оператор явно просит «чтобы Bro сам думал как GPT».
+на машине. Check: `npm run computer-mcp:check`.
 
 ## Отвергнуто
 
 - BYOK API key как единственный путь — это не Plus.
-- Токен ChatGPT как единственная модель eve — ломает Bro без
-  подписки и при карантине.
+- Только Codex без OpenRouter-fallback — ломает Bro без входа.
+- eve `chatgpt()` как есть — читает локальный CLI, в Vercel падает.
 - Один eve-session sandbox на чат — две машины на iMessage+Telegram.
 - Composio workbench как «компьютер» — нет сети, нет persistence
   как продукта, нет Codex.
@@ -217,6 +219,6 @@ Codex Responses тем же токеном. Только если P2 стаби�
 
 ## Вне скоупа v1
 
-Смена модели eve на GPT, Windows/macOS desktop, VNC, установка
-произвольных GUI-приложений, маркетплейс ChatGPT Apps внутри Bro,
-биллинг compute в рублях (сначала структурный счётчик).
+Windows/macOS desktop, VNC, установка произвольных GUI-приложений,
+маркетплейс ChatGPT Apps внутри Bro, биллинг compute в рублях
+(сначала структурный счётчик). STT на Codex.
