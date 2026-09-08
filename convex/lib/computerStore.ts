@@ -1,52 +1,62 @@
-import { v, type Infer } from "convex/values";
+import type { Infer } from "convex/values";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
+import schema from "../schema";
 
-export const computerSize = v.union(
-  v.literal("small"),
-  v.literal("default"),
-  v.literal("large"),
-);
+export const computerSize = schema.tables.computers.validator.fields.size;
 
 export type ComputerSize = Infer<typeof computerSize>;
 
 export const DEFAULT_COMPUTER_SIZE: ComputerSize = "small";
+export const PENDING_COMPUTER_STATE = "pending";
 
-export async function tenantByPhone(
+async function computersForTenant(
   ctx: QueryCtx | MutationCtx,
-  phoneE164: string,
-): Promise<Doc<"tenants"> | null> {
-  return await ctx.db
-    .query("tenants")
-    .withIndex("by_phone", (q) => q.eq("phoneE164", phoneE164))
-    .first();
+  tenantId: Id<"tenants">,
+): Promise<Doc<"computers">[]> {
+  const rows = await ctx.db
+    .query("computers")
+    .withIndex("by_tenant", (q) => q.eq("tenantId", tenantId))
+    .collect();
+  return rows.slice().sort((a, b) => a._creationTime - b._creationTime);
 }
 
 export async function computerByTenant(
   ctx: QueryCtx | MutationCtx,
   tenantId: Id<"tenants">,
 ): Promise<Doc<"computers"> | null> {
-  return await ctx.db
-    .query("computers")
-    .withIndex("by_tenant", (q) => q.eq("tenantId", tenantId))
-    .unique();
+  const rows = await computersForTenant(ctx, tenantId);
+  return rows[0] ?? null;
+}
+
+async function keepOldestComputer(
+  ctx: MutationCtx,
+  tenantId: Id<"tenants">,
+): Promise<Doc<"computers"> | null> {
+  const rows = await computersForTenant(ctx, tenantId);
+  const keep = rows[0];
+  if (!keep) return null;
+  for (const extra of rows.slice(1)) {
+    await ctx.db.delete(extra._id);
+  }
+  return keep;
 }
 
 export async function insertComputer(
   ctx: MutationCtx,
   args: {
     tenantId: Id<"tenants">;
-    boxId: string;
+    boxId?: string;
     size: ComputerSize;
     lastState: string;
     now: number;
   },
 ): Promise<Doc<"computers">> {
-  const existing = await computerByTenant(ctx, args.tenantId);
+  const existing = await keepOldestComputer(ctx, args.tenantId);
   if (existing) throw new Error("computer exists");
   const id = await ctx.db.insert("computers", {
     tenantId: args.tenantId,
-    boxId: args.boxId,
+    ...(args.boxId ? { boxId: args.boxId } : {}),
     size: args.size,
     lastState: args.lastState,
     lastStateAt: args.now,
@@ -67,7 +77,7 @@ export async function patchComputerState(
     resumedAt?: number;
   },
 ): Promise<Doc<"computers">> {
-  const existing = await computerByTenant(ctx, args.tenantId);
+  const existing = await keepOldestComputer(ctx, args.tenantId);
   if (!existing) throw new Error("computer not found");
   const patch: {
     lastState: string;
@@ -90,7 +100,7 @@ export async function touchComputerActive(
   ctx: MutationCtx,
   args: { tenantId: Id<"tenants">; now: number },
 ): Promise<Doc<"computers">> {
-  const existing = await computerByTenant(ctx, args.tenantId);
+  const existing = await keepOldestComputer(ctx, args.tenantId);
   if (!existing) throw new Error("computer not found");
   await ctx.db.patch(existing._id, { lastActiveAt: args.now });
   const next = await ctx.db.get(existing._id);
@@ -98,34 +108,70 @@ export async function touchComputerActive(
   return next;
 }
 
-export async function deleteComputerForTenant(
+export async function deleteComputersForTenant(
   ctx: MutationCtx,
   tenantId: Id<"tenants">,
 ): Promise<boolean> {
-  const existing = await computerByTenant(ctx, tenantId);
-  if (!existing) return false;
-  await ctx.db.delete(existing._id);
+  const rows = await computersForTenant(ctx, tenantId);
+  if (rows.length === 0) return false;
+  for (const row of rows) {
+    await ctx.db.delete(row._id);
+  }
   return true;
 }
 
+/** Lock the tenant document first so parallel claims OCC-retry onto one row. */
+async function lockTenantForClaim(
+  ctx: MutationCtx,
+  tenantId: Id<"tenants">,
+  now: number,
+): Promise<void> {
+  const tenant = await ctx.db.get(tenantId);
+  if (!tenant) throw new Error("tenant not found");
+  await ctx.db.patch(tenantId, { computerLockAt: now });
+}
+
+/** Lock row first (no boxId). Bind the ASCII id later with bindBox. */
 export async function claimOrGetComputer(
   ctx: MutationCtx,
   args: {
     tenantId: Id<"tenants">;
-    boxId?: string;
     size?: ComputerSize;
+    now: number;
+  },
+): Promise<Doc<"computers">> {
+  await lockTenantForClaim(ctx, args.tenantId, args.now);
+  const existing = await keepOldestComputer(ctx, args.tenantId);
+  if (existing) return existing;
+  return await insertComputer(ctx, {
+    tenantId: args.tenantId,
+    size: args.size ?? DEFAULT_COMPUTER_SIZE,
+    lastState: PENDING_COMPUTER_STATE,
+    now: args.now,
+  });
+}
+
+export async function bindComputerBox(
+  ctx: MutationCtx,
+  args: {
+    tenantId: Id<"tenants">;
+    boxId: string;
     lastState: string;
     now: number;
   },
 ): Promise<Doc<"computers">> {
-  const existing = await computerByTenant(ctx, args.tenantId);
-  if (existing) return existing;
-  if (!args.boxId) throw new Error("boxId required to create computer");
-  return await insertComputer(ctx, {
-    tenantId: args.tenantId,
+  const existing = await keepOldestComputer(ctx, args.tenantId);
+  if (!existing) throw new Error("computer not found");
+  if (existing.boxId && existing.boxId !== args.boxId) {
+    return existing;
+  }
+  await ctx.db.patch(existing._id, {
     boxId: args.boxId,
-    size: args.size ?? DEFAULT_COMPUTER_SIZE,
     lastState: args.lastState,
-    now: args.now,
+    lastStateAt: args.now,
+    resumedAt: args.now,
   });
+  const next = await ctx.db.get(existing._id);
+  if (!next) throw new Error("computer missing after bind");
+  return next;
 }

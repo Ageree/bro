@@ -43,6 +43,8 @@ export default defineSchema({
     lastChannel: v.optional(
       v.union(v.literal("imessage"), v.literal("telegram")),
     ),
+    /** OCC mutex for claimOrGet — parallel computer claims serialize here. */
+    computerLockAt: v.optional(v.number()),
   })
     .index("by_phone", ["phoneE164"])
     .index("by_handle", ["inkboxHandle"])
@@ -239,10 +241,11 @@ export default defineSchema({
     .index("by_owner", ["ownerPhoneE164"])
     .index("by_handle", ["inkboxHandle"]),
 
-  /** One personal box per Convex tenant. Status here is a cache; ASCII is truth. */
+  /** One personal box per Convex tenant. lastState is a cache; ASCII is truth.
+   *  boxId is missing while the row is a create-lock, before the ASCII fork. */
   computers: defineTable({
     tenantId: v.id("tenants"),
-    boxId: v.string(),
+    boxId: v.optional(v.string()),
     size: v.union(
       v.literal("small"),
       v.literal("default"),
@@ -260,7 +263,7 @@ export default defineSchema({
   /** ChatGPT/Codex account metadata. Tokens live in chatgptSecrets. */
   chatgptAccounts: defineTable({
     tenantId: v.id("tenants"),
-    accountId: v.optional(v.string()),
+    accountId: v.string(),
     email: v.optional(v.string()),
     planType: v.optional(v.string()),
     connectedAt: v.number(),
@@ -291,5 +294,7 @@ export default defineSchema({
       v.literal("expired"),
       v.literal("failed"),
     ),
-  }).index("by_tenant", ["tenantId"]),
+  })
+    .index("by_tenant", ["tenantId"])
+    .index("by_deviceAuthId", ["deviceAuthId"]),
 });
