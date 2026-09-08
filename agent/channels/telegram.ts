@@ -45,7 +45,6 @@ import {
 import { compileTelegram } from "../lib/telegram-text.ts";
 import { parkTurn } from "../lib/channel-turn.ts";
 import { shortAckAttribute } from "../lib/short-ack.ts";
-import { telegramDeliveryEvents } from "../lib/turn-delivery-events.ts";
 
 function telegramAuthAttrs(opts: {
   conversationId: string;
@@ -365,5 +364,4 @@ export default defineChannel({
       return new Response(null, { status: 204 });
     }),
   ],
-  events: telegramDeliveryEvents,
 });

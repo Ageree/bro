@@ -1,6 +1,12 @@
 import { defineHook } from "eve/hooks";
 import { telegramDeliveryEvents } from "../lib/turn-delivery-events.ts";
 
+/** Sole Telegram delivery path. Channel `events` also fire on new Telegram
+ *  sessions, but Eve bundles the hook and channel separately — in-memory
+ *  `recordSent` maps are not shared, so a second fire resends every bubble
+ *  and dumps the full reply as one concatenated message. iOS then ghosts
+ *  cells. Old HTTP-adapter sessions never ran channel events; the hook
+ *  covers both. */
 export default defineHook({
   events: {
     async "turn.failed"(event, ctx) {

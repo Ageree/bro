@@ -7,7 +7,13 @@ import {
   splitTelegramHtml,
   toTelegramHtml,
 } from "../agent/lib/telegram-text.ts";
-import { isTelegramReaction, TELEGRAM_REACTIONS } from "../agent/lib/telegram.ts";
+import {
+  enqueueTelegramChat,
+  isTelegramReaction,
+  resetTelegramSendGateForTests,
+  TELEGRAM_REACTIONS,
+  TELEGRAM_SEND_GAP_MS,
+} from "../agent/lib/telegram.ts";
 
 function assert(cond: unknown, msg: string): void {
   if (!cond) throw new Error(msg);
@@ -83,5 +89,55 @@ assert(
 assert(TELEGRAM_REACTIONS.love === "❤", "love emoji");
 assert(isTelegramReaction("like"), "like allowed");
 assert(!isTelegramReaction("heart"), "unknown reaction");
+
+{
+  resetTelegramSendGateForTests();
+  const order: string[] = [];
+  const first = enqueueTelegramChat(
+    "1",
+    async () => {
+      order.push("a");
+      return "a";
+    },
+    { gapMs: 20 },
+  );
+  const second = enqueueTelegramChat(
+    "1",
+    async () => {
+      order.push("b");
+      return "b";
+    },
+    { gapMs: 20 },
+  );
+  const other = enqueueTelegramChat(
+    "2",
+    async () => {
+      order.push("c");
+      return "c";
+    },
+    { gapMs: 20 },
+  );
+  const [a, c] = await Promise.all([first, other]);
+  assert(a === "a" && c === "c", "first sends on two chats do not block each other");
+  assert((await second) === "b", "same-chat second send still completes");
+  assert(order.indexOf("a") < order.indexOf("b"), "same chat is serialized");
+  const boom = enqueueTelegramChat(
+    "3",
+    async () => {
+      throw new Error("nope");
+    },
+    { gapMs: 0 },
+  );
+  const afterFail = enqueueTelegramChat("3", async () => "ok", { gapMs: 0 });
+  await boom.then(
+    () => {
+      throw new Error("failed send should reject");
+    },
+    () => undefined,
+  );
+  assert((await afterFail) === "ok", "failed send does not stall the chat gate");
+  assert(TELEGRAM_SEND_GAP_MS >= 200, "iOS needs a gap between bot bubbles");
+  resetTelegramSendGateForTests();
+}
 
 console.log("telegram-text-check ok");

@@ -72,13 +72,25 @@ const telegram = readFileSync(
 assert(telegram.includes("sendTelegramTyping"), "telegram shows typing like iMessage");
 assert(telegram.includes("inboundP"), "telegram STT overlaps photo fetch");
 assert(telegram.includes("parkTurn"), "human telegram turn is not awaited");
-assert(telegram.includes("telegramDeliveryEvents"), "telegram events only accept telegram-stamped turns");
+assert(
+  !telegram.includes("telegramDeliveryEvents"),
+  "telegram channel does not fire delivery events",
+);
+const telegramHook = readFileSync(
+  new URL("../agent/hooks/telegram-deliver.ts", import.meta.url),
+  "utf8",
+);
+assert(
+  telegramHook.includes("telegramDeliveryEvents"),
+  "telegram delivery lives on the root hook so old sessions still speak",
+);
 
 const telegramLib = readFileSync(
   new URL("../agent/lib/telegram.ts", import.meta.url),
   "utf8",
 );
 assert(telegramLib.includes("sendChatAction"), "typing uses Telegram chat action");
+assert(telegramLib.includes("enqueueTelegramChat"), "telegram sends are serialized per chat");
 
 const instructions = readFileSync(
   new URL("../agent/instructions.md", import.meta.url),
