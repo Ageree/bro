@@ -16,10 +16,13 @@ import {
 } from "../agent/lib/outbound-photo.ts";
 import { photoTargetFromAuth, sendPhotoToHuman } from "../agent/lib/send-photo.ts";
 import { deliverHuman } from "../agent/lib/deliver-human.ts";
+import { resetPhotoDedupe } from "../agent/lib/photo-dedupe.ts";
 
 function assert(cond: unknown, msg: string): asserts cond {
   if (!cond) throw new Error(msg);
 }
+
+resetPhotoDedupe();
 
 const PNG = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const JPEG = Uint8Array.from([0xff, 0xd8, 0xff, 0xe0]);
@@ -161,6 +164,46 @@ assert(oversize, "oversize fetch rejected");
   assert(sent.status === "ok" && sent.channel === "imessage", "imessage send ok");
   assert(uploads[0] === "shot.png", "uploaded filename");
   assert(media[0]?.[0] === "https://inkbox.example/m.png", "media url sent");
+}
+
+{
+  const tally = { sent: 0 };
+  const deps = {
+    uploadIMessage: async () => "https://inkbox.example/dup.png",
+    sendIMessageMedia: async () => {
+      tally.sent += 1;
+      return { service: "imessage" } as never;
+    },
+  };
+  const again = await sendPhotoToHuman({
+    channel: "imessage",
+    conversationId: "conv-1",
+    source: { kind: "bytes", photo: fromPng },
+    deps,
+  });
+  assert(again.status === "ok", "duplicate still reports ok");
+  const afterDup = tally.sent;
+  if (afterDup !== 0) throw new Error("same chat does not upload a second computer photo");
+
+  const compact = await sendPhotoToHuman({
+    channel: "imessage",
+    conversationId: "conv-1",
+    source: { kind: "bytes", photo: photoFromBytes(JPEG, "dt5.jpg") },
+    deps,
+  });
+  assert(compact.status === "ok", "compact remake reports ok");
+  const afterCompact = tally.sent;
+  if (afterCompact !== 0) throw new Error("compact remake in the same chat is dropped");
+
+  const otherChat = await sendPhotoToHuman({
+    channel: "imessage",
+    conversationId: "conv-other",
+    source: { kind: "bytes", photo: fromPng },
+    deps,
+  });
+  assert(otherChat.status === "ok", "other chat still sends");
+  const afterOther = tally.sent;
+  if (afterOther !== 1) throw new Error("other chat is not blocked by the first");
 }
 
 {
@@ -333,11 +376,12 @@ const shot = readFileSync(
 );
 assert(shot.includes("sendPhotoToHuman"), "screenshot send uses the same path");
 assert(!shot.includes("send: z.boolean"), "screenshot always sends — no optional flag");
-assert(shot.includes("Картинка уже у человека"), "screenshot tells the model it already attached");
+assert(shot.includes("Картинка уже в этом чате"), "screenshot tells the model it already attached");
+assert(shot.includes("Не шли вторую"), "screenshot forbids a second send");
 
 const execTool = readFileSync(new URL("../agent/tools/computer_exec.ts", import.meta.url), "utf8");
-assert(execTool.includes("imagePathFromCaptureStdout"), "exec detects a captured image path");
-assert(execTool.includes("sendPhotoToHuman"), "exec attaches the captured image");
+assert(!execTool.includes("sendPhotoToHuman"), "exec does not auto-attach a captured image");
+assert(execTool.includes("computer_screenshot"), "exec points at the screenshot tool");
 
 const deliver = readFileSync(
   new URL("../agent/lib/deliver-human.ts", import.meta.url),
