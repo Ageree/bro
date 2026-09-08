@@ -10,6 +10,7 @@ import {
   isHttpUrl,
   tinyfishErrorMessage,
   tinyfishFetch,
+  tinyfishFetchPage,
   tinyfishKey,
   tinyfishSearch,
 } from "../agent/lib/tinyfish.ts";
@@ -56,6 +57,7 @@ const fetched = compactFetchResult({
 });
 assert(fetched.pages.length === 1, "drops empty pages");
 assert(fetched.pages[0]?.title === "Search API", "keeps title");
+assert(fetched.pages[0]?.truncated === false, "short page is not truncated");
 assert(!fetched.pages[0]?.text.includes("\n\n\n"), "collapses extra blanks");
 assert(
   fetched.errors.some((e) => e.url === "https://blocked.example"),
@@ -75,6 +77,7 @@ assert(
   "clips long pages",
 );
 assert(clipped.pages[0]?.text.endsWith("…"), "clip marker");
+assert(clipped.pages[0]?.truncated === true, "long page is truncated");
 
 assert(
   tinyfishErrorMessage(
@@ -106,6 +109,11 @@ assert(!tinyfishKey(), "missing key is empty");
     "error" in missingFetch && missingFetch.error === TINYFISH_MISSING_KEY,
     "fetch refuses without a key",
   );
+  const missingPage = await tinyfishFetchPage({ url: "https://example.com" });
+  assert(missingPage.content === TINYFISH_MISSING_KEY, "eve fetch reports missing key");
+  assert(missingPage.contentType === "text/plain", "eve fetch failure is plain text");
+  assert(missingPage.truncated === false, "eve fetch failure is not truncated");
+  assert(missingPage.url === "https://example.com", "eve fetch keeps the url");
 }
 if (saved !== undefined) process.env.TINYFISH_API_KEY = saved;
 
@@ -123,11 +131,13 @@ const fetchTool = readFileSync(
   "utf8",
 );
 assert(searchTool.includes("tinyfishSearch"), "web_search uses TinyFish");
-assert(fetchTool.includes("tinyfishFetch"), "web_fetch uses TinyFish");
+assert(fetchTool.includes("tinyfishFetchPage"), "web_fetch uses TinyFish");
+assert(fetchTool.includes('from "eve/tools/web_fetch"'), "web_fetch keeps the eve slug and schema");
 assert(!searchTool.includes("disableTool"), "web_search is mounted");
-assert(!fetchTool.includes("disableTool"), "eve default web_fetch stays off");
+assert(!fetchTool.includes("disableTool"), "eve default fetch executor is replaced, not removed");
 assert(searchTool.includes("browser_task"), "search steers shops to the browser");
 assert(fetchTool.includes("browser_task"), "fetch steers forms to the browser");
+assert(!fetchTool.includes("urls:"), "web_fetch stays one url, like eve");
 assert(!searchTool.includes("groupPersonalBlock"), "public search is ok in groups");
 assert(!fetchTool.includes("groupPersonalBlock"), "public fetch is ok in groups");
 

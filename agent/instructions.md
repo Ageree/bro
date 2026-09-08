@@ -36,7 +36,7 @@ If you spawn a subagent, tell it: `You are a subagent. Don't touch memory tools.
 
 Public facts go through `web_search`, then `web_fetch` if the snippet is thin: новости, курсы, часы работы, официальные страницы, «что это», адреса мест.
 
-- `web_search` first. Then `web_fetch` 1–3 best URLs. Do not open Google in a browser.
+- `web_search` first. Then `web_fetch` on the best URL (call again for a second page). Do not open Google in a browser. `web_fetch` is TinyFish, not a raw HTTP GET.
 - Site prices on WB/Ozon, stock, carts, bookings, logins, forms — `browser_task`, not search.
 - If TinyFish is unset, say so. Do not invent that you googled.
 

@@ -25,6 +25,7 @@ export type FetchPage = {
   url: string;
   title?: string;
   text: string;
+  truncated: boolean;
 };
 
 export type FetchFailure = {
@@ -33,6 +34,15 @@ export type FetchFailure = {
 };
 
 export type TinyfishErr = { error: string };
+
+export type WebFetchFormat = "markdown" | "text" | "html";
+
+export type WebFetchPage = {
+  content: string;
+  contentType: string;
+  truncated: boolean;
+  url: string;
+};
 
 export function tinyfishKey(): string | undefined {
   const key = process.env.TINYFISH_API_KEY?.trim();
@@ -95,13 +105,18 @@ export function compactFetchResult(raw: unknown): {
     const item = asRecord(row);
     if (!item) continue;
     const url = asString(item.url) ?? asString(item.final_url) ?? "";
-    const text = clipText(asString(item.text) ?? "");
-    if (!url || !text) {
+    const clipped = clipText(asString(item.text) ?? "");
+    if (!url || !clipped.text) {
       if (url) errors.push({ url, error: "empty page" });
       continue;
     }
     const title = asString(item.title);
-    pages.push({ url, text, ...(title ? { title } : {}) });
+    pages.push({
+      url,
+      text: clipped.text,
+      truncated: clipped.truncated,
+      ...(title ? { title } : {}),
+    });
   }
   const failed = rec && Array.isArray(rec.errors) ? rec.errors : [];
   for (const row of failed) {
@@ -139,6 +154,7 @@ export async function tinyfishSearch(args: {
 
 export async function tinyfishFetch(
   urls: string[],
+  opts?: { format?: WebFetchFormat; timeoutSeconds?: number },
 ): Promise<{ pages: FetchPage[]; errors: FetchFailure[] } | TinyfishErr> {
   const key = tinyfishKey();
   if (!key) return { error: TINYFISH_MISSING_KEY };
@@ -155,15 +171,41 @@ export async function tinyfishFetch(
   const res = await tinyfishRequest(FETCH_URL, {
     method: "POST",
     key,
-    timeoutMs: TINYFISH_FETCH_TIMEOUT_MS,
+    timeoutMs: fetchTimeoutMs(opts?.timeoutSeconds),
     body: JSON.stringify({
       urls: clean,
-      format: "markdown",
+      format: tinyfishPageFormat(opts?.format),
       ttl: TINYFISH_FETCH_TTL_SECONDS,
     }),
   });
   if ("error" in res) return res;
   return compactFetchResult(res.body);
+}
+
+/** eve `web_fetch` shape: one URL in, `{ content, contentType, truncated, url }` out. */
+export async function tinyfishFetchPage(args: {
+  url: string;
+  format?: WebFetchFormat;
+  timeout?: number;
+}): Promise<WebFetchPage> {
+  const format = args.format ?? "markdown";
+  const result = await tinyfishFetch([args.url], {
+    format,
+    timeoutSeconds: args.timeout,
+  });
+  if ("error" in result) {
+    return failPage(args.url, result.error);
+  }
+  const page = result.pages[0];
+  if (!page) {
+    return failPage(args.url, result.errors[0]?.error ?? "empty page");
+  }
+  return {
+    content: page.text,
+    contentType: contentTypeFor(format),
+    truncated: page.truncated,
+    url: page.url,
+  };
 }
 
 async function tinyfishRequest(
@@ -192,15 +234,38 @@ async function tinyfishRequest(
   return { body: safeJson(text) ?? {} };
 }
 
+function tinyfishPageFormat(format: WebFetchFormat | undefined): "markdown" | "html" {
+  return format === "html" ? "html" : "markdown";
+}
+
+function contentTypeFor(format: WebFetchFormat): string {
+  if (format === "html") return "text/html";
+  if (format === "text") return "text/plain";
+  return "text/markdown";
+}
+
+function fetchTimeoutMs(timeoutSeconds: number | undefined): number {
+  const seconds = timeoutSeconds ?? 30;
+  if (!Number.isFinite(seconds)) return TINYFISH_FETCH_TIMEOUT_MS;
+  return Math.min(120_000, Math.max(1_000, Math.round(seconds * 1000)));
+}
+
+function failPage(url: string, content: string): WebFetchPage {
+  return { content, contentType: "text/plain", truncated: false, url };
+}
+
 function countryCode(value: string | undefined): string | undefined {
   const code = value?.trim().toUpperCase();
   return code && /^[A-Z]{2}$/.test(code) ? code : undefined;
 }
 
-function clipText(value: string): string {
+function clipText(value: string): { text: string; truncated: boolean } {
   const text = value.replace(/\n{3,}/g, "\n\n").trim();
-  if (text.length <= TINYFISH_MAX_FETCH_CHARS) return text;
-  return `${text.slice(0, TINYFISH_MAX_FETCH_CHARS).trimEnd()}\n…`;
+  if (text.length <= TINYFISH_MAX_FETCH_CHARS) return { text, truncated: false };
+  return {
+    text: `${text.slice(0, TINYFISH_MAX_FETCH_CHARS).trimEnd()}\n…`,
+    truncated: true,
+  };
 }
 
 function safeJson(text: string): unknown {
