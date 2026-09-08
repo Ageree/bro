@@ -27,6 +27,7 @@ const kept = [
   "watch_app.ts",
   "imessage_react.ts",
   "telegram_react.ts",
+  "send_photo.ts",
   "group_chat.ts",
 ];
 for (const file of kept) {

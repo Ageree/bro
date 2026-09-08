@@ -5,6 +5,7 @@ import {
 import { deliverHuman, type HumanTenant } from "./deliver-human.ts";
 import {
   routingFromAuth,
+  routingPhone,
   routingTenant,
   type AuthAttrs,
 } from "./turn-routing.ts";
@@ -30,10 +31,17 @@ export async function deliverHumanRouted(opts: {
   tenant?: HumanTenant | null;
   conversationId?: string;
   text: string;
+  principalId?: string | null;
 }): Promise<void> {
   const routing = routingFromAuth(opts.attrs);
+  const phone =
+    routingPhone(routing, opts.principalId) ?? opts.tenant?.phoneE164;
   await deliverHuman({
-    tenant: { ...opts.tenant, ...routingTenant(routing) },
+    tenant: {
+      ...opts.tenant,
+      ...routingTenant(routing),
+      ...(phone ? { phoneE164: phone } : {}),
+    },
     conversationId: opts.conversationId,
     text: opts.text,
     channel: routing.channel ?? lastChannelOf(opts.tenant?.lastChannel),

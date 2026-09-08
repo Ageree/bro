@@ -30,6 +30,7 @@
     "connect-link:check": "node --experimental-strip-types scripts/connect-link-check.ts",
     "jobs:check": "node --experimental-strip-types scripts/jobs-check.ts",
     "imessage:check": "node --experimental-strip-types scripts/imessage-text-check.ts",
+    "photo:check": "node --experimental-strip-types scripts/photo-check.ts",
     "telegram:check": "node --experimental-strip-types scripts/telegram-text-check.ts && node --experimental-strip-types scripts/telegram-policy-check.ts",
     "telegram:webhooks": "node --env-file=.env.local --experimental-strip-types scripts/setup-telegram-webhook.ts",
     "onboard:check": "node --experimental-strip-types scripts/onboard-check.ts",
