@@ -334,4 +334,42 @@ assert(shotTool.includes("sendPhotoToHuman"), "screenshot attaches the PNG itsel
 assert(!shotTool.includes("send: z.boolean"), "screenshot always sends");
 assert(!recTool.includes("toolOutputPart.file"), "record does not dump mp4 to the model");
 
+const instructions = await import("node:fs").then((fs) =>
+  fs.readFileSync(new URL("../agent/instructions.md", import.meta.url), "utf8"),
+);
+assert(
+  instructions.includes("встроенная Linux-машина Bro"),
+  "instructions: computer is Bro's own box",
+);
+assert(
+  /Не называй сторонние VM-сервисы/.test(instructions),
+  "instructions forbid third-party VM vendors",
+);
+assert(
+  /Maritime|MyTime/.test(instructions),
+  "instructions name the leftover vendors so the model will not invent them",
+);
+
+const powerTool = await import("node:fs").then((fs) =>
+  fs.readFileSync(
+    new URL("../agent/tools/computer_power.ts", import.meta.url),
+    "utf8",
+  ),
+);
+assert(
+  powerTool.includes("not a third-party VM"),
+  "computer_power does not send users to an external VM host",
+);
+
+const earlyDeliver = await import("node:fs").then((fs) =>
+  fs.readFileSync(
+    new URL("./early-deliver-check.ts", import.meta.url),
+    "utf8",
+  ),
+);
+assert(
+  !/Maritime|MyTime/i.test(earlyDeliver),
+  "early-deliver fixtures must not model a third-party VM pitch",
+);
+
 console.log("computer-check ok");

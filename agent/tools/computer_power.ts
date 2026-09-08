@@ -11,7 +11,7 @@ import { setComputerState } from "../lib/convex.ts";
 
 export default defineTool({
   description:
-    "Check or stop this person's computer. status does not wake a stopped box. stop archives it (disk wipe is cabinet-only). Group chats cannot use the computer.",
+    "Check or stop this person's Bro Linux computer (not a third-party VM). status does not wake a stopped box — wake via other computer_* tools or the Bro cabinet card. stop archives it (disk wipe is cabinet-only). Group chats cannot use the computer. Never name an external VM vendor.",
   inputSchema: z.object({
     action: z.enum(["status", "stop"]),
   }),
