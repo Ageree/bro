@@ -316,6 +316,75 @@ assert(oversize, "oversize fetch rejected");
 }
 
 {
+  const spoilers: Array<{ url: string; hasSpoiler?: boolean }> = [];
+  await deliverHuman({
+    tenant: { telegramChatId: "99", lastChannel: "telegram" },
+    text: "смотри\n!![обложка](https://img.example/hidden.jpg)",
+    channel: "telegram",
+    deps: {
+      sendTelegramPhotoUrl: async (opts) => {
+        spoilers.push({ url: String(opts.url), hasSpoiler: opts.hasSpoiler });
+        return { message_id: 4 };
+      },
+    },
+  });
+  assert(spoilers[0]?.url === "https://img.example/hidden.jpg", "hidden media url");
+  assert(spoilers[0]?.hasSpoiler === true, "hidden media sets has_spoiler");
+}
+
+{
+  const rich: string[] = [];
+  const classic: string[] = [];
+  await deliverHuman({
+    tenant: { telegramChatId: "99", lastChannel: "telegram" },
+    text: `# Форматы
+
+- **Жирный**
+- ||Спойлер||
+`,
+    channel: "telegram",
+    deps: {
+      sendTelegramRichMessage: async (opts) => {
+        rich.push(opts.html);
+        return { message_id: 5 };
+      },
+      sendTelegramMessage: async (opts) => {
+        classic.push(opts.html);
+        return { message_id: 6 };
+      },
+    },
+  });
+  assert(rich.length === 1, "structured card uses sendRichMessage");
+  assert(rich[0]?.includes("<h1>Форматы</h1>"), "rich heading sent");
+  assert(rich[0]?.includes("<ul>"), "rich list sent");
+  assert(classic.length === 0, "rich success skips classic");
+}
+
+{
+  const rich: string[] = [];
+  const classic: string[] = [];
+  await deliverHuman({
+    tenant: { telegramChatId: "88", lastChannel: "telegram" },
+    text: `# Форматы
+
+- пункт
+`,
+    channel: "telegram",
+    deps: {
+      sendTelegramRichMessage: async () => {
+        throw new Error("Not Found");
+      },
+      sendTelegramMessage: async (opts) => {
+        classic.push(opts.html);
+        return { message_id: 7 };
+      },
+    },
+  });
+  assert(rich.length === 0, "failed rich does not count as sent");
+  assert(classic[0]?.includes("<b>Форматы</b>"), "rich failure falls back to HTML");
+}
+
+{
   const loaded: string[] = [];
   const media: string[][] = [];
   const texts: string[] = [];
@@ -366,6 +435,7 @@ assert(imessageTarget.conversationId === "conv-im", "auth iMessage conversation"
 const tool = readFileSync(new URL("../agent/tools/send_photo.ts", import.meta.url), "utf8");
 assert(tool.includes("sendPhotoToHuman"), "tool uses shared sender");
 assert(tool.includes("parseSendPhotoInput"), "tool validates path/url");
+assert(tool.includes("spoiler"), "tool can hide Telegram media");
 assert(tool.includes("readBinaryFile"), "computer path reads the box file");
 assert(tool.includes("asPersonal"), "computer path is personal-only");
 assert(existsSync(new URL("../agent/tools/send_photo.ts", import.meta.url)), "tool mounted");
@@ -390,9 +460,12 @@ const deliver = readFileSync(
 assert(deliver.includes("extractMarkdownPhotoUrls"), "iMessage delivery sends markdown photos");
 assert(deliver.includes("extractComputerImagePaths"), "iMessage delivery attaches computer paths");
 assert(deliver.includes("sendPhotoToHuman"), "iMessage photos share send_photo path");
+assert(deliver.includes("sendTelegramRichMessage"), "structured cards use rich messages");
 
 const telegram = readFileSync(new URL("../agent/lib/telegram.ts", import.meta.url), "utf8");
 assert(telegram.includes("sendTelegramPhotoFile"), "telegram can upload bytes");
+assert(telegram.includes("has_spoiler"), "telegram can send hidden media");
+assert(telegram.includes("sendRichMessage"), "telegram can send rich messages");
 assert(telegram.includes("apiForm"), "telegram photo file is multipart");
 assert(!telegram.includes('"Content-Type": "application/json"') || telegram.includes("apiForm"), "json helper stays");
 

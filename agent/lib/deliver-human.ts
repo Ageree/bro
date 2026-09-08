@@ -6,7 +6,11 @@ import {
   lastChannelOf,
   type HumanChannel,
 } from "../../convex/lib/telegramPolicy.ts";
-import { sendTelegramMessage, sendTelegramPhoto } from "./telegram.ts";
+import {
+  sendTelegramMessage,
+  sendTelegramPhoto,
+  sendTelegramRichMessage,
+} from "./telegram.ts";
 import { compileTelegram, type TelegramButton } from "./telegram-text.ts";
 import {
   extractComputerImagePaths,
@@ -33,6 +37,7 @@ export type DeliverHumanDeps = SendPhotoDeps & {
   sendIMessage?: typeof sendBlueIMessage;
   sendTelegramMessage?: typeof sendTelegramMessage;
   sendTelegramPhotoUrl?: typeof sendTelegramPhoto;
+  sendTelegramRichMessage?: typeof sendTelegramRichMessage;
 };
 
 export async function deliverHuman(opts: {
@@ -148,16 +153,40 @@ async function deliverTelegram(
   const rest = compiled.chunks.slice(1);
   const sendPhoto = deps?.sendTelegramPhotoUrl ?? sendTelegramPhoto;
   const sendMessage = deps?.sendTelegramMessage ?? sendTelegramMessage;
+  const sendRich = deps?.sendTelegramRichMessage ?? sendTelegramRichMessage;
+
+  if (compiled.preferRich && compiled.richHtml) {
+    const claimed = claimChatBubble({ chatKey: chatId, text: compiled.richHtml });
+    if (claimed) {
+      try {
+        await sendRich({
+          chatId,
+          html: compiled.richHtml,
+          buttons,
+        });
+        return;
+      } catch (err) {
+        console.error("telegram rich fallback", err);
+      }
+    } else {
+      return;
+    }
+  }
 
   if (compiled.photos[0]) {
     await sendPhoto({
       chatId,
-      url: compiled.photos[0],
+      url: compiled.photos[0].url,
       html: html || undefined,
       buttons,
+      hasSpoiler: compiled.photos[0].spoiler,
     });
     for (const extra of compiled.photos.slice(1)) {
-      await sendPhoto({ chatId, url: extra });
+      await sendPhoto({
+        chatId,
+        url: extra.url,
+        hasSpoiler: extra.spoiler,
+      });
     }
     for (const chunk of rest) {
       if (!claimChatBubble({ chatKey: chatId, text: chunk })) continue;

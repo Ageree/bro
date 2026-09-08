@@ -9,7 +9,7 @@ import { isHeadingOnly } from "./bubble-dedupe.ts";
 import { isThinFragment } from "./early-deliver.ts";
 
 const FENCE = /```[\w+-]*\n?([\s\S]*?)```/g;
-const IMAGE = /!\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)/gi;
+const IMAGE = /!{1,2}\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)/gi;
 const LINK = /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/gi;
 const AUTO_URL = /<(https?:\/\/[^>\s]+)>/gi;
 const AUTO_MAIL = /<([^>\s]+@[^>\s]+)>/g;
@@ -111,12 +111,15 @@ export function toIMessageText(src: string): string {
   s = s.replace(AUTO_URL, "$1");
   s = s.replace(AUTO_MAIL, "$1");
 
+  s = s.replace(/^:::rich\s*$/gm, "");
   s = s.replace(/^#{1,6}\s+(.*)$/gm, (_, t: string) => toBold(t.trim()));
-  s = s.replace(/^>\s?/gm, "");
+  s = s.replace(/^>!?\s?/gm, "");
   s = s.replace(/^\s*[-*]\s+/gm, "• ");
 
   s = s.replace(/~~([^~\n]+)~~/g, (_, t: string) => strike(t));
   s = s.replace(/`([^`\n]+)`/g, "$1");
+  s = s.replace(/\+\+([^+\n]+)\+\+/g, "$1");
+  s = s.replace(/\|\|([^|\n]+)\|\|/g, "$1");
   s = s.replace(/\*\*\*([^*]+)\*\*\*/g, (_, t: string) => toBold(t));
   s = s.replace(/\*\*([^*]+)\*\*/g, (_, t: string) => toBold(t));
   s = s.replace(/__([^_]+)__/g, (_, t: string) => toBold(t));

@@ -22,6 +22,7 @@ export type SendPhotoTarget = {
   telegramChatId?: string;
   handle?: string;
   caption?: string;
+  spoiler?: boolean;
 };
 
 function firstAttr(attrs: AuthAttrs, key: string): string | undefined {
@@ -100,6 +101,7 @@ export async function sendPhotoToHuman(
       await sendTelegramPhotoSource({
         chatId,
         caption,
+        hasSpoiler: opts.spoiler === true,
         source: opts.source,
         deps: opts.deps,
       });
@@ -128,6 +130,7 @@ export async function sendPhotoToHuman(
 async function sendTelegramPhotoSource(opts: {
   chatId: string;
   caption?: string;
+  hasSpoiler?: boolean;
   source: { kind: "url"; url: string } | { kind: "bytes"; photo: PhotoBytes };
   deps?: SendPhotoDeps;
 }): Promise<void> {
@@ -135,7 +138,12 @@ async function sendTelegramPhotoSource(opts: {
   if (opts.source.kind === "url") {
     const sendUrl = opts.deps?.sendTelegramUrl ?? sendTelegramPhoto;
     try {
-      await sendUrl({ chatId: opts.chatId, url: opts.source.url, html });
+      await sendUrl({
+        chatId: opts.chatId,
+        url: opts.source.url,
+        html,
+        hasSpoiler: opts.hasSpoiler,
+      });
       return;
     } catch (err) {
       console.error("telegram photo url failed, uploading bytes", err);
@@ -152,6 +160,7 @@ async function sendTelegramPhotoSource(opts: {
     filename: photo.filename,
     contentType: photo.contentType,
     html,
+    hasSpoiler: opts.hasSpoiler,
   });
 }
 

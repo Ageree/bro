@@ -55,6 +55,19 @@ assert(
   "heading",
 );
 
+assert(toIMessageText(":::rich\nкарточка") === "карточка", ":::rich mark strips");
+assert(toIMessageText("++черта++") === "черта", "telegram underline strips");
+assert(toIMessageText("||спойлер||") === "спойлер", "telegram spoiler strips");
+assert(
+  toIMessageText(">! скрыто\n>! ещё") === "скрыто\nещё",
+  "expandable quote prefix strips",
+);
+assert(
+  toIMessageText("!![обложка](https://img.example/s.jpg)") ===
+    "обложка\nhttps://img.example/s.jpg",
+  "hidden media markdown becomes url lines",
+);
+
 assert(
   toIMessageText("<notifications@github.com>") === "notifications@github.com",
   "autolink email",
