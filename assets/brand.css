@@ -1,0 +1,270 @@
+/* ============================================================
+   bro — design system
+   The atom is the bubble. Character, logo, card, button and
+   message are the same shape at different sizes.
+   ============================================================ */
+
+:root {
+  /* paper & ink */
+  --paper:        #f2efe7;
+  --paper-raised: #fbfaf6;
+  --ink:          #15241b;
+  --ink-2:        #33453a;
+  --ink-soft:     #6b7c71;
+  --line:         rgba(21, 36, 27, 0.11);
+  --line-strong:  rgba(21, 36, 27, 0.2);
+  --signal:       #d8913a;
+
+  /* one radius family — the brand signature */
+  --r-sm:   0.75rem;
+  --r-md:   1.25rem;
+  --r-lg:   1.75rem;
+  --r-pill: 999px;
+
+  --gutter:  clamp(1.25rem, 5vw, 2.5rem);
+  --measure: 60rem;
+
+  --lift: 0 18px 40px -24px rgba(21, 36, 27, 0.45);
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { overflow-x: hidden; }
+html { scroll-behavior: smooth; }
+
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: "Onest", system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 1rem;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---------- type scale ---------- */
+.t-display {
+  font-weight: 600;
+  font-size: clamp(4rem, 17vw, 9rem);
+  line-height: 0.86;
+  letter-spacing: -0.05em;
+}
+.t-h1 {
+  font-weight: 600;
+  font-size: clamp(1.5rem, 5vw, 2.4rem);
+  line-height: 1.12;
+  letter-spacing: -0.03em;
+}
+.t-h2 {
+  font-weight: 600;
+  font-size: clamp(1.35rem, 4vw, 1.9rem);
+  line-height: 1.15;
+  letter-spacing: -0.025em;
+}
+.t-body   { font-size: clamp(1rem, 2vw, 1.1rem); line-height: 1.55; }
+.t-muted  { color: var(--ink-soft); }
+.t-small  { font-size: 0.9rem; line-height: 1.55; }
+.t-mono-label {
+  font-size: 0.76rem;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+/* ---------- layout ---------- */
+.wrap {
+  width: 100%;
+  max-width: var(--measure);
+  margin-inline: auto;
+  padding-inline: var(--gutter);
+}
+.section { padding-block: clamp(3rem, 7vw, 5rem); }
+.stack   { display: flex; flex-direction: column; }
+
+/* ============================================================
+   The character
+   One shape, one expression, one animation: he blinks.
+   ============================================================ */
+.bro {
+  display: block;
+  fill: currentColor;
+  color: var(--ink);
+  overflow: visible;
+}
+.bro__eye {
+  fill: var(--bro-eye, var(--paper));
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: bro-blink 6.5s infinite;
+}
+@keyframes bro-blink {
+  0%, 93%, 100% { transform: scaleY(1); }
+  96%           { transform: scaleY(0.1); }
+}
+/* he flips to face the reader on the other side of the thread */
+.bro--flip { transform: scaleX(-1); }
+
+@media (prefers-reduced-motion: reduce) {
+  .bro__eye { animation: none; }
+  html { scroll-behavior: auto; }
+}
+
+/* ---------- lockup ---------- */
+.lockup {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  text-decoration: none;
+  color: var(--ink);
+}
+.lockup .bro { width: 1.65rem; }
+.lockup__word {
+  font-weight: 600;
+  font-size: 1.25rem;
+  letter-spacing: -0.045em;
+}
+
+/* ============================================================
+   Bubbles — the shared primitive
+   ============================================================ */
+.bubble {
+  border-radius: var(--r-lg);
+  border-bottom-left-radius: var(--r-sm);
+  padding: 1.15rem 1.35rem;
+  background: var(--paper-raised);
+  border: 1px solid var(--line);
+}
+.bubble--ink {
+  background: var(--ink);
+  color: var(--paper);
+  border-color: transparent;
+}
+.bubble--ink .t-muted { color: rgba(242, 239, 231, 0.66); }
+
+/* ---------- buttons ---------- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  font: inherit;
+  font-weight: 500;
+  text-decoration: none;
+  border: 1px solid transparent;
+  border-radius: var(--r-pill);
+  padding: 0.85rem 1.9rem;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+}
+.btn--primary {
+  background: var(--ink);
+  color: var(--paper);
+  box-shadow: var(--lift);
+}
+.btn--primary:hover { transform: translateY(-2px); }
+.btn--ghost {
+  background: transparent;
+  color: var(--ink);
+  border-color: var(--line-strong);
+  padding: 0.5rem 1.15rem;
+  font-size: 0.95rem;
+}
+.btn--ghost:hover { background: rgba(21, 36, 27, 0.05); }
+.btn:focus-visible { outline: 3px solid var(--ink); outline-offset: 3px; }
+
+/* ---------- cards ---------- */
+.card {
+  background: var(--paper-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  border-bottom-left-radius: var(--r-sm);
+  padding: 1.5rem 1.5rem 1.6rem;
+}
+.grid {
+  display: grid;
+  gap: 0.9rem;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+}
+
+/* ============================================================
+   Thread — the page speaks in messages
+   ============================================================ */
+.thread {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-width: 34rem;
+  margin-inline: auto;
+}
+.msg {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.55rem;
+  opacity: 0;
+  transform: translateY(14px);
+  transition: opacity 0.5s ease, transform 0.5s cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+.msg.is-in { opacity: 1; transform: none; }
+.msg__avatar { width: 1.75rem; flex: 0 0 auto; margin-bottom: 0.15rem; }
+.msg__avatar .bro { width: 100%; }
+.msg__text {
+  border-radius: var(--r-lg);
+  padding: 0.8rem 1.1rem;
+  max-width: 25rem;
+  font-size: 1rem;
+  line-height: 1.45;
+}
+/* bro speaks in ink, on the left, with the tail pointing at him */
+.msg--bro .msg__text {
+  background: var(--ink);
+  color: var(--paper);
+  border-bottom-left-radius: var(--r-sm);
+}
+/* the human answers in paper, on the right */
+.msg--me { flex-direction: row-reverse; }
+.msg--me .msg__text {
+  background: var(--paper-raised);
+  border: 1px solid var(--line);
+  border-bottom-right-radius: var(--r-sm);
+}
+.msg__meta {
+  display: block;
+  margin-top: 0.3rem;
+  font-size: 0.78rem;
+  color: var(--signal);
+  font-weight: 500;
+}
+
+/* typing indicator */
+.typing { display: inline-flex; gap: 0.28rem; padding-block: 0.35rem; }
+.typing span {
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.45;
+  animation: typing 1.25s infinite;
+}
+.typing span:nth-child(2) { animation-delay: 0.16s; }
+.typing span:nth-child(3) { animation-delay: 0.32s; }
+@keyframes typing {
+  0%, 60%, 100% { opacity: 0.28; transform: translateY(0); }
+  30%           { opacity: 0.9;  transform: translateY(-3px); }
+}
+
+/* a message bro sends on his own, unprompted */
+.msg--unprompted .msg__text { border: 1px solid rgba(216, 145, 58, 0.55); }
+
+@media (prefers-reduced-motion: reduce) {
+  .msg { opacity: 1; transform: none; transition: none; }
+  .typing span { animation: none; }
+}
+
+/* inverse button — for use inside an ink bubble */
+.btn--paper {
+  background: var(--paper);
+  color: var(--ink);
+}
+.btn--paper:hover { transform: translateY(-2px); }
+.btn--paper:focus-visible { outline-color: var(--paper); }

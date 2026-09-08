@@ -4,135 +4,103 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>bro — твой личный ИИ-агент</title>
-  <meta name="description" content="bro — персональный ИИ-агент со своим номером, почтой и памятью. Записи к врачу, брони, поиск — берёт рутину на себя." />
+  <meta name="description" content="bro — персональный ИИ-агент со своим номером, памятью и руками в интернете. Записи к врачу, брони, заказы — просто напиши ему в iMessage." />
+  <meta name="theme-color" content="#f2efe7" />
+  <link rel="icon" href="/assets/bro-mark.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="/assets/bro-logo.png" />
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="bro — твой личный ИИ-агент" />
+  <meta property="og:description" content="Свой номер, своя память, свои руки в интернете. Записать к врачу, забронировать, заказать — просто напиши ему." />
+  <meta property="og:image" content="/assets/bro-og.png" />
+  <meta name="twitter:card" content="summary_large_image" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/assets/brand.css" />
   <style>
-    :root {
-      --ink: #17271e;          /* deep green-charcoal text */
-      --ink-soft: #3c4d43;     /* muted subline */
-      --cta-bg: #17271e;
-      --cta-fg: #f6faf5;
+    /* ---- topbar ---- */
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 5;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.6rem;
+      padding: 0.9rem var(--gutter);
+      background: rgba(242, 239, 231, 0.82);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid transparent;
     }
-    * { margin: 0; padding: 0; box-sizing: border-box; }
+    .topbar__actions { display: flex; gap: 0.5rem; }
 
-    html, body { overflow-x: hidden; }
-
-    body {
-      font-family: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
-      color: var(--ink);
-      -webkit-font-smoothing: antialiased;
-    }
-
-    /* Full-bleed background: generated meadow image, with a sky→meadow
-       gradient as fallback if the image is missing. */
-    .bg {
-      position: fixed;
-      inset: 0;
-      z-index: -2;
-      background:
-        url("assets/meadow.webp") center / cover no-repeat,
-        linear-gradient(180deg, #dff0fb 0%, #eaf6ec 45%, #bfe3c4 100%);
-    }
-    /* Soft light scrim guarantees text contrast over any part of the image. */
-    .scrim {
-      position: fixed;
-      inset: 0;
-      z-index: -1;
-      background: radial-gradient(ellipse 70% 55% at 50% 42%,
-        rgba(255, 255, 255, 0.62) 0%,
-        rgba(255, 255, 255, 0.28) 45%,
-        rgba(255, 255, 255, 0) 72%);
-    }
-
+    /* ---- hero ---- */
     .hero {
-      min-height: 100svh;
+      min-height: min(84svh, 46rem);
       display: flex;
       flex-direction: column;
       align-items: center;
       justify-content: center;
       text-align: center;
-      gap: 1.4rem;
-      padding: 2rem 1.5rem;
+      gap: 1.1rem;
+      padding: clamp(2.5rem, 8vw, 5rem) var(--gutter) clamp(2rem, 6vw, 3.5rem);
     }
+    .hero .bro { width: clamp(5.5rem, 16vw, 8.5rem); }
+    .hero__word { margin-top: -0.35rem; }
+    .hero__sub { max-width: 32rem; }
+    .hero__cta { margin-top: 0.7rem; }
+    .hero__fine { font-size: 0.85rem; color: var(--ink-soft); }
 
-    .wordmark {
-      font-weight: 600;
-      font-size: clamp(4.5rem, 15vw, 11rem);
-      line-height: 0.9;
-      letter-spacing: -0.04em;
-    }
+    /* ---- section heads ---- */
+    .head { text-align: center; margin-bottom: clamp(1.75rem, 4vw, 2.75rem); }
+    .head .t-mono-label { display: block; margin-bottom: 0.6rem; }
 
-    .tagline {
-      font-weight: 500;
-      font-size: clamp(1.35rem, 4.2vw, 2.15rem);
-      letter-spacing: -0.01em;
-    }
+    /* ---- capabilities ---- */
+    .card h3 { font-size: 1.05rem; font-weight: 600; margin-bottom: 0.4rem; }
+    .card p  { color: var(--ink-soft); font-size: 0.95rem; line-height: 1.5; }
 
-    .subline {
-      font-weight: 400;
-      font-size: clamp(1rem, 2.2vw, 1.15rem);
-      color: var(--ink-soft);
-      max-width: min(34rem, calc(100vw - 3rem));
-      overflow-wrap: break-word;
-      line-height: 1.5;
+    /* ---- pricing ---- */
+    .plans { display: flex; justify-content: center; }
+    .plan { width: min(22rem, 100%); text-align: left; }
+    .plan .price { font-size: 2.1rem; font-weight: 600; letter-spacing: -0.03em; margin: 0.35rem 0 1rem; }
+    .plan .price small { font-size: 0.95rem; font-weight: 400; color: rgba(242, 239, 231, 0.66); }
+    .plan ul { list-style: none; display: flex; flex-direction: column; gap: 0.4rem; }
+    .plan li { font-size: 0.95rem; padding-left: 1.1rem; position: relative; color: rgba(242, 239, 231, 0.82); }
+    .plan li::before {
+      content: "";
+      position: absolute;
+      left: 0; top: 0.55rem;
+      width: 0.4rem; height: 0.4rem;
+      border-radius: 50%;
+      background: var(--signal);
     }
+    .note { margin-top: 1.4rem; color: var(--ink-soft); font-size: 0.93rem; line-height: 1.6; }
 
-    .cta {
-      margin-top: 0.6rem;
-      display: inline-block;
-      background: var(--cta-bg);
-      color: var(--cta-fg);
-      font-size: 1.02rem;
-      font-weight: 500;
-      text-decoration: none;
-      padding: 0.9rem 2.1rem;
-      border-radius: 999px;
-      box-shadow: 0 10px 30px -12px rgba(23, 39, 30, 0.55);
-      transition: transform 0.15s ease, box-shadow 0.15s ease;
-    }
-    .cta:hover {
-      transform: translateY(-2px);
-      box-shadow: 0 16px 38px -12px rgba(23, 39, 30, 0.6);
-    }
-    .cta:focus-visible {
-      outline: 3px solid #17271e;
-      outline-offset: 3px;
-    }
+    /* ---- legal prose ---- */
+    .prose { max-width: 40rem; margin-inline: auto; }
+    .prose p + p { margin-top: 0.9rem; }
 
-    .topbar {
-      position: fixed;
-      top: 0;
-      right: 0;
-      left: 0;
-      z-index: 5;
+    /* ---- closing CTA ---- */
+    .closing {
       display: flex;
-      justify-content: flex-end;
-      gap: 0.6rem;
-      padding: 1rem 1.3rem;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+      gap: 0.9rem;
+      padding: clamp(2.25rem, 6vw, 3.25rem) var(--gutter);
+      max-width: 44rem;
+      margin-inline: auto;
     }
-    .ghost {
-      background: rgba(255, 255, 255, 0.72);
-      border: 1px solid rgba(23, 39, 30, 0.18);
-      color: var(--ink);
-      font: inherit;
-      font-size: 0.95rem;
-      font-weight: 500;
-      text-decoration: none;
-      padding: 0.5rem 1.15rem;
-      border-radius: 999px;
-      cursor: pointer;
-    }
-    .ghost:focus-visible {
-      outline: 3px solid #17271e;
-      outline-offset: 3px;
-    }
+    .closing .bro { width: 3.25rem; color: var(--paper); }
+    .closing .t-body { color: rgba(242, 239, 231, 0.72); max-width: 26rem; }
+    .closing .btn { margin-top: 0.4rem; }
+
+    /* ---- modal ---- */
     .modal {
       position: fixed;
       inset: 0;
       z-index: 10;
-      background: rgba(23, 39, 30, 0.28);
+      background: rgba(21, 36, 27, 0.35);
       display: flex;
       align-items: center;
       justify-content: center;
@@ -141,35 +109,25 @@
     .modal[hidden] { display: none; }
     .sheet {
       width: min(24rem, 100%);
-      background: rgba(255, 255, 255, 0.94);
-      border-radius: 1.2rem;
-      padding: 1.6rem 1.5rem 1.35rem;
+      background: var(--paper-raised);
+      border-radius: var(--r-lg);
+      padding: 1.7rem 1.5rem 1.35rem;
       text-align: left;
+      box-shadow: var(--lift);
     }
-    .sheet h2 { font-size: 1.15rem; margin-bottom: 0.45rem; }
-    .sheet .hint {
-      color: var(--ink-soft);
-      font-size: 0.9rem;
-      line-height: 1.45;
-      margin-bottom: 0.35rem;
-    }
-    .sheet label { display: block; font-size: 0.85rem; margin: 0.75rem 0 0.3rem; }
+    .sheet h2 { font-size: 1.15rem; font-weight: 600; margin-bottom: 0.45rem; }
+    .sheet label { display: block; font-size: 0.85rem; color: var(--ink-soft); margin: 0.85rem 0 0.35rem; }
     .sheet input {
       width: 100%;
       font: inherit;
-      padding: 0.7rem 0.8rem;
-      border-radius: 0.7rem;
-      border: 1px solid rgba(23, 39, 30, 0.2);
+      padding: 0.7rem 0.85rem;
+      border-radius: var(--r-sm);
+      border: 1px solid var(--line-strong);
+      background: var(--paper);
+      color: var(--ink);
     }
-    .sheet .sheet-cta {
-      display: block;
-      width: 100%;
-      margin-top: 1rem;
-      text-align: center;
-      white-space: nowrap;
-      border: 0;
-      cursor: pointer;
-    }
+    .sheet input:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
+    .sheet .sheet-cta { display: flex; width: 100%; margin-top: 1rem; white-space: nowrap; }
     .sheet .text-close {
       display: block;
       width: 100%;
@@ -182,144 +140,302 @@
       cursor: pointer;
       text-align: center;
     }
-    .sheet .status { min-height: 1.3rem; margin-top: 0.7rem; color: var(--ink-soft); font-size: 0.9rem; }
+    .sheet .status { min-height: 1.3rem; margin-top: 0.7rem; color: var(--ink-soft); font-size: 0.88rem; line-height: 1.4; }
 
-    .section {
-      max-width: 44rem;
-      margin: 0 auto;
-      padding: 4rem 1.5rem;
-      text-align: center;
-    }
-    .section h2 {
-      font-weight: 600;
-      font-size: clamp(1.6rem, 4vw, 2.2rem);
-      letter-spacing: -0.02em;
-      margin-bottom: 1.6rem;
-    }
-    .plans {
-      display: flex;
-      gap: 1.2rem;
-      justify-content: center;
-      flex-wrap: wrap;
-    }
-    .plan {
-      background: rgba(255, 255, 255, 0.82);
-      border: 1px solid rgba(23, 39, 30, 0.12);
-      border-radius: 1.2rem;
-      padding: 1.6rem 1.8rem;
-      width: min(19rem, 100%);
-      text-align: left;
-    }
-    .plan h3 { font-size: 1.05rem; font-weight: 600; margin-bottom: 0.3rem; }
-    .plan .price { font-size: 1.7rem; font-weight: 600; margin-bottom: 0.9rem; }
-    .plan .price small { font-size: 0.95rem; font-weight: 400; color: var(--ink-soft); }
-    .plan ul { list-style: none; }
-    .plan li { padding: 0.28rem 0; color: var(--ink-soft); font-size: 0.95rem; }
-    .plan li::before { content: "— "; }
-    .note {
-      margin-top: 1.4rem;
-      color: var(--ink-soft);
-      font-size: 0.92rem;
-      line-height: 1.55;
-    }
-
+    /* ---- footer ---- */
     footer {
-      background: rgba(255, 255, 255, 0.7);
-      border-top: 1px solid rgba(23, 39, 30, 0.1);
-      padding: 2rem 1.5rem 2.6rem;
+      border-top: 1px solid var(--line);
+      padding: 2.5rem var(--gutter) 3rem;
       text-align: center;
       font-size: 0.85rem;
       color: var(--ink-soft);
-      line-height: 1.7;
+      line-height: 1.8;
     }
     footer a { color: var(--ink); }
   </style>
 </head>
 <body>
-  <div class="bg" aria-hidden="true"></div>
-  <div class="scrim" aria-hidden="true"></div>
 
   <header class="topbar">
-      <a class="ghost" id="cabinet-open" href="/cabinet.html" hidden>Кабинет</a>
-      <a class="ghost" id="vault-open" href="/vault.html" hidden>Сейф</a>
-      <button class="ghost" id="logout" type="button" hidden>Выйти</button>
-    <button class="ghost" id="login-open" type="button">Войти</button>
+    <a class="lockup" href="/" aria-label="bro — на главную">
+      <svg class="bro" viewBox="0 0 128 128" aria-hidden="true" focusable="false">
+        <path d="M56 70c0 16-10 27-30 34 11-10 13-21 13-34z"/>
+        <rect x="16" y="16" width="96" height="76" rx="28"/>
+        <circle class="bro__eye" cx="48" cy="53" r="7.5"/>
+        <circle class="bro__eye" cx="82" cy="53" r="7.5"/>
+      </svg>
+      <span class="lockup__word">bro</span>
+    </a>
+    <div class="topbar__actions">
+      <a class="btn btn--ghost" id="cabinet-open" href="/cabinet.html" hidden>Кабинет</a>
+      <a class="btn btn--ghost" id="vault-open" href="/vault.html" hidden>Сейф</a>
+      <button class="btn btn--ghost" id="logout" type="button" hidden>Выйти</button>
+      <button class="btn btn--ghost" id="login-open" type="button">Войти</button>
+    </div>
   </header>
 
   <div class="modal" id="login-modal" hidden>
     <div class="sheet" role="dialog" aria-labelledby="login-title">
       <h2 id="login-title">Вход в кабинет</h2>
-      <p class="hint">На компьютере введи handle. Код придёт сообщением от Bro в уже открытый чат iMessage.</p>
+      <p class="t-small t-muted">На компьютере введи handle. Код придёт сообщением от Bro в уже открытый чат iMessage.</p>
       <div id="login-handle-row" hidden>
         <label for="login-handle">Handle</label>
         <input id="login-handle" autocomplete="username" placeholder="bro-xxxxxxxx" />
       </div>
-      <button class="cta sheet-cta" id="login-send" type="button">Получить код</button>
+      <button class="btn btn--primary sheet-cta" id="login-send" type="button">Получить код</button>
       <div id="login-code-row" hidden>
         <label for="login-code">Код из iMessage</label>
         <input id="login-code" inputmode="numeric" maxlength="6" autocomplete="one-time-code" />
-        <button class="cta sheet-cta" id="login-verify" type="button">Войти</button>
+        <button class="btn btn--primary sheet-cta" id="login-verify" type="button">Войти</button>
       </div>
       <p class="status" id="login-status"></p>
       <button class="text-close" id="login-cancel" type="button">Закрыть</button>
     </div>
   </div>
 
-  <main class="hero">
-    <h1 class="wordmark">bro</h1>
-    <p class="tagline">Твой личный ИИ-агент</p>
-    <p class="subline">Свой номер, своя почта, своя память. Записи к врачу, брони, поиск — берёт рутину на себя.</p>
-    <a class="cta" id="request-access" href="#">Запросить доступ</a>
-  </main>
+  <main>
+    <section class="hero">
+      <svg class="bro" viewBox="0 0 128 128" role="img" aria-label="Персонаж bro">
+        <path d="M56 70c0 16-10 27-30 34 11-10 13-21 13-34z"/>
+        <rect x="16" y="16" width="96" height="76" rx="28"/>
+        <circle class="bro__eye" cx="48" cy="53" r="7.5"/>
+        <circle class="bro__eye" cx="82" cy="53" r="7.5"/>
+      </svg>
+      <h1 class="t-display hero__word">bro</h1>
+      <p class="t-h1">Твой личный ИИ-агент</p>
+      <p class="t-body t-muted hero__sub">
+        Свой номер, своя память, свои руки в интернете.
+        Записать к врачу, забронировать, заказать — просто напиши ему.
+      </p>
+      <a class="btn btn--primary hero__cta" id="request-access" data-request-access href="#">Запросить доступ</a>
+      <p class="hero__fine">iMessage и Telegram · приложение ставить не нужно</p>
+    </section>
 
-  <section class="section" id="pricing">
-    <h2>Тарифы</h2>
-    <div class="plans">
-      <div class="plan">
-        <h3>Полный доступ</h3>
-        <p class="price">2000 ₽<small> / месяц</small></p>
-        <ul>
-          <li>500 сообщений в день</li>
-          <li>60 браузер-задач в месяц</li>
-          <li>напоминания и утренний бриф</li>
-          <li>сторожа: почта, календарь, цены</li>
-        </ul>
+    <section class="section" id="how">
+      <div class="wrap">
+        <div class="head">
+          <span class="t-mono-label">Как это выглядит</span>
+          <h2 class="t-h2">Один чат — и дело сделано</h2>
+        </div>
+
+        <ol class="thread" id="thread">
+          <li class="msg msg--me">
+            <p class="msg__text">запиши к стоматологу на след неделе, лучше вечером</p>
+          </li>
+          <li class="msg msg--bro" data-typing="1">
+            <span class="msg__avatar">
+              <svg class="bro" viewBox="0 0 128 128" aria-hidden="true" focusable="false">
+                <path d="M56 70c0 16-10 27-30 34 11-10 13-21 13-34z"/>
+                <rect x="16" y="16" width="96" height="76" rx="28"/>
+                <circle class="bro__eye" cx="48" cy="53" r="7.5"/>
+                <circle class="bro__eye" cx="82" cy="53" r="7.5"/>
+              </svg>
+            </span>
+            <p class="msg__text">Записал: четверг, 19:30, «Дентал» на Белорусской — 8 минут от дома. Напомню за час.</p>
+          </li>
+          <li class="msg msg--me">
+            <p class="msg__text">закажи корм коту, как в прошлый раз</p>
+          </li>
+          <li class="msg msg--bro" data-typing="1">
+            <span class="msg__avatar">
+              <svg class="bro" viewBox="0 0 128 128" aria-hidden="true" focusable="false">
+                <path d="M56 70c0 16-10 27-30 34 11-10 13-21 13-34z"/>
+                <rect x="16" y="16" width="96" height="76" rx="28"/>
+                <circle class="bro__eye" cx="48" cy="53" r="7.5"/>
+                <circle class="bro__eye" cx="82" cy="53" r="7.5"/>
+              </svg>
+            </span>
+            <p class="msg__text">Оформил и оплатил. Курьер завтра, 12:00–15:00.</p>
+          </li>
+          <li class="msg msg--bro msg--unprompted" data-typing="1">
+            <span class="msg__avatar">
+              <svg class="bro" viewBox="0 0 128 128" aria-hidden="true" focusable="false">
+                <path d="M56 70c0 16-10 27-30 34 11-10 13-21 13-34z"/>
+                <rect x="16" y="16" width="96" height="76" rx="28"/>
+                <circle class="bro__eye" cx="48" cy="53" r="7.5"/>
+                <circle class="bro__eye" cx="82" cy="53" r="7.5"/>
+              </svg>
+            </span>
+            <p class="msg__text">
+              Билеты в Стамбул на ноябрь упали до 18 400 ₽ — минимум за два месяца. Брать?
+              <span class="msg__meta">написал сам, никто не просил</span>
+            </p>
+          </li>
+        </ol>
       </div>
-    </div>
-    <p class="note">
-      Перед оплатой можно попробовать бесплатно: 30 сообщений в день и 5 браузер-задач в месяц.
-      Подписка оформляется на 30 дней и не продлевается автоматически.
-      Если сервис не заработал, напишите нам — вернём деньги.
-    </p>
-  </section>
+    </section>
 
-  <section class="section" id="how-to-pay">
-    <h2>Что вы оплачиваете и как</h2>
-    <p class="note">
-      bro — это персональный ИИ-ассистент, который работает в переписке iMessage со своим номером
-      (и тем же агентом в Telegram, если подключить его из чата):
-      отвечает на вопросы, выполняет поручения в интернете (поиск, брони, заказы), ставит напоминания
-      и присылает утренние сводки. Оплачивается одна услуга — подписка «Полный доступ» на 30 дней.
-    </p>
-    <p class="note">
-      Покупка происходит не на сайте, поэтому корзины здесь нет: когда вы решаете оформить подписку,
-      ассистент отправляет вам в iMessage персональную ссылку на оплату через ЮKassa.
-      После оплаты доступ включается автоматически в течение пары минут, а кассовый чек приходит на почту.
-    </p>
-  </section>
+    <section class="section" id="what">
+      <div class="wrap">
+        <div class="head">
+          <span class="t-mono-label">Что он умеет</span>
+          <h2 class="t-h2">Не советует, а делает</h2>
+        </div>
+        <div class="grid">
+          <article class="card">
+            <h3>Свой номер</h3>
+            <p>Пишешь в iMessage как другу. Никаких приложений и вкладок. Telegram подключается из того же чата — агент тот же.</p>
+          </article>
+          <article class="card">
+            <h3>Помнит тебя</h3>
+            <p>Адреса, карты, привычки, прошлые заказы. «Как в прошлый раз» для него — достаточное описание задачи.</p>
+          </article>
+          <article class="card">
+            <h3>Руки в интернете</h3>
+            <p>Сам заходит на сайты: брони, записи, заказы, формы. Не присылает ссылку — присылает результат.</p>
+          </article>
+          <article class="card">
+            <h3>Почта и календарь</h3>
+            <p>Читает входящее, отвечает, ставит встречи и не даёт пропустить то, что важно сегодня.</p>
+          </article>
+          <article class="card">
+            <h3>Пишет первым</h3>
+            <p>Сторожит письмо, цену, свободный слот — и сообщает сам, как только что-то появилось.</p>
+          </article>
+          <article class="card">
+            <h3>Сейф</h3>
+            <p>Карты и адреса лежат зашифрованными. Модель видит обезличенные ключи, а не сами данные.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="pricing">
+      <div class="wrap">
+        <div class="head">
+          <span class="t-mono-label">Тарифы</span>
+          <h2 class="t-h2">Один тариф, без сюрпризов</h2>
+        </div>
+        <div class="plans">
+          <div class="bubble bubble--ink plan">
+            <h3 class="t-mono-label" style="color: rgba(242,239,231,.6)">Полный доступ</h3>
+            <p class="price">2000 ₽<small> / месяц</small></p>
+            <ul>
+              <li>500 сообщений в день</li>
+              <li>60 браузер-задач в месяц</li>
+              <li>напоминания и утренний бриф</li>
+              <li>сторожа: почта, календарь, цены</li>
+            </ul>
+          </div>
+        </div>
+        <p class="note prose">
+          Перед оплатой можно попробовать бесплатно: 30 сообщений в день и 5 браузер-задач в месяц.
+          Подписка оформляется на 30 дней и не продлевается автоматически.
+          Если сервис не заработал, напишите нам — вернём деньги.
+        </p>
+      </div>
+    </section>
+
+    <section class="section" id="how-to-pay">
+      <div class="wrap prose">
+        <div class="head">
+          <span class="t-mono-label">Оплата</span>
+          <h2 class="t-h2">Что вы оплачиваете и как</h2>
+        </div>
+        <p class="t-small t-muted">
+          bro — это персональный ИИ-ассистент, который работает в переписке iMessage со своим номером
+          (и тем же агентом в Telegram, если подключить его из чата):
+          отвечает на вопросы, выполняет поручения в интернете (поиск, брони, заказы), ставит напоминания
+          и присылает утренние сводки. Оплачивается одна услуга — подписка «Полный доступ» на 30 дней.
+        </p>
+        <p class="t-small t-muted">
+          Покупка происходит не на сайте, поэтому корзины здесь нет: когда вы решаете оформить подписку,
+          ассистент отправляет вам в iMessage персональную ссылку на оплату через ЮKassa.
+          После оплаты доступ включается автоматически в течение пары минут, а кассовый чек приходит на почту.
+        </p>
+      </div>
+    </section>
+    <section class="section" id="start">
+      <div class="wrap">
+        <div class="bubble bubble--ink closing">
+          <svg class="bro" viewBox="0 0 128 128" aria-hidden="true" focusable="false" style="--bro-eye: var(--ink)">
+            <path d="M56 70c0 16-10 27-30 34 11-10 13-21 13-34z"/>
+            <rect x="16" y="16" width="96" height="76" rx="28"/>
+            <circle class="bro__eye" cx="48" cy="53" r="7.5"/>
+            <circle class="bro__eye" cx="82" cy="53" r="7.5"/>
+          </svg>
+          <h2 class="t-h2">Напиши ему первым</h2>
+          <p class="t-body">Доступ открывается сразу — чат заводится на твой номер за пару секунд.</p>
+          <a class="btn btn--paper" data-request-access href="#">Запросить доступ</a>
+        </div>
+      </div>
+    </section>
+
+  </main>
 
   <footer>
     <p>ИП Соловьев Савелий Андреевич · ИНН 780159467840 · ОГРНИП 325784700145981</p>
     <p>Связь: <a href="mailto:solsav1703@gmail.com">solsav1703@gmail.com</a></p>
     <p><a href="/oferta.html">Публичная оферта</a></p>
   </footer>
+
   <script src="assets/config.js"></script>
   <script src="assets/auth.js"></script>
   <script>
+    /* Reveal the demo thread message by message, with bro "typing" before
+       each of his replies. Purely decorative — the copy is in the DOM. */
+    (function () {
+      var thread = document.querySelector("#thread");
+      if (!thread) return;
+      var items = [].slice.call(thread.querySelectorAll(".msg"));
+      var reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+      if (reduced || !("IntersectionObserver" in window)) {
+        items.forEach(function (el) { el.classList.add("is-in"); });
+        return;
+      }
+
+      function typingNode() {
+        var t = document.createElement("span");
+        t.className = "typing";
+        t.innerHTML = "<span></span><span></span><span></span>";
+        return t;
+      }
+
+      function play(i) {
+        var el = items[i];
+        if (!el) return;
+        var text = el.querySelector(".msg__text");
+        var wait = i === 0 ? 0 : 520;
+
+        if (el.hasAttribute("data-typing")) {
+          var held = text.innerHTML;
+          text.innerHTML = "";
+          text.appendChild(typingNode());
+          setTimeout(function () {
+            el.classList.add("is-in");
+            setTimeout(function () {
+              text.innerHTML = held;
+              play(i + 1);
+            }, 1100);
+          }, wait);
+          return;
+        }
+
+        setTimeout(function () {
+          el.classList.add("is-in");
+          play(i + 1);
+        }, wait);
+      }
+
+      var seen = false;
+      var io = new IntersectionObserver(function (entries) {
+        entries.forEach(function (e) {
+          if (e.isIntersecting && !seen) {
+            seen = true;
+            io.disconnect();
+            play(0);
+          }
+        });
+      }, { threshold: 0.25 });
+      io.observe(thread);
+    })();
+  </script>
+  <script>
     (function () {
       var KEY = "bro.handle";
-      var cta = document.querySelector("#request-access");
-      if (!cta) return;
+      var ctas = [].slice.call(document.querySelectorAll("[data-request-access]"));
+      if (!ctas.length) return;
 
       function isIos() {
         var ua = navigator.userAgent || "";
@@ -332,11 +448,14 @@
         return typeof s === "string" ? s.replace(/\/$/, "") : "";
       }
 
+      /* Every CTA on the page shows the same state, so a person who scrolled
+         past the hero still sees why nothing happened. */
       function setLabel(t) {
-        cta.textContent = t;
+        ctas.forEach(function (el) { el.textContent = t; });
       }
 
-      cta.addEventListener("click", function (e) {
+      function onClick(e) {
+        var cta = e.currentTarget;
         e.preventDefault();
         if (cta.getAttribute("aria-busy") === "true") return;
 
@@ -379,7 +498,9 @@
           .then(function () {
             cta.removeAttribute("aria-busy");
           });
-      });
+      }
+
+      ctas.forEach(function (el) { el.addEventListener("click", onClick); });
     })();
   </script>
 </body>

@@ -363,7 +363,7 @@ const landing = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 assert(landing.includes('id="vault-open"'), "landing links to vault when logged in");
 assert(landing.includes('id="login-send"'), "landing has login send");
 assert(
-  landing.includes('class="cta sheet-cta" id="login-send"'),
+  /class="[^"]*\bsheet-cta\b[^"]*" id="login-send"/.test(landing),
   "login send is a full-width one-line CTA",
 );
 assert(landing.includes("white-space: nowrap"), "login CTA stays on one line");
