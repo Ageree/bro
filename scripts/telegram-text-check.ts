@@ -4,12 +4,14 @@ import {
   compileTelegram,
   escapeHtml,
   extractButtons,
+  isTelegramRichHtml,
   splitTelegramHtml,
   toTelegramHtml,
 } from "../agent/lib/telegram-text.ts";
 import {
   enqueueTelegramChat,
   isTelegramReaction,
+  isTelegramRichUnsupported,
   resetTelegramSendGateForTests,
   TELEGRAM_REACTIONS,
   TELEGRAM_SEND_GAP_MS,
@@ -114,6 +116,43 @@ assert(card.html.includes("<u>Подчёркнутый</u>"), "card underline");
 assert(card.html.includes("<s>Зачёркнутый</s>"), "card strike");
 assert(card.html.includes("<code>Моноширинный</code>"), "card mono");
 assert(card.html.includes("<tg-spoiler>Спойлер</tg-spoiler>"), "card spoiler");
+assert(card.preferRich === true, "structured card prefers sendRichMessage");
+assert(card.richHtml.includes("<h1>Что такое форматирование сообщений?</h1>"), "rich heading");
+assert(card.richHtml.includes("<blockquote>Telegram поддерживает"), "rich quote");
+assert(card.richHtml.includes("<ul>"), "rich list");
+assert(card.richHtml.includes("<li><b>Жирный</b></li>"), "rich list item");
+assert(card.richHtml.includes("<tg-spoiler>Спойлер</tg-spoiler>"), "rich spoiler");
+assert(isTelegramRichHtml(card.richHtml), "card html is rich");
+
+assert(compileTelegram("просто текст").preferRich === false, "plain is classic");
+assert(compileTelegram("- один").preferRich === true, "a list is rich");
+const forced = compileTelegram(":::rich\nкороткая карточка");
+assert(forced.preferRich === true, ":::rich opts in");
+assert(forced.richHtml.includes("<p>короткая карточка</p>"), "rich paragraph");
+assert(forced.html.includes("короткая карточка"), "classic still compiled");
+
+const table = compileTelegram("| A | B |\n| --- | --- |\n| 1 | 2 |");
+assert(table.preferRich === true, "table is rich");
+assert(table.richHtml.includes("<table>"), "rich table");
+assert(table.richHtml.includes("<th>A</th>"), "rich th");
+assert(table.richHtml.includes("<td>1</td>"), "rich td");
+
+const checks = compileTelegram("- [x] Жирный\n- [ ] Курсив");
+assert(checks.richHtml.includes('checked'), "checkbox checked");
+assert(checks.richHtml.includes('<input type="checkbox"/>'), "checkbox empty");
+
+const withFig = compileTelegram(`# Обложка
+
+!![скрытое](https://img.example/s.jpg)
+`);
+assert(withFig.preferRich === true, "heading+photo is rich");
+assert(withFig.richHtml.includes("<figure>"), "rich figure");
+assert(withFig.richHtml.includes("tg-spoiler"), "rich hidden media");
+assert(withFig.richHtml.includes("https://img.example/s.jpg"), "rich img src");
+
+assert(isTelegramRichUnsupported(new Error("Not Found")), "404 is unsupported");
+assert(isTelegramRichUnsupported(new Error("unknown method sendRichMessage")), "unknown method");
+assert(!isTelegramRichUnsupported(new Error("chat not found")), "other errors stay");
 
 const long = "п".repeat(5000);
 const chunks = splitTelegramHtml(long, 4096);

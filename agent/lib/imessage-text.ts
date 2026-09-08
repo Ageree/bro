@@ -111,6 +111,7 @@ export function toIMessageText(src: string): string {
   s = s.replace(AUTO_URL, "$1");
   s = s.replace(AUTO_MAIL, "$1");
 
+  s = s.replace(/^:::rich\s*$/gm, "");
   s = s.replace(/^#{1,6}\s+(.*)$/gm, (_, t: string) => toBold(t.trim()));
   s = s.replace(/^>!?\s?/gm, "");
   s = s.replace(/^\s*[-*]\s+/gm, "• ");

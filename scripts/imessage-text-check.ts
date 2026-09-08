@@ -55,6 +55,7 @@ assert(
   "heading",
 );
 
+assert(toIMessageText(":::rich\nкарточка") === "карточка", ":::rich mark strips");
 assert(toIMessageText("++черта++") === "черта", "telegram underline strips");
 assert(toIMessageText("||спойлер||") === "спойлер", "telegram spoiler strips");
 assert(

@@ -192,6 +192,35 @@ export async function sendTelegramMessage(opts: {
   );
 }
 
+export function isTelegramRichUnsupported(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  const lower = msg.toLowerCase();
+  if (lower.includes("chat not found")) return false;
+  return (
+    lower === "not found" ||
+    lower.includes("unknown method") ||
+    lower.includes("sendrichmessage") ||
+    lower.includes("can't parse")
+  );
+}
+
+export async function sendTelegramRichMessage(opts: {
+  chatId: string | number;
+  html: string;
+  buttons?: TelegramButton[][];
+  replyTo?: number;
+}): Promise<{ message_id: number }> {
+  const markup = opts.buttons?.length ? inlineKeyboard(opts.buttons) : undefined;
+  return await enqueueTelegramChat(opts.chatId, () =>
+    api("sendRichMessage", {
+      chat_id: opts.chatId,
+      rich_message: { html: opts.html },
+      ...(opts.replyTo ? { reply_parameters: { message_id: opts.replyTo } } : {}),
+      ...(markup ? { reply_markup: markup } : {}),
+    }),
+  );
+}
+
 export async function sendTelegramPhoto(opts: {
   chatId: string | number;
   url: string;
