@@ -13,6 +13,7 @@ import {
   readBinaryFile,
 } from "./computer.ts";
 import { routingFromAuth, type AuthAttrs } from "./turn-routing.ts";
+import { claimComputerPhoto, claimUrlPhoto } from "./photo-dedupe.ts";
 import type { HumanChannel } from "../../convex/lib/telegramPolicy.ts";
 
 export type SendPhotoTarget = {
@@ -76,6 +77,22 @@ export async function sendPhotoToHuman(
   },
 ): Promise<{ status: "ok"; channel: HumanChannel } | { status: "error"; error: string }> {
   const caption = clipPhotoCaption(opts.caption);
+  const chatKey = (opts.conversationId ?? opts.telegramChatId ?? "").trim();
+  const channel: HumanChannel =
+    opts.channel === "telegram" ? "telegram" : "imessage";
+  if (opts.source.kind === "bytes") {
+    if (
+      !claimComputerPhoto({
+        chatKey,
+        bytes: opts.source.photo.bytes,
+        filename: opts.source.photo.filename,
+      })
+    ) {
+      return { status: "ok", channel };
+    }
+  } else if (!claimUrlPhoto({ chatKey, url: opts.source.url })) {
+    return { status: "ok", channel };
+  }
   try {
     if (opts.channel === "telegram") {
       const chatId = opts.telegramChatId?.trim();

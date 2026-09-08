@@ -58,13 +58,13 @@ export default defineTool({
       return toolOutput.json(output);
     }
     const sentLine = output.sent
-      ? " Картинка уже у человека в этом чате."
+      ? " Картинка уже в этом чате. Не шли вторую, не делай compact и не пиши путь."
       : output.sentError
-        ? ` В чат не ушло (${output.sentError}) — вызови send_photo с ${output.path}.`
-        : ` Вызови send_photo с ${output.path}.`;
+        ? ` В чат не ушло (${output.sentError}) — один раз вызови send_photo с ${output.path}.`
+        : ` Один раз вызови send_photo с ${output.path}.`;
     return toolOutput.content([
       toolOutputPart.text(
-        `Снял экран компьютера (${output.bytes} байт). Файл: ${output.path}.${sentLine}`,
+        `Снял экран компьютера (${output.bytes} байт).${sentLine}`,
       ),
       toolOutputPart.file(output.screenshotBase64, {
         mediaType: output.mimeType,
