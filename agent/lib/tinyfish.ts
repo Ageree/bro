@@ -5,6 +5,7 @@ export const TINYFISH_SEARCH_TIMEOUT_MS = 10_000;
 export const TINYFISH_FETCH_TIMEOUT_MS = 25_000;
 export const TINYFISH_MAX_FETCH_URLS = 5;
 export const TINYFISH_MAX_FETCH_CHARS = 6_000;
+export const TINYFISH_FETCH_TTL_SECONDS = 3_600;
 export const TINYFISH_DEFAULT_LOCATION = "RU";
 export const TINYFISH_MISSING_KEY =
   "TinyFish не настроен: нужен TINYFISH_API_KEY";
@@ -31,7 +32,6 @@ export type FetchFailure = {
   error: string;
 };
 
-export type TinyfishOk<T> = T & { error?: undefined };
 export type TinyfishErr = { error: string };
 
 export function tinyfishKey(): string | undefined {
@@ -119,7 +119,7 @@ export async function tinyfishSearch(args: {
   purpose?: string;
   kind?: SearchKind;
   location?: string;
-}): Promise<TinyfishOk<{ query: string; results: SearchHit[] }> | TinyfishErr> {
+}): Promise<{ query: string; results: SearchHit[] } | TinyfishErr> {
   const key = tinyfishKey();
   if (!key) return { error: TINYFISH_MISSING_KEY };
   const query = args.query.trim();
@@ -137,9 +137,9 @@ export async function tinyfishSearch(args: {
   return { query, results: compactSearchHits(res.body) };
 }
 
-export async function tinyfishFetch(urls: string[]): Promise<
-  TinyfishOk<{ pages: FetchPage[]; errors: FetchFailure[] }> | TinyfishErr
-> {
+export async function tinyfishFetch(
+  urls: string[],
+): Promise<{ pages: FetchPage[]; errors: FetchFailure[] } | TinyfishErr> {
   const key = tinyfishKey();
   if (!key) return { error: TINYFISH_MISSING_KEY };
 
@@ -156,7 +156,11 @@ export async function tinyfishFetch(urls: string[]): Promise<
     method: "POST",
     key,
     timeoutMs: TINYFISH_FETCH_TIMEOUT_MS,
-    body: JSON.stringify({ urls: clean, format: "markdown" }),
+    body: JSON.stringify({
+      urls: clean,
+      format: "markdown",
+      ttl: TINYFISH_FETCH_TTL_SECONDS,
+    }),
   });
   if ("error" in res) return res;
   return compactFetchResult(res.body);

@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import {
   TINYFISH_DEFAULT_LOCATION,
+  TINYFISH_FETCH_TTL_SECONDS,
   TINYFISH_MAX_FETCH_CHARS,
   TINYFISH_MAX_FETCH_URLS,
   TINYFISH_MISSING_KEY,
@@ -95,16 +96,22 @@ const saved = process.env.TINYFISH_API_KEY;
 delete process.env.TINYFISH_API_KEY;
 assert(!tinyfishKey(), "missing key is empty");
 {
-  const search = await tinyfishSearch({ query: "test" });
-  assert(search.error === TINYFISH_MISSING_KEY, "search refuses without a key");
-  const fetch = await tinyfishFetch(["https://example.com"]);
-  assert(fetch.error === TINYFISH_MISSING_KEY, "fetch refuses without a key");
+  const missingSearch = await tinyfishSearch({ query: "test" });
+  assert(
+    "error" in missingSearch && missingSearch.error === TINYFISH_MISSING_KEY,
+    "search refuses without a key",
+  );
+  const missingFetch = await tinyfishFetch(["https://example.com"]);
+  assert(
+    "error" in missingFetch && missingFetch.error === TINYFISH_MISSING_KEY,
+    "fetch refuses without a key",
+  );
 }
 if (saved !== undefined) process.env.TINYFISH_API_KEY = saved;
 
 {
   const bad = await tinyfishFetch(["javascript:alert(1)"]);
-  assert(bad.error?.includes("не URL"), "fetch rejects non-http");
+  assert("error" in bad && bad.error.includes("не URL"), "fetch rejects non-http");
 }
 
 const searchTool = readFileSync(
@@ -143,16 +150,23 @@ assert(worker.includes("`web_search`"), "worker still defers discovery to search
 
 assert(TINYFISH_DEFAULT_LOCATION === "RU", "RU-first search");
 assert(TINYFISH_MAX_FETCH_URLS === 5, "fetch stays small");
+assert(TINYFISH_FETCH_TTL_SECONDS === 3_600, "fetch prefers hour-fresh pages");
+assert(
+  readFileSync(new URL("../agent/lib/tinyfish.ts", import.meta.url), "utf8").includes(
+    "ttl: TINYFISH_FETCH_TTL_SECONDS",
+  ),
+  "fetch sends ttl so TinyFish does not serve any-age cache",
+);
 
 if (tinyfishKey()) {
   const live = await tinyfishSearch({
     query: "курс доллара ЦБ сегодня",
     purpose: "ответить человеку в мессенджере",
   });
-  if ("error" in live && live.error) throw new Error(`live search: ${live.error}`);
-  assert((live.results?.length ?? 0) > 0, "live search returns hits");
+  if ("error" in live) throw new Error(`live search: ${live.error}`);
+  assert(live.results.length > 0, "live search returns hits");
   assert(
-    live.results?.some((h) => h.url.includes("cbr.ru") || h.snippet.includes("₽")),
+    live.results.some((h) => h.url.includes("cbr.ru") || h.snippet.includes("₽")),
     "live RU query stays on-topic",
   );
 }
