@@ -4,13 +4,15 @@ function assert(cond: unknown, msg: string): void {
   if (!cond) throw new Error(msg);
 }
 
-const disabled = ["ask_question.ts", "web_fetch.ts"];
+const disabled = ["ask_question.ts"];
 for (const file of disabled) {
   const src = readFileSync(new URL(`../agent/tools/${file}`, import.meta.url), "utf8");
   assert(src.includes("disableTool()"), `${file} disables a broken default`);
 }
 
 const kept = [
+  "web_search.ts",
+  "web_fetch.ts",
   "browser_task.ts",
   "composio.ts",
   "otp_lookup.ts",
@@ -33,6 +35,12 @@ for (const file of kept) {
     `${file} still exists — Bro capabilities stay mounted`,
   );
 }
+assert(
+  !readFileSync(new URL("../agent/tools/web_fetch.ts", import.meta.url), "utf8").includes(
+    "disableTool()",
+  ),
+  "web_fetch is TinyFish, not the disabled eve default",
+);
 
 assert(
   !existsSync(new URL("../agent/tools/agent.ts", import.meta.url)),

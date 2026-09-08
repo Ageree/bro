@@ -308,6 +308,13 @@ for (const file of tools) {
   );
   assert(src.includes("groupPersonalBlock"), `${file} refuses group personal work`);
 }
+for (const file of ["web_search.ts", "web_fetch.ts"]) {
+  const src = readFileSync(
+    new URL(`../agent/tools/${file}`, import.meta.url),
+    "utf8",
+  );
+  assert(!src.includes("groupPersonalBlock"), `${file} is public web, ok in groups`);
+}
 
 const createTool = readFileSync(
   new URL("../agent/tools/group_chat.ts", import.meta.url),

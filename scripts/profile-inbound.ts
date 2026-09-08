@@ -37,6 +37,8 @@ import { loadWakeContext } from "../agent/lib/convex.ts";
 const ITER = 100_000;
 
 const TOOL_FILES = [
+  "web_search.ts",
+  "web_fetch.ts",
   "browser_task.ts",
   "profile_setup.ts",
   "vault_setup.ts",

@@ -12,6 +12,7 @@ Voice notes: inbound audio is transcribed via OpenRouter STT (`/audio/transcript
 
 - Node 24 (`nvm use`)
 - Inkbox API key, OpenRouter (`z-ai/glm-5.3-flash`, override with `BRO_MODEL` / `BRO_MODEL_CONTEXT_TOKENS`) or Vercel AI Gateway
+- TinyFish API key (optional; `web_search` / `web_fetch` for public facts). Without it those tools say they are unset. Interactive shops stay on Browser Use.
 
 ## Run
 
@@ -40,7 +41,9 @@ Memory is three eve slots, all keyed by the person's E.164. `memo` (always on) i
 
 Push watchers (`watch_app`): Composio triggers POST Convex `/composio`, then one agent turn per event. Subscribe once with `npm run composio:webhook https://<deployment>.convex.site/composio`. Prices/websites still poll via `schedule_wakeup kind=watcher`. Check: `npm run watchers:check`.
 
-Sandbox tools (`COMPOSIO_REMOTE_WORKBENCH`, `COMPOSIO_REMOTE_BASH_TOOL`) have no web access by policy; any site data goes through `browser_task`. Check: `npm run sandbox:check`.
+Public facts use TinyFish Search + Fetch (`web_search`, `web_fetch`) — free, even at a $0 wallet; rate limits only (PAYG: 30 searches/min, 150 fetch URLs/min). Set `TINYFISH_API_KEY` (from [agent.tinyfish.ai/api-keys](https://agent.tinyfish.ai/api-keys)) on eve / Vercel. Interactive shops, bookings, and logins stay on `browser_task`. Check: `npm run tinyfish:check`.
+
+Sandbox tools (`COMPOSIO_REMOTE_WORKBENCH`, `COMPOSIO_REMOTE_BASH_TOOL`) have no web access by policy; facts go through TinyFish, shops through `browser_task`. Check: `npm run sandbox:check`.
 
 Landing CTA creates a personal Inkbox identity and opens iMessage (`sms_link`).
 `assets/config.js` holds the Convex HTTP site URL (`https://<deployment>.convex.site`).
