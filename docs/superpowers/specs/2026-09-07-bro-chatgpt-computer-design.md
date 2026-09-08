@@ -200,6 +200,10 @@ Principal только из ctx. `groupPersonalBlock`, как vault. Отказ 
 - `computer_exec` — bash, сеть разрешена; `cwd?`, `timeoutSeconds` ≤ 240,
   `detached?` / `processId?`.
 - `computer_read` / `computer_write` — `/home/user`, read ≤ 64 КБ.
+- `computer_screenshot` — PNG рабочего стола (X/ffmpeg), картинка модели,
+  файл в `/home/user/screens`.
+- `computer_record` — mp4 1–60 с в `/home/user/recordings`, путь в ответ,
+  не гонять ролик в модель.
 - `computer_power` — `status | stop`. Стереть диск — только кабинет.
 - `chatgpt_connect` / `chatgpt_status` / `chatgpt_disconnect`.
 - `ls` через exec. `box.prompt` не звать.
@@ -209,6 +213,7 @@ Principal только из ctx. `groupPersonalBlock`, как vault. Отказ 
 | Нужно | Тул |
 |---|---|
 | Файлы, скрипты, git, CLI, MCP, скачать и сохранить | `computer_*` |
+| Экран машины: кадр / короткое видео | `computer_screenshot` / `computer_record` |
 | Сайты: покупки, брони, врачи | `browser_task` |
 | Один экран / 3-D Secure / OTP, если browser_task не дожал | `worker` |
 | Временные вычисления хода | eve `bash` / files — не диск человека |

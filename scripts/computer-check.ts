@@ -5,8 +5,13 @@ import {
 } from "../agent/lib/boxClient.ts";
 import {
   ComputerError,
+  buildRecordCommand,
+  buildScreenshotCommand,
+  clampRecordSeconds,
   ensureRunning,
+  recordDesktop,
   runCabinetComputerAction,
+  screenshotDesktop,
   wipeDisk,
   type ComputerStore,
 } from "../agent/lib/computer.ts";
@@ -151,6 +156,25 @@ const cat = await fake.command(created.id, {
 });
 assert(cat.success && cat.stdout === "hello-bro", "cat after resume");
 
+assert(clampRecordSeconds() === 10, "record default 10s");
+assert(clampRecordSeconds(0) === 1, "record min 1s");
+assert(clampRecordSeconds(99) === 60, "record max 60s");
+assert(
+  buildScreenshotCommand().includes("bro-desktop-capture screenshot"),
+  "screenshot command marked",
+);
+assert(buildRecordCommand(12).includes("-t 12"), "record injects clamped seconds");
+assert(!buildRecordCommand(12).includes("-t 99"), "record does not leak raw seconds");
+
+const shot = await screenshotDesktop(created.id, fake);
+assert(shot.path === "/home/user/screens/shot.png", "screenshot path");
+assert(shot.bytes > 0, "screenshot bytes");
+assert(shot.base64.startsWith("iVBOR"), "screenshot png");
+
+const rec = await recordDesktop(created.id, 12, fake);
+assert(rec.path === "/home/user/recordings/clip.mp4", "record path");
+assert(rec.seconds === 12, "record seconds");
+
 const limits = await fake.limits();
 assert(limits.canStart === true, "limits canStart");
 assert(limits.starts?.day?.limit === 150, "limits day limit");
@@ -290,5 +314,22 @@ assert(
   !/body\.boxId|boxId\s*:/.test(imessage),
   "internal computer does not take boxId",
 );
+
+const shotTool = await import("node:fs").then((fs) =>
+  fs.readFileSync(
+    new URL("../agent/tools/computer_screenshot.ts", import.meta.url),
+    "utf8",
+  ),
+);
+const recTool = await import("node:fs").then((fs) =>
+  fs.readFileSync(
+    new URL("../agent/tools/computer_record.ts", import.meta.url),
+    "utf8",
+  ),
+);
+assert(shotTool.includes("asPersonal"), "screenshot is personal-only");
+assert(recTool.includes("asPersonal"), "record is personal-only");
+assert(shotTool.includes("toolOutputPart.file"), "screenshot goes to the model");
+assert(!recTool.includes("toolOutputPart.file"), "record does not dump mp4 to the model");
 
 console.log("computer-check ok");

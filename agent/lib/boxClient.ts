@@ -80,7 +80,11 @@ export type BoxClient = {
   remove(boxId: string): Promise<void>;
   resume(boxId: string, input?: ResumeBoxInput): Promise<BoxRecord>;
   command(boxId: string, input: CommandBoxInput): Promise<BoxCommandResult>;
-  readFile(boxId: string, path: string): Promise<string>;
+  readFile(
+    boxId: string,
+    path: string,
+    encoding?: "utf8" | "base64",
+  ): Promise<string>;
   writeFile(boxId: string, path: string, content: string): Promise<void>;
   limits(): Promise<BoxLimits>;
   waitUntil(
@@ -273,9 +277,13 @@ export function createBoxClient(opts: BoxClientOpts = {}): BoxClient {
     );
   }
 
-  async function readFile(boxId: string, path: string): Promise<string> {
+  async function readFile(
+    boxId: string,
+    path: string,
+    encoding?: "utf8" | "base64",
+  ): Promise<string> {
     const raw = await request("GET", boxPath(boxId, "/files"), {
-      query: { path },
+      query: encoding ? { path, encoding } : { path },
     });
     const rec = asRecord(raw);
     if (typeof rec?.content !== "string") {

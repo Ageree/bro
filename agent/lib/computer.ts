@@ -30,6 +30,10 @@ const HOME = "/home/user";
 const TMP = "/tmp";
 export const WRITE_MAX_BYTES = 256 * 1024;
 export const READ_MAX_BYTES = 64 * 1024;
+export const CAPTURE_MAX_BYTES = 4 * 1024 * 1024;
+export const RECORD_SECONDS_MIN = 1;
+export const RECORD_SECONDS_MAX = 60;
+export const DESKTOP_CAPTURE_MARK = "bro-desktop-capture";
 const EXEC_TIMEOUT_MAX = 240;
 const SETTLE_ROUNDS = 8;
 const WAIT_READY_MS = 180_000;
@@ -412,6 +416,116 @@ export async function readFile(
     throw new ComputerError("invalid", "file exceeds 64KB");
   }
   return { boxId, path: safe, content };
+}
+
+export function clampRecordSeconds(seconds?: number): number {
+  if (seconds === undefined || !Number.isFinite(seconds)) return 10;
+  return Math.min(
+    RECORD_SECONDS_MAX,
+    Math.max(RECORD_SECONDS_MIN, Math.floor(seconds)),
+  );
+}
+
+/** In-box capture. Display is the ASCII desktop (X + ffmpeg). */
+export function buildScreenshotCommand(): string {
+  return [
+    `# ${DESKTOP_CAPTURE_MARK} screenshot`,
+    "set -eu",
+    "mkdir -p /home/user/screens",
+    'OUT="/home/user/screens/shot-$(date +%s).png"',
+    'DISP="${DISPLAY:-:0}"',
+    'DISP="${DISP%%.*}"',
+    'if ffmpeg -y -hide_banner -loglevel error -f x11grab -video_size 1920x1080 -i "${DISP}.0" -frames:v 1 "$OUT"; then',
+    '  printf "%s\\n" "$OUT"',
+    "  exit 0",
+    "fi",
+    'if command -v import >/dev/null 2>&1 && DISPLAY="$DISP" import -window root "$OUT"; then',
+    '  printf "%s\\n" "$OUT"',
+    "  exit 0",
+    "fi",
+    'echo "desktop screenshot failed" >&2',
+    "exit 1",
+  ].join("\n");
+}
+
+export function buildRecordCommand(seconds?: number): string {
+  const sec = clampRecordSeconds(seconds);
+  return [
+    `# ${DESKTOP_CAPTURE_MARK} record`,
+    "set -eu",
+    "mkdir -p /home/user/recordings",
+    'OUT="/home/user/recordings/rec-$(date +%s).mp4"',
+    'DISP="${DISPLAY:-:0}"',
+    'DISP="${DISP%%.*}"',
+    `ffmpeg -y -hide_banner -loglevel error -f x11grab -video_size 1920x1080 -i "\${DISP}.0" -t ${sec} -c:v libx264 -pix_fmt yuv420p -an "$OUT"`,
+    'printf "%s\\n" "$OUT"',
+  ].join("\n");
+}
+
+function capturePathFromStdout(stdout: string): string {
+  const lines = stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  const last = lines[lines.length - 1];
+  if (!last) throw new ComputerError("error", "desktop capture produced no file");
+  return assertComputerPath(last);
+}
+
+export async function readBinaryFile(
+  boxId: string,
+  path: string,
+  client: BoxClient = createBoxClient(),
+): Promise<{ boxId: string; path: string; base64: string; bytes: number }> {
+  const safe = assertComputerPath(path);
+  const content = await withStartingWait(client, boxId, () =>
+    client.readFile(boxId, safe, "base64"),
+  );
+  const trimmed = content.trim();
+  if (!/^[A-Za-z0-9+/]+=*$/.test(trimmed) || trimmed.length === 0) {
+    throw new ComputerError("error", "desktop file is not readable");
+  }
+  const bytes = Buffer.byteLength(trimmed, "base64");
+  if (bytes > CAPTURE_MAX_BYTES) {
+    throw new ComputerError("invalid", "capture exceeds 4MB");
+  }
+  return { boxId, path: safe, base64: trimmed, bytes };
+}
+
+export async function screenshotDesktop(
+  boxId: string,
+  client: BoxClient = createBoxClient(),
+): Promise<{ boxId: string; path: string; base64: string; bytes: number }> {
+  const result = await exec(boxId, buildScreenshotCommand(), undefined, 45, client);
+  if (result.exitCode !== 0) {
+    throw new ComputerError(
+      "error",
+      result.stderr.trim() || "desktop screenshot failed",
+    );
+  }
+  return await readBinaryFile(boxId, capturePathFromStdout(result.stdout), client);
+}
+
+export async function recordDesktop(
+  boxId: string,
+  seconds?: number,
+  client: BoxClient = createBoxClient(),
+): Promise<{ boxId: string; path: string; seconds: number }> {
+  const sec = clampRecordSeconds(seconds);
+  const result = await exec(
+    boxId,
+    buildRecordCommand(sec),
+    undefined,
+    sec + 30,
+    client,
+  );
+  if (result.exitCode !== 0) {
+    throw new ComputerError(
+      "error",
+      result.stderr.trim() || "desktop recording failed",
+    );
+  }
+  return { boxId, path: capturePathFromStdout(result.stdout), seconds: sec };
 }
 
 export async function writeFile(
