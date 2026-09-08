@@ -22,6 +22,8 @@ import {
   imessageOwnsTurn,
   telegramOwnsTurn,
 } from "../agent/lib/turn-delivery-events.ts";
+import { isHeadingOnly, resetBubbleDedupe } from "../agent/lib/bubble-dedupe.ts";
+import { deliverHuman } from "../agent/lib/deliver-human.ts";
 
 function assert(cond: unknown, msg: string): void {
   if (!cond) throw new Error(msg);
@@ -91,8 +93,8 @@ assert(
       "Здесь упираюсь в лимит браузера: на этот месяц задачи исчерпаны (сайт Инвитро без браузера не открыть).",
     ],
     "Записываю в Инвитро на чекап. Открываю браузер — подберу ближайшее время и филиал.\nЗдесь упираюсь в лимит браузера: на этот месяц задачи исчерпаны (сайт Инвитро без браузера не открыть). Два варианта:",
-  ) === "Два варианта:",
-  "sentence peels on one line still yield only the new tail",
+  ) === null,
+  "heading-only remainder is not a new bubble",
 );
 assert(
   nextBubble(
@@ -287,6 +289,74 @@ assert(
   }).send === null,
   "second tool-round does not spam the same screenshot paragraph",
 );
+
+assert(isHeadingOnly("Тяжёлая артиллерия:"), "short colon title is a heading");
+assert(isHeadingOnly("**Тяжёлая артиллерия:**"), "md heading is a heading");
+assert(
+  !isHeadingOnly(
+    "Что реально могу делать на твоём компе (уже проверил, что стоит Chrome, Python, Node, Git, ffmpeg):",
+  ),
+  "long colon line is not a heading",
+);
+assert(
+  planPreToolFlush({ soFar: "Тяжёлая артиллерия:", alreadySent: [] }).send ===
+    null,
+  "pre-tool does not flush a heading",
+);
+assert(
+  planTurnDelivery({
+    finishReason: "tool-calls",
+    message: "Тяжёлая артиллерия:",
+    origin: "human",
+    alreadySent: [],
+  }).send === null,
+  "tool-calls does not flush a heading",
+);
+assert(nextBubble([], "Тяжёлая артиллерия:") === null, "heading-only is never a bubble");
+{
+  resetBubbleDedupe();
+  const texts: string[] = [];
+  for (let i = 0; i < 6; i += 1) {
+    await deliverHuman({
+      tenant: { inkboxHandle: "bro-test" },
+      conversationId: "conv-heading",
+      text: "Тяжёлая артиллерия:",
+      channel: "imessage",
+      deps: {
+        sendIMessage: async (opts) => {
+          texts.push(opts.text);
+          return { service: "imessage" } as never;
+        },
+      },
+    });
+  }
+  assert(texts.length === 0, "six heading leftovers do not leave the chat");
+  await deliverHuman({
+    tenant: { inkboxHandle: "bro-test" },
+    conversationId: "conv-heading",
+    text: "Что реально могу делать на твоём компе. Уже есть Chrome, Python, Node.",
+    channel: "imessage",
+    deps: {
+      sendIMessage: async (opts) => {
+        texts.push(opts.text);
+        return { service: "imessage" } as never;
+      },
+    },
+  });
+  await deliverHuman({
+    tenant: { inkboxHandle: "bro-test" },
+    conversationId: "conv-heading",
+    text: "Что реально могу делать на твоём компе. Уже есть Chrome, Python, Node.",
+    channel: "imessage",
+    deps: {
+      sendIMessage: async (opts) => {
+        texts.push(opts.text);
+        return { service: "imessage" } as never;
+      },
+    },
+  });
+  assert(texts.length === 1, "exact restatement is sent once");
+}
 
 const shotCut =
   "Скриншот снял, но в чат картинку вложить не получается — файл лежит у тебя на компе: /home/user/screens/shot.png (полный размер) (";

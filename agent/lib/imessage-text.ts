@@ -5,6 +5,7 @@
 
 import { stripButtonBlocksForIMessage } from "./telegram-text.ts";
 import { voiceTranscriptLine } from "./voice-policy.ts";
+import { isHeadingOnly } from "./bubble-dedupe.ts";
 
 const FENCE = /```[\w+-]*\n?([\s\S]*?)```/g;
 const IMAGE = /!\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)/gi;
@@ -134,11 +135,21 @@ export function toIMessageBubbles(src: string): string[] {
     .split(/\n(?=\d+\.\s)/)
     .map((c) => c.trim())
     .filter(Boolean);
-  if (chunks.length < 2) return [text];
-  const items = chunks[0].match(/^\d+\.\s/) ? chunks : chunks.slice(1);
-  const long = items.filter((p) => p.length >= 80);
-  if (long.length < 2) return [text];
-  return chunks.slice(0, 8);
+  if (chunks.length >= 2 && isHeadingOnly(chunks[0] ?? "")) {
+    const rest = chunks.slice(1);
+    const first = rest[0];
+    if (first) rest[0] = `${chunks[0]}\n${first}`;
+    chunks.splice(0, chunks.length, ...rest);
+  }
+  if (chunks.length < 2) {
+    return isHeadingOnly(text) ? [] : [text];
+  }
+  const numbered = chunks.filter(
+    (c) => /^\d+\.\s/.test(c) || /\n\d+\.\s/.test(c),
+  );
+  const long = numbered.filter((p) => p.length >= 80);
+  if (long.length < 2) return isHeadingOnly(text) ? [] : [text];
+  return chunks.slice(0, 8).filter((c) => !isHeadingOnly(c));
 }
 
 export function isAudioContentType(
