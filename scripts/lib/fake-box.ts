@@ -183,13 +183,15 @@ class FakeBoxWorld {
 
     if (method === "GET" && action === "files") {
       const filePath = url.searchParams.get("path") ?? "";
+      const encoding =
+        url.searchParams.get("encoding") === "base64" ? "base64" : "utf8";
       const content = this.fileMap(boxId).get(filePath) ?? "";
       return jsonRes(200, {
         ok: true,
         type: "file.read",
         success: true,
         path: filePath,
-        encoding: "utf8",
+        encoding,
         size: content.length,
         content,
       });
@@ -301,6 +303,35 @@ class FakeBoxWorld {
       throw new BoxHttpError(409, "box_starting", "Box is still starting");
     }
     const command = typeof body.command === "string" ? body.command : "";
+    if (command.includes("bro-desktop-capture screenshot")) {
+      const path = "/home/user/screens/shot.png";
+      this.fileMap(boxId).set(
+        path,
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+      );
+      return {
+        ok: true,
+        type: "command.finished",
+        success: true,
+        exitCode: 0,
+        stdout: `${path}\n`,
+        stderr: "",
+        timedOut: false,
+      };
+    }
+    if (command.includes("bro-desktop-capture record")) {
+      const path = "/home/user/recordings/clip.mp4";
+      this.fileMap(boxId).set(path, "AAAA");
+      return {
+        ok: true,
+        type: "command.finished",
+        success: true,
+        exitCode: 0,
+        stdout: `${path}\n`,
+        stderr: "",
+        timedOut: false,
+      };
+    }
     const cat = /^cat\s+(\S+)$/.exec(command.trim());
     const stdout = cat ? (this.fileMap(boxId).get(cat[1]!) ?? "") : "";
     return {
