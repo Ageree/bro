@@ -64,6 +64,7 @@ import {
   releaseWakeupDelivery,
   takeWakeupDelivery,
 } from "../lib/wakeup-dedupe";
+import { runCabinetComputerAction } from "../lib/computer.ts";
 import { inboundGateFromResult } from "../../convex/lib/billingPolicy";
 import { eventPrompt } from "../../convex/lib/watcherPolicy.ts";
 import { syncTenantArchive } from "../lib/archive-sync.ts";
@@ -806,6 +807,42 @@ export default defineChannel({
         throw err;
       }
       return Response.json({ ok: true });
+    }),
+    POST("/internal/computer", async (request) => {
+      let body: { secret?: unknown; phoneE164?: unknown; action?: unknown };
+      try {
+        body = (await request.json()) as typeof body;
+      } catch {
+        return new Response("bad json", { status: 400 });
+      }
+      const expected = process.env.BRO_INTERNAL_SECRET;
+      if (!expected || body.secret !== expected) {
+        return new Response("unauthorized", { status: 401 });
+      }
+      const phoneE164 =
+        typeof body.phoneE164 === "string" ? body.phoneE164.trim() : "";
+      const action =
+        body.action === "wake" ||
+        body.action === "stop" ||
+        body.action === "wipe"
+          ? body.action
+          : "";
+      if (!phoneE164 || !action) {
+        return new Response("missing fields", { status: 400 });
+      }
+      try {
+        const result = await runCabinetComputerAction(phoneE164, action);
+        return Response.json({ ok: true, state: result.state });
+      } catch (err) {
+        console.error("internal computer", phoneE164, action, err);
+        return Response.json(
+          {
+            ok: false,
+            error: err instanceof Error ? err.message : String(err),
+          },
+          { status: 500 },
+        );
+      }
     }),
   ],
   events: imessageDeliveryEvents,

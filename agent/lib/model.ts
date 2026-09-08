@@ -1,6 +1,22 @@
 import { createOpenAI } from "@ai-sdk/openai";
 import { wrapLanguageModel, type LanguageModelMiddleware } from "ai";
+import {
+  CODEX_CONTEXT_WINDOW_TOKENS,
+  DEFAULT_CODEX_MODEL,
+  createCodexModel,
+  withFallback,
+  type CodexTokenBroker,
+  type LanguageModelLike,
+} from "./codex-model.ts";
 import { openRouterChatFetch } from "./openrouter-chat.ts";
+
+export {
+  CODEX_CONTEXT_WINDOW_TOKENS,
+  DEFAULT_CODEX_MODEL,
+  createCodexModel,
+  withFallback,
+};
+export type { CodexTokenBroker, LanguageModelLike };
 
 export const DEFAULT_OPENROUTER_MODEL = "z-ai/glm-5.3-flash";
 const DEFAULT_OPENROUTER_CONTEXT_TOKENS = 1_000_000;
@@ -54,8 +70,8 @@ export type BroModelOpts = {
   contextTokens?: number;
 };
 
-/** Model choice shared by the root agent and the worker subagent. */
-export function broModel(opts?: BroModelOpts) {
+/** OpenRouter (or Gateway string) branch. Same shape as `broModel()`. */
+export function openRouterModel(opts?: BroModelOpts) {
   const model = process.env.BRO_MODEL?.trim() || DEFAULT_OPENROUTER_MODEL;
   const contextTokens =
     opts?.contextTokens ??
@@ -84,4 +100,70 @@ export function broModel(opts?: BroModelOpts) {
         modelContextWindowTokens: contextTokens,
       }
     : { model: openrouterModel };
+}
+
+/** Model choice shared by the root agent and the worker subagent. */
+export function broModel(opts?: BroModelOpts) {
+  return openRouterModel(opts);
+}
+
+export type ChatgptModelStatus = "none" | "pending" | "connected" | "quarantined";
+
+export type ResolveBroModelInput = {
+  isGroup: boolean;
+  chatgpt: ChatgptModelStatus;
+};
+
+export type ResolveBroModelOpts = BroModelOpts & {
+  broker?: CodexTokenBroker;
+  onFail?: (error: unknown) => unknown;
+  fetch?: typeof globalThis.fetch;
+};
+
+/**
+ * Group / no live Codex / missing broker → today's OpenRouter `broModel()`.
+ * Connected + broker → Codex transport with OpenRouter fallback on 401/402/429.
+ */
+export function resolveBroModel(
+  input: ResolveBroModelInput,
+  opts?: ResolveBroModelOpts,
+) {
+  if (typeof input !== "object" || input === null) {
+    throw new Error("resolveBroModel input required");
+  }
+  if (typeof input.isGroup !== "boolean") {
+    throw new Error("isGroup must be a boolean");
+  }
+  if (
+    input.chatgpt !== "none" &&
+    input.chatgpt !== "pending" &&
+    input.chatgpt !== "connected" &&
+    input.chatgpt !== "quarantined"
+  ) {
+    throw new Error("chatgpt status is invalid");
+  }
+  const { broker, onFail, fetch: fetchImpl, ...broOpts } = opts ?? {};
+  if (input.isGroup || input.chatgpt !== "connected" || broker === undefined) {
+    return broModel(broOpts);
+  }
+  const fallback = broModel(broOpts);
+  const primary = createCodexModel({
+    model: process.env.BRO_CODEX_MODEL?.trim() || DEFAULT_CODEX_MODEL,
+    broker,
+    fetch: fetchImpl,
+  });
+  if (typeof fallback.model === "string") {
+    return {
+      model: primary as unknown as typeof fallback.model,
+      modelContextWindowTokens: CODEX_CONTEXT_WINDOW_TOKENS,
+    };
+  }
+  return {
+    model: withFallback(
+      primary as unknown as LanguageModelLike,
+      fallback.model as unknown as LanguageModelLike,
+      onFail ?? (() => undefined),
+    ) as unknown as typeof fallback.model,
+    modelContextWindowTokens: CODEX_CONTEXT_WINDOW_TOKENS,
+  };
 }

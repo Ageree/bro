@@ -1,6 +1,7 @@
 import { httpRouter } from "convex/server";
 import { httpAction } from "./_generated/server";
 import { internal } from "./_generated/api";
+import type { Id } from "./_generated/dataModel";
 import { isValidHandle } from "./lib/accessPolicy";
 import { newLoginCode, newSessionToken, sha256hex } from "./lib/cabinetPolicy";
 import {
@@ -128,6 +129,9 @@ http.route({ path: "/me/browser-profile", method: "OPTIONS", handler: options() 
 http.route({ path: "/me/browser-profile/refresh", method: "OPTIONS", handler: options() });
 http.route({ path: "/me/memories/forget", method: "OPTIONS", handler: options() });
 http.route({ path: "/me/tz", method: "OPTIONS", handler: options() });
+http.route({ path: "/me/chatgpt/start", method: "OPTIONS", handler: options() });
+http.route({ path: "/me/chatgpt/disconnect", method: "OPTIONS", handler: options() });
+http.route({ path: "/me/computer", method: "OPTIONS", handler: options() });
 http.route({ path: "/vault/items", method: "OPTIONS", handler: options() });
 http.route({ path: "/vault/items/delete", method: "OPTIONS", handler: options() });
 
@@ -455,6 +459,113 @@ http.route({
     });
     console.log("composio webhook", event.triggerSlug, outcome);
     return json({ ok: true, outcome });
+  }),
+});
+
+async function sessionTenant(
+  ctx: {
+    runQuery: (
+      ref: typeof internal.cabinet.getSessionTenant,
+      args: { tokenHash: string; now: number },
+    ) => Promise<{ tenantId: Id<"tenants"> } | null>;
+  },
+  request: Request,
+): Promise<{ tenantId: Id<"tenants"> } | null> {
+  const token = bearer(request);
+  if (!token) return null;
+  return await ctx.runQuery(internal.cabinet.getSessionTenant, {
+    tokenHash: await sha256hex(token),
+    now: Date.now(),
+  });
+}
+
+http.route({
+  path: "/me/chatgpt/start",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const session = await sessionTenant(ctx, request);
+    if (!session) return json({ ok: false, code: "unauthorized" }, 401);
+    try {
+      const started = await ctx.runAction(
+        internal.chatgptSecrets.startDeviceLoginForTenant,
+        { tenantId: session.tenantId },
+      );
+      return json({ ok: true, ...started });
+    } catch (err) {
+      console.error("me/chatgpt/start", err);
+      return json({ ok: false, code: "unavailable" }, 503);
+    }
+  }),
+});
+
+http.route({
+  path: "/me/chatgpt/disconnect",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const session = await sessionTenant(ctx, request);
+    if (!session) return json({ ok: false, code: "unauthorized" }, 401);
+    const phone = await ctx.runQuery(internal.cabinet.sessionPhone, {
+      tenantId: session.tenantId,
+    });
+    if (!phone) return json({ ok: false, code: "unbound" }, 400);
+    try {
+      await ctx.runAction(internal.chatgptSecrets.disconnectForTenant, {
+        tenantId: session.tenantId,
+      });
+      return json({ ok: true });
+    } catch (err) {
+      console.error("me/chatgpt/disconnect", err);
+      return json({ ok: false, code: "unavailable" }, 503);
+    }
+  }),
+});
+
+http.route({
+  path: "/me/computer",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const session = await sessionTenant(ctx, request);
+    if (!session) return json({ ok: false, code: "unauthorized" }, 401);
+    const phone = await ctx.runQuery(internal.cabinet.sessionPhone, {
+      tenantId: session.tenantId,
+    });
+    if (!phone) return json({ ok: false, code: "unbound" }, 400);
+    const body = await jsonBody(request);
+    const action =
+      body.action === "wake" || body.action === "stop" || body.action === "wipe"
+        ? body.action
+        : "";
+    if (!action) return json({ ok: false, code: "invalid" }, 400);
+    const eveUrl = process.env.EVE_URL;
+    const secret = process.env.BRO_INTERNAL_SECRET ?? "";
+    if (!eveUrl) return json({ ok: false, code: "unavailable" }, 503);
+    try {
+      const res = await fetch(`${eveUrl.replace(/\/$/, "")}/internal/computer`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          secret,
+          phoneE164: phone.phoneE164,
+          action,
+        }),
+        signal: AbortSignal.timeout(180_000),
+      });
+      const payload = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        state?: string;
+        error?: string;
+      };
+      if (!res.ok || payload.ok === false) {
+        return json(
+          { ok: false, code: "computer_failed", error: payload.error },
+          res.status === 401 ? 401 : 503,
+        );
+      }
+      return json({ ok: true, state: payload.state ?? "ok" });
+    } catch (err) {
+      console.error("me/computer", err);
+      return json({ ok: false, code: "unavailable" }, 503);
+    }
   }),
 });
 

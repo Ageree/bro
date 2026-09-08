@@ -43,6 +43,8 @@ export default defineSchema({
     lastChannel: v.optional(
       v.union(v.literal("imessage"), v.literal("telegram")),
     ),
+    /** OCC mutex for claimOrGet — parallel computer claims serialize here. */
+    computerLockAt: v.optional(v.number()),
   })
     .index("by_phone", ["phoneE164"])
     .index("by_handle", ["inkboxHandle"])
@@ -238,4 +240,61 @@ export default defineSchema({
     .index("by_conversation", ["conversationId"])
     .index("by_owner", ["ownerPhoneE164"])
     .index("by_handle", ["inkboxHandle"]),
+
+  /** One personal box per Convex tenant. lastState is a cache; ASCII is truth.
+   *  boxId is missing while the row is a create-lock, before the ASCII fork. */
+  computers: defineTable({
+    tenantId: v.id("tenants"),
+    boxId: v.optional(v.string()),
+    size: v.union(
+      v.literal("small"),
+      v.literal("default"),
+      v.literal("large"),
+    ),
+    lastState: v.string(),
+    lastStateAt: v.number(),
+    lastActiveAt: v.optional(v.number()),
+    resumedAt: v.optional(v.number()),
+    createdAt: v.number(),
+  })
+    .index("by_tenant", ["tenantId"])
+    .index("by_box", ["boxId"]),
+
+  /** ChatGPT/Codex account metadata. Tokens live in chatgptSecrets. */
+  chatgptAccounts: defineTable({
+    tenantId: v.id("tenants"),
+    accountId: v.string(),
+    email: v.optional(v.string()),
+    planType: v.optional(v.string()),
+    connectedAt: v.number(),
+    version: v.number(),
+    accessExpiresAt: v.optional(v.number()),
+    quarantinedAt: v.optional(v.number()),
+    quarantineReason: v.optional(v.string()),
+  }).index("by_tenant", ["tenantId"]),
+
+  /** AES-256-GCM ciphertext for Codex OAuth, one row per tenant. */
+  chatgptSecrets: defineTable({
+    tenantId: v.id("tenants"),
+    ciphertext: v.string(),
+    version: v.number(),
+    updatedAt: v.number(),
+  }).index("by_tenant", ["tenantId"]),
+
+  /** In-flight Codex device-code login. */
+  chatgptLogins: defineTable({
+    tenantId: v.id("tenants"),
+    deviceAuthId: v.string(),
+    userCode: v.string(),
+    interval: v.number(),
+    expiresAt: v.number(),
+    status: v.union(
+      v.literal("pending"),
+      v.literal("done"),
+      v.literal("expired"),
+      v.literal("failed"),
+    ),
+  })
+    .index("by_tenant", ["tenantId"])
+    .index("by_deviceAuthId", ["deviceAuthId"]),
 });
