@@ -361,7 +361,10 @@ const instructions = readFileSync(
   "utf8",
 );
 assert(instructions.includes("send_photo"), "instructions name the photo tool");
-assert(instructions.includes("не могу вложить") === false || instructions.includes("Не пиши «не могу вложить»"), "do not claim you cannot attach");
+assert(
+  /не пиши «не могу вложить»/i.test(instructions),
+  "do not claim you cannot attach",
+);
 
 const pkg = readFileSync(new URL("../package.json", import.meta.url), "utf8");
 assert(pkg.includes("photo:check"), "npm script");

@@ -45,7 +45,7 @@ export function stripMarkdownPhotos(src: string): string {
 }
 
 const COMPUTER_IMAGE_PATH =
-  /(?:^|[\s`'"(\[]|:)(\/(?:home\/user|tmp)\/[^\s`'")\]]+\.(?:jpg|jpeg|png|gif|webp))\b/gi;
+  /(?:^|[\s`'"(\[]|:\s*)(\/(?:home\/user|tmp)\/[^\s`'")\]]+\.(?:jpg|jpeg|png|gif|webp))\b/gi;
 
 export function extractComputerImagePaths(src: string): string[] {
   const out: string[] = [];
