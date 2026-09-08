@@ -41,6 +41,7 @@ class FakeBoxWorld {
   startsToday = 0;
   private readonly boxes = new Map<string, InternalBox>();
   private readonly files = new Map<string, Map<string, string>>();
+  private readonly idempotentCreates = new Map<string, string>();
   private seq = 0;
 
   private readonly clock: () => number;
@@ -109,13 +110,14 @@ class FakeBoxWorld {
       return jsonRes(202, {
         ok: true,
         type: "box.created",
-        box: this.toApi(this.createBox(asRecord(body))),
+        box: this.toApi(
+          this.createBox(asRecord(body), headerValue(init, "Idempotency-Key")),
+        ),
       });
     }
 
-    const parts = /^\/boxes\/([^/]+)(?:\/(stop|resume|commands|files))?$/.exec(
-      path,
-    );
+    const parts =
+      /^\/boxes\/([^/]+)(?:\/(stop|resume|commands|files|fork))?$/.exec(path);
     if (!parts) {
       throw new BoxHttpError(404, "not_found", "not found");
     }
@@ -145,6 +147,17 @@ class FakeBoxWorld {
         id: boxId,
         status: "archiving",
         box: this.toApi(this.stopBox(boxId)),
+      });
+    }
+
+    if (method === "POST" && action === "fork") {
+      this.getBox(boxId, false);
+      return jsonRes(202, {
+        ok: true,
+        type: "box.created",
+        box: this.toApi(
+          this.createBox(asRecord(body), headerValue(init, "Idempotency-Key")),
+        ),
       });
     }
 
@@ -194,7 +207,18 @@ class FakeBoxWorld {
     throw new BoxHttpError(404, "not_found", "not found");
   }
 
-  private createBox(body: Record<string, unknown>): InternalBox {
+  private createBox(
+    body: Record<string, unknown>,
+    idempotencyKey?: string,
+  ): InternalBox {
+    const key = idempotencyKey?.trim();
+    if (key) {
+      const existingId = this.idempotentCreates.get(key);
+      if (existingId) {
+        const existing = this.boxes.get(existingId);
+        if (existing) return existing;
+      }
+    }
     this.startsToday += 1;
     this.seq += 1;
     const ttl =
@@ -208,6 +232,7 @@ class FakeBoxWorld {
     };
     this.boxes.set(box.id, box);
     this.fileMap(box.id);
+    if (key) this.idempotentCreates.set(key, box.id);
     return box;
   }
 
@@ -350,5 +375,17 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function isBoxType(value: unknown): value is BoxType {
   return value === "small" || value === "default" || value === "large";
+}
+
+function headerValue(init: RequestInit | undefined, name: string): string | undefined {
+  const headers = init?.headers;
+  if (!headers) return undefined;
+  if (headers instanceof Headers) return headers.get(name) ?? undefined;
+  if (Array.isArray(headers)) {
+    const hit = headers.find(([k]) => k.toLowerCase() === name.toLowerCase());
+    return hit?.[1];
+  }
+  const rec = headers as Record<string, string>;
+  return rec[name] ?? rec[name.toLowerCase()];
 }
 

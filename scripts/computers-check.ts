@@ -36,6 +36,9 @@ assert.match(computersSrc, /export const bindBox/, "computers.bindBox");
 assert.match(computersSrc, /export const setState/, "computers.setState");
 assert.match(computersSrc, /export const touchActive/, "computers.touchActive");
 assert.match(computersSrc, /export const deleteForTenant/, "computers.deleteForTenant");
+assert.match(computersSrc, /export const claimForAgent/, "computers.claimForAgent");
+assert.match(computersSrc, /export const bindForAgent/, "computers.bindForAgent");
+assert.match(computersSrc, /export const getForAgent/, "computers.getForAgent");
 assert.doesNotMatch(
   computersSrc,
   /export const getByPhone/,

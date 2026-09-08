@@ -72,6 +72,7 @@ export type CommandBoxInput = {
 
 export type BoxClient = {
   create(input?: CreateBoxInput): Promise<BoxRecord>;
+  fork(boxId: string, input?: CreateBoxInput): Promise<BoxRecord>;
   get(boxId: string): Promise<BoxRecord>;
   update(boxId: string, input: UpdateBoxInput): Promise<BoxRecord>;
   stop(boxId: string, input?: StopBoxInput): Promise<BoxRecord>;
@@ -191,8 +192,25 @@ export function createBoxClient(opts: BoxClientOpts = {}): BoxClient {
     );
   }
 
+  function boxPath(boxId: string, suffix = ""): string {
+    return `/boxes/${encodeURIComponent(boxId)}${suffix}`;
+  }
+
+  async function fork(
+    boxId: string,
+    input: CreateBoxInput = {},
+  ): Promise<BoxRecord> {
+    const { idempotencyKey, ...fields } = input;
+    return parseBox(
+      await request("POST", boxPath(boxId, "/fork"), {
+        body: omitUndefined(fields),
+        idempotencyKey,
+      }),
+    );
+  }
+
   async function get(boxId: string): Promise<BoxRecord> {
-    return parseBox(await request("GET", `/boxes/${boxId}`));
+    return parseBox(await request("GET", boxPath(boxId)));
   }
 
   async function update(
@@ -200,7 +218,7 @@ export function createBoxClient(opts: BoxClientOpts = {}): BoxClient {
     input: UpdateBoxInput,
   ): Promise<BoxRecord> {
     return parseBox(
-      await request("PATCH", `/boxes/${boxId}`, {
+      await request("PATCH", boxPath(boxId), {
         body: omitUndefined(input),
       }),
     );
@@ -211,7 +229,7 @@ export function createBoxClient(opts: BoxClientOpts = {}): BoxClient {
     input?: StopBoxInput,
   ): Promise<BoxRecord> {
     return parseBox(
-      await request("POST", `/boxes/${boxId}/stop`, {
+      await request("POST", boxPath(boxId, "/stop"), {
         body: omitUndefined(input ?? {}),
       }),
     );
@@ -222,7 +240,7 @@ export function createBoxClient(opts: BoxClientOpts = {}): BoxClient {
     input?: ResumeBoxInput,
   ): Promise<BoxRecord> {
     return parseBox(
-      await request("POST", `/boxes/${boxId}/resume`, {
+      await request("POST", boxPath(boxId, "/resume"), {
         body: omitUndefined(input ?? {}),
       }),
     );
@@ -233,14 +251,14 @@ export function createBoxClient(opts: BoxClientOpts = {}): BoxClient {
     input: CommandBoxInput,
   ): Promise<BoxCommandResult> {
     return parseCommand(
-      await request("POST", `/boxes/${boxId}/commands`, {
+      await request("POST", boxPath(boxId, "/commands"), {
         body: omitUndefined(input),
       }),
     );
   }
 
   async function readFile(boxId: string, path: string): Promise<string> {
-    const raw = await request("GET", `/boxes/${boxId}/files`, {
+    const raw = await request("GET", boxPath(boxId, "/files"), {
       query: { path },
     });
     const rec = asRecord(raw);
@@ -255,7 +273,7 @@ export function createBoxClient(opts: BoxClientOpts = {}): BoxClient {
     path: string,
     content: string,
   ): Promise<void> {
-    await request("PUT", `/boxes/${boxId}/files`, {
+    await request("PUT", boxPath(boxId, "/files"), {
       body: { path, content },
     });
   }
@@ -285,6 +303,7 @@ export function createBoxClient(opts: BoxClientOpts = {}): BoxClient {
 
   return {
     create,
+    fork,
     get,
     update,
     stop,

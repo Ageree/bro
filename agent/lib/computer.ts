@@ -1,0 +1,419 @@
+import { posix as posixPath } from "node:path";
+import {
+  BoxHttpError,
+  createBoxClient,
+  type BoxClient,
+  type BoxRecord,
+  type BoxState,
+} from "./boxClient.ts";
+import {
+  bindComputer,
+  claimComputer,
+  getComputer,
+  setComputerState,
+  touchComputer,
+  type ComputerRow,
+} from "./convex.ts";
+import { groupPersonalBlock } from "./group-guard.ts";
+import { requirePersonalPhone, tenantId } from "./tenant.ts";
+import {
+  BRO_COMPUTER_START_RESERVE,
+  BRO_COMPUTER_TTL_SECONDS,
+  canSpendStart,
+  nextCommandAction,
+  shouldRenewTtl,
+} from "../../convex/lib/computerPolicy.ts";
+
+const HOME = "/home/user";
+const TMP = "/tmp";
+export const WRITE_MAX_BYTES = 256 * 1024;
+export const READ_MAX_BYTES = 64 * 1024;
+const EXEC_TIMEOUT_MAX = 240;
+const SETTLE_ROUNDS = 8;
+const WAIT_READY_MS = 180_000;
+
+const COMMAND_STATES: BoxState[] = ["ready", "idle", "running"];
+const WAIT_STATES: BoxState[] = ["ready", "idle", "running", "archived"];
+
+export type ComputerSize = "small" | "default" | "large";
+
+export type ComputerStore = {
+  get(phoneE164: string): Promise<ComputerRow | null>;
+  claim(
+    phoneE164: string,
+    opts?: { size?: ComputerSize; now?: number },
+  ): Promise<ComputerRow | null>;
+  bind(
+    phoneE164: string,
+    boxId: string,
+    lastState: string,
+    now?: number,
+  ): Promise<ComputerRow | null>;
+  setState(
+    phoneE164: string,
+    lastState: string,
+    now?: number,
+  ): Promise<ComputerRow | null>;
+  touch(phoneE164: string, now?: number): Promise<ComputerRow | null>;
+};
+
+export const convexComputerStore: ComputerStore = {
+  get: getComputer,
+  claim: claimComputer,
+  bind: bindComputer,
+  setState: setComputerState,
+  touch: touchComputer,
+};
+
+export type EnsureRunningOpts = {
+  phoneE164: string;
+  size?: ComputerSize;
+  store?: ComputerStore;
+};
+
+export type RunningBox = { boxId: string; state: string };
+
+export type ExecResult = {
+  boxId: string;
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+};
+
+export type ComputerDenied = {
+  status: "group" | "denied";
+  error: string;
+};
+
+type AuthBox = {
+  session: {
+    auth: {
+      current?: { principalId?: string | null } | null;
+      initiator?: { principalId?: string | null } | null;
+    };
+  };
+};
+
+export class ComputerError extends Error {
+  readonly status: "limit" | "invalid" | "denied" | "error";
+
+  constructor(status: ComputerError["status"], message: string) {
+    super(message);
+    this.name = "ComputerError";
+    this.status = status;
+  }
+}
+
+export function computerFailure(err: unknown): {
+  status: string;
+  error: string;
+} {
+  if (err instanceof ComputerError) {
+    return { status: err.status, error: err.message };
+  }
+  return {
+    status: "error",
+    error: err instanceof Error ? err.message : "computer failed",
+  };
+}
+
+/** Dev-only override. Tools do not use this for a shared deploy box. */
+export function envBoxId(): string | undefined {
+  const id = process.env.BRO_COMPUTER_BOX_ID?.trim();
+  return id && id.length > 0 ? id : undefined;
+}
+
+/** group / local-dev / shared → structured deny. Never throws. */
+export function asPersonal(
+  ctx: AuthBox,
+): { phone: string } | ComputerDenied {
+  const blocked = groupPersonalBlock(ctx);
+  if (blocked) return { status: "group", error: blocked };
+  try {
+    return { phone: requirePersonalPhone(tenantId(ctx)) };
+  } catch (err) {
+    return {
+      status: "denied",
+      error:
+        err instanceof Error ? err.message : "refusing shared computer principal",
+    };
+  }
+}
+
+/** Reject `..` and anything outside `/home/user` or `/tmp`. */
+export function assertComputerPath(raw: string): string {
+  const path = raw.trim();
+  if (!path) throw new ComputerError("invalid", "path required");
+  if (path.includes("\0") || path.includes("..")) {
+    throw new ComputerError("denied", "path escapes computer jail");
+  }
+  const resolved = posixPath.resolve("/", path);
+  const allowed =
+    resolved === HOME ||
+    resolved.startsWith(`${HOME}/`) ||
+    resolved === TMP ||
+    resolved.startsWith(`${TMP}/`);
+  if (!allowed) {
+    throw new ComputerError("denied", "path must be under /home/user or /tmp");
+  }
+  return resolved;
+}
+
+export function assertWriteContent(content: string): void {
+  if (Buffer.byteLength(content, "utf8") > WRITE_MAX_BYTES) {
+    throw new ComputerError("invalid", "content exceeds 256KB");
+  }
+}
+
+function clampTimeout(timeoutSeconds?: number): number | undefined {
+  if (timeoutSeconds === undefined) return undefined;
+  return Math.min(Math.max(1, Math.floor(timeoutSeconds)), EXEC_TIMEOUT_MAX);
+}
+
+function storeOf(opts: EnsureRunningOpts): ComputerStore {
+  return opts.store ?? convexComputerStore;
+}
+
+function startInput(
+  tenantConvexId: string,
+  size: ComputerSize = "small",
+): {
+  type: ComputerSize;
+  noEnv: true;
+  ttlSeconds: number;
+  env: { TENANT_ID: string };
+  idempotencyKey: string;
+} {
+  return {
+    type: size,
+    noEnv: true,
+    ttlSeconds: BRO_COMPUTER_TTL_SECONDS,
+    env: { TENANT_ID: tenantConvexId },
+    idempotencyKey: `bro:${tenantConvexId}:v1`,
+  };
+}
+
+async function maybeRenewTtl(
+  client: BoxClient,
+  box: BoxRecord,
+): Promise<BoxRecord> {
+  if (!shouldRenewTtl(box.archiveAfter, Date.now(), BRO_COMPUTER_TTL_SECONDS)) {
+    return box;
+  }
+  return await client.update(box.id, { ttlSeconds: BRO_COMPUTER_TTL_SECONDS });
+}
+
+async function assertCanStart(client: BoxClient): Promise<void> {
+  const limits = await client.limits();
+  if (
+    !canSpendStart({
+      canStart: limits.canStart,
+      remaining: limits.starts?.day?.remaining,
+      reserve: BRO_COMPUTER_START_RESERVE,
+    })
+  ) {
+    throw new ComputerError("limit", "computer start limit reached");
+  }
+}
+
+async function settle(client: BoxClient, box: BoxRecord): Promise<BoxRecord> {
+  let current = box;
+  for (let i = 0; i < SETTLE_ROUNDS; i++) {
+    const action = nextCommandAction(current.state);
+    if (action === "command") {
+      return await maybeRenewTtl(client, current);
+    }
+    if (action === "resume") {
+      await assertCanStart(client);
+      current = await client.resume(current.id, {
+        noEnv: true,
+        ttlSeconds: BRO_COMPUTER_TTL_SECONDS,
+      });
+      current = await client.waitUntil(current.id, COMMAND_STATES, WAIT_READY_MS);
+      continue;
+    }
+    if (action === "wait") {
+      current = await client.waitUntil(current.id, WAIT_STATES, WAIT_READY_MS);
+      continue;
+    }
+    throw new ComputerError("error", `computer is not ready (${current.state})`);
+  }
+  throw new ComputerError("error", "computer did not become ready");
+}
+
+async function startBox(
+  client: BoxClient,
+  tenantConvexId: string,
+  size: ComputerSize = "small",
+): Promise<BoxRecord> {
+  await assertCanStart(client);
+  const input = startInput(tenantConvexId, size);
+  const template = process.env.BOX_TEMPLATE_ID?.trim();
+  const created = template
+    ? await client.fork(template, input)
+    : await client.create(input);
+  try {
+    await client.update(created.id, { name: `bro-${tenantConvexId}` });
+  } catch {
+    // name is cosmetic
+  }
+  return created;
+}
+
+/**
+ * Claim the tenant row first, then create/fork ASCII, then bind.
+ * Phone never goes to ASCII. BOX_API_KEY never enters the VM.
+ */
+export async function ensureRunning(
+  opts: EnsureRunningOpts,
+  client: BoxClient = createBoxClient(),
+): Promise<RunningBox> {
+  const store = storeOf(opts);
+  const claimed = await store.claim(opts.phoneE164, { size: opts.size });
+  if (!claimed) throw new ComputerError("denied", "unknown tenant");
+
+  let boxId = claimed.boxId;
+  if (!boxId) {
+    const created = await startBox(
+      client,
+      claimed.tenantId,
+      opts.size ?? "small",
+    );
+    const bound = await store.bind(
+      opts.phoneE164,
+      created.id,
+      created.state,
+    );
+    const winner = bound?.boxId ?? created.id;
+    if (winner !== created.id) {
+      try {
+        await client.stop(created.id);
+      } catch {
+        // orphan billed until TTL
+      }
+    }
+    boxId = winner;
+  }
+
+  const got = await client.get(boxId);
+  const ready = await settle(client, got);
+  await store.setState(opts.phoneE164, ready.state);
+  await store.touch(opts.phoneE164);
+  return { boxId: ready.id, state: ready.state };
+}
+
+export async function ensureSession(
+  opts: EnsureRunningOpts,
+  client?: BoxClient,
+): Promise<RunningBox> {
+  return await ensureRunning(opts, client);
+}
+
+export async function boundBoxId(
+  phoneE164: string,
+  store: ComputerStore = convexComputerStore,
+): Promise<string | null> {
+  const row = await store.get(phoneE164);
+  return row?.boxId ?? null;
+}
+
+async function withStartingWait<T>(
+  client: BoxClient,
+  boxId: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    const starting =
+      err instanceof BoxHttpError &&
+      (err.status === 409 || err.code === "box_starting");
+    if (!starting) throw err;
+    await client.waitUntil(boxId, COMMAND_STATES, WAIT_READY_MS);
+    return await fn();
+  }
+}
+
+export async function exec(
+  boxId: string,
+  command: string,
+  cwd?: string,
+  timeoutSeconds?: number,
+  client: BoxClient = createBoxClient(),
+): Promise<ExecResult> {
+  const cmd = command.trim();
+  if (!cmd) throw new ComputerError("invalid", "command required");
+  const timeout = clampTimeout(timeoutSeconds);
+  const result = await withStartingWait(client, boxId, async () => {
+    const work = client.command(boxId, {
+      command: cmd,
+      ...(cwd ? { cwd: assertComputerPath(cwd) } : {}),
+      ...(timeout !== undefined ? { timeoutSeconds: timeout } : {}),
+    });
+    if (timeout === undefined) return await work;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        work,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => {
+            reject(new ComputerError("error", "command timed out"));
+          }, timeout * 1000);
+        }),
+      ]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  });
+  return {
+    boxId,
+    exitCode: result.exitCode ?? 0,
+    stdout: result.stdout,
+    stderr: result.stderr,
+  };
+}
+
+export async function readFile(
+  boxId: string,
+  path: string,
+  client: BoxClient = createBoxClient(),
+): Promise<{ boxId: string; path: string; content: string }> {
+  const safe = assertComputerPath(path);
+  const content = await withStartingWait(client, boxId, () =>
+    client.readFile(boxId, safe),
+  );
+  if (Buffer.byteLength(content, "utf8") > READ_MAX_BYTES) {
+    throw new ComputerError("invalid", "file exceeds 64KB");
+  }
+  return { boxId, path: safe, content };
+}
+
+export async function writeFile(
+  boxId: string,
+  path: string,
+  content: string,
+  client: BoxClient = createBoxClient(),
+): Promise<{ boxId: string; path: string }> {
+  const safe = assertComputerPath(path);
+  assertWriteContent(content);
+  await withStartingWait(client, boxId, () =>
+    client.writeFile(boxId, safe, content),
+  );
+  return { boxId, path: safe };
+}
+
+export async function stop(
+  boxId: string,
+  client: BoxClient = createBoxClient(),
+): Promise<RunningBox> {
+  const box = await client.stop(boxId);
+  return { boxId: box.id, state: box.state };
+}
+
+export async function status(
+  boxId: string,
+  client: BoxClient = createBoxClient(),
+): Promise<RunningBox> {
+  const box = await client.get(boxId);
+  return { boxId: box.id, state: box.state };
+}

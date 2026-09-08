@@ -29,3 +29,15 @@ export function composioUserId(principal: string): string {
   }
   return id;
 }
+
+/**
+ * Personal iMessage/Telegram phone for the computer. Throws on empty,
+ * local-dev, and the same shared buckets as composioUserId.
+ */
+export function requirePersonalPhone(principal: string): string {
+  const id = principal.trim();
+  if (!id || id === LOCAL || SHARED.has(id)) {
+    throw new Error("refusing shared computer principal");
+  }
+  return id;
+}

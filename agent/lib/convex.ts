@@ -1,5 +1,6 @@
 import { ConvexHttpClient } from "convex/browser";
 import type { FunctionReturnType } from "convex/server";
+import { anyApi } from "convex/server";
 import { api } from "../../convex/_generated/api.js";
 import type { Id } from "../../convex/_generated/dataModel";
 import {
@@ -734,6 +735,78 @@ export async function listOrders(
     secret: secret(),
     phoneE164,
   });
+}
+
+export type ComputerRow = {
+  _id: string;
+  tenantId: string;
+  boxId?: string;
+  size: "small" | "default" | "large";
+  lastState: string;
+  lastStateAt: number;
+  lastActiveAt?: number;
+  resumedAt?: number;
+  createdAt: number;
+};
+
+export async function getComputer(
+  phoneE164: string,
+): Promise<ComputerRow | null> {
+  return (await client().query(anyApi.computers.getForAgent, {
+    secret: secret(),
+    phoneE164,
+  })) as ComputerRow | null;
+}
+
+export async function claimComputer(
+  phoneE164: string,
+  opts?: { size?: ComputerRow["size"]; now?: number },
+): Promise<ComputerRow | null> {
+  return (await client().mutation(anyApi.computers.claimForAgent, {
+    secret: secret(),
+    phoneE164,
+    now: opts?.now ?? Date.now(),
+    ...(opts?.size ? { size: opts.size } : {}),
+  })) as ComputerRow | null;
+}
+
+export async function bindComputer(
+  phoneE164: string,
+  boxId: string,
+  lastState: string,
+  now = Date.now(),
+): Promise<ComputerRow | null> {
+  return (await client().mutation(anyApi.computers.bindForAgent, {
+    secret: secret(),
+    phoneE164,
+    boxId,
+    lastState,
+    now,
+  })) as ComputerRow | null;
+}
+
+export async function setComputerState(
+  phoneE164: string,
+  lastState: string,
+  now = Date.now(),
+): Promise<ComputerRow | null> {
+  return (await client().mutation(anyApi.computers.setStateForAgent, {
+    secret: secret(),
+    phoneE164,
+    lastState,
+    now,
+  })) as ComputerRow | null;
+}
+
+export async function touchComputer(
+  phoneE164: string,
+  now = Date.now(),
+): Promise<ComputerRow | null> {
+  return (await client().mutation(anyApi.computers.touchForAgent, {
+    secret: secret(),
+    phoneE164,
+    now,
+  })) as ComputerRow | null;
 }
 
 export async function updateOrderStatus(

@@ -1,4 +1,6 @@
 import { BoxHttpError, type BoxState } from "../agent/lib/boxClient.ts";
+import { ensureRunning, type ComputerStore } from "../agent/lib/computer.ts";
+import type { ComputerRow } from "../agent/lib/convex.ts";
 import {
   BRO_COMPUTER_START_RESERVE,
   BRO_COMPUTER_TTL_SECONDS,
@@ -132,5 +134,53 @@ assert(
   "limits remaining",
 );
 assert(fake.startsToday() === 2, "create + resume count as starts");
+
+function memoryStore(tenantId: string): ComputerStore {
+  let row: ComputerRow | null = null;
+  const now = 1_700_000_000_000;
+  return {
+    async get() {
+      return row;
+    },
+    async claim() {
+      if (row) return row;
+      row = {
+        _id: "computers:1",
+        tenantId,
+        size: "small",
+        lastState: "pending",
+        lastStateAt: now,
+        createdAt: now,
+      };
+      return row;
+    },
+    async bind(_phone, boxId, lastState) {
+      if (!row) throw new Error("missing claim");
+      if (row.boxId && row.boxId !== boxId) return row;
+      row = { ...row, boxId, lastState, lastStateAt: now, resumedAt: now };
+      return row;
+    },
+    async setState(_phone, lastState) {
+      if (!row) throw new Error("missing claim");
+      row = { ...row, lastState, lastStateAt: now };
+      return row;
+    },
+    async touch() {
+      if (!row) throw new Error("missing claim");
+      row = { ...row, lastActiveAt: now };
+      return row;
+    },
+  };
+}
+
+const tenantConvexId = "tenants_parallel";
+const store = memoryStore(tenantConvexId);
+const parallel = createFakeBox({ now: () => clock });
+const [a, b] = await Promise.all([
+  ensureRunning({ phoneE164: "+15555550100", store }, parallel),
+  ensureRunning({ phoneE164: "+15555550100", store }, parallel),
+]);
+assert(a.boxId === b.boxId, "parallel ensureRunning shares one box");
+assert(parallel.startsToday() === 1, "idempotent create spends one start");
 
 console.log("computer-check ok");
