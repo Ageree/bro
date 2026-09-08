@@ -53,7 +53,8 @@
     "provision:inkbox": "node --experimental-strip-types scripts/provision-inkbox.ts",
     "computer:check": "node --experimental-strip-types scripts/computer-check.ts",
     "computer:spike": "node --env-file=.env.local --experimental-strip-types scripts/computer-spike.ts",
-    "computers:check": "node --experimental-strip-types scripts/computers-check.ts"
+    "computers:check": "node --experimental-strip-types scripts/computers-check.ts",
+    "chatgpt:check": "node --experimental-strip-types scripts/chatgpt-check.ts"
   },
   "dependencies": {
     "@ai-sdk/openai": "^4.0.47",
