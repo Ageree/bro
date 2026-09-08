@@ -5,7 +5,7 @@ export const PHOTO_MAX_BYTES = 8 * 1024 * 1024;
 export const PHOTO_FETCH_TIMEOUT_MS = 15_000;
 export const PHOTO_CAPTION_MAX = 1024;
 
-const IMAGE_MARKDOWN = /!\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)/gi;
+const IMAGE_MARKDOWN = /!{1,2}\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)/gi;
 
 export const PHOTO_TYPES = [
   "image/jpeg",

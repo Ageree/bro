@@ -5,7 +5,7 @@ export const TELEGRAM_TEXT_LIMIT = 4096;
 
 const FENCE = /```([\w+-]*)\n?([\s\S]*?)```/g;
 const BUTTONS = /:::buttons\s*\n([\s\S]*?):::/g;
-const IMAGE = /!\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)/gi;
+const IMAGE = /!{1,2}\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)/gi;
 const LINK = /\[([^\]]+)\]\((https?:\/\/[^)\s]+|callback:[^)\s]+)\)/gi;
 const AUTO_URL = /<(https?:\/\/[^>\s]+)>/gi;
 const AUTO_MAIL = /<([^>\s]+@[^>\s]+)>/g;
@@ -16,11 +16,16 @@ export type TelegramButton = {
   callback_data?: string;
 };
 
+export type TelegramPhotoRef = {
+  url: string;
+  spoiler: boolean;
+};
+
 export type TelegramCompiled = {
   html: string;
   chunks: string[];
   buttons: TelegramButton[][];
-  photos: string[];
+  photos: TelegramPhotoRef[];
 };
 
 export function escapeHtml(s: string): string {
@@ -56,6 +61,51 @@ export function extractButtons(src: string): {
   return { text, buttons: rows };
 }
 
+function isSpoilerPhotoAlt(alt: string, bangs: string): boolean {
+  const marker = alt.trim().toLowerCase();
+  return bangs.length >= 2 || marker.startsWith("!") || marker.startsWith("spoiler");
+}
+
+/** Consecutive `>` lines become one quote. `>!` or a trailing `||` makes it expandable. */
+function applyQuoteBlocks(s: string): string {
+  const lines = s.split("\n");
+  const out: string[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const start = lines[i] ?? "";
+    const expandableLine = /^&gt;!\s?(.*)$/.exec(start);
+    const regularLine = /^&gt;\s?(.*)$/.exec(start);
+    if (!expandableLine && !regularLine) {
+      out.push(start);
+      i += 1;
+      continue;
+    }
+    let expandable = Boolean(expandableLine);
+    const body: string[] = [];
+    while (i < lines.length) {
+      const cur = lines[i] ?? "";
+      const exp = /^&gt;!\s?(.*)$/.exec(cur);
+      const reg = /^&gt;\s?(.*)$/.exec(cur);
+      if (!exp && !reg) break;
+      if (exp) expandable = true;
+      let inner = exp?.[1] ?? reg?.[1] ?? "";
+      if (inner.endsWith("||")) {
+        expandable = true;
+        inner = inner.slice(0, -2).trimEnd();
+      }
+      body.push(inner);
+      i += 1;
+    }
+    const inner = body.join("\n");
+    out.push(
+      expandable
+        ? `<blockquote expandable>${inner}</blockquote>`
+        : `<blockquote>${inner}</blockquote>`,
+    );
+  }
+  return out.join("\n");
+}
+
 function applyMarkdown(escaped: string): string {
   let s = escaped;
   s = s.replace(AUTO_URL, "$1");
@@ -68,10 +118,12 @@ function applyMarkdown(escaped: string): string {
     return `<a href="${u}">${l}</a>`;
   });
   s = s.replace(/^#{1,6}\s+(.*)$/gm, (_, t: string) => `<b>${t.trim()}</b>`);
-  s = s.replace(/^&gt;\s?(.*)$/gm, (_, t: string) => `<blockquote>${t}</blockquote>`);
+  s = applyQuoteBlocks(s);
   s = s.replace(/^\s*[-*]\s+/gm, "• ");
-  s = s.replace(/~~([^~\n]+)~~/g, "<s>$1</s>");
   s = s.replace(/`([^`\n]+)`/g, "<code>$1</code>");
+  s = s.replace(/~~([^~\n]+)~~/g, "<s>$1</s>");
+  s = s.replace(/\+\+([^+\n]+)\+\+/g, "<u>$1</u>");
+  s = s.replace(/\|\|([^|\n]+)\|\|/g, "<tg-spoiler>$1</tg-spoiler>");
   s = s.replace(/\*\*\*([^*]+)\*\*\*/g, "<b><i>$1</i></b>");
   s = s.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
   s = s.replace(/__([^_]+)__/g, "<b>$1</b>");
@@ -97,9 +149,13 @@ export function compileTelegram(src: string): TelegramCompiled {
   const { text, buttons } = extractButtons(s);
   s = text;
 
-  const photos: string[] = [];
-  s = s.replace(IMAGE, (_, _alt: string, url: string) => {
-    photos.push(String(url).trim());
+  const photos: TelegramPhotoRef[] = [];
+  s = s.replace(IMAGE, (match: string, alt: string, url: string) => {
+    const bangs = match.startsWith("!!") ? "!!" : "!";
+    photos.push({
+      url: String(url).trim(),
+      spoiler: isSpoilerPhotoAlt(String(alt), bangs),
+    });
     return "";
   });
 

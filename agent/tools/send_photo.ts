@@ -16,13 +16,14 @@ import { photoTargetFromAuth, sendPhotoToHuman } from "../lib/send-photo.ts";
 
 export default defineTool({
   description:
-    "Send a photo into this chat (iMessage or Telegram). Pass a public https URL or a computer path under /home/user. Then [SILENT] unless you still need text.",
+    "Send a photo into this chat (iMessage or Telegram). Pass a public https URL or a computer path under /home/user. On Telegram, spoiler=true covers the photo until tap (скрытое медиа). Then [SILENT] unless you still need text.",
   inputSchema: z.object({
     path: z.string().min(1).max(1000).optional(),
     url: z.string().min(1).max(2000).optional(),
     caption: z.string().max(1024).optional(),
+    spoiler: z.boolean().optional(),
   }),
-  async execute({ path, url, caption }, ctx) {
+  async execute({ path, url, caption, spoiler }, ctx) {
     const parsed = parseSendPhotoInput({ path, url });
     if ("error" in parsed) return { status: "error", error: parsed.error };
 
@@ -48,6 +49,7 @@ export default defineTool({
     return await sendPhotoToHuman({
       ...photoTargetFromAuth(attrsFromSession(ctx.session)),
       caption,
+      spoiler,
       source,
     });
   },

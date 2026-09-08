@@ -152,12 +152,17 @@ async function deliverTelegram(
   if (compiled.photos[0]) {
     await sendPhoto({
       chatId,
-      url: compiled.photos[0],
+      url: compiled.photos[0].url,
       html: html || undefined,
       buttons,
+      hasSpoiler: compiled.photos[0].spoiler,
     });
     for (const extra of compiled.photos.slice(1)) {
-      await sendPhoto({ chatId, url: extra });
+      await sendPhoto({
+        chatId,
+        url: extra.url,
+        hasSpoiler: extra.spoiler,
+      });
     }
     for (const chunk of rest) {
       if (!claimChatBubble({ chatKey: chatId, text: chunk })) continue;

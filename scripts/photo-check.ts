@@ -316,6 +316,23 @@ assert(oversize, "oversize fetch rejected");
 }
 
 {
+  const spoilers: Array<{ url: string; hasSpoiler?: boolean }> = [];
+  await deliverHuman({
+    tenant: { telegramChatId: "99", lastChannel: "telegram" },
+    text: "смотри\n!![обложка](https://img.example/hidden.jpg)",
+    channel: "telegram",
+    deps: {
+      sendTelegramPhotoUrl: async (opts) => {
+        spoilers.push({ url: String(opts.url), hasSpoiler: opts.hasSpoiler });
+        return { message_id: 4 };
+      },
+    },
+  });
+  assert(spoilers[0]?.url === "https://img.example/hidden.jpg", "hidden media url");
+  assert(spoilers[0]?.hasSpoiler === true, "hidden media sets has_spoiler");
+}
+
+{
   const loaded: string[] = [];
   const media: string[][] = [];
   const texts: string[] = [];
@@ -366,6 +383,7 @@ assert(imessageTarget.conversationId === "conv-im", "auth iMessage conversation"
 const tool = readFileSync(new URL("../agent/tools/send_photo.ts", import.meta.url), "utf8");
 assert(tool.includes("sendPhotoToHuman"), "tool uses shared sender");
 assert(tool.includes("parseSendPhotoInput"), "tool validates path/url");
+assert(tool.includes("spoiler"), "tool can hide Telegram media");
 assert(tool.includes("readBinaryFile"), "computer path reads the box file");
 assert(tool.includes("asPersonal"), "computer path is personal-only");
 assert(existsSync(new URL("../agent/tools/send_photo.ts", import.meta.url)), "tool mounted");
@@ -393,6 +411,7 @@ assert(deliver.includes("sendPhotoToHuman"), "iMessage photos share send_photo p
 
 const telegram = readFileSync(new URL("../agent/lib/telegram.ts", import.meta.url), "utf8");
 assert(telegram.includes("sendTelegramPhotoFile"), "telegram can upload bytes");
+assert(telegram.includes("has_spoiler"), "telegram can send hidden media");
 assert(telegram.includes("apiForm"), "telegram photo file is multipart");
 assert(!telegram.includes('"Content-Type": "application/json"') || telegram.includes("apiForm"), "json helper stays");
 

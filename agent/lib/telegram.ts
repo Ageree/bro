@@ -197,6 +197,7 @@ export async function sendTelegramPhoto(opts: {
   url: string;
   html?: string;
   buttons?: TelegramButton[][];
+  hasSpoiler?: boolean;
 }): Promise<{ message_id: number }> {
   const markup = opts.buttons?.length ? inlineKeyboard(opts.buttons) : undefined;
   return await enqueueTelegramChat(opts.chatId, () =>
@@ -204,6 +205,7 @@ export async function sendTelegramPhoto(opts: {
       chat_id: opts.chatId,
       photo: opts.url,
       ...(opts.html ? { caption: opts.html.slice(0, 1024), parse_mode: "HTML" } : {}),
+      ...(opts.hasSpoiler ? { has_spoiler: true } : {}),
       ...(markup ? { reply_markup: markup } : {}),
     }),
   );
@@ -216,6 +218,7 @@ export async function sendTelegramPhotoFile(opts: {
   contentType: string;
   html?: string;
   buttons?: TelegramButton[][];
+  hasSpoiler?: boolean;
 }): Promise<{ message_id: number }> {
   const markup = opts.buttons?.length ? inlineKeyboard(opts.buttons) : undefined;
   return await enqueueTelegramChat(opts.chatId, () => {
@@ -230,6 +233,7 @@ export async function sendTelegramPhotoFile(opts: {
       form.set("caption", opts.html.slice(0, 1024));
       form.set("parse_mode", "HTML");
     }
+    if (opts.hasSpoiler) form.set("has_spoiler", "true");
     if (markup) form.set("reply_markup", JSON.stringify(markup));
     return apiForm<{ message_id: number }>("sendPhoto", form);
   });

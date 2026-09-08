@@ -35,6 +35,26 @@ assert(
   toTelegramHtml("> цитата") === "<blockquote>цитата</blockquote>",
   "quote",
 );
+assert(
+  toTelegramHtml("> строка один\n> строка два") ===
+    "<blockquote>строка один\nстрока два</blockquote>",
+  "multiline quote merges",
+);
+assert(
+  toTelegramHtml(">! секрет\n>! ещё") ===
+    "<blockquote expandable>секрет\nещё</blockquote>",
+  "expandable quote",
+);
+assert(
+  toTelegramHtml("> скрыто||") ===
+    "<blockquote expandable>скрыто</blockquote>",
+  "expandable via trailing ||",
+);
+assert(toTelegramHtml("++черта++") === "<u>черта</u>", "underline");
+assert(
+  toTelegramHtml("||спойлер||") === "<tg-spoiler>спойлер</tg-spoiler>",
+  "spoiler",
+);
 assert(toTelegramHtml("- один") === "• один", "ul");
 assert(
   toTelegramHtml("```ts\nconst x = 1\n```").includes("<pre>"),
@@ -58,7 +78,42 @@ assert(withBtns.buttons[0]?.[0]?.url === "https://pay.example/x", "url button");
 assert(withBtns.buttons[0]?.[1]?.callback_data === "cancel", "callback button");
 
 const photo = compileTelegram("смотри\n![книга](https://img.example/a.jpg)");
-assert(photo.photos[0] === "https://img.example/a.jpg", "photo extracted");
+assert(photo.photos[0]?.url === "https://img.example/a.jpg", "photo extracted");
+assert(photo.photos[0]?.spoiler === false, "plain photo is not hidden");
+
+const hidden = compileTelegram("!![обложка](https://img.example/s.jpg)");
+assert(hidden.photos[0]?.url === "https://img.example/s.jpg", "spoiler photo url");
+assert(hidden.photos[0]?.spoiler === true, "!![alt] is hidden media");
+assert(
+  compileTelegram("![!обложка](https://img.example/s.jpg)").photos[0]?.spoiler ===
+    true,
+  "![!alt] is hidden media",
+);
+assert(
+  compileTelegram("![spoiler](https://img.example/s.jpg)").photos[0]?.spoiler ===
+    true,
+  "![spoiler] is hidden media",
+);
+
+const card = compileTelegram(`# Что такое форматирование сообщений?
+
+> Telegram поддерживает разные виды оформления текста
+
+- **Жирный**
+- *Курсив*
+- ++Подчёркнутый++
+- ~~Зачёркнутый~~
+- \`Моноширинный\`
+- ||Спойлер||
+`);
+assert(card.html.includes("<b>Что такое форматирование сообщений?</b>"), "card heading");
+assert(card.html.includes("<blockquote>Telegram поддерживает"), "card quote");
+assert(card.html.includes("<b>Жирный</b>"), "card bold");
+assert(card.html.includes("<i>Курсив</i>"), "card italic");
+assert(card.html.includes("<u>Подчёркнутый</u>"), "card underline");
+assert(card.html.includes("<s>Зачёркнутый</s>"), "card strike");
+assert(card.html.includes("<code>Моноширинный</code>"), "card mono");
+assert(card.html.includes("<tg-spoiler>Спойлер</tg-spoiler>"), "card spoiler");
 
 const long = "п".repeat(5000);
 const chunks = splitTelegramHtml(long, 4096);
