@@ -41,6 +41,7 @@
     "schema:check": "node --experimental-strip-types scripts/schema-check.ts",
     "image:check": "node --experimental-strip-types scripts/inbound-image-check.ts",
     "sandbox:check": "node --experimental-strip-types scripts/sandbox-policy-check.ts",
+    "tinyfish:check": "node --experimental-strip-types scripts/tinyfish-check.ts",
     "silent:check": "node --experimental-strip-types scripts/silent-turn-check.ts",
     "early:check": "node --experimental-strip-types scripts/early-deliver-check.ts",
     "latency:check": "node --experimental-strip-types scripts/latency-check.ts && node --experimental-strip-types scripts/early-deliver-check.ts && node --experimental-strip-types scripts/start-path-check.ts && node --experimental-strip-types scripts/profile-inbound.ts",

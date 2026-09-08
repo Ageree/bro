@@ -166,7 +166,7 @@ export default defineDynamic({
       }),
       COMPOSIO_REMOTE_WORKBENCH: defineTool({
         description:
-          "Python in the remote sandbox for large tool responses. Skip if the data fits in chat. No network: never fetch websites — use browser_task.",
+          "Python in the remote sandbox for large tool responses. Skip if the data fits in chat. No network: facts via web_search / web_fetch, shops via browser_task.",
         inputSchema: {
           type: "object",
           required: ["code_to_execute"],
@@ -183,7 +183,7 @@ export default defineDynamic({
             if (violation) {
               return Promise.resolve({
                 error: violation,
-                hint: "Открой сайт через browser_task — он использует облачный браузер; Ozon, WB и другие магазины блокируют прямые HTTP-запросы.",
+                hint: "Факты — web_search / web_fetch. Магазины (Ozon, WB) — browser_task: они режут прямой HTTP.",
               });
             }
           }
@@ -192,7 +192,7 @@ export default defineDynamic({
       }),
       COMPOSIO_REMOTE_BASH_TOOL: defineTool({
         description:
-          "Bash in the remote sandbox for large files. 3-minute limit. No network: never fetch websites — use browser_task.",
+          "Bash in the remote sandbox for large files. 3-minute limit. No network: facts via web_search / web_fetch, shops via browser_task.",
         inputSchema: {
           type: "object",
           required: ["command"],
@@ -208,7 +208,7 @@ export default defineDynamic({
             if (violation) {
               return Promise.resolve({
                 error: violation,
-                hint: "Открой сайт через browser_task — он использует облачный браузер; Ozon, WB и другие магазины блокируют прямые HTTP-запросы.",
+                hint: "Факты — web_search / web_fetch. Магазины (Ozon, WB) — browser_task: они режут прямой HTTP.",
               });
             }
           }
