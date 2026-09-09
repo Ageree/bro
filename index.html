@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>bro — твой личный ИИ-агент</title>
   <meta name="description" content="bro — персональный ИИ-агент со своим номером, памятью и руками в интернете. Записать к врачу, забронировать, заказать — просто напиши ему." />
-  <meta name="theme-color" content="#000000" />
+  <meta name="theme-color" content="#ebebeb" />
   <link rel="icon" href="/assets/bro-mark.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="/assets/bro-logo.png" />
   <meta property="og:type" content="website" />
@@ -94,15 +94,14 @@
     <!-- Two cuts of the same film. Phones get the 9:16 one instead of the
          cropped-out middle of a widescreen frame. Until the footage lands,
          both fall back to the poster. -->
-    <video class="stage__video stage__video--portrait" poster="/assets/hero-poster-placeholder.png"
+    <video class="stage__video stage__video--portrait" poster="/assets/hero-poster-portrait.png"
            playsinline muted loop autoplay preload="metadata" aria-hidden="true">
       <source src="/assets/hero-portrait.mp4" type="video/mp4" />
     </video>
-    <video class="stage__video stage__video--landscape" poster="/assets/hero-poster-placeholder.png"
+    <video class="stage__video stage__video--landscape" poster="/assets/hero-poster-landscape.png"
            playsinline muted loop autoplay preload="metadata" aria-hidden="true">
       <source src="/assets/hero-landscape.mp4" type="video/mp4" />
     </video>
-    <div class="stage__veil" aria-hidden="true"></div>
 
     <header class="stage__bar">
       <div></div>
@@ -116,7 +115,7 @@
     </header>
 
     <div class="stage__foot">
-      <a class="btn btn--light" id="request-access" data-request-access href="#">Получить своего бро</a>
+      <a class="btn" id="request-access" data-request-access href="#">Получить своего бро</a>
       <p class="stage__note">iMessage и Telegram · приложение ставить не нужно</p>
     </div>
   </section>

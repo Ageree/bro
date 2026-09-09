@@ -45,7 +45,7 @@ part of the family rather than bolted on.
 | `--pad` | `clamp(1.1rem, 4vw, 2rem)` | the one spacing unit |
 | `--container` / `--measure` | `40rem` / `60ch` | narrow by design |
 | `--r-pill` | `9999px` | the only radius in the system |
-| `--veil` | black at 34–42% | keeps white type legible over any frame |
+| `--studio` | `#ebebeb` | the ground the footage is shot on |
 
 Type stays small and quiet — the footage is the only loud element on the page.
 Cards, boxes and shadows are gone: the price list is hairline rules, the login sheet
@@ -53,14 +53,24 @@ is a square white panel.
 
 ## The stage
 
+The first build of this got it wrong: I read "full-viewport video" and built a dark
+cinematic hero with white chrome over a veil. Pulling doji's actual poster frames
+off their Mux endpoint settled it — their hero is **one person shot full-length on a
+flat `#ebebeb` studio ground**, with a lot of air around them. It is a light page
+with a figure in it, not a dark film.
+
+So the stage is light and the chrome is ink: no veil, no white-on-dark. Sampling the
+corners of both of their frames gives `#ebebeb` exactly, and that is `--studio`.
+
 `assets/hero-portrait.mp4` and `assets/hero-landscape.mp4`, both `muted loop
 playsinline autoplay`, swapped by `@media (orientation: …)`. Until the footage
-exists both fall back to `assets/hero-poster-placeholder.png` — a neutral grey field,
-deliberately mid-tone so the white chrome still reads over it. **Replace it with a
-real poster frame before launch.**
+exists each falls back to its own placeholder composed for that aspect —
+`assets/hero-poster-portrait.png` and `assets/hero-poster-landscape.png`, the mark
+centred on the studio ground. **Replace both with real poster frames before launch.**
 
 Planned footage: short scenarios of different people texting the assistant — a
-parent, a working guy, a teenager — generated in Higgsfield.
+parent, a working guy, a teenager — generated in Higgsfield. Shoot each on a flat
+light ground and deliver two cuts, 9:16 and 16:9.
 
 ## Page
 

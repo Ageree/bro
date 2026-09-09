@@ -15,7 +15,7 @@
   --ink-mute:  #6f6f6f;
   --ink-faint: #b4b4b4;
   --line:      #e6e6e6;
-  --veil:      rgba(0, 0, 0, 0.34);   /* over footage, for white text */
+  --studio:    #ebebeb;   /* the ground the footage is shot on */
 
   --pad:       clamp(1.1rem, 4vw, 2rem);
   --container: 40rem;
@@ -98,11 +98,6 @@ body {
 }
 .btn:hover { opacity: 0.82; }
 .btn:active { transform: scale(0.985); }
-.btn--light {
-  background: var(--paper);
-  color: var(--ink);
-  border-color: transparent;
-}
 .btn--quiet {
   background: transparent;
   color: inherit;
@@ -118,7 +113,11 @@ body {
 }
 
 /* ============================================================
-   Stage — one full-viewport film, one thing to press
+   Stage — a light studio field with one figure in it
+
+   The reference frame is a person shot full-length on a flat
+   #ebebeb ground with a lot of air around them. So the stage is
+   light and the chrome is ink: no veil, no white-on-dark.
    Portrait and landscape cuts swap on orientation, so phones get
    a 9:16 frame instead of a cropped-out middle of a 16:9 one.
    ============================================================ */
@@ -127,8 +126,8 @@ body {
   height: 100svh;
   min-height: 32rem;
   overflow: hidden;
-  background: #101010;
-  color: var(--paper);
+  background: var(--studio);
+  color: var(--ink);
 }
 .stage__video {
   position: absolute;
@@ -137,19 +136,10 @@ body {
   height: 100%;
   object-fit: cover;
   display: block;
+  background: var(--studio);
 }
 @media (orientation: portrait)  { .stage__video--landscape { display: none; } }
 @media (orientation: landscape) { .stage__video--portrait  { display: none; } }
-
-/* just enough veil for white type to hold over any frame */
-.stage__veil {
-  position: absolute;
-  inset: 0;
-  background:
-    linear-gradient(180deg, rgba(0,0,0,0.34) 0%, rgba(0,0,0,0) 28%),
-    linear-gradient(0deg,   rgba(0,0,0,0.42) 0%, rgba(0,0,0,0) 34%);
-  pointer-events: none;
-}
 
 .stage__bar {
   position: absolute;
@@ -161,7 +151,6 @@ body {
   gap: 1rem;
   padding: var(--pad);
 }
-.stage__bar .lockup { color: var(--paper); }
 /* the wordmark sits centred like a masthead, actions ride the edges */
 .stage__bar > :first-child,
 .stage__bar > :last-child { flex: 1 1 0; display: flex; gap: 0.4rem; }
@@ -186,5 +175,5 @@ body {
 }
 .stage__note {
   font-size: 0.82rem;
-  color: rgba(255, 255, 255, 0.78);
+  color: var(--ink-mute);
 }
