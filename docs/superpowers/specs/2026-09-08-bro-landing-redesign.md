@@ -1,137 +1,108 @@
 # bro — landing redesign & design system
 
-_Date: 2026-09-08. Supersedes `2026-08-26-bro-landing-design.md`._
+_Date: 2026-09-09. Supersedes `2026-08-26-bro-landing-design.md`._
 
 ## Why
 
 The first landing was a stock meadow photo with a wordmark on top. Nothing on the
 page came from the product, so it read as a wellness page and the brand was a font
-choice. The redesign gives bro a character and a system with a point of view.
+choice.
 
-## The character — «Бабл»
+## The reference
 
-bro has no app, no dashboard, no screen of his own. He exists as one thing: a bubble
-in your chat. So the character *is* the message.
+[doji.com](https://www.doji.com/) — minimal and elegant on white. Read off their
+stylesheets rather than guessed at:
 
-- **Form:** a soft cloud bubble with a blunt tail at the bottom left, two oval eyes and
-  a small smile.
-- **Personality:** warm and unbothered. He smiles, but he does not chatter — he says
-  «сделаю» and gets on with it.
-- **States, without redrawing:** eyes closed → asleep; eyes as dashes → thinking; tail
-  flipped → your turn.
-- **Scales:** verified at 240 / 90 / 42 / 20 px before the shape was frozen. The face
-  survives to favicon size.
+- `--color-font: #000` on white. No greys in the palette at all.
+- `--container-width: 40rem`, `--padding: 2rem`, `--max-width-text: 60ch`. Narrow.
+- The **only** `border-radius` in their CSS is `9999px`. Everything else is square.
+- The home page is one **full-viewport video**, `object-fit: cover`, in two cuts:
+  a 9:16 portrait and a 16:9 landscape, swapped on orientation so a phone gets a
+  portrait frame instead of the cropped-out middle of a widescreen one.
+- Chrome over the film is tiny: a masthead and one link. Nothing competes with the
+  footage.
 
-The character came from a Higgsfield generation the founder approved. It is **redrawn
-as vector**, not traced: a traced diffusion output carries wobbly, unevenly weighted
-edges that show at hero size and turn to mush at favicon size. The body is nine
-overlapping circles plus a tail path — few and large, so the outline stays gently
-scalloped. An earlier pass used more, smaller lobes and read as broccoli.
+### The fonts were not copyable, for two reasons
 
-Source of truth is `assets/bro-mark.svg`. The page inlines the same shapes so CSS can
-animate the eyes — document CSS does not reach into a `<use>` shadow tree. The body
-inherits `currentColor` and the `.bro__face` group takes `--bro-eye`, so he inverts
-cleanly on an ink surface by setting both.
+doji sets `--font-headline: "Tid-Book"` and `--font-default: "DioramaGothic"`.
+Inspecting the woff2 name tables: **Tid Book** is Letters from Sweden (Göran
+Söderström & Stefania Malmsten) and **Diorama Gothic** is Diorama Type Partners.
+Both are licensed commercial faces, so serving them from bro would be piracy.
 
-## Where the system comes from
+The decisive problem is simpler than licensing: **both files contain zero Cyrillic
+glyphs** (458 and 491 mapped codepoints, none in U+0400–U+04FF). They physically
+cannot set Russian. The site would fall through to a system font on every word.
 
-The founder asked to borrow the design system from
-[folk.com/folkways](https://www.folk.com/folkways). What folk actually does, read off
-their stylesheets rather than guessed at:
-
-- warm putty paper (`#e8e3da`) and a warm, brown-biased near-black ink (`#0e0a07`) —
-  no neutral greys anywhere in the palette;
-- **thick ink outlines** as the signature: `--border: 3px solid var(--ink)`, `2px` for
-  the lighter variant;
-- **small radii** on paper — `--radius-card: 6px`, `--radius-soft: 14px` — against
-  fully-round pills;
-- a **letterpress** treatment: a lit top inset edge and a shaded bottom one, so a
-  surface sits *in* the page instead of floating over it;
-- a warm accent family (butter golds, rust `#d4561f`, sage `#95a684`), washi tape;
-- `cubic-bezier(.32, .72, 0, 1)` for motion;
-- Labil Grotesk and Cursor Gothic for type, with Caveat for handwritten notes.
-
-**What was deliberately not borrowed, and why:**
-
-1. **Labil Grotesk and Cursor Gothic are licensed commercial faces.** Pulling their
-   woff2 files off folk's CDN and serving them from bro would be font piracy. The
-   substitute is **Golos Text** (Paratype) — a warm neo-grotesk in the same register
-   with stronger Cyrillic than the Onest this replaces, which matters on a Russian
-   site. **Caveat** is free on Google Fonts and is used the same way folk uses it.
-2. **The butter gold accent.** It is folk's most recognisable colour, and wearing a
-   competitor's hero colour is how you end up looking like their side project. bro's
-   accent is **rust `#d4561f`**, which is in folk's palette but not their signature.
-3. **Washi tape.** Their most costume-y device; it would read as fancy dress on a
-   product about getting errands done.
+**Onest** stands in — free, contemporary, and with Cyrillic drawn as a first-class
+part of the family rather than bolted on.
 
 ## The system
 
-Surfaces follow the tactile-paper idiom: warm ground, ink outline, small radius,
-letterpress highlight, so every block reads as printed stock.
-
-**Chat bubbles are the deliberate exception.** They keep soft radii, because that is
-what a message is — and the contrast against hard-edged paper is what makes them read
-as real bubbles lying on the page rather than as more cards. This is the one place the
-borrowed system was bent to fit the product.
-
 | Token | Value | Role |
 | --- | --- | --- |
-| `--paper` | `#e8e3da` | putty ground |
-| `--paper-2` / `--paper-3` | `#f6f6f3` / `#fafaf7` | raised stock, inputs |
-| `--ink` | `#0e0a07` | outlines, bro's bubbles, primary button |
-| `--ink-soft` / `--ink-mute` | `#4a3b3d` / `#6e6260` | secondary copy |
-| `--signal` | `#d4561f` | one job only: bro acted unprompted |
-| `--border` / `--border-3` | `2px` / `3px solid var(--ink)` | the signature |
-| `--r-card` / `--r-soft` / `--r-bubble` | `6px` / `14px` / `1.4rem` | paper is hard, speech is soft |
-| `--press` | lit top inset, shaded bottom | letterpress |
-| `--spring` | `cubic-bezier(.32,.72,0,1)` | all motion |
+| `--paper` / `--ink` | `#ffffff` / `#000000` | the whole palette |
+| `--ink-mute` / `--ink-faint` | `#6f6f6f` / `#b4b4b4` | secondary copy, hairlines |
+| `--pad` | `clamp(1.1rem, 4vw, 2rem)` | the one spacing unit |
+| `--container` / `--measure` | `40rem` / `60ch` | narrow by design |
+| `--r-pill` | `9999px` | the only radius in the system |
+| `--veil` | black at 34–42% | keeps white type legible over any frame |
 
-- **Type:** Golos Text 400–700, Caveat 600 for margin notes.
-- **Motion budget:** he blinks, the demo thread types itself once on scroll, cards and
-  buttons lift on the spring. All respect `prefers-reduced-motion`.
-- **Accent discipline:** `--signal` marks exactly one thing — the unprompted message,
-  ringed and annotated in a hand. Spending it elsewhere costs its meaning.
+Type stays small and quiet — the footage is the only loud element on the page.
+Cards, boxes and shadows are gone: the price list is hairline rules, the login sheet
+is a square white panel.
 
-Tokens and primitives live in `assets/brand.css` and are page-agnostic on purpose:
-`cabinet.html` and `vault.html` still carry their own inline styles and the old meadow
-background. Porting them onto `brand.css` is the next step, not part of this change.
+## The stage
+
+`assets/hero-portrait.mp4` and `assets/hero-landscape.mp4`, both `muted loop
+playsinline autoplay`, swapped by `@media (orientation: …)`. Until the footage
+exists both fall back to `assets/hero-poster-placeholder.png` — a neutral grey field,
+deliberately mid-tone so the white chrome still reads over it. **Replace it with a
+real poster frame before launch.**
+
+Planned footage: short scenarios of different people texting the assistant — a
+parent, a working guy, a teenager — generated in Higgsfield.
 
 ## Page
 
-1. **Hero** — character, wordmark, promise, CTA.
-2. **Как это выглядит** — a thread that types itself: a booking, a repeat order paid
-   from the vault, and one message bro sends unprompted, annotated in Caveat.
-3. **Что он умеет** — six capability cards.
-4. **Тарифы** — unchanged offer, on an ink slab.
-5. **Что вы оплачиваете и как** — kept verbatim; YooKassa requires it.
-6. **Напиши ему первым** — closing CTA. The page previously ended on legal prose.
-7. **Footer** — legal details, unchanged.
+1. **Stage** — full-viewport film. Masthead `bro.` centred, «Войти» at the right,
+   one pill CTA at the bottom: **«Получить своего бро»**.
+2. **Тариф** — the offer as a hairline list.
+3. **Что вы оплачиваете и как** — kept verbatim.
+4. **Footer** — legal details, unchanged.
+
+doji's home does not scroll: it is `fixed inset-0` and nothing else. bro's cannot
+copy that. The YooKassa offer text, the refund terms and the sole-trader details
+have to stay reachable on the site, so the stage is `100svh` and the required
+sections follow underneath.
+
+Everything else in doji's chrome is dropped, as asked: no Manifesto, no Careers, no
+Socials. Most traffic is expected on phones, and those tabs have no counterpart here.
+«Войти» stays because the cabinet and vault are real product surfaces behind it.
+
+## The character
+
+Demoted to the app icon and favicon (`assets/bro-mark.svg`, `assets/bro-logo.png`).
+The masthead is now the wordmark `bro.` set in type, with the full stop, so the hero
+belongs entirely to the film. He is unchanged otherwise and still available if a
+smaller mark is wanted in the chrome later.
 
 ## Contracts preserved
 
 Every id `assets/auth.js` binds (`#login-open`, `#login-modal`, `#login-handle`,
 `#login-send`, `#login-code`, `#login-verify`, `#login-status`, `#login-cancel`,
-`#cabinet-open`, `#vault-open`, `#logout`) and the `POST /access` CTA flow.
-Both CTAs share one handler via `[data-request-access]` and show the same state.
-
-`scripts/cabinet-check.ts` pinned the old `class="cta sheet-cta"` string; it now
-asserts the `sheet-cta` class on `#login-send` instead of the whole skin.
-
-## Assets
-
-- `assets/bro-mark.svg` — the mark; favicon. Standalone, so its fills are literal.
-- `assets/bro-logo.png` — 1024², apple-touch-icon.
-- `assets/bro-og.png` — 1200×630 share card.
-- `assets/meadow.webp` — kept: `cabinet.html` and `vault.html` still use it.
+`#cabinet-open`, `#vault-open`, `#logout`) and the `POST /access` flow. Both CTAs
+share one handler via `[data-request-access]` and show the same state.
 
 ## Verification
 
-Rendered at 1280×900 and 390×844 with the real fonts loaded. Checked: no horizontal
-scroll on either viewport, no console or page errors, only «Войти» visible in the
-topbar when logged out, both CTAs wired. `npm run cabinet:check` passes its landing
-assertions.
+Rendered at 390×844 as a touch device and at 1280×800, with Onest loaded. Checked:
+no horizontal scroll on either, no console or page errors beyond the two expected
+404s for the absent video files, only `bro.` and «Войти» visible in the masthead,
+both CTAs wired, and the orientation swap resolving to portrait on the phone and
+landscape on the desktop. `npm run cabinet:check` passes its landing assertions.
 
 ## Out of scope
 
-Cabinet/vault restyle, an expression sheet for the character, analytics, i18n.
+Cabinet/vault restyle (still inline-styled with the old meadow background, so
+`assets/meadow.webp` stays), the real hero footage, analytics, i18n.
 The `vercel.json` that `cabinet-check.ts` reads is missing on `main` and still is.
