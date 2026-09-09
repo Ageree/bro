@@ -63,11 +63,14 @@ inside the login sheet, and it is a square black rectangle.
 playsinline autoplay`, swapped by `@media (orientation: …)` so a phone gets the 9:16
 cut rather than the cropped-out middle of a 16:9 one.
 
-**The footage does not exist yet**, so both fall back to a plain white poster and the
-middle of the screen is empty. That is the honest state: doji's page minus the
-person. Planned footage is short scenarios of different people texting the assistant
-— a parent, a working guy, a teenager — generated in Higgsfield. **They must be shot
-against a flat light ground**, or the white page falls apart around them.
+The film is in `assets/hero-portrait.mp4` (720×1280) and `assets/hero-landscape.mp4`
+(1280×720). Six people stand in the same spot on a light-grey cyclorama, each
+chatting with bro on a phone, then the next person replaces them — same mechanic
+as doji.com. Cast and photography notes:
+`docs/superpowers/specs/2026-09-09-hero-cast.md`. Posters:
+`assets/hero-poster-portrait.png`, `assets/hero-poster-landscape.png`.
+**They are shot against a flat light ground**, or the white page falls apart
+around them.
 
 A sound toggle sits bottom-right, as on doji, but stays hidden until a video actually
 reaches `readyState >= 2`. A visible control with nothing to unmute is worse than no
@@ -111,13 +114,13 @@ share one handler via `[data-request-access]` and show the same state.
 ## Verification
 
 Rendered at 390×844 as a touch device and at 1280×800 with Prata and Onest loaded.
-Checked: no horizontal scroll on either, no console or page errors beyond the two
-expected 404s for the absent video files, only `bro.` and «Войти» in the masthead,
-both CTAs wired, and the orientation swap resolving to portrait on the phone and
-landscape on the desktop. `npm run cabinet:check` passes its landing assertions.
+Checked: no horizontal scroll on either, no console or page errors, only `bro.`
+and «Войти» in the masthead, both CTAs wired, and the orientation swap resolving
+to portrait on the phone and landscape on the desktop. Hero films now sit on
+those paths. `npm run cabinet:check` passes its landing assertions.
 
 ## Out of scope
 
 Cabinet/vault restyle — they still carry inline styles and the old meadow
-background, so `assets/meadow.webp` stays. Also the real hero footage, analytics, i18n.
+background, so `assets/meadow.webp` stays. Also analytics and i18n.
 The `vercel.json` that `cabinet-check.ts` reads is missing on `main` and still is.

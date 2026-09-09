@@ -68,8 +68,8 @@
 
   <section class="stage">
     <!-- Two cuts of the same film, shot against white. Phones get the 9:16 one
-         instead of the cropped-out middle of a widescreen frame. Until the
-         footage lands both fall back to a plain white poster. -->
+         instead of the cropped-out middle of a widescreen frame. Six people
+         chat with bro, then replace each other — same mechanic as doji.com. -->
     <video class="stage__video stage__video--portrait" poster="/assets/hero-poster-portrait.png"
            playsinline muted loop autoplay preload="metadata" aria-hidden="true">
       <source src="/assets/hero-portrait.mp4" type="video/mp4" />
@@ -121,9 +121,8 @@
   <script src="assets/config.js"></script>
   <script src="assets/auth.js"></script>
   <script>
-    /* The sound toggle only appears once a film is actually playing — with no
-       footage in the build there is nothing to unmute, and a dead control is
-       worse than none. */
+    /* The sound toggle only appears once a film is actually playing — a
+       visible control with nothing to unmute is worse than none. */
     (function () {
       var btn = document.querySelector("#sound");
       var videos = [].slice.call(document.querySelectorAll(".stage__video"));
