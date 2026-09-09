@@ -52,10 +52,10 @@ token — but the Cyrillic problem would remain, so it would need a Cyrillic cut
 | `--font-display` | Prata | wordmark, nav, CTA, headings |
 | `--font-text` | Onest | fine print and legal prose |
 | `--pad` | `clamp(1.15rem, 4vw, 2rem)` | the one spacing unit |
-| `--container` / `--measure` | `42rem` / `62ch` | narrow by design |
 
-No radius token, because nothing on the page is rounded. The only remaining button
-is inside the login sheet, and it is a square black rectangle.
+No radius token, because nothing on the page is rounded. No container or measure
+tokens either, now that the page has no prose to set. The only remaining button is
+inside the login sheet, and it is a square black rectangle.
 
 ## The stage
 
@@ -82,18 +82,24 @@ typography.
 
 ## Page
 
-1. **Stage** — the film. `bro.` centred, «Войти» right, «Получить своего бро» large
-   at the bottom.
-2. **Тариф** — the offer as a plain list on hairline rules.
-3. **Что вы оплачиваете и как** — kept verbatim.
-4. **Footer** — legal details, unchanged.
+One screen. Nothing scrolls, the way doji's home does not scroll.
 
-doji's home does not scroll — it is `fixed inset-0` and nothing else. bro's cannot
-copy that: the YooKassa offer text, refund terms and sole-trader details have to stay
-reachable, so the stage is `100svh` and the required sections follow underneath.
+- **Masthead** — «Оферта» left, `bro.` centred, «Войти» right. The same three slots
+  doji gives to Manifesto / Doji / Careers.
+- **The film** fills the screen.
+- **«Получить своего бро»** large at the bottom, with one line of fine print under it.
+- **Sound toggle** bottom right, hidden until footage loads.
 
-Manifesto, Careers and Socials have no counterpart here and are dropped. «Войти»
-stays because the cabinet and vault are real surfaces behind it.
+The pricing table, the payment prose and the footer with the sole-trader details were
+all removed at the founder's request. **The legal content itself is not lost:**
+`oferta.html` already carries the ИП name, ИНН, ОГРНИП, the contact address, the
+refund terms, the YooKassa payment flow and the 152-ФЗ personal-data clause. It stays
+published and is now reached from the masthead link instead of a footer.
+
+That link is the reason the page keeps one non-design element. A payment provider
+needs the offer reachable from the site; a single word in the corner satisfies that
+without a wall of text under the film. If it goes too, nothing on the site states the
+terms a customer is paying under.
 
 ## Contracts preserved
 
