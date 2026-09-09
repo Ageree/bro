@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>bro — твой личный ИИ-агент</title>
   <meta name="description" content="bro — персональный ИИ-агент со своим номером, памятью и руками в интернете. Записать к врачу, забронировать, заказать — просто напиши ему." />
-  <meta name="theme-color" content="#ebebeb" />
+  <meta name="theme-color" content="#ffffff" />
   <link rel="icon" href="/assets/bro-mark.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="/assets/bro-logo.png" />
   <meta property="og:type" content="website" />
@@ -15,29 +15,24 @@
   <meta name="twitter:card" content="summary_large_image" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Prata&family=Onest:wght@400;500&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/assets/brand.css" />
   <style>
-    /* ---- plans: a plain list, no boxes ---- */
-    .plan { border-top: 1px solid var(--ink); padding-top: 1.1rem; }
-    .plan .price { font-size: clamp(2.2rem, 9vw, 3.2rem); font-weight: 500; letter-spacing: -0.045em; line-height: 1; }
-    .plan .price small { font-size: 1rem; font-weight: 400; letter-spacing: -0.01em; color: var(--ink-mute); }
-    .plan ul { list-style: none; margin-top: 1.1rem; display: flex; flex-direction: column; }
-    .plan li { padding: 0.55rem 0; border-bottom: 1px solid var(--line); font-size: 0.95rem; }
+    /* ---- the offer, set as a plain list ---- */
+    .plan { border-top: 1px solid var(--ink); padding-top: 1.2rem; margin-top: 1.6rem; }
+    .plan .price { font-family: var(--font-display); font-size: clamp(2.4rem, 10vw, 3.4rem); line-height: 1; }
+    .plan .price small { font-family: var(--font-text); font-size: 0.95rem; color: var(--ink-mute); }
+    .plan ul { list-style: none; margin-top: 1.2rem; }
+    .plan li { padding: 0.6rem 0; border-bottom: 1px solid var(--line); font-size: 0.95rem; }
     .plan li:last-child { border-bottom: 0; }
+    .cta-row { margin-top: 2.4rem; text-align: center; }
 
-    .head { margin-bottom: 1.5rem; }
-    .head .t-label { display: block; margin-bottom: 0.7rem; }
-
-    .section--pay .t-small { color: var(--ink-mute); }
-    .cta-row { margin-top: 2rem; display: flex; justify-content: center; }
-
-    /* ---- login sheet: square, hairline, no chrome ---- */
+    /* ---- login sheet ---- */
     .modal {
       position: fixed;
       inset: 0;
       z-index: 20;
-      background: rgba(0, 0, 0, 0.45);
+      background: rgba(0, 0, 0, 0.4);
       display: flex;
       align-items: center;
       justify-content: center;
@@ -47,10 +42,10 @@
     .sheet {
       width: min(23rem, 100%);
       background: var(--paper);
-      padding: 1.6rem 1.4rem 1.2rem;
+      padding: 1.7rem 1.5rem 1.3rem;
       text-align: left;
     }
-    .sheet h2 { font-size: 1.1rem; font-weight: 500; letter-spacing: -0.03em; margin-bottom: 0.5rem; }
+    .sheet h2 { font-family: var(--font-display); font-size: 1.3rem; margin-bottom: 0.6rem; }
     .sheet label { display: block; font-size: 0.8rem; color: var(--ink-mute); margin: 0.9rem 0 0.35rem; }
     .sheet input {
       width: 100%;
@@ -66,7 +61,7 @@
     .sheet .text-close {
       display: block;
       width: 100%;
-      margin-top: 0.8rem;
+      margin-top: 0.85rem;
       background: none;
       border: 0;
       color: var(--ink-mute);
@@ -79,11 +74,11 @@
 
     footer {
       border-top: 1px solid var(--line);
-      padding: 2.2rem var(--pad) 2.8rem;
+      padding: 2.4rem var(--pad) 3rem;
       text-align: center;
-      font-size: 0.82rem;
+      font-size: 0.8rem;
       color: var(--ink-mute);
-      line-height: 1.8;
+      line-height: 1.9;
     }
     footer a { color: var(--ink); }
   </style>
@@ -91,9 +86,9 @@
 <body>
 
   <section class="stage">
-    <!-- Two cuts of the same film. Phones get the 9:16 one instead of the
-         cropped-out middle of a widescreen frame. Until the footage lands,
-         both fall back to the poster. -->
+    <!-- Two cuts of the same film, shot against white. Phones get the 9:16 one
+         instead of the cropped-out middle of a widescreen frame. Until the
+         footage lands both fall back to a plain white poster. -->
     <video class="stage__video stage__video--portrait" poster="/assets/hero-poster-portrait.png"
            playsinline muted loop autoplay preload="metadata" aria-hidden="true">
       <source src="/assets/hero-portrait.mp4" type="video/mp4" />
@@ -105,28 +100,32 @@
 
     <header class="stage__bar">
       <div></div>
-      <a class="lockup t-wordmark" href="/">bro.</a>
+      <a class="link t-wordmark" href="/">bro.</a>
       <div>
-        <a class="btn btn--quiet" id="cabinet-open" href="/cabinet.html" hidden>Кабинет</a>
-        <a class="btn btn--quiet" id="vault-open" href="/vault.html" hidden>Сейф</a>
-        <button class="btn btn--quiet" id="logout" type="button" hidden>Выйти</button>
-        <button class="btn btn--quiet" id="login-open" type="button">Войти</button>
+        <a class="link t-nav" id="cabinet-open" href="/cabinet.html" hidden>Кабинет</a>
+        <a class="link t-nav" id="vault-open" href="/vault.html" hidden>Сейф</a>
+        <button class="link t-nav" id="logout" type="button" style="background:none;border:0;cursor:pointer" hidden>Выйти</button>
+        <button class="link t-nav" id="login-open" type="button" style="background:none;border:0;cursor:pointer">Войти</button>
       </div>
     </header>
 
     <div class="stage__foot">
-      <a class="btn" id="request-access" data-request-access href="#">Получить своего бро</a>
-      <p class="stage__note">iMessage и Telegram · приложение ставить не нужно</p>
+      <div>
+        <a class="link t-cta" id="request-access" data-request-access href="#">Получить своего бро</a>
+        <p class="stage__note">iMessage и Telegram · приложение ставить не нужно</p>
+      </div>
     </div>
+
+    <button class="stage__sound" id="sound" type="button" aria-label="Включить звук" hidden>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4zm12.5 3a4.5 4.5 0 0 0-2.5-4v8a4.5 4.5 0 0 0 2.5-4z"/></svg>
+    </button>
   </section>
 
   <main>
     <section class="section" id="pricing">
       <div class="wrap">
-        <div class="head">
-          <span class="t-label">Тариф</span>
-          <h2 class="t-h2">Один тариф, без сюрпризов</h2>
-        </div>
+        <span class="t-label">Тариф</span>
+        <h2 class="t-h2" style="margin-top:0.6rem">Один тариф, без сюрпризов</h2>
         <div class="plan">
           <p class="price">2000 ₽<small> / месяц</small></p>
           <ul>
@@ -136,30 +135,28 @@
             <li>сторожа: почта, календарь, цены</li>
           </ul>
         </div>
-        <p class="t-small t-mute" style="margin-top: 1.4rem">
+        <p class="t-small t-mute" style="margin-top:1.5rem">
           Перед оплатой можно попробовать бесплатно: 30 сообщений в день и 5 браузер-задач в месяц.
           Подписка оформляется на 30 дней и не продлевается автоматически.
           Если сервис не заработал, напишите нам — вернём деньги.
         </p>
         <div class="cta-row">
-          <a class="btn" data-request-access href="#">Получить своего бро</a>
+          <a class="link t-cta" data-request-access href="#">Получить своего бро</a>
         </div>
       </div>
     </section>
 
-    <section class="section section--pay" id="how-to-pay">
+    <section class="section" id="how-to-pay">
       <div class="wrap prose">
-        <div class="head">
-          <span class="t-label">Оплата</span>
-          <h2 class="t-h2">Что вы оплачиваете и как</h2>
-        </div>
-        <p class="t-small">
+        <span class="t-label">Оплата</span>
+        <h2 class="t-h2" style="margin:0.6rem 0 1.2rem">Что вы оплачиваете и как</h2>
+        <p class="t-small t-mute">
           bro — это персональный ИИ-ассистент, который работает в переписке iMessage со своим номером
           (и тем же агентом в Telegram, если подключить его из чата):
           отвечает на вопросы, выполняет поручения в интернете (поиск, брони, заказы), ставит напоминания
           и присылает утренние сводки. Оплачивается одна услуга — подписка «Полный доступ» на 30 дней.
         </p>
-        <p class="t-small">
+        <p class="t-small t-mute">
           Покупка происходит не на сайте, поэтому корзины здесь нет: когда вы решаете оформить подписку,
           ассистент отправляет вам в iMessage персональную ссылку на оплату через ЮKassa.
           После оплаты доступ включается автоматически в течение пары минут, а кассовый чек приходит на почту.
@@ -195,6 +192,29 @@
 
   <script src="assets/config.js"></script>
   <script src="assets/auth.js"></script>
+  <script>
+    /* The sound toggle only appears once a film is actually playing — with no
+       footage in the build there is nothing to unmute, and a dead control is
+       worse than none. */
+    (function () {
+      var btn = document.querySelector("#sound");
+      var videos = [].slice.call(document.querySelectorAll(".stage__video"));
+      if (!btn || !videos.length) return;
+
+      function shown() { return videos.some(function (v) { return v.readyState >= 2; }); }
+      function reveal() { if (shown()) btn.hidden = false; }
+
+      videos.forEach(function (v) { v.addEventListener("loadeddata", reveal); });
+      reveal();
+
+      btn.addEventListener("click", function () {
+        var muting = !videos[0].muted;
+        videos.forEach(function (v) { v.muted = muting; });
+        btn.setAttribute("aria-label", muting ? "Включить звук" : "Выключить звук");
+        btn.style.opacity = muting ? "" : "0.45";
+      });
+    })();
+  </script>
   <script>
     (function () {
       var KEY = "bro.handle";
