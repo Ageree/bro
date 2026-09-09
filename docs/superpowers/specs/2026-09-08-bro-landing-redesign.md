@@ -87,7 +87,7 @@ One screen. Nothing scrolls, the way doji's home does not scroll.
 - **Masthead** — «Оферта» left, `bro.` centred, «Войти» right. The same three slots
   doji gives to Manifesto / Doji / Careers.
 - **The film** fills the screen.
-- **«Получить своего бро»** large at the bottom, with one line of fine print under it.
+- **«Получить своего бро»** large at the bottom, alone — no strapline under it.
 - **Sound toggle** bottom right, hidden until footage loads.
 
 The pricing table, the payment prose and the footer with the sole-trader details were

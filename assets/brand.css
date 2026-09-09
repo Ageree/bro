@@ -142,11 +142,6 @@ body {
   padding: var(--pad);
   text-align: center;
 }
-.stage__note {
-  margin-top: 0.5rem;
-  font-size: 0.8rem;
-  color: var(--ink-mute);
-}
 /* sound toggle, bottom right — revealed only once footage actually loads */
 .stage__sound {
   position: absolute;
