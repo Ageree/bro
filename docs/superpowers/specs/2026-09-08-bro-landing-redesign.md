@@ -64,7 +64,7 @@ playsinline autoplay`, swapped by `@media (orientation: …)` so a phone gets th
 cut rather than the cropped-out middle of a 16:9 one.
 
 The film is in `assets/hero-portrait.mp4` (720×1280) and `assets/hero-landscape.mp4`
-(1280×720). Six people stand in the same spot on a light-grey cyclorama, each
+(1280×720). Nine people stand in the same spot on a white cyclorama, each
 chatting with bro on a phone, then the next person replaces them — same mechanic
 as doji.com. Cast and photography notes:
 `docs/superpowers/specs/2026-09-09-hero-cast.md`. Posters:
