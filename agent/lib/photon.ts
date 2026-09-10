@@ -96,11 +96,11 @@ async function withSpectrum<T>(fn: (im: SpectrumIm, app: SpectrumApp) => Promise
     projectId: id,
     projectSecret: secret,
     providers: [imessage.config()],
-  }) as SpectrumApp;
+  });
   try {
-    return await fn(imessage(app) as SpectrumIm, app);
+    return await fn(imessage(app) as unknown as SpectrumIm, app);
   } finally {
-    await app.stop?.().catch(() => undefined);
+    await (app as SpectrumApp).stop?.().catch(() => undefined);
   }
 }
 

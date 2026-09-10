@@ -300,8 +300,7 @@ export default defineChannel({
       }
 
       const knownOwnerPhone =
-        boundTenant.phoneE164 === inbound.senderPhone &&
-        boundTenant.status !== "disabled"
+        boundTenant.phoneE164 === inbound.senderPhone
           ? boundTenant.phoneE164
           : undefined;
       const earlyGateP = knownOwnerPhone && preview
@@ -380,7 +379,7 @@ export default defineChannel({
             attributes: {
               conversationId: inbound.spaceId,
               inkboxHandle: boundTenant.inkboxHandle ?? agentHandle(),
-              messageId: inbound.messageId,
+              ...(inbound.messageId ? { messageId: inbound.messageId } : {}),
               origin: "human",
               ...shortAckAttribute(inbound.text),
             },

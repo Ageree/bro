@@ -76,7 +76,7 @@ const enableOnly = existingIdentityUpdateOptions({
 });
 assert(enableOnly?.imessageEnabled === false, "existing turns iMessage off");
 assert(
-  enableOnly?.claimIMessageNumber === undefined,
+  !enableOnly || !("claimIMessageNumber" in enableOnly),
   "existing shared does not claim",
 );
 
@@ -87,7 +87,10 @@ const claimExisting = existingIdentityUpdateOptions({
   handle: "bro-a1b2c3d4",
 });
 assert(claimExisting?.imessageEnabled === false, "existing claims become mail-only");
-assert(claimExisting?.claimIMessageNumber === undefined, "never claim a chat line");
+assert(
+  !claimExisting || !("claimIMessageNumber" in claimExisting),
+  "never claim a chat line",
+);
 
 const alreadyAttached = existingIdentityUpdateOptions({
   dedicatedLine: true,
