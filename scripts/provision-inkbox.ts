@@ -57,7 +57,5 @@ if (line) {
   console.log("dedicated iMessage line", line.number, line.status ?? "");
 }
 
-const router = await inkbox.imessages.getTriageNumber();
-console.log("iMessage router", router.number);
-console.log("connect command", router.connectCommand);
-console.log("Tell the human: text that command (blue iMessage, Wi-Fi). Send as SMS = off.");
+console.log("Inkbox identity is mail-only. iMessage chat is Photon Spectrum.");
+console.log("Do not text connect @handle. Open the landing and write the Photon number.");

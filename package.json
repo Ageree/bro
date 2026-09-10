@@ -52,6 +52,8 @@
     "voice:check": "node --experimental-strip-types scripts/voice-check.ts",
     "worker:check": "node --experimental-strip-types scripts/worker-check.ts",
     "wakeups:check": "node --experimental-strip-types scripts/wakeups-check.ts",
+    "photon:check": "node --experimental-strip-types scripts/photon-check.ts",
+    "photon:webhooks": "node --env-file=.env.local --experimental-strip-types scripts/setup-photon-webhook.ts",
     "provision:inkbox": "node --experimental-strip-types scripts/provision-inkbox.ts",
     "computer:check": "node --experimental-strip-types scripts/computer-check.ts",
     "computer:spike": "node --env-file=.env.local --experimental-strip-types scripts/computer-spike.ts",
@@ -74,6 +76,7 @@
     "convex": "^1.45.0",
     "convex-helpers": "^0.1.123",
     "eve": "^0.47.6",
+    "spectrum-ts": "^12.8.0",
     "zod": "4.4.3"
   },
   "devDependencies": {

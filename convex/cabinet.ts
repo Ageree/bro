@@ -199,7 +199,7 @@ export const beginLogin = internalMutation({
     return {
       ok: true as const,
       identityId: tenant.inkboxIdentityId!,
-      conversationId: tenant.inkboxConversationId!,
+      conversationId: tenant.photonConversationId || tenant.inkboxConversationId!,
       handle,
     };
   },
@@ -270,26 +270,23 @@ export const sendLoginCode = internalAction({
   },
   returns: v.null(),
   handler: async (_ctx, { identityId, conversationId, code }) => {
-    const q = new URLSearchParams({ agent_identity_id: identityId });
-    const res = await fetch(
-      `https://inkbox.ai/api/v1/imessage/messages?${q}`,
-      {
-        method: "POST",
-        headers: {
-          "X-API-Key": apiKey(),
-          Accept: "application/json",
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          conversation_id: conversationId,
-          text: `Код входа в кабинет bro: ${code}`,
-        }),
-        signal: AbortSignal.timeout(20_000),
-      },
-    );
+    void identityId;
+    const eve = (process.env.EVE_URL ?? "").replace(/\/$/, "");
+    const secret = process.env.BRO_INTERNAL_SECRET ?? "";
+    if (!eve || !secret) throw new Error("EVE_URL or BRO_INTERNAL_SECRET missing");
+    const res = await fetch(`${eve}/internal/photon-send`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        secret,
+        conversationId,
+        text: `Код входа в кабинет bro: ${code}`,
+      }),
+      signal: AbortSignal.timeout(20_000),
+    });
     if (!res.ok) {
       const text = await res.text();
-      throw new Error(`inkbox send ${res.status}: ${text.slice(0, 200)}`);
+      throw new Error(`photon send ${res.status}: ${text.slice(0, 200)}`);
     }
     return null;
   },

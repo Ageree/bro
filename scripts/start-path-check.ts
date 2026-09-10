@@ -207,25 +207,18 @@ const turnDelivery = readFileSync(
   "utf8",
 );
 assert(imessage.includes("canSkipInboundBind"), "returning users skip no-op bind");
-assert(imessage.includes("prefetchInboundImages"), "photos download during bind/count");
-assert(imessage.includes("voiceP"), "voice STT overlaps bind/count");
-assert(imessage.includes("flaggedGroup"), "flagged groups skip the extra Convex lookup");
-assert(imessage.includes("boundOneToOne"), "bound 1:1 skips getGroupByConversation");
-assert(imessage.includes("imageUrlParts"), "photos do not tail-wait after bind");
+assert(imessage.includes("/webhooks/photon"), "Photon webhook is the chat path");
+assert(imessage.includes("bindPhotonInbound"), "Photon inbound binds the space");
+assert(imessage.includes("boundOneToOne"), "bound 1:1 skips bindPhotonInbound");
 assert(imessage.includes("getTenantByHandle"), "HMAC still loads the handle tenant");
 assert(imessage.includes("loadWakeContext"), "1:1 billing prefetches wake context");
 assert(imessage.includes("prefetchInstinctRecall"), "1:1 billing prefetches Instinct searches");
 assert(imessage.includes("shortAckAttribute(inbound.text)"), "1:1 inbound stamps this-turn ack");
 assert(imessage.includes("prefetchOpenRouter"), "1:1 billing warms OpenRouter");
 assert(
-  imessage.includes("instinct voice prefetch failed"),
-  "STT completion prefetches Instinct without waiting for billing",
-);
-assert(
   imessage.includes("prefetchInstinctRecall(ownerPhone, inbound.text)"),
-  "final inbound text warms Instinct after STT",
+  "final inbound text warms Instinct",
 );
-assert(imessage.includes("ackIMessageReadAndTyping"), "read+typing is one helper");
 assert(imessage.includes("imessageDeliveryEvents"), "first bubble leaves through shared events");
 assert(turnDelivery.includes("planStreamFlush"), "first bubble can leave on a streamed newline");
 assert(
@@ -238,37 +231,21 @@ assert(
   "delivered bubbles record the turn so tools can skip a second ищу",
 );
 {
-  const ackFn = imessage.slice(imessage.indexOf("function ackIMessageReadAndTyping"));
-  assert(ackFn.includes("Promise.all"), "read and typing share one identity GET");
-}
-{
-  const afterVoice = imessage.indexOf("const voiceP = inboundIMessageTextWithVoice");
-  const groupLookupAt = imessage.indexOf("getGroupByConversation(msg.conversation_id)");
-  const afterIdentity = imessage.indexOf("const identityHandle = handle");
-  const bindAt = imessage.indexOf("bindInbound(handle, remote");
-  const earlyOrAt = imessage.indexOf("prefetchOpenRouter()", afterVoice);
-  const earlyAckAt = imessage.indexOf("ackIMessageReadAndTyping(", afterIdentity);
-  const remoteWakeAt = imessage.indexOf("prefetchOneToOneStart(remote");
+  const photonAt = imessage.indexOf('POST("/webhooks/photon"');
+  const bindAt = imessage.indexOf("bindPhotonInbound(");
+  const earlyOrAt = imessage.indexOf("prefetchOpenRouter()", photonAt);
+  const remoteWakeAt = imessage.indexOf("prefetchOneToOneStart(inbound.senderPhone");
   const knownOwnerAt = imessage.indexOf("knownOwnerPhone");
   const earlyGateAt = imessage.indexOf("inboundOwnerGate(knownOwnerPhone)");
   const awaitGateAt = imessage.indexOf("await (earlyGateP ?? inboundOwnerGate(ownerPhone))");
-  assert(afterVoice > 0 && groupLookupAt > afterVoice, "group lookup stays after inbound parse");
-  assert(
-    earlyOrAt > afterVoice && earlyOrAt < groupLookupAt,
-    "OpenRouter warm starts before group lookup",
-  );
-  assert(afterIdentity > 0 && bindAt > afterIdentity, "1:1 bind stays after identity");
-  assert(earlyAckAt > afterIdentity && earlyAckAt < bindAt, "1:1 typing starts before bind");
-  assert(remoteWakeAt > 0 && remoteWakeAt < bindAt, "wake/Instinct start before bind on 1:1");
-  assert(knownOwnerAt > 0 && earlyGateAt > 0 && earlyGateAt < bindAt, "known-owner billing starts before bind");
+  assert(photonAt > 0 && bindAt > photonAt, "Photon bind is on the Photon webhook");
+  assert(earlyOrAt > photonAt && earlyOrAt < bindAt, "OpenRouter warm starts before Photon bind");
+  assert(remoteWakeAt > photonAt && remoteWakeAt < bindAt, "wake/Instinct start before Photon bind");
+  assert(knownOwnerAt > 0 && earlyGateAt > 0, "known-owner billing is prepared");
   assert(awaitGateAt > bindAt, "first-bind still bills after bind");
   assert(
-    !imessage.slice(awaitGateAt, awaitGateAt + 400).includes("ackIMessageReadAndTyping"),
-    "unbound 1:1 does not wait for billing to start typing",
-  );
-  assert(
-    imessage.includes("tenant.status !== \"disabled\""),
-    "disabled tenants do not bill before bind",
+    imessage.includes("boundTenant.status === \"disabled\""),
+    "disabled tenants do not continue after bind",
   );
 }
 
@@ -316,9 +293,11 @@ assert(cache.get("h", 1050).hit === false, "ttl cache expires at ttl");
 cache.set("h", "t", 2000);
 cache.forget("h");
 assert(cache.get("h", 2001).hit === false, "forget drops a live entry");
-const skipGroupAt = imessage.indexOf("!boundOneToOne && msg.conversation_id");
-assert(skipGroupAt > 0 && skipGroupAt < imessage.indexOf("getGroupByConversation", skipGroupAt), "bound 1:1 skips group lookup");
-assert(imessage.indexOf("if (boundOneToOne)") < imessage.indexOf("bindInbound("), "bound 1:1 skips bindInbound");
+assert(imessage.includes("boundOneToOne && known"), "bound 1:1 skips bindPhotonInbound");
+assert(
+  imessage.indexOf("canSkipInboundBind(") < imessage.indexOf("bindPhotonInbound("),
+  "bound 1:1 skip-check runs before Photon bind",
+);
 
 assert(canSkipInboundBind({ phoneE164: "+1", inkboxConversationId: "c1" }, "+1", "c1"), "bound skip");
 assert(

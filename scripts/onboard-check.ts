@@ -115,9 +115,10 @@ assert(/сейф/i.test(help), "help vault");
 assert(/ящик|письм|почт/i.test(help), "help mailbox");
 assert(/телеграм/i.test(help), "help telegram second channel");
 assert(/групп/i.test(help), "help groups");
-assert(!/добав/i.test(welcome), "welcome without number does not promise add");
-assert(/добав/i.test(welcomeJoin), "welcome with number can add to group");
-assert(/групп/i.test(helpJoin), "help with number still mentions groups");
+assert(!/добав/i.test(welcome), "welcome does not promise add");
+assert(!/добав/i.test(welcomeJoin), "welcome never promises group add on Pro");
+assert(/Business|пауз/i.test(helpJoin), "help says groups after Business");
+assert(/пауз/i.test(welcome), "welcome says groups paused");
 
 const bare = broVcard({});
 assert(bare.startsWith("BEGIN:VCARD\r\n"), "vcard begin crlf");
@@ -152,13 +153,14 @@ assert(
   "empty preview still onboards on first bind",
 );
 assert(
-  channel.includes("if (continueToAgent) parkTurn(waitUntil, onboard)"),
+  channel.includes("parkTurn(waitUntil, onboard)"),
   "first-bind welcome does not block the agent turn",
 );
 assert(channel.includes("sendHelpCatalog"), "channel sends canned help");
-assert(channel.includes("bindGroupInbound"), "channel has group bind");
-assert(channel.includes("sendGroupWelcome"), "channel has group welcome");
-assert(channel.includes("canJoinGroups"), "channel passes join flag");
+assert(channel.includes("/webhooks/photon"), "channel has Photon inbound");
+assert(channel.includes("bindPhotonInbound"), "channel binds Photon DM");
+assert(channel.includes("photonNudgeText"), "old Inkbox thread gets one nudge");
+assert(!channel.includes("bindGroupInbound"), "Photon Pro does not bind groups");
 assert(
   channel.includes("shouldSkipAgentTurn") && channel.includes("from("),
   "help/connect skip agent turn",

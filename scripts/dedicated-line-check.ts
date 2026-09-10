@@ -32,7 +32,7 @@ const sharedRest = identityCreateBody({
   displayName: "Bro",
   dedicatedLine: false,
 });
-assert(sharedRest.imessage_enabled === true, "rest always imessage");
+assert(sharedRest.imessage_enabled === false, "rest mail-only");
 assert(sharedRest.agent_handle === "bro-a1b2c3d4", "rest handle");
 assert(
   !("claim_imessage_number" in sharedRest),
@@ -44,39 +44,39 @@ const dedicatedRest = identityCreateBody({
   displayName: "Bro",
   dedicatedLine: true,
 });
-assert(dedicatedRest.claim_imessage_number === true, "rest claims");
-assert(dedicatedRest.imessage_enabled === true, "claim requires imessage");
+assert(!("claim_imessage_number" in dedicatedRest), "mail-only never claims");
+assert(dedicatedRest.imessage_enabled === false, "dedicated flag still mail-only");
 
 const sharedSdk = sdkCreateIdentityOptions(false);
-assert(sharedSdk.imessageEnabled === true, "sdk always imessage");
+assert(sharedSdk.imessageEnabled === false, "sdk mail-only");
 assert(
   !("claimIMessageNumber" in sharedSdk),
   "shared sdk omits claimIMessageNumber",
 );
 
 const dedicatedSdk = sdkCreateIdentityOptions(true);
-assert(dedicatedSdk.claimIMessageNumber === true, "sdk claims");
-assert(dedicatedSdk.imessageEnabled === true, "sdk claim requires imessage");
+assert(!("claimIMessageNumber" in dedicatedSdk), "sdk never claims a chat line");
+assert(dedicatedSdk.imessageEnabled === false, "sdk stays mail-only");
 
 assert(
   existingIdentityUpdateOptions({
     dedicatedLine: false,
-    imessageEnabled: true,
+    imessageEnabled: false,
     hasDedicatedNumber: false,
     handle: "bro-a1b2c3d4",
   }) === undefined,
-  "existing shared no-op",
+  "already mail-only no-op",
 );
 
 const enableOnly = existingIdentityUpdateOptions({
   dedicatedLine: false,
-  imessageEnabled: false,
+  imessageEnabled: true,
   hasDedicatedNumber: false,
   handle: "bro-a1b2c3d4",
 });
-assert(enableOnly?.imessageEnabled === true, "existing enable imessage");
+assert(enableOnly?.imessageEnabled === false, "existing turns iMessage off");
 assert(
-  enableOnly?.claimIMessageNumber === undefined,
+  !enableOnly || !("claimIMessageNumber" in enableOnly),
   "existing shared does not claim",
 );
 
@@ -86,19 +86,19 @@ const claimExisting = existingIdentityUpdateOptions({
   hasDedicatedNumber: false,
   handle: "bro-a1b2c3d4",
 });
-assert(claimExisting?.claimIMessageNumber === true, "existing claims");
+assert(claimExisting?.imessageEnabled === false, "existing claims become mail-only");
 assert(
-  claimExisting?.idempotencyKey === dedicatedClaimIdempotencyKey("bro-a1b2c3d4"),
-  "existing idempotency",
+  !claimExisting || !("claimIMessageNumber" in claimExisting),
+  "never claim a chat line",
 );
 
 const alreadyAttached = existingIdentityUpdateOptions({
   dedicatedLine: true,
-  imessageEnabled: true,
+  imessageEnabled: false,
   hasDedicatedNumber: true,
   handle: "bro-a1b2c3d4",
 });
-assert(alreadyAttached === undefined, "already attached no-op");
+assert(alreadyAttached === undefined, "already mail-only no-op");
 
 const claimOpts = claimNumberOptions("bro-dedicated-bro-a1b2c3d4");
 assert(claimOpts.idempotencyKey === "bro-dedicated-bro-a1b2c3d4", "claimNumber key");

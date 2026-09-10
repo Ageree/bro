@@ -44,6 +44,10 @@
 
     <div class="stage__foot">
       <a class="link t-cta" id="request-access" data-request-access href="#">Получить своего бро</a>
+      <div id="access-phone-row" hidden style="margin-top:16px;max-width:22rem">
+        <label class="t-small" for="access-phone">Номер телефона (E.164)</label>
+        <input id="access-phone" inputmode="tel" autocomplete="tel" placeholder="+79001112233" />
+      </div>
     </div>
   </section>
 
@@ -110,16 +114,26 @@
         cta.setAttribute("aria-busy", "true");
         setLabel("Создаём…");
         var handle = localStorage.getItem(KEY) || undefined;
+        var phoneEl = document.getElementById("access-phone");
+        var phone = phoneEl && phoneEl.value ? phoneEl.value.trim() : "";
+        var payload = {};
+        if (handle) payload.handle = handle;
+        if (phone) payload.phone = phone;
         fetch(base + "/access", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(handle ? { handle: handle } : {}),
+          body: JSON.stringify(payload),
         })
           .then(function (res) { return res.json(); })
           .then(function (data) {
             if (!data.ok) {
               if (data.code === "not_ios") setLabel("Открой на iPhone");
               else if (data.code === "closed") setLabel("Пока закрыто");
+              else if (data.code === "need_phone") {
+                var row = document.getElementById("access-phone-row");
+                if (row) row.hidden = false;
+                setLabel(phone ? "Проверь номер и нажми ещё раз" : "Введи номер телефона");
+              }
               else setLabel("Не вышло, нажми ещё раз");
               return;
             }

@@ -201,72 +201,10 @@ const channel = readFileSync(
   new URL("../agent/channels/imessage.ts", import.meta.url),
   "utf8",
 );
-assert(channel.includes("isGroupMessage"), "channel detects groups");
-assert(channel.includes("getGroupByConversation"), "known group overrides missing flag");
-assert(channel.includes("flaggedGroup"), "already-flagged groups skip the extra lookup");
-assert(channel.includes("bindGroupInbound"), "channel binds groups");
-assert(channel.includes("shouldReplyInGroup"), "channel mention gate");
-assert(channel.includes("sendGroupWelcome"), "channel group welcome");
-assert(
-  channel.includes("parkTurn(waitUntil, welcome)"),
-  "first-group welcome does not block a mentioned agent turn",
-);
-assert(channel.includes("tagGroupUserContent"), "channel tags group text");
-assert(channel.includes("groupAuthAttributes"), "channel group auth");
-assert(channel.includes("replyTenant"), "outbound uses group owner");
-const mentionAt = channel.indexOf("group && !shouldReplyInGroup(inbound.text)");
-const firstGate = channel.indexOf("inboundOwnerGate(ownerPhone)");
-const secondGate = channel.indexOf("inboundOwnerGate(ownerPhone)", firstGate + 1);
-assert(mentionAt !== -1 && firstGate !== -1 && secondGate !== -1, "mention and both bills");
-assert(firstGate < mentionAt, "1:1 bills before mention");
-assert(mentionAt < secondGate, "group bills after mention");
-assert(
-  channel.indexOf("groupMemoryScope(msg.conversation_id)") > mentionAt,
-  "group wake/Instinct use the group container, after the mention gate",
-);
-assert(
-  channel.indexOf("prefetchInstinctRecall(", mentionAt) > mentionAt &&
-    channel.indexOf("prefetchInstinctRecall(", mentionAt) <
-      channel.indexOf("const gate = await gateP", secondGate),
-  "group Instinct overlaps group billing",
-);
-assert(
-  channel.includes("groupTaggedText(remote, inbound.text)"),
-  "group Instinct prefetch uses the same tagged query turn.started will search",
-);
-assert(
-  channel.indexOf("prefetchOpenRouter()", mentionAt) > mentionAt &&
-    channel.indexOf("prefetchOpenRouter()", mentionAt) <
-      channel.indexOf("const gate = await gateP", secondGate),
-  "group OpenRouter warm overlaps group billing",
-);
-assert(
-  channel.includes("if (inbound.allVoiceFailed)") &&
-    channel.includes("if (group) return new Response(null, { status: 204 })"),
-  "groups skip voice-fail noise",
-);
-assert(
-  /if\s*\(\s*!group\s*\)/.test(channel) &&
-    channel.includes("sendIMessageTyping"),
-  "groups skip typing/read",
-);
-assert(channel.includes("else if (handle)"), "1:1 bind is not the group branch");
-assert(
-  channel.indexOf("bindGroupInbound") < channel.indexOf("bindInbound(handle, remote"),
-  "group bind runs before 1:1 bind",
-);
-assert(
-  channel.includes("dropped group inbound without handle"),
-  "shared-pool groups are dropped",
-);
-const groupBranch = channel.slice(
-  channel.indexOf("if (group)"),
-  channel.indexOf("} else if (handle)"),
-);
-assert(
-  groupBranch.includes("if (!allowlisted(remote))"),
-  "group speakers still pass ALLOWED_SENDERS",
-);
+assert(channel.includes("/webhooks/photon"), "Photon inbound is the chat path");
+assert(channel.includes("if (msg.is_group)"), "Inkbox groups are dropped");
+assert(!channel.includes("bindGroupInbound"), "no new Inkbox group binds");
+assert(!channel.includes("sendGroupWelcome"), "no group welcome on Pro");
 
 const bind = readFileSync(new URL("../convex/groupChats.ts", import.meta.url), "utf8");
 assert(!bind.includes("inkboxConversationId"), "group bind never touches 1:1 conv");
@@ -320,14 +258,9 @@ const createTool = readFileSync(
   new URL("../agent/tools/group_chat.ts", import.meta.url),
   "utf8",
 );
-assert(createTool.includes("sendBlueIMessageGroup"), "can open a group");
-assert(createTool.includes("dedicatedIMessageNumber"), "create needs a number");
-assert(
-  createTool.includes("parseGroupCreatePhones([phone, ...(phones ?? [])], [line])"),
-  "create keeps the owner in to",
-);
-assert(!createTool.includes("[line, phone]"), "create does not strip the owner");
-assert(createTool.includes("if (!bound.ok)"), "create checks bind result");
+assert(createTool.includes("PHOTON_GROUPS_PAUSED"), "create is refused on Pro");
+assert(createTool.includes("groupHowtoText"), "howto still explains groups");
+assert(!createTool.includes("sendBlueIMessageGroup"), "tool does not open a group");
 
 const inkbox = readFileSync(new URL("../agent/lib/inkbox.ts", import.meta.url), "utf8");
 assert(inkbox.includes("sendBlueIMessageGroup"), "inkbox group send");
@@ -338,8 +271,8 @@ assert(schema.includes("groupChats: defineTable"), "schema table");
 assert(schema.includes('index("by_conversation"'), "group conversation index");
 
 const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
-assert(readme.includes("Group chats"), "readme documents groups");
-assert(readme.includes("BRO_DEDICATED_LINE"), "readme dedicated line");
+assert(/group|групп/i.test(readme), "readme documents groups");
+assert(readme.includes("Photon"), "readme Photon chat");
 
 const jobs = readFileSync(
   new URL("../agent/instructions/jobs.ts", import.meta.url),

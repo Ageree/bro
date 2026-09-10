@@ -173,7 +173,8 @@ export async function ingestInboundMail(request: Request): Promise<MailIngest> {
       return { drop: "foreign mailbox" };
     }
     const phone = tenant.phoneE164;
-    const conversationId = tenant.inkboxConversationId;
+    const conversationId =
+      tenant.photonConversationId ?? tenant.inkboxConversationId;
     if (!phone || !conversationId) return { drop: "unbound tenant" };
     return composeWake(
       phone,

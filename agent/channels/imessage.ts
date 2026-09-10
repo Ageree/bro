@@ -3,23 +3,20 @@ import type { IMessageWebhookPayload } from "@inkbox/sdk";
 import {
   agentHandle,
   allowlisted,
-  inkboxIdentity,
   isAccessHandle,
   isBlueIMessage,
   sendBlueIMessage,
-  sendBlueIMessageMedia,
   webhookOk,
 } from "../lib/inkbox";
 import {
-  bindGroupInbound,
-  bindInbound,
+  bindPhotonInbound,
   countInboundMessage,
-  getGroupByConversation,
   getTenant,
+  getTenantByConversation,
   getTenantByHandle,
   loadWakeContext,
-  markGroupGreeted,
   markPaywallSent,
+  markPhotonNudgeSent,
   mintTelegramBind,
   touchLastChannel,
   upsertTenant,
@@ -28,7 +25,6 @@ import { prefetchInstinctRecall } from "../lib/instinct-recall.ts";
 import { prefetchOpenRouter } from "../lib/openrouter-warm.ts";
 import { shortAckAttribute } from "../lib/short-ack.ts";
 import {
-  broVcard,
   helpText,
   isHelpAsk,
   isTelegramAsk,
@@ -40,24 +36,14 @@ import {
   connectCardHtml,
   isConnectDest,
 } from "../lib/connect-link";
-import {
-  inboundIMessageText,
-  inboundIMessageTextWithVoice,
-  type InboundWithVoice,
-} from "../lib/imessage-text";
+import { inboundIMessageText } from "../lib/imessage-text";
 import { parkTurn } from "../lib/channel-turn.ts";
 import { jobCheckWakePrompt } from "../lib/job-wake.ts";
 import { imessageDeliveryEvents } from "../lib/turn-delivery-events.ts";
 import { telegramBindLink } from "../../convex/lib/telegramPolicy.ts";
 import { telegramBotUsername } from "../lib/telegram";
-import { transcribeVoiceNote } from "../lib/voice";
-import {
-  assembleInboundContent,
-  imageUrlParts,
-  prefetchInboundImages,
-} from "../lib/inbound-image.ts";
+import { assembleInboundContent } from "../lib/inbound-image.ts";
 import { canSkipInboundBind } from "../lib/inbound-bind.ts";
-import { VOICE_FAILED_REPLY } from "../lib/voice-policy";
 import { watcherWakeupPrompt } from "../lib/purchase-policy";
 import { wakeupCarriesRunId } from "../../convex/lib/browserFollowPolicy.ts";
 import {
@@ -69,80 +55,38 @@ import { inboundGateFromResult } from "../../convex/lib/billingPolicy";
 import { eventPrompt } from "../../convex/lib/watcherPolicy.ts";
 import { syncTenantArchive } from "../lib/archive-sync.ts";
 import {
-  groupAuthAttributes,
-  groupMemoryScope,
-  groupParticipantPhones,
-  groupSenderPhone,
-  groupTaggedText,
-  groupWelcomeText,
-  isGroupMessage,
-  shouldReplyInGroup,
-  tagGroupUserContent,
-} from "../../convex/lib/groupChatPolicy.ts";
+  photonWebhookOk,
+  readPhotonInbound,
+  sendPhotonText,
+} from "../lib/photon.ts";
+import {
+  isBluePhotonService,
+  photonNudgeText,
+  refuseSmsText,
+  shouldNudgeInkboxThread,
+} from "../../convex/lib/photonPolicy.ts";
 
 // ponytail: in-memory only — lost on restart, not shared across instances
 const wakeupDelivered = new Map<string, number>();
 
 async function sendFirstBindOnboard(opts: {
   conversationId: string;
-  handle: string;
-  email?: string;
-  tel?: string;
 }): Promise<void> {
   try {
-    const identity = await inkboxIdentity(opts.handle);
-    const upload = await identity.uploadIMessageMedia({
-      content: new TextEncoder().encode(
-        broVcard({ email: opts.email, tel: opts.tel }),
-      ),
-      filename: "Bro.vcf",
-      contentType: "text/vcard",
-    });
-    await sendBlueIMessageMedia({
+    await sendPhotonText({
       conversationId: opts.conversationId,
-      mediaUrls: [upload.mediaUrl],
-      handle: opts.handle,
-    });
-  } catch (err) {
-    console.error("onboard vcard failed", err);
-  }
-  try {
-    await sendBlueIMessage({
-      conversationId: opts.conversationId,
-      text: welcomeText({ canJoinGroups: Boolean(opts.tel) }),
-      handle: opts.handle,
+      text: welcomeText(),
     });
   } catch (err) {
     console.error("onboard welcome failed", err);
   }
 }
 
-async function sendGroupWelcome(opts: {
-  conversationId: string;
-  handle: string;
-}): Promise<void> {
+async function sendHelpCatalog(opts: { conversationId: string }): Promise<void> {
   try {
-    await sendBlueIMessage({
+    await sendPhotonText({
       conversationId: opts.conversationId,
-      text: groupWelcomeText(),
-      handle: opts.handle,
-    });
-    await markGroupGreeted(opts.conversationId);
-  } catch (err) {
-    console.error("group welcome failed", err);
-  }
-}
-
-async function sendHelpCatalog(opts: {
-  conversationId: string;
-  handle: string;
-  canJoinGroups?: boolean;
-}): Promise<void> {
-  try {
-    await sendBlueIMessage({
-      conversationId: opts.conversationId,
-      text: helpText({ canJoinGroups: opts.canJoinGroups }),
-      handle: opts.handle,
+      text: helpText(),
     });
   } catch (err) {
     console.error("help catalog failed", err);
@@ -151,24 +95,21 @@ async function sendHelpCatalog(opts: {
 
 async function sendTelegramInvite(opts: {
   conversationId: string;
-  handle: string;
   phone: string;
 }): Promise<void> {
   const bot = telegramBotUsername();
   if (!bot) {
-    await sendBlueIMessage({
+    await sendPhotonText({
       conversationId: opts.conversationId,
       text: "Telegram у Bro ещё не включён.",
-      handle: opts.handle,
     });
     return;
   }
   const minted = await mintTelegramBind(opts.phone);
   if (!minted.ok) {
-    await sendBlueIMessage({
+    await sendPhotonText({
       conversationId: opts.conversationId,
       text: "Сначала напиши Bro в этот чат как обычно, потом «телеграм».",
-      handle: opts.handle,
     });
     return;
   }
@@ -176,44 +117,19 @@ async function sendTelegramInvite(opts: {
   const text = minted.alreadyLinked
     ? `Чтобы переподключить Telegram, открой:\n${url}`
     : `Открой Telegram — тот же Bro, почта и поручения общие:\n${url}`;
-  await sendBlueIMessage({
+  await sendPhotonText({
     conversationId: opts.conversationId,
     text,
-    handle: opts.handle,
   });
 }
 
-function prefetchOneToOneStart(
-  phone: string,
-  preview: string,
-  voiceP: Promise<InboundWithVoice>,
-): void {
+function prefetchOneToOneStart(phone: string, preview: string): void {
   if (!phone.trim() || !preview) return;
   void loadWakeContext(phone).catch((err) =>
     console.error("wake prefetch failed", err),
   );
   prefetchInstinctRecall(phone, preview);
-  void voiceP
-    .then((got) => {
-      if (got.text) prefetchInstinctRecall(phone, got.text);
-    })
-    .catch((err) => console.error("instinct voice prefetch failed", err));
   prefetchOpenRouter();
-}
-
-async function ackIMessageReadAndTyping(
-  conversationId: string,
-  handle: string,
-): Promise<void> {
-  try {
-    const identity = await inkboxIdentity(handle);
-    await Promise.all([
-      identity.markIMessageConversationRead(conversationId),
-      identity.sendIMessageTyping(conversationId),
-    ]);
-  } catch (err) {
-    console.error("imessage ack failed", err);
-  }
 }
 
 async function inboundOwnerGate(ownerPhone: string): Promise<{
@@ -249,10 +165,9 @@ async function sendQuotaPaywall(opts: {
     ? `Лимит на сегодня исчерпан 🙈 Полный доступ — 2000 ₽/мес: ${opts.payUrl}`
     : "Лимит на сегодня исчерпан 🙈 Полный доступ — 2000 ₽/мес: напиши @оператору";
   try {
-    await sendBlueIMessage({
+    await sendPhotonText({
       conversationId: opts.conversationId,
       text: line,
-      handle: opts.handle,
     });
   } catch (err) {
     console.error("paywall send failed", err);
@@ -289,7 +204,191 @@ export default defineChannel({
         },
       });
     }),
-    POST("/webhooks/imessage", async (request, { from, waitUntil }) => {
+    POST("/internal/photon-send", async (request) => {
+      let body: { secret?: unknown; conversationId?: unknown; text?: unknown };
+      try {
+        body = (await request.json()) as typeof body;
+      } catch {
+        return new Response("bad json", { status: 400 });
+      }
+      const expected = process.env.BRO_INTERNAL_SECRET;
+      if (!expected || body.secret !== expected) {
+        return new Response("unauthorized", { status: 401 });
+      }
+      const conversationId =
+        typeof body.conversationId === "string" ? body.conversationId.trim() : "";
+      const text = typeof body.text === "string" ? body.text.trim() : "";
+      if (!conversationId || !text) {
+        return new Response("conversationId and text required", { status: 400 });
+      }
+      await sendPhotonText({ conversationId, text });
+      return Response.json({ ok: true });
+    }),
+    POST("/webhooks/photon", async (request, { from, waitUntil }) => {
+      const secret = process.env.SPECTRUM_WEBHOOK_SECRET?.trim();
+      if (!secret) {
+        return new Response("missing SPECTRUM_WEBHOOK_SECRET", { status: 500 });
+      }
+      const payload = Buffer.from(await request.arrayBuffer());
+      if (!photonWebhookOk(payload, request.headers, secret)) {
+        return new Response("unauthorized", { status: 401 });
+      }
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(payload.toString()) as unknown;
+      } catch {
+        return new Response("bad json", { status: 400 });
+      }
+      const inbound = readPhotonInbound(parsed);
+      if (!inbound || inbound.isEcho) return new Response(null, { status: 204 });
+      if (!isBluePhotonService({ service: inbound.service })) {
+        try {
+          await sendPhotonText({
+            conversationId: inbound.spaceId,
+            text: refuseSmsText(),
+          });
+        } catch (err) {
+          console.error("[photon] refuse sms failed", err);
+        }
+        return new Response(null, { status: 204 });
+      }
+
+      const preview = inbound.text;
+      prefetchOpenRouter();
+      if (inbound.senderPhone && preview) {
+        prefetchOneToOneStart(inbound.senderPhone, preview);
+      }
+
+      const known = await getTenant(inbound.senderPhone).catch(() => null);
+      if (!known && !allowlisted(inbound.senderPhone)) {
+        return new Response(null, { status: 204 });
+      }
+      if (!known && allowlisted(inbound.senderPhone)) {
+        try {
+          await upsertTenant(inbound.senderPhone);
+        } catch (err) {
+          console.error("photon tenant upsert failed", err);
+        }
+      }
+
+      const boundOneToOne = canSkipInboundBind(
+        known,
+        inbound.senderPhone,
+        inbound.spaceId,
+      );
+      const bound = boundOneToOne && known
+        ? { ok: true as const, tenant: known, firstBind: false }
+        : await bindPhotonInbound({
+            phoneE164: inbound.senderPhone,
+            photonConversationId: inbound.spaceId,
+            photonUserId: inbound.userId,
+            photonAssignedNumber: inbound.assignedPhoneNumber,
+          }).catch((err) => {
+            console.error("bind photon inbound failed", err);
+            return { ok: false as const, reason: "error" };
+          });
+      if (!bound.ok) {
+        console.error("dropped photon inbound", bound.reason, inbound.senderPhone);
+        return new Response(null, { status: 204 });
+      }
+
+      const firstBind = bound.firstBind;
+      const boundTenant = bound.tenant;
+      const ownerPhone = bound.tenant.phoneE164 ?? inbound.senderPhone;
+      if (boundTenant.status === "disabled") {
+        return new Response(null, { status: 204 });
+      }
+
+      const knownOwnerPhone =
+        boundTenant.phoneE164 === inbound.senderPhone
+          ? boundTenant.phoneE164
+          : undefined;
+      const earlyGateP = knownOwnerPhone && preview
+        ? inboundOwnerGate(knownOwnerPhone)
+        : undefined;
+
+      if (!preview) {
+        if (firstBind) {
+          await sendFirstBindOnboard({ conversationId: inbound.spaceId });
+        }
+        return new Response(null, { status: 204 });
+      }
+
+      prefetchOneToOneStart(ownerPhone, preview);
+      const gate = await (earlyGateP ?? inboundOwnerGate(ownerPhone));
+      if (gate.decision === "drop") {
+        return new Response(null, { status: 204 });
+      }
+      if (gate.decision === "paywall") {
+        if (firstBind) {
+          await sendFirstBindOnboard({ conversationId: inbound.spaceId });
+        }
+        await sendQuotaPaywall({
+          conversationId: inbound.spaceId,
+          handle: boundTenant.inkboxHandle ?? agentHandle(),
+          payUrl: gate.payUrl,
+        });
+        return new Response(null, { status: 204 });
+      }
+
+      if (firstBind) {
+        const onboard = sendFirstBindOnboard({ conversationId: inbound.spaceId });
+        if (shouldSkipAgentTurn({ firstBind, text: inbound.text })) {
+          await onboard;
+        } else {
+          parkTurn(waitUntil, onboard);
+        }
+      }
+      if (isHelpAsk(inbound.text)) {
+        await sendHelpCatalog({ conversationId: inbound.spaceId });
+      }
+      if (isTelegramAsk(inbound.text)) {
+        try {
+          await sendTelegramInvite({
+            conversationId: inbound.spaceId,
+            phone: inbound.senderPhone,
+          });
+        } catch (err) {
+          console.error("telegram invite failed", err);
+        }
+      }
+      if (shouldSkipAgentTurn({ firstBind, text: inbound.text })) {
+        return new Response(null, { status: 204 });
+      }
+      prefetchInstinctRecall(ownerPhone, inbound.text);
+      const touch = touchLastChannel(inbound.senderPhone, "imessage").catch((err) =>
+        console.error("touch last channel failed", err),
+      );
+      parkTurn(waitUntil, touch);
+      const content = assembleInboundContent(inbound.text, []);
+      console.log("photon inbound", {
+        remote: inbound.senderPhone,
+        ownerPhone,
+        conversationId: inbound.spaceId,
+        chars: inbound.text.length,
+      });
+
+      parkTurn(
+        waitUntil,
+        from(inbound.spaceId).send(content, {
+          auth: {
+            authenticator: "photon",
+            issuer: "photon",
+            principalType: "user",
+            principalId: ownerPhone,
+            attributes: {
+              conversationId: inbound.spaceId,
+              inkboxHandle: boundTenant.inkboxHandle ?? agentHandle(),
+              ...(inbound.messageId ? { messageId: inbound.messageId } : {}),
+              origin: "human",
+              ...shortAckAttribute(inbound.text),
+            },
+          },
+        }),
+      );
+      return new Response(null, { status: 204 });
+    }),
+    POST("/webhooks/imessage", async (request) => {
       const handle = handleFromRequest(request);
       const tenant = handle ? await getTenantByHandle(handle).catch(() => null) : null;
       const secret =
@@ -305,10 +404,6 @@ export default defineChannel({
 
       const body = JSON.parse(payload.toString()) as IMessageWebhookPayload;
 
-      if (body.event_type === "imessage.delivery_failed") {
-        console.error("imessage delivery failed", body.data.message);
-        return new Response(null, { status: 204 });
-      }
       if (body.event_type !== "imessage.received") {
         return new Response(null, { status: 204 });
       }
@@ -317,318 +412,44 @@ export default defineChannel({
       if (!msg || msg.direction !== "inbound") {
         return new Response(null, { status: 204 });
       }
+      if (msg.is_group) {
+        return new Response(null, { status: 204 });
+      }
       if (
         !isBlueIMessage({
           service: msg.service,
           wasDowngraded: msg.was_downgraded,
         })
       ) {
-        console.error("dropped non-imessage inbound", {
-          service: msg.service,
-          was_downgraded: msg.was_downgraded,
-        });
         return new Response(null, { status: 204 });
       }
 
-      const voiceP = inboundIMessageTextWithVoice(msg, transcribeVoiceNote);
-      let fetchedImages: Awaited<ReturnType<typeof prefetchInboundImages>> | undefined;
-      prefetchInboundImages(msg.media).then(
-        (p) => {
-          fetchedImages = p;
-        },
-        (err) => console.error("inbound image prefetch failed", err),
-      );
-      prefetchOpenRouter();
-
-      const flaggedGroup = isGroupMessage(msg);
-      const boundOneToOne = canSkipInboundBind(
-        tenant,
-        typeof msg.remote_number === "string" ? msg.remote_number : "",
-        msg.conversation_id,
-      );
-      const knownGroup =
-        !flaggedGroup && !boundOneToOne && msg.conversation_id
-          ? await getGroupByConversation(msg.conversation_id).catch(() => null)
-          : null;
-      const group = Boolean(knownGroup) || flaggedGroup;
-      const remote = group ? groupSenderPhone(msg) : msg.remote_number;
-      if (!remote) {
-        console.error("dropped inbound without remote number");
-        return new Response(null, { status: 204 });
-      }
-
-      const identityHandle = handle ?? agentHandle();
-      const participants = group ? groupParticipantPhones(msg) : [];
+      const conversationId = msg.conversation_id;
+      if (!conversationId) return new Response(null, { status: 204 });
       const preview = inboundIMessageText(msg);
-      if (!group && preview) {
-        prefetchOneToOneStart(remote, preview, voiceP);
-        if (msg.conversation_id) {
-          parkTurn(
-            waitUntil,
-            ackIMessageReadAndTyping(msg.conversation_id, identityHandle),
-          );
-        }
-      }
-      const knownOwnerPhone =
-        !group &&
-        tenant?.phoneE164 === remote &&
-        tenant.status !== "disabled"
-          ? tenant.phoneE164
-          : undefined;
-      const earlyGateP =
-        knownOwnerPhone && preview
-          ? inboundOwnerGate(knownOwnerPhone)
-          : undefined;
+      if (!preview) return new Response(null, { status: 204 });
 
-      let firstBind = false;
-      let firstGroup = false;
-      let boundTenant = tenant;
-      let ownerPhone = remote;
-      if (group) {
-        if (!handle) {
-          console.error("dropped group inbound without handle");
-          return new Response(null, { status: 204 });
-        }
-        if (!allowlisted(remote)) {
-          return new Response(null, { status: 204 });
-        }
-        const bound = await bindGroupInbound({
-          conversationId: msg.conversation_id,
-          senderPhone: remote,
-          participants,
-          handle,
-        }).catch((err) => {
-          console.error("bind group inbound failed", err);
-          return { ok: false as const, reason: "error" };
-        });
-        if (!bound.ok) {
-          console.error("dropped group inbound", bound.reason, handle, remote);
-          return new Response(null, { status: 204 });
-        }
-        firstGroup = bound.firstGroup;
-        ownerPhone = bound.ownerPhoneE164;
-      } else if (handle) {
-        if (boundOneToOne) {
-          firstBind = false;
-          boundTenant = tenant;
-          ownerPhone = tenant?.phoneE164 ?? remote;
-        } else {
-          const bound = await bindInbound(handle, remote, msg.conversation_id).catch(
-            (err) => {
-              console.error("bind inbound failed", err);
-              return { ok: false as const, reason: "error" };
-            },
-          );
-          if (!bound.ok) {
-            console.error("dropped inbound", bound.reason, handle, remote);
-            return new Response(null, { status: 204 });
-          }
-          firstBind = bound.firstBind;
-          boundTenant = bound.tenant;
-          ownerPhone = bound.tenant.phoneE164 ?? remote;
-        }
-      } else {
-        if (!allowlisted(remote)) {
-          return new Response(null, { status: 204 });
-        }
-        try {
-          await upsertTenant(remote, msg.conversation_id);
-        } catch (err) {
-          console.error("tenant upsert failed", err);
-        }
-      }
-
-      if (!preview) {
-        if (firstBind) {
-          await sendFirstBindOnboard({
-            conversationId: msg.conversation_id,
-            handle: identityHandle,
-            email: boundTenant?.emailAddress,
-            tel: boundTenant?.dedicatedIMessageNumber,
-          });
-        }
-        if (firstGroup) {
-          await sendGroupWelcome({
-            conversationId: msg.conversation_id,
-            handle: identityHandle,
-          });
-        }
-        return new Response(null, { status: 204 });
-      }
-
-      if (!group) {
-        prefetchOneToOneStart(ownerPhone, preview, voiceP);
-        const gate = await (earlyGateP ?? inboundOwnerGate(ownerPhone));
-        if (gate.decision === "drop") {
-          return new Response(null, { status: 204 });
-        }
-        if (gate.decision === "paywall") {
-          if (firstBind) {
-            await sendFirstBindOnboard({
-              conversationId: msg.conversation_id,
-              handle: identityHandle,
-              email: boundTenant?.emailAddress,
-              tel: boundTenant?.dedicatedIMessageNumber,
-            });
-          }
-          await sendQuotaPaywall({
-            conversationId: msg.conversation_id,
-            handle: identityHandle,
-            payUrl: gate.payUrl,
-          });
-          return new Response(null, { status: 204 });
-        }
-      }
-
-      const inbound = await voiceP;
-      const continueToAgent =
-        Boolean(inbound.text) && !inbound.allVoiceFailed;
-      if (firstBind) {
-        const onboard = sendFirstBindOnboard({
-          conversationId: msg.conversation_id,
-          handle: identityHandle,
-          email: boundTenant?.emailAddress,
-          tel: boundTenant?.dedicatedIMessageNumber,
-        });
-        if (continueToAgent) parkTurn(waitUntil, onboard);
-        else await onboard;
-      }
-      if (firstGroup) {
-        const welcome = sendGroupWelcome({
-          conversationId: msg.conversation_id,
-          handle: identityHandle,
-        });
-        if (continueToAgent && shouldReplyInGroup(inbound.text)) {
-          parkTurn(waitUntil, welcome);
-        } else {
-          await welcome;
-        }
-      }
-      if (inbound.allVoiceFailed) {
-        if (group) return new Response(null, { status: 204 });
-        console.log("imessage inbound", {
-          remote,
-          conversationId: msg.conversation_id,
-          chars: 0,
-          voice: true,
-          messageType: msg.message_type,
-        });
-        try {
-          await sendBlueIMessage({
-            conversationId: msg.conversation_id,
-            text: VOICE_FAILED_REPLY,
-            handle: identityHandle,
-          });
-        } catch (err) {
-          console.error("voice failed reply failed", err);
-        }
-        return new Response(null, { status: 204 });
-      }
-      if (!inbound.text) return new Response(null, { status: 204 });
-      if (group && !shouldReplyInGroup(inbound.text)) {
-        return new Response(null, { status: 204 });
-      }
-      if (group) {
-        const gateP = inboundOwnerGate(ownerPhone);
-        const groupScope = groupMemoryScope(msg.conversation_id);
-        if (groupScope) {
-          void loadWakeContext(groupScope).catch((err) =>
-            console.error("group wake prefetch failed", err),
-          );
-          prefetchInstinctRecall(
-            groupScope,
-            groupTaggedText(remote, inbound.text),
-          );
-        }
-        prefetchOpenRouter();
-        const gate = await gateP;
-        if (gate.decision === "drop") {
-          return new Response(null, { status: 204 });
-        }
-        if (gate.decision === "paywall") {
-          await sendQuotaPaywall({
-            conversationId: msg.conversation_id,
-            handle: identityHandle,
-            payUrl: gate.payUrl,
-          });
-          return new Response(null, { status: 204 });
-        }
-      }
-      if (isHelpAsk(inbound.text)) {
-        await sendHelpCatalog({
-          conversationId: msg.conversation_id,
-          handle: identityHandle,
-          canJoinGroups: Boolean(
-            boundTenant?.dedicatedIMessageNumber ??
-              tenant?.dedicatedIMessageNumber,
-          ),
-        });
-      }
-      if (isTelegramAsk(inbound.text)) {
-        try {
-          await sendTelegramInvite({
-            conversationId: msg.conversation_id,
-            handle: identityHandle,
-            phone: remote,
-          });
-        } catch (err) {
-          console.error("telegram invite failed", err);
-        }
-      }
-      if (shouldSkipAgentTurn({ firstBind, text: inbound.text })) {
-        return new Response(null, { status: 204 });
-      }
-      if (!group) prefetchInstinctRecall(ownerPhone, inbound.text);
-      const touch = touchLastChannel(remote, "imessage").catch((err) =>
-        console.error("touch last channel failed", err),
-      );
-      parkTurn(waitUntil, touch);
-      const rawContent = assembleInboundContent(
-        inbound.text,
-        fetchedImages ?? imageUrlParts(msg.media),
-      );
-      const content = group
-        ? tagGroupUserContent(remote, rawContent)
-        : rawContent;
-      console.log("imessage inbound", {
-        remote,
-        ownerPhone,
-        group,
-        conversationId: msg.conversation_id,
-        chars: inbound.text.length,
-        voice: inbound.voice,
-        images: typeof content === "string" ? 0 : content.length - 1,
-        messageType: msg.message_type,
+      const found =
+        tenant ??
+        (await getTenantByConversation(conversationId).catch(() => null));
+      if (!found) return new Response(null, { status: 204 });
+      const action = shouldNudgeInkboxThread({
+        photonConversationId: found.photonConversationId,
+        photonNudgeSentAt: found.photonNudgeSentAt,
       });
+      if (action !== "nudge") return new Response(null, { status: 204 });
 
-      parkTurn(
-        waitUntil,
-        from(msg.conversation_id).send(content, {
-          auth: {
-            authenticator: "inkbox",
-            issuer: "inkbox",
-            principalType: "user",
-            principalId: ownerPhone,
-            attributes: group
-              ? groupAuthAttributes({
-                  conversationId: msg.conversation_id,
-                  inkboxHandle: identityHandle,
-                  messageId: msg.id,
-                  origin: "human",
-                  senderPhone: remote,
-                  ownerPhone,
-                })
-              : {
-                  conversationId: msg.conversation_id,
-                  inkboxHandle: identityHandle,
-                  messageId: msg.id,
-                  origin: "human",
-                  ...shortAckAttribute(inbound.text),
-                },
-          },
-        }),
-      );
-
+      const identityHandle = handle ?? found.inkboxHandle ?? agentHandle();
+      try {
+        await sendBlueIMessage({
+          conversationId,
+          text: photonNudgeText(found.photonAssignedNumber),
+          handle: identityHandle,
+        });
+        await markPhotonNudgeSent(conversationId);
+      } catch (err) {
+        console.error("[imessage] photon nudge failed", err);
+      }
       return new Response(null, { status: 204 });
     }),
     POST("/webhooks/mail", async (request, { from }) => {

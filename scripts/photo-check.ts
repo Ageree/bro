@@ -472,6 +472,8 @@ assert(!telegram.includes('"Content-Type": "application/json"') || telegram.incl
 const inkbox = readFileSync(new URL("../agent/lib/inkbox.ts", import.meta.url), "utf8");
 assert(inkbox.includes("uploadIMessagePhoto"), "inkbox uploads photo bytes");
 assert(inkbox.includes("uploadIMessageMedia"), "inkbox uses identity media upload");
+const sendPhoto = readFileSync(new URL("../agent/lib/send-photo.ts", import.meta.url), "utf8");
+assert(sendPhoto.includes("sendPhotonMedia"), "iMessage photos go out through Photon");
 
 const instructions = readFileSync(
   new URL("../agent/instructions.md", import.meta.url),

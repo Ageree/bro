@@ -1,10 +1,10 @@
 # Bro
 
-Personal iMessage concierge. **eve** runs the agent. **Convex** holds tenants, orders, and long-term memory (one store per person). **Inkbox** is blue iMessage only (never SMS). **Supermemory** (optional, paid) adds automatic conversation memory.
+Personal iMessage concierge. **eve** runs the agent. **Convex** holds tenants, orders, and long-term memory (one store per person). **Photon Spectrum Pro** is the iMessage chat transport (shared pool, blue only — never SMS/RCS). **Inkbox** is mail-only: Bro mailbox, OTP, `[event:mail]`. **Supermemory** (optional, paid) adds automatic conversation memory.
 
-Outbound replies are compiled to iMessage text: markdown is stripped, `**latin**` becomes Unicode math-bold (looks bold on iPhone), Russian field labels get a `▸` mark, long numbered dumps become one bubble per item. Inkbox cannot send native iOS 18 text styles or carousels.
+Outbound replies are compiled to iMessage text: markdown is stripped, `**latin**` becomes Unicode math-bold (looks bold on iPhone), Russian field labels get a `▸` mark, long numbered dumps become one bubble per item. Photon Pro has no native iOS 18 cards or groups.
 
-Telegram is a **second channel on the same tenant** (same phone, Bro mailbox, Gmail/Calendar, eve session). The human texts «телеграм» in iMessage, opens `t.me/<bot>?start=bind_…`, and later replies follow `lastChannel`. Markdown becomes Telegram HTML (`**привет**` is real bold; `++u++`, `||spoiler||`, `>` / `>!` quotes, `!![alt](url)` hidden media). Structured cards (`#` headings, lists, `:::rich`) go out as `sendRichMessage` and fall back to classic HTML if the method is missing. Optional `:::buttons` inline keyboards, photos, voice STT, and reactions. Outbound photos are real attachments on both channels: `send_photo` uploads a computer file or a public https image, and `![alt](https://…)` in a reply becomes `sendPhoto` on Telegram and Inkbox `mediaUrls` on iMessage. Check: `npm run photo:check`. Unbound Telegram users are told to start from iMessage — no second identity. Env: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BOT_USERNAME`, `TELEGRAM_WEBHOOK_SECRET`. `npm run telegram:webhooks` once. Check: `npm run telegram:check`. Inbound photos reach the model as image parts (`z-ai/glm-5.3-flash` has vision): bytes are downloaded up to 3 MB and sent as a plain `data:` base64 string so the picture survives the signed URL — never a `Uint8Array`/`URL` object, because eve serialises the turn input into memory-tool closures as JSON and those types break that; larger or failed downloads become the plain URL string instead. The URL also stays in the text for `browser_task`. Other attachments stay URLs. Check: `npm run imessage:check`, `npm run image:check`.
+Telegram is a **second channel on the same tenant** (same phone, Bro mailbox, Gmail/Calendar, eve session). The human texts «телеграм» in iMessage, opens `t.me/<bot>?start=bind_…`, and later replies follow `lastChannel`. Markdown becomes Telegram HTML (`**привет**` is real bold; `++u++`, `||spoiler||`, `>` / `>!` quotes, `!![alt](url)` hidden media). Structured cards (`#` headings, lists, `:::rich`) go out as `sendRichMessage` and fall back to classic HTML if the method is missing. Optional `:::buttons` inline keyboards, photos, voice STT, and reactions. Outbound photos are real attachments on both channels: `send_photo` uploads a computer file or a public https image, and `![alt](https://…)` in a reply becomes `sendPhoto` on Telegram and Photon attachments on iMessage. Check: `npm run photo:check`. Unbound Telegram users are told to start from iMessage — no second identity. Env: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BOT_USERNAME`, `TELEGRAM_WEBHOOK_SECRET`. `npm run telegram:webhooks` once. Check: `npm run telegram:check`. Inbound photos reach the model as image parts (`z-ai/glm-5.3-flash` has vision): bytes are downloaded up to 3 MB and sent as a plain `data:` base64 string so the picture survives the signed URL — never a `Uint8Array`/`URL` object, because eve serialises the turn input into memory-tool closures as JSON and those types break that; larger or failed downloads become the plain URL string instead. The URL also stays in the text for `browser_task`. Other attachments stay URLs. Check: `npm run imessage:check`, `npm run image:check`.
 
 Voice notes: inbound audio is transcribed via OpenRouter STT (`/audio/transcriptions`) before the model sees it (`[voice] …`). Default `qwen/qwen3-asr-flash-2026-02-10` (best digit/time/brand accuracy on Russian in our bake-off, ~1.5 s, ~$0.001 per 30 s), fallback `openai/gpt-4o-transcribe`, language hint `ru`. iPhone CAF Opus is remuxed to Ogg in TypeScript — no provider accepts CAF and there is no ffmpeg on Vercel. If transcription fails and there is no other text, Bro sends a short Russian retry line and skips the agent. Override with `BRO_STT_MODEL` / `BRO_STT_FALLBACK_MODEL` / `BRO_STT_LANGUAGE`. Check: `npm run voice:check`.
 
@@ -20,20 +20,21 @@ Voice notes: inbound audio is transcribed via OpenRouter STT (`/audio/transcript
 cp .env.example .env.local
 # fill INKBOX_*, OPENROUTER_API_KEY (or AI_GATEWAY_API_KEY), ALLOWED_SENDERS
 npm run memory:check
-npm run provision:inkbox    # once
-npm run webhooks            # once: signing key + https://<handle>.inkboxwire.com/webhooks/imessage
-npm run dev:local           # eve :2000 + Inkbox tunnel (needed for iMessage)
+npm run provision:inkbox    # once — mail-only identity
+npm run webhooks            # once: Inkbox mail signing key
+npm run photon:webhooks     # once: Photon inbound URL + SPECTRUM_WEBHOOK_SECRET
+npm run dev:local           # eve :2000
 ```
 
-Production (you are just a user on iMessage): Convex cloud + `eve deploy` on Vercel. Webhook URL is the Vercel host, not the laptop tunnel.
+Production: Convex cloud + `eve deploy` on Vercel. Photon webhook is `https://<host>/webhooks/photon`. Inkbox mail webhook stays `/webhooks/mail`.
 
-`npm run dev` is TUI-only (no public URL). Local iMessage still needs the tunnel: `https://bro-ageree.inkboxwire.com`.
+`npm run dev` is TUI-only (no public URL).
 
-Onboard: after provision, the human texts `connect @bro-ageree` to the printed router **as iMessage** (blue). iPhone Settings → Messages → Send as SMS = off.
+Onboard: landing «Получить своего бро» asks for the iPhone number, creates a Photon shared user, and opens Messages to the assigned +1. Blue iMessage only. iPhone Settings → Messages → Send as SMS = off. Do not text `connect @handle`.
 
-Group chats (Tomo-style): save the Bro vCard and add that number to an iMessage group, or from the 1:1 thread ask Bro to open a chat with 2–8 numbers (`group_chat`). Inkbox groups need a dedicated line (`BRO_DEDICATED_LINE=1`) and a per-person webhook handle. Shared-pool identities stay 1:1 — group inbound without `?h=` is dropped. Bro answers in a group only when addressed (`бро` / `bro`); personal tools (vault, pay, mail, Composio, browser, wakeups) stay in the private thread. If `ALLOWED_SENDERS` is set, group speakers must be on it. A group never overwrites the tenant's 1:1 `inkboxConversationId`. Check: `npm run group:check`.
+iMessage groups are paused on Photon Pro. `group_chat` explains that Bro is 1:1 until Business. Check: `npm run group:check`.
 
-Shared router pool is the default (inbound-first, ~100 messages/day). To let Bro write first, set `BRO_DEDICATED_LINE=1` before `npm run provision:inkbox` and on the Convex deployment. New identities then pass Inkbox `claimIMessageNumber: true` (create) or `identity.update({ claimIMessageNumber: true, idempotencyKey })` (existing). Unattached inventory is `inkbox.imessages.claimNumber({ idempotencyKey })` — Bro does not call that on the default path. Off by default; shared pool is unchanged. Number/status, when returned, is stored on the tenant. Check: `npm run dedicated:check`.
+Inkbox identities are mail-only (`imessage_enabled: false`). `BRO_DEDICATED_LINE` does not claim a chat line. Check: `npm run dedicated:check`. Photon env: `SPECTRUM_PROJECT_ID`, `SPECTRUM_PROJECT_SECRET`, `SPECTRUM_WEBHOOK_SECRET`. Check: `npm run photon:check`.
 
 Memory is three eve slots, all keyed by the person's E.164. `memo` (always on) is curated facts in the Convex `memories` table: recalled every turn, maintained by the model via `memo__remember` / `memo__search` / `memo__forget`, deduped and capped at 400 lines per person. `recall` mounts only when `SUPERMEMORY_API_KEY` is set: [Supermemory](https://supermemory.ai) then captures completed turns automatically, recalls relevant context before each turn, and adds `recall__search` and friends — no extra setup. Without the key both Supermemory slots are disabled and nothing breaks. Check: `npm run memory:check`.
 
@@ -45,11 +46,10 @@ Public facts use TinyFish Search + Fetch (`web_search`, `web_fetch`) — free, e
 
 Sandbox tools (`COMPOSIO_REMOTE_WORKBENCH`, `COMPOSIO_REMOTE_BASH_TOOL`) have no web access by policy; facts go through TinyFish, shops through `browser_task`. Check: `npm run sandbox:check`.
 
-Landing CTA creates a personal Inkbox identity and opens iMessage (`sms_link`).
+Landing CTA creates a mail-only Inkbox identity plus a Photon shared user, then opens Messages (`sms:` to the assigned +1).
 `assets/config.js` holds the Convex HTTP site URL (`https://<deployment>.convex.site`).
-Set `INKBOX_API_KEY` and `INKBOX_WEBHOOK_URL` on the Convex deployment.
+Set `INKBOX_API_KEY`, `INKBOX_WEBHOOK_URL`, and the `SPECTRUM_*` keys on the Convex deployment.
 Cap is `BRO_IDENTITY_CAP` (default 100).
-`BRO_DEDICATED_LINE` on Convex claims a dedicated line at landing provision.
 
 Billing is a one-shot YooKassa month. Set `YOOKASSA_SHOP_ID` / `YOOKASSA_SECRET_KEY` on the Convex deployment; webhook URL is `https://<deployment>.convex.site/yookassa`. Empty keys keep the free beta, with daily message and monthly browser-job limits.
 

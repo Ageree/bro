@@ -287,6 +287,38 @@ export async function bindTelegram(opts: {
   return result;
 }
 
+export async function bindPhotonInbound(opts: {
+  phoneE164: string;
+  photonConversationId: string;
+  photonUserId?: string;
+  photonAssignedNumber?: string;
+  handle?: string;
+}): Promise<BindInboundResult> {
+  const result = await client().mutation(api.tenants.bindPhotonInbound, {
+    secret: secret(),
+    ...opts,
+  });
+  if (!result.ok) return result;
+  if (result.tenant.inkboxHandle) forgetHandleTenant(result.tenant.inkboxHandle);
+  if (result.tenant.telegramUserId) {
+    forgetTelegramTenant(result.tenant.telegramUserId);
+  }
+  const firstBind = result.firstBind === true;
+  return { ok: true, tenant: result.tenant, firstBind };
+}
+
+export async function markPhotonNudgeSent(
+  conversationId: string,
+  now = Date.now(),
+): Promise<boolean> {
+  const result = await client().mutation(api.tenants.markPhotonNudgeSent, {
+    secret: secret(),
+    conversationId,
+    now,
+  });
+  return result.sent;
+}
+
 export async function bindInbound(
   handle: string,
   phoneE164: string,

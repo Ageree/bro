@@ -1,7 +1,6 @@
 import { defineDynamic, defineTool } from "eve/tools";
 import type { ToolContext } from "eve/tools";
 import { isConnectDest, wrapConnectUrl } from "../lib/connect-link";
-import { sendBlueIMessage } from "../lib/inkbox";
 import { sessionFor } from "../lib/composio";
 import { groupPersonalBlock } from "../lib/group-guard";
 import { tenantId } from "../lib/tenant";
@@ -35,7 +34,6 @@ function connectLinks(result: unknown): string[] {
 async function sendConnectIfAny(ctx: ToolContext, result: unknown): Promise<void> {
   const conv = attr(ctx, "conversationId");
   if (!conv) return;
-  const handle = attr(ctx, "inkboxHandle");
   const phone = tenantId(ctx);
   const tenant = await getTenant(phone).catch(() => null);
   for (const url of connectLinks(result)) {
@@ -50,10 +48,10 @@ async function sendConnectIfAny(ctx: ToolContext, result: unknown): Promise<void
           channel: "telegram",
         });
       } else {
-        await sendBlueIMessage({
+        await deliverHuman({
+          tenant,
           conversationId: conv,
           text: wrapped,
-          handle: tenant?.inkboxHandle ?? handle,
         });
       }
     } catch (err) {

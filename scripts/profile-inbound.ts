@@ -474,12 +474,11 @@ const report = {
       "loadWakeContext",
       "prefetchInstinctRecall",
       "prefetchOpenRouter",
-      "ackIMessageReadAndTyping",
     ],
     remainingAfterParkTurn: [
       "eve session start (wake/instinct should cache-hit after billing prefetch)",
       "OpenRouter first tokens (measured here as stream TTFB, tools-off and Bro-tool descriptions)",
-      "Inkbox send (not measured — no live conversation)",
+      "Photon send (not measured — no live conversation)",
     ],
   },
   turnStarted,

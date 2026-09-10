@@ -58,6 +58,7 @@ http.route({
     const ua = request.headers.get("user-agent") ?? "";
     const result = await ctx.runAction(internal.access.requestAccess, {
       handle,
+      phone: typeof body.phone === "string" ? body.phone : undefined,
       ua,
       create: true,
     });

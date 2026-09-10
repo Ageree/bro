@@ -60,6 +60,17 @@ assert(
   }) === "unbound",
   "no conversation",
 );
+assert(
+  loginStartDecision({
+    tenant: {
+      ...bound,
+      inkboxConversationId: undefined,
+      photonConversationId: "photon-space-1",
+    },
+    now,
+  }) === "ok",
+  "photon conversation is bound",
+);
 assert(loginStartDecision({ tenant: bound, now }) === "ok", "bound ok");
 assert(
   loginStartDecision({
