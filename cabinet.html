@@ -2,253 +2,48 @@
 <html lang="ru">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>bro — кабинет</title>
+  <meta name="theme-color" content="#ffffff" />
+  <link rel="icon" href="/assets/bro-mark.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="/assets/bro-logo.png" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
-  <style>
-    :root {
-      --ink: #17271e;
-      --ink-soft: #3c4d43;
-      --cta-bg: #17271e;
-      --cta-fg: #f6faf5;
-    }
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    html, body { overflow-x: hidden; }
-    body {
-      font-family: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
-      color: var(--ink);
-      -webkit-font-smoothing: antialiased;
-    }
-    .bg {
-      position: fixed;
-      inset: 0;
-      z-index: -2;
-      background:
-        url("assets/meadow.webp") center / cover no-repeat,
-        linear-gradient(180deg, #dff0fb 0%, #eaf6ec 45%, #bfe3c4 100%);
-    }
-    .scrim {
-      position: fixed;
-      inset: 0;
-      z-index: -1;
-      background: radial-gradient(ellipse 70% 55% at 50% 42%,
-        rgba(255, 255, 255, 0.62) 0%,
-        rgba(255, 255, 255, 0.28) 45%,
-        rgba(255, 255, 255, 0) 72%);
-    }
-    .topbar {
-      position: fixed;
-      top: 0; right: 0; left: 0;
-      z-index: 5;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: 1rem 1.3rem;
-    }
-    .word {
-      font-weight: 600;
-      font-size: 1.2rem;
-      letter-spacing: -0.03em;
-      text-decoration: none;
-      color: var(--ink);
-    }
-    .topbar-actions { display: flex; gap: 0.6rem; }
-    .ghost {
-      background: rgba(255, 255, 255, 0.72);
-      border: 1px solid rgba(23, 39, 30, 0.18);
-      color: var(--ink);
-      font: inherit;
-      font-size: 0.95rem;
-      font-weight: 500;
-      text-decoration: none;
-      padding: 0.5rem 1.15rem;
-      border-radius: 999px;
-      cursor: pointer;
-    }
-    .cta {
-      display: inline-block;
-      background: var(--cta-bg);
-      color: var(--cta-fg);
-      font: inherit;
-      font-size: 1rem;
-      font-weight: 500;
-      text-decoration: none;
-      padding: 0.75rem 1.6rem;
-      border-radius: 999px;
-      border: 0;
-      cursor: pointer;
-    }
-    .wrap {
-      max-width: 40rem;
-      margin: 0 auto;
-      padding: 6rem 1.5rem 4rem;
-    }
-    h1 {
-      font-size: clamp(1.8rem, 4vw, 2.4rem);
-      letter-spacing: -0.03em;
-      margin-bottom: 1.4rem;
-    }
-    .card {
-      background: rgba(255, 255, 255, 0.84);
-      border: 1px solid rgba(23, 39, 30, 0.12);
-      border-radius: 1.2rem;
-      padding: 1.4rem 1.5rem;
-      margin-bottom: 1rem;
-    }
-    .card h2 { font-size: 1.02rem; margin-bottom: 0.7rem; }
-    .cmd {
-      display: block;
-      margin: 0.8rem 0;
-      padding: 0.75rem 0.9rem;
-      border-radius: 0.75rem;
-      background: #17271e;
-      color: #f6faf5;
-      font: 0.78rem/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
-      overflow-x: auto;
-      white-space: pre-wrap;
-      word-break: break-all;
-    }
-    .row { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.8rem; }
-    .row input,
-    .row select {
-      flex: 1 1 12rem;
-      min-width: 0;
-      font: inherit;
-      padding: 0.55rem 0.7rem;
-      border-radius: 0.7rem;
-      border: 1px solid rgba(23, 39, 30, 0.18);
-      background: #fff;
-    }
-    .muted { color: var(--ink-soft); font-size: 0.95rem; line-height: 1.5; }
-    .handle-xl {
-      font-size: clamp(1.6rem, 4vw, 2.2rem);
-      font-weight: 600;
-      letter-spacing: -0.03em;
-      line-height: 1.15;
-      margin-bottom: 0.55rem;
-    }
-    .memos { list-style: none; }
-    .memos li {
-      display: flex;
-      justify-content: space-between;
-      align-items: flex-start;
-      gap: 0.8rem;
-      padding: 0.55rem 0;
-      border-top: 1px solid rgba(23, 39, 30, 0.08);
-    }
-    .memos li:first-child { border-top: 0; }
-    .memo-line { flex: 1; min-width: 0; word-break: break-word; line-height: 1.45; }
-    .memo-forget { font-size: 0.88rem; padding: 0.4rem 0.9rem; flex-shrink: 0; }
-    .bar {
-      height: 0.45rem;
-      background: rgba(23, 39, 30, 0.1);
-      border-radius: 999px;
-      overflow: hidden;
-      margin: 0.45rem 0 0.9rem;
-    }
-    .bar > i {
-      display: block;
-      height: 100%;
-      background: #17271e;
-    }
-    .pay { list-style: none; }
-    .pay li { padding: 0.35rem 0; border-top: 1px solid rgba(23, 39, 30, 0.08); }
-    .pay li:first-child { border-top: 0; }
-    .vault-kind { color: var(--ink-soft); font-size: 0.88rem; flex-shrink: 0; }
-    .modal {
-      position: fixed;
-      inset: 0;
-      z-index: 10;
-      background: rgba(23, 39, 30, 0.28);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 1.2rem;
-    }
-    .modal[hidden] { display: none; }
-    .sheet {
-      width: min(24rem, 100%);
-      background: rgba(255, 255, 255, 0.94);
-      border-radius: 1.2rem;
-      padding: 1.6rem 1.5rem 1.35rem;
-    }
-    .sheet h2 { font-size: 1.15rem; margin-bottom: 0.45rem; }
-    .sheet .hint {
-      color: var(--ink-soft);
-      font-size: 0.9rem;
-      line-height: 1.45;
-      margin-bottom: 0.35rem;
-    }
-    .sheet label { display: block; font-size: 0.85rem; margin: 0.75rem 0 0.3rem; }
-    .sheet input {
-      width: 100%;
-      font: inherit;
-      padding: 0.7rem 0.8rem;
-      border-radius: 0.7rem;
-      border: 1px solid rgba(23, 39, 30, 0.2);
-    }
-    .sheet .sheet-cta {
-      display: block;
-      width: 100%;
-      margin-top: 1rem;
-      text-align: center;
-      white-space: nowrap;
-      border: 0;
-      cursor: pointer;
-    }
-    .sheet .text-close {
-      display: block;
-      width: 100%;
-      margin-top: 0.85rem;
-      background: none;
-      border: 0;
-      color: var(--ink-soft);
-      font: inherit;
-      font-size: 0.92rem;
-      cursor: pointer;
-      text-align: center;
-    }
-    .sheet .status { min-height: 1.3rem; margin-top: 0.7rem; color: var(--ink-soft); font-size: 0.9rem; }
-  </style>
+  <link href="https://fonts.googleapis.com/css2?family=Prata&family=Onest:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/assets/brand.css" />
 </head>
 <body>
-  <div class="bg" aria-hidden="true"></div>
-  <div class="scrim" aria-hidden="true"></div>
 
-  <header class="topbar">
-    <a class="word" href="/">bro</a>
-    <div class="topbar-actions">
-      <a class="ghost" id="cabinet-open" href="/cabinet.html">Кабинет</a>
-      <a class="ghost" id="vault-open" href="/vault.html">Сейф</a>
-      <button class="ghost" id="logout" type="button">Выйти</button>
-      <button class="ghost" id="login-open" type="button" hidden>Войти</button>
+  <header class="bar">
+    <div><a class="link t-nav" id="vault-open" href="/vault.html">Сейф</a></div>
+    <a class="link t-wordmark" href="/">bro.</a>
+    <div>
+      <button class="link t-nav" id="logout" type="button" style="background:none;border:0;cursor:pointer">Выйти</button>
+      <button class="link t-nav" id="login-open" type="button" style="background:none;border:0;cursor:pointer" hidden>Войти</button>
     </div>
   </header>
 
   <div class="modal" id="login-modal" hidden>
     <div class="sheet" role="dialog" aria-labelledby="login-title">
       <h2 id="login-title">Вход в кабинет</h2>
-      <p class="hint">На компьютере введи handle. Код придёт сообщением от Bro в уже открытый чат iMessage.</p>
+      <p class="t-small t-mute">На компьютере введи handle. Код придёт сообщением от Bro в уже открытый чат iMessage.</p>
       <div id="login-handle-row" hidden>
         <label for="login-handle">Handle</label>
         <input id="login-handle" autocomplete="username" placeholder="bro-xxxxxxxx" />
       </div>
-      <button class="cta sheet-cta" id="login-send" type="button">Получить код</button>
+      <button class="btn sheet-cta" id="login-send" type="button">Получить код</button>
       <div id="login-code-row" hidden>
         <label for="login-code">Код из iMessage</label>
         <input id="login-code" inputmode="numeric" maxlength="6" autocomplete="one-time-code" />
-        <button class="cta sheet-cta" id="login-verify" type="button">Войти</button>
+        <button class="btn sheet-cta" id="login-verify" type="button">Войти</button>
       </div>
       <p class="status" id="login-status"></p>
       <button class="text-close" id="login-cancel" type="button">Закрыть</button>
     </div>
   </div>
 
-  <main class="wrap">
-    <h1>Кабинет</h1>
-    <p class="muted" id="boot">Загружаем…</p>
+  <main class="doc">
+    <p class="t-small t-mute" id="boot">Загружаем…</p>
     <div id="body" hidden></div>
   </main>
 
@@ -270,6 +65,17 @@
       function pct(used, allow) {
         if (!allow) return 0;
         return Math.max(0, Math.min(100, Math.round((used / allow) * 100)));
+      }
+      /* Every section is the same shape: a serif heading with the current
+         state set small and grey on the same line, then whatever the section
+         has to say. No card, no border but the hairline above it. */
+      function head(title, state) {
+        return '<div class="sec__head">' + title +
+          (state ? '<span class="sec__state">' + esc(state) + "</span>" : "") +
+          "</div>";
+      }
+      function meter(used, allow) {
+        return '<div class="meter"><i style="width:' + pct(used, allow) + '%"></i></div>';
       }
       var DEFAULT_TZ = "Europe/Moscow";
       var TZ_LIST = [
@@ -326,53 +132,55 @@
       }
       function computerCard(me) {
         var c = me.computer || { state: "none" };
-        return '<div class="card" id="computer"><h2>Компьютер</h2>' +
-          "<p>" + esc(computerStateRu(c.state)) + "</p>" +
-          '<div class="row">' +
-          '<button class="cta" id="computer-wake" type="button">Разбудить</button>' +
-          '<button class="ghost" id="computer-stop" type="button">Выключить</button>' +
-          '<button class="ghost" id="computer-wipe" type="button">Стереть диск</button>' +
+        return '<section class="sec" id="computer">' +
+          head("<h2>Компьютер</h2>", computerStateRu(c.state)) +
+          '<div class="acts">' +
+          '<button class="act" id="computer-wake" type="button">Разбудить</button>' +
+          '<button class="act" id="computer-stop" type="button">Выключить</button>' +
+          '<button class="act act--mute" id="computer-wipe" type="button">Стереть диск</button>' +
           "</div>" +
-          '<p class="muted" id="computer-status"></p></div>';
+          '<p class="status-line" id="computer-status"></p></section>';
       }
       function chatgptCard(me) {
         var g = me.chatgpt || { status: "none" };
-        var bits = "<p>" + esc(chatgptStatusRu(g.status)) + "</p>";
-        if (g.email) bits += '<p class="muted">' + esc(g.email) + "</p>";
-        if (g.planType) bits += '<p class="muted">' + esc(g.planType) + "</p>";
-        bits += '<div class="row">';
+        var bits = "";
+        if (g.email) bits += '<p class="t-small t-mute">' + esc(g.email) + "</p>";
+        if (g.planType) bits += '<p class="t-small t-mute">' + esc(g.planType) + "</p>";
+        bits += '<div class="acts">';
         if (g.status !== "connected") {
-          bits += '<button class="cta" id="chatgpt-connect" type="button">Подключить</button>';
+          bits += '<button class="act" id="chatgpt-connect" type="button">Подключить</button>';
         }
         if (g.status === "connected" || g.status === "quarantined" || g.status === "pending") {
-          bits += '<button class="ghost" id="chatgpt-disconnect" type="button">Отключить</button>';
+          bits += '<button class="act" id="chatgpt-disconnect" type="button">Отключить</button>';
         }
         bits += "</div>" +
-          '<p class="muted" id="chatgpt-status"></p>' +
+          '<p class="status-line" id="chatgpt-status"></p>' +
           '<p class="cmd" id="chatgpt-code" hidden></p>';
-        return '<div class="card" id="chatgpt"><h2>ChatGPT</h2>' + bits + "</div>";
+        return '<section class="sec" id="chatgpt">' +
+          head("<h2>ChatGPT</h2>", chatgptStatusRu(g.status)) + bits + "</section>";
       }
       function nowCard(me) {
         var job = me.browserJob || { status: "", label: "Сейчас ничего не делает" };
         var live = safeHttpUrl(job.liveUrl || "");
-        var bits = '<p>' + esc(job.label) + "</p>";
-        if (job.task) bits += '<p class="muted">' + esc(job.task) + "</p>";
+        var bits = "";
+        if (job.task) bits += '<p class="t-small t-mute">' + esc(job.task) + "</p>";
         if (job.startedAt) {
-          bits += '<p class="muted">' + esc(when(job.startedAt, zoneOf(me))) + "</p>";
+          bits += '<p class="t-small t-mute">' + esc(when(job.startedAt, zoneOf(me))) + "</p>";
         }
         if (live) {
-          bits += '<div class="row"><a class="cta" id="browser-live" href="' +
+          bits += '<div class="acts"><a class="act" id="browser-live" href="' +
             esc(live) + '" target="_blank" rel="noopener noreferrer">Открыть</a></div>';
         }
-        return '<div class="card" id="now"><h2>Сейчас</h2>' + bits + "</div>";
+        return '<section class="sec" id="now">' +
+          head("<h2>Сейчас</h2>", job.label) + bits + "</section>";
       }
       function tzCard(me) {
         var zone = zoneOf(me);
-        return '<div class="card" id="tz"><h2>Часовой пояс</h2>' +
-          '<p class="muted">Сейчас: ' + esc(zone) + "</p>" +
-          '<div class="row"><select id="tz-select" aria-label="Часовой пояс">' +
-          tzOptions(zone) + "</select></div>" +
-          '<p class="muted" id="tz-status"></p></div>';
+        return '<section class="sec" id="tz">' +
+          '<div class="sec__head"><h2>Часовой пояс</h2></div>' +
+          '<select class="field" id="tz-select" aria-label="Часовой пояс">' +
+          tzOptions(zone) + "</select>" +
+          '<p class="status-line" id="tz-status"></p></section>';
       }
       function statusRu(s) {
         if (s === "succeeded") return "оплачен";
@@ -393,14 +201,15 @@
         return k || "";
       }
       function vaultCard() {
-        return '<div class="card" id="vault"><h2>Сейф</h2>' +
-          '<p class="muted">Bro платит этой картой на сайтах. Номер и CVV он не видит — только заполняет форму оплаты.</p>' +
-          '<ul class="memos" id="vault-items" hidden></ul>' +
-          '<p class="muted" id="vault-empty">Карты ещё нет — добавь, и Bro сможет покупать.</p>' +
-          '<div class="row">' +
-          '<a class="cta" id="vault-add-card" href="/vault.html?kind=payment&from=cabinet">Добавить карту</a>' +
-          '<a class="ghost" id="vault-open-page" href="/vault.html">Открыть сейф</a>' +
-          "</div></div>";
+        return '<section class="sec" id="vault">' +
+          head("<h2>Сейф</h2>", "") +
+          '<p class="t-small t-mute">Bro платит этой картой на сайтах. Номер и CVV он не видит — только заполняет форму оплаты.</p>' +
+          '<ul class="rows" id="vault-items" hidden></ul>' +
+          '<p class="t-small t-mute" id="vault-empty">Карты ещё нет — добавь, и Bro сможет покупать.</p>' +
+          '<div class="acts">' +
+          '<a class="act" id="vault-add-card" href="/vault.html?kind=payment&from=cabinet">Добавить карту</a>' +
+          '<a class="act" id="vault-open-page" href="/vault.html">Открыть сейф</a>' +
+          "</div></section>";
       }
 
       var HANDLE = "bro.handle";
@@ -430,18 +239,19 @@
       function memoCard(me) {
         memoLines = me.memories || [];
         var items = memoLines.map(function (line, i) {
-          return '<li><span class="memo-line">' + esc(line) + "</span>" +
-            '<button class="ghost memo-forget" type="button" data-i="' + i +
+          return '<li><span class="row-main">' + esc(line) + "</span>" +
+            '<button class="act act--sm act--mute row-side" type="button" data-i="' + i +
             '">Забыть</button></li>';
         }).join("");
         var empty = me.phoneBound
           ? "Пока пусто."
           : "Память появится, когда напишешь Bro в iMessage.";
-        return '<div class="card" id="memory"><h2>Память</h2>' +
+        return '<section class="sec" id="memory">' +
+          head("<h2>Память</h2>", "") +
           (items
-            ? '<ul class="memos" id="memos">' + items + "</ul>"
-            : '<p class="muted">' + empty + "</p>") +
-          '<p class="muted" id="memory-status"></p></div>';
+            ? '<ul class="rows" id="memos">' + items + "</ul>"
+            : '<p class="t-small t-mute">' + empty + "</p>") +
+          '<p class="status-line" id="memory-status"></p></section>';
       }
 
       function bindPay() {
@@ -543,7 +353,7 @@
         list.addEventListener("click", function (e) {
           var el = e.target;
           if (!el || !el.closest) return;
-          var btn = el.closest(".memo-forget");
+          var btn = el.closest("[data-i]");
           if (!btn) return;
           var i = Number(btn.getAttribute("data-i"));
           var needle = memoLines[i];
@@ -585,36 +395,37 @@
           ? "телефон …" + esc(me.phoneLast4 || "")
           : "телефон ещё не привязан — напиши Bro в iMessage";
         var pays = (me.payments || []).map(function (p) {
-          return "<li>" + esc(when(p.createdAt, zone)) + " · " + esc(p.amountRub) +
-            " ₽ · " + statusRu(p.status) + "</li>";
+          return '<li><span class="row-main">' + esc(when(p.createdAt, zone)) +
+            " · " + esc(p.amountRub) + " ₽</span>" +
+            '<span class="row-side">' + esc(statusRu(p.status)) + "</span></li>";
         }).join("");
         body.innerHTML =
-          '<div class="card"><p class="handle-xl">' + esc(me.handle) + "</p>" +
-          '<p class="muted">' + esc(plan) + " · " + phone + "</p>" +
-          '<p class="muted">' + until + "</p>" +
-          '<div class="row">' +
-          '<button class="cta" id="write-bro" type="button">Написать Bro</button>' +
-          '<button class="cta" id="pay-now" type="button">Оплатить месяц</button>' +
+          '<h1 class="handle-xl">' + esc(me.handle) + "</h1>" +
+          '<p class="t-small t-mute">' + esc(plan) + " · " + phone + "</p>" +
+          '<p class="t-small t-mute">' + until + "</p>" +
+          '<div class="acts">' +
+          '<button class="act act--lead" id="write-bro" type="button">Написать Bro</button>' +
+          '<button class="act act--lead" id="pay-now" type="button">Оплатить месяц</button>' +
           "</div>" +
-          '<p class="muted" id="write-status"></p>' +
-          '<p class="muted" id="pay-status"></p></div>' +
+          '<p class="status-line" id="write-status"></p>' +
+          '<p class="status-line" id="pay-status"></p>' +
           nowCard(me) +
           computerCard(me) +
           chatgptCard(me) +
-          '<div class="card"><h2>Лимиты</h2>' +
-          '<p class="muted">Сообщения сегодня: ' + me.msgsUsed + " из " + me.msgsAllowance + "</p>" +
-          '<div class="bar"><i style="width:' + pct(me.msgsUsed, me.msgsAllowance) + '%"></i></div>' +
-          '<p class="muted">Браузер-задачи в этом месяце: ' + me.browserUsed + " из " + me.browserAllowance + "</p>" +
-          '<div class="bar"><i style="width:' + pct(me.browserUsed, me.browserAllowance) + '%"></i></div></div>' +
+          '<section class="sec"><div class="sec__head"><h2>Лимиты</h2></div>' +
+          '<p class="t-small t-mute">Сообщения сегодня — ' + me.msgsUsed + " из " + me.msgsAllowance + "</p>" +
+          meter(me.msgsUsed, me.msgsAllowance) +
+          '<p class="t-small t-mute">Браузер-задачи в этом месяце — ' + me.browserUsed + " из " + me.browserAllowance + "</p>" +
+          meter(me.browserUsed, me.browserAllowance) + "</section>" +
           memoCard(me) +
-          '<div class="card" id="chrome"><h2>Входы в сайты</h2>' +
-          '<p class="muted">Когда Bro нужна твоя учётка, он сам пришлёт ссылку в чат. Открой, войди — пароль он не увидит, вход сохранится.</p>' +
-          '<p style="margin-top:0.7rem">' + profileStatusRu(me.browserProfileStatus, me.browserCookieDomains) + "</p></div>" +
+          '<section class="sec" id="chrome"><div class="sec__head"><h2>Входы в сайты</h2></div>' +
+          '<p class="t-small t-mute">Когда Bro нужна твоя учётка, он сам пришлёт ссылку в чат. Открой, войди — пароль он не увидит, вход сохранится.</p>' +
+          '<p class="t-small" style="margin-top:0.6rem">' + profileStatusRu(me.browserProfileStatus, me.browserCookieDomains) + "</p></section>" +
           vaultCard() +
           tzCard(me) +
-          '<div class="card"><h2>Оплаты</h2>' +
-          (pays ? '<ul class="pay">' + pays + "</ul>" : '<p class="muted">Пока нет оплат.</p>') +
-          "</div>";
+          '<section class="sec"><div class="sec__head"><h2>Оплаты</h2></div>' +
+          (pays ? '<ul class="rows">' + pays + "</ul>" : '<p class="t-small t-mute">Пока нет оплат.</p>') +
+          "</section>";
         boot.hidden = true;
         body.hidden = false;
         bindWrite(me);
@@ -659,8 +470,8 @@
               var hint = item.account || "";
               var line = item.label || kind;
               if (hint && hint !== line) line += " · " + hint;
-              return "<li><span class=\"memo-line\">" + esc(line) +
-                "</span><span class=\"vault-kind\">" + esc(kind) + "</span></li>";
+              return "<li><span class=\"row-main\">" + esc(line) +
+                "</span><span class=\"row-side\">" + esc(kind) + "</span></li>";
             }).join("");
           })
           .catch(function () {
@@ -774,7 +585,6 @@
               boot.textContent = "Сессия истекла. Войди снова.";
               document.getElementById("login-open").hidden = false;
               document.getElementById("logout").hidden = true;
-              document.getElementById("cabinet-open").hidden = true;
               var vaultNav = document.getElementById("vault-open");
               if (vaultNav) vaultNav.hidden = true;
               return null;

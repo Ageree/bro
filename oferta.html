@@ -2,30 +2,36 @@
 <html lang="ru">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>Публичная оферта — bro</title>
   <meta name="robots" content="noindex" />
+  <link rel="icon" href="/assets/bro-mark.svg" type="image/svg+xml" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Prata&family=Onest:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/assets/brand.css" />
   <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body {
-      font-family: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
-      color: #17271e;
-      background: #f6faf5;
-      line-height: 1.65;
-      -webkit-font-smoothing: antialiased;
-    }
-    main { max-width: 46rem; margin: 0 auto; padding: 3rem 1.5rem 4rem; }
-    h1 { font-size: 1.6rem; letter-spacing: -0.02em; margin-bottom: 0.4rem; }
-    .date { color: #3c4d43; font-size: 0.9rem; margin-bottom: 2rem; }
-    h2 { font-size: 1.1rem; margin: 1.8rem 0 0.6rem; }
-    p, li { font-size: 0.97rem; margin-bottom: 0.6rem; }
-    ol { padding-left: 1.3rem; }
-    a { color: #17271e; }
-    .req { margin-top: 2.4rem; padding-top: 1.2rem; border-top: 1px solid rgba(23,39,30,0.15); font-size: 0.9rem; color: #3c4d43; }
+    /* legal prose is the one place on the site with a running text measure */
+    .doc { max-width: 44rem; }
+    .doc h1 { font-family: var(--font-display); font-weight: 400; font-size: clamp(1.6rem, 6vw, 2.2rem); line-height: 1.15; margin-bottom: 0.35rem; }
+    .doc h2 { font-family: var(--font-display); font-weight: 400; font-size: 1.15rem; margin: 2rem 0 0.5rem; }
+    .doc p, .doc li { font-size: 0.95rem; line-height: 1.7; margin-bottom: 0.55rem; }
+    .doc ol { padding-left: 1.3rem; }
+    .doc a { color: inherit; text-underline-offset: 0.2em; }
+    .date { color: var(--ink-mute); font-size: 0.88rem; margin-bottom: 2rem; }
+    .req { margin-top: 2.6rem; padding-top: 1.3rem; border-top: 1px solid var(--rule); font-size: 0.88rem; color: var(--ink-mute); }
+    .req p { font-size: inherit; margin-bottom: 0.2rem; }
   </style>
 </head>
 <body>
-<main>
+
+<header class="bar">
+  <div></div>
+  <a class="link t-wordmark" href="/">bro.</a>
+  <div></div>
+</header>
+
+<main class="doc">
   <h1>Публичная оферта</h1>
   <p class="date">о предоставлении доступа к сервису «bro» · редакция от 27.08.2026</p>
 

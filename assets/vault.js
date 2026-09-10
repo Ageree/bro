@@ -298,16 +298,16 @@
       var siteLine = item.kind === "login" && item.origin ? esc(item.origin) : "";
       var li = document.createElement("li");
       li.innerHTML =
-        '<div class="item-meta"><p class="item-label">' +
+        '<div class="row-main"><p class="item-label">' +
         esc(item.label || "") +
-        '</p><p class="muted">' +
+        '</p><p class="t-small t-mute">' +
         esc(item.account || "") +
         "</p><p class=\"item-kind\">" +
         esc(kind) +
         (siteLine ? " · " + siteLine : "") +
         (item.available === false ? " · сейчас недоступно" : "") +
         "</p></div>" +
-        '<button class="ghost item-del" type="button" data-handle="' +
+        '<button class="act act--sm act--mute item-del" type="button" data-handle="' +
         esc(item.handle || "") +
         '" data-step="ask">Удалить</button>';
       list.appendChild(li);
