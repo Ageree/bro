@@ -40,8 +40,14 @@
   var modal = $("#login-modal");
   if (!loginBtn || !modal) return;
 
+  var landingOnly = !cabinetBtn && !vaultBtn && !logoutBtn;
+
   function painted() {
     var in_ = Boolean(token());
+    if (landingOnly) {
+      loginBtn.hidden = false;
+      return;
+    }
     loginBtn.hidden = in_;
     if (cabinetBtn) cabinetBtn.hidden = !in_;
     if (vaultBtn) vaultBtn.hidden = !in_;
@@ -107,6 +113,10 @@
 
   loginBtn.addEventListener("click", function (e) {
     e.preventDefault();
+    if (landingOnly && token()) {
+      window.location.href = afterLogin();
+      return;
+    }
     openModal();
   });
   $("#login-cancel").addEventListener("click", function (e) {

@@ -43,11 +43,13 @@ body {
   font-size: clamp(1.6rem, 5.5vw, 2.1rem);
   line-height: 1;
   letter-spacing: 0;
+  font-weight: 400;
 }
 .t-nav {
   font-family: var(--font-display);
   font-size: clamp(1rem, 3.4vw, 1.2rem);
   line-height: 1;
+  font-weight: 400;
 }
 .t-cta {
   font-family: var(--font-display);
@@ -64,6 +66,13 @@ body {
   text-decoration: none;
   display: inline-block;
   transition: opacity 0.25s var(--ease);
+}
+button.link {
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
 }
 .link:hover { opacity: 0.55; }
 .link:focus-visible { outline: 1px solid currentColor; outline-offset: 4px; }
@@ -103,13 +112,14 @@ body {
   overflow: hidden;
   background: var(--paper);
   color: var(--ink);
+  --cta-band: clamp(5.2rem, 14vw, 7.2rem);
 }
 .stage__video {
   position: absolute;
-  inset: 0;
+  inset: 0 0 var(--cta-band) 0;
   width: 100%;
-  height: 100%;
-  object-fit: cover;
+  object-fit: contain;
+  object-position: center bottom;
   display: block;
   background: var(--paper);
 }
@@ -126,33 +136,16 @@ body {
   gap: 1rem;
   padding: var(--pad);
 }
-/* the wordmark sits centred like a masthead, the action rides the edge */
-.stage__bar > :first-child,
-.stage__bar > :last-child { flex: 1 1 0; display: flex; gap: 0.9rem; }
-.stage__bar > :last-child { justify-content: flex-end; }
 
 .stage__foot {
   position: absolute;
   inset: auto 0 0 0;
   z-index: 2;
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   justify-content: center;
-  gap: 1rem;
-  padding: var(--pad);
+  min-height: var(--cta-band);
+  padding: 0 var(--pad) max(0.85rem, env(safe-area-inset-bottom));
+  background: var(--paper);
   text-align: center;
 }
-/* sound toggle, bottom right — revealed only once footage actually loads */
-.stage__sound {
-  position: absolute;
-  right: var(--pad);
-  bottom: var(--pad);
-  z-index: 3;
-  background: none;
-  border: 0;
-  padding: 0.3rem;
-  cursor: pointer;
-  color: var(--ink);
-  line-height: 0;
-}
-.stage__sound svg { width: 1.4rem; height: 1.4rem; fill: currentColor; }

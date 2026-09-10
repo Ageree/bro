@@ -358,9 +358,16 @@ assert(authJs.includes("Запросить доступ"), "missing handle point
 assert(authJs.includes("bro-xxxxxxxx"), "missing handle tells the person to type it");
 assert(authJs.includes("#vault-open") || authJs.includes('vault-open'), "auth shows vault when logged in");
 assert(authJs.includes("vaultBtn"), "auth paints vault nav");
+assert(authJs.includes("landingOnly"), "auth keeps the landing chrome to Войти");
 
 const landing = readFileSync(new URL("../index.html", import.meta.url), "utf8");
-assert(landing.includes('id="vault-open"'), "landing links to vault when logged in");
+assert(!landing.includes('id="vault-open"'), "landing has no vault nav");
+assert(!landing.includes('id="cabinet-open"'), "landing has no cabinet nav");
+assert(!landing.includes('id="logout"'), "landing has no logout in the hero");
+assert(!landing.includes("/oferta.html"), "landing hero has no oferta link");
+assert(!landing.includes("stage__sound"), "landing has no sound toggle");
+assert(landing.includes('id="login-open"'), "landing keeps only Войти");
+assert(landing.includes(">бро.<"), "landing wordmark is бро. in the display face");
 assert(landing.includes('id="login-send"'), "landing has login send");
 assert(
   /class="[^"]*\bsheet-cta\b[^"]*" id="login-send"/.test(landing),

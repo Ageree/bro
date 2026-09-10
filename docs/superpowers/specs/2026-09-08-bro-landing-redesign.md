@@ -72,9 +72,7 @@ as doji.com. Cast and photography notes:
 **They are shot against a flat light ground**, or the white page falls apart
 around them.
 
-A sound toggle sits bottom-right, as on doji, but stays hidden until a video actually
-reaches `readyState >= 2`. A visible control with nothing to unmute is worse than no
-control.
+No sound toggle. The film stays muted.
 
 ## No cartoon
 
@@ -87,34 +85,29 @@ typography.
 
 One screen. Nothing scrolls, the way doji's home does not scroll.
 
-- **Masthead** — «Оферта» left, `bro.` centred, «Войти» right. The same three slots
-  doji gives to Manifesto / Doji / Careers.
-- **The film** fills the screen.
+- **Masthead** — `бро.` left, «Войти» right. No Оферта, кабинет, сейф or
+  sound control on the landing; after login the person goes to `/cabinet.html`.
+- **The film** sits above a white CTA band so figures do not cover the line.
 - **«Получить своего бро»** large at the bottom, alone — no strapline under it.
-- **Sound toggle** bottom right, hidden until footage loads.
 
 The pricing table, the payment prose and the footer with the sole-trader details were
 all removed at the founder's request. **The legal content itself is not lost:**
 `oferta.html` already carries the ИП name, ИНН, ОГРНИП, the contact address, the
-refund terms, the YooKassa payment flow and the 152-ФЗ personal-data clause. It stays
-published and is now reached from the masthead link instead of a footer.
-
-That link is the reason the page keeps one non-design element. A payment provider
-needs the offer reachable from the site; a single word in the corner satisfies that
-without a wall of text under the film. If it goes too, nothing on the site states the
-terms a customer is paying under.
+refund terms, the YooKassa payment flow and the 152-ФЗ personal-data clause. It
+stays published; the landing itself no longer links to it.
 
 ## Contracts preserved
 
 Every id `assets/auth.js` binds (`#login-open`, `#login-modal`, `#login-handle`,
-`#login-send`, `#login-code`, `#login-verify`, `#login-status`, `#login-cancel`,
-`#cabinet-open`, `#vault-open`, `#logout`) and the `POST /access` flow. Both CTAs
-share one handler via `[data-request-access]` and show the same state.
+`#login-send`, `#login-code`, `#login-verify`, `#login-status`, `#login-cancel`)
+and the `POST /access` flow. Cabinet and vault still bind `#cabinet-open`,
+`#vault-open` and `#logout` on their own pages. Both CTAs share one handler via
+`[data-request-access]` and show the same state.
 
 ## Verification
 
 Rendered at 390×844 as a touch device and at 1280×800 with Prata and Onest loaded.
-Checked: no horizontal scroll on either, no console or page errors, only `bro.`
+Checked: no horizontal scroll on either, no console or page errors, only `бро.`
 and «Войти» in the masthead, both CTAs wired, and the orientation swap resolving
 to portrait on the phone and landscape on the desktop. Hero films now sit on
 those paths. `npm run cabinet:check` passes its landing assertions.

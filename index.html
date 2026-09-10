@@ -3,13 +3,13 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>bro — твой личный ИИ-агент</title>
+  <title>бро — твой личный ИИ-агент</title>
   <meta name="description" content="bro — персональный ИИ-агент со своим номером, памятью и руками в интернете. Записать к врачу, забронировать, заказать — просто напиши ему." />
   <meta name="theme-color" content="#ffffff" />
   <link rel="icon" href="/assets/bro-mark.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="/assets/bro-logo.png" />
   <meta property="og:type" content="website" />
-  <meta property="og:title" content="bro — твой личный ИИ-агент" />
+  <meta property="og:title" content="бро — твой личный ИИ-агент" />
   <meta property="og:description" content="Свой номер, своя память, свои руки в интернете. Записать к врачу, забронировать, заказать — просто напиши ему." />
   <meta property="og:image" content="/assets/bro-og.png" />
   <meta name="twitter:card" content="summary_large_image" />
@@ -80,23 +80,13 @@
     </video>
 
     <header class="stage__bar">
-      <div><a class="link t-nav" href="/oferta.html">Оферта</a></div>
-      <a class="link t-wordmark" href="/">bro.</a>
-      <div>
-        <a class="link t-nav" id="cabinet-open" href="/cabinet.html" hidden>Кабинет</a>
-        <a class="link t-nav" id="vault-open" href="/vault.html" hidden>Сейф</a>
-        <button class="link t-nav" id="logout" type="button" style="background:none;border:0;cursor:pointer" hidden>Выйти</button>
-        <button class="link t-nav" id="login-open" type="button" style="background:none;border:0;cursor:pointer">Войти</button>
-      </div>
+      <a class="link t-wordmark" href="/">бро.</a>
+      <button class="link t-nav" id="login-open" type="button">Войти</button>
     </header>
 
     <div class="stage__foot">
       <a class="link t-cta" id="request-access" data-request-access href="#">Получить своего бро</a>
     </div>
-
-    <button class="stage__sound" id="sound" type="button" aria-label="Включить звук" hidden>
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4zm12.5 3a4.5 4.5 0 0 0-2.5-4v8a4.5 4.5 0 0 0 2.5-4z"/></svg>
-    </button>
   </section>
 
   <div class="modal" id="login-modal" hidden>
@@ -120,28 +110,6 @@
 
   <script src="assets/config.js"></script>
   <script src="assets/auth.js"></script>
-  <script>
-    /* The sound toggle only appears once a film is actually playing — a
-       visible control with nothing to unmute is worse than none. */
-    (function () {
-      var btn = document.querySelector("#sound");
-      var videos = [].slice.call(document.querySelectorAll(".stage__video"));
-      if (!btn || !videos.length) return;
-
-      function shown() { return videos.some(function (v) { return v.readyState >= 2; }); }
-      function reveal() { if (shown()) btn.hidden = false; }
-
-      videos.forEach(function (v) { v.addEventListener("loadeddata", reveal); });
-      reveal();
-
-      btn.addEventListener("click", function () {
-        var muting = !videos[0].muted;
-        videos.forEach(function (v) { v.muted = muting; });
-        btn.setAttribute("aria-label", muting ? "Включить звук" : "Выключить звук");
-        btn.style.opacity = muting ? "" : "0.45";
-      });
-    })();
-  </script>
   <script>
     (function () {
       var KEY = "bro.handle";
