@@ -163,6 +163,13 @@ export const getByConversation = query({
   returns: v.union(tenantDoc, v.null()),
   handler: async (ctx, { secret, conversationId }) => {
     assertSecret(secret);
+    const photon = await ctx.db
+      .query("tenants")
+      .withIndex("by_photon_conversation", (q) =>
+        q.eq("photonConversationId", conversationId),
+      )
+      .unique();
+    if (photon) return photon;
     return await ctx.db
       .query("tenants")
       .withIndex("by_conversation", (q) =>
@@ -569,6 +576,9 @@ export const insertProvisioned = internalMutation({
     webhookSigningKey: v.optional(v.string()),
     dedicatedIMessageNumber: v.optional(v.string()),
     dedicatedIMessageNumberStatus: v.optional(v.string()),
+    photonUserId: v.optional(v.string()),
+    photonAssignedNumber: v.optional(v.string()),
+    phoneE164: v.optional(v.string()),
   },
   returns: tenantDoc,
   handler: async (ctx, args) => {
@@ -576,7 +586,28 @@ export const insertProvisioned = internalMutation({
       .query("tenants")
       .withIndex("by_handle", (q) => q.eq("inkboxHandle", args.inkboxHandle))
       .unique();
-    if (existing) return existing;
+    if (existing) {
+      const patch: {
+        photonUserId?: string;
+        photonAssignedNumber?: string;
+        phoneE164?: string;
+      } = {};
+      if (args.photonUserId && existing.photonUserId !== args.photonUserId) {
+        patch.photonUserId = args.photonUserId;
+      }
+      if (
+        args.photonAssignedNumber &&
+        existing.photonAssignedNumber !== args.photonAssignedNumber
+      ) {
+        patch.photonAssignedNumber = args.photonAssignedNumber;
+      }
+      if (args.phoneE164 && !existing.phoneE164) patch.phoneE164 = args.phoneE164;
+      if (Object.keys(patch).length) {
+        await ctx.db.patch(existing._id, patch);
+        return { ...existing, ...patch };
+      }
+      return existing;
+    }
     const email = args.emailAddress?.trim().toLowerCase();
     const id = await ctx.db.insert("tenants", {
       inkboxHandle: args.inkboxHandle,
@@ -585,12 +616,161 @@ export const insertProvisioned = internalMutation({
       webhookSigningKey: args.webhookSigningKey,
       dedicatedIMessageNumber: args.dedicatedIMessageNumber,
       dedicatedIMessageNumberStatus: args.dedicatedIMessageNumberStatus,
+      photonUserId: args.photonUserId,
+      photonAssignedNumber: args.photonAssignedNumber,
+      phoneE164: args.phoneE164,
       displayName: "Bro",
       status: "active",
     });
     const created = await ctx.db.get(id);
     if (!created) throw new Error("tenant insert failed");
     return created;
+  },
+});
+
+export const bindPhotonInbound = mutation({
+  args: {
+    secret: v.string(),
+    phoneE164: v.string(),
+    photonConversationId: v.string(),
+    photonUserId: v.optional(v.string()),
+    photonAssignedNumber: v.optional(v.string()),
+    handle: v.optional(v.string()),
+  },
+  returns: v.union(
+    v.object({
+      ok: v.literal(true),
+      tenant: tenantDoc,
+      firstBind: v.boolean(),
+    }),
+    v.object({ ok: v.literal(false), reason: v.string() }),
+  ),
+  handler: async (ctx, args) => {
+    assertSecret(args.secret);
+    const phone = args.phoneE164.trim();
+    const conversation = args.photonConversationId.trim();
+    if (!phone || !conversation) {
+      return { ok: false as const, reason: "missing fields" };
+    }
+    let tenant = args.handle
+      ? await ctx.db
+          .query("tenants")
+          .withIndex("by_handle", (q) => q.eq("inkboxHandle", args.handle!))
+          .unique()
+      : null;
+    if (!tenant) {
+      tenant = await ctx.db
+        .query("tenants")
+        .withIndex("by_phone", (q) => q.eq("phoneE164", phone))
+        .first();
+    }
+    if (!tenant && args.photonUserId) {
+      tenant = await ctx.db
+        .query("tenants")
+        .withIndex("by_photon_user", (q) => q.eq("photonUserId", args.photonUserId!))
+        .unique();
+    }
+    if (!tenant) {
+      const id = await ctx.db.insert("tenants", {
+        phoneE164: phone,
+        status: "active",
+        photonConversationId: conversation,
+        photonUserId: args.photonUserId,
+        photonAssignedNumber: args.photonAssignedNumber,
+        lastChannel: "imessage",
+      });
+      const created = await ctx.db.get(id);
+      if (!created) return { ok: false as const, reason: "missing" };
+      return { ok: true as const, tenant: created, firstBind: true };
+    }
+    if (tenant.status === "disabled") {
+      return { ok: false as const, reason: "disabled" };
+    }
+    if (tenant.phoneE164 && tenant.phoneE164 !== phone) {
+      return { ok: false as const, reason: "wrong phone" };
+    }
+    const firstBind = !tenant.photonConversationId;
+    const patch: {
+      phoneE164?: string;
+      photonConversationId?: string;
+      photonUserId?: string;
+      photonAssignedNumber?: string;
+      lastChannel?: "imessage";
+    } = { lastChannel: "imessage" };
+    if (!tenant.phoneE164) patch.phoneE164 = phone;
+    if (tenant.photonConversationId !== conversation) {
+      patch.photonConversationId = conversation;
+    }
+    if (args.photonUserId && tenant.photonUserId !== args.photonUserId) {
+      patch.photonUserId = args.photonUserId;
+    }
+    if (
+      args.photonAssignedNumber &&
+      tenant.photonAssignedNumber !== args.photonAssignedNumber
+    ) {
+      patch.photonAssignedNumber = args.photonAssignedNumber;
+    }
+    await ctx.db.patch(tenant._id, patch);
+    const next = await ctx.db.get(tenant._id);
+    if (!next) return { ok: false as const, reason: "missing" };
+    return { ok: true as const, tenant: next, firstBind };
+  },
+});
+
+export const markPhotonNudgeSent = mutation({
+  args: {
+    secret: v.string(),
+    conversationId: v.string(),
+    now: v.number(),
+  },
+  returns: v.object({ sent: v.boolean() }),
+  handler: async (ctx, { secret, conversationId, now }) => {
+    assertSecret(secret);
+    const tenant = await ctx.db
+      .query("tenants")
+      .withIndex("by_conversation", (q) =>
+        q.eq("inkboxConversationId", conversationId),
+      )
+      .unique();
+    if (!tenant) return { sent: false };
+    if (tenant.photonNudgeSentAt) return { sent: false };
+    await ctx.db.patch(tenant._id, { photonNudgeSentAt: now });
+    return { sent: true };
+  },
+});
+
+export const listNeedingPhotonNudge = internalQuery({
+  args: { secret: v.string() },
+  returns: v.array(
+    v.object({
+      inkboxConversationId: v.string(),
+      inkboxHandle: v.optional(v.string()),
+      photonAssignedNumber: v.optional(v.string()),
+      phoneE164: v.optional(v.string()),
+    }),
+  ),
+  handler: async (ctx, { secret }) => {
+    assertSecret(secret);
+    const rows = await ctx.db.query("tenants").take(200);
+    const out: Array<{
+      inkboxConversationId: string;
+      inkboxHandle?: string;
+      photonAssignedNumber?: string;
+      phoneE164?: string;
+    }> = [];
+    for (const row of rows) {
+      if (row.status === "disabled") continue;
+      if (!row.inkboxConversationId) continue;
+      if (row.photonConversationId) continue;
+      if (row.photonNudgeSentAt) continue;
+      out.push({
+        inkboxConversationId: row.inkboxConversationId,
+        inkboxHandle: row.inkboxHandle,
+        photonAssignedNumber: row.photonAssignedNumber,
+        phoneE164: row.phoneE164,
+      });
+    }
+    return out;
   },
 });
 

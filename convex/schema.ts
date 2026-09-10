@@ -11,6 +11,10 @@ export default defineSchema({
     displayName: v.optional(v.string()),
     status: v.union(v.literal("active"), v.literal("disabled")),
     inkboxConversationId: v.optional(v.string()),
+    photonUserId: v.optional(v.string()),
+    photonConversationId: v.optional(v.string()),
+    photonAssignedNumber: v.optional(v.string()),
+    photonNudgeSentAt: v.optional(v.number()),
     browserSessionId: v.optional(v.string()),
     browserLiveUrl: v.optional(v.string()),
     browserRunId: v.optional(v.string()),
@@ -49,6 +53,8 @@ export default defineSchema({
     .index("by_phone", ["phoneE164"])
     .index("by_handle", ["inkboxHandle"])
     .index("by_conversation", ["inkboxConversationId"])
+    .index("by_photon_conversation", ["photonConversationId"])
+    .index("by_photon_user", ["photonUserId"])
     .index("by_email", ["emailAddress"])
     .index("by_telegram", ["telegramUserId"])
     .index("by_telegram_bind", ["telegramBindToken"]),

@@ -9,8 +9,7 @@ export function dedicatedLineEnabled(raw: string | undefined): boolean {
 export type IdentityCreateBody = {
   agent_handle: string;
   display_name: string;
-  imessage_enabled: true;
-  claim_imessage_number?: true;
+  imessage_enabled: false;
 };
 
 export function identityCreateBody(opts: {
@@ -18,31 +17,28 @@ export function identityCreateBody(opts: {
   displayName: string;
   dedicatedLine: boolean;
 }): IdentityCreateBody {
-  const body: IdentityCreateBody = {
+  void opts.dedicatedLine;
+  return {
     agent_handle: opts.handle,
     display_name: opts.displayName,
-    imessage_enabled: true,
+    imessage_enabled: false,
   };
-  if (opts.dedicatedLine) body.claim_imessage_number = true;
-  return body;
 }
 
 export type SdkCreateIdentityOptions = {
   displayName: string;
-  imessageEnabled: true;
-  claimIMessageNumber?: true;
+  imessageEnabled: false;
 };
 
 export function sdkCreateIdentityOptions(
   dedicatedLine: boolean,
   displayName = "Bro",
 ): SdkCreateIdentityOptions {
-  const opts: SdkCreateIdentityOptions = {
+  void dedicatedLine;
+  return {
     displayName,
-    imessageEnabled: true,
+    imessageEnabled: false,
   };
-  if (dedicatedLine) opts.claimIMessageNumber = true;
-  return opts;
 }
 
 export function dedicatedClaimIdempotencyKey(handle: string): string {
@@ -50,24 +46,21 @@ export function dedicatedClaimIdempotencyKey(handle: string): string {
 }
 
 export type ExistingIdentityUpdate = {
-  imessageEnabled?: true;
-  claimIMessageNumber?: true;
-  idempotencyKey?: string;
+  imessageEnabled?: false;
 };
 
+/** Mail-only: turn iMessage off. Never claim a dedicated chat line. */
 export function existingIdentityUpdateOptions(opts: {
   dedicatedLine: boolean;
   imessageEnabled: boolean;
   hasDedicatedNumber: boolean;
   handle: string;
 }): ExistingIdentityUpdate | undefined {
-  const patch: ExistingIdentityUpdate = {};
-  if (!opts.imessageEnabled) patch.imessageEnabled = true;
-  if (opts.dedicatedLine && !opts.hasDedicatedNumber) {
-    patch.claimIMessageNumber = true;
-    patch.idempotencyKey = dedicatedClaimIdempotencyKey(opts.handle);
-  }
-  return Object.keys(patch).length > 0 ? patch : undefined;
+  void opts.dedicatedLine;
+  void opts.hasDedicatedNumber;
+  void opts.handle;
+  if (opts.imessageEnabled) return { imessageEnabled: false };
+  return undefined;
 }
 
 /** Shape required by `inkbox.imessages.claimNumber` (unattached inventory). */

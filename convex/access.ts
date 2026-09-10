@@ -7,16 +7,12 @@ import {
   isIosUserAgent,
   isValidHandle,
   makeHandle,
-  webhookUrlForHandle,
 } from "./lib/accessPolicy";
-import {
-  dedicatedLineEnabled,
-  dedicatedLineFromIdentityPayload,
-  dedicatedLineFromInventory,
-  identityCreateBody,
-} from "./lib/dedicatedLinePolicy";
+import { identityCreateBody } from "./lib/dedicatedLinePolicy";
 import { mailWebhookUrl } from "./lib/mailPolicy";
 import { newSessionToken, sha256hex } from "./lib/cabinetPolicy";
+import { normalizePhotonE164, photonSmsLink } from "./lib/photonPolicy";
+import { upsertPhotonSharedUser } from "./lib/photonRest";
 
 type InkboxIdentity = {
   id?: string;
@@ -28,12 +24,6 @@ type InkboxIdentity = {
     number?: string;
     type?: string;
   } | null;
-};
-
-type InkboxTriage = {
-  number?: string;
-  connect_command?: string;
-  sms_link?: string;
 };
 
 type InkboxSub = {
@@ -86,31 +76,6 @@ async function inkbox(
   return json;
 }
 
-async function triage(identityId: string): Promise<InkboxTriage> {
-  const q = new URLSearchParams({ agent_identity_id: identityId });
-  return (await inkbox(
-    "GET",
-    `/imessage/triage-number?${q}`,
-  )) as InkboxTriage;
-}
-
-/** GET /imessage/numbers — same path as `inkbox.imessages.listNumbers()`. */
-async function listIMessageNumbers(): Promise<unknown> {
-  const res = await fetch("https://inkbox.ai/api/v1/imessage/numbers", {
-    method: "GET",
-    headers: {
-      "X-API-Key": apiKey(),
-      Accept: "application/json",
-    },
-    signal: AbortSignal.timeout(20_000),
-  });
-  const text = await res.text();
-  if (!res.ok) {
-    throw new Error(`inkbox ${res.status} /imessage/numbers: ${text.slice(0, 400)}`);
-  }
-  return text ? JSON.parse(text) : [];
-}
-
 const result = v.union(
   v.object({
     ok: v.literal(true),
@@ -124,6 +89,7 @@ const result = v.union(
     code: v.union(
       v.literal("not_ios"),
       v.literal("closed"),
+      v.literal("need_phone"),
       v.literal("error"),
     ),
     message: v.string(),
@@ -133,31 +99,64 @@ const result = v.union(
 export const requestAccess = internalAction({
   args: {
     handle: v.optional(v.string()),
+    phone: v.optional(v.string()),
     ua: v.string(),
     create: v.boolean(),
   },
   returns: result,
-  handler: async (ctx, { handle, ua, create }) => {
+  handler: async (ctx, { handle, phone, ua, create }) => {
+    const phoneE164 = phone ? normalizePhotonE164(phone) : undefined;
+
+    async function photonLinkFor(
+      existingPhone: string,
+    ): Promise<{ smsLink: string; connectCommand: string; userId: string; assigned: string }> {
+      const user = await upsertPhotonSharedUser({
+        phoneNumber: existingPhone,
+        firstName: "Bro",
+      });
+      const assigned = user.assignedPhoneNumber?.trim();
+      if (!assigned) throw new Error("photon user missing assigned number");
+      return {
+        smsLink: photonSmsLink(assigned),
+        connectCommand: assigned,
+        userId: user.id,
+        assigned,
+      };
+    }
+
     if (handle && isValidHandle(handle)) {
       const existing = await ctx.runQuery(internal.tenants.getByHandleInternal, {
         handle,
       });
       if (existing?.inkboxIdentityId) {
+        const knownPhone = existing.phoneE164 ?? phoneE164;
+        if (!knownPhone) {
+          return {
+            ok: false as const,
+            code: "need_phone" as const,
+            message: "Нужен номер телефона, чтобы открыть чат Bro",
+          };
+        }
         try {
-          const t = await triage(existing.inkboxIdentityId);
-          if (t.sms_link && t.connect_command) {
-            return {
-              ok: true as const,
-              handle,
-              smsLink: t.sms_link,
-              connectCommand: t.connect_command,
-            };
-          }
+          const link = await photonLinkFor(knownPhone);
+          await ctx.runMutation(internal.tenants.insertProvisioned, {
+            inkboxHandle: handle,
+            inkboxIdentityId: existing.inkboxIdentityId,
+            phoneE164: knownPhone,
+            photonUserId: link.userId,
+            photonAssignedNumber: link.assigned,
+          });
+          return {
+            ok: true as const,
+            handle,
+            smsLink: link.smsLink,
+            connectCommand: link.connectCommand,
+          };
         } catch (err) {
           return {
             ok: false as const,
             code: "error" as const,
-            message: err instanceof Error ? err.message : "triage failed",
+            message: err instanceof Error ? err.message : "photon user failed",
           };
         }
       }
@@ -179,6 +178,14 @@ export const requestAccess = internalAction({
       };
     }
 
+    if (!phoneE164) {
+      return {
+        ok: false as const,
+        code: "need_phone" as const,
+        message: "Нужен номер телефона, чтобы открыть чат Bro",
+      };
+    }
+
     const used = await ctx.runQuery(internal.tenants.countProvisioned, {});
     if (identityCapReached(used, cap())) {
       return {
@@ -196,7 +203,7 @@ export const requestAccess = internalAction({
         identity = (await inkbox("POST", "/identities", identityCreateBody({
           handle: candidate,
           displayName: "Bro",
-          dedicatedLine: dedicatedLineEnabled(process.env.BRO_DEDICATED_LINE),
+          dedicatedLine: false,
         }))) as InkboxIdentity;
       } catch (err) {
         const status = (err as Error & { status?: number }).status;
@@ -228,102 +235,68 @@ export const requestAccess = internalAction({
         };
       }
 
-      let signingKey: string | undefined;
-      try {
-        const sub = (await inkbox("POST", "/webhooks/subscriptions", {
-          agent_identity_id: id,
-          url: webhookUrlForHandle(webhookBase(), gotHandle),
-          event_types: ["imessage.received", "imessage.delivery_failed"],
-        })) as InkboxSub;
-        if (typeof sub.signing_key === "string" && sub.signing_key) {
-          signingKey = sub.signing_key;
-        }
-      } catch (err) {
-        return {
-          ok: false as const,
-          code: "error" as const,
-          message: err instanceof Error ? err.message : "webhook failed",
-        };
-      }
-
       let mailboxId = identity.mailbox?.id;
-      const wantDedicated = dedicatedLineEnabled(process.env.BRO_DEDICATED_LINE);
-      if (!mailboxId || (wantDedicated && !identity.imessage_number)) {
+      if (!mailboxId) {
         try {
           const full = (await inkbox("GET", `/identities/${gotHandle}`)) as InkboxIdentity;
-          mailboxId = mailboxId ?? full.mailbox?.id;
+          mailboxId = full.mailbox?.id;
           if (!identity.email_address && full.email_address) {
             identity.email_address = full.email_address;
-          }
-          if (!identity.imessage_number && full.imessage_number) {
-            identity.imessage_number = full.imessage_number;
           }
         } catch (err) {
           console.error("identity refetch failed", err);
         }
       }
+      let signingKey: string | undefined;
       if (mailboxId) {
         try {
-          await inkbox("POST", "/webhooks/subscriptions", {
+          const sub = (await inkbox("POST", "/webhooks/subscriptions", {
             mailbox_id: mailboxId,
             url: mailWebhookUrl(webhookBase(), gotHandle),
             event_types: ["message.received"],
-          });
+          })) as InkboxSub;
+          if (typeof sub.signing_key === "string" && sub.signing_key) {
+            signingKey = sub.signing_key;
+          }
         } catch (err) {
           console.error("mail webhook failed", err);
         }
       }
 
-      let dedicatedLine = dedicatedLineFromIdentityPayload(identity);
-      if (dedicatedLine) {
-        try {
-          dedicatedLine = dedicatedLineFromInventory(
-            dedicatedLine,
-            await listIMessageNumbers(),
-            { identityId: id, handle: gotHandle },
-          );
-        } catch (err) {
-          console.error("list iMessage numbers failed", err);
-        }
+      let link: Awaited<ReturnType<typeof photonLinkFor>>;
+      try {
+        link = await photonLinkFor(phoneE164);
+      } catch (err) {
+        return {
+          ok: false as const,
+          code: "error" as const,
+          message: err instanceof Error ? err.message : "photon user failed",
+        };
       }
+
       await ctx.runMutation(internal.tenants.insertProvisioned, {
         inkboxHandle: gotHandle,
         inkboxIdentityId: id,
         emailAddress: identity.email_address ?? undefined,
         webhookSigningKey: signingKey,
-        dedicatedIMessageNumber: dedicatedLine?.number,
-        dedicatedIMessageNumberStatus: dedicatedLine?.status,
+        phoneE164,
+        photonUserId: link.userId,
+        photonAssignedNumber: link.assigned,
       });
 
-      try {
-        const t = await triage(id);
-        if (!t.sms_link || !t.connect_command) {
-          return {
-            ok: false as const,
-            code: "error" as const,
-            message: "no sms_link",
-          };
-        }
-        const sessionToken = newSessionToken();
-        await ctx.runMutation(internal.cabinet.issueDeviceSession, {
-          handle: gotHandle,
-          tokenHash: await sha256hex(sessionToken),
-          now: Date.now(),
-        });
-        return {
-          ok: true as const,
-          handle: gotHandle,
-          smsLink: t.sms_link,
-          connectCommand: t.connect_command,
-          sessionToken,
-        };
-      } catch (err) {
-        return {
-          ok: false as const,
-          code: "error" as const,
-          message: err instanceof Error ? err.message : "triage failed",
-        };
-      }
+      const sessionToken = newSessionToken();
+      await ctx.runMutation(internal.cabinet.issueDeviceSession, {
+        handle: gotHandle,
+        tokenHash: await sha256hex(sessionToken),
+        now: Date.now(),
+      });
+      return {
+        ok: true as const,
+        handle: gotHandle,
+        smsLink: link.smsLink,
+        connectCommand: link.connectCommand,
+        sessionToken,
+      };
     }
 
     return { ok: false as const, code: "error" as const, message: lastErr };

@@ -8,6 +8,7 @@ export type LoginStartKind = "unknown" | "unbound" | "cooldown" | "ok";
 export type BoundTenant = {
   phoneE164?: string;
   inkboxConversationId?: string;
+  photonConversationId?: string;
   inkboxHandle?: string;
   inkboxIdentityId?: string;
 };
@@ -20,7 +21,8 @@ export function loginStartDecision(opts: {
 }): LoginStartKind {
   const t = opts.tenant;
   if (!t?.inkboxHandle) return "unknown";
-  if (!t.phoneE164 || !t.inkboxConversationId || !t.inkboxIdentityId) {
+  const chatId = t.photonConversationId || t.inkboxConversationId;
+  if (!t.phoneE164 || !chatId || !t.inkboxIdentityId) {
     return "unbound";
   }
   const cool = opts.cooldownMs ?? START_COOLDOWN_MS;
