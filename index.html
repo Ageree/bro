@@ -17,58 +17,11 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Prata&family=Onest:wght@400;500&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/assets/brand.css" />
-  <style>
-    /* ---- login sheet ---- */
-    .modal {
-      position: fixed;
-      inset: 0;
-      z-index: 20;
-      background: rgba(0, 0, 0, 0.4);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 1.2rem;
-    }
-    .modal[hidden] { display: none; }
-    .sheet {
-      width: min(23rem, 100%);
-      background: var(--paper);
-      padding: 1.7rem 1.5rem 1.3rem;
-      text-align: left;
-    }
-    .sheet h2 { font-family: var(--font-display); font-size: 1.35rem; margin-bottom: 0.6rem; }
-    .sheet label { display: block; font-size: 0.8rem; color: var(--ink-mute); margin: 0.9rem 0 0.35rem; }
-    .sheet input {
-      width: 100%;
-      font: inherit;
-      padding: 0.7rem 0.8rem;
-      border: 1px solid var(--ink);
-      border-radius: 0;
-      background: var(--paper);
-      color: var(--ink);
-    }
-    .sheet input:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
-    .sheet .sheet-cta { display: flex; width: 100%; margin-top: 1rem; white-space: nowrap; }
-    .sheet .text-close {
-      font-family: var(--font-display);
-      display: block;
-      width: 100%;
-      margin-top: 0.85rem;
-      background: none;
-      border: 0;
-      color: var(--ink-mute);
-      font: inherit;
-      font-size: 0.9rem;
-      cursor: pointer;
-      text-align: center;
-    }
-    .sheet .status { min-height: 1.3rem; margin-top: 0.7rem; color: var(--ink-mute); font-size: 0.86rem; line-height: 1.4; }
-  </style>
 </head>
 <body>
 
   <section class="stage">
-    <header class="stage__bar">
+    <header class="bar stage__bar">
       <div><a class="link t-nav" href="/oferta.html">Оферта</a></div>
       <a class="link t-wordmark" href="/">bro.</a>
       <div>

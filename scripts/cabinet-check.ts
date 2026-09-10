@@ -366,7 +366,12 @@ assert(
   /class="[^"]*\bsheet-cta\b[^"]*" id="login-send"/.test(landing),
   "login send is a full-width one-line CTA",
 );
-assert(landing.includes("white-space: nowrap"), "login CTA stays on one line");
+const brand = readFileSync(new URL("../assets/brand.css", import.meta.url), "utf8");
+assert(brand.includes("white-space: nowrap"), "login CTA stays on one line");
+assert(
+  landing.includes('href="/assets/brand.css"'),
+  "landing takes the login sheet from the shared stylesheet",
+);
 assert(
   landing.includes("Код придёт сообщением от Bro"),
   "login sheet says where the code arrives",
@@ -463,8 +468,23 @@ assert(!snapshotValidatorHas(cabinetSrc, "boxId"), "cabinet snapshot does not ex
 assert(!snapshotValidatorHas(cabinetSrc, "userCode"), "cabinet snapshot does not expose userCode");
 assert(!cabinetSrc.includes("setTimezone"), "cabinet.ts does not add /me/tz mutation");
 
+// The cabinet and the vault are the landing's system, not their own: one
+// stylesheet, one serif, no photograph behind the page and no card chrome.
+assert(cabinet.includes('href="/assets/brand.css"'), "cabinet uses the brand stylesheet");
+assert(!/<style>/.test(cabinet), "cabinet carries no page-local stylesheet");
+assert(!cabinet.includes("meadow"), "cabinet has no photograph behind it");
+assert(!cabinet.includes('class="card"'), "cabinet has no cards");
+assert(cabinet.includes('family=Prata'), "cabinet is set in the display serif");
+assert(cabinet.includes('class="sec"'), "cabinet is sections divided by rules");
+
 const vault = readFileSync(new URL("../vault.html", import.meta.url), "utf8");
 assert(vault.includes('id="login-handle-row"'), "vault login handle row");
+assert(vault.includes('href="/assets/brand.css"'), "vault uses the brand stylesheet");
+assert(!vault.includes("meadow"), "vault has no photograph behind it");
+assert(!vault.includes('class="card"'), "vault has no cards");
+const vaultJs = readFileSync(new URL("../assets/vault.js", import.meta.url), "utf8");
+assert(!vaultJs.includes("ghost"), "vault rows do not paint the old pill button");
+assert(brand.includes("--rule:"), "the system has one hairline token");
 assert(landing.includes('id="login-handle-row"'), "landing login handle row");
 
 const httpSrc = readFileSync(new URL("../convex/http.ts", import.meta.url), "utf8");
@@ -506,11 +526,11 @@ assert(!httpSrc.includes("BOX_API_KEY"), "http does not send BOX_API_KEY");
 
 assert(landing.includes('id="request-access"'), "landing CTA has id");
 assert(
-  landing.includes('querySelector("#request-access")'),
-  "landing CTA script does not grab modal .cta",
+  landing.includes('querySelectorAll("[data-request-access]")'),
+  "landing CTA script binds the marked CTAs, not the first .cta",
 );
 assert(
-  !/var cta = document\.querySelector\("\.cta"\)/.test(landing),
+  !/document\.querySelector\("\.cta"\)/.test(landing),
   "landing does not query first .cta",
 );
 
