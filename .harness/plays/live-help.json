@@ -1,0 +1,10 @@
+{
+  "name": "live-help-catalog",
+  "broHandle": "bro-live-bro",
+  "turns": [
+    {
+      "text": "привет",
+      "expect": "консьерж|купить|напомнить|записать"
+    }
+  ]
+}
