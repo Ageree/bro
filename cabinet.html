@@ -304,6 +304,10 @@
                 window.location.href = data.smsLink;
                 return;
               }
+              if (data.code === "need_phone") {
+                st.textContent = "Нужен номер телефона — открой лендинг на iPhone.";
+                return;
+              }
               st.textContent = "Не вышло, нажми ещё раз";
             })
             .catch(function () {

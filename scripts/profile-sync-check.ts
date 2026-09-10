@@ -62,7 +62,7 @@ const tool = readFileSync(
   new URL("../agent/tools/profile_setup.ts", import.meta.url),
   "utf8",
 );
-assert(tool.includes("sendBlueIMessage"), "tool texts the link itself");
+assert(tool.includes("deliverHuman"), "tool texts the link itself");
 assert(tool.includes("loginChatText"), "tool uses the plain copy");
 
 console.log("profile-sync-check ok");
