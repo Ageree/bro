@@ -61,7 +61,7 @@ inside the login sheet, and it is a square black rectangle.
 
 A flex column: the masthead and the call to action take their own height, the film
 gets whatever is left. `assets/hero-portrait.mp4` is the real footage — 720×1280,
-28.9 s, H.264, 4.05 MB, generated in Seedance and shot on white.
+28.9 s, H.264, 996 KB, generated in Seedance.
 
 **`object-fit: contain`, never `cover`.** This is the whole point: a 9:16 clip under
 `cover` on a 16:9 desktop crops the head and the feet off. Under `contain` the figure
@@ -73,6 +73,34 @@ the call to action.
 
 The clip carries a single track and no audio, so there is no sound toggle — doji has
 one because their film has sound. A control with nothing to unmute is worse than none.
+
+### The page follows the film, not the other way round
+
+The clip is not shot on the page's white. Measured at full resolution across every
+second: the background sits anywhere between **207 and 253** depending on the
+character, and drifts within a single frame too. Against a fixed `#ffffff` page that
+shows as a grey rectangle around the letterboxed frame — worst case 48 levels off.
+
+**Correcting the video does not work, and this was tried.** A tone curve that lifts
+the background to white also lifts anything at the same brightness, and several
+characters wear light clothing: at a knee of 190 the man in the white shirt
+dissolved into the background entirely, and the pink top and grey vest washed out.
+Background and shirt occupy the same tonal range, so no global operator can separate
+them. (ffmpeg's `curves` is worth a warning of its own: it interpolates a spline
+through the control points, so a "flat below 0.78" curve still lifted the whole
+figure by 52 levels on average. `lutrgb` with an explicit expression is the tool for
+a piecewise knee.)
+
+So the page adapts instead. A 1×1 canvas samples the corner of the current frame —
+always background, never the figure — eight times a second and writes it to
+`--paper`. Every surface on the page reads that token, so the whole page becomes
+exactly the film's white and the seam cannot exist. Verified in a browser against a
+VP9 copy of the clip: the page tracked 246 → 253 → 246 → 247 across the cuts, in
+step with the footage. A tainted canvas throws, which stops the loop and leaves the
+default white — no broken state.
+
+The clip is also re-encoded for weight only, no colour touched: **4.05 MB → 996 KB**
+at CRF 27 with `+faststart`.
 
 **One thing worth fixing later:** the clip is portrait only, so on a wide desktop it is
 height-limited and the figure ends up narrow — 335 px across a 1280 px viewport. doji
