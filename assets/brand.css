@@ -1,0 +1,151 @@
+/* ============================================================
+   bro — design system
+
+   White page, black serif, one figure in the middle. Chrome is
+   text and nothing else: no pills, no boxes, no borders. The
+   footage is the only image on the page.
+
+   Reference: doji.com — same restraint, our own type and words.
+   ============================================================ */
+
+:root {
+  --paper:     #ffffff;
+  --ink:       #000000;
+  --ink-mute:  #757575;
+
+  --pad:       clamp(1.15rem, 4vw, 2rem);
+
+  /* the display face carries the whole brand; the gothic is only
+     for fine print, the way doji pairs a headline with a default */
+  --font-display: "Prata", Georgia, "Times New Roman", serif;
+  --font-text:    "Onest", system-ui, -apple-system, sans-serif;
+
+  --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { overflow-x: hidden; }
+html { scroll-behavior: smooth; }
+
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-text);
+  font-size: 1rem;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---------- type ---------- */
+.t-wordmark {
+  font-family: var(--font-display);
+  font-size: clamp(1.6rem, 5.5vw, 2.1rem);
+  line-height: 1;
+  letter-spacing: 0;
+  font-weight: 400;
+}
+.t-nav {
+  font-family: var(--font-display);
+  font-size: clamp(1rem, 3.4vw, 1.2rem);
+  line-height: 1;
+  font-weight: 400;
+}
+.t-cta {
+  font-family: var(--font-display);
+  font-size: clamp(1.9rem, 7vw, 2.6rem);
+  line-height: 1.05;
+  letter-spacing: -0.01em;
+}
+.t-small { font-size: 0.88rem; line-height: 1.65; }
+.t-mute  { color: var(--ink-mute); }
+
+/* ---------- links: chrome is text ---------- */
+.link {
+  color: inherit;
+  text-decoration: none;
+  display: inline-block;
+  transition: opacity 0.25s var(--ease);
+}
+button.link {
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+}
+.link:hover { opacity: 0.55; }
+.link:focus-visible { outline: 1px solid currentColor; outline-offset: 4px; }
+
+/* the login sheet still needs real buttons */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font: inherit;
+  font-family: var(--font-text);
+  border: 1px solid var(--ink);
+  border-radius: 0;
+  background: var(--ink);
+  color: var(--paper);
+  padding: 0.75rem 1.5rem;
+  cursor: pointer;
+  transition: opacity 0.25s var(--ease);
+}
+.btn:hover { opacity: 0.82; }
+.btn:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  .link, .btn { transition: none; }
+}
+
+/* ============================================================
+   Stage — a white page with one figure standing in it
+   Portrait and landscape cuts swap on orientation, so phones get
+   a 9:16 frame instead of a cropped-out middle of a 16:9 one.
+   ============================================================ */
+.stage {
+  position: relative;
+  height: 100svh;
+  min-height: 34rem;
+  overflow: hidden;
+  background: var(--paper);
+  color: var(--ink);
+  --cta-band: clamp(5.2rem, 14vw, 7.2rem);
+}
+.stage__video {
+  position: absolute;
+  inset: 0 0 var(--cta-band) 0;
+  width: 100%;
+  object-fit: contain;
+  object-position: center bottom;
+  display: block;
+  background: var(--paper);
+}
+@media (orientation: portrait)  { .stage__video--landscape { display: none; } }
+@media (orientation: landscape) { .stage__video--portrait  { display: none; } }
+
+.stage__bar {
+  position: absolute;
+  inset: 0 0 auto 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: var(--pad);
+}
+
+.stage__foot {
+  position: absolute;
+  inset: auto 0 0 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--cta-band);
+  padding: 0 var(--pad) max(0.85rem, env(safe-area-inset-bottom));
+  background: var(--paper);
+  text-align: center;
+}
