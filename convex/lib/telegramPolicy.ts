@@ -114,8 +114,8 @@ export function bindRefuseText(kind: TelegramBindKind): string {
 
 export function telegramWelcomeText(): string {
   return [
-    "Это тот же Bro, что в iMessage.",
+    "Тот же Bro, что в iMessage.",
     "",
-    "Почта, напоминания и поручения общие. Пиши сюда, если так удобнее — отвечу здесь.",
+    "Почта и поручения общие — пиши сюда.",
   ].join("\n");
 }

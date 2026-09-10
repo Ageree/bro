@@ -120,5 +120,6 @@ assert(canDeliverTelegram("99"), "has chat");
 assert(!canDeliverTelegram(""), "empty chat");
 assert(bindRefuseText("unknown_token").includes("iMessage"), "refuse mentions iMessage");
 assert(telegramWelcomeText().includes("iMessage"), "welcome same agent");
+assert(telegramWelcomeText().length < 120, "telegram welcome stays short");
 
 console.log("telegram-policy-check ok");

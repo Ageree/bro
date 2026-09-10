@@ -69,35 +69,36 @@ export function shouldSkipAgentTurn(input: {
   return false;
 }
 
-export function welcomeText(opts?: { canJoinGroups?: boolean }): string {
+/** Separate iMessage bubbles. Keep each under ~90 chars. */
+export function welcomeBubbles(opts?: { canJoinGroups?: boolean }): string[] {
   void opts?.canJoinGroups;
   return [
-    "Я Bro — личный консьерж в iMessage. Пиши как другу: купить, записать, напомнить. Сделаю сам.",
-    "",
-    "Группы в iMessage сейчас на паузе — откроем, когда будет свой номер Bro.",
-    "",
-    "Банковскую карту в чат не кидай, она в сейфе. Пароль — лучше по ссылке, но если кинул, введу.",
-    "",
-    "Напиши «что ты умеешь», если нужен короткий список.",
-  ].join("\n");
+    "Bro. Купить, записать, напомнить — пиши как другу. Сделаю сам.",
+    "Карту в чат не кидай, она в сейфе. Группы в iMessage пока на паузе.",
+    "Список — «что ты умеешь».",
+  ];
+}
+
+export function welcomeText(opts?: { canJoinGroups?: boolean }): string {
+  return welcomeBubbles(opts).join("\n\n");
 }
 
 export function helpText(opts?: { canJoinGroups?: boolean }): string {
   void opts?.canJoinGroups;
   return [
-    "Коротко, что умею:",
+    "Умею:",
     "",
     "• Купить на Wildberries и Ozon",
-    "• Запись к врачу, в салон, бронь столика",
+    "• Запись к врачу, салон, бронь",
     "• Помнить размер, адрес, ПВЗ",
-    "• Напоминания и сторожа (цена, почта, календарь)",
-    "• Платить картой из сейфа — номер в чат не пиши",
-    "• Войти или зарегать на сайте — скажи пароль, введу; нет — кину ссылку",
-    "• Письма со своего ящика Bro — коды из почты сам подхватываю",
-    "• Тот же Bro в Telegram — напиши «телеграм»",
-    "• Групповые чаты: после Photon Business. Сейчас Bro только в личке.",
+    "• Напоминания и сторожа",
+    "• Платить из сейфа — номер в чат не пиши",
+    "• Войти на сайт — пароль скажи, или кину ссылку",
+    "• Письма со своего ящика — коды сам",
+    "• Тот же Bro в Telegram — «телеграм»",
+    "• Группы: после Photon Business. Сейчас только личка.",
     "",
-    "Пиши обычным текстом.",
+    "Пиши текстом.",
   ].join("\n");
 }
 
