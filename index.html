@@ -113,53 +113,6 @@
     </div>
   </div>
 
-  <script>
-    /* The clip's white is not the page's white. It drifts between roughly #e7
-       and #fc from one character to the next, so any fixed page colour leaves a
-       visible seam around the letterboxed frame.
-
-       Correcting the video was the other option and it is not available: several
-       characters wear clothing at the same brightness as their own background,
-       so any curve that whitens the background dissolves the shirt with it —
-       tried, and the man in the white shirt disappeared.
-
-       So the page follows the film instead: sample the corner of the current
-       frame, which is always background, and make the page that exact colour. */
-    (function () {
-      var v = document.querySelector(".stage__video");
-      if (!v || !window.requestAnimationFrame) return;
-
-      var c = document.createElement("canvas");
-      c.width = c.height = 1;
-      var ctx = c.getContext && c.getContext("2d", { willReadFrequently: true });
-      if (!ctx) return;
-
-      var root = document.documentElement;
-      var last = "";
-      var next = 0;
-
-      function sample(now) {
-        if (v.readyState >= 2 && now >= next) {
-          next = now + 120;              /* eight reads a second catches every cut */
-          try {
-            ctx.drawImage(v, 6, 6, 40, 40, 0, 0, 1, 1);
-            var d = ctx.getImageData(0, 0, 1, 1).data;
-            var rgb = "rgb(" + d[0] + "," + d[1] + "," + d[2] + ")";
-            if (rgb !== last) {
-              last = rgb;
-              root.style.setProperty("--paper", rgb);
-            }
-          } catch (e) {
-            return;                      /* tainted canvas: keep the default white */
-          }
-        }
-        requestAnimationFrame(sample);
-      }
-
-      requestAnimationFrame(sample);
-    })();
-  </script>
-
   <script src="assets/config.js"></script>
   <script src="assets/auth.js"></script>
   <script>

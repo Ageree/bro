@@ -74,15 +74,15 @@ the call to action.
 The clip carries a single track and no audio, so there is no sound toggle — doji has
 one because their film has sound. A control with nothing to unmute is worse than none.
 
-### The page follows the film, not the other way round
+### One white, cut out of the footage
 
-The clip is not shot on the page's white. Measured at full resolution across every
+The clip was not shot on the page's white. Measured at full resolution across every
 second: the background sits anywhere between **207 and 253** depending on the
 character, and drifts within a single frame too. Against a fixed `#ffffff` page that
 shows as a grey rectangle around the letterboxed frame — worst case 48 levels off.
 
-**Correcting the video does not work, and this was tried.** A tone curve that lifts
-the background to white also lifts anything at the same brightness, and several
+**Tone correction does not work, and this was tried.** A curve that lifts the
+background to white also lifts anything at the same brightness, and several
 characters wear light clothing: at a knee of 190 the man in the white shirt
 dissolved into the background entirely, and the pink top and grey vest washed out.
 Background and shirt occupy the same tonal range, so no global operator can separate
@@ -91,16 +91,28 @@ through the control points, so a "flat below 0.78" curve still lifted the whole
 figure by 52 levels on average. `lutrgb` with an explicit expression is the tool for
 a piecewise knee.)
 
-So the page adapts instead. A 1×1 canvas samples the corner of the current frame —
-always background, never the figure — eight times a second and writes it to
-`--paper`. Every surface on the page reads that token, so the whole page becomes
-exactly the film's white and the seam cannot exist. Verified in a browser against a
-VP9 copy of the clip: the page tracked 246 → 253 → 246 → 247 across the cuts, in
-step with the footage. A tainted canvas throws, which stops the loop and leaves the
-default white — no broken state.
+**Making the page follow the film does not work either, even though it works.** A
+1×1 canvas sampling the frame corner eight times a second and writing it to `--paper`
+tracked the cuts correctly in a browser — 246 → 253 → 246 → 247 — but it makes the
+whole page's colour a property of the video. The page flickers between shades as
+characters change, and the brief is a white site.
 
-The clip is also re-encoded for weight only, no colour touched: **4.05 MB → 996 KB**
-at CRF 27 with `+faststart`.
+So the background is removed from the footage instead of corrected. What a tone curve
+cannot do by brightness, a segmentation model does by shape: `rembg`/u2net produces a
+subject alpha per frame, and the frame is composited over pure `#ffffff`. This
+separates the white shirt from the white wall because the model is deciding *person or
+not*, not *bright or not*.
+
+All 693 frames were processed at roughly 0.4–1.1 s each and re-encoded at CRF 27 with
+`+faststart` (**4.05 MB → 707 KB**). Verified on the encoded output, sampling every
+twelfth frame: the six-pixel border ring is exactly 255 on **58 of 58** frames, and
+comparing each matted frame against its original, **99.7 %** of the subject pixels
+survive (worst frame 98.9 %). By eye, on the frames tone correction destroyed — the
+white shirt, the white sneakers, the fur hood, flyaway hair, lace tights — the figure
+is intact.
+
+`--paper` is therefore a constant `#ffffff` again, and the page carries no runtime
+colour script at all.
 
 **One thing worth fixing later:** the clip is portrait only, so on a wide desktop it is
 height-limited and the figure ends up narrow — 335 px across a 1280 px viewport. doji
