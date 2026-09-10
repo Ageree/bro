@@ -36,7 +36,7 @@
       padding: 1.7rem 1.5rem 1.3rem;
       text-align: left;
     }
-    .sheet h2 { font-family: var(--font-display); font-size: 1.3rem; margin-bottom: 0.6rem; }
+    .sheet h2 { font-family: var(--font-display); font-size: 1.35rem; margin-bottom: 0.6rem; }
     .sheet label { display: block; font-size: 0.8rem; color: var(--ink-mute); margin: 0.9rem 0 0.35rem; }
     .sheet input {
       width: 100%;
@@ -50,6 +50,7 @@
     .sheet input:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
     .sheet .sheet-cta { display: flex; width: 100%; margin-top: 1rem; white-space: nowrap; }
     .sheet .text-close {
+      font-family: var(--font-display);
       display: block;
       width: 100%;
       margin-top: 0.85rem;
@@ -67,18 +68,6 @@
 <body>
 
   <section class="stage">
-    <!-- Two cuts of the same film, shot against white. Phones get the 9:16 one
-         instead of the cropped-out middle of a widescreen frame. Until the
-         footage lands both fall back to a plain white poster. -->
-    <video class="stage__video stage__video--portrait" poster="/assets/hero-poster-portrait.png"
-           playsinline muted loop autoplay preload="metadata" aria-hidden="true">
-      <source src="/assets/hero-portrait.mp4" type="video/mp4" />
-    </video>
-    <video class="stage__video stage__video--landscape" poster="/assets/hero-poster-landscape.png"
-           playsinline muted loop autoplay preload="metadata" aria-hidden="true">
-      <source src="/assets/hero-landscape.mp4" type="video/mp4" />
-    </video>
-
     <header class="stage__bar">
       <div><a class="link t-nav" href="/oferta.html">Оферта</a></div>
       <a class="link t-wordmark" href="/">bro.</a>
@@ -90,13 +79,19 @@
       </div>
     </header>
 
+    <div class="stage__film">
+      <!-- `contain`, not `cover`: the figure is shown whole at every viewport,
+           never cropped at the head or the feet. The clip is shot on the same
+           white as the page, so the letterboxing either side of a 9:16 frame
+           is invisible. It carries no audio track, so there is no sound
+           control to offer. -->
+      <video class="stage__video" src="/assets/hero-portrait.mp4"
+             playsinline muted loop autoplay preload="auto" aria-hidden="true"></video>
+    </div>
+
     <div class="stage__foot">
       <a class="link t-cta" id="request-access" data-request-access href="#">Получить своего бро</a>
     </div>
-
-    <button class="stage__sound" id="sound" type="button" aria-label="Включить звук" hidden>
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4zm12.5 3a4.5 4.5 0 0 0-2.5-4v8a4.5 4.5 0 0 0 2.5-4z"/></svg>
-    </button>
   </section>
 
   <div class="modal" id="login-modal" hidden>
@@ -120,29 +115,6 @@
 
   <script src="assets/config.js"></script>
   <script src="assets/auth.js"></script>
-  <script>
-    /* The sound toggle only appears once a film is actually playing — with no
-       footage in the build there is nothing to unmute, and a dead control is
-       worse than none. */
-    (function () {
-      var btn = document.querySelector("#sound");
-      var videos = [].slice.call(document.querySelectorAll(".stage__video"));
-      if (!btn || !videos.length) return;
-
-      function shown() { return videos.some(function (v) { return v.readyState >= 2; }); }
-      function reveal() { if (shown()) btn.hidden = false; }
-
-      videos.forEach(function (v) { v.addEventListener("loadeddata", reveal); });
-      reveal();
-
-      btn.addEventListener("click", function () {
-        var muting = !videos[0].muted;
-        videos.forEach(function (v) { v.muted = muting; });
-        btn.setAttribute("aria-label", muting ? "Включить звук" : "Выключить звук");
-        btn.style.opacity = muting ? "" : "0.45";
-      });
-    })();
-  </script>
   <script>
     (function () {
       var KEY = "bro.handle";

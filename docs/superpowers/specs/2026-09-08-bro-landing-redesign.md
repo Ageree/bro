@@ -59,19 +59,27 @@ inside the login sheet, and it is a square black rectangle.
 
 ## The stage
 
-`assets/hero-portrait.mp4` and `assets/hero-landscape.mp4`, both `muted loop
-playsinline autoplay`, swapped by `@media (orientation: …)` so a phone gets the 9:16
-cut rather than the cropped-out middle of a 16:9 one.
+A flex column: the masthead and the call to action take their own height, the film
+gets whatever is left. `assets/hero-portrait.mp4` is the real footage — 720×1280,
+28.9 s, H.264, 4.05 MB, generated in Seedance and shot on white.
 
-**The footage does not exist yet**, so both fall back to a plain white poster and the
-middle of the screen is empty. That is the honest state: doji's page minus the
-person. Planned footage is short scenarios of different people texting the assistant
-— a parent, a working guy, a teenager — generated in Higgsfield. **They must be shot
-against a flat light ground**, or the white page falls apart around them.
+**`object-fit: contain`, never `cover`.** This is the whole point: a 9:16 clip under
+`cover` on a 16:9 desktop crops the head and the feet off. Under `contain` the figure
+is shown whole at every viewport, and the letterboxing either side is invisible
+because the footage is on the same white as the page. Measured at 390×844, 360×640,
+1280×800 and 1440×900 against a marked test frame: the top and bottom edges of the
+frame are inside the film box on all four, and neither edge crosses the masthead or
+the call to action.
 
-A sound toggle sits bottom-right, as on doji, but stays hidden until a video actually
-reaches `readyState >= 2`. A visible control with nothing to unmute is worse than no
-control.
+The clip carries a single track and no audio, so there is no sound toggle — doji has
+one because their film has sound. A control with nothing to unmute is worse than none.
+
+**One thing worth fixing later:** the clip is portrait only, so on a wide desktop it is
+height-limited and the figure ends up narrow — 335 px across a 1280 px viewport. doji
+avoids this by shooting a separate 16:9 cut where the person is framed with more air.
+A landscape cut would drop straight in; the markup would take a second `<video>` and a
+`@media (orientation: …)` swap, which is how this file was built before the footage
+existed.
 
 ## No cartoon
 

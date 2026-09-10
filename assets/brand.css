@@ -74,7 +74,8 @@ body {
   align-items: center;
   justify-content: center;
   font: inherit;
-  font-family: var(--font-text);
+  font-family: var(--font-display);
+  font-size: 1.05rem;
   border: 1px solid var(--ink);
   border-radius: 0;
   background: var(--ink);
@@ -93,33 +94,26 @@ body {
 
 /* ============================================================
    Stage — a white page with one figure standing in it
-   Portrait and landscape cuts swap on orientation, so phones get
-   a 9:16 frame instead of a cropped-out middle of a 16:9 one.
+
+   A flex column: the masthead and the call to action take their
+   own height, the film gets whatever is left. The video is
+   `contain`, never `cover`, so the figure is shown whole at any
+   viewport — nothing is ever cropped off the top or the bottom,
+   and the letterboxing is invisible because the footage is shot
+   on the same white as the page.
    ============================================================ */
 .stage {
-  position: relative;
+  display: flex;
+  flex-direction: column;
   height: 100svh;
-  min-height: 34rem;
+  min-height: 30rem;
   overflow: hidden;
   background: var(--paper);
   color: var(--ink);
 }
-.stage__video {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  display: block;
-  background: var(--paper);
-}
-@media (orientation: portrait)  { .stage__video--landscape { display: none; } }
-@media (orientation: landscape) { .stage__video--portrait  { display: none; } }
 
 .stage__bar {
-  position: absolute;
-  inset: 0 0 auto 0;
-  z-index: 2;
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -131,28 +125,23 @@ body {
 .stage__bar > :last-child { flex: 1 1 0; display: flex; gap: 0.9rem; }
 .stage__bar > :last-child { justify-content: flex-end; }
 
-.stage__foot {
+.stage__film {
+  flex: 1 1 auto;
+  min-height: 0;      /* lets the film shrink instead of pushing the CTA off */
+  position: relative;
+}
+.stage__video {
   position: absolute;
-  inset: auto 0 0 0;
-  z-index: 2;
-  display: flex;
-  align-items: flex-end;
-  justify-content: center;
-  gap: 1rem;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+  background: var(--paper);
+}
+
+.stage__foot {
+  flex: 0 0 auto;
   padding: var(--pad);
   text-align: center;
 }
-/* sound toggle, bottom right — revealed only once footage actually loads */
-.stage__sound {
-  position: absolute;
-  right: var(--pad);
-  bottom: var(--pad);
-  z-index: 3;
-  background: none;
-  border: 0;
-  padding: 0.3rem;
-  cursor: pointer;
-  color: var(--ink);
-  line-height: 0;
-}
-.stage__sound svg { width: 1.4rem; height: 1.4rem; fill: currentColor; }
