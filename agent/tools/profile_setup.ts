@@ -13,7 +13,6 @@ import {
   waitForLiveUrl,
 } from "../lib/browseruse";
 import { countBrowserJobStart, setBrowser, upsertTenant } from "../lib/convex";
-import { sendBlueIMessage } from "../lib/inkbox";
 import { groupPersonalBlock } from "../lib/group-guard";
 import { tenantId } from "../lib/tenant";
 import { attrsFromSession, channelFromAuth } from "../lib/deliver-routed";
@@ -125,10 +124,10 @@ export default defineTool({
             channel: "telegram",
           });
         } else {
-          await sendBlueIMessage({
+          await deliverHuman({
+            tenant,
             conversationId: conv,
             text,
-            handle: tenant.inkboxHandle,
           });
         }
       } catch (err) {

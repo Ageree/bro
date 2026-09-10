@@ -1,4 +1,5 @@
-import { sendBlueIMessage } from "./inkbox.ts";
+import { sendPhotonText } from "./photon.ts";
+import { outboundIMessageConversation } from "../../convex/lib/photonPolicy.ts";
 import { toIMessageBubbles, toIMessageText } from "./imessage-text.ts";
 import { stripConnectUrls } from "./connect-link.ts";
 import {
@@ -29,12 +30,17 @@ export type HumanTenant = {
   phoneE164?: string;
   inkboxHandle?: string;
   inkboxConversationId?: string;
+  photonConversationId?: string;
   telegramChatId?: string;
   lastChannel?: string;
 };
 
 export type DeliverHumanDeps = SendPhotoDeps & {
-  sendIMessage?: typeof sendBlueIMessage;
+  sendIMessage?: (opts: {
+    conversationId: string;
+    text: string;
+    handle?: string;
+  }) => Promise<unknown>;
   sendTelegramMessage?: typeof sendTelegramMessage;
   sendTelegramPhotoUrl?: typeof sendTelegramPhoto;
   sendTelegramRichMessage?: typeof sendTelegramRichMessage;
@@ -52,7 +58,11 @@ export async function deliverHuman(opts: {
   if (!text) return;
   const tenant = opts.tenant ?? {};
   const prefer = opts.channel ?? lastChannelOf(tenant.lastChannel);
-  const conversationId = opts.conversationId ?? tenant.inkboxConversationId;
+  const conversationId = outboundIMessageConversation({
+    requested: opts.conversationId,
+    photonConversationId: tenant.photonConversationId,
+    inkboxConversationId: tenant.inkboxConversationId,
+  });
   const telegram =
     prefer === "telegram" && canDeliverTelegram(tenant.telegramChatId);
 
@@ -121,7 +131,7 @@ async function deliverIMessage(opts: {
     else console.error("imessage photo send failed", url, sent.error);
   }
   if (attached > 0) return;
-  const sendText = opts.deps?.sendIMessage ?? sendBlueIMessage;
+  const sendText = opts.deps?.sendIMessage ?? sendPhotonText;
   const bubbles = toIMessageBubbles(opts.text);
   for (const bubble of bubbles) {
     if (

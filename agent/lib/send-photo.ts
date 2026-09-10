@@ -1,4 +1,5 @@
-import { uploadIMessagePhoto, sendBlueIMessageMedia } from "./inkbox.ts";
+import { uploadIMessagePhoto } from "./inkbox.ts";
+import { sendPhotonMedia } from "./photon.ts";
 import { sendTelegramPhoto, sendTelegramPhotoFile } from "./telegram.ts";
 import { compileTelegram } from "./telegram-text.ts";
 import {
@@ -56,7 +57,12 @@ export type SendPhotoDeps = {
     contentType: string;
     handle?: string;
   }) => Promise<string>;
-  sendIMessageMedia?: typeof sendBlueIMessageMedia;
+  sendIMessageMedia?: (opts: {
+    conversationId: string;
+    mediaUrls: string[];
+    handle?: string;
+    text?: string;
+  }) => Promise<unknown>;
   sendTelegramUrl?: typeof sendTelegramPhoto;
   sendTelegramFile?: typeof sendTelegramPhotoFile;
 };
@@ -171,6 +177,18 @@ async function sendIMessagePhotoSource(opts: {
   source: { kind: "url"; url: string } | { kind: "bytes"; photo: PhotoBytes };
   deps?: SendPhotoDeps;
 }): Promise<void> {
+  if (
+    opts.source.kind === "url" &&
+    !opts.deps?.sendIMessageMedia &&
+    !opts.deps?.uploadIMessage
+  ) {
+    await sendPhotonMedia({
+      conversationId: opts.conversationId,
+      url: opts.source.url,
+      text: opts.caption,
+    });
+    return;
+  }
   const photo =
     opts.source.kind === "bytes"
       ? opts.source.photo
@@ -182,11 +200,19 @@ async function sendIMessagePhotoSource(opts: {
     contentType: photo.contentType,
     handle: opts.handle,
   });
-  const sendMedia = opts.deps?.sendIMessageMedia ?? sendBlueIMessageMedia;
-  await sendMedia({
+  const sendMedia = opts.deps?.sendIMessageMedia;
+  if (sendMedia) {
+    await sendMedia({
+      conversationId: opts.conversationId,
+      mediaUrls: [mediaUrl],
+      handle: opts.handle,
+      text: opts.caption,
+    });
+    return;
+  }
+  await sendPhotonMedia({
     conversationId: opts.conversationId,
-    mediaUrls: [mediaUrl],
-    handle: opts.handle,
+    url: mediaUrl,
     text: opts.caption,
   });
 }
