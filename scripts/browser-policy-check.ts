@@ -26,7 +26,9 @@ import {
 } from "../convex/lib/browserFollowPolicy.ts";
 import {
   applyProxyCountry,
+  DEFAULT_BROWSER_MODEL,
   proxyCountryCode,
+  resolveBrowserModel,
   scaffoldTask,
 } from "../agent/lib/browseruse.ts";
 
@@ -360,6 +362,12 @@ assert(
   "proxyCountryCode in browserSettings",
 );
 
+assert(DEFAULT_BROWSER_MODEL === "deepseek-v4.1-flash", "cloud default is DeepSeek V4.1 Flash");
+assert(resolveBrowserModel(undefined) === DEFAULT_BROWSER_MODEL, "unset model uses default");
+assert(resolveBrowserModel("") === DEFAULT_BROWSER_MODEL, "empty model uses default");
+assert(resolveBrowserModel("  ") === DEFAULT_BROWSER_MODEL, "blank model uses default");
+assert(resolveBrowserModel(" grok-4.5 ") === "grok-4.5", "BRO_BROWSER_MODEL override");
+
 assert(BROWSER_WAIT_MS === 2_000, "wait is short; follow-through still delivers");
 
 const browserTool = readFileSync(
@@ -395,6 +403,9 @@ const waitFor = readFileSync(
   new URL("../agent/lib/browseruse.ts", import.meta.url),
   "utf8",
 );
+const startFn = waitFor.slice(waitFor.indexOf("export async function startRun"));
+assert(startFn.includes("body.model = resolveBrowserModel()"), "every cloud run sends a model");
+assert(!startFn.includes("if (process.env.BRO_BROWSER_MODEL)"), "model is no longer env-gated");
 const waitFn = waitFor.slice(waitFor.indexOf("export async function waitForRun"));
 assert(
   waitFn.indexOf("bu(`/runs/${runId}/status`)") < waitFn.indexOf("return hydrate"),
