@@ -6,6 +6,7 @@ import {
   isHelpAsk,
   isTelegramAsk,
   shouldSkipAgentTurn,
+  welcomeBubbles,
   welcomeText,
 } from "../agent/lib/onboard-policy.ts";
 
@@ -97,6 +98,7 @@ const welcome = welcomeText();
 const help = helpText();
 const welcomeJoin = welcomeText({ canJoinGroups: true });
 const helpJoin = helpText({ canJoinGroups: true });
+const bubbles = welcomeBubbles();
 assert(welcome.trim().length > 0, "welcome nonempty");
 assert(help.trim().length > 0, "help nonempty");
 assert(hasCyrillic(welcome), "welcome russian");
@@ -107,6 +109,12 @@ assert(!/\[[^\]]+\]\(/ .test(welcome), "welcome no markdown links");
 assert(!/\[[^\]]+\]\(/ .test(help), "help no markdown links");
 assert(welcome.includes("что ты умеешь"), "welcome points at catalog");
 assert(/сейф/i.test(welcome), "welcome vault card");
+assert(bubbles.length >= 2 && bubbles.length <= 3, "welcome is a few short bubbles");
+for (const bubble of bubbles) {
+  assert(bubble.length > 0 && bubble.length <= 90, `welcome bubble short: ${bubble}`);
+  assert(!bubble.includes("\n"), "welcome bubble is one line");
+}
+assert(help.split("\n").filter((l) => l.startsWith("•")).length <= 9, "help stays a short list");
 assert(/Wildberries|Ozon|WB/i.test(help), "help buy");
 assert(/запис|бронь/i.test(help), "help bookings");
 assert(/помн/i.test(help), "help memory");
@@ -152,6 +160,7 @@ assert(
   channel.includes("if (!preview)") && channel.includes("sendFirstBindOnboard"),
   "empty preview still onboards on first bind",
 );
+assert(channel.includes("welcomeBubbles"), "channel sends welcome as short bubbles");
 assert(
   channel.includes("parkTurn(waitUntil, onboard)"),
   "first-bind welcome does not block the agent turn",

@@ -29,7 +29,7 @@ import {
   isHelpAsk,
   isTelegramAsk,
   shouldSkipAgentTurn,
-  welcomeText,
+  welcomeBubbles,
 } from "../lib/onboard-policy";
 import { ingestInboundMail } from "../lib/mail-inbound";
 import {
@@ -73,10 +73,12 @@ async function sendFirstBindOnboard(opts: {
   conversationId: string;
 }): Promise<void> {
   try {
-    await sendPhotonText({
-      conversationId: opts.conversationId,
-      text: welcomeText(),
-    });
+    for (const text of welcomeBubbles()) {
+      await sendPhotonText({
+        conversationId: opts.conversationId,
+        text,
+      });
+    }
   } catch (err) {
     console.error("onboard welcome failed", err);
   }

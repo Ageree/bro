@@ -116,6 +116,16 @@ assert(
     instructions.includes("короткие подтверждения"),
   "static prompt still tells the model short acks are real turns",
 );
+assert(
+  /Poke \/ Tomo|Poke \/ Tomo short/.test(instructions) &&
+    instructions.includes("## Voice"),
+  "static prompt keeps Poke/Tomo-short voice",
+);
+assert(
+  instructions.includes("1–2 short sentences") ||
+    instructions.includes("1-2 short sentences"),
+  "voice default is one or two sentences",
+);
 
 const archiveClient = readFileSync(
   new URL("../agent/lib/archive.ts", import.meta.url),
