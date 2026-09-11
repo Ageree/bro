@@ -3,6 +3,7 @@ import { doc } from "convex-helpers/validators";
 import schema from "./schema";
 import { mutation, query } from "./_generated/server";
 import { assertSecret } from "./secret";
+import { insertOpsEvent } from "./lib/opsStore";
 
 const MAX_OPEN = 8;
 const LINE = 280;
@@ -147,6 +148,14 @@ export const finish = mutation({
       status: failed ? "failed" : "done",
       note: clip(outcome),
     });
+    if (failed) {
+      await insertOpsEvent(ctx, {
+        kind: "job_failed",
+        at: Date.now(),
+        tenantId: tenant._id,
+        detail: job.goal,
+      });
+    }
     const row = await ctx.db.get(jobId);
     if (!row) return { error: "missing" };
     return row;

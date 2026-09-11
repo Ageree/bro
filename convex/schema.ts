@@ -47,6 +47,8 @@ export default defineSchema({
     lastChannel: v.optional(
       v.union(v.literal("imessage"), v.literal("telegram")),
     ),
+    /** Last inbound human message that passed the disabled-tenant gate. */
+    lastHumanAt: v.optional(v.number()),
     /** OCC mutex for claimOrGet — parallel computer claims serialize here. */
     computerLockAt: v.optional(v.number()),
   })
@@ -286,6 +288,31 @@ export default defineSchema({
     version: v.number(),
     updatedAt: v.number(),
   }).index("by_tenant", ["tenantId"]),
+
+  /** Operator activity. No message bodies. Rows older than 14d are pruned. */
+  opsEvents: defineTable({
+    tenantId: v.optional(v.id("tenants")),
+    kind: v.union(
+      v.literal("access_ok"),
+      v.literal("access_not_ios"),
+      v.literal("access_need_phone"),
+      v.literal("access_closed"),
+      v.literal("access_error"),
+      v.literal("first_bind"),
+      v.literal("first_message"),
+      v.literal("paywall"),
+      v.literal("turn_failed"),
+      v.literal("job_failed"),
+      v.literal("wakeup_failed"),
+      v.literal("payment_ok"),
+      v.literal("telegram_bound"),
+      v.literal("cabinet_login"),
+    ),
+    at: v.number(),
+    detail: v.optional(v.string()),
+  })
+    .index("by_at", ["at"])
+    .index("by_tenant_at", ["tenantId", "at"]),
 
   /** In-flight Codex device-code login. */
   chatgptLogins: defineTable({

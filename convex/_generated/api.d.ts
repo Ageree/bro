@@ -44,7 +44,10 @@ import type * as lib_vaultPayload from "../lib/vaultPayload.js";
 import type * as lib_wakeupCrons from "../lib/wakeupCrons.js";
 import type * as lib_wakeupPolicy from "../lib/wakeupPolicy.js";
 import type * as lib_watcherPolicy from "../lib/watcherPolicy.js";
+import type * as lib_opsPolicy from "../lib/opsPolicy.js";
+import type * as lib_opsStore from "../lib/opsStore.js";
 import type * as memories from "../memories.js";
+import type * as ops from "../ops.js";
 import type * as orders from "../orders.js";
 import type * as secret from "../secret.js";
 import type * as tenants from "../tenants.js";
@@ -90,6 +93,8 @@ declare const fullApi: ApiFromModules<{
   "lib/jobWakeLine": typeof lib_jobWakeLine;
   "lib/mailPolicy": typeof lib_mailPolicy;
   "lib/memoryPolicy": typeof lib_memoryPolicy;
+  "lib/opsPolicy": typeof lib_opsPolicy;
+  "lib/opsStore": typeof lib_opsStore;
   "lib/rateLimits": typeof lib_rateLimits;
   "lib/telegramPolicy": typeof lib_telegramPolicy;
   "lib/tzPolicy": typeof lib_tzPolicy;
@@ -98,6 +103,7 @@ declare const fullApi: ApiFromModules<{
   "lib/wakeupPolicy": typeof lib_wakeupPolicy;
   "lib/watcherPolicy": typeof lib_watcherPolicy;
   memories: typeof memories;
+  ops: typeof ops;
   orders: typeof orders;
   secret: typeof secret;
   tenants: typeof tenants;

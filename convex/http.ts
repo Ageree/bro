@@ -4,6 +4,7 @@ import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { isValidHandle } from "./lib/accessPolicy";
 import { newLoginCode, newSessionToken, sha256hex } from "./lib/cabinetPolicy";
+import { timingSafeEqual } from "./secret";
 import {
   formatEvent,
   parseComposioEvent,
@@ -27,6 +28,12 @@ function bearer(request: Request): string {
   const raw = request.headers.get("authorization") ?? "";
   const m = /^Bearer\s+(\S+)/i.exec(raw);
   return m?.[1] ?? "";
+}
+
+function opsAuthed(request: Request): "ok" | "unset" | "unauthorized" {
+  const expected = process.env.BRO_INTERNAL_SECRET ?? "";
+  if (!expected) return "unset";
+  return timingSafeEqual(bearer(request), expected) ? "ok" : "unauthorized";
 }
 
 async function jsonBody(request: Request): Promise<Record<string, unknown>> {
@@ -135,6 +142,47 @@ http.route({ path: "/me/chatgpt/disconnect", method: "OPTIONS", handler: options
 http.route({ path: "/me/computer", method: "OPTIONS", handler: options() });
 http.route({ path: "/vault/items", method: "OPTIONS", handler: options() });
 http.route({ path: "/vault/items/delete", method: "OPTIONS", handler: options() });
+http.route({ path: "/ops", method: "OPTIONS", handler: options() });
+http.route({ path: "/ops/person", method: "OPTIONS", handler: options() });
+
+http.route({
+  path: "/ops",
+  method: "GET",
+  handler: httpAction(async (ctx, request) => {
+    const auth = opsAuthed(request);
+    if (auth === "unset") return json({ ok: false, code: "unavailable" }, 503);
+    if (auth !== "ok") return json({ ok: false, code: "unauthorized" }, 401);
+    const board = await ctx.runQuery(internal.ops.board, { now: Date.now() });
+    return json({ ok: true, ...board });
+  }),
+});
+
+http.route({
+  path: "/ops/person",
+  method: "GET",
+  handler: httpAction(async (ctx, request) => {
+    const auth = opsAuthed(request);
+    if (auth === "unset") return json({ ok: false, code: "unavailable" }, 503);
+    if (auth !== "ok") return json({ ok: false, code: "unauthorized" }, 401);
+    let handle = "";
+    let phone = "";
+    try {
+      const u = new URL(request.url);
+      handle = u.searchParams.get("handle") ?? "";
+      phone = u.searchParams.get("phone") ?? "";
+    } catch {
+      handle = "";
+      phone = "";
+    }
+    const person = await ctx.runQuery(internal.ops.person, {
+      now: Date.now(),
+      ...(handle ? { handle } : {}),
+      ...(phone ? { phoneE164: phone } : {}),
+    });
+    if (!person) return json({ ok: false, code: "missing" }, 404);
+    return json({ ok: true, person });
+  }),
+});
 
 http.route({
   path: "/login/start",

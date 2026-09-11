@@ -20,4 +20,6 @@ crons.interval(
 );
 // Drop composioEvents older than EVENT_TTL_MS so the dedupe table stays bounded.
 crons.interval("prune composio events", { hours: 24 }, internal.watchers.pruneEvents, {});
+// Operator event log: keep two weeks.
+crons.interval("prune ops events", { hours: 24 }, internal.ops.prune, {});
 export default crons;
