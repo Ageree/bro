@@ -9,11 +9,22 @@ import { payScaffold, type SecretBinding } from "./browser-pay.ts";
 
 const BASE = "https://api.browser-use.com/api/v4";
 
+/** Browser Use Cloud V4 id for DeepSeek V4.1 Flash (dashboard label). */
+export const DEFAULT_BROWSER_MODEL = "deepseek-v4.1-flash";
+
 export {
   isBrowserProfileId,
   loginWaitTask,
   normalizeBrowserProfileId,
 };
+
+/** Cloud `model` for POST /runs. Empty BRO_BROWSER_MODEL keeps the default. */
+export function resolveBrowserModel(
+  raw: string | undefined = process.env.BRO_BROWSER_MODEL,
+): string {
+  const model = raw?.trim();
+  return model ? model : DEFAULT_BROWSER_MODEL;
+}
 
 /** ISO 3166-1 alpha-2 from BROWSERUSE_PROXY_COUNTRY. Unset → undefined (API default US). */
 export function proxyCountryCode(
@@ -203,7 +214,7 @@ export async function startRun(
   };
   const maxCost = Number(process.env.BRO_BROWSER_MAX_COST ?? "1");
   if (Number.isFinite(maxCost) && maxCost > 0) body.maxCostUsd = maxCost;
-  if (process.env.BRO_BROWSER_MODEL) body.model = process.env.BRO_BROWSER_MODEL;
+  body.model = resolveBrowserModel();
   if (opts?.secretBindings && opts.secretBindings.length > 0) {
     body.secretBindings = opts.secretBindings;
   }
