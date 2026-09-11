@@ -114,7 +114,9 @@
         return fetch(site() + path, {
           headers: { Authorization: "Bearer " + secret() }
         }).then(function (r) {
-          return r.json().then(function (j) {
+          return r.text().then(function (text) {
+            var j = {};
+            try { j = text ? JSON.parse(text) : {}; } catch (e) { j = {}; }
             return { status: r.status, json: j };
           });
         });
@@ -247,8 +249,14 @@
             showLogin("Не тот секрет.");
             return;
           }
+          if (res.status === 503 || (res.json && res.json.code === "unavailable")) {
+            boot.textContent = "На Convex не задан секрет.";
+            return;
+          }
           if (!res.json || !res.json.ok) {
-            boot.textContent = "Не открылось.";
+            boot.textContent = res.status === 404
+              ? "На этом деплое ещё нет /ops. Задеплой Convex и обнови страницу."
+              : "Не открылось.";
             return;
           }
           modal.hidden = true;

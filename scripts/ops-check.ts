@@ -188,6 +188,8 @@ assert(page.includes("BRO_INTERNAL_SECRET"), "ops page asks for the secret");
 assert(page.includes('content="noindex, nofollow"'), "ops is not indexed");
 assert(!page.includes("assets/auth.js"), "ops does not use cabinet login");
 assert(page.includes("/ops/person"), "ops can open one person");
+assert(page.includes("JSON.parse"), "ops parses text, not r.json()");
+assert(page.includes("ещё нет /ops"), "ops explains an undeployed route");
 
 const landing = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 assert(!landing.includes("ops.html"), "landing does not link ops");
