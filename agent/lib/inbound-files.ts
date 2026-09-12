@@ -1,20 +1,10 @@
-import { posix as posixPath } from "node:path";
-import { uploadFileBytes } from "./files.ts";
+import { filenameFromUrl, uploadFileBytes } from "./files.ts";
 import { readLimited } from "./voice.ts";
 import type { TelegramMessage } from "./telegram.ts";
 import { largestPhoto, telegramFileUrl } from "./telegram.ts";
 
 const INBOUND_MAX = 8 * 1024 * 1024;
 const INBOUND_TIMEOUT_MS = 15_000;
-
-function filenameFromUrl(url: string, fallback: string): string {
-  try {
-    const name = posixPath.basename(new URL(url).pathname);
-    return name || fallback;
-  } catch {
-    return fallback;
-  }
-}
 
 export async function saveInboundRemoteFile(opts: {
   phoneE164: string;

@@ -3,16 +3,13 @@
  *  Mathematical Sans-Serif Bold (looks bold on iPhone). Cyrillic field
  *  labels get a leading ▸ — mixed-script fake-bold looks broken. */
 
-import { stripButtonBlocksForIMessage } from "./telegram-text.ts";
+import { AUTO_MAIL, AUTO_URL, IMAGE, stripButtonBlocksForIMessage } from "./telegram-text.ts";
 import { voiceTranscriptLine } from "./voice-policy.ts";
 import { isHeadingOnly } from "./bubble-dedupe.ts";
 import { isThinFragment } from "./early-deliver.ts";
 
 const FENCE = /```[\w+-]*\n?([\s\S]*?)```/g;
-const IMAGE = /!{1,2}\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)/gi;
 const LINK = /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/gi;
-const AUTO_URL = /<(https?:\/\/[^>\s]+)>/gi;
-const AUTO_MAIL = /<([^>\s]+@[^>\s]+)>/g;
 const LABEL =
   /^(?:(\d+\.\s*))?(От|Тема|Дата|Предварительный текст|From|Subject|Date|To|Preview)\s*:/u;
 

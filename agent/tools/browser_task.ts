@@ -34,31 +34,11 @@ import {
 import { profileSyncStatus } from "../../convex/lib/browserProfilePolicy.ts";
 import { turnLooking } from "../lib/early-deliver.ts";
 import { attrsFromSession, deliverHumanRouted } from "../lib/deliver-routed";
-import { groupPersonalBlock } from "../lib/group-guard";
+import { conversationId, groupPersonalBlock } from "../lib/group-guard";
 import { tenantId } from "../lib/tenant";
 import { browserGateFromResult } from "../../convex/lib/billingPolicy";
 import { cardBindings, normalizePayHosts } from "../lib/browser-pay.ts";
 import { parsePaymentPayload } from "../../convex/lib/vaultPayload.ts";
-
-
-function conversationId(
-  ctx: {
-    session: {
-      auth: {
-        current?: { attributes?: Record<string, unknown> } | null;
-        initiator?: { attributes?: Record<string, unknown> } | null;
-      };
-    };
-  },
-  fallback?: string,
-): string | undefined {
-  const attrs =
-    ctx.session.auth.current?.attributes ??
-    ctx.session.auth.initiator?.attributes;
-  const fromAuth = attrs?.conversationId;
-  if (typeof fromAuth === "string" && fromAuth.length > 0) return fromAuth;
-  return fallback;
-}
 
 async function persist(
   phone: string,

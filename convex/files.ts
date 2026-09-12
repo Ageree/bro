@@ -21,6 +21,7 @@ import {
   upsertFile,
   type FileListItem,
 } from "./lib/fileStore";
+import { requirePhone } from "./lib/chatgptPolicy";
 
 const sourceChannel = v.union(
   v.literal("imessage"),
@@ -47,12 +48,6 @@ const fileWithUrl = v.object({
   sourceChannel: v.optional(sourceChannel),
   url: v.union(v.string(), v.null()),
 });
-
-function requirePhone(phoneE164: string): string {
-  const phone = phoneE164.trim();
-  if (!phone) throw new Error("phoneE164 required");
-  return phone;
-}
 
 export const tenantIdInternal = internalQuery({
   args: { phoneE164: v.string() },

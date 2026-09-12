@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { src } from "./lib/check.ts";
 import {
   conversationContainerTag,
   formatConversationRecall,
@@ -224,10 +224,7 @@ assert.ok(
   "auto-recall is shorter than the tool path",
 );
 
-const recallMemory = readFileSync(
-  new URL("../agent/memory/recall.ts", import.meta.url),
-  "utf8",
-);
+const recallMemory = src("agent/memory/recall.ts");
 assert.ok(
   recallMemory.includes("shouldRecallConversation"),
   "conversation recall keeps captionless photos and the wakeup gate",
@@ -236,10 +233,7 @@ assert.ok(
   recallMemory.includes("loadInstinctRecall"),
   "turn.started conversation recall uses the Instinct pair",
 );
-const archiveClient = readFileSync(
-  new URL("../agent/lib/archive.ts", import.meta.url),
-  "utf8",
-);
+const archiveClient = src("agent/lib/archive.ts");
 assert.ok(archiveClient.includes("AbortSignal.any"), "archive search joins Eve abort");
 assert.ok(archiveClient.includes("/v4/search"), "Instinct archive search uses the v4 API");
 assert.ok(archiveClient.includes('searchMode: "hybrid"'), "archive search is hybrid");
@@ -259,10 +253,7 @@ assert.ok(
   "ingest/forget stay on v3 documents",
 );
 
-const conversationSrc = readFileSync(
-  new URL("../agent/lib/conversation-recall.ts", import.meta.url),
-  "utf8",
-);
+const conversationSrc = src("agent/lib/conversation-recall.ts");
 assert.ok(conversationSrc.includes("/v4/search"), "conversation search uses the plugin v4 API");
 assert.ok(conversationSrc.includes("searchMode: \"hybrid\""), "conversation search is hybrid");
 assert.ok(conversationSrc.includes("rewriteQuery: false"), "conversation search skips query rewrite");
@@ -281,18 +272,12 @@ assert.ok(
   "conversation hits are framed as data",
 );
 
-const archiveMemory = readFileSync(
-  new URL("../agent/memory/archive.ts", import.meta.url),
-  "utf8",
-);
+const archiveMemory = src("agent/memory/archive.ts");
 assert.ok(
   archiveMemory.includes("loadInstinctRecall"),
   "instinct archive recall uses the shared pair",
 );
-const instinctSrc = readFileSync(
-  new URL("../agent/lib/instinct-recall.ts", import.meta.url),
-  "utf8",
-);
+const instinctSrc = src("agent/lib/instinct-recall.ts");
 assert.ok(instinctSrc.includes("Promise.allSettled"), "Instinct searches run together");
 assert.ok(instinctSrc.includes("ARCHIVE_RECALL_TIMEOUT_MS"), "Instinct pair keeps the 1.5s budget");
 assert.ok(

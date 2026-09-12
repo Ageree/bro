@@ -25,11 +25,7 @@ import {
   rateLimitPeriodKey,
   usedCount,
 } from "../convex/lib/billingPolicy.ts";
-import { readFileSync } from "node:fs";
-
-function assert(cond: unknown, msg: string): void {
-  if (!cond) throw new Error(msg);
-}
+import { assert, src } from "./lib/check.ts";
 
 assert(/^\d{4}-\d{2}-\d{2}$/.test(dayKey(Date.now())), "dayKey format");
 assert(/^\d{4}-\d{2}$/.test(monthKey(Date.now())), "monthKey format");
@@ -483,7 +479,7 @@ assert(
   "homepage override ignored",
 );
 
-const tenantsSrc = readFileSync(new URL("../convex/tenants.ts", import.meta.url), "utf8");
+const tenantsSrc = src("convex/tenants.ts");
 const countFn = tenantsSrc.slice(tenantsSrc.indexOf("export const countInboundMessage"));
 assert(countFn.includes('tenant.status === "disabled"'), "countInbound drops disabled");
 assert(
@@ -491,7 +487,7 @@ assert(
   "disabled drop before the daily increment",
 );
 
-const billingSrc = readFileSync(new URL("../convex/billing.ts", import.meta.url), "utf8");
+const billingSrc = src("convex/billing.ts");
 assert(billingSrc.includes("payReturnUrl"), "createPaymentFor uses payReturnUrl");
 assert(
   !billingSrc.includes('?? "https://bro-agent.vercel.app"'),

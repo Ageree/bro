@@ -94,16 +94,6 @@ export function shouldNudgeInkboxThread(opts: {
   return "nudge";
 }
 
-export function chatConversationId(opts: {
-  photonConversationId?: string;
-  inkboxConversationId?: string;
-}): string | undefined {
-  return (
-    opts.photonConversationId?.trim() ||
-    undefined
-  );
-}
-
 export function parsePhotonSenderPhone(input: {
   address?: unknown;
   phone?: unknown;

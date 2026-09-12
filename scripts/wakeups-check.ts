@@ -25,9 +25,7 @@ import {
   WAKEUP_DEDUPE_TTL_MS,
 } from "../agent/lib/wakeup-dedupe.ts";
 
-function assert(cond: unknown, msg: string): void {
-  if (!cond) throw new Error(msg);
-}
+import { assert } from "./lib/check.ts";
 
 const now = Date.parse("2026-08-27T12:00:00.000Z");
 

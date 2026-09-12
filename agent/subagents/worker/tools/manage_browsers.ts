@@ -91,15 +91,11 @@ export default defineTool({
             saveChanges,
           });
         } catch (error) {
-          await kernel()
-            .browsers.deleteByID(browser.session_id, { signal })
-            .catch(() => undefined);
+          await bestEffortDeleteBrowser(browser.session_id, signal);
           throw error;
         }
         if (!registered.ok) {
-          await kernel()
-            .browsers.deleteByID(browser.session_id, { signal })
-            .catch(() => undefined);
+          await bestEffortDeleteBrowser(browser.session_id, signal);
           throw new Error(
             `Browser session ${registered.sessionId} is already saving login state for this tenant. Retry after it finishes.`,
           );
@@ -178,6 +174,12 @@ export default defineTool({
 function requireSessionId(sessionId: string | undefined) {
   if (!sessionId) throw new Error("A browser session ID is required.");
   return sessionId;
+}
+
+async function bestEffortDeleteBrowser(sessionId: string, signal?: AbortSignal) {
+  await kernel()
+    .browsers.deleteByID(sessionId, { signal })
+    .catch(() => undefined);
 }
 
 async function retrieveBrowser(

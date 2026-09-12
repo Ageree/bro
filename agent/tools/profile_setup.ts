@@ -13,29 +13,10 @@ import {
   waitForLiveUrl,
 } from "../lib/browseruse";
 import { countBrowserJobStart, setBrowser, upsertTenant } from "../lib/convex";
-import { groupPersonalBlock } from "../lib/group-guard";
+import { conversationId, groupPersonalBlock } from "../lib/group-guard";
 import { tenantId } from "../lib/tenant";
 import { attrsFromSession, channelFromAuth } from "../lib/deliver-routed";
 import { deliverHuman } from "../lib/deliver-human";
-
-function conversationId(
-  ctx: {
-    session: {
-      auth: {
-        current?: { attributes?: Record<string, unknown> } | null;
-        initiator?: { attributes?: Record<string, unknown> } | null;
-      };
-    };
-  },
-  fallback?: string,
-): string | undefined {
-  const attrs =
-    ctx.session.auth.current?.attributes ??
-    ctx.session.auth.initiator?.attributes;
-  const fromAuth = attrs?.conversationId;
-  if (typeof fromAuth === "string" && fromAuth.length > 0) return fromAuth;
-  return fallback;
-}
 
 export default defineTool({
   description:

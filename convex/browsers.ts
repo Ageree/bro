@@ -1,11 +1,7 @@
 import { v } from "convex/values";
-import {
-  mutation,
-  query,
-  type MutationCtx,
-  type QueryCtx,
-} from "./_generated/server";
+import { mutation, query } from "./_generated/server";
 import { assertSecret } from "./secret";
+import { findTenantByPhone as tenantByPhone } from "./lib/tenantLookup";
 
 const WRITER_TTL_MS = 20 * 60 * 1000;
 
@@ -15,16 +11,6 @@ const sessionView = v.object({
   saveChanges: v.boolean(),
   createdAt: v.number(),
 });
-
-async function tenantByPhone(
-  ctx: QueryCtx | MutationCtx,
-  phoneE164: string,
-) {
-  return await ctx.db
-    .query("tenants")
-    .withIndex("by_phone", (q) => q.eq("phoneE164", phoneE164))
-    .first();
-}
 
 export const register = mutation({
   args: {

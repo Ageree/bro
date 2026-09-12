@@ -1,4 +1,4 @@
-import { readFileSync, existsSync } from "node:fs";
+import { existsSync } from "node:fs";
 import {
   assertPublicPhotoUrl,
   extractMarkdownPhotoUrls,
@@ -17,9 +17,7 @@ import { photoTargetFromAuth, sendPhotoToHuman } from "../agent/lib/send-photo.t
 import { deliverHuman } from "../agent/lib/deliver-human.ts";
 import { resetPhotoDedupe } from "../agent/lib/photo-dedupe.ts";
 
-function assert(cond: unknown, msg: string): asserts cond {
-  if (!cond) throw new Error(msg);
-}
+import { assert, src } from "./lib/check.ts";
 
 resetPhotoDedupe();
 
@@ -422,7 +420,7 @@ const imessageTarget = photoTargetFromAuth({
 assert(imessageTarget.channel === "imessage", "auth iMessage channel");
 assert(imessageTarget.conversationId === "conv-im", "auth iMessage conversation");
 
-const tool = readFileSync(new URL("../agent/tools/send_photo.ts", import.meta.url), "utf8");
+const tool = src("agent/tools/send_photo.ts");
 assert(tool.includes("sendPhotoToHuman"), "tool uses shared sender");
 assert(tool.includes("parseSendPhotoInput"), "tool validates file/url");
 assert(tool.includes("spoiler"), "tool can hide Telegram media");
@@ -434,39 +432,33 @@ assert(
   "box screenshot tool is gone",
 );
 
-const deliver = readFileSync(
-  new URL("../agent/lib/deliver-human.ts", import.meta.url),
-  "utf8",
-);
+const deliver = src("agent/lib/deliver-human.ts");
 assert(deliver.includes("extractMarkdownPhotoUrls"), "iMessage delivery sends markdown photos");
 assert(deliver.includes("extractStoredFileRefs"), "iMessage delivery attaches stored files");
 assert(deliver.includes("sendPhotoToHuman"), "iMessage photos share send_photo path");
 assert(deliver.includes("sendTelegramRichMessage"), "structured cards use rich messages");
 
-const telegram = readFileSync(new URL("../agent/lib/telegram.ts", import.meta.url), "utf8");
+const telegram = src("agent/lib/telegram.ts");
 assert(telegram.includes("sendTelegramPhotoFile"), "telegram can upload bytes");
 assert(telegram.includes("has_spoiler"), "telegram can send hidden media");
 assert(telegram.includes("sendRichMessage"), "telegram can send rich messages");
 assert(telegram.includes("apiForm"), "telegram photo file is multipart");
 assert(!telegram.includes('"Content-Type": "application/json"') || telegram.includes("apiForm"), "json helper stays");
 
-const inkbox = readFileSync(new URL("../agent/lib/inkbox.ts", import.meta.url), "utf8");
+const inkbox = src("agent/lib/inkbox.ts");
 assert(inkbox.includes("uploadIMessagePhoto"), "inkbox uploads photo bytes");
 assert(inkbox.includes("uploadIMessageMedia"), "inkbox uses identity media upload");
-const sendPhoto = readFileSync(new URL("../agent/lib/send-photo.ts", import.meta.url), "utf8");
+const sendPhoto = src("agent/lib/send-photo.ts");
 assert(sendPhoto.includes("sendPhotonMedia"), "iMessage photos go out through Photon");
 
-const instructions = readFileSync(
-  new URL("../agent/instructions.md", import.meta.url),
-  "utf8",
-);
+const instructions = src("agent/instructions.md");
 assert(instructions.includes("send_photo"), "instructions name the photo tool");
 assert(
   /не пиши «не могу вложить»/i.test(instructions),
   "do not claim you cannot attach",
 );
 
-const pkg = readFileSync(new URL("../package.json", import.meta.url), "utf8");
+const pkg = src("package.json");
 assert(pkg.includes("photo:check"), "npm script");
 
 console.log("photo-check ok");

@@ -47,6 +47,20 @@ import {
   telegramBindExpiry,
   type HumanChannel,
 } from "./lib/telegramPolicy";
+import { findTenantByHandle, findTenantByPhone } from "./lib/tenantLookup";
+
+/** `{ k: obj[k] }` for each key present with a defined value. Same shape as
+ *  chaining `...(obj[k] !== undefined ? { [k]: obj[k] } : {})` per key. */
+function definedEntries<T extends Record<string, unknown>>(
+  obj: T,
+  keys: readonly (keyof T)[],
+): Partial<T> {
+  const out: Partial<T> = {};
+  for (const key of keys) {
+    if (obj[key] !== undefined) out[key] = obj[key];
+  }
+  return out;
+}
 
 /** Never write a group conversation onto the 1:1 wakeup/mail lane. */
 async function oneToOneConversationIdOrUndefined(
@@ -69,10 +83,7 @@ async function oneToOneConversationIdOrUndefined(
 export const tenantDoc = doc(schema, "tenants");
 
 async function tenantByPhone(ctx: MutationCtx, phoneE164: string) {
-  const existing = await ctx.db
-    .query("tenants")
-    .withIndex("by_phone", (q) => q.eq("phoneE164", phoneE164))
-    .first();
+  const existing = await findTenantByPhone(ctx, phoneE164);
   if (existing) return existing;
   const id = await ctx.db.insert("tenants", {
     phoneE164,
@@ -100,10 +111,7 @@ export const attachCabinetLoginForAgent = mutation({
     const identityId = args.identityId.trim();
     if (!phone) throw new Error("phoneE164 required");
     if (!identityId) throw new Error("identityId required");
-    const tenant = await ctx.db
-      .query("tenants")
-      .withIndex("by_phone", (q) => q.eq("phoneE164", phone))
-      .first();
+    const tenant = await findTenantByPhone(ctx, phone);
     if (!tenant) throw new Error("unknown tenant");
     if (tenant.inkboxHandle && isValidHandle(tenant.inkboxHandle)) {
       if (!tenant.inkboxIdentityId) {
@@ -114,17 +122,11 @@ export const attachCabinetLoginForAgent = mutation({
     let handle = args.handle?.trim() || makeHandle();
     if (!isValidHandle(handle)) throw new Error("invalid handle");
     for (let i = 0; i < 8; i++) {
-      const taken = await ctx.db
-        .query("tenants")
-        .withIndex("by_handle", (q) => q.eq("inkboxHandle", handle))
-        .unique();
+      const taken = await findTenantByHandle(ctx, handle);
       if (!taken) break;
       handle = makeHandle();
     }
-    const taken = await ctx.db
-      .query("tenants")
-      .withIndex("by_handle", (q) => q.eq("inkboxHandle", handle))
-      .unique();
+    const taken = await findTenantByHandle(ctx, handle);
     if (taken) throw new Error("handle unavailable");
     await ctx.db.patch(tenant._id, {
       inkboxHandle: handle,
@@ -139,10 +141,7 @@ export const getByPhone = query({
   returns: v.union(tenantDoc, v.null()),
   handler: async (ctx, { secret, phoneE164 }) => {
     assertSecret(secret);
-    return await ctx.db
-      .query("tenants")
-      .withIndex("by_phone", (q) => q.eq("phoneE164", phoneE164))
-      .first();
+    return await findTenantByPhone(ctx, phoneE164);
   },
 });
 
@@ -151,10 +150,7 @@ export const getByHandle = query({
   returns: v.union(tenantDoc, v.null()),
   handler: async (ctx, { secret, handle }) => {
     assertSecret(secret);
-    return await ctx.db
-      .query("tenants")
-      .withIndex("by_handle", (q) => q.eq("inkboxHandle", handle))
-      .unique();
+    return await findTenantByHandle(ctx, handle);
   },
 });
 
@@ -207,10 +203,7 @@ export const upsert = mutation({
   handler: async (ctx, { secret, phoneE164, inkboxConversationId, emailAddress }) => {
     assertSecret(secret);
     const email = emailAddress?.trim().toLowerCase();
-    const existing = await ctx.db
-      .query("tenants")
-      .withIndex("by_phone", (q) => q.eq("phoneE164", phoneE164))
-      .first();
+    const existing = await findTenantByPhone(ctx, phoneE164);
     const oneToOneConversationId = await oneToOneConversationIdOrUndefined(
       ctx,
       inkboxConversationId,
@@ -356,36 +349,22 @@ export const setBrowser = mutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     assertSecret(args.secret);
-    const existing = await ctx.db
-      .query("tenants")
-      .withIndex("by_phone", (q) => q.eq("phoneE164", args.phoneE164))
-      .first();
+    const existing = await findTenantByPhone(ctx, args.phoneE164);
     if (!existing) throw new Error("unknown tenant");
-    await ctx.db.patch(existing._id, {
-      ...(args.browserSessionId !== undefined
-        ? { browserSessionId: args.browserSessionId }
-        : {}),
-      ...(args.browserLiveUrl !== undefined
-        ? { browserLiveUrl: args.browserLiveUrl }
-        : {}),
-      ...(args.browserRunId !== undefined ? { browserRunId: args.browserRunId } : {}),
-      ...(args.browserTask !== undefined ? { browserTask: args.browserTask } : {}),
-      ...(args.browserStatus !== undefined
-        ? { browserStatus: args.browserStatus }
-        : {}),
-      ...(args.browserStartedAt !== undefined
-        ? { browserStartedAt: args.browserStartedAt }
-        : {}),
-      ...(args.browserProfileId !== undefined
-        ? { browserProfileId: args.browserProfileId }
-        : {}),
-      ...(args.browserCookieDomains !== undefined
-        ? { browserCookieDomains: args.browserCookieDomains }
-        : {}),
-      ...(args.browserProfileSyncedAt !== undefined
-        ? { browserProfileSyncedAt: args.browserProfileSyncedAt }
-        : {}),
-    });
+    await ctx.db.patch(
+      existing._id,
+      definedEntries(args, [
+        "browserSessionId",
+        "browserLiveUrl",
+        "browserRunId",
+        "browserTask",
+        "browserStatus",
+        "browserStartedAt",
+        "browserProfileId",
+        "browserCookieDomains",
+        "browserProfileSyncedAt",
+      ]),
+    );
     return null;
   },
 });
@@ -409,10 +388,7 @@ export const getByHandleInternal = internalQuery({
   args: { handle: v.string() },
   returns: v.union(tenantDoc, v.null()),
   handler: async (ctx, { handle }) => {
-    return await ctx.db
-      .query("tenants")
-      .withIndex("by_handle", (q) => q.eq("inkboxHandle", handle))
-      .unique();
+    return await findTenantByHandle(ctx, handle);
   },
 });
 
@@ -420,10 +396,7 @@ export const getByPhoneInternal = internalQuery({
   args: { phoneE164: v.string() },
   returns: v.union(tenantDoc, v.null()),
   handler: async (ctx, { phoneE164 }) => {
-    return await ctx.db
-      .query("tenants")
-      .withIndex("by_phone", (q) => q.eq("phoneE164", phoneE164))
-      .first();
+    return await findTenantByPhone(ctx, phoneE164);
   },
 });
 
@@ -437,23 +410,15 @@ export const patchBrowserInternal = internalMutation({
   },
   returns: v.object({ stale: v.boolean() }),
   handler: async (ctx, args) => {
-    const existing = await ctx.db
-      .query("tenants")
-      .withIndex("by_phone", (q) => q.eq("phoneE164", args.phoneE164))
-      .first();
+    const existing = await findTenantByPhone(ctx, args.phoneE164);
     if (!existing || existing.browserRunId !== args.runId) {
       return { stale: true };
     }
-    const patch: {
-      browserStatus?: string;
-      browserSessionId?: string;
-      browserLiveUrl?: string;
-    } = {};
-    if (args.browserStatus !== undefined) patch.browserStatus = args.browserStatus;
-    if (args.browserSessionId !== undefined) {
-      patch.browserSessionId = args.browserSessionId;
-    }
-    if (args.browserLiveUrl !== undefined) patch.browserLiveUrl = args.browserLiveUrl;
+    const patch = definedEntries(args, [
+      "browserStatus",
+      "browserSessionId",
+      "browserLiveUrl",
+    ]);
     if (Object.keys(patch).length) await ctx.db.patch(existing._id, patch);
     return { stale: false };
   },
@@ -485,10 +450,7 @@ export const claimBrowserWakeup = internalMutation({
   },
   returns: wakeupClaimResult,
   handler: async (ctx, args): Promise<Infer<typeof wakeupClaimResult>> => {
-    const existing = await ctx.db
-      .query("tenants")
-      .withIndex("by_phone", (q) => q.eq("phoneE164", args.phoneE164))
-      .first();
+    const existing = await findTenantByPhone(ctx, args.phoneE164);
     const now = Date.now();
     const phase = args.phase as WakeupPhase;
     const decision = decideWakeupClaim({
@@ -521,10 +483,7 @@ export const releaseBrowserWakeup = internalMutation({
   },
   returns: v.null(),
   handler: async (ctx, args) => {
-    const existing = await ctx.db
-      .query("tenants")
-      .withIndex("by_phone", (q) => q.eq("phoneE164", args.phoneE164))
-      .first();
+    const existing = await findTenantByPhone(ctx, args.phoneE164);
     const phase = args.phase as WakeupPhase;
     if (!existing || !claimMatchesRunPhase(existing.browserWakeupClaim, args.runId, phase)) {
       return null;
@@ -542,10 +501,7 @@ export const confirmBrowserWakeup = internalMutation({
   },
   returns: v.null(),
   handler: async (ctx, args) => {
-    const existing = await ctx.db
-      .query("tenants")
-      .withIndex("by_phone", (q) => q.eq("phoneE164", args.phoneE164))
-      .first();
+    const existing = await findTenantByPhone(ctx, args.phoneE164);
     const phase = args.phase as WakeupPhase;
     const parsed = parseWakeupClaim(existing?.browserWakeupClaim);
     if (
@@ -582,10 +538,7 @@ export const insertProvisioned = internalMutation({
   },
   returns: tenantDoc,
   handler: async (ctx, args) => {
-    const existing = await ctx.db
-      .query("tenants")
-      .withIndex("by_handle", (q) => q.eq("inkboxHandle", args.inkboxHandle))
-      .unique();
+    const existing = await findTenantByHandle(ctx, args.inkboxHandle);
     if (existing) {
       const patch: {
         photonUserId?: string;
@@ -652,17 +605,9 @@ export const bindPhotonInbound = mutation({
     if (!phone || !conversation) {
       return { ok: false as const, reason: "missing fields" };
     }
-    let tenant = args.handle
-      ? await ctx.db
-          .query("tenants")
-          .withIndex("by_handle", (q) => q.eq("inkboxHandle", args.handle!))
-          .unique()
-      : null;
+    let tenant = args.handle ? await findTenantByHandle(ctx, args.handle) : null;
     if (!tenant) {
-      tenant = await ctx.db
-        .query("tenants")
-        .withIndex("by_phone", (q) => q.eq("phoneE164", phone))
-        .first();
+      tenant = await findTenantByPhone(ctx, phone);
     }
     if (!tenant && args.photonUserId) {
       tenant = await ctx.db
@@ -739,41 +684,6 @@ export const markPhotonNudgeSent = mutation({
   },
 });
 
-export const listNeedingPhotonNudge = internalQuery({
-  args: { secret: v.string() },
-  returns: v.array(
-    v.object({
-      inkboxConversationId: v.string(),
-      inkboxHandle: v.optional(v.string()),
-      photonAssignedNumber: v.optional(v.string()),
-      phoneE164: v.optional(v.string()),
-    }),
-  ),
-  handler: async (ctx, { secret }) => {
-    assertSecret(secret);
-    const rows = await ctx.db.query("tenants").take(200);
-    const out: Array<{
-      inkboxConversationId: string;
-      inkboxHandle?: string;
-      photonAssignedNumber?: string;
-      phoneE164?: string;
-    }> = [];
-    for (const row of rows) {
-      if (row.status === "disabled") continue;
-      if (!row.inkboxConversationId) continue;
-      if (row.photonConversationId) continue;
-      if (row.photonNudgeSentAt) continue;
-      out.push({
-        inkboxConversationId: row.inkboxConversationId,
-        inkboxHandle: row.inkboxHandle,
-        photonAssignedNumber: row.photonAssignedNumber,
-        phoneE164: row.phoneE164,
-      });
-    }
-    return out;
-  },
-});
-
 export const bindInbound = mutation({
   args: {
     secret: v.string(),
@@ -791,10 +701,7 @@ export const bindInbound = mutation({
   ),
   handler: async (ctx, { secret, handle, phoneE164, inkboxConversationId }) => {
     assertSecret(secret);
-    const tenant = await ctx.db
-      .query("tenants")
-      .withIndex("by_handle", (q) => q.eq("inkboxHandle", handle))
-      .unique();
+    const tenant = await findTenantByHandle(ctx, handle);
     if (!tenant) return { ok: false as const, reason: "unknown handle" };
     if (tenant.status === "disabled") {
       return { ok: false as const, reason: "disabled" };
@@ -1016,10 +923,7 @@ export const touchLastChannel = mutation({
   returns: v.null(),
   handler: async (ctx, { secret, phoneE164, lastChannel }) => {
     assertSecret(secret);
-    const tenant = await ctx.db
-      .query("tenants")
-      .withIndex("by_phone", (q) => q.eq("phoneE164", phoneE164))
-      .first();
+    const tenant = await findTenantByPhone(ctx, phoneE164);
     if (!tenant) return null;
     if (lastChannelOf(tenant.lastChannel) === lastChannel) return null;
     await ctx.db.patch(tenant._id, { lastChannel });
@@ -1035,10 +939,7 @@ export const mintTelegramBind = mutation({
   ),
   handler: async (ctx, { secret, phoneE164 }) => {
     assertSecret(secret);
-    const tenant = await ctx.db
-      .query("tenants")
-      .withIndex("by_phone", (q) => q.eq("phoneE164", phoneE164))
-      .first();
+    const tenant = await findTenantByPhone(ctx, phoneE164);
     if (!tenant?.phoneE164 || !tenant.inkboxConversationId) {
       return { ok: false as const, reason: "unbound" as const };
     }

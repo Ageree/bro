@@ -1,5 +1,4 @@
 /** Fails if group-chat policy, channel wiring, or isolation regress. */
-import { readFileSync } from "node:fs";
 import {
   foldGroupAsk,
   groupAuthAttributes,
@@ -22,9 +21,7 @@ import {
 import { isGroupTurn, groupPersonalBlock } from "../agent/lib/group-guard.ts";
 import { resolveMemoryScope } from "../agent/lib/memory-policy.ts";
 
-function assert(cond: unknown, msg: string): void {
-  if (!cond) throw new Error(msg);
-}
+import { assert, src } from "./lib/check.ts";
 
 assert(isGroupMessage({ is_group: true }), "snake group");
 assert(isGroupMessage({ isGroup: true }), "camel group");
@@ -197,23 +194,20 @@ assert(
   "group memory isolated",
 );
 
-const channel = readFileSync(
-  new URL("../agent/channels/imessage.ts", import.meta.url),
-  "utf8",
-);
+const channel = src("agent/channels/imessage.ts");
 assert(channel.includes("/webhooks/photon"), "Photon inbound is the chat path");
 assert(channel.includes("if (msg.is_group)"), "Inkbox groups are dropped");
 assert(!channel.includes("bindGroupInbound"), "no new Inkbox group binds");
 assert(!channel.includes("sendGroupWelcome"), "no group welcome on Pro");
 
-const bind = readFileSync(new URL("../convex/groupChats.ts", import.meta.url), "utf8");
+const bind = src("convex/groupChats.ts");
 assert(!bind.includes("inkboxConversationId"), "group bind never touches 1:1 conv");
 assert(bind.includes("firstGroup"), "first group flag");
 assert(bind.includes("existing.ownerPhoneE164"), "keep first owner on later speakers");
 assert(bind.includes("normalizeE164(args.senderPhone)"), "normalize last sender");
 assert(bind.includes("missing handle"), "refuse empty handle on insert");
 
-const tenants = readFileSync(new URL("../convex/tenants.ts", import.meta.url), "utf8");
+const tenants = src("convex/tenants.ts");
 assert(
   tenants.includes("inkboxConversationId") &&
     tenants.includes("bindInbound"),
@@ -231,7 +225,6 @@ const tools = [
   "profile_setup.ts",
   "composio.ts",
   "bro_mail.ts",
-  "otp_lookup.ts",
   "watch_app.ts",
   "job_open.ts",
   "job_wait.ts",
@@ -240,74 +233,68 @@ const tools = [
   "cancel_wakeup.ts",
 ];
 for (const file of tools) {
-  const src = readFileSync(
-    new URL(`../agent/tools/${file}`, import.meta.url),
-    "utf8",
+  const toolSrc = src(`agent/tools/${file}`);
+  assert(toolSrc.includes("groupPersonalBlock"), `${file} refuses group personal work`);
+}
+{
+  // otp_lookup.ts shares its execute (and the group guard inside it) with the
+  // otp-subagent's lookup tool, defined in lib/otp-lookup.ts.
+  const libSrc = src("agent/lib/otp-lookup.ts");
+  assert(
+    libSrc.includes("groupPersonalBlock"),
+    "otp_lookup.ts refuses group personal work",
   );
-  assert(src.includes("groupPersonalBlock"), `${file} refuses group personal work`);
 }
 for (const file of ["web_search.ts", "web_fetch.ts"]) {
-  const src = readFileSync(
-    new URL(`../agent/tools/${file}`, import.meta.url),
-    "utf8",
-  );
-  assert(!src.includes("groupPersonalBlock"), `${file} is public web, ok in groups`);
+  const toolSrc = src(`agent/tools/${file}`);
+  assert(!toolSrc.includes("groupPersonalBlock"), `${file} is public web, ok in groups`);
 }
 
-const createTool = readFileSync(
-  new URL("../agent/tools/group_chat.ts", import.meta.url),
-  "utf8",
-);
+const createTool = src("agent/tools/group_chat.ts");
 assert(createTool.includes("PHOTON_GROUPS_PAUSED"), "create is refused on Pro");
 assert(createTool.includes("groupHowtoText"), "howto still explains groups");
 assert(!createTool.includes("sendBlueIMessageGroup"), "tool does not open a group");
 
-const inkbox = readFileSync(new URL("../agent/lib/inkbox.ts", import.meta.url), "utf8");
+const inkbox = src("agent/lib/inkbox.ts");
 assert(inkbox.includes("sendBlueIMessageGroup"), "inkbox group send");
 assert(inkbox.includes("to: opts.to"), "create uses to[]");
 
-const schema = readFileSync(new URL("../convex/schema.ts", import.meta.url), "utf8");
+const schema = src("convex/schema.ts");
 assert(schema.includes("groupChats: defineTable"), "schema table");
 assert(schema.includes('index("by_conversation"'), "group conversation index");
 
-const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
+const readme = src("README.md");
 assert(/group|групп/i.test(readme), "readme documents groups");
 assert(readme.includes("Photon"), "readme Photon chat");
 
-const jobs = readFileSync(
-  new URL("../agent/instructions/jobs.ts", import.meta.url),
-  "utf8",
-);
+const jobs = src("agent/instructions/jobs.ts");
 assert(jobs.includes("isGroupTurn"), "jobs skip group turns");
 
-const workerScope = readFileSync(
-  new URL("../agent/subagents/worker/lib/scope.ts", import.meta.url),
-  "utf8",
-);
+const workerScope = src("agent/subagents/worker/lib/scope.ts");
 assert(workerScope.includes("groupPersonalBlock"), "worker refuses group personal work");
 
-for (const file of ["lookup.ts", "inbox.ts", "archive_search.ts"]) {
-  const src = readFileSync(
-    new URL(`../agent/subagents/otp/tools/${file}`, import.meta.url),
-    "utf8",
+for (const file of ["inbox.ts", "archive_search.ts"]) {
+  const toolSrc = src(`agent/subagents/otp/tools/${file}`);
+  assert(toolSrc.includes("groupPersonalBlock"), `otp ${file} refuses group personal work`);
+}
+{
+  // lookup.ts shares its execute (and the group guard inside it) with the
+  // top-level otp_lookup.ts tool, defined in lib/otp-lookup.ts.
+  const libSrc = src("agent/lib/otp-lookup.ts");
+  assert(
+    libSrc.includes("groupPersonalBlock"),
+    "otp lookup.ts refuses group personal work",
   );
-  assert(src.includes("groupPersonalBlock"), `otp ${file} refuses group personal work`);
 }
 
-const otpAgent = readFileSync(
-  new URL("../agent/subagents/otp/agent.ts", import.meta.url),
-  "utf8",
-);
+const otpAgent = src("agent/subagents/otp/agent.ts");
 assert(otpAgent.includes("isGroupTurn"), "otp subagent hidden on group turns");
 
-const instructions = readFileSync(
-  new URL("../agent/instructions.md", import.meta.url),
-  "utf8",
-);
+const instructions = src("agent/instructions.md");
 assert(instructions.includes("[group"), "instructions group prefix");
 assert(instructions.includes("group_chat"), "instructions tool");
 
-const pkg = readFileSync(new URL("../package.json", import.meta.url), "utf8");
+const pkg = src("package.json");
 assert(pkg.includes("group:check"), "npm script");
 
 console.log("group-chat-check ok");

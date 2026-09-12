@@ -2,6 +2,26 @@
 
 export const CHATGPT_REFRESH_MARGIN_MS = 120_000;
 
+export function requireTenantId<T extends string>(tenantId: T): T {
+  if (typeof tenantId !== "string" || tenantId.length === 0) {
+    throw new Error("tenantId required");
+  }
+  return tenantId;
+}
+
+export function requirePhone(phoneE164: string): string {
+  const phone = phoneE164.trim();
+  if (!phone) throw new Error("phoneE164 required");
+  return phone;
+}
+
+export function requireVersion(version: number): number {
+  if (!Number.isInteger(version) || version < 0) {
+    throw new Error("version must be a non-negative integer");
+  }
+  return version;
+}
+
 export type ChatgptLoginStatus =
   | "pending"
   | "done"

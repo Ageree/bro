@@ -18,9 +18,7 @@ import schema from "../convex/schema.ts";
 // the source text is checked to still use that form.
 const tenantDoc = doc(schema, "tenants");
 
-function assert(cond: unknown, msg: string): void {
-  if (!cond) throw new Error(msg);
-}
+import { assert } from "./lib/check.ts";
 
 type TableName = keyof typeof schema.tables;
 

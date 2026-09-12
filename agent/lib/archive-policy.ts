@@ -4,6 +4,8 @@
  * Pure functions only; the REST client lives in archive.ts.
  */
 
+import { rec, str } from "./guards.ts";
+
 export interface ArchiveDocument {
   /** Stable per-source id; Supermemory upserts on it, so re-syncs dedup. */
   customId: string;
@@ -17,16 +19,6 @@ const TAG_PREFIX = "bro_archive_";
 /** One Supermemory container per person, derived from the E.164. */
 export function archiveTag(phone: string): string {
   return TAG_PREFIX + phone.replace(/[^0-9A-Za-z._-]/g, "");
-}
-
-function str(v: unknown): string {
-  return typeof v === "string" ? v : "";
-}
-
-function rec(v: unknown): Record<string, unknown> {
-  return v !== null && typeof v === "object" && !Array.isArray(v)
-    ? (v as Record<string, unknown>)
-    : {};
 }
 
 const CONTENT_CHARS = 4000;

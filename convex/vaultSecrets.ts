@@ -13,14 +13,8 @@ import {
   isValidVaultSecret,
   vaultAccountHint,
   vaultItemOrigin,
+  vaultKind,
 } from "./lib/vaultPayload";
-
-const vaultKind = v.union(
-  v.literal("login"),
-  v.literal("payment"),
-  v.literal("address"),
-  v.literal("contact"),
-);
 
 const readResult = v.union(
   v.object({

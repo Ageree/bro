@@ -6,9 +6,7 @@ import {
   parseMaxOutputTokens,
 } from "../agent/lib/model.ts";
 
-function assert(cond: unknown, msg: string): void {
-  if (!cond) throw new Error(msg);
-}
+import { assert, src } from "./lib/check.ts";
 
 assert(
   parseMaxOutputTokens(undefined) === DEFAULT_MAX_OUTPUT_TOKENS,
@@ -64,9 +62,7 @@ assert(
 assert(DEFAULT_MAX_OUTPUT_TOKENS === 8192, "output cap stays large enough for product dumps");
 assert(DEFAULT_ROOT_CONTEXT_TOKENS >= 128_000, "root window still holds a live job thread");
 
-const agentSrc = await import("node:fs").then((fs) =>
-  fs.readFileSync(new URL("../agent/agent.ts", import.meta.url), "utf8"),
-);
+const agentSrc = src("agent/agent.ts");
 assert(agentSrc.includes("DEFAULT_ROOT_CONTEXT_TOKENS"), "root agent uses compact window");
 assert(agentSrc.includes("compaction"), "root agent enables compaction");
 assert(agentSrc.includes("step.started"), "root model resolves on step.started");
@@ -74,9 +70,7 @@ assert(agentSrc.includes("resolveBroModelForTurn"), "root uses the ChatGPT-aware
 assert(!agentSrc.includes("turn.started"), "root model is not resolved on turn.started");
 assert(!agentSrc.includes('reasoning: "low"'), "root reasoning left default — do not dumb Bro down");
 
-const otpSrc = await import("node:fs").then((fs) =>
-  fs.readFileSync(new URL("../agent/subagents/otp/agent.ts", import.meta.url), "utf8"),
-);
+const otpSrc = src("agent/subagents/otp/agent.ts");
 assert(otpSrc.includes("broModel()"), "otp stays on OpenRouter");
 assert(!otpSrc.includes("resolveBroModelForTurn"), "otp does not use Codex");
 
@@ -136,13 +130,9 @@ const appliedBody = JSON.parse(String(applied?.body)) as {
 };
 assert(appliedBody.reasoning?.effort === "low", "fetch wrapper rewrites JSON chat bodies");
 
-const modelSrc = await import("node:fs").then((fs) =>
-  fs.readFileSync(new URL("../agent/lib/model.ts", import.meta.url), "utf8"),
-);
+const modelSrc = src("agent/lib/model.ts");
 assert(modelSrc.includes("openRouterChatFetch"), "default DeepSeek chat uses the OpenRouter extras fetch");
-const warmSrc = await import("node:fs").then((fs) =>
-  fs.readFileSync(new URL("../agent/lib/openrouter-warm.ts", import.meta.url), "utf8"),
-);
+const warmSrc = src("agent/lib/openrouter-warm.ts");
 assert(
   warmSrc.includes(`"${DEFAULT_OPENROUTER_MODEL}"`),
   "chat warm fallback stays on the same default model",

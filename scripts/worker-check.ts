@@ -16,22 +16,8 @@ import {
   proxyCountry,
   proxyNameForCountry,
 } from "../agent/subagents/worker/lib/kernel.ts";
-import { readFileSync } from "node:fs";
 
-function assert(cond: unknown, msg: string): asserts cond {
-  if (!cond) throw new Error(msg);
-}
-
-function throws(fn: () => unknown, contains: string, msg: string): void {
-  try {
-    fn();
-  } catch (err) {
-    const text = err instanceof Error ? err.message : String(err);
-    assert(text.includes(contains), `${msg}: got "${text}"`);
-    return;
-  }
-  throw new Error(msg);
-}
+import { assert, src, throws, withEnv } from "./lib/check.ts";
 
 const PHONE = "+79001112233";
 
@@ -57,11 +43,10 @@ assert(kernelRegion("eu-west") === "eu-west", "known region");
 assert(kernelRegion("moon") === undefined, "unknown region ignored");
 assert(kernelRegion(undefined) === undefined, "region is opt-in");
 
-const savedKey = process.env.KERNEL_API_KEY;
-delete process.env.KERNEL_API_KEY;
-assert(!kernelEnabled(), "kernel disabled without a key");
-throws(() => kernel(), "KERNEL_API_KEY", "kernel must fail loudly without a key");
-if (savedKey !== undefined) process.env.KERNEL_API_KEY = savedKey;
+withEnv({ KERNEL_API_KEY: undefined }, () => {
+  assert(!kernelEnabled(), "kernel disabled without a key");
+  throws(() => kernel(), "kernel must fail loudly without a key", "KERNEL_API_KEY");
+});
 
 function control(
   over: Partial<NativeLoginControlDescriptor>,
@@ -254,16 +239,16 @@ assert(bound.get("email") === "ivan@mail.ru", "email claim");
 assert(bound.get("username") === "ivan@mail.ru", "username claim");
 throws(
   () => vaultClaimValues("login", login, "https://wildbernes.ru", "credentials"),
-  "restricted to https://www.wildberries.ru",
   "a login must not leave its origin",
+  "restricted to https://www.wildberries.ru",
 );
 const otp = vaultClaimValues("login", otpLogin, "https://www.ozon.ru", "credentials");
 assert(otp.get("tel") === "+79001112233", "phone identifier claim");
 assert(!otp.has("current-password"), "an OTP login has no password to fill");
 throws(
   () => vaultClaimValues("payment", card, "https://www.ozon.ru", "credentials"),
-  "not compatible",
   "a card must not answer a login form",
+  "not compatible",
 );
 
 const cardValues = vaultClaimValues("payment", card, "https://www.ozon.ru", "payment-card");
@@ -294,8 +279,8 @@ throws(
     buildNativeAutofillPayload("payment", [
       { token: "cc-number", value: "2200123456789012" },
     ]),
-  "payment card is incomplete",
   "an incomplete card must not be submitted",
+  "payment card is incomplete",
 );
 
 const addressPayload = buildNativeAutofillPayload(
@@ -308,18 +293,15 @@ assert(fieldNames.includes("ADDRESS_HOME_CITY"), "city mapped to chromium");
 assert(!fieldNames.includes("ADDRESS_HOME_STATE"), "missing region is skipped");
 throws(
   () => buildNativeAutofillPayload("address", [{ token: "nonsense", value: "x" }]),
-  "address is incomplete",
   "an unmapped address must not be submitted",
+  "address is incomplete",
 );
 
 assert(nativeAutofillTokens.payment.includes("cc-csc"), "card tokens");
 assert(nativeAutofillTokens.login.includes("current-password"), "login tokens");
 assert(nativeAutofillTokens.address.includes("postal-code"), "address tokens");
 
-const workerInstr = readFileSync(
-  new URL("../agent/subagents/worker/instructions.md", import.meta.url),
-  "utf8",
-);
+const workerInstr = src("agent/subagents/worker/instructions.md");
 assert(
   workerInstr.includes("If the assignment includes a username or password"),
   "worker types a supplied password",

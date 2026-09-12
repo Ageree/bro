@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import {
   merchantFromHost,
   merchantFromTask,
@@ -7,9 +6,7 @@ import {
   resolveMerchant,
 } from "../agent/lib/order-policy.ts";
 
-function assert(cond: unknown, msg: string): asserts cond {
-  if (!cond) throw new Error(msg);
-}
+import { assert, src } from "./lib/check.ts";
 
 // --- merchant ---
 
@@ -152,7 +149,7 @@ assert(
 
 // --- wiring ---
 
-const ordersSrc = readFileSync(new URL("../convex/orders.ts", import.meta.url), "utf8");
+const ordersSrc = src("convex/orders.ts");
 assert(ordersSrc.includes("assertSecret"), "orders assertSecret");
 assert(ordersSrc.includes("listForPhone"), "listForPhone");
 assert(ordersSrc.includes("updateStatus"), "updateStatus");
@@ -167,17 +164,14 @@ assert(
 assert(ordersSrc.includes("ctx.db.patch"), "existing order is patched");
 assert(!ordersSrc.includes("v.any()"), "no any in orders.ts");
 
-const convexSrc = readFileSync(new URL("../agent/lib/convex.ts", import.meta.url), "utf8");
+const convexSrc = src("agent/lib/convex.ts");
 assert(convexSrc.includes("export async function recordOrder"), "recordOrder wrapper");
 assert(convexSrc.includes("export async function listOrders"), "listOrders wrapper");
 assert(convexSrc.includes("export async function updateOrderStatus"), "updateOrderStatus wrapper");
 assert(convexSrc.includes("api.orders.listForPhone"), "listOrders hits listForPhone");
 assert(convexSrc.includes("api.orders.updateStatus"), "update hits updateStatus");
 
-const settleSrc = readFileSync(
-  new URL("../agent/tools/browser_task.ts", import.meta.url),
-  "utf8",
-);
+const settleSrc = src("agent/tools/browser_task.ts");
 assert(settleSrc.includes("parseOrderFromResult"), "settle parses result");
 assert(settleSrc.includes("recordOrder"), "settle records");
 assert(settleSrc.includes("extra.paying"), "settle checks paying");
@@ -189,7 +183,7 @@ assert(
   "follow-through reuse still records",
 );
 
-const toolSrc = readFileSync(new URL("../agent/tools/list_orders.ts", import.meta.url), "utf8");
+const toolSrc = src("agent/tools/list_orders.ts");
 assert(toolSrc.includes("list_orders") || toolSrc.includes("Заказы"), "tool voice");
 assert(toolSrc.includes("cancel"), "tool can cancel");
 assert(toolSrc.includes("listOrders"), "tool lists");
@@ -200,7 +194,7 @@ assert(
 );
 assert(!toolSrc.includes("v.any()"), "no any in list_orders");
 
-const instr = readFileSync(new URL("../agent/instructions.md", import.meta.url), "utf8");
+const instr = src("agent/instructions.md");
 assert(instr.includes("list_orders"), "instructions name list_orders");
 assert(instr.includes("Где заказ") || instr.includes("где заказ"), "instructions где заказ");
 assert(instr.includes("ПВЗ"), "instructions ПВЗ");
@@ -209,10 +203,10 @@ assert(
   "browser only if no row",
 );
 
-const pkg = readFileSync(new URL("../package.json", import.meta.url), "utf8");
+const pkg = src("package.json");
 assert(pkg.includes("orders:check"), "package.json orders:check");
 
-const schemaSrc = readFileSync(new URL("../convex/schema.ts", import.meta.url), "utf8");
+const schemaSrc = src("convex/schema.ts");
 assert(schemaSrc.includes("orders:"), "schema still has orders");
 assert(schemaSrc.includes('v.literal("wb")'), "schema merchant wb");
 assert(schemaSrc.includes("pickup"), "schema pickup");

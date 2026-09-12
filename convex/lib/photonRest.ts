@@ -1,4 +1,4 @@
-import { photonBasicAuthHeader, photonSmsLink, PHOTON_ONBOARD_BODY } from "./photonPolicy";
+import { photonBasicAuthHeader } from "./photonPolicy";
 
 export type PhotonSharedUser = {
   id: string;
@@ -16,10 +16,6 @@ function projectSecret(): string {
   const secret = process.env.SPECTRUM_PROJECT_SECRET?.trim();
   if (!secret) throw new Error("SPECTRUM_PROJECT_SECRET missing");
   return secret;
-}
-
-export function photonRedirectUrl(userId: string, msg = PHOTON_ONBOARD_BODY): string {
-  return `https://spectrum.photon.codes/users/${userId}/redirect?msg=${encodeURIComponent(msg)}`;
 }
 
 export function photonAuthHeader(): string {
@@ -58,10 +54,4 @@ export async function upsertPhotonSharedUser(opts: {
     throw new Error(`photon user ${res.status}: ${json.message ?? text.slice(0, 200)}`);
   }
   return json.data;
-}
-
-export function smsLinkForPhotonUser(user: PhotonSharedUser): string | undefined {
-  const assigned = user.assignedPhoneNumber?.trim();
-  if (!assigned) return undefined;
-  return photonSmsLink(assigned);
 }

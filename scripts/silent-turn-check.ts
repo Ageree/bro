@@ -6,9 +6,7 @@ import {
   turnOrigin,
 } from "../agent/lib/silent-turn.ts";
 
-function assert(cond: unknown, msg: string): void {
-  if (!cond) throw new Error(msg);
-}
+import { assert } from "./lib/check.ts";
 
 // origin is read from channel auth attributes; wire v1 may deliver arrays
 assert(turnOrigin({ origin: "human" }) === "human", "origin human");

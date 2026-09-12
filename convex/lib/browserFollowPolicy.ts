@@ -1,4 +1,4 @@
-const DONE = new Set([
+export const DONE = new Set([
   "completed",
   "failed",
   "cancelled",

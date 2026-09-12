@@ -10,9 +10,7 @@ import {
 } from "../convex/lib/accessPolicy.ts";
 import { assertSecret, timingSafeEqual } from "../convex/secret.ts";
 
-function assert(cond: unknown, msg: string): void {
-  if (!cond) throw new Error(msg);
-}
+import { assert, withEnv } from "./lib/check.ts";
 
 assert(isValidHandle("bro-a1b2c3d4"), "valid handle");
 assert(!isValidHandle("bro-ageree"), "old handle is not v1 format");
@@ -56,9 +54,7 @@ assert(!timingSafeEqual("", "x"), "xor empty vs x");
 assert(!timingSafeEqual("x", ""), "xor x vs empty expected");
 assert(timingSafeEqual("", ""), "xor both empty");
 
-const prevSecret = process.env.BRO_INTERNAL_SECRET;
-try {
-  delete process.env.BRO_INTERNAL_SECRET;
+withEnv({ BRO_INTERNAL_SECRET: undefined }, () => {
   let threw = false;
   try {
     assertSecret("");
@@ -83,10 +79,7 @@ try {
     threw = true;
   }
   assert(threw, "mismatch secret rejects");
-} finally {
-  if (prevSecret === undefined) delete process.env.BRO_INTERNAL_SECRET;
-  else process.env.BRO_INTERNAL_SECRET = prevSecret;
-}
+});
 
 assert(
   webhookUrlForHandle("https://app.example/webhooks/imessage", "bro-a1b2c3d4") ===

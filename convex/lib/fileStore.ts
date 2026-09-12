@@ -1,5 +1,6 @@
 import type { Id, Doc } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
+export { tenantIdByPhone } from "./tenantLookup.ts";
 
 export const FILE_LIST_LIMIT = 100;
 export const FILE_NAME_MAX = 200;
@@ -39,19 +40,6 @@ export function listedFile(row: Doc<"files">): FileListItem {
     createdAt: row.createdAt,
     ...(row.sourceChannel ? { sourceChannel: row.sourceChannel } : {}),
   };
-}
-
-export async function tenantIdByPhone(
-  ctx: QueryCtx | MutationCtx,
-  phoneE164: string,
-): Promise<Id<"tenants"> | null> {
-  const phone = phoneE164.trim();
-  if (!phone) throw new Error("phoneE164 required");
-  const tenant = await ctx.db
-    .query("tenants")
-    .withIndex("by_phone", (q) => q.eq("phoneE164", phone))
-    .first();
-  return tenant?._id ?? null;
 }
 
 export async function listFilesForTenant(

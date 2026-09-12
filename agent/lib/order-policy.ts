@@ -3,6 +3,8 @@
  * result text, or `pending:<short>` only when title and price are both known.
  */
 
+import { parseAmount } from "./purchase-policy.ts";
+
 export type OrderMerchant = "wb" | "ozon" | "other";
 export type OrderStatus = "placed" | "cancelled" | "unknown";
 
@@ -145,12 +147,7 @@ function looksLikePan(id: string): boolean {
 }
 
 function parseRub(raw: string): number | undefined {
-  const compact = raw.replace(/[\s\u00a0]/g, "").replace(",", ".");
-  const n = Number(compact);
-  if (!Number.isFinite(n) || n <= 0) return undefined;
-  const rub = Math.round(n);
-  if (rub > 10_000_000) return undefined;
-  return rub;
+  return parseAmount(raw, false);
 }
 
 function utcDay(now: number): string {

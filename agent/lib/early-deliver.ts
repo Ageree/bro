@@ -1,7 +1,16 @@
 import { splitSeen } from "./wakeup-text.ts";
 import type { TurnOrigin } from "./silent-turn.ts";
 import { isSilentReply, TURN_FAILED_REPLY } from "./silent-turn.ts";
-import { isHeadingOnly } from "./bubble-dedupe.ts";
+import { foldWs, isHeadingOnly } from "./bubble-dedupe.ts";
+import { parkTurn } from "./channel-turn.ts";
+
+/** Fire-and-forget a channel's `touchLastChannel(...)` write without blocking the turn. */
+export function parkLastChannelTouch(
+  waitUntil: ((work: Promise<unknown>) => void) | undefined,
+  touch: Promise<unknown>,
+): void {
+  parkTurn(waitUntil, touch.catch((err) => console.error("touch last channel failed", err)));
+}
 
 export type TurnDelivery = {
   send: string | null;
@@ -20,10 +29,6 @@ export type EarlySentRow = { at: number; bubbles: string[]; soFar?: string };
 
 function foldLines(s: string): string {
   return s.replace(/[ \t]+\n/g, "\n").replace(/[ \t]+$/g, "").trim();
-}
-
-function foldWs(s: string): string {
-  return s.replace(/\s+/g, " ").trim();
 }
 
 function restAfterPrefix(cur: string, prefix: string): string | null | undefined {
@@ -140,20 +145,8 @@ function stripFinalPunct(s: string): string {
   return s.replace(/[.!?…。！？]+$/u, "").trim();
 }
 
-const ACK_TAILS = new Set([
-  "ок",
-  "ok",
-  "okay",
-  "окей",
-  "спасибо",
-  "thanks",
-  "thx",
-  "понял",
-  "поняла",
-  "ясно",
-  "принято",
-  "ага",
-]);
+const NON_ACK_TAILS = new Set(["сделано", "готово", "ищу", "нашел", "нашла"]);
+const ACK_TAILS = new Set([...COMPLETE_TAILS].filter((w) => !NON_ACK_TAILS.has(w)));
 
 export function isLikelyCompleteBubble(text: string): boolean {
   const t = text.trim();
@@ -677,6 +670,19 @@ export function soFarFor(
   return sent.get(turnId)?.soFar ?? "";
 }
 
+function markTurnAfterExpiry(
+  turns: Map<string, number>,
+  turnId: string,
+  now: number,
+  ttlMs: number,
+): void {
+  if (!turnId) return;
+  for (const [key, at] of turns) {
+    if (now - at > ttlMs) turns.delete(key);
+  }
+  turns.set(turnId, now);
+}
+
 const spokeTurns = new Map<string, number>();
 
 export function markTurnSpoke(
@@ -684,11 +690,7 @@ export function markTurnSpoke(
   now: number,
   ttlMs = 10 * 60_000,
 ): void {
-  if (!turnId) return;
-  for (const [key, at] of spokeTurns) {
-    if (now - at > ttlMs) spokeTurns.delete(key);
-  }
-  spokeTurns.set(turnId, now);
+  markTurnAfterExpiry(spokeTurns, turnId, now, ttlMs);
 }
 
 export function turnSpoke(turnId: string | undefined, now = Date.now()): boolean {
@@ -708,11 +710,7 @@ export function markTurnLooking(
   now: number,
   ttlMs = 10 * 60_000,
 ): void {
-  if (!turnId) return;
-  for (const [key, at] of lookingTurns) {
-    if (now - at > ttlMs) lookingTurns.delete(key);
-  }
-  lookingTurns.set(turnId, now);
+  markTurnAfterExpiry(lookingTurns, turnId, now, ttlMs);
 }
 
 export function turnLooking(turnId: string | undefined, now = Date.now()): boolean {

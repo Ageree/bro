@@ -4,9 +4,7 @@ import {
   wrapConnectUrl,
 } from "../agent/lib/connect-link.ts";
 
-function assert(cond: unknown, msg: string): void {
-  if (!cond) throw new Error(msg);
-}
+import { assert } from "./lib/check.ts";
 
 const good = "https://connect.composio.dev/link/lk_abc";
 assert(isConnectDest(good), "allow composio link");

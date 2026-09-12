@@ -202,6 +202,18 @@ async function inspectNativeLoginControls(
   connection: CdpConnection,
   sessionIds: readonly string[]
 ) {
+  return inspectAllFrames(connection, sessionIds, inspectNativeLoginFrame);
+}
+
+async function inspectAllFrames<T>(
+  connection: CdpConnection,
+  sessionIds: readonly string[],
+  inspectFrame: (
+    connection: CdpConnection,
+    sessionId: string,
+    frameId: string
+  ) => Promise<T[]>
+): Promise<T[]> {
   return (
     await Promise.all(
       sessionIds.map(async (sessionId) => {
@@ -213,9 +225,7 @@ async function inspectNativeLoginControls(
           return (
             await Promise.all(
               flattenFrames(frameTree).map(({ id: frameId }) =>
-                inspectNativeLoginFrame(connection, sessionId, frameId).catch(
-                  () => []
-                )
+                inspectFrame(connection, sessionId, frameId).catch(() => [])
               )
             )
           ).flat();
@@ -310,32 +320,9 @@ async function inspectControls(
   sessionIds: readonly string[],
   kind: "address" | "payment"
 ) {
-  const controls = (
-    await Promise.all(
-      sessionIds.map(async (sessionId) => {
-        try {
-          await connection.send("Page.enable", undefined, sessionId);
-          const { frameTree } = frameTreeSchema.parse(
-            await connection.send("Page.getFrameTree", undefined, sessionId)
-          );
-          return (
-            await Promise.all(
-              flattenFrames(frameTree).map(({ id: frameId }) =>
-                inspectFrameControls(
-                  connection,
-                  sessionId,
-                  frameId,
-                  kind
-                ).catch(() => [])
-              )
-            )
-          ).flat();
-        } catch {
-          return [];
-        }
-      })
-    )
-  ).flat();
+  const controls = await inspectAllFrames(connection, sessionIds, (c, s, f) =>
+    inspectFrameControls(c, s, f, kind)
+  );
 
   return controls.toSorted((left, right) => {
     if (left.focused !== right.focused) return left.focused ? -1 : 1;
@@ -421,7 +408,7 @@ const controlInspectionExpression = `(() => {
   });
 })()`;
 
-export function nativeAutofillSecretMarkingExpression(index: number) {
+function nativeAutofillSecretMarkingExpression(index: number) {
   return `(() => {
     const controls = document.querySelectorAll("input, select, textarea");
     const anchor = controls.item(${String(index)});

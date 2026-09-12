@@ -1,5 +1,8 @@
+import type { ToolContext } from "eve/tools";
 import { searchArchive } from "./archive.ts";
 import { fillOtpBodies, listBroInbox, searchBroInbox } from "./bro-inbox.ts";
+import { upsertTenant } from "./convex.ts";
+import { groupPersonalBlock } from "./group-guard.ts";
 import { agentHandle, inkbox } from "./inkbox";
 import {
   archiveOtpAllowed,
@@ -11,6 +14,7 @@ import {
   type OtpCandidate,
   type OtpLookupResult,
 } from "./otp-policy.ts";
+import { tenantId } from "./tenant.ts";
 
 function mergeSnaps(
   listed: Awaited<ReturnType<typeof listBroInbox>>,
@@ -95,4 +99,21 @@ export async function findFreshOtp(opts: {
     ...formatOtpLookup(pickOtp([...mailHits, ...archiveHits], now)),
     messages: listed.length,
   };
+}
+
+/** Shared `execute` for the otp_lookup tool and its otp-subagent twin. */
+export async function otpLookupExecute(
+  { hint, sinceMinutes }: { hint?: string; sinceMinutes?: number },
+  ctx: ToolContext,
+) {
+  const blocked = groupPersonalBlock(ctx);
+  if (blocked) return { error: blocked };
+  const phone = tenantId(ctx);
+  const tenant = await upsertTenant(phone);
+  return findFreshOtp({
+    phone,
+    handle: tenant.inkboxHandle ?? agentHandle(),
+    hint,
+    sinceMinutes,
+  });
 }

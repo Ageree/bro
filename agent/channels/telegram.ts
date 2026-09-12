@@ -1,10 +1,8 @@
 import { defineChannel, POST } from "eve/channels";
 import {
   bindTelegram,
-  countInboundMessage,
   getTenantByTelegram,
   loadWakeContext,
-  markPaywallSent,
   mintTelegramBind,
   touchLastChannel,
 } from "../lib/convex";
@@ -24,7 +22,7 @@ import { saveTelegramInboundFiles } from "../lib/inbound-files.ts";
 import { transcribeVoiceNote } from "../lib/voice";
 import { inboundVoiceLine } from "../lib/imessage-text";
 import { VOICE_FAILED_REPLY } from "../lib/voice-policy";
-import { inboundGateFromResult } from "../../convex/lib/billingPolicy";
+import { inboundOwnerGate } from "./imessage.ts";
 import {
   bindRefuseText,
   telegramBindLink,
@@ -45,6 +43,7 @@ import {
 } from "../lib/telegram";
 import { compileTelegram } from "../lib/telegram-text.ts";
 import { parkTurn } from "../lib/channel-turn.ts";
+import { parkLastChannelTouch } from "../lib/early-deliver.ts";
 import { shortAckAttribute } from "../lib/short-ack.ts";
 
 function telegramAuthAttrs(opts: {
@@ -170,10 +169,7 @@ export default defineChannel({
         }
         const data = (cb.data ?? "").trim();
         if (!data) return new Response(null, { status: 204 });
-        const touch = touchLastChannel(tenant.phoneE164, "telegram").catch((err) =>
-          console.error("touch last channel failed", err),
-        );
-        parkTurn(waitUntil, touch);
+        parkLastChannelTouch(waitUntil, touchLastChannel(tenant.phoneE164, "telegram"));
         const typing = sendTelegramTyping(chatIdOf(msg)).catch((err) =>
           console.error("telegram typing failed", err),
         );
@@ -283,25 +279,7 @@ export default defineChannel({
       prefetchInstinctRecall(phone, inbound.text);
       prefetchOpenRouter();
 
-      let gate: { decision: "allow" | "paywall" | "drop"; payUrl?: string };
-      try {
-        gate = inboundGateFromResult(await countInboundMessage(phone), undefined);
-      } catch (err) {
-        console.error("billing count failed", err);
-        try {
-          const marked = await markPaywallSent(phone);
-          gate = inboundGateFromResult(undefined, err, {
-            alreadySentToday: marked.alreadySentToday,
-            marked: true,
-          });
-        } catch (markErr) {
-          console.error("paywallSentDayKey persist failed", markErr);
-          gate = inboundGateFromResult(undefined, err, {
-            alreadySentToday: false,
-            marked: false,
-          });
-        }
-      }
+      const gate = await inboundOwnerGate(phone);
       if (gate.decision === "drop") return new Response(null, { status: 204 });
       if (gate.decision === "paywall") {
         const line = gate.payUrl
@@ -336,10 +314,7 @@ export default defineChannel({
         return new Response(null, { status: 204 });
       }
 
-      const touch = touchLastChannel(phone, "telegram").catch((err) =>
-        console.error("touch last channel failed", err),
-      );
-      parkTurn(waitUntil, touch);
+      parkLastChannelTouch(waitUntil, touchLastChannel(phone, "telegram"));
 
       const content = assembleInboundContent(inbound.text, await photoP);
       console.log("telegram inbound", {

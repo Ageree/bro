@@ -9,7 +9,7 @@ type Row = { at: number; texts: string[] };
 
 const sent = new Map<string, Row>();
 
-function foldWs(s: string): string {
+export function foldWs(s: string): string {
   return s.replace(/\s+/g, " ").trim();
 }
 

@@ -3,6 +3,7 @@ import { doc } from "convex-helpers/validators";
 import schema from "./schema";
 import { mutation, query } from "./_generated/server";
 import { assertSecret } from "./secret";
+import { findTenantByPhone } from "./lib/tenantLookup";
 
 const orderDoc = doc(schema, "orders");
 
@@ -31,10 +32,7 @@ export const listForPhone = query({
   returns: v.array(orderDoc),
   handler: async (ctx, { secret, phoneE164 }) => {
     assertSecret(secret);
-    const tenant = await ctx.db
-      .query("tenants")
-      .withIndex("by_phone", (q) => q.eq("phoneE164", phoneE164))
-      .first();
+    const tenant = await findTenantByPhone(ctx, phoneE164);
     if (!tenant) return [];
     return await ctx.db
       .query("orders")
@@ -101,10 +99,7 @@ export const updateStatus = mutation({
     if (!args.orderId && !args.merchantOrderId) {
       return { error: "merchantOrderId or orderId required" };
     }
-    const tenant = await ctx.db
-      .query("tenants")
-      .withIndex("by_phone", (q) => q.eq("phoneE164", args.phoneE164))
-      .first();
+    const tenant = await findTenantByPhone(ctx, args.phoneE164);
     if (!tenant) return { error: "unknown tenant" };
 
     let row = args.orderId ? await ctx.db.get(args.orderId) : null;

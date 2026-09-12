@@ -7,6 +7,23 @@
     return typeof s === "string" ? s.replace(/\/$/, "") : "";
   }
 
+  function esc(s) {
+    return String(s).replace(/[&<>"]/g, function (c) {
+      return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c];
+    });
+  }
+
+  function validHandle(h) {
+    return /^bro-[a-z0-9]{8}$/.test(h || "");
+  }
+
+  function storedHandle() {
+    var h = (handle() || "").trim();
+    return validHandle(h) ? h : "";
+  }
+
+  window.bro = { site: site, token: token, esc: esc };
+
   window.broIMessageLink = function () {
     var s = window.BRO_IMESSAGE_LINK;
     return typeof s === "string" ? s : "";
@@ -57,15 +74,6 @@
     if (cabinetBtn) cabinetBtn.hidden = !in_;
     if (vaultBtn) vaultBtn.hidden = !in_;
     if (logoutBtn) logoutBtn.hidden = !in_;
-  }
-
-  function validHandle(h) {
-    return /^bro-[a-z0-9]{8}$/.test(h);
-  }
-
-  function storedHandle() {
-    var h = (handle() || "").trim();
-    return validHandle(h) ? h : "";
   }
 
   var WRITE_FIRST = "Сначала напиши Bro в iMessage.";

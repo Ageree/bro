@@ -3,9 +3,7 @@ import {
   sandboxNetworkViolation,
 } from "../agent/lib/sandbox-policy.ts";
 
-function assert(cond: unknown, msg: string): void {
-  if (!cond) throw new Error(msg);
-}
+import { assert } from "./lib/check.ts";
 
 // Python HTTP client hitting a real site
 assert(

@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import {
   broVcard,
   helpText,
@@ -10,9 +9,7 @@ import {
   welcomeText,
 } from "../agent/lib/onboard-policy.ts";
 
-function assert(cond: unknown, msg: string): void {
-  if (!cond) throw new Error(msg);
-}
+import { assert, src } from "./lib/check.ts";
 
 function hasCyrillic(s: string): boolean {
   return /[а-яё]/i.test(s);
@@ -160,10 +157,7 @@ const injected = broVcard({
 assert(!injected.includes("\nFN:Nope"), "email cannot inject fields");
 assert(!injected.includes("TEL"), "garbage tel omitted");
 
-const channel = readFileSync(
-  new URL("../agent/channels/imessage.ts", import.meta.url),
-  "utf8",
-);
+const channel = src("agent/channels/imessage.ts");
 assert(channel.includes("if (firstBind)"), "channel sends onboard on firstBind");
 assert(
   channel.includes("if (!preview)") && channel.includes("sendFirstBindOnboard"),

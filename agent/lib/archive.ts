@@ -10,7 +10,7 @@ import {
 const V3_BASE = "https://api.supermemory.ai/v3";
 const V4_SEARCH = "https://api.supermemory.ai/v4/search";
 
-function apiKey(): string {
+export function apiKey(): string {
   const key = process.env.SUPERMEMORY_API_KEY;
   if (!key?.trim()) throw new Error("SUPERMEMORY_API_KEY missing");
   return key.trim();

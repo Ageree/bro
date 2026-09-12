@@ -59,7 +59,7 @@ body {
   letter-spacing: -0.01em;
 }
 .t-small { font-size: 0.88rem; line-height: 1.65; }
-.t-mute  { color: var(--ink-mute); }
+.t-mute, .act--mute { color: var(--ink-mute); }
 
 /* ---------- links: chrome is text ---------- */
 .link {
@@ -68,8 +68,8 @@ body {
   display: inline-block;
   transition: opacity 0.25s var(--ease);
 }
-.link:hover { opacity: 0.55; }
-.link:focus-visible { outline: 1px solid currentColor; outline-offset: 4px; }
+.link:hover, .act:hover { opacity: 0.55; }
+.link:focus-visible, .act:focus-visible { outline: 1px solid currentColor; outline-offset: 4px; }
 
 /* the login sheet still needs real buttons */
 .btn {
@@ -88,12 +88,12 @@ body {
   transition: opacity 0.25s var(--ease);
 }
 .btn:hover { opacity: 0.82; }
-.btn:disabled { opacity: 0.45; cursor: default; }
+.btn:disabled, .act:disabled { opacity: 0.45; cursor: default; }
 .btn:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
 
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
-  .link, .btn { transition: none; }
+  .link, .btn, .act { transition: none; }
 }
 
 /* ============================================================
@@ -239,7 +239,6 @@ body {
 .act:hover { opacity: 0.55; }
 .act:focus-visible { outline: 1px solid currentColor; outline-offset: 4px; }
 .act--lead { font-size: clamp(1.2rem, 4.6vw, 1.7rem); }
-.act--mute { color: var(--ink-mute); }
 .act--sm { font-size: 0.95rem; }
 
 .status-line { font-size: 0.86rem; line-height: 1.5; color: var(--ink-mute); }
@@ -267,7 +266,6 @@ body {
 .row-main > p + p { margin-top: 0.1rem; }
 .item-label { font-size: 0.95rem; line-height: 1.45; }
 .item-kind { font-size: 0.86rem; color: var(--ink-mute); }
-.act:disabled { opacity: 0.45; cursor: default; }
 
 /* a quota reads as a rule that is partly inked in — square ends, like
    everything else on the page */
@@ -292,7 +290,7 @@ body {
   background: var(--paper);
   color: var(--ink);
 }
-.field:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
+.field:focus-visible, .sheet input:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
 .field[readonly] { color: var(--ink-mute); border-color: var(--rule); }
 select.field {
   appearance: none;
@@ -373,7 +371,6 @@ select.field {
   background: var(--paper);
   color: var(--ink);
 }
-.sheet input:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
 .sheet .sheet-cta { display: flex; width: 100%; margin-top: 1rem; white-space: nowrap; }
 .sheet .text-close {
   font-family: var(--font-display);
@@ -389,7 +386,3 @@ select.field {
   text-align: center;
 }
 .sheet .status { min-height: 1.3rem; margin-top: 0.7rem; color: var(--ink-mute); font-size: 0.86rem; line-height: 1.4; }
-
-@media (prefers-reduced-motion: reduce) {
-  .act { transition: none; }
-}

@@ -17,18 +17,7 @@ import {
   vaultSetupRequestSchema,
 } from "../convex/lib/vaultPayload.ts";
 
-function assert(cond: unknown, msg: string): asserts cond {
-  if (!cond) throw new Error(msg);
-}
-
-function throws(fn: () => unknown, msg: string): void {
-  try {
-    fn();
-  } catch {
-    return;
-  }
-  throw new Error(msg);
-}
+import { assert, throws } from "./lib/check.ts";
 
 const master = vaultMasterKey(Buffer.alloc(32, 7).toString("base64"));
 const other = vaultMasterKey(Buffer.alloc(32, 9).toString("base64"));
