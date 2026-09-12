@@ -169,3 +169,30 @@ landscape on the desktop. `npm run cabinet:check` passes its landing assertions.
 Cabinet/vault restyle — they still carry inline styles and the old meadow
 background, so `assets/meadow.webp` stays. Also the real hero footage, analytics, i18n.
 The `vercel.json` that `cabinet-check.ts` reads is missing on `main` and still is.
+
+## Rebuilding the film
+
+`scripts/hero-video/build.py` is the pipeline the section above describes, made
+repeatable: `refs` cuts one still per character out of the film in production,
+`generate` runs image-to-video on each still, `assemble` trims, mattes to white
+and encodes, `verify` proves the border ring is 255. Only `generate` touches the
+network.
+
+Two things it fixes about the film in production. The nine shots run 1.8 s
+instead of 3.21 s, so the faces change about twice as often and the whole strip
+is 16.2 s rather than 28.9 s. And each character is given its own piece of
+business — typing, laughing, taking a call, punching the air — because nine
+people holding the same pose read as one photo shown nine times.
+
+The reference stills come out of the film already shipped, which are matted to
+`#ffffff` before a single request is made, so the model starts from the page's
+own white. `assemble` mattes the result again anyway: what the model paints
+behind the figure is its own business.
+
+Generation runs on Higgsfield. Its API takes a key id and a secret from
+https://cloud.higgsfield.ai as `Authorization: Key ${id}:${secret}`; a dashboard
+or session token (`oat_…`) is not an API key and comes back
+`401 Invalid credentials`. The catalogue there tops out at Seedance **v1**
+(`/bytedance/seedance/v1/pro/fast/image-to-video`, 1080 × 9:16) — 2.5 is not
+exposed. Veo 3.1, Kling 2.5 Turbo Pro and Sora 2 Pro sit behind the same
+lifecycle if a different model is wanted; only the path and payload change.
