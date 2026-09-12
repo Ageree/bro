@@ -7,10 +7,13 @@ export const TELEGRAM_RICH_TEXT_LIMIT = 32_768;
 
 const FENCE = /```([\w+-]*)\n?([\s\S]*?)```/g;
 const BUTTONS = /:::buttons\s*\n([\s\S]*?):::/g;
-const IMAGE = /!{1,2}\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)/gi;
+// Shared with imessage-text.ts — only ever used via .replace(), which always
+// scans from index 0 regardless of lastIndex, so sharing these `g` regexes
+// across modules is safe. Do not use these with .exec/.test in a loop.
+export const IMAGE = /!{1,2}\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)/gi;
 const LINK = /\[([^\]]+)\]\((https?:\/\/[^)\s]+|callback:[^)\s]+)\)/gi;
-const AUTO_URL = /<(https?:\/\/[^>\s]+)>/gi;
-const AUTO_MAIL = /<([^>\s]+@[^>\s]+)>/g;
+export const AUTO_URL = /<(https?:\/\/[^>\s]+)>/gi;
+export const AUTO_MAIL = /<([^>\s]+@[^>\s]+)>/g;
 const RICH_MARK = /^:::rich\s*$/gm;
 const RICH_BLOCK_LINE =
   /^<(?:h[1-6]|ul|ol|li|table|thead|tbody|tr|th|td|blockquote|figure|figcaption|pre|details|summary|hr|p|img)\b/i;

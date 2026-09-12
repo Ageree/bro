@@ -27,7 +27,7 @@ export function purchaseStance(text: string): PurchaseStance {
   return "search";
 }
 
-function parseAmount(raw: string, asThousands: boolean): number | undefined {
+export function parseAmount(raw: string, asThousands: boolean): number | undefined {
   const compact = raw.replace(/[\s\u00a0]/g, "").replace(",", ".");
   const n = Number(compact);
   if (!Number.isFinite(n) || n <= 0) return undefined;

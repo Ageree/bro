@@ -8,16 +8,7 @@ import {
 import { scaffoldTask } from "../agent/lib/browseruse.ts";
 import type { PaymentPayload } from "../convex/lib/vaultPayload.ts";
 
-import { assert } from "./lib/check.ts";
-
-function throws(fn: () => unknown, msg: string): void {
-  try {
-    fn();
-  } catch {
-    return;
-  }
-  throw new Error(msg);
-}
+import { assert, throws } from "./lib/check.ts";
 
 // --- normalizePayHost ---
 

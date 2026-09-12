@@ -14,11 +14,7 @@ import {
   voiceTranscriptLine,
 } from "../agent/lib/voice-policy.ts";
 
-import { assert } from "./lib/check.ts";
-
-function eq<T>(got: T, want: T, msg: string): void {
-  if (got !== want) throw new Error(`${msg}: got ${JSON.stringify(got)} want ${JSON.stringify(want)}`);
-}
+import { assert, eq, makeFetch } from "./lib/check.ts";
 
 // --- sttFormatFor ---
 eq(sttFormatFor({ contentType: "audio/mp4" })?.format, "m4a", "mp4");
@@ -322,17 +318,6 @@ try {
 assert(threw, "lpcm remux throws");
 
 // --- transcribeVoiceNote with fake fetch ---
-type Call = { url: string; body?: string };
-function makeFetch(handler: (url: string, init?: RequestInit) => Response | Promise<Response>) {
-  const calls: Call[] = [];
-  const fn = async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = String(input);
-    calls.push({ url, body: typeof init?.body === "string" ? init.body : undefined });
-    return handler(url, init);
-  };
-  return { fetch: fn as typeof fetch, calls };
-}
-
 {
   const audio = new Uint8Array([0x49, 0x44, 0x33, 0x00, 1, 2, 3]);
   let sttHits = 0;

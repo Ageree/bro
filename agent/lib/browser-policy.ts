@@ -1,3 +1,5 @@
+import { DONE } from "../../convex/lib/browserFollowPolicy.ts";
+
 const ACTIVE = new Set([
   "queued",
   "pending",
@@ -6,15 +8,6 @@ const ACTIVE = new Set([
   "in_progress",
   "working",
   "processing",
-]);
-
-const DONE = new Set([
-  "completed",
-  "failed",
-  "cancelled",
-  "canceled",
-  "stopped",
-  "error",
 ]);
 
 export function normalizeTask(task: string): string {
