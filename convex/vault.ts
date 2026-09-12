@@ -2,13 +2,8 @@ import { v } from "convex/values";
 import { internalMutation, internalQuery, query, type QueryCtx } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 import { assertSecret } from "./secret";
-
-const vaultKind = v.union(
-  v.literal("login"),
-  v.literal("payment"),
-  v.literal("address"),
-  v.literal("contact"),
-);
+import { vaultKind } from "./lib/vaultPayload";
+import { tenantIdByPhone } from "./lib/tenantLookup";
 
 const listedItem = v.object({
   handle: v.string(),
@@ -40,17 +35,6 @@ const itemFields = v.object({
   createdAt: v.number(),
   updatedAt: v.number(),
 });
-
-async function tenantIdByPhone(
-  ctx: QueryCtx,
-  phoneE164: string,
-): Promise<Id<"tenants"> | null> {
-  const tenant = await ctx.db
-    .query("tenants")
-    .withIndex("by_phone", (q) => q.eq("phoneE164", phoneE164))
-    .first();
-  return tenant?._id ?? null;
-}
 
 async function listItemsForTenant(ctx: QueryCtx, tenantId: Id<"tenants">) {
   // One person's saved credentials: bounded by hand, never paginated.

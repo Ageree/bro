@@ -10,6 +10,7 @@ import {
 } from "./lib/memoryPolicy";
 import { formatJobWakeLine } from "./lib/jobWakeLine";
 import { assertSecret } from "./secret";
+import { findTenantByPhone } from "./lib/tenantLookup";
 
 const waitingFor = v.union(
   v.literal("human"),
@@ -41,10 +42,7 @@ export const wakeContext = query({
         .withIndex("by_phone", (q) => q.eq("phoneE164", phoneE164))
         .order("desc")
         .take(WAKE_LINES),
-      ctx.db
-        .query("tenants")
-        .withIndex("by_phone", (q) => q.eq("phoneE164", phoneE164))
-        .first(),
+      findTenantByPhone(ctx, phoneE164),
     ]);
     const memories = memoryRows.reverse().map((r) => r.line);
     if (!tenant) return { memories, jobs: [] };

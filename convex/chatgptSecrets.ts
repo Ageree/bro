@@ -11,7 +11,12 @@ import {
   encryptVaultSecret,
   vaultMasterKey,
 } from "../shared/vaultCrypto";
-import { shouldRefresh } from "./lib/chatgptPolicy";
+import {
+  requirePhone,
+  requireTenantId,
+  requireVersion,
+  shouldRefresh,
+} from "./lib/chatgptPolicy";
 import {
   CHATGPT_OAUTH_HANDLE,
   accountIdFromJwt,
@@ -157,26 +162,6 @@ function saveTokensRef(): FunctionReference<
   { ok: boolean; version: number }
 > {
   return internal.chatgptSecrets.saveTokens;
-}
-
-function requireTenantId(tenantId: Id<"tenants">): Id<"tenants"> {
-  if (typeof tenantId !== "string" || tenantId.length === 0) {
-    throw new Error("tenantId required");
-  }
-  return tenantId;
-}
-
-function requirePhone(phoneE164: string): string {
-  const phone = phoneE164.trim();
-  if (!phone) throw new Error("phoneE164 required");
-  return phone;
-}
-
-function requireVersion(version: number): number {
-  if (!Number.isInteger(version) || version < 0) {
-    throw new Error("version must be a non-negative integer");
-  }
-  return version;
 }
 
 function requireJson(json: string): string {

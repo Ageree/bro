@@ -12,11 +12,15 @@ import type { Id } from "./_generated/dataModel";
 import { assertSecret } from "./secret";
 import {
   nextLoginStatus,
+  requirePhone,
+  requireTenantId,
+  requireVersion,
   snapshotStatus,
   type ChatgptLoginStatus,
   type ChatgptLoginStatusInput,
   type ChatgptSnapshotStatus,
 } from "./lib/chatgptPolicy";
+import { tenantIdByPhone } from "./lib/tenantLookup";
 
 const loginStatus = v.union(
   v.literal("pending"),
@@ -94,37 +98,6 @@ function chatgptDb(ctx: { db: unknown }): ChatgptDb {
   return ctx.db as ChatgptDb;
 }
 
-function requireTenantId(tenantId: Id<"tenants">): Id<"tenants"> {
-  if (typeof tenantId !== "string" || tenantId.length === 0) {
-    throw new Error("tenantId required");
-  }
-  return tenantId;
-}
-
-function requirePhone(phoneE164: string): string {
-  const phone = phoneE164.trim();
-  if (!phone) throw new Error("phoneE164 required");
-  return phone;
-}
-
-function requireVersion(version: number): number {
-  if (!Number.isInteger(version) || version < 0) {
-    throw new Error("version must be a non-negative integer");
-  }
-  return version;
-}
-
-async function tenantIdByPhone(
-  ctx: QueryCtx | MutationCtx,
-  phoneE164: string,
-): Promise<Id<"tenants"> | null> {
-  const tenant = await ctx.db
-    .query("tenants")
-    .withIndex("by_phone", (q) => q.eq("phoneE164", phoneE164))
-    .first();
-  return tenant?._id ?? null;
-}
-
 async function accountForTenant(
   ctx: QueryCtx | MutationCtx,
   tenantId: Id<"tenants">,
@@ -200,24 +173,6 @@ function statusFromRows(
   };
 }
 
-export const statusForPhone = internalQuery({
-  args: {
-    phoneE164: v.string(),
-    now: v.optional(v.number()),
-  },
-  returns: statusResult,
-  handler: async (ctx, { phoneE164, now }) => {
-    const phone = requirePhone(phoneE164);
-    const tenantId = await tenantIdByPhone(ctx, phone);
-    if (!tenantId) return { status: "none" as const };
-    const [account, logins] = await Promise.all([
-      accountForTenant(ctx, tenantId),
-      loginsForTenant(ctx, tenantId),
-    ]);
-    return statusFromRows(account, latestLogin(logins), now);
-  },
-});
-
 export const statusForAgent = query({
   args: {
     secret: v.string(),
@@ -282,60 +237,6 @@ export const startLogin = internalMutation({
       expiresAt: args.expiresAt,
     });
     return null;
-  },
-});
-
-export const beginLoginForAgent = mutation({
-  args: {
-    secret: v.string(),
-    phoneE164: v.string(),
-    deviceAuthId: v.string(),
-    userCode: v.string(),
-    interval: v.number(),
-    expiresAt: v.number(),
-    now: v.number(),
-  },
-  returns: v.union(
-    v.object({ ok: v.literal(true) }),
-    v.object({ ok: v.literal(false), reason: v.string() }),
-  ),
-  handler: async (ctx, args) => {
-    assertSecret(args.secret);
-    const phone = requirePhone(args.phoneE164);
-    const tenantId = await tenantIdByPhone(ctx, phone);
-    if (!tenantId) return { ok: false as const, reason: "unknown tenant" };
-    const deviceAuthId = args.deviceAuthId.trim();
-    const userCode = args.userCode.trim();
-    if (!deviceAuthId) throw new Error("deviceAuthId required");
-    if (!userCode) throw new Error("userCode required");
-    if (!Number.isFinite(args.interval) || args.interval < 0) {
-      throw new Error("interval must be >= 0");
-    }
-    if (!Number.isFinite(args.expiresAt) || !Number.isFinite(args.now)) {
-      throw new Error("expiresAt and now must be finite");
-    }
-    const db = chatgptDb(ctx);
-    const existing = await loginsForTenant(ctx, tenantId);
-    for (const row of existing) {
-      if (row.status === "pending") {
-        await db.patch(row._id, { status: "expired" });
-      }
-    }
-    await db.insert("chatgptLogins", {
-      tenantId,
-      deviceAuthId,
-      userCode,
-      interval: args.interval,
-      expiresAt: args.expiresAt,
-      status: "pending",
-    });
-    await scheduleDevicePoll(ctx, {
-      tenantId,
-      deviceAuthId,
-      interval: args.interval,
-      expiresAt: args.expiresAt,
-    });
-    return { ok: true as const };
   },
 });
 
@@ -577,18 +478,6 @@ export const putSecret = internalMutation({
   },
 });
 
-export const deleteSecretsForTenant = internalMutation({
-  args: { tenantId: v.id("tenants") },
-  returns: v.boolean(),
-  handler: async (ctx, { tenantId }) => {
-    const id = requireTenantId(tenantId);
-    const secret = await secretForTenantRow(ctx, id);
-    if (!secret) return false;
-    await chatgptDb(ctx).delete(secret._id);
-    return true;
-  },
-});
-
 export const loginByDeviceAuthId = internalQuery({
   args: { deviceAuthId: v.string() },
   returns: v.union(
@@ -646,32 +535,5 @@ export const quarantineForAgent = mutation({
       quarantineReason: args.reason.trim(),
     });
     return true;
-  },
-});
-
-export const accountForAgent = internalQuery({
-  args: { tenantId: v.id("tenants") },
-  returns: v.union(
-    v.object({
-      version: v.number(),
-      accountId: v.optional(v.string()),
-      accessExpiresAt: v.optional(v.number()),
-      quarantinedAt: v.optional(v.number()),
-    }),
-    v.null(),
-  ),
-  handler: async (ctx, { tenantId }) => {
-    const account = await accountForTenant(ctx, requireTenantId(tenantId));
-    if (!account) return null;
-    return {
-      version: account.version,
-      ...(account.accountId ? { accountId: account.accountId } : {}),
-      ...(account.accessExpiresAt !== undefined
-        ? { accessExpiresAt: account.accessExpiresAt }
-        : {}),
-      ...(account.quarantinedAt !== undefined
-        ? { quarantinedAt: account.quarantinedAt }
-        : {}),
-    };
   },
 });

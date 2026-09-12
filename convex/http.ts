@@ -23,6 +23,10 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
+function unauthorized(): Response {
+  return json({ ok: false, code: "unauthorized" }, 401);
+}
+
 function bearer(request: Request): string {
   const raw = request.headers.get("authorization") ?? "";
   const m = /^Bearer\s+(\S+)/i.exec(raw);
@@ -36,6 +40,25 @@ async function jsonBody(request: Request): Promise<Record<string, unknown>> {
   } catch {
     return {};
   }
+}
+
+/** Bearer token → live session, or null. Every `/me*` and `/vault/*` route
+ *  gates on this before touching tenant data. */
+async function sessionTenant(
+  ctx: {
+    runQuery: (
+      ref: typeof internal.cabinet.getSessionTenant,
+      args: { tokenHash: string; now: number },
+    ) => Promise<{ tenantId: Id<"tenants"> } | null>;
+  },
+  request: Request,
+): Promise<{ tenantId: Id<"tenants"> } | null> {
+  const token = bearer(request);
+  if (!token) return null;
+  return await ctx.runQuery(internal.cabinet.getSessionTenant, {
+    tokenHash: await sha256hex(token),
+    now: Date.now(),
+  });
 }
 
 const http = httpRouter();
@@ -213,19 +236,13 @@ http.route({
   path: "/me",
   method: "GET",
   handler: httpAction(async (ctx, request) => {
-    const token = bearer(request);
-    if (!token) return json({ ok: false, code: "unauthorized" }, 401);
-    const now = Date.now();
-    const session = await ctx.runQuery(internal.cabinet.getSessionTenant, {
-      tokenHash: await sha256hex(token),
-      now,
-    });
-    if (!session) return json({ ok: false, code: "unauthorized" }, 401);
+    const session = await sessionTenant(ctx, request);
+    if (!session) return unauthorized();
     const me = await ctx.runQuery(internal.cabinet.snapshotForTenant, {
       tenantId: session.tenantId,
-      now,
+      now: Date.now(),
     });
-    if (!me) return json({ ok: false, code: "unauthorized" }, 401);
+    if (!me) return unauthorized();
     return json({ ok: true, me });
   }),
 });
@@ -234,13 +251,8 @@ http.route({
   path: "/me/browser-profile",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
-    const token = bearer(request);
-    if (!token) return json({ ok: false, code: "unauthorized" }, 401);
-    const session = await ctx.runQuery(internal.cabinet.getSessionTenant, {
-      tokenHash: await sha256hex(token),
-      now: Date.now(),
-    });
-    if (!session) return json({ ok: false, code: "unauthorized" }, 401);
+    const session = await sessionTenant(ctx, request);
+    if (!session) return unauthorized();
     const body = await jsonBody(request);
     const profileId = typeof body.profileId === "string" ? body.profileId : "";
     try {
@@ -260,13 +272,8 @@ http.route({
   path: "/me/browser-profile/refresh",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
-    const token = bearer(request);
-    if (!token) return json({ ok: false, code: "unauthorized" }, 401);
-    const session = await ctx.runQuery(internal.cabinet.getSessionTenant, {
-      tokenHash: await sha256hex(token),
-      now: Date.now(),
-    });
-    if (!session) return json({ ok: false, code: "unauthorized" }, 401);
+    const session = await sessionTenant(ctx, request);
+    if (!session) return unauthorized();
     try {
       const refreshed = await ctx.runAction(internal.cabinet.refreshBrowserProfile, {
         tenantId: session.tenantId,
@@ -283,13 +290,8 @@ http.route({
   path: "/me/memories/forget",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
-    const token = bearer(request);
-    if (!token) return json({ ok: false, code: "unauthorized" }, 401);
-    const session = await ctx.runQuery(internal.cabinet.getSessionTenant, {
-      tokenHash: await sha256hex(token),
-      now: Date.now(),
-    });
-    if (!session) return json({ ok: false, code: "unauthorized" }, 401);
+    const session = await sessionTenant(ctx, request);
+    if (!session) return unauthorized();
     const body = await jsonBody(request);
     const needle = typeof body.needle === "string" ? body.needle : "";
     const forgotten = await ctx.runMutation(internal.cabinet.forgetMemoriesForTenant, {
@@ -304,20 +306,14 @@ http.route({
   path: "/me/tz",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
-    const token = bearer(request);
-    if (!token) return json({ ok: false, code: "unauthorized" }, 401);
-    const now = Date.now();
-    const session = await ctx.runQuery(internal.cabinet.getSessionTenant, {
-      tokenHash: await sha256hex(token),
-      now,
-    });
-    if (!session) return json({ ok: false, code: "unauthorized" }, 401);
+    const session = await sessionTenant(ctx, request);
+    if (!session) return unauthorized();
     const body = await jsonBody(request);
     const tz = typeof body.tz === "string" ? body.tz : "";
     const result = await ctx.runMutation(internal.cabinet.setTzForSession, {
       tenantId: session.tenantId,
       tz,
-      now,
+      now: Date.now(),
     });
     if (!result.ok) return json({ ok: false, code: result.code }, 400);
     return json({ ok: true, tz: result.tz });
@@ -328,16 +324,14 @@ http.route({
   path: "/me/pay",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
-    const token = bearer(request);
-    if (!token) return json({ ok: false, code: "unauthorized" }, 401);
+    // Token presence is checked before the billing-off gate, and the gate
+    // before the session lookup: order matters when both can fail.
+    if (!bearer(request)) return unauthorized();
     if (!process.env.YOOKASSA_SHOP_ID || !process.env.YOOKASSA_SECRET_KEY) {
       return json({ ok: false, code: "billing_off" }, 503);
     }
-    const session = await ctx.runQuery(internal.cabinet.getSessionTenant, {
-      tokenHash: await sha256hex(token),
-      now: Date.now(),
-    });
-    if (!session) return json({ ok: false, code: "unauthorized" }, 401);
+    const session = await sessionTenant(ctx, request);
+    if (!session) return unauthorized();
     try {
       const { confirmationUrl } = await ctx.runAction(
         internal.billing.createPaymentFor,
@@ -355,13 +349,8 @@ http.route({
   path: "/vault/items",
   method: "GET",
   handler: httpAction(async (ctx, request) => {
-    const token = bearer(request);
-    if (!token) return json({ ok: false, code: "unauthorized" }, 401);
-    const session = await ctx.runQuery(internal.cabinet.getSessionTenant, {
-      tokenHash: await sha256hex(token),
-      now: Date.now(),
-    });
-    if (!session) return json({ ok: false, code: "unauthorized" }, 401);
+    const session = await sessionTenant(ctx, request);
+    if (!session) return unauthorized();
     const items = await ctx.runQuery(internal.vault.listItems, {
       tenantId: session.tenantId,
     });
@@ -373,13 +362,8 @@ http.route({
   path: "/vault/items",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
-    const token = bearer(request);
-    if (!token) return json({ ok: false, code: "unauthorized" }, 401);
-    const session = await ctx.runQuery(internal.cabinet.getSessionTenant, {
-      tokenHash: await sha256hex(token),
-      now: Date.now(),
-    });
-    if (!session) return json({ ok: false, code: "unauthorized" }, 401);
+    const session = await sessionTenant(ctx, request);
+    if (!session) return unauthorized();
     const body = await jsonBody(request);
     const kind = body.kind;
     const label = typeof body.label === "string" ? body.label.trim() : "";
@@ -414,13 +398,8 @@ http.route({
   path: "/vault/items/delete",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
-    const token = bearer(request);
-    if (!token) return json({ ok: false, code: "unauthorized" }, 401);
-    const session = await ctx.runQuery(internal.cabinet.getSessionTenant, {
-      tokenHash: await sha256hex(token),
-      now: Date.now(),
-    });
-    if (!session) return json({ ok: false, code: "unauthorized" }, 401);
+    const session = await sessionTenant(ctx, request);
+    if (!session) return unauthorized();
     const body = await jsonBody(request);
     const handle = typeof body.handle === "string" ? body.handle : "";
     const deleted = await ctx.runMutation(internal.vault.deleteItemByHandle, {
@@ -462,29 +441,12 @@ http.route({
   }),
 });
 
-async function sessionTenant(
-  ctx: {
-    runQuery: (
-      ref: typeof internal.cabinet.getSessionTenant,
-      args: { tokenHash: string; now: number },
-    ) => Promise<{ tenantId: Id<"tenants"> } | null>;
-  },
-  request: Request,
-): Promise<{ tenantId: Id<"tenants"> } | null> {
-  const token = bearer(request);
-  if (!token) return null;
-  return await ctx.runQuery(internal.cabinet.getSessionTenant, {
-    tokenHash: await sha256hex(token),
-    now: Date.now(),
-  });
-}
-
 http.route({
   path: "/me/chatgpt/start",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
     const session = await sessionTenant(ctx, request);
-    if (!session) return json({ ok: false, code: "unauthorized" }, 401);
+    if (!session) return unauthorized();
     try {
       const started = await ctx.runAction(
         internal.chatgptSecrets.startDeviceLoginForTenant,
@@ -503,7 +465,7 @@ http.route({
   method: "POST",
   handler: httpAction(async (ctx, request) => {
     const session = await sessionTenant(ctx, request);
-    if (!session) return json({ ok: false, code: "unauthorized" }, 401);
+    if (!session) return unauthorized();
     const phone = await ctx.runQuery(internal.cabinet.sessionPhone, {
       tenantId: session.tenantId,
     });

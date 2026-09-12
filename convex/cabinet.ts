@@ -41,6 +41,7 @@ import {
 } from "./lib/browserProfilePolicy";
 import { getProfile } from "./lib/browseruse";
 import { periodConfig, rateLimiter } from "./lib/rateLimits";
+import { findTenantByHandle } from "./lib/tenantLookup";
 import { applyTimezoneForTenantId, tzChangeResult } from "./tenants";
 
 const snapshotValidator = v.object({
@@ -93,12 +94,6 @@ const snapshotValidator = v.object({
     email: v.optional(v.string()),
   }),
 });
-
-function apiKey(): string {
-  const k = process.env.INKBOX_API_KEY;
-  if (!k) throw new Error("INKBOX_API_KEY missing");
-  return k;
-}
 
 export const getSessionTenant = internalQuery({
   args: { tokenHash: v.string(), now: v.number() },
@@ -167,10 +162,7 @@ export const beginLogin = internalMutation({
   },
   returns: startResult,
   handler: async (ctx, { handle, codeHash, now }) => {
-    const tenant = await ctx.db
-      .query("tenants")
-      .withIndex("by_handle", (q) => q.eq("inkboxHandle", handle))
-      .unique();
+    const tenant = await findTenantByHandle(ctx, handle);
     const prior = await ctx.db
       .query("loginChallenges")
       .withIndex("by_handle", (q) => q.eq("handle", handle))
@@ -222,10 +214,7 @@ export const finishLogin = internalMutation({
   },
   returns: verifyResult,
   handler: async (ctx, { handle, codeHash, now }) => {
-    const tenant = await ctx.db
-      .query("tenants")
-      .withIndex("by_handle", (q) => q.eq("inkboxHandle", handle))
-      .unique();
+    const tenant = await findTenantByHandle(ctx, handle);
     const challenge = await ctx.db
       .query("loginChallenges")
       .withIndex("by_handle", (q) => q.eq("handle", handle))
@@ -559,10 +548,7 @@ export const issueDeviceSession = internalMutation({
   args: { handle: v.string(), tokenHash: v.string(), now: v.number() },
   returns: v.boolean(),
   handler: async (ctx, { handle, tokenHash, now }) => {
-    const tenant = await ctx.db
-      .query("tenants")
-      .withIndex("by_handle", (q) => q.eq("inkboxHandle", handle))
-      .unique();
+    const tenant = await findTenantByHandle(ctx, handle);
     if (!tenant) return false;
     await ctx.db.insert("sessions", {
       tokenHash,

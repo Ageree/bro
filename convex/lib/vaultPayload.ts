@@ -4,10 +4,19 @@
  * A vault secret is always a JSON string in one of these shapes. The model never
  * sees a payload: it gets `handle`, `kind`, `label` and a masked `account` hint.
  */
+import { v } from "convex/values";
 import { z } from "zod";
 
 export const vaultKindSchema = z.enum(["login", "payment", "address", "contact"]);
 export type VaultKind = z.infer<typeof vaultKindSchema>;
+
+/** Convex validator counterpart of {@link vaultKindSchema}. */
+export const vaultKind = v.union(
+  v.literal("login"),
+  v.literal("payment"),
+  v.literal("address"),
+  v.literal("contact"),
+);
 
 const bounded = z.string().trim().min(1).max(2_000);
 const optionalBounded = z

@@ -9,6 +9,7 @@ import {
   resolveGroupOwner,
   uniquePhones,
 } from "./lib/groupChatPolicy";
+import { findTenantByHandle } from "./lib/tenantLookup";
 
 export const groupChatDoc = doc(schema, "groupChats");
 
@@ -21,18 +22,6 @@ export const getByConversation = query({
       .query("groupChats")
       .withIndex("by_conversation", (q) => q.eq("conversationId", conversationId))
       .first();
-  },
-});
-
-export const listForOwner = query({
-  args: { secret: v.string(), ownerPhoneE164: v.string() },
-  returns: v.array(groupChatDoc),
-  handler: async (ctx, { secret, ownerPhoneE164 }) => {
-    assertSecret(secret);
-    return await ctx.db
-      .query("groupChats")
-      .withIndex("by_owner", (q) => q.eq("ownerPhoneE164", ownerPhoneE164))
-      .take(32);
   },
 });
 
@@ -74,10 +63,7 @@ export const bindInbound = mutation({
       ownerPhone = existing.ownerPhoneE164;
       inkboxHandle = existing.inkboxHandle;
     } else if (args.handle) {
-      const tenant = await ctx.db
-        .query("tenants")
-        .withIndex("by_handle", (q) => q.eq("inkboxHandle", args.handle))
-        .unique();
+      const tenant = await findTenantByHandle(ctx, args.handle);
       if (!tenant) return { ok: false as const, reason: "unknown handle" };
       if (tenant.status === "disabled") {
         return { ok: false as const, reason: "disabled" };

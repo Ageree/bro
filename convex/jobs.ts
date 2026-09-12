@@ -3,6 +3,7 @@ import { doc } from "convex-helpers/validators";
 import schema from "./schema";
 import { mutation, query } from "./_generated/server";
 import { assertSecret } from "./secret";
+import { findTenantByPhone } from "./lib/tenantLookup";
 
 const MAX_OPEN = 8;
 const LINE = 280;
@@ -29,10 +30,7 @@ export const open = mutation({
   returns: v.union(jobDoc, v.object({ error: v.string() })),
   handler: async (ctx, { secret, phoneE164, goal, doneWhen }) => {
     assertSecret(secret);
-    const tenant = await ctx.db
-      .query("tenants")
-      .withIndex("by_phone", (q) => q.eq("phoneE164", phoneE164))
-      .first();
+    const tenant = await findTenantByPhone(ctx, phoneE164);
     if (!tenant) return { error: "unknown tenant" };
     const live = await ctx.db
       .query("jobs")
@@ -70,10 +68,7 @@ export const wait = mutation({
   returns: v.union(jobDoc, v.object({ error: v.string() })),
   handler: async (ctx, args) => {
     assertSecret(args.secret);
-    const tenant = await ctx.db
-      .query("tenants")
-      .withIndex("by_phone", (q) => q.eq("phoneE164", args.phoneE164))
-      .first();
+    const tenant = await findTenantByPhone(ctx, args.phoneE164);
     if (!tenant) return { error: "unknown tenant" };
     const job = await ctx.db.get(args.jobId);
     if (!job || job.tenantId !== tenant._id) return { error: "unknown job" };
@@ -111,10 +106,7 @@ export const markNudged = mutation({
   returns: v.union(jobDoc, v.object({ error: v.string() })),
   handler: async (ctx, { secret, phoneE164, jobId }) => {
     assertSecret(secret);
-    const tenant = await ctx.db
-      .query("tenants")
-      .withIndex("by_phone", (q) => q.eq("phoneE164", phoneE164))
-      .first();
+    const tenant = await findTenantByPhone(ctx, phoneE164);
     if (!tenant) return { error: "unknown tenant" };
     const job = await ctx.db.get(jobId);
     if (!job || job.tenantId !== tenant._id) return { error: "unknown job" };
@@ -136,10 +128,7 @@ export const finish = mutation({
   returns: v.union(jobDoc, v.object({ error: v.string() })),
   handler: async (ctx, { secret, phoneE164, jobId, outcome, failed }) => {
     assertSecret(secret);
-    const tenant = await ctx.db
-      .query("tenants")
-      .withIndex("by_phone", (q) => q.eq("phoneE164", phoneE164))
-      .first();
+    const tenant = await findTenantByPhone(ctx, phoneE164);
     if (!tenant) return { error: "unknown tenant" };
     const job = await ctx.db.get(jobId);
     if (!job || job.tenantId !== tenant._id) return { error: "unknown job" };
@@ -164,10 +153,7 @@ export const touchMail = mutation({
   returns: v.union(jobDoc, v.object({ error: v.string() })),
   handler: async (ctx, args) => {
     assertSecret(args.secret);
-    const tenant = await ctx.db
-      .query("tenants")
-      .withIndex("by_phone", (q) => q.eq("phoneE164", args.phoneE164))
-      .first();
+    const tenant = await findTenantByPhone(ctx, args.phoneE164);
     if (!tenant) return { error: "unknown tenant" };
     const job = await ctx.db.get(args.jobId);
     if (!job || job.tenantId !== tenant._id) return { error: "unknown job" };
@@ -186,10 +172,7 @@ export const listOpen = query({
   returns: v.array(jobDoc),
   handler: async (ctx, { secret, phoneE164 }) => {
     assertSecret(secret);
-    const tenant = await ctx.db
-      .query("tenants")
-      .withIndex("by_phone", (q) => q.eq("phoneE164", phoneE164))
-      .first();
+    const tenant = await findTenantByPhone(ctx, phoneE164);
     if (!tenant) return [];
     const rows = await ctx.db
       .query("jobs")

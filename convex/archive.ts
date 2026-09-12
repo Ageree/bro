@@ -5,6 +5,7 @@ import {
   internalQuery,
 } from "./_generated/server";
 import { internal } from "./_generated/api";
+import { findTenantByPhone } from "./lib/tenantLookup";
 
 const BATCH = 128;
 
@@ -29,10 +30,7 @@ export const markSynced = internalMutation({
   args: { phoneE164: v.string(), at: v.number() },
   returns: v.null(),
   handler: async (ctx, { phoneE164, at }) => {
-    const tenant = await ctx.db
-      .query("tenants")
-      .withIndex("by_phone", (q) => q.eq("phoneE164", phoneE164))
-      .first();
+    const tenant = await findTenantByPhone(ctx, phoneE164);
     if (tenant) await ctx.db.patch(tenant._id, { archiveSyncedAt: at });
     return null;
   },

@@ -16,6 +16,7 @@ import {
 } from "./lib/browserFollowPolicy";
 import { isLiveBrowserPoll } from "./lib/wakeupPolicy";
 import { unscheduleCron } from "./lib/wakeupCrons";
+import { findTenantByPhone } from "./lib/tenantLookup";
 import { workflow } from "./workflow";
 
 const startResult = v.object({
@@ -139,10 +140,7 @@ export const startFollowThrough = mutation({
     args,
   ): Promise<Infer<typeof startResult> | { error: string }> => {
     assertSecret(args.secret);
-    const tenant = await ctx.db
-      .query("tenants")
-      .withIndex("by_phone", (q) => q.eq("phoneE164", args.tenantPhone))
-      .first();
+    const tenant = await findTenantByPhone(ctx, args.tenantPhone);
     if (!tenant) return { error: "unknown tenant" };
     if (!sameBrowserRun(tenant.browserRunId, args.runId)) {
       return { error: "stale_run" };
@@ -208,10 +206,7 @@ export const cancelFollowThrough = mutation({
   }),
   handler: async (ctx, { secret, tenantPhone, runId }) => {
     assertSecret(secret);
-    const tenant = await ctx.db
-      .query("tenants")
-      .withIndex("by_phone", (q) => q.eq("phoneE164", tenantPhone))
-      .first();
+    const tenant = await findTenantByPhone(ctx, tenantPhone);
     if (!tenant?.browserWorkflowId) return { cancelled: 0 };
     if (!sameBrowserRun(tenant.browserRunId, runId)) {
       return { cancelled: 0, error: "stale_run" };
