@@ -39,7 +39,34 @@ SOURCE = ROOT / "assets" / "hero-portrait.mp4"
 OUT = ROOT / "assets" / "hero-portrait.mp4"
 
 API = "https://api.higgsfield.ai"
-MODEL = "/bytedance/seedance/v1/pro/fast/image-to-video"
+
+# What an account may call is not what the catalogue lists. Measured against
+# this account on 2026-09-12: Seedance (pro fast and lite) and Sora 2 answer
+# `404 model_not_found`, Veo 3.1 answers `503 model_disabled`, and Kling and
+# Wan authorise but answer `403 not_enough_credits`. So the model is a switch,
+# not a constant — `--model` picks one without touching the code.
+MODELS = {
+    "seedance": ("/bytedance/seedance/v1/pro/fast/image-to-video",
+                 {"resolution": "1080", "aspect_ratio": "9:16", "duration": 5,
+                  "camera_fixed": True}),
+    "seedance-lite": ("/bytedance/seedance/v1/lite/image-to-video",
+                      {"resolution": "1080", "aspect_ratio": "9:16", "duration": 5,
+                       "camera_fixed": True}),
+    "kling": ("/kling-video/v2.5-turbo/pro/image-to-video",
+              {"duration": 5,
+               # Kling has no aspect or resolution field: it follows the still,
+               # which is already 720x1280. The negative prompt stands in for
+               # `camera_fixed`, which it also has no field for.
+               "negative_prompt": "camera movement, zoom, pan, walking, "
+                                  "stepping, drifting, background, scenery, "
+                                  "shadow on the wall"}),
+    "veo": ("/veo3.1/image-to-video",
+            {"resolution": "1080", "aspect_ratio": "9:16", "duration": "4",
+             "generate_audio": False}),
+    "sora": ("/sora-2/image-to-video/pro",
+             {"resolution": "1080p", "aspect_ratio": "9:16", "duration": 4}),
+}
+DEFAULT_MODEL = "seedance"
 
 # The film in production is nine shots of 3.2083 s, cut on the beat. The new cut
 # runs each shot shorter so the faces change roughly twice as often.
@@ -121,10 +148,15 @@ def auth() -> dict[str, str]:
     return {"Authorization": f"Key {key_id}:{secret}"}
 
 
+# Cloudflare sits in front of the API and answers the urllib default
+# User-Agent with `403 error code: 1010`, so every request names itself.
+UA = "bro-hero-video/1.0"
+
+
 def api(method: str, url: str, body: dict | None = None, headers: dict | None = None) -> dict:
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method)
-    for k, v in {**auth(), **(headers or {})}.items():
+    for k, v in {"User-Agent": UA, **auth(), **(headers or {})}.items():
         req.add_header(k, v)
     if data is not None:
         req.add_header("Content-Type", "application/json")
@@ -138,6 +170,7 @@ def api(method: str, url: str, body: dict | None = None, headers: dict | None = 
 def upload(png: Path) -> str:
     slot = api("POST", f"{API}/files/generate-upload-url", {"content_type": "image/png"})
     req = urllib.request.Request(slot["upload_url"], data=png.read_bytes(), method="PUT")
+    req.add_header("User-Agent", UA)
     for k, v in slot["upload_headers"].items():  # every header, or the PUT is rejected
         req.add_header(k, v)
     with urllib.request.urlopen(req, timeout=180):
@@ -156,7 +189,8 @@ def wait(status_url: str, timeout: float = 900) -> dict:
     sys.exit(f"timed out waiting on {status_url}")
 
 
-def stage_generate(work: Path) -> None:
+def stage_generate(work: Path, model: str) -> None:
+    path, params = MODELS[model]
     refs, clips = work / "refs", work / "clips"
     clips.mkdir(parents=True, exist_ok=True)
     pending = []
@@ -168,14 +202,11 @@ def stage_generate(work: Path) -> None:
         if out.exists():
             print(f"generate: {name} already downloaded, skipping")
             continue
-        submitted = api("POST", API + MODEL, {
+        # 1080 x 9:16 is the ceiling these models offer; the page downscales to 720.
+        submitted = api("POST", API + path, {
             "image_url": upload(still),
             "prompt": f"{action} {COMMON}",
-            # 1080 and 9:16 are the model's ceiling here; the page downscales to 720.
-            "resolution": "1080",
-            "aspect_ratio": "9:16",
-            "duration": 5,
-            "camera_fixed": True,
+            **params,
         })
         print(f"generate: {name} queued as {submitted['request_id']}")
         pending.append((name, out, submitted["status_url"]))
@@ -185,7 +216,8 @@ def stage_generate(work: Path) -> None:
         if result["status"] != "completed":
             sys.exit(f"generate: {name} ended {result['status']}: {json.dumps(result)[:300]}")
         url = (result.get("videos") or result.get("video") or [{}])[0]["url"]
-        with urllib.request.urlopen(url, timeout=300) as res, out.open("wb") as fh:
+        dl = urllib.request.Request(url, headers={"User-Agent": UA})
+        with urllib.request.urlopen(dl, timeout=300) as res, out.open("wb") as fh:
             shutil.copyfileobj(res, fh)
         print(f"generate: {name} -> {out} ({out.stat().st_size // 1024} KB)")
 
@@ -297,6 +329,8 @@ def main() -> None:
     ap.add_argument("--no-matte", action="store_true",
                     help="assemble: skip background removal")
     ap.add_argument("--path", type=Path, help="verify: file to check")
+    ap.add_argument("--model", choices=sorted(MODELS), default=DEFAULT_MODEL,
+                    help="generate: which image-to-video model to call")
     args = ap.parse_args()
     args.work.mkdir(parents=True, exist_ok=True)
 
@@ -306,7 +340,7 @@ def main() -> None:
     elif args.stage == "refs":
         stage_refs(args.work)
     elif args.stage == "generate":
-        stage_generate(args.work)
+        stage_generate(args.work, args.model)
     elif args.stage == "assemble":
         stage_assemble(args.work, SOURCE if args.from_source else None, args.no_matte)
     elif args.stage == "verify":

@@ -198,7 +198,30 @@ behind the figure is its own business.
 Generation runs on Higgsfield. Its API takes a key id and a secret from
 https://cloud.higgsfield.ai as `Authorization: Key ${id}:${secret}`; a dashboard
 or session token (`oat_…`) is not an API key and comes back
-`401 Invalid credentials`. The catalogue there tops out at Seedance **v1**
-(`/bytedance/seedance/v1/pro/fast/image-to-video`, 1080 × 9:16) — 2.5 is not
-exposed. Veo 3.1, Kling 2.5 Turbo Pro and Sora 2 Pro sit behind the same
-lifecycle if a different model is wanted; only the path and payload change.
+`401 Invalid credentials`. Cloudflare sits in front and answers urllib's default
+User-Agent with `403 error code: 1010`, so every request names itself.
+
+**What the catalogue lists is not what an account may call.** Measured against
+the project account on 2026-09-12, one submit per endpoint:
+
+| model | answer |
+| --- | --- |
+| `/bytedance/seedance/v1/pro/fast/image-to-video` | `404 model_not_found` |
+| `/bytedance/seedance/v1/lite/image-to-video` | `404 model_not_found` |
+| `/sora-2/image-to-video/pro` | `404 model_not_found` |
+| `/veo3.1/image-to-video`, `/veo3.1/fast/image-to-video` | `503 model_disabled` |
+| `/kling-video/v2.5-turbo/pro/image-to-video` | `403 not_enough_credits` |
+| `/wan-25-preview/image-to-video` | `403 not_enough_credits` |
+| `/minimax/hailuo-02/standard/image-to-video` | `403 not_enough_credits` |
+| `/higgsfield-ai/dop/turbo` | `403 not_enough_credits` |
+
+Two separate walls. Seedance and Sora are not in this account's catalogue at
+all, credits or no credits — and Seedance stops at v1 there in any case, 2.5 is
+not exposed. Everything the account *is* authorised for is out of credits, down
+to the cheapest model on the list, so the balance is at zero.
+
+The model is therefore a switch rather than a constant: `MODELS` in the script
+carries the path and the payload for each, and `--model` picks one. Kling has no
+aspect, resolution or `camera_fixed` field — it follows the still, which is
+already 720 × 1280, and the negative prompt does the work `camera_fixed` does
+elsewhere.
