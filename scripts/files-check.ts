@@ -5,7 +5,7 @@
  * Run: npm run files:check
  */
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import {
@@ -80,5 +80,14 @@ assert.match(inbound, /savePhotonInboundFiles/, "photon inbound save");
 const sendPhoto = readFileSync(join(root, "agent/lib/send-photo.ts"), "utf8");
 assert.match(sendPhoto, /photoFromStoredFile/, "send-photo uses storage");
 assert.doesNotMatch(sendPhoto, /readBinaryFile/, "send-photo does not read the box");
+
+for (const gone of [
+  "agent/lib/boxClient.ts",
+  "agent/lib/computer.ts",
+  "agent/tools/computer_exec.ts",
+  "convex/computers.ts",
+]) {
+  assert.equal(existsSync(join(root, gone)), false, `${gone} is gone`);
+}
 
 console.log("files-check: ok");

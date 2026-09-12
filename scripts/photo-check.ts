@@ -1,11 +1,9 @@
 import { readFileSync, existsSync } from "node:fs";
 import {
   assertPublicPhotoUrl,
-  extractComputerImagePaths,
   extractMarkdownPhotoUrls,
   fetchPhotoBytes,
   imageMetaFromName,
-  imagePathFromCaptureStdout,
   extractStoredFileRefs,
   parseSendPhotoInput,
   photoFromBase64,
@@ -13,7 +11,6 @@ import {
   photoFromBytes,
   PHOTO_MAX_BYTES,
   sniffImage,
-  stripComputerImagePaths,
   stripMarkdownPhotos,
 } from "../agent/lib/outbound-photo.ts";
 import { photoTargetFromAuth, sendPhotoToHuman } from "../agent/lib/send-photo.ts";
@@ -34,26 +31,6 @@ const WEBP = Uint8Array.from([
 ]);
 
 assert(extractMarkdownPhotoUrls("нет фото").length === 0, "no photos");
-assert(
-  extractComputerImagePaths(
-    "Скриншот снял, файл: /home/user/dt5.jpg (компактная версия)",
-  )[0] === "/home/user/dt5.jpg",
-  "extract computer jpeg path",
-);
-assert(
-  extractComputerImagePaths("обрывок /home/user/dt5.").length === 0,
-  "truncated path is not a photo",
-);
-assert(
-  stripComputerImagePaths("файл лежит: /home/user/dt5.jpg ок") === "файл лежит ок",
-  "strip computer path leaves caption",
-);
-assert(
-  imagePathFromCaptureStdout("scrot /tmp/a.png\n/home/user/dt5.jpg\n") ===
-    "/home/user/dt5.jpg",
-  "exec last-line path is a capture",
-);
-assert(imagePathFromCaptureStdout("ok\n") === null, "plain stdout is not a capture");
 assert(
   extractMarkdownPhotoUrls("смотри\n![книга](https://img.example/a.jpg)")[0] ===
     "https://img.example/a.jpg",
@@ -452,19 +429,10 @@ assert(tool.includes("spoiler"), "tool can hide Telegram media");
 assert(tool.includes("photoFromStoredFile"), "stored file reads Convex storage");
 assert(tool.includes("asPersonal"), "stored file is personal-only");
 assert(existsSync(new URL("../agent/tools/send_photo.ts", import.meta.url)), "tool mounted");
-
-const shot = readFileSync(
-  new URL("../agent/tools/computer_screenshot.ts", import.meta.url),
-  "utf8",
+assert(
+  !existsSync(new URL("../agent/tools/computer_screenshot.ts", import.meta.url)),
+  "box screenshot tool is gone",
 );
-assert(shot.includes("sendPhotoToHuman"), "screenshot send uses the same path");
-assert(!shot.includes("send: z.boolean"), "screenshot always sends — no optional flag");
-assert(shot.includes("Картинка уже в этом чате"), "screenshot tells the model it already attached");
-assert(shot.includes("Не шли вторую"), "screenshot forbids a second send");
-
-const execTool = readFileSync(new URL("../agent/tools/computer_exec.ts", import.meta.url), "utf8");
-assert(!execTool.includes("sendPhotoToHuman"), "exec does not auto-attach a captured image");
-assert(execTool.includes("computer_screenshot"), "exec points at the screenshot tool");
 
 const deliver = readFileSync(
   new URL("../agent/lib/deliver-human.ts", import.meta.url),

@@ -47,8 +47,6 @@ export function photoTargetFromAuth(attrs: AuthAttrs): {
 export type SendPhotoDeps = {
   fetchPhoto?: (url: string) => Promise<PhotoBytes>;
   loadStoredPhoto?: (phoneE164: string, name: string) => Promise<PhotoBytes>;
-  /** @deprecated use loadStoredPhoto */
-  loadComputerPhoto?: (phoneE164: string, path: string) => Promise<PhotoBytes>;
   uploadIMessage?: (opts: {
     content: Uint8Array;
     filename: string;
@@ -75,19 +73,6 @@ export async function photoFromStoredFile(
     loaded.file.name,
     loaded.file.mimeType,
   );
-}
-
-/** @deprecated use photoFromStoredFile */
-export async function photoFromComputerPath(
-  phoneE164: string,
-  path: string,
-): Promise<PhotoBytes> {
-  return await photoFromStoredFile(phoneE164, { name: posixBasename(path) });
-}
-
-function posixBasename(path: string): string {
-  const parts = path.replace(/\\/g, "/").split("/");
-  return parts[parts.length - 1] || path;
 }
 
 export async function sendPhotoToHuman(

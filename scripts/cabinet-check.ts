@@ -157,9 +157,8 @@ assert(
   snap.browserJob.status === "" && snap.browserJob.label === BROWSER_JOB_IDLE,
   "default browser job idle",
 );
-assert(snap.computer.state === "none", "default computer none");
 assert(snap.chatgpt.status === "none", "default chatgpt none");
-assert(!("boxId" in snap.computer), "snapshot never leaks boxId");
+assert(!("computer" in snap), "snapshot has no computer card");
 assert(!("userCode" in snap.chatgpt), "snapshot never leaks userCode");
 
 const withGear = buildSnapshot({
@@ -173,11 +172,8 @@ const withGear = buildSnapshot({
   browserAllowance: 5,
   browserMonthKey: "2026-08",
   payments: [],
-  computer: { state: "ready", lastActiveAt: now },
   chatgpt: { status: "connected", email: "a@b.c", planType: "plus" },
 });
-assert(withGear.computer.state === "ready", "snapshot keeps computer state");
-assert(withGear.computer.lastActiveAt === now, "snapshot keeps lastActiveAt");
 assert(withGear.chatgpt.status === "connected", "snapshot keeps chatgpt status");
 assert(withGear.chatgpt.email === "a@b.c", "snapshot keeps chatgpt email");
 assert(withGear.chatgpt.planType === "plus", "snapshot keeps chatgpt plan");
@@ -421,16 +417,11 @@ assert(cabinet.includes('id="now"'), "cabinet now card");
 assert(cabinet.includes("<h2>Сейчас</h2>"), "cabinet now title");
 assert(cabinet.includes("browserJob"), "cabinet reads snapshot browserJob");
 assert(cabinet.includes("Открыть"), "cabinet liveUrl open");
-assert(cabinet.includes('id="computer"'), "cabinet computer card");
-assert(cabinet.includes("<h2>Компьютер</h2>"), "cabinet computer title");
-assert(cabinet.includes('id="computer-wake"'), "cabinet wake");
-assert(cabinet.includes("Разбудить"), "cabinet wake copy");
-assert(cabinet.includes('id="computer-stop"'), "cabinet stop");
-assert(cabinet.includes("Выключить"), "cabinet stop copy");
-assert(cabinet.includes('id="computer-wipe"'), "cabinet wipe");
-assert(cabinet.includes("Стереть диск"), "cabinet wipe copy");
-assert(cabinet.includes("/me/computer"), "computer posts to cabinet route");
-assert(cabinet.includes('JSON.stringify({ action: action })'), "computer body is { action }");
+assert(!cabinet.includes('id="computer"'), "cabinet has no computer card");
+assert(!cabinet.includes("<h2>Компьютер</h2>"), "cabinet has no computer title");
+assert(!cabinet.includes("/me/computer"), "cabinet has no computer route");
+assert(!cabinet.includes("Разбудить"), "cabinet has no wake copy");
+assert(!cabinet.includes("Стереть диск"), "cabinet has no wipe copy");
 assert(cabinet.includes('id="chatgpt"'), "cabinet chatgpt card");
 assert(cabinet.includes("<h2>ChatGPT</h2>"), "cabinet chatgpt title");
 assert(cabinet.includes('id="chatgpt-connect"'), "cabinet chatgpt connect");
@@ -441,7 +432,6 @@ assert(cabinet.includes("/me/chatgpt/start"), "chatgpt start route");
 assert(cabinet.includes("/me/chatgpt/disconnect"), "chatgpt disconnect route");
 assert(cabinet.includes("userCode"), "chatgpt start shows userCode only after start");
 assert(!cabinet.includes("me.chatgpt.userCode"), "snapshot userCode is not rendered");
-assert(!cabinet.includes("me.computer.boxId"), "snapshot boxId is not rendered");
 assert(cabinet.includes('id="tz"'), "cabinet tz card");
 assert(cabinet.includes("<h2>Часовой пояс</h2>"), "cabinet tz title");
 assert(cabinet.includes('id="tz-select"'), "cabinet tz select");
@@ -473,7 +463,7 @@ const cabinetSrc = readFileSync(new URL("../convex/cabinet.ts", import.meta.url)
 assert(cabinetSrc.includes("tz: v.optional(v.string())"), "snapshot validator has tz");
 assert(cabinetSrc.includes("browserJob:"), "snapshot validator has browserJob");
 assert(cabinetSrc.includes("browserJobForSnapshot"), "snapshotForTenant maps browser job");
-assert(cabinetSrc.includes("computer:"), "snapshot validator has computer");
+assert(!cabinetSrc.includes("computer:"), "snapshot validator has no computer");
 assert(cabinetSrc.includes("chatgpt:"), "snapshot validator has chatgpt");
 assert(!snapshotValidatorHas(cabinetSrc, "boxId"), "cabinet snapshot does not expose boxId");
 assert(!snapshotValidatorHas(cabinetSrc, "userCode"), "cabinet snapshot does not expose userCode");
@@ -510,7 +500,7 @@ assert(
 );
 assert(httpSrc.includes("/me/chatgpt/start"), "http chatgpt start");
 assert(httpSrc.includes("/me/chatgpt/disconnect"), "http chatgpt disconnect");
-assert(httpSrc.includes("/me/computer"), "http computer route");
+assert(!httpSrc.includes("/me/computer"), "http has no computer route");
 const tenantsSrc = readFileSync(new URL("../convex/tenants.ts", import.meta.url), "utf8");
 assert(
   tenantsSrc.includes("export const attachCabinetLoginForAgent"),
@@ -532,7 +522,7 @@ assert(
     vercelJson.buildCommand.includes("vercel-build"),
   "vercel build copies cabinet.html first",
 );
-assert(httpSrc.includes("/internal/computer"), "http computer proxies eve");
+assert(!httpSrc.includes("/internal/computer"), "http does not proxy a computer");
 assert(!httpSrc.includes("BOX_API_KEY"), "http does not send BOX_API_KEY");
 
 assert(landing.includes('id="request-access"'), "landing CTA has id");
