@@ -1,5 +1,5 @@
 /** Inbound iMessage photos reach the model as image parts, not as URLs in
- *  text. `z-ai/glm-5.3-flash` has vision; a signed Inkbox URL in plain text
+ *  text. `deepseek/deepseek-v4.1-flash` has vision; a signed Inkbox URL in plain text
  *  is invisible to it («найди эту книгу» + photo got nothing).
  *
  *  Bytes are downloaded here so the image stays valid in session history

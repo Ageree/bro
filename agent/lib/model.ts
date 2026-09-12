@@ -18,7 +18,7 @@ export {
 };
 export type { CodexTokenBroker, LanguageModelLike };
 
-export const DEFAULT_OPENROUTER_MODEL = "z-ai/glm-5.3-flash";
+export const DEFAULT_OPENROUTER_MODEL = "deepseek/deepseek-v4.1-flash";
 const DEFAULT_OPENROUTER_CONTEXT_TOKENS = 1_000_000;
 
 export const DEFAULT_ROOT_CONTEXT_TOKENS = 131_072;
