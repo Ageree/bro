@@ -1,6 +1,6 @@
 import type { AutofillClaim, DetectedAutofillSurface } from "./protocol";
 
-export interface AutofillFillTarget {
+interface AutofillFillTarget {
   readonly availableTokens: ReadonlySet<string>;
   readonly origin: string;
   readonly surface: DetectedAutofillSurface;

@@ -40,7 +40,7 @@ export const nativeAutofillTokens = {
 
 export type NativeAutofillKind = "address" | "login" | "payment";
 
-export type NativeAutofillPayload =
+type NativeAutofillPayload =
   | {
       card: {
         cvc: string;

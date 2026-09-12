@@ -215,55 +215,34 @@ function requiredAction<T>(value: T | undefined, action: string): T {
   return value;
 }
 
+type BatchActionKey =
+  | "click_mouse"
+  | "move_mouse"
+  | "type_text"
+  | "press_key"
+  | "scroll"
+  | "drag_mouse"
+  | "set_cursor"
+  | "sleep";
+
+const BATCH_ACTION_KEYS: ReadonlySet<string> = new Set<BatchActionKey>([
+  "click_mouse",
+  "move_mouse",
+  "type_text",
+  "press_key",
+  "scroll",
+  "drag_mouse",
+  "set_cursor",
+  "sleep",
+]);
+
 function toBatchAction(
   action: z.infer<typeof actionSchema>,
 ): ComputerBatchParams.Action | null {
-  switch (action.type) {
-    case "click_mouse":
-      return {
-        click_mouse: requiredAction(action.click_mouse, action.type),
-        type: action.type,
-      };
-    case "move_mouse":
-      return {
-        move_mouse: requiredAction(action.move_mouse, action.type),
-        type: action.type,
-      };
-    case "type_text":
-      return {
-        type: action.type,
-        type_text: requiredAction(action.type_text, action.type),
-      };
-    case "press_key":
-      return {
-        press_key: requiredAction(action.press_key, action.type),
-        type: action.type,
-      };
-    case "scroll":
-      return {
-        scroll: requiredAction(action.scroll, action.type),
-        type: action.type,
-      };
-    case "drag_mouse":
-      return {
-        drag_mouse: requiredAction(action.drag_mouse, action.type),
-        type: action.type,
-      };
-    case "set_cursor":
-      return {
-        set_cursor: requiredAction(action.set_cursor, action.type),
-        type: action.type,
-      };
-    case "sleep":
-      return {
-        sleep: requiredAction(action.sleep, action.type),
-        type: action.type,
-      };
-    case "get_mouse_position":
-    case "read_clipboard":
-    case "screenshot":
-    case "write_clipboard":
-      return null;
-  }
-  throw new Error("Unsupported computer action.");
+  if (!BATCH_ACTION_KEYS.has(action.type)) return null;
+  const key = action.type as BatchActionKey;
+  return {
+    type: key,
+    [key]: requiredAction(action[key], key),
+  } as ComputerBatchParams.Action;
 }
