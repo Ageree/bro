@@ -49,15 +49,15 @@
 
   <div class="modal" id="login-modal" hidden>
     <div class="sheet" role="dialog" aria-labelledby="login-title">
-      <h2 id="login-title">Вход в кабинет</h2>
-      <p class="t-small t-mute">На компьютере введи handle. Код придёт сообщением от Bro в уже открытый чат iMessage.</p>
+      <h2 id="login-title">Вход</h2>
+      <p class="t-small t-mute" id="login-hint">Сначала напиши Bro в iMessage.</p>
       <div id="login-handle-row" hidden>
-        <label for="login-handle">Handle</label>
-        <input id="login-handle" autocomplete="username" placeholder="bro-xxxxxxxx" />
+        <label for="login-handle">Bro</label>
+        <input id="login-handle" autocomplete="username" />
       </div>
-      <button class="btn sheet-cta" id="login-send" type="button">Получить код</button>
+      <button class="btn sheet-cta" id="login-send" type="button">Написать Bro</button>
       <div id="login-code-row" hidden>
-        <label for="login-code">Код из iMessage</label>
+        <label for="login-code">Код</label>
         <input id="login-code" inputmode="numeric" maxlength="6" autocomplete="one-time-code" />
         <button class="btn sheet-cta" id="login-verify" type="button">Войти</button>
       </div>
@@ -83,8 +83,11 @@
       ctas.forEach(function (el) {
         if (link) el.setAttribute("href", link);
         el.addEventListener("click", function (e) {
-          if (window.broIsIos && window.broIsIos()) return;
           e.preventDefault();
+          if (window.broIsIos && window.broIsIos() && link) {
+            window.location.href = link;
+            return;
+          }
           setLabel("Открой на iPhone");
         });
       });

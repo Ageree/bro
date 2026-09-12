@@ -357,12 +357,14 @@ assert(authJs.includes('#login-open'), "auth binds #login-open");
 assert(authJs.includes('#login-modal'), "auth binds #login-modal");
 assert(!/\$\("\.login-open"\)/.test(authJs), "auth does not use class login-open");
 assert(authJs.includes("bro.handle"), "auth reads stored handle key");
-assert(authJs.includes("login-handle-row"), "auth paints handle row");
-assert(authJs.includes("typedHandle"), "auth reads typed handle on desktop");
-assert(authJs.includes("loginHandle"), "auth prefers stored handle then typed");
-assert(authJs.includes("storedHandle"), "auth sends stored handle");
-assert(authJs.includes("Запросить доступ"), "missing handle points at request access");
-assert(authJs.includes("bro-xxxxxxxx"), "missing handle tells the person to type it");
+assert(authJs.includes("login-handle-row"), "auth still knows the handle row");
+assert(!authJs.includes("typedHandle"), "auth does not ask anyone to type a handle");
+assert(authJs.includes("loginHandle"), "auth still resolves a login handle");
+assert(authJs.includes("storedHandle"), "auth sends only a stored handle");
+assert(authJs.includes("Сначала напиши Bro в iMessage"), "missing session points at iMessage");
+assert(!authJs.includes("Запросить доступ"), "missing session does not mention request access");
+assert(!authJs.includes("bro-xxxxxxxx"), "auth copy has no handle jargon");
+assert(authJs.includes("Открой на iPhone"), "desktop without Bro stays an iPhone hint");
 assert(authJs.includes("#vault-open") || authJs.includes('vault-open'), "auth shows vault when logged in");
 assert(authJs.includes("vaultBtn"), "auth paints vault nav");
 
@@ -380,13 +382,14 @@ assert(
   "landing takes the login sheet from the shared stylesheet",
 );
 assert(
-  landing.includes("Код придёт сообщением от Bro"),
-  "login sheet says where the code arrives",
+  landing.includes("Сначала напиши Bro в iMessage"),
+  "login sheet starts from iMessage, not a desktop handle",
 );
-assert(
-  landing.includes("На компьютере введи handle"),
-  "login sheet tells desktop users to type the handle",
-);
+assert(!landing.includes("На компьютере введи handle"), "login sheet has no computer-handle essay");
+assert(!landing.includes(">Handle<"), "login sheet does not say Handle");
+assert(!landing.includes("bro-xxxxxxxx"), "login sheet has no handle placeholder");
+assert(landing.includes('id="login-hint"'), "login hint is a short line");
+assert(landing.includes("Написать Bro"), "login first action is write Bro");
 const cabinet = readFileSync(new URL("../cabinet.html", import.meta.url), "utf8");
 assert(cabinet.includes('id="vault"'), "cabinet vault card");
 assert(cabinet.includes("<h2>Сейф</h2>"), "cabinet vault title");
@@ -402,6 +405,8 @@ assert(!cabinet.includes("profile.sh"), "cabinet has no terminal helper");
 assert(!cabinet.includes('id="profile-save"'), "cabinet does not bind profile ids");
 assert(cabinet.includes('id="login-handle-row"'), "cabinet login handle row");
 assert(cabinet.includes("handle-xl"), "cabinet handle is large");
+assert(cabinet.includes("Сначала напиши Bro в iMessage"), "cabinet login starts from iMessage");
+assert(!cabinet.includes("На компьютере введи handle"), "cabinet login has no computer-handle essay");
 assert(cabinet.includes("Написать Bro"), "cabinet write-bro cta");
 assert(cabinet.includes('id="write-bro"'), "cabinet write-bro id");
 assert(cabinet.includes("broIMessageLink"), "write-bro uses the static iMessage link");
