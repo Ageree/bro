@@ -1,4 +1,4 @@
-import { photonSmsLink, PHOTON_ONBOARD_BODY } from "./photonPolicy";
+import { photonBasicAuthHeader, photonSmsLink, PHOTON_ONBOARD_BODY } from "./photonPolicy";
 
 export type PhotonSharedUser = {
   id: string;
@@ -23,7 +23,7 @@ export function photonRedirectUrl(userId: string, msg = PHOTON_ONBOARD_BODY): st
 }
 
 export function photonAuthHeader(): string {
-  return `Basic ${Buffer.from(`${projectId()}:${projectSecret()}`).toString("base64")}`;
+  return photonBasicAuthHeader(projectId(), projectSecret());
 }
 
 export async function upsertPhotonSharedUser(opts: {

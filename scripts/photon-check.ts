@@ -3,6 +3,7 @@ import {
   isBluePhotonService,
   normalizePhotonE164,
   outboundIMessageConversation,
+  photonBasicAuthHeader,
   photonNudgeText,
   photonSmsLink,
   refuseSmsText,
@@ -19,6 +20,31 @@ assert(isBluePhotonService({ service: undefined }), "missing service is blue");
 assert(!isBluePhotonService({ service: "sms" }), "sms is refused");
 assert(!isBluePhotonService({ service: "rcs" }), "rcs is refused");
 assert(!isBluePhotonService({ wasDowngraded: true }), "downgrade is refused");
+
+assert(
+  photonBasicAuthHeader("proj", "s3cret") ===
+    `Basic ${Buffer.from("proj:s3cret").toString("base64")}`,
+  "basic auth matches node Buffer",
+);
+assert(
+  photonBasicAuthHeader("id", "пароль") ===
+    `Basic ${Buffer.from("id:пароль").toString("base64")}`,
+  "basic auth encodes utf8 like Buffer",
+);
+{
+  const saved = globalThis.Buffer;
+  // @ts-expect-error -- prove the helper does not touch Buffer
+  delete globalThis.Buffer;
+  try {
+    assert(
+      photonBasicAuthHeader("proj", "s3cret") ===
+        `Basic ${saved.from("proj:s3cret").toString("base64")}`,
+      "basic auth works without Buffer (Convex default runtime)",
+    );
+  } finally {
+    globalThis.Buffer = saved;
+  }
+}
 
 assert(normalizePhotonE164("+79001112233") === "+79001112233", "e164 passthrough");
 assert(normalizePhotonE164("89001112233") === "+79001112233", "8 → +7");
@@ -101,6 +127,12 @@ assert(deliver.includes("outboundIMessageConversation"), "never sends to Inkbox 
 const access = readFileSync(new URL("../convex/access.ts", import.meta.url), "utf8");
 assert(access.includes("need_phone"), "landing can ask for E.164");
 assert(access.includes("upsertPhotonSharedUser"), "access mints Photon user");
+assert(
+  !readFileSync(new URL("../convex/lib/photonRest.ts", import.meta.url), "utf8").includes(
+    "Buffer.",
+  ),
+  "photonRest stays Convex-runtime safe (no Buffer)",
+);
 
 const dedicated = readFileSync(
   new URL("../convex/lib/dedicatedLinePolicy.ts", import.meta.url),

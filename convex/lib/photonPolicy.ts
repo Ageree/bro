@@ -5,6 +5,17 @@ export const PHOTON_GROUPS_PAUSED =
 
 export const PHOTON_ONBOARD_BODY = "Привет";
 
+/** Basic auth for Photon Spectrum. Web APIs only — Convex default runtime has no `Buffer`. */
+export function photonBasicAuthHeader(projectId: string, projectSecret: string): string {
+  const raw = `${projectId}:${projectSecret}`;
+  const bytes = new TextEncoder().encode(raw);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]!);
+  }
+  return `Basic ${btoa(binary)}`;
+}
+
 export function refuseSmsText(): string {
   return "Bro отвечает только в iMessage (синие пузыри). Выключи «Отправлять как SMS» в Настройки → Сообщения и напиши ещё раз.";
 }
