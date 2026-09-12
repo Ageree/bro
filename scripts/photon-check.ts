@@ -5,6 +5,8 @@ import {
   outboundIMessageConversation,
   photonBasicAuthHeader,
   photonNudgeText,
+  photonOnboardLink,
+  PHOTON_SHARED_NUMBER,
   photonSmsLink,
   refuseSmsText,
   shouldNudgeInkboxThread,
@@ -51,6 +53,22 @@ assert(normalizePhotonE164("89001112233") === "+79001112233", "8 → +7");
 assert(normalizePhotonE164("not") === undefined, "garbage");
 
 assert(photonSmsLink("+15551212").startsWith("sms:"), "sms deep link");
+assert(PHOTON_SHARED_NUMBER === "+16282649335", "shared Bro number");
+assert(
+  photonOnboardLink() === "sms:+16282649335&body=%D0%9F%D1%80%D0%B8%D0%B2%D0%B5%D1%82",
+  "onboard link is Bro's iMessage sms: deep link",
+);
+assert(
+  photonOnboardLink() === photonSmsLink(PHOTON_SHARED_NUMBER),
+  "onboard link uses the shared number",
+);
+const configJs = readFileSync(new URL("../assets/config.js", import.meta.url), "utf8");
+assert(configJs.includes(photonOnboardLink()), "config.js ships the same iMessage link");
+const landingHtml = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+assert(landingHtml.includes(photonOnboardLink()), "landing CTA href is the iMessage link");
+assert(!landingHtml.includes("access-phone"), "landing has no phone field");
+assert(!landingHtml.includes("/access"), "landing CTA does not POST /access");
+assert(landingHtml.includes("Открой на iPhone"), "desktop keeps the iPhone hint");
 assert(refuseSmsText().toLowerCase().includes("sms"), "refuse copy");
 assert(photonNudgeText("+1555").includes("+1555"), "nudge has number");
 
@@ -125,8 +143,8 @@ assert(deliver.includes("sendPhotonText"), "deliver-human uses Photon");
 assert(deliver.includes("outboundIMessageConversation"), "never sends to Inkbox chat id");
 
 const access = readFileSync(new URL("../convex/access.ts", import.meta.url), "utf8");
-assert(access.includes("need_phone"), "landing can ask for E.164");
-assert(access.includes("upsertPhotonSharedUser"), "access mints Photon user");
+assert(access.includes("need_phone"), "access API can still ask for E.164");
+assert(access.includes("upsertPhotonSharedUser"), "access can still mint a Photon user");
 assert(
   !readFileSync(new URL("../convex/lib/photonRest.ts", import.meta.url), "utf8").includes(
     "Buffer.",

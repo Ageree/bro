@@ -25,15 +25,15 @@
 
   <div class="modal" id="login-modal" hidden>
     <div class="sheet" role="dialog" aria-labelledby="login-title">
-      <h2 id="login-title">Вход в кабинет</h2>
-      <p class="t-small t-mute">На компьютере введи handle. Код придёт сообщением от Bro в уже открытый чат iMessage.</p>
+      <h2 id="login-title">Вход</h2>
+      <p class="t-small t-mute" id="login-hint">Сначала напиши Bro в iMessage.</p>
       <div id="login-handle-row" hidden>
-        <label for="login-handle">Handle</label>
-        <input id="login-handle" autocomplete="username" placeholder="bro-xxxxxxxx" />
+        <label for="login-handle">Bro</label>
+        <input id="login-handle" autocomplete="username" />
       </div>
-      <button class="btn sheet-cta" id="login-send" type="button">Получить код</button>
+      <button class="btn sheet-cta" id="login-send" type="button">Написать Bro</button>
       <div id="login-code-row" hidden>
-        <label for="login-code">Код из iMessage</label>
+        <label for="login-code">Код</label>
         <input id="login-code" inputmode="numeric" maxlength="6" autocomplete="one-time-code" />
         <button class="btn sheet-cta" id="login-verify" type="button">Войти</button>
       </div>
@@ -261,43 +261,21 @@
         });
       }
 
-      function bindWrite(me) {
+      function bindWrite() {
         var btn = document.getElementById("write-bro");
         if (!btn) return;
         btn.addEventListener("click", function () {
           var st = document.getElementById("write-status");
-          var h = storedHandle() || (validHandle(me.handle) ? me.handle : "");
-          if (h && !storedHandle()) localStorage.setItem(HANDLE, h);
-          if (!h) {
-            st.textContent = "Открой сайт на том же iPhone или нажми «Запросить доступ» ещё раз.";
+          var link = window.broIMessageLink ? window.broIMessageLink() : "";
+          if (!link) {
+            st.textContent = "Не вышло, нажми ещё раз";
             return;
           }
-          if (btn.getAttribute("aria-busy") === "true") return;
-          btn.setAttribute("aria-busy", "true");
-          st.textContent = "Открываем Messages…";
-          fetch(base + "/access", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ handle: h }),
-          })
-            .then(function (res) { return res.json(); })
-            .then(function (data) {
-              if (data.ok && data.smsLink) {
-                window.location.href = data.smsLink;
-                return;
-              }
-              if (data.code === "need_phone") {
-                st.textContent = "Нужен номер телефона — открой лендинг на iPhone.";
-                return;
-              }
-              st.textContent = "Не вышло, нажми ещё раз";
-            })
-            .catch(function () {
-              st.textContent = "Не вышло, нажми ещё раз";
-            })
-            .then(function () {
-              btn.removeAttribute("aria-busy");
-            });
+          if (window.broIsIos && window.broIsIos()) {
+            window.location.href = link;
+            return;
+          }
+          st.textContent = "Открой на iPhone";
         });
       }
 
@@ -413,7 +391,7 @@
           "</section>";
         boot.hidden = true;
         body.hidden = false;
-        bindWrite(me);
+        bindWrite();
         bindPay();
         bindForget();
         bindTz();

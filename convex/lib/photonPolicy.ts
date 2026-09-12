@@ -5,6 +5,17 @@ export const PHOTON_GROUPS_PAUSED =
 
 export const PHOTON_ONBOARD_BODY = "Привет";
 
+/** Photon's shared Bro +1 (Spectrum Pro pool). Landing/cabinet deep-link here. */
+export const PHOTON_SHARED_NUMBER = "+16282649335";
+
+/** Open Messages to Bro. iPhone treats `sms:` as iMessage when the line is blue. */
+export function photonOnboardLink(
+  assignedNumber: string = PHOTON_SHARED_NUMBER,
+  body = PHOTON_ONBOARD_BODY,
+): string {
+  return photonSmsLink(assignedNumber, body);
+}
+
 /** Basic auth for Photon Spectrum. Web APIs only — Convex default runtime has no `Buffer`. */
 export function photonBasicAuthHeader(projectId: string, projectSecret: string): string {
   const raw = `${projectId}:${projectSecret}`;

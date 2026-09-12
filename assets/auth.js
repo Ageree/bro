@@ -7,6 +7,17 @@
     return typeof s === "string" ? s.replace(/\/$/, "") : "";
   }
 
+  window.broIMessageLink = function () {
+    var s = window.BRO_IMESSAGE_LINK;
+    return typeof s === "string" ? s : "";
+  };
+
+  window.broIsIos = function () {
+    var ua = navigator.userAgent || "";
+    if (/iPhone|iPad|iPod/i.test(ua)) return true;
+    return navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1;
+  };
+
   function handle() {
     return localStorage.getItem(HANDLE) || "";
   }
@@ -57,35 +68,30 @@
     return validHandle(h) ? h : "";
   }
 
-  var MISSING_HANDLE =
-    "Введи handle вида bro-xxxxxxxx — или открой сайт на том же iPhone и нажми «Запросить доступ».";
-
-  function typedHandle() {
-    var input = $("#login-handle");
-    var raw = input ? (input.value || "").trim().toLowerCase() : "";
-    return validHandle(raw) ? raw : "";
-  }
+  var WRITE_FIRST = "Сначала напиши Bro в iMessage.";
+  var CODE_HINT = "Код придёт в iMessage.";
 
   function loginHandle() {
-    return storedHandle() || typedHandle();
+    return storedHandle();
   }
 
-  function paintHandleRow() {
+  function paintLogin() {
     var row = $("#login-handle-row");
-    var input = $("#login-handle");
     var sendBtn = $("#login-send");
+    var hint = $("#login-hint");
     var h = storedHandle();
-    if (row) row.hidden = false;
-    if (input && !input.value) input.value = h;
-    if (sendBtn) sendBtn.hidden = false;
-    return loginHandle();
+    if (row) row.hidden = true;
+    if (hint) hint.textContent = h ? CODE_HINT : WRITE_FIRST;
+    if (sendBtn) sendBtn.textContent = h ? "Получить код" : "Написать Bro";
+    return h;
   }
 
   function openModal() {
     modal.hidden = false;
-    var h = paintHandleRow();
-    $("#login-status").textContent = h ? "" : MISSING_HANDLE;
+    var h = paintLogin();
+    $("#login-status").textContent = "";
     $("#login-code-row").hidden = true;
+    void h;
   }
 
   function closeModal() {
@@ -120,12 +126,17 @@
   $("#login-send").addEventListener("click", function () {
     var base = site();
     var h = loginHandle();
-    if (!base) {
-      setStatus("Сайт ещё не подключён");
+    if (!h) {
+      var link = window.broIMessageLink ? window.broIMessageLink() : "";
+      if (window.broIsIos && window.broIsIos() && link) {
+        window.location.href = link;
+        return;
+      }
+      setStatus("Открой на iPhone");
       return;
     }
-    if (!h) {
-      setStatus(MISSING_HANDLE);
+    if (!base) {
+      setStatus("Сайт ещё не подключён");
       return;
     }
     setHandle(h);
@@ -158,7 +169,7 @@
     var h = loginHandle();
     var code = ($("#login-code").value || "").trim();
     if (!h) {
-      setStatus(MISSING_HANDLE);
+      setStatus(WRITE_FIRST);
       return;
     }
     setStatus("Проверяем…");
