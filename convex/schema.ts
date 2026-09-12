@@ -247,6 +247,26 @@ export default defineSchema({
     .index("by_owner", ["ownerPhoneE164"])
     .index("by_handle", ["inkboxHandle"]),
 
+  /** Durable per-tenant files. Bytes live in Convex `_storage`; this row is metadata. */
+  files: defineTable({
+    tenantId: v.id("tenants"),
+    storageId: v.id("_storage"),
+    name: v.string(),
+    mimeType: v.string(),
+    size: v.number(),
+    createdAt: v.number(),
+    sourceChannel: v.optional(
+      v.union(
+        v.literal("imessage"),
+        v.literal("telegram"),
+        v.literal("sandbox"),
+        v.literal("agent"),
+      ),
+    ),
+  })
+    .index("by_tenant", ["tenantId"])
+    .index("by_tenant_and_name", ["tenantId", "name"]),
+
   /** One personal box per Convex tenant. lastState is a cache; ASCII is truth.
    *  boxId is missing while the row is a create-lock, before the ASCII fork. */
   computers: defineTable({
