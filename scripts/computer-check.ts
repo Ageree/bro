@@ -337,17 +337,11 @@ assert(!recTool.includes("toolOutputPart.file"), "record does not dump mp4 to th
 const instructions = await import("node:fs").then((fs) =>
   fs.readFileSync(new URL("../agent/instructions.md", import.meta.url), "utf8"),
 );
+assert(instructions.includes("files_list"), "instructions route files to files_*");
+assert(instructions.includes("sandbox_run"), "instructions route processing to sandbox_run");
 assert(
-  instructions.includes("встроенная Linux-машина Bro"),
-  "instructions: computer is Bro's own box",
-);
-assert(
-  /Не называй сторонние VM-сервисы/.test(instructions),
-  "instructions forbid third-party VM vendors",
-);
-assert(
-  /Maritime|MyTime/.test(instructions),
-  "instructions name the leftover vendors so the model will not invent them",
+  /Не называй песочницу, VM/.test(instructions),
+  "instructions forbid naming the sandbox or a VM",
 );
 
 const powerTool = await import("node:fs").then((fs) =>
