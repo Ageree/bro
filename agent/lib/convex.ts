@@ -769,87 +769,6 @@ export async function listOrders(
   });
 }
 
-export type ComputerRow = {
-  _id: string;
-  tenantId: string;
-  boxId?: string;
-  size: "small" | "default" | "large";
-  lastState: string;
-  lastStateAt: number;
-  lastActiveAt?: number;
-  resumedAt?: number;
-  createdAt: number;
-};
-
-export async function getComputer(
-  phoneE164: string,
-): Promise<ComputerRow | null> {
-  return (await client().query(api.computers.getForAgent, {
-    secret: secret(),
-    phoneE164,
-  })) as ComputerRow | null;
-}
-
-export async function claimComputer(
-  phoneE164: string,
-  opts?: { size?: ComputerRow["size"]; now?: number },
-): Promise<ComputerRow | null> {
-  return (await client().mutation(api.computers.claimForAgent, {
-    secret: secret(),
-    phoneE164,
-    now: opts?.now ?? Date.now(),
-    ...(opts?.size ? { size: opts.size } : {}),
-  })) as ComputerRow | null;
-}
-
-export async function bindComputer(
-  phoneE164: string,
-  boxId: string,
-  lastState: string,
-  now = Date.now(),
-): Promise<ComputerRow | null> {
-  return (await client().mutation(api.computers.bindForAgent, {
-    secret: secret(),
-    phoneE164,
-    boxId,
-    lastState,
-    now,
-  })) as ComputerRow | null;
-}
-
-export async function setComputerState(
-  phoneE164: string,
-  lastState: string,
-  now = Date.now(),
-): Promise<ComputerRow | null> {
-  return (await client().mutation(api.computers.setStateForAgent, {
-    secret: secret(),
-    phoneE164,
-    lastState,
-    now,
-  })) as ComputerRow | null;
-}
-
-export async function deleteComputer(
-  phoneE164: string,
-): Promise<boolean> {
-  return await client().mutation(api.computers.deleteForAgent, {
-    secret: secret(),
-    phoneE164,
-  });
-}
-
-export async function spendComputerStart(
-  phoneE164: string,
-  now = Date.now(),
-): Promise<boolean> {
-  return await client().mutation(api.computers.spendStartForAgent, {
-    secret: secret(),
-    phoneE164,
-    now,
-  });
-}
-
 export async function chatgptStatus(
   phoneE164: string,
 ): Promise<{
@@ -885,17 +804,6 @@ export async function chatgptQuarantine(
     now: Date.now(),
     reason,
   });
-}
-
-export async function touchComputer(
-  phoneE164: string,
-  now = Date.now(),
-): Promise<ComputerRow | null> {
-  return (await client().mutation(api.computers.touchForAgent, {
-    secret: secret(),
-    phoneE164,
-    now,
-  })) as ComputerRow | null;
 }
 
 export type StoredFile = {

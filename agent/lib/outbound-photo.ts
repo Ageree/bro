@@ -47,9 +47,6 @@ export function stripMarkdownPhotos(src: string): string {
 const STORED_FILE_REF =
   /(?:^|[\s`'"(\[]|:\s*)file:([^\s`'")\]]+\.(?:jpg|jpeg|png|gif|webp))\b/gi;
 
-const COMPUTER_IMAGE_PATH =
-  /(?:^|[\s`'"(\[]|:\s*)(\/(?:home\/user|tmp)\/[^\s`'")\]]+\.(?:jpg|jpeg|png|gif|webp))\b/gi;
-
 export function extractStoredFileRefs(src: string): string[] {
   const out: string[] = [];
   const re = new RegExp(STORED_FILE_REF.source, "gi");
@@ -67,36 +64,6 @@ export function stripStoredFileRefs(src: string): string {
     .replace(/[ \t]{2,}/g, " ")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
-}
-
-export function extractComputerImagePaths(src: string): string[] {
-  const out: string[] = [];
-  const re = new RegExp(COMPUTER_IMAGE_PATH.source, "gi");
-  for (const match of src.matchAll(re)) {
-    const path = match[1]?.trim();
-    if (path && imageMetaFromName(path) && !out.includes(path)) out.push(path);
-  }
-  return out;
-}
-
-export function stripComputerImagePaths(src: string): string {
-  return src
-    .replace(new RegExp(COMPUTER_IMAGE_PATH.source, "gi"), " ")
-    .replace(/[ \t]+\n/g, "\n")
-    .replace(/[ \t]{2,}/g, " ")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
-
-export function imagePathFromCaptureStdout(stdout: string): string | null {
-  const lines = stdout
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
-  const last = lines[lines.length - 1];
-  if (!last) return null;
-  const found = extractComputerImagePaths(last);
-  return found[0] && (found[0] === last || found.length === 1) ? found[0] : null;
 }
 
 export function isPhotoContentType(

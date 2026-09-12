@@ -32,7 +32,6 @@ import {
   type ChatgptSnapshot,
   type PaymentRow,
 } from "./lib/cabinetPolicy";
-import { computerByTenant } from "./lib/computerStore";
 import { nextLoginStatus, snapshotStatus } from "./lib/chatgptPolicy";
 import { browserJobForSnapshot } from "./lib/browserJobPolicy";
 import { lineMatches, SCAN_LINES, WAKE_LINES } from "./lib/memoryPolicy";
@@ -82,10 +81,6 @@ const snapshotValidator = v.object({
     task: v.optional(v.string()),
     liveUrl: v.optional(v.string()),
     startedAt: v.optional(v.number()),
-  }),
-  computer: v.object({
-    state: v.string(),
-    lastActiveAt: v.optional(v.number()),
   }),
   chatgpt: v.object({
     status: v.union(
@@ -392,23 +387,10 @@ export const snapshotForTenant = internalQuery({
       }),
       tz: tenant.tz,
       browserJob: browserJobForSnapshot(tenant),
-      computer: await computerSnapshot(ctx, tenant._id),
       chatgpt: await chatgptSnapshot(ctx, tenant._id, now),
     });
   },
 });
-
-async function computerSnapshot(
-  ctx: QueryCtx,
-  tenantId: Id<"tenants">,
-): Promise<{ state: string; lastActiveAt?: number }> {
-  const row = await computerByTenant(ctx, tenantId);
-  if (!row) return { state: "none" };
-  return {
-    state: row.lastState || "none",
-    ...(row.lastActiveAt !== undefined ? { lastActiveAt: row.lastActiveAt } : {}),
-  };
-}
 
 async function chatgptSnapshot(
   ctx: QueryCtx,

@@ -72,7 +72,6 @@ export async function deliverHuman(opts: {
   if (storedNames.length > 0 && tenant.phoneE164) {
     const load =
       opts.deps?.loadStoredPhoto ??
-      opts.deps?.loadComputerPhoto ??
       ((phone: string, name: string) => photoFromStoredFile(phone, { name }));
     for (const name of storedNames) {
       try {

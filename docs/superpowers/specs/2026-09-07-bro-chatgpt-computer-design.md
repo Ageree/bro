@@ -1,6 +1,12 @@
 # Bro — ChatGPT OAuth + личный компьютер
 
-_Date: 2026-09-07 · computer: box 2026-09-08 · уточнение: Fable 5.1 + eve 0.47.6_
+> **Superseded (2026-09-12).** The persistent per-user ASCII box is gone.
+> Files live in Convex storage; file work runs in an ephemeral Vercel
+> sandbox the person never sees. See the plan:
+> `/cursor/stores/bc-446af243-4073-40fa-bc3d-c3a00266e387/docs/files-and-sandbox-plan.md`.
+> ChatGPT OAuth / model routing in this spec is unchanged.
+
+_Date: 2026-09-07 · computer: box 2026-09-08 · уточнение: Fable 5.1 + eve 0.47.6 · superseded 2026-09-12_
 
 Утверждено оператором: вход через **Codex OAuth**. Если вход есть —
 **весь Bro** (корень, worker, otp) думает через этот Codex. Если входа

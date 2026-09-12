@@ -117,29 +117,11 @@
             (z === current ? " selected" : "") + ">" + esc(z) + "</option>";
         }).join("");
       }
-      function computerStateRu(s) {
-        if (!s || s === "none") return "нет компьютера";
-        if (s === "pending") return "создаём";
-        if (s === "ready" || s === "idle" || s === "running") return "работает";
-        if (s === "archived" || s === "stopped" || s === "archiving") return "выключен";
-        return s;
-      }
       function chatgptStatusRu(s) {
         if (s === "connected") return "подключён";
         if (s === "pending") return "ждём вход";
         if (s === "quarantined") return "нужно войти снова";
         return "не подключён";
-      }
-      function computerCard(me) {
-        var c = me.computer || { state: "none" };
-        return '<section class="sec" id="computer">' +
-          head("<h2>Компьютер</h2>", computerStateRu(c.state)) +
-          '<div class="acts">' +
-          '<button class="act" id="computer-wake" type="button">Разбудить</button>' +
-          '<button class="act" id="computer-stop" type="button">Выключить</button>' +
-          '<button class="act act--mute" id="computer-wipe" type="button">Стереть диск</button>' +
-          "</div>" +
-          '<p class="status-line" id="computer-status"></p></section>';
       }
       function chatgptCard(me) {
         var g = me.chatgpt || { status: "none" };
@@ -414,7 +396,6 @@
           '<p class="status-line" id="write-status"></p>' +
           '<p class="status-line" id="pay-status"></p>' +
           nowCard(me) +
-          computerCard(me) +
           chatgptCard(me) +
           '<section class="sec"><div class="sec__head"><h2>Лимиты</h2></div>' +
           '<p class="t-small t-mute">Сообщения сегодня — ' + me.msgsUsed + " из " + me.msgsAllowance + "</p>" +
@@ -436,7 +417,6 @@
         bindPay();
         bindForget();
         bindTz();
-        bindComputer();
         bindChatgpt();
         bindVault();
       }
@@ -482,44 +462,6 @@
             empty.hidden = false;
             empty.textContent = "Не вышло загрузить сейф";
           });
-      }
-
-      function bindComputer() {
-        function post(action, label) {
-          var st = document.getElementById("computer-status");
-          if (action === "wipe" && !window.confirm("Стереть диск компьютера? Это нельзя отменить.")) {
-            return;
-          }
-          st.textContent = label;
-          fetch(base + "/me/computer", {
-            method: "POST",
-            headers: {
-              Authorization: "Bearer " + t,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({ action: action }),
-          })
-            .then(function (res) { return res.json(); })
-            .then(function (data) {
-              if (!data.ok) {
-                st.textContent = "Не вышло, нажми ещё раз";
-                return;
-              }
-              return loadMe().then(function (me) {
-                if (!me) return;
-                paint(me);
-              });
-            })
-            .catch(function () {
-              st.textContent = "Не вышло, нажми ещё раз";
-            });
-        }
-        var wake = document.getElementById("computer-wake");
-        var stop = document.getElementById("computer-stop");
-        var wipe = document.getElementById("computer-wipe");
-        if (wake) wake.addEventListener("click", function () { post("wake", "Будим…"); });
-        if (stop) stop.addEventListener("click", function () { post("stop", "Выключаем…"); });
-        if (wipe) wipe.addEventListener("click", function () { post("wipe", "Стираем диск…"); });
       }
 
       function bindChatgpt() {

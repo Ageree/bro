@@ -77,11 +77,6 @@ export type BrowserJobSnapshot = {
   startedAt?: number;
 };
 
-export type ComputerSnapshot = {
-  state: string;
-  lastActiveAt?: number;
-};
-
 export type ChatgptSnapshot = {
   status: "none" | "pending" | "connected" | "quarantined";
   planType?: string;
@@ -118,7 +113,6 @@ export type CabinetSnapshot = {
   memories: string[];
   tz?: string;
   browserJob: BrowserJobSnapshot;
-  computer: ComputerSnapshot;
   chatgpt: ChatgptSnapshot;
 };
 
@@ -166,7 +160,6 @@ export function buildSnapshot(opts: {
   memories?: string[];
   tz?: string;
   browserJob?: BrowserJobSnapshot;
-  computer?: ComputerSnapshot;
   chatgpt?: ChatgptSnapshot;
 }): CabinetSnapshot {
   const phoneBound = Boolean(opts.phoneE164);
@@ -192,7 +185,6 @@ export function buildSnapshot(opts: {
     memories: opts.memories ?? [],
     ...(opts.tz ? { tz: opts.tz } : {}),
     browserJob: opts.browserJob ?? { status: "", label: "Сейчас ничего не делает" },
-    computer: opts.computer ?? { state: "none" },
     chatgpt: opts.chatgpt ?? { status: "none" },
   };
 }

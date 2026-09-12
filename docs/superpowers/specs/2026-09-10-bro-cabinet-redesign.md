@@ -62,10 +62,11 @@ now), and «Часовой пояс» no longer prints the current zone twice �
 already shows it.
 
 Nothing about the data changed: every id `assets/auth.js` binds, every route
-(`/me`, `/me/pay`, `/me/tz`, `/me/computer`, `/me/chatgpt/*`,
+(`/me`, `/me/pay`, `/me/tz`, `/me/chatgpt/*`,
 `/me/memories/forget`, `/vault/items`, `/access`) and every guard
-(`safeHttpUrl`, the `bro-[a-z0-9]{8}` handle test, the wipe confirmation, no
-`boxId` or `userCode` rendered from the snapshot) is carried over untouched.
+(`safeHttpUrl`, the `bro-[a-z0-9]{8}` handle test, no `userCode` rendered
+from the snapshot) is carried over. The cabinet computer card and
+`/me/computer` were removed when the per-user VM was dropped (2026-09-12).
 
 ## Vault
 
