@@ -69,13 +69,15 @@ export function shouldSkipAgentTurn(input: {
   return false;
 }
 
-/** Separate iMessage bubbles. Keep each under ~90 chars. */
+/** Separate iMessage bubbles. Keep each under ~90 chars.
+ *  «Бро.» / «Bro.» as a line opener is only for the rare channel-ok ping,
+ *  never for these welcome bubbles. */
 export function welcomeBubbles(opts?: { canJoinGroups?: boolean }): string[] {
   void opts?.canJoinGroups;
   return [
-    "Bro. Купить, записать, напомнить — пиши как другу. Сделаю сам.",
-    "Карту в чат не кидай, она в сейфе. Группы в iMessage пока на паузе.",
-    "Список — «что ты умеешь».",
+    "Если нужно купить, записаться или напомнить — пиши как другу, сделаю сам.",
+    "Карту в чат не кидай: она лежит в сейфе. Группы в iMessage пока на паузе.",
+    "Если интересно, что ещё умею — напиши «что ты умеешь».",
   ];
 }
 
@@ -86,19 +88,13 @@ export function welcomeText(opts?: { canJoinGroups?: boolean }): string {
 export function helpText(opts?: { canJoinGroups?: boolean }): string {
   void opts?.canJoinGroups;
   return [
-    "Умею:",
+    "Могу сам купить на Wildberries и Ozon, записаться к врачу или в салон, забронировать стол.",
     "",
-    "• Купить на Wildberries и Ozon",
-    "• Запись к врачу, салон, бронь",
-    "• Помнить размер, адрес, ПВЗ",
-    "• Напоминания и сторожа",
-    "• Платить из сейфа — номер в чат не пиши",
-    "• Войти на сайт — пароль скажи, или кину ссылку",
-    "• Письма со своего ящика — коды сам",
-    "• Тот же Bro в Telegram — «телеграм»",
-    "• Группы: после Photon Business. Сейчас только личка.",
+    "Помню размер, адрес и ПВЗ. Напоминания и сторожа тоже на мне. Плачу из сейфа — номер карты в чат не пиши. Если сайт просит вход, скажи пароль или я пришлю ссылку.",
     "",
-    "Пиши текстом.",
+    "Письма приходят на мой ящик, коды ввожу сам. Тот же Bro есть в Telegram — напиши «телеграм». Группы в iMessage пока на паузе, сейчас только личка.",
+    "",
+    "Пиши как другу.",
   ].join("\n");
 }
 
