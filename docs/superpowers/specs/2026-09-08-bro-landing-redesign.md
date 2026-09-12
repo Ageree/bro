@@ -169,3 +169,59 @@ landscape on the desktop. `npm run cabinet:check` passes its landing assertions.
 Cabinet/vault restyle — they still carry inline styles and the old meadow
 background, so `assets/meadow.webp` stays. Also the real hero footage, analytics, i18n.
 The `vercel.json` that `cabinet-check.ts` reads is missing on `main` and still is.
+
+## Rebuilding the film
+
+`scripts/hero-video/build.py` is the pipeline the section above describes, made
+repeatable: `refs` cuts one still per character out of the film in production,
+`generate` runs image-to-video on each still, `assemble` trims, mattes to white
+and encodes, `verify` proves the border ring is 255. Only `generate` touches the
+network.
+
+Two things it fixes about the film in production. The nine shots run 1.8 s
+instead of 3.21 s, so the faces change about twice as often and the whole strip
+is 16.2 s rather than 28.9 s. And each character is given its own piece of
+business — typing, laughing, taking a call, punching the air — because nine
+people holding the same pose read as one photo shown nine times.
+
+The business is deliberately motion in place. At 1.8 s a shot there is no room
+for a figure to walk, turn or drift: it would still be travelling when the cut
+lands, and against the next shot that reads as a jump. So every prompt plants
+the feet and holds the figure at one size and one position in frame, and puts
+the life in the hands, the face and the shoulders instead.
+
+The reference stills come out of the film already shipped, which are matted to
+`#ffffff` before a single request is made, so the model starts from the page's
+own white. `assemble` mattes the result again anyway: what the model paints
+behind the figure is its own business.
+
+Generation runs on Higgsfield. Its API takes a key id and a secret from
+https://cloud.higgsfield.ai as `Authorization: Key ${id}:${secret}`; a dashboard
+or session token (`oat_…`) is not an API key and comes back
+`401 Invalid credentials`. Cloudflare sits in front and answers urllib's default
+User-Agent with `403 error code: 1010`, so every request names itself.
+
+**What the catalogue lists is not what an account may call.** Measured against
+the project account on 2026-09-12, one submit per endpoint:
+
+| model | answer |
+| --- | --- |
+| `/bytedance/seedance/v1/pro/fast/image-to-video` | `404 model_not_found` |
+| `/bytedance/seedance/v1/lite/image-to-video` | `404 model_not_found` |
+| `/sora-2/image-to-video/pro` | `404 model_not_found` |
+| `/veo3.1/image-to-video`, `/veo3.1/fast/image-to-video` | `503 model_disabled` |
+| `/kling-video/v2.5-turbo/pro/image-to-video` | `403 not_enough_credits` |
+| `/wan-25-preview/image-to-video` | `403 not_enough_credits` |
+| `/minimax/hailuo-02/standard/image-to-video` | `403 not_enough_credits` |
+| `/higgsfield-ai/dop/turbo` | `403 not_enough_credits` |
+
+Two separate walls. Seedance and Sora are not in this account's catalogue at
+all, credits or no credits — and Seedance stops at v1 there in any case, 2.5 is
+not exposed. Everything the account *is* authorised for is out of credits, down
+to the cheapest model on the list, so the balance is at zero.
+
+The model is therefore a switch rather than a constant: `MODELS` in the script
+carries the path and the payload for each, and `--model` picks one. Kling has no
+aspect, resolution or `camera_fixed` field — it follows the still, which is
+already 720 × 1280, and the negative prompt does the work `camera_fixed` does
+elsewhere.
