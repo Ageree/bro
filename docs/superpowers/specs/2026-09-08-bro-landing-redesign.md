@@ -184,6 +184,12 @@ is 16.2 s rather than 28.9 s. And each character is given its own piece of
 business — typing, laughing, taking a call, punching the air — because nine
 people holding the same pose read as one photo shown nine times.
 
+The business is deliberately motion in place. At 1.8 s a shot there is no room
+for a figure to walk, turn or drift: it would still be travelling when the cut
+lands, and against the next shot that reads as a jump. So every prompt plants
+the feet and holds the figure at one size and one position in frame, and puts
+the life in the hands, the face and the shoulders instead.
+
 The reference stills come out of the film already shipped, which are matted to
 `#ffffff` before a single request is made, so the model starts from the page's
 own white. `assemble` mattes the result again anyway: what the model paints

@@ -54,19 +54,25 @@ COMMON = (
     "Full body head to toe, feet and top of head inside frame with air above and below, "
     "figure centred, seamless pure white background (#ffffff), flat even studio light, "
     "no shadow on the backdrop, locked-off camera on a tripod, no zoom, no camera move, "
-    "photoreal, same person and same clothing as the reference, natural loose motion."
+    "photoreal, same person and same clothing as the reference. "
+    # The cuts are 1.8 s. A figure that walks, turns or drifts reads as a jump
+    # against the next shot, so the motion has to live in the hands, the face and
+    # the shoulders while the feet stay put.
+    "Feet planted on one spot, no walking, no stepping, no turning away from camera, "
+    "the figure keeps the same size and the same position in frame from first frame "
+    "to last; the movement is in the hands, face and shoulders only."
 )
 
 CHARACTERS = [
-    ("goth", "She thumb-types fast, smirks at what she wrote, shakes her head once and keeps typing."),
+    ("goth", "She thumb-types fast, smirks at what she wrote and shakes her head once, then keeps typing."),
     ("babushka", "She raises the phone to her ear, listens, nods twice and breaks into a warm smile."),
-    ("muscle", "He reads something funny, laughs out loud with his head tipped back and turns half away."),
-    ("blonde", "She walks two easy steps toward camera without looking up, then pushes her sunglasses up."),
+    ("muscle", "He reads something funny and laughs out loud with his head tipped back, shoulders shaking."),
+    ("blonde", "She pushes her sunglasses up onto her hair, raises an eyebrow at the screen and keeps reading."),
     ("worker", "He reads good news, punches a fist up and grins wide, then claps the phone to his chest."),
-    ("tee", "He turns the screen out toward camera, taps it twice and waves someone over."),
+    ("tee", "He turns the screen out toward camera, taps it twice, pulls it back and grins."),
     ("suit", "He talks on speakerphone, gesturing with his free hand, then slips the phone into his pocket."),
     ("heavy", "He lifts the phone up for a selfie, tilts his head, gives a small shy wave and grins."),
-    ("redhead", "She spins on the spot, flicks her hair back and laughs at the screen."),
+    ("redhead", "She flicks her hair back with her free hand and laughs at the screen."),
 ]
 
 
