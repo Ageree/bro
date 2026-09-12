@@ -47,6 +47,7 @@ import {
   telegramBindExpiry,
   type HumanChannel,
 } from "./lib/telegramPolicy";
+import { insertOpsEvent } from "./lib/opsStore";
 
 /** Never write a group conversation onto the 1:1 wakeup/mail lane. */
 async function oneToOneConversationIdOrUndefined(
@@ -681,6 +682,11 @@ export const bindPhotonInbound = mutation({
       });
       const created = await ctx.db.get(id);
       if (!created) return { ok: false as const, reason: "missing" };
+      await insertOpsEvent(ctx, {
+        kind: "first_bind",
+        at: Date.now(),
+        tenantId: created._id,
+      });
       return { ok: true as const, tenant: created, firstBind: true };
     }
     if (tenant.status === "disabled") {
@@ -713,6 +719,13 @@ export const bindPhotonInbound = mutation({
     await ctx.db.patch(tenant._id, patch);
     const next = await ctx.db.get(tenant._id);
     if (!next) return { ok: false as const, reason: "missing" };
+    if (firstBind) {
+      await insertOpsEvent(ctx, {
+        kind: "first_bind",
+        at: Date.now(),
+        tenantId: next._id,
+      });
+    }
     return { ok: true as const, tenant: next, firstBind };
   },
 });
@@ -840,6 +853,15 @@ export const countInboundMessage = mutation({
     const tenant = await tenantByPhone(ctx, phoneE164);
     if (tenant.status === "disabled") return { decision: "drop" as const };
     const now = Date.now();
+    const firstHuman = tenant.lastHumanAt === undefined;
+    await ctx.db.patch(tenant._id, { lastHumanAt: now });
+    if (firstHuman) {
+      await insertOpsEvent(ctx, {
+        kind: "first_message",
+        at: now,
+        tenantId: tenant._id,
+      });
+    }
     const key = dayKey(now, tenant.tz);
     const paid = isPaid(tenant.paidUntil, now);
     const allowance = msgAllowance(paid, {
@@ -867,6 +889,11 @@ export const countInboundMessage = mutation({
       let payUrl: string | undefined;
       if (decision === "paywall") {
         await ctx.db.patch(tenant._id, { paywallSentDayKey: key });
+        await insertOpsEvent(ctx, {
+          kind: "paywall",
+          at: now,
+          tenantId: tenant._id,
+        });
         const base = (process.env.BRO_PAY_BASE ?? "").replace(/\/$/, "");
         if (base) payUrl = `${base}/pay?tid=${tenant._id}`;
       }
@@ -1115,6 +1142,14 @@ export const bindTelegram = mutation({
     });
     const next = await ctx.db.get(tenant._id);
     if (!next) return { ok: false as const, reason: "unknown_token" as const };
+    if (firstBind) {
+      await insertOpsEvent(ctx, {
+        kind: "telegram_bound",
+        at: Date.now(),
+        tenantId: next._id,
+        detail: username,
+      });
+    }
     return { ok: true as const, tenant: next, firstBind };
   },
 });

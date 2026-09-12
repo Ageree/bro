@@ -1,4 +1,4 @@
-import { replyTenant, setWakeupLastSeen } from "./convex.ts";
+import { noteTurnFailed, replyTenant, setWakeupLastSeen } from "./convex.ts";
 import { deliverHuman } from "./deliver-human.ts";
 import {
   bubblesFor,
@@ -159,6 +159,15 @@ export function createTurnDeliveryEvents(opts: {
         accept: opts.accept(auth?.attributes),
         routed: routingFromAuth(auth?.attributes).channel ?? null,
       });
+      const failedPhone = routingPhone(
+        routingFromAuth(auth?.attributes),
+        auth?.principalId,
+      );
+      if (failedPhone) {
+        void noteTurnFailed(failedPhone, event.code, event.message).catch(
+          (err) => console.error("ops turn_failed", err),
+        );
+      }
       if (!canTarget(conversationId, auth?.attributes)) return;
       if (!opts.accept(auth?.attributes)) return;
       const text = fallbackForFailed(turnOrigin(auth?.attributes));

@@ -13,6 +13,7 @@ import {
 import { internal } from "./_generated/api";
 import type { Doc } from "./_generated/dataModel";
 import { assertSecret } from "./secret";
+import { insertOpsEvent } from "./lib/opsStore";
 import {
   backoffAt,
   canClaim,
@@ -304,6 +305,18 @@ export const finish = internalMutation({
     const attempts = (w.attempts ?? 0) + 1;
     if (giveUp(attempts)) {
       await ctx.db.patch(id, { status: "failed", attempts });
+      const tenant = await ctx.db
+        .query("tenants")
+        .withIndex("by_phone", (q) => q.eq("phoneE164", w.tenantPhone))
+        .first();
+      if (tenant) {
+        await insertOpsEvent(ctx, {
+          kind: "wakeup_failed",
+          at: now,
+          tenantId: tenant._id,
+          detail: w.kind,
+        });
+      }
     } else {
       const at = backoffAt(attempts, now);
       const gen = nextGen(w.gen);

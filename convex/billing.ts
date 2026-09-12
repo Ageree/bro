@@ -4,6 +4,7 @@ import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { extendPaidUntil, payReturnUrl } from "./lib/billingPolicy";
 import { paymentApplyDecision } from "./lib/cabinetPolicy";
+import { insertOpsEvent } from "./lib/opsStore";
 
 function shopCreds(): { shopId: string; secret: string } {
   const shopId = process.env.YOOKASSA_SHOP_ID;
@@ -46,6 +47,12 @@ export const applyPayment = internalMutation({
       status: "succeeded",
       createdAt: now,
       paidUntilAfter: paidUntil,
+    });
+    await insertOpsEvent(ctx, {
+      kind: "payment_ok",
+      at: now,
+      tenantId: tenant._id,
+      detail: String(amountRub),
     });
     return null;
   },

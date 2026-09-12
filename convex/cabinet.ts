@@ -43,6 +43,7 @@ import {
 import { getProfile } from "./lib/browseruse";
 import { periodConfig, rateLimiter } from "./lib/rateLimits";
 import { applyTimezoneForTenantId, tzChangeResult } from "./tenants";
+import { insertOpsEvent } from "./lib/opsStore";
 
 const snapshotValidator = v.object({
   handle: v.string(),
@@ -247,6 +248,11 @@ export const finishLogin = internalMutation({
     });
     if (decision.kind === "ok") {
       await ctx.db.delete(challenge._id);
+      await insertOpsEvent(ctx, {
+        kind: "cabinet_login",
+        at: now,
+        tenantId: tenant._id,
+      });
       return { ok: true as const, tenantId: tenant._id };
     }
     if (decision.kind === "wrong") {

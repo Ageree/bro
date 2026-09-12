@@ -602,6 +602,19 @@ export async function countInboundMessage(phoneE164: string): Promise<{
   });
 }
 
+export async function noteTurnFailed(
+  phoneE164: string,
+  code?: string,
+  message?: string,
+): Promise<void> {
+  await client().mutation(api.ops.noteTurnFailed, {
+    secret: secret(),
+    phoneE164,
+    ...(code ? { code } : {}),
+    ...(message ? { message } : {}),
+  });
+}
+
 export async function markPaywallSent(
   phoneE164: string,
 ): Promise<{ alreadySentToday: boolean }> {

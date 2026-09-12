@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>bro — ops</title>
+  <meta name="robots" content="noindex, nofollow" />
+  <meta name="theme-color" content="#ffffff" />
+  <link rel="icon" href="/assets/bro-mark.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="/assets/bro-logo.png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Prata&family=Onest:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/assets/brand.css" />
+</head>
+<body>
+
+  <header class="bar">
+    <div><button class="link t-nav" id="back" type="button" style="background:none;border:0;cursor:pointer" hidden>Все</button></div>
+    <a class="link t-wordmark" href="/">bro.</a>
+    <div>
+      <button class="link t-nav" id="logout" type="button" style="background:none;border:0;cursor:pointer" hidden>Выйти</button>
+    </div>
+  </header>
+
+  <div class="modal" id="login-modal" hidden>
+    <div class="sheet" role="dialog" aria-labelledby="login-title">
+      <h2 id="login-title">Оператор</h2>
+      <p class="t-small t-mute">Секрет с Convex-деплоя. Страница не в меню лендинга.</p>
+      <label for="ops-secret">BRO_INTERNAL_SECRET</label>
+      <input class="field" id="ops-secret" type="password" autocomplete="current-password" />
+      <button class="btn sheet-cta" id="login-send" type="button">Открыть</button>
+      <p class="status" id="login-status"></p>
+    </div>
+  </div>
+
+  <main class="doc">
+    <p class="t-small t-mute" id="boot">Нужен секрет.</p>
+    <div id="body" hidden></div>
+  </main>
+
+  <script src="assets/config.js"></script>
+  <script>
+    (function () {
+      var KEY = "bro.opsSecret";
+      var LABELS = {
+        access_ok: "доступ выдан",
+        access_not_ios: "не iPhone",
+        access_need_phone: "нет номера",
+        access_closed: "кап",
+        access_error: "ошибка доступа",
+        first_bind: "первый чат",
+        first_message: "первое сообщение",
+        paywall: "пейволл",
+        turn_failed: "ход сломался",
+        job_failed: "дело упало",
+        wakeup_failed: "wakeup упал",
+        payment_ok: "оплата",
+        telegram_bound: "телеграм",
+        cabinet_login: "вход в кабинет",
+        never_wrote: "не писал",
+        no_chat: "нет чата",
+        stuck_job: "дело ждёт",
+        failed_wakeup: "wakeup",
+        browser: "браузер"
+      };
+      function site() {
+        var s = window.BRO_CONVEX_SITE_URL;
+        return typeof s === "string" ? s.replace(/\/$/, "") : "";
+      }
+      function secret() { return sessionStorage.getItem(KEY) || ""; }
+      function setSecret(v) {
+        if (v) sessionStorage.setItem(KEY, v);
+        else sessionStorage.removeItem(KEY);
+      }
+      function esc(s) {
+        return String(s).replace(/[&<>"]/g, function (c) {
+          return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c];
+        });
+      }
+      function when(ms) {
+        try {
+          return new Date(ms).toLocaleString("ru-RU", { timeZone: "Europe/Moscow" });
+        } catch (e) {
+          return new Date(ms).toLocaleString("ru-RU");
+        }
+      }
+      function label(k) { return LABELS[k] || k; }
+      function flags(list) {
+        return (list || []).map(function (f) { return label(f); }).join(" · ");
+      }
+      function head(title, state) {
+        return '<div class="sec__head">' + title +
+          (state ? '<span class="sec__state">' + esc(state) + "</span>" : "") +
+          "</div>";
+      }
+      function $(id) { return document.getElementById(id); }
+
+      var boot = $("boot");
+      var body = $("body");
+      var modal = $("login-modal");
+      var logoutBtn = $("logout");
+      var backBtn = $("back");
+
+      function showLogin(msg) {
+        boot.textContent = msg || "Нужен секрет.";
+        body.hidden = true;
+        logoutBtn.hidden = true;
+        backBtn.hidden = true;
+        modal.hidden = false;
+      }
+
+      function get(path) {
+        return fetch(site() + path, {
+          headers: { Authorization: "Bearer " + secret() }
+        }).then(function (r) {
+          return r.text().then(function (text) {
+            var j = {};
+            try { j = text ? JSON.parse(text) : {}; } catch (e) { j = {}; }
+            return { status: r.status, json: j };
+          });
+        });
+      }
+
+      function renderBoard(data) {
+        var t = data.totals || {};
+        var people = data.people || [];
+        var recent = data.recent || [];
+        var html = "";
+        html += '<div class="sec">' + head("Бета", people.length + " человек") +
+          '<p class="t-small">Выдано ' + t.provisioned +
+          " · написали " + t.wrote +
+          " · за сутки " + t.wrote24h +
+          " · молчат " + t.neverWrote +
+          " · пейволл " + t.paywalled +
+          " · дела " + t.stuckJobs +
+          " · wakeup " + t.failedWakeups + "</p>" +
+          '<p class="t-small t-mute">Доступ за сутки: ок ' + t.accessOk24h +
+          " · не iPhone " + t.accessNotIos24h +
+          " · нет номера " + t.accessNeedPhone24h +
+          " · кап " + t.accessClosed24h + "</p></div>";
+
+        html += '<div class="sec">' + head("Люди") + '<ul class="rows">';
+        if (!people.length) {
+          html += '<li><span class="row-main t-mute">Пока никого</span></li>';
+        }
+        people.forEach(function (p) {
+          var title = p.handle || p.phoneE164 || "без handle";
+          var side = flags(p.flags) || (p.lastHumanAt ? when(p.lastHumanAt) : "новый");
+          html += '<li><button class="act row-main" data-handle="' +
+            esc(p.handle || "") + '" data-phone="' + esc(p.phoneE164 || "") +
+            '" type="button">' + esc(title) +
+            (p.phoneLast4 ? ' <span class="t-mute">…' + esc(p.phoneLast4) + "</span>" : "") +
+            (p.telegram ? ' <span class="t-mute">tg</span>' : "") +
+            (p.plan === "paid" ? ' <span class="t-mute">paid</span>' : "") +
+            '</button><span class="row-side">' + esc(side) + "</span></li>";
+        });
+        html += "</ul></div>";
+
+        html += '<div class="sec">' + head("Лента") + '<ul class="rows">';
+        if (!recent.length) {
+          html += '<li><span class="row-main t-mute">Событий ещё нет</span></li>';
+        }
+        recent.forEach(function (e) {
+          html += '<li><span class="row-main">' + esc(label(e.kind)) +
+            (e.handle ? " · " + esc(e.handle) : "") +
+            (e.detail ? '<p class="t-mute">' + esc(e.detail) + "</p>" : "") +
+            '</span><span class="row-side">' + esc(when(e.at)) + "</span></li>";
+        });
+        html += "</ul></div>";
+
+        body.innerHTML = html;
+        body.hidden = false;
+        boot.hidden = true;
+        logoutBtn.hidden = false;
+        backBtn.hidden = true;
+        body.querySelectorAll("[data-handle]").forEach(function (btn) {
+          btn.addEventListener("click", function () {
+            loadPerson(btn.getAttribute("data-handle") || "", btn.getAttribute("data-phone") || "");
+          });
+        });
+      }
+
+      function list(title, rows) {
+        var html = '<div class="sec">' + head(title) + '<ul class="rows">';
+        if (!rows.length) html += '<li><span class="row-main t-mute">пусто</span></li>';
+        rows.forEach(function (r) {
+          html += "<li>" + r + "</li>";
+        });
+        return html + "</ul></div>";
+      }
+
+      function renderPerson(p) {
+        var html = '<div class="sec">' + head(p.handle || "человек", flags(p.flags) || p.status) +
+          '<p class="handle-xl">' + esc(p.handle || "—") + "</p>" +
+          '<p class="t-small">' + esc(p.phoneE164 || "номер ещё не связан") +
+          (p.telegramUsername ? " · @" + esc(p.telegramUsername) : "") +
+          (p.lastChannel ? " · " + esc(p.lastChannel) : "") + "</p>" +
+          '<p class="t-small t-mute">' + esc(p.plan) +
+          (p.lastHumanAt ? " · писал " + when(p.lastHumanAt) : " · ещё не писал") +
+          " · " + when(p.createdAt) + "</p></div>";
+
+        html += '<div class="sec">' + head("Сейчас", p.browser.label) +
+          (p.browser.task ? '<p class="t-small">' + esc(p.browser.task) + "</p>" : "") +
+          '<p class="t-small t-mute">компьютер ' + esc(p.computer.state) +
+          " · chatgpt " + esc(p.chatgpt.status) + "</p></div>";
+
+        html += list("Дела", (p.jobs || []).map(function (j) {
+          return '<span class="row-main">' + esc(j.goal) +
+            (j.note ? '<p class="t-mute">' + esc(j.note) + "</p>" : "") +
+            '</span><span class="row-side">' + esc(j.status) + "</span>";
+        }));
+        html += list("Wakeups", (p.wakeups || []).map(function (w) {
+          return '<span class="row-main">' + esc(w.kind) + " · " + esc(w.payload) +
+            '</span><span class="row-side">' + esc(w.status) + "</span>";
+        }));
+        html += list("Сторожа", (p.watchers || []).map(function (w) {
+          return '<span class="row-main">' + esc(w.source) + " · " + esc(w.about) +
+            '</span><span class="row-side">' + esc(w.status) + "</span>";
+        }));
+        html += list("Заказы", (p.orders || []).map(function (o) {
+          return '<span class="row-main">' + esc(o.merchant) + " · " + esc(o.title) +
+            '</span><span class="row-side">' + esc(o.status) + "</span>";
+        }));
+        html += list("Оплаты", (p.payments || []).map(function (pay) {
+          return '<span class="row-main">' + esc(String(pay.amountRub)) + " ₽" +
+            '</span><span class="row-side">' + esc(pay.status) + "</span>";
+        }));
+        html += list("События", (p.events || []).map(function (e) {
+          return '<span class="row-main">' + esc(label(e.kind)) +
+            (e.detail ? '<p class="t-mute">' + esc(e.detail) + "</p>" : "") +
+            '</span><span class="row-side">' + esc(when(e.at)) + "</span>";
+        }));
+
+        body.innerHTML = html;
+        body.hidden = false;
+        boot.hidden = true;
+        logoutBtn.hidden = false;
+        backBtn.hidden = false;
+      }
+
+      function loadBoard() {
+        boot.hidden = false;
+        boot.textContent = "Загружаем…";
+        body.hidden = true;
+        return get("/ops").then(function (res) {
+          if (res.status === 401 || (res.json && res.json.code === "unauthorized")) {
+            setSecret("");
+            showLogin("Не тот секрет.");
+            return;
+          }
+          if (res.status === 503 || (res.json && res.json.code === "unavailable")) {
+            boot.textContent = "На Convex не задан секрет.";
+            return;
+          }
+          if (!res.json || !res.json.ok) {
+            boot.textContent = res.status === 404
+              ? "На этом деплое ещё нет /ops. Задеплой Convex и обнови страницу."
+              : "Не открылось.";
+            return;
+          }
+          modal.hidden = true;
+          renderBoard(res.json);
+        }).catch(function () {
+          boot.textContent = "Нет связи с Convex.";
+        });
+      }
+
+      function loadPerson(handle, phone) {
+        boot.hidden = false;
+        boot.textContent = "Загружаем…";
+        var q = handle ? ("handle=" + encodeURIComponent(handle)) : ("phone=" + encodeURIComponent(phone));
+        return get("/ops/person?" + q).then(function (res) {
+          if (res.status === 401) {
+            setSecret("");
+            showLogin("Не тот секрет.");
+            return;
+          }
+          if (!res.json || !res.json.ok) {
+            boot.textContent = "Человека нет.";
+            return;
+          }
+          renderPerson(res.json.person);
+        }).catch(function () {
+          boot.textContent = "Нет связи с Convex.";
+        });
+      }
+
+      $("login-send").addEventListener("click", function () {
+        var v = ($("ops-secret").value || "").trim();
+        if (!v) {
+          $("login-status").textContent = "Введи секрет.";
+          return;
+        }
+        setSecret(v);
+        $("login-status").textContent = "";
+        loadBoard();
+      });
+      logoutBtn.addEventListener("click", function () {
+        setSecret("");
+        showLogin("Вышел.");
+      });
+      backBtn.addEventListener("click", function () { loadBoard(); });
+
+      if (!site()) {
+        boot.textContent = "Нет BRO_CONVEX_SITE_URL.";
+        return;
+      }
+      if (!secret()) {
+        showLogin();
+        return;
+      }
+      loadBoard();
+    })();
+  </script>
+</body>
+</html>

@@ -1,6 +1,7 @@
-import { v } from "convex/values";
-import { internalAction } from "./_generated/server";
+import { v, type Infer } from "convex/values";
+import { internalAction, type ActionCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
+import { accessEventKind } from "./lib/opsPolicy";
 import {
   identityCap,
   identityCapReached,
@@ -96,6 +97,22 @@ const result = v.union(
   }),
 );
 
+async function noteAccess<T extends Infer<typeof result>>(
+  ctx: ActionCtx,
+  outcome: T,
+): Promise<T> {
+  try {
+    await ctx.runMutation(internal.ops.record, {
+      kind: accessEventKind(outcome.ok, outcome.ok ? undefined : outcome.code),
+      at: Date.now(),
+      detail: outcome.ok ? outcome.handle : outcome.code,
+    });
+  } catch (err) {
+    console.error("ops access", err);
+  }
+  return outcome;
+}
+
 export const requestAccess = internalAction({
   args: {
     handle: v.optional(v.string()),
@@ -131,11 +148,11 @@ export const requestAccess = internalAction({
       if (existing?.inkboxIdentityId) {
         const knownPhone = existing.phoneE164 ?? phoneE164;
         if (!knownPhone) {
-          return {
+          return await noteAccess(ctx, {
             ok: false as const,
             code: "need_phone" as const,
             message: "Нужен номер телефона, чтобы открыть чат Bro",
-          };
+          });
         }
         try {
           const link = await photonLinkFor(knownPhone);
@@ -146,53 +163,53 @@ export const requestAccess = internalAction({
             photonUserId: link.userId,
             photonAssignedNumber: link.assigned,
           });
-          return {
+          return await noteAccess(ctx, {
             ok: true as const,
             handle,
             smsLink: link.smsLink,
             connectCommand: link.connectCommand,
-          };
+          });
         } catch (err) {
-          return {
+          return await noteAccess(ctx, {
             ok: false as const,
             code: "error" as const,
             message: err instanceof Error ? err.message : "photon user failed",
-          };
+          });
         }
       }
     }
 
     if (!create) {
-      return {
+      return await noteAccess(ctx, {
         ok: false as const,
         code: "error" as const,
         message: "unknown handle",
-      };
+      });
     }
 
     if (!isIosUserAgent(ua)) {
-      return {
+      return await noteAccess(ctx, {
         ok: false as const,
         code: "not_ios" as const,
         message: "Открой эту страницу на iPhone",
-      };
+      });
     }
 
     if (!phoneE164) {
-      return {
+      return await noteAccess(ctx, {
         ok: false as const,
         code: "need_phone" as const,
         message: "Нужен номер телефона, чтобы открыть чат Bro",
-      };
+      });
     }
 
     const used = await ctx.runQuery(internal.tenants.countProvisioned, {});
     if (identityCapReached(used, cap())) {
-      return {
+      return await noteAccess(ctx, {
         ok: false as const,
         code: "closed" as const,
         message: "Пока закрыто",
-      };
+      });
     }
 
     let lastErr = "create failed";
@@ -208,31 +225,31 @@ export const requestAccess = internalAction({
       } catch (err) {
         const status = (err as Error & { status?: number }).status;
         if (status === 402) {
-          return {
+          return await noteAccess(ctx, {
             ok: false as const,
             code: "closed" as const,
             message: "Пока закрыто",
-          };
+          });
         }
         if (status === 409) {
           lastErr = "handle taken";
           continue;
         }
-        return {
+        return await noteAccess(ctx, {
           ok: false as const,
           code: "error" as const,
           message: err instanceof Error ? err.message : "identity failed",
-        };
+        });
       }
 
       const id = identity.id;
       const gotHandle = identity.agent_handle ?? candidate;
       if (!id) {
-        return {
+        return await noteAccess(ctx, {
           ok: false as const,
           code: "error" as const,
           message: "identity missing id",
-        };
+        });
       }
 
       let mailboxId = identity.mailbox?.id;
@@ -267,11 +284,11 @@ export const requestAccess = internalAction({
       try {
         link = await photonLinkFor(phoneE164);
       } catch (err) {
-        return {
+        return await noteAccess(ctx, {
           ok: false as const,
           code: "error" as const,
           message: err instanceof Error ? err.message : "photon user failed",
-        };
+        });
       }
 
       await ctx.runMutation(internal.tenants.insertProvisioned, {
@@ -290,15 +307,19 @@ export const requestAccess = internalAction({
         tokenHash: await sha256hex(sessionToken),
         now: Date.now(),
       });
-      return {
+      return await noteAccess(ctx, {
         ok: true as const,
         handle: gotHandle,
         smsLink: link.smsLink,
         connectCommand: link.connectCommand,
         sessionToken,
-      };
+      });
     }
 
-    return { ok: false as const, code: "error" as const, message: lastErr };
+    return await noteAccess(ctx, {
+      ok: false as const,
+      code: "error" as const,
+      message: lastErr,
+    });
   },
 });
