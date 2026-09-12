@@ -43,11 +43,7 @@
     </div>
 
     <div class="stage__foot">
-      <a class="link t-cta" id="request-access" data-request-access href="#">Получить своего бро</a>
-      <div id="access-phone-row" hidden style="margin-top:16px;max-width:22rem">
-        <label class="t-small" for="access-phone">Номер телефона (E.164)</label>
-        <input id="access-phone" inputmode="tel" autocomplete="tel" placeholder="+79001112233" />
-      </div>
+      <a class="link t-cta" id="request-access" data-request-access href="sms:+16282649335&body=%D0%9F%D1%80%D0%B8%D0%B2%D0%B5%D1%82">Получить своего бро</a>
     </div>
   </section>
 
@@ -74,20 +70,8 @@
   <script src="assets/auth.js"></script>
   <script>
     (function () {
-      var KEY = "bro.handle";
       var ctas = [].slice.call(document.querySelectorAll("[data-request-access]"));
       if (!ctas.length) return;
-
-      function isIos() {
-        var ua = navigator.userAgent || "";
-        if (/iPhone|iPad|iPod/i.test(ua)) return true;
-        return navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1;
-      }
-
-      function site() {
-        var s = window.BRO_CONVEX_SITE_URL;
-        return typeof s === "string" ? s.replace(/\/$/, "") : "";
-      }
 
       /* Every CTA on the page shows the same state, so a person who scrolled
          past the hero still sees why nothing happened. */
@@ -95,63 +79,15 @@
         ctas.forEach(function (el) { el.textContent = t; });
       }
 
-      function onClick(e) {
-        var cta = e.currentTarget;
-        e.preventDefault();
-        if (cta.getAttribute("aria-busy") === "true") return;
-
-        var base = site();
-        if (!base) {
-          setLabel("Сайт ещё не подключён");
-          return;
-        }
-
-        if (!isIos() && !localStorage.getItem(KEY)) {
+      var link = window.broIMessageLink ? window.broIMessageLink() : "";
+      ctas.forEach(function (el) {
+        if (link) el.setAttribute("href", link);
+        el.addEventListener("click", function (e) {
+          if (window.broIsIos && window.broIsIos()) return;
+          e.preventDefault();
           setLabel("Открой на iPhone");
-          return;
-        }
-
-        cta.setAttribute("aria-busy", "true");
-        setLabel("Создаём…");
-        var handle = localStorage.getItem(KEY) || undefined;
-        var phoneEl = document.getElementById("access-phone");
-        var phone = phoneEl && phoneEl.value ? phoneEl.value.trim() : "";
-        var payload = {};
-        if (handle) payload.handle = handle;
-        if (phone) payload.phone = phone;
-        fetch(base + "/access", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        })
-          .then(function (res) { return res.json(); })
-          .then(function (data) {
-            if (!data.ok) {
-              if (data.code === "not_ios") setLabel("Открой на iPhone");
-              else if (data.code === "closed") setLabel("Пока закрыто");
-              else if (data.code === "need_phone") {
-                var row = document.getElementById("access-phone-row");
-                if (row) row.hidden = false;
-                setLabel(phone ? "Проверь номер и нажми ещё раз" : "Введи номер телефона");
-              }
-              else setLabel("Не вышло, нажми ещё раз");
-              return;
-            }
-            localStorage.setItem(KEY, data.handle);
-            if (data.sessionToken && window.broStoreSession) {
-              window.broStoreSession(data.handle, data.sessionToken);
-            }
-            window.location.href = data.smsLink;
-          })
-          .catch(function () {
-            setLabel("Не вышло, нажми ещё раз");
-          })
-          .then(function () {
-            cta.removeAttribute("aria-busy");
-          });
-      }
-
-      ctas.forEach(function (el) { el.addEventListener("click", onClick); });
+        });
+      });
     })();
   </script>
 </body>

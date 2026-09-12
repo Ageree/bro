@@ -7,6 +7,17 @@
     return typeof s === "string" ? s.replace(/\/$/, "") : "";
   }
 
+  window.broIMessageLink = function () {
+    var s = window.BRO_IMESSAGE_LINK;
+    return typeof s === "string" ? s : "";
+  };
+
+  window.broIsIos = function () {
+    var ua = navigator.userAgent || "";
+    if (/iPhone|iPad|iPod/i.test(ua)) return true;
+    return navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1;
+  };
+
   function handle() {
     return localStorage.getItem(HANDLE) || "";
   }

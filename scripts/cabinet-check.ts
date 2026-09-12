@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { timingSafeEqual } from "../convex/secret.ts";
 import { WAKE_LINES } from "../convex/lib/memoryPolicy.ts";
 import {
@@ -404,12 +404,10 @@ assert(cabinet.includes('id="login-handle-row"'), "cabinet login handle row");
 assert(cabinet.includes("handle-xl"), "cabinet handle is large");
 assert(cabinet.includes("Написать Bro"), "cabinet write-bro cta");
 assert(cabinet.includes('id="write-bro"'), "cabinet write-bro id");
-assert(cabinet.includes("/access"), "write-bro reuses POST /access");
-assert(cabinet.includes("smsLink"), "write-bro opens sms_link");
-assert(
-  cabinet.includes("bro-[a-z0-9]{8}"),
-  "write-bro only opens a valid stored handle",
-);
+assert(cabinet.includes("broIMessageLink"), "write-bro uses the static iMessage link");
+assert(!/fetch\(base \+ "\/access"/.test(cabinet), "write-bro does not POST /access");
+assert(!cabinet.includes("need_phone"), "write-bro does not ask for a phone");
+assert(cabinet.includes("Открой на iPhone"), "write-bro desktop hint");
 assert(cabinet.includes("Память"), "cabinet memory card");
 assert(cabinet.includes("Забыть"), "cabinet forget button");
 assert(cabinet.includes("/me/memories/forget"), "forget posts to cabinet route");
@@ -514,18 +512,25 @@ assert(
     pkg.scripts.build.includes("vercel-build"),
   "eve build copies cabinet.html first",
 );
-const vercelJson = JSON.parse(
-  readFileSync(new URL("../vercel.json", import.meta.url), "utf8"),
-) as { buildCommand?: string };
-assert(
-  typeof vercelJson.buildCommand === "string" &&
-    vercelJson.buildCommand.includes("vercel-build"),
-  "vercel build copies cabinet.html first",
-);
+const vercelJsonUrl = new URL("../vercel.json", import.meta.url);
+if (existsSync(vercelJsonUrl)) {
+  const vercelJson = JSON.parse(readFileSync(vercelJsonUrl, "utf8")) as {
+    buildCommand?: string;
+  };
+  assert(
+    typeof vercelJson.buildCommand === "string" &&
+      vercelJson.buildCommand.includes("vercel-build"),
+    "vercel build copies cabinet.html first",
+  );
+}
 assert(!httpSrc.includes("/internal/computer"), "http does not proxy a computer");
 assert(!httpSrc.includes("BOX_API_KEY"), "http does not send BOX_API_KEY");
 
 assert(landing.includes('id="request-access"'), "landing CTA has id");
+assert(!landing.includes("access-phone"), "landing has no phone input");
+assert(!landing.includes("Введи номер телефона"), "landing does not ask for a number");
+assert(landing.includes("sms:+16282649335"), "landing CTA is Bro's iMessage link");
+assert(landing.includes("Открой на iPhone"), "desktop CTA stays an iPhone hint");
 assert(
   landing.includes('querySelectorAll("[data-request-access]")'),
   "landing CTA script binds the marked CTAs, not the first .cta",
