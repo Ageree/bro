@@ -99,6 +99,7 @@ const help = helpText();
 const welcomeJoin = welcomeText({ canJoinGroups: true });
 const helpJoin = helpText({ canJoinGroups: true });
 const bubbles = welcomeBubbles();
+const broOpener = /^(?:Бро|Bro)\./;
 assert(welcome.trim().length > 0, "welcome nonempty");
 assert(help.trim().length > 0, "help nonempty");
 assert(hasCyrillic(welcome), "welcome russian");
@@ -113,7 +114,15 @@ assert(bubbles.length >= 2 && bubbles.length <= 3, "welcome is a few short bubbl
 for (const bubble of bubbles) {
   assert(bubble.length > 0 && bubble.length <= 90, `welcome bubble short: ${bubble}`);
   assert(!bubble.includes("\n"), "welcome bubble is one line");
+  assert(!broOpener.test(bubble), `welcome bubble no Bro. opener: ${bubble}`);
+  assert(/[.!?…»)]$/.test(bubble.trim()), `welcome bubble is a sentence: ${bubble}`);
 }
+assert(!broOpener.test(help), "help no Bro. opener");
+assert(!help.includes("•"), "help is spoken prose, not a bullet dump");
+assert(
+  !help.split("\n").some((line) => /^[-*•]/.test(line.trim())),
+  "help has no list markers",
+);
 assert(help.split("\n").filter((l) => l.startsWith("•")).length <= 9, "help stays a short list");
 assert(/Wildberries|Ozon|WB/i.test(help), "help buy");
 assert(/запис|бронь/i.test(help), "help bookings");
