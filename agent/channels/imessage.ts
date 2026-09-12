@@ -2,7 +2,6 @@ import { defineChannel, GET, POST } from "eve/channels";
 import type { IMessageWebhookPayload } from "@inkbox/sdk";
 import {
   agentHandle,
-  allowlisted,
   isAccessHandle,
   isBlueIMessage,
   sendBlueIMessage,
@@ -262,10 +261,10 @@ export default defineChannel({
       }
 
       const known = await getTenant(inbound.senderPhone).catch(() => null);
-      if (!known && !allowlisted(inbound.senderPhone)) {
-        return new Response(null, { status: 204 });
-      }
-      if (!known && allowlisted(inbound.senderPhone)) {
+      // Closed beta: first DMs from any new number must bind. ALLOWED_SENDERS
+      // is not a product gate (instant-access spec). bindPhotonInbound creates
+      // the tenant when missing — do not drop unknown senders here.
+      if (!known && inbound.senderPhone) {
         try {
           await upsertTenant(inbound.senderPhone);
         } catch (err) {

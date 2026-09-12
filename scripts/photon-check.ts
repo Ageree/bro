@@ -10,6 +10,7 @@ import {
   shouldNudgeInkboxThread,
 } from "../convex/lib/photonPolicy.ts";
 import { photonWebhookOk, readPhotonInbound } from "../agent/lib/photon.ts";
+import { shouldSkipAgentTurn } from "../agent/lib/onboard-policy.ts";
 
 function assert(cond: unknown, msg: string): void {
   if (!cond) throw new Error(msg);
@@ -119,6 +120,22 @@ assert(channel.includes("/internal/photon-send"), "cabinet OTP route");
 assert(channel.includes("sendPhotonText"), "outbound Photon");
 assert(channel.includes("photonNudgeText"), "Inkbox nudge");
 assert(!channel.includes("bindGroupInbound"), "no group bind on Pro");
+assert(
+  !channel.includes("allowlisted(inbound.senderPhone)"),
+  "Photon DMs are not gated by ALLOWED_SENDERS",
+);
+assert(
+  !/\+79\d{9}/.test(channel),
+  "Photon channel has no hardcoded tenant phone",
+);
+assert(
+  shouldSkipAgentTurn({ firstBind: true, text: "привет" }),
+  "first привет is canned welcome+help, not a silent drop",
+);
+assert(
+  !shouldSkipAgentTurn({ firstBind: false, text: "запиши к врачу завтра" }),
+  "later errand is an agent turn for every bound tenant",
+);
 
 const deliver = readFileSync(new URL("../agent/lib/deliver-human.ts", import.meta.url), "utf8");
 assert(deliver.includes("sendPhotonText"), "deliver-human uses Photon");
@@ -151,5 +168,10 @@ const photonSrc = readFileSync(new URL("../agent/lib/photon.ts", import.meta.url
 assert(photonSrc.includes('import "@grpc/grpc-js"'), "photon pins grpc-js");
 assert(photonSrc.includes('import "nice-grpc"'), "photon pins nice-grpc");
 assert(photonSrc.includes('import "nice-grpc-common"'), "photon pins nice-grpc-common");
+assert(!/\+79\d{9}/.test(photonSrc), "sendPhotonText has no hardcoded phone");
+assert(
+  photonSrc.includes("opts.conversationId") && photonSrc.includes("im.space.get"),
+  "outbound is conversation-id based for every tenant",
+);
 
 console.log("photon-check ok");
