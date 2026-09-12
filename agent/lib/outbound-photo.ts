@@ -1,4 +1,5 @@
 import { posix as posixPath } from "node:path";
+import { filenameFromUrl } from "./files.ts";
 import { readLimited } from "./voice.ts";
 
 export const PHOTO_MAX_BYTES = 8 * 1024 * 1024;
@@ -223,15 +224,6 @@ export async function fetchPhotoBytes(
   if ("error" in body) throw new Error("картинка больше 8 МБ");
   const headerType = res.headers.get("content-type");
   return photoFromBytes(body, filenameFromUrl(href), headerType);
-}
-
-function filenameFromUrl(url: string): string {
-  try {
-    const name = posixPath.basename(new URL(url).pathname);
-    return name || "photo.jpg";
-  } catch {
-    return "photo.jpg";
-  }
 }
 
 function extensionFor(type: PhotoContentType): string {

@@ -160,24 +160,6 @@ export async function getProfile(profileId: string): Promise<ProfileView> {
   return asProfile(await bu(`/profiles/${id}`));
 }
 
-export async function listProfiles(query?: string): Promise<ProfileView[]> {
-  const q = new URLSearchParams({ pageSize: "20", pageNumber: "1" });
-  if (query?.trim()) q.set("query", query.trim().slice(0, 200));
-  const listed = await bu(`/profiles?${q}`);
-  const items = listed.items;
-  if (!Array.isArray(items)) return [];
-  const out: ProfileView[] = [];
-  for (const item of items) {
-    if (!item || typeof item !== "object") continue;
-    try {
-      out.push(asProfile(item as Record<string, unknown>));
-    } catch {
-      // skip malformed rows
-    }
-  }
-  return out;
-}
-
 function resolveProxyCountry(): string | undefined {
   const explicit = proxyCountryCode(process.env.BROWSERUSE_PROXY_COUNTRY);
   if (explicit) return explicit;

@@ -1,6 +1,5 @@
 import { ConvexHttpClient } from "convex/browser";
-import type { FunctionReturnType } from "convex/server";
-import { anyApi } from "convex/server";
+import type { FunctionArgs, FunctionReference, FunctionReturnType } from "convex/server";
 import { api } from "../../convex/_generated/api.js";
 import type { Id } from "../../convex/_generated/dataModel";
 import {
@@ -26,6 +25,22 @@ function secret(): string {
   if (!s) throw new Error("BRO_INTERNAL_SECRET missing");
   return s;
 }
+
+/** Generic forwarders: call a Convex function with `secret` injected. */
+const q =
+  <F extends FunctionReference<"query">>(fn: F) =>
+  (args: Omit<FunctionArgs<F>, "secret">): Promise<FunctionReturnType<F>> =>
+    client().query(fn, { secret: secret(), ...args } as FunctionArgs<F>);
+
+const m =
+  <F extends FunctionReference<"mutation">>(fn: F) =>
+  (args: Omit<FunctionArgs<F>, "secret">): Promise<FunctionReturnType<F>> =>
+    client().mutation(fn, { secret: secret(), ...args } as FunctionArgs<F>);
+
+const a =
+  <F extends FunctionReference<"action">>(fn: F) =>
+  (args: Omit<FunctionArgs<F>, "secret">): Promise<FunctionReturnType<F>> =>
+    client().action(fn, { secret: secret(), ...args } as FunctionArgs<F>);
 
 export type JobWakeRow = {
   id: string;
@@ -60,11 +75,7 @@ export async function loadWakeContext(phoneE164: string): Promise<WakeContext> {
   if (cached && Date.now() - cached.at < WAKE_CONTEXT_TTL_MS) return cached.value;
   const existing = wakeInflight.get(phoneE164);
   if (existing) return existing;
-  const pending = client()
-    .query(api.memories.wakeContext, {
-      secret: secret(),
-      phoneE164,
-    })
+  const pending = q(api.memories.wakeContext)({ phoneE164 })
     .then((value) => {
       rememberWake(phoneE164, value);
       return value;
@@ -81,35 +92,16 @@ export async function wakeLines(phoneE164: string): Promise<string[]> {
 }
 
 export async function noteLine(phoneE164: string, line: string): Promise<string> {
-  await client().mutation(api.memories.note, {
-    secret: secret(),
-    phoneE164,
-    line,
-  });
+  await m(api.memories.note)({ phoneE164, line });
   forgetWake(phoneE164);
   return "noted";
 }
 
-export async function searchLines(
-  phoneE164: string,
-  needle: string,
-): Promise<string[]> {
-  return await client().query(api.memories.search, {
-    secret: secret(),
-    phoneE164,
-    needle,
-  });
-}
+export const searchLines = (phoneE164: string, needle: string): Promise<string[]> =>
+  q(api.memories.search)({ phoneE164, needle });
 
-export async function forgetLines(
-  phoneE164: string,
-  needle: string,
-): Promise<string> {
-  const n = await client().mutation(api.memories.forget, {
-    secret: secret(),
-    phoneE164,
-    needle,
-  });
+export async function forgetLines(phoneE164: string, needle: string): Promise<string> {
+  const n = await m(api.memories.forget)({ phoneE164, needle });
   forgetWake(phoneE164);
   return `forgot ${n}`;
 }
@@ -119,8 +111,7 @@ export async function upsertTenant(
   inkboxConversationId?: string,
   emailAddress?: string,
 ) {
-  const tenant = await client().mutation(api.tenants.upsert, {
-    secret: secret(),
+  const tenant = await m(api.tenants.upsert)({
     phoneE164,
     inkboxConversationId,
     emailAddress,
@@ -130,12 +121,7 @@ export async function upsertTenant(
   return tenant;
 }
 
-export async function getTenant(phoneE164: string) {
-  return await client().query(api.tenants.getByPhone, {
-    secret: secret(),
-    phoneE164,
-  });
-}
+export const getTenant = (phoneE164: string) => q(api.tenants.getByPhone)({ phoneE164 });
 
 type HandleTenant = FunctionReturnType<typeof api.tenants.getByHandle>;
 type TelegramTenant = FunctionReturnType<typeof api.tenants.getByTelegram>;
@@ -175,11 +161,7 @@ export async function getTenantByHandle(
     const existing = handleInflight.get(key);
     if (existing) return existing;
   }
-  const pending = client()
-    .query(api.tenants.getByHandle, {
-      secret: secret(),
-      handle: key,
-    })
+  const pending = q(api.tenants.getByHandle)({ handle: key })
     .then((tenant) => {
       if (tenant) rememberHandleTenant(key, tenant);
       else forgetHandleTenant(key);
@@ -192,12 +174,8 @@ export async function getTenantByHandle(
   return pending;
 }
 
-export async function getTenantByConversation(conversationId: string) {
-  return await client().query(api.tenants.getByConversation, {
-    secret: secret(),
-    conversationId,
-  });
-}
+export const getTenantByConversation = (conversationId: string) =>
+  q(api.tenants.getByConversation)({ conversationId });
 
 export type BindInboundResult =
   | {
@@ -215,11 +193,7 @@ export async function getTenantByTelegram(
   if (cached.hit) return cached.value;
   const existing = telegramInflight.get(key);
   if (existing) return existing;
-  const pending = client()
-    .query(api.tenants.getByTelegram, {
-      secret: secret(),
-      telegramUserId: key,
-    })
+  const pending = q(api.tenants.getByTelegram)({ telegramUserId: key })
     .then((tenant) => {
       if (tenant) rememberTelegramTenant(key, tenant);
       else forgetTelegramTenant(key);
@@ -232,26 +206,18 @@ export async function getTenantByTelegram(
   return pending;
 }
 
-export async function touchLastChannel(
+export const touchLastChannel = (
   phoneE164: string,
   lastChannel: "imessage" | "telegram",
-): Promise<void> {
-  await client().mutation(api.tenants.touchLastChannel, {
-    secret: secret(),
-    phoneE164,
-    lastChannel,
-  });
-}
+): Promise<void> =>
+  m(api.tenants.touchLastChannel)({ phoneE164, lastChannel }).then(() => {});
 
-export async function mintTelegramBind(phoneE164: string): Promise<
+export const mintTelegramBind = (
+  phoneE164: string,
+): Promise<
   | { ok: true; token: string; alreadyLinked: boolean }
   | { ok: false; reason: "unbound" }
-> {
-  return await client().mutation(api.tenants.mintTelegramBind, {
-    secret: secret(),
-    phoneE164,
-  });
-}
+> => m(api.tenants.mintTelegramBind)({ phoneE164 });
 
 export type BindTelegramResult =
   | {
@@ -275,10 +241,7 @@ export async function bindTelegram(opts: {
   telegramChatId: string;
   telegramUsername?: string;
 }): Promise<BindTelegramResult> {
-  const result = await client().mutation(api.tenants.bindTelegram, {
-    secret: secret(),
-    ...opts,
-  });
+  const result = await m(api.tenants.bindTelegram)(opts);
   forgetTelegramTenant(opts.telegramUserId);
   if (result.ok) {
     rememberTelegramTenant(opts.telegramUserId, result.tenant);
@@ -294,10 +257,7 @@ export async function bindPhotonInbound(opts: {
   photonAssignedNumber?: string;
   handle?: string;
 }): Promise<BindInboundResult> {
-  const result = await client().mutation(api.tenants.bindPhotonInbound, {
-    secret: secret(),
-    ...opts,
-  });
+  const result = await m(api.tenants.bindPhotonInbound)(opts);
   if (!result.ok) return result;
   if (result.tenant.inkboxHandle) forgetHandleTenant(result.tenant.inkboxHandle);
   if (result.tenant.telegramUserId) {
@@ -311,11 +271,7 @@ export async function markPhotonNudgeSent(
   conversationId: string,
   now = Date.now(),
 ): Promise<boolean> {
-  const result = await client().mutation(api.tenants.markPhotonNudgeSent, {
-    secret: secret(),
-    conversationId,
-    now,
-  });
+  const result = await m(api.tenants.markPhotonNudgeSent)({ conversationId, now });
   return result.sent;
 }
 
@@ -324,8 +280,7 @@ export async function bindInbound(
   phoneE164: string,
   inkboxConversationId?: string,
 ): Promise<BindInboundResult> {
-  const result = await client().mutation(api.tenants.bindInbound, {
-    secret: secret(),
+  const result = await m(api.tenants.bindInbound)({
     handle,
     phoneE164,
     inkboxConversationId,
@@ -356,10 +311,7 @@ export async function bindGroupInbound(args: {
   handle?: string;
   ownerPhone?: string;
 }): Promise<BindGroupResult> {
-  const result = await client().mutation(api.groupChats.bindInbound, {
-    secret: secret(),
-    ...args,
-  });
+  const result = await m(api.groupChats.bindInbound)(args);
   if (!result.ok) return result;
   return {
     ok: true,
@@ -369,19 +321,8 @@ export async function bindGroupInbound(args: {
   };
 }
 
-export async function getGroupByConversation(conversationId: string) {
-  return await client().query(api.groupChats.getByConversation, {
-    secret: secret(),
-    conversationId,
-  });
-}
-
-export async function markGroupGreeted(conversationId: string): Promise<void> {
-  await client().mutation(api.groupChats.markGreeted, {
-    secret: secret(),
-    conversationId,
-  });
-}
+export const getGroupByConversation = (conversationId: string) =>
+  q(api.groupChats.getByConversation)({ conversationId });
 
 export async function replyTenant(conversationId: string) {
   const group = await getGroupByConversation(conversationId).catch(() => null);
@@ -391,7 +332,7 @@ export async function replyTenant(conversationId: string) {
   return await getTenantByConversation(conversationId).catch(() => null);
 }
 
-export async function setBrowser(
+export const setBrowser = (
   phoneE164: string,
   patch: {
     browserSessionId?: string;
@@ -404,45 +345,27 @@ export async function setBrowser(
     browserCookieDomains?: string[];
     browserProfileSyncedAt?: number;
   },
-): Promise<void> {
-  await client().mutation(api.tenants.setBrowser, {
-    secret: secret(),
-    phoneE164,
-    ...patch,
-  });
-}
+): Promise<void> =>
+  m(api.tenants.setBrowser)({ phoneE164, ...patch }).then(() => {});
 
-export async function getTenantByEmail(emailAddress: string) {
-  return await client().query(api.tenants.getByEmail, {
-    secret: secret(),
-    emailAddress,
-  });
-}
+export const getTenantByEmail = (emailAddress: string) =>
+  q(api.tenants.getByEmail)({ emailAddress });
 
 export async function jobWakeRows(phoneE164: string): Promise<JobWakeRow[]> {
   return (await loadWakeContext(phoneE164)).jobs;
 }
 
-export async function listOpenJobs(
+export const listOpenJobs = (
   phoneE164: string,
-): Promise<FunctionReturnType<typeof api.jobs.listOpen>> {
-  return await client().query(api.jobs.listOpen, {
-    secret: secret(),
-    phoneE164,
-  });
-}
+): Promise<FunctionReturnType<typeof api.jobs.listOpen>> =>
+  q(api.jobs.listOpen)({ phoneE164 });
 
 export async function openJob(
   phoneE164: string,
   goal: string,
   doneWhen: string,
 ) {
-  const id = await client().mutation(api.jobs.open, {
-    secret: secret(),
-    phoneE164,
-    goal,
-    doneWhen,
-  });
+  const id = await m(api.jobs.open)({ phoneE164, goal, doneWhen });
   forgetWake(phoneE164);
   return id;
 }
@@ -457,8 +380,7 @@ export async function waitJob(
     emailMessageId?: string;
   },
 ) {
-  const result = await client().mutation(api.jobs.wait, {
-    secret: secret(),
+  const result = await m(api.jobs.wait)({
     phoneE164,
     jobId: jobId as Id<"jobs">,
     waitingFor,
@@ -474,8 +396,7 @@ export async function finishJob(
   outcome: string,
   failed?: boolean,
 ) {
-  const result = await client().mutation(api.jobs.finish, {
-    secret: secret(),
+  const result = await m(api.jobs.finish)({
     phoneE164,
     jobId: jobId as Id<"jobs">,
     outcome,
@@ -486,8 +407,7 @@ export async function finishJob(
 }
 
 export async function markNudged(phoneE164: string, jobId: string) {
-  const result = await client().mutation(api.jobs.markNudged, {
-    secret: secret(),
+  const result = await m(api.jobs.markNudged)({
     phoneE164,
     jobId: jobId as Id<"jobs">,
   });
@@ -495,20 +415,18 @@ export async function markNudged(phoneE164: string, jobId: string) {
   return result;
 }
 
-export async function touchJobMail(
+export const touchJobMail = (
   phoneE164: string,
   jobId: string,
   extra: { emailThreadId?: string; emailMessageId?: string },
-) {
-  return await client().mutation(api.jobs.touchMail, {
-    secret: secret(),
+) =>
+  m(api.jobs.touchMail)({
     phoneE164,
     jobId: jobId as Id<"jobs">,
     ...extra,
   });
-}
 
-export async function scheduleWakeup(args: {
+export const scheduleWakeup = (args: {
   tenantPhone: string;
   at: number;
   kind: "reminder" | "browser_poll" | "brief" | "watcher" | "job_check";
@@ -516,148 +434,91 @@ export async function scheduleWakeup(args: {
   recurMinutes?: number;
   recurDailyHour?: number;
   tz?: string;
-}): Promise<string> {
-  return await client().mutation(api.wakeups.schedule, {
-    secret: secret(),
-    ...args,
-  });
-}
+}): Promise<string> => m(api.wakeups.schedule)(args);
 
-export async function cancelWakeup(
+export const cancelWakeup = (
   tenantPhone: string,
   opts: {
     id?: string;
     kind?: "reminder" | "browser_poll" | "brief" | "watcher" | "job_check";
     payloadContains?: string;
   },
-): Promise<number> {
-  return await client().mutation(api.wakeups.cancel, {
-    secret: secret(),
+): Promise<number> =>
+  m(api.wakeups.cancel)({
     tenantPhone,
     id: opts.id as Id<"wakeups"> | undefined,
     kind: opts.kind,
   });
-}
 
-export async function listWakeups(tenantPhone: string) {
-  return await client().query(api.wakeups.listForTenant, {
-    secret: secret(),
-    tenantPhone,
-  });
-}
-
-export async function createWatcher(args: {
+export const createWatcher = (args: {
   tenantPhone: string;
   source: "gmail" | "calendar";
   triggerId: string;
   triggerSlug: string;
   about: string;
   filter?: string;
-}): Promise<string> {
-  return await client().mutation(api.watchers.create, {
-    secret: secret(),
-    ...args,
-  });
-}
+}): Promise<string> => m(api.watchers.create)(args);
 
-export async function listWatchers(
+export const listWatchers = (
   tenantPhone: string,
-): Promise<FunctionReturnType<typeof api.watchers.listActive>> {
-  return await client().query(api.watchers.listActive, {
-    secret: secret(),
-    tenantPhone,
-  });
-}
+): Promise<FunctionReturnType<typeof api.watchers.listActive>> =>
+  q(api.watchers.listActive)({ tenantPhone });
 
-export async function stopWatchers(
+export const stopWatchers = (
   tenantPhone: string,
   id?: string,
-): Promise<{ id: string; triggerId: string }[]> {
-  return await client().mutation(api.watchers.stop, {
-    secret: secret(),
-    tenantPhone,
-    id: id as Id<"watchers"> | undefined,
-  });
-}
+): Promise<{ id: string; triggerId: string }[]> =>
+  m(api.watchers.stop)({ tenantPhone, id: id as Id<"watchers"> | undefined });
 
-export async function setWakeupLastSeen(
+export const setWakeupLastSeen = (
   tenantPhone: string,
   lastSeen: string,
-): Promise<void> {
-  await client().mutation(api.wakeups.setLastSeen, {
-    secret: secret(),
-    tenantPhone,
-    kind: "watcher",
-    lastSeen,
-  });
-}
+): Promise<void> =>
+  m(api.wakeups.setLastSeen)({ tenantPhone, kind: "watcher", lastSeen }).then(() => {});
 
-export async function countInboundMessage(phoneE164: string): Promise<{
+export const countInboundMessage = (
+  phoneE164: string,
+): Promise<{
   decision: "allow" | "paywall" | "drop";
   payUrl?: string;
-}> {
-  return await client().mutation(api.tenants.countInboundMessage, {
-    secret: secret(),
-    phoneE164,
-  });
-}
+}> => m(api.tenants.countInboundMessage)({ phoneE164 });
 
-export async function markPaywallSent(
+export const markPaywallSent = (
   phoneE164: string,
-): Promise<{ alreadySentToday: boolean }> {
-  return await client().mutation(api.tenants.markPaywallSent, {
-    secret: secret(),
-    phoneE164,
-  });
-}
+): Promise<{ alreadySentToday: boolean }> =>
+  m(api.tenants.markPaywallSent)({ phoneE164 });
 
-export async function countBrowserJobStart(
+export const countBrowserJobStart = (
   phoneE164: string,
-): Promise<{ allowed: boolean }> {
-  return await client().mutation(api.tenants.countBrowserJobStart, {
-    secret: secret(),
-    phoneE164,
-  });
-}
+): Promise<{ allowed: boolean }> =>
+  m(api.tenants.countBrowserJobStart)({ phoneE164 });
 
 /** Charges one browser job for a whole worker assignment, not per browser. */
-export async function startBrowserErrand(args: {
+export const startBrowserErrand = (args: {
   phoneE164: string;
   workerSessionId: string;
-}): Promise<{ allowed: boolean }> {
-  return await client().mutation(api.tenants.startBrowserErrand, {
-    secret: secret(),
-    ...args,
-  });
-}
+}): Promise<{ allowed: boolean }> => m(api.tenants.startBrowserErrand)(args);
 
-export async function startBrowserFollow(args: {
+export const startBrowserFollow = (args: {
   tenantPhone: string;
   runId: string;
   sessionId?: string;
   task: string;
   startedAt: number;
-}): Promise<{ workflowId: string; reused: boolean } | { error: string }> {
-  return await client().mutation(api.browserFollow.startFollowThrough, {
-    secret: secret(),
-    ...args,
-  });
-}
+}): Promise<{ workflowId: string; reused: boolean } | { error: string }> =>
+  m(api.browserFollow.startFollowThrough)(args);
 
-export async function cancelBrowserFollow(
+export const cancelBrowserFollow = (
   tenantPhone: string,
   runId: string,
-): Promise<{ cancelled: number; error?: string }> {
-  return await client().mutation(api.browserFollow.cancelFollowThrough, {
-    secret: secret(),
-    tenantPhone,
-    runId,
-  });
-}
+): Promise<{ cancelled: number; error?: string }> =>
+  m(api.browserFollow.cancelFollowThrough)({ tenantPhone, runId });
 
 export type VaultKindName = "login" | "payment" | "address" | "contact";
 
-export async function listVaultItems(phoneE164: string): Promise<
+export const listVaultItems = (
+  phoneE164: string,
+): Promise<
   {
     handle: string;
     kind: VaultKindName;
@@ -666,48 +527,28 @@ export async function listVaultItems(phoneE164: string): Promise<
     origin?: string;
     available: boolean;
   }[]
-> {
-  return await client().query(api.vault.listForAgent, {
-    secret: secret(),
-    phoneE164,
-  });
-}
+> => q(api.vault.listForAgent)({ phoneE164 });
 
-export async function readVaultSecret(
+export const readVaultSecret = (
   phoneE164: string,
   handle: string,
-): Promise<{ kind: VaultKindName; origin?: string; secret: string } | null> {
-  return await client().action(api.vaultSecrets.readForAgent, {
-    secret: secret(),
-    phoneE164,
-    handle,
-  });
-}
+): Promise<{ kind: VaultKindName; origin?: string; secret: string } | null> =>
+  a(api.vaultSecrets.readForAgent)({ phoneE164, handle });
 
-export async function registerBrowserSession(args: {
+export const registerBrowserSession = (args: {
   phoneE164: string;
   sessionId: string;
   workerSessionId?: string;
   saveChanges: boolean;
-}): Promise<{ ok: true } | { ok: false; reason: "writer_busy"; sessionId: string }> {
-  return await client().mutation(api.browsers.register, {
-    secret: secret(),
-    ...args,
-  });
-}
+}): Promise<{ ok: true } | { ok: false; reason: "writer_busy"; sessionId: string }> =>
+  m(api.browsers.register)(args);
 
-export async function dropBrowserSession(
+export const dropBrowserSession = (
   phoneE164: string,
   sessionId: string,
-): Promise<void> {
-  await client().mutation(api.browsers.drop, {
-    secret: secret(),
-    phoneE164,
-    sessionId,
-  });
-}
+): Promise<void> => m(api.browsers.drop)({ phoneE164, sessionId }).then(() => {});
 
-export async function getBrowserSession(
+export const getBrowserSession = (
   phoneE164: string,
   sessionId: string,
 ): Promise<{
@@ -715,20 +556,10 @@ export async function getBrowserSession(
   workerSessionId?: string;
   saveChanges: boolean;
   createdAt: number;
-} | null> {
-  return await client().query(api.browsers.get, {
-    secret: secret(),
-    phoneE164,
-    sessionId,
-  });
-}
+} | null> => q(api.browsers.get)({ phoneE164, sessionId });
 
-export async function listBrowserSessionIds(phoneE164: string): Promise<string[]> {
-  return await client().query(api.browsers.listIds, {
-    secret: secret(),
-    phoneE164,
-  });
-}
+export const listBrowserSessionIds = (phoneE164: string): Promise<string[]> =>
+  q(api.browsers.listIds)({ phoneE164 });
 
 export type OrderMerchant = "wb" | "ozon" | "other";
 export type OrderStatus = "placed" | "cancelled" | "unknown";
@@ -748,8 +579,7 @@ export async function recordOrder(
 ): Promise<string> {
   const tenant = await getTenant(phoneE164);
   if (!tenant) throw new Error("unknown tenant");
-  return await client().mutation(api.orders.record, {
-    secret: secret(),
+  return await m(api.orders.record)({
     tenantId: tenant._id,
     merchant: row.merchant,
     merchantOrderId: row.merchantOrderId,
@@ -763,48 +593,28 @@ export async function recordOrder(
 export async function listOrders(
   phoneE164: string,
 ): Promise<FunctionReturnType<typeof api.orders.listForPhone>> {
-  return await client().query(api.orders.listForPhone, {
-    secret: secret(),
-    phoneE164,
-  });
+  return q(api.orders.listForPhone)({ phoneE164 });
 }
 
-export async function chatgptStatus(
+export const chatgptStatus = (
   phoneE164: string,
 ): Promise<{
   status: "none" | "pending" | "connected" | "quarantined";
   email?: string;
   planType?: string;
-}> {
-  return await client().query(api.chatgpt.statusForAgent, {
-    secret: secret(),
-    phoneE164,
-    now: Date.now(),
-  });
-}
+}> => q(api.chatgpt.statusForAgent)({ phoneE164, now: Date.now() });
 
-export async function chatgptToken(phoneE164: string): Promise<{
+export const chatgptToken = (phoneE164: string): Promise<{
   status: "connected" | "none" | "quarantined";
   accessToken?: string;
   accountId?: string;
-}> {
-  return await client().action(api.chatgptSecrets.tokenForAgent, {
-    secret: secret(),
-    phoneE164,
-  });
-}
+}> => a(api.chatgptSecrets.tokenForAgent)({ phoneE164 });
 
-export async function chatgptQuarantine(
+export const chatgptQuarantine = (
   phoneE164: string,
   reason: string,
-): Promise<boolean> {
-  return await client().mutation(api.chatgpt.quarantineForAgent, {
-    secret: secret(),
-    phoneE164,
-    now: Date.now(),
-    reason,
-  });
-}
+): Promise<boolean> =>
+  m(api.chatgpt.quarantineForAgent)({ phoneE164, now: Date.now(), reason });
 
 export type StoredFile = {
   id: string;
@@ -817,35 +627,24 @@ export type StoredFile = {
 
 export type StoredFileWithUrl = StoredFile & { url: string | null };
 
-export async function listStoredFiles(phoneE164: string): Promise<StoredFile[]> {
-  return await client().query(api.files.listForAgent, {
-    secret: secret(),
-    phoneE164,
-  });
-}
+export const listStoredFiles = (phoneE164: string): Promise<StoredFile[]> =>
+  q(api.files.listForAgent)({ phoneE164 });
 
-export async function getStoredFile(
+export const getStoredFile = (
   phoneE164: string,
   ref: { fileId?: string; name?: string },
-): Promise<StoredFileWithUrl | null> {
-  return await client().query(api.files.getForAgent, {
-    secret: secret(),
+): Promise<StoredFileWithUrl | null> =>
+  q(api.files.getForAgent)({
     phoneE164,
-    ...(ref.fileId ? { fileId: ref.fileId as Id<"files"> } : {}),
-    ...(ref.name ? { name: ref.name } : {}),
+    fileId: ref.fileId as Id<"files"> | undefined,
+    name: ref.name,
   });
-}
 
-export async function generateFileUploadUrl(
+export const generateFileUploadUrl = (
   phoneE164: string,
-): Promise<string | null> {
-  return await client().mutation(api.files.generateUploadUrlForAgent, {
-    secret: secret(),
-    phoneE164,
-  });
-}
+): Promise<string | null> => m(api.files.generateUploadUrlForAgent)({ phoneE164 });
 
-export async function saveStoredFile(
+export const saveStoredFile = (
   phoneE164: string,
   args: {
     storageId: string;
@@ -855,30 +654,26 @@ export async function saveStoredFile(
     sourceChannel?: StoredFile["sourceChannel"];
     now?: number;
   },
-): Promise<StoredFile | null> {
-  return await client().mutation(api.files.saveForAgent, {
-    secret: secret(),
+): Promise<StoredFile | null> =>
+  m(api.files.saveForAgent)({
     phoneE164,
     storageId: args.storageId as Id<"_storage">,
     name: args.name,
     mimeType: args.mimeType,
     size: args.size,
     now: args.now ?? Date.now(),
-    ...(args.sourceChannel ? { sourceChannel: args.sourceChannel } : {}),
+    sourceChannel: args.sourceChannel,
   });
-}
 
-export async function deleteStoredFile(
+export const deleteStoredFile = (
   phoneE164: string,
   ref: { fileId?: string; name?: string },
-): Promise<boolean> {
-  return await client().mutation(api.files.deleteForAgent, {
-    secret: secret(),
+): Promise<boolean> =>
+  m(api.files.deleteForAgent)({
     phoneE164,
-    ...(ref.fileId ? { fileId: ref.fileId as Id<"files"> } : {}),
-    ...(ref.name ? { name: ref.name } : {}),
+    fileId: ref.fileId as Id<"files"> | undefined,
+    name: ref.name,
   });
-}
 
 export async function storeFileBytes(
   phoneE164: string,
@@ -890,14 +685,13 @@ export async function storeFileBytes(
     now?: number;
   },
 ): Promise<StoredFile | null> {
-  return await client().action(api.files.storeBytesForAgent, {
-    secret: secret(),
+  return await a(api.files.storeBytesForAgent)({
     phoneE164,
     name: args.name,
     mimeType: args.mimeType,
     bytesBase64: Buffer.from(args.bytes).toString("base64"),
     now: args.now ?? Date.now(),
-    ...(args.sourceChannel ? { sourceChannel: args.sourceChannel } : {}),
+    sourceChannel: args.sourceChannel,
   });
 }
 
@@ -909,8 +703,7 @@ export async function updateOrderStatus(
     orderId?: string;
   },
 ): Promise<FunctionReturnType<typeof api.orders.updateStatus>> {
-  return await client().mutation(api.orders.updateStatus, {
-    secret: secret(),
+  return m(api.orders.updateStatus)({
     phoneE164,
     status: args.status,
     merchantOrderId: args.merchantOrderId,

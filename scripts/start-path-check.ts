@@ -40,7 +40,7 @@ assert(convex.includes("handleTenants"), "returning 1:1 reuses getTenantByHandle
 assert(convex.includes("telegramTenants"), "returning telegram reuses getByTelegram");
 assert(convex.includes("handleInflight"), "parallel handle lookups coalesce");
 
-const memo = src("agent/lib/convex-memory.ts");
+const memo = src("agent/memory/memo.ts");
 assert(memo.includes("wakeLines"), "memo still injects wake lines");
 
 const jobs = src("agent/instructions/jobs.ts");

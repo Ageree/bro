@@ -6,18 +6,13 @@ import {
   gmailQuery,
   type ArchiveDocument,
 } from "./archive-policy.ts";
+import { rec } from "./guards.ts";
 
 export type AppSyncResult = { ingested: number } | { skipped: string };
 
 export interface ArchiveSyncResult {
   gmail: AppSyncResult;
   calendar: AppSyncResult;
-}
-
-function rec(v: unknown): Record<string, unknown> {
-  return v !== null && typeof v === "object" && !Array.isArray(v)
-    ? (v as Record<string, unknown>)
-    : {};
 }
 
 async function execute(

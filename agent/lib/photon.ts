@@ -24,11 +24,6 @@ function projectCreds(): { id: string; secret: string } {
   return { id, secret };
 }
 
-export function photonWebhookSecret(): string | undefined {
-  const s = process.env.SPECTRUM_WEBHOOK_SECRET?.trim();
-  return s || undefined;
-}
-
 /** Native Spectrum HMAC: v0:{timestamp}:{body}, header `v0=<hex>`. */
 export function photonWebhookOk(
   payload: Buffer,

@@ -1,5 +1,4 @@
 import { defineTool } from "eve/tools";
-import type { ToolContext } from "eve/tools";
 import { z } from "zod";
 import {
   agentHandle,
@@ -8,20 +7,7 @@ import {
   reactionTargetId,
   sendIMessageTapback,
 } from "../lib/inkbox";
-
-function attrs(ctx: ToolContext): Record<string, unknown> | undefined {
-  return (
-    ctx.session.auth.current?.attributes ??
-    ctx.session.auth.initiator?.attributes
-  );
-}
-
-function attr(ctx: ToolContext, key: string): string | undefined {
-  const raw = attrs(ctx)?.[key];
-  const id = Array.isArray(raw) ? raw[0] : raw;
-  if (typeof id === "string" && id.length > 0) return id;
-  return undefined;
-}
+import { attr, turnAttributes } from "../lib/group-guard";
 
 export default defineTool({
   description:
@@ -34,7 +20,7 @@ export default defineTool({
       return { error: "это Telegram — поставь реакцию через telegram_react" };
     }
     if (!isIMessageTapback(reaction)) return { error: "unsupported reaction" };
-    const target = reactionTargetId(attrs(ctx));
+    const target = reactionTargetId(turnAttributes(ctx));
     if (!target) return { error: "нет сообщения для реакции" };
     const handle = attr(ctx, "inkboxHandle") ?? agentHandle();
     const sent = await sendIMessageTapback({

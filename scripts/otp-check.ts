@@ -305,8 +305,12 @@ assert(broMail.includes('"inbox"'), "bro_mail lists inbox");
 assert(broMail.includes("groupPersonalBlock"), "inbox stays 1:1");
 
 const otpTool = src("agent/tools/otp_lookup.ts");
-assert(otpTool.includes("findFreshOtp"), "lookup is deterministic");
-assert(otpTool.includes("groupPersonalBlock"), "lookup stays 1:1");
+assert(otpTool.includes("otpLookupExecute"), "lookup tool wires the shared execute");
+// otp_lookup.ts and the otp-subagent's lookup tool share this execute,
+// defined in lib/otp-lookup.ts.
+const otpLookupLib = src("agent/lib/otp-lookup.ts");
+assert(otpLookupLib.includes("findFreshOtp"), "lookup is deterministic");
+assert(otpLookupLib.includes("groupPersonalBlock"), "lookup stays 1:1");
 
 const otpAgent = src("agent/subagents/otp/agent.ts");
 assert(otpAgent.includes("outputSchema"), "otp returns structured result");

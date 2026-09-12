@@ -1,15 +1,11 @@
+import { apiKey } from "./archive.ts";
+
 export const CONVERSATION_SEARCH_HITS = 5;
 export const CONVERSATION_HIT_CHARS = 500;
 export const CONVERSATION_RECALL_ID = "bro-conversation-hits";
 
 const BASE = "https://api.supermemory.ai";
 const TAG_PREFIX = "eve_agent_";
-
-function apiKey(): string {
-  const key = process.env.SUPERMEMORY_API_KEY;
-  if (!key?.trim()) throw new Error("SUPERMEMORY_API_KEY missing");
-  return key.trim();
-}
 
 export function conversationContainerTag(scopeKey: string): string {
   const tag = `${TAG_PREFIX}${scopeKey}`;

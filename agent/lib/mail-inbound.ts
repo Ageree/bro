@@ -9,8 +9,8 @@ import {
 } from "../../convex/lib/mailPolicy.ts";
 import {
   agentHandle,
+  handleFromRequest,
   inkbox,
-  isAccessHandle,
   webhookOk,
 } from "./inkbox";
 import {
@@ -38,16 +38,6 @@ async function ingestInkboxArchive(
   const doc = inkboxMailToDocument(msg);
   if (!doc) return;
   await ingestArchiveDocument(phone, doc);
-}
-
-function handleFromRequest(request: Request): string | undefined {
-  try {
-    const h = new URL(request.url).searchParams.get("h");
-    if (h && isAccessHandle(h)) return h;
-  } catch {
-    return undefined;
-  }
-  return undefined;
 }
 
 export type MailIngest =

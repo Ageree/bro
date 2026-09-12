@@ -1,3 +1,5 @@
+import { asNumber, asRecord, asString } from "./guards.ts";
+
 const SEARCH_URL = "https://api.search.tinyfish.ai";
 const FETCH_URL = "https://api.fetch.tinyfish.ai";
 
@@ -277,16 +279,3 @@ function safeJson(text: string): unknown {
   }
 }
 
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-}
-
-function asString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
-function asNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}

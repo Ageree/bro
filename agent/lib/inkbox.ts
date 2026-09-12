@@ -62,6 +62,16 @@ export function isAccessHandle(h: string): boolean {
   return /^bro-[a-z0-9]{8}$/.test(h);
 }
 
+export function handleFromRequest(request: Request): string | undefined {
+  try {
+    const h = new URL(request.url).searchParams.get("h");
+    if (h && isAccessHandle(h)) return h;
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
 export function webhookOk(
   payload: Buffer,
   headers: Headers,
@@ -142,27 +152,6 @@ export async function uploadIMessagePhoto(opts: {
   const url = upload.mediaUrl?.trim();
   if (!url) throw new Error("iMessage media upload missing url");
   return url;
-}
-
-export async function sendBlueIMessageMedia(opts: {
-  conversationId: string;
-  mediaUrls: string[];
-  handle?: string;
-  text?: string;
-}): Promise<IMessage> {
-  const identity = await inkboxIdentity(opts.handle);
-  const text = opts.text?.trim();
-  const sent = await identity.sendIMessage({
-    conversationId: opts.conversationId,
-    mediaUrls: opts.mediaUrls,
-    ...(text ? { text } : {}),
-  });
-  if (!isBlueIMessage(sent)) {
-    throw new Error(
-      `refusing SMS/RCS fallback (service=${sent.service} downgraded=${sent.wasDowngraded})`,
-    );
-  }
-  return sent;
 }
 
 export async function sendIMessageTapback(opts: {

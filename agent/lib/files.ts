@@ -1,3 +1,4 @@
+import { posix as posixPath } from "node:path";
 import {
   FILE_BINARY_MAX,
   FILE_TEXT_READ_MAX,
@@ -21,6 +22,15 @@ export {
   FILE_TEXT_WRITE_MAX,
   sanitizeFileName,
 };
+
+export function filenameFromUrl(url: string, fallback = "photo.jpg"): string {
+  try {
+    const name = posixPath.basename(new URL(url).pathname);
+    return name || fallback;
+  } catch {
+    return fallback;
+  }
+}
 
 export class FileError extends Error {
   readonly status: "invalid" | "denied" | "error";

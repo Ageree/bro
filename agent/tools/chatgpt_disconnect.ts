@@ -1,41 +1,27 @@
-import { ConvexHttpClient } from "convex/browser";
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { api } from "../../convex/_generated/api.js";
-import { groupPersonalBlock } from "../lib/group-guard";
-import { tenantId } from "../lib/tenant";
+import { chatgptAgentCall } from "../lib/chatgpt-tool";
 
-const SHARED = new Set(["local-dev", "unknown", "default", "eve:app"]);
+type DisconnectResult =
+  | { status: "unavailable"; error: string }
+  | { status: "ok" | "none" };
 
 export default defineTool({
   description:
     "Disconnect ChatGPT / Codex for this person. Next turns use OpenRouter. Group chats: refuse.",
   inputSchema: z.object({}),
-  async execute(_args, ctx) {
-    const blocked = groupPersonalBlock(ctx);
-    if (blocked) return { status: "group", error: blocked };
-    const phone = tenantId(ctx);
-    if (SHARED.has(phone)) {
-      return {
+  execute: (_args, ctx) =>
+    chatgptAgentCall<DisconnectResult>({
+      ctx,
+      sharedFallback: {
         status: "unavailable",
         error: "ChatGPT отключение только в личке, не в local-dev.",
-      };
-    }
-
-    const url = process.env.CONVEX_URL?.trim();
-    const secret = process.env.BRO_INTERNAL_SECRET?.trim();
-    if (!url || !secret) {
-      return { status: "ok" as const };
-    }
-    try {
-      const client = new ConvexHttpClient(url);
-      return await client.action(api.chatgptSecrets.disconnect, {
-        secret,
-        phoneE164: phone,
-      });
-    } catch (err) {
-      console.error("chatgpt disconnect failed", err);
-      return { status: "ok" as const };
-    }
-  },
+      },
+      envFallback: { status: "ok" as const },
+      errorLabel: "chatgpt disconnect failed",
+      catchFallback: () => ({ status: "ok" as const }),
+      call: (client, secret, phoneE164) =>
+        client.action(api.chatgptSecrets.disconnect, { secret, phoneE164 }),
+    }),
 });

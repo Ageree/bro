@@ -1,25 +1,11 @@
 import { defineTool } from "eve/tools";
-import type { ToolContext } from "eve/tools";
 import { z } from "zod";
 import {
   isTelegramReaction,
   setTelegramReaction,
   TELEGRAM_REACTIONS,
 } from "../lib/telegram";
-
-function attrs(ctx: ToolContext): Record<string, unknown> | undefined {
-  return (
-    ctx.session.auth.current?.attributes ??
-    ctx.session.auth.initiator?.attributes
-  );
-}
-
-function attr(ctx: ToolContext, key: string): string | undefined {
-  const raw = attrs(ctx)?.[key];
-  const id = Array.isArray(raw) ? raw[0] : raw;
-  if (typeof id === "string" && id.length > 0) return id;
-  return undefined;
-}
+import { attr } from "../lib/group-guard";
 
 const NAMES = [
   "love",

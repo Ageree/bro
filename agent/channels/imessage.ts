@@ -2,7 +2,7 @@ import { defineChannel, GET, POST } from "eve/channels";
 import type { IMessageWebhookPayload } from "@inkbox/sdk";
 import {
   agentHandle,
-  isAccessHandle,
+  handleFromRequest,
   isBlueIMessage,
   sendBlueIMessage,
   webhookOk,
@@ -173,16 +173,6 @@ async function sendQuotaPaywall(opts: {
   } catch (err) {
     console.error("paywall send failed", err);
   }
-}
-
-function handleFromRequest(request: Request): string | undefined {
-  try {
-    const h = new URL(request.url).searchParams.get("h");
-    if (h && isAccessHandle(h)) return h;
-  } catch {
-    return undefined;
-  }
-  return undefined;
 }
 
 export default defineChannel({

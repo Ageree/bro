@@ -37,7 +37,7 @@ assert.equal(
   "local python ok",
 );
 
-const vercelSrc = readFileSync(join(root, "agent/lib/sandbox-vercel.ts"), "utf8");
+const vercelSrc = readFileSync(join(root, "agent/lib/sandbox-run.ts"), "utf8");
 assert.match(vercelSrc, /timeout:/, "sandbox auto-stops");
 assert.match(vercelSrc, /networkPolicy:\s*"deny-all"/, "deny-all network");
 assert.match(vercelSrc, /sandbox\.stop/, "always stop");

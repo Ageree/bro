@@ -2,28 +2,13 @@ import { defineDynamic, defineTool } from "eve/tools";
 import type { ToolContext } from "eve/tools";
 import { isConnectDest, wrapConnectUrl } from "../lib/connect-link";
 import { sessionFor } from "../lib/composio";
-import { groupPersonalBlock } from "../lib/group-guard";
+import { attr, groupPersonalBlock } from "../lib/group-guard";
 import { tenantId } from "../lib/tenant";
 import { sandboxNetworkViolation } from "../lib/sandbox-policy";
 import { getTenant } from "../lib/convex";
 import { attrsFromSession, channelFromAuth } from "../lib/deliver-routed";
 import { deliverHuman } from "../lib/deliver-human";
-
-function rec(v: unknown): Record<string, unknown> {
-  return v !== null && typeof v === "object" && !Array.isArray(v)
-    ? (v as Record<string, unknown>)
-    : {};
-}
-
-function attr(ctx: ToolContext, key: string): string | undefined {
-  const attrs =
-    ctx.session.auth.current?.attributes ??
-    ctx.session.auth.initiator?.attributes;
-  const raw = attrs?.[key];
-  const id = Array.isArray(raw) ? raw[0] : raw;
-  if (typeof id === "string" && id.length > 0) return id;
-  return undefined;
-}
+import { rec } from "../lib/guards";
 
 function connectLinks(result: unknown): string[] {
   const blob = JSON.stringify(result ?? "");

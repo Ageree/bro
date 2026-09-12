@@ -225,7 +225,6 @@ const tools = [
   "profile_setup.ts",
   "composio.ts",
   "bro_mail.ts",
-  "otp_lookup.ts",
   "watch_app.ts",
   "job_open.ts",
   "job_wait.ts",
@@ -236,6 +235,15 @@ const tools = [
 for (const file of tools) {
   const toolSrc = src(`agent/tools/${file}`);
   assert(toolSrc.includes("groupPersonalBlock"), `${file} refuses group personal work`);
+}
+{
+  // otp_lookup.ts shares its execute (and the group guard inside it) with the
+  // otp-subagent's lookup tool, defined in lib/otp-lookup.ts.
+  const libSrc = src("agent/lib/otp-lookup.ts");
+  assert(
+    libSrc.includes("groupPersonalBlock"),
+    "otp_lookup.ts refuses group personal work",
+  );
 }
 for (const file of ["web_search.ts", "web_fetch.ts"]) {
   const toolSrc = src(`agent/tools/${file}`);
@@ -265,9 +273,18 @@ assert(jobs.includes("isGroupTurn"), "jobs skip group turns");
 const workerScope = src("agent/subagents/worker/lib/scope.ts");
 assert(workerScope.includes("groupPersonalBlock"), "worker refuses group personal work");
 
-for (const file of ["lookup.ts", "inbox.ts", "archive_search.ts"]) {
+for (const file of ["inbox.ts", "archive_search.ts"]) {
   const toolSrc = src(`agent/subagents/otp/tools/${file}`);
   assert(toolSrc.includes("groupPersonalBlock"), `otp ${file} refuses group personal work`);
+}
+{
+  // lookup.ts shares its execute (and the group guard inside it) with the
+  // top-level otp_lookup.ts tool, defined in lib/otp-lookup.ts.
+  const libSrc = src("agent/lib/otp-lookup.ts");
+  assert(
+    libSrc.includes("groupPersonalBlock"),
+    "otp lookup.ts refuses group personal work",
+  );
 }
 
 const otpAgent = src("agent/subagents/otp/agent.ts");

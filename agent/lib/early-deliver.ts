@@ -1,7 +1,7 @@
 import { splitSeen } from "./wakeup-text.ts";
 import type { TurnOrigin } from "./silent-turn.ts";
 import { isSilentReply, TURN_FAILED_REPLY } from "./silent-turn.ts";
-import { isHeadingOnly } from "./bubble-dedupe.ts";
+import { foldWs, isHeadingOnly } from "./bubble-dedupe.ts";
 
 export type TurnDelivery = {
   send: string | null;
@@ -20,10 +20,6 @@ export type EarlySentRow = { at: number; bubbles: string[]; soFar?: string };
 
 function foldLines(s: string): string {
   return s.replace(/[ \t]+\n/g, "\n").replace(/[ \t]+$/g, "").trim();
-}
-
-function foldWs(s: string): string {
-  return s.replace(/\s+/g, " ").trim();
 }
 
 function restAfterPrefix(cur: string, prefix: string): string | null | undefined {
@@ -140,20 +136,8 @@ function stripFinalPunct(s: string): string {
   return s.replace(/[.!?…。！？]+$/u, "").trim();
 }
 
-const ACK_TAILS = new Set([
-  "ок",
-  "ok",
-  "okay",
-  "окей",
-  "спасибо",
-  "thanks",
-  "thx",
-  "понял",
-  "поняла",
-  "ясно",
-  "принято",
-  "ага",
-]);
+const NON_ACK_TAILS = new Set(["сделано", "готово", "ищу", "нашел", "нашла"]);
+const ACK_TAILS = new Set([...COMPLETE_TAILS].filter((w) => !NON_ACK_TAILS.has(w)));
 
 export function isLikelyCompleteBubble(text: string): boolean {
   const t = text.trim();
