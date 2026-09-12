@@ -31,7 +31,6 @@ export const CABINET_TIMEZONES = [
   "Asia/Ashgabat",
 ] as const;
 
-export type CabinetTimeZone = (typeof CABINET_TIMEZONES)[number];
 
 export type SessionTzChangeResult =
   | { ok: true; tz: string }

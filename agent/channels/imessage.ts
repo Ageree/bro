@@ -37,6 +37,7 @@ import {
 } from "../lib/connect-link";
 import { inboundIMessageText } from "../lib/imessage-text";
 import { parkTurn } from "../lib/channel-turn.ts";
+import { parkLastChannelTouch } from "../lib/early-deliver.ts";
 import { jobCheckWakePrompt } from "../lib/job-wake.ts";
 import { imessageDeliveryEvents } from "../lib/turn-delivery-events.ts";
 import { telegramBindLink } from "../../convex/lib/telegramPolicy.ts";
@@ -133,7 +134,7 @@ function prefetchOneToOneStart(phone: string, preview: string): void {
   prefetchOpenRouter();
 }
 
-async function inboundOwnerGate(ownerPhone: string): Promise<{
+export async function inboundOwnerGate(ownerPhone: string): Promise<{
   decision: "allow" | "paywall" | "drop";
   payUrl?: string;
 }> {
@@ -353,10 +354,7 @@ export default defineChannel({
         return new Response(null, { status: 204 });
       }
       prefetchInstinctRecall(ownerPhone, inbound.text);
-      const touch = touchLastChannel(inbound.senderPhone, "imessage").catch((err) =>
-        console.error("touch last channel failed", err),
-      );
-      parkTurn(waitUntil, touch);
+      parkLastChannelTouch(waitUntil, touchLastChannel(inbound.senderPhone, "imessage"));
       const content = assembleInboundContent(inbound.text, []);
       console.log("photon inbound", {
         remote: inbound.senderPhone,

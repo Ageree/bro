@@ -248,13 +248,13 @@ assert(telegram.includes("inboundP"), "telegram STT overlaps photo fetch");
 assert(telegram.includes("photoP"), "telegram photo overlaps billing");
 assert(
   telegram.indexOf("const inbound = await inboundP") <
-    telegram.indexOf("countInboundMessage(phone)"),
+    telegram.indexOf("inboundOwnerGate(phone)"),
   "telegram bills only after a real inbound",
 );
 {
   const afterReal = telegram.indexOf("if (!inbound.text && !largestPhoto");
   const typingAt = telegram.indexOf("sendTelegramTyping", afterReal);
-  const billAt = telegram.indexOf("countInboundMessage(phone)", afterReal);
+  const billAt = telegram.indexOf("inboundOwnerGate(phone)", afterReal);
   const wakeAt = telegram.indexOf("loadWakeContext(phone)", afterReal);
   const instinctAt = telegram.indexOf("prefetchInstinctRecall(phone", afterReal);
   assert(afterReal > 0 && typingAt > afterReal && typingAt < billAt, "telegram typing overlaps billing");

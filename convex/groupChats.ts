@@ -146,18 +146,3 @@ export const bindInbound = mutation({
   },
 });
 
-export const markGreeted = mutation({
-  args: { secret: v.string(), conversationId: v.string() },
-  returns: v.null(),
-  handler: async (ctx, { secret, conversationId }) => {
-    assertSecret(secret);
-    const row = await ctx.db
-      .query("groupChats")
-      .withIndex("by_conversation", (q) => q.eq("conversationId", conversationId))
-      .first();
-    if (row && row.greeted !== true) {
-      await ctx.db.patch(row._id, { greeted: true });
-    }
-    return null;
-  },
-});

@@ -95,8 +95,6 @@ export const contactPayloadSchema = z
 
 export type LoginPayload = z.infer<typeof loginPayloadSchema>;
 export type PaymentPayload = z.infer<typeof paymentPayloadSchema>;
-export type AddressPayload = z.infer<typeof addressPayloadSchema>;
-export type ContactPayload = z.infer<typeof contactPayloadSchema>;
 
 function parseJson<T>(schema: z.ZodType<T>, value: string): T | undefined {
   try {
