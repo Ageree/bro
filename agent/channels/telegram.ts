@@ -20,6 +20,7 @@ import {
   assembleInboundContent,
   prefetchInboundImages,
 } from "../lib/inbound-image.ts";
+import { saveTelegramInboundFiles } from "../lib/inbound-files.ts";
 import { transcribeVoiceNote } from "../lib/voice";
 import { inboundVoiceLine } from "../lib/imessage-text";
 import { VOICE_FAILED_REPLY } from "../lib/voice-policy";
@@ -255,6 +256,12 @@ export default defineChannel({
 
       const inboundP = inboundTelegramText(msg);
       const photoP = inboundTelegramPhotoParts(msg);
+      parkTurn(
+        waitUntil,
+        saveTelegramInboundFiles(phone, msg).catch((err) =>
+          console.error("telegram inbound file save failed", err),
+        ),
+      );
       const inbound = await inboundP;
       if (inbound.allVoiceFailed) {
         await sendHtml(chatId, VOICE_FAILED_REPLY).catch((err) =>

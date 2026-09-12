@@ -898,6 +898,101 @@ export async function touchComputer(
   })) as ComputerRow | null;
 }
 
+export type StoredFile = {
+  id: string;
+  name: string;
+  mimeType: string;
+  size: number;
+  createdAt: number;
+  sourceChannel?: "imessage" | "telegram" | "sandbox" | "agent";
+};
+
+export type StoredFileWithUrl = StoredFile & { url: string | null };
+
+export async function listStoredFiles(phoneE164: string): Promise<StoredFile[]> {
+  return await client().query(api.files.listForAgent, {
+    secret: secret(),
+    phoneE164,
+  });
+}
+
+export async function getStoredFile(
+  phoneE164: string,
+  ref: { fileId?: string; name?: string },
+): Promise<StoredFileWithUrl | null> {
+  return await client().query(api.files.getForAgent, {
+    secret: secret(),
+    phoneE164,
+    ...(ref.fileId ? { fileId: ref.fileId as Id<"files"> } : {}),
+    ...(ref.name ? { name: ref.name } : {}),
+  });
+}
+
+export async function generateFileUploadUrl(
+  phoneE164: string,
+): Promise<string | null> {
+  return await client().mutation(api.files.generateUploadUrlForAgent, {
+    secret: secret(),
+    phoneE164,
+  });
+}
+
+export async function saveStoredFile(
+  phoneE164: string,
+  args: {
+    storageId: string;
+    name: string;
+    mimeType: string;
+    size: number;
+    sourceChannel?: StoredFile["sourceChannel"];
+    now?: number;
+  },
+): Promise<StoredFile | null> {
+  return await client().mutation(api.files.saveForAgent, {
+    secret: secret(),
+    phoneE164,
+    storageId: args.storageId as Id<"_storage">,
+    name: args.name,
+    mimeType: args.mimeType,
+    size: args.size,
+    now: args.now ?? Date.now(),
+    ...(args.sourceChannel ? { sourceChannel: args.sourceChannel } : {}),
+  });
+}
+
+export async function deleteStoredFile(
+  phoneE164: string,
+  ref: { fileId?: string; name?: string },
+): Promise<boolean> {
+  return await client().mutation(api.files.deleteForAgent, {
+    secret: secret(),
+    phoneE164,
+    ...(ref.fileId ? { fileId: ref.fileId as Id<"files"> } : {}),
+    ...(ref.name ? { name: ref.name } : {}),
+  });
+}
+
+export async function storeFileBytes(
+  phoneE164: string,
+  args: {
+    name: string;
+    mimeType: string;
+    bytes: Uint8Array;
+    sourceChannel?: StoredFile["sourceChannel"];
+    now?: number;
+  },
+): Promise<StoredFile | null> {
+  return await client().action(api.files.storeBytesForAgent, {
+    secret: secret(),
+    phoneE164,
+    name: args.name,
+    mimeType: args.mimeType,
+    bytesBase64: Buffer.from(args.bytes).toString("base64"),
+    now: args.now ?? Date.now(),
+    ...(args.sourceChannel ? { sourceChannel: args.sourceChannel } : {}),
+  });
+}
+
 export async function updateOrderStatus(
   phoneE164: string,
   args: {

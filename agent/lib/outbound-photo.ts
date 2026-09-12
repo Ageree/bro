@@ -24,7 +24,7 @@ export type PhotoBytes = {
 
 export type SendPhotoSource =
   | { kind: "url"; url: string }
-  | { kind: "path"; path: string };
+  | { kind: "file"; fileId?: string; name?: string };
 
 export function extractMarkdownPhotoUrls(src: string): string[] {
   const photos: string[] = [];
@@ -44,8 +44,30 @@ export function stripMarkdownPhotos(src: string): string {
     .trim();
 }
 
+const STORED_FILE_REF =
+  /(?:^|[\s`'"(\[]|:\s*)file:([^\s`'")\]]+\.(?:jpg|jpeg|png|gif|webp))\b/gi;
+
 const COMPUTER_IMAGE_PATH =
   /(?:^|[\s`'"(\[]|:\s*)(\/(?:home\/user|tmp)\/[^\s`'")\]]+\.(?:jpg|jpeg|png|gif|webp))\b/gi;
+
+export function extractStoredFileRefs(src: string): string[] {
+  const out: string[] = [];
+  const re = new RegExp(STORED_FILE_REF.source, "gi");
+  for (const match of src.matchAll(re)) {
+    const name = match[1]?.trim();
+    if (name && imageMetaFromName(name) && !out.includes(name)) out.push(name);
+  }
+  return out;
+}
+
+export function stripStoredFileRefs(src: string): string {
+  return src
+    .replace(new RegExp(STORED_FILE_REF.source, "gi"), " ")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
 
 export function extractComputerImagePaths(src: string): string[] {
   const out: string[] = [];
@@ -157,11 +179,15 @@ export function assertPublicPhotoUrl(raw: string): string {
 
 export function parseSendPhotoInput(input: {
   path?: string;
+  name?: string;
+  fileId?: string;
   url?: string;
 }): SendPhotoSource | { error: string } {
   const path = input.path?.trim() ?? "";
+  const name = input.name?.trim() || (path ? posixPath.basename(path) : "");
+  const fileId = input.fileId?.trim() ?? "";
   const url = input.url?.trim() ?? "";
-  if (path && url) return { error: "укажи либо path, либо url — не оба" };
+  if (url && (fileId || name)) return { error: "укажи либо файл, либо url — не оба" };
   if (url) {
     try {
       return { kind: "url", url: assertPublicPhotoUrl(url) };
@@ -169,8 +195,14 @@ export function parseSendPhotoInput(input: {
       return { error: err instanceof Error ? err.message : "нужен https URL картинки" };
     }
   }
-  if (path) return { kind: "path", path };
-  return { error: "нужен path с компа или https URL" };
+  if (fileId || name) {
+    return {
+      kind: "file",
+      ...(fileId ? { fileId } : {}),
+      ...(name ? { name } : {}),
+    };
+  }
+  return { error: "нужен fileId, имя файла или https URL" };
 }
 
 export function photoFromBytes(
