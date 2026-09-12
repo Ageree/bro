@@ -43,6 +43,7 @@ import { imessageDeliveryEvents } from "../lib/turn-delivery-events.ts";
 import { telegramBindLink } from "../../convex/lib/telegramPolicy.ts";
 import { telegramBotUsername } from "../lib/telegram";
 import { assembleInboundContent } from "../lib/inbound-image.ts";
+import { savePhotonInboundFiles } from "../lib/inbound-files.ts";
 import { canSkipInboundBind } from "../lib/inbound-bind.ts";
 import { watcherWakeupPrompt } from "../lib/purchase-policy";
 import { wakeupCarriesRunId } from "../../convex/lib/browserFollowPolicy.ts";
@@ -297,6 +298,12 @@ export default defineChannel({
       const firstBind = bound.firstBind;
       const boundTenant = bound.tenant;
       const ownerPhone = bound.tenant.phoneE164 ?? inbound.senderPhone;
+      parkTurn(
+        waitUntil,
+        savePhotonInboundFiles(ownerPhone, parsed).catch((err) =>
+          console.error("photon inbound file save failed", err),
+        ),
+      );
       if (boundTenant.status === "disabled") {
         return new Response(null, { status: 204 });
       }

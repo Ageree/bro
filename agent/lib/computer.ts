@@ -16,8 +16,8 @@ import {
   touchComputer,
   type ComputerRow,
 } from "./convex.ts";
-import { groupPersonalBlock } from "./group-guard.ts";
-import { requirePersonalPhone, tenantId } from "./tenant.ts";
+import { asPersonal } from "./personal.ts";
+import { tenantId } from "./tenant.ts";
 import {
   BRO_COMPUTER_START_RESERVE,
   BRO_COMPUTER_TTL_SECONDS,
@@ -134,21 +134,7 @@ export function envBoxId(): string | undefined {
 }
 
 /** group / local-dev / shared → structured deny. Never throws. */
-export function asPersonal(
-  ctx: AuthBox,
-): { phone: string } | ComputerDenied {
-  const blocked = groupPersonalBlock(ctx);
-  if (blocked) return { status: "group", error: blocked };
-  try {
-    return { phone: requirePersonalPhone(tenantId(ctx)) };
-  } catch (err) {
-    return {
-      status: "denied",
-      error:
-        err instanceof Error ? err.message : "refusing shared computer principal",
-    };
-  }
-}
+export { asPersonal };
 
 /** Reject `..` and anything outside `/home/user` or `/tmp`. */
 export function assertComputerPath(raw: string): string {

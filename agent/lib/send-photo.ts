@@ -8,14 +8,10 @@ import {
   photoFromBase64,
   type PhotoBytes,
 } from "./outbound-photo.ts";
-import {
-  assertComputerPath,
-  ensureSession,
-  readBinaryFile,
-} from "./computer.ts";
 import { routingFromAuth, type AuthAttrs } from "./turn-routing.ts";
 import { claimComputerPhoto, claimUrlPhoto } from "./photo-dedupe.ts";
 import type { HumanChannel } from "../../convex/lib/telegramPolicy.ts";
+import { readStoredFileBytes } from "./files.ts";
 
 export type SendPhotoTarget = {
   channel: HumanChannel;
@@ -50,6 +46,8 @@ export function photoTargetFromAuth(attrs: AuthAttrs): {
 
 export type SendPhotoDeps = {
   fetchPhoto?: (url: string) => Promise<PhotoBytes>;
+  loadStoredPhoto?: (phoneE164: string, name: string) => Promise<PhotoBytes>;
+  /** @deprecated use loadStoredPhoto */
   loadComputerPhoto?: (phoneE164: string, path: string) => Promise<PhotoBytes>;
   uploadIMessage?: (opts: {
     content: Uint8Array;
@@ -67,14 +65,29 @@ export type SendPhotoDeps = {
   sendTelegramFile?: typeof sendTelegramPhotoFile;
 };
 
+export async function photoFromStoredFile(
+  phoneE164: string,
+  ref: { fileId?: string; name?: string },
+): Promise<PhotoBytes> {
+  const loaded = await readStoredFileBytes(phoneE164, ref);
+  return photoFromBase64(
+    Buffer.from(loaded.bytes).toString("base64"),
+    loaded.file.name,
+    loaded.file.mimeType,
+  );
+}
+
+/** @deprecated use photoFromStoredFile */
 export async function photoFromComputerPath(
   phoneE164: string,
   path: string,
 ): Promise<PhotoBytes> {
-  const safe = assertComputerPath(path);
-  const running = await ensureSession({ phoneE164 });
-  const file = await readBinaryFile(running.boxId, safe);
-  return photoFromBase64(file.base64, file.path);
+  return await photoFromStoredFile(phoneE164, { name: posixBasename(path) });
+}
+
+function posixBasename(path: string): string {
+  const parts = path.replace(/\\/g, "/").split("/");
+  return parts[parts.length - 1] || path;
 }
 
 export async function sendPhotoToHuman(

@@ -14,13 +14,13 @@ import {
 } from "./telegram.ts";
 import { compileTelegram, type TelegramButton } from "./telegram-text.ts";
 import {
-  extractComputerImagePaths,
+  extractStoredFileRefs,
   extractMarkdownPhotoUrls,
-  stripComputerImagePaths,
+  stripStoredFileRefs,
   stripMarkdownPhotos,
 } from "./outbound-photo.ts";
 import {
-  photoFromComputerPath,
+  photoFromStoredFile,
   sendPhotoToHuman,
   type SendPhotoDeps,
 } from "./send-photo.ts";
@@ -67,13 +67,16 @@ export async function deliverHuman(opts: {
     prefer === "telegram" && canDeliverTelegram(tenant.telegramChatId);
 
   const cleaned = stripConnectUrls(text);
-  const localPaths = extractComputerImagePaths(cleaned);
-  const remaining = stripComputerImagePaths(cleaned);
-  if (localPaths.length > 0 && tenant.phoneE164) {
-    const load = opts.deps?.loadComputerPhoto ?? photoFromComputerPath;
-    for (const path of localPaths) {
+  const storedNames = extractStoredFileRefs(cleaned);
+  const remaining = stripStoredFileRefs(cleaned);
+  if (storedNames.length > 0 && tenant.phoneE164) {
+    const load =
+      opts.deps?.loadStoredPhoto ??
+      opts.deps?.loadComputerPhoto ??
+      ((phone: string, name: string) => photoFromStoredFile(phone, { name }));
+    for (const name of storedNames) {
       try {
-        const photo = await load(tenant.phoneE164, path);
+        const photo = await load(tenant.phoneE164, name);
         const sent = await sendPhotoToHuman({
           channel: telegram ? "telegram" : "imessage",
           conversationId,
@@ -83,10 +86,10 @@ export async function deliverHuman(opts: {
           deps: opts.deps,
         });
         if (sent.status !== "ok") {
-          console.error("local photo send failed", path, sent.error);
+          console.error("stored photo send failed", name, sent.error);
         }
       } catch (err) {
-        console.error("local photo load failed", path, err);
+        console.error("stored photo load failed", name, err);
       }
     }
   }

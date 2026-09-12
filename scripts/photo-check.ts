@@ -6,8 +6,10 @@ import {
   fetchPhotoBytes,
   imageMetaFromName,
   imagePathFromCaptureStdout,
+  extractStoredFileRefs,
   parseSendPhotoInput,
   photoFromBase64,
+  stripStoredFileRefs,
   photoFromBytes,
   PHOTO_MAX_BYTES,
   sniffImage,
@@ -78,16 +80,27 @@ assert(imageMetaFromName("/home/user/screens/shot.png")?.contentType === "image/
 assert(imageMetaFromName("desk.JPEG")?.contentType === "image/jpeg", "jpeg name");
 assert(imageMetaFromName("note.txt") === null, "reject txt name");
 
-assert("error" in parseSendPhotoInput({}), "need path or url");
+assert("error" in parseSendPhotoInput({}), "need file or url");
 assert(
-  "error" in parseSendPhotoInput({ path: "/a", url: "https://x.example/a.jpg" }),
+  "error" in parseSendPhotoInput({ name: "a.png", url: "https://x.example/a.jpg" }),
   "not both",
 );
 assert("error" in parseSendPhotoInput({ url: "http://x.example/a.jpg" }), "http rejected");
 const parsedUrl = parseSendPhotoInput({ url: "https://img.example/a.jpg" });
 assert(!("error" in parsedUrl) && parsedUrl.kind === "url", "https url ok");
+const parsedFile = parseSendPhotoInput({ name: "shot.png" });
+assert(!("error" in parsedFile) && parsedFile.kind === "file", "name ok");
+assert(parsedFile.kind === "file" && parsedFile.name === "shot.png", "file name");
 const parsedPath = parseSendPhotoInput({ path: "/home/user/screens/shot.png" });
-assert(!("error" in parsedPath) && parsedPath.kind === "path", "path ok");
+assert(!("error" in parsedPath) && parsedPath.kind === "file", "legacy path becomes file name");
+assert(
+  extractStoredFileRefs("Скриншот: file:dt5.jpg ок")[0] === "dt5.jpg",
+  "extract stored file ref",
+);
+assert(
+  stripStoredFileRefs("файл лежит: file:dt5.jpg ок") === "файл лежит ок",
+  "strip stored file ref",
+);
 
 try {
   assertPublicPhotoUrl("ftp://x.example/a.jpg");
@@ -391,11 +404,11 @@ assert(oversize, "oversize fetch rejected");
   await deliverHuman({
     tenant: { phoneE164: "+79990000000", inkboxHandle: "bro-test" },
     conversationId: "conv-path",
-    text: "Скриншот снял: /home/user/dt5.jpg",
+    text: "Скриншот снял: file:dt5.jpg",
     channel: "imessage",
     deps: {
-      loadComputerPhoto: async (phone, path) => {
-        loaded.push(`${phone}:${path}`);
+      loadStoredPhoto: async (phone, name) => {
+        loaded.push(`${phone}:${name}`);
         return fromPng;
       },
       uploadIMessage: async () => "https://inkbox.example/dt5.png",
@@ -409,11 +422,11 @@ assert(oversize, "oversize fetch rejected");
       },
     },
   });
-  assert(loaded[0] === "+79990000000:/home/user/dt5.jpg", "loads computer path");
-  assert(media[0]?.[0] === "https://inkbox.example/dt5.png", "attaches computer path");
+  assert(loaded[0] === "+79990000000:dt5.jpg", "loads stored file");
+  assert(media[0]?.[0] === "https://inkbox.example/dt5.png", "attaches stored file");
   assert(
-    texts.every((t) => !t.includes("/home/user/dt5.jpg")),
-    "path is not pasted as a leftover bubble",
+    texts.every((t) => !t.includes("file:dt5.jpg") && !t.includes("/home/user/dt5.jpg")),
+    "file ref is not pasted as a leftover bubble",
   );
 }
 
@@ -434,10 +447,10 @@ assert(imessageTarget.conversationId === "conv-im", "auth iMessage conversation"
 
 const tool = readFileSync(new URL("../agent/tools/send_photo.ts", import.meta.url), "utf8");
 assert(tool.includes("sendPhotoToHuman"), "tool uses shared sender");
-assert(tool.includes("parseSendPhotoInput"), "tool validates path/url");
+assert(tool.includes("parseSendPhotoInput"), "tool validates file/url");
 assert(tool.includes("spoiler"), "tool can hide Telegram media");
-assert(tool.includes("readBinaryFile"), "computer path reads the box file");
-assert(tool.includes("asPersonal"), "computer path is personal-only");
+assert(tool.includes("photoFromStoredFile"), "stored file reads Convex storage");
+assert(tool.includes("asPersonal"), "stored file is personal-only");
 assert(existsSync(new URL("../agent/tools/send_photo.ts", import.meta.url)), "tool mounted");
 
 const shot = readFileSync(
@@ -458,7 +471,7 @@ const deliver = readFileSync(
   "utf8",
 );
 assert(deliver.includes("extractMarkdownPhotoUrls"), "iMessage delivery sends markdown photos");
-assert(deliver.includes("extractComputerImagePaths"), "iMessage delivery attaches computer paths");
+assert(deliver.includes("extractStoredFileRefs"), "iMessage delivery attaches stored files");
 assert(deliver.includes("sendPhotoToHuman"), "iMessage photos share send_photo path");
 assert(deliver.includes("sendTelegramRichMessage"), "structured cards use rich messages");
 
