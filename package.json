@@ -61,6 +61,7 @@
   },
   "dependencies": {
     "@ai-sdk/openai": "^4.0.47",
+    "@grpc/grpc-js": "^1.14.4",
     "@composio/core": "^0.17.0",
     "@composio/experimental": "^0.2.2",
     "@convex-dev/crons": "^0.2.2",
@@ -76,6 +77,8 @@
     "convex": "^1.45.0",
     "convex-helpers": "^0.1.123",
     "eve": "^0.47.6",
+    "nice-grpc": "^2.1.17",
+    "nice-grpc-common": "^2.0.4",
     "spectrum-ts": "^12.8.0",
     "zod": "4.4.3"
   },

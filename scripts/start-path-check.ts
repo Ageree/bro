@@ -209,6 +209,10 @@ const turnDelivery = readFileSync(
 assert(imessage.includes("canSkipInboundBind"), "returning users skip no-op bind");
 assert(imessage.includes("/webhooks/photon"), "Photon webhook is the chat path");
 assert(imessage.includes("bindPhotonInbound"), "Photon inbound binds the space");
+assert(
+  !imessage.includes("allowlisted(inbound.senderPhone)"),
+  "first Photon DM is not an allowlist drop",
+);
 assert(imessage.includes("boundOneToOne"), "bound 1:1 skips bindPhotonInbound");
 assert(imessage.includes("getTenantByHandle"), "HMAC still loads the handle tenant");
 assert(imessage.includes("loadWakeContext"), "1:1 billing prefetches wake context");
