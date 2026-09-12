@@ -116,7 +116,7 @@ export type CabinetSnapshot = {
   chatgpt: ChatgptSnapshot;
 };
 
-/** Accept only a stored bro-xxxxxxxx handle — typing one is not the login path. */
+/** Accept only a bro-xxxxxxxx id. New people get Bro in iMessage; this id is for people who already have a chat. */
 export function storedHandle(raw: string | null | undefined): string | null {
   const h = (raw ?? "").trim();
   return /^bro-[a-z0-9]{8}$/.test(h) ? h : null;
