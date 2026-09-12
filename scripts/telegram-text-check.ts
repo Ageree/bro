@@ -17,9 +17,7 @@ import {
   TELEGRAM_SEND_GAP_MS,
 } from "../agent/lib/telegram.ts";
 
-function assert(cond: unknown, msg: string): void {
-  if (!cond) throw new Error(msg);
-}
+import { assert } from "./lib/check.ts";
 
 assert(escapeHtml("a<b&c>") === "a&lt;b&amp;c&gt;", "escape");
 assert(toTelegramHtml("просто текст") === "просто текст", "plain");

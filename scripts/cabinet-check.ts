@@ -30,9 +30,7 @@ import {
   storedHandle,
 } from "../convex/lib/cabinetPolicy.ts";
 
-function assert(cond: unknown, msg: string): void {
-  if (!cond) throw new Error(msg);
-}
+import { assert, src, srcJson } from "./lib/check.ts";
 
 function snapshotValidatorHas(src: string, field: string): boolean {
   const block = src.match(/const snapshotValidator = v\.object\(\{[\s\S]*?\n\}\);/);
@@ -352,7 +350,7 @@ assert(hex === (await sha256hex("secret")), "sha256 stable");
 assert(hex !== (await sha256hex("Secret")), "sha256 distinct");
 assert(timingSafeEqual(hex, hex), "hash compare");
 
-const authJs = readFileSync(new URL("../assets/auth.js", import.meta.url), "utf8");
+const authJs = src("assets/auth.js");
 assert(authJs.includes('#login-open'), "auth binds #login-open");
 assert(authJs.includes('#login-modal'), "auth binds #login-modal");
 assert(!/\$\("\.login-open"\)/.test(authJs), "auth does not use class login-open");
@@ -370,14 +368,14 @@ assert(authJs.includes("Открой на iPhone"), "desktop without Bro stays a
 assert(authJs.includes("#vault-open") || authJs.includes('vault-open'), "auth shows vault when logged in");
 assert(authJs.includes("vaultBtn"), "auth paints vault nav");
 
-const landing = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+const landing = src("index.html");
 assert(landing.includes('id="vault-open"'), "landing links to vault when logged in");
 assert(landing.includes('id="login-send"'), "landing has login send");
 assert(
   /class="[^"]*\bsheet-cta\b[^"]*" id="login-send"/.test(landing),
   "login send is a full-width one-line CTA",
 );
-const brand = readFileSync(new URL("../assets/brand.css", import.meta.url), "utf8");
+const brand = src("assets/brand.css");
 assert(brand.includes("white-space: nowrap"), "login CTA stays on one line");
 assert(
   landing.includes('href="/assets/brand.css"'),
@@ -394,7 +392,7 @@ assert(landing.includes('id="login-hint"'), "login hint is a short line");
 assert(landing.includes("Написать Bro"), "login first action is write Bro");
 assert(landing.includes('id="login-have-bro"'), "new people can stay on iMessage; existing people can continue");
 assert(landing.includes("Уже есть Bro"), "existing-tenant login is one short line");
-const cabinet = readFileSync(new URL("../cabinet.html", import.meta.url), "utf8");
+const cabinet = src("cabinet.html");
 assert(cabinet.includes('id="vault"'), "cabinet vault card");
 assert(cabinet.includes("<h2>Сейф</h2>"), "cabinet vault title");
 assert(cabinet.includes('id="vault-add-card"'), "cabinet add-card cta");
@@ -468,7 +466,7 @@ for (const z of [
   assert(cabinet.includes(`"${z}"`), `cabinet lists ${z}`);
 }
 
-const cabinetSrc = readFileSync(new URL("../convex/cabinet.ts", import.meta.url), "utf8");
+const cabinetSrc = src("convex/cabinet.ts");
 assert(cabinetSrc.includes("tz: v.optional(v.string())"), "snapshot validator has tz");
 assert(cabinetSrc.includes("browserJob:"), "snapshot validator has browserJob");
 assert(cabinetSrc.includes("browserJobForSnapshot"), "snapshotForTenant maps browser job");
@@ -487,19 +485,19 @@ assert(!cabinet.includes('class="card"'), "cabinet has no cards");
 assert(cabinet.includes('family=Prata'), "cabinet is set in the display serif");
 assert(cabinet.includes('class="sec"'), "cabinet is sections divided by rules");
 
-const vault = readFileSync(new URL("../vault.html", import.meta.url), "utf8");
+const vault = src("vault.html");
 assert(vault.includes('id="login-handle-row"'), "vault login handle row");
 assert(vault.includes('id="login-have-bro"'), "vault keeps the existing-tenant path");
 assert(vault.includes("Уже есть Bro"), "vault existing-tenant copy is short");
 assert(vault.includes('href="/assets/brand.css"'), "vault uses the brand stylesheet");
 assert(!vault.includes("meadow"), "vault has no photograph behind it");
 assert(!vault.includes('class="card"'), "vault has no cards");
-const vaultJs = readFileSync(new URL("../assets/vault.js", import.meta.url), "utf8");
+const vaultJs = src("assets/vault.js");
 assert(!vaultJs.includes("ghost"), "vault rows do not paint the old pill button");
 assert(brand.includes("--rule:"), "the system has one hairline token");
 assert(landing.includes('id="login-handle-row"'), "landing login handle row");
 
-const httpSrc = readFileSync(new URL("../convex/http.ts", import.meta.url), "utf8");
+const httpSrc = src("convex/http.ts");
 assert(httpSrc.includes("/me/memories/forget"), "http forget route");
 assert(
   httpSrc.includes("forgetMemoriesForTenant"),
@@ -512,14 +510,12 @@ assert(
 assert(httpSrc.includes("/me/chatgpt/start"), "http chatgpt start");
 assert(httpSrc.includes("/me/chatgpt/disconnect"), "http chatgpt disconnect");
 assert(!httpSrc.includes("/me/computer"), "http has no computer route");
-const tenantsSrc = readFileSync(new URL("../convex/tenants.ts", import.meta.url), "utf8");
+const tenantsSrc = src("convex/tenants.ts");
 assert(
   tenantsSrc.includes("export const attachCabinetLoginForAgent"),
   "phone-only tenants can get a cabinet handle",
 );
-const pkg = JSON.parse(
-  readFileSync(new URL("../package.json", import.meta.url), "utf8"),
-) as { scripts?: Record<string, string> };
+const pkg = srcJson<{ scripts?: Record<string, string> }>("package.json");
 assert(
   typeof pkg.scripts?.build === "string" &&
     pkg.scripts.build.includes("vercel-build"),

@@ -6,9 +6,7 @@ import {
   watcherWakeupPrompt,
 } from "../agent/lib/purchase-policy.ts";
 
-function assert(cond: unknown, msg: string): asserts cond {
-  if (!cond) throw new Error(msg);
-}
+import { assert } from "./lib/check.ts";
 
 assert(purchaseStance("найди кроссовки на WB") === "search", "search find");
 assert(purchaseStance("сколько стоит эта зубная паста") === "search", "search price");

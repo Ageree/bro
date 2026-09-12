@@ -17,9 +17,7 @@ import {
   vaultSetupRequestSchema,
 } from "../convex/lib/vaultPayload.ts";
 
-function assert(cond: unknown, msg: string): asserts cond {
-  if (!cond) throw new Error(msg);
-}
+import { assert } from "./lib/check.ts";
 
 function throws(fn: () => unknown, msg: string): void {
   try {

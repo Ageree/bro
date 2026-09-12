@@ -16,11 +16,8 @@ import {
   proxyCountry,
   proxyNameForCountry,
 } from "../agent/subagents/worker/lib/kernel.ts";
-import { readFileSync } from "node:fs";
 
-function assert(cond: unknown, msg: string): asserts cond {
-  if (!cond) throw new Error(msg);
-}
+import { assert, src } from "./lib/check.ts";
 
 function throws(fn: () => unknown, contains: string, msg: string): void {
   try {
@@ -316,10 +313,7 @@ assert(nativeAutofillTokens.payment.includes("cc-csc"), "card tokens");
 assert(nativeAutofillTokens.login.includes("current-password"), "login tokens");
 assert(nativeAutofillTokens.address.includes("postal-code"), "address tokens");
 
-const workerInstr = readFileSync(
-  new URL("../agent/subagents/worker/instructions.md", import.meta.url),
-  "utf8",
-);
+const workerInstr = src("agent/subagents/worker/instructions.md");
 assert(
   workerInstr.includes("If the assignment includes a username or password"),
   "worker types a supplied password",

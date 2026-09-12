@@ -10,9 +10,7 @@ import {
   sdkCreateIdentityOptions,
 } from "../convex/lib/dedicatedLinePolicy.ts";
 
-function assert(cond: unknown, msg: string): void {
-  if (!cond) throw new Error(msg);
-}
+import { assert } from "./lib/check.ts";
 
 assert(!dedicatedLineEnabled(undefined), "default off");
 assert(!dedicatedLineEnabled(""), "empty off");

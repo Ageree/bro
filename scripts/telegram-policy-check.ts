@@ -11,9 +11,7 @@ import {
   telegramWelcomeText,
 } from "../convex/lib/telegramPolicy.ts";
 
-function assert(cond: unknown, msg: string): void {
-  if (!cond) throw new Error(msg);
-}
+import { assert } from "./lib/check.ts";
 
 const bytes = new Uint8Array(16).fill(0xab);
 assert(

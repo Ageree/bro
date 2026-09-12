@@ -1,13 +1,11 @@
-import { readFileSync, existsSync } from "node:fs";
+import { existsSync } from "node:fs";
 
-function assert(cond: unknown, msg: string): void {
-  if (!cond) throw new Error(msg);
-}
+import { assert, src } from "./lib/check.ts";
 
 const disabled = ["ask_question.ts"];
 for (const file of disabled) {
-  const src = readFileSync(new URL(`../agent/tools/${file}`, import.meta.url), "utf8");
-  assert(src.includes("disableTool()"), `${file} disables a broken default`);
+  const toolSrc = src(`agent/tools/${file}`);
+  assert(toolSrc.includes("disableTool()"), `${file} disables a broken default`);
 }
 
 const kept = [
@@ -37,7 +35,7 @@ for (const file of kept) {
   );
 }
 assert(
-  !readFileSync(new URL("../agent/tools/web_fetch.ts", import.meta.url), "utf8").includes(
+  !src("agent/tools/web_fetch.ts").includes(
     "disableTool()",
   ),
   "web_fetch is TinyFish, not the disabled eve default",
@@ -56,10 +54,7 @@ assert(
   "short acks steer the model, they do not skip the agent",
 );
 {
-  const jobs = readFileSync(
-    new URL("../agent/instructions/jobs.ts", import.meta.url),
-    "utf8",
-  );
+  const jobs = src("agent/instructions/jobs.ts");
   assert(jobs.includes("isShortAckTurn"), "ack steer keys off this-turn stamp");
   assert(
     !jobs.includes("recallQuery(ctx.messages)"),
@@ -67,17 +62,11 @@ assert(
   );
 }
 
-const imessage = readFileSync(
-  new URL("../agent/channels/imessage.ts", import.meta.url),
-  "utf8",
-);
+const imessage = src("agent/channels/imessage.ts");
 assert(imessage.includes("imessageDeliveryEvents"), "iMessage shares delivery events");
 assert(imessage.includes("prefetchOpenRouter"), "OpenRouter warms during billing, not after first token");
 
-const telegram = readFileSync(
-  new URL("../agent/channels/telegram.ts", import.meta.url),
-  "utf8",
-);
+const telegram = src("agent/channels/telegram.ts");
 assert(telegram.includes("sendTelegramTyping"), "telegram shows typing like iMessage");
 assert(telegram.includes("inboundP"), "telegram STT overlaps photo fetch");
 assert(telegram.includes("parkTurn"), "human telegram turn is not awaited");
@@ -85,26 +74,17 @@ assert(
   !telegram.includes("telegramDeliveryEvents"),
   "telegram channel does not fire delivery events",
 );
-const telegramHook = readFileSync(
-  new URL("../agent/hooks/telegram-deliver.ts", import.meta.url),
-  "utf8",
-);
+const telegramHook = src("agent/hooks/telegram-deliver.ts");
 assert(
   telegramHook.includes("telegramDeliveryEvents"),
   "telegram delivery lives on the root hook so old sessions still speak",
 );
 
-const telegramLib = readFileSync(
-  new URL("../agent/lib/telegram.ts", import.meta.url),
-  "utf8",
-);
+const telegramLib = src("agent/lib/telegram.ts");
 assert(telegramLib.includes("sendChatAction"), "typing uses Telegram chat action");
 assert(telegramLib.includes("enqueueTelegramChat"), "telegram sends are serialized per chat");
 
-const instructions = readFileSync(
-  new URL("../agent/instructions.md", import.meta.url),
-  "utf8",
-);
+const instructions = src("agent/instructions.md");
 assert(
   instructions.includes("write one short line") ||
     instructions.includes("напиши одну короткую") ||
@@ -127,10 +107,7 @@ assert(
   "voice default is one or two sentences",
 );
 
-const archiveClient = readFileSync(
-  new URL("../agent/lib/archive.ts", import.meta.url),
-  "utf8",
-);
+const archiveClient = src("agent/lib/archive.ts");
 assert(archiveClient.includes("/v4/search"), "archive Instinct search uses v4");
 assert(archiveClient.includes('searchMode: "hybrid"'), "archive Instinct search is hybrid");
 assert(

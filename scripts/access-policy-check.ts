@@ -10,9 +10,7 @@ import {
 } from "../convex/lib/accessPolicy.ts";
 import { assertSecret, timingSafeEqual } from "../convex/secret.ts";
 
-function assert(cond: unknown, msg: string): void {
-  if (!cond) throw new Error(msg);
-}
+import { assert } from "./lib/check.ts";
 
 assert(isValidHandle("bro-a1b2c3d4"), "valid handle");
 assert(!isValidHandle("bro-ageree"), "old handle is not v1 format");

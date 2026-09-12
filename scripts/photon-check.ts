@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import {
   isBluePhotonService,
   normalizePhotonE164,
@@ -14,9 +13,7 @@ import {
 import { photonWebhookOk, readPhotonInbound } from "../agent/lib/photon.ts";
 import { shouldSkipAgentTurn } from "../agent/lib/onboard-policy.ts";
 
-function assert(cond: unknown, msg: string): void {
-  if (!cond) throw new Error(msg);
-}
+import { assert, src } from "./lib/check.ts";
 
 assert(isBluePhotonService({ service: "iMessage" }), "imessage is blue");
 assert(isBluePhotonService({ service: undefined }), "missing service is blue");
@@ -63,9 +60,9 @@ assert(
   photonOnboardLink() === photonSmsLink(PHOTON_SHARED_NUMBER),
   "onboard link uses the shared number",
 );
-const configJs = readFileSync(new URL("../assets/config.js", import.meta.url), "utf8");
+const configJs = src("assets/config.js");
 assert(configJs.includes(photonOnboardLink()), "config.js ships the same iMessage link");
-const landingHtml = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+const landingHtml = src("index.html");
 assert(landingHtml.includes(photonOnboardLink()), "landing CTA href is the iMessage link");
 assert(!landingHtml.includes("access-phone"), "landing has no phone field");
 assert(!landingHtml.includes("/access"), "landing CTA does not POST /access");
@@ -132,7 +129,7 @@ assert(
   "hmac rejects bad sig",
 );
 
-const channel = readFileSync(new URL("../agent/channels/imessage.ts", import.meta.url), "utf8");
+const channel = src("agent/channels/imessage.ts");
 assert(channel.includes("/webhooks/photon"), "photon route");
 assert(channel.includes("/internal/photon-send"), "cabinet OTP route");
 assert(channel.includes("sendPhotonText"), "outbound Photon");
@@ -155,34 +152,31 @@ assert(
   "later errand is an agent turn for every bound tenant",
 );
 
-const deliver = readFileSync(new URL("../agent/lib/deliver-human.ts", import.meta.url), "utf8");
+const deliver = src("agent/lib/deliver-human.ts");
 assert(deliver.includes("sendPhotonText"), "deliver-human uses Photon");
 assert(deliver.includes("outboundIMessageConversation"), "never sends to Inkbox chat id");
 
-const access = readFileSync(new URL("../convex/access.ts", import.meta.url), "utf8");
+const access = src("convex/access.ts");
 assert(access.includes("need_phone"), "access API can still ask for E.164");
 assert(access.includes("upsertPhotonSharedUser"), "access can still mint a Photon user");
 assert(
-  !readFileSync(new URL("../convex/lib/photonRest.ts", import.meta.url), "utf8").includes(
+  !src("convex/lib/photonRest.ts").includes(
     "Buffer.",
   ),
   "photonRest stays Convex-runtime safe (no Buffer)",
 );
 
-const dedicated = readFileSync(
-  new URL("../convex/lib/dedicatedLinePolicy.ts", import.meta.url),
-  "utf8",
-);
+const dedicated = src("convex/lib/dedicatedLinePolicy.ts");
 assert(dedicated.includes("imessage_enabled: false"), "new identities are mail-only");
 
-const pkg = readFileSync(new URL("../package.json", import.meta.url), "utf8");
+const pkg = src("package.json");
 assert(pkg.includes("photon:check"), "npm script");
 assert(pkg.includes("spectrum-ts"), "spectrum-ts dependency");
 assert(pkg.includes('"@grpc/grpc-js"'), "grpc peer is a direct dep");
 assert(pkg.includes('"nice-grpc"'), "nice-grpc is a direct dep");
 assert(pkg.includes('"nice-grpc-common"'), "nice-grpc-common is a direct dep");
 
-const photonSrc = readFileSync(new URL("../agent/lib/photon.ts", import.meta.url), "utf8");
+const photonSrc = src("agent/lib/photon.ts");
 assert(photonSrc.includes('import "@grpc/grpc-js"'), "photon pins grpc-js");
 assert(photonSrc.includes('import "nice-grpc"'), "photon pins nice-grpc");
 assert(photonSrc.includes('import "nice-grpc-common"'), "photon pins nice-grpc-common");
@@ -192,7 +186,7 @@ assert(
   "outbound is conversation-id based for every tenant",
 );
 
-const agentSrc = readFileSync(new URL("../agent/agent.ts", import.meta.url), "utf8");
+const agentSrc = src("agent/agent.ts");
 assert(agentSrc.includes("externalDependencies"), "eve traces Photon gRPC peers");
 assert(agentSrc.includes('"@grpc/grpc-js"'), "agent traces grpc-js");
 assert(agentSrc.includes('"nice-grpc"'), "agent traces nice-grpc");

@@ -2,9 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { composioUserId } from "../agent/lib/tenant.ts";
 
-function assert(cond: unknown, msg: string): void {
-  if (!cond) throw new Error(msg);
-}
+import { assert } from "./lib/check.ts";
 
 function throws(fn: () => unknown, msg: string): void {
   try {

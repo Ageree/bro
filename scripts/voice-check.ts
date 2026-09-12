@@ -14,9 +14,7 @@ import {
   voiceTranscriptLine,
 } from "../agent/lib/voice-policy.ts";
 
-function assert(cond: unknown, msg: string): void {
-  if (!cond) throw new Error(msg);
-}
+import { assert } from "./lib/check.ts";
 
 function eq<T>(got: T, want: T, msg: string): void {
   if (got !== want) throw new Error(`${msg}: got ${JSON.stringify(got)} want ${JSON.stringify(want)}`);

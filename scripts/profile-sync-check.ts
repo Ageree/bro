@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import {
   isBrowserProfileId,
   LOGIN_MARK,
@@ -11,9 +10,7 @@ import {
 } from "../convex/lib/browserProfilePolicy.ts";
 import { scaffoldTask } from "../agent/lib/browseruse.ts";
 
-function assert(cond: unknown, msg: string): void {
-  if (!cond) throw new Error(msg);
-}
+import { assert, src } from "./lib/check.ts";
 
 const id = "550e8400-e29b-41d4-a716-446655440000";
 assert(isBrowserProfileId(id), "uuid ok");
@@ -47,21 +44,18 @@ assert(
   "dedupe domains",
 );
 
-const cabinet = readFileSync(new URL("../cabinet.html", import.meta.url), "utf8");
+const cabinet = src("cabinet.html");
 assert(cabinet.includes('id="chrome"'), "cabinet has chrome card");
 assert(cabinet.includes("пришлёт ссылку в чат"), "cabinet explains the chat link");
 assert(!cabinet.includes("profile.sh"), "cabinet has no terminal helper");
 assert(!cabinet.includes("profile-id"), "cabinet has no profile id field");
 assert(!cabinet.includes("/me/browser-profile"), "cabinet does not paste ids");
 
-const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
+const readme = src("README.md");
 assert(readme.includes("texts a link"), "readme is the chat-link flow");
 assert(!readme.includes("profile.sh"), "readme has no terminal helper");
 
-const tool = readFileSync(
-  new URL("../agent/tools/profile_setup.ts", import.meta.url),
-  "utf8",
-);
+const tool = src("agent/tools/profile_setup.ts");
 assert(tool.includes("deliverHuman"), "tool texts the link itself");
 assert(tool.includes("loginChatText"), "tool uses the plain copy");
 

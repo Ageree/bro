@@ -21,9 +21,7 @@ import {
   verifyComposioWebhook,
 } from "../convex/lib/watcherPolicy.ts";
 
-function assert(cond: unknown, msg: string): asserts cond {
-  if (!cond) throw new Error(msg);
-}
+import { assert } from "./lib/check.ts";
 
 const gmailSpec = triggerSpec("gmail");
 assert(gmailSpec.slug === "GMAIL_NEW_GMAIL_MESSAGE", "gmail slug");

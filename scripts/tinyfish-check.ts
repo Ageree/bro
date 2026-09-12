@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import {
   TINYFISH_DEFAULT_LOCATION,
   TINYFISH_FETCH_TTL_SECONDS,
@@ -15,9 +14,7 @@ import {
   tinyfishSearch,
 } from "../agent/lib/tinyfish.ts";
 
-function assert(cond: unknown, msg: string): void {
-  if (!cond) throw new Error(msg);
-}
+import { assert, src } from "./lib/check.ts";
 
 assert(isHttpUrl("https://cbr.ru/currency_base/daily/"), "https ok");
 assert(isHttpUrl("http://example.com"), "http ok");
@@ -122,14 +119,8 @@ if (saved !== undefined) process.env.TINYFISH_API_KEY = saved;
   assert("error" in bad && bad.error.includes("не URL"), "fetch rejects non-http");
 }
 
-const searchTool = readFileSync(
-  new URL("../agent/tools/web_search.ts", import.meta.url),
-  "utf8",
-);
-const fetchTool = readFileSync(
-  new URL("../agent/tools/web_fetch.ts", import.meta.url),
-  "utf8",
-);
+const searchTool = src("agent/tools/web_search.ts");
+const fetchTool = src("agent/tools/web_fetch.ts");
 assert(searchTool.includes("tinyfishSearch"), "web_search uses TinyFish");
 assert(fetchTool.includes("tinyfishFetchPage"), "web_fetch uses TinyFish");
 assert(fetchTool.includes('from "eve/tools/web_fetch"'), "web_fetch keeps the eve slug and schema");
@@ -141,10 +132,7 @@ assert(!fetchTool.includes("urls:"), "web_fetch stays one url, like eve");
 assert(!searchTool.includes("groupPersonalBlock"), "public search is ok in groups");
 assert(!fetchTool.includes("groupPersonalBlock"), "public fetch is ok in groups");
 
-const instructions = readFileSync(
-  new URL("../agent/instructions.md", import.meta.url),
-  "utf8",
-);
+const instructions = src("agent/instructions.md");
 assert(instructions.includes("`web_search`"), "prompt routes facts to search");
 assert(instructions.includes("`web_fetch`"), "prompt routes pages to fetch");
 assert(
@@ -152,17 +140,14 @@ assert(
   "general search is no longer a browser errand",
 );
 
-const worker = readFileSync(
-  new URL("../agent/subagents/worker/instructions.md", import.meta.url),
-  "utf8",
-);
+const worker = src("agent/subagents/worker/instructions.md");
 assert(worker.includes("`web_search`"), "worker still defers discovery to search");
 
 assert(TINYFISH_DEFAULT_LOCATION === "RU", "RU-first search");
 assert(TINYFISH_MAX_FETCH_URLS === 5, "fetch stays small");
 assert(TINYFISH_FETCH_TTL_SECONDS === 3_600, "fetch prefers hour-fresh pages");
 assert(
-  readFileSync(new URL("../agent/lib/tinyfish.ts", import.meta.url), "utf8").includes(
+  src("agent/lib/tinyfish.ts").includes(
     "ttl: TINYFISH_FETCH_TTL_SECONDS",
   ),
   "fetch sends ttl so TinyFish does not serve any-age cache",

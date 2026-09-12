@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import {
   dueJobNudges,
   isJobCheckWakeup,
@@ -39,9 +38,7 @@ import {
   shouldStartFollowThrough,
 } from "../convex/lib/browserFollowPolicy.ts";
 
-function assert(cond: unknown, msg: string): void {
-  if (!cond) throw new Error(msg);
-}
+import { assert, src } from "./lib/check.ts";
 
 assert(normalizeEmail("  Foo@Mail.COM ") === "foo@mail.com", "normalize");
 assert(isEmailAddr("clinic@example.com"), "good email");
@@ -434,10 +431,7 @@ assert(
   "epochs stay off the injected line — dueJobNudges reads structured fields",
 );
 {
-  const memoriesSrc = readFileSync(
-    new URL("../convex/memories.ts", import.meta.url),
-    "utf8",
-  );
+  const memoriesSrc = src("convex/memories.ts");
   assert(
     memoriesSrc.includes('from "./lib/jobWakeLine"'),
     "wakeContext uses the shared job line formatter",
@@ -448,10 +442,7 @@ assert(
   );
 }
 
-const jobsSrc = readFileSync(
-  new URL("../agent/instructions/jobs.ts", import.meta.url),
-  "utf8",
-);
+const jobsSrc = src("agent/instructions/jobs.ts");
 assert(jobsSrc.includes("return null"), "empty job list injects nothing");
 assert(jobsSrc.includes("Job store unavailable"), "store errors still surface");
 assert(isJobCheckWakeup({ origin: "wakeup", wakeupKind: "job_check" }), "job_check wakeup nudges");
@@ -477,10 +468,7 @@ assert(
 );
 assert(jobsSrc.includes('role: "system"'), "turn.started job text is turn-scoped");
 
-const imessage = readFileSync(
-  new URL("../agent/channels/imessage.ts", import.meta.url),
-  "utf8",
-);
+const imessage = src("agent/channels/imessage.ts");
 assert(imessage.includes("jobCheckWakePrompt"), "HTTP path uses shared job_check prompt");
 assert(imessage.includes("parkTurn"), "human iMessage turn is not awaited");
 assert(

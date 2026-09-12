@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import {
   bubblesFor,
   firstCompleteLine,
@@ -28,9 +27,7 @@ import {
 import { isHeadingOnly, resetBubbleDedupe } from "../agent/lib/bubble-dedupe.ts";
 import { deliverHuman } from "../agent/lib/deliver-human.ts";
 
-function assert(cond: unknown, msg: string): void {
-  if (!cond) throw new Error(msg);
-}
+import { assert, src } from "./lib/check.ts";
 
 assert(visibleReply(null) === null, "null invisible");
 assert(visibleReply("   ") === null, "whitespace invisible");
@@ -455,7 +452,8 @@ assert(nextBubble([], "Тяжёлая артиллерия:") === null, "heading
       },
     });
   }
-  assert(texts.length === 0, "six heading leftovers do not leave the chat");
+  const leftoverCount = texts.length;
+  assert(leftoverCount === 0, "six heading leftovers do not leave the chat");
   await deliverHuman({
     tenant: { inkboxHandle: "bro-test" },
     conversationId: "conv-heading",
@@ -630,27 +628,15 @@ assert(bubblesFor(sent, "t2").length === 0, "other turn empty");
 recordSent(sent, "t1", "старое", 1_000 + 11 * 60_000);
 assert(bubblesFor(sent, "t1").join("|") === "старое", "ttl expires the old row");
 
-const channel = readFileSync(
-  new URL("../agent/channels/imessage.ts", import.meta.url),
-  "utf8",
-);
-const delivery = readFileSync(
-  new URL("../agent/lib/turn-delivery-events.ts", import.meta.url),
-  "utf8",
-);
-const telegramChannel = readFileSync(
-  new URL("../agent/channels/telegram.ts", import.meta.url),
-  "utf8",
-);
+const channel = src("agent/channels/imessage.ts");
+const delivery = src("agent/lib/turn-delivery-events.ts");
+const telegramChannel = src("agent/channels/telegram.ts");
 assert(channel.includes("imessageDeliveryEvents"), "imessage uses shared delivery events");
 assert(
   !telegramChannel.includes("telegramDeliveryEvents"),
   "telegram channel does not register delivery events — hook is the only path",
 );
-const hook = readFileSync(
-  new URL("../agent/hooks/telegram-deliver.ts", import.meta.url),
-  "utf8",
-);
+const hook = src("agent/hooks/telegram-deliver.ts");
 assert(hook.includes("telegramDeliveryEvents"), "hook is the telegram delivery path");
 assert(hook.includes("defineHook"), "telegram hook observes every channel session");
 assert(

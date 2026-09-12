@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { canSkipInboundBind } from "../agent/lib/inbound-bind.ts";
 import { CONVERSATION_RECALL_TIMEOUT_MS } from "../agent/lib/archive-policy.ts";
 import {
@@ -21,11 +20,9 @@ import {
   shortAckInstruction,
 } from "../agent/lib/short-ack.ts";
 
-function assert(cond: unknown, msg: string): void {
-  if (!cond) throw new Error(msg);
-}
+import { assert, src } from "./lib/check.ts";
 
-const convex = readFileSync(new URL("../agent/lib/convex.ts", import.meta.url), "utf8");
+const convex = src("agent/lib/convex.ts");
 assert(convex.includes("loadWakeContext"), "memo+jobs share one snapshot");
 assert(convex.includes("api.memories.wakeContext"), "one Convex query for wake context");
 assert(convex.includes("wakeInflight"), "parallel turn.started callers coalesce");
@@ -43,10 +40,10 @@ assert(convex.includes("handleTenants"), "returning 1:1 reuses getTenantByHandle
 assert(convex.includes("telegramTenants"), "returning telegram reuses getByTelegram");
 assert(convex.includes("handleInflight"), "parallel handle lookups coalesce");
 
-const memo = readFileSync(new URL("../agent/lib/convex-memory.ts", import.meta.url), "utf8");
+const memo = src("agent/lib/convex-memory.ts");
 assert(memo.includes("wakeLines"), "memo still injects wake lines");
 
-const jobs = readFileSync(new URL("../agent/instructions/jobs.ts", import.meta.url), "utf8");
+const jobs = src("agent/instructions/jobs.ts");
 assert(jobs.includes("jobWakeRows"), "jobs read the same snapshot");
 assert(jobs.includes("isJobCheckWakeup"), "job_check nudge is not on the HTTP path");
 assert(jobs.includes("Promise.all"), "due markNudged calls run in parallel");
@@ -72,15 +69,15 @@ assert(
   "job/ack inject must not append to session history",
 );
 
-const archive = readFileSync(new URL("../agent/memory/archive.ts", import.meta.url), "utf8");
+const archive = src("agent/memory/archive.ts");
 assert(archive.includes("shouldRecallArchive"), "archive recall is gated");
 assert(archive.includes("loadInstinctRecall"), "archive recall shares the Instinct pair");
-const archiveClient = readFileSync(new URL("../agent/lib/archive.ts", import.meta.url), "utf8");
+const archiveClient = src("agent/lib/archive.ts");
 assert(archiveClient.includes("/v4/search"), "Instinct archive search is v4, not v3 documents search");
 assert(archiveClient.includes('searchMode: "hybrid"'), "archive search stays hybrid");
 assert(archiveClient.includes("V3_BASE"), "ingest/forget stay on v3");
 
-const recall = readFileSync(new URL("../agent/memory/recall.ts", import.meta.url), "utf8");
+const recall = src("agent/memory/recall.ts");
 assert(recall.includes("shouldRecallConversation"), "conversation recall keeps captionless photos");
 assert(recall.includes("compaction.completed"), "compaction recall uses the same gate");
 assert(recall.includes("loadInstinctRecall"), "turn.started conversation uses the Instinct pair");
@@ -90,7 +87,7 @@ assert(!recall.includes("loadProfileContext"), "profile dump stays off turn.star
 assert(recall.includes("inner.recall"), "compaction still uses the plugin recall");
 assert(recall.includes("abortSignal"), "conversation search joins Eve abort");
 
-const instinct = readFileSync(new URL("../agent/lib/instinct-recall.ts", import.meta.url), "utf8");
+const instinct = src("agent/lib/instinct-recall.ts");
 assert(instinct.includes("Promise.allSettled"), "conversation and archive search in parallel");
 assert(instinct.includes("searchConversation"), "conversation search stays on the pair");
 assert(instinct.includes("searchArchive"), "archive search stays on the pair");
@@ -105,17 +102,11 @@ assert(
 );
 assert(instinct.includes("canPrefetchInstinctQuery"), "voice placeholders skip early prefetch");
 
-const openrouterWarm = readFileSync(
-  new URL("../agent/lib/openrouter-warm.ts", import.meta.url),
-  "utf8",
-);
-const chatExtras = readFileSync(
-  new URL("../agent/lib/openrouter-chat.ts", import.meta.url),
-  "utf8",
-);
+const openrouterWarm = src("agent/lib/openrouter-warm.ts");
+const chatExtras = src("agent/lib/openrouter-chat.ts");
 assert(chatExtras.includes('effort = OPENROUTER_CHAT_REASONING_EFFORT'), "chat fills reasoning.effort");
 assert(chatExtras.includes("OPENROUTER_CHAT_PROVIDER_SORT"), "chat fills provider.sort");
-const modelLib = readFileSync(new URL("../agent/lib/model.ts", import.meta.url), "utf8");
+const modelLib = src("agent/lib/model.ts");
 assert(modelLib.includes("openRouterChatFetch"), "default DeepSeek uses OpenRouter chat extras");
 
 assert(openrouterWarm.includes("OPENROUTER_AUTH_URL"), "OpenRouter warm hits /auth/key");
@@ -177,7 +168,7 @@ assert(
 assert(canPrefetchOpenRouter("sk-test"), "OpenRouter warm runs when a key is set");
 assert(!canPrefetchOpenRouter(""), "OpenRouter warm skips without a key");
 
-const tenants = readFileSync(new URL("../convex/tenants.ts", import.meta.url), "utf8");
+const tenants = src("convex/tenants.ts");
 {
   const countFn = tenants.slice(tenants.indexOf("export const countInboundMessage"));
   assert(countFn.includes('tenant.status === "disabled"'), "countInbound drops disabled");
@@ -187,7 +178,7 @@ const tenants = readFileSync(new URL("../convex/tenants.ts", import.meta.url), "
   );
 }
 
-const memories = readFileSync(new URL("../convex/memories.ts", import.meta.url), "utf8");
+const memories = src("convex/memories.ts");
 assert(memories.includes("wakeContext"), "Convex exposes the combined snapshot");
 assert(memories.includes("WAKE_LINES"), "combined snapshot still returns 80 memo lines");
 assert(memories.includes("Promise.all"), "wakeContext loads memories and tenant in parallel");
@@ -197,15 +188,9 @@ assert(
   "wake line omits epochs — nudge still uses structured waitingSince",
 );
 
-const imessage = readFileSync(new URL("../agent/channels/imessage.ts", import.meta.url), "utf8");
-const earlyDeliver = readFileSync(
-  new URL("../agent/lib/early-deliver.ts", import.meta.url),
-  "utf8",
-);
-const turnDelivery = readFileSync(
-  new URL("../agent/lib/turn-delivery-events.ts", import.meta.url),
-  "utf8",
-);
+const imessage = src("agent/channels/imessage.ts");
+const earlyDeliver = src("agent/lib/early-deliver.ts");
+const turnDelivery = src("agent/lib/turn-delivery-events.ts");
 assert(imessage.includes("canSkipInboundBind"), "returning users skip no-op bind");
 assert(imessage.includes("/webhooks/photon"), "Photon webhook is the chat path");
 assert(imessage.includes("bindPhotonInbound"), "Photon inbound binds the space");
@@ -253,10 +238,10 @@ assert(
   );
 }
 
-const inkbox = readFileSync(new URL("../agent/lib/inkbox.ts", import.meta.url), "utf8");
+const inkbox = src("agent/lib/inkbox.ts");
 assert(inkbox.includes("inkboxIdentity"), "Inkbox identity is cached");
 
-const telegram = readFileSync(new URL("../agent/channels/telegram.ts", import.meta.url), "utf8");
+const telegram = src("agent/channels/telegram.ts");
 assert(telegram.includes("prefetchOpenRouter"), "telegram billing warms OpenRouter");
 assert(telegram.includes("shortAckAttribute(opts.text"), "telegram stamps this-turn ack");
 assert(telegram.includes("inboundP"), "telegram STT overlaps photo fetch");
@@ -279,7 +264,7 @@ assert(
   assert(orAt > afterReal && orAt < billAt, "telegram OpenRouter warm overlaps billing");
 }
 
-const mail = readFileSync(new URL("../agent/lib/mail-inbound.ts", import.meta.url), "utf8");
+const mail = src("agent/lib/mail-inbound.ts");
 assert(mail.includes("fresh: true"), "mail handle lookup is live for disabled/HMAC");
 
 assert(INSTINCT_RECALL_TTL_MS === 8_000, "Instinct pair outlasts Eve session start");

@@ -1,4 +1,5 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { src } from "./lib/check.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { searchArchive } from "../agent/lib/archive.ts";
@@ -61,8 +62,8 @@ const TOOL_FILES = [
 function toolDescriptionChars(): { files: number; chars: number } {
   let chars = 0;
   for (const file of TOOL_FILES) {
-    const src = readFileSync(new URL(`../agent/tools/${file}`, import.meta.url), "utf8");
-    for (const block of src.matchAll(/description:\s*\n?\s*"([^"]+)"/g)) {
+    const toolSrc = src(`agent/tools/${file}`);
+    for (const block of toolSrc.matchAll(/description:\s*\n?\s*"([^"]+)"/g)) {
       chars += block[1]?.length ?? 0;
     }
   }
@@ -75,10 +76,10 @@ function broToolSchemas(): Array<{
 }> {
   const descriptions: Array<[string, string]> = [];
   for (const file of TOOL_FILES) {
-    const src = readFileSync(new URL(`../agent/tools/${file}`, import.meta.url), "utf8");
+    const toolSrc = src(`agent/tools/${file}`);
     const name = file.replace(/\.ts$/, "");
     let i = 0;
-    for (const block of src.matchAll(/description:\s*\n?\s*"([^"]+)"/g)) {
+    for (const block of toolSrc.matchAll(/description:\s*\n?\s*"([^"]+)"/g)) {
       const desc = block[1] ?? "";
       const toolName = i === 0 && !file.includes("composio") ? name : `${name}_${i}`;
       descriptions.push([toolName, desc]);
@@ -274,10 +275,7 @@ async function measureOpenRouterTtfb(): Promise<Record<string, unknown>> {
   const key = process.env.OPENROUTER_API_KEY?.trim();
   if (!key) return { skipped: true, reason: "OPENROUTER_API_KEY missing" };
   const model = process.env.BRO_MODEL?.trim() || DEFAULT_OPENROUTER_MODEL;
-  const instructions = readFileSync(
-    new URL("../agent/instructions.md", import.meta.url),
-    "utf8",
-  );
+  const instructions = src("agent/instructions.md");
   const tools = broToolSchemas();
   const prefetch = await timed(() =>
     fetch(OPENROUTER_AUTH_URL, {

@@ -32,9 +32,7 @@ import {
   vaultMasterKey,
 } from "../shared/vaultCrypto.ts";
 
-function assert(cond: unknown, msg: string): asserts cond {
-  if (!cond) throw new Error(msg);
-}
+import { assert, src } from "./lib/check.ts";
 
 assert(devicePollSleepMs(5) === 5_000, "interval 5s → 5000ms");
 assert(devicePollSleepMs(5, 5) === 10_000, "slowDown adds seconds");
@@ -343,24 +341,18 @@ assert(
   "connected + broker uses the 200k Codex window",
 );
 
-const chatgptSrc = await import("node:fs").then((fs) =>
-  fs.readFileSync(new URL("../convex/chatgpt.ts", import.meta.url), "utf8"),
-);
+const chatgptSrc = src("convex/chatgpt.ts");
 assert(chatgptSrc.includes("scheduleDevicePoll"), "login start schedules the poller");
 assert(chatgptSrc.includes("pollDeviceLogin"), "poller is the internal ChatGPT action");
 assert(chatgptSrc.includes("status: \"done\""), "finishLogin writes done, not authorized");
 
-const connectSrc = await import("node:fs").then((fs) =>
-  fs.readFileSync(new URL("../agent/tools/chatgpt_connect.ts", import.meta.url), "utf8"),
-);
+const connectSrc = src("agent/tools/chatgpt_connect.ts");
 assert(connectSrc.includes("Я сам проверю вход"), "connect tool says polling is on");
 assert(connectSrc.includes("startLoginForAgent"), "connect tool starts login in Convex");
 assert(!connectSrc.includes("startDeviceAuth"), "connect tool does not talk to OpenAI");
 assert(!connectSrc.includes("ещё не подключён"), "connect tool no longer says polling is off");
 
-const secretsSrc = await import("node:fs").then((fs) =>
-  fs.readFileSync(new URL("../convex/chatgptSecrets.ts", import.meta.url), "utf8"),
-);
+const secretsSrc = src("convex/chatgptSecrets.ts");
 assert(secretsSrc.includes("pollDeviceAuth"), "secrets poller talks to deviceauth");
 assert(secretsSrc.includes("exchangeDeviceCode"), "secrets poller exchanges the code");
 assert(secretsSrc.includes("startDeviceLoginForTenant"), "cabinet start is an internal action");

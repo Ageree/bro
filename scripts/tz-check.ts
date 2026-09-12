@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import {
   CABINET_TIMEZONES,
   DEFAULT_TZ,
@@ -9,9 +8,7 @@ import {
   type SessionTzChangeResult,
 } from "../convex/lib/tzPolicy.ts";
 
-function assert(cond: unknown, msg: string): void {
-  if (!cond) throw new Error(msg);
-}
+import { assert, src } from "./lib/check.ts";
 
 function failCode(r: SessionTzChangeResult): "unbound" | "invalid" {
   if (r.ok) throw new Error("expected tz change to fail");
@@ -86,7 +83,7 @@ const ok = sessionTzChangeDecision({
 if (!ok.ok) throw new Error("bound + trimmed IANA");
 assert(ok.tz === "Asia/Yekaterinburg", "bound + trimmed IANA");
 
-const httpSrc = readFileSync(new URL("../convex/http.ts", import.meta.url), "utf8");
+const httpSrc = src("convex/http.ts");
 assert(httpSrc.includes('path: "/me/tz"'), "http /me/tz route");
 assert(
   httpSrc.includes('path: "/me/tz", method: "OPTIONS"') ||
@@ -110,20 +107,14 @@ assert(
   "http /me/tz does not send BRO_INTERNAL_SECRET",
 );
 
-const cabinetSrc = readFileSync(
-  new URL("../convex/cabinet.ts", import.meta.url),
-  "utf8",
-);
+const cabinetSrc = src("convex/cabinet.ts");
 assert(cabinetSrc.includes("export const setTzForSession"), "cabinet setTzForSession");
 assert(
   cabinetSrc.includes("applyTimezoneForTenantId"),
   "session reuses tenant-id path",
 );
 
-const tenantsSrc = readFileSync(
-  new URL("../convex/tenants.ts", import.meta.url),
-  "utf8",
-);
+const tenantsSrc = src("convex/tenants.ts");
 assert(tenantsSrc.includes("export const setTimezoneForTenantId"), "internal by id");
 assert(tenantsSrc.includes("applyTimezoneChange"), "shared carry helper");
 assert(tenantsSrc.includes("carryCountersOnTzChange"), "still carries counters");
@@ -133,10 +124,7 @@ assert(
   "public setTimezone still throws invalid",
 );
 
-const wakeupSrc = readFileSync(
-  new URL("../agent/tools/schedule_wakeup.ts", import.meta.url),
-  "utf8",
-);
+const wakeupSrc = src("agent/tools/schedule_wakeup.ts");
 assert(wakeupSrc.includes("getTenant"), "wakeup reads tenant");
 assert(wakeupSrc.includes("upsertTenant"), "wakeup can upsert");
 assert(wakeupSrc.includes("resolveTenantTz"), "wakeup uses tenant tz helper");

@@ -10,9 +10,7 @@ import {
   prefetchInboundImages,
 } from "../agent/lib/inbound-image.ts";
 
-function assert(cond: unknown, msg: string): void {
-  if (!cond) throw new Error(msg);
-}
+import { assert } from "./lib/check.ts";
 
 assert(isImageContentType("image/jpeg"), "jpeg");
 assert(isImageContentType("IMAGE/PNG"), "case-insensitive");

@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import {
   BROWSER_WAIT_MS,
   nextBrowserAction,
@@ -32,9 +31,7 @@ import {
   scaffoldTask,
 } from "../agent/lib/browseruse.ts";
 
-function assert(cond: unknown, msg: string): void {
-  if (!cond) throw new Error(msg);
-}
+import { assert, src } from "./lib/check.ts";
 
 assert(normalizeTask("  Купить   скотч ") === "купить скотч", "normalize");
 
@@ -370,10 +367,7 @@ assert(resolveBrowserModel(" grok-4.5 ") === "grok-4.5", "BRO_BROWSER_MODEL over
 
 assert(BROWSER_WAIT_MS === 2_000, "wait is short; follow-through still delivers");
 
-const browserTool = readFileSync(
-  new URL("../agent/tools/browser_task.ts", import.meta.url),
-  "utf8",
-);
+const browserTool = src("agent/tools/browser_task.ts");
 assert(browserTool.includes("BROWSER_WAIT_MS"), "start and poll use shared wait");
 assert(!browserTool.includes("WAIT_MS = 12_000"), "old 12s park is gone");
 const startPath = browserTool.slice(browserTool.indexOf("const started = await startRun"));
@@ -387,10 +381,7 @@ assert(
   "canned ищу skips only when this turn already said ищу",
 );
 
-const follow = readFileSync(
-  new URL("../convex/browserFollow.ts", import.meta.url),
-  "utf8",
-);
+const follow = src("convex/browserFollow.ts");
 const handler = follow.slice(follow.indexOf("}).handler"));
 const firstPoll = handler.search(/pollRun/);
 const firstSleep = handler.search(/step\.sleep/);
@@ -399,10 +390,7 @@ assert(firstSleep >= 0, "follow-through still sleeps between polls");
 assert(firstPoll < firstSleep, "first poll comes before the first sleep");
 assert(handler.includes("followSleepMs"), "first re-sleep is shorter than 2min");
 
-const waitFor = readFileSync(
-  new URL("../agent/lib/browseruse.ts", import.meta.url),
-  "utf8",
-);
+const waitFor = src("agent/lib/browseruse.ts");
 const startFn = waitFor.slice(waitFor.indexOf("export async function startRun"));
 assert(startFn.includes("body.model = resolveBrowserModel()"), "every cloud run sends a model");
 assert(!startFn.includes("if (process.env.BRO_BROWSER_MODEL)"), "model is no longer env-gated");

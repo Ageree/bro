@@ -13,9 +13,7 @@ import {
   toIMessageText,
 } from "../agent/lib/imessage-text.ts";
 
-function assert(cond: unknown, msg: string): void {
-  if (!cond) throw new Error(msg);
-}
+import { assert } from "./lib/check.ts";
 
 assert(toIMessageText("просто текст") === "просто текст", "plain");
 

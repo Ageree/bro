@@ -1,5 +1,5 @@
-import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
+import { src } from "./lib/check.ts";
 import {
   archiveOtpAllowed,
   attachOtpToWake,
@@ -285,10 +285,7 @@ assert.equal(
 assert.ok(!otpSearchQuery("WB").includes("\n"));
 assert.ok(otpSearchQuery("WB").includes("WB"));
 
-const instructions = readFileSync(
-  new URL("../agent/instructions.md", import.meta.url),
-  "utf8",
-);
+const instructions = src("agent/instructions.md");
 assert(instructions.includes("otp_lookup") || instructions.includes("`otp`"), "root knows otp");
 assert(
   /сначала/i.test(instructions) && /треде/i.test(instructions),
@@ -299,56 +296,35 @@ assert(
   "old ask-first OTP line is gone",
 );
 
-const skill = readFileSync(
-  new URL("../agent/skills/otp/SKILL.md", import.meta.url),
-  "utf8",
-);
+const skill = src("agent/skills/otp/SKILL.md");
 assert(skill.includes("otp_lookup"), "skill names the tool");
 assert(skill.includes("не цитируй") || skill.includes("цифры не цитируй"), "no quote");
 
-const broMail = readFileSync(
-  new URL("../agent/tools/bro_mail.ts", import.meta.url),
-  "utf8",
-);
+const broMail = src("agent/tools/bro_mail.ts");
 assert(broMail.includes('"inbox"'), "bro_mail lists inbox");
 assert(broMail.includes("groupPersonalBlock"), "inbox stays 1:1");
 
-const otpTool = readFileSync(
-  new URL("../agent/tools/otp_lookup.ts", import.meta.url),
-  "utf8",
-);
+const otpTool = src("agent/tools/otp_lookup.ts");
 assert(otpTool.includes("findFreshOtp"), "lookup is deterministic");
 assert(otpTool.includes("groupPersonalBlock"), "lookup stays 1:1");
 
-const otpAgent = readFileSync(
-  new URL("../agent/subagents/otp/agent.ts", import.meta.url),
-  "utf8",
-);
+const otpAgent = src("agent/subagents/otp/agent.ts");
 assert(otpAgent.includes("outputSchema"), "otp returns structured result");
 assert(otpAgent.includes("isGroupTurn"), "otp hidden in groups");
 
-const otpInstr = readFileSync(
-  new URL("../agent/subagents/otp/instructions.md", import.meta.url),
-  "utf8",
-);
+const otpInstr = src("agent/subagents/otp/instructions.md");
 assert(otpInstr.includes("Don't touch memory tools"), "otp is a subagent");
 assert(otpInstr.includes("lookup"), "otp calls lookup first");
 
-const worker = readFileSync(
-  new URL("../agent/subagents/worker/instructions.md", import.meta.url),
-  "utf8",
-);
+const worker = src("agent/subagents/worker/instructions.md");
 assert(worker.includes("mailbox") || worker.includes("archive"), "worker knows coordinator checks mail");
 
-const inbound = readFileSync(
-  new URL("../agent/lib/mail-inbound.ts", import.meta.url),
-  "utf8",
-);
+const inbound = src("agent/lib/mail-inbound.ts");
 assert(inbound.includes("shouldIngestInkboxMail"), "inbound skips OTP archive copies");
 assert(inbound.includes("attachOtpToWake"), "mail wake runs otp extract");
 assert(otpAgent.includes("/^\\d{4,8}$/"), "otp subagent cannot invent non-digit codes");
 
-const pkg = readFileSync(new URL("../package.json", import.meta.url), "utf8");
+const pkg = src("package.json");
 assert(pkg.includes("otp:check"), "npm script");
 
 console.log("otp-check ok");
