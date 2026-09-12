@@ -192,4 +192,10 @@ assert(
   "outbound is conversation-id based for every tenant",
 );
 
+const agentSrc = readFileSync(new URL("../agent/agent.ts", import.meta.url), "utf8");
+assert(agentSrc.includes("externalDependencies"), "eve traces Photon gRPC peers");
+assert(agentSrc.includes('"@grpc/grpc-js"'), "agent traces grpc-js");
+assert(agentSrc.includes('"nice-grpc"'), "agent traces nice-grpc");
+assert(agentSrc.includes('"nice-grpc-common"'), "agent traces nice-grpc-common");
+
 console.log("photon-check ok");
