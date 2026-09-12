@@ -116,7 +116,7 @@ const chatExtras = readFileSync(
 assert(chatExtras.includes('effort = OPENROUTER_CHAT_REASONING_EFFORT'), "chat fills reasoning.effort");
 assert(chatExtras.includes("OPENROUTER_CHAT_PROVIDER_SORT"), "chat fills provider.sort");
 const modelLib = readFileSync(new URL("../agent/lib/model.ts", import.meta.url), "utf8");
-assert(modelLib.includes("openRouterChatFetch"), "default GLM uses OpenRouter chat extras");
+assert(modelLib.includes("openRouterChatFetch"), "default DeepSeek uses OpenRouter chat extras");
 
 assert(openrouterWarm.includes("OPENROUTER_AUTH_URL"), "OpenRouter warm hits /auth/key");
 assert(openrouterWarm.includes("OPENROUTER_CHAT_URL"), "OpenRouter warm also hits chat/completions");

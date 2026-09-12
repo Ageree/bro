@@ -1,12 +1,13 @@
 export const OPENROUTER_CHAT_REASONING_EFFORT = "low" as const;
 export const OPENROUTER_CHAT_PROVIDER_SORT = "latency" as const;
+/** Healthy DeepSeek V4.1 Flash hosts with tools. Official first (cache + price). */
 export const OPENROUTER_CHAT_PROVIDER_ORDER = [
-  "parasail",
-  "together",
-  "baseten",
+  "deepseek",
   "novita",
+  "gmicloud",
+  "fireworks",
 ] as const;
-export const OPENROUTER_CHAT_PREFERRED_MAX_LATENCY = 1.5;
+export const OPENROUTER_CHAT_PREFERRED_MAX_LATENCY = 2;
 
 export type OpenRouterChatBody = {
   reasoning?: { effort?: string };

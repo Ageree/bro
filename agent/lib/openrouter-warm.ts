@@ -26,7 +26,7 @@ function warmAuth(key: string): Promise<void> {
 }
 
 export function warmOpenRouterChat(key: string): Promise<void> {
-  const model = process.env.BRO_MODEL?.trim() || "z-ai/glm-5.3-flash";
+  const model = process.env.BRO_MODEL?.trim() || "deepseek/deepseek-v4.1-flash";
   return fetch(OPENROUTER_CHAT_URL, {
     method: "POST",
     headers: {

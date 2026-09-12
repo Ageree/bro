@@ -1,5 +1,6 @@
 import {
   DEFAULT_MAX_OUTPUT_TOKENS,
+  DEFAULT_OPENROUTER_MODEL,
   DEFAULT_ROOT_CONTEXT_TOKENS,
   outputCapMiddleware,
   parseMaxOutputTokens,
@@ -42,7 +43,11 @@ assert(typeof model === "object" && model !== null, "OpenRouter branch returns a
 const wrapped = model as Extract<typeof model, object>;
 
 assert(typeof wrapped.provider === "string", "wrapped model has a string provider");
-assert(wrapped.modelId === "z-ai/glm-5.3-flash", "wrapped model keeps the OpenRouter model id");
+assert(
+  DEFAULT_OPENROUTER_MODEL === "deepseek/deepseek-v4.1-flash",
+  "default OpenRouter model is DeepSeek V4.1 Flash",
+);
+assert(wrapped.modelId === DEFAULT_OPENROUTER_MODEL, "wrapped model keeps the OpenRouter model id");
 assert(typeof wrapped.doGenerate === "function", "wrapped model keeps doGenerate");
 assert(typeof wrapped.doStream === "function", "wrapped model keeps doStream");
 assert(
@@ -84,29 +89,29 @@ const {
   isOpenRouterChatCompletionsUrl,
   withOpenRouterChatDefaults,
 } = await import("../agent/lib/openrouter-chat.ts");
-assert(OPENROUTER_CHAT_REASONING_EFFORT === "low", "GLM default max is overridden to low");
+assert(OPENROUTER_CHAT_REASONING_EFFORT === "low", "DeepSeek thinking default is overridden to low");
 assert(OPENROUTER_CHAT_PROVIDER_SORT === "latency", "chat prefers the fastest OpenRouter provider");
 assert(
-  OPENROUTER_CHAT_PROVIDER_ORDER[0] === "parasail",
-  "fast GLM hosts are tried before Z.ai",
+  OPENROUTER_CHAT_PROVIDER_ORDER[0] === "deepseek",
+  "official DeepSeek is tried before third-party hosts",
 );
 assert(
-  OPENROUTER_CHAT_PREFERRED_MAX_LATENCY <= 1.5,
+  OPENROUTER_CHAT_PREFERRED_MAX_LATENCY <= 2,
   "slow hosts are deprioritized, not required",
 );
-const filled = withOpenRouterChatDefaults({ model: "z-ai/glm-5.3-flash" }) as {
+const filled = withOpenRouterChatDefaults({ model: DEFAULT_OPENROUTER_MODEL }) as {
   reasoning?: { effort?: string };
   provider?: { sort?: string; order?: string[]; preferred_max_latency?: number };
 };
 assert(filled.reasoning?.effort === "low", "unset reasoning.effort becomes low");
 assert(filled.provider?.sort === "latency", "unset provider.sort becomes latency");
 assert(
-  filled.provider?.order?.[0] === "parasail",
-  "unset provider.order prefers fast GLM hosts",
+  filled.provider?.order?.[0] === "deepseek",
+  "unset provider.order prefers official DeepSeek",
 );
 assert(
   filled.provider?.preferred_max_latency === OPENROUTER_CHAT_PREFERRED_MAX_LATENCY,
-  "unset preferred_max_latency deprioritizes Z.ai-class hosts",
+  "unset preferred_max_latency deprioritizes slow DeepSeek hosts",
 );
 const kept = withOpenRouterChatDefaults({
   reasoning: { effort: "high" },
@@ -124,7 +129,7 @@ assert(
 );
 const applied = applyOpenRouterChatDefaults({
   method: "POST",
-  body: JSON.stringify({ model: "z-ai/glm-5.3-flash" }),
+  body: JSON.stringify({ model: DEFAULT_OPENROUTER_MODEL }),
 });
 const appliedBody = JSON.parse(String(applied?.body)) as {
   reasoning?: { effort?: string };
@@ -134,7 +139,14 @@ assert(appliedBody.reasoning?.effort === "low", "fetch wrapper rewrites JSON cha
 const modelSrc = await import("node:fs").then((fs) =>
   fs.readFileSync(new URL("../agent/lib/model.ts", import.meta.url), "utf8"),
 );
-assert(modelSrc.includes("openRouterChatFetch"), "default GLM chat uses the OpenRouter extras fetch");
+assert(modelSrc.includes("openRouterChatFetch"), "default DeepSeek chat uses the OpenRouter extras fetch");
+const warmSrc = await import("node:fs").then((fs) =>
+  fs.readFileSync(new URL("../agent/lib/openrouter-warm.ts", import.meta.url), "utf8"),
+);
+assert(
+  warmSrc.includes(`"${DEFAULT_OPENROUTER_MODEL}"`),
+  "chat warm fallback stays on the same default model",
+);
 
 const {
   resolveBroModel,
