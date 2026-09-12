@@ -70,28 +70,38 @@
 
   var WRITE_FIRST = "Сначала напиши Bro в iMessage.";
   var CODE_HINT = "Код придёт в iMessage.";
+  var returning = false;
+
+  function fieldHandle() {
+    var el = $("#login-handle");
+    var h = el ? (el.value || "").trim() : "";
+    return validHandle(h) ? h : "";
+  }
 
   function loginHandle() {
-    return storedHandle();
+    return storedHandle() || fieldHandle();
   }
 
   function paintLogin() {
+    var stored = storedHandle();
+    var needCode = Boolean(stored) || returning;
     var row = $("#login-handle-row");
     var sendBtn = $("#login-send");
     var hint = $("#login-hint");
-    var h = storedHandle();
-    if (row) row.hidden = true;
-    if (hint) hint.textContent = h ? CODE_HINT : WRITE_FIRST;
-    if (sendBtn) sendBtn.textContent = h ? "Получить код" : "Написать Bro";
-    return h;
+    var haveBtn = $("#login-have-bro");
+    if (row) row.hidden = Boolean(stored) || !returning;
+    if (hint) hint.textContent = needCode ? CODE_HINT : WRITE_FIRST;
+    if (sendBtn) sendBtn.textContent = needCode ? "Получить код" : "Написать Bro";
+    if (haveBtn) haveBtn.hidden = needCode;
+    return stored;
   }
 
   function openModal() {
     modal.hidden = false;
-    var h = paintLogin();
+    returning = false;
     $("#login-status").textContent = "";
     $("#login-code-row").hidden = true;
-    void h;
+    paintLogin();
   }
 
   function closeModal() {
@@ -122,11 +132,25 @@
   modal.addEventListener("click", function (e) {
     if (e.target === modal) closeModal();
   });
+  var haveBroBtn = $("#login-have-bro");
+  if (haveBroBtn) {
+    haveBroBtn.addEventListener("click", function (e) {
+      e.preventDefault();
+      returning = true;
+      paintLogin();
+      var field = $("#login-handle");
+      if (field) field.focus();
+    });
+  }
 
   $("#login-send").addEventListener("click", function () {
     var base = site();
     var h = loginHandle();
     if (!h) {
+      if (returning) {
+        setStatus(WRITE_FIRST);
+        return;
+      }
       var link = window.broIMessageLink ? window.broIMessageLink() : "";
       if (window.broIsIos && window.broIsIos() && link) {
         window.location.href = link;
