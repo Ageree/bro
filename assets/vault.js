@@ -9,23 +9,12 @@
     contact: "контакт",
   };
 
-  function site() {
-    var s = window.BRO_CONVEX_SITE_URL;
-    return typeof s === "string" ? s.replace(/\/$/, "") : "";
-  }
-
-  function token() {
-    return localStorage.getItem(TOKEN) || "";
-  }
+  var site = window.bro.site;
+  var token = window.bro.token;
+  var esc = window.bro.esc;
 
   function $(id) {
     return document.getElementById(id);
-  }
-
-  function esc(s) {
-    return String(s).replace(/[&<>"]/g, function (c) {
-      return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c];
-    });
   }
 
   function isOrigin(value) {

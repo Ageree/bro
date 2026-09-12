@@ -53,16 +53,9 @@
   <script>
     (function () {
       var TOKEN = "bro.session";
-      function site() {
-        var s = window.BRO_CONVEX_SITE_URL;
-        return typeof s === "string" ? s.replace(/\/$/, "") : "";
-      }
-      function token() { return localStorage.getItem(TOKEN) || ""; }
-      function esc(s) {
-        return String(s).replace(/[&<>"]/g, function (c) {
-          return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c];
-        });
-      }
+      var site = window.bro.site;
+      var token = window.bro.token;
+      var esc = window.bro.esc;
       function pct(used, allow) {
         if (!allow) return 0;
         return Math.max(0, Math.min(100, Math.round((used / allow) * 100)));
@@ -195,7 +188,6 @@
           "</div></section>";
       }
 
-      var HANDLE = "bro.handle";
       var boot = document.getElementById("boot");
       var body = document.getElementById("body");
       var t = token();
@@ -209,14 +201,6 @@
       if (!base) {
         boot.textContent = "Сайт ещё не подключён";
         return;
-      }
-
-      function validHandle(h) {
-        return /^bro-[a-z0-9]{8}$/.test(h || "");
-      }
-      function storedHandle() {
-        var h = (localStorage.getItem(HANDLE) || "").trim();
-        return validHandle(h) ? h : "";
       }
 
       function memoCard(me) {
