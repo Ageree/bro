@@ -1,4 +1,11 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
+// spectrum-ts iMessage still boots createGrpcClient. Those packages are
+// optional peers of @photon-ai/advanced-imessage, so eve's Vercel bundle
+// drops them unless this module names them. Without them inbound «привет»
+// binds the tenant and then every outbound send throws MODULE_NOT_FOUND.
+import "@grpc/grpc-js";
+import "nice-grpc";
+import "nice-grpc-common";
 import {
   isBluePhotonService,
   parsePhotonInboundJson,

@@ -29,6 +29,9 @@ importers:
       '@convex-dev/workpool':
         specifier: ^0.4.10
         version: 0.4.10(convex-helpers@0.1.123(@standard-schema/spec@1.1.0)(convex@1.45.0(react@19.2.8))(react@19.2.8)(typescript@7.0.2)(zod@4.4.3))(convex@1.45.0(react@19.2.8))(react@19.2.8)
+      '@grpc/grpc-js':
+        specifier: ^1.14.4
+        version: 1.14.4
       '@inkbox/sdk':
         specifier: ^0.6.4
         version: 0.6.4
@@ -56,6 +59,12 @@ importers:
       eve:
         specifier: ^0.47.6
         version: 0.47.6(@opentelemetry/api@1.9.1)(ai@7.0.79(zod@4.4.3))(lru-cache@11.5.2)
+      nice-grpc:
+        specifier: ^2.1.17
+        version: 2.1.17
+      nice-grpc-common:
+        specifier: ^2.0.4
+        version: 2.0.4
       spectrum-ts:
         specifier: ^12.8.0
         version: 12.8.0(typescript@7.0.2)

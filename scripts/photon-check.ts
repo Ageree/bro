@@ -143,5 +143,13 @@ assert(dedicated.includes("imessage_enabled: false"), "new identities are mail-o
 const pkg = readFileSync(new URL("../package.json", import.meta.url), "utf8");
 assert(pkg.includes("photon:check"), "npm script");
 assert(pkg.includes("spectrum-ts"), "spectrum-ts dependency");
+assert(pkg.includes('"@grpc/grpc-js"'), "grpc peer is a direct dep");
+assert(pkg.includes('"nice-grpc"'), "nice-grpc is a direct dep");
+assert(pkg.includes('"nice-grpc-common"'), "nice-grpc-common is a direct dep");
+
+const photonSrc = readFileSync(new URL("../agent/lib/photon.ts", import.meta.url), "utf8");
+assert(photonSrc.includes('import "@grpc/grpc-js"'), "photon pins grpc-js");
+assert(photonSrc.includes('import "nice-grpc"'), "photon pins nice-grpc");
+assert(photonSrc.includes('import "nice-grpc-common"'), "photon pins nice-grpc-common");
 
 console.log("photon-check ok");
