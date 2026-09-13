@@ -3,10 +3,10 @@
   var KINDS = { login: 1, payment: 1, address: 1, contact: 1 };
   var IDENTS = { email: 1, phone: 1, username: 1 };
   var KIND_RU = {
-    login: "вход",
-    payment: "карта",
-    address: "адрес",
-    contact: "контакт",
+    login: "Вход",
+    payment: "Карта",
+    address: "Адрес",
+    contact: "Контакт",
   };
 
   var site = window.bro.site;
@@ -97,13 +97,13 @@
       try {
         return new URL(origin).hostname;
       } catch (e) {
-        return "вход";
+        return "Вход";
       }
     }
     if (kind === "payment") return "Карта";
     if (kind === "address") return "Адрес";
     if (kind === "contact") return "Контакт";
-    return "вход";
+    return "Вход";
   }
 
   function applyPrefill(q) {

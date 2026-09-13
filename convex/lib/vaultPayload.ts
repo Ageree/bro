@@ -192,7 +192,7 @@ export function defaultVaultLabel(kind: VaultKind, secret: string): string {
   switch (kind) {
     case "login": {
       const login = parseLoginPayload(secret);
-      return login ? originHost(login.origin) : "вход";
+      return login ? originHost(login.origin) : "Вход";
     }
     case "payment":
       return "Карта";

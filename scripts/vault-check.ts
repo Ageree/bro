@@ -163,7 +163,7 @@ assert(defaultVaultLabel("payment", card) === "Карта", "default card label"
 assert(defaultVaultLabel("address", address) === "Адрес", "default address label");
 assert(defaultVaultLabel("contact", contact) === "Контакт", "default contact label");
 assert(defaultVaultLabel("login", login) === "www.wildberries.ru", "default login label");
-assert(defaultVaultLabel("login", "not json") === "вход", "unparsable login label");
+assert(defaultVaultLabel("login", "not json") === "Вход", "unparsable login label");
 
 const setup = vaultSetupRequestSchema.parse({
   kind: "login",
