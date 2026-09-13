@@ -1,0 +1,21 @@
+---
+description: Use Microsoft tgrep for all codebase text search
+alwaysApply: true
+---
+
+# tgrep
+
+This Cloud Agent environment has [Microsoft tgrep](https://github.com/microsoft/tgrep) installed. `tgrep serve` watches `/workspace` and keeps a trigram index warm.
+
+Prefer `tgrep` over the built-in Grep tool, `rg`, and `grep` for repository searches.
+
+```bash
+tgrep "pattern" /workspace
+tgrep "TODO|FIXME" /workspace -t ts
+tgrep "createTask" /workspace -l
+tgrep "pattern" /workspace -C 3
+tgrep --files /workspace -t ts
+tgrep status /workspace
+```
+
+The client auto-connects to the running server. Do not pass `--no-index` unless debugging the index.
