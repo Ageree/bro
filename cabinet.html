@@ -135,21 +135,6 @@
         return '<section class="sec" id="chatgpt">' +
           head("<h2>ChatGPT</h2>", chatgptStatusRu(g.status)) + bits + "</section>";
       }
-      function nowCard(me) {
-        var job = me.browserJob || { status: "", label: "Сейчас ничего не делает" };
-        var live = safeHttpUrl(job.liveUrl || "");
-        var bits = "";
-        if (job.task) bits += '<p class="t-small t-mute">' + esc(job.task) + "</p>";
-        if (job.startedAt) {
-          bits += '<p class="t-small t-mute">' + esc(when(job.startedAt, zoneOf(me))) + "</p>";
-        }
-        if (live) {
-          bits += '<div class="acts"><a class="act" id="browser-live" href="' +
-            esc(live) + '" target="_blank" rel="noopener noreferrer">Открыть</a></div>';
-        }
-        return '<section class="sec" id="now">' +
-          head("<h2>Сейчас</h2>", job.label) + bits + "</section>";
-      }
       function tzCard(me) {
         var zone = zoneOf(me);
         return '<section class="sec" id="tz">' +
@@ -358,7 +343,6 @@
           "</div>" +
           '<p class="status-line" id="write-status"></p>' +
           '<p class="status-line" id="pay-status"></p>' +
-          nowCard(me) +
           chatgptCard(me) +
           '<section class="sec"><div class="sec__head"><h2>Лимиты</h2></div>' +
           '<p class="t-small t-mute">Сообщения сегодня — ' + me.msgsUsed + " из " + me.msgsAllowance + "</p>" +
