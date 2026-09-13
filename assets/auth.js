@@ -17,6 +17,15 @@
     return /^bro-[a-z0-9]{8}$/.test(h || "");
   }
 
+  function queryHandle() {
+    try {
+      var q = new URLSearchParams(location.search).get("handle");
+      return validHandle(q) ? q : "";
+    } catch (e) {
+      return "";
+    }
+  }
+
   function storedHandle() {
     var h = (handle() || "").trim();
     return validHandle(h) ? h : "";
@@ -46,6 +55,9 @@
   function setHandle(h) {
     if (h) localStorage.setItem(HANDLE, h);
   }
+
+  var fromUrl = queryHandle();
+  if (fromUrl) setHandle(fromUrl);
 
   function setToken(t) {
     if (t) localStorage.setItem(TOKEN, t);

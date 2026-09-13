@@ -8,6 +8,7 @@ import {
   webhookOk,
 } from "../lib/inkbox";
 import {
+  attachCabinetLogin,
   bindPhotonInbound,
   countInboundMessage,
   getTenant,
@@ -24,12 +25,13 @@ import { prefetchInstinctRecall } from "../lib/instinct-recall.ts";
 import { prefetchOpenRouter } from "../lib/openrouter-warm.ts";
 import { shortAckAttribute } from "../lib/short-ack.ts";
 import {
-  helpText,
+  cabinetBaseUrl,
   isHelpAsk,
   isTelegramAsk,
   shouldSkipAgentTurn,
   welcomeBubbles,
 } from "../lib/onboard-policy";
+import { storedHandle } from "../../convex/lib/cabinetPolicy";
 import { ingestInboundMail } from "../lib/mail-inbound";
 import {
   connectCardHtml,
@@ -69,11 +71,40 @@ import {
 // ponytail: in-memory only — lost on restart, not shared across instances
 const wakeupDelivered = new Map<string, number>();
 
-async function sendFirstBindOnboard(opts: {
-  conversationId: string;
-}): Promise<void> {
+async function cabinetHandleForWelcome(opts: {
+  phone: string;
+  inkboxHandle?: string;
+  inkboxIdentityId?: string;
+  photonUserId?: string;
+}): Promise<string | undefined> {
+  const existing = storedHandle(opts.inkboxHandle);
+  if (existing) return existing;
+  const identityId = opts.inkboxIdentityId?.trim() || opts.photonUserId?.trim() || "photon";
   try {
-    for (const text of welcomeBubbles()) {
+    const minted = await attachCabinetLogin({
+      phoneE164: opts.phone,
+      identityId,
+    });
+    return storedHandle(minted.handle) ?? undefined;
+  } catch (err) {
+    console.error("cabinet handle attach failed", err);
+    return undefined;
+  }
+}
+
+async function sendWelcomeLetter(opts: {
+  conversationId: string;
+  phone: string;
+  inkboxHandle?: string;
+  inkboxIdentityId?: string;
+  photonUserId?: string;
+}): Promise<void> {
+  const handle = await cabinetHandleForWelcome(opts);
+  try {
+    for (const text of welcomeBubbles({
+      handle,
+      cabinetBase: cabinetBaseUrl(),
+    })) {
       await sendPhotonText({
         conversationId: opts.conversationId,
         text,
@@ -81,17 +112,6 @@ async function sendFirstBindOnboard(opts: {
     }
   } catch (err) {
     console.error("onboard welcome failed", err);
-  }
-}
-
-async function sendHelpCatalog(opts: { conversationId: string }): Promise<void> {
-  try {
-    await sendPhotonText({
-      conversationId: opts.conversationId,
-      text: helpText(),
-    });
-  } catch (err) {
-    console.error("help catalog failed", err);
   }
 }
 
@@ -307,7 +327,13 @@ export default defineChannel({
 
       if (!preview) {
         if (firstBind) {
-          await sendFirstBindOnboard({ conversationId: inbound.spaceId });
+          await sendWelcomeLetter({
+            conversationId: inbound.spaceId,
+            phone: inbound.senderPhone,
+            inkboxHandle: boundTenant.inkboxHandle,
+            inkboxIdentityId: boundTenant.inkboxIdentityId,
+            photonUserId: inbound.userId,
+          });
         }
         return new Response(null, { status: 204 });
       }
@@ -319,7 +345,13 @@ export default defineChannel({
       }
       if (gate.decision === "paywall") {
         if (firstBind) {
-          await sendFirstBindOnboard({ conversationId: inbound.spaceId });
+          await sendWelcomeLetter({
+            conversationId: inbound.spaceId,
+            phone: inbound.senderPhone,
+            inkboxHandle: boundTenant.inkboxHandle,
+            inkboxIdentityId: boundTenant.inkboxIdentityId,
+            photonUserId: inbound.userId,
+          });
         }
         await sendQuotaPaywall({
           conversationId: inbound.spaceId,
@@ -330,15 +362,27 @@ export default defineChannel({
       }
 
       if (firstBind) {
-        const onboard = sendFirstBindOnboard({ conversationId: inbound.spaceId });
+        const onboard = sendWelcomeLetter({
+          conversationId: inbound.spaceId,
+          phone: inbound.senderPhone,
+          inkboxHandle: boundTenant.inkboxHandle,
+          inkboxIdentityId: boundTenant.inkboxIdentityId,
+          photonUserId: inbound.userId,
+        });
         if (shouldSkipAgentTurn({ firstBind, text: inbound.text })) {
           await onboard;
         } else {
           parkTurn(waitUntil, onboard);
         }
       }
-      if (isHelpAsk(inbound.text)) {
-        await sendHelpCatalog({ conversationId: inbound.spaceId });
+      if (!firstBind && isHelpAsk(inbound.text)) {
+        await sendWelcomeLetter({
+          conversationId: inbound.spaceId,
+          phone: inbound.senderPhone,
+          inkboxHandle: boundTenant.inkboxHandle,
+          inkboxIdentityId: boundTenant.inkboxIdentityId,
+          photonUserId: inbound.userId,
+        });
       }
       if (isTelegramAsk(inbound.text)) {
         try {

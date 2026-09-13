@@ -123,6 +123,19 @@ export async function upsertTenant(
 
 export const getTenant = (phoneE164: string) => q(api.tenants.getByPhone)({ phoneE164 });
 
+/** Mint `bro-xxxxxxxx` for a phone-only tenant, or return the one they already have. */
+export async function attachCabinetLogin(opts: {
+  phoneE164: string;
+  identityId: string;
+}): Promise<{ handle: string; attached: boolean }> {
+  const result = await m(api.tenants.attachCabinetLoginForAgent)({
+    phoneE164: opts.phoneE164,
+    identityId: opts.identityId,
+  });
+  if (result.handle) forgetHandleTenant(result.handle);
+  return result;
+}
+
 type HandleTenant = FunctionReturnType<typeof api.tenants.getByHandle>;
 type TelegramTenant = FunctionReturnType<typeof api.tenants.getByTelegram>;
 

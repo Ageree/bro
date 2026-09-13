@@ -355,6 +355,8 @@ assert(authJs.includes('#login-open'), "auth binds #login-open");
 assert(authJs.includes('#login-modal'), "auth binds #login-modal");
 assert(!/\$\("\.login-open"\)/.test(authJs), "auth does not use class login-open");
 assert(authJs.includes("bro.handle"), "auth reads stored handle key");
+assert(authJs.includes("queryHandle"), "auth adopts handle from Bro's cabinet link");
+assert(authJs.includes("URLSearchParams"), "auth reads ?handle=");
 assert(authJs.includes("login-handle-row"), "auth still knows the handle row");
 assert(authJs.includes("login-have-bro"), "existing tenants can say they already have Bro");
 assert(authJs.includes("fieldHandle"), "existing tenants can enter the Bro they already have");
