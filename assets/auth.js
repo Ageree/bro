@@ -259,4 +259,7 @@
   }
 
   painted();
+  // Bro's vault/cabinet link carries ?handle= so the person is already known.
+  // Open the real login sheet on «Получить код» — do not invent a second path.
+  if (fromUrl && !token()) openModal();
 })();
