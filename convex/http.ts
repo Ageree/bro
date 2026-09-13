@@ -153,8 +153,6 @@ http.route({ path: "/me/browser-profile", method: "OPTIONS", handler: options() 
 http.route({ path: "/me/browser-profile/refresh", method: "OPTIONS", handler: options() });
 http.route({ path: "/me/memories/forget", method: "OPTIONS", handler: options() });
 http.route({ path: "/me/tz", method: "OPTIONS", handler: options() });
-http.route({ path: "/me/chatgpt/start", method: "OPTIONS", handler: options() });
-http.route({ path: "/me/chatgpt/disconnect", method: "OPTIONS", handler: options() });
 http.route({ path: "/vault/items", method: "OPTIONS", handler: options() });
 http.route({ path: "/vault/items/delete", method: "OPTIONS", handler: options() });
 
@@ -438,47 +436,6 @@ http.route({
     });
     console.log("composio webhook", event.triggerSlug, outcome);
     return json({ ok: true, outcome });
-  }),
-});
-
-http.route({
-  path: "/me/chatgpt/start",
-  method: "POST",
-  handler: httpAction(async (ctx, request) => {
-    const session = await sessionTenant(ctx, request);
-    if (!session) return unauthorized();
-    try {
-      const started = await ctx.runAction(
-        internal.chatgptSecrets.startDeviceLoginForTenant,
-        { tenantId: session.tenantId },
-      );
-      return json({ ok: true, ...started });
-    } catch (err) {
-      console.error("me/chatgpt/start", err);
-      return json({ ok: false, code: "unavailable" }, 503);
-    }
-  }),
-});
-
-http.route({
-  path: "/me/chatgpt/disconnect",
-  method: "POST",
-  handler: httpAction(async (ctx, request) => {
-    const session = await sessionTenant(ctx, request);
-    if (!session) return unauthorized();
-    const phone = await ctx.runQuery(internal.cabinet.sessionPhone, {
-      tenantId: session.tenantId,
-    });
-    if (!phone) return json({ ok: false, code: "unbound" }, 400);
-    try {
-      await ctx.runAction(internal.chatgptSecrets.disconnectForTenant, {
-        tenantId: session.tenantId,
-      });
-      return json({ ok: true });
-    } catch (err) {
-      console.error("me/chatgpt/disconnect", err);
-      return json({ ok: false, code: "unavailable" }, 503);
-    }
   }),
 });
 

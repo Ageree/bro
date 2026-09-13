@@ -1,6 +1,6 @@
-import { defineAgent, defineDynamic } from "eve";
+import { defineAgent } from "eve";
 import { z } from "zod";
-import { resolveBroModelForTurn } from "../../lib/resolve-bro-model";
+import { broModel } from "../../lib/model";
 
 const taskCompletionSchema = z.object({
   status: z.enum(["success", "failure"]),
@@ -10,11 +10,7 @@ const taskCompletionSchema = z.object({
 export default defineAgent({
   description:
     "Execute one bounded browser assignment for the root coordinator, including vault autofill, and return a structured verified result.",
-  model: defineDynamic({
-    events: {
-      "step.started": (_event, ctx) => resolveBroModelForTurn(ctx),
-    },
-  }),
+  ...broModel(),
   reasoning: "low",
   outputSchema: taskCompletionSchema,
   compaction: {

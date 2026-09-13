@@ -155,9 +155,8 @@ assert(
   snap.browserJob.status === "" && snap.browserJob.label === BROWSER_JOB_IDLE,
   "default browser job idle",
 );
-assert(snap.chatgpt.status === "none", "default chatgpt none");
 assert(!("computer" in snap), "snapshot has no computer card");
-assert(!("userCode" in snap.chatgpt), "snapshot never leaks userCode");
+assert(!("chatgpt" in snap), "snapshot has no chatgpt card");
 
 const withGear = buildSnapshot({
   handle: "bro-a1b2c3d4",
@@ -170,11 +169,8 @@ const withGear = buildSnapshot({
   browserAllowance: 5,
   browserMonthKey: "2026-08",
   payments: [],
-  chatgpt: { status: "connected", email: "a@b.c", planType: "plus" },
 });
-assert(withGear.chatgpt.status === "connected", "snapshot keeps chatgpt status");
-assert(withGear.chatgpt.email === "a@b.c", "snapshot keeps chatgpt email");
-assert(withGear.chatgpt.planType === "plus", "snapshot keeps chatgpt plan");
+assert(!("chatgpt" in withGear), "snapshot has no chatgpt card");
 
 const free = buildSnapshot({
   handle: "bro-a1b2c3d4",
@@ -445,16 +441,12 @@ assert(!cabinet.includes("<h2>Компьютер</h2>"), "cabinet has no compute
 assert(!cabinet.includes("/me/computer"), "cabinet has no computer route");
 assert(!cabinet.includes("Разбудить"), "cabinet has no wake copy");
 assert(!cabinet.includes("Стереть диск"), "cabinet has no wipe copy");
-assert(cabinet.includes('id="chatgpt"'), "cabinet chatgpt card");
-assert(cabinet.includes("<h2>ChatGPT</h2>"), "cabinet chatgpt title");
-assert(cabinet.includes('id="chatgpt-connect"'), "cabinet chatgpt connect");
-assert(cabinet.includes("Подключить"), "cabinet chatgpt connect copy");
-assert(cabinet.includes('id="chatgpt-disconnect"'), "cabinet chatgpt disconnect");
-assert(cabinet.includes("Отключить"), "cabinet chatgpt disconnect copy");
-assert(cabinet.includes("/me/chatgpt/start"), "chatgpt start route");
-assert(cabinet.includes("/me/chatgpt/disconnect"), "chatgpt disconnect route");
-assert(cabinet.includes("userCode"), "chatgpt start shows userCode only after start");
-assert(!cabinet.includes("me.chatgpt.userCode"), "snapshot userCode is not rendered");
+assert(!cabinet.includes('id="chatgpt"'), "cabinet has no chatgpt card");
+assert(!cabinet.includes("<h2>ChatGPT</h2>"), "cabinet has no chatgpt title");
+assert(!cabinet.includes("chatgpt-connect"), "cabinet has no chatgpt connect button");
+assert(!cabinet.includes("chatgpt-disconnect"), "cabinet has no chatgpt disconnect button");
+assert(!cabinet.includes("/me/chatgpt/start"), "cabinet has no chatgpt start route");
+assert(!cabinet.includes("/me/chatgpt/disconnect"), "cabinet has no chatgpt disconnect route");
 assert(cabinet.includes('id="tz"'), "cabinet tz card");
 assert(cabinet.includes("<h2>Часовой пояс</h2>"), "cabinet tz title");
 assert(cabinet.includes('id="tz-select"'), "cabinet tz select");
@@ -487,7 +479,7 @@ assert(cabinetSrc.includes("tz: v.optional(v.string())"), "snapshot validator ha
 assert(cabinetSrc.includes("browserJob:"), "snapshot validator has browserJob");
 assert(cabinetSrc.includes("browserJobForSnapshot"), "snapshotForTenant maps browser job");
 assert(!cabinetSrc.includes("computer:"), "snapshot validator has no computer");
-assert(cabinetSrc.includes("chatgpt:"), "snapshot validator has chatgpt");
+assert(!cabinetSrc.includes("chatgpt"), "snapshot validator has no chatgpt");
 assert(!snapshotValidatorHas(cabinetSrc, "boxId"), "cabinet snapshot does not expose boxId");
 assert(!snapshotValidatorHas(cabinetSrc, "userCode"), "cabinet snapshot does not expose userCode");
 assert(!cabinetSrc.includes("setTimezone"), "cabinet.ts does not add /me/tz mutation");
@@ -523,8 +515,8 @@ assert(
   !httpSrc.includes("internal.memories.forget"),
   "http forget does not call secret memories.forget",
 );
-assert(httpSrc.includes("/me/chatgpt/start"), "http chatgpt start");
-assert(httpSrc.includes("/me/chatgpt/disconnect"), "http chatgpt disconnect");
+assert(!httpSrc.includes("/me/chatgpt/start"), "http has no chatgpt start route");
+assert(!httpSrc.includes("/me/chatgpt/disconnect"), "http has no chatgpt disconnect route");
 assert(!httpSrc.includes("/me/computer"), "http has no computer route");
 const tenantsSrc = src("convex/tenants.ts");
 assert(
