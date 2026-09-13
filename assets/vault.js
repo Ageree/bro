@@ -430,7 +430,9 @@
       body: payload,
     })
       .then(function (res) {
-        return res.json().then(function (data) {
+        // an edge/proxy 5xx may carry an HTML body: parse best-effort so the
+        // status still reaches the branches below instead of the catch
+        return res.json().catch(function () { return null; }).then(function (data) {
           return { res: res, data: data };
         });
       })
