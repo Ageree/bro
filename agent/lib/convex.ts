@@ -609,26 +609,6 @@ export async function listOrders(
   return q(api.orders.listForPhone)({ phoneE164 });
 }
 
-export const chatgptStatus = (
-  phoneE164: string,
-): Promise<{
-  status: "none" | "pending" | "connected" | "quarantined";
-  email?: string;
-  planType?: string;
-}> => q(api.chatgpt.statusForAgent)({ phoneE164, now: Date.now() });
-
-export const chatgptToken = (phoneE164: string): Promise<{
-  status: "connected" | "none" | "quarantined";
-  accessToken?: string;
-  accountId?: string;
-}> => a(api.chatgptSecrets.tokenForAgent)({ phoneE164 });
-
-export const chatgptQuarantine = (
-  phoneE164: string,
-  reason: string,
-): Promise<boolean> =>
-  m(api.chatgpt.quarantineForAgent)({ phoneE164, now: Date.now(), reason });
-
 export type StoredFile = {
   id: string;
   name: string;

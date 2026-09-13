@@ -19,6 +19,12 @@ export type FileListItem = {
   sourceChannel?: FileSourceChannel;
 };
 
+export function requirePhone(phoneE164: string): string {
+  const phone = phoneE164.trim();
+  if (!phone) throw new Error("phoneE164 required");
+  return phone;
+}
+
 export function sanitizeFileName(raw: string): string {
   const base = raw.trim().replace(/\\/g, "/").split("/").pop() ?? "";
   const cleaned = base.replace(/[\0\n\r]/g, "").slice(0, FILE_NAME_MAX).trim();
