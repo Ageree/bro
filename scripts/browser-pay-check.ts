@@ -24,6 +24,12 @@ assert(normalizePayHost("wildberries") === undefined, "no-dot host rejected");
 assert(normalizePayHost("https://") === undefined, "empty URL rejected");
 assert(normalizePayHost("") === undefined, "empty string rejected");
 assert(normalizePayHost("   ") === undefined, "blank string rejected");
+assert(normalizePayHost("127.0.0.1") === undefined, "loopback rejected");
+assert(normalizePayHost("169.254.169.254") === undefined, "link-local rejected");
+assert(normalizePayHost("10.1.2.3") === undefined, "private IPv4 rejected");
+assert(normalizePayHost("192.168.1.1") === undefined, "private subnet rejected");
+assert(normalizePayHost("::1") === undefined, "IPv6 loopback rejected");
+assert(normalizePayHost("www.ozon.ru") === "ozon.ru", "www.ozon.ru normalizes to ozon.ru");
 
 // --- normalizePayHosts ---
 

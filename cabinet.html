@@ -194,7 +194,7 @@
           })
             .then(function (res) { return res.json(); })
             .then(function (data) {
-              if (data.ok && data.confirmationUrl) {
+              if (data.ok && data.confirmationUrl && /^https:\/\//.test(data.confirmationUrl)) {
                 window.location.href = data.confirmationUrl;
                 return;
               }

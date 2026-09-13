@@ -1,4 +1,5 @@
 import { inlineKeyboard, type TelegramButton } from "./telegram-text.ts";
+import { secretEquals } from "./secret-compare.ts";
 
 const API = "https://api.telegram.org";
 
@@ -78,9 +79,8 @@ export function telegramBotUsername(): string {
 
 export function webhookSecretOk(request: Request): boolean {
   const expected = telegramWebhookSecret();
-  if (!expected) return false;
   const got = request.headers.get("x-telegram-bot-api-secret-token");
-  return got === expected;
+  return secretEquals(got, expected);
 }
 
 /** iOS Telegram ghosts and overlaps cells when several bot messages land

@@ -5,7 +5,9 @@
  * field when the model asks for the alias by name, only while the page host
  * is one of the bound domains. Bindings die with the run.
  */
+import { isIP } from "node:net";
 import type { PaymentPayload } from "../../convex/lib/vaultPayload.ts";
+import { isPrivateHost } from "./public-host.ts";
 
 export const PAY_ALIASES = {
   number: "card_number",
@@ -30,6 +32,7 @@ export function normalizePayHost(raw: string): string | undefined {
   const stripped = hostname.startsWith("www.") ? hostname.slice(4) : hostname;
   if (!stripped.includes(".")) return undefined;
   if (!/^[a-z0-9.-]+$/.test(stripped)) return undefined;
+  if (isPrivateHost(stripped) || isIP(stripped)) return undefined;
   return stripped;
 }
 

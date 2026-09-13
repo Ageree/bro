@@ -10,7 +10,7 @@ import {
 } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { assertSecret } from "./secret";
-import { isValidHandle, makeHandle } from "./lib/accessPolicy";
+import { isValidHandle, makeHandle, phoneBindDecision } from "./lib/accessPolicy";
 import {
   browserAllowance,
   browserAllowedOnLimitError,
@@ -554,12 +554,24 @@ export const insertProvisioned = internalMutation({
       ) {
         patch.photonAssignedNumber = args.photonAssignedNumber;
       }
-      if (args.phoneE164 && !existing.phoneE164) patch.phoneE164 = args.phoneE164;
+      if (args.phoneE164 && !existing.phoneE164) {
+        const holder = await findTenantByPhone(ctx, args.phoneE164);
+        if (phoneBindDecision(holder?._id, existing._id) === "taken") {
+          throw new Error("phone already bound to another tenant");
+        }
+        patch.phoneE164 = args.phoneE164;
+      }
       if (Object.keys(patch).length) {
         await ctx.db.patch(existing._id, patch);
         return { ...existing, ...patch };
       }
       return existing;
+    }
+    if (args.phoneE164) {
+      const holder = await findTenantByPhone(ctx, args.phoneE164);
+      if (phoneBindDecision(holder?._id, undefined) === "taken") {
+        throw new Error("phone already bound to another tenant");
+      }
     }
     const email = args.emailAddress?.trim().toLowerCase();
     const id = await ctx.db.insert("tenants", {

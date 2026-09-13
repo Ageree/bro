@@ -24,6 +24,7 @@ import {
 import { prefetchInstinctRecall } from "../lib/instinct-recall.ts";
 import { prefetchOpenRouter } from "../lib/openrouter-warm.ts";
 import { shortAckAttribute } from "../lib/short-ack.ts";
+import { secretEquals } from "../lib/secret-compare.ts";
 import {
   cabinetBaseUrl,
   isHelpAsk,
@@ -223,8 +224,7 @@ export default defineChannel({
       } catch {
         return new Response("bad json", { status: 400 });
       }
-      const expected = process.env.BRO_INTERNAL_SECRET;
-      if (!expected || body.secret !== expected) {
+      if (!secretEquals(body.secret, process.env.BRO_INTERNAL_SECRET)) {
         return new Response("unauthorized", { status: 401 });
       }
       const conversationId =
@@ -528,8 +528,7 @@ export default defineChannel({
       } catch {
         return new Response("bad json", { status: 400 });
       }
-      const expected = process.env.BRO_INTERNAL_SECRET;
-      if (!expected || body.secret !== expected) {
+      if (!secretEquals(body.secret, process.env.BRO_INTERNAL_SECRET)) {
         return new Response("unauthorized", { status: 401 });
       }
       const tenantPhone =
@@ -561,8 +560,7 @@ export default defineChannel({
       } catch {
         return new Response("bad json", { status: 400 });
       }
-      const expected = process.env.BRO_INTERNAL_SECRET;
-      if (!expected || body.secret !== expected) {
+      if (!secretEquals(body.secret, process.env.BRO_INTERNAL_SECRET)) {
         return new Response("unauthorized", { status: 401 });
       }
       const conversationId =
@@ -591,8 +589,7 @@ export default defineChannel({
       } catch {
         return new Response("bad json", { status: 400 });
       }
-      const expected = process.env.BRO_INTERNAL_SECRET;
-      if (!expected || body.secret !== expected) {
+      if (!secretEquals(body.secret, process.env.BRO_INTERNAL_SECRET)) {
         return new Response("unauthorized", { status: 401 });
       }
       const conversationId =

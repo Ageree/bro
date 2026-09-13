@@ -10,7 +10,7 @@ import {
 } from "../convex/lib/accessPolicy.ts";
 import { assertSecret, timingSafeEqual } from "../convex/secret.ts";
 
-import { assert, withEnv } from "./lib/check.ts";
+import { assert, src, withEnv } from "./lib/check.ts";
 
 assert(isValidHandle("bro-a1b2c3d4"), "valid handle");
 assert(!isValidHandle("bro-ageree"), "old handle is not v1 format");
@@ -88,3 +88,29 @@ assert(
 );
 
 console.log("access-policy-check ok");
+
+import {
+  DEFAULT_ACCESS_CREATES_PER_HOUR,
+  accessCreatesPerHour,
+  phoneBindDecision,
+} from "../convex/lib/accessPolicy.ts";
+
+// One tenant per phone: `/access` must never mint a second identity (and a
+// cabinet session) on a number that already belongs to someone.
+assert(phoneBindDecision(undefined, undefined) === "ok", "free phone, new tenant");
+assert(phoneBindDecision(undefined, "t1") === "ok", "free phone, existing tenant");
+assert(phoneBindDecision("t1", "t1") === "ok", "same tenant re-binds");
+assert(phoneBindDecision("t1", "t2") === "taken", "other tenant holds the phone");
+assert(phoneBindDecision("t1", undefined) === "taken", "new tenant on a held phone");
+
+assert(accessCreatesPerHour(undefined) === DEFAULT_ACCESS_CREATES_PER_HOUR, "creates default");
+assert(accessCreatesPerHour("5") === 5, "creates override");
+assert(accessCreatesPerHour("0") === DEFAULT_ACCESS_CREATES_PER_HOUR, "zero → default");
+assert(accessCreatesPerHour("abc") === DEFAULT_ACCESS_CREATES_PER_HOUR, "junk → default");
+
+const accessSrc = src("convex/access.ts");
+assert(accessSrc.includes("getByPhoneInternal"), "requestAccess looks up the phone before creating");
+assert(accessSrc.indexOf("phoneBindDecision") < accessSrc.indexOf('inkbox("POST", "/identities"'), "phone check runs before the Inkbox identity is bought");
+assert(accessSrc.includes('"accessCreates"'), "identity creation is rate limited");
+const tenantsSrc = src("convex/tenants.ts");
+assert(tenantsSrc.includes("phone already bound to another tenant"), "insertProvisioned refuses a duplicate phone");

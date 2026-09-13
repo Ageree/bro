@@ -131,6 +131,7 @@ http.route({
       return new Response("оплата скоро", { status: 503 });
     }
     if (!tid) return new Response("нет tid", { status: 400 });
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(tid)) return new Response("нет tid", { status: 400 });
     try {
       const { confirmationUrl } = await ctx.runAction(
         internal.billing.createPaymentFor,

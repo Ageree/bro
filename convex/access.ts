@@ -2,12 +2,15 @@ import { v } from "convex/values";
 import { internalAction } from "./_generated/server";
 import { internal } from "./_generated/api";
 import {
+  accessCreatesPerHour,
   identityCap,
   identityCapReached,
   isIosUserAgent,
   isValidHandle,
   makeHandle,
+  phoneBindDecision,
 } from "./lib/accessPolicy";
+import { rateLimiter } from "./lib/rateLimits";
 import { identityCreateBody } from "./lib/dedicatedLinePolicy";
 import { mailWebhookUrl } from "./lib/mailPolicy";
 import { newSessionToken, sha256hex } from "./lib/cabinetPolicy";
@@ -44,6 +47,14 @@ function webhookBase(): string {
 
 function cap(): number {
   return identityCap(process.env.BRO_IDENTITY_CAP);
+}
+
+function phoneTaken() {
+  return {
+    ok: false as const,
+    code: "error" as const,
+    message: "Этот номер уже подключён — напиши Bro в iMessage",
+  };
 }
 
 async function inkbox(
@@ -137,6 +148,14 @@ export const requestAccess = internalAction({
             message: "Нужен номер телефона, чтобы открыть чат Bro",
           };
         }
+        if (!existing.phoneE164) {
+          const holder = await ctx.runQuery(internal.tenants.getByPhoneInternal, {
+            phoneE164: knownPhone,
+          });
+          if (phoneBindDecision(holder?._id, existing._id) === "taken") {
+            return phoneTaken();
+          }
+        }
         try {
           const link = await photonLinkFor(knownPhone);
           await ctx.runMutation(internal.tenants.insertProvisioned, {
@@ -183,6 +202,31 @@ export const requestAccess = internalAction({
         ok: false as const,
         code: "need_phone" as const,
         message: "Нужен номер телефона, чтобы открыть чат Bro",
+      };
+    }
+
+    // One tenant per phone: the cabinet, memories and wakeups are keyed by
+    // phone, so a second identity on a known number would expose the first.
+    const holder = await ctx.runQuery(internal.tenants.getByPhoneInternal, {
+      phoneE164,
+    });
+    if (phoneBindDecision(holder?._id, undefined) === "taken") {
+      return phoneTaken();
+    }
+
+    const { ok: createAllowed } = await rateLimiter.limit(ctx, "accessCreates", {
+      key: "global",
+      config: {
+        kind: "token bucket",
+        rate: accessCreatesPerHour(process.env.BRO_ACCESS_CREATES_PER_HOUR),
+        period: 60 * 60 * 1000,
+      },
+    });
+    if (!createAllowed) {
+      return {
+        ok: false as const,
+        code: "closed" as const,
+        message: "Пока закрыто",
       };
     }
 

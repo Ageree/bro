@@ -16,6 +16,7 @@ import {
 import { photoTargetFromAuth, sendPhotoToHuman } from "../agent/lib/send-photo.ts";
 import { deliverHuman } from "../agent/lib/deliver-human.ts";
 import { resetPhotoDedupe } from "../agent/lib/photo-dedupe.ts";
+import { isPrivateHost } from "../agent/lib/public-host.ts";
 
 import { assert, src } from "./lib/check.ts";
 
@@ -83,6 +84,56 @@ try {
 } catch (err) {
   assert(err instanceof Error && err.message.includes("https"), "ftp rejected");
 }
+
+try {
+  assertPublicPhotoUrl("https://127.0.0.1/a.png");
+  throw new Error("loopback should fail");
+} catch (err) {
+  assert(err instanceof Error && err.message.includes("публичном"), "loopback rejected");
+}
+
+try {
+  assertPublicPhotoUrl("https://169.254.169.254/x");
+  throw new Error("link-local should fail");
+} catch (err) {
+  assert(err instanceof Error && err.message.includes("публичном"), "link-local rejected");
+}
+
+try {
+  assertPublicPhotoUrl("https://localhost/x");
+  throw new Error("localhost should fail");
+} catch (err) {
+  assert(err instanceof Error && err.message.includes("публичном"), "localhost rejected");
+}
+
+try {
+  assertPublicPhotoUrl("https://[::1]/x");
+  throw new Error("IPv6 loopback should fail");
+} catch (err) {
+  assert(err instanceof Error && err.message.includes("публичном"), "IPv6 loopback rejected");
+}
+
+try {
+  assertPublicPhotoUrl("https://10.1.2.3/x");
+  throw new Error("private should fail");
+} catch (err) {
+  assert(err instanceof Error && err.message.includes("публичном"), "private rejected");
+}
+
+assert(assertPublicPhotoUrl("https://example.com/a.png") === "https://example.com/a.png", "public URL accepted");
+
+// isPrivateHost tests
+assert(isPrivateHost("example.com") === false, "example.com is public");
+assert(isPrivateHost("192.168.1.1") === true, "192.168.1.1 is private");
+assert(isPrivateHost("100.64.0.1") === true, "100.64.0.1 is CGNAT private");
+assert(isPrivateHost("8.8.8.8") === false, "8.8.8.8 is public");
+assert(isPrivateHost("::ffff:127.0.0.1") === true, "mapped IPv6 loopback is private");
+assert(isPrivateHost("localhost") === true, "localhost is private");
+assert(isPrivateHost("example.local") === true, "example.local is private");
+assert(isPrivateHost("127.0.0.1") === true, "127.0.0.1 is loopback");
+assert(isPrivateHost("::1") === true, "::1 is loopback");
+assert(isPrivateHost("10.0.0.1") === true, "10.0.0.1 is private");
+assert(isPrivateHost("169.254.1.1") === true, "169.254.1.1 is link-local");
 
 const fromPng = photoFromBytes(PNG, "shot.png");
 assert(fromPng.contentType === "image/png", "bytes png");

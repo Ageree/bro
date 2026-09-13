@@ -49,7 +49,7 @@ Sandbox tools (`COMPOSIO_REMOTE_WORKBENCH`, `COMPOSIO_REMOTE_BASH_TOOL`) have no
 Landing CTA creates a mail-only Inkbox identity plus a Photon shared user, then opens Messages (`sms:` to the assigned +1).
 `assets/config.js` holds the Convex HTTP site URL (`https://<deployment>.convex.site`).
 Set `INKBOX_API_KEY`, `INKBOX_WEBHOOK_URL`, and the `SPECTRUM_*` keys on the Convex deployment.
-Cap is `BRO_IDENTITY_CAP` (default 100).
+Cap is `BRO_IDENTITY_CAP` (default 100). One tenant per phone: `POST /access` refuses a number that already belongs to someone (memories, wakeups and the cabinet are keyed by phone), and identity creation is rate limited to `BRO_ACCESS_CREATES_PER_HOUR` (default 20) because the iOS user-agent gate is spoofable. Check: `npm run access:check`.
 
 Billing is a one-shot YooKassa month. Set `YOOKASSA_SHOP_ID` / `YOOKASSA_SECRET_KEY` on the Convex deployment; webhook URL is `https://<deployment>.convex.site/yookassa`. Empty keys keep the free beta, with daily message and monthly browser-job limits.
 

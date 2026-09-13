@@ -158,9 +158,6 @@ export async function tinyfishFetch(
   urls: string[],
   opts?: { format?: WebFetchFormat; timeoutSeconds?: number },
 ): Promise<{ pages: FetchPage[]; errors: FetchFailure[] } | TinyfishErr> {
-  const key = tinyfishKey();
-  if (!key) return { error: TINYFISH_MISSING_KEY };
-
   const clean: string[] = [];
   for (const raw of urls) {
     const url = raw.trim();
@@ -169,6 +166,9 @@ export async function tinyfishFetch(
     if (clean.length >= TINYFISH_MAX_FETCH_URLS) break;
   }
   if (clean.length === 0) return { error: "нужен хотя бы один http(s) URL" };
+
+  const key = tinyfishKey();
+  if (!key) return { error: TINYFISH_MISSING_KEY };
 
   const res = await tinyfishRequest(FETCH_URL, {
     method: "POST",

@@ -1,6 +1,7 @@
 import { posix as posixPath } from "node:path";
 import { filenameFromUrl } from "./files.ts";
 import { readLimited } from "./voice.ts";
+import { isPrivateHost } from "./public-host.ts";
 
 export const PHOTO_MAX_BYTES = 8 * 1024 * 1024;
 export const PHOTO_FETCH_TIMEOUT_MS = 15_000;
@@ -141,6 +142,9 @@ export function assertPublicPhotoUrl(raw: string): string {
   }
   if (parsed.protocol !== "https:") {
     throw new Error("нужен https URL картинки");
+  }
+  if (isPrivateHost(parsed.hostname)) {
+    throw new Error("картинка должна быть на публичном хосте");
   }
   return parsed.toString();
 }
