@@ -106,6 +106,18 @@
     return "Вход";
   }
 
+  function savedText(kind, fromCabinet) {
+    if (kind === "payment") {
+      return fromCabinet
+        ? "Карта добавлена. Bro уже видит её и готов совершать покупки."
+        : "Карта добавлена. Bro уже видит её и готов совершать покупки — напиши ему в iMessage.";
+    }
+    if (kind === "login") return "Вход сохранён. Bro сможет войти на сайт за тебя.";
+    if (kind === "address") return "Адрес сохранён. Bro укажет его при заказе.";
+    if (kind === "contact") return "Контакт сохранён.";
+    return "Готово.";
+  }
+
   function applyPrefill(q) {
     var kind = q.kind || "login";
     $("kind").value = kind;
@@ -457,9 +469,7 @@
         }
         clearSecrets();
         var fromCabinet = new URLSearchParams(location.search).get("from") === "cabinet";
-        setFlash(fromCabinet
-          ? "Готово. Карта в сейфе — Bro сможет платить."
-          : "Готово. Вернись в iMessage и напиши Bro.");
+        setFlash(savedText(kind, fromCabinet));
         return loadItems(base, now);
       })
       .catch(function () {
