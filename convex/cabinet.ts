@@ -232,6 +232,23 @@ export const finishLogin = internalMutation({
   },
 });
 
+async function photonSend(conversationId: string, text: string): Promise<null> {
+  const eve = (process.env.EVE_URL ?? "").replace(/\/$/, "");
+  const secret = process.env.BRO_INTERNAL_SECRET ?? "";
+  if (!eve || !secret) throw new Error("EVE_URL or BRO_INTERNAL_SECRET missing");
+  const res = await fetch(`${eve}/internal/photon-send`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ secret, conversationId, text }),
+    signal: AbortSignal.timeout(20_000),
+  });
+  if (!res.ok) {
+    const responseText = await res.text();
+    throw new Error(`photon send ${res.status}: ${responseText.slice(0, 200)}`);
+  }
+  return null;
+}
+
 export const sendLoginCode = internalAction({
   args: {
     identityId: v.string(),
@@ -241,24 +258,27 @@ export const sendLoginCode = internalAction({
   returns: v.null(),
   handler: async (_ctx, { identityId, conversationId, code }) => {
     void identityId;
-    const eve = (process.env.EVE_URL ?? "").replace(/\/$/, "");
-    const secret = process.env.BRO_INTERNAL_SECRET ?? "";
-    if (!eve || !secret) throw new Error("EVE_URL or BRO_INTERNAL_SECRET missing");
-    const res = await fetch(`${eve}/internal/photon-send`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        secret,
-        conversationId,
-        text: `Код входа в кабинет bro: ${code}`,
-      }),
-      signal: AbortSignal.timeout(20_000),
-    });
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`photon send ${res.status}: ${text.slice(0, 200)}`);
-    }
-    return null;
+    return await photonSend(conversationId, `Код входа в кабинет bro: ${code}`);
+  },
+});
+
+export const sendText = internalAction({
+  args: {
+    conversationId: v.string(),
+    text: v.string(),
+  },
+  returns: v.null(),
+  handler: async (_ctx, { conversationId, text }) => {
+    return await photonSend(conversationId, text);
+  },
+});
+
+export const conversationForTenant = internalQuery({
+  args: { tenantId: v.id("tenants") },
+  returns: v.union(v.string(), v.null()),
+  handler: async (ctx, { tenantId }) => {
+    const tenant = await ctx.db.get(tenantId);
+    return tenant?.photonConversationId || tenant?.inkboxConversationId || null;
   },
 });
 

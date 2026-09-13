@@ -14,6 +14,7 @@ import {
   parseLoginPayload,
   parsePaymentPayload,
   vaultAccountHint,
+  vaultAddedText,
   vaultItemOrigin,
   vaultSetupRequestSchema,
 } from "../convex/lib/vaultPayload.ts";
@@ -192,5 +193,18 @@ assert(
   vaultSetupRequestSchema.safeParse({ kind: "payment" }).success,
   "payment setup needs no label",
 );
+
+const addedText = vaultAddedText("payment", "Visa · •••• 4310");
+assert(
+  !!addedText?.includes("карта Visa · •••• 4310 добавлена"),
+  `payment added text: ${addedText}`,
+);
+assert(
+  !!addedText?.includes("Готов совершать покупки"),
+  `payment added text ready phrase: ${addedText}`,
+);
+assert(vaultAddedText("login", "www.wildberries.ru · i•••@mail.ru") === undefined, "login has no added text");
+assert(vaultAddedText("address", "Москва · Иван Петров") === undefined, "address has no added text");
+assert(vaultAddedText("contact", "Иван Петров") === undefined, "contact has no added text");
 
 console.log("vault ok");

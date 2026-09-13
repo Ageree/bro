@@ -187,6 +187,15 @@ export function vaultAccountHint(kind: VaultKind, secret: string): string {
   }
 }
 
+/**
+ * iMessage text sent to the tenant right after a vault item is saved, or
+ * `undefined` when that kind doesn't warrant one.
+ */
+export function vaultAddedText(kind: VaultKind, account: string): string | undefined {
+  if (kind !== "payment") return undefined;
+  return `Вижу, карта ${account} добавлена в сейф. Готов совершать покупки — просто напиши, что купить.`;
+}
+
 /** Label used when the human leaves the field empty: the site host for logins, the kind otherwise. */
 export function defaultVaultLabel(kind: VaultKind, secret: string): string {
   switch (kind) {

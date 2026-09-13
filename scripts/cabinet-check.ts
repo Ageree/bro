@@ -502,6 +502,7 @@ assert(!vault.includes("meadow"), "vault has no photograph behind it");
 assert(!vault.includes('class="card"'), "vault has no cards");
 const vaultJs = src("assets/vault.js");
 assert(!vaultJs.includes("ghost"), "vault rows do not paint the old pill button");
+assert(vaultJs.includes("Карта добавлена"), "vault savedText shows card added message");
 assert(brand.includes("--rule:"), "the system has one hairline token");
 assert(landing.includes('id="login-handle-row"'), "landing login handle row");
 

@@ -4,7 +4,12 @@ import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { isValidHandle } from "./lib/accessPolicy";
 import { newLoginCode, newSessionToken, sha256hex } from "./lib/cabinetPolicy";
-import { defaultVaultLabel, isValidVaultSecret } from "./lib/vaultPayload";
+import {
+  defaultVaultLabel,
+  isValidVaultSecret,
+  vaultAccountHint,
+  vaultAddedText,
+} from "./lib/vaultPayload";
 import {
   formatEvent,
   parseComposioEvent,
@@ -391,6 +396,23 @@ http.route({
         label,
         secret: body.secret,
       });
+      try {
+        const text = vaultAddedText(kind, vaultAccountHint(kind, body.secret));
+        if (text) {
+          const conversationId = await ctx.runQuery(
+            internal.cabinet.conversationForTenant,
+            { tenantId: session.tenantId },
+          );
+          if (conversationId) {
+            await ctx.scheduler.runAfter(0, internal.cabinet.sendText, {
+              conversationId,
+              text,
+            });
+          }
+        }
+      } catch (err) {
+        console.error("vault save notify", err);
+      }
       return json({ ok: true, handle });
     } catch (err) {
       console.error("vault save", err);
