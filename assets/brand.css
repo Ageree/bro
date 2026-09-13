@@ -15,6 +15,8 @@
   /* the one hairline: a rule dark enough to divide a long page, light
      enough that a column of them does not read as a table of boxes */
   --rule:      #e6e6e6;
+  /* the one accent: only an error line is allowed to leave the ink */
+  --alert:     #c62828;
 
   --pad:       clamp(1.15rem, 4vw, 2rem);
 
@@ -324,9 +326,7 @@ select.field {
 .form .choice input { width: auto; accent-color: var(--ink); }
 .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 0.7rem; max-width: 22rem; }
 .pair .field { max-width: 100%; }
-/* an error is set in ink, not in red: the palette is the palette, and the
-   captions around it are grey, so full black already reads as the loud one */
-.err { min-height: 1.3rem; margin-top: 0.8rem; font-size: 0.88rem; line-height: 1.45; }
+.err { min-height: 1.3rem; margin-top: 0.8rem; font-size: 0.88rem; line-height: 1.45; color: var(--alert); }
 
 /* a credential is the one inverted rectangle in the system */
 .cmd {

@@ -3,10 +3,10 @@
   var KINDS = { login: 1, payment: 1, address: 1, contact: 1 };
   var IDENTS = { email: 1, phone: 1, username: 1 };
   var KIND_RU = {
-    login: "вход",
-    payment: "карта",
-    address: "адрес",
-    contact: "контакт",
+    login: "Вход",
+    payment: "Карта",
+    address: "Адрес",
+    contact: "Контакт",
   };
 
   var site = window.bro.site;
@@ -97,13 +97,13 @@
       try {
         return new URL(origin).hostname;
       } catch (e) {
-        return "вход";
+        return "Вход";
       }
     }
     if (kind === "payment") return "Карта";
     if (kind === "address") return "Адрес";
     if (kind === "contact") return "Контакт";
-    return "вход";
+    return "Вход";
   }
 
   function applyPrefill(q) {
@@ -403,8 +403,8 @@
       return;
     }
     var label = ($("label").value || "").trim() || defaultLabel(kind, $("login-origin").value);
-    if (!label || label.length > 120) {
-      setError("Нужна короткая метка");
+    if (label.length > 120) {
+      setError("Метка — до 120 символов");
       return;
     }
     var built = buildSecret(kind);
@@ -430,7 +430,9 @@
       body: payload,
     })
       .then(function (res) {
-        return res.json().then(function (data) {
+        // an edge/proxy 5xx may carry an HTML body: parse best-effort so the
+        // status still reaches the branches below instead of the catch
+        return res.json().catch(function () { return null; }).then(function (data) {
           return { res: res, data: data };
         });
       })
@@ -443,6 +445,10 @@
         }
         if (got.res.status === 400 || (got.data && got.data.code === "invalid")) {
           setError("Проверь поля");
+          return;
+        }
+        if (got.res.status >= 500 || (got.data && got.data.code === "error")) {
+          setError("Сейф сейчас не работает — попробуй позже");
           return;
         }
         if (!got.res.ok || !got.data || !got.data.ok) {
