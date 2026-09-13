@@ -1,4 +1,11 @@
-/** First-bind onboarding and canned help. Pure: no Convex, no Inkbox client. */
+/** First-bind onboarding and canned help. Pure: no Convex I/O. */
+
+const HANDLE_RE = /^bro-[a-z0-9]{8}$/;
+
+function cabinetHandle(raw: string | undefined): string | undefined {
+  const h = raw?.trim() ?? "";
+  return HANDLE_RE.test(h) ? h : undefined;
+}
 
 const VOICE_PREFIX = /^\[voice\]\s*/i;
 
@@ -69,33 +76,72 @@ export function shouldSkipAgentTurn(input: {
   return false;
 }
 
-/** Separate iMessage bubbles. Keep each under ~90 chars.
- *  «Бро.» / «Bro.» as a line opener is only for the rare channel-ok ping,
- *  never for these welcome bubbles. */
-export function welcomeBubbles(opts?: { canJoinGroups?: boolean }): string[] {
-  void opts?.canJoinGroups;
-  return [
-    "Если нужно купить, записаться или напомнить — пиши как другу, сделаю сам.",
-    "Карту в чат не кидай: она лежит в сейфе. Группы в iMessage пока на паузе.",
-    "Если интересно, что ещё умею — напиши «что ты умеешь».",
-  ];
+/** Public cabinet / vault host. Override with BRO_CABINET_BASE or BRO_PAY_BASE. */
+export function cabinetBaseUrl(env: {
+  BRO_CABINET_BASE?: string;
+  BRO_PAY_BASE?: string;
+} = process.env): string {
+  const raw =
+    env.BRO_CABINET_BASE?.trim() ||
+    env.BRO_PAY_BASE?.trim() ||
+    "https://brobro.tech";
+  return raw.replace(/\/$/, "");
 }
 
-export function welcomeText(opts?: { canJoinGroups?: boolean }): string {
+/** Same path `vault_setup` / `createVaultSetupUrl` uses for a payment card. */
+export function vaultCardUrl(base: string, handle?: string): string {
+  const url = new URL("/vault.html", `${base.replace(/\/$/, "")}/`);
+  url.searchParams.set("kind", "payment");
+  const id = cabinetHandle(handle);
+  if (id) url.searchParams.set("handle", id);
+  return url.toString();
+}
+
+/** Real cabinet login: handle goes in the query so «Уже есть Bro» is prefilled. */
+export function cabinetLoginUrl(base: string, handle: string): string {
+  const url = new URL("/cabinet.html", `${base.replace(/\/$/, "")}/`);
+  const id = cabinetHandle(handle);
+  if (id) url.searchParams.set("handle", id);
+  return url.toString();
+}
+
+export type WelcomeOpts = {
+  canJoinGroups?: boolean;
+  handle?: string;
+  cabinetBase?: string;
+};
+
+/** First-contact letter. Same bubbles for a new bind and later «привет».
+ *  «Бро.» / «Bro.» as a line opener is only for the rare channel-ok ping. */
+export function welcomeBubbles(opts?: WelcomeOpts): string[] {
+  void opts?.canJoinGroups;
+  const base = opts?.cabinetBase ?? cabinetBaseUrl();
+  const handle = cabinetHandle(opts?.handle);
+  const vault = vaultCardUrl(base, handle);
+  const bubbles = [
+    "Привет, я Bro. Я твой личный ассистент.",
+    "Могу сам купить на Wildberries и Ozon, записаться к врачу или в салон, забронировать стол. Помню размер, адрес и пункт выдачи. Если попросишь — поставлю напоминание или прослежу за ценой. Когда сайт просит вход, скажи пароль или я пришлю ссылку. Письма приходят на мой ящик, коды ввожу сам. Тот же Bro есть в Telegram — напиши «телеграм». Группы в iMessage пока на паузе, сейчас только личные сообщения.",
+    "Пиши как другу — остальное на мне.",
+    `Чтобы я мог сам платить в интернете, положи карту в сейф. Открой ссылку и введи её там — номер в чат не пиши.\n${vault}`,
+  ];
+  if (handle) {
+    bubbles.push(
+      `Кабинет тоже сразу. Твой Bro — ${handle}. Открой ссылку, нажми «Получить код» — код придёт сюда.\n${cabinetLoginUrl(base, handle)}`,
+    );
+  } else {
+    bubbles.push(
+      `Кабинет — на brobro.tech. Открой сайт и нажми «Уже есть Bro», когда появится твой Bro.`,
+    );
+  }
+  return bubbles;
+}
+
+export function welcomeText(opts?: WelcomeOpts): string {
   return welcomeBubbles(opts).join("\n\n");
 }
 
-export function helpText(opts?: { canJoinGroups?: boolean }): string {
-  void opts?.canJoinGroups;
-  return [
-    "Могу сам купить на Wildberries и Ozon, записаться к врачу или в салон, забронировать стол.",
-    "",
-    "Помню размер, адрес и ПВЗ. Напоминания и сторожа тоже на мне. Плачу из сейфа — номер карты в чат не пиши. Если сайт просит вход, скажи пароль или я пришлю ссылку.",
-    "",
-    "Письма приходят на мой ящик, коды ввожу сам. Тот же Bro есть в Telegram — напиши «телеграм». Группы в iMessage пока на паузе, сейчас только личка.",
-    "",
-    "Пиши как другу.",
-  ].join("\n");
+export function helpText(opts?: WelcomeOpts): string {
+  return welcomeText(opts);
 }
 
 function escapeVcardText(value: string): string {

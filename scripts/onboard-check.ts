@@ -1,10 +1,12 @@
 import {
   broVcard,
+  cabinetLoginUrl,
   helpText,
   isConnectOrEmptyInbound,
   isHelpAsk,
   isTelegramAsk,
   shouldSkipAgentTurn,
+  vaultCardUrl,
   welcomeBubbles,
   welcomeText,
 } from "../agent/lib/onboard-policy.ts";
@@ -91,28 +93,56 @@ assert(
   "later connect is not auto-skip",
 );
 
-const welcome = welcomeText();
-const help = helpText();
-const welcomeJoin = welcomeText({ canJoinGroups: true });
-const helpJoin = helpText({ canJoinGroups: true });
-const bubbles = welcomeBubbles();
+const welcome = welcomeText({
+  handle: "bro-a1b2c3d4",
+  cabinetBase: "https://brobro.tech",
+});
+const help = helpText({
+  handle: "bro-a1b2c3d4",
+  cabinetBase: "https://brobro.tech",
+});
+const welcomeJoin = welcomeText({
+  canJoinGroups: true,
+  handle: "bro-a1b2c3d4",
+  cabinetBase: "https://brobro.tech",
+});
+const helpJoin = helpText({
+  canJoinGroups: true,
+  handle: "bro-a1b2c3d4",
+  cabinetBase: "https://brobro.tech",
+});
+const bubbles = welcomeBubbles({
+  handle: "bro-a1b2c3d4",
+  cabinetBase: "https://brobro.tech",
+});
 const broOpener = /^(?:Бро|Bro)\./;
 assert(welcome.trim().length > 0, "welcome nonempty");
 assert(help.trim().length > 0, "help nonempty");
+assert(welcome === help, "welcome and help are the same letter");
 assert(hasCyrillic(welcome), "welcome russian");
 assert(hasCyrillic(help), "help russian");
 assert(!welcome.includes("**"), "welcome no markdown bold");
 assert(!help.includes("**"), "help no markdown bold");
 assert(!/\[[^\]]+\]\(/ .test(welcome), "welcome no markdown links");
 assert(!/\[[^\]]+\]\(/ .test(help), "help no markdown links");
-assert(welcome.includes("что ты умеешь"), "welcome points at catalog");
+assert(welcome.startsWith("Привет, я Bro."), "welcome opens as a person");
 assert(/сейф/i.test(welcome), "welcome vault card");
-assert(bubbles.length >= 2 && bubbles.length <= 3, "welcome is a few short bubbles");
+assert(welcome.includes("vault.html?kind=payment"), "welcome sends the real vault card URL");
+assert(welcome.includes("bro-a1b2c3d4"), "welcome gives the real cabinet handle");
+assert(welcome.includes("/cabinet.html?handle=bro-a1b2c3d4"), "welcome sends cabinet login URL");
+assert(
+  vaultCardUrl("https://brobro.tech", "bro-a1b2c3d4").includes("kind=payment"),
+  "vault URL is payment setup",
+);
+assert(
+  cabinetLoginUrl("https://brobro.tech", "bro-a1b2c3d4").includes("handle=bro-a1b2c3d4"),
+  "cabinet URL carries handle",
+);
+assert(bubbles.length >= 4 && bubbles.length <= 6, "welcome is a letter then vault and cabinet");
+assert(bubbles[0] === "Привет, я Bro. Я твой личный ассистент.", "first bubble is the greeting");
 for (const bubble of bubbles) {
-  assert(bubble.length > 0 && bubble.length <= 90, `welcome bubble short: ${bubble}`);
-  assert(!bubble.includes("\n"), "welcome bubble is one line");
+  assert(bubble.length > 0 && bubble.length <= 700, `welcome bubble sized: ${bubble.slice(0, 40)}`);
   assert(!broOpener.test(bubble), `welcome bubble no Bro. opener: ${bubble}`);
-  assert(/[.!?…»)]$/.test(bubble.trim()), `welcome bubble is a sentence: ${bubble}`);
 }
 assert(!broOpener.test(help), "help no Bro. opener");
 assert(!help.includes("•"), "help is spoken prose, not a bullet dump");
@@ -120,7 +150,6 @@ assert(
   !help.split("\n").some((line) => /^[-*•]/.test(line.trim())),
   "help has no list markers",
 );
-assert(help.split("\n").filter((l) => l.startsWith("•")).length <= 9, "help stays a short list");
 assert(/Wildberries|Ozon|WB/i.test(help), "help buy");
 assert(/запис|бронь/i.test(help), "help bookings");
 assert(/помн/i.test(help), "help memory");
@@ -133,6 +162,7 @@ assert(!/добав/i.test(welcome), "welcome does not promise add");
 assert(!/добав/i.test(welcomeJoin), "welcome never promises group add on Pro");
 assert(/Business|пауз/i.test(helpJoin), "help says groups after Business");
 assert(/пауз/i.test(welcome), "welcome says groups paused");
+assert(/Получить код/i.test(welcome), "welcome explains the iMessage login code");
 
 const bare = broVcard({});
 assert(bare.startsWith("BEGIN:VCARD\r\n"), "vcard begin crlf");
@@ -160,15 +190,16 @@ assert(!injected.includes("TEL"), "garbage tel omitted");
 const channel = src("agent/channels/imessage.ts");
 assert(channel.includes("if (firstBind)"), "channel sends onboard on firstBind");
 assert(
-  channel.includes("if (!preview)") && channel.includes("sendFirstBindOnboard"),
+  channel.includes("if (!preview)") && channel.includes("sendWelcomeLetter"),
   "empty preview still onboards on first bind",
 );
 assert(channel.includes("welcomeBubbles"), "channel sends welcome as short bubbles");
+assert(channel.includes("attachCabinetLogin"), "channel mints a cabinet handle if missing");
 assert(
   channel.includes("parkTurn(waitUntil, onboard)"),
   "first-bind welcome does not block the agent turn",
 );
-assert(channel.includes("sendHelpCatalog"), "channel sends canned help");
+assert(channel.includes("!firstBind && isHelpAsk"), "later help resends the same letter");
 assert(channel.includes("/webhooks/photon"), "channel has Photon inbound");
 assert(channel.includes("bindPhotonInbound"), "channel binds Photon DM");
 assert(channel.includes("photonNudgeText"), "old Inkbox thread gets one nudge");

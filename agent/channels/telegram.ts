@@ -1,5 +1,6 @@
 import { defineChannel, POST } from "eve/channels";
 import {
+  attachCabinetLogin,
   bindTelegram,
   getTenantByTelegram,
   loadWakeContext,
@@ -9,11 +10,13 @@ import {
 import { prefetchInstinctRecall } from "../lib/instinct-recall.ts";
 import { prefetchOpenRouter } from "../lib/openrouter-warm.ts";
 import {
+  cabinetBaseUrl,
   helpText,
   isHelpAsk,
   isTelegramAsk,
   shouldSkipAgentTurn,
 } from "../lib/onboard-policy";
+import { storedHandle } from "../../convex/lib/cabinetPolicy";
 import {
   assembleInboundContent,
   prefetchInboundImages,
@@ -292,9 +295,24 @@ export default defineChannel({
       }
 
       if (isHelpAsk(inbound.text)) {
-        await sendHtml(chatId, helpText()).catch((err) =>
-          console.error("telegram help failed", err),
-        );
+        let handle = storedHandle(tenant.inkboxHandle) ?? undefined;
+        if (!handle) {
+          const identityId =
+            tenant.inkboxIdentityId?.trim() || tenant.telegramUserId?.trim() || "telegram";
+          handle = await attachCabinetLogin({
+            phoneE164: phone,
+            identityId,
+          })
+            .then((row) => storedHandle(row.handle) ?? undefined)
+            .catch((err) => {
+              console.error("cabinet handle attach failed", err);
+              return undefined;
+            });
+        }
+        await sendHtml(
+          chatId,
+          helpText({ handle, cabinetBase: cabinetBaseUrl() }),
+        ).catch((err) => console.error("telegram help failed", err));
       }
       if (isTelegramAsk(inbound.text)) {
         const bot = telegramBotUsername();
