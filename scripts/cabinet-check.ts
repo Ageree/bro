@@ -155,9 +155,8 @@ assert(
   snap.browserJob.status === "" && snap.browserJob.label === BROWSER_JOB_IDLE,
   "default browser job idle",
 );
-assert(snap.chatgpt.status === "none", "default chatgpt none");
 assert(!("computer" in snap), "snapshot has no computer card");
-assert(!("userCode" in snap.chatgpt), "snapshot never leaks userCode");
+assert(!("chatgpt" in snap), "snapshot has no chatgpt card");
 
 const withGear = buildSnapshot({
   handle: "bro-a1b2c3d4",
@@ -170,11 +169,8 @@ const withGear = buildSnapshot({
   browserAllowance: 5,
   browserMonthKey: "2026-08",
   payments: [],
-  chatgpt: { status: "connected", email: "a@b.c", planType: "plus" },
 });
-assert(withGear.chatgpt.status === "connected", "snapshot keeps chatgpt status");
-assert(withGear.chatgpt.email === "a@b.c", "snapshot keeps chatgpt email");
-assert(withGear.chatgpt.planType === "plus", "snapshot keeps chatgpt plan");
+assert(!("chatgpt" in withGear), "snapshot has no chatgpt card");
 
 const free = buildSnapshot({
   handle: "bro-a1b2c3d4",
@@ -419,6 +415,11 @@ assert(cabinet.includes("Написать Bro"), "cabinet write-bro cta");
 assert(cabinet.includes('id="login-have-bro"'), "cabinet keeps the existing-tenant path");
 assert(cabinet.includes("Уже есть Bro"), "cabinet existing-tenant copy is short");
 assert(cabinet.includes('id="write-bro"'), "cabinet write-bro id");
+assert(cabinet.includes('id="pay-now"'), "cabinet pay cta");
+assert(cabinet.includes("Оплатить месяц"), "cabinet pay copy");
+assert(cabinet.includes("<h2>Лимиты</h2>"), "cabinet limits title");
+assert(cabinet.includes("<h2>Входы в сайты</h2>"), "cabinet site-logins title");
+assert(cabinet.includes("<h2>Оплаты</h2>"), "cabinet payments title");
 assert(cabinet.includes("broIMessageLink"), "write-bro uses the static iMessage link");
 assert(!/fetch\(base \+ "\/access"/.test(cabinet), "write-bro does not POST /access");
 assert(!cabinet.includes("need_phone"), "write-bro does not ask for a phone");
@@ -426,25 +427,26 @@ assert(cabinet.includes("Открой на iPhone"), "write-bro desktop hint");
 assert(cabinet.includes("Память"), "cabinet memory card");
 assert(cabinet.includes("Забыть"), "cabinet forget button");
 assert(cabinet.includes("/me/memories/forget"), "forget posts to cabinet route");
-assert(cabinet.includes('id="now"'), "cabinet now card");
-assert(cabinet.includes("<h2>Сейчас</h2>"), "cabinet now title");
-assert(cabinet.includes("browserJob"), "cabinet reads snapshot browserJob");
-assert(cabinet.includes("Открыть"), "cabinet liveUrl open");
+assert(!cabinet.includes('id="now"'), "cabinet has no now card");
+assert(!cabinet.includes("<h2>Сейчас</h2>"), "cabinet has no now title");
+assert(!cabinet.includes("nowCard"), "cabinet has no nowCard");
+assert(!cabinet.includes("browserJob"), "cabinet does not read snapshot browserJob");
+assert(!cabinet.includes("Сейчас ничего не делает"), "cabinet has no idle job label");
+assert(!cabinet.includes('id="browser-live"'), "cabinet has no live viewer");
+assert(!cabinet.includes("computerCard"), "cabinet has no computerCard");
+assert(!cabinet.includes("bindComputer"), "cabinet has no bindComputer");
+assert(!cabinet.includes("computerStateRu"), "cabinet has no computerStateRu");
 assert(!cabinet.includes('id="computer"'), "cabinet has no computer card");
 assert(!cabinet.includes("<h2>Компьютер</h2>"), "cabinet has no computer title");
 assert(!cabinet.includes("/me/computer"), "cabinet has no computer route");
 assert(!cabinet.includes("Разбудить"), "cabinet has no wake copy");
 assert(!cabinet.includes("Стереть диск"), "cabinet has no wipe copy");
-assert(cabinet.includes('id="chatgpt"'), "cabinet chatgpt card");
-assert(cabinet.includes("<h2>ChatGPT</h2>"), "cabinet chatgpt title");
-assert(cabinet.includes('id="chatgpt-connect"'), "cabinet chatgpt connect");
-assert(cabinet.includes("Подключить"), "cabinet chatgpt connect copy");
-assert(cabinet.includes('id="chatgpt-disconnect"'), "cabinet chatgpt disconnect");
-assert(cabinet.includes("Отключить"), "cabinet chatgpt disconnect copy");
-assert(cabinet.includes("/me/chatgpt/start"), "chatgpt start route");
-assert(cabinet.includes("/me/chatgpt/disconnect"), "chatgpt disconnect route");
-assert(cabinet.includes("userCode"), "chatgpt start shows userCode only after start");
-assert(!cabinet.includes("me.chatgpt.userCode"), "snapshot userCode is not rendered");
+assert(!cabinet.includes('id="chatgpt"'), "cabinet has no chatgpt card");
+assert(!cabinet.includes("<h2>ChatGPT</h2>"), "cabinet has no chatgpt title");
+assert(!cabinet.includes("chatgpt-connect"), "cabinet has no chatgpt connect button");
+assert(!cabinet.includes("chatgpt-disconnect"), "cabinet has no chatgpt disconnect button");
+assert(!cabinet.includes("/me/chatgpt/start"), "cabinet has no chatgpt start route");
+assert(!cabinet.includes("/me/chatgpt/disconnect"), "cabinet has no chatgpt disconnect route");
 assert(cabinet.includes('id="tz"'), "cabinet tz card");
 assert(cabinet.includes("<h2>Часовой пояс</h2>"), "cabinet tz title");
 assert(cabinet.includes('id="tz-select"'), "cabinet tz select");
@@ -477,7 +479,7 @@ assert(cabinetSrc.includes("tz: v.optional(v.string())"), "snapshot validator ha
 assert(cabinetSrc.includes("browserJob:"), "snapshot validator has browserJob");
 assert(cabinetSrc.includes("browserJobForSnapshot"), "snapshotForTenant maps browser job");
 assert(!cabinetSrc.includes("computer:"), "snapshot validator has no computer");
-assert(cabinetSrc.includes("chatgpt:"), "snapshot validator has chatgpt");
+assert(!cabinetSrc.includes("chatgpt"), "snapshot validator has no chatgpt");
 assert(!snapshotValidatorHas(cabinetSrc, "boxId"), "cabinet snapshot does not expose boxId");
 assert(!snapshotValidatorHas(cabinetSrc, "userCode"), "cabinet snapshot does not expose userCode");
 assert(!cabinetSrc.includes("setTimezone"), "cabinet.ts does not add /me/tz mutation");
@@ -500,6 +502,7 @@ assert(!vault.includes("meadow"), "vault has no photograph behind it");
 assert(!vault.includes('class="card"'), "vault has no cards");
 const vaultJs = src("assets/vault.js");
 assert(!vaultJs.includes("ghost"), "vault rows do not paint the old pill button");
+assert(vaultJs.includes("Карта добавлена"), "vault savedText shows card added message");
 assert(brand.includes("--rule:"), "the system has one hairline token");
 assert(landing.includes('id="login-handle-row"'), "landing login handle row");
 
@@ -513,8 +516,8 @@ assert(
   !httpSrc.includes("internal.memories.forget"),
   "http forget does not call secret memories.forget",
 );
-assert(httpSrc.includes("/me/chatgpt/start"), "http chatgpt start");
-assert(httpSrc.includes("/me/chatgpt/disconnect"), "http chatgpt disconnect");
+assert(!httpSrc.includes("/me/chatgpt/start"), "http has no chatgpt start route");
+assert(!httpSrc.includes("/me/chatgpt/disconnect"), "http has no chatgpt disconnect route");
 assert(!httpSrc.includes("/me/computer"), "http has no computer route");
 const tenantsSrc = src("convex/tenants.ts");
 assert(

@@ -17,11 +17,11 @@ import {
   FILE_BINARY_MAX,
   listedFile,
   listFilesForTenant,
+  requirePhone,
   tenantIdByPhone,
   upsertFile,
   type FileListItem,
 } from "./lib/fileStore";
-import { requirePhone } from "./lib/chatgptPolicy";
 
 const sourceChannel = v.union(
   v.literal("imessage"),

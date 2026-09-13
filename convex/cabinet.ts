@@ -4,9 +4,7 @@ import {
   internalAction,
   internalMutation,
   internalQuery,
-  type QueryCtx,
 } from "./_generated/server";
-import type { Id } from "./_generated/dataModel";
 import { timingSafeEqual } from "./secret";
 import {
   browserAllowance,
@@ -29,10 +27,8 @@ import {
   sessionExpiry,
   sessionLive,
   type CabinetSnapshot,
-  type ChatgptSnapshot,
   type PaymentRow,
 } from "./lib/cabinetPolicy";
-import { nextLoginStatus, snapshotStatus } from "./lib/chatgptPolicy";
 import { browserJobForSnapshot } from "./lib/browserJobPolicy";
 import { lineMatches, SCAN_LINES, WAKE_LINES } from "./lib/memoryPolicy";
 import {
@@ -82,16 +78,6 @@ const snapshotValidator = v.object({
     task: v.optional(v.string()),
     liveUrl: v.optional(v.string()),
     startedAt: v.optional(v.number()),
-  }),
-  chatgpt: v.object({
-    status: v.union(
-      v.literal("none"),
-      v.literal("pending"),
-      v.literal("connected"),
-      v.literal("quarantined"),
-    ),
-    planType: v.optional(v.string()),
-    email: v.optional(v.string()),
   }),
 });
 
@@ -246,6 +232,23 @@ export const finishLogin = internalMutation({
   },
 });
 
+async function photonSend(conversationId: string, text: string): Promise<null> {
+  const eve = (process.env.EVE_URL ?? "").replace(/\/$/, "");
+  const secret = process.env.BRO_INTERNAL_SECRET ?? "";
+  if (!eve || !secret) throw new Error("EVE_URL or BRO_INTERNAL_SECRET missing");
+  const res = await fetch(`${eve}/internal/photon-send`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ secret, conversationId, text }),
+    signal: AbortSignal.timeout(20_000),
+  });
+  if (!res.ok) {
+    const responseText = await res.text();
+    throw new Error(`photon send ${res.status}: ${responseText.slice(0, 200)}`);
+  }
+  return null;
+}
+
 export const sendLoginCode = internalAction({
   args: {
     identityId: v.string(),
@@ -255,35 +258,27 @@ export const sendLoginCode = internalAction({
   returns: v.null(),
   handler: async (_ctx, { identityId, conversationId, code }) => {
     void identityId;
-    const eve = (process.env.EVE_URL ?? "").replace(/\/$/, "");
-    const secret = process.env.BRO_INTERNAL_SECRET ?? "";
-    if (!eve || !secret) throw new Error("EVE_URL or BRO_INTERNAL_SECRET missing");
-    const res = await fetch(`${eve}/internal/photon-send`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        secret,
-        conversationId,
-        text: `Код входа в кабинет bro: ${code}`,
-      }),
-      signal: AbortSignal.timeout(20_000),
-    });
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`photon send ${res.status}: ${text.slice(0, 200)}`);
-    }
-    return null;
+    return await photonSend(conversationId, `Код входа в кабинет bro: ${code}`);
   },
 });
 
-export const sessionPhone = internalQuery({
+export const sendText = internalAction({
+  args: {
+    conversationId: v.string(),
+    text: v.string(),
+  },
+  returns: v.null(),
+  handler: async (_ctx, { conversationId, text }) => {
+    return await photonSend(conversationId, text);
+  },
+});
+
+export const conversationForTenant = internalQuery({
   args: { tenantId: v.id("tenants") },
-  returns: v.union(v.object({ phoneE164: v.string() }), v.null()),
+  returns: v.union(v.string(), v.null()),
   handler: async (ctx, { tenantId }) => {
     const tenant = await ctx.db.get(tenantId);
-    const phone = tenant?.phoneE164?.trim();
-    if (!phone) return null;
-    return { phoneE164: phone };
+    return tenant?.photonConversationId || tenant?.inkboxConversationId || null;
   },
 });
 
@@ -376,48 +371,9 @@ export const snapshotForTenant = internalQuery({
       }),
       tz: tenant.tz,
       browserJob: browserJobForSnapshot(tenant),
-      chatgpt: await chatgptSnapshot(ctx, tenant._id, now),
     });
   },
 });
-
-async function chatgptSnapshot(
-  ctx: QueryCtx,
-  tenantId: Id<"tenants">,
-  now: number,
-): Promise<ChatgptSnapshot> {
-  const accounts = await ctx.db
-    .query("chatgptAccounts")
-    .withIndex("by_tenant", (q) => q.eq("tenantId", tenantId))
-    .collect();
-  const account = accounts
-    .slice()
-    .sort((a, b) => a.connectedAt - b.connectedAt)[0];
-  const logins = await ctx.db
-    .query("chatgptLogins")
-    .withIndex("by_tenant", (q) => q.eq("tenantId", tenantId))
-    .collect();
-  const login = logins
-    .slice()
-    .sort((a, b) => (b._creationTime ?? b.expiresAt) - (a._creationTime ?? a.expiresAt))[0];
-  const loginStatus = login
-    ? nextLoginStatus({
-        status: login.status,
-        expiresAt: login.expiresAt,
-        now,
-      })
-    : undefined;
-  const status = snapshotStatus({
-    hasAccount: account !== undefined,
-    quarantinedAt: account?.quarantinedAt,
-    loginStatus,
-  });
-  return {
-    status,
-    ...(account?.planType ? { planType: account.planType } : {}),
-    ...(account?.email ? { email: account.email } : {}),
-  };
-}
 
 export const attachBrowserProfile = internalMutation({
   args: {

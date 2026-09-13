@@ -56,8 +56,7 @@
     "wakeups:check": "node --experimental-strip-types scripts/wakeups-check.ts",
     "photon:check": "node --experimental-strip-types scripts/photon-check.ts",
     "photon:webhooks": "node --env-file=.env.local --experimental-strip-types scripts/setup-photon-webhook.ts",
-    "provision:inkbox": "node --experimental-strip-types scripts/provision-inkbox.ts",
-    "chatgpt:check": "node --experimental-strip-types scripts/chatgpt-check.ts"
+    "provision:inkbox": "node --experimental-strip-types scripts/provision-inkbox.ts"
   },
   "dependencies": {
     "@ai-sdk/openai": "^4.0.47",

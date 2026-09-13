@@ -7,12 +7,14 @@ import {
 import {
   cardBrand,
   createVaultSetupUrl,
+  defaultVaultLabel,
   isValidVaultSecret,
   originHost,
   parseAddressPayload,
   parseLoginPayload,
   parsePaymentPayload,
   vaultAccountHint,
+  vaultAddedText,
   vaultItemOrigin,
   vaultSetupRequestSchema,
 } from "../convex/lib/vaultPayload.ts";
@@ -158,6 +160,12 @@ assert(originHost("https://www.ozon.ru") === "www.ozon.ru", "origin host");
 assert(vaultItemOrigin("login", login) === "https://www.wildberries.ru", "login origin");
 assert(vaultItemOrigin("payment", card) === undefined, "only logins bind an origin");
 
+assert(defaultVaultLabel("payment", card) === "Карта", "default card label");
+assert(defaultVaultLabel("address", address) === "Адрес", "default address label");
+assert(defaultVaultLabel("contact", contact) === "Контакт", "default contact label");
+assert(defaultVaultLabel("login", login) === "www.wildberries.ru", "default login label");
+assert(defaultVaultLabel("login", "not json") === "Вход", "unparsable login label");
+
 const setup = vaultSetupRequestSchema.parse({
   kind: "login",
   label: "Wildberries",
@@ -185,5 +193,18 @@ assert(
   vaultSetupRequestSchema.safeParse({ kind: "payment" }).success,
   "payment setup needs no label",
 );
+
+const addedText = vaultAddedText("payment", "Visa · •••• 4310");
+assert(
+  !!addedText?.includes("карта Visa · •••• 4310 добавлена"),
+  `payment added text: ${addedText}`,
+);
+assert(
+  !!addedText?.includes("Готов совершать покупки"),
+  `payment added text ready phrase: ${addedText}`,
+);
+assert(vaultAddedText("login", "www.wildberries.ru · i•••@mail.ru") === undefined, "login has no added text");
+assert(vaultAddedText("address", "Москва · Иван Петров") === undefined, "address has no added text");
+assert(vaultAddedText("contact", "Иван Петров") === undefined, "contact has no added text");
 
 console.log("vault ok");

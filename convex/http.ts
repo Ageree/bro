@@ -5,6 +5,12 @@ import type { Id } from "./_generated/dataModel";
 import { isValidHandle } from "./lib/accessPolicy";
 import { newLoginCode, newSessionToken, sha256hex } from "./lib/cabinetPolicy";
 import {
+  defaultVaultLabel,
+  isValidVaultSecret,
+  vaultAccountHint,
+  vaultAddedText,
+} from "./lib/vaultPayload";
+import {
   formatEvent,
   parseComposioEvent,
   verifyComposioWebhook,
@@ -154,8 +160,6 @@ http.route({ path: "/me/browser-profile", method: "OPTIONS", handler: options() 
 http.route({ path: "/me/browser-profile/refresh", method: "OPTIONS", handler: options() });
 http.route({ path: "/me/memories/forget", method: "OPTIONS", handler: options() });
 http.route({ path: "/me/tz", method: "OPTIONS", handler: options() });
-http.route({ path: "/me/chatgpt/start", method: "OPTIONS", handler: options() });
-http.route({ path: "/me/chatgpt/disconnect", method: "OPTIONS", handler: options() });
 http.route({ path: "/vault/items", method: "OPTIONS", handler: options() });
 http.route({ path: "/vault/items/delete", method: "OPTIONS", handler: options() });
 
@@ -367,19 +371,25 @@ http.route({
     if (!session) return unauthorized();
     const body = await jsonBody(request);
     const kind = body.kind;
-    const label = typeof body.label === "string" ? body.label.trim() : "";
     if (
       (kind !== "login" &&
         kind !== "payment" &&
         kind !== "address" &&
         kind !== "contact") ||
-      !label ||
-      label.length > 120 ||
       typeof body.secret !== "string" ||
       body.secret.length > 20_000
     ) {
       return json({ ok: false, code: "invalid" }, 400);
     }
+    if (!isValidVaultSecret(kind, body.secret)) {
+      return json({ ok: false, code: "invalid" }, 400);
+    }
+    const label =
+      (typeof body.label === "string" ? body.label.trim() : "") ||
+      defaultVaultLabel(kind, body.secret);
+    if (label.length > 120) return json({ ok: false, code: "invalid" }, 400);
+    // Invalid payloads are rejected above, so anything thrown here is a
+    // server-side failure (missing key, DB) and must not read as a form error.
     try {
       const { handle } = await ctx.runAction(internal.vaultSecrets.save, {
         tenantId: session.tenantId,
@@ -387,10 +397,27 @@ http.route({
         label,
         secret: body.secret,
       });
+      try {
+        const text = vaultAddedText(kind, vaultAccountHint(kind, body.secret));
+        if (text) {
+          const conversationId = await ctx.runQuery(
+            internal.cabinet.conversationForTenant,
+            { tenantId: session.tenantId },
+          );
+          if (conversationId) {
+            await ctx.scheduler.runAfter(0, internal.cabinet.sendText, {
+              conversationId,
+              text,
+            });
+          }
+        }
+      } catch (err) {
+        console.error("vault save notify", err);
+      }
       return json({ ok: true, handle });
     } catch (err) {
       console.error("vault save", err);
-      return json({ ok: false, code: "invalid" }, 400);
+      return json({ ok: false, code: "error" }, 500);
     }
   }),
 });
@@ -439,47 +466,6 @@ http.route({
     });
     console.log("composio webhook", event.triggerSlug, outcome);
     return json({ ok: true, outcome });
-  }),
-});
-
-http.route({
-  path: "/me/chatgpt/start",
-  method: "POST",
-  handler: httpAction(async (ctx, request) => {
-    const session = await sessionTenant(ctx, request);
-    if (!session) return unauthorized();
-    try {
-      const started = await ctx.runAction(
-        internal.chatgptSecrets.startDeviceLoginForTenant,
-        { tenantId: session.tenantId },
-      );
-      return json({ ok: true, ...started });
-    } catch (err) {
-      console.error("me/chatgpt/start", err);
-      return json({ ok: false, code: "unavailable" }, 503);
-    }
-  }),
-});
-
-http.route({
-  path: "/me/chatgpt/disconnect",
-  method: "POST",
-  handler: httpAction(async (ctx, request) => {
-    const session = await sessionTenant(ctx, request);
-    if (!session) return unauthorized();
-    const phone = await ctx.runQuery(internal.cabinet.sessionPhone, {
-      tenantId: session.tenantId,
-    });
-    if (!phone) return json({ ok: false, code: "unbound" }, 400);
-    try {
-      await ctx.runAction(internal.chatgptSecrets.disconnectForTenant, {
-        tenantId: session.tenantId,
-      });
-      return json({ ok: true });
-    } catch (err) {
-      console.error("me/chatgpt/disconnect", err);
-      return json({ ok: false, code: "unavailable" }, 503);
-    }
   }),
 });
 

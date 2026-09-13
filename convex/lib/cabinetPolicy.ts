@@ -77,12 +77,6 @@ export type BrowserJobSnapshot = {
   startedAt?: number;
 };
 
-export type ChatgptSnapshot = {
-  status: "none" | "pending" | "connected" | "quarantined";
-  planType?: string;
-  email?: string;
-};
-
 export type PaymentRow = {
   createdAt: number;
   amountRub: number;
@@ -113,7 +107,6 @@ export type CabinetSnapshot = {
   memories: string[];
   tz?: string;
   browserJob: BrowserJobSnapshot;
-  chatgpt: ChatgptSnapshot;
 };
 
 /** Accept only a bro-xxxxxxxx id. New people get Bro in iMessage; this id is for people who already have a chat. */
@@ -160,7 +153,6 @@ export function buildSnapshot(opts: {
   memories?: string[];
   tz?: string;
   browserJob?: BrowserJobSnapshot;
-  chatgpt?: ChatgptSnapshot;
 }): CabinetSnapshot {
   const phoneBound = Boolean(opts.phoneE164);
   const last4 = phoneLast4(opts.phoneE164);
@@ -185,7 +177,6 @@ export function buildSnapshot(opts: {
     memories: opts.memories ?? [],
     ...(opts.tz ? { tz: opts.tz } : {}),
     browserJob: opts.browserJob ?? { status: "", label: "Сейчас ничего не делает" },
-    chatgpt: opts.chatgpt ?? { status: "none" },
   };
 }
 

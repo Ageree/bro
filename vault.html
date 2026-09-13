@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>bro — сейф</title>
+  <title>bro — Сейф</title>
   <meta name="theme-color" content="#ffffff" />
   <link rel="icon" href="/assets/bro-mark.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="/assets/bro-logo.png" />
@@ -67,13 +67,13 @@
         <form class="form" id="add-form" autocomplete="off" method="post">
           <label for="kind">Тип</label>
           <select class="field" id="kind">
-            <option value="login">вход</option>
-            <option value="payment">карта</option>
-            <option value="address">адрес</option>
-            <option value="contact">контакт</option>
+            <option value="login">Вход</option>
+            <option value="payment">Карта</option>
+            <option value="address">Адрес</option>
+            <option value="contact">Контакт</option>
           </select>
 
-          <label for="label">Метка</label>
+          <label for="label">Метка (необязательно)</label>
           <input class="field" id="label" maxlength="120" autocomplete="off" placeholder="Wildberries" />
 
           <div id="fields-login">
@@ -82,9 +82,9 @@
 
             <label for="login-ident-type">Тип логина</label>
             <select class="field" id="login-ident-type">
-              <option value="email">почта</option>
-              <option value="phone">телефон</option>
-              <option value="username">логин</option>
+              <option value="email">Почта</option>
+              <option value="phone">Телефон</option>
+              <option value="username">Логин</option>
             </select>
 
             <label for="login-ident">Логин</label>
@@ -92,9 +92,9 @@
 
             <label>Как входить</label>
             <div class="choice">
-              <label><input type="radio" name="login-auth" value="password" checked /> пароль</label>
-              <label><input type="radio" name="login-auth" value="email_otp" /> код из почты</label>
-              <label><input type="radio" name="login-auth" value="sms_otp" /> код из СМС</label>
+              <label><input type="radio" name="login-auth" value="password" checked /> Пароль</label>
+              <label><input type="radio" name="login-auth" value="email_otp" /> Код из почты</label>
+              <label><input type="radio" name="login-auth" value="sms_otp" /> Код из СМС</label>
             </div>
             <div id="login-password-row">
               <label for="login-password">Пароль</label>
@@ -162,7 +162,7 @@
           </div>
 
           <div class="acts"><button class="btn" id="save" type="button">Сохранить</button></div>
-          <p class="err" id="form-error"></p>
+          <p class="err" id="form-error" role="alert" aria-live="polite"></p>
         </form>
       </section>
     </div>

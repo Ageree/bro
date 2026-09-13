@@ -3,10 +3,10 @@
   var KINDS = { login: 1, payment: 1, address: 1, contact: 1 };
   var IDENTS = { email: 1, phone: 1, username: 1 };
   var KIND_RU = {
-    login: "вход",
-    payment: "карта",
-    address: "адрес",
-    contact: "контакт",
+    login: "Вход",
+    payment: "Карта",
+    address: "Адрес",
+    contact: "Контакт",
   };
 
   var site = window.bro.site;
@@ -97,13 +97,25 @@
       try {
         return new URL(origin).hostname;
       } catch (e) {
-        return "вход";
+        return "Вход";
       }
     }
     if (kind === "payment") return "Карта";
     if (kind === "address") return "Адрес";
     if (kind === "contact") return "Контакт";
-    return "вход";
+    return "Вход";
+  }
+
+  function savedText(kind, fromCabinet) {
+    if (kind === "payment") {
+      return fromCabinet
+        ? "Карта добавлена. Bro уже видит её и готов совершать покупки."
+        : "Карта добавлена. Bro уже видит её и готов совершать покупки — напиши ему в iMessage.";
+    }
+    if (kind === "login") return "Вход сохранён. Bro сможет войти на сайт за тебя.";
+    if (kind === "address") return "Адрес сохранён. Bro укажет его при заказе.";
+    if (kind === "contact") return "Контакт сохранён.";
+    return "Готово.";
   }
 
   function applyPrefill(q) {
@@ -403,8 +415,8 @@
       return;
     }
     var label = ($("label").value || "").trim() || defaultLabel(kind, $("login-origin").value);
-    if (!label || label.length > 120) {
-      setError("Нужна короткая метка");
+    if (label.length > 120) {
+      setError("Метка — до 120 символов");
       return;
     }
     var built = buildSecret(kind);
@@ -430,7 +442,9 @@
       body: payload,
     })
       .then(function (res) {
-        return res.json().then(function (data) {
+        // an edge/proxy 5xx may carry an HTML body: parse best-effort so the
+        // status still reaches the branches below instead of the catch
+        return res.json().catch(function () { return null; }).then(function (data) {
           return { res: res, data: data };
         });
       })
@@ -445,15 +459,17 @@
           setError("Проверь поля");
           return;
         }
+        if (got.res.status >= 500 || (got.data && got.data.code === "error")) {
+          setError("Сейф сейчас не работает — попробуй позже");
+          return;
+        }
         if (!got.res.ok || !got.data || !got.data.ok) {
           setError("Не вышло сохранить");
           return;
         }
         clearSecrets();
         var fromCabinet = new URLSearchParams(location.search).get("from") === "cabinet";
-        setFlash(fromCabinet
-          ? "Готово. Карта в сейфе — Bro сможет платить."
-          : "Готово. Вернись в iMessage и напиши Bro.");
+        setFlash(savedText(kind, fromCabinet));
         return loadItems(base, now);
       })
       .catch(function () {

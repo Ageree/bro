@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>bro — кабинет</title>
+  <title>bro — Кабинет</title>
   <meta name="theme-color" content="#ffffff" />
   <link rel="icon" href="/assets/bro-mark.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="/assets/bro-logo.png" />
@@ -111,45 +111,6 @@
             (z === current ? " selected" : "") + ">" + esc(z) + "</option>";
         }).join("");
       }
-      function chatgptStatusRu(s) {
-        if (s === "connected") return "подключён";
-        if (s === "pending") return "ждём вход";
-        if (s === "quarantined") return "нужно войти снова";
-        return "не подключён";
-      }
-      function chatgptCard(me) {
-        var g = me.chatgpt || { status: "none" };
-        var bits = "";
-        if (g.email) bits += '<p class="t-small t-mute">' + esc(g.email) + "</p>";
-        if (g.planType) bits += '<p class="t-small t-mute">' + esc(g.planType) + "</p>";
-        bits += '<div class="acts">';
-        if (g.status !== "connected") {
-          bits += '<button class="act" id="chatgpt-connect" type="button">Подключить</button>';
-        }
-        if (g.status === "connected" || g.status === "quarantined" || g.status === "pending") {
-          bits += '<button class="act" id="chatgpt-disconnect" type="button">Отключить</button>';
-        }
-        bits += "</div>" +
-          '<p class="status-line" id="chatgpt-status"></p>' +
-          '<p class="cmd" id="chatgpt-code" hidden></p>';
-        return '<section class="sec" id="chatgpt">' +
-          head("<h2>ChatGPT</h2>", chatgptStatusRu(g.status)) + bits + "</section>";
-      }
-      function nowCard(me) {
-        var job = me.browserJob || { status: "", label: "Сейчас ничего не делает" };
-        var live = safeHttpUrl(job.liveUrl || "");
-        var bits = "";
-        if (job.task) bits += '<p class="t-small t-mute">' + esc(job.task) + "</p>";
-        if (job.startedAt) {
-          bits += '<p class="t-small t-mute">' + esc(when(job.startedAt, zoneOf(me))) + "</p>";
-        }
-        if (live) {
-          bits += '<div class="acts"><a class="act" id="browser-live" href="' +
-            esc(live) + '" target="_blank" rel="noopener noreferrer">Открыть</a></div>';
-        }
-        return '<section class="sec" id="now">' +
-          head("<h2>Сейчас</h2>", job.label) + bits + "</section>";
-      }
       function tzCard(me) {
         var zone = zoneOf(me);
         return '<section class="sec" id="tz">' +
@@ -159,9 +120,9 @@
           '<p class="status-line" id="tz-status"></p></section>';
       }
       function statusRu(s) {
-        if (s === "succeeded") return "оплачен";
-        if (s === "pending") return "ожидает";
-        return "отменён";
+        if (s === "succeeded") return "Оплачен";
+        if (s === "pending") return "Ожидает";
+        return "Отменён";
       }
       function profileStatusRu(s, domains) {
         if (s === "synced" && domains && domains.length) {
@@ -170,10 +131,10 @@
         return "Пока нет сохранённых входов — Bro пришлёт ссылку, когда понадобится.";
       }
       function vaultKindRu(k) {
-        if (k === "payment") return "карта";
-        if (k === "address") return "адрес";
-        if (k === "contact") return "контакт";
-        if (k === "login") return "вход";
+        if (k === "payment") return "Карта";
+        if (k === "address") return "Адрес";
+        if (k === "contact") return "Контакт";
+        if (k === "login") return "Вход";
         return k || "";
       }
       function vaultCard() {
@@ -339,10 +300,10 @@
         var plan = me.plan === "paid" ? "Полный доступ" : "Бесплатный режим";
         var until = me.paidUntil
           ? "до " + when(me.paidUntil, zone)
-          : "оплата ещё не оформлена";
+          : "Оплата ещё не оформлена";
         var phone = me.phoneBound
-          ? "телефон …" + esc(me.phoneLast4 || "")
-          : "телефон ещё не привязан — напиши Bro в iMessage";
+          ? "Телефон …" + esc(me.phoneLast4 || "")
+          : "Телефон ещё не привязан — напиши Bro в iMessage";
         var pays = (me.payments || []).map(function (p) {
           return '<li><span class="row-main">' + esc(when(p.createdAt, zone)) +
             " · " + esc(p.amountRub) + " ₽</span>" +
@@ -358,8 +319,6 @@
           "</div>" +
           '<p class="status-line" id="write-status"></p>' +
           '<p class="status-line" id="pay-status"></p>' +
-          nowCard(me) +
-          chatgptCard(me) +
           '<section class="sec"><div class="sec__head"><h2>Лимиты</h2></div>' +
           '<p class="t-small t-mute">Сообщения сегодня — ' + me.msgsUsed + " из " + me.msgsAllowance + "</p>" +
           meter(me.msgsUsed, me.msgsAllowance) +
@@ -380,7 +339,6 @@
         bindPay();
         bindForget();
         bindTz();
-        bindChatgpt();
         bindVault();
       }
 
@@ -425,62 +383,6 @@
             empty.hidden = false;
             empty.textContent = "Не вышло загрузить сейф";
           });
-      }
-
-      function bindChatgpt() {
-        var connect = document.getElementById("chatgpt-connect");
-        var disconnect = document.getElementById("chatgpt-disconnect");
-        var st = document.getElementById("chatgpt-status");
-        var code = document.getElementById("chatgpt-code");
-        if (connect) {
-          connect.addEventListener("click", function () {
-            st.textContent = "Открываем вход…";
-            if (code) { code.hidden = true; code.textContent = ""; }
-            fetch(base + "/me/chatgpt/start", {
-              method: "POST",
-              headers: { Authorization: "Bearer " + t },
-            })
-              .then(function (res) { return res.json(); })
-              .then(function (data) {
-                if (!data.ok || !data.url || !data.userCode) {
-                  st.textContent = "Не вышло, нажми ещё раз";
-                  return;
-                }
-                var href = safeHttpUrl(data.url);
-                st.textContent = "Открой ссылку и введи код. Bro сам проверит вход.";
-                if (code) {
-                  code.hidden = false;
-                  code.textContent = (href || data.url) + "\n" + data.userCode;
-                }
-              })
-              .catch(function () {
-                st.textContent = "Не вышло, нажми ещё раз";
-              });
-          });
-        }
-        if (disconnect) {
-          disconnect.addEventListener("click", function () {
-            st.textContent = "Отключаем…";
-            fetch(base + "/me/chatgpt/disconnect", {
-              method: "POST",
-              headers: { Authorization: "Bearer " + t },
-            })
-              .then(function (res) { return res.json(); })
-              .then(function (data) {
-                if (!data.ok) {
-                  st.textContent = "Не вышло, нажми ещё раз";
-                  return;
-                }
-                return loadMe().then(function (me) {
-                  if (!me) return;
-                  paint(me);
-                });
-              })
-              .catch(function () {
-                st.textContent = "Не вышло, нажми ещё раз";
-              });
-          });
-        }
       }
 
       function loadMe() {
