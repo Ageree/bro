@@ -19,6 +19,7 @@
  *  strings are fully equivalent and JSON-safe. */
 
 import { readLimited } from "./voice.ts";
+import { publicHttpUrl } from "./public-host.ts";
 
 export const IMAGE_MAX_BYTES = 3 * 1024 * 1024;
 export const IMAGE_TIMEOUT_MS = 800;
@@ -68,6 +69,7 @@ export async function fetchImagePart(
   const timeoutMs = deps.timeoutMs ?? IMAGE_TIMEOUT_MS;
   const byUrl: ImagePart = { type: "file", mediaType: image.mediaType, data: image.url };
   if (image.size !== null && image.size > maxBytes) return byUrl;
+  if (!publicHttpUrl(image.url)) return byUrl;
   try {
     const res = await doFetch(image.url, { signal: AbortSignal.timeout(timeoutMs) });
     if (!res.ok) return byUrl;

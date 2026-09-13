@@ -48,7 +48,9 @@ if (!process.env.INKBOX_WEBHOOK_SECRET) {
   console.log("signing key already in env");
 }
 
-upsertEnv("ALLOWED_SENDERS", "+79217818876");
+if (!process.env.ALLOWED_SENDERS) {
+  console.log("ALLOWED_SENDERS not set — add your E.164 number to .env.local");
+}
 
 const url =
   process.env.INKBOX_WEBHOOK_URL ??
@@ -99,6 +101,5 @@ if (!mailboxId) {
   }
 }
 
-console.log("allowed sender +79217818876");
 console.log("webhook url", url);
 console.log("mail webhook url", mailUrl);

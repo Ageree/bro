@@ -210,8 +210,12 @@ export function newSessionToken(): string {
 }
 
 export function newLoginCode(): string {
+  const limit = 4_294_967_296 - (4_294_967_296 % 1_000_000);
   const bytes = new Uint8Array(4);
-  crypto.getRandomValues(bytes);
-  const n = new DataView(bytes.buffer).getUint32(0) % 1_000_000;
-  return n.toString().padStart(6, "0");
+  let n: number;
+  do {
+    crypto.getRandomValues(bytes);
+    n = new DataView(bytes.buffer).getUint32(0);
+  } while (n >= limit);
+  return (n % 1_000_000).toString().padStart(6, "0");
 }

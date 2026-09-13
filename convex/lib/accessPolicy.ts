@@ -41,3 +41,28 @@ export function webhookUrlForHandle(base: string, handle: string): string {
   u.searchParams.set("h", handle);
   return u.toString();
 }
+
+/** Identity creations allowed per hour on `POST /access` (spoofable iOS UA,
+ *  no login): each one buys an Inkbox identity and a Photon user, so an
+ *  attacker looping phones could burn the whole cap. */
+export const DEFAULT_ACCESS_CREATES_PER_HOUR = 20;
+
+export function accessCreatesPerHour(raw: string | undefined): number {
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : DEFAULT_ACCESS_CREATES_PER_HOUR;
+}
+
+/**
+ * A phone belongs to at most one tenant. `memories`, `wakeups`, `watchers`
+ * and the cabinet snapshot are keyed by phone, so a second tenant on the same
+ * number would read (and forget) the first one's data through its own session.
+ * `existingId` is the tenant already holding `phone` (if any); `targetId` is
+ * the tenant about to receive it (undefined when inserting a new row).
+ */
+export function phoneBindDecision(
+  existingId: string | undefined,
+  targetId: string | undefined,
+): "ok" | "taken" {
+  if (!existingId) return "ok";
+  return existingId === targetId ? "ok" : "taken";
+}

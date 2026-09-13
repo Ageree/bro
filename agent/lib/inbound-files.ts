@@ -2,6 +2,7 @@ import { filenameFromUrl, uploadFileBytes } from "./files.ts";
 import { readLimited } from "./voice.ts";
 import type { TelegramMessage } from "./telegram.ts";
 import { largestPhoto, telegramFileUrl } from "./telegram.ts";
+import { publicHttpUrl } from "./public-host.ts";
 
 const INBOUND_MAX = 8 * 1024 * 1024;
 const INBOUND_TIMEOUT_MS = 15_000;
@@ -14,6 +15,7 @@ export async function saveInboundRemoteFile(opts: {
   sourceChannel: "imessage" | "telegram";
   fetch?: typeof fetch;
 }): Promise<{ name: string } | null> {
+  if (!publicHttpUrl(opts.url)) return null;
   const doFetch = opts.fetch ?? fetch;
   const res = await doFetch(opts.url, {
     signal: AbortSignal.timeout(INBOUND_TIMEOUT_MS),

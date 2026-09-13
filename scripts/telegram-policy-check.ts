@@ -11,7 +11,9 @@ import {
   telegramWelcomeText,
 } from "../convex/lib/telegramPolicy.ts";
 
-import { assert } from "./lib/check.ts";
+import { assert, withEnv } from "./lib/check.ts";
+import { secretEquals } from "../agent/lib/secret-compare.ts";
+import { webhookSecretOk } from "../agent/lib/telegram.ts";
 
 const bytes = new Uint8Array(16).fill(0xab);
 assert(
@@ -119,5 +121,29 @@ assert(!canDeliverTelegram(""), "empty chat");
 assert(bindRefuseText("unknown_token").includes("iMessage"), "refuse mentions iMessage");
 assert(telegramWelcomeText().includes("iMessage"), "welcome same agent");
 assert(telegramWelcomeText().length < 120, "telegram welcome stays short");
+
+// secretEquals tests
+assert(secretEquals("abc", "abc"), "equal strings");
+assert(!secretEquals("abc", "abd"), "different same-length strings");
+assert(!secretEquals("ab", "abc"), "different length strings");
+assert(!secretEquals(undefined, "abc"), "undefined got");
+assert(!secretEquals(123 as unknown, "abc"), "non-string got");
+assert(!secretEquals("abc", ""), "empty expected");
+assert(!secretEquals("abc", undefined), "undefined expected");
+
+// webhookSecretOk tests
+withEnv({ TELEGRAM_WEBHOOK_SECRET: "abc" }, () => {
+  const req = new Request("https://x", {
+    headers: { "x-telegram-bot-api-secret-token": "abc" },
+  });
+  assert(webhookSecretOk(req), "valid webhook secret");
+});
+
+withEnv({ TELEGRAM_WEBHOOK_SECRET: "abc" }, () => {
+  const req = new Request("https://x", {
+    headers: { "x-telegram-bot-api-secret-token": "abd" },
+  });
+  assert(!webhookSecretOk(req), "invalid webhook secret");
+});
 
 console.log("telegram-policy-check ok");

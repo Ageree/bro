@@ -480,7 +480,7 @@ export const pollDeviceLogin = internalAction({
     const login = await ctx.runQuery(api.loginByDeviceAuthId, {
       deviceAuthId: args.deviceAuthId,
     });
-    if (!login || login.status !== "pending") return null;
+    if (!login || login.tenantId !== args.tenantId || login.status !== "pending") return null;
     const polled = await pollDeviceAuth({
       deviceAuthId: login.deviceAuthId,
       userCode: login.userCode,
