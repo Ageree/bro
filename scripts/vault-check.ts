@@ -7,6 +7,7 @@ import {
 import {
   cardBrand,
   createVaultSetupUrl,
+  defaultVaultLabel,
   isValidVaultSecret,
   originHost,
   parseAddressPayload,
@@ -157,6 +158,12 @@ assert(originHost("https://www.ozon.ru") === "www.ozon.ru", "origin host");
 
 assert(vaultItemOrigin("login", login) === "https://www.wildberries.ru", "login origin");
 assert(vaultItemOrigin("payment", card) === undefined, "only logins bind an origin");
+
+assert(defaultVaultLabel("payment", card) === "Карта", "default card label");
+assert(defaultVaultLabel("address", address) === "Адрес", "default address label");
+assert(defaultVaultLabel("contact", contact) === "Контакт", "default contact label");
+assert(defaultVaultLabel("login", login) === "www.wildberries.ru", "default login label");
+assert(defaultVaultLabel("login", "not json") === "вход", "unparsable login label");
 
 const setup = vaultSetupRequestSchema.parse({
   kind: "login",

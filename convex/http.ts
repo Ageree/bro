@@ -4,6 +4,7 @@ import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { isValidHandle } from "./lib/accessPolicy";
 import { newLoginCode, newSessionToken, sha256hex } from "./lib/cabinetPolicy";
+import { defaultVaultLabel, isValidVaultSecret } from "./lib/vaultPayload";
 import {
   formatEvent,
   parseComposioEvent,
@@ -366,19 +367,25 @@ http.route({
     if (!session) return unauthorized();
     const body = await jsonBody(request);
     const kind = body.kind;
-    const label = typeof body.label === "string" ? body.label.trim() : "";
     if (
       (kind !== "login" &&
         kind !== "payment" &&
         kind !== "address" &&
         kind !== "contact") ||
-      !label ||
-      label.length > 120 ||
       typeof body.secret !== "string" ||
       body.secret.length > 20_000
     ) {
       return json({ ok: false, code: "invalid" }, 400);
     }
+    if (!isValidVaultSecret(kind, body.secret)) {
+      return json({ ok: false, code: "invalid" }, 400);
+    }
+    const label =
+      (typeof body.label === "string" ? body.label.trim() : "") ||
+      defaultVaultLabel(kind, body.secret);
+    if (label.length > 120) return json({ ok: false, code: "invalid" }, 400);
+    // Invalid payloads are rejected above, so anything thrown here is a
+    // server-side failure (missing key, DB) and must not read as a form error.
     try {
       const { handle } = await ctx.runAction(internal.vaultSecrets.save, {
         tenantId: session.tenantId,
@@ -389,7 +396,7 @@ http.route({
       return json({ ok: true, handle });
     } catch (err) {
       console.error("vault save", err);
-      return json({ ok: false, code: "invalid" }, 400);
+      return json({ ok: false, code: "error" }, 500);
     }
   }),
 });

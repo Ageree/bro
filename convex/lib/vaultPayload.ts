@@ -187,6 +187,22 @@ export function vaultAccountHint(kind: VaultKind, secret: string): string {
   }
 }
 
+/** Label used when the human leaves the field empty: the site host for logins, the kind otherwise. */
+export function defaultVaultLabel(kind: VaultKind, secret: string): string {
+  switch (kind) {
+    case "login": {
+      const login = parseLoginPayload(secret);
+      return login ? originHost(login.origin) : "вход";
+    }
+    case "payment":
+      return "Карта";
+    case "address":
+      return "Адрес";
+    case "contact":
+      return "Контакт";
+  }
+}
+
 /** Origin stored as non-secret metadata so autofill can bind a login to one site. */
 export function vaultItemOrigin(kind: VaultKind, secret: string): string | undefined {
   if (kind !== "login") return undefined;

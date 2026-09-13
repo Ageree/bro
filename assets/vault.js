@@ -403,8 +403,8 @@
       return;
     }
     var label = ($("label").value || "").trim() || defaultLabel(kind, $("login-origin").value);
-    if (!label || label.length > 120) {
-      setError("Нужна короткая метка");
+    if (label.length > 120) {
+      setError("Метка — до 120 символов");
       return;
     }
     var built = buildSecret(kind);
@@ -443,6 +443,10 @@
         }
         if (got.res.status === 400 || (got.data && got.data.code === "invalid")) {
           setError("Проверь поля");
+          return;
+        }
+        if (got.res.status >= 500 || (got.data && got.data.code === "error")) {
+          setError("Сейф сейчас не работает — попробуй позже");
           return;
         }
         if (!got.res.ok || !got.data || !got.data.ok) {
