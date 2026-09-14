@@ -413,6 +413,11 @@ assert(
   browserTool.includes("turnSpoke"),
   "canned ищу skips only when this turn already spoke",
 );
+assert(browserTool.includes("maybeInjectChat"), "relevant chat is injected into the live run");
+assert(
+  src("agent/lib/browseruse.ts").includes("INJECT_MARK"),
+  "follow-up inject is not re-wrapped as a new errand",
+);
 
 const follow = src("convex/browserFollow.ts");
 const handler = follow.slice(follow.indexOf("}).handler"));

@@ -17,6 +17,7 @@
     "model:check": "node --experimental-strip-types scripts/model-check.ts",
     "archive:check": "node --experimental-strip-types scripts/archive-check.ts",
     "browser:check": "node --experimental-strip-types scripts/browser-policy-check.ts",
+    "inject:check": "node --experimental-strip-types scripts/browser-inject-check.ts",
     "pay:check": "node --experimental-strip-types scripts/browser-pay-check.ts",
     "purchase:check": "node --experimental-strip-types scripts/purchase-check.ts",
     "orders:check": "node --experimental-strip-types scripts/orders-check.ts",
