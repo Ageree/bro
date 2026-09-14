@@ -109,12 +109,15 @@ export default defineSchema({
     .index("by_tenant", ["tenantId"]),
 
   loginChallenges: defineTable({
-    handle: v.string(),
+    handle: v.optional(v.string()),
+    phoneE164: v.optional(v.string()),
     codeHash: v.string(),
     expiresAt: v.number(),
     attempts: v.number(),
     createdAt: v.number(),
-  }).index("by_handle", ["handle"]),
+  })
+    .index("by_handle", ["handle"])
+    .index("by_phone", ["phoneE164"]),
 
   payments: defineTable({
     tenantId: v.id("tenants"),

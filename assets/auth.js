@@ -1,5 +1,6 @@
 (function () {
   var HANDLE = "bro.handle";
+  var PHONE = "bro.phone";
   var TOKEN = "bro.session";
 
   function site() {
@@ -27,8 +28,12 @@
   }
 
   function storedHandle() {
-    var h = (handle() || "").trim();
+    var h = (localStorage.getItem(HANDLE) || "").trim();
     return validHandle(h) ? h : "";
+  }
+
+  function storedPhone() {
+    return (localStorage.getItem(PHONE) || "").trim();
   }
 
   window.bro = { site: site, token: token, esc: esc };
@@ -44,16 +49,16 @@
     return navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1;
   };
 
-  function handle() {
-    return localStorage.getItem(HANDLE) || "";
-  }
-
   function token() {
     return localStorage.getItem(TOKEN) || "";
   }
 
   function setHandle(h) {
-    if (h) localStorage.setItem(HANDLE, h);
+    if (h && validHandle(h)) localStorage.setItem(HANDLE, h);
+  }
+
+  function setPhone(p) {
+    if (p) localStorage.setItem(PHONE, p);
   }
 
   var fromUrl = queryHandle();
@@ -88,40 +93,42 @@
     if (logoutBtn) logoutBtn.hidden = !in_;
   }
 
-  var WRITE_FIRST = "Сначала напиши Bro в iMessage.";
+  var PHONE_HINT = "Введи телефон, с которого пишешь Bro. Код придёт в iMessage.";
   var CODE_HINT = "Код придёт в iMessage.";
-  var returning = false;
+  var NEED_PHONE = "Нужен телефон, с которого пишешь Bro.";
+  var WRITE_FIRST = "Сначала напиши Bro в iMessage.";
 
-  function fieldHandle() {
-    var el = $("#login-handle");
-    var h = el ? (el.value || "").trim() : "";
-    return validHandle(h) ? h : "";
+  function fieldPhone() {
+    var el = $("#login-phone");
+    return el ? (el.value || "").trim() : "";
   }
 
-  function loginHandle() {
-    return storedHandle() || fieldHandle();
+  function fallbackHandle() {
+    return fromUrl || "";
   }
 
   function paintLogin() {
-    var stored = storedHandle();
-    var needCode = Boolean(stored) || returning;
-    var row = $("#login-handle-row");
-    var sendBtn = $("#login-send");
+    var handleOnly = Boolean(fallbackHandle()) && !fieldPhone() && !storedPhone();
+    var phoneRow = $("#login-phone-row");
+    var writeBtn = $("#login-write-bro");
     var hint = $("#login-hint");
-    var haveBtn = $("#login-have-bro");
-    if (row) row.hidden = Boolean(stored) || !returning;
-    if (hint) hint.textContent = needCode ? CODE_HINT : WRITE_FIRST;
-    if (sendBtn) sendBtn.textContent = needCode ? "Получить код" : "Написать Bro";
-    if (haveBtn) haveBtn.hidden = needCode;
-    return stored;
+    var sendBtn = $("#login-send");
+    var phoneEl = $("#login-phone");
+    if (phoneEl && storedPhone() && !phoneEl.value) phoneEl.value = storedPhone();
+    if (phoneRow) phoneRow.hidden = handleOnly;
+    if (writeBtn) writeBtn.hidden = handleOnly;
+    if (hint) hint.textContent = handleOnly ? CODE_HINT : PHONE_HINT;
+    if (sendBtn) sendBtn.textContent = "Получить код";
+    return handleOnly;
   }
 
   function openModal() {
     modal.hidden = false;
-    returning = false;
     $("#login-status").textContent = "";
     $("#login-code-row").hidden = true;
     paintLogin();
+    var phoneEl = $("#login-phone");
+    if (phoneEl && !phoneEl.hidden && !$("#login-phone-row").hidden) phoneEl.focus();
   }
 
   function closeModal() {
@@ -141,6 +148,15 @@
     return "/cabinet.html";
   }
 
+  function writeBro() {
+    var link = window.broIMessageLink ? window.broIMessageLink() : "";
+    if (window.broIsIos && window.broIsIos() && link) {
+      window.location.href = link;
+      return;
+    }
+    setStatus("Открой на iPhone");
+  }
+
   loginBtn.addEventListener("click", function (e) {
     e.preventDefault();
     openModal();
@@ -152,20 +168,17 @@
   modal.addEventListener("click", function (e) {
     if (e.target === modal) closeModal();
   });
-  var haveBroBtn = $("#login-have-bro");
-  if (haveBroBtn) {
-    haveBroBtn.addEventListener("click", function (e) {
+  var writeBtn = $("#login-write-bro");
+  if (writeBtn) {
+    writeBtn.addEventListener("click", function (e) {
       e.preventDefault();
-      returning = true;
-      paintLogin();
-      var field = $("#login-handle");
-      if (field) field.focus();
+      writeBro();
     });
   }
 
-  var loginHandleField = $("#login-handle");
-  if (loginHandleField) {
-    loginHandleField.addEventListener("keydown", function (e) {
+  var loginPhoneField = $("#login-phone");
+  if (loginPhoneField) {
+    loginPhoneField.addEventListener("keydown", function (e) {
       if (e.key === "Enter") $("#login-send").click();
     });
   }
@@ -176,38 +189,38 @@
     });
   }
 
+  function startBody() {
+    var phone = fieldPhone() || storedPhone();
+    if (phone) return { phone: phone, stored: phone };
+    var h = fallbackHandle();
+    if (h) return { handle: h };
+    return null;
+  }
+
   $("#login-send").addEventListener("click", function () {
     var base = site();
-    var h = loginHandle();
-    if (!h) {
-      if (returning) {
-        setStatus(WRITE_FIRST);
-        return;
-      }
-      var link = window.broIMessageLink ? window.broIMessageLink() : "";
-      if (window.broIsIos && window.broIsIos() && link) {
-        window.location.href = link;
-        return;
-      }
-      setStatus("Открой на iPhone");
+    var body = startBody();
+    if (!body) {
+      setStatus(NEED_PHONE);
       return;
     }
     if (!base) {
       setStatus("Сайт ещё не подключён");
       return;
     }
-    setHandle(h);
+    if (body.stored) setPhone(body.stored);
     setStatus("Шлём код в iMessage…");
+    var payload = body.phone ? { phone: body.phone } : { handle: body.handle };
     fetch(base + "/login/start", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ handle: h }),
+      body: JSON.stringify(payload),
     })
       .then(function (res) { return res.json(); })
       .then(function (data) {
         if (!data.ok) {
           if (data.code === "unavailable" || data.code === "unbound" || data.code === "unknown") {
-            setStatus("Сначала напиши Bro в iMessage");
+            setStatus(WRITE_FIRST);
           } else if (data.code === "cooldown") setStatus("Подожди минуту и нажми ещё раз");
           else if (data.code === "error") setStatus("Не получилось отправить код, попробуй ещё раз");
           else setStatus("Не вышло, нажми ещё раз");
@@ -224,10 +237,10 @@
 
   $("#login-verify").addEventListener("click", function () {
     var base = site();
-    var h = loginHandle();
+    var body = startBody();
     var code = ($("#login-code").value || "").replace(/\D/g, "");
-    if (!h) {
-      setStatus(WRITE_FIRST);
+    if (!body) {
+      setStatus(NEED_PHONE);
       return;
     }
     if (code.length !== 6) {
@@ -235,10 +248,13 @@
       return;
     }
     setStatus("Проверяем…");
+    var payload = body.phone
+      ? { phone: body.phone, code: code }
+      : { handle: body.handle, code: code };
     fetch(base + "/login/verify", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ handle: h, code: code }),
+      body: JSON.stringify(payload),
     })
       .then(function (res) { return res.json(); })
       .then(function (data) {
@@ -251,7 +267,8 @@
           } else setStatus("Не вышло, нажми ещё раз");
           return;
         }
-        setHandle(data.handle || h);
+        if (body.phone) setPhone(body.phone);
+        if (data.handle) setHandle(data.handle);
         setToken(data.token);
         closeModal();
         window.location.href = afterLogin();
@@ -279,7 +296,6 @@
   }
 
   painted();
-  // Bro's vault/cabinet link carries ?handle= so the person is already known.
-  // Open the real login sheet on «Получить код» — do not invent a second path.
+  // Old Bro links still carry ?handle=. Open the same sheet on «Получить код».
   if (fromUrl && !token()) openModal();
 })();

@@ -3,7 +3,13 @@ import { httpAction } from "./_generated/server";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { isValidHandle } from "./lib/accessPolicy";
-import { newLoginCode, newSessionToken, sha256hex } from "./lib/cabinetPolicy";
+import {
+  digitsLoginCode,
+  newLoginCode,
+  newSessionToken,
+  sha256hex,
+} from "./lib/cabinetPolicy";
+import { normalizePhotonE164 } from "./lib/photonPolicy";
 import {
   defaultVaultLabel,
   isValidVaultSecret,
@@ -168,11 +174,15 @@ http.route({
   method: "POST",
   handler: httpAction(async (ctx, request) => {
     const body = await jsonBody(request);
+    const phone =
+      typeof body.phone === "string" ? normalizePhotonE164(body.phone) : undefined;
     const handle = typeof body.handle === "string" ? body.handle.trim() : "";
-    if (!isValidHandle(handle)) return json({ ok: false, code: "unavailable" });
+    const useHandle = !phone && isValidHandle(handle);
+    if (!phone && !useHandle) return json({ ok: false, code: "unavailable" });
     const code = newLoginCode();
     const begun = await ctx.runMutation(internal.cabinet.beginLogin, {
-      handle,
+      ...(phone ? { phoneE164: phone } : {}),
+      ...(useHandle ? { handle } : {}),
       codeHash: await sha256hex(code),
       now: Date.now(),
     });
@@ -201,14 +211,19 @@ http.route({
   method: "POST",
   handler: httpAction(async (ctx, request) => {
     const body = await jsonBody(request);
+    const phone =
+      typeof body.phone === "string" ? normalizePhotonE164(body.phone) : undefined;
     const handle = typeof body.handle === "string" ? body.handle.trim() : "";
-    const code = typeof body.code === "string" ? body.code.trim() : "";
-    if (!isValidHandle(handle) || !/^\d{6}$/.test(code)) {
+    const useHandle = !phone && isValidHandle(handle);
+    const code =
+      typeof body.code === "string" ? digitsLoginCode(body.code) : null;
+    if ((!phone && !useHandle) || !code) {
       return json({ ok: false, code: "unknown" });
     }
     const now = Date.now();
     const finished = await ctx.runMutation(internal.cabinet.finishLogin, {
-      handle,
+      ...(phone ? { phoneE164: phone } : {}),
+      ...(useHandle ? { handle } : {}),
       codeHash: await sha256hex(code),
       now,
     });
@@ -219,7 +234,7 @@ http.route({
       tokenHash: await sha256hex(token),
       now,
     });
-    return json({ ok: true, token, handle });
+    return json({ ok: true, token, ...(useHandle ? { handle } : {}) });
   }),
 });
 

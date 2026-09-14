@@ -88,7 +88,8 @@ export function cabinetBaseUrl(env: {
   return raw.replace(/\/$/, "");
 }
 
-/** Same path `vault_setup` / `createVaultSetupUrl` uses for a payment card. */
+/** Payment-card vault. New copy never puts a handle in the URL.
+ *  `handle` is only for old `?handle=` fallbacks. */
 export function vaultCardUrl(base: string, handle?: string): string {
   const url = new URL("/vault.html", `${base.replace(/\/$/, "")}/`);
   url.searchParams.set("kind", "payment");
@@ -97,8 +98,8 @@ export function vaultCardUrl(base: string, handle?: string): string {
   return url.toString();
 }
 
-/** Real cabinet login: handle goes in the query so «Уже есть Bro» is prefilled. */
-export function cabinetLoginUrl(base: string, handle: string): string {
+/** Cabinet login. New copy is handle-free; `handle` stays as a fallback. */
+export function cabinetLoginUrl(base: string, handle?: string): string {
   const url = new URL("/cabinet.html", `${base.replace(/\/$/, "")}/`);
   const id = cabinetHandle(handle);
   if (id) url.searchParams.set("handle", id);
@@ -115,25 +116,17 @@ export type WelcomeOpts = {
  *  «Бро.» / «Bro.» as a line opener is only for the rare channel-ok ping. */
 export function welcomeBubbles(opts?: WelcomeOpts): string[] {
   void opts?.canJoinGroups;
+  void opts?.handle;
   const base = opts?.cabinetBase ?? cabinetBaseUrl();
-  const handle = cabinetHandle(opts?.handle);
-  const vault = vaultCardUrl(base, handle);
-  const bubbles = [
+  const vault = vaultCardUrl(base);
+  const cabinet = cabinetLoginUrl(base);
+  return [
     "Привет, я Bro. Я твой личный ассистент.",
     "Могу сам купить на Wildberries и Ozon, записаться к врачу или в салон, забронировать стол. Помню размер, адрес и пункт выдачи. Если попросишь — поставлю напоминание или прослежу за ценой. Когда сайт просит вход, скажи пароль или я пришлю ссылку. Письма приходят на мой ящик, коды ввожу сам. Тот же Bro есть в Telegram — напиши «телеграм». Группы в iMessage пока на паузе, сейчас только личные сообщения.",
     "Пиши как другу — остальное на мне.",
-    `Чтобы я мог сам платить в интернете, положи карту в сейф. Открой ссылку и введи её там — номер в чат не пиши.\n${vault}`,
+    `Чтобы я мог сам платить в интернете, положи карту в сейф. Открой ссылку, введи телефон, с которого мне пишешь, и код из этого чата — номер карты в чат не пиши.\n${vault}`,
+    `Кабинет — тот же вход. Открой ссылку, введи телефон и код.\n${cabinet}`,
   ];
-  if (handle) {
-    bubbles.push(
-      `Кабинет тоже сразу. Твой Bro — ${handle}. Открой ссылку, нажми «Получить код» — код придёт сюда.\n${cabinetLoginUrl(base, handle)}`,
-    );
-  } else {
-    bubbles.push(
-      `Кабинет — на brobro.tech. Открой сайт и нажми «Уже есть Bro», когда появится твой Bro.`,
-    );
-  }
-  return bubbles;
 }
 
 export function welcomeText(opts?: WelcomeOpts): string {

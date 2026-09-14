@@ -4,6 +4,7 @@ import {
   internalAction,
   internalMutation,
   internalQuery,
+  type MutationCtx,
 } from "./_generated/server";
 import { timingSafeEqual } from "./secret";
 import {
@@ -20,6 +21,7 @@ import {
 import {
   buildSnapshot,
   challengeExpiry,
+  loginIdentity,
   loginStartDecision,
   loginVerifyDecision,
   memoriesForSnapshot,
@@ -37,7 +39,7 @@ import {
 } from "./lib/browserProfilePolicy";
 import { getProfile } from "./lib/browseruse";
 import { periodConfig, rateLimiter } from "./lib/rateLimits";
-import { findTenantByHandle } from "./lib/tenantLookup";
+import { findTenantByHandle, findTenantByPhone } from "./lib/tenantLookup";
 import { applyTimezoneForTenantId, tzChangeResult } from "./tenants";
 
 const snapshotValidator = v.object({
@@ -128,7 +130,8 @@ const startResult = v.union(
     ok: v.literal(true),
     identityId: v.string(),
     conversationId: v.string(),
-    handle: v.string(),
+    handle: v.optional(v.string()),
+    phoneE164: v.string(),
   }),
   v.object({
     ok: v.literal(false),
@@ -140,30 +143,66 @@ const startResult = v.union(
   }),
 );
 
+async function challengeByHandle(ctx: MutationCtx, handle: string | undefined) {
+  if (!handle) return null;
+  return await ctx.db
+    .query("loginChallenges")
+    .withIndex("by_handle", (q) => q.eq("handle", handle))
+    .unique();
+}
+
+async function challengeByPhone(ctx: MutationCtx, phoneE164: string | undefined) {
+  if (!phoneE164) return null;
+  return await ctx.db
+    .query("loginChallenges")
+    .withIndex("by_phone", (q) => q.eq("phoneE164", phoneE164))
+    .unique();
+}
+
 export const beginLogin = internalMutation({
   args: {
-    handle: v.string(),
+    handle: v.optional(v.string()),
+    phoneE164: v.optional(v.string()),
     codeHash: v.string(),
     now: v.number(),
   },
   returns: startResult,
-  handler: async (ctx, { handle, codeHash, now }) => {
-    const tenant = await findTenantByHandle(ctx, handle);
-    const prior = await ctx.db
-      .query("loginChallenges")
-      .withIndex("by_handle", (q) => q.eq("handle", handle))
-      .unique();
+  handler: async (ctx, { handle, phoneE164, codeHash, now }) => {
+    const tenant = phoneE164
+      ? await findTenantByPhone(ctx, phoneE164)
+      : handle
+        ? await findTenantByHandle(ctx, handle)
+        : null;
+    const priorPhone = await challengeByPhone(ctx, tenant?.phoneE164 ?? phoneE164);
+    const priorHandle = await challengeByHandle(
+      ctx,
+      tenant?.inkboxHandle ?? handle,
+    );
+    const lastChallengeAt = [priorPhone?.createdAt, priorHandle?.createdAt]
+      .filter((n): n is number => n !== undefined)
+      .reduce<number | undefined>((max, n) => (max === undefined || n > max ? n : max), undefined);
     const decision = loginStartDecision({
       tenant,
-      lastChallengeAt: prior?.createdAt,
+      lastChallengeAt,
       now,
     });
     if (decision !== "ok" || !tenant) {
       return { ok: false as const, code: decision === "ok" ? "unknown" : decision };
     }
-    if (prior) await ctx.db.delete(prior._id);
+    const identityId = loginIdentity(tenant);
+    const conversationId =
+      tenant.photonConversationId || tenant.inkboxConversationId;
+    const phone = tenant.phoneE164;
+    if (!identityId || !conversationId || !phone) {
+      return { ok: false as const, code: "unbound" as const };
+    }
+    if (priorPhone) await ctx.db.delete(priorPhone._id);
+    if (priorHandle && priorHandle._id !== priorPhone?._id) {
+      await ctx.db.delete(priorHandle._id);
+    }
     await ctx.db.insert("loginChallenges", {
-      handle,
+      ...(tenant.inkboxHandle ? { handle: tenant.inkboxHandle } : {}),
+      phoneE164: phone,
       codeHash,
       expiresAt: challengeExpiry(now),
       attempts: 0,
@@ -171,9 +210,10 @@ export const beginLogin = internalMutation({
     });
     return {
       ok: true as const,
-      identityId: tenant.inkboxIdentityId!,
-      conversationId: tenant.photonConversationId || tenant.inkboxConversationId!,
-      handle,
+      identityId,
+      conversationId,
+      ...(tenant.inkboxHandle ? { handle: tenant.inkboxHandle } : {}),
+      phoneE164: phone,
     };
   },
 });
@@ -194,17 +234,25 @@ const verifyResult = v.union(
 
 export const finishLogin = internalMutation({
   args: {
-    handle: v.string(),
+    handle: v.optional(v.string()),
+    phoneE164: v.optional(v.string()),
     codeHash: v.string(),
     now: v.number(),
   },
   returns: verifyResult,
-  handler: async (ctx, { handle, codeHash, now }) => {
-    const tenant = await findTenantByHandle(ctx, handle);
-    const challenge = await ctx.db
-      .query("loginChallenges")
-      .withIndex("by_handle", (q) => q.eq("handle", handle))
-      .unique();
+  handler: async (ctx, { handle, phoneE164, codeHash, now }) => {
+    const challenge =
+      (await challengeByPhone(ctx, phoneE164)) ??
+      (await challengeByHandle(ctx, handle));
+    const tenant = challenge?.phoneE164
+      ? await findTenantByPhone(ctx, challenge.phoneE164)
+      : challenge?.handle
+        ? await findTenantByHandle(ctx, challenge.handle)
+        : phoneE164
+          ? await findTenantByPhone(ctx, phoneE164)
+          : handle
+            ? await findTenantByHandle(ctx, handle)
+            : null;
     if (!tenant || !challenge) {
       return { ok: false as const, code: "unknown" as const };
     }

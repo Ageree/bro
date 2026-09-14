@@ -11,7 +11,14 @@ export type BoundTenant = {
   photonConversationId?: string;
   inkboxHandle?: string;
   inkboxIdentityId?: string;
+  photonUserId?: string;
 };
+
+/** Identity Photon already has, or the one attachCabinetLogin minted. */
+export function loginIdentity(tenant: BoundTenant): string | undefined {
+  const id = tenant.inkboxIdentityId?.trim() || tenant.photonUserId?.trim();
+  return id || undefined;
+}
 
 export function loginStartDecision(opts: {
   tenant: BoundTenant | null;
@@ -20,9 +27,9 @@ export function loginStartDecision(opts: {
   cooldownMs?: number;
 }): LoginStartKind {
   const t = opts.tenant;
-  if (!t?.inkboxHandle) return "unknown";
+  if (!t) return "unknown";
   const chatId = t.photonConversationId || t.inkboxConversationId;
-  if (!t.phoneE164 || !chatId || !t.inkboxIdentityId) {
+  if (!t.phoneE164 || !chatId || !loginIdentity(t)) {
     return "unbound";
   }
   const cool = opts.cooldownMs ?? START_COOLDOWN_MS;
@@ -209,4 +216,10 @@ export function newLoginCode(): string {
     n = new DataView(bytes.buffer).getUint32(0);
   } while (n >= limit);
   return (n % 1_000_000).toString().padStart(6, "0");
+}
+
+/** Pasted «123 456» is still a login code. */
+export function digitsLoginCode(raw: string): string | null {
+  const digits = raw.replace(/\D/g, "");
+  return /^\d{6}$/.test(digits) ? digits : null;
 }
