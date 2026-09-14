@@ -403,17 +403,22 @@ http.route({
       (typeof body.label === "string" ? body.label.trim() : "") ||
       defaultVaultLabel(kind, body.secret);
     if (label.length > 120) return json({ ok: false, code: "invalid" }, 400);
+    const replaceHandle =
+      typeof body.handle === "string" ? body.handle.trim() : "";
+    if (replaceHandle.length > 80) return json({ ok: false, code: "invalid" }, 400);
     // Invalid payloads are rejected above, so anything thrown here is a
     // server-side failure (missing key, DB) and must not read as a form error.
     try {
-      const { handle } = await ctx.runAction(internal.vaultSecrets.save, {
+      const { handle, replaced } = await ctx.runAction(internal.vaultSecrets.save, {
         tenantId: session.tenantId,
         kind,
         label,
         secret: body.secret,
+        ...(replaceHandle ? { handle: replaceHandle } : {}),
       });
       try {
-        const text = vaultAddedText(kind, vaultAccountHint(kind, body.secret));
+        const text =
+          replaced ? undefined : vaultAddedText(kind, vaultAccountHint(kind, body.secret));
         if (text) {
           const conversationId = await ctx.runQuery(
             internal.cabinet.conversationForTenant,
@@ -429,7 +434,7 @@ http.route({
       } catch (err) {
         console.error("vault save notify", err);
       }
-      return json({ ok: true, handle });
+      return json({ ok: true, handle, replaced });
     } catch (err) {
       console.error("vault save", err);
       return json({ ok: false, code: "error" }, 500);

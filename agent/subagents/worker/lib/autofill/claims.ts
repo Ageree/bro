@@ -4,6 +4,7 @@
  * binding and the token table without a browser or a Convex round trip.
  */
 import {
+  originAllows,
   parseAddressPayload,
   parseContactPayload,
   parseLoginPayload,
@@ -12,6 +13,8 @@ import {
 } from "../../../../../convex/lib/vaultPayload.ts";
 import { nativeLoginAutofillTokens } from "./login.ts";
 import type { AutofillClaim, DetectedAutofillSurface } from "./protocol.ts";
+
+export { originAllows };
 
 const cardTokens = [
   "cc-name",
@@ -190,27 +193,6 @@ export function vaultClaimValues(
     throw new Error("The selected vault item is not compatible with this form.");
   }
   return codec.claims(secret, origin);
-}
-
-export function originAllows(saved: string, page: string): boolean {
-  try {
-    const savedUrl = new URL(saved);
-    const pageUrl = new URL(page);
-
-    // Require same protocol
-    if (savedUrl.protocol !== pageUrl.protocol) return false;
-
-    // Strip leading www. from both hostnames
-    let savedHost = savedUrl.hostname;
-    let pageHost = pageUrl.hostname;
-    if (savedHost.startsWith("www.")) savedHost = savedHost.slice(4);
-    if (pageHost.startsWith("www.")) pageHost = pageHost.slice(4);
-
-    // Allow when hosts match or page is a subdomain of saved
-    return pageHost === savedHost || pageHost.endsWith("." + savedHost);
-  } catch {
-    return false;
-  }
 }
 
 function requireBoundLogin(secret: string, origin: string) {

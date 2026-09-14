@@ -18,7 +18,7 @@ function cabinetBase(): string {
 
 export default defineTool({
   description:
-    "Cabinet link to save payment, address, or contact. Site logins: password from chat goes in worker / browser_task; otherwise profile_setup. Never put a card number or CVV in the arguments — they type those on the page.",
+    "Cabinet link so they add or edit a payment, address, contact, or site login on brobro.tech. Kind login: they type the password on the site, never in chat. To sign in now, call profile_setup — it reads the vault itself. Never ask for a site password. Never put a card number, CVV, or site password in the arguments.",
   inputSchema: vaultSetupRequestSchema,
   async execute(request, ctx) {
     const blocked = groupPersonalBlock(ctx);

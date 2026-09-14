@@ -104,6 +104,66 @@ export const ciphertextByHandle = internalQuery({
   },
 });
 
+export const loginHandleByOrigin = internalQuery({
+  args: { tenantId: v.id("tenants"), origin: v.string() },
+  returns: v.union(v.string(), v.null()),
+  handler: async (ctx, { tenantId, origin }) => {
+    const items = await listItemsForTenant(ctx, tenantId);
+    return (
+      items.find((row) => row.kind === "login" && row.origin === origin)?.handle ??
+      null
+    );
+  },
+});
+
+export const replaceItem = internalMutation({
+  args: {
+    tenantId: v.id("tenants"),
+    handle: v.string(),
+    kind: vaultKind,
+    label: v.string(),
+    account: v.string(),
+    origin: v.optional(v.string()),
+    ciphertext: v.string(),
+    now: v.number(),
+  },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    const item = await ctx.db
+      .query("vaultItems")
+      .withIndex("by_handle", (q) => q.eq("handle", args.handle))
+      .unique();
+    if (!item || item.tenantId !== args.tenantId || item.kind !== args.kind) {
+      return false;
+    }
+    await ctx.db.patch(item._id, {
+      label: args.label,
+      account: args.account,
+      updatedAt: args.now,
+      ...(args.origin !== undefined ? { origin: args.origin } : { origin: undefined }),
+    });
+    const secretRow = await ctx.db
+      .query("vaultSecrets")
+      .withIndex("by_handle", (q) => q.eq("handle", args.handle))
+      .unique();
+    if (secretRow && secretRow.tenantId === args.tenantId) {
+      await ctx.db.patch(secretRow._id, {
+        ciphertext: args.ciphertext,
+        updatedAt: args.now,
+      });
+      return true;
+    }
+    if (secretRow) return false;
+    await ctx.db.insert("vaultSecrets", {
+      tenantId: args.tenantId,
+      handle: args.handle,
+      ciphertext: args.ciphertext,
+      updatedAt: args.now,
+    });
+    return true;
+  },
+});
+
 export const insertItem = internalMutation({
   args: {
     tenantId: v.id("tenants"),

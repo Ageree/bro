@@ -350,6 +350,7 @@ export const setBrowser = (
   patch: {
     browserSessionId?: string;
     browserLiveUrl?: string;
+    browserLoginLinkSentAt?: number;
     browserRunId?: string;
     browserTask?: string;
     browserStatus?: string;

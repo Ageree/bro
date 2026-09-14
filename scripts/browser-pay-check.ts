@@ -1,10 +1,14 @@
 import {
   cardBindings,
+  LOGIN_ALIASES,
+  loginBindings,
+  loginScaffold,
   normalizePayHost,
   normalizePayHosts,
   PAY_ALIASES,
   payScaffold,
 } from "../agent/lib/browser-pay.ts";
+import type { LoginPayload } from "../convex/lib/vaultPayload.ts";
 import { scaffoldTask } from "../agent/lib/browseruse.ts";
 import type { PaymentPayload } from "../convex/lib/vaultPayload.ts";
 
@@ -179,6 +183,54 @@ const payOpts = {
   assert(
     !syncedWithPay.includes("Если нужна оплата — остановись"),
     "synced+pay drops generic pay-stop sentence",
+  );
+}
+
+const loginPassword = ["bro", "test", "fixture"].join("-");
+const login: LoginPayload = {
+  kind: "login",
+  version: 1,
+  origin: "https://taxi.yandex.ru",
+  identifier: { type: "email", value: "sava@mail.ru" },
+  authentication: { type: "password", password: loginPassword },
+};
+{
+  const bindings = loginBindings(login, ["taxi.yandex.ru", "yandex.ru"]);
+  assert(bindings.length === 2, "login + password bindings");
+  assert(bindings[0]?.alias === LOGIN_ALIASES.login, "login alias");
+  assert(bindings[1]?.alias === LOGIN_ALIASES.password, "password alias");
+  assert(bindings[0]?.source.value === "sava@mail.ru", "identifier bound");
+  assert(bindings[1]?.source.value === loginPassword, "password bound");
+  assert(
+    JSON.stringify(bindings[0]?.allowedDomains) ===
+      JSON.stringify(["taxi.yandex.ru", "yandex.ru"]),
+    "login domains",
+  );
+}
+throws(
+  () =>
+    loginBindings(
+      { ...login, authentication: { type: "sms_otp" } },
+      ["ozon.ru"],
+    ),
+  "otp login cannot be bound",
+);
+throws(() => loginBindings(login, []), "loginBindings throws on empty hosts");
+
+{
+  const text = loginScaffold();
+  assert(text.includes(LOGIN_ALIASES.login), "login scaffold names login alias");
+  assert(text.includes(LOGIN_ALIASES.password), "login scaffold names password alias");
+  assert(!text.includes(loginPassword), "login scaffold has no secret");
+  assert(
+    scaffoldTask("зайди на ozon", { login: true }).includes(LOGIN_ALIASES.password),
+    "errand scaffold includes vault login block",
+  );
+  assert(
+    !scaffoldTask("зайди на ozon", { login: true }).includes(
+      "Если пароля в задаче нет и сайт просит логин",
+    ),
+    "vault login does not fall back to asking the human",
   );
 }
 

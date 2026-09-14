@@ -424,6 +424,8 @@ assert(cabinet.includes('id="vault"'), "cabinet vault card");
 assert(cabinet.includes("<h2>Сейф</h2>"), "cabinet vault title");
 assert(cabinet.includes('id="vault-add-card"'), "cabinet add-card cta");
 assert(cabinet.includes("/vault.html?kind=payment&from=cabinet"), "add-card opens payment form");
+assert(cabinet.includes("/vault.html?kind=login&from=cabinet"), "add-login opens login form");
+assert(cabinet.includes("Добавить вход"), "cabinet add-login copy");
 assert(cabinet.includes("/vault/items"), "cabinet lists vault items");
 assert(cabinet.includes("Добавить карту"), "cabinet add-card copy");
 assert(cabinet.includes("Номер и CVV он не видит"), "cabinet vault does not expose secrets");

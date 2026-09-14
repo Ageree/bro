@@ -128,7 +128,7 @@
         if (s === "synced" && domains && domains.length) {
           return "Сохранены входы: " + esc(domains.join(", "));
         }
-        return "Пока нет сохранённых входов — Bro пришлёт ссылку, когда понадобится.";
+        return "Пока нет сохранённых входов — Bro возьмёт вход из сейфа или пришлёт ссылку, когда понадобится.";
       }
       function vaultKindRu(k) {
         if (k === "payment") return "Карта";
@@ -140,11 +140,12 @@
       function vaultCard() {
         return '<section class="sec" id="vault">' +
           head("<h2>Сейф</h2>", "") +
-          '<p class="t-small t-mute">Bro платит этой картой на сайтах. Номер и CVV он не видит — только заполняет форму оплаты.</p>' +
+          '<p class="t-small t-mute">Карта, адреса и входы на сайты. Номер и CVV он не видит — пароль в чат тоже не пиши.</p>' +
           '<ul class="rows" id="vault-items" hidden></ul>' +
-          '<p class="t-small t-mute" id="vault-empty">Карты ещё нет — добавь, и Bro сможет покупать.</p>' +
+          '<p class="t-small t-mute" id="vault-empty">Пока пусто — добавь карту или вход, и Bro сможет покупать и заходить на сайты.</p>' +
           '<div class="acts">' +
           '<a class="act" id="vault-add-card" href="/vault.html?kind=payment&from=cabinet">Добавить карту</a>' +
+          '<a class="act" id="vault-add-login" href="/vault.html?kind=login&from=cabinet">Добавить вход</a>' +
           '<a class="act" id="vault-open-page" href="/vault.html">перейти в сейф</a>' +
           "</div></section>";
       }
@@ -361,7 +362,7 @@
           meter(me.browserUsed, me.browserAllowance) + "</section>" +
           memoCard(me) +
           '<section class="sec" id="chrome"><div class="sec__head"><h2>Входы в сайты</h2></div>' +
-          '<p class="t-small t-mute">Когда Bro нужна твоя учётка, он сам пришлёт ссылку в чат. Открой, войди — пароль он не увидит, вход сохранится.</p>' +
+          '<p class="t-small t-mute">Сначала Bro берёт вход из сейфа. Если его нет — пришлёт ссылку в чат. Открой, войди — пароль в чат не пиши. Добавить или изменить вход можно в сейфе.</p>' +
           '<p class="t-small" style="margin-top:0.6rem">' + profileStatusRu(me.browserProfileStatus, me.browserCookieDomains) + "</p></section>" +
           vaultCard() +
           tzCard(me) +
@@ -400,7 +401,7 @@
             if (!items.length) {
               list.hidden = true;
               empty.hidden = false;
-              empty.textContent = "Карты ещё нет — добавь, и Bro сможет покупать.";
+              empty.textContent = "Пока пусто — добавь карту или вход.";
               return;
             }
             empty.hidden = true;
