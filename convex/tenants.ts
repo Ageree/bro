@@ -12,6 +12,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { assertSecret } from "./secret";
 import { isValidHandle, makeHandle, phoneBindDecision } from "./lib/accessPolicy";
 import {
+  BROWSER_JOBS_UNLIMITED,
   browserAllowance,
   browserAllowedOnLimitError,
   carryCountersOnTzChange,
@@ -908,12 +909,12 @@ async function chargeBrowserJob(
       usedCount(value),
       legacyUsedForPeriod(tenant.browserMonthKey, tenant.browserMonthCount, key),
     );
-    if (used >= allowance) return false;
+    if (!BROWSER_JOBS_UNLIMITED && used >= allowance) return false;
     const { ok } = await rateLimiter.limit(ctx, "browserJobsPerMonth", {
       key: periodKey,
       config,
     });
-    return ok;
+    return BROWSER_JOBS_UNLIMITED ? true : ok;
   } catch (err) {
     console.error("billing browser count failed", err);
     return browserAllowedOnLimitError().allowed;

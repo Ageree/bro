@@ -4,6 +4,8 @@ const FREE_MSGS = 30;
 const PAID_MSGS = 500;
 const FREE_BROWSER = 5;
 const PAID_BROWSER = 60;
+/** Closed beta: no monthly browser-job cap. Flip off to restore 5 / 60. */
+export const BROWSER_JOBS_UNLIMITED = true;
 
 function ymd(
   now: number,
@@ -116,6 +118,7 @@ export function browserAllowance(
   paid: boolean,
   env: { free?: string; paid?: string },
 ): number {
+  if (BROWSER_JOBS_UNLIMITED) return ALLOWANCE_MAX;
   return clampAllowance(
     paid ? cap(env.paid, PAID_BROWSER) : cap(env.free, FREE_BROWSER),
   );
@@ -199,7 +202,7 @@ export function inboundDecisionOnLimitError(opts?: {
 }
 
 export function browserAllowedOnLimitError(): BrowserGate {
-  return { allowed: false };
+  return { allowed: BROWSER_JOBS_UNLIMITED };
 }
 
 export function inboundGateFromResult(
