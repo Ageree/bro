@@ -297,6 +297,19 @@ assert(!canSkipInboundBind({ phoneE164: "+1" }, "+2", "c1"), "other phone still 
 assert(!canSkipInboundBind({ phoneE164: "+1", status: "disabled" }, "+1", "c1"), "disabled still binds");
 assert(CONVERSATION_RECALL_TIMEOUT_MS === 1500, "conversation recall matches archive budget");
 
+{
+  const imessage = src("agent/channels/imessage.ts");
+  const gateIdx = imessage.indexOf("inboundOwnerGate(inbound.senderPhone)");
+  const tenantIdx = imessage.indexOf("await getTenant(inbound.senderPhone)");
+  assert(gateIdx > 0 && tenantIdx > gateIdx, "billing count starts before the tenant lookup, not after bind");
+  assert(imessage.includes("senderGateP ??"), "the early count is reused for the thread owner");
+  assert(imessage.includes('POST("/internal/warm"'), "keep-warm route exists");
+  assert(imessage.includes("prefetchSpectrum();\n      prefetchOpenRouter();"), "warm boots Photon and OpenRouter");
+  const crons = src("convex/crons.ts");
+  assert(crons.includes("internal.warm.pingEve"), "Convex cron pings the warm route");
+  assert(src("convex/warm.ts").includes("/internal/warm"), "warm action targets the eve route");
+}
+
 console.log("start-path-check ok");
 console.log(
   JSON.stringify({
@@ -320,5 +333,7 @@ console.log(
     instinctPrefetchDuringBilling: true,
     instinctRecallsParallel: true,
     openRouterWarmDuringBilling: true,
+    billingCountParallelToTenantLookup: true,
+    keepWarmCronMinutes: 4,
   }),
 );

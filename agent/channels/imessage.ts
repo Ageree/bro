@@ -220,6 +220,24 @@ export default defineChannel({
         },
       });
     }),
+    // Keep-warm ping (Convex cron): boots the cached Spectrum app and the
+    // OpenRouter connection so the first human turn after a quiet spell
+    // does not pay the cold-start bill. Secret-gated: each boot costs Photon
+    // HTTP calls.
+    POST("/internal/warm", async (request) => {
+      let body: { secret?: unknown };
+      try {
+        body = (await request.json()) as typeof body;
+      } catch {
+        return new Response("bad json", { status: 400 });
+      }
+      if (!secretEquals(body.secret, process.env.BRO_INTERNAL_SECRET)) {
+        return new Response("unauthorized", { status: 401 });
+      }
+      prefetchSpectrum();
+      prefetchOpenRouter();
+      return Response.json({ ok: true });
+    }),
     POST("/internal/photon-send", async (request) => {
       let body: { secret?: unknown; conversationId?: unknown; text?: unknown };
       try {
@@ -284,6 +302,13 @@ export default defineChannel({
       if (inbound.senderPhone && preview) {
         prefetchOneToOneStart(inbound.senderPhone, preview);
       }
+      // Billing count and tenant lookup are independent Convex hops; run
+      // them side by side. The count is reused below when the sender owns
+      // the thread (always, for a 1:1), and recomputed otherwise.
+      const senderGateP =
+        inbound.senderPhone && preview
+          ? inboundOwnerGate(inbound.senderPhone)
+          : undefined;
 
       const known = await getTenant(inbound.senderPhone).catch(() => null);
       // Closed beta: first DMs from any new number must bind. ALLOWED_SENDERS
@@ -336,7 +361,7 @@ export default defineChannel({
           ? boundTenant.phoneE164
           : undefined;
       const earlyGateP = knownOwnerPhone && preview
-        ? inboundOwnerGate(knownOwnerPhone)
+        ? (senderGateP ?? inboundOwnerGate(knownOwnerPhone))
         : undefined;
 
       if (!preview) {
