@@ -1,18 +1,41 @@
-export const DONE = new Set([
-  "completed",
-  "failed",
-  "cancelled",
-  "canceled",
-  "stopped",
-  "error",
-]);
+// Documented v4 run terminal states (docs.browser-use.com/cloud/api-v4:
+// get-run/get-run-status/get-session all use the same six-value status
+// enum) plus our own `stalled` sentinel for a run followThrough gave up on.
+export const DONE = new Set(["completed", "failed", "cancelled", "stalled"]);
 
+/** Terminal status followThrough writes on give-up — never sent by the vendor. */
+export const STALLED_STATUS = "stalled";
+
+/**
+ * hydrate()'s guarded-failure placeholder for a transient upstream miss.
+ * Never a real Browser Use status — never let it overwrite one on the tenant.
+ */
+export const UNKNOWN_STATUS = "unknown";
+
+/** undefined when `status` is hydrate's "unknown" placeholder — a caller should skip the write. */
+export function persistableStatus(status: string): string | undefined {
+  return status.trim().toLowerCase() === UNKNOWN_STATUS ? undefined : status;
+}
+
+// Kept for callers/checks that still name the old steady cadence; the
+// schedule below no longer uses it internally.
 export const POLL_INTERVAL_MS = 2 * 60_000;
 export const POLL_GIVE_UP_MS = 20 * 60_000;
-export const FOLLOW_FIRST_SLEEP_MS = 20_000;
+
+// Poll cadence after a run starts: ramp 10s→15s→20s→30s→45s→60s, then a
+// steady 90s until give-up. No webhook exists (v4 confirmed) — this is the
+// only lever for follow-through latency.
+export const FOLLOW_SCHEDULE_MS = [
+  10_000, 15_000, 20_000, 30_000, 45_000, 60_000,
+] as const;
+export const FOLLOW_STEADY_SLEEP_MS = 90_000;
+
+export function followSchedule(): number[] {
+  return [...FOLLOW_SCHEDULE_MS];
+}
 
 export function followSleepMs(pollIndex: number): number {
-  return pollIndex === 0 ? FOLLOW_FIRST_SLEEP_MS : POLL_INTERVAL_MS;
+  return FOLLOW_SCHEDULE_MS[pollIndex] ?? FOLLOW_STEADY_SLEEP_MS;
 }
 
 export function isFollowTerminal(status: string): boolean {
@@ -39,8 +62,12 @@ export function nextFollowDecision(opts: {
   return "sleep";
 }
 
+/** Loop rounds whose cumulative sleep approximates POLL_GIVE_UP_MS under followSchedule(). */
 export function maxPollRounds(): number {
-  return Math.ceil(POLL_GIVE_UP_MS / POLL_INTERVAL_MS);
+  const rampSum = FOLLOW_SCHEDULE_MS.reduce((a, b) => a + b, 0);
+  const remaining = Math.max(0, POLL_GIVE_UP_MS - rampSum);
+  const steadyRounds = Math.ceil(remaining / FOLLOW_STEADY_SLEEP_MS);
+  return FOLLOW_SCHEDULE_MS.length + steadyRounds;
 }
 
 /** Start a follow-through workflow only while the Browser Use job is still live. */

@@ -1,14 +1,9 @@
 import { DONE } from "../../convex/lib/browserFollowPolicy.ts";
 
-const ACTIVE = new Set([
-  "queued",
-  "pending",
-  "running",
-  "started",
-  "in_progress",
-  "working",
-  "processing",
-]);
+// Documented v4 run states that are not yet terminal: queued, dispatching,
+// running (docs.browser-use.com/cloud/api-v4 — get-run/get-run-status/get-session
+// all use the same six-value enum: queued|dispatching|running|completed|failed|cancelled).
+const ACTIVE = new Set(["queued", "dispatching", "running"]);
 
 export function normalizeTask(task: string): string {
   return task.trim().toLowerCase().replace(/\s+/g, " ");
@@ -25,10 +20,33 @@ export function isDoneStatus(status: string | undefined | null): boolean {
 const NEW_JOB =
   /купи|купить|найди|найти|закаж|заказ|wb|wildberries|ozon|озон|wildberries\.|ozon\.ru|забронир|брон|запиш|запис|запись|столик|ресторан|врач|стоматолог|клиник|салон|такси|доставк|отель|билет|вызов|оформ|аренд/i;
 
-export function looksLikeNewJob(task: string): boolean {
+function significantWords(text: string): Set<string> {
+  const words = text.toLowerCase().match(/[a-zа-яё0-9]{4,}/giu) ?? [];
+  return new Set(words);
+}
+
+/** True when `a` and `b` share a significant (4+ char) word — same topic/errand. */
+export function sharesKeyword(a: string, b: string): boolean {
+  const words = significantWords(a);
+  for (const w of significantWords(b)) {
+    if (words.has(w)) return true;
+  }
+  return false;
+}
+
+/**
+ * True when `task` reads as a new errand rather than a ping or a follow-up
+ * on the current one. A keyword (такси, забронируй, ...) always counts. A
+ * long message with no keyword only counts when it does not share a
+ * significant word with `storedTask` — a 48+ char question about the same
+ * errand must not read as a fresh, separately-billed job.
+ */
+export function looksLikeNewJob(task: string, storedTask?: string): boolean {
   const t = task.trim();
-  if (t.length >= 48) return true;
-  return NEW_JOB.test(t);
+  if (NEW_JOB.test(t)) return true;
+  if (t.length < 48) return false;
+  if (!storedTask) return true;
+  return !sharesKeyword(t, storedTask);
 }
 
 /** One in-flight cloud job per person. Pings must poll, not spawn a twin search. */
@@ -38,10 +56,21 @@ export function nextBrowserAction(opts: {
   status?: string | null;
   storedTask?: string | null;
   incomingTask: string;
-}): "start" | "poll" | "reuse" {
+}): "start" | "poll" | "reuse" | "busy" {
   if (opts.reset) return "start";
   if (!opts.runId) return "start";
-  if (isActiveStatus(opts.status)) return "poll";
+  if (isActiveStatus(opts.status)) {
+    const stored = opts.storedTask?.trim();
+    if (
+      stored &&
+      normalizeTask(stored) !== normalizeTask(opts.incomingTask) &&
+      looksLikeNewJob(opts.incomingTask, stored) &&
+      !sharesKeyword(opts.incomingTask, stored)
+    ) {
+      return "busy";
+    }
+    return "poll";
+  }
   if (isDoneStatus(opts.status)) {
     if (
       opts.storedTask &&
@@ -49,22 +78,14 @@ export function nextBrowserAction(opts: {
     ) {
       return "reuse";
     }
-    if (!looksLikeNewJob(opts.incomingTask)) return "reuse";
+    if (!looksLikeNewJob(opts.incomingTask, opts.storedTask ?? undefined)) {
+      return "reuse";
+    }
   }
   return "start";
 }
 
 export const BROWSER_WAIT_MS = 2_000;
-
-const POLL_GIVE_UP_MS = 30 * 60_000;
-
-export function pollTimedOut(
-  startedAt: number | undefined,
-  now: number,
-): boolean {
-  if (startedAt === undefined) return false;
-  return now - startedAt > POLL_GIVE_UP_MS;
-}
 
 export {
   nextFollowDecision,

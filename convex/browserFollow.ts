@@ -1,9 +1,9 @@
 import { v, type Infer } from "convex/values";
-import { type WorkflowId } from "@convex-dev/workflow";
+import { type WorkflowCtx, type WorkflowId } from "@convex-dev/workflow";
 import { internalAction, mutation, type MutationCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { assertSecret } from "./secret";
-import { hydrate, pollStatus } from "./lib/browseruse";
+import { cancelRun, hydrate, pollStatus, stopBrowserForSession } from "./lib/browseruse";
 import {
   loginChatText,
   isLoginWaitTask,
@@ -15,7 +15,10 @@ import {
   followSleepMs,
   maxPollRounds,
   nextFollowDecision,
+  persistableStatus,
   sameBrowserRun,
+  STALLED_STATUS,
+  UNKNOWN_STATUS,
   wakeupIdempotencyKey,
   wakeupStepRetry,
   type WakeupPhase,
@@ -28,6 +31,25 @@ import { workflow } from "./workflow";
 const startResult = v.object({
   workflowId: v.string(),
   reused: v.boolean(),
+});
+
+const cancelRunResult = v.object({
+  cancelled: v.boolean(),
+  stopped: v.boolean(),
+});
+
+/** Best-effort stop of a Cloud run + its browser session. Never throws. */
+export const cancelRunAction = internalAction({
+  args: {
+    runId: v.string(),
+    sessionId: v.optional(v.string()),
+  },
+  returns: cancelRunResult,
+  handler: async (_ctx, { runId, sessionId }): Promise<Infer<typeof cancelRunResult>> => {
+    const cancelled = await cancelRun(runId);
+    const stopped = sessionId ? await stopBrowserForSession(sessionId) : false;
+    return { cancelled, stopped };
+  },
 });
 
 const followOutcome = v.object({
@@ -80,6 +102,9 @@ export const followThrough = workflow.define({
       continue;
     }
     const phase: WakeupPhase = decision === "giveup" ? "giveup" : "done";
+    if (phase === "giveup") {
+      await stopGivenUpRun(step, args, `-${i}`);
+    }
     await step.runAction(
       internal.browserFollow.wakeupAgent,
       {
@@ -92,6 +117,7 @@ export const followThrough = workflow.define({
     );
     return { outcome: decision === "giveup" ? "timeout" : "done" };
   }
+  await stopGivenUpRun(step, args, "-cap");
   await step.runAction(
     internal.browserFollow.wakeupAgent,
     {
@@ -104,6 +130,32 @@ export const followThrough = workflow.define({
   );
   return { outcome: "timeout" };
 });
+
+/**
+ * Give-up must stop the Cloud run, not just stop watching it — otherwise it
+ * keeps billing and a later, unrelated errand can silently inherit its stale
+ * result via nextBrowserAction's active-status branch.
+ */
+async function stopGivenUpRun(
+  step: WorkflowCtx,
+  args: { tenantPhone: string; runId: string; sessionId?: string },
+  nameSuffix: string,
+): Promise<void> {
+  await step.runAction(
+    internal.browserFollow.cancelRunAction,
+    { runId: args.runId, sessionId: args.sessionId },
+    { retry: true, name: `cancel${nameSuffix}` },
+  );
+  await step.runMutation(
+    internal.tenants.patchBrowserInternal,
+    {
+      phoneE164: args.tenantPhone,
+      runId: args.runId,
+      browserStatus: STALLED_STATUS,
+    },
+    { name: `stall${nameSuffix}` },
+  );
+}
 
 const WAKEUP_SCAN_PAGE = 100;
 
@@ -178,8 +230,10 @@ export const startFollowThrough = mutation({
         try {
           await workflow.cancel(ctx, id);
         } catch (err) {
+          // The old workflow's future steps are already guarded by
+          // sameBrowserRun, so a leftover one running stale is strictly
+          // better than the new run getting no follow-through at all.
           console.error("browser follow cancel failed", err);
-          return { error: "retry_later" };
         }
       }
     }
@@ -271,10 +325,23 @@ export const pollRun = internalAction({
             cheap.sessionId ?? args.sessionId,
             targetPage,
           );
+    const status = persistableStatus(run.status);
+    if (status === undefined) {
+      // hydrate's guarded-failure placeholder: a transient miss, never a
+      // real status. Writing it would blank the tenant's known status and
+      // make nextBrowserAction see neither active nor done → duplicate run.
+      return {
+        status: tenant.browserStatus ?? UNKNOWN_STATUS,
+        now: Date.now(),
+        stale: false,
+        sessionId: run.sessionId ?? tenant.browserSessionId,
+        liveUrl: tenant.browserLiveUrl,
+      };
+    }
     const wrote = await ctx.runMutation(internal.tenants.patchBrowserInternal, {
       phoneE164: args.tenantPhone,
       runId: args.runId,
-      browserStatus: run.status,
+      browserStatus: status,
       browserSessionId: run.sessionId,
       browserLiveUrl: run.liveUrl ?? "",
     });

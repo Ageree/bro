@@ -13,6 +13,7 @@ import {
 } from "../lib/convex";
 import {
   BROWSER_WAIT_MS,
+  isActiveStatus,
   nextBrowserAction,
   shouldStartFollowThrough,
 } from "../lib/browser-policy";
@@ -20,8 +21,10 @@ import { parseOrderFromResult } from "../lib/order-policy";
 import { purchaseStance } from "../lib/purchase-policy";
 import {
   FOLLOW_RETRY_HINT,
+  persistableStatus,
 } from "../../convex/lib/browserFollowPolicy.ts";
 import {
+  cancelRun,
   createProfile,
   envSyncedProfileId,
   findBrowserForSession,
@@ -32,6 +35,7 @@ import {
   queueMessage,
   resolveQueuedRun,
   startRun,
+  stopBrowserForSession,
   waitForPageLanding,
   waitForRun,
   type BrowserRun,
@@ -50,6 +54,7 @@ import {
   injectCandidate,
   injectQueueInterrupt,
   injectQueueText,
+  looksLikePasswordDump,
   NO_LIVE_RUN_TEXT,
 } from "../../convex/lib/browserInjectPolicy.ts";
 import {
@@ -76,12 +81,17 @@ async function persist(
     browserProfileSyncedAt?: number;
   },
 ): Promise<void> {
+  // hydrate's guarded-failure "unknown" is a transient miss, never a real
+  // status — writing it would blank out a known status/liveUrl and make
+  // nextBrowserAction see neither active nor done, starting a duplicate run.
+  const status = persistableStatus(run.status);
   await setBrowser(phone, {
     browserRunId: run.runId,
     browserTask: task,
-    browserStatus: run.status,
+    ...(status !== undefined
+      ? { browserStatus: status, browserLiveUrl: run.liveUrl ?? "" }
+      : {}),
     ...(run.sessionId ? { browserSessionId: run.sessionId } : {}),
-    browserLiveUrl: run.liveUrl ?? "",
     ...(extra ?? {}),
   });
 }
@@ -382,7 +392,7 @@ async function resolveSyncedProfile(
   cookieDomains: string[];
   synced: boolean;
 }> {
-  let profileId = tenant.browserProfileId ?? envSyncedProfileId();
+  let profileId = tenant.browserProfileId ?? envSyncedProfileId(phone);
   if (!profileId) {
     try {
       profileId = await createProfile(phone);
@@ -447,6 +457,12 @@ export default defineTool({
   async execute({ task, reset, pay }, ctx) {
     const blocked = groupPersonalBlock(ctx);
     if (blocked) return { status: "group", hint: blocked };
+    if (looksLikePasswordDump(task)) {
+      return {
+        status: "invalid",
+        hint: "это похоже на пароль сайта, не поручение — пароль в чат не нужен",
+      };
+    }
     const phone = tenantId(ctx);
     const tenant = await upsertTenant(phone);
     const conv = conversationId(ctx, tenant.inkboxConversationId);
@@ -477,6 +493,22 @@ export default defineTool({
         startedAt: tenant.browserStartedAt,
         runId: tenant.browserRunId,
       });
+    }
+
+    if (action === "busy" && tenant.browserRunId) {
+      const run = await waitForRun(
+        tenant.browserRunId,
+        tenant.browserSessionId,
+        BROWSER_WAIT_MS,
+      );
+      await persist(phone, run, tenant.browserTask ?? task);
+      return {
+        status: run.status,
+        busy: true,
+        activeTask: tenant.browserTask,
+        runId: run.runId,
+        hint: "Уже идёт другой браузер-джоб: сначала закончи его, потом это. Скажи человеку, что сделаешь по очереди, или вызови browser_task с reset:true, чтобы отменить текущий и начать это прямо сейчас.",
+      };
     }
 
     if (action === "poll" && tenant.browserRunId) {
@@ -571,9 +603,23 @@ export default defineTool({
       secretBindings = [...(secretBindings ?? []), ...vaultLogin.bindings];
     }
 
+    // Fresh session per errand: never hand the old browser to a new run.
+    // Cancel a still-active previous run (billing stops immediately) and stop
+    // its browser session (a completed run does not close its own browser).
+    if (tenant.browserRunId && isActiveStatus(tenant.browserStatus)) {
+      await cancelRun(tenant.browserRunId).catch((err) =>
+        console.error("browser cancel run failed", err),
+      );
+    }
+    if (tenant.browserSessionId) {
+      await stopBrowserForSession(tenant.browserSessionId).catch((err) =>
+        console.error("browser stop session failed", err),
+      );
+    }
+
     const resolved = await resolveSyncedProfile(phone, tenant);
     const startPage = errandStartUrl(task);
-    const started = await startRun(task, reset ? undefined : tenant.browserSessionId, {
+    const started = await startRun(task, undefined, {
       ...(resolved.profileId
         ? { profileId: resolved.profileId, profileSynced: resolved.synced }
         : {}),

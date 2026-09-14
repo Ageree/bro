@@ -127,7 +127,7 @@ export default defineTool({
     const conv = conversationId(ctx, tenant.inkboxConversationId);
     const turnId = typeof ctx.session.turn?.id === "string" ? ctx.session.turn.id : undefined;
 
-    let profileId = tenant.browserProfileId ?? envSyncedProfileId();
+    let profileId = tenant.browserProfileId ?? envSyncedProfileId(phone);
     if (!profileId) {
       try {
         profileId = await createProfile(phone);
