@@ -76,42 +76,61 @@ assert(workerSrc.includes("broModel("), "worker stays on OpenRouter");
 
 const {
   OPENROUTER_CHAT_PREFERRED_MAX_LATENCY,
-  OPENROUTER_CHAT_PROVIDER_ORDER,
   OPENROUTER_CHAT_PROVIDER_SORT,
-  OPENROUTER_CHAT_REASONING_EFFORT,
+  OPENROUTER_CHAT_REASONING,
   applyOpenRouterChatDefaults,
   isOpenRouterChatCompletionsUrl,
+  providerOrderFromEnv,
+  reasoningFromEnv,
   withOpenRouterChatDefaults,
 } = await import("../agent/lib/openrouter-chat.ts");
-assert(OPENROUTER_CHAT_REASONING_EFFORT === "low", "DeepSeek thinking default is overridden to low");
+// DeepSeek V4.1 Flash thinks at effort=high by default and even `low` spends
+// ~1,600 tokens before the first visible character. Chat turns run without a
+// thinking phase; BRO_REASONING_EFFORT=low|high|max brings it back.
+type Reasoning = ReturnType<typeof reasoningFromEnv>;
+const reasoningOff = (r: Reasoning): boolean => "enabled" in r && r.enabled === false;
+const reasoningEffort = (r: Reasoning): string | undefined => ("effort" in r ? r.effort : undefined);
+assert(reasoningOff(OPENROUTER_CHAT_REASONING), "thinking is off by default so the first token is visible");
+assert(reasoningOff(reasoningFromEnv({})), "unset env keeps thinking off");
+assert(reasoningOff(reasoningFromEnv({ BRO_REASONING_EFFORT: "off" })), "off keeps thinking off");
+assert(reasoningEffort(reasoningFromEnv({ BRO_REASONING_EFFORT: "low" })) === "low", "low re-enables low thinking");
+assert(reasoningEffort(reasoningFromEnv({ BRO_REASONING_EFFORT: "MAX" })) === "max", "effort names are case-insensitive");
+assert(reasoningOff(reasoningFromEnv({ BRO_REASONING_EFFORT: "none" })), "none is not a supported effort → off");
 assert(OPENROUTER_CHAT_PROVIDER_SORT === "latency", "chat prefers the fastest OpenRouter provider");
 assert(
-  OPENROUTER_CHAT_PROVIDER_ORDER[0] === "deepseek",
-  "official DeepSeek is tried before third-party hosts",
+  OPENROUTER_CHAT_PREFERRED_MAX_LATENCY.p90 <= 2.5,
+  "slow hosts are deprioritized on p90, not required",
 );
+assert(providerOrderFromEnv({}) === undefined, "no pinned provider order by default (sticky cache stays on)");
 assert(
-  OPENROUTER_CHAT_PREFERRED_MAX_LATENCY <= 2,
-  "slow hosts are deprioritized, not required",
+  providerOrderFromEnv({ BRO_OPENROUTER_PROVIDER_ORDER: "Baseten, fireworks" })?.join(",") === "baseten,fireworks",
+  "env pins a provider list",
 );
-const filled = withOpenRouterChatDefaults({ model: DEFAULT_OPENROUTER_MODEL }) as {
-  reasoning?: { effort?: string };
-  provider?: { sort?: string; order?: string[]; preferred_max_latency?: number };
+const filled = withOpenRouterChatDefaults({ model: DEFAULT_OPENROUTER_MODEL }, {}) as {
+  reasoning?: { effort?: string; enabled?: boolean };
+  provider?: { sort?: string; order?: string[]; preferred_max_latency?: { p90?: number } };
 };
-assert(filled.reasoning?.effort === "low", "unset reasoning.effort becomes low");
+assert(filled.reasoning?.enabled === false, "unset reasoning becomes disabled");
+assert(filled.reasoning?.effort === undefined, "no effort is sent alongside enabled:false");
 assert(filled.provider?.sort === "latency", "unset provider.sort becomes latency");
+assert(filled.provider?.order === undefined, "no provider.order unless pinned by env");
 assert(
-  filled.provider?.order?.[0] === "deepseek",
-  "unset provider.order prefers official DeepSeek",
+  filled.provider?.preferred_max_latency?.p90 === OPENROUTER_CHAT_PREFERRED_MAX_LATENCY.p90,
+  "unset preferred_max_latency deprioritizes slow hosts on p90",
 );
-assert(
-  filled.provider?.preferred_max_latency === OPENROUTER_CHAT_PREFERRED_MAX_LATENCY,
-  "unset preferred_max_latency deprioritizes slow DeepSeek hosts",
-);
+const pinnedBody = withOpenRouterChatDefaults(
+  { model: DEFAULT_OPENROUTER_MODEL },
+  { BRO_OPENROUTER_PROVIDER_ORDER: "baseten", BRO_REASONING_EFFORT: "low" },
+) as { reasoning?: { effort?: string; enabled?: boolean }; provider?: { sort?: string; order?: string[] } };
+assert(pinnedBody.provider?.order?.[0] === "baseten", "env order is sent");
+assert(pinnedBody.provider?.sort === undefined, "order and sort are never sent together");
+assert(pinnedBody.reasoning?.effort === "low" && pinnedBody.reasoning?.enabled === undefined, "env effort is sent");
 const kept = withOpenRouterChatDefaults({
   reasoning: { effort: "high" },
   provider: { sort: "price" },
-}) as { reasoning?: { effort?: string }; provider?: { sort?: string } };
+}, {}) as { reasoning?: { effort?: string; enabled?: boolean }; provider?: { sort?: string } };
 assert(kept.reasoning?.effort === "high", "explicit reasoning.effort is left alone");
+assert(kept.reasoning?.enabled === undefined, "explicit effort is not contradicted by enabled:false");
 assert(kept.provider?.sort === "price", "explicit provider.sort is left alone");
 assert(
   isOpenRouterChatCompletionsUrl("https://openrouter.ai/api/v1/chat/completions"),
@@ -126,9 +145,9 @@ const applied = applyOpenRouterChatDefaults({
   body: JSON.stringify({ model: DEFAULT_OPENROUTER_MODEL }),
 });
 const appliedBody = JSON.parse(String(applied?.body)) as {
-  reasoning?: { effort?: string };
+  reasoning?: { enabled?: boolean };
 };
-assert(appliedBody.reasoning?.effort === "low", "fetch wrapper rewrites JSON chat bodies");
+assert(appliedBody.reasoning?.enabled === false, "fetch wrapper rewrites JSON chat bodies");
 
 const modelSrc = src("agent/lib/model.ts");
 assert(modelSrc.includes("openRouterChatFetch"), "default DeepSeek chat uses the OpenRouter extras fetch");

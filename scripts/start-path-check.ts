@@ -104,7 +104,7 @@ assert(instinct.includes("canPrefetchInstinctQuery"), "voice placeholders skip e
 
 const openrouterWarm = src("agent/lib/openrouter-warm.ts");
 const chatExtras = src("agent/lib/openrouter-chat.ts");
-assert(chatExtras.includes('effort = OPENROUTER_CHAT_REASONING_EFFORT'), "chat fills reasoning.effort");
+assert(chatExtras.includes("reasoningFromEnv(env)"), "chat fills reasoning from the env default (thinking off)");
 assert(chatExtras.includes("OPENROUTER_CHAT_PROVIDER_SORT"), "chat fills provider.sort");
 const modelLib = src("agent/lib/model.ts");
 assert(modelLib.includes("openRouterChatFetch"), "default DeepSeek uses OpenRouter chat extras");
