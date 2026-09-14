@@ -30,6 +30,7 @@ import {
   settleFastAck,
   startFastAck,
 } from "../lib/fast-ack.ts";
+import { cloudInjectAttribute } from "../../convex/lib/browserInjectPolicy.ts";
 import { secretEquals } from "../lib/secret-compare.ts";
 import {
   cabinetBaseUrl,
@@ -504,6 +505,7 @@ export default defineChannel({
               ...shortAckAttribute(inbound.text),
               ...inboundAtAttribute(receivedAt),
               ...fastAckAttribute(ackText),
+              ...cloudInjectAttribute(inbound.text),
             },
           },
         }),
@@ -697,7 +699,7 @@ export default defineChannel({
       } else if (kind === "watcher") {
         prompt = watcherWakeupPrompt(payload, lastSeen);
       } else if (kind === "browser_poll") {
-        prompt = `[background wakeup] Проверь статус текущего браузер-джоба вызовом тула browser_task с task=${payload}. Если completed — отправь человеку результаты. Если failed или джоб завис — коротко скажи об этом. Если ещё работает — ответь [SILENT].`;
+        prompt = `[background wakeup] Проверь статус текущего браузер-джоба вызовом тула browser_task с task=${payload}. Если человек уже прислал одноразовый код или уточнение к этой сессии, и оно ещё не введено — вызови browser_task с его точной строкой (сначала «ввожу код» / «ввожу»). Пароль не проси. Если completed — отправь человеку результаты. Если failed или джоб завис — коротко скажи об этом. Если ещё работает и инжектить нечего — ответь [SILENT].`;
         if (wakeupCarriesRunId(body.runId)) {
           let tenant;
           try {

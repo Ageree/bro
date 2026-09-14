@@ -56,6 +56,7 @@ import {
   settleFastAck,
   startFastAck,
 } from "../lib/fast-ack.ts";
+import { cloudInjectAttribute } from "../../convex/lib/browserInjectPolicy.ts";
 
 function telegramAuthAttrs(opts: {
   conversationId: string;
@@ -78,6 +79,7 @@ function telegramAuthAttrs(opts: {
     ...shortAckAttribute(opts.text ?? ""),
     ...inboundAtAttribute(opts.receivedAt ?? Date.now()),
     ...fastAckAttribute(opts.fastAck ?? null),
+    ...cloudInjectAttribute(opts.text ?? ""),
   };
 }
 

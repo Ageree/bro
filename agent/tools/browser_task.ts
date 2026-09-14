@@ -24,14 +24,35 @@ import {
 import {
   createProfile,
   envSyncedProfileId,
+  findBrowserForSession,
   getProfile,
   hydrate,
+  isDryRunErrand,
   isTerminal,
   startRun,
+  waitForPageLanding,
   waitForRun,
   type BrowserRun,
 } from "../lib/browseruse";
-import { profileSyncStatus } from "../../convex/lib/browserProfilePolicy.ts";
+import { cdpTypeIntoPage } from "../lib/browser-cdp.ts";
+import { cdpPageUrl } from "../../convex/lib/browserCdp.ts";
+import {
+  cookieDomainsCoverPage,
+  loginPageUrl,
+  profileSyncStatus,
+} from "../../convex/lib/browserProfilePolicy.ts";
+import {
+  cloudSessionLooksLive,
+  decideCloudInject,
+  injectAckText,
+  injectCandidate,
+  injectFollowTask,
+  NO_LIVE_RUN_TEXT,
+} from "../../convex/lib/browserInjectPolicy.ts";
+import {
+  ERRAND_LANDING_WAIT_MS,
+  errandStartUrl,
+} from "../../convex/lib/browserStartPolicy.ts";
 import { turnSpoke } from "../lib/early-deliver.ts";
 import { attrsFromSession, deliverHumanRouted } from "../lib/deliver-routed";
 import { conversationId, groupPersonalBlock } from "../lib/group-guard";
@@ -39,7 +60,6 @@ import { tenantId } from "../lib/tenant";
 import { browserGateFromResult } from "../../convex/lib/billingPolicy";
 import { cardBindings, normalizePayHosts } from "../lib/browser-pay.ts";
 import { parsePaymentPayload } from "../../convex/lib/vaultPayload.ts";
-import { loginPageUrl } from "../../convex/lib/browserProfilePolicy.ts";
 import { vaultPasswordLoginForPages } from "../lib/vault-login.ts";
 
 async function persist(
@@ -78,6 +98,150 @@ function payload(run: BrowserRun, extra?: Record<string, unknown>) {
           : "Still running. Bro will message first when this finishes. Tell the human you're looking. Do not ask them to check back.",
     ...extra,
   };
+}
+
+async function maybeInjectChat(
+  phone: string,
+  tenant: Awaited<ReturnType<typeof upsertTenant>>,
+  incoming: string,
+  notify: {
+    conv?: string;
+    turnId?: string;
+    attrs: ReturnType<typeof attrsFromSession>;
+  },
+): Promise<Record<string, unknown> | null> {
+  if (!injectCandidate(incoming)) return null;
+  if (!tenant.browserRunId && !tenant.browserSessionId) {
+    return decideCloudInject(incoming, {}).kind === "code"
+      ? { status: "no_wait", entered: false, hint: NO_LIVE_RUN_TEXT }
+      : null;
+  }
+
+  let pageUrl: string | undefined;
+  let result: string | undefined;
+  let browserListed = false;
+  let cdpUrl: string | undefined;
+  let sessionId = tenant.browserSessionId;
+
+  if (tenant.browserRunId) {
+    const run = await hydrate(tenant.browserRunId, tenant.browserSessionId).catch(
+      () => undefined,
+    );
+    if (run) {
+      pageUrl = run.pageUrl;
+      result = run.result;
+      sessionId = run.sessionId ?? sessionId;
+    }
+  }
+
+  const browser = await findBrowserForSession(sessionId).catch(() => undefined);
+  if (browser?.cdpUrl) {
+    browserListed = true;
+    cdpUrl = browser.cdpUrl;
+    pageUrl = (await cdpPageUrl(browser.cdpUrl).catch(() => undefined)) ?? pageUrl;
+  }
+
+  const attrs = {
+    status: tenant.browserStatus,
+    sessionId,
+    runId: tenant.browserRunId,
+    storedTask: tenant.browserTask,
+    startedAt: tenant.browserStartedAt,
+    pageUrl,
+    result,
+    browserListed,
+  };
+  const decided = decideCloudInject(incoming, attrs);
+  if (!decided.kind) return null;
+
+  const live = cloudSessionLooksLive(attrs);
+  if (!live) {
+    return decided.kind === "code"
+      ? { status: "no_wait", entered: false, hint: NO_LIVE_RUN_TEXT }
+      : null;
+  }
+
+  const conv = notify.conv;
+  if (conv && !turnSpoke(notify.turnId)) {
+    void deliverHumanRouted({
+      attrs: notify.attrs,
+      tenant,
+      conversationId: conv,
+      text: injectAckText(decided.kind),
+    }).catch((err) => {
+      console.error("inject ack failed", err);
+    });
+  }
+
+  let typed = false;
+  let submitted = false;
+  if (decided.kind === "code" && decided.code && cdpUrl) {
+    const typedIn = await cdpTypeIntoPage(cdpUrl, decided.code).catch(
+      (err: unknown) => {
+        console.error("cdp inject code failed", err);
+        return { typed: false, submitted: false };
+      },
+    );
+    typed = typedIn.typed;
+    submitted = typedIn.submitted;
+  }
+
+  if (!sessionId) {
+    return {
+      status: "no_wait",
+      entered: false,
+      hint: NO_LIVE_RUN_TEXT,
+    };
+  }
+
+  const followTask = injectFollowTask({
+    kind: decided.kind,
+    humanText: incoming,
+    originalTask: tenant.browserTask ?? incoming,
+    ...(decided.code ? { code: decided.code } : {}),
+    dryRun: isDryRunErrand(tenant.browserTask ?? incoming),
+  });
+  const started = await startRun(followTask, sessionId, {
+    ...(tenant.browserProfileId
+      ? { profileId: tenant.browserProfileId, profileSynced: true }
+      : {}),
+  });
+  const startedAt = Date.now();
+  await persist(phone, started, tenant.browserTask ?? incoming, {
+    browserStartedAt: startedAt,
+  });
+  const followKick = startBrowserFollow({
+    tenantPhone: phone,
+    runId: started.runId,
+    sessionId: started.sessionId,
+    task: tenant.browserTask ?? incoming,
+    startedAt,
+  }).catch((err) => {
+    console.error("inject follow workflow failed", err);
+  });
+  const done = await waitForRun(
+    started.runId,
+    started.sessionId,
+    BROWSER_WAIT_MS,
+  );
+  await persist(phone, done, tenant.browserTask ?? incoming);
+  await followKick;
+  return settle(
+    phone,
+    done,
+    tenant.browserTask ?? incoming,
+    {
+      injected: decided.kind,
+      typed,
+      submitted,
+      alreadyNotified: Boolean(conv),
+      hint:
+        decided.kind === "code"
+          ? "код введён в живую вкладку. Не цитируй цифры и не проси пароль."
+          : "уточнение ушло в живую Cloud-сессию. Не проси пароль.",
+    },
+    { startedAt, runId: started.runId },
+  );
 }
 
 function extraHosts(extra: Record<string, unknown>): string[] | undefined {
@@ -196,16 +360,23 @@ async function resolveSyncedProfile(
   };
 }
 
-function profileExtra(resolved: {
-  profileId?: string;
-  cookieDomains: string[];
-  synced: boolean;
-}) {
+function profileExtra(
+  resolved: {
+    profileId?: string;
+    cookieDomains: string[];
+    synced: boolean;
+  },
+  startPage?: string,
+) {
+  const siteReady = Boolean(
+    startPage && cookieDomainsCoverPage(resolved.cookieDomains, startPage),
+  );
   return {
     profileId: resolved.profileId ?? null,
     profileSynced: resolved.synced,
     cookieDomains: resolved.cookieDomains,
-    ...(resolved.synced
+    ...(startPage ? { startPage, siteReady } : {}),
+    ...(siteReady || resolved.synced
       ? {}
       : {
           needsProfileSync: true,
@@ -216,7 +387,7 @@ function profileExtra(resolved: {
 
 export default defineTool({
   description:
-    "Cloud browser (WB, Ozon, bookings, appointments, taxi, forms, search). Starts or polls the current job — never a second search. reset = fresh browser. needsProfileSync → profile_setup with the login URL (vault password if saved, otherwise the live-view link). Never ask for a login or password. Never put a site password in chat. status=completed → paste result. Buy: pay on first call (hosts = merchant hostnames; maxRub only if they named a ceiling). Card is server-typed. needsVaultSetup → vault_setup kind=payment.",
+    "Cloud browser (WB, Ozon, bookings, appointments, taxi, forms, search). Starts or polls the current job — never a second search. reset = fresh browser. Eve opens the site over CDP (taxi.yandex.ru for такси). Vault kind:login is bound as secretBindings. Cloud cookies may exist — that is not proof the tab is logged in. The Cloud agent must click Войти / Авторизоваться / passport if the page is still guest; live-view only for OTP or a missing password. If a Cloud session is live and the human sent a one-time code, «подожди», or an address/size correction for that errand, pass their exact line here — Bro types it into the live tab (CDP) and/or starts a Cloud follow-up. Unrelated chat must not be sent here. A code they already sent must be used. needsProfileSync → profile_setup only when cookies and vault are missing. Never ask for a login or password. Never put a site password in chat. status=completed → paste result. Buy: pay on first call (hosts = merchant hostnames; maxRub only if they named a ceiling). Card is server-typed. needsVaultSetup → vault_setup kind=payment.",
   inputSchema: z.object({
     task: z.string().min(1).max(4000),
     reset: z.boolean().optional(),
@@ -234,6 +405,15 @@ export default defineTool({
     const phone = tenantId(ctx);
     const tenant = await upsertTenant(phone);
     const conv = conversationId(ctx, tenant.inkboxConversationId);
+    if (!reset) {
+      const turnId = ctx.session.turn?.id;
+      const injected = await maybeInjectChat(phone, tenant, task, {
+        conv,
+        turnId: typeof turnId === "string" ? turnId : undefined,
+        attrs: attrsFromSession(ctx.session),
+      });
+      if (injected) return injected;
+    }
     const rawAction = nextBrowserAction({
       reset,
       runId: tenant.browserRunId,
@@ -347,6 +527,7 @@ export default defineTool({
     }
 
     const resolved = await resolveSyncedProfile(phone, tenant);
+    const startPage = errandStartUrl(task);
     const started = await startRun(task, reset ? undefined : tenant.browserSessionId, {
       ...(resolved.profileId
         ? { profileId: resolved.profileId, profileSynced: resolved.synced }
@@ -354,9 +535,13 @@ export default defineTool({
       ...(payOpts ? { pay: payOpts } : {}),
       ...(vaultLogin ? { login: true } : {}),
       ...(secretBindings && secretBindings.length > 0 ? { secretBindings } : {}),
+      ...(startPage ? { startPage } : {}),
     });
+    const opened = startPage
+      ? await waitForPageLanding(started, startPage, ERRAND_LANDING_WAIT_MS)
+      : started;
     const startedAt = Date.now();
-    await persist(phone, started, task, {
+    await persist(phone, opened, task, {
       browserStartedAt: startedAt,
       ...(resolved.profileId && resolved.profileId !== tenant.browserProfileId
         ? { browserProfileId: resolved.profileId }
@@ -370,8 +555,8 @@ export default defineTool({
     });
     const followKick = startBrowserFollow({
       tenantPhone: phone,
-      runId: started.runId,
-      sessionId: started.sessionId,
+      runId: opened.runId,
+      sessionId: opened.sessionId,
       task,
       startedAt,
     }).catch((err) => {
@@ -389,8 +574,8 @@ export default defineTool({
       });
     }
     const done = await waitForRun(
-      started.runId,
-      started.sessionId,
+      opened.runId,
+      opened.sessionId,
       BROWSER_WAIT_MS,
     );
     await persist(phone, done, task);
@@ -402,12 +587,14 @@ export default defineTool({
       {
         started: true,
         alreadyNotified: Boolean(conv),
-        ...profileExtra(resolved),
+        ...profileExtra(resolved, startPage),
+        ...(opened.pageUrl ? { pageUrl: opened.pageUrl } : {}),
+        ...(opened.landed !== undefined ? { landed: opened.landed } : {}),
         ...(payOpts
           ? { paying: true, payAccount: payOpts.account, payHosts: payOpts.hosts }
           : {}),
       },
-      { startedAt, runId: started.runId },
+      { startedAt, runId: opened.runId },
     );
   },
 });

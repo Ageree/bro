@@ -13,6 +13,12 @@ import { isShortAckTurn, shortAckInstruction } from "../lib/short-ack.ts";
 import { fastAckInstruction, fastAckOf } from "../lib/fast-ack.ts";
 import { tenantId } from "../lib/tenant";
 import { latencyFields } from "../lib/latency-log.ts";
+import { getTenant } from "../lib/convex";
+import {
+  cloudInjectInstruction,
+  cloudInjectKindFromAttrs,
+  cloudSessionLooksLive,
+} from "../../convex/lib/browserInjectPolicy.ts";
 
 export default defineDynamic({
   events: {
@@ -49,6 +55,22 @@ export default defineDynamic({
               })
             : null;
         const fastAck = attrs?.origin === "human" ? fastAckOf(attrs) : null;
+        const injectKind =
+          !jobCheck && !ack ? cloudInjectKindFromAttrs(attrs) : null;
+        let inject: string | null = null;
+        if (injectKind) {
+          const tenant = await getTenant(phone).catch(() => null);
+          inject = cloudInjectInstruction(
+            injectKind,
+            cloudSessionLooksLive({
+              status: tenant?.browserStatus,
+              sessionId: tenant?.browserSessionId,
+              runId: tenant?.browserRunId,
+              startedAt: tenant?.browserStartedAt,
+              storedTask: tenant?.browserTask,
+            }),
+          );
+        }
         const content = [
           jobWakeInstruction(rows.map((r) => r.line)),
           scope
@@ -58,6 +80,7 @@ export default defineDynamic({
             : null,
           ack,
           fastAck ? fastAckInstruction(fastAck) : null,
+          inject,
         ]
           .filter((part): part is string => Boolean(part))
           .join("\n\n");

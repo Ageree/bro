@@ -203,6 +203,7 @@ assert(imessage.includes("getTenantByHandle"), "HMAC still loads the handle tena
 assert(imessage.includes("loadWakeContext"), "1:1 billing prefetches wake context");
 assert(imessage.includes("prefetchInstinctRecall"), "1:1 billing prefetches Instinct searches");
 assert(imessage.includes("shortAckAttribute(inbound.text)"), "1:1 inbound stamps this-turn ack");
+assert(imessage.includes("cloudInjectAttribute(inbound.text)"), "1:1 inbound stamps Cloud inject");
 assert(imessage.includes("prefetchOpenRouter"), "1:1 billing warms OpenRouter");
 assert(
   imessage.includes("prefetchInstinctRecall(ownerPhone, inbound.text)"),
@@ -244,6 +245,7 @@ assert(inkbox.includes("inkboxIdentity"), "Inkbox identity is cached");
 const telegram = src("agent/channels/telegram.ts");
 assert(telegram.includes("prefetchOpenRouter"), "telegram billing warms OpenRouter");
 assert(telegram.includes("shortAckAttribute(opts.text"), "telegram stamps this-turn ack");
+assert(telegram.includes("cloudInjectAttribute(opts.text"), "telegram stamps Cloud inject");
 assert(telegram.includes("inboundP"), "telegram STT overlaps photo fetch");
 assert(telegram.includes("photoP"), "telegram photo overlaps billing");
 assert(

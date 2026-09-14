@@ -178,7 +178,7 @@ export default defineTool({
         status: "already",
         usedProfile: true,
         alreadyNotified: notified,
-        hint: "вход уже в Cloud-профиле. Не шли live-view и не проси пароль. Сразу browser_task.",
+        hint: "куки сайта есть — live-view не шли и пароль не проси. Сразу browser_task. Куки ≠ вход: если на экране Войти, Cloud должен войти.",
         message: text,
       };
     }

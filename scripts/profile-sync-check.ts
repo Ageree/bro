@@ -26,6 +26,7 @@ import {
   shouldSendLoginLink,
 } from "../convex/lib/browserLivePolicy.ts";
 import { asCdpTargets, browserFromList, cdpCurrentUrl } from "../convex/lib/browserCdp.ts";
+import { errandStartUrl } from "../convex/lib/browserStartPolicy.ts";
 import { scaffoldTask } from "../agent/lib/browseruse.ts";
 
 import { assert, src } from "./lib/check.ts";
@@ -44,7 +45,11 @@ assert(wait.startsWith(LOGIN_MARK), "login mark");
 assert(wait.includes("https://www.ozon.ru/"), "opens the page");
 assert(wait.includes("Первым действием"), "navigate first");
 assert(wait.includes("не about:blank"), "not blank preview");
-assert(wait.includes("Ничего не вводи"), "never types secrets");
+assert(wait.includes("Не вводи логин"), "never types secrets");
+assert(wait.includes("прислать в чат"), "login wait accepts a chat OTP");
+assert(wait.includes("Пароль в iMessage не проси"), "login wait never asks for a password");
+assert(wait.includes("«Войти»"), "live-view login may click Войти to open the form");
+assert(!wait.includes("Не нажимай «войти» за него"), "must not forbid opening login");
 assert(isLoginWaitTask(wait), "wait is a live-view login");
 assert(scaffoldTask(wait) === wait, "login task not re-wrapped");
 assert(
@@ -62,6 +67,7 @@ assert(isLoginVaultTask(vaultTask), "vault task detected");
 assert(!isLoginWaitTask(vaultTask), "vault task is not a live-view wait");
 assert(scaffoldTask(vaultTask) === vaultTask, "vault task not re-wrapped");
 assert(vaultTask.includes("Первым действием"), "vault login navigates first");
+assert(vaultTask.includes("«Войти»"), "vault login clicks Войти if the form is closed");
 assert(vaultTask.includes("site_login"), "vault task names login alias");
 assert(vaultTask.includes("site_password"), "vault task names password alias");
 assert(!vaultTask.includes("ochen"), "vault task has no secret");
@@ -265,10 +271,35 @@ assert(follow.includes("shouldSendLoginLink"), "follow uses the live-link gate")
 assert(follow.includes("landed"), "follow waits until the login page");
 
 const startRun = src("agent/lib/browseruse.ts");
-assert(startRun.includes("waitForLoginLanding"), "cloud waits for the login page");
+assert(startRun.includes("waitForPageLanding"), "cloud waits for the real page");
 assert(startRun.includes("no startUrl"), "v4 has no start url");
-assert(startRun.includes("cdpNavigate") || src("agent/lib/browser-cdp.ts").includes("Page.navigate"), "eve opens the login over cdp");
+assert(startRun.includes("cdpNavigate") || src("agent/lib/browser-cdp.ts").includes("Page.navigate"), "eve opens the site over cdp");
 assert(tool.includes("waitForLoginLanding"), "tool waits for landing");
+assert(
+  errandStartUrl("вызови такси домой") === "https://taxi.yandex.ru/",
+  "taxi wording opens taxi.yandex.ru",
+);
+assert(
+  errandStartUrl("Открой https://taxi.yandex.ru. Закажи домой") ===
+    "https://taxi.yandex.ru/",
+  "explicit taxi url wins",
+);
+assert(
+  src("agent/tools/browser_task.ts").includes("waitForPageLanding"),
+  "browser_task opens the site over cdp",
+);
+assert(
+  src("agent/instructions.md").includes("сразу `browser_task`"),
+  "taxi goes to browser_task first",
+);
+assert(
+  src("agent/instructions.md").includes("Cloud входит сам"),
+  "eve tells the cloud job to log in",
+);
+assert(
+  !src("agent/instructions.md").includes("не открывай Яндекс.паспорт"),
+  "eve must not forbid passport",
+);
 assert(tool.includes("loginOpeningText"), "tool announces the login first");
 
 assert(

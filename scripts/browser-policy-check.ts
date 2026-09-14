@@ -26,6 +26,7 @@ import {
 import {
   applyProxyCountry,
   DEFAULT_BROWSER_MODEL,
+  isDryRunErrand,
   proxyCountryCode,
   resolveBrowserModel,
   scaffoldTask,
@@ -140,13 +141,19 @@ assert(wrapped.startsWith("[bro-errand]"), "scaffold starts with marker");
 assert(wrapped.includes(raw), "scaffold contains raw task");
 assert(scaffoldTask(wrapped) === wrapped, "scaffold is idempotent");
 assert(scaffoldTask("x").includes("Работай быстро"), "scaffold skip-slow");
+const synced = scaffoldTask("x", { profileSynced: true });
+assert(synced.includes("Cloud-профиле"), "synced scaffold mentions cookies");
+assert(synced.includes("Куки не значат"), "cookies are not proof of login");
+assert(synced.includes("«Войти»"), "synced scaffold still clicks Войти");
+assert(!synced.includes("Ты уже в аккаунтах"), "no already-logged-in lie");
+assert(!synced.includes("Не открывай паспорт"), "must not forbid passport");
 assert(
-  scaffoldTask("x", { profileSynced: true }).includes("Cloud-профиле"),
-  "synced scaffold uses saved profile",
+  !synced.includes("просит логин — остановись"),
+  "must not stop at a login wall",
 );
 assert(
-  scaffoldTask("x").includes("пришлёт человеку ссылку"),
-  "unsynced scaffold asks for a login link",
+  scaffoldTask("x").includes("войди сам"),
+  "unsynced scaffold still logs in",
 );
 assert(
   scaffoldTask("x").includes("Если в задаче есть логин или пароль"),
@@ -157,6 +164,24 @@ assert(
     "Если в задаче есть логин или пароль",
   ),
   "synced scaffold still types a supplied password",
+);
+const taxiOpen = scaffoldTask("вызови такси", {
+  startPage: "https://taxi.yandex.ru/",
+});
+assert(
+  taxiOpen.includes("Страница уже открыта: https://taxi.yandex.ru/"),
+  "scaffold says the site is already open",
+);
+assert(taxiOpen.includes("паспорт"), "open taxi may go to passport");
+assert(taxiOpen.includes("нажми «Заказать»"), "real taxi finishes the order");
+assert(!taxiOpen.includes("Не нажимай «Заказать»"), "real taxi is not a dry-run");
+assert(isDryRunErrand("покажи форму, не нажимай Заказать") === true, "dry-run flag");
+assert(isDryRunErrand("вызови такси домой") === false, "real taxi is not dry-run");
+assert(
+  scaffoldTask("покажи форму, не нажимай Заказать").includes(
+    "Не нажимай «Заказать»",
+  ),
+  "explicit dry-run forbids Заказать",
 );
 
 const t0 = Date.parse("2026-08-27T12:00:00.000Z");
@@ -343,14 +368,20 @@ assert(followStartRetry({ error: "retry_later" }) === true, "retry_later is retr
 assert(followStartRetry({ error: "stale_run" }) === false, "stale is not retry_later");
 assert(FOLLOW_RETRY_HINT.includes("не подцепилась"), "retry hint");
 
-assert(proxyCountryCode(undefined) === undefined, "proxy unset");
+{
+  const prev = process.env.BROWSERUSE_PROXY_COUNTRY;
+  delete process.env.BROWSERUSE_PROXY_COUNTRY;
+  assert(proxyCountryCode(undefined) === undefined, "proxy unset");
+  if (prev === undefined) delete process.env.BROWSERUSE_PROXY_COUNTRY;
+  else process.env.BROWSERUSE_PROXY_COUNTRY = prev;
+}
 assert(proxyCountryCode("") === undefined, "proxy empty");
 assert(proxyCountryCode("  ") === undefined, "proxy blank");
 assert(proxyCountryCode("ru") === "ru", "proxy ru");
 assert(proxyCountryCode("RU") === "ru", "proxy RU");
 assert(proxyCountryCode(" rus") === undefined, "proxy not alpha-2");
 assert(
-  !("browserSettings" in applyProxyCountry({ task: "x" }, undefined)),
+  !("browserSettings" in applyProxyCountry({ task: "x" }, "")),
   "no proxy field when unset",
 );
 assert(
@@ -359,7 +390,7 @@ assert(
   "proxyCountryCode in browserSettings",
 );
 
-assert(DEFAULT_BROWSER_MODEL === "deepseek-v4.1-flash", "cloud default is DeepSeek V4.1 Flash");
+assert(DEFAULT_BROWSER_MODEL === "gpt-5.6-luna", "cloud default is GPT-5.6 Luna");
 assert(resolveBrowserModel(undefined) === DEFAULT_BROWSER_MODEL, "unset model uses default");
 assert(resolveBrowserModel("") === DEFAULT_BROWSER_MODEL, "empty model uses default");
 assert(resolveBrowserModel("  ") === DEFAULT_BROWSER_MODEL, "blank model uses default");
@@ -369,6 +400,8 @@ assert(BROWSER_WAIT_MS === 2_000, "wait is short; follow-through still delivers"
 
 const browserTool = src("agent/tools/browser_task.ts");
 assert(browserTool.includes("BROWSER_WAIT_MS"), "start and poll use shared wait");
+assert(browserTool.includes("waitForPageLanding"), "errand opens the site over cdp");
+assert(browserTool.includes("errandStartUrl"), "errand picks taxi/shop url");
 assert(!browserTool.includes("WAIT_MS = 12_000"), "old 12s park is gone");
 const startPath = browserTool.slice(browserTool.indexOf("const started = await startRun"));
 assert(
@@ -379,6 +412,11 @@ assert(browserTool.includes("deliverHumanRouted"), "canned notify uses auth rout
 assert(
   browserTool.includes("turnSpoke"),
   "canned ищу skips only when this turn already spoke",
+);
+assert(browserTool.includes("maybeInjectChat"), "relevant chat is injected into the live run");
+assert(
+  src("agent/lib/browseruse.ts").includes("INJECT_MARK"),
+  "follow-up inject is not re-wrapped as a new errand",
 );
 
 const follow = src("convex/browserFollow.ts");
