@@ -24,6 +24,12 @@ import {
 import { prefetchInstinctRecall } from "../lib/instinct-recall.ts";
 import { prefetchOpenRouter } from "../lib/openrouter-warm.ts";
 import { shortAckAttribute } from "../lib/short-ack.ts";
+import {
+  fastAckAttribute,
+  fastAckBudgetMs,
+  settleFastAck,
+  startFastAck,
+} from "../lib/fast-ack.ts";
 import { secretEquals } from "../lib/secret-compare.ts";
 import {
   cabinetBaseUrl,
@@ -40,6 +46,7 @@ import {
 } from "../lib/connect-link";
 import { inboundIMessageText } from "../lib/imessage-text";
 import { parkTurn } from "../lib/channel-turn.ts";
+import { deliverHumanRouted } from "../lib/deliver-routed.ts";
 import { inboundAtAttribute } from "../lib/latency-log.ts";
 import { parkLastChannelTouch } from "../lib/early-deliver.ts";
 import { jobCheckWakePrompt } from "../lib/job-wake.ts";
@@ -289,6 +296,13 @@ export default defineChannel({
 
       const preview = inbound.text;
       prefetchOpenRouter();
+      // Fast-ack lane: a tiny no-reasoning model call turns this message into
+      // a 2-5 word status line and sends it as the first bubble within a
+      // hard budget, well before the real agent turn (a different Vercel
+      // function) could produce one. Started this early so the round trip
+      // overlaps everything below instead of adding to the wait.
+      const fastAck = preview ? startFastAck(preview) : null;
+      const cancelFastAck = () => fastAck?.abort();
       // «печатает…» goes out before any Convex hop: the human sees Bro is
       // alive within the Photon round trip, not after the first token.
       if (preview && !shouldSkipAgentTurn({ firstBind: false, text: preview })) {
@@ -340,6 +354,7 @@ export default defineChannel({
           });
       if (!bound.ok) {
         console.error("dropped photon inbound", bound.reason, inbound.senderPhone);
+        cancelFastAck();
         return new Response(null, { status: 204 });
       }
 
@@ -353,6 +368,7 @@ export default defineChannel({
         ),
       );
       if (boundTenant.status === "disabled") {
+        cancelFastAck();
         return new Response(null, { status: 204 });
       }
 
@@ -380,6 +396,7 @@ export default defineChannel({
       prefetchOneToOneStart(ownerPhone, preview);
       const gate = await (earlyGateP ?? inboundOwnerGate(ownerPhone));
       if (gate.decision === "drop") {
+        cancelFastAck();
         return new Response(null, { status: 204 });
       }
       if (gate.decision === "paywall") {
@@ -397,6 +414,7 @@ export default defineChannel({
           handle: boundTenant.inkboxHandle ?? agentHandle(),
           payUrl: gate.payUrl,
         });
+        cancelFastAck();
         return new Response(null, { status: 204 });
       }
 
@@ -434,6 +452,7 @@ export default defineChannel({
         }
       }
       if (shouldSkipAgentTurn({ firstBind, text: inbound.text })) {
+        cancelFastAck();
         return new Response(null, { status: 204 });
       }
       prefetchInstinctRecall(ownerPhone, inbound.text);
@@ -447,6 +466,28 @@ export default defineChannel({
         queuedAfterMs: Date.now() - receivedAt,
       });
 
+      const ackText = await settleFastAck(fastAck, { budgetMs: fastAckBudgetMs() });
+      if (ackText) {
+        parkTurn(
+          waitUntil,
+          deliverHumanRouted({
+            attrs: {
+              conversationId: inbound.spaceId,
+              inkboxHandle: boundTenant.inkboxHandle ?? agentHandle(),
+              origin: "human",
+            },
+            tenant: boundTenant,
+            conversationId: inbound.spaceId,
+            text: ackText,
+            principalId: ownerPhone,
+          }).catch((err) => console.error("fast ack deliver failed", err)),
+        );
+        console.log("fast ack sent", {
+          conversationId: inbound.spaceId,
+          chars: ackText.length,
+          sinceInboundMs: Date.now() - receivedAt,
+        });
+      }
       parkTurn(
         waitUntil,
         from(inbound.spaceId).send(content, {
@@ -462,6 +503,7 @@ export default defineChannel({
               origin: "human",
               ...shortAckAttribute(inbound.text),
               ...inboundAtAttribute(receivedAt),
+              ...fastAckAttribute(ackText),
             },
           },
         }),

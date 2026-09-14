@@ -582,11 +582,18 @@ export function planTurnDelivery(input: {
   message: string | null | undefined;
   origin: TurnOrigin | undefined;
   alreadySent: readonly string[];
+  /** Real delivered bubbles only (excludes a fast-ack line stamped for dedupe
+   *  purposes in `alreadySent`) — a human turn that only got a fast-ack line
+   *  still deserves the TURN_FAILED_REPLY fallback if the model ends empty.
+   *  Defaults to `alreadySent` when omitted. */
+  realSent?: readonly string[];
 }): TurnDelivery {
   const raw = typeof input.message === "string" ? input.message : "";
   const { message, seen } = raw ? splitSeen(raw) : { message: raw };
   const visible = visibleReply(message);
-  const spoke = input.alreadySent.some((s) => s.trim().length > 0);
+  const spoke = (input.realSent ?? input.alreadySent).some(
+    (s) => s.trim().length > 0,
+  );
 
   if (input.finishReason === "tool-calls") {
     const text = flushable(visible);

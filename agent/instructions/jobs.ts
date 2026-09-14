@@ -10,6 +10,7 @@ import {
   jobWakeInstruction,
 } from "../lib/job-wake.ts";
 import { isShortAckTurn, shortAckInstruction } from "../lib/short-ack.ts";
+import { fastAckInstruction, fastAckOf } from "../lib/fast-ack.ts";
 import { tenantId } from "../lib/tenant";
 import { latencyFields } from "../lib/latency-log.ts";
 
@@ -47,6 +48,7 @@ export default defineDynamic({
                 waitingForHuman: rows.some((row) => row.waitingFor === "human"),
               })
             : null;
+        const fastAck = attrs?.origin === "human" ? fastAckOf(attrs) : null;
         const content = [
           jobWakeInstruction(rows.map((r) => r.line)),
           scope
@@ -55,6 +57,7 @@ export default defineDynamic({
               : JOB_CHECK_QUIET
             : null,
           ack,
+          fastAck ? fastAckInstruction(fastAck) : null,
         ]
           .filter((part): part is string => Boolean(part))
           .join("\n\n");

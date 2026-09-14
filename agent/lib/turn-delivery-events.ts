@@ -2,6 +2,8 @@ import { replyTenant, setWakeupLastSeen } from "./convex.ts";
 import { deliverHuman } from "./deliver-human.ts";
 import {
   bubblesFor,
+  isIncompleteDraft,
+  isThinFragment,
   planPreToolFlush,
   planStreamFlush,
   planTurnDelivery,
@@ -17,6 +19,7 @@ import {
 } from "./silent-turn.ts";
 import { stripConnectUrls } from "./connect-link.ts";
 import { latencyFields } from "./latency-log.ts";
+import { fastAckOf, peelFastAck } from "./fast-ack.ts";
 import { sendPhotonTyping } from "./photon.ts";
 import { sendTelegramTyping } from "./telegram.ts";
 import {
@@ -167,6 +170,32 @@ export function createTurnDeliveryEvents(opts: {
   const fallbackSent = new Map<string, number>();
   const earlySent = new Map<string, EarlySentRow>();
 
+  // A fast-ack line was already sent before the turn started (stamped on the
+  // auth attributes — it lives in a different process than this Map). Fold
+  // it into `alreadySent` so nextBubble's restatement/near-duplicate peeling
+  // drops a repeated looking line, without counting as a real spoken bubble
+  // for the empty-turn fallback (see `realSent` on planTurnDelivery).
+  function alreadySentFor(attrs: AuthAttrs, turnId: string): readonly string[] {
+    const ack = fastAckOf(attrs);
+    const bubbles = bubblesFor(earlySent, turnId);
+    return ack ? [ack, ...bubbles] : bubbles;
+  }
+
+  /** Until a real bubble went out, the model's first text may restate the
+   *  fast ack in another case («Ищу на ВБ.») — drop or peel that. */
+  function afterFastAck(
+    attrs: AuthAttrs,
+    turnId: string,
+    send: string | null,
+  ): string | null {
+    if (!send) return null;
+    const ack = fastAckOf(attrs);
+    if (!ack || bubblesFor(earlySent, turnId).length > 0) return send;
+    const peeled = peelFastAck(ack, send);
+    if (!peeled || peeled === send) return peeled;
+    return isIncompleteDraft(peeled) || isThinFragment(peeled) ? null : peeled;
+  }
+
   return {
     async "turn.failed"(
       event: { turnId: string; code?: string; message?: string },
@@ -206,10 +235,14 @@ export function createTurnDeliveryEvents(opts: {
       if (!canTarget(conversationId, auth?.attributes)) return;
       if (!opts.accept(auth?.attributes)) return;
       rememberSoFar(earlySent, event.turnId, event.messageSoFar, Date.now());
-      const planned = planStreamFlush({
+      const streamPlan = planStreamFlush({
         soFar: event.messageSoFar,
-        alreadySent: bubblesFor(earlySent, event.turnId),
+        alreadySent: alreadySentFor(auth?.attributes, event.turnId),
       });
+      const planned = {
+        ...streamPlan,
+        send: afterFastAck(auth?.attributes, event.turnId, streamPlan.send),
+      };
       if (!planned.send) return;
       recordSent(earlySent, event.turnId, planned.send, Date.now());
       console.log("turn deliver appended", {
@@ -245,10 +278,14 @@ export function createTurnDeliveryEvents(opts: {
       const conversationId = conversationIdOf(channel, auth?.attributes);
       if (!canTarget(conversationId, auth?.attributes)) return;
       if (!opts.accept(auth?.attributes)) return;
-      const planned = planPreToolFlush({
+      const preToolPlan = planPreToolFlush({
         soFar: soFarFor(earlySent, event.turnId),
-        alreadySent: bubblesFor(earlySent, event.turnId),
+        alreadySent: alreadySentFor(auth?.attributes, event.turnId),
       });
+      const planned = {
+        ...preToolPlan,
+        send: afterFastAck(auth?.attributes, event.turnId, preToolPlan.send),
+      };
       if (!planned.send) {
         signalTurnTyping({ conversationId, attrs: auth?.attributes, state: "start" });
         return;
@@ -299,12 +336,17 @@ export function createTurnDeliveryEvents(opts: {
         return;
       }
       const origin = turnOrigin(auth?.attributes);
-      const planned = planTurnDelivery({
+      const turnPlan = planTurnDelivery({
         finishReason: event.finishReason ?? "",
         message: event.message,
         origin,
-        alreadySent: bubblesFor(earlySent, event.turnId),
+        alreadySent: alreadySentFor(auth?.attributes, event.turnId),
+        realSent: bubblesFor(earlySent, event.turnId),
       });
+      const planned = {
+        ...turnPlan,
+        send: afterFastAck(auth?.attributes, event.turnId, turnPlan.send),
+      };
       if (planned.send) {
         recordSent(earlySent, event.turnId, planned.send, Date.now());
         console.log("turn deliver completed", {
