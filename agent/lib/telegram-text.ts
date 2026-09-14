@@ -10,8 +10,8 @@ const BUTTONS = /:::buttons\s*\n([\s\S]*?):::/g;
 // Shared with imessage-text.ts — only ever used via .replace(), which always
 // scans from index 0 regardless of lastIndex, so sharing these `g` regexes
 // across modules is safe. Do not use these with .exec/.test in a loop.
-export const IMAGE = /!{1,2}\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)/gi;
-const LINK = /\[([^\]]+)\]\((https?:\/\/[^)\s]+|callback:[^)\s]+)\)/gi;
+export const IMAGE = /!{1,2}\[([^\]]*)\]\((https?:\/\/(?:[^()\s]|\([^()\s]*\))+)\)/gi;
+const LINK = /\[([^\]]+)\]\((https?:\/\/(?:[^()\s]|\([^()\s]*\))+|callback:[^)\s]+)\)/gi;
 export const AUTO_URL = /<(https?:\/\/[^>\s]+)>/gi;
 export const AUTO_MAIL = /<([^>\s]+@[^>\s]+)>/g;
 const RICH_MARK = /^:::rich\s*$/gm;
@@ -304,6 +304,7 @@ export function compileTelegram(src: string): TelegramCompiled {
   s = s.replace(RICH_MARK, "");
   const { text, buttons } = extractButtons(s);
   s = text;
+  s = s.replace(/^:::\s*$/gm, "");
 
   const photos: TelegramPhotoRef[] = [];
   const figures: string[] = [];
@@ -336,7 +337,8 @@ export function compileTelegram(src: string): TelegramCompiled {
       .trim();
 
   const html = restore(applyMarkdown(escapeHtml(s.replace(/\u0000P\d+\u0000/g, ""))));
-  const richHtml = restore(applyRichMarkdown(escapeHtml(s)));
+  let richHtml = restore(applyRichMarkdown(escapeHtml(s)));
+  richHtml = richHtml.replace(/^:::\s*$/gm, "");
   const preferRich =
     (forceRich || isTelegramRichHtml(richHtml)) &&
     richHtml.length > 0 &&

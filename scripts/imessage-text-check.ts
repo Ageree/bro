@@ -30,6 +30,14 @@ assert(
     "Просмотреть сообщение\nhttps://mail.google.com/x",
   "markdown link",
 );
+assert(
+  toIMessageText("[Doc](https://en.wikipedia.org/wiki/Function_(math))").includes("(math)"),
+  "markdown link with parentheses in url",
+);
+assert(
+  toIMessageText("[x](https://a.b/c)") === "x\nhttps://a.b/c",
+  "simple markdown link still works",
+);
 
 assert(
   toIMessageText("**[Открыть](https://example.com/a)**") ===
@@ -54,6 +62,8 @@ assert(
 );
 
 assert(toIMessageText(":::rich\nкарточка") === "карточка", ":::rich mark strips");
+assert(toIMessageText(":::rich\nContent\n:::\nafter") === "Content\n\nafter", "rich block closing ::: stripped");
+assert(!toIMessageText(":::rich\nContent\n:::").includes(":::"), "no ::: in rich block output");
 assert(toIMessageText("++черта++") === "черта", "telegram underline strips");
 assert(toIMessageText("||спойлер||") === "спойлер", "telegram spoiler strips");
 assert(

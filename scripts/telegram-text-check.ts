@@ -30,6 +30,22 @@ assert(
     '<a href="https://mail.google.com/x">Почта</a>',
   "link",
 );
+assert(
+  compileTelegram("[Doc](https://en.wikipedia.org/wiki/Function_(math))").html.includes(
+    'href="https://en.wikipedia.org/wiki/Function_(math)"',
+  ),
+  "link with parentheses in url - full URL in href",
+);
+assert(
+  !compileTelegram("[Doc](https://en.wikipedia.org/wiki/Function_(math))").html.includes(
+    'href="https://en.wikipedia.org/wiki/Function_(math)">Doc</a>)',
+  ),
+  "no extra ) after link tag",
+);
+assert(
+  toTelegramHtml("[x](https://a.b/c)") === '<a href="https://a.b/c">x</a>',
+  "simple link still works",
+);
 assert(toTelegramHtml("# Заголовок") === "<b>Заголовок</b>", "heading");
 assert(
   toTelegramHtml("> цитата") === "<blockquote>цитата</blockquote>",
@@ -128,6 +144,12 @@ const forced = compileTelegram(":::rich\nкороткая карточка");
 assert(forced.preferRich === true, ":::rich opts in");
 assert(forced.richHtml.includes("<p>короткая карточка</p>"), "rich paragraph");
 assert(forced.html.includes("короткая карточка"), "classic still compiled");
+
+const richWithClosing = compileTelegram(":::rich\nContent\n:::\nafter");
+assert(!richWithClosing.html.includes(":::"), "no ::: in html on rich block");
+assert(!richWithClosing.richHtml.includes(":::"), "no ::: in richHtml on rich block");
+assert(richWithClosing.html.includes("Content"), "content preserved in html");
+assert(richWithClosing.html.includes("after"), "text after closing ::: preserved");
 
 const table = compileTelegram("| A | B |\n| --- | --- |\n| 1 | 2 |");
 assert(table.preferRich === true, "table is rich");
