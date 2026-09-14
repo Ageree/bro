@@ -216,7 +216,7 @@ assert.equal(
   "plain reminder skips archive",
 );
 
-assert.equal(ARCHIVE_RECALL_TIMEOUT_MS, 1_500, "instinct recall budget is 1.5s");
+assert.equal(ARCHIVE_RECALL_TIMEOUT_MS, 900, "instinct recall budget is 0.9s — it gates the first token");
 assert.equal(CONVERSATION_RECALL_TIMEOUT_MS, ARCHIVE_RECALL_TIMEOUT_MS, "conversation recall shares the instinct budget");
 assert.equal(ARCHIVE_TOOL_TIMEOUT_MS, 30_000, "archive tools keep 30s");
 assert.ok(
@@ -279,7 +279,7 @@ assert.ok(
 );
 const instinctSrc = src("agent/lib/instinct-recall.ts");
 assert.ok(instinctSrc.includes("Promise.allSettled"), "Instinct searches run together");
-assert.ok(instinctSrc.includes("ARCHIVE_RECALL_TIMEOUT_MS"), "Instinct pair keeps the 1.5s budget");
+assert.ok(instinctSrc.includes("ARCHIVE_RECALL_TIMEOUT_MS"), "Instinct pair keeps the shared recall budget");
 assert.ok(
   instinctSrc.includes("conversationScopeKey"),
   "prefetch conversation search uses Eve MemoryScope.key",

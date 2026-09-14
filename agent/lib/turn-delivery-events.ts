@@ -138,7 +138,8 @@ export async function deliverTurnBubble(opts: {
     text: opts.text,
     channel: routing.channel,
   });
-  await persistSeen(phone, opts.seen);
+  // Bookkeeping, not a reply: never hold the bubble (or the turn) on it.
+  void persistSeen(phone, opts.seen);
 }
 
 /** Re-arm «печатает…» while Bro works (a sent bubble clears it on the phone),

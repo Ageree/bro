@@ -295,7 +295,7 @@ assert(
 );
 assert(!canSkipInboundBind({ phoneE164: "+1" }, "+2", "c1"), "other phone still binds");
 assert(!canSkipInboundBind({ phoneE164: "+1", status: "disabled" }, "+1", "c1"), "disabled still binds");
-assert(CONVERSATION_RECALL_TIMEOUT_MS === 1500, "conversation recall matches archive budget");
+assert(CONVERSATION_RECALL_TIMEOUT_MS === 900, "conversation recall matches archive budget");
 
 {
   const imessage = src("agent/channels/imessage.ts");
@@ -315,7 +315,7 @@ console.log(
   JSON.stringify({
     turnStartedConvexRtts: 1,
     returningOneToOneConvexRttsWarm: 1,
-    archiveRecallTimeoutMs: 1500,
+    archiveRecallTimeoutMs: 900,
     conversationRecallTimeoutMs: CONVERSATION_RECALL_TIMEOUT_MS,
     conversationRecallGated: true,
     jobCheckHttpListsJobs: false,
