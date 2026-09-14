@@ -28,10 +28,19 @@ import {
   hydrate,
   isTerminal,
   startRun,
+  waitForPageLanding,
   waitForRun,
   type BrowserRun,
 } from "../lib/browseruse";
-import { profileSyncStatus } from "../../convex/lib/browserProfilePolicy.ts";
+import {
+  cookieDomainsCoverPage,
+  loginPageUrl,
+  profileSyncStatus,
+} from "../../convex/lib/browserProfilePolicy.ts";
+import {
+  ERRAND_LANDING_WAIT_MS,
+  errandStartUrl,
+} from "../../convex/lib/browserStartPolicy.ts";
 import { turnSpoke } from "../lib/early-deliver.ts";
 import { attrsFromSession, deliverHumanRouted } from "../lib/deliver-routed";
 import { conversationId, groupPersonalBlock } from "../lib/group-guard";
@@ -39,7 +48,6 @@ import { tenantId } from "../lib/tenant";
 import { browserGateFromResult } from "../../convex/lib/billingPolicy";
 import { cardBindings, normalizePayHosts } from "../lib/browser-pay.ts";
 import { parsePaymentPayload } from "../../convex/lib/vaultPayload.ts";
-import { loginPageUrl } from "../../convex/lib/browserProfilePolicy.ts";
 import { vaultPasswordLoginForPages } from "../lib/vault-login.ts";
 
 async function persist(
@@ -196,16 +204,23 @@ async function resolveSyncedProfile(
   };
 }
 
-function profileExtra(resolved: {
-  profileId?: string;
-  cookieDomains: string[];
-  synced: boolean;
-}) {
+function profileExtra(
+  resolved: {
+    profileId?: string;
+    cookieDomains: string[];
+    synced: boolean;
+  },
+  startPage?: string,
+) {
+  const siteReady = Boolean(
+    startPage && cookieDomainsCoverPage(resolved.cookieDomains, startPage),
+  );
   return {
     profileId: resolved.profileId ?? null,
     profileSynced: resolved.synced,
     cookieDomains: resolved.cookieDomains,
-    ...(resolved.synced
+    ...(startPage ? { startPage, siteReady } : {}),
+    ...(siteReady || resolved.synced
       ? {}
       : {
           needsProfileSync: true,
@@ -216,7 +231,7 @@ function profileExtra(resolved: {
 
 export default defineTool({
   description:
-    "Cloud browser (WB, Ozon, bookings, appointments, taxi, forms, search). Starts or polls the current job — never a second search. reset = fresh browser. needsProfileSync → profile_setup with the login URL (vault password if saved, otherwise the live-view link). Never ask for a login or password. Never put a site password in chat. status=completed → paste result. Buy: pay on first call (hosts = merchant hostnames; maxRub only if they named a ceiling). Card is server-typed. needsVaultSetup → vault_setup kind=payment.",
+    "Cloud browser (WB, Ozon, bookings, appointments, taxi, forms, search). Starts or polls the current job — never a second search. reset = fresh browser. Eve opens the site over CDP (taxi.yandex.ru for такси) — do not wait for the Cloud LLM and do not start profile_setup when cookieDomains already cover that site. needsProfileSync → profile_setup with the login URL only if cookies/vault are missing. Never ask for a login or password. Never put a site password in chat. status=completed → paste result. Buy: pay on first call (hosts = merchant hostnames; maxRub only if they named a ceiling). Card is server-typed. needsVaultSetup → vault_setup kind=payment.",
   inputSchema: z.object({
     task: z.string().min(1).max(4000),
     reset: z.boolean().optional(),
@@ -347,6 +362,7 @@ export default defineTool({
     }
 
     const resolved = await resolveSyncedProfile(phone, tenant);
+    const startPage = errandStartUrl(task);
     const started = await startRun(task, reset ? undefined : tenant.browserSessionId, {
       ...(resolved.profileId
         ? { profileId: resolved.profileId, profileSynced: resolved.synced }
@@ -354,9 +370,13 @@ export default defineTool({
       ...(payOpts ? { pay: payOpts } : {}),
       ...(vaultLogin ? { login: true } : {}),
       ...(secretBindings && secretBindings.length > 0 ? { secretBindings } : {}),
+      ...(startPage ? { startPage } : {}),
     });
+    const opened = startPage
+      ? await waitForPageLanding(started, startPage, ERRAND_LANDING_WAIT_MS)
+      : started;
     const startedAt = Date.now();
-    await persist(phone, started, task, {
+    await persist(phone, opened, task, {
       browserStartedAt: startedAt,
       ...(resolved.profileId && resolved.profileId !== tenant.browserProfileId
         ? { browserProfileId: resolved.profileId }
@@ -370,8 +390,8 @@ export default defineTool({
     });
     const followKick = startBrowserFollow({
       tenantPhone: phone,
-      runId: started.runId,
-      sessionId: started.sessionId,
+      runId: opened.runId,
+      sessionId: opened.sessionId,
       task,
       startedAt,
     }).catch((err) => {
@@ -389,8 +409,8 @@ export default defineTool({
       });
     }
     const done = await waitForRun(
-      started.runId,
-      started.sessionId,
+      opened.runId,
+      opened.sessionId,
       BROWSER_WAIT_MS,
     );
     await persist(phone, done, task);
@@ -402,12 +422,14 @@ export default defineTool({
       {
         started: true,
         alreadyNotified: Boolean(conv),
-        ...profileExtra(resolved),
+        ...profileExtra(resolved, startPage),
+        ...(opened.pageUrl ? { pageUrl: opened.pageUrl } : {}),
+        ...(opened.landed !== undefined ? { landed: opened.landed } : {}),
         ...(payOpts
           ? { paying: true, payAccount: payOpts.account, payHosts: payOpts.hosts }
           : {}),
       },
-      { startedAt, runId: started.runId },
+      { startedAt, runId: opened.runId },
     );
   },
 });
