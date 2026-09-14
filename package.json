@@ -41,6 +41,7 @@
     "tz:check": "node --experimental-strip-types scripts/tz-check.ts",
     "types:check": "tsc --noEmit",
     "schema:check": "node --experimental-strip-types scripts/schema-check.ts",
+    "wipe:check": "node --experimental-strip-types scripts/wipe-check.ts",
     "image:check": "node --experimental-strip-types scripts/inbound-image-check.ts",
     "sandbox:check": "node --experimental-strip-types scripts/sandbox-policy-check.ts",
     "files:check": "node --experimental-strip-types scripts/files-check.ts",
