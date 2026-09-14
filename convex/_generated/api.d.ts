@@ -38,11 +38,13 @@ import type * as lib_photonRest from "../lib/photonRest.js";
 import type * as lib_rateLimits from "../lib/rateLimits.js";
 import type * as lib_telegramPolicy from "../lib/telegramPolicy.js";
 import type * as lib_tenantLookup from "../lib/tenantLookup.js";
+import type * as lib_tenantWipe from "../lib/tenantWipe.js";
 import type * as lib_tzPolicy from "../lib/tzPolicy.js";
 import type * as lib_vaultPayload from "../lib/vaultPayload.js";
 import type * as lib_wakeupCrons from "../lib/wakeupCrons.js";
 import type * as lib_wakeupPolicy from "../lib/wakeupPolicy.js";
 import type * as lib_watcherPolicy from "../lib/watcherPolicy.js";
+import type * as lib_wipePolicy from "../lib/wipePolicy.js";
 import type * as memories from "../memories.js";
 import type * as orders from "../orders.js";
 import type * as secret from "../secret.js";
@@ -51,6 +53,7 @@ import type * as vault from "../vault.js";
 import type * as vaultSecrets from "../vaultSecrets.js";
 import type * as wakeups from "../wakeups.js";
 import type * as watchers from "../watchers.js";
+import type * as wipe from "../wipe.js";
 import type * as workflow from "../workflow.js";
 
 import type {
@@ -90,11 +93,13 @@ declare const fullApi: ApiFromModules<{
   "lib/rateLimits": typeof lib_rateLimits;
   "lib/telegramPolicy": typeof lib_telegramPolicy;
   "lib/tenantLookup": typeof lib_tenantLookup;
+  "lib/tenantWipe": typeof lib_tenantWipe;
   "lib/tzPolicy": typeof lib_tzPolicy;
   "lib/vaultPayload": typeof lib_vaultPayload;
   "lib/wakeupCrons": typeof lib_wakeupCrons;
   "lib/wakeupPolicy": typeof lib_wakeupPolicy;
   "lib/watcherPolicy": typeof lib_watcherPolicy;
+  "lib/wipePolicy": typeof lib_wipePolicy;
   memories: typeof memories;
   orders: typeof orders;
   secret: typeof secret;
@@ -103,6 +108,7 @@ declare const fullApi: ApiFromModules<{
   vaultSecrets: typeof vaultSecrets;
   wakeups: typeof wakeups;
   watchers: typeof watchers;
+  wipe: typeof wipe;
   workflow: typeof workflow;
 }>;
 
