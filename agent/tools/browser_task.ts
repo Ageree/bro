@@ -231,7 +231,7 @@ function profileExtra(
 
 export default defineTool({
   description:
-    "Cloud browser (WB, Ozon, bookings, appointments, taxi, forms, search). Starts or polls the current job — never a second search. reset = fresh browser. Eve opens the site over CDP (taxi.yandex.ru for такси) — do not wait for the Cloud LLM and do not start profile_setup when cookieDomains already cover that site. needsProfileSync → profile_setup with the login URL only if cookies/vault are missing. Never ask for a login or password. Never put a site password in chat. status=completed → paste result. Buy: pay on first call (hosts = merchant hostnames; maxRub only if they named a ceiling). Card is server-typed. needsVaultSetup → vault_setup kind=payment.",
+    "Cloud browser (WB, Ozon, bookings, appointments, taxi, forms, search). Starts or polls the current job — never a second search. reset = fresh browser. Eve opens the site over CDP (taxi.yandex.ru for такси). Vault kind:login is bound as secretBindings. Cloud cookies may exist — that is not proof the tab is logged in. The Cloud agent must click Войти / Авторизоваться / passport if the page is still guest; live-view only for OTP or a missing password. needsProfileSync → profile_setup only when cookies and vault are missing. Never ask for a login or password. Never put a site password in chat. status=completed → paste result. Buy: pay on first call (hosts = merchant hostnames; maxRub only if they named a ceiling). Card is server-typed. needsVaultSetup → vault_setup kind=payment.",
   inputSchema: z.object({
     task: z.string().min(1).max(4000),
     reset: z.boolean().optional(),

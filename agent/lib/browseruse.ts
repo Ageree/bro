@@ -117,6 +117,48 @@ export type BrowserRun = {
 
 const ERRAND_MARK = "[bro-errand]";
 
+/**
+ * Only an explicit dry-run skips «Заказать».
+ * A real «вызови такси» must finish the order after login.
+ */
+export function isDryRunErrand(task: string): boolean {
+  const t = task.toLowerCase();
+  return (
+    /не\s+нажимай(?:те)?\s+[«"']?заказать/.test(t) ||
+    /не\s+нажимать\s+[«"']?заказать/.test(t) ||
+    /не\s+заказывай/.test(t) ||
+    /\bбез\s+заказа\b/.test(t) ||
+    /dry[- ]?run/.test(t) ||
+    /не\s+создавай\s+(?:реальн\w*\s+)?(?:поездк|заказ)/.test(t)
+  );
+}
+
+function errandLoginBlock(opts?: {
+  login?: boolean;
+  profileSynced?: boolean;
+}): string {
+  const session = opts?.profileSynced
+    ? "В Cloud-профиле могут быть куки прошлой сессии — используй их. Куки не значат, что ты уже вошёл: смотри экран."
+    : "Сохранённой сессии может не быть.";
+  const vault = opts?.login ? `${loginScaffold()}\n` : "";
+  const typed = opts?.login
+    ? ""
+    : "Если в задаче есть логин или пароль — введи их на входе и на регистрации, не цитируй. ";
+  return `${session} Нужен аккаунт — войди сам. Если видишь «Войти», «Авторизоваться» или гостевую форму — нажми и пройди вход (паспорт, Яндекс ID, телефон — так и надо). Не останавливайся на гостевом экране.
+${vault}${typed}Если пароля нет и без него дальше нельзя — остановись и дай live-URL. Код из SMS, почты или пуш — остановись и дай live-URL. Не выдумывай пароль. Номера карт и CVV сам не вводи, если карта не подключена секретами.`;
+}
+
+function errandFinishBlock(
+  task: string,
+  payBlock: string | undefined,
+): string {
+  if (payBlock) return "Доводи дело до конца, включая оплату подключённой картой.";
+  if (isDryRunErrand(task)) {
+    return "Это проверка без заказа: покажи форму и цену. Не нажимай «Заказать», «Поехали» и не создавай поездку.";
+  }
+  return "Доводи дело до конца. Для такси после входа заполни откуда/куда и нажми «Заказать», если человек просил вызвать. Остановка на гостевом экране без входа — не результат.";
+}
+
 export type ProfileView = {
   id: string;
   cookieDomains: string[];
@@ -147,25 +189,19 @@ export function scaffoldTask(
     return task;
   }
   const payBlock = opts?.pay ? payScaffold(opts.pay) : undefined;
-  const loginBlock = opts?.login ? loginScaffold() : undefined;
   const stopForPay = "Если нужна оплата — остановись и дай live-URL.";
-  const stopForLogin =
-    "Если пароля в задаче нет и сайт просит логин — остановись. Bro пришлёт человеку ссылку, он войдёт сам, вход сохранится.";
-  const stopForLoginSynced =
-    "Если пароля в задаче нет и сайт всё же просит логин — остановись; Bro пришлёт человеку ссылку, он войдёт сам.";
-  const login = opts?.profileSynced
-    ? `Ты уже в аккаунтах человека: вход сохранён в Cloud-профиле. Если личный кабинет открыт — работай как залогиненный пользователь. Если в задаче есть логин или пароль — введи их на входе и на регистрации, не цитируй. Номера карт, CVV и коды из SMS сам не выдумывай. ${loginBlock ?? stopForLoginSynced} ${payBlock ?? stopForPay}`
-    : `Если в задаче есть логин или пароль — введи их на входе и на регистрации, не цитируй. Номера карт и CVV сам не вводи. ${loginBlock ?? stopForLogin} ${payBlock ?? stopForPay}`;
-  const finish = payBlock
-    ? "Доводи дело до конца, включая оплату подключённой картой."
-    : "Доводи дело до конца, если оплата не требуется (например: выбрать слот, заполнить форму с известными данными, дойти до финального подтверждения).";
+  const login = errandLoginBlock({
+    login: opts?.login,
+    profileSynced: opts?.profileSynced,
+  });
+  const finish = errandFinishBlock(task, payBlock);
   const alreadyOpen = opts?.startPage
-    ? `Страница уже открыта: ${opts.startPage}. Не уходи на about:blank. Не открывай паспорт, если аккаунт уже свой.`
-    : "Сайт откроет Bro сам. Не сиди на about:blank.";
+    ? `Страница уже открыта: ${opts.startPage}. Не уходи на about:blank. Если сайт открывает паспорт или форму входа — иди туда и войди.`
+    : "Сайт откроет Bro сам. Не сиди на about:blank. Если нужна авторизация — открой вход и войди.";
   return `${ERRAND_MARK}
 Выполняй поручение на языке сайтов (обычно русский). Задача: ${task}.
 ${alreadyOpen}
-${login}
+${login} ${payBlock ?? stopForPay}
 ${finish}
 Если данных не хватает (имя, телефон, адрес, время) — не выдумывай; закончи и перечисли, что нужно уточнить.
 Работай быстро: если сайт медленный, требует капчу или недоступен — пропусти его и возьми другой вариант.

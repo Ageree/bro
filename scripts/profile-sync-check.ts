@@ -45,7 +45,9 @@ assert(wait.startsWith(LOGIN_MARK), "login mark");
 assert(wait.includes("https://www.ozon.ru/"), "opens the page");
 assert(wait.includes("Первым действием"), "navigate first");
 assert(wait.includes("не about:blank"), "not blank preview");
-assert(wait.includes("Ничего не вводи"), "never types secrets");
+assert(wait.includes("Не вводи логин"), "never types secrets");
+assert(wait.includes("«Войти»"), "live-view login may click Войти to open the form");
+assert(!wait.includes("Не нажимай «войти» за него"), "must not forbid opening login");
 assert(isLoginWaitTask(wait), "wait is a live-view login");
 assert(scaffoldTask(wait) === wait, "login task not re-wrapped");
 assert(
@@ -63,6 +65,7 @@ assert(isLoginVaultTask(vaultTask), "vault task detected");
 assert(!isLoginWaitTask(vaultTask), "vault task is not a live-view wait");
 assert(scaffoldTask(vaultTask) === vaultTask, "vault task not re-wrapped");
 assert(vaultTask.includes("Первым действием"), "vault login navigates first");
+assert(vaultTask.includes("«Войти»"), "vault login clicks Войти if the form is closed");
 assert(vaultTask.includes("site_login"), "vault task names login alias");
 assert(vaultTask.includes("site_password"), "vault task names password alias");
 assert(!vaultTask.includes("ochen"), "vault task has no secret");
@@ -285,7 +288,15 @@ assert(
 );
 assert(
   src("agent/instructions.md").includes("сразу `browser_task`"),
-  "taxi goes to browser_task not passport",
+  "taxi goes to browser_task first",
+);
+assert(
+  src("agent/instructions.md").includes("Cloud входит сам"),
+  "eve tells the cloud job to log in",
+);
+assert(
+  !src("agent/instructions.md").includes("не открывай Яндекс.паспорт"),
+  "eve must not forbid passport",
 );
 assert(tool.includes("loginOpeningText"), "tool announces the login first");
 
