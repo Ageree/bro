@@ -86,6 +86,11 @@ assert.equal(normalizeLine("  size 42  "), "size 42");
 assert.equal(normalizeLine("   "), null);
 assert.equal(normalizeLine("x".repeat(LINE_CHARS + 50))?.length, LINE_CHARS);
 
+// Surrogate pair handling: emoji at boundary should not be cut in half.
+const surrTest = normalizeLine("a".repeat(279) + "😀");
+assert.ok(!/[\ud800-\udbff]$/.test(surrTest ?? ""), "emoji not cut as lone high surrogate");
+assert.equal(normalizeLine("x".repeat(280))?.length, 280, "normal 280-char line preserved");
+
 // Dedup and cap.
 assert.equal(isDuplicate(["a", "b"], "b"), true);
 assert.equal(isDuplicate(["a", "b"], "c"), false);

@@ -46,6 +46,7 @@ export function isBluePhotonService(opts: {
 export function normalizePhotonE164(raw: string): string | undefined {
   let compact = raw.trim().replace(/[\s()-]/g, "");
   if (/^8[0-9]{10}$/.test(compact)) compact = `+7${compact.slice(1)}`;
+  if (/^8[0-9]*$/.test(compact)) return undefined;
   if (!/^\+?[1-9][0-9]{6,14}$/.test(compact)) return undefined;
   return compact.startsWith("+") ? compact : `+${compact}`;
 }

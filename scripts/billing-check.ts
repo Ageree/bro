@@ -493,5 +493,9 @@ assert(
   !billingSrc.includes('?? "https://bro-agent.vercel.app"'),
   "createPaymentFor no homepage default",
 );
+assert(
+  billingSrc.includes("yookassa currency"),
+  "verifyAndApply validates YooKassa currency",
+);
 
 console.log("billing-check ok");

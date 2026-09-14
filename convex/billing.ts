@@ -106,7 +106,7 @@ export const verifyAndApply = internalAction({
     const json = (await res.json()) as {
       status?: unknown;
       metadata?: { tenantId?: unknown };
-      amount?: { value?: unknown };
+      amount?: { value?: unknown; currency?: unknown };
     };
     if (!res.ok) throw new Error(`yookassa get ${res.status}`);
     const tenantId = json.metadata?.tenantId;
@@ -114,6 +114,10 @@ export const verifyAndApply = internalAction({
     const parsed =
       typeof rawAmount === "string" ? Number.parseFloat(rawAmount) : Number.NaN;
     const amountRub = Number.isFinite(parsed) ? parsed : priceRub();
+    const currency = json.amount?.currency;
+    if (typeof currency === "string" && currency.toUpperCase() !== "RUB") {
+      throw new Error(`yookassa currency ${currency}`);
+    }
     if (json.status === "succeeded" && typeof tenantId === "string" && tenantId) {
       await ctx.runMutation(internal.billing.applyPayment, {
         tenantId,

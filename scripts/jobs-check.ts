@@ -482,4 +482,8 @@ assert(
   "job_check no longer lists jobs on the HTTP path",
 );
 
+const jobsFinishSrc = src("convex/jobs.ts");
+const jobsAlreadyClosedCount = (jobsFinishSrc.match(/job already closed/g) || []).length;
+assert(jobsAlreadyClosedCount >= 2, "finish and wait both guard job already closed");
+
 console.log("jobs-check ok");
