@@ -283,17 +283,19 @@ export function hasNavigateActivity(payload: unknown): boolean {
   return false;
 }
 
-/** Live URL exists and the Cloud agent has opened the site login (not blank). */
+/** Live URL exists and the real tab (CDP or a matching page event) is the login. */
 export function loginLandingReady(opts: {
   liveUrl?: string;
   targetPage?: string;
   events?: unknown;
+  pageUrl?: string;
 }): boolean {
   if (!opts.liveUrl || !isLiveViewUrl(opts.liveUrl)) return false;
   const target = opts.targetPage?.trim();
   if (!target) return false;
+  if (opts.pageUrl && loginHostsMatch(target, opts.pageUrl)) return true;
   if (pageUrlFromEvents(opts.events, target)) return true;
-  return hasNavigateActivity(opts.events);
+  return false;
 }
 
 export function shouldSendLoginLink(opts: {

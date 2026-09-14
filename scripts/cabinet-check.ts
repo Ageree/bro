@@ -432,6 +432,7 @@ assert(cabinet.includes("Номер и CVV он не видит"), "cabinet vaul
 assert(cabinet.includes('id="vault-open"'), "cabinet topbar links to vault");
 assert(cabinet.includes('id="chrome"'), "cabinet chrome card");
 assert(cabinet.includes("пришлёт ссылку в чат"), "cabinet login is a chat link");
+assert(cabinet.includes("Повторно ссылку не пришлёт"), "cabinet says one login");
 assert(!cabinet.includes("profile.sh"), "cabinet has no terminal helper");
 assert(!cabinet.includes('id="profile-save"'), "cabinet does not bind profile ids");
 assert(cabinet.includes('id="login-phone"'), "cabinet login phone field");

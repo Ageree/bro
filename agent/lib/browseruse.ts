@@ -8,10 +8,17 @@ import {
 } from "../../convex/lib/browserProfilePolicy.ts";
 import {
   liveUrlFromRunPayloads,
+  loginHostsMatch,
   loginLandingReady,
   pageUrlFromEvents,
   runEventsPath,
 } from "../../convex/lib/browserLivePolicy.ts";
+import {
+  browserFromList,
+  cdpPageUrl,
+  type CloudBrowser,
+} from "../../convex/lib/browserCdp.ts";
+import { cdpNavigate } from "./browser-cdp.ts";
 import { loginScaffold, payScaffold, type SecretBinding } from "./browser-pay.ts";
 
 const BASE = "https://api.browser-use.com/api/v4";
@@ -204,8 +211,8 @@ export async function startRun(
   },
 ): Promise<BrowserRun> {
   // Cloud v4 POST /runs has no startUrl / initial navigation field
-  // (RunBrowserSettings.additionalProperties = false). The agent must
-  // navigate; callers wait for that page before sending live_view_url.
+  // (RunBrowserSettings.additionalProperties = false). Eve opens the
+  // login via CDP after browser.ready — do not wait for the Cloud LLM.
   const body: Record<string, unknown> = {
     task: scaffoldTask(task, {
       profileSynced: opts?.profileSynced,
@@ -268,13 +275,46 @@ function withLanding(
   const pageUrl = pageUrlFromEvents(events, targetPage) ?? run.pageUrl;
   const liveUrl = run.liveUrl ?? liveUrlFromRunPayloads({ events });
   const landed = targetPage
-    ? loginLandingReady({ liveUrl, targetPage, events })
+    ? loginLandingReady({ liveUrl, targetPage, events, pageUrl })
     : run.landed;
   return {
     ...run,
     ...(liveUrl ? { liveUrl } : {}),
     ...(pageUrl ? { pageUrl } : {}),
     ...(targetPage !== undefined ? { landed } : {}),
+  };
+}
+
+export async function findBrowserForSession(
+  sessionId?: string,
+): Promise<CloudBrowser | undefined> {
+  if (!sessionId) return undefined;
+  return browserFromList(await bu("/browsers"), sessionId);
+}
+
+async function applyCdpPage(
+  run: BrowserRun,
+  targetPage?: string,
+): Promise<BrowserRun> {
+  const browser = await findBrowserForSession(run.sessionId).catch(() => undefined);
+  const liveUrl = run.liveUrl ?? browser?.liveUrl;
+  if (!browser?.cdpUrl) {
+    return liveUrl && liveUrl !== run.liveUrl ? { ...run, liveUrl } : run;
+  }
+  const pageUrl = await cdpPageUrl(browser.cdpUrl).catch(() => undefined);
+  const next: BrowserRun = {
+    ...run,
+    ...(liveUrl ? { liveUrl } : {}),
+    ...(pageUrl ? { pageUrl } : {}),
+  };
+  if (!targetPage) return next;
+  return {
+    ...next,
+    landed: loginLandingReady({
+      liveUrl: next.liveUrl,
+      targetPage,
+      pageUrl: next.pageUrl,
+    }),
   };
 }
 
@@ -302,9 +342,12 @@ export async function hydrate(
     (typeof run.result === "object" && run.result
       ? JSON.stringify(run.result).slice(0, 2000)
       : undefined);
-  return withLanding(
-    { runId, sessionId: sid, status, liveUrl, result },
-    events,
+  return applyCdpPage(
+    withLanding(
+      { runId, sessionId: sid, status, liveUrl, result },
+      events,
+      targetPage,
+    ),
     targetPage,
   );
 }
@@ -363,9 +406,26 @@ export async function waitForLoginLanding(
 ): Promise<BrowserRun> {
   const start = Date.now();
   let last = run;
+  let navigated = false;
   while (Date.now() - start < ms) {
     last = await hydrate(last.runId, last.sessionId, targetPage);
     if (last.liveUrl && last.landed) return last;
+    const browser = await findBrowserForSession(last.sessionId).catch(
+      () => undefined,
+    );
+    const liveUrl = last.liveUrl ?? browser?.liveUrl;
+    if (browser?.cdpUrl && liveUrl && !navigated) {
+      const after = await cdpNavigate(browser.cdpUrl, targetPage).catch(
+        (err: unknown) => {
+          console.error("cdp login navigate failed", err);
+          return undefined;
+        },
+      );
+      navigated = true;
+      if (after && loginHostsMatch(targetPage, after)) {
+        return { ...last, liveUrl, pageUrl: after, landed: true };
+      }
+    }
     const remaining = ms - (Date.now() - start);
     if (remaining <= 0) break;
     await new Promise((r) => setTimeout(r, Math.min(1500, remaining)));
