@@ -2,6 +2,8 @@ import { replyTenant, setWakeupLastSeen } from "./convex.ts";
 import { deliverHuman } from "./deliver-human.ts";
 import {
   bubblesFor,
+  isIncompleteDraft,
+  isThinFragment,
   planPreToolFlush,
   planStreamFlush,
   planTurnDelivery,
@@ -16,6 +18,10 @@ import {
   turnOrigin,
 } from "./silent-turn.ts";
 import { stripConnectUrls } from "./connect-link.ts";
+import { latencyFields } from "./latency-log.ts";
+import { fastAckOf, peelFastAck } from "./fast-ack.ts";
+import { sendPhotonTyping } from "./photon.ts";
+import { sendTelegramTyping } from "./telegram.ts";
 import {
   routingFromAuth,
   routingPhone,
@@ -135,7 +141,27 @@ export async function deliverTurnBubble(opts: {
     text: opts.text,
     channel: routing.channel,
   });
-  await persistSeen(phone, opts.seen);
+  // Bookkeeping, not a reply: never hold the bubble (or the turn) on it.
+  void persistSeen(phone, opts.seen);
+}
+
+/** Re-arm «печатает…» while Bro works (a sent bubble clears it on the phone),
+ *  or drop it when a turn ends without a bubble. Best effort, never awaited. */
+export function signalTurnTyping(opts: {
+  conversationId: string;
+  attrs?: AuthAttrs;
+  state: "start" | "stop";
+}): void {
+  const routing = routingFromAuth(opts.attrs);
+  if (routing.channel === "telegram") {
+    if (opts.state !== "start" || !routing.telegramChatId) return;
+    void sendTelegramTyping(routing.telegramChatId).catch((err) =>
+      console.error("telegram typing failed", err),
+    );
+    return;
+  }
+  if (!opts.conversationId) return;
+  void sendPhotonTyping({ conversationId: opts.conversationId, state: opts.state });
 }
 
 export function createTurnDeliveryEvents(opts: {
@@ -143,6 +169,32 @@ export function createTurnDeliveryEvents(opts: {
 }) {
   const fallbackSent = new Map<string, number>();
   const earlySent = new Map<string, EarlySentRow>();
+
+  // A fast-ack line was already sent before the turn started (stamped on the
+  // auth attributes — it lives in a different process than this Map). Fold
+  // it into `alreadySent` so nextBubble's restatement/near-duplicate peeling
+  // drops a repeated looking line, without counting as a real spoken bubble
+  // for the empty-turn fallback (see `realSent` on planTurnDelivery).
+  function alreadySentFor(attrs: AuthAttrs, turnId: string): readonly string[] {
+    const ack = fastAckOf(attrs);
+    const bubbles = bubblesFor(earlySent, turnId);
+    return ack ? [ack, ...bubbles] : bubbles;
+  }
+
+  /** Until a real bubble went out, the model's first text may restate the
+   *  fast ack in another case («Ищу на ВБ.») — drop or peel that. */
+  function afterFastAck(
+    attrs: AuthAttrs,
+    turnId: string,
+    send: string | null,
+  ): string | null {
+    if (!send) return null;
+    const ack = fastAckOf(attrs);
+    if (!ack || bubblesFor(earlySent, turnId).length > 0) return send;
+    const peeled = peelFastAck(ack, send);
+    if (!peeled || peeled === send) return peeled;
+    return isIncompleteDraft(peeled) || isThinFragment(peeled) ? null : peeled;
+  }
 
   return {
     async "turn.failed"(
@@ -183,24 +235,39 @@ export function createTurnDeliveryEvents(opts: {
       if (!canTarget(conversationId, auth?.attributes)) return;
       if (!opts.accept(auth?.attributes)) return;
       rememberSoFar(earlySent, event.turnId, event.messageSoFar, Date.now());
-      const planned = planStreamFlush({
+      const streamPlan = planStreamFlush({
         soFar: event.messageSoFar,
-        alreadySent: bubblesFor(earlySent, event.turnId),
+        alreadySent: alreadySentFor(auth?.attributes, event.turnId),
       });
+      const planned = {
+        ...streamPlan,
+        send: afterFastAck(auth?.attributes, event.turnId, streamPlan.send),
+      };
       if (!planned.send) return;
       recordSent(earlySent, event.turnId, planned.send, Date.now());
       console.log("turn deliver appended", {
         conversationId,
+        ...latencyFields(auth?.attributes),
         routed: routingFromAuth(auth?.attributes).channel ?? null,
         chars: planned.send.length,
       });
+      const bubbleNo = bubblesFor(earlySent, event.turnId).length;
       void deliverTurnBubble({
         conversationId,
         text: stripConnectUrls(planned.send),
         attrs: auth?.attributes,
         principalId: auth?.principalId,
         seen: planned.seen,
-      }).catch((err) => console.error("streamed bubble send failed", err));
+      })
+        .then(() => {
+          if (bubbleNo === 1) {
+            console.log("turn first bubble delivered", {
+              conversationId,
+              ...latencyFields(auth?.attributes),
+            });
+          }
+        })
+        .catch((err) => console.error("streamed bubble send failed", err));
     },
     async "actions.requested"(
       event: { turnId: string },
@@ -211,14 +278,22 @@ export function createTurnDeliveryEvents(opts: {
       const conversationId = conversationIdOf(channel, auth?.attributes);
       if (!canTarget(conversationId, auth?.attributes)) return;
       if (!opts.accept(auth?.attributes)) return;
-      const planned = planPreToolFlush({
+      const preToolPlan = planPreToolFlush({
         soFar: soFarFor(earlySent, event.turnId),
-        alreadySent: bubblesFor(earlySent, event.turnId),
+        alreadySent: alreadySentFor(auth?.attributes, event.turnId),
       });
-      if (!planned.send) return;
+      const planned = {
+        ...preToolPlan,
+        send: afterFastAck(auth?.attributes, event.turnId, preToolPlan.send),
+      };
+      if (!planned.send) {
+        signalTurnTyping({ conversationId, attrs: auth?.attributes, state: "start" });
+        return;
+      }
       recordSent(earlySent, event.turnId, planned.send, Date.now());
       console.log("turn deliver pre-tool", {
         conversationId,
+        ...latencyFields(auth?.attributes),
         routed: routingFromAuth(auth?.attributes).channel ?? null,
         chars: planned.send.length,
       });
@@ -228,7 +303,12 @@ export function createTurnDeliveryEvents(opts: {
         attrs: auth?.attributes,
         principalId: auth?.principalId,
         seen: planned.seen,
-      }).catch((err) => console.error("pre-tool bubble send failed", err));
+      })
+        .catch((err) => console.error("pre-tool bubble send failed", err))
+        .finally(() => {
+          // The bubble cleared the indicator; tools are still running.
+          signalTurnTyping({ conversationId, attrs: auth?.attributes, state: "start" });
+        });
     },
     async "message.completed"(
       event: {
@@ -256,16 +336,22 @@ export function createTurnDeliveryEvents(opts: {
         return;
       }
       const origin = turnOrigin(auth?.attributes);
-      const planned = planTurnDelivery({
+      const turnPlan = planTurnDelivery({
         finishReason: event.finishReason ?? "",
         message: event.message,
         origin,
-        alreadySent: bubblesFor(earlySent, event.turnId),
+        alreadySent: alreadySentFor(auth?.attributes, event.turnId),
+        realSent: bubblesFor(earlySent, event.turnId),
       });
+      const planned = {
+        ...turnPlan,
+        send: afterFastAck(auth?.attributes, event.turnId, turnPlan.send),
+      };
       if (planned.send) {
         recordSent(earlySent, event.turnId, planned.send, Date.now());
         console.log("turn deliver completed", {
           conversationId,
+          ...latencyFields(auth?.attributes),
           routed: routingFromAuth(auth?.attributes).channel ?? null,
           chars: planned.send.length,
         });
@@ -284,6 +370,9 @@ export function createTurnDeliveryEvents(opts: {
         auth?.principalId,
         planned.seen,
       );
+      if (event.finishReason !== "tool-calls" && !planned.fallback) {
+        signalTurnTyping({ conversationId, attrs: auth?.attributes, state: "stop" });
+      }
       if (!planned.fallback) return;
       if (event.finishReason !== "tool-calls") {
         console.error("empty turn", {

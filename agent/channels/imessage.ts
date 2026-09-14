@@ -24,6 +24,12 @@ import {
 import { prefetchInstinctRecall } from "../lib/instinct-recall.ts";
 import { prefetchOpenRouter } from "../lib/openrouter-warm.ts";
 import { shortAckAttribute } from "../lib/short-ack.ts";
+import {
+  fastAckAttribute,
+  fastAckBudgetMs,
+  settleFastAck,
+  startFastAck,
+} from "../lib/fast-ack.ts";
 import { cloudInjectAttribute } from "../../convex/lib/browserInjectPolicy.ts";
 import { secretEquals } from "../lib/secret-compare.ts";
 import {
@@ -41,6 +47,8 @@ import {
 } from "../lib/connect-link";
 import { inboundIMessageText } from "../lib/imessage-text";
 import { parkTurn } from "../lib/channel-turn.ts";
+import { deliverHumanRouted } from "../lib/deliver-routed.ts";
+import { inboundAtAttribute } from "../lib/latency-log.ts";
 import { parkLastChannelTouch } from "../lib/early-deliver.ts";
 import { jobCheckWakePrompt } from "../lib/job-wake.ts";
 import { imessageDeliveryEvents } from "../lib/turn-delivery-events.ts";
@@ -60,8 +68,10 @@ import { eventPrompt } from "../../convex/lib/watcherPolicy.ts";
 import { syncTenantArchive } from "../lib/archive-sync.ts";
 import {
   photonWebhookOk,
+  prefetchSpectrum,
   readPhotonInbound,
   sendPhotonText,
+  sendPhotonTyping,
 } from "../lib/photon.ts";
 import {
   isBluePhotonService,
@@ -218,6 +228,24 @@ export default defineChannel({
         },
       });
     }),
+    // Keep-warm ping (Convex cron): boots the cached Spectrum app and the
+    // OpenRouter connection so the first human turn after a quiet spell
+    // does not pay the cold-start bill. Secret-gated: each boot costs Photon
+    // HTTP calls.
+    POST("/internal/warm", async (request) => {
+      let body: { secret?: unknown };
+      try {
+        body = (await request.json()) as typeof body;
+      } catch {
+        return new Response("bad json", { status: 400 });
+      }
+      if (!secretEquals(body.secret, process.env.BRO_INTERNAL_SECRET)) {
+        return new Response("unauthorized", { status: 401 });
+      }
+      prefetchSpectrum();
+      prefetchOpenRouter();
+      return Response.json({ ok: true });
+    }),
     POST("/internal/photon-send", async (request) => {
       let body: { secret?: unknown; conversationId?: unknown; text?: unknown };
       try {
@@ -238,6 +266,7 @@ export default defineChannel({
       return Response.json({ ok: true });
     }),
     POST("/webhooks/photon", async (request, { from, waitUntil }) => {
+      const receivedAt = Date.now();
       const secret = process.env.SPECTRUM_WEBHOOK_SECRET?.trim();
       if (!secret) {
         return new Response("missing SPECTRUM_WEBHOOK_SECRET", { status: 500 });
@@ -268,9 +297,33 @@ export default defineChannel({
 
       const preview = inbound.text;
       prefetchOpenRouter();
+      // Fast-ack lane: a tiny no-reasoning model call turns this message into
+      // a 2-5 word status line and sends it as the first bubble within a
+      // hard budget, well before the real agent turn (a different Vercel
+      // function) could produce one. Started this early so the round trip
+      // overlaps everything below instead of adding to the wait.
+      const fastAck = preview ? startFastAck(preview) : null;
+      const cancelFastAck = () => fastAck?.abort();
+      // «печатает…» goes out before any Convex hop: the human sees Bro is
+      // alive within the Photon round trip, not after the first token.
+      if (preview && !shouldSkipAgentTurn({ firstBind: false, text: preview })) {
+        parkTurn(
+          waitUntil,
+          sendPhotonTyping({ conversationId: inbound.spaceId }),
+        );
+      } else {
+        prefetchSpectrum();
+      }
       if (inbound.senderPhone && preview) {
         prefetchOneToOneStart(inbound.senderPhone, preview);
       }
+      // Billing count and tenant lookup are independent Convex hops; run
+      // them side by side. The count is reused below when the sender owns
+      // the thread (always, for a 1:1), and recomputed otherwise.
+      const senderGateP =
+        inbound.senderPhone && preview
+          ? inboundOwnerGate(inbound.senderPhone)
+          : undefined;
 
       const known = await getTenant(inbound.senderPhone).catch(() => null);
       // Closed beta: first DMs from any new number must bind. ALLOWED_SENDERS
@@ -302,6 +355,7 @@ export default defineChannel({
           });
       if (!bound.ok) {
         console.error("dropped photon inbound", bound.reason, inbound.senderPhone);
+        cancelFastAck();
         return new Response(null, { status: 204 });
       }
 
@@ -315,6 +369,7 @@ export default defineChannel({
         ),
       );
       if (boundTenant.status === "disabled") {
+        cancelFastAck();
         return new Response(null, { status: 204 });
       }
 
@@ -323,7 +378,7 @@ export default defineChannel({
           ? boundTenant.phoneE164
           : undefined;
       const earlyGateP = knownOwnerPhone && preview
-        ? inboundOwnerGate(knownOwnerPhone)
+        ? (senderGateP ?? inboundOwnerGate(knownOwnerPhone))
         : undefined;
 
       if (!preview) {
@@ -342,6 +397,7 @@ export default defineChannel({
       prefetchOneToOneStart(ownerPhone, preview);
       const gate = await (earlyGateP ?? inboundOwnerGate(ownerPhone));
       if (gate.decision === "drop") {
+        cancelFastAck();
         return new Response(null, { status: 204 });
       }
       if (gate.decision === "paywall") {
@@ -359,6 +415,7 @@ export default defineChannel({
           handle: boundTenant.inkboxHandle ?? agentHandle(),
           payUrl: gate.payUrl,
         });
+        cancelFastAck();
         return new Response(null, { status: 204 });
       }
 
@@ -396,6 +453,7 @@ export default defineChannel({
         }
       }
       if (shouldSkipAgentTurn({ firstBind, text: inbound.text })) {
+        cancelFastAck();
         return new Response(null, { status: 204 });
       }
       prefetchInstinctRecall(ownerPhone, inbound.text);
@@ -406,8 +464,31 @@ export default defineChannel({
         ownerPhone,
         conversationId: inbound.spaceId,
         chars: inbound.text.length,
+        queuedAfterMs: Date.now() - receivedAt,
       });
 
+      const ackText = await settleFastAck(fastAck, { budgetMs: fastAckBudgetMs() });
+      if (ackText) {
+        parkTurn(
+          waitUntil,
+          deliverHumanRouted({
+            attrs: {
+              conversationId: inbound.spaceId,
+              inkboxHandle: boundTenant.inkboxHandle ?? agentHandle(),
+              origin: "human",
+            },
+            tenant: boundTenant,
+            conversationId: inbound.spaceId,
+            text: ackText,
+            principalId: ownerPhone,
+          }).catch((err) => console.error("fast ack deliver failed", err)),
+        );
+        console.log("fast ack sent", {
+          conversationId: inbound.spaceId,
+          chars: ackText.length,
+          sinceInboundMs: Date.now() - receivedAt,
+        });
+      }
       parkTurn(
         waitUntil,
         from(inbound.spaceId).send(content, {
@@ -422,6 +503,8 @@ export default defineChannel({
               ...(inbound.messageId ? { messageId: inbound.messageId } : {}),
               origin: "human",
               ...shortAckAttribute(inbound.text),
+              ...inboundAtAttribute(receivedAt),
+              ...fastAckAttribute(ackText),
               ...cloudInjectAttribute(inbound.text),
             },
           },

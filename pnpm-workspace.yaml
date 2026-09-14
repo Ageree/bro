@@ -3,3 +3,4 @@ minimumReleaseAgeStrict: false
 allowBuilds:
   sharp: false
   esbuild: true
+  protobufjs: set this to true or false

@@ -52,6 +52,7 @@ import type * as tenants from "../tenants.js";
 import type * as vault from "../vault.js";
 import type * as vaultSecrets from "../vaultSecrets.js";
 import type * as wakeups from "../wakeups.js";
+import type * as warm from "../warm.js";
 import type * as watchers from "../watchers.js";
 import type * as wipe from "../wipe.js";
 import type * as workflow from "../workflow.js";
@@ -107,6 +108,7 @@ declare const fullApi: ApiFromModules<{
   vault: typeof vault;
   vaultSecrets: typeof vaultSecrets;
   wakeups: typeof wakeups;
+  warm: typeof warm;
   watchers: typeof watchers;
   wipe: typeof wipe;
   workflow: typeof workflow;

@@ -18,6 +18,9 @@ crons.interval(
   internal.archive.dispatchSyncs,
   {},
 );
+// Keep the eve instance, its Photon client and OpenRouter connection warm
+// between conversations, so the first reply after a pause is not a cold start.
+crons.interval("warm eve", { minutes: 4 }, internal.warm.pingEve, {});
 // Drop composioEvents older than EVENT_TTL_MS so the dedupe table stays bounded.
 crons.interval("prune composio events", { hours: 24 }, internal.watchers.pruneEvents, {});
 export default crons;

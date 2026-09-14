@@ -46,8 +46,16 @@ import {
 } from "../lib/telegram";
 import { compileTelegram } from "../lib/telegram-text.ts";
 import { parkTurn } from "../lib/channel-turn.ts";
+import { deliverHumanRouted } from "../lib/deliver-routed.ts";
+import { inboundAtAttribute } from "../lib/latency-log.ts";
 import { parkLastChannelTouch } from "../lib/early-deliver.ts";
 import { shortAckAttribute } from "../lib/short-ack.ts";
+import {
+  fastAckAttribute,
+  fastAckBudgetMs,
+  settleFastAck,
+  startFastAck,
+} from "../lib/fast-ack.ts";
 import { cloudInjectAttribute } from "../../convex/lib/browserInjectPolicy.ts";
 
 function telegramAuthAttrs(opts: {
@@ -57,6 +65,8 @@ function telegramAuthAttrs(opts: {
   messageId: string;
   inkboxHandle?: string;
   text?: string;
+  receivedAt?: number;
+  fastAck?: string | null;
 }): Record<string, string> {
   return {
     conversationId: opts.conversationId,
@@ -67,6 +77,8 @@ function telegramAuthAttrs(opts: {
     channel: "telegram",
     ...(opts.inkboxHandle ? { inkboxHandle: opts.inkboxHandle } : {}),
     ...shortAckAttribute(opts.text ?? ""),
+    ...inboundAtAttribute(opts.receivedAt ?? Date.now()),
+    ...fastAckAttribute(opts.fastAck ?? null),
     ...cloudInjectAttribute(opts.text ?? ""),
   };
 }
@@ -145,6 +157,7 @@ export default defineChannel({
   turnPolicy: "steer",
   routes: [
     POST("/webhooks/telegram", async (request, { from, waitUntil }) => {
+      const receivedAt = Date.now();
       if (!webhookSecretOk(request)) {
         return new Response("unauthorized", { status: 401 });
       }
@@ -264,13 +277,20 @@ export default defineChannel({
         ),
       );
       const inbound = await inboundP;
+      // Fast-ack lane: started only once the voice transcript (if any)
+      // resolved — text-only messages get no extra wait since inboundP was
+      // already in flight above.
+      const fastAck = startFastAck(inbound.text);
+      const cancelFastAck = () => fastAck?.abort();
       if (inbound.allVoiceFailed) {
+        cancelFastAck();
         await sendHtml(chatId, VOICE_FAILED_REPLY).catch((err) =>
           console.error("telegram voice fail reply", err),
         );
         return new Response(null, { status: 204 });
       }
       if (!inbound.text && !largestPhoto(msg)) {
+        cancelFastAck();
         return new Response(null, { status: 204 });
       }
 
@@ -285,8 +305,12 @@ export default defineChannel({
       prefetchOpenRouter();
 
       const gate = await inboundOwnerGate(phone);
-      if (gate.decision === "drop") return new Response(null, { status: 204 });
+      if (gate.decision === "drop") {
+        cancelFastAck();
+        return new Response(null, { status: 204 });
+      }
       if (gate.decision === "paywall") {
+        cancelFastAck();
         const line = gate.payUrl
           ? `Лимит на сегодня исчерпан 🙈 Полный доступ — 2000 ₽/мес:\n${gate.payUrl}`
           : "Лимит на сегодня исчерпан 🙈 Полный доступ — 2000 ₽/мес: напиши @оператору";
@@ -331,6 +355,7 @@ export default defineChannel({
         }
       }
       if (shouldSkipAgentTurn({ firstBind: false, text: inbound.text || "фото" })) {
+        cancelFastAck();
         return new Response(null, { status: 204 });
       }
 
@@ -343,7 +368,32 @@ export default defineChannel({
         chars: inbound.text.length,
         voice: inbound.voice,
         images: typeof content === "string" ? 0 : content.length - 1,
+        queuedAfterMs: Date.now() - receivedAt,
       });
+      const ackText = await settleFastAck(fastAck, { budgetMs: fastAckBudgetMs() });
+      if (ackText) {
+        parkTurn(
+          waitUntil,
+          deliverHumanRouted({
+            attrs: {
+              conversationId,
+              telegramChatId: chatId,
+              inkboxHandle: tenant.inkboxHandle,
+              origin: "human",
+              channel: "telegram",
+            },
+            tenant,
+            conversationId,
+            text: ackText,
+            principalId: phone,
+          }).catch((err) => console.error("fast ack deliver failed", err)),
+        );
+        console.log("fast ack sent", {
+          conversationId,
+          chars: ackText.length,
+          sinceInboundMs: Date.now() - receivedAt,
+        });
+      }
       parkTurn(
         waitUntil,
         from(conversationId).send(content, {
@@ -359,6 +409,8 @@ export default defineChannel({
               messageId: String(msg.message_id),
               inkboxHandle: tenant.inkboxHandle,
               text: inbound.text,
+              receivedAt,
+              fastAck: ackText,
             }),
           },
         }),

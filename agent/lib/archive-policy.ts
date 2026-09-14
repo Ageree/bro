@@ -127,7 +127,13 @@ export function recallQuery(input: readonly unknown[]): string | null {
   return null;
 }
 
-export const ARCHIVE_RECALL_TIMEOUT_MS = 1_500;
+/**
+ * Turn-start recall is a hard gate in front of the model call (eve awaits
+ * every slot's recall before the first token), and it runs in the workflow
+ * function where the webhook's prefetch cache is cold. 900 ms keeps the
+ * usual Supermemory hit and cuts the tail a human otherwise waits through.
+ */
+export const ARCHIVE_RECALL_TIMEOUT_MS = 900;
 export const ARCHIVE_TOOL_TIMEOUT_MS = 30_000;
 export const CONVERSATION_RECALL_TIMEOUT_MS = ARCHIVE_RECALL_TIMEOUT_MS;
 

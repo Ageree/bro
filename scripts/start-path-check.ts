@@ -104,7 +104,7 @@ assert(instinct.includes("canPrefetchInstinctQuery"), "voice placeholders skip e
 
 const openrouterWarm = src("agent/lib/openrouter-warm.ts");
 const chatExtras = src("agent/lib/openrouter-chat.ts");
-assert(chatExtras.includes('effort = OPENROUTER_CHAT_REASONING_EFFORT'), "chat fills reasoning.effort");
+assert(chatExtras.includes("reasoningFromEnv(env)"), "chat fills reasoning from the env default (thinking off)");
 assert(chatExtras.includes("OPENROUTER_CHAT_PROVIDER_SORT"), "chat fills provider.sort");
 const modelLib = src("agent/lib/model.ts");
 assert(modelLib.includes("openRouterChatFetch"), "default DeepSeek uses OpenRouter chat extras");
@@ -297,14 +297,27 @@ assert(
 );
 assert(!canSkipInboundBind({ phoneE164: "+1" }, "+2", "c1"), "other phone still binds");
 assert(!canSkipInboundBind({ phoneE164: "+1", status: "disabled" }, "+1", "c1"), "disabled still binds");
-assert(CONVERSATION_RECALL_TIMEOUT_MS === 1500, "conversation recall matches archive budget");
+assert(CONVERSATION_RECALL_TIMEOUT_MS === 900, "conversation recall matches archive budget");
+
+{
+  const imessage = src("agent/channels/imessage.ts");
+  const gateIdx = imessage.indexOf("inboundOwnerGate(inbound.senderPhone)");
+  const tenantIdx = imessage.indexOf("await getTenant(inbound.senderPhone)");
+  assert(gateIdx > 0 && tenantIdx > gateIdx, "billing count starts before the tenant lookup, not after bind");
+  assert(imessage.includes("senderGateP ??"), "the early count is reused for the thread owner");
+  assert(imessage.includes('POST("/internal/warm"'), "keep-warm route exists");
+  assert(imessage.includes("prefetchSpectrum();\n      prefetchOpenRouter();"), "warm boots Photon and OpenRouter");
+  const crons = src("convex/crons.ts");
+  assert(crons.includes("internal.warm.pingEve"), "Convex cron pings the warm route");
+  assert(src("convex/warm.ts").includes("/internal/warm"), "warm action targets the eve route");
+}
 
 console.log("start-path-check ok");
 console.log(
   JSON.stringify({
     turnStartedConvexRtts: 1,
     returningOneToOneConvexRttsWarm: 1,
-    archiveRecallTimeoutMs: 1500,
+    archiveRecallTimeoutMs: 900,
     conversationRecallTimeoutMs: CONVERSATION_RECALL_TIMEOUT_MS,
     conversationRecallGated: true,
     jobCheckHttpListsJobs: false,
@@ -322,5 +335,7 @@ console.log(
     instinctPrefetchDuringBilling: true,
     instinctRecallsParallel: true,
     openRouterWarmDuringBilling: true,
+    billingCountParallelToTenantLookup: true,
+    keepWarmCronMinutes: 4,
   }),
 );
