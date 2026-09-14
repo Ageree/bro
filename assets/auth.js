@@ -163,6 +163,19 @@
     });
   }
 
+  var loginHandleField = $("#login-handle");
+  if (loginHandleField) {
+    loginHandleField.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") $("#login-send").click();
+    });
+  }
+  var loginCodeField = $("#login-code");
+  if (loginCodeField) {
+    loginCodeField.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") $("#login-verify").click();
+    });
+  }
+
   $("#login-send").addEventListener("click", function () {
     var base = site();
     var h = loginHandle();
@@ -196,6 +209,7 @@
           if (data.code === "unavailable" || data.code === "unbound" || data.code === "unknown") {
             setStatus("Сначала напиши Bro в iMessage");
           } else if (data.code === "cooldown") setStatus("Подожди минуту и нажми ещё раз");
+          else if (data.code === "error") setStatus("Не получилось отправить код, попробуй ещё раз");
           else setStatus("Не вышло, нажми ещё раз");
           return;
         }
@@ -211,9 +225,13 @@
   $("#login-verify").addEventListener("click", function () {
     var base = site();
     var h = loginHandle();
-    var code = ($("#login-code").value || "").trim();
+    var code = ($("#login-code").value || "").replace(/\D/g, "");
     if (!h) {
       setStatus(WRITE_FIRST);
+      return;
+    }
+    if (code.length !== 6) {
+      setStatus("Код — 6 цифр");
       return;
     }
     setStatus("Проверяем…");
@@ -226,7 +244,9 @@
       .then(function (data) {
         if (!data.ok) {
           if (data.code === "wrong") setStatus("Неверный код");
-          else if (data.code === "expired" || data.code === "locked") {
+          else if (data.code === "unknown") setStatus("Код — 6 цифр");
+          else if (data.code === "expired") setStatus("Код устарел, запроси новый");
+          else if (data.code === "locked") {
             setStatus("Код больше не действует, запроси новый");
           } else setStatus("Не вышло, нажми ещё раз");
           return;

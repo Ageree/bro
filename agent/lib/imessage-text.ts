@@ -9,7 +9,7 @@ import { isHeadingOnly } from "./bubble-dedupe.ts";
 import { isThinFragment } from "./early-deliver.ts";
 
 const FENCE = /```[\w+-]*\n?([\s\S]*?)```/g;
-const LINK = /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/gi;
+const LINK = /\[([^\]]+)\]\((https?:\/\/(?:[^()\s]|\([^()\s]*\))+)\)/gi;
 const LABEL =
   /^(?:(\d+\.\s*))?(От|Тема|Дата|Предварительный текст|From|Subject|Date|To|Preview)\s*:/u;
 
@@ -109,6 +109,7 @@ export function toIMessageText(src: string): string {
   s = s.replace(AUTO_MAIL, "$1");
 
   s = s.replace(/^:::rich\s*$/gm, "");
+  s = s.replace(/^:::\s*$/gm, "");
   s = s.replace(/^#{1,6}\s+(.*)$/gm, (_, t: string) => toBold(t.trim()));
   s = s.replace(/^>!?\s?/gm, "");
   s = s.replace(/^\s*[-*]\s+/gm, "• ");

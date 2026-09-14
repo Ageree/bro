@@ -461,6 +461,7 @@ export const cancelWakeup = (
     tenantPhone,
     id: opts.id as Id<"wakeups"> | undefined,
     kind: opts.kind,
+    payloadContains: opts.payloadContains,
   });
 
 export const createWatcher = (args: {

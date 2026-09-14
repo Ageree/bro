@@ -93,6 +93,7 @@ async function deliverOne(
       body: JSON.stringify({
         secret,
         wakeupId: w._id,
+        idempotencyKey: `${w._id}:${gen}`,
         tenantPhone: w.tenantPhone,
         conversationId: tenant.inkboxConversationId,
         inkboxHandle: tenant.inkboxHandle,

@@ -23,15 +23,20 @@ export default defineTool({
     const target = reactionTargetId(turnAttributes(ctx));
     if (!target) return { error: "нет сообщения для реакции" };
     const handle = attr(ctx, "inkboxHandle") ?? agentHandle();
-    const sent = await sendIMessageTapback({
-      messageId: target,
-      reaction,
-      handle,
-    });
-    return {
-      id: sent.id,
-      reaction: sent.reaction,
-      targetMessageId: sent.targetMessageId,
-    };
+    try {
+      const sent = await sendIMessageTapback({
+        messageId: target,
+        reaction,
+        handle,
+      });
+      return {
+        id: sent.id,
+        reaction: sent.reaction,
+        targetMessageId: sent.targetMessageId,
+      };
+    } catch (err) {
+      console.error("imessage react", err);
+      return { error: "не получилось поставить реакцию" };
+    }
   },
 });

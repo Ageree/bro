@@ -96,14 +96,20 @@ export function shouldIngestInkboxMail(opts: {
 export function extractOtpCodes(text: string): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
+  // Normalize spaced digit groups before extraction
+  let normalized = text;
+  normalized = normalized.replace(/\b(\d{3})[  ](\d{3})\b/g, "$1$2");
+  normalized = normalized.replace(/\b(\d{2})[  ](\d{2})[  ](\d{2})\b/g, "$1$2$3");
+  normalized = normalized.replace(/\b(\d{4})[  ](\d{4})\b/g, "$1$2");
+  // Note: \b(\d{1})[  ](\d{3})\b is deliberately NOT joined to avoid matching prices like "1 990"
   const re = /\b(\d{4,8})\b/g;
   let m: RegExpExecArray | null;
-  while ((m = re.exec(text))) {
+  while ((m = re.exec(normalized))) {
     const code = m[1]!;
     if (YEAR.test(code)) continue;
     const start = Math.max(0, m.index - 24);
-    const end = Math.min(text.length, m.index + code.length + 24);
-    const ctx = text.slice(start, end);
+    const end = Math.min(normalized.length, m.index + code.length + 24);
+    const ctx = normalized.slice(start, end);
     if (ORDERISH.test(ctx) && !OTP_HINT.test(ctx)) continue;
     if (seen.has(code)) continue;
     seen.add(code);

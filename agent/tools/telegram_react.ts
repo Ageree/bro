@@ -32,11 +32,16 @@ export default defineTool({
     }
     const id = Number(messageId);
     if (!Number.isFinite(id)) return { error: "нет Telegram-сообщения для реакции" };
-    await setTelegramReaction({
-      chatId,
-      messageId: id,
-      emoji: TELEGRAM_REACTIONS[reaction],
-    });
+    try {
+      await setTelegramReaction({
+        chatId,
+        messageId: id,
+        emoji: TELEGRAM_REACTIONS[reaction],
+      });
+    } catch (err) {
+      console.error("telegram react", err);
+      return { error: "не получилось поставить реакцию — сообщение могло быть удалено" };
+    }
     return { reaction, emoji: TELEGRAM_REACTIONS[reaction], targetMessageId: messageId };
   },
 });

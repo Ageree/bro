@@ -25,7 +25,7 @@ import {
   WAKEUP_DEDUPE_TTL_MS,
 } from "../agent/lib/wakeup-dedupe.ts";
 
-import { assert } from "./lib/check.ts";
+import { assert, src } from "./lib/check.ts";
 
 const now = Date.parse("2026-08-27T12:00:00.000Z");
 
@@ -220,5 +220,14 @@ assertSeen(
   "seen then silent",
 );
 assertSeen("[SEEN] только состояние", { message: "", seen: "только состояние" }, "seen only");
+
+assert(
+  src("convex/wakeups.ts").includes("idempotencyKey:"),
+  "wakeup delivery includes idempotencyKey",
+);
+assert(
+  src("agent/lib/convex.ts").includes("payloadContains: opts.payloadContains"),
+  "cancelWakeup passes payloadContains",
+);
 
 console.log("wakeups-check ok");

@@ -132,6 +132,7 @@ export const finish = mutation({
     if (!tenant) return { error: "unknown tenant" };
     const job = await ctx.db.get(jobId);
     if (!job || job.tenantId !== tenant._id) return { error: "unknown job" };
+    if (job.status === "done" || job.status === "failed") return { error: "job already closed" };
     await ctx.db.patch(jobId, {
       status: failed ? "failed" : "done",
       note: clip(outcome),

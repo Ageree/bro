@@ -12,7 +12,10 @@ export const SCAN_LINES = 512;
 
 /** One normalized memory line, or null when nothing survives trimming. */
 export function normalizeLine(line: string): string | null {
-  const text = line.trim().slice(0, LINE_CHARS);
+  let text = line.trim().slice(0, LINE_CHARS);
+  const last = text.charCodeAt(text.length - 1);
+  if (last >= 0xd800 && last <= 0xdbff) text = text.slice(0, -1);
+  text = text.trimEnd();
   return text.length > 0 ? text : null;
 }
 

@@ -26,7 +26,7 @@ npm run photon:webhooks     # once: Photon inbound URL + SPECTRUM_WEBHOOK_SECRET
 npm run dev:local           # eve :2000
 ```
 
-Production: Convex cloud + `eve deploy` on Vercel. Photon webhook is `https://<host>/webhooks/photon`. Inkbox mail webhook stays `/webhooks/mail`.
+Production: Convex cloud + `eve deploy` on Vercel — `npm run deploy` does both in order (`CONVEX_DEPLOY_KEY`, `VERCEL_TOKEN`, optional `VERCEL_PROJECT` / `VERCEL_TEAM`; the script trims stray whitespace from the keys because both CLIs reject a token with a trailing newline). The static landing/cabinet site (`brobro`) deploys from git on push to `main`. Photon webhook is `https://<host>/webhooks/photon`. Inkbox mail webhook stays `/webhooks/mail`.
 
 `npm run dev` is TUI-only (no public URL).
 

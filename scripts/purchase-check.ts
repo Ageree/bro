@@ -36,6 +36,10 @@ assert(budgetRub("макс 4к") === 4000, "4к");
 assert(budgetRub("до 3.5к") === 3500, "3.5к");
 assert(budgetRub("не выше 990") === 990, "не выше");
 assert(budgetRub("купи когда будет дешевле 2500") === 2500, "дешевле 2500");
+assert(budgetRub("до 5 тысяч") === 5000, "до 5 тысяч");
+assert(budgetRub("бюджет 3 тысячи") === 3000, "бюджет 3 тысячи");
+assert(budgetRub("не дороже 5 тыс") === 5000, "не дороже 5 тыс");
+assert(budgetRub("до 5 тыс. рублей") === 5000, "до 5 тыс. рублей");
 
 assert(watcherBuys("пиши когда цена упадёт") === false, "notify-only");
 assert(watcherBuys("купи когда будет дешевле 2500") === true, "buy watcher");

@@ -48,7 +48,9 @@ assert(
 
 assert(normalizePhotonE164("+79001112233") === "+79001112233", "e164 passthrough");
 assert(normalizePhotonE164("89001112233") === "+79001112233", "8 → +7");
+assert(normalizePhotonE164("8901112233") === undefined, "bare 8 rejected");
 assert(normalizePhotonE164("not") === undefined, "garbage");
+assert(normalizePhotonE164("+8801112233") === normalizePhotonE164("+8801112233"), "existing +8 behavior");
 
 assert(photonSmsLink("+15551212").startsWith("sms:"), "sms deep link");
 assert(PHOTON_SHARED_NUMBER === "+16282649335", "shared Bro number");

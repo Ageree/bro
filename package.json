@@ -7,6 +7,7 @@
   },
   "scripts": {
     "build": "npm run vercel-build && eve build",
+    "deploy": "bash scripts/deploy.sh",
     "vercel-build": "mkdir -p public && cp index.html oferta.html cabinet.html vault.html public/ && cp -R assets public/",
     "dev": "eve dev",
     "dev:local": "bash scripts/dev-local.sh",
