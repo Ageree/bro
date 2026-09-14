@@ -26,6 +26,7 @@ import {
   shouldSendLoginLink,
 } from "../convex/lib/browserLivePolicy.ts";
 import { asCdpTargets, browserFromList, cdpCurrentUrl } from "../convex/lib/browserCdp.ts";
+import { errandStartUrl } from "../convex/lib/browserStartPolicy.ts";
 import { scaffoldTask } from "../agent/lib/browseruse.ts";
 
 import { assert, src } from "./lib/check.ts";
@@ -265,10 +266,27 @@ assert(follow.includes("shouldSendLoginLink"), "follow uses the live-link gate")
 assert(follow.includes("landed"), "follow waits until the login page");
 
 const startRun = src("agent/lib/browseruse.ts");
-assert(startRun.includes("waitForLoginLanding"), "cloud waits for the login page");
+assert(startRun.includes("waitForPageLanding"), "cloud waits for the real page");
 assert(startRun.includes("no startUrl"), "v4 has no start url");
-assert(startRun.includes("cdpNavigate") || src("agent/lib/browser-cdp.ts").includes("Page.navigate"), "eve opens the login over cdp");
+assert(startRun.includes("cdpNavigate") || src("agent/lib/browser-cdp.ts").includes("Page.navigate"), "eve opens the site over cdp");
 assert(tool.includes("waitForLoginLanding"), "tool waits for landing");
+assert(
+  errandStartUrl("вызови такси домой") === "https://taxi.yandex.ru/",
+  "taxi wording opens taxi.yandex.ru",
+);
+assert(
+  errandStartUrl("Открой https://taxi.yandex.ru. Закажи домой") ===
+    "https://taxi.yandex.ru/",
+  "explicit taxi url wins",
+);
+assert(
+  src("agent/tools/browser_task.ts").includes("waitForPageLanding"),
+  "browser_task opens the site over cdp",
+);
+assert(
+  src("agent/instructions.md").includes("сразу `browser_task`"),
+  "taxi goes to browser_task not passport",
+);
 assert(tool.includes("loginOpeningText"), "tool announces the login first");
 
 assert(

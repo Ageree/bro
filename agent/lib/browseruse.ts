@@ -23,8 +23,8 @@ import { loginScaffold, payScaffold, type SecretBinding } from "./browser-pay.ts
 
 const BASE = "https://api.browser-use.com/api/v4";
 
-/** Browser Use Cloud V4 id for DeepSeek V4.1 Flash (dashboard label). */
-export const DEFAULT_BROWSER_MODEL = "deepseek-v4.1-flash";
+/** Browser Use Cloud recommended V4 model. Flash kept dying mid-answer. */
+export const DEFAULT_BROWSER_MODEL = "gpt-5.6-luna";
 
 export {
   isBrowserProfileId,
@@ -136,6 +136,7 @@ export function scaffoldTask(
     profileSynced?: boolean;
     pay?: Parameters<typeof payScaffold>[0];
     login?: boolean;
+    startPage?: string;
   },
 ): string {
   if (
@@ -158,8 +159,12 @@ export function scaffoldTask(
   const finish = payBlock
     ? "Доводи дело до конца, включая оплату подключённой картой."
     : "Доводи дело до конца, если оплата не требуется (например: выбрать слот, заполнить форму с известными данными, дойти до финального подтверждения).";
+  const alreadyOpen = opts?.startPage
+    ? `Страница уже открыта: ${opts.startPage}. Не уходи на about:blank. Не открывай паспорт, если аккаунт уже свой.`
+    : "Сайт откроет Bro сам. Не сиди на about:blank.";
   return `${ERRAND_MARK}
 Выполняй поручение на языке сайтов (обычно русский). Задача: ${task}.
+${alreadyOpen}
 ${login}
 ${finish}
 Если данных не хватает (имя, телефон, адрес, время) — не выдумывай; закончи и перечисли, что нужно уточнить.
@@ -208,16 +213,18 @@ export async function startRun(
     pay?: Parameters<typeof payScaffold>[0];
     login?: boolean;
     secretBindings?: SecretBinding[];
+    startPage?: string;
   },
 ): Promise<BrowserRun> {
   // Cloud v4 POST /runs has no startUrl / initial navigation field
   // (RunBrowserSettings.additionalProperties = false). Eve opens the
-  // login via CDP after browser.ready — do not wait for the Cloud LLM.
+  // site via CDP after browser.ready — do not wait for the Cloud LLM.
   const body: Record<string, unknown> = {
     task: scaffoldTask(task, {
       profileSynced: opts?.profileSynced,
       pay: opts?.pay,
       login: opts?.login,
+      startPage: opts?.startPage,
     }),
   };
   // Cloud JSON accepts both; send both so a session is reused.
@@ -398,8 +405,8 @@ export async function waitForLiveUrl(
   return last;
 }
 
-/** Wait until live preview exists AND the site login page is showing. */
-export async function waitForLoginLanding(
+/** Wait until live preview exists AND the real tab is the target site. */
+export async function waitForPageLanding(
   run: BrowserRun,
   targetPage: string,
   ms = 45_000,
@@ -417,7 +424,7 @@ export async function waitForLoginLanding(
     if (browser?.cdpUrl && liveUrl && !navigated) {
       const after = await cdpNavigate(browser.cdpUrl, targetPage).catch(
         (err: unknown) => {
-          console.error("cdp login navigate failed", err);
+          console.error("cdp page navigate failed", err);
           return undefined;
         },
       );
@@ -433,4 +440,13 @@ export async function waitForLoginLanding(
   return last.landed !== undefined
     ? last
     : { ...last, landed: false };
+}
+
+/** Login wait: same as page landing, longer budget for the form. */
+export async function waitForLoginLanding(
+  run: BrowserRun,
+  targetPage: string,
+  ms = 45_000,
+): Promise<BrowserRun> {
+  return waitForPageLanding(run, targetPage, ms);
 }

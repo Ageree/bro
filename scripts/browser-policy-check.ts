@@ -158,6 +158,12 @@ assert(
   ),
   "synced scaffold still types a supplied password",
 );
+assert(
+  scaffoldTask("такси", { startPage: "https://taxi.yandex.ru/" }).includes(
+    "Страница уже открыта: https://taxi.yandex.ru/",
+  ),
+  "scaffold says the site is already open",
+);
 
 const t0 = Date.parse("2026-08-27T12:00:00.000Z");
 assert(pollTimedOut(t0, t0 + 10 * 60_000) === false, "poll not expired");
@@ -359,7 +365,7 @@ assert(
   "proxyCountryCode in browserSettings",
 );
 
-assert(DEFAULT_BROWSER_MODEL === "deepseek-v4.1-flash", "cloud default is DeepSeek V4.1 Flash");
+assert(DEFAULT_BROWSER_MODEL === "gpt-5.6-luna", "cloud default is GPT-5.6 Luna");
 assert(resolveBrowserModel(undefined) === DEFAULT_BROWSER_MODEL, "unset model uses default");
 assert(resolveBrowserModel("") === DEFAULT_BROWSER_MODEL, "empty model uses default");
 assert(resolveBrowserModel("  ") === DEFAULT_BROWSER_MODEL, "blank model uses default");
@@ -369,6 +375,8 @@ assert(BROWSER_WAIT_MS === 2_000, "wait is short; follow-through still delivers"
 
 const browserTool = src("agent/tools/browser_task.ts");
 assert(browserTool.includes("BROWSER_WAIT_MS"), "start and poll use shared wait");
+assert(browserTool.includes("waitForPageLanding"), "errand opens the site over cdp");
+assert(browserTool.includes("errandStartUrl"), "errand picks taxi/shop url");
 assert(!browserTool.includes("WAIT_MS = 12_000"), "old 12s park is gone");
 const startPath = browserTool.slice(browserTool.indexOf("const started = await startRun"));
 assert(
