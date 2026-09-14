@@ -15,9 +15,10 @@ export const INJECT_MARK = "[bro-inject]";
 export const CHAT_CODE_ACK = "ввожу код";
 export const CHAT_INJECT_ACK = "ввожу";
 export const CHAT_WAIT_ACK = "подожду";
+export const CHAT_CONFIRM_ACK = "проверяю";
 
 export const NO_LIVE_RUN_TEXT =
-  "Сейчас нет открытой сессии в браузере, которая ждёт этот код. Если нужно войти заново — напиши.";
+  "Сейчас нет открытой страницы, которая ждёт этот код — она уже закрылась. Скажи, что нужно сделать, и я зайду заново.";
 
 export const INJECT_NO_PASSWORD_HINT =
   "Не проси пароль сайта в чат. Код или уточнение введи в живую Cloud-сессию. Если сессии нет — скажи об этом, не начинай новый поиск.";
@@ -39,6 +40,15 @@ const FRESH_ERRAND =
 const WAIT_HEAD =
   /^(подожди|подождите|погоди|погодите|стой|стойте|wait|hold on|секунду|минутку|не нажимай(?:те)? пока|не сейчас)(?=$|[\s.!?…,])/;
 
+// Push/bank-app/3DS confirmation from the human's own phone or a live-view
+// tab — head-anchored like WAIT_HEAD, with an optional short tail («подтвердил
+// вход», «готово, оплатил»). A trailing "?" or a fresh-errand shape (F3) is
+// never a confirmation, and the whole line must stay short — a random
+// sentence that happens to start with «готово» («готово к выходу?») must not
+// match.
+const CONFIRM_HEAD =
+  /^(подтвердил(?:а)?|подтверждаю|одобрил(?:а)?|готово|сделал(?:а)?|вошел|вошла|зашел|зашла|оплатил(?:а)?|approved|done|confirmed|ок,?\s*подтвердил(?:а)?)(?=$|[\s.!?…,])/;
+
 const CORRECTION =
   /адрес|улиц|проспект|переул|набережн|шоссе|метро|аэропорт|вокзал|домой|на работу|офис|подъезд|квартир|кв\.?|корп|домофон|пвз|пункт выдач|размер|цвет|не туда|не этот|не те|другой адрес|другой пвз|исправ|поправ|откуда|куда|через \d|в \d{1,2}:\d{2}/i;
 
@@ -49,7 +59,7 @@ const CODE_WRAPPER = /^(?:код|воткод|смс|sms|otp|push|пуш)$/i;
 const OTP_RESULT =
   /needs user input:|код из|смс[- ]?код|sms|one[-\s]?time|passcode|пуш|push (?:code|approval)|verification code|live-url|live url|liveUrl/i;
 
-export type CloudInjectKind = "code" | "wait" | "correction";
+export type CloudInjectKind = "code" | "wait" | "correction" | "confirm";
 
 export type CloudInjectDecision = {
   kind: CloudInjectKind | null;
@@ -66,6 +76,12 @@ export type CloudInjectAttrs = {
   pageUrl?: string;
   result?: string | null;
   browserListed?: boolean;
+  /** `tenant.browserNeed` — what the parked Cloud agent is waiting on. */
+  need?: string;
+  /** true once `findBrowserForSession` was actually called and returned (not
+   * just "not set") — lets a confirmed-absent browser outrank the elapsed-time
+   * fallback below. */
+  browserProbed?: boolean;
 };
 
 export function isInjectTask(task: string | undefined): boolean {
@@ -91,25 +107,75 @@ export function looksLikeFreshErrand(text: string): boolean {
   return FRESH_ERRAND.test(text.trim());
 }
 
+const CODE_KEYWORD = /код|code|otp|sms|смс|пуш|push/i;
+const CODE_ADJACENT_REJECT = /заказ|order|№|руб|₽|р\./i;
+
+// A keyword/reject word only counts within a clause: a comma bounds the
+// window so «код 482913, заказ 55081234» doesn't let «заказ» disqualify the
+// first number, or «код» rescue the second.
+function clauseWindow(s: string, idx: number, before: boolean): string {
+  const RANGE = 12;
+  if (before) {
+    const seg = s.slice(Math.max(0, idx - RANGE), idx);
+    const parts = seg.split(/[,;]/);
+    return parts[parts.length - 1] ?? "";
+  }
+  const seg = s.slice(idx, Math.min(s.length, idx + RANGE));
+  return seg.split(/[,;]/)[0] ?? "";
+}
+
 export function extractChatCode(text: string): string | null {
   const t = text.trim();
   if (!t || t.length > 80) return null;
-  let normalized = t;
-  normalized = normalized.replace(/\b(\d{3})[ ](\d{3})\b/g, "$1$2");
-  normalized = normalized.replace(/\b(\d{2})[ ](\d{2})[ ](\d{2})\b/g, "$1$2$3");
-  const digitsOnly = t.replace(/\D/g, "");
-  if (/^\d{4,8}$/.test(digitsOnly) && !YEAR.test(digitsOnly)) {
-    return digitsOnly;
+
+  // Fast path: the whole message is a code with only separators around/inside
+  // it («482-913», «48 29 13», «482.913») — no keyword needed, and no letters
+  // may survive the strip (a price like «1500 руб» must fall through instead).
+  const compact = t.replace(/[\s\-–—.]/g, "");
+  if (/^\d{4,8}$/.test(compact) && !YEAR.test(compact)) {
+    return compact;
   }
-  const found: string[] = [];
+
+  let normalized = t;
+  normalized = normalized.replace(/\b(\d{3})[\s\-–—.](\d{3})\b/g, "$1$2");
+  normalized = normalized.replace(
+    /\b(\d{2})[\s\-–—.](\d{2})[\s\-–—.](\d{2})\b/g,
+    "$1$2$3",
+  );
+
+  const found: { code: string; index: number }[] = [];
   const re = /\b(\d{4,8})\b/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(normalized))) {
     const code = m[1]!;
     if (YEAR.test(code)) continue;
-    if (!found.includes(code)) found.push(code);
+    if (found.some((f) => f.code === code)) continue;
+    found.push({ code, index: m.index });
   }
-  return found.length === 1 ? found[0] : null;
+  if (found.length === 0) return null;
+
+  const context = (f: { code: string; index: number }) => {
+    const before = clauseWindow(normalized, f.index, true);
+    const after = clauseWindow(normalized, f.index + f.code.length, false);
+    return {
+      keyword: CODE_KEYWORD.test(before) || CODE_KEYWORD.test(after),
+      reject: CODE_ADJACENT_REJECT.test(before) || CODE_ADJACENT_REJECT.test(after),
+    };
+  };
+
+  if (found.length === 1) {
+    const only = found[0]!;
+    return context(only).reject ? null : only.code;
+  }
+
+  // Two-plus digit runs: only a candidate next to a code keyword (and not
+  // next to an order/price word) disambiguates; otherwise stay silent rather
+  // than guess (F5).
+  const withKeyword = found.filter((f) => {
+    const ctx = context(f);
+    return ctx.keyword && !ctx.reject;
+  });
+  return withKeyword.length === 1 ? withKeyword[0]!.code : null;
 }
 
 export function isChatCodeMessage(text: string): boolean {
@@ -138,6 +204,18 @@ export function isWaitInject(text: string): boolean {
   if (!t || t.length > 80) return false;
   if (looksLikeFreshErrand(text)) return false;
   return WAIT_HEAD.test(t);
+}
+
+export function isConfirmInject(text: string): boolean {
+  const t = text
+    .trim()
+    .normalize("NFC")
+    .replace(/ё/gi, "е")
+    .toLowerCase();
+  if (!t || t.length > 40) return false;
+  if (t.includes("?")) return false;
+  if (looksLikeFreshErrand(text) || looksLikePasswordDump(text)) return false;
+  return CONFIRM_HEAD.test(t);
 }
 
 export function correctionFitsTask(
@@ -171,7 +249,12 @@ export function correctionFitsTask(
 export function looksLikeCorrectionText(text: string): boolean {
   const t = text.trim();
   if (!t || t.length > 240) return false;
-  if (isChatCodeMessage(t) || isWaitInject(t) || looksLikePasswordDump(t)) {
+  if (
+    isChatCodeMessage(t) ||
+    isWaitInject(t) ||
+    isConfirmInject(t) ||
+    looksLikePasswordDump(t)
+  ) {
     return false;
   }
   if (looksLikeFreshErrand(t) && !CORRECTION.test(t)) return false;
@@ -228,11 +311,23 @@ export function isBroCloudTask(task: string | undefined | null): boolean {
 // treat it as no longer live for injection.
 const SESSION_LIVE_MS = 20 * 60_000;
 
+const NEEDS_HUMAN = new Set(["sms_code", "email_code", "push", "3ds", "captcha", "password"]);
+
+function tenantNeedsHuman(need: string | undefined): boolean {
+  return typeof need === "string" && NEEDS_HUMAN.has(need);
+}
+
 export function cloudSessionLooksLive(opts: CloudInjectAttrs): boolean {
   if (!opts.sessionId && !opts.runId) return false;
+  // The tenant is recorded as parked waiting on a human input — the session
+  // is live by definition, whatever the run status says (F1/Idea 1).
+  if (tenantNeedsHuman(opts.need)) return true;
   if (isActiveCloudStatus(opts.status)) return true;
   if (opts.browserListed) return true;
   if (opts.pageUrl && pageWaitsForCode(opts.pageUrl)) return true;
+  // `findBrowserForSession` was actually called and came back empty — that is
+  // authoritative, not a reason to fall back to the elapsed-time guess (F1).
+  if (opts.browserProbed === true) return false;
   const now = opts.now ?? Date.now();
   if (
     opts.sessionId &&
@@ -244,7 +339,11 @@ export function cloudSessionLooksLive(opts: CloudInjectAttrs): boolean {
   return false;
 }
 
-function codeRelevantToSession(opts: CloudInjectAttrs): boolean {
+function codeRelevantToSession(opts: CloudInjectAttrs, incoming: string): boolean {
+  // A tenant recorded as waiting for exactly this — a code — is authoritative
+  // regardless of what page the CDP probe happens to see this turn (the SMS
+  // modal on taxi.yandex.ru is not a passport URL, but the wait is real).
+  if (opts.need === "sms_code" || opts.need === "email_code") return true;
   if (pageWaitsForCode(opts.pageUrl)) return true;
   if (resultWaitsForCode(opts.result, opts.storedTask)) return true;
   if (
@@ -254,6 +353,9 @@ function codeRelevantToSession(opts: CloudInjectAttrs): boolean {
     return true;
   }
   if (opts.pageUrl && !pageWaitsForCode(opts.pageUrl)) return false;
+  // Bare digits with no код/otp/sms/пуш keyword: an errand merely existing is
+  // not enough (F4) — only a tenant recorded as waiting for a code counts.
+  if (!CODE_KEYWORD.test(incoming)) return false;
   return isBroCloudTask(opts.storedTask);
 }
 
@@ -268,8 +370,19 @@ export function decideCloudInject(
     if (!code) return { kind: null };
     const live = cloudSessionLooksLive(opts);
     if (!live) return { kind: "code", code };
-    if (!codeRelevantToSession(opts)) return { kind: null };
+    if (!codeRelevantToSession(opts, incoming)) return { kind: null };
     return { kind: "code", code };
+  }
+
+  if (isConfirmInject(incoming)) {
+    const live = cloudSessionLooksLive(opts);
+    const parkedForConfirm =
+      opts.need === "push" ||
+      opts.need === "3ds" ||
+      opts.need === "captcha" ||
+      opts.need === "password";
+    if (live || parkedForConfirm) return { kind: "confirm" };
+    return { kind: null };
   }
 
   if (!cloudSessionLooksLive(opts)) return { kind: null };
@@ -291,6 +404,7 @@ export function decideCloudInject(
 export function injectAckText(kind: CloudInjectKind): string {
   if (kind === "code") return CHAT_CODE_ACK;
   if (kind === "wait") return CHAT_WAIT_ACK;
+  if (kind === "confirm") return CHAT_CONFIRM_ACK;
   return CHAT_INJECT_ACK;
 }
 
@@ -298,6 +412,7 @@ export function injectCandidate(text: string): boolean {
   return (
     isChatCodeMessage(text) ||
     isWaitInject(text) ||
+    isConfirmInject(text) ||
     looksLikeCorrectionText(text)
   );
 }
@@ -305,6 +420,7 @@ export function injectCandidate(text: string): boolean {
 export function cloudInjectAttribute(text: string): Record<string, string> {
   if (isChatCodeMessage(text)) return { cloudInject: "code" };
   if (isWaitInject(text)) return { cloudInject: "wait" };
+  if (isConfirmInject(text)) return { cloudInject: "confirm" };
   if (looksLikeCorrectionText(text)) return { cloudInject: "correction" };
   return {};
 }
@@ -314,7 +430,14 @@ export function cloudInjectKindFromAttrs(
 ): CloudInjectKind | null {
   if (!attrs || attrs.origin !== "human") return null;
   const kind = attrs.cloudInject;
-  if (kind === "code" || kind === "wait" || kind === "correction") return kind;
+  if (
+    kind === "code" ||
+    kind === "wait" ||
+    kind === "correction" ||
+    kind === "confirm"
+  ) {
+    return kind;
+  }
   return null;
 }
 
@@ -333,6 +456,9 @@ export function cloudInjectInstruction(
   }
   if (kind === "wait") {
     return "The latest human line asks the live Cloud job to wait. First bubble «подожду», then call browser_task with that exact line. Do not start a new search. Never ask for a site password.";
+  }
+  if (kind === "confirm") {
+    return "The latest human line reports that the human confirmed a push/app/3-D-Secure step from their own phone, or finished a step in live-view. First bubble exactly «проверяю», then call browser_task with that exact line — do not retype or re-enter anything, just check whether the screen advanced and continue the errand on the already-open page. Never ask for a site password.";
   }
   return "The latest human line may be an address/size/ПВЗ correction for the open Cloud errand. If it is, first bubble «ввожу», then call browser_task with that exact line. If it is unrelated chat, reply normally and do not inject. Never ask for a site password.";
 }
@@ -366,10 +492,13 @@ export function injectQueueText(opts: {
       return `Код уже введён в поле на текущей странице. Подтверди вход, если ещё не подтверждён, и продолжи поручение на уже открытой странице. Не открывай новый сайт и не уходи на about:blank. Сайтовый пароль не проси.${noOrder}`;
     }
     const code = (opts.code ?? human).trim();
-    return `Одноразовый код для входа (не пароль сайта, не цитируй): ${code}. Введи его в поле кода на уже открытой странице и подтверди вход. Не открывай новый сайт и не уходи на about:blank. Сайтовый пароль не проси и не выдумывай.${noOrder}`;
+    return `Одноразовый код для входа (не пароль сайта, не цитируй): ${code}. Введи его в поле кода на уже открытой странице и подтверди вход. Если поле кода не видно — сначала нажми «Получить код»/«Войти по SMS» не более одного раза. Не открывай новый сайт и не уходи на about:blank. Сайтовый пароль не проси и не выдумывай.${noOrder}`;
   }
   if (opts.kind === "wait") {
     return `Человек просит подождать: «${human}». Оставайся на текущем экране, ничего не подтверждай — не нажимай «Заказать», «Поехали» или «Оплатить».`;
+  }
+  if (opts.kind === "confirm") {
+    return `Человек подтвердил со своего телефона / завершил шаг в live-view («${human}»). Проверь, продвинулся ли экран, и продолжи поручение на открытой странице. Ничего не вводи повторно.`;
   }
   return `Уточнение от человека (не пароль сайта): «${human}». Примени его на уже открытой странице, не открывая новый сайт. Сайтовый пароль не проси.${noOrder}`;
 }

@@ -68,6 +68,9 @@ export default defineDynamic({
               runId: tenant?.browserRunId,
               startedAt: tenant?.browserStartedAt,
               storedTask: tenant?.browserTask,
+              // `browserNeed` doesn't exist on the schema yet (added by a
+              // parallel package) — read it defensively.
+              need: (tenant as { browserNeed?: string } | null)?.browserNeed,
             }),
           );
         }

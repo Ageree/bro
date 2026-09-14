@@ -18,6 +18,11 @@ import { isHelpAsk, isTelegramAsk } from "./onboard-policy.ts";
 import { OPENROUTER_CHAT_URL } from "./openrouter-warm.ts";
 import { withOpenRouterChatDefaults } from "./openrouter-chat.ts";
 import { DEFAULT_OPENROUTER_MODEL } from "./model.ts";
+import {
+  isChatCodeMessage,
+  isConfirmInject,
+  isWaitInject,
+} from "../../convex/lib/browserInjectPolicy.ts";
 
 type EnvLike = Record<string, string | undefined>;
 
@@ -70,6 +75,13 @@ export function shouldFastAck(text: string): boolean {
   if (isShortAck(judged)) return false;
   // Canned replies (welcome/help, the Telegram invite) never reach the agent.
   if (isHelpAsk(judged) || isTelegramAsk(judged)) return false;
+  // The fast-ack lane has no idea whether a Cloud session is even open, so it
+  // must defer entirely on anything that looks like an OTP code, a wait, or a
+  // push/3DS confirmation — the real turn decides, not a tiny guessing model
+  // (F_extra).
+  if (isChatCodeMessage(judged) || isWaitInject(judged) || isConfirmInject(judged)) {
+    return false;
+  }
   if (trimmed.length > 600) return false;
   return true;
 }

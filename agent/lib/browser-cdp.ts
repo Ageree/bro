@@ -116,7 +116,42 @@ export async function cdpNavigate(
 export type CdpTypeResult = {
   typed: boolean;
   submitted: boolean;
+  /** true when a maxLength===1 box only got the first char of a longer value
+   * (F7) — the caller must not treat this as a completed entry. */
+  partial?: boolean;
 };
+
+export type OtpInputAttrs = {
+  name?: string;
+  id?: string;
+  placeholder?: string;
+  ariaLabel?: string;
+  type?: string;
+  autocomplete?: string;
+  active?: boolean;
+  maxLength?: number;
+};
+
+/**
+ * Pure scoring used to rank a page's visible inputs for OTP/code injection.
+ * This is the source of truth for the weights; `TYPE_INTO_PAGE` below runs
+ * inside the Cloud tab over CDP `Runtime.evaluate` (no module imports reach
+ * it there), so its inline `score()` duplicates this exact arithmetic — keep
+ * both in sync (browser-inject-check.ts asserts the literal weights match).
+ */
+export function scoreOtpInput(attrs: OtpInputAttrs, valueLen: number): number {
+  const auto = (attrs.autocomplete ?? "").toLowerCase();
+  const bits = [attrs.name, attrs.id, attrs.placeholder, attrs.ariaLabel, attrs.type]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  let n = 0;
+  if (auto.includes("one-time-code")) n += 80;
+  if (/otp|sms|code|pin|код|подтвержд/.test(bits)) n += 50;
+  if (attrs.active) n += 20;
+  if (attrs.maxLength === 1 || attrs.maxLength === valueLen) n += 10;
+  return n;
+}
 
 const TYPE_INTO_PAGE = `function (raw) {
   const value = String(raw ?? "");
@@ -146,6 +181,7 @@ const TYPE_INTO_PAGE = `function (raw) {
     }
     return true;
   });
+  // Mirrors scoreOtpInput() in browser-cdp.ts — keep the weights in sync.
   const score = (el) => {
     const auto = (el.autocomplete || "").toLowerCase();
     const bits = [el.name, el.id, el.placeholder, el.getAttribute("aria-label"), el.type]
@@ -168,7 +204,16 @@ const TYPE_INTO_PAGE = `function (raw) {
   } else {
     const ranked = [...inputs].sort((a, b) => score(b) - score(a));
     const target = ranked[0];
-    if (target && (score(target) > 0 || document.activeElement === target || ranked.length === 1)) {
+    // No bare "only one input on the page" escape hatch: a score of 0 with no
+    // focus signal is not enough evidence this is the right field (F6).
+    if (target && (score(target) > 0 || document.activeElement === target)) {
+      if (target instanceof HTMLInputElement && target.maxLength === 1 && value.length > 1) {
+        // A single maxLength=1 box for a multi-digit value: type only the
+        // first char rather than silently overflowing it (F7) — the caller
+        // must treat this as incomplete.
+        setValue(target, value.slice(0, 1));
+        return { typed: true, submitted: false, partial: true };
+      }
       setValue(target, value);
       typed = true;
     }
@@ -190,6 +235,13 @@ const TYPE_INTO_PAGE = `function (raw) {
 /**
  * Type digits or a short correction into the live Cloud tab.
  * Never fills a password field. Never clicks «Заказать».
+ *
+ * `Runtime.evaluate` only ever sees the top-level frame's document — a 3-D
+ * Secure ACS challenge or a bank app's push widget is almost always a
+ * cross-origin iframe, so its inputs are invisible here. This is by design
+ * (no `Target.getTargets`/isolated-world traversal): it fails safe as
+ * `typed: false` rather than guessing, and the reliable path for those cases
+ * is `queueMessage` to the real Cloud LLM, which can see inside iframes.
  */
 export async function cdpTypeIntoPage(
   cdpUrl: string,
@@ -206,10 +258,11 @@ export async function cdpTypeIntoPage(
     });
     const raw = reply.result?.result?.value;
     if (!raw || typeof raw !== "object") return { typed: false, submitted: false };
-    const rec = raw as { typed?: unknown; submitted?: unknown };
+    const rec = raw as { typed?: unknown; submitted?: unknown; partial?: unknown };
     return {
       typed: rec.typed === true,
       submitted: rec.submitted === true,
+      ...(rec.partial === true ? { partial: true } : {}),
     };
   } finally {
     session.close();
