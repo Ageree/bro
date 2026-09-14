@@ -15,6 +15,8 @@ import {
   injectAckText,
   injectCandidate,
   injectFollowTask,
+  injectQueueInterrupt,
+  injectQueueText,
   isChatCodeMessage,
   isWaitInject,
   looksLikeCorrectionText,
@@ -259,6 +261,46 @@ assert(follow.includes("482911"), "follow-up carries the code");
 assert(follow.includes("не пароль"), "follow-up says not a password");
 assert(!follow.includes("нажми «Заказать»"), "code follow-up does not order a taxi");
 assert(scaffoldTask(follow) === follow, "inject task is not re-wrapped");
+
+// Queue message: concise follow-up dropped into the live session (POST
+// /sessions/{id}/queue), not a fresh errand scaffold.
+const codeQueue = injectQueueText({
+  kind: "code",
+  humanText: "482911",
+  code: "482911",
+});
+assert(codeQueue.includes("482911"), "queue code carries the digits");
+assert(!codeQueue.startsWith(INJECT_MARK), "queue text is not scaffold-marked");
+assert(
+  codeQueue.includes("не пароль") && !/пароль сайта(?!.*не проси)/.test(codeQueue),
+  "queue code says not a password",
+);
+assert(
+  injectQueueText({ kind: "code", humanText: "482911", code: "482911", alreadyTyped: true })
+    .includes("уже введён"),
+  "already-typed queue does not re-enter the code",
+);
+assert(
+  !injectQueueText({ kind: "code", humanText: "482911", code: "482911", alreadyTyped: true })
+    .includes("482911"),
+  "already-typed queue never repeats the digits",
+);
+assert(
+  injectQueueText({ kind: "wait", humanText: "подожди" }).includes("Оставайся"),
+  "wait queue holds the screen",
+);
+assert(
+  injectQueueText({ kind: "correction", humanText: "Ленина 12" }).includes("Ленина 12"),
+  "correction queue carries the text",
+);
+assert(
+  injectQueueText({ kind: "code", humanText: "1", code: "1", dryRun: true })
+    .includes("ничего не заказывай"),
+  "dry-run queue does not order",
+);
+assert(injectQueueInterrupt("wait"), "wait interrupts the active run");
+assert(injectQueueInterrupt("correction"), "correction interrupts the active run");
+assert(!injectQueueInterrupt("code"), "code is appended, not interrupted");
 assert(
   injectFollowTask({
     kind: "wait",
@@ -276,7 +318,7 @@ assert(!injectCandidate("привет"), "hello is not a candidate");
 const tool = src("agent/tools/browser_task.ts");
 assert(tool.includes("maybeInjectChat"), "browser_task intercepts chat inject");
 assert(tool.includes("cdpTypeIntoPage"), "codes go into the live tab over CDP");
-assert(tool.includes("injectFollowTask"), "Cloud follow-up on the same session");
+assert(tool.includes("queueMessage"), "follow-up is queued into the live session");
 assert(tool.includes("NO_LIVE_RUN_TEXT"), "no-live run is spoken");
 assert(tool.includes("ввожу код") || tool.includes("injectAckText"), "first bubble ack");
 {
@@ -286,8 +328,12 @@ assert(tool.includes("ввожу код") || tool.includes("injectAckText"), "fi
   );
   assert(fn.includes("maybeInjectChat"), "inject helper is bounded");
   assert(
-    fn.includes("startRun(followTask, sessionId"),
-    "follow-up reuses the live session",
+    fn.includes("queueMessage(sessionId"),
+    "follow-up queues into the live session, not a fresh run",
+  );
+  assert(
+    !fn.includes("startRun("),
+    "inject follow-up does not start a fresh browser run",
   );
   assert(
     !fn.includes("startPage"),
