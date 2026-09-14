@@ -81,3 +81,13 @@ guard decision as a pure `nextLoginAction(...)`), `browser-pay-check.ts`, `purch
 `https://taxi.yandex.ru` login — mock `listVaultItems`/`readVaultSecret` via a deps parameter on
 `vaultPasswordLogin`). Add `"browser-task:check"` to package.json. Run all browser checks +
 `types:check` + `eve build` on Node 24.
+
+## Addendum (from B3's glue check)
+16. `convex/lib/browserStartPolicy.ts` (you may edit this file): the WB branch `\bвб\b` never matches
+    Cyrillic (ASCII `\b`). Use `(?:^|[^\p{L}])(?:wb|вб)(?:[^\p{L}]|$)` with the `u` flag (as
+    `agent/lib/order-policy.ts merchantFromTask` does). Flip the `// KNOWN GAP` assertions in
+    `scripts/browser-glue-check.ts` to the correct expectation («вб» → WB page). Same `\bвб\b`
+    pattern exists in `convex/lib/browserInjectPolicy.ts correctionFitsTask` — leave it (B1's file),
+    mention it in your report.
+17. `partial: true` from `cdpTypeIntoPage` (B1): when set, treat as NOT typed for the
+    `alreadyTyped` flag of `injectQueueText` (the queued Cloud message must carry the full code).
