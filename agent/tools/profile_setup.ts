@@ -1,9 +1,10 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { browserGateFromResult } from "../../convex/lib/billingPolicy";
-import { LOGIN_LIVE_WAIT_MS } from "../../convex/lib/browserLivePolicy.ts";
+import { LOGIN_LANDING_WAIT_MS } from "../../convex/lib/browserLivePolicy.ts";
 import {
   loginChatText,
+  loginOpeningText,
   loginPageUrl,
   loginVaultChatText,
   loginVaultTask,
@@ -13,7 +14,7 @@ import {
   envSyncedProfileId,
   loginWaitTask,
   startRun,
-  waitForLiveUrl,
+  waitForLoginLanding,
   type BrowserRun,
 } from "../lib/browseruse";
 import {
@@ -104,7 +105,7 @@ async function notify(opts: {
 
 export default defineTool({
   description:
-    "Log into any site or save the account for later. If a matching vault login (kind login) exists, Bro types it via secretBindings and does not ask in chat. If not, the tool immediately texts the live-view link. Never ask for a login or password. Never offer the link as an option. Never put a site password in iMessage. Person adds or edits vault logins on brobro.tech (vault_setup kind=login). Pass the https page URL.",
+    "Log into any site or save the account for later. If a matching vault login (kind login) exists, Bro types it via secretBindings and does not ask in chat. If not, Bro opens the site login page, announces that, then texts the live-view link only after that page is showing. Never ask for a login or password. Never offer the link as an option. Never put a site password in iMessage. Person adds or edits vault logins on brobro.tech (vault_setup kind=login). Pass the https login page URL.",
   inputSchema: z.object({
     url: z.string().min(8).max(2000),
     site: z.string().min(1).max(80).optional(),
@@ -206,38 +207,44 @@ export default defineTool({
     const startedAt = Date.now();
     await persistRun(phone, started, task, { startedAt, profileId });
 
-    const withLive = await waitForLiveUrl(started, LOGIN_LIVE_WAIT_MS);
+    const opening = loginOpeningText(site);
+    if (conv && !turnSpoke(turnId)) {
+      await deliverHuman({
+        tenant,
+        conversationId: conv,
+        text: opening,
+      }).catch((err) => console.error("login opening notify failed", err));
+      if (turnId) markTurnSpoke(turnId, Date.now());
+    }
+
+    const withLive = await waitForLoginLanding(
+      started,
+      page,
+      LOGIN_LANDING_WAIT_MS,
+    );
+    const liveUrl = withLive.liveUrl;
+    const landed = Boolean(liveUrl && withLive.landed);
     await persistRun(phone, withLive, task, {
       startedAt,
       profileId,
-      ...(withLive.liveUrl && conv ? { loginLinkSentAt: Date.now() } : {}),
+      ...(landed && conv ? { loginLinkSentAt: Date.now() } : {}),
     });
 
     const followKick = kickFollow({ phone, run: withLive, task, startedAt });
 
-    if (!withLive.liveUrl) {
-      if (conv && !turnSpoke(turnId)) {
-        const waiting = site?.trim()
-          ? `Открываю вход в ${site.trim()} — ссылка сейчас придёт.`
-          : "Открываю вход — ссылка сейчас придёт.";
-        await deliverHuman({
-          tenant,
-          conversationId: conv,
-          text: waiting,
-        }).catch((err) => console.error("login waiting notify failed", err));
-        if (turnId) markTurnSpoke(turnId, Date.now());
-      }
+    if (!liveUrl || !landed) {
       await followKick;
       return {
         status: "pending",
         alreadyNotified: Boolean(conv),
-        hint: `ссылка уйдёт в чат как только откроется. Подожди или вызови profile_setup ещё раз с тем же url. ${NO_PASSWORD_HINT}`,
+        hint: `ссылка уйдёт в чат, когда откроется страница входа. Подожди или вызови profile_setup ещё раз с тем же url. ${NO_PASSWORD_HINT}`,
+        message: opening,
       };
     }
 
-    const text = loginChatText(withLive.liveUrl, site);
+    const text = loginChatText(liveUrl, site);
     const where = site?.trim() ? ` в ${site.trim()}` : "";
-    const telegramText = `Открой и войди${where}. Bro пароль не увидит — вход сохранится сам.\n\n:::buttons\n[Войти](${withLive.liveUrl})\n:::`;
+    const telegramText = `Открой и войди${where}. Bro пароль не увидит — вход сохранится сам.\n\n:::buttons\n[Войти](${liveUrl})\n:::`;
     if (conv) {
       try {
         await notify({
@@ -257,7 +264,7 @@ export default defineTool({
         await followKick;
         return {
           status: "ready",
-          url: withLive.liveUrl,
+          url: liveUrl,
           alreadyNotified: false,
           hint: `вставь человеку message как есть. ${NO_PASSWORD_HINT}`,
           message: text,
@@ -268,7 +275,7 @@ export default defineTool({
     await followKick;
     return {
       status: "ready",
-      url: withLive.liveUrl,
+      url: liveUrl,
       alreadyNotified: Boolean(conv),
       hint: conv
         ? `ссылка уже ушла в чат. Не дублируй и не проси пароль. Когда человек напишет, что вошёл — продолжай browser_task.`

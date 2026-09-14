@@ -5,6 +5,8 @@ import {
   LOGIN_MARK,
   LOGIN_VAULT_MARK,
   loginChatText,
+  loginOpeningText,
+  loginPageFromTask,
   loginPageUrl,
   loginVaultChatText,
   loginVaultTask,
@@ -14,7 +16,11 @@ import {
   profileSyncStatus,
 } from "../convex/lib/browserProfilePolicy.ts";
 import {
+  hasNavigateActivity,
   liveUrlFromEvents,
+  loginHostsMatch,
+  loginLandingReady,
+  pageUrlFromEvents,
   shouldSendLoginLink,
 } from "../convex/lib/browserLivePolicy.ts";
 import { scaffoldTask } from "../agent/lib/browseruse.ts";
@@ -33,15 +39,26 @@ assert(loginPageUrl("ftp://x") === undefined, "ftp rejected");
 const wait = loginWaitTask("https://www.ozon.ru");
 assert(wait.startsWith(LOGIN_MARK), "login mark");
 assert(wait.includes("https://www.ozon.ru/"), "opens the page");
+assert(wait.includes("Первым действием"), "navigate first");
+assert(wait.includes("не about:blank"), "not blank preview");
 assert(wait.includes("Ничего не вводи"), "never types secrets");
 assert(isLoginWaitTask(wait), "wait is a live-view login");
 assert(scaffoldTask(wait) === wait, "login task not re-wrapped");
+assert(
+  loginPageFromTask(wait) === "https://www.ozon.ru/",
+  "task keeps the login url",
+);
+
+const opening = loginOpeningText("Яндекс Такси");
+assert(opening.includes("Открываю вход в Яндекс Такси"), "opening copy");
+assert(!opening.includes("http"), "opening has no url");
 
 const vaultTask = loginVaultTask("https://taxi.yandex.ru");
 assert(vaultTask.startsWith(LOGIN_VAULT_MARK), "vault login mark");
 assert(isLoginVaultTask(vaultTask), "vault task detected");
 assert(!isLoginWaitTask(vaultTask), "vault task is not a live-view wait");
 assert(scaffoldTask(vaultTask) === vaultTask, "vault task not re-wrapped");
+assert(vaultTask.includes("Первым действием"), "vault login navigates first");
 assert(vaultTask.includes("site_login"), "vault task names login alias");
 assert(vaultTask.includes("site_password"), "vault task names password alias");
 assert(!vaultTask.includes("ochen"), "vault task has no secret");
@@ -76,15 +93,81 @@ assert(
   shouldSendLoginLink({
     loginWait: true,
     liveUrl: "https://live.example/view",
+    landed: true,
   }),
-  "send live link on wait",
+  "send live link after landing",
+);
+assert(
+  !shouldSendLoginLink({
+    loginWait: true,
+    liveUrl: "https://live.example/view",
+  }),
+  "do not send live link before the login page",
 );
 assert(
   !shouldSendLoginLink({
     loginWait: false,
     liveUrl: "https://live.example/view",
+    landed: true,
   }),
   "do not send live link on vault login",
+);
+
+const readyOnly = {
+  events: [
+    { type: "run.created", data: { task: "Открой https://taxi.yandex.ru/" } },
+    { type: "browser.ready", data: { live_view_url: "https://live.browser-use.com/view" } },
+  ],
+};
+assert(
+  liveUrlFromEvents(readyOnly) === "https://live.browser-use.com/view",
+  "ready still exposes live_view_url",
+);
+assert(
+  pageUrlFromEvents(readyOnly, "https://taxi.yandex.ru/") === undefined,
+  "task echo on run.created is not a landing",
+);
+assert(
+  !loginLandingReady({
+    liveUrl: "https://live.browser-use.com/view",
+    targetPage: "https://taxi.yandex.ru/",
+    events: readyOnly,
+  }),
+  "blank preview is not the login page",
+);
+
+const navigated = {
+  events: [
+    { type: "browser.ready", data: { live_view_url: "https://live.browser-use.com/view" } },
+    { type: "tool.navigate", data: { url: "https://taxi.yandex.ru/account" } },
+  ],
+};
+assert(
+  pageUrlFromEvents(navigated, "https://taxi.yandex.ru/") ===
+    "https://taxi.yandex.ru/account",
+  "navigate event is the login page",
+);
+assert(
+  loginLandingReady({
+    liveUrl: "https://live.browser-use.com/view",
+    targetPage: "https://taxi.yandex.ru/",
+    events: navigated,
+  }),
+  "ready after navigate is landable",
+);
+assert(
+  loginHostsMatch("https://taxi.yandex.ru/", "https://passport.yandex.ru/auth"),
+  "yandex passport is the login host",
+);
+assert(
+  !loginHostsMatch("https://taxi.yandex.ru/", "https://yandex.ru/search"),
+  "search is not the login page",
+);
+assert(
+  hasNavigateActivity({
+    events: [{ type: "tool.navigate", data: { name: "navigate" } }],
+  }),
+  "bare navigate counts as activity",
 );
 
 assert(profileSyncStatus({}) === "missing", "no profile");
@@ -108,6 +191,7 @@ assert(!cabinet.includes("/me/browser-profile"), "cabinet does not paste ids");
 
 const readme = src("README.md");
 assert(readme.includes("texts a live-view link"), "readme is the chat-link flow");
+assert(readme.includes("not sent while the preview is blank"), "readme waits for the login page");
 assert(readme.includes("kind: login"), "readme mentions vault logins");
 assert(!readme.includes("asks them for the password"), "readme never asks in chat");
 assert(!readme.includes("profile.sh"), "readme has no terminal helper");
@@ -125,5 +209,12 @@ assert(vaultTool.includes("kind=login") || vaultTool.includes("site login"), "va
 const follow = src("convex/browserFollow.ts");
 assert(follow.includes("isLoginWaitTask"), "follow sends the live link only for wait tasks");
 assert(follow.includes("shouldSendLoginLink"), "follow uses the live-link gate");
+assert(follow.includes("landed"), "follow waits until the login page");
+
+const startRun = src("agent/lib/browseruse.ts");
+assert(startRun.includes("waitForLoginLanding"), "cloud waits for the login page");
+assert(startRun.includes("no startUrl"), "v4 has no start url");
+assert(tool.includes("waitForLoginLanding"), "tool waits for landing");
+assert(tool.includes("loginOpeningText"), "tool announces the login first");
 
 console.log("profile-sync-check ok");

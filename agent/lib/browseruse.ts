@@ -8,6 +8,8 @@ import {
 } from "../../convex/lib/browserProfilePolicy.ts";
 import {
   liveUrlFromRunPayloads,
+  loginLandingReady,
+  pageUrlFromEvents,
   runEventsPath,
 } from "../../convex/lib/browserLivePolicy.ts";
 import { loginScaffold, payScaffold, type SecretBinding } from "./browser-pay.ts";
@@ -102,6 +104,8 @@ export type BrowserRun = {
   status: string;
   liveUrl?: string;
   result?: string;
+  pageUrl?: string;
+  landed?: boolean;
 };
 
 const ERRAND_MARK = "[bro-errand]";
@@ -199,6 +203,9 @@ export async function startRun(
     secretBindings?: SecretBinding[];
   },
 ): Promise<BrowserRun> {
+  // Cloud v4 POST /runs has no startUrl / initial navigation field
+  // (RunBrowserSettings.additionalProperties = false). The agent must
+  // navigate; callers wait for that page before sending live_view_url.
   const body: Record<string, unknown> = {
     task: scaffoldTask(task, {
       profileSynced: opts?.profileSynced,
@@ -249,14 +256,32 @@ export async function startRun(
   return hydrate(runId, sid);
 }
 
-async function eventsLiveUrl(runId: string): Promise<string | undefined> {
-  const events = await bu(runEventsPath(runId)).catch(() => undefined);
-  return liveUrlFromRunPayloads({ events });
+async function runEvents(runId: string): Promise<unknown> {
+  return await bu(runEventsPath(runId)).catch(() => undefined);
+}
+
+function withLanding(
+  run: BrowserRun,
+  events: unknown,
+  targetPage?: string,
+): BrowserRun {
+  const pageUrl = pageUrlFromEvents(events, targetPage) ?? run.pageUrl;
+  const liveUrl = run.liveUrl ?? liveUrlFromRunPayloads({ events });
+  const landed = targetPage
+    ? loginLandingReady({ liveUrl, targetPage, events })
+    : run.landed;
+  return {
+    ...run,
+    ...(liveUrl ? { liveUrl } : {}),
+    ...(pageUrl ? { pageUrl } : {}),
+    ...(targetPage !== undefined ? { landed } : {}),
+  };
 }
 
 export async function hydrate(
   runId: string,
   sessionId?: string,
+  targetPage?: string,
 ): Promise<BrowserRun> {
   const run = await bu(`/runs/${runId}`);
   const status = pick(run, ["status"]) ?? "unknown";
@@ -269,15 +294,19 @@ export async function hydrate(
     sessionId ??
     pick(run, ["sessionId", "session_id"]) ??
     pick(session, ["id"]);
+  const events = await runEvents(runId);
   const liveUrl =
-    liveUrlFromRunPayloads({ run, session }) ??
-    (await eventsLiveUrl(runId));
+    liveUrlFromRunPayloads({ run, session, events });
   const result =
     pick(run, ["result", "output"]) ??
     (typeof run.result === "object" && run.result
       ? JSON.stringify(run.result).slice(0, 2000)
       : undefined);
-  return { runId, sessionId: sid, status, liveUrl, result };
+  return withLanding(
+    { runId, sessionId: sid, status, liveUrl, result },
+    events,
+    targetPage,
+  );
 }
 
 export async function waitForRun(
@@ -313,7 +342,9 @@ export async function waitForLiveUrl(
   const start = Date.now();
   let last = run;
   while (Date.now() - start < ms) {
-    const fromEvents = await eventsLiveUrl(last.runId);
+    const events = await runEvents(last.runId);
+    last = withLanding(last, events);
+    const fromEvents = liveUrlFromRunPayloads({ events });
     if (fromEvents) return { ...last, liveUrl: fromEvents };
     last = await hydrate(last.runId, last.sessionId);
     if (last.liveUrl) return last;
@@ -322,4 +353,24 @@ export async function waitForLiveUrl(
     await new Promise((r) => setTimeout(r, Math.min(1000, remaining)));
   }
   return last;
+}
+
+/** Wait until live preview exists AND the site login page is showing. */
+export async function waitForLoginLanding(
+  run: BrowserRun,
+  targetPage: string,
+  ms = 45_000,
+): Promise<BrowserRun> {
+  const start = Date.now();
+  let last = run;
+  while (Date.now() - start < ms) {
+    last = await hydrate(last.runId, last.sessionId, targetPage);
+    if (last.liveUrl && last.landed) return last;
+    const remaining = ms - (Date.now() - start);
+    if (remaining <= 0) break;
+    await new Promise((r) => setTimeout(r, Math.min(1500, remaining)));
+  }
+  return last.landed !== undefined
+    ? last
+    : { ...last, landed: false };
 }

@@ -20,7 +20,8 @@ export function loginVaultTask(url: string): string {
   const page = loginPageUrl(url);
   if (!page) throw new Error("нужна обычная ссылка на сайт");
   return `${LOGIN_VAULT_MARK}
-Открой ${page} и войди логином и паролем из сейфа.
+Первым действием открой именно ${page} (сразу navigate, не about:blank и не стартовая Browser Use).
+Дождись формы входа и войди логином и паролем из сейфа.
 Сфокусируй поле логина и попроси секрет \`site_login\`. Затем поле пароля и секрет \`site_password\`. Нажми войти.
 После входа закончи одним словом: вошёл.
 Никогда не читай и не переписывай значения. Не печатай пароль в чат.
@@ -32,10 +33,14 @@ export function loginVaultChatText(site?: string): string {
   return `Сейчас войду${where} входом из сейфа. Сам напишу.`;
 }
 
-export function siteFromLoginTask(task: string | undefined): string | undefined {
+export function loginPageFromTask(task: string | undefined): string | undefined {
   if (!task) return undefined;
   const match = task.match(/https?:\/\/\S+/);
-  const page = loginPageUrl(match?.[0]);
+  return loginPageUrl(match?.[0]);
+}
+
+export function siteFromLoginTask(task: string | undefined): string | undefined {
+  const page = loginPageFromTask(task);
   if (!page) return undefined;
   try {
     return new URL(page).hostname.replace(/^www\./, "");
@@ -71,15 +76,23 @@ export function loginPageUrl(raw: string | undefined): string | undefined {
   }
 }
 
-/** Cloud-agent instructions: open the page and wait. Person types secrets in live-view. */
+/** Cloud-agent instructions: open the login first, then wait. Person types secrets in live-view. */
 export function loginWaitTask(url: string): string {
   const page = loginPageUrl(url);
   if (!page) throw new Error("нужна обычная ссылка на сайт");
   return `${LOGIN_MARK}
-Открой ${page} и жди. Человек сам войдёт через live-view.
+Первым действием открой именно ${page} (сразу navigate, не about:blank и не стартовая Browser Use).
+Дождись формы входа — ссылку человеку отправим только когда эта страница уже на экране.
+Потом жди. Человек сам войдёт через live-view.
 Ничего не вводи: ни логин, ни пароль, ни код из SMS. Не нажимай «войти» за него.
 Когда увидишь личный кабинет, имя или заказы — закончи одним словом: вошёл.
 Если прошло несколько минут и входа нет — закончи: ещё не вошёл.`;
+}
+
+/** First bubble while the Cloud browser still opens the login page. */
+export function loginOpeningText(site?: string): string {
+  const where = site?.trim() ? ` в ${site.trim()}` : "";
+  return `Открываю вход${where} — ссылка сейчас придёт.`;
 }
 
 /** iMessage copy. URL on its own line. */

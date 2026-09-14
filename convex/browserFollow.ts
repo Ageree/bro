@@ -4,7 +4,11 @@ import { internalAction, mutation, type MutationCtx } from "./_generated/server"
 import { internal } from "./_generated/api";
 import { assertSecret } from "./secret";
 import { hydrate, pollStatus } from "./lib/browseruse";
-import { loginChatText, isLoginWaitTask } from "./lib/browserProfilePolicy";
+import {
+  loginChatText,
+  isLoginWaitTask,
+  loginPageFromTask,
+} from "./lib/browserProfilePolicy";
 import { shouldSendLoginLink } from "./lib/browserLivePolicy";
 import {
   decideExistingWorkflow,
@@ -255,14 +259,18 @@ export const pollRun = internalAction({
       return { status: tenant?.browserStatus ?? "unknown", now: Date.now(), stale: true };
     }
     const cheap = await pollStatus(args.runId, args.sessionId);
-    const needLoginLive =
-      isLoginWaitTask(tenant.browserTask) &&
-      !tenant.browserLiveUrl &&
-      !cheap.liveUrl;
+    const loginWait = isLoginWaitTask(tenant.browserTask);
+    const targetPage = loginPageFromTask(tenant.browserTask);
+    const needLoginHydrate =
+      loginWait && !tenant.browserLoginLinkSentAt;
     const run =
-      !needLoginLive && (cheap.liveUrl || cheap.result)
+      !needLoginHydrate && (cheap.liveUrl || cheap.result)
         ? cheap
-        : await hydrate(args.runId, cheap.sessionId ?? args.sessionId);
+        : await hydrate(
+            args.runId,
+            cheap.sessionId ?? args.sessionId,
+            targetPage,
+          );
     const wrote = await ctx.runMutation(internal.tenants.patchBrowserInternal, {
       phoneE164: args.tenantPhone,
       runId: args.runId,
@@ -275,9 +283,10 @@ export const pollRun = internalAction({
     }
     if (
       shouldSendLoginLink({
-        loginWait: isLoginWaitTask(tenant.browserTask),
+        loginWait,
         liveUrl: run.liveUrl,
         alreadySentAt: tenant.browserLoginLinkSentAt,
+        landed: run.landed === true,
       })
     ) {
       const claimed = await ctx.runMutation(internal.tenants.claimBrowserLoginLink, {

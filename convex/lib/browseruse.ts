@@ -3,7 +3,12 @@ import {
   normalizeBrowserProfileId,
   pickCookieDomains,
 } from "./browserProfilePolicy";
-import { liveUrlFromRunPayloads, runEventsPath } from "./browserLivePolicy";
+import {
+  liveUrlFromRunPayloads,
+  loginLandingReady,
+  pageUrlFromEvents,
+  runEventsPath,
+} from "./browserLivePolicy";
 
 const BASE = "https://api.browser-use.com/api/v4";
 
@@ -53,6 +58,8 @@ export type BrowserRun = {
   status: string;
   liveUrl?: string;
   result?: string;
+  pageUrl?: string;
+  landed?: boolean;
 };
 
 export type ProfileView = {
@@ -77,6 +84,7 @@ export async function getProfile(profileId: string): Promise<ProfileView> {
 export async function hydrate(
   runId: string,
   sessionId?: string,
+  targetPage?: string,
 ): Promise<BrowserRun> {
   const run = await bu(`/runs/${runId}`);
   const session: Record<string, unknown> = sessionId
@@ -88,13 +96,23 @@ export async function hydrate(
     pick(session, ["id"]);
   const events = await bu(runEventsPath(runId)).catch(() => undefined);
   const liveUrl = liveUrlFromRunPayloads({ run, session, events });
+  const pageUrl = pageUrlFromEvents(events, targetPage);
+  const landed = loginLandingReady({ liveUrl, targetPage, events });
   const result =
     pick(run, ["result", "output"]) ??
     (typeof run.result === "object" && run.result
       ? JSON.stringify(run.result).slice(0, 2000)
       : undefined);
   const status = pick(run, ["status"]) ?? "unknown";
-  return { runId, sessionId: sid, status, liveUrl, result };
+  return {
+    runId,
+    sessionId: sid,
+    status,
+    liveUrl,
+    result,
+    ...(pageUrl ? { pageUrl } : {}),
+    ...(targetPage ? { landed } : {}),
+  };
 }
 
 export async function pollStatus(
