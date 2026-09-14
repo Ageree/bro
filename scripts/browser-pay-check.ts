@@ -165,17 +165,20 @@ const payOpts = {
     "unchanged behavior without pay",
   );
   assert(
-    withoutPay.includes(
-      "Доводи дело до конца, если оплата не требуется",
-    ),
-    "unchanged finish line without pay",
+    withoutPay.includes("Доводи дело до конца"),
+    "finish line without pay still completes the errand",
+  );
+  assert(
+    withoutPay.includes("нажми «Заказать»"),
+    "default errand may tap Заказать after login",
   );
   assert(scaffoldTask(withoutPay) === withoutPay, "idempotent without pay");
 }
 
 {
   const syncedWithPay = scaffoldTask(raw, { profileSynced: true, pay: payOpts });
-  assert(syncedWithPay.includes("Cloud-профиле"), "synced wording kept");
+  assert(syncedWithPay.includes("Cloud-профиле"), "synced wording mentions cookies");
+  assert(syncedWithPay.includes("войди сам"), "synced+pay still logs in");
   assert(
     syncedWithPay.includes(PAY_ALIASES.number),
     "pay block present for synced profile too",
