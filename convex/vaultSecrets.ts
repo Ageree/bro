@@ -31,15 +31,52 @@ export const save = internalAction({
     kind: vaultKind,
     label: v.string(),
     secret: v.string(),
+    handle: v.optional(v.string()),
   },
-  returns: v.object({ handle: v.string() }),
-  handler: async (ctx, { tenantId, kind, label, secret: plaintext }) => {
+  returns: v.object({ handle: v.string(), replaced: v.boolean() }),
+  handler: async (ctx, { tenantId, kind, label, secret: plaintext, handle: existingHandle }) => {
     if (!isValidVaultSecret(kind, plaintext)) {
       throw new Error("секрет заполнен не полностью");
     }
-    const handle = crypto.randomUUID();
     const account = vaultAccountHint(kind, plaintext);
     const origin = vaultItemOrigin(kind, plaintext);
+    let target = existingHandle?.trim() || "";
+    if (target) {
+      const item = await ctx.runQuery(internal.vault.itemByHandle, {
+        tenantId,
+        handle: target,
+      });
+      if (!item || item.kind !== kind) {
+        throw new Error("запись не найдена");
+      }
+    } else if (kind === "login" && origin) {
+      target =
+        (await ctx.runQuery(internal.vault.loginHandleByOrigin, {
+          tenantId,
+          origin,
+        })) ?? "";
+    }
+    if (target) {
+      const ciphertext = encryptVaultSecret(
+        vaultMasterKey(),
+        tenantId,
+        target,
+        plaintext,
+      );
+      const replaced = await ctx.runMutation(internal.vault.replaceItem, {
+        tenantId,
+        handle: target,
+        kind,
+        label,
+        account,
+        ...(origin !== undefined ? { origin } : {}),
+        ciphertext,
+        now: Date.now(),
+      });
+      if (!replaced) throw new Error("не вышло обновить вход");
+      return { handle: target, replaced: true };
+    }
+    const handle = crypto.randomUUID();
     const ciphertext = encryptVaultSecret(
       vaultMasterKey(),
       tenantId,
@@ -56,7 +93,7 @@ export const save = internalAction({
       ciphertext,
       now: Date.now(),
     });
-    return { handle };
+    return { handle, replaced: false };
   },
 });
 

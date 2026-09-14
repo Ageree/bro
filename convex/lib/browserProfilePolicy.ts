@@ -1,10 +1,48 @@
 /**
- * Browser Use Cloud login fallback: the human opens a live link, signs in
- * themselves, cookies stay on their Cloud profile. Use this when they did
- * not give a password in chat. https://docs.browser-use.com/cloud/guides/authentication
+ * Site login so Bro can reuse the Cloud profile later.
+ * Vault password → Bro types via secretBindings. No match → live-view link.
+ * Password never goes in iMessage.
+ * https://docs.browser-use.com/cloud/guides/authentication
  */
 
 export const LOGIN_MARK = "[bro-login]";
+export const LOGIN_VAULT_MARK = "[bro-vault-login]";
+
+export function isLoginWaitTask(task: string | undefined): boolean {
+  return typeof task === "string" && task.trim().startsWith(LOGIN_MARK);
+}
+
+export function isLoginVaultTask(task: string | undefined): boolean {
+  return typeof task === "string" && task.trim().startsWith(LOGIN_VAULT_MARK);
+}
+
+export function loginVaultTask(url: string): string {
+  const page = loginPageUrl(url);
+  if (!page) throw new Error("нужна обычная ссылка на сайт");
+  return `${LOGIN_VAULT_MARK}
+Открой ${page} и войди логином и паролем из сейфа.
+Сфокусируй поле логина и попроси секрет \`site_login\`. Затем поле пароля и секрет \`site_password\`. Нажми войти.
+После входа закончи одним словом: вошёл.
+Никогда не читай и не переписывай значения. Не печатай пароль в чат.
+Если форма просит код из SMS или почты — остановись и дай live-URL.`;
+}
+
+export function loginVaultChatText(site?: string): string {
+  const where = site?.trim() ? ` в ${site.trim()}` : "";
+  return `Сейчас войду${where} входом из сейфа. Сам напишу.`;
+}
+
+export function siteFromLoginTask(task: string | undefined): string | undefined {
+  if (!task) return undefined;
+  const match = task.match(/https?:\/\/\S+/);
+  const page = loginPageUrl(match?.[0]);
+  if (!page) return undefined;
+  try {
+    return new URL(page).hostname.replace(/^www\./, "");
+  } catch {
+    return undefined;
+  }
+}
 
 const PROFILE_ID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -33,7 +71,7 @@ export function loginPageUrl(raw: string | undefined): string | undefined {
   }
 }
 
-/** Cloud-agent instructions: open the page and wait. Fallback path — they type secrets. */
+/** Cloud-agent instructions: open the page and wait. Person types secrets in live-view. */
 export function loginWaitTask(url: string): string {
   const page = loginPageUrl(url);
   if (!page) throw new Error("нужна обычная ссылка на сайт");

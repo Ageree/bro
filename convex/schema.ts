@@ -17,6 +17,7 @@ export default defineSchema({
     photonNudgeSentAt: v.optional(v.number()),
     browserSessionId: v.optional(v.string()),
     browserLiveUrl: v.optional(v.string()),
+    browserLoginLinkSentAt: v.optional(v.number()),
     browserRunId: v.optional(v.string()),
     browserTask: v.optional(v.string()),
     browserStatus: v.optional(v.string()),

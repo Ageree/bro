@@ -9,17 +9,19 @@ import {
   createVaultSetupUrl,
   defaultVaultLabel,
   isValidVaultSecret,
+  originAllows,
   originHost,
   parseAddressPayload,
   parseLoginPayload,
   parsePaymentPayload,
+  pickVaultLogin,
   vaultAccountHint,
   vaultAddedText,
   vaultItemOrigin,
   vaultSetupRequestSchema,
 } from "../convex/lib/vaultPayload.ts";
 
-import { assert, throws } from "./lib/check.ts";
+import { assert, src, throws } from "./lib/check.ts";
 
 const master = vaultMasterKey(Buffer.alloc(32, 7).toString("base64"));
 const other = vaultMasterKey(Buffer.alloc(32, 9).toString("base64"));
@@ -203,8 +205,38 @@ assert(
   !!addedText?.includes("Готов совершать покупки"),
   `payment added text ready phrase: ${addedText}`,
 );
+assert(originAllows("https://www.ozon.ru", "https://ozon.ru"), "www↔bare saved with www");
+assert(originAllows("https://ozon.ru", "https://www.ozon.ru"), "www↔bare saved bare");
+assert(originAllows("https://ozon.ru", "https://auth.ozon.ru"), "subdomain under parent");
+assert(!originAllows("https://auth.ozon.ru", "https://ozon.ru"), "parent under saved subdomain denied");
+assert(!originAllows("https://ozon.ru", "https://evil-ozon.ru"), "lookalike denied");
+assert(!originAllows("http://ozon.ru", "https://ozon.ru"), "protocol mismatch denied");
+assert(
+  pickVaultLogin(
+    [
+      { kind: "login", origin: "https://ozon.ru", available: true },
+      { kind: "login", origin: "https://www.wildberries.ru", available: true },
+    ],
+    "https://www.ozon.ru/login",
+  )?.origin === "https://ozon.ru",
+  "pickVaultLogin matches the page host",
+);
+
 assert(vaultAddedText("login", "www.wildberries.ru · i•••@mail.ru") === undefined, "login has no added text");
 assert(vaultAddedText("address", "Москва · Иван Петров") === undefined, "address has no added text");
 assert(vaultAddedText("contact", "Иван Петров") === undefined, "contact has no added text");
+
+const vaultSrc = src("convex/vault.ts");
+assert(vaultSrc.includes("export const listForAgent"), "agent can list vault items");
+assert(vaultSrc.includes("export const replaceItem"), "vault logins can be edited");
+assert(vaultSrc.includes("export const loginHandleByOrigin"), "same-origin login is replaced");
+const secretsSrc = src("convex/vaultSecrets.ts");
+assert(secretsSrc.includes("export const readForAgent"), "agent can read a vault secret");
+assert(secretsSrc.includes("replaced: v.boolean()"), "save reports a replace");
+const httpSrc = src("convex/http.ts");
+assert(httpSrc.includes("replaced"), "cabinet save returns replaced");
+const vaultPage = src("assets/vault.js");
+assert(vaultPage.includes("item-edit"), "vault page can edit a login");
+assert(vaultPage.includes("body.handle"), "edit posts the existing handle");
 
 console.log("vault ok");

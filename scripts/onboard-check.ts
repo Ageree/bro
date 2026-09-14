@@ -175,6 +175,8 @@ assert(!/добав/i.test(welcomeJoin), "welcome never promises group add on Pr
 assert(/Business|пауз/i.test(helpJoin), "help says groups after Business");
 assert(/пауз/i.test(welcome), "welcome says groups paused");
 assert(/код/i.test(welcome), "welcome explains the iMessage login code");
+assert(!welcome.includes("скажи пароль"), "welcome never asks for a site password");
+assert(/сейфа или пришлю ссылку/i.test(welcome), "welcome: vault login or live-view link");
 
 const bare = broVcard({});
 assert(bare.startsWith("BEGIN:VCARD\r\n"), "vcard begin crlf");

@@ -4,6 +4,8 @@ import { internalAction, mutation, type MutationCtx } from "./_generated/server"
 import { internal } from "./_generated/api";
 import { assertSecret } from "./secret";
 import { hydrate, pollStatus } from "./lib/browseruse";
+import { loginChatText, isLoginWaitTask } from "./lib/browserProfilePolicy";
+import { shouldSendLoginLink } from "./lib/browserLivePolicy";
 import {
   decideExistingWorkflow,
   followSleepMs,
@@ -249,12 +251,16 @@ export const pollRun = internalAction({
     const tenant = await ctx.runQuery(internal.tenants.getByPhoneInternal, {
       phoneE164: args.tenantPhone,
     });
-    if (!sameBrowserRun(tenant?.browserRunId, args.runId)) {
+    if (!tenant || !sameBrowserRun(tenant.browserRunId, args.runId)) {
       return { status: tenant?.browserStatus ?? "unknown", now: Date.now(), stale: true };
     }
     const cheap = await pollStatus(args.runId, args.sessionId);
+    const needLoginLive =
+      isLoginWaitTask(tenant.browserTask) &&
+      !tenant.browserLiveUrl &&
+      !cheap.liveUrl;
     const run =
-      cheap.liveUrl || cheap.result
+      !needLoginLive && (cheap.liveUrl || cheap.result)
         ? cheap
         : await hydrate(args.runId, cheap.sessionId ?? args.sessionId);
     const wrote = await ctx.runMutation(internal.tenants.patchBrowserInternal, {
@@ -266,6 +272,35 @@ export const pollRun = internalAction({
     });
     if (wrote.stale) {
       return { status: run.status, now: Date.now(), stale: true };
+    }
+    if (
+      shouldSendLoginLink({
+        loginWait: isLoginWaitTask(tenant.browserTask),
+        liveUrl: run.liveUrl,
+        alreadySentAt: tenant.browserLoginLinkSentAt,
+      })
+    ) {
+      const claimed = await ctx.runMutation(internal.tenants.claimBrowserLoginLink, {
+        phoneE164: args.tenantPhone,
+        runId: args.runId,
+        liveUrl: run.liveUrl!,
+      });
+      const conversationId = claimed.conversationId;
+      const claimedLiveUrl = claimed.liveUrl;
+      if (claimed.send && conversationId && claimedLiveUrl) {
+        try {
+          await ctx.runAction(internal.cabinet.sendText, {
+            conversationId,
+            text: loginChatText(claimedLiveUrl, claimed.site),
+          });
+        } catch (err) {
+          await ctx.runMutation(internal.tenants.releaseBrowserLoginLink, {
+            phoneE164: args.tenantPhone,
+            runId: args.runId,
+          });
+          throw err;
+        }
+      }
     }
     return {
       status: run.status,

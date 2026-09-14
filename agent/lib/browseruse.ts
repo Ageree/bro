@@ -1,11 +1,16 @@
 import {
   isBrowserProfileId,
   LOGIN_MARK,
+  LOGIN_VAULT_MARK,
   loginWaitTask,
   normalizeBrowserProfileId,
   pickCookieDomains,
 } from "../../convex/lib/browserProfilePolicy.ts";
-import { payScaffold, type SecretBinding } from "./browser-pay.ts";
+import {
+  liveUrlFromRunPayloads,
+  runEventsPath,
+} from "../../convex/lib/browserLivePolicy.ts";
+import { loginScaffold, payScaffold, type SecretBinding } from "./browser-pay.ts";
 
 const BASE = "https://api.browser-use.com/api/v4";
 
@@ -116,14 +121,29 @@ export function envSyncedProfileId(
 /** Wrap a raw errand with the cloud-browser operating envelope. Idempotent if already marked. */
 export function scaffoldTask(
   task: string,
-  opts?: { profileSynced?: boolean; pay?: Parameters<typeof payScaffold>[0] },
+  opts?: {
+    profileSynced?: boolean;
+    pay?: Parameters<typeof payScaffold>[0];
+    login?: boolean;
+  },
 ): string {
-  if (task.startsWith(ERRAND_MARK) || task.startsWith(LOGIN_MARK)) return task;
+  if (
+    task.startsWith(ERRAND_MARK) ||
+    task.startsWith(LOGIN_MARK) ||
+    task.startsWith(LOGIN_VAULT_MARK)
+  ) {
+    return task;
+  }
   const payBlock = opts?.pay ? payScaffold(opts.pay) : undefined;
+  const loginBlock = opts?.login ? loginScaffold() : undefined;
   const stopForPay = "Если нужна оплата — остановись и дай live-URL.";
+  const stopForLogin =
+    "Если пароля в задаче нет и сайт просит логин — остановись. Bro пришлёт человеку ссылку, он войдёт сам, вход сохранится.";
+  const stopForLoginSynced =
+    "Если пароля в задаче нет и сайт всё же просит логин — остановись; Bro пришлёт человеку ссылку, он войдёт сам.";
   const login = opts?.profileSynced
-    ? `Ты уже в аккаунтах человека: вход сохранён в Cloud-профиле. Если личный кабинет открыт — работай как залогиненный пользователь. Если в задаче есть логин или пароль — введи их на входе и на регистрации, не цитируй. Номера карт, CVV и коды из SMS сам не выдумывай. Если пароля в задаче нет и сайт всё же просит логин — остановись; Bro пришлёт человеку ссылку, он войдёт сам. ${payBlock ?? stopForPay}`
-    : `Если в задаче есть логин или пароль — введи их на входе и на регистрации, не цитируй. Номера карт и CVV сам не вводи. Если пароля в задаче нет и сайт просит логин — остановись. Bro пришлёт человеку ссылку, он войдёт сам, вход сохранится. ${payBlock ?? stopForPay}`;
+    ? `Ты уже в аккаунтах человека: вход сохранён в Cloud-профиле. Если личный кабинет открыт — работай как залогиненный пользователь. Если в задаче есть логин или пароль — введи их на входе и на регистрации, не цитируй. Номера карт, CVV и коды из SMS сам не выдумывай. ${loginBlock ?? stopForLoginSynced} ${payBlock ?? stopForPay}`
+    : `Если в задаче есть логин или пароль — введи их на входе и на регистрации, не цитируй. Номера карт и CVV сам не вводи. ${loginBlock ?? stopForLogin} ${payBlock ?? stopForPay}`;
   const finish = payBlock
     ? "Доводи дело до конца, включая оплату подключённой картой."
     : "Доводи дело до конца, если оплата не требуется (например: выбрать слот, заполнить форму с известными данными, дойти до финального подтверждения).";
@@ -175,6 +195,7 @@ export async function startRun(
     profileId?: string;
     profileSynced?: boolean;
     pay?: Parameters<typeof payScaffold>[0];
+    login?: boolean;
     secretBindings?: SecretBinding[];
   },
 ): Promise<BrowserRun> {
@@ -182,6 +203,7 @@ export async function startRun(
     task: scaffoldTask(task, {
       profileSynced: opts?.profileSynced,
       pay: opts?.pay,
+      login: opts?.login,
     }),
   };
   // Cloud JSON accepts both; send both so a session is reused.
@@ -227,16 +249,20 @@ export async function startRun(
   return hydrate(runId, sid);
 }
 
+async function eventsLiveUrl(runId: string): Promise<string | undefined> {
+  const events = await bu(runEventsPath(runId)).catch(() => undefined);
+  return liveUrlFromRunPayloads({ events });
+}
+
 export async function hydrate(
   runId: string,
   sessionId?: string,
 ): Promise<BrowserRun> {
   const run = await bu(`/runs/${runId}`);
   const status = pick(run, ["status"]) ?? "unknown";
-  const runLive =
-    pick(run, ["liveUrl", "live_url"]);
+  const nestedLive = liveUrlFromRunPayloads({ run });
   const session: Record<string, unknown> =
-    sessionId && (isTerminal(status) || !runLive)
+    sessionId && (isTerminal(status) || !nestedLive)
       ? await bu(`/sessions/${sessionId}`).catch(() => ({}))
       : {};
   const sid =
@@ -244,11 +270,8 @@ export async function hydrate(
     pick(run, ["sessionId", "session_id"]) ??
     pick(session, ["id"]);
   const liveUrl =
-    pick(run, ["liveUrl", "live_url"]) ??
-    pick(session, ["liveUrl", "live_url"]) ??
-    (typeof session.browser === "object" && session.browser
-      ? pick(session.browser as Record<string, unknown>, ["liveUrl", "live_url"])
-      : undefined);
+    liveUrlFromRunPayloads({ run, session }) ??
+    (await eventsLiveUrl(runId));
   const result =
     pick(run, ["result", "output"]) ??
     (typeof run.result === "object" && run.result
@@ -290,9 +313,13 @@ export async function waitForLiveUrl(
   const start = Date.now();
   let last = run;
   while (Date.now() - start < ms) {
+    const fromEvents = await eventsLiveUrl(last.runId);
+    if (fromEvents) return { ...last, liveUrl: fromEvents };
     last = await hydrate(last.runId, last.sessionId);
     if (last.liveUrl) return last;
-    await new Promise((r) => setTimeout(r, 1500));
+    const remaining = ms - (Date.now() - start);
+    if (remaining <= 0) break;
+    await new Promise((r) => setTimeout(r, Math.min(1000, remaining)));
   }
   return last;
 }

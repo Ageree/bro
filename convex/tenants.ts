@@ -48,6 +48,7 @@ import {
   type HumanChannel,
 } from "./lib/telegramPolicy";
 import { findTenantByHandle, findTenantByPhone } from "./lib/tenantLookup";
+import { siteFromLoginTask } from "./lib/browserProfilePolicy";
 
 /** `{ k: obj[k] }` for each key present with a defined value. Same shape as
  *  chaining `...(obj[k] !== undefined ? { [k]: obj[k] } : {})` per key. */
@@ -338,6 +339,7 @@ export const setBrowser = mutation({
     phoneE164: v.string(),
     browserSessionId: v.optional(v.string()),
     browserLiveUrl: v.optional(v.string()),
+    browserLoginLinkSentAt: v.optional(v.number()),
     browserRunId: v.optional(v.string()),
     browserTask: v.optional(v.string()),
     browserStatus: v.optional(v.string()),
@@ -351,20 +353,22 @@ export const setBrowser = mutation({
     assertSecret(args.secret);
     const existing = await findTenantByPhone(ctx, args.phoneE164);
     if (!existing) throw new Error("unknown tenant");
-    await ctx.db.patch(
-      existing._id,
-      definedEntries(args, [
-        "browserSessionId",
-        "browserLiveUrl",
-        "browserRunId",
-        "browserTask",
-        "browserStatus",
-        "browserStartedAt",
-        "browserProfileId",
-        "browserCookieDomains",
-        "browserProfileSyncedAt",
-      ]),
-    );
+    const patch = definedEntries(args, [
+      "browserSessionId",
+      "browserLiveUrl",
+      "browserLoginLinkSentAt",
+      "browserRunId",
+      "browserTask",
+      "browserStatus",
+      "browserStartedAt",
+      "browserProfileId",
+      "browserCookieDomains",
+      "browserProfileSyncedAt",
+    ]);
+    if (args.browserRunId && existing.browserRunId !== args.browserRunId) {
+      patch.browserLoginLinkSentAt = undefined;
+    }
+    await ctx.db.patch(existing._id, patch);
     return null;
   },
 });
@@ -421,6 +425,60 @@ export const patchBrowserInternal = internalMutation({
     ]);
     if (Object.keys(patch).length) await ctx.db.patch(existing._id, patch);
     return { stale: false };
+  },
+});
+
+const loginLinkClaim = v.object({
+  send: v.boolean(),
+  conversationId: v.optional(v.string()),
+  site: v.optional(v.string()),
+  liveUrl: v.optional(v.string()),
+});
+
+export const claimBrowserLoginLink = internalMutation({
+  args: {
+    phoneE164: v.string(),
+    runId: v.string(),
+    liveUrl: v.string(),
+  },
+  returns: loginLinkClaim,
+  handler: async (ctx, args): Promise<Infer<typeof loginLinkClaim>> => {
+    const existing = await findTenantByPhone(ctx, args.phoneE164);
+    if (!existing || existing.browserRunId !== args.runId) {
+      return { send: false };
+    }
+    if (existing.browserLoginLinkSentAt && existing.browserLoginLinkSentAt > 0) {
+      return { send: false };
+    }
+    const conversationId =
+      existing.photonConversationId || existing.inkboxConversationId;
+    if (!conversationId) return { send: false };
+    await ctx.db.patch(existing._id, {
+      browserLiveUrl: args.liveUrl,
+      browserLoginLinkSentAt: Date.now(),
+    });
+    return {
+      send: true,
+      conversationId,
+      liveUrl: args.liveUrl,
+      ...(siteFromLoginTask(existing.browserTask)
+        ? { site: siteFromLoginTask(existing.browserTask) }
+        : {}),
+    };
+  },
+});
+
+export const releaseBrowserLoginLink = internalMutation({
+  args: {
+    phoneE164: v.string(),
+    runId: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const existing = await findTenantByPhone(ctx, args.phoneE164);
+    if (!existing || existing.browserRunId !== args.runId) return null;
+    await ctx.db.patch(existing._id, { browserLoginLinkSentAt: undefined });
+    return null;
   },
 });
 

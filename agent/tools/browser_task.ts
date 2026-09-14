@@ -32,13 +32,15 @@ import {
   type BrowserRun,
 } from "../lib/browseruse";
 import { profileSyncStatus } from "../../convex/lib/browserProfilePolicy.ts";
-import { turnLooking } from "../lib/early-deliver.ts";
+import { turnSpoke } from "../lib/early-deliver.ts";
 import { attrsFromSession, deliverHumanRouted } from "../lib/deliver-routed";
 import { conversationId, groupPersonalBlock } from "../lib/group-guard";
 import { tenantId } from "../lib/tenant";
 import { browserGateFromResult } from "../../convex/lib/billingPolicy";
 import { cardBindings, normalizePayHosts } from "../lib/browser-pay.ts";
 import { parsePaymentPayload } from "../../convex/lib/vaultPayload.ts";
+import { loginPageUrl } from "../../convex/lib/browserProfilePolicy.ts";
+import { vaultPasswordLoginForPages } from "../lib/vault-login.ts";
 
 async function persist(
   phone: string,
@@ -207,14 +209,14 @@ function profileExtra(resolved: {
       ? {}
       : {
           needsProfileSync: true,
-          hint: "Сайт может потребовать логин. Если пароль уже в чате — сразу вводи его в task и продолжай. Если нет — один вопрос какой пароль поставить, либо profile_setup с url страницы входа (ссылка, человек войдёт сам).",
+          hint: "Сайт может потребовать логин. Сразу profile_setup с url страницы входа — инструмент сам возьмёт вход из сейфа или пришлёт live-view ссылку. Не проси логин или пароль. Не клади пароль в чат.",
         }),
   };
 }
 
 export default defineTool({
   description:
-    "Cloud browser (WB, Ozon, bookings, appointments, taxi, forms, search). Starts or polls the current job — never a second search. reset = fresh browser. If they gave a password, put it in task and type it (login and signup). needsProfileSync without a password → ask once or profile_setup with the login URL. status=completed → paste result. Buy: pay on first call (hosts = merchant hostnames; maxRub only if they named a ceiling). Card is server-typed. needsVaultSetup → vault_setup kind=payment.",
+    "Cloud browser (WB, Ozon, bookings, appointments, taxi, forms, search). Starts or polls the current job — never a second search. reset = fresh browser. needsProfileSync → profile_setup with the login URL (vault password if saved, otherwise the live-view link). Never ask for a login or password. Never put a site password in chat. status=completed → paste result. Buy: pay on first call (hosts = merchant hostnames; maxRub only if they named a ceiling). Card is server-typed. needsVaultSetup → vault_setup kind=payment.",
   inputSchema: z.object({
     task: z.string().min(1).max(4000),
     reset: z.boolean().optional(),
@@ -333,12 +335,25 @@ export default defineTool({
       };
     }
 
+    const loginPages = [
+      ...(payHosts ?? []).map((host) => `https://${host}`),
+      ...(task.match(/https?:\/\/[^\s]+/g) ?? []),
+    ]
+      .map((raw) => loginPageUrl(raw))
+      .filter((page): page is string => Boolean(page));
+    const vaultLogin = await vaultPasswordLoginForPages(phone, loginPages);
+    if (vaultLogin) {
+      secretBindings = [...(secretBindings ?? []), ...vaultLogin.bindings];
+    }
+
     const resolved = await resolveSyncedProfile(phone, tenant);
     const started = await startRun(task, reset ? undefined : tenant.browserSessionId, {
       ...(resolved.profileId
         ? { profileId: resolved.profileId, profileSynced: resolved.synced }
         : {}),
-      ...(payOpts ? { pay: payOpts, secretBindings } : {}),
+      ...(payOpts ? { pay: payOpts } : {}),
+      ...(vaultLogin ? { login: true } : {}),
+      ...(secretBindings && secretBindings.length > 0 ? { secretBindings } : {}),
     });
     const startedAt = Date.now();
     await persist(phone, started, task, {
@@ -363,7 +378,7 @@ export default defineTool({
       console.error("browser follow workflow failed", err);
     });
     const turnId = ctx.session.turn?.id;
-    if (conv && !turnLooking(typeof turnId === "string" ? turnId : undefined)) {
+    if (conv && !turnSpoke(typeof turnId === "string" ? turnId : undefined)) {
       void deliverHumanRouted({
         attrs: attrsFromSession(ctx.session),
         tenant,

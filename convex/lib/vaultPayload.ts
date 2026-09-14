@@ -218,6 +218,48 @@ export function vaultItemOrigin(kind: VaultKind, secret: string): string | undef
   return parseLoginPayload(secret)?.origin;
 }
 
+function hostKey(raw: string): string | undefined {
+  try {
+    const url = new URL(raw.includes("://") ? raw : `https://${raw}`);
+    return url.hostname.replace(/^www\./, "").toLowerCase() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Saved vault origin may cover the page host, www, or a subdomain.
+ * Protocol must match when both sides parse as URLs.
+ */
+export function originAllows(saved: string, page: string): boolean {
+  try {
+    const savedUrl = new URL(saved);
+    const pageUrl = new URL(page);
+    if (savedUrl.protocol !== pageUrl.protocol) return false;
+    const savedHost = savedUrl.hostname.replace(/^www\./, "").toLowerCase();
+    const pageHost = pageUrl.hostname.replace(/^www\./, "").toLowerCase();
+    if (!savedHost || !pageHost) return false;
+    return pageHost === savedHost || pageHost.endsWith(`.${savedHost}`);
+  } catch {
+    return false;
+  }
+}
+
+/** Prefer an exact host match, then a parent-origin login. Skip unavailable rows. */
+export function pickVaultLogin<
+  T extends { kind: string; origin?: string | null; available?: boolean },
+>(items: readonly T[], pageUrl: string): T | undefined {
+  const logins = items.filter(
+    (item) => item.kind === "login" && item.origin && item.available !== false,
+  );
+  const pageHost = hostKey(pageUrl);
+  const exact = pageHost
+    ? logins.find((item) => hostKey(item.origin!) === pageHost)
+    : undefined;
+  if (exact) return exact;
+  return logins.find((item) => originAllows(item.origin!, pageUrl));
+}
+
 export const vaultSetupRequestSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("login"),

@@ -106,13 +106,20 @@
     return "Вход";
   }
 
-  function savedText(kind, fromCabinet) {
+  var editHandle = "";
+
+  function savedText(kind, fromCabinet, replaced) {
     if (kind === "payment") {
       return fromCabinet
         ? "Карта добавлена. Bro уже видит её и готов совершать покупки."
         : "Карта добавлена. Bro уже видит её и готов совершать покупки — напиши ему в iMessage.";
     }
-    if (kind === "login") return "Вход сохранён. Bro сможет войти на сайт за тебя.";
+    if (kind === "login") {
+      if (replaced) return "Вход обновлён. Bro сможет войти на сайт за тебя.";
+      return fromCabinet
+        ? "Вход сохранён. Bro сможет войти на сайт за тебя."
+        : "Вход сохранён. Bro сможет войти на сайт за тебя — напиши ему, на какой.";
+    }
     if (kind === "address") return "Адрес сохранён. Bro укажет его при заказе.";
     if (kind === "contact") return "Контакт сохранён.";
     return "Готово.";
@@ -265,6 +272,30 @@
     return { error: "Неизвестный тип" };
   }
 
+  function clearEdit() {
+    editHandle = "";
+    $("login-origin").readOnly = false;
+    $("save").textContent = "Сохранить";
+  }
+
+  function startEdit(item) {
+    editHandle = item.handle || "";
+    var kind = parseKind(item.kind) || "login";
+    $("kind").value = kind;
+    showKind(kind);
+    $("label").value = parseLabel(item.label);
+    if (kind === "login") {
+      var origin = parseOrigin(item.origin);
+      if (origin) {
+        $("login-origin").value = origin;
+        $("login-origin").readOnly = true;
+      }
+    }
+    $("save").textContent = "Сохранить заново";
+    setFlash("Введи данные заново — старый пароль Bro не показывает.");
+    $("add-form").scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
   function clearSecrets() {
     $("login-password").value = "";
     $("pay-number").value = "";
@@ -308,6 +339,15 @@
         (siteLine ? " · " + siteLine : "") +
         (item.available === false ? " · сейчас недоступно" : "") +
         "</p></div>" +
+        '<button class="act act--sm item-edit" type="button" data-handle="' +
+        esc(item.handle || "") +
+        '" data-kind="' +
+        esc(item.kind || "") +
+        '" data-label="' +
+        esc(item.label || "") +
+        '" data-origin="' +
+        esc(item.origin || "") +
+        '">Изменить</button>' +
         '<button class="act act--sm act--mute item-del" type="button" data-handle="' +
         esc(item.handle || "") +
         '" data-step="ask">Удалить</button>';
@@ -362,6 +402,16 @@
   }
 
   $("items").addEventListener("click", function (e) {
+    var editBtn = e.target.closest(".item-edit");
+    if (editBtn) {
+      startEdit({
+        handle: editBtn.getAttribute("data-handle") || "",
+        kind: editBtn.getAttribute("data-kind") || "",
+        label: editBtn.getAttribute("data-label") || "",
+        origin: editBtn.getAttribute("data-origin") || "",
+      });
+      return;
+    }
     var btn = e.target.closest(".item-del");
     if (!btn) return;
     var handle = btn.getAttribute("data-handle") || "";
@@ -430,11 +480,13 @@
       $("login-open").click();
       return;
     }
-    var payload = JSON.stringify({
+    var body = {
       kind: kind,
       label: label,
       secret: JSON.stringify(built.secret),
-    });
+    };
+    if (editHandle) body.handle = editHandle;
+    var payload = JSON.stringify(body);
     $("save").disabled = true;
     fetch(base + "/vault/items", {
       method: "POST",
@@ -468,8 +520,9 @@
           return;
         }
         clearSecrets();
+        clearEdit();
         var fromCabinet = new URLSearchParams(location.search).get("from") === "cabinet";
-        setFlash(savedText(kind, fromCabinet));
+        setFlash(savedText(kind, fromCabinet, got.data && got.data.replaced));
         return loadItems(base, now);
       })
       .catch(function () {

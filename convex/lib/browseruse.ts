@@ -3,6 +3,7 @@ import {
   normalizeBrowserProfileId,
   pickCookieDomains,
 } from "./browserProfilePolicy";
+import { liveUrlFromRunPayloads, runEventsPath } from "./browserLivePolicy";
 
 const BASE = "https://api.browser-use.com/api/v4";
 
@@ -85,12 +86,8 @@ export async function hydrate(
     sessionId ??
     pick(run, ["sessionId", "session_id"]) ??
     pick(session, ["id"]);
-  const liveUrl =
-    pick(run, ["liveUrl", "live_url"]) ??
-    pick(session, ["liveUrl", "live_url"]) ??
-    (typeof session.browser === "object" && session.browser
-      ? pick(session.browser as Record<string, unknown>, ["liveUrl", "live_url"])
-      : undefined);
+  const events = await bu(runEventsPath(runId)).catch(() => undefined);
+  const liveUrl = liveUrlFromRunPayloads({ run, session, events });
   const result =
     pick(run, ["result", "output"]) ??
     (typeof run.result === "object" && run.result

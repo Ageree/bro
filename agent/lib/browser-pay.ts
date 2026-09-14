@@ -6,8 +6,13 @@
  * is one of the bound domains. Bindings die with the run.
  */
 import { isIP } from "node:net";
-import type { PaymentPayload } from "../../convex/lib/vaultPayload.ts";
+import type { LoginPayload, PaymentPayload } from "../../convex/lib/vaultPayload.ts";
 import { isPrivateHost } from "./public-host.ts";
+
+export const LOGIN_ALIASES = {
+  login: "site_login",
+  password: "site_password",
+} as const;
 
 export const PAY_ALIASES = {
   number: "card_number",
@@ -60,6 +65,33 @@ function binding(alias: string, value: string, hosts: readonly string[]): Secret
     source: { type: "inline", value },
     allowedDomains: [...hosts],
   };
+}
+
+/** Login + password bindings. The model only sees the alias names. */
+export function loginBindings(
+  payload: LoginPayload,
+  hosts: readonly string[],
+): SecretBinding[] {
+  if (hosts.length === 0) {
+    throw new Error("loginBindings needs at least one allowed host");
+  }
+  if (payload.authentication.type !== "password") {
+    throw new Error("loginBindings needs a password login");
+  }
+  return [
+    binding(LOGIN_ALIASES.login, payload.identifier.value, hosts),
+    binding(LOGIN_ALIASES.password, payload.authentication.password, hosts),
+  ];
+}
+
+/** Cloud-agent instructions when a vault password is bound to the run. */
+export function loginScaffold(): string {
+  return [
+    "Логин и пароль человека подключены секретами, и ввод делает сервер — ты значения не видишь.",
+    `На форме входа сфокусируй поле и попроси ввести секрет по имени: \`${LOGIN_ALIASES.login}\` — логин, почта или телефон, \`${LOGIN_ALIASES.password}\` — пароль.`,
+    "Никогда не читай, не переписывай и не запоминай значения этих полей.",
+    "Если форма просит код из SMS или почты — остановись и дай live-URL.",
+  ].join("\n");
 }
 
 /** Six secret bindings covering combined and split expiry-field forms (2- and 4-digit year). */
