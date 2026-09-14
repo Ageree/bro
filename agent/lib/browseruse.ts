@@ -312,6 +312,116 @@ async function runEvents(runId: string): Promise<unknown> {
   return await bu(runEventsPath(runId)).catch(() => undefined);
 }
 
+export type QueuedMessage = {
+  id?: number;
+  sessionId?: string;
+  runId?: string;
+  mode?: string;
+  status?: string;
+};
+
+/**
+ * Append a message to a live Cloud session (v4 POST /sessions/{id}/queue).
+ * A session holds conversation history and keeps its browser, so the queued
+ * text is handled on the already-open tab — this is how a code / correction /
+ * «подожди» reaches the live login without starting a fresh browser.
+ * `interrupt` cancels an active run so the message runs immediately.
+ */
+export async function queueMessage(
+  sessionId: string,
+  text: string,
+  opts?: { interrupt?: boolean; attachedFileIds?: string[] },
+): Promise<QueuedMessage> {
+  const trimmed = text.trim();
+  if (!trimmed) throw new Error("queueMessage: empty text");
+  const body: Record<string, unknown> = { text: trimmed };
+  if (opts?.interrupt) body.interrupt = true;
+  if (opts?.attachedFileIds && opts.attachedFileIds.length > 0) {
+    body.attachedFileIds = opts.attachedFileIds;
+  }
+  const res = await bu(`/sessions/${sessionId}/queue`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+  const id = typeof res.id === "number" ? res.id : undefined;
+  return {
+    ...(id !== undefined ? { id } : {}),
+    sessionId: pick(res, ["sessionId", "session_id"]) ?? sessionId,
+    ...(pick(res, ["runId", "run_id"]) ? { runId: pick(res, ["runId", "run_id"]) } : {}),
+    ...(pick(res, ["mode"]) ? { mode: pick(res, ["mode"]) } : {}),
+    ...(pick(res, ["status"]) ? { status: pick(res, ["status"]) } : {}),
+  };
+}
+
+export type SessionInfo = {
+  sessionId: string;
+  status: string;
+  latestRunId?: string;
+};
+
+/** GET /sessions/{id}: session status + latest run id (for follow-through). */
+export async function sessionInfo(
+  sessionId: string,
+): Promise<SessionInfo | undefined> {
+  const res = await bu(`/sessions/${sessionId}`).catch(() => undefined);
+  if (!res) return undefined;
+  const latest = pick(res, ["latestRunId", "latest_run_id"]);
+  return {
+    sessionId: pick(res, ["sessionId", "session_id", "id"]) ?? sessionId,
+    status: pick(res, ["status"]) ?? "unknown",
+    ...(latest ? { latestRunId: latest } : {}),
+  };
+}
+
+/**
+ * After queueing into a session, find the run that will carry the follow-up.
+ * The queued message may spawn a new run (new latestRunId) or resume the
+ * existing one (same id, session goes active again). Wait briefly for either
+ * so follow-through does not latch onto the just-finished run and report
+ * "done" before the code was even applied.
+ */
+export async function resolveQueuedRun(
+  sessionId: string,
+  priorRunId: string | undefined,
+  queued: QueuedMessage,
+  opts?: { ms?: number; nowFn?: () => number },
+): Promise<{ runId?: string; status?: string }> {
+  const active = new Set([
+    "queued",
+    "pending",
+    "dispatching",
+    "running",
+    "started",
+    "in_progress",
+    "working",
+    "processing",
+  ]);
+  if (queued.runId && queued.runId !== priorRunId) {
+    return { runId: queued.runId, ...(queued.status ? { status: queued.status } : {}) };
+  }
+  const now = opts?.nowFn ?? Date.now;
+  const deadline = now() + (opts?.ms ?? 6_000);
+  let last: SessionInfo | undefined;
+  for (;;) {
+    last = await sessionInfo(sessionId);
+    if (last?.latestRunId && last.latestRunId !== priorRunId) {
+      return { runId: last.latestRunId, status: last.status };
+    }
+    if (
+      last?.latestRunId &&
+      active.has(last.status.trim().toLowerCase())
+    ) {
+      return { runId: last.latestRunId, status: last.status };
+    }
+    if (now() >= deadline) break;
+    await new Promise((r) => setTimeout(r, 1_000));
+  }
+  return {
+    runId: last?.latestRunId ?? queued.runId ?? priorRunId,
+    ...(last?.status ? { status: last.status } : {}),
+  };
+}
+
 function withLanding(
   run: BrowserRun,
   events: unknown,

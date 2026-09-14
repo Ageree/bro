@@ -29,6 +29,8 @@ import {
   hydrate,
   isDryRunErrand,
   isTerminal,
+  queueMessage,
+  resolveQueuedRun,
   startRun,
   waitForPageLanding,
   waitForRun,
@@ -46,7 +48,8 @@ import {
   decideCloudInject,
   injectAckText,
   injectCandidate,
-  injectFollowTask,
+  injectQueueInterrupt,
+  injectQueueText,
   NO_LIVE_RUN_TEXT,
 } from "../../convex/lib/browserInjectPolicy.ts";
 import {
@@ -173,6 +176,8 @@ async function maybeInjectChat(
     });
   }
 
+  // Fast path: type a code straight into the open tab over CDP when the live
+  // browser is reachable. Best-effort — the reliable path below is the queue.
   let typed = false;
   let submitted = false;
   if (decided.kind === "code" && decided.code && cdpUrl) {
@@ -194,36 +199,79 @@ async function maybeInjectChat(
     };
   }
 
-  const followTask = injectFollowTask({
+  // Reliable path: queue the line into the live session. The session holds the
+  // errand history and its browser, so this lands on the already-open login tab
+  // instead of starting a fresh run in a blank browser.
+  const queueText = injectQueueText({
     kind: decided.kind,
     humanText: incoming,
-    originalTask: tenant.browserTask ?? incoming,
     ...(decided.code ? { code: decided.code } : {}),
     dryRun: isDryRunErrand(tenant.browserTask ?? incoming),
+    alreadyTyped: decided.kind === "code" && submitted,
   });
-  const started = await startRun(followTask, sessionId, {
-    ...(tenant.browserProfileId
-      ? { profileId: tenant.browserProfileId, profileSynced: true }
-      : {}),
+  const queued = await queueMessage(sessionId, queueText, {
+    interrupt: injectQueueInterrupt(decided.kind),
+  }).catch((err: unknown) => {
+    console.error("cloud queue failed", err);
+    return undefined;
   });
+
+  const codeHint =
+    "код ушёл в живую Cloud-сессию (открытая вкладка). Не цитируй цифры и не проси пароль.";
+  const otherHint = "уточнение ушло в живую Cloud-сессию. Не проси пароль.";
+  const hint = decided.kind === "code" ? codeHint : otherHint;
+
+  if (!queued) {
+    // CDP typing may still have entered the code; report best-effort state.
+    return {
+      status: tenant.browserStatus ?? "running",
+      entered: typed,
+      injected: decided.kind,
+      typed,
+      submitted,
+      alreadyNotified: Boolean(conv),
+      hint,
+    };
+  }
+
+  const resolved: { runId?: string; status?: string } = await resolveQueuedRun(
+    sessionId,
+    tenant.browserRunId,
+    queued,
+  ).catch(() => ({ runId: queued.runId ?? tenant.browserRunId }));
+  const followRunId = resolved.runId ?? tenant.browserRunId;
   const startedAt = Date.now();
-  await persist(phone, started, tenant.browserTask ?? incoming, {
+
+  if (!followRunId) {
+    return {
+      status: resolved.status ?? "running",
+      entered: true,
+      injected: decided.kind,
+      typed,
+      submitted,
+      alreadyNotified: Boolean(conv),
+      hint,
+    };
+  }
+
+  const queuedRun: BrowserRun = {
+    runId: followRunId,
+    sessionId,
+    status: resolved.status ?? "running",
+  };
+  await persist(phone, queuedRun, tenant.browserTask ?? incoming, {
     browserStartedAt: startedAt,
   });
   const followKick = startBrowserFollow({
     tenantPhone: phone,
-    runId: started.runId,
-    sessionId: started.sessionId,
+    runId: followRunId,
+    sessionId,
     task: tenant.browserTask ?? incoming,
     startedAt,
   }).catch((err) => {
     console.error("inject follow workflow failed", err);
   });
-  const done = await waitForRun(
-    started.runId,
-    started.sessionId,
-    BROWSER_WAIT_MS,
-  );
+  const done = await waitForRun(followRunId, sessionId, BROWSER_WAIT_MS);
   await persist(phone, done, tenant.browserTask ?? incoming);
   await followKick;
   return settle(
@@ -235,12 +283,9 @@ async function maybeInjectChat(
       typed,
       submitted,
       alreadyNotified: Boolean(conv),
-      hint:
-        decided.kind === "code"
-          ? "код введён в живую вкладку. Не цитируй цифры и не проси пароль."
-          : "уточнение ушло в живую Cloud-сессию. Не проси пароль.",
+      hint,
     },
-    { startedAt, runId: started.runId },
+    { startedAt, runId: followRunId },
   );
 }
 
@@ -387,7 +432,7 @@ function profileExtra(
 
 export default defineTool({
   description:
-    "Cloud browser (WB, Ozon, bookings, appointments, taxi, forms, search). Starts or polls the current job — never a second search. reset = fresh browser. Eve opens the site over CDP (taxi.yandex.ru for такси). Vault kind:login is bound as secretBindings. Cloud cookies may exist — that is not proof the tab is logged in. The Cloud agent must click Войти / Авторизоваться / passport if the page is still guest; live-view only for OTP or a missing password. If a Cloud session is live and the human sent a one-time code, «подожди», or an address/size correction for that errand, pass their exact line here — Bro types it into the live tab (CDP) and/or starts a Cloud follow-up. Unrelated chat must not be sent here. A code they already sent must be used. needsProfileSync → profile_setup only when cookies and vault are missing. Never ask for a login or password. Never put a site password in chat. status=completed → paste result. Buy: pay on first call (hosts = merchant hostnames; maxRub only if they named a ceiling). Card is server-typed. needsVaultSetup → vault_setup kind=payment.",
+    "Cloud browser (WB, Ozon, bookings, appointments, taxi, forms, search). Starts or polls the current job — never a second search. reset = fresh browser. Eve opens the site over CDP (taxi.yandex.ru for такси). Vault kind:login is bound as secretBindings. Cloud cookies may exist — that is not proof the tab is logged in. The Cloud agent must click Войти / Авторизоваться / passport if the page is still guest; live-view only for OTP or a missing password. If a Cloud session is live and the human sent a one-time code, «подожди», or an address/size correction for that errand, pass their exact line here — Bro types it into the live tab (CDP) and queues it into the live Cloud session so it lands on the already-open page. Unrelated chat must not be sent here. A code they already sent must be used. needsProfileSync → profile_setup only when cookies and vault are missing. Never ask for a login or password. Never put a site password in chat. status=completed → paste result. Buy: pay on first call (hosts = merchant hostnames; maxRub only if they named a ceiling). Card is server-typed. needsVaultSetup → vault_setup kind=payment.",
   inputSchema: z.object({
     task: z.string().min(1).max(4000),
     reset: z.boolean().optional(),

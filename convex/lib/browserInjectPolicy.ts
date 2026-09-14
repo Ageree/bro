@@ -223,7 +223,10 @@ export function isBroCloudTask(task: string | undefined | null): boolean {
   );
 }
 
-const SESSION_LIVE_MS = 30 * 60_000;
+// A V4 Cloud browser is eligible for cleanup after ~20 min without run
+// activity (hard cap 4 h). Past that the session cannot be queued into, so
+// treat it as no longer live for injection.
+const SESSION_LIVE_MS = 20 * 60_000;
 
 export function cloudSessionLooksLive(opts: CloudInjectAttrs): boolean {
   if (!opts.sessionId && !opts.runId) return false;
@@ -340,6 +343,44 @@ function stripMarks(task: string): string {
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 400);
+}
+
+/**
+ * Concise message queued into a live Cloud session (POST /sessions/{id}/queue).
+ * The session already holds the errand context and the open tab, so this is a
+ * short follow-up, not the full errand scaffold. Never quotes a site password.
+ */
+export function injectQueueText(opts: {
+  kind: CloudInjectKind;
+  humanText: string;
+  code?: string;
+  dryRun?: boolean;
+  alreadyTyped?: boolean;
+}): string {
+  const human = opts.humanText.trim().slice(0, 300);
+  const noOrder = opts.dryRun
+    ? " После этого остановись: ничего не заказывай и не оплачивай."
+    : "";
+  if (opts.kind === "code") {
+    if (opts.alreadyTyped) {
+      return `Код уже введён в поле на текущей странице. Подтверди вход, если ещё не подтверждён, и продолжи поручение на уже открытой странице. Не открывай новый сайт и не уходи на about:blank. Сайтовый пароль не проси.${noOrder}`;
+    }
+    const code = (opts.code ?? human).trim();
+    return `Одноразовый код для входа (не пароль сайта, не цитируй): ${code}. Введи его в поле кода на уже открытой странице и подтверди вход. Не открывай новый сайт и не уходи на about:blank. Сайтовый пароль не проси и не выдумывай.${noOrder}`;
+  }
+  if (opts.kind === "wait") {
+    return `Человек просит подождать: «${human}». Оставайся на текущем экране, ничего не подтверждай — не нажимай «Заказать», «Поехали» или «Оплатить».`;
+  }
+  return `Уточнение от человека (не пароль сайта): «${human}». Примени его на уже открытой странице, не открывая новый сайт. Сайтовый пароль не проси.${noOrder}`;
+}
+
+/**
+ * `interrupt:true` cancels the active run so the queued message runs at once.
+ * A correction or «подожди» must preempt whatever the agent is mid-doing; a
+ * code is the input a waiting agent expects next, so it is appended, not forced.
+ */
+export function injectQueueInterrupt(kind: CloudInjectKind): boolean {
+  return kind === "wait" || kind === "correction";
 }
 
 export function injectFollowTask(opts: {
