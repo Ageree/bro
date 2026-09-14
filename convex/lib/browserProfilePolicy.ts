@@ -101,6 +101,79 @@ export function loginChatText(liveUrl: string, site?: string): string {
   return `Открой ссылку и войди${where}. Bro пароль не увидит — вход сохранится сам.\n\n${liveUrl.trim()}`;
 }
 
+/** First bubble when Cloud cookies already cover this site. No live-view. */
+export function alreadyLoggedChatText(site?: string): string {
+  const where = site?.trim() ? ` в ${site.trim()}` : "";
+  return `Вход${where} уже сохранён — ссылку не присылаю, дальше сделаю сам.`;
+}
+
+function cookieHost(raw: string): string | undefined {
+  const text = raw.trim();
+  if (!text) return undefined;
+  try {
+    if (text.includes("://")) {
+      const host = new URL(text).hostname.replace(/^www\./, "").toLowerCase();
+      return host || undefined;
+    }
+  } catch {
+    return undefined;
+  }
+  const host = text.replace(/^\./, "").replace(/^www\./, "").toLowerCase();
+  return host || undefined;
+}
+
+function registrableHost(host: string): string {
+  const parts = host.split(".").filter(Boolean);
+  if (parts.length <= 2) return host;
+  return parts.slice(-2).join(".");
+}
+
+const IDENTITY_HEAD = new Set([
+  "passport",
+  "id",
+  "auth",
+  "login",
+  "account",
+  "accounts",
+  "oauth",
+  "sso",
+  "signin",
+  "signup",
+  "identity",
+  "idp",
+]);
+
+/**
+ * True when the Cloud profile already has cookies for this login page
+ * (same host, parent domain, or the site's identity host).
+ */
+export function cookieDomainsCoverPage(
+  domains: readonly string[] | undefined,
+  pageUrl: string,
+): boolean {
+  const page = cookieHost(pageUrl);
+  if (!page || !domains?.length) return false;
+  const pageReg = registrableHost(page);
+  const pageHead = page.split(".")[0] ?? "";
+  for (const raw of domains) {
+    const domain = cookieHost(raw);
+    if (!domain) continue;
+    if (page === domain || page.endsWith(`.${domain}`)) return true;
+    const domainReg = registrableHost(domain);
+    if (pageReg !== domainReg) continue;
+    const domainHead = domain.split(".")[0] ?? "";
+    if (
+      IDENTITY_HEAD.has(pageHead) ||
+      IDENTITY_HEAD.has(domainHead) ||
+      domain === pageReg ||
+      page === pageReg
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function profileSyncStatus(opts: {
   profileId?: string;
   cookieDomains?: readonly string[];

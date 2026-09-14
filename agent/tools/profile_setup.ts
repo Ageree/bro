@@ -3,6 +3,8 @@ import { z } from "zod";
 import { browserGateFromResult } from "../../convex/lib/billingPolicy";
 import { LOGIN_LANDING_WAIT_MS } from "../../convex/lib/browserLivePolicy.ts";
 import {
+  alreadyLoggedChatText,
+  cookieDomainsCoverPage,
   loginChatText,
   loginOpeningText,
   loginPageUrl,
@@ -12,6 +14,7 @@ import {
 import {
   createProfile,
   envSyncedProfileId,
+  getProfile,
   loginWaitTask,
   startRun,
   waitForLoginLanding,
@@ -52,12 +55,10 @@ async function persistRun(
     ...(extra?.startedAt !== undefined ? { browserStartedAt: extra.startedAt } : {}),
     ...(extra?.profileId ? { browserProfileId: extra.profileId } : {}),
     ...(run.sessionId ? { browserSessionId: run.sessionId } : {}),
-    ...(run.liveUrl
+    ...(extra?.loginLinkSentAt !== undefined && run.liveUrl
       ? {
           browserLiveUrl: run.liveUrl,
-          ...(extra?.loginLinkSentAt !== undefined
-            ? { browserLoginLinkSentAt: extra.loginLinkSentAt }
-            : {}),
+          browserLoginLinkSentAt: extra.loginLinkSentAt,
         }
       : {}),
   });
@@ -126,6 +127,62 @@ export default defineTool({
     const conv = conversationId(ctx, tenant.inkboxConversationId);
     const turnId = typeof ctx.session.turn?.id === "string" ? ctx.session.turn.id : undefined;
 
+    let profileId = tenant.browserProfileId ?? envSyncedProfileId();
+    if (!profileId) {
+      try {
+        profileId = await createProfile(phone);
+      } catch (err) {
+        console.error("browser profile create failed", err);
+        return {
+          status: "error",
+          hint: `не получилось открыть вход, вызови profile_setup ещё раз с тем же url. ${NO_PASSWORD_HINT}`,
+        };
+      }
+    }
+
+    let cookieDomains = tenant.browserCookieDomains ?? [];
+    if (profileId && cookieDomains.length === 0) {
+      try {
+        cookieDomains = (await getProfile(profileId)).cookieDomains;
+      } catch (err) {
+        console.error("browser profile get failed", err);
+      }
+    }
+    if (cookieDomains.length > 0) {
+      await setBrowser(phone, {
+        browserProfileId: profileId,
+        browserCookieDomains: cookieDomains,
+        browserProfileSyncedAt: Date.now(),
+      });
+    }
+    if (cookieDomainsCoverPage(cookieDomains, page)) {
+      await setBrowser(phone, {
+        browserProfileId: profileId,
+        browserCookieDomains: cookieDomains,
+        browserProfileSyncedAt: Date.now(),
+      });
+      const text = alreadyLoggedChatText(site);
+      let notified = false;
+      try {
+        notified = await notify({
+          tenant,
+          session: ctx.session,
+          conversationId: conv,
+          turnId,
+          text,
+        });
+      } catch (err) {
+        console.error("already-logged notify failed", err);
+      }
+      return {
+        status: "already",
+        usedProfile: true,
+        alreadyNotified: notified,
+        hint: "вход уже в Cloud-профиле. Не шли live-view и не проси пароль. Сразу browser_task.",
+        message: text,
+      };
+    }
+
     let allowed = false;
     try {
       allowed = browserGateFromResult(
@@ -141,19 +198,6 @@ export default defineTool({
         status: "limit",
         hint: "скажи человеку, что лимит браузер-задач на месяц исчерпан, предложи оплату",
       };
-    }
-
-    let profileId = tenant.browserProfileId ?? envSyncedProfileId();
-    if (!profileId) {
-      try {
-        profileId = await createProfile(phone);
-      } catch (err) {
-        console.error("browser profile create failed", err);
-        return {
-          status: "error",
-          hint: `не получилось открыть вход, вызови profile_setup ещё раз с тем же url. ${NO_PASSWORD_HINT}`,
-        };
-      }
     }
 
     const vault = await vaultPasswordLogin(phone, page);
@@ -227,7 +271,7 @@ export default defineTool({
     await persistRun(phone, withLive, task, {
       startedAt,
       profileId,
-      ...(landed && conv ? { loginLinkSentAt: Date.now() } : {}),
+      ...(landed ? { loginLinkSentAt: Date.now() } : {}),
     });
 
     const followKick = kickFollow({ phone, run: withLive, task, startedAt });

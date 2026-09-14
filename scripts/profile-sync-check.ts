@@ -1,4 +1,6 @@
 import {
+  alreadyLoggedChatText,
+  cookieDomainsCoverPage,
   isBrowserProfileId,
   isLoginVaultTask,
   isLoginWaitTask,
@@ -23,6 +25,7 @@ import {
   pageUrlFromEvents,
   shouldSendLoginLink,
 } from "../convex/lib/browserLivePolicy.ts";
+import { asCdpTargets, browserFromList, cdpCurrentUrl } from "../convex/lib/browserCdp.ts";
 import { scaffoldTask } from "../agent/lib/browseruse.ts";
 
 import { assert, src } from "./lib/check.ts";
@@ -169,6 +172,54 @@ assert(
   }),
   "bare navigate counts as activity",
 );
+assert(
+  !loginLandingReady({
+    liveUrl: "https://live.browser-use.com/view",
+    targetPage: "https://passport.yandex.ru/auth",
+    events: [{ type: "tool.navigate", data: { name: "navigate" } }],
+  }),
+  "bare navigate is not the login page",
+);
+assert(
+  loginLandingReady({
+    liveUrl: "https://live.browser-use.com/view",
+    targetPage: "https://passport.yandex.ru/auth",
+    pageUrl: "https://passport.yandex.ru/auth?origin=taxi",
+  }),
+  "cdp tab url is the login page",
+);
+assert(
+  !loginLandingReady({
+    liveUrl: "https://live.browser-use.com/view",
+    targetPage: "https://passport.yandex.ru/auth",
+    pageUrl: "about:blank",
+  }),
+  "about:blank is not the login page",
+);
+
+assert(
+  cookieDomainsCoverPage(
+    ["passport.yandex.ru", "taxi.yandex.ru", "yandex.ru"],
+    "https://passport.yandex.ru/auth",
+  ),
+  "yandex cookies cover passport",
+);
+assert(
+  cookieDomainsCoverPage(["yandex.ru"], "https://taxi.yandex.ru/"),
+  "parent yandex cookie covers taxi",
+);
+assert(
+  !cookieDomainsCoverPage(["ozon.ru"], "https://passport.yandex.ru/auth"),
+  "ozon cookies do not cover yandex",
+);
+assert(
+  alreadyLoggedChatText("Яндекс Такси").includes("уже сохранён"),
+  "already-logged copy",
+);
+assert(
+  !alreadyLoggedChatText("Яндекс Такси").includes("http"),
+  "already-logged has no url",
+);
 
 assert(profileSyncStatus({}) === "missing", "no profile");
 assert(
@@ -201,6 +252,8 @@ assert(tool.includes("deliverHuman"), "tool texts the link itself");
 assert(tool.includes("loginChatText"), "tool uses the plain copy");
 assert(tool.includes("vaultPasswordLogin"), "tool reads the vault first");
 assert(tool.includes("loginVaultTask"), "tool starts a vault login run");
+assert(tool.includes("cookieDomainsCoverPage"), "tool skips when cookies exist");
+assert(tool.includes("alreadyLoggedChatText"), "tool says login is already saved");
 assert(tool.includes("NO_PASSWORD_HINT") || tool.includes("Не проси"), "never ask for a password");
 
 const vaultTool = src("agent/tools/vault_setup.ts");
@@ -214,7 +267,31 @@ assert(follow.includes("landed"), "follow waits until the login page");
 const startRun = src("agent/lib/browseruse.ts");
 assert(startRun.includes("waitForLoginLanding"), "cloud waits for the login page");
 assert(startRun.includes("no startUrl"), "v4 has no start url");
+assert(startRun.includes("cdpNavigate") || src("agent/lib/browser-cdp.ts").includes("Page.navigate"), "eve opens the login over cdp");
 assert(tool.includes("waitForLoginLanding"), "tool waits for landing");
 assert(tool.includes("loginOpeningText"), "tool announces the login first");
+
+assert(
+  cdpCurrentUrl(
+    asCdpTargets([{ type: "page", url: "about:blank", title: "" }]),
+  ) === "about:blank",
+  "cdp reads about:blank",
+);
+assert(
+  browserFromList(
+    {
+      items: [
+        {
+          id: "b1",
+          agentSessionId: "s1",
+          liveUrl: "https://live.browser-use.com/view",
+          cdpUrl: "https://b1.cdp.browser-use.com",
+        },
+      ],
+    },
+    "s1",
+  )?.cdpUrl === "https://b1.cdp.browser-use.com",
+  "browser list matches session",
+);
 
 console.log("profile-sync-check ok");

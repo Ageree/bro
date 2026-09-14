@@ -9,6 +9,7 @@ import {
   pageUrlFromEvents,
   runEventsPath,
 } from "./browserLivePolicy";
+import { browserFromList, cdpPageUrl } from "./browserCdp";
 
 const BASE = "https://api.browser-use.com/api/v4";
 
@@ -95,9 +96,21 @@ export async function hydrate(
     pick(run, ["sessionId", "session_id"]) ??
     pick(session, ["id"]);
   const events = await bu(runEventsPath(runId)).catch(() => undefined);
-  const liveUrl = liveUrlFromRunPayloads({ run, session, events });
-  const pageUrl = pageUrlFromEvents(events, targetPage);
-  const landed = loginLandingReady({ liveUrl, targetPage, events });
+  const listed = sid ? await bu("/browsers").catch(() => undefined) : undefined;
+  const cloud = sid ? browserFromList(listed, sid) : undefined;
+  const liveUrl =
+    liveUrlFromRunPayloads({ run, session, events }) ?? cloud?.liveUrl;
+  const eventPage = pageUrlFromEvents(events, targetPage);
+  const cdpPage = cloud?.cdpUrl
+    ? await cdpPageUrl(cloud.cdpUrl).catch(() => undefined)
+    : undefined;
+  const pageUrl = eventPage ?? cdpPage;
+  const landed = loginLandingReady({
+    liveUrl,
+    targetPage,
+    events,
+    pageUrl,
+  });
   const result =
     pick(run, ["result", "output"]) ??
     (typeof run.result === "object" && run.result
