@@ -19,14 +19,19 @@ import {
   kernelRegion,
 } from "../lib/kernel";
 import { requireOwnedBrowser, workerTenant } from "../lib/scope";
+import {
+  BROWSER_TIMEOUT_FLOOR_SECONDS,
+  defaultBrowserTimeoutSeconds,
+} from "../lib/timeout-policy";
 
-const browserTimeoutFloorSeconds = 15 * 60;
+const browserTimeoutFloorSeconds = BROWSER_TIMEOUT_FLOOR_SECONDS;
 
 const inputSchema = z.object({
   action: z.enum(["create", "update", "list", "get", "delete"]),
   save_changes: z.boolean().optional(),
   session_id: z.string().optional(),
   start_url: z.url().optional(),
+  long_lived: z.boolean().optional(),
   timeout_seconds: z
     .number()
     .int()
@@ -42,7 +47,7 @@ const inputSchema = z.object({
 
 export default defineTool({
   description:
-    'Manage browser sessions backed by the tenant persistent profile. Create read-only browsers by default so tasks can run in parallel. Immediately before a login, replace that task browser with one created using save_changes: true, then delete it after authentication so the session is saved. Only one profile writer may be active. Use "list" or "get" to inspect sessions.',
+    'Manage browser sessions backed by the tenant persistent profile. Create read-only browsers by default so tasks can run in parallel. Immediately before a login, replace that task browser with one created using save_changes: true, then delete it after authentication so the session is saved. Only one profile writer may be active. Pass long_lived: true on create for a login/OTP/checkout assignment so the Kernel session outlives a mailbox or human wait. Use "list" or "get" to inspect sessions.',
   inputSchema,
   async execute(input, ctx) {
     const phone = workerTenant(ctx);
@@ -76,7 +81,12 @@ export default defineTool({
             ...(proxyId ? { proxy: { id: proxyId } } : {}),
             ...(region ? { region } : {}),
             timeout_seconds:
-              input.timeout_seconds ?? browserTimeoutFloorSeconds,
+              input.timeout_seconds ??
+              defaultBrowserTimeoutSeconds({
+                saveChanges,
+                startUrl: input.start_url,
+                longLived: input.long_lived,
+              }),
             viewport: browserViewport(input),
           },
           { signal },

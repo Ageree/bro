@@ -1,9 +1,13 @@
 import { v } from "convex/values";
-import { mutation, query } from "./_generated/server";
+import { internalMutation, mutation, query } from "./_generated/server";
 import { assertSecret } from "./secret";
 import { findTenantByPhone as tenantByPhone } from "./lib/tenantLookup";
+import { isStaleBrowserSession } from "./lib/browserSessionGc";
 
 const WRITER_TTL_MS = 20 * 60 * 1000;
+// Bound one sweep's work; a busier deployment catches the rest on the next
+// 30-minute cron tick instead of reading the whole table in one call.
+const GC_SWEEP_LIMIT = 500;
 
 const sessionView = v.object({
   sessionId: v.string(),
@@ -119,5 +123,27 @@ export const listIds = query({
       .withIndex("by_tenant", (q) => q.eq("tenantId", tenant._id))
       .collect();
     return rows.map((row) => row.sessionId);
+  },
+});
+
+/**
+ * Drop `browserSessions` rows a crashed worker never cleaned up (no cron
+ * previously swept this table at all — Finding A4 #7). Called by the
+ * `browsersGc` cron action, which also best-effort deletes the matching
+ * Kernel browser when this Convex deployment holds `KERNEL_API_KEY`; when it
+ * doesn't (the API key normally only lives in the worker's own hosting env),
+ * this mutation still bounds how long an orphaned row lingers.
+ */
+export const sweepStale = internalMutation({
+  args: {},
+  returns: v.array(v.string()),
+  handler: async (ctx) => {
+    const rows = await ctx.db.query("browserSessions").take(GC_SWEEP_LIMIT);
+    const now = Date.now();
+    const stale = rows.filter((row) => isStaleBrowserSession(row, now));
+    for (const row of stale) {
+      await ctx.db.delete(row._id);
+    }
+    return stale.map((row) => row.sessionId);
   },
 });

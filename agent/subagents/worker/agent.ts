@@ -5,6 +5,10 @@ import { broModel } from "../../lib/model";
 const taskCompletionSchema = z.object({
   status: z.enum(["success", "failure"]),
   message: z.string().trim().min(1),
+  liveViewUrl: z.url().optional(),
+  needs: z
+    .enum(["none", "otp", "push", "3ds", "captcha", "profile_sync", "approval"])
+    .optional(),
 });
 
 export default defineAgent({

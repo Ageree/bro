@@ -278,6 +278,57 @@ assert.equal(twoHigh.status, "ambiguous", "two fresh high codes");
 
 assert.equal(pickOtp([], now).status, "missing");
 
+// --- hint ranking (Finding A4 #6: a same-window wrong-merchant code must
+// not silently win over the merchant the caller actually named) -----------
+
+const wbCode = {
+  code: "482911",
+  source: "bro_mail" as const,
+  from: "noreply@wildberries.ru",
+  subject: "Код подтверждения",
+  confidence: "high" as const,
+  atMs: now,
+};
+const bankCode = {
+  code: "193847",
+  source: "bro_mail" as const,
+  from: "bank@tinkoff.ru",
+  subject: "Одноразовый код",
+  confidence: "high" as const,
+  atMs: now,
+};
+
+// Without a hint the two same-window high-confidence codes are ambiguous.
+assert.equal(pickOtp([wbCode, bankCode], now).status, "ambiguous");
+
+// With hint: "wildberries" the WB code wins outright instead of asking.
+const hinted = pickOtp([wbCode, bankCode], now, "wildberries");
+assert.equal(hinted.status, "found");
+if (hinted.status === "found") {
+  assert.equal(hinted.hit.code, "482911", "hint prefers the named merchant");
+}
+
+// The hint also works the other way round.
+const hintedBank = pickOtp([wbCode, bankCode], now, "tinkoff");
+assert.equal(hintedBank.status, "found");
+if (hintedBank.status === "found") {
+  assert.equal(hintedBank.hit.code, "193847", "hint prefers the named bank");
+}
+
+// A short/Russian alias for the hinted merchant still matches.
+const hintedAlias = pickOtp([wbCode, bankCode], now, "вб");
+assert.equal(hintedAlias.status, "found");
+if (hintedAlias.status === "found") {
+  assert.equal(hintedAlias.hit.code, "482911", "wb alias matches too");
+}
+
+// A hint naming neither sender does not force a pick between two rivals.
+assert.equal(
+  pickOtp([wbCode, bankCode], now, "ozon").status,
+  "ambiguous",
+  "an unrelated hint does not manufacture a false match",
+);
+
 const wake = [
   "[event:mail]",
   "job: jobA",
