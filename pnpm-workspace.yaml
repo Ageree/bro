@@ -3,4 +3,6 @@ minimumReleaseAgeStrict: false
 allowBuilds:
   sharp: false
   esbuild: true
-  protobufjs: set this to true or false
+  # protobufjs (via @grpc/proto-loader for Photon) only runs a postinstall
+  # notice; pnpm 12 in CI (eve deploy) aborts on any un-listed build script.
+  protobufjs: false
