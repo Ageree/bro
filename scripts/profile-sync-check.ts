@@ -46,6 +46,8 @@ assert(wait.includes("https://www.ozon.ru/"), "opens the page");
 assert(wait.includes("Первым действием"), "navigate first");
 assert(wait.includes("не about:blank"), "not blank preview");
 assert(wait.includes("Не вводи логин"), "never types secrets");
+assert(wait.includes("прислать в чат"), "login wait accepts a chat OTP");
+assert(wait.includes("Пароль в iMessage не проси"), "login wait never asks for a password");
 assert(wait.includes("«Войти»"), "live-view login may click Войти to open the form");
 assert(!wait.includes("Не нажимай «войти» за него"), "must not forbid opening login");
 assert(isLoginWaitTask(wait), "wait is a live-view login");

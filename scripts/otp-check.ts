@@ -310,6 +310,11 @@ assert.ok(otpSearchQuery("WB").includes("WB"));
 
 const instructions = src("agent/instructions.md");
 assert(instructions.includes("otp_lookup") || instructions.includes("`otp`"), "root knows otp");
+assert(instructions.includes("ввожу код"), "chat code first bubble");
+assert(
+  instructions.includes("живую Cloud-сессию") || instructions.includes("живую вкладку"),
+  "iMessage codes go into the live Cloud tab",
+);
 assert(
   /сначала/i.test(instructions) && /треде/i.test(instructions),
   "inbox before thread",

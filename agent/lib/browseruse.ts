@@ -6,6 +6,7 @@ import {
   normalizeBrowserProfileId,
   pickCookieDomains,
 } from "../../convex/lib/browserProfilePolicy.ts";
+import { INJECT_MARK } from "../../convex/lib/browserInjectPolicy.ts";
 import {
   liveUrlFromRunPayloads,
   loginHostsMatch,
@@ -184,7 +185,8 @@ export function scaffoldTask(
   if (
     task.startsWith(ERRAND_MARK) ||
     task.startsWith(LOGIN_MARK) ||
-    task.startsWith(LOGIN_VAULT_MARK)
+    task.startsWith(LOGIN_VAULT_MARK) ||
+    task.startsWith(INJECT_MARK)
   ) {
     return task;
   }

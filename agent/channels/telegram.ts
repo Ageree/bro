@@ -48,6 +48,7 @@ import { compileTelegram } from "../lib/telegram-text.ts";
 import { parkTurn } from "../lib/channel-turn.ts";
 import { parkLastChannelTouch } from "../lib/early-deliver.ts";
 import { shortAckAttribute } from "../lib/short-ack.ts";
+import { cloudInjectAttribute } from "../../convex/lib/browserInjectPolicy.ts";
 
 function telegramAuthAttrs(opts: {
   conversationId: string;
@@ -66,6 +67,7 @@ function telegramAuthAttrs(opts: {
     channel: "telegram",
     ...(opts.inkboxHandle ? { inkboxHandle: opts.inkboxHandle } : {}),
     ...shortAckAttribute(opts.text ?? ""),
+    ...cloudInjectAttribute(opts.text ?? ""),
   };
 }
 

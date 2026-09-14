@@ -24,6 +24,7 @@ import {
 import { prefetchInstinctRecall } from "../lib/instinct-recall.ts";
 import { prefetchOpenRouter } from "../lib/openrouter-warm.ts";
 import { shortAckAttribute } from "../lib/short-ack.ts";
+import { cloudInjectAttribute } from "../../convex/lib/browserInjectPolicy.ts";
 import { secretEquals } from "../lib/secret-compare.ts";
 import {
   cabinetBaseUrl,
@@ -421,6 +422,7 @@ export default defineChannel({
               ...(inbound.messageId ? { messageId: inbound.messageId } : {}),
               origin: "human",
               ...shortAckAttribute(inbound.text),
+              ...cloudInjectAttribute(inbound.text),
             },
           },
         }),
@@ -614,7 +616,7 @@ export default defineChannel({
       } else if (kind === "watcher") {
         prompt = watcherWakeupPrompt(payload, lastSeen);
       } else if (kind === "browser_poll") {
-        prompt = `[background wakeup] Проверь статус текущего браузер-джоба вызовом тула browser_task с task=${payload}. Если completed — отправь человеку результаты. Если failed или джоб завис — коротко скажи об этом. Если ещё работает — ответь [SILENT].`;
+        prompt = `[background wakeup] Проверь статус текущего браузер-джоба вызовом тула browser_task с task=${payload}. Если человек уже прислал одноразовый код или уточнение к этой сессии, и оно ещё не введено — вызови browser_task с его точной строкой (сначала «ввожу код» / «ввожу»). Пароль не проси. Если completed — отправь человеку результаты. Если failed или джоб завис — коротко скажи об этом. Если ещё работает и инжектить нечего — ответь [SILENT].`;
         if (wakeupCarriesRunId(body.runId)) {
           let tenant;
           try {
