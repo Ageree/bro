@@ -1,5 +1,6 @@
 import {
   ALLOWANCE_MAX,
+  BROWSER_JOBS_UNLIMITED,
   RATE_COUNTER_CAP,
   RATE_WINDOW_PERIOD_MS,
   RATE_WINDOW_START_MS,
@@ -80,9 +81,17 @@ assert(msgAllowance(true, { paid: "42" }) === 42, "paid env");
 assert(msgAllowance(false, { free: "nope" }) === 30, "free garbage");
 assert(msgAllowance(true, { paid: "0" }) === 500, "paid zero");
 
-assert(browserAllowance(false, {}) === 5, "browser free");
-assert(browserAllowance(true, {}) === 60, "browser paid");
-assert(browserAllowance(false, { free: "2" }) === 2, "browser env");
+assert(BROWSER_JOBS_UNLIMITED, "closed beta: browser jobs unlimited");
+assert(browserAllowance(false, {}) === ALLOWANCE_MAX, "browser free unlimited");
+assert(browserAllowance(true, {}) === ALLOWANCE_MAX, "browser paid unlimited");
+assert(
+  browserAllowance(false, { free: "2" }) === ALLOWANCE_MAX,
+  "browser env ignored while unlimited",
+);
+assert(
+  browserAllowance(true, { paid: "3" }) === ALLOWANCE_MAX,
+  "paid env ignored while unlimited",
+);
 
 assert(
   paywallDecision({ count: 30, allowance: 30, dayKey: "d1" }) === "allow",
@@ -207,7 +216,7 @@ assert(
   inboundDecisionOnLimitError({ marked: true }).decision === "paywall",
   "fail-closed marked → paywall",
 );
-assert(browserAllowedOnLimitError().allowed === false, "fail-closed browser");
+assert(browserAllowedOnLimitError().allowed === true, "fail-open browser");
 assert(
   inboundGateFromResult({ decision: "allow" }, undefined).decision === "allow",
   "gate success allow",
@@ -316,12 +325,12 @@ assert(
   "browser gate deny",
 );
 assert(
-  browserGateFromResult(undefined, new Error("convex down")).allowed === false,
-  "browser gate error → deny",
+  browserGateFromResult(undefined, new Error("convex down")).allowed === true,
+  "browser gate error → allow",
 );
 assert(
-  browserGateFromResult({ allowed: true }, new Error("boom")).allowed === false,
-  "browser error wins over result",
+  browserGateFromResult({ allowed: true }, new Error("boom")).allowed === true,
+  "browser error fail-open",
 );
 
 const msk = "Europe/Moscow";
@@ -480,6 +489,14 @@ assert(
 );
 
 const tenantsSrc = src("convex/tenants.ts");
+assert(
+  tenantsSrc.includes("if (!BROWSER_JOBS_UNLIMITED && used >= allowance)"),
+  "browser charge skips monthly cap",
+);
+assert(
+  tenantsSrc.includes("return BROWSER_JOBS_UNLIMITED ? true : ok"),
+  "browser charge never denies while unlimited",
+);
 const countFn = tenantsSrc.slice(tenantsSrc.indexOf("export const countInboundMessage"));
 assert(countFn.includes('tenant.status === "disabled"'), "countInbound drops disabled");
 assert(

@@ -449,6 +449,13 @@ assert(cabinet.includes('id="write-bro"'), "cabinet write-bro id");
 assert(cabinet.includes('id="pay-now"'), "cabinet pay cta");
 assert(cabinet.includes("Оплатить месяц"), "cabinet pay copy");
 assert(cabinet.includes("<h2>Лимиты</h2>"), "cabinet limits title");
+assert(cabinet.includes("Сообщения сегодня"), "cabinet keeps daily message meter");
+assert(!cabinet.includes("Браузер-задачи"), "cabinet hides browser-job meter");
+assert(!cabinet.includes("me.browserUsed"), "cabinet does not paint browser used");
+assert(
+  !cabinet.includes("me.browserAllowance"),
+  "cabinet does not paint browser allowance",
+);
 assert(cabinet.includes("<h2>Входы в сайты</h2>"), "cabinet site-logins title");
 assert(cabinet.includes("<h2>Оплаты</h2>"), "cabinet payments title");
 assert(cabinet.includes("broIMessageLink"), "write-bro uses the static iMessage link");
