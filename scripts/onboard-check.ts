@@ -128,16 +128,28 @@ assert(!/\[[^\]]+\]\(/ .test(help), "help no markdown links");
 assert(welcome.startsWith("Привет, я Bro."), "welcome opens as a person");
 assert(/сейф/i.test(welcome), "welcome vault card");
 assert(welcome.includes("vault.html?kind=payment"), "welcome sends the real vault card URL");
-assert(welcome.includes("bro-a1b2c3d4"), "welcome gives the real cabinet handle");
-assert(welcome.includes("/cabinet.html?handle=bro-a1b2c3d4"), "welcome sends cabinet login URL");
+assert(!welcome.includes("handle="), "welcome vault/cabinet URLs have no handle");
+assert(!welcome.includes("bro-a1b2c3d4"), "welcome never shows the handle");
+assert(welcome.includes("/cabinet.html"), "welcome sends cabinet login URL");
+assert(!/bro-[a-z0-9]{8}/.test(welcome), "welcome copy has no bro-xxxxxxxx");
 assert(
-  vaultCardUrl("https://brobro.tech", "bro-a1b2c3d4").includes("kind=payment"),
-  "vault URL is payment setup",
+  vaultCardUrl("https://brobro.tech").includes("kind=payment") &&
+    !vaultCardUrl("https://brobro.tech").includes("handle="),
+  "new vault URL is payment setup without handle",
+);
+assert(
+  vaultCardUrl("https://brobro.tech", "bro-a1b2c3d4").includes("handle=bro-a1b2c3d4"),
+  "old vault URL can still carry handle as a fallback",
+);
+assert(
+  cabinetLoginUrl("https://brobro.tech") === "https://brobro.tech/cabinet.html",
+  "new cabinet URL has no handle",
 );
 assert(
   cabinetLoginUrl("https://brobro.tech", "bro-a1b2c3d4").includes("handle=bro-a1b2c3d4"),
-  "cabinet URL carries handle",
+  "old cabinet URL can still carry handle as a fallback",
 );
+assert(/телефон/i.test(welcome), "welcome login is the phone");
 assert(bubbles.length >= 4 && bubbles.length <= 6, "welcome is a letter then vault and cabinet");
 assert(bubbles[0] === "Привет, я Bro. Я твой личный ассистент.", "first bubble is the greeting");
 for (const bubble of bubbles) {
@@ -162,7 +174,7 @@ assert(!/добав/i.test(welcome), "welcome does not promise add");
 assert(!/добав/i.test(welcomeJoin), "welcome never promises group add on Pro");
 assert(/Business|пауз/i.test(helpJoin), "help says groups after Business");
 assert(/пауз/i.test(welcome), "welcome says groups paused");
-assert(/Получить код/i.test(welcome), "welcome explains the iMessage login code");
+assert(/код/i.test(welcome), "welcome explains the iMessage login code");
 
 const bare = broVcard({});
 assert(bare.startsWith("BEGIN:VCARD\r\n"), "vcard begin crlf");

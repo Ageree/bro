@@ -50,13 +50,13 @@
   <div class="modal" id="login-modal" hidden>
     <div class="sheet" role="dialog" aria-labelledby="login-title">
       <h2 id="login-title">Вход</h2>
-      <p class="t-small t-mute" id="login-hint">Сначала напиши Bro в iMessage.</p>
-      <div id="login-handle-row" hidden>
-        <label for="login-handle">Bro</label>
-        <input id="login-handle" autocomplete="username" />
+      <p class="t-small t-mute" id="login-hint">Введи телефон, с которого пишешь Bro. Код придёт в iMessage.</p>
+      <div id="login-phone-row">
+        <label for="login-phone">Телефон</label>
+        <input id="login-phone" type="tel" inputmode="tel" autocomplete="tel" />
       </div>
-      <button class="btn sheet-cta" id="login-send" type="button">Написать Bro</button>
-      <button class="text-close" id="login-have-bro" type="button">Уже есть Bro</button>
+      <button class="btn sheet-cta" id="login-send" type="button">Получить код</button>
+      <button class="text-close" id="login-write-bro" type="button">Написать Bro</button>
       <div id="login-code-row" hidden>
         <label for="login-code">Код</label>
         <input id="login-code" inputmode="numeric" maxlength="6" autocomplete="one-time-code" />

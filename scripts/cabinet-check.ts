@@ -13,6 +13,8 @@ import {
   buildSnapshot,
   challengeExpiry,
   CHALLENGE_TTL_MS,
+  digitsLoginCode,
+  loginIdentity,
   loginStartDecision,
   loginVerifyDecision,
   MAX_VERIFY_ATTEMPTS,
@@ -51,6 +53,24 @@ assert(
     "unbound",
   "handle only",
 );
+assert(
+  loginStartDecision({
+    tenant: {
+      phoneE164: "+79001112233",
+      photonConversationId: "photon-space-1",
+      photonUserId: "photon-user-1",
+    },
+    now,
+  }) === "ok",
+  "phone-only photon tenant can log in",
+);
+assert(
+  loginIdentity({ photonUserId: "photon-user-1" }) === "photon-user-1",
+  "photon user is a login identity",
+);
+assert(loginIdentity({}) === undefined, "no identity");
+assert(digitsLoginCode("123 456") === "123456", "spaced otp");
+assert(digitsLoginCode("12") === null, "short otp");
 assert(
   loginStartDecision({
     tenant: { ...bound, inkboxConversationId: undefined },
@@ -350,23 +370,25 @@ const authJs = src("assets/auth.js");
 assert(authJs.includes('#login-open'), "auth binds #login-open");
 assert(authJs.includes('#login-modal'), "auth binds #login-modal");
 assert(!/\$\("\.login-open"\)/.test(authJs), "auth does not use class login-open");
-assert(authJs.includes("bro.handle"), "auth reads stored handle key");
-assert(authJs.includes("queryHandle"), "auth adopts handle from Bro's cabinet link");
+assert(authJs.includes("bro.phone"), "auth stores the phone they type");
+assert(authJs.includes("login-phone"), "auth binds the phone field");
+assert(authJs.includes("queryHandle"), "old ?handle= links still open login");
 assert(authJs.includes("URLSearchParams"), "auth reads ?handle=");
 assert(
   authJs.includes("fromUrl && !token()") && authJs.includes("openModal()"),
-  "Bro's handle link opens the existing login sheet",
+  "old handle link opens the same login sheet",
 );
-assert(authJs.includes("login-handle-row"), "auth still knows the handle row");
-assert(authJs.includes("login-have-bro"), "existing tenants can say they already have Bro");
-assert(authJs.includes("fieldHandle"), "existing tenants can enter the Bro they already have");
-assert(!authJs.includes("typedHandle"), "auth copy does not talk about typedHandle");
-assert(authJs.includes("loginHandle"), "auth still resolves a login handle");
-assert(authJs.includes("storedHandle"), "returning browsers reuse the stored Bro");
-assert(authJs.includes("Сначала напиши Bro в iMessage"), "missing session points at iMessage");
+assert(!authJs.includes("login-handle-row"), "auth has no handle field");
+assert(!authJs.includes("login-have-bro"), "auth does not ask people to type a handle");
+assert(!authJs.includes("fieldHandle"), "auth does not collect a typed handle");
+assert(authJs.includes("fallbackHandle"), "old ?handle= is a fallback only");
+assert(authJs.includes("storedPhone"), "returning browsers reuse the stored phone");
+assert(authJs.includes("Сначала напиши Bro в iMessage"), "unknown phone points at iMessage");
 assert(!authJs.includes("Запросить доступ"), "missing session does not mention request access");
 assert(!authJs.includes("bro-xxxxxxxx"), "auth copy has no handle jargon");
 assert(authJs.includes("Открой на iPhone"), "desktop without Bro stays an iPhone hint");
+assert(authJs.includes("Получить код"), "login send is get a code");
+assert(authJs.includes("login-write-bro"), "people who have not written Bro still can");
 assert(authJs.includes("#vault-open") || authJs.includes('vault-open'), "auth shows vault when logged in");
 assert(authJs.includes("vaultBtn"), "auth paints vault nav");
 
@@ -384,16 +406,19 @@ assert(
   "landing takes the login sheet from the shared stylesheet",
 );
 assert(
-  landing.includes("Сначала напиши Bro в iMessage"),
-  "login sheet starts from iMessage, not a desktop handle",
+  landing.includes("Введи телефон, с которого пишешь Bro"),
+  "login sheet asks for the iMessage phone",
 );
+assert(landing.includes('id="login-phone"'), "login sheet has a phone field");
 assert(!landing.includes("На компьютере введи handle"), "login sheet has no computer-handle essay");
 assert(!landing.includes(">Handle<"), "login sheet does not say Handle");
 assert(!landing.includes("bro-xxxxxxxx"), "login sheet has no handle placeholder");
+assert(!landing.includes("login-handle"), "login sheet has no handle field");
 assert(landing.includes('id="login-hint"'), "login hint is a short line");
-assert(landing.includes("Написать Bro"), "login first action is write Bro");
-assert(landing.includes('id="login-have-bro"'), "new people can stay on iMessage; existing people can continue");
-assert(landing.includes("Уже есть Bro"), "existing-tenant login is one short line");
+assert(landing.includes("Получить код"), "login first action is get a code");
+assert(landing.includes('id="login-write-bro"'), "new people can still write Bro");
+assert(landing.includes("Написать Bro"), "write-Bro stays as a second action");
+assert(!landing.includes("Уже есть Bro"), "login does not ask people to type a handle");
 const cabinet = src("cabinet.html");
 assert(cabinet.includes('id="vault"'), "cabinet vault card");
 assert(cabinet.includes("<h2>Сейф</h2>"), "cabinet vault title");
@@ -407,13 +432,17 @@ assert(cabinet.includes('id="chrome"'), "cabinet chrome card");
 assert(cabinet.includes("пришлёт ссылку в чат"), "cabinet login is a chat link");
 assert(!cabinet.includes("profile.sh"), "cabinet has no terminal helper");
 assert(!cabinet.includes('id="profile-save"'), "cabinet does not bind profile ids");
-assert(cabinet.includes('id="login-handle-row"'), "cabinet login handle row");
-assert(cabinet.includes("handle-xl"), "cabinet handle is large");
-assert(cabinet.includes("Сначала напиши Bro в iMessage"), "cabinet login starts from iMessage");
+assert(cabinet.includes('id="login-phone"'), "cabinet login phone field");
+assert(!cabinet.includes("login-handle"), "cabinet login has no handle field");
+assert(cabinet.includes("handle-xl"), "cabinet title stays large");
+assert(cabinet.includes(">Кабинет</h1>") || cabinet.includes('"Кабинет"'), "cabinet heading is Кабинет");
+assert(!cabinet.includes("esc(me.handle)"), "cabinet does not show the handle");
+assert(cabinet.includes("перейти в сейф"), "cabinet opens vault as перейти в сейф");
+assert(cabinet.includes("Введи телефон, с которого пишешь Bro"), "cabinet login asks for the phone");
 assert(!cabinet.includes("На компьютере введи handle"), "cabinet login has no computer-handle essay");
 assert(cabinet.includes("Написать Bro"), "cabinet write-bro cta");
-assert(cabinet.includes('id="login-have-bro"'), "cabinet keeps the existing-tenant path");
-assert(cabinet.includes("Уже есть Bro"), "cabinet existing-tenant copy is short");
+assert(cabinet.includes('id="login-write-bro"'), "cabinet keeps write Bro on the sheet");
+assert(!cabinet.includes("Уже есть Bro"), "cabinet does not ask for a handle");
 assert(cabinet.includes('id="write-bro"'), "cabinet write-bro id");
 assert(cabinet.includes('id="pay-now"'), "cabinet pay cta");
 assert(cabinet.includes("Оплатить месяц"), "cabinet pay copy");
@@ -494,9 +523,10 @@ assert(cabinet.includes('family=Prata'), "cabinet is set in the display serif");
 assert(cabinet.includes('class="sec"'), "cabinet is sections divided by rules");
 
 const vault = src("vault.html");
-assert(vault.includes('id="login-handle-row"'), "vault login handle row");
-assert(vault.includes('id="login-have-bro"'), "vault keeps the existing-tenant path");
-assert(vault.includes("Уже есть Bro"), "vault existing-tenant copy is short");
+assert(vault.includes('id="login-phone"'), "vault login phone field");
+assert(!vault.includes("login-handle"), "vault login has no handle field");
+assert(vault.includes('id="login-write-bro"'), "vault keeps write Bro on the sheet");
+assert(!vault.includes("Уже есть Bro"), "vault does not ask for a handle");
 assert(vault.includes('href="/assets/brand.css"'), "vault uses the brand stylesheet");
 assert(!vault.includes("meadow"), "vault has no photograph behind it");
 assert(!vault.includes('class="card"'), "vault has no cards");
@@ -504,9 +534,12 @@ const vaultJs = src("assets/vault.js");
 assert(!vaultJs.includes("ghost"), "vault rows do not paint the old pill button");
 assert(vaultJs.includes("Карта добавлена"), "vault savedText shows card added message");
 assert(brand.includes("--rule:"), "the system has one hairline token");
-assert(landing.includes('id="login-handle-row"'), "landing login handle row");
+assert(landing.includes('id="login-phone-row"'), "landing login phone row");
 
 const httpSrc = src("convex/http.ts");
+assert(httpSrc.includes("normalizePhotonE164"), "login start normalizes the phone");
+assert(httpSrc.includes("body.phone"), "login start accepts phone");
+assert(httpSrc.includes("digitsLoginCode"), "login verify accepts a spaced code");
 assert(httpSrc.includes("/me/memories/forget"), "http forget route");
 assert(
   httpSrc.includes("forgetMemoriesForTenant"),
