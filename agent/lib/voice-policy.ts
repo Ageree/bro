@@ -134,7 +134,7 @@ export function parseSttResponse(
     return { error: "stt error" };
   }
   if (typeof obj.text !== "string") return { error: "missing transcript" };
-  const text = obj.text.trim();
+  const text = obj.text.replace(/[​-‍﻿]/g, "").trim();
   if (!text) return { error: "empty transcript" };
   const usage =
     obj.usage !== null && typeof obj.usage === "object"

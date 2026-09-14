@@ -1,6 +1,7 @@
 import {
   buildNativeAutofillPayload,
   nativeAutofillTokens,
+  originAllows,
   vaultClaimValues,
 } from "../agent/subagents/worker/lib/autofill/claims.ts";
 import {
@@ -227,6 +228,14 @@ const address = JSON.stringify({
   city: "Москва",
   countryCode: "RU",
 });
+
+// Test originAllows
+assert(originAllows("https://www.ozon.ru", "https://ozon.ru"), "www↔bare both ways (saved with www)");
+assert(originAllows("https://ozon.ru", "https://www.ozon.ru"), "www↔bare both ways (saved bare)");
+assert(originAllows("https://ozon.ru", "https://auth.ozon.ru"), "subdomain under parent");
+assert(!originAllows("https://auth.ozon.ru", "https://ozon.ru"), "parent under saved subdomain denied");
+assert(!originAllows("https://ozon.ru", "https://evil-ozon.ru"), "different domain denied");
+assert(!originAllows("http://ozon.ru", "https://ozon.ru"), "protocol mismatch denied");
 
 const bound = vaultClaimValues(
   "login",

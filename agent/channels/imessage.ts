@@ -515,7 +515,7 @@ export default defineChannel({
           attributes: {
             conversationId: got.conversationId,
             inkboxHandle: got.handle,
-            origin: "human",
+            origin: "wakeup",
           },
         },
       });

@@ -87,6 +87,29 @@ assert.deepEqual(
   ["112233"],
   "dedupe",
 );
+assert.deepEqual(
+  extractOtpCodes("Код подтверждения: 123 456"),
+  ["123456"],
+  "spaced 3-3 digits joined",
+);
+assert.deepEqual(
+  extractOtpCodes("код 55 44 33"),
+  ["554433"],
+  "spaced 2-2-2 digits joined",
+);
+assert.deepEqual(
+  extractOtpCodes("Ваш код 4821"),
+  ["4821"],
+  "contiguous 4-digit code unchanged",
+);
+assert(
+  extractOtpCodes("сумма 1 990 руб, код 482911").includes("482911"),
+  "code extracted from price context",
+);
+assert(
+  !extractOtpCodes("сумма 1 990 руб, код 482911").includes("1990"),
+  "price 1 990 not treated as code",
+);
 assert.equal(
   looksLikeOtpMail({
     from: "noreply@wildberries.ru",

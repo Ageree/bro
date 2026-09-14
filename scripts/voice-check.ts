@@ -80,6 +80,7 @@ function sttErr(json: unknown): string {
 
 eq(sttErr({ text: "  " }), "empty transcript", "whitespace empty");
 eq(sttErr({ text: "" }), "empty transcript", "empty string");
+eq(sttErr({ text: "​​" }), "empty transcript", "zero-width chars empty");
 eq(sttErr({ foo: 1 }), "missing transcript", "missing text");
 eq(sttErr(null), "invalid stt response", "null json");
 eq(sttErr({ error: { code: 400, message: "nope" } }), "nope", "error object");

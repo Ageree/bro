@@ -192,6 +192,27 @@ export function vaultClaimValues(
   return codec.claims(secret, origin);
 }
 
+export function originAllows(saved: string, page: string): boolean {
+  try {
+    const savedUrl = new URL(saved);
+    const pageUrl = new URL(page);
+
+    // Require same protocol
+    if (savedUrl.protocol !== pageUrl.protocol) return false;
+
+    // Strip leading www. from both hostnames
+    let savedHost = savedUrl.hostname;
+    let pageHost = pageUrl.hostname;
+    if (savedHost.startsWith("www.")) savedHost = savedHost.slice(4);
+    if (pageHost.startsWith("www.")) pageHost = pageHost.slice(4);
+
+    // Allow when hosts match or page is a subdomain of saved
+    return pageHost === savedHost || pageHost.endsWith("." + savedHost);
+  } catch {
+    return false;
+  }
+}
+
 function requireBoundLogin(secret: string, origin: string) {
   const login = parseLoginPayload(secret);
   if (!login) {
@@ -199,7 +220,7 @@ function requireBoundLogin(secret: string, origin: string) {
       "This saved login is not assigned to a website. Ask the coordinator to have it saved again.",
     );
   }
-  if (login.origin !== origin) {
+  if (!originAllows(login.origin, origin)) {
     throw new Error(`This saved login is restricted to ${login.origin}.`);
   }
   return login;
