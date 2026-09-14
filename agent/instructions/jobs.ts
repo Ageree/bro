@@ -11,6 +11,7 @@ import {
 } from "../lib/job-wake.ts";
 import { isShortAckTurn, shortAckInstruction } from "../lib/short-ack.ts";
 import { tenantId } from "../lib/tenant";
+import { latencyFields } from "../lib/latency-log.ts";
 
 export default defineDynamic({
   events: {
@@ -24,9 +25,10 @@ export default defineDynamic({
       }
       try {
         const phone = tenantId(ctx);
+        const attrs = turnAttributes(ctx);
+        console.log("turn started", latencyFields(attrs));
         const rows = await jobWakeRows(phone);
         const now = Date.now();
-        const attrs = turnAttributes(ctx);
         const jobCheck = isJobCheckWakeup(attrs);
         const scope = jobCheck ? { payload: jobCheckPayload(attrs) } : undefined;
         const due = scope ? dueJobNudges(rows, now, scope) : [];

@@ -40,6 +40,7 @@ import {
 } from "../lib/connect-link";
 import { inboundIMessageText } from "../lib/imessage-text";
 import { parkTurn } from "../lib/channel-turn.ts";
+import { inboundAtAttribute } from "../lib/latency-log.ts";
 import { parkLastChannelTouch } from "../lib/early-deliver.ts";
 import { jobCheckWakePrompt } from "../lib/job-wake.ts";
 import { imessageDeliveryEvents } from "../lib/turn-delivery-events.ts";
@@ -59,8 +60,10 @@ import { eventPrompt } from "../../convex/lib/watcherPolicy.ts";
 import { syncTenantArchive } from "../lib/archive-sync.ts";
 import {
   photonWebhookOk,
+  prefetchSpectrum,
   readPhotonInbound,
   sendPhotonText,
+  sendPhotonTyping,
 } from "../lib/photon.ts";
 import {
   isBluePhotonService,
@@ -237,6 +240,7 @@ export default defineChannel({
       return Response.json({ ok: true });
     }),
     POST("/webhooks/photon", async (request, { from, waitUntil }) => {
+      const receivedAt = Date.now();
       const secret = process.env.SPECTRUM_WEBHOOK_SECRET?.trim();
       if (!secret) {
         return new Response("missing SPECTRUM_WEBHOOK_SECRET", { status: 500 });
@@ -267,6 +271,16 @@ export default defineChannel({
 
       const preview = inbound.text;
       prefetchOpenRouter();
+      // «печатает…» goes out before any Convex hop: the human sees Bro is
+      // alive within the Photon round trip, not after the first token.
+      if (preview && !shouldSkipAgentTurn({ firstBind: false, text: preview })) {
+        parkTurn(
+          waitUntil,
+          sendPhotonTyping({ conversationId: inbound.spaceId }),
+        );
+      } else {
+        prefetchSpectrum();
+      }
       if (inbound.senderPhone && preview) {
         prefetchOneToOneStart(inbound.senderPhone, preview);
       }
@@ -405,6 +419,7 @@ export default defineChannel({
         ownerPhone,
         conversationId: inbound.spaceId,
         chars: inbound.text.length,
+        queuedAfterMs: Date.now() - receivedAt,
       });
 
       parkTurn(
@@ -421,6 +436,7 @@ export default defineChannel({
               ...(inbound.messageId ? { messageId: inbound.messageId } : {}),
               origin: "human",
               ...shortAckAttribute(inbound.text),
+              ...inboundAtAttribute(receivedAt),
             },
           },
         }),

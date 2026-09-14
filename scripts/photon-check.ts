@@ -194,4 +194,24 @@ assert(agentSrc.includes('"@grpc/grpc-js"'), "agent traces grpc-js");
 assert(agentSrc.includes('"nice-grpc"'), "agent traces nice-grpc");
 assert(agentSrc.includes('"nice-grpc-common"'), "agent traces nice-grpc-common");
 
+// Latency: one Spectrum app per instance (boot = 2 Photon HTTP calls + TLS
+// gRPC), typing indicator before the first Convex hop, re-armed around tools.
+assert(photonSrc.includes("let spectrumHandle"), "Spectrum app is cached across sends");
+assert(photonSrc.includes("resetSpectrum"), "transport errors drop the cached app");
+assert(photonSrc.includes("export async function sendPhotonTyping"), "typing helper exists");
+assert(photonSrc.includes("startTyping"), "typing uses Spectrum space.startTyping");
+assert(photonSrc.includes("BRO_PHOTON_KEEPALIVE"), "per-send boot stays available as an escape hatch");
+assert(channel.includes("sendPhotonTyping({ conversationId: inbound.spaceId })"), "webhook shows «печатает…» right away");
+{
+  const idx = channel.indexOf("sendPhotonTyping({ conversationId: inbound.spaceId })");
+  const tenantIdx = channel.indexOf("await getTenant(inbound.senderPhone)");
+  assert(idx > 0 && tenantIdx > idx, "typing is fired before the first tenant lookup");
+}
+const events = src("agent/lib/turn-delivery-events.ts");
+assert(events.includes("signalTurnTyping"), "delivery events re-arm typing around tools");
+assert(events.includes('state: "stop"'), "silent completion drops the indicator");
+const { photonKeepAlive } = await import("../agent/lib/photon.ts");
+assert(photonKeepAlive({}) === true, "keep-alive is the default");
+assert(photonKeepAlive({ BRO_PHOTON_KEEPALIVE: "0" }) === false, "BRO_PHOTON_KEEPALIVE=0 boots per send");
+
 console.log("photon-check ok");

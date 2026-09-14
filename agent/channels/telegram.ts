@@ -46,6 +46,7 @@ import {
 } from "../lib/telegram";
 import { compileTelegram } from "../lib/telegram-text.ts";
 import { parkTurn } from "../lib/channel-turn.ts";
+import { inboundAtAttribute } from "../lib/latency-log.ts";
 import { parkLastChannelTouch } from "../lib/early-deliver.ts";
 import { shortAckAttribute } from "../lib/short-ack.ts";
 
@@ -56,6 +57,7 @@ function telegramAuthAttrs(opts: {
   messageId: string;
   inkboxHandle?: string;
   text?: string;
+  receivedAt?: number;
 }): Record<string, string> {
   return {
     conversationId: opts.conversationId,
@@ -66,6 +68,7 @@ function telegramAuthAttrs(opts: {
     channel: "telegram",
     ...(opts.inkboxHandle ? { inkboxHandle: opts.inkboxHandle } : {}),
     ...shortAckAttribute(opts.text ?? ""),
+    ...inboundAtAttribute(opts.receivedAt ?? Date.now()),
   };
 }
 
@@ -143,6 +146,7 @@ export default defineChannel({
   turnPolicy: "steer",
   routes: [
     POST("/webhooks/telegram", async (request, { from, waitUntil }) => {
+      const receivedAt = Date.now();
       if (!webhookSecretOk(request)) {
         return new Response("unauthorized", { status: 401 });
       }
@@ -341,6 +345,7 @@ export default defineChannel({
         chars: inbound.text.length,
         voice: inbound.voice,
         images: typeof content === "string" ? 0 : content.length - 1,
+        queuedAfterMs: Date.now() - receivedAt,
       });
       parkTurn(
         waitUntil,
@@ -357,6 +362,7 @@ export default defineChannel({
               messageId: String(msg.message_id),
               inkboxHandle: tenant.inkboxHandle,
               text: inbound.text,
+              receivedAt,
             }),
           },
         }),

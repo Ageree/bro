@@ -16,6 +16,9 @@ import {
   turnOrigin,
 } from "./silent-turn.ts";
 import { stripConnectUrls } from "./connect-link.ts";
+import { latencyFields } from "./latency-log.ts";
+import { sendPhotonTyping } from "./photon.ts";
+import { sendTelegramTyping } from "./telegram.ts";
 import {
   routingFromAuth,
   routingPhone,
@@ -138,6 +141,25 @@ export async function deliverTurnBubble(opts: {
   await persistSeen(phone, opts.seen);
 }
 
+/** Re-arm «печатает…» while Bro works (a sent bubble clears it on the phone),
+ *  or drop it when a turn ends without a bubble. Best effort, never awaited. */
+export function signalTurnTyping(opts: {
+  conversationId: string;
+  attrs?: AuthAttrs;
+  state: "start" | "stop";
+}): void {
+  const routing = routingFromAuth(opts.attrs);
+  if (routing.channel === "telegram") {
+    if (opts.state !== "start" || !routing.telegramChatId) return;
+    void sendTelegramTyping(routing.telegramChatId).catch((err) =>
+      console.error("telegram typing failed", err),
+    );
+    return;
+  }
+  if (!opts.conversationId) return;
+  void sendPhotonTyping({ conversationId: opts.conversationId, state: opts.state });
+}
+
 export function createTurnDeliveryEvents(opts: {
   accept: (attrs: AuthAttrs) => boolean;
 }) {
@@ -191,16 +213,27 @@ export function createTurnDeliveryEvents(opts: {
       recordSent(earlySent, event.turnId, planned.send, Date.now());
       console.log("turn deliver appended", {
         conversationId,
+        ...latencyFields(auth?.attributes),
         routed: routingFromAuth(auth?.attributes).channel ?? null,
         chars: planned.send.length,
       });
+      const bubbleNo = bubblesFor(earlySent, event.turnId).length;
       void deliverTurnBubble({
         conversationId,
         text: stripConnectUrls(planned.send),
         attrs: auth?.attributes,
         principalId: auth?.principalId,
         seen: planned.seen,
-      }).catch((err) => console.error("streamed bubble send failed", err));
+      })
+        .then(() => {
+          if (bubbleNo === 1) {
+            console.log("turn first bubble delivered", {
+              conversationId,
+              ...latencyFields(auth?.attributes),
+            });
+          }
+        })
+        .catch((err) => console.error("streamed bubble send failed", err));
     },
     async "actions.requested"(
       event: { turnId: string },
@@ -215,10 +248,14 @@ export function createTurnDeliveryEvents(opts: {
         soFar: soFarFor(earlySent, event.turnId),
         alreadySent: bubblesFor(earlySent, event.turnId),
       });
-      if (!planned.send) return;
+      if (!planned.send) {
+        signalTurnTyping({ conversationId, attrs: auth?.attributes, state: "start" });
+        return;
+      }
       recordSent(earlySent, event.turnId, planned.send, Date.now());
       console.log("turn deliver pre-tool", {
         conversationId,
+        ...latencyFields(auth?.attributes),
         routed: routingFromAuth(auth?.attributes).channel ?? null,
         chars: planned.send.length,
       });
@@ -228,7 +265,12 @@ export function createTurnDeliveryEvents(opts: {
         attrs: auth?.attributes,
         principalId: auth?.principalId,
         seen: planned.seen,
-      }).catch((err) => console.error("pre-tool bubble send failed", err));
+      })
+        .catch((err) => console.error("pre-tool bubble send failed", err))
+        .finally(() => {
+          // The bubble cleared the indicator; tools are still running.
+          signalTurnTyping({ conversationId, attrs: auth?.attributes, state: "start" });
+        });
     },
     async "message.completed"(
       event: {
@@ -266,6 +308,7 @@ export function createTurnDeliveryEvents(opts: {
         recordSent(earlySent, event.turnId, planned.send, Date.now());
         console.log("turn deliver completed", {
           conversationId,
+          ...latencyFields(auth?.attributes),
           routed: routingFromAuth(auth?.attributes).channel ?? null,
           chars: planned.send.length,
         });
@@ -284,6 +327,9 @@ export function createTurnDeliveryEvents(opts: {
         auth?.principalId,
         planned.seen,
       );
+      if (event.finishReason !== "tool-calls" && !planned.fallback) {
+        signalTurnTyping({ conversationId, attrs: auth?.attributes, state: "stop" });
+      }
       if (!planned.fallback) return;
       if (event.finishReason !== "tool-calls") {
         console.error("empty turn", {

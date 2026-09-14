@@ -78,19 +78,36 @@ type SpectrumApp = {
   stop?: () => Promise<void>;
 };
 
+type SpectrumSpace = {
+  id?: string;
+  send: (content: unknown) => Promise<unknown>;
+  startTyping?: () => Promise<void>;
+  stopTyping?: () => Promise<void>;
+};
+
 type SpectrumIm = {
   user: (phone: string) => Promise<unknown>;
   space: {
-    get: (id: string) => Promise<{ send: (content: unknown) => Promise<unknown> }>;
-    create: (user: unknown) => Promise<{
-      id?: string;
-      send: (content: unknown) => Promise<unknown>;
-    }>;
+    get: (id: string) => Promise<SpectrumSpace>;
+    create: (user: unknown) => Promise<SpectrumSpace>;
   };
 };
 
-async function withSpectrum<T>(fn: (im: SpectrumIm, app: SpectrumApp) => Promise<T>): Promise<T> {
-  const { id, secret } = projectCreds();
+type SpectrumHandle = { im: SpectrumIm; app: SpectrumApp };
+
+/** Booting a Spectrum app costs two Photon HTTP calls (project + iMessage
+ *  tokens) plus a TLS gRPC handshake — 1–2 s. One boot per send put that in
+ *  front of every bubble, including the first streamed one. Keep one app per
+ *  instance; the SDK refreshes its own tokens. `photon send` invalidates on a
+ *  transport error so the next call reboots. */
+let spectrumHandle: Promise<SpectrumHandle> | undefined;
+let spectrumCredsKey: string | undefined;
+
+function credsKey(id: string, secret: string): string {
+  return `${id}\n${secret}`;
+}
+
+async function bootSpectrum(id: string, secret: string): Promise<SpectrumHandle> {
   const [{ Spectrum }, { imessage }] = await Promise.all([
     import("spectrum-ts"),
     import("spectrum-ts/providers/imessage"),
@@ -100,10 +117,100 @@ async function withSpectrum<T>(fn: (im: SpectrumIm, app: SpectrumApp) => Promise
     projectSecret: secret,
     providers: [imessage.config()],
   });
+  return { im: imessage(app) as unknown as SpectrumIm, app: app as SpectrumApp };
+}
+
+/** Whether sends reuse one Spectrum app (default) or boot one per call. */
+export function photonKeepAlive(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = env.BRO_PHOTON_KEEPALIVE?.trim().toLowerCase();
+  return !(raw === "0" || raw === "false" || raw === "off");
+}
+
+function spectrumApp(): Promise<SpectrumHandle> {
+  const { id, secret } = projectCreds();
+  const key = credsKey(id, secret);
+  if (spectrumHandle && spectrumCredsKey === key) return spectrumHandle;
+  const pending = bootSpectrum(id, secret);
+  spectrumHandle = pending;
+  spectrumCredsKey = key;
+  pending.catch(() => {
+    if (spectrumHandle === pending) spectrumHandle = undefined;
+  });
+  return pending;
+}
+
+/** Drop the cached app (after a transport error). The old app is stopped in
+ *  the background; a concurrent send that still holds it finishes on it. */
+export function resetSpectrum(): void {
+  const stale = spectrumHandle;
+  spectrumHandle = undefined;
+  spectrumCredsKey = undefined;
+  if (stale) {
+    void stale
+      .then((h) => h.app.stop?.())
+      .catch(() => undefined);
+  }
+}
+
+/** Warm the Photon transport ahead of the first bubble (webhook, keep-warm). */
+export function prefetchSpectrum(): void {
+  if (!photonKeepAlive()) return;
   try {
-    return await fn(imessage(app) as unknown as SpectrumIm, app);
-  } finally {
-    await (app as SpectrumApp).stop?.().catch(() => undefined);
+    void spectrumApp().catch((err) => console.error("[photon] warm failed", err));
+  } catch {
+    // creds missing — nothing to warm
+  }
+}
+
+function isTransportError(err: unknown): boolean {
+  const text = err instanceof Error ? `${err.name} ${err.message}` : String(err);
+  return /UNAVAILABLE|UNAUTHENTICATED|DEADLINE|ECONNRESET|ECONNREFUSED|socket|closed|channel|token|expired|auth/i.test(
+    text,
+  );
+}
+
+async function withSpectrum<T>(fn: (im: SpectrumIm, app: SpectrumApp) => Promise<T>): Promise<T> {
+  if (!photonKeepAlive()) {
+    const { id, secret } = projectCreds();
+    const { im, app } = await bootSpectrum(id, secret);
+    try {
+      return await fn(im, app);
+    } finally {
+      await app.stop?.().catch(() => undefined);
+    }
+  }
+  const handle = spectrumApp();
+  const { im, app } = await handle;
+  try {
+    return await fn(im, app);
+  } catch (err) {
+    if (spectrumHandle === handle && isTransportError(err)) resetSpectrum();
+    throw err;
+  }
+}
+
+/** iMessage «печатает…» bubble. Best effort: never throws, never blocks. */
+export async function sendPhotonTyping(opts: {
+  conversationId: string;
+  state?: "start" | "stop";
+}): Promise<boolean> {
+  const conversationId = opts.conversationId.trim();
+  if (!conversationId) return false;
+  try {
+    return await withSpectrum(async (im) => {
+      const space = await im.space.get(conversationId);
+      if (opts.state === "stop") {
+        if (!space.stopTyping) return false;
+        await space.stopTyping();
+      } else {
+        if (!space.startTyping) return false;
+        await space.startTyping();
+      }
+      return true;
+    });
+  } catch (err) {
+    console.error("[photon] typing failed", err);
+    return false;
   }
 }
 
