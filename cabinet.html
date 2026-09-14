@@ -182,26 +182,51 @@
           '<p class="status-line" id="memory-status"></p></section>';
       }
 
+      /* Expired or revoked session: drop the token and show the login sheet. */
+      function sessionExpired() {
+        localStorage.removeItem(TOKEN);
+        boot.hidden = false;
+        body.hidden = true;
+        boot.textContent = "Сессия истекла. Войди снова.";
+        document.getElementById("login-open").hidden = false;
+        document.getElementById("logout").hidden = true;
+        var vaultNav = document.getElementById("vault-open");
+        if (vaultNav) vaultNav.hidden = true;
+      }
+
+      function withStatus(res) {
+        return res.json().then(function (data) { return { status: res.status, data: data }; });
+      }
+
       function bindPay() {
         var btn = document.getElementById("pay-now");
         if (!btn) return;
         btn.addEventListener("click", function () {
           var st = document.getElementById("pay-status");
+          if (btn.disabled) return;
+          btn.disabled = true;
           st.textContent = "Открываем ЮKassa…";
           fetch(base + "/me/pay", {
             method: "POST",
             headers: { Authorization: "Bearer " + t },
           })
-            .then(function (res) { return res.json(); })
-            .then(function (data) {
+            .then(withStatus)
+            .then(function (got) {
+              if (got.status === 401) {
+                sessionExpired();
+                return;
+              }
+              var data = got.data;
               if (data.ok && data.confirmationUrl && /^https:\/\//.test(data.confirmationUrl)) {
                 window.location.href = data.confirmationUrl;
                 return;
               }
+              btn.disabled = false;
               if (data.code === "billing_off") st.textContent = "Оплата скоро";
               else st.textContent = "Не вышло, нажми ещё раз";
             })
             .catch(function () {
+              btn.disabled = false;
               st.textContent = "Не вышло, нажми ещё раз";
             });
         });
@@ -240,8 +265,13 @@
             },
             body: JSON.stringify({ tz: tz }),
           })
-            .then(function (res) { return res.json(); })
-            .then(function (data) {
+            .then(withStatus)
+            .then(function (got) {
+              if (got.status === 401) {
+                sessionExpired();
+                return;
+              }
+              var data = got.data;
               if (!data.ok) {
                 st.textContent = "Не вышло, нажми ещё раз";
                 return;
@@ -278,8 +308,13 @@
             },
             body: JSON.stringify({ needle: needle }),
           })
-            .then(function (res) { return res.json(); })
-            .then(function (data) {
+            .then(withStatus)
+            .then(function (got) {
+              if (got.status === 401) {
+                sessionExpired();
+                return;
+              }
+              var data = got.data;
               if (!data.ok) {
                 st.textContent = "Не вышло, нажми ещё раз";
                 return;
@@ -390,14 +425,7 @@
           .then(function (res) { return res.json().then(function (data) { return { res: res, data: data }; }); })
           .then(function (got) {
             if (!got.res.ok || !got.data.ok) {
-              localStorage.removeItem(TOKEN);
-              boot.hidden = false;
-              body.hidden = true;
-              boot.textContent = "Сессия истекла. Войди снова.";
-              document.getElementById("login-open").hidden = false;
-              document.getElementById("logout").hidden = true;
-              var vaultNav = document.getElementById("vault-open");
-              if (vaultNav) vaultNav.hidden = true;
+              sessionExpired();
               return null;
             }
             return got.data.me;
