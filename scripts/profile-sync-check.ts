@@ -296,7 +296,7 @@ assert(
   "taxi goes to browser_task first",
 );
 assert(
-  src("agent/instructions.md").includes("Cloud входит сам"),
+  src("agent/instructions.md").includes("вход проходит сам"),
   "eve tells the cloud job to log in",
 );
 assert(
