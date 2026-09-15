@@ -2,3 +2,4 @@
 {"ts":"2026-09-14T23:15:12Z","event":"briefs_written","note":"a1,a2,a3,a4,b1,b2; launched A1, B1, B2 implementation agents in parallel"}
 {"ts":"2026-09-14T23:39:33Z","event":"packages_merged","note":"B1 3f42ece, B2 b485c37, A1 af38ba3 committed+pushed; A2 and B3 running"}
 {"ts":"2026-09-15T00:09:17Z","event":"a2_merged","note":"A2 9f26105 committed+pushed (outcome protocol, wakeup payload, durable dedupe, never-silent); A3 running; A4 next"}
+{"ts":"2026-09-15T06:57:40Z","event":"a3_merged","note":"A3 d501d9e committed+pushed; A4 relaunched after a sonnet rate-limit failure; draft PR opening"}
