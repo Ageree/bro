@@ -22,6 +22,8 @@ import {
   isWaitInject,
   looksLikeCorrectionText,
   looksLikePasswordDump,
+  looksLikeSteer,
+  steerCandidate,
   pageWaitsForCode,
   resultWaitsForCode,
 } from "../convex/lib/browserInjectPolicy.ts";
@@ -221,6 +223,49 @@ assert(
   "stale completed run without session is not live",
 );
 
+// General steer: any relevant follow-up to a live Cloud session (not just
+// code/wait/correction) is docked into it; chatter and status questions are not.
+assert(
+  decideCloudInject("сделай эконом", liveRun).kind === "steer",
+  "extra instruction steers the live errand",
+);
+assert(
+  decideCloudInject("поменяй время подачи на 18:30", liveRun).kind === "steer" ||
+    decideCloudInject("поменяй время подачи на 18:30", liveRun).kind === "correction",
+  "a time tweak reaches the live errand",
+);
+{
+  const k = decideCloudInject("добавь комментарий водителю: перезвоню", liveRun).kind;
+  assert(k === "steer" || k === "correction", "a driver note reaches the live errand");
+}
+assert(decideCloudInject("спасибо", liveRun).kind === null, "thanks never steers");
+assert(decideCloudInject("ну что там?", liveRun).kind === null, "status question never steers");
+assert(decideCloudInject("ты тут?", liveRun).kind === null, "presence ping never steers");
+assert(
+  decideCloudInject("купи скотч на ozon", liveRun).kind === null,
+  "a new unrelated errand never steers the taxi run",
+);
+assert(
+  decideCloudInject("сделай эконом", {}).kind === null,
+  "steer needs a live session on record",
+);
+assert(steerCandidate("сделай эконом"), "instruction is a steer candidate");
+assert(!steerCandidate("спасибо"), "thanks is not a steer candidate");
+assert(!steerCandidate("ну что там?"), "status question is not a steer candidate");
+assert(!steerCandidate("482911"), "a bare code is not a steer candidate");
+assert(!steerCandidate("купи телефон на ozon"), "a fresh errand is not a steer candidate");
+assert(looksLikeSteer("сделай эконом", taxiTask), "steer fires with a cloud task on record");
+assert(!looksLikeSteer("сделай эконом", undefined), "steer needs a cloud task on record");
+assert(injectCandidate("сделай подешевле"), "an instruction is an inject candidate");
+assert(!injectCandidate("спасибо"), "thanks is not an inject candidate");
+assert(!injectCandidate("ну что там?"), "status question is not an inject candidate");
+assert(injectAckText("steer") === CHAT_INJECT_ACK, "steer ack is «ввожу»");
+assert(injectQueueInterrupt("steer"), "steer preempts the active run");
+assert(
+  injectQueueText({ kind: "steer", humanText: "сделай эконом" }).includes("сделай эконом"),
+  "steer queue carries the instruction",
+);
+
 assert(injectAckText("code") === CHAT_CODE_ACK, "code ack");
 assert(injectAckText("wait") === CHAT_WAIT_ACK, "wait ack");
 assert(injectAckText("correction") === CHAT_INJECT_ACK, "correction ack");
@@ -355,8 +400,8 @@ assert(
   "inject uses the raw stamped human line, not just the model's task arg",
 );
 assert(
-  tool.includes("injectKind && (tenant.browserSessionId"),
-  "a stamped inject turn never spawns a fresh browser errand",
+  tool.includes('injectKind === "code" && (tenant.browserSessionId'),
+  "a stamped code turn never spawns a fresh browser errand with a stale code",
 );
 assert(tool.includes("NO_LIVE_RUN_TEXT"), "no-live run is spoken");
 assert(tool.includes("ввожу код") || tool.includes("injectAckText"), "first bubble ack");

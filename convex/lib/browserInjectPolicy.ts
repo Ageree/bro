@@ -49,7 +49,40 @@ const CODE_WRAPPER = /^(?:код|воткод|смс|sms|otp|push|пуш)$/i;
 const OTP_RESULT =
   /needs user input:|код из|смс[- ]?код|sms|one[-\s]?time|passcode|пуш|push (?:code|approval)|verification code|live-url|live url|liveUrl/i;
 
-export type CloudInjectKind = "code" | "wait" | "correction";
+export type CloudInjectKind = "code" | "wait" | "correction" | "steer";
+
+// Pure chatter and status questions to Bro must never be docked into a live
+// Cloud session. Everything else the human sends while a session is live is
+// treated as a relevant steer (extra instruction / detail for the errand).
+const SMALLTALK =
+  /^(привет\w*|здоров\w*|хай|ку|hi|hello|hey|спасибо( большое)?|спс|благодар\w*|пасиб\w*|ок\w*|okay?|ok|да|нет|неа|ага|угу|понял\w*|ясно|хорошо|ладно|класс|супер|отлично|круто|збс|топ|thanks|thx|ty|лол|ok\b|👍|🙏|❤️|😂|🔥|😊)\s*[.!?…]*$/iu;
+
+const STATUS_Q =
+  /(что там|как там|как дела|ну как|что по|есть новости|готово|status|статус|где (мой )?заказ|ты (тут|здесь|там)|получилось|сделал(а)?\??$|ну что)/i;
+
+/** A message worth docking into a live Cloud session as a steer, sans session context. */
+export function steerCandidate(text: string): boolean {
+  const t = text.trim().normalize("NFC").replace(/ё/gi, "е");
+  if (!t || t.length > 400) return false;
+  if (looksLikePasswordDump(t)) return false;
+  if (SMALLTALK.test(t)) return false;
+  if (STATUS_Q.test(t)) return false;
+  // Codes / «подожди» / corrections are their own kinds.
+  if (isChatCodeMessage(t) || isWaitInject(t) || looksLikeCorrectionText(t)) {
+    return false;
+  }
+  // A brand-new, unrelated errand opens a fresh session, it is not a steer.
+  if (looksLikeFreshErrand(t)) return false;
+  return true;
+}
+
+/** Steer only fires while a Cloud errand session is actually on record. */
+export function looksLikeSteer(
+  text: string,
+  storedTask?: string | null,
+): boolean {
+  return steerCandidate(text) && isBroCloudTask(storedTask);
+}
 
 export type CloudInjectDecision = {
   kind: CloudInjectKind | null;
@@ -289,6 +322,12 @@ export function decideCloudInject(
     return { kind: "correction" };
   }
 
+  // Any other relevant follow-up while a Cloud session is live is a steer:
+  // an extra instruction or detail the human wants applied to the open errand.
+  if (looksLikeSteer(incoming, opts.storedTask)) {
+    return { kind: "steer" };
+  }
+
   return { kind: null };
 }
 
@@ -302,7 +341,8 @@ export function injectCandidate(text: string): boolean {
   return (
     isChatCodeMessage(text) ||
     isWaitInject(text) ||
-    looksLikeCorrectionText(text)
+    looksLikeCorrectionText(text) ||
+    steerCandidate(text)
   );
 }
 
@@ -402,7 +442,7 @@ export function injectQueueText(opts: {
  * code is the input a waiting agent expects next, so it is appended, not forced.
  */
 export function injectQueueInterrupt(kind: CloudInjectKind): boolean {
-  return kind === "wait" || kind === "correction";
+  return kind === "wait" || kind === "correction" || kind === "steer";
 }
 
 export function injectFollowTask(opts: {
