@@ -519,15 +519,13 @@ export default defineTool({
         attrs: attrsFromSession(ctx.session),
       });
       if (injected) return injected;
-      // A stamped code (or confirm) turn must never fall through to a fresh
-      // browser errand: a new session would request its own new code and
-      // reject the stale one, and a confirm has nothing to re-do in a fresh
-      // browser either. If a session is on record but the turn could not be
-      // injected (browser gone), say so instead of starting a new one.
-      if (
-        (injectKind === "code" || injectKind === "confirm") &&
-        (tenant.browserSessionId || tenant.browserRunId)
-      ) {
+      // A stamped inject turn (code / «подожди» / correction / confirm) must
+      // never fall through to a fresh browser errand when a session is on
+      // record: a new session would drop the live login (a fresh code would
+      // be requested, rejecting the stale one, and a confirm has nothing to
+      // re-do in a fresh browser either). If it could not be injected
+      // (browser gone), say so instead of starting a new one.
+      if (injectKind && (tenant.browserSessionId || tenant.browserRunId)) {
         return { status: "no_wait", entered: false, hint: NO_LIVE_RUN_TEXT };
       }
     }

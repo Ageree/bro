@@ -437,11 +437,23 @@ assert(
 );
 assert(
   injectQueueText({ kind: "steer", humanText: "сделай эконом" }).startsWith("Дополнение"),
-  "steer queue text says Дополнение, not Уточнение",
+  "steer queue text says Дополнение, not Инструкция",
 );
 assert(
-  injectQueueText({ kind: "correction", humanText: "Ленина 12" }).startsWith("Уточнение"),
-  "correction queue text still says Уточнение",
+  injectQueueText({ kind: "correction", humanText: "Ленина 12" }).startsWith("Инструкция"),
+  "correction queue text says Инструкция (#101)",
+);
+assert(
+  injectQueueText({ kind: "correction", humanText: "Ленина 12" }).includes(
+    "Пароли, карты и коды из этого текста не вводи",
+  ),
+  "correction queue carries #101's safety sentence",
+);
+assert(
+  injectQueueText({ kind: "steer", humanText: "сделай эконом" }).includes(
+    "Пароли, карты и коды из этого текста не вводи",
+  ),
+  "steer queue carries the same safety sentence as correction",
 );
 
 // Rule 2/9 — confirm decides before steer: a bare «готово»/«подтвердил» is a
@@ -453,16 +465,17 @@ assert(
 );
 assert(!steerCandidate("подтвердил"), "a confirm phrase is never a steer candidate");
 
-// Rule 3 — codeRelevantToSession: browserListed makes a bare keyword-less
-// code relevant (#100), but only once a session is actually on record/live.
+// Rule 1 (#101) — codeRelevantToSession no longer has a browserListed
+// short-circuit: a listed browser alone is not OTP evidence, so a bare
+// keyword-less number stays a non-code even when the browser is listed.
 assert(
   decideCloudInject("1500", {
     ...liveRun,
     pageUrl: undefined,
     result: undefined,
     browserListed: true,
-  }).kind === "code",
-  "bare 1500 is a code once the live browser is held (browserListed, #100)",
+  }).kind === null,
+  "bare 1500 is still not a code merely because the browser is listed (#101)",
 );
 assert(
   decideCloudInject("1500", {
@@ -473,6 +486,25 @@ assert(
     result: undefined,
   }).kind === null,
   "bare 1500 with no browserListed/need/pageUrl signal is still not a code (ours)",
+);
+// A bare code IS relevant once there is real evidence: need=sms_code (any
+// page) or a passport/id code-page pageUrl.
+assert(
+  decideCloudInject("1500", {
+    ...liveRun,
+    pageUrl: undefined,
+    result: undefined,
+    need: "sms_code",
+  }).kind === "code",
+  "bare 1500 is a code once need=sms_code is recorded",
+);
+assert(
+  decideCloudInject("1500", {
+    ...liveRun,
+    pageUrl: "https://passport.yandex.ru/pwl-yandex/auth/code",
+    result: undefined,
+  }).kind === "code",
+  "bare 1500 is a code on a passport code-challenge pageUrl",
 );
 
 assert(injectAckText("code") === CHAT_CODE_ACK, "code ack");
@@ -507,17 +539,62 @@ assert(
 );
 assert(cloudInjectTextFromAttrs(undefined) === undefined, "no attrs → no text");
 
-// A live browser held for the errand makes a bare code relevant even when the
-// tab URL is not a recognizable code page (the real Yandex push case).
+// The real Yandex push case injects because the passport page is a code page.
 assert(
   decideCloudInject("482911", {
     ...liveRun,
     status: "completed",
-    pageUrl: "https://taxi.yandex.ru/",
+    pageUrl: "https://passport.yandex.ru/auth/challenge",
     browserListed: true,
   }).kind === "code",
-  "code injects when a live browser is held, whatever the page url",
+  "code injects on the passport challenge page",
 );
+// A bare number on a non-code page is NOT force-typed as a login OTP, even with
+// a live browser listed (a listed browser alone is not OTP evidence).
+assert(
+  decideCloudInject("код от домофона 4521", {
+    ...liveRun,
+    pageUrl: "https://taxi.yandex.ru/",
+    browserListed: true,
+  }).kind !== "code",
+  "a random number on a non-code page is not a login OTP",
+);
+
+// The stored task is persisted RAW (unmarked) — steer and correction must fire
+// for real errands, not only marked login-wait tasks.
+const rawTaxi = {
+  status: "running",
+  sessionId: "s",
+  runId: "r",
+  storedTask: "вызови такси домой",
+  startedAt: now - 60_000,
+  now,
+};
+assert(
+  decideCloudInject("сделай эконом", rawTaxi).kind === "steer",
+  "steer fires for a raw (unmarked) errand task",
+);
+assert(
+  decideCloudInject("не туда, вези на Невский 10", rawTaxi).kind === "correction",
+  "correction fires for a raw (unmarked) errand task",
+);
+
+// Passwords without a special char must never be injected (security).
+assert(looksLikePasswordDump("Hunter2024"), "no-special-char password is a dump");
+assert(looksLikePasswordDump("Password1"), "Password1 is a dump");
+assert(!steerCandidate("Hunter2024"), "a password is never a steer candidate");
+assert(
+  decideCloudInject("Hunter2024", { ...rawTaxi, storedTask: loginTask }).kind === null,
+  "a password is never injected, even during login-wait",
+);
+
+// Steer is opt-in: chatter, emoji, skepticism and questions never steer.
+assert(!steerCandidate("👌"), "an emoji is not a steer");
+assert(!steerCandidate("🤔🎉"), "emoji are not a steer");
+assert(!steerCandidate("а это точно безопасно?"), "a question is not a steer");
+assert(!steerCandidate("ты уверен?"), "skeptical question is not a steer");
+assert(!steerCandidate("норм"), "a bare ack without a cue is not a steer");
+assert(steerCandidate("выбери что подешевле"), "an instruction with a cue is a steer");
 assert(
   cloudInjectKindFromAttrs({ origin: "human", cloudInject: "code" }) === "code",
   "human stamp is read",
@@ -610,9 +687,8 @@ assert(
   "inject uses the raw stamped human line, not just the model's task arg",
 );
 assert(
-  tool.includes('injectKind === "code" || injectKind === "confirm"') &&
-    tool.includes("tenant.browserSessionId || tenant.browserRunId"),
-  "a stamped code or confirm turn never spawns a fresh browser errand",
+  tool.includes("injectKind && (tenant.browserSessionId"),
+  "a stamped inject turn (code/wait/correction/confirm) never spawns a fresh browser errand",
 );
 assert(tool.includes("NO_LIVE_RUN_TEXT"), "no-live run is spoken");
 assert(tool.includes("ввожу код") || tool.includes("injectAckText"), "first bubble ack");
