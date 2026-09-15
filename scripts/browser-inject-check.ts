@@ -9,6 +9,7 @@ import {
   cloudInjectAttribute,
   cloudInjectInstruction,
   cloudInjectKindFromAttrs,
+  cloudInjectTextFromAttrs,
   cloudSessionLooksLive,
   decideCloudInject,
   extractChatCode,
@@ -21,6 +22,8 @@ import {
   isWaitInject,
   looksLikeCorrectionText,
   looksLikePasswordDump,
+  looksLikeSteer,
+  steerCandidate,
   pageWaitsForCode,
   resultWaitsForCode,
 } from "../convex/lib/browserInjectPolicy.ts";
@@ -220,6 +223,49 @@ assert(
   "stale completed run without session is not live",
 );
 
+// General steer: any relevant follow-up to a live Cloud session (not just
+// code/wait/correction) is docked into it; chatter and status questions are not.
+assert(
+  decideCloudInject("сделай эконом", liveRun).kind === "steer",
+  "extra instruction steers the live errand",
+);
+assert(
+  decideCloudInject("поменяй время подачи на 18:30", liveRun).kind === "steer" ||
+    decideCloudInject("поменяй время подачи на 18:30", liveRun).kind === "correction",
+  "a time tweak reaches the live errand",
+);
+{
+  const k = decideCloudInject("добавь комментарий водителю: перезвоню", liveRun).kind;
+  assert(k === "steer" || k === "correction", "a driver note reaches the live errand");
+}
+assert(decideCloudInject("спасибо", liveRun).kind === null, "thanks never steers");
+assert(decideCloudInject("ну что там?", liveRun).kind === null, "status question never steers");
+assert(decideCloudInject("ты тут?", liveRun).kind === null, "presence ping never steers");
+assert(
+  decideCloudInject("купи скотч на ozon", liveRun).kind === null,
+  "a new unrelated errand never steers the taxi run",
+);
+assert(
+  decideCloudInject("сделай эконом", {}).kind === null,
+  "steer needs a live session on record",
+);
+assert(steerCandidate("сделай эконом"), "instruction is a steer candidate");
+assert(!steerCandidate("спасибо"), "thanks is not a steer candidate");
+assert(!steerCandidate("ну что там?"), "status question is not a steer candidate");
+assert(!steerCandidate("482911"), "a bare code is not a steer candidate");
+assert(!steerCandidate("купи телефон на ozon"), "a fresh errand is not a steer candidate");
+assert(looksLikeSteer("сделай эконом", taxiTask), "steer fires with a cloud task on record");
+assert(!looksLikeSteer("сделай эконом", undefined), "steer needs a cloud task on record");
+assert(injectCandidate("сделай подешевле"), "an instruction is an inject candidate");
+assert(!injectCandidate("спасибо"), "thanks is not an inject candidate");
+assert(!injectCandidate("ну что там?"), "status question is not an inject candidate");
+assert(injectAckText("steer") === CHAT_INJECT_ACK, "steer ack is «ввожу»");
+assert(injectQueueInterrupt("steer"), "steer preempts the active run");
+assert(
+  injectQueueText({ kind: "steer", humanText: "сделай эконом" }).includes("сделай эконом"),
+  "steer queue carries the instruction",
+);
+
 assert(injectAckText("code") === CHAT_CODE_ACK, "code ack");
 assert(injectAckText("wait") === CHAT_WAIT_ACK, "wait ack");
 assert(injectAckText("correction") === CHAT_INJECT_ACK, "correction ack");
@@ -232,6 +278,36 @@ assert(cloudInjectAttribute("подожди").cloudInject === "wait", "stamp wai
 assert(cloudInjectAttribute("Ленина 12").cloudInject === "correction", "stamp address");
 assert(Object.keys(cloudInjectAttribute("привет")).length === 0, "hello is not stamped");
 assert(Object.keys(cloudInjectAttribute("купи скотч")).length === 0, "new job is not stamped");
+
+// The raw human line is stamped so the tool can inject it even if the model
+// re-issues the whole errand instead of passing the bare code.
+assert(cloudInjectAttribute("482911").cloudInjectText === "482911", "stamp carries the code");
+assert(
+  cloudInjectAttribute("не туда, Ленина 12").cloudInjectText === "не туда, Ленина 12",
+  "stamp carries the correction line",
+);
+assert(
+  cloudInjectTextFromAttrs({ origin: "human", cloudInject: "code", cloudInjectText: "482911" }) ===
+    "482911",
+  "human stamped text is read",
+);
+assert(
+  cloudInjectTextFromAttrs({ origin: "wakeup", cloudInjectText: "482911" }) === undefined,
+  "wakeup stamp text is ignored",
+);
+assert(cloudInjectTextFromAttrs(undefined) === undefined, "no attrs → no text");
+
+// A live browser held for the errand makes a bare code relevant even when the
+// tab URL is not a recognizable code page (the real Yandex push case).
+assert(
+  decideCloudInject("482911", {
+    ...liveRun,
+    status: "completed",
+    pageUrl: "https://taxi.yandex.ru/",
+    browserListed: true,
+  }).kind === "code",
+  "code injects when a live browser is held, whatever the page url",
+);
 assert(
   cloudInjectKindFromAttrs({ origin: "human", cloudInject: "code" }) === "code",
   "human stamp is read",
@@ -319,6 +395,14 @@ const tool = src("agent/tools/browser_task.ts");
 assert(tool.includes("maybeInjectChat"), "browser_task intercepts chat inject");
 assert(tool.includes("cdpTypeIntoPage"), "codes go into the live tab over CDP");
 assert(tool.includes("queueMessage"), "follow-up is queued into the live session");
+assert(
+  tool.includes("cloudInjectTextFromAttrs") && tool.includes("stampedInjectText"),
+  "inject uses the raw stamped human line, not just the model's task arg",
+);
+assert(
+  tool.includes('injectKind === "code" && (tenant.browserSessionId'),
+  "a stamped code turn never spawns a fresh browser errand with a stale code",
+);
 assert(tool.includes("NO_LIVE_RUN_TEXT"), "no-live run is spoken");
 assert(tool.includes("ввожу код") || tool.includes("injectAckText"), "first bubble ack");
 {
