@@ -70,7 +70,7 @@ import { markTurnSpoke, turnSpoke } from "../lib/early-deliver.ts";
 import { fastAckOf } from "../lib/fast-ack.ts";
 import { attrsFromSession, deliverHumanRouted } from "../lib/deliver-routed";
 import { conversationId, groupPersonalBlock, turnAttributes } from "../lib/group-guard";
-import { tenantId } from "../lib/tenant";
+import { chatConversationId, tenantId } from "../lib/tenant";
 import { browserGateFromResult } from "../../convex/lib/billingPolicy";
 import { cardBindings, normalizePayHosts } from "../lib/browser-pay.ts";
 import { parsePaymentPayload } from "../../convex/lib/vaultPayload.ts";
@@ -523,7 +523,7 @@ export default defineTool({
     }
     const phone = tenantId(ctx);
     const tenant = await upsertTenant(phone);
-    const conv = conversationId(ctx, tenant.inkboxConversationId);
+    const conv = conversationId(ctx, chatConversationId(tenant));
     // The human turn is stamped with the exact code/correction it carried. Use
     // that raw line for injection instead of `task`, because the model
     // sometimes re-issues the whole errand instead of passing the bare code —

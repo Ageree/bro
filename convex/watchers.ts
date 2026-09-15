@@ -18,6 +18,7 @@ import {
   ownsEvent,
   shouldRetryDelivery,
 } from "./lib/watcherPolicy";
+import { chatConversationId } from "./lib/tenantConversation";
 
 const source = v.union(v.literal("gmail"), v.literal("calendar"));
 const status = v.union(v.literal("active"), v.literal("stopped"));
@@ -182,13 +183,14 @@ export const deliverEvent = internalAction({
     const tenant = await ctx.runQuery(internal.tenants.getByPhoneInternal, {
       phoneE164: watcher.tenantPhone,
     });
-    if (!tenant?.inkboxConversationId) return null;
+    const conversationId = chatConversationId(tenant);
+    if (!conversationId) return null;
     const body = {
       secret: process.env.BRO_INTERNAL_SECRET ?? "",
       wakeupId: args.watcherId,
       tenantPhone: watcher.tenantPhone,
-      conversationId: tenant.inkboxConversationId,
-      inkboxHandle: tenant.inkboxHandle,
+      conversationId,
+      inkboxHandle: tenant?.inkboxHandle,
       kind: "event" as const,
       payload: args.payload,
       idempotencyKey: args.eventId,

@@ -42,6 +42,7 @@ import {
 import { isLiveBrowserPoll } from "./lib/wakeupPolicy";
 import { unscheduleCron } from "./lib/wakeupCrons";
 import { findTenantByPhone } from "./lib/tenantLookup";
+import { chatConversationId } from "./lib/tenantConversation";
 import { workflow } from "./workflow";
 
 /** Cloud runs stop responding to human input after this long parked on a
@@ -682,7 +683,7 @@ export const lateResultNotify = internalAction({
     const tenant = await ctx.runQuery(internal.tenants.getByPhoneInternal, {
       phoneE164: tenantPhone,
     });
-    const conversationId = tenant?.photonConversationId || tenant?.inkboxConversationId;
+    const conversationId = chatConversationId(tenant);
     if (!conversationId) {
       console.error("lateResultNotify: no conversation for tenant", tenantPhone);
       return { delivered: false };
@@ -736,7 +737,19 @@ export const wakeupAgent = internalAction({
       }
       return { ok: false, reason: claimed.reason };
     }
-    if (!claimed.conversationId) return { ok: false, reason: "no conversation" };
+    if (!claimed.conversationId) {
+      console.error("wakeupAgent: tenant has no chat conversation", {
+        tenantPhone,
+        runId,
+        phase,
+      });
+      await ctx.runMutation(internal.tenants.releaseBrowserWakeup, {
+        phoneE164: tenantPhone,
+        runId,
+        phase,
+      });
+      return { ok: false, reason: "no conversation" };
+    }
 
     // The structured outcome (parseCloudOutcome, via pollRun's
     // patchBrowserInternal) already lives on the tenant, keyed to this same
@@ -842,7 +855,7 @@ export const listStuckOnNeed = internalQuery({
         tenantPhone: t.phoneE164,
         runId: t.browserRunId,
         sessionId: t.browserSessionId,
-        conversationId: t.photonConversationId || t.inkboxConversationId,
+        conversationId: chatConversationId(t),
         need: t.browserNeed,
       });
     }

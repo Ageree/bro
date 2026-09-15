@@ -24,7 +24,7 @@ import {
 } from "../lib/browseruse";
 import { setBrowser, startBrowserFollow, upsertTenant } from "../lib/convex";
 import { conversationId, groupPersonalBlock } from "../lib/group-guard";
-import { tenantId } from "../lib/tenant";
+import { chatConversationId, tenantId } from "../lib/tenant";
 import { attrsFromSession, channelFromAuth } from "../lib/deliver-routed";
 import { deliverHuman } from "../lib/deliver-human";
 import { fastAckOf } from "../lib/fast-ack.ts";
@@ -128,7 +128,7 @@ export default defineTool({
 
     const phone = tenantId(ctx);
     const tenant = await upsertTenant(phone);
-    const conv = conversationId(ctx, tenant.inkboxConversationId);
+    const conv = conversationId(ctx, chatConversationId(tenant));
     const turnId = typeof ctx.session.turn?.id === "string" ? ctx.session.turn.id : undefined;
 
     // Reuse guard (item 11/F2): a live-view login for this exact page is
