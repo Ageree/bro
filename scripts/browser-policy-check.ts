@@ -1,23 +1,30 @@
 import {
   BROWSER_WAIT_MS,
+  isActiveStatus,
+  looksLikeNewJob,
   nextBrowserAction,
   nextFollowDecision,
   normalizeTask,
-  pollTimedOut,
+  sharesKeyword,
   shouldStartFollowThrough,
 } from "../agent/lib/browser-policy.ts";
 import {
   browserWakeupClaimKey,
   decideExistingWorkflow,
   decideWakeupClaim,
+  DONE,
   FOLLOW_RETRY_HINT,
+  followSchedule,
   followStartRetry,
   maxPollRounds,
-  FOLLOW_FIRST_SLEEP_MS,
+  FOLLOW_STEADY_SLEEP_MS,
   followSleepMs,
+  persistableStatus,
   POLL_GIVE_UP_MS,
   POLL_INTERVAL_MS,
   sameBrowserRun,
+  STALLED_STATUS,
+  UNKNOWN_STATUS,
   WAKEUP_CLAIM_LEASE_MS,
   wakeupCarriesRunId,
   wakeupIdempotencyKey,
@@ -26,13 +33,15 @@ import {
 import {
   applyProxyCountry,
   DEFAULT_BROWSER_MODEL,
+  envSyncedProfileId,
+  hashedProfileName,
   isDryRunErrand,
   proxyCountryCode,
   resolveBrowserModel,
   scaffoldTask,
 } from "../agent/lib/browseruse.ts";
 
-import { assert, src } from "./lib/check.ts";
+import { assert, src, withEnv } from "./lib/check.ts";
 
 assert(normalizeTask("  Купить   скотч ") === "купить скотч", "normalize");
 
@@ -135,6 +144,111 @@ assert(
   "status ping after done reuses",
 );
 
+// --- busy: a second, unrelated errand must not be silently dropped (F1) ---
+const priorRunning = {
+  runId: "r1",
+  status: "running",
+  storedTask: "вызови такси домой",
+} as const;
+assert(
+  nextBrowserAction({
+    ...priorRunning,
+    incomingTask: "купи кроссовки на вб 42 размер",
+  }) === "busy",
+  "unrelated errand while running is busy, not dropped",
+);
+assert(
+  nextBrowserAction({ ...priorRunning, incomingTask: "ну что" }) === "poll",
+  "short ping while running still polls",
+);
+assert(
+  nextBrowserAction({
+    ...priorRunning,
+    incomingTask: "вызови такси домой",
+  }) === "poll",
+  "same task while running polls, not busy",
+);
+
+// A ping that merely mentions the running errand's own keyword must still
+// poll, not busy — sharing a significant word with storedTask means "same
+// errand", even though the NEW_JOB regex also matches that word.
+assert(
+  nextBrowserAction({ ...priorRunning, incomingTask: "ну что там с такси?" }) === "poll",
+  "ping about the same errand (такси) polls, not busy",
+);
+assert(
+  nextBrowserAction({ ...priorRunning, incomingTask: "такси уже едет?" }) === "poll",
+  "another same-errand ping polls, not busy",
+);
+assert(
+  nextBrowserAction({
+    runId: "r1",
+    status: "running",
+    storedTask: "купи кроссовки на вб 42 размер",
+    incomingTask: "нашёл кроссовки?",
+  }) === "poll",
+  "ping about a different running errand (кроссовки) polls, not busy",
+);
+assert(
+  nextBrowserAction({ ...priorRunning, incomingTask: "купи молоко" }) === "busy",
+  "an actually unrelated errand (milk) while taxi runs is still busy",
+);
+assert(
+  nextBrowserAction({
+    runId: "r1",
+    status: "queued",
+    storedTask: "вызови такси домой",
+    incomingTask: "запиши меня к стоматологу на чистку",
+  }) === "busy",
+  "queued counts as active for busy too",
+);
+
+// --- stalled (our give-up sentinel) is terminal → a new errand starts ---
+assert(
+  nextBrowserAction({
+    runId: "r1",
+    status: STALLED_STATUS,
+    storedTask: "вызови такси домой",
+    incomingTask: "купи кроссовки на вб",
+  }) === "start",
+  "stalled run is treated as done, new errand starts",
+);
+assert(
+  nextBrowserAction({
+    runId: "r1",
+    status: STALLED_STATUS,
+    storedTask: "вызови такси домой",
+    incomingTask: "ну что",
+  }) === "reuse",
+  "stalled run + ack-like ping reuses like any other done run",
+);
+
+// --- looksLikeNewJob: a 48+ char follow-up sharing a word with the stored
+// task is a continuation, not a fresh (separately-billed) errand (F9). The
+// follow-up text below deliberately avoids every NEW_JOB keyword so only the
+// length + shared-keyword fallback is exercised.
+const longFollowUp =
+  "уточни пожалуйста во сколько примерно мастер придёт чинить трубы сегодня";
+const plumberStored = "вызови мастера почистить трубы в ванной";
+assert(longFollowUp.length >= 48, "follow-up fixture is long enough to test");
+assert(
+  looksLikeNewJob(longFollowUp, plumberStored) === false,
+  "long follow-up sharing a keyword with the stored task is not new",
+);
+assert(
+  looksLikeNewJob(longFollowUp) === true,
+  "same long text with no stored task falls back to the length heuristic",
+);
+assert(
+  nextBrowserAction({
+    runId: "r1",
+    status: "completed",
+    storedTask: plumberStored,
+    incomingTask: longFollowUp,
+  }) === "reuse",
+  "long same-topic follow-up after done reuses, does not start a new paid run",
+);
+
 const raw = "забронируй столик в Сыроварне на пятницу 19:00";
 const wrapped = scaffoldTask(raw);
 assert(wrapped.startsWith("[bro-errand]"), "scaffold starts with marker");
@@ -142,7 +256,7 @@ assert(wrapped.includes(raw), "scaffold contains raw task");
 assert(scaffoldTask(wrapped) === wrapped, "scaffold is idempotent");
 assert(scaffoldTask("x").includes("Работай быстро"), "scaffold skip-slow");
 const synced = scaffoldTask("x", { profileSynced: true });
-assert(synced.includes("Cloud-профиле"), "synced scaffold mentions cookies");
+assert(synced.includes("уже могут быть куки прошлой сессии"), "synced scaffold mentions cookies");
 assert(synced.includes("Куки не значат"), "cookies are not proof of login");
 assert(synced.includes("«Войти»"), "synced scaffold still clicks Войти");
 assert(!synced.includes("Ты уже в аккаунтах"), "no already-logged-in lie");
@@ -185,17 +299,37 @@ assert(
 );
 
 const t0 = Date.parse("2026-08-27T12:00:00.000Z");
-assert(pollTimedOut(t0, t0 + 10 * 60_000) === false, "poll not expired");
-assert(pollTimedOut(t0, t0 + 30 * 60_000) === false, "poll exactly 30min");
-assert(pollTimedOut(t0, t0 + 30 * 60_000 + 1) === true, "poll expired");
-assert(pollTimedOut(undefined, t0) === false, "poll missing start");
 
-assert(POLL_INTERVAL_MS === 2 * 60_000, "sleep 2min");
-assert(FOLLOW_FIRST_SLEEP_MS === 20_000, "first re-sleep is 20s");
-assert(followSleepMs(0) === FOLLOW_FIRST_SLEEP_MS, "poll 0 uses first sleep");
-assert(followSleepMs(1) === POLL_INTERVAL_MS, "later polls use 2min");
+// pollTimedOut/POLL_GIVE_UP_MS (30min) were dead — nothing but their own test
+// consumed them, and the real give-up threshold below (20min) always won.
+assert(!src("agent/lib/browser-policy.ts").includes("pollTimedOut"), "dead 30min timeout is gone");
+assert(!src("agent/lib/browser-policy.ts").includes("POLL_GIVE_UP_MS"), "dead constant is gone");
+
+assert(POLL_INTERVAL_MS === 2 * 60_000, "legacy 2min constant kept for old callers");
+assert(
+  JSON.stringify(followSchedule()) ===
+    JSON.stringify([10_000, 15_000, 20_000, 30_000, 45_000, 60_000]),
+  "ramp schedule is 10/15/20/30/45/60s",
+);
+assert(followSleepMs(0) === 10_000, "poll 0 sleeps 10s");
+assert(followSleepMs(1) === 15_000, "poll 1 sleeps 15s");
+assert(followSleepMs(2) === 20_000, "poll 2 sleeps 20s");
+assert(followSleepMs(3) === 30_000, "poll 3 sleeps 30s");
+assert(followSleepMs(4) === 45_000, "poll 4 sleeps 45s");
+assert(followSleepMs(5) === 60_000, "poll 5 sleeps 60s");
+assert(followSleepMs(6) === FOLLOW_STEADY_SLEEP_MS, "poll 6+ steadies at 90s");
+assert(followSleepMs(50) === FOLLOW_STEADY_SLEEP_MS, "steady cadence holds far out");
 assert(POLL_GIVE_UP_MS === 20 * 60_000, "give-up 20min");
-assert(maxPollRounds() === 10, "10 poll rounds");
+{
+  // The loop's cap (maxPollRounds()+2 in followThrough) must not fire before
+  // real elapsed time reaches POLL_GIVE_UP_MS under the new ramp — otherwise
+  // give-up would trigger early, before the 20 minutes it's supposed to mean.
+  const rounds = maxPollRounds();
+  let cumulative = 0;
+  for (let i = 0; i < rounds; i++) cumulative += followSleepMs(i);
+  assert(cumulative >= POLL_GIVE_UP_MS, "maxPollRounds covers a full 20min under the new cadence");
+  assert(rounds === 18, "18 rounds under the ramp+steady schedule");
+}
 assert(
   nextFollowDecision({ status: "running", startedAt: t0, now: t0 + 2 * 60_000 }) ===
     "sleep",
@@ -442,6 +576,187 @@ const hydrateFn = waitFor.slice(waitFor.indexOf("export async function hydrate")
 assert(
   hydrateFn.includes("isTerminal(status)") && hydrateFn.includes("/sessions/"),
   "hydrate skips session GET while the run is live and already has a URL",
+);
+assert(
+  hydrateFn.indexOf(".catch(") < hydrateFn.indexOf("if (!run)"),
+  "hydrate's primary /runs fetch is guarded before anything reads run",
+);
+assert(hydrateFn.includes('status: "unknown"'), "a failed run fetch degrades, never throws");
+assert(hydrateFn.includes("scrubSecrets(rawResult)"), "hydrate scrubs the result before it is stored/returned");
+assert(
+  src("convex/lib/browseruse.ts").includes("scrubSecrets(rawResult)"),
+  "convex-side hydrate scrubs the result too",
+);
+
+// --- status enum: documented six + our own `stalled` sentinel (A6) ---
+assert(
+  JSON.stringify([...DONE].sort()) ===
+    JSON.stringify(["cancelled", "completed", "failed", "stalled"].sort()),
+  "DONE is the documented terminal states plus stalled",
+);
+assert(STALLED_STATUS === "stalled", "stalled sentinel name");
+assert(isActiveStatus("dispatching") === true, "dispatching is active (was missing before)");
+assert(isActiveStatus("queued") === true, "queued is active");
+assert(isActiveStatus("running") === true, "running is active");
+assert(isActiveStatus("stalled") === false, "stalled is not active");
+assert(waitFor.includes("DONE.has(status.trim().toLowerCase())"), "isTerminal reuses the documented DONE set");
+assert(
+  !waitFor.slice(waitFor.indexOf("export function isTerminal")).includes('"stopped"'),
+  "isTerminal no longer treats undocumented statuses as terminal",
+);
+
+// --- session/run lifecycle: cancel + stop exist and are wired in (F1/F2/A6) ---
+assert(waitFor.includes("export async function cancelRun"), "agent cancelRun exists");
+assert(waitFor.includes("export async function stopBrowserForSession"), "agent stopBrowserForSession exists");
+assert(waitFor.includes("/runs/${runId}/cancel"), "cancelRun hits POST /runs/{id}/cancel");
+assert(waitFor.includes('action: "stop"'), "stopBrowserForSession hits PATCH /browsers/{id} action:stop");
+const convexBu = src("convex/lib/browseruse.ts");
+assert(convexBu.includes("export async function cancelRun"), "convex cancelRun exists");
+assert(convexBu.includes("export async function stopBrowserForSession"), "convex stopBrowserForSession exists");
+
+assert(browserTool.includes("cancelRun(tenant.browserRunId)"), "start branch cancels an active previous run");
+assert(browserTool.includes("stopBrowserForSession(tenant.browserSessionId)"), "start branch stops the old browser session");
+assert(
+  browserTool.includes("await startRun(task, undefined,"),
+  "a fresh errand never hands the old session id to startRun",
+);
+const cancelIdx = browserTool.indexOf("cancelRun(tenant.browserRunId)");
+const startRunIdx = browserTool.indexOf("const started = await startRun(task, undefined,");
+assert(cancelIdx > 0 && startRunIdx > cancelIdx, "old run is cancelled before the new one starts");
+assert(
+  browserTool.includes('action === "busy"'),
+  "a second, unrelated errand while one is active gets a busy outcome, not silence (F1)",
+);
+assert(
+  browserTool.includes("looksLikePasswordDump(task)"),
+  "a password-shaped task is rejected before it ever reaches the cloud (item 12)",
+);
+
+// --- follow-through give-up stops the run + marks the tenant stalled (F2) ---
+assert(follow.includes("cancelRunAction"), "followThrough calls the new cancel/stop action");
+assert(follow.includes("STALLED_STATUS"), "give-up patches the tenant to stalled");
+assert(
+  follow.indexOf("stopGivenUpRun") < follow.indexOf("internal.browserFollow.wakeupAgent"),
+  "the run is stopped before the human is told give-up happened",
+);
+
+// --- startFollowThrough: a cancel failure must still start the new run (F5) ---
+const startFollow = follow.slice(
+  follow.indexOf("export const startFollowThrough"),
+  follow.indexOf("export const cancelFollowThrough"),
+);
+const cancelBlock = startFollow.slice(
+  startFollow.indexOf('if (next === "cancel_then_start")'),
+  startFollow.indexOf("const workflowId = await workflow.start"),
+);
+assert(
+  !cancelBlock.includes("retry_later"),
+  "cancel failure no longer bails out before workflow.start",
+);
+assert(
+  cancelBlock.includes("browser follow cancel failed"),
+  "cancel failure is still logged",
+);
+assert(
+  startFollow.indexOf("workflow.cancel(ctx, id)") < startFollow.indexOf("await workflow.start"),
+  "cancel is attempted, then the new workflow always starts",
+);
+
+// --- profile identity: hashed name/id, env only for the one named phone ---
+const hashed1 = hashedProfileName("+79991234567");
+const hashed2 = hashedProfileName("+79991234567");
+const hashedOther = hashedProfileName("+79997654321");
+assert(hashed1 === hashed2, "hashedProfileName is deterministic");
+assert(hashed1 !== hashedOther, "hashedProfileName differs per phone");
+assert(hashed1.startsWith("bro-"), "hashed profile name has the bro- prefix");
+assert(!hashed1.includes("79991234567"), "hashed profile name never carries the raw phone");
+assert(/^bro-[0-9a-f]{40}$/.test(hashed1), "hashed profile name is bro- + 40 hex chars");
+
+withEnv(
+  { BROWSER_USE_PROFILE_ID: "shared-id", BROWSER_USE_PROFILE_PHONE: "+79991234567" },
+  () => {
+    assert(
+      envSyncedProfileId("+79991234567") === undefined,
+      "a non-uuid BROWSER_USE_PROFILE_ID is rejected even for the matching phone",
+    );
+  },
+);
+withEnv(
+  {
+    BROWSER_USE_PROFILE_ID: "550e8400-e29b-41d4-a716-446655440000",
+    BROWSER_USE_PROFILE_PHONE: "+79991234567",
+  },
+  () => {
+    assert(
+      envSyncedProfileId("+79991234567") === "550e8400-e29b-41d4-a716-446655440000",
+      "env profile applies to the one tenant it is bound to",
+    );
+    assert(
+      envSyncedProfileId("+79997654321") === undefined,
+      "env profile does not leak to a different tenant",
+    );
+  },
+);
+withEnv(
+  { BROWSER_USE_PROFILE_ID: "550e8400-e29b-41d4-a716-446655440000", BROWSER_USE_PROFILE_PHONE: undefined },
+  () => {
+    assert(
+      envSyncedProfileId("+79991234567") === undefined,
+      "no owner phone configured → no tenant gets the shared profile",
+    );
+  },
+);
+
+assert(
+  waitFor.includes("hashedProfileName(phone)"),
+  "createProfile sends the hashed name, not the raw phone",
+);
+assert(
+  browserTool.includes("envSyncedProfileId(phone)"),
+  "browser_task resolves the synced profile for this tenant's phone",
+);
+assert(
+  src("agent/tools/profile_setup.ts").includes("envSyncedProfileId(phone)"),
+  "profile_setup resolves the synced profile for this tenant's phone",
+);
+
+// --- sharesKeyword: the primitive the busy-vs-poll fix relies on ---
+assert(sharesKeyword("такси уже едет?", "вызови такси домой") === true, "такси overlaps");
+assert(sharesKeyword("купи молоко", "вызови такси домой") === false, "milk shares nothing with taxi");
+assert(sharesKeyword("ну что", "вызови такси домой") === false, "too-short words never count");
+
+// --- persistableStatus: "unknown" (hydrate's guarded-failure placeholder)
+// must never be persisted over a known status (coordinator review fix #2) ---
+assert(persistableStatus("running") === "running", "a real status passes through");
+assert(persistableStatus("completed") === "completed", "a terminal status passes through");
+assert(persistableStatus("unknown") === undefined, "unknown is not persistable");
+assert(persistableStatus("Unknown") === undefined, "unknown is case-insensitive");
+assert(persistableStatus(` ${UNKNOWN_STATUS} `) === undefined, "unknown is trimmed");
+
+const persistFn = browserTool.slice(
+  browserTool.indexOf("async function persist("),
+  browserTool.indexOf("function payload("),
+);
+assert(persistFn.includes("persistableStatus(run.status)"), "persist() checks persistableStatus before writing");
+assert(
+  persistFn.indexOf("const status = persistableStatus") <
+    persistFn.indexOf("browserStatus: status"),
+  "persist() only writes browserStatus/browserLiveUrl when the status is known",
+);
+
+const pollRunFn = follow.slice(
+  follow.indexOf("export const pollRun"),
+  follow.indexOf("export const wakeupAgent"),
+);
+assert(pollRunFn.includes("persistableStatus(run.status)"), "pollRun checks persistableStatus before writing");
+assert(
+  pollRunFn.indexOf("if (status === undefined)") <
+    pollRunFn.indexOf("patchBrowserInternal"),
+  "pollRun skips the tenant write and returns early on an unknown status",
+);
+assert(
+  pollRunFn.includes("tenant.browserStatus ?? UNKNOWN_STATUS"),
+  "pollRun falls back to the tenant's last-known status, not unknown",
 );
 
 console.log("browser-policy-check ok");

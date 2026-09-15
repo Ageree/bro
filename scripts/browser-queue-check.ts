@@ -1,8 +1,11 @@
 import { assert, eq } from "./lib/check.ts";
 import {
+  cancelRun,
+  hydrate,
   queueMessage,
   resolveQueuedRun,
   sessionInfo,
+  stopBrowserForSession,
 } from "../agent/lib/browseruse.ts";
 
 // Behavioral check: prove the follow-up path actually hits the v4
@@ -179,6 +182,127 @@ await withFetch(
       { ms: 6_000, nowFn: () => (t === 0 ? (t = 1, 0) : 7_000) },
     );
     eq(r.runId, "run-1", "falls back to latest run id");
+  },
+);
+
+// cancelRun: POST /runs/{id}/cancel, idempotent (404 swallowed as success).
+await withFetch(
+  (call) =>
+    call.method === "POST" && call.url.endsWith("/runs/run-1/cancel")
+      ? { json: { id: "run-1", status: "cancelled" } }
+      : undefined,
+  async () => {
+    const ok = await cancelRun("run-1");
+    eq(ok, true, "cancelRun reports success");
+    const calls = lastCalls();
+    eq(calls.length, 1, "cancelRun makes one call");
+    eq(calls[0]!.method, "POST", "cancel is a POST");
+    assert(
+      calls[0]!.url === "https://api.browser-use.com/api/v4/runs/run-1/cancel",
+      "cancel hits the v4 cancel-run endpoint",
+    );
+  },
+);
+await withFetch(
+  (call) =>
+    call.url.endsWith("/runs/gone/cancel")
+      ? { status: 404, json: { error: "not found" } }
+      : undefined,
+  async () => {
+    const ok = await cancelRun("gone");
+    eq(ok, true, "a 404 (already gone) is treated as a successful cancel");
+  },
+);
+await withFetch(
+  (call) =>
+    call.url.endsWith("/runs/boom/cancel")
+      ? { status: 500, json: { error: "control plane unreachable" } }
+      : undefined,
+  async () => {
+    const ok = await cancelRun("boom");
+    eq(ok, false, "a real failure is reported, never thrown");
+  },
+);
+
+// stopBrowserForSession: GET /browsers → match by session → PATCH stop.
+await withFetch(
+  (call) => {
+    if (call.method === "GET" && call.url.endsWith("/browsers")) {
+      return {
+        json: {
+          items: [
+            { id: "b1", agentSessionId: "sess-1", liveUrl: "https://live/x", cdpUrl: "https://cdp/x" },
+          ],
+        },
+      };
+    }
+    if (call.method === "PATCH" && call.url.endsWith("/browsers/b1")) {
+      return { json: { id: "b1", status: "stopped" } };
+    }
+    return undefined;
+  },
+  async () => {
+    const ok = await stopBrowserForSession("sess-1");
+    eq(ok, true, "stopBrowserForSession stops the matched browser");
+    const calls = lastCalls();
+    eq(calls.length, 2, "list then patch");
+    const patch = calls.find((c) => c.method === "PATCH");
+    assert(patch !== undefined, "a PATCH call was made");
+    assert(
+      JSON.stringify(patch!.body) === JSON.stringify({ action: "stop" }),
+      "stop body is exactly action:stop",
+    );
+  },
+);
+await withFetch(
+  (call) =>
+    call.url.endsWith("/browsers") ? { json: { items: [] } } : undefined,
+  async () => {
+    const ok = await stopBrowserForSession("sess-missing");
+    eq(ok, false, "no matching browser → best-effort false, no throw");
+  },
+);
+
+// hydrate: a 500 on GET /runs/{id} degrades to "unknown", never throws.
+await withFetch(
+  (call) =>
+    call.url.endsWith("/runs/run-flaky")
+      ? { status: 500, json: { error: "boom" } }
+      : undefined,
+  async () => {
+    const run = await hydrate("run-flaky", "sess-1");
+    eq(run.status, "unknown", "hydrate degrades to unknown on a fetch failure");
+    eq(run.runId, "run-flaky", "hydrate keeps the runId on failure");
+    eq(run.sessionId, "sess-1", "hydrate keeps the last-known sessionId on failure");
+    eq(lastCalls().length, 1, "no enrichment calls are made after the primary fetch fails");
+  },
+);
+
+// hydrate: the result is scrubbed of PAN/CVV/password before it comes back.
+await withFetch(
+  (call) => {
+    if (call.url.endsWith("/runs/run-pay")) {
+      return {
+        json: {
+          id: "run-pay",
+          status: "completed",
+          result: "Оплатил картой 4111 1111 1111 1111, пароль: hunter2, cvv 123",
+        },
+      };
+    }
+    if (call.url.includes("/runs/run-pay/events")) return { json: { events: [] } };
+    if (call.url.endsWith("/browsers")) return { json: { items: [] } };
+    return undefined;
+  },
+  async () => {
+    const run = await hydrate("run-pay");
+    assert(run.result !== undefined, "result is present");
+    assert(!run.result!.includes("4111"), "card number is scrubbed from the result");
+    assert(!run.result!.includes("hunter2"), "password is scrubbed from the result");
+    assert(!run.result!.includes("123"), "cvv is scrubbed from the result");
+    assert(run.result!.includes("[card]"), "card is replaced with a marker");
+    assert(run.result!.includes("[password]"), "password is replaced with a marker");
+    assert(run.result!.includes("[cvv]"), "cvv is replaced with a marker");
   },
 );
 

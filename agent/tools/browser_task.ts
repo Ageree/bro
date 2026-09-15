@@ -1,8 +1,10 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 import {
+  aliasBrowserCharge,
   cancelBrowserFollow,
   cancelWakeup,
+  clearBrowserNeed,
   countBrowserJobStart,
   listVaultItems,
   readVaultSecret,
@@ -13,15 +15,19 @@ import {
 } from "../lib/convex";
 import {
   BROWSER_WAIT_MS,
+  isActiveStatus,
+  looksLikeNewJob,
   nextBrowserAction,
+  normalizeTask,
   shouldStartFollowThrough,
 } from "../lib/browser-policy";
 import { parseOrderFromResult } from "../lib/order-policy";
-import { purchaseStance } from "../lib/purchase-policy";
 import {
   FOLLOW_RETRY_HINT,
+  persistableStatus,
 } from "../../convex/lib/browserFollowPolicy.ts";
 import {
+  cancelRun,
   createProfile,
   envSyncedProfileId,
   findBrowserForSession,
@@ -32,6 +38,7 @@ import {
   queueMessage,
   resolveQueuedRun,
   startRun,
+  stopBrowserForSession,
   waitForPageLanding,
   waitForRun,
   type BrowserRun,
@@ -39,8 +46,7 @@ import {
 import { cdpTypeIntoPage } from "../lib/browser-cdp.ts";
 import { cdpPageUrl } from "../../convex/lib/browserCdp.ts";
 import {
-  cookieDomainsCoverPage,
-  loginPageUrl,
+  cookieCacheStale,
   profileSyncStatus,
 } from "../../convex/lib/browserProfilePolicy.ts";
 import {
@@ -52,13 +58,16 @@ import {
   injectCandidate,
   injectQueueInterrupt,
   injectQueueText,
+  looksLikePasswordDump,
   NO_LIVE_RUN_TEXT,
 } from "../../convex/lib/browserInjectPolicy.ts";
 import {
   ERRAND_LANDING_WAIT_MS,
   errandStartUrl,
 } from "../../convex/lib/browserStartPolicy.ts";
-import { turnSpoke } from "../lib/early-deliver.ts";
+import { parseCloudOutcome } from "../../convex/lib/browserOutcomePolicy.ts";
+import { markTurnSpoke, turnSpoke } from "../lib/early-deliver.ts";
+import { fastAckOf } from "../lib/fast-ack.ts";
 import { attrsFromSession, deliverHumanRouted } from "../lib/deliver-routed";
 import { conversationId, groupPersonalBlock, turnAttributes } from "../lib/group-guard";
 import { tenantId } from "../lib/tenant";
@@ -66,6 +75,14 @@ import { browserGateFromResult } from "../../convex/lib/billingPolicy";
 import { cardBindings, normalizePayHosts } from "../lib/browser-pay.ts";
 import { parsePaymentPayload } from "../../convex/lib/vaultPayload.ts";
 import { vaultPasswordLoginForPages } from "../lib/vault-login.ts";
+import {
+  chargeKeyFor,
+  isAckLike,
+  loginPagesFor,
+  profileExtra,
+  shortTask,
+  taskLooksLikeBuy,
+} from "../lib/browser-task-policy.ts";
 
 async function persist(
   phone: string,
@@ -76,14 +93,22 @@ async function persist(
     browserProfileId?: string;
     browserCookieDomains?: string[];
     browserProfileSyncedAt?: number;
+    browserPaying?: boolean;
+    browserPayHosts?: string[];
+    browserNextTask?: string;
   },
 ): Promise<void> {
+  // hydrate's guarded-failure "unknown" is a transient miss, never a real
+  // status — writing it would blank out a known status/liveUrl and make
+  // nextBrowserAction see neither active nor done, starting a duplicate run.
+  const status = persistableStatus(run.status);
   await setBrowser(phone, {
     browserRunId: run.runId,
     browserTask: task,
-    browserStatus: run.status,
+    ...(status !== undefined
+      ? { browserStatus: status, browserLiveUrl: run.liveUrl ?? "" }
+      : {}),
     ...(run.sessionId ? { browserSessionId: run.sessionId } : {}),
-    browserLiveUrl: run.liveUrl ?? "",
     ...(extra ?? {}),
   });
 }
@@ -155,6 +180,12 @@ async function maybeInjectChat(
     pageUrl,
     result,
     browserListed,
+    // What the parked Cloud agent is waiting on (A2's structured outcome) —
+    // authoritative over the elapsed-time/CDP-probe fallbacks below it.
+    need: tenant.browserNeed,
+    // findBrowserForSession was just awaited above unconditionally on this
+    // path, so an empty/absent browser is a confirmed absence, not "unknown".
+    browserProbed: true,
   };
   const decided = decideCloudInject(incoming, attrs);
   if (!decided.kind) return null;
@@ -167,7 +198,7 @@ async function maybeInjectChat(
   }
 
   const conv = notify.conv;
-  if (conv && !turnSpoke(notify.turnId)) {
+  if (conv && !turnSpoke(notify.turnId) && !fastAckOf(notify.attrs)) {
     void deliverHumanRouted({
       attrs: notify.attrs,
       tenant,
@@ -176,21 +207,27 @@ async function maybeInjectChat(
     }).catch((err) => {
       console.error("inject ack failed", err);
     });
+    if (notify.turnId) markTurnSpoke(notify.turnId, Date.now());
   }
 
   // Fast path: type a code straight into the open tab over CDP when the live
   // browser is reachable. Best-effort — the reliable path below is the queue.
+  // `confirm` never types over CDP (nothing to type — it just checks whether
+  // the already-open page advanced) and never interrupts the run either
+  // (injectQueueInterrupt(kind) below).
   let typed = false;
   let submitted = false;
+  let partial = false;
   if (decided.kind === "code" && decided.code && cdpUrl) {
     const typedIn = await cdpTypeIntoPage(cdpUrl, decided.code).catch(
       (err: unknown) => {
         console.error("cdp inject code failed", err);
-        return { typed: false, submitted: false };
+        return { typed: false, submitted: false, partial: false };
       },
     );
     typed = typedIn.typed;
     submitted = typedIn.submitted;
+    partial = typedIn.partial === true;
   }
 
   if (!sessionId) {
@@ -209,7 +246,10 @@ async function maybeInjectChat(
     humanText: incoming,
     ...(decided.code ? { code: decided.code } : {}),
     dryRun: isDryRunErrand(tenant.browserTask ?? incoming),
-    alreadyTyped: decided.kind === "code" && submitted,
+    // A `partial` CDP fill (a single maxLength=1 box swallowed only the first
+    // digit) never counts as "already typed" — the queued Cloud message must
+    // still carry the full code (item 17).
+    alreadyTyped: decided.kind === "code" && submitted && !partial,
   });
   const queued = await queueMessage(sessionId, queueText, {
     interrupt: injectQueueInterrupt(decided.kind),
@@ -218,23 +258,36 @@ async function maybeInjectChat(
     return undefined;
   });
 
-  const codeHint =
-    "код ушёл в живую Cloud-сессию (открытая вкладка). Не цитируй цифры и не проси пароль.";
-  const otherHint = "уточнение ушло в живую Cloud-сессию. Не проси пароль.";
-  const hint = decided.kind === "code" ? codeHint : otherHint;
-
   if (!queued) {
-    // CDP typing may still have entered the code; report best-effort state.
+    // The queue call failed outright: whatever CDP best-effort typing did or
+    // didn't do, the code/confirmation did NOT reliably reach the page — say
+    // so rather than reporting `typed` as success.
+    const what = decided.kind === "code" ? "код" : "подтверждение";
     return {
-      status: tenant.browserStatus ?? "running",
-      entered: typed,
+      status: browserListed ? (tenant.browserStatus ?? "running") : "no_wait",
+      entered: false,
       injected: decided.kind,
       typed,
       submitted,
       alreadyNotified: Boolean(conv),
-      hint,
+      hint: `не удалось передать ${what} в открытую страницу — скажи, что страница уже закрылась, и предложи начать заново`,
     };
   }
+
+  // The need this run was parked on (if any) is now satisfied — clear it so
+  // a stale browserNeed never lingers once the queued input has landed. The
+  // resumed run usually keeps the same runId, so `setBrowser`'s own
+  // new-run-id auto-clear does not fire for this case.
+  if (tenant.browserRunId) {
+    await clearBrowserNeed(phone, tenant.browserRunId).catch((err) => {
+      console.error("clear browser need failed", err);
+    });
+  }
+
+  const codeHint =
+    "код ушёл в открытую страницу (живая сессия). Не цитируй цифры и не проси пароль.";
+  const otherHint = "уточнение ушло в открытую страницу (живая сессия). Не проси пароль.";
+  const hint = decided.kind === "code" ? codeHint : otherHint;
 
   const resolved: { runId?: string; status?: string } = await resolveQueuedRun(
     sessionId,
@@ -288,6 +341,7 @@ async function maybeInjectChat(
       hint,
     },
     { startedAt, runId: followRunId },
+    tenant,
   );
 }
 
@@ -298,9 +352,14 @@ function extraHosts(extra: Record<string, unknown>): string[] | undefined {
   return hosts.length > 0 ? hosts : undefined;
 }
 
-function taskLooksLikeBuy(task: string): boolean {
-  const stance = purchaseStance(task);
-  return stance === "buy" || stance === "watch_and_buy";
+/** `extra.paying`/`extra.payHosts` only carry the call's own paid-start flag —
+ *  every later settle() (reuse/poll/inject) has none of that, so fall back to
+ *  the tenant row a fresh paid start persisted it onto (item 2). */
+function payingFor(
+  extra: Record<string, unknown>,
+  tenant: { browserPaying?: boolean },
+): boolean {
+  return typeof extra.paying === "boolean" ? extra.paying : tenant.browserPaying === true;
 }
 
 async function maybeRecordOrder(
@@ -308,14 +367,19 @@ async function maybeRecordOrder(
   run: BrowserRun,
   task: string,
   extra: Record<string, unknown>,
+  tenant: { browserPaying?: boolean; browserPayHosts?: string[] },
 ): Promise<void> {
   if (run.status.toLowerCase() !== "completed") return;
-  if (extra.paying !== true && !taskLooksLikeBuy(task)) return;
+  const paying = payingFor(extra, tenant);
+  if (!paying && !taskLooksLikeBuy(task)) return;
+  // A run that stopped on a blocker (3DS, a missing card, an OTP) is not a
+  // placed order yet, whatever free-text guessing over its result might say.
+  if (parseCloudOutcome(run.result).needs !== "none") return;
   const row = parseOrderFromResult({
     task,
     result: run.result,
-    hosts: extraHosts(extra),
-    pay: extra.paying === true,
+    hosts: extraHosts(extra) ?? tenant.browserPayHosts,
+    pay: paying,
   });
   if (!row) return;
   try {
@@ -331,6 +395,7 @@ async function settle(
   task: string,
   extra: Record<string, unknown>,
   opts: { startedAt?: number; runId?: string | null },
+  tenant: { browserPaying?: boolean; browserPayHosts?: string[] },
 ) {
   const now = Date.now();
   if (
@@ -345,12 +410,12 @@ async function settle(
     await cancelWakeup(phone, { kind: "browser_poll" }).catch(() => {});
     await cancelBrowserFollow(phone, run.runId).catch(() => {});
     if (isTerminal(run.status)) {
-      await maybeRecordOrder(phone, run, task, extra);
+      await maybeRecordOrder(phone, run, task, extra, tenant);
       return payload(run, extra);
     }
     return payload(run, {
       ...extra,
-      hint: "джоб висит слишком долго, скажи человеку и предложи reset",
+      hint: "это поручение идёт необычно долго — скажи человеку своими словами и, если он согласен, вызови browser_task с reset:true, чтобы начать заново",
     });
   }
   const follow = await startBrowserFollow({
@@ -378,13 +443,15 @@ async function resolveSyncedProfile(
   tenant: {
     browserProfileId?: string;
     browserCookieDomains?: string[];
+    browserNeed?: string;
+    browserProfileSyncedAt?: number;
   },
 ): Promise<{
   profileId?: string;
   cookieDomains: string[];
   synced: boolean;
 }> {
-  let profileId = tenant.browserProfileId ?? envSyncedProfileId();
+  let profileId = tenant.browserProfileId ?? envSyncedProfileId(phone);
   if (!profileId) {
     try {
       profileId = await createProfile(phone);
@@ -392,8 +459,10 @@ async function resolveSyncedProfile(
       console.error("browser profile create failed", err);
     }
   }
-  let cookieDomains = tenant.browserCookieDomains ?? [];
-  if (profileId && cookieDomains.length === 0) {
+  // A run that just reported it needs a password means cached cookies do not
+  // prove a login (F7) — never trust them past that point.
+  let cookieDomains = tenant.browserNeed === "password" ? [] : tenant.browserCookieDomains ?? [];
+  if (profileId && (cookieDomains.length === 0 || cookieCacheStale(tenant, Date.now()))) {
     try {
       cookieDomains = (await getProfile(profileId)).cookieDomains;
     } catch (err) {
@@ -407,34 +476,9 @@ async function resolveSyncedProfile(
   };
 }
 
-function profileExtra(
-  resolved: {
-    profileId?: string;
-    cookieDomains: string[];
-    synced: boolean;
-  },
-  startPage?: string,
-) {
-  const siteReady = Boolean(
-    startPage && cookieDomainsCoverPage(resolved.cookieDomains, startPage),
-  );
-  return {
-    profileId: resolved.profileId ?? null,
-    profileSynced: resolved.synced,
-    cookieDomains: resolved.cookieDomains,
-    ...(startPage ? { startPage, siteReady } : {}),
-    ...(siteReady || resolved.synced
-      ? {}
-      : {
-          needsProfileSync: true,
-          hint: "Сайт может потребовать логин. Сразу profile_setup с url страницы входа — инструмент сам возьмёт вход из сейфа или откроет вход и пришлёт live-view ссылку. Не проси логин или пароль. Не клади пароль в чат.",
-        }),
-  };
-}
-
 export default defineTool({
   description:
-    "Cloud browser (WB, Ozon, bookings, appointments, taxi, forms, search). Starts or polls the current job — never a second search. reset = fresh browser. Eve opens the site over CDP (taxi.yandex.ru for такси). Vault kind:login is bound as secretBindings. Cloud cookies may exist — that is not proof the tab is logged in. The Cloud agent must click Войти / Авторизоваться / passport if the page is still guest; live-view only for OTP or a missing password. If a Cloud session is live and the human sent a one-time code, «подожди», or an address/size correction for that errand, pass their exact line here — Bro types it into the live tab (CDP) and queues it into the live Cloud session so it lands on the already-open page. Unrelated chat must not be sent here. A code they already sent must be used. needsProfileSync → profile_setup only when cookies and vault are missing. Never ask for a login or password. Never put a site password in chat. status=completed → paste result. Buy: pay on first call (hosts = merchant hostnames; maxRub only if they named a ceiling). Card is server-typed. needsVaultSetup → vault_setup kind=payment.",
+    'One browser job per person: start or poll, never a second search while one runs. The site opens itself; the job logs in on its own (vault login, cookies, or Войти/passport) — never ask for a login or password, never put one in chat. busy = another job runs: say "сначала закончу X, потом сделаю Y"; do not call profile_setup. reset:true cancels the job and starts fresh. Live page + human\'s last line is a code, "подожди", an address/size correction, or "подтвердил"/"готово"/"вошёл" → pass their exact line, it gets typed/queued into the open page; never resend the old task. status:"completed" + result → report it. Buying: pay on the first call (hosts = merchant hostnames; maxRub only if named). needsVaultSetup → vault_setup kind=payment. needsProfileSync → profile_setup, only if no vault login was used and nothing runs.',
   inputSchema: z.object({
     task: z.string().min(1).max(4000),
     reset: z.boolean().optional(),
@@ -449,6 +493,12 @@ export default defineTool({
   async execute({ task, reset, pay }, ctx) {
     const blocked = groupPersonalBlock(ctx);
     if (blocked) return { status: "group", hint: blocked };
+    if (looksLikePasswordDump(task)) {
+      return {
+        status: "invalid",
+        hint: "это похоже на пароль сайта, не поручение — пароль в чат не нужен",
+      };
+    }
     const phone = tenantId(ctx);
     const tenant = await upsertTenant(phone);
     const conv = conversationId(ctx, tenant.inkboxConversationId);
@@ -469,11 +519,12 @@ export default defineTool({
         attrs: attrsFromSession(ctx.session),
       });
       if (injected) return injected;
-      // A stamped inject turn (code / «подожди» / correction) must never fall
-      // through to a fresh browser errand when a session is on record: a new
-      // session would drop the live login (and a fresh code would be requested,
-      // rejecting the stale one). If it could not be injected (browser gone),
-      // say so instead of starting a new one.
+      // A stamped inject turn (code / «подожди» / correction / confirm) must
+      // never fall through to a fresh browser errand when a session is on
+      // record: a new session would drop the live login (a fresh code would
+      // be requested, rejecting the stale one, and a confirm has nothing to
+      // re-do in a fresh browser either). If it could not be injected
+      // (browser gone), say so instead of starting a new one.
       if (injectKind && (tenant.browserSessionId || tenant.browserRunId)) {
         return { status: "no_wait", entered: false, hint: NO_LIVE_RUN_TEXT };
       }
@@ -491,11 +542,43 @@ export default defineTool({
 
     if (action === "reuse" && tenant.browserRunId) {
       const run = await hydrate(tenant.browserRunId, tenant.browserSessionId);
+      // A short, non-question follow-up on the just-finished errand ("готово",
+      // "спасибо") is an acknowledgement, not a request to resend the result
+      // (item 7) — do not re-run maybeRecordOrder/settle for it either.
+      if (isAckLike(task) && !looksLikeNewJob(task, tenant.browserTask ?? undefined)) {
+        return {
+          status: run.status,
+          reused: true,
+          ack: true,
+          hint: "это подтверждение, не пересылай результат заново; одна короткая строка или реакция",
+        };
+      }
       await persist(phone, run, tenant.browserTask ?? task);
-      return settle(phone, run, tenant.browserTask ?? task, { reused: true }, {
-        startedAt: tenant.browserStartedAt,
-        runId: tenant.browserRunId,
+      return settle(
+        phone,
+        run,
+        tenant.browserTask ?? task,
+        { reused: true },
+        { startedAt: tenant.browserStartedAt, runId: tenant.browserRunId },
+        tenant,
+      );
+    }
+
+    if (action === "busy" && tenant.browserRunId) {
+      const run = await waitForRun(
+        tenant.browserRunId,
+        tenant.browserSessionId,
+        BROWSER_WAIT_MS,
+      );
+      await persist(phone, run, tenant.browserTask ?? task, {
+        browserNextTask: task,
       });
+      return {
+        status: "busy",
+        activeTask: tenant.browserTask,
+        queuedTask: task,
+        hint: `скажи одной строкой: сначала закончу ${shortTask(tenant.browserTask) || "текущее"}, потом сделаю ${shortTask(task)}. Не вызывай profile_setup.`,
+      };
     }
 
     if (action === "poll" && tenant.browserRunId) {
@@ -513,10 +596,11 @@ export default defineTool({
           ? {
               polled: true,
               payDeferred: true,
-              hint: "Оплата не началась: предыдущий браузер-job ещё идёт. Дождись его завершения и вызови browser_task с pay ещё раз.",
+              hint: "оплата ещё не началась — сначала должно закончиться то, что уже идёт, потом вызови browser_task с pay ещё раз",
             }
           : { polled: true },
         { startedAt: tenant.browserStartedAt, runId: tenant.browserRunId },
+        tenant,
       );
     }
 
@@ -546,10 +630,17 @@ export default defineTool({
       }
     }
 
+    const chargeKey = chargeKeyFor(
+      { browserSessionId: tenant.browserSessionId, browserTask: tenant.browserTask, browserStartedAt: tenant.browserStartedAt },
+      { pay: Boolean(pay), rawAction },
+      Date.now(),
+    );
     let allowed = false;
     try {
-      allowed = browserGateFromResult(await countBrowserJobStart(phone), undefined)
-        .allowed;
+      allowed = browserGateFromResult(
+        await countBrowserJobStart(phone, { chargeKey }),
+        undefined,
+      ).allowed;
     } catch (err) {
       console.error("billing browser count failed", err);
       allowed = browserGateFromResult(undefined, err).allowed;
@@ -579,20 +670,33 @@ export default defineTool({
       };
     }
 
-    const loginPages = [
-      ...(payHosts ?? []).map((host) => `https://${host}`),
-      ...(task.match(/https?:\/\/[^\s]+/g) ?? []),
-    ]
-      .map((raw) => loginPageUrl(raw))
-      .filter((page): page is string => Boolean(page));
+    // startPage (errandStartUrl) is computed BEFORE the vault-login lookup and
+    // fed into it (item 3/F6): a keyword-only errand like «вызови такси
+    // домой» has no `pay` and no explicit URL, so without it the saved
+    // taxi.yandex.ru login is never looked up at all.
+    const startPage = errandStartUrl(task);
+    const loginPages = loginPagesFor(task, payHosts, startPage);
     const vaultLogin = await vaultPasswordLoginForPages(phone, loginPages);
     if (vaultLogin) {
       secretBindings = [...(secretBindings ?? []), ...vaultLogin.bindings];
     }
 
+    // Fresh session per errand: never hand the old browser to a new run.
+    // Cancel a still-active previous run (billing stops immediately) and stop
+    // its browser session (a completed run does not close its own browser).
+    if (tenant.browserRunId && isActiveStatus(tenant.browserStatus)) {
+      await cancelRun(tenant.browserRunId).catch((err) =>
+        console.error("browser cancel run failed", err),
+      );
+    }
+    if (tenant.browserSessionId) {
+      await stopBrowserForSession(tenant.browserSessionId).catch((err) =>
+        console.error("browser stop session failed", err),
+      );
+    }
+
     const resolved = await resolveSyncedProfile(phone, tenant);
-    const startPage = errandStartUrl(task);
-    const started = await startRun(task, reset ? undefined : tenant.browserSessionId, {
+    const started = await startRun(task, undefined, {
       ...(resolved.profileId
         ? { profileId: resolved.profileId, profileSynced: resolved.synced }
         : {}),
@@ -604,9 +708,29 @@ export default defineTool({
     const opened = startPage
       ? await waitForPageLanding(started, startPage, ERRAND_LANDING_WAIT_MS)
       : started;
+    // The charge above was keyed by `chargeKey`, which for a brand new errand
+    // is a fresh one-off string, not this run's session id — alias it onto
+    // the session id now that it exists so a later pay-forced restart or a
+    // login→errand continuation (chargeKeyFor keys those off the session id)
+    // finds it already covered instead of charging a second time.
+    if (opened.sessionId) {
+      await aliasBrowserCharge(phone, opened.sessionId).catch((err) => {
+        console.error("alias browser charge failed", err);
+      });
+    }
     const startedAt = Date.now();
+    // This run is really starting: the queued task it may have been standing
+    // in for is now underway, so clear it (item 1) — and record whether it is
+    // a paid run so every later settle() (reuse/poll/inject) can still gate
+    // maybeRecordOrder correctly (item 2), not just this synchronous call.
+    const nextTaskDone =
+      tenant.browserNextTask !== undefined &&
+      normalizeTask(tenant.browserNextTask) === normalizeTask(task);
     await persist(phone, opened, task, {
       browserStartedAt: startedAt,
+      browserPaying: Boolean(payOpts),
+      browserPayHosts: payOpts?.hosts ?? [],
+      ...(nextTaskDone ? { browserNextTask: "" } : {}),
       ...(resolved.profileId && resolved.profileId !== tenant.browserProfileId
         ? { browserProfileId: resolved.profileId }
         : {}),
@@ -627,15 +751,17 @@ export default defineTool({
       console.error("browser follow workflow failed", err);
     });
     const turnId = ctx.session.turn?.id;
-    if (conv && !turnSpoke(typeof turnId === "string" ? turnId : undefined)) {
+    const tId = typeof turnId === "string" ? turnId : undefined;
+    if (conv && !turnSpoke(tId) && !fastAckOf(attrsFromSession(ctx.session))) {
       void deliverHumanRouted({
         attrs: attrsFromSession(ctx.session),
         tenant,
         conversationId: conv,
-        text: "Ищу, это может занять пару минут. Сам напишу, когда будет готово.",
+        text: "ищу, сам напишу как будет готово",
       }).catch((err) => {
         console.error("browser start notify failed", err);
       });
+      if (tId) markTurnSpoke(tId, Date.now());
     }
     const done = await waitForRun(
       opened.runId,
@@ -651,7 +777,10 @@ export default defineTool({
       {
         started: true,
         alreadyNotified: Boolean(conv),
-        ...profileExtra(resolved, startPage),
+        ...profileExtra(resolved, startPage, {
+          vaultLogin: Boolean(vaultLogin),
+          need: parseCloudOutcome(done.result).needs,
+        }),
         ...(opened.pageUrl ? { pageUrl: opened.pageUrl } : {}),
         ...(opened.landed !== undefined ? { landed: opened.landed } : {}),
         ...(payOpts
@@ -659,6 +788,7 @@ export default defineTool({
           : {}),
       },
       { startedAt, runId: opened.runId },
+      { browserPaying: Boolean(payOpts), browserPayHosts: payOpts?.hosts },
     );
   },
 });

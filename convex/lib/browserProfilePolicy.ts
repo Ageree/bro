@@ -5,6 +5,9 @@
  * https://docs.browser-use.com/cloud/guides/authentication
  */
 
+import { loginHostsMatch } from "./browserLivePolicy.ts";
+import { DONE } from "./browserFollowPolicy.ts";
+
 export const LOGIN_MARK = "[bro-login]";
 export const LOGIN_VAULT_MARK = "[bro-vault-login]";
 
@@ -183,6 +186,47 @@ export function profileSyncStatus(opts: {
 }): "missing" | "empty" | "synced" {
   if (!normalizeBrowserProfileId(opts.profileId)) return "missing";
   return (opts.cookieDomains?.length ?? 0) > 0 ? "synced" : "empty";
+}
+
+/** profile_setup must not abandon a login it already has in flight (A3 F2):
+ *  a still-active run for the same login page, started recently, is polled
+ *  instead of starting a brand-new browser/run. */
+export const LOGIN_REUSE_WINDOW_MS = 15 * 60_000;
+
+export function nextLoginAction(opts: {
+  runId?: string;
+  status?: string;
+  storedTask?: string;
+  startedAt?: number;
+  page: string;
+  now: number;
+}): "start" | "reuse" {
+  if (!opts.runId) return "start";
+  if (!isLoginWaitTask(opts.storedTask)) return "start";
+  if (DONE.has((opts.status ?? "").trim().toLowerCase())) return "start";
+  const taskPage = loginPageFromTask(opts.storedTask);
+  if (!taskPage || !loginHostsMatch(taskPage, opts.page)) return "start";
+  if (
+    typeof opts.startedAt !== "number" ||
+    opts.now - opts.startedAt >= LOGIN_REUSE_WINDOW_MS
+  ) {
+    return "start";
+  }
+  return "reuse";
+}
+
+/** A cached "cookies cover this page" verdict must not be trusted forever
+ *  (A3 F7): a run that just reported needing a password invalidates it
+ *  outright, and otherwise it is refreshed once a day. */
+const COOKIE_CACHE_TTL_MS = 24 * 3600_000;
+
+export function cookieCacheStale(
+  tenant: { browserProfileSyncedAt?: number; browserNeed?: string },
+  now: number,
+): boolean {
+  if (tenant.browserNeed === "password") return true;
+  if (typeof tenant.browserProfileSyncedAt !== "number") return false;
+  return now - tenant.browserProfileSyncedAt > COOKIE_CACHE_TTL_MS;
 }
 
 export function pickCookieDomains(raw: unknown): string[] {

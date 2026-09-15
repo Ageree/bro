@@ -358,6 +358,17 @@ export const setBrowser = (
     browserProfileId?: string;
     browserCookieDomains?: string[];
     browserProfileSyncedAt?: number;
+    /** Structured outcome (A2): what the parked Cloud agent is waiting on. */
+    browserNeed?: string;
+    browserNeedSince?: number;
+    browserNeedDetail?: string;
+    /** True while a vault card is being typed into a bound checkout page. */
+    browserPaying?: boolean;
+    browserPayHosts?: string[];
+    /** Errand queued while a different one was active — run after `done`. */
+    browserNextTask?: string;
+    /** Last scrubbed Cloud result — wakeup/resume read this back. */
+    browserOutcome?: string;
   },
 ): Promise<void> =>
   m(api.tenants.setBrowser)({ phoneE164, ...patch }).then(() => {});
@@ -465,6 +476,13 @@ export const cancelWakeup = (
     payloadContains: opts.payloadContains,
   });
 
+/** Durable, cross-instance backstop for /internal/wakeup dedupe (A2) — the
+ *  in-memory Map in agent/lib/wakeup-dedupe.ts is only a same-instance
+ *  fast path in front of this. */
+export const claimDurableWakeupDelivery = (
+  key: string,
+): Promise<{ taken: boolean }> => m(api.wakeups.takeDelivery)({ key });
+
 export const createWatcher = (args: {
   tenantPhone: string;
   source: "gmail" | "calendar";
@@ -505,8 +523,27 @@ export const markPaywallSent = (
 
 export const countBrowserJobStart = (
   phoneE164: string,
+  opts?: { chargeKey?: string },
 ): Promise<{ allowed: boolean }> =>
-  m(api.tenants.countBrowserJobStart)({ phoneE164 });
+  m(api.tenants.countBrowserJobStart)({ phoneE164, chargeKey: opts?.chargeKey });
+
+/** Clears `browserNeed*` for a still-current run (A3 item 5) — see
+ *  `convex/tenants.ts` `clearBrowserNeedPublic` for why `setBrowser` alone
+ *  cannot do this. */
+export const clearBrowserNeed = (
+  phoneE164: string,
+  runId: string,
+): Promise<void> =>
+  m(api.tenants.clearBrowserNeedPublic)({ phoneE164, runId }).then(() => {});
+
+/** Marks `chargeKey` as already covered (no charge) so a later continuation
+ *  of this same errand keyed the same way (see `chargeKeyFor`) is free — see
+ *  `convex/tenants.ts` `aliasBrowserCharge`. */
+export const aliasBrowserCharge = (
+  phoneE164: string,
+  chargeKey: string,
+): Promise<void> =>
+  m(api.tenants.aliasBrowserCharge)({ phoneE164, chargeKey }).then(() => {});
 
 /** Charges one browser job for a whole worker assignment, not per browser. */
 export const startBrowserErrand = (args: {

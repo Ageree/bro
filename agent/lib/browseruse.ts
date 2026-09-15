@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   isBrowserProfileId,
   LOGIN_MARK,
@@ -7,6 +8,7 @@ import {
   pickCookieDomains,
 } from "../../convex/lib/browserProfilePolicy.ts";
 import { INJECT_MARK } from "../../convex/lib/browserInjectPolicy.ts";
+import { DONE } from "../../convex/lib/browserFollowPolicy.ts";
 import {
   liveUrlFromRunPayloads,
   loginHostsMatch,
@@ -19,6 +21,7 @@ import {
   cdpPageUrl,
   type CloudBrowser,
 } from "../../convex/lib/browserCdp.ts";
+import { scrubSecrets } from "../../convex/lib/secretScrub.ts";
 import { cdpNavigate } from "./browser-cdp.ts";
 import { loginScaffold, payScaffold, type SecretBinding } from "./browser-pay.ts";
 
@@ -139,25 +142,27 @@ function errandLoginBlock(opts?: {
   profileSynced?: boolean;
 }): string {
   const session = opts?.profileSynced
-    ? "В Cloud-профиле могут быть куки прошлой сессии — используй их. Куки не значат, что ты уже вошёл: смотри экран."
+    ? "В профиле уже могут быть куки прошлой сессии — используй их. Куки не значат, что ты уже вошёл: смотри на экран, а не на куки."
     : "Сохранённой сессии может не быть.";
   const vault = opts?.login ? `${loginScaffold()}\n` : "";
   const typed = opts?.login
     ? ""
     : "Если в задаче есть логин или пароль — введи их на входе и на регистрации, не цитируй. ";
-  return `${session} Нужен аккаунт — войди сам. Если видишь «Войти», «Авторизоваться» или гостевую форму — нажми и пройди вход (паспорт, Яндекс ID, телефон — так и надо). Не останавливайся на гостевом экране.
-${vault}${typed}Если пароля нет и без него дальше нельзя — остановись и дай live-URL. Код из SMS, почты или пуш — остановись и дай live-URL. Не выдумывай пароль. Номера карт и CVV сам не вводи, если карта не подключена секретами.`;
+  return `${session} Если видишь «Войти», «Авторизоваться» или гостевую форму — войди сам (паспорт, Яндекс ID, телефон — так и надо). Не останавливайся на гостевом экране.
+${vault}${typed}Нет пароля и без него дальше нельзя — закончи итог с НУЖНО: password. Код из SMS — НУЖНО: sms_code. Код на почту — НУЖНО: email_code. Подтверждение в приложении или пуш — НУЖНО: push. Не выдумывай пароль. Номера карт и CVV сам не вводи, если карта не подключена секретами.`;
 }
 
 function errandFinishBlock(
   task: string,
   payBlock: string | undefined,
 ): string {
-  if (payBlock) return "Доводи дело до конца, включая оплату подключённой картой.";
+  if (payBlock) {
+    return "Доводи дело до конца, включая оплату подключённой картой. Прежде чем оформить — проверь, что товар или услуга не добавлены в корзину дважды. После оплаты проверь, что на экране виден номер заказа — без него это не «готово».";
+  }
   if (isDryRunErrand(task)) {
     return "Это проверка без заказа: покажи форму и цену. Не нажимай «Заказать», «Поехали» и не создавай поездку.";
   }
-  return "Доводи дело до конца. Для такси после входа заполни откуда/куда и нажми «Заказать», если человек просил вызвать. Остановка на гостевом экране без входа — не результат.";
+  return "Доводи дело до конца: жми финальную кнопку (нажми «Заказать», «Записаться» и т.п.), если человек просил довести дело до конца. Для такси после входа заполни откуда/куда и нажми «Заказать». Прежде чем оформить — проверь, что заказ не создан дважды. Гостевой экран без попытки войти — не результат.";
 }
 
 export type ProfileView = {
@@ -165,10 +170,17 @@ export type ProfileView = {
   cookieDomains: string[];
 };
 
-/** Chrome cookies already on the Cloud profile. Type a password only if the task includes one. */
+/**
+ * Chrome cookies already on the Cloud profile. Type a password only if the task includes one.
+ * `BROWSER_USE_PROFILE_ID` is only shared across runs when `BROWSER_USE_PROFILE_PHONE`
+ * names the one tenant it belongs to — otherwise every tenant gets their own profile.
+ */
 export function envSyncedProfileId(
+  phone: string,
   raw: string | undefined = process.env.BROWSER_USE_PROFILE_ID,
+  ownerPhone: string | undefined = process.env.BROWSER_USE_PROFILE_PHONE,
 ): string | undefined {
+  if (!ownerPhone || ownerPhone.trim() !== phone.trim()) return undefined;
   return normalizeBrowserProfileId(raw);
 }
 
@@ -191,7 +203,7 @@ export function scaffoldTask(
     return task;
   }
   const payBlock = opts?.pay ? payScaffold(opts.pay) : undefined;
-  const stopForPay = "Если нужна оплата — остановись и дай live-URL.";
+  const stopForPay = "Если по ходу нужна оплата — закончи итог с НУЖНО: payment.";
   const login = errandLoginBlock({
     login: opts?.login,
     profileSynced: opts?.profileSynced,
@@ -203,17 +215,36 @@ export function scaffoldTask(
   return `${ERRAND_MARK}
 Выполняй поручение на языке сайтов (обычно русский). Задача: ${task}.
 ${alreadyOpen}
+Сначала закрой баннеры cookie, промо и подписки — не читая их. Если сайт спрашивает город или регион — выбери тот, что в задаче, или ближайший смысловой; не спрашивай человека.
 ${login} ${payBlock ?? stopForPay}
 ${finish}
-Если данных не хватает (имя, телефон, адрес, время) — не выдумывай; закончи и перечисли, что нужно уточнить.
-Работай быстро: если сайт медленный, требует капчу или недоступен — пропусти его и возьми другой вариант.
-В конце верни краткий структурированный итог: что сделано; что нашёл (варианты с ценами/временами, до 5); что нужно от человека.`;
+Если данных не хватает (имя, телефон, адрес, время, размер) — не выдумывай; перечисли в итоге (ДЕТАЛИ) и поставь НУЖНО: address, payment или info — какое подходит.
+Работай быстро: если сайт медленный или недоступен — пропусти его и возьми другой вариант. Капча без выхода — закончи итог с НУЖНО: captcha.
+
+Итог — только в этом формате, каждое поле с новой строки:
+СДЕЛАНО: <одна фраза>
+ЗАКАЗ: <номер или нет>
+СУММА: <число ₽ или нет>
+КОГДА: <дата/время/ETA или нет>
+ВАРИАНТЫ: <до 5 «название — цена — ссылка», через ; или нет>
+НУЖНО: none|sms_code|email_code|push|3ds|captcha|password|address|payment|info
+ДЕТАЛИ: <что именно нужно от человека, одной строкой, или нет>
+Никогда не пиши в итог пароль, номер карты или код.`;
 }
 
-export async function createProfile(userId: string): Promise<string> {
+/** Stable, non-reversible profile name/id — never the raw phone number. */
+export function hashedProfileName(phone: string): string {
+  const digest = createHash("sha256")
+    .update(`browseruse-profile\0${phone}`)
+    .digest("hex");
+  return `bro-${digest.slice(0, 40)}`;
+}
+
+export async function createProfile(phone: string): Promise<string> {
+  const name = hashedProfileName(phone);
   const created = await bu("/profiles", {
     method: "POST",
-    body: JSON.stringify({ userId, name: userId }),
+    body: JSON.stringify({ userId: name, name }),
   });
   const id = pick(created, ["id"]);
   if (!id) throw new Error(`browser-use profile: no id in ${JSON.stringify(created).slice(0, 400)}`);
@@ -453,6 +484,44 @@ export async function findBrowserForSession(
   return browserFromList(await bu("/browsers"), sessionId);
 }
 
+/**
+ * POST /runs/{id}/cancel — idempotent, blocks further billing on that run.
+ * https://docs.browser-use.com/cloud/api-v4/runs/cancel-run
+ * Best effort: 404 (already gone) is fine; never throw to callers.
+ */
+export async function cancelRun(runId: string): Promise<boolean> {
+  try {
+    await bu(`/runs/${runId}/cancel`, { method: "POST" });
+    return true;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "";
+    if (/^browser-use 404\b/.test(msg) || /^browser-use 409\b/.test(msg)) return true;
+    console.error("browser cancel run failed", err);
+    return false;
+  }
+}
+
+/**
+ * PATCH /browsers/{id} {"action":"stop"} — a completed run does not stop its
+ * cloud browser on its own; stop it explicitly so a fresh errand gets a fresh
+ * session instead of billing an abandoned one until the 4h hard cap.
+ * https://docs.browser-use.com/cloud/api-v4/browsers/update-browser-session
+ */
+export async function stopBrowserForSession(sessionId: string): Promise<boolean> {
+  try {
+    const browser = await findBrowserForSession(sessionId);
+    if (!browser?.id) return false;
+    await bu(`/browsers/${browser.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ action: "stop" }),
+    });
+    return true;
+  } catch (err) {
+    console.error("browser stop session failed", err);
+    return false;
+  }
+}
+
 async function applyCdpPage(
   run: BrowserRun,
   targetPage?: string,
@@ -484,7 +553,14 @@ export async function hydrate(
   sessionId?: string,
   targetPage?: string,
 ): Promise<BrowserRun> {
-  const run = await bu(`/runs/${runId}`);
+  // Every other enrichment fetch below is already optional/`.catch()`-guarded;
+  // this one is the one every caller treats as load-bearing, so a transient
+  // Browser Use hiccup must degrade to "still looking", never throw mid-turn.
+  const run = await bu(`/runs/${runId}`).catch((err: unknown) => {
+    console.error("browser run fetch failed", err);
+    return undefined;
+  });
+  if (!run) return { runId, sessionId, status: "unknown" };
   const status = pick(run, ["status"]) ?? "unknown";
   const nestedLive = liveUrlFromRunPayloads({ run });
   const session: Record<string, unknown> =
@@ -498,11 +574,12 @@ export async function hydrate(
   const events = await runEvents(runId);
   const liveUrl =
     liveUrlFromRunPayloads({ run, session, events });
-  const result =
+  const rawResult =
     pick(run, ["result", "output"]) ??
     (typeof run.result === "object" && run.result
       ? JSON.stringify(run.result).slice(0, 2000)
       : undefined);
+  const result = rawResult ? scrubSecrets(rawResult) : rawResult;
   return applyCdpPage(
     withLanding(
       { runId, sessionId: sid, status, liveUrl, result },
@@ -532,10 +609,13 @@ export async function waitForRun(
   return hydrate(runId, last.sessionId ?? sessionId);
 }
 
+/**
+ * Documented v4 run terminal states (completed|failed|cancelled) plus our own
+ * `stalled` sentinel. Confirmed against docs.browser-use.com/cloud/api-v4 —
+ * no `stopped`/`error`/`canceled` value is ever emitted by the API.
+ */
 export function isTerminal(status: string): boolean {
-  return ["completed", "failed", "cancelled", "canceled", "stopped", "error"].includes(
-    status.toLowerCase(),
-  );
+  return DONE.has(status.trim().toLowerCase());
 }
 
 export async function waitForLiveUrl(

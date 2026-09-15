@@ -8,6 +8,7 @@ import {
 } from "../lib/autofill/native";
 import { vaultAutofillProvider } from "../lib/autofill/provider";
 import { materializeAutofillClaims } from "../lib/autofill/service";
+import { markVaultFilled } from "../lib/code-guard";
 import { kernel } from "../lib/kernel";
 import { requireOwnedBrowser } from "../lib/scope";
 
@@ -86,6 +87,7 @@ export default defineTool({
       signal: context.abortSignal,
     });
 
+    markVaultFilled(context.session.id);
     return {
       filledClaims: result.filledClaims,
       kind: item.kind,

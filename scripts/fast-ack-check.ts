@@ -58,6 +58,13 @@ assert(!shouldFastAck("а".repeat(700)), "a long paste does not");
 assert(!shouldFastAck(""), "empty text does not");
 assert(!shouldFastAck("   "), "whitespace-only text does not");
 
+// F_extra — the fast-ack lane cannot know whether a Cloud session is open, so
+// it must defer entirely on anything that looks like a code, a wait, or a
+// push/3DS confirmation.
+assert(!shouldFastAck("482913"), "a bare OTP code gets no fast ack");
+assert(!shouldFastAck("подтвердил"), "a push confirmation gets no fast ack");
+assert(!shouldFastAck("подожди"), "a wait-inject line gets no fast ack");
+
 // --- sanitizeFastAck ---
 eq(sanitizeFastAck("ищу на вб."), "ищу на вб", "trailing period is stripped");
 eq(sanitizeFastAck("«смотрю почту»"), "смотрю почту", "surrounding quotes are stripped");

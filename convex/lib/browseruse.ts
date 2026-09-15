@@ -10,6 +10,7 @@ import {
   runEventsPath,
 } from "./browserLivePolicy";
 import { browserFromList, cdpPageUrl } from "./browserCdp";
+import { scrubSecrets } from "./secretScrub";
 
 const BASE = "https://api.browser-use.com/api/v4";
 
@@ -87,7 +88,13 @@ export async function hydrate(
   sessionId?: string,
   targetPage?: string,
 ): Promise<BrowserRun> {
-  const run = await bu(`/runs/${runId}`);
+  // Primary fetch: guarded like every other enrichment call below, so a
+  // transient upstream hiccup degrades to "unknown" instead of throwing.
+  const run = await bu(`/runs/${runId}`).catch((err: unknown) => {
+    console.error("browser run fetch failed", err);
+    return undefined;
+  });
+  if (!run) return { runId, sessionId, status: "unknown" };
   const session: Record<string, unknown> = sessionId
     ? await bu(`/sessions/${sessionId}`).catch(() => ({}))
     : {};
@@ -111,11 +118,12 @@ export async function hydrate(
     events,
     pageUrl,
   });
-  const result =
+  const rawResult =
     pick(run, ["result", "output"]) ??
     (typeof run.result === "object" && run.result
       ? JSON.stringify(run.result).slice(0, 2000)
       : undefined);
+  const result = rawResult ? scrubSecrets(rawResult) : rawResult;
   const status = pick(run, ["status"]) ?? "unknown";
   return {
     runId,
@@ -126,6 +134,39 @@ export async function hydrate(
     ...(pageUrl ? { pageUrl } : {}),
     ...(targetPage ? { landed } : {}),
   };
+}
+
+/**
+ * POST /runs/{id}/cancel — idempotent, blocks further billing on that run.
+ * Best effort: 404 (already gone) is fine; never throw to callers.
+ */
+export async function cancelRun(runId: string): Promise<boolean> {
+  try {
+    await bu(`/runs/${runId}/cancel`, { method: "POST" });
+    return true;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "";
+    if (/^browser-use 404\b/.test(msg) || /^browser-use 409\b/.test(msg)) return true;
+    console.error("browser cancel run failed", err);
+    return false;
+  }
+}
+
+/** PATCH /browsers/{id} {"action":"stop"} — a completed run leaves its browser up. */
+export async function stopBrowserForSession(sessionId: string): Promise<boolean> {
+  try {
+    const listed = await bu("/browsers");
+    const browser = browserFromList(listed, sessionId);
+    if (!browser?.id) return false;
+    await bu(`/browsers/${browser.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ action: "stop" }),
+    });
+    return true;
+  } catch (err) {
+    console.error("browser stop session failed", err);
+    return false;
+  }
 }
 
 export async function pollStatus(

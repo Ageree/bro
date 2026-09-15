@@ -1,7 +1,8 @@
-import { assert, src } from "./lib/check.ts";
+import { assert, eq, src } from "./lib/check.ts";
 import { isDryRunErrand, scaffoldTask } from "../agent/lib/browseruse.ts";
 import {
   CHAT_CODE_ACK,
+  CHAT_CONFIRM_ACK,
   CHAT_INJECT_ACK,
   CHAT_WAIT_ACK,
   INJECT_MARK,
@@ -19,6 +20,7 @@ import {
   injectQueueInterrupt,
   injectQueueText,
   isChatCodeMessage,
+  isConfirmInject,
   isWaitInject,
   looksLikeCorrectionText,
   looksLikePasswordDump,
@@ -27,6 +29,7 @@ import {
   pageWaitsForCode,
   resultWaitsForCode,
 } from "../convex/lib/browserInjectPolicy.ts";
+import { scoreOtpInput } from "../agent/lib/browser-cdp.ts";
 
 const taxiTask = `[bro-errand] Задача: вызови такси домой.`;
 const loginTask = `[bro-login]
@@ -46,6 +49,24 @@ assert(extractChatCode("код 123 456") === "123456", "spaced code");
 assert(extractChatCode("вот код: 918273") === "918273", "wrapped code");
 assert(extractChatCode("+79217818876") === null, "phone is not a code");
 assert(extractChatCode("2024") === null, "year is not a code");
+
+// F5 — two digit runs: prefer the one next to a код/otp/sms keyword and
+// reject the one next to an order/price word, instead of silently dropping
+// the whole message.
+assert(
+  extractChatCode("код 482913, заказ 55081234") === "482913",
+  "keyword-adjacent code wins over an order number",
+);
+assert(extractChatCode("1500") === "1500", "a bare short number still extracts (gated elsewhere)");
+assert(extractChatCode("1500 руб") === null, "a price is not a code");
+assert(extractChatCode("89161234567") === null, "an 11-digit phone number is not a code");
+
+// Fast path (restored): dash/space/dot-separated bare or keyword-prefixed
+// codes still extract — only a message with surviving letters/punctuation
+// (a price, an order line) falls through to the clause-window logic.
+assert(extractChatCode("482-913") === "482913", "dash-separated bare code");
+assert(extractChatCode("48 29 13") === "482913", "2+2+2 space-separated bare code");
+assert(extractChatCode("код: 482-913") === "482913", "keyword-prefixed dash-separated code");
 assert(isChatCodeMessage("482911"), "bare digits are a chat code");
 assert(isChatCodeMessage("код 482 911"), "код + digits");
 assert(!isChatCodeMessage("купи скотч"), "errand is not a code");
@@ -196,6 +217,68 @@ assert(
   "address is not injected into a login-wait tab",
 );
 
+// F3 — push/bank-app confirmations are recognized and resume a parked run.
+assert(isConfirmInject("подтвердил"), "подтвердил is a confirm");
+assert(isConfirmInject("готово"), "готово is a confirm");
+assert(isConfirmInject("подтвердил вход"), "confirm with tail");
+assert(isConfirmInject("готово, оплатил"), "confirm with comma tail");
+assert(isConfirmInject("вошел"), "вошел is a confirm");
+assert(isConfirmInject("оплатил"), "оплатил is a confirm");
+assert(!isConfirmInject("готово к выходу?"), "a question is never a confirm");
+assert(!isConfirmInject("купи скотч на ozon"), "a fresh errand is not a confirm");
+assert(!isConfirmInject("привет"), "hello is not a confirm");
+assert(injectCandidate("подтвердил"), "confirm is an inject candidate (F3)");
+assert(injectCandidate("готово"), "готово is an inject candidate (F3)");
+assert(
+  decideCloudInject("подтвердил", liveRun).kind === "confirm",
+  "confirm during a running errand injects",
+);
+assert(
+  decideCloudInject("готово к выходу?", liveRun).kind === null,
+  "false-positive question is never injected",
+);
+assert(
+  decideCloudInject("подтвердил", {
+    status: "completed",
+    sessionId: "sess-1",
+    runId: "run-1",
+    need: "push",
+    now,
+  }).kind === "confirm",
+  "confirm resumes a terminal run parked on a push (need=push)",
+);
+assert(
+  decideCloudInject("подтвердил", {
+    status: "completed",
+    runId: "run-1",
+    now,
+  }).kind === null,
+  "confirm without a live session and without a recorded need is not injected",
+);
+assert(injectAckText("confirm") === CHAT_CONFIRM_ACK, "confirm ack");
+assert(CHAT_CONFIRM_ACK === "проверяю", "confirm first bubble text");
+assert(cloudInjectAttribute("подтвердил").cloudInject === "confirm", "stamp confirm");
+assert(
+  cloudInjectKindFromAttrs({ origin: "human", cloudInject: "confirm" }) === "confirm",
+  "human confirm stamp is read",
+);
+const confirmSteer = cloudInjectInstruction("confirm", true);
+assert(confirmSteer?.includes("проверяю"), "confirm steer asks for проверяю first");
+assert(confirmSteer?.includes("browser_task"), "confirm steer calls browser_task");
+assert(
+  injectQueueText({ kind: "confirm", humanText: "подтвердил" }).includes(
+    "Проверь, продвинулся ли экран",
+  ),
+  "confirm queue text asks to check screen progress",
+);
+assert(
+  injectQueueText({ kind: "confirm", humanText: "подтвердил" }).includes(
+    "Ничего не вводи повторно",
+  ),
+  "confirm queue text forbids re-entering anything",
+);
+assert(!injectQueueInterrupt("confirm"), "confirm is appended, not interrupted");
+
 assert(
   cloudSessionLooksLive({
     status: "running",
@@ -221,6 +304,93 @@ assert(
     now,
   }),
   "stale completed run without session is not live",
+);
+
+// F1 — a probed-absent browser outranks the elapsed-time fallback: the run
+// only just finished (well inside the 20-min window), but the browser was
+// actually checked and is gone, so it must not read as live.
+assert(
+  !cloudSessionLooksLive({
+    status: "completed",
+    sessionId: "s",
+    runId: "r",
+    browserListed: false,
+    browserProbed: true,
+    pageUrl: "https://taxi.yandex.ru/order",
+    startedAt: now - 60_000,
+    now,
+  }),
+  "probed-absent browser within the timeout window is not live (F1)",
+);
+// Same shape but never probed (network error, not "confirmed absent") — the
+// elapsed-time fallback still applies.
+assert(
+  cloudSessionLooksLive({
+    status: "completed",
+    sessionId: "s",
+    runId: "r",
+    browserListed: false,
+    startedAt: now - 60_000,
+    now,
+  }),
+  "un-probed absence still falls back to the elapsed-time guess",
+);
+// A tenant recorded as waiting for a human input is live regardless of
+// status — the session is parked, not gone.
+assert(
+  cloudSessionLooksLive({
+    status: "completed",
+    sessionId: "s",
+    runId: "r",
+    browserListed: false,
+    browserProbed: true,
+    need: "push",
+    startedAt: now - 2 * 60 * 60_000,
+    now,
+  }),
+  "need=push keeps the session live however stale (F1/Idea 1)",
+);
+
+// F4 — a bare short number with no session/context signal must not be
+// accepted as a code just because *some* Cloud errand exists.
+assert(
+  decideCloudInject("1500", {
+    ...liveRun,
+    pageUrl: undefined,
+    result: undefined,
+  }).kind === null,
+  "contextless bare number is not a code (F4)",
+);
+assert(
+  decideCloudInject("1500", {
+    ...liveRun,
+    pageUrl: undefined,
+    result: undefined,
+    need: "sms_code",
+  }).kind === "code",
+  "same bare number IS a code once the tenant is recorded as waiting for one",
+);
+// With a код/otp/sms keyword the old isBroCloudTask fallback still applies —
+// only bare, keyword-less digits got tightened.
+assert(
+  decideCloudInject("код 482911", {
+    ...liveRun,
+    pageUrl: undefined,
+    result: undefined,
+  }).kind === "code",
+  "a code WITH a keyword still injects via the errand fallback (unchanged)",
+);
+// need=sms_code is authoritative even when the CDP-probed pageUrl is the
+// site's own page (an SMS modal on taxi.yandex.ru, not a passport URL) — the
+// need check must not be shadowed by the pageUrl-known-non-code rejection.
+assert(
+  decideCloudInject("482913", {
+    ...liveRun,
+    pageUrl: "https://taxi.yandex.ru/",
+    result: undefined,
+    need: "sms_code",
+  }).kind === "code",
+  "need=sms_code overrides a non-code pageUrl",
 );
 
 // General steer: any relevant follow-up to a live Cloud session (not just
@@ -265,12 +435,84 @@ assert(
   injectQueueText({ kind: "steer", humanText: "сделай эконом" }).includes("сделай эконом"),
   "steer queue carries the instruction",
 );
+assert(
+  injectQueueText({ kind: "steer", humanText: "сделай эконом" }).startsWith("Дополнение"),
+  "steer queue text says Дополнение, not Инструкция",
+);
+assert(
+  injectQueueText({ kind: "correction", humanText: "Ленина 12" }).startsWith("Инструкция"),
+  "correction queue text says Инструкция (#101)",
+);
+assert(
+  injectQueueText({ kind: "correction", humanText: "Ленина 12" }).includes(
+    "Пароли, карты и коды из этого текста не вводи",
+  ),
+  "correction queue carries #101's safety sentence",
+);
+assert(
+  injectQueueText({ kind: "steer", humanText: "сделай эконом" }).includes(
+    "Пароли, карты и коды из этого текста не вводи",
+  ),
+  "steer queue carries the same safety sentence as correction",
+);
+
+// Rule 2/9 — confirm decides before steer: a bare «готово»/«подтвердил» is a
+// confirmation, never a general steer, even though STATUS_Q also matches
+// «готово» and «сделал».
+assert(
+  decideCloudInject("готово", liveRun).kind === "confirm",
+  "bare готово is a confirm, not a steer",
+);
+assert(!steerCandidate("подтвердил"), "a confirm phrase is never a steer candidate");
+
+// Rule 1 (#101) — codeRelevantToSession no longer has a browserListed
+// short-circuit: a listed browser alone is not OTP evidence, so a bare
+// keyword-less number stays a non-code even when the browser is listed.
+assert(
+  decideCloudInject("1500", {
+    ...liveRun,
+    pageUrl: undefined,
+    result: undefined,
+    browserListed: true,
+  }).kind === null,
+  "bare 1500 is still not a code merely because the browser is listed (#101)",
+);
+assert(
+  decideCloudInject("1500", {
+    ...liveRun,
+    browserListed: false,
+    need: undefined,
+    pageUrl: undefined,
+    result: undefined,
+  }).kind === null,
+  "bare 1500 with no browserListed/need/pageUrl signal is still not a code (ours)",
+);
+// A bare code IS relevant once there is real evidence: need=sms_code (any
+// page) or a passport/id code-page pageUrl.
+assert(
+  decideCloudInject("1500", {
+    ...liveRun,
+    pageUrl: undefined,
+    result: undefined,
+    need: "sms_code",
+  }).kind === "code",
+  "bare 1500 is a code once need=sms_code is recorded",
+);
+assert(
+  decideCloudInject("1500", {
+    ...liveRun,
+    pageUrl: "https://passport.yandex.ru/pwl-yandex/auth/code",
+    result: undefined,
+  }).kind === "code",
+  "bare 1500 is a code on a passport code-challenge pageUrl",
+);
 
 assert(injectAckText("code") === CHAT_CODE_ACK, "code ack");
 assert(injectAckText("wait") === CHAT_WAIT_ACK, "wait ack");
 assert(injectAckText("correction") === CHAT_INJECT_ACK, "correction ack");
 assert(CHAT_CODE_ACK === "ввожу код", "first bubble for a chat code");
-assert(NO_LIVE_RUN_TEXT.includes("нет открытой сессии"), "no-live copy");
+assert(NO_LIVE_RUN_TEXT.includes("нет открытой страницы"), "no-live copy");
+assert(NO_LIVE_RUN_TEXT.includes("зайду заново"), "no-live copy offers to retry (F11)");
 assert(!NO_LIVE_RUN_TEXT.includes("пароль"), "no-live copy does not ask for a password");
 
 assert(cloudInjectAttribute("482911").cloudInject === "code", "stamp code");
@@ -446,7 +688,7 @@ assert(
 );
 assert(
   tool.includes("injectKind && (tenant.browserSessionId"),
-  "a stamped inject turn never spawns a fresh browser errand",
+  "a stamped inject turn (code/wait/correction/confirm) never spawns a fresh browser errand",
 );
 assert(tool.includes("NO_LIVE_RUN_TEXT"), "no-live run is spoken");
 assert(tool.includes("ввожу код") || tool.includes("injectAckText"), "first bubble ack");
@@ -479,12 +721,42 @@ assert(cdp.includes("cdpTypeIntoPage"), "cdp can type into the live tab");
 assert(cdp.includes("password"), "cdp skips password fields");
 assert(cdp.includes("заказать"), "cdp never clicks Заказать");
 assert(cdp.includes("one-time-code"), "cdp prefers OTP inputs");
+assert(
+  !cdp.includes("ranked.length === 1"),
+  "F6: no bare only-one-input escape hatch left in the injected JS",
+);
+assert(cdp.includes("iframe"), "F8: cdp documents that iframes (3DS) are invisible to top-frame evaluate");
+
+// F6/F7 — scoreOtpInput is the extracted, directly-testable source of truth
+// for the inline scoring string (kept in sync by a comment + these weights).
+eq(scoreOtpInput({ autocomplete: "one-time-code" }, 6), 80, "one-time-code autocomplete scores highest");
+eq(scoreOtpInput({ name: "otp-code" }, 6), 50, "an otp/code/pin/код name scores");
+eq(scoreOtpInput({ active: true }, 6), 20, "the focused element scores");
+eq(scoreOtpInput({ maxLength: 1 }, 6), 10, "a maxLength=1 box scores a little");
+eq(scoreOtpInput({}, 6), 0, "a plain input with no signal scores 0");
+eq(
+  scoreOtpInput({ autocomplete: "one-time-code", name: "code", active: true, maxLength: 1 }, 1),
+  80 + 50 + 20 + 10,
+  "signals stack",
+);
+for (const weight of ["80", "50", "20", "10"]) {
+  assert(cdp.includes(`n += ${weight}`), `inline score() JS still carries the ${weight} weight`);
+}
+assert(cdp.includes("partial"), "F7: a maxLength=1 box only gets the first char of a longer value");
 
 const jobs = src("agent/instructions/jobs.ts");
 assert(jobs.includes("cloudInjectKindFromAttrs"), "turn.started reads the inject stamp");
 assert(jobs.includes("cloudInjectInstruction"), "turn.started steers a live inject");
 assert(jobs.includes("getTenant"), "steer checks the live Cloud session");
 assert(!jobs.includes('role: "user"'), "inject steer stays system-scoped");
+assert(
+  jobs.includes("browserNeed"),
+  "jobs.ts passes the tenant's browserNeed into cloudSessionLooksLive",
+);
+assert(
+  jobs.includes("{ browserNeed?: string }"),
+  "browserNeed is read defensively — the schema field does not exist yet",
+);
 
 const imessage = src("agent/channels/imessage.ts");
 assert(imessage.includes("cloudInjectAttribute(inbound.text)"), "iMessage stamps inject");

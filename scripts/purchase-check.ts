@@ -5,8 +5,9 @@ import {
   watcherShouldPay,
   watcherWakeupPrompt,
 } from "../agent/lib/purchase-policy.ts";
+import { taskLooksLikeBuy } from "../agent/lib/browser-task-policy.ts";
 
-import { assert } from "./lib/check.ts";
+import { assert, src } from "./lib/check.ts";
 
 assert(purchaseStance("найди кроссовки на WB") === "search", "search find");
 assert(purchaseStance("сколько стоит эта зубная паста") === "search", "search price");
@@ -76,5 +77,14 @@ assert(buyPrompt.includes("2800"), "lastSeen in prompt");
 const watchPrompt = watcherWakeupPrompt("цена на wb");
 assert(watchPrompt.includes("не покупай"), "notify watcher does not buy");
 assert(!watchPrompt.includes("сторож на покупку"), "notify is not a buy watcher");
+
+// --- A3 F5: browser_task's order-recording gate is not fooled by a paid
+// non-"buy-verb" errand (e.g. a taxi ride paid with a bound card) ---
+assert(taskLooksLikeBuy("купи кроссовки на wb"), "buy verb");
+assert(!taskLooksLikeBuy("вызови такси до аэропорта"), "taxi has no buy verb by itself");
+assert(
+  src("agent/tools/browser_task.ts").includes("payingFor(extra, tenant)"),
+  "maybeRecordOrder falls back to the tenant's persisted browserPaying, not just the verb",
+);
 
 console.log("purchase-check ok");

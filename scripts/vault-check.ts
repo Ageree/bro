@@ -239,4 +239,57 @@ const vaultPage = src("assets/vault.js");
 assert(vaultPage.includes("item-edit"), "vault page can edit a login");
 assert(vaultPage.includes("body.handle"), "edit posts the existing handle");
 
+// --- A3 F6: vault login bound for a keyword-only errand with no URL/pay ---
+// («вызови такси домой» has no https:// in it and no pay hosts — only
+// errandStartUrl resolves taxi.yandex.ru from the wording, and that page
+// must reach the vault lookup for the saved login to ever be found).
+{
+  const { vaultPasswordLoginForPages } = await import("../agent/lib/vault-login.ts");
+  const { loginPagesFor } = await import("../agent/lib/browser-task-policy.ts");
+  const { errandStartUrl } = await import("../convex/lib/browserStartPolicy.ts");
+
+  const taxiLogin = JSON.stringify({
+    kind: "login",
+    version: 1,
+    origin: "https://taxi.yandex.ru",
+    identifier: { type: "email", value: "user@example.com" },
+    authentication: { type: "password", password: "very-secret-pw" },
+  });
+  const deps = {
+    listVaultItems: async () => [
+      {
+        handle: "h1",
+        kind: "login" as const,
+        label: "Такси",
+        account: "user@example.com",
+        origin: "https://taxi.yandex.ru",
+        available: true,
+      },
+    ],
+    readVaultSecret: async (_phone: string, handle: string) =>
+      handle === "h1"
+        ? { kind: "login" as const, origin: "https://taxi.yandex.ru", secret: taxiLogin }
+        : null,
+  };
+
+  const startPage = errandStartUrl("вызови такси домой");
+  const pages = loginPagesFor("вызови такси домой", undefined, startPage);
+  const bound = await vaultPasswordLoginForPages("+70000000000", pages, deps);
+  assert(bound !== undefined, "vault login bound for a keyword-only taxi errand");
+  assert(bound!.bindings.length === 2, "login + password bindings present");
+  assert(
+    bound!.bindings.some((b) => b.alias === "site_password" && b.source.value === "very-secret-pw"),
+    "the password binding carries the real secret for Cloud's secretBindings, not a placeholder",
+  );
+
+  // No pay hosts, no URL in the task, and no matching vault item at all:
+  // the lookup must come back empty, not throw.
+  const none = await vaultPasswordLoginForPages(
+    "+70000000000",
+    loginPagesFor("вызови такси домой", undefined, startPage),
+    { listVaultItems: async () => [], readVaultSecret: async () => null },
+  );
+  assert(none === undefined, "no saved login → no binding, no throw");
+}
+
 console.log("vault ok");

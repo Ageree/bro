@@ -28,6 +28,14 @@ export function errandStartUrl(task: string | undefined): string | undefined {
     return TAXI_PAGE;
   }
   if (/\bozon\b|озон/i.test(text)) return OZON_PAGE;
-  if (/\bwildberries\b|вайлдберриз|\bвб\b|\bwb\b/i.test(text)) return WB_PAGE;
+  // \b is ASCII-only in JS regex — it never forms directly against a
+  // Cyrillic letter, so a bare «вб» could never match here. Same fix as
+  // agent/lib/order-policy.ts merchantFromTask.
+  if (
+    /\bwildberries\b|вайлдберриз/i.test(text) ||
+    /(?:^|[^\p{L}])(?:wb|вб)(?:[^\p{L}]|$)/iu.test(text)
+  ) {
+    return WB_PAGE;
+  }
   return undefined;
 }

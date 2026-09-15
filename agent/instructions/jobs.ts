@@ -11,6 +11,7 @@ import {
 } from "../lib/job-wake.ts";
 import { isShortAckTurn, shortAckInstruction } from "../lib/short-ack.ts";
 import { fastAckInstruction, fastAckOf } from "../lib/fast-ack.ts";
+import { browserPollForceSpeak } from "../lib/silent-turn.ts";
 import { tenantId } from "../lib/tenant";
 import { latencyFields } from "../lib/latency-log.ts";
 import { getTenant } from "../lib/convex";
@@ -68,9 +69,13 @@ export default defineDynamic({
               runId: tenant?.browserRunId,
               startedAt: tenant?.browserStartedAt,
               storedTask: tenant?.browserTask,
+              // `browserNeed` doesn't exist on the schema yet (added by a
+              // parallel package) — read it defensively.
+              need: (tenant as { browserNeed?: string } | null)?.browserNeed,
             }),
           );
         }
+        const forceSpeak = browserPollForceSpeak(attrs);
         const content = [
           jobWakeInstruction(rows.map((r) => r.line)),
           scope
@@ -81,6 +86,9 @@ export default defineDynamic({
           ack,
           fastAck ? fastAckInstruction(fastAck) : null,
           inject,
+          forceSpeak
+            ? "Do NOT answer [SILENT]; the human must get one message about this browser errand now."
+            : null,
         ]
           .filter((part): part is string => Boolean(part))
           .join("\n\n");

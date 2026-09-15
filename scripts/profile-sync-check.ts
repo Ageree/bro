@@ -1,5 +1,6 @@
 import {
   alreadyLoggedChatText,
+  cookieCacheStale,
   cookieDomainsCoverPage,
   isBrowserProfileId,
   isLoginVaultTask,
@@ -13,6 +14,8 @@ import {
   loginVaultChatText,
   loginVaultTask,
   loginWaitTask,
+  LOGIN_REUSE_WINDOW_MS,
+  nextLoginAction,
   normalizeBrowserProfileId,
   pickCookieDomains,
   profileSyncStatus,
@@ -293,7 +296,7 @@ assert(
   "taxi goes to browser_task first",
 );
 assert(
-  src("agent/instructions.md").includes("Cloud входит сам"),
+  src("agent/instructions.md").includes("вход проходит сам"),
   "eve tells the cloud job to log in",
 );
 assert(
@@ -323,6 +326,88 @@ assert(
     "s1",
   )?.cdpUrl === "https://b1.cdp.browser-use.com",
   "browser list matches session",
+);
+
+// --- A3 F2: nextLoginAction — reuse an in-flight login for the same page ---
+
+const now = Date.parse("2026-09-15T12:00:00.000Z");
+const waitTask = loginWaitTask("https://www.ozon.ru");
+
+assert(
+  nextLoginAction({ page: "https://www.ozon.ru", now }) === "start",
+  "no runId → start",
+);
+assert(
+  nextLoginAction({
+    runId: "run-1",
+    status: "running",
+    storedTask: "купи кроссовки",
+    startedAt: now - 1000,
+    page: "https://www.ozon.ru",
+    now,
+  }) === "start",
+  "an active run that is not a login wait never blocks a fresh login",
+);
+assert(
+  nextLoginAction({
+    runId: "run-1",
+    status: "running",
+    storedTask: waitTask,
+    startedAt: now - 1000,
+    page: "https://www.wildberries.ru",
+    now,
+  }) === "start",
+  "a login run for a different site does not block this one",
+);
+assert(
+  nextLoginAction({
+    runId: "run-1",
+    status: "running",
+    storedTask: waitTask,
+    startedAt: now - 5 * 60_000,
+    page: "https://www.ozon.ru",
+    now,
+  }) === "reuse",
+  "same page, still active, within the reuse window → reuse",
+);
+assert(
+  nextLoginAction({
+    runId: "run-1",
+    status: "running",
+    storedTask: waitTask,
+    startedAt: now - (LOGIN_REUSE_WINDOW_MS + 1),
+    page: "https://www.ozon.ru",
+    now,
+  }) === "start",
+  "past the reuse window → start fresh instead of polling forever",
+);
+assert(
+  nextLoginAction({
+    runId: "run-1",
+    status: "completed",
+    storedTask: waitTask,
+    startedAt: now - 1000,
+    page: "https://www.ozon.ru",
+    now,
+  }) === "start",
+  "a terminal run is never reused",
+);
+
+// --- A3 F7: cookieCacheStale — a cached "cookies cover this page" verdict
+// must not be trusted forever ---
+
+assert(cookieCacheStale({}, now) === false, "never synced yet is not itself 'stale' (empty-domains check handles that)");
+assert(
+  cookieCacheStale({ browserProfileSyncedAt: now - 1000 }, now) === false,
+  "freshly synced is not stale",
+);
+assert(
+  cookieCacheStale({ browserProfileSyncedAt: now - 25 * 3600_000 }, now) === true,
+  "older than 24h is stale",
+);
+assert(
+  cookieCacheStale({ browserProfileSyncedAt: now - 1000, browserNeed: "password" }, now) === true,
+  "a run that just reported needing a password invalidates the cache outright",
 );
 
 console.log("profile-sync-check ok");

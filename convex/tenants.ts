@@ -348,6 +348,13 @@ export const setBrowser = mutation({
     browserProfileId: v.optional(v.string()),
     browserCookieDomains: v.optional(v.array(v.string())),
     browserProfileSyncedAt: v.optional(v.number()),
+    browserNeed: v.optional(v.string()),
+    browserNeedSince: v.optional(v.number()),
+    browserNeedDetail: v.optional(v.string()),
+    browserPaying: v.optional(v.boolean()),
+    browserPayHosts: v.optional(v.array(v.string())),
+    browserNextTask: v.optional(v.string()),
+    browserOutcome: v.optional(v.string()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -365,9 +372,25 @@ export const setBrowser = mutation({
       "browserProfileId",
       "browserCookieDomains",
       "browserProfileSyncedAt",
+      "browserNeed",
+      "browserNeedSince",
+      "browserNeedDetail",
+      "browserPaying",
+      "browserPayHosts",
+      "browserNextTask",
+      "browserOutcome",
     ]);
     if (args.browserRunId && existing.browserRunId !== args.browserRunId) {
+      // A fresh run/errand: the previous run's blocker and stored result are
+      // stale and must never leak into the new one. `browserNextTask` is the
+      // one thing that survives — it is what queued this new run in the
+      // first place (busy → done → nextTask), so keep it unless the caller
+      // explicitly overwrites it above.
       patch.browserLoginLinkSentAt = undefined;
+      patch.browserNeed = undefined;
+      patch.browserNeedSince = undefined;
+      patch.browserNeedDetail = undefined;
+      patch.browserOutcome = undefined;
     }
     await ctx.db.patch(existing._id, patch);
     return null;
@@ -412,6 +435,10 @@ export const patchBrowserInternal = internalMutation({
     browserStatus: v.optional(v.string()),
     browserSessionId: v.optional(v.string()),
     browserLiveUrl: v.optional(v.string()),
+    browserNeed: v.optional(v.string()),
+    browserNeedSince: v.optional(v.number()),
+    browserNeedDetail: v.optional(v.string()),
+    browserOutcome: v.optional(v.string()),
   },
   returns: v.object({ stale: v.boolean() }),
   handler: async (ctx, args) => {
@@ -423,9 +450,64 @@ export const patchBrowserInternal = internalMutation({
       "browserStatus",
       "browserSessionId",
       "browserLiveUrl",
+      "browserNeed",
+      "browserNeedSince",
+      "browserNeedDetail",
+      "browserOutcome",
     ]);
     if (Object.keys(patch).length) await ctx.db.patch(existing._id, patch);
     return { stale: false };
+  },
+});
+
+/** A run's terminal outcome resolved with no pending need — clear any
+ *  blocker the same run had parked earlier (pollRun writes it, this undoes
+ *  it once `parseCloudOutcome` says `needs: "none"`). Same runId gate as
+ *  every other browser-state write, so a stale poll never clobbers a newer run. */
+export const clearBrowserNeed = internalMutation({
+  args: {
+    phoneE164: v.string(),
+    runId: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const existing = await findTenantByPhone(ctx, args.phoneE164);
+    if (!existing || existing.browserRunId !== args.runId) return null;
+    await ctx.db.patch(existing._id, {
+      browserNeed: undefined,
+      browserNeedSince: undefined,
+      browserNeedDetail: undefined,
+    });
+    return null;
+  },
+});
+
+/** Public counterpart of `clearBrowserNeed` for agent-side callers (the inject
+ *  path in `browser_task.ts`): a code/confirmation/correction just queued into
+ *  the live session satisfies whatever the run was parked on, but the queued
+ *  message usually resumes the *same* run id, so `setBrowser`'s own
+ *  new-run-id auto-clear never fires — this clears it explicitly. Same runId
+ *  gate as every other browser-state write. `setBrowser` cannot do this
+ *  itself: its `definedEntries` picker only copies keys present with a
+ *  defined value, so passing `browserNeed: undefined` through the wrapper
+ *  never reaches the patch. */
+export const clearBrowserNeedPublic = mutation({
+  args: {
+    secret: v.string(),
+    phoneE164: v.string(),
+    runId: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    assertSecret(args.secret);
+    const existing = await findTenantByPhone(ctx, args.phoneE164);
+    if (!existing || existing.browserRunId !== args.runId) return null;
+    await ctx.db.patch(existing._id, {
+      browserNeed: undefined,
+      browserNeedSince: undefined,
+      browserNeedDetail: undefined,
+    });
+    return null;
   },
 });
 
@@ -483,7 +565,12 @@ export const releaseBrowserLoginLink = internalMutation({
   },
 });
 
-const wakeupPhase = v.union(v.literal("done"), v.literal("giveup"));
+const wakeupPhase = v.union(
+  v.literal("done"),
+  v.literal("need"),
+  v.literal("failed"),
+  v.literal("giveup"),
+);
 
 const wakeupClaimResult = v.union(
   v.object({
@@ -921,13 +1008,73 @@ async function chargeBrowserJob(
   }
 }
 
+/**
+ * `chargeKey` dedupes a charge across retries of the *same* errand (a
+ * pay-forced restart of the run just started, or an errand that resumes a
+ * login within the reuse window — see `agent/tools/browser_task.ts`
+ * `chargeKeyFor`) using the same `browserCharges`/`by_worker` pattern as
+ * `startBrowserErrand` below, just with a `cloud:`-prefixed key so the two
+ * charge kinds never collide in the same index.
+ */
 export const countBrowserJobStart = mutation({
-  args: { secret: v.string(), phoneE164: v.string() },
+  args: { secret: v.string(), phoneE164: v.string(), chargeKey: v.optional(v.string()) },
   returns: v.object({ allowed: v.boolean() }),
-  handler: async (ctx, { secret, phoneE164 }) => {
+  handler: async (ctx, { secret, phoneE164, chargeKey }) => {
     assertSecret(secret);
     const tenant = await tenantByPhone(ctx, phoneE164);
-    return { allowed: await chargeBrowserJob(ctx, tenant, Date.now()) };
+    const key = chargeKey?.trim();
+    if (!key) {
+      return { allowed: await chargeBrowserJob(ctx, tenant, Date.now()) };
+    }
+    const workerSessionId = `cloud:${key}`;
+    const charged = await ctx.db
+      .query("browserCharges")
+      .withIndex("by_worker", (q) => q.eq("workerSessionId", workerSessionId))
+      .first();
+    if (charged && charged.tenantId === tenant._id) return { allowed: true };
+    const now = Date.now();
+    if (!(await chargeBrowserJob(ctx, tenant, now))) return { allowed: false };
+    await ctx.db.insert("browserCharges", {
+      tenantId: tenant._id,
+      workerSessionId,
+      chargedAt: now,
+    });
+    return { allowed: true };
+  },
+});
+
+/**
+ * Marks a `chargeKey` as already covered WITHOUT charging — a no-op insert
+ * so a later `countBrowserJobStart({chargeKey})` call keyed the same way
+ * finds a row and skips the charge. `chargeKeyFor` (agent/lib/browser-
+ * task-policy.ts) keys a pay-forced restart or a login→errand continuation
+ * off the run's *session id*, but the original charge for that errand was
+ * keyed off a fresh, unrelated one-off key (the session id did not exist
+ * yet when the charge happened) — without this alias the continuation's
+ * lookup by session id never matches and it charges again. Call this once
+ * the fresh run's session id is known, right after the real charge.
+ */
+export const aliasBrowserCharge = mutation({
+  args: { secret: v.string(), phoneE164: v.string(), chargeKey: v.string() },
+  returns: v.null(),
+  handler: async (ctx, { secret, phoneE164, chargeKey }) => {
+    assertSecret(secret);
+    const tenant = await findTenantByPhone(ctx, phoneE164);
+    if (!tenant) throw new Error("unknown tenant");
+    const key = chargeKey.trim();
+    if (!key) return null;
+    const workerSessionId = `cloud:${key}`;
+    const existing = await ctx.db
+      .query("browserCharges")
+      .withIndex("by_worker", (q) => q.eq("workerSessionId", workerSessionId))
+      .first();
+    if (existing) return null;
+    await ctx.db.insert("browserCharges", {
+      tenantId: tenant._id,
+      workerSessionId,
+      chargedAt: Date.now(),
+    });
+    return null;
   },
 });
 

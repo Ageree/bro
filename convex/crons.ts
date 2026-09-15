@@ -23,4 +23,10 @@ crons.interval(
 crons.interval("warm eve", { minutes: 4 }, internal.warm.pingEve, {});
 // Drop composioEvents older than EVENT_TTL_MS so the dedupe table stays bounded.
 crons.interval("prune composio events", { hours: 24 }, internal.watchers.pruneEvents, {});
+// GC browserSessions rows (and, where KERNEL_API_KEY is set, the matching
+// Kernel browser) a crashed worker never dropped after `manage_browsers create`.
+crons.interval("sweep stale browsers", { minutes: 30 }, internal.browsersGc.sweep, {});
+// A Cloud run parked on a human input (code/3DS/captcha/password/missing
+// data) for too long never gets repolled on its own — nothing else notices.
+crons.interval("sweep waiting browser errands", { minutes: 10 }, internal.browserFollow.sweepWaiting, {});
 export default crons;

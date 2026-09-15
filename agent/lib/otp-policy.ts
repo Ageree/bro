@@ -33,6 +33,41 @@ const OTP_HINT =
 const KNOWN_SENDERS =
   /wildberries|wb\.ru|ozon|tinkoff|тинькофф|sber|сбер|alfa|альфа|vtb|втб|raiffeisen|райф|clinic|клиник|поликлин|лаборатор|invitro|гемотест|банк|bank/i;
 
+// A hint like "wildberries" or "вб" often doesn't literally appear in the
+// candidate's `from`/`subject` (real WB mail comes from wb.ru); a short
+// alias table covers the common abbreviations without hand-listing every
+// merchant twice.
+const HINT_ALIASES: Record<string, RegExp> = {
+  wb: /wildberries|wb\.ru/i,
+  вб: /wildberries|wb\.ru/i,
+  wildberries: /wildberries|wb\.ru/i,
+  ozon: /ozon/i,
+  озон: /ozon/i,
+  tinkoff: /tinkoff|тинькофф/i,
+  тинькофф: /tinkoff|тинькофф/i,
+  sber: /sber|сбер/i,
+  сбер: /sber|сбер/i,
+};
+
+function candidateHay(h: OtpCandidate): string {
+  return `${h.from ?? ""} ${h.subject ?? ""}`;
+}
+
+/** Does this candidate's sender/subject match the caller's merchant hint? */
+function matchesHint(h: OtpCandidate, hint: string): boolean {
+  const hay = candidateHay(h).toLowerCase();
+  const key = hint.trim().toLowerCase();
+  if (!key) return false;
+  if (hay.includes(key)) return true;
+  const alias = HINT_ALIASES[key];
+  return alias ? alias.test(hay) : false;
+}
+
+/** Is this candidate clearly from *some* recognized merchant/bank/clinic? */
+function isKnownSender(h: OtpCandidate): boolean {
+  return KNOWN_SENDERS.test(candidateHay(h));
+}
+
 const YEAR = /^(?:19|20)\d{2}$/;
 const ORDERISH = /заказ|order|чек|invoice|сумм|руб|₽|шт|промокод|promo\s*code|купон/i;
 
@@ -148,41 +183,71 @@ export function candidatesFromMail(
   }));
 }
 
-function rank(h: OtpCandidate, nowMs: number): number {
+function rank(h: OtpCandidate, nowMs: number, hint?: string): number {
   const src = h.source === "archive" ? 1 : 2;
   const conf = h.confidence === "high" ? 2 : 1;
   const age =
     h.atMs != null
       ? Math.max(0, OTP_WINDOW_MS - (nowMs - h.atMs)) / OTP_WINDOW_MS
       : 0.5;
-  return src * 10 + conf * 3 + age;
+  let hintAdj = 0;
+  if (hint) {
+    if (matchesHint(h, hint)) hintAdj = 3;
+    else if (isKnownSender(h)) hintAdj = -3;
+  }
+  return src * 10 + conf * 3 + age + hintAdj;
 }
 
+function dedupeByCode(hits: readonly OtpCandidate[]): OtpCandidate[] {
+  const unique: OtpCandidate[] = [];
+  for (const h of hits) {
+    if (!unique.some((u) => u.code === h.code)) unique.push(h);
+  }
+  return unique;
+}
+
+/**
+ * Rank fresh OTP candidates and pick the one the caller almost certainly
+ * wants. `hint` (usually a merchant name the coordinator already knows it's
+ * waiting on, e.g. "wildberries") boosts a matching sender and demotes a
+ * candidate that clearly belongs to a *different* known sender — without a
+ * hint match, a same-window bank code could otherwise outrank the merchant
+ * code root actually needs (Finding A4 #6).
+ */
 export function pickOtp(
   hits: readonly OtpCandidate[],
   nowMs = Date.now(),
+  hint?: string,
 ): OtpPick {
   const fresh = hits.filter(
     (h) => h.atMs != null && nowMs - h.atMs <= OTP_WINDOW_MS,
   );
   if (fresh.length === 0) return { status: "missing" };
 
-  const sorted = [...fresh].sort((a, b) => rank(b, nowMs) - rank(a, nowMs));
+  const sorted = [...fresh].sort(
+    (a, b) => rank(b, nowMs, hint) - rank(a, nowMs, hint),
+  );
   const best = sorted[0]!;
   const rivals = sorted.filter(
     (h) =>
       h.code !== best.code &&
       h.confidence === "high" &&
       best.confidence === "high" &&
-      rank(h, nowMs) >= rank(best, nowMs) - 1,
+      rank(h, nowMs, hint) >= rank(best, nowMs, hint) - 1,
   );
   if (rivals.length > 0) {
-    const unique: OtpCandidate[] = [];
-    for (const h of [best, ...rivals]) {
-      if (!unique.some((u) => u.code === h.code)) unique.push(h);
-    }
+    const unique = dedupeByCode([best, ...rivals]);
     if (unique.length > 1) {
       return { status: "ambiguous", hits: unique.slice(0, 3) };
+    }
+  }
+  if (hint && !matchesHint(best, hint)) {
+    const hintedAlt = fresh.find((h) => matchesHint(h, hint));
+    if (hintedAlt) {
+      return {
+        status: "ambiguous",
+        hits: dedupeByCode([hintedAlt, best]).slice(0, 3),
+      };
     }
   }
   return { status: "found", hit: best };

@@ -19,6 +19,8 @@
     "browser:check": "node --experimental-strip-types scripts/browser-policy-check.ts",
     "inject:check": "node --experimental-strip-types scripts/browser-inject-check.ts",
     "queue:check": "node --experimental-strip-types scripts/browser-queue-check.ts",
+    "glue:check": "node --experimental-strip-types scripts/browser-glue-check.ts",
+    "browser-task:check": "node --experimental-strip-types scripts/browser-task-check.ts",
     "pay:check": "node --experimental-strip-types scripts/browser-pay-check.ts",
     "purchase:check": "node --experimental-strip-types scripts/purchase-check.ts",
     "orders:check": "node --experimental-strip-types scripts/orders-check.ts",
@@ -60,6 +62,8 @@
     "voice:check": "node --experimental-strip-types scripts/voice-check.ts",
     "worker:check": "node --experimental-strip-types scripts/worker-check.ts",
     "wakeups:check": "node --experimental-strip-types scripts/wakeups-check.ts",
+    "outcome:check": "node --experimental-strip-types scripts/browser-outcome-check.ts",
+    "instructions:check": "node --experimental-strip-types scripts/instructions-check.ts",
     "photon:check": "node --experimental-strip-types scripts/photon-check.ts",
     "photon:webhooks": "node --env-file=.env.local --experimental-strip-types scripts/setup-photon-webhook.ts",
     "provision:inkbox": "node --experimental-strip-types scripts/provision-inkbox.ts"

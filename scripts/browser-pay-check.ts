@@ -12,7 +12,7 @@ import type { LoginPayload } from "../convex/lib/vaultPayload.ts";
 import { scaffoldTask } from "../agent/lib/browseruse.ts";
 import type { PaymentPayload } from "../convex/lib/vaultPayload.ts";
 
-import { assert, throws } from "./lib/check.ts";
+import { assert, src, throws } from "./lib/check.ts";
 
 // --- normalizePayHost ---
 
@@ -161,8 +161,8 @@ const payOpts = {
 {
   const withoutPay = scaffoldTask(raw);
   assert(
-    withoutPay.includes("Если нужна оплата — остановись и дай live-URL."),
-    "unchanged behavior without pay",
+    withoutPay.includes("НУЖНО: payment"),
+    "unchanged behavior without pay — structured outcome, no live-URL",
   );
   assert(
     withoutPay.includes("Доводи дело до конца"),
@@ -177,7 +177,10 @@ const payOpts = {
 
 {
   const syncedWithPay = scaffoldTask(raw, { profileSynced: true, pay: payOpts });
-  assert(syncedWithPay.includes("Cloud-профиле"), "synced wording mentions cookies");
+  assert(
+    syncedWithPay.includes("уже могут быть куки прошлой сессии"),
+    "synced wording mentions cookies",
+  );
   assert(syncedWithPay.includes("войди сам"), "synced+pay still logs in");
   assert(
     syncedWithPay.includes(PAY_ALIASES.number),
@@ -244,3 +247,18 @@ assert(
   payScaffold({ hosts: ["ozon.ru"], holder: "A", account: "B" }).includes("поддомен"),
   "payScaffold tells the agent that subdomains are covered",
 );
+
+// --- A3 item 2: browser_task persists paying/hosts so a later settle() (poll,
+// reuse, inject) can still gate maybeRecordOrder correctly, not just the
+// synchronous call that started the paid run ---
+{
+  const taskSrc = src("agent/tools/browser_task.ts");
+  assert(
+    /browserPaying: Boolean\(payOpts\)/.test(taskSrc),
+    "a fresh start persists whether it is a paid run",
+  );
+  assert(
+    /browserPayHosts: payOpts\?\.hosts \?\? \[\]/.test(taskSrc),
+    "a fresh start persists the paid hosts (or clears them for a non-paid run)",
+  );
+}

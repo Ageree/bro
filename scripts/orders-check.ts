@@ -147,6 +147,37 @@ assert(
   "PAN labeled as order id is ignored",
 );
 
+// --- А2: labelled («НУЖНО» protocol) result wins over free-text guessing ---
+
+const labelledPlaced = parseOrderFromResult({
+  task: "купи кроссовки nike 42 на wb",
+  result: `СДЕЛАНО: Заказал кроссовки Nike Revolution 42
+ЗАКАЗ: 15372849102
+СУММА: 4990
+КОГДА: нет
+ВАРИАНТЫ: нет
+НУЖНО: none
+ДЕТАЛИ: нет`,
+  hosts: ["wildberries.ru"],
+});
+assert(labelledPlaced, "labelled row");
+assert(labelledPlaced.merchantOrderId === "15372849102", "labelled id");
+assert(labelledPlaced.title.includes("Nike"), "labelled title from СДЕЛАНО");
+assert(labelledPlaced.priceRub === 4990, "labelled price from СУММА");
+assert(labelledPlaced.status === "placed", "labelled needs:none → placed");
+
+const labelledNeed = parseOrderFromResult({
+  task: "купи кроссовки nike на wb",
+  result: `СДЕЛАНО: нет
+ЗАКАЗ: нет
+СУММА: нет
+КОГДА: нет
+ВАРИАНТЫ: нет
+НУЖНО: sms_code
+ДЕТАЛИ: нет`,
+});
+assert(labelledNeed === null, "labelled result with a pending need is not an order yet");
+
 // --- wiring ---
 
 const ordersSrc = src("convex/orders.ts");
@@ -175,7 +206,14 @@ const settleSrc = src("agent/tools/browser_task.ts");
 assert(settleSrc.includes("parseOrderFromResult"), "settle parses result");
 assert(settleSrc.includes("recordOrder"), "settle records");
 assert(settleSrc.includes("extra.paying"), "settle checks paying");
-assert(settleSrc.includes("purchaseStance"), "settle uses buy stance");
+// taskLooksLikeBuy (which wraps purchaseStance) moved to
+// agent/lib/browser-task-policy.ts (A3) so it can be unit-tested without the
+// tool's network dependency graph — settle() still calls it via that import.
+assert(settleSrc.includes("taskLooksLikeBuy"), "settle uses buy stance");
+assert(
+  src("agent/lib/browser-task-policy.ts").includes("purchaseStance"),
+  "taskLooksLikeBuy is backed by purchaseStance",
+);
 assert(settleSrc.includes("record order failed"), "settle swallows record errors");
 assert(settleSrc.includes("maybeRecordOrder"), "record does not replace payload");
 assert(

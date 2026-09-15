@@ -96,7 +96,7 @@ export async function findFreshOtp(opts: {
   }
 
   return {
-    ...formatOtpLookup(pickOtp([...mailHits, ...archiveHits], now)),
+    ...formatOtpLookup(pickOtp([...mailHits, ...archiveHits], now, hint)),
     messages: listed.length,
   };
 }
