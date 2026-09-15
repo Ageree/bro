@@ -30,6 +30,8 @@ Production: Convex cloud + `eve deploy` on Vercel — `npm run deploy` does both
 
 `npm run dev` is TUI-only (no public URL).
 
+Device tests use a **virtual iPhone** on an Apple Silicon Mac ([vphone-cli](https://github.com/Lakr233/vphone-cli)), not a USB cable. Cloud Linux cannot boot it. On the MacBook: `npm run vphone:setup`, then `vphone-cli vm create bro -V jb && vphone-cli vm launch bro`, then `npm run vphone:e2e`. Playbook: `.cursor/skills/vphone`. Docs: `docs/vphone.md`. Check: `npm run vphone:check`. iMessage on a VM is not guaranteed — blue-bubble chat still needs a real iPhone unless the guest activates.
+
 Onboard: landing «Получить своего бро» asks for the iPhone number, creates a Photon shared user, and opens Messages to the assigned +1. Blue iMessage only. iPhone Settings → Messages → Send as SMS = off. Do not text `connect @handle`.
 
 iMessage groups are paused on Photon Pro. `group_chat` explains that Bro is 1:1 until Business. Check: `npm run group:check`.
