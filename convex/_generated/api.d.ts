@@ -29,6 +29,7 @@ import type * as lib_browserJobPolicy from "../lib/browserJobPolicy.js";
 import type * as lib_browserLivePolicy from "../lib/browserLivePolicy.js";
 import type * as lib_browserOutcomePolicy from "../lib/browserOutcomePolicy.js";
 import type * as lib_browserProfilePolicy from "../lib/browserProfilePolicy.js";
+import type * as lib_browserProgressPolicy from "../lib/browserProgressPolicy.js";
 import type * as lib_browserSessionGc from "../lib/browserSessionGc.js";
 import type * as lib_browserStartPolicy from "../lib/browserStartPolicy.js";
 import type * as lib_browseruse from "../lib/browseruse.js";
@@ -93,6 +94,7 @@ declare const fullApi: ApiFromModules<{
   "lib/browserLivePolicy": typeof lib_browserLivePolicy;
   "lib/browserOutcomePolicy": typeof lib_browserOutcomePolicy;
   "lib/browserProfilePolicy": typeof lib_browserProfilePolicy;
+  "lib/browserProgressPolicy": typeof lib_browserProgressPolicy;
   "lib/browserSessionGc": typeof lib_browserSessionGc;
   "lib/browserStartPolicy": typeof lib_browserStartPolicy;
   "lib/browseruse": typeof lib_browseruse;
