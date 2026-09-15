@@ -1,4 +1,3 @@
-import { defineChannel } from "eve/channels";
 import { eveChannel } from "eve/channels/eve";
 import {
   ForbiddenError,
@@ -111,7 +110,7 @@ const ownedCallbackRoutes = new Set([
   "/eve/v1/task-input/:token",
 ]);
 
-export default defineChannel({
+export default {
   ...channel,
   // oxlint-disable-next-line oxc/no-map-spread -- Keep Eve's original route definitions intact when adding the app authorization boundary.
   routes: channel.routes.map((route) => {
@@ -130,7 +129,7 @@ export default defineChannel({
       },
     };
   }),
-});
+} satisfies typeof channel;
 
 // Routes without a session subject. Every other eve route must name a session
 // this caller owns, either in the path or inside a hook token.

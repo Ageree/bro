@@ -32,6 +32,7 @@ describe("worker input bubbling", () => {
     const worker = await browserAgent.events["turn.started"]?.(
       {},
       {
+        model: null,
         channel: { kind: "channel:linq", metadata: {} },
         messages: [],
         session: {

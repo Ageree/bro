@@ -209,6 +209,7 @@ function memoryToolsContext(
   initiator: MemoryToolsContext["session"]["auth"]["initiator"] = null
 ): MemoryToolsContext {
   return {
+    model: null,
     channel: {},
     memory: {
       scope: {

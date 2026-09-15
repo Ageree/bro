@@ -128,6 +128,7 @@ function dynamicContext(
   initiatorAuthenticator?: string
 ) {
   return {
+    model: null,
     channel: { kind: "channel:linq", metadata: {} },
     messages: [],
     session: {

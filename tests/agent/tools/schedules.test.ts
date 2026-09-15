@@ -306,6 +306,7 @@ describe("schedule tools", () => {
 
 function dynamicContext(authenticator: string, kind = "channel:scheduled-run") {
   return {
+    model: null,
     channel: { kind, metadata: {} },
     messages: [],
     session: {

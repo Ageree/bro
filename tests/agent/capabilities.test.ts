@@ -118,6 +118,7 @@ async function authoredCapabilities(authenticator: string) {
 
 function dynamicContext(authenticator: string) {
   return {
+    model: null,
     channel: { kind: "channel:linq", metadata: {} },
     messages: [],
     session: {
