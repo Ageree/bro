@@ -86,7 +86,12 @@ export function sameBrowserRun(
   return tenantRunId === runId;
 }
 
-export type WakeupPhase = "done" | "giveup";
+/**
+ * `need` — a labelled or heuristic stop that waits on the human (code, 3DS,
+ * captcha, password, missing data). `failed` — a terminal failed/cancelled
+ * run with no pending need. `done`/`giveup` are unchanged from A1.
+ */
+export type WakeupPhase = "done" | "need" | "failed" | "giveup";
 
 export function wakeupIdempotencyKey(runId: string, phase: WakeupPhase): string {
   return `browser_poll:${runId}:${phase}`;

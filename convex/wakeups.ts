@@ -219,6 +219,42 @@ export const cancel = mutation({
   },
 });
 
+// Lease-based, not permanent: mirrors agent/lib/wakeup-dedupe.ts's in-memory
+// TTL so a genuinely stuck delivery (not just a lost HTTP ack) can still be
+// retried once Convex's own wakeup-claim retries (~64s worst case) are long
+// past. A row is durable across eve instances; the in-memory Map stays as a
+// same-instance fast path in front of this.
+const DELIVERY_LEASE_MS = 15 * 60_000;
+
+/** Durable /internal/wakeup delivery dedupe — insert-if-absent-or-expired. */
+export const takeDelivery = mutation({
+  args: { secret: v.string(), key: v.string() },
+  returns: v.object({ taken: v.boolean() }),
+  handler: async (ctx, { secret, key }) => {
+    assertSecret(secret);
+    if (!key) return { taken: true };
+    const now = Date.now();
+    // .first(), not .unique(): two instances can race an insert for the same
+    // key (both see "absent") — .unique() throws on the resulting duplicate
+    // key, and this route fails OPEN on an exception (a lost dedupe check
+    // must never cost the human their wakeup), which is exactly backwards
+    // for a dedupe check that is supposed to fail closed on a real race.
+    const existing = await ctx.db
+      .query("wakeupDeliveries")
+      .withIndex("by_key", (q) => q.eq("key", key))
+      .first();
+    if (existing && now - existing.at < DELIVERY_LEASE_MS) {
+      return { taken: false };
+    }
+    if (existing) {
+      await ctx.db.patch(existing._id, { at: now });
+    } else {
+      await ctx.db.insert("wakeupDeliveries", { key, at: now });
+    }
+    return { taken: true };
+  },
+});
+
 export const listForTenant = query({
   args: { secret: v.string(), tenantPhone: v.string() },
   returns: v.array(wakeupDoc),
@@ -271,6 +307,12 @@ export const ensureCrons = internalMutation({
       if (await hasCron(ctx, row._id)) continue;
       await scheduleCron(ctx, row._id, row.at, now, row.gen ?? 0);
       n++;
+    }
+    // Piggyback the durable wakeup-delivery dedupe prune on the same 15-min
+    // sweep this mutation already runs on — no need for a second cron.
+    const stale = await ctx.db.query("wakeupDeliveries").take(200);
+    for (const row of stale) {
+      if (now - row.at > 2 * 24 * 60 * 60_000) await ctx.db.delete(row._id);
     }
     return n;
   },

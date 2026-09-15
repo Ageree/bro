@@ -28,6 +28,17 @@ export default defineSchema({
     browserWorkflowId: v.optional(v.string()),
     browserWorkflowRunId: v.optional(v.string()),
     browserWakeupClaim: v.optional(v.string()),
+    /** Structured outcome (A2): what the parked Cloud agent is waiting on. */
+    browserNeed: v.optional(v.string()),
+    browserNeedSince: v.optional(v.number()),
+    browserNeedDetail: v.optional(v.string()),
+    /** True while a vault card is being typed into a bound checkout page. */
+    browserPaying: v.optional(v.boolean()),
+    browserPayHosts: v.optional(v.array(v.string())),
+    /** Errand queued while a different one was active — run it after `done`. */
+    browserNextTask: v.optional(v.string()),
+    /** Last scrubbed Cloud result (≤2000 chars) — wakeup/resume read this back. */
+    browserOutcome: v.optional(v.string()),
     paidUntil: v.optional(v.number()),
     // deprecated: msgs/day and browser/month counters moved to @convex-dev/rate-limiter
     msgsDayKey: v.optional(v.string()),
@@ -56,7 +67,8 @@ export default defineSchema({
     .index("by_photon_user", ["photonUserId"])
     .index("by_email", ["emailAddress"])
     .index("by_telegram", ["telegramUserId"])
-    .index("by_telegram_bind", ["telegramBindToken"]),
+    .index("by_telegram_bind", ["telegramBindToken"])
+    .index("by_browserNeed", ["browserNeed"]),
 
   jobs: defineTable({
     tenantId: v.id("tenants"),
@@ -212,6 +224,13 @@ export default defineSchema({
     .index("by_status_at", ["status", "at"])
     .index("by_tenant", ["tenantPhone"])
     .index("by_tenant_status", ["tenantPhone", "status"]),
+
+  /** Durable dedupe for /internal/wakeup delivery — a fast-path in-memory Map
+   *  backs it up, but this table is the cross-instance source of truth. */
+  wakeupDeliveries: defineTable({
+    key: v.string(),
+    at: v.number(),
+  }).index("by_key", ["key"]),
 
   watchers: defineTable({
     tenantPhone: v.string(),

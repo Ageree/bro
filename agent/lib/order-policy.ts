@@ -4,6 +4,7 @@
  */
 
 import { parseAmount } from "./purchase-policy.ts";
+import { parseCloudOutcome } from "../../convex/lib/browserOutcomePolicy.ts";
 
 export type OrderMerchant = "wb" | "ozon" | "other";
 export type OrderStatus = "placed" | "cancelled" | "unknown";
@@ -224,9 +225,40 @@ function extractPickup(result: string): string | undefined {
   return pickup.length > 0 ? clip(pickup, 280) : undefined;
 }
 
+/** «НУЖНО» protocol first (A2, convex/lib/browserOutcomePolicy.ts): a labelled
+ *  result names its own title/price/order id, so no regex guessing is needed.
+ *  Only a run whose result has no labels at all (predates the scaffold, or
+ *  skipped the block) falls through to the free-text parse below. */
+function fromLabelledOutcome(args: ParseOrderArgs, result: string, task: string): ParsedOrder | null {
+  const outcome = parseCloudOutcome(args.result);
+  if (!outcome.labelled) return null;
+  const orderId = outcome.orderId && !looksLikePan(outcome.orderId) ? outcome.orderId : undefined;
+  const title = outcome.done ? clip(stripSecrets(outcome.done), 200) : extractTitle(result, task);
+  const priceRub = outcome.amountRub ?? extractPrice(result, task);
+  if (!title || priceRub === undefined) return null;
+  const cancelled = CANCEL.test(`${task}\n${result}`);
+  const merchantOrderId = orderId ?? pendingOrderId(title, priceRub, args.now);
+  const pickup = extractPickup(result);
+  const status: OrderStatus = cancelled
+    ? "cancelled"
+    : orderId || outcome.needs === "none"
+      ? "placed"
+      : "unknown";
+  return {
+    merchant: resolveMerchant(args),
+    merchantOrderId,
+    title,
+    priceRub,
+    status,
+    ...(pickup ? { pickup } : {}),
+  };
+}
+
 export function parseOrderFromResult(args: ParseOrderArgs): ParsedOrder | null {
   const result = stripSecrets(args.result ?? "");
   const task = args.task ?? "";
+  const labelled = fromLabelledOutcome(args, result, task);
+  if (labelled) return labelled;
   const blob = `${task}\n${result}`;
   const cancelled = CANCEL.test(blob);
   const failed = FAIL.test(result) && !cancelled;

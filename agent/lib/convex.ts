@@ -358,6 +358,17 @@ export const setBrowser = (
     browserProfileId?: string;
     browserCookieDomains?: string[];
     browserProfileSyncedAt?: number;
+    /** Structured outcome (A2): what the parked Cloud agent is waiting on. */
+    browserNeed?: string;
+    browserNeedSince?: number;
+    browserNeedDetail?: string;
+    /** True while a vault card is being typed into a bound checkout page. */
+    browserPaying?: boolean;
+    browserPayHosts?: string[];
+    /** Errand queued while a different one was active — run after `done`. */
+    browserNextTask?: string;
+    /** Last scrubbed Cloud result — wakeup/resume read this back. */
+    browserOutcome?: string;
   },
 ): Promise<void> =>
   m(api.tenants.setBrowser)({ phoneE164, ...patch }).then(() => {});
@@ -464,6 +475,13 @@ export const cancelWakeup = (
     kind: opts.kind,
     payloadContains: opts.payloadContains,
   });
+
+/** Durable, cross-instance backstop for /internal/wakeup dedupe (A2) — the
+ *  in-memory Map in agent/lib/wakeup-dedupe.ts is only a same-instance
+ *  fast path in front of this. */
+export const claimDurableWakeupDelivery = (
+  key: string,
+): Promise<{ taken: boolean }> => m(api.wakeups.takeDelivery)({ key });
 
 export const createWatcher = (args: {
   tenantPhone: string;

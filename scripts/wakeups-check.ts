@@ -24,6 +24,16 @@ import {
   takeWakeupDelivery,
   WAKEUP_DEDUPE_TTL_MS,
 } from "../agent/lib/wakeup-dedupe.ts";
+import {
+  browserWakeupClaimKey,
+  decideWakeupClaim,
+  wakeupIdempotencyKey,
+  type WakeupPhase,
+} from "../convex/lib/browserFollowPolicy.ts";
+import {
+  browserPollForceSpeak,
+  wakeupFallbackText,
+} from "../agent/lib/silent-turn.ts";
 
 import { assert, src } from "./lib/check.ts";
 
@@ -228,6 +238,153 @@ assert(
 assert(
   src("agent/lib/convex.ts").includes("payloadContains: opts.payloadContains"),
   "cancelWakeup passes payloadContains",
+);
+
+// --- A2: WakeupPhase carries done|need|failed|giveup end to end ---
+
+const t1 = Date.parse("2026-09-14T12:00:00.000Z");
+for (const phase of ["done", "need", "failed", "giveup"] as WakeupPhase[]) {
+  assert(
+    wakeupIdempotencyKey("r1", phase) === `browser_poll:r1:${phase}`,
+    `idempotency key covers phase ${phase}`,
+  );
+  assert(
+    browserWakeupClaimKey("r1", phase, t1, "pending") === `r1:${phase}:${t1}:pending`,
+    `claim key covers phase ${phase}`,
+  );
+  assert(
+    decideWakeupClaim({
+      tenantRunId: "r1",
+      runId: "r1",
+      phase,
+      existingClaim: undefined,
+      now: t1,
+    }) === "ok",
+    `first claim for phase ${phase} succeeds`,
+  );
+  assert(
+    decideWakeupClaim({
+      tenantRunId: "r1",
+      runId: "r1",
+      phase,
+      existingClaim: `r1:${phase}:${t1}:sent`,
+      now: t1 + 1_000,
+    }) === "duplicate",
+    `sent claim for phase ${phase} is a real duplicate`,
+  );
+}
+
+// --- A2: durable /internal/wakeup dedupe (convex/wakeups.ts takeDelivery) ---
+// No convex-test harness in this repo (no other check invokes a mutation
+// handler directly against a hand-rolled ctx) — so this asserts the wiring
+// at the source level, the same style orders-check.ts uses for convex/orders.ts.
+
+const wakeupsSrc = src("convex/wakeups.ts");
+assert(wakeupsSrc.includes("export const takeDelivery"), "takeDelivery mutation exists");
+assert(wakeupsSrc.includes('withIndex("by_key"'), "takeDelivery reads the by_key index");
+assert(wakeupsSrc.includes("DELIVERY_LEASE_MS"), "takeDelivery is lease-based, not permanent");
+{
+  const takeDeliveryFn = wakeupsSrc.slice(
+    wakeupsSrc.indexOf("export const takeDelivery"),
+    wakeupsSrc.indexOf("export const listForTenant"),
+  );
+  assert(
+    /\.first\(\)\s*;/.test(takeDeliveryFn),
+    "takeDelivery reads with .first(), not .unique() — two instances can race an insert " +
+      "for the same key and .unique() throws on the duplicate, which fails this route OPEN",
+  );
+  assert(
+    !/\.unique\(\)\s*;/.test(takeDeliveryFn),
+    "no executable .unique() left in takeDelivery (a comment may still explain why not)",
+  );
+}
+assert(
+  wakeupsSrc.includes("assertSecret(secret)"),
+  "takeDelivery is secret-gated like every other public mutation here",
+);
+assert(
+  /wakeupDeliveries.*take\(200\)|take\(200\).*wakeupDeliveries/s.test(wakeupsSrc) ||
+    wakeupsSrc.includes('query("wakeupDeliveries")'),
+  "delivery rows get pruned somewhere in this file",
+);
+
+const convexWrappers = src("agent/lib/convex.ts");
+assert(
+  convexWrappers.includes("export const claimDurableWakeupDelivery"),
+  "eve-side wrapper for the durable dedupe mutation exists",
+);
+assert(
+  convexWrappers.includes("api.wakeups.takeDelivery"),
+  "wrapper calls the new mutation, not a hand-rolled endpoint",
+);
+
+// --- A2: need=password with a known site drives profile_setup, not a dead-end ask ---
+// NOTE for A3: this instructs the model to call profile_setup with an
+// `errand` argument — A3's brief adds that param to profile_setup.ts. Passing
+// it before that lands is harmless prompt text (the model just calls the
+// tool without an `errand` your schema doesn't yet accept, or the extra key
+// is dropped/rejected per eve's tool-schema strictness) but the two-step
+// login → resume flow only completes once A3 ships that param.
+const imessageWakeupSrc = src("agent/channels/imessage.ts");
+assert(
+  imessageWakeupSrc.includes('need === "password" && site'),
+  "a known site short-circuits the generic password ask",
+);
+assert(
+  imessageWakeupSrc.includes("Вызови profile_setup с url https://${site} и errand="),
+  "password+site tells the model to call profile_setup with the errand text",
+);
+assert(
+  imessageWakeupSrc.includes("человеку ничего не пиши до его ответа"),
+  "password+site does not also send the generic humanLineForNeed line as the live prompt",
+);
+
+// --- A2: never-silent wakeups (goal.md §2 / A7 finding B3) ---
+
+assert(wakeupFallbackText({ origin: "wakeup", wakeupFallback: "Нужен код из SMS." }) === "Нужен код из SMS.", "wakeup fallback text surfaces");
+assert(wakeupFallbackText({ origin: "human", wakeupFallback: "x" }) === null, "human turn never uses the wakeup fallback");
+assert(wakeupFallbackText({ origin: "wakeup" }) === null, "no stamped fallback → null, not empty string");
+assert(wakeupFallbackText(undefined) === null, "no attrs → null");
+
+for (const phase of ["done", "need", "failed", "giveup"]) {
+  assert(
+    browserPollForceSpeak({ origin: "wakeup", wakeupKind: "browser_poll", wakeupPhase: phase }) === true,
+    `browser_poll ${phase} forces speech`,
+  );
+}
+assert(
+  browserPollForceSpeak({ origin: "human", wakeupKind: "browser_poll", wakeupPhase: "done" }) === false,
+  "a human turn is never force-spoken by the wakeup rule",
+);
+assert(
+  browserPollForceSpeak({ origin: "wakeup", wakeupKind: "job_check", wakeupPhase: "done" }) === false,
+  "job_check has its own force-speak path, not this one",
+);
+assert(
+  browserPollForceSpeak({ origin: "wakeup", wakeupKind: "browser_poll" }) === false,
+  "an un-phased (legacy) browser_poll wakeup keeps its own [SILENT] escape hatch",
+);
+
+const silentTurnSrc = src("agent/lib/silent-turn.ts");
+assert(silentTurnSrc.includes("export function wakeupFallbackText"), "wakeupFallbackText exported");
+assert(silentTurnSrc.includes("export function browserPollForceSpeak"), "browserPollForceSpeak exported");
+
+const jobsInstrSrc = src("agent/instructions/jobs.ts");
+assert(jobsInstrSrc.includes("browserPollForceSpeak"), "turn.started wires the browser_poll force-speak steer");
+assert(jobsInstrSrc.includes("Do NOT answer [SILENT]"), "force-speak steer forbids [SILENT]");
+
+const deliverySrc = src("agent/lib/turn-delivery-events.ts");
+assert(deliverySrc.includes("wakeupFallbackText"), "message.completed consults the wakeup fallback");
+const completedFn = deliverySrc.slice(deliverySrc.indexOf('"message.completed"'));
+assert(
+  completedFn.indexOf('finishReason !== "tool-calls"') <
+    completedFn.indexOf("wakeupFallbackText(auth"),
+  "wakeup fallback is gated behind the same tool-calls check as the human fallback",
+);
+assert(
+  completedFn.indexOf("planned.fallback ?? wakeupFallback") <
+    completedFn.indexOf("if (!fallbackText) return;"),
+  "planned.fallback (human) still wins over the wakeup fallback when both could apply",
 );
 
 console.log("wakeups-check ok");

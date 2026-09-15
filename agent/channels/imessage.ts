@@ -60,9 +60,17 @@ import { canSkipInboundBind } from "../lib/inbound-bind.ts";
 import { watcherWakeupPrompt } from "../lib/purchase-policy";
 import { wakeupCarriesRunId } from "../../convex/lib/browserFollowPolicy.ts";
 import {
+  doneLineHint,
+  humanLineForNeed,
+  parseCloudOutcome,
+  type CloudNeed,
+} from "../../convex/lib/browserOutcomePolicy.ts";
+import {
   releaseWakeupDelivery,
   takeWakeupDelivery,
 } from "../lib/wakeup-dedupe";
+import { claimDurableWakeupDelivery } from "../lib/convex";
+import { deliverHuman } from "../lib/deliver-human.ts";
 import { inboundGateFromResult } from "../../convex/lib/billingPolicy";
 import { eventPrompt } from "../../convex/lib/watcherPolicy.ts";
 import { syncTenantArchive } from "../lib/archive-sync.ts";
@@ -668,6 +676,13 @@ export default defineChannel({
         lastSeen?: unknown;
         idempotencyKey?: unknown;
         runId?: unknown;
+        phase?: unknown;
+        need?: unknown;
+        needDetail?: unknown;
+        result?: unknown;
+        liveUrl?: unknown;
+        nextTask?: unknown;
+        site?: unknown;
       };
       try {
         body = (await request.json()) as typeof body;
@@ -693,13 +708,31 @@ export default defineChannel({
       // ponytail: у reminder нет [SILENT] — напоминание доставляется всегда,
       // иначе слабая модель молчит «на всякий случай».
       let prompt = `[background wakeup] Напоминание для человека: ${payload}. Сейчас ${new Date().toISOString()}. Передай его одним коротким сообщением от своего лица.`;
+      // A2: browser_poll now carries a resolved phase — the wakeup route
+      // builds the exact turn, the model reports it without calling
+      // browser_task again (the result already lives in the payload).
+      let wakeupPhase: string | undefined;
+      let wakeupFallback: string | undefined;
       if (kind === "brief") {
         prompt =
           "[background wakeup] Утренний бриф. Собери коротко: (1) память об этом человеке — незакрытые дела/напоминания на сегодня; (2) если подключён Gmail/Calendar через Composio — новые важные письма и встречи сегодня; (3) статус браузер-джоба, если был. Если по ВСЕМ пунктам пусто — ответь [SILENT]. Одно короткое сообщение, без воды.";
       } else if (kind === "watcher") {
         prompt = watcherWakeupPrompt(payload, lastSeen);
       } else if (kind === "browser_poll") {
-        prompt = `[background wakeup] Проверь статус текущего браузер-джоба вызовом тула browser_task с task=${payload}. Если человек уже прислал одноразовый код или уточнение к этой сессии, и оно ещё не введено — вызови browser_task с его точной строкой (сначала «ввожу код» / «ввожу»). Пароль не проси. Если completed — отправь человеку результаты. Если failed или джоб завис — коротко скажи об этом. Если ещё работает и инжектить нечего — ответь [SILENT].`;
+        const need = typeof body.need === "string" ? (body.need as CloudNeed) : undefined;
+        const needDetail = typeof body.needDetail === "string" ? body.needDetail : undefined;
+        const result = typeof body.result === "string" ? body.result : "";
+        const liveUrl = typeof body.liveUrl === "string" ? body.liveUrl : undefined;
+        const nextTask = typeof body.nextTask === "string" ? body.nextTask : undefined;
+        const site = typeof body.site === "string" ? body.site : undefined;
+        const phase =
+          body.phase === "done" ||
+          body.phase === "need" ||
+          body.phase === "failed" ||
+          body.phase === "giveup"
+            ? body.phase
+            : undefined;
+
         if (wakeupCarriesRunId(body.runId)) {
           let tenant;
           try {
@@ -711,6 +744,46 @@ export default defineChannel({
             return Response.json({ ok: true, skipped: "stale_run" });
           }
           // Residual race: browserRunId can change during from().send after this check.
+        }
+
+        if (phase === "done") {
+          wakeupPhase = phase;
+          const variantsLine =
+            "Если в итоге есть ВАРИАНТЫ — одно сообщение «нашёл N вариантов: …» одной строкой на вариант с ценой, ссылки не вставляй, кроме случая когда просят.";
+          const nextTaskLine = nextTask
+            ? ` Затем сразу начни отложенное поручение «${nextTask}»: одна короткая строка человеку и browser_task с этим текстом.`
+            : "";
+          prompt = `[background wakeup] Поручение «${payload}» завершено. Итог браузера:\n${result}\n\nНапиши человеку «готово»-сообщение: что сделано, номер заказа/записи, сумма, когда/куда — 1–2 коротких пузыря, без канцелярита. ${variantsLine} Не вызывай browser_task для проверки — результат уже здесь.${nextTaskLine}`;
+          wakeupFallback = doneLineHint(parseCloudOutcome(result));
+        } else if (phase === "need") {
+          wakeupPhase = phase;
+          const line = humanLineForNeed(need ?? "info", { site, liveUrl, detail: needDetail });
+          if (need === "email_code") {
+            prompt = `[background wakeup] Браузер остановился: нужен код с почты. Сначала вызови otp_lookup (hint: ${site ?? payload}). Если код найден — первая строка «код из почты, ввожу», затем browser_task с этим кодом. Если письма нет — отправь человеку ровно: «${line}».`;
+          } else if (need === "password" && site) {
+            // A known site + no vault login is exactly what profile_setup is
+            // for — let it open the login page and send its own live-view
+            // link, instead of the human being told a bare "нужен вход" with
+            // nothing for Bro to do about it.
+            prompt = `[background wakeup] Браузер остановился: нужен вход на ${site}. Вызови profile_setup с url https://${site} и errand=«${payload}» — он сам откроет вход и пришлёт ссылку; человеку ничего не пиши до его ответа.`;
+          } else {
+            prompt = `[background wakeup] Браузер остановился: нужно ${need ?? "info"} (${needDetail ?? "без деталей"}). Отправь человеку ровно: «${line}». Не проси пароль. Ничего больше не делай.`;
+          }
+          wakeupFallback = line;
+        } else if (phase === "failed") {
+          wakeupPhase = phase;
+          const reason = result.split(/\r?\n/)[0]?.slice(0, 200).trim();
+          prompt = `[background wakeup] Поручение «${payload}» не получилось${reason ? `: ${reason}` : ""}. Скажи одной строкой и предложи попробовать ещё раз или сделать иначе; без слов «джоб», «reset», «Cloud».`;
+          wakeupFallback = `Не получилось: ${payload}. Попробовать ещё раз?`;
+        } else if (phase === "giveup") {
+          wakeupPhase = phase;
+          prompt = `[background wakeup] Я остановил задачу «${payload}» — она зависла на ${site ?? "сайте"}. Скажи это одной строкой и предложи начать заново.`;
+          wakeupFallback = `Задача «${payload}» зависла — я её остановил. Начать заново?`;
+        } else {
+          // Legacy/un-phased wakeup (older workflow build, or a webhook
+          // replay from before this deploy) — keep the pre-A2 behavior so an
+          // in-flight run still resolves instead of erroring out.
+          prompt = `[background wakeup] Проверь статус текущего браузер-джоба вызовом тула browser_task с task=${payload}. Если человек уже прислал одноразовый код или уточнение к этой сессии, и оно ещё не введено — вызови browser_task с его точной строкой (сначала «ввожу код» / «ввожу»). Пароль не проси. Если completed — отправь человеку результаты. Если failed или джоб завис — коротко скажи об этом. Если ещё работает и инжектить нечего — ответь [SILENT].`;
         }
       } else if (kind === "job_check") {
         prompt = jobCheckWakePrompt(payload);
@@ -725,6 +798,19 @@ export default defineChannel({
       ) {
         return Response.json({ ok: true, duplicate: true });
       }
+      if (idempotencyKey) {
+        // Durable, cross-instance backstop (finding B2): the in-memory Map
+        // above only protects a single warm instance. A lookup failure fails
+        // open — a rare duplicate beats a wakeup that never reaches the human.
+        try {
+          const durable = await claimDurableWakeupDelivery(idempotencyKey);
+          if (!durable.taken) {
+            return Response.json({ ok: true, duplicate: true });
+          }
+        } catch (err) {
+          console.error("durable wakeup dedupe check failed", err);
+        }
+      }
       try {
         await from(conversationId).send(prompt, {
           auth: {
@@ -738,6 +824,8 @@ export default defineChannel({
               origin: "wakeup",
               wakeupKind: kind,
               ...(kind === "job_check" && payload ? { wakeupPayload: payload } : {}),
+              ...(wakeupPhase ? { wakeupPhase } : {}),
+              ...(wakeupFallback ? { wakeupFallback } : {}),
               ...(inkboxHandle ? { inkboxHandle } : {}),
             },
           },
@@ -748,6 +836,38 @@ export default defineChannel({
         }
         throw err;
       }
+      return Response.json({ ok: true });
+    }),
+    // Secret-gated same-process delivery for a channel-agnostic Convex-side
+    // notify (browser follow-through login link, sweepWaiting's give-up
+    // line) — honors `lastChannel` via deliverHuman, unlike cabinet.sendText.
+    POST("/internal/deliver", async (request) => {
+      let body: { secret?: unknown; tenantPhone?: unknown; text?: unknown };
+      try {
+        body = (await request.json()) as typeof body;
+      } catch {
+        return new Response("bad json", { status: 400 });
+      }
+      if (!secretEquals(body.secret, process.env.BRO_INTERNAL_SECRET)) {
+        return new Response("unauthorized", { status: 401 });
+      }
+      const tenantPhone =
+        typeof body.tenantPhone === "string" ? body.tenantPhone : "";
+      const text = typeof body.text === "string" ? body.text : "";
+      if (!tenantPhone || !text) {
+        return new Response("missing fields", { status: 400 });
+      }
+      let tenant;
+      try {
+        tenant = await getTenant(tenantPhone);
+      } catch (err) {
+        console.error("deliver tenant lookup failed", err);
+        return new Response("tenant lookup failed", { status: 503 });
+      }
+      if (!tenant) return new Response("unknown tenant", { status: 404 });
+      const conversationId = tenant.photonConversationId || tenant.inkboxConversationId;
+      if (!conversationId) return Response.json({ ok: false, reason: "no conversation" });
+      await deliverHuman({ tenant, conversationId, text });
       return Response.json({ ok: true });
     }),
   ],

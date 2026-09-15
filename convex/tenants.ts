@@ -348,6 +348,13 @@ export const setBrowser = mutation({
     browserProfileId: v.optional(v.string()),
     browserCookieDomains: v.optional(v.array(v.string())),
     browserProfileSyncedAt: v.optional(v.number()),
+    browserNeed: v.optional(v.string()),
+    browserNeedSince: v.optional(v.number()),
+    browserNeedDetail: v.optional(v.string()),
+    browserPaying: v.optional(v.boolean()),
+    browserPayHosts: v.optional(v.array(v.string())),
+    browserNextTask: v.optional(v.string()),
+    browserOutcome: v.optional(v.string()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -365,9 +372,25 @@ export const setBrowser = mutation({
       "browserProfileId",
       "browserCookieDomains",
       "browserProfileSyncedAt",
+      "browserNeed",
+      "browserNeedSince",
+      "browserNeedDetail",
+      "browserPaying",
+      "browserPayHosts",
+      "browserNextTask",
+      "browserOutcome",
     ]);
     if (args.browserRunId && existing.browserRunId !== args.browserRunId) {
+      // A fresh run/errand: the previous run's blocker and stored result are
+      // stale and must never leak into the new one. `browserNextTask` is the
+      // one thing that survives — it is what queued this new run in the
+      // first place (busy → done → nextTask), so keep it unless the caller
+      // explicitly overwrites it above.
       patch.browserLoginLinkSentAt = undefined;
+      patch.browserNeed = undefined;
+      patch.browserNeedSince = undefined;
+      patch.browserNeedDetail = undefined;
+      patch.browserOutcome = undefined;
     }
     await ctx.db.patch(existing._id, patch);
     return null;
@@ -412,6 +435,10 @@ export const patchBrowserInternal = internalMutation({
     browserStatus: v.optional(v.string()),
     browserSessionId: v.optional(v.string()),
     browserLiveUrl: v.optional(v.string()),
+    browserNeed: v.optional(v.string()),
+    browserNeedSince: v.optional(v.number()),
+    browserNeedDetail: v.optional(v.string()),
+    browserOutcome: v.optional(v.string()),
   },
   returns: v.object({ stale: v.boolean() }),
   handler: async (ctx, args) => {
@@ -423,9 +450,35 @@ export const patchBrowserInternal = internalMutation({
       "browserStatus",
       "browserSessionId",
       "browserLiveUrl",
+      "browserNeed",
+      "browserNeedSince",
+      "browserNeedDetail",
+      "browserOutcome",
     ]);
     if (Object.keys(patch).length) await ctx.db.patch(existing._id, patch);
     return { stale: false };
+  },
+});
+
+/** A run's terminal outcome resolved with no pending need — clear any
+ *  blocker the same run had parked earlier (pollRun writes it, this undoes
+ *  it once `parseCloudOutcome` says `needs: "none"`). Same runId gate as
+ *  every other browser-state write, so a stale poll never clobbers a newer run. */
+export const clearBrowserNeed = internalMutation({
+  args: {
+    phoneE164: v.string(),
+    runId: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const existing = await findTenantByPhone(ctx, args.phoneE164);
+    if (!existing || existing.browserRunId !== args.runId) return null;
+    await ctx.db.patch(existing._id, {
+      browserNeed: undefined,
+      browserNeedSince: undefined,
+      browserNeedDetail: undefined,
+    });
+    return null;
   },
 });
 
@@ -483,7 +536,12 @@ export const releaseBrowserLoginLink = internalMutation({
   },
 });
 
-const wakeupPhase = v.union(v.literal("done"), v.literal("giveup"));
+const wakeupPhase = v.union(
+  v.literal("done"),
+  v.literal("need"),
+  v.literal("failed"),
+  v.literal("giveup"),
+);
 
 const wakeupClaimResult = v.union(
   v.object({

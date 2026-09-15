@@ -161,8 +161,8 @@ const payOpts = {
 {
   const withoutPay = scaffoldTask(raw);
   assert(
-    withoutPay.includes("Если нужна оплата — остановись и дай live-URL."),
-    "unchanged behavior without pay",
+    withoutPay.includes("НУЖНО: payment"),
+    "unchanged behavior without pay — structured outcome, no live-URL",
   );
   assert(
     withoutPay.includes("Доводи дело до конца"),
@@ -177,7 +177,10 @@ const payOpts = {
 
 {
   const syncedWithPay = scaffoldTask(raw, { profileSynced: true, pay: payOpts });
-  assert(syncedWithPay.includes("Cloud-профиле"), "synced wording mentions cookies");
+  assert(
+    syncedWithPay.includes("уже могут быть куки прошлой сессии"),
+    "synced wording mentions cookies",
+  );
   assert(syncedWithPay.includes("войди сам"), "synced+pay still logs in");
   assert(
     syncedWithPay.includes(PAY_ALIASES.number),

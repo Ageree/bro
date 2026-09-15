@@ -50,3 +50,42 @@ export function takeFallbackSlot(
   sent.set(turnId, now);
   return true;
 }
+
+/** Auth attributes eve's /internal/wakeup route stamps on a browser_poll
+ *  turn (goal.md §2, "never-silent wakeups"). `wakeupPhase` is one of
+ *  done|need|failed|giveup; `wakeupFallback` is the exact canned Russian
+ *  line to use if the model answers [SILENT] or ends with no visible text. */
+export const WAKEUP_PHASE_ATTR = "wakeupPhase";
+export const WAKEUP_FALLBACK_ATTR = "wakeupFallback";
+
+function attrString(
+  attributes: Readonly<Record<string, unknown>> | null | undefined,
+  key: string,
+): string | undefined {
+  const raw = attributes?.[key];
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+/** The canned line to send instead of leaving a silent/empty browser_poll
+ *  wakeup turn unanswered. Null for anything else — a human turn already has
+ *  its own TURN_FAILED_REPLY via `fallbackForFailed`. */
+export function wakeupFallbackText(
+  attributes: Readonly<Record<string, unknown>> | null | undefined,
+): string | null {
+  if (turnOrigin(attributes) !== "wakeup") return null;
+  return attrString(attributes, WAKEUP_FALLBACK_ATTR) ?? null;
+}
+
+/** Every phased browser_poll wakeup (done/need/failed/giveup) already means
+ *  the follow-through workflow resolved to a concrete outcome server-side —
+ *  there is no legitimate "still running, stay quiet" case left, so the
+ *  model must never answer [SILENT] on one of these turns. */
+export function browserPollForceSpeak(
+  attributes: Readonly<Record<string, unknown>> | null | undefined,
+): boolean {
+  if (turnOrigin(attributes) !== "wakeup") return false;
+  if (attrString(attributes, "wakeupKind") !== "browser_poll") return false;
+  const phase = attrString(attributes, WAKEUP_PHASE_ATTR);
+  return phase === "done" || phase === "need" || phase === "failed" || phase === "giveup";
+}

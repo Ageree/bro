@@ -256,7 +256,7 @@ assert(wrapped.includes(raw), "scaffold contains raw task");
 assert(scaffoldTask(wrapped) === wrapped, "scaffold is idempotent");
 assert(scaffoldTask("x").includes("Работай быстро"), "scaffold skip-slow");
 const synced = scaffoldTask("x", { profileSynced: true });
-assert(synced.includes("Cloud-профиле"), "synced scaffold mentions cookies");
+assert(synced.includes("уже могут быть куки прошлой сессии"), "synced scaffold mentions cookies");
 assert(synced.includes("Куки не значат"), "cookies are not proof of login");
 assert(synced.includes("«Войти»"), "synced scaffold still clicks Войти");
 assert(!synced.includes("Ты уже в аккаунтах"), "no already-logged-in lie");

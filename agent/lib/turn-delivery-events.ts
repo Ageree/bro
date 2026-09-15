@@ -16,6 +16,7 @@ import {
   fallbackForFailed,
   takeFallbackSlot,
   turnOrigin,
+  wakeupFallbackText,
 } from "./silent-turn.ts";
 import { stripConnectUrls } from "./connect-link.ts";
 import { latencyFields } from "./latency-log.ts";
@@ -370,23 +371,37 @@ export function createTurnDeliveryEvents(opts: {
         auth?.principalId,
         planned.seen,
       );
-      if (event.finishReason !== "tool-calls" && !planned.fallback) {
+      // A wakeup turn's fallback only ever applies to a real end-of-turn
+      // silence, never to a mid-turn tool call — planTurnDelivery already
+      // enforces the equivalent rule for the human TURN_FAILED_REPLY. It also
+      // must not fire once the turn already spoke a real bubble (e.g. «код
+      // из почты, ввожу» streamed before a tool call) — the model reported
+      // in, it just has nothing further to add; sending the canned line too
+      // would be a second, redundant bubble, not a rescue from silence.
+      const spoke = bubblesFor(earlySent, event.turnId).some((s) => s.trim().length > 0);
+      const wakeupFallback =
+        event.finishReason !== "tool-calls" && !spoke
+          ? wakeupFallbackText(auth?.attributes)
+          : null;
+      const fallbackText = planned.fallback ?? wakeupFallback;
+      if (event.finishReason !== "tool-calls" && !fallbackText) {
         signalTurnTyping({ conversationId, attrs: auth?.attributes, state: "stop" });
       }
-      if (!planned.fallback) return;
+      if (!fallbackText) return;
       if (event.finishReason !== "tool-calls") {
         console.error("empty turn", {
           conversationId,
           finishReason: event.finishReason,
+          wakeupFallback: Boolean(wakeupFallback),
         });
       }
       if (!takeFallbackSlot(fallbackSent, event.turnId, Date.now())) return;
       await deliverTurnBubble({
         conversationId,
-        text: planned.fallback,
+        text: fallbackText,
         attrs: auth?.attributes,
         principalId: auth?.principalId,
-      }).catch((err) => console.error("empty turn fallback send failed", err));
+      }).catch((err) => console.error("empty/wakeup turn fallback send failed", err));
     },
   };
 }
