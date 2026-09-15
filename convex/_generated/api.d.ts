@@ -46,6 +46,7 @@ import type * as lib_photonRest from "../lib/photonRest.js";
 import type * as lib_rateLimits from "../lib/rateLimits.js";
 import type * as lib_secretScrub from "../lib/secretScrub.js";
 import type * as lib_telegramPolicy from "../lib/telegramPolicy.js";
+import type * as lib_tenantConversation from "../lib/tenantConversation.js";
 import type * as lib_tenantLookup from "../lib/tenantLookup.js";
 import type * as lib_tenantWipe from "../lib/tenantWipe.js";
 import type * as lib_tzPolicy from "../lib/tzPolicy.js";
@@ -111,6 +112,7 @@ declare const fullApi: ApiFromModules<{
   "lib/rateLimits": typeof lib_rateLimits;
   "lib/secretScrub": typeof lib_secretScrub;
   "lib/telegramPolicy": typeof lib_telegramPolicy;
+  "lib/tenantConversation": typeof lib_tenantConversation;
   "lib/tenantLookup": typeof lib_tenantLookup;
   "lib/tenantWipe": typeof lib_tenantWipe;
   "lib/tzPolicy": typeof lib_tzPolicy;
