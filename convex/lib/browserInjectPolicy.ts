@@ -59,7 +59,48 @@ const CODE_WRAPPER = /^(?:код|воткод|смс|sms|otp|push|пуш)$/i;
 const OTP_RESULT =
   /needs user input:|код из|смс[- ]?код|sms|one[-\s]?time|passcode|пуш|push (?:code|approval)|verification code|live-url|live url|liveUrl/i;
 
-export type CloudInjectKind = "code" | "wait" | "correction" | "confirm";
+export type CloudInjectKind = "code" | "wait" | "correction" | "confirm" | "steer";
+
+// Pure chatter and status questions to Bro must never be docked into a live
+// Cloud session. Everything else the human sends while a session is live is
+// treated as a relevant steer (extra instruction / detail for the errand).
+const SMALLTALK =
+  /^(привет\w*|здоров\w*|хай|ку|hi|hello|hey|спасибо( большое)?|спс|благодар\w*|пасиб\w*|ок\w*|okay?|ok|да|нет|неа|ага|угу|понял\w*|ясно|хорошо|ладно|класс|супер|отлично|круто|збс|топ|thanks|thx|ty|лол|ok\b|👍|🙏|❤️|😂|🔥|😊)\s*[.!?…]*$/iu;
+
+const STATUS_Q =
+  /(что там|как там|как дела|ну как|что по|есть новости|готово|status|статус|где (мой )?заказ|ты (тут|здесь|там)|получилось|сделал(а)?\??$|ну что)/i;
+
+/** A message worth docking into a live Cloud session as a steer, sans session context.
+ * A bare «готово»/«сделал» is a confirm (isConfirmInject wins earlier in
+ * decideCloudInject), not a steer — STATUS_Q also matches those words, so
+ * this must be excluded explicitly rather than relying on ordering alone. */
+export function steerCandidate(text: string): boolean {
+  const t = text.trim().normalize("NFC").replace(/ё/gi, "е");
+  if (!t || t.length > 400) return false;
+  if (looksLikePasswordDump(t)) return false;
+  if (SMALLTALK.test(t)) return false;
+  if (STATUS_Q.test(t)) return false;
+  // Codes / «подожди» / confirmations / corrections are their own kinds.
+  if (
+    isChatCodeMessage(t) ||
+    isWaitInject(t) ||
+    isConfirmInject(t) ||
+    looksLikeCorrectionText(t)
+  ) {
+    return false;
+  }
+  // A brand-new, unrelated errand opens a fresh session, it is not a steer.
+  if (looksLikeFreshErrand(t)) return false;
+  return true;
+}
+
+/** Steer only fires while a Cloud errand session is actually on record. */
+export function looksLikeSteer(
+  text: string,
+  storedTask?: string | null,
+): boolean {
+  return steerCandidate(text) && isBroCloudTask(storedTask);
+}
 
 export type CloudInjectDecision = {
   kind: CloudInjectKind | null;
@@ -344,6 +385,10 @@ function codeRelevantToSession(opts: CloudInjectAttrs, incoming: string): boolea
   // regardless of what page the CDP probe happens to see this turn (the SMS
   // modal on taxi.yandex.ru is not a passport URL, but the wait is real).
   if (opts.need === "sms_code" || opts.need === "email_code") return true;
+  // A live browser is being held for this errand → a code the human just sent
+  // is for it. This is the common OTP case (Yandex push, SMS): the tab is on
+  // the code screen even when its URL is not a recognizable "code" path.
+  if (opts.browserListed) return true;
   if (pageWaitsForCode(opts.pageUrl)) return true;
   if (resultWaitsForCode(opts.result, opts.storedTask)) return true;
   if (
@@ -398,6 +443,12 @@ export function decideCloudInject(
     return { kind: "correction" };
   }
 
+  // Any other relevant follow-up while a Cloud session is live is a steer:
+  // an extra instruction or detail the human wants applied to the open errand.
+  if (looksLikeSteer(incoming, opts.storedTask)) {
+    return { kind: "steer" };
+  }
+
   return { kind: null };
 }
 
@@ -413,16 +464,39 @@ export function injectCandidate(text: string): boolean {
     isChatCodeMessage(text) ||
     isWaitInject(text) ||
     isConfirmInject(text) ||
-    looksLikeCorrectionText(text)
+    looksLikeCorrectionText(text) ||
+    steerCandidate(text)
   );
 }
 
 export function cloudInjectAttribute(text: string): Record<string, string> {
-  if (isChatCodeMessage(text)) return { cloudInject: "code" };
-  if (isWaitInject(text)) return { cloudInject: "wait" };
-  if (isConfirmInject(text)) return { cloudInject: "confirm" };
-  if (looksLikeCorrectionText(text)) return { cloudInject: "correction" };
-  return {};
+  const kind = isChatCodeMessage(text)
+    ? "code"
+    : isConfirmInject(text)
+      ? "confirm"
+      : isWaitInject(text)
+        ? "wait"
+        : looksLikeCorrectionText(text)
+          ? "correction"
+          : null;
+  if (!kind) return {};
+  // Stamp the raw human line too, so the browser_task tool can inject the exact
+  // code/correction/confirmation the person sent even if the model rephrases
+  // the tool call (e.g. re-issues the whole errand instead of passing the
+  // bare code). Steer is intentionally never stamped here — it only exists
+  // once a live session's context (storedTask etc.) is known, which this
+  // text-only stamp does not have.
+  return { cloudInject: kind, cloudInjectText: text.trim().slice(0, 240) };
+}
+
+/** The exact human line stamped as a cloud inject on this turn, if any. */
+export function cloudInjectTextFromAttrs(
+  attrs: Record<string, unknown> | undefined,
+): string | undefined {
+  if (!attrs || attrs.origin !== "human") return undefined;
+  const raw = attrs.cloudInjectText;
+  const v = Array.isArray(raw) ? raw[0] : raw;
+  return typeof v === "string" && v.trim().length > 0 ? v.trim() : undefined;
 }
 
 export function cloudInjectKindFromAttrs(
@@ -500,7 +574,11 @@ export function injectQueueText(opts: {
   if (opts.kind === "confirm") {
     return `Человек подтвердил со своего телефона / завершил шаг в live-view («${human}»). Проверь, продвинулся ли экран, и продолжи поручение на открытой странице. Ничего не вводи повторно.`;
   }
-  return `Уточнение от человека (не пароль сайта): «${human}». Примени его на уже открытой странице, не открывая новый сайт. Сайтовый пароль не проси.${noOrder}`;
+  // steer reuses the correction template with "Дополнение" instead of
+  // "Уточнение" — it is an extra instruction/detail for the open errand
+  // rather than a location/size-style fix.
+  const label = opts.kind === "steer" ? "Дополнение" : "Уточнение";
+  return `${label} от человека (не пароль сайта): «${human}». Примени его на уже открытой странице, не открывая новый сайт. Сайтовый пароль не проси.${noOrder}`;
 }
 
 /**
@@ -509,7 +587,7 @@ export function injectQueueText(opts: {
  * code is the input a waiting agent expects next, so it is appended, not forced.
  */
 export function injectQueueInterrupt(kind: CloudInjectKind): boolean {
-  return kind === "wait" || kind === "correction";
+  return kind === "wait" || kind === "correction" || kind === "steer";
 }
 
 export function injectFollowTask(opts: {

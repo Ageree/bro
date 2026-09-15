@@ -50,6 +50,8 @@ import {
   profileSyncStatus,
 } from "../../convex/lib/browserProfilePolicy.ts";
 import {
+  cloudInjectKindFromAttrs,
+  cloudInjectTextFromAttrs,
   cloudSessionLooksLive,
   decideCloudInject,
   injectAckText,
@@ -67,7 +69,7 @@ import { parseCloudOutcome } from "../../convex/lib/browserOutcomePolicy.ts";
 import { markTurnSpoke, turnSpoke } from "../lib/early-deliver.ts";
 import { fastAckOf } from "../lib/fast-ack.ts";
 import { attrsFromSession, deliverHumanRouted } from "../lib/deliver-routed";
-import { conversationId, groupPersonalBlock } from "../lib/group-guard";
+import { conversationId, groupPersonalBlock, turnAttributes } from "../lib/group-guard";
 import { tenantId } from "../lib/tenant";
 import { browserGateFromResult } from "../../convex/lib/billingPolicy";
 import { cardBindings, normalizePayHosts } from "../lib/browser-pay.ts";
@@ -500,14 +502,34 @@ export default defineTool({
     const phone = tenantId(ctx);
     const tenant = await upsertTenant(phone);
     const conv = conversationId(ctx, tenant.inkboxConversationId);
+    // The human turn is stamped with the exact code/correction it carried. Use
+    // that raw line for injection instead of `task`, because the model
+    // sometimes re-issues the whole errand instead of passing the bare code —
+    // which used to spawn a fresh session and lose the live login.
+    const turnAttrs = turnAttributes(ctx);
+    const injectKind = cloudInjectKindFromAttrs(turnAttrs);
+    const stampedInjectText = cloudInjectTextFromAttrs(turnAttrs);
     if (!reset) {
       const turnId = ctx.session.turn?.id;
-      const injected = await maybeInjectChat(phone, tenant, task, {
+      const injectIncoming =
+        injectKind && stampedInjectText ? stampedInjectText : task;
+      const injected = await maybeInjectChat(phone, tenant, injectIncoming, {
         conv,
         turnId: typeof turnId === "string" ? turnId : undefined,
         attrs: attrsFromSession(ctx.session),
       });
       if (injected) return injected;
+      // A stamped code (or confirm) turn must never fall through to a fresh
+      // browser errand: a new session would request its own new code and
+      // reject the stale one, and a confirm has nothing to re-do in a fresh
+      // browser either. If a session is on record but the turn could not be
+      // injected (browser gone), say so instead of starting a new one.
+      if (
+        (injectKind === "code" || injectKind === "confirm") &&
+        (tenant.browserSessionId || tenant.browserRunId)
+      ) {
+        return { status: "no_wait", entered: false, hint: NO_LIVE_RUN_TEXT };
+      }
     }
     const rawAction = nextBrowserAction({
       reset,
