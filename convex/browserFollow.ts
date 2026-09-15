@@ -158,15 +158,29 @@ export const followThrough = workflow.define({
 }> => {
   const cap = maxPollRounds() + 2;
   for (let i = 0; i < cap; i++) {
-    const poll = await step.runAction(
-      internal.browserFollow.pollRun,
-      {
-        tenantPhone: args.tenantPhone,
-        runId: args.runId,
-        sessionId: args.sessionId,
-      },
-      { retry: true, name: `poll-${i}` },
-    );
+    let poll: Infer<typeof pollReturn>;
+    try {
+      poll = await step.runAction(
+        internal.browserFollow.pollRun,
+        {
+          tenantPhone: args.tenantPhone,
+          runId: args.runId,
+          sessionId: args.sessionId,
+        },
+        { retry: true, name: `poll-${i}` },
+      );
+    } catch (err) {
+      // The step already exhausted its own retries — this is not a flaky
+      // Cloud run, it's our side unable to talk to Browser Use at all (the
+      // incident: a missing BROWSERUSE_API_KEY on this deployment made every
+      // poll fail the same way, and the workflow just kept quietly retrying
+      // for the full 20-minute budget). Stall the tenant so nextBrowserAction
+      // doesn't see a run active forever, then tell the human now instead of
+      // dying silently.
+      console.error("browser poll step failed", err);
+      await pollStepFailed(step, args, i);
+      return { outcome: "done" };
+    }
     if (poll.stale) {
       // Rare path: usually startFollowThrough's cancel_then_start already
       // scheduled this for the old run before this workflow was cancelled
@@ -257,6 +271,40 @@ async function stopGivenUpRun(
       browserStatus: STALLED_STATUS,
     },
     { name: `stall${nameSuffix}` },
+  );
+}
+
+/**
+ * A poll step that fails outright (after its own retries) means our side
+ * can't talk to Browser Use at all — not a Cloud-run problem, so unlike
+ * stopGivenUpRun this never cancels the Cloud run (it may be running fine).
+ * Just stop treating it as active and tell the human, the same as any other
+ * terminal phase.
+ */
+async function pollStepFailed(
+  step: WorkflowCtx,
+  args: { tenantPhone: string; task: string; runId: string; sessionId?: string },
+  i: number,
+): Promise<void> {
+  await step.runMutation(
+    internal.tenants.patchBrowserInternal,
+    {
+      phoneE164: args.tenantPhone,
+      runId: args.runId,
+      browserStatus: STALLED_STATUS,
+    },
+    { name: `poll-fail-stall-${i}` },
+  );
+  await step.runAction(
+    internal.browserFollow.wakeupAgent,
+    {
+      tenantPhone: args.tenantPhone,
+      task: args.task,
+      runId: args.runId,
+      sessionId: args.sessionId,
+      phase: "failed",
+    },
+    { retry: wakeupStepRetry, name: `wakeup-poll-fail-${i}` },
   );
 }
 

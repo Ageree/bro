@@ -273,13 +273,13 @@ assert(jobs.includes("isGroupTurn"), "jobs skip group turns");
 const workerScope = src("agent/subagents/worker/lib/scope.ts");
 assert(workerScope.includes("groupPersonalBlock"), "worker refuses group personal work");
 
-for (const file of ["inbox.ts", "archive_search.ts"]) {
+for (const file of ["inbox.ts", "archive_search.ts", "lookup.ts"]) {
   const toolSrc = src(`agent/subagents/otp/tools/${file}`);
   assert(toolSrc.includes("groupPersonalBlock"), `otp ${file} refuses group personal work`);
 }
 {
-  // lookup.ts shares its execute (and the group guard inside it) with the
-  // top-level otp_lookup.ts tool, defined in lib/otp-lookup.ts.
+  // lookup.ts also delegates to otpLookupExecute, which shares its group
+  // guard with the top-level otp_lookup.ts tool, defined in lib/otp-lookup.ts.
   const libSrc = src("agent/lib/otp-lookup.ts");
   assert(
     libSrc.includes("groupPersonalBlock"),
@@ -287,8 +287,12 @@ for (const file of ["inbox.ts", "archive_search.ts"]) {
   );
 }
 
+// otp is a static defineAgent (broModel() returns a non-serializable provider
+// object, and eve requires dynamically-returned subagent configs to use a
+// string model id), so the group gate lives on each tool above, not on
+// subagent visibility.
 const otpAgent = src("agent/subagents/otp/agent.ts");
-assert(otpAgent.includes("isGroupTurn"), "otp subagent hidden on group turns");
+assert(!otpAgent.includes("defineDynamic("), "otp subagent is static, not hidden via defineDynamic(...)");
 
 const instructions = src("agent/instructions.md");
 assert(instructions.includes("[group"), "instructions group prefix");

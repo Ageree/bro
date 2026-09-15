@@ -1,4 +1,5 @@
 import { DONE } from "../../convex/lib/browserFollowPolicy.ts";
+import { needsHuman } from "../../convex/lib/browserOutcomePolicy.ts";
 
 // Documented v4 run states that are not yet terminal: queued, dispatching,
 // running (docs.browser-use.com/cloud/api-v4 — get-run/get-run-status/get-session
@@ -49,6 +50,20 @@ export function looksLikeNewJob(task: string, storedTask?: string): boolean {
   return !sharesKeyword(t, storedTask);
 }
 
+/**
+ * True when `incomingTask` reads as a follow-up on `storedTask` rather than
+ * an unrelated new errand — either the length/keyword heuristic in
+ * `looksLikeNewJob` doesn't flag it as new, or it shares a significant word
+ * with the stored task even though it also happens to hit a NEW_JOB keyword
+ * (e.g. «Продолжи такси…» repeats «такси», which alone would flag it as a
+ * fresh job — see the `busy` branch above for the same shape of check).
+ */
+function continuesErrand(incomingTask: string, storedTask?: string | null): boolean {
+  const stored = storedTask ?? undefined;
+  if (!looksLikeNewJob(incomingTask, stored)) return true;
+  return stored ? sharesKeyword(incomingTask, stored) : false;
+}
+
 /** One in-flight cloud job per person. Pings must poll, not spawn a twin search. */
 export function nextBrowserAction(opts: {
   reset?: boolean;
@@ -56,7 +71,10 @@ export function nextBrowserAction(opts: {
   status?: string | null;
   storedTask?: string | null;
   incomingTask: string;
-}): "start" | "poll" | "reuse" | "busy" {
+  /** The tenant's parked `browserNeed` (payment/address/info/sms_code/…). */
+  need?: string | null;
+  sessionId?: string | null;
+}): "start" | "poll" | "reuse" | "busy" | "continue" {
   if (opts.reset) return "start";
   if (!opts.runId) return "start";
   if (isActiveStatus(opts.status)) {
@@ -72,6 +90,15 @@ export function nextBrowserAction(opts: {
     return "poll";
   }
   if (isDoneStatus(opts.status)) {
+    // A run parked on a human-resolvable need (payment/address/info/...)
+    // whose follow-up continues the same errand must resume in the SAME
+    // Cloud session, not "reuse" the stale blocked result nor spawn a fresh
+    // session that redoes the whole route (the taxi incident this fixes).
+    // Without a sessionId there is nothing to resume into — start fresh
+    // rather than silently reusing a result that never actually finished.
+    if (needsHuman(opts.need ?? undefined) && continuesErrand(opts.incomingTask, opts.storedTask)) {
+      return opts.sessionId ? "continue" : "start";
+    }
     if (
       opts.storedTask &&
       normalizeTask(opts.storedTask) === normalizeTask(opts.incomingTask)

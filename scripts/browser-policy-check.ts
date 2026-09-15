@@ -563,9 +563,20 @@ assert(firstPoll < firstSleep, "first poll comes before the first sleep");
 assert(handler.includes("followSleepMs"), "first re-sleep is shorter than 2min");
 
 const waitFor = src("agent/lib/browseruse.ts");
-const startFn = waitFor.slice(waitFor.indexOf("export async function startRun"));
+const startFn = waitFor.slice(
+  waitFor.indexOf("export async function startRun"),
+  waitFor.indexOf("async function runEvents"),
+);
 assert(startFn.includes("body.model = resolveBrowserModel()"), "every cloud run sends a model");
 assert(!startFn.includes("if (process.env.BRO_BROWSER_MODEL)"), "model is no longer env-gated");
+// v4 POST /runs rejects unknown keys outright (422 extra_forbidden) —
+// `session_id` is not a real field, only `sessionId` is; sending both used
+// to fail every session-reusing call (verified live against Browser Use).
+// This checks the REQUEST body specifically — startRun's own response
+// parsing (`pick(created, ["sessionId", "session_id"])`) legitimately reads
+// `session_id` back as a defensive fallback key and must stay untouched.
+assert(startFn.includes("body.sessionId = sessionId"), "startRun sends the camelCase sessionId");
+assert(!startFn.includes("body.session_id"), "startRun never sends the rejected snake_case session_id");
 const waitFn = waitFor.slice(waitFor.indexOf("export async function waitForRun"));
 assert(
   waitFn.indexOf("bu(`/runs/${runId}/status`)") < waitFn.indexOf("return hydrate"),
@@ -757,6 +768,107 @@ assert(
 assert(
   pollRunFn.includes("tenant.browserStatus ?? UNKNOWN_STATUS"),
   "pollRun falls back to the tenant's last-known status, not unknown",
+);
+
+// ---------------------------------------------------------------------------
+// nextBrowserAction "continue": a completed run parked on a human-resolvable
+// need must resume in the SAME Cloud session, not reuse the stale blocked
+// result nor spawn a fresh one — the taxi incident this fixes (goal.md).
+// "continue" requires ALL FOUR: terminal status, a human-resolvable need, a
+// sessionId to resume into, and the incoming task continuing the same
+// errand (not a fresh, unrelated job).
+// ---------------------------------------------------------------------------
+
+const paymentNeedDone = {
+  runId: "r1",
+  status: "completed",
+  storedTask: "вызови такси домой",
+  sessionId: "sess-1",
+  need: "payment",
+} as const;
+
+assert(
+  nextBrowserAction({
+    ...paymentNeedDone,
+    incomingTask:
+      "Продолжи в текущей сессии Яндекс Такси: в способе оплаты выбери карту из сейфа",
+  }) === "continue",
+  "all four conditions hold: payment need + sessionId + same errand + done → continue",
+);
+
+// 1. terminal status only — an active run still just polls/busies, `need`
+// and `sessionId` never override that.
+assert(
+  nextBrowserAction({
+    ...paymentNeedDone,
+    status: "running",
+    incomingTask: "Продолжи такси, оплати картой из сейфа",
+  }) === "poll",
+  "an active (non-terminal) run never continues, whatever the need",
+);
+
+// 2. need must be human-resolvable — "none" (or absent) never continues,
+// even with a sessionId and a same-errand follow-up; it reuses like any
+// other clean completion.
+assert(
+  nextBrowserAction({
+    ...paymentNeedDone,
+    need: "none",
+    incomingTask: "ну что",
+  }) === "reuse",
+  "need:none never continues — falls back to the ordinary reuse/start logic",
+);
+assert(
+  nextBrowserAction({
+    runId: "r1",
+    status: "completed",
+    storedTask: "вызови такси домой",
+    sessionId: "sess-1",
+    incomingTask: "ну что",
+  }) === "reuse",
+  "no need at all never continues either",
+);
+
+// 3. sessionId must exist — without one there is nothing to resume into, so
+// a same-errand, need-pending follow-up starts fresh instead of reusing a
+// result that never actually finished.
+assert(
+  nextBrowserAction({
+    ...paymentNeedDone,
+    sessionId: undefined,
+    incomingTask: "Продолжи такси, оплати картой из сейфа",
+  }) === "start",
+  "no sessionId → start, never continue and never a stale reuse",
+);
+
+// 4. the incoming task must continue the SAME errand — a genuinely new,
+// unrelated errand still starts fresh even while a need is parked.
+assert(
+  nextBrowserAction({
+    ...paymentNeedDone,
+    incomingTask: "купи кроссовки на вб 42 размер",
+  }) === "start",
+  "a genuinely new errand while a need is parked still starts fresh, not continue",
+);
+
+// reset:true always wins, even over a pending human-resolvable need.
+assert(
+  nextBrowserAction({
+    ...paymentNeedDone,
+    reset: true,
+    incomingTask: "Продолжи такси, оплати картой из сейфа",
+  }) === "start",
+  "reset:true still starts fresh over a pending need",
+);
+
+// A short, non-keyword follow-up shares no NEW_JOB keyword but still reads
+// as the same errand via the length/keyword fallback in looksLikeNewJob.
+assert(
+  nextBrowserAction({
+    ...paymentNeedDone,
+    incomingTask: "картой из сейфа",
+  }) === "continue",
+  "a short same-errand follow-up with no NEW_JOB keyword still continues",
 );
 
 console.log("browser-policy-check ok");

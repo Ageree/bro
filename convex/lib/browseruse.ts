@@ -2,21 +2,43 @@ import {
   isBrowserProfileId,
   normalizeBrowserProfileId,
   pickCookieDomains,
-} from "./browserProfilePolicy";
+} from "./browserProfilePolicy.ts";
 import {
   liveUrlFromRunPayloads,
   loginLandingReady,
   pageUrlFromEvents,
   runEventsPath,
-} from "./browserLivePolicy";
-import { browserFromList, cdpPageUrl } from "./browserCdp";
-import { scrubSecrets } from "./secretScrub";
+} from "./browserLivePolicy.ts";
+import { browserFromList, cdpPageUrl } from "./browserCdp.ts";
+import { scrubSecrets } from "./secretScrub.ts";
 
 const BASE = "https://api.browser-use.com/api/v4";
 
+/** Fixed prefix so a config error is recognisable by message alone (logs, retries). */
+const CONFIG_ERROR_MARKER = "browser-use config:";
+
+/**
+ * A misconfigured deployment (no API key), distinct from a transient/network
+ * failure — the incident this guards against: hydrate/pollStatus used to
+ * swallow this the same as a network blip, so every run "hung" for the full
+ * 20-minute poll budget with nothing telling a human the deployment was
+ * broken. Callers must rethrow this, never degrade it to "unknown".
+ */
+export class BrowserUseConfigError extends Error {
+  constructor(message: string) {
+    super(`${CONFIG_ERROR_MARKER} ${message}`);
+    this.name = "BrowserUseConfigError";
+  }
+}
+
+export function isBrowserUseConfigError(err: unknown): boolean {
+  if (err instanceof BrowserUseConfigError) return true;
+  return err instanceof Error && err.message.startsWith(CONFIG_ERROR_MARKER);
+}
+
 function key(): string {
   const k = process.env.BROWSERUSE_API_KEY ?? process.env.BROWSER_USE_API_KEY;
-  if (!k) throw new Error("BROWSERUSE_API_KEY missing");
+  if (!k) throw new BrowserUseConfigError("BROWSERUSE_API_KEY missing");
   return k;
 }
 
@@ -90,7 +112,13 @@ export async function hydrate(
 ): Promise<BrowserRun> {
   // Primary fetch: guarded like every other enrichment call below, so a
   // transient upstream hiccup degrades to "unknown" instead of throwing.
+  // A config error (e.g. missing API key) is NOT transient — every future
+  // poll would fail the same way, so it must propagate instead of degrading
+  // to "unknown" (the incident this guards against: pollRun treated
+  // "unknown" as a momentary miss and kept polling for the full 20-minute
+  // give-up budget while every single poll was actually erroring).
   const run = await bu(`/runs/${runId}`).catch((err: unknown) => {
+    if (isBrowserUseConfigError(err)) throw err;
     console.error("browser run fetch failed", err);
     return undefined;
   });
@@ -173,7 +201,10 @@ export async function pollStatus(
   runId: string,
   sessionId?: string,
 ): Promise<BrowserRun> {
-  const cheap = await bu(`/runs/${runId}/status`).catch(() => ({}));
+  const cheap = await bu(`/runs/${runId}/status`).catch((err: unknown) => {
+    if (isBrowserUseConfigError(err)) throw err;
+    return {};
+  });
   const status = pick(cheap, ["status"]);
   if (!status) return hydrate(runId, sessionId);
   return { runId, sessionId, status };
