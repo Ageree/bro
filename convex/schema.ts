@@ -39,6 +39,8 @@ export default defineSchema({
     browserNextTask: v.optional(v.string()),
     /** Last scrubbed Cloud result (≤2000 chars) — wakeup/resume read this back. */
     browserOutcome: v.optional(v.string()),
+    /** Progress-note keys already sent for browserRunId (browserProgressPolicy). */
+    browserProgressSent: v.optional(v.array(v.string())),
     paidUntil: v.optional(v.number()),
     // deprecated: msgs/day and browser/month counters moved to @convex-dev/rate-limiter
     msgsDayKey: v.optional(v.string()),

@@ -741,15 +741,29 @@ export default defineTool({
           }
         : {}),
     });
+    // Best-effort early kick, not the only chance to start follow-through:
+    // settle() below re-derives whether this run still needs polling from
+    // `done.status` alone and, in the one case where it does (not terminal,
+    // not given up), calls startBrowserFollow again and surfaces a failure
+    // to the model via `hint: FOLLOW_RETRY_HINT`. So a failure here is never
+    // swallowed into silence for the human — only left unlogged if we only
+    // caught a thrown/rejected promise and ignored a resolved `{error}`.
     const followKick = startBrowserFollow({
       tenantPhone: phone,
       runId: opened.runId,
       sessionId: opened.sessionId,
       task,
       startedAt,
-    }).catch((err) => {
-      console.error("browser follow workflow failed", err);
-    });
+    }).then(
+      (result) => {
+        if ("error" in result && result.error) {
+          console.error("browser follow workflow failed to start", result.error);
+        }
+      },
+      (err) => {
+        console.error("browser follow workflow failed", err);
+      },
+    );
     const turnId = ctx.session.turn?.id;
     const tId = typeof turnId === "string" ? turnId : undefined;
     if (conv && !turnSpoke(tId) && !fastAckOf(attrsFromSession(ctx.session))) {

@@ -30,9 +30,21 @@ export function isSilentReply(text: string | null | undefined): boolean {
   return typeof text === "string" && text.trim().startsWith("[SILENT]");
 }
 
-/** Fallback text for a `turn.failed` event, or null for background turns. */
-export function fallbackForFailed(origin: TurnOrigin | undefined): string | null {
-  return origin === "human" ? TURN_FAILED_REPLY : null;
+/** Fallback text for a `turn.failed` event, or null for background turns.
+ *
+ *  Incident 2026-09-05 (taxi): a `done` browser_poll wakeup turn threw
+ *  instead of ending with empty text — `turn.failed` fires instead of
+ *  `message.completed`, and this path used to return null for every wakeup,
+ *  so the already-resolved outcome («Готово: Такси заказано… 508 ₽») never
+ *  reached the human. A phased browser_poll wakeup already carries a
+ *  concrete outcome server-side (see `browserPollForceSpeak`), so it must
+ *  still get its canned line even when the turn itself blew up. */
+export function fallbackForFailed(
+  attributes: Readonly<Record<string, unknown>> | null | undefined,
+): string | null {
+  if (turnOrigin(attributes) === "human") return TURN_FAILED_REPLY;
+  if (browserPollForceSpeak(attributes)) return wakeupFallbackText(attributes);
+  return null;
 }
 
 /** One fallback per turn even if both `message.completed` (empty) and

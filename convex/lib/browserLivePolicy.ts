@@ -194,7 +194,8 @@ export function loginHostsMatch(targetPage: string, seenPage: string): boolean {
   return false;
 }
 
-function isPreviewHost(host: string): boolean {
+/** Exported for browserProgressPolicy's "real page host" filter. */
+export function isPreviewHost(host: string): boolean {
   return PREVIEW_HOSTS.has(host) || host.endsWith(".browser-use.com");
 }
 

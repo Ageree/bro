@@ -4,13 +4,15 @@ import {
   internalAction,
   internalQuery,
   mutation,
+  type ActionCtx,
   type MutationCtx,
 } from "./_generated/server";
-import { internal } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import { assertSecret } from "./secret";
 import { cancelRun, hydrate, pollStatus, stopBrowserForSession } from "./lib/browseruse";
 import {
   loginChatText,
+  isLoginVaultTask,
   isLoginWaitTask,
   loginPageFromTask,
 } from "./lib/browserProfilePolicy";
@@ -31,6 +33,12 @@ import {
   type WakeupPhase,
 } from "./lib/browserFollowPolicy";
 import { needsHuman, parseCloudOutcome, type CloudNeed } from "./lib/browserOutcomePolicy";
+import {
+  lateResultLine,
+  lateRetryDelayMs,
+  nextProgressNote,
+  type ProgressKey,
+} from "./lib/browserProgressPolicy";
 import { isLiveBrowserPoll } from "./lib/wakeupPolicy";
 import { unscheduleCron } from "./lib/wakeupCrons";
 import { findTenantByPhone } from "./lib/tenantLookup";
@@ -69,6 +77,31 @@ async function deliverViaEve(opts: {
     signal: AbortSignal.timeout(20_000),
   });
   return res.ok;
+}
+
+/** Shared human-facing delivery: eve's own route first (honors lastChannel),
+ *  cabinet.sendText (always iMessage) as the fallback. Used for the login
+ *  link, progress notes, and the late-result report — throws on failure so
+ *  a caller can release its claim and let the next poll retry. */
+async function notifyHuman(
+  ctx: ActionCtx,
+  opts: { tenantPhone: string; conversationId: string; text: string },
+): Promise<void> {
+  const eveUrl = process.env.EVE_URL;
+  const delivered = eveUrl
+    ? await deliverViaEve({
+        eveUrl,
+        secret: process.env.BRO_INTERNAL_SECRET ?? "",
+        tenantPhone: opts.tenantPhone,
+        text: opts.text,
+      }).catch(() => false)
+    : false;
+  if (!delivered) {
+    await ctx.runAction(internal.cabinet.sendText, {
+      conversationId: opts.conversationId,
+      text: opts.text,
+    });
+  }
 }
 
 const startResult = v.object({
@@ -134,7 +167,25 @@ export const followThrough = workflow.define({
       },
       { retry: true, name: `poll-${i}` },
     );
-    if (poll.stale) return { outcome: "stale" };
+    if (poll.stale) {
+      // Rare path: usually startFollowThrough's cancel_then_start already
+      // scheduled this for the old run before this workflow was cancelled
+      // outright (workflow.cancel bumps the generation number and cancels
+      // the pending poll step, so this branch never runs then) — but if that
+      // cancel() call itself failed, this workflow keeps polling and is the
+      // only place left that can still notice a genuinely finished result.
+      await step.runAction(
+        internal.browserFollow.lateResultNotify,
+        {
+          tenantPhone: args.tenantPhone,
+          runId: args.runId,
+          sessionId: args.sessionId,
+          task: args.task,
+        },
+        { retry: true, name: `late-${i}` },
+      );
+      return { outcome: "stale" };
+    }
     const decision = nextFollowDecision({
       status: poll.status,
       startedAt: args.startedAt,
@@ -279,6 +330,20 @@ export const startFollowThrough = mutation({
         return { workflowId: id, reused: true };
       }
       if (next === "cancel_then_start") {
+        // workflow.cancel() bumps the old workflow's generation number and
+        // cancels its pending poll step outright — it never gets to run
+        // pollRun again, so its own poll.stale branch in followThrough never
+        // fires for this abandonment (that is the actual mechanism behind
+        // the taxi-order incident: a finished run's result going unreported
+        // because nothing polls it again). Schedule the late-result check
+        // for the OLD run here, before cancelling, so it still gets a
+        // chance once Browser Use Cloud settles.
+        if (tenant.browserWorkflowRunId) {
+          await ctx.scheduler.runAfter(0, internal.browserFollow.lateResultNotify, {
+            tenantPhone: args.tenantPhone,
+            runId: tenant.browserWorkflowRunId,
+          });
+        }
         try {
           await workflow.cancel(ctx, id);
         } catch (err) {
@@ -367,6 +432,10 @@ export const pollRun = internalAction({
     }
     const cheap = await pollStatus(args.runId, args.sessionId);
     const loginWait = isLoginWaitTask(tenant.browserTask);
+    // Progress notes only make sense for a human errand: a live-view login
+    // wait already gets its own link, and a vault-password login run has no
+    // human-facing task text at all (browserTask is the marked scaffold).
+    const noProgress = loginWait || isLoginVaultTask(tenant.browserTask);
     const targetPage = loginPageFromTask(tenant.browserTask);
     const needLoginHydrate =
       loginWait && !tenant.browserLoginLinkSentAt;
@@ -437,25 +506,54 @@ export const pollRun = internalAction({
       if (claimed.send && conversationId && claimedLiveUrl) {
         const text = loginChatText(claimedLiveUrl, claimed.site);
         try {
-          const eveUrl = process.env.EVE_URL;
-          const delivered = eveUrl
-            ? await deliverViaEve({
-                eveUrl,
-                secret: process.env.BRO_INTERNAL_SECRET ?? "",
-                tenantPhone: args.tenantPhone,
-                text,
-              }).catch(() => false)
-            : false;
-          if (!delivered) {
-            // No EVE_URL, or eve's own delivery route failed — cabinet.sendText
-            // always reaches iMessage (it does not honor lastChannel), so it is
-            // the fallback, not the default.
-            await ctx.runAction(internal.cabinet.sendText, { conversationId, text });
-          }
+          await notifyHuman(ctx, { tenantPhone: args.tenantPhone, conversationId, text });
         } catch (err) {
           await ctx.runMutation(internal.tenants.releaseBrowserLoginLink, {
             phoneE164: args.tenantPhone,
             runId: args.runId,
+          });
+          throw err;
+        }
+      }
+    }
+    // Intermediate "still working on it" notes — separate from the login
+    // link above (which is its own one-shot signal) and only while the run
+    // hasn't gone terminal (nextProgressNote enforces that itself).
+    const startUrl = errandStartUrl(tenant.browserTask);
+    let site: string | undefined;
+    try {
+      site = startUrl ? new URL(startUrl).hostname.replace(/^www\./, "") : undefined;
+    } catch {
+      site = undefined;
+    }
+    const note = nextProgressNote({
+      status: run.status,
+      startedAt: tenant.browserStartedAt ?? Date.now(),
+      now: Date.now(),
+      pageUrl: run.pageUrl,
+      task: tenant.browserTask ?? "",
+      site,
+      loginWait: noProgress,
+      sent: (tenant.browserProgressSent ?? []) as ProgressKey[],
+    });
+    if (note) {
+      const claimed = await ctx.runMutation(internal.tenants.claimBrowserProgress, {
+        phoneE164: args.tenantPhone,
+        runId: args.runId,
+        key: note.key,
+      });
+      if (claimed.send && claimed.conversationId) {
+        try {
+          await notifyHuman(ctx, {
+            tenantPhone: args.tenantPhone,
+            conversationId: claimed.conversationId,
+            text: note.text,
+          });
+        } catch (err) {
+          await ctx.runMutation(internal.tenants.releaseBrowserProgress, {
+            phoneE164: args.tenantPhone,
+            runId: args.runId,
+            key: note.key,
           });
           throw err;
         }
@@ -470,6 +568,84 @@ export const pollRun = internalAction({
       result: run.result,
       need: outcome?.needs,
     };
+  },
+});
+
+const lateResultReturn = v.object({ delivered: v.boolean() });
+
+/**
+ * One-off report for a run that finished after nobody was polling it
+ * anymore — the taxi-order incident (goal.md): a new errand / reset:true
+ * abandons the previous run (browser_task.ts's cancelRun), and that old run
+ * can still land a genuine, labelled done on Browser Use Cloud's side. Called
+ * from two places (see startFollowThrough and followThrough below) because
+ * either can be the one that actually runs for a given abandonment — see the
+ * comments there.
+ */
+export const lateResultNotify = internalAction({
+  args: {
+    tenantPhone: v.string(),
+    runId: v.string(),
+    sessionId: v.optional(v.string()),
+    // Accepted for signature parity with followThrough's own args (and the
+    // caller may not have it — see startFollowThrough's replace path, where
+    // the old run's task is already overwritten on the tenant by then); the
+    // outcome line never quotes it.
+    task: v.optional(v.string()),
+    // Which retry this is (0 = the first, immediate call). The old run's
+    // Cloud-side cancel may still be in flight when this first runs, so a
+    // still-active run gets a few more looks (lateRetryDelayMs) before this
+    // gives up for good rather than losing the result outright.
+    attempt: v.optional(v.number()),
+  },
+  returns: lateResultReturn,
+  handler: async (
+    ctx,
+    { tenantPhone, runId, sessionId, task, attempt },
+  ): Promise<Infer<typeof lateResultReturn>> => {
+    const run = await hydrate(runId, sessionId).catch((err: unknown) => {
+      console.error("lateResultNotify hydrate failed", err);
+      return undefined;
+    });
+    if (!run) return { delivered: false };
+    if (!isFollowTerminal(run.status)) {
+      const delay = lateRetryDelayMs(attempt ?? 0);
+      if (delay !== undefined) {
+        await ctx.scheduler.runAfter(delay, internal.browserFollow.lateResultNotify, {
+          tenantPhone,
+          runId,
+          sessionId,
+          task,
+          attempt: (attempt ?? 0) + 1,
+        });
+      }
+      return { delivered: false };
+    }
+    const line = lateResultLine(run.status, run.result);
+    if (!line) return { delivered: false };
+    // Durable dedupe: this can be scheduled once from startFollowThrough's
+    // replace path and, on the rare run where the old workflow survives to
+    // see poll.stale itself, once more from followThrough — only one wins.
+    const claim = await ctx.runMutation(api.wakeups.takeDelivery, {
+      secret: process.env.BRO_INTERNAL_SECRET ?? "",
+      key: `browser_late:${runId}`,
+    });
+    if (!claim.taken) return { delivered: false };
+    const tenant = await ctx.runQuery(internal.tenants.getByPhoneInternal, {
+      phoneE164: tenantPhone,
+    });
+    const conversationId = tenant?.photonConversationId || tenant?.inkboxConversationId;
+    if (!conversationId) {
+      console.error("lateResultNotify: no conversation for tenant", tenantPhone);
+      return { delivered: false };
+    }
+    try {
+      await notifyHuman(ctx, { tenantPhone, conversationId, text: line });
+    } catch (err) {
+      console.error("lateResultNotify deliver failed", err);
+      return { delivered: false };
+    }
+    return { delivered: true };
   },
 });
 
