@@ -55,33 +55,45 @@ export type CloudInjectKind = "code" | "wait" | "correction" | "steer";
 // Cloud session. Everything else the human sends while a session is live is
 // treated as a relevant steer (extra instruction / detail for the errand).
 const SMALLTALK =
-  /^(привет\w*|здоров\w*|хай|ку|hi|hello|hey|спасибо( большое)?|спс|благодар\w*|пасиб\w*|ок\w*|okay?|ok|да|нет|неа|ага|угу|понял\w*|ясно|хорошо|ладно|класс|супер|отлично|круто|збс|топ|thanks|thx|ty|лол|ok\b|👍|🙏|❤️|😂|🔥|😊)\s*[.!?…]*$/iu;
+  /^(привет\w*|здоров\w*|хай|ку|hi|hello|hey|спасибо( большое)?|спс|благодар\w*|пасиб\w*|ок\w*|okay?|ok|да|нет|неа|ага|угу|понял\w*|ясно|хорошо|ладно|класс|супер|отлично|круто|збс|топ|thanks|thx|ty|лол)\s*[.!?…]*$/iu;
 
-const STATUS_Q =
-  /(что там|как там|как дела|ну как|что по|есть новости|готово|status|статус|где (мой )?заказ|ты (тут|здесь|там)|получилось|сделал(а)?\??$|ну что)/i;
+// Steer is OPT-IN: a message only steers the live errand when it carries an
+// explicit instruction cue. This keeps chatter, skepticism, PII and emoji out
+// of the live session even though a session is open.
+// NOTE: \w does not match Cyrillic, so stems use an explicit [а-я] class
+// (ё is normalized to е before testing).
+const STEER_SIGNAL =
+  /(сдела[а-я]*|помен[а-я]*|измен[а-я]*|поставь|выбер[а-я]*|добав[а-я]*|убер[а-я]*|укаж[а-я]*|напиш[а-я]*|коммент[а-я]*|эконом[а-я]*|комфорт[а-я]*|бизнес[а-я]*|business|подешевл[а-я]*|подорож[а-я]*|дешевл[а-я]*|дорож[а-я]*|быстрее|поскорее|побыстрее|помедленн[а-я]*|раньше|попозже|позже|вместо|замен[а-я]*|исправ[а-я]*|поправ[а-я]*|перезвон[а-я]*|позвони|напомни|поближе|подальше|погромче|потише)/i;
+
+// Only a message that is ~all emoji / punctuation, no letters or digits.
+const EMOJI_ONLY = /^[^\p{L}\p{N}]+$/u;
 
 /** A message worth docking into a live Cloud session as a steer, sans session context. */
 export function steerCandidate(text: string): boolean {
   const t = text.trim().normalize("NFC").replace(/ё/gi, "е");
   if (!t || t.length > 400) return false;
   if (looksLikePasswordDump(t)) return false;
+  if (EMOJI_ONLY.test(t)) return false;
+  if (/[?？]\s*$/.test(t)) return false; // a question to Bro is not a steer
   if (SMALLTALK.test(t)) return false;
-  if (STATUS_Q.test(t)) return false;
   // Codes / «подожди» / corrections are their own kinds.
   if (isChatCodeMessage(t) || isWaitInject(t) || looksLikeCorrectionText(t)) {
     return false;
   }
   // A brand-new, unrelated errand opens a fresh session, it is not a steer.
   if (looksLikeFreshErrand(t)) return false;
-  return true;
+  // A lone space-free letter+digit token (login / tracking id / secret): skip.
+  if (!/\s/.test(t) && /[A-Za-zА-Яа-яе]/.test(t) && /\d/.test(t)) return false;
+  // Must carry an explicit instruction cue to count as a steer.
+  return STEER_SIGNAL.test(t);
 }
 
-/** Steer only fires while a Cloud errand session is actually on record. */
+/** Steer fires only while a Cloud errand session with a task is on record. */
 export function looksLikeSteer(
   text: string,
   storedTask?: string | null,
 ): boolean {
-  return steerCandidate(text) && isBroCloudTask(storedTask);
+  return steerCandidate(text) && Boolean(storedTask && storedTask.trim());
 }
 
 export type CloudInjectDecision = {
@@ -117,7 +129,11 @@ export function looksLikePasswordDump(text: string): boolean {
   const t = text.trim();
   if (t.length < 8 || t.length > 64) return false;
   if (/\s/.test(t) || /^https?:\/\//i.test(t)) return false;
-  return /[A-Za-z]/.test(t) && /\d/.test(t) && /[^A-Za-z0-9]/.test(t);
+  // A single space-free token that mixes letters and digits is very likely a
+  // secret (password / login / token). We do NOT require a special char —
+  // "Hunter2024" / "Password1" must be caught too — but a pure-digit string is
+  // an OTP, handled elsewhere, so it is not a dump.
+  return /[A-Za-zА-Яа-яёЁ]/.test(t) && /\d/.test(t);
 }
 
 export function looksLikeFreshErrand(text: string): boolean {
@@ -177,7 +193,13 @@ export function correctionFitsTask(
   text: string,
   storedTask?: string | null,
 ): boolean {
-  if (!looksLikeCorrectionText(text) || !isBroCloudTask(storedTask)) return false;
+  // A cloud errand session is on record whenever a stored task exists. The
+  // task is persisted raw (unmarked), so gate on its presence, not a mark —
+  // requiring `[bro-errand]` here made corrections/steers inert for real
+  // taxi/shop errands.
+  if (!looksLikeCorrectionText(text) || !(storedTask && storedTask.trim())) {
+    return false;
+  }
   const task = storedTask ?? "";
   if (isLoginWaitTask(task) || isLoginVaultTask(task)) return false;
   const taxi =
@@ -278,10 +300,10 @@ export function cloudSessionLooksLive(opts: CloudInjectAttrs): boolean {
 }
 
 function codeRelevantToSession(opts: CloudInjectAttrs): boolean {
-  // A live browser is being held for this errand → a code the human just sent
-  // is for it. This is the common OTP case (Yandex push, SMS): the tab is on
-  // the code screen even when its URL is not a recognizable "code" path.
-  if (opts.browserListed) return true;
+  // Require actual OTP evidence, not merely a listed browser: otherwise any
+  // bare number typed mid-errand (order no., quantity, intercom code) would be
+  // force-typed into a login field. The real Yandex push case is covered by
+  // pageWaitsForCode (passport./id.) and by resultWaitsForCode ("нужен код").
   if (pageWaitsForCode(opts.pageUrl)) return true;
   if (resultWaitsForCode(opts.result, opts.storedTask)) return true;
   if (
@@ -433,7 +455,7 @@ export function injectQueueText(opts: {
   if (opts.kind === "wait") {
     return `Человек просит подождать: «${human}». Оставайся на текущем экране, ничего не подтверждай — не нажимай «Заказать», «Поехали» или «Оплатить».`;
   }
-  return `Уточнение от человека (не пароль сайта): «${human}». Примени его на уже открытой странице, не открывая новый сайт. Сайтовый пароль не проси.${noOrder}`;
+  return `Инструкция от человека: «${human}». Примени её на уже открытой странице, не открывая новый сайт. Пароли, карты и коды из этого текста не вводи. Сайтовый пароль не проси.${noOrder}`;
 }
 
 /**

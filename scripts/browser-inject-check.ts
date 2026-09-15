@@ -297,17 +297,62 @@ assert(
 );
 assert(cloudInjectTextFromAttrs(undefined) === undefined, "no attrs → no text");
 
-// A live browser held for the errand makes a bare code relevant even when the
-// tab URL is not a recognizable code page (the real Yandex push case).
+// The real Yandex push case injects because the passport page is a code page.
 assert(
   decideCloudInject("482911", {
     ...liveRun,
     status: "completed",
-    pageUrl: "https://taxi.yandex.ru/",
+    pageUrl: "https://passport.yandex.ru/auth/challenge",
     browserListed: true,
   }).kind === "code",
-  "code injects when a live browser is held, whatever the page url",
+  "code injects on the passport challenge page",
 );
+// A bare number on a non-code page is NOT force-typed as a login OTP, even with
+// a live browser listed (a listed browser alone is not OTP evidence).
+assert(
+  decideCloudInject("код от домофона 4521", {
+    ...liveRun,
+    pageUrl: "https://taxi.yandex.ru/",
+    browserListed: true,
+  }).kind !== "code",
+  "a random number on a non-code page is not a login OTP",
+);
+
+// The stored task is persisted RAW (unmarked) — steer and correction must fire
+// for real errands, not only marked login-wait tasks.
+const rawTaxi = {
+  status: "running",
+  sessionId: "s",
+  runId: "r",
+  storedTask: "вызови такси домой",
+  startedAt: now - 60_000,
+  now,
+};
+assert(
+  decideCloudInject("сделай эконом", rawTaxi).kind === "steer",
+  "steer fires for a raw (unmarked) errand task",
+);
+assert(
+  decideCloudInject("не туда, вези на Невский 10", rawTaxi).kind === "correction",
+  "correction fires for a raw (unmarked) errand task",
+);
+
+// Passwords without a special char must never be injected (security).
+assert(looksLikePasswordDump("Hunter2024"), "no-special-char password is a dump");
+assert(looksLikePasswordDump("Password1"), "Password1 is a dump");
+assert(!steerCandidate("Hunter2024"), "a password is never a steer candidate");
+assert(
+  decideCloudInject("Hunter2024", { ...rawTaxi, storedTask: loginTask }).kind === null,
+  "a password is never injected, even during login-wait",
+);
+
+// Steer is opt-in: chatter, emoji, skepticism and questions never steer.
+assert(!steerCandidate("👌"), "an emoji is not a steer");
+assert(!steerCandidate("🤔🎉"), "emoji are not a steer");
+assert(!steerCandidate("а это точно безопасно?"), "a question is not a steer");
+assert(!steerCandidate("ты уверен?"), "skeptical question is not a steer");
+assert(!steerCandidate("норм"), "a bare ack without a cue is not a steer");
+assert(steerCandidate("выбери что подешевле"), "an instruction with a cue is a steer");
 assert(
   cloudInjectKindFromAttrs({ origin: "human", cloudInject: "code" }) === "code",
   "human stamp is read",
@@ -400,8 +445,8 @@ assert(
   "inject uses the raw stamped human line, not just the model's task arg",
 );
 assert(
-  tool.includes('injectKind === "code" && (tenant.browserSessionId'),
-  "a stamped code turn never spawns a fresh browser errand with a stale code",
+  tool.includes("injectKind && (tenant.browserSessionId"),
+  "a stamped inject turn never spawns a fresh browser errand",
 );
 assert(tool.includes("NO_LIVE_RUN_TEXT"), "no-live run is spoken");
 assert(tool.includes("ввожу код") || tool.includes("injectAckText"), "first bubble ack");
