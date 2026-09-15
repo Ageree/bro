@@ -417,6 +417,7 @@ describe("workstream memory", () => {
 function context(sessionId: string, authenticator = "authjs") {
   return {
     abortSignal: new AbortController().signal,
+    model: null,
     channel: {},
     getToken() {
       throw new Error("Token access is outside this test.");

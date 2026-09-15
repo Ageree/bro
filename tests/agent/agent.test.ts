@@ -60,6 +60,7 @@ describe("root agent model resolution", () => {
 
 function scheduledWorkerContext(): DynamicResolveContext {
   return {
+    model: null,
     channel: { kind: "http" },
     messages: [],
     session: {
