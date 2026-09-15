@@ -416,10 +416,16 @@ export async function resolveQueuedRun(
     if (now() >= deadline) break;
     await new Promise((r) => setTimeout(r, 1_000));
   }
-  return {
-    runId: last?.latestRunId ?? queued.runId ?? priorRunId,
-    ...(last?.status ? { status: last.status } : {}),
-  };
+  const runId = last?.latestRunId ?? queued.runId ?? priorRunId;
+  const status = last?.status;
+  // Never hand back the just-finished/cancelled prior run as if it were the
+  // follow-up: waitForRun would see a terminal status and report "done" before
+  // the queued message ran. Report it as still running so the caller keeps
+  // following (the background follow-through catches the real resumed run).
+  if (runId === priorRunId && status && isTerminal(status)) {
+    return { runId, status: "running" };
+  }
+  return { runId, ...(status ? { status } : {}) };
 }
 
 function withLanding(
