@@ -91,6 +91,22 @@ import {
 // ponytail: in-memory only — lost on restart, not shared across instances
 const wakeupDelivered = new Map<string, number>();
 
+/** Same two-step dedupe (in-memory fast path + durable cross-instance
+ *  backstop) the main /internal/wakeup delivery below already applies to its
+ *  idempotencyKey, factored out so the stale-run late-outcome notice can
+ *  share it under its own key. */
+async function claimWakeupOnce(key: string): Promise<boolean> {
+  if (!key) return true;
+  if (!takeWakeupDelivery(wakeupDelivered, key, Date.now())) return false;
+  try {
+    const durable = await claimDurableWakeupDelivery(key);
+    if (!durable.taken) return false;
+  } catch (err) {
+    console.error("durable wakeup dedupe check failed", err);
+  }
+  return true;
+}
+
 async function cabinetHandleForWelcome(opts: {
   phone: string;
   inkboxHandle?: string;
@@ -741,6 +757,31 @@ export default defineChannel({
             return new Response("tenant lookup failed", { status: 503 });
           }
           if (tenant?.browserRunId !== body.runId) {
+            // The run this webhook is about is no longer the tenant's active
+            // one (reset, or a later errand already started) — normally
+            // nothing to say. But a `done` phase with a real labelled outcome
+            // and nothing pending means the run finished anyway; staying
+            // silent would mean a completed order the person never hears
+            // about (real incident: a taxi got ordered and the chat stayed
+            // quiet) — worse than one redundant line. Uses the same durable
+            // key as Convex's own browser_late notice (wakeups.takeDelivery)
+            // so only one of the two paths ever fires for a given run.
+            if (tenant && phase === "done") {
+              const outcome = parseCloudOutcome(result);
+              if (outcome.labelled && outcome.needs === "none") {
+                const lateKey = `browser_late:${body.runId}`;
+                if (await claimWakeupOnce(lateKey)) {
+                  await deliverHuman({
+                    tenant,
+                    conversationId,
+                    text: `Кстати, прошлое поручение всё же завершилось. ${doneLineHint(outcome)}`,
+                  }).catch((err) => {
+                    releaseWakeupDelivery(wakeupDelivered, lateKey);
+                    console.error("late browser outcome deliver failed", err);
+                  });
+                }
+              }
+            }
             return Response.json({ ok: true, skipped: "stale_run" });
           }
           // Residual race: browserRunId can change during from().send after this check.

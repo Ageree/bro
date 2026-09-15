@@ -380,7 +380,8 @@ export const setBrowser = mutation({
       "browserNextTask",
       "browserOutcome",
     ]);
-    if (args.browserRunId && existing.browserRunId !== args.browserRunId) {
+    const isNewRun = Boolean(args.browserRunId && existing.browserRunId !== args.browserRunId);
+    if (isNewRun) {
       // A fresh run/errand: the previous run's blocker and stored result are
       // stale and must never leak into the new one. `browserNextTask` is the
       // one thing that survives — it is what queued this new run in the
@@ -392,7 +393,13 @@ export const setBrowser = mutation({
       patch.browserNeedDetail = undefined;
       patch.browserOutcome = undefined;
     }
-    await ctx.db.patch(existing._id, patch);
+    await ctx.db.patch(existing._id, {
+      ...patch,
+      // Progress notes (browserProgressPolicy) are per-errand, not part of
+      // setBrowser's own args — a fresh run must earn its own
+      // "opened"/"slow"/"long" milestones again.
+      ...(isNewRun ? { browserProgressSent: undefined } : {}),
+    });
     return null;
   },
 });
@@ -561,6 +568,48 @@ export const releaseBrowserLoginLink = internalMutation({
     const existing = await findTenantByPhone(ctx, args.phoneE164);
     if (!existing || existing.browserRunId !== args.runId) return null;
     await ctx.db.patch(existing._id, { browserLoginLinkSentAt: undefined });
+    return null;
+  },
+});
+
+const progressClaim = v.object({
+  send: v.boolean(),
+  conversationId: v.optional(v.string()),
+});
+
+/** Same claim-before-send shape as claimBrowserLoginLink, keyed by note kind
+ *  instead of a one-shot flag so several distinct notes can fire per run. */
+export const claimBrowserProgress = internalMutation({
+  args: {
+    phoneE164: v.string(),
+    runId: v.string(),
+    key: v.string(),
+  },
+  returns: progressClaim,
+  handler: async (ctx, args): Promise<Infer<typeof progressClaim>> => {
+    const existing = await findTenantByPhone(ctx, args.phoneE164);
+    if (!existing || existing.browserRunId !== args.runId) return { send: false };
+    const sent = existing.browserProgressSent ?? [];
+    if (sent.includes(args.key)) return { send: false };
+    const conversationId = existing.photonConversationId || existing.inkboxConversationId;
+    if (!conversationId) return { send: false };
+    await ctx.db.patch(existing._id, { browserProgressSent: [...sent, args.key] });
+    return { send: true, conversationId };
+  },
+});
+
+export const releaseBrowserProgress = internalMutation({
+  args: {
+    phoneE164: v.string(),
+    runId: v.string(),
+    key: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const existing = await findTenantByPhone(ctx, args.phoneE164);
+    if (!existing || existing.browserRunId !== args.runId) return null;
+    const sent = (existing.browserProgressSent ?? []).filter((k) => k !== args.key);
+    await ctx.db.patch(existing._id, { browserProgressSent: sent });
     return null;
   },
 });

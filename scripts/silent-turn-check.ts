@@ -19,9 +19,37 @@ assert(turnOrigin(undefined) === undefined, "no attributes");
 assert(isSilentReply("[SILENT]") === true, "silent marker");
 assert(isSilentReply("  [SILENT] leftover") === true, "silent prefix");
 assert(isSilentReply("Ищу") === false, "visible is not silent");
-assert(fallbackForFailed("human") === TURN_FAILED_REPLY, "failed human turn");
-assert(fallbackForFailed("wakeup") === null, "failed wakeup stays quiet");
+assert(fallbackForFailed({ origin: "human" }) === TURN_FAILED_REPLY, "failed human turn");
+assert(
+  fallbackForFailed({ origin: "wakeup" }) === null,
+  "failed un-phased wakeup stays quiet",
+);
 assert(fallbackForFailed(undefined) === null, "failed unknown stays quiet");
+assert(
+  fallbackForFailed({
+    origin: "wakeup",
+    wakeupKind: "reminder",
+    wakeupFallback: "x",
+  }) === null,
+  "failed non-browser wakeup (reminder) stays quiet even with a stamped fallback",
+);
+assert(
+  fallbackForFailed({
+    origin: "wakeup",
+    wakeupKind: "browser_poll",
+    wakeupPhase: "done",
+    wakeupFallback: "Готово: Такси заказано… 508 ₽, через ~2 мин.",
+  }) === "Готово: Такси заказано… 508 ₽, через ~2 мин.",
+  "a failed (thrown) browser_poll done turn still delivers the canned outcome — 2026-09-05 taxi incident",
+);
+assert(
+  fallbackForFailed({
+    origin: "wakeup",
+    wakeupKind: "browser_poll",
+    wakeupPhase: "done",
+  }) === null,
+  "failed browser_poll turn with no stamped fallback text stays quiet",
+);
 
 // one bubble per turn even if message.completed(empty) and turn.failed both fire
 const sent = new Map<string, number>();
@@ -67,6 +95,14 @@ assert(
 // event handler, so this is a source assertion, same style as the other
 // *-check.ts files that pin exact wiring in a file they don't otherwise import.
 const deliverySrc = src("agent/lib/turn-delivery-events.ts");
+const failedHandler = deliverySrc.slice(
+  deliverySrc.indexOf('"turn.failed"'),
+  deliverySrc.indexOf('"message.appended"'),
+);
+assert(
+  failedHandler.includes("fallbackForFailed(auth?.attributes)"),
+  "turn.failed passes the full attrs so a browser_poll wakeup can still speak — 2026-09-05 taxi incident",
+);
 const completedHandler = deliverySrc.slice(deliverySrc.indexOf('"message.completed"'));
 assert(
   completedHandler.includes("bubblesFor(earlySent, event.turnId).some"),
@@ -81,6 +117,28 @@ assert(
   completedHandler.includes("!spoke\n          ? wakeupFallbackText") ||
     /&&\s*!spoke\b/.test(completedHandler),
   "wakeup fallback is gated on !spoke",
+);
+
+// A `message.completed` delivery is not a fire-and-forget like
+// message.appended/actions.requested (it's the last chance for this event),
+// so a failed send must be logged, not left as a silent unhandled rejection
+// — and a resolved browser_poll wakeup gets one retry rather than nothing.
+const sendPlanBlock = completedHandler.slice(
+  completedHandler.indexOf("if (planned.send)"),
+  completedHandler.indexOf("await persistSeenFromTurn"),
+);
+assert(
+  sendPlanBlock.includes("deliverTurnBubble(bubbleOpts).catch"),
+  "message.completed's deliverTurnBubble call is .catch-ed, not left to reject silently",
+);
+assert(
+  sendPlanBlock.includes('console.error("message delivery failed"'),
+  "a message.completed delivery failure is logged",
+);
+assert(
+  sendPlanBlock.includes("browserPollForceSpeak(auth?.attributes)") &&
+    sendPlanBlock.includes("deliverTurnBubble(bubbleOpts).catch((retryErr)"),
+  "a browser_poll wakeup's message.completed delivery gets one retry on failure",
 );
 
 console.log("silent-turn-check ok");

@@ -339,6 +339,47 @@ assert(
   "password+site does not also send the generic humanLineForNeed line as the live prompt",
 );
 
+// --- stale_run must still surface a finished done outcome (2026-09-05 taxi
+// incident: a completed order silently dropped because the tenant's active
+// run had already moved on by the time the webhook landed) ---
+const staleRunBlock = imessageWakeupSrc.slice(
+  imessageWakeupSrc.indexOf("if (tenant?.browserRunId !== body.runId) {"),
+  imessageWakeupSrc.indexOf('// Residual race:'),
+);
+assert(
+  staleRunBlock.includes('phase === "done"'),
+  "stale_run still checks for a done phase before giving up",
+);
+assert(
+  staleRunBlock.includes("parseCloudOutcome(result)") &&
+    staleRunBlock.includes("outcome.labelled") &&
+    staleRunBlock.includes('outcome.needs === "none"'),
+  "stale_run only speaks up for a real labelled, fully-resolved outcome",
+);
+assert(
+  staleRunBlock.includes("`browser_late:${body.runId}`"),
+  "stale_run late notice uses the browser_late:<runId> key",
+);
+assert(
+  staleRunBlock.includes("claimWakeupOnce(lateKey)"),
+  "stale_run late notice is deduped before sending",
+);
+assert(
+  staleRunBlock.includes("deliverHuman({") &&
+    staleRunBlock.includes("Кстати, прошлое поручение всё же завершилось. "),
+  "stale_run delivers the canned done line prefixed with the late-notice framing",
+);
+assert(
+  staleRunBlock.includes("doneLineHint(outcome)"),
+  "stale_run late notice reuses the same canned outcome line as the live done path",
+);
+assert(
+  imessageWakeupSrc.includes(
+    'const durable = await claimDurableWakeupDelivery(key);',
+  ),
+  "the late-notice dedupe helper still goes through the durable, cross-instance backstop",
+);
+
 // --- A2: never-silent wakeups (goal.md §2 / A7 finding B3) ---
 
 assert(wakeupFallbackText({ origin: "wakeup", wakeupFallback: "Нужен код из SMS." }) === "Нужен код из SMS.", "wakeup fallback text surfaces");

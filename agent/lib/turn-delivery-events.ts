@@ -13,6 +13,7 @@ import {
   type EarlySentRow,
 } from "./early-deliver.ts";
 import {
+  browserPollForceSpeak,
   fallbackForFailed,
   takeFallbackSlot,
   turnOrigin,
@@ -29,6 +30,16 @@ import {
   routingTenant,
   type AuthAttrs,
 } from "./turn-routing.ts";
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// A `message.completed` delivery failure (network blip, Convex hiccup) must
+// never leave a resolved browser_poll wakeup silent — retry once, since
+// claimChatBubble's per-chat dedupe (agent/lib/bubble-dedupe.ts) already
+// keeps a retry from resending a bubble that actually made it out.
+const COMPLETED_DELIVERY_RETRY_MS = 1_500;
 
 export function telegramOwnsTurn(attrs: AuthAttrs): boolean {
   return routingFromAuth(attrs).channel === "telegram";
@@ -214,7 +225,7 @@ export function createTurnDeliveryEvents(opts: {
       });
       if (!canTarget(conversationId, auth?.attributes)) return;
       if (!opts.accept(auth?.attributes)) return;
-      const text = fallbackForFailed(turnOrigin(auth?.attributes));
+      const text = fallbackForFailed(auth?.attributes);
       if (!text) return;
       if (!takeFallbackSlot(fallbackSent, event.turnId, Date.now())) return;
       await deliverTurnBubble({
@@ -356,12 +367,32 @@ export function createTurnDeliveryEvents(opts: {
           routed: routingFromAuth(auth?.attributes).channel ?? null,
           chars: planned.send.length,
         });
-        await deliverTurnBubble({
+        const bubbleOpts = {
           conversationId,
           text: stripConnectUrls(planned.send),
           attrs: auth?.attributes,
           principalId: auth?.principalId,
           seen: planned.seen,
+        };
+        await deliverTurnBubble(bubbleOpts).catch(async (err) => {
+          console.error("message delivery failed", {
+            conversationId,
+            turnId: event.turnId,
+            err,
+          });
+          // Only worth a retry when silence would otherwise mean a resolved
+          // errand the human never hears about (goal.md §2) — a plain human
+          // turn's own turn.failed handler doesn't fire here (this branch
+          // already produced real text), so there's no other rescue for it.
+          if (!browserPollForceSpeak(auth?.attributes)) return;
+          await delay(COMPLETED_DELIVERY_RETRY_MS);
+          await deliverTurnBubble(bubbleOpts).catch((retryErr) =>
+            console.error("message delivery retry failed", {
+              conversationId,
+              turnId: event.turnId,
+              err: retryErr,
+            }),
+          );
         });
         return;
       }
