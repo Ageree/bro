@@ -261,19 +261,16 @@ eq(
 eq(errandStartUrl("напиши маме, что задержусь"), undefined, "unrelated text → undefined");
 eq(errandStartUrl(undefined), undefined, "no task text → undefined");
 
-// KNOWN GAP: bare «вб» never matches. `\bвб\b` (browserStartPolicy.ts:31) uses
-// an ASCII-only word boundary; Cyrillic letters are not `\w` in a non-unicode
-// regex, so a boundary can never form directly against them in real text
-// (start-of-string/space on one side, "в"/"б" on the other are both
-// "non-word" — no transition). `agent/lib/order-policy.ts`'s equivalent
-// merchant regex already gets this right with `(?:^|[^\p{L}])(?:wb|вб)(?:[^\p{L}]|$)`
-// under the `u` flag; `errandStartUrl`'s WB branch was never fixed the same
-// way, so the Ozon/WB coverage the audit asked for surfaces a real,
-// pre-existing bug rather than a gap in this test. Pinning current (broken)
-// behavior here, not the intended one — do not "fix" this assertion without
-// fixing browserStartPolicy.ts:31 first.
-eq(errandStartUrl("вб"), undefined, "KNOWN GAP: bare «вб» does not resolve to WB (dead \\b branch)");
-eq(errandStartUrl("закажи на вб"), undefined, "KNOWN GAP: «вб» inside a sentence is equally unreachable");
+// Fixed (A3 addendum item 16): the WB branch now uses the same
+// `(?:^|[^\p{L}])(?:wb|вб)(?:[^\p{L}]|$)` / `u`-flag pattern as
+// `agent/lib/order-policy.ts`'s `merchantFromTask`, so a bare Cyrillic «вб»
+// resolves like every other bare-wording case above.
+eq(errandStartUrl("вб"), "https://www.wildberries.ru/", "bare «вб» resolves to WB");
+eq(
+  errandStartUrl("закажи на вб"),
+  "https://www.wildberries.ru/",
+  "«вб» inside a sentence resolves to WB",
+);
 
 // ============================================================================
 // 5. cloudSessionLooksLive — SESSION_LIVE_MS (20 min) boundary

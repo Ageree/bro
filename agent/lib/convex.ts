@@ -523,8 +523,27 @@ export const markPaywallSent = (
 
 export const countBrowserJobStart = (
   phoneE164: string,
+  opts?: { chargeKey?: string },
 ): Promise<{ allowed: boolean }> =>
-  m(api.tenants.countBrowserJobStart)({ phoneE164 });
+  m(api.tenants.countBrowserJobStart)({ phoneE164, chargeKey: opts?.chargeKey });
+
+/** Clears `browserNeed*` for a still-current run (A3 item 5) — see
+ *  `convex/tenants.ts` `clearBrowserNeedPublic` for why `setBrowser` alone
+ *  cannot do this. */
+export const clearBrowserNeed = (
+  phoneE164: string,
+  runId: string,
+): Promise<void> =>
+  m(api.tenants.clearBrowserNeedPublic)({ phoneE164, runId }).then(() => {});
+
+/** Marks `chargeKey` as already covered (no charge) so a later continuation
+ *  of this same errand keyed the same way (see `chargeKeyFor`) is free — see
+ *  `convex/tenants.ts` `aliasBrowserCharge`. */
+export const aliasBrowserCharge = (
+  phoneE164: string,
+  chargeKey: string,
+): Promise<void> =>
+  m(api.tenants.aliasBrowserCharge)({ phoneE164, chargeKey }).then(() => {});
 
 /** Charges one browser job for a whole worker assignment, not per browser. */
 export const startBrowserErrand = (args: {

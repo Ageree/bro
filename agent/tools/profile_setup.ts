@@ -1,35 +1,33 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
-import { browserGateFromResult } from "../../convex/lib/billingPolicy";
 import { LOGIN_LANDING_WAIT_MS } from "../../convex/lib/browserLivePolicy.ts";
 import {
   alreadyLoggedChatText,
+  cookieCacheStale,
   cookieDomainsCoverPage,
   loginChatText,
   loginOpeningText,
   loginPageUrl,
   loginVaultChatText,
   loginVaultTask,
+  nextLoginAction,
 } from "../../convex/lib/browserProfilePolicy.ts";
 import {
   createProfile,
   envSyncedProfileId,
   getProfile,
+  hydrate,
   loginWaitTask,
   startRun,
   waitForLoginLanding,
   type BrowserRun,
 } from "../lib/browseruse";
-import {
-  countBrowserJobStart,
-  setBrowser,
-  startBrowserFollow,
-  upsertTenant,
-} from "../lib/convex";
+import { setBrowser, startBrowserFollow, upsertTenant } from "../lib/convex";
 import { conversationId, groupPersonalBlock } from "../lib/group-guard";
 import { tenantId } from "../lib/tenant";
 import { attrsFromSession, channelFromAuth } from "../lib/deliver-routed";
 import { deliverHuman } from "../lib/deliver-human";
+import { fastAckOf } from "../lib/fast-ack.ts";
 import { markTurnSpoke, turnSpoke } from "../lib/early-deliver.ts";
 import { vaultPasswordLogin } from "../lib/vault-login.ts";
 
@@ -46,6 +44,10 @@ async function persistRun(
     startedAt?: number;
     profileId?: string;
     loginLinkSentAt?: number;
+    /** Errand to resume once this login lands (item 12) — read back by the
+     *  `done` wakeup, which starts it via `browser_task` without the model
+     *  having to recall the original ask across the login/OTP detour. */
+    errand?: string;
   },
 ): Promise<void> {
   await setBrowser(phone, {
@@ -55,6 +57,7 @@ async function persistRun(
     ...(extra?.startedAt !== undefined ? { browserStartedAt: extra.startedAt } : {}),
     ...(extra?.profileId ? { browserProfileId: extra.profileId } : {}),
     ...(run.sessionId ? { browserSessionId: run.sessionId } : {}),
+    ...(extra?.errand ? { browserNextTask: extra.errand } : {}),
     ...(extra?.loginLinkSentAt !== undefined && run.liveUrl
       ? {
           browserLiveUrl: run.liveUrl,
@@ -106,12 +109,13 @@ async function notify(opts: {
 
 export default defineTool({
   description:
-    "Log into any site or save the account for later. If a matching vault login (kind login) exists, Bro types it via secretBindings and does not ask in chat. If not, Bro opens the site login page, announces that, then texts the live-view link only after that page is showing. Never ask for a login or password. Never offer the link as an option. Never put a site password in iMessage. Person adds or edits vault logins on brobro.tech (vault_setup kind=login). Pass the https login page URL.",
+    'Log a site in, or save the login for later. If a saved vault login exists for this page, it is typed in automatically and nothing is asked in chat. Otherwise the login page is opened and, once it is actually showing, a live-view link is sent so the human can log in — Bro never sees the password. Pass errand (the original ask, e.g. "вызови такси домой") so it resumes on its own once the login lands, instead of the model having to remember it. Calling this again with the same url while a login for it is already running just polls that run — it does not abandon it and start a new browser. Never ask for a login or password in chat. Never offer the live-view link as optional — just send it.',
   inputSchema: z.object({
     url: z.string().min(8).max(2000),
     site: z.string().min(1).max(80).optional(),
+    errand: z.string().min(1).max(4000).optional(),
   }),
-  async execute({ url, site }, ctx) {
+  async execute({ url, site, errand }, ctx) {
     const blocked = groupPersonalBlock(ctx);
     if (blocked) return { status: "group", hint: blocked };
     const page = loginPageUrl(url);
@@ -127,6 +131,53 @@ export default defineTool({
     const conv = conversationId(ctx, tenant.inkboxConversationId);
     const turnId = typeof ctx.session.turn?.id === "string" ? ctx.session.turn.id : undefined;
 
+    // Reuse guard (item 11/F2): a live-view login for this exact page is
+    // already in flight — poll/hydrate it instead of abandoning it for a
+    // brand-new browser + run (which also stops any live-view link already
+    // sent from being useful).
+    const reuseAction = nextLoginAction({
+      runId: tenant.browserRunId,
+      status: tenant.browserStatus,
+      storedTask: tenant.browserTask,
+      startedAt: tenant.browserStartedAt,
+      page,
+      now: Date.now(),
+    });
+    if (reuseAction === "reuse" && tenant.browserRunId) {
+      const run = await hydrate(tenant.browserRunId, tenant.browserSessionId, page);
+      if (run.landed && run.liveUrl && !tenant.browserLoginLinkSentAt) {
+        await persistRun(phone, run, tenant.browserTask ?? loginWaitTask(page), {
+          loginLinkSentAt: Date.now(),
+          ...(errand ? { errand } : {}),
+        });
+        const text = loginChatText(run.liveUrl, site);
+        let notified = false;
+        try {
+          notified = await notify({ tenant, session: ctx.session, conversationId: conv, turnId, text });
+        } catch (err) {
+          console.error("reuse login link notify failed", err);
+        }
+        return {
+          status: "ready",
+          url: run.liveUrl,
+          alreadyNotified: notified,
+          hint: notified
+            ? "ссылка уже ушла в чат. Не дублируй и не проси пароль."
+            : `вставь человеку message как есть. ${NO_PASSWORD_HINT}`,
+          message: text,
+        };
+      }
+      await persistRun(phone, run, tenant.browserTask ?? loginWaitTask(page), {
+        ...(errand ? { errand } : {}),
+      });
+      return {
+        status: "pending",
+        reused: true,
+        alreadyNotified: true,
+        hint: `этот вход уже открывается — не начинай его заново. Максимум один повторный вызов profile_setup с тем же url. ${NO_PASSWORD_HINT}`,
+      };
+    }
+
     let profileId = tenant.browserProfileId ?? envSyncedProfileId(phone);
     if (!profileId) {
       try {
@@ -140,8 +191,10 @@ export default defineTool({
       }
     }
 
-    let cookieDomains = tenant.browserCookieDomains ?? [];
-    if (profileId && cookieDomains.length === 0) {
+    // A run that just reported needing a password means cached cookies never
+    // meant a real login (F7) — never trust them past that point.
+    let cookieDomains = tenant.browserNeed === "password" ? [] : tenant.browserCookieDomains ?? [];
+    if (profileId && (cookieDomains.length === 0 || cookieCacheStale(tenant, Date.now()))) {
       try {
         cookieDomains = (await getProfile(profileId)).cookieDomains;
       } catch (err) {
@@ -178,28 +231,14 @@ export default defineTool({
         status: "already",
         usedProfile: true,
         alreadyNotified: notified,
-        hint: "куки сайта есть — live-view не шли и пароль не проси. Сразу browser_task. Куки ≠ вход: если на экране Войти, Cloud должен войти.",
+        hint: "куки сайта есть — live-view не шли и пароль не проси. Сразу browser_task. Куки ≠ вход: если на экране «Войти» — войди сам.",
         message: text,
       };
     }
 
-    let allowed = false;
-    try {
-      allowed = browserGateFromResult(
-        await countBrowserJobStart(phone),
-        undefined,
-      ).allowed;
-    } catch (err) {
-      console.error("billing browser count failed", err);
-      allowed = browserGateFromResult(undefined, err).allowed;
-    }
-    if (!allowed) {
-      return {
-        status: "limit",
-        hint: "скажи человеку, что лимит браузер-задач на месяц исчерпан, предложи оплату",
-      };
-    }
-
+    // No billing gate here (item 13): signing in is prerequisite plumbing,
+    // not a chargeable errand — browser_task charges once the errand itself
+    // starts (see chargeKeyFor there).
     const vault = await vaultPasswordLogin(phone, page);
     if (vault) {
       const vaultTask = loginVaultTask(page);
@@ -216,7 +255,11 @@ export default defineTool({
       }
       if (vaultRun) {
         const startedAt = Date.now();
-        await persistRun(phone, vaultRun, vaultTask, { startedAt, profileId });
+        await persistRun(phone, vaultRun, vaultTask, {
+          startedAt,
+          profileId,
+          ...(errand ? { errand } : {}),
+        });
         const text = loginVaultChatText(site);
         let notified = false;
         try {
@@ -249,10 +292,14 @@ export default defineTool({
       profileSynced: false,
     });
     const startedAt = Date.now();
-    await persistRun(phone, started, task, { startedAt, profileId });
+    await persistRun(phone, started, task, {
+      startedAt,
+      profileId,
+      ...(errand ? { errand } : {}),
+    });
 
     const opening = loginOpeningText(site);
-    if (conv && !turnSpoke(turnId)) {
+    if (conv && !turnSpoke(turnId) && !fastAckOf(attrsFromSession(ctx.session))) {
       await deliverHuman({
         tenant,
         conversationId: conv,

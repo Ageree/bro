@@ -504,6 +504,24 @@ assert(
   "disabled drop before the daily increment",
 );
 
+// A3 coordinator fix 2: aliasBrowserCharge marks a chargeKey covered without
+// charging, so a later continuation (chargeKeyFor keys it off a session id
+// the original charge did not yet know about) doesn't pay twice.
+assert(
+  tenantsSrc.includes("export const aliasBrowserCharge"),
+  "tenants.ts exposes aliasBrowserCharge",
+);
+{
+  const aliasFn = tenantsSrc.slice(tenantsSrc.indexOf("export const aliasBrowserCharge"));
+  const body = aliasFn.slice(0, aliasFn.indexOf("\n});"));
+  assert(body.includes("if (existing) return null;"), "aliasBrowserCharge is a no-op if already aliased");
+  assert(
+    !/chargeBrowserJob|rateLimiter\.limit/.test(body),
+    "aliasBrowserCharge never actually charges the monthly allowance",
+  );
+  assert(body.includes('`cloud:${key}`'), "aliasBrowserCharge uses the same cloud: namespace");
+}
+
 const billingSrc = src("convex/billing.ts");
 assert(billingSrc.includes("payReturnUrl"), "createPaymentFor uses payReturnUrl");
 assert(

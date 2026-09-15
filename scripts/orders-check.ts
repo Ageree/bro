@@ -206,7 +206,14 @@ const settleSrc = src("agent/tools/browser_task.ts");
 assert(settleSrc.includes("parseOrderFromResult"), "settle parses result");
 assert(settleSrc.includes("recordOrder"), "settle records");
 assert(settleSrc.includes("extra.paying"), "settle checks paying");
-assert(settleSrc.includes("purchaseStance"), "settle uses buy stance");
+// taskLooksLikeBuy (which wraps purchaseStance) moved to
+// agent/lib/browser-task-policy.ts (A3) so it can be unit-tested without the
+// tool's network dependency graph — settle() still calls it via that import.
+assert(settleSrc.includes("taskLooksLikeBuy"), "settle uses buy stance");
+assert(
+  src("agent/lib/browser-task-policy.ts").includes("purchaseStance"),
+  "taskLooksLikeBuy is backed by purchaseStance",
+);
 assert(settleSrc.includes("record order failed"), "settle swallows record errors");
 assert(settleSrc.includes("maybeRecordOrder"), "record does not replace payload");
 assert(

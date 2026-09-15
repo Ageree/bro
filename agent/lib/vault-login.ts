@@ -14,15 +14,23 @@ export type VaultLoginBinding = {
   bindings: SecretBinding[];
 };
 
+export type VaultLoginDeps = {
+  listVaultItems: typeof listVaultItems;
+  readVaultSecret: typeof readVaultSecret;
+};
+
+const defaultDeps: VaultLoginDeps = { listVaultItems, readVaultSecret };
+
 export async function vaultPasswordLogin(
   phone: string,
   pageUrl: string,
+  deps: VaultLoginDeps = defaultDeps,
 ): Promise<VaultLoginBinding | undefined> {
   const page = loginPageUrl(pageUrl);
   if (!page) return undefined;
   let items;
   try {
-    items = await listVaultItems(phone);
+    items = await deps.listVaultItems(phone);
   } catch (err) {
     console.error("vault list for login failed", err);
     return undefined;
@@ -31,7 +39,7 @@ export async function vaultPasswordLogin(
   if (!match) return undefined;
   let record;
   try {
-    record = await readVaultSecret(phone, match.handle);
+    record = await deps.readVaultSecret(phone, match.handle);
   } catch (err) {
     console.error("vault read for login failed", err);
     return undefined;
@@ -51,13 +59,14 @@ export async function vaultPasswordLogin(
 export async function vaultPasswordLoginForPages(
   phone: string,
   pages: readonly string[],
+  deps: VaultLoginDeps = defaultDeps,
 ): Promise<VaultLoginBinding | undefined> {
   const seen = new Set<string>();
   for (const raw of pages) {
     const page = loginPageUrl(raw);
     if (!page || seen.has(page)) continue;
     seen.add(page);
-    const found = await vaultPasswordLogin(phone, page);
+    const found = await vaultPasswordLogin(phone, page, deps);
     if (found) return found;
   }
   return undefined;

@@ -12,7 +12,7 @@ import type { LoginPayload } from "../convex/lib/vaultPayload.ts";
 import { scaffoldTask } from "../agent/lib/browseruse.ts";
 import type { PaymentPayload } from "../convex/lib/vaultPayload.ts";
 
-import { assert, throws } from "./lib/check.ts";
+import { assert, src, throws } from "./lib/check.ts";
 
 // --- normalizePayHost ---
 
@@ -247,3 +247,18 @@ assert(
   payScaffold({ hosts: ["ozon.ru"], holder: "A", account: "B" }).includes("поддомен"),
   "payScaffold tells the agent that subdomains are covered",
 );
+
+// --- A3 item 2: browser_task persists paying/hosts so a later settle() (poll,
+// reuse, inject) can still gate maybeRecordOrder correctly, not just the
+// synchronous call that started the paid run ---
+{
+  const taskSrc = src("agent/tools/browser_task.ts");
+  assert(
+    /browserPaying: Boolean\(payOpts\)/.test(taskSrc),
+    "a fresh start persists whether it is a paid run",
+  );
+  assert(
+    /browserPayHosts: payOpts\?\.hosts \?\? \[\]/.test(taskSrc),
+    "a fresh start persists the paid hosts (or clears them for a non-paid run)",
+  );
+}
