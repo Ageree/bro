@@ -73,7 +73,7 @@ export function chargeKeyFor(
     browserTask?: string;
     browserStartedAt?: number;
   },
-  opts: { pay?: boolean; rawAction: "start" | "poll" | "reuse" | "busy" },
+  opts: { pay?: boolean; rawAction: "start" | "poll" | "reuse" | "busy" | "continue" },
   now: number,
 ): string {
   const payForcedRestart = opts.pay === true && opts.rawAction === "reuse";

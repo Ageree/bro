@@ -807,6 +807,14 @@ export default defineChannel({
             // link, instead of the human being told a bare "нужен вход" with
             // nothing for Bro to do about it.
             prompt = `[background wakeup] Браузер остановился: нужен вход на ${site}. Вызови profile_setup с url https://${site} и errand=«${payload}» — он сам откроет вход и пришлёт ссылку; человеку ничего не пиши до его ответа.`;
+          } else if (need === "payment" && site) {
+            // Vault-aware first: the run may simply have started without
+            // `pay` (the taxi incident) even though a card is already
+            // saved. Try to finish it in the SAME session before bothering
+            // the human — browser_task's payment continuation auto-binds
+            // the vault card and reports needsVaultSetup only if there
+            // genuinely isn't one; only then does the human need anything.
+            prompt = `[background wakeup] Браузер остановился: нужна оплата на ${site}. Сначала попробуй сам: вызови browser_task с задачей «Продолжи поручение «${payload}» в текущей сессии, оплати картой из сейфа» и pay: {hosts: ["${site}"]}. Если тул вернёт needsVaultSetup — сохранённой карты нет: вызови vault_setup с kind=payment и пришли ссылку, больше ничего не пиши. Если оплата прошла — сообщи человеку «готово»-сообщением из результата. Если тул вернёт что-то другое — отправь человеку ровно: «${line}».`;
           } else {
             prompt = `[background wakeup] Браузер остановился: нужно ${need ?? "info"} (${needDetail ?? "без деталей"}). Отправь человеку ровно: «${line}». Не проси пароль. Ничего больше не делай.`;
           }

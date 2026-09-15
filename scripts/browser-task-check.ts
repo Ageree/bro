@@ -15,7 +15,7 @@ import {
   taskLooksLikeBuy,
 } from "../agent/lib/browser-task-policy.ts";
 import { errandStartUrl } from "../convex/lib/browserStartPolicy.ts";
-import { loginWaitTask } from "../agent/lib/browseruse.ts";
+import { loginWaitTask, scaffoldTask } from "../agent/lib/browseruse.ts";
 
 import { assert, eq, src } from "./lib/check.ts";
 
@@ -307,5 +307,131 @@ assert(
 
 const pkg = src("package.json");
 assert(pkg.includes("browser-task:check"), "package.json wires browser-task:check");
+
+// ---------------------------------------------------------------------------
+// scaffoldTask({ continuation: true }) — the continuation errand must say
+// the page is already open from the previous step and never repeat the
+// fresh-start "Сайт откроет Bro сам" navigation instruction (goal.md: the
+// taxi incident was a fresh run re-navigating and re-driving the route).
+// ---------------------------------------------------------------------------
+{
+  const cont = scaffoldTask("выбери карту из сейфа и заверши оплату", {
+    continuation: true,
+  });
+  const lower = cont.toLowerCase();
+  assert(lower.includes("страница уже открыта"), "continuation scaffold says the page is already open");
+  assert(lower.includes("продолжай"), "continuation scaffold tells the model to continue from here");
+  assert(!cont.includes("Сайт откроет Bro сам"), "continuation scaffold never repeats the fresh-start line");
+  assert(cont.includes("выбери карту из сейфа и заверши оплату"), "continuation scaffold carries the human's own line");
+  assert(
+    !cont.includes("Страница уже открыта:"),
+    "continuation never falls back to the plain startPage phrasing either",
+  );
+}
+{
+  // continuation and startPage are mutually exclusive in practice (browser_task
+  // never passes both) — continuation wins if somehow both are set, since
+  // re-navigating is exactly what a continuation must not do.
+  const both = scaffoldTask("x", { continuation: true, startPage: "https://taxi.yandex.ru/" });
+  assert(!both.includes("Страница уже открыта: https://taxi.yandex.ru/"), "continuation overrides startPage wording");
+}
+
+// ---------------------------------------------------------------------------
+// Source-level wiring: the `continue` branch in browser_task.ts (goal.md) —
+// resumes the SAME session, never tears down the old browser, never
+// re-navigates over CDP, and is never billed as a fresh job.
+// ---------------------------------------------------------------------------
+
+const continueBlock = toolSrc.slice(
+  toolSrc.indexOf('if (action === "continue"'),
+  toolSrc.indexOf("// Cheap part before the billing gate"),
+);
+assert(continueBlock.length > 0, "found the continue branch in browser_task.ts");
+assert(
+  continueBlock.includes("startRun(task, sessionId,"),
+  "continue starts the follow-up run with the SAME (stored) sessionId",
+);
+assert(
+  continueBlock.includes("continuation: true"),
+  "continue passes continuation:true through to startRun/scaffoldTask",
+);
+assert(
+  !continueBlock.includes("cancelRun(") && !continueBlock.includes("stopBrowserForSession("),
+  "continue never cancels the run or stops the browser — same session, same open tab",
+);
+assert(
+  !continueBlock.includes("await waitForPageLanding("),
+  "continue never re-navigates the open tab to the errand's start URL",
+);
+assert(
+  !continueBlock.includes("await countBrowserJobStart("),
+  "continue is never billed as a fresh job (same reasoning as the inject/resume path)",
+);
+assert(
+  continueBlock.includes('needsVaultSetup: "payment"'),
+  "a payment continuation with no vault card returns the standard needsVaultSetup shape",
+);
+assert(
+  continueBlock.includes('tenant.browserNeed === "payment"') &&
+    continueBlock.includes("continuationPayHosts("),
+  "a payment continuation binds the vault card even when the model forgot `pay`",
+);
+assert(
+  continueBlock.includes("clearBrowserNeed(phone, tenant.browserRunId)"),
+  "continue clears the resolved browserNeed once the follow-up run starts",
+);
+
+// Coordinator fix 1: the ORIGINAL errand (with its start URL etc.) stays the
+// stored/followed/settled task — the continuation text is only the Cloud
+// run's own instruction, never what later errandStartUrl/progress-note/
+// wakeup lookups key off (same pattern as maybeInjectChat's
+// `tenant.browserTask ?? incoming`).
+assert(
+  (continueBlock.match(/tenant\.browserTask \?\? task/g) ?? []).length >= 1,
+  "continue derives `errand` from tenant.browserTask ?? task, not the raw continuation text",
+);
+assert(
+  continueBlock.includes("persist(phone, started, errand,") &&
+    continueBlock.includes("persist(phone, done, errand)"),
+  "continue persists the ORIGINAL errand, not the continuation text",
+);
+assert(
+  continueBlock.includes("task: errand,"),
+  "continue's startBrowserFollow is keyed on the original errand text",
+);
+assert(
+  /return settle\(\s*phone,\s*done,\s*errand,/.test(continueBlock),
+  "continue settles with the original errand text",
+);
+assert(
+  continueBlock.includes("startRun(task, sessionId,") && !continueBlock.includes("startRun(errand, sessionId,"),
+  "the continuation text (not the original errand) is still what actually goes to the Cloud run",
+);
+
+// Coordinator fix 2: a `continue` target session can be gone by the time the
+// human answers (Browser Use's 4h hard cap, or sweepWaiting's 40min stop) —
+// check before committing to it, and never let a startRun failure into a
+// vanished session take down the whole errand.
+const actionBlock = toolSrc.slice(
+  toolSrc.indexOf("const preAction ="),
+  toolSrc.indexOf('if (action === "continue"'),
+);
+assert(
+  actionBlock.includes('preAction === "continue"') &&
+    actionBlock.includes("findBrowserForSession(tenant.browserSessionId)"),
+  "a `continue` decision is checked against findBrowserForSession before it is committed to",
+);
+assert(
+  continueBlock.includes("try {") && continueBlock.includes("fallbackToStart"),
+  "continue wraps its startRun call in try/catch with a fallbackToStart flag",
+);
+assert(
+  continueBlock.includes("continue: session gone, starting fresh"),
+  "a startRun failure into a vanished session is logged, not thrown",
+);
+assert(
+  /if \(started && !fallbackToStart\)/.test(continueBlock),
+  "continue only takes the continuation path when startRun actually succeeded",
+);
 
 console.log("browser-task-check ok");

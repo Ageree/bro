@@ -476,6 +476,28 @@ async function resolveSyncedProfile(
   };
 }
 
+/**
+ * Host to bind the vault card to on a `payment`-need continuation where the
+ * model forgot `pay` — the errand's own site (from its ORIGINAL task text,
+ * before the human's continuation line replaced it) first, the page the
+ * live browser is actually sitting on if that fails. Never a guess: an
+ * empty result means the tool cannot safely bind a card at all.
+ */
+async function continuationPayHosts(
+  storedTask: string | undefined,
+  sessionId: string,
+): Promise<string[]> {
+  const startPage = errandStartUrl(storedTask);
+  if (startPage) {
+    const hosts = normalizePayHosts([startPage]);
+    if (hosts.length > 0) return hosts;
+  }
+  const browser = await findBrowserForSession(sessionId).catch(() => undefined);
+  if (!browser?.cdpUrl) return [];
+  const pageUrl = await cdpPageUrl(browser.cdpUrl).catch(() => undefined);
+  return pageUrl ? normalizePayHosts([pageUrl]) : [];
+}
+
 export default defineTool({
   description:
     'One browser job per person: start or poll, never a second search while one runs. The site opens itself; the job logs in on its own (vault login, cookies, or Войти/passport) — never ask for a login or password, never put one in chat. busy = another job runs: say "сначала закончу X, потом сделаю Y"; do not call profile_setup. reset:true cancels the job and starts fresh. Live page + human\'s last line is a code, "подожди", an address/size correction, or "подтвердил"/"готово"/"вошёл" → pass their exact line, it gets typed/queued into the open page; never resend the old task. status:"completed" + result → report it. Buying: pay on the first call (hosts = merchant hostnames; maxRub only if named). needsVaultSetup → vault_setup kind=payment. needsProfileSync → profile_setup, only if no vault login was used and nothing runs.',
@@ -535,10 +557,21 @@ export default defineTool({
       status: tenant.browserStatus,
       storedTask: tenant.browserTask,
       incomingTask: task,
+      need: tenant.browserNeed,
+      sessionId: tenant.browserSessionId,
     });
     // secretBindings are run-scoped, so a paid errand can never just "reuse"
     // the last result — it has to start a fresh run with fresh bindings.
-    const action = pay && rawAction === "reuse" ? "start" : rawAction;
+    const preAction = pay && rawAction === "reuse" ? "start" : rawAction;
+    // A `continue` target session can already be gone by the time the human
+    // answers — Browser Use's 4h hard cap, or sweepWaiting stopping the
+    // browser after 40min parked on a need. Check before committing to it:
+    // if it's gone, just start fresh with the same task instead of failing.
+    const action =
+      preAction === "continue" &&
+      !(await findBrowserForSession(tenant.browserSessionId).catch(() => undefined))
+        ? "start"
+        : preAction;
 
     if (action === "reuse" && tenant.browserRunId) {
       const run = await hydrate(tenant.browserRunId, tenant.browserSessionId);
@@ -602,6 +635,150 @@ export default defineTool({
         { startedAt: tenant.browserStartedAt, runId: tenant.browserRunId },
         tenant,
       );
+    }
+
+    if (action === "continue" && tenant.browserRunId && tenant.browserSessionId) {
+      const sessionId = tenant.browserSessionId;
+      // Continuation of the SAME errand, in the SAME Cloud session: never
+      // cancelRun/stopBrowserForSession (that is exactly the taxi incident —
+      // tearing down the live browser and starting a fresh one re-drove the
+      // whole route) and never a new billed job (aliasBrowserCharge already
+      // covers this session from the original start, same reasoning as the
+      // inject/resume path in maybeInjectChat, which also never calls
+      // countBrowserJobStart).
+      let contPayHosts: string[] | undefined;
+      if (pay) {
+        contPayHosts = normalizePayHosts(pay.hosts);
+        if (contPayHosts.length === 0) {
+          return {
+            status: "invalid",
+            hint: "pay.hosts must contain at least one valid hostname",
+          };
+        }
+      } else if (tenant.browserNeed === "payment") {
+        // The model may just relay the human's own words ("оплати картой из
+        // сейфа") without `pay` — bind the vault card anyway, as if `pay`
+        // had been given with the errand's own site as the host.
+        const guessed = await continuationPayHosts(tenant.browserTask, sessionId);
+        if (guessed.length > 0) contPayHosts = guessed;
+      }
+
+      let contPayItem: { handle: string; account: string } | undefined;
+      if (contPayHosts && contPayHosts.length > 0) {
+        const items = (await listVaultItems(phone)).filter(
+          (i) => i.kind === "payment" && i.available,
+        );
+        contPayItem = pay?.vaultHandle
+          ? items.find((i) => i.handle === pay.vaultHandle)
+          : items[0];
+        if (!contPayItem) {
+          return {
+            status: "needs_vault",
+            needsVaultSetup: "payment",
+            hint: "У человека нет сохранённой карты. Вызови vault_setup с kind=payment и пришли ссылку.",
+          };
+        }
+      }
+
+      let contPayOpts:
+        | { hosts: string[]; holder: string; account: string; maxRub?: number }
+        | undefined;
+      let contSecretBindings: ReturnType<typeof cardBindings> | undefined;
+      if (contPayHosts && contPayItem) {
+        const secretRecord = await readVaultSecret(phone, contPayItem.handle);
+        const card = secretRecord ? parsePaymentPayload(secretRecord.secret) : undefined;
+        if (!card) throw new Error("карта в сейфе заполнена не полностью");
+        contSecretBindings = cardBindings(card, contPayHosts);
+        contPayOpts = {
+          hosts: contPayHosts,
+          holder: card.cardholderName,
+          account: contPayItem.account,
+          ...(pay?.maxRub !== undefined ? { maxRub: pay.maxRub } : {}),
+        };
+      }
+
+      const startPage = errandStartUrl(tenant.browserTask ?? task);
+      const loginPages = loginPagesFor(task, contPayHosts, startPage);
+      const vaultLogin = await vaultPasswordLoginForPages(phone, loginPages);
+      if (vaultLogin) {
+        contSecretBindings = [...(contSecretBindings ?? []), ...vaultLogin.bindings];
+      }
+
+      const resolved = await resolveSyncedProfile(phone, tenant);
+      // No cancelRun/stopBrowserForSession, no waitForPageLanding/CDP
+      // navigation to errandStartUrl — the point of `continue` is that the
+      // open tab is left exactly where the previous step landed it.
+      // The findBrowserForSession check above (in `action`) already caught
+      // the common case of a session that is simply gone, but the session
+      // can still vanish in the gap between that check and this call
+      // (Browser Use's 4h hard cap / sweepWaiting's 40min stop) — a
+      // fallbackToStart here must not fail the whole errand, it must fall
+      // through to the ordinary fresh-start path below with the original
+      // `task`, exactly as a plain "start" would.
+      let started: BrowserRun | undefined;
+      let fallbackToStart = false;
+      try {
+        started = await startRun(task, sessionId, {
+          ...(resolved.profileId
+            ? { profileId: resolved.profileId, profileSynced: resolved.synced }
+            : {}),
+          ...(contPayOpts ? { pay: contPayOpts } : {}),
+          ...(vaultLogin ? { login: true } : {}),
+          ...(contSecretBindings && contSecretBindings.length > 0
+            ? { secretBindings: contSecretBindings }
+            : {}),
+          continuation: true,
+        });
+      } catch (err) {
+        console.error("continue: session gone, starting fresh", err);
+        fallbackToStart = true;
+      }
+
+      if (started && !fallbackToStart) {
+        const startedAt = Date.now();
+        // The stored `browserTask` is the ORIGINAL errand (with its start
+        // URL etc.) — the continuation text (`task`) only makes sense as
+        // the Cloud run's own instruction, never as what later
+        // errandStartUrl/progress-note/wakeup lookups key off (same
+        // reasoning as `maybeInjectChat`'s `tenant.browserTask ?? incoming`).
+        const errand = tenant.browserTask ?? task;
+        await persist(phone, started, errand, {
+          browserStartedAt: startedAt,
+          browserPaying: Boolean(contPayOpts),
+          browserPayHosts: contPayOpts?.hosts ?? [],
+        });
+        // The need this continuation resolves (payment/address/info/...) is
+        // now acted on — clear it so a stale browserNeed never lingers.
+        await clearBrowserNeed(phone, tenant.browserRunId).catch((err) => {
+          console.error("clear browser need failed", err);
+        });
+        const followKick = startBrowserFollow({
+          tenantPhone: phone,
+          runId: started.runId,
+          sessionId: started.sessionId,
+          task: errand,
+          startedAt,
+        }).catch((err) => {
+          console.error("browser follow workflow failed", err);
+        });
+        const done = await waitForRun(started.runId, started.sessionId, BROWSER_WAIT_MS);
+        await persist(phone, done, errand);
+        await followKick;
+        return settle(
+          phone,
+          done,
+          errand,
+          {
+            continued: true,
+            ...(contPayOpts
+              ? { paying: true, payAccount: contPayOpts.account, payHosts: contPayOpts.hosts }
+              : {}),
+          },
+          { startedAt, runId: started.runId },
+          { browserPaying: Boolean(contPayOpts), browserPayHosts: contPayOpts?.hosts },
+        );
+      }
+      // fallbackToStart: fall through to the ordinary fresh-start path below.
     }
 
     // Cheap part before the billing gate: a missing card must not burn quota.

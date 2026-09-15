@@ -192,6 +192,10 @@ export function scaffoldTask(
     pay?: Parameters<typeof payScaffold>[0];
     login?: boolean;
     startPage?: string;
+    /** This run continues a PREVIOUS step of the same errand in the same
+     *  Cloud session — the page is already open and mid-flow. Never true
+     *  together with `startPage` (there is no fresh navigation to do). */
+    continuation?: boolean;
   },
 ): string {
   if (
@@ -209,9 +213,15 @@ export function scaffoldTask(
     profileSynced: opts?.profileSynced,
   });
   const finish = errandFinishBlock(task, payBlock);
-  const alreadyOpen = opts?.startPage
-    ? `Страница уже открыта: ${opts.startPage}. Не уходи на about:blank. Если сайт открывает паспорт или форму входа — иди туда и войди.`
-    : "Сайт откроет Bro сам. Не сиди на about:blank. Если нужна авторизация — открой вход и войди.";
+  // A continuation must never re-navigate or redo what the previous step of
+  // THIS SAME errand already did (the taxi incident: a fresh run re-drove
+  // the whole route because eve tore down the old browser first) — the tab
+  // is already open exactly where the last step left it.
+  const alreadyOpen = opts?.continuation
+    ? "Страница уже открыта на предыдущем шаге этого же поручения — продолжай с текущего состояния. Не перезагружай страницу, не открывай сайт заново и не вводи заново маршрут или данные, которые уже введены. Ниже — то, что человек только что прислал."
+    : opts?.startPage
+      ? `Страница уже открыта: ${opts.startPage}. Не уходи на about:blank. Если сайт открывает паспорт или форму входа — иди туда и войди.`
+      : "Сайт откроет Bro сам. Не сиди на about:blank. Если нужна авторизация — открой вход и войди.";
   return `${ERRAND_MARK}
 Выполняй поручение на языке сайтов (обычно русский). Задача: ${task}.
 ${alreadyOpen}
@@ -283,6 +293,9 @@ export async function startRun(
     login?: boolean;
     secretBindings?: SecretBinding[];
     startPage?: string;
+    /** Resume the same errand in `sessionId`'s already-open tab — see
+     *  `scaffoldTask`. Never combined with `startPage`. */
+    continuation?: boolean;
   },
 ): Promise<BrowserRun> {
   // Cloud v4 POST /runs has no startUrl / initial navigation field
@@ -294,12 +307,15 @@ export async function startRun(
       pay: opts?.pay,
       login: opts?.login,
       startPage: opts?.startPage,
+      continuation: opts?.continuation,
     }),
   };
-  // Cloud JSON accepts both; send both so a session is reused.
+  // v4 POST /runs rejects unknown keys outright (422 extra_forbidden) —
+  // `session_id` is not a real field, only `sessionId` is; sending both
+  // used to fail every session-reusing call (fresh-start login continuation,
+  // inject/resume, and now `continue`).
   if (sessionId) {
     body.sessionId = sessionId;
-    body.session_id = sessionId;
   }
   const country = resolveProxyCountry();
   body.browserSettings = {

@@ -393,11 +393,30 @@ assert(otpLookupLib.includes("groupPersonalBlock"), "lookup stays 1:1");
 
 const otpAgent = src("agent/subagents/otp/agent.ts");
 assert(otpAgent.includes("outputSchema"), "otp returns structured result");
-assert(otpAgent.includes("isGroupTurn"), "otp hidden in groups");
+// Static config only: eve requires dynamically-returned subagent configs to
+// carry a string model id, but broModel() returns a live provider object
+// when OPENROUTER_API_KEY is set. defineDynamic here silently dropped the
+// otp subagent on every 1:1 turn in production — see agent/subagents/worker/
+// agent.ts for the working static pattern this must match.
+assert(!otpAgent.includes("defineDynamic("), "otp subagent must be static, not defineDynamic(...)");
+assert(otpAgent.includes("defineAgent("), "otp uses a static defineAgent");
+assert(otpAgent.includes("...broModel()"), "otp spreads the static broModel() config");
 
 const otpInstr = src("agent/subagents/otp/instructions.md");
 assert(otpInstr.includes("Don't touch memory tools"), "otp is a subagent");
 assert(otpInstr.includes("lookup"), "otp calls lookup first");
+assert(
+  /1:1/.test(otpInstr),
+  "otp instructions say it only serves 1:1 turns now that group-hiding moved to the tools",
+);
+
+for (const file of ["inbox.ts", "archive_search.ts", "lookup.ts"]) {
+  const toolSrc = src(`agent/subagents/otp/tools/${file}`);
+  assert(
+    toolSrc.includes("groupPersonalBlock"),
+    `otp tool ${file} must refuse on a group turn via groupPersonalBlock (subagent is static now, so each tool is the group gate)`,
+  );
+}
 
 const worker = src("agent/subagents/worker/instructions.md");
 assert(worker.includes("mailbox") || worker.includes("archive"), "worker knows coordinator checks mail");

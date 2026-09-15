@@ -18,6 +18,43 @@ if [ -z "$CONVEX_DEPLOY_KEY" ]; then
   exit 1
 fi
 
+SKIP_ENV_CHECK=0
+for arg in "$@"; do
+  if [ "$arg" = "--skip-env-check" ]; then
+    SKIP_ENV_CHECK=1
+  fi
+done
+
+# Convex-side code (follow-through polling, wakeups) talks to Browser Use
+# Cloud and back to eve directly from the Convex deployment, not from eve on
+# Vercel — an env var set only on eve does nothing for it. This is the
+# incident: BROWSERUSE_API_KEY was set on eve but not on Convex, so every
+# follow-through poll threw "missing" and read as "unknown" for the full
+# 20-minute give-up budget before anyone heard anything.
+if [ "$SKIP_ENV_CHECK" != "1" ]; then
+  echo "checking convex env"
+  CONVEX_ENV="$(CI=1 npx convex env list)"
+  missing=""
+  has_var() {
+    printf '%s\n' "$CONVEX_ENV" | grep -q "^$1="
+  }
+  if ! has_var BROWSERUSE_API_KEY && ! has_var BROWSER_USE_API_KEY; then
+    missing="$missing BROWSERUSE_API_KEY"
+  fi
+  for name in EVE_URL BRO_INTERNAL_SECRET; do
+    if ! has_var "$name"; then
+      missing="$missing $name"
+    fi
+  done
+  if [ -n "$missing" ]; then
+    echo "convex deployment is missing:$missing" >&2
+    echo "set each with: npx convex env set <NAME> <value> (e.g. npx convex env set BROWSERUSE_API_KEY <key>)" >&2
+    echo "without BROWSERUSE_API_KEY, every browser follow-through run reads status \"unknown\" for the full 20-minute poll budget instead of reporting" >&2
+    echo "pass --skip-env-check to bypass this check" >&2
+    exit 1
+  fi
+fi
+
 echo "convex deploy"
 CI=1 npx convex deploy --typecheck enable
 
