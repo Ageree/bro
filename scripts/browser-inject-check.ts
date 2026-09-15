@@ -9,6 +9,7 @@ import {
   cloudInjectAttribute,
   cloudInjectInstruction,
   cloudInjectKindFromAttrs,
+  cloudInjectTextFromAttrs,
   cloudSessionLooksLive,
   decideCloudInject,
   extractChatCode,
@@ -232,6 +233,36 @@ assert(cloudInjectAttribute("подожди").cloudInject === "wait", "stamp wai
 assert(cloudInjectAttribute("Ленина 12").cloudInject === "correction", "stamp address");
 assert(Object.keys(cloudInjectAttribute("привет")).length === 0, "hello is not stamped");
 assert(Object.keys(cloudInjectAttribute("купи скотч")).length === 0, "new job is not stamped");
+
+// The raw human line is stamped so the tool can inject it even if the model
+// re-issues the whole errand instead of passing the bare code.
+assert(cloudInjectAttribute("482911").cloudInjectText === "482911", "stamp carries the code");
+assert(
+  cloudInjectAttribute("не туда, Ленина 12").cloudInjectText === "не туда, Ленина 12",
+  "stamp carries the correction line",
+);
+assert(
+  cloudInjectTextFromAttrs({ origin: "human", cloudInject: "code", cloudInjectText: "482911" }) ===
+    "482911",
+  "human stamped text is read",
+);
+assert(
+  cloudInjectTextFromAttrs({ origin: "wakeup", cloudInjectText: "482911" }) === undefined,
+  "wakeup stamp text is ignored",
+);
+assert(cloudInjectTextFromAttrs(undefined) === undefined, "no attrs → no text");
+
+// A live browser held for the errand makes a bare code relevant even when the
+// tab URL is not a recognizable code page (the real Yandex push case).
+assert(
+  decideCloudInject("482911", {
+    ...liveRun,
+    status: "completed",
+    pageUrl: "https://taxi.yandex.ru/",
+    browserListed: true,
+  }).kind === "code",
+  "code injects when a live browser is held, whatever the page url",
+);
 assert(
   cloudInjectKindFromAttrs({ origin: "human", cloudInject: "code" }) === "code",
   "human stamp is read",
@@ -319,6 +350,14 @@ const tool = src("agent/tools/browser_task.ts");
 assert(tool.includes("maybeInjectChat"), "browser_task intercepts chat inject");
 assert(tool.includes("cdpTypeIntoPage"), "codes go into the live tab over CDP");
 assert(tool.includes("queueMessage"), "follow-up is queued into the live session");
+assert(
+  tool.includes("cloudInjectTextFromAttrs") && tool.includes("stampedInjectText"),
+  "inject uses the raw stamped human line, not just the model's task arg",
+);
+assert(
+  tool.includes("injectKind && (tenant.browserSessionId"),
+  "a stamped inject turn never spawns a fresh browser errand",
+);
 assert(tool.includes("NO_LIVE_RUN_TEXT"), "no-live run is spoken");
 assert(tool.includes("ввожу код") || tool.includes("injectAckText"), "first bubble ack");
 {

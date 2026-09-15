@@ -245,6 +245,10 @@ export function cloudSessionLooksLive(opts: CloudInjectAttrs): boolean {
 }
 
 function codeRelevantToSession(opts: CloudInjectAttrs): boolean {
+  // A live browser is being held for this errand → a code the human just sent
+  // is for it. This is the common OTP case (Yandex push, SMS): the tab is on
+  // the code screen even when its URL is not a recognizable "code" path.
+  if (opts.browserListed) return true;
   if (pageWaitsForCode(opts.pageUrl)) return true;
   if (resultWaitsForCode(opts.result, opts.storedTask)) return true;
   if (
@@ -303,10 +307,28 @@ export function injectCandidate(text: string): boolean {
 }
 
 export function cloudInjectAttribute(text: string): Record<string, string> {
-  if (isChatCodeMessage(text)) return { cloudInject: "code" };
-  if (isWaitInject(text)) return { cloudInject: "wait" };
-  if (looksLikeCorrectionText(text)) return { cloudInject: "correction" };
-  return {};
+  const kind = isChatCodeMessage(text)
+    ? "code"
+    : isWaitInject(text)
+      ? "wait"
+      : looksLikeCorrectionText(text)
+        ? "correction"
+        : null;
+  if (!kind) return {};
+  // Stamp the raw human line too, so the browser_task tool can inject the exact
+  // code/correction the person sent even if the model rephrases the tool call
+  // (e.g. re-issues the whole errand instead of passing the bare code).
+  return { cloudInject: kind, cloudInjectText: text.trim().slice(0, 240) };
+}
+
+/** The exact human line stamped as a cloud inject on this turn, if any. */
+export function cloudInjectTextFromAttrs(
+  attrs: Record<string, unknown> | undefined,
+): string | undefined {
+  if (!attrs || attrs.origin !== "human") return undefined;
+  const raw = attrs.cloudInjectText;
+  const v = Array.isArray(raw) ? raw[0] : raw;
+  return typeof v === "string" && v.trim().length > 0 ? v.trim() : undefined;
 }
 
 export function cloudInjectKindFromAttrs(
