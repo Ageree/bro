@@ -1,3 +1,5 @@
+export { chatConversationId } from "../../convex/lib/tenantConversation.ts";
+
 const LOCAL = "local-dev";
 
 /** Principals that would mix people on one Composio user. */

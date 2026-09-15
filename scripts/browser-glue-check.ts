@@ -6,13 +6,14 @@
  * live-session boundary, the guard rails on parsed amounts, the pay/login
  * secret bindings, the dry-run inject text, and WB-style order parsing.
  */
-import { assert, eq, throws } from "./lib/check.ts";
+import { assert, eq, src, throws } from "./lib/check.ts";
 
 import {
   liveUrlFromRunPayloads,
   pickLiveUrl,
   runEventsPath,
 } from "../convex/lib/browserLivePolicy.ts";
+import { chatConversationId } from "../convex/lib/tenantConversation.ts";
 import {
   asCdpTargets,
   browserFromList,
@@ -411,6 +412,103 @@ assert(
   eq(order!.merchantOrderId, "123456", "order id extracted from «Заказ №...»");
   eq(order!.merchant, "wb", "merchant resolved from task wording");
   eq(order!.status, "placed", "an order id present → placed");
+}
+
+// ============================================================================
+// 10. chatConversationId — Photon-onboarded tenants (photonConversationId,
+//    no inkboxConversationId — Inkbox is mail-only now) must still resolve a
+//    chat conversation everywhere a background wakeup looks one up.
+// ============================================================================
+
+eq(
+  chatConversationId({ photonConversationId: "any;-;+7921", inkboxConversationId: "ib1" }),
+  "any;-;+7921",
+  "photon wins when both are set",
+);
+eq(
+  chatConversationId({ inkboxConversationId: "ib1" }),
+  "ib1",
+  "falls back to inkbox when photon is absent",
+);
+eq(
+  chatConversationId({ photonConversationId: "any;-;+7921" }),
+  "any;-;+7921",
+  "photon-only tenant resolves (the production bug: no inkboxConversationId at all)",
+);
+eq(chatConversationId({}), undefined, "neither field set → undefined");
+eq(chatConversationId(null), undefined, "null tenant → undefined");
+eq(chatConversationId(undefined), undefined, "undefined tenant → undefined");
+eq(
+  chatConversationId({ photonConversationId: "  ", inkboxConversationId: "ib1" }),
+  "ib1",
+  "blank photon id is treated as absent, falls back to inkbox",
+);
+eq(
+  chatConversationId({ inkboxConversationId: "   " }),
+  undefined,
+  "blank inkbox id with no photon id → undefined, not whitespace",
+);
+
+// Source-level: the tenant-facing wakeup paths must read the conversation id
+// through chatConversationId(), never a bare tenant.inkboxConversationId —
+// or a Photon-only tenant (no inkboxConversationId) silently never wakes up.
+const tenantsSrc = src("convex/tenants.ts");
+{
+  const claimBrowserWakeupFn = tenantsSrc.slice(
+    tenantsSrc.indexOf("export const claimBrowserWakeup"),
+    tenantsSrc.indexOf("export const releaseBrowserWakeup"),
+  );
+  assert(
+    claimBrowserWakeupFn.includes("chatConversationId(existing)"),
+    "claimBrowserWakeup resolves the conversation via chatConversationId(), not a bare inkboxConversationId read",
+  );
+  assert(
+    !/conversationId:\s*existing\.inkboxConversationId/.test(claimBrowserWakeupFn),
+    "claimBrowserWakeup no longer returns the bare inkboxConversationId field",
+  );
+}
+
+const wakeupsSrcForConv = src("convex/wakeups.ts");
+assert(
+  wakeupsSrcForConv.includes("chatConversationId(tenant)"),
+  "wakeups.ts deliverOne resolves the conversation via chatConversationId()",
+);
+assert(
+  !/tenant\??\.inkboxConversationId/.test(wakeupsSrcForConv),
+  "wakeups.ts no longer reads tenant.inkboxConversationId directly",
+);
+
+const watchersSrcForConv = src("convex/watchers.ts");
+assert(
+  watchersSrcForConv.includes("chatConversationId(tenant)"),
+  "watchers.ts deliverEvent resolves the conversation via chatConversationId()",
+);
+assert(
+  !/tenant\??\.inkboxConversationId/.test(watchersSrcForConv),
+  "watchers.ts no longer reads tenant.inkboxConversationId directly",
+);
+
+// wakeupAgent: a claim that succeeds but finds no chat conversation must log
+// loudly and release the claim (not leave browserWakeupClaim stuck pending
+// forever) instead of silently swallowing the failure.
+const browserFollowSrc = src("convex/browserFollow.ts");
+{
+  const wakeupAgentFn = browserFollowSrc.slice(
+    browserFollowSrc.indexOf("export const wakeupAgent"),
+    browserFollowSrc.indexOf("const stuckOnNeedRow"),
+  );
+  const noConvBlock = wakeupAgentFn.slice(
+    wakeupAgentFn.indexOf("if (!claimed.conversationId)"),
+    wakeupAgentFn.indexOf("no conversation") + "no conversation".length + 5,
+  );
+  assert(
+    noConvBlock.includes("console.error("),
+    "wakeupAgent logs when a claimed wakeup has no chat conversation",
+  );
+  assert(
+    noConvBlock.includes("internal.tenants.releaseBrowserWakeup"),
+    "wakeupAgent releases the browserWakeupClaim when there is no conversation to notify",
+  );
 }
 
 console.log("browser-glue-check ok");

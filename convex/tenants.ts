@@ -41,6 +41,7 @@ import {
   type WakeupPhase,
 } from "./lib/browserFollowPolicy";
 import { periodConfig, rateLimiter } from "./lib/rateLimits";
+import { chatConversationId } from "./lib/tenantConversation";
 import {
   bindTelegramDecision,
   lastChannelOf,
@@ -540,8 +541,7 @@ export const claimBrowserLoginLink = internalMutation({
     if (existing.browserLoginLinkSentAt && existing.browserLoginLinkSentAt > 0) {
       return { send: false };
     }
-    const conversationId =
-      existing.photonConversationId || existing.inkboxConversationId;
+    const conversationId = chatConversationId(existing);
     if (!conversationId) return { send: false };
     await ctx.db.patch(existing._id, {
       browserLiveUrl: args.liveUrl,
@@ -591,7 +591,7 @@ export const claimBrowserProgress = internalMutation({
     if (!existing || existing.browserRunId !== args.runId) return { send: false };
     const sent = existing.browserProgressSent ?? [];
     if (sent.includes(args.key)) return { send: false };
-    const conversationId = existing.photonConversationId || existing.inkboxConversationId;
+    const conversationId = chatConversationId(existing);
     if (!conversationId) return { send: false };
     await ctx.db.patch(existing._id, { browserProgressSent: [...sent, args.key] });
     return { send: true, conversationId };
@@ -664,7 +664,7 @@ export const claimBrowserWakeup = internalMutation({
     });
     return {
       ok: true as const,
-      conversationId: existing.inkboxConversationId,
+      conversationId: chatConversationId(existing),
       inkboxHandle: existing.inkboxHandle,
     };
   },
@@ -1207,7 +1207,7 @@ export const mintTelegramBind = mutation({
   handler: async (ctx, { secret, phoneE164 }) => {
     assertSecret(secret);
     const tenant = await findTenantByPhone(ctx, phoneE164);
-    if (!tenant?.phoneE164 || !tenant.inkboxConversationId) {
+    if (!tenant?.phoneE164 || !chatConversationId(tenant)) {
       return { ok: false as const, reason: "unbound" as const };
     }
     const token = newTelegramBindToken();

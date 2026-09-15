@@ -17,6 +17,7 @@ import {
   shouldSkipAgentTurn,
 } from "../lib/onboard-policy";
 import { storedHandle } from "../../convex/lib/cabinetPolicy";
+import { chatConversationId } from "../lib/tenant";
 import {
   assembleInboundContent,
   prefetchInboundImages,
@@ -179,7 +180,8 @@ export default defineChannel({
           return new Response(null, { status: 204 });
         }
         const tenant = await getTenantByTelegram(userId).catch(() => null);
-        if (!tenant?.phoneE164 || !tenant.inkboxConversationId) {
+        const callbackConversationId = chatConversationId(tenant);
+        if (!tenant?.phoneE164 || !callbackConversationId) {
           await sendHtml(chatIdOf(msg), bindRefuseText("unknown_token")).catch(
             (err) => console.error("telegram unbound callback", err),
           );
@@ -194,14 +196,14 @@ export default defineChannel({
         parkTurn(waitUntil, typing);
         parkTurn(
           waitUntil,
-          from(tenant.inkboxConversationId).send(`[button] ${data}`, {
+          from(callbackConversationId).send(`[button] ${data}`, {
             auth: {
               authenticator: "telegram",
               issuer: "telegram",
               principalType: "user",
               principalId: tenant.phoneE164,
               attributes: telegramAuthAttrs({
-                conversationId: tenant.inkboxConversationId,
+                conversationId: callbackConversationId,
                 telegramChatId: tenant.telegramChatId ?? chatIdOf(msg),
                 telegramUserId: userId,
                 messageId: String(msg.message_id),
@@ -259,14 +261,14 @@ export default defineChannel({
       }
 
       const tenant = await getTenantByTelegram(userId).catch(() => null);
-      if (!tenant?.phoneE164 || !tenant.inkboxConversationId) {
+      const conversationId = chatConversationId(tenant);
+      if (!tenant?.phoneE164 || !conversationId) {
         await sendHtml(chatId, bindRefuseText("unknown_token")).catch((err) =>
           console.error("telegram unbound inbound", err),
         );
         return new Response(null, { status: 204 });
       }
       const phone = tenant.phoneE164;
-      const conversationId = tenant.inkboxConversationId;
 
       const inboundP = inboundTelegramText(msg);
       const photoP = inboundTelegramPhotoParts(msg);

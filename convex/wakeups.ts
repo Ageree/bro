@@ -27,6 +27,7 @@ import {
   shouldApplyFinish,
 } from "./lib/wakeupPolicy";
 import { hasCron, scheduleCron, unscheduleCron } from "./lib/wakeupCrons";
+import { chatConversationId } from "./lib/tenantConversation";
 
 const kind = v.union(
   v.literal("reminder"),
@@ -83,7 +84,8 @@ async function deliverOne(
     const tenant = await ctx.runQuery(internal.tenants.getByPhoneInternal, {
       phoneE164: w.tenantPhone,
     });
-    if (!tenant?.inkboxConversationId) {
+    const conversationId = chatConversationId(tenant);
+    if (!conversationId) {
       await ctx.runMutation(internal.wakeups.finish, { id: w._id, ok: false, gen });
       return;
     }
@@ -95,8 +97,8 @@ async function deliverOne(
         wakeupId: w._id,
         idempotencyKey: `${w._id}:${gen}`,
         tenantPhone: w.tenantPhone,
-        conversationId: tenant.inkboxConversationId,
-        inkboxHandle: tenant.inkboxHandle,
+        conversationId,
+        inkboxHandle: tenant?.inkboxHandle,
         kind: w.kind,
         payload: w.payload,
         lastSeen: w.lastSeen,
