@@ -255,7 +255,7 @@ assert(FAST_ACK_SYSTEM.includes("NONE"), "system prompt defines the NONE escape 
   eq(sanitizeFastAck("смотрю почту и календарь сейчас же"), null, "six words is too long for a beat");
   eq(sanitizeFastAck("ищу"), "ищу", "a single-word beat is fine");
 
-  assert(!shouldFastAck("привет"), "canned welcome ask gets no fast ack");
+  assert(!shouldFastAck("привет"), "a greeting gets no fast ack — the agent greets back itself");
   assert(!shouldFastAck("телеграм"), "telegram invite ask gets no fast ack");
   assert(!shouldFastAck("help"), "help ask gets no fast ack");
   eq(fastAckPrompt("   купи хлеб   "), "купи хлеб", "prompt is the trimmed text");
