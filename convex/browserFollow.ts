@@ -22,6 +22,7 @@ import {
   decideExistingWorkflow,
   followSleepMs,
   isFollowTerminal,
+  lateDeliveryKey,
   maxPollRounds,
   nextFollowDecision,
   persistableStatus,
@@ -34,6 +35,7 @@ import {
 } from "./lib/browserFollowPolicy";
 import { needsHuman, parseCloudOutcome, type CloudNeed } from "./lib/browserOutcomePolicy";
 import {
+  doneNowLine,
   lateResultLine,
   lateRetryDelayMs,
   nextProgressNote,
@@ -103,6 +105,93 @@ async function notifyHuman(
       text: opts.text,
     });
   }
+}
+
+/**
+ * Send a finished run's «готово» the moment a poll sees it, instead of waking
+ * a model turn (workpool hop + cold start + model TTFT) to phrase an outcome
+ * that `parseCloudOutcome` has already fully resolved. Returns true when the
+ * human has been told and the `done` wakeup must be skipped.
+ *
+ * Duplicate-proofing reuses the machinery that was already there, and adds
+ * no key of its own:
+ *  - `claimBrowserWakeup(runId, "done")` — the same tenant-level claim
+ *    wakeupAgent takes. Winning it means nothing else can send this run's
+ *    done report; `confirmBrowserWakeup` then flips it to `sent`, so a later
+ *    wakeupAgent for the same run+phase short-circuits as "duplicate"
+ *    without ever POSTing to eve, and no model turn happens at all.
+ *  - `wakeups.takeDelivery` on `wakeupIdempotencyKey(runId, "done")` and
+ *    `lateDeliveryKey(runId)` — the two durable delivery keys eve itself
+ *    checks (in-memory Map + claimDurableWakeupDelivery) and lateResultNotify
+ *    claims. Taken only AFTER the line actually lands, so a failed delivery
+ *    can never suppress the model wakeup that has to cover for it.
+ *
+ * Every failure path returns false and releases the claim: the caller then
+ * takes the ordinary wakeup road, because a duplicate is survivable and
+ * silence is not.
+ */
+async function deliverDoneNow(
+  ctx: ActionCtx,
+  opts: { tenantPhone: string; runId: string; sessionId?: string; text: string },
+): Promise<boolean> {
+  const claimed = await ctx.runMutation(internal.tenants.claimBrowserWakeup, {
+    phoneE164: opts.tenantPhone,
+    runId: opts.runId,
+    phase: "done",
+  });
+  if (!claimed.ok) {
+    // `duplicate` — this run's done report already went out (a retried poll
+    // that already spoke); say nothing again and skip the wakeup too.
+    // `pending_in_flight` / `stale_run` — leave it to wakeupAgent, which owns
+    // the lease-retry and stale-run discipline for those.
+    return claimed.reason === "duplicate";
+  }
+  const conversationId = claimed.conversationId;
+  if (!conversationId) {
+    await ctx.runMutation(internal.tenants.releaseBrowserWakeup, {
+      phoneE164: opts.tenantPhone,
+      runId: opts.runId,
+      phase: "done",
+    });
+    return false;
+  }
+  try {
+    await notifyHuman(ctx, {
+      tenantPhone: opts.tenantPhone,
+      conversationId,
+      text: opts.text,
+    });
+  } catch (err) {
+    console.error("instant done deliver failed", err);
+    await ctx.runMutation(internal.tenants.releaseBrowserWakeup, {
+      phoneE164: opts.tenantPhone,
+      runId: opts.runId,
+      phase: "done",
+    });
+    return false;
+  }
+  await ctx.runMutation(internal.tenants.confirmBrowserWakeup, {
+    phoneE164: opts.tenantPhone,
+    runId: opts.runId,
+    phase: "done",
+  });
+  const secret = process.env.BRO_INTERNAL_SECRET ?? "";
+  for (const key of [
+    wakeupIdempotencyKey(opts.runId, "done"),
+    lateDeliveryKey(opts.runId),
+  ]) {
+    await ctx
+      .runMutation(api.wakeups.takeDelivery, { secret, key })
+      .catch((err: unknown) => console.error("done delivery key failed", key, err));
+  }
+  // Same housekeeping wakeupAgent does after a done with nothing pending:
+  // the errand is over, so the Cloud browser must not keep billing.
+  if (opts.sessionId) {
+    await stopBrowserForSession(opts.sessionId).catch((err) =>
+      console.error("post-done browser stop failed", err),
+    );
+  }
+  return true;
 }
 
 const startResult = v.object({
@@ -209,6 +298,15 @@ export const followThrough = workflow.define({
     if (decision === "sleep") {
       await step.sleep(followSleepMs(i), { name: `wait-${i}` });
       continue;
+    }
+    if (poll.spoke) {
+      // pollRun already sent the finished run's report and flipped the
+      // `done` wakeup claim to `sent` (deliverDoneNow). A model turn now
+      // could only say the same thing a second time — and the claim would
+      // make wakeupAgent skip the POST anyway. No new step: an in-flight
+      // workflow replaying a journalled poll from before this shipped sees
+      // `spoke === undefined` and takes the wakeup road as it always did.
+      return { outcome: "done" };
     }
     let phase: WakeupPhase;
     if (decision === "giveup") {
@@ -463,6 +561,14 @@ const pollReturn = v.object({
   liveUrl: v.optional(v.string()),
   result: v.optional(v.string()),
   need: v.optional(v.string()),
+  /**
+   * This poll already reported the finished run to the human (deliverDoneNow)
+   * — followThrough must return without a wakeup. Optional on purpose: a
+   * workflow that was already in flight when this shipped replays journalled
+   * polls that predate the field, and `undefined` reads as "no, wake up" —
+   * the old behaviour, no determinism violation.
+   */
+  spoke: v.optional(v.boolean()),
 });
 
 export const pollRun = internalAction({
@@ -537,6 +643,31 @@ export const pollRun = internalAction({
         runId: args.runId,
       });
     }
+    // The finished run's own report, sent from here rather than from a model
+    // turn one wakeup later. Deliberately narrow — this fires only for a
+    // human errand that ended in a clean, labelled «готово» with nothing
+    // pending, which is exactly the case where the model has nothing left to
+    // decide. need/failed/giveup, an unlabelled result, a login/vault
+    // scaffold, or a queued next errand (which only the model can start) all
+    // fall through to wakeupAgent unchanged.
+    const queuedNext = (tenant.browserNextTask ?? "").trim();
+    // Same "is this a human errand at all" rule the progress notes use: a
+    // login/vault wait, or any bro-internal scaffold sitting in browserTask,
+    // is not something to report as «готово» in the person's chat.
+    const humanErrand =
+      !noProgress && !(tenant.browserTask ?? "").trim().startsWith("[");
+    const nowLine =
+      outcome && humanErrand && !queuedNext
+        ? doneNowLine(status, run.result)
+        : undefined;
+    const spoke = nowLine
+      ? await deliverDoneNow(ctx, {
+          tenantPhone: args.tenantPhone,
+          runId: args.runId,
+          sessionId: run.sessionId ?? args.sessionId,
+          text: nowLine,
+        })
+      : false;
     if (
       shouldSendLoginLink({
         loginWait,
@@ -619,6 +750,7 @@ export const pollRun = internalAction({
       liveUrl: run.liveUrl,
       result: run.result,
       need: outcome?.needs,
+      ...(spoke ? { spoke: true } : {}),
     };
   },
 });
@@ -678,9 +810,11 @@ export const lateResultNotify = internalAction({
     // Durable dedupe: this can be scheduled once from startFollowThrough's
     // replace path and, on the rare run where the old workflow survives to
     // see poll.stale itself, once more from followThrough — only one wins.
+    // deliverDoneNow takes the same key once it has reported a run, so a
+    // result already told to the human is never re-announced as "кстати".
     const claim = await ctx.runMutation(api.wakeups.takeDelivery, {
       secret: process.env.BRO_INTERNAL_SECRET ?? "",
-      key: `browser_late:${runId}`,
+      key: lateDeliveryKey(runId),
     });
     if (!claim.taken) return { delivered: false };
     const tenant = await ctx.runQuery(internal.tenants.getByPhoneInternal, {
@@ -773,8 +907,12 @@ export const wakeupAgent = internalAction({
       site = undefined;
     }
     // Best-effort fresh live URL — the one already stored can be minutes
-    // stale by the time the human reads it.
-    const fresh = await hydrate(runId, sessionId).catch(() => undefined);
+    // stale by the time the human reads it. Only `need` ever puts that link
+    // in front of a person (humanLineForNeed); for done/failed/giveup the run
+    // is over and the round-trip bought nothing but a second of extra wait
+    // before the human hears anything.
+    const fresh =
+      phase === "need" ? await hydrate(runId, sessionId).catch(() => undefined) : undefined;
     const liveUrl = fresh?.liveUrl ?? tenant?.browserLiveUrl;
 
     // pending vs sent: a crash after claim must throw, not succeed as duplicate.

@@ -5,18 +5,35 @@
  * the human stopped hearing about it (lateResultLine — see browserFollow.ts
  * lateResultNotify for why that can happen at all: startFollowThrough's
  * cancel_then_start replaces a workflow's next poll before it ever runs).
+ *
+ * `doneNowLine` is the same report one beat earlier: the poll that sees a
+ * clean «готово» speaks it straight away, so the person does not wait out a
+ * whole model turn for an outcome that is already fully parsed.
  */
 
 import { isPreviewHost } from "./browserLivePolicy.ts";
 import { isFollowTerminal, STALLED_STATUS } from "./browserFollowPolicy.ts";
-import { doneLineHint, needsHuman, parseCloudOutcome } from "./browserOutcomePolicy.ts";
+import {
+  doneLineHint,
+  needsHuman,
+  parseCloudOutcome,
+  type CloudOutcome,
+} from "./browserOutcomePolicy.ts";
 
 export type ProgressKey = "opened" | "slow" | "long";
 
-/** Run still active this long with no "opened" note sent → "slow". */
-export const PROGRESS_SLOW_MS = 4 * 60_000;
-/** Run still active this long → "long", once. */
-export const PROGRESS_LONG_MS = 10 * 60_000;
+/**
+ * Run still active this long with no "opened" note sent → "slow".
+ *
+ * 75s, not the old 4 minutes: "opened" needs a real page host to fire, and a
+ * run that never lands one (a slow start, a redirect chain, a site that hangs)
+ * used to leave the person with four silent minutes after «делаю». A minute
+ * and a quarter is about how long a person waits before wondering whether
+ * anything is happening at all.
+ */
+export const PROGRESS_SLOW_MS = 75_000;
+/** Run still active this long → "long", once. Strictly after PROGRESS_SLOW_MS. */
+export const PROGRESS_LONG_MS = 4 * 60_000;
 
 const MAX_TASK_CHARS = 60;
 
@@ -272,6 +289,23 @@ const NON_REPORTABLE_TERMINAL: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * The one shape of outcome Bro can report without a model turn: a real
+ * terminal success carrying a labelled СДЕЛАНО and nothing left pending on
+ * the human. Anything else (unlabelled free text, a НУЖНО, failed/cancelled/
+ * stalled) still needs the model to phrase it, and returns undefined here.
+ */
+function reportableDone(
+  status: string,
+  result: string | null | undefined,
+): CloudOutcome | undefined {
+  const s = status.trim().toLowerCase();
+  if (!isFollowTerminal(s) || NON_REPORTABLE_TERMINAL.has(s)) return undefined;
+  const outcome = parseCloudOutcome(result, { status: s });
+  if (!outcome.labelled || !outcome.done || needsHuman(outcome.needs)) return undefined;
+  return outcome;
+}
+
+/**
  * A stale/abandoned run is worth one late message only when it actually
  * finished with a labelled, human-facing done and nothing left pending on
  * the human — a need on a run nobody is watching anymore is moot, and an
@@ -281,11 +315,28 @@ export function lateResultLine(
   status: string,
   result: string | null | undefined,
 ): string | undefined {
-  const s = status.trim().toLowerCase();
-  if (!isFollowTerminal(s) || NON_REPORTABLE_TERMINAL.has(s)) return undefined;
-  const outcome = parseCloudOutcome(result, { status: s });
-  if (!outcome.labelled || !outcome.done || needsHuman(outcome.needs)) return undefined;
+  const outcome = reportableDone(status, result);
+  if (!outcome) return undefined;
   return `Кстати, прошлое поручение всё же завершилось. ${doneLineHint(outcome)}`;
+}
+
+/**
+ * The same outcome, reported while the human is still waiting for it: the
+ * poll that notices a clean, fully-resolved «готово» sends this line itself
+ * instead of waking a model turn (queue hop + cold start + TTFT) to say the
+ * same thing in prettier words. Same guard rails as lateResultLine, minus
+ * its «кстати, прошлое поручение» framing — this one is not late, it is the
+ * report. Everything the model still has to think about (need/failed/giveup,
+ * an unlabelled result, a queued next errand) returns undefined and takes
+ * the normal wakeup path.
+ */
+export function doneNowLine(
+  status: string,
+  result: string | null | undefined,
+): string | undefined {
+  const outcome = reportableDone(status, result);
+  if (!outcome) return undefined;
+  return doneLineHint(outcome);
 }
 
 /**

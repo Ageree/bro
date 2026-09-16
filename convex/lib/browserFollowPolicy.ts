@@ -22,13 +22,21 @@ export function persistableStatus(status: string): string | undefined {
 export const POLL_INTERVAL_MS = 2 * 60_000;
 export const POLL_GIVE_UP_MS = 20 * 60_000;
 
-// Poll cadence after a run starts: ramp 10s→15s→20s→30s→45s→60s, then a
-// steady 90s until give-up. No webhook exists (v4 confirmed) — this is the
-// only lever for follow-through latency.
+// Poll cadence after a run starts: ramp 5s→10s→10s→15s→15s→20s, then a
+// steady 20s until give-up. No webhook exists (v4 confirmed) — this is the
+// only lever for follow-through latency, and the old 90s steady tail was the
+// single biggest chunk of the "он уже сделал, а я узнаю через минуту" wait:
+// past the first ~3 minutes a finished run went unnoticed for up to 90s.
+//
+// Cost of the tighter cadence: a poll is one cheap GET against the Browser
+// Use API (plus at most one enrichment GET) and one workflow step. A run
+// lives at most POLL_GIVE_UP_MS, so the worst case is 63 rounds instead of
+// 18 — ~3 polls/minute for the one run a person may have at a time, and
+// ~25KB of the workflow's 1MB step-data budget (see maxPollRounds).
 export const FOLLOW_SCHEDULE_MS = [
-  10_000, 15_000, 20_000, 30_000, 45_000, 60_000,
+  5_000, 10_000, 10_000, 15_000, 15_000, 20_000,
 ] as const;
-export const FOLLOW_STEADY_SLEEP_MS = 90_000;
+export const FOLLOW_STEADY_SLEEP_MS = 20_000;
 
 export function followSchedule(): number[] {
   return [...FOLLOW_SCHEDULE_MS];
@@ -62,7 +70,11 @@ export function nextFollowDecision(opts: {
   return "sleep";
 }
 
-/** Loop rounds whose cumulative sleep approximates POLL_GIVE_UP_MS under followSchedule(). */
+/**
+ * Loop rounds whose cumulative sleep approximates POLL_GIVE_UP_MS under
+ * followSchedule(). Derived, never hand-written: tightening the cadence above
+ * must move the round cap with it, or give-up would fire minutes early.
+ */
 export function maxPollRounds(): number {
   const rampSum = FOLLOW_SCHEDULE_MS.reduce((a, b) => a + b, 0);
   const remaining = Math.max(0, POLL_GIVE_UP_MS - rampSum);
@@ -95,6 +107,16 @@ export type WakeupPhase = "done" | "need" | "failed" | "giveup";
 
 export function wakeupIdempotencyKey(runId: string, phase: WakeupPhase): string {
   return `browser_poll:${runId}:${phase}`;
+}
+
+/**
+ * Durable delivery key (wakeups.takeDelivery / eve's claimDurableWakeupDelivery)
+ * for "this run's completion has already been told to the human once".
+ * Shared by lateResultNotify, eve's stale-run late line, and the immediate
+ * done report in pollRun — whoever gets there first owns the message.
+ */
+export function lateDeliveryKey(runId: string): string {
+  return `browser_late:${runId}`;
 }
 
 export type WakeupClaimStatus = "pending" | "sent";
