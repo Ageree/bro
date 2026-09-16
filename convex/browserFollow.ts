@@ -594,8 +594,29 @@ export const pollRun = internalAction({
     const targetPage = loginPageFromTask(tenant.browserTask);
     const needLoginHydrate =
       loginWait && !tenant.browserLoginLinkSentAt;
-    const run =
-      !needLoginHydrate && (cheap.liveUrl || cheap.result)
+    // What makes the tightened poll cadence affordable: `hydrate` costs up to
+    // five upstream calls (run + session + events + /browsers + CDP), while
+    // `pollStatus` is one. Once everything hydrate would add is already known
+    // — a live URL is stored, the "opened" note (the only consumer of
+    // pageUrl) is out, and no login link is pending — a mid-run poll needs
+    // nothing but the status. A terminal status always hydrates: that is
+    // where the outcome block lives.
+    const openedSent = (tenant.browserProgressSent ?? []).includes("opened");
+    const statusOnly =
+      !needLoginHydrate &&
+      cheap.status !== UNKNOWN_STATUS &&
+      !isFollowTerminal(cheap.status) &&
+      Boolean(tenant.browserLiveUrl) &&
+      (noProgress || openedSent);
+    const run = statusOnly
+      ? {
+          ...cheap,
+          // Never blank what we already know: the tenant write below stores
+          // `run.liveUrl ?? ""` and `run.sessionId` verbatim.
+          sessionId: cheap.sessionId ?? tenant.browserSessionId,
+          liveUrl: tenant.browserLiveUrl,
+        }
+      : !needLoginHydrate && (cheap.liveUrl || cheap.result)
         ? cheap
         : await hydrate(
             args.runId,

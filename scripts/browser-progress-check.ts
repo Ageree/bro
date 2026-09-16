@@ -125,6 +125,26 @@ assert(withSite?.key === "opened", "opened fires once pageUrl is an actual real 
 assert(withSite!.text.includes("в озоне"), "opened names the place from pageUrl, in human words");
 assert(!withSite!.text.includes("ozon.ru"), "opened does not print the domain");
 
+// --- the thresholds themselves: a sign of life inside a minute and a half ---
+//
+// The complaint these serve is "слегка много времени проходит": a run that
+// never lands a page host (no "opened") used to leave four silent minutes
+// after «делаю». Both notes must stay early, ordered, and distinct.
+
+assert(PROGRESS_SLOW_MS <= 90_000, "the first «ещё вожусь» lands within ~90s, not minutes later");
+assert(PROGRESS_SLOW_MS >= 60_000, "…but not so early it fires while the browser is still booting");
+assert(PROGRESS_LONG_MS > PROGRESS_SLOW_MS, "long comes strictly after slow");
+assert(PROGRESS_LONG_MS <= 5 * 60_000, "the «скажи отмени» note lands a few minutes in");
+eq(
+  note({ now: T0 + 60_000, sent: ["opened"] }),
+  undefined,
+  "nothing extra fires in the first minute — «делаю» has only just been said",
+);
+assert(
+  note({ now: T0 + 90_000, sent: ["opened"] })?.key === "slow",
+  "by 90s a silent run has said something",
+);
+
 // --- slow: only after the threshold, only once ---
 
 eq(note({ now: T0 + PROGRESS_SLOW_MS - 1 }), undefined, "no slow note before the threshold");

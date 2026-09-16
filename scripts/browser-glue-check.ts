@@ -22,8 +22,13 @@ import {
   type CdpTarget,
 } from "../convex/lib/browserCdp.ts";
 import {
+  browserWakeupClaimKey,
   claimMatchesRunPhase,
+  decideWakeupClaim,
+  lateDeliveryKey,
   parseWakeupClaim,
+  wakeupIdempotencyKey,
+  WAKEUP_CLAIM_LEASE_MS,
 } from "../convex/lib/browserFollowPolicy.ts";
 import { errandStartUrl } from "../convex/lib/browserStartPolicy.ts";
 import { cloudSessionLooksLive, injectQueueText } from "../convex/lib/browserInjectPolicy.ts";
@@ -508,6 +513,183 @@ const browserFollowSrc = src("convex/browserFollow.ts");
   assert(
     noConvBlock.includes("internal.tenants.releaseBrowserWakeup"),
     "wakeupAgent releases the browserWakeupClaim when there is no conversation to notify",
+  );
+}
+
+// ============================================================================
+// Immediate done report (deliverDoneNow): the human hears a finished run from
+// the poll that noticed it, and exactly once.
+// ============================================================================
+
+// --- the dedupe itself, played out on the real claim state machine ---
+{
+  const RUN = "run-fast-1";
+  const t = 1_700_000_000_000;
+
+  // 1. pollRun claims the `done` phase before it says anything.
+  eq(
+    decideWakeupClaim({
+      tenantRunId: RUN,
+      runId: RUN,
+      phase: "done",
+      existingClaim: undefined,
+      now: t,
+    }),
+    "ok",
+    "the poll that sees the finished run wins the done claim",
+  );
+  const pending = browserWakeupClaimKey(RUN, "done", t, "pending");
+
+  // 2. …delivers, then confirms — the claim flips to `sent`.
+  const sent = browserWakeupClaimKey(RUN, "done", t, "sent");
+  eq(parseWakeupClaim(sent)?.status, "sent", "confirm marks the claim sent");
+
+  // 3. A model wakeup for the same run+phase now short-circuits as a
+  //    duplicate, so wakeupAgent never POSTs and no second bubble is spoken.
+  eq(
+    decideWakeupClaim({
+      tenantRunId: RUN,
+      runId: RUN,
+      phase: "done",
+      existingClaim: sent,
+      now: t + 30_000,
+    }),
+    "duplicate",
+    "a done wakeup after an instant report is a duplicate, not a second bubble",
+  );
+  // …even long after the claim lease, because `sent` is terminal, not leased.
+  eq(
+    decideWakeupClaim({
+      tenantRunId: RUN,
+      runId: RUN,
+      phase: "done",
+      existingClaim: sent,
+      now: t + 10 * WAKEUP_CLAIM_LEASE_MS,
+    }),
+    "duplicate",
+    "the sent claim never expires back into a second report",
+  );
+
+  // 4. A crash between claim and delivery leaves `pending`: the wakeup must
+  //    retry (throw), never succeed silently — the human still gets told.
+  eq(
+    decideWakeupClaim({
+      tenantRunId: RUN,
+      runId: RUN,
+      phase: "done",
+      existingClaim: pending,
+      now: t + 1_000,
+    }),
+    "pending_in_flight",
+    "a half-finished instant report is retried, not swallowed",
+  );
+  eq(
+    decideWakeupClaim({
+      tenantRunId: RUN,
+      runId: RUN,
+      phase: "done",
+      existingClaim: pending,
+      now: t + WAKEUP_CLAIM_LEASE_MS + 1,
+    }),
+    "ok",
+    "once the lease expires the model wakeup reclaims and speaks — never silent",
+  );
+
+  // 5. The instant report owns `done` only. A run that later needs the human
+  //    (a different phase) is untouched by it.
+  eq(
+    decideWakeupClaim({
+      tenantRunId: RUN,
+      runId: RUN,
+      phase: "need",
+      existingClaim: sent,
+      now: t + 30_000,
+    }),
+    "ok",
+    "reporting a done never blocks a later need wakeup",
+  );
+
+  // 6. Durable delivery keys: the instant report claims the two keys eve and
+  //    lateResultNotify check, so neither can re-announce the same run.
+  eq(
+    wakeupIdempotencyKey(RUN, "done"),
+    "browser_poll:run-fast-1:done",
+    "the instant report reuses the wakeup's own idempotency key",
+  );
+  eq(
+    lateDeliveryKey(RUN),
+    "browser_late:run-fast-1",
+    "…and the shared late-delivery key, so no «кстати» repeat of what was just said",
+  );
+}
+
+// --- wiring in convex/browserFollow.ts ---
+{
+  const deliverFn = browserFollowSrc.slice(
+    browserFollowSrc.indexOf("async function deliverDoneNow"),
+    browserFollowSrc.indexOf("const startResult"),
+  );
+  assert(deliverFn.length > 0, "deliverDoneNow exists");
+  const claimAt = deliverFn.indexOf("internal.tenants.claimBrowserWakeup");
+  const notifyAt = deliverFn.indexOf("notifyHuman(");
+  const confirmAt = deliverFn.indexOf("internal.tenants.confirmBrowserWakeup");
+  const takeAt = deliverFn.indexOf("api.wakeups.takeDelivery");
+  assert(claimAt >= 0 && notifyAt > claimAt, "the claim is taken before the human is told");
+  assert(confirmAt > notifyAt, "the claim is confirmed only after the line lands");
+  assert(
+    takeAt > notifyAt,
+    "durable delivery keys are taken after delivery — a failed send must not mute the model wakeup",
+  );
+  assert(
+    deliverFn.includes("wakeupIdempotencyKey(opts.runId, \"done\")") &&
+      deliverFn.includes("lateDeliveryKey(opts.runId)"),
+    "both existing durable keys are claimed, no parallel key is invented",
+  );
+  const catchBlock = deliverFn.slice(deliverFn.indexOf("} catch (err) {"));
+  assert(
+    catchBlock.includes("releaseBrowserWakeup") && catchBlock.includes("return false"),
+    "a failed instant delivery releases the claim and falls back to the model wakeup",
+  );
+  assert(
+    deliverFn.includes('claimed.reason === "duplicate"'),
+    "an already-reported run is not reported twice, and skips the wakeup too",
+  );
+  assert(
+    deliverFn.includes("stopBrowserForSession"),
+    "the instant path still stops the Cloud browser, like the wakeup it replaces",
+  );
+
+  const pollFn = browserFollowSrc.slice(
+    browserFollowSrc.indexOf("export const pollRun"),
+    browserFollowSrc.indexOf("const lateResultReturn"),
+  );
+  assert(
+    pollFn.indexOf("patchBrowserInternal") < pollFn.indexOf("doneNowLine("),
+    "the outcome is persisted on the tenant before it is spoken",
+  );
+  assert(
+    /outcome && humanErrand && !queuedNext/.test(pollFn),
+    "the instant report is gated on a parsed outcome, a human errand and an empty queue",
+  );
+  assert(
+    pollFn.includes("tenant.browserNextTask"),
+    "a queued next errand keeps the model turn that has to start it",
+  );
+
+  const handlerFn = browserFollowSrc.slice(
+    browserFollowSrc.indexOf("}).handler"),
+    browserFollowSrc.indexOf("async function stopGivenUpRun"),
+  );
+  const spokeAt = handlerFn.indexOf("if (poll.spoke)");
+  const wakeupAt = handlerFn.indexOf("internal.browserFollow.wakeupAgent");
+  assert(spokeAt >= 0 && spokeAt < wakeupAt, "a poll that already spoke returns before the wakeup step");
+  assert(
+    handlerFn.slice(spokeAt, wakeupAt).includes('return { outcome: "done" }'),
+    "…and ends the follow-through as a normal done",
+  );
+  assert(
+    src("convex/browserFollow.ts").includes("spoke: v.optional(v.boolean())"),
+    "spoke is optional so in-flight workflows replaying older journals still wake the model",
   );
 }
 
