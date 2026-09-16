@@ -89,6 +89,48 @@ eq(
   "more than 6 words is rejected",
 );
 
+// --- the varied «я взялся» palette all has to survive sanitising ---
+for (const beat of [
+  "взялся, смотрю вб",
+  "окей, уже ищу",
+  "принял, гляну почту",
+  "понял, поехали",
+  "беру на себя",
+  "сделаю, минуту",
+  "приступил, открываю озон",
+  "ага, сейчас забронирую",
+  "щас проверю заказ",
+]) {
+  eq(sanitizeFastAck(beat), beat, `natural opener survives: «${beat}»`);
+}
+eq(
+  sanitizeFastAck("окей, взялся, смотрю вб и озон"),
+  "окей, взялся, смотрю вб и озон",
+  "a full six-word opener is accepted",
+);
+eq(
+  sanitizeFastAck("Принял, сейчас гляну почту."),
+  "Принял, сейчас гляну почту",
+  "a trailing period is stripped off a longer opener",
+);
+eq(
+  sanitizeFastAck("приступил, открываю озон и смотрю все чехлы"),
+  null,
+  "seven words is still too long",
+);
+eq(
+  sanitizeFastAck("взялся, открываю невероятно длиннющее наименование интернет-магазина"),
+  null,
+  "six words over 60 chars is still rejected",
+);
+// Safety filters keep biting at the wider limit.
+eq(sanitizeFastAck("NONE"), null, "NONE is still nothing to send");
+eq(sanitizeFastAck("взялся, смотрю none"), null, "an embedded NONE is rejected");
+eq(sanitizeFastAck("принял, открываю http://wb.ru"), null, "a six-word line with a URL is rejected");
+eq(sanitizeFastAck("бро, взялся, смотрю вб"), null, "a natural opener starting with «бро» is rejected");
+eq(sanitizeFastAck("взялся, статус: ищу вб"), null, "a field label inside an opener is rejected");
+eq(sanitizeFastAck("взялся, набираю 8 999 123 45 67"), null, "a digit dump is rejected");
+
 // --- fastAckAttribute / fastAckOf round trip ---
 eq(Object.keys(fastAckAttribute(null)).length, 0, "null yields no attribute at all");
 eq(
@@ -233,8 +275,34 @@ assert(
   "no instant-ack.ts skip lane — the agent turn always runs",
 );
 
-assert(FAST_ACK_SYSTEM.length <= 900, "system prompt stays compact");
+assert(FAST_ACK_SYSTEM.length <= 1_200, "system prompt stays compact");
 assert(FAST_ACK_SYSTEM.includes("NONE"), "system prompt defines the NONE escape hatch");
+assert(FAST_ACK_SYSTEM.includes("2-6 слов"), "system prompt asks for a 2-6 word line");
+assert(
+  FAST_ACK_SYSTEM.includes("не начинай всё время с «ищу»"),
+  "system prompt forbids always opening with «ищу»",
+);
+assert(
+  /придумывай формулировку заново/.test(FAST_ACK_SYSTEM),
+  "system prompt asks for a freshly worded opener each call",
+);
+{
+  // The example palette must show variety, not one shape repeated: count the
+  // distinct first words of the «… → …» sample answers.
+  const answers = [...FAST_ACK_SYSTEM.matchAll(/→\s*(.+)/g)]
+    .map((m) => m[1]!.trim())
+    .filter((a) => a !== "NONE");
+  assert(answers.length >= 8, "system prompt shows at least 8 errand examples");
+  const openers = new Set(answers.map((a) => a.split(/[\s,]+/)[0]!.toLowerCase()));
+  assert(openers.size >= 7, "system prompt examples open with many different words");
+  for (const a of answers) {
+    eq(sanitizeFastAck(a), a, `system prompt example «${a}» passes sanitizeFastAck`);
+  }
+}
+assert(
+  fastAckSrc.includes("temperature: 0.9"),
+  "the ack call runs hot enough for the opener to actually vary",
+);
 
 // --- review round: restatement peel, sanitize tightening, sync-throw guard ---
 {
@@ -250,9 +318,38 @@ assert(FAST_ACK_SYSTEM.includes("NONE"), "system prompt defines the NONE escape 
   eq(peelFastAck(ack, "Нашёл: Nike Air 5990 ₽"), "Нашёл: Nike Air 5990 ₽", "real content is kept");
   eq(peelFastAck("", "Ищу на ВБ."), "Ищу на ВБ.", "empty ack peels nothing");
 
+  // A longer, natural opener still dedupes: the <=10-token window has to clear
+  // a 6-word ack plus the words a weak model tacks on.
+  const long = "окей, взялся, смотрю вб";
+  eq(peelFastAck(long, "Окей, взялся, смотрю ВБ."), null, "long-ack restatement is dropped");
+  eq(
+    peelFastAck(long, "Взялся, смотрю кроссовки на ВБ"),
+    null,
+    "long ack reworded with one extra word is still a restatement",
+  );
+  eq(
+    peelFastAck(long, "Окей, взялся, смотрю ВБ. Нашёл 3 варианта"),
+    "Нашёл 3 варианта",
+    "content after a long ack survives",
+  );
+  eq(
+    peelFastAck(long, "Нашёл 3 варианта, самый дешёвый 5990 ₽"),
+    "Нашёл 3 варианта, самый дешёвый 5990 ₽",
+    "real content is not eaten by the wider window",
+  );
+
   eq(sanitizeFastAck("статус:"), null, "bare field label is rejected");
   eq(sanitizeFastAck("перезвони +7 999 123 45 67"), null, "phone-number dump is rejected");
-  eq(sanitizeFastAck("смотрю почту и календарь сейчас же"), null, "six words is too long for a beat");
+  eq(
+    sanitizeFastAck("смотрю почту и календарь сейчас же"),
+    "смотрю почту и календарь сейчас же",
+    "six words now fits a beat",
+  );
+  eq(
+    sanitizeFastAck("смотрю почту и календарь прямо сейчас же"),
+    null,
+    "seven words is still over the line",
+  );
   eq(sanitizeFastAck("ищу"), "ищу", "a single-word beat is fine");
 
   assert(!shouldFastAck("привет"), "a greeting gets no fast ack — the agent greets back itself");

@@ -1,10 +1,12 @@
 import { assert, src } from "./lib/check.ts";
 
 /**
- * A4: guards the canonical "результат тула → что сказать" table and the
- * jargon/phrasing rules it replaced (A5 Appendix C/F, A4-worker-otp F3).
- * Byte ceiling: the rewrite is meant to stay about the same length as the
- * pre-A4 file (19,326 bytes) — this asserts it never balloons past +10%.
+ * Guards the canonical "результат тула → что сказать" table, the
+ * jargon/phrasing rules it replaced (A5 Appendix C/F, A4-worker-otp F3), and
+ * the voice rules from the "человечный Bro" rewrite.
+ * Byte ceiling: the voice rewrite cut the file from 21,182 bytes to ~19.6k
+ * while keeping every behavioural rule — this asserts it never grows back
+ * past +10% of that.
  */
 
 const instructions = src("agent/instructions.md");
@@ -49,8 +51,62 @@ for (const needle of [
 // (Appendix F) — "браузер"/"живая вкладка"/"открытая страница" replace it.
 assert(!instructions.includes("Cloud"), "instructions.md drops the bare word Cloud");
 
+// --- voice: Bro texts like a person, not a status machine ---
+// The robotic phrasings must be named in the file so the model is steered off
+// them; each one is quoted inside the "так не пиши" block of ## Voice.
+for (const robotic of [
+  "Задача принята",
+  "Статус:",
+  "Выполняю запрос",
+  "Готов помочь!",
+]) {
+  assert(
+    instructions.includes(robotic),
+    `instructions.md must ban the robotic phrasing "${robotic}"`,
+  );
+}
+assert(
+  /не начинай сообщение с «Бро\.»/.test(instructions),
+  "instructions.md keeps the «Бро.» opener ban",
+);
+assert(
+  instructions.includes("не отчитывайся списком с буллетами"),
+  "instructions.md bans bullet-point reports",
+);
+assert(
+  instructions.includes("Не пересказывай просьбу обратно человеку"),
+  "instructions.md bans restating the user's request back at them",
+);
+
+// The first bubble of an errand turn is a freshly worded "я взялся" line, not
+// a hardcoded «ищу» — varied wording is the whole point of the rewrite.
+assert(
+  /2–6 слов/.test(instructions),
+  "instructions.md sets the 2–6 word window for the opening line",
+);
+assert(
+  instructions.includes("с маленькой буквы, без точки в конце, придумана заново"),
+  "instructions.md requires a freshly worded lowercase opening line",
+);
+assert(
+  instructions.includes("особенно с «ищу»"),
+  "instructions.md forbids always opening with «ищу»",
+);
+assert(
+  instructions.includes("не повторяй формулировку прошлого хода"),
+  "instructions.md forbids reusing the previous turn's wording",
+);
+// The palette has to be a palette: several differently-shaped openers.
+const palette = ["взялся", "принял", "беру на себя", "приступил", "сделаю"];
+for (const opener of palette) {
+  assert(
+    instructions.includes(opener),
+    `instructions.md opening-line palette includes "${opener}"`,
+  );
+}
+
 // --- length ceiling: same-or-shorter intent, hard cap at +10% over baseline ---
-const BASELINE_BYTES = 19_326; // agent/instructions.md size before the A4 rewrite
+const BASELINE_BYTES = 19_560; // agent/instructions.md size after the voice rewrite
 const CEILING_BYTES = Math.ceil(BASELINE_BYTES * 1.1);
 const actualBytes = Buffer.byteLength(instructions, "utf8");
 assert(
