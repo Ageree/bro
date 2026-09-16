@@ -679,7 +679,7 @@ export const pollRun = internalAction({
       !noProgress && !(tenant.browserTask ?? "").trim().startsWith("[");
     const nowLine =
       outcome && humanErrand && !queuedNext
-        ? doneNowLine(status, run.result)
+        ? doneNowLine(status, run.result, args.runId)
         : undefined;
     const spoke = nowLine
       ? await deliverDoneNow(ctx, {
@@ -826,7 +826,7 @@ export const lateResultNotify = internalAction({
       }
       return { delivered: false };
     }
-    const line = lateResultLine(run.status, run.result);
+    const line = lateResultLine(run.status, run.result, runId);
     if (!line) return { delivered: false };
     // Durable dedupe: this can be scheduled once from startFollowThrough's
     // replace path and, on the rare run where the old workflow survives to

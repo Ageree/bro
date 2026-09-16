@@ -311,13 +311,54 @@ function reportableDone(
  * the human — a need on a run nobody is watching anymore is moot, and an
  * unlabelled or cancelled/failed result was never going to be reported.
  */
+/**
+ * How Bro opens a finished errand. `doneLineHint` says «Готово: …» and only
+ * that, which was fine while a model turn did the talking — but the instant
+ * report speaks for itself now, and one frozen opener on the single most
+ * visible message of the whole errand is exactly the machine register the
+ * voice work is trying to get rid of. Same pick-by-seed as the progress
+ * notes: one run keeps one wording, different runs differ.
+ */
+// СДЕЛАНО comes back as a past-tense phrase («Заказал такси до аэропорта»),
+// so an opener that takes it after a colon has to be one the phrase can
+// follow. «Сделал: Заказал…» doubles the verb; making the phrase its own
+// sentence after a short «Готово.» is what a person actually types.
+const DONE_OPENERS: ReadonlyArray<(done: string | undefined) => string> = [
+  (d) => (d ? `Готово: ${d}.` : "Готово."),
+  (d) => (d ? `Всё, готово. ${d}.` : "Всё, готово."),
+  (d) => (d ? `Готово. ${d}.` : "Готово."),
+  (d) => (d ? `Порядок. ${d}.` : "Порядок."),
+  (d) => (d ? `Готово — ${d}.` : "Готово."),
+];
+
+/** Every opener we can send, in order. Exported for the guard. */
+export function doneOpeners(done?: string): string[] {
+  return DONE_OPENERS.map((build) => build(done));
+}
+
+/**
+ * The report body: a varied human opener, then the facts exactly as
+ * `doneLineHint` lays them out — those stay factual, it is the opener that
+ * was robotic. With no seed the first opener is used, which is
+ * `doneLineHint`'s own wording, so an un-seeded caller is unchanged.
+ */
+function humanDoneBody(outcome: CloudOutcome, seed?: string): string {
+  const openers = doneOpeners(outcome.done);
+  const opener = seed
+    ? openers[hashSeed(`${seed}|done`) % openers.length]!
+    : openers[0]!;
+  const rest = doneLineHint(outcome).split("\n").slice(1);
+  return [opener, ...rest].join("\n");
+}
+
 export function lateResultLine(
   status: string,
   result: string | null | undefined,
+  seed?: string,
 ): string | undefined {
   const outcome = reportableDone(status, result);
   if (!outcome) return undefined;
-  return `Кстати, прошлое поручение всё же завершилось. ${doneLineHint(outcome)}`;
+  return `Кстати, прошлое поручение всё же завершилось. ${humanDoneBody(outcome, seed)}`;
 }
 
 /**
@@ -333,10 +374,11 @@ export function lateResultLine(
 export function doneNowLine(
   status: string,
   result: string | null | undefined,
+  seed?: string,
 ): string | undefined {
   const outcome = reportableDone(status, result);
   if (!outcome) return undefined;
-  return doneLineHint(outcome);
+  return humanDoneBody(outcome, seed);
 }
 
 /**

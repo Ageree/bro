@@ -7,6 +7,7 @@ import {
 } from "../convex/lib/browserOutcomePolicy.ts";
 import {
   doneNowLine,
+  doneOpeners,
   lateResultLine,
 } from "../convex/lib/browserProgressPolicy.ts";
 
@@ -224,7 +225,7 @@ const nowLine = doneNowLine("completed", CLEAN_DONE);
 assert(nowLine !== undefined, "a clean labelled done is reportable without the model");
 assert(
   nowLine === doneLineHint(parseCloudOutcome(CLEAN_DONE)),
-  "the instant line is exactly the canned done draft — no second wording to drift",
+  "un-seeded, the instant line is still the canned done draft",
 );
 assert(
   !nowLine!.includes("Кстати"),
@@ -233,6 +234,46 @@ assert(
 assert(
   lateResultLine("completed", CLEAN_DONE)!.endsWith(nowLine!),
   "late and instant reports share one body, only the framing differs",
+);
+
+// --- the opener varies, the facts do not -------------------------------
+//
+// This line is the most visible message of the whole errand and no model
+// turn phrases it any more, so a single frozen «Готово: …» would be the
+// machine register the voice work exists to remove. The seed is the runId:
+// one run keeps one wording across retries, different runs differ.
+
+const FACTS = "заказ №55081234, 890 ₽, через 7 минут.";
+const seeded = ["run_a", "run_b", "run_c", "run_d", "run_e", "run_f", "run_g", "run_h"].map(
+  (seed) => doneNowLine("completed", CLEAN_DONE, seed)!,
+);
+assert(
+  seeded.every((line) => line !== undefined && line.includes(FACTS)),
+  "every wording still carries the order number, the sum and the when",
+);
+assert(
+  new Set(seeded).size > 1,
+  "the opener actually varies across runs — a frozen line is the bug",
+);
+assert(
+  doneNowLine("completed", CLEAN_DONE, "run_a") ===
+    doneNowLine("completed", CLEAN_DONE, "run_a"),
+  "the same run always reads the same — a retried poll must not rephrase",
+);
+const openers = doneOpeners("Заказал такси до аэропорта");
+assert(openers.length >= 4, "the done palette is a palette, not a pair");
+assert(new Set(openers).size === openers.length, "no duplicated wording in the palette");
+assert(
+  openers.every((o) => o.length <= 120 && !/Сделал:/.test(o)),
+  "openers stay short, and none doubles the verb with a past-tense СДЕЛАНО",
+);
+assert(
+  seeded.every((line) => openers.some((o) => line.startsWith(o))),
+  "every seeded line opens with one of the palette's wordings",
+);
+assert(
+  doneOpeners(undefined).every((o) => o.length > 0 && !o.includes("undefined")),
+  "a done with no phrase still renders a clean opener",
 );
 
 // Everything the model still has to think about must NOT be short-circuited.
