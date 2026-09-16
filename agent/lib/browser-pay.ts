@@ -183,29 +183,11 @@ export function expandLoginHosts(raw: readonly string[]): string[] {
   return expand(raw, { processors: false, siteExtras: false });
 }
 
-const ATTACH_CARD_RU =
-  /(?:привяж|привязк|прикреп|подключ|добав|сохран|заведи|введи|укаж|настрой)\p{L}*\s+(?:(?:нов\p{L}+|мою|свою|эту|банковск\p{L}+|нашу)\s+){0,2}(?:карт\p{L}*|способ\p{L}*\s+оплат\p{L}*)/iu;
+/** «привяжи карту» / «добавь способ оплаты» / "add a card" — moved next to
+ *  `taskLooksLikeBuy` in convex/lib/purchasePolicy.ts so the Convex
+ *  follow-through applies the same "a saved card is not a purchase" rule. */
+export { isAttachCardErrand } from "../../convex/lib/purchasePolicy.ts";
 
-const ATTACH_CARD_RU_REVERSED =
-  /карт\p{L}*\s+(?:привяж|привязк|прикреп|подключ|добав|сохран)\p{L}*/iu;
-
-const ATTACH_CARD_EN =
-  /\b(?:attach|add|save|link|bind|set\s+up)\s+(?:a\s+|my\s+|the\s+|new\s+|credit\s+|debit\s+|bank\s+)*(?:card|payment\s+method)\b/i;
-
-/**
- * «привяжи карту» / «добавь способ оплаты» / "add a card" — a first-class
- * errand that binds the card and saves it, with no purchase at the end.
- * «оплати картой из сейфа» is NOT this: paying is a different shape.
- */
-export function isAttachCardErrand(task: string | undefined | null): boolean {
-  const text = (task ?? "").trim();
-  if (!text) return false;
-  return (
-    ATTACH_CARD_RU.test(text) ||
-    ATTACH_CARD_RU_REVERSED.test(text) ||
-    ATTACH_CARD_EN.test(text)
-  );
-}
 
 export type SecretBinding = {
   alias: string;

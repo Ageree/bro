@@ -21,7 +21,6 @@ import {
   normalizeTask,
   shouldStartFollowThrough,
 } from "../lib/browser-policy";
-import { parseOrderFromResult } from "../lib/order-policy";
 import {
   FOLLOW_RETRY_HINT,
   persistableStatus,
@@ -66,6 +65,7 @@ import {
   errandStartUrl,
 } from "../../convex/lib/browserStartPolicy.ts";
 import { parseCloudOutcome } from "../../convex/lib/browserOutcomePolicy.ts";
+import { orderRowFromRun } from "../../convex/lib/orderRecordPolicy.ts";
 import { markTurnSpoke, turnSpoke } from "../lib/early-deliver.ts";
 import { fastAckOf } from "../lib/fast-ack.ts";
 import { attrsFromSession, deliverHumanRouted } from "../lib/deliver-routed";
@@ -86,7 +86,6 @@ import {
   loginPagesFor,
   profileExtra,
   shortTask,
-  taskLooksLikeBuy,
 } from "../lib/browser-task-policy.ts";
 
 async function persist(
@@ -367,6 +366,12 @@ function payingFor(
   return typeof extra.paying === "boolean" ? extra.paying : tenant.browserPaying === true;
 }
 
+/** The status/paying/attach-card/«НУЖНО» gate and the parse both live in
+ *  `orderRowFromRun` (convex/lib/orderRecordPolicy.ts) — the Convex
+ *  follow-through records a background completion through the very same
+ *  function, so the two paths cannot disagree about what counts as an order.
+ *  `api.orders.record` upserts on (tenantId, merchantOrderId), so a run that
+ *  both paths see lands on one row. */
 async function maybeRecordOrder(
   phone: string,
   run: BrowserRun,
@@ -374,20 +379,12 @@ async function maybeRecordOrder(
   extra: Record<string, unknown>,
   tenant: { browserPaying?: boolean; browserPayHosts?: string[] },
 ): Promise<void> {
-  if (run.status.toLowerCase() !== "completed") return;
-  const paying = payingFor(extra, tenant);
-  if (!paying && !taskLooksLikeBuy(task)) return;
-  // «привяжи карту» pays nothing (bar the bank's ~1 ₽ hold) — a saved card is
-  // not an order, and the hold must never be recorded as one.
-  if (isAttachCardErrand(task) && !taskLooksLikeBuy(task)) return;
-  // A run that stopped on a blocker (3DS, a missing card, an OTP) is not a
-  // placed order yet, whatever free-text guessing over its result might say.
-  if (parseCloudOutcome(run.result).needs !== "none") return;
-  const row = parseOrderFromResult({
+  const row = orderRowFromRun({
+    status: run.status,
     task,
     result: run.result,
+    paying: payingFor(extra, tenant),
     hosts: extraHosts(extra) ?? tenant.browserPayHosts,
-    pay: paying,
   });
   if (!row) return;
   try {
