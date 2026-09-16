@@ -106,19 +106,40 @@ for (const beat of [
   eq(sanitizeFastAck(beat), beat, `natural opener survives: «${beat}»`);
 }
 
-// The «взялся» palette in agent/instructions.md and the fast-ack examples are
-// the same register, so the agent's own palette must clear the same gate: a
-// beat the big model may send first has to be one the tiny lane could send.
+// Neither prompt may ship a roster of ready-made beats: the owner wants the
+// line composed, and a list long enough to choose from is what a model copies
+// instead of composing. Both sides must therefore ask for fresh wording and
+// keep whatever they do quote down to illustration.
 {
-  const paletteLine = src("agent/instructions.md")
-    .split("\n")
-    .find((l) => l.startsWith("«взялся, смотрю вб»"));
-  assert(Boolean(paletteLine), "instructions.md still carries the «взялся» palette line");
-  const beats = [...paletteLine!.matchAll(/«([^»]+)»/g)].map((m) => m[1]!);
-  assert(beats.length >= 9, `instructions palette lists ${beats.length} beats, want >= 9`);
-  for (const beat of beats) {
-    eq(sanitizeFastAck(beat), beat, `instructions palette beat survives: «${beat}»`);
+  const instructions = src("agent/instructions.md");
+  const section = instructions.slice(
+    instructions.indexOf("### Строка «взялся»"),
+    instructions.indexOf("## Groups"),
+  );
+  const quoted = [...section.matchAll(/«([^»]+)»/g)]
+    .map((m) => m[1]!)
+    .filter((q) => !["ищу", "взялся", "ок", "спасибо", "понял"].includes(q));
+  assert(
+    quoted.length <= 3,
+    `instructions.md offers ${quoted.length} ready-made beats — that is a menu, not an illustration`,
+  );
+  // What it does quote still has to be something the tiny lane could send,
+  // so the two prompts cannot drift into different registers.
+  for (const beat of quoted) {
+    eq(sanitizeFastAck(beat), beat, `instructions illustration survives: «${beat}»`);
   }
+  assert(
+    instructions.includes("Формулируй её сам, каждый раз с нуля"),
+    "instructions.md asks for the line to be composed, not picked",
+  );
+  assert(
+    FAST_ACK_SYSTEM.includes("сочиняй сам, каждый раз с нуля"),
+    "the fast-ack prompt asks for the line to be composed, not picked",
+  );
+  assert(
+    FAST_ACK_SYSTEM.includes("дословно не повторяй"),
+    "the fast-ack prompt tells the model not to reuse its examples verbatim",
+  );
 }
 eq(
   sanitizeFastAck("окей, взялся, смотрю вб и озон"),
@@ -315,12 +336,12 @@ assert(
   "system prompt carries no emoji of its own for the model to copy",
 );
 assert(
-  FAST_ACK_SYSTEM.includes("не начинай всё время с «ищу»"),
+  FAST_ACK_SYSTEM.includes("особенно не с «ищу»"),
   "system prompt forbids always opening with «ищу»",
 );
 assert(
-  /придумывай формулировку заново/.test(FAST_ACK_SYSTEM),
-  "system prompt asks for a freshly worded opener each call",
+  /сочиняй сам, каждый раз с нуля/.test(FAST_ACK_SYSTEM),
+  "system prompt asks for a freshly composed opener each call",
 );
 {
   // The example palette must show variety, not one shape repeated: count the
@@ -328,9 +349,19 @@ assert(
   const answers = [...FAST_ACK_SYSTEM.matchAll(/→\s*(.+)/g)]
     .map((m) => m[1]!.trim())
     .filter((a) => a !== "NONE");
-  assert(answers.length >= 10, "system prompt shows at least 10 errand examples");
+  // Few on purpose. A tiny model copies a long list verbatim instead of
+  // learning a register from it, and the owner asked for the line to be
+  // composed — so this is a ceiling, not a floor, and the examples that
+  // remain must still each show a different shape.
+  assert(
+    answers.length >= 2 && answers.length <= 4,
+    `system prompt shows ${answers.length} errand examples — enough to fix tone, few enough not to be a menu`,
+  );
   const openers = new Set(answers.map((a) => a.split(/[\s,]+/)[0]!.toLowerCase()));
-  assert(openers.size >= 9, "system prompt examples open with many different words");
+  assert(
+    openers.size === answers.length,
+    "no two system prompt examples open with the same word",
+  );
   assert(
     answers.every((a) => a === a.toLowerCase()),
     "every system prompt example answer is lowercase",

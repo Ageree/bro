@@ -116,8 +116,8 @@ assert(
   "instructions.md sets the 2–6 word window for the opening line",
 );
 assert(
-  instructions.includes("с маленькой буквы, без точки в конце, придумана заново"),
-  "instructions.md requires a freshly worded lowercase opening line",
+  instructions.includes("с маленькой буквы, без точки в конце"),
+  "instructions.md sets the lowercase, no-final-period shape",
 );
 // Poke: "Never output preamble or postamble" / "never repeat what the user
 // says directly back at them when acknowledging".
@@ -130,27 +130,36 @@ assert(
   "instructions.md forbids always opening with «ищу»",
 );
 assert(
-  instructions.includes("не повторяй формулировку прошлого хода"),
+  instructions.includes("сказанное в тот раз в этот раз не повторяй"),
   "instructions.md forbids reusing the previous turn's wording",
 );
-// The palette has to be a palette: several differently-shaped openers.
-const palette = ["взялся", "принял", "беру на себя", "приступил", "сделаю", "окей"];
-for (const opener of palette) {
-  assert(
-    instructions.includes(opener),
-    `instructions.md opening-line palette includes "${opener}"`,
-  );
-}
-// The palette line itself has to stay a palette: many differently-opened beats.
+
+// The owner's steer: the model must WRITE the line, not pick one off a list.
+// A menu of ready-made beats is rotation, not speech — however long the menu
+// is — so the file must ask for fresh wording and must not ship a roster to
+// choose from.
+assert(
+  instructions.includes("Формулируй её сам, каждый раз с нуля"),
+  "instructions.md asks the model to compose the line itself",
+);
+assert(
+  instructions.includes("Готовых заготовок не держи"),
+  "instructions.md bans keeping stock phrases",
+);
 {
-  const line = instructions
-    .split("\n")
-    .find((l) => l.startsWith("«взялся, смотрю вб»"));
-  assert(Boolean(line), "instructions.md still carries the «взялся» palette line");
-  const beats = [...line!.matchAll(/«([^»]+)»/g)].map((m) => m[1]!);
-  assert(beats.length >= 9, `«взялся» palette lists ${beats.length} beats, want >= 9`);
-  const openers = new Set(beats.map((b) => b.split(/[\s,]+/)[0]!.toLowerCase()));
-  assert(openers.size >= 9, "«взялся» palette beats open with distinct words");
+  const section = instructions.slice(
+    instructions.indexOf("### Строка «взялся»"),
+    instructions.indexOf("## Groups"),
+  );
+  assert(section.length > 0, "the «взялся» section is still in the file");
+  const quoted = [...section.matchAll(/«([^»]+)»/g)]
+    .map((m) => m[1]!)
+    // Words the rules talk ABOUT rather than beats offered for reuse.
+    .filter((q) => !["ищу", "взялся", "ок", "спасибо", "понял"].includes(q));
+  assert(
+    quoted.length <= 3,
+    `the «взялся» section offers ${quoted.length} ready-made beats — at most 3 may stand as illustration, the rest is a menu to copy`,
+  );
 }
 
 // --- length ceiling: same-or-shorter intent, hard cap at +10% over baseline ---
