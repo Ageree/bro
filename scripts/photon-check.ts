@@ -147,7 +147,11 @@ assert(
 );
 assert(
   shouldSkipAgentTurn({ firstBind: true, text: "привет" }),
-  "first привет is canned welcome+help, not a silent drop",
+  "first привет is the canned welcome letter, not a silent drop",
+);
+assert(
+  !shouldSkipAgentTurn({ firstBind: false, text: "привет" }),
+  "a later привет is an ordinary agent turn, not the letter again",
 );
 assert(
   !shouldSkipAgentTurn({ firstBind: false, text: "запиши к врачу завтра" }),

@@ -3,8 +3,10 @@ import {
   cabinetLoginUrl,
   helpText,
   isConnectOrEmptyInbound,
+  isGreeting,
   isHelpAsk,
   isTelegramAsk,
+  shouldSendWelcome,
   shouldSkipAgentTurn,
   vaultCardUrl,
   welcomeBubbles,
@@ -17,15 +19,26 @@ function hasCyrillic(s: string): boolean {
   return /[а-яё]/i.test(s);
 }
 
-const HELP_PHRASES = [
+const GREETINGS = [
   "привет",
   "Привет!",
   "привет 👋",
+  "привет бро",
   "здарова",
   "hello",
   "HELLO",
   "hi",
   "Hi.",
+  "[voice] привет",
+];
+
+for (const phrase of GREETINGS) {
+  assert(isGreeting(phrase), `greeting: ${phrase}`);
+  // A bare hello is no longer an ask for the letter — the agent answers it.
+  assert(!isHelpAsk(phrase), `greeting is not a help ask: ${phrase}`);
+}
+
+const HELP_PHRASES = [
   "что ты",
   "что ты?",
   "кто ты",
@@ -35,11 +48,11 @@ const HELP_PHRASES = [
   "help",
   "/help",
   "помощь",
-  "[voice] привет",
 ];
 
 for (const phrase of HELP_PHRASES) {
   assert(isHelpAsk(phrase), `help: ${phrase}`);
+  assert(!isGreeting(phrase), `help ask is not a greeting: ${phrase}`);
 }
 
 const NOT_HELP = [
@@ -56,6 +69,7 @@ const NOT_HELP = [
 
 for (const phrase of NOT_HELP) {
   assert(!isHelpAsk(phrase), `not help: ${JSON.stringify(phrase)}`);
+  assert(!isGreeting(phrase), `not greeting: ${JSON.stringify(phrase)}`);
 }
 
 assert(isConnectOrEmptyInbound(""), "empty inbound");
@@ -75,6 +89,21 @@ assert(
 assert(shouldSkipAgentTurn({ firstBind: true, text: "" }), "skip first bind empty");
 assert(shouldSkipAgentTurn({ firstBind: true, text: "привет" }), "skip first bind hi");
 assert(shouldSkipAgentTurn({ firstBind: false, text: "помощь" }), "skip later help");
+// The whole point: a repeat «привет» is a normal turn, not five canned bubbles.
+assert(
+  !shouldSkipAgentTurn({ firstBind: false, text: "привет" }),
+  "later hi runs the agent turn",
+);
+assert(
+  !shouldSkipAgentTurn({ firstBind: false, text: "hi bro" }),
+  "later english hi runs the agent turn",
+);
+assert(shouldSendWelcome({ firstBind: true, text: "привет" }), "first bind hi gets the letter");
+assert(shouldSendWelcome({ firstBind: true, text: "купи на вб кроссовки" }), "first bind always onboards");
+assert(!shouldSendWelcome({ firstBind: false, text: "привет" }), "later hi never resends the letter");
+assert(!shouldSendWelcome({ firstBind: false, text: "здарова бро" }), "later здарова never resends the letter");
+assert(shouldSendWelcome({ firstBind: false, text: "помощь" }), "later помощь resends the letter");
+assert(shouldSendWelcome({ firstBind: false, text: "что ты умеешь" }), "later что умеешь resends the letter");
 assert(isTelegramAsk("телеграм"), "telegram ask");
 assert(isTelegramAsk("Telegram"), "telegram ask case");
 assert(isTelegramAsk("тг"), "tg ask");
@@ -213,7 +242,14 @@ assert(
   channel.includes("parkTurn(waitUntil, onboard)"),
   "first-bind welcome does not block the agent turn",
 );
-assert(channel.includes("!firstBind && isHelpAsk"), "later help resends the same letter");
+assert(
+  channel.includes("shouldSendWelcome({ firstBind, text: inbound.text })"),
+  "one rule decides the letter: first bind, or an explicit help ask later",
+);
+assert(
+  !channel.includes("isHelpAsk"),
+  "the channel no longer resends the letter on its own help check",
+);
 assert(channel.includes("/webhooks/photon"), "channel has Photon inbound");
 assert(channel.includes("bindPhotonInbound"), "channel binds Photon DM");
 assert(channel.includes("photonNudgeText"), "old Inkbox thread gets one nudge");

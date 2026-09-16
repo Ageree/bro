@@ -34,8 +34,8 @@ import { cloudInjectAttribute } from "../../convex/lib/browserInjectPolicy.ts";
 import { secretEquals } from "../lib/secret-compare.ts";
 import {
   cabinetBaseUrl,
-  isHelpAsk,
   isTelegramAsk,
+  shouldSendWelcome,
   shouldSkipAgentTurn,
   welcomeBubbles,
 } from "../lib/onboard-policy";
@@ -443,7 +443,10 @@ export default defineChannel({
         return new Response(null, { status: 204 });
       }
 
-      if (firstBind) {
+      // The letter is a first-contact thing: once on the bind, and after that
+      // only when a human asks for it by name. A repeat «привет» falls through
+      // to the ordinary agent turn below.
+      if (shouldSendWelcome({ firstBind, text: inbound.text })) {
         const onboard = sendWelcomeLetter({
           conversationId: inbound.spaceId,
           phone: inbound.senderPhone,
@@ -451,20 +454,11 @@ export default defineChannel({
           inkboxIdentityId: boundTenant.inkboxIdentityId,
           photonUserId: inbound.userId,
         });
-        if (shouldSkipAgentTurn({ firstBind, text: inbound.text })) {
-          await onboard;
-        } else {
+        if (firstBind && !shouldSkipAgentTurn({ firstBind, text: inbound.text })) {
           parkTurn(waitUntil, onboard);
+        } else {
+          await onboard;
         }
-      }
-      if (!firstBind && isHelpAsk(inbound.text)) {
-        await sendWelcomeLetter({
-          conversationId: inbound.spaceId,
-          phone: inbound.senderPhone,
-          inkboxHandle: boundTenant.inkboxHandle,
-          inkboxIdentityId: boundTenant.inkboxIdentityId,
-          photonUserId: inbound.userId,
-        });
       }
       if (isTelegramAsk(inbound.text)) {
         try {

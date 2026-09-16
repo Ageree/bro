@@ -9,7 +9,9 @@ function cabinetHandle(raw: string | undefined): string | undefined {
 
 const VOICE_PREFIX = /^\[voice\]\s*/i;
 
-const HELP_EXACT = new Set([
+/** A bare hello. Worth the whole letter once, on the first bind; after that it
+ *  is just a human saying hi and the agent answers it like any other line. */
+const GREETING_EXACT = new Set([
   "привет",
   "привет бро",
   "привет bro",
@@ -20,6 +22,10 @@ const HELP_EXACT = new Set([
   "hello bro",
   "hi",
   "hi bro",
+]);
+
+/** An explicit ask for the letter. Always answered with the letter. */
+const HELP_EXACT = new Set([
   "что ты",
   "кто ты",
   "что умеешь",
@@ -52,6 +58,12 @@ export function foldAsk(text: string): string {
     .trim();
 }
 
+export function isGreeting(text: string): boolean {
+  const folded = foldAsk(text);
+  if (!folded) return false;
+  return GREETING_EXACT.has(folded);
+}
+
 export function isHelpAsk(text: string): boolean {
   const folded = foldAsk(text);
   if (!folded) return false;
@@ -66,14 +78,25 @@ export function isConnectOrEmptyInbound(text: string): boolean {
   return /^connect\s+@[a-z0-9][a-z0-9._-]*$/i.test(compact);
 }
 
+/** The letter goes out once, on the first bind, and after that only when a human
+ *  asks for it by name («что ты», «help», «помощь»). A later «привет» is a
+ *  normal turn — the agent greets back instead of resending five bubbles. */
+export function shouldSendWelcome(input: {
+  firstBind: boolean;
+  text: string;
+}): boolean {
+  if (input.firstBind) return true;
+  return isHelpAsk(input.text);
+}
+
 export function shouldSkipAgentTurn(input: {
   firstBind: boolean;
   text: string;
 }): boolean {
   if (isHelpAsk(input.text)) return true;
   if (isTelegramAsk(input.text)) return true;
-  if (input.firstBind && isConnectOrEmptyInbound(input.text)) return true;
-  return false;
+  if (!input.firstBind) return false;
+  return isGreeting(input.text) || isConnectOrEmptyInbound(input.text);
 }
 
 /** Public cabinet / vault host. Override with BRO_CABINET_BASE or BRO_PAY_BASE. */
@@ -112,7 +135,8 @@ export type WelcomeOpts = {
   cabinetBase?: string;
 };
 
-/** First-contact letter. Same bubbles for a new bind and later «привет».
+/** First-contact letter. Sent on the first bind, and later only for an explicit
+ *  «что ты» / «help» / «помощь» — never again for a plain «привет».
  *  «Бро.» / «Bro.» as a line opener is only for the rare channel-ok ping. */
 export function welcomeBubbles(opts?: WelcomeOpts): string[] {
   void opts?.canJoinGroups;
