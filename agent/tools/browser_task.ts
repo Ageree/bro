@@ -72,7 +72,12 @@ import { attrsFromSession, deliverHumanRouted } from "../lib/deliver-routed";
 import { conversationId, groupPersonalBlock, turnAttributes } from "../lib/group-guard";
 import { chatConversationId, tenantId } from "../lib/tenant";
 import { browserGateFromResult } from "../../convex/lib/billingPolicy";
-import { cardBindings, normalizePayHosts } from "../lib/browser-pay.ts";
+import {
+  cardBindings,
+  expandPayHosts,
+  isAttachCardErrand,
+  normalizePayHosts,
+} from "../lib/browser-pay.ts";
 import { parsePaymentPayload } from "../../convex/lib/vaultPayload.ts";
 import { vaultPasswordLoginForPages } from "../lib/vault-login.ts";
 import {
@@ -372,6 +377,9 @@ async function maybeRecordOrder(
   if (run.status.toLowerCase() !== "completed") return;
   const paying = payingFor(extra, tenant);
   if (!paying && !taskLooksLikeBuy(task)) return;
+  // «привяжи карту» pays nothing (bar the bank's ~1 ₽ hold) — a saved card is
+  // not an order, and the hold must never be recorded as one.
+  if (isAttachCardErrand(task) && !taskLooksLikeBuy(task)) return;
   // A run that stopped on a blocker (3DS, a missing card, an OTP) is not a
   // placed order yet, whatever free-text guessing over its result might say.
   if (parseCloudOutcome(run.result).needs !== "none") return;
@@ -489,18 +497,18 @@ async function continuationPayHosts(
 ): Promise<string[]> {
   const startPage = errandStartUrl(storedTask);
   if (startPage) {
-    const hosts = normalizePayHosts([startPage]);
+    const hosts = expandPayHosts([startPage]);
     if (hosts.length > 0) return hosts;
   }
   const browser = await findBrowserForSession(sessionId).catch(() => undefined);
   if (!browser?.cdpUrl) return [];
   const pageUrl = await cdpPageUrl(browser.cdpUrl).catch(() => undefined);
-  return pageUrl ? normalizePayHosts([pageUrl]) : [];
+  return pageUrl ? expandPayHosts([pageUrl]) : [];
 }
 
 export default defineTool({
   description:
-    'One browser job per person: start or poll, never a second search while one runs. The site opens itself; the job logs in on its own (vault login, cookies, or Войти/passport) — never ask for a login or password, never put one in chat. busy = another job runs: say "сначала закончу X, потом сделаю Y"; do not call profile_setup. reset:true cancels the job and starts fresh. Live page + human\'s last line is a code, "подожди", an address/size correction, or "подтвердил"/"готово"/"вошёл" → pass their exact line, it gets typed/queued into the open page; never resend the old task. status:"completed" + result → report it. Buying: pay on the first call (hosts = merchant hostnames; maxRub only if named). needsVaultSetup → vault_setup kind=payment. needsProfileSync → profile_setup, only if no vault login was used and nothing runs.',
+    'One browser job per person: start or poll, never a second search while one runs. The site opens itself; the job logs in on its own (vault login, cookies, or Войти/passport) — never ask for a login or password, never put one in chat. busy = another job runs: say "сначала закончу X, потом сделаю Y"; do not call profile_setup. reset:true cancels the job and starts fresh. Live page + human\'s last line is a code, "подожди", an address/size correction, or "подтвердил"/"готово"/"вошёл" → pass their exact line, it gets typed/queued into the open page; never resend the old task. status:"completed" + result → report it. Buying or «привяжи карту»: pay on the first call (hosts = the site\'s hostnames, Bro widens them to the real card-form domains; maxRub only if named). needsVaultSetup → vault_setup kind=payment. needsProfileSync → profile_setup, only if no vault login was used and nothing runs.',
   inputSchema: z.object({
     task: z.string().min(1).max(4000),
     reset: z.boolean().optional(),
@@ -522,6 +530,10 @@ export default defineTool({
       };
     }
     const phone = tenantId(ctx);
+    // «привяжи карту» / «добавь способ оплаты»: an errand about the card
+    // itself, with no purchase at the end. It needs the same vault card and
+    // the same run-scoped bindings a paid errand gets.
+    const attachCard = isAttachCardErrand(task);
     const tenant = await upsertTenant(phone);
     const conv = conversationId(ctx, chatConversationId(tenant));
     // The human turn is stamped with the exact code/correction it carried. Use
@@ -560,9 +572,10 @@ export default defineTool({
       need: tenant.browserNeed,
       sessionId: tenant.browserSessionId,
     });
-    // secretBindings are run-scoped, so a paid errand can never just "reuse"
+    // secretBindings are run-scoped, so a card errand can never just "reuse"
     // the last result — it has to start a fresh run with fresh bindings.
-    const preAction = pay && rawAction === "reuse" ? "start" : rawAction;
+    const preAction =
+      (pay || attachCard) && rawAction === "reuse" ? "start" : rawAction;
     // A `continue` target session can already be gone by the time the human
     // answers — Browser Use's 4h hard cap, or sweepWaiting stopping the
     // browser after 40min parked on a need. Check before committing to it:
@@ -646,19 +659,24 @@ export default defineTool({
       // covers this session from the original start, same reasoning as the
       // inject/resume path in maybeInjectChat, which also never calls
       // countBrowserJobStart).
+      const contAttachCard = isAttachCardErrand(tenant.browserTask ?? task);
       let contPayHosts: string[] | undefined;
+      let contPayHostsBase: string[] | undefined;
       if (pay) {
-        contPayHosts = normalizePayHosts(pay.hosts);
-        if (contPayHosts.length === 0) {
+        contPayHostsBase = normalizePayHosts(pay.hosts);
+        if (contPayHostsBase.length === 0) {
           return {
             status: "invalid",
             hint: "pay.hosts must contain at least one valid hostname",
           };
         }
-      } else if (tenant.browserNeed === "payment") {
+        contPayHosts = expandPayHosts(pay.hosts);
+      } else if (tenant.browserNeed === "payment" || contAttachCard) {
         // The model may just relay the human's own words ("оплати картой из
         // сейфа") without `pay` — bind the vault card anyway, as if `pay`
-        // had been given with the errand's own site as the host.
+        // had been given with the errand's own site as the host. An
+        // attach-card errand resumes the same way: the card is still what the
+        // open tab is waiting for.
         const guessed = await continuationPayHosts(tenant.browserTask, sessionId);
         if (guessed.length > 0) contPayHosts = guessed;
       }
@@ -681,7 +699,13 @@ export default defineTool({
       }
 
       let contPayOpts:
-        | { hosts: string[]; holder: string; account: string; maxRub?: number }
+        | {
+            hosts: string[];
+            holder: string;
+            account: string;
+            maxRub?: number;
+            attachCard?: boolean;
+          }
         | undefined;
       let contSecretBindings: ReturnType<typeof cardBindings> | undefined;
       if (contPayHosts && contPayItem) {
@@ -694,11 +718,12 @@ export default defineTool({
           holder: card.cardholderName,
           account: contPayItem.account,
           ...(pay?.maxRub !== undefined ? { maxRub: pay.maxRub } : {}),
+          ...(contAttachCard ? { attachCard: true } : {}),
         };
       }
 
       const startPage = errandStartUrl(tenant.browserTask ?? task);
-      const loginPages = loginPagesFor(task, contPayHosts, startPage);
+      const loginPages = loginPagesFor(task, contPayHostsBase, startPage);
       const vaultLogin = await vaultPasswordLoginForPages(phone, loginPages);
       if (vaultLogin) {
         contSecretBindings = [...(contSecretBindings ?? []), ...vaultLogin.bindings];
@@ -782,20 +807,37 @@ export default defineTool({
     }
 
     // Cheap part before the billing gate: a missing card must not burn quota.
+    // An attach-card ask used to start a run with no bindings at all and stall
+    // on the card form, because the chat model only sends `pay` for purchases.
+    // Bind it from the errand's own site instead, as if `pay` had been given.
     let payHosts: string[] | undefined;
+    // The hosts the CALLER named, un-widened — what a saved vault login is
+    // looked up against. The widened set below is only for card bindings.
+    let payHostsBase: string[] | undefined;
     let payItem: { handle: string; account: string } | undefined;
-    if (pay) {
-      payHosts = normalizePayHosts(pay.hosts);
-      if (payHosts.length === 0) {
+    if (pay || attachCard) {
+      const attachPage = pay ? undefined : errandStartUrl(task);
+      const rawHosts = pay
+        ? pay.hosts
+        : [
+            ...(task.match(/https?:\/\/[^\s]+/g) ?? []),
+            ...(attachPage ? [attachPage] : []),
+          ];
+      payHostsBase = normalizePayHosts(rawHosts);
+      if (pay && payHostsBase.length === 0) {
         return {
           status: "invalid",
           hint: "pay.hosts must contain at least one valid hostname",
         };
       }
+      // A payment form almost never lives on the merchant host itself — widen
+      // to the registrable domain and the known processors, or the server
+      // refuses to type the card where the field actually is.
+      if (payHostsBase.length > 0) payHosts = expandPayHosts(rawHosts);
       const items = (await listVaultItems(phone)).filter(
         (i) => i.kind === "payment" && i.available,
       );
-      payItem = pay.vaultHandle
+      payItem = pay?.vaultHandle
         ? items.find((i) => i.handle === pay.vaultHandle)
         : items[0];
       if (!payItem) {
@@ -809,7 +851,7 @@ export default defineTool({
 
     const chargeKey = chargeKeyFor(
       { browserSessionId: tenant.browserSessionId, browserTask: tenant.browserTask, browserStartedAt: tenant.browserStartedAt },
-      { pay: Boolean(pay), rawAction },
+      { pay: Boolean(pay) || attachCard, rawAction },
       Date.now(),
     );
     let allowed = false;
@@ -831,10 +873,16 @@ export default defineTool({
 
     // The card is decrypted only once a run is actually going to start.
     let payOpts:
-      | { hosts: string[]; holder: string; account: string; maxRub?: number }
+      | {
+          hosts: string[];
+          holder: string;
+          account: string;
+          maxRub?: number;
+          attachCard?: boolean;
+        }
       | undefined;
     let secretBindings: ReturnType<typeof cardBindings> | undefined;
-    if (pay && payHosts && payItem) {
+    if (payHosts && payItem) {
       const secretRecord = await readVaultSecret(phone, payItem.handle);
       const card = secretRecord ? parsePaymentPayload(secretRecord.secret) : undefined;
       if (!card) throw new Error("карта в сейфе заполнена не полностью");
@@ -843,7 +891,8 @@ export default defineTool({
         hosts: payHosts,
         holder: card.cardholderName,
         account: payItem.account,
-        ...(pay.maxRub !== undefined ? { maxRub: pay.maxRub } : {}),
+        ...(pay?.maxRub !== undefined ? { maxRub: pay.maxRub } : {}),
+        ...(attachCard ? { attachCard: true } : {}),
       };
     }
 
@@ -852,7 +901,7 @@ export default defineTool({
     // домой» has no `pay` and no explicit URL, so without it the saved
     // taxi.yandex.ru login is never looked up at all.
     const startPage = errandStartUrl(task);
-    const loginPages = loginPagesFor(task, payHosts, startPage);
+    const loginPages = loginPagesFor(task, payHostsBase, startPage);
     const vaultLogin = await vaultPasswordLoginForPages(phone, loginPages);
     if (vaultLogin) {
       secretBindings = [...(secretBindings ?? []), ...vaultLogin.bindings];

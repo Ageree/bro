@@ -15,6 +15,8 @@ import {
   taskLooksLikeBuy,
 } from "../agent/lib/browser-task-policy.ts";
 import { errandStartUrl } from "../convex/lib/browserStartPolicy.ts";
+import { expandPayHosts, isAttachCardErrand } from "../agent/lib/browser-pay.ts";
+import { nextBrowserAction } from "../agent/lib/browser-policy.ts";
 import { loginWaitTask, scaffoldTask } from "../agent/lib/browseruse.ts";
 
 import { assert, eq, src } from "./lib/check.ts";
@@ -433,5 +435,83 @@ assert(
   /if \(started && !fallbackToStart\)/.test(continueBlock),
   "continue only takes the continuation path when startRun actually succeeded",
 );
+
+// ---------------------------------------------------------------------------
+// Card flow: an attach-card errand («привяжи карту в яндекс такси») binds the
+// vault card even when the chat model sends no `pay`, and binds it to the
+// domains the card form actually lives on. Source-level — the full path needs
+// a live Browser Use session and a real Yandex account.
+// ---------------------------------------------------------------------------
+{
+  const startPage = errandStartUrl("привяжи карту в яндекс такси");
+  eq(startPage, "https://taxi.yandex.ru/", "an attach-card taxi errand resolves its site");
+  assert(
+    isAttachCardErrand("привяжи карту в яндекс такси"),
+    "«привяжи карту» is recognised as a card errand",
+  );
+  assert(
+    expandPayHosts([startPage!]).includes("yandex.ru"),
+    "the site it resolves widens to the domain the card form lives on",
+  );
+}
+
+{
+  const attachBlock = toolSrc.slice(
+    toolSrc.indexOf("// Cheap part before the billing gate"),
+    toolSrc.indexOf("const chargeKey = chargeKeyFor("),
+  );
+  assert(attachBlock.length > 0, "found the pre-billing card-resolution block");
+  assert(
+    attachBlock.includes("if (pay || attachCard) {"),
+    "an attach-card errand resolves a vault card even with no `pay`",
+  );
+  assert(
+    attachBlock.includes("errandStartUrl(task)"),
+    "with no `pay`, the hosts come from the errand's own site",
+  );
+  assert(
+    attachBlock.includes('needsVaultSetup: "payment"'),
+    "«привяжи карту» with an empty vault asks for vault_setup instead of running blind",
+  );
+  assert(
+    attachBlock.includes("expandPayHosts(rawHosts)"),
+    "the bound domains are the widened set",
+  );
+  assert(
+    /if \(pay && payHostsBase\.length === 0\)/.test(attachBlock),
+    "an explicit `pay` with no usable hostname is still rejected",
+  );
+}
+
+{
+  // 3-D Secure / SMS / push during a card flow must be resumable in the SAME
+  // session: the widened bindings are re-sent and the human's code is queued
+  // into the tab that is already sitting on the bank page.
+  assert(
+    toolSrc.includes("const contAttachCard = isAttachCardErrand(tenant.browserTask ?? task);"),
+    "a continuation knows the original errand was an attach-card one",
+  );
+  assert(
+    toolSrc.includes('tenant.browserNeed === "payment" || contAttachCard'),
+    "an attach-card continuation re-binds the card without waiting for `pay`",
+  );
+  assert(
+    toolSrc.includes("contAttachCard ? { attachCard: true } : {}"),
+    "the continuation keeps the attach-card shape in its prompt",
+  );
+  for (const need of ["3ds", "sms_code", "push"] as const) {
+    assert(
+      nextBrowserAction({
+        runId: "r1",
+        status: "completed",
+        storedTask: "привяжи карту в яндекс такси",
+        sessionId: "sess-1",
+        need,
+        incomingTask: "готово, подтвердил",
+      }) === "continue",
+      `a card errand parked on ${need} resumes in the same session`,
+    );
+  }
+}
 
 console.log("browser-task-check ok");

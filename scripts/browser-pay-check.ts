@@ -1,18 +1,23 @@
 import {
   cardBindings,
+  expandLoginHosts,
+  expandPayHosts,
+  isAttachCardErrand,
   LOGIN_ALIASES,
   loginBindings,
   loginScaffold,
   normalizePayHost,
   normalizePayHosts,
   PAY_ALIASES,
+  PAY_HOST_LIMIT,
   payScaffold,
+  registrableDomain,
 } from "../agent/lib/browser-pay.ts";
 import type { LoginPayload } from "../convex/lib/vaultPayload.ts";
 import { scaffoldTask } from "../agent/lib/browseruse.ts";
 import type { PaymentPayload } from "../convex/lib/vaultPayload.ts";
 
-import { assert, src, throws } from "./lib/check.ts";
+import { assert, eq, src, throws } from "./lib/check.ts";
 
 // --- normalizePayHost ---
 
@@ -237,6 +242,263 @@ throws(() => loginBindings(login, []), "loginBindings throws on empty hosts");
       "Если пароля в задаче нет и сайт просит логин",
     ),
     "vault login does not fall back to asking the human",
+  );
+}
+
+// ---------------------------------------------------------------------------
+// registrableDomain / expandPayHosts — the Yandex Taxi root cause: the card
+// form is never on taxi.yandex.ru, it is on pay./trust./passport.yandex.ru.
+// Browser Use v4: "A host covers its subdomains. Bare hostnames only."
+// (docs.browser-use.com/cloud/api-v4/runs/create-run.md, SecretBinding), so
+// binding only the merchant host leaves the real card field unbindable.
+// ---------------------------------------------------------------------------
+
+eq(registrableDomain("taxi.yandex.ru"), "yandex.ru", "sibling-covering root domain");
+eq(registrableDomain("ozon.ru"), "ozon.ru", "an apex host is its own root");
+eq(registrableDomain("https://www.wildberries.ru/x"), "wildberries.ru", "URL + www");
+eq(registrableDomain("a.b.c.yandex.ru"), "yandex.ru", "deep subdomain");
+eq(registrableDomain("127.0.0.1"), undefined, "an IP never yields a root");
+eq(registrableDomain("localhost"), undefined, "localhost never yields a root");
+// Shared hosting: every customer is a subdomain, so widening would hand the
+// card to somebody else's shop.
+eq(
+  registrableDomain("shop.myshopify.com"),
+  "shop.myshopify.com",
+  "a shared-hosting host is never widened to its provider",
+);
+eq(registrableDomain("site.vercel.app"), "site.vercel.app", "vercel.app is a public suffix");
+eq(registrableDomain("shop.com.ru"), "shop.com.ru", "com.ru is a public suffix");
+
+{
+  const hosts = expandPayHosts(["taxi.yandex.ru"]);
+  assert(hosts.includes("yandex.ru"), "the taxi errand binds the Yandex root domain");
+  assert(
+    !hosts.includes("taxi.yandex.ru"),
+    "the narrower merchant host is dropped once its root covers it",
+  );
+  assert(hosts.length <= PAY_HOST_LIMIT, "never over the API's 10-domain cap");
+  assert(hosts.includes("yoomoney.ru"), "Yandex's own wallet host is bound too");
+  for (const h of hosts) {
+    assert(normalizePayHost(h) === h, `${h} is a clean bare host`);
+  }
+}
+{
+  // Structural, not a Yandex special case: any merchant gets the common
+  // Russian processors its checkout may hand over to.
+  const hosts = expandPayHosts(["ozon.ru"]);
+  assert(hosts[0] === "ozon.ru", "the merchant host stays first");
+  assert(hosts.includes("cloudpayments.ru"), "generic processor bound");
+  assert(hosts.includes("yookassa.ru"), "generic processor bound");
+  assert(hosts.length <= PAY_HOST_LIMIT, "cap respected");
+}
+{
+  // Never a bank's login domain — only its acquiring/card-form host.
+  const hosts = expandPayHosts(["ozon.ru"]);
+  assert(!hosts.includes("tinkoff.ru"), "the bare bank domain is never bound");
+  assert(!hosts.includes("sberbank.ru"), "the bare bank domain is never bound");
+  assert(hosts.includes("securepay.tinkoff.ru"), "the acquiring host is bound instead");
+}
+{
+  // Private / IP / junk hosts are refused before anything is derived from them.
+  const hosts = expandPayHosts(["127.0.0.1", "localhost", "not a host", "taxi.yandex.ru"]);
+  assert(hosts.includes("yandex.ru"), "the one valid host still expands");
+  for (const bad of ["127.0.0.1", "localhost", "not a host"]) {
+    assert(!hosts.includes(bad), `${bad} never reaches allowedDomains`);
+  }
+  assert(expandPayHosts(["127.0.0.1"]).length === 0, "only private hosts → nothing to bind");
+  assert(expandPayHosts([]).length === 0, "no hosts → nothing to bind");
+}
+{
+  // Cap: prioritise, never blindly truncate. Ten caller hosts fill the ten
+  // slots (nothing lower-priority displaces a host the caller named).
+  const many = Array.from({ length: 14 }, (_, i) => `shop${i}.ru`);
+  const hosts = expandPayHosts(many);
+  eq(hosts.length, PAY_HOST_LIMIT, "capped at the API maximum");
+  eq(hosts[0], "shop0.ru", "caller order preserved");
+  assert(!hosts.includes("shop10.ru"), "the overflow tail is what gets dropped");
+}
+{
+  // A caller that names many merchant subdomains still gets their roots in:
+  // roots are interleaved right after their own host, not appended last.
+  const hosts = expandPayHosts(
+    Array.from({ length: 10 }, (_, i) => `sub${i}.merchant${i}.ru`),
+  );
+  assert(hosts.includes("merchant0.ru"), "the first host's root survives the cap");
+  assert(hosts.includes("merchant4.ru"), "a middle host's root survives the cap too");
+}
+{
+  // Cross-TLD sibling: yandex.com's card form lives on yandex.ru.
+  const hosts = expandPayHosts(["taxi.yandex.com"]);
+  assert(hosts.includes("yandex.com"), "own root bound");
+  assert(hosts.includes("yandex.ru"), "curated cross-TLD sibling bound");
+}
+
+// expandLoginHosts: the site's own family only — a password must never become
+// typeable on a payment processor.
+{
+  const hosts = expandLoginHosts(["https://taxi.yandex.ru/"]);
+  assert(hosts.includes("yandex.ru"), "a login covers passport.yandex.ru via the root");
+  for (const processor of ["yookassa.ru", "cloudpayments.ru", "yoomoney.ru"]) {
+    assert(!hosts.includes(processor), `login never bound to ${processor}`);
+  }
+}
+
+// The bindings actually carry the widened domains.
+{
+  const hosts = expandPayHosts(["taxi.yandex.ru"]);
+  const bindings = cardBindings(card, hosts);
+  assert(bindings.length === 6, "still six card bindings");
+  for (const b of bindings) {
+    assert(
+      b.allowedDomains.includes("yandex.ru"),
+      "every card binding is allowed on the Yandex root",
+    );
+    assert(b.allowedDomains.length <= 10, "API cap holds per binding");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// isAttachCardErrand — «привяжи карту» is its own errand shape, not a purchase
+// ---------------------------------------------------------------------------
+
+for (const yes of [
+  "привяжи карту в яндекс такси",
+  "добавь карту в яндекс такси",
+  "подключи карту на озоне",
+  "сохрани мою карту",
+  "карту привяжи, как в приложении",
+  "добавь способ оплаты",
+  "add a card to yandex taxi",
+  "save my credit card",
+]) {
+  assert(isAttachCardErrand(yes), `attach-card errand: ${yes}`);
+}
+for (const no of [
+  "купи кроссовки на wb",
+  "оплати картой из сейфа",
+  "вызови такси домой",
+  "закажи воду на ozon и оплати картой",
+  "",
+]) {
+  assert(!isAttachCardErrand(no), `not an attach-card errand: ${no}`);
+}
+assert(!isAttachCardErrand(undefined), "undefined task is not an attach-card errand");
+
+// ---------------------------------------------------------------------------
+// payScaffold / scaffoldTask in attach-card mode
+// ---------------------------------------------------------------------------
+
+{
+  const attachHosts = expandPayHosts(["taxi.yandex.ru"]);
+  const text = payScaffold({
+    hosts: attachHosts,
+    holder: "IVAN PETROV",
+    account: "Visa · •••• 1111",
+    attachCard: true,
+  });
+  assert(text.includes("привязать карту"), "names the goal: save the card");
+  assert(text.includes("Добавить карту"), "points at the Добавить карту control");
+  assert(text.includes("1 ₽"), "warns about the bank's small hold");
+  assert(text.includes("iframe"), "tells the agent the card field is in an iframe");
+  assert(text.includes("yandex.ru"), "lists the widened domains");
+  assert(text.includes("НУЖНО: 3ds"), "3-D Secure has a reachable outcome");
+  assert(text.includes("НУЖНО: sms_code"), "bank SMS has a reachable outcome");
+  assert(text.includes("НУЖНО: push"), "bank push has a reachable outcome");
+  assert(!text.includes("номер заказа"), "an attach-card run must not chase an order number");
+  for (const alias of Object.values(PAY_ALIASES)) {
+    assert(text.includes(alias), `attach scaffold still names ${alias}`);
+  }
+  assert(!text.includes("4111111111111111"), "no card value in the prompt");
+}
+{
+  const buy = payScaffold({
+    hosts: ["ozon.ru"],
+    holder: "IVAN PETROV",
+    account: "Visa · •••• 1111",
+  });
+  assert(buy.includes("номер заказа"), "a paying run still checks the order number");
+  assert(!buy.includes("привязать карту"), "a paying run is not an attach-card run");
+  assert(buy.includes("iframe"), "the iframe hint applies to paying too");
+}
+{
+  const attach = scaffoldTask("привяжи карту в яндекс такси", {
+    pay: {
+      hosts: expandPayHosts(["taxi.yandex.ru"]),
+      holder: "IVAN PETROV",
+      account: "Visa · •••• 1111",
+      attachCard: true,
+    },
+  });
+  assert(attach.includes(PAY_ALIASES.number), "card aliases bound into the errand");
+  assert(
+    attach.includes("Ничего не заказывай"),
+    "the finish block forbids placing an order",
+  );
+  assert(
+    !attach.includes("Доводи дело до конца, включая оплату"),
+    "the paying finish line is replaced, not added to",
+  );
+  assert(attach.includes("НУЖНО: none|"), "the mandatory outcome block survives");
+  for (const label of ["СДЕЛАНО:", "ЗАКАЗ:", "СУММА:", "КОГДА:", "ВАРИАНТЫ:", "НУЖНО:", "ДЕТАЛИ:"]) {
+    assert(attach.includes(label), `outcome block keeps ${label}`);
+  }
+}
+{
+  // Even with no card bound (nothing in the vault, no resolvable host), an
+  // attach-card errand must not be driven like a taxi order.
+  const bare = scaffoldTask("привяжи карту в яндекс такси");
+  assert(bare.includes("Ничего не заказывай"), "attach shape holds without pay");
+  assert(
+    !bare.includes("нажми «Заказать»"),
+    "an attach-card errand never gets the order-the-taxi finish line",
+  );
+  assert(bare.includes("НУЖНО: payment"), "it still asks for the card via the outcome block");
+}
+{
+  const buying = scaffoldTask("купи кроссовки 42 размера на wildberries.ru");
+  assert(
+    buying.includes("нажми «Заказать»"),
+    "an ordinary errand keeps its finish line",
+  );
+}
+
+// ---------------------------------------------------------------------------
+// browser_task wiring for the card flow (source-level: needs a live Cloud
+// session to exercise end to end)
+// ---------------------------------------------------------------------------
+{
+  const taskSrc = src("agent/tools/browser_task.ts");
+  assert(
+    /payHosts = expandPayHosts\(rawHosts\)/.test(taskSrc),
+    "a paid start binds the WIDENED host set, not the raw merchant hostnames",
+  );
+  assert(
+    taskSrc.includes("contPayHosts = expandPayHosts(pay.hosts)"),
+    "a continuation binds the widened host set too",
+  );
+  assert(
+    /loginPagesFor\(task, payHostsBase, startPage\)/.test(taskSrc),
+    "the vault-login lookup uses the caller's own hosts, not the payment processors",
+  );
+  assert(
+    taskSrc.includes("const attachCard = isAttachCardErrand(task);"),
+    "browser_task recognises an attach-card errand without `pay`",
+  );
+  assert(
+    /if \(pay \|\| attachCard\) \{/.test(taskSrc),
+    "an attach-card errand resolves a vault card just like a paid one",
+  );
+  assert(
+    /if \(payHosts && payItem\) \{/.test(taskSrc),
+    "card bindings are attached whenever hosts and a card exist, `pay` or not",
+  );
+  assert(
+    taskSrc.includes("(pay || attachCard) && rawAction === \"reuse\""),
+    "an attach-card repeat starts a fresh run — bindings are run-scoped",
+  );
+  assert(
+    taskSrc.includes("isAttachCardErrand(task) && !taskLooksLikeBuy(task)) return;"),
+    "attaching a card never records an order (the bank's 1 ₽ hold is not a purchase)",
   );
 }
 

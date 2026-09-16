@@ -41,6 +41,8 @@ import {
   scaffoldTask,
 } from "../agent/lib/browseruse.ts";
 
+import { expandPayHosts } from "../agent/lib/browser-pay.ts";
+
 import { assert, src, withEnv } from "./lib/check.ts";
 
 assert(normalizeTask("  Купить   скотч ") === "купить скотч", "normalize");
@@ -870,5 +872,55 @@ assert(
   }) === "continue",
   "a short same-errand follow-up with no NEW_JOB keyword still continues",
 );
+
+// ---------------------------------------------------------------------------
+// Attach-card errand: none of the ceilings/guards may abort it, and the taxi
+// finish line («нажми Заказать») must never be handed to it.
+// ---------------------------------------------------------------------------
+{
+  // A dry-run phrase inside an attach-card ask does not turn it into a
+  // "show me the form" run — there is nothing to order either way.
+  assert(
+    isDryRunErrand("привяжи карту, ничего не заказывай") === true,
+    "the dry-run detector still fires on the words themselves",
+  );
+  const attach = scaffoldTask("привяжи карту, ничего не заказывай", {
+    pay: {
+      hosts: expandPayHosts(["taxi.yandex.ru"]),
+      holder: "IVAN PETROV",
+      account: "Visa · •••• 1111",
+      attachCard: true,
+    },
+  });
+  assert(
+    attach.includes("Ничего не заказывай"),
+    "an attach-card run is driven to a saved card, not parked on a form preview",
+  );
+  assert(
+    !attach.includes("Не нажимай «Заказать», «Поехали»"),
+    "the dry-run finish line never replaces the attach-card one",
+  );
+  assert(attach.includes("card_number"), "the card is still bound on a dry-run-worded ask");
+}
+{
+  // No maxRub was named, so nothing may refuse to type the card on a ceiling.
+  const attach = scaffoldTask("привяжи карту в яндекс такси", {
+    pay: {
+      hosts: expandPayHosts(["taxi.yandex.ru"]),
+      holder: "IVAN PETROV",
+      account: "Visa · •••• 1111",
+      attachCard: true,
+    },
+  });
+  assert(!attach.includes("не плати, остановись"), "no ceiling line without maxRub");
+  assert(attach.includes("НУЖНО: 3ds"), "3-D Secure stays a reachable outcome");
+}
+{
+  const src_ = src("agent/tools/browser_task.ts");
+  assert(
+    src_.includes('{ pay: Boolean(pay) || attachCard, rawAction }'),
+    "an attach-card restart is charge-keyed like a paid one, so it cannot double-charge",
+  );
+}
 
 console.log("browser-policy-check ok");

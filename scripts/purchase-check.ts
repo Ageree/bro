@@ -6,6 +6,8 @@ import {
   watcherWakeupPrompt,
 } from "../agent/lib/purchase-policy.ts";
 import { taskLooksLikeBuy } from "../agent/lib/browser-task-policy.ts";
+import { isAttachCardErrand } from "../agent/lib/browser-pay.ts";
+import { parseOrderFromResult } from "../agent/lib/order-policy.ts";
 
 import { assert, src } from "./lib/check.ts";
 
@@ -86,5 +88,39 @@ assert(
   src("agent/tools/browser_task.ts").includes("payingFor(extra, tenant)"),
   "maybeRecordOrder falls back to the tenant's persisted browserPaying, not just the verb",
 );
+
+// --- «привяжи карту» is a card errand, not a purchase: nothing is bought, so
+// nothing may be written to `orders` (the bank's ~1 ₽ hold is not an order) ---
+assert(isAttachCardErrand("привяжи карту в яндекс такси"), "attach-card errand");
+assert(!taskLooksLikeBuy("привяжи карту в яндекс такси"), "attaching a card is not a buy");
+assert(
+  !isAttachCardErrand("купи кроссовки на wb"),
+  "a real purchase is not an attach-card errand",
+);
+assert(
+  src("agent/tools/browser_task.ts").includes(
+    "isAttachCardErrand(task) && !taskLooksLikeBuy(task)) return;",
+  ),
+  "maybeRecordOrder bails out on an attach-card run even though it is a paying run",
+);
+{
+  // Belt and braces: even if it reached the parser, a saved-card outcome has
+  // no price, so no order row could be built from it.
+  const row = parseOrderFromResult({
+    task: "привяжи карту в яндекс такси",
+    result: [
+      "СДЕЛАНО: карта привязана в Яндекс Такси",
+      "ЗАКАЗ: нет",
+      "СУММА: нет",
+      "КОГДА: нет",
+      "ВАРИАНТЫ: нет",
+      "НУЖНО: none",
+      "ДЕТАЛИ: нет",
+    ].join("\n"),
+    hosts: ["yandex.ru"],
+    pay: true,
+  });
+  assert(row === null, "a saved card never becomes an order row");
+}
 
 console.log("purchase-check ok");

@@ -23,7 +23,12 @@ import {
 } from "../../convex/lib/browserCdp.ts";
 import { scrubSecrets } from "../../convex/lib/secretScrub.ts";
 import { cdpNavigate } from "./browser-cdp.ts";
-import { loginScaffold, payScaffold, type SecretBinding } from "./browser-pay.ts";
+import {
+  isAttachCardErrand,
+  loginScaffold,
+  payScaffold,
+  type SecretBinding,
+} from "./browser-pay.ts";
 
 const BASE = "https://api.browser-use.com/api/v4";
 
@@ -155,7 +160,11 @@ ${vault}${typed}Нет пароля и без него дальше нельзя
 function errandFinishBlock(
   task: string,
   payBlock: string | undefined,
+  attachCard?: boolean,
 ): string {
+  if (attachCard) {
+    return "Ничего не заказывай и не вызывай — цель только привязать карту. Код от банка подтверди.";
+  }
   if (payBlock) {
     return "Доводи дело до конца, включая оплату подключённой картой. Прежде чем оформить — проверь, что товар или услуга не добавлены в корзину дважды. После оплаты проверь, что на экране виден номер заказа — без него это не «готово».";
   }
@@ -206,13 +215,18 @@ export function scaffoldTask(
   ) {
     return task;
   }
-  const payBlock = opts?.pay ? payScaffold(opts.pay) : undefined;
-  const stopForPay = "Если по ходу нужна оплата — закончи итог с НУЖНО: payment.";
+  const attachCard = opts?.pay?.attachCard ?? isAttachCardErrand(task);
+  const payBlock = opts?.pay
+    ? payScaffold({ ...opts.pay, ...(attachCard ? { attachCard: true } : {}) })
+    : undefined;
+  const stopForPay = attachCard
+    ? "Карта не подключена к этому запуску — дойди до формы карты и закончи итог с НУЖНО: payment."
+    : "Если по ходу нужна оплата — закончи итог с НУЖНО: payment.";
   const login = errandLoginBlock({
     login: opts?.login,
     profileSynced: opts?.profileSynced,
   });
-  const finish = errandFinishBlock(task, payBlock);
+  const finish = errandFinishBlock(task, payBlock, attachCard);
   // A continuation must never re-navigate or redo what the previous step of
   // THIS SAME errand already did (the taxi incident: a fresh run re-drove
   // the whole route because eve tore down the old browser first) — the tab
