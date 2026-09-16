@@ -5,6 +5,10 @@ import {
   parseCloudOutcome,
   type CloudNeed,
 } from "../convex/lib/browserOutcomePolicy.ts";
+import {
+  doneNowLine,
+  lateResultLine,
+} from "../convex/lib/browserProgressPolicy.ts";
 
 import { assert, src } from "./lib/check.ts";
 
@@ -203,6 +207,64 @@ const doneWithOptions = doneLineHint({
   options: ["Nike Air — 5990 ₽", "Nike Zoom — 6400 ₽"],
 });
 assert(doneWithOptions.includes("Nike Air"), "done line surfaces options when present");
+
+// --- doneNowLine: the report pollRun sends itself, with no model turn ---
+//
+// Same guard rails as lateResultLine (below it in the same module) but
+// without the «кстати, прошлое поручение» framing: this one is the report,
+// delivered while the person is still waiting for it.
+
+const CLEAN_DONE = `СДЕЛАНО: Заказал такси до аэропорта
+ЗАКАЗ: 55081234
+СУММА: 890 ₽
+КОГДА: через 7 минут
+НУЖНО: none`;
+
+const nowLine = doneNowLine("completed", CLEAN_DONE);
+assert(nowLine !== undefined, "a clean labelled done is reportable without the model");
+assert(
+  nowLine === doneLineHint(parseCloudOutcome(CLEAN_DONE)),
+  "the instant line is exactly the canned done draft — no second wording to drift",
+);
+assert(
+  !nowLine!.includes("Кстати"),
+  "the instant report is not framed as a late afterthought",
+);
+assert(
+  lateResultLine("completed", CLEAN_DONE)!.endsWith(nowLine!),
+  "late and instant reports share one body, only the framing differs",
+);
+
+// Everything the model still has to think about must NOT be short-circuited.
+assert(
+  doneNowLine("running", CLEAN_DONE) === undefined,
+  "a live run is never reported as finished",
+);
+assert(
+  doneNowLine("failed", CLEAN_DONE) === undefined,
+  "failed needs the model to phrase it, not a canned готово",
+);
+assert(
+  doneNowLine("cancelled", CLEAN_DONE) === undefined,
+  "cancelled is never a готово",
+);
+assert(
+  doneNowLine("stalled", CLEAN_DONE) === undefined,
+  "our own give-up sentinel is never a готово",
+);
+assert(
+  doneNowLine("completed", "СДЕЛАНО: оплатил\nНУЖНО: sms_code") === undefined,
+  "a run parked on the human goes to the model, which knows how to ask",
+);
+assert(
+  doneNowLine("completed", "всё готово, такси приедет через 7 минут") === undefined,
+  "unlabelled free text is not trustworthy enough to send unread",
+);
+assert(
+  doneNowLine("completed", "НУЖНО: none\nДЕТАЛИ: нет") === undefined,
+  "a labelled block with no СДЕЛАНО has nothing to report",
+);
+assert(doneNowLine("completed", undefined) === undefined, "no result → nothing to send");
 
 // --- wiring: package.json carries the new check without dropping B3's line ---
 

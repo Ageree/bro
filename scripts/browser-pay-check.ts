@@ -182,11 +182,15 @@ const payOpts = {
 
 {
   const syncedWithPay = scaffoldTask(raw, { profileSynced: true, pay: payOpts });
+  // Contract, not wording: a synced profile is told its cookies may already be
+  // there AND that cookies are not proof of a login, and it still signs in
+  // itself rather than parking on a guest screen.
+  assert(/куки прошлой сессии/.test(syncedWithPay), "synced wording mentions cookies");
+  assert(syncedWithPay.includes("Куки не значат"), "cookies are not proof of login");
   assert(
-    syncedWithPay.includes("уже могут быть куки прошлой сессии"),
-    "synced wording mentions cookies",
+    /вход\S*\s+(?:или|и)\s+регистр|входи или регистрируйся/i.test(syncedWithPay),
+    "synced+pay still logs in or registers by itself",
   );
-  assert(syncedWithPay.includes("войди сам"), "synced+pay still logs in");
   assert(
     syncedWithPay.includes(PAY_ALIASES.number),
     "pay block present for synced profile too",

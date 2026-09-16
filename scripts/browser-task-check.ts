@@ -18,6 +18,12 @@ import { errandStartUrl } from "../convex/lib/browserStartPolicy.ts";
 import { expandPayHosts, isAttachCardErrand } from "../agent/lib/browser-pay.ts";
 import { nextBrowserAction } from "../agent/lib/browser-policy.ts";
 import { loginWaitTask, scaffoldTask } from "../agent/lib/browseruse.ts";
+import {
+  injectFollowTask,
+  injectQueueText,
+  type CloudInjectKind,
+} from "../convex/lib/browserInjectPolicy.ts";
+import { loginVaultTask } from "../convex/lib/browserProfilePolicy.ts";
 
 import { assert, eq, src } from "./lib/check.ts";
 
@@ -513,5 +519,95 @@ assert(
     );
   }
 }
+
+// ---------------------------------------------------------------------------
+// Byte ceilings. The owner's complaint about the Cloud console was "гигантская
+// волна текста": the task field is the whole brief the Browser Use agent gets,
+// and every sentence added to it competes with the goal for the model's
+// attention. ~670 of these bytes are the mandatory outcome block, which is
+// contract and may not shrink — everything above the ceilings is operating
+// prose, and it must not creep back. Raising a ceiling is a decision, not a
+// side effect: if one of these fires, cut a sentence instead.
+// ---------------------------------------------------------------------------
+
+const bytes = (text: string) => Buffer.byteLength(text, "utf8");
+function underCeiling(label: string, text: string, ceiling: number): void {
+  assert(
+    bytes(text) <= ceiling,
+    `${label} is ${bytes(text)} bytes, ceiling ${ceiling} — cut a sentence, do not raise it`,
+  );
+}
+
+{
+  const payOpts = {
+    hosts: expandPayHosts(["ozon.ru"]),
+    holder: "IVAN PETROV",
+    account: "Visa · •••• 1111",
+    maxRub: 5000,
+  };
+  underCeiling(
+    "plain errand scaffold",
+    scaffoldTask("вызови такси до Шереметьево", { startPage: "https://taxi.yandex.ru/" }),
+    2700,
+  );
+  underCeiling(
+    "dry-run errand scaffold",
+    scaffoldTask("покажи форму такси, не нажимай Заказать", {
+      startPage: "https://taxi.yandex.ru/",
+    }),
+    2700,
+  );
+  underCeiling(
+    "continuation scaffold",
+    scaffoldTask("подтвердил в приложении", { continuation: true }),
+    2900,
+  );
+  underCeiling(
+    "vault-login errand scaffold",
+    scaffoldTask("зайди на ozon и посмотри заказы", { login: true, profileSynced: true }),
+    3200,
+  );
+  underCeiling(
+    "paid errand scaffold",
+    scaffoldTask("купи на ozon.ru кофе Lavazza 1 кг, оплати картой", {
+      profileSynced: true,
+      pay: payOpts,
+      startPage: "https://www.ozon.ru/",
+    }),
+    4200,
+  );
+  underCeiling(
+    "attach-card errand scaffold",
+    scaffoldTask("привяжи карту в яндекс такси", {
+      pay: { ...payOpts, hosts: expandPayHosts(["taxi.yandex.ru"]), attachCard: true },
+      startPage: "https://taxi.yandex.ru/",
+    }),
+    4300,
+  );
+}
+
+// Mid-run messages go into a session that already holds the errand and the
+// open tab (POST /sessions/{id}/queue runs them as the next turn), so they are
+// follow-ups, not briefs. They stay far smaller than a scaffold.
+for (const kind of ["code", "wait", "confirm", "correction", "steer"] as const) {
+  const human = kind === "code" ? "482911" : "Ленина 12";
+  underCeiling(
+    `injectQueueText(${kind})`,
+    injectQueueText({ kind, humanText: human, code: kind === "code" ? human : undefined }),
+    600,
+  );
+  underCeiling(
+    `injectFollowTask(${kind})`,
+    injectFollowTask({
+      kind: kind as CloudInjectKind,
+      humanText: human,
+      originalTask: "[bro-errand]\nвызови такси до Шереметьево",
+      code: kind === "code" ? human : undefined,
+    }),
+    900,
+  );
+}
+underCeiling("loginWaitTask", loginWaitTask("https://www.ozon.ru"), 1400);
+underCeiling("loginVaultTask", loginVaultTask("https://taxi.yandex.ru"), 1000);
 
 console.log("browser-task-check ok");

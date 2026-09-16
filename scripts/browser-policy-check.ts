@@ -258,7 +258,7 @@ assert(wrapped.includes(raw), "scaffold contains raw task");
 assert(scaffoldTask(wrapped) === wrapped, "scaffold is idempotent");
 assert(scaffoldTask("x").includes("Работай быстро"), "scaffold skip-slow");
 const synced = scaffoldTask("x", { profileSynced: true });
-assert(synced.includes("уже могут быть куки прошлой сессии"), "synced scaffold mentions cookies");
+assert(/куки прошлой сессии/.test(synced), "synced scaffold mentions cookies");
 assert(synced.includes("Куки не значат"), "cookies are not proof of login");
 assert(synced.includes("«Войти»"), "synced scaffold still clicks Войти");
 assert(!synced.includes("Ты уже в аккаунтах"), "no already-logged-in lie");
@@ -267,20 +267,31 @@ assert(
   !synced.includes("просит логин — остановись"),
   "must not stop at a login wall",
 );
+// Contract, not wording (the scaffold was rewritten as a mandate to act):
+// every errand tells the agent to sign in — or register — by itself, an
+// unsynced non-vault run types a login/password that arrived WITH the task,
+// and the vault variant carries loginScaffold()'s aliases instead.
+const LOGS_IN_ITSELF = /входи или регистрируйся/;
+const TYPES_TASK_CREDS = /Логин и пароль из задачи вводи сам/;
+assert(LOGS_IN_ITSELF.test(scaffoldTask("x")), "unsynced scaffold still logs in itself");
 assert(
-  scaffoldTask("x").includes("войди сам"),
-  "unsynced scaffold still logs in",
+  LOGS_IN_ITSELF.test(scaffoldTask("x", { profileSynced: true })),
+  "synced scaffold still logs in itself",
 );
 assert(
-  scaffoldTask("x").includes("Если в задаче есть логин или пароль"),
+  TYPES_TASK_CREDS.test(scaffoldTask("x")),
   "unsynced scaffold types a supplied password",
 );
 assert(
-  scaffoldTask("x", { profileSynced: true }).includes(
-    "Если в задаче есть логин или пароль",
-  ),
+  TYPES_TASK_CREDS.test(scaffoldTask("x", { profileSynced: true })),
   "synced scaffold still types a supplied password",
 );
+assert(
+  !TYPES_TASK_CREDS.test(scaffoldTask("x", { login: true })) &&
+    scaffoldTask("x", { login: true }).includes("site_password"),
+  "a vault-login scaffold names the aliases instead of typing a task password",
+);
+
 const taxiOpen = scaffoldTask("вызови такси", {
   startPage: "https://taxi.yandex.ru/",
 });
@@ -310,18 +321,33 @@ assert(!src("agent/lib/browser-policy.ts").includes("POLL_GIVE_UP_MS"), "dead co
 assert(POLL_INTERVAL_MS === 2 * 60_000, "legacy 2min constant kept for old callers");
 assert(
   JSON.stringify(followSchedule()) ===
-    JSON.stringify([10_000, 15_000, 20_000, 30_000, 45_000, 60_000]),
-  "ramp schedule is 10/15/20/30/45/60s",
+    JSON.stringify([5_000, 10_000, 10_000, 15_000, 15_000, 20_000]),
+  "ramp schedule is 5/10/10/15/15/20s",
 );
-assert(followSleepMs(0) === 10_000, "poll 0 sleeps 10s");
-assert(followSleepMs(1) === 15_000, "poll 1 sleeps 15s");
-assert(followSleepMs(2) === 20_000, "poll 2 sleeps 20s");
-assert(followSleepMs(3) === 30_000, "poll 3 sleeps 30s");
-assert(followSleepMs(4) === 45_000, "poll 4 sleeps 45s");
-assert(followSleepMs(5) === 60_000, "poll 5 sleeps 60s");
-assert(followSleepMs(6) === FOLLOW_STEADY_SLEEP_MS, "poll 6+ steadies at 90s");
+assert(followSleepMs(0) === 5_000, "poll 0 sleeps 5s");
+assert(followSleepMs(1) === 10_000, "poll 1 sleeps 10s");
+assert(followSleepMs(2) === 10_000, "poll 2 sleeps 10s");
+assert(followSleepMs(3) === 15_000, "poll 3 sleeps 15s");
+assert(followSleepMs(4) === 15_000, "poll 4 sleeps 15s");
+assert(followSleepMs(5) === 20_000, "poll 5 sleeps 20s");
+assert(followSleepMs(6) === FOLLOW_STEADY_SLEEP_MS, "poll 6+ steadies at 20s");
 assert(followSleepMs(50) === FOLLOW_STEADY_SLEEP_MS, "steady cadence holds far out");
 assert(POLL_GIVE_UP_MS === 20 * 60_000, "give-up 20min");
+// The whole point of the cadence: a run that finishes is noticed within one
+// steady sleep. 90s of dead air was the biggest single chunk of "он уже
+// сделал, а я узнаю потом" — the steady tail must stay inside 15–30s.
+assert(
+  FOLLOW_STEADY_SLEEP_MS <= 30_000 && FOLLOW_STEADY_SLEEP_MS >= 15_000,
+  "worst-case notice of a finished run stays in the 15-30s band",
+);
+assert(
+  followSchedule().every((ms, i, all) => i === 0 || ms >= all[i - 1]!),
+  "the ramp never gets faster as a run ages",
+);
+assert(
+  followSchedule().every((ms) => ms <= FOLLOW_STEADY_SLEEP_MS),
+  "no ramp step sleeps longer than the steady cadence it ramps into",
+);
 {
   // The loop's cap (maxPollRounds()+2 in followThrough) must not fire before
   // real elapsed time reaches POLL_GIVE_UP_MS under the new ramp — otherwise
@@ -330,7 +356,15 @@ assert(POLL_GIVE_UP_MS === 20 * 60_000, "give-up 20min");
   let cumulative = 0;
   for (let i = 0; i < rounds; i++) cumulative += followSleepMs(i);
   assert(cumulative >= POLL_GIVE_UP_MS, "maxPollRounds covers a full 20min under the new cadence");
-  assert(rounds === 18, "18 rounds under the ramp+steady schedule");
+  assert(rounds === 63, "63 rounds under the ramp+steady schedule");
+  // ...and not so far past it that a hung run is cancelled minutes late.
+  let oneShort = 0;
+  for (let i = 0; i < rounds - 1; i++) oneShort += followSleepMs(i);
+  assert(oneShort < POLL_GIVE_UP_MS, "the round cap is the first one that covers 20min, not a slack one");
+  // Workflow budget: every round journals one poll (args + return) and one
+  // sleep. @convex-dev/workflow allows 1MB of step data per execution; at a
+  // generous 1KB per round the tightened cadence uses a few percent of it.
+  assert(rounds * 1024 < 1_000_000, "the round count stays well inside the workflow's 1MB step budget");
 }
 assert(
   nextFollowDecision({ status: "running", startedAt: t0, now: t0 + 2 * 60_000 }) ===
@@ -770,6 +804,31 @@ assert(
 assert(
   pollRunFn.includes("tenant.browserStatus ?? UNKNOWN_STATUS"),
   "pollRun falls back to the tenant's last-known status, not unknown",
+);
+
+// What pays for the tightened cadence: hydrate (up to five upstream calls)
+// is skipped on a mid-run poll once everything it would add is known, so
+// three polls a minute cost about what one used to.
+assert(
+  pollRunFn.includes("const statusOnly ="),
+  "pollRun can take the cheap status-only road mid-run",
+);
+assert(
+  pollRunFn.indexOf("!isFollowTerminal(cheap.status)") > pollRunFn.indexOf("const statusOnly ="),
+  "a terminal poll always hydrates — that is where the outcome block lives",
+);
+assert(
+  /statusOnly[\s\S]{0,400}needLoginHydrate/.test(pollRunFn) ||
+    /needLoginHydrate[\s\S]{0,400}statusOnly/.test(pollRunFn),
+  "a pending login link still hydrates, so the live-view link is never missed",
+);
+assert(
+  /statusOnly[\s\S]{0,400}liveUrl: tenant\.browserLiveUrl/.test(pollRunFn),
+  "the cheap road carries the stored live URL through instead of blanking it",
+);
+assert(
+  /statusOnly[\s\S]{0,400}openedSent/.test(pollRunFn),
+  "the cheap road waits until the pageUrl-dependent opened note is out",
 );
 
 // ---------------------------------------------------------------------------
