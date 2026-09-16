@@ -8,6 +8,7 @@ import {
   type MutationCtx,
 } from "./_generated/server";
 import { api, internal } from "./_generated/api";
+import type { Id } from "./_generated/dataModel";
 import { assertSecret } from "./secret";
 import { cancelRun, hydrate, pollStatus, stopBrowserForSession } from "./lib/browseruse";
 import {
@@ -42,6 +43,7 @@ import {
   type ProgressKey,
 } from "./lib/browserProgressPolicy";
 import { isLiveBrowserPoll } from "./lib/wakeupPolicy";
+import { orderRowFromRun } from "./lib/orderRecordPolicy";
 import { unscheduleCron } from "./lib/wakeupCrons";
 import { findTenantByPhone } from "./lib/tenantLookup";
 import { chatConversationId } from "./lib/tenantConversation";
@@ -104,6 +106,55 @@ async function notifyHuman(
       conversationId: opts.conversationId,
       text: opts.text,
     });
+  }
+}
+
+/**
+ * Write a finished paid/buy run into `orders` from the Convex side.
+ *
+ * The tool's own `maybeRecordOrder` only ever runs when the chat model itself
+ * called `browser_task`; a run that completes in the BACKGROUND never reaches
+ * it — and `deliverDoneNow` below makes the background road the primary one
+ * for exactly the clean terminal successes that are most likely purchases. So
+ * without this, «где мой заказ» later finds nothing.
+ *
+ * Same gate and same parser as the tool path (`orderRowFromRun`), and
+ * `api.orders.record` upserts on (tenantId, merchantOrderId) — so a run both
+ * paths see lands on one row with one id. Never throws: a purchase that was
+ * made must still be reported to the human even if this write fails.
+ */
+async function recordOrderFromRun(
+  ctx: ActionCtx,
+  opts: {
+    tenantId: Id<"tenants">;
+    status: string;
+    task: string;
+    result?: string | null;
+    paying: boolean;
+    hosts?: string[];
+  },
+): Promise<void> {
+  const row = orderRowFromRun({
+    status: opts.status,
+    task: opts.task,
+    result: opts.result,
+    paying: opts.paying,
+    hosts: opts.hosts,
+  });
+  if (!row) return;
+  try {
+    await ctx.runMutation(api.orders.record, {
+      secret: process.env.BRO_INTERNAL_SECRET ?? "",
+      tenantId: opts.tenantId,
+      merchant: row.merchant,
+      merchantOrderId: row.merchantOrderId,
+      title: row.title,
+      priceRub: row.priceRub,
+      status: row.status,
+      ...(row.pickup ? { pickup: row.pickup } : {}),
+    });
+  } catch (err) {
+    console.error("record order failed", err);
   }
 }
 
@@ -664,6 +715,20 @@ export const pollRun = internalAction({
         runId: args.runId,
       });
     }
+    // A purchase that finished in the BACKGROUND is written to `orders` from
+    // right here — the tool's maybeRecordOrder never sees this run. Ahead of
+    // the report below on purpose: whichever road the human is told on
+    // (deliverDoneNow or the model wakeup), the row is already in.
+    if (outcome) {
+      await recordOrderFromRun(ctx, {
+        tenantId: tenant._id,
+        status,
+        task: tenant.browserTask ?? "",
+        result: run.result,
+        paying: tenant.browserPaying === true,
+        hosts: tenant.browserPayHosts,
+      });
+    }
     // The finished run's own report, sent from here rather than from a model
     // turn one wakeup later. Deliberately narrow — this fires only for a
     // human errand that ended in a clean, labelled «готово» with nothing
@@ -826,6 +891,26 @@ export const lateResultNotify = internalAction({
       }
       return { delivered: false };
     }
+    const tenant = await ctx.runQuery(internal.tenants.getByPhoneInternal, {
+      phoneE164: tenantPhone,
+    });
+    // An abandoned run can still have genuinely bought something. Record it
+    // before the delivery dedupe below (which another path may already have
+    // claimed) — the upsert makes an overlap harmless, a missing row is not.
+    // The tenant's paid-run flags describe THIS run only while it is still
+    // the tenant's current run; once it has been replaced, the errand text is
+    // all that is left to gate on.
+    const sameRun = sameBrowserRun(tenant?.browserRunId, runId);
+    if (tenant) {
+      await recordOrderFromRun(ctx, {
+        tenantId: tenant._id,
+        status: run.status,
+        task: task ?? (sameRun ? tenant.browserTask ?? "" : ""),
+        result: run.result,
+        paying: sameRun && tenant.browserPaying === true,
+        hosts: sameRun ? tenant.browserPayHosts : undefined,
+      });
+    }
     const line = lateResultLine(run.status, run.result, runId);
     if (!line) return { delivered: false };
     // Durable dedupe: this can be scheduled once from startFollowThrough's
@@ -838,9 +923,6 @@ export const lateResultNotify = internalAction({
       key: lateDeliveryKey(runId),
     });
     if (!claim.taken) return { delivered: false };
-    const tenant = await ctx.runQuery(internal.tenants.getByPhoneInternal, {
-      phoneE164: tenantPhone,
-    });
     const conversationId = chatConversationId(tenant);
     if (!conversationId) {
       console.error("lateResultNotify: no conversation for tenant", tenantPhone);

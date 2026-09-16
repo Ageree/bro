@@ -210,9 +210,18 @@ assert(toolSrc.includes("browserPayHosts"), "browser_task persists/reads browser
 assert(toolSrc.includes("need: tenant.browserNeed"), "inject attrs carry the tenant's browserNeed");
 assert(toolSrc.includes("browserProbed: true"), "inject attrs mark the browser as probed");
 assert(toolSrc.includes("clearBrowserNeed(phone"), "a successful inject queue clears browserNeed*");
+// The blocker guard moved into the gate both completion paths share
+// (convex/lib/orderRecordPolicy.ts) — assert it there, and that the tool
+// records through it.
 assert(
-  toolSrc.includes('parseCloudOutcome(run.result).needs !== "none"'),
-  "maybeRecordOrder never records an order while a blocker is still parked",
+  src("convex/lib/orderRecordPolicy.ts").includes(
+    'parseCloudOutcome(run.result).needs !== "none"',
+  ),
+  "orderRowFromRun never records an order while a blocker is still parked",
+);
+assert(
+  toolSrc.includes("orderRowFromRun({"),
+  "maybeRecordOrder gates and parses through the shared orderRowFromRun",
 );
 assert(
   toolSrc.includes("chargeKeyFor("),

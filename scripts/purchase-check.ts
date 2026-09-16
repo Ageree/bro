@@ -98,10 +98,14 @@ assert(
   "a real purchase is not an attach-card errand",
 );
 assert(
-  src("agent/tools/browser_task.ts").includes(
-    "isAttachCardErrand(task) && !taskLooksLikeBuy(task)) return;",
+  src("convex/lib/orderRecordPolicy.ts").includes(
+    "if (isAttachCardErrand(task) && !buy) return null;",
   ),
-  "maybeRecordOrder bails out on an attach-card run even though it is a paying run",
+  "the shared order gate bails out on an attach-card run even though it is a paying run",
+);
+assert(
+  src("agent/tools/browser_task.ts").includes("orderRowFromRun({"),
+  "maybeRecordOrder goes through that gate",
 );
 {
   // Belt and braces: even if it reached the parser, a saved-card outcome has

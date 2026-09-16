@@ -500,9 +500,18 @@ assert(!isAttachCardErrand(undefined), "undefined task is not an attach-card err
     taskSrc.includes("(pay || attachCard) && rawAction === \"reuse\""),
     "an attach-card repeat starts a fresh run — bindings are run-scoped",
   );
+  // The attach-card guard now lives in the gate both completion paths share
+  // (convex/lib/orderRecordPolicy.ts), so a background purchase recorded from
+  // convex/browserFollow.ts obeys exactly the same rule.
   assert(
-    taskSrc.includes("isAttachCardErrand(task) && !taskLooksLikeBuy(task)) return;"),
+    src("convex/lib/orderRecordPolicy.ts").includes(
+      "if (isAttachCardErrand(task) && !buy) return null;",
+    ),
     "attaching a card never records an order (the bank's 1 ₽ hold is not a purchase)",
+  );
+  assert(
+    taskSrc.includes("orderRowFromRun({"),
+    "browser_task records through that shared gate",
   );
 }
 
