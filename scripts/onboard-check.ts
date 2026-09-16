@@ -154,7 +154,7 @@ assert(!welcome.includes("**"), "welcome no markdown bold");
 assert(!help.includes("**"), "help no markdown bold");
 assert(!/\[[^\]]+\]\(/ .test(welcome), "welcome no markdown links");
 assert(!/\[[^\]]+\]\(/ .test(help), "help no markdown links");
-assert(welcome.startsWith("Привет, я Bro."), "welcome opens as a person");
+assert(/^Привет[,!] я Bro[.!]/.test(welcome), "welcome opens as a person saying hi");
 assert(/сейф/i.test(welcome), "welcome vault card");
 assert(welcome.includes("vault.html?kind=payment"), "welcome sends the real vault card URL");
 assert(!welcome.includes("handle="), "welcome vault/cabinet URLs have no handle");
@@ -179,12 +179,40 @@ assert(
   "old cabinet URL can still carry handle as a fallback",
 );
 assert(/телефон/i.test(welcome), "welcome login is the phone");
-assert(bubbles.length >= 4 && bubbles.length <= 6, "welcome is a letter then vault and cabinet");
-assert(bubbles[0] === "Привет, я Bro. Я твой личный ассистент.", "first bubble is the greeting");
+// Shape contract: a handful of short bubbles, and the two link bubbles last.
+assert(bubbles.length >= 4 && bubbles.length <= 8, "welcome is a few short bubbles then vault and cabinet");
+assert(/^Привет[,!] я Bro[.!]/.test(bubbles[0]!), "first bubble is a plain hello from Bro");
+assert(bubbles[0]!.length <= 120, "the hello is a one-liner, not a pitch");
 for (const bubble of bubbles) {
   assert(bubble.length > 0 && bubble.length <= 700, `welcome bubble sized: ${bubble.slice(0, 40)}`);
   assert(!broOpener.test(bubble), `welcome bubble no Bro. opener: ${bubble}`);
+  // The owner's complaint was a 600-char capability wall. A person texts in
+  // short bubbles; the URL itself does not count against the prose budget.
+  const prose = bubble.split("\n").filter((line) => !line.startsWith("http")).join(" ");
+  assert(prose.length <= 300, `welcome bubble is a text, not a paragraph: ${prose.slice(0, 60)}`);
 }
+// The two links: last two bubbles, each URL alone on its own line, and no
+// link anywhere before them.
+const vaultBubble = bubbles[bubbles.length - 2]!;
+const cabinetBubble = bubbles[bubbles.length - 1]!;
+for (const bubble of bubbles.slice(0, -2)) {
+  assert(!bubble.includes("http"), `only the last two bubbles carry links: ${bubble.slice(0, 40)}`);
+}
+assert(/\nhttps:\/\/\S+$/.test(vaultBubble), "vault URL sits alone on the last line of its bubble");
+assert(vaultBubble.includes("vault.html?kind=payment"), "vault bubble is the payment card link");
+assert(/карт/i.test(vaultBubble) && /не пиши/i.test(vaultBubble), "vault bubble: card number never in chat");
+assert(/телефон/i.test(vaultBubble) && /код/i.test(vaultBubble), "vault bubble keeps the phone+code instruction");
+assert(/\nhttps:\/\/\S+$/.test(cabinetBubble), "cabinet URL sits alone on the last line of its bubble");
+assert(cabinetBubble.includes("/cabinet.html"), "cabinet bubble is the cabinet link");
+assert(/телефон/i.test(cabinetBubble) && /код/i.test(cabinetBubble), "cabinet bubble keeps its short instruction");
+// The login promise, wherever it is phrased: vault or a link, and the
+// password never travels through the chat.
+const loginBubble = bubbles.find(
+  (b) => !b.includes("http") && /сейф/i.test(b) && /ссылк/i.test(b),
+);
+assert(loginBubble, "welcome says a site login comes from the vault or a link");
+assert(/парол\S*[^.!?]*не пиши/i.test(loginBubble!), "welcome states the password never goes in chat");
+assert(/ящик|почт|письм/i.test(loginBubble!), "welcome says mail and codes land on Bro's own mailbox");
 assert(!broOpener.test(help), "help no Bro. opener");
 assert(!help.includes("•"), "help is spoken prose, not a bullet dump");
 assert(
@@ -192,9 +220,9 @@ assert(
   "help has no list markers",
 );
 assert(/Wildberries|Ozon|WB/i.test(help), "help buy");
-assert(/запис|бронь/i.test(help), "help bookings");
+assert(/запиш|запис|брон/i.test(help), "help bookings");
 assert(/помн/i.test(help), "help memory");
-assert(/напоминан|сторож/i.test(help), "help wakeups");
+assert(/напомн|напоминан|сторож/i.test(help), "help wakeups");
 assert(/сейф/i.test(help), "help vault");
 assert(/ящик|письм|почт/i.test(help), "help mailbox");
 assert(/телеграм/i.test(help), "help telegram second channel");
@@ -205,7 +233,8 @@ assert(/Business|пауз/i.test(helpJoin), "help says groups after Business");
 assert(/пауз/i.test(welcome), "welcome says groups paused");
 assert(/код/i.test(welcome), "welcome explains the iMessage login code");
 assert(!welcome.includes("скажи пароль"), "welcome never asks for a site password");
-assert(/сейфа или пришлю ссылку/i.test(welcome), "welcome: vault login or live-view link");
+assert(/цен/i.test(welcome), "welcome keeps the price watch");
+assert(/стол/i.test(welcome), "welcome keeps the table booking");
 
 const bare = broVcard({});
 assert(bare.startsWith("BEGIN:VCARD\r\n"), "vcard begin crlf");

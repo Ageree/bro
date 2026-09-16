@@ -34,7 +34,7 @@ export function loginVaultTask(url: string): string {
 
 export function loginVaultChatText(site?: string): string {
   const where = site?.trim() ? ` в ${site.trim()}` : "";
-  return `Сейчас войду${where} входом из сейфа. Сам напишу.`;
+  return `Захожу${where} сам — вход у меня сохранён. Напишу, как войду.`;
 }
 
 export function loginPageFromTask(task: string | undefined): string | undefined {
@@ -98,19 +98,19 @@ export function loginWaitTask(url: string): string {
 /** First bubble while the Cloud browser still opens the login page. */
 export function loginOpeningText(site?: string): string {
   const where = site?.trim() ? ` в ${site.trim()}` : "";
-  return `Открываю вход${where} — ссылка сейчас придёт.`;
+  return `Открываю вход${where}, сейчас скину ссылку.`;
 }
 
 /** iMessage copy. URL on its own line. */
 export function loginChatText(liveUrl: string, site?: string): string {
   const where = site?.trim() ? ` в ${site.trim()}` : "";
-  return `Открой ссылку и войди${where}. Bro пароль не увидит — вход сохранится сам.\n\n${liveUrl.trim()}`;
+  return `Вот ссылка — зайди${where} сам. Пароль я не увижу, вход дальше сохранится.\n\n${liveUrl.trim()}`;
 }
 
 /** First bubble when Cloud cookies already cover this site. No live-view. */
 export function alreadyLoggedChatText(site?: string): string {
   const where = site?.trim() ? ` в ${site.trim()}` : "";
-  return `Вход${where} уже сохранён — ссылку не присылаю, дальше сделаю сам.`;
+  return `Вход${where} у меня уже сохранён, ссылка не нужна — дальше сам.`;
 }
 
 function cookieHost(raw: string): string | undefined {

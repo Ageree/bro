@@ -68,9 +68,149 @@ export function realPageHost(pageUrl: string | undefined): string | undefined {
 }
 
 /**
+ * Host → the way a person actually names that place in a sentence, ready to
+ * drop in after a verb («Я уже в озоне»). Stored with the preposition and in
+ * the right case, because Russian will not let us build it from the bare name.
+ * Unknown host → undefined: the note then simply says nothing about where he
+ * is, which is far better than reading a domain out loud.
+ */
+const SITE_PHRASES: ReadonlyMap<string, string> = new Map([
+  ["wildberries.ru", "на вб"],
+  ["wb.ru", "на вб"],
+  ["ozon.ru", "в озоне"],
+  ["taxi.yandex.ru", "в яндекс такси"],
+  ["market.yandex.ru", "на яндекс маркете"],
+  ["eda.yandex.ru", "в яндекс еде"],
+  ["lavka.yandex.ru", "в яндекс лавке"],
+  ["yandex.ru", "в яндексе"],
+  ["avito.ru", "на авито"],
+  ["aliexpress.ru", "на алиэкспрессе"],
+  ["aliexpress.com", "на алиэкспрессе"],
+  ["megamarket.ru", "в мегамаркете"],
+  ["lamoda.ru", "в ламоде"],
+  ["dns-shop.ru", "в днс"],
+  ["mvideo.ru", "в мвидео"],
+  ["citilink.ru", "в ситилинке"],
+  ["samokat.ru", "в самокате"],
+  ["vkusvill.ru", "во вкусвилле"],
+  ["perekrestok.ru", "в перекрёстке"],
+  ["sbermarket.ru", "в сбермаркете"],
+  ["kuper.ru", "в купере"],
+  ["dodopizza.ru", "в додо"],
+  ["gosuslugi.ru", "на госуслугах"],
+  ["tutu.ru", "на туту"],
+  ["aviasales.ru", "на авиасейлс"],
+  ["sportmaster.ru", "в спортмастере"],
+  ["detmir.ru", "в детском мире"],
+  ["eapteka.ru", "в аптеке"],
+  ["apteka.ru", "в аптеке"],
+  ["yclients.com", "в записи"],
+  ["booking.com", "на букинге"],
+]);
+
+/**
+ * «taxi.yandex.ru» → «в яндекс такси». Subdomains fall back to their parent
+ * («m.ozon.ru» → «в озоне»); anything we cannot name in human words returns
+ * undefined so the note drops the place entirely instead of printing a domain.
+ */
+export function humanSitePhrase(host: string | undefined): string | undefined {
+  const raw = host?.trim().toLowerCase().replace(/^www\./, "").replace(/\.$/, "");
+  if (!raw) return undefined;
+  const labels = raw.split(".").filter(Boolean);
+  for (let i = 0; i < labels.length - 1; i++) {
+    const phrase = SITE_PHRASES.get(labels.slice(i).join("."));
+    if (phrase) return phrase;
+  }
+  return undefined;
+}
+
+/**
+ * The note palettes. Every variant is written twice over: once for when we can
+ * name the place like a person would, once for when we cannot — a note never
+ * falls back to a raw hostname, and never reads the errand text back to the
+ * human who just typed it.
+ */
+const PROGRESS_VARIANTS: Readonly<
+  Record<ProgressKey, ReadonlyArray<(where: string | undefined) => string>>
+> = {
+  opened: [
+    (w) => (w ? `Я уже ${w}, начинаю.` : "Я уже начал, сейчас всё сделаю."),
+    (w) => (w ? `Всё, я ${w} — занимаюсь.` : "Всё, занимаюсь."),
+    (w) => (w ? `Я ${w}, приступил. Напишу, как будет готово.` : "Приступил. Напишу, как будет готово."),
+    (w) => (w ? `Так, я ${w}. Сейчас всё сделаю.` : "Так, я на месте. Сейчас всё сделаю."),
+  ],
+  slow: [
+    (w) =>
+      w
+        ? `Ещё вожусь ${w}, тут всё небыстро. Напишу, как закончу.`
+        : "Ещё вожусь, тут всё небыстро. Напишу, как закончу.",
+    (w) =>
+      w
+        ? `Я ${w}, но идёт медленно. Как доделаю — сразу напишу.`
+        : "Идёт медленно, но я в процессе. Как доделаю — сразу напишу.",
+    (w) =>
+      w
+        ? `Всё ещё ${w}, сайт не торопится. Напишу, как будет готово.`
+        : "Всё ещё занимаюсь, сайт не торопится. Напишу, как будет готово.",
+    (w) =>
+      w
+        ? `Пока без результата: ${w} всё грузится долго. Напишу, как получится.`
+        : "Пока без результата, всё грузится долго. Напишу, как получится.",
+  ],
+  long: [
+    (w) =>
+      w
+        ? `Всё ещё вожусь ${w}. Если надоело — напиши «отмени», остановлюсь.`
+        : "Всё ещё вожусь. Если надоело — напиши «отмени», остановлюсь.",
+    () => "Дольше обычного выходит. Скажешь «отмени» — брошу.",
+    (w) =>
+      w
+        ? `Я ${w}, пока не закончил. Если что, напиши «отмени» — остановлюсь.`
+        : "Пока не закончил. Если что, напиши «отмени» — остановлюсь.",
+    () => "Ещё в процессе. Надоест ждать — напиши «отмени».",
+  ],
+};
+
+/** Every wording we can send for this key, in order. Exported for the guard. */
+export function progressNoteVariants(
+  key: ProgressKey,
+  where?: string,
+): string[] {
+  return PROGRESS_VARIANTS[key].map((build) => build(where));
+}
+
+/** FNV-1a, so the pick is stable across processes and deploys (Math.random
+ *  would make a retried poll flip wording mid-run). */
+function hashSeed(seed: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < seed.length; i++) {
+    h ^= seed.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+/**
+ * One wording per (run, key): the same seed always picks the same line, so a
+ * re-poll or a retried delivery never rephrases itself, while a different run
+ * gets a different voice.
+ */
+export function pickProgressVariant(
+  key: ProgressKey,
+  where: string | undefined,
+  seed: string,
+): string {
+  const variants = progressNoteVariants(key, where);
+  return variants[hashSeed(`${seed}|${key}`) % variants.length]!;
+}
+
+/**
  * Which progress note (if any) to send on this poll. At most one per run per
  * key, checked in priority order, and never once the run has gone terminal —
  * the final done/need/failed/giveup wakeup owns that moment.
+ *
+ * `seed` should be the runId; it only picks the wording, and defaults to the
+ * run's start time so an older caller still gets a stable (never random) line.
  */
 export function nextProgressNote(opts: {
   status: string;
@@ -81,6 +221,7 @@ export function nextProgressNote(opts: {
   site?: string;
   loginWait: boolean;
   sent: ProgressKey[];
+  seed?: string;
 }): { key: ProgressKey; text: string } | undefined {
   if (isFollowTerminal(opts.status)) return undefined;
   // Login-wait runs already get the login-link push once the site's login
@@ -90,11 +231,11 @@ export function nextProgressNote(opts: {
   // Defense in depth: any bro-internal scaffold marker ([bro-login],
   // [bro-vault-login], [bro-errand], [bro-inject], ...) means `task` is not
   // a human errand at all — callers should already be gating this via
-  // `loginWait`, but a marked scaffold must never be shortened into a note.
+  // `loginWait`, but a marked scaffold must never reach a note.
   if (opts.task.trim().startsWith("[")) return undefined;
 
   const sent = new Set(opts.sent);
-  const short = shortenTask(opts.task);
+  const seed = opts.seed?.trim() || String(opts.startedAt);
   // "opened" needs actual evidence a page loaded — `site` (the errand's
   // known start URL) is not proof of that; it fires the instant a poll sees
   // one, which for a known-start errand is the very first ~10s poll whether
@@ -105,23 +246,19 @@ export function nextProgressNote(opts: {
   const host = openedHost ?? opts.site?.trim();
 
   if (openedHost && !sent.has("opened")) {
-    return { key: "opened", text: `Открыл ${openedHost}, делаю: ${short}` };
+    return {
+      key: "opened",
+      text: pickProgressVariant("opened", humanSitePhrase(openedHost), seed),
+    };
   }
 
   const elapsed = opts.now - opts.startedAt;
   if (elapsed >= PROGRESS_SLOW_MS && !sent.has("slow")) {
-    const where = host ? ` ${host}` : "";
-    return {
-      key: "slow",
-      text: `Ещё занимаюсь: ${short}. Сайт${where} небыстрый, напишу как будет готово.`,
-    };
+    return { key: "slow", text: pickProgressVariant("slow", humanSitePhrase(host), seed) };
   }
 
   if (elapsed >= PROGRESS_LONG_MS && !sent.has("long")) {
-    return {
-      key: "long",
-      text: `Всё ещё в процессе — ${short}. Если хочешь, напиши «отмени», и я остановлю.`,
-    };
+    return { key: "long", text: pickProgressVariant("long", humanSitePhrase(host), seed) };
   }
 
   return undefined;

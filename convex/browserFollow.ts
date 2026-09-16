@@ -584,6 +584,9 @@ export const pollRun = internalAction({
       site,
       loginWait: noProgress,
       sent: (tenant.browserProgressSent ?? []) as ProgressKey[],
+      // Wording is picked from this seed: one run keeps one voice across
+      // polls and retries, different runs read differently.
+      seed: args.runId,
     });
     if (note) {
       const claimed = await ctx.runMutation(internal.tenants.claimBrowserProgress, {
