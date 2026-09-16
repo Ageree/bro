@@ -92,16 +92,33 @@ eq(
 // --- the varied «я взялся» palette all has to survive sanitising ---
 for (const beat of [
   "взялся, смотрю вб",
-  "окей, уже ищу",
-  "принял, гляну почту",
+  "окей, гляну почту",
+  "так, уже ищу",
   "понял, поехали",
   "беру на себя",
   "сделаю, минуту",
-  "приступил, открываю озон",
+  "принял, открываю озон",
   "ага, сейчас забронирую",
   "щас проверю заказ",
+  "приступил, звоню в клинику",
+  "минуту, гляну фото",
 ]) {
   eq(sanitizeFastAck(beat), beat, `natural opener survives: «${beat}»`);
+}
+
+// The «взялся» palette in agent/instructions.md and the fast-ack examples are
+// the same register, so the agent's own palette must clear the same gate: a
+// beat the big model may send first has to be one the tiny lane could send.
+{
+  const paletteLine = src("agent/instructions.md")
+    .split("\n")
+    .find((l) => l.startsWith("«взялся, смотрю вб»"));
+  assert(Boolean(paletteLine), "instructions.md still carries the «взялся» palette line");
+  const beats = [...paletteLine!.matchAll(/«([^»]+)»/g)].map((m) => m[1]!);
+  assert(beats.length >= 9, `instructions palette lists ${beats.length} beats, want >= 9`);
+  for (const beat of beats) {
+    eq(sanitizeFastAck(beat), beat, `instructions palette beat survives: «${beat}»`);
+  }
 }
 eq(
   sanitizeFastAck("окей, взялся, смотрю вб и озон"),
@@ -278,6 +295,25 @@ assert(
 assert(FAST_ACK_SYSTEM.length <= 1_200, "system prompt stays compact");
 assert(FAST_ACK_SYSTEM.includes("NONE"), "system prompt defines the NONE escape hatch");
 assert(FAST_ACK_SYSTEM.includes("2-6 слов"), "system prompt asks for a 2-6 word line");
+// The Poke/Instinct register, spelled out for the tiny model too: a friend not
+// a bot, no preamble, no name, never an emoji it opened itself, and never the
+// human's own words handed back.
+assert(
+  FAST_ACK_SYSTEM.includes("как друг в чат, а не как бот"),
+  "system prompt sets the friend-not-bot register",
+);
+assert(
+  FAST_ACK_SYSTEM.includes("без вступлений, без имени, без эмодзи"),
+  "system prompt bans preamble, self-naming and an opening emoji",
+);
+assert(
+  FAST_ACK_SYSTEM.includes("Его слова обратно не пересказывай"),
+  "system prompt bans restating the human's words back at them",
+);
+assert(
+  !/[\p{Extended_Pictographic}]/u.test(FAST_ACK_SYSTEM),
+  "system prompt carries no emoji of its own for the model to copy",
+);
 assert(
   FAST_ACK_SYSTEM.includes("не начинай всё время с «ищу»"),
   "system prompt forbids always opening with «ищу»",
@@ -292,9 +328,21 @@ assert(
   const answers = [...FAST_ACK_SYSTEM.matchAll(/→\s*(.+)/g)]
     .map((m) => m[1]!.trim())
     .filter((a) => a !== "NONE");
-  assert(answers.length >= 8, "system prompt shows at least 8 errand examples");
+  assert(answers.length >= 10, "system prompt shows at least 10 errand examples");
   const openers = new Set(answers.map((a) => a.split(/[\s,]+/)[0]!.toLowerCase()));
-  assert(openers.size >= 7, "system prompt examples open with many different words");
+  assert(openers.size >= 9, "system prompt examples open with many different words");
+  assert(
+    answers.every((a) => a === a.toLowerCase()),
+    "every system prompt example answer is lowercase",
+  );
+  assert(
+    answers.every((a) => !a.endsWith(".")),
+    "no system prompt example answer ends in a period",
+  );
+  assert(
+    answers.filter((a) => /(^|[\s,])ищу($|[\s,])/.test(a)).length <= 1,
+    "at most one example answer leans on «ищу»",
+  );
   for (const a of answers) {
     eq(sanitizeFastAck(a), a, `system prompt example «${a}» passes sanitizeFastAck`);
   }

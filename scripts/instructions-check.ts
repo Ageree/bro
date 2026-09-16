@@ -3,10 +3,12 @@ import { assert, src } from "./lib/check.ts";
 /**
  * Guards the canonical "результат тула → что сказать" table, the
  * jargon/phrasing rules it replaced (A5 Appendix C/F, A4-worker-otp F3), and
- * the voice rules from the "человечный Bro" rewrite.
- * Byte ceiling: the voice rewrite cut the file from 21,182 bytes to ~19.6k
- * while keeping every behavioural rule — this asserts it never grows back
- * past +10% of that.
+ * the voice rules from the "человечный Bro" rewrite, re-sharpened against the
+ * register the owner pointed at (Poke / Instinct): match the human's length
+ * and capitalisation, never open an emoji, wit on a short leash, no flattery,
+ * bad news first, silence is a real turn.
+ * Byte ceiling: the Poke/Instinct pass grew ## Voice by ~1.8k, so the baseline
+ * is re-taken here — this asserts the file never grows past +10% of it.
  */
 
 const instructions = src("agent/instructions.md");
@@ -59,6 +61,7 @@ for (const robotic of [
   "Статус:",
   "Выполняю запрос",
   "Готов помочь!",
+  "Прошу прощения за доставленные неудобства",
 ]) {
   assert(
     instructions.includes(robotic),
@@ -78,6 +81,34 @@ assert(
   "instructions.md bans restating the user's request back at them",
 );
 
+// --- Poke/Instinct register: the traits the owner's reference points show ---
+// Each of these is a checkable rule in ## Voice, not a vibe.
+for (const [needle, what] of [
+  // Poke: "match your response length approximately to the user's".
+  ["Длину меряй по человеку", "reply length tracks the human's"],
+  // Poke: "Adapt to the texting style of the user. Use lowercase if the user
+  // does. Never use obscure acronyms or slang if the user has not first."
+  ["Пиши в его регистре", "capitalisation/slang follow the human"],
+  // Poke: "Never text with emojis if the user has not texted them first" and
+  // never reuse the emoji from their last few messages.
+  ["Эмодзи — только если он поставил первым", "Bro never opens an emoji"],
+  ["не те же, что у него в последних сообщениях", "Bro does not echo their emoji"],
+  // Poke: subtle wit, "Never make multiple jokes in a row", never unoriginal,
+  // "Never ask if the user wants to hear a joke", no "lol" as filler.
+  ["Две подряд не ставь", "wit stays on a short leash"],
+  // Poke: "never be sycophantic".
+  ["лести никогда", "no sycophancy"],
+  // Poke: when the user is just chatting, do not offer help — «привет» gets
+  // «what's up», not «Hi! How can I help you today?».
+  ["не предлагай помощь", "small talk is answered, not upsold"],
+  // Instinct: leads with the straight story when something went wrong.
+  ["Плохую новость — первой строкой", "bad news goes first and plainly"],
+  // Poke: "you can react or output an empty string to say nothing".
+  ["промолчи или поставь реакцию", "silence/a tapback is a real turn"],
+] as const) {
+  assert(instructions.includes(needle), `instructions.md voice rule: ${what}`);
+}
+
 // The first bubble of an errand turn is a freshly worded "я взялся" line, not
 // a hardcoded «ищу» — varied wording is the whole point of the rewrite.
 assert(
@@ -88,6 +119,12 @@ assert(
   instructions.includes("с маленькой буквы, без точки в конце, придумана заново"),
   "instructions.md requires a freshly worded lowercase opening line",
 );
+// Poke: "Never output preamble or postamble" / "never repeat what the user
+// says directly back at them when acknowledging".
+assert(
+  instructions.includes("Без вступления, сразу с дела"),
+  "instructions.md keeps the opening line preamble-free",
+);
 assert(
   instructions.includes("особенно с «ищу»"),
   "instructions.md forbids always opening with «ищу»",
@@ -97,16 +134,27 @@ assert(
   "instructions.md forbids reusing the previous turn's wording",
 );
 // The palette has to be a palette: several differently-shaped openers.
-const palette = ["взялся", "принял", "беру на себя", "приступил", "сделаю"];
+const palette = ["взялся", "принял", "беру на себя", "приступил", "сделаю", "окей"];
 for (const opener of palette) {
   assert(
     instructions.includes(opener),
     `instructions.md opening-line palette includes "${opener}"`,
   );
 }
+// The palette line itself has to stay a palette: many differently-opened beats.
+{
+  const line = instructions
+    .split("\n")
+    .find((l) => l.startsWith("«взялся, смотрю вб»"));
+  assert(Boolean(line), "instructions.md still carries the «взялся» palette line");
+  const beats = [...line!.matchAll(/«([^»]+)»/g)].map((m) => m[1]!);
+  assert(beats.length >= 9, `«взялся» palette lists ${beats.length} beats, want >= 9`);
+  const openers = new Set(beats.map((b) => b.split(/[\s,]+/)[0]!.toLowerCase()));
+  assert(openers.size >= 9, "«взялся» palette beats open with distinct words");
+}
 
 // --- length ceiling: same-or-shorter intent, hard cap at +10% over baseline ---
-const BASELINE_BYTES = 19_560; // agent/instructions.md size after the voice rewrite
+const BASELINE_BYTES = 21_980; // agent/instructions.md size after the Poke/Instinct voice pass
 const CEILING_BYTES = Math.ceil(BASELINE_BYTES * 1.1);
 const actualBytes = Buffer.byteLength(instructions, "utf8");
 assert(
