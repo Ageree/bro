@@ -65,6 +65,7 @@
     "wakeups:check": "node --experimental-strip-types scripts/wakeups-check.ts",
     "outcome:check": "node --experimental-strip-types scripts/browser-outcome-check.ts",
     "progress:check": "node --experimental-strip-types scripts/browser-progress-check.ts",
+    "phrasing:check": "node --experimental-strip-types scripts/phrasing-check.ts",
     "instructions:check": "node --experimental-strip-types scripts/instructions-check.ts",
     "photon:check": "node --experimental-strip-types scripts/photon-check.ts",
     "photon:webhooks": "node --env-file=.env.local --experimental-strip-types scripts/setup-photon-webhook.ts",

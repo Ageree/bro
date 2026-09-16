@@ -42,6 +42,12 @@ import {
   nextProgressNote,
   type ProgressKey,
 } from "./lib/browserProgressPolicy";
+import {
+  doneFacts,
+  phrasingConfigured,
+  type PhraseFacts,
+  type PhraseKind,
+} from "./lib/broPhrasing";
 import { isLiveBrowserPoll } from "./lib/wakeupPolicy";
 import { orderRowFromRun } from "./lib/orderRecordPolicy";
 import { unscheduleCron } from "./lib/wakeupCrons";
@@ -106,6 +112,32 @@ async function notifyHuman(
       conversationId: opts.conversationId,
       text: opts.text,
     });
+  }
+}
+
+/**
+ * The line Bro actually says, phrased for this run — or null, which means
+ * "use the canned one". Everything about this is fallback-shaped on purpose:
+ *
+ *  - a deployment with no OPENROUTER_API_KEY never even pays the action hop,
+ *    so it behaves exactly as it did before the lane existed;
+ *  - the action itself is hard-bounded (convex/lib/broPhrasing.ts) and
+ *    returns null rather than throwing on a timeout/error/bad output;
+ *  - a throw from the hop itself is caught here.
+ *
+ * It is never the only thing standing between the human and a message.
+ */
+async function phraseOrNull(
+  ctx: ActionCtx,
+  kind: PhraseKind,
+  facts: PhraseFacts,
+): Promise<string | null> {
+  if (!phrasingConfigured()) return null;
+  try {
+    return await ctx.runAction(internal.phrasing.phraseLine, { kind, facts });
+  } catch (err) {
+    console.error("phrasing hop failed", err);
+    return null;
   }
 }
 
@@ -183,7 +215,16 @@ async function recordOrderFromRun(
  */
 async function deliverDoneNow(
   ctx: ActionCtx,
-  opts: { tenantPhone: string; runId: string; sessionId?: string; text: string },
+  opts: {
+    tenantPhone: string;
+    runId: string;
+    sessionId?: string;
+    /** The canned report — the fallback, and what actually goes out whenever
+     *  `facts` is absent or the phrasing lane comes back empty. */
+    text: string;
+    /** The parsed outcome fields the phrasing lane may speak from. */
+    facts?: PhraseFacts;
+  },
 ): Promise<boolean> {
   const claimed = await ctx.runMutation(internal.tenants.claimBrowserWakeup, {
     phoneE164: opts.tenantPhone,
@@ -206,11 +247,16 @@ async function deliverDoneNow(
     });
     return false;
   }
+  // Phrased only after the claim is won: the loser of a race must not spend a
+  // model call on a line it will never send, and a duplicate poll must not
+  // rephrase a report that already went out.
+  const text =
+    (opts.facts ? await phraseOrNull(ctx, "done", opts.facts) : null) ?? opts.text;
   try {
     await notifyHuman(ctx, {
       tenantPhone: opts.tenantPhone,
       conversationId,
-      text: opts.text,
+      text,
     });
   } catch (err) {
     console.error("instant done deliver failed", err);
@@ -752,6 +798,9 @@ export const pollRun = internalAction({
           runId: args.runId,
           sessionId: run.sessionId ?? args.sessionId,
           text: nowLine,
+          // Only the parsed outcome fields — `run.result` itself (the raw
+          // Cloud dump) never leaves this function.
+          facts: doneFacts(outcome!),
         })
       : false;
     if (
@@ -812,11 +861,18 @@ export const pollRun = internalAction({
         key: note.key,
       });
       if (claimed.send && claimed.conversationId) {
+        // Same shape as the done report: phrase it only once this poll owns
+        // the note, and fall straight back to the seeded canned line when the
+        // lane is off, slow or unusable. `where` is the human site phrase —
+        // no hostname, no errand text, ever reaches the model here.
+        const text =
+          (await phraseOrNull(ctx, note.key, note.where ? { where: note.where } : {})) ??
+          note.text;
         try {
           await notifyHuman(ctx, {
             tenantPhone: args.tenantPhone,
             conversationId: claimed.conversationId,
-            text: note.text,
+            text,
           });
         } catch (err) {
           await ctx.runMutation(internal.tenants.releaseBrowserProgress, {

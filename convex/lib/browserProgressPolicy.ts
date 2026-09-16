@@ -9,6 +9,14 @@
  * `doneNowLine` is the same report one beat earlier: the poll that sees a
  * clean «готово» speaks it straight away, so the person does not wait out a
  * whole model turn for an outcome that is already fully parsed.
+ *
+ * Since the phrasing lane shipped (convex/lib/broPhrasing.ts) these palettes
+ * are the FALLBACK, not the voice: browserFollow asks a tiny, hard-bounded
+ * model call to write the line, and sends what is below whenever that call is
+ * unconfigured, too slow, or comes back with something that fails the gate.
+ * That is why the pick here stays seeded rather than random — a retried poll
+ * that falls back must fall back to the same sentence it would have used the
+ * first time, never a new one.
  */
 
 import { isPreviewHost } from "./browserLivePolicy.ts";
@@ -239,7 +247,7 @@ export function nextProgressNote(opts: {
   loginWait: boolean;
   sent: ProgressKey[];
   seed?: string;
-}): { key: ProgressKey; text: string } | undefined {
+}): { key: ProgressKey; text: string; where?: string } | undefined {
   if (isFollowTerminal(opts.status)) return undefined;
   // Login-wait runs already get the login-link push once the site's login
   // page loads, and every note afterwards is about the human, not the
@@ -263,19 +271,34 @@ export function nextProgressNote(opts: {
   const host = openedHost ?? opts.site?.trim();
 
   if (openedHost && !sent.has("opened")) {
+    const where = humanSitePhrase(openedHost);
     return {
       key: "opened",
-      text: pickProgressVariant("opened", humanSitePhrase(openedHost), seed),
+      text: pickProgressVariant("opened", where, seed),
+      // `where` is the same human phrase the canned line uses, handed out so
+      // the phrasing lane (convex/lib/broPhrasing.ts) can name the place in
+      // its own sentence. Undefined for a host we cannot name — the note then
+      // says nothing about where he is, generated or canned.
+      ...(where ? { where } : {}),
     };
   }
 
   const elapsed = opts.now - opts.startedAt;
+  const laterWhere = humanSitePhrase(host);
   if (elapsed >= PROGRESS_SLOW_MS && !sent.has("slow")) {
-    return { key: "slow", text: pickProgressVariant("slow", humanSitePhrase(host), seed) };
+    return {
+      key: "slow",
+      text: pickProgressVariant("slow", laterWhere, seed),
+      ...(laterWhere ? { where: laterWhere } : {}),
+    };
   }
 
   if (elapsed >= PROGRESS_LONG_MS && !sent.has("long")) {
-    return { key: "long", text: pickProgressVariant("long", humanSitePhrase(host), seed) };
+    return {
+      key: "long",
+      text: pickProgressVariant("long", laterWhere, seed),
+      ...(laterWhere ? { where: laterWhere } : {}),
+    };
   }
 
   return undefined;

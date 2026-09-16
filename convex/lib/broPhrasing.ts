@@ -33,11 +33,16 @@ export const OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completion
 /** Cheap + fast; same default family the agent and the fast-ack lane use. */
 export const DEFAULT_PHRASE_MODEL = "deepseek/deepseek-v4.1-flash";
 
-/** The done report is the errand's single most visible message and the human
- *  is already waiting on it — it can afford a beat. A progress note is filler
- *  between beats and must not add a visible pause to anything. */
+/**
+ * The done report is the errand's single most visible message and the human
+ * is already waiting on it — against the ~44s the instant path saves, 1.2s is
+ * noise. A progress note is unprompted filler nobody is blocked on, so it
+ * gets the tighter budget; measured round trips run ~460-1500ms, which means
+ * the slower half of notes simply goes out in the canned wording. That is the
+ * intended trade: a note is never worth holding a poll open for.
+ */
 export const DONE_BUDGET_MS = 1_200;
-export const PROGRESS_BUDGET_MS = 700;
+export const PROGRESS_BUDGET_MS = 1_000;
 
 export type PhraseKind = "done" | "opened" | "slow" | "long";
 
@@ -73,8 +78,15 @@ export function phrasingEnabled(env: EnvLike = process.env): boolean {
   return !(raw === "0" || raw === "off" || raw === "false");
 }
 
+/**
+ * Every whitespace character is stripped, not just the ends: a key pasted
+ * into a hosted environment often carries a newline in the MIDDLE (this is
+ * the same pathology scripts/deploy.sh trims for the Convex/Vercel CLIs),
+ * and `fetch` rejects such a header outright — which would turn a configured
+ * deployment into a permanently-falling-back one, silently.
+ */
 export function phrasingKey(env: EnvLike = process.env): string | undefined {
-  return env.OPENROUTER_API_KEY?.trim() || undefined;
+  return env.OPENROUTER_API_KEY?.replace(/\s+/gu, "") || undefined;
 }
 
 /**
@@ -170,11 +182,14 @@ function stripSurroundingQuotes(s: string): string {
 /** "1 290" and "1 290" (nbsp) are the same number as "1290" — fold the
  *  thousands separators away before any digit is compared or judged. */
 function foldDigits(s: string): string {
-  let out = s.replace(/[   ]/gu, " ");
+  let out = s.replace(/[\u00a0\u202f\u2009]/gu, " ");
   let prev = "";
   while (prev !== out) {
     prev = out;
-    out = out.replace(/(\d)[ ](?=\d)/gu, "$1");
+    // Only a group of exactly three digits is a thousands separator. Folding
+    // every space between digits would glue «заказ 508 на 1290 ₽» into one
+    // seven-digit number and lose both facts.
+    out = out.replace(/(\d)[ ](\d{3})(?!\d)/gu, "$1$2");
   }
   return out;
 }
@@ -196,7 +211,9 @@ function factText(facts: PhraseFacts): string {
     facts.when ?? "",
     ...(facts.options ?? []),
     facts.where ?? "",
-  ].join(" ");
+    // Newline-joined on purpose: a space between two facts must never read as
+    // a thousands separator when the runs are folded out below.
+  ].join("\n");
 }
 
 /** Scaffold labels and report headers — a generated line is a sentence, not
@@ -245,6 +262,9 @@ export function sanitizePhrase(
   if (!s) return null;
   // Fenced blocks are a model formatting reflex, never something a friend types.
   s = s.replace(/^```[\w-]*\n?/u, "").replace(/```$/u, "").trim();
+  // Quotes around the WHOLE answer come off first — a two-line report is
+  // often wrapped once, not line by line.
+  s = stripSurroundingQuotes(s);
   if (!s) return null;
 
   const lines = s
@@ -286,7 +306,9 @@ export function sanitizePhrase(
   return text;
 }
 
-type ChatResponse = { choices?: Array<{ message?: { content?: unknown } }> };
+type ChatResponse = {
+  choices?: Array<{ message?: { content?: unknown }; finish_reason?: unknown }>;
+};
 
 /**
  * One phrasing call, hard-bounded. Resolves to the sanitised line, or null —
@@ -317,7 +339,10 @@ export async function generatePhrase(opts: {
   const body = {
     model: phrasingModel(env),
     stream: false,
-    max_tokens: opts.kind === "done" ? 80 : 40,
+    // Room to finish the thought. A completion cut off at the cap («…и я
+    // торм») is rejected below rather than sent, so a cap that is too tight
+    // does not produce a bad line — it produces the canned one, every time.
+    max_tokens: opts.kind === "done" ? 110 : 64,
     // High enough that the wording really moves run to run — a low
     // temperature here would rebuild the canned palette by other means.
     temperature: 0.9,
@@ -345,7 +370,11 @@ export async function generatePhrase(opts: {
         return null;
       }
       const json = (await res.json()) as ChatResponse;
-      const raw = json.choices?.[0]?.message?.content;
+      const choice = json.choices?.[0];
+      // Ran into the token cap: whatever came back is a sentence with its
+      // tail sawn off. Never send that.
+      if (choice?.finish_reason === "length") return null;
+      const raw = choice?.message?.content;
       return sanitizePhrase(typeof raw === "string" ? raw : null, opts.kind, opts.facts);
     } catch (err) {
       if (!(err instanceof Error && err.name === "AbortError")) {

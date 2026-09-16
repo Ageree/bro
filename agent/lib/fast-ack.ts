@@ -240,7 +240,12 @@ export function startFastAck(
 ): FastAckHandle | null {
   const env = opts?.env ?? process.env;
   if (!fastAckEnabled(env)) return null;
-  const apiKey = env.OPENROUTER_API_KEY?.trim();
+  // Strip ALL whitespace, not just the ends: a key pasted into a hosted env
+  // can carry a newline in the middle, and fetch rejects such a header
+  // outright — the lane would then fall back forever on a deployment that
+  // believes it is configured. Same treatment the phrasing lane and the
+  // deploy script give their keys.
+  const apiKey = env.OPENROUTER_API_KEY?.replace(/\s+/gu, "");
   if (!apiKey) return null;
   if (!shouldFastAck(text)) return null;
 
