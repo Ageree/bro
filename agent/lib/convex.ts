@@ -382,7 +382,9 @@ export const setBrowser = (
 /** Claim the one allowed in-flight Cloud start for this person, BEFORE
  *  `startRun` round-trips. `claimed: false` means another turn is already
  *  starting an errand — the caller must hold its line for that errand instead
- *  of opening a second cloud run (the «на воскресенье» double-start). */
+ *  of opening a second cloud run (the «на воскресенье» double-start).
+ *  On a won claim `startingAt` is this claim's own stamp: keep it, it is the
+ *  only thing `releaseBrowserStart` accepts. */
 export const claimBrowserStart = (
   phoneE164: string,
   task: string,
@@ -390,9 +392,15 @@ export const claimBrowserStart = (
   staleMs: number,
 ) => m(api.tenants.claimBrowserStart)({ phoneE164, task, now, staleMs });
 
-/** Drop a start claim that will never produce a run (start threw / not taken). */
-export const releaseBrowserStart = (phoneE164: string): Promise<void> =>
-  m(api.tenants.releaseBrowserStart)({ phoneE164 }).then(() => {});
+/** Drop a start claim that will never produce a run (start threw / not taken).
+ *  `startingAt` is the stamp `claimBrowserStart` handed back, and the mutation
+ *  compares against it: a turn can only ever release ITS OWN claim, never a
+ *  sibling's in-flight start (S6 — that was a way to force a double start). */
+export const releaseBrowserStart = (
+  phoneE164: string,
+  startingAt: number,
+): Promise<void> =>
+  m(api.tenants.releaseBrowserStart)({ phoneE164, startingAt }).then(() => {});
 
 /** Park a follow-up that landed while a start was still in flight. */
 export const holdBrowserSteer = (phoneE164: string, text: string): Promise<void> =>

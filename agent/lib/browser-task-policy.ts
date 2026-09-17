@@ -10,6 +10,12 @@ import {
   isLoginWaitTask,
   loginPageUrl,
 } from "../../convex/lib/browserProfilePolicy.ts";
+import {
+  cloudStartInFlight,
+  injectCandidate,
+  isDoneCloudStatus,
+} from "../../convex/lib/browserInjectPolicy.ts";
+import { isActiveStatus } from "./browser-policy.ts";
 
 /** Pages eve should check the vault for a saved login against: the payment
  *  hosts, the site `errandStartUrl` resolved from wording alone, and any
@@ -63,6 +69,45 @@ export function isAckLike(
   if (!t || t.includes("?") || t.includes("？")) return false;
   const words = t.split(/\s+/).filter(Boolean);
   return words.length > 0 && words.length <= 3;
+}
+
+/** Is the errand a short line could belong to actually LIVE right now?
+ *
+ *  S14: this used to be `isActiveStatus(status) || cloudStartInFlight(...)`,
+ *  and a start claim was read as liveness no matter which errand it belonged
+ *  to. A genuine «спасибо» after a FINISHED errand, typed while a brand new
+ *  errand was still mid-claim, was therefore not an ack — so the `reuse`
+ *  branch skipped the ack short-circuit, ran persist+settle on the OLD
+ *  completed run and re-sent its result as if it had just finished again.
+ *  A claim only makes a short line "a detail for the running errand" while the
+ *  stored run is not already done; once it is, the claim belongs to a
+ *  different errand that has no result to talk about yet. */
+export function ackSessionLive(
+  tenant: { browserStatus?: string; browserStartingAt?: number },
+  now: number = Date.now(),
+): boolean {
+  if (isActiveStatus(tenant.browserStatus)) return true;
+  if (isDoneCloudStatus(tenant.browserStatus)) return false;
+  return cloudStartInFlight({ startingAt: tenant.browserStartingAt, now });
+}
+
+/** May this line be PARKED on the tenant row while a start is in flight?
+ *
+ *  S4: the claim-loser path parked whatever the human typed, unfiltered, and
+ *  `drainHeldSteer` later queued it verbatim into the Cloud session — so every
+ *  exclusion the inject path applies (smalltalk, a question aimed at Bro, an
+ *  emoji reaction, and above all `looksLikePasswordDump`) was bypassed for
+ *  anything that went through the hold. A pasted «Hunter2024» was parked by
+ *  one turn and typed into the live session by the next.
+ *
+ *  This is the text-only half of the inject decision: every kind
+ *  `decideCloudInject` can return implies it, so nothing that would have been
+ *  injected is dropped, and nothing it excludes can be smuggled in through the
+ *  hold. Held rows outlive the turn that wrote them, so the drain re-checks
+ *  the same predicate before queueing — a row written by an older build, or by
+ *  a path that forgets to filter, still never reaches the session. */
+export function holdableSteer(text: string): boolean {
+  return injectCandidate(text);
 }
 
 /** One charge per errand (item 10). A pay-forced restart of a run that would

@@ -1,12 +1,13 @@
 /**
  * Mid-run iMessage → live Browser Use Cloud session.
  *
- * While a session is live the default is to QUEUE the human's line into it —
- * a code, «подожди», an address correction, a confirmation, or just an extra
- * detail («на воскресенье»). Only the named exclusions stay out: smalltalk,
- * questions aimed at Bro, password dumps, emoji, lone letter+digit tokens and
- * genuinely fresh errands. Unrelated chat stays a normal Bro reply. Site
- * passwords never go in iMessage.
+ * While a session is live the human's line is queued into it when it
+ * PARAMETERISES the open errand — a code, «подожди», an address correction, a
+ * confirmation, or a plain verbless detail («на воскресенье», «на 4 человек»,
+ * «у окна»). Everything else stays a normal Bro reply: smalltalk, anything
+ * addressed at Bro, asides and narration, a different topic, a fresh errand,
+ * emoji, lone letter+digit tokens — and, above all, anything carrying a
+ * credential. Site passwords never go in iMessage and never leave the tenancy.
  */
 
 import {
@@ -14,6 +15,7 @@ import {
   isLoginWaitTask,
 } from "./browserProfilePolicy.ts";
 import { DONE } from "./browserFollowPolicy.ts";
+import { scrubSecrets } from "./secretScrub.ts";
 
 export const INJECT_MARK = "[bro-inject]";
 
@@ -75,16 +77,187 @@ export type CloudInjectKind = "code" | "wait" | "correction" | "confirm" | "stee
 const SMALLTALK =
   /^(привет\w*|здоров\w*|хай|ку|hi|hello|hey|спасибо( большое)?|спс|благодар\w*|пасиб\w*|ок\w*|okay?|ok|да|нет|неа|ага|угу|понял\w*|ясно|хорошо|ладно|класс|супер|отлично|круто|збс|топ|норм|нормально|пойдет|годится|давай|давайте|thanks|thx|ty|лол)\s*[.!?…]*$/iu;
 
-// Status / wellbeing questions aimed at Bro, typed without a question mark.
+// Status / wellbeing openers aimed at Bro, typed without a question mark.
 // A trailing «?» already excludes the punctuated ones; «как дела» and «ну что
 // там» are the same thing and must not be queued into the errand either.
-// Head-anchored and short, so «что там с бронью на воскресенье» (a real
-// follow-up, 6 words) is not swallowed by it.
+//
+// S11 — this used to be gated on `t.split(/\s+/).length <= 4`, a word count
+// standing in for "is this only a greeting". It was wrong in both directions:
+// «что там 4 человека» (4 words) is a real party size and was dropped, while
+// «ну что там вообще происходит у тебя» and «что нового на работе у тебя
+// сегодня» (7 words each) sailed through into the vendor session. The opener
+// is now STRIPPED instead of counted, and whatever remains is judged on its
+// own — empty remainder → chatter, a remainder that parameterises the errand
+// → steer.
 const CHATTER_Q =
   /^(как дела|как ты|как оно|как жизнь|как успехи|что там|ну что|ну как|что нового|что делаешь|чем занят|ты тут|ты там|ты здесь|ты жив[а-я]*|ты где)(?=$|[\s.!?…,])/i;
 
 // Only a message that is ~all emoji / punctuation, no letters or digits.
 const EMOJI_ONLY = /^[^\p{L}\p{N}]+$/u;
+
+// ---------------------------------------------------------------------------
+// S1 — the credential veto.
+//
+// Steering went opt-OUT, and that silently removed an accidental guard: under
+// the old opt-in gate a labelled password carried no imperative verb, so it
+// could never be a steer. Afterwards «пароль от вб: зайка2024» read as an
+// ordinary follow-up and was POSTed verbatim to Browser Use Cloud. The queued
+// message's «Пароли, карты и коды из этого текста не вводи» sentence does not
+// help: it is a prompt to the vendor's agent, and by the time anything reads
+// it the credential has already left the tenancy.
+//
+// `looksLikePasswordDump` cannot cover this — it bails on the first space
+// (`if (/\s/.test(t)) return false`), so it only ever saw a lone token, while
+// every labelled form a human actually types («мой пароль: qwerty123»,
+// «логин vasya пароль Hunter2024») walked straight past it. The rules below
+// are independent of it and look at the whole LINE.
+// ---------------------------------------------------------------------------
+
+// «пасс» / «пин» / «секрет» carry explicit end-boundaries so «пассажира»,
+// «пингвин», «спину» and «секретарю» can never trip the veto — those are
+// ordinary errand words in a taxi/booking chat.
+const CRED_LABEL_SRC = String.raw`(?<![\p{L}\d])(парол[\p{L}]{0,3}|пассворд|пасс|password|passphrase|логин[\p{L}]{0,3}|login|username|юзернейм|cvv2?|cvc2?|пин[- ]?код|пин|pin[- ]?code|pin|секрет(?:ы|а|ов)?|seed|сид[- ]?фраз[\p{L}]{0,2}|мнемоник[\p{L}]{0,3})(?![\p{L}\d])`;
+
+// A token that is a secret all by itself: letters AND digits, 6+ chars.
+const SECRET_TOKEN = /(?<![\p{L}\d])(?=\S*\p{L})(?=\S*\d)\S{6,}(?![\p{L}\d])/u;
+
+// Labels that are never a legitimate thing to say in prose — a CVV, a PIN or
+// a seed phrase is only ever quoted to hand over the value itself.
+const STRONG_CRED = /^(cvv2?|cvc2?|пин|pin|seed|сид|мнемоник|passphrase)/iu;
+
+// Identifiers that are a secret the moment they carry digits. «карта
+// заканчивается на 4242» and «мой инн 771234567890» are exactly the shape
+// STREET_LINE mistakes for an address correction, so this has to veto the
+// correction path too, not just the steer path.
+const SENSITIVE_ID =
+  /(?<![\p{L}])(карт[аыуе]|карточк[аиуе]|инн|снилс|паспорт[\p{L}]*|егрн|iban|swift)(?![\p{L}\d])/iu;
+
+function credValueShaped(token: string): boolean {
+  const t = token.replace(/[.,;:!?»«"'()]+$/u, "");
+  if (t.length < 3) return false;
+  if (/^\d{3,}$/.test(t)) return true; // «пин 1234», «cvv 123»
+  if (/\p{L}/u.test(t) && /\d/.test(t) && t.length >= 6) return true; // Hunter2024
+  if (/^[A-Za-z][A-Za-z0-9._-]{3,}$/.test(t)) return true; // «логин vasya»
+  return false;
+}
+
+/**
+ * A line that names a credential AND carries a plausible value for it.
+ *
+ * Deliberately NOT a bare keyword check: «забыл пароль, восстанови» and
+ * «войди в мой аккаунт» are legitimate errand instructions — the first names
+ * the label but hands over nothing, the second names no label at all — and
+ * both must still reach the open session. The veto needs a value.
+ */
+export function looksLikeCredentialLine(text: string): boolean {
+  const t = text.trim().normalize("NFC").replace(/ё/gi, "е");
+  if (!t || t.length > 400) return false;
+  // A one-time code is the whole reason injection exists. `isChatCodeMessage`
+  // is the narrow, keyword-anchored OTP shape — never veto it.
+  if (isChatCodeMessage(t)) return false;
+  const re = new RegExp(CRED_LABEL_SRC, "giu");
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(t))) {
+    const label = m[1] ?? "";
+    const rest = t.slice(m.index + m[0].length);
+    // «пароль: qwerty123» — separator straight after the label.
+    if (/^\s*[:=—–-]\s*\S{3,}/u.test(rest)) return true;
+    // «пароль от вб: зайка2024» — a few words, then the separator. The gap
+    // admits no digit, comma or sentence end, so a «:» belonging to a later
+    // clause can never be reached.
+    if (/^[^\d\n:=,;!?]{0,20}[:=—–]\s*\S{3,}/u.test(rest)) return true;
+    // «логин vasya», «пароль Hunter2024», «пин 1234» — no separator at all,
+    // but the very next token is value-shaped.
+    const next = /^[\s,]*(\S+)/u.exec(rest)?.[1] ?? "";
+    if (next && credValueShaped(next)) return true;
+    // «пароль от озона Hunter2024» — the value sits further along the line.
+    if (SECRET_TOKEN.test(rest)) return true;
+    // A CVV / PIN / seed label plus any digit run is a handover, full stop.
+    if (STRONG_CRED.test(label) && /\d{3,}/.test(t)) return true;
+  }
+  return false;
+}
+
+/** Everything the injection path must refuse to carry out of the tenancy. */
+export function carriesSecretValue(text: string): boolean {
+  const t = text.trim().normalize("NFC").replace(/ё/gi, "е");
+  if (!t) return false;
+  if (looksLikePasswordDump(t)) return true;
+  if (looksLikeCredentialLine(t)) return true;
+  if (SENSITIVE_ID.test(t) && /\d{3,}/.test(t)) return true;
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// S3 — what actually counts as a steer.
+//
+// The opt-out gate's only exclusions were a closed smalltalk list, a trailing
+// «?», emoji, a password dump, a fresh errand and a 4-word chatter opener, so
+// every other line the human typed while a session was live went to the
+// vendor: «мама звонила, просила перезвонить», «кстати я вчера был в кино»,
+// «ты вообще тупой». `FRESH_ERRAND` was quietly doing most of the real work —
+// «ну что там с моим заказом» is excluded only because it contains «заказ».
+//
+// So the gate now asks the question it always meant to ask: does this line
+// parameterise the OPEN errand? A preposition phrase, a day/time/quantity, an
+// instruction verb, a preference — yes. Anything aimed at Bro, an aside, past
+// narration, an insult, a different topic — no, whatever else it looks like.
+// ---------------------------------------------------------------------------
+
+// A short lead-in in front of a parameter: «а в центре», «лучше на 19:00».
+const STEER_LEAD = String.raw`(?:(?:а|и|ну|да|давай|давайте|лучше|тогда|может|плиз|пожалуйста|еще)[\s,]+){0,2}`;
+
+// The verbless vocabulary of follow-up parameters — the whole reason opt-out
+// exists: «на воскресенье», «на двоих», «на 4 человек», «на 19:00»,
+// «в центре», «у окна».
+const STEER_PREP = new RegExp(
+  `^${STEER_LEAD}(на|в|во|у|к|ко|с|со|из|от|до|за|по|при|около|возле|рядом|после|перед|через|без|для|не позже|не раньше|не позднее)\\s+\\S`,
+  "iu",
+);
+
+// An instruction aimed at the open page. Includes «восстанови» / «войди» so
+// «забыл пароль, восстанови» (a real errand step, no value handed over) still
+// lands in the session it belongs to.
+const STEER_CUE =
+  /(?<![\p{L}])(сделай|сделайте|поменяй|смени|замени|измени|добавь|убери|удали|выбери|возьми|поставь|укажи|напиши|отметь|перенеси|уточни|попроси|скажи|сравни|подбери|глянь|посмотри|проверь|восстанови|войди|зайди|залогинься|авторизуйся|продолжай|продолжи|остановись|отмени|оплати|подтверди|нажми|введи|вбей|открой|пропусти)(?![\p{L}])/iu;
+
+// A preference or a constraint on the open errand.
+const STEER_PREF =
+  /(?<![\p{L}])(подешевле|подороже|дешевл[\p{L}]*|дороже|эконом[\p{L}]*|комфорт[\p{L}]*|побыстрее|быстрее|поближе|ближе|подальше|срочно|чтобы|желательно|главное|предпочт[\p{L}]*|только не)(?![\p{L}])/iu;
+
+// A bare date / time / quantity fragment: «4 человека», «завтра», «двоих».
+const STEER_PARAM =
+  /(?<![\p{L}])(сегодня|завтра|послезавтра|утром|днем|вечером|ночью|понедельник|вторник|сред[ау]|четверг|пятниц[\p{L}]*|суббот[\p{L}]*|воскресень[\p{L}]*|двоих|троих|четверых|пятерых|шестерых)(?![\p{L}])/iu;
+
+// --- negative cues ---------------------------------------------------------
+
+// Addressed at Bro, not at the page. «ты вообще там что делаешь», «как
+// думаешь стоит брать», «что нового … у тебя сегодня».
+const BRO_ADDRESS =
+  /(?<![\p{L}])(ты|тебе|тебя|тобой|твой|твоя|твое|твои|твоего|твоей|твоим|думаешь|считаешь|делаешь|знаешь|помнишь|видишь|можешь|умеешь|понимаешь|слышишь|уверен|уверена)(?![\p{L}])/iu;
+
+// An aside that explicitly announces it is changing the subject. «а ещё
+// почини кран» is a second errand, not a detail of the open one; «потом» is
+// only a topic switch at the head of a line («сначала в центр, потом домой»
+// is a real route detail).
+const ASIDE =
+  /(?<![\p{L}])кстати(?![\p{L}])|^(?:а|и)\s+еще(?![\p{L}])|^потом(?![\p{L}])|^слушай(?![\p{L}])|^блин(?![\p{L}])/iu;
+
+const INSULT =
+  /(?<![\p{L}])(тупой|тупая|тупиш[ья]|дурак|дура|идиот|дебил|кретин|придурок|бесиш[ья]|достал[аи]?|отстой|хрень|бесполезн[\p{L}]*|ненавижу|заткнись|надоел[аи]?)(?![\p{L}])/iu;
+
+// Plainly a different topic — somebody else's call, an appointment, a second
+// household job. Keyed to the lines the review reproduced; the closed list is
+// the same shape as `SMALLTALK` and `FRESH_ERRAND` above it.
+const OFF_TOPIC =
+  /(?<![\p{L}])(встреч[аиуе]|созвон[\p{L}]*|совещани[\p{L}]*|планерк[\p{L}]*|юрист[\p{L}]*|бухгалтер[\p{L}]*|мам[аеуы]|пап[аеуы]|кино|театр|футбол|сериал[\p{L}]*|кран|сантехник[\p{L}]*|школ[аеуы]|уроки)(?![\p{L}])/iu;
+
+// Narration about something that already happened is a story, not a parameter
+// — unless the line also carries an instruction («вчера не получилось,
+// попробуй ещё раз»). «был/была» is deliberately absent: «и чтобы веранда
+// была» is a preference, not narration.
+const PAST_NARRATION =
+  /(?<![\p{L}])(вчера|позавчера|недавно|на днях|только что|звонил[аи]?|писал[аи]?|сказал[аи]?|говорил[аи]?|просил[аи]?|приходил[аи]?|заходил[аи]?|видел[аи]?|смотрел[аи]?|ездил[аи]?)(?![\p{L}])/iu;
 
 /**
  * A message worth docking into a live Cloud session as a steer, sans session
@@ -99,22 +272,35 @@ const EMOJI_ONLY = /^[^\p{L}\p{N}]+$/u;
  * «на 19:00», «в центре», «у окна» — the whole vocabulary of follow-up
  * parameters is verbless.
  *
- * So while a session is live the default is QUEUE IT, and only the shapes we
- * can name are excluded: smalltalk, a question aimed at Bro, a password dump,
- * an emoji reaction, a lone letter+digit token, a genuinely fresh errand —
- * plus code/wait/confirm/correction, which are their own earlier-winning
- * kinds. A queued line costs one message inside the session; a dropped line
- * costs the errand.
+ * But "not named as an exclusion" turned out to mean "everything" (S3): a
+ * closed smalltalk list, a «?», emoji, a password dump and a fresh errand are
+ * not a description of chat, and the vendor session received «мама звонила,
+ * просила перезвонить» and «ты вообще тупой» along with the party size. So
+ * the gate asks the real question instead — does this line PARAMETERISE the
+ * open errand? — with a matching set of negative cues, and everything that
+ * answers neither stays an ordinary Bro reply.
+ *
+ * A wrongly queued line costs one message inside the session; a wrongly
+ * dropped one costs the errand; a wrongly queued CREDENTIAL costs the
+ * tenancy, so that veto (S1) runs before anything else.
  */
 export function steerCandidate(text: string): boolean {
-  const t = text.trim().normalize("NFC").replace(/ё/gi, "е");
+  let t = text.trim().normalize("NFC").replace(/ё/gi, "е");
   // 400-char cap kept: a wall of text is a new brief, not a follow-up detail.
   if (!t || t.length > 400) return false;
-  if (looksLikePasswordDump(t)) return false;
+  // S1 — a credential must never reach the session, whatever else it is.
+  if (carriesSecretValue(t)) return false;
   if (EMOJI_ONLY.test(t)) return false;
   if (/[?？]\s*$/.test(t)) return false; // a question to Bro is not a steer
   if (SMALLTALK.test(t)) return false;
-  if (t.split(/\s+/).length <= 4 && CHATTER_Q.test(t)) return false;
+  // S11 — strip the greeting opener and judge what is left, instead of
+  // counting words. «ну что там» → nothing left → chatter. «что там 4
+  // человека» → «4 человека» → a party size that belongs in the session.
+  const opener = CHATTER_Q.exec(t);
+  if (opener) {
+    t = t.slice(opener[0].length).replace(/^[\s,.!…–—-]+/u, "").trim();
+    if (!t) return false;
+  }
   // Codes / «подожди» / confirmations / corrections are their own kinds.
   if (
     isChatCodeMessage(t) ||
@@ -128,7 +314,25 @@ export function steerCandidate(text: string): boolean {
   if (looksLikeFreshErrand(t)) return false;
   // A lone space-free letter+digit token (login / tracking id / secret): skip.
   if (!/\s/.test(t) && /[A-Za-zА-Яа-яе]/.test(t) && /\d/.test(t)) return false;
-  return true;
+
+  // --- negative cues: aimed at Bro, or plainly about something else --------
+  const instruction = STEER_CUE.test(t);
+  if (BRO_ADDRESS.test(t)) return false;
+  if (ASIDE.test(t)) return false;
+  if (INSULT.test(t)) return false;
+  if (OFF_TOPIC.test(t)) return false;
+  if (!instruction && PAST_NARRATION.test(t)) return false;
+
+  // --- positive cues: this parameterises the open errand -------------------
+  if (instruction) return true;
+  if (STEER_PREF.test(t)) return true;
+  const words = t.split(/\s+/).length;
+  // A preposition phrase or a bare date/quantity is only a parameter while it
+  // stays a FRAGMENT. Length is a proxy, but it is not the only thing between
+  // «завтра встреча в 10 с юристом» and the vendor: OFF_TOPIC names it too.
+  if (words <= 5 && STEER_PREP.test(t)) return true;
+  if (words <= 4 && (/\d/.test(t) || STEER_PARAM.test(t))) return true;
+  return false;
 }
 
 /** Steer fires while a Cloud errand session with a task is on record — or
@@ -386,7 +590,10 @@ export function looksLikeCorrectionText(text: string): boolean {
     isChatCodeMessage(t) ||
     isWaitInject(t) ||
     isConfirmInject(t) ||
-    looksLikePasswordDump(t)
+    // S1 — was `looksLikePasswordDump`, which only saw a lone token. STREET_LINE
+    // reads «инн 771234567890» and «пароль от вб: зайка2024» as "word + number
+    // = address", so the credential veto has to guard this path too.
+    carriesSecretValue(t)
   ) {
     return false;
   }
@@ -501,7 +708,10 @@ export function decideCloudInject(
   incoming: string,
   opts: CloudInjectAttrs,
 ): CloudInjectDecision {
-  if (looksLikePasswordDump(incoming)) return { kind: null };
+  // S1 — one veto in front of every kind, not just the steer path: a line
+  // carrying a password / login / CVV / PIN / card / ИНН never becomes an
+  // inject of any sort, so it can never be handed to the vendor.
+  if (carriesSecretValue(incoming)) return { kind: null };
 
   // A start claimed a moment ago but not yet persisted its ids counts as a
   // session for every decision below: the browser is (or is about to be)
@@ -567,6 +777,7 @@ export function injectAckText(kind: CloudInjectKind): string {
  * which is the one authority). Kept for the channel-side stamp and tests.
  */
 export function injectCandidate(text: string): boolean {
+  if (carriesSecretValue(text)) return false; // S1 — same veto as the stamp
   return (
     isChatCodeMessage(text) ||
     isWaitInject(text) ||
@@ -577,6 +788,13 @@ export function injectCandidate(text: string): boolean {
 }
 
 export function cloudInjectAttribute(text: string): Record<string, string> {
+  // S1 — this is the ONE place the raw human line is copied onto the turn as
+  // `cloudInjectText`, and everything downstream reads it from there. A line
+  // carrying a credential is never stamped, so it cannot be replayed into a
+  // session (or a task scaffold) by a later turn even if some other predicate
+  // would have claimed it — «готово, пароль qwerty123» is head-anchored
+  // «готово» and would otherwise stamp as a confirm.
+  if (carriesSecretValue(text)) return {};
   const kind = isChatCodeMessage(text)
     ? "code"
     : isConfirmInject(text)
@@ -669,6 +887,14 @@ function stripMarks(task: string): string {
  * Concise message queued into a live Cloud session (POST /sessions/{id}/queue).
  * The session already holds the errand context and the open tab, so this is a
  * short follow-up, not the full errand scaffold. Never quotes a site password.
+ *
+ * S1 — the human line is scrubbed here, at the last point before it leaves the
+ * tenancy. `steerCandidate`/`decideCloudInject` already refuse a credential
+ * line outright; this is the net under that net, so a labelled secret that
+ * slips a keyword veto still cannot ride out verbatim. It is a real guard, in
+ * this process — unlike the «Пароли, карты и коды из этого текста не вводи»
+ * sentence below, which is only a prompt to the vendor's agent and arrives
+ * long after the value has already been sent.
  */
 export function injectQueueText(opts: {
   kind: CloudInjectKind;
@@ -677,7 +903,7 @@ export function injectQueueText(opts: {
   dryRun?: boolean;
   alreadyTyped?: boolean;
 }): string {
-  const human = opts.humanText.trim().slice(0, 300);
+  const human = scrubSecrets(opts.humanText.trim()).slice(0, 300);
   const noOrder = opts.dryRun
     ? " После этого остановись: ничего не заказывай и не оплачивай."
     : "";
@@ -703,11 +929,22 @@ export function injectQueueText(opts: {
 
 /**
  * `interrupt:true` cancels the active run so the queued message runs at once.
- * A correction or «подожди» must preempt whatever the agent is mid-doing; a
- * code is the input a waiting agent expects next, so it is appended, not forced.
+ * A correction or «подожди» must preempt whatever the agent is mid-doing: both
+ * say "what you are about to commit is WRONG", and if the agent finishes the
+ * step first the wrong table is already booked. A code is the input a waiting
+ * agent expects next, so it is appended, not forced. A confirmation likewise.
+ *
+ * S2 — `steer` used to interrupt, and it should not. A steer is ADDITIVE: «на
+ * воскресенье», «у окна», «на 4 человек» add a parameter the agent has not
+ * reached yet, they do not contradict the step in flight. Cancelling the run
+ * for one buys nothing and costs plenty — the cancelled run id has to be
+ * handed back and re-derived by the caller, and a burst of three details
+ * («на двоих», «в центре», «у окна») cancels and restarts the run three times.
+ * `drainHeldSteer` already passes `interrupt: false` explicitly for exactly
+ * this reason; the default now agrees with it.
  */
 export function injectQueueInterrupt(kind: CloudInjectKind): boolean {
-  return kind === "wait" || kind === "correction" || kind === "steer";
+  return kind === "wait" || kind === "correction";
 }
 
 export function injectFollowTask(opts: {
@@ -718,7 +955,8 @@ export function injectFollowTask(opts: {
   dryRun?: boolean;
 }): string {
   const original = stripMarks(opts.originalTask) || "текущее поручение";
-  const human = opts.humanText.trim().slice(0, 400);
+  // S1 — same net as `injectQueueText`: this task text goes to the vendor too.
+  const human = scrubSecrets(opts.humanText.trim()).slice(0, 400);
   const head = `${INJECT_MARK}
 Человек написал в чат (это не пароль сайта): «${human}».
 Поручение: ${original}.

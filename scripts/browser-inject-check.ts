@@ -32,7 +32,10 @@ import {
   PENDING_STEER_TTL_MS,
   START_CLAIM_MS,
   startClaimIsLive,
+  carriesSecretValue,
+  looksLikeCredentialLine,
 } from "../convex/lib/browserInjectPolicy.ts";
+import { looksLikeCardNumber, scrubSecrets } from "../convex/lib/secretScrub.ts";
 import { scoreOtpInput } from "../agent/lib/browser-cdp.ts";
 
 const taxiTask = `[bro-errand] Задача: вызови такси домой.`;
@@ -434,7 +437,8 @@ assert(injectCandidate("сделай подешевле"), "an instruction is an
 assert(!injectCandidate("спасибо"), "thanks is not an inject candidate");
 assert(!injectCandidate("ну что там?"), "status question is not an inject candidate");
 assert(injectAckText("steer") === CHAT_INJECT_ACK, "steer ack is «ввожу»");
-assert(injectQueueInterrupt("steer"), "steer preempts the active run");
+// S2 — a steer is ADDITIVE and must not cancel the run it is adding to.
+assert(!injectQueueInterrupt("steer"), "steer is appended, never preempting (S2)");
 assert(
   injectQueueText({ kind: "steer", humanText: "сделай эконом" }).includes("сделай эконом"),
   "steer queue carries the instruction",
@@ -565,6 +569,203 @@ for (const line of ["спасибо", "как дела", "купи скотч н
 assert(
   !src("convex/lib/browserInjectPolicy.ts").includes("const STEER_SIGNAL"),
   "the opt-in STEER_SIGNAL regex is deleted, not left dead in the file",
+);
+
+// ---------------------------------------------------------------------------
+// S1 — a credential typed in chat must never reach the vendor.
+//
+// Reproduced on the real modules: «пароль от вб: зайка2024» came back as
+// `kind=steer` and was POSTed verbatim to Browser Use Cloud. The queued
+// message's «Пароли, карты и коды из этого текста не вводи» tail is a prompt,
+// not a guard — by the time the vendor's agent reads it the value has already
+// left the tenancy. `looksLikePasswordDump` could not catch any of these: it
+// bails on the first space, so it only ever saw a lone token.
+//
+// The values below are throwaway fixtures, not anybody's password.
+// ---------------------------------------------------------------------------
+const CREDENTIAL_LINES = [
+  "пароль от вб: зайка2024",
+  "мой пароль: qwerty123",
+  "логин vasya пароль Hunter2024",
+  "пароль от озона Hunter2024",
+  "пароль-hunter2ochen",
+  "пин 1234",
+  "cvv 123",
+  "seed фраза: table horse battery staple",
+  "карта заканчивается на 4242",
+  "мой инн 771234567890",
+];
+for (const line of CREDENTIAL_LINES) {
+  assert(carriesSecretValue(line), `«${line}» carries a secret value (S1)`);
+  assert(!steerCandidate(line), `«${line}» never steers (S1)`);
+  assert(!looksLikeCorrectionText(line), `«${line}» never rides the correction path (S1)`);
+  assert(
+    decideCloudInject(line, bookingRun).kind === null,
+    `«${line}» is never any kind of inject (S1)`,
+  );
+  assert(
+    Object.keys(cloudInjectAttribute(line)).length === 0,
+    `«${line}» is not stamped, so no turn can queue it (S1)`,
+  );
+}
+// «мой инн 771234567890» and «пароль от вб: зайка2024» both match STREET_LINE
+// («инн 771…» = "word + number"), which is why the veto had to cover the
+// correction path and not just `steerCandidate`.
+assert(
+  !looksLikeCorrectionText("мой инн 771234567890"),
+  "an ИНН is not an address correction (S1)",
+);
+// The stamp is the one place the raw line is copied onto the turn, so it is
+// vetoed there too: «готово, пароль …» is head-anchored «готово» and would
+// otherwise stamp as a confirm and be replayed verbatim by a later turn.
+assert(
+  Object.keys(cloudInjectAttribute("готово, пароль qwerty123")).length === 0,
+  "a confirm-shaped line carrying a password is never stamped (S1)",
+);
+assert(cloudInjectAttribute("готово").cloudInject === "confirm", "…a plain confirm still is");
+
+// The veto needs a VALUE. A label on its own is ordinary errand text and must
+// still reach the open session — «забыл пароль, восстанови» asks the agent to
+// run the recovery flow, «войди в мой аккаунт» asks it to sign in. Neither
+// hands over anything, so vetoing them would cost the errand for nothing.
+for (const line of [
+  "забыл пароль, восстанови",
+  "войди в мой аккаунт",
+  "пароль не подошел",
+  "пароль от ozon забыл",
+  "логин через госуслуги",
+]) {
+  assert(!looksLikeCredentialLine(line), `«${line}» names a label but hands over no value`);
+}
+assert(steerCandidate("забыл пароль, восстанови"), "«забыл пароль, восстанови» still steers");
+assert(steerCandidate("войди в мой аккаунт"), "«войди в мой аккаунт» still steers");
+// Ordinary errand words that merely CONTAIN a credential label as a substring
+// («пассажир», «секретарь», «пингвин») must not trip the veto.
+assert(!carriesSecretValue("на 3 пассажира"), "«пассажир» is not «пасс»");
+assert(!carriesSecretValue("запишись к секретарю на 10:00"), "«секретарь» is not «секрет»");
+// An OTP is the whole reason injection exists and is never vetoed.
+assert(!carriesSecretValue("код 482913"), "a one-time code is not a credential");
+assert(decideCloudInject("код 482913", { ...liveRun, need: "sms_code" }).kind === "code", "the OTP path is untouched by the veto");
+
+// Last-resort net: even a line that slips the veto cannot carry a raw secret
+// out, because the queued/scaffolded text is scrubbed in-process.
+{
+  const queued = injectQueueText({ kind: "steer", humanText: "пароль от вб: зайка2024" });
+  assert(!queued.includes("зайка2024"), "injectQueueText scrubs the raw secret (S1)");
+  assert(queued.includes("[password]"), "the scrubbed value is marked, not silently dropped");
+  const followed = injectFollowTask({
+    kind: "correction",
+    humanText: "мой пароль: qwerty123",
+    originalTask: taxiTask,
+  });
+  assert(!followed.includes("qwerty123"), "injectFollowTask scrubs the raw secret (S1)");
+}
+// …and the scrub itself now sees the shape people actually type. The label no
+// longer has to be followed IMMEDIATELY by the separator.
+assert(
+  scrubSecrets("пароль от озона: Hunter2024") === "пароль от озона: [password]",
+  "a label with intervening words before the «:» is redacted (S1)",
+);
+assert(
+  scrubSecrets("логин vasya пароль Hunter2024").endsWith("[password]"),
+  "a label with no separator at all but a secret-shaped value is redacted (S1)",
+);
+assert(
+  scrubSecrets("пароль не подошел") === "пароль не подошел",
+  "prose with no value is still left alone",
+);
+assert(
+  scrubSecrets("пароль не подошел, зайди на сайт: там кнопка") ===
+    "пароль не подошел, зайди на сайт: там кнопка",
+  "the gap stops at a comma, so a later clause's «:» is never reached",
+);
+// A 13-19 digit run is only a card when it checks out. A tracking number has
+// the same shape, and scrubbing it would delete the errand's own subject —
+// see the comment in agent/lib/browseruse.ts about «проверь заказ 46000…».
+assert(looksLikeCardNumber("4111 1111 1111 1111"), "a Luhn-valid PAN is a card");
+assert(looksLikeCardNumber("2200-1234-5678-9012"), "four-groups-of-four is a card however it checks out");
+assert(!looksLikeCardNumber("46000123456789"), "a 14-digit tracking number is not a card");
+assert(
+  scrubSecrets("проверь заказ 46000123456789") === "проверь заказ 46000123456789",
+  "a tracking number survives the scrub (S1)",
+);
+assert(
+  scrubSecrets("оплатил картой 4111 1111 1111 1111") === "оплатил картой [card]",
+  "a real card is still redacted",
+);
+
+// ---------------------------------------------------------------------------
+// S3 — the opt-out gate captures what parameterises the OPEN errand, not all
+// chat. Before this, everything outside a closed smalltalk list went to the
+// vendor; the lines below were all reproduced as `kind=steer`.
+// ---------------------------------------------------------------------------
+for (const line of [
+  "ты вообще тупой",
+  "мама звонила, просила перезвонить",
+  "завтра встреча в 10 с юристом",
+  "кстати я вчера был в кино",
+  "а ещё почини кран",
+  "интересно сколько это стоит",
+  "как думаешь стоит брать",
+  "ты вообще там что делаешь",
+]) {
+  assert(!steerCandidate(line), `«${line}» is not a parameter of the errand (S3)`);
+  assert(
+    decideCloudInject(line, bookingRun).kind === null,
+    `«${line}» never docks into the live session (S3)`,
+  );
+  assert(
+    Object.keys(cloudInjectAttribute(line)).length === 0,
+    `«${line}» is not stamped (S3)`,
+  );
+}
+// …and the whole reason opt-out exists still works, verbless and all.
+for (const line of [
+  "на воскресенье",
+  "на двоих",
+  "на 4 человек",
+  "на 19:00",
+  "в центре",
+  "у окна",
+  "и чтобы веранда была",
+]) {
+  assert(steerCandidate(line), `«${line}» still parameterises the errand (S3)`);
+  assert(
+    decideCloudInject(line, bookingRun).kind === "steer",
+    `«${line}» still reaches the live booking session (S3)`,
+  );
+}
+// A lead-in in front of a parameter does not make it chat.
+assert(steerCandidate("лучше на воскресенье"), "«лучше на воскресенье» is still a parameter");
+assert(steerCandidate("а в центре"), "«а в центре» is still a parameter");
+
+// ---------------------------------------------------------------------------
+// S11 — the greeting opener is STRIPPED and the remainder judged, instead of
+// counting words. The old `<= 4` gate was wrong in both directions.
+// ---------------------------------------------------------------------------
+assert(
+  steerCandidate("что там 4 человека"),
+  "a party size behind a greeting is not dropped (S11, 4 words)",
+);
+assert(
+  decideCloudInject("что там 4 человека", bookingRun).kind !== null,
+  "…and it actually reaches the live session",
+);
+for (const line of [
+  "ну что там вообще происходит у тебя",
+  "что нового на работе у тебя сегодня",
+]) {
+  assert(!steerCandidate(line), `«${line}» is still just chat (S11, 7 words)`);
+  assert(
+    decideCloudInject(line, bookingRun).kind === null,
+    `«${line}» never docks into the live session (S11)`,
+  );
+}
+assert(!steerCandidate("ну что там"), "an opener with nothing after it is chatter");
+assert(!steerCandidate("как дела"), "…same for «как дела»");
+assert(
+  !src("convex/lib/browserInjectPolicy.ts").includes("split(/\\s+/).length <= 4 && CHATTER_Q"),
+  "the word-count proxy in front of CHATTER_Q is gone, not left dead (S11)",
 );
 
 // ---------------------------------------------------------------------------
@@ -945,9 +1146,20 @@ assert(
     tool.includes("holdBrowserSteer(phone, injectIncoming)"),
   "a refused claim parks the line instead of starting a second run",
 );
+// Pinned on the ARITY, not just the name. The release used to be
+// `releaseBrowserStart(phone)`, which cleared whoever's claim happened to be
+// on the row — that is how a `reset` turn stole a sibling's in-flight claim
+// and started a second paid run. It is compare-and-clear now, so the stamp is
+// the whole point of the call. Matching the bare name would also match the
+// historical reference inside the WHY-comment that documents the old form,
+// i.e. the assertion would pass with every real call site deleted.
 assert(
-  tool.includes("releaseBrowserStart(phone)"),
-  "a claim that will never produce a run is released, not left to expire",
+  tool.includes("releaseBrowserStart(phone, startClaimAt)"),
+  "a claim that will never produce a run is released by its owner, not left to expire",
+);
+assert(
+  !/releaseBrowserStart\(phone\)\s*[;.)]/.test(tool),
+  "and no ownerless release survives anywhere in the tool",
 );
 assert(
   tool.includes("tenant = (await getTenant(phone).catch(() => null)) ?? tenant;"),

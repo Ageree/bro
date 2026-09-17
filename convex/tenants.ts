@@ -541,9 +541,11 @@ export const clearBrowserNeedPublic = mutation({
 const browserStartClaim = v.object({
   /** true when THIS caller now owns the start and may create a Cloud run. */
   claimed: v.boolean(),
-  /** Set when the claim was refused: what is already being started, so the
-   *  caller can hold its follow-up for that errand instead of opening a
-   *  second one. */
+  /** The claim's own timestamp. On a WON claim it is what this caller wrote
+   *  onto the row, and `releaseBrowserStart` compares against it so a turn can
+   *  only ever drop ITS OWN claim (S6). On a REFUSED claim it is the sibling's
+   *  stamp: what is already being started, so the caller can hold its
+   *  follow-up for that errand instead of opening a second one. */
   startingAt: v.optional(v.number()),
   startingTask: v.optional(v.string()),
   browserSessionId: v.optional(v.string()),
@@ -593,20 +595,38 @@ export const claimBrowserStart = mutation({
       browserStartingAt: args.now,
       browserStartingTask: args.task.slice(0, 2000),
     });
-    return { claimed: true };
+    // `startingAt` is handed back so the winner can release exactly the claim
+    // it just took, and nothing else (see `releaseBrowserStart`).
+    return { claimed: true, startingAt: args.now };
   },
 });
 
-/** Drop a start claim that will never produce a run (the start threw, or the
- *  turn decided not to start after all). Without this the tenant would look
- *  "starting" for the whole START_CLAIM_MS and swallow the next errand. */
+/**
+ * Drop a start claim that will never produce a run (the start threw, or the
+ * turn decided not to start after all). Without this the tenant would look
+ * "starting" for the whole START_CLAIM_MS and swallow the next errand.
+ *
+ * COMPARE-AND-CLEAR on `startingAt` (S6). This used to clear whatever claim
+ * happened to be on the row, which made it a way to cancel SOMEBODY ELSE's
+ * in-flight start — exactly the double-start the claim exists to prevent.
+ * Turn A claimed at t0 and sat inside `startRun`; at t0+3s a `reset:true` turn
+ * B wiped A's claim, took its own, and then could not cancel A's run because A
+ * had not written its runId down yet. Two charged runs, A's browser orphaned
+ * with no runId anyone could cancel. The same hazard exists without `reset`:
+ * a turn whose own claim has already expired and been re-taken by a sibling
+ * must not clear the sibling's claim on its way out.
+ *
+ * A mismatch is a no-op, not an error: the caller either never owned the claim
+ * or its run already cleared it (`setBrowser` zeroes it on a new run id).
+ */
 export const releaseBrowserStart = mutation({
-  args: { secret: v.string(), phoneE164: v.string() },
+  args: { secret: v.string(), phoneE164: v.string(), startingAt: v.number() },
   returns: v.null(),
   handler: async (ctx, args) => {
     assertSecret(args.secret);
     const existing = await findTenantByPhone(ctx, args.phoneE164);
     if (!existing) return null;
+    if ((existing.browserStartingAt ?? 0) !== args.startingAt) return null;
     await ctx.db.patch(existing._id, {
       browserStartingAt: 0,
       browserStartingTask: "",

@@ -1050,19 +1050,23 @@ assert(
     humanText: "мой пароль: qwerty123",
   } as never);
   assert(!leaky.includes("qwerty123"), "a password in the verbatim line is scrubbed");
-  // Known sharp edge, pinned rather than papered over: PAN_RE redacts ANY
-  // 13-19 digit run, so a marketplace tracking number reads as a card here.
-  // Safety wins on this line for now — a leaked PAN is worse than a lost
-  // order number, and the number usually also rides in ЦЕЛЬ. The real
-  // separator is a Luhn check in secretScrub (a card passes it, an arbitrary
-  // tracking number has ~1/10 odds); when that lands, flip this to expect
-  // «46000123456789» to survive.
+  // The sharp edge is gone: `secretScrub` now decides with a Luhn check (plus
+  // the four-groups-of-four spelling), so a real PAN is still redacted and a
+  // marketplace tracking number keeps its digits instead of being turned into
+  // «[card]» along with the errand's own subject.
   const tracking = scaffoldTask("проверь заказ", {
     humanText: "проверь заказ 46000123456789",
   } as never);
   assert(
-    tracking.includes("[card]") && !tracking.includes("46000123456789"),
-    "a long digit run is redacted on the verbatim line — blunt, deliberate, documented",
+    tracking.includes("46000123456789") && !tracking.includes("[card]"),
+    "a tracking number survives the verbatim line (Luhn separates it from a PAN)",
+  );
+  const pan = scaffoldTask("оплати заказ", {
+    humanText: "картой 4111 1111 1111 1111",
+  } as never);
+  assert(
+    pan.includes("[card]") && !pan.includes("4111 1111"),
+    "…while a real card number on the same line is still redacted",
   );
 }
 
