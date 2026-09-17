@@ -1,0 +1,102 @@
+# Conversation tests against a deployed Bro.
+#
+# Unlike checks.yml this one needs a place to talk to, so it is gated on three
+# secrets being configured:
+#
+#   BRO_E2E_BASE            the eve host to drive, e.g. a staging deployment
+#   BRO_INTERNAL_SECRET     same value as on that deployment
+#   SPECTRUM_WEBHOOK_SECRET same value as on that deployment
+#
+# Until they exist the workflow succeeds with a note rather than failing, so a
+# repository that has not set up staging yet does not carry a permanently red
+# check. Everything it drives lives in the fictional +1555555 range, so even a
+# BRO_E2E_BASE pointed at production cannot touch a real person's conversation
+# — but a staging deployment is still the right place for it, because the
+# turns it runs cost model calls.
+name: e2e
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 03:00 MSK, nightly. Failures open an issue (see the last step).
+    - cron: "0 0 * * *"
+  pull_request:
+
+concurrency:
+  # Test tenants are shared per scenario name, so two runs at once would drive
+  # the same conversation from both ends.
+  group: e2e
+  cancel-in-progress: false
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: configured
+        env:
+          BASE: ${{ secrets.BRO_E2E_BASE }}
+          INTERNAL: ${{ secrets.BRO_INTERNAL_SECRET }}
+          WEBHOOK: ${{ secrets.SPECTRUM_WEBHOOK_SECRET }}
+        run: |
+          if [ -n "$BASE" ] && [ -n "$INTERNAL" ] && [ -n "$WEBHOOK" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "### e2e skipped"
+              echo
+              echo "Set these repository secrets to turn it on:"
+              echo '- `BRO_E2E_BASE` — the eve host to drive'
+              echo '- `BRO_INTERNAL_SECRET` — same value as on that deployment'
+              echo '- `SPECTRUM_WEBHOOK_SECRET` — same value as on that deployment'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - if: steps.configured.outputs.ready == 'true'
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - if: steps.configured.outputs.ready == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - if: steps.configured.outputs.ready == 'true'
+        run: pnpm install --frozen-lockfile
+
+      - id: run
+        if: steps.configured.outputs.ready == 'true'
+        env:
+          BRO_E2E_BASE: ${{ secrets.BRO_E2E_BASE }}
+          BRO_INTERNAL_SECRET: ${{ secrets.BRO_INTERNAL_SECRET }}
+          SPECTRUM_WEBHOOK_SECRET: ${{ secrets.SPECTRUM_WEBHOOK_SECRET }}
+        # `shell: bash` for pipefail — without it `tee` swallows the runner's
+        # exit code and a failing suite reports green.
+        shell: bash
+        run: npm run e2e 2>&1 | tee e2e.log
+
+      # A nightly failure that only exists in a run log nobody opens is the
+      # same as no test at all. One issue per failing night, reusing an open
+      # one so a week of the same breakage is a single thread.
+      - if: failure() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: "Nightly e2e is failing"
+        run: |
+          body="$(printf 'The nightly conversation suite failed.\n\n```\n%s\n```\n\n[run](%s/%s/actions/runs/%s)\n' \
+            "$(tail -c 4000 e2e.log 2>/dev/null || echo 'no log captured')" \
+            "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID")"
+          existing="$(gh issue list --state open --search "$TITLE in:title" --json number --jq '.[0].number' || true)"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$body"
+          else
+            gh issue create --title "$TITLE" --body "$body"
+          fi
