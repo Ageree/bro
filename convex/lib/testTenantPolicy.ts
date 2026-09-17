@@ -89,5 +89,27 @@ export function photonTestInbound(opts: {
 
 /** The conversation a test tenant talks in. Stable per phone, like a real thread. */
 export function testSpaceId(phone: string): string {
-  return `test-space-${phone}`;
+  return `${TEST_SPACE_PREFIX}${phone}`;
+}
+
+const TEST_SPACE_PREFIX = "test-space-";
+
+/**
+ * The test tenant behind a conversation id, or undefined for a real thread.
+ *
+ * The transport needs this because not everything Bro says to a person goes
+ * through `deliverHuman`: the welcome letter, the Telegram invite and the
+ * quota paywall are written straight to Photon with a conversation id and no
+ * tenant in hand. Recording only at the `deliverHuman` layer left those
+ * invisible — the send failed against a number no carrier assigns, the error
+ * was swallowed by the caller's try/catch, and the scenario saw silence.
+ */
+export function testPhoneFromSpaceId(
+  conversationId: string | null | undefined,
+): string | undefined {
+  if (typeof conversationId !== "string") return undefined;
+  const id = conversationId.trim();
+  if (!id.startsWith(TEST_SPACE_PREFIX)) return undefined;
+  const phone = id.slice(TEST_SPACE_PREFIX.length);
+  return isTestPhone(phone) ? phone : undefined;
 }
