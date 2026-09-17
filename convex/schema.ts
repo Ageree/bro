@@ -50,6 +50,10 @@ export default defineSchema({
     /** True while a vault card is being typed into a bound checkout page. */
     browserPaying: v.optional(v.boolean()),
     browserPayHosts: v.optional(v.array(v.string())),
+    // The ₽ ceiling the person named, kept with the run so the completion path
+    // can compare it against what was actually charged. Until this existed the
+    // ceiling was one Russian sentence in a third-party model's prompt.
+    browserMaxRub: v.optional(v.number()),
     /** Errand queued while a different one was active — run it after `done`. */
     browserNextTask: v.optional(v.string()),
     /** Last scrubbed Cloud result (≤2000 chars) — wakeup/resume read this back. */

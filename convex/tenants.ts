@@ -350,6 +350,7 @@ export const setBrowser = mutation({
     browserNeedDetail: v.optional(v.string()),
     browserPaying: v.optional(v.boolean()),
     browserPayHosts: v.optional(v.array(v.string())),
+    browserMaxRub: v.optional(v.number()),
     browserNextTask: v.optional(v.string()),
     browserOutcome: v.optional(v.string()),
   },
@@ -378,6 +379,7 @@ export const setBrowser = mutation({
       "browserNeedDetail",
       "browserPaying",
       "browserPayHosts",
+      "browserMaxRub",
       "browserNextTask",
       "browserOutcome",
     ]);

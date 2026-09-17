@@ -4,12 +4,14 @@ import {
   watcherBuys,
   watcherShouldPay,
   watcherWakeupPrompt,
+  overspend,
+  overspendLine,
 } from "../agent/lib/purchase-policy.ts";
 import { taskLooksLikeBuy } from "../agent/lib/browser-task-policy.ts";
 import { isAttachCardErrand } from "../agent/lib/browser-pay.ts";
 import { parseOrderFromResult } from "../agent/lib/order-policy.ts";
 
-import { assert, src } from "./lib/check.ts";
+import { assert, eq, src } from "./lib/check.ts";
 
 assert(purchaseStance("найди кроссовки на WB") === "search", "search find");
 assert(purchaseStance("сколько стоит эта зубная паста") === "search", "search price");
@@ -128,3 +130,60 @@ assert(
 }
 
 console.log("purchase-check ok");
+
+// --- the named ceiling is checked in code, not only in the vendor's prompt ---
+/**
+ * `maxRub` used to travel into exactly one place: a Russian sentence in the
+ * cloud run's prompt, «Сумма выше N ₽ — не плати». Nothing ever compared it
+ * against what was actually charged, so a shipping fee added at checkout, a
+ * page quoting another currency, or a model that simply paid, all went through
+ * as an ordinary «готово» and the person found out from their bank.
+ *
+ * `overspend()` cannot prevent the charge — prevention would have to live in
+ * the vendor — but it decides whether the person is told, which is the whole
+ * difference between learning it from Bro and learning it from a bank SMS.
+ */
+{
+  eq(overspend({ paidRub: 4900, maxRub: 5000 }), null, "inside the ceiling is silent");
+  eq(overspend({ paidRub: 5000, maxRub: 5000 }), null, "exactly at the ceiling is allowed");
+  eq(overspend({ paidRub: 100 }), null, "no ceiling named, nothing to report");
+  eq(overspend({ maxRub: 100 }), null, "no amount reported, nothing to compare");
+  eq(overspend({}), null, "neither side known");
+  eq(
+    overspend({ paidRub: Number.NaN, maxRub: 5000 }),
+    null,
+    "an unparsable amount is not an overspend claim",
+  );
+
+  const over = overspend({ paidRub: 7400, maxRub: 5000 });
+  assert(over !== null, "a charge above the ceiling is reported");
+  eq(over!.overRub, 2400, "the overspend is the difference, for the person to see");
+  // One rouble over is over. Softening this here would be us deciding how much
+  // of someone else's money a rounding rule is worth.
+  assert(overspend({ paidRub: 5001, maxRub: 5000 }) !== null, "one rouble over is over");
+
+  const line = overspendLine({ paidRub: 7400, maxRub: 5000 });
+  assert(line.includes("7400") && line.includes("5000"), "the line carries both numbers");
+  assert(/перв/i.test(line), "the line tells the model to lead with it");
+}
+
+// The wiring: the ceiling is persisted with the run and read back on completion.
+{
+  const tool = src("agent/tools/browser_task.ts");
+  assert(tool.includes("browserMaxRub"), "the ceiling is stored with the run");
+  assert(
+    tool.includes("overspend(") && tool.includes("overspendLine("),
+    "the completion path compares the charge against the ceiling",
+  );
+  assert(
+    tool.includes("превышен_потолок"),
+    "an overspend reaches the model under a name it cannot read past",
+  );
+  const schema = src("convex/schema.ts");
+  assert(
+    schema.includes("browserMaxRub"),
+    "the follow-through path can see the ceiling too",
+  );
+}
+
+console.log("purchase-check: ceiling verified in code");

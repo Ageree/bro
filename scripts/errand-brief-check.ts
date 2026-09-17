@@ -469,7 +469,6 @@ assert(!isScaffolded("купи кроссовки"), "a raw errand is not scaffo
   for (const gone of [
     "дождись страницы",
     "на языке сайта",
-    "Дважды не заказывай",
     "убедись, что на экране",
     "Сайт откроет Bro сам",
   ]) {
@@ -748,3 +747,42 @@ assert(
 }
 
 console.log("errand-brief-check ok");
+
+
+// --- what looked like browsing advice and was not ---------------------------
+/**
+ * Two sentences were cut by the trim as "how to use a browser" and are back,
+ * because nothing in this repository replaces them.
+ *
+ * «Дважды не заказывай и не плати» was removed on the reasoning that
+ * double-charging is already held off by `browser_task`'s charge key and by
+ * `orderRowFromRun`. Neither does that: the charge key meters Bro's own
+ * monthly browser-job quota and never touches the card, and `orderRowFromRun`
+ * only decides whether to record a row, upserting by `merchantOrderId` — a
+ * real second order carries a different number and records as a second row.
+ * «выдумывать пароль или номер карты нельзя» had no replacement at all.
+ *
+ * The test for cutting a sentence from this envelope is not whether it sounds
+ * like advice. It is whether deleting it removes the only thing standing
+ * between the run and the person's money.
+ */
+{
+  const paid = scaffoldTask("купи кроссовки", {
+    pay: { hosts: ["wildberries.ru"], maxRub: 5000 },
+  });
+  assert(
+    paid.includes("Дважды не заказывай и не плати"),
+    "a paid run is still told not to pay twice",
+  );
+  const plain = scaffoldTask("забронируй столик на двоих");
+  assert(
+    plain.includes("Дважды не заказывай"),
+    "an unpaid run is still told not to order twice",
+  );
+  assert(
+    plain.includes("выдумывать пароль или номер карты нельзя"),
+    "the run is still forbidden from inventing a password or a card number",
+  );
+}
+
+console.log("errand-brief-check: money guards present");

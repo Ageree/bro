@@ -356,6 +356,7 @@ export const setBrowser = (
     /** True while a vault card is being typed into a bound checkout page. */
     browserPaying?: boolean;
     browserPayHosts?: string[];
+    browserMaxRub?: number;
     /** Errand queued while a different one was active — run after `done`. */
     browserNextTask?: string;
     /** Last scrubbed Cloud result — wakeup/resume read this back. */

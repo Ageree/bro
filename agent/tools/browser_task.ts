@@ -30,6 +30,7 @@ import {
   FOLLOW_RETRY_HINT,
   persistableStatus,
 } from "../../convex/lib/browserFollowPolicy.ts";
+import { overspend, overspendLine } from "../../convex/lib/purchasePolicy.ts";
 import {
   cancelRun,
   createProfile,
@@ -110,6 +111,7 @@ async function persist(
     browserProfileSyncedAt?: number;
     browserPaying?: boolean;
     browserPayHosts?: string[];
+    browserMaxRub?: number;
     browserNextTask?: string;
   },
 ): Promise<void> {
@@ -609,8 +611,8 @@ async function maybeRecordOrder(
   run: BrowserRun,
   task: string,
   extra: Record<string, unknown>,
-  tenant: { browserPaying?: boolean; browserPayHosts?: string[] },
-): Promise<void> {
+  tenant: { browserPaying?: boolean; browserPayHosts?: string[]; browserMaxRub?: number },
+): Promise<{ paidRub: number; maxRub: number; overRub: number } | null> {
   const row = orderRowFromRun({
     status: run.status,
     task,
@@ -618,12 +620,24 @@ async function maybeRecordOrder(
     paying: payingFor(extra, tenant),
     hosts: extraHosts(extra) ?? tenant.browserPayHosts,
   });
-  if (!row) return;
+  if (!row) return null;
   try {
     await recordOrder(phone, row);
   } catch (err) {
     console.error("record order failed", err);
   }
+  // The ceiling the person named, checked against what the run says it spent.
+  // Until this existed `maxRub` reached only the vendor's prompt, so a charge
+  // above it was indistinguishable from a charge below it — see the header of
+  // `convex/lib/purchasePolicy.ts`.
+  const over = overspend({
+    paidRub: row.priceRub,
+    maxRub: (extra as { maxRub?: number }).maxRub ?? tenant.browserMaxRub,
+  });
+  if (over) {
+    console.error("browser run exceeded the named ceiling", over);
+  }
+  return over;
 }
 
 async function settle(
@@ -632,7 +646,7 @@ async function settle(
   task: string,
   extra: Record<string, unknown>,
   opts: { startedAt?: number; runId?: string | null },
-  tenant: { browserPaying?: boolean; browserPayHosts?: string[] },
+  tenant: { browserPaying?: boolean; browserPayHosts?: string[]; browserMaxRub?: number },
 ) {
   const now = Date.now();
   if (
@@ -647,8 +661,11 @@ async function settle(
     await cancelWakeup(phone, { kind: "browser_poll" }).catch(() => {});
     await cancelBrowserFollow(phone, run.runId).catch(() => {});
     if (isTerminal(run.status)) {
-      await maybeRecordOrder(phone, run, task, extra, tenant);
-      return payload(run, extra);
+      const over = await maybeRecordOrder(phone, run, task, extra, tenant);
+      // Named in Russian, like `ссылка_не_ушла`, so the model cannot read past
+      // it: a charge above the person's own ceiling must not be reported as an
+      // ordinary «готово».
+      return payload(run, over ? { ...extra, превышен_потолок: overspendLine(over) } : extra);
     }
     return payload(run, {
       ...extra,
@@ -1156,6 +1173,7 @@ export default defineTool({
             browserStartedAt: startedAt,
             browserPaying: Boolean(contPayOpts),
             browserPayHosts: contPayOpts?.hosts ?? [],
+            browserMaxRub: contPayOpts?.maxRub,
           });
           // The need this continuation resolves (payment/address/info/...) is
           // now acted on — clear it so a stale browserNeed never lingers.
@@ -1428,6 +1446,7 @@ export default defineTool({
         browserStartedAt: startedAt,
         browserPaying: Boolean(payOpts),
         browserPayHosts: payOpts?.hosts ?? [],
+        browserMaxRub: payOpts?.maxRub,
         ...(nextTaskDone ? { browserNextTask: "" } : {}),
         ...(resolved.profileId && resolved.profileId !== tenant.browserProfileId
           ? { browserProfileId: resolved.profileId }

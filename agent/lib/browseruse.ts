@@ -226,7 +226,7 @@ function errandLoginBlock(opts?: { login?: boolean }): string {
   lines.push(
     opts?.login
       ? "Решай сам и меня не спрашивай. Надо войти — входи или регистрируйся сам, паспорт и Яндекс ID это норма."
-      : "Решай сам и меня не спрашивай. Надо войти — входи или регистрируйся сам, паспорт и Яндекс ID это норма. Логин и пароль из задачи вводи сам.",
+      : "Решай сам и меня не спрашивай. Надо войти — входи или регистрируйся сам, паспорт и Яндекс ID это норма. Логин и пароль из задачи вводи сам, но выдумывать пароль или номер карты нельзя.",
   );
   if (opts?.login) lines.push(loginScaffold());
   lines.push(
@@ -242,11 +242,21 @@ function errandLoginBlock(opts?: { login?: boolean }): string {
  * The brief above now says what "done" looks like for THIS errand, so this
  * only has to say that there IS a final button.
  *
- * «Дважды не заказывай и не плати» went with this pass. It read as a safety
- * rule and was not one: nothing enforces it in the run, double-charging is
- * held off by `browser_task`'s own charge key and by `orderRowFromRun`, and
- * telling a browser agent not to press a button twice is the same register as
- * telling it to close a cookie banner.
+ * «Дважды не заказывай и не плати» was cut by this pass and is back, because
+ * the reasoning that removed it was wrong. It claimed double-charging is
+ * already held off by `browser_task`'s charge key and by `orderRowFromRun`.
+ * Neither does that: `chargeKeyFor`/`countBrowserJobStart` meter Bro's own
+ * MONTHLY browser-job quota and never touch the card, and `orderRowFromRun`
+ * only decides whether to record a row, upserting by `merchantOrderId` — a
+ * genuine second order carries a different number and simply records as a
+ * second row. So nothing in this repository stops a run from pressing Pay
+ * twice when the page hangs after the first press, and eleven words of prompt
+ * are the only thing that ever did.
+ *
+ * The rule that really is prompt-shaped advice — «закрывай баннеры» — stayed
+ * deleted. The test is not whether a sentence sounds like browsing advice; it
+ * is whether deleting it removes the only thing standing between the run and
+ * the person's money.
  */
 function errandFinishBlock(
   task: string,
@@ -257,12 +267,12 @@ function errandFinishBlock(
     return "Ничего не заказывай и не вызывай.";
   }
   if (payBlock) {
-    return "Доводи до конца, включая оплату.";
+    return "Доводи до конца, включая оплату. Дважды не заказывай и не плати.";
   }
   if (isDryRunErrand(task)) {
     return "Это проверка без заказа: дойди до формы, покажи цену. Не нажимай «Заказать» или «Поехали».";
   }
-  return "Доводи до конца и жми финальную кнопку подтверждения.";
+  return "Доводи до конца и жми финальную кнопку подтверждения. Дважды не заказывай.";
 }
 
 export type ProfileView = {
