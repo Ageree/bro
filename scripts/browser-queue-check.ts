@@ -2,10 +2,12 @@ import { assert, eq } from "./lib/check.ts";
 import {
   cancelRun,
   hydrate,
+  isTerminal,
   queueMessage,
   resolveQueuedRun,
   sessionInfo,
   stopBrowserForSession,
+  waitForRun,
 } from "../agent/lib/browseruse.ts";
 
 // Behavioral check: prove the follow-up path actually hits the v4
@@ -303,6 +305,79 @@ await withFetch(
     assert(run.result!.includes("[card]"), "card is replaced with a marker");
     assert(run.result!.includes("[password]"), "password is replaced with a marker");
     assert(run.result!.includes("[cvv]"), "cvv is replaced with a marker");
+  },
+);
+
+// ---------------------------------------------------------------------------
+// S2 — what an INTERRUPTING queue actually does to the run it preempts, and
+// why the poll branch must pass `interrupt: false` explicitly.
+//
+// The vendor cancels the active run and starts a replacement. A caller that
+// queues with `interrupt` and then waits on the run id it already had is
+// waiting on a corpse: `waitForRun` returns a terminal `cancelled` at once, so
+// the turn settles, cancels the wakeup and the follow-through, runs the
+// order-recording gate against the cancelled run and tells the human the job
+// ended — while the replacement run keeps going, unpersisted and unfollowed.
+// That is the «купи кофе на ozon» → «ты долго что-то» report. Behavioural,
+// because a source-level `interrupt: false` grep cannot show what the flag
+// costs when it is missing.
+// ---------------------------------------------------------------------------
+await withFetch(
+  (call) => {
+    if (call.method === "POST" && call.url.endsWith("/sessions/sess-2/queue")) {
+      // interrupt:true → the active run is cancelled, a new one is spawned.
+      return { json: { id: 11, sessionId: "sess-2", runId: "run-2", status: "pending" } };
+    }
+    if (call.url.endsWith("/runs/run-1/status")) return { json: { status: "cancelled" } };
+    if (call.url.endsWith("/runs/run-1")) {
+      return { json: { id: "run-1", status: "cancelled", sessionId: "sess-2" } };
+    }
+    if (call.url.includes("/runs/run-1/events")) return { json: { events: [] } };
+    if (call.url.endsWith("/browsers")) return { json: { items: [] } };
+    return undefined;
+  },
+  async () => {
+    const queued = await queueMessage("sess-2", "ты долго что-то", { interrupt: true });
+    eq(queued.runId, "run-2", "an interrupting queue hands back a DIFFERENT run id");
+    const stale = await waitForRun("run-1", "sess-2", 1_000);
+    eq(stale.status, "cancelled", "the preempted run is already terminal");
+    assert(
+      isTerminal(stale.status),
+      "…so a caller waiting on the old run id settles the errand as finished",
+    );
+    assert(
+      queued.runId !== stale.runId,
+      "the live run is not the one that caller is following",
+    );
+  },
+);
+
+// The same queue without `interrupt` leaves the run alone: the session resumes
+// it, `resolveQueuedRun` hands back the very run the poll is already waiting
+// on, and nothing is cancelled.
+await withFetch(
+  (call) => {
+    if (call.method === "POST" && call.url.endsWith("/sessions/sess-3/queue")) {
+      return { json: { id: 12, sessionId: "sess-3", runId: "run-1", status: "running" } };
+    }
+    if (call.url.endsWith("/sessions/sess-3")) {
+      return { json: { sessionId: "sess-3", status: "running", latestRunId: "run-1" } };
+    }
+    return undefined;
+  },
+  async () => {
+    const queued = await queueMessage("sess-3", "ты долго что-то", { interrupt: false });
+    const body = lastCalls()[0]!.body as Record<string, unknown>;
+    assert(!("interrupt" in body), "a poll's steer carries no interrupt flag");
+    const resolved = await resolveQueuedRun("sess-3", "run-1", queued, {
+      ms: 1_000,
+      nowFn: () => 0,
+    });
+    eq(resolved.runId, "run-1", "the run the poll is waiting on is still the live one");
+    assert(
+      !lastCalls().some((c) => c.url.includes("/cancel")),
+      "nothing was cancelled",
+    );
   },
 );
 

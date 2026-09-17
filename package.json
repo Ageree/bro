@@ -60,6 +60,7 @@
     "silent:check": "node --experimental-strip-types scripts/silent-turn-check.ts",
     "early:check": "node --experimental-strip-types scripts/early-deliver-check.ts",
     "fast-ack:check": "node --experimental-strip-types scripts/fast-ack-check.ts",
+    "errand-brief:check": "node --experimental-strip-types scripts/errand-brief-check.ts",
     "latency:check": "node --experimental-strip-types scripts/latency-check.ts && node --experimental-strip-types scripts/early-deliver-check.ts && node --experimental-strip-types scripts/start-path-check.ts && node --experimental-strip-types scripts/latency-log-check.ts && node --experimental-strip-types scripts/fast-ack-check.ts && node --experimental-strip-types scripts/profile-inbound.ts",
     "latency-log:check": "node --experimental-strip-types scripts/latency-log-check.ts",
     "start-path:check": "node --experimental-strip-types scripts/start-path-check.ts",

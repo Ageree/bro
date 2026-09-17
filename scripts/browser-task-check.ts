@@ -7,7 +7,9 @@
  * browser-queue-check.ts / browser-glue-check.ts.
  */
 import {
+  ackSessionLive,
   chargeKeyFor,
+  holdableSteer,
   isAckLike,
   loginPagesFor,
   profileExtra,
@@ -97,6 +99,81 @@ assert(
   "long follow-up is not a bare ack",
 );
 assert(!isAckLike(""), "empty text is not an ack");
+// (e) «на воскресенье» is two words and carries no «?» — read as an ack it was
+// answered with "это подтверждение, не пересылай результат заново" and never
+// reached the live Cloud session. While a session is live (or a start is in
+// flight) a short line is a detail for the errand, not applause.
+for (const line of ["на воскресенье", "на двоих", "у окна", "готово"]) {
+  assert(
+    !isAckLike(line, { sessionLive: true }),
+    `«${line}» is not swallowed as an ack while a session is live`,
+  );
+}
+assert(isAckLike("спасибо", { sessionLive: false }), "with nothing live, a short reply is still an ack");
+assert(isAckLike("спасибо"), "the ack reading is unchanged when liveness is not passed");
+
+// ---------------------------------------------------------------------------
+// ackSessionLive — S14: a start claim is liveness only for the errand it
+// belongs to. A «спасибо» about the errand that just FINISHED, typed while a
+// brand new one is mid-claim, used to read as a detail — so the reuse branch
+// skipped the ack short-circuit and re-sent the old run's result.
+// ---------------------------------------------------------------------------
+{
+  const t0 = Date.parse("2026-09-15T12:00:00.000Z");
+  const claimed = t0 - 3_000;
+  assert(
+    ackSessionLive({ browserStatus: "running" }, t0),
+    "a genuinely running errand is live",
+  );
+  assert(
+    ackSessionLive({ browserStartingAt: claimed }, t0),
+    "a first errand mid-claim (no stored run at all) is live",
+  );
+  assert(
+    !ackSessionLive({ browserStatus: "completed", browserStartingAt: claimed }, t0),
+    "a claim for the NEXT errand never makes the finished one live (S14)",
+  );
+  assert(
+    !ackSessionLive({ browserStatus: "completed" }, t0),
+    "a finished errand with no claim is not live",
+  );
+  assert(
+    !ackSessionLive({ browserStartingAt: t0 - 5 * 60_000 }, t0),
+    "an expired claim is not live",
+  );
+  assert(!ackSessionLive({}, t0), "an empty row is not live");
+  // The S14 report, end to end: «спасибо» after a completed errand, while the
+  // next one is still opening, must come back out as an ack.
+  assert(
+    isAckLike("спасибо", {
+      sessionLive: ackSessionLive(
+        { browserStatus: "completed", browserStartingAt: claimed },
+        t0,
+      ),
+    }),
+    "«спасибо» after a completed errand stays an ack while the next one opens",
+  );
+}
+
+// ---------------------------------------------------------------------------
+// holdableSteer — S4: what may be PARKED on the tenant row while a start is in
+// flight. The claim loser used to park whatever the human typed, unfiltered,
+// and the winner queued it into the Cloud session verbatim — which is how a
+// pasted site password reached the vendor's browser. These are the exact lines
+// from the report.
+// ---------------------------------------------------------------------------
+for (const line of [
+  "Hunter2024",
+  "мой пароль от озона Hunter2024",
+  "спасибо",
+  "как дела",
+  "😀😀",
+]) {
+  assert(!holdableSteer(line), `«${line}» is never parked for the live session`);
+}
+for (const line of ["482913", "на воскресенье", "подожди", "не туда, Ленина 12"]) {
+  assert(holdableSteer(line), `«${line}» is still parked — it belongs to the errand`);
+}
 
 // ---------------------------------------------------------------------------
 // chargeKeyFor — item 10: one charge per errand
@@ -203,12 +280,185 @@ assert(!taskLooksLikeBuy("вызови такси"), "non-buy task");
 
 const toolSrc = src("agent/tools/browser_task.ts");
 
+assert(
+  toolSrc.includes("const sessionLive = ackSessionLive(tenant);") &&
+    toolSrc.includes("isAckLike(task, { sessionLive })"),
+  "the reuse branch passes liveness into isAckLike through the shared policy",
+);
+assert(
+  toolSrc.includes("cloudStartInFlight({ startingAt: tenant.browserStartingAt })"),
+  "a start in flight is still what the inject path calls liveness",
+);
+
+// ---------------------------------------------------------------------------
+// S2 — the poll branch's steer must never interrupt the run it is polling.
+// An interrupting queue CANCELS the active run and spawns a new one (that is
+// why resolveQueuedRun exists); this branch then waits on `tenant.browserRunId`
+// — the run it just killed — sees `cancelled`, settles it as finished, tells
+// the human «Job ended», and leaves the replacement run live, unpersisted,
+// unfollowed, and its purchase unrecorded. The flag is passed EXPLICITLY, so
+// the branch is correct whatever `injectQueueInterrupt("steer")` defaults to.
+// ---------------------------------------------------------------------------
+{
+  const poll = toolSrc.slice(
+    toolSrc.indexOf('if (action === "poll"'),
+    toolSrc.indexOf('if (action === "continue"'),
+  );
+  assert(poll.length > 0, "found the poll branch");
+  assert(
+    /queueSteer\(tenant\.browserSessionId, injectIncoming, \{[^}]*interrupt: false/s.test(poll),
+    "a poll appends its steer, never preempting the run it is about to wait on",
+  );
+  assert(
+    !poll.includes("resolveQueuedRun("),
+    "the poll branch does not (and now need not) re-resolve a replacement run",
+  );
+}
+
+// ---------------------------------------------------------------------------
+// S4 — the hold path filters. This code runs precisely when maybeInjectChat
+// returned null, i.e. when the line was judged NOT injectable, so parking it
+// unconditionally bypassed every exclusion (smalltalk, emoji, chatter and
+// looksLikePasswordDump) and drainHeldSteer then queued it verbatim.
+// ---------------------------------------------------------------------------
+assert(
+  /const held = holdableSteer\(injectIncoming\);\s*\n\s*if \(held\) \{\s*\n\s*await holdBrowserSteer\(phone, injectIncoming\)/.test(
+    toolSrc,
+  ),
+  "the claim loser parks a line only when the inject text gate accepts it",
+);
+assert(
+  /\.filter\(\(line\) => line\.length > 0 && line !== drop && holdableSteer\(line\)\)/.test(
+    toolSrc,
+  ),
+  "the drain re-checks the gate — a parked row outlives the turn that wrote it",
+);
+assert(
+  toolSrc.includes("эту строку я никуда не передавал"),
+  "«я записал эту строку» is only said when a row was actually written",
+);
+
+// ---------------------------------------------------------------------------
+// S10 — «поздно, но не потеряно». takeBrowserPendingSteer reads AND clears in
+// one transaction, so a swallowed queue failure destroyed the follow-up: one
+// Browser Use 5xx and the line was simply gone.
+// ---------------------------------------------------------------------------
+{
+  const drain = toolSrc.slice(
+    toolSrc.indexOf("async function drainHeldSteer"),
+    toolSrc.indexOf("async function maybeInjectChat"),
+  );
+  assert(drain.length > 0, "found drainHeldSteer");
+  assert(
+    drain.includes("else failed.push(line);") &&
+      /for \(const line of failed\) \{\s*\n\s*await holdBrowserSteer\(phone, line\)/.test(drain),
+    "a line whose queueSteer failed is re-parked, not dropped",
+  );
+}
+
+// ---------------------------------------------------------------------------
+// S5 — one guard over the whole span from the claim to the first persist.
+// Five throws were unguarded before (listVaultItems, readVaultSecret, the
+// half-filled-card throw, vaultPasswordLoginForPages, and the persist AFTER a
+// successful startRun), each wedging the tenant for START_CLAIM_MS while it
+// answered every line with a «я записал эту строку» that was not true.
+// ---------------------------------------------------------------------------
+{
+  const span = toolSrc.slice(toolSrc.indexOf("startClaimAt = claim.startingAt;"));
+  assert(span.length > 0, "found the claimed start span");
+  assert(
+    span.includes("let claimSpanDone = false;") &&
+      /\} finally \{\s*\n\s*if \(!claimSpanDone\) await dropStartClaim\(\);/.test(span),
+    "the claimed span releases on every exit, return or throw",
+  );
+  assert(
+    span.indexOf("claimSpanDone = true;") > span.indexOf("await persist(phone, opened, task, {"),
+    "the claim is only considered settled once the run is actually on the row",
+  );
+  assert(
+    !/await releaseBrowserStart\(phone\)/.test(toolSrc),
+    "no per-return release survives, and none clears a claim it does not own",
+  );
+  assert(
+    span.includes("if (openedRun) {") && span.includes("orphan run persist failed"),
+    "a run that was opened before the failure is written down so it can be cancelled",
+  );
+}
+
+// ---------------------------------------------------------------------------
+// S6 — reset must not release a SIBLING's in-flight claim. It used to, and
+// then reached the cleanup with a snapshot that had no runId/sessionId to
+// cancel: two charged runs, the first browser orphaned beyond reach.
+// ---------------------------------------------------------------------------
+assert(
+  !/if \(reset\) \{[\s\S]{0,200}releaseBrowserStart/.test(toolSrc),
+  "reset no longer clears whatever claim happens to be on the row",
+);
+assert(
+  toolSrc.includes("if (!claim.claimed && reset) {") &&
+    toolSrc.includes("waitForSiblingStart(phone, claim.startingAt)") &&
+    toolSrc.includes("tenant = landed;"),
+  "a reset waits for the sibling's run to land so the cleanup can cancel it",
+);
+assert(
+  toolSrc.includes("await releaseBrowserStart(phone, startClaimAt)"),
+  "the release is compare-and-clear on this turn's own claim stamp",
+);
+
+// ---------------------------------------------------------------------------
+// The continuation path takes the claim too. It never opens a browser and is
+// never billed as a fresh job — but it does open a second AGENT into a session
+// whose checkout already has the card bound, and it is reached exactly when
+// the human answers a blocker, which is when they type twice in a row.
+// ---------------------------------------------------------------------------
+{
+  const cont = toolSrc.slice(
+    toolSrc.indexOf('if (action === "continue"'),
+    toolSrc.indexOf("// Cheap part before the billing gate"),
+  );
+  assert(
+    cont.indexOf("const contClaim = await takeStartClaim();") <
+      cont.indexOf("started = await startRun(task, sessionId,"),
+    "the continuation claims before its startRun round-trips",
+  );
+  assert(
+    cont.includes("return parkBehindStart(phone, tenant, injectIncoming, notify, contClaim);"),
+    "a continuation that loses the claim parks its line instead of opening a twin agent",
+  );
+  assert(
+    /\} catch \(err\) \{\s*\n\s*await dropStartClaim\(\);\s*\n\s*throw err;/.test(cont),
+    "a throw inside the continuation hands the claim back",
+  );
+}
+// …and a continuation whose session had vanished carries its claim into the
+// fresh start instead of re-claiming: `claimBrowserStart` would refuse the
+// claim against ITSELF and the errand would be parked behind its own start.
+assert(
+  /let claim =\s*\n\s*startClaimAt === undefined\s*\n\s*\? await takeStartClaim\(\)\s*\n\s*: \{ claimed: true as const, startingAt: startClaimAt \};/.test(
+    toolSrc,
+  ),
+  "the fresh-start path reuses a claim this turn already holds",
+);
+
 assert(toolSrc.includes("markTurnSpoke"), "browser_task marks the turn as spoken after its own notify");
 assert(toolSrc.includes("fastAckOf"), "browser_task defers its own notify to a fast-ack");
 assert(toolSrc.includes("browserPaying"), "browser_task persists/reads browserPaying");
 assert(toolSrc.includes("browserPayHosts"), "browser_task persists/reads browserPayHosts");
 assert(toolSrc.includes("need: tenant.browserNeed"), "inject attrs carry the tenant's browserNeed");
-assert(toolSrc.includes("browserProbed: true"), "inject attrs mark the browser as probed");
+// Was `browserProbed: true` unconditionally. It cannot be: during a start
+// claim there is no session id to probe yet, and "probed and found nothing"
+// would then be read as a confirmed-absent browser (cloudSessionLooksLive's
+// F1 rule) and kill the inject the claim exists to protect.
+assert(
+  toolSrc.includes("browserProbed: probed"),
+  "inject attrs mark the browser as probed only when something was actually probed",
+);
+assert(
+  /if \(sessionId \|\| tenant\.browserRunId\) \{\s*const browser = await findBrowserForSession/.test(
+    toolSrc,
+  ),
+  "the browser probe only runs when there is a session or run to probe",
+);
 assert(toolSrc.includes("clearBrowserNeed(phone"), "a successful inject queue clears browserNeed*");
 // The blocker guard moved into the gate both completion paths share
 // (convex/lib/orderRecordPolicy.ts) — assert it there, and that the tool
@@ -308,6 +558,25 @@ assert(profileSrc.includes("fastAckOf"), "profile_setup defers its opening notif
 assert(!profileSrc.includes("Cloud должен войти"), "profile_setup already-logged hint no longer says «Cloud»");
 
 const tenantsSrc = src("convex/tenants.ts");
+// S6, the Convex half: releasing a start claim is compare-and-clear, so a turn
+// can only ever drop the claim it took itself. An unconditional clear was a
+// supported way to cancel somebody else's in-flight start.
+assert(
+  /args: \{ secret: v\.string\(\), phoneE164: v\.string\(\), startingAt: v\.number\(\) \}/.test(
+    tenantsSrc,
+  ),
+  "releaseBrowserStart requires the claim's own startingAt",
+);
+assert(
+  tenantsSrc.includes(
+    "if ((existing.browserStartingAt ?? 0) !== args.startingAt) return null;",
+  ),
+  "releaseBrowserStart clears only a matching claim",
+);
+assert(
+  tenantsSrc.includes("return { claimed: true, startingAt: args.now };"),
+  "a won claim hands back its own stamp, so the winner can release exactly it",
+);
 assert(tenantsSrc.includes("clearBrowserNeedPublic"), "tenants.ts exposes a public clearBrowserNeed");
 assert(tenantsSrc.includes("chargeKey"), "countBrowserJobStart accepts a chargeKey");
 assert(tenantsSrc.includes('`cloud:${key}`'), "cloud charge keys are namespaced in browserCharges");
@@ -320,6 +589,12 @@ assert(
 assert(
   convexWrapperSrc.includes("chargeKey: opts?.chargeKey"),
   "agent/lib/convex.ts forwards chargeKey to countBrowserJobStart",
+);
+assert(
+  /releaseBrowserStart = \(\s*\n?\s*phoneE164: string,\s*\n?\s*startingAt: number,/.test(
+    convexWrapperSrc,
+  ),
+  "the agent wrapper cannot release a claim without naming which one",
 );
 
 const pkg = src("package.json");
@@ -537,6 +812,12 @@ assert(
 // contract and may not shrink — everything above the ceilings is operating
 // prose, and it must not creep back. Raising a ceiling is a decision, not a
 // side effect: if one of these fires, cut a sentence instead.
+//
+// Every ceiling here dropped by ~600-700 bytes when the generic browsing
+// advice came out of the scaffold (agent/lib/errand-brief.ts). These calls
+// pass no facts and no composed brief, so what they measure is the ENVELOPE
+// alone; the ceilings for a task carrying the human's own facts live in
+// scripts/errand-brief-check.ts, where growth is user content, not prose.
 // ---------------------------------------------------------------------------
 
 const bytes = (text: string) => Buffer.byteLength(text, "utf8");
@@ -557,24 +838,24 @@ function underCeiling(label: string, text: string, ceiling: number): void {
   underCeiling(
     "plain errand scaffold",
     scaffoldTask("вызови такси до Шереметьево", { startPage: "https://taxi.yandex.ru/" }),
-    2700,
+    2100,
   );
   underCeiling(
     "dry-run errand scaffold",
     scaffoldTask("покажи форму такси, не нажимай Заказать", {
       startPage: "https://taxi.yandex.ru/",
     }),
-    2700,
+    2100,
   );
   underCeiling(
     "continuation scaffold",
     scaffoldTask("подтвердил в приложении", { continuation: true }),
-    2900,
+    2100,
   );
   underCeiling(
     "vault-login errand scaffold",
     scaffoldTask("зайди на ozon и посмотри заказы", { login: true, profileSynced: true }),
-    3200,
+    2400,
   );
   underCeiling(
     "paid errand scaffold",
@@ -583,7 +864,7 @@ function underCeiling(label: string, text: string, ceiling: number): void {
       pay: payOpts,
       startPage: "https://www.ozon.ru/",
     }),
-    4200,
+    3300,
   );
   underCeiling(
     "attach-card errand scaffold",
@@ -591,7 +872,7 @@ function underCeiling(label: string, text: string, ceiling: number): void {
       pay: { ...payOpts, hosts: expandPayHosts(["taxi.yandex.ru"]), attachCard: true },
       startPage: "https://taxi.yandex.ru/",
     }),
-    4300,
+    3600,
   );
 }
 

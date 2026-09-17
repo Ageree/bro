@@ -1,4 +1,5 @@
 import { ConvexHttpClient } from "convex/browser";
+import { PENDING_STEER_TTL_MS } from "../../convex/lib/browserInjectPolicy.ts";
 import type { FunctionArgs, FunctionReference, FunctionReturnType } from "convex/server";
 import { api } from "../../convex/_generated/api.js";
 import type { Id } from "../../convex/_generated/dataModel";
@@ -355,6 +356,11 @@ export const setBrowser = (
     browserTask?: string;
     browserStatus?: string;
     browserStartedAt?: number;
+    /** Start claim (see `claimBrowserStart`). 0 clears it. */
+    browserStartingAt?: number;
+    browserStartingTask?: string;
+    /** Follow-up held while a start was in flight. */
+    browserPendingSteer?: string;
     browserProfileId?: string;
     browserCookieDomains?: string[];
     browserProfileSyncedAt?: number;
@@ -372,6 +378,43 @@ export const setBrowser = (
   },
 ): Promise<void> =>
   m(api.tenants.setBrowser)({ phoneE164, ...patch }).then(() => {});
+
+/** Claim the one allowed in-flight Cloud start for this person, BEFORE
+ *  `startRun` round-trips. `claimed: false` means another turn is already
+ *  starting an errand — the caller must hold its line for that errand instead
+ *  of opening a second cloud run (the «на воскресенье» double-start).
+ *  On a won claim `startingAt` is this claim's own stamp: keep it, it is the
+ *  only thing `releaseBrowserStart` accepts. */
+export const claimBrowserStart = (
+  phoneE164: string,
+  task: string,
+  now: number,
+  staleMs: number,
+) => m(api.tenants.claimBrowserStart)({ phoneE164, task, now, staleMs });
+
+/** Drop a start claim that will never produce a run (start threw / not taken).
+ *  `startingAt` is the stamp `claimBrowserStart` handed back, and the mutation
+ *  compares against it: a turn can only ever release ITS OWN claim, never a
+ *  sibling's in-flight start (S6 — that was a way to force a double start). */
+export const releaseBrowserStart = (
+  phoneE164: string,
+  startingAt: number,
+): Promise<void> =>
+  m(api.tenants.releaseBrowserStart)({ phoneE164, startingAt }).then(() => {});
+
+/** Park a follow-up that landed while a start was still in flight. */
+export const holdBrowserSteer = (phoneE164: string, text: string): Promise<void> =>
+  m(api.tenants.holdBrowserSteer)({ phoneE164, text, now: Date.now() }).then(() => {});
+
+/** Read-and-clear the held follow-up, so it is queued into the session once.
+ *  Anything older than `PENDING_STEER_TTL_MS` is dropped rather than queued
+ *  into whatever errand happens to be open by then. */
+export const takeBrowserPendingSteer = (phoneE164: string): Promise<string> =>
+  m(api.tenants.takeBrowserPendingSteer)({
+    phoneE164,
+    now: Date.now(),
+    ttlMs: PENDING_STEER_TTL_MS,
+  });
 
 export const getTenantByEmail = (emailAddress: string) =>
   q(api.tenants.getByEmail)({ emailAddress });

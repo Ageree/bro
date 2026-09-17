@@ -266,7 +266,12 @@ export function payScaffold(opts: {
       ? "Цель — привязать карту, а не купить: открой «Способы оплаты» (профиль, настройки или корзина) и нажми «Добавить карту»."
       : "",
     `Карта ${account} подключена секретами: сфокусируй поле и попроси секрет по имени — \`${PAY_ALIASES.number}\`, \`${PAY_ALIASES.expiry}\` (срок ММ/ГГ; раздельные поля: \`${PAY_ALIASES.expMonth}\` месяц, \`${PAY_ALIASES.expYear}\` год двумя цифрами, \`${PAY_ALIASES.expYearFull}\` четырьмя), \`${PAY_ALIASES.cvc}\` CVV. Вводит сервер, ты значений не видишь.`,
-    "Форма карты обычно в iframe на соседнем домене — кликай прямо в поле внутри рамки и проси секрет там же, это работает.",
+    // The iframe tactic hint that used to sit here («форма карты обычно в
+    // iframe на соседнем домене — кликай прямо в поле внутри рамки…») is
+    // gone: 132 characters of how-to-use-a-browser on every paid run. The
+    // part of it that was NOT advice — that the card form lives on a sibling
+    // domain — is enforced in code, by `expandPayHosts` binding the card to
+    // the registrable domain and the processors, not by asking nicely.
     `Держатель ${holder} — не секрет, печатай его текстом.`,
     `Секреты работают только на ${hosts.join(", ")} и их поддоменах. Поле карты на другом домене — закончи, назови его, НУЖНО: payment.`,
     "3-D Secure — НУЖНО: 3ds. Код из SMS — НУЖНО: sms_code. Подтверждение в приложении банка — НУЖНО: push.",

@@ -19,6 +19,7 @@ import {
   cloudInjectInstruction,
   cloudInjectKindFromAttrs,
   cloudSessionLooksLive,
+  cloudStartInFlight,
 } from "../../convex/lib/browserInjectPolicy.ts";
 
 export default defineDynamic({
@@ -72,7 +73,12 @@ export default defineDynamic({
               // `browserNeed` doesn't exist on the schema yet (added by a
               // parallel package) — read it defensively.
               need: (tenant as { browserNeed?: string } | null)?.browserNeed,
-            }),
+            }) ||
+              // An errand whose start is still in flight has no session id to
+              // look live yet, and that is exactly the second in which the
+              // follow-up («на воскресенье») arrives — without this the model
+              // gets no «ввожу» instruction for it and treats it as chat.
+              cloudStartInFlight({ startingAt: tenant?.browserStartingAt }),
           );
         }
         const forceSpeak = browserPollForceSpeak(attrs);

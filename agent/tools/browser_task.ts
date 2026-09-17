@@ -4,13 +4,18 @@ import {
   aliasBrowserCharge,
   cancelBrowserFollow,
   cancelWakeup,
+  claimBrowserStart,
   clearBrowserNeed,
   countBrowserJobStart,
+  getTenant,
+  holdBrowserSteer,
   listVaultItems,
   readVaultSecret,
   recordOrder,
+  releaseBrowserStart,
   startBrowserFollow,
   setBrowser,
+  takeBrowserPendingSteer,
   upsertTenant,
 } from "../lib/convex";
 import {
@@ -52,13 +57,17 @@ import {
   cloudInjectKindFromAttrs,
   cloudInjectTextFromAttrs,
   cloudSessionLooksLive,
+  cloudStartInFlight,
   decideCloudInject,
   injectAckText,
-  injectCandidate,
   injectQueueInterrupt,
   injectQueueText,
   looksLikePasswordDump,
   NO_LIVE_RUN_TEXT,
+  START_CLAIM_MS,
+  startClaimIsLive,
+  steerCandidate,
+  type CloudInjectKind,
 } from "../../convex/lib/browserInjectPolicy.ts";
 import {
   ERRAND_LANDING_WAIT_MS,
@@ -81,7 +90,9 @@ import {
 import { parsePaymentPayload } from "../../convex/lib/vaultPayload.ts";
 import { vaultPasswordLoginForPages } from "../lib/vault-login.ts";
 import {
+  ackSessionLive,
   chargeKeyFor,
+  holdableSteer,
   isAckLike,
   loginPagesFor,
   profileExtra,
@@ -129,9 +140,93 @@ function payload(run: BrowserRun, extra?: Record<string, unknown>) {
         ? "Send these results to the human now. Do not start another search."
         : isTerminal(run.status)
           ? "Job ended. Tell the human."
-          : "Still running. Bro will message first when this finishes. Tell the human you're looking. Do not ask them to check back.",
+          : // Never let this read as "your detail was taken": the poll branch
+            // sees the human's latest line but only queues it into the live
+            // session when it is steerable, and `injected` in this payload is
+            // the only proof that it landed.
+            "Still running. Bro will message first when this finishes. Tell the human you're looking. Do not ask them to check back. Unless this payload has `injected`, nothing from their last line was added to the running job — do not say it was.",
     ...extra,
   };
+}
+
+/** Queue one human line into a live Cloud session as a steer. Returns whether
+ *  it actually landed — a failed POST must never be reported as "принял".
+ *  `interrupt` is false for a run that has only just started: preempting a
+ *  fresh run at t+0 would cancel the very errand the detail belongs to. */
+async function queueSteer(
+  sessionId: string,
+  text: string,
+  opts: { dryRun?: boolean; interrupt?: boolean } = {},
+): Promise<boolean> {
+  const queued = await queueMessage(
+    sessionId,
+    injectQueueText({
+      kind: "steer",
+      humanText: text,
+      ...(opts.dryRun ? { dryRun: true } : {}),
+    }),
+    { interrupt: opts.interrupt ?? injectQueueInterrupt("steer") },
+  ).catch((err: unknown) => {
+    console.error("cloud queue steer failed", err);
+    return undefined;
+  });
+  return Boolean(queued);
+}
+
+/** Lines parked by `holdBrowserSteer` while a start was in flight, oldest
+ *  first, minus one the caller is about to queue itself.
+ *
+ *  `holdableSteer` is re-applied HERE and not only at the parking end (S4).
+ *  A parked row outlives the turn that wrote it — it survives a deploy, and
+ *  any future path that forgets to filter before parking would otherwise get
+ *  its text typed straight into the live session. A pasted site password must
+ *  fail both gates, not just the one it happened to pass through. */
+function heldLines(held: string, skip?: string): string[] {
+  const drop = skip?.trim();
+  return held
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && line !== drop && holdableSteer(line))
+    .slice(0, 5);
+}
+
+/** Held text is queued into the session the moment one exists. This is the
+ *  second half of the start-race fix: the follow-up is late, never lost.
+ *
+ *  «Late, never lost» is why a failed `queueSteer` is re-parked (S10).
+ *  `takeBrowserPendingSteer` reads AND clears in one transaction, so by the
+ *  time a POST to Browser Use 5xxs the line is already off the row: swallowing
+ *  the failure here used to destroy the follow-up outright — one flaky queue
+ *  call and «на воскресенье» was gone, with the human told nothing. Putting it
+ *  back makes it late again instead. Re-parking restamps
+ *  `browserPendingSteerAt`, so the line gets one more TTL window; that is the
+ *  intended trade — a line the session never received is worth another try. */
+async function drainHeldSteer(
+  phone: string,
+  sessionId: string,
+  opts: { skip?: string; dryRun?: boolean; interrupt?: boolean } = {},
+): Promise<number> {
+  const held = await takeBrowserPendingSteer(phone).catch((err: unknown) => {
+    console.error("take pending steer failed", err);
+    return "";
+  });
+  let sent = 0;
+  const failed: string[] = [];
+  for (const line of heldLines(held, opts.skip)) {
+    const ok = await queueSteer(sessionId, line, {
+      ...(opts.dryRun ? { dryRun: true } : {}),
+      ...(opts.interrupt !== undefined ? { interrupt: opts.interrupt } : {}),
+    });
+    if (ok) sent += 1;
+    else failed.push(line);
+  }
+  // Oldest first, so the re-parked rows keep the order the human typed them.
+  for (const line of failed) {
+    await holdBrowserSteer(phone, line).catch((err: unknown) => {
+      console.error("re-hold steer failed", err);
+    });
+  }
+  return sent;
 }
 
 async function maybeInjectChat(
@@ -144,8 +239,16 @@ async function maybeInjectChat(
     attrs: ReturnType<typeof attrsFromSession>;
   },
 ): Promise<Record<string, unknown> | null> {
-  if (!injectCandidate(incoming)) return null;
-  if (!tenant.browserRunId && !tenant.browserSessionId) {
+  // LIVENESS FIRST. The old order asked a pure text predicate
+  // (`injectCandidate`) whether the line *looked* injectable before anything
+  // had checked whether a Cloud session existed at all — so «на воскресенье»
+  // was vetoed by the classifier and the live session it belonged to was
+  // never consulted. Now the session decides whether to queue, and the text
+  // only decides which kind of message is queued.
+  const startInFlight = cloudStartInFlight({ startingAt: tenant.browserStartingAt });
+  if (!tenant.browserRunId && !tenant.browserSessionId && !startInFlight) {
+    // Nothing open and nothing starting: only a stray one-time code deserves
+    // an answer of its own, everything else is ordinary chat.
     return decideCloudInject(incoming, {}).kind === "code"
       ? { status: "no_wait", entered: false, hint: NO_LIVE_RUN_TEXT }
       : null;
@@ -156,6 +259,10 @@ async function maybeInjectChat(
   let browserListed = false;
   let cdpUrl: string | undefined;
   let sessionId = tenant.browserSessionId;
+  // Only meaningful once there is something to probe: during a start claim
+  // there is no session id yet, and "probed and found nothing" would then be
+  // read as a confirmed-absent browser (cloudSessionLooksLive's F1 rule).
+  let probed = false;
 
   if (tenant.browserRunId) {
     const run = await hydrate(tenant.browserRunId, tenant.browserSessionId).catch(
@@ -168,34 +275,42 @@ async function maybeInjectChat(
     }
   }
 
-  const browser = await findBrowserForSession(sessionId).catch(() => undefined);
-  if (browser?.cdpUrl) {
-    browserListed = true;
-    cdpUrl = browser.cdpUrl;
-    pageUrl = (await cdpPageUrl(browser.cdpUrl).catch(() => undefined)) ?? pageUrl;
+  if (sessionId || tenant.browserRunId) {
+    const browser = await findBrowserForSession(sessionId).catch(() => undefined);
+    probed = true;
+    if (browser?.cdpUrl) {
+      browserListed = true;
+      cdpUrl = browser.cdpUrl;
+      pageUrl = (await cdpPageUrl(browser.cdpUrl).catch(() => undefined)) ?? pageUrl;
+    }
   }
 
   const attrs = {
     status: tenant.browserStatus,
     sessionId,
     runId: tenant.browserRunId,
-    storedTask: tenant.browserTask,
+    // A start claim carries the errand text before `browserTask` is written —
+    // without it a follow-up landing mid-start has no task to attach to and
+    // `looksLikeSteer` would refuse it.
+    storedTask: tenant.browserTask ?? tenant.browserStartingTask,
     startedAt: tenant.browserStartedAt,
+    startingAt: tenant.browserStartingAt,
     pageUrl,
     result,
     browserListed,
     // What the parked Cloud agent is waiting on (A2's structured outcome) —
     // authoritative over the elapsed-time/CDP-probe fallbacks below it.
     need: tenant.browserNeed,
-    // findBrowserForSession was just awaited above unconditionally on this
-    // path, so an empty/absent browser is a confirmed absence, not "unknown".
-    browserProbed: true,
+    // findBrowserForSession was awaited above whenever there was a session or
+    // run to probe, so an empty/absent browser is a confirmed absence, not
+    // "unknown". During a bare start claim nothing was probed at all.
+    browserProbed: probed,
   };
   const decided = decideCloudInject(incoming, attrs);
   if (!decided.kind) return null;
 
   const live = cloudSessionLooksLive(attrs);
-  if (!live) {
+  if (!live && !startInFlight) {
     return decided.kind === "code"
       ? { status: "no_wait", entered: false, hint: NO_LIVE_RUN_TEXT }
       : null;
@@ -212,6 +327,27 @@ async function maybeInjectChat(
       console.error("inject ack failed", err);
     });
     if (notify.turnId) markTurnSpoke(notify.turnId, Date.now());
+  }
+
+  // START RACE (the «на воскресенье» incident): a start is claimed but has not
+  // produced a session id yet, so there is nothing to queue into *yet*. Park
+  // the line on the tenant row — the starting turn drains it into the session
+  // the moment it exists. Returning here is as important as the parking
+  // itself: falling through would reach `nextBrowserAction`, which reads a row
+  // with no runId as "start" and would open a SECOND cloud run (second charge,
+  // first browser orphaned) whose whole task is the fragment.
+  if (!live || !sessionId) {
+    await holdBrowserSteer(phone, incoming).catch((err: unknown) => {
+      console.error("hold steer failed", err);
+    });
+    return {
+      status: "starting",
+      entered: false,
+      held: true,
+      injected: decided.kind,
+      alreadyNotified: Boolean(conv),
+      hint: "поручение ещё открывается — я записал эту строку и передам её в него, как только страница откроется; не начинай второе поручение и не говори, что уже применил",
+    };
   }
 
   // Fast path: type a code straight into the open tab over CDP when the live
@@ -234,14 +370,8 @@ async function maybeInjectChat(
     partial = typedIn.partial === true;
   }
 
-  if (!sessionId) {
-    return {
-      status: "no_wait",
-      entered: false,
-      hint: NO_LIVE_RUN_TEXT,
-    };
-  }
-
+  // (`sessionId` is non-empty here: the start-race branch above returns for
+  //  every live-but-session-less case.)
   // Reliable path: queue the line into the live session. The session holds the
   // errand history and its browser, so this lands on the already-open login tab
   // instead of starting a fresh run in a blank browser.
@@ -254,6 +384,14 @@ async function maybeInjectChat(
     // digit) never counts as "already typed" — the queued Cloud message must
     // still carry the full code (item 17).
     alreadyTyped: decided.kind === "code" && submitted && !partial,
+  });
+  // Anything parked while this errand was still starting goes in first, in
+  // the order the human typed it — appended, never interrupting, so it cannot
+  // cancel the run it is meant for.
+  await drainHeldSteer(phone, sessionId, {
+    skip: incoming,
+    dryRun: isDryRunErrand(tenant.browserTask ?? incoming),
+    interrupt: false,
   });
   const queued = await queueMessage(sessionId, queueText, {
     interrupt: injectQueueInterrupt(decided.kind),
@@ -364,6 +502,100 @@ function payingFor(
   tenant: { browserPaying?: boolean },
 ): boolean {
   return typeof extra.paying === "boolean" ? extra.paying : tenant.browserPaying === true;
+}
+
+/** How long a `reset:true` waits for a SIBLING start to write its run down
+ *  before giving up on it (S6). A Cloud start round-trips in a few seconds;
+ *  past this the sibling is assumed wedged and the reset is parked rather than
+ *  raced. A parked reset costs the human one repeated line; a raced one costs a
+ *  charged browser with no runId anyone can ever cancel. */
+const RESET_TAKEOVER_MS = 15_000;
+const RESET_TAKEOVER_POLL_MS = 750;
+
+/**
+ * Wait out a sibling turn's start claim so a `reset` can CANCEL what it
+ * started instead of racing it (S6).
+ *
+ * The row that comes back is the point of the wait: once the sibling's start
+ * lands, `setBrowser` has written its `browserRunId`/`browserSessionId` and
+ * zeroed the claim, so the ordinary "fresh session per errand" cleanup below
+ * can cancel that run and stop its browser. Reading the pre-start snapshot
+ * instead — which is what releasing the sibling's claim and charging ahead
+ * did — leaves a live, paid browser that nothing on the row points at.
+ *
+ * `null` means the sibling never finished inside the window: the caller must
+ * park its line, not steal the claim.
+ */
+async function waitForSiblingStart(
+  phone: string,
+  startingAt: number | undefined,
+  opts: { ms?: number; pollMs?: number } = {},
+): Promise<Awaited<ReturnType<typeof getTenant>> | null> {
+  const deadline = Date.now() + (opts.ms ?? RESET_TAKEOVER_MS);
+  for (;;) {
+    const row = await getTenant(phone).catch(() => null);
+    const at = row?.browserStartingAt;
+    // Either the claim cleared (the sibling persisted its run), or it aged
+    // out, or a third turn replaced it — in every case the row is no longer
+    // the seconds-old emptiness the reset used to act on.
+    if (row && (at !== startingAt || !startClaimIsLive(at, Date.now(), START_CLAIM_MS))) {
+      return row;
+    }
+    if (Date.now() >= deadline) return null;
+    await new Promise((resolve) => setTimeout(resolve, opts.pollMs ?? RESET_TAKEOVER_POLL_MS));
+  }
+}
+
+/**
+ * The claim loser: another turn owns the one in-flight start, so this turn
+ * must never open a second Cloud run. It parks its line for the winner to
+ * drain instead.
+ *
+ * S4: the park used to be unconditional, and that is precisely the wrong
+ * place for it — this code runs only when `maybeInjectChat` returned `null`,
+ * i.e. when the line was judged NOT injectable. Every exclusion the inject
+ * path applies (smalltalk, a question to Bro, an emoji reaction, and
+ * `looksLikePasswordDump`) was therefore bypassed for anything parked here,
+ * and `drainHeldSteer` later queued it into the live session verbatim. The
+ * reported case: «закажи такси домой» claims and sits inside `startRun` for
+ * ~8s, the human pastes their Ozon password, this turn parks «Hunter2024»,
+ * the starting turn types it into the Cloud browser. `holdableSteer` is the
+ * same text gate the inject path uses, and the drain re-checks it.
+ *
+ * The hint follows the park, not the other way round: «я записал эту строку»
+ * may only be said when a row was actually written.
+ */
+async function parkBehindStart(
+  phone: string,
+  tenant: Awaited<ReturnType<typeof upsertTenant>>,
+  injectIncoming: string,
+  notify: {
+    conv?: string;
+    turnId?: string;
+    attrs: ReturnType<typeof attrsFromSession>;
+  },
+  claim: { startingTask?: string },
+): Promise<Record<string, unknown>> {
+  // Re-read: the sibling start may have finished in the meantime, in which
+  // case there is a live session to queue straight into.
+  const now = (await getTenant(phone).catch(() => null)) ?? tenant;
+  const injected = await maybeInjectChat(phone, now, injectIncoming, notify);
+  if (injected) return injected;
+  const held = holdableSteer(injectIncoming);
+  if (held) {
+    await holdBrowserSteer(phone, injectIncoming).catch((err: unknown) => {
+      console.error("hold steer failed", err);
+    });
+  }
+  return {
+    status: "starting",
+    entered: false,
+    held,
+    activeTask: claim.startingTask ?? tenant.browserTask,
+    hint: held
+      ? "это же поручение уже открывается в другом окне — я записал эту строку и передам её туда; не начинай второе поручение"
+      : "это же поручение уже открывается в другом окне — ответь человеку сам, эту строку я никуда не передавал; не начинай второе поручение",
+  };
 }
 
 /** The status/paying/attach-card/«НУЖНО» gate and the parse both live in
@@ -531,7 +763,7 @@ export default defineTool({
     // itself, with no purchase at the end. It needs the same vault card and
     // the same run-scoped bindings a paid errand gets.
     const attachCard = isAttachCardErrand(task);
-    const tenant = await upsertTenant(phone);
+    let tenant = await upsertTenant(phone);
     const conv = conversationId(ctx, chatConversationId(tenant));
     // The human turn is stamped with the exact code/correction it carried. Use
     // that raw line for injection instead of `task`, because the model
@@ -540,26 +772,65 @@ export default defineTool({
     const turnAttrs = turnAttributes(ctx);
     const injectKind = cloudInjectKindFromAttrs(turnAttrs);
     const stampedInjectText = cloudInjectTextFromAttrs(turnAttrs);
+    const notifyTurnId = ctx.session.turn?.id;
+    const notify = {
+      conv,
+      turnId: typeof notifyTurnId === "string" ? notifyTurnId : undefined,
+      attrs: attrsFromSession(ctx.session),
+    };
+    // The raw human line when the turn carried one, because the model
+    // sometimes re-issues the whole errand instead of passing the bare line.
+    const injectIncoming = injectKind && stampedInjectText ? stampedInjectText : task;
     if (!reset) {
-      const turnId = ctx.session.turn?.id;
-      const injectIncoming =
-        injectKind && stampedInjectText ? stampedInjectText : task;
-      const injected = await maybeInjectChat(phone, tenant, injectIncoming, {
-        conv,
-        turnId: typeof turnId === "string" ? turnId : undefined,
-        attrs: attrsFromSession(ctx.session),
-      });
+      const injected = await maybeInjectChat(phone, tenant, injectIncoming, notify);
       if (injected) return injected;
-      // A stamped inject turn (code / «подожди» / correction / confirm) must
-      // never fall through to a fresh browser errand when a session is on
+      // A stamped HARD inject turn (code / «подожди» / correction / confirm)
+      // must never fall through to a fresh browser errand when a session is on
       // record: a new session would drop the live login (a fresh code would
       // be requested, rejecting the stale one, and a confirm has nothing to
       // re-do in a fresh browser either). If it could not be injected
       // (browser gone), say so instead of starting a new one.
-      if (injectKind && (tenant.browserSessionId || tenant.browserRunId)) {
+      //
+      // `steer` is deliberately NOT in that set. Since steering is opt-out,
+      // almost any line is stamped `steer`, so blocking on it would strand a
+      // perfectly ordinary new errand behind a long-dead session id.
+      // maybeInjectChat already returned null for it, which means no live
+      // session took it — so let it start normally.
+      if (
+        injectKind &&
+        injectKind !== "steer" &&
+        (tenant.browserSessionId || tenant.browserRunId)
+      ) {
         return { status: "no_wait", entered: false, hint: NO_LIVE_RUN_TEXT };
       }
     }
+    // START RACE (d): the snapshot above was taken at the top of the turn, and
+    // a first errand persists its runId/sessionId only after `startRun`
+    // round-trips. Re-read the row right before the start decision so a
+    // sibling turn's session — or its start claim — is actually visible here,
+    // instead of deciding "start" against seconds-old emptiness.
+    tenant = (await getTenant(phone).catch(() => null)) ?? tenant;
+    // This turn's OWN start claim, and the only one it is allowed to drop.
+    // `releaseBrowserStart` compares against this exact stamp, so a turn can
+    // never clear a sibling's in-flight start — the S6 double-start — nor a
+    // fresh claim that replaced its own after it expired.
+    let startClaimAt: number | undefined;
+    const takeStartClaim = () =>
+      claimBrowserStart(phone, task, Date.now(), START_CLAIM_MS).catch(
+        (err: unknown) => {
+          // A claim we could not take is not a reason to refuse the errand —
+          // degrade to the old (racy) behaviour rather than dropping the job.
+          // No `startingAt` comes back, so nothing will be released either:
+          // we do not know whether the mutation committed before the reply was
+          // lost, and clearing a claim we may not own is the very bug above.
+          console.error("browser start claim failed", err);
+          return { claimed: true as const, startingAt: undefined };
+        },
+      );
+    const dropStartClaim = async () => {
+      if (startClaimAt === undefined) return;
+      await releaseBrowserStart(phone, startClaimAt).catch(() => {});
+    };
     const rawAction = nextBrowserAction({
       reset,
       runId: tenant.browserRunId,
@@ -588,7 +859,18 @@ export default defineTool({
       // A short, non-question follow-up on the just-finished errand ("готово",
       // "спасибо") is an acknowledgement, not a request to resend the result
       // (item 7) — do not re-run maybeRecordOrder/settle for it either.
-      if (isAckLike(task) && !looksLikeNewJob(task, tenant.browserTask ?? undefined)) {
+      // But «на воскресенье» is also two words: while the errand is actually
+      // running (or still starting) a short line is a detail for it, never an
+      // ack, so `sessionLive` switches that reading off (e).
+      // Which errand the claim belongs to matters (S14) — see
+      // `ackSessionLive`: a claim for a NEW errand must not turn a genuine
+      // «спасибо» about the finished one into a detail, or this branch falls
+      // through and re-sends the old run's result.
+      const sessionLive = ackSessionLive(tenant);
+      if (
+        isAckLike(task, { sessionLive }) &&
+        !looksLikeNewJob(task, tenant.browserTask ?? undefined)
+      ) {
         return {
           status: run.status,
           reused: true,
@@ -625,6 +907,44 @@ export default defineTool({
     }
 
     if (action === "poll" && tenant.browserRunId) {
+      // (f) A poll must not swallow the line the human just sent. `busy` keeps
+      // its text in `browserNextTask`; `poll` used to be the one branch that
+      // dropped it entirely, while telling the model to reassure the human —
+      // which is how a detail could look accepted and be nowhere. If the line
+      // carries anything for the open errand, queue it into the live session
+      // now; if it is a plain «ну что там?», nothing is queued and the hint
+      // says so rather than implying it was taken.
+      // The human's OWN line, not whatever the model retyped: on a poll the
+      // model often re-issues the old errand text, and that is not a steer.
+      //
+      // `interrupt: false` is NOT a default this branch may inherit (S2).
+      // An interrupting queue CANCELS the active run and spawns a new one —
+      // that is the whole reason `resolveQueuedRun` exists, and why
+      // `maybeInjectChat` follows a queue with resolve → persist(newRunId) →
+      // startBrowserFollow → waitForRun(newRunId). This branch does none of
+      // that: it goes straight to `waitForRun(tenant.browserRunId)`. With an
+      // interrupt, that is a wait on the run the queue just KILLED — «купи
+      // кофе на ozon» sitting on the payment step, «ты долго что-то», run_1
+      // cancelled, run_2 live: waitForRun(run_1) sees `cancelled`, settle()
+      // cancels the wakeup and the follow-through, maybeRecordOrder runs
+      // against the cancelled run and the human is told «Job ended», while
+      // run_2 keeps paying with nobody following it and no order row. So the
+      // flag is passed explicitly and stays false whatever the steer default
+      // becomes: a poll appends to the run it is polling, never preempts it.
+      const steered =
+        tenant.browserSessionId && steerCandidate(injectIncoming)
+          ? await queueSteer(tenant.browserSessionId, injectIncoming, {
+              dryRun: isDryRunErrand(tenant.browserTask ?? task),
+              interrupt: false,
+            })
+          : false;
+      if (steered && tenant.browserSessionId) {
+        await drainHeldSteer(phone, tenant.browserSessionId, {
+          skip: injectIncoming,
+          dryRun: isDryRunErrand(tenant.browserTask ?? task),
+          interrupt: false,
+        });
+      }
       const run = await waitForRun(
         tenant.browserRunId,
         tenant.browserSessionId,
@@ -641,7 +961,13 @@ export default defineTool({
               payDeferred: true,
               hint: "оплата ещё не началась — сначала должно закончиться то, что уже идёт, потом вызови browser_task с pay ещё раз",
             }
-          : { polled: true },
+          : steered
+            ? {
+                polled: true,
+                injected: "steer" satisfies CloudInjectKind,
+                hint: "уточнение ушло в открытую страницу (живая сессия). Скажи одной строкой, что принял, и что напишешь как будет готово.",
+              }
+            : { polled: true },
         { startedAt: tenant.browserStartedAt, runId: tenant.browserRunId },
         tenant,
       );
@@ -737,6 +1063,22 @@ export default defineTool({
       // fallbackToStart here must not fail the whole errand, it must fall
       // through to the ordinary fresh-start path below with the original
       // `task`, exactly as a plain "start" would.
+      // ONE start at a time here too. A continuation does not open a browser,
+      // so it never charges a second job — but it DOES open a second agent,
+      // and it is reached exactly when the human is answering a blocker, which
+      // is when they type twice in a row: «подтвердил» then «оплати картой из
+      // сейфа», one second apart, is two turns both reading `need=payment` off
+      // an unchanged row and both calling `startRun` into the SAME session
+      // with the card bound. Two agents driving one checkout is a double
+      // order, which is worse than a double charge. The claim is taken here
+      // rather than at the top of the branch because everything above it is
+      // read-only preparation — only the startRun→persist window has to be
+      // exclusive, and a refused claim there would strand a vault read.
+      const contClaim = await takeStartClaim();
+      if (!contClaim.claimed) {
+        return parkBehindStart(phone, tenant, injectIncoming, notify, contClaim);
+      }
+      startClaimAt = contClaim.startingAt;
       let started: BrowserRun | undefined;
       let fallbackToStart = false;
       try {
@@ -750,6 +1092,15 @@ export default defineTool({
             ? { secretBindings: contSecretBindings }
             : {}),
           continuation: true,
+          // Facts on the continuation too, not only on the first run. A
+          // continuation is a NEW run built from a new task in the same tab,
+          // so without this the errand loses the address and the memories
+          // exactly when it needs them most — resuming into a checkout after
+          // a login. It costs a few Convex reads on a path that is already
+          // doing network work, and they are loaded in parallel and
+          // individually caught, so a slow read degrades the context, never
+          // the run.
+          phone,
         });
       } catch (err) {
         console.error("continue: session gone, starting fresh", err);
@@ -757,275 +1108,404 @@ export default defineTool({
       }
 
       if (started && !fallbackToStart) {
-        const startedAt = Date.now();
-        // The stored `browserTask` is the ORIGINAL errand (with its start
-        // URL etc.) — the continuation text (`task`) only makes sense as
-        // the Cloud run's own instruction, never as what later
-        // errandStartUrl/progress-note/wakeup lookups key off (same
-        // reasoning as `maybeInjectChat`'s `tenant.browserTask ?? incoming`).
-        const errand = tenant.browserTask ?? task;
-        await persist(phone, started, errand, {
-          browserStartedAt: startedAt,
-          browserPaying: Boolean(contPayOpts),
-          browserPayHosts: contPayOpts?.hosts ?? [],
-        });
-        // The need this continuation resolves (payment/address/info/...) is
-        // now acted on — clear it so a stale browserNeed never lingers.
-        await clearBrowserNeed(phone, tenant.browserRunId).catch((err) => {
-          console.error("clear browser need failed", err);
-        });
-        const followKick = startBrowserFollow({
-          tenantPhone: phone,
-          runId: started.runId,
-          sessionId: started.sessionId,
-          task: errand,
-          startedAt,
-        }).catch((err) => {
-          console.error("browser follow workflow failed", err);
-        });
-        const done = await waitForRun(started.runId, started.sessionId, BROWSER_WAIT_MS);
-        await persist(phone, done, errand);
-        await followKick;
-        return settle(
-          phone,
-          done,
-          errand,
-          {
-            continued: true,
-            ...(contPayOpts
-              ? { paying: true, payAccount: contPayOpts.account, payHosts: contPayOpts.hosts }
-              : {}),
-          },
-          { startedAt, runId: started.runId },
-          { browserPaying: Boolean(contPayOpts), browserPayHosts: contPayOpts?.hosts },
+        // S5, continuation half. Every throw between the claim above and the
+        // first `persist` below has to hand the claim back, or this person is
+        // told «поручение ещё открывается» for the next two minutes while
+        // nothing at all is opening. A throw AFTER the persist needs no
+        // release: the persist already zeroed the claim on the row, and
+        // `releaseBrowserStart` compares before it clears, so the extra call
+        // in the catch is a harmless no-op rather than a way to wipe whatever
+        // claim a sibling took in the meantime.
+        try {
+          const startedAt = Date.now();
+          // The stored `browserTask` is the ORIGINAL errand (with its start
+          // URL etc.) — the continuation text (`task`) only makes sense as
+          // the Cloud run's own instruction, never as what later
+          // errandStartUrl/progress-note/wakeup lookups key off (same
+          // reasoning as `maybeInjectChat`'s `tenant.browserTask ?? incoming`).
+          const errand = tenant.browserTask ?? task;
+          await persist(phone, started, errand, {
+            browserStartedAt: startedAt,
+            browserPaying: Boolean(contPayOpts),
+            browserPayHosts: contPayOpts?.hosts ?? [],
+          });
+          // The need this continuation resolves (payment/address/info/...) is
+          // now acted on — clear it so a stale browserNeed never lingers.
+          await clearBrowserNeed(phone, tenant.browserRunId).catch((err) => {
+            console.error("clear browser need failed", err);
+          });
+          const followKick = startBrowserFollow({
+            tenantPhone: phone,
+            runId: started.runId,
+            sessionId: started.sessionId,
+            task: errand,
+            startedAt,
+          }).catch((err) => {
+            console.error("browser follow workflow failed", err);
+          });
+          const done = await waitForRun(started.runId, started.sessionId, BROWSER_WAIT_MS);
+          await persist(phone, done, errand);
+          await followKick;
+          return settle(
+            phone,
+            done,
+            errand,
+            {
+              continued: true,
+              ...(contPayOpts
+                ? { paying: true, payAccount: contPayOpts.account, payHosts: contPayOpts.hosts }
+                : {}),
+            },
+            { startedAt, runId: started.runId },
+            { browserPaying: Boolean(contPayOpts), browserPayHosts: contPayOpts?.hosts },
+          );
+        } catch (err) {
+          await dropStartClaim();
+          throw err;
+        }
+      }
+      // fallbackToStart: the claim is deliberately NOT released here — it is
+      // carried into the fresh-start path below, which would otherwise have to
+      // drop it and re-take it, and a sibling could win the gap.
+    }
+
+    // ONE start at a time, claimed BEFORE `startRun` round-trips (d). The
+    // claim is a single Convex transaction, so of two turns racing to start an
+    // errand exactly one wins. The loser is the follow-up that used to open a
+    // second cloud run with only its fragment as the task, charge a second
+    // job and orphan the first browser — it now parks its line instead, and
+    // the winner queues it into the session as soon as there is one.
+    //
+    // S6: a `reset` used to open with an unconditional
+    // `releaseBrowserStart(phone)` right here, on the reasoning that "drop
+    // that and begin again" outranks a start in flight. It cleared WHOEVER's
+    // claim sat on the row, which turned the reset into a way to force the
+    // exact double-start the claim exists to prevent: turn A claims at t0 and
+    // is inside `startRun`; at t0+3s the human says «нет, отмени, начни
+    // заново»; turn B wipes A's claim, takes its own, and reaches the cleanup
+    // below with a snapshot that has no `browserRunId`/`browserSessionId`
+    // (A has not persisted yet), so it cannot cancel A's run. Two charged
+    // runs, and A's browser orphaned with no runId anyone can ever cancel.
+    //
+    // A reset is still allowed to win — but it waits for the sibling to write
+    // its run down first, so the cleanup below has something to cancel. If the
+    // sibling never lands inside that window, the line is parked like any
+    // other loser's: one repeated sentence from the human beats a paid browser
+    // nobody can reach.
+    //
+    // A continuation that fell back to a fresh start (its session had
+    // vanished) still holds the claim it took above. Re-claiming would refuse
+    // it against ITSELF and park the errand behind its own start, so carry the
+    // claim through instead of dropping and re-taking it — a sibling could win
+    // that gap.
+    let claim =
+      startClaimAt === undefined
+        ? await takeStartClaim()
+        : { claimed: true as const, startingAt: startClaimAt };
+    if (!claim.claimed && reset) {
+      const landed = await waitForSiblingStart(phone, claim.startingAt);
+      if (landed) {
+        // The row now carries the sibling's run/session — keep it, the
+        // "fresh session per errand" cleanup below cancels and stops them.
+        tenant = landed;
+        claim = await takeStartClaim();
+      }
+    }
+    if (!claim.claimed) {
+      return parkBehindStart(phone, tenant, injectIncoming, notify, claim);
+    }
+    startClaimAt = claim.startingAt;
+
+    // S5: ONE guard over the whole span from the claim to the first `persist`,
+    // instead of a release sprinkled next to each early return. The releases
+    // that existed covered four exits — empty `pay.hosts`, no card in the
+    // vault, a refused quota, a rejected `startRun`. Five more did not throw
+    // through anything: `listVaultItems`, `readVaultSecret`, the plain
+    // `throw new Error("карта в сейфе заполнена не полностью")` that a
+    // half-filled vault card really produces, `vaultPasswordLoginForPages`
+    // (whose own calls are unguarded), and worst, the `persist` AFTER a
+    // successful `startRun` — there the run exists and is being paid for, its
+    // runId is never written down, and the claim never clears. For the next
+    // two minutes every line from that person is answered with «поручение ещё
+    // открывается … я записал эту строку», which is not true of any of them.
+    //
+    // `finally` covers returns as well as throws, so a new early return added
+    // later cannot forget; `releaseBrowserStart` compares against this turn's
+    // own stamp, so releasing after the run already cleared the claim, or
+    // after the claim expired and a sibling took it, is a no-op instead of a
+    // way to unlock somebody else's start.
+    let claimSpanDone = false;
+    let openedRun: BrowserRun | undefined;
+    try {
+      // Cheap part before the billing gate: a missing card must not burn quota.
+      // An attach-card ask used to start a run with no bindings at all and stall
+      // on the card form, because the chat model only sends `pay` for purchases.
+      // Bind it from the errand's own site instead, as if `pay` had been given.
+      let payHosts: string[] | undefined;
+      // The hosts the CALLER named, un-widened — what a saved vault login is
+      // looked up against. The widened set below is only for card bindings.
+      let payHostsBase: string[] | undefined;
+      let payItem: { handle: string; account: string } | undefined;
+      if (pay || attachCard) {
+        const attachPage = pay ? undefined : errandStartUrl(task);
+        const rawHosts = pay
+          ? pay.hosts
+          : [
+              ...(task.match(/https?:\/\/[^\s]+/g) ?? []),
+              ...(attachPage ? [attachPage] : []),
+            ];
+        payHostsBase = normalizePayHosts(rawHosts);
+        if (pay && payHostsBase.length === 0) {
+          return {
+            status: "invalid",
+            hint: "pay.hosts must contain at least one valid hostname",
+          };
+        }
+        // A payment form almost never lives on the merchant host itself — widen
+        // to the registrable domain and the known processors, or the server
+        // refuses to type the card where the field actually is.
+        if (payHostsBase.length > 0) payHosts = expandPayHosts(rawHosts);
+        const items = (await listVaultItems(phone)).filter(
+          (i) => i.kind === "payment" && i.available,
+        );
+        payItem = pay?.vaultHandle
+          ? items.find((i) => i.handle === pay.vaultHandle)
+          : items[0];
+        if (!payItem) {
+          return {
+            status: "needs_vault",
+            needsVaultSetup: "payment",
+            hint: "У человека нет сохранённой карты. Вызови vault_setup с kind=payment и пришли ссылку.",
+          };
+        }
+      }
+
+      const chargeKey = chargeKeyFor(
+        { browserSessionId: tenant.browserSessionId, browserTask: tenant.browserTask, browserStartedAt: tenant.browserStartedAt },
+        { pay: Boolean(pay) || attachCard, rawAction },
+        Date.now(),
+      );
+      let allowed = false;
+      try {
+        allowed = browserGateFromResult(
+          await countBrowserJobStart(phone, { chargeKey }),
+          undefined,
+        ).allowed;
+      } catch (err) {
+        console.error("billing browser count failed", err);
+        allowed = browserGateFromResult(undefined, err).allowed;
+      }
+      if (!allowed) {
+        return {
+          status: "limit",
+          hint: "скажи человеку, что лимит браузер-задач на месяц исчерпан, предложи оплату",
+        };
+      }
+
+      // The card is decrypted only once a run is actually going to start.
+      let payOpts:
+        | {
+            hosts: string[];
+            holder: string;
+            account: string;
+            maxRub?: number;
+            attachCard?: boolean;
+          }
+        | undefined;
+      let secretBindings: ReturnType<typeof cardBindings> | undefined;
+      if (payHosts && payItem) {
+        const secretRecord = await readVaultSecret(phone, payItem.handle);
+        const card = secretRecord ? parsePaymentPayload(secretRecord.secret) : undefined;
+        if (!card) throw new Error("карта в сейфе заполнена не полностью");
+        secretBindings = cardBindings(card, payHosts);
+        payOpts = {
+          hosts: payHosts,
+          holder: card.cardholderName,
+          account: payItem.account,
+          ...(pay?.maxRub !== undefined ? { maxRub: pay.maxRub } : {}),
+          ...(attachCard ? { attachCard: true } : {}),
+        };
+      }
+
+      // startPage (errandStartUrl) is computed BEFORE the vault-login lookup and
+      // fed into it (item 3/F6): a keyword-only errand like «вызови такси
+      // домой» has no `pay` and no explicit URL, so without it the saved
+      // taxi.yandex.ru login is never looked up at all.
+      const startPage = errandStartUrl(task);
+      const loginPages = loginPagesFor(task, payHostsBase, startPage);
+      const vaultLogin = await vaultPasswordLoginForPages(phone, loginPages);
+      if (vaultLogin) {
+        secretBindings = [...(secretBindings ?? []), ...vaultLogin.bindings];
+      }
+
+      // Fresh session per errand: never hand the old browser to a new run.
+      // Cancel a still-active previous run (billing stops immediately) and stop
+      // its browser session (a completed run does not close its own browser).
+      if (tenant.browserRunId && isActiveStatus(tenant.browserStatus)) {
+        await cancelRun(tenant.browserRunId).catch((err) =>
+          console.error("browser cancel run failed", err),
         );
       }
-      // fallbackToStart: fall through to the ordinary fresh-start path below.
-    }
-
-    // Cheap part before the billing gate: a missing card must not burn quota.
-    // An attach-card ask used to start a run with no bindings at all and stall
-    // on the card form, because the chat model only sends `pay` for purchases.
-    // Bind it from the errand's own site instead, as if `pay` had been given.
-    let payHosts: string[] | undefined;
-    // The hosts the CALLER named, un-widened — what a saved vault login is
-    // looked up against. The widened set below is only for card bindings.
-    let payHostsBase: string[] | undefined;
-    let payItem: { handle: string; account: string } | undefined;
-    if (pay || attachCard) {
-      const attachPage = pay ? undefined : errandStartUrl(task);
-      const rawHosts = pay
-        ? pay.hosts
-        : [
-            ...(task.match(/https?:\/\/[^\s]+/g) ?? []),
-            ...(attachPage ? [attachPage] : []),
-          ];
-      payHostsBase = normalizePayHosts(rawHosts);
-      if (pay && payHostsBase.length === 0) {
-        return {
-          status: "invalid",
-          hint: "pay.hosts must contain at least one valid hostname",
-        };
+      if (tenant.browserSessionId) {
+        await stopBrowserForSession(tenant.browserSessionId).catch((err) =>
+          console.error("browser stop session failed", err),
+        );
       }
-      // A payment form almost never lives on the merchant host itself — widen
-      // to the registrable domain and the known processors, or the server
-      // refuses to type the card where the field actually is.
-      if (payHostsBase.length > 0) payHosts = expandPayHosts(rawHosts);
-      const items = (await listVaultItems(phone)).filter(
-        (i) => i.kind === "payment" && i.available,
-      );
-      payItem = pay?.vaultHandle
-        ? items.find((i) => i.handle === pay.vaultHandle)
-        : items[0];
-      if (!payItem) {
-        return {
-          status: "needs_vault",
-          needsVaultSetup: "payment",
-          hint: "У человека нет сохранённой карты. Вызови vault_setup с kind=payment и пришли ссылку.",
-        };
-      }
-    }
 
-    const chargeKey = chargeKeyFor(
-      { browserSessionId: tenant.browserSessionId, browserTask: tenant.browserTask, browserStartedAt: tenant.browserStartedAt },
-      { pay: Boolean(pay) || attachCard, rawAction },
-      Date.now(),
-    );
-    let allowed = false;
-    try {
-      allowed = browserGateFromResult(
-        await countBrowserJobStart(phone, { chargeKey }),
-        undefined,
-      ).allowed;
-    } catch (err) {
-      console.error("billing browser count failed", err);
-      allowed = browserGateFromResult(undefined, err).allowed;
-    }
-    if (!allowed) {
-      return {
-        status: "limit",
-        hint: "скажи человеку, что лимит браузер-задач на месяц исчерпан, предложи оплату",
-      };
-    }
-
-    // The card is decrypted only once a run is actually going to start.
-    let payOpts:
-      | {
-          hosts: string[];
-          holder: string;
-          account: string;
-          maxRub?: number;
-          attachCard?: boolean;
-        }
-      | undefined;
-    let secretBindings: ReturnType<typeof cardBindings> | undefined;
-    if (payHosts && payItem) {
-      const secretRecord = await readVaultSecret(phone, payItem.handle);
-      const card = secretRecord ? parsePaymentPayload(secretRecord.secret) : undefined;
-      if (!card) throw new Error("карта в сейфе заполнена не полностью");
-      secretBindings = cardBindings(card, payHosts);
-      payOpts = {
-        hosts: payHosts,
-        holder: card.cardholderName,
-        account: payItem.account,
-        ...(pay?.maxRub !== undefined ? { maxRub: pay.maxRub } : {}),
-        ...(attachCard ? { attachCard: true } : {}),
-      };
-    }
-
-    // startPage (errandStartUrl) is computed BEFORE the vault-login lookup and
-    // fed into it (item 3/F6): a keyword-only errand like «вызови такси
-    // домой» has no `pay` and no explicit URL, so without it the saved
-    // taxi.yandex.ru login is never looked up at all.
-    const startPage = errandStartUrl(task);
-    const loginPages = loginPagesFor(task, payHostsBase, startPage);
-    const vaultLogin = await vaultPasswordLoginForPages(phone, loginPages);
-    if (vaultLogin) {
-      secretBindings = [...(secretBindings ?? []), ...vaultLogin.bindings];
-    }
-
-    // Fresh session per errand: never hand the old browser to a new run.
-    // Cancel a still-active previous run (billing stops immediately) and stop
-    // its browser session (a completed run does not close its own browser).
-    if (tenant.browserRunId && isActiveStatus(tenant.browserStatus)) {
-      await cancelRun(tenant.browserRunId).catch((err) =>
-        console.error("browser cancel run failed", err),
-      );
-    }
-    if (tenant.browserSessionId) {
-      await stopBrowserForSession(tenant.browserSessionId).catch((err) =>
-        console.error("browser stop session failed", err),
-      );
-    }
-
-    const resolved = await resolveSyncedProfile(phone, tenant);
-    const started = await startRun(task, undefined, {
-      ...(resolved.profileId
-        ? { profileId: resolved.profileId, profileSynced: resolved.synced }
-        : {}),
-      ...(payOpts ? { pay: payOpts } : {}),
-      ...(vaultLogin ? { login: true } : {}),
-      ...(secretBindings && secretBindings.length > 0 ? { secretBindings } : {}),
-      ...(startPage ? { startPage } : {}),
-    });
-    const opened = startPage
-      ? await waitForPageLanding(started, startPage, ERRAND_LANDING_WAIT_MS)
-      : started;
-    // The charge above was keyed by `chargeKey`, which for a brand new errand
-    // is a fresh one-off string, not this run's session id — alias it onto
-    // the session id now that it exists so a later pay-forced restart or a
-    // login→errand continuation (chargeKeyFor keys those off the session id)
-    // finds it already covered instead of charging a second time.
-    if (opened.sessionId) {
-      await aliasBrowserCharge(phone, opened.sessionId).catch((err) => {
-        console.error("alias browser charge failed", err);
-      });
-    }
-    const startedAt = Date.now();
-    // This run is really starting: the queued task it may have been standing
-    // in for is now underway, so clear it (item 1) — and record whether it is
-    // a paid run so every later settle() (reuse/poll/inject) can still gate
-    // maybeRecordOrder correctly (item 2), not just this synchronous call.
-    const nextTaskDone =
-      tenant.browserNextTask !== undefined &&
-      normalizeTask(tenant.browserNextTask) === normalizeTask(task);
-    await persist(phone, opened, task, {
-      browserStartedAt: startedAt,
-      browserPaying: Boolean(payOpts),
-      browserPayHosts: payOpts?.hosts ?? [],
-      ...(nextTaskDone ? { browserNextTask: "" } : {}),
-      ...(resolved.profileId && resolved.profileId !== tenant.browserProfileId
-        ? { browserProfileId: resolved.profileId }
-        : {}),
-      ...(resolved.cookieDomains.length > 0
-        ? {
-            browserCookieDomains: resolved.cookieDomains,
-            browserProfileSyncedAt: Date.now(),
-          }
-        : {}),
-    });
-    // Best-effort early kick, not the only chance to start follow-through:
-    // settle() below re-derives whether this run still needs polling from
-    // `done.status` alone and, in the one case where it does (not terminal,
-    // not given up), calls startBrowserFollow again and surfaces a failure
-    // to the model via `hint: FOLLOW_RETRY_HINT`. So a failure here is never
-    // swallowed into silence for the human — only left unlogged if we only
-    // caught a thrown/rejected promise and ignored a resolved `{error}`.
-    const followKick = startBrowserFollow({
-      tenantPhone: phone,
-      runId: opened.runId,
-      sessionId: opened.sessionId,
-      task,
-      startedAt,
-    }).then(
-      (result) => {
-        if ("error" in result && result.error) {
-          console.error("browser follow workflow failed to start", result.error);
-        }
-      },
-      (err) => {
-        console.error("browser follow workflow failed", err);
-      },
-    );
-    const turnId = ctx.session.turn?.id;
-    const tId = typeof turnId === "string" ? turnId : undefined;
-    if (conv && !turnSpoke(tId) && !fastAckOf(attrsFromSession(ctx.session))) {
-      void deliverHumanRouted({
-        attrs: attrsFromSession(ctx.session),
-        tenant,
-        conversationId: conv,
-        text: "ищу, сам напишу как будет готово",
-      }).catch((err) => {
-        console.error("browser start notify failed", err);
-      });
-      if (tId) markTurnSpoke(tId, Date.now());
-    }
-    const done = await waitForRun(
-      opened.runId,
-      opened.sessionId,
-      BROWSER_WAIT_MS,
-    );
-    await persist(phone, done, task);
-    await followKick;
-    return settle(
-      phone,
-      done,
-      task,
-      {
-        started: true,
-        alreadyNotified: Boolean(conv),
-        ...profileExtra(resolved, startPage, {
-          vaultLogin: Boolean(vaultLogin),
-          need: parseCloudOutcome(done.result).needs,
-        }),
-        ...(opened.pageUrl ? { pageUrl: opened.pageUrl } : {}),
-        ...(opened.landed !== undefined ? { landed: opened.landed } : {}),
-        ...(payOpts
-          ? { paying: true, payAccount: payOpts.account, payHosts: payOpts.hosts }
+      const resolved = await resolveSyncedProfile(phone, tenant);
+      const started = await startRun(task, undefined, {
+        ...(resolved.profileId
+          ? { profileId: resolved.profileId, profileSynced: resolved.synced }
           : {}),
-      },
-      { startedAt, runId: opened.runId },
-      { browserPaying: Boolean(payOpts), browserPayHosts: payOpts?.hosts },
-    );
+        ...(payOpts ? { pay: payOpts } : {}),
+        ...(vaultLogin ? { login: true } : {}),
+        ...(secretBindings && secretBindings.length > 0 ? { secretBindings } : {}),
+        ...(startPage ? { startPage } : {}),
+        // The run carries what Bro already knows about this human — vault
+        // address and contact, curated memories, their timezone and today's
+        // date, their name — instead of aborting with «НУЖНО: address» for a
+        // street that was in the vault all along. `stampedInjectText` is the
+        // human's OWN sentence when the turn carried one; `task` is only
+        // whatever the model retyped, and «на воскресенье» only resolves to a
+        // date if the run is told what today is.
+        phone,
+        ...(stampedInjectText && stampedInjectText !== task
+          ? { humanText: stampedInjectText }
+          : {}),
+      });
+      openedRun = started;
+      const opened = startPage
+        ? await waitForPageLanding(started, startPage, ERRAND_LANDING_WAIT_MS)
+        : started;
+      openedRun = opened;
+      // The charge above was keyed by `chargeKey`, which for a brand new errand
+      // is a fresh one-off string, not this run's session id — alias it onto
+      // the session id now that it exists so a later pay-forced restart or a
+      // login→errand continuation (chargeKeyFor keys those off the session id)
+      // finds it already covered instead of charging a second time.
+      if (opened.sessionId) {
+        await aliasBrowserCharge(phone, opened.sessionId).catch((err) => {
+          console.error("alias browser charge failed", err);
+        });
+      }
+      const startedAt = Date.now();
+      // This run is really starting: the queued task it may have been standing
+      // in for is now underway, so clear it (item 1) — and record whether it is
+      // a paid run so every later settle() (reuse/poll/inject) can still gate
+      // maybeRecordOrder correctly (item 2), not just this synchronous call.
+      const nextTaskDone =
+        tenant.browserNextTask !== undefined &&
+        normalizeTask(tenant.browserNextTask) === normalizeTask(task);
+      await persist(phone, opened, task, {
+        browserStartedAt: startedAt,
+        browserPaying: Boolean(payOpts),
+        browserPayHosts: payOpts?.hosts ?? [],
+        ...(nextTaskDone ? { browserNextTask: "" } : {}),
+        ...(resolved.profileId && resolved.profileId !== tenant.browserProfileId
+          ? { browserProfileId: resolved.profileId }
+          : {}),
+        ...(resolved.cookieDomains.length > 0
+          ? {
+              browserCookieDomains: resolved.cookieDomains,
+              browserProfileSyncedAt: Date.now(),
+            }
+          : {}),
+      });
+      // The run is on the row now, which is what the claim was protecting —
+      // and `setBrowser` clears `browserStartingAt` itself on a new run id, so
+      // the guard above has nothing left to release.
+      claimSpanDone = true;
+      // The whole point of the claim: anything the human typed while this start
+      // was in flight («на воскресенье», one second after «хочу забронировать
+      // ресторан») was parked on the tenant row, and the session now exists. It
+      // is appended, never `interrupt`ed — preempting the run at t+0 would
+      // cancel the very errand the detail belongs to. Late, never lost.
+      if (opened.sessionId) {
+        await drainHeldSteer(phone, opened.sessionId, {
+          skip: task,
+          dryRun: isDryRunErrand(task),
+          interrupt: false,
+        });
+      }
+      // Best-effort early kick, not the only chance to start follow-through:
+      // settle() below re-derives whether this run still needs polling from
+      // `done.status` alone and, in the one case where it does (not terminal,
+      // not given up), calls startBrowserFollow again and surfaces a failure
+      // to the model via `hint: FOLLOW_RETRY_HINT`. So a failure here is never
+      // swallowed into silence for the human — only left unlogged if we only
+      // caught a thrown/rejected promise and ignored a resolved `{error}`.
+      const followKick = startBrowserFollow({
+        tenantPhone: phone,
+        runId: opened.runId,
+        sessionId: opened.sessionId,
+        task,
+        startedAt,
+      }).then(
+        (result) => {
+          if ("error" in result && result.error) {
+            console.error("browser follow workflow failed to start", result.error);
+          }
+        },
+        (err) => {
+          console.error("browser follow workflow failed", err);
+        },
+      );
+      const turnId = ctx.session.turn?.id;
+      const tId = typeof turnId === "string" ? turnId : undefined;
+      if (conv && !turnSpoke(tId) && !fastAckOf(attrsFromSession(ctx.session))) {
+        void deliverHumanRouted({
+          attrs: attrsFromSession(ctx.session),
+          tenant,
+          conversationId: conv,
+          text: "ищу, сам напишу как будет готово",
+        }).catch((err) => {
+          console.error("browser start notify failed", err);
+        });
+        if (tId) markTurnSpoke(tId, Date.now());
+      }
+      const done = await waitForRun(
+        opened.runId,
+        opened.sessionId,
+        BROWSER_WAIT_MS,
+      );
+      await persist(phone, done, task);
+      await followKick;
+      return settle(
+        phone,
+        done,
+        task,
+        {
+          started: true,
+          alreadyNotified: Boolean(conv),
+          ...profileExtra(resolved, startPage, {
+            vaultLogin: Boolean(vaultLogin),
+            need: parseCloudOutcome(done.result).needs,
+          }),
+          ...(opened.pageUrl ? { pageUrl: opened.pageUrl } : {}),
+          ...(opened.landed !== undefined ? { landed: opened.landed } : {}),
+          ...(payOpts
+            ? { paying: true, payAccount: payOpts.account, payHosts: payOpts.hosts }
+            : {}),
+        },
+        { startedAt, runId: opened.runId },
+        { browserPaying: Boolean(payOpts), browserPayHosts: payOpts?.hosts },
+      );
+    } catch (err) {
+      // A run that was actually opened must not be left with nothing on the
+      // row pointing at it: without a runId nobody — not a `reset`, not the
+      // follow-through, not the next turn's cleanup — can cancel the browser
+      // this person is being charged for. Best effort, and the original
+      // failure is still what the model sees.
+      if (openedRun) {
+        await persist(phone, openedRun, task, { browserStartedAt: Date.now() }).catch(
+          (persistErr: unknown) => {
+            console.error("orphan run persist failed", persistErr);
+          },
+        );
+      }
+      throw err;
+    } finally {
+      if (!claimSpanDone) await dropStartClaim();
+    }
   },
 });

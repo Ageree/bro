@@ -12,6 +12,8 @@ import { createMemoryLock } from "../node_modules/eve/dist/src/shared/memory-sta
 import {
   ARCHIVE_HIT_CHARS,
   ARCHIVE_RECALL_TIMEOUT_MS,
+  RECALL_BUDGET_DEFAULT_MS,
+  recallBudgetMs,
   ARCHIVE_TOOL_TIMEOUT_MS,
   CONVERSATION_RECALL_TIMEOUT_MS,
   archiveHitsFromSearch,
@@ -216,7 +218,30 @@ assert.equal(
   "plain reminder skips archive",
 );
 
-assert.equal(ARCHIVE_RECALL_TIMEOUT_MS, 900, "instinct recall budget is 0.9s — it gates the first token");
+// 900 ms was the old budget and production missed it on every single turn —
+// both halves logged `TimeoutError`, so Bro ran with no memory at all. The
+// budget now defaults to 2s and is tunable without a deploy.
+assert.equal(
+  ARCHIVE_RECALL_TIMEOUT_MS,
+  RECALL_BUDGET_DEFAULT_MS,
+  "instinct recall budget follows the shared default",
+);
+assert.equal(RECALL_BUDGET_DEFAULT_MS, 2_000, "recall budget default is 2s");
+assert.equal(
+  recallBudgetMs({ BRO_RECALL_BUDGET_MS: "3500" }),
+  3_500,
+  "BRO_RECALL_BUDGET_MS tunes the recall budget",
+);
+assert.equal(
+  recallBudgetMs({ BRO_RECALL_BUDGET_MS: "nope" }),
+  RECALL_BUDGET_DEFAULT_MS,
+  "a junk budget falls back to the default",
+);
+assert.equal(
+  recallBudgetMs({ BRO_RECALL_BUDGET_MS: "0" }),
+  RECALL_BUDGET_DEFAULT_MS,
+  "a zero budget falls back to the default rather than disabling recall",
+);
 assert.equal(CONVERSATION_RECALL_TIMEOUT_MS, ARCHIVE_RECALL_TIMEOUT_MS, "conversation recall shares the instinct budget");
 assert.equal(ARCHIVE_TOOL_TIMEOUT_MS, 30_000, "archive tools keep 30s");
 assert.ok(
