@@ -20,7 +20,6 @@ export type WipeCounts = {
   memories: number;
   wakeups: number;
   watchers: number;
-  groupChats: number;
   loginChallenges: number;
 };
 
@@ -38,7 +37,6 @@ export const emptyWipeCounts = (): WipeCounts => ({
   memories: 0,
   wakeups: 0,
   watchers: 0,
-  groupChats: 0,
   loginChallenges: 0,
 });
 
@@ -162,25 +160,6 @@ async function countWatchers(
   return rows.length;
 }
 
-async function countGroupChats(
-  ctx: QueryCtx | MutationCtx,
-  phone: string,
-  handle: string,
-): Promise<number> {
-  const byOwner = await ctx.db
-    .query("groupChats")
-    .withIndex("by_owner", (q) => q.eq("ownerPhoneE164", phone))
-    .take(PAGE * 4);
-  const byHandle = await ctx.db
-    .query("groupChats")
-    .withIndex("by_handle", (q) => q.eq("inkboxHandle", handle))
-    .take(PAGE * 4);
-  const ids = new Set<string>();
-  for (const row of byOwner) ids.add(row._id);
-  for (const row of byHandle) ids.add(row._id);
-  return ids.size;
-}
-
 async function countChallenges(
   ctx: QueryCtx | MutationCtx,
   handle: string,
@@ -208,7 +187,6 @@ export async function previewTenantWipe(
   counts.memories = await countMemories(ctx, phone);
   counts.wakeups = await countWakeups(ctx, phone);
   counts.watchers = await countWatchers(ctx, phone);
-  counts.groupChats = await countGroupChats(ctx, phone, handle);
   counts.loginChallenges = await countChallenges(ctx, handle);
   return {
     tenantId: tenant._id,
@@ -308,30 +286,6 @@ async function deleteWatchers(ctx: MutationCtx, phone: string): Promise<number> 
   return n;
 }
 
-async function deleteGroupChats(
-  ctx: MutationCtx,
-  phone: string,
-  handle: string,
-): Promise<number> {
-  const ids = new Set<Id<"groupChats">>();
-  const byOwner = await ctx.db
-    .query("groupChats")
-    .withIndex("by_owner", (q) => q.eq("ownerPhoneE164", phone))
-    .take(PAGE * 4);
-  const byHandle = await ctx.db
-    .query("groupChats")
-    .withIndex("by_handle", (q) => q.eq("inkboxHandle", handle))
-    .take(PAGE * 4);
-  for (const row of byOwner) ids.add(row._id);
-  for (const row of byHandle) ids.add(row._id);
-  let n = 0;
-  for (const id of ids) {
-    await ctx.db.delete(id);
-    n++;
-  }
-  return n;
-}
-
 async function deleteChallenges(ctx: MutationCtx, handle: string): Promise<number> {
   let n = 0;
   for (;;) {
@@ -365,7 +319,6 @@ export async function deleteTenantWipeTargets(
   counts.memories = await deleteMemories(ctx, phone);
   counts.wakeups = await deleteWakeups(ctx, phone);
   counts.watchers = await deleteWatchers(ctx, phone);
-  counts.groupChats = await deleteGroupChats(ctx, phone, handle);
   counts.loginChallenges = await deleteChallenges(ctx, handle);
   await ctx.db.delete(tenant._id);
   counts.tenant = 1;

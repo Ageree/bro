@@ -309,40 +309,7 @@ export async function bindInbound(
   return { ok: true, tenant: result.tenant, firstBind };
 }
 
-export type BindGroupResult =
-  | {
-      ok: true;
-      ownerPhoneE164: string;
-      inkboxHandle: string;
-      firstGroup: boolean;
-    }
-  | { ok: false; reason: string };
-
-export async function bindGroupInbound(args: {
-  conversationId: string;
-  senderPhone: string;
-  participants: string[];
-  handle?: string;
-  ownerPhone?: string;
-}): Promise<BindGroupResult> {
-  const result = await m(api.groupChats.bindInbound)(args);
-  if (!result.ok) return result;
-  return {
-    ok: true,
-    ownerPhoneE164: result.ownerPhoneE164,
-    inkboxHandle: result.inkboxHandle,
-    firstGroup: result.firstGroup,
-  };
-}
-
-export const getGroupByConversation = (conversationId: string) =>
-  q(api.groupChats.getByConversation)({ conversationId });
-
 export async function replyTenant(conversationId: string) {
-  const group = await getGroupByConversation(conversationId).catch(() => null);
-  if (group?.ownerPhoneE164) {
-    return await getTenant(group.ownerPhoneE164).catch(() => null);
-  }
   return await getTenantByConversation(conversationId).catch(() => null);
 }
 

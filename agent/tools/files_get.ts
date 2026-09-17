@@ -5,7 +5,7 @@ import { fileFailure, previewStoredFile } from "../lib/files.ts";
 
 export default defineTool({
   description:
-    "Read one of this person's saved files by id or name. Small text is returned inline; larger or binary files get metadata (and a url when needed). Group chats cannot use files.",
+    "Read one of this person's saved files by id or name. Small text is returned inline; larger or binary files get metadata (and a url when needed).",
   inputSchema: z.object({
     fileId: z.string().min(1).max(64).optional(),
     name: z.string().min(1).max(200).optional(),

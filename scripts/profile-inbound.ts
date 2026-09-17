@@ -48,7 +48,6 @@ const TOOL_FILES = [
   "otp_lookup.ts",
   "schedule_wakeup.ts",
   "watch_app.ts",
-  "group_chat.ts",
   "imessage_react.ts",
   "telegram_react.ts",
   "send_photo.ts",

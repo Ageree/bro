@@ -56,8 +56,6 @@ Browser errands are the slowest and least deterministic thing to test by hand, s
 
 Onboard: landing «Получить своего бро» asks for the iPhone number, creates a Photon shared user, and opens Messages to the assigned +1. Blue iMessage only. iPhone Settings → Messages → Send as SMS = off. Do not text `connect @handle`.
 
-iMessage groups are paused on Photon Pro. `group_chat` explains that Bro is 1:1 until Business. Check: `npm run group:check`.
-
 Inkbox identities are mail-only (`imessage_enabled: false`). `BRO_DEDICATED_LINE` does not claim a chat line. Check: `npm run dedicated:check`. Photon env: `SPECTRUM_PROJECT_ID`, `SPECTRUM_PROJECT_SECRET`, `SPECTRUM_WEBHOOK_SECRET`. Check: `npm run photon:check`.
 
 Memory is three eve slots, all keyed by the person's E.164. `memo` (always on) is curated facts in the Convex `memories` table: recalled every turn, maintained by the model via `memo__remember` / `memo__search` / `memo__forget`, deduped and capped at 400 lines per person. `recall` mounts only when `SUPERMEMORY_API_KEY` is set: [Supermemory](https://supermemory.ai) then captures completed turns automatically, recalls relevant context before each turn, and adds `recall__search` and friends — no extra setup. Without the key both Supermemory slots are disabled and nothing breaks. Check: `npm run memory:check`.

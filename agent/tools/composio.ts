@@ -2,7 +2,7 @@ import { defineDynamic, defineTool } from "eve/tools";
 import type { ToolContext } from "eve/tools";
 import { isConnectDest, wrapConnectUrl } from "../lib/connect-link";
 import { sessionFor } from "../lib/composio";
-import { attr, groupPersonalBlock } from "../lib/group-guard";
+import { attr } from "../lib/group-guard";
 import { tenantId } from "../lib/tenant";
 import { sandboxNetworkViolation } from "../lib/sandbox-policy";
 import { getTenant } from "../lib/convex";
@@ -99,8 +99,6 @@ async function runComposio(
   input: unknown,
   ctx: ToolContext,
 ): Promise<unknown> {
-  const blocked = groupPersonalBlock(ctx);
-  if (blocked) return blocked;
   const session = await sessionFor(tenantId(ctx));
   const result = await session.execute(slug, rec(input));
   const undelivered = await sendConnectIfAny(ctx, result);

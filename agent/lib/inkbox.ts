@@ -118,25 +118,6 @@ export async function sendBlueIMessage(opts: {
   return sent;
 }
 
-/** Dedicated-line group create. `to` is 2–8 E.164 numbers. */
-export async function sendBlueIMessageGroup(opts: {
-  to: string[];
-  text: string;
-  handle?: string;
-}): Promise<IMessage> {
-  const identity = await inkboxIdentity(opts.handle);
-  const sent = await identity.sendIMessage({
-    to: opts.to,
-    text: opts.text,
-  });
-  if (!isBlueIMessage(sent)) {
-    throw new Error(
-      `refusing SMS/RCS fallback (service=${sent.service} downgraded=${sent.wasDowngraded})`,
-    );
-  }
-  return sent;
-}
-
 export async function uploadIMessagePhoto(opts: {
   content: Uint8Array;
   filename: string;

@@ -282,7 +282,6 @@ assert(
 assert(channel.includes("/webhooks/photon"), "channel has Photon inbound");
 assert(channel.includes("bindPhotonInbound"), "channel binds Photon DM");
 assert(channel.includes("photonNudgeText"), "old Inkbox thread gets one nudge");
-assert(!channel.includes("bindGroupInbound"), "Photon Pro does not bind groups");
 assert(
   channel.includes("shouldSkipAgentTurn") && channel.includes("from("),
   "help/connect skip agent turn",

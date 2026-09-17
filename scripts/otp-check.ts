@@ -381,7 +381,6 @@ assert(skill.includes("не цитируй") || skill.includes("цифры не 
 
 const broMail = src("agent/tools/bro_mail.ts");
 assert(broMail.includes('"inbox"'), "bro_mail lists inbox");
-assert(broMail.includes("groupPersonalBlock"), "inbox stays 1:1");
 
 const otpTool = src("agent/tools/otp_lookup.ts");
 assert(otpTool.includes("otpLookupExecute"), "lookup tool wires the shared execute");
@@ -389,7 +388,6 @@ assert(otpTool.includes("otpLookupExecute"), "lookup tool wires the shared execu
 // defined in lib/otp-lookup.ts.
 const otpLookupLib = src("agent/lib/otp-lookup.ts");
 assert(otpLookupLib.includes("findFreshOtp"), "lookup is deterministic");
-assert(otpLookupLib.includes("groupPersonalBlock"), "lookup stays 1:1");
 
 const otpAgent = src("agent/subagents/otp/agent.ts");
 assert(otpAgent.includes("outputSchema"), "otp returns structured result");
@@ -405,18 +403,6 @@ assert(otpAgent.includes("...broModel()"), "otp spreads the static broModel() co
 const otpInstr = src("agent/subagents/otp/instructions.md");
 assert(otpInstr.includes("Don't touch memory tools"), "otp is a subagent");
 assert(otpInstr.includes("lookup"), "otp calls lookup first");
-assert(
-  /1:1/.test(otpInstr),
-  "otp instructions say it only serves 1:1 turns now that group-hiding moved to the tools",
-);
-
-for (const file of ["inbox.ts", "archive_search.ts", "lookup.ts"]) {
-  const toolSrc = src(`agent/subagents/otp/tools/${file}`);
-  assert(
-    toolSrc.includes("groupPersonalBlock"),
-    `otp tool ${file} must refuse on a group turn via groupPersonalBlock (subagent is static now, so each tool is the group gate)`,
-  );
-}
 
 const worker = src("agent/subagents/worker/instructions.md");
 assert(worker.includes("mailbox") || worker.includes("archive"), "worker knows coordinator checks mail");

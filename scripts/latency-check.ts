@@ -26,7 +26,6 @@ const kept = [
   "imessage_react.ts",
   "telegram_react.ts",
   "send_photo.ts",
-  "group_chat.ts",
 ];
 for (const file of kept) {
   assert(

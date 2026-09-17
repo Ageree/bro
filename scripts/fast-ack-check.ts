@@ -114,7 +114,7 @@ for (const beat of [
   const instructions = src("agent/instructions.md");
   const section = instructions.slice(
     instructions.indexOf("### Строка «взялся»"),
-    instructions.indexOf("## Groups"),
+    instructions.indexOf("## Memory"),
   );
   const quoted = [...section.matchAll(/«([^»]+)»/g)]
     .map((m) => m[1]!)

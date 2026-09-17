@@ -23,7 +23,7 @@ import {
   type BrowserRun,
 } from "../lib/browseruse";
 import { setBrowser, startBrowserFollow, upsertTenant } from "../lib/convex";
-import { conversationId, groupPersonalBlock } from "../lib/group-guard";
+import { conversationId } from "../lib/group-guard";
 import { chatConversationId, tenantId } from "../lib/tenant";
 import { attrsFromSession, channelFromAuth } from "../lib/deliver-routed";
 import { deliverHuman } from "../lib/deliver-human";
@@ -116,8 +116,6 @@ export default defineTool({
     errand: z.string().min(1).max(4000).optional(),
   }),
   async execute({ url, site, errand }, ctx) {
-    const blocked = groupPersonalBlock(ctx);
-    if (blocked) return { status: "group", hint: blocked };
     const page = loginPageUrl(url);
     if (!page) {
       return {

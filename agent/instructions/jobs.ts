@@ -1,5 +1,5 @@
 import { defineDynamic, defineInstructions } from "eve/instructions";
-import { isGroupTurn, turnAttributes } from "../lib/group-guard";
+import { turnAttributes } from "../lib/group-guard";
 import { jobWakeRows, markNudged } from "../lib/convex";
 import {
   dueJobNudges,
@@ -25,13 +25,6 @@ import {
 export default defineDynamic({
   events: {
     async "turn.started"(_event, ctx) {
-      if (isGroupTurn(ctx)) {
-        return defineInstructions({
-          role: "system",
-          content:
-            "Group turn. Do not inject or mention this person's private open jobs.",
-        });
-      }
       try {
         const phone = tenantId(ctx);
         const attrs = turnAttributes(ctx);

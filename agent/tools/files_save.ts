@@ -5,7 +5,7 @@ import { fileFailure, saveTextFile, uploadFileBytes } from "../lib/files.ts";
 
 export default defineTool({
   description:
-    "Save a file for this person. Text via content (max 256KB). Binary via base64 (max 8MB). Same name replaces the previous file. Group chats cannot use files.",
+    "Save a file for this person. Text via content (max 256KB). Binary via base64 (max 8MB). Same name replaces the previous file.",
   inputSchema: z.object({
     name: z.string().min(1).max(200),
     content: z.string().max(262_144).optional(),

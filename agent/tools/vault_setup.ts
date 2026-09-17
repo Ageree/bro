@@ -3,7 +3,6 @@ import {
   createVaultSetupUrl,
   vaultSetupRequestSchema,
 } from "../../convex/lib/vaultPayload.ts";
-import { groupPersonalBlock } from "../lib/group-guard";
 
 function cabinetBase(): string {
   const raw =
@@ -21,8 +20,6 @@ export default defineTool({
     "Cabinet link so they add or edit a payment, address, contact, or site login on brobro.tech. Kind login: they type the password on the site, never in chat. To sign in now, call profile_setup — it reads the vault itself. Never ask for a site password. Never put a card number, CVV, or site password in the arguments.",
   inputSchema: vaultSetupRequestSchema,
   async execute(request, ctx) {
-    const blocked = groupPersonalBlock(ctx);
-    if (blocked) return { error: blocked };
     const url = createVaultSetupUrl(cabinetBase(), request);
     return {
       url,

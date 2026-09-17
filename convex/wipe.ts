@@ -22,7 +22,6 @@ const wipeCounts = v.object({
   memories: v.number(),
   wakeups: v.number(),
   watchers: v.number(),
-  groupChats: v.number(),
   loginChallenges: v.number(),
 });
 

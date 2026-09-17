@@ -78,7 +78,7 @@ import { orderRowFromRun } from "../../convex/lib/orderRecordPolicy.ts";
 import { markTurnSpoke, turnSpoke } from "../lib/early-deliver.ts";
 import { fastAckOf } from "../lib/fast-ack.ts";
 import { attrsFromSession, deliverHumanRouted } from "../lib/deliver-routed";
-import { conversationId, groupPersonalBlock, turnAttributes } from "../lib/group-guard";
+import { conversationId, turnAttributes } from "../lib/group-guard";
 import { chatConversationId, tenantId } from "../lib/tenant";
 import { browserGateFromResult } from "../../convex/lib/billingPolicy";
 import {
@@ -750,8 +750,6 @@ export default defineTool({
       .optional(),
   }),
   async execute({ task, reset, pay }, ctx) {
-    const blocked = groupPersonalBlock(ctx);
-    if (blocked) return { status: "group", hint: blocked };
     if (looksLikePasswordDump(task)) {
       return {
         status: "invalid",

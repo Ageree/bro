@@ -1,7 +1,6 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { openJob, upsertTenant } from "../lib/convex";
-import { groupPersonalBlock } from "../lib/group-guard";
 import { tenantId } from "../lib/tenant";
 
 export default defineTool({
@@ -12,8 +11,6 @@ export default defineTool({
     doneWhen: z.string().min(1).max(280),
   }),
   async execute({ goal, doneWhen }, ctx) {
-    const blocked = groupPersonalBlock(ctx);
-    if (blocked) return { error: blocked };
     const phone = tenantId(ctx);
     await upsertTenant(phone);
     return openJob(phone, goal, doneWhen);
