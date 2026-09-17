@@ -116,3 +116,34 @@ fi
 
 echo "eve deploy -> $PROJECT"
 CI=1 npx eve deploy --non-interactive --project "$PROJECT" ${TEAM:+--team "$TEAM"} -y
+
+# Post-deploy smoke check: the Connect Link wrapper must point at a host that
+# actually serves `GET /l`.
+#
+# This is the 404 incident. `publicOrigin()` used to read BRO_PUBLIC_URL, which
+# in production is the brand domain (brobro.tech) — a different Vercel project,
+# the landing site, with no `/l` route. Every Connect Link Bro sent was
+# delivered, well-formed and valid, and answered 404 NOT_FOUND. Nothing in the
+# unit checks could see it: they all run in-process, and the route lives on a
+# deployment. Only an HTTP request to the real host can tell you.
+#
+# `publicOrigin()` now derives the origin from the agent's own production URL,
+# so hitting that URL here is checking the same host the wrapper will build.
+if [ "$SKIP_ENV_CHECK" != "1" ] && command -v curl >/dev/null 2>&1; then
+  PROBE_DEST="https%3A%2F%2Fconnect.composio.dev%2Flink%2Flk_deploycheck"
+  PROBE_ORIGIN="https://${PROJECT}.vercel.app"
+  echo "checking $PROBE_ORIGIN/l"
+  PROBE_CODE="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "$PROBE_ORIGIN/l?to=$PROBE_DEST" || echo 000)"
+  if [ "$PROBE_CODE" = "200" ]; then
+    echo "connect-link route ok ($PROBE_ORIGIN/l)"
+  elif [ "$PROBE_CODE" = "000" ]; then
+    # A network hiccup says nothing about the deploy; never fail on it.
+    echo "note: could not reach $PROBE_ORIGIN/l — connect-link route unverified" >&2
+  else
+    echo "connect-link route is dead: $PROBE_ORIGIN/l answered $PROBE_CODE" >&2
+    echo "every «подключи почту» link Bro sends points here, so a non-200 means the human gets a 404 instead of an authorization page" >&2
+    exit 1
+  fi
+  echo "note: if BRO_LINK_ORIGIN is set on $PROJECT, it overrides the host above —" >&2
+  echo "      that domain must proxy /l to this agent, or links 404 again" >&2
+fi

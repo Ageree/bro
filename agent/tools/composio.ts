@@ -66,13 +66,25 @@ async function sendConnectIfAny(
   }
 
   for (const url of dests) {
+    const wrapped = wrapConnectUrl(url);
     try {
       await deliverHuman({
         tenant,
         conversationId: conv,
         channel,
         text: "открой и подтверди доступ",
-        buttons: [[{ text: "Подключить", url: wrapConnectUrl(url) }]],
+        buttons: [[{ text: "Подключить", url: wrapped }]],
+      });
+      // Log the SUCCESS path too, not just the failures. When the 404 incident
+      // was investigated the logs could not answer the first question asked of
+      // them — "did the card go out at all?" — because a delivered card left
+      // no trace and only a failure wrote a line. The host is the useful field:
+      // it is what was wrong (the brand domain instead of the agent's own), and
+      // it is safe to log, unlike the link itself, which is a bearer credential
+      // for someone's mailbox.
+      console.log("composio connect card sent", {
+        channel,
+        host: new URL(wrapped).host,
       });
     } catch (err) {
       console.error("composio connect link send failed", err);

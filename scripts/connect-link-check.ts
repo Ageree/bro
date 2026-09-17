@@ -1,6 +1,7 @@
 import {
   isConnectDest,
   stripConnectUrls,
+  publicOrigin,
   wrapConnectUrl,
 } from "../agent/lib/connect-link.ts";
 import { compileTelegram } from "../agent/lib/telegram-text.ts";
@@ -29,12 +30,54 @@ assert(
 assert(!isConnectDest("https://connect.composio.dev/"), "bare host authorizes nothing");
 assert(!isConnectDest("http://connect.composio.dev/link/lk_abc"), "https only");
 
+delete process.env.BRO_LINK_ORIGIN;
+delete process.env.VERCEL_PROJECT_PRODUCTION_URL;
+delete process.env.VERCEL_URL;
 process.env.BRO_PUBLIC_URL = "https://bro-agent.vercel.app";
 assert(
   wrapConnectUrl(good) ===
     "https://bro-agent.vercel.app/l?to=" + encodeURIComponent(good),
   "wrap",
 );
+
+// --- the second assertion that was missing ---
+// The wrapper must point at the host that actually serves `GET /l`, i.e. this
+// agent's own deployment. It used to read BRO_PUBLIC_URL first, and in
+// production that is the BRAND domain (brobro.tech) — a different Vercel
+// project, the landing site, with no such route. Every Connect Link was
+// delivered, well-formed and validated, and answered 404 NOT_FOUND. Reported,
+// reasonably, as "composio is broken".
+{
+  process.env.BRO_PUBLIC_URL = "https://brobro.tech";
+  process.env.VERCEL_PROJECT_PRODUCTION_URL = "bro-agent.vercel.app";
+  assert(
+    publicOrigin() === "https://bro-agent.vercel.app",
+    "the brand domain never decides where /l is: the agent's own origin does",
+  );
+  assert(
+    !wrapConnectUrl(good).includes("brobro.tech"),
+    "and no wrapped link can point at a project that does not serve the route",
+  );
+  process.env.BRO_LINK_ORIGIN = "https://links.example";
+  assert(
+    publicOrigin() === "https://links.example",
+    "BRO_LINK_ORIGIN is the explicit override for a domain that does proxy /l",
+  );
+  assert(
+    publicOrigin() === "https://links.example" &&
+      wrapConnectUrl(good).startsWith("https://links.example/l?to="),
+    "and the override reaches the wrapper",
+  );
+  delete process.env.BRO_LINK_ORIGIN;
+  process.env.VERCEL_PROJECT_PRODUCTION_URL = "https://bro-agent.vercel.app/";
+  assert(
+    publicOrigin() === "https://bro-agent.vercel.app",
+    "a scheme-carrying, slash-trailing origin is normalised, not doubled",
+  );
+  delete process.env.BRO_PUBLIC_URL;
+  delete process.env.VERCEL_PROJECT_PRODUCTION_URL;
+}
+process.env.VERCEL_PROJECT_PRODUCTION_URL = "bro-agent.vercel.app";
 
 assert(
   stripConnectUrls("Открой [Gmail](https://connect.composio.dev/link/lk_x) сейчас") ===
@@ -58,15 +101,14 @@ assert(
   stripConnectUrls(`открой и подтверди доступ\n${wrapped}`).includes(wrapped),
   "wrapper survives inside a message",
 );
-// The same, for whatever host `publicOrigin()` resolves to on this deploy —
-// BRO_PUBLIC_URL and VERCEL_PROJECT_PRODUCTION_URL both feed it.
-process.env.BRO_PUBLIC_URL = "https://bro.example";
+// The same, for whatever host `publicOrigin()` resolves to on this deploy.
+process.env.BRO_LINK_ORIGIN = "https://bro.example";
 const elsewhere = wrapConnectUrl(good);
 assert(
   stripConnectUrls(elsewhere).includes(elsewhere),
-  "wrapper survives on any public origin",
+  "wrapper survives on any link origin",
 );
-process.env.BRO_PUBLIC_URL = "https://bro-agent.vercel.app";
+delete process.env.BRO_LINK_ORIGIN;
 
 // The raw destination must still never survive in free text — that is the
 // whole point of the sanitiser and the reason the card exists.

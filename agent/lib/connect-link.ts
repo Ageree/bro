@@ -30,12 +30,37 @@ export function isConnectDest(url: string): boolean {
   }
 }
 
+function asOrigin(raw: string | undefined): string | undefined {
+  const v = raw?.trim();
+  if (!v) return undefined;
+  return v.startsWith("http") ? v.replace(/\/+$/, "") : `https://${v.replace(/\/+$/, "")}`;
+}
+
+/**
+ * The origin that actually serves `GET /l` — this agent's own deployment.
+ *
+ * It used to read `BRO_PUBLIC_URL` first, and that is the incident. In
+ * production `BRO_PUBLIC_URL` is the BRAND domain (brobro.tech), which is a
+ * different Vercel project: the landing site. `/l` is a route of the agent
+ * (`agent/channels/imessage.ts`), so every Connect Link Bro ever sent pointed
+ * at a host that has no such route and answered `404 NOT_FOUND` from Vercel.
+ * The link was delivered, it was well-formed, it validated — and it went
+ * nowhere. From the outside that is indistinguishable from "Composio is
+ * broken", which is exactly how it was reported.
+ *
+ * So this resolver deliberately does NOT consult `BRO_PUBLIC_URL`: a pretty
+ * domain is only usable here if it proxies `/l` to the agent, and nothing in
+ * this repo can verify that. `BRO_LINK_ORIGIN` is the explicit override for
+ * whoever sets that proxy up; otherwise we use the agent's own production URL,
+ * which is the one host guaranteed to carry the route we are linking to.
+ */
 export function publicOrigin(): string {
-  const raw = process.env.BRO_PUBLIC_URL?.trim();
-  if (raw) return raw.replace(/\/$/, "");
-  const host = process.env.VERCEL_PROJECT_PRODUCTION_URL?.trim();
-  if (host) return host.startsWith("http") ? host.replace(/\/$/, "") : `https://${host}`;
-  return "https://bro-agent.vercel.app";
+  return (
+    asOrigin(process.env.BRO_LINK_ORIGIN) ??
+    asOrigin(process.env.VERCEL_PROJECT_PRODUCTION_URL) ??
+    asOrigin(process.env.VERCEL_URL) ??
+    "https://bro-agent.vercel.app"
+  );
 }
 
 export function wrapConnectUrl(dest: string): string {
