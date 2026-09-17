@@ -27,6 +27,8 @@ type Attempt = {
   decisionMs: number;
   wallMs: number;
   setupMs?: number;
+  /** Renamed from `navResidualMs`; both are read so older artifacts still merge. */
+  toFirstBrowserActionMs?: number | null;
   navResidualMs?: number | null;
   modelRequests: number;
   jevRequests?: number;
@@ -119,6 +121,31 @@ async function main(): Promise<void> {
     );
   }
 
+  // Speed is only a comparison where both arms can attempt the work at all.
+  // Averaging a task one arm cannot start into a latency figure would report
+  // its capability gap a second time, dressed up as slowness.
+  const attemptable = NAV_TASKS.filter((t) =>
+    groups.every((g) => attempts.some((a) => keyOf(a) === g && a.task === t.id && a.ok)),
+  ).map((t) => t.id);
+  const blocked = NAV_TASKS.filter((t) => !attemptable.includes(t.id)).map((t) => t.id);
+
+  if (attemptable.length && blocked.length) {
+    console.log(`\n## Speed on common ground\n`);
+    console.log(`Only the ${attemptable.length} task(s) every arm solved at least once: ${attemptable.join(", ")}.`);
+    console.log(`Excluded, because at least one arm never solved them: ${blocked.join(", ")}.`);
+    console.log(`Mixing those in would charge an arm twice for the same gap — once as a`);
+    console.log(`failure, once as a latency it never actually spent.\n`);
+    console.log(`| arm | solved | median decision time | median model requests |`);
+    console.log(`|---|---|---|---|`);
+    for (const g of groups) {
+      const mine = attempts.filter((a) => keyOf(a) === g && attemptable.includes(a.task));
+      console.log(
+        `| \`${g}\` | ${mine.filter((a) => a.ok).length}/${mine.length} | ` +
+          `${secs(median(mine.map((a) => a.decisionMs)))} | ${median(mine.map((a) => a.modelRequests))} |`,
+      );
+    }
+  }
+
   console.log(`\n## Not comparable — total wall clock\n`);
   console.log(`The arms run on different infrastructure: the Cloud arm provisions a remote`);
   console.log(`browser behind a proxy and cold-starts a worker, the Jev arm attaches to a`);
@@ -135,14 +162,16 @@ async function main(): Promise<void> {
   }
 
   const resid = attempts
-    .map((a) => a.navResidualMs)
+    .map((a) => a.toFirstBrowserActionMs ?? a.navResidualMs)
     .filter((n): n is number => typeof n === "number" && n > 0);
   if (resid.length) {
     console.log(
-      `\nResidual inside the Cloud arm's clock: median ${secs(median(resid))} spent opening the start URL.`,
+      `\nTime to the Cloud arm's first browser action: median ${secs(median(resid))}, inside its clock.`,
     );
-    console.log(`The Jev agent is constructed on the page, so that time is outside its clock.`);
-    console.log(`The asymmetry therefore flatters Jev; it is not the source of its lead.`);
+    console.log(`Read it as a ceiling on the start-page asymmetry, not as the navigation's cost:`);
+    console.log(`most of that interval is the agent loading its browser skill and reasoning for a`);
+    console.log(`turn or two, which is real work. The Jev agent is already on the page when its`);
+    console.log(`clock starts. The asymmetry flatters Jev; it is not the source of its lead.`);
   }
 
   const failures = attempts.filter((a) => !a.ok);

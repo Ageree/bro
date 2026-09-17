@@ -206,8 +206,14 @@ const withNav = decisionWindow([
   ev(4000, "core.event", { part: { type: "tool", tool: "browser_execute", state: { time: { end: 1_700_000_005_900 } } } }),
   ev(9000, "llm.response"),
 ] as any);
-assert(withNav.navResidualMs === 2700, `first-navigation residual measured (${withNav.navResidualMs}ms)`);
-assert(decisionWindow(stream as any).navResidualMs === null, "no browser tool call -> no residual claimed");
+assert(
+  withNav.toFirstBrowserActionMs === 2700,
+  `time to first browser action measured (${withNav.toFirstBrowserActionMs}ms)`,
+);
+assert(
+  decisionWindow(stream as any).toFirstBrowserActionMs === null,
+  "no browser tool call -> nothing claimed rather than zero",
+);
 
 console.log("\nmodel allowlist");
 assert(!V4_MODELS.has("jev") && !V4_MODELS.has("jev-latest"), "Jev is not a Browser Use Cloud model");

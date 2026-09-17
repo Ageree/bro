@@ -20,13 +20,19 @@
  *   Cloud: first `llm.request` event -> last `llm.response` event.
  *   Jev:   `state["elapsed_ms"]`, which the agent starts on its first predict.
  *
- * One residual is not removable and is therefore measured and printed:
+ * One asymmetry is not removable and is therefore measured and printed.
  * `RunCreateRequest` has no field for an already-open page (only `sessionId`,
  * which drags the previous run's conversation history along), so the Cloud
  * agent navigates to the start URL *inside* its own clock, while the Jev agent
- * is constructed on the page and starts timing after that. `navResidualMs`
- * reports how much of Cloud's measured time went on that first navigation.
- * The bias runs against Cloud, so it cannot manufacture a Jev win.
+ * is constructed on the page and starts timing after that.
+ *
+ * `toFirstBrowserActionMs` bounds that from above: first `llm.request` until
+ * the first browser tool call returns. Read it as a ceiling, not as the cost
+ * of the navigation — most of the interval is the agent loading its browser
+ * skill and reasoning for a turn or two, which is real agent work and belongs
+ * in the clock. The navigation-only part is a fraction of it and is not
+ * separately observable in the event stream. Either way the bias runs against
+ * Cloud, so it cannot manufacture a Jev win.
  *
  * Model requests are counted separately from time: one number is the bill, the
  * other is the wait, and Jev's whole claim is about the shape of the first.
@@ -131,7 +137,7 @@ export function decisionWindow(events: readonly Ev[]): {
   decisionMs: number;
   setupMs: number;
   modelRequests: number;
-  navResidualMs: number | null;
+  toFirstBrowserActionMs: number | null;
   firstRequestAt: number | null;
 } {
   const created = events.find((e) => e.type === "run.created");
@@ -140,16 +146,17 @@ export function decisionWindow(events: readonly Ev[]): {
   const first = requests[0] ? ms(requests[0].ts) : null;
   const last = responses.length ? ms(responses[responses.length - 1].ts) : null;
 
-  // How much of Cloud's measured time was spent opening the start URL — the
-  // one boundary difference between the arms that the API cannot remove.
-  let navResidualMs: number | null = null;
+  // Upper bound on the boundary difference between the arms: how long after
+  // its first prediction the agent first finished touching the browser. Most
+  // of this is start-up reasoning and skill loading, not the navigation.
+  let toFirstBrowserActionMs: number | null = null;
   if (first !== null) {
     for (const e of events) {
       const part = e.data?.part;
       if (part?.type !== "tool" || part?.tool !== "browser_execute") continue;
       const end = Number(part?.state?.time?.end);
       if (Number.isFinite(end) && end >= first) {
-        navResidualMs = end - first;
+        toFirstBrowserActionMs = end - first;
         break;
       }
     }
@@ -159,7 +166,7 @@ export function decisionWindow(events: readonly Ev[]): {
     decisionMs: first !== null && last !== null && last > first ? last - first : 0,
     setupMs: created && first !== null ? first - ms(created.ts) : 0,
     modelRequests: requests.length,
-    navResidualMs,
+    toFirstBrowserActionMs,
     firstRequestAt: first,
   };
 }
@@ -187,7 +194,7 @@ export type Attempt = {
   decisionMs: number;
   wallMs: number;
   setupMs: number;
-  navResidualMs: number | null;
+  toFirstBrowserActionMs: number | null;
   modelRequests: number;
   inputTokens: number;
   outputTokens: number;
@@ -201,7 +208,7 @@ export type Attempt = {
 async function runOne(model: string, task: NavTask, maxCostUsd: number, timeoutMs: number): Promise<Attempt> {
   const base: Attempt = {
     arm: "cloud", model, task: task.id, status: "error", ok: false, got: null,
-    decisionMs: 0, wallMs: 0, setupMs: 0, navResidualMs: null, modelRequests: 0,
+    decisionMs: 0, wallMs: 0, setupMs: 0, toFirstBrowserActionMs: null, modelRequests: 0,
     inputTokens: 0, outputTokens: 0, costUsd: 0, browserCostUsd: 0, result: "",
   };
   const started = Date.now();
@@ -237,6 +244,18 @@ async function runOne(model: string, task: NavTask, maxCostUsd: number, timeoutM
       verdict = await verifyOnCdp(browser.cdpUrl, task)
         .catch((e) => ({ ok: false, got: `verify failed: ${String((e as Error).message).slice(0, 160)}` }));
     }
+    // A finished run does NOT stop its cloud browser, and an abandoned one
+    // bills until the 4-hour cap — the same trap `stopBrowserForSession` in
+    // agent/lib/browseruse.ts exists for. Left unstopped, a 21-run sweep costs
+    // more in idle browsers than in the models it was measuring: this suite's
+    // first pass billed $0.13 of model time and left $1.68 of browsers alive.
+    // Stop it now that the page has been read back.
+    if (browser?.id) {
+      await api(`/browsers/${browser.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ action: "stop" }),
+      }).catch(() => {});
+    }
 
     return {
       ...base,
@@ -245,7 +264,7 @@ async function runOne(model: string, task: NavTask, maxCostUsd: number, timeoutM
       got: verdict.got,
       decisionMs: win.decisionMs,
       setupMs: win.setupMs,
-      navResidualMs: win.navResidualMs,
+      toFirstBrowserActionMs: win.toFirstBrowserActionMs,
       modelRequests: win.modelRequests,
       wallMs: Date.now() - started,
       inputTokens: Number(summary?.totalInputTokens ?? 0),
@@ -491,12 +510,13 @@ async function main(): Promise<void> {
   }
 
   const setup = attempts.map((a) => a.setupMs).filter((n) => n > 0);
-  const resid = attempts.map((a) => a.navResidualMs).filter((n): n is number => typeof n === "number" && n > 0);
+  const resid = attempts.map((a) => a.toFirstBrowserActionMs).filter((n): n is number => typeof n === "number" && n > 0);
   console.log(`\nExcluded infrastructure (queue, dispatch, browser boot, worker cold start):`);
   console.log(`  median ${(median(setup) / 1000).toFixed(1)}s per run — outside every decision-time number above.`);
   if (resid.length) {
-    console.log(`First-navigation residual still inside Cloud's clock: median ${(median(resid) / 1000).toFixed(1)}s.`);
-    console.log(`  Jev is constructed on the page, so this favours Jev. See the header comment.`);
+    console.log(`Time to first browser action, inside Cloud's clock: median ${(median(resid) / 1000).toFixed(1)}s.`);
+    console.log(`  A ceiling on the start-page asymmetry, not the navigation's cost: most of it is`);
+    console.log(`  the agent's own start-up reasoning. Jev starts timing already on the page.`);
   }
 
   const out = `bench-nav-cloud-${Date.now()}.json`;

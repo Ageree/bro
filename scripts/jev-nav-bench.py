@@ -132,6 +132,10 @@ def run_one(Agent, cdp, task: dict, action_budget: int) -> dict:
             actions=len(state.get("history") or []),
             inputTokens=sum(int((d.get("usage") or {}).get("input_tokens") or 0) for d in decisions),
             outputTokens=sum(int((d.get("usage") or {}).get("output_tokens") or 0) for d in decisions),
+            # Per-decision model latency, so the vendor's headline claim
+            # (a 178 ms median Jev request) can be checked against our own
+            # traffic rather than taken on faith.
+            jevLatenciesMs=[int(d.get("latency_ms") or 0) for d in decisions],
         )
         verdict = verify(cdp, agent.browser.target, task["check"])
         attempt["ok"] = bool(verdict.get("ok"))
@@ -141,6 +145,27 @@ def run_one(Agent, cdp, task: dict, action_budget: int) -> dict:
         attempt["wallMs"] = round((time.perf_counter() - started) * 1000)
         attempt["error"] = f"{type(exc).__name__}: {exc}"[:300]
         if agent is not None:
+            # Read the counters off the agent rather than leaving them at zero.
+            # `agent.run()` raising means the generator never yielded a final
+            # state, and a report showing "0 model requests" for a run that
+            # really made several would understate exactly the arm being
+            # measured.
+            try:
+                st = agent.state
+                decisions = st.get("decisions") or []
+                text_calls = st.get("text_calls") or []
+                attempt.update(
+                    status=str(st.get("status")),
+                    decisionMs=int(st.get("elapsed_ms") or 0),
+                    jevRequests=len(decisions),
+                    textCalls=len(text_calls),
+                    modelRequests=len(decisions) + len(text_calls),
+                    actions=len(st.get("history") or []),
+                    inputTokens=sum(int((d.get("usage") or {}).get("input_tokens") or 0) for d in decisions),
+                    outputTokens=sum(int((d.get("usage") or {}).get("output_tokens") or 0) for d in decisions),
+                )
+            except Exception:
+                pass
             try:
                 verdict = verify(cdp, agent.browser.target, task["check"])
                 attempt["ok"] = bool(verdict.get("ok"))
