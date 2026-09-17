@@ -10,6 +10,7 @@
  * model to an exact sentence tests the sampler, not the product.
  */
 import { welcomeBubbles } from "../../agent/lib/onboard-policy.ts";
+import { humanLineForNeed } from "../../convex/lib/browserOutcomePolicy.ts";
 
 export type Check =
   /** Some bubble contains this. */
@@ -107,6 +108,60 @@ export const SCENARIOS: Scenario[] = [
     ],
   },
 ];
+
+/**
+ * Browser errands, against `scripts/fake-browser-use.ts`.
+ *
+ * Skipped unless `BRO_E2E_FAKE_BROWSER` is set, which is the runner's way of
+ * being told that the deployment it is driving has `BROWSER_USE_BASE_URL`
+ * pointed at the fake. Run against the real Browser Use they would buy things
+ * and take minutes, so they are opt-in rather than on by default.
+ *
+ * The settle windows are long because the answer does not come back on the
+ * turn that started the errand: the run finishes later and the result reaches
+ * the human through follow-through polling and a wakeup. That gap is the
+ * whole point — it is where Bro has historically gone quiet — and the
+ * recorder catches it because the sink sits in the shared delivery funnel.
+ */
+const BROWSER_SCENARIOS: Scenario[] = [
+  {
+    name: "buy",
+    about:
+      "An errand that completes reaches the human with the order, without being asked again.",
+    needs: ["BRO_E2E_FAKE_BROWSER"],
+    turns: [
+      { text: "привет", expect: [{ says: LETTER }] },
+      {
+        text: "купи молоко на wildberries",
+        // The order number comes from the fake's labelled block, so this also
+        // proves the outcome survived parsing, the wakeup and the reply.
+        expect: [{ says: "4815162342" }],
+        settleMs: 30_000,
+      },
+    ],
+  },
+  {
+    name: "pay-3ds",
+    about:
+      "A run parked on the bank hands over a live-view link and never asks for a password in chat.",
+    needs: ["BRO_E2E_FAKE_BROWSER"],
+    turns: [
+      { text: "привет", expect: [{ says: LETTER }] },
+      {
+        text: "оплати заказ и подтверди в банке",
+        expect: [
+          { says: humanLineForNeed("3ds").split("—")[0]!.trim() },
+          { says: /https:\/\// },
+          // The standing rule: a password is never asked for in the thread.
+          { never: /парол/i },
+        ],
+        settleMs: 30_000,
+      },
+    ],
+  },
+];
+
+SCENARIOS.push(...BROWSER_SCENARIOS);
 
 export function scenarioByName(name: string): Scenario | undefined {
   return SCENARIOS.find((s) => s.name === name);

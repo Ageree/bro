@@ -25,7 +25,22 @@ import { scrubSecrets } from "../../convex/lib/secretScrub.ts";
 import { cdpNavigate } from "./browser-cdp.ts";
 import { loginScaffold, payScaffold, type SecretBinding } from "./browser-pay.ts";
 
-const BASE = "https://api.browser-use.com/api/v4";
+const DEFAULT_BASE = "https://api.browser-use.com/api/v4";
+
+/**
+ * Browser Use v4, or a stand-in.
+ *
+ * `BROWSER_USE_BASE_URL` exists so a staging deployment can point at
+ * `scripts/fake-browser-use.ts` and run shopping and login errands end to end
+ * without spending money or waiting on a real site. It is a base URL rather
+ * than a "pretend" flag on purpose: a flag that leaked into production would
+ * silently make Bro act as if it had bought things, while a wrong base URL is
+ * a visible, deliberate act that shows up in `convex env list` and in every
+ * log line. Unset, nothing changes.
+ */
+function base(): string {
+  return process.env.BROWSER_USE_BASE_URL?.trim().replace(/\/+$/, "") || DEFAULT_BASE;
+}
 
 /** Browser Use Cloud recommended V4 model. Flash kept dying mid-answer. */
 export const DEFAULT_BROWSER_MODEL = "gpt-5.6-luna";
@@ -79,7 +94,7 @@ async function bu(
   path: string,
   init: RequestInit = {},
 ): Promise<Record<string, unknown>> {
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await fetch(`${base()}${path}`, {
     ...init,
     headers: {
       "X-Browser-Use-API-Key": key(),

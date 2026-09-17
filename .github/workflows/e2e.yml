@@ -78,6 +78,10 @@ jobs:
           BRO_E2E_BASE: ${{ secrets.BRO_E2E_BASE }}
           BRO_INTERNAL_SECRET: ${{ secrets.BRO_INTERNAL_SECRET }}
           SPECTRUM_WEBHOOK_SECRET: ${{ secrets.SPECTRUM_WEBHOOK_SECRET }}
+          # Set this variable once the staging deployment's BROWSER_USE_BASE_URL
+          # points at scripts/fake-browser-use.ts; until then the browser
+          # scenarios skip instead of buying anything.
+          BRO_E2E_FAKE_BROWSER: ${{ vars.BRO_E2E_FAKE_BROWSER }}
         # `shell: bash` for pipefail — without it `tee` swallows the runner's
         # exit code and a failing suite reports green.
         shell: bash

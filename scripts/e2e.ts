@@ -58,8 +58,15 @@ function num(name: string, fallback: number): number {
 const base = (flag("base") ?? process.env.BRO_E2E_BASE ?? "").replace(/\/+$/, "");
 const internalSecret = process.env.BRO_INTERNAL_SECRET ?? "";
 const webhookSecret = process.env.SPECTRUM_WEBHOOK_SECRET ?? "";
-/** Quiet time after the last bubble before a turn counts as finished. */
+/**
+ * Quiet time after the last bubble before a turn counts as finished.
+ *
+ * A scenario can ask for longer (a browser errand answers minutes later,
+ * through a wakeup). Passing `--settle` explicitly overrides every scenario,
+ * which is what the harness's own self-test uses to keep itself fast.
+ */
 const settleMs = num("settle", 4000);
+const settleForced = flag("settle") !== undefined;
 /** Hard ceiling per turn — a cold start plus a tool call is the slow case. */
 const turnTimeoutMs = num("turn-timeout", 90_000);
 const jobs = Math.max(1, num("jobs", 3));
@@ -142,8 +149,16 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
  * note — and a harness that stopped at the first one would assert against half
  * a turn. The clock restarts on every new bubble.
  */
-async function collect(phone: string, alreadySeen: number): Promise<Bubble[]> {
-  const deadline = Date.now() + turnTimeoutMs;
+async function collect(
+  phone: string,
+  alreadySeen: number,
+  turnSettleMs: number,
+): Promise<Bubble[]> {
+  // A turn that waits 30s for quiet cannot have a 10s ceiling, so the budget
+  // always leaves room for at least one full settle window past the last
+  // bubble. Without this a browser scenario would time out mid-errand and
+  // report silence where the answer was simply still on its way.
+  const deadline = Date.now() + Math.max(turnTimeoutMs, turnSettleMs * 2);
   let rows = await transcript(phone);
   let lastChange = Date.now();
   while (Date.now() < deadline) {
@@ -155,7 +170,7 @@ async function collect(phone: string, alreadySeen: number): Promise<Bubble[]> {
       continue;
     }
     // Nothing new for a full settle window, and something has arrived: done.
-    if (rows.length > alreadySeen && Date.now() - lastChange >= settleMs) break;
+    if (rows.length > alreadySeen && Date.now() - lastChange >= turnSettleMs) break;
     // Nothing at all yet — keep waiting until the hard timeout, since silence
     // is itself a result some scenarios assert on.
     if (rows.length === alreadySeen && Date.now() - lastChange >= turnTimeoutMs) break;
@@ -224,7 +239,11 @@ async function runScenario(scenario: Scenario): Promise<ScenarioResult> {
     for (const turn of scenario.turns) {
       const turnStarted = Date.now();
       await sendInbound(phone, turn.text);
-      const bubbles = await collect(phone, seen);
+      const bubbles = await collect(
+        phone,
+        seen,
+        settleForced ? settleMs : (turn.settleMs ?? settleMs),
+      );
       seen += bubbles.length;
       const failures = turn.expect
         .map((check) => checkTurn(check, bubbles))

@@ -237,6 +237,26 @@ async function runner(base: string, args: string[], env?: Record<string, string>
   await bro.close();
 }
 
+// ------------------------------------------------------- opt-in scenarios
+
+{
+  // Browser scenarios need a deployment wired to the fake Browser Use service.
+  // Without that flag they must skip and keep the run green, not fail — a
+  // suite that goes red on an unconfigured optional feature gets ignored.
+  const bro = await fakeBro([[LETTER]]);
+  const { code, out } = await runner(bro.base, ["--only=buy"], {
+    BRO_E2E_FAKE_BROWSER: "",
+  });
+  eq(code, 0, `an unconfigured browser scenario does not fail the run:\n${out}`);
+  assert(out.includes("skip buy"), `it is reported as skipped:\n${out}`);
+  assert(
+    out.includes("BRO_E2E_FAKE_BROWSER"),
+    `and says what would turn it on:\n${out}`,
+  );
+  assert(out.includes("1 skipped"), `the summary counts it as skipped:\n${out}`);
+  await bro.close();
+}
+
 // ------------------------------------------------------------- isolation
 
 {
