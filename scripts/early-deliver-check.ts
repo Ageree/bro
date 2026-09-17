@@ -779,13 +779,19 @@ const wakeup = routingFromAuth({
 assert(wakeup.canDeliver === false, "wakeup still needs tenant lastChannel");
 assert(wakeup.channel === undefined, "wakeup does not guess iMessage from handle");
 
-const group = routingFromAuth({
-  origin: "human",
-  inkboxHandle: "+7999",
-  ownerPhone: "+7000",
-});
-assert(routingPhone(group, undefined) === "+7000", "group seen uses ownerPhone");
-assert(routingPhone(group, "+7111") === "+7111", "principal wins over owner");
+// Who a turn belongs to comes from the stamped principal and nowhere else.
+// The old `ownerPhone` attribute fallback was written only by the group-chat
+// auth builder, so with groups gone it could never fire again.
+const human = routingFromAuth({ origin: "human", inkboxHandle: "+7999" });
+assert(routingPhone(human, "+7111") === "+7111", "the stamped principal names the person");
+assert(
+  routingPhone(human, undefined) === undefined,
+  "no principal, no guess — a turn without a person is not routed to one",
+);
+assert(
+  routingPhone(routingFromAuth({ origin: "human", ownerPhone: "+7000" }), undefined) === undefined,
+  "a stray ownerPhone attribute must not resurrect the removed fallback",
+);
 assert(
   channelFromAuth({ origin: "human", channel: "telegram", telegramChatId: "1" }, "imessage") ===
     "telegram",

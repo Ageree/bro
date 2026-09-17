@@ -78,7 +78,7 @@ import { orderRowFromRun } from "../../convex/lib/orderRecordPolicy.ts";
 import { markTurnSpoke, turnSpoke } from "../lib/early-deliver.ts";
 import { fastAckOf } from "../lib/fast-ack.ts";
 import { attrsFromSession, deliverHumanRouted } from "../lib/deliver-routed";
-import { conversationId, turnAttributes } from "../lib/group-guard";
+import { conversationId, turnAttributes } from "../lib/turn-attrs";
 import { chatConversationId, tenantId } from "../lib/tenant";
 import { browserGateFromResult } from "../../convex/lib/billingPolicy";
 import {

@@ -1,5 +1,5 @@
 import { defineDynamic, defineInstructions } from "eve/instructions";
-import { turnAttributes } from "../lib/group-guard";
+import { turnAttributes } from "../lib/turn-attrs";
 import { jobWakeRows, markNudged } from "../lib/convex";
 import {
   dueJobNudges,

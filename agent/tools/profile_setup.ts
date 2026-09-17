@@ -23,7 +23,7 @@ import {
   type BrowserRun,
 } from "../lib/browseruse";
 import { setBrowser, startBrowserFollow, upsertTenant } from "../lib/convex";
-import { conversationId } from "../lib/group-guard";
+import { conversationId } from "../lib/turn-attrs";
 import { chatConversationId, tenantId } from "../lib/tenant";
 import { attrsFromSession, channelFromAuth } from "../lib/deliver-routed";
 import { deliverHuman } from "../lib/deliver-human";

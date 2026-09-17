@@ -2,7 +2,7 @@ import { defineDynamic, defineTool } from "eve/tools";
 import type { ToolContext } from "eve/tools";
 import { isConnectDest, wrapConnectUrl } from "../lib/connect-link";
 import { CALL_BUDGET_MS, sessionFor, withDeadline } from "../lib/composio";
-import { attr } from "../lib/group-guard";
+import { attr } from "../lib/turn-attrs";
 import { tenantId } from "../lib/tenant";
 import { sandboxNetworkViolation } from "../lib/sandbox-policy";
 import { getTenant } from "../lib/convex";
