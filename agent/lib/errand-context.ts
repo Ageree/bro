@@ -5,10 +5,10 @@
  * `contact` vault kinds at all — `browser_task.ts` filters the vault to
  * `kind === "payment"` and `vault-login.ts` picks `login`, so the two kinds
  * that hold the human's street, name, phone and email were only ever used by
- * the Kernel worker's autofill subagent. Curated memories, the tenant's
- * timezone and their display name never reached a run either. The result was
- * a run that aborted with «НУЖНО: address» for an address sitting in the
- * vault two function calls away.
+ * the Kernel worker's autofill subagent. The tenant's timezone and their
+ * display name never reached a run either. The result was a run that aborted
+ * with «НУЖНО: address» for an address sitting in the vault two function
+ * calls away.
  *
  * Everything here is NON-SECRET by construction: this loader parses the
  * `address` and `contact` payloads only. A `login` or `payment` payload is
@@ -27,21 +27,19 @@ import {
   parseAddressPayload,
   parseContactPayload,
 } from "../../convex/lib/vaultPayload.ts";
-import { getTenant, listVaultItems, readVaultSecret, wakeLines } from "./convex.ts";
-import { MEMORY_LINE_LIMIT, type ErrandAddress, type ErrandFacts } from "./errand-brief.ts";
+import { getTenant, listVaultItems, readVaultSecret } from "./convex.ts";
+import { type ErrandAddress, type ErrandFacts } from "./errand-brief.ts";
 
 export type ErrandContextDeps = {
   getTenant: typeof getTenant;
   listVaultItems: typeof listVaultItems;
   readVaultSecret: typeof readVaultSecret;
-  wakeLines: typeof wakeLines;
 };
 
 const defaultDeps: ErrandContextDeps = {
   getTenant,
   listVaultItems,
   readVaultSecret,
-  wakeLines,
 };
 
 /**
@@ -102,12 +100,20 @@ export async function loadErrandFacts(
   opts?: { now?: Date },
 ): Promise<ErrandFacts> {
   // One round trip each, in parallel: this sits directly in front of a Cloud
-  // run start, and three sequential Convex hops would be three hops of
-  // latency before the browser even opens.
-  const [tenant, items, memories] = await Promise.all([
+  // run start, and two sequential Convex hops would be two hops of latency
+  // before the browser even opens.
+  //
+  // The third read used to be the curated memo lines (≤6 of them, into
+  // «помню: …»). That store is gone and its replacement, Supermemory, is
+  // semantic search over a person's chat history — not a short list of vetted
+  // facts, and nothing an errand brief can paste in blind without turning a
+  // half-remembered sentence into an instruction the browser acts on. So the
+  // feed is dropped rather than repointed: the brief runs on what the vault
+  // actually holds — address, contact, timezone, today's date — which is what
+  // the «НУЖНО: address» incident was about in the first place.
+  const [tenant, items] = await Promise.all([
     safe("tenant", () => deps.getTenant(phone)),
     safe("vault list", () => deps.listVaultItems(phone)),
-    safe("memories", () => deps.wakeLines(phone)),
   ]);
 
   const facts: ErrandFacts = {};
@@ -127,7 +133,7 @@ export async function loadErrandFacts(
   const wanted = (items ?? []).filter(
     (item) => item.available && (item.kind === "address" || item.kind === "contact"),
   );
-  // In parallel, like the three reads above. `readVaultSecret` is an ACTION,
+  // In parallel, like the two reads above. `readVaultSecret` is an ACTION,
   // and each one costs several internal hops plus a decrypt — awaiting them
   // one at a time put ~0.5s of dead time in front of every errand start, on
   // top of the brief budget. Order still decides who wins a duplicate field,
@@ -153,12 +159,6 @@ export async function loadErrandFacts(
     if (!facts.phone && contact.phone) facts.phone = contact.phone;
     if (!facts.email && contact.email) facts.email = contact.email;
   }
-
-  const lines = (memories ?? [])
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .slice(0, MEMORY_LINE_LIMIT);
-  if (lines.length > 0) facts.memories = lines;
 
   return facts;
 }

@@ -149,7 +149,7 @@ assert(
 {
   const section = instructions.slice(
     instructions.indexOf("### Строка «взялся»"),
-    instructions.indexOf("## Groups"),
+    instructions.indexOf("## Memory"),
   );
   assert(section.length > 0, "the «взялся» section is still in the file");
   const quoted = [...section.matchAll(/«([^»]+)»/g)]

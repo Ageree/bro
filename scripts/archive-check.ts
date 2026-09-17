@@ -8,6 +8,10 @@ import {
   CONVERSATION_MEMORY_NAMESPACE,
   conversationScopeKey,
 } from "../agent/lib/eve-scope-key.ts";
+import {
+  loadInstinctRecall,
+  prefetchInstinctRecall,
+} from "../agent/lib/instinct-recall.ts";
 import { createMemoryLock } from "../node_modules/eve/dist/src/shared/memory-state.js";
 import {
   ARCHIVE_HIT_CHARS,
@@ -27,6 +31,27 @@ import {
   shouldRecallArchive,
   shouldRecallConversation,
 } from "../agent/lib/archive-policy.ts";
+
+/** `withEnv` for an async body: same save/restore, awaited. */
+async function withEnvAsync(
+  vars: Record<string, string | undefined>,
+  fn: () => Promise<void>,
+): Promise<void> {
+  const saved: Record<string, string | undefined> = {};
+  for (const k of Object.keys(vars)) saved[k] = process.env[k];
+  for (const [k, v] of Object.entries(vars)) {
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
+  try {
+    await fn();
+  } finally {
+    for (const k of Object.keys(saved)) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  }
+}
 
 assert.equal(archiveTag("+79991234567"), "bro_archive_79991234567");
 assert.equal(archiveTag("local-dev"), "bro_archive_local-dev");
@@ -307,7 +332,15 @@ assert.ok(instinctSrc.includes("Promise.allSettled"), "Instinct searches run tog
 assert.ok(instinctSrc.includes("ARCHIVE_RECALL_TIMEOUT_MS"), "Instinct pair keeps the shared recall budget");
 assert.ok(
   instinctSrc.includes("conversationScopeKey"),
-  "prefetch conversation search uses Eve MemoryScope.key",
+  "the conversation half addresses the Eve plugin container",
+);
+assert.ok(
+  !instinctSrc.includes("InstinctScopes"),
+  "one scope shape: two spellings of the same person is what split the cache",
+);
+assert.ok(
+  !src("agent/memory/recall.ts").includes("scope.key"),
+  "the recall slot passes the person, not its own lock key",
 );
 {
   const phone = "+79991234567";
@@ -333,5 +366,72 @@ assert.ok(
   archiveMemory.includes("ARCHIVE_TOOL_TIMEOUT_MS"),
   "archive__search keeps the tool timeout",
 );
+
+// ── One search pass per turn, shared by both slots ──────────────────────────
+// It used to be two: `loadInstinctRecall` always fired BOTH searches, was
+// called once from the recall slot (which keeps `.conversation`) and once from
+// the archive slot (which keeps `.archive`), and the two callers spelled the
+// person differently — eve's `scope.key` on one side, the mirrored digest on
+// the other. Different cache keys, so the in-flight map and the TTL cache
+// never matched and the turn paid for four Supermemory round trips in front of
+// its first model token, under a 2s budget. These assertions drive the real
+// module with a stubbed transport and count the requests.
+{
+  const real = globalThis.fetch;
+  const bodies: string[] = [];
+  globalThis.fetch = (async (_input: unknown, init?: RequestInit) => {
+    bodies.push(typeof init?.body === "string" ? init.body : "");
+    return new Response(JSON.stringify({ results: [] }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }) as typeof fetch;
+  try {
+    await withEnvAsync({ SUPERMEMORY_API_KEY: "sm_archive_check" }, async () => {
+      const phone = "+15550009001";
+      const query = "когда приём у стоматолога?";
+      // Both slots ask at once, exactly as eve dispatches them.
+      const [a, b] = await Promise.all([
+        loadInstinctRecall(phone, query),
+        loadInstinctRecall(phone, query),
+      ]);
+      assert.equal(bodies.length, 2, "one pass: one conversation search + one archive search");
+      assert.equal(
+        bodies.filter((body) => body.includes("eve_agent_memscope1_")).length,
+        1,
+        "exactly one conversation container search",
+      );
+      assert.equal(
+        bodies.filter((body) => body.includes(archiveTag(phone))).length,
+        1,
+        "exactly one archive container search",
+      );
+      assert.deepEqual(a, b, "both slots read the same result object");
+
+      // Inside the TTL the same person+query costs nothing at all.
+      await loadInstinctRecall(phone, query);
+      assert.equal(bodies.length, 2, "a repeat within the TTL adds no round trip");
+
+      // The webhook prefetch must warm THAT key, not a third spelling of it.
+      const warmPhone = "+15550009002";
+      const warmQuery = "закажи кроссовки 42 на озон";
+      prefetchInstinctRecall(warmPhone, warmQuery);
+      await new Promise((r) => setTimeout(r, 20));
+      assert.equal(bodies.length, 4, "the prefetch runs the pass once");
+      await loadInstinctRecall(warmPhone, warmQuery);
+      assert.equal(bodies.length, 4, "the turn reads the prefetched pass, not a new one");
+
+      // A gate that says no costs nothing: a browser poll wakeup recalls
+      // neither half, so it must not touch the network at all.
+      await loadInstinctRecall(
+        "+15550009003",
+        "[background wakeup] Проверь статус текущего браузер-джоба вызовом тула browser_task",
+      );
+      assert.equal(bodies.length, 4, "a fully gated-out turn makes no request");
+    });
+  } finally {
+    globalThis.fetch = real;
+  }
+}
 
 console.log("archive-check ok");

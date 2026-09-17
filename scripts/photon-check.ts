@@ -136,7 +136,6 @@ assert(channel.includes("/webhooks/photon"), "photon route");
 assert(channel.includes("/internal/photon-send"), "cabinet OTP route");
 assert(channel.includes("sendPhotonText"), "outbound Photon");
 assert(channel.includes("photonNudgeText"), "Inkbox nudge");
-assert(!channel.includes("bindGroupInbound"), "no group bind on Pro");
 assert(
   !channel.includes("allowlisted(inbound.senderPhone)"),
   "Photon DMs are not gated by ALLOWED_SENDERS",

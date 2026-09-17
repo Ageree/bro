@@ -1,6 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
 import { timingSafeEqual } from "../convex/secret.ts";
-import { WAKE_LINES } from "../convex/lib/memoryPolicy.ts";
 import {
   BROWSER_JOB_DONE,
   BROWSER_JOB_FAILED,
@@ -18,7 +17,6 @@ import {
   loginStartDecision,
   loginVerifyDecision,
   MAX_VERIFY_ATTEMPTS,
-  memoriesForSnapshot,
   newLoginCode,
   newSessionToken,
   paymentApplyDecision,
@@ -169,7 +167,6 @@ assert(snap.paidUntil === now + 1000, "paidUntil shown");
 assert(snap.payments.length === 1, "own payments");
 assert(snap.browserProfileStatus === "missing", "default profile missing");
 assert(snap.browserCookieDomains.length === 0, "default no domains");
-assert(Array.isArray(snap.memories) && snap.memories.length === 0, "default memories empty");
 assert(snap.tz === undefined, "default tz omitted");
 assert(
   snap.browserJob.status === "" && snap.browserJob.label === BROWSER_JOB_IDLE,
@@ -205,7 +202,6 @@ const free = buildSnapshot({
 });
 assert(free.plan === "free" && free.paidUntil === undefined, "free hides until");
 assert(!free.phoneBound && free.phoneLast4 === undefined, "unbound phone");
-assert(free.memories.length === 0, "unbound memories empty");
 
 assert(storedHandle("bro-a1b2c3d4") === "bro-a1b2c3d4", "stored handle ok");
 assert(storedHandle("  bro-a1b2c3d4  ") === "bro-a1b2c3d4", "stored handle trim");
@@ -213,28 +209,7 @@ assert(storedHandle(null) === null, "stored handle missing");
 assert(storedHandle("Bro-a1b2c3d4") === null, "stored handle case");
 assert(storedHandle("please-type-me") === null, "typed handle is not the path");
 
-assert(memoriesForSnapshot(["n2", "n1"], WAKE_LINES).join(",") === "n1,n2", "memories oldest first newest last");
-assert(memoriesForSnapshot([], WAKE_LINES).length === 0, "memories empty");
-const newestFirst = Array.from({ length: WAKE_LINES + 5 }, (_, i) => `n${i}`);
-const capped = memoriesForSnapshot(newestFirst, WAKE_LINES);
-assert(capped.length === WAKE_LINES, "memories cap WAKE_LINES");
-assert(capped[0] === `n${WAKE_LINES - 1}`, "cap keeps newest window, oldest of those first");
-assert(capped[capped.length - 1] === "n0", "newest last");
-
-const withMemos = buildSnapshot({
-  handle: "bro-a1b2c3d4",
-  phoneE164: "+79001112233",
-  paid: false,
-  msgsUsed: 0,
-  msgsAllowance: 30,
-  msgsDayKey: "2026-08-28",
-  browserUsed: 0,
-  browserAllowance: 5,
-  browserMonthKey: "2026-08",
-  payments: [],
-  memories: ["old fact", "new fact"],
-});
-assert(withMemos.memories.join("|") === "old fact|new fact", "snapshot keeps memory order");
+assert(!("memories" in snap), "snapshot carries no memory list");
 
 const withTz = buildSnapshot({
   handle: "bro-a1b2c3d4",
@@ -463,9 +438,14 @@ assert(cabinet.includes("broIMessageLink"), "write-bro uses the static iMessage 
 assert(!/fetch\(base \+ "\/access"/.test(cabinet), "write-bro does not POST /access");
 assert(!cabinet.includes("need_phone"), "write-bro does not ask for a phone");
 assert(cabinet.includes("Открой на iPhone"), "write-bro desktop hint");
-assert(cabinet.includes("Память"), "cabinet memory card");
-assert(cabinet.includes("Забыть"), "cabinet forget button");
-assert(cabinet.includes("/me/memories/forget"), "forget posts to cabinet route");
+// The «Память» card went with the Convex memo store. Memory is Supermemory
+// now and the cabinet has no read path to it, so a card that always said
+// "Пока пусто." over a Забыть button that forgot nothing would be a lie in the
+// UI. The section, the route and the snapshot field were removed together.
+assert(!cabinet.includes("<h2>Память</h2>"), "cabinet has no memory card");
+assert(!cabinet.includes("Забыть"), "cabinet has no forget button");
+assert(!cabinet.includes("/me/memories/forget"), "cabinet posts to no dead route");
+assert(!cabinet.includes("memoCard"), "cabinet has no memo renderer");
 assert(!cabinet.includes('id="now"'), "cabinet has no now card");
 assert(!cabinet.includes("<h2>Сейчас</h2>"), "cabinet has no now title");
 assert(!cabinet.includes("nowCard"), "cabinet has no nowCard");
@@ -550,14 +530,10 @@ const httpSrc = src("convex/http.ts");
 assert(httpSrc.includes("normalizePhotonE164"), "login start normalizes the phone");
 assert(httpSrc.includes("body.phone"), "login start accepts phone");
 assert(httpSrc.includes("digitsLoginCode"), "login verify accepts a spaced code");
-assert(httpSrc.includes("/me/memories/forget"), "http forget route");
+assert(!httpSrc.includes("/me/memories/forget"), "the memory forget route is gone");
 assert(
-  httpSrc.includes("forgetMemoriesForTenant"),
-  "http forget uses cabinet session mutation",
-);
-assert(
-  !httpSrc.includes("internal.memories.forget"),
-  "http forget does not call secret memories.forget",
+  !src("convex/cabinet.ts").includes("forgetMemoriesForTenant"),
+  "no cabinet mutation left behind a removed route",
 );
 assert(!httpSrc.includes("/me/chatgpt/start"), "http has no chatgpt start route");
 assert(!httpSrc.includes("/me/chatgpt/disconnect"), "http has no chatgpt disconnect route");

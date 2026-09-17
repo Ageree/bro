@@ -449,8 +449,8 @@ export type StartRunOpts = {
    *  `scaffoldTask`. Never combined with `startPage`. */
   continuation?: boolean;
   /** Tenant phone. Present → this run carries the human's own non-secret
-   *  facts (vault address/contact, curated memories, their timezone and
-   *  today's date in it, their display name). Absent → nothing is looked up
+   *  facts (vault address/contact, their timezone and today's date in it,
+   *  their display name). Absent → nothing is looked up
    *  and the task is the static scaffold, exactly as before. */
   phone?: string;
   /** The human's ORIGINAL wording. `task` is whatever the coordinator model

@@ -1,6 +1,10 @@
 import { splitSeen } from "./wakeup-text.ts";
-import type { TurnOrigin } from "./silent-turn.ts";
-import { isSilentReply, TURN_FAILED_REPLY } from "./silent-turn.ts";
+import type { TurnOrigin, TurnSpoke } from "./silent-turn.ts";
+import {
+  isSilentReply,
+  TURN_FAILED_REPLY,
+  TURN_STALLED_REPLY,
+} from "./silent-turn.ts";
 import { foldWs, isHeadingOnly } from "./bubble-dedupe.ts";
 import { parkTurn } from "./channel-turn.ts";
 
@@ -25,7 +29,14 @@ export function visibleReply(text: string | null | undefined): string | null {
   return trimmed;
 }
 
-export type EarlySentRow = { at: number; bubbles: string[]; soFar?: string };
+export type EarlySentRow = {
+  at: number;
+  bubbles: string[];
+  soFar?: string;
+  /** How many bubbles had already gone out when the turn last called a tool
+   *  (see `markPreTool`). Everything up to that mark is a status line. */
+  preTool?: number;
+};
 
 function foldLines(s: string): string {
   return s.replace(/[ \t]+\n/g, "\n").replace(/[ \t]+$/g, "").trim();
@@ -56,7 +67,7 @@ function hasPrefixBoundary(cur: string, prefix: string): boolean {
   return /[\s.!?…。！？,;:)\]]/.test(next);
 }
 
-export function finishedVisibleText(soFar: string): string | null {
+function finishedVisibleText(soFar: string): string | null {
   const raw = typeof soFar === "string" ? soFar : "";
   const { message } = raw ? splitSeen(raw) : { message: raw };
   let src = message;
@@ -72,11 +83,6 @@ export function finishedVisibleText(soFar: string): string | null {
     if (line && visibleReply(line)) lines.push(line);
   }
   return lines.length > 0 ? lines.join("\n") : null;
-}
-
-export function firstCompleteLine(soFar: string): string | null {
-  const text = finishedVisibleText(soFar);
-  return text?.split("\n")[0]?.trim() || null;
 }
 
 const COMPLETE_TAILS = new Set([
@@ -179,7 +185,7 @@ export function isLikelyCompleteBubble(text: string): boolean {
   return lastWord.length >= 4;
 }
 
-export function firstLikelyCompletePrefix(text: string): string | null {
+function firstLikelyCompletePrefix(text: string): string | null {
   const t = text.trim();
   if (!t) return null;
   if (isLikelyCompleteBubble(t)) return t;
@@ -221,15 +227,15 @@ function visibleLines(text: string): string[] {
     .filter(Boolean);
 }
 
-export function isBulletLine(text: string): boolean {
+function isBulletLine(text: string): boolean {
   return /^[-*•]\s/.test(text.trim());
 }
 
-export function isNumberedLine(text: string): boolean {
+function isNumberedLine(text: string): boolean {
   return /^\d+\.\s/.test(text.trim());
 }
 
-export function isListLine(text: string): boolean {
+function isListLine(text: string): boolean {
   return isBulletLine(text) || isNumberedLine(text);
 }
 
@@ -245,19 +251,15 @@ function isThinLine(text: string): boolean {
   const t = text.trim();
   if (!t) return true;
   if (/^(?:com|ru|org|net|io|dev)\b/i.test(t) && t.length < 80) return true;
+  const listLead = isListLine(t) || t.startsWith("•");
   const body = t.replace(/^(?:[-*•]|\d+\.)\s+/u, "");
   if (!/\p{L}|\p{N}/u.test(body)) {
-    if (isListLine(t) || t.startsWith("•")) return true;
+    if (listLead) return true;
     return !/^[\p{Extended_Pictographic}\p{Emoji_Presentation}\s]+$/u.test(body);
   }
-  if (isHangingListLead(t)) return true;
-  return false;
-}
-
-export function isHangingListLead(text: string): boolean {
-  const t = text.trim();
-  if (!isListLine(t) && !t.startsWith("•")) return false;
-  const body = t.replace(/^(?:[-*•]|\d+\.)\s+/u, "");
+  // «• 🚄» and «• 🏨 Жильё» stream as a bullet whose text has not arrived yet:
+  // an emoji and at most one word is the lead of an item, not an item.
+  if (!listLead) return false;
   const words = body
     .replace(/[\p{Extended_Pictographic}\p{Emoji_Presentation}]/gu, " ")
     .split(/\s+/)
@@ -269,18 +271,15 @@ export function isHangingListLead(text: string): boolean {
   );
 }
 
-export function isStatusBeat(text: string): boolean {
-  const t = text.trim();
-  if (!t || t.includes("\n")) return false;
-  if (isListLine(t) || isThinFragment(t) || isHeadingOnly(t)) return false;
+/** One short, self-contained thought — «ищу 🔎», «нашёл три варианта». A
+ *  paragraph torn mid-sentence is not, and neither is a heading whose list
+ *  has not streamed yet («Два варианта:»). */
+function isShortBeat(line: string): boolean {
+  const t = line.trim();
+  if (!t || isHeadingOnly(t)) return false;
   const words = t.split(/\s+/).filter(Boolean);
-  if (isLookingBubble(t) && words.length <= 10) return true;
-  const firstFolded = foldTail(words[0] ?? "");
-  if (ACK_TAILS.has(firstFolded) && words.length <= 3) return true;
-  if (isLikelyCompleteBubble(t) && t.length <= 140 && words.length <= 18) {
-    return true;
-  }
-  return words.length <= 6 && t.length <= 64;
+  if (words.length <= 6 && t.length <= 64) return true;
+  return isLikelyCompleteBubble(t) && t.length <= 140 && words.length <= 18;
 }
 
 function messageOf(soFar: string): string {
@@ -298,7 +297,7 @@ function afterLastLine(soFar: string, remainder: string): string {
   return src.slice(idx + last.length);
 }
 
-export function paragraphClosedAfter(soFar: string, remainder: string): boolean {
+function paragraphClosedAfter(soFar: string, remainder: string): boolean {
   return /^\s*\n\s*\n/.test(afterLastLine(soFar, remainder));
 }
 
@@ -307,9 +306,7 @@ function followingStartsNewNumbered(soFar: string, remainder: string): boolean {
 }
 
 function lastListItemComplete(line: string): boolean {
-  if (isThinFragment(line) || isHangingListLead(line) || isIncompleteDraft(line)) {
-    return false;
-  }
+  if (isIncompleteDraft(line)) return false;
   const body = line.replace(/^(?:[-*•]|\d+\.)\s+/u, "").trim();
   if (body.split(/\s+/).filter(Boolean).length >= 8) return true;
   return isLikelyCompleteBubble(body) || /[.!?…。！？)]$/.test(body);
@@ -319,16 +316,14 @@ const LIST_FLUSH_MIN_ITEMS = 3;
 const LIST_FLUSH_MIN_CHARS = 280;
 
 function isMeatyCompleteList(text: string): boolean {
-  const lines = visibleLines(text).filter(
-    (l) => !isThinFragment(l) && !isHangingListLead(l),
-  );
+  const lines = visibleLines(text).filter((l) => !isThinFragment(l));
   if (lines.length < LIST_FLUSH_MIN_ITEMS) return false;
   if (text.trim().length < LIST_FLUSH_MIN_CHARS) return false;
   return lastListItemComplete(visibleLines(text).at(-1) ?? "");
 }
 
 /** Stream may send this remainder now — status beats yes, torn list crumbs no. */
-export function isStreamFlushWorthy(
+function isStreamFlushWorthy(
   remainder: string | null,
   soFar: string,
 ): boolean {
@@ -339,7 +334,7 @@ export function isStreamFlushWorthy(
   }
   const lines = visibleLines(t);
   const last = lines[lines.length - 1] ?? "";
-  if (isThinFragment(last) || isHangingListLead(last)) return false;
+  if (isThinFragment(last)) return false;
 
   const hasBullet = lines.some(isBulletLine);
   const numberedBlock =
@@ -355,19 +350,19 @@ export function isStreamFlushWorthy(
     return t.length >= 80 && followingStartsNewNumbered(soFar, t);
   }
 
-  if (lines.length === 1) {
-    return isStatusBeat(t) || t.length >= 24 || isLikelyCompleteBubble(t);
-  }
+  // A single line that got this far is neither a crumb, a heading nor a torn
+  // draft — the model finished a thought, so it goes out now.
+  if (lines.length === 1) return true;
 
   if (paragraphClosedAfter(soFar, t)) return true;
-  return lines.every((line) => isStatusBeat(line));
+  return lines.every(isShortBeat);
 }
 
-export function likelyCompleteVisibleText(soFar: string): string | null {
+function likelyCompleteVisibleText(soFar: string): string | null {
   const finished = finishedVisibleText(soFar);
   const open = openVisibleLine(soFar);
   const peeled =
-    open && !isListLine(open) && !isHangingListLead(open)
+    open && !isListLine(open) && !open.startsWith("•")
       ? firstLikelyCompletePrefix(open)
       : null;
   if (peeled) {
@@ -475,49 +470,31 @@ export function nextBubble(
   const last = sent[sent.length - 1];
   if (last && last.startsWith(cur)) return null;
   if (last && foldWs(last).endsWith(foldWs(cur))) return null;
+  // The model usually re-emits everything it already sent as one prefix —
+  // joined by a blank line, a newline or a space (the invitro transcript:
+  // two flushed lines come back as one paragraph plus the new text).
   const curFold = foldLines(cur);
-  const curWs = foldWs(cur);
-  const prefixes = [
-    sent.join("\n\n"),
-    sent.join("\n"),
-    sent.join(" "),
-    last ?? "",
-  ];
+  const prefixes = [sent.join("\n\n"), sent.join("\n"), sent.join(" ")];
   for (const joined of prefixes) {
     const rest = restAfterPrefix(curFold, foldLines(joined));
     if (rest !== undefined) return rest === null ? null : dropSpamFragment(rest);
   }
-  const sentWs = foldWs(sent.join(" "));
-  const restWs = restAfterPrefix(curWs, sentWs);
-  if (restWs !== undefined) return restWs === null ? null : dropSpamFragment(restWs);
+  // Otherwise peel them off the front one by one, which also absorbs a
+  // rewritten separator or punctuation («Привет!» → «Привет. Как дела?»).
   const sequential = peelSentInOrder(cur, sent);
   if (sequential !== undefined) {
     return sequential === null ? null : dropSpamFragment(sequential);
   }
-  if (last) {
-    const bare = foldLines(stripFinalPunct(last));
-    if (bare && curFold.startsWith(bare) && curFold.length > bare.length) {
-      const next = curFold[bare.length] ?? "";
-      if (/[.!?…。！？]/.test(next)) {
-        return dropSpamFragment(
-          curFold
-            .slice(bare.length)
-            .replace(/^[\s.!?…。！？,;:]+/u, "")
-            .trim() || null,
-        );
-      }
-    }
-    const restated = peelRestatement(last, cur);
-    if (restated !== undefined) return dropSpamFragment(restated);
-  }
+  // Last resort, newest bubble first: the model rewrote a bubble instead of
+  // continuing it («…но вложить картинку в чат не получается» for the same
+  // screenshot line). Send only what it added, or nothing if it added nothing.
   for (let i = sent.length - 1; i >= 0; i -= 1) {
     const bubble = sent[i];
-    if (!bubble || bubble === last) continue;
+    if (!bubble) continue;
     const restated = peelRestatement(bubble, cur);
     if (restated !== undefined) return dropSpamFragment(restated);
     if (isNearDuplicate(bubble, cur)) return null;
   }
-  if (last && isNearDuplicate(last, cur)) return null;
   return cur;
 }
 
@@ -582,18 +559,18 @@ export function planTurnDelivery(input: {
   message: string | null | undefined;
   origin: TurnOrigin | undefined;
   alreadySent: readonly string[];
-  /** Real delivered bubbles only (excludes a fast-ack line stamped for dedupe
-   *  purposes in `alreadySent`) — a human turn that only got a fast-ack line
-   *  still deserves the TURN_FAILED_REPLY fallback if the model ends empty.
-   *  Defaults to `alreadySent` when omitted. */
-  realSent?: readonly string[];
+  /** What the turn really said to the human (see `spokeSoFar`), which is not
+   *  what `alreadySent` holds: that one also carries a fast-ack line stamped
+   *  for dedupe, and it cannot tell a «взялся» line from an answer. Only an
+   *  answer silences the fallback; a status line followed by nothing is
+   *  exactly the silence this guarantee exists for. Empty means «said
+   *  nothing yet», so an unwired caller errs towards speaking. */
+  spoke?: TurnSpoke;
 }): TurnDelivery {
   const raw = typeof input.message === "string" ? input.message : "";
   const { message, seen } = raw ? splitSeen(raw) : { message: raw };
   const visible = visibleReply(message);
-  const spoke = (input.realSent ?? input.alreadySent).some(
-    (s) => s.trim().length > 0,
-  );
+  const spoke = input.spoke ?? {};
 
   if (input.finishReason === "tool-calls") {
     const text = flushable(visible);
@@ -609,8 +586,10 @@ export function planTurnDelivery(input: {
       send: null,
       ...(seen !== undefined ? { seen } : {}),
       fallback:
-        input.origin === "human" && !spoke && !isSilentReply(message)
-          ? TURN_FAILED_REPLY
+        input.origin === "human" && !spoke.result && !isSilentReply(message)
+          ? spoke.status
+            ? TURN_STALLED_REPLY
+            : TURN_FAILED_REPLY
           : null,
     };
   }
@@ -645,7 +624,6 @@ export function recordSent(
   row.bubbles = [...row.bubbles, bubble];
   sent.set(turnId, row);
   markTurnSpoke(turnId, now);
-  if (isLookingBubble(bubble)) markTurnLooking(turnId, now);
   return row.bubbles;
 }
 
@@ -668,6 +646,35 @@ export function bubblesFor(
   turnId: string,
 ): readonly string[] {
   return sent.get(turnId)?.bubbles ?? [];
+}
+
+/** The turn is about to call a tool: everything it has said up to here was a
+ *  «взялся» line, not an answer — the turn itself said so by going on to work.
+ *  Called on every tool boundary, so only bubbles after the LAST tool call
+ *  count as the answer. */
+export function markPreTool(
+  sent: Map<string, EarlySentRow>,
+  turnId: string,
+  now: number,
+  ttlMs = 10 * 60_000,
+): void {
+  pruneSent(sent, now, ttlMs);
+  const row = sent.get(turnId) ?? { at: now, bubbles: [] };
+  row.at = now;
+  row.preTool = row.bubbles.filter((b) => b.trim().length > 0).length;
+  sent.set(turnId, row);
+}
+
+/** What this turn has actually said to the human so far. */
+export function spokeSoFar(
+  sent: Map<string, EarlySentRow>,
+  turnId: string,
+): TurnSpoke {
+  const row = sent.get(turnId);
+  if (!row) return {};
+  const said = row.bubbles.filter((b) => b.trim().length > 0).length;
+  const preTool = Math.min(row.preTool ?? 0, said);
+  return { status: preTool > 0, result: said > preTool };
 }
 
 export function soFarFor(
@@ -703,25 +710,5 @@ export function markTurnSpoke(
 export function turnSpoke(turnId: string | undefined, now = Date.now()): boolean {
   if (!turnId) return false;
   const at = spokeTurns.get(turnId);
-  return at !== undefined && now - at <= 10 * 60_000;
-}
-
-export function isLookingBubble(text: string): boolean {
-  return /ищу|looking/i.test(text);
-}
-
-const lookingTurns = new Map<string, number>();
-
-export function markTurnLooking(
-  turnId: string,
-  now: number,
-  ttlMs = 10 * 60_000,
-): void {
-  markTurnAfterExpiry(lookingTurns, turnId, now, ttlMs);
-}
-
-export function turnLooking(turnId: string | undefined, now = Date.now()): boolean {
-  if (!turnId) return false;
-  const at = lookingTurns.get(turnId);
   return at !== undefined && now - at <= 10 * 60_000;
 }

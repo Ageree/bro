@@ -32,6 +32,18 @@ export type Turn = {
    * longer before "nothing more is coming" is true.
    */
   settleMs?: number;
+  /**
+   * Wipe the eve session before sending this turn, keeping everything else.
+   *
+   * Without it a scenario cannot tell memory apart from conversation history.
+   * The old `memory` scenario said a fact and asked for it back three turns
+   * later, and passed — but it passed on the session transcript, which carries
+   * every word of the conversation anyway. Proven by running the same three
+   * turns with memory switched off entirely: still green. With the session
+   * cleared, Bro answers «не помню, чтобы ты называл — в памяти пусто», which
+   * is the honest answer and the one a real memory test has to be able to see.
+   */
+  clearSession?: true;
 };
 
 export type Scenario = {
@@ -87,24 +99,66 @@ export const SCENARIOS: Scenario[] = [
   {
     name: "telegram-invite",
     about: "«телеграм» hands over a t.me bind link rather than explaining what Telegram is.",
+    // Without a bot username there is no link to mint, and `sendTelegramInvite`
+    // correctly answers «Telegram у Bro ещё не включён». That is right behaviour
+    // for an unconfigured deployment, so it must skip rather than go red — a
+    // failure that only means "this deployment has no Telegram" teaches the
+    // reader to ignore red. Like `BRO_E2E_FAKE_BROWSER`, the variable is read
+    // on the RUNNER and is the operator asserting what the deployment carries;
+    // the runner cannot see the eve process's own env.
+    needs: ["TELEGRAM_BOT_USERNAME"],
     turns: [
       { text: "привет", expect: [{ says: LETTER }] },
       { text: "телеграм", expect: [{ says: /t\.me\// }] },
     ],
   },
   {
-    name: "memory",
+    name: "context",
     about:
-      "A fact told in one turn survives into the next one. This exercises the memo " +
-      "slot end to end — the tool call, the Convex write, and the recall before the next turn.",
+      "A fact told in one turn is still there in the next one. This is conversation " +
+      "history, not memory — it holds even with memory switched off, which is exactly " +
+      "why it cannot stand in for the `memory` scenario below.",
     turns: [
       { text: "привет", expect: [{ says: LETTER }] },
       {
         text: "запомни: мой размер обуви 43, пункт выдачи на Ленина 5",
         expect: [{ replies: true }],
-        settleMs: 6000,
+        settleMs: 12_000,
       },
-      { text: "какой у меня размер обуви?", expect: [{ says: /43/ }], settleMs: 6000 },
+      {
+        text: "какой у меня размер обуви?",
+        expect: [{ says: /43/ }],
+        // 6 s was sized for the old memo store, one fast Convex read. Recall
+        // now goes to Supermemory under a 2 s budget and gates the first
+        // token, so a turn that answers perfectly well was being recorded as
+        // silence by the harness rather than by Bro.
+        settleMs: 12_000,
+      },
+    ],
+  },
+  {
+    name: "memory",
+    about:
+      "A fact survives the conversation it was told in. The session is wiped between " +
+      "the telling and the asking, so history cannot answer and only the memory slot " +
+      "can — which is the whole point: the previous version of this scenario passed " +
+      "with memory turned off, so a broken memory subsystem would have shipped green.",
+    // Supermemory is the only memory Bro has, so an instance without the key
+    // genuinely cannot pass this. Skipping says that; failing would not.
+    needs: ["SUPERMEMORY_API_KEY"],
+    turns: [
+      { text: "привет", expect: [{ says: LETTER }] },
+      {
+        text: "запомни: мой размер обуви 43, пункт выдачи на Ленина 5",
+        expect: [{ replies: true }],
+        settleMs: 12_000,
+      },
+      {
+        text: "какой у меня размер обуви?",
+        clearSession: true,
+        expect: [{ says: /43/ }],
+        settleMs: 15_000,
+      },
     ],
   },
 ];

@@ -2,7 +2,6 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { searchArchive } from "../../../lib/archive.ts";
 import { formatArchiveRecall } from "../../../lib/archive-policy.ts";
-import { groupPersonalBlock } from "../../../lib/group-guard";
 import {
   candidatesFromMail,
   formatOtpLookup,
@@ -19,8 +18,6 @@ export default defineTool({
     hint: z.string().min(1).max(120).optional(),
   }),
   async execute({ query, hint }, ctx) {
-    const blocked = groupPersonalBlock(ctx);
-    if (blocked) return { error: blocked };
     if (!process.env.SUPERMEMORY_API_KEY?.trim()) {
       return { hits: "архив недоступен", otp: formatOtpLookup({ status: "missing" }) };
     }

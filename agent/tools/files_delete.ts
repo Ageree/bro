@@ -5,7 +5,7 @@ import { deleteStoredFile, fileFailure } from "../lib/files.ts";
 
 export default defineTool({
   description:
-    "Delete one of this person's saved files by id or name. Group chats cannot use files.",
+    "Delete one of this person's saved files by id or name.",
   inputSchema: z.object({
     fileId: z.string().min(1).max(64).optional(),
     name: z.string().min(1).max(200).optional(),

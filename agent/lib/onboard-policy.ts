@@ -130,7 +130,6 @@ export function cabinetLoginUrl(base: string, handle?: string): string {
 }
 
 export type WelcomeOpts = {
-  canJoinGroups?: boolean;
   handle?: string;
   cabinetBase?: string;
 };
@@ -139,7 +138,6 @@ export type WelcomeOpts = {
  *  «что ты» / «help» / «помощь» — never again for a plain «привет».
  *  «Бро.» / «Bro.» as a line opener is only for the rare channel-ok ping. */
 export function welcomeBubbles(opts?: WelcomeOpts): string[] {
-  void opts?.canJoinGroups;
   void opts?.handle;
   const base = opts?.cabinetBase ?? cabinetBaseUrl();
   const vault = vaultCardUrl(base);
@@ -149,7 +147,7 @@ export function welcomeBubbles(opts?: WelcomeOpts): string[] {
     "Закажу на Wildberries или Ozon, запишу к врачу или в салон, забронирую стол. Размер, адрес и пункт выдачи помню — второй раз не спрошу.",
     "Надо — напомню о чём-нибудь или послежу за ценой, пока не упадёт.",
     "Если сайт просит вход, возьму его из сейфа или пришлю ссылку, и ты зайдёшь сам. Пароль в чат не пиши, он мне не нужен. Письма и коды приходят на мой ящик, дальше я сам.",
-    "Я ещё в телеграме, тот же самый — напиши «телеграм», скину. Группы в iMessage пока на паузе, тут только личка. Пиши как другу, остальное на мне.",
+    "Я ещё в телеграме, тот же самый — напиши «телеграм», скину. Пиши как другу, остальное на мне.",
     `Хочешь, чтобы я платил сам — положи карту в сейф. Открой ссылку, введи телефон, с которого мне пишешь, и код, который придёт сюда. Номер карты в чат не пиши.\n${vault}`,
     `Кабинет — вход такой же, телефон и код.\n${cabinet}`,
   ];

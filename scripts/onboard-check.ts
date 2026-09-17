@@ -131,12 +131,10 @@ const help = helpText({
   cabinetBase: "https://brobro.tech",
 });
 const welcomeJoin = welcomeText({
-  canJoinGroups: true,
   handle: "bro-a1b2c3d4",
   cabinetBase: "https://brobro.tech",
 });
 const helpJoin = helpText({
-  canJoinGroups: true,
   handle: "bro-a1b2c3d4",
   cabinetBase: "https://brobro.tech",
 });
@@ -226,11 +224,11 @@ assert(/напомн|напоминан|сторож/i.test(help), "help wakeups
 assert(/сейф/i.test(help), "help vault");
 assert(/ящик|письм|почт/i.test(help), "help mailbox");
 assert(/телеграм/i.test(help), "help telegram second channel");
-assert(/групп/i.test(help), "help groups");
 assert(!/добав/i.test(welcome), "welcome does not promise add");
-assert(!/добав/i.test(welcomeJoin), "welcome never promises group add on Pro");
-assert(/Business|пауз/i.test(helpJoin), "help says groups after Business");
-assert(/пауз/i.test(welcome), "welcome says groups paused");
+// Groups are gone from the product and from the letter: the letter must not
+// raise a capability the person cannot use and Bro cannot deliver.
+assert(!/групп/i.test(help), "the letter must not mention groups at all");
+assert(!/групп/i.test(welcome), "the letter must not mention groups at all");
 assert(/код/i.test(welcome), "welcome explains the iMessage login code");
 assert(!welcome.includes("скажи пароль"), "welcome never asks for a site password");
 assert(/цен/i.test(welcome), "welcome keeps the price watch");
@@ -282,7 +280,6 @@ assert(
 assert(channel.includes("/webhooks/photon"), "channel has Photon inbound");
 assert(channel.includes("bindPhotonInbound"), "channel binds Photon DM");
 assert(channel.includes("photonNudgeText"), "old Inkbox thread gets one nudge");
-assert(!channel.includes("bindGroupInbound"), "Photon Pro does not bind groups");
 assert(
   channel.includes("shouldSkipAgentTurn") && channel.includes("from("),
   "help/connect skip agent turn",

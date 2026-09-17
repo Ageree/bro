@@ -38,6 +38,8 @@ import {
   shouldStartFollowThrough,
 } from "../convex/lib/browserFollowPolicy.ts";
 
+import { existsSync } from "node:fs";
+
 import { assert, src } from "./lib/check.ts";
 
 assert(normalizeEmail("  Foo@Mail.COM ") === "foo@mail.com", "normalize");
@@ -433,13 +435,15 @@ assert(
   "epochs stay off the injected line — dueJobNudges reads structured fields",
 );
 {
-  const memoriesSrc = src("convex/memories.ts");
+  // The wake snapshot moved out of the deleted `convex/memories.ts` and into
+  // jobs.ts, where the only half that survived the memo store belongs.
+  const jobsConvex = src("convex/jobs.ts");
   assert(
-    memoriesSrc.includes('from "./lib/jobWakeLine"'),
-    "wakeContext uses the shared job line formatter",
+    jobsConvex.includes('from "./lib/jobWakeLine"'),
+    "wakeRows uses the shared job line formatter",
   );
   assert(
-    memoriesSrc.includes("waitingSince: j.waitingSince"),
+    jobsConvex.includes("waitingSince: j.waitingSince"),
     "structured wake row still carries waitingSince for nudges",
   );
 }
@@ -488,5 +492,76 @@ assert(
 const jobsFinishSrc = src("convex/jobs.ts");
 const jobsAlreadyClosedCount = (jobsFinishSrc.match(/job already closed/g) || []).length;
 assert(jobsAlreadyClosedCount >= 2, "finish and wait both guard job already closed");
+
+// --- one `job` tool, three actions ---------------------------------------
+// open/wait/done were one idea split across three slots in the model's tool
+// list; wait and done were only a wakeup schedule/cancel around a Convex
+// mutation. The merge must keep every field, guard and payload intact.
+{
+  for (const gone of ["job_open.ts", "job_wait.ts", "job_done.ts"]) {
+    assert(
+      !existsSync(new URL(`../agent/tools/${gone}`, import.meta.url)),
+      `${gone} is merged into the single job tool`,
+    );
+  }
+  const jobTool = src("agent/tools/job.ts");
+  assert(
+    jobTool.includes('z.enum(["open", "wait", "done"])'),
+    "job routes on an action enum",
+  );
+  for (const field of [
+    "goal: z.string().min(1).max(280).optional()",
+    "doneWhen: z.string().min(1).max(280).optional()",
+    'waitingFor: z.enum(["human", "email", "browser"]).optional()',
+    "note: z.string().max(280).optional()",
+    "checkInMinutes: z.number().min(2).max(10080).optional()",
+    "outcome: z.string().min(1).max(280).optional()",
+    "failed: z.boolean().optional()",
+  ]) {
+    assert(jobTool.includes(field), `job keeps the old input field: ${field}`);
+  }
+  assert(
+    jobTool.includes('return { error: "open needs goal, doneWhen" }'),
+    "open still refuses a half-filled job",
+  );
+  assert(
+    jobTool.includes('return { error: "wait needs jobId, waitingFor" }'),
+    "wait still refuses a half-filled park",
+  );
+  assert(
+    jobTool.includes('return { error: "done needs jobId, outcome" }'),
+    "done still refuses a half-filled close",
+  );
+  assert(
+    jobTool.includes("defaultCheckInMinutes(waitingFor)"),
+    "wait still falls back to human 20 / email 45 / browser 8",
+  );
+  assert(
+    jobTool.includes('kind: "job_check"') &&
+      jobTool.includes("payload: `\u0434\u0436\u043e\u0431 ${jobId}: ${goal}`") &&
+      jobTool.includes("recurMinutes: minutes"),
+    "wait still schedules the recurring job_check with the same payload",
+  );
+  assert(
+    jobTool.includes("payloadContains: `\u0434\u0436\u043e\u0431 ${jobId}`"),
+    "done still cancels that job_check by the same payload prefix",
+  );
+  assert(
+    jobTool.includes("checkAt: new Date(at).toISOString()"),
+    "wait still returns checkAt on top of the job row",
+  );
+}
+
+const instructionsSrc = src("agent/instructions.md");
+assert(
+  !/job_open|job_wait|job_done/.test(instructionsSrc),
+  "instructions.md names the merged job tool, not the three old ones",
+);
+assert(
+  instructionsSrc.includes("`job` action=open") &&
+    instructionsSrc.includes("`job` action=wait") &&
+    instructionsSrc.includes("`job` action=done"),
+  "the Jobs section spells out all three actions",
+);
 
 console.log("jobs-check ok");

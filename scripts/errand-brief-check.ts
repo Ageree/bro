@@ -20,7 +20,6 @@ import {
   ERRAND_BRIEF_MAX_LINES,
   ERRAND_BRIEF_SYSTEM,
   KNOWN_FACTS_GAP,
-  MEMORY_LINE_LIMIT,
   MISSING_FACTS_LINE,
   composeErrandBrief,
   errandBriefBudgetMs,
@@ -229,7 +228,6 @@ const FACTS: ErrandFacts = {
     postalCode: "101000",
     countryCode: "RU",
   },
-  memories: ["размер обуви 42", "доставка только в пункт выдачи"],
   tz: "Europe/Moscow",
   nowLocal: "четверг, 17 сентября 2026 г., 14:32",
 };
@@ -248,7 +246,6 @@ eq(knownFactsBlock(undefined), "", "no facts → no block at all");
     "ул. Ленина, д. 5, кв. 12",
     "Москва",
     "101000",
-    "размер обуви 42",
     "четверг, 17 сентября 2026",
     "Europe/Moscow",
   ]) {
@@ -272,22 +269,32 @@ eq(knownFactsBlock(undefined), "", "no facts → no block at all");
   assert(abroad.includes("LV"), "a non-RU country code does travel");
 }
 {
-  // One rambling memory must not become the largest thing in the prompt.
-  const many = knownFactsBlock({
-    memories: Array.from({ length: MEMORY_LINE_LIMIT + 5 }, (_, i) => `факт ${i}`),
-  });
-  eq(
-    many.split("\n").filter((l) => l.startsWith("- помню:")).length,
-    MEMORY_LINE_LIMIT,
-    "memories are capped",
+  // The «помню: …» lines went with the Convex memo store. They were the only
+  // free-text field here, and their replacement — semantic search over a
+  // person's chat — is not a list of vetted facts to paste into a browser
+  // instruction. The brief runs on the vault alone now, and must not grow a
+  // memory feed back by accident.
+  assert(
+    !knownFactsBlock(FACTS).includes("помню"),
+    "no memory lines in the known-facts block",
   );
-  const long = knownFactsBlock({ memories: ["я".repeat(600)] });
-  assert(long.length < 400, "a long memory line is shortened");
+  assert(
+    !src("agent/lib/errand-context.ts").includes("wakeLines"),
+    "the errand context no longer reads the memo store",
+  );
 }
 {
-  // A memory is free text a human dictated — it is the one place a secret can
-  // realistically leak into the facts, so every line is scrubbed.
-  const leaky = knownFactsBlock({ memories: ["карта 4111 1111 1111 1111", "пароль: hunter2"] });
+  // Every fact line still goes through scrubSecrets. The vault payloads are
+  // parsed, not sanitised, so a human who typed a card number into the
+  // recipient field must not have it travel to the browser.
+  const leaky = knownFactsBlock({
+    address: {
+      recipientName: "карта 4111 1111 1111 1111",
+      line1: "пароль: hunter2",
+      city: "Москва",
+      countryCode: "RU",
+    },
+  });
   assert(!leaky.includes("4111"), "a card number never reaches the facts block");
   assert(!leaky.includes("hunter2"), "a password never reaches the facts block");
 }
@@ -366,7 +373,6 @@ assert(
           }),
         };
       },
-      wakeLines: async () => ["размер обуви 42"],
     },
     { now: new Date("2026-09-17T09:32:00Z") },
   );
@@ -383,7 +389,6 @@ assert(
   eq(facts.address?.countryCode, "RU", "country code normalised by the payload schema");
   eq(facts.tz, "Asia/Yekaterinburg", "tenant tz wins");
   assert(facts.nowLocal!.includes("2026"), "the current local date is stamped");
-  eq(facts.memories?.[0], "размер обуви 42", "curated memories loaded");
 }
 {
   // Nothing here may fail an errand: every dependency throwing at once still
@@ -395,7 +400,6 @@ assert(
     getTenant: boom as never,
     listVaultItems: boom as never,
     readVaultSecret: boom as never,
-    wakeLines: boom as never,
   });
   eq(facts.tz, "Europe/Moscow", "a dead Convex still leaves the default timezone");
   eq(facts.address, undefined, "and no invented address");
@@ -534,7 +538,12 @@ function userContentChars(task: string, opts: { brief?: string; facts?: ErrandFa
     boilerplate < BOILERPLATE_BEFORE,
     `boilerplate is ${boilerplate}, was ${BOILERPLATE_BEFORE} — it must not creep back`,
   );
-  assert(share > 0.25, `user content is ${(share * 100).toFixed(1)}% of the task, was 2.6%`);
+  // The threshold moved 25% → 20% when the memo feed left `FACTS`: those two
+  // «помню: …» lines were ~60 characters of the human's own content, and the
+  // envelope around them did not change. `boilerplate < BOILERPLATE_BEFORE`
+  // just above is the assertion that actually guards against prose creeping
+  // back; this one guards the ratio it produces.
+  assert(share > 0.2, `user content is ${(share * 100).toFixed(1)}% of the task, was 2.6%`);
 }
 {
   // The envelope alone — no facts, no brief — is what shrank. Everything the

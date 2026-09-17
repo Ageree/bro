@@ -2,7 +2,6 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { fillOtpBodies, listBroInbox } from "../../../lib/bro-inbox.ts";
 import { upsertTenant } from "../../../lib/convex";
-import { groupPersonalBlock } from "../../../lib/group-guard";
 import { agentHandle } from "../../../lib/inkbox";
 import {
   candidatesFromMail,
@@ -19,8 +18,6 @@ export default defineTool({
     limit: z.number().min(1).max(20).optional(),
   }),
   async execute({ sinceMinutes, limit }, ctx) {
-    const blocked = groupPersonalBlock(ctx);
-    if (blocked) return { error: blocked };
     const phone = tenantId(ctx);
     const tenant = await upsertTenant(phone);
     const handle = tenant.inkboxHandle ?? agentHandle();

@@ -1,8 +1,8 @@
 import { defineDynamic, defineTool } from "eve/tools";
 import type { ToolContext } from "eve/tools";
 import { isConnectDest, wrapConnectUrl } from "../lib/connect-link";
-import { sessionFor } from "../lib/composio";
-import { attr, groupPersonalBlock } from "../lib/group-guard";
+import { CALL_BUDGET_MS, sessionFor, withDeadline } from "../lib/composio";
+import { attr } from "../lib/turn-attrs";
 import { tenantId } from "../lib/tenant";
 import { sandboxNetworkViolation } from "../lib/sandbox-policy";
 import { getTenant } from "../lib/convex";
@@ -99,10 +99,14 @@ async function runComposio(
   input: unknown,
   ctx: ToolContext,
 ): Promise<unknown> {
-  const blocked = groupPersonalBlock(ctx);
-  if (blocked) return blocked;
   const session = await sessionFor(tenantId(ctx));
-  const result = await session.execute(slug, rec(input));
+  // Bounded on purpose: an unbounded `execute` on a just-connected Gmail is
+  // what left a turn hanging for sixteen minutes behind a «взялся» line.
+  const result = await withDeadline(
+    session.execute(slug, rec(input)),
+    CALL_BUDGET_MS,
+    `composio ${slug}`,
+  );
   const undelivered = await sendConnectIfAny(ctx, result);
   // Composio's own result says the connection was initiated — that is true
   // whether or not the human ever saw the link. When the card did not go out,

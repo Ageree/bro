@@ -83,10 +83,9 @@ export const list = query({
 /**
  * Put one test tenant back to a clean slate.
  *
- * Scenario isolation is not only the transcript: memories and wakeups are
- * keyed by phone and outlive a run, so a memo line written by yesterday's
- * "купи молоко" would steer today's "привет", and a reminder scheduled by one
- * scenario would fire into another. Browser state is on the tenant row and
+ * Scenario isolation is not only the transcript: wakeups are keyed by phone
+ * and outlive a run, so a reminder scheduled by one scenario would fire into
+ * another. Browser state is on the tenant row and
  * would make the next errand read `busy`. The eve session history is cleared
  * separately by the reset route — it lives in eve, not here.
  */
@@ -94,7 +93,6 @@ export const reset = mutation({
   args: { secret: v.string(), phoneE164: v.string() },
   returns: v.object({
     bubbles: v.number(),
-    memories: v.number(),
     wakeups: v.number(),
     jobs: v.number(),
     orders: v.number(),
@@ -109,12 +107,6 @@ export const reset = mutation({
       .collect();
     for (const row of bubbles) await ctx.db.delete(row._id);
 
-    const memories = await ctx.db
-      .query("memories")
-      .withIndex("by_phone", (q) => q.eq("phoneE164", args.phoneE164))
-      .collect();
-    for (const row of memories) await ctx.db.delete(row._id);
-
     const wakeups = await ctx.db
       .query("wakeups")
       .withIndex("by_tenant", (q) => q.eq("tenantPhone", args.phoneE164))
@@ -125,7 +117,6 @@ export const reset = mutation({
 
     return {
       bubbles: bubbles.length,
-      memories: memories.length,
       wakeups: wakeups.length,
       jobs: tenantRows.jobs,
       orders: tenantRows.orders,

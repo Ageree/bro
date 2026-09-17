@@ -27,10 +27,10 @@ import {
 import { assert, src } from "./lib/check.ts";
 
 const convex = src("agent/lib/convex.ts");
-assert(convex.includes("loadWakeContext"), "memo+jobs share one snapshot");
-assert(convex.includes("api.memories.wakeContext"), "one Convex query for wake context");
+assert(convex.includes("loadWakeContext"), "the wake snapshot is one loader");
+assert(convex.includes("api.jobs.wakeRows"), "one Convex query for wake context");
 assert(convex.includes("wakeInflight"), "parallel turn.started callers coalesce");
-assert(convex.includes("wakeCache"), "sequential memo then jobs reuse the snapshot");
+assert(convex.includes("wakeCache"), "prefetch and turn.started reuse the snapshot");
 assert(convex.includes("WAKE_CONTEXT_TTL_MS"), "wake snapshot is same-turn only");
 assert(convex.includes("WAKE_CONTEXT_TTL_MS = 8_000"), "wake TTL outlasts Instinct searches");
 assert(convex.includes("if (tenant) rememberHandleTenant"), "handle cache skips null");
@@ -43,9 +43,6 @@ assert(convex.includes("forgetTelegramTenant"), "telegram bind drops its cache")
 assert(convex.includes("handleTenants"), "returning 1:1 reuses getTenantByHandle");
 assert(convex.includes("telegramTenants"), "returning telegram reuses getByTelegram");
 assert(convex.includes("handleInflight"), "parallel handle lookups coalesce");
-
-const memo = src("agent/memory/memo.ts");
-assert(memo.includes("wakeLines"), "memo still injects wake lines");
 
 const jobs = src("agent/instructions/jobs.ts");
 assert(jobs.includes("jobWakeRows"), "jobs read the same snapshot");
@@ -85,8 +82,13 @@ const recall = src("agent/memory/recall.ts");
 assert(recall.includes("shouldRecallConversation"), "conversation recall keeps captionless photos");
 assert(recall.includes("compaction.completed"), "compaction recall uses the same gate");
 assert(recall.includes("loadInstinctRecall"), "turn.started conversation uses the Instinct pair");
-assert(recall.includes("conversationScope: context.memory.scope.key"), "conversation hook uses Eve digest");
-assert(recall.includes("archiveScope: scopePhone"), "conversation hook still pairs archive by phone");
+// Both slots now call the pair with the SAME argument — the person. Two
+// spellings of one scope is what split the cache and doubled the round trips.
+assert(recall.includes("scopePhone(context.memory.scope.value)"), "recall keys the pair by person");
+assert(
+  src("agent/memory/archive.ts").includes("scopePhone(context.memory.scope.value)"),
+  "archive keys the pair by the same person",
+);
 assert(!recall.includes("loadProfileContext"), "profile dump stays off turn.started");
 assert(recall.includes("inner.recall"), "compaction still uses the plugin recall");
 assert(recall.includes("abortSignal"), "conversation search joins Eve abort");
@@ -97,8 +99,11 @@ assert(instinct.includes("searchConversation"), "conversation search stays on th
 assert(instinct.includes("searchArchive"), "archive search stays on the pair");
 assert(instinct.includes("INSTINCT_RECALL_TTL_MS"), "Instinct pair is same-turn cached");
 assert(instinct.includes("instinctInflight"), "parallel hooks coalesce one pair");
-assert(instinct.includes("conversationScope"), "pair is keyed by Eve conversation scope");
-assert(instinct.includes("instinctScopesForPerson"), "prefetch uses Eve digest + phone");
+assert(instinct.includes("conversationScopeKey"), "the conversation half derives the Eve digest");
+assert(
+  !instinct.includes("InstinctScopes"),
+  "one scope shape for the slots and the webhook prefetch",
+);
 assert(
   instinct.includes('conversation.status === "fulfilled"') &&
     instinct.includes('archive.status === "fulfilled"'),
@@ -182,15 +187,18 @@ const tenants = src("convex/tenants.ts");
   );
 }
 
-const memories = src("convex/memories.ts");
-assert(memories.includes("wakeContext"), "Convex exposes the combined snapshot");
-assert(memories.includes("WAKE_LINES"), "combined snapshot still returns 80 memo lines");
-assert(memories.includes("Promise.all"), "wakeContext loads memories and tenant in parallel");
-assert(memories.includes("formatJobWakeLine"), "job lines are formatted, not dumped as JSON");
+// The wake snapshot used to be memo lines + jobs out of `convex/memories.ts`.
+// The memo half is gone — 80 lines x 280 chars injected on every single turn,
+// relevance-gated by nothing — so what is left is the job half, and it lives
+// with the jobs.
+const jobsConvex = src("convex/jobs.ts");
+assert(jobsConvex.includes("wakeRows"), "Convex exposes the wake snapshot");
+assert(jobsConvex.includes("formatJobWakeLine"), "job lines are formatted, not dumped as JSON");
 assert(
-  !memories.includes("waitingSince=${"),
+  !jobsConvex.includes("waitingSince=${"),
   "wake line omits epochs — nudge still uses structured waitingSince",
 );
+assert(!src("agent/instructions.md").includes("memo__"), "no turn-start memo injection left");
 
 const imessage = src("agent/channels/imessage.ts");
 const earlyDeliver = src("agent/lib/early-deliver.ts");
@@ -332,10 +340,10 @@ console.log(
     conversationRecallSearchOnly: true,
     handleTenantCached: true,
     oneToOneTypingBeforeBind: true,
-    openRouterWarmBeforeGroupLookup: true,
+    openRouterWarmBeforeTenantLookup: true,
     wakeInstinctBeforeBind: true,
     knownOwnerBillsBeforeBind: true,
-    groupPrefetchDuringBilling: true,
+    prefetchDuringBilling: true,
     telegramTypingOverlapsBilling: true,
     wakePrefetchDuringBilling: true,
     wakeContextTtlMs: 8000,

@@ -5,7 +5,7 @@ import { fileFailure, listStoredFiles } from "../lib/files.ts";
 
 export default defineTool({
   description:
-    "List this person's saved files (name, type, size). Bro keeps their files. Group chats cannot use files.",
+    "List this person's saved files (name, type, size). Bro keeps their files.",
   inputSchema: z.object({}),
   async execute(_args, ctx) {
     const who = asPersonal(ctx);

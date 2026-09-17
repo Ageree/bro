@@ -5,7 +5,7 @@ import {
   setTelegramReaction,
   TELEGRAM_REACTIONS,
 } from "../lib/telegram";
-import { attr } from "../lib/group-guard";
+import { attr } from "../lib/turn-attrs";
 
 const NAMES = [
   "love",

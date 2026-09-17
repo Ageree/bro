@@ -14,9 +14,7 @@ const kept = [
   "browser_task.ts",
   "composio.ts",
   "otp_lookup.ts",
-  "job_open.ts",
-  "job_wait.ts",
-  "job_done.ts",
+  "job.ts",
   "list_orders.ts",
   "bro_mail.ts",
   "vault_setup.ts",
@@ -26,7 +24,6 @@ const kept = [
   "imessage_react.ts",
   "telegram_react.ts",
   "send_photo.ts",
-  "group_chat.ts",
 ];
 for (const file of kept) {
   assert(

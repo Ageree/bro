@@ -8,13 +8,9 @@ import {
   recallQuery,
   shouldRecallArchive,
 } from "../lib/archive-policy.ts";
+import { loadInstinctRecall } from "../lib/instinct-recall.ts";
 import {
-  instinctScopesForPerson,
-  loadInstinctRecall,
-} from "../lib/instinct-recall.ts";
-import {
-  resolveMemoryScope,
-  resolveRecallBackend,
+  resolveSupermemoryScope,
   scopePhone,
 } from "../lib/memory-policy.ts";
 
@@ -32,8 +28,9 @@ async function recall(
     recallQuery(context.turn?.input ?? []) ?? recallQuery(context.messages);
   if (!query || !shouldRecallArchive(query)) return null;
   try {
+    // Same arguments the conversation slot passes: one pass per turn, shared.
     const { archive } = await loadInstinctRecall(
-      instinctScopesForPerson(scopePhone(context.memory.scope.value)),
+      scopePhone(context.memory.scope.value),
       query,
       context.abortSignal,
     );
@@ -46,13 +43,17 @@ async function recall(
 }
 
 /**
- * Mounted only with SUPERMEMORY_API_KEY, like the recall slot. The archive is
- * filled by the hourly sync (Convex → /internal/memory-sync).
+ * Filled by the hourly sync (Convex → /internal/memory-sync). Like the recall
+ * slot it now REQUIRES SUPERMEMORY_API_KEY and says so loudly.
  */
 export default defineMemory({
   namespace: "bro-archive-v1",
   description:
     "Archive of this person's connected apps (mail, calendar) copied into memory.",
+  // See the note in recall.ts: without `visibility: "scope"` eve keeps an
+  // already-injected recall block in the session history across a scope
+  // change, which is another person's mail sitting in this conversation.
+  visibility: "scope",
   provider: {
     recall: {
       "turn.started": recall,
@@ -90,7 +91,5 @@ export default defineMemory({
     },
   },
   scope: (ctx) =>
-    resolveRecallBackend(process.env).kind === "supermemory"
-      ? resolveMemoryScope(ctx.session.auth, process.env.NODE_ENV === "production")
-      : null,
+    resolveSupermemoryScope(ctx.session.auth),
 });

@@ -67,18 +67,11 @@ function definedEntries<T extends Record<string, unknown>>(
   return out;
 }
 
-/** Never write a group conversation onto the 1:1 wakeup/mail lane. */
-async function oneToOneConversationIdOrUndefined(
-  ctx: MutationCtx,
+/** A blank conversation id never lands on the 1:1 wakeup/mail lane. */
+function trimmedConversationId(
   conversationId: string | undefined,
-): Promise<string | undefined> {
-  const id = conversationId?.trim();
-  if (!id) return undefined;
-  const group = await ctx.db
-    .query("groupChats")
-    .withIndex("by_conversation", (q) => q.eq("conversationId", id))
-    .first();
-  return group ? undefined : id;
+): string | undefined {
+  return conversationId?.trim() || undefined;
 }
 
 /** Full tenant document. Derived from the schema so a new column (e.g.
@@ -209,10 +202,7 @@ export const upsert = mutation({
     assertSecret(secret);
     const email = emailAddress?.trim().toLowerCase();
     const existing = await findTenantByPhone(ctx, phoneE164);
-    const oneToOneConversationId = await oneToOneConversationIdOrUndefined(
-      ctx,
-      inkboxConversationId,
-    );
+    const oneToOneConversationId = trimmedConversationId(inkboxConversationId);
     if (existing) {
       const patch: {
         inkboxConversationId?: string;
@@ -1086,10 +1076,7 @@ export const bindInbound = mutation({
       return { ok: false as const, reason: "wrong phone" };
     }
     const firstBind = !tenant.phoneE164;
-    const oneToOneConversationId = await oneToOneConversationIdOrUndefined(
-      ctx,
-      inkboxConversationId,
-    );
+    const oneToOneConversationId = trimmedConversationId(inkboxConversationId);
     const patch: {
       phoneE164?: string;
       inkboxConversationId?: string;

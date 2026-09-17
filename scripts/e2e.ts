@@ -11,6 +11,7 @@
 import {
   photonTestInbound,
   testPhoneFor,
+  testSpaceId,
 } from "../convex/lib/testTenantPolicy.ts";
 import { signSpectrumWebhook } from "../agent/lib/photon.ts";
 import {
@@ -238,6 +239,15 @@ async function runScenario(scenario: Scenario): Promise<ScenarioResult> {
     let seen = 0;
     for (const turn of scenario.turns) {
       const turnStarted = Date.now();
+      if (turn.clearSession) {
+        // Drop the conversation history and nothing else, so the next question
+        // can only be answered from memory. `/internal/test/reset` would also
+        // wipe the memory we are about to test for; this route takes a
+        // conversation id and clears exactly the eve session.
+        await internal("/internal/session-clear", {
+          conversationId: testSpaceId(phone),
+        });
+      }
       await sendInbound(phone, turn.text);
       const bubbles = await collect(
         phone,
