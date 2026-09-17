@@ -915,6 +915,15 @@ export default defineTool({
             ? { secretBindings: contSecretBindings }
             : {}),
           continuation: true,
+          // Facts on the continuation too, not only on the first run. A
+          // continuation is a NEW run built from a new task in the same tab,
+          // so without this the errand loses the address and the memories
+          // exactly when it needs them most — resuming into a checkout after
+          // a login. It costs a few Convex reads on a path that is already
+          // doing network work, and they are loaded in parallel and
+          // individually caught, so a slow read degrades the context, never
+          // the run.
+          phone,
         });
       } catch (err) {
         console.error("continue: session gone, starting fresh", err);
@@ -1134,6 +1143,17 @@ export default defineTool({
       ...(vaultLogin ? { login: true } : {}),
       ...(secretBindings && secretBindings.length > 0 ? { secretBindings } : {}),
       ...(startPage ? { startPage } : {}),
+      // The run carries what Bro already knows about this human — vault
+      // address and contact, curated memories, their timezone and today's
+      // date, their name — instead of aborting with «НУЖНО: address» for a
+      // street that was in the vault all along. `stampedInjectText` is the
+      // human's OWN sentence when the turn carried one; `task` is only
+      // whatever the model retyped, and «на воскресенье» only resolves to a
+      // date if the run is told what today is.
+      phone,
+      ...(stampedInjectText && stampedInjectText !== task
+        ? { humanText: stampedInjectText }
+        : {}),
     }).catch(async (err: unknown) => {
       // The claim promised a run that will never exist: release it so the
       // person can simply ask again instead of being told "уже открывается"

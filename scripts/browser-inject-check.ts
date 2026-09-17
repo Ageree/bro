@@ -29,6 +29,7 @@ import {
   steerCandidate,
   pageWaitsForCode,
   resultWaitsForCode,
+  PENDING_STEER_TTL_MS,
   START_CLAIM_MS,
   startClaimIsLive,
 } from "../convex/lib/browserInjectPolicy.ts";
@@ -978,6 +979,37 @@ assert(
   tool.includes("Unless this payload has `injected`, nothing from their last line was added"),
   "the still-running hint never lets the model claim a detail was taken",
 );
+
+// The Convex side of the race: one claim per transaction, a claim that a new
+// run clears, and a hold that expires instead of leaking into a later errand.
+{
+  const tenants = src("convex/tenants.ts");
+  assert(
+    tenants.includes("startClaimIsLive(at, args.now, args.staleMs)"),
+    "the claim mutation and the agent read the same start-claim policy",
+  );
+  assert(
+    tenants.includes("browserStartingAt: args.now"),
+    "claiming stamps the start on the tenant row inside the transaction",
+  );
+  assert(
+    /if \(isNewRun && args\.browserStartingAt === undefined\)/.test(tenants),
+    "only a NEW run id clears the claim — a poll must not cancel a start in flight",
+  );
+  assert(
+    tenants.includes('args.now - at > args.ttlMs ? "" : held'),
+    "a held follow-up older than the TTL is dropped, never queued into a later errand",
+  );
+  assert(
+    tenants.includes('browserPendingSteer: ""'),
+    "draining clears the hold in the same transaction (queued once)",
+  );
+  assert(
+    tenants.includes("if (held.includes(text)) return null"),
+    "the same line held twice stays one line",
+  );
+}
+assert(PENDING_STEER_TTL_MS <= START_CLAIM_MS * 10, "a held line expires on a human timescale");
 
 const cdp = src("agent/lib/browser-cdp.ts");
 assert(cdp.includes("cdpTypeIntoPage"), "cdp can type into the live tab");

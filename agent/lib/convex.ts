@@ -1,4 +1,5 @@
 import { ConvexHttpClient } from "convex/browser";
+import { PENDING_STEER_TTL_MS } from "../../convex/lib/browserInjectPolicy.ts";
 import type { FunctionArgs, FunctionReference, FunctionReturnType } from "convex/server";
 import { api } from "../../convex/_generated/api.js";
 import type { Id } from "../../convex/_generated/dataModel";
@@ -395,11 +396,17 @@ export const releaseBrowserStart = (phoneE164: string): Promise<void> =>
 
 /** Park a follow-up that landed while a start was still in flight. */
 export const holdBrowserSteer = (phoneE164: string, text: string): Promise<void> =>
-  m(api.tenants.holdBrowserSteer)({ phoneE164, text }).then(() => {});
+  m(api.tenants.holdBrowserSteer)({ phoneE164, text, now: Date.now() }).then(() => {});
 
-/** Read-and-clear the held follow-up, so it is queued into the session once. */
+/** Read-and-clear the held follow-up, so it is queued into the session once.
+ *  Anything older than `PENDING_STEER_TTL_MS` is dropped rather than queued
+ *  into whatever errand happens to be open by then. */
 export const takeBrowserPendingSteer = (phoneE164: string): Promise<string> =>
-  m(api.tenants.takeBrowserPendingSteer)({ phoneE164 });
+  m(api.tenants.takeBrowserPendingSteer)({
+    phoneE164,
+    now: Date.now(),
+    ttlMs: PENDING_STEER_TTL_MS,
+  });
 
 export const getTenantByEmail = (emailAddress: string) =>
   q(api.tenants.getByEmail)({ emailAddress });
