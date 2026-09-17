@@ -87,6 +87,14 @@ export const SCENARIOS: Scenario[] = [
   {
     name: "telegram-invite",
     about: "«телеграм» hands over a t.me bind link rather than explaining what Telegram is.",
+    // Without a bot username there is no link to mint, and `sendTelegramInvite`
+    // correctly answers «Telegram у Bro ещё не включён». That is right behaviour
+    // for an unconfigured deployment, so it must skip rather than go red — a
+    // failure that only means "this deployment has no Telegram" teaches the
+    // reader to ignore red. Like `BRO_E2E_FAKE_BROWSER`, the variable is read
+    // on the RUNNER and is the operator asserting what the deployment carries;
+    // the runner cannot see the eve process's own env.
+    needs: ["TELEGRAM_BOT_USERNAME"],
     turns: [
       { text: "привет", expect: [{ says: LETTER }] },
       { text: "телеграм", expect: [{ says: /t\.me\// }] },
