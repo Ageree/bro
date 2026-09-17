@@ -11,6 +11,7 @@ import {
   photonTestInbound,
   TEST_PHONE_PREFIX,
   testPhoneFor,
+  testPhoneFromSpaceId,
   testSpaceId,
 } from "../convex/lib/testTenantPolicy.ts";
 import {
@@ -25,6 +26,18 @@ import { resetBubbleDedupe } from "../agent/lib/bubble-dedupe.ts";
 import { SCENARIOS } from "./lib/scenarios.ts";
 
 import { assert, eq, src } from "./lib/check.ts";
+
+/** The body of a named async function in the iMessage channel, up to the next
+ *  top-level declaration. Enough to see which send path it uses. */
+function channelSrcForOnboarding(): (fn: string) => string {
+  const text = src("agent/channels/imessage.ts");
+  return (fn: string) => {
+    const start = text.indexOf(`async function ${fn}(`);
+    assert(start >= 0, `${fn} still exists`);
+    const next = text.indexOf("\nasync function ", start + 1);
+    return text.slice(start, next > 0 ? next : start + 4000);
+  };
+}
 
 // ---------------------------------------------------------------- the range
 
@@ -75,6 +88,64 @@ for (const scenario of SCENARIOS) {
   const taken = phones.get(phone);
   assert(!taken, `scenario phone collision: ${scenario.name} and ${taken}`);
   phones.set(phone, scenario.name);
+}
+
+// ------------------------------------------------- the transport-level sink
+//
+// Not everything Bro says to a person goes through `deliverHuman`. The welcome
+// letter, the Telegram invite and the quota paywall are written straight to
+// Photon with a conversation id and no tenant. Recording only at the
+// `deliverHuman` layer left those invisible: against a test number the send
+// failed, the caller's try/catch swallowed it, and a first-contact scenario
+// saw silence. So the conversation id has to be reversible back to the tenant.
+
+eq(
+  testPhoneFromSpaceId(testSpaceId("+15555550101")),
+  "+15555550101",
+  "a test conversation id names its tenant",
+);
+for (const real of [
+  "space-real",
+  "",
+  "test-space-",
+  "test-space-+79161234567", // shaped like ours, but a real number
+  undefined,
+  null,
+]) {
+  assert(
+    !testPhoneFromSpaceId(real as string | undefined),
+    `a real conversation is not a test thread: ${String(real)}`,
+  );
+}
+
+const photonSrc = src("agent/lib/photon.ts");
+assert(
+  photonSrc.includes("testPhoneFromSpaceId(opts.conversationId)"),
+  "sendPhotonText records for a test thread instead of sending",
+);
+// Scoped to sendPhotonText's own body — `withSpectrum` is used by several
+// functions above it, so a whole-file index comparison proves nothing.
+const sendBody = photonSrc.slice(
+  photonSrc.indexOf("export async function sendPhotonText"),
+);
+assert(
+  sendBody.indexOf("testPhoneFromSpaceId(opts.conversationId)") <
+    sendBody.indexOf("withSpectrum"),
+  "the sink runs before Photon is contacted at all",
+);
+assert(
+  photonSrc.includes("if (testPhoneFromSpaceId(conversationId)) return false"),
+  "a test thread is never sent a typing indicator",
+);
+// The onboarding paths this exists for. If any of them stops going through
+// sendPhotonText, it needs its own sink — and this check should fail first.
+const onboardingSends = channelSrcForOnboarding();
+for (const fn of ["sendWelcomeLetter", "sendTelegramInvite", "sendQuotaPaywall"]) {
+  const body = onboardingSends(fn);
+  assert(
+    body.includes("sendPhotonText") || body.includes("deliverHuman"),
+    `${fn} sends through a path the recorder covers`,
+  );
 }
 
 // -------------------------------------------------- the synthetic inbound

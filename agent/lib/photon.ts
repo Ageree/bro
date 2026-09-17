@@ -11,6 +11,7 @@ import {
   isBluePhotonService,
   parsePhotonInboundJson,
 } from "../../convex/lib/photonPolicy.ts";
+import { testPhoneFromSpaceId } from "../../convex/lib/testTenantPolicy.ts";
 
 export type PhotonSendResult = {
   spaceId: string;
@@ -217,6 +218,8 @@ export async function sendPhotonTyping(opts: {
 }): Promise<boolean> {
   const conversationId = opts.conversationId.trim();
   if (!conversationId) return false;
+  // Nobody is watching a test thread type, and the lookup would throw.
+  if (testPhoneFromSpaceId(conversationId)) return false;
   try {
     return await withSpectrum(async (im) => {
       const space = await im.space.get(conversationId);
@@ -259,6 +262,21 @@ export async function sendPhotonText(opts: {
 }): Promise<PhotonSendResult> {
   const text = opts.text.trim();
   if (!text) throw new Error("empty photon text");
+  // Last hop, and the only one everything shares. `deliverHuman` carries the
+  // agent's replies, but the welcome letter, the Telegram invite, the quota
+  // paywall and the SMS refusal are written straight here with a conversation
+  // id and no tenant — so a sink one layer up records the turn and misses the
+  // onboarding, which is the half a first-contact scenario is about.
+  const testPhone = testPhoneFromSpaceId(opts.conversationId);
+  if (testPhone) {
+    const { recordTestDelivery } = await import("./test-sink.ts");
+    await recordTestDelivery({
+      phoneE164: testPhone,
+      channel: "imessage",
+      text,
+    });
+    return { spaceId: opts.conversationId!, service: "iMessage" };
+  }
   return await withSpectrum(async (im) => {
     const space = opts.conversationId
       ? await im.space.get(opts.conversationId)

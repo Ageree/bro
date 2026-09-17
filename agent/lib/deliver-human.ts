@@ -74,12 +74,12 @@ export async function deliverHuman(opts: {
 
   const cleaned = stripConnectUrls(text);
   // A test tenant has no device on the other end: record what it would have
-  // been told, and stop. The branch sits here, in front of the photo and
-  // channel work, because this function is the one funnel every human-facing
-  // path already shares — an agent turn, a wakeup, browser follow-through,
-  // `profile_setup`, a Composio notice. A sink placed any deeper would catch
-  // some of those and silently miss the rest, which is the failure mode a
-  // test harness can least afford.
+  // been told, and stop. This catches everything the agent says — a turn, a
+  // wakeup, browser follow-through, `profile_setup`, a Composio notice — with
+  // the tenant in hand, so the recorded row knows its channel. It is not the
+  // only sink: the welcome letter, the Telegram invite and the quota paywall
+  // never reach this function, and are caught one layer down in
+  // `sendPhotonText`.
   if (isTestPhone(tenant.phoneE164)) {
     const record = opts.deps?.recordTestDelivery ?? recordTestDelivery;
     await record({
