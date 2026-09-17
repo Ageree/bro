@@ -12,7 +12,16 @@ import {
 import { browserFromList, cdpPageUrl } from "./browserCdp.ts";
 import { scrubSecrets } from "./secretScrub.ts";
 
-const BASE = "https://api.browser-use.com/api/v4";
+const DEFAULT_BASE = "https://api.browser-use.com/api/v4";
+
+/** Same `BROWSER_USE_BASE_URL` override as the eve-side client — follow-through
+ *  polling runs here, on the Convex deployment, so a staging environment that
+ *  only redirected one of the two would start a fake run and then poll the
+ *  real API for a run id it has never heard of. See `agent/lib/browseruse.ts`
+ *  for why this is a base URL and not a "pretend" flag. */
+function base(): string {
+  return process.env.BROWSER_USE_BASE_URL?.trim().replace(/\/+$/, "") || DEFAULT_BASE;
+}
 
 /** Fixed prefix so a config error is recognisable by message alone (logs, retries). */
 const CONFIG_ERROR_MARKER = "browser-use config:";
@@ -46,7 +55,7 @@ async function bu(
   path: string,
   init: RequestInit = {},
 ): Promise<Record<string, unknown>> {
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await fetch(`${base()}${path}`, {
     ...init,
     headers: {
       "X-Browser-Use-API-Key": key(),

@@ -1,0 +1,42 @@
+# Every push and pull request runs the whole offline check battery.
+#
+# The ~50 `*:check` scripts are pure-logic assertions over the policy modules:
+# no network, no secrets, no deployment. That is the point — this workflow
+# needs nothing configured to be useful, and catches a broken reply table or a
+# dropped outcome branch before anything reaches a real conversation.
+name: checks
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+concurrency:
+  # A new push to the same branch supersedes an in-flight run.
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      # `minimum-release-age=0` in .npmrc is what lets a same-day eve release
+      # install here instead of CI waiting 24h behind the default hold.
+      - run: pnpm install --frozen-lockfile
+
+      # Runs `types:check` plus every other `*:check` in parallel and prints
+      # the failing ones' full output. The Composio checks are excluded by the
+      # runner: they need a real .env.local and a live API key.
+      - run: npm run check

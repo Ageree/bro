@@ -50,6 +50,27 @@ export function photonWebhookOk(
   }
 }
 
+/**
+ * The exact inverse of `photonWebhookOk`, for the test harness: it lets a
+ * scenario drive the real `/webhooks/photon` route — signature check, bind,
+ * quota gate, fast-ack lane, the actual turn — instead of a simulated copy of
+ * it that would quietly stop matching the day the real path changes.
+ *
+ * It lives next to the verifier rather than in the runner so the two cannot
+ * drift: a change to the signing string has to break one of them visibly.
+ */
+export function signSpectrumWebhook(
+  payload: string,
+  secret: string,
+  timestampSeconds = Math.floor(Date.now() / 1000),
+): { timestamp: string; signature: string } {
+  const timestamp = String(timestampSeconds);
+  const signature = createHmac("sha256", secret)
+    .update(`v0:${timestamp}:${payload}`)
+    .digest("hex");
+  return { timestamp, signature: `v0=${signature}` };
+}
+
 export function readPhotonInbound(body: unknown): {
   spaceId: string;
   messageId?: string;

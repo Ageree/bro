@@ -376,6 +376,29 @@ export const setBrowser = (
 export const getTenantByEmail = (emailAddress: string) =>
   q(api.tenants.getByEmail)({ emailAddress });
 
+/** Test-tenant recorder (`convex/testTranscript.ts`). Every one of these
+ *  refuses a phone outside the fictional range on the Convex side, so a suite
+ *  that has drifted onto a real number fails loudly instead of reading or
+ *  clearing someone's conversation. */
+export const recordTestBubble = (args: {
+  phoneE164: string;
+  at: number;
+  channel: "imessage" | "telegram";
+  text: string;
+  bubbles: string[];
+  note?: string;
+}): Promise<void> => m(api.testTranscript.record)(args).then(() => {});
+
+export const listTestBubbles = (
+  phoneE164: string,
+): Promise<FunctionReturnType<typeof api.testTranscript.list>> =>
+  q(api.testTranscript.list)({ phoneE164 });
+
+export const resetTestTenant = (
+  phoneE164: string,
+): Promise<FunctionReturnType<typeof api.testTranscript.reset>> =>
+  m(api.testTranscript.reset)({ phoneE164 });
+
 export async function jobWakeRows(phoneE164: string): Promise<JobWakeRow[]> {
   return (await loadWakeContext(phoneE164)).jobs;
 }

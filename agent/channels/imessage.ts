@@ -14,10 +14,12 @@ import {
   getTenant,
   getTenantByConversation,
   getTenantByHandle,
+  listTestBubbles,
   loadWakeContext,
   markPaywallSent,
   markPhotonNudgeSent,
   mintTelegramBind,
+  resetTestTenant,
   touchLastChannel,
   upsertTenant,
 } from "../lib/convex";
@@ -71,6 +73,10 @@ import {
 } from "../lib/wakeup-dedupe";
 import { claimDurableWakeupDelivery } from "../lib/convex";
 import { deliverHuman } from "../lib/deliver-human.ts";
+import {
+  isTestPhone,
+  testSpaceId,
+} from "../../convex/lib/testTenantPolicy.ts";
 import { inboundGateFromResult } from "../../convex/lib/billingPolicy";
 import { eventPrompt } from "../../convex/lib/watcherPolicy.ts";
 import { syncTenantArchive } from "../lib/archive-sync.ts";
@@ -499,6 +505,10 @@ export default defineChannel({
             conversationId: inbound.spaceId,
             text: ackText,
             principalId: ownerPhone,
+            // Test tenants only: lets a scenario tell the pre-turn status
+            // line apart from the turn's own first bubble, so "it answered"
+            // cannot be satisfied by the ack alone.
+            note: "fast-ack",
           }).catch((err) => console.error("fast ack deliver failed", err)),
         );
         console.log("fast ack sent", {
@@ -674,6 +684,51 @@ export default defineChannel({
       const result = await from(conversationId).clear();
       console.log("session cleared", { conversationId, result });
       return Response.json({ ok: true, result });
+    }),
+    // Cloud testing (docs: README "Cloud testing"). Inbound needs no route of
+    // its own — a scenario signs a synthetic Photon payload and posts it to
+    // the real /webhooks/photon, so the suite exercises the production path
+    // rather than a copy. These two only cover what a test cannot do from
+    // outside: read back what Bro said, and put a tenant back to a clean
+    // slate. Both refuse any phone outside the fictional test range, on this
+    // side and again inside Convex.
+    POST("/internal/test/transcript", async (request) => {
+      let body: { secret?: unknown; phone?: unknown };
+      try {
+        body = (await request.json()) as typeof body;
+      } catch {
+        return new Response("bad json", { status: 400 });
+      }
+      if (!secretEquals(body.secret, process.env.BRO_INTERNAL_SECRET)) {
+        return new Response("unauthorized", { status: 401 });
+      }
+      const phone = typeof body.phone === "string" ? body.phone.trim() : "";
+      if (!isTestPhone(phone)) {
+        return new Response("not a test phone", { status: 400 });
+      }
+      return Response.json({ ok: true, bubbles: await listTestBubbles(phone) });
+    }),
+    POST("/internal/test/reset", async (request, { from }) => {
+      let body: { secret?: unknown; phone?: unknown };
+      try {
+        body = (await request.json()) as typeof body;
+      } catch {
+        return new Response("bad json", { status: 400 });
+      }
+      if (!secretEquals(body.secret, process.env.BRO_INTERNAL_SECRET)) {
+        return new Response("unauthorized", { status: 401 });
+      }
+      const phone = typeof body.phone === "string" ? body.phone.trim() : "";
+      if (!isTestPhone(phone)) {
+        return new Response("not a test phone", { status: 400 });
+      }
+      const cleared = await resetTestTenant(phone);
+      // The model's own history lives in eve, not Convex: without this a
+      // second run of the same scenario starts mid-conversation and the
+      // welcome-letter and greeting branches never fire again.
+      const session = await from(testSpaceId(phone)).clear();
+      console.log("test tenant reset", { phone, ...cleared });
+      return Response.json({ ok: true, cleared, session });
     }),
     POST("/internal/wakeup", async (request, { from }) => {
       let body: {
