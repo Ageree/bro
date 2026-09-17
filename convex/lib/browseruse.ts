@@ -45,8 +45,34 @@ export function isBrowserUseConfigError(err: unknown): boolean {
   return err instanceof Error && err.message.startsWith(CONFIG_ERROR_MARKER);
 }
 
+/**
+ * Every whitespace character is stripped, not just the ends — the same
+ * pathology `agent/lib/browseruse.ts` documents, and the follow-through
+ * polling that runs here reads the very same secret. Observed for real: the
+ * value came back from the store with a newline in the MIDDLE, and `fetch`
+ * rejects such a header outright (`Headers.append: "…" is an invalid header
+ * value`), so the request never left the process. `.trim()` only touches the
+ * ends. A Browser Use key has no internal whitespace of its own, so this can
+ * only rescue a wrapped key, never corrupt a valid one.
+ */
+export function normalizeBrowserUseKey(raw: string | undefined): string | undefined {
+  return raw?.replace(/\s+/gu, "") || undefined;
+}
+
+/** Once per process: the request is rescued, but the stored secret is still
+ *  malformed and only a human can fix that. */
+let warnedWrappedKey = false;
+
 function key(): string {
-  const k = process.env.BROWSERUSE_API_KEY ?? process.env.BROWSER_USE_API_KEY;
+  const raw = process.env.BROWSERUSE_API_KEY ?? process.env.BROWSER_USE_API_KEY;
+  const k = normalizeBrowserUseKey(raw);
+  if (raw !== undefined && raw !== k && !warnedWrappedKey) {
+    warnedWrappedKey = true;
+    // Never the value itself — just that it is wrapped, and where to look.
+    console.warn(
+      "BROWSERUSE_API_KEY contains whitespace (a newline mid-value survives a paste into a hosted env); stripping it for the request, but re-set the stored secret",
+    );
+  }
   if (!k) throw new BrowserUseConfigError("BROWSERUSE_API_KEY missing");
   return k;
 }
