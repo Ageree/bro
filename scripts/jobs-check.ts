@@ -142,9 +142,9 @@ assert(
 
 const t0 = Date.parse("2026-08-27T12:00:00.000Z");
 assert(POLL_INTERVAL_MS === 2 * 60_000, "legacy 2min constant kept for old callers");
-// A1: followSleepMs ramps 10/15/20/30/45/60s then steadies at 90s, so
-// maxPollRounds() now covers ~20min in 18 rounds, not 10 (browser-policy-check.ts).
-assert(maxPollRounds() === 18, "follow 18 rounds / 20min under the new ramp+steady cadence");
+// followSleepMs ramps 5/10/10/15/15/20s then steadies at 20s, so
+// maxPollRounds() covers ~20min in 63 rounds (browser-policy-check.ts).
+assert(maxPollRounds() === 63, "follow 63 rounds / 20min under the tightened cadence");
 assert(
   nextFollowDecision({
     status: "running",

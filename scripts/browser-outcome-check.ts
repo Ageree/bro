@@ -5,6 +5,11 @@ import {
   parseCloudOutcome,
   type CloudNeed,
 } from "../convex/lib/browserOutcomePolicy.ts";
+import {
+  doneNowLine,
+  doneOpeners,
+  lateResultLine,
+} from "../convex/lib/browserProgressPolicy.ts";
 
 import { assert, src } from "./lib/check.ts";
 
@@ -203,6 +208,104 @@ const doneWithOptions = doneLineHint({
   options: ["Nike Air — 5990 ₽", "Nike Zoom — 6400 ₽"],
 });
 assert(doneWithOptions.includes("Nike Air"), "done line surfaces options when present");
+
+// --- doneNowLine: the report pollRun sends itself, with no model turn ---
+//
+// Same guard rails as lateResultLine (below it in the same module) but
+// without the «кстати, прошлое поручение» framing: this one is the report,
+// delivered while the person is still waiting for it.
+
+const CLEAN_DONE = `СДЕЛАНО: Заказал такси до аэропорта
+ЗАКАЗ: 55081234
+СУММА: 890 ₽
+КОГДА: через 7 минут
+НУЖНО: none`;
+
+const nowLine = doneNowLine("completed", CLEAN_DONE);
+assert(nowLine !== undefined, "a clean labelled done is reportable without the model");
+assert(
+  nowLine === doneLineHint(parseCloudOutcome(CLEAN_DONE)),
+  "un-seeded, the instant line is still the canned done draft",
+);
+assert(
+  !nowLine!.includes("Кстати"),
+  "the instant report is not framed as a late afterthought",
+);
+assert(
+  lateResultLine("completed", CLEAN_DONE)!.endsWith(nowLine!),
+  "late and instant reports share one body, only the framing differs",
+);
+
+// --- the opener varies, the facts do not -------------------------------
+//
+// This line is the most visible message of the whole errand and no model
+// turn phrases it any more, so a single frozen «Готово: …» would be the
+// machine register the voice work exists to remove. The seed is the runId:
+// one run keeps one wording across retries, different runs differ.
+
+const FACTS = "заказ №55081234, 890 ₽, через 7 минут.";
+const seeded = ["run_a", "run_b", "run_c", "run_d", "run_e", "run_f", "run_g", "run_h"].map(
+  (seed) => doneNowLine("completed", CLEAN_DONE, seed)!,
+);
+assert(
+  seeded.every((line) => line !== undefined && line.includes(FACTS)),
+  "every wording still carries the order number, the sum and the when",
+);
+assert(
+  new Set(seeded).size > 1,
+  "the opener actually varies across runs — a frozen line is the bug",
+);
+assert(
+  doneNowLine("completed", CLEAN_DONE, "run_a") ===
+    doneNowLine("completed", CLEAN_DONE, "run_a"),
+  "the same run always reads the same — a retried poll must not rephrase",
+);
+const openers = doneOpeners("Заказал такси до аэропорта");
+assert(openers.length >= 4, "the done palette is a palette, not a pair");
+assert(new Set(openers).size === openers.length, "no duplicated wording in the palette");
+assert(
+  openers.every((o) => o.length <= 120 && !/Сделал:/.test(o)),
+  "openers stay short, and none doubles the verb with a past-tense СДЕЛАНО",
+);
+assert(
+  seeded.every((line) => openers.some((o) => line.startsWith(o))),
+  "every seeded line opens with one of the palette's wordings",
+);
+assert(
+  doneOpeners(undefined).every((o) => o.length > 0 && !o.includes("undefined")),
+  "a done with no phrase still renders a clean opener",
+);
+
+// Everything the model still has to think about must NOT be short-circuited.
+assert(
+  doneNowLine("running", CLEAN_DONE) === undefined,
+  "a live run is never reported as finished",
+);
+assert(
+  doneNowLine("failed", CLEAN_DONE) === undefined,
+  "failed needs the model to phrase it, not a canned готово",
+);
+assert(
+  doneNowLine("cancelled", CLEAN_DONE) === undefined,
+  "cancelled is never a готово",
+);
+assert(
+  doneNowLine("stalled", CLEAN_DONE) === undefined,
+  "our own give-up sentinel is never a готово",
+);
+assert(
+  doneNowLine("completed", "СДЕЛАНО: оплатил\nНУЖНО: sms_code") === undefined,
+  "a run parked on the human goes to the model, which knows how to ask",
+);
+assert(
+  doneNowLine("completed", "всё готово, такси приедет через 7 минут") === undefined,
+  "unlabelled free text is not trustworthy enough to send unread",
+);
+assert(
+  doneNowLine("completed", "НУЖНО: none\nДЕТАЛИ: нет") === undefined,
+  "a labelled block with no СДЕЛАНО has nothing to report",
+);
+assert(doneNowLine("completed", undefined) === undefined, "no result → nothing to send");
 
 // --- wiring: package.json carries the new check without dropping B3's line ---
 

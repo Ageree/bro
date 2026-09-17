@@ -843,7 +843,7 @@ export default defineChannel({
           const nextTaskLine = nextTask
             ? ` Затем сразу начни отложенное поручение «${nextTask}»: одна короткая строка человеку и browser_task с этим текстом.`
             : "";
-          prompt = `[background wakeup] Поручение «${payload}» завершено. Итог браузера:\n${result}\n\nНапиши человеку «готово»-сообщение: что сделано, номер заказа/записи, сумма, когда/куда — 1–2 коротких пузыря, без канцелярита. ${variantsLine} Не вызывай browser_task для проверки — результат уже здесь.${nextTaskLine}`;
+          prompt = `[background wakeup] Поручение «${payload}» завершено. Итог браузера:\n${result}\n\nСкажи человеку, что всё сделано, живыми словами — как другу в чат, своей формулировкой, а не заученной фразой (каждый раз по-новому, не начинай одинаково). Важное не теряй: что именно сделано, номер заказа или записи, сумма, когда и куда. 1–2 коротких пузыря, без канцелярита и без слов «джоб», «reset», «Cloud», «браузер». ${variantsLine} Не вызывай browser_task для проверки — результат уже здесь.${nextTaskLine}`;
           wakeupFallback = doneLineHint(parseCloudOutcome(result));
         } else if (phase === "need") {
           wakeupPhase = phase;
@@ -871,11 +871,11 @@ export default defineChannel({
         } else if (phase === "failed") {
           wakeupPhase = phase;
           const reason = result.split(/\r?\n/)[0]?.slice(0, 200).trim();
-          prompt = `[background wakeup] Поручение «${payload}» не получилось${reason ? `: ${reason}` : ""}. Скажи одной строкой и предложи попробовать ещё раз или сделать иначе; без слов «джоб», «reset», «Cloud».`;
+          prompt = `[background wakeup] Поручение «${payload}» не получилось${reason ? `: ${reason}` : ""}. Скажи это одной строкой, своими словами и каждый раз по-разному — как живой человек, без извинительных шаблонов и без «к сожалению». И тут же предложи попробовать ещё раз или сделать иначе. Без слов «джоб», «reset», «Cloud».`;
           wakeupFallback = `Не получилось: ${payload}. Попробовать ещё раз?`;
         } else if (phase === "giveup") {
           wakeupPhase = phase;
-          prompt = `[background wakeup] Я остановил задачу «${payload}» — она зависла на ${site ?? "сайте"}. Скажи это одной строкой и предложи начать заново.`;
+          prompt = `[background wakeup] Я остановил задачу «${payload}» — она зависла на ${site ?? "сайте"}. Скажи это одной строкой, простыми словами и не по шаблону, и предложи начать заново. Без слов «джоб», «reset», «Cloud».`;
           wakeupFallback = `Задача «${payload}» зависла — я её остановил. Начать заново?`;
         } else {
           // Legacy/un-phased wakeup (older workflow build, or a webhook

@@ -23,7 +23,12 @@ import {
 } from "../../convex/lib/browserCdp.ts";
 import { scrubSecrets } from "../../convex/lib/secretScrub.ts";
 import { cdpNavigate } from "./browser-cdp.ts";
-import { loginScaffold, payScaffold, type SecretBinding } from "./browser-pay.ts";
+import {
+  isAttachCardErrand,
+  loginScaffold,
+  payScaffold,
+  type SecretBinding,
+} from "./browser-pay.ts";
 
 const DEFAULT_BASE = "https://api.browser-use.com/api/v4";
 
@@ -156,28 +161,43 @@ function errandLoginBlock(opts?: {
   login?: boolean;
   profileSynced?: boolean;
 }): string {
-  const session = opts?.profileSynced
-    ? "В профиле уже могут быть куки прошлой сессии — используй их. Куки не значат, что ты уже вошёл: смотри на экран, а не на куки."
-    : "Сохранённой сессии может не быть.";
-  const vault = opts?.login ? `${loginScaffold()}\n` : "";
-  const typed = opts?.login
-    ? ""
-    : "Если в задаче есть логин или пароль — введи их на входе и на регистрации, не цитируй. ";
-  return `${session} Если видишь «Войти», «Авторизоваться» или гостевую форму — войди сам (паспорт, Яндекс ID, телефон — так и надо). Не останавливайся на гостевом экране.
-${vault}${typed}Нет пароля и без него дальше нельзя — закончи итог с НУЖНО: password. Код из SMS — НУЖНО: sms_code. Код на почту — НУЖНО: email_code. Подтверждение в приложении или пуш — НУЖНО: push. Не выдумывай пароль. Номера карт и CVV сам не вводи, если карта не подключена секретами.`;
+  const lines: string[] = [];
+  if (opts?.profileSynced) {
+    lines.push(
+      "В профиле могут быть куки прошлой сессии. Куки не значат, что ты вошёл: смотри на экран.",
+    );
+  }
+  if (opts?.login) lines.push(loginScaffold());
+  lines.push(
+    opts?.login
+      ? "Упёрся в код, пуш или капчу — закончи с НУЖНО: sms_code, email_code, push или captcha."
+      : "Логин и пароль из задачи вводи сам; выдумывать пароль или номер карты нельзя. Упёрся в код, пуш, капчу или чужой пароль — закончи с НУЖНО: sms_code, email_code, push, captcha или password.",
+  );
+  // The autonomy licence above is deliberately broad, so this is where the
+  // line gets drawn: an interface decision is free, a fact about the human is
+  // not. `address`/`info` exist so Bro can come back and ask instead of
+  // shipping a parcel to a guessed street.
+  lines.push(
+    "Что знает только человек — адрес, имя, телефон, время, размер — не придумывай: закончи с НУЖНО: address или info и напиши в ДЕТАЛИ, чего не хватает.",
+  );
+  return lines.join("\n");
 }
 
 function errandFinishBlock(
   task: string,
   payBlock: string | undefined,
+  attachCard?: boolean,
 ): string {
+  if (attachCard) {
+    return "Ничего не заказывай и не вызывай. Код от банка подтверди.";
+  }
   if (payBlock) {
-    return "Доводи дело до конца, включая оплату подключённой картой. Прежде чем оформить — проверь, что товар или услуга не добавлены в корзину дважды. После оплаты проверь, что на экране виден номер заказа — без него это не «готово».";
+    return "Доводи дело до конца, включая оплату картой. Дважды не заказывай и не плати.";
   }
   if (isDryRunErrand(task)) {
-    return "Это проверка без заказа: покажи форму и цену. Не нажимай «Заказать», «Поехали» и не создавай поездку.";
+    return "Это проверка без заказа: дойди до формы, покажи цену. Не нажимай «Заказать» или «Поехали».";
   }
-  return "Доводи дело до конца: жми финальную кнопку (нажми «Заказать», «Записаться» и т.п.), если человек просил довести дело до конца. Для такси после входа заполни откуда/куда и нажми «Заказать». Прежде чем оформить — проверь, что заказ не создан дважды. Гостевой экран без попытки войти — не результат.";
+  return "Доводи дело до конца и жми финальную кнопку: у такси заполни откуда/куда и нажми «Заказать», иначе «Записаться» или «Оформить заказ». Дважды не заказывай.";
 }
 
 export type ProfileView = {
@@ -221,30 +241,36 @@ export function scaffoldTask(
   ) {
     return task;
   }
-  const payBlock = opts?.pay ? payScaffold(opts.pay) : undefined;
-  const stopForPay = "Если по ходу нужна оплата — закончи итог с НУЖНО: payment.";
+  const attachCard = opts?.pay?.attachCard ?? isAttachCardErrand(task);
+  const payBlock = opts?.pay
+    ? payScaffold({ ...opts.pay, ...(attachCard ? { attachCard: true } : {}) })
+    : undefined;
+  const stopForPay = attachCard
+    ? "Карта к запуску не подключена — дойди до формы карты и закончи с НУЖНО: payment."
+    : "Дошло до оплаты — закончи с НУЖНО: payment.";
   const login = errandLoginBlock({
     login: opts?.login,
     profileSynced: opts?.profileSynced,
   });
-  const finish = errandFinishBlock(task, payBlock);
+  const finish = errandFinishBlock(task, payBlock, attachCard);
   // A continuation must never re-navigate or redo what the previous step of
   // THIS SAME errand already did (the taxi incident: a fresh run re-drove
   // the whole route because eve tore down the old browser first) — the tab
   // is already open exactly where the last step left it.
   const alreadyOpen = opts?.continuation
-    ? "Страница уже открыта на предыдущем шаге этого же поручения — продолжай с текущего состояния. Не перезагружай страницу, не открывай сайт заново и не вводи заново маршрут или данные, которые уже введены. Ниже — то, что человек только что прислал."
+    ? "Страница уже открыта с предыдущего шага этого же поручения — продолжай прямо с неё, заново ничего не открывай и не вводи. Ниже — то, что человек только что прислал."
     : opts?.startPage
-      ? `Страница уже открыта: ${opts.startPage}. Не уходи на about:blank. Если сайт открывает паспорт или форму входа — иди туда и войди.`
-      : "Сайт откроет Bro сам. Не сиди на about:blank. Если нужна авторизация — открой вход и войди.";
+      ? `Страница уже открыта: ${opts.startPage} — работай на ней, на языке сайта.`
+      : "Сайт откроет Bro сам — дождись страницы и работай на ней, на языке сайта.";
   return `${ERRAND_MARK}
-Выполняй поручение на языке сайтов (обычно русский). Задача: ${task}.
+ЦЕЛЬ: ${task}
 ${alreadyOpen}
-Сначала закрой баннеры cookie, промо и подписки — не читая их. Если сайт спрашивает город или регион — выбери тот, что в задаче, или ближайший смысловой; не спрашивай человека.
-${login} ${payBlock ?? stopForPay}
+Решай сам и не спрашивай человека: баннеры закрывай, город и вариант выбирай, «Войти» или гостевую форму — входи или регистрируйся (паспорт, Яндекс ID — норма).
+Работай быстро и не застревай: не грузится или не жмётся — перезагрузи, вернись, ищи по сайту, жми Tab/Enter, бери другой вариант или сайт.
+Важен результат: гостевой экран, баннер, пустая корзина и ненажатая финальная кнопка результатом не считаются.
+${login}
+${payBlock ?? stopForPay}
 ${finish}
-Если данных не хватает (имя, телефон, адрес, время, размер) — не выдумывай; перечисли в итоге (ДЕТАЛИ) и поставь НУЖНО: address, payment или info — какое подходит.
-Работай быстро: если сайт медленный или недоступен — пропусти его и возьми другой вариант. Капча без выхода — закончи итог с НУЖНО: captcha.
 
 Итог — только в этом формате, каждое поле с новой строки:
 СДЕЛАНО: <одна фраза>

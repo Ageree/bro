@@ -1,7 +1,8 @@
 /**
  * Fast-ack lane: a tiny no-reasoning OpenRouter call that turns the human's
- * message into a 2-5 word status line («ищу на вб») and sends it as the
- * first bubble within a hard time budget — well before eve's queue hop,
+ * message into a freshly worded 2-6 word "я взялся" line («так, уже ищу»,
+ * «окей, гляну почту») and sends it as the first bubble within a hard time
+ * budget — well before eve's queue hop,
  * workflow cold start, memory recall and model TTFT would produce one.
  *
  * The real agent turn runs in a DIFFERENT Vercel function (eve compiles it
@@ -50,14 +51,16 @@ export function fastAckModel(env: EnvLike = process.env): string {
   );
 }
 
-/** Compact Russian-first steer for the tiny ack model. Keep this <= 900 chars. */
-export const FAST_ACK_SYSTEM = `Ты — Bro, персональный помощник, пишешь человеку как друг в чат. Тебе дают последнее сообщение человека. Если выполнить его нужно делом (поискать, купить, забронировать, проверить почту/календарь/заказ, поставить напоминание, открыть сайт, посмотреть фото) — ответь ОДНОЙ строкой из 2-5 слов на языке человека: с маленькой буквы, без точки на конце, без вступлений и без имени, в стиле «ищу на вб» / «смотрю почту» / «открываю озон» / «ставлю напоминание» / «проверяю заказ». Если это просто разговор, приветствие, спасибо, ответ на вопрос Bro, да/нет, или на это можно ответить сразу без инструментов — выведи ровно NONE. Никогда не выводи что-то ещё.
-Примеры:
-купи кроссовки на вб → ищу на вб
-проверь почту → смотрю почту
+/** Compact Russian-first steer for the tiny ack model. Keep this <= 1200 chars.\n *  The examples are deliberately few: the owner wants the model composing the\n *  line, and a long menu of beats is something a tiny model copies verbatim\n *  rather than something it learns a register from. */
+export const FAST_ACK_SYSTEM = `Ты — Bro, пишешь человеку как друг в чат, а не как бот. Тебе дают его последнее сообщение. Если по нему надо что-то сделать (поискать, купить, забронировать, проверить почту, календарь или заказ, поставить напоминание, открыть сайт, посмотреть фото) — ответь ОДНОЙ живой строкой на языке человека: ты взялся за дело, и назови его, если понятно какое.
+Строку сочиняй сам, каждый раз с нуля, как сказал бы вслух в эту секунду. Заготовок не держи, примеры ниже дословно не повторяй — они только показывают длину и тон. 2-6 слов, с маленькой буквы, без точки в конце, без вступлений, без имени, без эмодзи. Его слова обратно не пересказывай. Начинай каждый раз с разного слова, особенно не с «ищу». Можно как статус, можно как движение — второе живее.
+Если это просто разговор, приветствие, спасибо, ответ на твой вопрос, да/нет или можно ответить сразу без инструментов — выведи ровно NONE. Больше ничего не выводи.
+Тон и длина (не копируй):
+купи кроссовки на вб → пошёл за кроссовками
+проверь почту → окей, гляну почту
+напомни завтра в 9 позвонить маме → сделаю, ставлю напоминание
 спасибо бро → NONE
 ок → NONE
-открой озон и найди чехол → открываю озон
 как дела? → NONE`;
 
 /** False for empty text, short acks, event/wakeup/button placeholders, and long pastes. */
@@ -124,8 +127,8 @@ export function sanitizeFastAck(raw: string | null | undefined): string | null {
   if (s.toLowerCase() === "none") return null;
   if (/\bnone\b/i.test(s)) return null;
   const words = s.split(/\s+/).filter(Boolean);
-  if (words.length === 0 || words.length > 5) return null;
-  if (s.length > 48) return null;
+  if (words.length === 0 || words.length > 6) return null;
+  if (s.length > 60) return null;
   if (/https?:\/\/|www\.\S+/i.test(s)) return null;
   // \b is ASCII-only in JS regex — Cyrillic needs an explicit non-letter lookahead.
   if (/^(бро|bro)(?!\p{L})/iu.test(s)) return null;
@@ -153,9 +156,9 @@ function beatTokens(text: string): Set<string> {
 
 /**
  * The real turn's model was told not to repeat the ack, but a weak model
- * still opens with «Ищу на ВБ.» or «Ищу кроссовки на ВБ». The generic bubble
- * dedupe is case-sensitive and needs 32 shared chars / 6 tokens, which a
- * 3-word beat never has. Returns: null when `text` is the ack restated (drop
+ * still opens with «Ищу на ВБ.» or «Взялся, смотрю кроссовки на ВБ». The
+ * generic bubble dedupe is case-sensitive and needs 32 shared chars / 6
+ * tokens, which a short beat never has. Returns: null when `text` is the ack restated (drop
  * it), the remainder when `text` starts with the ack (send only the rest),
  * or `text` unchanged.
  */
@@ -186,7 +189,9 @@ export function peelFastAck(ack: string, text: string): string | null {
     return rest || null;
   }
   // Single short line with mostly the same content words → a restatement.
-  if (!t.includes("\n") && lineFold.split(" ").length <= 8) {
+  // The ack itself runs up to 6 words now, and a restatement usually adds a
+  // couple ("Взялся, смотрю кроссовки на ВБ"), so the window has to clear that.
+  if (!t.includes("\n") && lineFold.split(" ").length <= 10) {
     const a = beatTokens(ack);
     const b = beatTokens(firstLine);
     if (a.size > 0 && b.size > 0) {
@@ -214,7 +219,7 @@ export function fastAckOf(
 }
 
 export function fastAckInstruction(text: string): string {
-  return `Before this turn started, Bro already sent the human this first line: «${text}». Treat it as the first line of your reply — do not repeat, rephrase, or write another looking/status line. Continue from it: call the tool now, or write the answer. If that line turns out to be wrong, just proceed correctly without apologising.`;
+  return `Before this turn started, Bro already sent the human this first line: «${text}». Treat it as the first line of your reply — do not repeat it, rephrase it, or open with another "взялся"/status line of your own. Continue from it: call the tool now, or write the answer. If that line turns out to be wrong, just proceed correctly without apologising.`;
 }
 
 export type FastAckHandle = {
@@ -235,7 +240,12 @@ export function startFastAck(
 ): FastAckHandle | null {
   const env = opts?.env ?? process.env;
   if (!fastAckEnabled(env)) return null;
-  const apiKey = env.OPENROUTER_API_KEY?.trim();
+  // Strip ALL whitespace, not just the ends: a key pasted into a hosted env
+  // can carry a newline in the middle, and fetch rejects such a header
+  // outright — the lane would then fall back forever on a deployment that
+  // believes it is configured. Same treatment the phrasing lane and the
+  // deploy script give their keys.
+  const apiKey = env.OPENROUTER_API_KEY?.replace(/\s+/gu, "");
   if (!apiKey) return null;
   if (!shouldFastAck(text)) return null;
 
@@ -254,7 +264,9 @@ export function startFastAck(
       model: fastAckModel(env),
       stream: false,
       max_tokens: 24,
-      temperature: 0.2,
+      // High enough that the opener really varies turn to turn — the palette in
+      // FAST_ACK_SYSTEM is only useful if the model does not collapse onto «ищу».
+      temperature: 0.9,
       reasoning: { enabled: false },
       messages: [
         { role: "system", content: FAST_ACK_SYSTEM },

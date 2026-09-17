@@ -61,8 +61,11 @@ assert(
 );
 
 const opening = loginOpeningText("Яндекс Такси");
-assert(opening.includes("Открываю вход в Яндекс Такси"), "opening copy");
+assert(opening.includes("Яндекс Такси"), "opening names the site");
+assert(/ссылк/i.test(opening), "opening promises the link that follows");
+assert(opening.length <= 120 && !opening.includes("\n"), "opening is one short spoken line");
 assert(!opening.includes("http"), "opening has no url");
+assert(!/парол/i.test(opening), "opening never mentions a password");
 
 const vaultTask = loginVaultTask("https://taxi.yandex.ru");
 assert(vaultTask.startsWith(LOGIN_VAULT_MARK), "vault login mark");
@@ -76,14 +79,19 @@ assert(vaultTask.includes("site_password"), "vault task names password alias");
 assert(!vaultTask.includes("ochen"), "vault task has no secret");
 
 const chat = loginChatText("https://live.example/view", "Ozon");
-assert(chat.includes("Открой ссылку и войди в Ozon"), "plain chat copy");
-assert(chat.includes("пароль не увидит"), "no password");
+assert(chat.includes("Ozon"), "chat copy names the site");
+assert(/парол\S*[^.!?]*не увиж|не увиж[^.!?]*парол/i.test(chat), "Bro states he will not see the password");
+assert(/вход[^.!?]*сохранит|сохранит[^.!?]*/i.test(chat), "chat says the login is saved after this once");
+assert(!/введи парол|скажи парол|пришли парол/i.test(chat), "chat never asks for the password");
 assert(/\n\nhttps:\/\/live\.example\/view$/.test(chat), "url on its own line");
 assert(!chat.includes("profile.sh"), "no terminal helper");
 assert(!chat.includes("Profile ID"), "no profile id");
 
 const vaultChat = loginVaultChatText("Ozon");
-assert(vaultChat.includes("войду в Ozon входом из сейфа"), "vault chat copy");
+assert(vaultChat.includes("Ozon"), "vault chat names the site");
+assert(/сейф|сохранён/i.test(vaultChat), "vault chat says the login is already his to use");
+assert(/напиш|скаж/i.test(vaultChat), "vault chat promises to come back");
+assert(vaultChat.length <= 120 && !vaultChat.includes("\n"), "vault chat is one short spoken line");
 assert(!vaultChat.includes("http"), "vault chat has no url");
 assert(!vaultChat.includes("пароль"), "vault chat does not say password");
 
@@ -221,14 +229,15 @@ assert(
   !cookieDomainsCoverPage(["ozon.ru"], "https://passport.yandex.ru/auth"),
   "ozon cookies do not cover yandex",
 );
+const alreadyLogged = alreadyLoggedChatText("Яндекс Такси");
+assert(alreadyLogged.includes("Яндекс Такси"), "already-logged names the site");
+assert(/уже/i.test(alreadyLogged) && /вход/i.test(alreadyLogged), "already-logged says the login is already there");
+assert(/ссылк/i.test(alreadyLogged), "already-logged explains why no link is coming");
 assert(
-  alreadyLoggedChatText("Яндекс Такси").includes("уже сохранён"),
-  "already-logged copy",
+  alreadyLogged.length <= 120 && !alreadyLogged.includes("\n"),
+  "already-logged is one short spoken line",
 );
-assert(
-  !alreadyLoggedChatText("Яндекс Такси").includes("http"),
-  "already-logged has no url",
-);
+assert(!alreadyLogged.includes("http"), "already-logged has no url");
 
 assert(profileSyncStatus({}) === "missing", "no profile");
 assert(

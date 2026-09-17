@@ -46,6 +46,14 @@ if [ "$SKIP_ENV_CHECK" != "1" ]; then
       missing="$missing $name"
     fi
   done
+  # Optional, warn-only: without it the Convex deployment still sends every
+  # progress note and «готово» report, just in the canned wording from
+  # convex/lib/browserProgressPolicy.ts instead of phrasing each one
+  # (convex/lib/broPhrasing.ts). Never a hard requirement.
+  if ! has_var OPENROUTER_API_KEY; then
+    echo "note: convex has no OPENROUTER_API_KEY — browser progress notes and the done report will use their canned wording" >&2
+    echo "      set it with: npx convex env set OPENROUTER_API_KEY <key>" >&2
+  fi
   if [ -n "$missing" ]; then
     echo "convex deployment is missing:$missing" >&2
     echo "set each with: npx convex env set <NAME> <value> (e.g. npx convex env set BROWSERUSE_API_KEY <key>)" >&2
