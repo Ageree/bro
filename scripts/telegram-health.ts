@@ -69,7 +69,15 @@ function print(report: Report, where: string): void {
       `  bot username      ${facts.configuredUsername ? `@${facts.configuredUsername}` : "MISSING"}` +
         (facts.botUsername ? ` (token belongs to @${facts.botUsername})` : ""),
     );
-    console.log(`  webhook secret    ${facts.hasWebhookSecret ? "set" : "MISSING"}`);
+    console.log(
+      `  webhook secret    ${
+        facts.hasWebhookSecret
+          ? "set"
+          : facts.webhookSecretVisible === false
+            ? "not visible from here (it lives on the deployment)"
+            : "MISSING"
+      }`,
+    );
     console.log(`  webhook url       ${facts.webhookUrl || "(none)"}`);
     console.log(`  expected url      ${report.expectedWebhookUrl}`);
     if (facts.pendingUpdates !== undefined) {
@@ -129,6 +137,9 @@ async function local(repair: boolean): Promise<Report> {
     hasToken: Boolean(process.env.TELEGRAM_BOT_TOKEN?.trim()),
     configuredUsername: (process.env.TELEGRAM_BOT_USERNAME ?? "").trim().replace(/^@/, ""),
     hasWebhookSecret: Boolean(telegramWebhookSecret()),
+    // A machine without the secret says nothing about the deployment that has
+    // it, so local mode must not report one as broken.
+    webhookSecretVisible: Boolean(telegramWebhookSecret()),
   };
   if (facts.hasToken) {
     const me = await telegramGetMe().catch((err: unknown) => ({ error: String(err) }));

@@ -134,6 +134,14 @@ export type TelegramHealthFacts = {
   /** `TELEGRAM_BOT_USERNAME` as configured, without the `@`. */
   configuredUsername: string;
   hasWebhookSecret: boolean;
+  /**
+   * Whether `hasWebhookSecret` was read where the secret lives.
+   *
+   * False from an operator's machine: the deployment's copy is the one Telegram
+   * is checked against, and a laptop that lacks it proves nothing. Absent or
+   * true means the answer counts.
+   */
+  webhookSecretVisible?: boolean;
   /** Username Telegram reports for this token (`getMe`). */
   botUsername?: string;
   /** `getMe` refused — a wrong or revoked token. */
@@ -200,7 +208,7 @@ export function telegramHealth(facts: TelegramHealthFacts): TelegramHealth {
       `TELEGRAM_BOT_USERNAME is @${username} but the token belongs to @${facts.botUsername}: every bind link points at the wrong bot`,
     );
   }
-  if (!facts.hasWebhookSecret) {
+  if (!facts.hasWebhookSecret && facts.webhookSecretVisible !== false) {
     problems.push(
       "TELEGRAM_WEBHOOK_SECRET is not set: webhookSecretOk rejects every update with 401, so the bot never hears anything",
     );

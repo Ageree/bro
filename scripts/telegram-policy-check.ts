@@ -215,6 +215,18 @@ assert(
 }
 
 {
+  // Local mode reads the secret off the operator's machine, where its absence
+  // means nothing: the deployment's copy is the one Telegram is checked
+  // against. A false «broken» there would teach the reader to ignore the tool.
+  const health = telegramHealth({
+    ...HEALTHY,
+    hasWebhookSecret: false,
+    webhookSecretVisible: false,
+  });
+  assert(health.ok, "a secret we cannot see from here is not a problem");
+}
+
+{
   // The link points at a bot this token cannot answer for.
   const health = telegramHealth({ ...HEALTHY, botUsername: "SomeOtherBot" });
   assert(!health.ok, "a username/token mismatch is broken");
