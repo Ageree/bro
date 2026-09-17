@@ -289,4 +289,21 @@ export default defineSchema({
   })
     .index("by_tenant", ["tenantId"])
     .index("by_tenant_and_name", ["tenantId", "name"]),
+
+  /**
+   * Outbound for a test tenant (`convex/lib/testTenantPolicy.ts`), recorded
+   * instead of sent. This is a table rather than an in-memory buffer because
+   * eve runs the turn in a separate Vercel function from the webhook, and a
+   * wakeup or a browser follow-through fires from Convex itself — nothing
+   * in-process can see all three. Rows are cleared per run by the reset route.
+   */
+  testTranscript: defineTable({
+    phoneE164: v.string(),
+    at: v.number(),
+    channel: v.union(v.literal("imessage"), v.literal("telegram")),
+    /** What the model produced, after connect-URL scrubbing, before compiling. */
+    text: v.string(),
+    /** What the human would actually have seen, one string per bubble. */
+    bubbles: v.array(v.string()),
+  }).index("by_phone", ["phoneE164"]),
 });

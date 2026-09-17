@@ -45,6 +45,7 @@
     "billing:check": "node --experimental-strip-types scripts/billing-check.ts",
     "cabinet:check": "node --experimental-strip-types scripts/cabinet-check.ts",
     "tz:check": "node --experimental-strip-types scripts/tz-check.ts",
+    "test-tenant:check": "node --experimental-strip-types scripts/test-tenant-check.ts",
     "types:check": "tsc --noEmit",
     "schema:check": "node --experimental-strip-types scripts/schema-check.ts",
     "wipe:check": "node --experimental-strip-types scripts/wipe-check.ts",

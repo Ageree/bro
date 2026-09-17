@@ -50,6 +50,7 @@ import {
   type HumanChannel,
 } from "./lib/telegramPolicy";
 import { findTenantByHandle, findTenantByPhone } from "./lib/tenantLookup";
+import { isTestPhone } from "./lib/testTenantPolicy";
 import { siteFromLoginTask } from "./lib/browserProfilePolicy";
 
 /** `{ k: obj[k] }` for each key present with a defined value. Same shape as
@@ -953,6 +954,10 @@ export const countInboundMessage = mutation({
     assertSecret(secret);
     const tenant = await tenantByPhone(ctx, phoneE164);
     if (tenant.status === "disabled") return { decision: "drop" as const };
+    // A test tenant is not a customer: counting its messages would let a
+    // nightly suite paywall itself halfway through, which reads as a
+    // behavioural failure when it is only an accounting one.
+    if (isTestPhone(phoneE164)) return { decision: "allow" as const };
     const now = Date.now();
     const key = dayKey(now, tenant.tz);
     const paid = isPaid(tenant.paidUntil, now);
@@ -1071,6 +1076,10 @@ export const countBrowserJobStart = mutation({
   handler: async (ctx, { secret, phoneE164, chargeKey }) => {
     assertSecret(secret);
     const tenant = await tenantByPhone(ctx, phoneE164);
+    // Same reason as `countInboundMessage`: a suite that exhausts a month of
+    // browser jobs stops testing browser behaviour and starts testing the
+    // quota message.
+    if (isTestPhone(phoneE164)) return { allowed: true };
     const key = chargeKey?.trim();
     if (!key) {
       return { allowed: await chargeBrowserJob(ctx, tenant, Date.now()) };

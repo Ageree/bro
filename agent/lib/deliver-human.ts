@@ -25,6 +25,8 @@ import {
   type SendPhotoDeps,
 } from "./send-photo.ts";
 import { claimChatBubble } from "./bubble-dedupe.ts";
+import { isTestPhone } from "../../convex/lib/testTenantPolicy.ts";
+import { recordTestDelivery, type TestDelivery } from "./test-sink.ts";
 
 export type HumanTenant = {
   phoneE164?: string;
@@ -36,6 +38,8 @@ export type HumanTenant = {
 };
 
 export type DeliverHumanDeps = SendPhotoDeps & {
+  /** Overridable so a check can watch the test-tenant branch without Convex. */
+  recordTestDelivery?: (delivery: TestDelivery) => Promise<void>;
   sendIMessage?: (opts: {
     conversationId: string;
     text: string;
@@ -67,6 +71,22 @@ export async function deliverHuman(opts: {
     prefer === "telegram" && canDeliverTelegram(tenant.telegramChatId);
 
   const cleaned = stripConnectUrls(text);
+  // A test tenant has no device on the other end: record what it would have
+  // been told, and stop. The branch sits here, in front of the photo and
+  // channel work, because this function is the one funnel every human-facing
+  // path already shares — an agent turn, a wakeup, browser follow-through,
+  // `profile_setup`, a Composio notice. A sink placed any deeper would catch
+  // some of those and silently miss the rest, which is the failure mode a
+  // test harness can least afford.
+  if (isTestPhone(tenant.phoneE164)) {
+    const record = opts.deps?.recordTestDelivery ?? recordTestDelivery;
+    await record({
+      phoneE164: tenant.phoneE164!,
+      channel: telegram ? "telegram" : "imessage",
+      text: cleaned,
+    });
+    return;
+  }
   const storedNames = extractStoredFileRefs(cleaned);
   const remaining = stripStoredFileRefs(cleaned);
   if (storedNames.length > 0 && tenant.phoneE164) {
