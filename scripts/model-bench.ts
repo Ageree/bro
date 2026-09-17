@@ -138,7 +138,12 @@ export const TASKS: Task[] = [
 ];
 
 function key(): string {
-  const k = process.env.BROWSER_USE_API_KEY?.trim();
+  // Every whitespace character is stripped, not just the ends: the key can
+  // arrive from a secret store with an embedded newline, and `fetch` rejects
+  // such a header value outright ("invalid header value") before any request
+  // goes out. A Browser Use key has no internal whitespace of its own, so
+  // this cannot corrupt a good key — it only rescues a wrapped one.
+  const k = process.env.BROWSER_USE_API_KEY?.replace(/\s+/g, "");
   if (!k) throw new Error("BROWSER_USE_API_KEY missing");
   return k;
 }
