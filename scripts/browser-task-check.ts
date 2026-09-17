@@ -97,6 +97,18 @@ assert(
   "long follow-up is not a bare ack",
 );
 assert(!isAckLike(""), "empty text is not an ack");
+// (e) «на воскресенье» is two words and carries no «?» — read as an ack it was
+// answered with "это подтверждение, не пересылай результат заново" and never
+// reached the live Cloud session. While a session is live (or a start is in
+// flight) a short line is a detail for the errand, not applause.
+for (const line of ["на воскресенье", "на двоих", "у окна", "готово"]) {
+  assert(
+    !isAckLike(line, { sessionLive: true }),
+    `«${line}» is not swallowed as an ack while a session is live`,
+  );
+}
+assert(isAckLike("спасибо", { sessionLive: false }), "with nothing live, a short reply is still an ack");
+assert(isAckLike("спасибо"), "the ack reading is unchanged when liveness is not passed");
 
 // ---------------------------------------------------------------------------
 // chargeKeyFor — item 10: one charge per errand
@@ -203,12 +215,34 @@ assert(!taskLooksLikeBuy("вызови такси"), "non-buy task");
 
 const toolSrc = src("agent/tools/browser_task.ts");
 
+assert(
+  toolSrc.includes("isAckLike(task, { sessionLive: ackSessionLive })"),
+  "the reuse branch passes liveness into isAckLike",
+);
+assert(
+  toolSrc.includes("cloudStartInFlight({ startingAt: tenant.browserStartingAt })"),
+  "a start in flight also switches the ack reading off",
+);
+
 assert(toolSrc.includes("markTurnSpoke"), "browser_task marks the turn as spoken after its own notify");
 assert(toolSrc.includes("fastAckOf"), "browser_task defers its own notify to a fast-ack");
 assert(toolSrc.includes("browserPaying"), "browser_task persists/reads browserPaying");
 assert(toolSrc.includes("browserPayHosts"), "browser_task persists/reads browserPayHosts");
 assert(toolSrc.includes("need: tenant.browserNeed"), "inject attrs carry the tenant's browserNeed");
-assert(toolSrc.includes("browserProbed: true"), "inject attrs mark the browser as probed");
+// Was `browserProbed: true` unconditionally. It cannot be: during a start
+// claim there is no session id to probe yet, and "probed and found nothing"
+// would then be read as a confirmed-absent browser (cloudSessionLooksLive's
+// F1 rule) and kill the inject the claim exists to protect.
+assert(
+  toolSrc.includes("browserProbed: probed"),
+  "inject attrs mark the browser as probed only when something was actually probed",
+);
+assert(
+  /if \(sessionId \|\| tenant\.browserRunId\) \{\s*const browser = await findBrowserForSession/.test(
+    toolSrc,
+  ),
+  "the browser probe only runs when there is a session or run to probe",
+);
 assert(toolSrc.includes("clearBrowserNeed(phone"), "a successful inject queue clears browserNeed*");
 // The blocker guard moved into the gate both completion paths share
 // (convex/lib/orderRecordPolicy.ts) — assert it there, and that the tool
@@ -537,6 +571,12 @@ assert(
 // contract and may not shrink — everything above the ceilings is operating
 // prose, and it must not creep back. Raising a ceiling is a decision, not a
 // side effect: if one of these fires, cut a sentence instead.
+//
+// Every ceiling here dropped by ~600-700 bytes when the generic browsing
+// advice came out of the scaffold (agent/lib/errand-brief.ts). These calls
+// pass no facts and no composed brief, so what they measure is the ENVELOPE
+// alone; the ceilings for a task carrying the human's own facts live in
+// scripts/errand-brief-check.ts, where growth is user content, not prose.
 // ---------------------------------------------------------------------------
 
 const bytes = (text: string) => Buffer.byteLength(text, "utf8");
@@ -557,24 +597,24 @@ function underCeiling(label: string, text: string, ceiling: number): void {
   underCeiling(
     "plain errand scaffold",
     scaffoldTask("вызови такси до Шереметьево", { startPage: "https://taxi.yandex.ru/" }),
-    2700,
+    2100,
   );
   underCeiling(
     "dry-run errand scaffold",
     scaffoldTask("покажи форму такси, не нажимай Заказать", {
       startPage: "https://taxi.yandex.ru/",
     }),
-    2700,
+    2100,
   );
   underCeiling(
     "continuation scaffold",
     scaffoldTask("подтвердил в приложении", { continuation: true }),
-    2900,
+    2100,
   );
   underCeiling(
     "vault-login errand scaffold",
     scaffoldTask("зайди на ozon и посмотри заказы", { login: true, profileSynced: true }),
-    3200,
+    2400,
   );
   underCeiling(
     "paid errand scaffold",
@@ -583,7 +623,7 @@ function underCeiling(label: string, text: string, ceiling: number): void {
       pay: payOpts,
       startPage: "https://www.ozon.ru/",
     }),
-    4200,
+    3300,
   );
   underCeiling(
     "attach-card errand scaffold",
@@ -591,7 +631,7 @@ function underCeiling(label: string, text: string, ceiling: number): void {
       pay: { ...payOpts, hosts: expandPayHosts(["taxi.yandex.ru"]), attachCard: true },
       startPage: "https://taxi.yandex.ru/",
     }),
-    4300,
+    3600,
   );
 }
 

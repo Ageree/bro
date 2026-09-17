@@ -256,28 +256,38 @@ const wrapped = scaffoldTask(raw);
 assert(wrapped.startsWith("[bro-errand]"), "scaffold starts with marker");
 assert(wrapped.includes(raw), "scaffold contains raw task");
 assert(scaffoldTask(wrapped) === wrapped, "scaffold is idempotent");
-assert(scaffoldTask("x").includes("Работай быстро"), "scaffold skip-slow");
+// The generic browsing-advice lines the scaffold used to ship on EVERY run —
+// «Работай быстро и не застревай…», «Важен результат…», «Решай сам и не
+// спрашивай человека: баннеры закрывай…» and the two-sentence cookie note —
+// are gone on purpose (errand-brief.ts): ~980 characters of advice a capable
+// browser agent does not need, spent on every errand. What survives is the
+// one-line autonomy licence, which is a permission, not advice.
+for (const gone of [
+  "Работай быстро",
+  "не застревай",
+  "Важен результат",
+  "куки прошлой сессии",
+  "Куки не значат",
+  "баннеры закрывай",
+]) {
+  assert(!scaffoldTask("x").includes(gone), `generic advice «${gone}» is gone`);
+  assert(
+    !scaffoldTask("x", { profileSynced: true }).includes(gone),
+    `generic advice «${gone}» is gone for a synced profile too`,
+  );
+}
+assert(scaffoldTask("x").includes("Решай сам"), "the autonomy licence survives");
 const synced = scaffoldTask("x", { profileSynced: true });
-assert(/куки прошлой сессии/.test(synced), "synced scaffold mentions cookies");
-assert(synced.includes("Куки не значат"), "cookies are not proof of login");
-assert(synced.includes("«Войти»"), "synced scaffold still clicks Войти");
 assert(!synced.includes("Ты уже в аккаунтах"), "no already-logged-in lie");
 assert(!synced.includes("Не открывай паспорт"), "must not forbid passport");
 assert(
   !synced.includes("просит логин — остановись"),
   "must not stop at a login wall",
 );
-// Contract, not wording (the scaffold was rewritten as a mandate to act):
-// every errand tells the agent to sign in — or register — by itself, an
-// unsynced non-vault run types a login/password that arrived WITH the task,
-// and the vault variant carries loginScaffold()'s aliases instead.
-const LOGS_IN_ITSELF = /входи или регистрируйся/;
+// Contract, not wording: an unsynced non-vault run types a login/password
+// that arrived WITH the task, and the vault variant carries
+// loginScaffold()'s aliases instead.
 const TYPES_TASK_CREDS = /Логин и пароль из задачи вводи сам/;
-assert(LOGS_IN_ITSELF.test(scaffoldTask("x")), "unsynced scaffold still logs in itself");
-assert(
-  LOGS_IN_ITSELF.test(scaffoldTask("x", { profileSynced: true })),
-  "synced scaffold still logs in itself",
-);
 assert(
   TYPES_TASK_CREDS.test(scaffoldTask("x")),
   "unsynced scaffold types a supplied password",
@@ -299,8 +309,13 @@ assert(
   taxiOpen.includes("Страница уже открыта: https://taxi.yandex.ru/"),
   "scaffold says the site is already open",
 );
-assert(taxiOpen.includes("паспорт"), "open taxi may go to passport");
-assert(taxiOpen.includes("нажми «Заказать»"), "real taxi finishes the order");
+// The finish line no longer names a taxi (that worked example was hardcoded
+// into a sentence that applies to every errand) — what it must still do is
+// drive the run past the form to the final confirmation button.
+assert(
+  taxiOpen.includes("жми финальную кнопку подтверждения"),
+  "real taxi finishes the order",
+);
 assert(!taxiOpen.includes("Не нажимай «Заказать»"), "real taxi is not a dry-run");
 assert(isDryRunErrand("покажи форму, не нажимай Заказать") === true, "dry-run flag");
 assert(isDryRunErrand("вызови такси домой") === false, "real taxi is not dry-run");

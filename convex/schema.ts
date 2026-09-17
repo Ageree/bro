@@ -22,6 +22,21 @@ export default defineSchema({
     browserTask: v.optional(v.string()),
     browserStatus: v.optional(v.string()),
     browserStartedAt: v.optional(v.number()),
+    /** A start claimed BEFORE `startRun` round-trips (browserInjectPolicy's
+     *  START_CLAIM_MS). Without it the ~10s between "errand accepted" and
+     *  "runId persisted" looked like "no session at all", so a follow-up sent
+     *  one second later («на воскресенье») started a SECOND cloud run, charged
+     *  a second job and orphaned the first browser. 0 = no claim. */
+    browserStartingAt: v.optional(v.number()),
+    /** The task that start claim is for — lets a concurrent turn see what is
+     *  already being started instead of guessing from an empty row. */
+    browserStartingTask: v.optional(v.string()),
+    /** Follow-up text that landed while a start was still in flight. Drained
+     *  and queued into the session the moment it exists — never dropped. */
+    browserPendingSteer: v.optional(v.string()),
+    /** When that text was parked. Past PENDING_STEER_TTL_MS it belongs to an
+     *  errand that is long over and must not be queued into a later one. */
+    browserPendingSteerAt: v.optional(v.number()),
     browserProfileId: v.optional(v.string()),
     browserCookieDomains: v.optional(v.array(v.string())),
     browserProfileSyncedAt: v.optional(v.number()),

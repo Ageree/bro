@@ -4,13 +4,18 @@ import {
   aliasBrowserCharge,
   cancelBrowserFollow,
   cancelWakeup,
+  claimBrowserStart,
   clearBrowserNeed,
   countBrowserJobStart,
+  getTenant,
+  holdBrowserSteer,
   listVaultItems,
   readVaultSecret,
   recordOrder,
+  releaseBrowserStart,
   startBrowserFollow,
   setBrowser,
+  takeBrowserPendingSteer,
   upsertTenant,
 } from "../lib/convex";
 import {
@@ -52,13 +57,16 @@ import {
   cloudInjectKindFromAttrs,
   cloudInjectTextFromAttrs,
   cloudSessionLooksLive,
+  cloudStartInFlight,
   decideCloudInject,
   injectAckText,
-  injectCandidate,
   injectQueueInterrupt,
   injectQueueText,
   looksLikePasswordDump,
   NO_LIVE_RUN_TEXT,
+  START_CLAIM_MS,
+  steerCandidate,
+  type CloudInjectKind,
 } from "../../convex/lib/browserInjectPolicy.ts";
 import {
   ERRAND_LANDING_WAIT_MS,
@@ -129,9 +137,70 @@ function payload(run: BrowserRun, extra?: Record<string, unknown>) {
         ? "Send these results to the human now. Do not start another search."
         : isTerminal(run.status)
           ? "Job ended. Tell the human."
-          : "Still running. Bro will message first when this finishes. Tell the human you're looking. Do not ask them to check back.",
+          : // Never let this read as "your detail was taken": the poll branch
+            // sees the human's latest line but only queues it into the live
+            // session when it is steerable, and `injected` in this payload is
+            // the only proof that it landed.
+            "Still running. Bro will message first when this finishes. Tell the human you're looking. Do not ask them to check back. Unless this payload has `injected`, nothing from their last line was added to the running job — do not say it was.",
     ...extra,
   };
+}
+
+/** Queue one human line into a live Cloud session as a steer. Returns whether
+ *  it actually landed — a failed POST must never be reported as "принял".
+ *  `interrupt` is false for a run that has only just started: preempting a
+ *  fresh run at t+0 would cancel the very errand the detail belongs to. */
+async function queueSteer(
+  sessionId: string,
+  text: string,
+  opts: { dryRun?: boolean; interrupt?: boolean } = {},
+): Promise<boolean> {
+  const queued = await queueMessage(
+    sessionId,
+    injectQueueText({
+      kind: "steer",
+      humanText: text,
+      ...(opts.dryRun ? { dryRun: true } : {}),
+    }),
+    { interrupt: opts.interrupt ?? injectQueueInterrupt("steer") },
+  ).catch((err: unknown) => {
+    console.error("cloud queue steer failed", err);
+    return undefined;
+  });
+  return Boolean(queued);
+}
+
+/** Lines parked by `holdBrowserSteer` while a start was in flight, oldest
+ *  first, minus one the caller is about to queue itself. */
+function heldLines(held: string, skip?: string): string[] {
+  const drop = skip?.trim();
+  return held
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && line !== drop)
+    .slice(0, 5);
+}
+
+/** Held text is queued into the session the moment one exists. This is the
+ *  second half of the start-race fix: the follow-up is late, never lost. */
+async function drainHeldSteer(
+  phone: string,
+  sessionId: string,
+  opts: { skip?: string; dryRun?: boolean; interrupt?: boolean } = {},
+): Promise<number> {
+  const held = await takeBrowserPendingSteer(phone).catch((err: unknown) => {
+    console.error("take pending steer failed", err);
+    return "";
+  });
+  let sent = 0;
+  for (const line of heldLines(held, opts.skip)) {
+    const ok = await queueSteer(sessionId, line, {
+      ...(opts.dryRun ? { dryRun: true } : {}),
+      ...(opts.interrupt !== undefined ? { interrupt: opts.interrupt } : {}),
+    });
+    if (ok) sent += 1;
+  }
+  return sent;
 }
 
 async function maybeInjectChat(
@@ -144,8 +213,16 @@ async function maybeInjectChat(
     attrs: ReturnType<typeof attrsFromSession>;
   },
 ): Promise<Record<string, unknown> | null> {
-  if (!injectCandidate(incoming)) return null;
-  if (!tenant.browserRunId && !tenant.browserSessionId) {
+  // LIVENESS FIRST. The old order asked a pure text predicate
+  // (`injectCandidate`) whether the line *looked* injectable before anything
+  // had checked whether a Cloud session existed at all — so «на воскресенье»
+  // was vetoed by the classifier and the live session it belonged to was
+  // never consulted. Now the session decides whether to queue, and the text
+  // only decides which kind of message is queued.
+  const startInFlight = cloudStartInFlight({ startingAt: tenant.browserStartingAt });
+  if (!tenant.browserRunId && !tenant.browserSessionId && !startInFlight) {
+    // Nothing open and nothing starting: only a stray one-time code deserves
+    // an answer of its own, everything else is ordinary chat.
     return decideCloudInject(incoming, {}).kind === "code"
       ? { status: "no_wait", entered: false, hint: NO_LIVE_RUN_TEXT }
       : null;
@@ -156,6 +233,10 @@ async function maybeInjectChat(
   let browserListed = false;
   let cdpUrl: string | undefined;
   let sessionId = tenant.browserSessionId;
+  // Only meaningful once there is something to probe: during a start claim
+  // there is no session id yet, and "probed and found nothing" would then be
+  // read as a confirmed-absent browser (cloudSessionLooksLive's F1 rule).
+  let probed = false;
 
   if (tenant.browserRunId) {
     const run = await hydrate(tenant.browserRunId, tenant.browserSessionId).catch(
@@ -168,34 +249,42 @@ async function maybeInjectChat(
     }
   }
 
-  const browser = await findBrowserForSession(sessionId).catch(() => undefined);
-  if (browser?.cdpUrl) {
-    browserListed = true;
-    cdpUrl = browser.cdpUrl;
-    pageUrl = (await cdpPageUrl(browser.cdpUrl).catch(() => undefined)) ?? pageUrl;
+  if (sessionId || tenant.browserRunId) {
+    const browser = await findBrowserForSession(sessionId).catch(() => undefined);
+    probed = true;
+    if (browser?.cdpUrl) {
+      browserListed = true;
+      cdpUrl = browser.cdpUrl;
+      pageUrl = (await cdpPageUrl(browser.cdpUrl).catch(() => undefined)) ?? pageUrl;
+    }
   }
 
   const attrs = {
     status: tenant.browserStatus,
     sessionId,
     runId: tenant.browserRunId,
-    storedTask: tenant.browserTask,
+    // A start claim carries the errand text before `browserTask` is written —
+    // without it a follow-up landing mid-start has no task to attach to and
+    // `looksLikeSteer` would refuse it.
+    storedTask: tenant.browserTask ?? tenant.browserStartingTask,
     startedAt: tenant.browserStartedAt,
+    startingAt: tenant.browserStartingAt,
     pageUrl,
     result,
     browserListed,
     // What the parked Cloud agent is waiting on (A2's structured outcome) —
     // authoritative over the elapsed-time/CDP-probe fallbacks below it.
     need: tenant.browserNeed,
-    // findBrowserForSession was just awaited above unconditionally on this
-    // path, so an empty/absent browser is a confirmed absence, not "unknown".
-    browserProbed: true,
+    // findBrowserForSession was awaited above whenever there was a session or
+    // run to probe, so an empty/absent browser is a confirmed absence, not
+    // "unknown". During a bare start claim nothing was probed at all.
+    browserProbed: probed,
   };
   const decided = decideCloudInject(incoming, attrs);
   if (!decided.kind) return null;
 
   const live = cloudSessionLooksLive(attrs);
-  if (!live) {
+  if (!live && !startInFlight) {
     return decided.kind === "code"
       ? { status: "no_wait", entered: false, hint: NO_LIVE_RUN_TEXT }
       : null;
@@ -212,6 +301,27 @@ async function maybeInjectChat(
       console.error("inject ack failed", err);
     });
     if (notify.turnId) markTurnSpoke(notify.turnId, Date.now());
+  }
+
+  // START RACE (the «на воскресенье» incident): a start is claimed but has not
+  // produced a session id yet, so there is nothing to queue into *yet*. Park
+  // the line on the tenant row — the starting turn drains it into the session
+  // the moment it exists. Returning here is as important as the parking
+  // itself: falling through would reach `nextBrowserAction`, which reads a row
+  // with no runId as "start" and would open a SECOND cloud run (second charge,
+  // first browser orphaned) whose whole task is the fragment.
+  if (!live || !sessionId) {
+    await holdBrowserSteer(phone, incoming).catch((err: unknown) => {
+      console.error("hold steer failed", err);
+    });
+    return {
+      status: "starting",
+      entered: false,
+      held: true,
+      injected: decided.kind,
+      alreadyNotified: Boolean(conv),
+      hint: "поручение ещё открывается — я записал эту строку и передам её в него, как только страница откроется; не начинай второе поручение и не говори, что уже применил",
+    };
   }
 
   // Fast path: type a code straight into the open tab over CDP when the live
@@ -234,14 +344,8 @@ async function maybeInjectChat(
     partial = typedIn.partial === true;
   }
 
-  if (!sessionId) {
-    return {
-      status: "no_wait",
-      entered: false,
-      hint: NO_LIVE_RUN_TEXT,
-    };
-  }
-
+  // (`sessionId` is non-empty here: the start-race branch above returns for
+  //  every live-but-session-less case.)
   // Reliable path: queue the line into the live session. The session holds the
   // errand history and its browser, so this lands on the already-open login tab
   // instead of starting a fresh run in a blank browser.
@@ -254,6 +358,14 @@ async function maybeInjectChat(
     // digit) never counts as "already typed" — the queued Cloud message must
     // still carry the full code (item 17).
     alreadyTyped: decided.kind === "code" && submitted && !partial,
+  });
+  // Anything parked while this errand was still starting goes in first, in
+  // the order the human typed it — appended, never interrupting, so it cannot
+  // cancel the run it is meant for.
+  await drainHeldSteer(phone, sessionId, {
+    skip: incoming,
+    dryRun: isDryRunErrand(tenant.browserTask ?? incoming),
+    interrupt: false,
   });
   const queued = await queueMessage(sessionId, queueText, {
     interrupt: injectQueueInterrupt(decided.kind),
@@ -531,7 +643,7 @@ export default defineTool({
     // itself, with no purchase at the end. It needs the same vault card and
     // the same run-scoped bindings a paid errand gets.
     const attachCard = isAttachCardErrand(task);
-    const tenant = await upsertTenant(phone);
+    let tenant = await upsertTenant(phone);
     const conv = conversationId(ctx, chatConversationId(tenant));
     // The human turn is stamped with the exact code/correction it carried. Use
     // that raw line for injection instead of `task`, because the model
@@ -540,26 +652,44 @@ export default defineTool({
     const turnAttrs = turnAttributes(ctx);
     const injectKind = cloudInjectKindFromAttrs(turnAttrs);
     const stampedInjectText = cloudInjectTextFromAttrs(turnAttrs);
+    const notifyTurnId = ctx.session.turn?.id;
+    const notify = {
+      conv,
+      turnId: typeof notifyTurnId === "string" ? notifyTurnId : undefined,
+      attrs: attrsFromSession(ctx.session),
+    };
+    // The raw human line when the turn carried one, because the model
+    // sometimes re-issues the whole errand instead of passing the bare line.
+    const injectIncoming = injectKind && stampedInjectText ? stampedInjectText : task;
     if (!reset) {
-      const turnId = ctx.session.turn?.id;
-      const injectIncoming =
-        injectKind && stampedInjectText ? stampedInjectText : task;
-      const injected = await maybeInjectChat(phone, tenant, injectIncoming, {
-        conv,
-        turnId: typeof turnId === "string" ? turnId : undefined,
-        attrs: attrsFromSession(ctx.session),
-      });
+      const injected = await maybeInjectChat(phone, tenant, injectIncoming, notify);
       if (injected) return injected;
-      // A stamped inject turn (code / «подожди» / correction / confirm) must
-      // never fall through to a fresh browser errand when a session is on
+      // A stamped HARD inject turn (code / «подожди» / correction / confirm)
+      // must never fall through to a fresh browser errand when a session is on
       // record: a new session would drop the live login (a fresh code would
       // be requested, rejecting the stale one, and a confirm has nothing to
       // re-do in a fresh browser either). If it could not be injected
       // (browser gone), say so instead of starting a new one.
-      if (injectKind && (tenant.browserSessionId || tenant.browserRunId)) {
+      //
+      // `steer` is deliberately NOT in that set. Since steering is opt-out,
+      // almost any line is stamped `steer`, so blocking on it would strand a
+      // perfectly ordinary new errand behind a long-dead session id.
+      // maybeInjectChat already returned null for it, which means no live
+      // session took it — so let it start normally.
+      if (
+        injectKind &&
+        injectKind !== "steer" &&
+        (tenant.browserSessionId || tenant.browserRunId)
+      ) {
         return { status: "no_wait", entered: false, hint: NO_LIVE_RUN_TEXT };
       }
     }
+    // START RACE (d): the snapshot above was taken at the top of the turn, and
+    // a first errand persists its runId/sessionId only after `startRun`
+    // round-trips. Re-read the row right before the start decision so a
+    // sibling turn's session — or its start claim — is actually visible here,
+    // instead of deciding "start" against seconds-old emptiness.
+    tenant = (await getTenant(phone).catch(() => null)) ?? tenant;
     const rawAction = nextBrowserAction({
       reset,
       runId: tenant.browserRunId,
@@ -588,7 +718,16 @@ export default defineTool({
       // A short, non-question follow-up on the just-finished errand ("готово",
       // "спасибо") is an acknowledgement, not a request to resend the result
       // (item 7) — do not re-run maybeRecordOrder/settle for it either.
-      if (isAckLike(task) && !looksLikeNewJob(task, tenant.browserTask ?? undefined)) {
+      // But «на воскресенье» is also two words: while the errand is actually
+      // running (or still starting) a short line is a detail for it, never an
+      // ack, so `sessionLive` switches that reading off (e).
+      const ackSessionLive =
+        isActiveStatus(tenant.browserStatus) ||
+        cloudStartInFlight({ startingAt: tenant.browserStartingAt });
+      if (
+        isAckLike(task, { sessionLive: ackSessionLive }) &&
+        !looksLikeNewJob(task, tenant.browserTask ?? undefined)
+      ) {
         return {
           status: run.status,
           reused: true,
@@ -625,6 +764,26 @@ export default defineTool({
     }
 
     if (action === "poll" && tenant.browserRunId) {
+      // (f) A poll must not swallow the line the human just sent. `busy` keeps
+      // its text in `browserNextTask`; `poll` used to be the one branch that
+      // dropped it entirely, while telling the model to reassure the human —
+      // which is how a detail could look accepted and be nowhere. If the line
+      // carries anything for the open errand, queue it into the live session
+      // now; if it is a plain «ну что там?», nothing is queued and the hint
+      // says so rather than implying it was taken.
+      const steered =
+        tenant.browserSessionId && steerCandidate(task)
+          ? await queueSteer(tenant.browserSessionId, task, {
+              dryRun: isDryRunErrand(tenant.browserTask ?? task),
+            })
+          : false;
+      if (steered && tenant.browserSessionId) {
+        await drainHeldSteer(phone, tenant.browserSessionId, {
+          skip: task,
+          dryRun: isDryRunErrand(tenant.browserTask ?? task),
+          interrupt: false,
+        });
+      }
       const run = await waitForRun(
         tenant.browserRunId,
         tenant.browserSessionId,
@@ -641,7 +800,13 @@ export default defineTool({
               payDeferred: true,
               hint: "оплата ещё не началась — сначала должно закончиться то, что уже идёт, потом вызови browser_task с pay ещё раз",
             }
-          : { polled: true },
+          : steered
+            ? {
+                polled: true,
+                injected: "steer" satisfies CloudInjectKind,
+                hint: "уточнение ушло в открытую страницу (живая сессия). Скажи одной строкой, что принял, и что напишешь как будет готово.",
+              }
+            : { polled: true },
         { startedAt: tenant.browserStartedAt, runId: tenant.browserRunId },
         tenant,
       );
@@ -803,6 +968,44 @@ export default defineTool({
       // fallbackToStart: fall through to the ordinary fresh-start path below.
     }
 
+    // ONE start at a time, claimed BEFORE `startRun` round-trips (d). The
+    // claim is a single Convex transaction, so of two turns racing to start an
+    // errand exactly one wins. The loser is the follow-up that used to open a
+    // second cloud run with only its fragment as the task, charge a second
+    // job and orphan the first browser — it now parks its line instead, and
+    // the winner queues it into the session as soon as there is one.
+    if (reset) {
+      // An explicit reset outranks a start in flight: it is the human saying
+      // "drop that and begin again", so it takes the claim rather than being
+      // parked behind it.
+      await releaseBrowserStart(phone).catch(() => {});
+    }
+    const claim = await claimBrowserStart(phone, task, Date.now(), START_CLAIM_MS).catch(
+      (err: unknown) => {
+        // A claim we could not take is not a reason to refuse the errand —
+        // degrade to the old (racy) behaviour rather than dropping the job.
+        console.error("browser start claim failed", err);
+        return { claimed: true as const };
+      },
+    );
+    if (!claim.claimed) {
+      // Re-read: the sibling start may have finished in the meantime, in which
+      // case there is a live session to queue straight into.
+      const now = (await getTenant(phone).catch(() => null)) ?? tenant;
+      const injected = await maybeInjectChat(phone, now, injectIncoming, notify);
+      if (injected) return injected;
+      await holdBrowserSteer(phone, injectIncoming).catch((err: unknown) => {
+        console.error("hold steer failed", err);
+      });
+      return {
+        status: "starting",
+        entered: false,
+        held: true,
+        activeTask: claim.startingTask ?? tenant.browserTask,
+        hint: "это же поручение уже открывается в другом окне — я записал эту строку и передам её туда; не начинай второе поручение",
+      };
+    }
+
     // Cheap part before the billing gate: a missing card must not burn quota.
     // An attach-card ask used to start a run with no bindings at all and stall
     // on the card form, because the chat model only sends `pay` for purchases.
@@ -838,6 +1041,9 @@ export default defineTool({
         ? items.find((i) => i.handle === pay.vaultHandle)
         : items[0];
       if (!payItem) {
+        // No run will come of this claim — drop it, or the next errand would
+        // read the tenant as "already starting" for the whole START_CLAIM_MS.
+        await releaseBrowserStart(phone).catch(() => {});
         return {
           status: "needs_vault",
           needsVaultSetup: "payment",
@@ -862,6 +1068,7 @@ export default defineTool({
       allowed = browserGateFromResult(undefined, err).allowed;
     }
     if (!allowed) {
+      await releaseBrowserStart(phone).catch(() => {});
       return {
         status: "limit",
         hint: "скажи человеку, что лимит браузер-задач на месяц исчерпан, предложи оплату",
@@ -927,6 +1134,12 @@ export default defineTool({
       ...(vaultLogin ? { login: true } : {}),
       ...(secretBindings && secretBindings.length > 0 ? { secretBindings } : {}),
       ...(startPage ? { startPage } : {}),
+    }).catch(async (err: unknown) => {
+      // The claim promised a run that will never exist: release it so the
+      // person can simply ask again instead of being told "уже открывается"
+      // for the next two minutes.
+      await releaseBrowserStart(phone).catch(() => {});
+      throw err;
     });
     const opened = startPage
       ? await waitForPageLanding(started, startPage, ERRAND_LANDING_WAIT_MS)
@@ -964,6 +1177,18 @@ export default defineTool({
           }
         : {}),
     });
+    // The whole point of the claim: anything the human typed while this start
+    // was in flight («на воскресенье», one second after «хочу забронировать
+    // ресторан») was parked on the tenant row, and the session now exists. It
+    // is appended, never `interrupt`ed — preempting the run at t+0 would
+    // cancel the very errand the detail belongs to. Late, never lost.
+    if (opened.sessionId) {
+      await drainHeldSteer(phone, opened.sessionId, {
+        skip: task,
+        dryRun: isDryRunErrand(task),
+        interrupt: false,
+      });
+    }
     // Best-effort early kick, not the only chance to start follow-through:
     // settle() below re-derives whether this run still needs polling from
     // `done.status` alone and, in the one case where it does (not terminal,

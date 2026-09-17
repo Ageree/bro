@@ -29,6 +29,14 @@ import {
   payScaffold,
   type SecretBinding,
 } from "./browser-pay.ts";
+import {
+  composeErrandBrief,
+  knownFactsBlock,
+  MISSING_FACTS_LINE,
+  staticBriefLine,
+  type ErrandFacts,
+} from "./errand-brief.ts";
+import { loadErrandFacts } from "./errand-context.ts";
 
 const DEFAULT_BASE = "https://api.browser-use.com/api/v4";
 
@@ -157,32 +165,37 @@ export function isDryRunErrand(task: string): boolean {
   );
 }
 
-function errandLoginBlock(opts?: {
-  login?: boolean;
-  profileSynced?: boolean;
-}): string {
+/**
+ * The credential half of the envelope. What used to live here as well —
+ * «В профиле могут быть куки прошлой сессии…» — is gone on purpose: it was
+ * 98 characters of advice on every run telling a browser agent to look at
+ * the screen, which is the one thing a browser agent does unprompted.
+ *
+ * The fact-abort sentence that used to close this block is gone too, and
+ * that one was a bug, not just noise. It told the run to stop on any fact
+ * only the human could know, while Bro held those facts in the vault and
+ * never passed them. The facts now arrive in `knownFactsBlock()` above and
+ * `KNOWN_FACTS_GAP` / `MISSING_FACTS_LINE` keep `НУЖНО: address|info` as the
+ * fallback for what is genuinely missing.
+ */
+function errandLoginBlock(opts?: { login?: boolean }): string {
   const lines: string[] = [];
-  if (opts?.profileSynced) {
-    lines.push(
-      "В профиле могут быть куки прошлой сессии. Куки не значат, что ты вошёл: смотри на экран.",
-    );
-  }
   if (opts?.login) lines.push(loginScaffold());
   lines.push(
     opts?.login
       ? "Упёрся в код, пуш или капчу — закончи с НУЖНО: sms_code, email_code, push или captcha."
       : "Логин и пароль из задачи вводи сам; выдумывать пароль или номер карты нельзя. Упёрся в код, пуш, капчу или чужой пароль — закончи с НУЖНО: sms_code, email_code, push, captcha или password.",
   );
-  // The autonomy licence above is deliberately broad, so this is where the
-  // line gets drawn: an interface decision is free, a fact about the human is
-  // not. `address`/`info` exist so Bro can come back and ask instead of
-  // shipping a parcel to a guessed street.
-  lines.push(
-    "Что знает только человек — адрес, имя, телефон, время, размер — не придумывай: закончи с НУЖНО: address или info и напиши в ДЕТАЛИ, чего не хватает.",
-  );
   return lines.join("\n");
 }
 
+/**
+ * How this run ends. The default line used to carry a worked taxi example
+ * («у такси заполни откуда/куда…») inside a sentence that applies to every
+ * errand — a hardcoded example of one errand shipped with all the others.
+ * The brief above now says what "done" looks like for THIS errand, so this
+ * only has to say that there IS a final button and that it is pressed once.
+ */
 function errandFinishBlock(
   task: string,
   payBlock: string | undefined,
@@ -197,7 +210,7 @@ function errandFinishBlock(
   if (isDryRunErrand(task)) {
     return "Это проверка без заказа: дойди до формы, покажи цену. Не нажимай «Заказать» или «Поехали».";
   }
-  return "Доводи дело до конца и жми финальную кнопку: у такси заполни откуда/куда и нажми «Заказать», иначе «Записаться» или «Оформить заказ». Дважды не заказывай.";
+  return "Доводи дело до конца и жми финальную кнопку подтверждения. Дважды не заказывай.";
 }
 
 export type ProfileView = {
@@ -219,10 +232,59 @@ export function envSyncedProfileId(
   return normalizeBrowserProfileId(raw);
 }
 
-/** Wrap a raw errand with the cloud-browser operating envelope. Idempotent if already marked. */
+/** True when `task` already carries one of the marks the scaffold owns. */
+export function isScaffolded(task: string): boolean {
+  return (
+    task.startsWith(ERRAND_MARK) ||
+    task.startsWith(LOGIN_MARK) ||
+    task.startsWith(LOGIN_VAULT_MARK) ||
+    task.startsWith(INJECT_MARK)
+  );
+}
+
+/**
+ * The goal, in the human's terms. `brief` is what the per-errand composer
+ * wrote (what "done" looks like for THIS errand); with the composer off, the
+ * static `ЦЕЛЬ: <task>` line the scaffold always opened with.
+ *
+ * `ДОСЛОВНО` is the fix for the finding that the human's literal sentence
+ * never reached a run at all: `task` is whatever the coordinator model
+ * retyped into the tool argument, so when the caller can hand over the real
+ * wording it rides along verbatim, and when it cannot, the raw `task` does.
+ */
+function errandGoalBlock(
+  task: string,
+  opts?: { brief?: string; humanText?: string },
+): string {
+  const brief = opts?.brief?.trim();
+  const trimmed = task.trim();
+  const verbatim = opts?.humanText?.trim() || trimmed;
+  const lines = [`ЦЕЛЬ: ${brief || staticBriefLine(task)}`];
+  if (verbatim && (!brief || !brief.includes(verbatim))) {
+    lines.push(`ДОСЛОВНО ОТ ЧЕЛОВЕКА: «${verbatim}»`);
+  }
+  return lines.join("\n");
+}
+
+/**
+ * Wrap a raw errand with the cloud-browser operating envelope. Idempotent if
+ * already marked.
+ *
+ * The envelope is deliberately thin now. What a 1,497-character task used to
+ * spend on «решай сам», «работай быстро», «важен результат» and a cookie
+ * note is gone — that was ~980 characters of generic browsing advice on
+ * every run, and a capable browser agent needs none of it. What is left is
+ * either parsed by our own code (the mark, the output contract, the
+ * `secretBindings` alias names) or is a fact about THIS errand: the brief,
+ * the human's own words, and the facts Bro already knows about them.
+ */
 export function scaffoldTask(
   task: string,
   opts?: {
+    /** Cookies from a previous session are already on the Cloud profile.
+     *  No longer changes a single character of the task — the note it used
+     *  to add was advice, not information — but every call site still passes
+     *  it, and it stays part of the contract for whatever needs it next. */
     profileSynced?: boolean;
     pay?: Parameters<typeof payScaffold>[0];
     login?: boolean;
@@ -231,16 +293,16 @@ export function scaffoldTask(
      *  Cloud session — the page is already open and mid-flow. Never true
      *  together with `startPage` (there is no fresh navigation to do). */
     continuation?: boolean;
+    /** The per-errand brief from `composeErrandBrief`. Absent → the static
+     *  `ЦЕЛЬ: <task>` line, i.e. exactly what shipped before this existed. */
+    brief?: string;
+    /** The human's original wording, when the caller has it. */
+    humanText?: string;
+    /** Non-secret facts Bro already holds — see `agent/lib/errand-context.ts`. */
+    facts?: ErrandFacts;
   },
 ): string {
-  if (
-    task.startsWith(ERRAND_MARK) ||
-    task.startsWith(LOGIN_MARK) ||
-    task.startsWith(LOGIN_VAULT_MARK) ||
-    task.startsWith(INJECT_MARK)
-  ) {
-    return task;
-  }
+  if (isScaffolded(task)) return task;
   const attachCard = opts?.pay?.attachCard ?? isAttachCardErrand(task);
   const payBlock = opts?.pay
     ? payScaffold({ ...opts.pay, ...(attachCard ? { attachCard: true } : {}) })
@@ -248,26 +310,29 @@ export function scaffoldTask(
   const stopForPay = attachCard
     ? "Карта к запуску не подключена — дойди до формы карты и закончи с НУЖНО: payment."
     : "Дошло до оплаты — закончи с НУЖНО: payment.";
-  const login = errandLoginBlock({
-    login: opts?.login,
-    profileSynced: opts?.profileSynced,
-  });
+  const login = errandLoginBlock({ login: opts?.login });
   const finish = errandFinishBlock(task, payBlock, attachCard);
+  const goal = errandGoalBlock(task, {
+    ...(opts?.brief ? { brief: opts.brief } : {}),
+    ...(opts?.humanText ? { humanText: opts.humanText } : {}),
+  });
+  // Facts first, `НУЖНО` second. The old scaffold had only the second half,
+  // so a run aborted asking for a street that was in the vault all along.
+  const facts = knownFactsBlock(opts?.facts) || MISSING_FACTS_LINE;
   // A continuation must never re-navigate or redo what the previous step of
   // THIS SAME errand already did (the taxi incident: a fresh run re-drove
   // the whole route because eve tore down the old browser first) — the tab
   // is already open exactly where the last step left it.
   const alreadyOpen = opts?.continuation
-    ? "Страница уже открыта с предыдущего шага этого же поручения — продолжай прямо с неё, заново ничего не открывай и не вводи. Ниже — то, что человек только что прислал."
+    ? "Страница уже открыта с предыдущего шага этого же поручения — продолжай прямо с неё, заново ничего не открывай и не вводи."
     : opts?.startPage
       ? `Страница уже открыта: ${opts.startPage} — работай на ней, на языке сайта.`
       : "Сайт откроет Bro сам — дождись страницы и работай на ней, на языке сайта.";
   return `${ERRAND_MARK}
-ЦЕЛЬ: ${task}
+${goal}
+${facts}
 ${alreadyOpen}
-Решай сам и не спрашивай человека: баннеры закрывай, город и вариант выбирай, «Войти» или гостевую форму — входи или регистрируйся (паспорт, Яндекс ID — норма).
-Работай быстро и не застревай: не грузится или не жмётся — перезагрузи, вернись, ищи по сайту, жми Tab/Enter, бери другой вариант или сайт.
-Важен результат: гостевой экран, баннер, пустая корзина и ненажатая финальная кнопка результатом не считаются.
+Решай сам и человека не спрашивай.
 ${login}
 ${payBlock ?? stopForPay}
 ${finish}
@@ -324,31 +389,88 @@ function resolveProxyCountry(): string | undefined {
   return proxyCountryCode(fallback);
 }
 
+export type StartRunOpts = {
+  profileId?: string;
+  profileSynced?: boolean;
+  pay?: Parameters<typeof payScaffold>[0];
+  login?: boolean;
+  secretBindings?: SecretBinding[];
+  startPage?: string;
+  /** Resume the same errand in `sessionId`'s already-open tab — see
+   *  `scaffoldTask`. Never combined with `startPage`. */
+  continuation?: boolean;
+  /** Tenant phone. Present → this run carries the human's own non-secret
+   *  facts (vault address/contact, curated memories, their timezone and
+   *  today's date in it, their display name). Absent → nothing is looked up
+   *  and the task is the static scaffold, exactly as before. */
+  phone?: string;
+  /** The human's ORIGINAL wording. `task` is whatever the coordinator model
+   *  retyped; this is what they actually said, and it rides along verbatim. */
+  humanText?: string;
+  /** Pre-loaded facts, for a caller that already has them (and for tests).
+   *  Wins over `phone`, which is only the instruction to go and load them. */
+  facts?: ErrandFacts;
+};
+
+/**
+ * The context + brief for one run. Everything in here is best-effort: a
+ * Convex hiccup, a missing key or a slow model costs the run some context,
+ * never the run. `isScaffolded` short-circuits the whole thing for login /
+ * vault-login / inject tasks, which `scaffoldTask` returns untouched anyway.
+ */
+async function errandBriefing(
+  task: string,
+  opts: StartRunOpts | undefined,
+): Promise<{ brief?: string; facts?: ErrandFacts }> {
+  if (isScaffolded(task)) return {};
+  const facts =
+    opts?.facts ??
+    (opts?.phone
+      ? await loadErrandFacts(opts.phone).catch((err: unknown) => {
+          console.error("errand context failed", err);
+          return undefined;
+        })
+      : undefined);
+  const brief = await composeErrandBrief({
+    task,
+    ...(opts?.humanText ? { humanText: opts.humanText } : {}),
+    ...(facts ? { facts } : {}),
+    ...(opts?.pay ? { pay: true } : {}),
+    ...(opts?.login ? { login: true } : {}),
+    ...(opts?.continuation ? { continuation: true } : {}),
+    ...(opts?.startPage ? { startPage: opts.startPage } : {}),
+  });
+  return {
+    ...(brief ? { brief } : {}),
+    ...(facts ? { facts } : {}),
+  };
+}
+
 export async function startRun(
   task: string,
   sessionId?: string,
-  opts?: {
-    profileId?: string;
-    profileSynced?: boolean;
-    pay?: Parameters<typeof payScaffold>[0];
-    login?: boolean;
-    secretBindings?: SecretBinding[];
-    startPage?: string;
-    /** Resume the same errand in `sessionId`'s already-open tab — see
-     *  `scaffoldTask`. Never combined with `startPage`. */
-    continuation?: boolean;
-  },
+  opts?: StartRunOpts,
 ): Promise<BrowserRun> {
+  const briefing = await errandBriefing(task, opts);
   // Cloud v4 POST /runs has no startUrl / initial navigation field
   // (RunBrowserSettings.additionalProperties = false). Eve opens the
   // site via CDP after browser.ready — do not wait for the Cloud LLM.
   const body: Record<string, unknown> = {
+    // Everything that reaches the task from free text — every memory line in
+    // `factLines`, the whole composed brief in `sanitizeErrandBrief` — is
+    // already run through `scrubSecrets` at the point it is produced. The
+    // task as a whole is deliberately NOT scrubbed again here: the human's
+    // own sentence travels verbatim, and a 13-digit tracking number in
+    // «проверь заказ 46000123456789» is indistinguishable from a PAN to the
+    // regex, so a blanket pass would silently delete the errand's subject.
     task: scaffoldTask(task, {
       profileSynced: opts?.profileSynced,
       pay: opts?.pay,
       login: opts?.login,
       startPage: opts?.startPage,
       continuation: opts?.continuation,
+      ...(opts?.humanText ? { humanText: opts.humanText } : {}),
+      ...briefing,
     }),
   };
   // v4 POST /runs rejects unknown keys outright (422 extra_forbidden) —

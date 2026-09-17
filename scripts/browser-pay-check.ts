@@ -173,9 +173,12 @@ const payOpts = {
     withoutPay.includes("Доводи дело до конца"),
     "finish line without pay still completes the errand",
   );
+  // The finish line no longer names a taxi's «Заказать» button (that worked
+  // example was hardcoded into a sentence that applies to every errand) — it
+  // still has to drive the run past the form to the final confirmation.
   assert(
-    withoutPay.includes("нажми «Заказать»"),
-    "default errand may tap Заказать after login",
+    withoutPay.includes("жми финальную кнопку подтверждения"),
+    "default errand is driven to the final confirmation button",
   );
   assert(scaffoldTask(withoutPay) === withoutPay, "idempotent without pay");
 }
@@ -185,12 +188,13 @@ const payOpts = {
   // Contract, not wording: a synced profile is told its cookies may already be
   // there AND that cookies are not proof of a login, and it still signs in
   // itself rather than parking on a guest screen.
-  assert(/куки прошлой сессии/.test(syncedWithPay), "synced wording mentions cookies");
-  assert(syncedWithPay.includes("Куки не значат"), "cookies are not proof of login");
-  assert(
-    /вход\S*\s+(?:или|и)\s+регистр|входи или регистрируйся/i.test(syncedWithPay),
-    "synced+pay still logs in or registers by itself",
-  );
+  // The cookie note and the «решай сам: баннеры закрывай… входи или
+  // регистрируйся» line are gone from every scaffold (errand-brief.ts): both
+  // were generic advice, ~250 characters of it, on every single run. The
+  // autonomy they granted survives as one short line.
+  assert(!/куки прошлой сессии/.test(syncedWithPay), "the cookie note is gone");
+  assert(!syncedWithPay.includes("баннеры закрывай"), "banner advice is gone");
+  assert(syncedWithPay.includes("Решай сам"), "the autonomy licence survives");
   assert(
     syncedWithPay.includes(PAY_ALIASES.number),
     "pay block present for synced profile too",
@@ -403,7 +407,10 @@ assert(!isAttachCardErrand(undefined), "undefined task is not an attach-card err
   assert(text.includes("привязать карту"), "names the goal: save the card");
   assert(text.includes("Добавить карту"), "points at the Добавить карту control");
   assert(text.includes("1 ₽"), "warns about the bank's small hold");
-  assert(text.includes("iframe"), "tells the agent the card field is in an iframe");
+  // The iframe tactic hint is gone (see payScaffold): what it was really
+  // saying — the card form is on a sibling domain — is enforced by
+  // expandPayHosts binding the card there, not by advice in the prompt.
+  assert(!text.includes("iframe"), "the iframe tactic hint is gone");
   assert(text.includes("yandex.ru"), "lists the widened domains");
   assert(text.includes("НУЖНО: 3ds"), "3-D Secure has a reachable outcome");
   assert(text.includes("НУЖНО: sms_code"), "bank SMS has a reachable outcome");
@@ -422,7 +429,7 @@ assert(!isAttachCardErrand(undefined), "undefined task is not an attach-card err
   });
   assert(buy.includes("номер заказа"), "a paying run still checks the order number");
   assert(!buy.includes("привязать карту"), "a paying run is not an attach-card run");
-  assert(buy.includes("iframe"), "the iframe hint applies to paying too");
+  assert(!buy.includes("iframe"), "the iframe tactic hint is gone from paying too");
 }
 {
   const attach = scaffoldTask("привяжи карту в яндекс такси", {
@@ -461,7 +468,7 @@ assert(!isAttachCardErrand(undefined), "undefined task is not an attach-card err
 {
   const buying = scaffoldTask("купи кроссовки 42 размера на wildberries.ru");
   assert(
-    buying.includes("нажми «Заказать»"),
+    buying.includes("жми финальную кнопку подтверждения"),
     "an ordinary errand keeps its finish line",
   );
 }

@@ -1,7 +1,12 @@
 /**
  * Mid-run iMessage → live Browser Use Cloud session.
- * Only text relevant to that session is injected (OTP, wait, address/correction).
- * Unrelated chat stays a normal Bro reply. Site passwords never go in iMessage.
+ *
+ * While a session is live the default is to QUEUE the human's line into it —
+ * a code, «подожди», an address correction, a confirmation, or just an extra
+ * detail («на воскресенье»). Only the named exclusions stay out: smalltalk,
+ * questions aimed at Bro, password dumps, emoji, lone letter+digit tokens and
+ * genuinely fresh errands. Unrelated chat stays a normal Bro reply. Site
+ * passwords never go in iMessage.
  */
 
 import {
@@ -64,31 +69,52 @@ export type CloudInjectKind = "code" | "wait" | "correction" | "confirm" | "stee
 // Pure chatter and status questions to Bro must never be docked into a live
 // Cloud session. Everything else the human sends while a session is live is
 // treated as a relevant steer (extra instruction / detail for the errand).
+// A lone «норм»/«давай»/«пойдёт» is the same kind of noise as «ок» — it has
+// to sit here, because steering is now opt-OUT and anything not named here
+// gets queued into the live session.
 const SMALLTALK =
-  /^(привет\w*|здоров\w*|хай|ку|hi|hello|hey|спасибо( большое)?|спс|благодар\w*|пасиб\w*|ок\w*|okay?|ok|да|нет|неа|ага|угу|понял\w*|ясно|хорошо|ладно|класс|супер|отлично|круто|збс|топ|thanks|thx|ty|лол)\s*[.!?…]*$/iu;
+  /^(привет\w*|здоров\w*|хай|ку|hi|hello|hey|спасибо( большое)?|спс|благодар\w*|пасиб\w*|ок\w*|okay?|ok|да|нет|неа|ага|угу|понял\w*|ясно|хорошо|ладно|класс|супер|отлично|круто|збс|топ|норм|нормально|пойдет|годится|давай|давайте|thanks|thx|ty|лол)\s*[.!?…]*$/iu;
 
-// Steer is OPT-IN: a message only steers the live errand when it carries an
-// explicit instruction cue. This keeps chatter, skepticism, PII and emoji out
-// of the live session even though a session is open.
-// NOTE: \w does not match Cyrillic, so stems use an explicit [а-я] class
-// (ё is normalized to е before testing).
-const STEER_SIGNAL =
-  /(сдела[а-я]*|помен[а-я]*|измен[а-я]*|поставь|выбер[а-я]*|добав[а-я]*|убер[а-я]*|укаж[а-я]*|напиш[а-я]*|коммент[а-я]*|эконом[а-я]*|комфорт[а-я]*|бизнес[а-я]*|business|подешевл[а-я]*|подорож[а-я]*|дешевл[а-я]*|дорож[а-я]*|быстрее|поскорее|побыстрее|помедленн[а-я]*|раньше|попозже|позже|вместо|замен[а-я]*|исправ[а-я]*|поправ[а-я]*|перезвон[а-я]*|позвони|напомни|поближе|подальше|погромче|потише)/i;
+// Status / wellbeing questions aimed at Bro, typed without a question mark.
+// A trailing «?» already excludes the punctuated ones; «как дела» and «ну что
+// там» are the same thing and must not be queued into the errand either.
+// Head-anchored and short, so «что там с бронью на воскресенье» (a real
+// follow-up, 6 words) is not swallowed by it.
+const CHATTER_Q =
+  /^(как дела|как ты|как оно|как жизнь|как успехи|что там|ну что|ну как|что нового|что делаешь|чем занят|ты тут|ты там|ты здесь|ты жив[а-я]*|ты где)(?=$|[\s.!?…,])/i;
 
 // Only a message that is ~all emoji / punctuation, no letters or digits.
 const EMOJI_ONLY = /^[^\p{L}\p{N}]+$/u;
 
-/** A message worth docking into a live Cloud session as a steer, sans session context.
- * A bare «готово»/«сделал» is a confirm (isConfirmInject wins earlier in
- * decideCloudInject), not a steer — excluded explicitly here rather than
- * relying on decision order alone (steerCandidate is also asserted on its own). */
+/**
+ * A message worth docking into a live Cloud session as a steer, sans session
+ * context.
+ *
+ * Steering is OPT-OUT, not opt-in. The old gate required an explicit
+ * imperative cue (a `STEER_SIGNAL` regex of verbs: «сделай», «поменяй»…), and
+ * that is exactly what lost the real report: the human asked to book a
+ * restaurant, the Cloud session started, and a second later they wrote «на
+ * воскресенье». No verb → no cue → the detail was dropped on the floor and
+ * the table was booked for the wrong day. The same holds for «на 4 человек»,
+ * «на 19:00», «в центре», «у окна» — the whole vocabulary of follow-up
+ * parameters is verbless.
+ *
+ * So while a session is live the default is QUEUE IT, and only the shapes we
+ * can name are excluded: smalltalk, a question aimed at Bro, a password dump,
+ * an emoji reaction, a lone letter+digit token, a genuinely fresh errand —
+ * plus code/wait/confirm/correction, which are their own earlier-winning
+ * kinds. A queued line costs one message inside the session; a dropped line
+ * costs the errand.
+ */
 export function steerCandidate(text: string): boolean {
   const t = text.trim().normalize("NFC").replace(/ё/gi, "е");
+  // 400-char cap kept: a wall of text is a new brief, not a follow-up detail.
   if (!t || t.length > 400) return false;
   if (looksLikePasswordDump(t)) return false;
   if (EMOJI_ONLY.test(t)) return false;
   if (/[?？]\s*$/.test(t)) return false; // a question to Bro is not a steer
   if (SMALLTALK.test(t)) return false;
+  if (t.split(/\s+/).length <= 4 && CHATTER_Q.test(t)) return false;
   // Codes / «подожди» / confirmations / corrections are their own kinds.
   if (
     isChatCodeMessage(t) ||
@@ -102,16 +128,20 @@ export function steerCandidate(text: string): boolean {
   if (looksLikeFreshErrand(t)) return false;
   // A lone space-free letter+digit token (login / tracking id / secret): skip.
   if (!/\s/.test(t) && /[A-Za-zА-Яа-яе]/.test(t) && /\d/.test(t)) return false;
-  // Must carry an explicit instruction cue to count as a steer.
-  return STEER_SIGNAL.test(t);
+  return true;
 }
 
-/** Steer fires only while a Cloud errand session with a task is on record. */
+/** Steer fires while a Cloud errand session with a task is on record — or
+ *  while a start for one is in flight, which is the window the «на
+ *  воскресенье» follow-up actually lands in (the tenant row has a start claim
+ *  but no task/session id yet). */
 export function looksLikeSteer(
   text: string,
   storedTask?: string | null,
+  opts?: { startInFlight?: boolean },
 ): boolean {
-  return steerCandidate(text) && Boolean(storedTask && storedTask.trim());
+  if (!steerCandidate(text)) return false;
+  return Boolean(storedTask && storedTask.trim()) || opts?.startInFlight === true;
 }
 
 export type CloudInjectDecision = {
@@ -135,7 +165,47 @@ export type CloudInjectAttrs = {
    * just "not set") — lets a confirmed-absent browser outrank the elapsed-time
    * fallback below. */
   browserProbed?: boolean;
+  /** `tenant.browserStartingAt` — a start claimed on the tenant row *before*
+   * `startRun` round-trips. Between the claim and the first `persist()` there
+   * is no runId and no sessionId at all, which is the ~10s window the «на
+   * воскресенье» follow-up landed in and got treated as a brand-new errand. */
+  startingAt?: number | null;
 };
+
+/** How long a start claim on the tenant row is believed. A Cloud start
+ * round-trips in seconds; past this the claiming turn is assumed dead (the
+ * process was killed mid-start) and a new start may proceed, so a crashed
+ * start can never wedge the tenant into "always starting". */
+export const START_CLAIM_MS = 2 * 60_000;
+
+/** How long a follow-up parked by `holdBrowserSteer` may still be queued into
+ * a session. A held line belongs to the errand that was starting when it was
+ * typed; past this it is stale, and queueing it into whatever session exists
+ * later would apply «на воскресенье» to an unrelated errand. */
+export const PENDING_STEER_TTL_MS = 10 * 60_000;
+
+/** Is a start claim on the tenant row still believed? The Convex mutation
+ * that hands out the claim (`tenants.claimBrowserStart`) and every agent-side
+ * reader go through this one function, so "who is starting" can never be
+ * answered two different ways. `0`/absent means no claim. */
+export function startClaimIsLive(
+  startingAt: number | null | undefined,
+  now: number,
+  staleMs: number = START_CLAIM_MS,
+): boolean {
+  if (typeof startingAt !== "number" || startingAt <= 0) return false;
+  return now - startingAt < staleMs;
+}
+
+/** True while another turn has claimed a start that has not produced a
+ * run/session yet. Callers must treat this exactly like a live session for
+ * inject purposes: hold the follow-up, never open a second Cloud run. */
+export function cloudStartInFlight(opts: {
+  startingAt?: number | null;
+  now?: number;
+}): boolean {
+  return startClaimIsLive(opts.startingAt, opts.now ?? Date.now());
+}
 
 export function isInjectTask(task: string | undefined): boolean {
   return typeof task === "string" && task.trim().startsWith(INJECT_MARK);
@@ -433,6 +503,11 @@ export function decideCloudInject(
 ): CloudInjectDecision {
   if (looksLikePasswordDump(incoming)) return { kind: null };
 
+  // A start claimed a moment ago but not yet persisted its ids counts as a
+  // session for every decision below: the browser is (or is about to be)
+  // there, and the caller holds the line until the session id exists.
+  const starting = cloudStartInFlight(opts);
+
   if (isChatCodeMessage(incoming)) {
     const code = extractChatCode(incoming);
     if (!code) return { kind: null };
@@ -449,14 +524,14 @@ export function decideCloudInject(
       opts.need === "3ds" ||
       opts.need === "captcha" ||
       opts.need === "password";
-    if (live || parkedForConfirm) return { kind: "confirm" };
+    if (live || parkedForConfirm || starting) return { kind: "confirm" };
     return { kind: null };
   }
 
-  if (!cloudSessionLooksLive(opts)) return { kind: null };
+  if (!cloudSessionLooksLive(opts) && !starting) return { kind: null };
 
   if (isWaitInject(incoming)) {
-    if (isActiveCloudStatus(opts.status) || opts.browserListed) {
+    if (isActiveCloudStatus(opts.status) || opts.browserListed || starting) {
       return { kind: "wait" };
     }
     return { kind: null };
@@ -466,9 +541,10 @@ export function decideCloudInject(
     return { kind: "correction" };
   }
 
-  // Any other relevant follow-up while a Cloud session is live is a steer:
-  // an extra instruction or detail the human wants applied to the open errand.
-  if (looksLikeSteer(incoming, opts.storedTask)) {
+  // Any other follow-up while a Cloud session is live (or being started) is a
+  // steer: an extra instruction or detail the human wants applied to the open
+  // errand. Opt-out — see `steerCandidate` for why a verb is never required.
+  if (looksLikeSteer(incoming, opts.storedTask, { startInFlight: starting })) {
     return { kind: "steer" };
   }
 
@@ -482,6 +558,14 @@ export function injectAckText(kind: CloudInjectKind): string {
   return CHAT_INJECT_ACK;
 }
 
+/**
+ * Text-only "could this ever be an inject?" predicate. It knows nothing about
+ * liveness, so it must never be used as a pre-filter *before* the session
+ * state is known — that ordering is precisely what let `browser_task` drop
+ * «на воскресенье» before it ever looked at whether a Cloud session was live
+ * (`maybeInjectChat` now checks liveness first and calls `decideCloudInject`,
+ * which is the one authority). Kept for the channel-side stamp and tests.
+ */
 export function injectCandidate(text: string): boolean {
   return (
     isChatCodeMessage(text) ||
@@ -501,14 +585,23 @@ export function cloudInjectAttribute(text: string): Record<string, string> {
         ? "wait"
         : looksLikeCorrectionText(text)
           ? "correction"
-          : null;
+          : steerCandidate(text)
+            ? "steer"
+            : null;
   if (!kind) return {};
   // Stamp the raw human line too, so the browser_task tool can inject the exact
   // code/correction/confirmation the person sent even if the model rephrases
   // the tool call (e.g. re-issues the whole errand instead of passing the
-  // bare code). Steer is intentionally never stamped here — it only exists
-  // once a live session's context (storedTask etc.) is known, which this
-  // text-only stamp does not have.
+  // bare code).
+  //
+  // `steer` IS stamped now. It used to be left out because this stamp is
+  // text-only and cannot know whether a session is live — but the cost of
+  // that purity was that a steer got no «ввожу» bubble and no system
+  // instruction, so «на воскресенье» reached the model as ordinary chat and
+  // usually never became a browser_task call at all. Liveness is still
+  // decided later, where it is known: `cloudInjectInstruction(kind, live)`
+  // returns null for a steer with no live session, and `maybeInjectChat`
+  // checks liveness itself before queueing anything.
   return { cloudInject: kind, cloudInjectText: text.trim().slice(0, 240) };
 }
 
@@ -531,7 +624,8 @@ export function cloudInjectKindFromAttrs(
     kind === "code" ||
     kind === "wait" ||
     kind === "correction" ||
-    kind === "confirm"
+    kind === "confirm" ||
+    kind === "steer"
   ) {
     return kind;
   }
@@ -553,6 +647,9 @@ export function cloudInjectInstruction(
   }
   if (kind === "wait") {
     return "The latest human line asks the live Cloud job to hold. First bubble exactly «подожду», then call browser_task with that exact line. Do not start a search. Never ask for a site password.";
+  }
+  if (kind === "steer") {
+    return "The latest human line is an extra detail for the live Cloud errand — a day, a time, a party size, a place, a preference. It usually carries no verb at all («на воскресенье», «на 4 человек», «у окна»). First bubble exactly «ввожу», then call browser_task with that exact line so it is queued into the open session. Do not start a new search and do not re-send the old errand text. Never ask for a site password.";
   }
   if (kind === "confirm") {
     return "The latest human line says the human approved a push / app / 3-D Secure step on their own phone, or finished a step in live-view. First bubble exactly «проверяю», then call browser_task with that exact line: the agent only checks whether the screen advanced and carries on with the open page, it re-enters nothing. Never ask for a site password.";

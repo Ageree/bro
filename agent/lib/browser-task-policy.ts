@@ -46,8 +46,19 @@ export function shortTask(text: string | undefined | null, max = 80): string {
 }
 
 /** A short, non-question reply is a plain acknowledgement of the last
- *  "готово"/result bubble, not a new instruction (item 7). */
-export function isAckLike(text: string): boolean {
+ *  "готово"/result bubble, not a new instruction (item 7).
+ *
+ *  `sessionLive` switches that reading off entirely. "≤3 words, no ?" also
+ *  describes «на воскресенье», «на двоих», «у окна» — the exact follow-ups
+ *  people send *while* an errand is running. Read as an ack, such a line was
+ *  answered with "это подтверждение, не пересылай результат заново" and the
+ *  detail never reached the live Cloud session. While a session is live, or a
+ *  start is in flight, a short line is a detail for the errand, not applause. */
+export function isAckLike(
+  text: string,
+  opts?: { sessionLive?: boolean },
+): boolean {
+  if (opts?.sessionLive === true) return false;
   const t = text.trim();
   if (!t || t.includes("?") || t.includes("？")) return false;
   const words = t.split(/\s+/).filter(Boolean);

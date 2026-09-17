@@ -12,6 +12,7 @@ import {
   cloudInjectKindFromAttrs,
   cloudInjectTextFromAttrs,
   cloudSessionLooksLive,
+  cloudStartInFlight,
   decideCloudInject,
   extractChatCode,
   injectAckText,
@@ -28,6 +29,8 @@ import {
   steerCandidate,
   pageWaitsForCode,
   resultWaitsForCode,
+  START_CLAIM_MS,
+  startClaimIsLive,
 } from "../convex/lib/browserInjectPolicy.ts";
 import { scoreOtpInput } from "../agent/lib/browser-cdp.ts";
 
@@ -465,6 +468,180 @@ assert(
 );
 assert(!steerCandidate("подтвердил"), "a confirm phrase is never a steer candidate");
 
+// ---------------------------------------------------------------------------
+// Cue-less parameter follow-ups — the «на воскресенье» incident.
+//
+// The human asked to book a restaurant, the Cloud session started, and one
+// second later they typed «на воскресенье». The old gate made steering OPT-IN
+// on an imperative verb (`STEER_SIGNAL`), and none of these lines has a verb,
+// so every one of them was classified as "not for the session" and dropped
+// while the session sat there live. A2/F3 documents this bug class for
+// corrections; this is one kind further out — the plain parameters of an
+// errand: the day, the party size, the time, the area, the table.
+// ---------------------------------------------------------------------------
+const bookingRun = {
+  status: "running",
+  sessionId: "sess-book",
+  runId: "run-book",
+  storedTask: "забронируй столик на ужин",
+  startedAt: now - 1_000,
+  now,
+};
+for (const line of [
+  "на воскресенье",
+  "на двоих",
+  "на 4 человек",
+  "на 19:00",
+  "в центре",
+  "у окна",
+]) {
+  assert(steerCandidate(line), `«${line}» is a steer candidate (no verb needed)`);
+  assert(
+    decideCloudInject(line, bookingRun).kind === "steer",
+    `«${line}» reaches the live booking session`,
+  );
+  assert(
+    cloudInjectAttribute(line).cloudInject === "steer",
+    `«${line}» is stamped as a steer, so it gets an ack bubble and an instruction`,
+  );
+  assert(
+    cloudInjectAttribute(line).cloudInjectText === line,
+    `«${line}» is stamped with the raw human line`,
+  );
+  const queued = injectQueueText({ kind: "steer", humanText: line });
+  assert(queued.includes(line), `«${line}» survives into the queued message`);
+  assert(
+    queued.includes("Пароли, карты и коды из этого текста не вводи"),
+    `«${line}» keeps the safety tail`,
+  );
+}
+assert(
+  cloudInjectKindFromAttrs({ origin: "human", cloudInject: "steer" }) === "steer",
+  "a stamped steer is read back off the turn (ack bubble + jobs.ts instruction)",
+);
+assert(
+  cloudInjectKindFromAttrs({ origin: "wakeup", cloudInject: "steer" }) === null,
+  "a wakeup never steals the steer stamp",
+);
+assert(injectAckText("steer") === CHAT_INJECT_ACK, "steer acks with «ввожу»");
+assert(CHAT_INJECT_ACK === "ввожу", "steer ack stays in Bro's register");
+{
+  const live = cloudInjectInstruction("steer", true);
+  assert(live?.includes("ввожу"), "a live steer asks for the «ввожу» bubble first");
+  assert(live?.includes("browser_task"), "a live steer calls browser_task with the exact line");
+  assert(
+    live?.includes("Do not start a new search"),
+    "a live steer never opens a second errand",
+  );
+  assert(
+    cloudInjectInstruction("steer", false) === null,
+    "a steer with no live session is ordinary chat, not an instruction",
+  );
+}
+
+// No regressions: the opt-out gate still names its exclusions.
+assert(!steerCandidate("спасибо"), "thanks is still not a steer");
+assert(!steerCandidate("как дела"), "smalltalk without a «?» is still not a steer");
+assert(!steerCandidate("ну что там"), "a status question without a «?» is not a steer");
+assert(!steerCandidate("а это точно безопасно?"), "a question to Bro is still not a steer");
+assert(!steerCandidate("Hunter2024"), "a password dump is still never a steer");
+assert(!steerCandidate("🙂"), "an emoji reaction is still not a steer");
+assert(!steerCandidate("bro7788"), "a lone letter+digit token is still not a steer");
+assert(!steerCandidate("купи скотч на ozon"), "a fresh unrelated errand is still not a steer");
+assert(!steerCandidate("x".repeat(401)), "the 400-char cap still holds");
+for (const line of ["спасибо", "как дела", "купи скотч на ozon", "Hunter2024", "🙂"]) {
+  assert(
+    decideCloudInject(line, bookingRun).kind === null,
+    `«${line}» still never docks into the live session`,
+  );
+  assert(
+    Object.keys(cloudInjectAttribute(line)).length === 0,
+    `«${line}» is still not stamped`,
+  );
+}
+// The dead regex is gone, not just unused (the name survives only in the
+// comment that explains what it used to cost).
+assert(
+  !src("convex/lib/browserInjectPolicy.ts").includes("const STEER_SIGNAL"),
+  "the opt-in STEER_SIGNAL regex is deleted, not left dead in the file",
+);
+
+// ---------------------------------------------------------------------------
+// The start race: a follow-up that lands BEFORE the first errand persisted its
+// ids must not open a second run, must not be charged a second time, and must
+// not be dropped. `startClaimIsLive` is the single source of truth both the
+// Convex claim mutation and the agent read.
+// ---------------------------------------------------------------------------
+assert(startClaimIsLive(now - 1_000, now), "a claim taken a second ago is live");
+assert(!startClaimIsLive(0, now), "0 is no claim at all");
+assert(!startClaimIsLive(undefined, now), "an absent claim is no claim");
+assert(
+  !startClaimIsLive(now - START_CLAIM_MS - 1, now),
+  "a stale claim is taken over — a dead turn cannot wedge the tenant",
+);
+assert(
+  cloudStartInFlight({ startingAt: now - 1_000, now }),
+  "cloudStartInFlight reads the same claim",
+);
+assert(
+  decideCloudInject("на воскресенье", { startingAt: now - 1_000, now }).kind === "steer",
+  "a follow-up steers on a bare start claim — before any session id exists",
+);
+{
+  // One tenant row, two turns, the exact timeline of the report.
+  const row: {
+    browserStartingAt?: number;
+    browserStartingTask?: string;
+    browserPendingSteer?: string;
+    browserSessionId?: string;
+  } = {};
+  let runs = 0;
+  let charges = 0;
+  const claim = (task: string, at: number) => {
+    if (startClaimIsLive(row.browserStartingAt, at, START_CLAIM_MS)) return false;
+    row.browserStartingAt = at;
+    row.browserStartingTask = task;
+    return true;
+  };
+
+  // t0 — «хочу забронировать ресторан». The claim is taken BEFORE startRun,
+  // so the row already says "starting" while the Cloud call is in flight.
+  assert(claim("хочу забронировать ресторан", now), "the errand claims the start");
+  charges += 1;
+  runs += 1;
+
+  // t0+1s — «на воскресенье». No runId, no sessionId on the row yet: this is
+  // exactly the window that used to read as "no session → start".
+  const at = now + 1_000;
+  assert(
+    decideCloudInject("на воскресенье", { startingAt: row.browserStartingAt, now: at })
+      .kind === "steer",
+    "the follow-up is recognised as a steer during the start",
+  );
+  assert(!claim("на воскресенье", at), "the follow-up never wins a second start claim");
+  row.browserPendingSteer = "на воскресенье"; // holdBrowserSteer
+  assert(runs === 1, "no second cloud run");
+  assert(charges === 1, "no second charged job");
+
+  // The start finally returns and persists its session; the held line drains.
+  row.browserSessionId = "sess-book";
+  row.browserStartingAt = 0;
+  const drained = row.browserPendingSteer ?? "";
+  row.browserPendingSteer = "";
+  assert(drained === "на воскресенье", "the held detail is still there, not dropped");
+  assert(
+    injectQueueText({ kind: "steer", humanText: drained }).includes("на воскресенье"),
+    "the held detail is queued into the session that now exists",
+  );
+  assert(row.browserPendingSteer === "", "draining clears the hold — queued once, not twice");
+
+  // A genuinely new errand much later is not blocked by the spent claim.
+  assert(
+    claim("вызови такси", now + START_CLAIM_MS + 5_000),
+    "a later errand still starts normally",
+  );
+}
+
 // Rule 1 (#101) — codeRelevantToSession no longer has a browserListed
 // short-circuit: a listed browser alone is not OTP evidence, so a bare
 // keyword-less number stays a non-code even when the browser is listed.
@@ -687,8 +864,15 @@ assert(
   "inject uses the raw stamped human line, not just the model's task arg",
 );
 assert(
-  tool.includes("injectKind && (tenant.browserSessionId"),
-  "a stamped inject turn (code/wait/correction/confirm) never spawns a fresh browser errand",
+  /injectKind &&\s*injectKind !== "steer" &&\s*\(tenant\.browserSessionId/.test(tool),
+  "a stamped HARD inject turn (code/wait/correction/confirm) never spawns a fresh browser errand",
+);
+// …and `steer` is deliberately excluded from that guard: steering is opt-out
+// now, so almost every line is stamped `steer` and blocking on it would strand
+// an ordinary new errand behind a long-dead session id.
+assert(
+  tool.includes('injectKind !== "steer"'),
+  "a steer that found no live session falls through to a normal start",
 );
 assert(tool.includes("NO_LIVE_RUN_TEXT"), "no-live run is spoken");
 assert(tool.includes("ввожу код") || tool.includes("injectAckText"), "first bubble ack");
@@ -715,6 +899,85 @@ assert(tool.includes("ввожу код") || tool.includes("injectAckText"), "fi
     "CDP typing is for a code",
   );
 }
+
+// Liveness is decided BEFORE the text classifier gets a veto (b): the pure
+// text predicate `injectCandidate` must not stand in front of maybeInjectChat
+// any more — that ordering is what dropped «на воскресенье» before anyone
+// looked at whether a Cloud session was live.
+{
+  const fn = tool.slice(
+    tool.indexOf("async function maybeInjectChat"),
+    tool.indexOf("function extraHosts"),
+  );
+  assert(!fn.includes("injectCandidate("), "the text pre-filter no longer vetoes before liveness");
+  assert(
+    fn.indexOf("cloudStartInFlight(") < fn.indexOf("decideCloudInject("),
+    "liveness / start-in-flight is established before the inject decision",
+  );
+  assert(
+    fn.includes("holdBrowserSteer(phone, incoming)"),
+    "a follow-up that lands mid-start is held, never dropped",
+  );
+  assert(
+    fn.includes("drainHeldSteer(phone, sessionId"),
+    "held follow-ups are queued into the session once it exists",
+  );
+}
+assert(
+  !/^import[\s\S]*?injectCandidate/m.test(tool.slice(0, tool.indexOf("async function persist"))),
+  "browser_task no longer imports the text pre-filter",
+);
+
+// The start race (d): the claim is taken before anything is charged or
+// created, and a refused claim holds the line instead of opening a twin run.
+assert(tool.includes("claimBrowserStart(phone, task, Date.now(), START_CLAIM_MS)"), "the start is claimed");
+assert(
+  tool.indexOf("claimBrowserStart(") < tool.indexOf("countBrowserJobStart("),
+  "the claim is taken before the billing gate — a held follow-up is never charged",
+);
+assert(
+  tool.indexOf("claimBrowserStart(") < tool.indexOf("startRun(task, undefined"),
+  "the claim is taken before startRun round-trips",
+);
+assert(
+  tool.includes("if (!claim.claimed)") &&
+    tool.includes("holdBrowserSteer(phone, injectIncoming)"),
+  "a refused claim parks the line instead of starting a second run",
+);
+assert(
+  tool.includes("releaseBrowserStart(phone)"),
+  "a claim that will never produce a run is released, not left to expire",
+);
+assert(
+  tool.includes("tenant = (await getTenant(phone).catch(() => null)) ?? tenant;"),
+  "the tenant row is re-read immediately before the start decision, not trusted from the turn's opening snapshot",
+);
+assert(
+  tool.includes("drainHeldSteer(phone, opened.sessionId"),
+  "a fresh start drains whatever was held while it was starting",
+);
+assert(
+  /drainHeldSteer\(phone, opened\.sessionId, \{[^}]*interrupt: false/s.test(tool),
+  "the drained detail is appended, never interrupting the run it belongs to",
+);
+
+// (f) The poll branch no longer throws the human's line away.
+{
+  const poll = tool.slice(
+    tool.indexOf('if (action === "poll"'),
+    tool.indexOf('if (action === "continue"'),
+  );
+  assert(poll.includes("queueSteer(tenant.browserSessionId, task"), "a poll queues a steerable line into the live session");
+  assert(poll.includes("steerCandidate(task)"), "a poll only queues what is actually meant for the errand");
+  assert(
+    poll.includes('injected: "steer"'),
+    "the poll payload says so when the line really landed",
+  );
+}
+assert(
+  tool.includes("Unless this payload has `injected`, nothing from their last line was added"),
+  "the still-running hint never lets the model claim a detail was taken",
+);
 
 const cdp = src("agent/lib/browser-cdp.ts");
 assert(cdp.includes("cdpTypeIntoPage"), "cdp can type into the live tab");

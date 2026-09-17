@@ -52,6 +52,7 @@ import {
 import { findTenantByHandle, findTenantByPhone } from "./lib/tenantLookup";
 import { isTestPhone } from "./lib/testTenantPolicy";
 import { siteFromLoginTask } from "./lib/browserProfilePolicy";
+import { startClaimIsLive } from "./lib/browserInjectPolicy";
 
 /** `{ k: obj[k] }` for each key present with a defined value. Same shape as
  *  chaining `...(obj[k] !== undefined ? { [k]: obj[k] } : {})` per key. */
@@ -347,6 +348,10 @@ export const setBrowser = mutation({
     browserTask: v.optional(v.string()),
     browserStatus: v.optional(v.string()),
     browserStartedAt: v.optional(v.number()),
+    browserStartingAt: v.optional(v.number()),
+    browserStartingTask: v.optional(v.string()),
+    browserPendingSteer: v.optional(v.string()),
+    browserPendingSteerAt: v.optional(v.number()),
     browserProfileId: v.optional(v.string()),
     browserCookieDomains: v.optional(v.array(v.string())),
     browserProfileSyncedAt: v.optional(v.number()),
@@ -371,6 +376,10 @@ export const setBrowser = mutation({
       "browserTask",
       "browserStatus",
       "browserStartedAt",
+      "browserStartingAt",
+      "browserStartingTask",
+      "browserPendingSteer",
+      "browserPendingSteerAt",
       "browserProfileId",
       "browserCookieDomains",
       "browserProfileSyncedAt",
@@ -383,6 +392,15 @@ export const setBrowser = mutation({
       "browserOutcome",
     ]);
     const isNewRun = Boolean(args.browserRunId && existing.browserRunId !== args.browserRunId);
+    // The run this start claim was for now exists: the claim has done its job,
+    // so drop it — leaving it would keep `cloudStartInFlight` true for two
+    // more minutes and make the next errand look like a start already in
+    // flight. Only a NEW run id clears it: a poll re-persisting the previous
+    // run must not cancel a claim that belongs to a start still in flight.
+    if (isNewRun && args.browserStartingAt === undefined) {
+      patch.browserStartingAt = 0;
+      patch.browserStartingTask = "";
+    }
     if (isNewRun) {
       // A fresh run/errand: the previous run's blocker and stored result are
       // stale and must never leak into the new one. `browserNextTask` is the
@@ -517,6 +535,136 @@ export const clearBrowserNeedPublic = mutation({
       browserNeedDetail: undefined,
     });
     return null;
+  },
+});
+
+const browserStartClaim = v.object({
+  /** true when THIS caller now owns the start and may create a Cloud run. */
+  claimed: v.boolean(),
+  /** Set when the claim was refused: what is already being started, so the
+   *  caller can hold its follow-up for that errand instead of opening a
+   *  second one. */
+  startingAt: v.optional(v.number()),
+  startingTask: v.optional(v.string()),
+  browserSessionId: v.optional(v.string()),
+  browserRunId: v.optional(v.string()),
+});
+
+/**
+ * One Cloud start at a time, claimed BEFORE the start round-trips.
+ *
+ * `startRun()` takes seconds, and `browserRunId`/`browserSessionId` were only
+ * persisted after it returned. A follow-up sent one second after the errand
+ * («хочу забронировать ресторан» → «на воскресенье») therefore read a tenant
+ * row with no session at all, decided "start", and opened a SECOND cloud run
+ * carrying only the fragment as its whole task — a second charged job and one
+ * orphaned live browser. The claim closes that window: it is a single Convex
+ * transaction, so exactly one concurrent turn gets `claimed: true`.
+ *
+ * A claim older than `staleMs` (browserInjectPolicy's START_CLAIM_MS) is taken
+ * over — a turn that died mid-start must never wedge the tenant forever.
+ */
+export const claimBrowserStart = mutation({
+  args: {
+    secret: v.string(),
+    phoneE164: v.string(),
+    task: v.string(),
+    now: v.number(),
+    staleMs: v.number(),
+  },
+  returns: browserStartClaim,
+  handler: async (ctx, args): Promise<Infer<typeof browserStartClaim>> => {
+    assertSecret(args.secret);
+    const existing = await findTenantByPhone(ctx, args.phoneE164);
+    if (!existing) throw new Error("unknown tenant");
+    const at = existing.browserStartingAt ?? 0;
+    if (startClaimIsLive(at, args.now, args.staleMs)) {
+      return {
+        claimed: false,
+        startingAt: at,
+        ...(existing.browserStartingTask
+          ? { startingTask: existing.browserStartingTask }
+          : {}),
+        ...(existing.browserSessionId ? { browserSessionId: existing.browserSessionId } : {}),
+        ...(existing.browserRunId ? { browserRunId: existing.browserRunId } : {}),
+      };
+    }
+    await ctx.db.patch(existing._id, {
+      browserStartingAt: args.now,
+      browserStartingTask: args.task.slice(0, 2000),
+    });
+    return { claimed: true };
+  },
+});
+
+/** Drop a start claim that will never produce a run (the start threw, or the
+ *  turn decided not to start after all). Without this the tenant would look
+ *  "starting" for the whole START_CLAIM_MS and swallow the next errand. */
+export const releaseBrowserStart = mutation({
+  args: { secret: v.string(), phoneE164: v.string() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    assertSecret(args.secret);
+    const existing = await findTenantByPhone(ctx, args.phoneE164);
+    if (!existing) return null;
+    await ctx.db.patch(existing._id, {
+      browserStartingAt: 0,
+      browserStartingTask: "",
+    });
+    return null;
+  },
+});
+
+/** Park a follow-up that arrived while a start was still in flight. Appended,
+ *  not overwritten: the human can type two details in a row and neither may be
+ *  lost. Whoever sees the session first drains it (`takeBrowserPendingSteer`)
+ *  and queues it into the live Cloud session. */
+export const holdBrowserSteer = mutation({
+  args: { secret: v.string(), phoneE164: v.string(), text: v.string(), now: v.number() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    assertSecret(args.secret);
+    const existing = await findTenantByPhone(ctx, args.phoneE164);
+    if (!existing) return null;
+    const text = args.text.trim();
+    if (!text) return null;
+    const held = (existing.browserPendingSteer ?? "")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+    if (held.includes(text)) return null; // the same line twice is one line
+    // Whole lines only, newest last, bounded — a partial line queued into a
+    // Cloud session is worse than no line at all.
+    const next = [...held, text.slice(0, 300)].slice(-5).join("\n");
+    await ctx.db.patch(existing._id, {
+      browserPendingSteer: next,
+      browserPendingSteerAt: args.now,
+    });
+    return null;
+  },
+});
+
+/** Read-and-clear in one transaction, so two turns racing to drain the held
+ *  follow-up cannot queue it into the session twice. Text older than `ttlMs`
+ *  is dropped rather than returned: it belonged to an errand that is over, and
+ *  «на воскресенье» applied to somebody's next taxi is worse than losing it. */
+export const takeBrowserPendingSteer = mutation({
+  args: {
+    secret: v.string(),
+    phoneE164: v.string(),
+    now: v.number(),
+    ttlMs: v.number(),
+  },
+  returns: v.string(),
+  handler: async (ctx, args): Promise<string> => {
+    assertSecret(args.secret);
+    const existing = await findTenantByPhone(ctx, args.phoneE164);
+    if (!existing) return "";
+    const held = (existing.browserPendingSteer ?? "").trim();
+    if (!held) return "";
+    const at = existing.browserPendingSteerAt ?? 0;
+    await ctx.db.patch(existing._id, { browserPendingSteer: "", browserPendingSteerAt: 0 });
+    return args.now - at > args.ttlMs ? "" : held;
   },
 });
 
