@@ -244,7 +244,9 @@ async function measureInstinctHttp(): Promise<Record<string, unknown>> {
 }
 
 async function searchArchiveV3Documents(phone: string, query: string): Promise<void> {
-  const key = process.env.SUPERMEMORY_API_KEY?.trim();
+  // Strip all whitespace, not just the ends: a pasted key can carry a newline
+  // mid-string, and `fetch` refuses to send such a header at all.
+  const key = process.env.SUPERMEMORY_API_KEY?.replace(/\s+/gu, "");
   if (!key) throw new Error("SUPERMEMORY_API_KEY missing");
   const tag = `bro_archive_${phone.replace(/[^0-9A-Za-z._-]/g, "")}`;
   const res = await fetch("https://api.supermemory.ai/v3/search", {

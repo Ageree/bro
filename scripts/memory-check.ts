@@ -36,6 +36,30 @@ for (const bad of [undefined, "", "   ", "your_key_here", "sk_xxxx"]) {
 }
 assert.equal(supermemoryKey({ SUPERMEMORY_API_KEY: " sm_key " }), "sm_key");
 
+// A key pasted into a hosted env arrives wrapped, with a newline in the MIDDLE
+// of the value — `fetch` then refuses to send the header at all, so memory is
+// not degraded but dead. `.trim()` cannot see an interior break. Observed on a
+// real 90-character key that arrived as 92. Same breakage the Browser Use key
+// hit in production; this one matters more, because it is the only memory Bro
+// has and it is no longer optional.
+for (const wrapped of [
+  "sm_abc\ndef",
+  "sm_abc\r\ndef",
+  " sm_abc\n def \n",
+  "sm_abc\tdef",
+]) {
+  const cleaned = supermemoryKey({ SUPERMEMORY_API_KEY: wrapped });
+  assert.equal(cleaned, "sm_abcdef", `interior whitespace must go: ${JSON.stringify(wrapped)}`);
+  assert.doesNotThrow(
+    () => new Headers({ authorization: `Bearer ${cleaned}` }),
+    "the cleaned key must be sendable as a header",
+  );
+}
+assert.throws(
+  () => new Headers({ authorization: "Bearer sm_abc\ndef" }),
+  "guard is meaningless unless fetch really rejects the wrapped form",
+);
+
 const person = { current: { principalId: "+79991234567" } };
 withEnv({ SUPERMEMORY_API_KEY: undefined, BRO_MEMORY_OPTIONAL: undefined }, () => {
   assert.throws(

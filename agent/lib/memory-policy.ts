@@ -14,7 +14,15 @@ import { isSharedPrincipal, localDevPrincipal } from "./tenant.ts";
 export function supermemoryKey(env: {
   SUPERMEMORY_API_KEY?: string;
 } = process.env): string {
-  const key = env.SUPERMEMORY_API_KEY?.trim();
+  // ALL whitespace, not `.trim()`. A key pasted into a hosted env routinely
+  // arrives wrapped, with a newline in the MIDDLE of the string, and `fetch`
+  // rejects such a header outright rather than sending a broken one — so the
+  // failure is total, not degraded. `.trim()` cannot see an interior newline.
+  // This is the same breakage the Browser Use key hit in production (#114) and
+  // that both model lanes already guard against; the memory key is now the one
+  // that must never be down, because it is the only memory Bro has. Observed
+  // live: a real 90-character key arriving as 92 with two interior newlines.
+  const key = env.SUPERMEMORY_API_KEY?.replace(/\s+/gu, "");
   if (!key || key.includes("xxxx") || key.includes("your_")) {
     throw new Error(
       "SUPERMEMORY_API_KEY missing or placeholder. Supermemory is the only memory Bro has — without it every slot is empty and nothing would say so. Set it in .env.local (and on the deployment) from https://console.supermemory.ai, or set BRO_MEMORY_OPTIONAL=1 to run this instance deliberately memoryless.",
