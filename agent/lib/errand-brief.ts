@@ -149,10 +149,20 @@ export function errandBriefModel(env: EnvLike = process.env): string {
   );
 }
 
+/** Upper bound on the brief budget. `AbortSignal.timeout` throws a RangeError
+ *  above 2^32-1 ms, and that throw happens *outside* the try below, so an
+ *  operator fat-fingering an extra digit into BRO_ERRAND_BRIEF_BUDGET_MS would
+ *  not degrade the brief — it would take down every browser errand, 100% of
+ *  them. A budget is a latency knob; nothing legitimate wants a browser errand
+ *  to sit half a minute behind its own instruction, so clamp rather than
+ *  trust. */
+export const ERRAND_BRIEF_BUDGET_CEILING_MS = 30_000;
+
 export function errandBriefBudgetMs(env: EnvLike = process.env): number {
   const raw = env.BRO_ERRAND_BRIEF_BUDGET_MS?.trim();
   const n = raw ? Number(raw) : NaN;
-  return Number.isInteger(n) && n > 0 ? n : ERRAND_BRIEF_BUDGET_MS;
+  if (!Number.isInteger(n) || n <= 0) return ERRAND_BRIEF_BUDGET_MS;
+  return Math.min(n, ERRAND_BRIEF_BUDGET_CEILING_MS);
 }
 
 /**
@@ -326,8 +336,16 @@ export function sanitizeErrandBrief(raw: string | null | undefined): string | nu
   // Small models like to wrap prose in a fence when the prompt mentions a format.
   s = s.replace(/^```[a-z]*\n?/iu, "").replace(/\n?```$/u, "").trim();
   s = stripSurroundingQuotes(s);
+  // Normalise every line break the platform recognises BEFORE splitting.
+  // `grabLabel` in convex/lib/browserOutcomePolicy.ts matches with the `m`
+  // flag, whose `^` also fires after a lone \r, U+2028 and U+2029 — so a brief
+  // containing «Итог\rНУЖНО: info» would sail past a `\r?\n` split and hand the
+  // run a SECOND output contract. The run would then come back `labelled:true`
+  // with a `needs` nobody asked for, and that value drives `browserNeed`, the
+  // inject decisions and the «нужно X» line the human reads.
+  s = s.replace(/\r\n?|\u2028|\u2029|\u0085/gu, "\n");
   const lines = s
-    .split(/\r?\n/)
+    .split(/\n/)
     .map((line) => line.replace(/^\s*[-*•]\s*/u, "").trim())
     .filter((line) => line.length > 0)
     .filter((line) => !CONTRACT_LINE.test(line));
@@ -364,8 +382,17 @@ export async function composeErrandBrief(
   const budgetMs = errandBriefBudgetMs(env);
   const fetchImpl = opts?.fetchImpl ?? fetch;
   // The `+300` mirrors the fast-ack lane: the outer race below is the real
-  // deadline, this only stops a socket from outliving the decision.
-  const signal = AbortSignal.timeout(budgetMs + 300);
+  // deadline, this only stops a socket from outliving the decision. Guarded
+  // even though `errandBriefBudgetMs` now clamps: this call is the one place
+  // that can throw before the try/catch below, and "never throws" is this
+  // function's whole contract — `startRun` awaits it before building the run.
+  let signal: AbortSignal;
+  try {
+    signal = AbortSignal.timeout(budgetMs + 300);
+  } catch (err) {
+    console.error("errand brief budget unusable", err);
+    return null;
+  }
 
   const body = withOpenRouterChatDefaults(
     {

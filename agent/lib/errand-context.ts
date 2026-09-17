@@ -127,8 +127,17 @@ export async function loadErrandFacts(
   const wanted = (items ?? []).filter(
     (item) => item.available && (item.kind === "address" || item.kind === "contact"),
   );
-  for (const item of wanted) {
-    const record = await safe("vault read", () => deps.readVaultSecret(phone, item.handle));
+  // In parallel, like the three reads above. `readVaultSecret` is an ACTION,
+  // and each one costs several internal hops plus a decrypt — awaiting them
+  // one at a time put ~0.5s of dead time in front of every errand start, on
+  // top of the brief budget. Order still decides who wins a duplicate field,
+  // so the results are consumed in the original order, not as they land.
+  const records = await Promise.all(
+    wanted.map((item) =>
+      safe("vault read", () => deps.readVaultSecret(phone, item.handle)),
+    ),
+  );
+  for (const record of records) {
     if (!record?.secret) continue;
     if (record.kind === "address") {
       if (!facts.address) {

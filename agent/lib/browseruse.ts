@@ -181,6 +181,14 @@ export function isDryRunErrand(task: string): boolean {
 function errandLoginBlock(opts?: { login?: boolean }): string {
   const lines: string[] = [];
   if (opts?.login) lines.push(loginScaffold());
+  // The licence to sign in or register WITHOUT asking is load-bearing, not
+  // prose. It was the entire substance of «Cloud errand must log in when the
+  // site shows Войти» (#94): a run that treats «Войти» as a wall stops on a
+  // guest screen and reports nothing done. The surrounding advice around it
+  // really was stale and stayed deleted; this one sentence comes back, short.
+  lines.push(
+    "«Войти» или гостевая форма — входи или регистрируйся сам (паспорт, Яндекс ID — норма).",
+  );
   lines.push(
     opts?.login
       ? "Упёрся в код, пуш или капчу — закончи с НУЖНО: sms_code, email_code, push или captcha."
@@ -258,9 +266,20 @@ function errandGoalBlock(
 ): string {
   const brief = opts?.brief?.trim();
   const trimmed = task.trim();
-  const verbatim = opts?.humanText?.trim() || trimmed;
+  // `scrubSecrets` here and not only on the brief: this is the one line that
+  // carries the human's raw keystrokes to a third-party browser vendor, and a
+  // person who types «мой пароль: qwerty123» mid-errand must not have it
+  // shipped out verbatim and logged on someone else's infrastructure. The
+  // task as a whole is still deliberately unscrubbed — a 13-digit tracking
+  // number is indistinguishable from a PAN to the regex, and blanking it
+  // would delete the errand's own subject.
+  const verbatim = scrubSecrets(opts?.humanText?.trim() || trimmed).trim();
   const lines = [`ЦЕЛЬ: ${brief || staticBriefLine(task)}`];
-  if (verbatim && (!brief || !brief.includes(verbatim))) {
+  // Never restate the goal as its own quote. Without an OPENROUTER key there
+  // is no brief, `!brief` is always true, and `verbatim` defaults to `task` —
+  // so every keyless deployment printed ЦЕЛЬ and ДОСЛОВНО with identical
+  // text. A commit whose thesis is "delete boilerplate" must not add a line.
+  if (verbatim && verbatim !== trimmed && (!brief || !brief.includes(verbatim))) {
     lines.push(`ДОСЛОВНО ОТ ЧЕЛОВЕКА: «${verbatim}»`);
   }
   return lines.join("\n");
@@ -431,6 +450,10 @@ async function errandBriefing(
           return undefined;
         })
       : undefined);
+  // `composeErrandBrief` documents itself as never throwing, and it is written
+  // that way — but it is awaited before the run body is built, so if that
+  // contract ever breaks the cost is not a missing brief, it is every browser
+  // errand failing. Cheap belt to go with the braces.
   const brief = await composeErrandBrief({
     task,
     ...(opts?.humanText ? { humanText: opts.humanText } : {}),
@@ -439,6 +462,9 @@ async function errandBriefing(
     ...(opts?.login ? { login: true } : {}),
     ...(opts?.continuation ? { continuation: true } : {}),
     ...(opts?.startPage ? { startPage: opts.startPage } : {}),
+  }).catch((err: unknown) => {
+    console.error("errand brief threw", err);
+    return null;
   });
   return {
     ...(brief ? { brief } : {}),

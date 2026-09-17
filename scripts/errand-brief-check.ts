@@ -35,6 +35,7 @@ import {
   sanitizeErrandBrief,
   staticBriefLine,
   type ErrandFacts,
+  ERRAND_BRIEF_BUDGET_CEILING_MS,
 } from "../agent/lib/errand-brief.ts";
 import { formatLocalNow, loadErrandFacts } from "../agent/lib/errand-context.ts";
 import { DEFAULT_OPENROUTER_MODEL } from "../agent/lib/model.ts";
@@ -600,5 +601,45 @@ assert(
   src("scripts/check-all.ts").includes("endsWith(\":check\")"),
   "check-all enumerates every *:check script, so the new one is picked up",
 );
+
+// A budget is a latency knob, but `AbortSignal.timeout` throws a RangeError
+// above 2^32-1 ms, and that call sits in front of the try/catch — so one extra
+// digit in the env var did not degrade the brief, it failed EVERY browser
+// errand. Clamp, do not trust.
+{
+  assert(
+    errandBriefBudgetMs({ BRO_ERRAND_BRIEF_BUDGET_MS: "999999999999999999" }) ===
+      ERRAND_BRIEF_BUDGET_CEILING_MS,
+    "an absurd budget is clamped instead of reaching AbortSignal.timeout",
+  );
+  assert(
+    errandBriefBudgetMs({ BRO_ERRAND_BRIEF_BUDGET_MS: "900" }) === 900,
+    "a sane budget is honoured unchanged",
+  );
+  assert(
+    errandBriefBudgetMs({ BRO_ERRAND_BRIEF_BUDGET_MS: "-5" }) ===
+      errandBriefBudgetMs({}),
+    "a negative budget falls back to the default",
+  );
+}
+
+// The composer's output must never hand the run a SECOND output contract.
+// `grabLabel` in browserOutcomePolicy matches with the `m` flag, whose `^`
+// also fires after a lone \r, U+2028 and U+2029 — so splitting on /\r?\n/
+// alone let «Итог\rНУЖНО: info» through, and the run came back labelled with
+// a `needs` nobody asked for, driving browserNeed and the «нужно X» line.
+{
+  for (const sep of ["\r", "\u2028", "\u2029", "\u0085"]) {
+    const out = sanitizeErrandBrief(`Итог${sep}НУЖНО: info`);
+    assert(
+      out === null || !/(^|[\r\n\u2028\u2029\u0085])\s*НУЖНО:/u.test(out),
+      `a contract line hidden behind ${JSON.stringify(sep)} never survives sanitize`,
+    );
+  }
+  assert(
+    sanitizeErrandBrief("Столик на 2 подтверждён на экране.") !== null,
+    "ordinary one-line briefs still pass",
+  );
+}
 
 console.log("errand-brief-check ok");

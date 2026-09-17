@@ -997,4 +997,73 @@ assert(
   );
 }
 
+// The licence to sign in or register on its own. This is a regression pin,
+// not a style preference: it was the whole substance of «Cloud errand must
+// log in when the site shows Войти» (#94), and the pass that trimmed generic
+// advice from the scaffold deleted both the sentence and the assertions that
+// held it — so nothing was red while the fix silently went away. A run that
+// treats «Войти» as a wall stops on a guest screen and reports nothing done.
+{
+  const LICENCE = /входи или регистрируйся/;
+  for (const opts of [
+    {},
+    { profileSynced: true },
+    { login: true },
+    { startPage: "https://www.ozon.ru" },
+    { pay: { hosts: ["ozon.ru"], maxRub: 5000 } },
+  ]) {
+    assert(
+      LICENCE.test(scaffoldTask("купи носки", opts as never)),
+      `the log-in-yourself licence survives in ${JSON.stringify(opts)}`,
+    );
+  }
+  assert(
+    scaffoldTask("купи носки").includes("паспорт"),
+    "and it still names паспорт / Яндекс ID as normal, which is what stops the run balking",
+  );
+}
+
+// ДОСЛОВНО must never simply restate ЦЕЛЬ. Without an OPENROUTER key there is
+// no composed brief, so `verbatim` falls back to `task` and every keyless
+// deployment printed the same sentence twice — boilerplate added by the pass
+// whose whole thesis was removing boilerplate.
+{
+  const plain = scaffoldTask("просто посмотри цену на такси, не заказывай");
+  assert(
+    !plain.includes("ДОСЛОВНО ОТ ЧЕЛОВЕКА"),
+    "no verbatim line when it would only repeat ЦЕЛЬ",
+  );
+  const withHuman = scaffoldTask("посмотри цену на такси", {
+    humanText: "глянь скок стоит такси до шары",
+  } as never);
+  assert(
+    withHuman.includes("ДОСЛОВНО ОТ ЧЕЛОВЕКА: «глянь скок стоит такси до шары»"),
+    "the human's own wording still rides along when it differs from the task",
+  );
+}
+
+// A password typed mid-errand must not be shipped to the browser vendor
+// verbatim. The task as a whole stays unscrubbed on purpose (a tracking
+// number looks like a PAN to the regex), so this line is scrubbed on its own.
+{
+  const leaky = scaffoldTask("оплати заказ", {
+    humanText: "мой пароль: qwerty123",
+  } as never);
+  assert(!leaky.includes("qwerty123"), "a password in the verbatim line is scrubbed");
+  // Known sharp edge, pinned rather than papered over: PAN_RE redacts ANY
+  // 13-19 digit run, so a marketplace tracking number reads as a card here.
+  // Safety wins on this line for now — a leaked PAN is worse than a lost
+  // order number, and the number usually also rides in ЦЕЛЬ. The real
+  // separator is a Luhn check in secretScrub (a card passes it, an arbitrary
+  // tracking number has ~1/10 odds); when that lands, flip this to expect
+  // «46000123456789» to survive.
+  const tracking = scaffoldTask("проверь заказ", {
+    humanText: "проверь заказ 46000123456789",
+  } as never);
+  assert(
+    tracking.includes("[card]") && !tracking.includes("46000123456789"),
+    "a long digit run is redacted on the verbatim line — blunt, deliberate, documented",
+  );
+}
+
 console.log("browser-policy-check ok");
