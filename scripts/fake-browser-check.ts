@@ -49,11 +49,34 @@ process.env.BROWSERUSE_API_KEY = "fake-key";
 // Imported after the env is set only for tidiness — the client reads the base
 // per call, which is itself the property that lets staging point elsewhere
 // without a restart.
-const { cancelRun, createProfile, startRun, waitForRun } = await import(
-  "../agent/lib/browseruse.ts"
-);
+const { cancelRun, createProfile, scaffoldTask, startRun, waitForRun } =
+  await import("../agent/lib/browseruse.ts");
+const { humanErrand } = await import("./fake-browser-use.ts");
 
 try {
+  // ------------------------------------------- the fake reads the real task
+  //
+  // The fake picks its ending from the errand, which reaches it wrapped in
+  // whatever scaffold `scaffoldTask` currently writes. When #108 renamed that
+  // label from `Задача:` to `ЦЕЛЬ:` the fake did not fail — it matched nothing
+  // and reported every errand as bought, and the only symptom was a 3ds
+  // assertion far below saying `needs: none`. These two assert the extraction
+  // itself, so the next rename says what actually broke.
+  for (const errand of [
+    "купи молоко на wildberries",
+    "оплати заказ и подтверди в банке",
+  ]) {
+    eq(
+      humanErrand(scaffoldTask(errand, {})),
+      errand,
+      "the errand survives the scaffold — if this fails, scaffoldTask changed shape",
+    );
+  }
+  assert(
+    !humanErrand(scaffoldTask("купи молоко", {})).includes("bro-errand"),
+    "the errand mark is not mistaken for the errand",
+  );
+
   const profileId = await createProfile("+15555550101");
   assert(isBrowserProfileId(profileId), `fake profile id is a real uuid: ${profileId}`);
 

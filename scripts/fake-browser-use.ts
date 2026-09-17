@@ -78,14 +78,27 @@ function outcomeFor(task: string): Outcome {
  * in its own instructions. Matching against the whole task made every errand
  * come back parked on the bank — the fake was reading Bro's instructions to
  * the Cloud agent as if they were the human's request.
+ *
+ * The extraction is structural — the line after the `[bro-errand]` mark, minus
+ * whatever label it carries — rather than a search for that label by name.
+ * It was `Задача:` and became `ЦЕЛЬ:` in #108, and a fake keyed to the word
+ * did not fail: it quietly matched nothing and reported every errand as
+ * bought. Product copy churns; the shape does not.
  */
-function humanErrand(task: string): string {
-  const line = task
-    .split("\n")
-    .find((l) => l.includes("Задача:") || l.includes("Task:"));
-  if (!line) return task.split("\n")[0] ?? task;
-  return line.slice(line.indexOf(":") + 1);
+export function humanErrand(task: string): string {
+  const lines = task.split("\n").map((l) => l.trim());
+  const mark = lines.findIndex((l) => l.startsWith(ERRAND_MARK));
+  const line =
+    (mark >= 0 ? lines.slice(mark + 1).find(Boolean) : undefined) ??
+    lines.find(Boolean) ??
+    task;
+  // `ЦЕЛЬ: купи молоко` → `купи молоко`; an unlabelled line is left alone.
+  const labelled = /^[\p{Lu}][\p{Lu}\s]*:\s*(.*)$/u.exec(line);
+  return labelled?.[1] ?? line;
 }
+
+/** The marker `scaffoldTask` opens an errand with. */
+const ERRAND_MARK = "[bro-errand]";
 
 type Run = {
   id: string;
@@ -232,10 +245,17 @@ const server = createServer((req, res) => {
   })();
 });
 
+// Only when run as a program. Importing this module — which the check does, to
+// assert the errand extraction directly against a real `scaffoldTask` output —
+// must not open a socket, or the importing process never exits.
+const invokedDirectly =
+  process.argv[1] !== undefined &&
+  import.meta.url === new URL(`file://${process.argv[1]}`).href;
+
 // `--port=0` picks a free one, which is how the check starts it without
 // racing another test for a fixed port — hence reporting the bound address
 // rather than the requested one.
-server.listen(port, () => {
+if (invokedDirectly) server.listen(port, () => {
   const address = server.address();
   const bound = typeof address === "object" && address ? address.port : port;
   console.log(`[fake-browser-use] listening on :${bound}, runs take ${runMs}ms`);
