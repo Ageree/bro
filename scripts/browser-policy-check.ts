@@ -36,14 +36,16 @@ import {
   envSyncedProfileId,
   hashedProfileName,
   isDryRunErrand,
+  normalizeBrowserUseKey,
   proxyCountryCode,
   resolveBrowserModel,
   scaffoldTask,
 } from "../agent/lib/browseruse.ts";
+import { normalizeBrowserUseKey as normalizeConvexBrowserUseKey } from "../convex/lib/browseruse.ts";
 
 import { expandPayHosts } from "../agent/lib/browser-pay.ts";
 
-import { assert, src, withEnv } from "./lib/check.ts";
+import { assert, eq, src, throws, withEnv } from "./lib/check.ts";
 
 assert(normalizeTask("  Купить   скотч ") === "купить скотч", "normalize");
 
@@ -1068,6 +1070,39 @@ assert(
     pan.includes("[card]") && !pan.includes("4111 1111"),
     "…while a real card number on the same line is still redacted",
   );
+}
+
+// A secret store can hand back a key with a newline in the MIDDLE of the
+// value ("bu_xxx\nyyy"). `fetch` refuses to build the header at all — the
+// request never leaves the process and the error blames headers, not the
+// secret — so both clients strip every whitespace character, not just the
+// ends. `.trim()` is specifically not enough here.
+{
+  const wrapped = "bu_abc123\ndef456";
+  eq(normalizeBrowserUseKey(wrapped), "bu_abc123def456", "eve-side: a mid-value newline is stripped");
+  eq(
+    normalizeConvexBrowserUseKey(wrapped),
+    "bu_abc123def456",
+    "convex-side: the same key normalizes identically",
+  );
+  assert(wrapped.trim() !== "bu_abc123def456", ".trim() would not have fixed this key");
+  // The header the stripped key goes into must now be constructible; the raw
+  // one is exactly what threw "invalid header value" in the incident.
+  new Headers({ "X-Browser-Use-API-Key": normalizeBrowserUseKey(wrapped)! });
+  throws(
+    () => new Headers({ "X-Browser-Use-API-Key": wrapped }),
+    "the un-stripped key is still rejected by Headers (this is the bug being guarded)",
+  );
+  // Surrounding whitespace and the other shapes a paste can leave behind.
+  eq(normalizeBrowserUseKey("  bu_abc  "), "bu_abc", "ends are stripped too");
+  eq(normalizeBrowserUseKey("bu_a\r\n b\tc"), "bu_abc", "CR, LF, tab and space all go");
+  // A valid key has no internal whitespace, so stripping cannot corrupt it.
+  eq(normalizeBrowserUseKey("bu_abc123"), "bu_abc123", "a clean key is returned unchanged");
+  // Missing / whitespace-only stays missing, so key()'s existing "missing"
+  // error still fires instead of a request going out with an empty header.
+  eq(normalizeBrowserUseKey(undefined), undefined, "unset stays unset");
+  eq(normalizeBrowserUseKey("\n \t"), undefined, "a whitespace-only key counts as missing");
+  eq(normalizeConvexBrowserUseKey("\n \t"), undefined, "…on the convex side as well");
 }
 
 console.log("browser-policy-check ok");
