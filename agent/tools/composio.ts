@@ -16,33 +16,70 @@ function connectLinks(result: unknown): string[] {
   return [...new Set(found.map((u) => u.replace(/[.,)]+$/, "")))];
 }
 
-async function sendConnectIfAny(ctx: ToolContext, result: unknown): Promise<void> {
+/**
+ * Hand the human the Connect Link Composio just minted, or say why we could not.
+ *
+ * Delivery goes through `deliverHuman`'s `buttons` parameter rather than the
+ * text body. The URL then never passes through `stripConnectUrls` at all — on
+ * Telegram it becomes a real inline keyboard, on iMessage a labelled URL line
+ * — and the sanitiser stays free to be as aggressive as it likes about raw
+ * `*.composio.dev` URLs in model prose, which is the only thing it was ever
+ * meant to catch.
+ *
+ * The return value is the other half of the fix. Every failure here used to
+ * end in `console.error`, so the tool still resolved with Composio's happy
+ * result, the model read "connection initiated" and told the human the link
+ * was sent. Nobody saw the link and nobody was told. Now the reason comes
+ * back to the model in Russian and lands in the reply.
+ */
+async function sendConnectIfAny(
+  ctx: ToolContext,
+  result: unknown,
+): Promise<string | undefined> {
+  const found = connectLinks(result);
+  if (found.length === 0) return undefined;
+  const dests = found.filter(isConnectDest);
+  if (dests.length === 0) {
+    return "composio вернул ссылку, которую я не признал ссылкой на подключение, — карточку не отправил. скажи человеку, что подключить не вышло, и не выдавай это за успех.";
+  }
+
   const conv = attr(ctx, "conversationId");
-  if (!conv) return;
+  if (!conv) {
+    return "ссылку на подключение отправить некуда: у этого хода нет conversationId. скажи человеку, что ссылка не ушла и что надо написать тебе ещё раз в личку. свою ссылку в текст не вставляй.";
+  }
+
   const phone = tenantId(ctx);
-  const tenant = await getTenant(phone).catch(() => null);
-  for (const url of connectLinks(result)) {
-    if (!isConnectDest(url)) continue;
-    const wrapped = wrapConnectUrl(url);
+  let tenant: Awaited<ReturnType<typeof getTenant>> | null = null;
+  try {
+    tenant = await getTenant(phone);
+  } catch (err) {
+    console.error("composio connect link: tenant lookup failed", err);
+    // Without the tenant row there is no telegramChatId and no lastChannel,
+    // so a send here would quietly aim a Telegram-derived conversation id at
+    // iMessage and land nowhere. Say so instead of guessing.
+    return "не смог достать профиль, чтобы понять, куда слать ссылку, — карточка не ушла. скажи человеку прямо и предложи попробовать ещё раз.";
+  }
+
+  const channel = channelFromAuth(attrsFromSession(ctx.session), tenant?.lastChannel);
+  if (channel === "telegram" && !tenant?.telegramChatId) {
+    return "ход пришёл из телеграма, а чат для ответа не записан — карточку с ссылкой отправить не смог. скажи человеку, что не вышло.";
+  }
+
+  for (const url of dests) {
     try {
-      if (channelFromAuth(attrsFromSession(ctx.session), tenant?.lastChannel) === "telegram") {
-        await deliverHuman({
-          tenant,
-          conversationId: conv,
-          text: `Подключи приложение\n\n:::buttons\n[Подключить](${wrapped})\n:::`,
-          channel: "telegram",
-        });
-      } else {
-        await deliverHuman({
-          tenant,
-          conversationId: conv,
-          text: wrapped,
-        });
-      }
+      await deliverHuman({
+        tenant,
+        conversationId: conv,
+        channel,
+        text: "открой и подтверди доступ",
+        buttons: [[{ text: "Подключить", url: wrapConnectUrl(url) }]],
+      });
     } catch (err) {
       console.error("composio connect link send failed", err);
+      return "ссылка на подключение не дошла: отправка упала. скажи человеку, что подключить не получилось, и предложи повторить.";
     }
   }
+  return undefined;
 }
 
 async function runComposio(
@@ -54,7 +91,12 @@ async function runComposio(
   if (blocked) return blocked;
   const session = await sessionFor(tenantId(ctx));
   const result = await session.execute(slug, rec(input));
-  await sendConnectIfAny(ctx, result);
+  const undelivered = await sendConnectIfAny(ctx, result);
+  // Composio's own result says the connection was initiated — that is true
+  // whether or not the human ever saw the link. When the card did not go out,
+  // the model has to hear it here, or it reports a success that never
+  // happened.
+  if (undelivered) return { result, ссылка_не_ушла: undelivered };
   return result;
 }
 
@@ -119,6 +161,31 @@ export default defineDynamic({
         },
         execute: (input, ctx) =>
           runComposio("COMPOSIO_MANAGE_CONNECTIONS", input, ctx),
+      }),
+      // The session's seventh default meta tool (see
+      // agent/skills/composio/references/platform.md). Without it, the turn
+      // that sends a Connect Link has no way to learn that the human actually
+      // tapped it: Bro could only send the link and then claim, or deny, a
+      // connection he never checked. `toolkits` mirrors
+      // COMPOSIO_MANAGE_CONNECTIONS; the rest of the argument shape is the
+      // server's, so extra keys pass through instead of being dropped here.
+      COMPOSIO_WAIT_FOR_CONNECTIONS: defineTool({
+        description:
+          "Wait for this person to finish authorizing after a Connect Link was sent, then report whether the app is connected. Short waits only — come back and talk to them instead of holding the turn.",
+        inputSchema: {
+          type: "object",
+          additionalProperties: true,
+          properties: {
+            toolkits: { type: "array", items: { type: "string" } },
+            timeout: {
+              type: "number",
+              description: "Seconds to wait. Keep it at 60 or under.",
+            },
+            session_id: { type: "string" },
+          },
+        },
+        execute: (input, ctx) =>
+          runComposio("COMPOSIO_WAIT_FOR_CONNECTIONS", input, ctx),
       }),
       COMPOSIO_MULTI_EXECUTE_TOOL: defineTool({
         description:

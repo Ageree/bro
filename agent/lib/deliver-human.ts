@@ -60,8 +60,25 @@ export async function deliverHuman(opts: {
   note?: string;
   deps?: DeliverHumanDeps;
 }): Promise<void> {
-  const text = opts.text.trim();
-  if (!text) return;
+  const raw = opts.text.trim();
+  // Strip BEFORE the emptiness check, not after. The other order made an
+  // all-stripped message a silent no-op: `if (!text) return` passed, then
+  // `stripConnectUrls` emptied the text, then iMessage turned "" into zero
+  // bubbles and Telegram into an empty send — the human heard nothing and no
+  // log said why. Now a message that existed and then did not is an error on
+  // the way out, and a card whose whole payload lives in `buttons` still
+  // delivers.
+  const cleaned = stripConnectUrls(raw);
+  const hasButtons = (opts.buttons?.length ?? 0) > 0;
+  if (!cleaned && !hasButtons) {
+    if (raw) {
+      console.error(
+        "deliverHuman: nothing left after stripConnectUrls, sending nothing",
+        raw.slice(0, 200),
+      );
+    }
+    return;
+  }
   const tenant = opts.tenant ?? {};
   const prefer = opts.channel ?? lastChannelOf(tenant.lastChannel);
   const conversationId = outboundIMessageConversation({
@@ -72,7 +89,6 @@ export async function deliverHuman(opts: {
   const telegram =
     prefer === "telegram" && canDeliverTelegram(tenant.telegramChatId);
 
-  const cleaned = stripConnectUrls(text);
   // A test tenant has no device on the other end: record what it would have
   // been told, and stop. This catches everything the agent says — a turn, a
   // wakeup, browser follow-through, `profile_setup`, a Composio notice — with
@@ -85,7 +101,11 @@ export async function deliverHuman(opts: {
     await record({
       phoneE164: tenant.phoneE164!,
       channel: telegram ? "telegram" : "imessage",
-      text: cleaned,
+      // Buttons travel beside the text, so a recorded row built from `cleaned`
+      // alone would show a Connect Link card as an empty message and a
+      // conversation test could not tell a delivered link from a lost one.
+      // Fold them back into the `:::buttons` block they compile from.
+      text: hasButtons ? withButtonBlock(cleaned, opts.buttons!) : cleaned,
       ...(opts.note ? { note: opts.note } : {}),
     });
     return;
@@ -125,12 +145,26 @@ export async function deliverHuman(opts: {
     }
   }
   if (!conversationId) throw new Error("no conversation to deliver");
+  // iMessage has no inline keyboard, so a caller that put the whole point of
+  // the message in `buttons` (a Connect Link card) would deliver an empty
+  // string here. Fold the rows back into the `:::buttons` block that
+  // `toIMessageText` already knows how to flatten into labelled URL lines.
   await deliverIMessage({
     conversationId,
     handle: tenant.inkboxHandle,
-    text: remaining,
+    text: hasButtons ? withButtonBlock(remaining, opts.buttons!) : remaining,
     deps: opts.deps,
   });
+}
+
+/** Inverse of `extractButtons`: rows back into the `:::buttons` block they came from. */
+function withButtonBlock(text: string, rows: TelegramButton[][]): string {
+  const lines = rows
+    .flat()
+    .map((b) => `[${b.text}](${b.url ?? `callback:${b.callback_data ?? ""}`})`);
+  if (lines.length === 0) return text;
+  const block = `:::buttons\n${lines.join("\n")}\n:::`;
+  return text ? `${text}\n\n${block}` : block;
 }
 
 async function deliverIMessage(opts: {
