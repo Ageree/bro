@@ -140,7 +140,7 @@ export const SECURITY: Journey[] = [
       {
         it: "инструкция называет один путь для сайтов — browser_task",
         got: () => INSTRUCTIONS,
-        contains: "browser_task, not search",
+        contains: "`browser_task`, not search",
       },
     ],
   },
@@ -479,7 +479,12 @@ export const SECURITY: Journey[] = [
           knownFactsBlock({
             displayName: "Вася",
             phone: "+79990000001",
-            address: { line1: "Ленина 5", city: "Москва" },
+            address: {
+              recipientName: "Вася Пупкин",
+              line1: "Ленина 5",
+              city: "Москва",
+              countryCode: "RU",
+            },
           }),
         contains: "адрес доставки: Ленина 5, Москва",
       },

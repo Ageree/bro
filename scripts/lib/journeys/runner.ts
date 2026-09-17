@@ -86,14 +86,27 @@ export type JourneyResult = {
   ran: number;
 };
 
+/** A failing step prints its observed value, and some of those values are whole
+ *  prompt files. Past this many characters the middle is elided: the head and
+ *  tail are what identify the value, and an untruncated dump buries the three
+ *  lines around it that say which journey failed. */
+const SHOW_MAX = 300;
+
+function clip(text: string): string {
+  if (text.length <= SHOW_MAX) return text;
+  const head = text.slice(0, SHOW_MAX - 60);
+  const tail = text.slice(-40);
+  return `${head}…[ещё ${text.length - SHOW_MAX + 20} симв.]…${tail}`;
+}
+
 function show(value: unknown): string {
-  if (typeof value === "string") return JSON.stringify(value);
+  if (typeof value === "string") return clip(JSON.stringify(value));
   if (value instanceof RegExp) return String(value);
   if (value === undefined) return "undefined";
   try {
-    return JSON.stringify(value);
+    return clip(JSON.stringify(value) ?? String(value));
   } catch {
-    return String(value);
+    return clip(String(value));
   }
 }
 
