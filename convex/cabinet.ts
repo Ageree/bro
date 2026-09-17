@@ -24,7 +24,6 @@ import {
   loginIdentity,
   loginStartDecision,
   loginVerifyDecision,
-  memoriesForSnapshot,
   paymentsOwnedBy,
   sessionExpiry,
   sessionLive,
@@ -32,7 +31,6 @@ import {
   type PaymentRow,
 } from "./lib/cabinetPolicy";
 import { browserJobForSnapshot } from "./lib/browserJobPolicy";
-import { lineMatches, SCAN_LINES, WAKE_LINES } from "./lib/memoryPolicy";
 import {
   normalizeBrowserProfileId,
   profileSyncStatus,
@@ -72,7 +70,6 @@ const snapshotValidator = v.object({
     v.literal("empty"),
     v.literal("synced"),
   ),
-  memories: v.array(v.string()),
   tz: v.optional(v.string()),
   browserJob: v.object({
     status: v.string(),
@@ -381,23 +378,11 @@ export const snapshotForTenant = internalQuery({
       amountRub: p.amountRub,
       status: p.status,
     }));
-    const phone = tenant.phoneE164;
-    const memoryRows = phone
-      ? await ctx.db
-          .query("memories")
-          .withIndex("by_phone", (q) => q.eq("phoneE164", phone))
-          .order("desc")
-          .take(WAKE_LINES)
-      : [];
     return buildSnapshot({
       handle: tenant.inkboxHandle,
       phoneE164: tenant.phoneE164,
       paid,
       paidUntil: tenant.paidUntil,
-      memories: memoriesForSnapshot(
-        memoryRows.map((r) => r.line),
-        WAKE_LINES,
-      ),
       msgsUsed,
       msgsAllowance: msgAllowance(paid, {
         free: process.env.BRO_FREE_MSGS_PER_DAY,
@@ -512,29 +497,6 @@ export const refreshBrowserProfile = internalAction({
       cookieDomains: attached.cookieDomains,
       status: attached.status,
     };
-  },
-});
-
-export const forgetMemoriesForTenant = internalMutation({
-  args: { tenantId: v.id("tenants"), needle: v.string() },
-  returns: v.number(),
-  handler: async (ctx, { tenantId, needle }) => {
-    const tenant = await ctx.db.get(tenantId);
-    const phone = tenant?.phoneE164;
-    if (!phone || !needle.trim()) return 0;
-    const rows = await ctx.db
-      .query("memories")
-      .withIndex("by_phone", (q) => q.eq("phoneE164", phone))
-      .order("desc")
-      .take(SCAN_LINES);
-    let n = 0;
-    for (const row of rows) {
-      if (lineMatches(row.line, needle)) {
-        await ctx.db.delete(row._id);
-        n++;
-      }
-    }
-    return n;
   },
 });
 

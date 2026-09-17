@@ -53,7 +53,7 @@ export function accessCreatesPerHour(raw: string | undefined): number {
 }
 
 /**
- * A phone belongs to at most one tenant. `memories`, `wakeups`, `watchers`
+ * A phone belongs to at most one tenant. `wakeups`, `watchers`
  * and the cabinet snapshot are keyed by phone, so a second tenant on the same
  * number would read (and forget) the first one's data through its own session.
  * `existingId` is the tenant already holding `phone` (if any); `targetId` is

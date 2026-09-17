@@ -53,8 +53,14 @@ export type JobWakeRow = {
   lastNudgeAt?: number;
 };
 
+/**
+ * The open-work snapshot every wake path asks for. It used to carry the memo
+ * lines too (`memories.wakeContext`); the memo store is gone and durable facts
+ * live in Supermemory, so only the jobs remain. The TTL cache stays: the 1:1
+ * inbound prefetch, the wakeup lane and the turn itself all ask within the
+ * same second, and that was always the reason for one query rather than three.
+ */
 export type WakeContext = {
-  memories: string[];
   jobs: JobWakeRow[];
 };
 
@@ -63,10 +69,7 @@ const wakeCache = new Map<string, { at: number; value: WakeContext }>();
 
 export const WAKE_CONTEXT_TTL_MS = 8_000;
 
-function rememberWake(phoneE164: string, value: WakeContext): void {
-  wakeCache.set(phoneE164, { at: Date.now(), value });
-}
-
+/** Any job write invalidates the snapshot: the next read must see it. */
 function forgetWake(phoneE164: string): void {
   wakeCache.delete(phoneE164);
 }
@@ -76,9 +79,10 @@ export async function loadWakeContext(phoneE164: string): Promise<WakeContext> {
   if (cached && Date.now() - cached.at < WAKE_CONTEXT_TTL_MS) return cached.value;
   const existing = wakeInflight.get(phoneE164);
   if (existing) return existing;
-  const pending = q(api.memories.wakeContext)({ phoneE164 })
-    .then((value) => {
-      rememberWake(phoneE164, value);
+  const pending = q(api.jobs.wakeRows)({ phoneE164 })
+    .then((jobs) => {
+      const value = { jobs };
+      wakeCache.set(phoneE164, { at: Date.now(), value });
       return value;
     })
     .finally(() => {
@@ -86,25 +90,6 @@ export async function loadWakeContext(phoneE164: string): Promise<WakeContext> {
     });
   wakeInflight.set(phoneE164, pending);
   return pending;
-}
-
-export async function wakeLines(phoneE164: string): Promise<string[]> {
-  return (await loadWakeContext(phoneE164)).memories;
-}
-
-export async function noteLine(phoneE164: string, line: string): Promise<string> {
-  await m(api.memories.note)({ phoneE164, line });
-  forgetWake(phoneE164);
-  return "noted";
-}
-
-export const searchLines = (phoneE164: string, needle: string): Promise<string[]> =>
-  q(api.memories.search)({ phoneE164, needle });
-
-export async function forgetLines(phoneE164: string, needle: string): Promise<string> {
-  const n = await m(api.memories.forget)({ phoneE164, needle });
-  forgetWake(phoneE164);
-  return `forgot ${n}`;
 }
 
 export async function upsertTenant(

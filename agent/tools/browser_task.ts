@@ -1092,7 +1092,7 @@ export default defineTool({
           continuation: true,
           // Facts on the continuation too, not only on the first run. A
           // continuation is a NEW run built from a new task in the same tab,
-          // so without this the errand loses the address and the memories
+          // so without this the errand loses the address and the contact
           // exactly when it needs them most — resuming into a checkout after
           // a login. It costs a few Convex reads on a path that is already
           // doing network work, and they are loaded in parallel and
@@ -1360,8 +1360,8 @@ export default defineTool({
         ...(secretBindings && secretBindings.length > 0 ? { secretBindings } : {}),
         ...(startPage ? { startPage } : {}),
         // The run carries what Bro already knows about this human — vault
-        // address and contact, curated memories, their timezone and today's
-        // date, their name — instead of aborting with «НУЖНО: address» for a
+        // address and contact, their timezone and today's date, their name —
+        // instead of aborting with «НУЖНО: address» for a
         // street that was in the vault all along. `stampedInjectText` is the
         // human's OWN sentence when the turn carried one; `task` is only
         // whatever the model retyped, and «на воскресенье» only resolves to a

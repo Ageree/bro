@@ -205,7 +205,7 @@ export const requestAccess = internalAction({
       };
     }
 
-    // One tenant per phone: the cabinet, memories and wakeups are keyed by
+    // One tenant per phone: the cabinet and wakeups are keyed by
     // phone, so a second identity on a known number would expose the first.
     const holder = await ctx.runQuery(internal.tenants.getByPhoneInternal, {
       phoneE164,

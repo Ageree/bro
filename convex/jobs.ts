@@ -4,6 +4,7 @@ import schema from "./schema";
 import { mutation, query } from "./_generated/server";
 import { assertSecret } from "./secret";
 import { findTenantByPhone } from "./lib/tenantLookup";
+import { formatJobWakeLine } from "./lib/jobWakeLine";
 
 const MAX_OPEN = 8;
 const LINE = 280;
@@ -180,5 +181,49 @@ export const listOpen = query({
       .withIndex("by_tenant", (q) => q.eq("tenantId", tenant._id))
       .take(32);
     return rows.filter((j) => j.status === "open" || j.status === "waiting");
+  },
+});
+
+const jobWakeRow = v.object({
+  id: v.string(),
+  line: v.string(),
+  goal: v.string(),
+  note: v.optional(v.string()),
+  waitingFor: v.optional(waitingFor),
+  waitingSince: v.optional(v.number()),
+  lastNudgeAt: v.optional(v.number()),
+});
+
+/**
+ * Everything a wake-up needs about this person's open work, in one query.
+ *
+ * This used to be `memories.wakeContext` and returned the curated memo lines
+ * next to the jobs. The memo store is gone — durable facts live in Supermemory
+ * now — so what is left is the job half, which was always the reason this was
+ * one round trip instead of two: a background wakeup, the 1:1 inbound prefetch
+ * and the turn itself all ask the same question at the same moment.
+ */
+export const wakeRows = query({
+  args: { secret: v.string(), phoneE164: v.string() },
+  returns: v.array(jobWakeRow),
+  handler: async (ctx, { secret, phoneE164 }) => {
+    assertSecret(secret);
+    const tenant = await findTenantByPhone(ctx, phoneE164);
+    if (!tenant) return [];
+    const rows = await ctx.db
+      .query("jobs")
+      .withIndex("by_tenant", (q) => q.eq("tenantId", tenant._id))
+      .take(32);
+    return rows
+      .filter((j) => j.status === "open" || j.status === "waiting")
+      .map((j) => ({
+        id: j._id,
+        line: formatJobWakeLine(j),
+        goal: j.goal,
+        ...(j.note ? { note: j.note } : {}),
+        ...(j.waitingFor ? { waitingFor: j.waitingFor } : {}),
+        ...(j.waitingSince != null ? { waitingSince: j.waitingSince } : {}),
+        ...(j.lastNudgeAt != null ? { lastNudgeAt: j.lastNudgeAt } : {}),
+      }));
   },
 });

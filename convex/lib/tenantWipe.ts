@@ -17,7 +17,6 @@ export type WipeCounts = {
   browserCharges: number;
   browserSessions: number;
   files: number;
-  memories: number;
   wakeups: number;
   watchers: number;
   loginChallenges: number;
@@ -34,7 +33,6 @@ export const emptyWipeCounts = (): WipeCounts => ({
   browserCharges: 0,
   browserSessions: 0,
   files: 0,
-  memories: 0,
   wakeups: 0,
   watchers: 0,
   loginChallenges: 0,
@@ -127,17 +125,6 @@ async function countFiles(
   return rows.length;
 }
 
-async function countMemories(
-  ctx: QueryCtx | MutationCtx,
-  phone: string,
-): Promise<number> {
-  const rows = await ctx.db
-    .query("memories")
-    .withIndex("by_phone", (q) => q.eq("phoneE164", phone))
-    .take(PAGE * 16);
-  return rows.length;
-}
-
 async function countWakeups(
   ctx: QueryCtx | MutationCtx,
   phone: string,
@@ -184,7 +171,6 @@ export async function previewTenantWipe(
     counts[table] = await countByTenant(ctx, table, tenant._id);
   }
   counts.files = await countFiles(ctx, tenant._id);
-  counts.memories = await countMemories(ctx, phone);
   counts.wakeups = await countWakeups(ctx, phone);
   counts.watchers = await countWatchers(ctx, phone);
   counts.loginChallenges = await countChallenges(ctx, handle);
@@ -230,22 +216,6 @@ async function deleteFiles(
     if (rows.length === 0) break;
     for (const row of rows) {
       await ctx.storage.delete(row.storageId);
-      await ctx.db.delete(row._id);
-      n++;
-    }
-  }
-  return n;
-}
-
-async function deleteMemories(ctx: MutationCtx, phone: string): Promise<number> {
-  let n = 0;
-  for (;;) {
-    const rows = await ctx.db
-      .query("memories")
-      .withIndex("by_phone", (q) => q.eq("phoneE164", phone))
-      .take(PAGE);
-    if (rows.length === 0) break;
-    for (const row of rows) {
       await ctx.db.delete(row._id);
       n++;
     }
@@ -316,7 +286,6 @@ export async function deleteTenantWipeTargets(
     counts[table] = await deleteTenantChildren(ctx, table, tenant._id);
   }
   counts.files = await deleteFiles(ctx, tenant._id);
-  counts.memories = await deleteMemories(ctx, phone);
   counts.wakeups = await deleteWakeups(ctx, phone);
   counts.watchers = await deleteWatchers(ctx, phone);
   counts.loginChallenges = await deleteChallenges(ctx, handle);

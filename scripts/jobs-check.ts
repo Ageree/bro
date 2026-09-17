@@ -433,13 +433,15 @@ assert(
   "epochs stay off the injected line — dueJobNudges reads structured fields",
 );
 {
-  const memoriesSrc = src("convex/memories.ts");
+  // The wake snapshot moved out of the deleted `convex/memories.ts` and into
+  // jobs.ts, where the only half that survived the memo store belongs.
+  const jobsConvex = src("convex/jobs.ts");
   assert(
-    memoriesSrc.includes('from "./lib/jobWakeLine"'),
-    "wakeContext uses the shared job line formatter",
+    jobsConvex.includes('from "./lib/jobWakeLine"'),
+    "wakeRows uses the shared job line formatter",
   );
   assert(
-    memoriesSrc.includes("waitingSince: j.waitingSince"),
+    jobsConvex.includes("waitingSince: j.waitingSince"),
     "structured wake row still carries waitingSince for nudges",
   );
 }

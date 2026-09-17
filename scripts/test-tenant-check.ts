@@ -354,7 +354,9 @@ eq(
   "every recorder function is secret-gated",
 );
 // Reset is only useful if it clears what actually leaks between scenarios.
-for (const table of ["testTranscript", "memories", "wakeups", "jobs"]) {
+// `memories` left the list with the table: memory is Supermemory now, keyed by
+// the test phone's own container, and Convex cannot clear it from here.
+for (const table of ["testTranscript", "wakeups", "jobs"]) {
   assert(recorderSrc.includes(`"${table}"`), `reset clears ${table}`);
 }
 assert(recorderSrc.includes("browserNextTask: undefined"), "reset clears browser state");

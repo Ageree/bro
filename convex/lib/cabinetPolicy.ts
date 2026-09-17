@@ -90,11 +90,7 @@ export type PaymentRow = {
   status: "pending" | "succeeded" | "canceled";
 };
 
-/**
- * Cabinet GET /me snapshot.
- * `memories` is oldest-first, newest-last (same as wake recall).
- * Capped at WAKE_LINES, keeping the newest lines. Empty if the phone is unbound.
- */
+/** Cabinet GET /me snapshot. */
 export type CabinetSnapshot = {
   handle: string;
   phoneBound: boolean;
@@ -111,7 +107,6 @@ export type CabinetSnapshot = {
   browserProfileId?: string;
   browserCookieDomains: string[];
   browserProfileStatus: "missing" | "empty" | "synced";
-  memories: string[];
   tz?: string;
   browserJob: BrowserJobSnapshot;
 };
@@ -120,14 +115,6 @@ export type CabinetSnapshot = {
 export function storedHandle(raw: string | null | undefined): string | null {
   const h = (raw ?? "").trim();
   return /^bro-[a-z0-9]{8}$/.test(h) ? h : null;
-}
-
-/** Newest-first DB rows → oldest-first snapshot, newest last. Cap is WAKE_LINES. */
-export function memoriesForSnapshot(
-  newestFirst: readonly string[],
-  cap: number,
-): string[] {
-  return newestFirst.slice(0, cap).slice().reverse();
 }
 
 export function phoneLast4(phoneE164: string | undefined): string | undefined {
@@ -157,7 +144,6 @@ export function buildSnapshot(opts: {
   browserProfileId?: string;
   browserCookieDomains?: string[];
   browserProfileStatus?: "missing" | "empty" | "synced";
-  memories?: string[];
   tz?: string;
   browserJob?: BrowserJobSnapshot;
 }): CabinetSnapshot {
@@ -181,7 +167,6 @@ export function buildSnapshot(opts: {
     ...(opts.browserProfileId ? { browserProfileId: opts.browserProfileId } : {}),
     browserCookieDomains: opts.browserCookieDomains ?? [],
     browserProfileStatus: opts.browserProfileStatus ?? "missing",
-    memories: opts.memories ?? [],
     ...(opts.tz ? { tz: opts.tz } : {}),
     browserJob: opts.browserJob ?? { status: "", label: "Сейчас ничего не делает" },
   };

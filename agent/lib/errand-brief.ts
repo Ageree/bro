@@ -15,9 +15,9 @@
  * So this module does two things, in that order of importance:
  *
  *  1. `knownFactsBlock()` — pure, no model, no network. It turns the facts
- *     Bro already holds (vault `address`/`contact` payload fields, curated
- *     memories, the tenant's timezone and the CURRENT LOCAL DATE, the
- *     display name) into a block the run can type from. This is the fix that
+ *     Bro already holds (vault `address`/`contact` payload fields, the
+ *     tenant's timezone and the CURRENT LOCAL DATE, the display name) into a
+ *     block the run can type from. This is the fix that
  *     matters: «на воскресенье» is unactionable until the run knows today is
  *     Thursday the 17th.
  *  2. `composeErrandBrief()` — a small-model lane, modelled on
@@ -40,7 +40,7 @@
  * types them without either model seeing them; the facts here are the
  * human's own address/name/phone/email, which the human would otherwise be
  * asked to retype. Everything this module emits goes through `scrubSecrets`
- * anyway, as a last-resort net over free-text memories.
+ * anyway, as a last-resort net over free-text fields.
  */
 
 import { scrubSecrets } from "../../convex/lib/secretScrub.ts";
@@ -64,9 +64,9 @@ export type ErrandAddress = {
 
 /**
  * Everything non-secret Bro knows that a browser errand might need. Every
- * field is optional: a tenant with an empty vault and no memories produces
- * an empty `ErrandFacts`, and the scaffold then behaves exactly as it did
- * before this shipped.
+ * field is optional: a tenant with an empty vault produces an empty
+ * `ErrandFacts`, and the scaffold then behaves exactly as it did before this
+ * shipped.
  */
 export type ErrandFacts = {
   /** `tenants.displayName` — how the human is addressed, not a recipient name. */
@@ -78,8 +78,6 @@ export type ErrandFacts = {
   phone?: string;
   email?: string;
   address?: ErrandAddress;
-  /** Curated memories (`memories.wakeContext`), already short lines. */
-  memories?: readonly string[];
   /** IANA zone, already resolved through `resolveTenantTz`. */
   tz?: string;
   /** Current local date and time in `tz`, pre-formatted in Russian. */
@@ -106,11 +104,6 @@ export type ErrandBriefInput = {
  *  second scaffold, which is the thing this module exists to delete. */
 export const ERRAND_BRIEF_MAX_CHARS = 700;
 export const ERRAND_BRIEF_MAX_LINES = 6;
-
-/** Memories are free text a human dictated; cap both count and length so one
- *  rambling note cannot become the largest thing in the prompt. */
-export const MEMORY_LINE_LIMIT = 6;
-export const MEMORY_LINE_MAX_CHARS = 180;
 
 /** Default budget. A Cloud run costs minutes, so ~1.5s of composition is
  *  free in wall-clock terms — but it is still hard-capped, because a hung
@@ -207,11 +200,6 @@ export function staticBriefLine(task: string): string {
   return task.trim();
 }
 
-function shorten(raw: string, max: number): string {
-  const s = raw.replace(/\s+/gu, " ").trim();
-  return s.length <= max ? s : `${s.slice(0, max - 1).trimEnd()}…`;
-}
-
 function addressOneLine(a: ErrandAddress): string {
   return [
     a.line1,
@@ -248,10 +236,6 @@ export function factLines(facts?: ErrandFacts): string[] {
     const tz = facts.tz?.trim();
     lines.push(`сейчас: ${facts.nowLocal.trim()}${tz ? ` (${tz})` : ""}`);
   }
-  for (const memory of (facts.memories ?? []).slice(0, MEMORY_LINE_LIMIT)) {
-    const line = shorten(memory ?? "", MEMORY_LINE_MAX_CHARS);
-    if (line) lines.push(`помню: ${line}`);
-  }
   return lines.map((line) => scrubSecrets(line));
 }
 
@@ -269,7 +253,7 @@ export function hasErrandFacts(facts?: ErrandFacts): boolean {
 export const KNOWN_FACTS_GAP =
   "Чего нет ни здесь, ни в задаче — не выдумывай: закончи с НУЖНО: address или info и напиши в ДЕТАЛИ, чего не хватает.";
 
-/** Same sentence for a tenant whose vault and memories really are empty. */
+/** Same sentence for a tenant whose vault really is empty. */
 export const MISSING_FACTS_LINE =
   "Данных человека — адреса, имени, телефона, времени, размера — не нашлось: не выдумывай их, закончи с НУЖНО: address или info и напиши в ДЕТАЛИ, чего не хватает.";
 

@@ -108,11 +108,6 @@ export default defineSchema({
     lastNudgeAt: v.optional(v.number()),
   }).index("by_tenant", ["tenantId"]),
 
-  memories: defineTable({
-    phoneE164: v.string(),
-    line: v.string(),
-  }).index("by_phone", ["phoneE164"]),
-
   orders: defineTable({
     tenantId: v.id("tenants"),
     merchant: v.union(v.literal("wb"), v.literal("ozon"), v.literal("other")),

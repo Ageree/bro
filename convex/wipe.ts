@@ -19,7 +19,6 @@ const wipeCounts = v.object({
   browserCharges: v.number(),
   browserSessions: v.number(),
   files: v.number(),
-  memories: v.number(),
   wakeups: v.number(),
   watchers: v.number(),
   loginChallenges: v.number(),
