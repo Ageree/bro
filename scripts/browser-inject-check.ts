@@ -968,8 +968,14 @@ assert(
     tool.indexOf('if (action === "poll"'),
     tool.indexOf('if (action === "continue"'),
   );
-  assert(poll.includes("queueSteer(tenant.browserSessionId, task"), "a poll queues a steerable line into the live session");
-  assert(poll.includes("steerCandidate(task)"), "a poll only queues what is actually meant for the errand");
+  assert(
+    poll.includes("queueSteer(tenant.browserSessionId, injectIncoming"),
+    "a poll queues the human's own line into the live session",
+  );
+  assert(
+    poll.includes("steerCandidate(injectIncoming)"),
+    "a poll only queues what is actually meant for the errand",
+  );
   assert(
     poll.includes('injected: "steer"'),
     "the poll payload says so when the line really landed",

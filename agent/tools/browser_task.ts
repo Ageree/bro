@@ -771,15 +771,17 @@ export default defineTool({
       // carries anything for the open errand, queue it into the live session
       // now; if it is a plain «ну что там?», nothing is queued and the hint
       // says so rather than implying it was taken.
+      // The human's OWN line, not whatever the model retyped: on a poll the
+      // model often re-issues the old errand text, and that is not a steer.
       const steered =
-        tenant.browserSessionId && steerCandidate(task)
-          ? await queueSteer(tenant.browserSessionId, task, {
+        tenant.browserSessionId && steerCandidate(injectIncoming)
+          ? await queueSteer(tenant.browserSessionId, injectIncoming, {
               dryRun: isDryRunErrand(tenant.browserTask ?? task),
             })
           : false;
       if (steered && tenant.browserSessionId) {
         await drainHeldSteer(phone, tenant.browserSessionId, {
-          skip: task,
+          skip: injectIncoming,
           dryRun: isDryRunErrand(tenant.browserTask ?? task),
           interrupt: false,
         });
@@ -1034,6 +1036,9 @@ export default defineTool({
           ];
       payHostsBase = normalizePayHosts(rawHosts);
       if (pay && payHostsBase.length === 0) {
+        // Same reasoning as every other early return past the claim: no run
+        // will come of it, so the claim must not outlive the turn.
+        await releaseBrowserStart(phone).catch(() => {});
         return {
           status: "invalid",
           hint: "pay.hosts must contain at least one valid hostname",
