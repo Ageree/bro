@@ -296,6 +296,23 @@ export async function telegramFileUrl(fileId: string): Promise<string> {
   return `${API}/file/bot${botToken()}/${file.file_path}`;
 }
 
+/** Who Telegram thinks this token is. Public info: username and id. */
+export async function telegramGetMe(): Promise<{ id?: number; username?: string }> {
+  return await api("getMe", {});
+}
+
+/** Where Telegram currently posts updates, and how that is going. */
+export async function telegramWebhookInfo(): Promise<{
+  url?: string;
+  pending_update_count?: number;
+  last_error_date?: number;
+  last_error_message?: string;
+  ip_address?: string;
+  allowed_updates?: string[];
+}> {
+  return await api("getWebhookInfo", {});
+}
+
 export async function setTelegramWebhook(opts: {
   url: string;
   secret: string;

@@ -108,6 +108,40 @@ assert(isTelegramAsk("телеграм"), "telegram ask");
 assert(isTelegramAsk("Telegram"), "telegram ask case");
 assert(isTelegramAsk("тг"), "tg ask");
 assert(!isTelegramAsk("телеграмму напиши"), "telegram in a sentence");
+// The regression this widening fixes: the girlfriend and the owner both asked
+// in words rather than typing the bare keyword, fell through to a full agent
+// turn — which has no tool that mints a t.me link — and were told Telegram is
+// unavailable. Every phrasing below is a bare ask for the second channel.
+for (const ask of [
+  "а телеграм сейчас доступен?",
+  "можно с тобой в телеграме пообщаться?",
+  "в телеграме ты есть?",
+  "есть тг?",
+  "тг работает?",
+  "а в тг можно писать?",
+  "скинь ссылку на телеграм",
+  "хочу в телеграме общаться",
+  "почему ты не в телеграме?",
+  "у тебя есть телеграм бот?",
+  "Телеграм?",
+]) {
+  assert(isTelegramAsk(ask), `telegram ask in words: ${ask}`);
+  assert(
+    shouldSkipAgentTurn({ firstBind: false, text: ask }),
+    `telegram ask answered with the link, not a turn: ${ask}`,
+  );
+}
+// An errand that merely mentions Telegram stays an errand: one word outside
+// the closed vocabulary and the canned lane lets go.
+for (const errand of [
+  "напиши маме в телеграм",
+  "закажи телеграм премиум",
+  "найди в телеграме канал про биржу",
+  "перешли это в телеграм васе",
+  "телеграм не открывается на ноуте, что делать",
+]) {
+  assert(!isTelegramAsk(errand), `not a telegram ask: ${errand}`);
+}
 assert(shouldSkipAgentTurn({ firstBind: false, text: "телеграм" }), "skip telegram ask");
 assert(
   !shouldSkipAgentTurn({ firstBind: true, text: "купи на вб кроссовки" }),
