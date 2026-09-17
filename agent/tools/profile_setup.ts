@@ -107,6 +107,18 @@ async function notify(opts: {
   return true;
 }
 
+/**
+ * This tool's own half of the prompt, collected by
+ * `agent/instructions/tools.ts` (mechanism: `agent/lib/tool-guidelines.ts`).
+ *
+ * The one line here is word for word the one `browser_task` exports. That is
+ * deliberate and it is the point of the dedupe pass: both tools return a
+ * `liveUrl`, so each owns the rule for its own result, neither has to know the
+ * other exists, and the assembled block still carries the sentence once. The
+ * old central table stated it once for both, which is why moving either tool's
+ * behaviour used to mean editing the root prompt.
+ */
+
 export default defineTool({
   description:
     'Log a site in, or save the login for later. If a saved vault login exists for this page, it is typed in automatically and nothing is asked in chat. Otherwise the login page is opened and, once it is actually showing, a live-view link is sent so the human can log in — Bro never sees the password. Pass errand (the original ask, e.g. "вызови такси домой") so it resumes on its own once the login lands, instead of the model having to remember it. Calling this again with the same url while a login for it is already running just polls that run — it does not abandon it and start a new browser. Never ask for a login or password in chat. Never offer the live-view link as optional — just send it.',

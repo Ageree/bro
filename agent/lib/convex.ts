@@ -8,6 +8,7 @@ import {
   TELEGRAM_TENANT_TTL_MS,
   createTtlCache,
 } from "./inbound-path.ts";
+import { budgetFromEnv, withDeadline } from "./deadline.ts";
 
 let cachedClient: ConvexHttpClient | undefined;
 let cachedClientUrl: string | undefined;
@@ -27,21 +28,53 @@ function secret(): string {
   return s;
 }
 
+/**
+ * Budgets for the Convex round trip.
+ *
+ * `ConvexHttpClient` passes no `AbortSignal`, so without these a stalled
+ * request never settles and the turn behind it never ends — the person is left
+ * holding a «проверяю» line with no answer and no error, which is the
+ * 2026-09-16 silence recorded in `agent/lib/silent-turn.ts`. A budget turns
+ * that into a thrown error, `turn.failed`, and the stalled-turn reply.
+ *
+ * Queries and mutations are sub-second in practice (`turnStartedConvexRtts: 1`
+ * in the latency log), so 15 s is far beyond anything healthy and only ever
+ * fires on a genuine stall. Actions are different in kind — they decrypt vault
+ * items and call third parties — so they get a minute before we call it dead.
+ */
+const CALL_BUDGET_MS = budgetFromEnv(process.env.BRO_CONVEX_BUDGET_MS, 15_000);
+const ACTION_BUDGET_MS = budgetFromEnv(
+  process.env.BRO_CONVEX_ACTION_BUDGET_MS,
+  60_000,
+);
+
 /** Generic forwarders: call a Convex function with `secret` injected. */
 const q =
   <F extends FunctionReference<"query">>(fn: F) =>
   (args: Omit<FunctionArgs<F>, "secret">): Promise<FunctionReturnType<F>> =>
-    client().query(fn, { secret: secret(), ...args } as FunctionArgs<F>);
+    withDeadline(
+      client().query(fn, { secret: secret(), ...args } as FunctionArgs<F>),
+      CALL_BUDGET_MS,
+      "convex query",
+    );
 
 const m =
   <F extends FunctionReference<"mutation">>(fn: F) =>
   (args: Omit<FunctionArgs<F>, "secret">): Promise<FunctionReturnType<F>> =>
-    client().mutation(fn, { secret: secret(), ...args } as FunctionArgs<F>);
+    withDeadline(
+      client().mutation(fn, { secret: secret(), ...args } as FunctionArgs<F>),
+      CALL_BUDGET_MS,
+      "convex mutation",
+    );
 
 const a =
   <F extends FunctionReference<"action">>(fn: F) =>
   (args: Omit<FunctionArgs<F>, "secret">): Promise<FunctionReturnType<F>> =>
-    client().action(fn, { secret: secret(), ...args } as FunctionArgs<F>);
+    withDeadline(
+      client().action(fn, { secret: secret(), ...args } as FunctionArgs<F>),
+      ACTION_BUDGET_MS,
+      "convex action",
+    );
 
 export type JobWakeRow = {
   id: string;

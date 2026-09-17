@@ -84,9 +84,22 @@ eq(sanitizeFastAck(""), null, "empty raw input");
 eq(sanitizeFastAck("   "), null, "whitespace-only raw input");
 eq(sanitizeFastAck("статус: ищу"), null, "a colon field label is rejected");
 eq(
-  sanitizeFastAck("ищу нашёл проверяю ставлю открываю прочее лишнее"),
+  sanitizeFastAck("ищу нашёл проверяю ставлю открываю прочее лишнее ещё немного"),
   null,
-  "more than 6 words is rejected",
+  "a word pile past the gate is rejected",
+);
+// The gate sits above the register the prompt asks for, not on it: a line the
+// human would actually say out loud must survive, or the lane sends nothing and
+// the human gets the silence it exists to remove.
+eq(
+  sanitizeFastAck("окей, сейчас гляну что там по заказу"),
+  "окей, сейчас гляну что там по заказу",
+  "a natural seven-word line survives",
+);
+eq(
+  sanitizeFastAck("так, понял, иду смотреть твой заказ на вб"),
+  "так, понял, иду смотреть твой заказ на вб",
+  "a natural eight-word line survives",
 );
 
 // --- the varied «я взялся» palette all has to survive sanitising ---
@@ -156,13 +169,20 @@ eq(
 );
 eq(
   sanitizeFastAck("приступил, открываю озон и смотрю все чехлы"),
-  null,
-  "seven words is still too long",
+  "приступил, открываю озон и смотрю все чехлы",
+  "seven words is a beat, not a sentence",
 );
 eq(
   sanitizeFastAck("взялся, открываю невероятно длиннющее наименование интернет-магазина"),
+  "взялся, открываю невероятно длиннющее наименование интернет-магазина",
+  "a wordy but single-line beat survives the wider char gate",
+);
+eq(
+  sanitizeFastAck(
+    "взялся, открываю невероятно длиннющее наименование интернет-магазина и ещё чуть-чуть",
+  ),
   null,
-  "six words over 60 chars is still rejected",
+  "past the char gate it is a sentence again",
 );
 // Safety filters keep biting at the wider limit.
 eq(sanitizeFastAck("NONE"), null, "NONE is still nothing to send");
@@ -318,6 +338,9 @@ assert(
 
 assert(FAST_ACK_SYSTEM.length <= 1_200, "system prompt stays compact");
 assert(FAST_ACK_SYSTEM.includes("NONE"), "system prompt defines the NONE escape hatch");
+// The prompt keeps naming the register it wants; sanitizeFastAck deliberately
+// gates a little wider so a line that comes out one or two words longer is
+// still sent rather than silently dropped.
 assert(FAST_ACK_SYSTEM.includes("2-6 слов"), "system prompt asks for a 2-6 word line");
 // The Poke/Instinct register, spelled out for the tiny model too: a friend not
 // a bot, no preamble, no name, never an emoji it opened itself, and never the
@@ -420,17 +443,33 @@ assert(
     "real content is not eaten by the wider window",
   );
 
+  // The peel window has to stay ahead of the sanitizer's word gate: an ack of
+  // the full allowed length, restated with a couple of words tacked on, is
+  // still a restatement and must not reach the human as a second bubble.
+  const longest = "так, понял, иду смотреть твой заказ на вб";
+  eq(sanitizeFastAck(longest), longest, "the longest allowed ack really is allowed");
+  eq(
+    peelFastAck(longest, "Понял, иду смотреть твой заказ на ВБ прямо сейчас"),
+    null,
+    "a restated longest-allowed ack is still dropped",
+  );
+
   eq(sanitizeFastAck("статус:"), null, "bare field label is rejected");
   eq(sanitizeFastAck("перезвони +7 999 123 45 67"), null, "phone-number dump is rejected");
   eq(
     sanitizeFastAck("смотрю почту и календарь сейчас же"),
     "смотрю почту и календарь сейчас же",
-    "six words now fits a beat",
+    "six words fits a beat",
   );
   eq(
     sanitizeFastAck("смотрю почту и календарь прямо сейчас же"),
+    "смотрю почту и календарь прямо сейчас же",
+    "seven words fits a beat too",
+  );
+  eq(
+    sanitizeFastAck("смотрю почту и календарь прямо сейчас же вот прямо сразу"),
     null,
-    "seven words is still over the line",
+    "ten words is a sentence, not a beat",
   );
   eq(sanitizeFastAck("ищу"), "ищу", "a single-word beat is fine");
 

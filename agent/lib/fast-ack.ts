@@ -114,6 +114,20 @@ function stripSurroundingQuotes(s: string): string {
   return out;
 }
 
+/**
+ * Shape limits for a usable beat. FAST_ACK_SYSTEM still *asks* for 2-6 words —
+ * that is the target register — but this function is the hard gate, and gating
+ * exactly at the target threw away lines that are plainly live speech:
+ * «окей, сейчас гляну что там по заказу» (7 words) and «так, понял, иду
+ * смотреть твой заказ на вб» (8 words, 40 chars) both used to sanitize to null,
+ * and a null here means the human gets no first bubble at all — the silence the
+ * lane exists to remove. The gate's real job is to reject a *sentence* («Конечно!
+ * Сейчас найду кроссовки на WB и пришлю варианты», 9 words) or a paragraph, so
+ * it sits a couple of words above the target instead of on it.
+ */
+const FAST_ACK_MAX_WORDS = 8;
+const FAST_ACK_MAX_CHARS = 80;
+
 /** Cleans the tiny model's raw output; null when it is unusable or means NONE. */
 export function sanitizeFastAck(raw: string | null | undefined): string | null {
   if (typeof raw !== "string") return null;
@@ -127,8 +141,8 @@ export function sanitizeFastAck(raw: string | null | undefined): string | null {
   if (s.toLowerCase() === "none") return null;
   if (/\bnone\b/i.test(s)) return null;
   const words = s.split(/\s+/).filter(Boolean);
-  if (words.length === 0 || words.length > 6) return null;
-  if (s.length > 60) return null;
+  if (words.length === 0 || words.length > FAST_ACK_MAX_WORDS) return null;
+  if (s.length > FAST_ACK_MAX_CHARS) return null;
   if (/https?:\/\/|www\.\S+/i.test(s)) return null;
   // \b is ASCII-only in JS regex — Cyrillic needs an explicit non-letter lookahead.
   if (/^(бро|bro)(?!\p{L})/iu.test(s)) return null;
@@ -189,9 +203,11 @@ export function peelFastAck(ack: string, text: string): string | null {
     return rest || null;
   }
   // Single short line with mostly the same content words → a restatement.
-  // The ack itself runs up to 6 words now, and a restatement usually adds a
-  // couple ("Взялся, смотрю кроссовки на ВБ"), so the window has to clear that.
-  if (!t.includes("\n") && lineFold.split(" ").length <= 10) {
+  // The ack itself runs up to FAST_ACK_MAX_WORDS now, and a restatement usually
+  // adds a couple ("Взялся, смотрю кроссовки на ВБ"), so the window has to stay
+  // ahead of the sanitizer's ceiling or a restated long ack would slip through
+  // as a second bubble.
+  if (!t.includes("\n") && lineFold.split(" ").length <= FAST_ACK_MAX_WORDS + 4) {
     const a = beatTokens(ack);
     const b = beatTokens(firstLine);
     if (a.size > 0 && b.size > 0) {

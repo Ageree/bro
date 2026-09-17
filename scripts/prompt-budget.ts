@@ -32,6 +32,13 @@ import { formatBudget, measure } from "./lib/prompt-budget.ts";
  *                  measured style that three unactionable rules stood in for
  *         and separately −5912 on-demand, the vendored Composio SDK guide
  *         that used to land in an errand turn whenever the skill matched.
+ *   8141  after the tool-guidelines pass. The root prompt lost `## Браузер`
+ *         and the result→reply table (−1000) and the rules came back as a
+ *         per-turn block — so the move bought structure, not budget, because
+ *         every tool Bro has is mounted on every turn and "mounted only" never
+ *         filters anything. The saving had to come from the TURN instead:
+ *         the live-tab rules ship only while a tab is actually open, which is
+ *         463 tok on an ordinary turn against 775 on a browser one.
  *
  * Lower this whenever a trim lands. Raising it is a deliberate act: a rule
  * that has to be on every single call, for every person, on every channel,
@@ -40,11 +47,11 @@ import { formatBudget, measure } from "./lib/prompt-budget.ts";
  * person are the one thing worth buying room for — they are what the generic
  * rules were a substitute for.
  */
-export const PER_TURN_CEILING_TOKENS = 8_650;
+export const PER_TURN_CEILING_TOKENS = 8_200;
 
 /** The root prompt plus its dynamic siblings: identity, voice, standing rules,
  *  the active channel's formatting, and who this person is. */
-export const ROOT_INSTRUCTIONS_CEILING_TOKENS = 5_150;
+export const ROOT_INSTRUCTIONS_CEILING_TOKENS = 4_700;
 
 function main(): void {
   const budget = measure();

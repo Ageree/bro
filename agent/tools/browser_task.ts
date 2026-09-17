@@ -735,6 +735,36 @@ async function continuationPayHosts(
   return pageUrl ? expandPayHosts([pageUrl]) : [];
 }
 
+/**
+ * What the HUMAN hears around a browser job — the tool's own half of the
+ * prompt, collected by `agent/instructions/tools.ts` (see
+ * `agent/lib/tool-guidelines.ts` for how the block is assembled).
+ *
+ * How to CALL this tool is the `description` below; these are the lines Bro
+ * says. They were the «Браузер» and «Что сказать после тула» sections of
+ * `agent/instructions.md`, written centrally and therefore charged centrally:
+ * every turn paid for them, including the turns with no browser in them.
+ *
+ * Several of these are protocol, not chat. «ввожу код», «подожду», «ввожу»,
+ * «проверяю» and «продолжаю в той же вкладке» are the exact first lines that
+ * tell the person their code went into the tab that is waiting for it rather
+ * than into a fresh search — the same four acks `injectAckText` produces, so
+ * the standing rule and the per-turn instruction `cloudInjectInstruction`
+ * injects cannot describe different behaviour.
+ *
+ * FIVE ROWS OF THE OLD TABLE ARE DELIBERATELY ABSENT: `status:"no_wait"`,
+ * `followUp:"retry"`, `status:"limit"`, `status:"invalid"` and `ack:true`.
+ * Every one of those results already returns its own `hint:` — `NO_LIVE_RUN_TEXT`,
+ * `FOLLOW_RETRY_HINT`, «лимит браузер-задач на месяц исчерпан», «это похоже на
+ * пароль сайта, не поручение», «это подтверждение, не пересылай результат
+ * заново» — so the phrasing reaches the model on the one turn it applies to,
+ * carrying the live details (which task, which limit) a prompt row never has.
+ * A prompt copy of a runtime hint is a second version of it, free to drift.
+ * `status:"busy"` keeps its bullet even though it too carries a hint: «сначала
+ * закончу X, потом сделаю Y» is the shape of the sentence, and the hint fills
+ * in X and Y.
+ */
+
 export default defineTool({
   description:
     'One browser job per person: start or poll, never a second search while one runs. The site opens itself; the job logs in on its own (vault login, cookies, or Войти/passport) — never ask for a login or password, never put one in chat. busy = another job runs: say "сначала закончу X, потом сделаю Y"; do not call profile_setup. reset:true cancels the job and starts fresh. Live page + human\'s last line is a code, "подожди", an address/size correction, or "подтвердил"/"готово"/"вошёл" → pass their exact line, it gets typed/queued into the open page; never resend the old task. status:"completed" + result → report it. Buying or «привяжи карту»: pay on the first call (hosts = the site\'s hostnames, Bro widens them to the real card-form domains; maxRub only if named). needsVaultSetup → vault_setup kind=payment. needsProfileSync → profile_setup, only if no vault login was used and nothing runs.',

@@ -124,12 +124,39 @@ assert(
   "instructions.md bans restating the request back at them",
 );
 
-// --- 4. the canonical result → reply table ----------------------------------
-assert(
-  instructions.includes("| результат тула | что сказать |"),
-  "the canonical tool-result table is present with its column header",
-);
-for (const needle of ["проверяю", "ввожу код", "подожду", "сначала закончу", "reset:true", "otp_lookup", "errand"]) {
+// --- 4. tool rules live with their tools, not in the root prompt ------------
+/**
+ * The `## Браузер` section and the `результат тула → что сказать` table used to
+ * sit here, ~1000 estimated tokens on EVERY call, though they only apply once
+ * `browser_task` has been called and has returned a particular result. They are
+ * now exported by the tools themselves and assembled per turn by
+ * `agent/instructions/tools.ts`, the way pi's `toolGuidelines` works: a tool
+ * that is not mounted contributes no rules at all.
+ *
+ * What is asserted here is the invariant that survived the move — every one of
+ * those rules still reaches the model, and none of them is stated twice. The
+ * text itself is `guidelines:check`'s to own.
+ */
+{
+  const browserRules = src("agent/lib/tool-rules.ts");
+  for (const needle of ["ввожу код", "подожду", "проверяю", "сначала закончу"]) {
+    assert(
+      browserRules.includes(needle),
+      `the «${needle}» protocol line moved to BROWSER_TASK_GUIDELINES and must still be there`,
+    );
+  }
+  // …and is gone from the root prompt, or it is being paid for twice.
+  assert(
+    !instructions.includes("| результат тула | что сказать |"),
+    "the tool-result table belongs to the tools now, not the root prompt",
+  );
+  assert(
+    !/^## Браузер/m.test(instructions),
+    "the browser section belongs to browser_task's guidelines now",
+  );
+}
+// Rules that are genuinely about the person rather than about a tool stay.
+for (const needle of ["otp_lookup", "errand"]) {
   assert(instructions.includes(needle), `instructions.md must contain "${needle}"`);
 }
 

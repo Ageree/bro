@@ -51,11 +51,28 @@ const NEED_VALUES: ReadonlySet<string> = new Set<CloudNeed>([
 /** «нет» / «none» / «-» / «—» / «н/д» all mean "nothing in this field". */
 const EMPTYISH = /^(?:нет|none|-|—|н\/д)$/iu;
 
+/**
+ * One labelled line, tolerating the two decorations a chat model adds to a
+ * list it was asked for in prose: a leading bullet («- НУЖНО: none») and
+ * markdown bold («**НУЖНО:** none»). Neither used to parse, and the cost of
+ * missing the label is not a missing field — `parseCloudOutcome` falls back
+ * to guessing `needs` off free text, which drives the inject decisions and
+ * the «нужно X» line the human reads.
+ *
+ * This matters more now that the errand asks for the block in one short
+ * sentence instead of four lines of formatting instructions: the shorter the
+ * ask, the more the run formats the answer its own way.
+ */
 function grabLabel(result: string, labels: readonly string[]): string | undefined {
   for (const label of labels) {
-    const re = new RegExp(`^[ \\t]*${label}[ \\t]*:[ \\t]*(.+)$`, "imu");
+    const re = new RegExp(
+      `^[ \\t]*(?:[-*•]+[ \\t]*)?\\*{0,2}${label}\\*{0,2}[ \\t]*:[ \\t]*(.+)$`,
+      "imu",
+    );
     const m = result.match(re);
-    if (m?.[1] !== undefined) return m[1].trim();
+    // A bolded label often closes after the colon («**СДЕЛАНО:** заказал») and
+    // sometimes around the value itself — the asterisks are never the value.
+    if (m?.[1] !== undefined) return m[1].replace(/^\*+|[\s*]+$/gu, "").trim();
   }
   return undefined;
 }

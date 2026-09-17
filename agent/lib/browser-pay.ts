@@ -220,12 +220,19 @@ export function loginBindings(
   ];
 }
 
-/** Cloud-agent instructions when a vault password is bound to the run. */
+/**
+ * Cloud-agent instructions when a vault password is bound to the run.
+ *
+ * One sentence, because only one thing in it is information: the alias names,
+ * which our own `secretBindings` payload is keyed by. The «просит код из SMS
+ * — закончи с НУЖНО: sms_code, код на почту — НУЖНО: email_code» line that
+ * used to follow is gone — `scaffoldTask` already tells every run to stop on
+ * a code it cannot get, and the output contract at the foot of the errand
+ * lists every `НУЖНО` value there is. A third copy next to the aliases only
+ * made the block longer.
+ */
 export function loginScaffold(): string {
-  return [
-    `Логин и пароль подключены секретами: сфокусируй поле и попроси секрет по имени — \`${LOGIN_ALIASES.login}\` (логин, почта или телефон), \`${LOGIN_ALIASES.password}\` (пароль), потом нажми «Войти». Значения вводит сервер, ты их не видишь.`,
-    "Просит код из SMS — закончи с НУЖНО: sms_code, код на почту — НУЖНО: email_code.",
-  ].join("\n");
+  return `Логин и пароль подключены секретами: сфокусируй поле и попроси секрет по имени — \`${LOGIN_ALIASES.login}\` (логин, почта или телефон), потом \`${LOGIN_ALIASES.password}\`. Значения вводит сервер, ты их не видишь.`;
 }
 
 /** Six secret bindings covering combined and split expiry-field forms (2- and 4-digit year). */
@@ -251,34 +258,51 @@ export function cardBindings(
 /**
  * Russian instructions block for the cloud agent describing how to pay — or,
  * with `attachCard`, how to save the card without buying anything.
+ *
+ * `holder` and `account` are OPTIONAL and must be treated as such. They were
+ * typed as required and interpolated unconditionally, but real call sites
+ * (a vault card with no cardholder on file, `browser_task`'s pay options
+ * assembled from a partial item) pass neither — so the prompt shipped
+ * «Карта undefined подключена секретами» and «Держатель undefined — не
+ * секрет, печатай его текстом», which is an instruction to type the word
+ * "undefined" into a cardholder field on a live checkout. A missing value
+ * now removes its sentence (or its noun phrase) instead of printing itself.
  */
 export function payScaffold(opts: {
   hosts: readonly string[];
-  holder: string;
-  account: string;
+  holder?: string;
+  account?: string;
   maxRub?: number;
   /** «привяжи карту»: save the card as a payment method, place no order. */
   attachCard?: boolean;
 }): string {
-  const { hosts, holder, account, maxRub, attachCard } = opts;
+  const { hosts, maxRub, attachCard } = opts;
+  const holder = opts.holder?.trim();
+  const account = opts.account?.trim();
+  // The card's own label («Visa · •••• 1111») is a fact for the human's
+  // benefit, not something the run types — so a missing one costs the
+  // sentence two words, never a line the run needs.
+  const card = account ? `Карта ${account}` : "Карта";
+  // The bound hosts ARE the security boundary, so they are stated when they
+  // exist; an empty list would otherwise read «работает только на  и их
+  // поддоменах», which names no boundary at all.
+  const where = hosts.length > 0 ? `${hosts.join(", ")} и их поддоменах` : undefined;
   return [
     attachCard
-      ? "Цель — привязать карту, а не купить: открой «Способы оплаты» (профиль, настройки или корзина) и нажми «Добавить карту»."
+      ? "Надо привязать карту, а не купить: открой «Способы оплаты» и нажми «Добавить карту»."
       : "",
-    `Карта ${account} подключена секретами: сфокусируй поле и попроси секрет по имени — \`${PAY_ALIASES.number}\`, \`${PAY_ALIASES.expiry}\` (срок ММ/ГГ; раздельные поля: \`${PAY_ALIASES.expMonth}\` месяц, \`${PAY_ALIASES.expYear}\` год двумя цифрами, \`${PAY_ALIASES.expYearFull}\` четырьмя), \`${PAY_ALIASES.cvc}\` CVV. Вводит сервер, ты значений не видишь.`,
     // The iframe tactic hint that used to sit here («форма карты обычно в
     // iframe на соседнем домене — кликай прямо в поле внутри рамки…») is
     // gone: 132 characters of how-to-use-a-browser on every paid run. The
     // part of it that was NOT advice — that the card form lives on a sibling
     // domain — is enforced in code, by `expandPayHosts` binding the card to
     // the registrable domain and the processors, not by asking nicely.
-    `Держатель ${holder} — не секрет, печатай его текстом.`,
-    `Секреты работают только на ${hosts.join(", ")} и их поддоменах. Поле карты на другом домене — закончи, назови его, НУЖНО: payment.`,
-    "3-D Secure — НУЖНО: 3ds. Код из SMS — НУЖНО: sms_code. Подтверждение в приложении банка — НУЖНО: push.",
-    maxRub !== undefined ? `Сумма выше ${maxRub} ₽ — не плати, закончи и назови её.` : "",
+    `${card} подключена секретами${where ? `, работает на ${where}` : ""} — плати ей: сфокусируй поле и попроси секрет по имени \`${PAY_ALIASES.number}\`, \`${PAY_ALIASES.expiry}\` (ММ/ГГ; раздельные поля — \`${PAY_ALIASES.expMonth}\`, \`${PAY_ALIASES.expYear}\`, \`${PAY_ALIASES.expYearFull}\`), \`${PAY_ALIASES.cvc}\`. Вводит сервер, ты значений не видишь.${holder ? ` Держатель ${holder} — печатай текстом.` : ""}`,
+    "Поле карты на чужом домене — остановись, НУЖНО: payment. 3-D Secure — НУЖНО: 3ds, код или подтверждение от банка — sms_code или push.",
+    maxRub !== undefined ? `Сумма выше ${maxRub} ₽ — не плати.` : "",
     attachCard
-      ? "Банк может списать и вернуть около 1 ₽ — это нормально, не повод останавливаться. Готово, когда карта видна в списке способов оплаты: так и напиши в СДЕЛАНО, заказ не оформляй."
-      : "После оплаты убедись, что на экране есть номер заказа, и верни его и сумму.",
+      ? "Банк может списать и вернуть около 1 ₽ — это нормально. Готово, когда карта видна в списке способов оплаты; заказ не оформляй."
+      : "",
   ]
     .filter(Boolean)
     .join("\n");

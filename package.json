@@ -79,6 +79,10 @@
     "voice:turn:check": "node --experimental-strip-types scripts/turn-voice-check.ts",
     "profile:person:check": "node --experimental-strip-types scripts/person-profile-check.ts",
     "instinct:check": "node --experimental-strip-types scripts/instinct-check.ts",
+    "clamps:check": "node --experimental-strip-types scripts/clamps-check.ts",
+    "guidelines:check": "node --experimental-strip-types scripts/tool-guidelines-check.ts",
+    "placeholders:check": "node --experimental-strip-types scripts/placeholders-check.ts",
+    "deadline:check": "node --experimental-strip-types scripts/deadline-check.ts",
     "photon:check": "node --experimental-strip-types scripts/photon-check.ts",
     "photon:webhooks": "node --env-file=.env.local --experimental-strip-types scripts/setup-photon-webhook.ts",
     "provision:inkbox": "node --experimental-strip-types scripts/provision-inkbox.ts"

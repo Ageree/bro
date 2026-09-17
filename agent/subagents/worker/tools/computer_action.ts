@@ -70,6 +70,12 @@ const actionSchema = z.object({
     })
     .optional(),
   set_cursor: z.object({ hidden: z.boolean() }).optional(),
+  // A `sleep` is the one action with no terminal condition: it cannot observe
+  // anything, so a long one only spends wall clock the assignment may need for
+  // an actual wait. The cap stays deliberately low — waiting *for* something
+  // (a slow Russian site behind the residential proxy included) is expressed as
+  // a Playwright wait with a condition and its own deadline, which the model is
+  // free to make as long as the 25-second call ceiling allows.
   sleep: z
     .object({ duration_ms: z.number().int().min(0).max(2_000) })
     .optional(),
@@ -102,7 +108,7 @@ const outputSchema = z.object({
 
 export default defineTool({
   description:
-    "Execute a bounded batch of computer actions on one browser session. Prefer one batch over repeated calls, keep sleep actions at or below two seconds, and include a screenshot last only when visual inspection is needed; screenshots are delivered directly to the vision model.",
+    "Execute a bounded batch of computer actions on one browser session. Prefer one batch over repeated calls; a sleep action is a short nudge between inputs (capped at two seconds — a sleep has no terminal condition, so real waiting belongs in a Playwright wait with one), and include a screenshot last only when visual inspection is needed; screenshots are delivered directly to the vision model.",
   inputSchema,
   outputSchema,
   async execute(input, ctx) {

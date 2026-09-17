@@ -1,6 +1,7 @@
 import { Composio } from "@composio/core";
 import { EveProvider } from "@composio/experimental/eve";
 import { isSharedPrincipal } from "./tenant.ts";
+import { withDeadline } from "./deadline.ts";
 
 function assertKey(): void {
   const key = process.env.COMPOSIO_API_KEY;
@@ -41,24 +42,14 @@ const sessions = new Map<string, Promise<BroSession>>();
 const CALL_BUDGET_MS = Number(process.env.BRO_COMPOSIO_BUDGET_MS ?? 45_000);
 const SESSION_BUDGET_MS = Number(process.env.BRO_COMPOSIO_SESSION_BUDGET_MS ?? 20_000);
 
-/** Reject with a named error once the budget is spent. Never leaves a timer behind. */
-export function withDeadline<T>(
-  work: Promise<T>,
-  budgetMs: number,
-  what: string,
-): Promise<T> {
-  if (!Number.isFinite(budgetMs) || budgetMs <= 0) return work;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const deadline = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(
-      () => reject(new Error(`${what} timed out after ${budgetMs} ms`)),
-      budgetMs,
-    );
-  });
-  return Promise.race([work, deadline]).finally(() => {
-    if (timer) clearTimeout(timer);
-  }) as Promise<T>;
-}
+/**
+ * Re-exported, not redefined. This helper used to live here, which put it
+ * behind the Composio SDK import and out of reach of the one caller that needs
+ * it most: the Convex client on the hot path of every tool. It now lives in
+ * `agent/lib/deadline.ts`, so every network path shares one definition of
+ * "this has stalled", and this export keeps existing importers working.
+ */
+export { withDeadline } from "./deadline.ts";
 
 function requireUserId(userId: string): string {
   const id = userId.trim();

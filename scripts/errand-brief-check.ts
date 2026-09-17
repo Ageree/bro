@@ -254,8 +254,17 @@ eq(knownFactsBlock(undefined), "", "no facts → no block at all");
   // The inverted restriction: the facts come first and НУЖНО is the fallback
   // for what is genuinely missing, not a standing order to abort.
   assert(block.includes(KNOWN_FACTS_GAP), "the gap sentence closes the block");
-  assert(block.includes("НУЖНО: address"), "address stays a reachable outcome");
   assert(block.includes("не выдумывай"), "inventing a fact is still forbidden");
+  assert(block.includes("остановись"), "and stopping is still the alternative");
+  // The `НУЖНО: address|info` menu left this sentence with the rewrite: the
+  // output contract at the foot of every errand lists all ten values, and
+  // reciting two of them here bought characters on every single run. The
+  // facts themselves — the thing this block exists for — all stayed.
+  assert(!block.includes("НУЖНО:"), "the outcome taxonomy is not repeated inside the facts");
+  // One line, not a heading plus a dash per field: the list shape was ours,
+  // the facts are the human's, and only the shape was worth deleting.
+  assert(block.split("\n").length === 1, "the known facts travel as one line");
+  assert(!block.includes("ИЗВЕСТНО"), "the form-field heading is gone");
   assert(
     !block.includes("Что знает только человек"),
     "the old abort-on-any-personal-fact order is gone",
@@ -447,12 +456,88 @@ assert(!isScaffolded("купи кроссовки"), "a raw errand is not scaffo
   }
   assert(task.includes("НУЖНО: none|"), "the НУЖНО menu survives verbatim");
   assert(
-    task.includes("Никогда не пиши в итог пароль, номер карты или код."),
+    task.includes("Пароль, номер карты и код в ответ не пиши."),
     "the safety line survives",
   );
   // The generic browsing advice the audit costed at ~980 chars is gone.
   for (const gone of ["Работай быстро", "Важен результат", "баннеры закрывай", "куки прошлой сессии", "iframe"]) {
     assert(!task.includes(gone), `generic advice «${gone}» is gone`);
+  }
+  // The second pass over the envelope: what a browser agent does not need to
+  // be told is how to use a browser. Each of these was a full sentence on
+  // every run, and not one of them is a fact about the errand.
+  for (const gone of [
+    "дождись страницы",
+    "на языке сайта",
+    "Дважды не заказывай",
+    "убедись, что на экране",
+    "Сайт откроет Bro сам",
+  ]) {
+    assert(!task.includes(gone), `browser how-to «${gone}» is gone`);
+  }
+  // …while every one of these is a fact or a boundary, and stays.
+  for (const kept of ["Решай сам", "входи или регистрируйся", "остановись"]) {
+    assert(task.includes(kept), `the licence/boundary «${kept}» survives`);
+  }
+}
+{
+  // The goal opens the errand as a sentence, not as a form field. Anything
+  // that reads the task back out (scripts/fake-browser-use.ts `humanErrand`,
+  // and a human reading a log) takes the line after the mark, so it must
+  // stay ONE line and stay first.
+  const task = scaffoldTask(SAMPLE_TASK, { facts: FACTS });
+  const [mark, goal] = task.split("\n");
+  eq(mark, "[bro-errand]", "the mark is still the first line");
+  eq(goal, SAMPLE_TASK, "the errand itself is the second line, unlabelled");
+  assert(!task.includes("ЦЕЛЬ:"), "the ЦЕЛЬ form label is gone");
+  // ДОСЛОВНО is not a restatement of the goal — it is the only line that
+  // carries the human's own «43» and «до 12к» — so it stays, and stays
+  // labelled, but only when it says something the goal does not.
+  const quoted = scaffoldTask("купи кроссовки nike air max 43 на wildberries, до 12000", {
+    humanText: "купи кроссовки nike air max 43 на вб, до 12к",
+  });
+  assert(
+    quoted.includes("ДОСЛОВНО ОТ ЧЕЛОВЕКА: «купи кроссовки nike air max 43 на вб, до 12к»"),
+    "the human's own wording still rides along verbatim",
+  );
+  eq(
+    scaffoldTask(SAMPLE_TASK, { humanText: SAMPLE_TASK }).split("\n").length,
+    scaffoldTask(SAMPLE_TASK).split("\n").length,
+    "and never costs a line when it would only repeat the goal",
+  );
+}
+{
+  // The release blocker this pass was written around: `payScaffold`'s
+  // `holder`/`account` are optional at every real call site, were typed as
+  // required, and were interpolated unconditionally — so the errand told the
+  // cloud agent «Держатель undefined — не секрет, печатай его текстом».
+  // Nothing the scaffold assembles may ever print the word.
+  const matrix: Array<[string, Parameters<typeof scaffoldTask>[1]]> = [
+    ["bare", undefined],
+    ["facts only", { facts: FACTS }],
+    ["empty facts", { facts: {} }],
+    ["brief + human", { brief: BRIEF, humanText: "закажи кроссы 42го на вб" }],
+    ["continuation", { facts: FACTS, continuation: true }],
+    ["start page", { facts: FACTS, startPage: "https://www.ozon.ru/" }],
+    ["vault login", { facts: FACTS, login: true }],
+    [
+      "card without holder/account",
+      { facts: FACTS, pay: { hosts: expandPayHosts(["ozon.ru"]), maxRub: 5000 } },
+    ],
+    [
+      "card without hosts",
+      { facts: FACTS, pay: { hosts: [], holder: "IVAN PETROV", account: "Visa" } },
+    ],
+    [
+      "attach card, nothing but hosts",
+      { facts: FACTS, pay: { hosts: expandPayHosts(["taxi.yandex.ru"]), attachCard: true } },
+    ],
+  ];
+  for (const [label, opts] of matrix) {
+    const task = opts ? scaffoldTask(SAMPLE_TASK, opts) : scaffoldTask(SAMPLE_TASK);
+    assert(!task.includes("undefined"), `«undefined» never reaches the run (${label})`);
+    assert(!task.includes("null"), `nor «null» (${label})`);
+    assert(!/\n\s*\n\s*\n/u.test(task), `and an absent block leaves no blank gap (${label})`);
   }
 }
 {
@@ -463,7 +548,10 @@ assert(!isScaffolded("купи кроссовки"), "a raw errand is not scaffo
   // With nothing on file it falls back exactly where it used to.
   const unknown = scaffoldTask(SAMPLE_TASK);
   assert(unknown.includes(MISSING_FACTS_LINE), "empty vault → say so and ask");
-  assert(unknown.includes("НУЖНО: address"), "empty vault → address is reachable");
+  assert(
+    unknown.includes("|address|"),
+    "empty vault → address is still a reachable outcome, via the output contract",
+  );
   assert(unknown.includes(SAMPLE_TASK), "the raw task still travels with no context at all");
 }
 {
@@ -538,12 +626,19 @@ function userContentChars(task: string, opts: { brief?: string; facts?: ErrandFa
     boilerplate < BOILERPLATE_BEFORE,
     `boilerplate is ${boilerplate}, was ${BOILERPLATE_BEFORE} — it must not creep back`,
   );
-  // The threshold moved 25% → 20% when the memo feed left `FACTS`: those two
-  // «помню: …» lines were ~60 characters of the human's own content, and the
-  // envelope around them did not change. `boilerplate < BOILERPLATE_BEFORE`
-  // just above is the assertion that actually guards against prose creeping
-  // back; this one guards the ratio it produces.
-  assert(share > 0.2, `user content is ${(share * 100).toFixed(1)}% of the task, was 2.6%`);
+  // The threshold moved 25% → 20% when the memo feed left `FACTS`, and 20% →
+  // 24% when the envelope was rewritten as a message rather than a form
+  // (the heading-plus-dashes fact list, the browser how-to sentences and the
+  // recited `НУЖНО` taxonomy all went). `boilerplate < BOILERPLATE_BEFORE`
+  // just above is what actually guards against prose creeping back; this one
+  // guards the ratio it produces, which is the number the product owner
+  // reads: how much of what we send is the human's own business.
+  assert(share > 0.24, `user content is ${(share * 100).toFixed(1)}% of the task, was 2.6%`);
+  // The word that shipped a release blocker. `payScaffold` interpolated an
+  // optional `holder`/`account` unconditionally, and the errand told the run
+  // «Держатель undefined — печатай его текстом» — with the card bound, on a
+  // live checkout. Every scaffold, every combination, never the word.
+  assert(!task.includes("undefined"), "no «undefined» anywhere in the assembled task");
 }
 {
   // The envelope alone — no facts, no brief — is what shrank. Everything the
@@ -552,7 +647,7 @@ function userContentChars(task: string, opts: { brief?: string; facts?: ErrandFa
   const boilerplate = bare.length - SAMPLE_TASK.length;
   console.log(`errand-brief: bare envelope=${boilerplate} chars (was ${BOILERPLATE_BEFORE})`);
   assert(
-    boilerplate <= 1_150,
+    boilerplate <= 900,
     `the bare envelope is ${boilerplate} chars — cut a sentence, do not raise this`,
   );
 }
@@ -573,9 +668,10 @@ function userContentChars(task: string, opts: { brief?: string; facts?: ErrandFa
     },
   });
   assert(
-    paid.length <= 2_800,
+    paid.length <= 2_000,
     `the fullest scaffold is ${paid.length} chars — cut a sentence, do not raise this`,
   );
+  assert(!paid.includes("undefined"), "not even the fullest scaffold prints «undefined»");
 }
 
 // ---------------------------------------------------------------------------

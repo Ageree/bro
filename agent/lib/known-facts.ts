@@ -109,23 +109,34 @@ export function hasErrandFacts(facts?: ErrandFacts): boolean {
  * The inverted restriction. The old scaffold said «что знает только человек
  * — не придумывай: закончи с НУЖНО: address или info», full stop, and so a
  * run aborted asking for a street Bro had on file. Now the facts come first
- * and `НУЖНО` is the fallback for what is genuinely missing — the ban on
- * INVENTING a fact is what survives, not the ban on knowing one.
+ * and «остановись и скажи» is the fallback for what is genuinely missing —
+ * the ban on INVENTING a fact is what survives, not the ban on knowing one.
+ *
+ * It no longer spells the `НУЖНО: address|info` menu out: the output contract
+ * at the foot of every errand already lists every value, and repeating the
+ * taxonomy here bought nothing but characters on every single run.
  */
 export const KNOWN_FACTS_GAP =
-  "Чего нет ни здесь, ни в задаче — не выдумывай: закончи с НУЖНО: address или info и напиши в ДЕТАЛИ, чего не хватает.";
+  "Чего здесь нет — не выдумывай, лучше остановись и скажи.";
 
 /** Same sentence for a tenant whose vault really is empty. */
 export const MISSING_FACTS_LINE =
-  "Данных человека — адреса, имени, телефона, времени, размера — не нашлось: не выдумывай их, закончи с НУЖНО: address или info и напиши в ДЕТАЛИ, чего не хватает.";
+  "Данных человека — адреса, имени, телефона — нет: не выдумывай их, лучше остановись и скажи.";
 
-/** The known-facts block, or "" when Bro knows nothing worth passing along. */
+/**
+ * The known-facts block, or "" when Bro knows nothing worth passing along.
+ *
+ * One line, not a bulleted list with a heading. Every fact here is the
+ * human's own business and all of it stays — the list shape was the part that
+ * was ours: a «ИЗВЕСТНО (это данные самого человека…)» header plus a newline
+ * and a dash per field, spent on a run that reads a sentence just as well as
+ * a form. The labels inside each fact («телефон: …») are untouched, because
+ * `factLines` is also what `agent/lib/person-profile.ts` prints, and two
+ * spellings of the same phone number is how two blocks start disagreeing
+ * about the same person in the same prompt.
+ */
 export function knownFactsBlock(facts?: ErrandFacts): string {
   const lines = factLines(facts);
   if (lines.length === 0) return "";
-  return [
-    "ИЗВЕСТНО (это данные самого человека — вводи их сам, не переспрашивай):",
-    ...lines.map((line) => `- ${line}`),
-    KNOWN_FACTS_GAP,
-  ].join("\n");
+  return `Данные: ${lines.join("; ")}. ${KNOWN_FACTS_GAP}`;
 }

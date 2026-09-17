@@ -175,7 +175,15 @@ const CONTRACT_LABELS = [
   "NEEDS",
 ] as const;
 
-const CONTRACT_LINE = new RegExp(`^\\s*(?:${CONTRACT_LABELS.join("|")})\\s*:`, "iu");
+// Bullets are already stripped before this runs, but markdown bold is not —
+// and `grabLabel` in convex/lib/browserOutcomePolicy.ts now reads «**НУЖНО:**
+// info» as a real label, so a brief allowed to keep that spelling would hand
+// the run a second output contract again, which is the one thing this regex
+// exists to prevent.
+const CONTRACT_LINE = new RegExp(
+  `^\\s*\\*{0,2}(?:${CONTRACT_LABELS.join("|")})\\*{0,2}\\s*:`,
+  "iu",
+);
 
 /**
  * The line the scaffold falls back to when the composer is off, unkeyed,

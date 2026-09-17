@@ -361,9 +361,15 @@ assert.ok(otpSearchQuery("WB").includes("WB"));
 
 const instructions = src("agent/instructions.md");
 assert(instructions.includes("otp_lookup") || instructions.includes("`otp`"), "root knows otp");
-assert(instructions.includes("ввожу код"), "chat code first bubble");
+// The «ввожу код» first bubble is browser_task's rule (it owns the tab the
+// code is typed into); the root prompt keeps the mailbox-before-thread order.
 assert(
-  instructions.includes("живую Cloud-сессию") || instructions.includes("живую вкладку"),
+  src("agent/lib/tool-rules.ts").includes("ввожу код"),
+  "chat code first bubble",
+);
+assert(
+  instructions.includes("живую вкладку") ||
+    src("agent/lib/tool-rules.ts").includes("Живая вкладка"),
   "iMessage codes go into the live Cloud tab",
 );
 assert(
