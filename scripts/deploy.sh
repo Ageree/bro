@@ -147,3 +147,42 @@ if [ "$SKIP_ENV_CHECK" != "1" ] && command -v curl >/dev/null 2>&1; then
   echo "note: if BRO_LINK_ORIGIN is set on $PROJECT, it overrides the host above —" >&2
   echo "      that domain must proxy /l to this agent, or links 404 again" >&2
 fi
+
+# Second post-deploy smoke check, same shape as the one above and born the same
+# way: people asked Bro whether Telegram works and were told it does not.
+#
+# Telegram is the one channel nothing in this repository can see. The token,
+# the username and the webhook secret live on the deployment, and the webhook
+# URL lives at Telegram — set once by hand, so it keeps pointing at whatever
+# host was live that day. A stale URL looks exactly like a bot nobody writes
+# to. So ask the deployment itself, and let it re-point the webhook at its own
+# origin while we are here (--repair); that is idempotent when it is already
+# right.
+if [ "$SKIP_ENV_CHECK" != "1" ]; then
+  if [ -z "${BRO_INTERNAL_SECRET:-}" ]; then
+    echo "note: BRO_INTERNAL_SECRET not set here — telegram left unverified (npm run telegram:health)" >&2
+  else
+    echo "checking telegram"
+    set +e
+    node --experimental-strip-types scripts/telegram-health.ts \
+      --base="https://${PROJECT}.vercel.app" --repair
+    TELEGRAM_CODE=$?
+    set -e
+    case "$TELEGRAM_CODE" in
+      0) ;;
+      3)
+        echo "note: no telegram on $PROJECT — «телеграм» answers «Telegram у Bro ещё не включён»" >&2
+        echo "      set TELEGRAM_BOT_TOKEN, TELEGRAM_BOT_USERNAME and TELEGRAM_WEBHOOK_SECRET to turn the channel on" >&2
+        ;;
+      2)
+        echo "note: could not ask $PROJECT about telegram — unverified" >&2
+        ;;
+      *)
+        echo "telegram is broken on $PROJECT (see above)" >&2
+        echo "the second channel is dead for every person: either the link cannot be minted or updates never arrive" >&2
+        echo "pass --skip-env-check to bypass this check" >&2
+        exit 1
+        ;;
+    esac
+  fi
+fi
