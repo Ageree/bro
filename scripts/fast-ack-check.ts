@@ -89,6 +89,86 @@ eq(
   "more than 6 words is rejected",
 );
 
+// --- the varied «я взялся» palette all has to survive sanitising ---
+for (const beat of [
+  "взялся, смотрю вб",
+  "окей, гляну почту",
+  "так, уже ищу",
+  "понял, поехали",
+  "беру на себя",
+  "сделаю, минуту",
+  "принял, открываю озон",
+  "ага, сейчас забронирую",
+  "щас проверю заказ",
+  "приступил, звоню в клинику",
+  "минуту, гляну фото",
+]) {
+  eq(sanitizeFastAck(beat), beat, `natural opener survives: «${beat}»`);
+}
+
+// Neither prompt may ship a roster of ready-made beats: the owner wants the
+// line composed, and a list long enough to choose from is what a model copies
+// instead of composing. Both sides must therefore ask for fresh wording and
+// keep whatever they do quote down to illustration.
+{
+  const instructions = src("agent/instructions.md");
+  const section = instructions.slice(
+    instructions.indexOf("### Строка «взялся»"),
+    instructions.indexOf("## Groups"),
+  );
+  const quoted = [...section.matchAll(/«([^»]+)»/g)]
+    .map((m) => m[1]!)
+    .filter((q) => !["ищу", "взялся", "ок", "спасибо", "понял"].includes(q));
+  assert(
+    quoted.length <= 3,
+    `instructions.md offers ${quoted.length} ready-made beats — that is a menu, not an illustration`,
+  );
+  // What it does quote still has to be something the tiny lane could send,
+  // so the two prompts cannot drift into different registers.
+  for (const beat of quoted) {
+    eq(sanitizeFastAck(beat), beat, `instructions illustration survives: «${beat}»`);
+  }
+  assert(
+    instructions.includes("Формулируй её сам, каждый раз с нуля"),
+    "instructions.md asks for the line to be composed, not picked",
+  );
+  assert(
+    FAST_ACK_SYSTEM.includes("сочиняй сам, каждый раз с нуля"),
+    "the fast-ack prompt asks for the line to be composed, not picked",
+  );
+  assert(
+    FAST_ACK_SYSTEM.includes("дословно не повторяй"),
+    "the fast-ack prompt tells the model not to reuse its examples verbatim",
+  );
+}
+eq(
+  sanitizeFastAck("окей, взялся, смотрю вб и озон"),
+  "окей, взялся, смотрю вб и озон",
+  "a full six-word opener is accepted",
+);
+eq(
+  sanitizeFastAck("Принял, сейчас гляну почту."),
+  "Принял, сейчас гляну почту",
+  "a trailing period is stripped off a longer opener",
+);
+eq(
+  sanitizeFastAck("приступил, открываю озон и смотрю все чехлы"),
+  null,
+  "seven words is still too long",
+);
+eq(
+  sanitizeFastAck("взялся, открываю невероятно длиннющее наименование интернет-магазина"),
+  null,
+  "six words over 60 chars is still rejected",
+);
+// Safety filters keep biting at the wider limit.
+eq(sanitizeFastAck("NONE"), null, "NONE is still nothing to send");
+eq(sanitizeFastAck("взялся, смотрю none"), null, "an embedded NONE is rejected");
+eq(sanitizeFastAck("принял, открываю http://wb.ru"), null, "a six-word line with a URL is rejected");
+eq(sanitizeFastAck("бро, взялся, смотрю вб"), null, "a natural opener starting with «бро» is rejected");
+eq(sanitizeFastAck("взялся, статус: ищу вб"), null, "a field label inside an opener is rejected");
+eq(sanitizeFastAck("взялся, набираю 8 999 123 45 67"), null, "a digit dump is rejected");
+
 // --- fastAckAttribute / fastAckOf round trip ---
 eq(Object.keys(fastAckAttribute(null)).length, 0, "null yields no attribute at all");
 eq(
@@ -233,8 +313,75 @@ assert(
   "no instant-ack.ts skip lane — the agent turn always runs",
 );
 
-assert(FAST_ACK_SYSTEM.length <= 900, "system prompt stays compact");
+assert(FAST_ACK_SYSTEM.length <= 1_200, "system prompt stays compact");
 assert(FAST_ACK_SYSTEM.includes("NONE"), "system prompt defines the NONE escape hatch");
+assert(FAST_ACK_SYSTEM.includes("2-6 слов"), "system prompt asks for a 2-6 word line");
+// The Poke/Instinct register, spelled out for the tiny model too: a friend not
+// a bot, no preamble, no name, never an emoji it opened itself, and never the
+// human's own words handed back.
+assert(
+  FAST_ACK_SYSTEM.includes("как друг в чат, а не как бот"),
+  "system prompt sets the friend-not-bot register",
+);
+assert(
+  FAST_ACK_SYSTEM.includes("без вступлений, без имени, без эмодзи"),
+  "system prompt bans preamble, self-naming and an opening emoji",
+);
+assert(
+  FAST_ACK_SYSTEM.includes("Его слова обратно не пересказывай"),
+  "system prompt bans restating the human's words back at them",
+);
+assert(
+  !/[\p{Extended_Pictographic}]/u.test(FAST_ACK_SYSTEM),
+  "system prompt carries no emoji of its own for the model to copy",
+);
+assert(
+  FAST_ACK_SYSTEM.includes("особенно не с «ищу»"),
+  "system prompt forbids always opening with «ищу»",
+);
+assert(
+  /сочиняй сам, каждый раз с нуля/.test(FAST_ACK_SYSTEM),
+  "system prompt asks for a freshly composed opener each call",
+);
+{
+  // The example palette must show variety, not one shape repeated: count the
+  // distinct first words of the «… → …» sample answers.
+  const answers = [...FAST_ACK_SYSTEM.matchAll(/→\s*(.+)/g)]
+    .map((m) => m[1]!.trim())
+    .filter((a) => a !== "NONE");
+  // Few on purpose. A tiny model copies a long list verbatim instead of
+  // learning a register from it, and the owner asked for the line to be
+  // composed — so this is a ceiling, not a floor, and the examples that
+  // remain must still each show a different shape.
+  assert(
+    answers.length >= 2 && answers.length <= 4,
+    `system prompt shows ${answers.length} errand examples — enough to fix tone, few enough not to be a menu`,
+  );
+  const openers = new Set(answers.map((a) => a.split(/[\s,]+/)[0]!.toLowerCase()));
+  assert(
+    openers.size === answers.length,
+    "no two system prompt examples open with the same word",
+  );
+  assert(
+    answers.every((a) => a === a.toLowerCase()),
+    "every system prompt example answer is lowercase",
+  );
+  assert(
+    answers.every((a) => !a.endsWith(".")),
+    "no system prompt example answer ends in a period",
+  );
+  assert(
+    answers.filter((a) => /(^|[\s,])ищу($|[\s,])/.test(a)).length <= 1,
+    "at most one example answer leans on «ищу»",
+  );
+  for (const a of answers) {
+    eq(sanitizeFastAck(a), a, `system prompt example «${a}» passes sanitizeFastAck`);
+  }
+}
+assert(
+  fastAckSrc.includes("temperature: 0.9"),
+  "the ack call runs hot enough for the opener to actually vary",
+);
 
 // --- review round: restatement peel, sanitize tightening, sync-throw guard ---
 {
@@ -250,9 +397,38 @@ assert(FAST_ACK_SYSTEM.includes("NONE"), "system prompt defines the NONE escape 
   eq(peelFastAck(ack, "Нашёл: Nike Air 5990 ₽"), "Нашёл: Nike Air 5990 ₽", "real content is kept");
   eq(peelFastAck("", "Ищу на ВБ."), "Ищу на ВБ.", "empty ack peels nothing");
 
+  // A longer, natural opener still dedupes: the <=10-token window has to clear
+  // a 6-word ack plus the words a weak model tacks on.
+  const long = "окей, взялся, смотрю вб";
+  eq(peelFastAck(long, "Окей, взялся, смотрю ВБ."), null, "long-ack restatement is dropped");
+  eq(
+    peelFastAck(long, "Взялся, смотрю кроссовки на ВБ"),
+    null,
+    "long ack reworded with one extra word is still a restatement",
+  );
+  eq(
+    peelFastAck(long, "Окей, взялся, смотрю ВБ. Нашёл 3 варианта"),
+    "Нашёл 3 варианта",
+    "content after a long ack survives",
+  );
+  eq(
+    peelFastAck(long, "Нашёл 3 варианта, самый дешёвый 5990 ₽"),
+    "Нашёл 3 варианта, самый дешёвый 5990 ₽",
+    "real content is not eaten by the wider window",
+  );
+
   eq(sanitizeFastAck("статус:"), null, "bare field label is rejected");
   eq(sanitizeFastAck("перезвони +7 999 123 45 67"), null, "phone-number dump is rejected");
-  eq(sanitizeFastAck("смотрю почту и календарь сейчас же"), null, "six words is too long for a beat");
+  eq(
+    sanitizeFastAck("смотрю почту и календарь сейчас же"),
+    "смотрю почту и календарь сейчас же",
+    "six words now fits a beat",
+  );
+  eq(
+    sanitizeFastAck("смотрю почту и календарь прямо сейчас же"),
+    null,
+    "seven words is still over the line",
+  );
   eq(sanitizeFastAck("ищу"), "ищу", "a single-word beat is fine");
 
   assert(!shouldFastAck("привет"), "a greeting gets no fast ack — the agent greets back itself");

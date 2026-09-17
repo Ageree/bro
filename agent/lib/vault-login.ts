@@ -4,7 +4,7 @@
  */
 import { loginPageUrl } from "../../convex/lib/browserProfilePolicy.ts";
 import { parseLoginPayload, pickVaultLogin } from "../../convex/lib/vaultPayload.ts";
-import { loginBindings, normalizePayHosts, type SecretBinding } from "./browser-pay.ts";
+import { expandLoginHosts, loginBindings, type SecretBinding } from "./browser-pay.ts";
 import { listVaultItems, readVaultSecret } from "./convex.ts";
 
 export type VaultLoginBinding = {
@@ -46,7 +46,10 @@ export async function vaultPasswordLogin(
   }
   const payload = record?.secret ? parseLoginPayload(record.secret) : undefined;
   if (!payload || payload.authentication.type !== "password") return undefined;
-  const hosts = normalizePayHosts([page, payload.origin]);
+  // The login form usually lives on a SIBLING host (passport.yandex.ru, not
+  // taxi.yandex.ru), so the binding has to cover the registrable domain too —
+  // otherwise the server refuses to type the saved password where it is asked.
+  const hosts = expandLoginHosts([page, payload.origin]);
   if (hosts.length === 0) return undefined;
   return {
     handle: match.handle,

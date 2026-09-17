@@ -10,7 +10,6 @@ import {
   isLoginWaitTask,
   loginPageUrl,
 } from "../../convex/lib/browserProfilePolicy.ts";
-import { purchaseStance } from "./purchase-policy.ts";
 
 /** Pages eve should check the vault for a saved login against: the payment
  *  hosts, the site `errandStartUrl` resolved from wording alone, and any
@@ -87,10 +86,10 @@ export function chargeKeyFor(
   return freshChargeKey(now);
 }
 
-export function taskLooksLikeBuy(task: string): boolean {
-  const stance = purchaseStance(task);
-  return stance === "buy" || stance === "watch_and_buy";
-}
+/** Moved next to `purchaseStance` in convex/lib/purchasePolicy.ts (the
+ *  order-recording gate now runs on the Convex side too, and Convex never
+ *  imports from agent/). Re-exported so existing imports keep working. */
+export { taskLooksLikeBuy } from "../../convex/lib/purchasePolicy.ts";
 
 /** Pure — testable without the network calls in `resolveSyncedProfile`.
  *  `need` is the last run's `parseCloudOutcome(...).needs`; a vault login

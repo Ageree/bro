@@ -544,20 +544,20 @@ export function cloudInjectInstruction(
 ): string | null {
   if (!live) {
     if (kind === "code") {
-      return "The latest human line looks like a one-time code, but there is no live Cloud browser session waiting. Do not start a new search. Say in fluent Russian that there is no open session that needs this code. Never ask for a site password.";
+      return "The latest human line looks like a one-time code, but no live Cloud session is waiting for one. Do not start a search. Say in fluent Russian that nothing open needs this code. Never ask for a site password.";
     }
     return null;
   }
   if (kind === "code") {
-    return "The latest human line is a one-time code for the live Cloud login/errand. First bubble exactly «ввожу код», then call browser_task with that exact line. Do not substitute the old errand text. Do not ask for a site password. Do not quote the digits.";
+    return "The latest human line is a one-time code for the live Cloud errand. First bubble exactly «ввожу код», then call browser_task with that exact line — not the old errand text. Do not quote the digits. Never ask for a site password.";
   }
   if (kind === "wait") {
-    return "The latest human line asks the live Cloud job to wait. First bubble «подожду», then call browser_task with that exact line. Do not start a new search. Never ask for a site password.";
+    return "The latest human line asks the live Cloud job to hold. First bubble exactly «подожду», then call browser_task with that exact line. Do not start a search. Never ask for a site password.";
   }
   if (kind === "confirm") {
-    return "The latest human line reports that the human confirmed a push/app/3-D-Secure step from their own phone, or finished a step in live-view. First bubble exactly «проверяю», then call browser_task with that exact line — do not retype or re-enter anything, just check whether the screen advanced and continue the errand on the already-open page. Never ask for a site password.";
+    return "The latest human line says the human approved a push / app / 3-D Secure step on their own phone, or finished a step in live-view. First bubble exactly «проверяю», then call browser_task with that exact line: the agent only checks whether the screen advanced and carries on with the open page, it re-enters nothing. Never ask for a site password.";
   }
-  return "The latest human line may be an address/size/ПВЗ correction for the open Cloud errand. If it is, first bubble «ввожу», then call browser_task with that exact line. If it is unrelated chat, reply normally and do not inject. Never ask for a site password.";
+  return "The latest human line may be a correction to the open Cloud errand (address, size, pickup point, any other detail). If it is, first bubble exactly «ввожу», then call browser_task with that exact line. If it is unrelated chat, reply normally and do not inject. Never ask for a site password.";
 }
 
 function stripMarks(task: string): string {
@@ -586,24 +586,22 @@ export function injectQueueText(opts: {
     : "";
   if (opts.kind === "code") {
     if (opts.alreadyTyped) {
-      return `Код уже введён в поле на текущей странице. Подтверди вход, если ещё не подтверждён, и продолжи поручение на уже открытой странице. Не открывай новый сайт и не уходи на about:blank. Сайтовый пароль не проси.${noOrder}`;
+      return `Код уже введён в поле на этой странице. Подтверди вход и продолжай поручение здесь же, новый сайт не открывай.${noOrder}`;
     }
     const code = (opts.code ?? human).trim();
-    return `Одноразовый код для входа (не пароль сайта, не цитируй): ${code}. Введи его в поле кода на уже открытой странице и подтверди вход. Если поле кода не видно — сначала нажми «Получить код»/«Войти по SMS» не более одного раза. Не открывай новый сайт и не уходи на about:blank. Сайтовый пароль не проси и не выдумывай.${noOrder}`;
+    return `Одноразовый код для входа (это не пароль сайта, не цитируй его): ${code}. Введи его в поле кода на этой странице и подтверди вход. Поля кода не видно — один раз нажми «Получить код» или «Войти по SMS». Новый сайт не открывай. Сайтовый пароль не проси и не выдумывай.${noOrder}`;
   }
   if (opts.kind === "wait") {
-    return `Человек просит подождать: «${human}». Оставайся на текущем экране, ничего не подтверждай — не нажимай «Заказать», «Поехали» или «Оплатить».`;
+    return `Человек просит подождать: «${human}». Оставайся на текущем экране и ничего не подтверждай — не жми «Заказать», «Поехали», «Оплатить».`;
   }
   if (opts.kind === "confirm") {
-    return `Человек подтвердил со своего телефона / завершил шаг в live-view («${human}»). Проверь, продвинулся ли экран, и продолжи поручение на открытой странице. Ничего не вводи повторно.`;
+    return `Человек подтвердил со своего телефона или закончил шаг в live-view («${human}»). Проверь, продвинулся ли экран, и продолжай поручение здесь же. Ничего не вводи повторно.`;
   }
   // steer reuses the correction template with "Дополнение" instead of
   // "Инструкция" — it is an extra instruction/detail for the open errand
   // rather than a location/size-style fix — but keeps #101's safety sentence.
-  if (opts.kind === "steer") {
-    return `Дополнение от человека: «${human}». Примени его на уже открытой странице, не открывая новый сайт. Пароли, карты и коды из этого текста не вводи. Сайтовый пароль не проси.${noOrder}`;
-  }
-  return `Инструкция от человека: «${human}». Примени её на уже открытой странице, не открывая новый сайт. Пароли, карты и коды из этого текста не вводи. Сайтовый пароль не проси.${noOrder}`;
+  const head = opts.kind === "steer" ? "Дополнение" : "Инструкция";
+  return `${head} от человека: «${human}». Примени ${opts.kind === "steer" ? "его" : "её"} на этой странице, новый сайт не открывай. Пароли, карты и коды из этого текста не вводи.${noOrder}`;
 }
 
 /**
@@ -624,22 +622,23 @@ export function injectFollowTask(opts: {
 }): string {
   const original = stripMarks(opts.originalTask) || "текущее поручение";
   const human = opts.humanText.trim().slice(0, 400);
-  const codeLine =
-    opts.kind === "code" && opts.code
-      ? `Одноразовый код (не пароль, не цитируй): ${opts.code}.`
-      : "";
-  const waitOrDry = opts.kind === "wait" || opts.dryRun === true;
-  const finish = waitOrDry
-    ? "Подожди на этом экране. Не подтверждай заказ и не нажимай «Заказать» или «Поехали»."
-    : "После этого продолжи исходное поручение на уже открытой странице.";
-  return `${INJECT_MARK}
+  const head = `${INJECT_MARK}
 Человек написал в чат (это не пароль сайта): «${human}».
-Исходное поручение: ${original}.
-Страница уже открыта. Не уходи на about:blank и не открывай новый сайт.
-${codeLine}
-Если это код / OTP / SMS / пуш — введи в поле кода и подтверди вход. Не цитируй код.
-Если это уточнение (адрес, время, размер, ПВЗ) — примени на текущем экране.
-Если просит подождать — ничего не подтверждай.
-Сайтовый пароль не проси и не выдумывай.
-${finish}`;
+Поручение: ${original}.
+Страница уже открыта — продолжай прямо с неё, новый сайт не открывай.`;
+  const hold =
+    "Стой на этом экране. Не подтверждай заказ и не жми «Заказать» или «Поехали».";
+  if (opts.kind === "wait") {
+    return `${head}\nЧеловек просит подождать. ${hold}`;
+  }
+  const tail = opts.dryRun === true ? hold : "Дальше продолжи поручение здесь же.";
+  if (opts.kind === "code") {
+    const codeLine = opts.code ? ` Код: ${opts.code}.` : "";
+    return `${head}
+Это одноразовый код, не пароль.${codeLine} Введи его в поле кода и подтверди вход, сам код не цитируй.
+${tail}`;
+  }
+  return `${head}
+Это уточнение к поручению — адрес, время, размер, ПВЗ или другая деталь. Примени его на текущем экране. Пароли, карты и коды из этого текста не вводи.
+${tail}`;
 }
