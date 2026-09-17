@@ -30,6 +30,10 @@ Production: Convex cloud + `eve deploy` on Vercel — `npm run deploy` does both
 
 `npm run dev` is TUI-only (no public URL).
 
+## Checks
+
+`npm run check` runs the whole battery — `types:check` plus every other `*:check` script — in parallel, and prints the full output of whatever failed. They are pure-logic assertions over the policy modules: no network, no secrets, no deployment, ~10 s for all of them. `--only=onboard,silent` narrows to a few, `--skip=types` drops one, `--list` prints the selection, `--jobs=N` sets the concurrency. The Composio checks are excluded because they need a real `.env.local` and a live API key — run `npm run composio:check` by hand. GitHub Actions (`.github/workflows/checks.yml`) runs `npm run check` on every push and pull request, so a broken reply table or a dropped outcome branch is red before it reaches a real conversation.
+
 Onboard: landing «Получить своего бро» asks for the iPhone number, creates a Photon shared user, and opens Messages to the assigned +1. Blue iMessage only. iPhone Settings → Messages → Send as SMS = off. Do not text `connect @handle`.
 
 iMessage groups are paused on Photon Pro. `group_chat` explains that Bro is 1:1 until Business. Check: `npm run group:check`.
