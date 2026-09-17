@@ -130,10 +130,41 @@ export function recallQuery(input: readonly unknown[]): string | null {
 /**
  * Turn-start recall is a hard gate in front of the model call (eve awaits
  * every slot's recall before the first token), and it runs in the workflow
- * function where the webhook's prefetch cache is cold. 900 ms keeps the
- * usual Supermemory hit and cuts the tail a human otherwise waits through.
+ * function where the webhook's prefetch cache is cold.
+ *
+ * It used to be 900 ms, on the theory that this "keeps the usual Supermemory
+ * hit and cuts the tail a human otherwise waits through". Production logs say
+ * otherwise: every `/.well-known/workflow/v1/flow` turn sampled on
+ * `dpl_5PDc4RAUeZCWoexonc7A99LwmT7w` logged both `conversation recall failed`
+ * and `archive recall failed` with a `TimeoutError` — a 100% miss rate. Bro
+ * has been running with no conversation memory and no mail/calendar archive
+ * at all, which is exactly the "он не помнит, что я ему говорил" complaint.
+ * The failures are all `TimeoutError`, never `supermemory /v4/search failed:
+ * <status>`, so the request is genuinely slow rather than rejected — a bigger
+ * budget is the fix, not a different key.
+ *
+ * Raising it is also cheaper than it was when 900 ms was chosen: the fast-ack
+ * lane (`agent/lib/fast-ack.ts`) now sends the human a real first bubble
+ * ~560 ms after inbound, independent of this turn, so recall no longer gates
+ * what a human perceives as Bro's response time — it only moves the second
+ * bubble, which already lands seconds later behind the queue hop and cold
+ * start (`turn started { sinceInboundMs: 3234 }` in the same logs).
+ *
+ * `BRO_RECALL_BUDGET_MS` tunes it without a deploy, and `recallOutcome` in
+ * `instinct-recall.ts` logs the measured latency of every attempt, so the next
+ * person to touch this number reads it off the logs instead of guessing.
  */
-export const ARCHIVE_RECALL_TIMEOUT_MS = 900;
+export const RECALL_BUDGET_DEFAULT_MS = 2_000;
+
+export function recallBudgetMs(
+  env: { BRO_RECALL_BUDGET_MS?: string } = process.env,
+): number {
+  const raw = env.BRO_RECALL_BUDGET_MS?.trim();
+  const n = raw ? Number(raw) : NaN;
+  return Number.isInteger(n) && n > 0 ? n : RECALL_BUDGET_DEFAULT_MS;
+}
+
+export const ARCHIVE_RECALL_TIMEOUT_MS = recallBudgetMs();
 export const ARCHIVE_TOOL_TIMEOUT_MS = 30_000;
 export const CONVERSATION_RECALL_TIMEOUT_MS = ARCHIVE_RECALL_TIMEOUT_MS;
 

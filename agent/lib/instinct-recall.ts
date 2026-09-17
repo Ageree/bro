@@ -71,6 +71,37 @@ function settledHalf(
   return null;
 }
 
+/**
+ * One log line per recall attempt, with the measured latency and the budget it
+ * ran under. Without this the only production signal was `… recall failed
+ * TimeoutError`, which says a request was too slow but never how slow — so the
+ * budget could only ever be guessed at. A hit logs its latency too, so the
+ * margin between a typical hit and the budget is visible rather than inferred.
+ */
+function recallOutcome(
+  label: string,
+  result: PromiseSettledResult<string | null>,
+  ms: number,
+  budgetMs: number,
+): void {
+  const timedOut =
+    result.status === "rejected" &&
+    result.reason instanceof Error &&
+    (result.reason.name === "TimeoutError" || result.reason.name === "AbortError");
+  console.log(`recall ${label}`, {
+    ms,
+    budgetMs,
+    outcome:
+      result.status === "fulfilled"
+        ? result.value
+          ? "hit"
+          : "empty"
+        : timedOut
+          ? "timeout"
+          : "error",
+  });
+}
+
 export async function loadInstinctRecall(
   scopes: InstinctScopes,
   query: string,
@@ -86,6 +117,7 @@ export async function loadInstinctRecall(
   if (cached.hit) return cached.value;
   const existing = instinctInflight.get(key);
   if (existing) return existing;
+  const startedAt = Date.now();
   const pending = Promise.allSettled([
     searchConversation(
       scopes.conversationScope,
@@ -102,6 +134,9 @@ export async function loadInstinctRecall(
     ).then(formatArchiveRecall),
   ])
     .then(([conversation, archive]) => {
+      const ms = Date.now() - startedAt;
+      recallOutcome("conversation", conversation, ms, CONVERSATION_RECALL_TIMEOUT_MS);
+      recallOutcome("archive", archive, ms, ARCHIVE_RECALL_TIMEOUT_MS);
       const value = {
         conversation: settledHalf(conversation, "conversation"),
         archive: settledHalf(archive, "archive"),

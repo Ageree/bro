@@ -1,5 +1,9 @@
 import { canSkipInboundBind } from "../agent/lib/inbound-bind.ts";
-import { CONVERSATION_RECALL_TIMEOUT_MS } from "../agent/lib/archive-policy.ts";
+import {
+  ARCHIVE_RECALL_TIMEOUT_MS,
+  CONVERSATION_RECALL_TIMEOUT_MS,
+  RECALL_BUDGET_DEFAULT_MS,
+} from "../agent/lib/archive-policy.ts";
 import {
   HANDLE_TENANT_TTL_MS,
   TELEGRAM_TENANT_TTL_MS,
@@ -297,7 +301,10 @@ assert(
 );
 assert(!canSkipInboundBind({ phoneE164: "+1" }, "+2", "c1"), "other phone still binds");
 assert(!canSkipInboundBind({ phoneE164: "+1", status: "disabled" }, "+1", "c1"), "disabled still binds");
-assert(CONVERSATION_RECALL_TIMEOUT_MS === 900, "conversation recall matches archive budget");
+assert(
+  CONVERSATION_RECALL_TIMEOUT_MS === RECALL_BUDGET_DEFAULT_MS,
+  "conversation recall matches archive budget",
+);
 
 {
   const imessage = src("agent/channels/imessage.ts");
@@ -317,7 +324,7 @@ console.log(
   JSON.stringify({
     turnStartedConvexRtts: 1,
     returningOneToOneConvexRttsWarm: 1,
-    archiveRecallTimeoutMs: 900,
+    archiveRecallTimeoutMs: ARCHIVE_RECALL_TIMEOUT_MS,
     conversationRecallTimeoutMs: CONVERSATION_RECALL_TIMEOUT_MS,
     conversationRecallGated: true,
     jobCheckHttpListsJobs: false,
