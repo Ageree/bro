@@ -97,8 +97,38 @@ export function applyProxyCountry(
   };
 }
 
+/**
+ * Every whitespace character is stripped, not just the ends.
+ *
+ * This bit us for real: the secret arrived from the store with a newline in
+ * the MIDDLE of the value, and `fetch` rejects such a header outright
+ * (`Headers.append: "…" is an invalid header value`), so the request never
+ * left the process. Every errand failed, and the error pointed at headers
+ * rather than at the malformed secret — slow to diagnose, because nothing in
+ * it says "your key is wrapped". `.trim()` would not have helped: it only
+ * touches the ends. A Browser Use key carries no internal whitespace of its
+ * own, so stripping can only rescue a wrapped key, never corrupt a valid one.
+ * Same treatment the fast-ack, phrasing and errand-brief lanes give
+ * `OPENROUTER_API_KEY`.
+ */
+export function normalizeBrowserUseKey(raw: string | undefined): string | undefined {
+  return raw?.replace(/\s+/gu, "") || undefined;
+}
+
+/** Once per process: the code works around the malformed secret, but the
+ *  stored value is still wrong and only a human can fix that. */
+let warnedWrappedKey = false;
+
 function key(): string {
-  const k = process.env.BROWSER_USE_API_KEY;
+  const raw = process.env.BROWSER_USE_API_KEY;
+  const k = normalizeBrowserUseKey(raw);
+  if (raw !== undefined && raw !== k && !warnedWrappedKey) {
+    warnedWrappedKey = true;
+    // Never the value itself — just that it is wrapped, and where to look.
+    console.warn(
+      "BROWSER_USE_API_KEY contains whitespace (a newline mid-value survives a paste into a hosted env); stripping it for the request, but re-set the stored secret",
+    );
+  }
   if (!k) throw new Error("BROWSER_USE_API_KEY missing");
   return k;
 }
