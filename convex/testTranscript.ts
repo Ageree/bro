@@ -22,6 +22,7 @@ const bubbleRow = v.object({
   channel,
   text: v.string(),
   bubbles: v.array(v.string()),
+  note: v.optional(v.string()),
 });
 
 function assertTestPhone(phoneE164: string): void {
@@ -40,6 +41,7 @@ export const record = mutation({
     channel,
     text: v.string(),
     bubbles: v.array(v.string()),
+    note: v.optional(v.string()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -51,6 +53,7 @@ export const record = mutation({
       channel: args.channel,
       text: args.text,
       bubbles: args.bubbles,
+      ...(args.note ? { note: args.note } : {}),
     });
     return null;
   },
@@ -72,6 +75,7 @@ export const list = query({
       channel: row.channel,
       text: row.text,
       bubbles: row.bubbles,
+      ...(row.note ? { note: row.note } : {}),
     }));
   },
 });

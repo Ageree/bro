@@ -56,6 +56,8 @@ export async function deliverHuman(opts: {
   text: string;
   channel?: HumanChannel;
   buttons?: TelegramButton[][];
+  /** Test-tenant bookkeeping only: tags the recorded row (e.g. "fast-ack"). */
+  note?: string;
   deps?: DeliverHumanDeps;
 }): Promise<void> {
   const text = opts.text.trim();
@@ -84,6 +86,7 @@ export async function deliverHuman(opts: {
       phoneE164: tenant.phoneE164!,
       channel: telegram ? "telegram" : "imessage",
       text: cleaned,
+      ...(opts.note ? { note: opts.note } : {}),
     });
     return;
   }

@@ -15,6 +15,8 @@ export type TestDelivery = {
   phoneE164: string;
   channel: "imessage" | "telegram";
   text: string;
+  /** "fast-ack" for the pre-turn status line; absent for a real reply. */
+  note?: string;
 };
 
 export function compileTestBubbles(delivery: TestDelivery): string[] {
@@ -33,5 +35,6 @@ export async function recordTestDelivery(delivery: TestDelivery): Promise<void> 
     channel: delivery.channel,
     text: delivery.text,
     bubbles: compileTestBubbles(delivery),
+    ...(delivery.note ? { note: delivery.note } : {}),
   });
 }

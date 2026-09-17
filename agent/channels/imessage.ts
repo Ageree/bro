@@ -505,6 +505,10 @@ export default defineChannel({
             conversationId: inbound.spaceId,
             text: ackText,
             principalId: ownerPhone,
+            // Test tenants only: lets a scenario tell the pre-turn status
+            // line apart from the turn's own first bubble, so "it answered"
+            // cannot be satisfied by the ack alone.
+            note: "fast-ack",
           }).catch((err) => console.error("fast ack deliver failed", err)),
         );
         console.log("fast ack sent", {

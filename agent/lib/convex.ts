@@ -386,6 +386,7 @@ export const recordTestBubble = (args: {
   channel: "imessage" | "telegram";
   text: string;
   bubbles: string[];
+  note?: string;
 }): Promise<void> => m(api.testTranscript.record)(args).then(() => {});
 
 export const listTestBubbles = (

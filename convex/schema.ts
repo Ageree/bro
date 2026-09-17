@@ -305,5 +305,9 @@ export default defineSchema({
     text: v.string(),
     /** What the human would actually have seen, one string per bubble. */
     bubbles: v.array(v.string()),
+    /** "fast-ack" for the tiny status line the webhook sends ahead of the
+     *  real turn. A scenario asserting "it answered" has to be able to tell
+     *  that apart, or a silent turn passes on the ack alone. */
+    note: v.optional(v.string()),
   }).index("by_phone", ["phoneE164"]),
 });

@@ -32,6 +32,7 @@ export async function deliverHumanRouted(opts: {
   conversationId?: string;
   text: string;
   principalId?: string | null;
+  note?: string;
 }): Promise<void> {
   const routing = routingFromAuth(opts.attrs);
   const phone =
@@ -45,5 +46,6 @@ export async function deliverHumanRouted(opts: {
     conversationId: opts.conversationId,
     text: opts.text,
     channel: routing.channel ?? lastChannelOf(opts.tenant?.lastChannel),
+    ...(opts.note ? { note: opts.note } : {}),
   });
 }
