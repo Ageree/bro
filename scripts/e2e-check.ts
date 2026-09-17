@@ -17,8 +17,13 @@ import type { AddressInfo } from "node:net";
 import { photonWebhookOk } from "../agent/lib/photon.ts";
 import { isTestPhone, testPhoneFor } from "../convex/lib/testTenantPolicy.ts";
 import { welcomeBubbles } from "../agent/lib/onboard-policy.ts";
+import {
+  SCENARIOS,
+  validateScenarios,
+  type Scenario,
+} from "./lib/scenarios.ts";
 
-import { assert, eq } from "./lib/check.ts";
+import { assert, eq, src } from "./lib/check.ts";
 
 const SECRET = "internal-secret-for-the-fake";
 const WEBHOOK_SECRET = "webhook-secret-for-the-fake";
@@ -265,6 +270,96 @@ async function runner(base: string, args: string[], env?: Record<string, string>
   const names = ["onboard-letter", "help-letter"];
   const phones = new Set(names.map(testPhoneFor));
   eq(phones.size, names.length, "scenarios run against different tenants");
+}
+
+// ------------------------------------------------- the list's own shape
+
+/**
+ * Every variable name `.env.example` mentions, commented-out lines included.
+ *
+ * A `needs` entry is only useful if some deployment can actually set it: one
+ * that names nothing real skips forever, silently, and the scenario stops
+ * running without anyone noticing it stopped. `.env.example` is the repo's own
+ * register of what exists, and half of it is commented out (`# TINYFISH_API_KEY=`
+ * is the normal state of an optional key), so the commented lines count too.
+ */
+function envNamesFromExample(): Set<string> {
+  const names = new Set<string>();
+  for (const line of src(".env.example").split("\n")) {
+    const match = /^\s*#?\s*([A-Z][A-Z0-9_]*)\s*=/.exec(line);
+    if (match) names.add(match[1]!);
+  }
+  return names;
+}
+
+{
+  const known = envNamesFromExample();
+  // If the parse ever stops finding anything, every `needs` would read as
+  // unknown and the assertion below would fail loudly — but say so directly,
+  // since "«.env.example» moved" and "a scenario has a typo" deserve different
+  // reactions from whoever reads the failure.
+  assert(known.size > 20, `.env.example parsed to ${known.size} names — did it move?`);
+  assert(
+    known.has("COMPOSIO_API_KEY") && known.has("TELEGRAM_BOT_USERNAME"),
+    "the parse sees both plain and commented-out variables",
+  );
+
+  const problems = validateScenarios({ knownEnv: known });
+  eq(
+    problems.length,
+    0,
+    `the scenario list is well-formed:\n${problems
+      .map((p) => `  ${p.scenario}: ${p.problem}`)
+      .join("\n")}`,
+  );
+  assert(SCENARIOS.length > 0, "there are scenarios to validate");
+
+  // And the validator can see a defect — otherwise the zero above is a
+  // statement about the validator's silence rather than about the list.
+  const long = "достаточно длинное описание того, что именно ломается, если это покраснеет";
+  const defective: Scenario[] = [
+    { name: "", about: "", turns: [] },
+    { name: "Bad Name", about: "коротко", turns: [{ text: "  ", expect: [] }] },
+    {
+      name: "twice",
+      about: long,
+      needs: ["NO_SUCH_VARIABLE_ANYWHERE"],
+      turns: [{ text: "привет", expect: [{ says: "" }] }],
+    },
+    {
+      name: "twice",
+      about: long,
+      turns: [{ text: "привет", expect: [{ replies: true }], settleMs: 0 }],
+    },
+  ];
+  const found = validateScenarios({ knownEnv: known, scenarios: defective })
+    .map((p) => `${p.scenario}: ${p.problem}`)
+    .join("\n");
+  for (const expected of [
+    "name is empty",
+    "not lowercase-kebab",
+    "about is empty",
+    "about is too short",
+    "no turns",
+    "empty text",
+    "no expectations",
+    "duplicate name",
+    "not an env var this repo knows",
+    "matches everything",
+    "settleMs must be positive",
+  ]) {
+    assert(found.includes(expected), `validator reports «${expected}»:\n${found}`);
+  }
+
+  // A clean list must survive the same call with an empty env register only
+  // if nothing declares `needs` — it does declare some, so this is the proof
+  // that `knownEnv` is actually consulted rather than ignored.
+  assert(
+    validateScenarios({ knownEnv: [] }).some((p) =>
+      p.problem.includes("not an env var"),
+    ),
+    "knownEnv is consulted: with an empty register the real `needs` are unknown",
+  );
 }
 
 console.log("e2e check ok");
