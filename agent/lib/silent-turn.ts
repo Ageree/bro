@@ -12,7 +12,31 @@
 export const TURN_FAILED_REPLY =
   "У меня тут что-то отвалилось. Напиши ещё раз через минуту, уже разбираюсь.";
 
+/** Incident 2026-09-16 (бронь ресторана): the person asked «что там с бронью
+ *  ресторана?», got the «взялся» line «проверяю бронь ресторана», and then
+ *  heard nothing for 16 minutes — the tool behind that line had no deadline.
+ *  Nothing noticed, because a status line counted as «the turn spoke» and
+ *  killed the fallback outright.
+ *
+ *  A status line is a promise, not an answer, so the turn that dies behind
+ *  one needs its own wording: TURN_FAILED_REPLY's «у меня тут что-то
+ *  отвалилось» reads as a second, unrelated excuse right after «проверяю…».
+ *  Bad news first, in his register (instructions.md §Voice), one line. */
+export const TURN_STALLED_REPLY =
+  "завис на этом и ответа так и нет. напиши ещё раз — добью";
+
 export type TurnOrigin = "human" | "wakeup";
+
+/** What a turn has already said to the human by the time we decide whether it
+ *  ended in silence. The two are not the same thing: a pre-tool «взялся» line
+ *  («проверяю бронь ресторана») is a promise the turn made, an answer is the
+ *  turn keeping it. Only the second one may silence a fallback. */
+export type TurnSpoke = {
+  /** A status line went out before a tool call. */
+  status?: boolean;
+  /** A bubble went out after the last tool call — the actual answer. */
+  result?: boolean;
+};
 
 /** Auth attribute the channel stamps on every `from().send`. */
 export const ORIGIN_ATTR = "origin";
@@ -41,8 +65,13 @@ export function isSilentReply(text: string | null | undefined): boolean {
  *  still get its canned line even when the turn itself blew up. */
 export function fallbackForFailed(
   attributes: Readonly<Record<string, unknown>> | null | undefined,
+  spoke: TurnSpoke = {},
 ): string | null {
-  if (turnOrigin(attributes) === "human") return TURN_FAILED_REPLY;
+  if (turnOrigin(attributes) === "human") {
+    // A turn that blew up right after its «взялся» line left the person
+    // holding a promise — say that, not «что-то отвалилось» on top of it.
+    return spoke.status && !spoke.result ? TURN_STALLED_REPLY : TURN_FAILED_REPLY;
+  }
   if (browserPollForceSpeak(attributes)) return wakeupFallbackText(attributes);
   return null;
 }

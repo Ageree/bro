@@ -1,14 +1,12 @@
 import {
   bubblesFor,
-  firstCompleteLine,
   isIncompleteDraft,
   isLikelyCompleteBubble,
-  isStatusBeat,
-  isStreamFlushWorthy,
   isThinFragment,
+  markPreTool,
   markTurnSpoke,
   nextBubble,
-  turnLooking,
+  spokeSoFar,
   turnSpoke,
   planPreToolFlush,
   planStreamFlush,
@@ -17,7 +15,10 @@ import {
   visibleReply,
 } from "../agent/lib/early-deliver.ts";
 import { parkTurn } from "../agent/lib/channel-turn.ts";
-import { TURN_FAILED_REPLY } from "../agent/lib/silent-turn.ts";
+import {
+  TURN_FAILED_REPLY,
+  TURN_STALLED_REPLY,
+} from "../agent/lib/silent-turn.ts";
 import { routingFromAuth, routingPhone } from "../agent/lib/turn-routing.ts";
 import { channelFromAuth } from "../agent/lib/deliver-routed.ts";
 import {
@@ -41,12 +42,17 @@ assert(nextBubble(["Ищу"], "Ищу\n\nНашёл три варианта") ==
 assert(nextBubble(["Ищу"], "Нашёл три варианта") === "Нашёл три варианта", "new independent bubble");
 assert(nextBubble(["Ищу кроссовки"], "Ищу") === null, "shorter prefix of last skipped");
 
-assert(firstCompleteLine("Ищу") === null, "partial first line stays");
-assert(firstCompleteLine("\nИ") === null, "leading newline does not flush a crumb");
-assert(firstCompleteLine("Ищу кроссовки\n") === "Ищу кроссовки", "newline completes the line");
-assert(firstCompleteLine("[SILENT]\n") === null, "silent first line stays hidden");
 assert(
-  firstCompleteLine("Цена та же\n[SEEN] abc") === "Цена та же",
+  planStreamFlush({ soFar: "\nИ", alreadySent: [] }).send === null,
+  "leading newline does not flush a crumb",
+);
+assert(
+  planStreamFlush({ soFar: "[SILENT]\n", alreadySent: [] }).send === null,
+  "silent first line stays hidden",
+);
+assert(
+  planStreamFlush({ soFar: "Цена та же\n[SEEN] abc", alreadySent: [] }).send ===
+    "Цена та же",
   "seen does not block a complete first line",
 );
 
@@ -141,7 +147,19 @@ assert(
     !flushed.some((b) => b.includes("Записываю") && b.includes("Два варианта")),
     "stream must not resend the already-flushed status lines",
   );
-  assert(final.send === null, "completed must not replay the whole reply");
+  const tail = final.send ?? "";
+  assert(
+    !tail.includes("Записываю") && !tail.includes("упираюсь в лимит"),
+    "completed must not replay the already-flushed lines",
+  );
+  assert(
+    tail.startsWith("Два варианта:") && tail.endsWith("Что выбираешь?"),
+    "the rest of the reply still arrives exactly once, at the end",
+  );
+  assert(
+    tail.split("\n").length === 4,
+    "the two options keep their own lines instead of being folded into one",
+  );
 }
 
 assert(isLikelyCompleteBubble("Ок!"), "exclaim is complete");
@@ -194,16 +212,6 @@ assert(!isThinFragment("👍"), "emoji ack is not a crumb");
 assert(
   !isThinFragment("• 📅 10 и 11 октября 2026, начало в 20:00"),
   "full date bullet is not a crumb",
-);
-assert(isStatusBeat("Ищу 🔎"), "looking line is a status beat");
-assert(isStatusBeat("Нашёл три варианта"), "short found line is a status beat");
-assert(
-  !isStatusBeat("• 📅 10 и 11 октября 2026, начало в 20:00"),
-  "date bullet is not a status beat",
-);
-assert(
-  !isStreamFlushWorthy("• 🚄", "• 🚄\n"),
-  "stream must not send an emoji-only bullet",
 );
 assert(
   planStreamFlush({ soFar: "• 🚄\n", alreadySent: [] }).send === null,
@@ -570,10 +578,11 @@ const emptyAfterSpeak = planTurnDelivery({
   finishReason: "stop",
   message: null,
   origin: "human",
-  alreadySent: ["Ищу"],
+  alreadySent: ["Нашёл, держи: столик на 19:00"],
+  spoke: { result: true },
 });
 assert(emptyAfterSpeak.send === null, "empty final after speak");
-assert(emptyAfterSpeak.fallback === null, "do not claim failure after a real bubble");
+assert(emptyAfterSpeak.fallback === null, "do not claim failure after a real answer");
 
 const emptyHuman = planTurnDelivery({
   finishReason: "stop",
@@ -582,6 +591,82 @@ const emptyHuman = planTurnDelivery({
   alreadySent: [],
 });
 assert(emptyHuman.fallback === TURN_FAILED_REPLY, "empty human turn still fallbacks");
+
+// Incident 2026-09-16 (бронь ресторана): «проверяю бронь ресторана» went out,
+// the tool behind it hung, and the turn ended with nothing. A status line is a
+// promise, not an answer — the turn may not end there in silence.
+const stalledAfterStatus = planTurnDelivery({
+  finishReason: "stop",
+  message: null,
+  origin: "human",
+  alreadySent: ["проверяю бронь ресторана"],
+  spoke: { status: true },
+});
+assert(
+  stalledAfterStatus.fallback !== null,
+  "a human turn that only spoke a status line must not end in silence",
+);
+assert(
+  stalledAfterStatus.fallback === TURN_STALLED_REPLY,
+  "the stalled turn says it stalled, not «что-то отвалилось» on top of «проверяю…»",
+);
+assert(stalledAfterStatus.send === null, "the stalled fallback is the only bubble");
+// A status line plus a real answer is a normal turn: no fallback at all.
+assert(
+  planTurnDelivery({
+    finishReason: "stop",
+    message: null,
+    origin: "human",
+    alreadySent: ["проверяю бронь", "бронь на 19:00 в силе"],
+    spoke: { status: true, result: true },
+  }).fallback === null,
+  "an answered turn stays quiet even though it opened with a status line",
+);
+// A wakeup keeps its own canned line; it never borrows the human wording.
+assert(
+  planTurnDelivery({
+    finishReason: "stop",
+    message: null,
+    origin: "wakeup",
+    alreadySent: ["ввожу код"],
+    spoke: { status: true },
+  }).fallback === null,
+  "a wakeup's silence is answered by wakeupFallbackText, not here",
+);
+// Mid-turn tool boundaries never fall back — the turn has not ended yet.
+assert(
+  planTurnDelivery({
+    finishReason: "tool-calls",
+    message: null,
+    origin: "human",
+    alreadySent: ["проверяю бронь ресторана"],
+    spoke: { status: true },
+  }).fallback === null,
+  "a tool call is not the end of the turn",
+);
+
+// The bubble bookkeeping behind `spoke`: a tool boundary demotes everything
+// said so far to a status line, and only what leaves after the LAST tool call
+// counts as the answer.
+{
+  const row = new Map<string, { at: number; bubbles: string[]; preTool?: number }>();
+  assert(!spokeSoFar(row, "t").status && !spokeSoFar(row, "t").result, "silent turn said nothing");
+  recordSent(row, "t", "проверяю бронь ресторана", 1_000);
+  assert(
+    spokeSoFar(row, "t").result === true,
+    "text with no tool boundary yet is still the turn's own reply",
+  );
+  markPreTool(row, "t", 1_000);
+  assert(spokeSoFar(row, "t").status === true, "a pre-tool line is a status line");
+  assert(spokeSoFar(row, "t").result === false, "a pre-tool line is not the answer");
+  recordSent(row, "t", "бронь на 19:00 в силе", 2_000);
+  assert(spokeSoFar(row, "t").result === true, "the bubble after the tool is the answer");
+  markPreTool(row, "t", 3_000);
+  assert(
+    spokeSoFar(row, "t").result === false,
+    "a second tool round demotes the earlier bubbles again",
+  );
+}
 
 const silentFinal = planTurnDelivery({
   finishReason: "stop",
@@ -619,9 +704,6 @@ const sent = new Map<string, { at: number; bubbles: string[]; soFar?: string }>(
 recordSent(sent, "t1", "Ищу", 1_000);
 assert(bubblesFor(sent, "t1").join("|") === "Ищу", "record first");
 assert(turnSpoke("t1", 1_000), "recordSent marks this turn as spoken");
-assert(turnLooking("t1", 1_000), "ищу bubble marks the turn as looking");
-recordSent(sent, "t-ack", "Ок!", 1_000);
-assert(!turnLooking("t-ack", 1_000), "ок bubble is not a looking line");
 recordSent(sent, "t1", "Нашёл", 2_000);
 assert(bubblesFor(sent, "t1").join("|") === "Ищу|Нашёл", "record second");
 assert(bubblesFor(sent, "t2").length === 0, "other turn empty");
