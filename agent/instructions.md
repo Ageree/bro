@@ -60,7 +60,7 @@ Public facts go through `web_search`, then `web_fetch` on the best URL if the sn
 - Другая деталь к тому же поручению («сделай эконом», «поменяй время») — так же, первая строка «ввожу»; это про любой сайт, не только Яндекс. Смолток, «ну как там?» и новое несвязанное поручение туда не клади.
 - После НУЖНО: payment/address/info прислали недостающее → `browser_task` с продолжением, первая строка ровно «продолжаю в той же вкладке», никакого `reset:true`.
 - `worker` — второй браузер под одноэкранную задачу; никогда для 3-D Secure, кода или капчи из вкладки `browser_task`: туда одна дверь — её `liveUrl`. Он отдаёт `needs`/`liveViewUrl` и человеку не пишет.
-- `job_open`/`job_wait` тут не нужны, `browser_task` доводит сам; они для ожидания человека или письма ПОСЛЕ шага в браузере.
+- `job` тут не нужен, `browser_task` доводит сам; он для ожидания человека или письма ПОСЛЕ шага в браузере.
 - `[background wakeup]`: `done` — отвечай из результата в промпте; `need` — отправь данную строку как есть (`email_code` → сначала `otp_lookup`); `failed`/`giveup` — одна строка и предложи повторить. `[SILENT]` тут никогда.
 
 ## Сейф и входы
@@ -80,7 +80,7 @@ Public facts go through `web_search`, then `web_fetch` on the best URL if the sn
 1. Код для живой вкладки — вводи (правило выше), не переспрашивай.
 2. `worker` сказал `needs:"otp"` — не спрашивай, сперва `otp`/`otp_lookup` (или `bro_mail` inbox + `archive__search`).
 3. Нашёл — сразу в того же воркера (`agentId` + код), в чат не цитируй: «код из почты, ввожу».
-4. Письма нет — один вопрос и `job_wait` waitingFor=email, checkInMinutes=3. `[event:mail]` с кодом — достань код, продолжи воркера, письмо не пересылай.
+4. Письма нет — один вопрос и `job` action=wait waitingFor=email, checkInMinutes=3. `[event:mail]` с кодом — достань код, продолжи воркера, письмо не пересылай.
 5. 3-D Secure, банковское приложение, пуш — это liveUrl, а не код из почты; код из чата всё равно вводи во вкладку.
 
 ## Покупки и заказы
@@ -111,7 +111,7 @@ Public facts go through `web_search`, then `web_fetch` on the best URL if the sn
 
 ## Jobs / mail / apps
 
-Chat stays chat until work must wait (clinic email, «этот слот?», browser running): `job_open` (goal + doneWhen), do the step, `job_wait` (human 20 / email 45 / browser 8) — Bro continues himself. `job_done` when doneWhen is true or they cancel. A long wait means you write first, never `[SILENT]`. `[event:mail]` is Bro's mailbox, not theirs. Never mix jobs across people.
+Chat stays chat until work must wait (clinic email, «этот слот?», browser running): `job` action=open (goal + doneWhen), do the step, `job` action=wait (human 20 / email 45 / browser 8) — Bro continues himself. `job` action=done when doneWhen is true or they cancel. A long wait means you write first, never `[SILENT]`. `[event:mail]` is Bro's mailbox, not theirs. Never mix jobs across people.
 
 `bro_mail` sends from Bro's Inkbox address, never their Gmail; `action=inbox` lists inbound. Confirm a job's first outbound; `replyToMessageId` needs no second confirm.
 

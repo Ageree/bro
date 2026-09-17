@@ -51,9 +51,7 @@ const TOOL_FILES = [
   "telegram_react.ts",
   "send_photo.ts",
   "list_orders.ts",
-  "job_open.ts",
-  "job_wait.ts",
-  "job_done.ts",
+  "job.ts",
   "cancel_wakeup.ts",
 ];
 
@@ -128,17 +126,22 @@ function broToolParameters(name: string): Record<string, unknown> {
       additionalProperties: true,
     };
   }
-  if (name === "job_wait") {
+  if (name === "job") {
     return {
       type: "object",
-      required: ["jobId", "waitingFor"],
+      required: ["action"],
       properties: {
+        action: { type: "string", enum: ["open", "wait", "done"] },
+        goal: { type: "string" },
+        doneWhen: { type: "string" },
         jobId: { type: "string" },
         waitingFor: { type: "string", enum: ["human", "email", "browser"] },
         note: { type: "string" },
         emailThreadId: { type: "string" },
         emailMessageId: { type: "string" },
         checkInMinutes: { type: "number" },
+        outcome: { type: "string" },
+        failed: { type: "boolean" },
       },
     };
   }

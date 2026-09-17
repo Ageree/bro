@@ -105,7 +105,7 @@ export default defineTool({
       to: sent.toAddresses,
       subject: sent.subject,
       hint: jobId
-        ? "If you are waiting on a reply, job_wait waitingFor=email with this threadId."
+        ? "If you are waiting on a reply, job action=wait waitingFor=email with this threadId."
         : undefined,
     };
   },
