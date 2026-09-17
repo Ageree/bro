@@ -41,9 +41,68 @@ function visibleInbound(text: string): string {
 
 const TELEGRAM_ASK = new Set(["телеграм", "telegram", "тг", "/telegram"]);
 
+/** Words that name the channel itself, in the forms people actually type. */
+const TELEGRAM_WORDS = new Set([
+  "телеграм", "телеграма", "телеграме", "телеграму", "телеграмом",
+  "телеграмм", "телеграмма", "телеграмме", "телеграмму", "телеграммом",
+  "телега", "телеге", "телеги", "телегу",
+  "тг", "telegram", "tg",
+]);
+
+/**
+ * Everything else a bare «есть телеграм?» is allowed to be made of.
+ *
+ * The gate used to be four exact strings, so «а в телеграме с тобой можно
+ * пообщаться?» fell through to a full agent turn — and the agent has no tool
+ * that mints a `t.me` bind link and nothing in its instructions about the
+ * second channel beyond formatting, so it answered that Telegram is not
+ * available. It is; the link just only ever came from this canned lane.
+ *
+ * A closed vocabulary rather than a keyword sniff: the message must be about
+ * the channel and NOTHING else. One unknown word — a name, an item, a verb
+ * like «напиши» — and this is an errand that merely mentions Telegram, which
+ * belongs to the agent. That is why «телеграмму напиши» still misses.
+ */
+const TELEGRAM_ASK_WORDS = new Set([
+  // question scaffolding
+  "а", "и", "ну", "же", "ли", "еще", "вообще", "там", "тут", "сейчас",
+  "сегодня", "точно", "правда", "что", "как", "где", "почему", "разве",
+  "не", "нет", "или",
+  // is it on / does it work
+  "есть", "был", "была", "будет", "бывает", "появился", "появится",
+  "включен", "включена", "включено", "доступен", "доступна", "доступно",
+  "работает", "работаешь", "работают", "живой", "жив", "сидишь",
+  "поддерживаешь", "поддерживается", "умеешь", "можешь", "можно", "могу",
+  // give me the link / I want to chat there
+  "хочу", "хотел", "хотела", "давай", "дай", "дашь", "скинь", "скинешь",
+  "пришли", "пришлешь", "кинь", "ссылку", "ссылка", "ссылки", "линк",
+  "бот", "бота", "боте", "чат", "чате", "чатик", "канал", "версия",
+  "версию", "версии", "вариант", "общаться", "пообщаться", "поговорить",
+  "переписываться", "писать", "написать", "пользоваться", "перейти",
+  "зайти", "добавить", "пожалуйста", "плиз",
+  // pronouns, prepositions, filler
+  "ты", "тебя", "тебе", "тобой", "тобою", "твой", "твоя", "я", "меня",
+  "мне", "мы", "нам", "в", "во", "на", "с", "со", "у", "к", "по", "про",
+  "тоже", "также", "бро", "bro",
+]);
+
+/** A bare ask for the second channel: «телеграм», «есть тг?», «а в телеграме
+ *  с тобой можно пообщаться?». Answered with a `t.me` bind link, not a turn. */
 export function isTelegramAsk(text: string): boolean {
   const folded = foldAsk(text);
-  return TELEGRAM_ASK.has(folded);
+  if (!folded) return false;
+  if (TELEGRAM_ASK.has(folded)) return true;
+  const words = folded.split(" ");
+  if (words.length > 8) return false;
+  let named = false;
+  for (const word of words) {
+    if (TELEGRAM_WORDS.has(word)) {
+      named = true;
+      continue;
+    }
+    if (!TELEGRAM_ASK_WORDS.has(word)) return false;
+  }
+  return named;
 }
 
 export function foldAsk(text: string): string {
