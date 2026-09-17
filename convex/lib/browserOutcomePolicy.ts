@@ -188,6 +188,18 @@ export function humanLineForNeed(
   const liveUrl = opts?.liveUrl?.trim();
   const detail = opts?.detail?.trim();
   const withLink = (line: string): string => (liveUrl ? `${line}\n\n${liveUrl}` : line);
+  /**
+   * A line that names a link, and the line to send when there is no link.
+   *
+   * `withLink` appends the URL when there is one and silently drops it when
+   * there is not — but the sentence above it still said «открой ссылку». The
+   * person then read an instruction to open something they were never sent and
+   * had nothing to do, which is exactly the kind of dead end this release is
+   * meant to remove. `password` already handled it; 3-D Secure and CAPTCHA did
+   * not. Found by `scripts/journeys.ts`.
+   */
+  const withLinkOr = (withUrl: string, withoutUrl: string): string =>
+    liveUrl ? withLink(withUrl) : withoutUrl;
   switch (need) {
     case "sms_code":
       return "Нужен код из SMS — пришли его сюда, введу сам.";
@@ -196,11 +208,15 @@ export function humanLineForNeed(
     case "push":
       return "Подтверди вход в приложении банка/Яндекса и напиши «готово».";
     case "3ds":
-      return withLink(
+      return withLinkOr(
         "Банк просит подтвердить оплату — открой ссылку, подтверди и напиши «готово».",
+        "Банк просит подтвердить оплату — подтверди у себя в приложении банка и напиши «готово».",
       );
     case "captcha":
-      return withLink("Сайт показал капчу — реши по ссылке и напиши «готово».");
+      return withLinkOr(
+        "Сайт показал капчу — реши по ссылке и напиши «готово».",
+        "Сайт показал капчу и без тебя её не пройти — сейчас пришлю ссылку, а если не придёт, напиши, попробую заново.",
+      );
     case "password": {
       if (liveUrl) {
         return withLink("Нужен вход — открой ссылку и войди, пароль я не увижу.");
