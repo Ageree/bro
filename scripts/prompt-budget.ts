@@ -21,7 +21,9 @@ import { formatBudget, measure } from "./lib/prompt-budget.ts";
  *   9142  baseline (root 5617 + tools 3398 + skill index 127). The first
  *         reading said 8365 because the tool scan counted one description per
  *         file, and `agent/tools/composio.ts` registers seven.
- *   8592  after the dedup pass. The total moved less than the work did,
+ *   8645  after the dedup pass, plus the Telegram-is-live caveat carried in
+ *         from #116 on the main merge (see scripts/instructions-check.ts).
+ *         The total moved less than the work did,
  *         because the pass spent part of what it freed:
  *           −1106  root prompt deduped (OTP, browser prose, Composio detail,
  *                  onboarding rules for turns the channel already answers)
@@ -38,11 +40,11 @@ import { formatBudget, measure } from "./lib/prompt-budget.ts";
  * person are the one thing worth buying room for — they are what the generic
  * rules were a substitute for.
  */
-export const PER_TURN_CEILING_TOKENS = 8_600;
+export const PER_TURN_CEILING_TOKENS = 8_650;
 
 /** The root prompt plus its dynamic siblings: identity, voice, standing rules,
  *  the active channel's formatting, and who this person is. */
-export const ROOT_INSTRUCTIONS_CEILING_TOKENS = 5_100;
+export const ROOT_INSTRUCTIONS_CEILING_TOKENS = 5_150;
 
 function main(): void {
   const budget = measure();

@@ -98,7 +98,10 @@ export const SCENARIOS: Scenario[] = [
   },
   {
     name: "telegram-invite",
-    about: "«телеграм» hands over a t.me bind link rather than explaining what Telegram is.",
+    about:
+      "«телеграм» hands over a t.me bind link rather than explaining what " +
+      "Telegram is — and so does the same ask in ordinary words, which used " +
+      "to reach the agent and come back as «Telegram недоступен».",
     // Without a bot username there is no link to mint, and `sendTelegramInvite`
     // correctly answers «Telegram у Bro ещё не включён». That is right behaviour
     // for an unconfigured deployment, so it must skip rather than go red — a
@@ -110,6 +113,10 @@ export const SCENARIOS: Scenario[] = [
     turns: [
       { text: "привет", expect: [{ says: LETTER }] },
       { text: "телеграм", expect: [{ says: /t\.me\// }] },
+      {
+        text: "а с тобой в телеграме можно пообщаться?",
+        expect: [{ says: /t\.me\// }],
+      },
     ],
   },
   {

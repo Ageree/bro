@@ -30,17 +30,25 @@ import { inboundOwnerGate } from "./imessage.ts";
 import {
   bindRefuseText,
   telegramBindLink,
+  telegramHealth,
   telegramWelcomeText,
   parseTelegramStart,
+  type TelegramHealthFacts,
 } from "../../convex/lib/telegramPolicy.ts";
+import { publicOrigin } from "../lib/connect-link.ts";
+import { secretEquals } from "../lib/secret-compare.ts";
 import {
   answerCallback,
   isPrivateChat,
   largestPhoto,
   sendTelegramMessage,
   sendTelegramTyping,
+  setTelegramWebhook,
   telegramBotUsername,
   telegramFileUrl,
+  telegramGetMe,
+  telegramWebhookInfo,
+  telegramWebhookSecret,
   webhookSecretOk,
   type TelegramMessage,
   type TelegramUpdate,
@@ -154,9 +162,90 @@ async function inboundTelegramPhotoParts(msg: TelegramMessage) {
   }
 }
 
+/** Never let a bot token ride out in an error string. */
+function scrubToken(message: string): string {
+  const token = process.env.TELEGRAM_BOT_TOKEN?.trim();
+  return token ? message.split(token).join("<token>") : message;
+}
+
+function errText(err: unknown): string {
+  return scrubToken(err instanceof Error ? err.message : String(err)).slice(0, 200);
+}
+
+/**
+ * Ask the deployment and Telegram what the state of the channel is.
+ *
+ * Runs where the token lives, which is the whole point: the three variables
+ * and the webhook URL are exactly the things no check in this repository can
+ * see, and each one of them takes Telegram down quietly.
+ */
+async function readTelegramFacts(): Promise<TelegramHealthFacts> {
+  const facts: TelegramHealthFacts = {
+    origin: publicOrigin(),
+    hasToken: Boolean(process.env.TELEGRAM_BOT_TOKEN?.trim()),
+    configuredUsername: telegramBotUsername(),
+    hasWebhookSecret: Boolean(telegramWebhookSecret()),
+  };
+  if (!facts.hasToken) return facts;
+  const [me, hook] = await Promise.all([
+    telegramGetMe().catch((err) => ({ error: errText(err) })),
+    telegramWebhookInfo().catch((err) => ({ error: errText(err) })),
+  ]);
+  if ("error" in me) facts.tokenError = me.error;
+  else if (me.username) facts.botUsername = me.username;
+  if ("error" in hook) {
+    facts.webhookError = hook.error;
+  } else {
+    facts.webhookUrl = hook.url ?? "";
+    facts.pendingUpdates = hook.pending_update_count ?? 0;
+    if (hook.last_error_message) facts.lastErrorMessage = scrubToken(hook.last_error_message);
+  }
+  return facts;
+}
+
 export default defineChannel({
   turnPolicy: "steer",
   routes: [
+    // Is Telegram actually working? Secret-gated because it reads the
+    // deployment's own configuration and talks to the Bot API.
+    //
+    // `repair: true` re-points the webhook at this deployment when it has
+    // drifted. The URL is set once by hand after a deploy, so it keeps
+    // pointing at whatever host was live that day — and a stale URL is
+    // indistinguishable, from the inside, from a bot nobody writes to.
+    POST("/internal/telegram-health", async (request) => {
+      let body: { secret?: unknown; repair?: unknown };
+      try {
+        body = (await request.json()) as typeof body;
+      } catch {
+        return new Response("bad json", { status: 400 });
+      }
+      if (!secretEquals(body.secret, process.env.BRO_INTERNAL_SECRET)) {
+        return new Response("unauthorized", { status: 401 });
+      }
+      const facts = await readTelegramFacts();
+      const health = telegramHealth(facts);
+      const secret = telegramWebhookSecret();
+      if (body.repair !== true || !health.webhookDrifted || !secret) {
+        return Response.json({ ...health, repaired: false, facts });
+      }
+      try {
+        await setTelegramWebhook({ url: health.expectedWebhookUrl, secret });
+      } catch (err) {
+        return Response.json({
+          ...health,
+          repaired: false,
+          problems: [...health.problems, `setWebhook failed: ${errText(err)}`],
+          facts,
+        });
+      }
+      const after = await readTelegramFacts();
+      return Response.json({
+        ...telegramHealth(after),
+        repaired: true,
+        facts: after,
+      });
+    }),
     POST("/webhooks/telegram", async (request, { from, waitUntil }) => {
       const receivedAt = Date.now();
       if (!webhookSecretOk(request)) {

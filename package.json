@@ -41,6 +41,7 @@
     "photo:check": "node --experimental-strip-types scripts/photo-check.ts",
     "telegram:check": "node --experimental-strip-types scripts/telegram-text-check.ts && node --experimental-strip-types scripts/telegram-policy-check.ts",
     "telegram:webhooks": "node --env-file=.env.local --experimental-strip-types scripts/setup-telegram-webhook.ts",
+    "telegram:health": "node --experimental-strip-types scripts/telegram-health.ts",
     "onboard:check": "node --experimental-strip-types scripts/onboard-check.ts",
     "billing:check": "node --experimental-strip-types scripts/billing-check.ts",
     "cabinet:check": "node --experimental-strip-types scripts/cabinet-check.ts",

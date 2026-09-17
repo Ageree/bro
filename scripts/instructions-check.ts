@@ -251,12 +251,17 @@ assert(
  *         `shouldSkipAgentTurn` answers «что ты» / «help» from the channel —
  *         those turns never reach the model, so rules about them were prompt
  *         weight spent on a turn that does not exist
+ *   4565  carried in from #116 when main was merged: the caveat that Telegram
+ *         is a LIVE second channel and «недоступен» is never the answer. It
+ *         sits in the root block rather than the Telegram half of
+ *         `channel.ts`, because the person asks that question from iMessage —
+ *         on that turn the Telegram half is not loaded at all
  *
  * Lower this when a trim lands. Raising it means a rule was added that truly
  * must reach every person on every channel on every turn — rare, and worth
  * arguing for in the commit message.
  */
-const CEILING_TOKENS = 4_550;
+const CEILING_TOKENS = 4_600;
 const actual = estimateTokens(instructions);
 assert(
   actual <= CEILING_TOKENS,

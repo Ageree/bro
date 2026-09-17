@@ -164,6 +164,11 @@ async function sendTelegramInvite(opts: {
 }): Promise<void> {
   const bot = telegramBotUsername();
   if (!bot) {
+    // A deployment without TELEGRAM_BOT_USERNAME tells every person who asks
+    // that the second channel is off, and used to do it without a single log
+    // line — so the only place the misconfiguration showed up was a human's
+    // chat. Say it in the log too, by the name of the variable to set.
+    console.error("telegram invite impossible: TELEGRAM_BOT_USERNAME is not set");
     await sendPhotonText({
       conversationId: opts.conversationId,
       text: "Telegram у Bro ещё не включён.",
