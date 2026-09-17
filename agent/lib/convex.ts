@@ -472,7 +472,7 @@ export const touchJobMail = (
 export const scheduleWakeup = (args: {
   tenantPhone: string;
   at: number;
-  kind: "reminder" | "browser_poll" | "brief" | "watcher" | "job_check";
+  kind: "reminder" | "browser_poll" | "brief" | "watcher" | "job_check" | "instinct";
   payload: string;
   recurMinutes?: number;
   recurDailyHour?: number;
@@ -483,7 +483,13 @@ export const cancelWakeup = (
   tenantPhone: string,
   opts: {
     id?: string;
-    kind?: "reminder" | "browser_poll" | "brief" | "watcher" | "job_check";
+    kind?:
+      | "reminder"
+      | "browser_poll"
+      | "brief"
+      | "watcher"
+      | "job_check"
+      | "instinct";
     payloadContains?: string;
   },
 ): Promise<number> =>
@@ -500,6 +506,25 @@ export const cancelWakeup = (
 export const claimDurableWakeupDelivery = (
   key: string,
 ): Promise<{ taken: boolean }> => m(api.wakeups.takeDelivery)({ key });
+
+/** Proactivity budget + dedupe state for one person (convex/instinct.ts).
+ *  Null when the tenant is unknown or disabled — no initiative for either. */
+export const instinctState = (
+  phoneE164: string,
+): Promise<FunctionReturnType<typeof api.instinct.state>> =>
+  q(api.instinct.state)({ phoneE164 });
+
+/** Mark what this scan looked at, and spend a slot when it actually spoke. */
+export const noteInstinctSpoken = (
+  phoneE164: string,
+  sourceIds: readonly string[],
+  spent: boolean,
+): Promise<void> =>
+  m(api.instinct.noteSpoken)({
+    phoneE164,
+    sourceIds: [...sourceIds],
+    spent,
+  }).then(() => {});
 
 export const createWatcher = (args: {
   tenantPhone: string;

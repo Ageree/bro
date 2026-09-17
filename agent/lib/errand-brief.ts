@@ -14,7 +14,9 @@
  *
  * So this module does two things, in that order of importance:
  *
- *  1. `knownFactsBlock()` — pure, no model, no network. It turns the facts
+ *  1. `knownFactsBlock()` — pure, no model, no network. Its code now lives in
+ *     `./known-facts.ts` (the per-turn person profile is its second consumer)
+ *     and is re-exported below unchanged. It turns the facts
  *     Bro already holds (vault `address`/`contact` payload fields, the
  *     tenant's timezone and the CURRENT LOCAL DATE, the display name) into a
  *     block the run can type from. This is the fix that
@@ -47,42 +49,27 @@ import { scrubSecrets } from "../../convex/lib/secretScrub.ts";
 import { DEFAULT_OPENROUTER_MODEL } from "./model.ts";
 import { withOpenRouterChatDefaults } from "./openrouter-chat.ts";
 import { OPENROUTER_CHAT_URL } from "./openrouter-warm.ts";
+import { factLines, type ErrandFacts } from "./known-facts.ts";
 
 type EnvLike = Record<string, string | undefined>;
 
-/** Postal address as the vault stores it (`addressPayloadSchema`), minus nothing —
- *  every field here is the human's own, non-secret, and typed into checkout forms. */
-export type ErrandAddress = {
-  recipientName: string;
-  line1: string;
-  line2?: string;
-  city: string;
-  region?: string;
-  postalCode?: string;
-  countryCode: string;
-};
-
 /**
- * Everything non-secret Bro knows that a browser errand might need. Every
- * field is optional: a tenant with an empty vault produces an empty
- * `ErrandFacts`, and the scaffold then behaves exactly as it did before this
- * shipped.
+ * The known-facts half moved to `./known-facts.ts` when the per-turn person
+ * profile (`./person-profile.ts`) became its second consumer: one spelling of
+ * «телефон: …» for the whole prompt, and a pure module that needs no model
+ * SDK to format a fact. Re-exported here so every existing caller and
+ * `scripts/errand-brief-check.ts` keep the API they were written against.
  */
-export type ErrandFacts = {
-  /** `tenants.displayName` — how the human is addressed, not a recipient name. */
-  displayName?: string;
-  /** Vault `contact.fullName`, or the address recipient. */
-  contactName?: string;
-  /** Vault `contact.phone`. The tenant's own phone is an account id, not a
-   *  delivery phone, so it is NOT substituted here. */
-  phone?: string;
-  email?: string;
-  address?: ErrandAddress;
-  /** IANA zone, already resolved through `resolveTenantTz`. */
-  tz?: string;
-  /** Current local date and time in `tz`, pre-formatted in Russian. */
-  nowLocal?: string;
-};
+export {
+  addressOneLine,
+  factLines,
+  hasErrandFacts,
+  knownFactsBlock,
+  KNOWN_FACTS_GAP,
+  MISSING_FACTS_LINE,
+  type ErrandAddress,
+  type ErrandFacts,
+} from "./known-facts.ts";
 
 export type ErrandBriefInput = {
   /** The errand as the coordinator model phrased it. */
@@ -198,74 +185,6 @@ const CONTRACT_LINE = new RegExp(`^\\s*(?:${CONTRACT_LABELS.join("|")})\\s*:`, "
  */
 export function staticBriefLine(task: string): string {
   return task.trim();
-}
-
-function addressOneLine(a: ErrandAddress): string {
-  return [
-    a.line1,
-    a.line2,
-    a.city,
-    a.region,
-    a.postalCode,
-    // RU is the default for every stored address; naming it adds noise, a
-    // foreign country code is exactly the thing a run must not guess.
-    a.countryCode && a.countryCode !== "RU" ? a.countryCode : undefined,
-  ]
-    .map((part) => part?.trim())
-    .filter((part): part is string => Boolean(part))
-    .join(", ");
-}
-
-/** The fact lines, in the order a checkout form asks for them. */
-export function factLines(facts?: ErrandFacts): string[] {
-  if (!facts) return [];
-  const lines: string[] = [];
-  const recipient = facts.contactName?.trim() || facts.address?.recipientName?.trim();
-  if (facts.displayName?.trim()) lines.push(`зовут: ${facts.displayName.trim()}`);
-  if (recipient) lines.push(`получатель: ${recipient}`);
-  if (facts.phone?.trim()) lines.push(`телефон: ${facts.phone.trim()}`);
-  if (facts.email?.trim()) lines.push(`почта: ${facts.email.trim()}`);
-  if (facts.address) {
-    const address = addressOneLine(facts.address);
-    if (address) lines.push(`адрес доставки: ${address}`);
-  }
-  // The current local date is the single most load-bearing fact here: «на
-  // воскресенье» is not a date until the run knows what day it is, and the
-  // Cloud agent's own clock is neither the human's zone nor reliable.
-  if (facts.nowLocal?.trim()) {
-    const tz = facts.tz?.trim();
-    lines.push(`сейчас: ${facts.nowLocal.trim()}${tz ? ` (${tz})` : ""}`);
-  }
-  return lines.map((line) => scrubSecrets(line));
-}
-
-export function hasErrandFacts(facts?: ErrandFacts): boolean {
-  return factLines(facts).length > 0;
-}
-
-/**
- * The inverted restriction. The old scaffold said «что знает только человек
- * — не придумывай: закончи с НУЖНО: address или info», full stop, and so a
- * run aborted asking for a street Bro had on file. Now the facts come first
- * and `НУЖНО` is the fallback for what is genuinely missing — the ban on
- * INVENTING a fact is what survives, not the ban on knowing one.
- */
-export const KNOWN_FACTS_GAP =
-  "Чего нет ни здесь, ни в задаче — не выдумывай: закончи с НУЖНО: address или info и напиши в ДЕТАЛИ, чего не хватает.";
-
-/** Same sentence for a tenant whose vault really is empty. */
-export const MISSING_FACTS_LINE =
-  "Данных человека — адреса, имени, телефона, времени, размера — не нашлось: не выдумывай их, закончи с НУЖНО: address или info и напиши в ДЕТАЛИ, чего не хватает.";
-
-/** The known-facts block, or "" when Bro knows nothing worth passing along. */
-export function knownFactsBlock(facts?: ErrandFacts): string {
-  const lines = factLines(facts);
-  if (lines.length === 0) return "";
-  return [
-    "ИЗВЕСТНО (это данные самого человека — вводи их сам, не переспрашивай):",
-    ...lines.map((line) => `- ${line}`),
-    KNOWN_FACTS_GAP,
-  ].join("\n");
 }
 
 /** The user message the composer sees: the errand, the human's own line, the facts. */

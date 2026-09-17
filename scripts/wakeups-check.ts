@@ -34,6 +34,7 @@ import {
   browserPollForceSpeak,
   wakeupFallbackText,
 } from "../agent/lib/silent-turn.ts";
+import { turnVoice, voiceInstruction } from "../agent/lib/turn-voice.ts";
 
 import { assert, src } from "./lib/check.ts";
 
@@ -412,7 +413,24 @@ assert(silentTurnSrc.includes("export function browserPollForceSpeak"), "browser
 
 const jobsInstrSrc = src("agent/instructions/jobs.ts");
 assert(jobsInstrSrc.includes("browserPollForceSpeak"), "turn.started wires the browser_poll force-speak steer");
-assert(jobsInstrSrc.includes("Do NOT answer [SILENT]"), "force-speak steer forbids [SILENT]");
+// The steer copy itself moved into turn-voice.ts, where one verdict replaces
+// the four lines that used to race each other inside this system block.
+assert(jobsInstrSrc.includes("turnVoice("), "force-speak goes through the single voice verdict");
+assert(
+  turnVoice({
+    origin: "wakeup",
+    shortAck: false,
+    waitingForHuman: false,
+    jobCheck: false,
+    dueNudges: 0,
+    browserPollForceSpeak: true,
+  }) === "must_speak",
+  "a resolved browser_poll wakeup must speak",
+);
+assert(
+  voiceInstruction("must_speak", {})?.includes("[SILENT]"),
+  "force-speak steer forbids [SILENT]",
+);
 
 const deliverySrc = src("agent/lib/turn-delivery-events.ts");
 assert(deliverySrc.includes("wakeupFallbackText"), "message.completed consults the wakeup fallback");

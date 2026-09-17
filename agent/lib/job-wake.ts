@@ -1,9 +1,7 @@
 import type { JobWakeRow } from "./convex.ts";
 import {
-  nudgePrompt,
   shouldNudge,
   shouldSpeakNotSilent,
-  type WaitingFor,
 } from "../../convex/lib/jobNudgePolicy.ts";
 
 export function isJobCheckWakeup(attrs: Record<string, unknown> | undefined): boolean {
@@ -40,9 +38,6 @@ export function jobCheckWakePrompt(payload: string): string {
   return `[background wakeup] Фоновая проверка джоба: ${payload}. Открытые джобы этого человека уже в контексте. Сделай следующий шаг цепочки сам (проверь почту/статус нужным тулом: composio, browser_task, bro_mail, otp_lookup). Если ждёшь OTP — сначала inbox/archive, в тред только если письма нет. Если есть прогресс — сделай шаг и коротко напиши человеку. Если джоб уже закрыт или отменён — вызови cancel_wakeup с kind=job_check и payloadContains «джоб <id>».`;
 }
 
-export const JOB_CHECK_QUIET =
-  "If you cannot make progress on this job_check, answer exactly [SILENT]. The check will repeat.";
-
 export function dueJobNudges(
   rows: readonly JobWakeRow[],
   now: number,
@@ -69,21 +64,4 @@ export function dueJobNudges(
       }) && shouldSpeakNotSilent(waitingFor)
     );
   });
-}
-
-export function jobNudgeInstruction(
-  due: readonly JobWakeRow[],
-): string | null {
-  if (due.length === 0) return null;
-  return due
-    .map((job) => {
-      const waitingFor = job.waitingFor as WaitingFor;
-      const text = nudgePrompt({
-        waitingFor,
-        goal: job.goal,
-        note: job.note,
-      });
-      return `This job has been waiting too long. Do NOT answer [SILENT] — write the human now: ${text}. Ignore any later line that allows [SILENT].`;
-    })
-    .join("\n");
 }

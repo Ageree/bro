@@ -367,7 +367,7 @@ assert(
   "iMessage codes go into the live Cloud tab",
 );
 assert(
-  /сначала/i.test(instructions) && /треде/i.test(instructions),
+  /сначала почта/i.test(instructions) && /в тред/i.test(instructions),
   "inbox before thread",
 );
 assert(
@@ -375,9 +375,16 @@ assert(
   "old ask-first OTP line is gone",
 );
 
-const skill = src("agent/skills/otp/SKILL.md");
-assert(skill.includes("otp_lookup"), "skill names the tool");
-assert(skill.includes("не цитируй") || skill.includes("цифры не цитируй"), "no quote");
+// The OTP protocol used to exist four times over (root prompt, an `otp`
+// skill, the worker's instructions, the worker's browser-execution skill) and
+// the copies had already drifted apart on what to try first. The skill copy is
+// deleted; the root prompt owns what Bro says and the worker owns what the
+// browser does, so these assertions follow the protocol to its one home.
+assert(instructions.includes("otp_lookup"), "root prompt names the lookup tool");
+assert(
+  /не цитируй/.test(instructions) || /цифры в чат не цитируй/i.test(instructions),
+  "root prompt forbids quoting the code into chat",
+);
 
 const broMail = src("agent/tools/bro_mail.ts");
 assert(broMail.includes('"inbox"'), "bro_mail lists inbox");

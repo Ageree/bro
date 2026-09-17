@@ -53,6 +53,7 @@ import { deliverHumanRouted } from "../lib/deliver-routed.ts";
 import { inboundAtAttribute } from "../lib/latency-log.ts";
 import { parkLastChannelTouch } from "../lib/early-deliver.ts";
 import { jobCheckWakePrompt } from "../lib/job-wake.ts";
+import { runInstinctScan, noteInstinctSources } from "../lib/instinct-wake.ts";
 import { imessageDeliveryEvents } from "../lib/turn-delivery-events.ts";
 import { telegramBindLink } from "../../convex/lib/telegramPolicy.ts";
 import { telegramBotUsername } from "../lib/telegram";
@@ -778,6 +779,10 @@ export default defineChannel({
       // browser_task again (the result already lives in the payload).
       let wakeupPhase: string | undefined;
       let wakeupFallback: string | undefined;
+      /** What an `instinct` turn is about — marked as seen once it is handed
+       *  to the model, so the next scan half an hour later does not offer the
+       *  same meeting again whether or not the model chose to speak. */
+      let instinctSources: string[] = [];
       if (kind === "brief") {
         prompt =
           "[background wakeup] Утренний бриф. Собери коротко: (1) память об этом человеке — незакрытые дела/напоминания на сегодня; (2) если подключён Gmail/Calendar через Composio — новые важные письма и встречи сегодня; (3) статус браузер-джоба, если был. Если по ВСЕМ пунктам пусто — ответь [SILENT]. Одно короткое сообщение, без воды.";
@@ -885,6 +890,23 @@ export default defineChannel({
         }
       } else if (kind === "job_check") {
         prompt = jobCheckWakePrompt(payload);
+      } else if (kind === "instinct") {
+        // Proactivity: nobody asked for this turn. The scan decides on its own
+        // whether there is anything worth saying first — and most of the time
+        // there is not, so the cheap exit is the normal one: answer the wakeup
+        // without starting a model turn at all. The scan checks the
+        // conversation budget (quiet hours, daily cap, gap, live chat) before
+        // it reads any data, so a silent scan costs one Convex query.
+        const scan = await runInstinctScan(tenantPhone).catch((err) => {
+          console.error("instinct scan failed", err);
+          return { speak: false as const, reason: "scan_failed" };
+        });
+        if (!scan.speak) {
+          console.log("instinct scan silent", { reason: scan.reason });
+          return Response.json({ ok: true, skipped: scan.reason });
+        }
+        prompt = scan.prompt;
+        instinctSources = scan.sourceIds;
       } else if (kind === "event") {
         prompt = eventPrompt(payload);
       }
@@ -933,6 +955,14 @@ export default defineChannel({
           releaseWakeupDelivery(wakeupDelivered, idempotencyKey);
         }
         throw err;
+      }
+      if (instinctSources.length > 0) {
+        // Marked seen, not spent: the daily slot is only charged when the turn
+        // actually produced a bubble, which the delivery events know and this
+        // route does not (see `spendInstinctSlot` in turn-delivery-events.ts).
+        await noteInstinctSources(tenantPhone, instinctSources).catch((err) =>
+          console.error("instinct sources note failed", err),
+        );
       }
       return Response.json({ ok: true });
     }),

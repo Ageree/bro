@@ -112,10 +112,13 @@ for (const beat of [
 // keep whatever they do quote down to illustration.
 {
   const instructions = src("agent/instructions.md");
-  const section = instructions.slice(
-    instructions.indexOf("### Строка «взялся»"),
-    instructions.indexOf("## Memory"),
-  );
+  // End at the next heading, whatever it is called. Pinning the slice to one
+  // section title made this count every «…» in the file the day that title was
+  // renamed, and report a 3-beat illustration as a 52-beat menu.
+  const start = instructions.indexOf("### Строка «взялся»");
+  assert(start >= 0, "the «взялся» section is still in the file");
+  const next = instructions.indexOf("\n## ", start);
+  const section = instructions.slice(start, next < 0 ? undefined : next);
   const quoted = [...section.matchAll(/«([^»]+)»/g)]
     .map((m) => m[1]!)
     .filter((q) => !["ищу", "взялся", "ок", "спасибо", "понял"].includes(q));

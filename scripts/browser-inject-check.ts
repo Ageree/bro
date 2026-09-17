@@ -1283,9 +1283,18 @@ assert(telegram.includes("cloudInjectAttribute(opts.text"), "telegram stamps inj
 
 const instructions = src("agent/instructions.md");
 assert(instructions.includes("ввожу код"), "root first bubble for a chat code");
-assert(instructions.includes("Посторонний чат"), "unrelated chat is not injected");
+// The rule, not the sentence: small talk and a new unrelated errand must not
+// be typed into the tab an errand is waiting in.
+assert(
+  /Посторонний чат/.test(instructions) ||
+    /несвязанное поручение туда не клади/.test(instructions),
+  "unrelated chat is not injected",
+);
 assert(instructions.includes("не только Яндекс") || instructions.includes("любой сайт"), "not Yandex-only");
-assert(instructions.includes("Пароль в чат не проси") || instructions.includes("Do not ask for a password"), "no password ask");
+assert(
+  /не проси пароль|Пароль в чат не проси|Do not ask for a password/.test(instructions),
+  "no password ask",
+);
 
 const login = src("convex/lib/browserProfilePolicy.ts");
 assert(login.includes("прислать в чат"), "login wait accepts a chat code");

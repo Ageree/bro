@@ -27,6 +27,7 @@ import {
   shouldApplyFinish,
 } from "./lib/wakeupPolicy";
 import { hasCron, scheduleCron, unscheduleCron } from "./lib/wakeupCrons";
+import { INSTINCT_SCAN_MINUTES } from "./lib/instinctPolicy";
 import { chatConversationId } from "./lib/tenantConversation";
 
 const kind = v.union(
@@ -35,6 +36,7 @@ const kind = v.union(
   v.literal("brief"),
   v.literal("watcher"),
   v.literal("job_check"),
+  v.literal("instinct"),
 );
 const status = v.union(
   v.literal("scheduled"),
@@ -315,6 +317,56 @@ export const ensureCrons = internalMutation({
     const stale = await ctx.db.query("wakeupDeliveries").take(200);
     for (const row of stale) {
       if (now - row.at > 2 * 24 * 60 * 60_000) await ctx.db.delete(row._id);
+    }
+    return n;
+  },
+});
+
+/** Active tenants scanned per sweep. Same bound archive.dispatchSyncs uses. */
+const INSTINCT_BATCH = 128;
+
+/**
+ * Give every active person a standing proactive scan.
+ *
+ * Proactivity cannot wait for someone to ask for it — that is what made every
+ * other wakeup path reactive. So the scan is not scheduled by a tool: this
+ * sweep (crons.ts, every 6h) makes sure each active tenant has one live
+ * `instinct` row recurring every INSTINCT_SCAN_MINUTES, and the ordinary
+ * wakeup machinery delivers it from there.
+ *
+ * Cheap to run often: `instinct` is a singleton kind, so a person who already
+ * has a live scan is skipped outright. The scan itself is cheap too — the eve
+ * route checks the conversation budget (quiet hours, daily cap, gap, live
+ * chat) BEFORE it reads any data or starts a model turn.
+ */
+export const ensureInstinctScans = internalMutation({
+  args: {},
+  returns: v.number(),
+  handler: async (ctx) => {
+    const now = Date.now();
+    const tenants = await ctx.db.query("tenants").take(INSTINCT_BATCH);
+    let n = 0;
+    for (const t of tenants) {
+      const phone = t.phoneE164;
+      if (t.status !== "active" || !phone) continue;
+      if (!chatConversationId(t)) continue;
+      if (liveOfKind(await liveForTenant(ctx, phone), "instinct")) continue;
+      // First scan one interval out, not now: a person who just signed up
+      // should hear from Bro because he asked something, not because a sweep
+      // happened to run a second later.
+      const at = now + INSTINCT_SCAN_MINUTES * 60_000;
+      const id = await ctx.db.insert("wakeups", {
+        tenantPhone: phone,
+        at,
+        kind: "instinct",
+        payload: "",
+        status: "scheduled",
+        recurMinutes: INSTINCT_SCAN_MINUTES,
+        tz: t.tz,
+        gen: 0,
+      });
+      await scheduleCron(ctx, id, at, now, 0);
+      n++;
     }
     return n;
   },
