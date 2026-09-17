@@ -91,5 +91,5 @@ export default defineMemory({
     },
   },
   scope: (ctx) =>
-    resolveSupermemoryScope(ctx.session.auth, process.env.NODE_ENV === "production"),
+    resolveSupermemoryScope(ctx.session.auth),
 });

@@ -31,6 +31,19 @@ export function isSharedPrincipal(id: string | null | undefined): boolean {
   return typeof id !== "string" || SHARED.has(id.trim());
 }
 
+/**
+ * The principal an explicitly configured local session stands in as, if any.
+ *
+ * One escape hatch for the whole agent, so the tenant key and the memory scope
+ * cannot disagree about who this turn belongs to. It refuses a shared value,
+ * which is the entire point: the hole this replaces was a *default* nobody
+ * typed, and a default is what let two people meet in one bucket.
+ */
+export function localDevPrincipal(): string | undefined {
+  const local = process.env.BRO_LOCAL_DEV_PRINCIPAL?.trim();
+  return local && !isSharedPrincipal(local) ? local : undefined;
+}
+
 function principalOf(ctx: AuthBox): string | undefined {
   const id =
     ctx.session.auth.current?.principalId ??
@@ -51,8 +64,8 @@ function principalOf(ctx: AuthBox): string | undefined {
 export function tenantId(ctx: AuthBox): string {
   const id = principalOf(ctx);
   if (id !== undefined && !isSharedPrincipal(id)) return id;
-  const local = process.env.BRO_LOCAL_DEV_PRINCIPAL?.trim();
-  if (local && !isSharedPrincipal(local)) return local;
+  const local = localDevPrincipal();
+  if (local) return local;
   throw new Error(
     "refusing shared principal: this turn carries no person. " +
       "Set BRO_LOCAL_DEV_PRINCIPAL for a local session.",

@@ -37,34 +37,78 @@ for (const bad of [undefined, "", "   ", "your_key_here", "sk_xxxx"]) {
 assert.equal(supermemoryKey({ SUPERMEMORY_API_KEY: " sm_key " }), "sm_key");
 
 const person = { current: { principalId: "+79991234567" } };
-withEnv({ SUPERMEMORY_API_KEY: undefined }, () => {
+withEnv({ SUPERMEMORY_API_KEY: undefined, BRO_MEMORY_OPTIONAL: undefined }, () => {
   assert.throws(
-    () => resolveSupermemoryScope(person, true),
+    () => resolveSupermemoryScope(person),
     /SUPERMEMORY_API_KEY/,
     "a slot must not quietly disable itself when the key is missing",
   );
 });
-withEnv({ SUPERMEMORY_API_KEY: "sm_check_key" }, () => {
-  assert.equal(resolveSupermemoryScope(person, true), "+79991234567");
-  assert.equal(resolveSupermemoryScope({}, true), null, "no person, no slot");
+withEnv({ SUPERMEMORY_API_KEY: "sm_check_key", BRO_MEMORY_OPTIONAL: undefined }, () => {
+  assert.equal(resolveSupermemoryScope(person), "+79991234567");
+  assert.equal(resolveSupermemoryScope({}), null, "no person, no slot");
 });
 
+// Running memoryless is allowed, but only when somebody typed it out. The
+// throw above is right for a deployment and wrong as the only option: it would
+// take every turn down over a key the operator may not have bought, and it
+// would make this repo's own live conversation suite impossible to run.
+withEnv({ SUPERMEMORY_API_KEY: undefined, BRO_MEMORY_OPTIONAL: "1" }, () => {
+  assert.equal(
+    resolveSupermemoryScope(person),
+    null,
+    "an explicit opt-out disables the slot instead of throwing",
+  );
+});
+for (const notOptIn of [undefined, "", "0", "no", "off"]) {
+  withEnv({ SUPERMEMORY_API_KEY: undefined, BRO_MEMORY_OPTIONAL: notOptIn }, () => {
+    assert.throws(
+      () => resolveSupermemoryScope(person),
+      /SUPERMEMORY_API_KEY/,
+      `"${notOptIn}" must not read as an opt-out — nobody falls into memorylessness`,
+    );
+  });
+}
+
 // ── Scope: the person's E.164 from trusted auth, never a shared bucket ───────
-assert.equal(resolveMemoryScope(person, true), "+79991234567");
+//
+// The old signature took a `production` flag meaning `NODE_ENV === "production"`
+// and fell back to the literal "local-dev" whenever it was false — a variable
+// nothing in this repository sets. Every person-less turn then shared one
+// memory bucket. The flag is gone; the only way to name a scope without a
+// principal is to set BRO_LOCAL_DEV_PRINCIPAL yourself.
+assert.equal(resolveMemoryScope(person), "+79991234567");
 assert.equal(
-  resolveMemoryScope({ initiator: { principalId: "+79991234567" } }, true),
+  resolveMemoryScope({ initiator: { principalId: "+79991234567" } }),
   "+79991234567",
 );
-for (const shared of ["", "unknown", "default", "eve:app"]) {
+for (const shared of ["", "unknown", "default", "eve:app", "local-dev"]) {
   assert.equal(
-    resolveMemoryScope({ current: { principalId: shared } }, true),
+    resolveMemoryScope({ current: { principalId: shared } }),
     null,
-    `shared principal "${shared}" must disable memory in production`,
+    `shared principal "${shared}" must disable memory, never share a bucket`,
   );
 }
-assert.equal(resolveMemoryScope({}, true), null);
-assert.equal(resolveMemoryScope({}, false), "local-dev");
-assert.equal(resolveMemoryScope({ current: { principalId: "eve:app" } }, false), "local-dev");
+assert.equal(resolveMemoryScope({}), null, "no principal, no memory scope");
+withEnv({ BRO_LOCAL_DEV_PRINCIPAL: "+79990000001" }, () => {
+  assert.equal(
+    resolveMemoryScope({}),
+    "+79990000001",
+    "an explicitly configured local principal names the scope",
+  );
+  assert.equal(
+    resolveMemoryScope(person),
+    "+79991234567",
+    "a real principal always wins over the local stand-in",
+  );
+});
+withEnv({ BRO_LOCAL_DEV_PRINCIPAL: "local-dev" }, () => {
+  assert.equal(
+    resolveMemoryScope({}),
+    null,
+    "the escape hatch cannot launder a shared value into a memory scope",
+  );
+});
 
 assert.equal(scopePhone("+79991234567"), "+79991234567");
 assert.equal(scopePhone(["a", "b"]), "a/b");
