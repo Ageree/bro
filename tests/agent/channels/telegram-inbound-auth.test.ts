@@ -136,7 +136,7 @@ describe("Telegram inbound authentication", () => {
     ).resolves.toBeNull();
 
     expect(sent).toHaveBeenCalledTimes(1);
-    expect(sent.mock.calls[0]?.[0]).toContain("Link Telegram");
+    expect(sent.mock.calls[0]?.[0]).toContain("Привязать Telegram");
 
     vi.setSystemTime(new Date("2026-09-18T11:00:01.000Z"));
     await expect(
@@ -160,7 +160,7 @@ describe("Telegram inbound authentication", () => {
       { chatId: "4242", externalUserId: "9001", username: "ada" }
     );
     expect(sent).toHaveBeenCalledExactlyOnceWith(
-      "Telegram is connected. You can talk to your assistant right here."
+      "Готово, телеграм привязан. Пиши мне прямо здесь."
     );
     expect(capture.findIdentity).not.toHaveBeenCalled();
   });
@@ -182,10 +182,10 @@ describe("Telegram inbound authentication", () => {
   });
 
   it.each([
-    ["expired", "expired"],
-    ["unknown", "used already"],
-    ["already_linked_other_user", "different workspace"],
-    ["already_linked_other_account", "different Telegram account"],
+    ["expired", "протухла"],
+    ["unknown", "уже воспользовались"],
+    ["already_linked_other_user", "другому кабинету"],
+    ["already_linked_other_account", "другой телеграм"],
   ] as const)("reports the %s outcome", async (outcome, reason) => {
     capture.redeemToken.mockResolvedValue(outcome);
     const { context, sent } = inboundContext();

@@ -40,38 +40,40 @@ afterAll(async () => {
 
 describe("iMessage phone onboarding", () => {
   it("creates one verified user and its workspace, then reuses it", async () => {
-    const { ensureVerifiedPhoneUserId } =
+    const { ensureVerifiedPhoneUser } =
       await import("@db/services/auth/phone-user");
 
-    const created = await ensureVerifiedPhoneUserId("+12025550123");
-    const reused = await ensureVerifiedPhoneUserId("+12025550123");
+    const created = await ensureVerifiedPhoneUser("+12025550123");
+    const reused = await ensureVerifiedPhoneUser("+12025550123");
 
-    expect(created).toBeDefined();
-    expect(reused).toBe(created);
+    expect(created?.created).toBe(true);
+    expect(reused).toEqual({ created: false, userId: created?.userId });
     await expect(phoneUsers()).resolves.toEqual([
       {
-        id: created,
+        id: created?.userId,
         name: "Phone user",
         phoneNumber: "+12025550123",
         phoneNumberVerified: true,
       },
     ]);
     await expect(workspaceOwners()).resolves.toEqual([
-      `better-auth:${String(created)}`,
+      `better-auth:${String(created?.userId)}`,
     ]);
   });
 
   it("creates one user when two first messages arrive at once", async () => {
-    const { ensureVerifiedPhoneUserId } =
+    const { ensureVerifiedPhoneUser } =
       await import("@db/services/auth/phone-user");
 
     const [first, second] = await Promise.all([
-      ensureVerifiedPhoneUserId("+12025550123"),
-      ensureVerifiedPhoneUserId("+12025550123"),
+      ensureVerifiedPhoneUser("+12025550123"),
+      ensureVerifiedPhoneUser("+12025550123"),
     ]);
 
-    expect(first).toBeDefined();
-    expect(second).toBe(first);
+    expect(first?.userId).toBeDefined();
+    expect(second?.userId).toBe(first?.userId);
+    // Exactly one of the two racing messages may greet the new person.
+    expect([first?.created, second?.created].filter(Boolean)).toHaveLength(1);
     await expect(phoneUsers()).resolves.toHaveLength(1);
   });
 
@@ -83,11 +85,11 @@ describe("iMessage phone onboarding", () => {
       phoneNumber: "+12025550124",
       phoneNumberVerified: false,
     });
-    const { ensureVerifiedPhoneUserId } =
+    const { ensureVerifiedPhoneUser } =
       await import("@db/services/auth/phone-user");
 
     await expect(
-      ensureVerifiedPhoneUserId("+12025550124")
+      ensureVerifiedPhoneUser("+12025550124")
     ).resolves.toBeUndefined();
   });
 });

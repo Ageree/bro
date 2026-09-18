@@ -30,7 +30,10 @@ import {
 } from "@shared/chat/reaction";
 import { accessScopeForUser } from "@shared/identity/access-scope";
 import { env } from "@shared/environment";
-import { prepareImageArtifactDelivery } from "../lib/image-artifact/delivery";
+import {
+  imageArtifactFailureText,
+  prepareImageArtifactDelivery,
+} from "../lib/image-artifact/delivery";
 import {
   extractImageArtifactMarkdownReferences,
   stripImageArtifactMarkdownReferences,
@@ -158,7 +161,7 @@ export default telegramChannel({
             ? requestedText
             : [
                 stripImageArtifactMarkdownReferences(requestedText),
-                "I couldn't attach the image.",
+                imageArtifactFailureText(references.length),
               ]
                 .filter(Boolean)
                 .join("\n\n");
@@ -178,12 +181,9 @@ export default telegramChannel({
           sessionId: session.session.id,
         });
       }
-      const failureMessage =
-        delivery.failedArtifactIds.length === 0
-          ? ""
-          : delivery.failedArtifactIds.length === 1
-            ? "I couldn't attach one image."
-            : `I couldn't attach ${String(delivery.failedArtifactIds.length)} images.`;
+      const failureMessage = imageArtifactFailureText(
+        delivery.failedArtifactIds.length
+      );
       const body = [delivery.text, failureMessage, ...attachmentLinks]
         .filter(Boolean)
         .join("\n\n");
@@ -224,7 +224,7 @@ export default telegramChannel({
       if (!scheduledReportFromSession(session)) {
         await sendText(
           context,
-          "I hit an error while handling your request. Please try again."
+          "Что-то сломалось, пока я разбирался с твоей просьбой. Попробуй ещё раз."
         );
       }
     },
@@ -281,9 +281,9 @@ export default telegramChannel({
 });
 
 const unlinkedHintText = [
-  "This Telegram account is not connected to an assistant workspace yet.",
+  "Этот телеграм пока не привязан ни к одному кабинету.",
   "",
-  "Open the workspace page in your browser and choose Link Telegram, or ask the assistant in iMessage to link Telegram. Either one gives you a one-time link that connects this chat to your account.",
+  "Открой кабинет в браузере и нажми «Привязать Telegram» или попроси меня в iMessage привязать телеграм. И там, и там получится одноразовая ссылка, которая свяжет этот чат с твоим аккаунтом.",
 ].join("\n");
 
 function linkOutcomeText(
@@ -291,19 +291,19 @@ function linkOutcomeText(
 ) {
   switch (outcome) {
     case "linked": {
-      return "Telegram is connected. You can talk to your assistant right here.";
+      return "Готово, телеграм привязан. Пиши мне прямо здесь.";
     }
     case "expired": {
-      return "That link has expired. Links last 30 minutes, so please generate a new one and try again.";
+      return "Ссылка протухла: они живут 30 минут. Сделай новую и попробуй ещё раз.";
     }
     case "already_linked_other_user": {
-      return "This Telegram account is already connected to a different workspace. Disconnect it there first.";
+      return "Этот телеграм уже привязан к другому кабинету. Сначала отвяжи его там.";
     }
     case "already_linked_other_account": {
-      return "That workspace is already connected to a different Telegram account. Disconnect that one first.";
+      return "К тому кабинету уже привязан другой телеграм. Сначала отвяжи тот.";
     }
     default: {
-      return "That link is not valid. It may have been used already, so please generate a new one.";
+      return "Ссылка не подходит. Возможно, ею уже воспользовались — сделай новую.";
     }
   }
 }

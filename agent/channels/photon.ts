@@ -1,4 +1,4 @@
-import type { AdapterPostableMessage } from "chat";
+import type { AdapterPostableMessage, Thread } from "chat";
 import {
   defaultPhotonAuth,
   photonIMessageChannel,
@@ -6,14 +6,19 @@ import {
 } from "eve/channels/photon";
 import { resolvePhotonReplyTarget } from "@agent/lib/reply-targets";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
-import { ensureVerifiedPhoneUserId } from "@db/services/auth/phone-user";
+import { ensureVerifiedPhoneUser } from "@db/services/auth/phone-user";
 import { sendMessageToolResultSchema } from "@shared/chat/message-delivery";
 import { reactToMessageToolResultSchema } from "@shared/chat/reaction";
 import { accessScopeForUser } from "@shared/identity/access-scope";
 import { normalizeAuthPhoneNumber } from "@shared/identity/phone-number";
 import { photonProjectCredentials } from "@shared/photon/credentials";
 import { env } from "@shared/environment";
-import { prepareImageArtifactDelivery } from "../lib/image-artifact/delivery";
+import {
+  imageArtifactFailureText,
+  prepareImageArtifactDelivery,
+} from "../lib/image-artifact/delivery";
+import { toIMessageBubbles } from "../lib/imessage-text/bubbles";
+import { toIMessageText } from "../lib/imessage-text/compile";
 import {
   extractImageArtifactMarkdownReferences,
   stripImageArtifactMarkdownReferences,
@@ -25,6 +30,13 @@ import {
 } from "@agent/lib/schedules/report-lifecycle";
 
 const webhookSecret = env.IMESSAGE_WEBHOOK_SECRET;
+
+/**
+ * Handed to the model on the turn that created the account. The instructions
+ * look for the `first-contact` marker and introduce Bro once, in Russian.
+ */
+const firstContactContext =
+  "Пометка `first-contact`: аккаунт этого человека создан прямо сейчас, это его первое в жизни сообщение, и знакомства ещё не было.";
 
 // Photon signs its own webhook deliveries. Without the signing secret nothing
 // can be verified, so reject the delivery with the missing configuration.
@@ -130,13 +142,11 @@ export default photonIMessageChannel({
             ? requestedText
             : [
                 stripImageArtifactMarkdownReferences(requestedText),
-                "I couldn't attach the image.",
+                imageArtifactFailureText(references.length),
               ]
                 .filter(Boolean)
                 .join("\n\n");
-        await thread.post(
-          outgoingMessage({ attachmentLinks, files: [], text })
-        );
+        await postBubbles(thread, { attachmentLinks, files: [], text });
         await finalizeScheduledReportDelivery(session);
         return;
       }
@@ -152,19 +162,14 @@ export default photonIMessageChannel({
           sessionId: session.session.id,
         });
       }
-      const failureMessage =
-        delivery.failedArtifactIds.length === 0
-          ? ""
-          : delivery.failedArtifactIds.length === 1
-            ? "I couldn't attach one image."
-            : `I couldn't attach ${String(delivery.failedArtifactIds.length)} images.`;
-      await thread.post(
-        outgoingMessage({
-          attachmentLinks,
-          files: delivery.files,
-          text: [delivery.text, failureMessage].filter(Boolean).join("\n\n"),
-        })
+      const failureMessage = imageArtifactFailureText(
+        delivery.failedArtifactIds.length
       );
+      await postBubbles(thread, {
+        attachmentLinks,
+        files: delivery.files,
+        text: [delivery.text, failureMessage].filter(Boolean).join("\n\n"),
+      });
       await finalizeScheduledReportDelivery(session);
     },
     async "message.completed"(event, _context, session) {
@@ -206,14 +211,14 @@ export default photonIMessageChannel({
     // Photon proved possession of this number by delivering the message, which
     // is the same factor the sign-in code checks, so a first-time number is
     // onboarded here instead of being dropped.
-    const userId = await ensureVerifiedPhoneUserId(phoneNumber);
-    if (!userId) {
+    const account = await ensureVerifiedPhoneUser(phoneNumber);
+    if (!account) {
       console.warn("[photon] ignoring message from an unusable handle", {
         threadId: context.thread.id,
       });
       return null;
     }
-    const principalId = `better-auth:${userId}`;
+    const principalId = `better-auth:${account.userId}`;
     const scope = accessScopeForUser(principalId);
     return {
       auth: {
@@ -229,9 +234,56 @@ export default photonIMessageChannel({
         },
         principalId,
       },
+      // The account was created by this very message, so the turn is the first
+      // one this person ever had and the instructions introduce Bro once.
+      context: account.created ? [firstContactContext] : [],
     };
   },
 });
+
+/**
+ * Photon delivers one bubble per post, so a long numbered dump goes out as the
+ * bubbles a person would have typed rather than one wall of text. Attachments
+ * ride with the last bubble, which keeps them below the words that introduce
+ * them.
+ */
+async function postBubbles(
+  thread: Thread,
+  {
+    attachmentLinks,
+    files,
+    text,
+  }: {
+    readonly attachmentLinks: readonly string[];
+    readonly files: readonly {
+      readonly data: Buffer;
+      readonly filename: string;
+      readonly mimeType: string;
+    }[];
+    readonly text: string;
+  }
+) {
+  const bubbles = toIMessageBubbles(text);
+  // A message the splitter declines to break up is still delivered whole:
+  // dropping it would lose the only user-visible output of the turn.
+  const delivered =
+    bubbles.length > 0 ? bubbles : [toIMessageText(text)].filter(Boolean);
+  const last = delivered.at(-1);
+  for (const bubble of delivered.slice(0, -1)) {
+    // oxlint-disable-next-line eslint/no-await-in-loop -- iMessage renders bubbles in post order.
+    await thread.post({ raw: bubble });
+  }
+  if (
+    last === undefined &&
+    attachmentLinks.length === 0 &&
+    files.length === 0
+  ) {
+    return;
+  }
+  await thread.post(
+    outgoingMessage({ attachmentLinks, files, text: last ?? "" })
+  );
+}
 
 function outgoingMessage({
   attachmentLinks,

@@ -24,8 +24,7 @@ export const linkTelegram = defineTool({
     if (!telegramLinkConfigured()) {
       return {
         status: "not_configured",
-        detail:
-          "Telegram is not set up for this deployment, so there is nothing to connect to.",
+        detail: "Телеграм на этом деплое не настроен, привязывать не к чему.",
       };
     }
     const scope = scopeFromPrincipal(auth);
