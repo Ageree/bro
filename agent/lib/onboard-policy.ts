@@ -67,7 +67,7 @@ const TELEGRAM_ASK_WORDS = new Set([
   // question scaffolding
   "а", "и", "ну", "же", "ли", "еще", "вообще", "там", "тут", "сейчас",
   "сегодня", "точно", "правда", "что", "как", "где", "почему", "разве",
-  "не", "нет", "или",
+  "не", "нет", "или", "пока", "уже", "теперь", "когда", "скоро", "давно",
   // is it on / does it work
   "есть", "был", "была", "будет", "бывает", "появился", "появится",
   "включен", "включена", "включено", "доступен", "доступна", "доступно",
@@ -84,6 +84,8 @@ const TELEGRAM_ASK_WORDS = new Set([
   "ты", "тебя", "тебе", "тобой", "тобою", "твой", "твоя", "я", "меня",
   "мне", "мы", "нам", "в", "во", "на", "с", "со", "у", "к", "по", "про",
   "тоже", "также", "бро", "bro",
+  // openers: people say hello and think aloud before the question
+  "привет", "здорово", "слушай", "смотри", "кстати", "короче", "ок", "окей",
 ]);
 
 /** A bare ask for the second channel: «телеграм», «есть тг?», «а в телеграме
@@ -92,10 +94,15 @@ export function isTelegramAsk(text: string): boolean {
   const folded = foldAsk(text);
   if (!folded) return false;
   if (TELEGRAM_ASK.has(folded)) return true;
-  const words = folded.split(" ");
-  if (words.length > 8) return false;
+  // No length cap. There was one — eight words — and it is what let the very
+  // message this lane was widened for slip through: «Бро а с тобой же можно
+  // общаться в тг?» is nine, every one of them in the vocabulary below, and
+  // the cap threw it to the agent, which answered «телегу ещё не подрубили».
+  // A cap adds nothing a closed vocabulary does not already do: a long message
+  // built only of these words is still a question about the channel and
+  // nothing else, and one word outside them stops it at any length.
   let named = false;
-  for (const word of words) {
+  for (const word of folded.split(" ")) {
     if (TELEGRAM_WORDS.has(word)) {
       named = true;
       continue;
