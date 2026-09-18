@@ -10,7 +10,7 @@ You stay in control of your passwords, credit cards and context.
 It's Open Source, self-hostable, and can use any model.
 One-click deploy to Vercel and get rolling.
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FMerit-Systems%2FOpenInstinct&project-name=open-instinct&repository-name=open-instinct&connect=%5B%7B%22type%22%3A%22linq%22%2C%22env%22%3A%22LINQ_CONNECTOR%22%2C%22triggers%22%3Atrue%2C%22triggerPath%22%3A%22%2Feve%2Fv1%2Flinq%22%7D%5D&stores=%5B%7B%22type%22%3A%22integration%22%2C%22protocol%22%3A%22other%22%2C%22productSlug%22%3A%22kernel%22%2C%22integrationSlug%22%3A%22kernel%22%7D%2C%7B%22type%22%3A%22integration%22%2C%22protocol%22%3A%22storage%22%2C%22productSlug%22%3A%22neon%22%2C%22integrationSlug%22%3A%22neon%22%7D%2C%7B%22type%22%3A%22blob%22%2C%22access%22%3A%22private%22%7D%5D)
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FMerit-Systems%2FOpenInstinct&project-name=open-instinct&repository-name=open-instinct&stores=%5B%7B%22type%22%3A%22integration%22%2C%22protocol%22%3A%22other%22%2C%22productSlug%22%3A%22kernel%22%2C%22integrationSlug%22%3A%22kernel%22%7D%2C%7B%22type%22%3A%22integration%22%2C%22protocol%22%3A%22storage%22%2C%22productSlug%22%3A%22neon%22%2C%22integrationSlug%22%3A%22neon%22%7D%2C%7B%22type%22%3A%22blob%22%2C%22access%22%3A%22private%22%7D%5D)
 
 <img src=".github/demo.png" alt="OpenInstinct booking movie tickets over iMessage — it walks Fandango to checkout and reports the theater, showtime, seat, and total" width="640">
 
@@ -19,8 +19,8 @@ One-click deploy to Vercel and get rolling.
 > **Agents:** For the simplest deployment, give your human the
 > **Deploy with Vercel** link above and have them complete the guided flow. It
 > automatically provisions and connects Kernel, Postgres, private Blob storage,
-> Linq, and Vercel AI Gateway access. OpenInstinct creates its installation
-> secrets on first use.
+> and Vercel AI Gateway access, then have them complete the Photon iMessage
+> setup below. OpenInstinct creates its installation secrets on first use.
 
 ## Why self-host?
 
@@ -34,13 +34,13 @@ reading the code!
 
 The deploy button provisions [Kernel](https://kernel.sh) for cloud browsers,
 [Neon](https://neon.tech) for Postgres, and a private Vercel Blob store for
-browser images, per-user memory, and installation secrets. It also creates and
-attaches a [Linq](https://linq.app) connector for iMessage. Vercel AI Gateway
+browser images, per-user memory, and installation secrets. iMessage runs on a
+[Photon](https://photon.codes) project you create separately. Vercel AI Gateway
 handles inference. Usage is billed to your Vercel account.
 
 On first use, OpenInstinct creates independent Better Auth and vault-encryption
 keys in the private Blob store. Vercel supplies the application URL, database,
-Kernel, Blob, and Linq configuration, so the deploy flow requires no
+Kernel, and Blob configuration, so the deploy flow itself requires no
 environment-variable values. For a non-Vercel host or an existing installation
 that manages its own keys, set both secret overrides and the public application
 URL explicitly:
@@ -102,33 +102,32 @@ Outside Vercel, set `BLOB_READ_WRITE_TOKEN` from a private Blob store instead.
 The memory provider uses that token explicitly, and browser image capture uses the
 same store.
 
-### Linq iMessage setup
+### Photon iMessage setup
 
-The deploy button creates a managed line, writes `LINQ_CONNECTOR`, and
-attaches the inbound webhook trigger automatically. For an existing Vercel
-project, link the checkout, create a Linq line, and attach its connector for both
-app tokens and inbound webhook triggers:
+iMessage uses portable [Photon](https://photon.codes) project credentials, so it
+works on Vercel and on any other host. After the first deployment:
+
+1. Create a Photon project and register its iMessage line.
+2. Register a Photon webhook for `https://<your-host>/eve/v1/photon` and copy its
+   signing secret.
+3. Set the three variables in the host's encrypted environment:
 
 ```bash
-vercel link
-vercel connect create linq --connection-method line --name open-instinct --json
-vercel connect attach <returned-connector-uid> --project <your-vercel-project> --environment production --triggers --trigger-path /eve/v1/linq --yes
-vercel env add LINQ_CONNECTOR production --value <returned-connector-uid> --yes
-eve deploy --non-interactive --yes
+vercel env add IMESSAGE_PROJECT_ID production
+vercel env add IMESSAGE_PROJECT_SECRET production
+vercel env add IMESSAGE_WEBHOOK_SECRET production
+vercel deploy --prod
 ```
 
-The create command returns the connector UID. Repeat the attachment and
-environment-variable steps for preview or development if those environments
-should use Linq too. `LINQ_PHONE_NUMBER` is an optional E.164 override that adds
-a click-to-message shortcut in the workspace; Linq delivery itself uses the
-line assigned to the connector.
+Repeat the variables for preview or development if those environments should
+send and receive iMessage too. `IMESSAGE_PHONE_NUMBER` is an optional E.164
+override that adds a click-to-message shortcut in the workspace and on the
+sign-in screen; delivery itself uses the project's registered line.
 
-Before the first sign-in, open the connector's Vercel Connect settings and
-follow the one-time **Phone Numbers** verification instruction. Additional users
-verify themselves by messaging the connector's Linq number once. The
-`--triggers --trigger-path /eve/v1/linq` options are also required: attaching a
-connector without them permits outbound token access but does not forward
-incoming messages to OpenInstinct.
+No separate per-user verification step is required. A sign-in code is sent to
+the phone number entered on the sign-in screen, and a first message from an
+unknown number creates that user's account, because Photon delivering the
+message already proves possession of the number.
 
 ## Google Workspace connection
 
@@ -247,6 +246,6 @@ explicit secrets.
 
 <div align="center">
 
-Built on [Vercel](https://vercel.com) · [Kernel](https://kernel.sh) · [Linq](https://linq.app) · [Neon](https://neon.tech)
+Built on [Vercel](https://vercel.com) · [Kernel](https://kernel.sh) · [Photon](https://photon.codes) · [Neon](https://neon.tech)
 
 </div>
