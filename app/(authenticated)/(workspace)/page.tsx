@@ -12,6 +12,7 @@ import { Badge } from "@web/components/ui/badge";
 import { Button } from "@web/components/ui/button";
 import { getGatewayModel } from "@db/services/settings";
 import { env } from "@shared/environment";
+import { photonConfigured } from "@shared/photon/credentials";
 import { googleWorkspaceTokenParams } from "@shared/google-workspace/connection";
 import { requireRequestScope } from "@web/auth/request-scope";
 import { GoogleWorkspaceAction } from "./_components/google-workspace-action";
@@ -43,8 +44,8 @@ export default async function Page({ searchParams }: PageProps<"/">) {
       ) : null}
 
       <ChannelsSection
-        linqConfigured={env.LINQ_CONNECTOR !== undefined}
-        linqPhoneNumber={env.LINQ_PHONE_NUMBER}
+        imessageConfigured={photonConfigured()}
+        imessagePhoneNumber={env.IMESSAGE_PHONE_NUMBER}
       />
       <GoogleWorkspaceSection connection={googleWorkspace} />
 
@@ -137,11 +138,11 @@ async function readGoogleWorkspaceConnection(
 }
 
 export function ChannelsSection({
-  linqConfigured,
-  linqPhoneNumber,
+  imessageConfigured,
+  imessagePhoneNumber,
 }: {
-  readonly linqConfigured: boolean;
-  readonly linqPhoneNumber?: string;
+  readonly imessageConfigured: boolean;
+  readonly imessagePhoneNumber?: string;
 }) {
   return (
     <WorkspaceSection headingId="channels-heading" title="Channels">
@@ -154,11 +155,14 @@ export function ChannelsSection({
           <MessageSquareIcon />
           WebChat
         </Button>
-        {linqConfigured && linqPhoneNumber ? (
+        {imessageConfigured && imessagePhoneNumber ? (
           <Button
             nativeButton={false}
             render={
-              <a aria-label="Open iMessage" href={`sms:${linqPhoneNumber}`} />
+              <a
+                aria-label="Open iMessage"
+                href={`sms:${imessagePhoneNumber}`}
+              />
             }
             variant="surface"
           >
@@ -173,26 +177,29 @@ export function ChannelsSection({
         )}
       </div>
       <p className="type-caption text-muted-foreground">
-        {channelAvailabilityMessage({ linqConfigured, linqPhoneNumber })}
+        {channelAvailabilityMessage({
+          imessageConfigured,
+          imessagePhoneNumber,
+        })}
       </p>
     </WorkspaceSection>
   );
 }
 
 function channelAvailabilityMessage({
-  linqConfigured,
-  linqPhoneNumber,
+  imessageConfigured,
+  imessagePhoneNumber,
 }: {
-  readonly linqConfigured: boolean;
-  readonly linqPhoneNumber?: string;
+  readonly imessageConfigured: boolean;
+  readonly imessagePhoneNumber?: string;
 }) {
   return [
     "WebChat is ready.",
-    linqConfigured && linqPhoneNumber
-      ? `iMessage opens ${linqPhoneNumber}.`
-      : linqConfigured
-        ? "Linq is connected. Use its assigned line to start an iMessage."
-        : "Set up Linq to enable iMessage.",
+    imessageConfigured && imessagePhoneNumber
+      ? `iMessage opens ${imessagePhoneNumber}.`
+      : imessageConfigured
+        ? "Photon is connected. Use its iMessage line to start a conversation."
+        : "Set up Photon to enable iMessage.",
   ].join(" ");
 }
 

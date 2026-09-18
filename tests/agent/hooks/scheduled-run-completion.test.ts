@@ -64,7 +64,7 @@ const resumedContext = {
       ...context.session.auth,
       current: {
         attributes: {},
-        authenticator: "linq",
+        authenticator: "photon-imessage",
         principalId: "user-1",
         principalType: "user" as const,
       },

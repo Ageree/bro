@@ -21,13 +21,13 @@ const renderForm = (form: ReactElement) =>
   );
 
 describe("phone OTP errors", () => {
-  it("shows actionable Linq errors", () => {
+  it("shows actionable iMessage errors", () => {
     expect(
       phoneOtpErrorMessage({
-        code: "LINQ_RECIPIENT_NOT_VERIFIED",
-        message: "Send a message to the Linq phone number, then try again.",
+        code: "IMESSAGE_RECIPIENT_UNREACHABLE",
+        message: "This number is not reachable on iMessage.",
       })
-    ).toBe("Send a message to the Linq phone number, then try again.");
+    ).toBe("This number is not reachable on iMessage.");
   });
 
   it("does not expose unrelated server errors", () => {
@@ -39,48 +39,46 @@ describe("phone OTP errors", () => {
     ).toBe("Unable to send a code. Please try again.");
   });
 
-  it("explains and links the required first-time Messages flow", () => {
+  it("explains how the code is delivered and links Messages", () => {
     const html = renderForm(
       createElement(PhoneOtpAuthForm, {
         callbackUrl: "/",
-        linqPhoneNumber: "+12025550123",
+        imessagePhoneNumber: "+12025550123",
       })
     );
 
-    expect(html).toContain("First time signing in?");
-    expect(html).toContain("Linq requires one message");
-    expect(html).toContain("Send any message");
-    expect(html).toContain("Return here and select Send code");
+    expect(html).toContain("Your code arrives by iMessage");
+    expect(html).toContain("can receive iMessage");
     expect(html).toContain('href="sms:+12025550123"');
-    expect(html).toContain("Text Linq in Messages");
+    expect(html).toContain("Open Messages");
   });
 
-  it("keeps the required flow visible when the number cannot be resolved", () => {
+  it("keeps the delivery notice visible without a configured number", () => {
     const html = renderForm(
       createElement(PhoneOtpAuthForm, {
         callbackUrl: "/",
-        linqPhoneNumber: undefined,
+        imessagePhoneNumber: undefined,
       })
     );
 
-    expect(html).toContain("First time signing in?");
-    expect(html).toContain("Find the Linq number in Vercel Connect");
+    expect(html).toContain("Your code arrives by iMessage");
+    expect(html).toContain("iMessage number of this deployment");
     expect(html).not.toContain("sms:");
     const error = phoneOtpErrorMessage({
-      code: "LINQ_SENDING_LINE_UNAVAILABLE",
+      code: "IMESSAGE_RECIPIENT_UNKNOWN",
       message:
-        "No Linq line is currently eligible. Complete the first-time sign-in steps above or review line health in Linq.",
+        "Photon could not open an iMessage conversation with this number.",
     });
-    expect(error).toContain("first-time sign-in steps above");
+    expect(error).toContain("iMessage conversation");
     expect(error).not.toContain("button");
   });
 
-  it("does not show Linq setup during local sign-in", () => {
+  it("does not show the iMessage notice during local sign-in", () => {
     const html = renderForm(
       createElement(LocalPhoneAuthForm, { callbackUrl: "/" })
     );
 
-    expect(html).not.toContain("First time signing in?");
+    expect(html).not.toContain("Your code arrives by iMessage");
     expect(html).toContain("Continue");
   });
 });

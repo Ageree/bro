@@ -83,13 +83,15 @@ export const env = createEnv({
     BLOB_READ_WRITE_TOKEN: requiredValue.optional(),
     BLOB_STORE_ID: requiredValue.optional(),
     GOOGLE_CONNECTOR_UID: requiredValue.default("google/open-instinct"),
-    LINQ_CONNECTOR: requiredValue.optional(),
-    LINQ_PHONE_NUMBER: requiredValue
+    IMESSAGE_PHONE_NUMBER: requiredValue
       .refine(
         (value) => isE164PhoneNumber(value),
-        "LINQ_PHONE_NUMBER must use E.164 format"
+        "IMESSAGE_PHONE_NUMBER must use E.164 format"
       )
       .optional(),
+    IMESSAGE_PROJECT_ID: requiredValue.optional(),
+    IMESSAGE_PROJECT_SECRET: requiredValue.optional(),
+    IMESSAGE_WEBHOOK_SECRET: requiredValue.optional(),
     NODE_ENV: z
       .enum(["development", "production", "test"])
       .default("production"),

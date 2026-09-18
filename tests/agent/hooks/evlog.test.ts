@@ -36,12 +36,12 @@ describe("evlog hook", () => {
     const log = useLogger(first);
     log.set({
       channel: {
-        linq: { reactions: [{ outcome: "accepted" }] },
+        photon: { reactions: [{ outcome: "accepted" }] },
       },
     });
     log.set({
       channel: {
-        linq: { reactions: [{ outcome: "already-acknowledged" }] },
+        photon: { reactions: [{ outcome: "already-acknowledged" }] },
       },
     });
     await emit(
@@ -67,8 +67,8 @@ describe("evlog hook", () => {
     expect(capturedEvents).toHaveLength(2);
     expect(capturedEvents[0]).toMatchObject({
       channel: {
-        kind: "linq",
-        linq: {
+        kind: "photon",
+        photon: {
           reactions: [
             { outcome: "accepted" },
             { outcome: "already-acknowledged" },
@@ -81,10 +81,10 @@ describe("evlog hook", () => {
       },
     });
     expect(capturedEvents[1]).toMatchObject({
-      channel: { kind: "linq" },
+      channel: { kind: "photon" },
       message: { received: "next turn", response: "next response" },
     });
-    expect(capturedEvents[1]).not.toHaveProperty("channel.linq");
+    expect(capturedEvents[1]).not.toHaveProperty("channel.photon");
   });
 });
 
@@ -103,7 +103,7 @@ async function emit<Name extends keyof EvlogEvents>(
 function hookContext(turnId: string, sequence: number) {
   return {
     agent: { name: "root" },
-    channel: { kind: "linq" },
+    channel: { kind: "photon" },
     async getSandbox() {
       throw new Error("Sandbox access is outside this focused test.");
     },

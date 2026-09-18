@@ -20,10 +20,10 @@ import { PhoneNumberField } from "./phone-field";
 
 export function PhoneOtpAuthForm({
   callbackUrl,
-  linqPhoneNumber,
+  imessagePhoneNumber,
 }: {
   readonly callbackUrl: string;
-  readonly linqPhoneNumber?: string;
+  readonly imessagePhoneNumber?: string;
 }) {
   const sendOtp = useMutation({
     mutationFn: async (phoneNumberValue: string) => {
@@ -57,7 +57,7 @@ export function PhoneOtpAuthForm({
 
   return (
     <>
-      <FirstTimeLinqSetup phoneNumber={linqPhoneNumber} />
+      <IMessageCodeNotice phoneNumber={imessagePhoneNumber} />
       <form
         className="mt-4"
         onSubmit={(event) => {
@@ -154,7 +154,7 @@ function VerificationCodeForm({
   );
 }
 
-function FirstTimeLinqSetup({
+function IMessageCodeNotice({
   phoneNumber,
 }: {
   readonly phoneNumber?: string;
@@ -162,35 +162,26 @@ function FirstTimeLinqSetup({
   return (
     <Alert className="mt-6" variant="information">
       <MessageSquareIcon />
-      <AlertTitle>First time signing in?</AlertTitle>
+      <AlertTitle>Your code arrives by iMessage</AlertTitle>
       <AlertDescription>
         <p>
-          Linq requires one message from your phone before it can send a sign-in
-          code.
+          Enter a phone number that can receive iMessage, then open Messages to
+          read the code.
         </p>
-        <ol className="mt-2 list-decimal space-y-1 pl-4">
-          <li>Open Messages to the Linq number.</li>
-          <li>Send any message from the phone number you will enter below.</li>
-          <li>Return here and select Send code.</li>
-        </ol>
         {phoneNumber ? (
           <Button
             className="mt-3 w-full"
             nativeButton={false}
             render={
-              <a
-                aria-label="Text Linq in Messages"
-                href={`sms:${phoneNumber}`}
-              />
+              <a aria-label="Open Messages" href={`sms:${phoneNumber}`} />
             }
             variant="outline"
           >
-            Text Linq in Messages
+            Open Messages
           </Button>
         ) : (
           <p className="mt-2">
-            Find the Linq number in Vercel Connect or the Linq dashboard, text
-            it once, then return here.
+            The code comes from the iMessage number of this deployment.
           </p>
         )}
       </AlertDescription>
@@ -202,7 +193,7 @@ export function phoneOtpErrorMessage(error: {
   readonly code?: string;
   readonly message?: string;
 }) {
-  return error.code?.startsWith("LINQ_") && error.message
+  return error.code?.startsWith("IMESSAGE_") && error.message
     ? error.message
     : "Unable to send a code. Please try again.";
 }

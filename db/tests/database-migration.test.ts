@@ -41,6 +41,7 @@ describe("database migrations", () => {
     await applyMigration(database, "0011_faulty_unicorn.sql");
     await applyMigration(database, "0012_harsh_domino.sql");
     await applyMigration(database, "0013_last_christian_walker.sql");
+    await applyMigration(database, "0014_uneven_vector.sql");
 
     const tables = await database.query<{ count: number }>(
       `SELECT count(*)::int AS count

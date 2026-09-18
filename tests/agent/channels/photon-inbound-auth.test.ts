@@ -1,0 +1,160 @@
+import type { PhotonIMessageChannelConfig } from "eve/channels/photon";
+import { Message } from "chat";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type * as EnvModule from "@shared/environment";
+// oxlint-disable-next-line import/no-unassigned-import -- Loads the production module so the mocked channel factory can capture its configuration.
+import "@agent/channels/photon";
+
+const capture = vi.hoisted(() => ({
+  // SAFETY: The mocked channel factory replaces this value during module loading.
+  config: undefined as PhotonIMessageChannelConfig | undefined,
+  ensureUser: vi.fn<() => Promise<string | undefined>>(),
+}));
+
+vi.mock("@shared/environment", async (importOriginal) => {
+  const original = await importOriginal<typeof EnvModule>();
+  return {
+    ...original,
+    env: {
+      ...original.env,
+      IMESSAGE_PROJECT_ID: "photon-test-project",
+      IMESSAGE_PROJECT_SECRET: "photon-test-secret",
+      IMESSAGE_WEBHOOK_SECRET: "photon-test-webhook-secret",
+    },
+  };
+});
+vi.mock(import("eve/channels/photon"), async (importOriginal) => {
+  const original = await importOriginal();
+  return {
+    ...original,
+    photonIMessageChannel(config: PhotonIMessageChannelConfig) {
+      capture.config = config;
+      return original.photonIMessageChannel(config);
+    },
+  };
+});
+vi.mock("@db/services/auth/phone-user", () => ({
+  ensureVerifiedPhoneUserId: capture.ensureUser,
+}));
+
+const onMessage = capture.config?.onMessage;
+if (!onMessage) {
+  throw new Error("The Photon channel must route inbound messages.");
+}
+
+describe("Photon inbound authentication", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("verifies webhooks with the configured Photon signing secret", () => {
+    expect(capture.config?.webhookSecret).toBe("photon-test-webhook-secret");
+    expect(capture.config?.webhookVerifier).toBeUndefined();
+  });
+
+  it("resolves Photon project credentials lazily", () => {
+    expect(capture.config?.credentials()).toEqual({
+      projectId: "photon-test-project",
+      projectSecret: "photon-test-secret",
+    });
+  });
+
+  it("drops messages this deployment sent itself", async () => {
+    await expect(
+      onMessage(threadContext(), photonMessage("+15550100011", { isMe: true }))
+    ).resolves.toBeNull();
+    expect(capture.ensureUser).not.toHaveBeenCalled();
+  });
+
+  it("drops messages from handles that are not phone numbers", async () => {
+    await expect(
+      onMessage(threadContext(), photonMessage("someone@example.com"))
+    ).resolves.toBeNull();
+    expect(capture.ensureUser).not.toHaveBeenCalled();
+  });
+
+  it("drops messages whose phone number has no usable account", async () => {
+    capture.ensureUser.mockResolvedValue(undefined);
+
+    await expect(
+      onMessage(threadContext(), photonMessage("+15550100011"))
+    ).resolves.toBeNull();
+    expect(capture.ensureUser).toHaveBeenCalledExactlyOnceWith("+15550100011");
+  });
+
+  it("scopes a known handle to that user's own workspace", async () => {
+    capture.ensureUser.mockResolvedValue("user-1");
+
+    const result = await onMessage(
+      threadContext(),
+      photonMessage("+15550100011")
+    );
+
+    expect(result?.auth?.principalId).toBe("better-auth:user-1");
+    expect(result?.auth?.attributes).toMatchObject({
+      conversationChannel: "photon",
+      conversationId: "imessage:iMessage;-;+15550100011",
+      phoneNumber: "+15550100011",
+      photonMessageId: "message-1",
+    });
+    expect(result?.auth?.attributes.workspaceId).toMatch(
+      /^personal:[0-9a-f]{32}$/
+    );
+  });
+
+  it("onboards a first-time number through the verified phone account", async () => {
+    capture.ensureUser.mockResolvedValue("user-new");
+
+    const first = await onMessage(
+      threadContext(),
+      photonMessage("+15550100011")
+    );
+    const second = await onMessage(
+      threadContext(),
+      photonMessage("+15550100011")
+    );
+
+    expect(capture.ensureUser).toHaveBeenCalledTimes(2);
+    expect(first?.auth?.principalId).toBe("better-auth:user-new");
+    expect(second?.auth?.principalId).toBe("better-auth:user-new");
+  });
+});
+
+type InboundContext = Parameters<
+  NonNullable<PhotonIMessageChannelConfig["onMessage"]>
+>[0];
+
+interface ThreadIdentity {
+  readonly thread: Pick<InboundContext["thread"], "id">;
+}
+
+function threadContext(): InboundContext {
+  const identity: ThreadIdentity = {
+    thread: { id: "imessage:iMessage;-;+15550100011" },
+  };
+  // SAFETY: The inbound policy reads only the thread id from this context.
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- A complete Chat SDK thread mock would add unrelated methods.
+  return identity as InboundContext;
+}
+
+function photonMessage(handle: string, options?: { readonly isMe?: boolean }) {
+  return new Message({
+    attachments: [],
+    author: {
+      fullName: handle,
+      isBot: false,
+      isMe: options?.isMe ?? false,
+      userId: handle,
+      userName: handle,
+    },
+    formatted: { children: [], type: "root" },
+    id: "message-1",
+    metadata: {
+      dateSent: new Date("2026-09-03T00:00:00.000Z"),
+      edited: false,
+    },
+    raw: {},
+    text: "list my vault items",
+    threadId: "imessage:iMessage;-;+15550100011",
+  });
+}

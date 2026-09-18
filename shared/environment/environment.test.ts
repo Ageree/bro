@@ -15,8 +15,10 @@ describe("environment", () => {
     for (const [name, value] of Object.entries(requiredEnvironment)) {
       vi.stubEnv(name, value);
     }
-    vi.stubEnv("LINQ_CONNECTOR", "");
-    vi.stubEnv("LINQ_PHONE_NUMBER", "");
+    vi.stubEnv("IMESSAGE_PHONE_NUMBER", "");
+    vi.stubEnv("IMESSAGE_PROJECT_ID", "");
+    vi.stubEnv("IMESSAGE_PROJECT_SECRET", "");
+    vi.stubEnv("IMESSAGE_WEBHOOK_SECRET", "");
   });
 
   afterEach(() => {
@@ -30,14 +32,16 @@ describe("environment", () => {
     expect(env).toMatchObject(requiredEnvironment);
   });
 
-  it("provides the Google connector default without enabling Linq", async () => {
+  it("provides the Google connector default without enabling iMessage", async () => {
     vi.stubEnv("GOOGLE_CONNECTOR_UID", "");
 
     const { env } = await import("@shared/environment");
 
     expect(env.GOOGLE_CONNECTOR_UID).toBe("google/open-instinct");
-    expect(env.LINQ_CONNECTOR).toBeUndefined();
-    expect(env.LINQ_PHONE_NUMBER).toBeUndefined();
+    expect(env.IMESSAGE_PROJECT_ID).toBeUndefined();
+    expect(env.IMESSAGE_PROJECT_SECRET).toBeUndefined();
+    expect(env.IMESSAGE_WEBHOOK_SECRET).toBeUndefined();
+    expect(env.IMESSAGE_PHONE_NUMBER).toBeUndefined();
   });
 
   it("provides stable auth and encryption defaults in local development", async () => {
@@ -75,16 +79,20 @@ describe("environment", () => {
     }
   );
 
-  it("accepts connector overrides", async () => {
+  it("accepts connector and Photon project overrides", async () => {
     vi.stubEnv("GOOGLE_CONNECTOR_UID", "google/custom");
-    vi.stubEnv("LINQ_CONNECTOR", "linq/custom");
-    vi.stubEnv("LINQ_PHONE_NUMBER", "+12025550123");
+    vi.stubEnv("IMESSAGE_PROJECT_ID", "photon-project");
+    vi.stubEnv("IMESSAGE_PROJECT_SECRET", "photon-secret");
+    vi.stubEnv("IMESSAGE_WEBHOOK_SECRET", "photon-webhook-secret");
+    vi.stubEnv("IMESSAGE_PHONE_NUMBER", "+12025550123");
 
     const { env } = await import("@shared/environment");
 
     expect(env.GOOGLE_CONNECTOR_UID).toBe("google/custom");
-    expect(env.LINQ_CONNECTOR).toBe("linq/custom");
-    expect(env.LINQ_PHONE_NUMBER).toBe("+12025550123");
+    expect(env.IMESSAGE_PROJECT_ID).toBe("photon-project");
+    expect(env.IMESSAGE_PROJECT_SECRET).toBe("photon-secret");
+    expect(env.IMESSAGE_WEBHOOK_SECRET).toBe("photon-webhook-secret");
+    expect(env.IMESSAGE_PHONE_NUMBER).toBe("+12025550123");
   });
 
   it("does not provide local defaults in a Vercel development environment", async () => {
@@ -146,14 +154,15 @@ describe("environment", () => {
     );
   });
 
-  it("accepts a Linq connector without a copied phone number", async () => {
-    vi.stubEnv("LINQ_CONNECTOR", "linq/open-instinct");
-    vi.stubEnv("LINQ_PHONE_NUMBER", "");
+  it("accepts a Photon project without a copied phone number", async () => {
+    vi.stubEnv("IMESSAGE_PROJECT_ID", "photon-project");
+    vi.stubEnv("IMESSAGE_PROJECT_SECRET", "photon-secret");
+    vi.stubEnv("IMESSAGE_PHONE_NUMBER", "");
 
     const { env } = await import("@shared/environment");
 
-    expect(env.LINQ_CONNECTOR).toBe("linq/open-instinct");
-    expect(env.LINQ_PHONE_NUMBER).toBeUndefined();
+    expect(env.IMESSAGE_PROJECT_ID).toBe("photon-project");
+    expect(env.IMESSAGE_PHONE_NUMBER).toBeUndefined();
   });
 
   it("accepts Vercel OIDC Blob storage without a static token", async () => {
@@ -166,9 +175,9 @@ describe("environment", () => {
     expect(env.BLOB_STORE_ID).toBe("store_openinstinct");
   });
 
-  it("rejects a Linq phone number outside E.164 format", async () => {
-    vi.stubEnv("LINQ_CONNECTOR", "linq/open-instinct");
-    vi.stubEnv("LINQ_PHONE_NUMBER", "(202) 555-0123");
+  it("rejects an iMessage phone number outside E.164 format", async () => {
+    vi.stubEnv("IMESSAGE_PROJECT_ID", "photon-project");
+    vi.stubEnv("IMESSAGE_PHONE_NUMBER", "(202) 555-0123");
 
     await expect(import("@shared/environment")).rejects.toThrow(
       "Invalid environment variables"

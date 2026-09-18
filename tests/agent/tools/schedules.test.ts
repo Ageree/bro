@@ -52,7 +52,10 @@ describe("schedule tools", () => {
     expect(
       await resolve({}, dynamicContext("scheduled-result"))
     ).not.toBeNull();
-    const interactiveTools = await resolve({}, dynamicContext("linq"));
+    const interactiveTools = await resolve(
+      {},
+      dynamicContext("photon-imessage")
+    );
     const answer =
       interactiveTools && !("execute" in interactiveTools)
         ? interactiveTools["schedules-answer"]
@@ -69,13 +72,13 @@ describe("schedule tools", () => {
         answer: "DCA",
         runId: "00000000-0000-4000-8000-000000000002",
       },
-      toolContext("schedules-answer", "linq")
+      toolContext("schedules-answer", "photon-imessage")
     );
     expect(services.getInput).toHaveBeenCalledExactlyOnceWith(
       { userId: "user-1", workspaceId: "workspace-1" },
       {
-        conversationChannel: "linq",
-        conversationId: "linq:dm:chat-1",
+        conversationChannel: "photon",
+        conversationId: "imessage:dm:chat-1",
       },
       "00000000-0000-4000-8000-000000000002"
     );
@@ -147,8 +150,8 @@ describe("schedule tools", () => {
     expect(services.create).toHaveBeenCalledExactlyOnceWith(
       { userId: "user-1", workspaceId: "workspace-1" },
       {
-        conversationChannel: "linq",
-        conversationId: "linq:dm:chat-1",
+        conversationChannel: "photon",
+        conversationId: "imessage:dm:chat-1",
         missedRunPolicy: "run_latest",
         prompt: "Send the morning summary.",
         replyAnchorMessageId: "message-1",
@@ -176,8 +179,8 @@ describe("schedule tools", () => {
     expect(services.list).toHaveBeenCalledExactlyOnceWith(
       { userId: "user-1", workspaceId: "workspace-1" },
       {
-        conversationChannel: "linq",
-        conversationId: "linq:dm:chat-1",
+        conversationChannel: "photon",
+        conversationId: "imessage:dm:chat-1",
       }
     );
     expect(result).toEqual([scheduleListSummary(job)]);
@@ -204,8 +207,8 @@ describe("schedule tools", () => {
     expect(services.update).toHaveBeenCalledExactlyOnceWith(
       { userId: "user-1", workspaceId: "workspace-1" },
       {
-        conversationChannel: "linq",
-        conversationId: "linq:dm:chat-1",
+        conversationChannel: "photon",
+        conversationId: "imessage:dm:chat-1",
       },
       job.id,
       { status: "paused" }
@@ -224,7 +227,7 @@ describe("schedule tools", () => {
     expect(await resolveMessaging({}, resumedWorkerContext())).toBeNull();
     const reportMessaging = await resolveMessaging(
       {},
-      dynamicContext("scheduled-result", "channel:linq")
+      dynamicContext("scheduled-result", "channel:photon")
     );
     expect(Object.keys(reportMessaging ?? {})).toEqual(["send_message"]);
 
@@ -234,10 +237,9 @@ describe("schedule tools", () => {
     );
     const interactiveMessaging = await resolveMessaging(
       {},
-      dynamicContext("test", "channel:linq")
+      dynamicContext("test", "channel:photon")
     );
     expect(Object.keys(debugMessaging ?? {}).toSorted()).toEqual([
-      "react_to_message",
       "send_message",
     ]);
     expect(Object.keys(interactiveMessaging ?? {}).toSorted()).toEqual([
@@ -325,7 +327,7 @@ function dynamicContext(authenticator: string, kind = "channel:scheduled-run") {
 }
 
 function resumedWorkerContext() {
-  const context = dynamicContext("linq");
+  const context = dynamicContext("photon-imessage");
   return {
     ...context,
     session: {
@@ -346,7 +348,7 @@ function resumedWorkerContext() {
 function toolContext(
   toolName: string,
   authenticator = "test",
-  conversationChannel: "eve" | "linq" = "linq"
+  conversationChannel: "eve" | "photon" = "photon"
 ) {
   return {
     abortSignal: new AbortController().signal,
@@ -368,9 +370,9 @@ function toolContext(
         current: {
           attributes: {
             conversationChannel,
-            conversationId: "linq:dm:chat-1",
-            linqMessageId: "message-1",
-            linqThreadId: "linq:dm:chat-1",
+            conversationId: "imessage:dm:chat-1",
+            photonMessageId: "message-1",
+            photonThreadId: "imessage:dm:chat-1",
             workspaceId: "workspace-1",
           },
           authenticator,
@@ -419,11 +421,11 @@ function inputProperties(schema: ToolDefinition["inputSchema"]) {
 
 function scheduledJob(
   conversation: {
-    conversationChannel: "eve" | "linq";
+    conversationChannel: "eve" | "photon";
     conversationId: string;
   } = {
-    conversationChannel: "linq",
-    conversationId: "linq:dm:chat-1",
+    conversationChannel: "photon",
+    conversationId: "imessage:dm:chat-1",
   }
 ): Awaited<ReturnType<typeof listScheduledAgentJobs>>[number] {
   return {

@@ -4,7 +4,7 @@ import { LocalPhoneAuthForm } from "@app/sign-in/_components/local-form";
 import { PhoneOtpAuthForm } from "@app/sign-in/_components/otp-form";
 import { env, localPhoneAuthBypassEnabled } from "@shared/environment";
 import { getAuthSession } from "@db/services/auth/session";
-import { readLinqOnboardingPhoneNumber } from "@db/services/auth/linq";
+import { photonConfigured } from "@shared/photon/credentials";
 
 export default async function SignInPage({
   searchParams,
@@ -19,12 +19,11 @@ export default async function SignInPage({
     requestedCallback?.startsWith("/") && !requestedCallback.startsWith("//")
       ? requestedCallback
       : "/";
-  const linqConfigured = env.LINQ_CONNECTOR !== undefined;
-  const linqPhoneNumber =
-    localPhoneAuthBypassEnabled || !env.LINQ_CONNECTOR
+  const imessageConfigured = photonConfigured();
+  const imessagePhoneNumber =
+    localPhoneAuthBypassEnabled || !imessageConfigured
       ? undefined
-      : (env.LINQ_PHONE_NUMBER ??
-        (await readLinqOnboardingPhoneNumber(env.LINQ_CONNECTOR)));
+      : env.IMESSAGE_PHONE_NUMBER;
 
   return (
     <main className="flex min-h-svh items-center justify-center bg-background px-4 py-8 text-foreground">
@@ -35,17 +34,17 @@ export default async function SignInPage({
             Enter your phone number to sign in.
           </p>
         </div>
-        {!localPhoneAuthBypassEnabled && !linqConfigured ? (
+        {!localPhoneAuthBypassEnabled && !imessageConfigured ? (
           <p className="type-supporting-body text-muted-foreground">
-            iMessage sign-in is not configured for this deployment. Attach a
-            Linq connector through Vercel Connect.
+            iMessage sign-in is not configured for this deployment. Set its
+            Photon project variables.
           </p>
         ) : localPhoneAuthBypassEnabled ? (
           <LocalPhoneAuthForm callbackUrl={callbackUrl} />
         ) : (
           <PhoneOtpAuthForm
             callbackUrl={callbackUrl}
-            linqPhoneNumber={linqPhoneNumber}
+            imessagePhoneNumber={imessagePhoneNumber}
           />
         )}
       </section>

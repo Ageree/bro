@@ -7,7 +7,7 @@ const applicationEnvironment = [
   "BLOB_*",
   "DATABASE_URL",
   "*_CONNECTOR_UID",
-  "LINQ_*",
+  "IMESSAGE_*",
   "NODE_ENV",
   "SECRET_ENCRYPTION_KEY",
   "VERCEL_*",
@@ -51,7 +51,7 @@ describe("Turbo configuration", () => {
     );
     const deployButtons = [
       ...readme.matchAll(
-        /\[!\[Deploy with Vercel(?: and Linq)?\]\([^)]+\)\]\((https:\/\/vercel\.com\/new\/clone\?[^)]+)\)/gu
+        /\[!\[Deploy with Vercel\]\([^)]+\)\]\((https:\/\/vercel\.com\/new\/clone\?[^)]+)\)/gu
       ),
     ].map((match) => new URL(z.url().parse(match[1])));
     expect(deployButtons).toHaveLength(1);
@@ -59,7 +59,7 @@ describe("Turbo configuration", () => {
     expect(deployButton).toBeDefined();
     const blobSetup = readme
       .split("### Blob storage", 2)[1]
-      ?.split("### Linq iMessage setup", 1)[0];
+      ?.split("### Photon iMessage setup", 1)[0];
 
     expect(deployButton?.searchParams.get("repository-url")).toBe(
       "https://github.com/Merit-Systems/OpenInstinct"
@@ -77,16 +77,7 @@ describe("Turbo configuration", () => {
       },
       { access: "private", type: "blob" },
     ]);
-    expect(
-      JSON.parse(deployButton?.searchParams.get("connect") ?? "null")
-    ).toEqual([
-      {
-        env: "LINQ_CONNECTOR",
-        triggerPath: "/eve/v1/linq",
-        triggers: true,
-        type: "linq",
-      },
-    ]);
+    expect(deployButton?.searchParams.has("connect")).toBe(false);
     expect(blobSetup).toContain(
       "vercel blob create-store open-instinct-images --access private --yes"
     );

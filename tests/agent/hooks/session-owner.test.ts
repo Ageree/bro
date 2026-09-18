@@ -24,7 +24,7 @@ type MessageReceivedHandler = NonNullable<
 const scope = { userId: "user-1", workspaceId: "workspace-1" };
 const context = {
   agent: { name: "test-agent" },
-  channel: { kind: "channel:linq" },
+  channel: { kind: "channel:photon" },
   async getSandbox() {
     throw new Error("Sandbox access is outside this focused test.");
   },
@@ -71,7 +71,7 @@ describe("session ownership hook", () => {
     expect(mocks.ensureScope).toHaveBeenCalledWith(scope);
     expect(mocks.claimSession).toHaveBeenCalledWith(scope, "session-1");
     expect(mocks.saveChat).toHaveBeenCalledWith(scope, {
-      channel: "channel:linq",
+      channel: "channel:photon",
       sessionId: "session-1",
     });
     expect(mocks.ensureScope.mock.invocationCallOrder[0]).toBeLessThan(

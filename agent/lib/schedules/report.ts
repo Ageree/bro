@@ -5,7 +5,7 @@ import {
   finalizeScheduledReport,
   releaseScheduledReport,
 } from "@db/services/scheduled-agent-jobs";
-import linq from "../../channels/linq";
+import photon from "../../channels/photon";
 
 type ClaimedScheduledReport = NonNullable<
   Awaited<ReturnType<typeof claimScheduledReport>>
@@ -40,10 +40,10 @@ export async function dispatchScheduledReport(
   };
   try {
     const prompt = scheduledReportPrompt(claimed);
-    if (claimed.job.conversationChannel === "linq") {
+    if (claimed.job.conversationChannel === "photon") {
       const session = await delivery
-        .to(linq, {
-          adapterName: "linq",
+        .to(photon, {
+          adapterName: "imessage",
           threadId: claimed.job.conversationId,
         })
         .send(prompt, options);
@@ -126,11 +126,11 @@ function scheduledReportAttributes(
     ["workspaceId", claimed.job.workspaceId],
   ]);
   if (
-    claimed.job.conversationChannel === "linq" &&
+    claimed.job.conversationChannel === "photon" &&
     claimed.job.replyAnchorMessageId
   ) {
     attributes.set(
-      "linqReplyAnchorMessageId",
+      "photonReplyAnchorMessageId",
       claimed.job.replyAnchorMessageId
     );
   }

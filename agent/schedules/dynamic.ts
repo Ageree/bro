@@ -100,7 +100,7 @@ function dispatchRecoverableReport(
   to: ScheduleToFn,
   report: Awaited<ReturnType<typeof listRecoverableScheduledReports>>[number]
 ) {
-  return report.conversationChannel === "linq"
+  return report.conversationChannel === "photon"
     ? dispatchScheduledReport({ to }, report.runId)
     : postScheduledReport(report.runId);
 }

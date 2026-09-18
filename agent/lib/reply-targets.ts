@@ -3,14 +3,16 @@ import { z } from "zod";
 import { scheduledReportIdentity } from "@agent/lib/schedules/identity";
 import type { ReplyReference } from "@shared/chat/message-delivery";
 
-const linqReplyTargetSchema = z.strictObject({
-  conversationId: z.string().startsWith("linq:"),
+// Photon encodes its iMessage conversations as `imessage:<chat guid>`.
+const photonConversationIdSchema = z.string().startsWith("imessage:");
+const photonReplyTargetSchema = z.strictObject({
+  conversationId: photonConversationIdSchema,
   messageId: z.string().min(1),
 });
 
-type LinqReplyTarget = z.infer<typeof linqReplyTargetSchema>;
+type PhotonReplyTarget = z.infer<typeof photonReplyTargetSchema>;
 
-const backgroundReplyTargets = defineState<Record<string, LinqReplyTarget>>(
+const backgroundReplyTargets = defineState<Record<string, PhotonReplyTarget>>(
   "open-instinct.background-reply-targets",
   () => ({})
 );
@@ -21,7 +23,7 @@ export function registerBackgroundReplyTarget(
   taskId: string,
   auth: SessionAuth
 ) {
-  const target = currentLinqReplyTarget(auth);
+  const target = currentPhotonReplyTarget(auth);
   if (!target) return;
 
   backgroundReplyTargets.update((current) =>
@@ -34,17 +36,17 @@ export function registerBackgroundReplyTarget(
   );
 }
 
-export function resolveLinqReplyTarget(
+export function resolvePhotonReplyTarget(
   reference: ReplyReference | undefined,
   auth: SessionAuth
 ) {
   if (!reference) return undefined;
 
-  const conversationId = currentLinqConversationId(auth);
+  const conversationId = currentPhotonConversationId(auth);
   if (!conversationId) return undefined;
 
   if (reference.kind === "current") {
-    return currentLinqReplyTarget(auth);
+    return currentPhotonReplyTarget(auth);
   }
 
   if (reference.kind === "task") {
@@ -59,25 +61,24 @@ export function resolveLinqReplyTarget(
   return {
     conversationId,
     messageId: report.replyAnchorMessageId,
-  } satisfies LinqReplyTarget;
+  } satisfies PhotonReplyTarget;
 }
 
-function currentLinqConversationId(auth: SessionAuth) {
+function currentPhotonConversationId(auth: SessionAuth) {
   const caller = auth.current ?? auth.initiator;
-  if (caller?.attributes.conversationChannel !== "linq") return undefined;
-  const parsed = z
-    .string()
-    .startsWith("linq:")
-    .safeParse(caller.attributes.conversationId);
+  if (caller?.attributes.conversationChannel !== "photon") return undefined;
+  const parsed = photonConversationIdSchema.safeParse(
+    caller.attributes.conversationId
+  );
   return parsed.success ? parsed.data : undefined;
 }
 
-function currentLinqReplyTarget(auth: SessionAuth) {
+function currentPhotonReplyTarget(auth: SessionAuth) {
   const caller = auth.current;
-  if (caller?.attributes.conversationChannel !== "linq") return undefined;
-  const parsed = linqReplyTargetSchema.safeParse({
+  if (caller?.attributes.conversationChannel !== "photon") return undefined;
+  const parsed = photonReplyTargetSchema.safeParse({
     conversationId: caller.attributes.conversationId,
-    messageId: caller.attributes.linqMessageId,
+    messageId: caller.attributes.photonMessageId,
   });
   return parsed.success ? parsed.data : undefined;
 }
