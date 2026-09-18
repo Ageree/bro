@@ -25,14 +25,8 @@ describe("source layout", () => {
     expect(existsSync("src")).toBe(false);
   });
 
-  it("keeps browser support and cross-boundary contracts explicitly owned", () => {
-    expect(directories("web")).toEqual([
-      "auth",
-      "browser",
-      "components",
-      "hooks",
-      "trpc",
-    ]);
+  it("keeps cross-boundary contracts explicitly owned", () => {
+    expect(directories("web")).toEqual(["auth", "components", "hooks", "trpc"]);
     expect(files("web")).toEqual([]);
     expect(directories("shared")).toEqual([
       "browser",
@@ -47,10 +41,7 @@ describe("source layout", () => {
     ]);
     expect(files("shared")).toEqual([]);
     expect(existsSync("shared/environment/env.ts")).toBe(true);
-    expect(existsSync("agent/subagents/browser-agent/lib/kernel.ts")).toBe(
-      true
-    );
     expect(existsSync("db/services/installation-secrets.ts")).toBe(true);
-    expect(existsSync("evals/browser/worker-events.ts")).toBe(true);
+    expect(existsSync("agent/subagents")).toBe(false);
   });
 });

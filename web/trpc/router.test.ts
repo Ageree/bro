@@ -1,10 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import * as BrowserTraces from "@db/services/browser-traces";
 import * as Chats from "@db/services/chats";
 import type { AccessScope } from "@shared/identity/access-scope";
 import { appRouter } from "./router";
 
-const listBrowserTracesMock = vi.spyOn(BrowserTraces, "listBrowserTraces");
 const saveChatMock = vi.spyOn(Chats, "saveChat");
 
 const scope = {
@@ -15,14 +13,16 @@ const scope = {
 describe("appRouter", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("passes the authenticated scope and cursor to the trace history", async () => {
-    listBrowserTracesMock.mockResolvedValue({ nextCursor: null, traces: [] });
+  it("passes the authenticated scope to a chat write", async () => {
+    saveChatMock.mockResolvedValue(undefined);
 
     await appRouter
       .createCaller({ origin: "https://example.com", scope })
-      .traces.list({ cursor: "next-page" });
+      .chats.save({ sessionId: "session-1" });
 
-    expect(listBrowserTracesMock).toHaveBeenCalledWith(scope, "next-page");
+    expect(saveChatMock).toHaveBeenCalledWith(scope, {
+      sessionId: "session-1",
+    });
   });
 
   it("rejects invalid chat writes before persistence", async () => {

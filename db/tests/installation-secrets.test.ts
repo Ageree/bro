@@ -20,7 +20,6 @@ beforeEach(() => {
   vi.stubEnv("BLOB_READ_WRITE_TOKEN", "");
   vi.stubEnv("BLOB_STORE_ID", "store_openinstinct");
   vi.stubEnv("DATABASE_URL", "postgresql://user:password@example.com/database");
-  vi.stubEnv("KERNEL_API_KEY", "test-kernel-key");
   vi.stubEnv("SECRET_ENCRYPTION_KEY", "");
   vi.stubEnv("VERCEL_PROJECT_ID", "prj_openinstinct");
 });

@@ -1,7 +1,6 @@
 import { gateway } from "ai";
 import { revokeToken, startAuthorization } from "@vercel/connect";
 import { z } from "zod";
-import { listBrowserTraces } from "@db/services/browser-traces";
 import { saveChat } from "@db/services/chats";
 import { replaceUserProfile } from "@db/services/user-profile";
 import { selectGatewayModel } from "@db/services/settings";
@@ -59,13 +58,6 @@ export const appRouter = createTRPCRouter({
       .input(userProfileSchema)
       .output(userProfileSchema)
       .mutation(({ ctx, input }) => replaceUserProfile(ctx.scope, input)),
-  },
-  traces: {
-    list: protectedProcedure
-      .input(z.object({ cursor: z.string().nullish() }))
-      .query(({ ctx, input }) =>
-        listBrowserTraces(ctx.scope, input.cursor ?? undefined)
-      ),
   },
   vault: {
     create: protectedProcedure

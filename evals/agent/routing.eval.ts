@@ -18,14 +18,13 @@ export default [
       turn.succeeded();
       turn.calledTool("web_fetch", { count: 1 });
       turn.notCalledTool("web_search");
-      turn.notEvent("subagent.called", { data: { name: "browser-agent" } });
       const text = await requireDeliveredText(t, turn);
       t.check(text, includes(/example domain/iu));
       assertPlainTextDelivery(t, text);
     },
   }),
   defineEval({
-    description: "Uses public search for discovery instead of a browser worker",
+    description: "Uses public search for discovery instead of prior knowledge",
     tags: [...agentEvalTags, "routing"],
     async test(t) {
       const turn = await t.send(
@@ -34,7 +33,6 @@ export default [
       turn.expectOk();
       turn.succeeded();
       turn.calledTool("web_search");
-      turn.notEvent("subagent.called", { data: { name: "browser-agent" } });
       const text = await requireDeliveredText(t, turn);
       t.judge.autoevals
         .closedQA(
@@ -47,7 +45,7 @@ export default [
     },
   }),
   defineEval({
-    description: "Drafts an email without sending or delegating",
+    description: "Drafts an email without sending it",
     tags: [...agentEvalTags, "routing", "smoke"],
     async test(t) {
       const turn = await t.send(
@@ -56,7 +54,6 @@ export default [
       turn.expectOk();
       turn.succeeded();
       turn.notCalledTool("gmail-send");
-      turn.notEvent("subagent.called", { data: { name: "browser-agent" } });
       const text = await requireDeliveredText(t, turn);
       t.judge.autoevals
         .closedQA(

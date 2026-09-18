@@ -258,7 +258,6 @@ export const vaultSetupRequestSchema = z.union([
 export type VaultCreateItem = z.infer<typeof vaultCreateItemSchema>;
 export type VaultImportItems = z.infer<typeof vaultImportItemsSchema>;
 export type VaultItem = z.infer<typeof vaultItemSchema>;
-export type VaultItemKind = z.infer<typeof vaultItemKindSchema>;
 export type VaultSetupRequest = z.infer<typeof vaultSetupRequestSchema>;
 
 export function serializeLoginVaultPayload(

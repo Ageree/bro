@@ -232,8 +232,7 @@ describe("migration deployment policy", () => {
     );
     const services = await Promise.all(
       [
-        "browser-traces",
-        "browsers",
+        "browser-images",
         "chats",
         "scope",
         "secrets",

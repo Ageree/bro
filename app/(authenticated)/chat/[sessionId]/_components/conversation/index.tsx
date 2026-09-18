@@ -5,7 +5,7 @@ import {
   messageTimestamps,
   sentMessages,
 } from "../../_lib/message-events";
-import { messagesForTraceView, type TraceView } from "../../_lib/trace-view";
+import type { TraceView } from "../../_lib/trace-view";
 import { getLatestTurnFailure } from "../../_lib/turn-failure";
 import {
   Conversation,
@@ -58,10 +58,7 @@ export function ChatConversation({
     isBusy || isRestoring ? undefined : getLatestTurnFailure(agent.events);
   const errorMessage =
     (agent.error ? toErrorMessage(agent.error) : undefined) ?? turnFailure;
-  const messages = useMemo(
-    () => messagesForTraceView(agent.data.messages, agent.events, traceView),
-    [agent.data.messages, agent.events, traceView]
-  );
+  const messages = agent.data.messages;
   const timestamps = useMemo(
     () =>
       traceView === "imessage"

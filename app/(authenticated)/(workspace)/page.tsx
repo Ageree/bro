@@ -1,10 +1,4 @@
-import {
-  BotIcon,
-  CloudIcon,
-  ImageIcon,
-  MailIcon,
-  MessageSquareIcon,
-} from "lucide-react";
+import { BotIcon, ImageIcon, MailIcon, MessageSquareIcon } from "lucide-react";
 import Link from "next/link";
 import type { ReactNode } from "react";
 import {
@@ -30,7 +24,6 @@ export default async function Page({ searchParams }: PageProps<"/">) {
     readGoogleWorkspaceConnection(scope.userId),
     getGatewayModel(scope),
   ]);
-  const browserReady = true;
   const imageStorageReady = Boolean(
     env.BLOB_STORE_ID ?? env.BLOB_READ_WRITE_TOKEN
   );
@@ -50,7 +43,6 @@ export default async function Page({ searchParams }: PageProps<"/">) {
       ) : null}
 
       <ChannelsSection
-        browserReady={browserReady}
         linqConfigured={env.LINQ_CONNECTOR !== undefined}
         linqPhoneNumber={env.LINQ_PHONE_NUMBER}
       />
@@ -59,12 +51,6 @@ export default async function Page({ searchParams }: PageProps<"/">) {
       <WorkspaceSection headingId="connectors-heading" title="Infrastructure">
         <div className="divide-y divide-border/50 border-y border-border/50">
           <ConnectorRow
-            action={<Badge variant="success">Connected</Badge>}
-            description="Run isolated browsers in your Kernel account."
-            icon={<CloudIcon />}
-            label="Kernel browser"
-          />
-          <ConnectorRow
             action={
               <Badge variant={imageStorageReady ? "success" : "secondary"}>
                 {imageStorageReady ? "Connected" : "Setup required"}
@@ -72,8 +58,8 @@ export default async function Page({ searchParams }: PageProps<"/">) {
             }
             description={
               imageStorageReady
-                ? "Store browser images in a private Vercel Blob store."
-                : "Connect a private Vercel Blob store to share browser images."
+                ? "Store image artifacts in a private Vercel Blob store."
+                : "Connect a private Vercel Blob store to share image artifacts."
             }
             icon={<ImageIcon />}
             label="Vercel Blob"
@@ -151,32 +137,23 @@ async function readGoogleWorkspaceConnection(
 }
 
 export function ChannelsSection({
-  browserReady,
   linqConfigured,
   linqPhoneNumber,
 }: {
-  readonly browserReady: boolean;
   readonly linqConfigured: boolean;
   readonly linqPhoneNumber?: string;
 }) {
   return (
     <WorkspaceSection headingId="channels-heading" title="Channels">
       <div className="grid gap-2 sm:grid-cols-2">
-        {browserReady ? (
-          <Button
-            nativeButton={false}
-            render={<Link href="/chat" />}
-            variant="surface"
-          >
-            <MessageSquareIcon />
-            WebChat
-          </Button>
-        ) : (
-          <Button disabled variant="surface">
-            <MessageSquareIcon />
-            WebChat
-          </Button>
-        )}
+        <Button
+          nativeButton={false}
+          render={<Link href="/chat" />}
+          variant="surface"
+        >
+          <MessageSquareIcon />
+          WebChat
+        </Button>
         {linqConfigured && linqPhoneNumber ? (
           <Button
             nativeButton={false}
@@ -196,29 +173,21 @@ export function ChannelsSection({
         )}
       </div>
       <p className="type-caption text-muted-foreground">
-        {channelAvailabilityMessage({
-          browserReady,
-          linqConfigured,
-          linqPhoneNumber,
-        })}
+        {channelAvailabilityMessage({ linqConfigured, linqPhoneNumber })}
       </p>
     </WorkspaceSection>
   );
 }
 
 function channelAvailabilityMessage({
-  browserReady,
   linqConfigured,
   linqPhoneNumber,
 }: {
-  readonly browserReady: boolean;
   readonly linqConfigured: boolean;
   readonly linqPhoneNumber?: string;
 }) {
   return [
-    browserReady
-      ? "WebChat is ready."
-      : "KERNEL_API_KEY is required to enable WebChat.",
+    "WebChat is ready.",
     linqConfigured && linqPhoneNumber
       ? `iMessage opens ${linqPhoneNumber}.`
       : linqConfigured

@@ -7,7 +7,6 @@ describe("workspace Linq channel", () => {
   it("disables iMessage without advertising another deployment's number", () => {
     const html = renderToStaticMarkup(
       createElement(ChannelsSection, {
-        browserReady: true,
         linqConfigured: false,
         linqPhoneNumber: undefined,
       })
@@ -21,7 +20,6 @@ describe("workspace Linq channel", () => {
   it("links the configured deployment number", () => {
     const html = renderToStaticMarkup(
       createElement(ChannelsSection, {
-        browserReady: true,
         linqConfigured: true,
         linqPhoneNumber: "+12025550123",
       })
@@ -34,7 +32,6 @@ describe("workspace Linq channel", () => {
   it("reports a connected Linq line without requiring its number", () => {
     const html = renderToStaticMarkup(
       createElement(ChannelsSection, {
-        browserReady: true,
         linqConfigured: true,
         linqPhoneNumber: undefined,
       })
@@ -47,7 +44,6 @@ describe("workspace Linq channel", () => {
   it("does not advertise a phone-number override without its connector", () => {
     const html = renderToStaticMarkup(
       createElement(ChannelsSection, {
-        browserReady: true,
         linqConfigured: false,
         linqPhoneNumber: "+12025550123",
       })

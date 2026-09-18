@@ -70,23 +70,6 @@ describe("local development", supervisorTestOptions, () => {
     expectIsolatedLifecycle(result.commands);
   });
 
-  it("rejects a missing Kernel key before starting Docker", async () => {
-    const result = await runWithoutKernelApiKey();
-
-    expect(result.code).toBe(1);
-    expect(result.commands).toBe("");
-    expect(result.stderr).toContain(
-      "KERNEL_API_KEY is required for manual local development."
-    );
-    expect(result.stderr).toContain(
-      "Deploy with Vercel button in README.md; its Kernel Marketplace integration supplies the credentials automatically."
-    );
-    expect(result.stderr).toContain(
-      "pnpm exec vercel integration add kernel --plan FREE"
-    );
-    expect(result.stderr).toContain("create a key at https://kernel.sh");
-  });
-
   it("does not advance when interrupted startup exits cleanly", async () => {
     const result = await interruptDuringStartup({ DEV_STARTUP_EXIT: "0" });
 
@@ -189,7 +172,6 @@ printf 'pnpm %s\\n' "$*" >> "$DEV_SUPERVISOR_LOG"
     {
       env: {
         DEV_SUPERVISOR_LOG: logPath,
-        KERNEL_API_KEY: "test-kernel-key",
         NODE_ENV: "test",
         PATH: directory,
         ...environment,
@@ -244,7 +226,6 @@ printf 'pnpm %s %s\n' "$*" "$DATABASE_URL" >> "$DEV_SUPERVISOR_LOG"
     {
       env: {
         DEV_SUPERVISOR_LOG: logPath,
-        KERNEL_API_KEY: "test-kernel-key",
         NODE_ENV: "test",
         PATH: directory,
       },
@@ -256,44 +237,5 @@ printf 'pnpm %s %s\n' "$*" "$DATABASE_URL" >> "$DEV_SUPERVISOR_LOG"
   return {
     code: await exitCode,
     commands: await readFile(logPath, "utf8"),
-  };
-}
-
-async function runWithoutKernelApiKey() {
-  const directory = await mkdtemp(join(tmpdir(), "open-instinct-dev-"));
-  temporaryDirectories.push(directory);
-  const logPath = join(directory, "commands.log");
-  const dockerPath = join(directory, "docker");
-  await writeFile(
-    dockerPath,
-    `#!/bin/sh
-printf '%s\n' "$*" >> "$DEV_SUPERVISOR_LOG"
-`
-  );
-  await chmod(dockerPath, 0o755);
-
-  const supervisor = spawn(
-    process.execPath,
-    [new URL("../scripts/dev.ts", import.meta.url).pathname],
-    {
-      env: {
-        DEV_SUPERVISOR_LOG: logPath,
-        NODE_ENV: "test",
-        PATH: directory,
-      },
-      stdio: ["ignore", "ignore", "pipe"],
-    }
-  );
-  supervisor.stderr.setEncoding("utf8");
-  let stderr = "";
-  supervisor.stderr.on("data", (chunk: string) => {
-    stderr += chunk;
-  });
-  const exitCode = waitForSupervisorClose(supervisor);
-
-  return {
-    code: await exitCode,
-    commands: await readFile(logPath, "utf8").catch(() => ""),
-    stderr,
   };
 }

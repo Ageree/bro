@@ -11,7 +11,7 @@ export const metadata: Metadata = {
   metadataBase: new URL(applicationOrigin()),
   title: "OpenInstinct",
   description:
-    "A self-hosted personal agent with private credentials and Kernel-powered browser execution.",
+    "A self-hosted personal agent with private credentials and connected services.",
 };
 
 export default async function RootLayout({ children }: LayoutProps<"/">) {

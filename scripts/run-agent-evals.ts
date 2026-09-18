@@ -55,8 +55,6 @@ async function runAgentEvals() {
       BETTER_AUTH_URL: "http://127.0.0.1:9",
       DATABASE_URL: databaseUrl,
       DATABASE_URL_UNPOOLED: databaseUrl,
-      KERNEL_API_KEY: "unused-by-agent-evals",
-      KERNEL_BASE_URL: "http://127.0.0.1:9",
       NODE_ENV: "development" as const,
     };
 

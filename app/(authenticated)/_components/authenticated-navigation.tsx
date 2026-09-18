@@ -3,7 +3,6 @@
 import {
   HistoryIcon,
   KeyRoundIcon,
-  ListTodoIcon,
   MessageSquareIcon,
   PanelsTopLeftIcon,
   UserRoundIcon,
@@ -35,7 +34,6 @@ const navigation = [
     id: "history",
     label: "All chats",
   },
-  { href: "/tasks", icon: ListTodoIcon, id: "tasks", label: "Tasks" },
 ] as const;
 
 export function AuthenticatedNavigation() {
@@ -85,6 +83,5 @@ function activeRoute(pathname: string) {
   if (pathname.startsWith("/personal-info")) return "personal-info";
   if (pathname.startsWith("/chat/history")) return "history";
   if (pathname.startsWith("/chat")) return "chat";
-  if (pathname.startsWith("/tasks")) return "tasks";
   return undefined;
 }

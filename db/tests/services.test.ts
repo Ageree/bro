@@ -1,14 +1,10 @@
 import { readFile } from "node:fs/promises";
 import { PGlite } from "@electric-sql/pglite";
-import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/pglite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as Database from "@db";
 import * as schema from "../schema";
-import {
-  browserTraceDomains as browserTraceDomainsTable,
-  browserTraces as browserTracesTable,
-} from "../schema";
+import { browserImageArtifacts as browserImageArtifactsTable } from "../schema";
 
 const databases: PGlite[] = [];
 
@@ -36,106 +32,63 @@ describe("database services", () => {
     const database = pgliteDatabase as never;
     vi.spyOn(Database, "db", "get").mockReturnValue(database);
 
-    const [
-      browserImages,
-      browsers,
-      browserTraces,
-      chats,
-      secrets,
-      sessions,
-      settings,
-      scope,
-      vault,
-    ] = await Promise.all([
-      import("@db/services/browser-images"),
-      import("@db/services/browsers"),
-      import("@db/services/browser-traces"),
-      import("@db/services/chats"),
-      import("@db/services/secrets"),
-      import("@db/services/sessions"),
-      import("@db/services/settings"),
-      import("@db/services/scope"),
-      import("@db/services/vault"),
-    ]);
+    const [browserImages, chats, secrets, sessions, settings, scope, vault] =
+      await Promise.all([
+        import("@db/services/browser-images"),
+        import("@db/services/chats"),
+        import("@db/services/secrets"),
+        import("@db/services/sessions"),
+        import("@db/services/settings"),
+        import("@db/services/scope"),
+        import("@db/services/vault"),
+      ]);
     const alice = { userId: "alice", workspaceId: "workspace:alice" };
     const bob = { userId: "bob", workspaceId: "workspace:bob" };
 
     await scope.ensureScope(alice);
     await scope.ensureScope(bob);
 
-    const imageInput = {
+    const imageId = "00000000-0000-4000-8000-0000000000a1";
+    await pgliteDatabase.insert(browserImageArtifactsTable).values({
       browserSessionId: "browser-alice",
+      byteSize: 8,
+      contentHash: "content-hash",
+      createdAt: new Date(),
+      createdByUserId: alice.userId,
+      filename: "product.png",
+      id: imageId,
       idempotencyKey: "worker-session:call-image",
       label: "Product image",
+      mediaType: "image/png",
       rootSessionId: "session-alice",
       sourceKind: "viewport",
+      status: "ready",
+      storagePathname: "browser-images/alice/content-hash",
       workerSessionId: "worker-alice",
-    };
-    const firstReservation = await browserImages.reserveBrowserImageArtifact(
+      workspaceId: alice.workspaceId,
+    });
+
+    const storedImage = await browserImages.readReadyBrowserImageArtifact(
       alice,
-      imageInput
+      imageId,
+      { rootSessionId: "session-alice" }
     );
-    const retryReservation = await browserImages.reserveBrowserImageArtifact(
-      alice,
-      imageInput
-    );
-    expect(firstReservation.status).toBe("pending");
-    expect(retryReservation).toEqual(firstReservation);
-    if (firstReservation.status !== "pending") {
-      throw new Error("Expected a pending browser image reservation.");
-    }
-    const finalized = await browserImages.finalizeBrowserImageArtifact(
-      alice,
-      firstReservation.reservation,
-      {
-        byteSize: 8,
-        contentHash: "content-hash",
-        filename: "product.png",
-        mediaType: "image/png",
-        sourceKind: "viewport",
-        storagePathname: `${firstReservation.reservation.storagePathname}/content-hash`,
-      }
-    );
-    const image = finalized.image;
-    expect(image).toMatchObject({
+    expect(storedImage).toMatchObject({
       byteSize: 8,
       label: "Product image",
       mediaType: "image/png",
     });
-    await expect(
-      browserImages.finalizeBrowserImageArtifact(
-        alice,
-        firstReservation.reservation,
-        {
-          byteSize: 9,
-          contentHash: "losing-content-hash",
-          filename: "losing.png",
-          mediaType: "image/png",
-          sourceKind: "viewport",
-          storagePathname: `${firstReservation.reservation.storagePathname}/losing-content-hash`,
-        }
-      )
-    ).resolves.toEqual(finalized);
-    const storedImage = await browserImages.readReadyBrowserImageArtifact(
-      alice,
-      image.id,
-      { rootSessionId: "session-alice" }
-    );
     expect(storedImage?.createdAt).toMatch(
       /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u
     );
     expect(
-      await browserImages.readReadyBrowserImageArtifact(bob, image.id)
+      await browserImages.readReadyBrowserImageArtifact(alice, imageId, {
+        rootSessionId: "another-session",
+      })
     ).toBeUndefined();
     expect(
-      await browserImages.reserveBrowserImageArtifact(alice, imageInput)
-    ).toEqual({ image, status: "ready" });
-    await expect(
-      browserImages.reserveBrowserImageArtifact(alice, {
-        ...imageInput,
-        workerSessionId: "different-worker",
-      })
-    ).rejects.toThrow("idempotency key is already in use");
+      await browserImages.readReadyBrowserImageArtifact(bob, imageId)
+    ).toBeUndefined();
 
     await sessions.claimSession(alice, "session-alice");
 
@@ -193,105 +146,7 @@ describe("database services", () => {
     expect(await chats.readChat(bob, "session-unknown")).toBeUndefined();
     expect(await chats.listChats(bob)).toEqual([]);
 
-    await browsers.createBrowserSession(alice, {
-      createdAt: new Date().toISOString(),
-      sessionId: "browser-alice",
-      workerSessionId: "worker-alice",
-    });
-    expect(
-      await browsers.readBrowserSession(alice, "browser-alice")
-    ).toMatchObject({ workerSessionId: "worker-alice" });
-    expect(
-      await browsers.readBrowserSession(bob, "browser-alice")
-    ).toBeUndefined();
-    expect(await browsers.listBrowserSessions(alice)).toHaveLength(1);
-    expect(
-      await browsers.listWorkerBrowserSessions(alice, "worker-alice")
-    ).toHaveLength(1);
-    expect(
-      await browsers.listWorkerBrowserSessions(bob, "worker-alice")
-    ).toEqual([]);
-    expect(await browsers.deleteBrowserSession(bob, "browser-alice")).toBe(
-      false
-    );
-
     const { serializeLoginVaultPayload } = await import("@shared/vault/schema");
-    await browserTraces.beginBrowserTrace(alice, {
-      sessionId: "worker-alice",
-      startedAt: "2026-08-31T00:00:00.000Z",
-      task: "Order the blue mug",
-    });
-    await browserTraces.recordBrowserTraceDomains(alice, "worker-alice", [
-      "shop.example.com",
-      "shop.example.com",
-    ]);
-    await browserTraces.recordBrowserTraceDomains(bob, "worker-alice", [
-      "intruder.example.com",
-    ]);
-    await browserTraces.completeBrowserTrace(alice, "worker-alice", {
-      completedAt: "2026-08-31T00:00:12.500Z",
-      resultMessage: "Ordered.",
-      status: "success",
-    });
-    const [trace] = await pgliteDatabase
-      .select()
-      .from(browserTracesTable)
-      .where(eq(browserTracesTable.sessionId, "worker-alice"));
-    expect(trace).toMatchObject({
-      durationMs: 12_500,
-      resultMessage: "Ordered.",
-      status: "success",
-      task: "Order the blue mug",
-    });
-    const traceDomains = await pgliteDatabase
-      .select()
-      .from(browserTraceDomainsTable);
-    expect(traceDomains).toHaveLength(1);
-    expect(traceDomains[0]).toMatchObject({
-      domain: "shop.example.com",
-      traceSessionId: "worker-alice",
-    });
-
-    await browserTraces.recordBrowserTraceEvents(alice, "worker-alice", [
-      {
-        at: "2026-08-31T00:00:01.000Z",
-        detail: "Order the blue mug",
-        id: "evt_01",
-        label: "Task received",
-        type: "message.received",
-      },
-    ]);
-    await browserTraces.recordBrowserTraceEvents(bob, "worker-alice", [
-      {
-        at: "2026-08-31T00:00:01.000Z",
-        detail: "intrusion",
-        id: "evt_02",
-        label: "Task received",
-        type: "message.received",
-      },
-    ]);
-    const events = await browserTraces.listBrowserTraceEvents(
-      alice,
-      "worker-alice"
-    );
-    expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({ id: "evt_01", label: "Task received" });
-    expect(
-      await browserTraces.listBrowserTraceEvents(bob, "worker-alice")
-    ).toEqual([]);
-
-    const tracePage = await browserTraces.listBrowserTraces(alice);
-    expect(tracePage.nextCursor).toBeNull();
-    expect(tracePage.traces).toHaveLength(1);
-    expect(tracePage.traces[0]).toMatchObject({
-      domains: ["shop.example.com"],
-      durationMs: 12_500,
-      sessionId: "worker-alice",
-      status: "success",
-      task: "Order the blue mug",
-    });
-    expect((await browserTraces.listBrowserTraces(bob)).traces).toEqual([]);
-
     await vault.saveVaultItem(alice, {
       account: "alice@example.com",
       kind: "login",
@@ -304,14 +159,9 @@ describe("database services", () => {
         version: 2,
       }),
     });
-    const [aliceVaultItem] = await vault.listVaultItems(alice);
-    expect(aliceVaultItem).toMatchObject({
-      label: "Alice",
-    });
-    expect(
-      await vault.readVaultItem(bob, aliceVaultItem?.id ?? "vault-alice")
-    ).toBeUndefined();
-    expect(await vault.listVaultItems(alice)).toHaveLength(1);
+    const [aliceVaultItem] = await vault.readVaultItems(alice);
+    expect(aliceVaultItem).toMatchObject({ hasSecret: true, label: "Alice" });
+    expect(await vault.readVaultItems(bob)).toEqual([]);
     expect(
       await vault.deleteVaultItem(bob, aliceVaultItem?.id ?? "vault-alice")
     ).toBe(false);

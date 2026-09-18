@@ -4,7 +4,6 @@ beforeEach(() => {
   vi.resetModules();
   vi.stubEnv("BETTER_AUTH_URL", "");
   vi.stubEnv("DATABASE_URL", "postgresql://user:password@example.com/database");
-  vi.stubEnv("KERNEL_API_KEY", "test-kernel-key");
   vi.stubEnv("VERCEL_BRANCH_URL", "");
   vi.stubEnv("VERCEL_ENV", undefined);
   vi.stubEnv("VERCEL_PROJECT_PRODUCTION_URL", "");
