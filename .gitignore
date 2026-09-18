@@ -9,3 +9,6 @@ node_modules/
 .vercel
 public/
 .env*
+
+# Timestamped run artifacts from `npm run bench:models` — raw data, not source.
+bench-*.json
