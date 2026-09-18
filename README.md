@@ -152,6 +152,11 @@ vercel env add BROWSER_USE_WEBHOOK_SECRET production
 vercel deploy --prod
 ```
 
+`BROWSER_USE_MAX_COST_USD` is the ceiling every run is created with and defaults
+to `1`: Browser Use stops a run that reaches it, so a task that loops or wanders
+into an expensive site cannot keep spending unattended. Raise it for errands
+that genuinely need longer sessions.
+
 `BROWSER_USE_PROXY_COUNTRY` is the ISO 3166-1 alpha-2 residential-proxy country
 every run browses through and defaults to `ru`. `BROWSER_USE_MODEL` overrides
 the hosted agent the cloud runs; leaving it unset uses the v4 API's documented

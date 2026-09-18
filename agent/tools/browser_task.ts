@@ -218,6 +218,7 @@ export const browserTask = defineTool({
         site: input.site,
       });
       const run = await createBrowserUseRun({
+        maxCostUsd: env.BROWSER_USE_MAX_COST_USD,
         model: env.BROWSER_USE_MODEL,
         profileId,
         proxyCountryCode: env.BROWSER_USE_PROXY_COUNTRY,

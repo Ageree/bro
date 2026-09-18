@@ -69,6 +69,7 @@ describe("Browser Use client", () => {
     );
 
     const run = await client.createBrowserUseRun({
+      maxCostUsd: 2.5,
       model: "hosted-agent",
       profileId: "profile-1",
       proxyCountryCode: "ru",
@@ -90,6 +91,7 @@ describe("Browser Use client", () => {
     expect(call?.headers.get("x-browser-use-api-key")).toBe("browseruse-key");
     expect(JSON.parse(call?.body ?? "")).toEqual({
       browserSettings: { profileId: "profile-1", proxyCountryCode: "ru" },
+      maxCostUsd: 2.5,
       model: "hosted-agent",
       secretBindings: [
         {

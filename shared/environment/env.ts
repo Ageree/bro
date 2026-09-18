@@ -104,6 +104,12 @@ export const env = createEnv({
         "BROWSER_USE_BASE_URL must be an absolute URL"
       )
       .default("https://api.browser-use.com/api/v4"),
+    // Every run carries this ceiling, so a task that loops or wanders into an
+    // expensive site stops costing money without anyone watching it.
+    BROWSER_USE_MAX_COST_USD: z.coerce
+      .number()
+      .positive("BROWSER_USE_MAX_COST_USD must be greater than zero")
+      .default(1),
     BROWSER_USE_MODEL: requiredValue.default(defaultBrowserUseModel),
     BROWSER_USE_PROXY_COUNTRY: z
       .string()
