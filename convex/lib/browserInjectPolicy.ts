@@ -284,6 +284,27 @@ const PAST_NARRATION =
  * dropped one costs the errand; a wrongly queued CREDENTIAL costs the
  * tenancy, so that veto (S1) runs before anything else.
  */
+/**
+ * Words that mean «stop this errand», anchored at the start of the line.
+ *
+ * Head-anchored on purpose, but not to tell «отмени» from «отмени заказ на
+ * озоне» — both start with the word, both stop being steers, and both are
+ * right to: one becomes `reset:true`, the other a new errand, and the model
+ * decides which. What the anchor protects is the word appearing INSIDE a
+ * correction: «возьми серые, отмени синие» is a detail about the current
+ * errand and stays a steer, which is what the person meant.
+ *
+ * Kept deliberately small — every entry here is a line the model must handle
+ * itself rather than forward.
+ */
+const CANCEL_INJECT =
+  /^(отмени(?:те|сь|)|отменяй|отмена|хватит|прекрати(?:те|)|стоп|останови(?:сь|те|)|брось|забей|забудь|не надо|больше не надо|начни заново|начинай заново)(?![\p{L}])/iu;
+
+/** True when the line is the person pulling the emergency brake. */
+export function isCancelInject(text: string): boolean {
+  return CANCEL_INJECT.test(text.trim().normalize("NFC").replace(/ё/gi, "е"));
+}
+
 export function steerCandidate(text: string): boolean {
   let t = text.trim().normalize("NFC").replace(/ё/gi, "е");
   // 400-char cap kept: a wall of text is a new brief, not a follow-up detail.
@@ -301,6 +322,19 @@ export function steerCandidate(text: string): boolean {
     t = t.slice(opener[0].length).replace(/^[\s,.!…–—-]+/u, "").trim();
     if (!t) return false;
   }
+  // CANCEL IS NOT A STEER. `progressNoteVariants("long")` promises the person
+  // this word by name — «Если надоело — напиши «отмени», остановлюсь» — and
+  // `sanitizePhrase` even requires «отмен» to appear in that note. Yet «отмени»
+  // was the one cancel word this gate accepted, so it was queued into the
+  // vendor session as «Дополнение от человека … примени его на этой странице»:
+  // the run carried on, the spending carried on, and the only emergency brake
+  // the product names out loud did the opposite of stopping.
+  //
+  // Returning false here does not cancel anything by itself — it hands the line
+  // back to the model, which `agent/instructions.md` already tells to answer
+  // «отмени» / «забудь» / «начни заново» with `browser_task reset:true`, the
+  // path that really does cancel the run. Found by `scripts/journeys.ts`.
+  if (isCancelInject(t)) return false;
   // Codes / «подожди» / confirmations / corrections are their own kinds.
   if (
     isChatCodeMessage(t) ||

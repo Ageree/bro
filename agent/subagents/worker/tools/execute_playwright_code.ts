@@ -5,6 +5,10 @@ import { checkPlaywrightCode } from "../lib/code-guard";
 import { kernel } from "../lib/kernel";
 import { requireOwnedBrowser } from "../lib/scope";
 
+// Kernel's Playwright execution endpoint is what bounds a single program; 25s
+// is the ceiling this tool hands it and nothing in-session can raise it, so the
+// model has to size every wait inside one call against this number. It is a
+// fact about the platform, not a budget on how hard the worker may try.
 const playwrightTimeoutSeconds = 25;
 const modelResultCharacterLimit = 12_000;
 const modelLogCharacterLimit = 2_000;
@@ -26,7 +30,7 @@ const outputSchema = z.object({
 
 export default defineTool({
   description:
-    'Execute one bounded Playwright/TypeScript program against an existing browser session with a 25-second ceiling. Prefer one program per page state that inspects, performs all related safe actions, verifies the outcome, and returns one compact object. Use "domcontentloaded" or precise locator waits of at most five seconds, and never wait for "networkidle" or use fixed multi-second sleeps. Does not create or delete browsers. After fill_from_vault ran in this session, code that reads back field values, cookies, or storage is refused.',
+    'Execute one bounded Playwright/TypeScript program against an existing browser session with a 25-second ceiling. Prefer one program per page state that inspects, performs all related safe actions, verifies the outcome, and returns one compact object. Use "domcontentloaded" or a precise locator wait whose deadline fits the 25-second ceiling and matches how slow the site really is, and never wait for "networkidle" or use blind multi-second sleeps. Does not create or delete browsers. After fill_from_vault ran in this session, code that reads back field values, cookies, or storage is refused.',
   inputSchema,
   outputSchema,
   async execute(input, ctx) {

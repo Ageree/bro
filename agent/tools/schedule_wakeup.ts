@@ -4,6 +4,8 @@ import { resolveTenantTz } from "../../convex/lib/tzPolicy";
 import { nextDailyAt, parseWhen } from "../../convex/lib/wakeupPolicy";
 import { getTenant, scheduleWakeup, upsertTenant } from "../lib/convex";
 import { tenantId } from "../lib/tenant";
+import { instinctBlocked } from "../lib/instinct-guard.ts";
+import { turnAttributes } from "../lib/turn-attrs";
 
 async function tzForPhone(phone: string): Promise<string> {
   try {
@@ -27,6 +29,8 @@ export default defineTool({
     kind: z.enum(["reminder", "brief", "watcher"]).default("reminder"),
   }),
   async execute({ payload, atIso, inMinutes, dailyHour, everyMinutes, kind }, ctx) {
+    const blocked = instinctBlocked(turnAttributes(ctx), "schedule_wakeup");
+    if (blocked) return blocked;
     const now = Date.now();
     const phone = tenantId(ctx);
     const tz = await tzForPhone(phone);

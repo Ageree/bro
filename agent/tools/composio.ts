@@ -2,7 +2,8 @@ import { defineDynamic, defineTool } from "eve/tools";
 import type { ToolContext } from "eve/tools";
 import { isConnectDest, wrapConnectUrl } from "../lib/connect-link";
 import { CALL_BUDGET_MS, sessionFor, withDeadline } from "../lib/composio";
-import { attr } from "../lib/turn-attrs";
+import { attr, turnAttributes } from "../lib/turn-attrs";
+import { instinctBlocked } from "../lib/instinct-guard.ts";
 import { tenantId } from "../lib/tenant";
 import { sandboxNetworkViolation } from "../lib/sandbox-policy";
 import { getTenant } from "../lib/convex";
@@ -99,6 +100,11 @@ async function runComposio(
   input: unknown,
   ctx: ToolContext,
 ): Promise<unknown> {
+  // One guard for the whole `COMPOSIO_*` family: these write to the person's
+  // own mail and calendar, and an instinct turn's prompt is built out of that
+  // same mail. See INSTINCT_FORBIDDEN_PREFIX.
+  const blocked = instinctBlocked(turnAttributes(ctx), slug);
+  if (blocked) return blocked;
   const session = await sessionFor(tenantId(ctx));
   // Bounded on purpose: an unbounded `execute` on a just-connected Gmail is
   // what left a turn hanging for sixteen minutes behind a «взялся» line.

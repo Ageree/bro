@@ -18,6 +18,17 @@ crons.interval(
   internal.archive.dispatchSyncs,
   {},
 );
+// Proactivity ("инстинкт"): make sure every active person has a standing
+// background scan that lets Bro decide on his own whether there is anything
+// worth saying first. The scan row itself recurs every INSTINCT_SCAN_MINUTES;
+// this sweep only creates the ones that are missing (new tenant, cancelled
+// scan), so 6 hours is plenty.
+crons.interval(
+  "ensure instinct scans",
+  { hours: 6 },
+  internal.wakeups.ensureInstinctScans,
+  {},
+);
 // Keep the eve instance, its Photon client and OpenRouter connection warm
 // between conversations, so the first reply after a pause is not a cold start.
 crons.interval("warm eve", { minutes: 4 }, internal.warm.pingEve, {});

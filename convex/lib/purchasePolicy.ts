@@ -1,8 +1,20 @@
 /**
  * Purchase stance: Bro pays when the person asked to buy, or when a
  * buy-when watcher fires. There is no second confirmation of shop / item /
- * qty / total. 3-D Secure, missing vault card, and a named budget ceiling
- * still stop the card.
+ * qty / total. 3-D Secure and a missing vault card still stop the card.
+ *
+ * A named budget ceiling does NOT stop the card, and this header used to say
+ * it did. `maxRub` travels only into one Russian sentence in the cloud run's
+ * prompt — «Сумма выше N ₽ — не плати» — which a third-party model may or may
+ * not honour, and nothing in this repository ever compared it against what was
+ * actually charged. A shipping fee added at checkout, a currency the page
+ * quotes in, or a model that simply pays, all go through unnoticed.
+ *
+ * `overspend()` below is the part that can be enforced here: the run reports
+ * what it paid, and a charge above the ceiling is reported to the person as an
+ * overspend instead of a plain «готово». It is detection after the fact, not
+ * prevention — prevention would have to live in the vendor — but it is the
+ * difference between the person learning from us and learning from their bank.
  *
  * Lives in convex/lib (not agent/lib) because the Convex follow-through
  * bundle needs the same purchase rules the agent tools use, and Convex code
@@ -74,10 +86,47 @@ export function watcherShouldPay(opts: {
   return opts.currentPriceRub <= cap;
 }
 
+/**
+ * What was charged against what the person allowed.
+ *
+ * Returns null when there is nothing to report: no ceiling was named, the run
+ * reported no amount, or the charge is within the ceiling. A tolerance is
+ * deliberately absent — the person said «до 5000», and 5001 is above 5000;
+ * softening that here would be us deciding how much of their money a rounding
+ * rule is worth.
+ */
+export function overspend(opts: {
+  paidRub?: number;
+  maxRub?: number;
+}): { paidRub: number; maxRub: number; overRub: number } | null {
+  const { paidRub, maxRub } = opts;
+  if (paidRub === undefined || maxRub === undefined) return null;
+  if (!Number.isFinite(paidRub) || !Number.isFinite(maxRub)) return null;
+  if (paidRub <= maxRub) return null;
+  return { paidRub, maxRub, overRub: paidRub - maxRub };
+}
+
+/** The line the model must pass on when a run spent more than it was allowed. */
+export function overspendLine(over: {
+  paidRub: number;
+  maxRub: number;
+}): string {
+  return `списано ${over.paidRub} ₽ при потолке ${over.maxRub} ₽ — скажи это человеку первой строкой, не выдавай за обычное «готово»`;
+}
+
 export function watcherWakeupPrompt(payload: string, lastSeen?: string): string {
+  // The ceiling is resolved here and stated as a number. The tool enforces it
+  // either way (`watcherPayDecision` fills `maxRub` from this same payload),
+  // but a model that has been told «потолок 3000 ₽» stops at the right price
+  // on the page, which is hours earlier than a post-hoc «превышен потолок».
+  const cap = watcherBuys(payload) ? budgetRub(payload) : undefined;
+  const capLine =
+    cap !== undefined
+      ? ` Потолок ${cap} ₽: дороже не бери, лучше напиши человеку.`
+      : " Потолка человек не называл — если цена заметно выше ожидаемой, сначала спроси.";
   const buyLine = watcherBuys(payload)
-    ? "Это сторож на покупку: если условие сработало (цена, наличие) — сразу `browser_task` с `pay`, не спрашивай подтверждение. maxRub — потолок из задания, если человек его назвал. Потом одно короткое сообщение, что купил. Если условие не сработало — [SILENT]."
-    : "Если это только наблюдение (без «купи когда…») — сообщи об изменении, не покупай.";
+    ? `Это сторож на покупку: если условие сработало (цена, наличие) — сразу \`browser_task\` с \`pay\`, не спрашивай подтверждение.${capLine} Потом одно короткое сообщение, что купил. Если условие не сработало — [SILENT].`
+    : "Это только наблюдение (без «купи когда…»): сообщи об изменении и не покупай — оплату по такому сторожу тул всё равно отклонит.";
   return `[background wakeup] Сторож: ${payload}.
 Прошлое состояние: ${lastSeen ?? "ничего"}. Проверь текущее состояние (Composio-тулы или browser_task — что уместно). Если НИЧЕГО нового относительно прошлого состояния — ответь ровно [SILENT]. Если есть новое — одно короткое сообщение человеку. ${buyLine} В КОНЦЕ ответа добавь строку [SEEN] <краткое текущее состояние в одну строку> — она не уйдёт человеку.`;
 }

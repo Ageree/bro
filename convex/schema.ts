@@ -50,6 +50,10 @@ export default defineSchema({
     /** True while a vault card is being typed into a bound checkout page. */
     browserPaying: v.optional(v.boolean()),
     browserPayHosts: v.optional(v.array(v.string())),
+    // The ₽ ceiling the person named, kept with the run so the completion path
+    // can compare it against what was actually charged. Until this existed the
+    // ceiling was one Russian sentence in a third-party model's prompt.
+    browserMaxRub: v.optional(v.number()),
     /** Errand queued while a different one was active — run it after `done`. */
     browserNextTask: v.optional(v.string()),
     /** Last scrubbed Cloud result (≤2000 chars) — wakeup/resume read this back. */
@@ -68,6 +72,21 @@ export default defineSchema({
     dedicatedIMessageNumberStatus: v.optional(v.string()),
     /** Last successful connected-app archive sync (Instinct-style memory). */
     archiveSyncedAt: v.optional(v.number()),
+    /** Proactivity budget (convex/lib/instinctPolicy.ts). The day key is the
+     *  person's LOCAL day, like the billing counters, so "три в день" means
+     *  his day and not UTC's. */
+    instinctDayKey: v.optional(v.string()),
+    instinctDayCount: v.optional(v.number()),
+    instinctLastAt: v.optional(v.number()),
+    /** Things already said unprompted, so a 30-minute scan cannot report the
+     *  same meeting twice. Pruned to the policy TTL on every write. */
+    instinctSpoken: v.optional(
+      v.array(v.object({ sourceId: v.string(), at: v.number() })),
+    ),
+    /** Last inbound message FROM the person. A proactive line into a live
+     *  conversation is an interruption, not initiative — see
+     *  `instinctPolicy.humanActive`. Stamped at most once a minute. */
+    lastHumanAt: v.optional(v.number()),
     telegramUserId: v.optional(v.string()),
     telegramChatId: v.optional(v.string()),
     telegramUsername: v.optional(v.string()),
@@ -217,6 +236,9 @@ export default defineSchema({
       v.literal("brief"),
       v.literal("watcher"),
       v.literal("job_check"),
+      /** Proactive scan: Bro looks at this person's data on his own and
+       *  decides whether there is anything worth saying first. */
+      v.literal("instinct"),
     ),
     payload: v.string(),
     status: v.union(

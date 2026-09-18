@@ -5,13 +5,13 @@ import {
   dueJobNudges,
   isJobCheckWakeup,
   jobCheckPayload,
-  JOB_CHECK_QUIET,
-  jobNudgeInstruction,
   jobWakeInstruction,
 } from "../lib/job-wake.ts";
-import { isShortAckTurn, shortAckInstruction } from "../lib/short-ack.ts";
+import { isShortAckTurn } from "../lib/short-ack.ts";
 import { fastAckInstruction, fastAckOf } from "../lib/fast-ack.ts";
-import { browserPollForceSpeak } from "../lib/silent-turn.ts";
+import { browserPollForceSpeak, turnOrigin } from "../lib/silent-turn.ts";
+import { turnVoice, voiceInstruction } from "../lib/turn-voice.ts";
+import { nudgePrompt, type WaitingFor } from "../../convex/lib/jobNudgePolicy.ts";
 import { tenantId } from "../lib/tenant";
 import { latencyFields } from "../lib/latency-log.ts";
 import { getTenant } from "../lib/convex";
@@ -43,15 +43,32 @@ export default defineDynamic({
             ),
           );
         }
-        const ack =
-          !jobCheck && isShortAckTurn(attrs)
-            ? shortAckInstruction({
-                waitingForHuman: rows.some((row) => row.waitingFor === "human"),
-              })
-            : null;
+        // Speak-or-stay-quiet is decided ONCE, by `turnVoice`, and injected as
+        // exactly one line. It used to be four competing lines whose winner
+        // depended on the order of this array — the nudge copy even carried
+        // «Ignore any later line that allows [SILENT]» to survive the clash.
+        const verdict = turnVoice({
+          origin: turnOrigin(attrs),
+          shortAck: isShortAckTurn(attrs),
+          waitingForHuman: rows.some((row) => row.waitingFor === "human"),
+          jobCheck,
+          dueNudges: due.length,
+          browserPollForceSpeak: browserPollForceSpeak(attrs),
+        });
+        const voice = voiceInstruction(verdict, {
+          nudges: due.map((job) =>
+            nudgePrompt({
+              waitingFor: job.waitingFor as WaitingFor,
+              goal: job.goal,
+              note: job.note,
+            }),
+          ),
+        });
         const fastAck = attrs?.origin === "human" ? fastAckOf(attrs) : null;
         const injectKind =
-          !jobCheck && !ack ? cloudInjectKindFromAttrs(attrs) : null;
+          !jobCheck && verdict !== "ack_only"
+            ? cloudInjectKindFromAttrs(attrs)
+            : null;
         let inject: string | null = null;
         if (injectKind) {
           const tenant = await getTenant(phone).catch(() => null);
@@ -74,20 +91,11 @@ export default defineDynamic({
               cloudStartInFlight({ startingAt: tenant?.browserStartingAt }),
           );
         }
-        const forceSpeak = browserPollForceSpeak(attrs);
         const content = [
           jobWakeInstruction(rows.map((r) => r.line)),
-          scope
-            ? due.length > 0
-              ? jobNudgeInstruction(due)
-              : JOB_CHECK_QUIET
-            : null,
-          ack,
+          voice,
           fastAck ? fastAckInstruction(fastAck) : null,
           inject,
-          forceSpeak
-            ? "Do NOT answer [SILENT]; the human must get one message about this browser errand now."
-            : null,
         ]
           .filter((part): part is string => Boolean(part))
           .join("\n\n");

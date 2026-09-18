@@ -3,6 +3,8 @@ import { z } from "zod";
 import { asPersonal } from "../lib/personal.ts";
 import { fileFailure } from "../lib/files.ts";
 import { runSandboxTask } from "../lib/sandbox-run.ts";
+import { instinctBlocked } from "../lib/instinct-guard.ts";
+import { turnAttributes } from "../lib/turn-attrs";
 
 export default defineTool({
   description:
@@ -15,6 +17,8 @@ export default defineTool({
     timeoutSeconds: z.number().positive().max(240).optional(),
   }),
   async execute({ fileIds, names, command, script, timeoutSeconds }, ctx) {
+    const blocked = instinctBlocked(turnAttributes(ctx), "sandbox_run");
+    if (blocked) return blocked;
     const who = asPersonal(ctx);
     if ("status" in who) return who;
     try {

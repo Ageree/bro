@@ -350,6 +350,7 @@ export const setBrowser = mutation({
     browserNeedDetail: v.optional(v.string()),
     browserPaying: v.optional(v.boolean()),
     browserPayHosts: v.optional(v.array(v.string())),
+    browserMaxRub: v.optional(v.number()),
     browserNextTask: v.optional(v.string()),
     browserOutcome: v.optional(v.string()),
   },
@@ -378,6 +379,7 @@ export const setBrowser = mutation({
       "browserNeedDetail",
       "browserPaying",
       "browserPayHosts",
+      "browserMaxRub",
       "browserNextTask",
       "browserOutcome",
     ]);
@@ -1345,6 +1347,10 @@ export const getByTelegram = query({
   },
 });
 
+/** Coarse enough that a burst of messages is one write, fine enough for the
+ *  15-minute "he is in the chat right now" window the proactivity gate uses. */
+const HUMAN_TOUCH_MIN_MS = 60_000;
+
 export const touchLastChannel = mutation({
   args: {
     secret: v.string(),
@@ -1356,8 +1362,23 @@ export const touchLastChannel = mutation({
     assertSecret(secret);
     const tenant = await findTenantByPhone(ctx, phoneE164);
     if (!tenant) return null;
-    if (lastChannelOf(tenant.lastChannel) === lastChannel) return null;
-    await ctx.db.patch(tenant._id, { lastChannel });
+    const channelChanged = lastChannelOf(tenant.lastChannel) !== lastChannel;
+    // Both channels already park this call on every inbound message, so it is
+    // the one place that knows "the person just wrote". The proactivity gate
+    // needs that (`instinctPolicy.humanActive`): writing first into a live
+    // conversation is an interruption, not initiative.
+    //
+    // The early return that used to sit here existed to avoid a write per
+    // message; HUMAN_TOUCH_MIN_MS keeps that property — a burst of messages
+    // still costs at most one patch a minute, which is finer than the
+    // 15-minute window the gate reads it through.
+    const now = Date.now();
+    const humanStale = now - (tenant.lastHumanAt ?? 0) >= HUMAN_TOUCH_MIN_MS;
+    if (!channelChanged && !humanStale) return null;
+    await ctx.db.patch(tenant._id, {
+      ...(channelChanged ? { lastChannel } : {}),
+      ...(humanStale ? { lastHumanAt: now } : {}),
+    });
     return null;
   },
 });

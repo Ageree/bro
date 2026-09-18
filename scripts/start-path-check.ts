@@ -21,8 +21,8 @@ import {
   isShortAck,
   isShortAckTurn,
   shortAckAttribute,
-  shortAckInstruction,
 } from "../agent/lib/short-ack.ts";
+import { turnVoice, voiceInstruction } from "../agent/lib/turn-voice.ts";
 
 import { assert, src } from "./lib/check.ts";
 
@@ -53,9 +53,9 @@ assert(
   !jobs.includes("await Promise.all"),
   "nudge persist must not sit in front of job instructions",
 );
-assert(jobs.includes("JOB_CHECK_QUIET"), "non-due job_check may stay silent");
+assert(jobs.includes("turnVoice("), "speak-or-stay-quiet is decided once on turn.started");
+assert(jobs.includes("voiceInstruction("), "one voice block, not four competing ones");
 assert(jobs.includes("isShortAckTurn"), "short acks get a no-new-tools steer");
-assert(jobs.includes("shortAckInstruction"), "short-ack instruction stays on turn.started");
 assert(jobs.includes("waitingForHuman"), "ack that confirms a waiting job still allows tools");
 assert(
   !jobs.includes("recallQuery(ctx.messages)"),
@@ -138,16 +138,26 @@ assert(isShortAck("Спасибо!"), "thanks with punct is a short ack");
 assert(isShortAck("понял"), "понял is a short ack");
 assert(!isShortAck("купи кроссовки"), "errands are not short acks");
 assert(!isShortAck("да"), "bare да is not a short ack — it can be a real answer");
+const ackVoice = (waitingForHuman: boolean) =>
+  turnVoice({
+    origin: "human",
+    shortAck: true,
+    waitingForHuman,
+    jobCheck: false,
+    dueNudges: 0,
+    browserPollForceSpeak: false,
+  });
 assert(
-  shortAckInstruction({ waitingForHuman: true }).includes("confirmation"),
-  "ack confirms a waiting job",
+  ackVoice(true) === "ack_confirms",
+  "an ack that answers a waiting job proceeds, it is not acked back",
 );
+assert(ackVoice(false) === "ack_only", "an idle ack stays an ack");
 assert(
-  shortAckInstruction({ waitingForHuman: false }).includes("browser_task"),
+  voiceInstruction(ackVoice(false), {})?.includes("browser_task"),
   "idle ack forbids a new browser loop",
 );
 assert(
-  shortAckInstruction({ waitingForHuman: false }).includes("punctuation"),
+  voiceInstruction(ackVoice(false), {})?.includes("punctuation"),
   "idle ack asks for a punctuated first line so iMessage can flush",
 );
 assert(

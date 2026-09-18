@@ -9,6 +9,8 @@ import {
   photoTargetFromAuth,
   sendPhotoToHuman,
 } from "../lib/send-photo.ts";
+import { instinctBlocked } from "../lib/instinct-guard.ts";
+import { turnAttributes } from "../lib/turn-attrs";
 
 export default defineTool({
   description:
@@ -22,6 +24,8 @@ export default defineTool({
     spoiler: z.boolean().optional(),
   }),
   async execute({ fileId, name, path, url, caption, spoiler }, ctx) {
+    const blocked = instinctBlocked(turnAttributes(ctx), "send_photo");
+    if (blocked) return blocked;
     const parsed = parseSendPhotoInput({ fileId, name, path, url });
     if ("error" in parsed) return { status: "error", error: parsed.error };
 

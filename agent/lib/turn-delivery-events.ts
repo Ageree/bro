@@ -21,6 +21,7 @@ import {
   turnOrigin,
   wakeupFallbackText,
 } from "./silent-turn.ts";
+import { isInstinctWakeup, spendInstinctSlot } from "./instinct-wake.ts";
 import { stripConnectUrls } from "./connect-link.ts";
 import { latencyFields } from "./latency-log.ts";
 import { fastAckOf, peelFastAck } from "./fast-ack.ts";
@@ -133,6 +134,19 @@ async function persistSeenFromTurn(
     return null;
   });
   if (tenant?.phoneE164) await persistSeen(tenant.phoneE164, seen);
+}
+
+/** Fire-and-forget: a lost budget write must never cost the person the line. */
+function chargeInstinct(
+  attrs: AuthAttrs,
+  principalId: string | null | undefined,
+): void {
+  if (!isInstinctWakeup(attrs)) return;
+  const phone = routingPhone(routingFromAuth(attrs), principalId);
+  if (!phone) return;
+  void spendInstinctSlot(phone).catch((err) =>
+    console.error("instinct slot spend failed", err),
+  );
 }
 
 export async function deliverTurnBubble(opts: {
@@ -370,6 +384,11 @@ export function createTurnDeliveryEvents(opts: {
       };
       if (planned.send) {
         recordSent(earlySent, event.turnId, planned.send, Date.now());
+        // A proactive turn that actually says something spends one of the
+        // person's three daily slots (convex/lib/instinctPolicy.ts). Charged
+        // here and nowhere else: this is the only point that knows the model
+        // chose to speak instead of answering [SILENT].
+        chargeInstinct(auth?.attributes, auth?.principalId);
         console.log("turn deliver completed", {
           conversationId,
           ...latencyFields(auth?.attributes),

@@ -301,11 +301,12 @@ assert(
   "browser_task opens the site over cdp",
 );
 assert(
-  src("agent/instructions.md").includes("сразу `browser_task`"),
+  src("agent/instructions.md").includes("`browser_task`"),
   "taxi goes to browser_task first",
 );
+// Login-without-asking is browser_task's own rule now, not the root prompt's.
 assert(
-  src("agent/instructions.md").includes("вход проходит сам"),
+  src("agent/lib/tool-rules.ts").includes("вход проходит сам"),
   "eve tells the cloud job to log in",
 );
 assert(

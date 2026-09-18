@@ -1282,10 +1282,38 @@ const telegram = src("agent/channels/telegram.ts");
 assert(telegram.includes("cloudInjectAttribute(opts.text"), "telegram stamps inject");
 
 const instructions = src("agent/instructions.md");
-assert(instructions.includes("ввожу код"), "root first bubble for a chat code");
-assert(instructions.includes("Посторонний чат"), "unrelated chat is not injected");
-assert(instructions.includes("не только Яндекс") || instructions.includes("любой сайт"), "not Yandex-only");
-assert(instructions.includes("Пароль в чат не проси") || instructions.includes("Do not ask for a password"), "no password ask");
+// The «ввожу код» protocol moved out of the root prompt and into
+// `BROWSER_TASK_GUIDELINES`, which reaches the model only on turns where that
+// tool is mounted. Follow the rule to its owner.
+assert(
+  src("agent/lib/tool-rules.ts").includes("ввожу код"),
+  "first bubble for a chat code is stated by the tool that receives it",
+);
+// The rule, not the sentence: small talk and a new unrelated errand must not
+// be typed into the tab an errand is waiting in.
+{
+  // Also browser_task's own rule now — it is about what may be typed into the
+  // tab that tool is holding open.
+  const browserTool = src("agent/lib/tool-rules.ts");
+  assert(
+    /Посторонний чат/.test(browserTool) ||
+      /несвязанное поручение туда не клади/.test(browserTool),
+    "unrelated chat is not injected",
+  );
+}
+{
+  const browserTool = src("agent/lib/tool-rules.ts");
+  assert(
+    browserTool.includes("не только Яндекс") || browserTool.includes("любой сайт"),
+    "not Yandex-only",
+  );
+}
+assert(
+  /не проси пароль|Пароль в чат не проси|Do not ask for a password/.test(
+    instructions + src("agent/lib/tool-rules.ts"),
+  ),
+  "no password ask",
+);
 
 const login = src("convex/lib/browserProfilePolicy.ts");
 assert(login.includes("прислать в чат"), "login wait accepts a chat code");
