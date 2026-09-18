@@ -13,6 +13,8 @@ export default {
     "db/schema/index.ts",
     "evals/**/*.eval.ts",
     "evals/evals.config.ts",
+    // A one-off maintenance CLI, run by hand rather than from package.json.
+    "scripts/migrate-from-convex.ts",
     "taze.config.ts",
   ],
   ignoreDependencies: [

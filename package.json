@@ -6,6 +6,7 @@
     "@googleapis/calendar": "^16.0.0",
     "@googleapis/gmail": "^18.0.0",
     "@googleapis/people": "^8.0.0",
+    "@neondatabase/serverless": "^1.1.0",
     "@openrouter/ai-sdk-provider": "3.0.0",
     "@opentelemetry/api": "^1.9.1",
     "@photon-ai/chat-adapter-imessage": "3.2.0",
