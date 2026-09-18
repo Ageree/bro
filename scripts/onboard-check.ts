@@ -113,6 +113,13 @@ assert(!isTelegramAsk("телеграмму напиши"), "telegram in a sente
 // turn — which has no tool that mints a t.me link — and were told Telegram is
 // unavailable. Every phrasing below is a bare ask for the second channel.
 for (const ask of [
+  // Verbatim from the owner's phone, after the first fix shipped: nine words,
+  // every one of them ordinary, and the eight-word cap this lane used to carry
+  // threw it to the agent, which answered «Телегу ещё не подрубили». Length is
+  // not what makes a message an errand, so the case stays here as the longest
+  // one and there is no cap to grow back into.
+  "Бро а с тобой же можно общаться в тг?",
+  "привет, слушай, а с тобой можно в телеграме общаться, или пока нет?",
   "а телеграм сейчас доступен?",
   "можно с тобой в телеграме пообщаться?",
   "в телеграме ты есть?",

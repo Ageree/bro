@@ -114,7 +114,8 @@ export const SCENARIOS: Scenario[] = [
       { text: "привет", expect: [{ says: LETTER }] },
       { text: "телеграм", expect: [{ says: /t\.me\// }] },
       {
-        text: "а с тобой в телеграме можно пообщаться?",
+        // The exact message from the owner's phone, word for word.
+        text: "Бро а с тобой же можно общаться в тг?",
         expect: [{ says: /t\.me\// }],
       },
     ],
