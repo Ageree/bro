@@ -57,7 +57,8 @@ Run the validation the task requests. When it does not establish the behavior yo
 ## Repository contract
 
 - The repository root owns the single Next.js application, Eve agent, and shared UI contract.
-- The workspace manager lives on `/` and the agent chat on `/chat`.
+- The public landing lives on `/`, the workspace manager on `/workspace`, and
+  the agent chat on `/chat`.
 - This build has no browser capability. Do not add a browser connection, extension, or subagent; browser work is planned as a separate hosted `browser_task` tool.
 - Keep each tool's schema and implementation together. Group a shared agent domain under `agent/lib` in a lower-case folder, such as `schedules/report.ts`; do not use it as a holding area for a tool's one-off logic.
 - Validate runtime environment variables through `shared/environment/env.ts`.

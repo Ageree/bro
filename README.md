@@ -211,6 +211,25 @@ Only private chats reach the agent; group messages are ignored. A message from
 an unlinked Telegram account gets one short explanation of how to link, at most
 once an hour per chat.
 
+## Landing and onboarding
+
+`/` is a public Russian landing page and the signed-in workspace lives at
+`/workspace`. The landing takes a phone number and posts it to
+`POST /api/access`, which validates it as E.164, creates a Photon `shared` user
+for it, and answers with the iMessage line the agent replies on. The page then
+shows that number with an `sms:` deep link and a copy fallback. No account is
+created here: the first inbound iMessage creates it.
+
+Because onboarding needs no login, it is bounded twice.
+`ACCESS_CREATES_PER_HOUR` (default 20) caps new lines per hour per caller
+address, and `ACCESS_IDENTITY_CAP` (default 100) caps how many lines the
+deployment ever hands out. Both are counted from the `onboarding_requests`
+table, which also replays the number a phone already has instead of buying a
+second Photon user. Without `IMESSAGE_PROJECT_ID` and `IMESSAGE_PROJECT_SECRET`
+the endpoint answers that onboarding is closed.
+
+`/oferta` carries the Russian public offer the landing links to.
+
 ## Google Workspace connection
 
 OpenInstinct can use a user's Gmail, Calendar, and read-only Contacts through a

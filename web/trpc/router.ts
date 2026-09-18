@@ -36,10 +36,10 @@ export const appRouter = createTRPCRouter({
           await revokeToken(env.GOOGLE_CONNECTOR_UID, {
             subject: googleWorkspaceSubject(ctx.scope.userId),
           });
-          return { redirectTo: "/?google=disconnected" };
+          return { redirectTo: "/workspace?google=disconnected" };
         }
 
-        const callbackUrl = new URL("/", ctx.origin);
+        const callbackUrl = new URL("/workspace", ctx.origin);
         callbackUrl.searchParams.set("google", "connected");
         return {
           redirectTo: await startGoogleWorkspaceAuthorization(

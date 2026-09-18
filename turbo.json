@@ -4,6 +4,7 @@
     "build:app": {
       "dependsOn": ["^build:app"],
       "env": [
+        "ACCESS_*",
         "BETTER_AUTH_*",
         "BLOB_*",
         "BROWSER_USE_*",
@@ -22,6 +23,7 @@
     "build:vercel": {
       "dependsOn": ["db:migrate"],
       "env": [
+        "ACCESS_*",
         "BETTER_AUTH_*",
         "BLOB_*",
         "BROWSER_USE_*",
@@ -44,6 +46,7 @@
     "dev:app": {
       "cache": false,
       "passThroughEnv": [
+        "ACCESS_*",
         "BETTER_AUTH_*",
         "BLOB_*",
         "BROWSER_USE_*",
@@ -73,6 +76,7 @@
     "start:app": {
       "cache": false,
       "passThroughEnv": [
+        "ACCESS_*",
         "BETTER_AUTH_*",
         "BLOB_*",
         "BROWSER_USE_*",

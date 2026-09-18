@@ -38,6 +38,31 @@ describe("auth proxy matcher", () => {
     ).toBe(true);
   });
 
+  it("serves the public landing, its offer and onboarding without a session", async () => {
+    const responses = await Promise.all(
+      [
+        "https://example.com/",
+        "https://example.com/oferta",
+        "https://example.com/api/access",
+      ].map(async (url) => await proxy(new NextRequest(url)))
+    );
+
+    for (const response of responses) {
+      expect(response.headers.get("x-middleware-next")).toBe("1");
+    }
+    expect(getAuthSession).not.toHaveBeenCalled();
+  });
+
+  it("still sends the workspace through sign-in", async () => {
+    const response = await proxy(
+      new NextRequest("https://example.com/workspace")
+    );
+
+    expect(response.headers.get("location")).toBe(
+      "https://example.com/sign-in?callbackUrl=%2Fworkspace"
+    );
+  });
+
   it("leaves scheduled-run authorization to the Eve channel", async () => {
     const response = await proxy(
       new NextRequest("https://example.com/internal/scheduled-run/start")
