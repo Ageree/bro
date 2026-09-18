@@ -1,10 +1,10 @@
 import type { DynamicResolveContext } from "eve";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { isScheduledAgentRunLeaseActive } from "@db/services/scheduled-agent-run-leases";
-import type { getGatewayModel } from "@db/services/settings";
+import type { getWorkspaceModelId } from "@db/services/settings";
 
 const services = vi.hoisted(() => ({
-  getModel: vi.fn<typeof getGatewayModel>(),
+  getModel: vi.fn<typeof getWorkspaceModelId>(),
   isActive: vi.fn<typeof isScheduledAgentRunLeaseActive>(),
 }));
 
@@ -12,7 +12,7 @@ vi.mock("@db/services/scheduled-agent-run-leases", () => ({
   isScheduledAgentRunLeaseActive: services.isActive,
 }));
 vi.mock("@db/services/settings", () => ({
-  getGatewayModel: services.getModel,
+  getWorkspaceModelId: services.getModel,
 }));
 
 import agent from "@agent/agent";

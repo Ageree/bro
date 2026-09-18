@@ -8,6 +8,20 @@ const testEnvironment = {
   SECRET_ENCRYPTION_KEY: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
 };
 
+// Optional provider configuration must not leak in from the host shell: tests
+// opt into OpenRouter explicitly and otherwise exercise the AI Gateway path.
+const unsetEnvironment = [
+  "OPENROUTER_API_KEY",
+  "OPENROUTER_MODEL",
+  "OPENROUTER_MODEL_CONTEXT_TOKENS",
+  "OPENROUTER_PROVIDER_ORDER",
+  "OPENROUTER_REASONING_EFFORT",
+];
+
 for (const [name, value] of Object.entries(testEnvironment)) {
   vi.stubEnv(name, value);
+}
+
+for (const name of unsetEnvironment) {
+  vi.stubEnv(name, "");
 }

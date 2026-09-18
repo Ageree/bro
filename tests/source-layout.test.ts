@@ -34,6 +34,7 @@ describe("source layout", () => {
       "environment",
       "google-workspace",
       "identity",
+      "model",
       "photon",
       "schedules",
       "user-profile",

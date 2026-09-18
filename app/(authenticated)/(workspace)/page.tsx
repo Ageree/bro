@@ -18,9 +18,10 @@ import { Alert, AlertDescription, AlertTitle } from "@web/components/ui/alert";
 import { Badge } from "@web/components/ui/badge";
 import { Button } from "@web/components/ui/button";
 import { readChannelIdentity } from "@db/services/channel-identities";
-import { getGatewayModel } from "@db/services/settings";
+import { getWorkspaceModelId } from "@db/services/settings";
 import { env } from "@shared/environment";
 import { photonConfigured } from "@shared/photon/credentials";
+import { openRouterActive } from "@shared/model/provider";
 import { googleWorkspaceTokenParams } from "@shared/google-workspace/connection";
 import { telegramLinkConfigured } from "@shared/identity/telegram-link";
 import { requireRequestScope } from "@web/auth/request-scope";
@@ -32,11 +33,14 @@ export default async function Page({ searchParams }: PageProps<"/">) {
   const google = (await searchParams).google;
   const scope = await requireRequestScope();
   const telegramConfigured = telegramLinkConfigured();
-  const [googleWorkspace, gatewayModel, telegramIdentity] = await Promise.all([
-    readGoogleWorkspaceConnection(scope.userId),
-    getGatewayModel(scope),
-    telegramConfigured ? readChannelIdentity(scope, "telegram") : undefined,
-  ]);
+  const [googleWorkspace, workspaceModel, telegramIdentity] = await Promise.all(
+    [
+      readGoogleWorkspaceConnection(scope.userId),
+      getWorkspaceModelId(scope),
+      telegramConfigured ? readChannelIdentity(scope, "telegram") : undefined,
+    ]
+  );
+  const openRouter = openRouterActive();
   const imageStorageReady = Boolean(
     env.BLOB_STORE_ID ?? env.BLOB_READ_WRITE_TOKEN
   );
@@ -96,10 +100,12 @@ export default async function Page({ searchParams }: PageProps<"/">) {
             label="Browser"
           />
           <ConnectorRow
-            action={<ModelSelector modelId={gatewayModel} />}
-            description={gatewayModel}
+            action={
+              <ModelSelector modelId={workspaceModel} openRouter={openRouter} />
+            }
+            description={workspaceModel}
             icon={<BotIcon />}
-            label="AI Gateway model"
+            label={openRouter ? "Model (OpenRouter)" : "AI Gateway model"}
           />
         </div>
       </WorkspaceSection>

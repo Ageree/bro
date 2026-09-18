@@ -4,7 +4,7 @@ import { z } from "zod";
 import { mintChannelLinkToken } from "@db/services/channel-identities";
 import { saveChat } from "@db/services/chats";
 import { replaceUserProfile } from "@db/services/user-profile";
-import { selectGatewayModel } from "@db/services/settings";
+import { selectWorkspaceModel } from "@db/services/settings";
 import { deleteVaultItem, saveVaultItem } from "@db/services/vault";
 import type { AccessScope } from "@shared/identity/access-scope";
 import { saveChatSchema } from "@shared/chat/schema";
@@ -14,6 +14,7 @@ import {
   googleWorkspaceTokenParams,
 } from "@shared/google-workspace/connection";
 import { telegramLinkUrl } from "@shared/identity/telegram-link";
+import { modelIdSchema } from "@shared/model/id";
 import { userProfileSchema } from "@shared/user-profile/schema";
 import {
   vaultCreateItemSchema,
@@ -55,9 +56,9 @@ export const appRouter = createTRPCRouter({
   },
   settings: {
     selectModel: protectedProcedure
-      .input(z.object({ modelId: z.string().trim().min(1).max(300) }))
+      .input(z.object({ modelId: modelIdSchema }))
       .mutation(({ ctx, input }) =>
-        selectGatewayModel(ctx.scope, input.modelId)
+        selectWorkspaceModel(ctx.scope, input.modelId)
       ),
   },
   userProfile: {
