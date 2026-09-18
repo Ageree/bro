@@ -1,7 +1,8 @@
 import { defineAgent, defineDynamic } from "eve";
 import { scheduledRunIdentity } from "@agent/lib/schedules/identity";
 import { isScheduledAgentRunLeaseActive } from "@db/services/scheduled-agent-run-leases";
-import { getGatewayModel } from "@db/services/settings";
+import { getWorkspaceModelId } from "@db/services/settings";
+import { modelSelection } from "@agent/lib/model/selection";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 
 export default defineAgent({
@@ -21,7 +22,9 @@ export default defineAgent({
         }
         const caller = ctx.session.auth.current ?? ctx.session.auth.initiator;
         if (!caller) throw new Error("An authenticated user is required.");
-        return getGatewayModel(scopeFromPrincipal(caller));
+        return modelSelection(
+          await getWorkspaceModelId(scopeFromPrincipal(caller))
+        );
       },
     },
   }),

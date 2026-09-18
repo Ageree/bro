@@ -39,6 +39,12 @@ const requiredValue = z
   .string()
   .refine((value) => value.trim().length > 0, "Required");
 
+// Keys and ids pasted from a provider dashboard often carry stray whitespace.
+const trimmedValue = z
+  .string()
+  .trim()
+  .refine((value) => value.length > 0, "Required");
+
 const betterAuthUrlSchema = requiredValue.refine(
   (value) => URL.canParse(value),
   "BETTER_AUTH_URL must be an absolute URL"
@@ -95,6 +101,21 @@ export const env = createEnv({
     NODE_ENV: z
       .enum(["development", "production", "test"])
       .default("production"),
+    // OpenRouter replaces AI Gateway routing whenever its key is present.
+    OPENROUTER_API_KEY: trimmedValue.optional(),
+    OPENROUTER_MODEL: trimmedValue.default("deepseek/deepseek-v4.1-flash"),
+    OPENROUTER_MODEL_CONTEXT_TOKENS: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(1_000_000),
+    OPENROUTER_PROVIDER_ORDER: trimmedValue.optional(),
+    OPENROUTER_REASONING_EFFORT: z
+      .string()
+      .trim()
+      .toLowerCase()
+      .pipe(z.enum(["off", "low", "medium", "high"]))
+      .default("off"),
     VERCEL_BRANCH_URL: requiredValue.optional(),
     VERCEL_ENV: z.enum(["production", "preview", "development"]).optional(),
     VERCEL_PROJECT_ID: requiredValue.optional(),

@@ -2,7 +2,7 @@
 
 import { ChevronsUpDownIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useMemo, useState } from "react";
+import { type SubmitEvent, useMemo, useState } from "react";
 import {
   ModelSelector as ModelSelectorRoot,
   ModelSelectorContent,
@@ -16,6 +16,23 @@ import {
   ModelSelectorTrigger,
 } from "@web/components/ai-elements/model-selector";
 import { Button } from "@web/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@web/components/ui/dialog";
+import {
+  Field,
+  FieldDescription,
+  FieldError,
+  FieldLabel,
+} from "@web/components/ui/field";
+import { Input } from "@web/components/ui/input";
+import { modelIdSchema } from "@shared/model/id";
 import { api } from "@web/trpc/client";
 import type { RouterOutputs } from "@web/trpc/types";
 
@@ -28,7 +45,124 @@ const priceFormatter = new Intl.NumberFormat("en-US", {
   currency: "USD",
 });
 
-export function ModelSelector({ modelId }: { readonly modelId: string }) {
+// OpenRouter publishes thousands of ids, so the workspace takes one as text
+// rather than mirroring a catalogue the deployment cannot filter by entitlement.
+const openRouterSuggestions = [
+  "deepseek/deepseek-v4.1-flash",
+  "anthropic/claude-sonnet-4.5",
+  "openai/gpt-5.6-mini",
+  "google/gemini-3-flash",
+];
+
+export function ModelSelector({
+  modelId,
+  openRouter,
+}: {
+  readonly modelId: string;
+  readonly openRouter: boolean;
+}) {
+  return openRouter ? (
+    <OpenRouterModelField modelId={modelId} />
+  ) : (
+    <GatewayModelSelector modelId={modelId} />
+  );
+}
+
+function OpenRouterModelField({ modelId }: { readonly modelId: string }) {
+  const router = useRouter();
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState(modelId);
+  const selectModel = api.settings.selectModel.useMutation({
+    onSuccess: () => {
+      setOpen(false);
+      router.refresh();
+    },
+  });
+  const parsed = modelIdSchema.safeParse(draft);
+  const submit = (event: SubmitEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (parsed.success) selectModel.mutate({ modelId: parsed.data });
+  };
+
+  return (
+    <Dialog onOpenChange={setOpen} open={open}>
+      <DialogTrigger
+        render={
+          <Button
+            disabled={selectModel.isPending}
+            size="sm"
+            type="button"
+            variant="outline"
+          />
+        }
+      >
+        Choose
+        <ChevronsUpDownIcon />
+      </DialogTrigger>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Model (OpenRouter)</DialogTitle>
+          <DialogDescription>
+            Every turn runs through OpenRouter with the deployment&apos;s API
+            key.
+          </DialogDescription>
+        </DialogHeader>
+        <form className="flex flex-col gap-4" onSubmit={submit}>
+          <Field>
+            <FieldLabel htmlFor="openrouter-model">Model id</FieldLabel>
+            <Input
+              autoComplete="off"
+              id="openrouter-model"
+              name="modelId"
+              onChange={(event) => {
+                setDraft(event.target.value);
+              }}
+              placeholder="provider/model"
+              spellCheck={false}
+              value={draft}
+            />
+            <FieldDescription>
+              Any OpenRouter id, written as provider/model.
+            </FieldDescription>
+            {parsed.success ? null : (
+              <FieldError>Use a provider/model id.</FieldError>
+            )}
+            {selectModel.error ? (
+              <FieldError>
+                Unable to update the workspace. Try again.
+              </FieldError>
+            ) : null}
+          </Field>
+          <div className="flex flex-wrap gap-2">
+            {openRouterSuggestions.map((suggestion) => (
+              <Button
+                key={suggestion}
+                onClick={() => {
+                  setDraft(suggestion);
+                }}
+                size="sm"
+                type="button"
+                variant="outline"
+              >
+                {suggestion}
+              </Button>
+            ))}
+          </div>
+          <DialogFooter>
+            <Button
+              disabled={!parsed.success || selectModel.isPending}
+              type="submit"
+            >
+              Save
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function GatewayModelSelector({ modelId }: { readonly modelId: string }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const catalog = api.models.list.useQuery(undefined, {

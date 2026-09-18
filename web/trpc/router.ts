@@ -3,7 +3,7 @@ import { revokeToken, startAuthorization } from "@vercel/connect";
 import { z } from "zod";
 import { saveChat } from "@db/services/chats";
 import { replaceUserProfile } from "@db/services/user-profile";
-import { selectGatewayModel } from "@db/services/settings";
+import { selectWorkspaceModel } from "@db/services/settings";
 import { deleteVaultItem, saveVaultItem } from "@db/services/vault";
 import type { AccessScope } from "@shared/identity/access-scope";
 import { saveChatSchema } from "@shared/chat/schema";
@@ -12,6 +12,7 @@ import {
   googleWorkspaceSubject,
   googleWorkspaceTokenParams,
 } from "@shared/google-workspace/connection";
+import { modelIdSchema } from "@shared/model/id";
 import { userProfileSchema } from "@shared/user-profile/schema";
 import {
   vaultCreateItemSchema,
@@ -48,9 +49,9 @@ export const appRouter = createTRPCRouter({
   },
   settings: {
     selectModel: protectedProcedure
-      .input(z.object({ modelId: z.string().trim().min(1).max(300) }))
+      .input(z.object({ modelId: modelIdSchema }))
       .mutation(({ ctx, input }) =>
-        selectGatewayModel(ctx.scope, input.modelId)
+        selectWorkspaceModel(ctx.scope, input.modelId)
       ),
   },
   userProfile: {

@@ -1,33 +1,38 @@
 import { and, eq } from "drizzle-orm";
 import type { AccessScope } from "@shared/identity/access-scope";
+import { defaultModelId } from "@shared/model/provider";
 import { db, settings } from "@db";
 
-const gatewayModelKey = "gateway_model";
-const defaultGatewayModel = "openai/gpt-5.6-sol-fast";
+// The stored key predates OpenRouter routing; it now holds whichever model id
+// the active provider addresses.
+const workspaceModelKey = "gateway_model";
 
-async function readGatewayModel(scope: AccessScope) {
+async function readWorkspaceModelId(scope: AccessScope) {
   const rows = await db
     .select({ value: settings.value })
     .from(settings)
     .where(
       and(
         eq(settings.workspaceId, scope.workspaceId),
-        eq(settings.key, gatewayModelKey)
+        eq(settings.key, workspaceModelKey)
       )
     )
     .limit(1);
   return rows[0]?.value;
 }
 
-export async function getGatewayModel(scope: AccessScope) {
-  return (await readGatewayModel(scope)) ?? defaultGatewayModel;
+export async function getWorkspaceModelId(scope: AccessScope) {
+  return (await readWorkspaceModelId(scope)) ?? defaultModelId();
 }
 
-export async function selectGatewayModel(scope: AccessScope, modelId: string) {
+export async function selectWorkspaceModel(
+  scope: AccessScope,
+  modelId: string
+) {
   await db
     .insert(settings)
     .values({
-      key: gatewayModelKey,
+      key: workspaceModelKey,
       value: modelId,
       workspaceId: scope.workspaceId,
     })

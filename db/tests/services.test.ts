@@ -187,9 +187,11 @@ describe("database services", () => {
       "ciphertext-bob"
     );
 
-    await settings.selectGatewayModel(alice, "openai/test");
-    expect(await settings.getGatewayModel(alice)).toBe("openai/test");
-    expect(await settings.getGatewayModel(bob)).toBe("openai/gpt-5.6-sol-fast");
+    await settings.selectWorkspaceModel(alice, "openai/test");
+    expect(await settings.getWorkspaceModelId(alice)).toBe("openai/test");
+    expect(await settings.getWorkspaceModelId(bob)).toBe(
+      "openai/gpt-5.6-sol-fast"
+    );
   }, 15_000);
 });
 

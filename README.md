@@ -201,6 +201,19 @@ cd OpenInstinct
 pnpm install --frozen-lockfile
 ```
 
+### Model provider
+
+Inference runs through the Vercel AI Gateway by default, which bills your Vercel
+account and refuses most models on the free tier — a Gateway deployment needs
+paid credits. Set `OPENROUTER_API_KEY` to route every turn through
+[OpenRouter](https://openrouter.ai) instead. OpenRouter then owns model
+selection: `OPENROUTER_MODEL` is the default id for a workspace that has not
+chosen one, `OPENROUTER_MODEL_CONTEXT_TOKENS` declares the context window,
+`OPENROUTER_PROVIDER_ORDER` pins upstream hosts, and
+`OPENROUTER_REASONING_EFFORT` turns the thinking phase on at `low`, `medium`, or
+`high`. The workspace page switches its model picker to an OpenRouter id field
+whenever the key is present.
+
 For fully manual setup, copy the environment template and add your AI Gateway
 key:
 

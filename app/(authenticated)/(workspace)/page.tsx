@@ -10,9 +10,10 @@ import { z } from "zod";
 import { Alert, AlertDescription, AlertTitle } from "@web/components/ui/alert";
 import { Badge } from "@web/components/ui/badge";
 import { Button } from "@web/components/ui/button";
-import { getGatewayModel } from "@db/services/settings";
+import { getWorkspaceModelId } from "@db/services/settings";
 import { env } from "@shared/environment";
 import { photonConfigured } from "@shared/photon/credentials";
+import { openRouterActive } from "@shared/model/provider";
 import { googleWorkspaceTokenParams } from "@shared/google-workspace/connection";
 import { requireRequestScope } from "@web/auth/request-scope";
 import { GoogleWorkspaceAction } from "./_components/google-workspace-action";
@@ -21,10 +22,11 @@ import { ModelSelector } from "./_components/model-selector";
 export default async function Page({ searchParams }: PageProps<"/">) {
   const google = (await searchParams).google;
   const scope = await requireRequestScope();
-  const [googleWorkspace, gatewayModel] = await Promise.all([
+  const [googleWorkspace, workspaceModel] = await Promise.all([
     readGoogleWorkspaceConnection(scope.userId),
-    getGatewayModel(scope),
+    getWorkspaceModelId(scope),
   ]);
+  const openRouter = openRouterActive();
   const imageStorageReady = Boolean(
     env.BLOB_STORE_ID ?? env.BLOB_READ_WRITE_TOKEN
   );
@@ -66,10 +68,12 @@ export default async function Page({ searchParams }: PageProps<"/">) {
             label="Vercel Blob"
           />
           <ConnectorRow
-            action={<ModelSelector modelId={gatewayModel} />}
-            description={gatewayModel}
+            action={
+              <ModelSelector modelId={workspaceModel} openRouter={openRouter} />
+            }
+            description={workspaceModel}
             icon={<BotIcon />}
-            label="AI Gateway model"
+            label={openRouter ? "Model (OpenRouter)" : "AI Gateway model"}
           />
         </div>
       </WorkspaceSection>

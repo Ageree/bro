@@ -9,6 +9,7 @@ const applicationEnvironment = [
   "*_CONNECTOR_UID",
   "IMESSAGE_*",
   "NODE_ENV",
+  "OPENROUTER_*",
   "SECRET_ENCRYPTION_KEY",
   "VERCEL_*",
 ];
