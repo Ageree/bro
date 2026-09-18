@@ -372,8 +372,46 @@ describe("Photon message delivery", () => {
     );
 
     expect(post).toHaveBeenCalledExactlyOnceWith({
-      raw: "Here it is.\n\nI couldn't attach one image.",
+      raw: "Here it is.\n\nНе получилось приложить картинку.",
     });
+  });
+
+  it("compiles Markdown into text an iMessage bubble can render", async () => {
+    const { context, post } = handlerContext();
+
+    await handleActionResult(
+      sendMessageResult({
+        kind: "message",
+        text: "## Итог\n- взял [чек](https://example.com/receipt)\n- списал `1290`",
+      }),
+      context,
+      sessionContext()
+    );
+
+    expect(post).toHaveBeenCalledExactlyOnceWith({
+      raw: "Итог\n• взял чек\nhttps://example.com/receipt\n• списал 1290",
+    });
+  });
+
+  it("posts one bubble per item of a long numbered list, in order", async () => {
+    const { context, post } = handlerContext();
+    const first = `1. ${"Первое письмо про сборку, которая упала на верификации ".repeat(2)}`;
+    const second = `2. ${"Второе письмо про релиз, который ждёт подтверждения ".repeat(2)}`;
+
+    await handleActionResult(
+      sendMessageResult({
+        kind: "message",
+        text: `Вот письма:\n${first}\n${second}`,
+      }),
+      context,
+      sessionContext()
+    );
+
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(post.mock.calls[0]?.[0]).toEqual({
+      raw: `Вот письма:\n${first.trim()}`,
+    });
+    expect(post.mock.calls[1]?.[0]).toEqual({ raw: second.trim() });
   });
 
   it("posts a proactive message without a current inbound message", async () => {

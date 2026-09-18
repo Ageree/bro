@@ -21,11 +21,12 @@ export const phoneUserName = "Phone user";
  * Returns the verified user for a phone number, creating one when the number
  * has never signed in. Two first messages can arrive at once, so creation
  * relies on the unique phone number and email constraints and re-reads the
- * winning row instead of failing.
+ * winning row instead of failing. `created` is true for exactly one call per
+ * phone number, which is what lets the conversation greet a new person once.
  */
-export async function ensureVerifiedPhoneUserId(phoneNumber: string) {
+export async function ensureVerifiedPhoneUser(phoneNumber: string) {
   const existing = await findVerifiedPhoneUser(phoneNumber);
-  if (existing) return existing;
+  if (existing) return { created: false, userId: existing };
 
   const [created] = await db
     .insert(user)
@@ -39,10 +40,16 @@ export async function ensureVerifiedPhoneUserId(phoneNumber: string) {
     })
     .onConflictDoNothing()
     .returning({ id: user.id });
-  if (!created) return await findVerifiedPhoneUser(phoneNumber);
+  if (!created) {
+    // A concurrent first message won the insert, so that turn owns the welcome.
+    const winner = await findVerifiedPhoneUser(phoneNumber);
+    return winner === undefined
+      ? undefined
+      : { created: false, userId: winner };
+  }
 
   await ensureScope(accessScopeForUser(`better-auth:${created.id}`));
-  return created.id;
+  return { created: true, userId: created.id };
 }
 
 async function findVerifiedPhoneUser(phoneNumber: string) {

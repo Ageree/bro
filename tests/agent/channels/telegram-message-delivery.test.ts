@@ -277,7 +277,7 @@ describe("Telegram message delivery", () => {
     expect(request).toHaveBeenCalledExactlyOnceWith("sendMessage", {
       chat_id: "4242",
       parse_mode: "HTML",
-      text: "Here it is.\n\nI couldn't attach one image.",
+      text: "Here it is.\n\nНе получилось приложить картинку.",
     });
   });
 

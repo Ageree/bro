@@ -6,9 +6,9 @@ import messageStyle from "@agent/instructions/30-message-style";
 
 describe("agent instructions", () => {
   it.each([
-    ["scheduled-worker", "isolated background session"],
-    ["scheduled-result", "evaluating the completed outcome"],
-    ["photon-imessage", "root coordinator"],
+    ["scheduled-worker", "изолированной фоновой сессии"],
+    ["scheduled-result", "разбираешь готовый результат"],
+    ["photon-imessage", "главный координатор"],
   ])("selects %s instructions for the current turn", async (role, phrase) => {
     const resolve = roleInstructions.events["turn.started"];
     expect(resolve).toBeDefined();
@@ -25,13 +25,13 @@ describe("agent instructions", () => {
 
     const selected = await resolve({}, dynamicContext("scheduled-result"));
     expect(selected?.content).toContain(
-      "Never invoke another agent, alter a schedule or profile, read or change vault contents, access an account"
+      "Никогда не зови другого агента, не меняй расписание и профиль, не читай и не меняй содержимое сейфа, не заходи в аккаунты"
     );
     expect(selected?.content).toContain(
-      "call `request_vault_setup` with only the safe metadata"
+      "вызови `request_vault_setup`, положив в запрос только безопасные метаданные"
     );
     expect(selected?.content).toContain(
-      "After `send_message`, emit only `DELIVERY_COMPLETE`"
+      "После `send_message` напиши только `DELIVERY_COMPLETE`"
     );
   });
 
@@ -42,7 +42,7 @@ describe("agent instructions", () => {
 
     expect(await resolve({}, dynamicContext("scheduled-result"))).toBeNull();
     const selected = await resolve({}, dynamicContext("scheduled-worker"));
-    expect(selected?.content).toContain("approval");
+    expect(selected?.content).toContain("разрешение");
   });
 
   it("uses native approval cards instead of prose approval loops", async () => {
@@ -52,9 +52,9 @@ describe("agent instructions", () => {
 
     const selected = await resolve({}, dynamicContext("photon-imessage"));
     expect(selected?.content).toContain(
-      "Never ask for approval in prose first"
+      "Никогда не проси разрешение текстом заранее"
     );
-    expect(selected?.content).toContain("native approval card");
+    expect(selected?.content).toContain("Нативная карточка подтверждения");
   });
 
   it("treats personal information as recalled context instead of a read tool", async () => {
@@ -64,13 +64,13 @@ describe("agent instructions", () => {
 
     const selected = await resolve({}, dynamicContext("photon-imessage"));
     expect(selected?.content).toContain(
-      "never call `personal_info__update` to read it"
+      "никогда не зови `personal_info__update`, чтобы её прочитать"
     );
     expect(selected?.content).toContain(
-      "say plainly when a requested value is not present"
+      "прямо скажи, если нужного значения там нет"
     );
     expect(selected?.content).toContain(
-      "never import third-party claims or task details into those slots"
+      "никогда не переноси туда чужие утверждения и детали задач"
     );
   });
 
@@ -81,7 +81,7 @@ describe("agent instructions", () => {
 
     expect(await resolve({}, dynamicContext("scheduled-worker"))).toBeNull();
     const selected = await resolve({}, dynamicContext("scheduled-result"));
-    expect(selected?.content).toContain("natural text message");
+    expect(selected?.content).toContain("обычное сообщение в текущий чат");
   });
 
   it("says there is no browser until Browser Use is configured", async () => {
@@ -97,7 +97,7 @@ describe("agent instructions", () => {
 
     for (const content of selected.slice(0, 2)) {
       expect(content?.content).toContain(
-        "This deployment cannot interact with a website"
+        "Этот деплой не умеет работать с сайтом"
       );
       expect(content?.content).not.toContain("browser_task");
     }
@@ -111,12 +111,24 @@ describe("agent instructions", () => {
     if (!resolve) return;
 
     const selected = await resolve({}, dynamicContext("photon-imessage"));
-    expect(selected?.content).toContain("`browser_task` runs an errand");
-    expect(selected?.content).toContain("exactly one run per errand");
+    expect(selected?.content).toContain("`browser_task` выполняет поручение");
+    expect(selected?.content).toContain("ровно один запуск");
     expect(selected?.content).toContain('`action: "continue"`');
     expect(selected?.content).toContain("`allowPayment: true`");
-    expect(selected?.content).toContain("live-view link only");
-    expect(selected?.content).toContain("arrives later as a new message");
+    expect(selected?.content).toContain("Ссылку на живой просмотр шли только");
+    expect(selected?.content).toContain("придёт позже отдельным сообщением");
+  });
+
+  it("greets a first-contact turn in short Russian bubbles", async () => {
+    const resolve = roleInstructions.events["turn.started"];
+    expect(resolve).toBeDefined();
+    if (!resolve) return;
+
+    const selected = await resolve({}, dynamicContext("photon-imessage"));
+    expect(selected?.content).toContain("`first-contact`");
+    expect(selected?.content).toContain("два-три коротких пузыря");
+    expect(selected?.content).toContain("`browser_task`");
+    expect(selected?.content).toContain("Второй раз не знакомься никогда");
   });
 
   it("keeps resumed scheduled turns in worker mode", async () => {
@@ -128,7 +140,7 @@ describe("agent instructions", () => {
       {},
       dynamicContext("photon-imessage", "scheduled-worker")
     );
-    expect(selected?.content).toContain("isolated background session");
+    expect(selected?.content).toContain("изолированной фоновой сессии");
   });
 });
 

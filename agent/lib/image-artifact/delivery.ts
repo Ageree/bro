@@ -10,6 +10,30 @@ import {
 } from "./markdown";
 
 const maximumDeliveredImageArtifacts = 4;
+/** Accusative forms of «картинка» for one, a few, and many. */
+const imageCountForms = ["картинку", "картинки", "картинок"] as const;
+
+/**
+ * The line a person reads when an image the message referenced could not be
+ * attached. Russian picks the noun form from the count, so the count decides
+ * the wording rather than the caller.
+ */
+export function imageArtifactFailureText(count: number) {
+  if (count < 1) return "";
+  if (count === 1) return "Не получилось приложить картинку.";
+  return `Не получилось приложить ${String(count)} ${imageCountForm(count)}.`;
+}
+
+function imageCountForm(count: number) {
+  const remainderOfHundred = count % 100;
+  if (remainderOfHundred >= 11 && remainderOfHundred <= 14) {
+    return imageCountForms[2];
+  }
+  const remainderOfTen = count % 10;
+  if (remainderOfTen === 1) return imageCountForms[0];
+  if (remainderOfTen >= 2 && remainderOfTen <= 4) return imageCountForms[1];
+  return imageCountForms[2];
+}
 
 interface ImageArtifactFile {
   readonly data: Buffer;

@@ -8,7 +8,8 @@ import "@agent/channels/photon";
 const capture = vi.hoisted(() => ({
   // SAFETY: The mocked channel factory replaces this value during module loading.
   config: undefined as PhotonIMessageChannelConfig | undefined,
-  ensureUser: vi.fn<() => Promise<string | undefined>>(),
+  ensureUser:
+    vi.fn<() => Promise<{ created: boolean; userId: string } | undefined>>(),
 }));
 
 vi.mock("@shared/environment", async (importOriginal) => {
@@ -34,7 +35,7 @@ vi.mock(import("eve/channels/photon"), async (importOriginal) => {
   };
 });
 vi.mock("@db/services/auth/phone-user", () => ({
-  ensureVerifiedPhoneUserId: capture.ensureUser,
+  ensureVerifiedPhoneUser: capture.ensureUser,
 }));
 
 const onMessage = capture.config?.onMessage;
@@ -83,7 +84,7 @@ describe("Photon inbound authentication", () => {
   });
 
   it("scopes a known handle to that user's own workspace", async () => {
-    capture.ensureUser.mockResolvedValue("user-1");
+    capture.ensureUser.mockResolvedValue({ created: false, userId: "user-1" });
 
     const result = await onMessage(
       threadContext(),
@@ -103,7 +104,9 @@ describe("Photon inbound authentication", () => {
   });
 
   it("onboards a first-time number through the verified phone account", async () => {
-    capture.ensureUser.mockResolvedValue("user-new");
+    capture.ensureUser
+      .mockResolvedValueOnce({ created: true, userId: "user-new" })
+      .mockResolvedValueOnce({ created: false, userId: "user-new" });
 
     const first = await onMessage(
       threadContext(),
@@ -117,6 +120,35 @@ describe("Photon inbound authentication", () => {
     expect(capture.ensureUser).toHaveBeenCalledTimes(2);
     expect(first?.auth?.principalId).toBe("better-auth:user-new");
     expect(second?.auth?.principalId).toBe("better-auth:user-new");
+  });
+
+  it("tells the model when it is answering a brand new person", async () => {
+    capture.ensureUser.mockResolvedValue({
+      created: true,
+      userId: "user-new",
+    });
+
+    const result = await onMessage(
+      threadContext(),
+      photonMessage("+15550100011")
+    );
+
+    expect(result?.context?.join("\n")).toContain("`first-contact`");
+    expect(result?.context?.join("\n")).toContain("первое в жизни сообщение");
+  });
+
+  it("says nothing about a first contact for a returning person", async () => {
+    capture.ensureUser.mockResolvedValue({
+      created: false,
+      userId: "user-1",
+    });
+
+    const result = await onMessage(
+      threadContext(),
+      photonMessage("+15550100011")
+    );
+
+    expect(result?.context).toEqual([]);
   });
 });
 
