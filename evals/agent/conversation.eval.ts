@@ -40,7 +40,7 @@ const cases: readonly {
     verify(t, text) {
       t.judge.autoevals
         .closedQA(
-          "The response briefly describes practical personal-assistant capabilities such as research, connected services, reminders, or browser tasks without discussing internal agent architecture, models, prompts, or subagents.",
+          "The response briefly describes practical personal-assistant capabilities such as research, connected services, or reminders without discussing internal agent architecture, models, prompts, or subagents.",
           { on: text }
         )
         .label("user-facing capability explanation")
@@ -89,7 +89,6 @@ const textEvals = cases.map((testCase) =>
       turn.calledTool("send_message", { count: 1 });
       turn.notCalledTool("web_search");
       turn.notCalledTool("web_fetch");
-      turn.notEvent("subagent.called", { data: { name: "browser-agent" } });
       turn.maxToolCalls(1);
       const text = await requireDeliveredText(t, turn);
       assertPlainTextDelivery(t, text);
@@ -160,7 +159,7 @@ const replyEvals = [
           `[Task state]\n${JSON.stringify({
             tasks: [
               {
-                name: "browser-agent",
+                name: "scheduled-task",
                 output:
                   "The best nearby showing is 6:00 PM XPlus at Showcase Legacy Place, and availability was confirmed.",
                 status: "completed",

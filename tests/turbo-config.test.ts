@@ -7,7 +7,6 @@ const applicationEnvironment = [
   "BLOB_*",
   "DATABASE_URL",
   "*_CONNECTOR_UID",
-  "KERNEL_*",
   "LINQ_*",
   "NODE_ENV",
   "SECRET_ENCRYPTION_KEY",
@@ -70,12 +69,6 @@ describe("Turbo configuration", () => {
     expect(
       JSON.parse(deployButton?.searchParams.get("stores") ?? "null")
     ).toEqual([
-      {
-        integrationSlug: "kernel",
-        productSlug: "kernel",
-        protocol: "other",
-        type: "integration",
-      },
       {
         integrationSlug: "neon",
         productSlug: "neon",

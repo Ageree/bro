@@ -5,7 +5,6 @@ const requiredEnvironment = {
   BETTER_AUTH_URL: "https://example.com",
   BLOB_READ_WRITE_TOKEN: "vercel_blob_rw_test",
   DATABASE_URL: "postgresql://user:password@example.com/database",
-  KERNEL_API_KEY: "test-kernel-key",
   SECRET_ENCRYPTION_KEY: Buffer.alloc(32, 1).toString("base64"),
 };
 
@@ -103,18 +102,15 @@ describe("environment", () => {
     expect(env.SECRET_ENCRYPTION_KEY).toBeUndefined();
   });
 
-  it.each(["DATABASE_URL", "KERNEL_API_KEY"])(
-    "keeps %s required in local development",
-    async (name) => {
-      vi.stubEnv(name, "");
-      vi.stubEnv("NODE_ENV", "development");
-      vi.stubEnv("VERCEL_ENV", undefined);
+  it("keeps DATABASE_URL required in local development", async () => {
+    vi.stubEnv("DATABASE_URL", "");
+    vi.stubEnv("NODE_ENV", "development");
+    vi.stubEnv("VERCEL_ENV", undefined);
 
-      await expect(import("@shared/environment")).rejects.toThrow(
-        "Invalid environment variables"
-      );
-    }
-  );
+    await expect(import("@shared/environment")).rejects.toThrow(
+      "Invalid environment variables"
+    );
+  });
 
   it.each([
     requiredEnvironment.SECRET_ENCRYPTION_KEY.slice(0, -1),
@@ -126,17 +122,13 @@ describe("environment", () => {
     expect(env.SECRET_ENCRYPTION_KEY).toBe(key);
   });
 
-  it.each([
-    ["DATABASE_URL", "Invalid environment variables"],
-    ["KERNEL_API_KEY", "Invalid environment variables"],
-  ])(
-    "rejects a missing required %s value during import",
-    async (name, errorMessage) => {
-      vi.stubEnv(name, "");
+  it("rejects a missing required DATABASE_URL value during import", async () => {
+    vi.stubEnv("DATABASE_URL", "");
 
-      await expect(import("@shared/environment")).rejects.toThrow(errorMessage);
-    }
-  );
+    await expect(import("@shared/environment")).rejects.toThrow(
+      "Invalid environment variables"
+    );
+  });
 
   it("rejects an encryption key that does not decode to 32 bytes", async () => {
     vi.stubEnv("SECRET_ENCRYPTION_KEY", Buffer.alloc(31, 1).toString("base64"));
