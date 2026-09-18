@@ -1,4 +1,9 @@
 import { filenameFromUrl, uploadFileBytes } from "./files.ts";
+import {
+  inboundImages,
+  MAX_INLINE_IMAGES,
+  type InboundImage,
+} from "./inbound-image.ts";
 import { readLimited } from "./voice.ts";
 import type { TelegramMessage } from "./telegram.ts";
 import { largestPhoto, telegramFileUrl } from "./telegram.ts";
@@ -77,6 +82,7 @@ export type InboundAttachment = {
   url: string;
   name?: string;
   mimeType?: string;
+  size?: number;
 };
 
 export function attachmentsFromUnknown(value: unknown): InboundAttachment[] {
@@ -108,6 +114,7 @@ export function attachmentsFromUnknown(value: unknown): InboundAttachment[] {
             : typeof att.contentType === "string"
               ? att.contentType
               : undefined,
+        size: typeof att.size === "number" ? att.size : undefined,
       });
     }
   }
@@ -116,9 +123,29 @@ export function attachmentsFromUnknown(value: unknown): InboundAttachment[] {
       url: content.url,
       name: typeof content.filename === "string" ? content.filename : undefined,
       mimeType: typeof content.mimeType === "string" ? content.mimeType : undefined,
+      size: typeof content.size === "number" ? content.size : undefined,
     });
   }
   return out;
+}
+
+/** The image attachments of a Photon inbound payload, in webhook order.
+ *
+ *  Both shapes Photon uses arrive here: a photo with a caption is
+ *  `content: { type: "text", text, attachments: [{ url }] }`, a bare photo is
+ *  `content: { type: "file", url }`. Neither puts anything in `content.text`
+ *  that the model could see, which is why a photo used to be answered as if
+ *  only the caption had been sent — and a caption-less one not answered at
+ *  all. */
+export function photonInboundImages(body: unknown): InboundImage[] {
+  return inboundImages(
+    attachmentsFromUnknown(body).map((att) => ({
+      url: att.url,
+      content_type: att.mimeType ?? null,
+      name: att.name ?? null,
+      size: att.size ?? null,
+    })),
+  ).slice(0, MAX_INLINE_IMAGES);
 }
 
 export async function savePhotonInboundFiles(

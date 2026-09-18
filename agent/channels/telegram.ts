@@ -20,7 +20,12 @@ import { storedHandle } from "../../convex/lib/cabinetPolicy";
 import { chatConversationId } from "../lib/tenant";
 import {
   assembleInboundContent,
+  IMAGE_MAX_BYTES,
+  inlineImageParts,
+  PHOTO_ONLY_TEXT,
+  PHOTO_UNREADABLE_TEXT,
   prefetchInboundImages,
+  type ImagePart,
 } from "../lib/inbound-image.ts";
 import { saveTelegramInboundFiles } from "../lib/inbound-files.ts";
 import { transcribeVoiceNote } from "../lib/voice";
@@ -41,6 +46,7 @@ import {
   answerCallback,
   isPrivateChat,
   largestPhoto,
+  photoWithinBytes,
   sendTelegramMessage,
   sendTelegramTyping,
   setTelegramWebhook,
@@ -144,21 +150,30 @@ async function inboundTelegramText(
   return { text: caption, voice: Boolean(voice), allVoiceFailed: false };
 }
 
-async function inboundTelegramPhotoParts(msg: TelegramMessage) {
-  const photo = largestPhoto(msg);
-  if (!photo) return [];
+type InboundPhoto = { parts: ImagePart[]; unreadable: boolean };
+
+async function inboundTelegramPhotoParts(msg: TelegramMessage): Promise<InboundPhoto> {
+  const photo = photoWithinBytes(msg, IMAGE_MAX_BYTES);
+  if (!photo) return { parts: [], unreadable: false };
   try {
     const url = await telegramFileUrl(photo.file_id);
-    return await prefetchInboundImages([
+    const parts = await prefetchInboundImages([
       {
         url,
         content_type: "image/jpeg",
         size: photo.file_size ?? null,
       },
     ]);
+    // `api.telegram.org/file/bot<TOKEN>/…` is the bot token written into a
+    // URL. A finished download is inline base64 and carries none of it; a
+    // failed one falls back to that URL, which would hand the token to
+    // OpenRouter and whichever host serves the model — and still not show
+    // them the photo. Drop it and let the text say the picture is missing.
+    const inline = inlineImageParts(parts);
+    return { parts: inline, unreadable: inline.length < parts.length };
   } catch (err) {
     console.error("telegram photo fetch failed", err);
-    return [];
+    return { parts: [], unreadable: true };
   }
 }
 
@@ -452,13 +467,21 @@ export default defineChannel({
 
       parkLastChannelTouch(waitUntil, touchLastChannel(phone, "telegram"));
 
-      const content = assembleInboundContent(inbound.text, await photoP);
+      const photo = await photoP;
+      const modelText = [
+        inbound.text || (photo.parts.length > 0 ? PHOTO_ONLY_TEXT : ""),
+        photo.unreadable ? PHOTO_UNREADABLE_TEXT : "",
+      ]
+        .filter(Boolean)
+        .join("\n");
+      const content = assembleInboundContent(modelText, photo.parts);
       console.log("telegram inbound", {
         phone,
         conversationId,
         chars: inbound.text.length,
         voice: inbound.voice,
-        images: typeof content === "string" ? 0 : content.length - 1,
+        images: photo.parts.length,
+        photoUnreadable: photo.unreadable,
         queuedAfterMs: Date.now() - receivedAt,
       });
       const ackText = await settleFastAck(fastAck, { budgetMs: fastAckBudgetMs() });

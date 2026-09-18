@@ -57,8 +57,15 @@ import { runInstinctScan, noteInstinctSources } from "../lib/instinct-wake.ts";
 import { imessageDeliveryEvents } from "../lib/turn-delivery-events.ts";
 import { telegramBindLink } from "../../convex/lib/telegramPolicy.ts";
 import { telegramBotUsername } from "../lib/telegram";
-import { assembleInboundContent } from "../lib/inbound-image.ts";
-import { savePhotonInboundFiles } from "../lib/inbound-files.ts";
+import {
+  assembleInboundContent,
+  PHOTO_ONLY_TEXT,
+  prefetchImageParts,
+} from "../lib/inbound-image.ts";
+import {
+  photonInboundImages,
+  savePhotonInboundFiles,
+} from "../lib/inbound-files.ts";
 import { canSkipInboundBind } from "../lib/inbound-bind.ts";
 import { watcherWakeupPrompt } from "../lib/purchase-policy";
 import { wakeupCarriesRunId } from "../../convex/lib/browserFollowPolicy.ts";
@@ -317,12 +324,12 @@ export default defineChannel({
       } catch {
         return new Response("bad json", { status: 400 });
       }
-      const inbound = readPhotonInbound(parsed);
-      if (!inbound || inbound.isEcho) return new Response(null, { status: 204 });
-      if (!isBluePhotonService({ service: inbound.service })) {
+      const received = readPhotonInbound(parsed);
+      if (!received || received.isEcho) return new Response(null, { status: 204 });
+      if (!isBluePhotonService({ service: received.service })) {
         try {
           await sendPhotonText({
-            conversationId: inbound.spaceId,
+            conversationId: received.spaceId,
             text: refuseSmsText(),
           });
         } catch (err) {
@@ -330,6 +337,23 @@ export default defineChannel({
         }
         return new Response(null, { status: 204 });
       }
+
+      // A photo rides in the attachments, never in `content.text`: with a
+      // caption the webhook sends `{ type: "text", text, attachments: [...] }`,
+      // without one `{ type: "file", url }`. Reading only the text is why Bro
+      // answered «найди эту книгу» blind — the picture was never in the turn —
+      // and why a photo with nothing written under it looked like an empty
+      // message and was dropped a few lines down.
+      const images = photonInboundImages(parsed);
+      const photoP = images.length > 0
+        ? prefetchImageParts(images).catch((err) => {
+            console.error("photon inbound image fetch failed", err);
+            return [];
+          })
+        : undefined;
+      const inbound = images.length > 0 && !received.text
+        ? { ...received, text: PHOTO_ONLY_TEXT }
+        : received;
 
       const preview = inbound.text;
       prefetchOpenRouter();
@@ -488,12 +512,14 @@ export default defineChannel({
       }
       prefetchInstinctRecall(ownerPhone, inbound.text);
       parkLastChannelTouch(waitUntil, touchLastChannel(inbound.senderPhone, "imessage"));
-      const content = assembleInboundContent(inbound.text, []);
+      const photoParts = photoP ? await photoP : [];
+      const content = assembleInboundContent(inbound.text, photoParts);
       console.log("photon inbound", {
         remote: inbound.senderPhone,
         ownerPhone,
         conversationId: inbound.spaceId,
         chars: inbound.text.length,
+        images: photoParts.length,
         queuedAfterMs: Date.now() - receivedAt,
       });
 
