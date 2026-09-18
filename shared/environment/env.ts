@@ -154,6 +154,9 @@ export const env = createEnv({
       .positive()
       .default(1_000_000),
     OPENROUTER_PROVIDER_ORDER: trimmedValue.optional(),
+    // The `web_search` tool reads its plugin results with this model. Left
+    // unset it reuses the inference default.
+    OPENROUTER_SEARCH_MODEL: trimmedValue.optional(),
     OPENROUTER_REASONING_EFFORT: z
       .string()
       .trim()
