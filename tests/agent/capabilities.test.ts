@@ -1,5 +1,5 @@
 import type { DynamicResolveContext } from "eve/tools";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import personalInfoMemory from "@agent/memory/personal_info";
 import workstreamMemory from "@agent/memory/workstreams";
 import calendar from "@agent/tools/calendar";
@@ -48,6 +48,34 @@ describe("authored mode capability matrix", () => {
     ]);
   });
 
+  it("adds browser_task only to a deployment configured for Browser Use", async () => {
+    const unconfigured = await loadBrowserTask("");
+    const resolveUnconfigured = unconfigured.events["turn.started"];
+    expect(resolveUnconfigured).toBeDefined();
+    if (!resolveUnconfigured) return;
+    expect(
+      await resolveUnconfigured({}, dynamicContext("photon-imessage"))
+    ).toBeNull();
+
+    const configured = await loadBrowserTask("browser-use-test-key");
+    const resolve = configured.events["turn.started"];
+    expect(resolve).toBeDefined();
+    if (!resolve) return;
+
+    const resolved = await Promise.all(
+      ["photon-imessage", "scheduled-worker", "scheduled-result"].map(
+        async (role) => resolve({}, dynamicContext(role))
+      )
+    );
+
+    for (const tools of resolved.slice(0, 2)) {
+      expect(tools && !("execute" in tools) ? Object.keys(tools) : []).toEqual([
+        "browser_task",
+      ]);
+    }
+    expect(resolved[2]).toBeNull();
+  });
+
   it("limits authored scheduled reporting tools to delivery or resuming its own run", async () => {
     expect(await authoredCapabilities("scheduled-result")).toEqual([
       "request_vault_setup",
@@ -56,6 +84,14 @@ describe("authored mode capability matrix", () => {
     ]);
   });
 });
+
+// The Browser Use key comes from the environment, so each expectation loads
+// the tool module against the state it is describing.
+async function loadBrowserTask(apiKey: string) {
+  vi.resetModules();
+  vi.stubEnv("BROWSER_USE_API_KEY", apiKey);
+  return (await import("@agent/tools/browser_task")).default;
+}
 
 async function authoredCapabilities(authenticator: string) {
   const context = dynamicContext(authenticator);

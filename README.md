@@ -131,6 +131,39 @@ the phone number entered on the sign-in screen, and a first message from an
 unknown number creates that user's account, because Photon delivering the
 message already proves possession of the number.
 
+### Browser Use Cloud
+
+`browser_task` runs a website errand — sign in, fill the form, finish the
+checkout — in a hosted [Browser Use](https://browser-use.com) cloud browser.
+The tool, and the instructions that describe it, appear only when
+`BROWSER_USE_API_KEY` is set; without it the agent says plainly that it cannot
+operate a website.
+
+1. Create a Browser Use Cloud project and copy its API key.
+2. Register a webhook for `https://<your-host>/webhooks/browser-use` in the
+   Browser Use dashboard and copy its signing secret. Completion is also
+   reconciled by a once-a-minute poller, so the webhook is an optimization, not
+   a requirement.
+3. Set the variables in the host's encrypted environment:
+
+```bash
+vercel env add BROWSER_USE_API_KEY production
+vercel env add BROWSER_USE_WEBHOOK_SECRET production
+vercel deploy --prod
+```
+
+`BROWSER_USE_PROXY_COUNTRY` is the ISO 3166-1 alpha-2 residential-proxy country
+every run browses through and defaults to `ru`. `BROWSER_USE_MODEL` overrides
+the hosted agent the cloud runs; leaving it unset uses the v4 API's documented
+default. `BROWSER_USE_BASE_URL` overrides the API origin and exists so a staging
+deployment can point at a stand-in.
+
+Each workspace keeps one persistent Browser Use profile, so a site stays signed
+in between errands. Saved vault logins are bound to the exact origin they were
+saved for, and the saved card is bound only when the user approved paying on
+that errand; the values are typed by Browser Use and are never visible to any
+model in this system.
+
 ## Google Workspace connection
 
 OpenInstinct can use a user's Gmail, Calendar, and read-only Contacts through a
