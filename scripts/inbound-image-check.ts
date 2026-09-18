@@ -2,15 +2,23 @@ import assert_ from "node:assert/strict";
 import {
   assembleInboundContent,
   fetchImagePart,
+  IMAGE_MAX_BYTES,
   IMAGE_TIMEOUT_MS,
+  imageMediaTypeFromName,
   inboundImages,
   imageUrlParts,
+  inlineImageParts,
   isImageContentType,
+  MAX_INLINE_IMAGES,
   isPlainJson,
+  PHOTO_ONLY_TEXT,
+  PHOTO_UNREADABLE_TEXT,
   prefetchInboundImages,
 } from "../agent/lib/inbound-image.ts";
+import { photonInboundImages } from "../agent/lib/inbound-files.ts";
+import { photoWithinBytes } from "../agent/lib/telegram.ts";
 
-import { assert } from "./lib/check.ts";
+import { assert, src } from "./lib/check.ts";
 
 assert(isImageContentType("image/jpeg"), "jpeg");
 assert(isImageContentType("IMAGE/PNG"), "case-insensitive");
@@ -95,8 +103,105 @@ assert(isPlainJson(42), "finite number is plain JSON");
 assert(isPlainJson("hi"), "string is plain JSON");
 assert(isPlainJson([1, "a", null, { b: [true, {}] }]), "nested plain arrays/objects are plain JSON");
 
-assert(IMAGE_TIMEOUT_MS === 800, "inbound image wait is 800ms — URL fallback after");
+assert(IMAGE_TIMEOUT_MS === 2_000, "inbound image wait is 2s — a photo is worth the second");
 const urls = imageUrlParts(media);
 assert(urls.length === 2 && urls[0]?.data === imgs[0].url, "url parts skip the download");
+
+// A photo with no caption. An empty text part is not sent at all, and the
+// channels put PHOTO_ONLY_TEXT in its place so the message is not empty to the
+// gates on the way in.
+const bare = assembleInboundContent("", await prefetchInboundImages([media[0]], { fetch: okFetch }));
+assert(Array.isArray(bare) && bare.length === 1 && bare[0].type === "file", "no caption → image only");
+assert(assembleInboundContent("   ", [{ type: "file", mediaType: "image/jpeg", data: "data:x" }]).length === 1, "blank caption is no caption");
+assert(PHOTO_ONLY_TEXT.trim().length > 0 && PHOTO_UNREADABLE_TEXT.trim().length > 0, "markers are sayable");
+
+// Media type from the filename: Photon attachments arrive as `{ url }` with no
+// content type, and a photo with no declared type used to be dropped.
+assert(imageMediaTypeFromName("photo.JPG") === "image/jpeg", "extension, any case");
+assert(imageMediaTypeFromName("https://cdn.example/a/b.heic?sig=1") === "image/heic", "extension off a signed url");
+assert(imageMediaTypeFromName("https://cdn.example/file") === undefined, "no extension, no guess");
+assert(imageMediaTypeFromName("notes.pdf") === undefined, "pdf is not an image");
+const untyped = inboundImages([
+  { url: "https://cdn.example/a.png" },
+  { url: "https://cdn.example/blob", content_type: "application/octet-stream", name: "IMG_0042.HEIC" },
+  { url: "https://cdn.example/clip.caf", content_type: "audio/x-caf", name: "clip.jpg" },
+  { url: "https://cdn.example/doc", content_type: "application/pdf" },
+]);
+assert(untyped.length === 2, "untyped image and octet-stream photo pass, audio and pdf do not");
+assert(untyped[0].mediaType === "image/png" && untyped[1].mediaType === "image/heic", "guessed types");
+
+// A part that is still a URL never made it past the download. On Telegram that
+// URL is `…/bot<TOKEN>/…` — dropping it is the only safe move.
+const inline = inlineImageParts([
+  { type: "file", mediaType: "image/jpeg", data: "data:image/jpeg;base64,AA" },
+  { type: "file", mediaType: "image/jpeg", data: "https://api.telegram.org/file/botSECRET/photo.jpg" },
+]);
+assert(inline.length === 1 && inline[0].data.startsWith("data:"), "url part dropped, inline kept");
+
+// Photon inbound: both shapes of a photo the webhook can carry.
+const captioned = photonInboundImages({
+  message: {
+    content: {
+      type: "text",
+      text: "найди мне эту книгу",
+      attachments: [{ url: "https://cdn.photon/a.jpeg", size: 120 }],
+    },
+  },
+});
+assert(captioned.length === 1 && captioned[0].size === 120, "captioned photo is an attachment");
+const bareFile = photonInboundImages({
+  message: { content: { type: "file", url: "https://cdn.photon/b.png" } },
+});
+assert(bareFile.length === 1 && bareFile[0].mediaType === "image/png", "bare photo is a file content");
+assert(photonInboundImages({ message: { content: { type: "text", text: "привет" } } }).length === 0, "plain text has no images");
+assert(
+  photonInboundImages({
+    message: { content: { type: "text", text: "", attachments: [{ url: "https://cdn.photon/v.caf", mimeType: "audio/x-caf" }] } },
+  }).length === 0,
+  "voice attachment is not an image",
+);
+
+// An album does not get to blow up the turn input: the extra photos are still
+// saved to the person's files, they just do not ride inline.
+const album = photonInboundImages({
+  message: {
+    content: {
+      type: "text",
+      text: "вот квартира",
+      attachments: Array.from({ length: 8 }, (_, i) => ({ url: `https://cdn.photon/${i}.jpg` })),
+    },
+  },
+});
+assert(album.length === MAX_INLINE_IMAGES, "album is capped at MAX_INLINE_IMAGES");
+
+// Telegram sends several renditions; the cap must pick one that fits instead
+// of refusing the biggest and sending nothing.
+const sizes = {
+  chat: { id: 1, type: "private" as const },
+  message_id: 1,
+  photo: [
+    { file_id: "s", file_size: 20_000 },
+    { file_id: "m", file_size: 200_000 },
+    { file_id: "l", file_size: 9_000_000 },
+  ],
+};
+assert(photoWithinBytes(sizes, IMAGE_MAX_BYTES)?.file_id === "m", "largest rendition under the cap");
+assert(photoWithinBytes({ ...sizes, photo: [{ file_id: "huge", file_size: 9_000_000 }] }, IMAGE_MAX_BYTES)?.file_id === "huge", "only an oversize one left → try it");
+assert(photoWithinBytes({ ...sizes, photo: [] }, IMAGE_MAX_BYTES) === undefined, "no photo");
+
+// The pipeline above is only worth anything if a channel calls it. It was
+// wired, tested, and documented for months while `/webhooks/photon` passed an
+// empty parts list — every photo on the main channel answered from the caption
+// alone.
+const imessage = src("agent/channels/imessage.ts");
+assert(imessage.includes("photonInboundImages(parsed)"), "photon inbound reads its attachments");
+assert(
+  imessage.includes("assembleInboundContent(inbound.text, photoParts)"),
+  "the photon turn carries the photo, not just the caption",
+);
+assert(!imessage.includes("assembleInboundContent(inbound.text, [])"), "no empty parts list");
+const telegram = src("agent/channels/telegram.ts");
+assert(telegram.includes("inlineImageParts"), "telegram keeps the tokened file url away from the model");
+assert(telegram.includes("photoWithinBytes"), "telegram picks a rendition that fits the cap");
 
 console.log("inbound-image-check ok");
