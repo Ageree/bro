@@ -3,6 +3,7 @@ import { z } from "zod";
 
 const scheduledReportIdentitySchema = z.object({
   photonReplyAnchorMessageId: z.string().min(1).optional(),
+  telegramReplyAnchorMessageId: z.string().min(1).optional(),
   scheduleId: z.uuid(),
   scheduledReportLeaseToken: z.uuid(),
   scheduledReportSequence: z.coerce.number().int().positive(),
@@ -39,7 +40,9 @@ export function scheduledReportIdentity(
   const identity = scheduledReportIdentitySchema.safeParse(caller.attributes);
   return identity.success
     ? {
-        replyAnchorMessageId: identity.data.photonReplyAnchorMessageId,
+        replyAnchorMessageId:
+          identity.data.photonReplyAnchorMessageId ??
+          identity.data.telegramReplyAnchorMessageId,
         scheduleId: identity.data.scheduleId,
         leaseToken: identity.data.scheduledReportLeaseToken,
         runId: identity.data.scheduledRunId,

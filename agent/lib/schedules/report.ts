@@ -5,7 +5,9 @@ import {
   finalizeScheduledReport,
   releaseScheduledReport,
 } from "@db/services/scheduled-agent-jobs";
+import { telegramChatIdFromConversationId } from "@agent/lib/telegram-conversation";
 import photon from "../../channels/photon";
+import telegram from "../../channels/telegram";
 
 type ClaimedScheduledReport = NonNullable<
   Awaited<ReturnType<typeof claimScheduledReport>>
@@ -46,6 +48,24 @@ export async function dispatchScheduledReport(
           adapterName: "imessage",
           threadId: claimed.job.conversationId,
         })
+        .send(prompt, options);
+      console.info("[scheduled-run] report session accepted", {
+        channel: claimed.job.conversationChannel,
+        reportSequence: claimed.run.reportSequence,
+        runId: claimed.run.id,
+        sessionId: session.id,
+      });
+      return;
+    }
+    if (claimed.job.conversationChannel === "telegram") {
+      const chatId = telegramChatIdFromConversationId(
+        claimed.job.conversationId
+      );
+      if (!chatId) {
+        throw new Error("A Telegram scheduled report requires a chat id.");
+      }
+      const session = await delivery
+        .to(telegram, { chatId })
         .send(prompt, options);
       console.info("[scheduled-run] report session accepted", {
         channel: claimed.job.conversationChannel,
@@ -125,14 +145,19 @@ function scheduledReportAttributes(
     ["scheduledRunId", claimed.run.id],
     ["workspaceId", claimed.job.workspaceId],
   ]);
-  if (
-    claimed.job.conversationChannel === "photon" &&
-    claimed.job.replyAnchorMessageId
-  ) {
-    attributes.set(
-      "photonReplyAnchorMessageId",
-      claimed.job.replyAnchorMessageId
-    );
+  if (claimed.job.replyAnchorMessageId) {
+    if (claimed.job.conversationChannel === "photon") {
+      attributes.set(
+        "photonReplyAnchorMessageId",
+        claimed.job.replyAnchorMessageId
+      );
+    }
+    if (claimed.job.conversationChannel === "telegram") {
+      attributes.set(
+        "telegramReplyAnchorMessageId",
+        claimed.job.replyAnchorMessageId
+      );
+    }
   }
   if (claimed.run.workerSessionId) {
     attributes.set("scheduledRunSessionId", claimed.run.workerSessionId);

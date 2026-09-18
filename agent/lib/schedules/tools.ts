@@ -5,6 +5,7 @@ import type {
   listScheduledAgentJobs,
 } from "@db/services/scheduled-agent-jobs";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
+import { telegramConversationIdSchema } from "@agent/lib/telegram-conversation";
 
 export function scheduleOwner(context: ToolContext) {
   const auth = context.session.auth.current;
@@ -12,15 +13,17 @@ export function scheduleOwner(context: ToolContext) {
     throw new Error("An authenticated user is required to manage schedules.");
   }
   const conversationChannel = z
-    .enum(["eve", "photon"])
+    .enum(["eve", "photon", "telegram"])
     .parse(auth.attributes.conversationChannel);
   const conversationId =
     conversationChannel === "eve"
       ? context.session.id
-      : z
-          .string()
-          .startsWith("imessage:")
-          .parse(auth.attributes.conversationId);
+      : conversationChannel === "photon"
+        ? z
+            .string()
+            .startsWith("imessage:")
+            .parse(auth.attributes.conversationId)
+        : telegramConversationIdSchema.parse(auth.attributes.conversationId);
   return {
     conversation: { conversationChannel, conversationId },
     scope: scopeFromPrincipal(auth),
@@ -29,11 +32,13 @@ export function scheduleOwner(context: ToolContext) {
 
 export function scheduleReplyAnchor(context: ToolContext) {
   const auth = context.session.auth.current;
-  if (auth?.attributes.conversationChannel !== "photon") return undefined;
-  const messageId = z
-    .string()
-    .min(1)
-    .safeParse(auth.attributes.photonMessageId);
+  const anchorAttribute =
+    auth?.attributes.conversationChannel === "photon"
+      ? auth.attributes.photonMessageId
+      : auth?.attributes.conversationChannel === "telegram"
+        ? auth.attributes.telegramMessageId
+        : undefined;
+  const messageId = z.string().min(1).safeParse(anchorAttribute);
   return messageId.success ? messageId.data : undefined;
 }
 

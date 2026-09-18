@@ -12,6 +12,7 @@
         "IMESSAGE_*",
         "NODE_ENV",
         "SECRET_ENCRYPTION_KEY",
+        "TELEGRAM_*",
         "VERCEL_*"
       ],
       "outputs": [".next/**", "!.next/cache/**", "next-env.d.ts"]
@@ -26,6 +27,7 @@
         "IMESSAGE_*",
         "NODE_ENV",
         "SECRET_ENCRYPTION_KEY",
+        "TELEGRAM_*",
         "VERCEL_*"
       ],
       "outputs": [".next/**", "!.next/cache/**", "next-env.d.ts"]
@@ -45,6 +47,7 @@
         "IMESSAGE_*",
         "NODE_ENV",
         "SECRET_ENCRYPTION_KEY",
+        "TELEGRAM_*",
         "VERCEL_*"
       ],
       "persistent": true
@@ -71,6 +74,7 @@
         "IMESSAGE_*",
         "NODE_ENV",
         "SECRET_ENCRYPTION_KEY",
+        "TELEGRAM_*",
         "VERCEL_*"
       ],
       "persistent": true

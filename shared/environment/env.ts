@@ -95,6 +95,14 @@ export const env = createEnv({
     NODE_ENV: z
       .enum(["development", "production", "test"])
       .default("production"),
+    TELEGRAM_BOT_TOKEN: requiredValue.optional(),
+    TELEGRAM_BOT_USERNAME: requiredValue
+      .refine(
+        (value) => /^[A-Za-z0-9_]{5,32}$/u.test(value),
+        "TELEGRAM_BOT_USERNAME must be the bot handle without a leading @"
+      )
+      .optional(),
+    TELEGRAM_WEBHOOK_SECRET_TOKEN: requiredValue.optional(),
     VERCEL_BRANCH_URL: requiredValue.optional(),
     VERCEL_ENV: z.enum(["production", "preview", "development"]).optional(),
     VERCEL_PROJECT_ID: requiredValue.optional(),

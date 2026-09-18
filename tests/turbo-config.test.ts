@@ -10,6 +10,7 @@ const applicationEnvironment = [
   "IMESSAGE_*",
   "NODE_ENV",
   "SECRET_ENCRYPTION_KEY",
+  "TELEGRAM_*",
   "VERCEL_*",
 ];
 const runtimeEnvironment = applicationEnvironment;

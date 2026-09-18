@@ -131,6 +131,48 @@ the phone number entered on the sign-in screen, and a first message from an
 unknown number creates that user's account, because Photon delivering the
 message already proves possession of the number.
 
+### Telegram setup
+
+Telegram is a second conversation channel for an account that already exists.
+A person links their Telegram once, and afterwards messages from that Telegram
+account run as the same user, workspace, memory, vault, and schedules.
+
+1. Create a bot with [@BotFather](https://t.me/BotFather), then copy its token
+   and its username (the handle without the leading `@`).
+2. Set the three variables in the host's encrypted environment:
+
+```bash
+vercel env add TELEGRAM_BOT_TOKEN production
+vercel env add TELEGRAM_BOT_USERNAME production
+vercel env add TELEGRAM_WEBHOOK_SECRET_TOKEN production
+vercel deploy --prod
+```
+
+`TELEGRAM_WEBHOOK_SECRET_TOKEN` is a secret you choose; Telegram echoes it back
+in the `X-Telegram-Bot-Api-Secret-Token` header, and inbound webhooks that do
+not carry it are rejected.
+
+3. Point the bot at the deployment's webhook route:
+
+```bash
+curl -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/setWebhook" \
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://<your-host>/eve/v1/telegram",
+       "secret_token":"'"$TELEGRAM_WEBHOOK_SECRET_TOKEN"'",
+       "allowed_updates":["message","callback_query"]}'
+```
+
+To link an account, open the workspace page and choose **Link Telegram**, or ask
+the assistant over iMessage to link Telegram. Either one mints a one-time
+`https://t.me/<bot>?start=link_<token>` deep link that expires after 30 minutes.
+Opening it in Telegram binds that Telegram account to the workspace. One
+Telegram account maps to exactly one workspace, and one workspace holds at most
+one Telegram account.
+
+Only private chats reach the agent; group messages are ignored. A message from
+an unlinked Telegram account gets one short explanation of how to link, at most
+once an hour per chat.
+
 ## Google Workspace connection
 
 OpenInstinct can use a user's Gmail, Calendar, and read-only Contacts through a
