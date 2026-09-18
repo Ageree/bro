@@ -313,6 +313,16 @@ chosen one, `OPENROUTER_MODEL_CONTEXT_TOKENS` declares the context window,
 `high`. The workspace page switches its model picker to an OpenRouter id field
 whenever the key is present.
 
+`web_search` changes shape with the provider. The framework tool is
+provider-managed: an AI Gateway model searches through Exa, and a direct
+provider model is handed that provider's own search tool. OpenRouter exposes
+neither, so with `OPENROUTER_API_KEY` set the agent swaps in its own ordinary
+function tool, which runs the query through OpenRouter's `web` plugin and
+returns up to eight titles, URLs, and one-line summaries. `OPENROUTER_SEARCH_MODEL`
+picks the cheap model that reads those plugin results and falls back to
+`OPENROUTER_MODEL`. The tool keeps the name `web_search`, and `web_fetch` is
+unaffected because it is an ordinary function tool on every provider.
+
 For fully manual setup, copy the environment template and add your AI Gateway
 key:
 
