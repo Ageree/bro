@@ -10,6 +10,13 @@ const capture = vi.hoisted(() => ({
   config: undefined as PhotonIMessageChannelConfig | undefined,
   ensureUser:
     vi.fn<() => Promise<{ created: boolean; userId: string } | undefined>>(),
+  messageQuotaGate: vi.fn<
+    () => Promise<{
+      allowed: boolean;
+      paywallText: string | undefined;
+    }>
+  >(),
+  post: vi.fn<InboundContext["thread"]["post"]>(),
 }));
 
 vi.mock("@shared/environment", async (importOriginal) => {
@@ -37,6 +44,9 @@ vi.mock(import("eve/channels/photon"), async (importOriginal) => {
 vi.mock("@db/services/auth/phone-user", () => ({
   ensureVerifiedPhoneUser: capture.ensureUser,
 }));
+vi.mock("@agent/lib/billing/quota", () => ({
+  messageQuotaGate: capture.messageQuotaGate,
+}));
 
 const onMessage = capture.config?.onMessage;
 if (!onMessage) {
@@ -46,6 +56,10 @@ if (!onMessage) {
 describe("Photon inbound authentication", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    capture.messageQuotaGate.mockResolvedValue({
+      allowed: true,
+      paywallText: undefined,
+    });
   });
 
   it("verifies webhooks with the configured Photon signing secret", () => {
@@ -137,6 +151,32 @@ describe("Photon inbound authentication", () => {
     expect(result?.context?.join("\n")).toContain("первое в жизни сообщение");
   });
 
+  it("answers an over-limit message with one paywall bubble a day", async () => {
+    capture.ensureUser.mockResolvedValue({ created: false, userId: "user-1" });
+    capture.messageQuotaGate.mockResolvedValueOnce({
+      allowed: false,
+      paywallText: "Лимит на сегодня исчерпан",
+    });
+    const context = threadContext();
+
+    const paywalled = await onMessage(context, photonMessage("+15550100011"));
+
+    expect(paywalled).toBeNull();
+    expect(capture.post).toHaveBeenCalledExactlyOnceWith({
+      raw: "Лимит на сегодня исчерпан",
+    });
+
+    // The rest of the day is turned away without saying so again.
+    capture.messageQuotaGate.mockResolvedValueOnce({
+      allowed: false,
+      paywallText: undefined,
+    });
+    const silent = await onMessage(context, photonMessage("+15550100011"));
+
+    expect(silent).toBeNull();
+    expect(capture.post).toHaveBeenCalledTimes(1);
+  });
+
   it("says nothing about a first contact for a returning person", async () => {
     capture.ensureUser.mockResolvedValue({
       created: false,
@@ -157,14 +197,14 @@ type InboundContext = Parameters<
 >[0];
 
 interface ThreadIdentity {
-  readonly thread: Pick<InboundContext["thread"], "id">;
+  readonly thread: Pick<InboundContext["thread"], "id" | "post">;
 }
 
 function threadContext(): InboundContext {
   const identity: ThreadIdentity = {
-    thread: { id: "imessage:iMessage;-;+15550100011" },
+    thread: { id: "imessage:iMessage;-;+15550100011", post: capture.post },
   };
-  // SAFETY: The inbound policy reads only the thread id from this context.
+  // SAFETY: The inbound policy reads only the thread id and `post` from this context.
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- A complete Chat SDK thread mock would add unrelated methods.
   return identity as InboundContext;
 }

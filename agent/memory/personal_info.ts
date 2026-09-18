@@ -75,7 +75,7 @@ export default defineMemory({
       return {
         update: defineTool({
           description:
-            "Update model-readable Personal Info after the user explicitly states or corrects reusable form information. This tool cannot read Personal Info; recalled values are already present in context. Pass null to remove a field. Never store credentials, payment details, tokens, or one-time codes.",
+            "Update model-readable Personal Info after the user explicitly states or corrects reusable form information. Save `timezone` as an IANA zone name, such as Europe/Moscow, whenever the user names the city or time zone they live in: every «сегодня» and every usage limit is counted on it. This tool cannot read Personal Info; recalled values are already present in context. Pass null to remove a field. Never store credentials, payment details, tokens, or one-time codes.",
           inputSchema: userProfilePatchSchema,
           outputSchema: userProfileSchema,
           execute: (input) => patchUserProfile(scope, input),

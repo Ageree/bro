@@ -71,3 +71,112 @@ export function browserOutcomeSummary(
   ];
   return lines.filter((line) => line !== undefined).join("\n");
 }
+
+type OrderStatus = "cancelled" | "placed";
+
+const wildberriesPattern =
+  /wildberries|вайлдберр|\bwb\.ru\b|(?<![\p{L}])(?:wb|вб)(?![\p{L}])/iu;
+const ozonPattern = /ozon|озон/iu;
+const cancelledPattern =
+  /отмен(?:и|ить|ён|ен|ена|или|яю|яем)|аннулир|cancel(?:l?ed)?/iu;
+const pickupPattern =
+  /(?:пвз|пункт\s+выдачи|самовывоз|pickup)\s*[:\-–—]\s*(.+)/iu;
+// Digits with the separators a merchant prints inside them.
+const digitsOnly = /^\d[\d\s-]*$/u;
+
+/**
+ * Which shop the errand was run against. The site the run was pointed at wins:
+ * a person writes «купи на вб» as often as they write the domain, but only one
+ * of the two is a fact the tool recorded.
+ */
+export function merchantFromText(...sources: (string | null | undefined)[]) {
+  for (const source of sources) {
+    if (!source) continue;
+    if (wildberriesPattern.test(source)) return "wb" as const;
+    if (ozonPattern.test(source)) return "ozon" as const;
+  }
+  return "other" as const;
+}
+
+/**
+ * A WB or Ozon order number is 13–19 bare digits, which is exactly a card
+ * number's shape, so length cannot tell them apart. Luhn can: an order number
+ * that happens to pass it is rare, a card number that fails it does not exist.
+ */
+function looksLikeCardNumber(value: string) {
+  const bare = value.replaceAll(/[\s-]/gu, "");
+  if (bare.length < 13 || bare.length > 19) return false;
+  let sum = 0;
+  for (let index = 0; index < bare.length; index += 1) {
+    const digit = Number(bare[bare.length - 1 - index]);
+    const doubled = digit * 2;
+    sum += index % 2 === 0 ? digit : doubled > 9 ? doubled - 9 : doubled;
+  }
+  return sum % 10 === 0;
+}
+
+/** «1 299,00 ₽» and «620 руб» alike, in whole roubles. */
+function priceRubFromTotal(total: string) {
+  const digits = /\d[\d\s]*(?:[.,]\d{1,2})?/u.exec(total)?.[0];
+  if (!digits) return undefined;
+  const amount = Number.parseFloat(
+    digits.replaceAll(/\s/gu, "").replace(",", ".")
+  );
+  return Number.isFinite(amount) && amount >= 0
+    ? Math.round(amount)
+    : undefined;
+}
+
+function orderTitle(
+  outcome: ReturnType<typeof parseBrowserOutcome>,
+  task: string
+) {
+  return (outcome.result ?? task).trim().split(/\r?\n/u)[0]?.slice(0, 200);
+}
+
+/**
+ * The purchase a finished run made, or nothing. A run only becomes an order
+ * when it reported both an order number and an amount and asked for nothing
+ * further: a run parked on 3-D Secure or a missing card has not bought
+ * anything yet, whatever its prose claims.
+ */
+export function parseBrowserOrder(
+  outcome: ReturnType<typeof parseBrowserOutcome>,
+  run: {
+    readonly result: string | null | undefined;
+    readonly site: string | null | undefined;
+    readonly task: string;
+  }
+) {
+  if (outcome.needs !== "none") return null;
+  const merchantOrderId = outcome.order?.trim();
+  if (!merchantOrderId || merchantOrderId.length > 64) return null;
+  if (
+    digitsOnly.test(merchantOrderId) &&
+    looksLikeCardNumber(merchantOrderId)
+  ) {
+    return null;
+  }
+  const priceRub = outcome.total ? priceRubFromTotal(outcome.total) : undefined;
+  if (priceRub === undefined) return null;
+  const title = orderTitle(outcome, run.task);
+  if (!title) return null;
+
+  const pickup = pickupPattern
+    .exec(run.result ?? "")?.[1]
+    ?.trim()
+    .slice(0, 280);
+  const status: OrderStatus = cancelledPattern.test(
+    `${run.task}\n${run.result ?? ""}`
+  )
+    ? "cancelled"
+    : "placed";
+  return {
+    merchant: merchantFromText(run.site, run.task, run.result),
+    merchantOrderId,
+    pickup: pickup === undefined || pickup === "" ? null : pickup,
+    priceRub,
+    status,
+    title,
+  };
+}

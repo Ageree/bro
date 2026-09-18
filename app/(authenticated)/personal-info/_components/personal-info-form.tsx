@@ -7,6 +7,7 @@ import { Button } from "@web/components/ui/button";
 import { Input } from "@web/components/ui/input";
 import { Label } from "@web/components/ui/label";
 import {
+  defaultTimeZone,
   userProfileSchema,
   type UserProfile,
 } from "@shared/user-profile/schema";
@@ -36,6 +37,7 @@ export function PersonalInfoForm({
       phone: nullableFormValue(values.phone),
       postalCode: nullableFormValue(values.postalCode),
       region: nullableFormValue(values.region),
+      timezone: nullableFormValue(values.timezone),
     });
     if (!parsed.success) {
       setStatus("error");
@@ -66,11 +68,19 @@ export function PersonalInfoForm({
         <Alert variant="destructive">
           <AlertTitle>Couldn&apos;t save personal info</AlertTitle>
           <AlertDescription>
-            Check the email, birth date, and two-letter country code, then try
-            again.
+            Check the email, birth date, two-letter country code, and IANA time
+            zone, then try again.
           </AlertDescription>
         </Alert>
       ) : null}
+
+      <datalist id="personal-info-timezones">
+        {suggestedTimeZones.map((zone) => (
+          <option key={zone} value={zone}>
+            {zone}
+          </option>
+        ))}
+      </datalist>
 
       <form className="space-y-10" onSubmit={submit}>
         <section aria-labelledby="identity-heading" className="space-y-4">
@@ -110,6 +120,14 @@ export function PersonalInfoForm({
               label="Date of birth"
               name="dateOfBirth"
               type="date"
+            />
+            <ProfileField
+              autoComplete="off"
+              defaultValue={initialProfile.timezone}
+              label="Time zone"
+              list="personal-info-timezones"
+              name="timezone"
+              placeholder={defaultTimeZone}
             />
           </div>
         </section>
@@ -201,6 +219,30 @@ function ProfileField({
     </div>
   );
 }
+
+/**
+ * The zones this product's people actually live in, offered as a datalist so
+ * the field stays a plain text input that accepts any valid IANA name.
+ */
+const suggestedTimeZones = [
+  "Europe/Kaliningrad",
+  "Europe/Moscow",
+  "Europe/Samara",
+  "Asia/Yekaterinburg",
+  "Asia/Omsk",
+  "Asia/Novosibirsk",
+  "Asia/Krasnoyarsk",
+  "Asia/Irkutsk",
+  "Asia/Yakutsk",
+  "Asia/Vladivostok",
+  "Asia/Magadan",
+  "Asia/Kamchatka",
+  "Europe/Minsk",
+  "Asia/Tbilisi",
+  "Asia/Yerevan",
+  "Asia/Almaty",
+  "Asia/Tashkent",
+];
 
 function nullableFormValue(value: FormDataEntryValue | undefined) {
   const parsed = z.string().trim().min(1).safeParse(value);

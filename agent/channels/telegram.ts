@@ -12,6 +12,7 @@ import {
   findChannelIdentity,
   redeemChannelLinkToken,
 } from "@db/services/channel-identities";
+import { messageQuotaGate } from "@agent/lib/billing/quota";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { resolveTelegramReplyTarget } from "@agent/lib/reply-targets";
 import {
@@ -260,6 +261,15 @@ export default telegramChannel({
     if (!auth) return null;
     const principalId = `better-auth:${identity.userId}`;
     const scope = accessScopeForUser(principalId);
+    // Metering happens before the turn starts, so an over-limit message costs
+    // a counter row rather than a model call.
+    const gate = await messageQuotaGate(scope);
+    if (!gate.allowed) {
+      if (gate.paywallText) {
+        await context.telegram.sendMessage(gate.paywallText);
+      }
+      return null;
+    }
     return {
       auth: {
         ...auth,

@@ -5,6 +5,7 @@ import {
   type PhotonIMessageChannelConfig,
 } from "eve/channels/photon";
 import { resolvePhotonReplyTarget } from "@agent/lib/reply-targets";
+import { messageQuotaGate } from "@agent/lib/billing/quota";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { ensureVerifiedPhoneUser } from "@db/services/auth/phone-user";
 import { sendMessageToolResultSchema } from "@shared/chat/message-delivery";
@@ -220,6 +221,15 @@ export default photonIMessageChannel({
     }
     const principalId = `better-auth:${account.userId}`;
     const scope = accessScopeForUser(principalId);
+    // Metering happens before the turn starts, so an over-limit message costs
+    // a counter row rather than a model call.
+    const gate = await messageQuotaGate(scope);
+    if (!gate.allowed) {
+      if (gate.paywallText) {
+        await context.thread.post({ raw: gate.paywallText });
+      }
+      return null;
+    }
     return {
       auth: {
         ...auth,

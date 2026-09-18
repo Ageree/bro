@@ -39,6 +39,9 @@ export const browserRuns = pgTable(
     sessionId: text("session_id").notNull(),
     profileId: text("profile_id"),
     task: text("task").notNull(),
+    // The origin the errand was pointed at. Recording an order reads it to
+    // name the merchant, which the errand wording alone often does not.
+    site: text("site"),
     status: text("status", {
       enum: ["created", "running", "waiting", "done", "failed", "stopped"],
     })

@@ -127,6 +127,13 @@
       "when": 1789731267878,
       "tag": "0017_talented_penance",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1789740834337,
+      "tag": "0018_easy_butterfly",
+      "breakpoints": true
     }
   ]
 }

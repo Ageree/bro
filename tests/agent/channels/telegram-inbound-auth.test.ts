@@ -18,6 +18,12 @@ const capture = vi.hoisted(() => ({
   // SAFETY: The mocked channel factory replaces this value during module loading.
   config: undefined as TelegramChannelConfig | undefined,
   findIdentity: vi.fn<typeof findChannelIdentity>(),
+  messageQuotaGate: vi.fn<
+    () => Promise<{
+      allowed: boolean;
+      paywallText: string | undefined;
+    }>
+  >(),
   redeemToken: vi.fn<typeof redeemChannelLinkToken>(),
 }));
 
@@ -46,6 +52,9 @@ vi.mock(import("eve/channels/telegram"), async (importOriginal) => {
 vi.mock("@db/services/channel-identities", () => ({
   findChannelIdentity: capture.findIdentity,
   redeemChannelLinkToken: capture.redeemToken,
+}));
+vi.mock("@agent/lib/billing/quota", () => ({
+  messageQuotaGate: capture.messageQuotaGate,
 }));
 
 const onMessage = capture.config?.onMessage;
@@ -79,6 +88,10 @@ describe("Telegram inbound authentication", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.useRealTimers();
+    capture.messageQuotaGate.mockResolvedValue({
+      allowed: true,
+      paywallText: undefined,
+    });
   });
 
   it("ignores group chats without replying", async () => {
@@ -121,6 +134,26 @@ describe("Telegram inbound authentication", () => {
     expect(result?.auth?.attributes.workspaceId).toMatch(
       /^personal:[0-9a-f]{32}$/
     );
+  });
+
+  it("answers an over-limit message with one paywall message a day", async () => {
+    capture.findIdentity.mockResolvedValue(channelIdentity());
+    capture.messageQuotaGate.mockResolvedValueOnce({
+      allowed: false,
+      paywallText: "Лимит на сегодня исчерпан",
+    });
+    const { context, sent } = inboundContext();
+
+    await expect(onMessage(context, telegramMessage())).resolves.toBeNull();
+    expect(sent).toHaveBeenCalledExactlyOnceWith("Лимит на сегодня исчерпан");
+
+    // The rest of the day is turned away without saying so again.
+    capture.messageQuotaGate.mockResolvedValueOnce({
+      allowed: false,
+      paywallText: undefined,
+    });
+    await expect(onMessage(context, telegramMessage())).resolves.toBeNull();
+    expect(sent).toHaveBeenCalledTimes(1);
   });
 
   it("explains linking once per chat per hour to an unlinked user", async () => {
