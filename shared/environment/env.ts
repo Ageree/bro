@@ -65,6 +65,21 @@ function installationSecretWithLocalDefault<
     : schema.optional();
 }
 
+/**
+ * The hosted agent model Browser Use Cloud documents as the v4 default for
+ * `POST /runs`. Overridden per deployment with `BROWSER_USE_MODEL`.
+ */
+const defaultBrowserUseModel = "gpt-5.6-luna";
+
+// A Browser Use key carries no internal whitespace, so a newline that survived
+// a paste into a hosted environment can only be damage: `fetch` rejects such a
+// header value outright and every run fails with an error that points at the
+// header instead of at the stored secret.
+const browserUseApiKeySchema = z
+  .string()
+  .transform((value) => value.replaceAll(/\s+/gu, ""))
+  .refine((value) => value.length > 0, "Required");
+
 export const env = createEnv({
   server: {
     // Required
@@ -88,6 +103,30 @@ export const env = createEnv({
     // Optional
     BLOB_READ_WRITE_TOKEN: requiredValue.optional(),
     BLOB_STORE_ID: requiredValue.optional(),
+    BROWSER_USE_API_KEY: browserUseApiKeySchema.optional(),
+    BROWSER_USE_BASE_URL: requiredValue
+      .refine(
+        (value) => URL.canParse(value),
+        "BROWSER_USE_BASE_URL must be an absolute URL"
+      )
+      .default("https://api.browser-use.com/api/v4"),
+    // Every run carries this ceiling, so a task that loops or wanders into an
+    // expensive site stops costing money without anyone watching it.
+    BROWSER_USE_MAX_COST_USD: z.coerce
+      .number()
+      .positive("BROWSER_USE_MAX_COST_USD must be greater than zero")
+      .default(1),
+    BROWSER_USE_MODEL: requiredValue.default(defaultBrowserUseModel),
+    BROWSER_USE_PROXY_COUNTRY: z
+      .string()
+      .trim()
+      .toLowerCase()
+      .refine(
+        (value) => /^[a-z]{2}$/u.test(value),
+        "BROWSER_USE_PROXY_COUNTRY must be an ISO 3166-1 alpha-2 code"
+      )
+      .default("ru"),
+    BROWSER_USE_WEBHOOK_SECRET: requiredValue.optional(),
     GOOGLE_CONNECTOR_UID: requiredValue.default("google/open-instinct"),
     IMESSAGE_PHONE_NUMBER: requiredValue
       .refine(
@@ -116,6 +155,14 @@ export const env = createEnv({
       .toLowerCase()
       .pipe(z.enum(["off", "low", "medium", "high"]))
       .default("off"),
+    TELEGRAM_BOT_TOKEN: requiredValue.optional(),
+    TELEGRAM_BOT_USERNAME: requiredValue
+      .refine(
+        (value) => /^[A-Za-z0-9_]{5,32}$/u.test(value),
+        "TELEGRAM_BOT_USERNAME must be the bot handle without a leading @"
+      )
+      .optional(),
+    TELEGRAM_WEBHOOK_SECRET_TOKEN: requiredValue.optional(),
     VERCEL_BRANCH_URL: requiredValue.optional(),
     VERCEL_ENV: z.enum(["production", "preview", "development"]).optional(),
     VERCEL_PROJECT_ID: requiredValue.optional(),

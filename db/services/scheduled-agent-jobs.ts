@@ -33,7 +33,7 @@ const exhaustedRunOutcome = {
 } satisfies ScheduledRunOutcome;
 
 export interface CreateScheduledAgentJob {
-  readonly conversationChannel: "eve" | "photon";
+  readonly conversationChannel: "eve" | "photon" | "telegram";
   readonly conversationId: string;
   readonly missedRunPolicy: "catch_up" | "run_latest";
   readonly prompt: string;

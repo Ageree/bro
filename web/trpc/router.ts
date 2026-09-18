@@ -1,6 +1,7 @@
 import { gateway } from "ai";
 import { revokeToken, startAuthorization } from "@vercel/connect";
 import { z } from "zod";
+import { mintChannelLinkToken } from "@db/services/channel-identities";
 import { saveChat } from "@db/services/chats";
 import { replaceUserProfile } from "@db/services/user-profile";
 import { selectWorkspaceModel } from "@db/services/settings";
@@ -12,6 +13,7 @@ import {
   googleWorkspaceSubject,
   googleWorkspaceTokenParams,
 } from "@shared/google-workspace/connection";
+import { telegramLinkUrl } from "@shared/identity/telegram-link";
 import { modelIdSchema } from "@shared/model/id";
 import { userProfileSchema } from "@shared/user-profile/schema";
 import {
@@ -46,6 +48,11 @@ export const appRouter = createTRPCRouter({
           ),
         };
       }),
+  },
+  telegram: {
+    link: protectedProcedure.mutation(async ({ ctx }) => ({
+      url: telegramLinkUrl(await mintChannelLinkToken(ctx.scope, "telegram")),
+    })),
   },
   settings: {
     selectModel: protectedProcedure

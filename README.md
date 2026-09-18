@@ -131,6 +131,86 @@ the phone number entered on the sign-in screen, and a first message from an
 unknown number creates that user's account, because Photon delivering the
 message already proves possession of the number.
 
+### Browser Use Cloud
+
+`browser_task` runs a website errand — sign in, fill the form, finish the
+checkout — in a hosted [Browser Use](https://browser-use.com) cloud browser.
+The tool, and the instructions that describe it, appear only when
+`BROWSER_USE_API_KEY` is set; without it the agent says plainly that it cannot
+operate a website.
+
+1. Create a Browser Use Cloud project and copy its API key.
+2. Register a webhook for `https://<your-host>/webhooks/browser-use` in the
+   Browser Use dashboard and copy its signing secret. Completion is also
+   reconciled by a once-a-minute poller, so the webhook is an optimization, not
+   a requirement.
+3. Set the variables in the host's encrypted environment:
+
+```bash
+vercel env add BROWSER_USE_API_KEY production
+vercel env add BROWSER_USE_WEBHOOK_SECRET production
+vercel deploy --prod
+```
+
+`BROWSER_USE_MAX_COST_USD` is the ceiling every run is created with and defaults
+to `1`: Browser Use stops a run that reaches it, so a task that loops or wanders
+into an expensive site cannot keep spending unattended. Raise it for errands
+that genuinely need longer sessions.
+
+`BROWSER_USE_PROXY_COUNTRY` is the ISO 3166-1 alpha-2 residential-proxy country
+every run browses through and defaults to `ru`. `BROWSER_USE_MODEL` overrides
+the hosted agent the cloud runs; leaving it unset uses the v4 API's documented
+default. `BROWSER_USE_BASE_URL` overrides the API origin and exists so a staging
+deployment can point at a stand-in.
+
+Each workspace keeps one persistent Browser Use profile, so a site stays signed
+in between errands. Saved vault logins are bound to the exact origin they were
+saved for, and the saved card is bound only when the user approved paying on
+that errand; the values are typed by Browser Use and are never visible to any
+model in this system.
+
+### Telegram setup
+
+Telegram is a second conversation channel for an account that already exists.
+A person links their Telegram once, and afterwards messages from that Telegram
+account run as the same user, workspace, memory, vault, and schedules.
+
+1. Create a bot with [@BotFather](https://t.me/BotFather), then copy its token
+   and its username (the handle without the leading `@`).
+2. Set the three variables in the host's encrypted environment:
+
+```bash
+vercel env add TELEGRAM_BOT_TOKEN production
+vercel env add TELEGRAM_BOT_USERNAME production
+vercel env add TELEGRAM_WEBHOOK_SECRET_TOKEN production
+vercel deploy --prod
+```
+
+`TELEGRAM_WEBHOOK_SECRET_TOKEN` is a secret you choose; Telegram echoes it back
+in the `X-Telegram-Bot-Api-Secret-Token` header, and inbound webhooks that do
+not carry it are rejected.
+
+3. Point the bot at the deployment's webhook route:
+
+```bash
+curl -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/setWebhook" \
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://<your-host>/eve/v1/telegram",
+       "secret_token":"'"$TELEGRAM_WEBHOOK_SECRET_TOKEN"'",
+       "allowed_updates":["message","callback_query"]}'
+```
+
+To link an account, open the workspace page and choose **Link Telegram**, or ask
+the assistant over iMessage to link Telegram. Either one mints a one-time
+`https://t.me/<bot>?start=link_<token>` deep link that expires after 30 minutes.
+Opening it in Telegram binds that Telegram account to the workspace. One
+Telegram account maps to exactly one workspace, and one workspace holds at most
+one Telegram account.
+
+Only private chats reach the agent; group messages are ignored. A message from
+an unlinked Telegram account gets one short explanation of how to link, at most
+once an hour per chat.
+
 ## Google Workspace connection
 
 OpenInstinct can use a user's Gmail, Calendar, and read-only Contacts through a

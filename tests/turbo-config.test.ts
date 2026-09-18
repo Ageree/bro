@@ -5,12 +5,14 @@ import { z } from "zod";
 const applicationEnvironment = [
   "BETTER_AUTH_*",
   "BLOB_*",
+  "BROWSER_USE_*",
   "DATABASE_URL",
   "*_CONNECTOR_UID",
   "IMESSAGE_*",
   "NODE_ENV",
   "OPENROUTER_*",
   "SECRET_ENCRYPTION_KEY",
+  "TELEGRAM_*",
   "VERCEL_*",
 ];
 const runtimeEnvironment = applicationEnvironment;

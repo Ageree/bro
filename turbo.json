@@ -6,6 +6,7 @@
       "env": [
         "BETTER_AUTH_*",
         "BLOB_*",
+        "BROWSER_USE_*",
         "DATABASE_URL",
         "EVE_NEXT_*",
         "*_CONNECTOR_UID",
@@ -13,6 +14,7 @@
         "NODE_ENV",
         "OPENROUTER_*",
         "SECRET_ENCRYPTION_KEY",
+        "TELEGRAM_*",
         "VERCEL_*"
       ],
       "outputs": [".next/**", "!.next/cache/**", "next-env.d.ts"]
@@ -22,12 +24,14 @@
       "env": [
         "BETTER_AUTH_*",
         "BLOB_*",
+        "BROWSER_USE_*",
         "DATABASE_URL",
         "*_CONNECTOR_UID",
         "IMESSAGE_*",
         "NODE_ENV",
         "OPENROUTER_*",
         "SECRET_ENCRYPTION_KEY",
+        "TELEGRAM_*",
         "VERCEL_*"
       ],
       "outputs": [".next/**", "!.next/cache/**", "next-env.d.ts"]
@@ -42,12 +46,14 @@
       "passThroughEnv": [
         "BETTER_AUTH_*",
         "BLOB_*",
+        "BROWSER_USE_*",
         "DATABASE_URL",
         "*_CONNECTOR_UID",
         "IMESSAGE_*",
         "NODE_ENV",
         "OPENROUTER_*",
         "SECRET_ENCRYPTION_KEY",
+        "TELEGRAM_*",
         "VERCEL_*"
       ],
       "persistent": true
@@ -69,12 +75,14 @@
       "passThroughEnv": [
         "BETTER_AUTH_*",
         "BLOB_*",
+        "BROWSER_USE_*",
         "DATABASE_URL",
         "*_CONNECTOR_UID",
         "IMESSAGE_*",
         "NODE_ENV",
         "OPENROUTER_*",
         "SECRET_ENCRYPTION_KEY",
+        "TELEGRAM_*",
         "VERCEL_*"
       ],
       "persistent": true
