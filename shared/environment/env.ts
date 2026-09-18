@@ -80,6 +80,10 @@ const browserUseApiKeySchema = z
   .transform((value) => value.replaceAll(/\s+/gu, ""))
   .refine((value) => value.length > 0, "Required");
 
+// An OpenRouter key is a bearer token with the same property, and the same
+// failure mode when a pasted newline survives into the environment.
+const openRouterApiKeySchema = browserUseApiKeySchema;
+
 export const env = createEnv({
   server: {
     // Required
@@ -146,7 +150,7 @@ export const env = createEnv({
       .enum(["development", "production", "test"])
       .default("production"),
     // OpenRouter replaces AI Gateway routing whenever its key is present.
-    OPENROUTER_API_KEY: trimmedValue.optional(),
+    OPENROUTER_API_KEY: openRouterApiKeySchema.optional(),
     OPENROUTER_MODEL: trimmedValue.default("deepseek/deepseek-v4.1-flash"),
     OPENROUTER_MODEL_CONTEXT_TOKENS: z.coerce
       .number()
