@@ -35,6 +35,10 @@ export const userProfiles = pgTable(
     region: text("region"),
     postalCode: text("postal_code"),
     countryCode: text("country_code"),
+    // An IANA zone name. Every local day and month the usage counters key on
+    // resolves here first, so a person who moves is metered on their own
+    // calendar rather than on Moscow's.
+    timezone: text("timezone"),
     updatedAt: timestamp("updated_at", {
       mode: "date",
       precision: 3,

@@ -1,9 +1,12 @@
 import { z } from "zod";
 import { describe, expect, it } from "vitest";
 import {
+  defaultTimeZone,
   emptyUserProfile,
   hasUserProfileValues,
+  isSupportedTimeZone,
   parseUserProfile,
+  resolveTimeZone,
   userProfilePatchSchema,
 } from "@shared/user-profile/schema";
 
@@ -33,6 +36,31 @@ describe("user profile", () => {
     expect(
       hasUserProfileValues({ ...emptyUserProfile, city: "Brooklyn" })
     ).toBe(true);
+  });
+
+  it("accepts only a time zone this runtime actually knows", () => {
+    expect(isSupportedTimeZone("Europe/Moscow")).toBe(true);
+    expect(isSupportedTimeZone("Asia/Novosibirsk")).toBe(true);
+    expect(isSupportedTimeZone("Москва")).toBe(false);
+    expect(isSupportedTimeZone("UTC+3")).toBe(false);
+    expect(isSupportedTimeZone("")).toBe(false);
+
+    expect(
+      userProfilePatchSchema.parse({ timezone: " Asia/Yekaterinburg " })
+    ).toEqual({ timezone: "Asia/Yekaterinburg" });
+    expect(
+      userProfilePatchSchema.safeParse({ timezone: "Mars/Olympus" }).success
+    ).toBe(false);
+    expect(userProfilePatchSchema.parse({ timezone: null })).toEqual({
+      timezone: null,
+    });
+  });
+
+  it("falls back to Moscow for a missing or stale zone", () => {
+    expect(defaultTimeZone).toBe("Europe/Moscow");
+    expect(resolveTimeZone("Asia/Omsk")).toBe("Asia/Omsk");
+    expect(resolveTimeZone(null)).toBe(defaultTimeZone);
+    expect(resolveTimeZone("Mars/Olympus")).toBe(defaultTimeZone);
   });
 
   it("keeps model-facing email validation free of unsupported lookaround", () => {

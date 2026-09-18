@@ -15,6 +15,11 @@ const readBrowserRunForScope = vi.hoisted(() =>
     Promise.resolve(undefined)
   )
 );
+const browserRunQuotaGate = vi.hoisted(() =>
+  vi.fn<() => Promise<{ allowed: boolean; note: string | undefined }>>(() =>
+    Promise.resolve({ allowed: true, note: undefined })
+  )
+);
 const createBrowserUseRun = vi.hoisted(() =>
   vi.fn<
     (input: BrowserUseCreateRunInput) => Promise<{
@@ -43,6 +48,9 @@ vi.mock("@db/services/user-profile", () => ({
     Promise.resolve(emptyUserProfile)
   ),
 }));
+vi.mock("@agent/lib/billing/quota", () => ({
+  browserRunQuotaGate,
+}));
 vi.mock("@agent/lib/browser-use/secrets", () => ({
   resolveBrowserSecretBindings: vi.fn<
     () => Promise<{ aliases: string[]; bindings: [] }>
@@ -66,6 +74,7 @@ vi.mock("@agent/lib/browser-use/client", () => ({
 afterEach(() => {
   vi.stubEnv("BROWSER_USE_MAX_COST_USD", "");
   vi.clearAllMocks();
+  browserRunQuotaGate.mockResolvedValue({ allowed: true, note: undefined });
 });
 
 async function startErrand(maxCostUsd: string) {
@@ -97,6 +106,33 @@ describe("browser_task cost ceiling", () => {
 
     expect(createBrowserUseRun).toHaveBeenCalledOnce();
     expect(createBrowserUseRun.mock.calls[0]?.[0].maxCostUsd).toBe(2.5);
+  });
+});
+
+describe("browser_task monthly quota", () => {
+  it("records the site the errand was pointed at", async () => {
+    await startErrand("");
+    const { createBrowserRun } = await import("@db/services/browser-runs");
+
+    expect(createBrowserRun).toHaveBeenCalledWith(
+      accessScopeForUser("better-auth:alice"),
+      expect.objectContaining({ site: "https://example.com" })
+    );
+  });
+
+  it("refuses a run past the monthly ceiling before provisioning anything", async () => {
+    browserRunQuotaGate.mockResolvedValue({
+      allowed: false,
+      note: "Лимит браузерных поручений на этот месяц исчерпан.",
+    });
+
+    const result = await startErrand("");
+
+    expect(result).toEqual({
+      note: "Лимит браузерных поручений на этот месяц исчерпан.",
+      status: "quota_exhausted",
+    });
+    expect(createBrowserUseRun).not.toHaveBeenCalled();
   });
 });
 

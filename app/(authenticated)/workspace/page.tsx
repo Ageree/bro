@@ -1,5 +1,6 @@
 import {
   BotIcon,
+  CreditCardIcon,
   GlobeIcon,
   ImageIcon,
   MailIcon,
@@ -17,8 +18,10 @@ import { z } from "zod";
 import { Alert, AlertDescription, AlertTitle } from "@web/components/ui/alert";
 import { Badge } from "@web/components/ui/badge";
 import { Button } from "@web/components/ui/button";
+import { readBillingState } from "@db/services/billing";
 import { readChannelIdentity } from "@db/services/channel-identities";
 import { getWorkspaceModelId } from "@db/services/settings";
+import { yooKassaConfigured } from "@db/services/yookassa";
 import { env } from "@shared/environment";
 import { photonConfigured } from "@shared/photon/credentials";
 import { openRouterActive } from "@shared/model/provider";
@@ -33,13 +36,13 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
   const google = (await searchParams).google;
   const scope = await requireRequestScope();
   const telegramConfigured = telegramLinkConfigured();
-  const [googleWorkspace, workspaceModel, telegramIdentity] = await Promise.all(
-    [
+  const [googleWorkspace, workspaceModel, telegramIdentity, billing] =
+    await Promise.all([
       readGoogleWorkspaceConnection(scope.userId),
       getWorkspaceModelId(scope),
       telegramConfigured ? readChannelIdentity(scope, "telegram") : undefined,
-    ]
-  );
+      readBillingState(scope),
+    ]);
   const openRouter = openRouterActive();
   const imageStorageReady = Boolean(
     env.BLOB_STORE_ID ?? env.BLOB_READ_WRITE_TOKEN
@@ -65,6 +68,7 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
         imessagePhoneNumber={env.IMESSAGE_PHONE_NUMBER}
       />
       <GoogleWorkspaceSection connection={googleWorkspace} />
+      <SubscriptionSection paid={billing.paid} paidUntil={billing.paidUntil} />
       {telegramConfigured ? (
         <TelegramSection username={telegramIdentity?.username ?? null} />
       ) : null}
@@ -139,6 +143,49 @@ function GoogleWorkspaceSection({
     </WorkspaceSection>
   );
 }
+
+function SubscriptionSection({
+  paid,
+  paidUntil,
+}: {
+  readonly paid: boolean;
+  readonly paidUntil: Date | null;
+}) {
+  return (
+    <WorkspaceSection headingId="subscription-heading" title="Подписка">
+      <div className="divide-y divide-border/50 border-y border-border/50">
+        <ConnectorRow
+          action={
+            yooKassaConfigured() ? (
+              <Button
+                nativeButton={false}
+                render={<Link href="/api/pay" prefetch={false} />}
+                variant="surface"
+              >
+                <CreditCardIcon />
+                {`Оплатить ${String(env.PRICE_RUB)} ₽ в месяц`}
+              </Button>
+            ) : (
+              <Badge variant="secondary">Оплата не подключена</Badge>
+            )
+          }
+          description={
+            paidUntil && paid
+              ? `Оплачено до ${subscriptionDate.format(paidUntil)}.`
+              : "Бесплатно до лимитов: дневной лимит сообщений и месячный лимит браузерных поручений."
+          }
+          icon={<CreditCardIcon />}
+          label={paid ? "Оплачено" : "Бесплатно"}
+        />
+      </div>
+    </WorkspaceSection>
+  );
+}
+
+const subscriptionDate = new Intl.DateTimeFormat("ru-RU", {
+  dateStyle: "long",
+  timeZone: "Europe/Moscow",
+});
 
 function TelegramSection({ username }: { readonly username: string | null }) {
   return (

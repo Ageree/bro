@@ -132,6 +132,11 @@ export const env = createEnv({
       )
       .default("ru"),
     BROWSER_USE_WEBHOOK_SECRET: requiredValue.optional(),
+    // Usage ceilings per workspace: messages on the local day, browser errands
+    // on the local month. A deployment without YooKassa keys never leaves the
+    // free column.
+    FREE_BROWSER_RUNS_PER_MONTH: z.coerce.number().int().positive().default(5),
+    FREE_MESSAGES_PER_DAY: z.coerce.number().int().positive().default(30),
     GOOGLE_CONNECTOR_UID: requiredValue.default("google/open-instinct"),
     IMESSAGE_PHONE_NUMBER: requiredValue
       .refine(
@@ -160,6 +165,10 @@ export const env = createEnv({
       .toLowerCase()
       .pipe(z.enum(["off", "low", "medium", "high"]))
       .default("off"),
+    PAID_BROWSER_RUNS_PER_MONTH: z.coerce.number().int().positive().default(60),
+    PAID_MESSAGES_PER_DAY: z.coerce.number().int().positive().default(500),
+    // One month of paid access, in whole roubles.
+    PRICE_RUB: z.coerce.number().int().positive().default(2000),
     TELEGRAM_BOT_TOKEN: requiredValue.optional(),
     TELEGRAM_BOT_USERNAME: requiredValue
       .refine(
@@ -173,6 +182,10 @@ export const env = createEnv({
     VERCEL_PROJECT_ID: requiredValue.optional(),
     VERCEL_PROJECT_PRODUCTION_URL: requiredValue.optional(),
     VERCEL_URL: requiredValue.optional(),
+    // Both YooKassa credentials together switch billing on. With either one
+    // missing the deployment runs in free mode: free limits, no pay link.
+    YOOKASSA_SECRET_KEY: trimmedValue.optional(),
+    YOOKASSA_SHOP_ID: trimmedValue.optional(),
   },
   experimental__runtimeEnv: {},
   emptyStringAsUndefined: true,

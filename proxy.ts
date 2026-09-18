@@ -11,6 +11,9 @@ export async function proxy(request: NextRequest) {
     pathname === "/" ||
     pathname === "/oferta" ||
     pathname === "/api/access" ||
+    // YooKassa signs nothing this proxy could check. The route trusts only the
+    // payment id in the body and re-fetches the payment itself.
+    pathname === "/api/yookassa" ||
     pathname.startsWith("/api/auth/") ||
     pathname === "/eve/v1/health" ||
     pathname.startsWith("/internal/scheduled-run/") ||

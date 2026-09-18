@@ -12,7 +12,12 @@ import {
   readBrowserUseRun,
   type BrowserUseRunStatus,
 } from "./client";
-import { browserOutcomeSummary, parseBrowserOutcome } from "./outcome";
+import { recordOrder } from "@db/services/orders";
+import {
+  browserOutcomeSummary,
+  parseBrowserOrder,
+  parseBrowserOutcome,
+} from "./outcome";
 
 /**
  * Both completion paths — the Browser Use webhook and the reconciling poller —
@@ -58,7 +63,36 @@ export async function settleBrowserRun(
     status: settledStatus(run.status),
   });
   if (!claimed) return;
+  await recordBrowserRunOrder(claimed, run.result);
   await deliverBrowserRunOutcome(delivery, claimed, outcome);
+}
+
+/**
+ * A purchase the run reported becomes a row before the person is told about
+ * it, so «где мой заказ» in the next message already finds it. A failure here
+ * never costs the report: the errand still happened.
+ */
+async function recordBrowserRunOrder(
+  row: BrowserRunRow,
+  result: string | null | undefined
+) {
+  const order = parseBrowserOrder(parseBrowserOutcome(result), {
+    result,
+    site: row.site,
+    task: row.task,
+  });
+  if (!order) return;
+  try {
+    await recordOrder(
+      { userId: row.createdByUserId, workspaceId: row.workspaceId },
+      { ...order, browserRunId: row.id }
+    );
+  } catch (error) {
+    console.warn("[browser-use] order could not be recorded", {
+      cause: error,
+      runId: row.id,
+    });
+  }
 }
 
 /**

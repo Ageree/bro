@@ -26,6 +26,7 @@ import {
 import { readUserProfile } from "@db/services/user-profile";
 import { env } from "@shared/environment";
 import { browserRunNeeds } from "@agent/lib/browser-use/outcome";
+import { browserRunQuotaGate } from "@agent/lib/billing/quota";
 
 const inputSchema = z.object({
   action: z.enum(["start", "continue", "cancel", "status"]),
@@ -203,6 +204,12 @@ export const browserTask = defineTool({
         .string()
         .min(1, "A start action needs the errand text.")
         .parse(input.task);
+      // The monthly ceiling is checked before anything is provisioned: a
+      // refused errand must not cost a remote profile or a bound secret.
+      const quota = await browserRunQuotaGate(scope);
+      if (!quota.allowed) {
+        return { note: quota.note, status: "quota_exhausted" };
+      }
       const [profileId, secrets, profile] = await Promise.all([
         workspaceProfileId(scope),
         resolveBrowserSecretBindings(scope, {
@@ -230,6 +237,7 @@ export const browserTask = defineTool({
         id: run.id,
         profileId,
         sessionId: run.sessionId,
+        site: input.site ?? null,
         status: "running",
         task: errand,
       });

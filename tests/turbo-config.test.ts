@@ -8,13 +8,17 @@ const applicationEnvironment = [
   "BLOB_*",
   "BROWSER_USE_*",
   "DATABASE_URL",
+  "FREE_*",
   "*_CONNECTOR_UID",
   "IMESSAGE_*",
   "NODE_ENV",
   "OPENROUTER_*",
+  "PAID_*",
+  "PRICE_RUB",
   "SECRET_ENCRYPTION_KEY",
   "TELEGRAM_*",
   "VERCEL_*",
+  "YOOKASSA_*",
 ];
 const runtimeEnvironment = applicationEnvironment;
 

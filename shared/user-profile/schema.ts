@@ -11,6 +11,28 @@ const emailAddress = z
     message: "Invalid email address",
   });
 
+/**
+ * Metering, scheduling and «сегодня» all need one zone name, and this is where
+ * it is settled. Moscow is the default because that is where the product's
+ * people are, not because the runtime happens to live there.
+ */
+export const defaultTimeZone = "Europe/Moscow";
+
+// Built once: `Intl.supportedValuesOf` allocates a fresh array of ~400 names
+// on every call, and this runs on each profile write and each metered message.
+let supportedTimeZones: Set<string> | undefined;
+
+/** True when `value` is an IANA zone this runtime's ICU data actually knows. */
+export function isSupportedTimeZone(value: string) {
+  supportedTimeZones ??= new Set(Intl.supportedValuesOf("timeZone"));
+  return supportedTimeZones.has(value);
+}
+
+/** The stored zone, or Moscow when it is missing or no longer a real zone. */
+export function resolveTimeZone(value: string | null | undefined) {
+  return value && isSupportedTimeZone(value) ? value : defaultTimeZone;
+}
+
 export const userProfileSchema = z.object({
   addressLine1: nullableText(300),
   addressLine2: nullableText(300),
@@ -28,6 +50,11 @@ export const userProfileSchema = z.object({
   phone: nullableText(100),
   postalCode: nullableText(100),
   region: nullableText(200),
+  timezone: z
+    .string()
+    .trim()
+    .refine(isSupportedTimeZone, "Unknown IANA time zone")
+    .nullable(),
 });
 
 export const userProfilePatchSchema = userProfileSchema
@@ -51,6 +78,7 @@ export const emptyUserProfile = {
   phone: null,
   postalCode: null,
   region: null,
+  timezone: null,
 } satisfies UserProfile;
 
 export function hasUserProfileValues(profile: UserProfile) {

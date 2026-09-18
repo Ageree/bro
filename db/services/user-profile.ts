@@ -3,6 +3,7 @@ import type { AccessScope } from "@shared/identity/access-scope";
 import {
   emptyUserProfile,
   parseUserProfile,
+  resolveTimeZone,
   userProfilePatchSchema,
   type UserProfile,
   type UserProfilePatch,
@@ -22,7 +23,18 @@ const selection = {
   phone: userProfiles.phone,
   postalCode: userProfiles.postalCode,
   region: userProfiles.region,
+  timezone: userProfiles.timezone,
 };
+
+/** The workspace's own zone, defaulted, for a caller that needs nothing else. */
+export async function readWorkspaceTimeZone(scope: AccessScope) {
+  const rows = await db
+    .select({ timezone: userProfiles.timezone })
+    .from(userProfiles)
+    .where(eq(userProfiles.workspaceId, scope.workspaceId))
+    .limit(1);
+  return resolveTimeZone(rows[0]?.timezone);
+}
 
 export async function readUserProfile(scope: AccessScope) {
   const rows = await db

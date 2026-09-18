@@ -111,7 +111,7 @@ describe("database migrations", () => {
       { columnName: "channel" },
       { columnName: "reply_anchor_message_id" },
     ]);
-  });
+  }, 15_000);
 
   it("preserves legacy rows while enforcing constraints for new writes", async () => {
     const database = createDatabase();

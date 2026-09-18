@@ -53,6 +53,20 @@ describe("auth proxy matcher", () => {
     expect(getAuthSession).not.toHaveBeenCalled();
   });
 
+  it("serves the YooKassa webhook without a session but not the checkout", async () => {
+    const webhook = await proxy(
+      new NextRequest("https://example.com/api/yookassa", { method: "POST" })
+    );
+    expect(webhook.headers.get("x-middleware-next")).toBe("1");
+
+    const checkout = await proxy(
+      new NextRequest("https://example.com/api/pay")
+    );
+    expect(checkout.headers.get("location")).toBe(
+      "https://example.com/sign-in?callbackUrl=%2Fapi%2Fpay"
+    );
+  });
+
   it("still sends the workspace through sign-in", async () => {
     const response = await proxy(
       new NextRequest("https://example.com/workspace")
