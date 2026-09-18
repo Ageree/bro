@@ -1,5 +1,5 @@
 import type { DynamicResolveContext } from "eve/instructions";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import executionSafety from "@agent/instructions/10-execution-safety";
 import roleInstructions from "@agent/instructions/20-role";
 import messageStyle from "@agent/instructions/30-message-style";
@@ -84,13 +84,39 @@ describe("agent instructions", () => {
     expect(selected?.content).toContain("natural text message");
   });
 
-  it("tells scheduled workers this deployment has no browser", async () => {
-    const resolve = roleInstructions.events["turn.started"];
+  it("says there is no browser until Browser Use is configured", async () => {
+    const resolve = (await loadBrowserInstructions("")).events["turn.started"];
     expect(resolve).toBeDefined();
     if (!resolve) return;
 
-    const selected = await resolve({}, dynamicContext("scheduled-worker"));
-    expect(selected?.content).toContain("This deployment has no browser");
+    const selected = await Promise.all(
+      ["photon-imessage", "scheduled-worker", "scheduled-result"].map(
+        async (role) => resolve({}, dynamicContext(role))
+      )
+    );
+
+    for (const content of selected.slice(0, 2)) {
+      expect(content?.content).toContain(
+        "This deployment cannot interact with a website"
+      );
+      expect(content?.content).not.toContain("browser_task");
+    }
+    expect(selected[2]).toBeNull();
+  });
+
+  it("explains browser_task once Browser Use is configured", async () => {
+    const configured = await loadBrowserInstructions("browser-use-test-key");
+    const resolve = configured.events["turn.started"];
+    expect(resolve).toBeDefined();
+    if (!resolve) return;
+
+    const selected = await resolve({}, dynamicContext("photon-imessage"));
+    expect(selected?.content).toContain("`browser_task` runs an errand");
+    expect(selected?.content).toContain("exactly one run per errand");
+    expect(selected?.content).toContain('`action: "continue"`');
+    expect(selected?.content).toContain("`allowPayment: true`");
+    expect(selected?.content).toContain("live-view link only");
+    expect(selected?.content).toContain("arrives later as a new message");
   });
 
   it("keeps resumed scheduled turns in worker mode", async () => {
@@ -105,6 +131,14 @@ describe("agent instructions", () => {
     expect(selected?.content).toContain("isolated background session");
   });
 });
+
+// The Browser Use key is read from the environment, so each expectation loads
+// the instruction module against the state it is describing.
+async function loadBrowserInstructions(apiKey: string) {
+  vi.resetModules();
+  vi.stubEnv("BROWSER_USE_API_KEY", apiKey);
+  return (await import("@agent/instructions/40-browser")).default;
+}
 
 function dynamicContext(
   authenticator: string,

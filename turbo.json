@@ -6,6 +6,7 @@
       "env": [
         "BETTER_AUTH_*",
         "BLOB_*",
+        "BROWSER_USE_*",
         "DATABASE_URL",
         "EVE_NEXT_*",
         "*_CONNECTOR_UID",
@@ -22,6 +23,7 @@
       "env": [
         "BETTER_AUTH_*",
         "BLOB_*",
+        "BROWSER_USE_*",
         "DATABASE_URL",
         "*_CONNECTOR_UID",
         "IMESSAGE_*",
@@ -42,6 +44,7 @@
       "passThroughEnv": [
         "BETTER_AUTH_*",
         "BLOB_*",
+        "BROWSER_USE_*",
         "DATABASE_URL",
         "*_CONNECTOR_UID",
         "IMESSAGE_*",
@@ -69,6 +72,7 @@
       "passThroughEnv": [
         "BETTER_AUTH_*",
         "BLOB_*",
+        "BROWSER_USE_*",
         "DATABASE_URL",
         "*_CONNECTOR_UID",
         "IMESSAGE_*",

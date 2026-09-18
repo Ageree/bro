@@ -1,5 +1,6 @@
 import {
   BotIcon,
+  GlobeIcon,
   ImageIcon,
   MailIcon,
   MessageSquareIcon,
@@ -39,6 +40,7 @@ export default async function Page({ searchParams }: PageProps<"/">) {
   const imageStorageReady = Boolean(
     env.BLOB_STORE_ID ?? env.BLOB_READ_WRITE_TOKEN
   );
+  const browserReady = env.BROWSER_USE_API_KEY !== undefined;
 
   return (
     <div className="mx-auto flex w-full max-w-4xl min-w-0 flex-col gap-8 px-4 py-6 sm:px-6 sm:py-8">
@@ -78,6 +80,20 @@ export default async function Page({ searchParams }: PageProps<"/">) {
             }
             icon={<ImageIcon />}
             label="Vercel Blob"
+          />
+          <ConnectorRow
+            action={
+              <Badge variant={browserReady ? "success" : "secondary"}>
+                {browserReady ? "Configured" : "Not configured"}
+              </Badge>
+            }
+            description={
+              browserReady
+                ? "Run website errands in a hosted cloud browser."
+                : "Set BROWSER_USE_API_KEY to run website errands."
+            }
+            icon={<GlobeIcon />}
+            label="Browser"
           />
           <ConnectorRow
             action={<ModelSelector modelId={gatewayModel} />}

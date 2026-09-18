@@ -1,4 +1,9 @@
-import { createCipheriv, randomBytes, randomUUID } from "node:crypto";
+import {
+  createCipheriv,
+  createDecipheriv,
+  randomBytes,
+  randomUUID,
+} from "node:crypto";
 import { and, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import {
@@ -110,6 +115,18 @@ export async function saveVaultItem(
   }
 }
 
+/**
+ * Decrypt one vault secret for a server-side consumer. The plaintext must
+ * never reach a model, a tool result, or a log line: the only current caller
+ * puts it straight into a Browser Use `secretBindings` request body.
+ */
+export async function readVaultSecret(scope: AccessScope, id: string) {
+  const encrypted = await readEncryptedSecret(scope, id);
+  if (!encrypted) return undefined;
+  const { secretEncryptionKey } = await getInstallationSecrets();
+  return decryptVaultSecret(scope, id, encrypted, secretEncryptionKey);
+}
+
 async function hasVaultSecret(scope: AccessScope, id: string) {
   return (await readEncryptedSecret(scope, id)) !== undefined;
 }
@@ -168,6 +185,30 @@ function encryptVaultSecret(
     cipher.getAuthTag().toString("base64url"),
     ciphertext.toString("base64url"),
   ].join(".");
+}
+
+function decryptVaultSecret(
+  scope: AccessScope,
+  id: string,
+  value: string,
+  secretEncryptionKey: string
+) {
+  const [version, encodedIv, encodedTag, encodedCiphertext] = value.split(".");
+  if (version !== "v1" || !encodedIv || !encodedTag || !encodedCiphertext) {
+    throw new Error("The stored secret uses an unsupported format.");
+  }
+
+  const decipher = createDecipheriv(
+    "aes-256-gcm",
+    Buffer.from(secretEncryptionKey, "base64"),
+    Buffer.from(encodedIv, "base64url")
+  );
+  decipher.setAAD(vaultSecretAad(scope, id));
+  decipher.setAuthTag(Buffer.from(encodedTag, "base64url"));
+  return Buffer.concat([
+    decipher.update(Buffer.from(encodedCiphertext, "base64url")),
+    decipher.final(),
+  ]).toString("utf8");
 }
 
 function vaultSecretAad(scope: AccessScope, id: string) {
