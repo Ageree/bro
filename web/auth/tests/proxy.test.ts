@@ -47,6 +47,17 @@ describe("auth proxy matcher", () => {
     expect(getAuthSession).not.toHaveBeenCalled();
   });
 
+  it("leaves provider webhook verification to the Eve channel", async () => {
+    const response = await proxy(
+      new NextRequest("https://example.com/webhooks/browser-use", {
+        method: "POST",
+      })
+    );
+
+    expect(response.headers.get("x-middleware-next")).toBe("1");
+    expect(getAuthSession).not.toHaveBeenCalled();
+  });
+
   it("allows the schedule dispatcher without a browser session in development", async () => {
     const response = await proxy(
       new NextRequest("http://localhost:3000/eve/v1/dev/schedules/dynamic")
