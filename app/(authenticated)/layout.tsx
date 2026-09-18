@@ -31,7 +31,7 @@ export default async function AuthenticatedLayout({
           <SidebarHeader>
             <SidebarMenu>
               <SidebarMenuItem>
-                <SidebarMenuButton render={<Link href="/" />}>
+                <SidebarMenuButton render={<Link href="/workspace" />}>
                   <Logo />
                   <span>OpenInstinct</span>
                 </SidebarMenuButton>

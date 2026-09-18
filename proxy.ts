@@ -5,9 +5,17 @@ export async function proxy(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
   if (
     pathname === "/sign-in" ||
+    // The public landing, its offer page and the onboarding endpoint behind
+    // its phone form. Onboarding hands out an iMessage line; the first message
+    // on that line, not this proxy, creates the account.
+    pathname === "/" ||
+    pathname === "/oferta" ||
+    pathname === "/api/access" ||
     pathname.startsWith("/api/auth/") ||
     pathname === "/eve/v1/health" ||
     pathname.startsWith("/internal/scheduled-run/") ||
+    // Provider webhooks verify their own signatures inside the channel.
+    pathname.startsWith("/webhooks/") ||
     pathname === "/eve/v1/dev/schedules/dynamic"
   ) {
     return NextResponse.next();

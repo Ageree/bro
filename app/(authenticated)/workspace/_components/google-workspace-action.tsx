@@ -11,7 +11,7 @@ export function GoogleWorkspaceAction({
 }) {
   const update = api.googleWorkspace.update.useMutation({
     onError: () => {
-      window.location.assign("/?google=unavailable");
+      window.location.assign("/workspace?google=unavailable");
     },
     onSuccess: ({ redirectTo }) => {
       window.location.assign(redirectTo);

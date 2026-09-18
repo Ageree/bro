@@ -19,7 +19,12 @@ import {
 } from "@web/components/ui/sidebar";
 
 const navigation = [
-  { href: "/", icon: PanelsTopLeftIcon, id: "workspace", label: "Workspace" },
+  {
+    href: "/workspace",
+    icon: PanelsTopLeftIcon,
+    id: "workspace",
+    label: "Workspace",
+  },
   { href: "/vault", icon: KeyRoundIcon, id: "vault", label: "Vault" },
   {
     href: "/personal-info",
@@ -78,7 +83,7 @@ export function AuthenticatedMobileHeader() {
 }
 
 function activeRoute(pathname: string) {
-  if (pathname === "/") return "workspace";
+  if (pathname.startsWith("/workspace")) return "workspace";
   if (pathname.startsWith("/vault")) return "vault";
   if (pathname.startsWith("/personal-info")) return "personal-info";
   if (pathname.startsWith("/chat/history")) return "history";

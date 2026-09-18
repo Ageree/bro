@@ -29,7 +29,7 @@ import { GoogleWorkspaceAction } from "./_components/google-workspace-action";
 import { ModelSelector } from "./_components/model-selector";
 import { TelegramLinkAction } from "./_components/telegram-link-action";
 
-export default async function Page({ searchParams }: PageProps<"/">) {
+export default async function Page({ searchParams }: PageProps<"/workspace">) {
   const google = (await searchParams).google;
   const scope = await requireRequestScope();
   const telegramConfigured = telegramLinkConfigured();

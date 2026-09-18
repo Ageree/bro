@@ -9,7 +9,7 @@ import { photonConfigured } from "@shared/photon/credentials";
 export default async function SignInPage({
   searchParams,
 }: PageProps<"/sign-in">) {
-  if (await getAuthSession(await headers())) redirect("/");
+  if (await getAuthSession(await headers())) redirect("/workspace");
 
   const callbackValue = (await searchParams).callbackUrl;
   const requestedCallback = Array.isArray(callbackValue)
@@ -18,7 +18,7 @@ export default async function SignInPage({
   const callbackUrl =
     requestedCallback?.startsWith("/") && !requestedCallback.startsWith("//")
       ? requestedCallback
-      : "/";
+      : "/workspace";
   const imessageConfigured = photonConfigured();
   const imessagePhoneNumber =
     localPhoneAuthBypassEnabled || !imessageConfigured
