@@ -75,7 +75,7 @@ describe("reply targets", () => {
           backgroundTask: { status: "working", taskId: "task-from-hook" },
           callId: "call-1",
           output: "Delegated",
-          subagentName: "browser-agent",
+          subagentName: "subagent",
         },
         meta: { at: "2026-09-03T12:00:00.000Z", id: "event-1" },
         type: "subagent.completed",

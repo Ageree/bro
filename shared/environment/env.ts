@@ -63,7 +63,6 @@ export const env = createEnv({
   server: {
     // Required
     DATABASE_URL: databaseUrlSchema,
-    KERNEL_API_KEY: requiredValue,
 
     // Optional overrides with local defaults. Vercel deployments provision
     // installation secrets in their connected private Blob store.

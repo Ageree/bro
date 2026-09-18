@@ -44,7 +44,7 @@ tester.run(
     ],
     invalid: [
       {
-        code: 'import "@web/browser/activity";',
+        code: 'import "@web/trpc/router";',
         cwd: repositoryRoot,
         filename: "/repo/agent/tool.ts",
         errors: [{ messageId: "forbiddenImport" }],

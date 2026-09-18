@@ -4,11 +4,12 @@ import type { AccessScope } from "@shared/identity/access-scope";
 import { readReadyBrowserImageArtifact } from "@db/services/browser-images";
 import { maximumBrowserImageBytes } from "@shared/browser/artifact";
 import { env } from "@shared/environment";
-import { maximumWorkerCompletionImages } from "@agent/subagents/browser-agent/lib/completion";
 import {
   extractImageArtifactMarkdownReferences,
   stripImageArtifactMarkdownReferences,
 } from "./markdown";
+
+const maximumDeliveredImageArtifacts = 4;
 
 interface ImageArtifactFile {
   readonly data: Buffer;
@@ -29,7 +30,7 @@ export async function prepareImageArtifactDelivery(
     return { failedArtifactIds: [], files: [], text: message };
   }
 
-  const selected = references.slice(0, maximumWorkerCompletionImages);
+  const selected = references.slice(0, maximumDeliveredImageArtifacts);
   const loaded = await Promise.all(
     selected.map(async (reference) => ({
       image: await readImageArtifact(input.scope, reference.id, {
@@ -44,7 +45,7 @@ export async function prepareImageArtifactDelivery(
       .filter((item) => item.image === undefined)
       .map((item) => item.reference.id),
     ...references
-      .slice(maximumWorkerCompletionImages)
+      .slice(maximumDeliveredImageArtifacts)
       .map((reference) => reference.id),
   ];
   const files = loaded.flatMap(({ image }) =>

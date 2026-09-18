@@ -7,7 +7,6 @@ describe("workspace Photon channel", () => {
   it("disables iMessage without advertising another deployment's number", () => {
     const html = renderToStaticMarkup(
       createElement(ChannelsSection, {
-        browserReady: true,
         imessageConfigured: false,
         imessagePhoneNumber: undefined,
       })
@@ -21,7 +20,6 @@ describe("workspace Photon channel", () => {
   it("links the configured deployment number", () => {
     const html = renderToStaticMarkup(
       createElement(ChannelsSection, {
-        browserReady: true,
         imessageConfigured: true,
         imessagePhoneNumber: "+12025550123",
       })
@@ -34,7 +32,6 @@ describe("workspace Photon channel", () => {
   it("reports a connected Photon line without requiring its number", () => {
     const html = renderToStaticMarkup(
       createElement(ChannelsSection, {
-        browserReady: true,
         imessageConfigured: true,
         imessagePhoneNumber: undefined,
       })
@@ -47,7 +44,6 @@ describe("workspace Photon channel", () => {
   it("does not advertise a phone-number override without its connector", () => {
     const html = renderToStaticMarkup(
       createElement(ChannelsSection, {
-        browserReady: true,
         imessageConfigured: false,
         imessagePhoneNumber: "+12025550123",
       })

@@ -6,7 +6,6 @@ export default {
     "agent/hooks/**/*.ts",
     "agent/instructions/**/*.ts",
     "agent/memory/**/*.ts",
-    "agent/subagents/**/*.ts",
     "agent/schedules/**/*.ts",
     "agent/tools/**/*.ts",
     "db/drizzle.config.ts",

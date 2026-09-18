@@ -44,7 +44,6 @@ export default [
         t.check(text, includes(/(?:0?9(?::00)?|nine)/iu));
         t.check(text, includes(/(?:11(?::00)?|eleven)/iu));
         later.notCalledTool("schedules-create");
-        later.notCalledTool("browser-agent");
       } finally {
         if (id) {
           const cleanup = await t
