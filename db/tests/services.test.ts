@@ -160,7 +160,7 @@ describe("database services", () => {
       title: "Updated title",
     });
     await chats.saveChat(alice, {
-      channel: "channel:linq",
+      channel: "channel:photon",
       sessionId: "session-imessage",
     });
 
@@ -180,7 +180,7 @@ describe("database services", () => {
     ).toEqual(aliceChat);
     expect(
       indexedChats.find((chat) => chat.sessionId === "session-imessage")
-    ).toMatchObject({ channel: "channel:linq", title: "New chat" });
+    ).toMatchObject({ channel: "channel:photon", title: "New chat" });
     expect(await chats.listChats(bob)).toEqual([]);
 
     await chats.saveChat(bob, {

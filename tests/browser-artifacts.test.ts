@@ -12,7 +12,7 @@ import {
 import {
   extractImageArtifactMarkdownReferences,
   stripImageArtifactMarkdownReferences,
-} from "@agent/lib/linq-image-artifact/markdown";
+} from "@agent/lib/image-artifact/markdown";
 
 const artifactId = "0d01e667-d128-4bb7-a248-1ae21db72f4f";
 

@@ -10,13 +10,13 @@ import {
   stripImageArtifactMarkdownReferences,
 } from "./markdown";
 
-interface LinqImageArtifactFile {
+interface ImageArtifactFile {
   readonly data: Buffer;
   readonly filename: string;
   readonly mimeType: string;
 }
 
-export async function prepareLinqImageArtifactDelivery(
+export async function prepareImageArtifactDelivery(
   message: string,
   input: {
     readonly rootSessionId: string;
@@ -32,7 +32,7 @@ export async function prepareLinqImageArtifactDelivery(
   const selected = references.slice(0, maximumWorkerCompletionImages);
   const loaded = await Promise.all(
     selected.map(async (reference) => ({
-      image: await readLinqImageArtifact(input.scope, reference.id, {
+      image: await readImageArtifact(input.scope, reference.id, {
         rootSessionId: input.rootSessionId,
         signal: input.signal,
       }).catch(() => undefined),
@@ -54,7 +54,7 @@ export async function prepareLinqImageArtifactDelivery(
             data: Buffer.from(image.bytes),
             filename: image.filename,
             mimeType: image.mediaType,
-          } satisfies LinqImageArtifactFile,
+          } satisfies ImageArtifactFile,
         ]
       : []
   );
@@ -66,7 +66,7 @@ export async function prepareLinqImageArtifactDelivery(
   };
 }
 
-async function readLinqImageArtifact(
+async function readImageArtifact(
   scope: AccessScope,
   artifactId: string,
   options: { readonly rootSessionId: string; readonly signal?: AbortSignal }

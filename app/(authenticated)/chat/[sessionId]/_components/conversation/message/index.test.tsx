@@ -30,7 +30,7 @@ describe("agent messages", () => {
     expect(markup).toContain("Hello from ordinary assistant output.");
   });
 
-  it("renders only Linq-delivered content in the iMessage view", () => {
+  it("renders only channel-delivered content in the iMessage view", () => {
     const message = {
       id: "turn-1:assistant",
       metadata: { status: "complete", turnId: "turn-1" },

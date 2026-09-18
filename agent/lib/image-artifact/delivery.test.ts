@@ -13,7 +13,7 @@ vi.mock("@vercel/blob", () => ({
   get: mocks.getBlob,
 }));
 
-import { prepareLinqImageArtifactDelivery } from "./delivery";
+import { prepareImageArtifactDelivery } from "./delivery";
 
 const scope = { userId: "user-1", workspaceId: "workspace-1" };
 
@@ -40,7 +40,7 @@ beforeEach(() => {
   });
 });
 
-describe("Linq image artifact delivery", () => {
+describe("image artifact delivery", () => {
   it("loads scoped artifacts, deduplicates references, and strips internal URLs", async () => {
     const markdown = [
       "Here is the product.",
@@ -48,7 +48,7 @@ describe("Linq image artifact delivery", () => {
       `![Product again](/artifacts/${firstId})`,
     ].join("\n\n");
 
-    const result = await prepareLinqImageArtifactDelivery(markdown, {
+    const result = await prepareImageArtifactDelivery(markdown, {
       rootSessionId: "root-session",
       scope,
     });
@@ -69,7 +69,7 @@ describe("Linq image artifact delivery", () => {
   });
 
   it("keeps successful files while reporting unavailable artifacts", async () => {
-    const result = await prepareLinqImageArtifactDelivery(
+    const result = await prepareImageArtifactDelivery(
       [
         `![First](/artifacts/${firstId})`,
         `![Second](/artifacts/${secondId})`,
@@ -85,7 +85,7 @@ describe("Linq image artifact delivery", () => {
   it("leaves ordinary markdown untouched without storage reads", async () => {
     const markdown = "See ![external](https://example.com/product.png).";
 
-    const result = await prepareLinqImageArtifactDelivery(markdown, {
+    const result = await prepareImageArtifactDelivery(markdown, {
       rootSessionId: "root-session",
       scope,
     });

@@ -66,7 +66,7 @@ describe("profile memory", () => {
     ).toBe(workspaceId);
     expect(
       resolveProfileMemoryScope(
-        memoryContext(userPrincipal("linq-message", workspaceId))
+        memoryContext(userPrincipal("photon-imessage", workspaceId))
       )
     ).toBe(workspaceId);
   });

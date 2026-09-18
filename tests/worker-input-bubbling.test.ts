@@ -33,7 +33,7 @@ describe("worker input bubbling", () => {
       {},
       {
         model: null,
-        channel: { kind: "channel:linq", metadata: {} },
+        channel: { kind: "channel:photon", metadata: {} },
         messages: [],
         session: {
           auth: { current: null, initiator: null },

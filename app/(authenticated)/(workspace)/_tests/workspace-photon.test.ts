@@ -3,17 +3,17 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { ChannelsSection } from "@app/(authenticated)/(workspace)/page";
 
-describe("workspace Linq channel", () => {
+describe("workspace Photon channel", () => {
   it("disables iMessage without advertising another deployment's number", () => {
     const html = renderToStaticMarkup(
       createElement(ChannelsSection, {
         browserReady: true,
-        linqConfigured: false,
-        linqPhoneNumber: undefined,
+        imessageConfigured: false,
+        imessagePhoneNumber: undefined,
       })
     );
 
-    expect(html).toContain("Set up Linq to enable iMessage.");
+    expect(html).toContain("Set up Photon to enable iMessage.");
     expect(html).not.toContain("+12052611117");
     expect(html).not.toContain("sms:");
   });
@@ -22,8 +22,8 @@ describe("workspace Linq channel", () => {
     const html = renderToStaticMarkup(
       createElement(ChannelsSection, {
         browserReady: true,
-        linqConfigured: true,
-        linqPhoneNumber: "+12025550123",
+        imessageConfigured: true,
+        imessagePhoneNumber: "+12025550123",
       })
     );
 
@@ -31,16 +31,16 @@ describe("workspace Linq channel", () => {
     expect(html).toContain("iMessage opens +12025550123.");
   });
 
-  it("reports a connected Linq line without requiring its number", () => {
+  it("reports a connected Photon line without requiring its number", () => {
     const html = renderToStaticMarkup(
       createElement(ChannelsSection, {
         browserReady: true,
-        linqConfigured: true,
-        linqPhoneNumber: undefined,
+        imessageConfigured: true,
+        imessagePhoneNumber: undefined,
       })
     );
 
-    expect(html).toContain("Linq is connected.");
+    expect(html).toContain("Photon is connected.");
     expect(html).not.toContain("sms:");
   });
 
@@ -48,12 +48,12 @@ describe("workspace Linq channel", () => {
     const html = renderToStaticMarkup(
       createElement(ChannelsSection, {
         browserReady: true,
-        linqConfigured: false,
-        linqPhoneNumber: "+12025550123",
+        imessageConfigured: false,
+        imessagePhoneNumber: "+12025550123",
       })
     );
 
-    expect(html).toContain("Set up Linq to enable iMessage.");
+    expect(html).toContain("Set up Photon to enable iMessage.");
     expect(html).not.toContain("sms:");
   });
 });

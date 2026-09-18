@@ -9,7 +9,7 @@ describe("agent instructions", () => {
   it.each([
     ["scheduled-worker", "isolated background session"],
     ["scheduled-result", "evaluating the completed outcome"],
-    ["linq", "root coordinator"],
+    ["photon-imessage", "root coordinator"],
   ])("selects %s instructions for the current turn", async (role, phrase) => {
     const resolve = roleInstructions.events["turn.started"];
     expect(resolve).toBeDefined();
@@ -51,7 +51,7 @@ describe("agent instructions", () => {
     expect(resolve).toBeDefined();
     if (!resolve) return;
 
-    const selected = await resolve({}, dynamicContext("linq-message"));
+    const selected = await resolve({}, dynamicContext("photon-imessage"));
     expect(selected?.content).toContain(
       "Never ask for approval in prose first"
     );
@@ -63,7 +63,7 @@ describe("agent instructions", () => {
     expect(resolve).toBeDefined();
     if (!resolve) return;
 
-    const selected = await resolve({}, dynamicContext("linq-message"));
+    const selected = await resolve({}, dynamicContext("photon-imessage"));
     expect(selected?.content).toContain(
       "never call `personal_info__update` to read it"
     );
@@ -91,7 +91,7 @@ describe("agent instructions", () => {
     if (!resolve) return;
 
     const selections = await Promise.all(
-      ["linq", "scheduled-worker"].map((authenticator) =>
+      ["photon-imessage", "scheduled-worker"].map((authenticator) =>
         Promise.resolve(resolve({}, dynamicContext(authenticator)))
       )
     );
@@ -117,7 +117,7 @@ describe("agent instructions", () => {
 
     const selected = await resolve(
       {},
-      dynamicContext("linq-message", "scheduled-worker")
+      dynamicContext("photon-imessage", "scheduled-worker")
     );
     expect(selected?.content).toContain("isolated background session");
   });
@@ -129,7 +129,7 @@ function dynamicContext(
 ) {
   return {
     model: null,
-    channel: { kind: "channel:linq", metadata: {} },
+    channel: { kind: "channel:photon", metadata: {} },
     messages: [],
     session: {
       auth: {
