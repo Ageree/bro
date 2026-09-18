@@ -17,6 +17,9 @@ const unsetEnvironment = [
   "OPENROUTER_PROVIDER_ORDER",
   "OPENROUTER_REASONING_EFFORT",
   "OPENROUTER_SEARCH_MODEL",
+  "OPENROUTER_STT_FALLBACK_MODEL",
+  "OPENROUTER_STT_LANGUAGE",
+  "OPENROUTER_STT_MODEL",
 ];
 
 for (const [name, value] of Object.entries(testEnvironment)) {

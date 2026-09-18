@@ -212,6 +212,27 @@ Only private chats reach the agent; group messages are ignored. A message from
 an unlinked Telegram account gets one short explanation of how to link, at most
 once an hour per chat.
 
+### Inbound photos and voice notes
+
+A photo, an image or PDF document, or a voice note sent over Telegram or
+iMessage reaches the model as bytes the channel downloaded itself, not as a
+URL. Photos are served at the largest rendition under 3 MB with the media type
+read from the file's magic bytes; PDFs up to 10 MB become file parts; other
+files are described to the model in one line. A message that carries only a
+picture still tells the model `[фото]`.
+
+Voice notes are transcribed through OpenRouter's audio endpoint with
+`OPENROUTER_API_KEY`, so a deployment without the key answers a voice note with
+one line saying voice is not supported. iMessage voice notes arrive as
+CAF-Opus and are remuxed to Ogg in process. `OPENROUTER_STT_MODEL` is the
+transcription model (default `qwen/qwen3-asr-flash-2026-02-10`),
+`OPENROUTER_STT_FALLBACK_MODEL` takes over when the first model rejects the clip
+(default `openai/gpt-4o-transcribe`), and `OPENROUTER_STT_LANGUAGE` is the
+language hint (default `ru`; `auto` lets the model guess). The transcript
+reaches the model as a line starting with `[голосовое]`; when nothing could be
+transcribed and the message has no text, the person is asked to retry and no
+model turn runs.
+
 ## Landing and onboarding
 
 `/` is a public Russian landing page and the signed-in workspace lives at

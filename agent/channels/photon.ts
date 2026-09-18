@@ -6,6 +6,7 @@ import {
 } from "eve/channels/photon";
 import { resolvePhotonReplyTarget } from "@agent/lib/reply-targets";
 import { messageQuotaGate } from "@agent/lib/billing/quota";
+import { photonMediaTurn } from "@agent/lib/inbound-media/photon";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { ensureVerifiedPhoneUser } from "@db/services/auth/phone-user";
 import { sendMessageToolResultSchema } from "@shared/chat/message-delivery";
@@ -230,24 +231,31 @@ export default photonIMessageChannel({
       }
       return null;
     }
-    return {
-      auth: {
-        ...auth,
-        attributes: {
-          ...auth.attributes,
-          conversationChannel: "photon",
-          conversationId: context.thread.id,
-          phoneNumber,
-          photonMessageId: message.id,
-          photonThreadId: context.thread.id,
-          workspaceId: scope.workspaceId,
-        },
-        principalId,
+    const sessionAuth = {
+      ...auth,
+      attributes: {
+        ...auth.attributes,
+        conversationChannel: "photon",
+        conversationId: context.thread.id,
+        phoneNumber,
+        photonMessageId: message.id,
+        photonThreadId: context.thread.id,
+        workspaceId: scope.workspaceId,
       },
-      // The account was created by this very message, so the turn is the first
-      // one this person ever had and the instructions introduce Bro once.
-      context: account.created ? [firstContactContext] : [],
+      principalId,
     };
+    // The account was created by this very message, so the turn is the first
+    // one this person ever had and the instructions introduce Bro once.
+    const turnContext = account.created ? [firstContactContext] : [];
+    // Photos and voice notes are read from the Photon message here, because
+    // the adapter exposes no URL for them and the model otherwise sees nothing.
+    const media = await photonMediaTurn(message);
+    if (media === undefined) return { auth: sessionAuth, context: turnContext };
+    if (media.notice) await context.thread.post({ raw: media.notice });
+    // A voice note nobody could transcribe leaves nothing to answer, so the
+    // retry line above is the whole reply and no model turn starts.
+    if (media.message === undefined) return null;
+    return { auth: sessionAuth, context: turnContext, message: media.message };
   },
 });
 
