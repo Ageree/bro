@@ -23,6 +23,9 @@ importers:
       '@googleapis/people':
         specifier: ^8.0.0
         version: 8.0.0
+      '@neondatabase/serverless':
+        specifier: ^1.1.0
+        version: 1.1.0
       '@openrouter/ai-sdk-provider':
         specifier: 3.0.0
         version: 3.0.0(ai@7.0.93(zod@4.5.4))(zod@4.5.4)
@@ -8290,8 +8293,7 @@ snapshots:
       '@tybys/wasm-util': 0.10.3
     optional: true
 
-  '@neondatabase/serverless@1.1.0':
-    optional: true
+  '@neondatabase/serverless@1.1.0': {}
 
   '@next/env@16.3.3': {}
 

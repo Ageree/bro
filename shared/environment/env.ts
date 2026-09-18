@@ -136,6 +136,12 @@ export const env = createEnv({
       )
       .default("ru"),
     BROWSER_USE_WEBHOOK_SECRET: requiredValue.optional(),
+    // Which Drizzle driver `db/index.ts` builds. Deployments keep the pooled
+    // TCP client; `neon-http` exists for a maintenance run from a machine that
+    // can only reach the database over HTTPS.
+    DATABASE_DRIVER: z
+      .enum(["node-postgres", "neon-http"])
+      .default("node-postgres"),
     // Usage ceilings per workspace: messages on the local day, browser errands
     // on the local month. A deployment without YooKassa keys never leaves the
     // free column.

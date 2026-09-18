@@ -60,7 +60,8 @@ commands require the direct `DATABASE_URL_UNPOOLED` connection. Run
 Vercel uses Turbo to run the uncached migration task before its application
 build. See [`db/README.md`](db/README.md) for existing-database adoption,
 environment loading, and constraint-validation sequencing. Better Auth retains
-its separate migration path.
+its separate migration path. Importing an existing Convex deployment is covered
+by [`docs/migrate-from-convex.md`](docs/migrate-from-convex.md).
 
 Treat the private Blob store as production key material: deleting it loses the
 automatically generated encryption key, and rotating that key requires
