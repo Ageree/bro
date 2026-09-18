@@ -5,6 +5,8 @@ import {
   readBrowserRun,
 } from "@db/services/browser-runs";
 import photon from "@agent/channels/photon";
+import telegram from "@agent/channels/telegram";
+import { telegramChatIdFromConversationId } from "@agent/lib/telegram-conversation";
 import {
   cancelBrowserUseRun,
   readBrowserUseRun,
@@ -120,6 +122,14 @@ async function deliverBrowserRunOutcome(
       await delivery
         .to(photon, { adapterName: "imessage", threadId: row.conversationId })
         .send(prompt, options);
+      return;
+    }
+    if (row.conversationChannel === "telegram") {
+      const chatId = telegramChatIdFromConversationId(row.conversationId);
+      if (!chatId) {
+        throw new Error("A Telegram browser run requires a chat id.");
+      }
+      await delivery.to(telegram, { chatId }).send(prompt, options);
       return;
     }
     if (!delivery.attachSession) {

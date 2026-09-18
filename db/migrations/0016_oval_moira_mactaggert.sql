@@ -23,7 +23,7 @@ CREATE TABLE "browser_runs" (
 	"updated_at" timestamp (3) with time zone DEFAULT now() NOT NULL,
 	"completed_at" timestamp (3) with time zone,
 	CONSTRAINT "browser_runs_status_check" CHECK ("browser_runs"."status" IN ('created', 'running', 'waiting', 'done', 'failed', 'stopped')),
-	CONSTRAINT "browser_runs_conversation_channel_check" CHECK ("browser_runs"."conversation_channel" IN ('eve', 'photon')),
+	CONSTRAINT "browser_runs_conversation_channel_check" CHECK ("browser_runs"."conversation_channel" IN ('eve', 'photon', 'telegram')),
 	CONSTRAINT "browser_runs_conversation_id_check" CHECK ("browser_runs"."conversation_id" <> '')
 );
 --> statement-breakpoint

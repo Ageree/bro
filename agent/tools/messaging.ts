@@ -18,6 +18,7 @@ interface ChannelDelivery {
 const channelDelivery = new Map<string, ChannelDelivery>([
   ["channel:eve", { attachmentUrls: true, reactions: "add" }],
   ["channel:photon", { attachmentUrls: false, reactions: "toggle" }],
+  ["channel:telegram", { attachmentUrls: false, reactions: "toggle" }],
 ]);
 
 function defineSendMessage(delivery: ChannelDelivery | undefined) {

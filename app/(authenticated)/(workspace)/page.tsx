@@ -4,6 +4,7 @@ import {
   ImageIcon,
   MailIcon,
   MessageSquareIcon,
+  SendIcon,
 } from "lucide-react";
 import Link from "next/link";
 import type { ReactNode } from "react";
@@ -16,20 +17,25 @@ import { z } from "zod";
 import { Alert, AlertDescription, AlertTitle } from "@web/components/ui/alert";
 import { Badge } from "@web/components/ui/badge";
 import { Button } from "@web/components/ui/button";
+import { readChannelIdentity } from "@db/services/channel-identities";
 import { getGatewayModel } from "@db/services/settings";
 import { env } from "@shared/environment";
 import { photonConfigured } from "@shared/photon/credentials";
 import { googleWorkspaceTokenParams } from "@shared/google-workspace/connection";
+import { telegramLinkConfigured } from "@shared/identity/telegram-link";
 import { requireRequestScope } from "@web/auth/request-scope";
 import { GoogleWorkspaceAction } from "./_components/google-workspace-action";
 import { ModelSelector } from "./_components/model-selector";
+import { TelegramLinkAction } from "./_components/telegram-link-action";
 
 export default async function Page({ searchParams }: PageProps<"/">) {
   const google = (await searchParams).google;
   const scope = await requireRequestScope();
-  const [googleWorkspace, gatewayModel] = await Promise.all([
+  const telegramConfigured = telegramLinkConfigured();
+  const [googleWorkspace, gatewayModel, telegramIdentity] = await Promise.all([
     readGoogleWorkspaceConnection(scope.userId),
     getGatewayModel(scope),
+    telegramConfigured ? readChannelIdentity(scope, "telegram") : undefined,
   ]);
   const imageStorageReady = Boolean(
     env.BLOB_STORE_ID ?? env.BLOB_READ_WRITE_TOKEN
@@ -55,6 +61,9 @@ export default async function Page({ searchParams }: PageProps<"/">) {
         imessagePhoneNumber={env.IMESSAGE_PHONE_NUMBER}
       />
       <GoogleWorkspaceSection connection={googleWorkspace} />
+      {telegramConfigured ? (
+        <TelegramSection username={telegramIdentity?.username ?? null} />
+      ) : null}
 
       <WorkspaceSection headingId="connectors-heading" title="Infrastructure">
         <div className="divide-y divide-border/50 border-y border-border/50">
@@ -119,6 +128,25 @@ function GoogleWorkspaceSection({
           description={description}
           icon={<MailIcon />}
           label="Google Workspace"
+        />
+      </div>
+    </WorkspaceSection>
+  );
+}
+
+function TelegramSection({ username }: { readonly username: string | null }) {
+  return (
+    <WorkspaceSection headingId="telegram-heading" title="Telegram">
+      <div className="divide-y divide-border/50 border-y border-border/50">
+        <ConnectorRow
+          action={<TelegramLinkAction linked={username !== null} />}
+          description={
+            username
+              ? `Linked as @${username}. Messages from that Telegram account run as this workspace.`
+              : "Not linked. Open a one-time link to connect your Telegram account to this workspace."
+          }
+          icon={<SendIcon />}
+          label="Telegram"
         />
       </div>
     </WorkspaceSection>

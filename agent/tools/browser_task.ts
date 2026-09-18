@@ -3,6 +3,7 @@ import { defineDynamic, defineTool } from "eve/tools";
 import { z } from "zod";
 import { resolveModeValue } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
+import { telegramConversationIdSchema } from "@agent/lib/telegram-conversation";
 import {
   browserUseConfigured,
   cancelBrowserUseRun,
@@ -124,16 +125,25 @@ function conversationTarget(context: ToolContext) {
     throw new Error("An authenticated user is required to run a browser task.");
   }
   const conversationChannel = z
-    .enum(["eve", "photon"])
+    .enum(["eve", "photon", "telegram"])
     .parse(auth.attributes.conversationChannel);
   const conversationId =
     conversationChannel === "eve"
       ? context.session.id
-      : z.string().min(1).parse(auth.attributes.conversationId);
+      : conversationChannel === "photon"
+        ? z
+            .string()
+            .startsWith("imessage:")
+            .parse(auth.attributes.conversationId)
+        : telegramConversationIdSchema.parse(auth.attributes.conversationId);
   const replyAnchorMessageId = z
     .string()
     .min(1)
-    .safeParse(auth.attributes.photonMessageId);
+    .safeParse(
+      conversationChannel === "telegram"
+        ? auth.attributes.telegramMessageId
+        : auth.attributes.photonMessageId
+    );
   return {
     conversation: {
       conversationChannel,

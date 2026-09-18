@@ -16,9 +16,7 @@ export default async function AllChatsPage() {
   const scope = await requireRequestScope();
   const chats = await listChats(scope);
   const totalUsage = combineChatUsage(chats.map((chat) => chat.usage));
-  const imessageSessionId = chats.find(
-    (chat) => chat.channel === "channel:photon"
-  )?.sessionId;
+  const mainThreads = mainThreadLabels(chats);
 
   return (
     <div className="mx-auto w-full max-w-4xl space-y-8 px-4 py-6 sm:px-6 sm:py-8">
@@ -54,15 +52,15 @@ export default async function AllChatsPage() {
             >
               <MessageSquareIcon
                 className={
-                  chat.sessionId === imessageSessionId
+                  mainThreads.has(chat.sessionId)
                     ? "size-4 shrink-0 text-information"
                     : "size-4 shrink-0 text-muted-foreground"
                 }
               />
               <span className="min-w-0 flex-1 truncate">
-                {chat.sessionId === imessageSessionId ? "iMessage" : chat.title}
+                {mainThreads.get(chat.sessionId) ?? chat.title}
               </span>
-              {chat.sessionId === imessageSessionId ? (
+              {mainThreads.has(chat.sessionId) ? (
                 <Badge variant="information">Main thread</Badge>
               ) : null}
               <span className="shrink-0 type-label text-muted-foreground">
@@ -80,6 +78,24 @@ export default async function AllChatsPage() {
       </section>
     </div>
   );
+}
+
+// Conversation channels whose newest chat is the person's ongoing thread.
+const conversationChannelLabels = new Map([
+  ["channel:photon", "iMessage"],
+  ["channel:telegram", "Telegram"],
+]);
+
+function mainThreadLabels(chats: Awaited<ReturnType<typeof listChats>>) {
+  const labels = new Map<string, string>();
+  const claimed = new Set<string>();
+  for (const chat of chats) {
+    const label = conversationChannelLabels.get(chat.channel ?? "");
+    if (!label || claimed.has(label)) continue;
+    claimed.add(label);
+    labels.set(chat.sessionId, label);
+  }
+  return labels;
 }
 
 function formatChatDate(value: string) {

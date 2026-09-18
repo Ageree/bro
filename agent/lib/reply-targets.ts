@@ -1,18 +1,31 @@
 import { defineState, type SessionAuth } from "eve/context";
 import { z } from "zod";
 import { scheduledReportIdentity } from "@agent/lib/schedules/identity";
+import { telegramConversationIdSchema } from "@agent/lib/telegram-conversation";
 import type { ReplyReference } from "@shared/chat/message-delivery";
 
-// Photon encodes its iMessage conversations as `imessage:<chat guid>`.
-const photonConversationIdSchema = z.string().startsWith("imessage:");
-const photonReplyTargetSchema = z.strictObject({
-  conversationId: photonConversationIdSchema,
+// Photon encodes its iMessage conversations as `imessage:<chat guid>`, and
+// Telegram as eve's `<chatId>:<threadId>:<anchorId>` continuation token.
+const conversationIdSchema = {
+  photon: z.string().startsWith("imessage:"),
+  telegram: telegramConversationIdSchema,
+};
+
+type ConversationChannel = keyof typeof conversationIdSchema;
+
+const messageIdAttribute = {
+  photon: "photonMessageId",
+  telegram: "telegramMessageId",
+} as const satisfies Record<ConversationChannel, string>;
+
+const replyTargetSchema = z.strictObject({
+  conversationId: z.string().min(1),
   messageId: z.string().min(1),
 });
 
-type PhotonReplyTarget = z.infer<typeof photonReplyTargetSchema>;
+type ReplyTarget = z.infer<typeof replyTargetSchema>;
 
-const backgroundReplyTargets = defineState<Record<string, PhotonReplyTarget>>(
+const backgroundReplyTargets = defineState<Record<string, ReplyTarget>>(
   "open-instinct.background-reply-targets",
   () => ({})
 );
@@ -23,7 +36,8 @@ export function registerBackgroundReplyTarget(
   taskId: string,
   auth: SessionAuth
 ) {
-  const target = currentPhotonReplyTarget(auth);
+  const target =
+    currentReplyTarget("photon", auth) ?? currentReplyTarget("telegram", auth);
   if (!target) return;
 
   backgroundReplyTargets.update((current) =>
@@ -40,13 +54,28 @@ export function resolvePhotonReplyTarget(
   reference: ReplyReference | undefined,
   auth: SessionAuth
 ) {
+  return resolveReplyTarget("photon", reference, auth);
+}
+
+export function resolveTelegramReplyTarget(
+  reference: ReplyReference | undefined,
+  auth: SessionAuth
+) {
+  return resolveReplyTarget("telegram", reference, auth);
+}
+
+function resolveReplyTarget(
+  channel: ConversationChannel,
+  reference: ReplyReference | undefined,
+  auth: SessionAuth
+) {
   if (!reference) return undefined;
 
-  const conversationId = currentPhotonConversationId(auth);
+  const conversationId = currentConversationId(channel, auth);
   if (!conversationId) return undefined;
 
   if (reference.kind === "current") {
-    return currentPhotonReplyTarget(auth);
+    return currentReplyTarget(channel, auth);
   }
 
   if (reference.kind === "task") {
@@ -61,24 +90,31 @@ export function resolvePhotonReplyTarget(
   return {
     conversationId,
     messageId: report.replyAnchorMessageId,
-  } satisfies PhotonReplyTarget;
+  } satisfies ReplyTarget;
 }
 
-function currentPhotonConversationId(auth: SessionAuth) {
+function currentConversationId(
+  channel: ConversationChannel,
+  auth: SessionAuth
+) {
   const caller = auth.current ?? auth.initiator;
-  if (caller?.attributes.conversationChannel !== "photon") return undefined;
-  const parsed = photonConversationIdSchema.safeParse(
+  if (caller?.attributes.conversationChannel !== channel) return undefined;
+  const parsed = conversationIdSchema[channel].safeParse(
     caller.attributes.conversationId
   );
   return parsed.success ? parsed.data : undefined;
 }
 
-function currentPhotonReplyTarget(auth: SessionAuth) {
+function currentReplyTarget(channel: ConversationChannel, auth: SessionAuth) {
   const caller = auth.current;
-  if (caller?.attributes.conversationChannel !== "photon") return undefined;
-  const parsed = photonReplyTargetSchema.safeParse({
-    conversationId: caller.attributes.conversationId,
-    messageId: caller.attributes.photonMessageId,
+  if (caller?.attributes.conversationChannel !== channel) return undefined;
+  const conversationId = conversationIdSchema[channel].safeParse(
+    caller.attributes.conversationId
+  );
+  if (!conversationId.success) return undefined;
+  const parsed = replyTargetSchema.safeParse({
+    conversationId: conversationId.data,
+    messageId: caller.attributes[messageIdAttribute[channel]],
   });
   return parsed.success ? parsed.data : undefined;
 }

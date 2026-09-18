@@ -1,6 +1,7 @@
 export * from "./auth";
 export * from "./browser";
 export * from "./browser-runs";
+export * from "./channel-identities";
 export * from "./chats";
 export * from "./schedules";
 export * from "./sessions";

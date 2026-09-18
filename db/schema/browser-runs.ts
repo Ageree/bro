@@ -47,7 +47,7 @@ export const browserRuns = pgTable(
     outcome: text("outcome"),
     liveViewUrl: text("live_view_url"),
     conversationChannel: text("conversation_channel", {
-      enum: ["eve", "photon"],
+      enum: ["eve", "photon", "telegram"],
     }).notNull(),
     conversationId: text("conversation_id").notNull(),
     replyAnchorMessageId: text("reply_anchor_message_id"),
@@ -87,7 +87,7 @@ export const browserRuns = pgTable(
     ),
     check(
       "browser_runs_conversation_channel_check",
-      sql`${table.conversationChannel} IN ('eve', 'photon')`
+      sql`${table.conversationChannel} IN ('eve', 'photon', 'telegram')`
     ),
     check(
       "browser_runs_conversation_id_check",
