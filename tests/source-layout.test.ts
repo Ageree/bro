@@ -19,7 +19,8 @@ describe("source layout", () => {
     expect(existsSync("agent/agent.ts")).toBe(true);
     expect(existsSync("agent/instructions.md")).toBe(true);
     expect(existsSync("app/layout.tsx")).toBe(true);
-    expect(existsSync("app/(authenticated)/(workspace)/page.tsx")).toBe(true);
+    expect(existsSync("app/(public)/page.tsx")).toBe(true);
+    expect(existsSync("app/(authenticated)/workspace/page.tsx")).toBe(true);
     expect(existsSync("app/(authenticated)/chat/(new)/page.tsx")).toBe(true);
     expect(existsSync("proxy.ts")).toBe(true);
     expect(existsSync("src")).toBe(false);
