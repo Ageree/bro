@@ -520,4 +520,52 @@ assert(
   "schema index tenant+merchantOrderId",
 );
 
+
+// --- a long order number is an order number ---------------------------------
+/**
+ * 13-19 digits is the ordinary length of a WB/Ozon order number as well as of
+ * a card, and length alone used to decide. Luhn is the real test — the same
+ * one `secretScrub.looksLikeCardNumber` runs — so the merchant's own number
+ * survives and «где заказ» keeps working on it.
+ */
+{
+  const ten = parseOrderFromResult({
+    task: "купи кроссовки на вб",
+    result: "Заказ 4600012345 оформлен. Кроссовки Nike. 8990 руб",
+  });
+  eq(ten?.merchantOrderId, "4600012345", "a ten-digit order number is kept");
+
+  const fourteen = parseOrderFromResult({
+    task: "купи кроссовки на вб",
+    result: "Заказ 46000123456789 оформлен. Кроссовки Nike. 8990 руб",
+  });
+  eq(fourteen?.merchantOrderId, "46000123456789", "and so is a fourteen-digit one");
+
+  const card = parseOrderFromResult({
+    task: "купи кроссовки на вб",
+    result: "Заказ 4111111111111111 оформлен. Кроссовки Nike. 8990 руб",
+  });
+  assert(
+    card?.merchantOrderId.startsWith("pending:"),
+    "a Luhn-valid PAN still never becomes an order id",
+  );
+
+  const letters = parseOrderFromResult({
+    task: "купи кроссовки на вб",
+    result: "Заказ WB-4K7X2 оформлен. Кроссовки Nike. 8990 руб",
+  });
+  eq(letters?.merchantOrderId, "WB-4K7X2", "an id with letters was never a PAN either");
+
+  // The same gate guards the title line, which is cut out of the result text:
+  // a labelled title carrying the order number keeps it instead of losing it.
+  const titled = parseOrderFromResult({
+    task: "купи это",
+    result: "Товар: набор 46000123456789. Сумма: 8990 руб. Заказ 5508123 оформлен",
+  });
+  assert(
+    titled?.title.includes("46000123456789"),
+    "a long number inside the title is not mistaken for a card and deleted",
+  );
+}
+
 console.log("orders-check ok");

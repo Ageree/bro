@@ -2,6 +2,8 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { cancelWakeup } from "../lib/convex";
 import { tenantId } from "../lib/tenant";
+import { instinctBlocked } from "../lib/instinct-guard.ts";
+import { turnAttributes } from "../lib/turn-attrs";
 
 export default defineTool({
   description:
@@ -14,6 +16,8 @@ export default defineTool({
     payloadContains: z.string().optional(),
   }),
   async execute({ id, kind, payloadContains }, ctx) {
+    const blocked = instinctBlocked(turnAttributes(ctx), "cancel_wakeup");
+    if (blocked) return blocked;
     const n = await cancelWakeup(tenantId(ctx), { id, kind, payloadContains });
     return `cancelled ${n}`;
   },

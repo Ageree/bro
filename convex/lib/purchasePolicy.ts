@@ -115,9 +115,18 @@ export function overspendLine(over: {
 }
 
 export function watcherWakeupPrompt(payload: string, lastSeen?: string): string {
+  // The ceiling is resolved here and stated as a number. The tool enforces it
+  // either way (`watcherPayDecision` fills `maxRub` from this same payload),
+  // but a model that has been told «потолок 3000 ₽» stops at the right price
+  // on the page, which is hours earlier than a post-hoc «превышен потолок».
+  const cap = watcherBuys(payload) ? budgetRub(payload) : undefined;
+  const capLine =
+    cap !== undefined
+      ? ` Потолок ${cap} ₽: дороже не бери, лучше напиши человеку.`
+      : " Потолка человек не называл — если цена заметно выше ожидаемой, сначала спроси.";
   const buyLine = watcherBuys(payload)
-    ? "Это сторож на покупку: если условие сработало (цена, наличие) — сразу `browser_task` с `pay`, не спрашивай подтверждение. maxRub — потолок из задания, если человек его назвал. Потом одно короткое сообщение, что купил. Если условие не сработало — [SILENT]."
-    : "Если это только наблюдение (без «купи когда…») — сообщи об изменении, не покупай.";
+    ? `Это сторож на покупку: если условие сработало (цена, наличие) — сразу \`browser_task\` с \`pay\`, не спрашивай подтверждение.${capLine} Потом одно короткое сообщение, что купил. Если условие не сработало — [SILENT].`
+    : "Это только наблюдение (без «купи когда…»): сообщи об изменении и не покупай — оплату по такому сторожу тул всё равно отклонит.";
   return `[background wakeup] Сторож: ${payload}.
 Прошлое состояние: ${lastSeen ?? "ничего"}. Проверь текущее состояние (Composio-тулы или browser_task — что уместно). Если НИЧЕГО нового относительно прошлого состояния — ответь ровно [SILENT]. Если есть новое — одно короткое сообщение человеку. ${buyLine} В КОНЦЕ ответа добавь строку [SEEN] <краткое текущее состояние в одну строку> — она не уйдёт человеку.`;
 }

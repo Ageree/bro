@@ -223,12 +223,10 @@ export async function runInstinctScan(
   };
 }
 
-/** Auth attributes of a turn this scan started (see the wakeup route). */
-export function isInstinctWakeup(
-  attrs: Readonly<Record<string, unknown>> | null | undefined,
-): boolean {
-  return attrs?.origin === "wakeup" && attrs?.wakeupKind === "instinct";
-}
+/** Auth attributes of a turn this scan started (see the wakeup route). One
+ *  definition, in the module the guarded tools import — two copies of "is this
+ *  an instinct turn?" is exactly the drift that would silently unguard them. */
+export { isInstinctTurn as isInstinctWakeup } from "./instinct-guard.ts";
 
 /** Mark what the model was shown, without charging the daily budget. */
 export function noteInstinctSources(

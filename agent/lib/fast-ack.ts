@@ -128,6 +128,42 @@ function stripSurroundingQuotes(s: string): string {
 const FAST_ACK_MAX_WORDS = 8;
 const FAST_ACK_MAX_CHARS = 80;
 
+/**
+ * Assistant-speak openers. FAST_ACK_SYSTEM already forbids them («без
+ * вступлений»), but that instruction only reaches a 24-token no-reasoning
+ * model, and «Конечно! Сейчас гляну» is three words — every shape rule above
+ * passes it. The whole point of this lane is that the first bubble sounds
+ * like a person, so the one voice rule that CAN be checked mechanically is
+ * checked here instead of being left to the prompt.
+ *
+ * The list mirrors the robot phrases §Voice in `agent/instructions.md`
+ * already names («Задача принята», «Выполняю запрос», «Готов помочь!»,
+ * «Конечно! Сейчас я…») — the same ban, applied where the small model can be
+ * held to it.
+ *
+ * Only servile openers are on it. Russian discourse markers are not, on
+ * purpose: «так, понял, иду смотреть твой заказ» is exactly the register the
+ * lane wants, and «окей» / «ладно» / «так» are how a friend actually starts a
+ * sentence. What is banned is the register of a helpdesk — a word whose only
+ * job is to announce willingness before the work is named.
+ *
+ * Head-anchored with an explicit non-letter boundary (`\b` is ASCII-only in
+ * JS and never forms against Cyrillic), so it catches the opener and cannot
+ * reach into the middle of a line: «сделаю конечно» is not this.
+ */
+const FAST_ACK_FILLER =
+  /^(?:конечно|разумеется|безусловно|непременно|охотно|с\s+радостью|без\s+проблем|не\s+вопрос|сию\s+секунду|задача\s+принята|принято\s+к\s+исполнению|выполняю|обрабатываю\s+запрос|готов\s+помочь|рад\s+помочь|чем\s+ещё\s+могу|прошу\s+прощения|sure|certainly|absolutely|gladly|of\s+course|no\s+problem|happy\s+to\s+help)(?![\p{L}\d])/iu;
+
+/** «без эмодзи» is the other checkable line in FAST_ACK_SYSTEM. Stripped
+ *  rather than rejected: a good beat with a stray 👀 is still a good beat,
+ *  and a rejection costs the human the whole first bubble. */
+function stripEmoji(s: string): string {
+  return s
+    .replace(/[\p{Extended_Pictographic}\p{Emoji_Presentation}\uFE0F\u20E3]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 /** Cleans the tiny model's raw output; null when it is unusable or means NONE. */
 export function sanitizeFastAck(raw: string | null | undefined): string | null {
   if (typeof raw !== "string") return null;
@@ -136,10 +172,12 @@ export function sanitizeFastAck(raw: string | null | undefined): string | null {
   s = s.split("\n")[0]?.trim() ?? "";
   if (!s) return null;
   s = stripSurroundingQuotes(s);
-  s = s.replace(/\.$/, "").trim();
+  s = stripEmoji(s);
+  s = s.replace(/[.\s]+$/u, "").trim();
   if (!s) return null;
   if (s.toLowerCase() === "none") return null;
   if (/\bnone\b/i.test(s)) return null;
+  if (FAST_ACK_FILLER.test(s)) return null;
   const words = s.split(/\s+/).filter(Boolean);
   if (words.length === 0 || words.length > FAST_ACK_MAX_WORDS) return null;
   if (s.length > FAST_ACK_MAX_CHARS) return null;

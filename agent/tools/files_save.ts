@@ -2,6 +2,8 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { asPersonal } from "../lib/personal.ts";
 import { fileFailure, saveTextFile, uploadFileBytes } from "../lib/files.ts";
+import { instinctBlocked } from "../lib/instinct-guard.ts";
+import { turnAttributes } from "../lib/turn-attrs";
 
 export default defineTool({
   description:
@@ -13,6 +15,8 @@ export default defineTool({
     mimeType: z.string().min(1).max(200).optional(),
   }),
   async execute({ name, content, bytesBase64, mimeType }, ctx) {
+    const blocked = instinctBlocked(turnAttributes(ctx), "files_save");
+    if (blocked) return blocked;
     const who = asPersonal(ctx);
     if ("status" in who) return who;
     if (content && bytesBase64) {

@@ -46,6 +46,9 @@ import {
   INJECT_NO_PASSWORD_HINT,
 } from "../../../convex/lib/browserInjectPolicy.ts";
 import { looksLikeCardNumber, scrubSecrets } from "../../../convex/lib/secretScrub.ts";
+import { payHostConfirmHint } from "../../../agent/lib/browser-pay.ts";
+import { errandStartUrl } from "../../../convex/lib/browserStartPolicy.ts";
+import { watcherPayDecision } from "../../../agent/lib/browser-task-policy.ts";
 import {
   alreadyLoggedChatText,
   cookieDomainsCoverPage,
@@ -622,6 +625,117 @@ export const PAY: Journey[] = [
         it: "и человеку это говорится первой строкой, а не прячется в «готово»",
         got: () => overspendLine({ paidRub: 6200, maxRub: 5000 }),
         contains: "первой строкой",
+      },
+    ],
+  },
+
+  {
+    name: "Сторож «следи за ценой» не превращается в покупку",
+    group: "pay",
+    steps: [
+      {
+        it: "человек просил только следить",
+        got: () => watcherShouldPay({ payload: "следи за ценой на кроссовки" }),
+        want: false,
+      },
+      {
+        it: "и фоновый ход по такому сторожу платить не может",
+        got: () =>
+          watcherPayDecision({
+            origin: "wakeup",
+            wakeupKind: "watcher",
+            wakeupPayload: "следи за ценой на кроссовки",
+          }).allow,
+        want: false,
+      },
+      {
+        it: "модели говорят спросить человека, а не списать деньги",
+        got: () => {
+          const d = watcherPayDecision({
+            origin: "wakeup",
+            wakeupKind: "watcher",
+            wakeupPayload: "следи за ценой на кроссовки",
+          });
+          return d.allow ? "" : d.hint;
+        },
+        contains: "спроси, брать ли",
+      },
+      {
+        it: "«купи когда подешевеет до 3000» — это уже покупка",
+        got: () =>
+          watcherPayDecision({
+            origin: "wakeup",
+            wakeupKind: "watcher",
+            wakeupPayload: "купи когда подешевеет до 3000",
+          }).allow,
+        want: true,
+      },
+      {
+        it: "и потолок берётся из слов человека, а не из памяти модели",
+        got: () => {
+          const d = watcherPayDecision({
+            origin: "wakeup",
+            wakeupKind: "watcher",
+            wakeupPayload: "купи когда подешевеет до 3000",
+          });
+          return d.allow ? d.maxRub : undefined;
+        },
+        want: 3000,
+      },
+      {
+        it: "модель попросила потолок выше названного — её прижимают к названному",
+        got: () => {
+          const d = watcherPayDecision(
+            {
+              origin: "wakeup",
+              wakeupKind: "watcher",
+              wakeupPayload: "купи когда подешевеет до 3000",
+            },
+            9000,
+          );
+          return d.allow ? d.maxRub : undefined;
+        },
+        want: 3000,
+      },
+      {
+        it: "а обычный ход человека этим правилом не задет",
+        got: () => {
+          const d = watcherPayDecision({ origin: "human" }, 5000);
+          return d.allow ? d.maxRub : undefined;
+        },
+        want: 5000,
+      },
+    ],
+  },
+
+  {
+    name: "Сайт в поручении не назван, а вкладка где-то стоит",
+    group: "pay",
+    steps: [
+      {
+        it: "поручение без сайта: стартовую страницу вывести не из чего",
+        got: () => errandStartUrl("купи это"),
+        want: undefined,
+      },
+      {
+        it: "URL живой вкладки — не согласие человека, поэтому его называют вслух",
+        got: () => payHostConfirmHint("lamoda.ru"),
+        contains: "lamoda.ru",
+      },
+      {
+        it: "и до ответа не запускают ничего",
+        got: () => payHostConfirmHint("lamoda.ru"),
+        contains: "ничего не запускай",
+      },
+      {
+        it: "ответит «да» — дальше обычный путь с явным хостом",
+        got: () => payHostConfirmHint("lamoda.ru"),
+        contains: 'pay.hosts: ["lamoda.ru"]',
+      },
+      {
+        it: "а названный в поручении сайт по-прежнему привязывается молча",
+        got: () => errandStartUrl("купи кроссовки на озоне"),
+        contains: "ozon.ru",
       },
     ],
   },

@@ -16,6 +16,7 @@ import {
   isDoneCloudStatus,
 } from "../../convex/lib/browserInjectPolicy.ts";
 import { isActiveStatus } from "./browser-policy.ts";
+import { budgetRub, watcherShouldPay } from "../../convex/lib/purchasePolicy.ts";
 
 /** Pages eve should check the vault for a saved login against: the payment
  *  hosts, the site `errandStartUrl` resolved from wording alone, and any
@@ -178,4 +179,66 @@ export function profileExtra(
           hint: "Сайт может потребовать логин. Сразу profile_setup с url страницы входа — инструмент сам возьмёт вход из сейфа или откроет вход и пришлёт live-view ссылку. Не проси логин или пароль. Не клади пароль в чат.",
         }),
   };
+}
+
+/** The watcher a background turn belongs to, or undefined on any other turn.
+ *  Read from the turn's own auth attributes, never from a model argument —
+ *  the model must not be able to claim it is a watcher. */
+export function watcherPayloadOf(
+  attrs: Readonly<Record<string, unknown>> | null | undefined,
+): string | undefined {
+  if (attrs?.origin !== "wakeup" || attrs?.wakeupKind !== "watcher") return undefined;
+  const raw = attrs?.wakeupPayload;
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+export type WatcherPayDecision =
+  | { allow: true; maxRub?: number }
+  | { allow: false; hint: string };
+
+/**
+ * May THIS turn spend money, and up to how much?
+ *
+ * Both halves used to live only in the wakeup prompt, as two Russian
+ * sentences a weak model read once with nobody in the chat to notice if it
+ * read them wrong:
+ *
+ *   «следи за ценой на кроссовки» is a notify-only watch, and paying on it
+ *   spends the person's money on something they never agreed to buy.
+ *   `purchasePolicy.watcherShouldPay` has always known the difference; it
+ *   simply had no caller, which made it documentation rather than a guard.
+ *
+ *   «купи когда подешевеет до 3000» names a ceiling, and `pay.maxRub` was
+ *   whatever the model chose to re-derive from the payload — usually nothing,
+ *   because nothing made it. The ceiling the person actually typed is filled
+ *   in here instead, so the run carries it whether or not the model bothered.
+ *
+ * An explicit `maxRub` from the model is kept when it is at or below the
+ * person's own ceiling and clamped when it is above: the errand may be
+ * stricter than the person was, never looser.
+ *
+ * Any turn that is not a watcher wakeup passes through untouched — this is a
+ * gate on unattended spending, not on the person asking Bro to buy something.
+ */
+export function watcherPayDecision(
+  attrs: Readonly<Record<string, unknown>> | null | undefined,
+  requestedMaxRub?: number,
+): WatcherPayDecision {
+  const payload = watcherPayloadOf(attrs);
+  if (payload === undefined) {
+    return requestedMaxRub === undefined ? { allow: true } : { allow: true, maxRub: requestedMaxRub };
+  }
+  if (!watcherShouldPay({ payload })) {
+    return {
+      allow: false,
+      hint: `Этот сторож — только наблюдение («${payload.trim().slice(0, 120)}»), покупать по нему нельзя. Скажи человеку, что изменилось, и спроси, брать ли. Платить будешь, когда он ответит.`,
+    };
+  }
+  const named = budgetRub(payload);
+  const capped = [requestedMaxRub, named].filter(
+    (n): n is number => n !== undefined && Number.isFinite(n) && n > 0,
+  );
+  if (capped.length === 0) return { allow: true };
+  return { allow: true, maxRub: Math.min(...capped) };
 }

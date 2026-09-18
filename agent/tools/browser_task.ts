@@ -78,6 +78,7 @@ import { parseCloudOutcome } from "../../convex/lib/browserOutcomePolicy.ts";
 import { orderRowFromRun } from "../../convex/lib/orderRecordPolicy.ts";
 import { markTurnSpoke, turnSpoke } from "../lib/early-deliver.ts";
 import { fastAckOf } from "../lib/fast-ack.ts";
+import { instinctBlocked } from "../lib/instinct-guard.ts";
 import { attrsFromSession, deliverHumanRouted } from "../lib/deliver-routed";
 import { conversationId, turnAttributes } from "../lib/turn-attrs";
 import { chatConversationId, tenantId } from "../lib/tenant";
@@ -87,6 +88,7 @@ import {
   expandPayHosts,
   isAttachCardErrand,
   normalizePayHosts,
+  payHostConfirmHint,
 } from "../lib/browser-pay.ts";
 import { parsePaymentPayload } from "../../convex/lib/vaultPayload.ts";
 import { vaultPasswordLoginForPages } from "../lib/vault-login.ts";
@@ -98,6 +100,7 @@ import {
   loginPagesFor,
   profileExtra,
   shortTask,
+  watcherPayDecision,
 } from "../lib/browser-task-policy.ts";
 
 async function persist(
@@ -732,24 +735,30 @@ async function resolveSyncedProfile(
 
 /**
  * Host to bind the vault card to on a `payment`-need continuation where the
- * model forgot `pay` — the errand's own site (from its ORIGINAL task text,
- * before the human's continuation line replaced it) first, the page the
- * live browser is actually sitting on if that fails. Never a guess: an
- * empty result means the tool cannot safely bind a card at all.
+ * model forgot `pay`.
+ *
+ * Two sources, and they are NOT interchangeable, which is why the result says
+ * which one it came from. `errand` is the errand's own site, read from its
+ * ORIGINAL task text (before the human's continuation line replaced it) — the
+ * person named it, so binding to it needs no permission. `live-tab` is merely
+ * where the open tab happens to be right now; see `payHostConfirmHint` for why
+ * that is a question and not an answer. An empty result means neither source
+ * produced a usable host.
  */
 async function continuationPayHosts(
   storedTask: string | undefined,
   sessionId: string,
-): Promise<string[]> {
+): Promise<{ hosts: string[]; source: "errand" | "live-tab" }> {
   const startPage = errandStartUrl(storedTask);
   if (startPage) {
     const hosts = expandPayHosts([startPage]);
-    if (hosts.length > 0) return hosts;
+    if (hosts.length > 0) return { hosts, source: "errand" };
   }
   const browser = await findBrowserForSession(sessionId).catch(() => undefined);
-  if (!browser?.cdpUrl) return [];
+  if (!browser?.cdpUrl) return { hosts: [], source: "live-tab" };
   const pageUrl = await cdpPageUrl(browser.cdpUrl).catch(() => undefined);
-  return pageUrl ? expandPayHosts([pageUrl]) : [];
+  const hosts = pageUrl ? expandPayHosts([pageUrl]) : [];
+  return { hosts, source: "live-tab" };
 }
 
 /**
@@ -815,6 +824,12 @@ export default defineTool({
     // sometimes re-issues the whole errand instead of passing the bare code —
     // which used to spawn a fresh session and lose the live login.
     const turnAttrs = turnAttributes(ctx);
+    // An unprompted turn never starts an errand: see INSTINCT_FORBIDDEN_TOOLS.
+    const blocked = instinctBlocked(turnAttrs, "browser_task");
+    if (blocked) return blocked;
+    // Whether this turn may spend at all, and up to what. Only a watcher
+    // wakeup is ever constrained here; see `watcherPayDecision`.
+    const watcherPay = watcherPayDecision(turnAttrs, pay?.maxRub);
     const injectKind = cloudInjectKindFromAttrs(turnAttrs);
     const stampedInjectText = cloudInjectTextFromAttrs(turnAttrs);
     const notifyTurnId = ctx.session.turn?.id;
@@ -1028,6 +1043,12 @@ export default defineTool({
       // inject/resume path in maybeInjectChat, which also never calls
       // countBrowserJobStart).
       const contAttachCard = isAttachCardErrand(tenant.browserTask ?? task);
+      if (
+        !watcherPay.allow &&
+        (pay || tenant.browserNeed === "payment" || contAttachCard)
+      ) {
+        return { status: "refused", hint: watcherPay.hint };
+      }
       let contPayHosts: string[] | undefined;
       let contPayHostsBase: string[] | undefined;
       if (pay) {
@@ -1046,7 +1067,17 @@ export default defineTool({
         // attach-card errand resumes the same way: the card is still what the
         // open tab is waiting for.
         const guessed = await continuationPayHosts(tenant.browserTask, sessionId);
-        if (guessed.length > 0) contPayHosts = guessed;
+        if (guessed.source === "live-tab" && guessed.hosts.length > 0) {
+          // The tab's URL is not the person's intent. Name the host and let
+          // them say yes — the confirmed call arrives with `pay.hosts` and
+          // takes the ordinary path above.
+          return {
+            status: "needs_pay_host",
+            host: guessed.hosts[0],
+            hint: payHostConfirmHint(guessed.hosts[0]!),
+          };
+        }
+        if (guessed.hosts.length > 0) contPayHosts = guessed.hosts;
       }
 
       let contPayItem: { handle: string; account: string } | undefined;
@@ -1085,7 +1116,9 @@ export default defineTool({
           hosts: contPayHosts,
           holder: card.cardholderName,
           account: contPayItem.account,
-          ...(pay?.maxRub !== undefined ? { maxRub: pay.maxRub } : {}),
+          ...(watcherPay.allow && watcherPay.maxRub !== undefined
+            ? { maxRub: watcherPay.maxRub }
+            : {}),
           ...(contAttachCard ? { attachCard: true } : {}),
         };
       }
@@ -1293,6 +1326,9 @@ export default defineTool({
       let payHostsBase: string[] | undefined;
       let payItem: { handle: string; account: string } | undefined;
       if (pay || attachCard) {
+        if (!watcherPay.allow) {
+          return { status: "refused", hint: watcherPay.hint };
+        }
         const attachPage = pay ? undefined : errandStartUrl(task);
         const rawHosts = pay
           ? pay.hosts
@@ -1368,7 +1404,9 @@ export default defineTool({
           hosts: payHosts,
           holder: card.cardholderName,
           account: payItem.account,
-          ...(pay?.maxRub !== undefined ? { maxRub: pay.maxRub } : {}),
+          ...(watcherPay.allow && watcherPay.maxRub !== undefined
+            ? { maxRub: watcherPay.maxRub }
+            : {}),
           ...(attachCard ? { attachCard: true } : {}),
         };
       }

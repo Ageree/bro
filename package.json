@@ -79,6 +79,7 @@
     "voice:turn:check": "node --experimental-strip-types scripts/turn-voice-check.ts",
     "profile:person:check": "node --experimental-strip-types scripts/person-profile-check.ts",
     "instinct:check": "node --experimental-strip-types scripts/instinct-check.ts",
+    "unattended:check": "node --experimental-strip-types scripts/unattended-check.ts",
     "journeys": "node --experimental-strip-types scripts/journeys.ts",
     "journeys:check": "node --experimental-strip-types scripts/journeys.ts --check",
     "clamps:check": "node --experimental-strip-types scripts/clamps-check.ts",

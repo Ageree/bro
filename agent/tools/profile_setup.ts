@@ -23,13 +23,14 @@ import {
   type BrowserRun,
 } from "../lib/browseruse";
 import { setBrowser, startBrowserFollow, upsertTenant } from "../lib/convex";
-import { conversationId } from "../lib/turn-attrs";
+import { conversationId, turnAttributes } from "../lib/turn-attrs";
 import { chatConversationId, tenantId } from "../lib/tenant";
 import { attrsFromSession, channelFromAuth } from "../lib/deliver-routed";
 import { deliverHuman } from "../lib/deliver-human";
 import { fastAckOf } from "../lib/fast-ack.ts";
 import { markTurnSpoke, turnSpoke } from "../lib/early-deliver.ts";
 import { vaultPasswordLogin } from "../lib/vault-login.ts";
+import { instinctBlocked } from "../lib/instinct-guard.ts";
 
 const NO_PASSWORD_HINT =
   "Не проси логин или пароль в чат. Ссылка уйдёт сама или вызови profile_setup ещё раз с тем же url.";
@@ -128,6 +129,8 @@ export default defineTool({
     errand: z.string().min(1).max(4000).optional(),
   }),
   async execute({ url, site, errand }, ctx) {
+    const blocked = instinctBlocked(turnAttributes(ctx), "profile_setup");
+    if (blocked) return blocked;
     const page = loginPageUrl(url);
     if (!page) {
       return {

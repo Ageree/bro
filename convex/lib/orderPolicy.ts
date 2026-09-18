@@ -10,6 +10,7 @@
 
 import { parseAmount } from "./purchasePolicy.ts";
 import { parseCloudOutcome } from "./browserOutcomePolicy.ts";
+import { looksLikeCardNumber } from "./secretScrub.ts";
 
 export type OrderMerchant = "wb" | "ozon" | "other";
 export type OrderStatus = "placed" | "cancelled" | "unknown";
@@ -40,7 +41,10 @@ const FAIL =
 const SUCCESS =
   /(?:оформлен|оплачен|оплатил|куплен|купил|заказ\s+принят|successfully|placed|confirmed|paid)/iu;
 
-const PAN = /\b(?:\d[ \t-]*){13,19}\b/;
+// A card-LENGTH digit run. Only a candidate: `looksLikeCardNumber` decides
+// whether it is actually a PAN, because a WB/Ozon order number has exactly
+// the same shape (14 digits, no separators) and used to be thrown away here.
+const PAN = /\b(?:\d[ \t-]*){13,19}\b/g;
 
 const TITLE_LABEL =
   /(?:товар|название|позици[яи]|купил(?:а|и)?|заказал(?:а|и)?|title)\s*[:\-–—]\s*(.+)/iu;
@@ -140,16 +144,33 @@ export function resolveMerchant(args: {
 }
 
 function stripSecrets(text: string): string {
-  return text.replace(PAN, "").replace(/\s+/g, " ").trim();
+  return text
+    .replace(PAN, (run) => (looksLikeCardNumber(run) ? "" : run))
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function clip(text: string, max: number): string {
   return text.trim().slice(0, max);
 }
 
+/**
+ * A card number the merchant printed next to the order, not the order number.
+ *
+ * Length alone used to decide, and 13-19 digits is the ordinary length of a
+ * WB/Ozon order number: «Заказ 46000123456789 оформлен» lost its own number
+ * and the row fell back to a made-up `pending:<hash>` id, so «где заказ» and
+ * cancelling by that number stopped working on exactly the orders where the
+ * merchant had been most explicit. Luhn is the real test, and
+ * `secretScrub.looksLikeCardNumber` already ran it one module over.
+ *
+ * The digits-only condition stays: an id with letters in it (`WB-4K7X2`) is
+ * never a PAN, whatever its length.
+ */
 function looksLikePan(id: string): boolean {
-  const digits = id.replace(/\D/g, "");
-  return digits.length >= 13 && digits.length <= 19 && digits.length === id.replace(/[\s-]/g, "").length;
+  const bare = id.replace(/[\s-]/g, "");
+  if (!/^\d+$/.test(bare)) return false;
+  return looksLikeCardNumber(id);
 }
 
 function parseRub(raw: string): number | undefined {

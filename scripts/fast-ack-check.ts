@@ -493,4 +493,38 @@ assert(
   assert(events.includes("peelFastAck"), "delivery events use the case-insensitive peel");
 }
 
+
+// --- the voice rules the tiny model cannot be trusted to follow -------------
+/**
+ * FAST_ACK_SYSTEM asks for a line with no intro and no emoji, and that ask
+ * reaches a 24-token no-reasoning model. §Voice in `agent/instructions.md`
+ * names the robot phrases; this is the same ban applied where it can be
+ * enforced, because the ack is the first bubble the person sees.
+ */
+for (const robot of [
+  "Конечно! Сейчас я всё сделаю",
+  "конечно, посмотрю",
+  "Задача принята",
+  "Выполняю запрос",
+  "Готов помочь!",
+  "Sure, checking that",
+  "без проблем, гляну",
+]) {
+  eq(sanitizeFastAck(robot), null, `«${robot}» is a robot opener and must not be sent`);
+}
+
+// The ban is head-anchored: these are how a person actually talks.
+for (const live of [
+  "понял, делаю",
+  "так, уже ищу",
+  "окей, гляну почту",
+  "сделаю конечно",
+  "выполню к вечеру",
+]) {
+  eq(sanitizeFastAck(live), live, `«${live}» is live speech and must survive`);
+}
+
+eq(sanitizeFastAck("окей, гляну почту 👀"), "окей, гляну почту", "a stray emoji is stripped, not fatal");
+eq(sanitizeFastAck("🙂"), null, "an ack that was only an emoji is nothing at all");
+
 console.log("fast-ack-check ok");

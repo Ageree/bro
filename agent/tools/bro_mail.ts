@@ -10,6 +10,8 @@ import {
   pickOtp,
 } from "../lib/otp-policy.ts";
 import { tenantId } from "../lib/tenant";
+import { instinctBlocked } from "../lib/instinct-guard.ts";
+import { turnAttributes } from "../lib/turn-attrs";
 
 export default defineTool({
   description:
@@ -26,6 +28,8 @@ export default defineTool({
     limit: z.number().min(1).max(20).optional(),
   }),
   async execute(args, ctx) {
+    const blocked = instinctBlocked(turnAttributes(ctx), "bro_mail");
+    if (blocked) return blocked;
     const action = args.action ?? "send";
     const phone = tenantId(ctx);
     const tenant = await upsertTenant(phone);

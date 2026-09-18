@@ -948,7 +948,13 @@ export default defineChannel({
               conversationId,
               origin: "wakeup",
               wakeupKind: kind,
-              ...(kind === "job_check" && payload ? { wakeupPayload: payload } : {}),
+              // The watcher's own wording travels with the turn so
+              // `browser_task` can read the person's ceiling and their
+              // «следи» / «следи и купи» stance from the attributes instead of
+              // trusting the model to re-derive them (watcherPayDecision).
+              ...((kind === "job_check" || kind === "watcher") && payload
+                ? { wakeupPayload: payload }
+                : {}),
               ...(wakeupPhase ? { wakeupPhase } : {}),
               ...(wakeupFallback ? { wakeupFallback } : {}),
               ...(inkboxHandle ? { inkboxHandle } : {}),

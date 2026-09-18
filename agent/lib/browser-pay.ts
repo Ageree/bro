@@ -307,3 +307,28 @@ export function payScaffold(opts: {
     .filter(Boolean)
     .join("\n");
 }
+
+/**
+ * The line Bro says when a card is about to be bound to a host that nothing
+ * but the open tab vouches for.
+ *
+ * The payment continuation used to fall back to «whatever URL the live tab is
+ * on right now» whenever `errandStartUrl` did not recognise the errand's site,
+ * and bind the real card to it silently. That fallback is doing the one thing
+ * this whole vault exists to prevent: the tab's URL is not evidence of intent
+ * — a redirect, an ad interstitial or a payment aggregator nobody named can
+ * all be what the run happens to be sitting on, and the binding is what lets
+ * the vendor type a real PAN into that page's form.
+ *
+ * So the host is now named out loud and the person decides. One bubble, in the
+ * rare case where the model forgot `pay` AND the site was never recognisable
+ * from the errand text; every recognised site still binds without asking.
+ */
+export function payHostConfirmHint(host: string): string {
+  return (
+    `Карту привязывать не к чему проверенному: в поручении сайт не назван, ` +
+    `а открытая вкладка сейчас на ${host}. Спроси человека одной короткой строкой, ` +
+    `оплачивать ли на ${host} — и пока он не ответил, ничего не запускай. ` +
+    `Ответит «да» — вызови browser_task ещё раз с pay.hosts: ["${host}"].`
+  );
+}
