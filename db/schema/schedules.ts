@@ -22,7 +22,7 @@ export const scheduledAgentJobs = pgTable(
     createdByUserId: text("created_by_user_id").notNull(),
     prompt: text("prompt").notNull(),
     conversationChannel: text("conversation_channel", {
-      enum: ["eve", "photon"],
+      enum: ["eve", "photon", "telegram"],
     }).notNull(),
     conversationId: text("conversation_id").notNull(),
     replyAnchorMessageId: text("reply_anchor_message_id"),
@@ -75,7 +75,7 @@ export const scheduledAgentJobs = pgTable(
     }).onDelete("cascade"),
     check(
       "scheduled_agent_jobs_conversation_channel_check",
-      sql`${table.conversationChannel} IN ('eve', 'photon')`
+      sql`${table.conversationChannel} IN ('eve', 'photon', 'telegram')`
     ),
     check(
       "scheduled_agent_jobs_conversation_id_check",
