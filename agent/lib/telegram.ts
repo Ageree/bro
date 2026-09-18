@@ -331,6 +331,22 @@ export function largestPhoto(msg: TelegramMessage): TelegramPhotoSize | undefine
   return photos.reduce((a, b) => ((b.file_size ?? 0) >= (a.file_size ?? 0) ? b : a));
 }
 
+/** The biggest rendition that still fits a byte cap, else the smallest one
+ *  there is. Telegram sends four or five sizes of every photo; taking the
+ *  largest and then refusing it as oversize threw away a picture the same
+ *  message was carrying in a size that fits. */
+export function photoWithinBytes(
+  msg: TelegramMessage,
+  maxBytes: number,
+): TelegramPhotoSize | undefined {
+  const photos = [...(msg.photo ?? [])].sort(
+    (a, b) => (a.file_size ?? 0) - (b.file_size ?? 0),
+  );
+  if (photos.length === 0) return undefined;
+  const fits = photos.filter((p) => (p.file_size ?? 0) <= maxBytes);
+  return fits.at(-1) ?? photos[0];
+}
+
 export function isPrivateChat(msg: { chat?: TelegramChat } | undefined): boolean {
   return msg?.chat?.type === "private";
 }
