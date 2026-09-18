@@ -9,12 +9,6 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import type { ReactNode } from "react";
-import {
-  getTokenResponse,
-  NoValidTokenError,
-  UserAuthorizationRequiredError,
-} from "@vercel/connect";
-import { z } from "zod";
 import { Alert, AlertDescription, AlertTitle } from "@web/components/ui/alert";
 import { Badge } from "@web/components/ui/badge";
 import { Button } from "@web/components/ui/button";
@@ -25,7 +19,10 @@ import { yooKassaConfigured } from "@db/services/yookassa";
 import { env } from "@shared/environment";
 import { photonConfigured } from "@shared/photon/credentials";
 import { openRouterActive } from "@shared/model/provider";
-import { googleWorkspaceTokenParams } from "@shared/google-workspace/connection";
+import {
+  type GoogleWorkspaceConnection,
+  readGoogleWorkspaceConnection,
+} from "@shared/google-workspace/connection";
 import { telegramLinkConfigured } from "@shared/identity/telegram-link";
 import { requireRequestScope } from "@web/auth/request-scope";
 import { GoogleWorkspaceAction } from "./_components/google-workspace-action";
@@ -204,39 +201,6 @@ function TelegramSection({ username }: { readonly username: string | null }) {
       </div>
     </WorkspaceSection>
   );
-}
-
-interface GoogleWorkspaceConnection {
-  readonly accountLabel: string | null;
-  readonly state: "connected" | "disconnected" | "unavailable";
-}
-
-async function readGoogleWorkspaceConnection(
-  userId: string
-): Promise<GoogleWorkspaceConnection> {
-  try {
-    const response = await getTokenResponse(
-      env.GOOGLE_CONNECTOR_UID,
-      googleWorkspaceTokenParams(userId),
-      { forceRefresh: true }
-    );
-    const claims = z
-      .object({ email: z.string().optional() })
-      .safeParse(response.claims);
-    return {
-      accountLabel:
-        response.name ?? (claims.success ? (claims.data.email ?? null) : null),
-      state: "connected",
-    };
-  } catch (error) {
-    if (
-      error instanceof UserAuthorizationRequiredError ||
-      error instanceof NoValidTokenError
-    ) {
-      return { accountLabel: null, state: "disconnected" };
-    }
-    return { accountLabel: null, state: "unavailable" };
-  }
 }
 
 export function ChannelsSection({

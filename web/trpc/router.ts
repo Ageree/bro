@@ -1,17 +1,16 @@
 import { gateway } from "ai";
-import { revokeToken, startAuthorization } from "@vercel/connect";
+import { revokeToken } from "@vercel/connect";
 import { z } from "zod";
 import { mintChannelLinkToken } from "@db/services/channel-identities";
 import { saveChat } from "@db/services/chats";
 import { replaceUserProfile } from "@db/services/user-profile";
 import { selectWorkspaceModel } from "@db/services/settings";
 import { deleteVaultItem, saveVaultItem } from "@db/services/vault";
-import type { AccessScope } from "@shared/identity/access-scope";
 import { saveChatSchema } from "@shared/chat/schema";
 import { env } from "@shared/environment";
 import {
   googleWorkspaceSubject,
-  googleWorkspaceTokenParams,
+  startGoogleWorkspaceAuthorization,
 } from "@shared/google-workspace/connection";
 import { telegramLinkUrl } from "@shared/identity/telegram-link";
 import { modelIdSchema } from "@shared/model/id";
@@ -43,7 +42,7 @@ export const appRouter = createTRPCRouter({
         callbackUrl.searchParams.set("google", "connected");
         return {
           redirectTo: await startGoogleWorkspaceAuthorization(
-            ctx.scope,
+            ctx.scope.userId,
             callbackUrl.toString()
           ),
         };
@@ -88,18 +87,6 @@ export const appRouter = createTRPCRouter({
 });
 
 export type AppRouter = typeof appRouter;
-
-async function startGoogleWorkspaceAuthorization(
-  scope: AccessScope,
-  callbackUrl: string
-) {
-  const authorization = await startAuthorization(
-    env.GOOGLE_CONNECTOR_UID,
-    googleWorkspaceTokenParams(scope.userId),
-    { callbackUrl, expiresInMs: 10 * 60_000 }
-  );
-  return authorization.url;
-}
 
 async function readModelCatalog() {
   const { models } = await gateway.getAvailableModels();
