@@ -22,15 +22,36 @@ const VAULT_DIALOG_PAGE_SIZE = 50;
 
 type VaultSectionView = "add" | "import" | "list";
 
+/** What a section reads from the query on every render: its own sheet, if named. */
+interface VaultSectionRequest<Setup> {
+  readonly setup?: Setup;
+  readonly view: VaultSectionView;
+}
+
+/**
+ * The state a section takes on from a query it has not answered yet, or
+ * `undefined` to keep what it has. A query that names this section's sheet
+ * opens it; one that names another section's closes this one, so two sheets
+ * never stand open at once. The empty query is the sheet's own cleanup of
+ * the URL, and it says nothing about the sheet.
+ */
+export function answerVaultSectionQuery<Setup>(
+  query: string,
+  requested: VaultSectionRequest<Setup>
+) {
+  if (requested.view !== "list") {
+    return { open: true, setup: requested.setup, view: requested.view };
+  }
+  if (query === "") return undefined;
+  return { open: false, setup: undefined, view: "list" as const };
+}
+
 /**
  * A section's sheet, and the request that opened it. A link from the
  * cabinet, or from the foot of the vault, names the sheet in the query:
  * `requested` is what this section reads from it on every render.
  */
-export function useVaultSection<Setup>(requested: {
-  readonly setup?: Setup;
-  readonly view: VaultSectionView;
-}) {
+export function useVaultSection<Setup>(requested: VaultSectionRequest<Setup>) {
   const query = useSearchParams().toString();
   const [open, setOpen] = useState(requested.view !== "list");
   const [view, setView] = useState(requested.view);
@@ -42,10 +63,11 @@ export function useVaultSection<Setup>(requested: {
   // about the item even after the query is gone from the URL.
   if (query !== answeredQuery) {
     setAnsweredQuery(query);
-    if (requested.view !== "list") {
-      setOpen(true);
-      setView(requested.view);
-      setSetup(requested.setup);
+    const answer = answerVaultSectionQuery(query, requested);
+    if (answer) {
+      setOpen(answer.open);
+      setView(answer.view);
+      setSetup(answer.setup);
     }
   }
 

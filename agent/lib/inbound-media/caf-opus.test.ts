@@ -104,6 +104,26 @@ describe("CAF Opus remux", () => {
     expect(() => cafOpusToOgg(ragged)).toThrow("caf packet remainder");
   });
 
+  it("refuses a constant-size stream that would cut into more packets than a voice note holds", () => {
+    const oversized = syntheticCafOpus({
+      bytesPerPacket: 1,
+      packetTable: false,
+      packets: [new Uint8Array(1_000_001)],
+    });
+    expect(() => cafOpusToOgg(oversized)).toThrow("caf packet count");
+  });
+
+  it("reads a multi-byte packet-table size for a packet of 128 bytes or more", () => {
+    const large = new Uint8Array(300);
+    large.set(syntheticOpusPacket);
+    const ogg = cafOpusToOgg(
+      syntheticCafOpus({ packets: [syntheticOpusPacket, large] })
+    );
+    const pages = oggPages(ogg);
+    expect(pages.map((page) => page.bodyLength).slice(2)).toEqual([3, 300]);
+    expect(pages.at(-1)?.segments).toBe(2);
+  });
+
   it("ends the stream before the encoder's remainder frames", () => {
     const ogg = cafOpusToOgg(
       syntheticCafOpus({

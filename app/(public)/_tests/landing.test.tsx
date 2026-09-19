@@ -1,9 +1,19 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { yooKassaConfigured } from "@db/services/yookassa";
+import { env } from "@shared/environment";
 import { imessageLink } from "@app/(public)/_components/access-form";
 import LandingPage, { metadata } from "@app/(public)/page";
+
+const mocks = vi.hoisted(() => ({
+  yooKassaConfigured: vi.fn<typeof yooKassaConfigured>(),
+}));
+
+vi.mock("@db/services/yookassa", () => ({
+  yooKassaConfigured: mocks.yooKassaConfigured,
+}));
 
 const landingMarkup = () =>
   renderToStaticMarkup(
@@ -13,6 +23,10 @@ const landingMarkup = () =>
       createElement(LandingPage)
     )
   );
+
+beforeEach(() => {
+  mocks.yooKassaConfigured.mockReturnValue(true);
+});
 
 describe("landing page", () => {
   it("keeps the old stage: masthead, film and one call to action", () => {
@@ -51,8 +65,24 @@ describe("landing page", () => {
     expect(html).toContain("bro — твой личный ИИ-агент</h1>");
     expect(html).toContain('id="pricing"');
     expect(html).toContain("Тарифы");
-    expect(html).toContain("Бесплатный режим — до 30 сообщений в день");
-    expect(html).toContain("Полный доступ — 2000 ₽ за 30 календарных дней");
+    expect(html).toContain(
+      `Бесплатный режим — до ${String(env.FREE_MESSAGES_PER_DAY)} сообщений в день`
+    );
+    expect(html).toContain(
+      `Полный доступ — ${String(env.PRICE_RUB)} ₽ за 30 календарных дней`
+    );
+  });
+
+  it("describes the paid tariff without a price when YooKassa is off", () => {
+    mocks.yooKassaConfigured.mockReturnValue(false);
+
+    const html = landingMarkup();
+
+    expect(html).toContain(
+      `Полный доступ — до ${String(env.PAID_MESSAGES_PER_DAY)} сообщений в день`
+    );
+    expect(html).toContain("Оплата пока не подключена.");
+    expect(html).not.toContain("₽");
   });
 
   it("carries the old title and Open Graph card", () => {

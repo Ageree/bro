@@ -36,6 +36,17 @@ function ascii(text: string) {
   return new TextEncoder().encode(text);
 }
 
+/** A packet-table size the way the remuxer reads it: big-endian 7-bit groups, continuation in the high bit. */
+function vlq(value: number) {
+  const groups = [value & 0x7f];
+  let rest = value >>> 7;
+  while (rest > 0) {
+    groups.unshift((rest & 0x7f) | 0x80);
+    rest >>>= 7;
+  }
+  return new Uint8Array(groups);
+}
+
 function chunk(type: string, data: Uint8Array) {
   return concat(ascii(type), be64(data.length), data);
 }
@@ -80,9 +91,7 @@ export function syntheticCafOpus(options: SyntheticCafOpusOptions = {}) {
     be64(960 * packets.length - packetTable.priming - packetTable.remainder),
     be32(packetTable.priming),
     be32(packetTable.remainder),
-    ...(bytesPerPacket === 0
-      ? packets.map((packet) => new Uint8Array([packet.length]))
-      : [])
+    ...(bytesPerPacket === 0 ? packets.map((packet) => vlq(packet.length)) : [])
   );
   return concat(
     header,

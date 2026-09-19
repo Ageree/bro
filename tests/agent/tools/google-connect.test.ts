@@ -136,7 +136,7 @@ describe("connect_google execution", () => {
   });
 
   it("asks for a retry when Vercel Connect is down instead of calling Google unconfigured", async () => {
-    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     connect.getTokenResponse.mockRejectedValue(
       new ConnectError("bad gateway", { status: 502 })
     );
@@ -146,6 +146,25 @@ describe("connect_google execution", () => {
       status: "error",
     });
     expect(connect.startAuthorization).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it("asks for a retry when minting the link fails instead of throwing", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    connect.getTokenResponse.mockRejectedValue(
+      new UserAuthorizationRequiredError("authorize first")
+    );
+    connect.startAuthorization.mockRejectedValue(
+      new ConnectError("bad gateway", { status: 502 })
+    );
+
+    await expect(connectGoogle.execute({}, toolContext())).resolves.toEqual({
+      detail: "Google сейчас не отвечает, попробуй через минуту.",
+      status: "error",
+    });
+    expect(connect.startAuthorization).toHaveBeenCalledOnce();
+    expect(warn).toHaveBeenCalledOnce();
+    warn.mockRestore();
   });
 
   it("requires an authenticated user", async () => {

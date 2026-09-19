@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { Masthead, OfferLink } from "@web/components/paper/masthead";
+import { yooKassaConfigured } from "@db/services/yookassa";
 import { env } from "@shared/environment";
 import { AccessForm } from "./_components/access-form";
 import { HeroVideo } from "./_components/hero-video";
@@ -64,9 +65,11 @@ export default function Page() {
 
 /**
  * The tariffs, in two lines of fine print under the call to action: the
- * offer points here as `#pricing`. The numbers are the deployment's own.
+ * offer points here as `#pricing`. The numbers are the deployment's own,
+ * and a deployment without YooKassa names no price it cannot take.
  */
 function Pricing() {
+  const billingOn = yooKassaConfigured();
   return (
     <section
       aria-labelledby="pricing-heading"
@@ -81,10 +84,20 @@ function Pricing() {
         {env.FREE_BROWSER_RUNS_PER_MONTH} поручений в браузере в месяц.
       </p>
       <p className="type-fine text-muted-foreground">
-        Полный доступ — {env.PRICE_RUB} ₽ за 30 календарных дней: до{" "}
-        {env.PAID_MESSAGES_PER_DAY} сообщений в день и{" "}
-        {env.PAID_BROWSER_RUNS_PER_MONTH} поручений в месяц. Тариф не
-        продлевается автоматически.
+        {billingOn ? (
+          <>
+            Полный доступ — {env.PRICE_RUB} ₽ за 30 календарных дней: до{" "}
+            {env.PAID_MESSAGES_PER_DAY} сообщений в день и{" "}
+            {env.PAID_BROWSER_RUNS_PER_MONTH} поручений в месяц. Тариф не
+            продлевается автоматически.
+          </>
+        ) : (
+          <>
+            Полный доступ — до {env.PAID_MESSAGES_PER_DAY} сообщений в день и{" "}
+            {env.PAID_BROWSER_RUNS_PER_MONTH} поручений в месяц. Оплата пока не
+            подключена.
+          </>
+        )}
       </p>
     </section>
   );

@@ -59,6 +59,7 @@ async function createVaultRecord(scope: AccessScope, record: VaultRecord) {
  * preview; a page that acts on an item reads `readVaultItems`.
  */
 export async function listVaultItems(scope: AccessScope) {
+  await ensureScope(scope);
   return vaultRecordSchema
     .array()
     .parse(
@@ -73,7 +74,6 @@ export async function listVaultItems(scope: AccessScope) {
 }
 
 export async function readVaultItems(scope: AccessScope) {
-  await ensureScope(scope);
   const records = await listVaultItems(scope);
   return Promise.all(
     records.map(async (record) =>

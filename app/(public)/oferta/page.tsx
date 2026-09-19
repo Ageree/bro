@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Masthead } from "@web/components/paper/masthead";
+import { env } from "@shared/environment";
 
 export const metadata: Metadata = {
   title: { absolute: "Публичная оферта — bro" },
@@ -57,8 +58,8 @@ export default function Page() {
           <a className={proseLinkClassName} href="https://brobro.tech/#pricing">
             brobro.tech/#pricing
           </a>
-          . Платный тариф «Полный доступ» — 2000 ₽ за 30 календарных дней. Тариф
-          не продлевается автоматически.
+          . Платный тариф «Полный доступ» — {env.PRICE_RUB} ₽ за 30 календарных
+          дней. Тариф не продлевается автоматически.
         </p>
 
         <h2 className="type-clause-title">

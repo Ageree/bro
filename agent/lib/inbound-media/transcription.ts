@@ -209,6 +209,7 @@ async function transcribeOnce(
   const language = transcriptionLanguage();
   if (language) body.language = language;
   let response: Response;
+  let text: string;
   try {
     response = await fetch(transcriptionsUrl, {
       body: JSON.stringify(body),
@@ -221,11 +222,14 @@ async function transcribeOnce(
       method: "POST",
       signal: AbortSignal.timeout(timeoutMs),
     });
+    // The timeout signal also aborts the body stream, so a stalled body
+    // fails here like a stalled request.
+    text = await response.text();
   } catch (error) {
     const message = error instanceof Error ? error.message || error.name : "";
     return { error: message || "fetch failed", ok: false };
   }
-  const parsed = parseTranscriptionResponse(await response.text());
+  const parsed = parseTranscriptionResponse(text);
   if (parsed.kind === "error") {
     return { error: parsed.message, ok: false, status: response.status };
   }

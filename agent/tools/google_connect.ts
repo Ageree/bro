@@ -55,13 +55,25 @@ export const connectGoogle = defineTool({
       "/workspace?google=connected",
       applicationOrigin()
     );
+    let url: string;
+    try {
+      url = await startGoogleWorkspaceAuthorization(
+        userId,
+        callbackUrl.toString()
+      );
+    } catch (error) {
+      console.warn("[google-workspace] authorization start failed", {
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return {
+        status: "error",
+        detail: "Google сейчас не отвечает, попробуй через минуту.",
+      };
+    }
     return {
       status: "authorize",
       expiresInMinutes: googleWorkspaceAuthorizationLifetimeMs / 60_000,
-      url: await startGoogleWorkspaceAuthorization(
-        userId,
-        callbackUrl.toString()
-      ),
+      url,
     };
   },
 });

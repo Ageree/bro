@@ -187,7 +187,9 @@ function holdStill(video: HTMLVideoElement) {
   video.autoplay = false;
   video.loop = false;
   video.pause();
-  video.currentTime = 0;
+  // Seeking before any metadata is an InvalidStateError; a clip that has not
+  // loaded yet already stands on its first frame.
+  if (video.readyState > HTMLMediaElement.HAVE_NOTHING) video.currentTime = 0;
   return () => undefined;
 }
 

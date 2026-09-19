@@ -20,6 +20,8 @@ export function GoogleWorkspaceAction({
 
   if (!state) return <span>Загружаем…</span>;
   if (state === "unavailable") return <span>Нужна настройка</span>;
+  // A read that failed just now is not a missing grant: no OAuth from here.
+  if (state === "error") return <span>Google не отвечает</span>;
 
   const action = state === "connected" ? "disconnect" : "connect";
   return (

@@ -49,6 +49,22 @@ function failure(status: number, message: string) {
   return new Response(JSON.stringify({ error: { message } }), { status });
 }
 
+/** A response whose headers arrived but whose body the timeout signal aborted. */
+function abortedBody() {
+  return new Response(
+    new ReadableStream({
+      start(controller) {
+        controller.error(
+          new DOMException(
+            "The operation was aborted due to timeout",
+            "TimeoutError"
+          )
+        );
+      },
+    })
+  );
+}
+
 const mp3 = new Uint8Array([0x49, 0x44, 0x33, 0x04, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
 
 async function loadTranscription() {
@@ -264,6 +280,24 @@ describe("transcribeAudio", () => {
       reason: "upstream; fallback skipped, budget exhausted",
     });
     expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("treats a body read that the timeout aborts like a failed request", async () => {
+    fetchMock
+      .mockResolvedValueOnce(abortedBody())
+      .mockResolvedValueOnce(abortedBody());
+    const { transcribeAudio } = await loadTranscription();
+
+    const result = await transcribeAudio({
+      bytes: mp3,
+      mediaType: "audio/mpeg",
+    });
+
+    expect(result).toEqual({
+      kind: "failed",
+      reason: "The operation was aborted due to timeout",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("does not retry an unauthorized key", async () => {

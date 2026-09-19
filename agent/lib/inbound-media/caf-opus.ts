@@ -8,6 +8,8 @@ const cafMagic = 0x63616666; // "caff"
 const oggCrcPolynomial = 0x04c11db7;
 const defaultPreSkip = 312;
 const opusRate = 48_000;
+/** More packets than any voice note holds; a larger count is a corrupt table. */
+const maxPacketCount = 1_000_000;
 
 const crcTable = (() => {
   const table = new Uint32Array(256);
@@ -129,13 +131,12 @@ function packetSizes(
     if (payloadLength % bytesPerPacket !== 0) {
       throw new Error("caf packet remainder");
     }
-    return Array.from(
-      { length: payloadLength / bytesPerPacket },
-      () => bytesPerPacket
-    );
+    const sliceCount = payloadLength / bytesPerPacket;
+    if (sliceCount > maxPacketCount) throw new Error("caf packet count");
+    return Array.from({ length: sliceCount }, () => bytesPerPacket);
   }
   const numberPackets = i64be(pakt, 0);
-  if (numberPackets < 0 || numberPackets > 1_000_000) {
+  if (numberPackets < 0 || numberPackets > maxPacketCount) {
     throw new Error("caf packet count");
   }
   if (bytesPerPacket > 0) {

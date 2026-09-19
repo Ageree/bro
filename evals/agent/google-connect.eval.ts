@@ -6,7 +6,9 @@ import { agentEvalTags } from "@evals/agent/shared";
 import { sendMessageOutputSchema } from "@shared/chat/message-delivery";
 
 const urlPattern = /https?:\/\/\S+/u;
+const connectedPattern = /подключ[её]н/iu;
 const notConfiguredPattern = /не подключ[её]н/iu;
+const notConnectedPattern = /не подключ|не настро|недоступ/iu;
 const retryLaterPattern = /не отвеча|попробу/iu;
 
 function deliveryMatches(
@@ -22,7 +24,11 @@ function deliveryMatches(
       retryLaterPattern.test(delivered) && !notConfiguredPattern.test(delivered)
     );
   }
-  return !urlPattern.test(delivered) && !notConfiguredPattern.test(delivered);
+  return (
+    connectedPattern.test(delivered) &&
+    !notConnectedPattern.test(delivered) &&
+    !urlPattern.test(delivered)
+  );
 }
 
 export default [
@@ -65,7 +71,7 @@ export default [
         delivered,
         satisfies<string>(
           (value) => deliveryMatches(result, value),
-          "delivers the tool's own outcome: its minted URL, or its not-configured or retry message"
+          "delivers the tool's own outcome: its connected acknowledgement, its minted URL, or its not-configured or retry message"
         )
       );
     },
