@@ -3,6 +3,7 @@ import { readWorkspaceTimeZone } from "@db/services/user-profile";
 import { countUsage } from "@db/services/usage";
 import { yooKassaConfigured } from "@db/services/yookassa";
 import type { AccessScope } from "@shared/identity/access-scope";
+import { env } from "@shared/environment";
 import { applicationOrigin } from "@shared/environment/origin";
 import {
   browserQuotaNote,
@@ -43,8 +44,14 @@ async function billingWindow(scope: AccessScope, now: Date) {
  * Counts one inbound message and decides what the channel does with it. Over
  * the limit the person is told once per local day; the messages after that are
  * dropped in silence rather than turning the paywall into a flood of its own.
+ *
+ * With `USAGE_LIMITS` off (the closed-beta default) every message is allowed
+ * and `countUsage` is skipped, since it exists only to feed this gate.
  */
 export async function messageQuotaGate(scope: AccessScope, now = new Date()) {
+  if (env.USAGE_LIMITS === "off")
+    return { allowed: true, paywallText: undefined };
+
   const { paid, timeZone } = await billingWindow(scope, now);
   const dayKey = localDayKey(now, timeZone);
   const count = await countUsage(scope, "messages", dayKey);
@@ -62,11 +69,16 @@ export async function messageQuotaGate(scope: AccessScope, now = new Date()) {
 /**
  * Counts one browser errand against the local month. The refusal is written for
  * the model, which relays it to the person in its own words.
+ *
+ * With `USAGE_LIMITS` off (the closed-beta default) every errand is allowed
+ * and `countUsage` is skipped, since it exists only to feed this gate.
  */
 export async function browserRunQuotaGate(
   scope: AccessScope,
   now = new Date()
 ) {
+  if (env.USAGE_LIMITS === "off") return { allowed: true, note: undefined };
+
   const { paid, timeZone } = await billingWindow(scope, now);
   const count = await countUsage(
     scope,
