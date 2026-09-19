@@ -1,4 +1,4 @@
-import type { AudienceInput } from "eve/channels";
+import type { AudienceContext } from "eve/channels";
 import type * as CompiledChannel from "../../../node_modules/eve/dist/src/channel/compiled-channel.js";
 import { describe, expect, it, vi } from "vitest";
 import eve from "@agent/channels/eve";
@@ -19,7 +19,9 @@ describe("compiled channel compatibility", () => {
   });
 
   it.each([
-    { channel: eve, anonymousAudience: "public" },
+    // eve 0.56 classifies anonymous eve channel sessions as `unknown` so their
+    // content stays out of preview and production traces.
+    { channel: eve, anonymousAudience: "unknown" },
     { channel: scheduledRun, anonymousAudience: "unknown" },
   ])(
     "keeps authenticated conversations private",
@@ -29,19 +31,33 @@ describe("compiled channel compatibility", () => {
       const audience = channel.adapter.instrumentation?.audience;
       if (!audience) throw new Error("Expected a native audience classifier.");
       const input = {
-        channel: { kind: "http" },
-        environment: "production",
-        mode: "conversation",
-        state: undefined,
+        // Eve still requires the deprecated `auth` projection on the audience
+        // input, so the fixture carries it alongside the `caller` classifiers read.
+        // oxlint-disable-next-line typescript/no-deprecated
         auth: {
           attributes: {},
           authenticator: "scheduled-worker",
           principalType: "user",
         },
-      } satisfies AudienceInput<undefined>;
+        caller: {
+          type: "principal",
+          principal: {
+            attributes: {},
+            authenticator: "scheduled-worker",
+            kind: "user",
+          },
+        },
+        channel: { kind: "http" },
+        environment: "production",
+        mode: "conversation",
+        state: undefined,
+      } satisfies AudienceContext<undefined>;
 
       expect(audience(input)).toBe("private");
-      expect(audience({ ...input, auth: null })).toBe(anonymousAudience);
+      expect(
+        // oxlint-disable-next-line typescript/no-deprecated
+        audience({ ...input, auth: null, caller: { type: "anonymous" } })
+      ).toBe(anonymousAudience);
     }
   );
 });

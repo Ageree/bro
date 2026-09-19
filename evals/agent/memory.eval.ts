@@ -23,7 +23,7 @@ export default [
         first.calledTool("profile__save_memory", { count: 1 });
         await requireDeliveredText(t, first);
 
-        const laterSession = t.newSession();
+        const laterSession = await t.session();
         const later = await laterSession.send(
           "What seating preference have I told you to use for train trips?"
         );
@@ -43,7 +43,7 @@ export default [
 
       let cleanupError: Error | undefined;
       try {
-        const cleanupSession = t.newSession();
+        const cleanupSession = await t.session();
         const cleanup = await cleanupSession.send(
           `Use profile__remove_memory to forget this exact preference: ${preferenceCanary}.`
         );

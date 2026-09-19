@@ -22,8 +22,10 @@ const respondSchema = z.strictObject({
 const internalRouteAuth = [vercelOidc(), localDev()];
 
 export default defineChannel({
-  audience({ auth }) {
-    return auth?.principalType === "user" ? "private" : "unknown";
+  audience({ caller }) {
+    return caller.type === "principal" && caller.principal.kind === "user"
+      ? "private"
+      : "unknown";
   },
   async receive(input, { from }) {
     const target = scheduledRunTargetSchema.parse(input.target);
