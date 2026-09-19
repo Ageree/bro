@@ -34,7 +34,7 @@ async function initializeAuthWithRetry() {
 async function initializeAuth() {
   const { betterAuthSecret } = await getInstallationSecrets();
   return betterAuth({
-    appName: "Local Vault Assistant",
+    appName: "Bro",
     baseURL: betterAuthBaseURL(),
     database: drizzleAdapter(db, {
       provider: "pg",
@@ -90,7 +90,7 @@ export async function sendPhoneCode({
 
   try {
     await sendPhotonText({
-      message: `Local Vault Assistant sign-in code: ${code}. Expires in 5 minutes.`,
+      message: `Код входа в Bro: ${code}. Действует 5 минут.`,
       to,
     });
   } catch (error) {

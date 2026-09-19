@@ -14,7 +14,7 @@ export const requestVaultImport = defineTool({
   execute() {
     return {
       message:
-        "Open this page in your Local Vault Assistant deployment. It explains how to export from Chrome and opens the secure importer directly.",
+        "Открой эту ссылку — там объясняется, как выгрузить пароли из Chrome, и сразу откроется безопасный импорт. Пароли в чат не присылай.",
       url: new URL("/vault?import=chrome", applicationOrigin()).toString(),
     };
   },
@@ -27,7 +27,7 @@ export const requestVaultSetup = defineTool({
   execute(request) {
     return {
       message:
-        "Open this page in your Local Vault Assistant deployment and complete the form. Do not send the secret in chat.",
+        "Открой эту ссылку и заполни форму там. Секрет в чат не присылай.",
       url: createVaultSetupUrl(applicationOrigin(), request),
     };
   },

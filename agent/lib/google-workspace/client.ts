@@ -13,7 +13,7 @@ export const googleWorkspaceAuthOptions = {
   createSubject(principal) {
     if (principal.type !== "user") {
       throw new Error(
-        "Google Workspace requires an authenticated OpenInstinct user."
+        "Google Workspace requires an authenticated Bro user."
       );
     }
     return googleWorkspaceSubject(principal.id);

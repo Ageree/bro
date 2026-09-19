@@ -98,7 +98,7 @@ describe("OpenRouter web search", () => {
       authorization: "Bearer openrouter-test-key",
       "content-type": "application/json",
       "HTTP-Referer": "https://openinstinct.example",
-      "X-Title": "OpenInstinct",
+      "X-Title": "Bro",
     });
     expect(request.body.model).toBe("deepseek/deepseek-v4.1-flash");
     expect(request.body.max_tokens).toBe(700);

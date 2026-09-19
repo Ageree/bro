@@ -117,7 +117,7 @@ describe("Photon phone authentication", () => {
     expect(mocks.postMessage).toHaveBeenCalledExactlyOnceWith(
       "imessage:iMessage;-;+12025550123",
       {
-        raw: "Local Vault Assistant sign-in code: 123456. Expires in 5 minutes.",
+        raw: "Код входа в Bro: 123456. Действует 5 минут.",
       }
     );
   });

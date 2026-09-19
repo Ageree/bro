@@ -217,7 +217,7 @@ async function transcribeOnce(
         authorization: `Bearer ${apiKey}`,
         "content-type": "application/json",
         "HTTP-Referer": applicationOrigin(),
-        "X-Title": "OpenInstinct",
+        "X-Title": "Bro",
       },
       method: "POST",
       signal: AbortSignal.timeout(timeoutMs),

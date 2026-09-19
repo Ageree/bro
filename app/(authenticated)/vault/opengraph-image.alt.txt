@@ -1,1 +1,1 @@
-OpenInstinct secure vault setup
+Сейф Bro — безопасное хранение данных

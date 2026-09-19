@@ -217,7 +217,7 @@ describe("transcribeAudio", () => {
       authorization: "Bearer openrouter-test-key",
       "content-type": "application/json",
       "HTTP-Referer": "https://openinstinct.example",
-      "X-Title": "OpenInstinct",
+      "X-Title": "Bro",
     });
     expect(request.body).toEqual({
       input_audio: { data: Buffer.from(mp3).toString("base64"), format: "mp3" },
