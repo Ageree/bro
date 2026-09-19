@@ -201,6 +201,11 @@ export const env = createEnv({
       )
       .optional(),
     TELEGRAM_WEBHOOK_SECRET_TOKEN: requiredValue.optional(),
+    // Whether the FREE_*/PAID_* ceilings above and the paywall are enforced
+    // at all. Off by default: the closed beta runs with no usage limits, by
+    // the owner's decision. "on" restores the per-day/per-month ceilings and
+    // the paywall.
+    USAGE_LIMITS: z.enum(["on", "off"]).default("off"),
     VERCEL_BRANCH_URL: requiredValue.optional(),
     VERCEL_ENV: z.enum(["production", "preview", "development"]).optional(),
     VERCEL_PROJECT_ID: requiredValue.optional(),
