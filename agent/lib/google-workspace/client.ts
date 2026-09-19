@@ -12,9 +12,7 @@ export const googleWorkspaceAuthOptions = {
   connector: env.GOOGLE_CONNECTOR_UID,
   createSubject(principal) {
     if (principal.type !== "user") {
-      throw new Error(
-        "Google Workspace requires an authenticated Bro user."
-      );
+      throw new Error("Google Workspace requires an authenticated Bro user.");
     }
     return googleWorkspaceSubject(principal.id);
   },
