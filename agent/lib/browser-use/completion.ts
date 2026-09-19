@@ -146,7 +146,7 @@ async function deliverBrowserRunOutcome(
     row.liveViewUrl
       ? `Live view (share only for a CAPTCHA, 3-D Secure, push approval, or manual sign-in): ${row.liveViewUrl}`
       : undefined,
-    "This is a background result, not a user message. Tell the user what happened in your own words. Answer a follow-up with browser_task continue on this run id instead of starting a new run, and omit send_message.replyTo.",
+    "This is a background result, not a user message. Tell the user what happened in your own words. Answer a follow-up with browser_task continue on this run id instead of a new start: it picks the same browser up where this run left off and hands back the run id to use after that. Omit send_message.replyTo.",
   ]
     .filter((line) => line !== undefined)
     .join("\n\n");
