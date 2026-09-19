@@ -72,7 +72,7 @@
   "engines": {
     "node": "24.x"
   },
-  "name": "bro",
+  "name": "local-vault-assistant",
   "packageManager": "pnpm@11.24.0",
   "scripts": {
     "build": "turbo run build:app",
