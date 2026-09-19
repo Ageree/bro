@@ -30,7 +30,17 @@ export function resolveModeValue<T>(
   context: AgentModeContext,
   valueByMode: Partial<Record<AgentMode, T>>
 ) {
-  return valueByMode[sessionAgentMode(context.session.auth)] ?? null;
+  const mode = sessionAgentMode(context.session.auth);
+  // Temporary diagnostics for the eve 0.62 rollout: which mode each dynamic
+  // resolver sees per turn, and why a channel may end up without capabilities.
+  console.info("[mode] resolve", {
+    mode,
+    current: context.session.auth.current?.authenticator ?? null,
+    initiator: context.session.auth.initiator?.authenticator ?? null,
+    modes: Object.keys(valueByMode),
+    hit: valueByMode[mode] !== undefined,
+  });
+  return valueByMode[mode] ?? null;
 }
 
 export function resolveModeInstructions(
