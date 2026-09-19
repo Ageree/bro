@@ -14,24 +14,20 @@ const contactFormSchema = z
   .object({
     email: z.string().trim(),
     fullName: z.string().trim(),
-    nickname: z
-      .string()
-      .trim()
-      .min(1, "Enter a name for this contact.")
-      .max(120),
+    nickname: z.string().trim().min(1, "Дай этому контакту метку.").max(120),
     phone: z.string().trim(),
   })
   .superRefine((form, context) => {
     if (form.email && !z.email().safeParse(form.email).success) {
       context.addIssue({
         code: "custom",
-        message: "Enter a valid email address.",
+        message: "Введи почту полностью.",
         path: ["email"],
       });
     }
   })
   .refine((form) => [form.email, form.fullName, form.phone].some(Boolean), {
-    message: "Enter at least one contact value.",
+    message: "Заполни хотя бы имя, почту или телефон.",
     path: ["fullName"],
   });
 
@@ -92,18 +88,18 @@ export function ContactForm({
         <FormField
           error={errors.nickname?.[0]}
           id="vault-contact-label"
-          label="Name"
+          label="Метка"
           onChange={(value) => {
             update("nickname", value);
           }}
-          placeholder="Checkout"
+          placeholder="Для заказов"
           value={form.nickname}
         />
         <FormField
           autoComplete="name"
           error={errors.fullName?.[0]}
           id="vault-contact-name"
-          label="Full name (optional)"
+          label="Имя (необязательно)"
           onChange={(value) => {
             update("fullName", value);
           }}
@@ -113,7 +109,7 @@ export function ContactForm({
           autoComplete="email"
           error={errors.email?.[0]}
           id="vault-contact-email"
-          label="Email (optional)"
+          label="Почта (необязательно)"
           onChange={(value) => {
             update("email", value);
           }}
@@ -124,7 +120,7 @@ export function ContactForm({
           autoComplete="tel"
           error={errors.phone?.[0]}
           id="vault-contact-phone"
-          label="Phone (optional)"
+          label="Телефон (необязательно)"
           onChange={(value) => {
             update("phone", value);
           }}
@@ -133,8 +129,8 @@ export function ContactForm({
         />
       </FieldGroup>
       <DialogFooter>
-        <Button disabled={create.isPending} type="submit">
-          Save contact
+        <Button disabled={create.isPending} type="submit" variant="paper">
+          Сохранить
         </Button>
       </DialogFooter>
     </form>

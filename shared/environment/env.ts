@@ -178,6 +178,17 @@ export const env = createEnv({
       .toLowerCase()
       .pipe(z.enum(["off", "low", "medium", "high"]))
       .default("off"),
+    // Inbound voice notes are transcribed through OpenRouter's audio endpoint
+    // with the same key. The fallback model takes over when the first one
+    // rejects the clip; the language is an ISO 639-1 hint, `auto` lets the
+    // model guess.
+    OPENROUTER_STT_FALLBACK_MODEL: trimmedValue.default(
+      "openai/gpt-4o-transcribe"
+    ),
+    OPENROUTER_STT_LANGUAGE: trimmedValue.default("ru"),
+    OPENROUTER_STT_MODEL: trimmedValue.default(
+      "qwen/qwen3-asr-flash-2026-02-10"
+    ),
     PAID_BROWSER_RUNS_PER_MONTH: z.coerce.number().int().positive().default(60),
     PAID_MESSAGES_PER_DAY: z.coerce.number().int().positive().default(500),
     // One month of paid access, in whole roubles.

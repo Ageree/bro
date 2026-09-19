@@ -13,6 +13,7 @@ import {
   redeemChannelLinkToken,
 } from "@db/services/channel-identities";
 import { messageQuotaGate } from "@agent/lib/billing/quota";
+import { telegramMediaTurn } from "@agent/lib/inbound-media/telegram";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { resolveTelegramReplyTarget } from "@agent/lib/reply-targets";
 import {
@@ -270,23 +271,31 @@ export default telegramChannel({
       }
       return null;
     }
-    return {
-      auth: {
-        ...auth,
-        attributes: {
-          ...auth.attributes,
-          conversationChannel: "telegram",
-          conversationId: telegramContinuationToken({
-            chatId: message.chat.id,
-          }),
-          telegramChatId: message.chat.id,
-          telegramMessageId: message.messageId,
-          telegramUserId: from.id,
-          workspaceId: scope.workspaceId,
-        },
-        principalId,
+    const sessionAuth = {
+      ...auth,
+      attributes: {
+        ...auth.attributes,
+        conversationChannel: "telegram",
+        conversationId: telegramContinuationToken({
+          chatId: message.chat.id,
+        }),
+        telegramChatId: message.chat.id,
+        telegramMessageId: message.messageId,
+        telegramUserId: from.id,
+        workspaceId: scope.workspaceId,
       },
+      principalId,
     };
+    // Photos, documents and voice notes are resolved to bytes and text here,
+    // because eve's lazy resolver drops a photo the Bot API serves without an
+    // image content type and never reads a voice note at all.
+    const media = await telegramMediaTurn(message);
+    if (media === undefined) return { auth: sessionAuth };
+    if (media.notice) await context.telegram.sendMessage(media.notice);
+    // A voice note nobody could transcribe leaves nothing to answer, so the
+    // retry line above is the whole reply and no model turn starts.
+    if (media.message === undefined) return null;
+    return { auth: sessionAuth, message: media.message };
   },
 });
 

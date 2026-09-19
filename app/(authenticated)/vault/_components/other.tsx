@@ -3,6 +3,7 @@
 import type { VaultItem } from "@shared/vault/schema";
 import { VaultItemList } from "./section";
 
+/** Items the agent stored itself: a phone, an identity, a token. */
 export function VaultOtherItems({
   items,
 }: {
@@ -11,13 +12,9 @@ export function VaultOtherItems({
   if (items.length === 0) return null;
 
   return (
-    <section aria-labelledby="other-vault-heading" className="space-y-3">
-      <h2 className="type-section-title" id="other-vault-heading">
-        Other
-      </h2>
-      <div className="border-y border-border/50">
-        <VaultItemList items={items} />
-      </div>
-    </section>
+    <div>
+      <p className="type-fine mt-6 mb-[0.2rem] text-muted-foreground">Прочее</p>
+      <VaultItemList items={items} />
+    </div>
   );
 }

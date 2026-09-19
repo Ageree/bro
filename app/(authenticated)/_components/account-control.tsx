@@ -13,7 +13,7 @@ export function AuthenticatedAccountControl() {
   const { data: session } = authClient.useSession();
   if (!session?.user) return null;
 
-  const accountLabel = session.user.phoneNumber ?? "Signed in";
+  const accountLabel = session.user.phoneNumber ?? "В системе";
 
   return (
     <SidebarMenu>
@@ -23,13 +23,13 @@ export function AuthenticatedAccountControl() {
           <span>{accountLabel}</span>
         </SidebarMenuButton>
         <SidebarMenuAction
-          aria-label="Sign out"
+          aria-label="Выйти"
           onClick={() => {
             void authClient.signOut().finally(() => {
               window.location.assign("/sign-in");
             });
           }}
-          title="Sign out"
+          title="Выйти"
           type="button"
         >
           <LogOutIcon />

@@ -36,10 +36,10 @@ describe("phone OTP errors", () => {
         code: "INTERNAL_SERVER_ERROR",
         message: "database connection string",
       })
-    ).toBe("Unable to send a code. Please try again.");
+    ).toBe("Не вышло отправить код. Попробуй ещё раз.");
   });
 
-  it("explains how the code is delivered and links Messages", () => {
+  it("asks for the phone and offers to open Messages", () => {
     const html = renderForm(
       createElement(PhoneOtpAuthForm, {
         callbackUrl: "/",
@@ -47,13 +47,13 @@ describe("phone OTP errors", () => {
       })
     );
 
-    expect(html).toContain("Your code arrives by iMessage");
-    expect(html).toContain("can receive iMessage");
+    expect(html).toContain(">Телефон<");
+    expect(html).toContain("Получить код");
     expect(html).toContain('href="sms:+12025550123"');
-    expect(html).toContain("Open Messages");
+    expect(html).toContain("Написать Bro");
   });
 
-  it("keeps the delivery notice visible without a configured number", () => {
+  it("says where the code comes from without a configured number", () => {
     const html = renderForm(
       createElement(PhoneOtpAuthForm, {
         callbackUrl: "/",
@@ -61,9 +61,9 @@ describe("phone OTP errors", () => {
       })
     );
 
-    expect(html).toContain("Your code arrives by iMessage");
-    expect(html).toContain("iMessage number of this deployment");
+    expect(html).toContain("Код придёт с iMessage-номера этого сервиса.");
     expect(html).not.toContain("sms:");
+    expect(html).not.toContain("Написать Bro");
     const error = phoneOtpErrorMessage({
       code: "IMESSAGE_RECIPIENT_UNKNOWN",
       message:
@@ -73,12 +73,13 @@ describe("phone OTP errors", () => {
     expect(error).not.toContain("button");
   });
 
-  it("does not show the iMessage notice during local sign-in", () => {
+  it("does not mention iMessage during local sign-in", () => {
     const html = renderForm(
       createElement(LocalPhoneAuthForm, { callbackUrl: "/" })
     );
 
-    expect(html).not.toContain("Your code arrives by iMessage");
-    expect(html).toContain("Continue");
+    expect(html).not.toContain("iMessage-номера");
+    expect(html).not.toContain("Написать Bro");
+    expect(html).toContain("Войти");
   });
 });

@@ -17,11 +17,11 @@ export function LocalPhoneAuthForm({
   const signIn = useMutation({
     mutationFn: async (phoneNumberValue: string) => {
       const phoneNumber = normalizeAuthPhoneNumber(phoneNumberValue);
-      if (!phoneNumber) throw new Error("Enter a valid phone number.");
+      if (!phoneNumber) throw new Error("Введи номер телефона.");
 
       await verifyPhoneNumber({
         code: "000000",
-        errorMessage: "Unable to sign in locally. Please try again.",
+        errorMessage: "Не вышло войти. Попробуй ещё раз.",
         phoneNumber,
       });
     },
@@ -33,22 +33,25 @@ export function LocalPhoneAuthForm({
 
   return (
     <form
-      className="mt-6"
+      className="mt-[0.9rem]"
       onSubmit={(event) => {
         event.preventDefault();
         signIn.mutate(formValue(event.currentTarget, "phone-number"));
       }}
     >
-      <FieldGroup>
+      <FieldGroup className="gap-4">
         <PhoneNumberField />
-        <FieldError errors={signIn.error ? [signIn.error] : undefined} />
+        <FieldError
+          className="type-fine"
+          errors={signIn.error ? [signIn.error] : undefined}
+        />
         <Button
           className="w-full"
           disabled={signIn.isPending}
-          size="lg"
           type="submit"
+          variant="paper"
         >
-          {signIn.isPending ? "Signing in…" : "Continue"}
+          {signIn.isPending ? "Входим…" : "Войти"}
         </Button>
       </FieldGroup>
     </form>

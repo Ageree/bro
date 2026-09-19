@@ -11,14 +11,17 @@ import { api } from "@web/trpc/client";
 import { FormField } from "../field";
 
 const addressFormSchema = z.object({
-  city: z.string().trim().min(1, "Enter the city."),
-  countryCode: z.string().trim().length(2, "Use a two-letter country code."),
-  line1: z.string().trim().min(1, "Enter the street address."),
+  city: z.string().trim().min(1, "Введи город."),
+  countryCode: z
+    .string()
+    .trim()
+    .length(2, "Страна — две буквы кода, например RU."),
+  line1: z.string().trim().min(1, "Введи улицу и дом."),
   line2: z.string().trim(),
-  nickname: z.string().trim().min(1, "Enter a name for this address.").max(120),
-  postalCode: z.string().trim().min(1, "Enter the postal code."),
-  recipientName: z.string().trim().min(1, "Enter the recipient name."),
-  region: z.string().trim().min(1, "Enter the state, province, or region."),
+  nickname: z.string().trim().min(1, "Дай этому адресу метку.").max(120),
+  postalCode: z.string().trim().min(1, "Введи индекс."),
+  recipientName: z.string().trim().min(1, "Введи имя получателя."),
+  region: z.string().trim().min(1, "Введи регион, край или область."),
 });
 
 export function AddressForm({
@@ -79,18 +82,18 @@ export function AddressForm({
           <FormField
             error={errors.nickname?.[0]}
             id="vault-address-label"
-            label="Name"
+            label="Метка"
             onChange={(value) => {
               update("nickname", value);
             }}
-            placeholder="Home"
+            placeholder="Дом"
             value={form.nickname}
           />
           <FormField
             autoComplete="name"
             error={errors.recipientName?.[0]}
             id="vault-address-recipient"
-            label="Recipient name"
+            label="Получатель"
             onChange={(value) => {
               update("recipientName", value);
             }}
@@ -101,7 +104,7 @@ export function AddressForm({
           autoComplete="address-line1"
           error={errors.line1?.[0]}
           id="vault-address-line1"
-          label="Address line 1"
+          label="Улица"
           onChange={(value) => {
             update("line1", value);
           }}
@@ -111,7 +114,7 @@ export function AddressForm({
           autoComplete="address-line2"
           error={errors.line2?.[0]}
           id="vault-address-line2"
-          label="Address line 2 (optional)"
+          label="Квартира, офис (необязательно)"
           onChange={(value) => {
             update("line2", value);
           }}
@@ -122,7 +125,7 @@ export function AddressForm({
             autoComplete="address-level2"
             error={errors.city?.[0]}
             id="vault-address-city"
-            label="City"
+            label="Город"
             onChange={(value) => {
               update("city", value);
             }}
@@ -132,7 +135,7 @@ export function AddressForm({
             autoComplete="address-level1"
             error={errors.region?.[0]}
             id="vault-address-region"
-            label="State / province / region"
+            label="Регион"
             onChange={(value) => {
               update("region", value);
             }}
@@ -144,7 +147,7 @@ export function AddressForm({
             autoComplete="postal-code"
             error={errors.postalCode?.[0]}
             id="vault-address-postal"
-            label="ZIP / postal code"
+            label="Индекс"
             onChange={(value) => {
               update("postalCode", value);
             }}
@@ -154,7 +157,7 @@ export function AddressForm({
             autoComplete="country"
             error={errors.countryCode?.[0]}
             id="vault-address-country"
-            label="Country"
+            label="Страна"
             maxLength={2}
             onChange={(value) => {
               update("countryCode", value.toUpperCase());
@@ -164,8 +167,8 @@ export function AddressForm({
         </div>
       </FieldGroup>
       <DialogFooter>
-        <Button disabled={create.isPending} type="submit">
-          Save address
+        <Button disabled={create.isPending} type="submit" variant="paper">
+          Сохранить
         </Button>
       </DialogFooter>
     </form>

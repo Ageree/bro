@@ -29,6 +29,11 @@ const buttonVariants = cva(
         link: "border-transparent text-primary underline-offset-4 hover:underline",
         motion:
           "border-transparent bg-transparent text-muted-foreground hover:bg-transparent hover:text-foreground aria-pressed:text-foreground dark:hover:bg-transparent",
+        // bro: an action is text, like the call to action on the landing.
+        act: "bro-link border-transparent bg-transparent text-left whitespace-normal focus-visible:border-transparent focus-visible:ring-0 active:not-aria-[haspopup]:translate-y-0 disabled:opacity-45",
+        // bro: the one inverted rectangle in the system, for a sheet's submit.
+        paper:
+          "border-foreground bg-foreground text-background hover:opacity-80 focus-visible:border-foreground focus-visible:ring-0 focus-visible:outline-2 focus-visible:outline-offset-[3px] focus-visible:outline-solid focus-visible:outline-foreground active:not-aria-[haspopup]:translate-y-0",
       },
       size: {
         default:
@@ -47,6 +52,10 @@ const buttonVariants = cva(
           "h-auto w-full justify-start gap-3 rounded-xl p-4 type-supporting-body text-left whitespace-normal",
         "motion-box": "h-7 gap-1 rounded-md px-0 type-label",
         "motion-line": "h-7 gap-1 rounded-none px-0 pt-0 pb-2 type-label",
+        act: "h-auto gap-1.5 rounded-none p-0 type-act",
+        "act-lead": "h-auto gap-1.5 rounded-none p-0 type-act-lead",
+        "act-sm": "h-auto gap-1.5 rounded-none p-0 type-act-sm",
+        paper: "h-auto gap-1.5 rounded-none px-6 py-3 type-act",
       },
     },
     defaultVariants: {
@@ -64,7 +73,11 @@ function Button({
   size,
   ...props
 }: ButtonProps) {
-  const resolvedSize = size ?? (variant === "surface" ? "surface" : "default");
+  const resolvedSize =
+    size ??
+    (variant === "surface" || variant === "act" || variant === "paper"
+      ? variant
+      : "default");
 
   return (
     <ButtonPrimitive

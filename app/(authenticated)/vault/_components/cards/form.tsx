@@ -3,7 +3,6 @@
 import { type SubmitEvent, useState } from "react";
 import { useRouter } from "next/navigation";
 import { z } from "zod";
-import { Badge } from "@web/components/ui/badge";
 import { Button } from "@web/components/ui/button";
 import { DialogFooter } from "@web/components/ui/dialog";
 import {
@@ -21,21 +20,21 @@ import {
 import { api } from "@web/trpc/client";
 
 const paymentCardFormSchema = z.object({
-  billingPostalCode: z.string().trim().min(1, "Enter the billing postal code."),
+  billingPostalCode: z.string().trim().min(1, "Введи индекс адреса карты."),
   cardNumber: z
     .string()
     .transform((value) => value.replaceAll(/\D/gu, ""))
-    .pipe(z.string().regex(/^\d{12,19}$/u, "Enter a valid card number."))
-    .refine(passesLuhnCheck, "Check the card number."),
-  cardholderName: z.string().trim().min(1, "Enter the name on the card."),
+    .pipe(z.string().regex(/^\d{12,19}$/u, "Введи номер карты полностью."))
+    .refine(passesLuhnCheck, "Проверь номер карты."),
+  cardholderName: z.string().trim().min(1, "Введи имя, как на карте."),
   cvc: z
     .string()
     .transform((value) => value.replaceAll(/\D/gu, ""))
-    .pipe(z.string().regex(/^\d{3,4}$/u, "Enter a valid CVC.")),
+    .pipe(z.string().regex(/^\d{3,4}$/u, "Введи CVV: три или четыре цифры.")),
   expiration: z
     .string()
-    .regex(/^(0[1-9]|1[0-2]) \/ \d{2}$/u, "Use MM / YY.")
-    .refine(isCurrentExpiration, "Use a current expiration date."),
+    .regex(/^(0[1-9]|1[0-2]) \/ \d{2}$/u, "Срок в виде ММ / ГГ.")
+    .refine(isCurrentExpiration, "Срок действия карты уже вышел."),
   nickname: z.string().trim().max(120),
 });
 
@@ -104,7 +103,7 @@ export function CardForm({
             autoComplete="cc-name"
             error={errors.cardholderName?.[0]}
             id="vault-payment-cardholder"
-            label="Name on card"
+            label="Имя на карте"
             name="cc-name"
             onChange={(cardholderName) => {
               setForm((current) => ({ ...current, cardholderName }));
@@ -115,12 +114,12 @@ export function CardForm({
             autoComplete="off"
             error={errors.nickname?.[0]}
             id="vault-payment-nickname"
-            label="Nickname (optional)"
+            label="Метка (необязательно)"
             name="card-nickname"
             onChange={(nickname) => {
               setForm((current) => ({ ...current, nickname }));
             }}
-            placeholder="Personal"
+            placeholder="Основная"
             value={form.nickname}
           />
         </div>
@@ -130,7 +129,7 @@ export function CardForm({
           error={errors.cardNumber?.[0]}
           id="vault-payment-number"
           inputMode="numeric"
-          label="Card number"
+          label="Номер карты"
           maxLength={23}
           name="cc-number"
           onChange={(value) => {
@@ -150,7 +149,7 @@ export function CardForm({
             error={errors.expiration?.[0]}
             id="vault-payment-expiration"
             inputMode="numeric"
-            label="Expiration"
+            label="Срок действия"
             maxLength={7}
             name="cc-exp"
             onChange={(value) => {
@@ -159,7 +158,7 @@ export function CardForm({
                 expiration: formatExpiration(value),
               }));
             }}
-            placeholder="MM / YY"
+            placeholder="ММ / ГГ"
             value={form.expiration}
           />
           <CardField
@@ -167,7 +166,7 @@ export function CardForm({
             error={errors.cvc?.[0]}
             id="vault-payment-cvc"
             inputMode="numeric"
-            label="CVC"
+            label="CVV"
             maxLength={4}
             name="cc-csc"
             onChange={(value) => {
@@ -184,7 +183,7 @@ export function CardForm({
             className="col-span-2 sm:col-span-1"
             error={errors.billingPostalCode?.[0]}
             id="vault-payment-postal-code"
-            label="Billing ZIP / postal"
+            label="Индекс"
             maxLength={20}
             name="postal-code"
             onChange={(billingPostalCode) => {
@@ -196,8 +195,8 @@ export function CardForm({
       </FieldGroup>
 
       <DialogFooter>
-        <Button disabled={create.isPending} type="submit">
-          Save card
+        <Button disabled={create.isPending} type="submit" variant="paper">
+          Сохранить
         </Button>
       </DialogFooter>
     </form>
@@ -212,7 +211,7 @@ function CardField({
   onChange,
   trailingLabel,
   ...inputProps
-}: Omit<React.ComponentProps<typeof Input>, "onChange"> & {
+}: Omit<React.ComponentProps<typeof Input>, "onChange" | "variant"> & {
   readonly error?: string;
   readonly label: string;
   readonly onChange: (value: string) => void;
@@ -221,11 +220,19 @@ function CardField({
   return (
     <Field className={className} data-invalid={error ? true : undefined}>
       <div className="flex items-center justify-between gap-2">
-        <FieldLabel htmlFor={id}>{label}</FieldLabel>
+        <FieldLabel
+          className="type-field-label text-muted-foreground"
+          htmlFor={id}
+        >
+          {label}
+        </FieldLabel>
         {trailingLabel ? (
-          <Badge aria-live="polite" variant="outline">
+          <span
+            aria-live="polite"
+            className="type-status shrink-0 whitespace-nowrap text-muted-foreground"
+          >
             {trailingLabel}
-          </Badge>
+          </span>
         ) : null}
       </div>
       <Input
@@ -235,8 +242,12 @@ function CardField({
         onChange={(event) => {
           onChange(event.target.value);
         }}
+        variant="paper"
       />
-      <FieldError errors={error ? [{ message: error }] : undefined} />
+      <FieldError
+        className="type-fine"
+        errors={error ? [{ message: error }] : undefined}
+      />
     </Field>
   );
 }

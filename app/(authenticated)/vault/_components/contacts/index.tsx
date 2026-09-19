@@ -1,6 +1,5 @@
 "use client";
 
-import { PlusIcon } from "lucide-react";
 import type { VaultItem } from "@shared/vault/schema";
 import { Button } from "@web/components/ui/button";
 import {
@@ -25,41 +24,43 @@ export function VaultContacts({
   readonly items: readonly VaultItem[];
 }) {
   const setup = useVaultSetup();
-  const initialAdd = setup?.kind === "contact";
-  const section = useVaultSection(initialAdd ? "add" : "list");
+  const section = useVaultSection({
+    setup: setup?.kind === "contact" ? setup : undefined,
+    view: setup?.kind === "contact" ? "add" : "list",
+  });
 
   return (
     <VaultSection
       onOpenChange={section.onOpenChange}
       open={section.open}
-      title="Contact info"
+      title="Контакты"
     >
-      <VaultSectionTrigger items={items} title="Contact info" />
+      <VaultSectionTrigger items={items} title="Контакты" />
       <VaultSectionContent view={section.view}>
         {section.view === "list" ? (
           <>
             <DialogHeader className="pr-10 sm:pr-6">
-              <DialogTitle>Contact info</DialogTitle>
+              <DialogTitle>Контакты</DialogTitle>
               <DialogDescription>
                 {items.length > 0
-                  ? `Search and manage ${items.length.toLocaleString()} saved contact info.`
-                  : "Add your first saved contact."}
+                  ? "Найди нужный контакт или удали лишний."
+                  : "Добавь первый контакт."}
               </DialogDescription>
             </DialogHeader>
             <VaultItemBrowser
               items={items}
               searchId="vault-search-contacts"
-              title="Contact info"
+              title="Контакты"
             />
-            <div className="flex justify-end gap-2">
+            <div className="flex flex-wrap items-baseline gap-x-6 gap-y-2">
               <Button
                 onClick={() => {
                   section.setView("add");
                 }}
                 type="button"
+                variant="act"
               >
-                <PlusIcon />
-                Add contact
+                Добавить контакт
               </Button>
             </div>
           </>
@@ -69,17 +70,16 @@ export function VaultContacts({
               onClick={() => {
                 section.setView("list");
               }}
-              title="Contact info"
+              title="Контакты"
             />
             <DialogHeader className="pr-10 sm:pr-6">
-              <DialogTitle>Add contact</DialogTitle>
+              <DialogTitle>Добавить контакт</DialogTitle>
               <DialogDescription>
-                Sensitive values are encrypted before database storage and are
-                never returned after saving.
+                Имя, почта и телефон, которые Bro укажет при оформлении.
               </DialogDescription>
             </DialogHeader>
             <ContactForm
-              initialLabel={initialAdd ? setup.label : undefined}
+              initialLabel={section.setup?.label}
               onSaved={() => {
                 section.setView("list");
               }}
