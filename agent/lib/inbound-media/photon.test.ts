@@ -27,6 +27,7 @@ function transcriptionBody(index: number) {
 const png = new Uint8Array([
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d, 0x49, 0x48,
 ]);
+const pngBase64 = Buffer.from(png).toString("base64");
 
 /** One spectrum content node as the Photon adapter leaves it on `message.raw`. */
 interface RawNode {
@@ -119,7 +120,7 @@ describe("Photon media turn", () => {
     expect(turn?.message).toEqual([
       { text: "что на фото?", type: "text" },
       {
-        data: Buffer.from(png),
+        data: pngBase64,
         filename: "IMG_0001",
         mediaType: "image/png",
         type: "file",
@@ -337,7 +338,7 @@ describe("Photon media turn", () => {
     expect(downloaded?.message).toEqual([
       { text: "[фото]", type: "text" },
       {
-        data: new Uint8Array(png),
+        data: pngBase64,
         filename: "a.png",
         mediaType: "image/png",
         type: "file",

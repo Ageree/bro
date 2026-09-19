@@ -68,6 +68,7 @@ const fetchMock =
 const jpeg = new Uint8Array([
   0xff, 0xd8, 0xff, 0xe0, 0, 0x10, 0x4a, 0x46, 0x49, 0x46, 0, 1, 1,
 ]);
+const jpegBase64 = Buffer.from(jpeg).toString("base64");
 
 function serveTelegram(file: Uint8Array, transcription?: () => Response) {
   fetchMock.mockImplementation(async (input) => {
@@ -139,7 +140,7 @@ describe("Telegram inbound media", () => {
     expect(result?.message).toEqual([
       { text: "[фото]", type: "text" },
       {
-        data: jpeg,
+        data: jpegBase64,
         filename: "photo.jpg",
         mediaType: "image/jpeg",
         type: "file",
