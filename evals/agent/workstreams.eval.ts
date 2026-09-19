@@ -31,11 +31,10 @@ export default [
         correction.succeeded();
         correction.calledTool("workstreams__save");
 
-        const later = await t
-          .newSession()
-          .send(
-            `Let's continue ${title}. Which departures were we considering, what seat do I want, and what remains undecided? Do not search or book.`
-          );
+        const laterSession = await t.session();
+        const later = await laterSession.send(
+          `Let's continue ${title}. Which departures were we considering, what seat do I want, and what remains undecided? Do not search or book.`
+        );
         later.expectOk();
         later.succeeded();
         later.calledTool("workstreams__read");
@@ -46,11 +45,10 @@ export default [
         later.notCalledTool("schedules-create");
       } finally {
         if (id) {
-          const cleanup = await t
-            .newSession()
-            .send(
-              `Forget the workstream with id ${id}. Read its current revision and remove it from workstream memory.`
-            );
+          const cleanupSession = await t.session();
+          const cleanup = await cleanupSession.send(
+            `Forget the workstream with id ${id}. Read its current revision and remove it from workstream memory.`
+          );
           cleanup.expectOk();
           cleanup.calledTool("workstreams__forget", { count: 1 });
         }

@@ -5,6 +5,8 @@ export default {
     "agent/channels/**/*.ts",
     "agent/hooks/**/*.ts",
     "agent/instructions/**/*.ts",
+    // eve discovers each path-named instrumentation file in this directory.
+    "agent/instrumentation/**/*.ts",
     "agent/memory/**/*.ts",
     "agent/schedules/**/*.ts",
     "agent/tools/**/*.ts",
