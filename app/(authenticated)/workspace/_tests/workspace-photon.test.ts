@@ -12,7 +12,7 @@ describe("workspace Photon channel", () => {
       })
     );
 
-    expect(html).toContain("Set up Photon to enable iMessage.");
+    expect(html).toContain("Подключи Photon, чтобы включить iMessage.");
     expect(html).not.toContain("+12052611117");
     expect(html).not.toContain("sms:");
   });
@@ -26,7 +26,7 @@ describe("workspace Photon channel", () => {
     );
 
     expect(html).toContain("sms:+12025550123");
-    expect(html).toContain("iMessage opens +12025550123.");
+    expect(html).toContain("iMessage откроет +12025550123.");
   });
 
   it("reports a connected Photon line without requiring its number", () => {
@@ -37,7 +37,7 @@ describe("workspace Photon channel", () => {
       })
     );
 
-    expect(html).toContain("Photon is connected.");
+    expect(html).toContain("Photon подключён");
     expect(html).not.toContain("sms:");
   });
 
@@ -49,7 +49,20 @@ describe("workspace Photon channel", () => {
       })
     );
 
-    expect(html).toContain("Set up Photon to enable iMessage.");
+    expect(html).toContain("Подключи Photon, чтобы включить iMessage.");
     expect(html).not.toContain("sms:");
+  });
+
+  it("keeps the web chat as a text action", () => {
+    const html = renderToStaticMarkup(
+      createElement(ChannelsSection, {
+        imessageConfigured: false,
+        imessagePhoneNumber: undefined,
+      })
+    );
+
+    expect(html).toContain('href="/chat"');
+    expect(html).toContain("Открыть чат");
+    expect(html).toContain("Написать Bro");
   });
 });

@@ -1,6 +1,5 @@
 "use client";
 
-import { Badge } from "@web/components/ui/badge";
 import { Button } from "@web/components/ui/button";
 import { api } from "@web/trpc/client";
 
@@ -18,12 +17,8 @@ export function GoogleWorkspaceAction({
     },
   });
 
-  if (!state) {
-    return <Badge variant="secondary">Loading…</Badge>;
-  }
-  if (state === "unavailable") {
-    return <Badge variant="secondary">Setup required</Badge>;
-  }
+  if (!state) return <span>Загружаем…</span>;
+  if (state === "unavailable") return <span>Нужна настройка</span>;
 
   const action = state === "connected" ? "disconnect" : "connect";
   return (
@@ -32,11 +27,11 @@ export function GoogleWorkspaceAction({
       onClick={() => {
         update.mutate(action);
       }}
-      size="sm"
+      size="act-sm"
       type="button"
-      variant="outline"
+      variant="act"
     >
-      {state === "connected" ? "Disconnect" : "Connect"}
+      {state === "connected" ? "Отключить" : "Подключить"}
     </Button>
   );
 }

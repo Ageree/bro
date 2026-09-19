@@ -26,7 +26,7 @@ const loginFormSchema = z
   .object({
     identifier: z.string().trim(),
     identifierType: loginIdentifierTypeSchema,
-    nickname: z.string().trim().min(1, "Enter a name for this login.").max(120),
+    nickname: z.string().trim().min(1, "Дай этому входу метку.").max(120),
     origin: z
       .string()
       .trim()
@@ -51,7 +51,7 @@ const loginFormSchema = z
     if (form.identifierType === "username" && !form.password) {
       context.addIssue({
         code: "custom",
-        message: "Username logins require a password.",
+        message: "Для входа по логину нужен пароль.",
         path: ["password"],
       });
     }
@@ -121,11 +121,11 @@ export function LoginForm({
           <FormField
             error={errors.nickname?.[0]}
             id="vault-login-label"
-            label="Name"
+            label="Метка"
             onChange={(nickname) => {
               setForm((current) => ({ ...current, nickname }));
             }}
-            placeholder="GitHub"
+            placeholder="Wildberries"
             value={form.nickname}
           />
         )}
@@ -134,11 +134,11 @@ export function LoginForm({
           error={errors.origin?.[0]}
           id="vault-login-origin"
           inputMode="url"
-          label="Website"
+          label="Сайт"
           onChange={(origin) => {
             setForm((current) => ({ ...current, origin }));
           }}
-          placeholder="https://www.ubereats.com"
+          placeholder="https://www.wildberries.ru"
           type="url"
           value={form.origin}
         />
@@ -151,8 +151,11 @@ export function LoginForm({
         >
           {initialIdentifierType ? null : (
             <Field>
-              <FieldLabel htmlFor="vault-login-identifier-type">
-                Sign in with
+              <FieldLabel
+                className="type-field-label text-muted-foreground"
+                htmlFor="vault-login-identifier-type"
+              >
+                Тип логина
               </FieldLabel>
               <Select
                 onValueChange={(value) => {
@@ -167,13 +170,14 @@ export function LoginForm({
                 <SelectTrigger
                   className="w-full"
                   id="vault-login-identifier-type"
+                  variant="paper"
                 >
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="email">Email</SelectItem>
-                  <SelectItem value="phone">Phone</SelectItem>
-                  <SelectItem value="username">Username</SelectItem>
+                  <SelectItem value="email">Почта</SelectItem>
+                  <SelectItem value="phone">Телефон</SelectItem>
+                  <SelectItem value="username">Логин</SelectItem>
                 </SelectContent>
               </Select>
             </Field>
@@ -194,12 +198,12 @@ export function LoginForm({
           autoComplete="new-password"
           description={
             passwordOptional
-              ? "Leave blank if you sign in with a one-time code."
+              ? "Оставь пустым, если входишь по коду из почты или СМС."
               : undefined
           }
           error={errors.password?.[0]}
           id="vault-login-password"
-          label={passwordOptional ? "Password (optional)" : "Password"}
+          label={passwordOptional ? "Пароль (необязательно)" : "Пароль"}
           onChange={(password) => {
             setForm((current) => ({ ...current, password }));
           }}
@@ -208,8 +212,8 @@ export function LoginForm({
         />
       </FieldGroup>
       <DialogFooter>
-        <Button disabled={create.isPending} type="submit">
-          Save login
+        <Button disabled={create.isPending} type="submit" variant="paper">
+          Сохранить
         </Button>
       </DialogFooter>
     </form>
@@ -220,14 +224,14 @@ function identifierPlaceholder(
   type: z.infer<typeof loginIdentifierTypeSchema>
 ) {
   if (type === "email") return "name@example.com";
-  if (type === "phone") return "+1 555 555 5555";
-  return "username";
+  if (type === "phone") return "+7 999 123-45-67";
+  return "login";
 }
 
 function identifierLabel(type: z.infer<typeof loginIdentifierTypeSchema>) {
-  if (type === "email") return "Email";
-  if (type === "phone") return "Phone number";
-  return "Username";
+  if (type === "email") return "Почта";
+  if (type === "phone") return "Телефон";
+  return "Логин";
 }
 
 function loginAuthentication(form: z.output<typeof loginFormSchema>) {

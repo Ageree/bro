@@ -1,127 +1,64 @@
-import { BellIcon, MailIcon, SendIcon, ShoppingBagIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
-import { Logo } from "@web/components/ui/logo";
 import { AccessForm } from "./_components/access-form";
+import { HeroVideo } from "./_components/hero-video";
+
+const title = "bro — твой личный ИИ-агент";
 
 export const metadata: Metadata = {
-  title: "Бро — личный агент в iMessage",
+  title: { absolute: title },
   description:
-    "Свой номер в iMessage, своя память и руки в интернете. Записать, забронировать, заказать — просто напиши Бро.",
+    "bro — персональный ИИ-агент со своим номером, памятью и руками в интернете. Записать к врачу, забронировать, заказать — просто напиши ему.",
+  openGraph: {
+    description:
+      "Свой номер, своя память, свои руки в интернете. Записать к врачу, забронировать, заказать — просто напиши ему.",
+    images: ["/brand/bro-og.png"],
+    title,
+    type: "website",
+  },
+  twitter: { card: "summary_large_image" },
 };
 
-const benefits = [
-  {
-    description: "Найдёт на сайте, оформит заказ и доведёт покупку до конца.",
-    icon: ShoppingBagIcon,
-    id: "orders",
-    title: "Заказы и покупки",
-  },
-  {
-    description: "Разберёт почту, ответит на письмо, назначит встречу.",
-    icon: MailIcon,
-    id: "mail",
-    title: "Письма и календарь",
-  },
-  {
-    description: "Сам напомнит о важном и вернётся, когда будет результат.",
-    icon: BellIcon,
-    id: "reminders",
-    title: "Напоминания",
-  },
-  {
-    description: "Тот же Бро, если писать удобнее там.",
-    icon: SendIcon,
-    id: "telegram",
-    title: "Telegram",
-  },
-] as const;
-
+/**
+ * Stage — a white page with one figure standing in it. A flex column: the
+ * masthead and the call to action take their own height, the film gets
+ * whatever is left and shrinks instead of pushing the form off-screen.
+ */
 export default function Page() {
   return (
-    <div
-      className="flex min-h-svh flex-col bg-background text-foreground"
-      lang="ru"
-    >
-      <header className="mx-auto flex w-full max-w-xl items-center justify-between gap-4 px-4 py-5">
-        <span className="flex items-center gap-2 type-label">
-          <Logo />
-          бро
-        </span>
-        <nav
-          aria-label="Служебные страницы"
-          className="flex items-center gap-4"
-        >
-          <Link
-            className="type-label text-muted-foreground hover:text-foreground"
-            href="/oferta"
-          >
+    <main className="flex h-svh min-h-[30rem] flex-col overflow-hidden">
+      <header className="flex items-center justify-between gap-4 p-bro-pad">
+        <div className="flex flex-1 basis-0 gap-[0.9rem]">
+          <Link className="type-nav bro-link" href="/oferta">
             Оферта
           </Link>
-          <Link
-            className="type-label text-muted-foreground hover:text-foreground"
-            href="/workspace"
-          >
+        </div>
+        <Link className="type-wordmark bro-link" href="/">
+          bro.
+        </Link>
+        <nav
+          aria-label="Служебные страницы"
+          className="flex flex-1 basis-0 justify-end gap-[0.9rem]"
+        >
+          <Link className="type-nav bro-link" href="/sign-in">
             Кабинет
+          </Link>
+          <Link className="type-nav bro-link" href="/vault">
+            Сейф
           </Link>
         </nav>
       </header>
 
-      <main className="mx-auto flex w-full max-w-xl flex-1 flex-col gap-10 px-4 pt-4 pb-16">
-        <section className="space-y-3">
-          <h1 className="type-product-title">
-            Бро — личный агент со своим номером
-          </h1>
-          <p className="type-body text-muted-foreground">
-            Своя память, свои руки в интернете. Записать к врачу, забронировать,
-            заказать — просто напиши ему, как написал бы другу.
-          </p>
-        </section>
+      <div className="relative min-h-0 flex-1">
+        <HeroVideo />
+      </div>
 
-        <section aria-labelledby="benefits-heading" className="space-y-3">
-          <h2 className="type-section-title" id="benefits-heading">
-            Что он берёт на себя
-          </h2>
-          <ul className="divide-y divide-border/50 border-y border-border/50">
-            {benefits.map((benefit) => {
-              const Icon = benefit.icon;
-              return (
-                <li className="flex items-start gap-3 py-4" key={benefit.id}>
-                  <span className="flex size-9 shrink-0 items-center justify-center rounded-md border border-border bg-muted/50 text-muted-foreground">
-                    <Icon />
-                  </span>
-                  <div className="min-w-0">
-                    <p className="type-label">{benefit.title}</p>
-                    <p className="type-caption text-muted-foreground">
-                      {benefit.description}
-                    </p>
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-        </section>
-
-        <section aria-labelledby="access-heading" className="space-y-3">
-          <h2 className="type-section-title" id="access-heading">
-            Получить своего Бро
-          </h2>
-          <p className="type-supporting-body text-muted-foreground">
-            Оставь номер — мы выдадим линию iMessage, на которой он отвечает.
-          </p>
-          <AccessForm />
-        </section>
-      </main>
-
-      <footer className="mx-auto w-full max-w-xl px-4 pb-8">
-        <p className="type-caption text-muted-foreground">
-          Пользуясь сервисом, ты принимаешь{" "}
-          <Link className="underline underline-offset-4" href="/oferta">
-            публичную оферту
-          </Link>
-          .
-        </p>
-      </footer>
-    </div>
+      <section
+        aria-label="Получить своего бро"
+        className="p-bro-pad text-center"
+      >
+        <AccessForm />
+      </section>
+    </main>
   );
 }

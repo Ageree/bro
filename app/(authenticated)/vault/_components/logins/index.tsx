@@ -1,6 +1,5 @@
 "use client";
 
-import { PlusIcon } from "lucide-react";
 import { useSearchParams } from "next/navigation";
 import type { VaultItem } from "@shared/vault/schema";
 import { Button } from "@web/components/ui/button";
@@ -30,51 +29,53 @@ export function VaultLogins({
   const setup = useVaultSetup();
   const initialSetup = setup?.kind === "login" ? setup : undefined;
   const initialChromeImport = searchParams.get("import") === "chrome";
+  const initialAdd =
+    initialSetup !== undefined || searchParams.get("add") === "login";
   const section = useVaultSection(
-    initialChromeImport ? "import" : initialSetup ? "add" : "list"
+    initialChromeImport ? "import" : initialAdd ? "add" : "list"
   );
 
   return (
     <VaultSection
       onOpenChange={section.onOpenChange}
       open={section.open}
-      title="Logins"
+      title="Входы"
     >
-      <VaultSectionTrigger items={items} title="Logins" />
+      <VaultSectionTrigger items={items} title="Входы" />
       <VaultSectionContent view={section.view}>
         {section.view === "list" ? (
           <>
             <DialogHeader className="pr-10 sm:pr-6">
-              <DialogTitle>Logins</DialogTitle>
+              <DialogTitle>Входы</DialogTitle>
               <DialogDescription>
                 {items.length > 0
-                  ? `Search and manage ${items.length.toLocaleString()} saved logins.`
-                  : "Add your first saved login."}
+                  ? "Найди нужный вход или удали лишний."
+                  : "Добавь первый вход на сайт."}
               </DialogDescription>
             </DialogHeader>
             <VaultItemBrowser
               items={items}
               searchId="vault-search-logins"
-              title="Logins"
+              title="Входы"
             />
-            <div className="flex justify-end gap-2">
-              <Button
-                onClick={() => {
-                  section.setView("import");
-                }}
-                type="button"
-                variant="outline"
-              >
-                Bulk import
-              </Button>
+            <div className="flex flex-wrap items-baseline gap-x-6 gap-y-2">
               <Button
                 onClick={() => {
                   section.setView("add");
                 }}
                 type="button"
+                variant="act"
               >
-                <PlusIcon />
-                Add login
+                Добавить вход
+              </Button>
+              <Button
+                onClick={() => {
+                  section.setView("import");
+                }}
+                type="button"
+                variant="act"
+              >
+                Импортировать из Chrome
               </Button>
             </div>
           </>
@@ -84,7 +85,7 @@ export function VaultLogins({
               onClick={() => {
                 section.setView("list");
               }}
-              title="Logins"
+              title="Входы"
             />
             {section.view === "import" ? (
               <ChromeImportPanel
@@ -96,10 +97,12 @@ export function VaultLogins({
               <>
                 <DialogHeader className="pr-10 sm:pr-6">
                   <DialogTitle>
-                    {initialSetup ? `Add ${initialSetup.label}` : "Add login"}
+                    {initialSetup
+                      ? `Добавить вход: ${initialSetup.label}`
+                      : "Добавить вход"}
                   </DialogTitle>
                   <DialogDescription>
-                    Enter the credentials you use to sign in.
+                    Введи данные, с которыми ты заходишь на сайт.
                   </DialogDescription>
                 </DialogHeader>
                 <LoginForm

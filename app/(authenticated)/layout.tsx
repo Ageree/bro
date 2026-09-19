@@ -1,5 +1,4 @@
 import Link from "next/link";
-import { Logo } from "@web/components/ui/logo";
 import {
   Sidebar,
   SidebarContent,
@@ -31,9 +30,8 @@ export default async function AuthenticatedLayout({
           <SidebarHeader>
             <SidebarMenu>
               <SidebarMenuItem>
-                <SidebarMenuButton render={<Link href="/workspace" />}>
-                  <Logo />
-                  <span>OpenInstinct</span>
+                <SidebarMenuButton render={<Link href="/" />}>
+                  <span className="type-nav">bro.</span>
                 </SidebarMenuButton>
               </SidebarMenuItem>
             </SidebarMenu>

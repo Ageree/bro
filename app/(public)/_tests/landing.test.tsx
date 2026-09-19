@@ -3,7 +3,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { imessageLink } from "@app/(public)/_components/access-form";
-import LandingPage from "@app/(public)/page";
+import LandingPage, { metadata } from "@app/(public)/page";
 
 const landingMarkup = () =>
   renderToStaticMarkup(
@@ -15,23 +15,43 @@ const landingMarkup = () =>
   );
 
 describe("landing page", () => {
+  it("keeps the old stage: masthead, film and one call to action", () => {
+    const html = landingMarkup();
+
+    expect(html).toContain(">bro.<");
+    expect(html).toContain("Оферта");
+    expect(html).toContain("Кабинет");
+    expect(html).toContain("Сейф");
+    expect(html).toContain('src="/brand/hero-portrait.mp4"');
+    expect(html).toContain("Получить своего бро");
+  });
+
   it("asks for a phone number and explains the iMessage requirement", () => {
     const html = landingMarkup();
 
-    expect(html).toContain("Получить своего Бро");
+    expect(html).toContain('name="phone-number"');
     expect(html).toContain("Только синий iMessage; SMS не подойдёт.");
-    expect(html).toContain("Заказы и покупки");
-    expect(html).toContain("Письма и календарь");
-    expect(html).toContain("Напоминания");
-    expect(html).toContain("Telegram");
   });
 
-  it("links the workspace and the offer without advertising a line", () => {
+  it("links this app's routes without advertising a line", () => {
     const html = landingMarkup();
 
-    expect(html).toContain('href="/workspace"');
     expect(html).toContain('href="/oferta"');
+    expect(html).toContain('href="/sign-in"');
+    expect(html).toContain('href="/vault"');
+    expect(html).not.toContain('href="/workspace"');
     expect(html).not.toContain("sms:");
+    expect(html).not.toContain("+16282649335");
+  });
+
+  it("carries the old title and Open Graph card", () => {
+    expect(metadata.title).toEqual({
+      absolute: "bro — твой личный ИИ-агент",
+    });
+    expect(metadata.openGraph).toMatchObject({
+      images: ["/brand/bro-og.png"],
+      title: "bro — твой личный ИИ-агент",
+    });
   });
 
   it("opens Messages with a greeting on the separator iOS accepts", () => {

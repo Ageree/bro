@@ -1,12 +1,6 @@
 "use client";
 
-import {
-  ArrowLeftIcon,
-  ChevronRightIcon,
-  Globe2Icon,
-  SearchIcon,
-  Trash2Icon,
-} from "lucide-react";
+import { ArrowLeftIcon, SearchIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { type ReactNode, useState } from "react";
 import { Button } from "@web/components/ui/button";
@@ -40,6 +34,7 @@ export function useVaultSection(initialView: VaultSectionView) {
   return { onOpenChange, open, setView, view };
 }
 
+/** One row of the vault's saved list; its sheet opens from the row itself. */
 export function VaultSection({
   children,
   onOpenChange,
@@ -52,11 +47,14 @@ export function VaultSection({
   readonly title: string;
 }) {
   return (
-    <section aria-label={title}>
+    <li
+      aria-label={title}
+      className="border-t border-border first:border-t-0 first:[&>button]:pt-[0.2rem]"
+    >
       <Dialog onOpenChange={onOpenChange} open={open}>
         {children}
       </Dialog>
-    </section>
+    </li>
   );
 }
 
@@ -68,18 +66,34 @@ export function VaultSectionTrigger({
   readonly title: string;
 }) {
   return (
-    <DialogTrigger render={<Button type="button" variant="surface" />}>
-      <span className="min-w-0 flex-1">
-        <span className="block type-label">{title}</span>
-        <span className="type-supporting-body block text-muted-foreground">
-          {items.length > 0
-            ? `${items.length.toLocaleString()} saved`
-            : `No saved ${title.toLocaleLowerCase()}`}
-        </span>
+    <DialogTrigger
+      render={
+        <Button
+          className="flex w-full items-baseline justify-between gap-4 py-[0.6rem]"
+          size="none"
+          type="button"
+          variant="act"
+        />
+      }
+    >
+      <span className="type-row min-w-0 flex-1">{title}</span>
+      <span className="type-status shrink-0 text-muted-foreground">
+        {items.length > 0 ? savedCount(items.length) : "Пока пусто"}
       </span>
-      <ChevronRightIcon />
     </DialogTrigger>
   );
+}
+
+function savedCount(count: number) {
+  const mod10 = count % 10;
+  const mod100 = count % 100;
+  const noun =
+    mod10 === 1 && mod100 !== 11
+      ? "запись"
+      : mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)
+        ? "записи"
+        : "записей";
+  return `${count.toLocaleString("ru-RU")} ${noun}`;
 }
 
 export function VaultSectionContent({
@@ -94,8 +108,8 @@ export function VaultSectionContent({
       animated={false}
       className={
         view === "list"
-          ? "grid-rows-[auto_auto_minmax(0,1fr)_auto] overflow-hidden"
-          : "no-scrollbar overflow-y-auto"
+          ? "grid-rows-[auto_auto_minmax(0,1fr)_auto] overflow-hidden rounded-none sm:rounded-none"
+          : "no-scrollbar overflow-y-auto rounded-none sm:rounded-none"
       }
       variant="responsive"
     >
@@ -112,7 +126,7 @@ export function VaultSectionBackButton({
   readonly title: string;
 }) {
   return (
-    <Button onClick={onClick} size="sm" type="button" variant="plain">
+    <Button onClick={onClick} size="act-sm" type="button" variant="act">
       <ArrowLeftIcon />
       {title}
     </Button>
@@ -145,9 +159,9 @@ export function VaultItemBrowser({
       {items.length > 0 ? (
         <div>
           <Label className="sr-only" htmlFor={searchId}>
-            Search {title.toLocaleLowerCase()}
+            Поиск: {title.toLocaleLowerCase()}
           </Label>
-          <InputGroup>
+          <InputGroup className="rounded-none border-foreground">
             <InputGroupAddon>
               <SearchIcon />
             </InputGroupAddon>
@@ -157,7 +171,7 @@ export function VaultItemBrowser({
                 setQuery(event.target.value);
                 setVisibleCount(VAULT_DIALOG_PAGE_SIZE);
               }}
-              placeholder="Search by name or account"
+              placeholder="Поиск по метке или аккаунту"
               type="search"
               value={query}
             />
@@ -168,7 +182,7 @@ export function VaultItemBrowser({
       )}
 
       <section
-        aria-label={`${title} list`}
+        aria-label={`${title}: список`}
         className="-mx-4 no-scrollbar min-h-0 overflow-y-auto px-4"
         onScroll={(event) => {
           const list = event.currentTarget;
@@ -184,12 +198,12 @@ export function VaultItemBrowser({
         {visibleItems.length > 0 ? (
           <VaultItemList items={visibleItems} />
         ) : query.trim() ? (
-          <p className="type-supporting-body py-10 text-center text-muted-foreground">
-            No matches for “{query.trim()}”
+          <p className="type-fine py-10 text-center text-muted-foreground">
+            Ничего не нашлось по «{query.trim()}»
           </p>
         ) : (
-          <p className="type-supporting-body py-10 text-center text-muted-foreground">
-            No saved {title.toLocaleLowerCase()} yet.
+          <p className="type-fine py-10 text-center text-muted-foreground">
+            Пока пусто.
           </p>
         )}
       </section>
@@ -203,11 +217,11 @@ export function VaultItemList({
   readonly items: readonly VaultItem[];
 }) {
   return (
-    <div className="divide-y divide-border/50">
+    <ul className="list-none">
       {items.map((item) => (
         <VaultItemRow item={item} key={item.id} />
       ))}
-    </div>
+    </ul>
   );
 }
 
@@ -220,63 +234,28 @@ function VaultItemRow({ item }: { readonly item: VaultItem }) {
   });
 
   return (
-    <div className="flex min-w-0 items-center gap-3 py-3">
-      <VaultItemIcon item={item} />
-      <div className="min-w-0 flex-1">
-        <p className="truncate type-label">{item.label}</p>
+    <li className="flex min-w-0 items-baseline justify-between gap-4 border-t border-border py-[0.6rem] first:border-t-0 first:pt-[0.2rem]">
+      <div className="type-row min-w-0 flex-1">
+        <p className="truncate">{item.label}</p>
         {item.account ? (
-          <p className="type-supporting-body truncate text-muted-foreground">
+          <p className="type-status truncate text-muted-foreground">
             {item.account}
           </p>
         ) : null}
       </div>
       <Button
-        aria-label={`Remove ${item.label}`}
+        aria-label={`Удалить ${item.label}`}
+        className="shrink-0"
         disabled={remove.isPending}
         onClick={() => {
           remove.mutate({ id: item.id });
         }}
-        size="icon-sm"
+        size="act-sm"
         type="button"
-        variant="quiet"
+        variant="act"
       >
-        <Trash2Icon />
+        Удалить
       </Button>
-    </div>
+    </li>
   );
-}
-
-function VaultItemIcon({ item }: { readonly item: VaultItem }) {
-  const faviconUrl = loginFaviconUrl(item);
-  return (
-    <span className="relative flex size-8 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-muted text-muted-foreground">
-      <Globe2Icon className="size-4" />
-      {faviconUrl ? (
-        // Imported domains cannot be declared in Next Image configuration.
-        // oxlint-disable-next-line nextjs/no-img-element -- user-imported favicon URL
-        <img
-          alt=""
-          className="absolute inset-0 size-full bg-background object-contain p-1"
-          onError={(event) => {
-            event.currentTarget.remove();
-          }}
-          referrerPolicy="no-referrer"
-          src={faviconUrl}
-        />
-      ) : null}
-    </span>
-  );
-}
-
-function loginFaviconUrl(item: VaultItem): string | undefined {
-  if (item.kind !== "login") return undefined;
-  const hostname = item.account.split(" · ", 1)[0]?.trim();
-  if (!hostname || !hostname.includes(".") || hostname.includes(" ")) {
-    return undefined;
-  }
-  try {
-    return new URL("/favicon.ico", `https://${hostname}`).toString();
-  } catch {
-    return undefined;
-  }
 }

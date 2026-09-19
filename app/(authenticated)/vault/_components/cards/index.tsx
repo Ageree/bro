@@ -1,6 +1,5 @@
 "use client";
 
-import { PlusIcon } from "lucide-react";
 import type { VaultItem } from "@shared/vault/schema";
 import { Button } from "@web/components/ui/button";
 import {
@@ -32,34 +31,34 @@ export function VaultCards({
     <VaultSection
       onOpenChange={section.onOpenChange}
       open={section.open}
-      title="Cards"
+      title="Карты"
     >
-      <VaultSectionTrigger items={items} title="Cards" />
+      <VaultSectionTrigger items={items} title="Карты" />
       <VaultSectionContent view={section.view}>
         {section.view === "list" ? (
           <>
             <DialogHeader className="pr-10 sm:pr-6">
-              <DialogTitle>Cards</DialogTitle>
+              <DialogTitle>Карты</DialogTitle>
               <DialogDescription>
                 {items.length > 0
-                  ? `Search and manage ${items.length.toLocaleString()} saved cards.`
-                  : "Add your first saved card."}
+                  ? "Найди нужную карту или удали лишнюю."
+                  : "Добавь первую карту."}
               </DialogDescription>
             </DialogHeader>
             <VaultItemBrowser
               items={items}
               searchId="vault-search-cards"
-              title="Cards"
+              title="Карты"
             />
-            <div className="flex justify-end gap-2">
+            <div className="flex flex-wrap items-baseline gap-x-6 gap-y-2">
               <Button
                 onClick={() => {
                   section.setView("add");
                 }}
                 type="button"
+                variant="act"
               >
-                <PlusIcon />
-                Add card
+                Добавить карту
               </Button>
             </div>
           </>
@@ -69,13 +68,13 @@ export function VaultCards({
               onClick={() => {
                 section.setView("list");
               }}
-              title="Cards"
+              title="Карты"
             />
             <DialogHeader className="pr-10 sm:pr-6">
-              <DialogTitle>Add card</DialogTitle>
+              <DialogTitle>Добавить карту</DialogTitle>
               <DialogDescription>
-                Sensitive values are encrypted before database storage and are
-                never returned after saving.
+                Номер и CVV шифруются до записи в базу и после сохранения не
+                показываются.
               </DialogDescription>
             </DialogHeader>
             <CardForm

@@ -93,41 +93,41 @@ export function ChromeImportPanel({ onDone }: { readonly onDone: () => void }) {
   return (
     <>
       <DialogHeader>
-        <DialogTitle>Import Chrome passwords</DialogTitle>
+        <DialogTitle>Импорт паролей из Chrome</DialogTitle>
         <DialogDescription>
-          Export a CSV from Google Password Manager, then choose it here. The
-          passwords go into this workspace&apos;s encrypted vault.
+          Выгрузи CSV из Google Password Manager и выбери его здесь. Пароли
+          лягут в зашифрованный сейф этого кабинета.
         </DialogDescription>
       </DialogHeader>
 
       {importedCount === undefined ? (
         <div className="grid gap-5">
           <div className="grid gap-2">
-            <p className="type-label">1. Export your passwords</p>
-            <p className="type-supporting-body text-muted-foreground">
-              Open Settings in Google Password Manager and choose Export
-              passwords.
+            <p className="type-row">1. Выгрузи пароли</p>
+            <p className="type-fine text-muted-foreground">
+              Открой настройки Google Password Manager и выбери «Экспорт
+              паролей».
             </p>
             <Button
               nativeButton={false}
               render={
                 <a
-                  aria-label="Open Google Password Manager"
+                  aria-label="Открыть Google Password Manager"
                   href={GOOGLE_PASSWORD_MANAGER_URL}
                   rel="noreferrer"
                   target="_blank"
                 />
               }
-              variant="outline"
+              variant="act"
             >
-              Open Google Password Manager
+              Открыть Google Password Manager
               <ExternalLinkIcon />
             </Button>
           </div>
 
           <div className="grid gap-2">
-            <Label htmlFor="chrome-passwords-csv">
-              2. Choose the exported CSV
+            <Label className="type-row" htmlFor="chrome-passwords-csv">
+              2. Выбери выгруженный CSV
             </Label>
             <Input
               accept=".csv,text/csv"
@@ -138,13 +138,14 @@ export function ChromeImportPanel({ onDone }: { readonly onDone: () => void }) {
                 void chooseFile(event.currentTarget.files?.[0])
               }
               type="file"
+              variant="paper"
             />
             {selection ? (
-              <p className="type-supporting-body text-muted-foreground">
-                {selection.items.length.toLocaleString()} login
-                {selection.items.length === 1 ? "" : "s"} ready from {fileName}
+              <p className="type-fine text-muted-foreground">
+                Готово к импорту:{" "}
+                {selection.items.length.toLocaleString("ru-RU")} из {fileName}
                 {selection.skipped > 0
-                  ? ` · ${selection.skipped.toLocaleString()} invalid ${selection.skipped === 1 ? "row" : "rows"} skipped`
+                  ? ` · пропущено строк с ошибками: ${selection.skipped.toLocaleString("ru-RU")}`
                   : ""}
               </p>
             ) : null}
@@ -153,18 +154,18 @@ export function ChromeImportPanel({ onDone }: { readonly onDone: () => void }) {
           {importError ? (
             <Alert variant="destructive">
               <FileKeyIcon />
-              <AlertTitle>Couldn&apos;t import this file</AlertTitle>
+              <AlertTitle>Не вышло импортировать этот файл</AlertTitle>
               <AlertDescription>{importError}</AlertDescription>
             </Alert>
           ) : null}
 
           <Alert>
             <ShieldCheckIcon />
-            <AlertTitle>Your passwords stay in your vault</AlertTitle>
+            <AlertTitle>Пароли остаются в твоём сейфе</AlertTitle>
             <AlertDescription>
-              The CSV is read in this browser and is never uploaded. Chrome
-              exports passwords as plain text, so delete the file after this
-              import.
+              CSV читается в этом браузере и никуда не выгружается. Chrome
+              экспортирует пароли открытым текстом, так что удали файл после
+              импорта.
             </AlertDescription>
           </Alert>
         </div>
@@ -172,12 +173,11 @@ export function ChromeImportPanel({ onDone }: { readonly onDone: () => void }) {
         <Alert>
           <ShieldCheckIcon />
           <AlertTitle>
-            {importedCount.toLocaleString()} login
-            {importedCount === 1 ? "" : "s"} imported
+            Импортировано входов: {importedCount.toLocaleString("ru-RU")}
           </AlertTitle>
           <AlertDescription>
-            They are now available to the agent through the encrypted vault.
-            Delete the exported CSV from your device.
+            Теперь Bro берёт их из зашифрованного сейфа. Удали выгруженный CSV с
+            устройства.
           </AlertDescription>
         </Alert>
       )}
@@ -188,13 +188,14 @@ export function ChromeImportPanel({ onDone }: { readonly onDone: () => void }) {
             disabled={importPasswords.isPending || !selection}
             onClick={importSelectedPasswords}
             type="button"
+            variant="paper"
           >
             <UploadIcon />
             {importPasswords.isPending
-              ? "Importing…"
+              ? "Импортируем…"
               : selection
-                ? `Import ${selection.items.length.toLocaleString()} ${selection.items.length === 1 ? "login" : "logins"}`
-                : "Choose a CSV"}
+                ? `Импортировать: ${selection.items.length.toLocaleString("ru-RU")}`
+                : "Выбери CSV"}
           </Button>
         ) : (
           <Button
@@ -203,8 +204,9 @@ export function ChromeImportPanel({ onDone }: { readonly onDone: () => void }) {
               onDone();
             }}
             type="button"
+            variant="paper"
           >
-            Done
+            Готово
           </Button>
         )}
       </DialogFooter>

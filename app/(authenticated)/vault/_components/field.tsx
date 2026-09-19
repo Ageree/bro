@@ -15,7 +15,7 @@ export function FormField({
   label,
   onChange,
   ...inputProps
-}: Omit<React.ComponentProps<typeof Input>, "onChange"> & {
+}: Omit<React.ComponentProps<typeof Input>, "onChange" | "variant"> & {
   readonly description?: string;
   readonly error?: string;
   readonly label: string;
@@ -23,7 +23,12 @@ export function FormField({
 }) {
   return (
     <Field data-invalid={error ? true : undefined}>
-      <FieldLabel htmlFor={id}>{label}</FieldLabel>
+      <FieldLabel
+        className="type-field-label text-muted-foreground"
+        htmlFor={id}
+      >
+        {label}
+      </FieldLabel>
       <Input
         {...inputProps}
         aria-invalid={error ? true : undefined}
@@ -31,9 +36,15 @@ export function FormField({
         onChange={(event) => {
           onChange(event.target.value);
         }}
+        variant="paper"
       />
-      {description ? <FieldDescription>{description}</FieldDescription> : null}
-      <FieldError errors={error ? [{ message: error }] : undefined} />
+      {description ? (
+        <FieldDescription className="type-fine">{description}</FieldDescription>
+      ) : null}
+      <FieldError
+        className="type-fine"
+        errors={error ? [{ message: error }] : undefined}
+      />
     </Field>
   );
 }

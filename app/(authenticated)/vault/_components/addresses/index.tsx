@@ -1,6 +1,5 @@
 "use client";
 
-import { PlusIcon } from "lucide-react";
 import type { VaultItem } from "@shared/vault/schema";
 import { Button } from "@web/components/ui/button";
 import {
@@ -32,34 +31,34 @@ export function VaultAddresses({
     <VaultSection
       onOpenChange={section.onOpenChange}
       open={section.open}
-      title="Addresses"
+      title="Адреса"
     >
-      <VaultSectionTrigger items={items} title="Addresses" />
+      <VaultSectionTrigger items={items} title="Адреса" />
       <VaultSectionContent view={section.view}>
         {section.view === "list" ? (
           <>
             <DialogHeader className="pr-10 sm:pr-6">
-              <DialogTitle>Addresses</DialogTitle>
+              <DialogTitle>Адреса</DialogTitle>
               <DialogDescription>
                 {items.length > 0
-                  ? `Search and manage ${items.length.toLocaleString()} saved addresses.`
-                  : "Add your first saved address."}
+                  ? "Найди нужный адрес или удали лишний."
+                  : "Добавь первый адрес."}
               </DialogDescription>
             </DialogHeader>
             <VaultItemBrowser
               items={items}
               searchId="vault-search-addresses"
-              title="Addresses"
+              title="Адреса"
             />
-            <div className="flex justify-end gap-2">
+            <div className="flex flex-wrap items-baseline gap-x-6 gap-y-2">
               <Button
                 onClick={() => {
                   section.setView("add");
                 }}
                 type="button"
+                variant="act"
               >
-                <PlusIcon />
-                Add address
+                Добавить адрес
               </Button>
             </div>
           </>
@@ -69,13 +68,12 @@ export function VaultAddresses({
               onClick={() => {
                 section.setView("list");
               }}
-              title="Addresses"
+              title="Адреса"
             />
             <DialogHeader className="pr-10 sm:pr-6">
-              <DialogTitle>Add address</DialogTitle>
+              <DialogTitle>Добавить адрес</DialogTitle>
               <DialogDescription>
-                Sensitive values are encrypted before database storage and are
-                never returned after saving.
+                Адрес доставки, который Bro подставит при заказе.
               </DialogDescription>
             </DialogHeader>
             <AddressForm

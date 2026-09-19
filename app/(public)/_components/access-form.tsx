@@ -7,7 +7,6 @@ import {
   Field,
   FieldDescription,
   FieldError,
-  FieldGroup,
   FieldLabel,
 } from "@web/components/ui/field";
 import { Input } from "@web/components/ui/input";
@@ -58,42 +57,43 @@ export function AccessForm() {
     return (
       <section
         aria-labelledby="access-ready-heading"
-        className="space-y-4 rounded-xl bg-card p-5 ring-1 ring-foreground/10"
+        className="mx-auto flex w-full max-w-[22rem] flex-col items-center gap-3"
       >
-        <div className="space-y-1">
-          <h2 className="type-label" id="access-ready-heading">
-            Твой Бро ждёт на этом номере
-          </h2>
-          <p className="type-banner-metric type-numeric">
-            {assignedPhoneNumber}
-          </p>
-        </div>
+        <h2
+          className="type-fine text-muted-foreground"
+          id="access-ready-heading"
+        >
+          Твой бро ждёт на этом номере
+        </h2>
+        {/* A number is read character by character: machine strings get the
+            gothic, words get the serif. */}
+        <p className="type-numeric text-2xl font-medium tracking-[-0.02em]">
+          {assignedPhoneNumber}
+        </p>
         <Button
-          className="w-full"
+          className="type-cta"
           nativeButton={false}
           render={
             <a
-              aria-label="Написать Бро в iMessage"
+              aria-label="Написать бро в iMessage"
               href={imessageLink(assignedPhoneNumber)}
             />
           }
-          size="lg"
+          variant="act"
         >
-          Написать Бро
+          Написать бро
         </Button>
         <Button
-          className="w-full"
           onClick={() => {
             copyNumber.mutate(assignedPhoneNumber);
           }}
-          size="lg"
-          variant="outline"
+          variant="act"
         >
           {copyNumber.isSuccess ? "Номер скопирован" : "Скопировать номер"}
         </Button>
-        <p className="type-caption text-muted-foreground">
+        <p className="type-fine text-muted-foreground">
           Первое сообщение создаёт твой аккаунт. Если сейчас ты не на iPhone —
-          открой эту страницу на нём или сохрани номер: Бро отвечает только в
+          открой эту страницу на нём или сохрани номер: бро отвечает только в
           iMessage.
         </p>
       </section>
@@ -102,6 +102,7 @@ export function AccessForm() {
 
   return (
     <form
+      className="mx-auto flex w-full max-w-[22rem] flex-col items-center gap-4"
       onSubmit={(event) => {
         event.preventDefault();
         access.mutate(
@@ -111,33 +112,40 @@ export function AccessForm() {
         );
       }}
     >
-      <FieldGroup>
-        <Field>
-          <FieldLabel htmlFor="phone-number">Твой номер телефона</FieldLabel>
-          <Input
-            autoComplete="tel"
-            id="phone-number"
-            inputMode="tel"
-            name="phone-number"
-            placeholder="+7 999 123-45-67"
-            required
-            size="xl"
-            type="tel"
-          />
-          <FieldDescription>
-            Только синий iMessage; SMS не подойдёт.
-          </FieldDescription>
-        </Field>
-        <FieldError errors={access.error ? [access.error] : undefined} />
-        <Button
-          className="w-full"
-          disabled={access.isPending}
-          size="lg"
-          type="submit"
+      <Field className="items-center text-center">
+        <FieldLabel
+          className="type-fine justify-center text-muted-foreground"
+          htmlFor="phone-number"
         >
-          {access.isPending ? "Выдаём номер…" : "Получить своего Бро"}
-        </Button>
-      </FieldGroup>
+          Твой номер телефона
+        </FieldLabel>
+        <Input
+          autoComplete="tel"
+          className="text-center"
+          id="phone-number"
+          inputMode="tel"
+          name="phone-number"
+          placeholder="+7 999 123-45-67"
+          required
+          type="tel"
+          variant="paper"
+        />
+        <FieldDescription className="type-fine text-center">
+          Только синий iMessage; SMS не подойдёт.
+        </FieldDescription>
+      </Field>
+      <FieldError
+        className="type-fine"
+        errors={access.error ? [access.error] : undefined}
+      />
+      <Button
+        className="type-cta"
+        disabled={access.isPending}
+        type="submit"
+        variant="act"
+      >
+        {access.isPending ? "Выдаём номер…" : "Получить своего бро"}
+      </Button>
     </form>
   );
 }

@@ -90,16 +90,16 @@ function OpenRouterModelField({ modelId }: { readonly modelId: string }) {
         render={
           <Button
             disabled={selectModel.isPending}
-            size="sm"
+            size="act-sm"
             type="button"
-            variant="outline"
+            variant="act"
           />
         }
       >
-        Choose
+        Выбрать
         <ChevronsUpDownIcon />
       </DialogTrigger>
-      <DialogContent className="sm:max-w-lg">
+      <DialogContent className="rounded-none sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>Model (OpenRouter)</DialogTitle>
           <DialogDescription>
@@ -204,16 +204,16 @@ function GatewayModelSelector({ modelId }: { readonly modelId: string }) {
         render={
           <Button
             disabled={selectModel.isPending}
-            size="sm"
+            size="act-sm"
             type="button"
-            variant="outline"
+            variant="act"
           />
         }
       >
         <ModelSelectorLogo
           provider={providerLogo(modelId.split("/", 1)[0] ?? modelId)}
         />
-        Choose
+        Выбрать
         <ChevronsUpDownIcon />
       </ModelSelectorTrigger>
       <ModelSelectorContent

@@ -12,16 +12,16 @@ export function TelegramLinkAction({ linked }: { readonly linked: boolean }) {
         nativeButton={false}
         render={
           <a
-            aria-label="Open the Telegram link"
+            aria-label="Открыть ссылку Telegram"
             href={link.data.url}
             rel="noreferrer"
             target="_blank"
           />
         }
-        size="sm"
-        variant="outline"
+        size="act-sm"
+        variant="act"
       >
-        Open the link
+        Открыть ссылку
       </Button>
     );
   }
@@ -32,11 +32,11 @@ export function TelegramLinkAction({ linked }: { readonly linked: boolean }) {
       onClick={() => {
         link.mutate();
       }}
-      size="sm"
+      size="act-sm"
       type="button"
-      variant="outline"
+      variant="act"
     >
-      {linked ? "Relink Telegram" : "Link Telegram"}
+      {linked ? "Перепривязать" : "Привязать"}
     </Button>
   );
 }

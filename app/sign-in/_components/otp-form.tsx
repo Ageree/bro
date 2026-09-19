@@ -1,13 +1,11 @@
 "use client";
 
 import { useMutation } from "@tanstack/react-query";
-import { MessageSquareIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import type { SubmitEvent } from "react";
 import { authClient } from "@web/auth/client";
 import { formValue, verifyPhoneNumber } from "@app/sign-in/_lib/phone-auth";
 import { normalizeAuthPhoneNumber } from "@shared/identity/phone-number";
-import { Alert, AlertDescription, AlertTitle } from "@web/components/ui/alert";
 import { Button } from "@web/components/ui/button";
 import {
   Field,
@@ -17,6 +15,8 @@ import {
 } from "@web/components/ui/field";
 import { Input } from "@web/components/ui/input";
 import { PhoneNumberField } from "./phone-field";
+
+const sendCodeFallbackMessage = "Не вышло отправить код. Попробуй ещё раз.";
 
 export function PhoneOtpAuthForm({
   callbackUrl,
@@ -28,12 +28,12 @@ export function PhoneOtpAuthForm({
   const sendOtp = useMutation({
     mutationFn: async (phoneNumberValue: string) => {
       const phoneNumber = normalizeAuthPhoneNumber(phoneNumberValue);
-      if (!phoneNumber) throw new Error("Enter a valid phone number.");
+      if (!phoneNumber) throw new Error("Введи номер телефона.");
 
       const result = await authClient.phoneNumber
         .sendOtp({ phoneNumber })
         .catch(() => {
-          throw new Error("Unable to send a code. Please try again.");
+          throw new Error(sendCodeFallbackMessage);
         });
       if (result.error) throw new Error(phoneOtpErrorMessage(result.error));
       return phoneNumber;
@@ -57,21 +57,29 @@ export function PhoneOtpAuthForm({
 
   return (
     <>
-      <IMessageCodeNotice phoneNumber={imessagePhoneNumber} />
       <form
-        className="mt-4"
+        className="mt-[0.9rem]"
         onSubmit={(event) => {
           submit(event);
         }}
       >
-        <FieldGroup>
+        <FieldGroup className="gap-4">
           <PhoneNumberField />
-          <FieldError errors={sendOtp.error ? [sendOtp.error] : undefined} />
-          <Button className="w-full" disabled={sendOtp.isPending} type="submit">
-            {sendOtp.isPending ? "Sending…" : "Send code"}
+          <FieldError
+            className="type-fine"
+            errors={sendOtp.error ? [sendOtp.error] : undefined}
+          />
+          <Button
+            className="w-full"
+            disabled={sendOtp.isPending}
+            type="submit"
+            variant="paper"
+          >
+            {sendOtp.isPending ? "Отправляем…" : "Получить код"}
           </Button>
         </FieldGroup>
       </form>
+      <IMessageCodeNotice phoneNumber={imessagePhoneNumber} />
     </>
   );
 }
@@ -89,13 +97,12 @@ function VerificationCodeForm({
   const verifyCode = useMutation({
     mutationFn: async (code: string) => {
       if (!/^\d{6}$/.test(code)) {
-        throw new Error("Enter the six-digit code.");
+        throw new Error("Введи код из шести цифр.");
       }
 
       await verifyPhoneNumber({
         code,
-        errorMessage:
-          "That code could not be verified. Request a new code and try again.",
+        errorMessage: "Код не подошёл. Запроси новый и попробуй ещё раз.",
         phoneNumber,
       });
     },
@@ -112,14 +119,19 @@ function VerificationCodeForm({
 
   return (
     <form
-      className="mt-6"
+      className="mt-[0.9rem]"
       onSubmit={(event) => {
         submit(event);
       }}
     >
-      <FieldGroup>
-        <Field>
-          <FieldLabel htmlFor="code">Verification Code</FieldLabel>
+      <FieldGroup className="gap-4">
+        <Field className="gap-[0.35rem]">
+          <FieldLabel
+            className="type-field-label text-muted-foreground"
+            htmlFor="code"
+          >
+            Код
+          </FieldLabel>
           <Input
             autoComplete="one-time-code"
             id="code"
@@ -128,64 +140,62 @@ function VerificationCodeForm({
             name="code"
             pattern="[0-9]{6}"
             required
+            variant="paper"
           />
         </Field>
         <FieldError
+          className="type-fine"
           errors={verifyCode.error ? [verifyCode.error] : undefined}
         />
         <Button
           className="w-full"
           disabled={verifyCode.isPending}
           type="submit"
+          variant="paper"
         >
-          {verifyCode.isPending ? "Verifying…" : "Verify code"}
+          {verifyCode.isPending ? "Проверяем…" : "Войти"}
         </Button>
         <Button
-          className="w-full"
+          className="w-full justify-center text-muted-foreground"
           disabled={verifyCode.isPending}
           onClick={onUseDifferentNumber}
+          size="act-sm"
           type="button"
-          variant="ghost"
+          variant="act"
         >
-          Use a different number
+          Другой номер
         </Button>
       </FieldGroup>
     </form>
   );
 }
 
+/**
+ * The code comes from the deployment's own iMessage line. With the number
+ * known, the sheet offers to open that conversation — the same «Написать
+ * Bro» the old sheet had — otherwise it says where to look.
+ */
 function IMessageCodeNotice({
   phoneNumber,
 }: {
   readonly phoneNumber?: string;
 }) {
-  return (
-    <Alert className="mt-6" variant="information">
-      <MessageSquareIcon />
-      <AlertTitle>Your code arrives by iMessage</AlertTitle>
-      <AlertDescription>
-        <p>
-          Enter a phone number that can receive iMessage, then open Messages to
-          read the code.
-        </p>
-        {phoneNumber ? (
-          <Button
-            className="mt-3 w-full"
-            nativeButton={false}
-            render={
-              <a aria-label="Open Messages" href={`sms:${phoneNumber}`} />
-            }
-            variant="outline"
-          >
-            Open Messages
-          </Button>
-        ) : (
-          <p className="mt-2">
-            The code comes from the iMessage number of this deployment.
-          </p>
-        )}
-      </AlertDescription>
-    </Alert>
+  return phoneNumber ? (
+    <Button
+      className="mt-[0.85rem] w-full justify-center text-muted-foreground"
+      nativeButton={false}
+      render={
+        <a aria-label="Написать Bro в iMessage" href={`sms:${phoneNumber}`} />
+      }
+      size="act-sm"
+      variant="act"
+    >
+      Написать Bro
+    </Button>
+  ) : (
+    <p className="type-status mt-[0.85rem] text-center text-muted-foreground">
+      Код придёт с iMessage-номера этого сервиса.
+    </p>
   );
 }
 
@@ -195,5 +205,5 @@ export function phoneOtpErrorMessage(error: {
 }) {
   return error.code?.startsWith("IMESSAGE_") && error.message
     ? error.message
-    : "Unable to send a code. Please try again.";
+    : sendCodeFallbackMessage;
 }

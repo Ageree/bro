@@ -23,21 +23,21 @@ const navigation = [
     href: "/workspace",
     icon: PanelsTopLeftIcon,
     id: "workspace",
-    label: "Workspace",
+    label: "Кабинет",
   },
-  { href: "/vault", icon: KeyRoundIcon, id: "vault", label: "Vault" },
+  { href: "/vault", icon: KeyRoundIcon, id: "vault", label: "Сейф" },
   {
     href: "/personal-info",
     icon: UserRoundIcon,
     id: "personal-info",
-    label: "Personal info",
+    label: "Личные данные",
   },
-  { href: "/chat", icon: MessageSquareIcon, id: "chat", label: "Chat" },
+  { href: "/chat", icon: MessageSquareIcon, id: "chat", label: "Чат" },
   {
     href: "/chat/history",
     icon: HistoryIcon,
     id: "history",
-    label: "All chats",
+    label: "Все чаты",
   },
 ] as const;
 
@@ -47,7 +47,7 @@ export function AuthenticatedNavigation() {
   return (
     <SidebarGroup>
       <SidebarGroupContent>
-        <nav aria-label="Primary">
+        <nav aria-label="Основная навигация">
           <SidebarMenu>
             {navigation.map((item) => {
               const Icon = item.icon;
