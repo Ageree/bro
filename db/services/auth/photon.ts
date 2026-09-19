@@ -88,7 +88,7 @@ export function photonOtpFailure(error: PhotonDeliveryError) {
       return {
         code: "IMESSAGE_RATE_LIMITED",
         message:
-          "Too many sign-in codes were requested from this line. Wait a moment, then request another code.",
+          "Слишком много кодов запрошено с этого номера. Подожди немного и запроси код ещё раз.",
       };
     }
     case "ValidationError": {
@@ -102,7 +102,7 @@ export function photonOtpFailure(error: PhotonDeliveryError) {
       return {
         code: "IMESSAGE_DELIVERY_FAILED",
         message:
-          "Photon could not send a sign-in code. Check the project's iMessage line, then try again.",
+          "Не удалось отправить код в iMessage. Проверь номер и попробуй ещё раз.",
       };
     }
   }

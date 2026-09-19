@@ -94,9 +94,9 @@ describe("Photon delivery", () => {
     ["AuthenticationError", "IMESSAGE_PROJECT_NOT_AUTHORIZED", "credentials"],
     ["ConnectionError", "IMESSAGE_SERVICE_UNAVAILABLE", "did not respond"],
     ["NotFoundError", "IMESSAGE_RECIPIENT_UNKNOWN", "registered with iMessage"],
-    ["RateLimitError", "IMESSAGE_RATE_LIMITED", "Wait a moment"],
+    ["RateLimitError", "IMESSAGE_RATE_LIMITED", "Подожди немного"],
     ["ValidationError", "IMESSAGE_RECIPIENT_UNREACHABLE", "not reachable"],
-    ["IMessageError", "IMESSAGE_DELIVERY_FAILED", "could not send"],
+    ["IMessageError", "IMESSAGE_DELIVERY_FAILED", "Не удалось отправить"],
   ])("maps %s to actionable OTP copy", (kind, expectedCode, copy) => {
     const failure = photonOtpFailure(new PhotonDeliveryError({ kind }));
 

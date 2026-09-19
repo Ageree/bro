@@ -69,6 +69,7 @@ const postedText = z.object({ raw: z.string() });
 const png = new Uint8Array([
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d, 0x49, 0x48,
 ]);
+const pngBase64 = Buffer.from(png).toString("base64");
 
 describe("Photon inbound media", () => {
   beforeEach(() => {
@@ -125,7 +126,7 @@ describe("Photon inbound media", () => {
     expect(result?.message).toEqual([
       { text: "[фото]", type: "text" },
       {
-        data: Buffer.from(png),
+        data: pngBase64,
         filename: "IMG_1.png",
         mediaType: "image/png",
         type: "file",

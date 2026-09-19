@@ -6,7 +6,10 @@ import {
   registrableDomain,
   selectBrowserVaultItems,
 } from "@agent/lib/browser-use/secrets";
-import { composeBrowserTask } from "@agent/tools/browser_task";
+import {
+  composeBrowserContinuation,
+  composeBrowserTask,
+} from "@agent/tools/browser_task";
 import {
   serializeLoginVaultPayload,
   serializePaymentCard,
@@ -61,6 +64,21 @@ describe("browser secret domains", () => {
     expect(registrableDomain("127.0.0.1")).toBeUndefined();
   });
 
+  it("lets a login reach the host it was actually saved for", () => {
+    expect(
+      loginAllowedDomains(
+        "https://taxi.yandex.ru",
+        "https://passport.yandex.ru"
+      )
+    ).toEqual(["yandex.ru"]);
+    expect(
+      loginAllowedDomains(
+        "https://store.myshopify.com",
+        "https://checkout.myshopify.com"
+      )
+    ).toEqual(["store.myshopify.com", "checkout.myshopify.com"]);
+  });
+
   it("binds a login to the site alone and a card to the payment processors too", () => {
     expect(loginAllowedDomains("https://taxi.yandex.ru")).toEqual([
       "yandex.ru",
@@ -90,6 +108,67 @@ describe("browser vault selection", () => {
         site: "https://www.other.example",
       })
     ).toEqual({ loginId: undefined, paymentId: undefined });
+  });
+
+  it("falls back to a login saved elsewhere on the same registrable domain", () => {
+    const saved = [
+      { account: "yandex.ru · i•••@example.com", id: "login-3", kind: "login" },
+      {
+        account: "passport.yandex.ru · p•••@example.com",
+        id: "login-4",
+        kind: "login",
+      },
+    ];
+
+    expect(
+      selectBrowserVaultItems(saved, {
+        allowPayment: false,
+        site: "https://taxi.yandex.ru",
+      }).loginId
+    ).toBe("login-3");
+    expect(
+      selectBrowserVaultItems(saved.slice(1), {
+        allowPayment: false,
+        site: "https://taxi.yandex.ru",
+      }).loginId
+    ).toBe("login-4");
+  });
+
+  it("prefers the login saved for the exact host", () => {
+    expect(
+      selectBrowserVaultItems(
+        [
+          {
+            account: "yandex.ru · i•••@example.com",
+            id: "login-3",
+            kind: "login",
+          },
+          ...entries,
+        ],
+        { allowPayment: false, site: "https://taxi.yandex.ru" }
+      ).loginId
+    ).toBe("login-1");
+  });
+
+  it("never matches a login across registrable domains", () => {
+    expect(
+      selectBrowserVaultItems(entries, {
+        allowPayment: false,
+        site: "https://shop.example.org",
+      }).loginId
+    ).toBeUndefined();
+    expect(
+      selectBrowserVaultItems(
+        [
+          {
+            account: "yandex.com.tr · i•••@example.com",
+            id: "login-5",
+            kind: "login",
+          },
+        ],
+        { allowPayment: false, site: "https://taxi.yandex.ru" }
+      ).loginId
+    ).toBeUndefined();
   });
 
   it("selects the card only when payment was approved for the errand", () => {
@@ -144,6 +223,32 @@ describe("browser secret bindings", () => {
     expect(task).toContain("login_password");
     expect(task).toContain("NEEDS: exactly one of");
     expect(JSON.stringify(bound.aliases)).not.toContain(password);
+  });
+
+  it("leads a continuation with the person's own message", () => {
+    const bound = browserSecretBindings({
+      card,
+      login,
+      site: "https://taxi.yandex.ru",
+    });
+    const continuation = composeBrowserContinuation({
+      aliases: bound.aliases,
+      errand: "Войди в аккаунт",
+      facts: "Known details you may type into forms:\nPhone: +79991234567",
+      message: "Привяжи карту, она есть в сейфе",
+      site: "https://taxi.yandex.ru",
+    });
+
+    expect(continuation.startsWith("Привяжи карту, она есть в сейфе")).toBe(
+      true
+    );
+    expect(continuation).toContain("«Войди в аккаунт»");
+    expect(continuation).toContain("do not start over");
+    expect(continuation).toContain("card_number");
+    expect(continuation).toContain("NEEDS: exactly one of");
+    for (const secret of [password, cardNumber, securityCode]) {
+      expect(continuation).not.toContain(secret);
+    }
   });
 
   it("binds nothing when no vault item was selected", () => {

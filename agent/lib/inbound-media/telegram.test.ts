@@ -28,6 +28,8 @@ const ogg = new Uint8Array([
 const pdf = new Uint8Array([
   0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34, 0x0a, 0x25, 0xe2, 0xe3,
 ]);
+const jpegBase64 = Buffer.from(jpeg).toString("base64");
+const pdfBase64 = Buffer.from(pdf).toString("base64");
 
 /** Serves the Bot API: `getFile` resolves every id to a path, the file endpoint serves `files`. */
 function serveTelegram(
@@ -159,7 +161,7 @@ describe("Telegram media turn", () => {
     expect(turn?.message).toEqual([
       { text: "[фото]", type: "text" },
       {
-        data: jpeg,
+        data: jpegBase64,
         filename: "photo.jpg",
         mediaType: "image/jpeg",
         type: "file",
@@ -257,7 +259,7 @@ describe("Telegram media turn", () => {
     expect(scan?.message).toEqual([
       { text: "[документ]", type: "text" },
       {
-        data: pdf,
+        data: pdfBase64,
         filename: "scan.pdf",
         mediaType: "application/pdf",
         type: "file",

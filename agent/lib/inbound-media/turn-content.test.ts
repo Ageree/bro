@@ -7,6 +7,7 @@ import {
 } from "./turn-content";
 
 const jpeg = new Uint8Array([0xff, 0xd8, 0xff]);
+const jpegBase64 = Buffer.from(jpeg).toString("base64");
 
 describe("inbound turn assembly", () => {
   it("keeps a plain text message as a string", () => {
@@ -30,12 +31,41 @@ describe("inbound turn assembly", () => {
     expect(turn.message).toEqual([
       { text: "[фото]", type: "text" },
       {
-        data: jpeg,
+        data: jpegBase64,
         filename: "photo.jpg",
         mediaType: "image/jpeg",
         type: "file",
       },
     ]);
+  });
+
+  it("encodes image and PDF bytes as a base64 string, not raw bytes", () => {
+    const turn = inboundTurn("что это?", [
+      {
+        data: jpeg,
+        filename: "photo.jpg",
+        kind: "image",
+        mediaType: "image/jpeg",
+      },
+      { data: jpeg, filename: "scan.pdf", kind: "pdf" },
+    ]);
+
+    if (!Array.isArray(turn.message)) {
+      throw new Error("Expected file parts alongside the caption.");
+    }
+    const files = turn.message.filter(
+      (part): part is Extract<typeof part, { type: "file" }> =>
+        part.type === "file"
+    );
+    expect(files).toHaveLength(2);
+    for (const file of files) {
+      expect(file.data).toBe(jpegBase64);
+    }
+    // A raw Uint8Array/Buffer is not a plain JSON value and breaks eve's
+    // durable dynamic-tool closures, which JSON-serialize the whole turn;
+    // a base64 string keeps the message plain-JSON-serializable.
+    expect(() => JSON.stringify(turn.message)).not.toThrow();
+    expect(JSON.parse(JSON.stringify(turn.message))).toEqual(turn.message);
   });
 
   it("puts the caption before the file parts and marks a PDF as a document", () => {
@@ -46,7 +76,7 @@ describe("inbound turn assembly", () => {
     expect(turn.message).toEqual([
       { text: "что это?", type: "text" },
       {
-        data: jpeg,
+        data: jpegBase64,
         filename: "scan.pdf",
         mediaType: "application/pdf",
         type: "file",

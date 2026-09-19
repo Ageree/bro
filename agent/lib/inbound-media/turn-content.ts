@@ -45,6 +45,18 @@ export const voiceFailedNote = "[голосовое не распозналос�
 const photoNote = "[фото]";
 const documentNote = "[документ]";
 
+/**
+ * Encodes attachment bytes as base64 so a `FilePart` stays plain,
+ * JSON-serializable data — a raw `Uint8Array` is not a plain object and
+ * breaks eve's durable dynamic-tool closures (e.g. its memory tools), which
+ * validate the whole turn, including this message, as JSON.
+ */
+function toBase64(data: Uint8Array) {
+  return Buffer.from(data.buffer, data.byteOffset, data.byteLength).toString(
+    "base64"
+  );
+}
+
 /** The line the model sees for a file it cannot open. */
 export function fileNote(
   name: string | undefined,
@@ -77,7 +89,7 @@ export function inboundTurn(
       case "image": {
         hasImage = true;
         files.push({
-          data: item.data,
+          data: toBase64(item.data),
           filename: item.filename,
           mediaType: item.mediaType,
           type: "file",
@@ -86,7 +98,7 @@ export function inboundTurn(
       }
       case "pdf": {
         files.push({
-          data: item.data,
+          data: toBase64(item.data),
           filename: item.filename,
           mediaType: "application/pdf",
           type: "file",

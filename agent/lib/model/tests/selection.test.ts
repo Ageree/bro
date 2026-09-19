@@ -73,7 +73,7 @@ describe("model selection", () => {
       apiKey: "openrouter-test-key",
       headers: {
         "HTTP-Referer": "https://openinstinct.example",
-        "X-Title": "OpenInstinct",
+        "X-Title": "Bro",
       },
     });
     expect(openRouter.chat).toHaveBeenCalledExactlyOnceWith(

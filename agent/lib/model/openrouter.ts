@@ -3,7 +3,7 @@ import type { AgentModelOptionsDefinition } from "eve";
 import { env } from "@shared/environment";
 import { applicationOrigin } from "@shared/environment/origin";
 
-const applicationName = "OpenInstinct";
+const applicationName = "Bro";
 
 /**
  * OpenRouter attributes traffic on its dashboard from these headers, and the

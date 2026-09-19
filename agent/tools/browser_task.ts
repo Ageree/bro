@@ -5,6 +5,7 @@ import { resolveModeValue } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { telegramConversationIdSchema } from "@agent/lib/telegram-conversation";
 import {
+  BrowserUseError,
   browserUseConfigured,
   cancelBrowserUseRun,
   createBrowserUseProfile,
@@ -13,6 +14,8 @@ import {
   liveViewUrlFromEvents,
   queueBrowserUseSessionMessage,
   readBrowserUseRunStatus,
+  type BrowserUseCreateRunInput,
+  type BrowserUseRunStatus,
 } from "@agent/lib/browser-use/client";
 import { resolveBrowserSecretBindings } from "@agent/lib/browser-use/secrets";
 import {
@@ -23,7 +26,7 @@ import {
   saveBrowserProfileId,
   updateBrowserRunProgress,
 } from "@db/services/browser-runs";
-import { readUserProfile } from "@db/services/user-profile";
+import { browserRunFacts } from "@agent/lib/browser-use/facts";
 import { env } from "@shared/environment";
 import { browserRunNeeds } from "@agent/lib/browser-use/outcome";
 import { browserRunQuotaGate } from "@agent/lib/billing/quota";
@@ -75,29 +78,10 @@ function outcomeContract() {
   ].join("\n");
 }
 
-function knownFacts(profile: Awaited<ReturnType<typeof readUserProfile>>) {
-  const name = [profile.firstName, profile.lastName]
-    .filter((part) => part !== null)
-    .join(" ");
-  const address = [
-    profile.addressLine1,
-    profile.addressLine2,
-    profile.postalCode,
-    profile.city,
-    profile.region,
-    profile.countryCode,
-  ]
-    .filter((part) => part !== null)
-    .join(", ");
-  const facts = [
-    name ? `Name: ${name}` : undefined,
-    profile.phone ? `Phone: ${profile.phone}` : undefined,
-    profile.email ? `Email: ${profile.email}` : undefined,
-    address ? `Address: ${address}` : undefined,
-  ].filter((fact) => fact !== undefined);
-  return facts.length === 0
-    ? undefined
-    : ["Known details you may type into forms:", ...facts].join("\n");
+function credentialsLine(aliases: readonly string[]) {
+  return aliases.length === 0
+    ? "No stored credentials are available for this run. If the site asks you to sign in, stop with NEEDS: password instead of guessing one."
+    : `Credentials are attached as secrets: focus the field and ask for the secret by name — ${aliases.join(", ")}. The server types the values; you never see them.`;
 }
 
 export function composeBrowserTask(options: {
@@ -111,9 +95,37 @@ export function composeBrowserTask(options: {
       ? `${options.errand}\n\nSite: ${options.site}`
       : options.errand,
     options.facts,
-    options.aliases.length === 0
-      ? "No stored credentials are available for this run. If the site asks you to sign in, stop with NEEDS: password instead of guessing one."
-      : `Credentials are attached as secrets: focus the field and ask for the secret by name — ${options.aliases.join(", ")}. The server types the values; you never see them.`,
+    credentialsLine(options.aliases),
+    outcomeContract(),
+  ]
+    .filter((part) => part !== undefined)
+    .join("\n\n");
+}
+
+/**
+ * A follow-up run in the browser the errand already lives in. The person's own
+ * message leads, because it is the instruction; everything after it only says
+ * where that instruction lands. The tab, the cookies and the agent's memory of
+ * the errand are still there, so telling it to start over would undo the
+ * sign-in the person is following up about.
+ */
+export function composeBrowserContinuation(options: {
+  readonly aliases: readonly string[];
+  readonly errand: string;
+  readonly facts: string | undefined;
+  readonly message: string;
+  readonly site: string | undefined;
+}) {
+  return [
+    options.message,
+    [
+      `This continues the errand «${options.errand}» in this same browser session. Keep the tab that is open and the account already signed in: do not start over and do not navigate again unless the page is gone.`,
+      options.site ? `Site: ${options.site}` : undefined,
+    ]
+      .filter((line) => line !== undefined)
+      .join("\n"),
+    options.facts,
+    credentialsLine(options.aliases),
     outcomeContract(),
   ]
     .filter((part) => part !== undefined)
@@ -162,11 +174,53 @@ async function workspaceProfileId(scope: {
 }) {
   const existing = await readBrowserProfileId(scope);
   if (existing) return existing;
-  const profile = await createBrowserUseProfile(
-    "OpenInstinct workspace",
-    scope.userId
-  );
+  const profile = await createBrowserUseProfile("Bro workspace", scope.userId);
   return saveBrowserProfileId(scope, profile.id);
+}
+
+const terminalRunStatuses = new Set<BrowserUseRunStatus>([
+  "cancelled",
+  "completed",
+  "failed",
+]);
+
+/**
+ * Whether the tracked run can still accept a queued message. Browser Use
+ * drains a message queued onto an idle session immediately — as a new run the
+ * caller never learns the id of — so a run that has already finished must be
+ * continued with a run of its own instead.
+ */
+async function trackedRunIsLive(runId: string, completedAt: Date | null) {
+  if (completedAt) return false;
+  try {
+    return !terminalRunStatuses.has(await readBrowserUseRunStatus(runId));
+  } catch (error) {
+    console.warn("[browser-use] run status could not be read", {
+      cause: error,
+      runId,
+    });
+    return false;
+  }
+}
+
+/**
+ * The follow-up run inside the errand's own session. A busy session answers
+ * 409 and the caller falls back to the queue; a session that no longer exists
+ * answers 404, and the run is made again without one so it opens a fresh
+ * browser on the same profile, where the signed-in cookies live.
+ */
+async function createFollowUpRun(input: BrowserUseCreateRunInput) {
+  try {
+    return { reusedSession: true, run: await createBrowserUseRun(input) };
+  } catch (error) {
+    if (!(error instanceof BrowserUseError)) throw error;
+    if (error.status === 409) return { reusedSession: true, run: undefined };
+    if (error.status !== 400 && error.status !== 404) throw error;
+    return {
+      reusedSession: false,
+      run: await createBrowserUseRun({ ...input, sessionId: undefined }),
+    };
+  }
 }
 
 // The live browser takes a few seconds to come up, and its takeover URL only
@@ -194,7 +248,7 @@ async function waitForLiveViewUrl(
 
 export const browserTask = defineTool({
   description:
-    "Run one errand on a website through a hosted cloud browser that can sign in, fill forms, and complete a checkout. Use it when the user wants something done on a site; use web_search and web_fetch instead for reading public pages. Start exactly one run per errand and pass the site's origin so saved credentials can be bound to it. Every follow-up for that errand — an answer, a code the user typed, a changed constraint — goes through continue with the same runId, never a second start. Set allowPayment only after the user approved paying on this errand in this conversation. The run signs in with vault credentials the models involved never see, so never ask the user for a password: when none is stored, call request_vault_setup. Give the user the live-view link only when the run is blocked on a CAPTCHA, 3-D Secure, a push approval, or a sign-in you cannot complete. The run continues in the background and its result arrives later as a new message, so do not wait on it.",
+    "Run one errand on a website through a hosted cloud browser that can sign in, fill forms, and complete a checkout. Use it when the user wants something done on a site; use web_search and web_fetch instead for reading public pages. Start exactly one run per errand and pass the site's origin so saved credentials can be bound to it. Write the errand short: the cloud browser is itself an agent, so give it the goal, the hard constraints, and what to report back — not a click-by-click script. Every follow-up for that errand — an answer, a code the user typed, a changed constraint — goes through continue with the same runId, never a second start: continue works in the same browser, on the tab and the signed-in account the run already has. When the previous run has already finished, continue starts a follow-up run in that same browser and returns a NEW runId; use that one from then on. Pass allowPayment: true on start or on continue once the user approved paying or attaching a card on this errand in this conversation — «привяжи карту» is approval to bind the saved card, not to buy anything. The person's name, phone, email and addresses from the profile and from the vault are typed into forms automatically, so never ask for a phone number or an address the user said is saved: start the errand and let the run use it. The run signs in with vault credentials the models involved never see, so never ask the user for a password: when none is stored, call request_vault_setup. Give the user the live-view link only when the run is blocked on a CAPTCHA, 3-D Secure, a push approval, or a sign-in you cannot complete, and never forward a one-time code back to the user. The run continues in the background and its result arrives later as a new message, so do not wait on it.",
   inputSchema,
   async execute(input, context) {
     const { conversation, scope } = conversationTarget(context);
@@ -210,18 +264,18 @@ export const browserTask = defineTool({
       if (!quota.allowed) {
         return { note: quota.note, status: "quota_exhausted" };
       }
-      const [profileId, secrets, profile] = await Promise.all([
+      const [profileId, secrets, facts] = await Promise.all([
         workspaceProfileId(scope),
         resolveBrowserSecretBindings(scope, {
           allowPayment: input.allowPayment === true,
           site: input.site,
         }),
-        readUserProfile(scope),
+        browserRunFacts(scope),
       ]);
       const task = composeBrowserTask({
         aliases: secrets.aliases,
         errand,
-        facts: knownFacts(profile),
+        facts,
         site: input.site,
       });
       const run = await createBrowserUseRun({
@@ -267,11 +321,105 @@ export const browserTask = defineTool({
         .string()
         .min(1, "A continue action needs the message to pass into the run.")
         .parse(input.task);
-      await queueBrowserUseSessionMessage(row.sessionId, message);
+      const allowPayment = input.allowPayment === true;
+      const site = input.site ?? row.site ?? undefined;
+      const live = await trackedRunIsLive(runId, row.completedAt);
+
+      // A live run already carries the secrets it was created with, so a plain
+      // follow-up is just a message on its queue. Bindings exist per run only:
+      // a card the person has only now approved needs a run of its own.
+      if (live && !allowPayment) {
+        await queueBrowserUseSessionMessage(row.sessionId, message);
+        return {
+          note: "The message was queued into the running errand. Its outcome still arrives as a new message.",
+          runId,
+          status: row.status,
+        };
+      }
+      if (live) {
+        try {
+          await cancelBrowserUseRun(runId);
+        } catch (error) {
+          console.warn(
+            "[browser-use] the replaced run could not be cancelled",
+            {
+              cause: error,
+              runId,
+            }
+          );
+        }
+        // Claiming the completion here is what keeps the webhook and the
+        // poller from reporting the replaced run as an outcome of its own.
+        await claimBrowserRunCompletion(runId, {
+          outcome: "Заменён продолжением с привязанной картой",
+          status: "stopped",
+        });
+      }
+
+      // No quota gate: `browserRunQuotaGate` counts as it reads, and a
+      // continuation is the same errand the month was already charged for.
+      const [secrets, facts] = await Promise.all([
+        resolveBrowserSecretBindings(scope, { allowPayment, site }),
+        browserRunFacts(scope),
+      ]);
+      const profileId = row.profileId ?? (await workspaceProfileId(scope));
+      const followUp = await createFollowUpRun({
+        maxCostUsd: env.BROWSER_USE_MAX_COST_USD,
+        model: env.BROWSER_USE_MODEL,
+        profileId,
+        proxyCountryCode: env.BROWSER_USE_PROXY_COUNTRY,
+        secretBindings: secrets.bindings,
+        sessionId: row.sessionId,
+        task: composeBrowserContinuation({
+          aliases: secrets.aliases,
+          errand: row.task,
+          facts,
+          message,
+          site,
+        }),
+      });
+      if (!followUp.run) {
+        await queueBrowserUseSessionMessage(row.sessionId, message);
+        return {
+          note: "The browser session was busy with another run, so the message was queued onto it instead. Keep using this run id; the outcome arrives as a new message.",
+          runId,
+          status: row.status,
+        };
+      }
+
+      await createBrowserRun(scope, {
+        ...conversation,
+        id: followUp.run.id,
+        liveViewUrl: followUp.reusedSession ? row.liveViewUrl : null,
+        profileId,
+        sessionId: followUp.run.sessionId,
+        site: site ?? null,
+        status: "running",
+        task: message,
+      });
+      const inheritedLiveViewUrl = followUp.reusedSession
+        ? row.liveViewUrl
+        : null;
+      const liveViewUrl =
+        inheritedLiveViewUrl ?? (await waitForLiveViewUrl(followUp.run.id));
+      if (liveViewUrl && liveViewUrl !== row.liveViewUrl) {
+        await updateBrowserRunProgress(followUp.run.id, { liveViewUrl });
+      }
       return {
-        note: "The message was queued into the running errand. Its outcome still arrives as a new message.",
-        runId,
-        status: row.status,
+        boundSecrets: secrets.aliases,
+        liveViewUrl,
+        note: [
+          `This errand now continues as run ${followUp.run.id} in the same browser. Use that run id from here on: ${runId} is finished and takes no further follow-up.`,
+          followUp.reusedSession
+            ? undefined
+            : "The previous browser session was gone, so the follow-up opened a new one on the same profile; the signed-in cookies came with it.",
+          "The outcome arrives as a new message; do not poll for it.",
+        ]
+          .filter((line) => line !== undefined)
+          .join(" "),
+        previousRunId: runId,
+        runId: followUp.run.id,
+        status: "running",
       };
     }
 

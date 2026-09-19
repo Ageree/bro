@@ -119,10 +119,21 @@ function withoutRedundantHosts(candidates: readonly string[]) {
   return kept;
 }
 
-export function loginAllowedDomains(site: string) {
+/**
+ * The hosts a stored login may be typed on: the errand's site widened to its
+ * registrable domain, plus the host the login was actually saved for when that
+ * one is not already covered — a password saved for a sign-in host has to be
+ * typeable there.
+ */
+export function loginAllowedDomains(site: string, loginOrigin?: string) {
   const host = secretHost(site);
   if (!host) return [];
-  return withoutRedundantHosts([registrableDomain(host) ?? host, host]);
+  const stored = loginOrigin ? secretHost(loginOrigin) : undefined;
+  return withoutRedundantHosts([
+    registrableDomain(host) ?? host,
+    host,
+    ...(stored ? [stored] : []),
+  ]);
 }
 
 export function paymentAllowedDomains(site: string) {
@@ -143,25 +154,41 @@ export function paymentAllowedDomains(site: string) {
  * so a password can only ever be bound to the site it was saved for. Vault
  * account hints are prefixed with the saved origin's hostname, which keeps the
  * match to a list read instead of decrypting every stored login.
+ *
+ * The exact host wins. Failing that, a login saved anywhere under the same
+ * registrable domain serves the errand — the account behind `taxi.yandex.ru`
+ * is the one saved for `yandex.ru` or `passport.yandex.ru` — and nothing is
+ * ever matched across two registrable domains.
  */
 export function selectBrowserVaultItems(
   entries: readonly BrowserVaultEntry[],
   options: { readonly allowPayment: boolean; readonly site: string | undefined }
 ) {
   const host = options.site ? secretHost(options.site) : undefined;
+  const domain = host ? registrableDomain(host) : undefined;
+  const logins = entries.filter((entry) => entry.kind === "login");
   const login = host
-    ? entries.find(
-        (entry) =>
-          entry.kind === "login" &&
-          (entry.account.startsWith(`${host} · `) ||
-            entry.account.startsWith(`www.${host} · `))
-      )
+    ? (logins.find((entry) => storedLoginHost(entry) === host) ??
+      logins.find((entry) => {
+        const stored = storedLoginHost(entry);
+        return (
+          stored !== undefined &&
+          domain !== undefined &&
+          registrableDomain(stored) === domain
+        );
+      }))
     : undefined;
   const payment =
     options.allowPayment && host
       ? entries.find((entry) => entry.kind === "payment")
       : undefined;
   return { loginId: login?.id, paymentId: payment?.id };
+}
+
+/** The hostname a login's account hint was prefixed with when it was saved. */
+function storedLoginHost(entry: BrowserVaultEntry) {
+  const [stored] = entry.account.split(" · ");
+  return stored ? secretHost(stored) : undefined;
 }
 
 function binding(
@@ -189,7 +216,10 @@ export function browserSecretBindings(options: {
   const bindings: BrowserUseSecretBinding[] = [];
   if (options.login) {
     const payload = parseLoginVaultPayload(options.login);
-    const domains = loginAllowedDomains(options.site);
+    const domains = loginAllowedDomains(
+      options.site,
+      payload && "origin" in payload ? payload.origin : undefined
+    );
     if (payload && domains.length > 0) {
       bindings.push(
         binding(
