@@ -53,7 +53,12 @@ async function createVaultRecord(scope: AccessScope, record: VaultRecord) {
   });
 }
 
-async function listVaultItems(scope: AccessScope) {
+/**
+ * The metadata rows only, newest first: one query, no per-item secret
+ * lookup. For a listing that never needs `hasSecret`, such as the cabinet's
+ * preview; a page that acts on an item reads `readVaultItems`.
+ */
+export async function listVaultItems(scope: AccessScope) {
   return vaultRecordSchema
     .array()
     .parse(

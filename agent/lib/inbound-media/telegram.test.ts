@@ -34,7 +34,11 @@ function serveTelegram(
   files: Readonly<
     Record<
       string,
-      { readonly bytes: Uint8Array; readonly contentType?: string }
+      {
+        readonly bytes: Uint8Array;
+        readonly contentLength?: number;
+        readonly contentType?: string;
+      }
     >
   >,
   transcription?: () => Response
@@ -51,6 +55,9 @@ function serveTelegram(
       if (!file) return new Response("not found", { status: 404 });
       const headers = new Headers();
       if (file.contentType) headers.set("content-type", file.contentType);
+      if (file.contentLength !== undefined) {
+        headers.set("content-length", String(file.contentLength));
+      }
       return new Response(new Uint8Array(file.bytes), { headers });
     }
     if (url === "https://openrouter.ai/api/v1/audio/transcriptions") {
@@ -187,6 +194,49 @@ describe("Telegram media turn", () => {
 
     expect(turn?.message).toBe(
       "смотри\n[файл: photo.jpg (image/jpeg), не удалось скачать]"
+    );
+  });
+
+  it("says the photo is too large when even the smallest rendition is over the cap", async () => {
+    const cap = 3 * 1024 * 1024;
+    serveTelegram({ next: { bytes: jpeg, contentLength: cap + 1 } });
+    const { telegramMediaTurn } = await loadTelegramMedia();
+
+    const turn = await telegramMediaTurn(
+      telegramMessage({
+        photo: [
+          { file_id: "l", file_size: cap + 1 },
+          { file_id: "xl", file_size: cap + 9 },
+        ],
+      })
+    );
+
+    expect(turn?.message).toBe(
+      "[файл: photo.jpg (image/jpeg), слишком большой]"
+    );
+  });
+
+  it("keeps the inline image cap for a PDF-labelled document that is an image", async () => {
+    const oversizedJpeg = new Uint8Array(3 * 1024 * 1024 + 1);
+    oversizedJpeg.set(jpeg);
+    serveTelegram({
+      next: { bytes: oversizedJpeg, contentType: "application/pdf" },
+    });
+    const { telegramMediaTurn } = await loadTelegramMedia();
+
+    const turn = await telegramMediaTurn(
+      telegramMessage({
+        document: {
+          file_id: "d",
+          file_name: "scan.pdf",
+          file_size: oversizedJpeg.byteLength,
+          mime_type: "application/pdf",
+        },
+      })
+    );
+
+    expect(turn?.message).toBe(
+      "[файл: scan.pdf (image/jpeg), слишком большой]"
     );
   });
 

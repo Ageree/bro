@@ -89,6 +89,12 @@ export async function downloadWithin(
     await response.body?.cancel().catch(() => undefined);
     return { kind: "failed", reason: `http ${String(response.status)}` };
   }
+  // fetch follows redirects, so the body may come from a different origin
+  // and scheme than the URL that was checked above.
+  if (response.url.length > 0 && !response.url.startsWith("https:")) {
+    await response.body?.cancel().catch(() => undefined);
+    return { kind: "failed", reason: "not-https" };
+  }
   try {
     return await readBodyWithin(response, maxBytes);
   } catch {

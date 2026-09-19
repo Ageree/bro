@@ -15,6 +15,8 @@ vi.mock("@vercel/connect", async (importOriginal) => ({
 }));
 
 import {
+  ConnectError,
+  ConnectorInstallationRequiredError,
   NoValidTokenError,
   UserAuthorizationRequiredError,
 } from "@vercel/connect";
@@ -83,13 +85,42 @@ describe("readGoogleWorkspaceConnection", () => {
     });
   });
 
-  it("reports any other failure as unavailable", async () => {
-    connect.getTokenResponse.mockRejectedValue(new Error("no connector"));
+  it.each([
+    [
+      "a connector that needs installing",
+      new ConnectorInstallationRequiredError("install", { status: 400 }),
+    ],
+    [
+      "a connector Vercel Connect does not know",
+      new ConnectError("connector not found", {
+        code: "connector_not_found",
+        status: 404,
+      }),
+    ],
+    ["a failure before the request", new Error("no OIDC token")],
+  ])("reports %s as unavailable", async (_description, error) => {
+    connect.getTokenResponse.mockRejectedValue(error);
 
     await expect(readGoogleWorkspaceConnection(userId)).resolves.toEqual({
       accountLabel: null,
       state: "unavailable",
     });
+  });
+
+  it.each([
+    ["an upstream failure", new ConnectError("bad gateway", { status: 502 })],
+    ["throttling", new ConnectError("slow down", { status: 429 })],
+    ["a network failure", new TypeError("fetch failed")],
+  ])("reports %s as a transient error", async (_description, error) => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    connect.getTokenResponse.mockRejectedValue(error);
+
+    await expect(readGoogleWorkspaceConnection(userId)).resolves.toEqual({
+      accountLabel: null,
+      state: "error",
+    });
+    expect(warn).toHaveBeenCalledOnce();
+    warn.mockRestore();
   });
 });
 

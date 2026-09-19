@@ -17,7 +17,7 @@ import { requireRequestScope } from "@web/auth/request-scope";
 
 export const metadata: Metadata = { title: "Сейф" };
 
-export default async function Page({ searchParams }: PageProps<"/vault">) {
+export default async function Page() {
   const scope = await requireRequestScope();
   const items = await readVaultItems(scope);
   const itemsByKind = Object.groupBy(items, (item) => item.kind);
@@ -25,11 +25,6 @@ export default async function Page({ searchParams }: PageProps<"/vault">) {
     (item) =>
       item.kind === "identity" || item.kind === "phone" || item.kind === "token"
   );
-  // A link from the cabinet lands here with the item to add in the query.
-  // Keying the lists on it remounts them, so a second link opens a second
-  // sheet instead of being ignored by state initialised for the first.
-  const setupKey = JSON.stringify(await searchParams);
-
   return (
     <Document>
       <DocumentTitle>Сейф</DocumentTitle>
@@ -39,7 +34,7 @@ export default async function Page({ searchParams }: PageProps<"/vault">) {
       </p>
 
       <Section headingId="saved-heading" title="Сохранённые">
-        <Rows key={setupKey}>
+        <Rows>
           <VaultLogins items={itemsByKind.login ?? []} />
           <VaultCards items={itemsByKind.payment ?? []} />
           <VaultAddresses items={itemsByKind.address ?? []} />

@@ -21,6 +21,7 @@ const capture = vi.hoisted(() => ({
       paywallText: string | undefined;
     }>
   >(),
+  markRead: vi.fn<(threadId: string, messageId: string) => Promise<void>>(),
   post: vi.fn<InboundContext["thread"]["post"]>(),
 }));
 
@@ -166,7 +167,7 @@ describe("Photon inbound media", () => {
     );
   });
 
-  it("asks for a retry and skips the turn when the voice note is unusable", async () => {
+  it("asks for a retry, marks the message read and skips the turn when the voice note is unusable", async () => {
     fetchMock.mockResolvedValue(
       new Response(JSON.stringify({ error: "unauthorized" }), { status: 401 })
     );
@@ -186,6 +187,31 @@ describe("Photon inbound media", () => {
     expect(postedText.parse(capture.post.mock.calls[0]?.[0]).raw).toContain(
       "Не расслышал голосовое"
     );
+    expect(capture.markRead).toHaveBeenCalledExactlyOnceWith(
+      "imessage:iMessage;-;+15550100011",
+      "message-1"
+    );
+  });
+
+  it("still opens the first-contact turn when the very first message is an unusable voice note", async () => {
+    capture.ensureUser.mockResolvedValue({ created: true, userId: "user-new" });
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ error: "unauthorized" }), { status: 401 })
+    );
+    const read = reader(syntheticCafOpus());
+
+    const result = await onMessage(
+      threadContext(),
+      photonMessage({
+        attachments: [{ name: "Audio Message.caf", size: 80, type: "audio" }],
+        raw: { content: { name: "Audio Message.caf", read, type: "voice" } },
+      })
+    );
+
+    expect(capture.post).toHaveBeenCalledOnce();
+    expect(result?.context?.join("\n")).toContain("`first-contact`");
+    expect(result?.message).toBe("[голосовое не распозналось]");
+    expect(capture.markRead).not.toHaveBeenCalled();
   });
 
   it("says voice is unsupported when the deployment has no OpenRouter key", async () => {
@@ -215,16 +241,28 @@ type InboundContext = Parameters<
 >[0];
 
 interface ThreadIdentity {
-  readonly thread: Pick<InboundContext["thread"], "id" | "post">;
+  readonly thread: Pick<InboundContext["thread"], "id" | "post"> & {
+    /** The iMessage adapter's read receipt, the only adapter call the policy makes. */
+    readonly adapter: { readonly markRead: typeof capture.markRead };
+  };
 }
 
-function threadContext(): InboundContext {
+function threadContext() {
   const identity: ThreadIdentity = {
-    thread: { id: "imessage:iMessage;-;+15550100011", post: capture.post },
+    thread: {
+      adapter: { markRead: capture.markRead },
+      id: "imessage:iMessage;-;+15550100011",
+      post: capture.post,
+    },
   };
-  // SAFETY: The inbound policy reads only the thread id and `post` from this context.
+  return focusedInboundContext(identity);
+}
+
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- This test adapter deliberately accepts a focused structural fixture.
+function focusedInboundContext(value: unknown): InboundContext {
+  // SAFETY: The inbound policy reads only the thread id, `post` and the adapter's read receipt from this context.
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- A complete Chat SDK thread mock would add unrelated methods.
-  return identity as InboundContext;
+  return value as InboundContext;
 }
 
 /** One spectrum content node as the Photon adapter leaves it on `message.raw`. */

@@ -20,21 +20,21 @@ import {
 import { api } from "@web/trpc/client";
 
 const paymentCardFormSchema = z.object({
-  billingPostalCode: z.string().trim().min(1, "Enter the billing postal code."),
+  billingPostalCode: z.string().trim().min(1, "Введи индекс адреса карты."),
   cardNumber: z
     .string()
     .transform((value) => value.replaceAll(/\D/gu, ""))
-    .pipe(z.string().regex(/^\d{12,19}$/u, "Enter a valid card number."))
-    .refine(passesLuhnCheck, "Check the card number."),
-  cardholderName: z.string().trim().min(1, "Enter the name on the card."),
+    .pipe(z.string().regex(/^\d{12,19}$/u, "Введи номер карты полностью."))
+    .refine(passesLuhnCheck, "Проверь номер карты."),
+  cardholderName: z.string().trim().min(1, "Введи имя, как на карте."),
   cvc: z
     .string()
     .transform((value) => value.replaceAll(/\D/gu, ""))
-    .pipe(z.string().regex(/^\d{3,4}$/u, "Enter a valid CVC.")),
+    .pipe(z.string().regex(/^\d{3,4}$/u, "Введи CVV: три или четыре цифры.")),
   expiration: z
     .string()
-    .regex(/^(0[1-9]|1[0-2]) \/ \d{2}$/u, "Use MM / YY.")
-    .refine(isCurrentExpiration, "Use a current expiration date."),
+    .regex(/^(0[1-9]|1[0-2]) \/ \d{2}$/u, "Срок в виде ММ / ГГ.")
+    .refine(isCurrentExpiration, "Срок действия карты уже вышел."),
   nickname: z.string().trim().max(120),
 });
 
@@ -229,7 +229,7 @@ function CardField({
         {trailingLabel ? (
           <span
             aria-live="polite"
-            className="type-status text-muted-foreground"
+            className="type-status shrink-0 whitespace-nowrap text-muted-foreground"
           >
             {trailingLabel}
           </span>

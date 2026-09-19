@@ -33,7 +33,7 @@ const buttonVariants = cva(
         act: "bro-link border-transparent bg-transparent text-left whitespace-normal focus-visible:border-transparent focus-visible:ring-0 active:not-aria-[haspopup]:translate-y-0 disabled:opacity-45",
         // bro: the one inverted rectangle in the system, for a sheet's submit.
         paper:
-          "border-foreground bg-foreground text-background hover:opacity-80 focus-visible:border-foreground focus-visible:ring-0 focus-visible:outline-2 focus-visible:outline-offset-[3px] focus-visible:outline-foreground active:not-aria-[haspopup]:translate-y-0",
+          "border-foreground bg-foreground text-background hover:opacity-80 focus-visible:border-foreground focus-visible:ring-0 focus-visible:outline-2 focus-visible:outline-offset-[3px] focus-visible:outline-solid focus-visible:outline-foreground active:not-aria-[haspopup]:translate-y-0",
       },
       size: {
         default:

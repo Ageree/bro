@@ -26,6 +26,9 @@ describe("media type sniffing", () => {
     ["audio/ogg", padded([0x4f, 0x67, 0x67, 0x53])],
     ["audio/mpeg", padded([0x49, 0x44, 0x33, 0x04])],
     ["audio/mpeg", padded([0xff, 0xfb, 0x90, 0x00])],
+    ["audio/mpeg", padded([0xff, 0xf3, 0x90, 0x00])],
+    ["audio/aac", padded([0xff, 0xf1, 0x50, 0x80])],
+    ["audio/aac", padded([0xff, 0xf9, 0x50, 0x80])],
   ])("reads %s from the magic bytes", (mediaType, bytes) => {
     expect(sniffMediaType(bytes)).toBe(mediaType);
   });

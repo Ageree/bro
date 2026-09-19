@@ -21,18 +21,36 @@ function startsWith(bytes: Uint8Array, prefix: readonly number[]) {
   return prefix.every((byte, index) => bytes[index] === byte);
 }
 
+/**
+ * ISO base media brands that pin a type. The generic `isom`, `mp41` and `mp42`
+ * brands are shared by videos and audio files, so they are left to the
+ * declared type rather than sending a video to transcription.
+ */
 const isoBrandMediaTypes: ReadonlyMap<string, string> = new Map([
   ["M4A ", "audio/mp4"],
   ["heic", "image/heic"],
   ["heix", "image/heic"],
   ["hevc", "image/heic"],
   ["hevx", "image/heic"],
-  ["isom", "audio/mp4"],
   ["mif1", "image/heif"],
-  ["mp41", "audio/mp4"],
-  ["mp42", "audio/mp4"],
   ["msf1", "image/heif"],
 ]);
+
+/**
+ * Frame sync at the top of raw MPEG audio and ADTS AAC. Both begin with
+ * eleven set bits; the layer bits then tell them apart, because ADTS always
+ * carries the reserved layer `00` and an MPEG audio frame never does.
+ */
+function frameSyncMediaType(bytes: Uint8Array) {
+  const second = bytes[1] ?? 0;
+  if (bytes[0] !== 0xff || (second & 0xe0) !== 0xe0) return undefined;
+  const version = (second >> 3) & 0x03;
+  const layer = (second >> 1) & 0x03;
+  if (layer === 0) {
+    return (second & 0xf0) === 0xf0 ? "audio/aac" : undefined;
+  }
+  return version === 1 ? undefined : "audio/mpeg";
+}
 
 /**
  * Reads the media type from the file's magic bytes. Images, PDFs and the audio
@@ -57,13 +75,10 @@ export function sniffMediaType(bytes: Uint8Array): string | undefined {
   if (head === "caff") return "audio/x-caf";
   if (head === "OggS") return "audio/ogg";
   if (ascii(bytes, 0, 3) === "ID3") return "audio/mpeg";
-  if (bytes[0] === 0xff && ((bytes[1] ?? 0) & 0xe0) === 0xe0) {
-    return "audio/mpeg";
-  }
   if (ascii(bytes, 4, 4) === "ftyp") {
     return isoBrandMediaTypes.get(ascii(bytes, 8, 4));
   }
-  return undefined;
+  return frameSyncMediaType(bytes);
 }
 
 /** The media type before any `; charset=` or codec parameters, lower-cased. */

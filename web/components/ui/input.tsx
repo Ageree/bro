@@ -18,7 +18,7 @@ const inputVariants = cva(
           "flex-1 rounded-none border-0 bg-transparent shadow-none ring-0 focus-visible:ring-0 disabled:bg-transparent aria-invalid:ring-0 dark:bg-transparent dark:disabled:bg-transparent",
         // bro: a field on paper is a hairline rectangle, square-cornered.
         paper:
-          "h-auto rounded-none border-foreground bg-background px-[0.7rem] py-[0.6rem] type-row text-foreground focus-visible:border-foreground focus-visible:ring-0 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-foreground read-only:border-border read-only:text-muted-foreground aria-invalid:border-destructive aria-invalid:ring-0 dark:bg-background",
+          "h-auto rounded-none border-foreground bg-background px-[0.7rem] py-[0.6rem] type-row text-foreground focus-visible:border-foreground focus-visible:ring-0 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-solid focus-visible:outline-foreground read-only:border-border read-only:text-muted-foreground aria-invalid:border-destructive aria-invalid:ring-0 dark:bg-background",
       },
       size: {
         default: null,

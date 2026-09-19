@@ -46,7 +46,7 @@ export function ChromeImportPanel({ onDone }: { readonly onDone: () => void }) {
     setFileName(file?.name ?? "");
     if (!file) return;
     if (file.size > MAX_FILE_SIZE) {
-      setError("Choose a CSV smaller than 10 MB.");
+      setError("Выбери CSV меньше 10 МБ.");
       return;
     }
 
@@ -56,7 +56,7 @@ export function ChromeImportPanel({ onDone }: { readonly onDone: () => void }) {
       setError(
         parseError instanceof Error
           ? parseError.message
-          : "That CSV could not be read."
+          : "Этот CSV не прочитать."
       );
     }
   };
@@ -87,7 +87,7 @@ export function ChromeImportPanel({ onDone }: { readonly onDone: () => void }) {
   const importError =
     error ??
     (importPasswords.error
-      ? "The import did not finish. Check the vault error and try again."
+      ? "Импорт не завершился. Посмотри ошибку сейфа и попробуй ещё раз."
       : undefined);
 
   return (
@@ -222,7 +222,7 @@ function parseChromePasswordsCsv(csv: string) {
       .trim()
       .toLowerCase()
   );
-  if (!headers) throw new Error("Choose a Chrome passwords CSV file.");
+  if (!headers) throw new Error("Выбери CSV с паролями из Chrome.");
 
   const indexes = {
     name: headers.indexOf("name"),
@@ -232,7 +232,7 @@ function parseChromePasswordsCsv(csv: string) {
   };
   if (indexes.url < 0 || indexes.username < 0 || indexes.password < 0) {
     throw new Error(
-      "This CSV needs url, username, and password columns. Export it from Google Password Manager and try again."
+      "В этом CSV нужны колонки url, username и password. Выгрузи его из Google Password Manager и попробуй ещё раз."
     );
   }
 
@@ -285,11 +285,11 @@ function parseChromePasswordsCsv(csv: string) {
   }
 
   if (items.length === 0) {
-    throw new Error("No valid saved passwords were found in this CSV.");
+    throw new Error("В этом CSV не нашлось ни одного сохранённого пароля.");
   }
   if (items.length > 3_000) {
     throw new Error(
-      `This file contains ${items.length.toLocaleString()} passwords. Import up to 3,000 at a time.`
+      `В этом файле паролей: ${items.length.toLocaleString("ru-RU")}. За раз можно импортировать до ${(3_000).toLocaleString("ru-RU")}.`
     );
   }
 
@@ -355,7 +355,7 @@ function parseCsv(csv: string) {
     }
   }
 
-  if (quoted) throw new Error("This CSV has an unfinished quoted value.");
+  if (quoted) throw new Error("В этом CSV не закрыта кавычка.");
   if (field.length > 0 || row.length > 0) {
     row.push(field);
     rows.push(row);

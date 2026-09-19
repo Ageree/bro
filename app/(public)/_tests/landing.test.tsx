@@ -44,6 +44,17 @@ describe("landing page", () => {
     expect(html).not.toContain("+16282649335");
   });
 
+  it("names the page once and anchors the tariffs the offer points at", () => {
+    const html = landingMarkup();
+
+    expect(html.match(/<h1/g)).toHaveLength(1);
+    expect(html).toContain("bro — твой личный ИИ-агент</h1>");
+    expect(html).toContain('id="pricing"');
+    expect(html).toContain("Тарифы");
+    expect(html).toContain("Бесплатный режим — до 30 сообщений в день");
+    expect(html).toContain("Полный доступ — 2000 ₽ за 30 календарных дней");
+  });
+
   it("carries the old title and Open Graph card", () => {
     expect(metadata.title).toEqual({
       absolute: "bro — твой личный ИИ-агент",

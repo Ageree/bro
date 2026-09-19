@@ -2,8 +2,21 @@
 
 import { useEffect, useRef } from "react";
 
-/** How often a paused, visible clip is nudged back into playing. */
+/** How often a paused or stuck, visible clip is nudged back into playing. */
 const watchdogIntervalMs = 2000;
+
+/**
+ * A clip that reports itself playing but has not advanced for this many
+ * watchdog ticks, with no data ahead, is treated as a stalled fetch.
+ */
+const stalledTicksBeforeReload = 2;
+
+/**
+ * How many times an errored or stalled clip is reloaded before it is left
+ * alone. The film is decorative: an unreachable file must not be fetched
+ * forever.
+ */
+const maxReloads = 3;
 
 /**
  * Browsers pause an autoplaying clip for many reasons — a tab in the
@@ -17,6 +30,7 @@ function keepPlaying(video: HTMLVideoElement) {
   // autoplays a clip that is muted before the first play() call.
   video.muted = true;
   video.defaultMuted = true;
+  video.loop = true;
 
   const listeners = new AbortController();
   const { signal } = listeners;
@@ -24,6 +38,9 @@ function keepPlaying(video: HTMLVideoElement) {
   let retried = false;
   let awaitingGesture = false;
   let gestureBound = false;
+  let reloads = 0;
+  let lastTime = video.currentTime;
+  let stalledTicks = 0;
 
   const isPlaying = () => !video.paused && !video.ended && !video.error;
 
@@ -31,6 +48,27 @@ function keepPlaying(video: HTMLVideoElement) {
     Boolean(video.error) ||
     video.networkState === HTMLMediaElement.NETWORK_EMPTY ||
     video.networkState === HTMLMediaElement.NETWORK_NO_SOURCE;
+
+  const watchdog = window.setInterval(() => {
+    if (!document.hidden) checkProgress();
+  }, watchdogIntervalMs);
+
+  const stop = () => {
+    listeners.abort();
+    window.clearInterval(watchdog);
+  };
+
+  // Every reload of the source counts until the clip plays again; past the
+  // cap the whole loop shuts down and the frame stays as it is.
+  function reload() {
+    if (reloads >= maxReloads) {
+      stop();
+      return false;
+    }
+    reloads += 1;
+    video.load();
+    return true;
+  }
 
   function bindGestureFallback() {
     if (gestureBound) return;
@@ -58,7 +96,7 @@ function keepPlaying(video: HTMLVideoElement) {
     }
     if (retried) return;
     retried = true;
-    video.load();
+    if (!reload()) return;
     try {
       await video.play();
     } catch (retryError) {
@@ -87,31 +125,70 @@ function keepPlaying(video: HTMLVideoElement) {
     if (resuming) return;
     resuming = true;
     retried = false;
-    if (needsLoad()) video.load();
+    if (needsLoad() && !reload()) {
+      resuming = false;
+      return;
+    }
     void attemptPlay();
+  }
+
+  // A clip whose fetch stalls after playback began still says `paused ===
+  // false`, so resume() alone would never touch it: watch the play head
+  // instead, and reload once it has sat still with nothing buffered ahead.
+  function checkProgress() {
+    if (video.paused) {
+      stalledTicks = 0;
+      resume();
+      return;
+    }
+    const advanced = video.currentTime !== lastTime;
+    lastTime = video.currentTime;
+    if (advanced || video.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) {
+      stalledTicks = 0;
+      return;
+    }
+    stalledTicks += 1;
+    if (stalledTicks < stalledTicksBeforeReload) return;
+    stalledTicks = 0;
+    if (reload()) void video.play().catch(() => undefined);
   }
 
   document.addEventListener("visibilitychange", resume, { signal });
   window.addEventListener("pageshow", resume, { signal });
   window.addEventListener("focus", resume, { signal });
   video.addEventListener("ended", resume, { signal });
-  video.addEventListener("stalled", resume, { signal });
   video.addEventListener("suspend", resume, { signal });
-  // resume() already calls load() through needsLoad() whenever the element
-  // carries an error, and the watchdog bounds the retry rate, so an
-  // unreachable file is not refetched in a tight loop.
+  // A stall the browser reports is checked on the next tick like any other;
+  // the watchdog is what decides it is real.
+  video.addEventListener("stalled", resume, { signal });
+  video.addEventListener("waiting", resume, { signal });
+  // resume() reloads through needsLoad() whenever the element carries an
+  // error, and reload() caps how often that happens.
   video.addEventListener("error", resume, { signal });
-
-  const watchdog = window.setInterval(() => {
-    if (!document.hidden && video.paused) resume();
-  }, watchdogIntervalMs);
+  video.addEventListener(
+    "playing",
+    () => {
+      reloads = 0;
+      stalledTicks = 0;
+    },
+    { signal }
+  );
 
   resume();
 
-  return () => {
-    listeners.abort();
-    window.clearInterval(watchdog);
-  };
+  return stop;
+}
+
+/**
+ * Someone who asked the system for less motion gets the figure standing
+ * still: the first frame, no autoplay, no loop. Returns the teardown.
+ */
+function holdStill(video: HTMLVideoElement) {
+  video.autoplay = false;
+  video.loop = false;
+  video.pause();
+  video.currentTime = 0;
+  return () => undefined;
 }
 
 /**
@@ -125,7 +202,19 @@ export function HeroVideo() {
 
   useEffect(() => {
     const video = videoRef.current;
-    return video ? keepPlaying(video) : undefined;
+    if (!video) return undefined;
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    let teardown: () => void = () => undefined;
+    const apply = () => {
+      teardown();
+      teardown = reducedMotion.matches ? holdStill(video) : keepPlaying(video);
+    };
+    apply();
+    reducedMotion.addEventListener("change", apply);
+    return () => {
+      reducedMotion.removeEventListener("change", apply);
+      teardown();
+    };
   }, []);
 
   return (

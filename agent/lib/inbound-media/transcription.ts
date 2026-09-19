@@ -12,6 +12,14 @@ import { audioByteCap, baseMediaType, sniffMediaType } from "./media-type";
  */
 const transcriptionsUrl = "https://openrouter.ai/api/v1/audio/transcriptions";
 const requestTimeoutMs = 20_000;
+/**
+ * The whole chain, primary and fallback together, must finish inside this
+ * budget: the messenger's webhook handler is waiting on it and would
+ * otherwise sit through two full request timeouts.
+ */
+export const transcriptionBudgetMs = 25_000;
+/** A fallback attempt with less time than this left is not worth starting. */
+export const fallbackMinimumMs = 5_000;
 
 /** One inbound audio clip together with what the messenger said about it. */
 export interface InboundAudio {
@@ -190,7 +198,8 @@ async function transcribeOnce(
   apiKey: string,
   model: string,
   data: string,
-  format: string
+  format: string,
+  timeoutMs: number
 ): Promise<TranscriptionAttempt> {
   const body: TranscriptionRequest = {
     input_audio: { data, format },
@@ -210,7 +219,7 @@ async function transcribeOnce(
         "X-Title": "OpenInstinct",
       },
       method: "POST",
-      signal: AbortSignal.timeout(requestTimeoutMs),
+      signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (error) {
     const message = error instanceof Error ? error.message || error.name : "";
@@ -259,7 +268,8 @@ function prepareAudio(audio: InboundAudio):
 
 /**
  * Transcribes one clip, trying the fallback model once when the primary
- * model's failure looks transient or container-specific.
+ * model's failure looks transient or container-specific and enough of the
+ * {@link transcriptionBudgetMs} is left for it.
  */
 export async function transcribeAudio(
   audio: InboundAudio
@@ -275,6 +285,7 @@ export async function transcribeAudio(
   if (prepared.kind === "failed") return prepared;
 
   const startedAt = Date.now();
+  const deadline = startedAt + transcriptionBudgetMs;
   const data = Buffer.from(prepared.bytes).toString("base64");
   const primary = env.OPENROUTER_STT_MODEL;
   const fallback = env.OPENROUTER_STT_FALLBACK_MODEL;
@@ -283,9 +294,20 @@ export async function transcribeAudio(
   let lastReason = "stt failed";
   let lastModel = primary;
   for (const [index, model] of models.entries()) {
+    const remainingMs = deadline - Date.now();
+    if (index > 0 && remainingMs < fallbackMinimumMs) {
+      lastReason = `${lastReason}; fallback skipped, budget exhausted`;
+      break;
+    }
     lastModel = model;
     // oxlint-disable-next-line eslint/no-await-in-loop -- The fallback model runs only after the primary answered.
-    const attempt = await transcribeOnce(apiKey, model, data, prepared.format);
+    const attempt = await transcribeOnce(
+      apiKey,
+      model,
+      data,
+      prepared.format,
+      Math.max(1, Math.min(requestTimeoutMs, remainingMs))
+    );
     if (attempt.ok) {
       console.info("[inbound-media] voice transcribed", {
         chars: attempt.text.length,

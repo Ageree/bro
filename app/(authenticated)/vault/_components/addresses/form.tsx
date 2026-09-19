@@ -11,14 +11,17 @@ import { api } from "@web/trpc/client";
 import { FormField } from "../field";
 
 const addressFormSchema = z.object({
-  city: z.string().trim().min(1, "Enter the city."),
-  countryCode: z.string().trim().length(2, "Use a two-letter country code."),
-  line1: z.string().trim().min(1, "Enter the street address."),
+  city: z.string().trim().min(1, "Введи город."),
+  countryCode: z
+    .string()
+    .trim()
+    .length(2, "Страна — две буквы кода, например RU."),
+  line1: z.string().trim().min(1, "Введи улицу и дом."),
   line2: z.string().trim(),
-  nickname: z.string().trim().min(1, "Enter a name for this address.").max(120),
-  postalCode: z.string().trim().min(1, "Enter the postal code."),
-  recipientName: z.string().trim().min(1, "Enter the recipient name."),
-  region: z.string().trim().min(1, "Enter the state, province, or region."),
+  nickname: z.string().trim().min(1, "Дай этому адресу метку.").max(120),
+  postalCode: z.string().trim().min(1, "Введи индекс."),
+  recipientName: z.string().trim().min(1, "Введи имя получателя."),
+  region: z.string().trim().min(1, "Введи регион, край или область."),
 });
 
 export function AddressForm({

@@ -40,7 +40,8 @@ export const voiceUnsupportedText =
 /** Prefix of a transcript line; the instructions explain it to the model. */
 const transcriptMarker = "[голосовое]";
 
-const voiceFailedNote = "[голосовое не распозналось]";
+/** The line the model sees for a voice note nobody could transcribe. */
+export const voiceFailedNote = "[голосовое не распозналось]";
 const photoNote = "[фото]";
 const documentNote = "[документ]";
 

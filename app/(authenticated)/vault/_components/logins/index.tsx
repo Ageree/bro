@@ -27,13 +27,15 @@ export function VaultLogins({
 }) {
   const searchParams = useSearchParams();
   const setup = useVaultSetup();
-  const initialSetup = setup?.kind === "login" ? setup : undefined;
-  const initialChromeImport = searchParams.get("import") === "chrome";
-  const initialAdd =
-    initialSetup !== undefined || searchParams.get("add") === "login";
-  const section = useVaultSection(
-    initialChromeImport ? "import" : initialAdd ? "add" : "list"
-  );
+  const requestedSetup = setup?.kind === "login" ? setup : undefined;
+  const requestedChromeImport = searchParams.get("import") === "chrome";
+  const requestedAdd =
+    requestedSetup !== undefined || searchParams.get("add") === "login";
+  const section = useVaultSection({
+    setup: requestedSetup,
+    view: requestedChromeImport ? "import" : requestedAdd ? "add" : "list",
+  });
+  const initialSetup = section.setup;
 
   return (
     <VaultSection

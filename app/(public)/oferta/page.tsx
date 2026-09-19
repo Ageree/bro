@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import Link from "next/link";
+import { Masthead } from "@web/components/paper/masthead";
 
 export const metadata: Metadata = {
   title: { absolute: "Публичная оферта — bro" },
@@ -20,13 +20,7 @@ const proseLinkClassName = "underline underline-offset-[0.2em]";
 export default function Page() {
   return (
     <div className="flex min-h-svh flex-col">
-      <header className="flex items-center justify-between gap-4 p-bro-pad">
-        <div className="flex flex-1 basis-0" />
-        <Link className="type-wordmark bro-link" href="/">
-          bro.
-        </Link>
-        <div className="flex flex-1 basis-0" />
-      </header>
+      <Masthead />
 
       <main className="mx-auto w-full max-w-[44rem] px-bro-pad pt-[0.6rem] pb-20 [&_h2]:mt-8 [&_h2]:mb-2 [&_p]:mb-[0.55rem]">
         <h1 className="type-doc-heading mb-[0.35rem]">Публичная оферта</h1>

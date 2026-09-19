@@ -56,14 +56,17 @@ const contentNodeSchema = z.object({
 });
 
 type ContentNode = z.infer<typeof contentNodeSchema>;
+type Reader = ContentNode["read"];
 
 const rawMessageSchema = z.object({ content: contentNodeSchema });
 
-function collectReaders(
-  node: ContentNode,
-  readers: NonNullable<ContentNode["read"]>[]
-) {
-  if ((node.type === "attachment" || node.type === "voice") && node.read) {
+/**
+ * One slot per media node, even when it carries no `read`, so the slots line
+ * up with `message.attachments` and a node without bytes cannot shift the next
+ * attachment's bytes onto the wrong file.
+ */
+function collectReaders(node: ContentNode, readers: Reader[]) {
+  if (node.type === "attachment" || node.type === "voice") {
     readers.push(node.read);
   }
   if (node.content) collectReaders(node.content, readers);
@@ -72,7 +75,7 @@ function collectReaders(
 }
 
 /** Byte readers for the message's attachments, in attachment order. */
-function rawReaders(message: Message) {
+function rawReaders(message: Message): readonly Reader[] {
   const raw = rawMessageSchema.safeParse(message.raw);
   return raw.success ? collectReaders(raw.data.content, []) : [];
 }
@@ -98,9 +101,14 @@ function within(bytes: Uint8Array, maxBytes: number): AttachmentBytes {
  */
 async function attachmentBytes(
   attachment: Attachment,
-  reader: NonNullable<ContentNode["read"]> | undefined,
+  reader: Reader,
   maxBytes: number
 ): Promise<AttachmentBytes> {
+  // The adapter reports the size up front, so a file the model would never
+  // receive is refused before its bytes are pulled into memory.
+  if (attachment.size !== undefined && attachment.size > maxBytes) {
+    return { kind: "oversize" };
+  }
   try {
     if (attachment.data instanceof Blob) {
       return within(
@@ -122,12 +130,10 @@ async function attachmentBytes(
   return { kind: "failed", reason: "no source" };
 }
 
-function byteCapFor(attachment: Attachment, declared: string | undefined) {
+function byteCapFor(declared: string | undefined, voiceLike: boolean) {
   if (isImageMediaType(declared)) return inlineImageByteCap;
   if (declared === "application/pdf") return pdfByteCap;
-  if (isAudioMediaType(declared) || attachment.type === "audio") {
-    return audioByteCap;
-  }
+  if (voiceLike) return audioByteCap;
   return pdfByteCap;
 }
 
@@ -137,7 +143,7 @@ function isVoiceName(name: string | undefined) {
 
 async function attachmentItem(
   attachment: Attachment,
-  reader: NonNullable<ContentNode["read"]> | undefined
+  reader: Reader
 ): Promise<InboundMediaItem> {
   const declared = baseMediaType(attachment.mimeType);
   const voiceLike =
@@ -150,7 +156,7 @@ async function attachmentItem(
   const resolved = await attachmentBytes(
     attachment,
     reader,
-    byteCapFor(attachment, declared)
+    byteCapFor(declared, voiceLike)
   );
   if (resolved.kind === "oversize") {
     if (voiceLike) return { kind: "voice-failed" };

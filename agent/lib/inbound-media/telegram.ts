@@ -140,10 +140,17 @@ async function photoItem(
   const size = choosePhotoSize(sizes);
   if (!size) return { kind: "note", text: fileNote("photo.jpg", "image/jpeg") };
   const download = await downloadTelegramFile(size.file_id, inlineImageByteCap);
-  if (download.kind !== "bytes") {
+  if (download.kind === "oversize") {
+    // Even the smallest rendition is over what the model can be handed.
+    return {
+      kind: "note",
+      text: fileNote("photo.jpg", "image/jpeg", "слишком большой"),
+    };
+  }
+  if (download.kind === "failed") {
     console.warn("[inbound-media] telegram photo", {
       declaredBytes: size.file_size,
-      status: download.kind === "oversize" ? "oversize" : download.reason,
+      status: download.reason,
     });
     return {
       kind: "note",
@@ -204,6 +211,14 @@ async function documentItem(
     return { data: download.bytes, filename: name, kind: "pdf" };
   }
   if (isImageMediaType(mediaType)) {
+    // A document labelled PDF was fetched under the PDF cap, but the bytes
+    // are an image and eve inlines images only up to the smaller cap.
+    if (download.bytes.byteLength > inlineImageByteCap) {
+      return {
+        kind: "note",
+        text: fileNote(document.file_name, mediaType, "слишком большой"),
+      };
+    }
     return { data: download.bytes, filename: name, kind: "image", mediaType };
   }
   return { kind: "note", text: fileNote(document.file_name, mediaType) };

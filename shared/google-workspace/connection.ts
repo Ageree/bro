@@ -1,4 +1,6 @@
 import {
+  ConnectError,
+  ConnectorInstallationRequiredError,
   type ConnectTokenParams,
   type ConnectTokenSubject,
   getTokenResponse,
@@ -38,12 +40,25 @@ export interface GoogleWorkspaceConnection {
   /**
    * `connected` when a valid grant exists, `disconnected` when the person has
    * not authorized yet or revoked access, `unavailable` when the deployment
-   * has no working Google OAuth connector attached.
+   * has no working Google OAuth connector attached, `error` when Vercel
+   * Connect could not answer just now and the same read may succeed shortly.
    */
-  readonly state: "connected" | "disconnected" | "unavailable";
+  readonly state: "connected" | "disconnected" | "unavailable" | "error";
 }
 
 const tokenClaimsSchema = z.object({ email: z.string().optional() });
+
+/**
+ * Whether a Vercel Connect failure is worth retrying shortly. The service
+ * names a connector that is missing or not linked with a 4xx; an upstream
+ * outage or throttling is transient.
+ */
+function isTransientConnectError(error: ConnectError) {
+  const status = error.status;
+  return (
+    status === undefined || status === 408 || status === 429 || status >= 500
+  );
+}
 
 /**
  * Reads the live Google Workspace grant for a workspace user. The agent
@@ -73,7 +88,21 @@ export async function readGoogleWorkspaceConnection(
     ) {
       return { accountLabel: null, state: "disconnected" };
     }
-    return { accountLabel: null, state: "unavailable" };
+    if (error instanceof ConnectorInstallationRequiredError) {
+      return { accountLabel: null, state: "unavailable" };
+    }
+    // fetch reports a network failure as a TypeError; anything else thrown
+    // before the request, such as a missing Vercel OIDC token, is configuration.
+    const transient =
+      error instanceof ConnectError
+        ? isTransientConnectError(error)
+        : error instanceof TypeError;
+    if (!transient) return { accountLabel: null, state: "unavailable" };
+    console.warn("[google-workspace] connection check failed", {
+      code: error instanceof ConnectError ? error.code : undefined,
+      status: error instanceof ConnectError ? error.status : undefined,
+    });
+    return { accountLabel: null, state: "error" };
   }
 }
 

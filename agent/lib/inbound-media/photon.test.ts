@@ -179,6 +179,86 @@ describe("Photon media turn", () => {
     ]);
   });
 
+  it("keeps a node without bytes from shifting the next attachment's bytes", async () => {
+    const second = reader(png);
+    const { photonMediaTurn } = await loadPhotonMedia();
+
+    const turn = await photonMediaTurn(
+      photonMessage(
+        [
+          { mimeType: "image/png", name: "a.png", size: 14, type: "image" },
+          { mimeType: "image/png", name: "b.png", size: 14, type: "image" },
+        ],
+        {
+          items: [
+            {
+              content: {
+                mimeType: "image/png",
+                name: "a.png",
+                type: "attachment",
+              },
+            },
+            {
+              content: {
+                mimeType: "image/png",
+                name: "b.png",
+                read: second,
+                type: "attachment",
+              },
+            },
+          ],
+          type: "group",
+        }
+      )
+    );
+
+    expect(second).toHaveBeenCalledOnce();
+    expect(turn?.message).toEqual([
+      { text: "[файл: a.png (image/png), не удалось получить]", type: "text" },
+      expect.objectContaining({ filename: "b.png", mediaType: "image/png" }),
+    ]);
+  });
+
+  it("refuses an attachment by its reported size before reading it", async () => {
+    const read = reader(png);
+    const { photonMediaTurn } = await loadPhotonMedia();
+
+    const turn = await photonMediaTurn(
+      photonMessage(
+        [
+          {
+            mimeType: "image/png",
+            name: "big.png",
+            size: 3 * 1024 * 1024 + 1,
+            type: "image",
+          },
+        ],
+        { mimeType: "image/png", name: "big.png", read, type: "attachment" }
+      )
+    );
+
+    expect(read).not.toHaveBeenCalled();
+    expect(turn?.message).toBe("[файл: big.png (image/png), слишком большой]");
+  });
+
+  it("gives a bare .caf file the audio cap rather than the document cap", async () => {
+    const read = reader(syntheticCafOpus());
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ text: "длинное" }))
+    );
+    const { photonMediaTurn } = await loadPhotonMedia();
+
+    const turn = await photonMediaTurn(
+      photonMessage(
+        [{ name: "Audio Message.caf", size: 12 * 1024 * 1024, type: "file" }],
+        { name: "Audio Message.caf", read, type: "attachment" }
+      )
+    );
+
+    expect(read).toHaveBeenCalledOnce();
+    expect(turn).toEqual({ message: "[голосовое] длинное", notice: undefined });
+  });
+
   it("transcribes a CAF voice note as Ogg and asks for a retry when it fails", async () => {
     const read = reader(syntheticCafOpus());
     fetchMock.mockResolvedValueOnce(

@@ -4,9 +4,11 @@ import {
   photonIMessageChannel,
   type PhotonIMessageChannelConfig,
 } from "eve/channels/photon";
+import { z } from "zod";
 import { resolvePhotonReplyTarget } from "@agent/lib/reply-targets";
 import { messageQuotaGate } from "@agent/lib/billing/quota";
 import { photonMediaTurn } from "@agent/lib/inbound-media/photon";
+import { voiceFailedNote } from "@agent/lib/inbound-media/turn-content";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { ensureVerifiedPhoneUser } from "@db/services/auth/phone-user";
 import { sendMessageToolResultSchema } from "@shared/chat/message-delivery";
@@ -252,12 +254,45 @@ export default photonIMessageChannel({
     const media = await photonMediaTurn(message);
     if (media === undefined) return { auth: sessionAuth, context: turnContext };
     if (media.notice) await context.thread.post({ raw: media.notice });
-    // A voice note nobody could transcribe leaves nothing to answer, so the
-    // retry line above is the whole reply and no model turn starts.
-    if (media.message === undefined) return null;
+    if (media.message === undefined) {
+      // A first message that is an unusable voice note still gets its turn:
+      // the first-contact introduction happens only on the turn that created
+      // the account, and the model can ask the person to type instead.
+      if (account.created) {
+        return {
+          auth: sessionAuth,
+          context: turnContext,
+          message: voiceFailedNote,
+        };
+      }
+      // Otherwise the retry line above is the whole reply, no model turn
+      // starts, and eve does not get to mark the message read.
+      await markReadBestEffort(context.thread, message.id);
+      return null;
+    }
     return { auth: sessionAuth, context: turnContext, message: media.message };
   },
 });
+
+/** The iMessage adapter's read receipt, which the base Chat SDK adapter does not declare. */
+const readReceiptSchema = z.object({
+  markRead: z.function({
+    input: [z.string(), z.string()],
+    output: z.promise(z.void()),
+  }),
+});
+
+/** Marks the message read the way eve does for a message that starts a turn. */
+async function markReadBestEffort(thread: Thread, messageId: string) {
+  const receipt = readReceiptSchema.safeParse(thread.adapter);
+  if (!receipt.success) return;
+  try {
+    // The parsed wrapper does not carry the adapter as `this`.
+    await receipt.data.markRead.call(thread.adapter, thread.id, messageId);
+  } catch {
+    // The reply was already posted; a missing read receipt is not worth a retry.
+  }
+}
 
 /**
  * Photon delivers one bubble per post, so a long numbered dump goes out as the

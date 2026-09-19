@@ -114,11 +114,25 @@ function readVlq(bytes: Uint8Array, offset: number) {
   throw new Error("caf vlq too long");
 }
 
-function packetSizes(desc: Uint8Array, pakt: Uint8Array | undefined) {
+/**
+ * The packet boundaries: from the packet table, or for a constant-size stream
+ * without one, by cutting the payload into `mBytesPerPacket` slices.
+ */
+function packetSizes(
+  desc: Uint8Array,
+  pakt: Uint8Array | undefined,
+  payloadLength: number
+) {
   const bytesPerPacket = u32be(desc, 16);
   if (!pakt || pakt.length < 24) {
-    if (bytesPerPacket > 0) return [];
-    throw new Error("caf missing pakt");
+    if (bytesPerPacket === 0) throw new Error("caf missing pakt");
+    if (payloadLength % bytesPerPacket !== 0) {
+      throw new Error("caf packet remainder");
+    }
+    return Array.from(
+      { length: payloadLength / bytesPerPacket },
+      () => bytesPerPacket
+    );
   }
   const numberPackets = i64be(pakt, 0);
   if (numberPackets < 0 || numberPackets > 1_000_000) {
@@ -165,6 +179,8 @@ function opusPacketSamples(packet: Uint8Array) {
   const frameSamples = (frameMilliseconds * opusRate) / 1000;
   if (code === 0) return frameSamples;
   if (code === 1 || code === 2) return frameSamples * 2;
+  // RFC 6716 §3.2.5 frame count byte, MSB first: VBR flag, padding flag, then
+  // the six-bit frame count, which is why the count is the low six bits.
   const frameCount = (packet[1] ?? 0) & 0x3f;
   return frameSamples * (frameCount === 0 ? 1 : frameCount);
 }
@@ -269,18 +285,24 @@ export function cafOpusToOgg(bytes: Uint8Array) {
   const channels = u32be(desc, 24) || 1;
   const sampleRate = Math.round(f64be(desc, 0)) || opusRate;
   const pakt = chunkOf(chunks, "pakt");
-  const priming = pakt && pakt.length >= 24 ? i32be(pakt, 16) : 0;
-  const preSkip = priming > 0 ? priming : defaultPreSkip;
+  // The packet table records the encoder's priming and trailing padding. A
+  // recorded zero is kept as is; only a missing table falls back to the
+  // pre-skip Apple's Opus encoder uses.
+  const preSkip =
+    pakt && pakt.length >= 24
+      ? Math.max(0, Math.min(0xffff, i32be(pakt, 16)))
+      : defaultPreSkip;
+  const remainderFrames =
+    pakt && pakt.length >= 24 ? Math.max(0, i32be(pakt, 20)) : 0;
   const data = chunkOf(chunks, "data");
   if (!data || data.length < 4) throw new Error("caf missing data");
   // The data chunk starts with a four-byte edit count; packets follow back to back.
   const payload = data.subarray(4);
-  const sizes = packetSizes(desc, pakt);
-  if (sizes.length === 0) {
-    if (payload.length === 0) throw new Error("caf empty audio");
-    sizes.push(payload.length);
-  }
-  const packets = splitPackets(payload, sizes);
+  const packets = splitPackets(
+    payload,
+    packetSizes(desc, pakt, payload.length)
+  );
+  if (packets.length === 0) throw new Error("caf empty audio");
   const serial = 1;
   const pages = [
     writePage({
@@ -301,10 +323,14 @@ export function cafOpusToOgg(bytes: Uint8Array) {
   let granule = 0;
   for (const [index, packet] of packets.entries()) {
     granule += opusPacketSamples(packet);
+    const last = index === packets.length - 1;
+    // The final granule ends the stream before the encoder's trailing padding,
+    // so a decoder does not play the remainder frames as silence.
+    const pageGranule = last ? Math.max(0, granule - remainderFrames) : granule;
     pages.push(
       writePage({
-        granule: BigInt(granule),
-        headerType: index === packets.length - 1 ? 0x04 : 0,
+        granule: BigInt(pageGranule),
+        headerType: last ? 0x04 : 0,
         packets: [packet],
         sequence: index + 2,
         serial,

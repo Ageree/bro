@@ -18,6 +18,7 @@ vi.mock("@vercel/connect", async (importOriginal) => ({
 }));
 
 import {
+  ConnectError,
   NoValidTokenError,
   UserAuthorizationRequiredError,
 } from "@vercel/connect";
@@ -130,6 +131,19 @@ describe("connect_google execution", () => {
       detail:
         "Google на этом деплое не подключён: нужно прикрепить Google OAuth-коннектор в Vercel.",
       status: "not_configured",
+    });
+    expect(connect.startAuthorization).not.toHaveBeenCalled();
+  });
+
+  it("asks for a retry when Vercel Connect is down instead of calling Google unconfigured", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    connect.getTokenResponse.mockRejectedValue(
+      new ConnectError("bad gateway", { status: 502 })
+    );
+
+    await expect(connectGoogle.execute({}, toolContext())).resolves.toEqual({
+      detail: "Google сейчас не отвечает, попробуй через минуту.",
+      status: "error",
     });
     expect(connect.startAuthorization).not.toHaveBeenCalled();
   });

@@ -18,7 +18,7 @@ const selectTriggerVariants = cva(
         ghost: "border-transparent hover:bg-muted dark:hover:bg-muted/50",
         // bro: a field on paper is a hairline rectangle, square-cornered.
         paper:
-          "h-auto rounded-none border-foreground bg-background py-[0.6rem] pr-[0.75rem] pl-[0.7rem] type-row focus-visible:border-foreground focus-visible:ring-0 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-foreground dark:bg-background",
+          "h-auto rounded-none border-foreground bg-background py-[0.6rem] pr-[0.75rem] pl-[0.7rem] type-row focus-visible:border-foreground focus-visible:ring-0 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-solid focus-visible:outline-foreground aria-invalid:border-destructive aria-invalid:ring-0 dark:bg-background",
       },
       size: {
         default: "h-8",

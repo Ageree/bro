@@ -1,7 +1,12 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { ChannelsSection } from "@app/(authenticated)/workspace/page";
+import {
+  ChannelsSection,
+  LimitsSection,
+} from "@app/(authenticated)/workspace/page";
+
+const dayMs = 24 * 60 * 60 * 1000;
 
 describe("workspace Photon channel", () => {
   it("disables iMessage without advertising another deployment's number", () => {
@@ -64,5 +69,30 @@ describe("workspace Photon channel", () => {
     expect(html).toContain('href="/chat"');
     expect(html).toContain("Открыть чат");
     expect(html).toContain("Написать Bro");
+  });
+});
+
+describe("workspace limits", () => {
+  it("counts the paid month from zero when it was bought ahead of time", () => {
+    const html = renderToStaticMarkup(
+      createElement(LimitsSection, {
+        paid: true,
+        paidUntil: new Date(Date.now() + 45 * dayMs),
+      })
+    );
+
+    expect(html).toContain("прошло 0 из 30 дней");
+    expect(html).toContain("width:0%");
+  });
+
+  it("never counts past the month", () => {
+    const html = renderToStaticMarkup(
+      createElement(LimitsSection, {
+        paid: true,
+        paidUntil: new Date(Date.now() + 2 * dayMs),
+      })
+    );
+
+    expect(html).toContain("прошло 28 из 30 дней");
   });
 });

@@ -242,6 +242,30 @@ describe("transcribeAudio", () => {
     expect(requestAt(1).body.model).toBe("fallback-stt");
   });
 
+  it("skips the fallback when the primary used up the budget", async () => {
+    const { fallbackMinimumMs, transcribeAudio, transcriptionBudgetMs } =
+      await loadTranscription();
+    const startedAt = 1_000;
+    vi.spyOn(Date, "now")
+      .mockReturnValueOnce(startedAt)
+      .mockReturnValueOnce(startedAt)
+      .mockReturnValue(
+        startedAt + transcriptionBudgetMs - fallbackMinimumMs + 1
+      );
+    fetchMock.mockResolvedValueOnce(failure(500, "upstream"));
+
+    const result = await transcribeAudio({
+      bytes: mp3,
+      mediaType: "audio/mpeg",
+    });
+
+    expect(result).toEqual({
+      kind: "failed",
+      reason: "upstream; fallback skipped, budget exhausted",
+    });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
   it("does not retry an unauthorized key", async () => {
     fetchMock.mockResolvedValueOnce(failure(401, "unauthorized"));
     const { transcribeAudio } = await loadTranscription();

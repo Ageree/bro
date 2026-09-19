@@ -18,7 +18,7 @@ import { paidPeriodDays, readBillingState } from "@db/services/billing";
 import { readChannelIdentity } from "@db/services/channel-identities";
 import { getWorkspaceModelId } from "@db/services/settings";
 import { readUserProfile } from "@db/services/user-profile";
-import { readVaultItems } from "@db/services/vault";
+import { listVaultItems } from "@db/services/vault";
 import { yooKassaConfigured } from "@db/services/yookassa";
 import { env } from "@shared/environment";
 import {
@@ -29,7 +29,6 @@ import { telegramLinkConfigured } from "@shared/identity/telegram-link";
 import { openRouterActive } from "@shared/model/provider";
 import { photonConfigured } from "@shared/photon/credentials";
 import { resolveTimeZone } from "@shared/user-profile/schema";
-import type { VaultItem } from "@shared/vault/schema";
 import { requireRequestScope } from "@web/auth/request-scope";
 import { GoogleWorkspaceAction } from "./_components/google-workspace-action";
 import { ModelSelector } from "./_components/model-selector";
@@ -42,12 +41,19 @@ const vaultPreviewRows = 8;
 
 const dayMs = 24 * 60 * 60 * 1000;
 
-/** Whole days of paid access still ahead, never negative. */
-function paidDaysLeft(paidUntil: Date) {
-  return Math.max(0, Math.ceil((paidUntil.getTime() - Date.now()) / dayMs));
+/**
+ * Whole days of the paid period already behind, clamped to it: a month
+ * bought before the current one expires is not a negative day count.
+ */
+function paidDaysUsed(paidUntil: Date) {
+  const daysLeft = Math.ceil((paidUntil.getTime() - Date.now()) / dayMs);
+  return Math.min(paidPeriodDays, Math.max(0, paidPeriodDays - daysLeft));
 }
 
-const vaultKindLabels: Partial<Record<VaultItem["kind"], string>> = {
+/** What the cabinet shows of a vault item: the metadata, never the secret. */
+type VaultPreviewItem = Awaited<ReturnType<typeof listVaultItems>>[number];
+
+const vaultKindLabels: Partial<Record<VaultPreviewItem["kind"], string>> = {
   address: "Адрес",
   contact: "Контакт",
   login: "Вход",
@@ -74,7 +80,7 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
     telegramConfigured ? readChannelIdentity(scope, "telegram") : undefined,
     readBillingState(scope),
     readUserProfile(scope),
-    readVaultItems(scope),
+    listVaultItems(scope),
   ]);
   const openRouter = openRouterActive();
   const imageStorageReady = Boolean(
@@ -139,15 +145,13 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
           {telegramConfigured ? (
             <Row
               side={
-                <TelegramLinkAction
-                  linked={telegramIdentity?.username !== undefined}
-                />
+                <TelegramLinkAction linked={telegramIdentity !== undefined} />
               }
             >
               <p>Telegram</p>
               <p className="type-status text-muted-foreground">
-                {telegramIdentity?.username
-                  ? `Привязан как @${telegramIdentity.username}. Сообщения с этого аккаунта Telegram идут в этот кабинет.`
+                {telegramIdentity
+                  ? `${telegramLinkedAs(telegramIdentity.username)}. Сообщения с этого аккаунта Telegram идут в этот кабинет.`
                   : "Не привязан. Открой одноразовую ссылку, чтобы подключить свой Telegram."}
               </p>
             </Row>
@@ -189,13 +193,20 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
   );
 }
 
+/** A Telegram account may have no public username; the link still holds. */
+function telegramLinkedAs(username: string | null) {
+  return username ? `Привязан как @${username}` : "Привязан";
+}
+
 function googleWorkspaceDescription(connection: GoogleWorkspaceConnection) {
   const state = connection.state;
   return state === "connected"
     ? (connection.accountLabel ?? "Gmail, Календарь и Контакты подключены.")
     : state === "unavailable"
       ? "Подключи коннектор Google OAuth через Vercel Connect, чтобы включить."
-      : "Gmail, Календарь и Контакты через твой аккаунт Google.";
+      : state === "error"
+        ? "Google не отвечает, попробуй позже."
+        : "Gmail, Календарь и Контакты через твой аккаунт Google.";
 }
 
 /** The lead actions under the title: text, like on the landing. */
@@ -266,7 +277,8 @@ function channelAvailabilityMessage({
   ].join(" ");
 }
 
-function LimitsSection({
+/** Exported for its test: the day count of a paid month. */
+export function LimitsSection({
   paid,
   paidUntil,
 }: {
@@ -277,7 +289,7 @@ function LimitsSection({
   const browserRuns = paid
     ? env.PAID_BROWSER_RUNS_PER_MONTH
     : env.FREE_BROWSER_RUNS_PER_MONTH;
-  const daysLeft = paid && paidUntil ? paidDaysLeft(paidUntil) : undefined;
+  const daysUsed = paid && paidUntil ? paidDaysUsed(paidUntil) : undefined;
 
   return (
     <Section
@@ -291,14 +303,12 @@ function LimitsSection({
       <p className="type-fine text-muted-foreground">
         Браузерные поручения в месяц — до {browserRuns}
       </p>
-      {daysLeft === undefined ? null : (
+      {daysUsed === undefined ? null : (
         <>
           <p className="type-fine mt-2 text-muted-foreground">
-            Оплаченный месяц — прошло{" "}
-            {Math.min(paidPeriodDays, paidPeriodDays - daysLeft)} из{" "}
-            {paidPeriodDays} дней
+            Оплаченный месяц — прошло {daysUsed} из {paidPeriodDays} дней
           </p>
-          <Meter allowance={paidPeriodDays} used={paidPeriodDays - daysLeft} />
+          <Meter allowance={paidPeriodDays} used={daysUsed} />
         </>
       )}
     </Section>
@@ -362,7 +372,7 @@ function PaymentsSection({
 function SiteLoginsSection({
   logins,
 }: {
-  readonly logins: readonly VaultItem[];
+  readonly logins: readonly VaultPreviewItem[];
 }) {
   const domains = [
     ...new Set(
@@ -397,7 +407,11 @@ function SiteLoginsSection({
   );
 }
 
-function VaultSection({ items }: { readonly items: readonly VaultItem[] }) {
+function VaultSection({
+  items,
+}: {
+  readonly items: readonly VaultPreviewItem[];
+}) {
   const shown = items.slice(0, vaultPreviewRows);
   const rest = items.length - shown.length;
 

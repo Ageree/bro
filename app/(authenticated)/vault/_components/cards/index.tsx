@@ -24,8 +24,10 @@ export function VaultCards({
   readonly items: readonly VaultItem[];
 }) {
   const setup = useVaultSetup();
-  const initialAdd = setup?.kind === "payment";
-  const section = useVaultSection(initialAdd ? "add" : "list");
+  const section = useVaultSection({
+    setup: setup?.kind === "payment" ? setup : undefined,
+    view: setup?.kind === "payment" ? "add" : "list",
+  });
 
   return (
     <VaultSection
@@ -78,7 +80,7 @@ export function VaultCards({
               </DialogDescription>
             </DialogHeader>
             <CardForm
-              initialLabel={initialAdd ? setup.label : undefined}
+              initialLabel={section.setup?.label}
               onSaved={() => {
                 section.setView("list");
               }}

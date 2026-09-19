@@ -1,8 +1,8 @@
 "use client";
 
 import { ArrowLeftIcon, SearchIcon } from "lucide-react";
-import { useRouter } from "next/navigation";
-import { type ReactNode, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { type ReactNode, useEffect, useState } from "react";
 import { Button } from "@web/components/ui/button";
 import {
   Dialog,
@@ -22,16 +22,48 @@ const VAULT_DIALOG_PAGE_SIZE = 50;
 
 type VaultSectionView = "add" | "import" | "list";
 
-export function useVaultSection(initialView: VaultSectionView) {
-  const [open, setOpen] = useState(initialView !== "list");
-  const [view, setView] = useState(initialView);
+/**
+ * A section's sheet, and the request that opened it. A link from the
+ * cabinet, or from the foot of the vault, names the sheet in the query:
+ * `requested` is what this section reads from it on every render.
+ */
+export function useVaultSection<Setup>(requested: {
+  readonly setup?: Setup;
+  readonly view: VaultSectionView;
+}) {
+  const query = useSearchParams().toString();
+  const [open, setOpen] = useState(requested.view !== "list");
+  const [view, setView] = useState(requested.view);
+  const [setup, setSetup] = useState(requested.setup);
+  const [answeredQuery, setAnsweredQuery] = useState(query);
+
+  // Each new query is answered once, as state that follows a prop: the
+  // sheet opens on the view the link asked for, keeping what the link said
+  // about the item even after the query is gone from the URL.
+  if (query !== answeredQuery) {
+    setAnsweredQuery(query);
+    if (requested.view !== "list") {
+      setOpen(true);
+      setView(requested.view);
+      setSetup(requested.setup);
+    }
+  }
+
+  // Once the sheet is open the query has done its job, so it comes off the
+  // URL without a round trip. The same link then reads as a new query the
+  // next time, even after the sheet was closed, and a refresh after a save
+  // renders the plain page instead of asking for the sheet again.
+  useEffect(() => {
+    if (query === "" || requested.view === "list") return;
+    window.history.replaceState(null, "", window.location.pathname);
+  }, [query, requested.view]);
 
   const onOpenChange = (nextOpen: boolean) => {
     setOpen(nextOpen);
     if (!nextOpen) setView("list");
   };
 
-  return { onOpenChange, open, setView, view };
+  return { onOpenChange, open, setView, setup, view };
 }
 
 /** One row of the vault's saved list; its sheet opens from the row itself. */

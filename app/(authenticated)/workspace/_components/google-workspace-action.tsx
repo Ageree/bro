@@ -1,12 +1,13 @@
 "use client";
 
+import type { GoogleWorkspaceConnection } from "@shared/google-workspace/connection";
 import { Button } from "@web/components/ui/button";
 import { api } from "@web/trpc/client";
 
 export function GoogleWorkspaceAction({
   state,
 }: {
-  readonly state?: "connected" | "disconnected" | "unavailable";
+  readonly state?: GoogleWorkspaceConnection["state"];
 }) {
   const update = api.googleWorkspace.update.useMutation({
     onError: () => {

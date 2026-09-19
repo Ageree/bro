@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { headers } from "next/headers";
-import Link from "next/link";
+import { Masthead, OfferLink } from "@web/components/paper/masthead";
 import { LocalPhoneAuthForm } from "@app/sign-in/_components/local-form";
 import { PhoneOtpAuthForm } from "@app/sign-in/_components/otp-form";
 import { env, localPhoneAuthBypassEnabled } from "@shared/environment";
@@ -35,17 +35,7 @@ export default async function SignInPage({
 
   return (
     <div className="flex min-h-svh flex-col">
-      <header className="flex items-center justify-between gap-4 p-bro-pad">
-        <div className="flex flex-1 basis-0">
-          <Link className="type-nav bro-link" href="/oferta">
-            Оферта
-          </Link>
-        </div>
-        <Link className="type-wordmark bro-link" href="/">
-          bro.
-        </Link>
-        <div className="flex flex-1 basis-0" />
-      </header>
+      <Masthead start={<OfferLink />} />
 
       <main className="flex flex-1 justify-center px-bro-pad pt-[1.1rem] pb-20">
         <section aria-labelledby="login-title" className="w-full max-w-[23rem]">
@@ -53,7 +43,10 @@ export default async function SignInPage({
             Вход
           </h1>
           <p className="type-fine text-muted-foreground">
-            Введи телефон, с которого пишешь Bro. Код придёт в iMessage.
+            Введи телефон, с которого пишешь Bro.
+            {!localPhoneAuthBypassEnabled && imessageConfigured
+              ? " Код придёт в iMessage."
+              : null}
           </p>
           {!localPhoneAuthBypassEnabled && !imessageConfigured ? (
             <p className="type-fine mt-4 text-muted-foreground">

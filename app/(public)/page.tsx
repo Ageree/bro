@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { Masthead, OfferLink } from "@web/components/paper/masthead";
+import { env } from "@shared/environment";
 import { AccessForm } from "./_components/access-form";
 import { HeroVideo } from "./_components/hero-video";
 
@@ -21,33 +23,28 @@ export const metadata: Metadata = {
 
 /**
  * Stage — a white page with one figure standing in it. A flex column: the
- * masthead and the call to action take their own height, the film gets
- * whatever is left and shrinks instead of pushing the form off-screen.
+ * masthead, the call to action and the tariff line take their own height,
+ * the film gets whatever is left and shrinks instead of pushing the form
+ * off-screen. Below the floor height the page scrolls, so a keyboard on a
+ * phone never covers the form for good.
  */
 export default function Page() {
   return (
-    <main className="flex h-svh min-h-[30rem] flex-col overflow-hidden">
-      <header className="flex items-center justify-between gap-4 p-bro-pad">
-        <div className="flex flex-1 basis-0 gap-[0.9rem]">
-          <Link className="type-nav bro-link" href="/oferta">
-            Оферта
-          </Link>
-        </div>
-        <Link className="type-wordmark bro-link" href="/">
-          bro.
-        </Link>
-        <nav
-          aria-label="Служебные страницы"
-          className="flex flex-1 basis-0 justify-end gap-[0.9rem]"
-        >
-          <Link className="type-nav bro-link" href="/sign-in">
-            Кабинет
-          </Link>
-          <Link className="type-nav bro-link" href="/vault">
-            Сейф
-          </Link>
-        </nav>
-      </header>
+    <main className="flex h-svh min-h-[30rem] flex-col overflow-x-hidden overflow-y-auto">
+      <h1 className="sr-only">{title}</h1>
+      <Masthead
+        end={
+          <nav aria-label="Служебные страницы" className="flex gap-[0.9rem]">
+            <Link className="type-nav bro-link" href="/sign-in">
+              Кабинет
+            </Link>
+            <Link className="type-nav bro-link" href="/vault">
+              Сейф
+            </Link>
+          </nav>
+        }
+        start={<OfferLink />}
+      />
 
       <div className="relative min-h-0 flex-1">
         <HeroVideo />
@@ -59,6 +56,36 @@ export default function Page() {
       >
         <AccessForm />
       </section>
+
+      <Pricing />
     </main>
+  );
+}
+
+/**
+ * The tariffs, in two lines of fine print under the call to action: the
+ * offer points here as `#pricing`. The numbers are the deployment's own.
+ */
+function Pricing() {
+  return (
+    <section
+      aria-labelledby="pricing-heading"
+      className="px-bro-pad pb-bro-pad text-center"
+      id="pricing"
+    >
+      <h2 className="sr-only" id="pricing-heading">
+        Тарифы
+      </h2>
+      <p className="type-fine text-muted-foreground">
+        Бесплатный режим — до {env.FREE_MESSAGES_PER_DAY} сообщений в день и{" "}
+        {env.FREE_BROWSER_RUNS_PER_MONTH} поручений в браузере в месяц.
+      </p>
+      <p className="type-fine text-muted-foreground">
+        Полный доступ — {env.PRICE_RUB} ₽ за 30 календарных дней: до{" "}
+        {env.PAID_MESSAGES_PER_DAY} сообщений в день и{" "}
+        {env.PAID_BROWSER_RUNS_PER_MONTH} поручений в месяц. Тариф не
+        продлевается автоматически.
+      </p>
+    </section>
   );
 }

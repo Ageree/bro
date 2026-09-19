@@ -24,8 +24,10 @@ export function VaultContacts({
   readonly items: readonly VaultItem[];
 }) {
   const setup = useVaultSetup();
-  const initialAdd = setup?.kind === "contact";
-  const section = useVaultSection(initialAdd ? "add" : "list");
+  const section = useVaultSection({
+    setup: setup?.kind === "contact" ? setup : undefined,
+    view: setup?.kind === "contact" ? "add" : "list",
+  });
 
   return (
     <VaultSection
@@ -77,7 +79,7 @@ export function VaultContacts({
               </DialogDescription>
             </DialogHeader>
             <ContactForm
-              initialLabel={initialAdd ? setup.label : undefined}
+              initialLabel={section.setup?.label}
               onSaved={() => {
                 section.setView("list");
               }}

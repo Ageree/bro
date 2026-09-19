@@ -49,9 +49,9 @@
 }
 
 /* Chrome is text: a link is inherited ink that fades on hover and draws a
-   hairline outline when focused from the keyboard. */
+   hairline outline when focused from the keyboard. It leaves `display`
+   alone, so a button that is text keeps its flex row for an icon. */
 @utility bro-link {
-  display: inline-block;
   color: inherit;
   text-decoration: none;
   transition: opacity 250ms var(--ease-bro);
