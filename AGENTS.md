@@ -62,6 +62,7 @@ Run the validation the task requests. When it does not establish the behavior yo
 - This build has no browser capability. Do not add a browser connection, extension, or subagent; browser work is planned as a separate hosted `browser_task` tool.
 - Keep each tool's schema and implementation together. Group a shared agent domain under `agent/lib` in a lower-case folder, such as `schedules/report.ts`; do not use it as a holding area for a tool's one-off logic.
 - Validate runtime environment variables through `shared/environment/env.ts`.
+- `package.json` `name` is the eve agent identity, not a cosmetic label. eve derives the Vercel Workflow queue namespace from it (`__eve<hex(name)>_wkf_workflow_*`), used both for the flow function's `experimentalTriggers` consumer and for the runtime `WORKFLOW_QUEUE_NAMESPACE`. Renaming it moves every agent turn onto a brand-new queue topic and strands in-flight runs. Keep it `local-vault-assistant`; do product branding in instructions, UI, and user-facing copy.
 - Run `pnpm check` and `pnpm build` before handing off changes.
 
 ## Code organization
