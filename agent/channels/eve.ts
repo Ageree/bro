@@ -103,8 +103,20 @@ const channel = eveChannel({
 
 // Eve callback handlers authenticate their capability tokens internally. Apply
 // this app's caller and workspace ownership policy at the public route boundary.
+//
+// The attempt-scoped connection callback
+// (`/eve/v1/connections/:name/callback/:attemptId/:token`) is deliberately not
+// here. It is the URL Google and Vercel Connect send the person's browser to
+// after consent, and that browser carries no Bro cookie: people connect Gmail
+// from iMessage or Telegram, not from a signed-in tab. Guarding it answered
+// every finished consent screen with `401 authentication_required`, so the
+// grant was never stored and the mail never connected. It is also the one
+// token route that does not need the guard: eve mints a fresh ULID per
+// attempt, matches the callback against the parked challenge by that exact
+// attempt id, and resumes nothing once the hook is gone. The routes below keep
+// the guard because their token is derived from the session id alone, which is
+// not a secret.
 const ownedCallbackRoutes = new Set([
-  "/eve/v1/connections/:name/callback/:attemptId/:token",
   "/eve/v1/connections/:name/callback/:token",
   "/eve/v1/callback/:token",
   "/eve/v1/task-input/:token",
@@ -156,13 +168,13 @@ export function sessionIdFromPath(pathname: string) {
 }
 
 // Hook tokens are derived from the session id: `eve:session:<id>:inbox`,
-// `<id>:turn-control:<n>[:cancel|:inbox]`, and `<id>:auth`.
+// optionally inside the session-inbox envelope `eve:inbox:v1:<token>` that eve
+// wraps an authorization hook in. The `<id>:auth` and `<id>:turn-control:<n>`
+// shapes this used to read are gone from eve and stay unresolved, so a request
+// carrying one fails closed.
 function sessionIdFromHookToken(token: string) {
-  return (
-    /^eve:session:([^:]+):inbox$/.exec(token)?.[1] ??
-    /^([^:]+):turn-control:\d+(?::(?:cancel|inbox))?$/.exec(token)?.[1] ??
-    /^([^:]+):auth$/.exec(token)?.[1]
-  );
+  const inner = /^eve:inbox:v1:(.+)$/.exec(token)?.[1] ?? token;
+  return /^eve:session:([^:]+):inbox$/.exec(inner)?.[1];
 }
 
 function decodePathSegment(segment: string) {
