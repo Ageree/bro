@@ -17,6 +17,8 @@ export default {
     "evals/evals.config.ts",
     // A one-off maintenance CLI, run by hand rather than from package.json.
     "scripts/migrate-from-convex.ts",
+    // Claude Code runs this at session start, from .claude/settings.json.
+    "scripts/session-start.ts",
     "taze.config.ts",
   ],
   ignoreDependencies: [
