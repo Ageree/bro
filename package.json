@@ -49,6 +49,8 @@
     "test-tenant:check": "node --experimental-strip-types scripts/test-tenant-check.ts",
     "e2e:check": "node --experimental-strip-types scripts/e2e-check.ts",
     "fake-browser:check": "node --experimental-strip-types scripts/fake-browser-check.ts",
+    "cdp:probe": "node --experimental-strip-types scripts/cdp-frames-probe.ts",
+    "cdp:probe:cloud": "node --experimental-strip-types scripts/cdp-cloud-probe.ts",
     "types:check": "tsc --noEmit",
     "schema:check": "node --experimental-strip-types scripts/schema-check.ts",
     "wipe:check": "node --experimental-strip-types scripts/wipe-check.ts",
