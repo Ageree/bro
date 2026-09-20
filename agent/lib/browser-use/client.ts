@@ -48,6 +48,22 @@ const queuedMessageSchema = z.object({
 
 const profileSchema = z.object({ id: z.string().min(1) });
 
+/**
+ * A browser the cloud is running. `cdpUrl` is the debugger endpoint of that
+ * very browser: hold it and you drive the page the run is on, which is how a
+ * one-time code is typed without waiting for the run's own agent.
+ */
+const browserSessionSchema = z.object({
+  agentSessionId: z.string().nullable().optional(),
+  cdpUrl: z.string().nullable().optional(),
+  id: z.string().min(1),
+  status: z.string(),
+});
+
+const browserSessionListSchema = z.object({
+  items: z.array(browserSessionSchema),
+});
+
 const secretBindingSchema = z.object({
   /** Bare hostnames; a host covers its own subdomains. Browser Use caps this at ten. */
   allowedDomains: z.array(z.string().min(1)).min(1).max(10),
@@ -152,6 +168,22 @@ export async function queueBrowserUseSessionMessage(
       JSON.stringify({ text })
     )
   );
+}
+
+/**
+ * The debugger endpoint of the browser this run's session is using, when one
+ * is still up. A finished run does not close its browser — the cloud keeps it
+ * until it is stopped or hits the four-hour cap — so a code can still be typed
+ * into the page the person is looking at.
+ */
+export async function findBrowserUseSessionCdpUrl(sessionId: string) {
+  const { items } = browserSessionListSchema.parse(
+    await request("GET", "/browsers")
+  );
+  const browser = items.find(
+    (item) => item.agentSessionId === sessionId && item.status === "active"
+  );
+  return browser?.cdpUrl ?? undefined;
 }
 
 export async function cancelBrowserUseRun(runId: string) {

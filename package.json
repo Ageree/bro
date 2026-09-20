@@ -76,6 +76,8 @@
   "packageManager": "pnpm@11.24.0",
   "scripts": {
     "build": "turbo run build:app",
+    "cdp:probe": "node --experimental-strip-types scripts/cdp-probe.ts",
+    "cdp:probe:cloud": "node --env-file-if-exists=.env.local --experimental-strip-types scripts/cdp-cloud-probe.ts",
     "build:app": "next build",
     "build:vercel": "next build",
     "check": "turbo run lint:app types:check:app test:app format:check knip",

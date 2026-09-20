@@ -169,6 +169,50 @@ describe("Browser Use client", () => {
     expect(client.liveViewUrlFromEvents([])).toBeUndefined();
   });
 
+  it("finds the debugger endpoint of the browser this session is using", async () => {
+    const client = await loadClient();
+    const calls = stubFetch(
+      Response.json({
+        items: [
+          {
+            agentSessionId: "99999999-9999-4999-8999-999999999999",
+            cdpUrl: "wss://cdp.browser-use.test/other",
+            id: "browser-other",
+            status: "active",
+          },
+          // The same session's earlier browser: it has no endpoint left to
+          // type into, and taking it would send the code nowhere.
+          {
+            agentSessionId: sessionId,
+            cdpUrl: null,
+            id: "browser-stopped",
+            status: "stopped",
+          },
+          {
+            agentSessionId: sessionId,
+            cdpUrl: "wss://cdp.browser-use.test/live",
+            id: "browser-live",
+            status: "active",
+          },
+        ],
+      })
+    );
+
+    await expect(client.findBrowserUseSessionCdpUrl(sessionId)).resolves.toBe(
+      "wss://cdp.browser-use.test/live"
+    );
+    expect(calls[0]?.method).toBe("GET");
+    expect(calls[0]?.url).toBe(`${baseUrl}/browsers`);
+  });
+
+  it("reports no endpoint when this session has no browser up", async () => {
+    const client = await loadClient();
+    stubFetch(Response.json({ items: [] }));
+    await expect(
+      client.findBrowserUseSessionCdpUrl(sessionId)
+    ).resolves.toBeUndefined();
+  });
+
   it("refuses to call the API without a configured key", async () => {
     vi.resetModules();
     vi.stubEnv("BROWSER_USE_API_KEY", "");

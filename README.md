@@ -170,6 +170,35 @@ saved for, and the saved card is bound only when the user approved paying on
 that errand; the values are typed by Browser Use and are never visible to any
 model in this system.
 
+A one-time code sent as a follow-up is typed straight into the page the run is
+on, over the Chrome DevTools Protocol, before the hosted agent is asked to do
+anything with it. The agent could type it — this is a shortcut, not a repair —
+but a queued message waits for its next step, and a code that arrives after the
+run has finished costs a whole new run before anyone touches the keyboard. Bank
+codes expire in a couple of minutes, so that gap is the difference between a
+payment that goes through and one the person starts over.
+
+The search covers embedded frames, which is the whole point: a bank's 3-D
+Secure challenge is a cross-origin iframe, and the page's own document does not
+contain its field. Every frame is scored before anything is typed anywhere and
+only the best one is filled, so a page carrying a bank frame and three ad
+frames cannot get the code sprayed across all four; the page's own document
+keeps a tie, an embedded frame needs a naming signal rather than merely a
+focused input, and a frame too small to hold a form is skipped whatever its
+input is named. A password field is never filled and a pay or order button is
+never pressed. Whatever the entry does, the person's message still reaches the
+hosted agent, which is told what is already in the page so it does not type the
+code a second time; when no field can be identified with confidence, nothing is
+typed and the agent handles the code exactly as it did before.
+
+`npm run cdp:probe` checks that against a real Chromium, with the code field
+inside a cross-site frame and an ad frame, a 0x0 tracking frame, a password
+field and a pay button around it. `npm run cdp:probe:cloud` runs the same walk
+against a real Browser Use browser through the production path, to catch the
+vendor fronting the protocol in a way a flattened auto-attach cannot survive;
+it costs about a cent and always stops the browser afterwards. Neither is part
+of `pnpm check`, which stays offline.
+
 ### Telegram setup
 
 Telegram is a second conversation channel for an account that already exists.
