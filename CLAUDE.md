@@ -1,5 +1,12 @@
 # Bro
 
+> **Это легаси-ветка.** Разработка идёт в `bro-next`: другой проект с
+> несвязанной историей — форк [OpenInstinct](https://github.com/Merit-Systems/OpenInstinct)
+> на Next.js, eve 0.62, Neon Postgres и Vercel Blob, без Convex. Всё ниже
+> описывает архитектуру этой ветки и верно только для неё. Правки сюда имеют
+> смысл, лишь если задача прямо про старый код; иначе переключайся:
+> `git switch bro-next`.
+
 Личный консьерж в iMessage и Telegram. **eve** крутит агента, **Convex** держит
 тенантов, заказы и долгую память, **Photon Spectrum Pro** — транспорт iMessage,
 **Inkbox** — почта и OTP. Полное описание продукта — в `README.md`
