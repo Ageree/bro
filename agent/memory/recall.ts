@@ -11,25 +11,23 @@ import {
 } from "../lib/archive-policy.ts";
 import { CONVERSATION_RECALL_ID } from "../lib/conversation-recall.ts";
 import { loadInstinctRecall } from "../lib/instinct-recall.ts";
-import { resolveMemoryScope, resolveRecallBackend, scopePhone } from "../lib/memory-policy.ts";
+import {
+  resolveSupermemoryScope,
+  scopePhone,
+  supermemoryKey,
+} from "../lib/memory-policy.ts";
 
 /**
- * Automatic conversation memory via Supermemory (paid, zero-config for users):
- * completed turns are captured per person, relevant context is recalled before
- * each turn, and the model gets recall__search / remember / forget tools.
+ * Automatic conversation memory via Supermemory: completed turns are captured
+ * per person, relevant context is recalled before each turn, and the model
+ * gets recall__search / remember / forget. Since the Convex `memo` store went
+ * away this is also where a durable fact goes — `recall__remember` is the one
+ * write tool Bro has.
  *
- * Without SUPERMEMORY_API_KEY the scope resolves to null, which disables this
- * slot entirely; the curated `memo` slot keeps working on Convex alone.
+ * SUPERMEMORY_API_KEY is required, not optional: `supermemoryKey()` throws
+ * with a named variable rather than letting the slot disable itself.
  */
-const inner = supermemory({
-  apiKey: () => {
-    const backend = resolveRecallBackend(process.env);
-    if (backend.kind !== "supermemory") {
-      throw new Error("SUPERMEMORY_API_KEY missing");
-    }
-    return backend.apiKey;
-  },
-});
+const inner = supermemory({ apiKey: () => supermemoryKey() });
 
 type RecallCtx = MemoryOperationContext & {
   turn?: { input?: readonly unknown[] } | null;
@@ -51,11 +49,10 @@ async function startedSearch(context: RecallCtx): Promise<MemoryRecallResult> {
     recallQuery(context.turn?.input ?? []) ?? recallQuery(context.messages);
   if (!query?.trim()) return null;
   try {
+    // Same arguments the archive slot passes, so whichever slot runs first
+    // pays for the pass and the other one reads its result.
     const { conversation } = await loadInstinctRecall(
-      {
-        archiveScope: scopePhone(context.memory.scope.value),
-        conversationScope: context.memory.scope.key,
-      },
+      scopePhone(context.memory.scope.value),
       query,
       context.abortSignal,
     );
@@ -72,6 +69,13 @@ async function startedSearch(context: RecallCtx): Promise<MemoryRecallResult> {
 export default defineMemory({
   namespace: "bro-recall-v1",
   description: "Automatic memory of past conversations with this person.",
+  // Spelled out, not left to the compiler's default. `projectMemoryHistory`
+  // (eve/dist/src/shared/memory-state.js) drops an already-injected recall
+  // block on a scope change ONLY when the lock says `visibility === "scope"`;
+  // with anything else a block injected under one person's scope stays in that
+  // eve session's history after the slot re-locks to another. That is a
+  // cross-conversation leak, and it is not a thing to leave to a default.
+  visibility: "scope",
   provider: {
     ...inner,
     recall: {
@@ -84,7 +88,5 @@ export default defineMemory({
     },
   },
   scope: (ctx) =>
-    resolveRecallBackend(process.env).kind === "supermemory"
-      ? resolveMemoryScope(ctx.session.auth, process.env.NODE_ENV === "production")
-      : null,
+    resolveSupermemoryScope(ctx.session.auth),
 });

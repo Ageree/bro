@@ -7,13 +7,14 @@ import {
   type ArchiveHit,
 } from "./archive-policy.ts";
 
+import { supermemoryKey } from "./memory-policy.ts";
+
 const V3_BASE = "https://api.supermemory.ai/v3";
 const V4_SEARCH = "https://api.supermemory.ai/v4/search";
 
+/** One place decides what a usable key is, and it throws by name. */
 export function apiKey(): string {
-  const key = process.env.SUPERMEMORY_API_KEY;
-  if (!key?.trim()) throw new Error("SUPERMEMORY_API_KEY missing");
-  return key.trim();
+  return supermemoryKey();
 }
 
 async function call(

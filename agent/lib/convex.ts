@@ -8,6 +8,7 @@ import {
   TELEGRAM_TENANT_TTL_MS,
   createTtlCache,
 } from "./inbound-path.ts";
+import { budgetFromEnv, withDeadline } from "./deadline.ts";
 
 let cachedClient: ConvexHttpClient | undefined;
 let cachedClientUrl: string | undefined;
@@ -27,21 +28,53 @@ function secret(): string {
   return s;
 }
 
+/**
+ * Budgets for the Convex round trip.
+ *
+ * `ConvexHttpClient` passes no `AbortSignal`, so without these a stalled
+ * request never settles and the turn behind it never ends — the person is left
+ * holding a «проверяю» line with no answer and no error, which is the
+ * 2026-09-16 silence recorded in `agent/lib/silent-turn.ts`. A budget turns
+ * that into a thrown error, `turn.failed`, and the stalled-turn reply.
+ *
+ * Queries and mutations are sub-second in practice (`turnStartedConvexRtts: 1`
+ * in the latency log), so 15 s is far beyond anything healthy and only ever
+ * fires on a genuine stall. Actions are different in kind — they decrypt vault
+ * items and call third parties — so they get a minute before we call it dead.
+ */
+const CALL_BUDGET_MS = budgetFromEnv(process.env.BRO_CONVEX_BUDGET_MS, 15_000);
+const ACTION_BUDGET_MS = budgetFromEnv(
+  process.env.BRO_CONVEX_ACTION_BUDGET_MS,
+  60_000,
+);
+
 /** Generic forwarders: call a Convex function with `secret` injected. */
 const q =
   <F extends FunctionReference<"query">>(fn: F) =>
   (args: Omit<FunctionArgs<F>, "secret">): Promise<FunctionReturnType<F>> =>
-    client().query(fn, { secret: secret(), ...args } as FunctionArgs<F>);
+    withDeadline(
+      client().query(fn, { secret: secret(), ...args } as FunctionArgs<F>),
+      CALL_BUDGET_MS,
+      "convex query",
+    );
 
 const m =
   <F extends FunctionReference<"mutation">>(fn: F) =>
   (args: Omit<FunctionArgs<F>, "secret">): Promise<FunctionReturnType<F>> =>
-    client().mutation(fn, { secret: secret(), ...args } as FunctionArgs<F>);
+    withDeadline(
+      client().mutation(fn, { secret: secret(), ...args } as FunctionArgs<F>),
+      CALL_BUDGET_MS,
+      "convex mutation",
+    );
 
 const a =
   <F extends FunctionReference<"action">>(fn: F) =>
   (args: Omit<FunctionArgs<F>, "secret">): Promise<FunctionReturnType<F>> =>
-    client().action(fn, { secret: secret(), ...args } as FunctionArgs<F>);
+    withDeadline(
+      client().action(fn, { secret: secret(), ...args } as FunctionArgs<F>),
+      ACTION_BUDGET_MS,
+      "convex action",
+    );
 
 export type JobWakeRow = {
   id: string;
@@ -53,8 +86,14 @@ export type JobWakeRow = {
   lastNudgeAt?: number;
 };
 
+/**
+ * The open-work snapshot every wake path asks for. It used to carry the memo
+ * lines too (`memories.wakeContext`); the memo store is gone and durable facts
+ * live in Supermemory, so only the jobs remain. The TTL cache stays: the 1:1
+ * inbound prefetch, the wakeup lane and the turn itself all ask within the
+ * same second, and that was always the reason for one query rather than three.
+ */
 export type WakeContext = {
-  memories: string[];
   jobs: JobWakeRow[];
 };
 
@@ -63,10 +102,7 @@ const wakeCache = new Map<string, { at: number; value: WakeContext }>();
 
 export const WAKE_CONTEXT_TTL_MS = 8_000;
 
-function rememberWake(phoneE164: string, value: WakeContext): void {
-  wakeCache.set(phoneE164, { at: Date.now(), value });
-}
-
+/** Any job write invalidates the snapshot: the next read must see it. */
 function forgetWake(phoneE164: string): void {
   wakeCache.delete(phoneE164);
 }
@@ -76,9 +112,10 @@ export async function loadWakeContext(phoneE164: string): Promise<WakeContext> {
   if (cached && Date.now() - cached.at < WAKE_CONTEXT_TTL_MS) return cached.value;
   const existing = wakeInflight.get(phoneE164);
   if (existing) return existing;
-  const pending = q(api.memories.wakeContext)({ phoneE164 })
-    .then((value) => {
-      rememberWake(phoneE164, value);
+  const pending = q(api.jobs.wakeRows)({ phoneE164 })
+    .then((jobs) => {
+      const value = { jobs };
+      wakeCache.set(phoneE164, { at: Date.now(), value });
       return value;
     })
     .finally(() => {
@@ -86,25 +123,6 @@ export async function loadWakeContext(phoneE164: string): Promise<WakeContext> {
     });
   wakeInflight.set(phoneE164, pending);
   return pending;
-}
-
-export async function wakeLines(phoneE164: string): Promise<string[]> {
-  return (await loadWakeContext(phoneE164)).memories;
-}
-
-export async function noteLine(phoneE164: string, line: string): Promise<string> {
-  await m(api.memories.note)({ phoneE164, line });
-  forgetWake(phoneE164);
-  return "noted";
-}
-
-export const searchLines = (phoneE164: string, needle: string): Promise<string[]> =>
-  q(api.memories.search)({ phoneE164, needle });
-
-export async function forgetLines(phoneE164: string, needle: string): Promise<string> {
-  const n = await m(api.memories.forget)({ phoneE164, needle });
-  forgetWake(phoneE164);
-  return `forgot ${n}`;
 }
 
 export async function upsertTenant(
@@ -309,40 +327,7 @@ export async function bindInbound(
   return { ok: true, tenant: result.tenant, firstBind };
 }
 
-export type BindGroupResult =
-  | {
-      ok: true;
-      ownerPhoneE164: string;
-      inkboxHandle: string;
-      firstGroup: boolean;
-    }
-  | { ok: false; reason: string };
-
-export async function bindGroupInbound(args: {
-  conversationId: string;
-  senderPhone: string;
-  participants: string[];
-  handle?: string;
-  ownerPhone?: string;
-}): Promise<BindGroupResult> {
-  const result = await m(api.groupChats.bindInbound)(args);
-  if (!result.ok) return result;
-  return {
-    ok: true,
-    ownerPhoneE164: result.ownerPhoneE164,
-    inkboxHandle: result.inkboxHandle,
-    firstGroup: result.firstGroup,
-  };
-}
-
-export const getGroupByConversation = (conversationId: string) =>
-  q(api.groupChats.getByConversation)({ conversationId });
-
 export async function replyTenant(conversationId: string) {
-  const group = await getGroupByConversation(conversationId).catch(() => null);
-  if (group?.ownerPhoneE164) {
-    return await getTenant(group.ownerPhoneE164).catch(() => null);
-  }
   return await getTenantByConversation(conversationId).catch(() => null);
 }
 
@@ -371,6 +356,7 @@ export const setBrowser = (
     /** True while a vault card is being typed into a bound checkout page. */
     browserPaying?: boolean;
     browserPayHosts?: string[];
+    browserMaxRub?: number;
     /** Errand queued while a different one was active — run after `done`. */
     browserNextTask?: string;
     /** Last scrubbed Cloud result — wakeup/resume read this back. */
@@ -520,7 +506,7 @@ export const touchJobMail = (
 export const scheduleWakeup = (args: {
   tenantPhone: string;
   at: number;
-  kind: "reminder" | "browser_poll" | "brief" | "watcher" | "job_check";
+  kind: "reminder" | "browser_poll" | "brief" | "watcher" | "job_check" | "instinct";
   payload: string;
   recurMinutes?: number;
   recurDailyHour?: number;
@@ -531,7 +517,13 @@ export const cancelWakeup = (
   tenantPhone: string,
   opts: {
     id?: string;
-    kind?: "reminder" | "browser_poll" | "brief" | "watcher" | "job_check";
+    kind?:
+      | "reminder"
+      | "browser_poll"
+      | "brief"
+      | "watcher"
+      | "job_check"
+      | "instinct";
     payloadContains?: string;
   },
 ): Promise<number> =>
@@ -548,6 +540,25 @@ export const cancelWakeup = (
 export const claimDurableWakeupDelivery = (
   key: string,
 ): Promise<{ taken: boolean }> => m(api.wakeups.takeDelivery)({ key });
+
+/** Proactivity budget + dedupe state for one person (convex/instinct.ts).
+ *  Null when the tenant is unknown or disabled — no initiative for either. */
+export const instinctState = (
+  phoneE164: string,
+): Promise<FunctionReturnType<typeof api.instinct.state>> =>
+  q(api.instinct.state)({ phoneE164 });
+
+/** Mark what this scan looked at, and spend a slot when it actually spoke. */
+export const noteInstinctSpoken = (
+  phoneE164: string,
+  sourceIds: readonly string[],
+  spent: boolean,
+): Promise<void> =>
+  m(api.instinct.noteSpoken)({
+    phoneE164,
+    sourceIds: [...sourceIds],
+    spent,
+  }).then(() => {});
 
 export const createWatcher = (args: {
   tenantPhone: string;

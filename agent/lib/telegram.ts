@@ -296,6 +296,23 @@ export async function telegramFileUrl(fileId: string): Promise<string> {
   return `${API}/file/bot${botToken()}/${file.file_path}`;
 }
 
+/** Who Telegram thinks this token is. Public info: username and id. */
+export async function telegramGetMe(): Promise<{ id?: number; username?: string }> {
+  return await api("getMe", {});
+}
+
+/** Where Telegram currently posts updates, and how that is going. */
+export async function telegramWebhookInfo(): Promise<{
+  url?: string;
+  pending_update_count?: number;
+  last_error_date?: number;
+  last_error_message?: string;
+  ip_address?: string;
+  allowed_updates?: string[];
+}> {
+  return await api("getWebhookInfo", {});
+}
+
 export async function setTelegramWebhook(opts: {
   url: string;
   secret: string;
@@ -312,6 +329,22 @@ export function largestPhoto(msg: TelegramMessage): TelegramPhotoSize | undefine
   const photos = msg.photo ?? [];
   if (photos.length === 0) return undefined;
   return photos.reduce((a, b) => ((b.file_size ?? 0) >= (a.file_size ?? 0) ? b : a));
+}
+
+/** The biggest rendition that still fits a byte cap, else the smallest one
+ *  there is. Telegram sends four or five sizes of every photo; taking the
+ *  largest and then refusing it as oversize threw away a picture the same
+ *  message was carrying in a size that fits. */
+export function photoWithinBytes(
+  msg: TelegramMessage,
+  maxBytes: number,
+): TelegramPhotoSize | undefined {
+  const photos = [...(msg.photo ?? [])].sort(
+    (a, b) => (a.file_size ?? 0) - (b.file_size ?? 0),
+  );
+  if (photos.length === 0) return undefined;
+  const fits = photos.filter((p) => (p.file_size ?? 0) <= maxBytes);
+  return fits.at(-1) ?? photos[0];
 }
 
 export function isPrivateChat(msg: { chat?: TelegramChat } | undefined): boolean {

@@ -20,7 +20,6 @@ import {
   ERRAND_BRIEF_MAX_LINES,
   ERRAND_BRIEF_SYSTEM,
   KNOWN_FACTS_GAP,
-  MEMORY_LINE_LIMIT,
   MISSING_FACTS_LINE,
   composeErrandBrief,
   errandBriefBudgetMs,
@@ -229,7 +228,6 @@ const FACTS: ErrandFacts = {
     postalCode: "101000",
     countryCode: "RU",
   },
-  memories: ["размер обуви 42", "доставка только в пункт выдачи"],
   tz: "Europe/Moscow",
   nowLocal: "четверг, 17 сентября 2026 г., 14:32",
 };
@@ -248,7 +246,6 @@ eq(knownFactsBlock(undefined), "", "no facts → no block at all");
     "ул. Ленина, д. 5, кв. 12",
     "Москва",
     "101000",
-    "размер обуви 42",
     "четверг, 17 сентября 2026",
     "Europe/Moscow",
   ]) {
@@ -257,8 +254,17 @@ eq(knownFactsBlock(undefined), "", "no facts → no block at all");
   // The inverted restriction: the facts come first and НУЖНО is the fallback
   // for what is genuinely missing, not a standing order to abort.
   assert(block.includes(KNOWN_FACTS_GAP), "the gap sentence closes the block");
-  assert(block.includes("НУЖНО: address"), "address stays a reachable outcome");
   assert(block.includes("не выдумывай"), "inventing a fact is still forbidden");
+  assert(block.includes("остановись"), "and stopping is still the alternative");
+  // The `НУЖНО: address|info` menu left this sentence with the rewrite: the
+  // output contract at the foot of every errand lists all ten values, and
+  // reciting two of them here bought characters on every single run. The
+  // facts themselves — the thing this block exists for — all stayed.
+  assert(!block.includes("НУЖНО:"), "the outcome taxonomy is not repeated inside the facts");
+  // One line, not a heading plus a dash per field: the list shape was ours,
+  // the facts are the human's, and only the shape was worth deleting.
+  assert(block.split("\n").length === 1, "the known facts travel as one line");
+  assert(!block.includes("ИЗВЕСТНО"), "the form-field heading is gone");
   assert(
     !block.includes("Что знает только человек"),
     "the old abort-on-any-personal-fact order is gone",
@@ -272,22 +278,32 @@ eq(knownFactsBlock(undefined), "", "no facts → no block at all");
   assert(abroad.includes("LV"), "a non-RU country code does travel");
 }
 {
-  // One rambling memory must not become the largest thing in the prompt.
-  const many = knownFactsBlock({
-    memories: Array.from({ length: MEMORY_LINE_LIMIT + 5 }, (_, i) => `факт ${i}`),
-  });
-  eq(
-    many.split("\n").filter((l) => l.startsWith("- помню:")).length,
-    MEMORY_LINE_LIMIT,
-    "memories are capped",
+  // The «помню: …» lines went with the Convex memo store. They were the only
+  // free-text field here, and their replacement — semantic search over a
+  // person's chat — is not a list of vetted facts to paste into a browser
+  // instruction. The brief runs on the vault alone now, and must not grow a
+  // memory feed back by accident.
+  assert(
+    !knownFactsBlock(FACTS).includes("помню"),
+    "no memory lines in the known-facts block",
   );
-  const long = knownFactsBlock({ memories: ["я".repeat(600)] });
-  assert(long.length < 400, "a long memory line is shortened");
+  assert(
+    !src("agent/lib/errand-context.ts").includes("wakeLines"),
+    "the errand context no longer reads the memo store",
+  );
 }
 {
-  // A memory is free text a human dictated — it is the one place a secret can
-  // realistically leak into the facts, so every line is scrubbed.
-  const leaky = knownFactsBlock({ memories: ["карта 4111 1111 1111 1111", "пароль: hunter2"] });
+  // Every fact line still goes through scrubSecrets. The vault payloads are
+  // parsed, not sanitised, so a human who typed a card number into the
+  // recipient field must not have it travel to the browser.
+  const leaky = knownFactsBlock({
+    address: {
+      recipientName: "карта 4111 1111 1111 1111",
+      line1: "пароль: hunter2",
+      city: "Москва",
+      countryCode: "RU",
+    },
+  });
   assert(!leaky.includes("4111"), "a card number never reaches the facts block");
   assert(!leaky.includes("hunter2"), "a password never reaches the facts block");
 }
@@ -366,7 +382,6 @@ assert(
           }),
         };
       },
-      wakeLines: async () => ["размер обуви 42"],
     },
     { now: new Date("2026-09-17T09:32:00Z") },
   );
@@ -383,7 +398,6 @@ assert(
   eq(facts.address?.countryCode, "RU", "country code normalised by the payload schema");
   eq(facts.tz, "Asia/Yekaterinburg", "tenant tz wins");
   assert(facts.nowLocal!.includes("2026"), "the current local date is stamped");
-  eq(facts.memories?.[0], "размер обуви 42", "curated memories loaded");
 }
 {
   // Nothing here may fail an errand: every dependency throwing at once still
@@ -395,7 +409,6 @@ assert(
     getTenant: boom as never,
     listVaultItems: boom as never,
     readVaultSecret: boom as never,
-    wakeLines: boom as never,
   });
   eq(facts.tz, "Europe/Moscow", "a dead Convex still leaves the default timezone");
   eq(facts.address, undefined, "and no invented address");
@@ -443,12 +456,87 @@ assert(!isScaffolded("купи кроссовки"), "a raw errand is not scaffo
   }
   assert(task.includes("НУЖНО: none|"), "the НУЖНО menu survives verbatim");
   assert(
-    task.includes("Никогда не пиши в итог пароль, номер карты или код."),
+    task.includes("Пароль, номер карты и код в ответ не пиши."),
     "the safety line survives",
   );
   // The generic browsing advice the audit costed at ~980 chars is gone.
   for (const gone of ["Работай быстро", "Важен результат", "баннеры закрывай", "куки прошлой сессии", "iframe"]) {
     assert(!task.includes(gone), `generic advice «${gone}» is gone`);
+  }
+  // The second pass over the envelope: what a browser agent does not need to
+  // be told is how to use a browser. Each of these was a full sentence on
+  // every run, and not one of them is a fact about the errand.
+  for (const gone of [
+    "дождись страницы",
+    "на языке сайта",
+    "убедись, что на экране",
+    "Сайт откроет Bro сам",
+  ]) {
+    assert(!task.includes(gone), `browser how-to «${gone}» is gone`);
+  }
+  // …while every one of these is a fact or a boundary, and stays.
+  for (const kept of ["Решай сам", "входи или регистрируйся", "остановись"]) {
+    assert(task.includes(kept), `the licence/boundary «${kept}» survives`);
+  }
+}
+{
+  // The goal opens the errand as a sentence, not as a form field. Anything
+  // that reads the task back out (scripts/fake-browser-use.ts `humanErrand`,
+  // and a human reading a log) takes the line after the mark, so it must
+  // stay ONE line and stay first.
+  const task = scaffoldTask(SAMPLE_TASK, { facts: FACTS });
+  const [mark, goal] = task.split("\n");
+  eq(mark, "[bro-errand]", "the mark is still the first line");
+  eq(goal, SAMPLE_TASK, "the errand itself is the second line, unlabelled");
+  assert(!task.includes("ЦЕЛЬ:"), "the ЦЕЛЬ form label is gone");
+  // ДОСЛОВНО is not a restatement of the goal — it is the only line that
+  // carries the human's own «43» and «до 12к» — so it stays, and stays
+  // labelled, but only when it says something the goal does not.
+  const quoted = scaffoldTask("купи кроссовки nike air max 43 на wildberries, до 12000", {
+    humanText: "купи кроссовки nike air max 43 на вб, до 12к",
+  });
+  assert(
+    quoted.includes("ДОСЛОВНО ОТ ЧЕЛОВЕКА: «купи кроссовки nike air max 43 на вб, до 12к»"),
+    "the human's own wording still rides along verbatim",
+  );
+  eq(
+    scaffoldTask(SAMPLE_TASK, { humanText: SAMPLE_TASK }).split("\n").length,
+    scaffoldTask(SAMPLE_TASK).split("\n").length,
+    "and never costs a line when it would only repeat the goal",
+  );
+}
+{
+  // The release blocker this pass was written around: `payScaffold`'s
+  // `holder`/`account` are optional at every real call site, were typed as
+  // required, and were interpolated unconditionally — so the errand told the
+  // cloud agent «Держатель undefined — не секрет, печатай его текстом».
+  // Nothing the scaffold assembles may ever print the word.
+  const matrix: Array<[string, Parameters<typeof scaffoldTask>[1]]> = [
+    ["bare", undefined],
+    ["facts only", { facts: FACTS }],
+    ["empty facts", { facts: {} }],
+    ["brief + human", { brief: BRIEF, humanText: "закажи кроссы 42го на вб" }],
+    ["continuation", { facts: FACTS, continuation: true }],
+    ["start page", { facts: FACTS, startPage: "https://www.ozon.ru/" }],
+    ["vault login", { facts: FACTS, login: true }],
+    [
+      "card without holder/account",
+      { facts: FACTS, pay: { hosts: expandPayHosts(["ozon.ru"]), maxRub: 5000 } },
+    ],
+    [
+      "card without hosts",
+      { facts: FACTS, pay: { hosts: [], holder: "IVAN PETROV", account: "Visa" } },
+    ],
+    [
+      "attach card, nothing but hosts",
+      { facts: FACTS, pay: { hosts: expandPayHosts(["taxi.yandex.ru"]), attachCard: true } },
+    ],
+  ];
+  for (const [label, opts] of matrix) {
+    const task = opts ? scaffoldTask(SAMPLE_TASK, opts) : scaffoldTask(SAMPLE_TASK);
+    assert(!task.includes("undefined"), `«undefined» never reaches the run (${label})`);
+    assert(!task.includes("null"), `nor «null» (${label})`);
+    assert(!/\n\s*\n\s*\n/u.test(task), `and an absent block leaves no blank gap (${label})`);
   }
 }
 {
@@ -459,7 +547,10 @@ assert(!isScaffolded("купи кроссовки"), "a raw errand is not scaffo
   // With nothing on file it falls back exactly where it used to.
   const unknown = scaffoldTask(SAMPLE_TASK);
   assert(unknown.includes(MISSING_FACTS_LINE), "empty vault → say so and ask");
-  assert(unknown.includes("НУЖНО: address"), "empty vault → address is reachable");
+  assert(
+    unknown.includes("|address|"),
+    "empty vault → address is still a reachable outcome, via the output contract",
+  );
   assert(unknown.includes(SAMPLE_TASK), "the raw task still travels with no context at all");
 }
 {
@@ -534,7 +625,19 @@ function userContentChars(task: string, opts: { brief?: string; facts?: ErrandFa
     boilerplate < BOILERPLATE_BEFORE,
     `boilerplate is ${boilerplate}, was ${BOILERPLATE_BEFORE} — it must not creep back`,
   );
-  assert(share > 0.25, `user content is ${(share * 100).toFixed(1)}% of the task, was 2.6%`);
+  // The threshold moved 25% → 20% when the memo feed left `FACTS`, and 20% →
+  // 24% when the envelope was rewritten as a message rather than a form
+  // (the heading-plus-dashes fact list, the browser how-to sentences and the
+  // recited `НУЖНО` taxonomy all went). `boilerplate < BOILERPLATE_BEFORE`
+  // just above is what actually guards against prose creeping back; this one
+  // guards the ratio it produces, which is the number the product owner
+  // reads: how much of what we send is the human's own business.
+  assert(share > 0.24, `user content is ${(share * 100).toFixed(1)}% of the task, was 2.6%`);
+  // The word that shipped a release blocker. `payScaffold` interpolated an
+  // optional `holder`/`account` unconditionally, and the errand told the run
+  // «Держатель undefined — печатай его текстом» — with the card bound, on a
+  // live checkout. Every scaffold, every combination, never the word.
+  assert(!task.includes("undefined"), "no «undefined» anywhere in the assembled task");
 }
 {
   // The envelope alone — no facts, no brief — is what shrank. Everything the
@@ -543,7 +646,7 @@ function userContentChars(task: string, opts: { brief?: string; facts?: ErrandFa
   const boilerplate = bare.length - SAMPLE_TASK.length;
   console.log(`errand-brief: bare envelope=${boilerplate} chars (was ${BOILERPLATE_BEFORE})`);
   assert(
-    boilerplate <= 1_150,
+    boilerplate <= 900,
     `the bare envelope is ${boilerplate} chars — cut a sentence, do not raise this`,
   );
 }
@@ -564,9 +667,10 @@ function userContentChars(task: string, opts: { brief?: string; facts?: ErrandFa
     },
   });
   assert(
-    paid.length <= 2_800,
+    paid.length <= 2_000,
     `the fullest scaffold is ${paid.length} chars — cut a sentence, do not raise this`,
   );
+  assert(!paid.includes("undefined"), "not even the fullest scaffold prints «undefined»");
 }
 
 // ---------------------------------------------------------------------------
@@ -643,3 +747,42 @@ assert(
 }
 
 console.log("errand-brief-check ok");
+
+
+// --- what looked like browsing advice and was not ---------------------------
+/**
+ * Two sentences were cut by the trim as "how to use a browser" and are back,
+ * because nothing in this repository replaces them.
+ *
+ * «Дважды не заказывай и не плати» was removed on the reasoning that
+ * double-charging is already held off by `browser_task`'s charge key and by
+ * `orderRowFromRun`. Neither does that: the charge key meters Bro's own
+ * monthly browser-job quota and never touches the card, and `orderRowFromRun`
+ * only decides whether to record a row, upserting by `merchantOrderId` — a
+ * real second order carries a different number and records as a second row.
+ * «выдумывать пароль или номер карты нельзя» had no replacement at all.
+ *
+ * The test for cutting a sentence from this envelope is not whether it sounds
+ * like advice. It is whether deleting it removes the only thing standing
+ * between the run and the person's money.
+ */
+{
+  const paid = scaffoldTask("купи кроссовки", {
+    pay: { hosts: ["wildberries.ru"], maxRub: 5000 },
+  });
+  assert(
+    paid.includes("Дважды не заказывай и не плати"),
+    "a paid run is still told not to pay twice",
+  );
+  const plain = scaffoldTask("забронируй столик на двоих");
+  assert(
+    plain.includes("Дважды не заказывай"),
+    "an unpaid run is still told not to order twice",
+  );
+  assert(
+    plain.includes("выдумывать пароль или номер карты нельзя"),
+    "the run is still forbidden from inventing a password or a card number",
+  );
+}
+
+console.log("errand-brief-check: money guards present");

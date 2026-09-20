@@ -51,11 +51,28 @@ const NEED_VALUES: ReadonlySet<string> = new Set<CloudNeed>([
 /** «нет» / «none» / «-» / «—» / «н/д» all mean "nothing in this field". */
 const EMPTYISH = /^(?:нет|none|-|—|н\/д)$/iu;
 
+/**
+ * One labelled line, tolerating the two decorations a chat model adds to a
+ * list it was asked for in prose: a leading bullet («- НУЖНО: none») and
+ * markdown bold («**НУЖНО:** none»). Neither used to parse, and the cost of
+ * missing the label is not a missing field — `parseCloudOutcome` falls back
+ * to guessing `needs` off free text, which drives the inject decisions and
+ * the «нужно X» line the human reads.
+ *
+ * This matters more now that the errand asks for the block in one short
+ * sentence instead of four lines of formatting instructions: the shorter the
+ * ask, the more the run formats the answer its own way.
+ */
 function grabLabel(result: string, labels: readonly string[]): string | undefined {
   for (const label of labels) {
-    const re = new RegExp(`^[ \\t]*${label}[ \\t]*:[ \\t]*(.+)$`, "imu");
+    const re = new RegExp(
+      `^[ \\t]*(?:[-*•]+[ \\t]*)?\\*{0,2}${label}\\*{0,2}[ \\t]*:[ \\t]*(.+)$`,
+      "imu",
+    );
     const m = result.match(re);
-    if (m?.[1] !== undefined) return m[1].trim();
+    // A bolded label often closes after the colon («**СДЕЛАНО:** заказал») and
+    // sometimes around the value itself — the asterisks are never the value.
+    if (m?.[1] !== undefined) return m[1].replace(/^\*+|[\s*]+$/gu, "").trim();
   }
   return undefined;
 }
@@ -171,6 +188,18 @@ export function humanLineForNeed(
   const liveUrl = opts?.liveUrl?.trim();
   const detail = opts?.detail?.trim();
   const withLink = (line: string): string => (liveUrl ? `${line}\n\n${liveUrl}` : line);
+  /**
+   * A line that names a link, and the line to send when there is no link.
+   *
+   * `withLink` appends the URL when there is one and silently drops it when
+   * there is not — but the sentence above it still said «открой ссылку». The
+   * person then read an instruction to open something they were never sent and
+   * had nothing to do, which is exactly the kind of dead end this release is
+   * meant to remove. `password` already handled it; 3-D Secure and CAPTCHA did
+   * not. Found by `scripts/journeys.ts`.
+   */
+  const withLinkOr = (withUrl: string, withoutUrl: string): string =>
+    liveUrl ? withLink(withUrl) : withoutUrl;
   switch (need) {
     case "sms_code":
       return "Нужен код из SMS — пришли его сюда, введу сам.";
@@ -179,11 +208,15 @@ export function humanLineForNeed(
     case "push":
       return "Подтверди вход в приложении банка/Яндекса и напиши «готово».";
     case "3ds":
-      return withLink(
+      return withLinkOr(
         "Банк просит подтвердить оплату — открой ссылку, подтверди и напиши «готово».",
+        "Банк просит подтвердить оплату — подтверди у себя в приложении банка и напиши «готово».",
       );
     case "captcha":
-      return withLink("Сайт показал капчу — реши по ссылке и напиши «готово».");
+      return withLinkOr(
+        "Сайт показал капчу — реши по ссылке и напиши «готово».",
+        "Сайт показал капчу и без тебя её не пройти — сейчас пришлю ссылку, а если не придёт, напиши, попробую заново.",
+      );
     case "password": {
       if (liveUrl) {
         return withLink("Нужен вход — открой ссылку и войди, пароль я не увижу.");

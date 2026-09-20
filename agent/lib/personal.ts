@@ -1,4 +1,3 @@
-import { groupPersonalBlock } from "./group-guard.ts";
 import { requirePersonalPhone, tenantId } from "./tenant.ts";
 
 type AuthBox = {
@@ -11,7 +10,7 @@ type AuthBox = {
 };
 
 export type PersonalDenied = {
-  status: "group" | "denied";
+  status: "denied";
   error: string;
 };
 
@@ -19,8 +18,6 @@ export type PersonalDenied = {
 export function asPersonal(
   ctx: AuthBox,
 ): { phone: string } | PersonalDenied {
-  const blocked = groupPersonalBlock(ctx);
-  if (blocked) return { status: "group", error: blocked };
   try {
     return { phone: requirePersonalPhone(tenantId(ctx)) };
   } catch (err) {

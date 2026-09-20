@@ -2,9 +2,7 @@ import {
   dueJobNudges,
   isJobCheckWakeup,
   jobCheckPayload,
-  JOB_CHECK_QUIET,
   jobCheckWakePrompt,
-  jobNudgeInstruction,
   jobWakeInstruction,
   matchWakeJob,
 } from "../agent/lib/job-wake.ts";
@@ -14,6 +12,7 @@ import {
   shouldNudge,
   shouldSpeakNotSilent,
 } from "../convex/lib/jobNudgePolicy.ts";
+import { turnVoice, voiceInstruction } from "../agent/lib/turn-voice.ts";
 import { formatJobWakeLine } from "../convex/lib/jobWakeLine.ts";
 import {
   attachMailToJob,
@@ -37,6 +36,8 @@ import {
   sameBrowserRun,
   shouldStartFollowThrough,
 } from "../convex/lib/browserFollowPolicy.ts";
+
+import { existsSync } from "node:fs";
 
 import { assert, src } from "./lib/check.ts";
 
@@ -372,42 +373,42 @@ assert(
 );
 assert(jobCheckPayload({ wakeupPayload: "джоб j1: слот" }) === "джоб j1: слот", "stamped payload");
 assert(jobCheckPayload({ origin: "wakeup" }) === "", "no payload");
-const nudgeText = jobNudgeInstruction(
-  dueJobNudges(
-    [
-      {
-        id: "j1",
-        line: "id=j1",
-        goal: "слот",
-        waitingFor: "human",
-        waitingSince: t0,
-      },
-    ],
-    nudgeNow,
+// The nudge copy moved to `turn-voice.ts`: `dueJobNudges` supplies the facts,
+// `turnVoice` decides once, `voiceInstruction` writes the only voice line.
+const oneJob = [
+  {
+    id: "j1",
+    line: "id=j1",
+    goal: "слот",
+    waitingFor: "human" as const,
+    waitingSince: t0,
+  },
+];
+const dueVoice = (now: number) =>
+  turnVoice({
+    origin: "wakeup",
+    shortAck: false,
+    waitingForHuman: true,
+    jobCheck: true,
+    dueNudges: dueJobNudges(oneJob, now).length,
+    browserPollForceSpeak: false,
+  });
+assert(dueVoice(nudgeNow) === "must_speak", "due job_check force-speaks");
+const nudgeText = voiceInstruction(dueVoice(nudgeNow), {
+  nudges: dueJobNudges(oneJob, nudgeNow).map((job) =>
+    nudgePrompt({ waitingFor: "human", goal: job.goal, note: job.note }),
   ),
-);
-assert(nudgeText?.includes("Do NOT answer [SILENT]"), "due job_check force-speaks");
+});
+assert(nudgeText?.includes("[SILENT]"), "due nudge steer names what it forbids");
+assert(nudgeText?.includes("Нужен твой ответ"), "due nudge steer carries the nudge line");
 assert(
   !jobCheckWakePrompt("джоб j1: слот").includes("[SILENT]"),
   "wakeup user text does not authorize SILENT — turn.started decides",
 );
-assert(JOB_CHECK_QUIET.includes("[SILENT]"), "quiet job_check may stay silent");
+assert(dueVoice(t0 + 1000) === "may_silent", "fresh wait is not a nudge");
 assert(
-  jobNudgeInstruction(
-    dueJobNudges(
-      [
-        {
-          id: "j1",
-          line: "id=j1",
-          goal: "слот",
-          waitingFor: "human",
-          waitingSince: t0,
-        },
-      ],
-      t0 + 1000,
-    ),
-  ) === null,
-  "fresh wait is not a nudge",
+  voiceInstruction("may_silent", {})?.includes("[SILENT]"),
+  "quiet job_check may stay silent",
 );
 
 assert(
@@ -433,13 +434,15 @@ assert(
   "epochs stay off the injected line — dueJobNudges reads structured fields",
 );
 {
-  const memoriesSrc = src("convex/memories.ts");
+  // The wake snapshot moved out of the deleted `convex/memories.ts` and into
+  // jobs.ts, where the only half that survived the memo store belongs.
+  const jobsConvex = src("convex/jobs.ts");
   assert(
-    memoriesSrc.includes('from "./lib/jobWakeLine"'),
-    "wakeContext uses the shared job line formatter",
+    jobsConvex.includes('from "./lib/jobWakeLine"'),
+    "wakeRows uses the shared job line formatter",
   );
   assert(
-    memoriesSrc.includes("waitingSince: j.waitingSince"),
+    jobsConvex.includes("waitingSince: j.waitingSince"),
     "structured wake row still carries waitingSince for nudges",
   );
 }
@@ -455,12 +458,16 @@ assert(
 assert(!isJobCheckWakeup({ origin: "wakeup", wakeupKind: "brief" }), "brief is not a nudge");
 assert(jobsSrc.includes("isJobCheckWakeup"), "nudge only on job_check wakeups");
 assert(jobsSrc.includes("void Promise.all"), "markNudged does not block turn.started");
-assert(jobsSrc.includes("jobNudgeInstruction"), "nudge copy lives on turn.started");
+assert(jobsSrc.includes("nudgePrompt"), "nudge copy reaches the one voice block");
 assert(jobsSrc.includes("jobCheckPayload"), "nudge scoped to stamped payload");
-assert(jobsSrc.includes("JOB_CHECK_QUIET"), "non-due job_check gets SILENT from instructions");
+assert(jobsSrc.includes("turnVoice("), "speak-or-stay-quiet is one verdict, not six competing lines");
+assert(jobsSrc.includes("voiceInstruction("), "the verdict becomes exactly one injected block");
 assert(jobsSrc.includes("isShortAckTurn"), "human short acks get a steer on turn.started");
 assert(jobsSrc.includes("cloudInjectKindFromAttrs"), "live Cloud inject gets a steer on turn.started");
-assert(jobsSrc.includes("shortAckInstruction"), "ack steer is not a skipped agent turn");
+assert(
+  !jobsSrc.includes("shortAckInstruction") && !jobsSrc.includes("JOB_CHECK_QUIET"),
+  "the retired competing voice instructions are off the prompt",
+);
 assert(
   !jobsSrc.includes("recallQuery(ctx.messages)"),
   "ack steer does not use Eve instruction history",
@@ -488,5 +495,76 @@ assert(
 const jobsFinishSrc = src("convex/jobs.ts");
 const jobsAlreadyClosedCount = (jobsFinishSrc.match(/job already closed/g) || []).length;
 assert(jobsAlreadyClosedCount >= 2, "finish and wait both guard job already closed");
+
+// --- one `job` tool, three actions ---------------------------------------
+// open/wait/done were one idea split across three slots in the model's tool
+// list; wait and done were only a wakeup schedule/cancel around a Convex
+// mutation. The merge must keep every field, guard and payload intact.
+{
+  for (const gone of ["job_open.ts", "job_wait.ts", "job_done.ts"]) {
+    assert(
+      !existsSync(new URL(`../agent/tools/${gone}`, import.meta.url)),
+      `${gone} is merged into the single job tool`,
+    );
+  }
+  const jobTool = src("agent/tools/job.ts");
+  assert(
+    jobTool.includes('z.enum(["open", "wait", "done"])'),
+    "job routes on an action enum",
+  );
+  for (const field of [
+    "goal: z.string().min(1).max(280).optional()",
+    "doneWhen: z.string().min(1).max(280).optional()",
+    'waitingFor: z.enum(["human", "email", "browser"]).optional()',
+    "note: z.string().max(280).optional()",
+    "checkInMinutes: z.number().min(2).max(10080).optional()",
+    "outcome: z.string().min(1).max(280).optional()",
+    "failed: z.boolean().optional()",
+  ]) {
+    assert(jobTool.includes(field), `job keeps the old input field: ${field}`);
+  }
+  assert(
+    jobTool.includes('return { error: "open needs goal, doneWhen" }'),
+    "open still refuses a half-filled job",
+  );
+  assert(
+    jobTool.includes('return { error: "wait needs jobId, waitingFor" }'),
+    "wait still refuses a half-filled park",
+  );
+  assert(
+    jobTool.includes('return { error: "done needs jobId, outcome" }'),
+    "done still refuses a half-filled close",
+  );
+  assert(
+    jobTool.includes("defaultCheckInMinutes(waitingFor)"),
+    "wait still falls back to human 20 / email 45 / browser 8",
+  );
+  assert(
+    jobTool.includes('kind: "job_check"') &&
+      jobTool.includes("payload: `\u0434\u0436\u043e\u0431 ${jobId}: ${goal}`") &&
+      jobTool.includes("recurMinutes: minutes"),
+    "wait still schedules the recurring job_check with the same payload",
+  );
+  assert(
+    jobTool.includes("payloadContains: `\u0434\u0436\u043e\u0431 ${jobId}`"),
+    "done still cancels that job_check by the same payload prefix",
+  );
+  assert(
+    jobTool.includes("checkAt: new Date(at).toISOString()"),
+    "wait still returns checkAt on top of the job row",
+  );
+}
+
+const instructionsSrc = src("agent/instructions.md");
+assert(
+  !/job_open|job_wait|job_done/.test(instructionsSrc),
+  "instructions.md names the merged job tool, not the three old ones",
+);
+assert(
+  instructionsSrc.includes("`job` action=open") &&
+    instructionsSrc.includes("`job` action=wait") &&
+    instructionsSrc.includes("`job` action=done"),
+  "the Jobs section spells out all three actions",
+);
 
 console.log("jobs-check ok");

@@ -3,8 +3,9 @@ import { z } from "zod";
 import { describeWatcher, triggerSpec } from "../../convex/lib/watcherPolicy.ts";
 import { composio } from "../lib/composio";
 import { createWatcher, listWatchers, stopWatchers } from "../lib/convex";
-import { groupPersonalBlock } from "../lib/group-guard";
 import { composioUserId, tenantId } from "../lib/tenant";
+import { instinctBlocked } from "../lib/instinct-guard.ts";
+import { turnAttributes } from "../lib/turn-attrs";
 
 export default defineTool({
   description:
@@ -17,7 +18,7 @@ export default defineTool({
     id: z.string().optional(),
   }),
   async execute({ action, source, about, gmailQuery, id }, ctx) {
-    const blocked = groupPersonalBlock(ctx);
+    const blocked = instinctBlocked(turnAttributes(ctx), "watch_app");
     if (blocked) return blocked;
     const phone = composioUserId(tenantId(ctx));
     if (action === "stop") {

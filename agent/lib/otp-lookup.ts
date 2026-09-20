@@ -2,7 +2,6 @@ import type { ToolContext } from "eve/tools";
 import { searchArchive } from "./archive.ts";
 import { fillOtpBodies, listBroInbox, searchBroInbox } from "./bro-inbox.ts";
 import { upsertTenant } from "./convex.ts";
-import { groupPersonalBlock } from "./group-guard.ts";
 import { agentHandle, inkbox } from "./inkbox";
 import {
   archiveOtpAllowed,
@@ -106,8 +105,6 @@ export async function otpLookupExecute(
   { hint, sinceMinutes }: { hint?: string; sinceMinutes?: number },
   ctx: ToolContext,
 ) {
-  const blocked = groupPersonalBlock(ctx);
-  if (blocked) return { error: blocked };
   const phone = tenantId(ctx);
   const tenant = await upsertTenant(phone);
   return findFreshOtp({

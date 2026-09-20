@@ -108,6 +108,47 @@ assert(isTelegramAsk("телеграм"), "telegram ask");
 assert(isTelegramAsk("Telegram"), "telegram ask case");
 assert(isTelegramAsk("тг"), "tg ask");
 assert(!isTelegramAsk("телеграмму напиши"), "telegram in a sentence");
+// The regression this widening fixes: the girlfriend and the owner both asked
+// in words rather than typing the bare keyword, fell through to a full agent
+// turn — which has no tool that mints a t.me link — and were told Telegram is
+// unavailable. Every phrasing below is a bare ask for the second channel.
+for (const ask of [
+  // Verbatim from the owner's phone, after the first fix shipped: nine words,
+  // every one of them ordinary, and the eight-word cap this lane used to carry
+  // threw it to the agent, which answered «Телегу ещё не подрубили». Length is
+  // not what makes a message an errand, so the case stays here as the longest
+  // one and there is no cap to grow back into.
+  "Бро а с тобой же можно общаться в тг?",
+  "привет, слушай, а с тобой можно в телеграме общаться, или пока нет?",
+  "а телеграм сейчас доступен?",
+  "можно с тобой в телеграме пообщаться?",
+  "в телеграме ты есть?",
+  "есть тг?",
+  "тг работает?",
+  "а в тг можно писать?",
+  "скинь ссылку на телеграм",
+  "хочу в телеграме общаться",
+  "почему ты не в телеграме?",
+  "у тебя есть телеграм бот?",
+  "Телеграм?",
+]) {
+  assert(isTelegramAsk(ask), `telegram ask in words: ${ask}`);
+  assert(
+    shouldSkipAgentTurn({ firstBind: false, text: ask }),
+    `telegram ask answered with the link, not a turn: ${ask}`,
+  );
+}
+// An errand that merely mentions Telegram stays an errand: one word outside
+// the closed vocabulary and the canned lane lets go.
+for (const errand of [
+  "напиши маме в телеграм",
+  "закажи телеграм премиум",
+  "найди в телеграме канал про биржу",
+  "перешли это в телеграм васе",
+  "телеграм не открывается на ноуте, что делать",
+]) {
+  assert(!isTelegramAsk(errand), `not a telegram ask: ${errand}`);
+}
 assert(shouldSkipAgentTurn({ firstBind: false, text: "телеграм" }), "skip telegram ask");
 assert(
   !shouldSkipAgentTurn({ firstBind: true, text: "купи на вб кроссовки" }),
@@ -131,12 +172,10 @@ const help = helpText({
   cabinetBase: "https://brobro.tech",
 });
 const welcomeJoin = welcomeText({
-  canJoinGroups: true,
   handle: "bro-a1b2c3d4",
   cabinetBase: "https://brobro.tech",
 });
 const helpJoin = helpText({
-  canJoinGroups: true,
   handle: "bro-a1b2c3d4",
   cabinetBase: "https://brobro.tech",
 });
@@ -226,11 +265,11 @@ assert(/напомн|напоминан|сторож/i.test(help), "help wakeups
 assert(/сейф/i.test(help), "help vault");
 assert(/ящик|письм|почт/i.test(help), "help mailbox");
 assert(/телеграм/i.test(help), "help telegram second channel");
-assert(/групп/i.test(help), "help groups");
 assert(!/добав/i.test(welcome), "welcome does not promise add");
-assert(!/добав/i.test(welcomeJoin), "welcome never promises group add on Pro");
-assert(/Business|пауз/i.test(helpJoin), "help says groups after Business");
-assert(/пауз/i.test(welcome), "welcome says groups paused");
+// Groups are gone from the product and from the letter: the letter must not
+// raise a capability the person cannot use and Bro cannot deliver.
+assert(!/групп/i.test(help), "the letter must not mention groups at all");
+assert(!/групп/i.test(welcome), "the letter must not mention groups at all");
 assert(/код/i.test(welcome), "welcome explains the iMessage login code");
 assert(!welcome.includes("скажи пароль"), "welcome never asks for a site password");
 assert(/цен/i.test(welcome), "welcome keeps the price watch");
@@ -282,7 +321,6 @@ assert(
 assert(channel.includes("/webhooks/photon"), "channel has Photon inbound");
 assert(channel.includes("bindPhotonInbound"), "channel binds Photon DM");
 assert(channel.includes("photonNudgeText"), "old Inkbox thread gets one nudge");
-assert(!channel.includes("bindGroupInbound"), "Photon Pro does not bind groups");
 assert(
   channel.includes("shouldSkipAgentTurn") && channel.includes("from("),
   "help/connect skip agent turn",

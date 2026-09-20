@@ -133,7 +133,12 @@ export function giveUp(attempts: number): boolean {
   return attempts >= 4;
 }
 
-const SINGLETON_KINDS = new Set(["brief", "browser_poll", "watcher"]);
+/** `instinct` joins them: the proactive scan is a standing background pass over
+ *  one person's data, not a per-request reminder. One live row per person means
+ *  the 6-hour ensure sweep is idempotent (it reschedules the existing row
+ *  instead of stacking a second scan every time it runs), and cancelling by
+ *  kind turns proactivity off for that person in one call. */
+const SINGLETON_KINDS = new Set(["brief", "browser_poll", "watcher", "instinct"]);
 
 export function isSingletonKind(kind: string): boolean {
   return SINGLETON_KINDS.has(kind);

@@ -1,8 +1,5 @@
 /** Photon iMessage policy. No I/O. Shared pool (Free/Pro): one assigned +1 per user. */
 
-export const PHOTON_GROUPS_PAUSED =
-  "Группы в iMessage сейчас на паузе — на тарифе Photon Pro Bro только в личке. Когда будет свой номер, откроем снова.";
-
 export const PHOTON_ONBOARD_BODY = "Привет";
 
 /** Photon's shared Bro +1 (Spectrum Pro pool). Landing/cabinet deep-link here. */

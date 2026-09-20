@@ -50,6 +50,10 @@ export default defineSchema({
     /** True while a vault card is being typed into a bound checkout page. */
     browserPaying: v.optional(v.boolean()),
     browserPayHosts: v.optional(v.array(v.string())),
+    // The ₽ ceiling the person named, kept with the run so the completion path
+    // can compare it against what was actually charged. Until this existed the
+    // ceiling was one Russian sentence in a third-party model's prompt.
+    browserMaxRub: v.optional(v.number()),
     /** Errand queued while a different one was active — run it after `done`. */
     browserNextTask: v.optional(v.string()),
     /** Last scrubbed Cloud result (≤2000 chars) — wakeup/resume read this back. */
@@ -68,6 +72,21 @@ export default defineSchema({
     dedicatedIMessageNumberStatus: v.optional(v.string()),
     /** Last successful connected-app archive sync (Instinct-style memory). */
     archiveSyncedAt: v.optional(v.number()),
+    /** Proactivity budget (convex/lib/instinctPolicy.ts). The day key is the
+     *  person's LOCAL day, like the billing counters, so "три в день" means
+     *  his day and not UTC's. */
+    instinctDayKey: v.optional(v.string()),
+    instinctDayCount: v.optional(v.number()),
+    instinctLastAt: v.optional(v.number()),
+    /** Things already said unprompted, so a 30-minute scan cannot report the
+     *  same meeting twice. Pruned to the policy TTL on every write. */
+    instinctSpoken: v.optional(
+      v.array(v.object({ sourceId: v.string(), at: v.number() })),
+    ),
+    /** Last inbound message FROM the person. A proactive line into a live
+     *  conversation is an interruption, not initiative — see
+     *  `instinctPolicy.humanActive`. Stamped at most once a minute. */
+    lastHumanAt: v.optional(v.number()),
     telegramUserId: v.optional(v.string()),
     telegramChatId: v.optional(v.string()),
     telegramUsername: v.optional(v.string()),
@@ -107,11 +126,6 @@ export default defineSchema({
     waitingSince: v.optional(v.number()),
     lastNudgeAt: v.optional(v.number()),
   }).index("by_tenant", ["tenantId"]),
-
-  memories: defineTable({
-    phoneE164: v.string(),
-    line: v.string(),
-  }).index("by_phone", ["phoneE164"]),
 
   orders: defineTable({
     tenantId: v.id("tenants"),
@@ -222,6 +236,9 @@ export default defineSchema({
       v.literal("brief"),
       v.literal("watcher"),
       v.literal("job_check"),
+      /** Proactive scan: Bro looks at this person's data on his own and
+       *  decides whether there is anything worth saying first. */
+      v.literal("instinct"),
     ),
     payload: v.string(),
     status: v.union(
@@ -269,21 +286,6 @@ export default defineSchema({
   composioEvents: defineTable({ eventId: v.string(), receivedAt: v.number() })
     .index("by_event", ["eventId"])
     .index("by_receivedAt", ["receivedAt"]),
-
-  /** One Inkbox iMessage group. Never store this conversationId on tenants. */
-  groupChats: defineTable({
-    conversationId: v.string(),
-    ownerPhoneE164: v.string(),
-    inkboxHandle: v.string(),
-    participants: v.array(v.string()),
-    status: v.union(v.literal("active"), v.literal("disabled")),
-    createdAt: v.number(),
-    lastSenderPhone: v.optional(v.string()),
-    greeted: v.optional(v.boolean()),
-  })
-    .index("by_conversation", ["conversationId"])
-    .index("by_owner", ["ownerPhoneE164"])
-    .index("by_handle", ["inkboxHandle"]),
 
   /** Durable per-tenant files. Bytes live in Convex `_storage`; this row is metadata. */
   files: defineTable({

@@ -5,6 +5,7 @@ import {
   formatArchiveRecall,
   recallQuery,
   shouldRecallArchive,
+  shouldRecallConversation,
 } from "./archive-policy.ts";
 import {
   formatConversationRecall,
@@ -16,21 +17,30 @@ import { createTtlCache } from "./inbound-path.ts";
 export const INSTINCT_RECALL_TTL_MS = 8_000;
 export const ARCHIVE_RECALL_HITS = 4;
 
-export type InstinctScopes = {
-  archiveScope: string;
-  conversationScope: string;
-};
-
 export type InstinctRecall = {
   conversation: string | null;
   archive: string | null;
 };
 
+const EMPTY: InstinctRecall = { conversation: null, archive: null };
+
 const instinctCache = createTtlCache<InstinctRecall>(INSTINCT_RECALL_TTL_MS);
 const instinctInflight = new Map<string, Promise<InstinctRecall>>();
 
-function instinctKey(scopes: InstinctScopes, query: string): string {
-  return `${scopes.archiveScope}\n${scopes.conversationScope}\n${query}`;
+/**
+ * ONE key per person and query — nothing else.
+ *
+ * It used to be `${archiveScope}\n${conversationScope}\n${query}`, with the
+ * two callers deriving `conversationScope` differently: the recall slot passed
+ * eve's own `scope.key`, the archive slot recomputed it from the phone, and
+ * the webhook prefetch used the recomputed one. Three spellings of the same
+ * person, so the cache and the in-flight map could not do their job and the
+ * turn paid for the same two searches twice, all of it in front of the first
+ * model token. The scope VALUE (the E.164) is the one thing every caller
+ * already has, so it is the key; the eve container tag is derived inside.
+ */
+function instinctKey(scopeValue: string, query: string): string {
+  return `${scopeValue}\n${query}`;
 }
 
 function recallText(query: string): string {
@@ -39,24 +49,23 @@ function recallText(query: string): string {
   );
 }
 
-export function instinctScopesForPerson(scopeValue: string): InstinctScopes {
-  return {
-    archiveScope: scopeValue,
-    conversationScope: conversationScopeKey(scopeValue),
-  };
-}
-
 export function canPrefetchInstinctQuery(query: string): boolean {
   const q = recallText(query);
-  if (!q || !shouldRecallArchive(q)) return false;
+  if (!q) return false;
+  if (!shouldRecallArchive(q) && !shouldRecallConversation(q)) return false;
   return !q.includes("[voice message]");
 }
 
+/**
+ * Warm the one pass the turn is about to ask for. Same key as the slots use,
+ * so this actually lands: while it was keyed on the mirrored scope it could
+ * only ever warm the half whose caller happened to spell the scope the same
+ * way, which is the half the recall slot was NOT asking for.
+ */
 export function prefetchInstinctRecall(scopeValue: string, query: string): void {
-  if (!process.env.SUPERMEMORY_API_KEY?.trim()) return;
-  if (!canPrefetchInstinctQuery(query)) return;
-  void loadInstinctRecall(instinctScopesForPerson(scopeValue), recallText(query)).catch(
-    (err) => console.error("instinct prefetch failed", err),
+  if (!scopeValue.trim() || !canPrefetchInstinctQuery(query)) return;
+  void loadInstinctRecall(scopeValue, recallText(query)).catch((err) =>
+    console.error("instinct prefetch failed", err),
   );
 }
 
@@ -102,41 +111,60 @@ function recallOutcome(
   });
 }
 
+/**
+ * Both recall halves for one person and one query, computed ONCE per turn.
+ *
+ * Two slots read this — `recall` keeps `.conversation`, `archive` keeps
+ * `.archive` — and both call it with the same person and the same query, so
+ * the second caller gets the first one's in-flight promise instead of firing
+ * its own pair of Supermemory round trips.
+ *
+ * Which halves run is decided here, from the query alone, so the decision is a
+ * pure function of the cache key and a cached entry can never be a different
+ * shape than a fresh one. A skipped half is `null`, exactly like an empty one.
+ */
 export async function loadInstinctRecall(
-  scopes: InstinctScopes,
+  scopeValue: string,
   query: string,
   abort?: AbortSignal,
 ): Promise<InstinctRecall> {
   const q = recallText(query);
-  if (!q) return { conversation: null, archive: null };
-  if (!scopes.archiveScope.trim() || !scopes.conversationScope.trim()) {
-    throw new Error("Instinct scopes must be non-empty");
-  }
-  const key = instinctKey(scopes, q);
+  if (!q) return EMPTY;
+  if (!scopeValue.trim()) throw new Error("Instinct recall scope must be non-empty");
+  const key = instinctKey(scopeValue, q);
   const cached = instinctCache.get(key);
   if (cached.hit) return cached.value;
   const existing = instinctInflight.get(key);
   if (existing) return existing;
+  const wantConversation = shouldRecallConversation(q);
+  const wantArchive = shouldRecallArchive(q);
+  if (!wantConversation && !wantArchive) return EMPTY;
   const startedAt = Date.now();
   const pending = Promise.allSettled([
-    searchConversation(
-      scopes.conversationScope,
-      q,
-      CONVERSATION_RECALL_TIMEOUT_MS,
-      abort,
-    ).then(formatConversationRecall),
-    searchArchive(
-      scopes.archiveScope,
-      q,
-      ARCHIVE_RECALL_HITS,
-      ARCHIVE_RECALL_TIMEOUT_MS,
-      abort,
-    ).then(formatArchiveRecall),
+    wantConversation
+      ? searchConversation(
+          conversationScopeKey(scopeValue),
+          q,
+          CONVERSATION_RECALL_TIMEOUT_MS,
+          abort,
+        ).then(formatConversationRecall)
+      : Promise.resolve(null),
+    wantArchive
+      ? searchArchive(
+          scopeValue,
+          q,
+          ARCHIVE_RECALL_HITS,
+          ARCHIVE_RECALL_TIMEOUT_MS,
+          abort,
+        ).then(formatArchiveRecall)
+      : Promise.resolve(null),
   ])
     .then(([conversation, archive]) => {
       const ms = Date.now() - startedAt;
-      recallOutcome("conversation", conversation, ms, CONVERSATION_RECALL_TIMEOUT_MS);
-      recallOutcome("archive", archive, ms, ARCHIVE_RECALL_TIMEOUT_MS);
+      if (wantConversation) {
+        recallOutcome("conversation", conversation, ms, CONVERSATION_RECALL_TIMEOUT_MS);
+      }
+      if (wantArchive) recallOutcome("archive", archive, ms, ARCHIVE_RECALL_TIMEOUT_MS);
       const value = {
         conversation: settledHalf(conversation, "conversation"),
         archive: settledHalf(archive, "archive"),

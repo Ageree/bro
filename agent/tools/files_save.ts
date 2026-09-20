@@ -2,10 +2,12 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { asPersonal } from "../lib/personal.ts";
 import { fileFailure, saveTextFile, uploadFileBytes } from "../lib/files.ts";
+import { instinctBlocked } from "../lib/instinct-guard.ts";
+import { turnAttributes } from "../lib/turn-attrs";
 
 export default defineTool({
   description:
-    "Save a file for this person. Text via content (max 256KB). Binary via base64 (max 8MB). Same name replaces the previous file. Group chats cannot use files.",
+    "Save a file for this person. Text via content (max 256KB). Binary via base64 (max 8MB). Same name replaces the previous file.",
   inputSchema: z.object({
     name: z.string().min(1).max(200),
     content: z.string().max(262_144).optional(),
@@ -13,6 +15,8 @@ export default defineTool({
     mimeType: z.string().min(1).max(200).optional(),
   }),
   async execute({ name, content, bytesBase64, mimeType }, ctx) {
+    const blocked = instinctBlocked(turnAttributes(ctx), "files_save");
+    if (blocked) return blocked;
     const who = asPersonal(ctx);
     if ("status" in who) return who;
     if (content && bytesBase64) {

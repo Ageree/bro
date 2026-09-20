@@ -63,6 +63,46 @@ const manyOptions = parseCloudOutcome(
 );
 assert(manyOptions.options?.length === 5, "options capped at 5");
 
+// --- a chat model's own formatting of the block still parses -------------
+//
+// The errand now asks for these seven lines in one sentence instead of four
+// lines of formatting instructions, and the shorter the ask, the more the run
+// answers in its own style: a markdown list, or bolded labels. Neither used
+// to match `grabLabel`, and a missed НУЖНО is not a missing field — it drops
+// the whole result to the free-text heuristic, which is what drives the
+// inject decision and the «нужно X» line the human reads.
+
+const bulleted = parseCloudOutcome(`- СДЕЛАНО: Заказал такси
+- ЗАКАЗ: 55081234
+- СУММА: 890 ₽
+- НУЖНО: none`);
+assert(bulleted.labelled === true, "a bulleted block is still the labelled block");
+assert(bulleted.done === "Заказал такси", "bulleted СДЕЛАНО parsed");
+assert(bulleted.orderId === "55081234", "bulleted ЗАКАЗ parsed");
+assert(bulleted.amountRub === 890, "bulleted СУММА parsed");
+assert(bulleted.needs === "none", "bulleted НУЖНО parsed");
+
+const bolded = parseCloudOutcome(`**СДЕЛАНО:** Заказал такси
+**ЗАКАЗ:** 55081234
+**НУЖНО:** sms_code
+**ДЕТАЛИ:** нужен код из SMS`);
+assert(bolded.labelled === true, "a bolded block is still the labelled block");
+assert(bolded.done === "Заказал такси", "bold markers never become part of СДЕЛАНО");
+assert(bolded.orderId === "55081234", "bold markers never become part of ЗАКАЗ");
+assert(bolded.needs === "sms_code", "a bolded НУЖНО still resolves to its enum value");
+assert(bolded.detail === "нужен код из SMS", "bolded ДЕТАЛИ parsed");
+
+const boldValue = parseCloudOutcome("**СДЕЛАНО**: **готово**\n**НУЖНО**: **none**");
+assert(boldValue.done === "готово", "bold around the value is stripped too");
+assert(boldValue.needs === "none", "a bolded need value still matches the enum");
+
+// The tolerance is decoration only: a sentence that merely mentions the word
+// must not be read as a label.
+assert(
+  parseCloudOutcome("в итоге НУЖНО: ничего").labelled === false,
+  "a label mid-sentence is not a labelled block",
+);
+
 // --- unknown НУЖНО value falls back to heuristic, never invents a need ---
 
 const garbageNeed = parseCloudOutcome("СДЕЛАНО: готово\nНУЖНО: bla-bla");

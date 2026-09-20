@@ -37,9 +37,9 @@ export function isTestPhone(phone: string | null | undefined): boolean {
 
 /**
  * One stable phone per scenario name, so scenarios cannot contaminate each
- * other: memories, wakeups, browser state and the transcript are all keyed by
- * phone, and two scenarios sharing a tenant would read each other's memo
- * lines. FNV-1a because this has to give the same answer in the Convex
+ * other: wakeups, browser state and the transcript are all keyed by phone,
+ * and two scenarios sharing a tenant would read each other's reminders and
+ * bubbles. FNV-1a because this has to give the same answer in the Convex
  * runtime, in the agent, and in the runner — no `node:crypto`.
  */
 export function testPhoneFor(scenario: string): string {

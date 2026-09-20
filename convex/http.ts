@@ -164,7 +164,6 @@ http.route({ path: "/me", method: "OPTIONS", handler: options() });
 http.route({ path: "/me/pay", method: "OPTIONS", handler: options() });
 http.route({ path: "/me/browser-profile", method: "OPTIONS", handler: options() });
 http.route({ path: "/me/browser-profile/refresh", method: "OPTIONS", handler: options() });
-http.route({ path: "/me/memories/forget", method: "OPTIONS", handler: options() });
 http.route({ path: "/me/tz", method: "OPTIONS", handler: options() });
 http.route({ path: "/vault/items", method: "OPTIONS", handler: options() });
 http.route({ path: "/vault/items/delete", method: "OPTIONS", handler: options() });
@@ -303,22 +302,6 @@ http.route({
       console.error("me/browser-profile/refresh", err);
       return json({ ok: false, code: "error" }, 500);
     }
-  }),
-});
-
-http.route({
-  path: "/me/memories/forget",
-  method: "POST",
-  handler: httpAction(async (ctx, request) => {
-    const session = await sessionTenant(ctx, request);
-    if (!session) return unauthorized();
-    const body = await jsonBody(request);
-    const needle = typeof body.needle === "string" ? body.needle : "";
-    const forgotten = await ctx.runMutation(internal.cabinet.forgetMemoriesForTenant, {
-      tenantId: session.tenantId,
-      needle,
-    });
-    return json({ ok: true, forgotten });
   }),
 });
 

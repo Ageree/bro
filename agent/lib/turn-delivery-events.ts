@@ -4,12 +4,14 @@ import {
   bubblesFor,
   isIncompleteDraft,
   isThinFragment,
+  markPreTool,
   planPreToolFlush,
   planStreamFlush,
   planTurnDelivery,
   recordSent,
   rememberSoFar,
   soFarFor,
+  spokeSoFar,
   type EarlySentRow,
 } from "./early-deliver.ts";
 import {
@@ -19,6 +21,7 @@ import {
   turnOrigin,
   wakeupFallbackText,
 } from "./silent-turn.ts";
+import { isInstinctWakeup, spendInstinctSlot } from "./instinct-wake.ts";
 import { stripConnectUrls } from "./connect-link.ts";
 import { latencyFields } from "./latency-log.ts";
 import { fastAckOf, peelFastAck } from "./fast-ack.ts";
@@ -133,6 +136,19 @@ async function persistSeenFromTurn(
   if (tenant?.phoneE164) await persistSeen(tenant.phoneE164, seen);
 }
 
+/** Fire-and-forget: a lost budget write must never cost the person the line. */
+function chargeInstinct(
+  attrs: AuthAttrs,
+  principalId: string | null | undefined,
+): void {
+  if (!isInstinctWakeup(attrs)) return;
+  const phone = routingPhone(routingFromAuth(attrs), principalId);
+  if (!phone) return;
+  void spendInstinctSlot(phone).catch((err) =>
+    console.error("instinct slot spend failed", err),
+  );
+}
+
 export async function deliverTurnBubble(opts: {
   conversationId: string;
   text: string;
@@ -186,7 +202,7 @@ export function createTurnDeliveryEvents(opts: {
   // auth attributes — it lives in a different process than this Map). Fold
   // it into `alreadySent` so nextBubble's restatement/near-duplicate peeling
   // drops a repeated looking line, without counting as a real spoken bubble
-  // for the empty-turn fallback (see `realSent` on planTurnDelivery).
+  // for the empty-turn fallback (see `spoke` on planTurnDelivery).
   function alreadySentFor(attrs: AuthAttrs, turnId: string): readonly string[] {
     const ack = fastAckOf(attrs);
     const bubbles = bubblesFor(earlySent, turnId);
@@ -225,7 +241,10 @@ export function createTurnDeliveryEvents(opts: {
       });
       if (!canTarget(conversationId, auth?.attributes)) return;
       if (!opts.accept(auth?.attributes)) return;
-      const text = fallbackForFailed(auth?.attributes);
+      const text = fallbackForFailed(
+        auth?.attributes,
+        spokeSoFar(earlySent, event.turnId),
+      );
       if (!text) return;
       if (!takeFallbackSlot(fallbackSent, event.turnId, Date.now())) return;
       await deliverTurnBubble({
@@ -299,10 +318,14 @@ export function createTurnDeliveryEvents(opts: {
         send: afterFastAck(auth?.attributes, event.turnId, preToolPlan.send),
       };
       if (!planned.send) {
+        // Whatever this turn already streamed, it streamed before a tool call:
+        // a status line, not the answer (see `markPreTool`).
+        markPreTool(earlySent, event.turnId, Date.now());
         signalTurnTyping({ conversationId, attrs: auth?.attributes, state: "start" });
         return;
       }
       recordSent(earlySent, event.turnId, planned.send, Date.now());
+      markPreTool(earlySent, event.turnId, Date.now());
       console.log("turn deliver pre-tool", {
         conversationId,
         ...latencyFields(auth?.attributes),
@@ -353,7 +376,7 @@ export function createTurnDeliveryEvents(opts: {
         message: event.message,
         origin,
         alreadySent: alreadySentFor(auth?.attributes, event.turnId),
-        realSent: bubblesFor(earlySent, event.turnId),
+        spoke: spokeSoFar(earlySent, event.turnId),
       });
       const planned = {
         ...turnPlan,
@@ -361,6 +384,11 @@ export function createTurnDeliveryEvents(opts: {
       };
       if (planned.send) {
         recordSent(earlySent, event.turnId, planned.send, Date.now());
+        // A proactive turn that actually says something spends one of the
+        // person's three daily slots (convex/lib/instinctPolicy.ts). Charged
+        // here and nowhere else: this is the only point that knows the model
+        // chose to speak instead of answering [SILENT].
+        chargeInstinct(auth?.attributes, auth?.principalId);
         console.log("turn deliver completed", {
           conversationId,
           ...latencyFields(auth?.attributes),
@@ -404,14 +432,15 @@ export function createTurnDeliveryEvents(opts: {
       );
       // A wakeup turn's fallback only ever applies to a real end-of-turn
       // silence, never to a mid-turn tool call — planTurnDelivery already
-      // enforces the equivalent rule for the human TURN_FAILED_REPLY. It also
-      // must not fire once the turn already spoke a real bubble (e.g. «код
-      // из почты, ввожу» streamed before a tool call) — the model reported
-      // in, it just has nothing further to add; sending the canned line too
-      // would be a second, redundant bubble, not a rescue from silence.
-      const spoke = bubblesFor(earlySent, event.turnId).some((s) => s.trim().length > 0);
+      // enforces the equivalent rule for the human fallbacks. It also must
+      // not fire once the turn already delivered its answer: the model
+      // reported in, it just has nothing further to add, and the canned line
+      // would be a second, redundant bubble. A line streamed BEFORE a tool
+      // call («код из почты, ввожу») is not that answer — it is the promise
+      // the human is still waiting on, so it no longer buys silence.
+      const spoke = spokeSoFar(earlySent, event.turnId);
       const wakeupFallback =
-        event.finishReason !== "tool-calls" && !spoke
+        event.finishReason !== "tool-calls" && !spoke.result
           ? wakeupFallbackText(auth?.attributes)
           : null;
       const fallbackText = planned.fallback ?? wakeupFallback;

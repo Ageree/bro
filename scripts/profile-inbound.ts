@@ -18,7 +18,6 @@ import {
 } from "../agent/lib/inbound-path.ts";
 import {
   INSTINCT_RECALL_TTL_MS,
-  instinctScopesForPerson,
   loadInstinctRecall,
 } from "../agent/lib/instinct-recall.ts";
 import { DEFAULT_OPENROUTER_MODEL } from "../agent/lib/model.ts";
@@ -48,14 +47,11 @@ const TOOL_FILES = [
   "otp_lookup.ts",
   "schedule_wakeup.ts",
   "watch_app.ts",
-  "group_chat.ts",
   "imessage_react.ts",
   "telegram_react.ts",
   "send_photo.ts",
   "list_orders.ts",
-  "job_open.ts",
-  "job_wait.ts",
-  "job_done.ts",
+  "job.ts",
   "cancel_wakeup.ts",
 ];
 
@@ -130,17 +126,22 @@ function broToolParameters(name: string): Record<string, unknown> {
       additionalProperties: true,
     };
   }
-  if (name === "job_wait") {
+  if (name === "job") {
     return {
       type: "object",
-      required: ["jobId", "waitingFor"],
+      required: ["action"],
       properties: {
+        action: { type: "string", enum: ["open", "wait", "done"] },
+        goal: { type: "string" },
+        doneWhen: { type: "string" },
         jobId: { type: "string" },
         waitingFor: { type: "string", enum: ["human", "email", "browser"] },
         note: { type: "string" },
         emailThreadId: { type: "string" },
         emailMessageId: { type: "string" },
         checkInMinutes: { type: "number" },
+        outcome: { type: "string" },
+        failed: { type: "boolean" },
       },
     };
   }
@@ -204,14 +205,14 @@ async function measureInstinctHttp(): Promise<Record<string, unknown>> {
   }
   const phone = "+15550001999";
   const query = "ок";
-  const scopes = instinctScopesForPerson(phone);
+  const conversationScope = conversationScopeKey(phone);
   const digestUs = Math.round(
     nsPerCall(() => {
       conversationScopeKey(phone);
     }) / 1e3,
   );
   const conversation = await timed(() =>
-    searchConversation(scopes.conversationScope, query, CONVERSATION_RECALL_TIMEOUT_MS),
+    searchConversation(conversationScope, query, CONVERSATION_RECALL_TIMEOUT_MS),
   );
   const archiveV3 = await timed(() => searchArchiveV3Documents(phone, query));
   const archive = await timed(() =>
@@ -219,17 +220,17 @@ async function measureInstinctHttp(): Promise<Record<string, unknown>> {
   );
   const parallel = await timed(() =>
     Promise.all([
-      searchConversation(scopes.conversationScope, query, CONVERSATION_RECALL_TIMEOUT_MS),
+      searchConversation(conversationScope, query, CONVERSATION_RECALL_TIMEOUT_MS),
       searchArchive(phone, query, 4, ARCHIVE_RECALL_TIMEOUT_MS),
     ]),
   );
-  const firstPair = await timed(() => loadInstinctRecall(scopes, query));
-  const cachedPair = await timed(() => loadInstinctRecall(scopes, query));
+  const firstPair = await timed(() => loadInstinctRecall(phone, query));
+  const cachedPair = await timed(() => loadInstinctRecall(phone, query));
   const serialMs = conversation.ms + archive.ms;
   return {
     skipped: false,
     query,
-    conversationScopePrefix: scopes.conversationScope.slice(0, 12),
+    conversationScopePrefix: conversationScope.slice(0, 12),
     digestUs,
     conversationHttp: conversation,
     archiveV3DocumentsHttp: archiveV3,
@@ -246,7 +247,9 @@ async function measureInstinctHttp(): Promise<Record<string, unknown>> {
 }
 
 async function searchArchiveV3Documents(phone: string, query: string): Promise<void> {
-  const key = process.env.SUPERMEMORY_API_KEY?.trim();
+  // Strip all whitespace, not just the ends: a pasted key can carry a newline
+  // mid-string, and `fetch` refuses to send such a header at all.
+  const key = process.env.SUPERMEMORY_API_KEY?.replace(/\s+/gu, "");
   if (!key) throw new Error("SUPERMEMORY_API_KEY missing");
   const tag = `bro_archive_${phone.replace(/[^0-9A-Za-z._-]/g, "")}`;
   const res = await fetch("https://api.supermemory.ai/v3/search", {

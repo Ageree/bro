@@ -6,7 +6,6 @@ export type TurnRouting = {
   channel?: HumanChannel;
   telegramChatId?: string;
   inkboxHandle?: string;
-  ownerPhone?: string;
   canDeliver: boolean;
 };
 
@@ -20,7 +19,6 @@ function firstAttr(attrs: AuthAttrs, key: string): string {
 export function routingFromAuth(attrs: AuthAttrs): TurnRouting {
   const telegramChatId = firstAttr(attrs, "telegramChatId");
   const inkboxHandle = firstAttr(attrs, "inkboxHandle");
-  const ownerPhone = firstAttr(attrs, "ownerPhone");
   const origin = firstAttr(attrs, "origin");
   const stampedTelegram =
     firstAttr(attrs, "channel") === "telegram" || Boolean(telegramChatId);
@@ -30,7 +28,6 @@ export function routingFromAuth(attrs: AuthAttrs): TurnRouting {
       channel: "telegram",
       ...(telegramChatId ? { telegramChatId } : {}),
       ...(inkboxHandle ? { inkboxHandle } : {}),
-      ...(ownerPhone ? { ownerPhone } : {}),
       canDeliver: Boolean(telegramChatId),
     };
   }
@@ -39,14 +36,12 @@ export function routingFromAuth(attrs: AuthAttrs): TurnRouting {
     return {
       channel: "imessage",
       ...(inkboxHandle ? { inkboxHandle } : {}),
-      ...(ownerPhone ? { ownerPhone } : {}),
       canDeliver: true,
     };
   }
 
   return {
     ...(inkboxHandle ? { inkboxHandle } : {}),
-    ...(ownerPhone ? { ownerPhone } : {}),
     canDeliver: false,
   };
 }
@@ -63,11 +58,19 @@ export function routingTenant(routing: TurnRouting): {
   };
 }
 
+/**
+ * Whose turn this is, from the principal the transport stamped.
+ *
+ * There used to be a fallback to an `ownerPhone` turn attribute. Nothing
+ * writes that attribute any more: it came only from the group-chat auth
+ * builder, and groups are gone. A fallback that can never fire is worse than
+ * none — it reads like a second, quieter way to decide who a turn belongs to,
+ * which is exactly the kind of thing that produced the `local-dev` leak.
+ */
 export function routingPhone(
-  routing: TurnRouting,
+  _routing: TurnRouting,
   principalId?: string | null,
 ): string | undefined {
   const principal = typeof principalId === "string" ? principalId.trim() : "";
-  if (principal) return principal;
-  return routing.ownerPhone || undefined;
+  return principal || undefined;
 }

@@ -53,11 +53,19 @@ import { deliverHumanRouted } from "../lib/deliver-routed.ts";
 import { inboundAtAttribute } from "../lib/latency-log.ts";
 import { parkLastChannelTouch } from "../lib/early-deliver.ts";
 import { jobCheckWakePrompt } from "../lib/job-wake.ts";
+import { runInstinctScan, noteInstinctSources } from "../lib/instinct-wake.ts";
 import { imessageDeliveryEvents } from "../lib/turn-delivery-events.ts";
 import { telegramBindLink } from "../../convex/lib/telegramPolicy.ts";
 import { telegramBotUsername } from "../lib/telegram";
-import { assembleInboundContent } from "../lib/inbound-image.ts";
-import { savePhotonInboundFiles } from "../lib/inbound-files.ts";
+import {
+  assembleInboundContent,
+  PHOTO_ONLY_TEXT,
+  prefetchImageParts,
+} from "../lib/inbound-image.ts";
+import {
+  photonInboundImages,
+  savePhotonInboundFiles,
+} from "../lib/inbound-files.ts";
 import { canSkipInboundBind } from "../lib/inbound-bind.ts";
 import { watcherWakeupPrompt } from "../lib/purchase-policy";
 import { wakeupCarriesRunId } from "../../convex/lib/browserFollowPolicy.ts";
@@ -163,6 +171,11 @@ async function sendTelegramInvite(opts: {
 }): Promise<void> {
   const bot = telegramBotUsername();
   if (!bot) {
+    // A deployment without TELEGRAM_BOT_USERNAME tells every person who asks
+    // that the second channel is off, and used to do it without a single log
+    // line — so the only place the misconfiguration showed up was a human's
+    // chat. Say it in the log too, by the name of the variable to set.
+    console.error("telegram invite impossible: TELEGRAM_BOT_USERNAME is not set");
     await sendPhotonText({
       conversationId: opts.conversationId,
       text: "Telegram у Bro ещё не включён.",
@@ -311,12 +324,12 @@ export default defineChannel({
       } catch {
         return new Response("bad json", { status: 400 });
       }
-      const inbound = readPhotonInbound(parsed);
-      if (!inbound || inbound.isEcho) return new Response(null, { status: 204 });
-      if (!isBluePhotonService({ service: inbound.service })) {
+      const received = readPhotonInbound(parsed);
+      if (!received || received.isEcho) return new Response(null, { status: 204 });
+      if (!isBluePhotonService({ service: received.service })) {
         try {
           await sendPhotonText({
-            conversationId: inbound.spaceId,
+            conversationId: received.spaceId,
             text: refuseSmsText(),
           });
         } catch (err) {
@@ -324,6 +337,23 @@ export default defineChannel({
         }
         return new Response(null, { status: 204 });
       }
+
+      // A photo rides in the attachments, never in `content.text`: with a
+      // caption the webhook sends `{ type: "text", text, attachments: [...] }`,
+      // without one `{ type: "file", url }`. Reading only the text is why Bro
+      // answered «найди эту книгу» blind — the picture was never in the turn —
+      // and why a photo with nothing written under it looked like an empty
+      // message and was dropped a few lines down.
+      const images = photonInboundImages(parsed);
+      const photoP = images.length > 0
+        ? prefetchImageParts(images).catch((err) => {
+            console.error("photon inbound image fetch failed", err);
+            return [];
+          })
+        : undefined;
+      const inbound = images.length > 0 && !received.text
+        ? { ...received, text: PHOTO_ONLY_TEXT }
+        : received;
 
       const preview = inbound.text;
       prefetchOpenRouter();
@@ -482,12 +512,14 @@ export default defineChannel({
       }
       prefetchInstinctRecall(ownerPhone, inbound.text);
       parkLastChannelTouch(waitUntil, touchLastChannel(inbound.senderPhone, "imessage"));
-      const content = assembleInboundContent(inbound.text, []);
+      const photoParts = photoP ? await photoP : [];
+      const content = assembleInboundContent(inbound.text, photoParts);
       console.log("photon inbound", {
         remote: inbound.senderPhone,
         ownerPhone,
         conversationId: inbound.spaceId,
         chars: inbound.text.length,
+        images: photoParts.length,
         queuedAfterMs: Date.now() - receivedAt,
       });
 
@@ -778,6 +810,10 @@ export default defineChannel({
       // browser_task again (the result already lives in the payload).
       let wakeupPhase: string | undefined;
       let wakeupFallback: string | undefined;
+      /** What an `instinct` turn is about — marked as seen once it is handed
+       *  to the model, so the next scan half an hour later does not offer the
+       *  same meeting again whether or not the model chose to speak. */
+      let instinctSources: string[] = [];
       if (kind === "brief") {
         prompt =
           "[background wakeup] Утренний бриф. Собери коротко: (1) память об этом человеке — незакрытые дела/напоминания на сегодня; (2) если подключён Gmail/Calendar через Composio — новые важные письма и встречи сегодня; (3) статус браузер-джоба, если был. Если по ВСЕМ пунктам пусто — ответь [SILENT]. Одно короткое сообщение, без воды.";
@@ -885,6 +921,23 @@ export default defineChannel({
         }
       } else if (kind === "job_check") {
         prompt = jobCheckWakePrompt(payload);
+      } else if (kind === "instinct") {
+        // Proactivity: nobody asked for this turn. The scan decides on its own
+        // whether there is anything worth saying first — and most of the time
+        // there is not, so the cheap exit is the normal one: answer the wakeup
+        // without starting a model turn at all. The scan checks the
+        // conversation budget (quiet hours, daily cap, gap, live chat) before
+        // it reads any data, so a silent scan costs one Convex query.
+        const scan = await runInstinctScan(tenantPhone).catch((err) => {
+          console.error("instinct scan failed", err);
+          return { speak: false as const, reason: "scan_failed" };
+        });
+        if (!scan.speak) {
+          console.log("instinct scan silent", { reason: scan.reason });
+          return Response.json({ ok: true, skipped: scan.reason });
+        }
+        prompt = scan.prompt;
+        instinctSources = scan.sourceIds;
       } else if (kind === "event") {
         prompt = eventPrompt(payload);
       }
@@ -921,7 +974,13 @@ export default defineChannel({
               conversationId,
               origin: "wakeup",
               wakeupKind: kind,
-              ...(kind === "job_check" && payload ? { wakeupPayload: payload } : {}),
+              // The watcher's own wording travels with the turn so
+              // `browser_task` can read the person's ceiling and their
+              // «следи» / «следи и купи» stance from the attributes instead of
+              // trusting the model to re-derive them (watcherPayDecision).
+              ...((kind === "job_check" || kind === "watcher") && payload
+                ? { wakeupPayload: payload }
+                : {}),
               ...(wakeupPhase ? { wakeupPhase } : {}),
               ...(wakeupFallback ? { wakeupFallback } : {}),
               ...(inkboxHandle ? { inkboxHandle } : {}),
@@ -933,6 +992,14 @@ export default defineChannel({
           releaseWakeupDelivery(wakeupDelivered, idempotencyKey);
         }
         throw err;
+      }
+      if (instinctSources.length > 0) {
+        // Marked seen, not spent: the daily slot is only charged when the turn
+        // actually produced a bubble, which the delivery events know and this
+        // route does not (see `spendInstinctSlot` in turn-delivery-events.ts).
+        await noteInstinctSources(tenantPhone, instinctSources).catch((err) =>
+          console.error("instinct sources note failed", err),
+        );
       }
       return Response.json({ ok: true });
     }),

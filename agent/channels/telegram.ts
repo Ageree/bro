@@ -20,7 +20,12 @@ import { storedHandle } from "../../convex/lib/cabinetPolicy";
 import { chatConversationId } from "../lib/tenant";
 import {
   assembleInboundContent,
+  IMAGE_MAX_BYTES,
+  inlineImageParts,
+  PHOTO_ONLY_TEXT,
+  PHOTO_UNREADABLE_TEXT,
   prefetchInboundImages,
+  type ImagePart,
 } from "../lib/inbound-image.ts";
 import { saveTelegramInboundFiles } from "../lib/inbound-files.ts";
 import { transcribeVoiceNote } from "../lib/voice";
@@ -30,17 +35,26 @@ import { inboundOwnerGate } from "./imessage.ts";
 import {
   bindRefuseText,
   telegramBindLink,
+  telegramHealth,
   telegramWelcomeText,
   parseTelegramStart,
+  type TelegramHealthFacts,
 } from "../../convex/lib/telegramPolicy.ts";
+import { publicOrigin } from "../lib/connect-link.ts";
+import { secretEquals } from "../lib/secret-compare.ts";
 import {
   answerCallback,
   isPrivateChat,
   largestPhoto,
+  photoWithinBytes,
   sendTelegramMessage,
   sendTelegramTyping,
+  setTelegramWebhook,
   telegramBotUsername,
   telegramFileUrl,
+  telegramGetMe,
+  telegramWebhookInfo,
+  telegramWebhookSecret,
   webhookSecretOk,
   type TelegramMessage,
   type TelegramUpdate,
@@ -136,27 +150,117 @@ async function inboundTelegramText(
   return { text: caption, voice: Boolean(voice), allVoiceFailed: false };
 }
 
-async function inboundTelegramPhotoParts(msg: TelegramMessage) {
-  const photo = largestPhoto(msg);
-  if (!photo) return [];
+type InboundPhoto = { parts: ImagePart[]; unreadable: boolean };
+
+async function inboundTelegramPhotoParts(msg: TelegramMessage): Promise<InboundPhoto> {
+  const photo = photoWithinBytes(msg, IMAGE_MAX_BYTES);
+  if (!photo) return { parts: [], unreadable: false };
   try {
     const url = await telegramFileUrl(photo.file_id);
-    return await prefetchInboundImages([
+    const parts = await prefetchInboundImages([
       {
         url,
         content_type: "image/jpeg",
         size: photo.file_size ?? null,
       },
     ]);
+    // `api.telegram.org/file/bot<TOKEN>/…` is the bot token written into a
+    // URL. A finished download is inline base64 and carries none of it; a
+    // failed one falls back to that URL, which would hand the token to
+    // OpenRouter and whichever host serves the model — and still not show
+    // them the photo. Drop it and let the text say the picture is missing.
+    const inline = inlineImageParts(parts);
+    return { parts: inline, unreadable: inline.length < parts.length };
   } catch (err) {
     console.error("telegram photo fetch failed", err);
-    return [];
+    return { parts: [], unreadable: true };
   }
+}
+
+/** Never let a bot token ride out in an error string. */
+function scrubToken(message: string): string {
+  const token = process.env.TELEGRAM_BOT_TOKEN?.trim();
+  return token ? message.split(token).join("<token>") : message;
+}
+
+function errText(err: unknown): string {
+  return scrubToken(err instanceof Error ? err.message : String(err)).slice(0, 200);
+}
+
+/**
+ * Ask the deployment and Telegram what the state of the channel is.
+ *
+ * Runs where the token lives, which is the whole point: the three variables
+ * and the webhook URL are exactly the things no check in this repository can
+ * see, and each one of them takes Telegram down quietly.
+ */
+async function readTelegramFacts(): Promise<TelegramHealthFacts> {
+  const facts: TelegramHealthFacts = {
+    origin: publicOrigin(),
+    hasToken: Boolean(process.env.TELEGRAM_BOT_TOKEN?.trim()),
+    configuredUsername: telegramBotUsername(),
+    hasWebhookSecret: Boolean(telegramWebhookSecret()),
+  };
+  if (!facts.hasToken) return facts;
+  const [me, hook] = await Promise.all([
+    telegramGetMe().catch((err) => ({ error: errText(err) })),
+    telegramWebhookInfo().catch((err) => ({ error: errText(err) })),
+  ]);
+  if ("error" in me) facts.tokenError = me.error;
+  else if (me.username) facts.botUsername = me.username;
+  if ("error" in hook) {
+    facts.webhookError = hook.error;
+  } else {
+    facts.webhookUrl = hook.url ?? "";
+    facts.pendingUpdates = hook.pending_update_count ?? 0;
+    if (hook.last_error_message) facts.lastErrorMessage = scrubToken(hook.last_error_message);
+  }
+  return facts;
 }
 
 export default defineChannel({
   turnPolicy: "steer",
   routes: [
+    // Is Telegram actually working? Secret-gated because it reads the
+    // deployment's own configuration and talks to the Bot API.
+    //
+    // `repair: true` re-points the webhook at this deployment when it has
+    // drifted. The URL is set once by hand after a deploy, so it keeps
+    // pointing at whatever host was live that day — and a stale URL is
+    // indistinguishable, from the inside, from a bot nobody writes to.
+    POST("/internal/telegram-health", async (request) => {
+      let body: { secret?: unknown; repair?: unknown };
+      try {
+        body = (await request.json()) as typeof body;
+      } catch {
+        return new Response("bad json", { status: 400 });
+      }
+      if (!secretEquals(body.secret, process.env.BRO_INTERNAL_SECRET)) {
+        return new Response("unauthorized", { status: 401 });
+      }
+      const facts = await readTelegramFacts();
+      const health = telegramHealth(facts);
+      const secret = telegramWebhookSecret();
+      if (body.repair !== true || !health.webhookDrifted || !secret) {
+        return Response.json({ ...health, repaired: false, facts });
+      }
+      try {
+        await setTelegramWebhook({ url: health.expectedWebhookUrl, secret });
+      } catch (err) {
+        return Response.json({
+          ...health,
+          repaired: false,
+          problems: [...health.problems, `setWebhook failed: ${errText(err)}`],
+          facts,
+        });
+      }
+      const after = await readTelegramFacts();
+      return Response.json({
+        ...telegramHealth(after),
+        repaired: true,
+        facts: after,
+      });
+    }),
     POST("/webhooks/telegram", async (request, { from, waitUntil }) => {
       const receivedAt = Date.now();
       if (!webhookSecretOk(request)) {
@@ -363,13 +467,21 @@ export default defineChannel({
 
       parkLastChannelTouch(waitUntil, touchLastChannel(phone, "telegram"));
 
-      const content = assembleInboundContent(inbound.text, await photoP);
+      const photo = await photoP;
+      const modelText = [
+        inbound.text || (photo.parts.length > 0 ? PHOTO_ONLY_TEXT : ""),
+        photo.unreadable ? PHOTO_UNREADABLE_TEXT : "",
+      ]
+        .filter(Boolean)
+        .join("\n");
+      const content = assembleInboundContent(modelText, photo.parts);
       console.log("telegram inbound", {
         phone,
         conversationId,
         chars: inbound.text.length,
         voice: inbound.voice,
-        images: typeof content === "string" ? 0 : content.length - 1,
+        images: photo.parts.length,
+        photoUnreadable: photo.unreadable,
         queuedAfterMs: Date.now() - receivedAt,
       });
       const ackText = await settleFastAck(fastAck, { budgetMs: fastAckBudgetMs() });

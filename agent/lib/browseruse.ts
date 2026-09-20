@@ -204,25 +204,33 @@ export function isDryRunErrand(task: string): boolean {
  * The fact-abort sentence that used to close this block is gone too, and
  * that one was a bug, not just noise. It told the run to stop on any fact
  * only the human could know, while Bro held those facts in the vault and
- * never passed them. The facts now arrive in `knownFactsBlock()` above and
- * `KNOWN_FACTS_GAP` / `MISSING_FACTS_LINE` keep `НУЖНО: address|info` as the
- * fallback for what is genuinely missing.
+ * never passed them. The facts now arrive in `knownFactsBlock()` above, and
+ * `KNOWN_FACTS_GAP` / `MISSING_FACTS_LINE` keep "stop and say so" as the
+ * fallback for what is genuinely missing — the run picks the `НУЖНО` value
+ * off the output contract, which is the only place that menu is spelled out.
  */
 function errandLoginBlock(opts?: { login?: boolean }): string {
   const lines: string[] = [];
-  if (opts?.login) lines.push(loginScaffold());
-  // The licence to sign in or register WITHOUT asking is load-bearing, not
-  // prose. It was the entire substance of «Cloud errand must log in when the
-  // site shows Войти» (#94): a run that treats «Войти» as a wall stops on a
-  // guest screen and reports nothing done. The surrounding advice around it
-  // really was stale and stayed deleted; this one sentence comes back, short.
-  lines.push(
-    "«Войти» или гостевая форма — входи или регистрируйся сам (паспорт, Яндекс ID — норма).",
-  );
+  // Autonomy, the sign-in licence and the one real stop condition, in one
+  // breath. The licence to sign in or register WITHOUT asking is load-bearing,
+  // not prose: it was the entire substance of «Cloud errand must log in when
+  // the site shows Войти» (#94), and a run that treats «Войти» as a wall stops
+  // on a guest screen and reports nothing done. Naming паспорт / Яндекс ID is
+  // part of it — those are the screens runs used to balk at.
+  //
+  // What left with this pass is the `НУЖНО:` menu that used to be recited
+  // here. A run that is stuck needs to know it may stop, not which of ten
+  // enum values to type: the output contract at the foot of the errand lists
+  // every one of them, and a person texting a capable assistant would not
+  // dictate the taxonomy twice either.
   lines.push(
     opts?.login
-      ? "Упёрся в код, пуш или капчу — закончи с НУЖНО: sms_code, email_code, push или captcha."
-      : "Логин и пароль из задачи вводи сам; выдумывать пароль или номер карты нельзя. Упёрся в код, пуш, капчу или чужой пароль — закончи с НУЖНО: sms_code, email_code, push, captcha или password.",
+      ? "Решай сам и меня не спрашивай. Надо войти — входи или регистрируйся сам, паспорт и Яндекс ID это норма."
+      : "Решай сам и меня не спрашивай. Надо войти — входи или регистрируйся сам, паспорт и Яндекс ID это норма. Логин и пароль из задачи вводи сам, но выдумывать пароль или номер карты нельзя.",
+  );
+  if (opts?.login) lines.push(loginScaffold());
+  lines.push(
+    "Застрял на коде, пуше, 3-D Secure, капче или чужом пароле — остановись и скажи, что нужно.",
   );
   return lines.join("\n");
 }
@@ -232,7 +240,23 @@ function errandLoginBlock(opts?: { login?: boolean }): string {
  * («у такси заполни откуда/куда…») inside a sentence that applies to every
  * errand — a hardcoded example of one errand shipped with all the others.
  * The brief above now says what "done" looks like for THIS errand, so this
- * only has to say that there IS a final button and that it is pressed once.
+ * only has to say that there IS a final button.
+ *
+ * «Дважды не заказывай и не плати» was cut by this pass and is back, because
+ * the reasoning that removed it was wrong. It claimed double-charging is
+ * already held off by `browser_task`'s charge key and by `orderRowFromRun`.
+ * Neither does that: `chargeKeyFor`/`countBrowserJobStart` meter Bro's own
+ * MONTHLY browser-job quota and never touch the card, and `orderRowFromRun`
+ * only decides whether to record a row, upserting by `merchantOrderId` — a
+ * genuine second order carries a different number and simply records as a
+ * second row. So nothing in this repository stops a run from pressing Pay
+ * twice when the page hangs after the first press, and eleven words of prompt
+ * are the only thing that ever did.
+ *
+ * The rule that really is prompt-shaped advice — «закрывай баннеры» — stayed
+ * deleted. The test is not whether a sentence sounds like browsing advice; it
+ * is whether deleting it removes the only thing standing between the run and
+ * the person's money.
  */
 function errandFinishBlock(
   task: string,
@@ -240,15 +264,15 @@ function errandFinishBlock(
   attachCard?: boolean,
 ): string {
   if (attachCard) {
-    return "Ничего не заказывай и не вызывай. Код от банка подтверди.";
+    return "Ничего не заказывай и не вызывай.";
   }
   if (payBlock) {
-    return "Доводи дело до конца, включая оплату картой. Дважды не заказывай и не плати.";
+    return "Доводи до конца, включая оплату. Дважды не заказывай и не плати.";
   }
   if (isDryRunErrand(task)) {
     return "Это проверка без заказа: дойди до формы, покажи цену. Не нажимай «Заказать» или «Поехали».";
   }
-  return "Доводи дело до конца и жми финальную кнопку подтверждения. Дважды не заказывай.";
+  return "Доводи до конца и жми финальную кнопку подтверждения. Дважды не заказывай.";
 }
 
 export type ProfileView = {
@@ -283,12 +307,24 @@ export function isScaffolded(task: string): boolean {
 /**
  * The goal, in the human's terms. `brief` is what the per-errand composer
  * wrote (what "done" looks like for THIS errand); with the composer off, the
- * static `ЦЕЛЬ: <task>` line the scaffold always opened with.
+ * raw task the scaffold always opened with.
+ *
+ * The `ЦЕЛЬ: ` label is gone. It was a form field name in front of a sentence
+ * that is already the first thing in the message — the run has nothing to
+ * disambiguate it from — and the line reads as an instruction to a person
+ * without it. `humanErrand` in `scripts/fake-browser-use.ts` reads the line
+ * after the mark and strips an ALL-CAPS label if there is one, so it keeps
+ * working either way; that is also why the goal must stay ONE line and stay
+ * first.
  *
  * `ДОСЛОВНО` is the fix for the finding that the human's literal sentence
  * never reached a run at all: `task` is whatever the coordinator model
  * retyped into the tool argument, so when the caller can hand over the real
  * wording it rides along verbatim, and when it cannot, the raw `task` does.
+ * The two lines are NOT a restatement of each other — the brief is what
+ * "done" means, the quote is what the human actually typed («43», «до 12к»),
+ * and the guard below is what keeps the quote from appearing when it would
+ * only repeat the goal.
  */
 function errandGoalBlock(
   task: string,
@@ -304,7 +340,7 @@ function errandGoalBlock(
   // number is indistinguishable from a PAN to the regex, and blanking it
   // would delete the errand's own subject.
   const verbatim = scrubSecrets(opts?.humanText?.trim() || trimmed).trim();
-  const lines = [`ЦЕЛЬ: ${brief || staticBriefLine(task)}`];
+  const lines = [brief || staticBriefLine(task)];
   // Never restate the goal as its own quote. Without an OPENROUTER key there
   // is no brief, `!brief` is always true, and `verbatim` defaults to `task` —
   // so every keyless deployment printed ЦЕЛЬ and ДОСЛОВНО with identical
@@ -326,6 +362,18 @@ function errandGoalBlock(
  * either parsed by our own code (the mark, the output contract, the
  * `secretBindings` alias names) or is a fact about THIS errand: the brief,
  * the human's own words, and the facts Bro already knows about them.
+ *
+ * The shape is a message, not a form. Everything an errand does NOT involve
+ * is absent rather than stated in the negative — no card bound, no sentence
+ * about a card; nothing open yet, no sentence about the tab — because a
+ * paragraph that answers questions the run never asked is what made the
+ * human's two lines 12% of a 2,200-character prompt. The rules that stayed
+ * are the ones a capable browser agent cannot derive from the screen: what
+ * it may do without asking (sign in, decide), where it must stop (a code,
+ * a foreign card domain, a price over the ceiling) and how to report back.
+ * Everything that explained how to use a browser — wait for the page, work
+ * in the site's language, don't order twice, check the screen for an order
+ * number — is gone, and belongs gone.
  */
 export function scaffoldTask(
   task: string,
@@ -357,8 +405,8 @@ export function scaffoldTask(
     ? payScaffold({ ...opts.pay, ...(attachCard ? { attachCard: true } : {}) })
     : undefined;
   const stopForPay = attachCard
-    ? "Карта к запуску не подключена — дойди до формы карты и закончи с НУЖНО: payment."
-    : "Дошло до оплаты — закончи с НУЖНО: payment.";
+    ? "Карта к запуску не подключена — дойди до формы карты и остановись, НУЖНО: payment."
+    : "Дойдёт до оплаты — остановись, НУЖНО: payment.";
   const login = errandLoginBlock({ login: opts?.login });
   const finish = errandFinishBlock(task, payBlock, attachCard);
   const goal = errandGoalBlock(task, {
@@ -372,29 +420,43 @@ export function scaffoldTask(
   // THIS SAME errand already did (the taxi incident: a fresh run re-drove
   // the whole route because eve tore down the old browser first) — the tab
   // is already open exactly where the last step left it.
+  //
+  // The third branch is deliberately empty. «Сайт откроет Bro сам — дождись
+  // страницы и работай на ней, на языке сайта» told a browser agent to wait
+  // for a page to load and to read the language it is written in; the only
+  // case where the state of the tab is news is when it is ALREADY somewhere,
+  // and those are the two branches that survive.
   const alreadyOpen = opts?.continuation
-    ? "Страница уже открыта с предыдущего шага этого же поручения — продолжай прямо с неё, заново ничего не открывай и не вводи."
+    ? "Страница уже открыта с прошлого шага этого же поручения — продолжай прямо с неё."
     : opts?.startPage
-      ? `Страница уже открыта: ${opts.startPage} — работай на ней, на языке сайта.`
-      : "Сайт откроет Bro сам — дождись страницы и работай на ней, на языке сайта.";
-  return `${ERRAND_MARK}
-${goal}
-${facts}
-${alreadyOpen}
-Решай сам и человека не спрашивай.
-${login}
-${payBlock ?? stopForPay}
-${finish}
-
-Итог — только в этом формате, каждое поле с новой строки:
-СДЕЛАНО: <одна фраза>
-ЗАКАЗ: <номер или нет>
-СУММА: <число ₽ или нет>
-КОГДА: <дата/время/ETA или нет>
-ВАРИАНТЫ: <до 5 «название — цена — ссылка», через ; или нет>
+      ? `Страница уже открыта: ${opts.startPage}`
+      : "";
+  return [
+    ERRAND_MARK,
+    goal,
+    facts,
+    alreadyOpen,
+    login,
+    payBlock ?? stopForPay,
+    finish,
+    // The output contract, and the one place in the errand that is addressed
+    // to our parser rather than to the run: `parseCloudOutcome` reads these
+    // seven labels off their own lines. Compressed, not loosened — the label
+    // spellings, the line-per-field shape and the `НУЖНО` menu are exactly
+    // what the parser matches, only the prose around them got shorter.
+    `
+Ответь в конце, каждое поле со своей строки (нечего сказать — «нет»):
+СДЕЛАНО: <одной фразой>
+ЗАКАЗ: <номер>
+СУММА: <число ₽>
+КОГДА: <дата, время или ETA>
+ВАРИАНТЫ: <до 5 «название — цена — ссылка», через ;>
 НУЖНО: none|sms_code|email_code|push|3ds|captcha|password|address|payment|info
-ДЕТАЛИ: <что именно нужно от человека, одной строкой, или нет>
-Никогда не пиши в итог пароль, номер карты или код.`;
+ДЕТАЛИ: <чего не хватает от человека, одной строкой>
+Пароль, номер карты и код в ответ не пиши.`,
+  ]
+    .filter((block) => block.length > 0)
+    .join("\n");
 }
 
 /** Stable, non-reversible profile name/id — never the raw phone number. */
@@ -449,8 +511,8 @@ export type StartRunOpts = {
    *  `scaffoldTask`. Never combined with `startPage`. */
   continuation?: boolean;
   /** Tenant phone. Present → this run carries the human's own non-secret
-   *  facts (vault address/contact, curated memories, their timezone and
-   *  today's date in it, their display name). Absent → nothing is looked up
+   *  facts (vault address/contact, their timezone and today's date in it,
+   *  their display name). Absent → nothing is looked up
    *  and the task is the static scaffold, exactly as before. */
   phone?: string;
   /** The human's ORIGINAL wording. `task` is whatever the coordinator model

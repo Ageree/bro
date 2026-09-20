@@ -154,7 +154,6 @@
       var body = document.getElementById("body");
       var t = token();
       var base = site();
-      var memoLines = [];
       if (!t) {
         boot.textContent = "Войди, чтобы увидеть оплату и лимиты.";
         document.getElementById("login-open").click();
@@ -163,24 +162,6 @@
       if (!base) {
         boot.textContent = "Сайт ещё не подключён";
         return;
-      }
-
-      function memoCard(me) {
-        memoLines = me.memories || [];
-        var items = memoLines.map(function (line, i) {
-          return '<li><span class="row-main">' + esc(line) + "</span>" +
-            '<button class="act act--sm act--mute row-side" type="button" data-i="' + i +
-            '">Забыть</button></li>';
-        }).join("");
-        var empty = me.phoneBound
-          ? "Пока пусто."
-          : "Память появится, когда напишешь Bro в iMessage.";
-        return '<section class="sec" id="memory">' +
-          head("<h2>Память</h2>", "") +
-          (items
-            ? '<ul class="rows" id="memos">' + items + "</ul>"
-            : '<p class="t-small t-mute">' + empty + "</p>") +
-          '<p class="status-line" id="memory-status"></p></section>';
       }
 
       /* Expired or revoked session: drop the token and show the login sheet. */
@@ -288,49 +269,6 @@
         });
       }
 
-      function bindForget() {
-        var list = document.getElementById("memos");
-        if (!list) return;
-        list.addEventListener("click", function (e) {
-          var el = e.target;
-          if (!el || !el.closest) return;
-          var btn = el.closest("[data-i]");
-          if (!btn) return;
-          var i = Number(btn.getAttribute("data-i"));
-          var needle = memoLines[i];
-          if (!needle) return;
-          var st = document.getElementById("memory-status");
-          st.textContent = "Забываем…";
-          fetch(base + "/me/memories/forget", {
-            method: "POST",
-            headers: {
-              Authorization: "Bearer " + t,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({ needle: needle }),
-          })
-            .then(withStatus)
-            .then(function (got) {
-              if (got.status === 401) {
-                sessionExpired();
-                return;
-              }
-              var data = got.data;
-              if (!data.ok) {
-                st.textContent = "Не вышло, нажми ещё раз";
-                return;
-              }
-              return loadMe().then(function (me) {
-                if (!me) return;
-                paint(me);
-              });
-            })
-            .catch(function () {
-              st.textContent = "Не вышло, нажми ещё раз";
-            });
-        });
-      }
-
       function paint(me) {
         var zone = zoneOf(me);
         var plan = me.plan === "paid" ? "Полный доступ" : "Бесплатный режим";
@@ -358,7 +296,6 @@
           '<section class="sec"><div class="sec__head"><h2>Лимиты</h2></div>' +
           '<p class="t-small t-mute">Сообщения сегодня — ' + me.msgsUsed + " из " + me.msgsAllowance + "</p>" +
           meter(me.msgsUsed, me.msgsAllowance) + "</section>" +
-          memoCard(me) +
           '<section class="sec" id="chrome"><div class="sec__head"><h2>Входы в сайты</h2></div>' +
           '<p class="t-small t-mute">Сначала Bro берёт вход из сейфа или уже сохранённые куки. Если входа нет — откроет страницу входа и пришлёт ссылку в чат. Открой, войди один раз — пароль в чат не пиши. Повторно ссылку не пришлёт. Добавить или изменить вход можно в сейфе.</p>' +
           '<p class="t-small" style="margin-top:0.6rem">' + profileStatusRu(me.browserProfileStatus, me.browserCookieDomains) + "</p></section>" +
@@ -371,7 +308,6 @@
         body.hidden = false;
         bindWrite();
         bindPay();
-        bindForget();
         bindTz();
         bindVault();
       }

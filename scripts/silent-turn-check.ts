@@ -4,6 +4,7 @@ import {
   isSilentReply,
   takeFallbackSlot,
   TURN_FAILED_REPLY,
+  TURN_STALLED_REPLY,
   turnOrigin,
   wakeupFallbackText,
 } from "../agent/lib/silent-turn.ts";
@@ -20,6 +21,17 @@ assert(isSilentReply("[SILENT]") === true, "silent marker");
 assert(isSilentReply("  [SILENT] leftover") === true, "silent prefix");
 assert(isSilentReply("Ищу") === false, "visible is not silent");
 assert(fallbackForFailed({ origin: "human" }) === TURN_FAILED_REPLY, "failed human turn");
+// Incident 2026-09-16 (бронь ресторана): the «взялся» line had already gone
+// out when the turn blew up, so the person was holding a promise, not nothing.
+assert(
+  fallbackForFailed({ origin: "human" }, { status: true }) === TURN_STALLED_REPLY,
+  "a turn that failed after its status line says it stalled",
+);
+assert(
+  fallbackForFailed({ origin: "human" }, { status: true, result: true }) ===
+    TURN_FAILED_REPLY,
+  "once the answer went out, a failure is a plain failure again",
+);
 assert(
   fallbackForFailed({ origin: "wakeup" }) === null,
   "failed un-phased wakeup stays quiet",
@@ -69,6 +81,32 @@ assert(
 assert(/напиши|попроб/i.test(TURN_FAILED_REPLY), "the fallback tells the human what to do next");
 assert(/разбира|чиню|чин/i.test(TURN_FAILED_REPLY), "the fallback says Bro is already on it");
 
+// The stalled-turn line answers «проверяю бронь ресторана» + 16 minutes of
+// nothing, so it has the same job and the same register — plus one more rule:
+// bad news first (instructions.md §Voice), and no second apology on top of a
+// line the person already read.
+assert(
+  TURN_STALLED_REPLY.length < 120 && !/[*_`#\[]/.test(TURN_STALLED_REPLY),
+  "plain short iMessage line",
+);
+assert(!TURN_STALLED_REPLY.includes("\n"), "the stalled fallback is a single line");
+assert(
+  !/\bВы\b|\bВам\b|Напишите|Извините|Приносим|пожалуйста/i.test(TURN_STALLED_REPLY),
+  "the stalled fallback stays on «ты» and out of support-desk register",
+);
+assert(
+  /напиши|попроб/i.test(TURN_STALLED_REPLY),
+  "the stalled fallback tells the human what to do next",
+);
+assert(
+  /^[а-яё]/.test(TURN_STALLED_REPLY) && !/^(Ок|Готово)/.test(TURN_STALLED_REPLY),
+  "the stalled fallback opens with the bad news, in his lowercase register",
+);
+assert(
+  (TURN_STALLED_REPLY as string) !== (TURN_FAILED_REPLY as string),
+  "a stalled turn is not the same news as a turn that never started",
+);
+
 // --- A2: never-silent wakeup fallback (goal.md §2 / A7 finding B3) ---
 
 assert(
@@ -96,11 +134,9 @@ assert(
   "job_check keeps its own force-speak path",
 );
 
-// The fallback must never re-state a bubble the turn already spoke (e.g. a
-// «код из почты, ввожу» line streamed before the tool call that ends the
-// turn empty) — gated on the same bubblesFor(...) real-bubble check the
-// human TURN_FAILED_REPLY path already relies on via planTurnDelivery's
-// `realSent`. No convex-test-style harness exists here to drive the actual
+// The fallback must never re-state an answer the turn already delivered —
+// gated on the same `spokeSoFar(...)` reading the human fallbacks rely on via
+// planTurnDelivery's `spoke`. No convex-test-style harness exists here to drive the actual
 // event handler, so this is a source assertion, same style as the other
 // *-check.ts files that pin exact wiring in a file they don't otherwise import.
 const deliverySrc = src("agent/lib/turn-delivery-events.ts");
@@ -109,13 +145,18 @@ const failedHandler = deliverySrc.slice(
   deliverySrc.indexOf('"message.appended"'),
 );
 assert(
-  failedHandler.includes("fallbackForFailed(auth?.attributes)"),
+  failedHandler.includes("fallbackForFailed(") &&
+    failedHandler.includes("auth?.attributes"),
   "turn.failed passes the full attrs so a browser_poll wakeup can still speak — 2026-09-05 taxi incident",
+);
+assert(
+  failedHandler.includes("spokeSoFar(earlySent, event.turnId)"),
+  "turn.failed knows whether a status line already went out — 2026-09-16 бронь incident",
 );
 const completedHandler = deliverySrc.slice(deliverySrc.indexOf('"message.completed"'));
 assert(
-  completedHandler.includes("bubblesFor(earlySent, event.turnId).some"),
-  "wakeup fallback checks whether the turn already spoke a real bubble",
+  completedHandler.includes("spokeSoFar(earlySent, event.turnId)"),
+  "wakeup fallback checks whether the turn already delivered an answer",
 );
 assert(
   completedHandler.indexOf("const spoke =") <
@@ -123,9 +164,22 @@ assert(
   "the spoke check is computed before the wakeup fallback is looked up",
 );
 assert(
-  completedHandler.includes("!spoke\n          ? wakeupFallbackText") ||
-    /&&\s*!spoke\b/.test(completedHandler),
-  "wakeup fallback is gated on !spoke",
+  /&&\s*!spoke\.result\b/.test(completedHandler),
+  "wakeup fallback is gated on a delivered answer, not on any bubble — a «ввожу код» line before a tool call is still an unkept promise",
+);
+// The tool boundary is what tells a status line from an answer, so it has to
+// be marked on BOTH pre-tool paths — including the one that flushes nothing.
+const preToolHandler = deliverySrc.slice(
+  deliverySrc.indexOf('"actions.requested"'),
+  deliverySrc.indexOf('"message.completed"'),
+);
+assert(
+  preToolHandler.split("markPreTool(earlySent, event.turnId").length - 1 === 2,
+  "every tool boundary demotes what the turn already said, flushed line or not",
+);
+assert(
+  preToolHandler.indexOf("recordSent") < preToolHandler.indexOf("markPreTool(earlySent, event.turnId, Date.now());\n      console.log"),
+  "the pre-tool line itself is recorded before the boundary marks it a status line",
 );
 
 // A `message.completed` delivery is not a fire-and-forget like

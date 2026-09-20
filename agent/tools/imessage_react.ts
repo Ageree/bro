@@ -7,7 +7,7 @@ import {
   reactionTargetId,
   sendIMessageTapback,
 } from "../lib/inkbox";
-import { attr, turnAttributes } from "../lib/group-guard";
+import { attr, turnAttributes } from "../lib/turn-attrs";
 
 export default defineTool({
   description:

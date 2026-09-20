@@ -4,13 +4,14 @@ import { isEmailAddr } from "../../convex/lib/mailPolicy.ts";
 import { fillOtpBodies, listBroInbox } from "../lib/bro-inbox.ts";
 import { touchJobMail, upsertTenant } from "../lib/convex";
 import { agentHandle, inkbox } from "../lib/inkbox";
-import { groupPersonalBlock } from "../lib/group-guard";
 import {
   candidatesFromMail,
   formatOtpLookup,
   pickOtp,
 } from "../lib/otp-policy.ts";
 import { tenantId } from "../lib/tenant";
+import { instinctBlocked } from "../lib/instinct-guard.ts";
+import { turnAttributes } from "../lib/turn-attrs";
 
 export default defineTool({
   description:
@@ -27,8 +28,8 @@ export default defineTool({
     limit: z.number().min(1).max(20).optional(),
   }),
   async execute(args, ctx) {
-    const blocked = groupPersonalBlock(ctx);
-    if (blocked) return { error: blocked };
+    const blocked = instinctBlocked(turnAttributes(ctx), "bro_mail");
+    if (blocked) return blocked;
     const action = args.action ?? "send";
     const phone = tenantId(ctx);
     const tenant = await upsertTenant(phone);
@@ -108,7 +109,7 @@ export default defineTool({
       to: sent.toAddresses,
       subject: sent.subject,
       hint: jobId
-        ? "If you are waiting on a reply, job_wait waitingFor=email with this threadId."
+        ? "If you are waiting on a reply, job action=wait waitingFor=email with this threadId."
         : undefined,
     };
   },

@@ -153,7 +153,7 @@ const payOpts = {
     "no generic pay-stop sentence when paying",
   );
   assert(
-    withPay.includes("Доводи дело до конца, включая оплату"),
+    withPay.includes("Доводи до конца, включая оплату"),
     "finish line mentions paying with the card",
   );
   assert(scaffoldTask(withPay, { pay: payOpts }) === withPay, "idempotent with pay");
@@ -170,7 +170,7 @@ const payOpts = {
     "unchanged behavior without pay — structured outcome, no live-URL",
   );
   assert(
-    withoutPay.includes("Доводи дело до конца"),
+    withoutPay.includes("Доводи до конца"),
     "finish line without pay still completes the errand",
   );
   // The finish line no longer names a taxi's «Заказать» button (that worked
@@ -251,6 +251,52 @@ throws(() => loginBindings(login, []), "loginBindings throws on empty hosts");
     ),
     "vault login does not fall back to asking the human",
   );
+}
+
+// ---------------------------------------------------------------------------
+// `holder` / `account` are optional, and a missing one drops its own words.
+//
+// This shipped as a release blocker: both were typed as required `string` and
+// interpolated unconditionally, so a vault card with no cardholder on file
+// produced «Карта undefined подключена секретами» and «Держатель undefined —
+// не секрет, печатай его текстом» — i.e. an instruction to type the word
+// "undefined" into a cardholder field on a live checkout.
+// ---------------------------------------------------------------------------
+{
+  const noNames = payScaffold({ hosts: ["ozon.ru"] });
+  assert(!noNames.includes("undefined"), "no holder/account never prints «undefined»");
+  assert(noNames.startsWith("Карта подключена"), "the card sentence loses two words, not the line");
+  assert(!noNames.includes("Держатель"), "no holder → no holder sentence at all");
+  assert(noNames.includes(PAY_ALIASES.number), "the aliases still travel");
+  assert(noNames.includes("ozon.ru"), "the bound domains still travel");
+
+  const holderOnly = payScaffold({ hosts: ["ozon.ru"], holder: "IVAN PETROV" });
+  assert(!holderOnly.includes("undefined"), "a missing account alone prints no «undefined»");
+  assert(holderOnly.includes("Держатель IVAN PETROV"), "the holder still travels");
+
+  const accountOnly = payScaffold({ hosts: ["ozon.ru"], account: "Visa · •••• 1111" });
+  assert(!accountOnly.includes("undefined"), "a missing holder alone prints no «undefined»");
+  assert(accountOnly.includes("Карта Visa · •••• 1111"), "the card label still travels");
+  assert(!accountOnly.includes("Держатель"), "and no empty holder sentence is left behind");
+
+  // Blank strings are the same case as missing ones — a vault item with an
+  // empty cardholder field must not print «Держатель  — печатай текстом».
+  const blank = payScaffold({ hosts: ["ozon.ru"], holder: "   ", account: "  " });
+  assert(!blank.includes("Держатель"), "a blank holder is a missing holder");
+  assert(blank.startsWith("Карта подключена"), "a blank account is a missing account");
+
+  // An empty host list names no boundary, so it must not claim one either.
+  const noHosts = payScaffold({ hosts: [], holder: "IVAN PETROV" });
+  assert(!noHosts.includes("undefined"), "no hosts prints no «undefined»");
+  assert(!noHosts.includes("поддомен"), "no hosts → no «работает только на  и их поддоменах»");
+
+  // The whole errand, the way browser_task assembles it when the vault item
+  // has no cardholder: nothing anywhere in the prompt says "undefined".
+  const errand = scaffoldTask("купи кроссовки на wildberries.ru", {
+    pay: { hosts: expandPayHosts(["wildberries.ru"]), maxRub: 5000 },
+  });
+  assert(!errand.includes("undefined"), "no «undefined» reaches the cloud agent");
+  assert(errand.includes(PAY_ALIASES.cvc), "the card is still payable");
 }
 
 // ---------------------------------------------------------------------------
@@ -413,8 +459,11 @@ assert(!isAttachCardErrand(undefined), "undefined task is not an attach-card err
   assert(!text.includes("iframe"), "the iframe tactic hint is gone");
   assert(text.includes("yandex.ru"), "lists the widened domains");
   assert(text.includes("НУЖНО: 3ds"), "3-D Secure has a reachable outcome");
-  assert(text.includes("НУЖНО: sms_code"), "bank SMS has a reachable outcome");
-  assert(text.includes("НУЖНО: push"), "bank push has a reachable outcome");
+  // The three bank stops share one sentence now: naming `НУЖНО:` three times
+  // in a row was the taxonomy, not the information, and the output contract
+  // at the foot of the errand lists every value anyway.
+  assert(text.includes("sms_code"), "bank SMS has a reachable outcome");
+  assert(text.includes("push"), "bank push has a reachable outcome");
   assert(!text.includes("номер заказа"), "an attach-card run must not chase an order number");
   for (const alias of Object.values(PAY_ALIASES)) {
     assert(text.includes(alias), `attach scaffold still names ${alias}`);
@@ -427,8 +476,13 @@ assert(!isAttachCardErrand(undefined), "undefined task is not an attach-card err
     holder: "IVAN PETROV",
     account: "Visa · •••• 1111",
   });
-  assert(buy.includes("номер заказа"), "a paying run still checks the order number");
+  // «После оплаты убедись, что на экране есть номер заказа, и верни его и
+  // сумму» is gone: the output contract already asks for ЗАКАЗ and СУММА, and
+  // telling a browser agent to look at the screen is the register this pass
+  // exists to remove. What still separates the two blocks is the goal.
+  assert(!buy.includes("номер заказа"), "the read-the-screen sentence is gone from paying too");
   assert(!buy.includes("привязать карту"), "a paying run is not an attach-card run");
+  assert(!buy.includes("1 ₽"), "a paying run is not warned about the attach-card hold");
   assert(!buy.includes("iframe"), "the iframe tactic hint is gone from paying too");
 }
 {
@@ -446,7 +500,7 @@ assert(!isAttachCardErrand(undefined), "undefined task is not an attach-card err
     "the finish block forbids placing an order",
   );
   assert(
-    !attach.includes("Доводи дело до конца, включая оплату"),
+    !attach.includes("Доводи до конца, включая оплату"),
     "the paying finish line is replaced, not added to",
   );
   assert(attach.includes("НУЖНО: none|"), "the mandatory outcome block survives");

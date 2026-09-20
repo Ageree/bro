@@ -129,8 +129,6 @@ assert(!fetchTool.includes("disableTool"), "eve default fetch executor is replac
 assert(searchTool.includes("browser_task"), "search steers shops to the browser");
 assert(fetchTool.includes("browser_task"), "fetch steers forms to the browser");
 assert(!fetchTool.includes("urls:"), "web_fetch stays one url, like eve");
-assert(!searchTool.includes("groupPersonalBlock"), "public search is ok in groups");
-assert(!fetchTool.includes("groupPersonalBlock"), "public fetch is ok in groups");
 
 const instructions = src("agent/instructions.md");
 assert(instructions.includes("`web_search`"), "prompt routes facts to search");

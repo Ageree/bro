@@ -14,9 +14,7 @@ const kept = [
   "browser_task.ts",
   "composio.ts",
   "otp_lookup.ts",
-  "job_open.ts",
-  "job_wait.ts",
-  "job_done.ts",
+  "job.ts",
   "list_orders.ts",
   "bro_mail.ts",
   "vault_setup.ts",
@@ -26,7 +24,6 @@ const kept = [
   "imessage_react.ts",
   "telegram_react.ts",
   "send_photo.ts",
-  "group_chat.ts",
 ];
 for (const file of kept) {
   assert(
@@ -85,20 +82,31 @@ assert(telegramLib.includes("enqueueTelegramChat"), "telegram sends are serializ
 
 const instructions = src("agent/instructions.md");
 assert(
-  instructions.includes("write one short line") ||
-    instructions.includes("напиши одну короткую") ||
-    /write one short line the human can see first/i.test(instructions),
+  /Перед инструментом[^.]*одна короткая строка/i.test(instructions) ||
+    instructions.includes("write one short line") ||
+    instructions.includes("напиши одну короткую"),
   "instructions ask for a visible line before tools",
 );
+// Short acks used to be a sentence in the static prompt. They are now a turn
+// verdict (`agent/lib/turn-voice.ts`), which is strictly better: the static
+// sentence could not tell an idle «ок» from one that answers a waiting job,
+// and acking the second one back stalls the job. Follow the rule to its home.
+{
+  const voice = src("agent/lib/turn-voice.ts");
+  assert(voice.includes('"ack_only"'), "an idle short ack has its own verdict");
+  assert(
+    voice.includes('"ack_confirms"'),
+    "an ack answering a waiting job has its own verdict",
+  );
+}
+// The register, not the reference points. The prompt used to name Poke and
+// Tomo as shorthand for "text like that"; the brands mean nothing to the model
+// on their own, so what is checked is the property they stood for.
 assert(
-  instructions.includes("Short acknowledgements") ||
-    instructions.includes("короткие подтверждения"),
-  "static prompt still tells the model short acks are real turns",
-);
-assert(
-  /Poke \/ Tomo|Poke \/ Tomo short/.test(instructions) &&
-    instructions.includes("## Voice"),
-  "static prompt keeps Poke/Tomo-short voice",
+  instructions.includes("## Voice") &&
+    /1–2 short sentences|never a chatbot essay/i.test(instructions) &&
+    /Пиши, как он: длина, регистр/.test(instructions),
+  "static prompt keeps the short-texting voice",
 );
 assert(
   instructions.includes("1–2 short sentences") ||

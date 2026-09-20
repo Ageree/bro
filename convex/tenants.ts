@@ -67,18 +67,11 @@ function definedEntries<T extends Record<string, unknown>>(
   return out;
 }
 
-/** Never write a group conversation onto the 1:1 wakeup/mail lane. */
-async function oneToOneConversationIdOrUndefined(
-  ctx: MutationCtx,
+/** A blank conversation id never lands on the 1:1 wakeup/mail lane. */
+function trimmedConversationId(
   conversationId: string | undefined,
-): Promise<string | undefined> {
-  const id = conversationId?.trim();
-  if (!id) return undefined;
-  const group = await ctx.db
-    .query("groupChats")
-    .withIndex("by_conversation", (q) => q.eq("conversationId", id))
-    .first();
-  return group ? undefined : id;
+): string | undefined {
+  return conversationId?.trim() || undefined;
 }
 
 /** Full tenant document. Derived from the schema so a new column (e.g.
@@ -209,10 +202,7 @@ export const upsert = mutation({
     assertSecret(secret);
     const email = emailAddress?.trim().toLowerCase();
     const existing = await findTenantByPhone(ctx, phoneE164);
-    const oneToOneConversationId = await oneToOneConversationIdOrUndefined(
-      ctx,
-      inkboxConversationId,
-    );
+    const oneToOneConversationId = trimmedConversationId(inkboxConversationId);
     if (existing) {
       const patch: {
         inkboxConversationId?: string;
@@ -360,6 +350,7 @@ export const setBrowser = mutation({
     browserNeedDetail: v.optional(v.string()),
     browserPaying: v.optional(v.boolean()),
     browserPayHosts: v.optional(v.array(v.string())),
+    browserMaxRub: v.optional(v.number()),
     browserNextTask: v.optional(v.string()),
     browserOutcome: v.optional(v.string()),
   },
@@ -388,6 +379,7 @@ export const setBrowser = mutation({
       "browserNeedDetail",
       "browserPaying",
       "browserPayHosts",
+      "browserMaxRub",
       "browserNextTask",
       "browserOutcome",
     ]);
@@ -1086,10 +1078,7 @@ export const bindInbound = mutation({
       return { ok: false as const, reason: "wrong phone" };
     }
     const firstBind = !tenant.phoneE164;
-    const oneToOneConversationId = await oneToOneConversationIdOrUndefined(
-      ctx,
-      inkboxConversationId,
-    );
+    const oneToOneConversationId = trimmedConversationId(inkboxConversationId);
     const patch: {
       phoneE164?: string;
       inkboxConversationId?: string;
@@ -1358,6 +1347,10 @@ export const getByTelegram = query({
   },
 });
 
+/** Coarse enough that a burst of messages is one write, fine enough for the
+ *  15-minute "he is in the chat right now" window the proactivity gate uses. */
+const HUMAN_TOUCH_MIN_MS = 60_000;
+
 export const touchLastChannel = mutation({
   args: {
     secret: v.string(),
@@ -1369,8 +1362,23 @@ export const touchLastChannel = mutation({
     assertSecret(secret);
     const tenant = await findTenantByPhone(ctx, phoneE164);
     if (!tenant) return null;
-    if (lastChannelOf(tenant.lastChannel) === lastChannel) return null;
-    await ctx.db.patch(tenant._id, { lastChannel });
+    const channelChanged = lastChannelOf(tenant.lastChannel) !== lastChannel;
+    // Both channels already park this call on every inbound message, so it is
+    // the one place that knows "the person just wrote". The proactivity gate
+    // needs that (`instinctPolicy.humanActive`): writing first into a live
+    // conversation is an interruption, not initiative.
+    //
+    // The early return that used to sit here existed to avoid a write per
+    // message; HUMAN_TOUCH_MIN_MS keeps that property — a burst of messages
+    // still costs at most one patch a minute, which is finer than the
+    // 15-minute window the gate reads it through.
+    const now = Date.now();
+    const humanStale = now - (tenant.lastHumanAt ?? 0) >= HUMAN_TOUCH_MIN_MS;
+    if (!channelChanged && !humanStale) return null;
+    await ctx.db.patch(tenant._id, {
+      ...(channelChanged ? { lastChannel } : {}),
+      ...(humanStale ? { lastHumanAt: now } : {}),
+    });
     return null;
   },
 });

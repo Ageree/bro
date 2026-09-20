@@ -17,10 +17,8 @@ export type WipeCounts = {
   browserCharges: number;
   browserSessions: number;
   files: number;
-  memories: number;
   wakeups: number;
   watchers: number;
-  groupChats: number;
   loginChallenges: number;
 };
 
@@ -35,10 +33,8 @@ export const emptyWipeCounts = (): WipeCounts => ({
   browserCharges: 0,
   browserSessions: 0,
   files: 0,
-  memories: 0,
   wakeups: 0,
   watchers: 0,
-  groupChats: 0,
   loginChallenges: 0,
 });
 
@@ -129,17 +125,6 @@ async function countFiles(
   return rows.length;
 }
 
-async function countMemories(
-  ctx: QueryCtx | MutationCtx,
-  phone: string,
-): Promise<number> {
-  const rows = await ctx.db
-    .query("memories")
-    .withIndex("by_phone", (q) => q.eq("phoneE164", phone))
-    .take(PAGE * 16);
-  return rows.length;
-}
-
 async function countWakeups(
   ctx: QueryCtx | MutationCtx,
   phone: string,
@@ -160,25 +145,6 @@ async function countWatchers(
     .withIndex("by_tenant", (q) => q.eq("tenantPhone", phone))
     .take(PAGE * 16);
   return rows.length;
-}
-
-async function countGroupChats(
-  ctx: QueryCtx | MutationCtx,
-  phone: string,
-  handle: string,
-): Promise<number> {
-  const byOwner = await ctx.db
-    .query("groupChats")
-    .withIndex("by_owner", (q) => q.eq("ownerPhoneE164", phone))
-    .take(PAGE * 4);
-  const byHandle = await ctx.db
-    .query("groupChats")
-    .withIndex("by_handle", (q) => q.eq("inkboxHandle", handle))
-    .take(PAGE * 4);
-  const ids = new Set<string>();
-  for (const row of byOwner) ids.add(row._id);
-  for (const row of byHandle) ids.add(row._id);
-  return ids.size;
 }
 
 async function countChallenges(
@@ -205,10 +171,8 @@ export async function previewTenantWipe(
     counts[table] = await countByTenant(ctx, table, tenant._id);
   }
   counts.files = await countFiles(ctx, tenant._id);
-  counts.memories = await countMemories(ctx, phone);
   counts.wakeups = await countWakeups(ctx, phone);
   counts.watchers = await countWatchers(ctx, phone);
-  counts.groupChats = await countGroupChats(ctx, phone, handle);
   counts.loginChallenges = await countChallenges(ctx, handle);
   return {
     tenantId: tenant._id,
@@ -259,22 +223,6 @@ async function deleteFiles(
   return n;
 }
 
-async function deleteMemories(ctx: MutationCtx, phone: string): Promise<number> {
-  let n = 0;
-  for (;;) {
-    const rows = await ctx.db
-      .query("memories")
-      .withIndex("by_phone", (q) => q.eq("phoneE164", phone))
-      .take(PAGE);
-    if (rows.length === 0) break;
-    for (const row of rows) {
-      await ctx.db.delete(row._id);
-      n++;
-    }
-  }
-  return n;
-}
-
 async function deleteWakeups(ctx: MutationCtx, phone: string): Promise<number> {
   let n = 0;
   for (;;) {
@@ -304,30 +252,6 @@ async function deleteWatchers(ctx: MutationCtx, phone: string): Promise<number> 
       await ctx.db.delete(row._id);
       n++;
     }
-  }
-  return n;
-}
-
-async function deleteGroupChats(
-  ctx: MutationCtx,
-  phone: string,
-  handle: string,
-): Promise<number> {
-  const ids = new Set<Id<"groupChats">>();
-  const byOwner = await ctx.db
-    .query("groupChats")
-    .withIndex("by_owner", (q) => q.eq("ownerPhoneE164", phone))
-    .take(PAGE * 4);
-  const byHandle = await ctx.db
-    .query("groupChats")
-    .withIndex("by_handle", (q) => q.eq("inkboxHandle", handle))
-    .take(PAGE * 4);
-  for (const row of byOwner) ids.add(row._id);
-  for (const row of byHandle) ids.add(row._id);
-  let n = 0;
-  for (const id of ids) {
-    await ctx.db.delete(id);
-    n++;
   }
   return n;
 }
@@ -362,10 +286,8 @@ export async function deleteTenantWipeTargets(
     counts[table] = await deleteTenantChildren(ctx, table, tenant._id);
   }
   counts.files = await deleteFiles(ctx, tenant._id);
-  counts.memories = await deleteMemories(ctx, phone);
   counts.wakeups = await deleteWakeups(ctx, phone);
   counts.watchers = await deleteWatchers(ctx, phone);
-  counts.groupChats = await deleteGroupChats(ctx, phone, handle);
   counts.loginChallenges = await deleteChallenges(ctx, handle);
   await ctx.db.delete(tenant._id);
   counts.tenant = 1;
