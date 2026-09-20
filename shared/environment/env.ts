@@ -105,11 +105,6 @@ export const env = createEnv({
     ),
 
     // Optional
-    // Public onboarding buys a Photon line without a login, so an unattended
-    // loop over phone numbers could drain the project. Both ceilings guard
-    // POST /api/access.
-    ACCESS_CREATES_PER_HOUR: z.coerce.number().int().positive().default(20),
-    ACCESS_IDENTITY_CAP: z.coerce.number().int().positive().default(100),
     BLOB_READ_WRITE_TOKEN: requiredValue.optional(),
     BLOB_STORE_ID: requiredValue.optional(),
     BROWSER_USE_API_KEY: browserUseApiKeySchema.optional(),
