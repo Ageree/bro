@@ -54,12 +54,13 @@ export default function Page() {
           выбранного тарифа.
         </p>
         <p className="type-prose">
-          2.2. Тарифы и их наполнение опубликованы на странице{" "}
-          <a className={proseLinkClassName} href="https://brobro.tech/#pricing">
-            brobro.tech/#pricing
-          </a>
-          . Платный тариф «Полный доступ» — {env.PRICE_RUB} ₽ за 30 календарных
-          дней. Тариф не продлевается автоматически.
+          2.2. Тарифы и их наполнение опубликованы здесь. Бесплатный режим — до{" "}
+          {env.FREE_MESSAGES_PER_DAY} сообщений в день и{" "}
+          {env.FREE_BROWSER_RUNS_PER_MONTH} поручений в браузере в месяц.
+          Платный тариф «Полный доступ» — {env.PRICE_RUB} ₽ за 30 календарных
+          дней: до {env.PAID_MESSAGES_PER_DAY} сообщений в день и{" "}
+          {env.PAID_BROWSER_RUNS_PER_MONTH} поручений в месяц. Тариф не
+          продлевается автоматически.
         </p>
 
         <h2 className="type-clause-title">
