@@ -73,33 +73,18 @@ describe("Eve channel authentication", () => {
     );
   });
 
-  it.each([
-    [
-      "GET",
-      "/eve/v1/connections/:name/callback/:attemptId/:token",
-      "/eve/v1/connections/google/callback/attempt/wrun_victim:auth",
-    ],
-    [
-      "POST",
-      "/eve/v1/connections/:name/callback/:attemptId/:token",
-      "/eve/v1/connections/google/callback/attempt/wrun_victim:auth",
-    ],
-    [
-      "GET",
-      "/eve/v1/connections/:name/callback/:token",
-      "/eve/v1/connections/google/callback/wrun_victim:auth",
-    ],
-    [
-      "POST",
-      "/eve/v1/connections/:name/callback/:token",
-      "/eve/v1/connections/google/callback/wrun_victim:auth",
-    ],
-  ] as const)(
-    "guards %s %s before invoking the callback",
-    async (method, pattern, path) => {
-      const route = findRoute(method, pattern);
+  it.each(["GET", "POST"] as const)(
+    "guards %s on the expired connection callback before invoking it",
+    async (method) => {
+      const route = findRoute(
+        method,
+        "/eve/v1/connections/:name/callback/:token"
+      );
       const pending = route.handler(
-        new Request(`https://assistant.example${path}`, { method }),
+        new Request(
+          "https://assistant.example/eve/v1/connections/google/callback/eve%3Asession%3Awrun_victim%3Ainbox",
+          { method }
+        ),
         unexpectedRouteContext()
       );
       await vi.runAllTimersAsync();
@@ -108,6 +93,39 @@ describe("Eve channel authentication", () => {
         expect.objectContaining({ userId: "better-auth:user-1" }),
         "wrun_victim"
       );
+    }
+  );
+
+  // The browser that finishes the Google consent screen carries no Bro cookie:
+  // people connect Gmail from iMessage or Telegram, not from a signed-in tab.
+  // Asking it to sign in answered every finished consent with 401 and the
+  // grant was never stored. Eve authorizes this route by the attempt id it
+  // minted, so it stays open to an anonymous return.
+  it.each(["GET", "POST"] as const)(
+    "lets the %s OAuth return through without a Bro session",
+    async (method) => {
+      getAuthSessionMock.mockResolvedValue(null);
+      const route = findRoute(
+        method,
+        "/eve/v1/connections/:name/callback/:attemptId/:token"
+      );
+
+      const response = await route.handler(
+        new Request(
+          "https://assistant.example/eve/v1/connections/gmail-search__google/callback/01M2Z8ZRRTDR514VWB6ZEW799V/eve%3Ainbox%3Av1%3Aeve%3Asession%3Awrun_1%3Ainbox",
+          { method }
+        ),
+        connectionCallbackContext()
+      );
+
+      // Eve's own handler answers — here, that this attempt is no longer
+      // parked — rather than this app's sign-in boundary.
+      expect(await response.json()).toStrictEqual({
+        error: "Connection callback not pending.",
+        ok: false,
+      });
+      expect(response.status).toBe(404);
+      expect(getAuthSessionMock).not.toHaveBeenCalled();
     }
   );
 
@@ -131,17 +149,24 @@ describe("Eve channel authentication", () => {
     expect(sessionIdFromPath("/eve/v1/callback/eve:session:wrun_1:inbox")).toBe(
       "wrun_1"
     );
-    expect(
-      sessionIdFromPath("/eve/v1/callback/wrun_1:turn-control:3:cancel")
-    ).toBe("wrun_1");
+    // Eve wraps an authorization hook token in the session-inbox envelope.
     expect(
       sessionIdFromPath(
-        "/eve/v1/connections/google/callback/attempt/wrun_1:auth"
+        "/eve/v1/callback/eve:inbox:v1:eve:session:wrun_1:inbox"
       )
     ).toBe("wrun_1");
     expect(
-      sessionIdFromPath("/eve/v1/connections/google/callback/wrun_1:auth")
+      sessionIdFromPath(
+        "/eve/v1/connections/google/callback/eve:session:wrun_1:inbox"
+      )
     ).toBe("wrun_1");
+    // Token shapes eve no longer mints resolve to nothing and fail closed.
+    expect(
+      sessionIdFromPath("/eve/v1/callback/wrun_1:turn-control:3:cancel")
+    ).toBeUndefined();
+    expect(
+      sessionIdFromPath("/eve/v1/connections/google/callback/wrun_1:auth")
+    ).toBeUndefined();
     expect(
       sessionIdFromPath(
         "/eve/v1/callback/task:task_1:0123456789abcdef0123456789abcdef"
@@ -165,6 +190,19 @@ function findRoute(method: string, path: string) {
     throw new Error(`The Eve route ${method} ${path} is unavailable.`);
   }
   return route;
+}
+
+// The OAuth return reaches eve's own handler, which reads the callback
+// coordinates from the route params.
+function connectionCallbackContext() {
+  return {
+    ...unexpectedRouteContext(),
+    params: {
+      attemptId: "01M2Z8ZRRTDR514VWB6ZEW799V",
+      name: "gmail-search__google",
+      token: "eve:inbox:v1:eve:session:wrun_1:inbox",
+    },
+  } satisfies RouteHandlerArgs;
 }
 
 function unexpectedRouteContext() {
