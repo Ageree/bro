@@ -10,6 +10,7 @@ import {
   cancelBrowserUseRun,
   createBrowserUseProfile,
   createBrowserUseRun,
+  findBrowserUseSessionCdpUrl,
   listBrowserUseRunEvents,
   liveViewUrlFromEvents,
   queueBrowserUseSessionMessage,
@@ -17,6 +18,10 @@ import {
   type BrowserUseCreateRunInput,
   type BrowserUseRunStatus,
 } from "@agent/lib/browser-use/client";
+import {
+  typeOneTimeCodeOverCdp,
+  type OneTimeCodeEntry,
+} from "@agent/lib/browser-use/cdp";
 import { resolveBrowserSecretBindings } from "@agent/lib/browser-use/secrets";
 import {
   claimBrowserRunCompletion,
@@ -130,6 +135,81 @@ export function composeBrowserContinuation(options: {
   ]
     .filter((part) => part !== undefined)
     .join("\n\n");
+}
+
+/**
+ * The one-time code in a follow-up message, when the message is plainly just
+ * that and nothing else.
+ *
+ * Deliberately narrow. Typing into the page is a shortcut the cloud agent does
+ * not need, so it is only worth taking when there is no doubt about what the
+ * person sent: bare digits, optionally introduced by the word for a code and
+ * broken up the way people copy them out of a text message. Anything else —
+ * an address, a correction, a sentence with a number in it — goes to the agent,
+ * which is what reads instructions for a living.
+ */
+export function oneTimeCodeFromMessage(message: string) {
+  const text = message.trim().toLowerCase();
+  const labelled = /^(?:код|code|otp|sms|смс|пароль из смс)\s*[:—-]?\s*/u;
+  const labelMatch = labelled.exec(text);
+  const rest = labelMatch ? text.slice(labelMatch[0].length) : text;
+  if (!/^\d[\d\s.-]*$/u.test(rest)) return undefined;
+  const digits = rest.replaceAll(/\D/gu, "");
+  if (digits.length < 4 || digits.length > 8) return undefined;
+  // A bare four-digit year is how people answer a question about a date, and a
+  // long run of digits is a phone number or an order number, not a code.
+  if (!labelMatch && /^(?:19|20)\d{2}$/u.test(digits)) return undefined;
+  return digits;
+}
+
+/**
+ * What the cloud agent is told about a code that is already in the page. It
+ * still gets the person's message — it has an errand to finish either way —
+ * but retyping a code that is in the field is how a correct code becomes a
+ * wrong one.
+ */
+export function codeEntryNote(entry: OneTimeCodeEntry | undefined) {
+  // A partial entry only put the first character somewhere, so as far as the
+  // agent is concerned nothing was typed at all.
+  if (!entry?.typed || entry.partial) return undefined;
+  return entry.submitted
+    ? "The one-time code above has already been typed into the page and confirmed. Do not type it again: read what the page shows now and carry on with the errand."
+    : "The one-time code above has already been typed into the field on the page, but nothing was submitted. Do not type it again: confirm it if the page is waiting for that, then carry on with the errand.";
+}
+
+function withCodeEntry(message: string, entry: OneTimeCodeEntry | undefined) {
+  const note = codeEntryNote(entry);
+  return note === undefined ? message : `${message}\n\n${note}`;
+}
+
+/**
+ * Best effort, and never fatal: when the browser cannot be found or the field
+ * cannot be identified with confidence, the code travels on to the cloud agent
+ * exactly as it did before any of this existed.
+ */
+async function typeCodeIntoRunBrowser(sessionId: string, message: string) {
+  const code = oneTimeCodeFromMessage(message);
+  if (code === undefined) return undefined;
+  try {
+    const cdpUrl = await findBrowserUseSessionCdpUrl(sessionId);
+    if (cdpUrl === undefined) return undefined;
+    const entry = await typeOneTimeCodeOverCdp(cdpUrl, code);
+    console.info("[browser-use] one-time code entry", {
+      // Never the code itself, and never the challenge URL: it carries tokens.
+      inFrame: entry.inFrame,
+      searched: entry.searched,
+      sessionId,
+      submitted: entry.submitted,
+      typed: entry.typed,
+    });
+    return entry;
+  } catch (error) {
+    console.warn("[browser-use] the code could not be typed into the page", {
+      cause: error,
+      sessionId,
+    });
+    return undefined;
+  }
 }
 
 function conversationTarget(context: ToolContext) {
@@ -323,15 +403,28 @@ export const browserTask = defineTool({
         .parse(input.task);
       const allowPayment = input.allowPayment === true;
       const site = input.site ?? row.site ?? undefined;
-      const live = await trackedRunIsLive(runId, row.completedAt);
+      // Both are round trips to the cloud and neither needs the other's answer.
+      // A one-time code waiting its turn is a code closer to expiring, and the
+      // entry is worth attempting whether or not a run is still on the page:
+      // the browser outlives its run, and the field is where the code belongs.
+      const [live, codeEntry] = await Promise.all([
+        trackedRunIsLive(runId, row.completedAt),
+        typeCodeIntoRunBrowser(row.sessionId, message),
+      ]);
 
       // A live run already carries the secrets it was created with, so a plain
       // follow-up is just a message on its queue. Bindings exist per run only:
       // a card the person has only now approved needs a run of its own.
       if (live && !allowPayment) {
-        await queueBrowserUseSessionMessage(row.sessionId, message);
+        await queueBrowserUseSessionMessage(
+          row.sessionId,
+          withCodeEntry(message, codeEntry)
+        );
         return {
-          note: "The message was queued into the running errand. Its outcome still arrives as a new message.",
+          note:
+            codeEntryNote(codeEntry) === undefined
+              ? "The message was queued into the running errand. Its outcome still arrives as a new message."
+              : "The code went straight into the page, and the message was queued into the running errand as well. Its outcome still arrives as a new message.",
           runId,
           status: row.status,
         };
@@ -374,12 +467,15 @@ export const browserTask = defineTool({
           aliases: secrets.aliases,
           errand: row.task,
           facts,
-          message,
+          message: withCodeEntry(message, codeEntry),
           site,
         }),
       });
       if (!followUp.run) {
-        await queueBrowserUseSessionMessage(row.sessionId, message);
+        await queueBrowserUseSessionMessage(
+          row.sessionId,
+          withCodeEntry(message, codeEntry)
+        );
         return {
           note: "The browser session was busy with another run, so the message was queued onto it instead. Keep using this run id; the outcome arrives as a new message.",
           runId,
