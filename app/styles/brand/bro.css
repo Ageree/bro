@@ -48,6 +48,33 @@
   }
 }
 
+/* The film has no border, and on iOS it must not look like it has one:
+   a video layer is composited a shade off the page white, so its straight
+   edge reads as a frame around a clip that is otherwise white paper. The
+   edges are faded into the page instead of cut, which costs nothing on the
+   figure — it stands in the middle of the frame, never at its edge. */
+@utility film-edge {
+  --film-edge: 2rem;
+
+  mask-image:
+    linear-gradient(
+      to bottom,
+      transparent,
+      #000 var(--film-edge),
+      #000 calc(100% - var(--film-edge)),
+      transparent
+    ),
+    linear-gradient(
+      to right,
+      transparent,
+      #000 var(--film-edge),
+      #000 calc(100% - var(--film-edge)),
+      transparent
+    );
+  mask-composite: intersect;
+  -webkit-mask-composite: source-in;
+}
+
 /* Chrome is text: a link is inherited ink that fades on hover and draws a
    hairline outline when focused from the keyboard. It leaves `display`
    alone, so a button that is text keeps its flex row for an icon. */
