@@ -74,7 +74,6 @@ function defineReactToMessage(delivery: ChannelDelivery) {
 export default defineDynamic({
   events: {
     "turn.started": (_event, context) => {
-      console.info("[messaging] resolve", { channel: context.channel.kind });
       const delivery = channelDelivery.get(context.channel.kind ?? "");
       const send_message = defineSendMessage(delivery);
       const messageOnly = { send_message };
