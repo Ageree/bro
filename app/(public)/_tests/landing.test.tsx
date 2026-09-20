@@ -1,11 +1,8 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { yooKassaConfigured } from "@db/services/yookassa";
-import { env } from "@shared/environment";
-import { imessageLink } from "@app/(public)/_components/access-form";
-import LandingPage, { metadata } from "@app/(public)/page";
+import { imessageLink } from "@app/(public)/_components/write-bro";
 
 const mocks = vi.hoisted(() => ({
   yooKassaConfigured: vi.fn<typeof yooKassaConfigured>(),
@@ -15,51 +12,71 @@ vi.mock("@db/services/yookassa", () => ({
   yooKassaConfigured: mocks.yooKassaConfigured,
 }));
 
-const landingMarkup = () =>
-  renderToStaticMarkup(
-    createElement(
-      QueryClientProvider,
-      { client: new QueryClient() },
-      createElement(LandingPage)
-    )
-  );
+/** A line no carrier assigns: the real one belongs in the environment. */
+const broLine = "+12025550123";
 
+// The page reads the line from the validated environment at import, so each
+// render starts from a fresh module graph with the line this test wants.
+const landingMarkup = async () => {
+  const { default: LandingPage } = await import("@app/(public)/page");
+  return renderToStaticMarkup(createElement(LandingPage));
+};
+
+// `vi.unstubAllEnvs` would take the shared test environment down with it, so
+// each test restates the line it wants instead of clearing every stub.
 beforeEach(() => {
+  vi.resetModules();
+  vi.stubEnv("IMESSAGE_PHONE_NUMBER", broLine);
   mocks.yooKassaConfigured.mockReturnValue(true);
 });
 
 describe("landing page", () => {
-  it("keeps the old stage: masthead, film and one call to action", () => {
-    const html = landingMarkup();
+  it("keeps the old stage: masthead, film and one call to action", async () => {
+    const html = await landingMarkup();
 
     expect(html).toContain(">bro.<");
     expect(html).toContain("Оферта");
     expect(html).toContain("Кабинет");
     expect(html).toContain("Сейф");
     expect(html).toContain('src="/brand/hero-portrait.mp4"');
-    expect(html).toContain("Получить своего бро");
+    expect(html).toContain("Написать бро");
   });
 
-  it("asks for a phone number and explains the iMessage requirement", () => {
-    const html = landingMarkup();
+  it("opens the iMessage thread without asking for a number", async () => {
+    const html = await landingMarkup();
 
-    expect(html).toContain('name="phone-number"');
+    // React escapes the `&` the `sms:` separator needs; a browser reads it
+    // back as the link this helper built.
+    expect(html).toContain(
+      `href="${imessageLink(broLine).replace("&", "&amp;")}"`
+    );
+    expect(html).toContain(broLine);
     expect(html).toContain("Только синий iMessage; SMS не подойдёт.");
+    expect(html).not.toContain('name="phone-number"');
+    expect(html).not.toContain("<form");
   });
 
-  it("links this app's routes without advertising a line", () => {
-    const html = landingMarkup();
+  it("says onboarding is closed when the deployment has no line", async () => {
+    vi.stubEnv("IMESSAGE_PHONE_NUMBER", "");
+
+    const html = await landingMarkup();
+
+    expect(html).toContain("Пока закрыто");
+    expect(html).not.toContain("sms:");
+  });
+
+  it("links this app's routes", async () => {
+    const html = await landingMarkup();
 
     expect(html).toContain('href="/oferta"');
     expect(html).toContain('href="/sign-in"');
     expect(html).toContain('href="/vault"');
     expect(html).not.toContain('href="/workspace"');
-    expect(html).not.toContain("sms:");
-    expect(html).not.toContain("+16282649335");
   });
 
-  it("names the page once and anchors the tariffs the offer points at", () => {
-    const html = landingMarkup();
+  it("names the page once and anchors the tariffs the offer points at", async () => {
+    const { env } = await import("@shared/environment");
+    const html = await landingMarkup();
 
     expect(html.match(/<h1/g)).toHaveLength(1);
     expect(html).toContain("bro — твой личный ИИ-агент</h1>");
@@ -73,10 +90,11 @@ describe("landing page", () => {
     );
   });
 
-  it("describes the paid tariff without a price when YooKassa is off", () => {
+  it("describes the paid tariff without a price when YooKassa is off", async () => {
     mocks.yooKassaConfigured.mockReturnValue(false);
+    const { env } = await import("@shared/environment");
 
-    const html = landingMarkup();
+    const html = await landingMarkup();
 
     expect(html).toContain(
       `Полный доступ — до ${String(env.PAID_MESSAGES_PER_DAY)} сообщений в день`
@@ -85,7 +103,9 @@ describe("landing page", () => {
     expect(html).not.toContain("₽");
   });
 
-  it("carries the old title and Open Graph card", () => {
+  it("carries the old title and Open Graph card", async () => {
+    const { metadata } = await import("@app/(public)/page");
+
     expect(metadata.title).toEqual({
       absolute: "bro — твой личный ИИ-агент",
     });
@@ -96,8 +116,8 @@ describe("landing page", () => {
   });
 
   it("opens Messages with a greeting on the separator iOS accepts", () => {
-    expect(imessageLink("+16282649335")).toBe(
-      "sms:+16282649335&body=%D0%9F%D1%80%D0%B8%D0%B2%D0%B5%D1%82"
+    expect(imessageLink(broLine)).toBe(
+      `sms:${broLine}&body=%D0%9F%D1%80%D0%B8%D0%B2%D0%B5%D1%82`
     );
   });
 });

@@ -5,12 +5,11 @@ export async function proxy(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
   if (
     pathname === "/sign-in" ||
-    // The public landing, its offer page and the onboarding endpoint behind
-    // its phone form. Onboarding hands out an iMessage line; the first message
-    // on that line, not this proxy, creates the account.
+    // The public landing and its offer page. The landing asks for nothing
+    // and provisions nothing: it deep-links into iMessage, and the first
+    // message on that line creates the account.
     pathname === "/" ||
     pathname === "/oferta" ||
-    pathname === "/api/access" ||
     // YooKassa signs nothing this proxy could check. The route trusts only the
     // payment id in the body and re-fetches the payment itself.
     pathname === "/api/yookassa" ||
@@ -34,6 +33,10 @@ export async function proxy(request: NextRequest) {
   return NextResponse.redirect(signInUrl);
 }
 
+// Everything static the public pages need is excluded here, not allowed in
+// the body above: a request the matcher catches is redirected to /sign-in,
+// and that is what once hid the hero film and the og image, both of which
+// live under /brand.
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|fonts|favicon.ico).*)"],
+  matcher: ["/((?!_next/static|_next/image|brand|fonts|favicon.ico).*)"],
 };

@@ -3,8 +3,8 @@ import Link from "next/link";
 import { Masthead, OfferLink } from "@web/components/paper/masthead";
 import { yooKassaConfigured } from "@db/services/yookassa";
 import { env } from "@shared/environment";
-import { AccessForm } from "./_components/access-form";
 import { HeroVideo } from "./_components/hero-video";
+import { WriteBro } from "./_components/write-bro";
 
 const title = "bro — твой личный ИИ-агент";
 
@@ -25,9 +25,8 @@ export const metadata: Metadata = {
 /**
  * Stage — a white page with one figure standing in it. A flex column: the
  * masthead, the call to action and the tariff line take their own height,
- * the film gets whatever is left and shrinks instead of pushing the form
- * off-screen. Below the floor height the page scrolls, so a keyboard on a
- * phone never covers the form for good.
+ * the film gets whatever is left and shrinks instead of pushing the call to
+ * action off-screen. Below the floor height the page scrolls.
  */
 export default function Page() {
   return (
@@ -51,11 +50,8 @@ export default function Page() {
         <HeroVideo />
       </div>
 
-      <section
-        aria-label="Получить своего бро"
-        className="p-bro-pad text-center"
-      >
-        <AccessForm />
+      <section aria-label="Написать бро" className="p-bro-pad text-center">
+        <WriteBro phoneNumber={env.IMESSAGE_PHONE_NUMBER} />
       </section>
 
       <Pricing />

@@ -236,19 +236,20 @@ model turn runs.
 ## Landing and onboarding
 
 `/` is a public Russian landing page and the signed-in workspace lives at
-`/workspace`. The landing takes a phone number and posts it to
-`POST /api/access`, which validates it as E.164, creates a Photon `shared` user
-for it, and answers with the iMessage line the agent replies on. The page then
-shows that number with an `sms:` deep link and a copy fallback. No account is
-created here: the first inbound iMessage creates it.
+`/workspace`. The landing asks for nothing: under the film there is one call to
+action, «Написать бро», an `sms:` deep link into `IMESSAGE_PHONE_NUMBER` with
+«Привет» prefilled, and the number itself underneath for a visitor who is not
+on an iPhone right now. No account is created here: the first inbound iMessage
+creates it, so nothing is provisioned before a person actually writes. A deployment without `IMESSAGE_PHONE_NUMBER` has no line to open and
+says onboarding is closed instead of linking into nowhere.
 
-Because onboarding needs no login, it is bounded twice.
-`ACCESS_CREATES_PER_HOUR` (default 20) caps new lines per hour per caller
-address, and `ACCESS_IDENTITY_CAP` (default 100) caps how many lines the
-deployment ever hands out. Both are counted from the `onboarding_requests`
-table, which also replays the number a phone already has instead of buying a
-second Photon user. Without `IMESSAGE_PROJECT_ID` and `IMESSAGE_PROJECT_SECRET`
-the endpoint answers that onboarding is closed.
+The film and the og image are served from `/brand`, which the auth proxy must
+not touch: its matcher excludes those paths, because a static asset redirected
+to `/sign-in` is an asset that silently disappears from the page.
+
+`scripts/lib/migrate-from-convex.ts` still registers a Photon `shared` user per
+migrated phone and stores it in the `onboarding_requests` table, which replays
+the number a phone already has instead of buying a second Photon user.
 
 `/oferta` carries the Russian public offer the landing links to.
 

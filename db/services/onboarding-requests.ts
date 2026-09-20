@@ -1,8 +1,5 @@
-import { and, count, eq, gte, sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { db, onboardingRequests } from "@db";
-
-/** The window the per-caller onboarding ceiling is counted over. */
-const onboardingWindowMs = 60 * 60_000;
 
 /** The line a phone number was already given, when it asked before. */
 export async function findOnboardingRequest(phoneNumber: string) {
@@ -12,32 +9,6 @@ export async function findOnboardingRequest(phoneNumber: string) {
     .where(eq(onboardingRequests.phoneNumber, phoneNumber))
     .limit(1);
   return request;
-}
-
-/** Every line handed out so far, counted against the identity cap. */
-export async function countOnboardingRequests() {
-  const [row] = await db.select({ value: count() }).from(onboardingRequests);
-  return row?.value ?? 0;
-}
-
-/** Lines handed out to one caller inside the rate-limit window. */
-export async function countRecentOnboardingRequests(
-  ipHash: string,
-  now = new Date()
-) {
-  const [row] = await db
-    .select({ value: count() })
-    .from(onboardingRequests)
-    .where(
-      and(
-        eq(onboardingRequests.ipHash, ipHash),
-        gte(
-          onboardingRequests.createdAt,
-          new Date(now.getTime() - onboardingWindowMs)
-        )
-      )
-    );
-  return row?.value ?? 0;
 }
 
 /**

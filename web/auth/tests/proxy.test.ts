@@ -28,6 +28,14 @@ describe("auth proxy matcher", () => {
     ).toBe(false);
   });
 
+  it("does not match the brand assets the landing shows", () => {
+    for (const url of ["/brand/hero-portrait.mp4", "/brand/bro-og.png"]) {
+      expect(
+        unstable_doesMiddlewareMatch({ config, nextConfig: {}, url })
+      ).toBe(false);
+    }
+  });
+
   it("continues to match protected application routes", () => {
     expect(
       unstable_doesMiddlewareMatch({
@@ -38,13 +46,11 @@ describe("auth proxy matcher", () => {
     ).toBe(true);
   });
 
-  it("serves the public landing, its offer and onboarding without a session", async () => {
+  it("serves the public landing and its offer without a session", async () => {
     const responses = await Promise.all(
-      [
-        "https://example.com/",
-        "https://example.com/oferta",
-        "https://example.com/api/access",
-      ].map(async (url) => await proxy(new NextRequest(url)))
+      ["https://example.com/", "https://example.com/oferta"].map(
+        async (url) => await proxy(new NextRequest(url))
+      )
     );
 
     for (const response of responses) {
