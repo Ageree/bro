@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { Masthead, OfferLink } from "@web/components/paper/masthead";
-import { yooKassaConfigured } from "@db/services/yookassa";
 import { env } from "@shared/environment";
 import { HeroVideo } from "./_components/hero-video";
 import { WriteBro } from "./_components/write-bro";
@@ -23,10 +22,10 @@ export const metadata: Metadata = {
 };
 
 /**
- * Stage — a white page with one figure standing in it. A flex column: the
- * masthead, the call to action and the tariff line take their own height,
- * the film gets whatever is left and shrinks instead of pushing the call to
- * action off-screen. Below the floor height the page scrolls.
+ * Stage — a white page with one figure standing in it. A flex column of
+ * three: the masthead and the call to action take their own height, the
+ * film takes everything else. Nothing else stands under it — the tariffs
+ * live in the offer now — so the figure gets the whole page between them.
  */
 export default function Page() {
   return (
@@ -50,51 +49,12 @@ export default function Page() {
         <HeroVideo />
       </div>
 
-      <section aria-label="Написать бро" className="p-bro-pad text-center">
+      <section
+        aria-label="Написать бро"
+        className="px-bro-pad pt-[0.6rem] pb-bro-pad text-center"
+      >
         <WriteBro phoneNumber={env.IMESSAGE_PHONE_NUMBER} />
       </section>
-
-      <Pricing />
     </main>
-  );
-}
-
-/**
- * The tariffs, in two lines of fine print under the call to action: the
- * offer points here as `#pricing`. The numbers are the deployment's own,
- * and a deployment without YooKassa names no price it cannot take.
- */
-function Pricing() {
-  const billingOn = yooKassaConfigured();
-  return (
-    <section
-      aria-labelledby="pricing-heading"
-      className="px-bro-pad pb-bro-pad text-center"
-      id="pricing"
-    >
-      <h2 className="sr-only" id="pricing-heading">
-        Тарифы
-      </h2>
-      <p className="type-fine text-muted-foreground">
-        Бесплатный режим — до {env.FREE_MESSAGES_PER_DAY} сообщений в день и{" "}
-        {env.FREE_BROWSER_RUNS_PER_MONTH} поручений в браузере в месяц.
-      </p>
-      <p className="type-fine text-muted-foreground">
-        {billingOn ? (
-          <>
-            Полный доступ — {env.PRICE_RUB} ₽ за 30 календарных дней: до{" "}
-            {env.PAID_MESSAGES_PER_DAY} сообщений в день и{" "}
-            {env.PAID_BROWSER_RUNS_PER_MONTH} поручений в месяц. Тариф не
-            продлевается автоматически.
-          </>
-        ) : (
-          <>
-            Полный доступ — до {env.PAID_MESSAGES_PER_DAY} сообщений в день и{" "}
-            {env.PAID_BROWSER_RUNS_PER_MONTH} поручений в месяц. Оплата пока не
-            подключена.
-          </>
-        )}
-      </p>
-    </section>
   );
 }

@@ -1,16 +1,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { yooKassaConfigured } from "@db/services/yookassa";
 import { imessageLink } from "@app/(public)/_components/write-bro";
-
-const mocks = vi.hoisted(() => ({
-  yooKassaConfigured: vi.fn<typeof yooKassaConfigured>(),
-}));
-
-vi.mock("@db/services/yookassa", () => ({
-  yooKassaConfigured: mocks.yooKassaConfigured,
-}));
 
 /** A line no carrier assigns: the real one belongs in the environment. */
 const broLine = "+12025550123";
@@ -27,7 +18,6 @@ const landingMarkup = async () => {
 beforeEach(() => {
   vi.resetModules();
   vi.stubEnv("IMESSAGE_PHONE_NUMBER", broLine);
-  mocks.yooKassaConfigured.mockReturnValue(true);
 });
 
 describe("landing page", () => {
@@ -50,10 +40,22 @@ describe("landing page", () => {
     expect(html).toContain(
       `href="${imessageLink(broLine).replace("&", "&amp;")}"`
     );
-    expect(html).toContain(broLine);
-    expect(html).toContain("Только синий iMessage; SMS не подойдёт.");
     expect(html).not.toContain('name="phone-number"');
     expect(html).not.toContain("<form");
+  });
+
+  it("stands the film on a page with nothing but the call to action", async () => {
+    const html = await landingMarkup();
+
+    // The line under the button, the number in plain sight and the tariffs
+    // all left the stage; the tariffs are published in the offer instead.
+    expect(html).not.toContain("Первое сообщение создаёт твой аккаунт");
+    expect(html).not.toContain("SMS не подойдёт");
+    expect(html).not.toContain("Тарифы");
+    expect(html).not.toContain("Бесплатный режим");
+    expect(html).not.toContain("Полный доступ");
+    expect(html).not.toContain('id="pricing"');
+    expect(html).not.toContain(`>${broLine}<`);
   });
 
   it("says onboarding is closed when the deployment has no line", async () => {
@@ -74,33 +76,11 @@ describe("landing page", () => {
     expect(html).not.toContain('href="/workspace"');
   });
 
-  it("names the page once and anchors the tariffs the offer points at", async () => {
-    const { env } = await import("@shared/environment");
+  it("names the page once", async () => {
     const html = await landingMarkup();
 
     expect(html.match(/<h1/g)).toHaveLength(1);
     expect(html).toContain("bro — твой личный ИИ-агент</h1>");
-    expect(html).toContain('id="pricing"');
-    expect(html).toContain("Тарифы");
-    expect(html).toContain(
-      `Бесплатный режим — до ${String(env.FREE_MESSAGES_PER_DAY)} сообщений в день`
-    );
-    expect(html).toContain(
-      `Полный доступ — ${String(env.PRICE_RUB)} ₽ за 30 календарных дней`
-    );
-  });
-
-  it("describes the paid tariff without a price when YooKassa is off", async () => {
-    mocks.yooKassaConfigured.mockReturnValue(false);
-    const { env } = await import("@shared/environment");
-
-    const html = await landingMarkup();
-
-    expect(html).toContain(
-      `Полный доступ — до ${String(env.PAID_MESSAGES_PER_DAY)} сообщений в день`
-    );
-    expect(html).toContain("Оплата пока не подключена.");
-    expect(html).not.toContain("₽");
   });
 
   it("carries the old title and Open Graph card", async () => {
