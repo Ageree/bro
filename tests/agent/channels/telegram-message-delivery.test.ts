@@ -112,13 +112,16 @@ vi.mock("@vercel/blob", async (importOriginal) => {
 
 const handleActionResult =
   telegramChannelCapture.config?.events?.["action.result"];
-if (!handleActionResult) {
+const handleMessageCompleted =
+  telegramChannelCapture.config?.events?.["message.completed"];
+if (!handleActionResult || !handleMessageCompleted) {
   throw new Error(
     "The Telegram channel must configure action result delivery."
   );
 }
 
 type ActionHandlerParameters = Parameters<typeof handleActionResult>;
+type MessageHandlerParameters = Parameters<typeof handleMessageCompleted>;
 
 describe("Telegram message delivery", () => {
   beforeEach(() => {
@@ -133,6 +136,93 @@ describe("Telegram message delivery", () => {
     expect(
       telegramChannelCapture.config?.events?.["message.completed"]
     ).toBeTypeOf("function");
+  });
+
+  it("delivers assistant text the model wrote instead of calling send_message", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { context, request } = handlerContext();
+
+    await handleMessageCompleted(
+      assistantMessage("**Готово.** Заказ оформлен."),
+      context,
+      sessionContext()
+    );
+
+    expect(request).toHaveBeenCalledExactlyOnceWith("sendMessage", {
+      chat_id: "4242",
+      parse_mode: "HTML",
+      text: "<b>Готово.</b> Заказ оформлен.",
+    });
+    expect(warn).toHaveBeenCalledExactlyOnceWith(
+      "[telegram] assistant text delivered as fallback",
+      { sessionId: "session-1" }
+    );
+    warn.mockRestore();
+  });
+
+  it("ignores the delivery marker the instructions ask for", async () => {
+    const { context, request } = handlerContext();
+
+    await handleActionResult(
+      sendMessageResult({ kind: "message", text: "Готово." }),
+      context,
+      sessionContext()
+    );
+    request.mockClear();
+    await handleMessageCompleted(
+      assistantMessage("DELIVERY_COMPLETE"),
+      context,
+      sessionContext()
+    );
+
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("does not repeat a reply send_message already delivered", async () => {
+    const { context, request } = handlerContext();
+
+    await handleActionResult(
+      sendMessageResult({ kind: "message", text: "Готово." }),
+      context,
+      sessionContext()
+    );
+    request.mockClear();
+    await handleMessageCompleted(
+      assistantMessage("Готово, заказ оформлен."),
+      context,
+      sessionContext()
+    );
+
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("leaves text that only introduces a tool call undelivered", async () => {
+    const { context, request } = handlerContext();
+
+    await handleMessageCompleted(
+      assistantMessage("Сейчас посмотрю.", "tool-calls"),
+      context,
+      sessionContext()
+    );
+
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("keeps a scheduled report suppressed instead of delivering its text", async () => {
+    const { context, request } = handlerContext();
+
+    await handleMessageCompleted(
+      assistantMessage("Внутренний отчёт."),
+      context,
+      sessionContext("scheduled-result")
+    );
+
+    expect(request).not.toHaveBeenCalled();
+    expect(scheduleDeliveryCapture.finalize).toHaveBeenCalledWith(
+      "00000000-0000-4000-8000-000000000002",
+      "00000000-0000-4000-8000-000000000004",
+      "suppressed"
+    );
   });
 
   it("sends send_message output as Telegram HTML", async () => {
@@ -354,6 +444,13 @@ function sendMessageResult(
     stepIndex: 0,
     turnId: "turn-1",
   };
+}
+
+function assistantMessage(
+  message: string,
+  finishReason: MessageHandlerParameters[0]["finishReason"] = "stop"
+): MessageHandlerParameters[0] {
+  return { finishReason, message, sequence: 1, stepIndex: 1, turnId: "turn-1" };
 }
 
 function reactToMessageResult(

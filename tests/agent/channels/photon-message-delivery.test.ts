@@ -103,11 +103,14 @@ vi.mock("@vercel/blob", async (importOriginal) => {
 });
 const handleActionResult =
   photonChannelCapture.config?.events?.["action.result"];
-if (!handleActionResult) {
+const handleMessageCompleted =
+  photonChannelCapture.config?.events?.["message.completed"];
+if (!handleActionResult || !handleMessageCompleted) {
   throw new Error("The Photon channel must configure action result delivery.");
 }
 
 type ActionHandlerParameters = Parameters<typeof handleActionResult>;
+type MessageHandlerParameters = Parameters<typeof handleMessageCompleted>;
 
 describe("Photon message delivery", () => {
   beforeEach(() => {
@@ -120,6 +123,91 @@ describe("Photon message delivery", () => {
     expect(
       photonChannelCapture.config?.events?.["message.completed"]
     ).toBeTypeOf("function");
+  });
+
+  it("posts assistant text the model wrote instead of calling send_message", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { context, post } = handlerContext();
+
+    await handleMessageCompleted(
+      assistantMessage("Готово, заказ оформлен."),
+      context,
+      sessionContext()
+    );
+
+    expect(post).toHaveBeenCalledExactlyOnceWith({
+      raw: "Готово, заказ оформлен.",
+    });
+    expect(warn).toHaveBeenCalledExactlyOnceWith(
+      "[photon] assistant text delivered as fallback",
+      { sessionId: "session-1" }
+    );
+    warn.mockRestore();
+  });
+
+  it("ignores the delivery marker the instructions ask for", async () => {
+    const { context, post } = handlerContext();
+
+    await handleActionResult(
+      sendMessageResult({ kind: "message", text: "Готово." }),
+      context,
+      sessionContext()
+    );
+    post.mockClear();
+    await handleMessageCompleted(
+      assistantMessage("DELIVERY_COMPLETE"),
+      context,
+      sessionContext()
+    );
+
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it("does not repeat a reply send_message already posted", async () => {
+    const { context, post } = handlerContext();
+
+    await handleActionResult(
+      sendMessageResult({ kind: "message", text: "Готово." }),
+      context,
+      sessionContext()
+    );
+    post.mockClear();
+    await handleMessageCompleted(
+      assistantMessage("Готово, заказ оформлен."),
+      context,
+      sessionContext()
+    );
+
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it("leaves text that only introduces a tool call unposted", async () => {
+    const { context, post } = handlerContext();
+
+    await handleMessageCompleted(
+      assistantMessage("Сейчас посмотрю.", "tool-calls"),
+      context,
+      sessionContext()
+    );
+
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it("keeps a scheduled report suppressed instead of posting its text", async () => {
+    const { context, post } = handlerContext();
+
+    await handleMessageCompleted(
+      assistantMessage("Внутренний отчёт."),
+      context,
+      sessionContext("scheduled-result")
+    );
+
+    expect(post).not.toHaveBeenCalled();
+    expect(scheduleDeliveryCapture.finalize).toHaveBeenCalledWith(
+      "00000000-0000-4000-8000-000000000002",
+      "00000000-0000-4000-8000-000000000004",
+      "suppressed"
+    );
   });
 
   it("posts send_message output as raw iMessage text", async () => {
@@ -549,6 +637,13 @@ function sendMessageResult(
     stepIndex: 0,
     turnId: "turn-1",
   };
+}
+
+function assistantMessage(
+  message: string,
+  finishReason: MessageHandlerParameters[0]["finishReason"] = "stop"
+): MessageHandlerParameters[0] {
+  return { finishReason, message, sequence: 1, stepIndex: 1, turnId: "turn-1" };
 }
 
 function reactToMessageResult(

@@ -20,4 +20,4 @@ allowBuilds:
   protobufjs: false
   sharp: true
 patchedDependencies:
-  "eve@0.55.0": patches/eve@0.55.0.patch
+  eve@0.62.0: patches/eve@0.62.0.patch

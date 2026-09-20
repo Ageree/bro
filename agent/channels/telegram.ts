@@ -6,13 +6,14 @@ import {
   type TelegramChannelConfig,
   type TelegramEventContext,
 } from "eve/channels/telegram";
-import type { SessionAuth } from "eve/context";
+import type { SessionAuth, SessionContext } from "eve/context";
 import { z } from "zod";
 import {
   findChannelIdentity,
   redeemChannelLinkToken,
 } from "@db/services/channel-identities";
 import { messageQuotaGate } from "@agent/lib/billing/quota";
+import { fallbackDeliveryText } from "@agent/lib/delivery-fallback";
 import { telegramMediaTurn } from "@agent/lib/inbound-media/telegram";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { resolveTelegramReplyTarget } from "@agent/lib/reply-targets";
@@ -137,6 +138,7 @@ export default telegramChannel({
 
       if (output.kind === "link") {
         await sendText(context, output.url);
+        markTurnDelivered(context, event.turnId);
         await finalizeScheduledReportDelivery(session);
         return;
       }
@@ -149,63 +151,37 @@ export default telegramChannel({
         if (attachmentLinks.length > 0) {
           await sendText(context, attachmentLinks.join("\n"));
         }
+        markTurnDelivered(context, event.turnId);
         await finalizeScheduledReportDelivery(session);
         return;
       }
 
-      const caller =
-        session.session.auth.current ?? session.session.auth.initiator;
-      if (!caller) {
-        const references =
-          extractImageArtifactMarkdownReferences(requestedText);
-        const text =
-          references.length === 0
-            ? requestedText
-            : [
-                stripImageArtifactMarkdownReferences(requestedText),
-                imageArtifactFailureText(references.length),
-              ]
-                .filter(Boolean)
-                .join("\n\n");
-        await sendText(context, [text, ...attachmentLinks].join("\n\n"));
-        await finalizeScheduledReportDelivery(session);
-        return;
-      }
-
-      const report = scheduledReportFromSession(session);
-      const delivery = await prepareImageArtifactDelivery(requestedText, {
-        rootSessionId: report?.workerSessionId ?? session.session.id,
-        scope: scopeFromPrincipal(caller),
+      await deliverText(context, session, {
+        attachmentLinks,
+        text: requestedText,
       });
-      if (delivery.failedArtifactIds.length > 0) {
-        console.warn("[telegram] image artifact delivery failed", {
-          artifactIds: delivery.failedArtifactIds,
-          sessionId: session.session.id,
-        });
-      }
-      const failureMessage = imageArtifactFailureText(
-        delivery.failedArtifactIds.length
-      );
-      const body = [delivery.text, failureMessage, ...attachmentLinks]
-        .filter(Boolean)
-        .join("\n\n");
-      if (body) await sendText(context, body);
-      for (const file of delivery.files) {
-        // Photos are uploaded one at a time so a single failure cannot drop
-        // the rest of the delivery.
-        // oxlint-disable-next-line eslint/no-await-in-loop -- Telegram renders uploads in call order.
-        await sendPhoto(context, file);
-      }
+      markTurnDelivered(context, event.turnId);
       await finalizeScheduledReportDelivery(session);
     },
-    // Overriding eve's default reply handler keeps assistant text out of the
-    // chat: send_message above is the only delivery path on this channel.
-    async "message.completed"(event, _context, session) {
+    // eve's default reply handler would post every assistant message, so this
+    // channel delivers through send_message instead. A model that answers in
+    // plain text anyway would leave the person with silence, so the text of
+    // such a turn is delivered here as a fallback.
+    async "message.completed"(event, context, session) {
       if (event.finishReason === "tool-calls") return;
       const report = scheduledReportFromSession(session);
       if (report) {
         await finalizeScheduledReportDelivery(session, "suppressed");
+        return;
       }
+      if (deliveredTurnId(context) === event.turnId) return;
+      const text = fallbackDeliveryText(event.message);
+      if (!text) return;
+      console.warn("[telegram] assistant text delivered as fallback", {
+        sessionId: session.session.id,
+      });
+      markTurnDelivered(context, event.turnId);
+      await deliverText(context, session, { attachmentLinks: [], text });
     },
     async "session.completed"(_event, _context, session) {
       const report = scheduledReportFromSession(session);
@@ -348,6 +324,85 @@ function currentTelegramMessageId(auth: SessionAuth) {
     auth.current?.attributes.telegramMessageId
   );
   return messageId.success ? messageId.data : undefined;
+}
+
+/**
+ * Delivers one reply body: image artifacts referenced in the text are uploaded
+ * as photos, and whatever remains goes out as Telegram HTML. Both `send_message`
+ * and the plain-text fallback deliver through here.
+ */
+async function deliverText(
+  context: TelegramEventContext,
+  session: SessionContext,
+  {
+    attachmentLinks,
+    text,
+  }: {
+    readonly attachmentLinks: readonly string[];
+    readonly text: string;
+  }
+) {
+  const caller = session.session.auth.current ?? session.session.auth.initiator;
+  if (!caller) {
+    const references = extractImageArtifactMarkdownReferences(text);
+    const body =
+      references.length === 0
+        ? text
+        : [
+            stripImageArtifactMarkdownReferences(text),
+            imageArtifactFailureText(references.length),
+          ]
+            .filter(Boolean)
+            .join("\n\n");
+    await sendText(context, [body, ...attachmentLinks].join("\n\n"));
+    return;
+  }
+
+  const report = scheduledReportFromSession(session);
+  const delivery = await prepareImageArtifactDelivery(text, {
+    rootSessionId: report?.workerSessionId ?? session.session.id,
+    scope: scopeFromPrincipal(caller),
+  });
+  if (delivery.failedArtifactIds.length > 0) {
+    console.warn("[telegram] image artifact delivery failed", {
+      artifactIds: delivery.failedArtifactIds,
+      sessionId: session.session.id,
+    });
+  }
+  const failureMessage = imageArtifactFailureText(
+    delivery.failedArtifactIds.length
+  );
+  const body = [delivery.text, failureMessage, ...attachmentLinks]
+    .filter(Boolean)
+    .join("\n\n");
+  if (body) await sendText(context, body);
+  for (const file of delivery.files) {
+    // Photos are uploaded one at a time so a single failure cannot drop
+    // the rest of the delivery.
+    // oxlint-disable-next-line eslint/no-await-in-loop -- Telegram renders uploads in call order.
+    await sendPhoto(context, file);
+  }
+}
+
+/**
+ * The turn whose reply already went out through a tool, kept in the channel
+ * state eve persists between the events of one turn, so `message.completed`
+ * can tell a delivered turn from one the model answered in plain text.
+ */
+function deliveryMarker(context: TelegramEventContext) {
+  // SAFETY: The marker rides along with eve's own Telegram state, which is a
+  // closed interface but a plain JSON object eve round-trips verbatim.
+  return context.state as TelegramEventContext["state"] & {
+    deliveredTurnId?: string;
+  };
+}
+
+function markTurnDelivered(context: TelegramEventContext, turnId: string) {
+  deliveryMarker(context).deliveredTurnId = turnId;
+}
+
+function deliveredTurnId(context: TelegramEventContext) {
+  return deliveryMarker(context).deliveredTurnId;
 }
 
 async function sendText(context: TelegramEventContext, text: string) {

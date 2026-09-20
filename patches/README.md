@@ -1,25 +1,17 @@
 # Eve patches
 
-Eve is pinned to the official, immutable `pkg.eve.dev` build at
-`59ec96cc99f65a80f7a2daf4ca5e2a0ad95455f2` (`0.52.2+main.59ec96cc99f65a80`).
-It includes the merged turn-context placement fix in
-[vercel/eve#3089](https://github.com/vercel/eve/pull/3089), which is absent from
-npm's `0.52.2` release. Return to a registry version once a release contains this
-commit and the patches below have been checked against it.
-
-The tarball SHA-256 is
-`633c0d9ebf5d0d5733d8cc2fdc5315952a7ccca8cb7902c31f550dc8ab0750a9`.
-The lockfile also records its package integrity. pnpm matches URL dependency
-patches by package name, so keep the immutable dependency pin when changing the
-Eve patch.
+Eve is pinned to the npm release `0.62.0`. The lockfile records both the
+package integrity and the patch hash, so bumping the version means
+regenerating the patch below against the new dist.
 
 ## Remaining patches
 
-`eve@0.55.0.patch` carries two independent hunks:
+`eve@0.62.0.patch` carries two independent hunks:
 
 - The declaration bridge redirects Eve's incomplete bundled Chat SDK
   declaration exports to the explicitly installed `chat` package. Eve's runtime
-  still uses its bundled Chat SDK.
+  still uses its bundled Chat SDK. `dist/src/compiled/chat/index.d.ts` still
+  imports from a `messages-*.js` sibling that the published package omits.
 - The inbound `message` override lets the `onMessage` hook of the Telegram and
   Photon channels return an optional `message?: string | UserContent` (the AI
   SDK `UserContent` from `ai`) that replaces the turn message Eve would build.
@@ -35,13 +27,15 @@ Eve patch.
   URL for an attachment. Drop the hunk once Eve's inbound hooks accept a turn
   message override natively.
 
-To change the patch, run `pnpm patch eve@0.55.0`, edit the files in the
+To change the patch, run `pnpm patch eve@0.62.0`, edit the files in the
 reported directory, and `pnpm patch-commit <dir>` so both hunks and the
-lockfile hash stay consistent.
+lockfile hash stay consistent. When upgrading Eve, first check the new dist:
+the bridge goes away once `dist/src/compiled/chat/index.d.ts` resolves on its
+own, and the override goes away once `TelegramInboundResult` and
+`PhotonInboundResult` declare `message` themselves.
 
-Remove the declaration bridge when the published declaration files resolve
-without it. Photon's iMessage adapter posts into a conversation without a reply
-anchor, so no provider reply option is patched in any more.
+Photon's iMessage adapter posts into a conversation without a reply anchor, so
+no provider reply option is patched in any more.
 
 The old Eve patches for `ask_question` and `task_cancel` exports are no longer
 needed: both now have public entry points. Callback authorization is composed

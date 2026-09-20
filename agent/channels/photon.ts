@@ -1,4 +1,6 @@
 import type { AdapterPostableMessage, Thread } from "chat";
+import type { ChatSdkChannelState } from "eve/channels/chat-sdk";
+import type { SessionContext } from "eve/context";
 import {
   defaultPhotonAuth,
   photonIMessageChannel,
@@ -7,6 +9,7 @@ import {
 import { z } from "zod";
 import { resolvePhotonReplyTarget } from "@agent/lib/reply-targets";
 import { messageQuotaGate } from "@agent/lib/billing/quota";
+import { fallbackDeliveryText } from "@agent/lib/delivery-fallback";
 import { photonMediaTurn } from "@agent/lib/inbound-media/photon";
 import { voiceFailedNote } from "@agent/lib/inbound-media/turn-content";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
@@ -120,6 +123,7 @@ export default photonIMessageChannel({
         // A message whose whole body is a URL renders as a native iMessage
         // rich link preview, which is the closest Photon gets to a link card.
         await thread.post({ raw: output.url });
+        markTurnDelivered(context.state, event.turnId);
         await finalizeScheduledReportDelivery(session);
         return;
       }
@@ -132,56 +136,39 @@ export default photonIMessageChannel({
         if (attachmentLinks.length > 0) {
           await thread.post({ raw: attachmentLinks.join("\n") });
         }
+        markTurnDelivered(context.state, event.turnId);
         await finalizeScheduledReportDelivery(session);
         return;
       }
 
-      const caller =
-        session.session.auth.current ?? session.session.auth.initiator;
-      if (!caller) {
-        const references =
-          extractImageArtifactMarkdownReferences(requestedText);
-        const text =
-          references.length === 0
-            ? requestedText
-            : [
-                stripImageArtifactMarkdownReferences(requestedText),
-                imageArtifactFailureText(references.length),
-              ]
-                .filter(Boolean)
-                .join("\n\n");
-        await postBubbles(thread, { attachmentLinks, files: [], text });
-        await finalizeScheduledReportDelivery(session);
-        return;
-      }
-
-      const report = scheduledReportFromSession(session);
-      const delivery = await prepareImageArtifactDelivery(requestedText, {
-        rootSessionId: report?.workerSessionId ?? session.session.id,
-        scope: scopeFromPrincipal(caller),
-      });
-      if (delivery.failedArtifactIds.length > 0) {
-        console.warn("[photon] browser image delivery failed", {
-          artifactIds: delivery.failedArtifactIds,
-          sessionId: session.session.id,
-        });
-      }
-      const failureMessage = imageArtifactFailureText(
-        delivery.failedArtifactIds.length
-      );
-      await postBubbles(thread, {
+      await deliverText(thread, session, {
         attachmentLinks,
-        files: delivery.files,
-        text: [delivery.text, failureMessage].filter(Boolean).join("\n\n"),
+        text: requestedText,
       });
+      markTurnDelivered(context.state, event.turnId);
       await finalizeScheduledReportDelivery(session);
     },
-    async "message.completed"(event, _context, session) {
+    // eve's default reply handler would post every assistant message, so this
+    // channel delivers through send_message instead. A model that answers in
+    // plain text anyway would leave the person with silence, so the text of
+    // such a turn is delivered here as a fallback.
+    async "message.completed"(event, context, session) {
       if (event.finishReason === "tool-calls") return;
       const report = scheduledReportFromSession(session);
       if (report) {
         await finalizeScheduledReportDelivery(session, "suppressed");
+        return;
       }
+      const { thread } = context;
+      if (!thread) return;
+      if (deliveredTurnId(context.state) === event.turnId) return;
+      const text = fallbackDeliveryText(event.message);
+      if (!text) return;
+      console.warn("[photon] assistant text delivered as fallback", {
+        sessionId: session.session.id,
+      });
+      markTurnDelivered(context.state, event.turnId);
+      await deliverText(thread, session, { attachmentLinks: [], text });
     },
     async "session.completed"(_event, _context, session) {
       const report = scheduledReportFromSession(session);
@@ -292,6 +279,75 @@ async function markReadBestEffort(thread: Thread, messageId: string) {
   } catch {
     // The reply was already posted; a missing read receipt is not worth a retry.
   }
+}
+
+/**
+ * Delivers one reply body: image artifacts referenced in the text ride along as
+ * message files, and the words go out as bubbles. Both `send_message` and the
+ * plain-text fallback deliver through here.
+ */
+async function deliverText(
+  thread: Thread,
+  session: SessionContext,
+  {
+    attachmentLinks,
+    text,
+  }: {
+    readonly attachmentLinks: readonly string[];
+    readonly text: string;
+  }
+) {
+  const caller = session.session.auth.current ?? session.session.auth.initiator;
+  if (!caller) {
+    const references = extractImageArtifactMarkdownReferences(text);
+    const body =
+      references.length === 0
+        ? text
+        : [
+            stripImageArtifactMarkdownReferences(text),
+            imageArtifactFailureText(references.length),
+          ]
+            .filter(Boolean)
+            .join("\n\n");
+    await postBubbles(thread, { attachmentLinks, files: [], text: body });
+    return;
+  }
+
+  const report = scheduledReportFromSession(session);
+  const delivery = await prepareImageArtifactDelivery(text, {
+    rootSessionId: report?.workerSessionId ?? session.session.id,
+    scope: scopeFromPrincipal(caller),
+  });
+  if (delivery.failedArtifactIds.length > 0) {
+    console.warn("[photon] browser image delivery failed", {
+      artifactIds: delivery.failedArtifactIds,
+      sessionId: session.session.id,
+    });
+  }
+  const failureMessage = imageArtifactFailureText(
+    delivery.failedArtifactIds.length
+  );
+  await postBubbles(thread, {
+    attachmentLinks,
+    files: delivery.files,
+    text: [delivery.text, failureMessage].filter(Boolean).join("\n\n"),
+  });
+}
+
+/**
+ * The turn whose reply already went out through a tool, kept in the channel
+ * state eve persists between the events of one turn, so `message.completed`
+ * can tell a delivered turn from one the model answered in plain text.
+ */
+function markTurnDelivered(state: ChatSdkChannelState, turnId: string) {
+  state.deliveredTurnId = turnId;
+}
+
+const deliveredTurnIdSchema = z.string().min(1);
+
+function deliveredTurnId(state: ChatSdkChannelState) {
+  const turnId = deliveredTurnIdSchema.safeParse(state.deliveredTurnId);
+  return turnId.success ? turnId.data : undefined;
 }
 
 /**
