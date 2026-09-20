@@ -1,6 +1,7 @@
 node_modules/
 .eve/
 .convex/
+.tgrep/
 .env
 .env.local
 .DS_Store
