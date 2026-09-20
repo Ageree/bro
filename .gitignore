@@ -12,3 +12,6 @@ next-env.d.ts
 dist
 .DS_Store
 *.tsbuildinfo
+
+# Personal Claude Code overrides; the shared hook config is committed.
+.claude/settings.local.json

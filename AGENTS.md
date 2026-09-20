@@ -59,7 +59,7 @@ Run the validation the task requests. When it does not establish the behavior yo
 - The repository root owns the single Next.js application, Eve agent, and shared UI contract.
 - The public landing lives on `/`, the workspace manager on `/workspace`, and
   the agent chat on `/chat`.
-- This build has no browser capability. Do not add a browser connection, extension, or subagent; browser work is planned as a separate hosted `browser_task` tool.
+- Browser work runs through the hosted `browser_task` tool on Browser Use Cloud, with its client under `agent/lib/browser-use` and run state in `db/services/browser-runs`. Do not add a browser connection, extension, or subagent alongside it. (Upstream OpenInstinct ships this line as "no browser capability"; a merge from upstream will try to restore that.)
 - Keep each tool's schema and implementation together. Group a shared agent domain under `agent/lib` in a lower-case folder, such as `schedules/report.ts`; do not use it as a holding area for a tool's one-off logic.
 - Validate runtime environment variables through `shared/environment/env.ts`.
 - `package.json` `name` is the eve agent identity, not a cosmetic label. eve derives the Vercel Workflow queue namespace from it (`__eve<hex(name)>_wkf_workflow_*`), used both for the flow function's `experimentalTriggers` consumer and for the runtime `WORKFLOW_QUEUE_NAMESPACE`. Renaming it moves every agent turn onto a brand-new queue topic and strands in-flight runs. Keep it `local-vault-assistant`; do product branding in instructions, UI, and user-facing copy.
