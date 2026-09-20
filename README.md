@@ -34,6 +34,34 @@ Production: Convex cloud + `eve deploy` on Vercel — `npm run deploy` does both
 
 `npm run check` runs the whole battery — `types:check` plus every other `*:check` script — in parallel, and prints the full output of whatever failed. They are pure-logic assertions over the policy modules: no network, no secrets, no deployment, ~10 s for all of them. `--only=onboard,silent` narrows to a few, `--skip=types` drops one, `--list` prints the selection, `--jobs=N` sets the concurrency. The Composio checks are excluded because they need a real `.env.local` and a live API key — run `npm run composio:check` by hand. GitHub Actions (`.github/workflows/checks.yml`) runs `npm run check` on every push and pull request, so a broken reply table or a dropped outcome branch is red before it reaches a real conversation.
 
+## Agent memory
+
+A cloud Claude Code session runs in a container that gets reclaimed after
+idling, and its auto memory (`~/.claude/projects/<project>/memory/`) goes with
+it — the docs are explicit that those files are "not shared across machines or
+cloud environments". Of the settings files, a cloud session reads only a
+committed `.claude/settings.json`; nothing from `~/.claude` reaches it. So the
+memory every future agent gets has to travel in git, and it does:
+
+- `CLAUDE.md` — the rules that hold in every session: layout, commands, how
+  commits and checks are done here. Under 200 lines, because past that
+  adherence drops. It `@`-imports the memory index, which is what loads it.
+- `.claude/memory/MEMORY.md` — the index of what we learned, one line per
+  finding, in context at every session start. `.claude/memory/*.md` are topic
+  files it points at, read on demand.
+- `.claude/hooks/session-start.ts` — the part that can't be a file, because it
+  goes stale with every commit: branch, uncommitted work, the last few commits,
+  and the live goals under `.harness/goals` with their last recorded event.
+  `SessionStart` stdout is added to the session's context, so the hook prints a
+  deliberately narrow report and never exits non-zero.
+
+The protocol is in `CLAUDE.md`: learn something a future session would need and
+can't read off the code, add a line to the index and commit it with the work.
+`.harness/goals` stays the log of one long-running goal; `MEMORY.md` is what the
+project knows in general. Check: `npm run claude:check`, which guards the load
+limits, the `@`-import, the topic links and the hook actually running — every
+one of which fails silently, by the next session just not knowing something.
+
 ## Cloud testing
 
 Testing a change used to mean deploying it, picking up an iPhone and texting Bro. `npm run e2e -- --base=https://<eve host>` does that conversation in the cloud instead: it walks a deployed Bro through `scripts/lib/scenarios.ts` and checks what comes back.
