@@ -193,11 +193,20 @@ function holdStill(video: HTMLVideoElement) {
   return () => undefined;
 }
 
+/** The clip's own frame, so the element has its ratio before it loads. */
+const frameWidth = 720;
+const frameHeight = 1280;
+
 /**
  * The one image on the page: a figure standing on the same white as the
- * paper. `contain`, never `cover`, so it is shown whole at every viewport
- * and the letterboxing either side of a 9:16 frame is invisible. The clip
- * carries no audio track, so there is no sound control to offer.
+ * paper. The element is sized to the clip's own 9:16 frame rather than
+ * letterboxed inside a larger box — width first, height derived, both
+ * clamped to the stage, which a replaced element resolves by keeping the
+ * ratio. So the element's edges are the frame's edges, and `film-edge` can
+ * fade exactly those: iOS composites video in its own layer and draws it a
+ * shade off the page white, which turns a hard edge into a visible frame
+ * around an otherwise white clip. The figure is never cropped, and the
+ * clip carries no audio track, so there is no sound control to offer.
  */
 export function HeroVideo() {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -223,13 +232,15 @@ export function HeroVideo() {
     <video
       aria-hidden="true"
       autoPlay
-      className="absolute inset-0 block size-full bg-background object-contain"
+      className="absolute inset-0 m-auto block size-auto max-h-full max-w-full bg-background film-edge object-contain"
+      height={frameHeight}
       loop
       muted
       playsInline
       preload="auto"
       ref={videoRef}
       src="/brand/hero-portrait.mp4"
+      width={frameWidth}
     />
   );
 }

@@ -32,6 +32,17 @@ describe("landing page", () => {
     expect(html).toContain("Написать бро");
   });
 
+  it("sizes the film to its own frame and fades its edges", async () => {
+    const html = await landingMarkup();
+
+    // The element carries the clip's ratio, so its box is the frame rather
+    // than a larger box the frame is letterboxed inside — which is what
+    // makes an edge fade land on the frame's own edges.
+    expect(html).toContain('width="720"');
+    expect(html).toContain('height="1280"');
+    expect(html).toContain("film-edge");
+  });
+
   it("opens the iMessage thread without asking for a number", async () => {
     const html = await landingMarkup();
 
