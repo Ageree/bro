@@ -36,7 +36,12 @@ import {
   looksLikeCredentialLine,
 } from "../convex/lib/browserInjectPolicy.ts";
 import { looksLikeCardNumber, scrubSecrets } from "../convex/lib/secretScrub.ts";
-import { scoreOtpInput } from "../agent/lib/browser-cdp.ts";
+import {
+  BOXES_SCORE,
+  MIN_FRAME_SCORE,
+  MIN_FRAME_WIDTH,
+  scoreOtpInput,
+} from "../agent/lib/browser-cdp.ts";
 
 const taxiTask = `[bro-errand] Задача: вызови такси домой.`;
 const loginTask = `[bro-login]
@@ -1238,7 +1243,79 @@ assert(
   !cdp.includes("ranked.length === 1"),
   "F6: no bare only-one-input escape hatch left in the injected JS",
 );
-assert(cdp.includes("iframe"), "F8: cdp documents that iframes (3DS) are invisible to top-frame evaluate");
+// F8 — the frame walk. A 3-D Secure challenge and a bank's push widget are
+// cross-origin iframes, and a top-frame-only `Runtime.evaluate` could not see
+// inside one, so every bank code used to fail as `typed: false` and had to be
+// handed back to the Cloud LLM. Both kinds of frame need their own mechanism:
+// a same-renderer iframe is reached through an isolated world for its frame
+// id, a cross-process one (OOPIF) only answers on the session `setAutoAttach`
+// hands over. `npm run cdp:probe` proves both against a real Chromium.
+assert(cdp.includes("iframe"), "F8: cdp knows about iframes (3DS) at all");
+assert(cdp.includes("Page.getFrameTree"), "F8: cdp enumerates the frame tree");
+assert(
+  cdp.includes("Page.createIsolatedWorld"),
+  "F8: same-renderer frames are reached through an isolated world",
+);
+assert(
+  cdp.includes("Target.setAutoAttach"),
+  "F8: cross-process frames (3DS) are attached to, not skipped",
+);
+assert(
+  /flatten:\s*true/.test(cdp),
+  "F8: auto-attach is flat, so a child frame answers on this same socket",
+);
+assert(
+  cdp.includes('info.type !== "iframe"'),
+  "F8: only embedded documents are walked — a worker has no DOM",
+);
+assert(
+  cdp.includes("depth: depth + frame.depth"),
+  "F8: depth is per frame, so a same-renderer iframe is not reported as the page",
+);
+assert(
+  cdp.includes("MAX_CONTEXTS") && cdp.includes("MAX_FRAME_DEPTH"),
+  "F8: the walk is bounded — an ad-farm page cannot turn one code into a hundred round trips",
+);
+
+// F9 — one code, one field. Every frame is scored BEFORE anything is typed
+// anywhere (`apply: false`), and only the winner is typed into, so a page
+// with a bank frame and three ad frames cannot get the code sprayed into all
+// four.
+assert(
+  cdp.includes("(raw, apply)") && cdp.includes("if (!apply)"),
+  "F9: the injected program probes and applies through one body",
+);
+assert(
+  /\(\$\{INJECT_PROGRAM\}\)\(\$\{JSON\.stringify\(value\)\}, false\)/.test(cdp),
+  "F9: frames are probed with apply=false first",
+);
+assert(
+  cdp.includes("score > (best.probe.score ?? 0)"),
+  "F9: strictly greater — the top document keeps a tie",
+);
+assert(
+  cdp.includes("window.innerWidth <") && cdp.includes("window.innerHeight <"),
+  "F9: a 0x0 tracking frame is never offered a one-time code",
+);
+eq(MIN_FRAME_WIDTH >= 100, true, "F9: the frame-size floor is a real form's width");
+eq(BOXES_SCORE > 90, true, "F9: a split OTP widget outranks an ordinary field across frames");
+eq(
+  BOXES_SCORE >= MIN_FRAME_SCORE,
+  true,
+  "F9: a split OTP widget still clears the embedded-frame floor",
+);
+assert(
+  cdp.includes("candidate.ctx.depth > 0 && score < MIN_FRAME_SCORE"),
+  "F9: an embedded frame needs a naming signal, not just a focused input, to take the code",
+);
+
+// F10 — the code itself never reaches a log line, and neither does a
+// challenge URL (they carry tokens); only the frame's host does.
+assert(cdp.includes("hostOf("), "F10: only the host of a frame is ever logged");
+assert(
+  !/console\.(log|warn|error)\([^;]*\bvalue\b/.test(cdp),
+  "F10: no log line carries the injected value",
+);
 
 // F6/F7 — scoreOtpInput is the extracted, directly-testable source of truth
 // for the inline scoring string (kept in sync by a comment + these weights).
