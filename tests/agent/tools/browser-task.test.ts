@@ -201,6 +201,7 @@ function continuationNote(
 async function continueErrand(input: {
   readonly allowPayment?: boolean;
   readonly completedAt?: Date;
+  readonly site?: string;
 }) {
   readBrowserRunForScope.mockResolvedValue(
     browserRunRow(input.completedAt ?? null)
@@ -211,6 +212,7 @@ async function continueErrand(input: {
       action: "continue",
       allowPayment: input.allowPayment,
       runId,
+      site: input.site,
       task: "Код из смс 992130",
     },
     toolContext("better-auth:alice")
@@ -393,14 +395,14 @@ describe("browser_task continuation", () => {
 });
 
 describe("browser_task anti-bot checks", () => {
-  it("tells a started errand to wait a CAPTCHA out instead of clicking it", async () => {
+  it("tells a started errand to wait a CAPTCHA out and then work it by hand", async () => {
     await startErrand("");
 
     const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
-    expect(task).toContain("the cloud browser solves it for you");
-    expect(task).toContain("do not click the challenge, do not reload it");
+    expect(task).toContain("the first move is to wait, not to click");
+    expect(task).toContain("it is yours to do: drag the slider");
     expect(task).toContain(
-      "Stop with NEEDS: captcha only if the check is still"
+      "Stop with NEEDS: captcha only after both the waiting and those attempts"
     );
   });
 
@@ -408,8 +410,19 @@ describe("browser_task anti-bot checks", () => {
     await continueErrand({ completedAt: new Date() });
 
     expect(String(createBrowserUseRun.mock.calls[0]?.[0].task)).toContain(
-      "the cloud browser solves it for you"
+      "the first move is to wait, not to click"
     );
+  });
+
+  it("keeps a follow-up on the errand's own site", async () => {
+    await continueErrand({
+      completedAt: new Date(),
+      site: "https://mail.google.com",
+    });
+
+    const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
+    expect(task).toContain("Site: https://taxi.yandex.ru");
+    expect(task).not.toContain("mail.google.com");
   });
 });
 
