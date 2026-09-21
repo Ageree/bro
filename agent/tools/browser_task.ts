@@ -84,18 +84,20 @@ function outcomeContract() {
 }
 
 /**
- * A CAPTCHA is the run's own work. Browser Use can tick the checkbox, hold the
- * button, drag the slider and pick the tiles, and an errand that stops at the
- * first anti-bot check hands a shopping trip back to the person it was taken
- * off. The labelled `captcha` need stays available for a challenge that truly
- * does not yield, so the coordinator can still bring the person into the live
- * browser — after the run has tried, not instead of it.
+ * Browser Use solves the CAPTCHA for the run: on the v4 API the cloud browser
+ * runs its own solver, and the documented way to lose that solve is an agent
+ * that keeps driving the page — clicking the challenge or reloading it starts
+ * the work over. The bot walls a shop like Ozon puts up are handled the same
+ * way, by the stealth layer and the residential proxy rather than by anything
+ * the run can click. So the errand says to wait the check out instead of
+ * fighting it, and the labelled `captcha` need stays for the challenge still
+ * standing after that wait.
  */
 function captchaLine() {
   return [
-    "Anti-bot checks are part of this errand, not a reason to stop: tick «I am not a robot», hold the button, drag the slider, pick the tiles, and wait out a «checking your browser» interstitial.",
-    "Act like a person on the page — deliberate clicks and typing, no instant jumps — and when a challenge fails, try it again and try another route to the same page (reload, a different entry point, the search box) before treating it as blocking.",
-    "Stop with NEEDS: captcha only after those attempts, and put in DETAILS what the check asks for.",
+    "A CAPTCHA or a «checking your browser» page is not a reason to stop the errand, and not yours to click: the cloud browser solves it for you in the background.",
+    "When one appears, stop driving the page and leave it alone — do not click the challenge, do not reload it, do not navigate away. Wait about 10 seconds, look at the page again, and keep waiting that way for up to about a minute; then carry on with the errand from wherever the page ended up.",
+    "Stop with NEEDS: captcha only if the check is still on the page after you waited it out, and put in DETAILS what it shows.",
   ].join(" ");
 }
 
@@ -346,7 +348,7 @@ async function waitForLiveViewUrl(
 
 export const browserTask = defineTool({
   description:
-    "Run one errand on a website through a hosted cloud browser that can sign in, fill forms, and complete a checkout. Use it when the user wants something done on a site; use web_search and web_fetch instead for reading public pages. Start exactly one run per errand and pass the site's origin so saved credentials can be bound to it. Write the errand short: the cloud browser is itself an agent, so give it the goal, the hard constraints, and what to report back — not a click-by-click script. Every follow-up for that errand — an answer, a code the user typed, a changed constraint — goes through continue with the same runId, never a second start: continue works in the same browser, on the tab and the signed-in account the run already has. When the previous run has already finished, continue starts a follow-up run in that same browser and returns a NEW runId; use that one from then on. Pass allowPayment: true on start or on continue once the user approved paying or attaching a card on this errand in this conversation — «привяжи карту» is approval to bind the saved card, not to buy anything. The person's name, phone, email and addresses from the profile and from the vault are typed into forms automatically, so never ask for a phone number or an address the user said is saved: start the errand and let the run use it. The run signs in with vault credentials the models involved never see, so never ask the user for a password: when none is stored, call request_vault_setup. The run solves CAPTCHAs and other anti-bot checks itself, so never tell the user you cannot pass one and never ask them to pass it for the run: when a run comes back with NEEDS: captcha, continue it on the same runId and ask it to clear the check and finish the errand. Give the user the live-view link only when the run is blocked on something only they can do — 3-D Secure, a push approval, a sign-in you cannot complete, or a check the run still could not pass after retrying — and never forward a one-time code back to the user. The run continues in the background and its result arrives later as a new message, so do not wait on it.",
+    "Run one errand on a website through a hosted cloud browser that can sign in, fill forms, and complete a checkout. Use it when the user wants something done on a site; use web_search and web_fetch instead for reading public pages. Start exactly one run per errand and pass the site's origin so saved credentials can be bound to it. Write the errand short: the cloud browser is itself an agent, so give it the goal, the hard constraints, and what to report back — not a click-by-click script. Every follow-up for that errand — an answer, a code the user typed, a changed constraint — goes through continue with the same runId, never a second start: continue works in the same browser, on the tab and the signed-in account the run already has. When the previous run has already finished, continue starts a follow-up run in that same browser and returns a NEW runId; use that one from then on. Pass allowPayment: true on start or on continue once the user approved paying or attaching a card on this errand in this conversation — «привяжи карту» is approval to bind the saved card, not to buy anything. The person's name, phone, email and addresses from the profile and from the vault are typed into forms automatically, so never ask for a phone number or an address the user said is saved: start the errand and let the run use it. The run signs in with vault credentials the models involved never see, so never ask the user for a password: when none is stored, call request_vault_setup. The cloud browser solves CAPTCHAs and anti-bot checks on its own while the run waits them out, so never tell the user you cannot pass one and never ask them to pass it for the run: when a run comes back with NEEDS: captcha, continue it on the same runId and tell it to wait the check out without touching it and finish the errand. Give the user the live-view link only when the run is blocked on something only they can do — 3-D Secure, a push approval, a sign-in you cannot complete, or a check the run still could not pass after retrying — and never forward a one-time code back to the user. The run continues in the background and its result arrives later as a new message, so do not wait on it.",
   inputSchema,
   async execute(input, context) {
     const { conversation, scope } = conversationTarget(context);

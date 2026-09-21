@@ -144,7 +144,7 @@ async function deliverBrowserRunOutcome(
     `Browser run ${row.id} finished: ${outcome}`,
     `Errand: ${row.task}`,
     row.liveViewUrl
-      ? `Live view (share only for 3-D Secure, a push approval, a manual sign-in, or a CAPTCHA the run has already failed to pass on a continue): ${row.liveViewUrl}`
+      ? `Live view (share only for 3-D Secure, a push approval, a manual sign-in, or a CAPTCHA still standing after the run waited it out on a continue): ${row.liveViewUrl}`
       : undefined,
     "This is a background result, not a user message. Tell the user what happened in your own words. Answer a follow-up with browser_task continue on this run id instead of a new start: it picks the same browser up where this run left off and hands back the run id to use after that. Omit send_message.replyTo.",
   ]
