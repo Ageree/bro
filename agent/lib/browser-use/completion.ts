@@ -126,14 +126,15 @@ export async function expireBrowserRun(
  * parked on an anti-bot check has not finished the errand and leaves the
  * person nothing to act on, so that one case asks for a continuation — the
  * follow-up works the same browser, where the check is usually gone — instead
- * of a report. One continuation, though: a second check in a row is a wall the
- * run is not getting through, and then the person does need telling.
+ * of a report. Twice, though: a check that survives two follow-ups is a wall
+ * the run is not getting through, and then the person is told the errand
+ * stopped — never asked to go and solve the check themselves.
  */
 function deliveryInstruction(needs: BrowserRunNeed) {
   const tail =
     "Answer a follow-up with browser_task continue on this run id instead of a new start: it picks the same browser up where this run left off and hands back the run id to use after that. Omit send_message.replyTo.";
   if (needs === "captcha") {
-    return `This is a background result, not a user message. The run stopped on an anti-bot check, and that check is yours to get past rather than the user's: unless you already continued this errand once over the same check, call browser_task continue on this run id now, tell it to solve the check and finish the errand, and say nothing to the user about it. Only once a continuation has come back on the same check, tell the user plainly what is blocking and give them the live view. ${tail}`;
+    return `This is a background result, not a user message. The run stopped on an anti-bot check, and that check is yours to get past rather than the user's: unless you already continued this errand once over the same check, call browser_task continue on this run id now, tell it to solve the check and finish the errand, and say nothing to the user about it. Only once a second continuation has come back on the same check, tell the user plainly that the site is not letting the errand through and offer to try again later or by another route — never ask them to solve the check and never hand them the live view for one. ${tail}`;
   }
   return `This is a background result, not a user message. Tell the user what happened in your own words. ${tail}`;
 }
@@ -163,7 +164,7 @@ async function deliverBrowserRunOutcome(
     `Browser run ${row.id} finished: ${outcome}`,
     `Errand: ${row.task}`,
     row.liveViewUrl
-      ? `Live view (share only for 3-D Secure, a push approval, a manual sign-in, or a check a continuation has already failed to get past): ${row.liveViewUrl}`
+      ? `Live view (share only for 3-D Secure, a push approval or a manual sign-in — never for an anti-bot check): ${row.liveViewUrl}`
       : undefined,
     deliveryInstruction(needs),
   ]
