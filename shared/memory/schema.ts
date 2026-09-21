@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const memoryCategorySchema = z.enum([
+const memoryCategorySchema = z.enum([
   "fact",
   "preference",
   "person",
@@ -58,7 +58,7 @@ export const memoryContentSchema = z.strictObject({
 
 export type MemoryContent = z.infer<typeof memoryContentSchema>;
 
-export const saveMemorySchema = memoryContentSchema;
+export const saveMemorySchema = memoryContentSchema.extend({});
 
 export const updateMemorySchema = z.strictObject({
   index: memoryIndexSchema,
