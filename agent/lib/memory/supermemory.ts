@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import Supermemory, { APIError, NotFoundError } from "supermemory";
+import type { SearchDocumentsResponse } from "supermemory/resources/search";
 import { env } from "@shared/environment";
 import type { AccessScope } from "@shared/identity/access-scope";
 import { hydrateIndexedMemory } from "@db/services/memory/sync";
@@ -74,6 +75,7 @@ export async function searchIndexedMemories(
 ) {
   if (!supermemoryConfigured() || query.trim().length === 0) return null;
   try {
+    // oxlint-disable-next-line typescript/no-deprecated -- v3 document search is required because it returns canonical document metadata for hydration.
     const response = await clientOrThrow().search.documents(
       {
         containerTag: memoryContainerTag(scope.workspaceId, scopeKey),
@@ -100,18 +102,20 @@ export async function searchIndexedMemories(
     return hydrated.filter((record) => record !== null);
   } catch (error) {
     if (abortSignal.aborted) abortSignal.throwIfAborted();
+    const providerError =
+      error instanceof Error ? error : new Error("Unknown provider error");
     console.warn("[memory-index] semantic search unavailable", {
-      errorCode: providerErrorCode(error),
+      errorCode: providerErrorCode(providerError),
     });
     return null;
   }
 }
 
-export function providerErrorCode(error: unknown) {
+export function providerErrorCode(error: Error) {
   if (error instanceof APIError) {
-    return error.status ? `http_${error.status}` : error.name;
+    return error.status ? `http_${String(error.status)}` : error.name;
   }
-  return error instanceof Error ? error.name : "unknown";
+  return error.name;
 }
 
 function clientOrThrow() {
@@ -126,7 +130,7 @@ function clientOrThrow() {
   });
 }
 
-function parseMetadata(metadata: Record<string, unknown> | null) {
+function parseMetadata(metadata: SearchDocumentsResponse.Result["metadata"]) {
   if (metadata?.sourceKind !== "profile") return null;
   const recordIndex = Number(metadata.recordIndex);
   const revision = Number(metadata.revision);

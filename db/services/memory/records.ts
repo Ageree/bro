@@ -184,7 +184,7 @@ export async function saveMemory(
       );
     if ((total?.count ?? 0) >= maximumRecords) {
       throw new Error(
-        `Profile memory is full (${maximumRecords} records). Forget an obsolete memory before adding another.`
+        `Profile memory is full (${maximumRecords.toLocaleString("en-US")} records). Forget an obsolete memory before adding another.`
       );
     }
 
@@ -461,7 +461,7 @@ export async function importLegacyMemories(
               }),
               generation: state.generation,
               index: entry.index,
-              lastOperationId: `legacy-import:${entry.index}`,
+              lastOperationId: `legacy-import:${String(entry.index)}`,
               revision: 1,
               scopeKey,
               workspaceId: scope.workspaceId,
@@ -620,7 +620,14 @@ function memorySyncCustomId(
   revision: number,
   generation: number
 ) {
-  return `bro-memory-${sqlHash(`${workspaceId}:${scopeKey}:${index}:${revision}:${generation}`)}`;
+  const identity = [
+    workspaceId,
+    scopeKey,
+    String(index),
+    String(revision),
+    String(generation),
+  ].join(":");
+  return `bro-memory-${sqlHash(identity)}`;
 }
 
 function sqlHash(value: string) {

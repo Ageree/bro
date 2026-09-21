@@ -69,7 +69,7 @@ describe("Supermemory semantic index", () => {
     expect(request?.method).toBe("POST");
     if (!request) throw new Error("Expected an add request.");
     expect(new URL(request.url).pathname).toBe("/v3/documents");
-    const body = await request.clone().json();
+    const body: unknown = await request.clone().json();
     expect(body).toMatchObject({
       containerTag: memoryContainerTag("workspace", "scope-key"),
       content: "Canonical memory\nAliases: coffee",
@@ -141,7 +141,7 @@ describe("Supermemory semantic index", () => {
     );
     const [request] = requests;
     if (!request) throw new Error("Expected a search request.");
-    const body = await request.clone().json();
+    const body: unknown = await request.clone().json();
     expect(new URL(request.url).pathname).toBe("/v3/search");
     expect(body).toMatchObject({
       includeFullDocs: false,

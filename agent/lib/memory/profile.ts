@@ -109,7 +109,7 @@ export function createProfileMemoryProvider(
                 scope,
                 scopeKey,
                 query,
-                toolContext.abortSignal ?? new AbortController().signal
+                toolContext.abortSignal
               )) ?? []
             );
           },
@@ -278,7 +278,7 @@ function renderProfile(
     const aliases = record.content.aliases.length
       ? `; aliases: ${record.content.aliases.join(", ")}`
       : "";
-    const line = `${record.index} (revision ${record.revision}, ${record.content.category}): ${record.content.text}${aliases}`;
+    const line = `${String(record.index)} (revision ${String(record.revision)}, ${record.content.category}): ${record.content.text}${aliases}`;
     if (utf8Bytes([...lines, line].join("\n")) > profileBudgetBytes) {
       const hint = "More memories exist; use profile__find to retrieve them.";
       if (utf8Bytes([...lines, hint].join("\n")) <= profileBudgetBytes)

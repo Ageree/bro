@@ -72,11 +72,13 @@ export async function processMemorySyncJob(
     }
     await completeMemorySyncJob(job, response.id);
   } catch (error) {
+    const providerError =
+      error instanceof Error ? error : new Error("Unknown provider error");
     console.warn("[memory-index] reconciliation failed", {
-      errorCode: providerErrorCode(error),
+      errorCode: providerErrorCode(providerError),
       recordIndex: job.recordIndex,
       revision: job.revision,
     });
-    await failMemorySyncJob(job, providerErrorCode(error));
+    await failMemorySyncJob(job, providerErrorCode(providerError));
   }
 }

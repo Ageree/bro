@@ -34,6 +34,8 @@ const bob = { userId: "bob", workspaceId: "workspace-bob" };
 
 beforeAll(async () => {
   await migrate(database, { migrationsFolder: "db/migrations" });
+  // SAFETY: PGlite implements the same Drizzle query-builder contract used by these services; only the transport changes.
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Exercise the real schema and services against an isolated PostgreSQL-compatible database.
   vi.spyOn(Database, "db", "get").mockReturnValue(database as never);
 }, 20_000);
 
