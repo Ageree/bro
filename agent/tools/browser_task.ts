@@ -109,10 +109,10 @@ function outcomeContract() {
  */
 function captchaLine() {
   return [
-    "Solve any CAPTCHA or anti-bot check yourself, right away, and carry on with the errand: drag the slider, tick «I am not a robot», hold the button, pick the tiles. The browser you are in solves supported challenges on its own as well, so give a check that is resolving itself a moment rather than fighting it.",
-    "Work it at a human pace and try again if the first attempt does not take.",
+    "Getting past a CAPTCHA or anti-bot check is part of this errand, not a reason to end it: solve it yourself, right away, and stay on it until the page lets you through — drag the slider, tick «I am not a robot», hold the button, pick the tiles, read out the characters. The browser you are in also solves supported challenges on its own, so a check that is already resolving needs a moment rather than a fight.",
+    "Work it at a human pace. If an attempt does not take, try it again, and again after that; a check that comes back on the next page is the same job, not a verdict.",
     "This is never the person's job: they cannot see your screen and will not be asked to do it for you.",
-    "Stop with NEEDS: captcha only if the check still blocks the page after those attempts, and put in DETAILS what it shows.",
+    "Stop with NEEDS: captcha only once the page still blocks you after all of that, and put in DETAILS what it shows.",
   ].join(" ");
 }
 

@@ -432,13 +432,12 @@ describe("browser_task anti-bot checks", () => {
     await startErrand("");
 
     const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
-    expect(task).toContain(
-      "Solve any CAPTCHA or anti-bot check yourself, right away"
-    );
+    expect(task).toContain("solve it yourself, right away");
+    expect(task).toContain("stay on it until the page lets you through");
     expect(task).toContain("drag the slider");
     expect(task).toContain("This is never the person's job");
     expect(task).toContain(
-      "Stop with NEEDS: captcha only if the check still blocks the page"
+      "Stop with NEEDS: captcha only once the page still blocks you"
     );
   });
 
@@ -446,7 +445,7 @@ describe("browser_task anti-bot checks", () => {
     await continueErrand({ completedAt: new Date() });
 
     expect(String(createBrowserUseRun.mock.calls[0]?.[0].task)).toContain(
-      "Solve any CAPTCHA or anti-bot check yourself, right away"
+      "solve it yourself, right away"
     );
   });
 
