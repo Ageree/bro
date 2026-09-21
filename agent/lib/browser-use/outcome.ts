@@ -17,6 +17,8 @@ export const browserRunNeeds = [
   "info",
 ] as const;
 
+export type BrowserRunNeed = (typeof browserRunNeeds)[number];
+
 // «нет» / "none" / "-" all mean "nothing in this field".
 const emptyValue = /^(?:none|нет|-|—|n\/a|н\/д)$/iu;
 

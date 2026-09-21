@@ -87,17 +87,18 @@ function outcomeContract() {
  * Browser Use solves the CAPTCHA for the run: on the v4 API the cloud browser
  * runs its own solver, and the documented way to lose that solve is an agent
  * that keeps driving the page — clicking the challenge or reloading it starts
- * the work over. The bot walls a shop like Ozon puts up are handled the same
- * way, by the stealth layer and the residential proxy rather than by anything
- * the run can click. So the errand says to wait the check out instead of
- * fighting it, and the labelled `captcha` need stays for the challenge still
- * standing after that wait.
+ * the work over. So waiting comes first. But a wall a shop like Ozon puts up
+ * is not always something that solver takes, and an errand that ends there has
+ * handed a shopping trip back to the person it was taken off, so once the wait
+ * is spent the run does the check by hand rather than give up. The labelled
+ * `captcha` need stays for the challenge that survives both.
  */
 function captchaLine() {
   return [
-    "A CAPTCHA or a «checking your browser» page is not a reason to stop the errand, and not yours to click: the cloud browser solves it for you in the background.",
-    "When one appears, stop driving the page and leave it alone — do not click the challenge, do not reload it, do not navigate away. Wait about 10 seconds, look at the page again, and keep waiting that way for up to about a minute; then carry on with the errand from wherever the page ended up.",
-    "Stop with NEEDS: captcha only if the check is still on the page after you waited it out, and put in DETAILS what it shows.",
+    "A CAPTCHA or a «checking your browser» page is not a reason to stop the errand: the cloud browser solves it for you in the background, so the first move is to wait, not to click.",
+    "When one appears, leave the page alone — no clicking the challenge, no reloading, no navigating away. Wait about 10 seconds, look again, and keep waiting that way for up to about a minute.",
+    "If the check is still there after that wait, it is yours to do: drag the slider, tick «I am not a robot», hold the button, or pick the tiles, deliberately and at a human pace, then wait about 10 more seconds for the page to settle. Try that twice.",
+    "Then carry on with the errand from wherever the page ended up. Stop with NEEDS: captcha only after both the waiting and those attempts, and put in DETAILS what the check shows.",
   ].join(" ");
 }
 
@@ -422,7 +423,12 @@ export const browserTask = defineTool({
         .min(1, "A continue action needs the message to pass into the run.")
         .parse(input.task);
       const allowPayment = input.allowPayment === true;
-      const site = input.site ?? row.site ?? undefined;
+      // The errand's origin is fixed when it starts: the browser is already on
+      // that site, signed in, and the run's secrets are bound to it. A site the
+      // model passes on a follow-up can only be a mix-up with another errand in
+      // the same conversation — one that would point the run at the wrong shop
+      // and attach another site's credentials to it — so the row wins.
+      const site = row.site ?? input.site ?? undefined;
       // Both are round trips to the cloud and neither needs the other's answer.
       // A one-time code waiting its turn is a code closer to expiring, and the
       // entry is worth attempting whether or not a run is still on the page:

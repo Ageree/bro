@@ -17,6 +17,7 @@ import {
   browserOutcomeSummary,
   parseBrowserOrder,
   parseBrowserOutcome,
+  type BrowserRunNeed,
 } from "./outcome";
 
 /**
@@ -64,7 +65,7 @@ export async function settleBrowserRun(
   });
   if (!claimed) return;
   await recordBrowserRunOrder(claimed, run.result);
-  await deliverBrowserRunOutcome(delivery, claimed, outcome);
+  await deliverBrowserRunOutcome(delivery, claimed, outcome, parsed.needs);
 }
 
 /**
@@ -117,13 +118,31 @@ export async function expireBrowserRun(
     status: "failed",
   });
   if (!claimed) return;
-  await deliverBrowserRunOutcome(delivery, claimed, outcome);
+  await deliverBrowserRunOutcome(delivery, claimed, outcome, "none");
+}
+
+/**
+ * What the coordinator is asked to do with the run it just got back. A run
+ * parked on an anti-bot check has not finished the errand and leaves the
+ * person nothing to act on, so that one case asks for a continuation — the
+ * follow-up works the same browser, where the check is usually gone — instead
+ * of a report. One continuation, though: a second check in a row is a wall the
+ * run is not getting through, and then the person does need telling.
+ */
+function deliveryInstruction(needs: BrowserRunNeed) {
+  const tail =
+    "Answer a follow-up with browser_task continue on this run id instead of a new start: it picks the same browser up where this run left off and hands back the run id to use after that. Omit send_message.replyTo.";
+  if (needs === "captcha") {
+    return `This is a background result, not a user message. The run stopped on an anti-bot check, and that check is yours to get past rather than the user's: unless you already continued this errand once over the same check, call browser_task continue on this run id now, tell it to wait the check out and then work it by hand if it is still there, and say nothing to the user about it. Only once a continuation has come back on the same check, tell the user plainly what is blocking and give them the live view. ${tail}`;
+  }
+  return `This is a background result, not a user message. Tell the user what happened in your own words. ${tail}`;
 }
 
 async function deliverBrowserRunOutcome(
   delivery: BrowserRunDelivery,
   row: BrowserRunRow,
-  outcome: string
+  outcome: string,
+  needs: BrowserRunNeed
 ) {
   const options = {
     auth: {
@@ -144,9 +163,9 @@ async function deliverBrowserRunOutcome(
     `Browser run ${row.id} finished: ${outcome}`,
     `Errand: ${row.task}`,
     row.liveViewUrl
-      ? `Live view (share only for 3-D Secure, a push approval, a manual sign-in, or a CAPTCHA still standing after the run waited it out on a continue): ${row.liveViewUrl}`
+      ? `Live view (share only for 3-D Secure, a push approval, a manual sign-in, or a check a continuation has already failed to get past): ${row.liveViewUrl}`
       : undefined,
-    "This is a background result, not a user message. Tell the user what happened in your own words. Answer a follow-up with browser_task continue on this run id instead of a new start: it picks the same browser up where this run left off and hands back the run id to use after that. Omit send_message.replyTo.",
+    deliveryInstruction(needs),
   ]
     .filter((line) => line !== undefined)
     .join("\n\n");
