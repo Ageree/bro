@@ -20,6 +20,9 @@ const navigation = [
  * The rail is the masthead stood on its side: a column of text under the
  * wordmark. No icons, no pills, no filled row — the page you are on is ink,
  * the rest is grey, and a hovered row fades like every other link here.
+ *
+ * A row is a thumb's worth of paper: the padding that makes it one is taken
+ * back off the column, so the block sits exactly where the text alone would.
  */
 export function AuthenticatedNavigation() {
   const active = activeRoute(usePathname());
@@ -28,12 +31,12 @@ export function AuthenticatedNavigation() {
     <SidebarGroup className="px-bro-rail py-0">
       <SidebarGroupContent>
         <nav aria-label="Основная навигация">
-          <ul className="flex list-none flex-col gap-[0.35rem] bro-rail">
+          <ul className="my-[-0.5rem] flex list-none flex-col bro-rail">
             {navigation.map((item) => (
               <li key={item.id}>
                 <Link
                   aria-current={active === item.id ? "page" : undefined}
-                  className="type-act block bro-link"
+                  className="type-act block py-[0.5rem] bro-link"
                   href={item.href}
                 >
                   {item.label}
@@ -50,7 +53,8 @@ export function AuthenticatedNavigation() {
 /**
  * On a narrow screen the rail is off canvas, so the page carries one line of
  * chrome: the way to the rail, and the page you are on. Both are text —
- * there is no hamburger on this site.
+ * there is no hamburger on this site. «Меню» takes the header's own padding
+ * as its hit area, so the whole line is the tap.
  */
 export function AuthenticatedMobileHeader() {
   const { toggleSidebar } = useSidebar();
@@ -61,7 +65,7 @@ export function AuthenticatedMobileHeader() {
     <header className="flex items-baseline justify-between gap-4 border-b border-border px-bro-pad py-[0.85rem] md:hidden">
       <button
         aria-label="Открыть меню"
-        className="type-act bro-link"
+        className="type-act my-[-0.85rem] py-[0.85rem] bro-link"
         onClick={toggleSidebar}
         type="button"
       >

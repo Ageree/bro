@@ -17,7 +17,7 @@ export function AuthenticatedAccountControl() {
         {session.user.phoneNumber ?? "В системе"}
       </p>
       <Button
-        className="mt-[0.35rem]"
+        className="mb-[-0.5rem] py-[0.5rem]"
         onClick={() => {
           void authClient.signOut().finally(() => {
             window.location.assign("/sign-in");
