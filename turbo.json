@@ -9,6 +9,7 @@
         "BLOB_*",
         "BROWSER_USE_*",
         "DATABASE_URL",
+        "EVE_MEMORY_BLOB_*",
         "EVE_NEXT_*",
         "FREE_*",
         "*_CONNECTOR_UID",
@@ -18,6 +19,7 @@
         "PAID_*",
         "PRICE_RUB",
         "SECRET_ENCRYPTION_KEY",
+        "SUPERMEMORY_*",
         "TELEGRAM_*",
         "VERCEL_*",
         "YOOKASSA_*"
@@ -32,6 +34,7 @@
         "BLOB_*",
         "BROWSER_USE_*",
         "DATABASE_URL",
+        "EVE_MEMORY_BLOB_*",
         "FREE_*",
         "*_CONNECTOR_UID",
         "IMESSAGE_*",
@@ -40,6 +43,7 @@
         "PAID_*",
         "PRICE_RUB",
         "SECRET_ENCRYPTION_KEY",
+        "SUPERMEMORY_*",
         "TELEGRAM_*",
         "VERCEL_*",
         "YOOKASSA_*"
@@ -59,6 +63,7 @@
         "BLOB_*",
         "BROWSER_USE_*",
         "DATABASE_URL",
+        "EVE_MEMORY_BLOB_*",
         "FREE_*",
         "*_CONNECTOR_UID",
         "IMESSAGE_*",
@@ -67,6 +72,7 @@
         "PAID_*",
         "PRICE_RUB",
         "SECRET_ENCRYPTION_KEY",
+        "SUPERMEMORY_*",
         "TELEGRAM_*",
         "VERCEL_*",
         "YOOKASSA_*"
@@ -93,6 +99,7 @@
         "BLOB_*",
         "BROWSER_USE_*",
         "DATABASE_URL",
+        "EVE_MEMORY_BLOB_*",
         "FREE_*",
         "*_CONNECTOR_UID",
         "IMESSAGE_*",
@@ -101,6 +108,7 @@
         "PAID_*",
         "PRICE_RUB",
         "SECRET_ENCRYPTION_KEY",
+        "SUPERMEMORY_*",
         "TELEGRAM_*",
         "VERCEL_*",
         "YOOKASSA_*"

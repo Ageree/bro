@@ -4,6 +4,7 @@ export * from "./browser";
 export * from "./browser-runs";
 export * from "./channel-identities";
 export * from "./chats";
+export * from "./memory";
 export * from "./onboarding-requests";
 export * from "./orders";
 export * from "./schedules";

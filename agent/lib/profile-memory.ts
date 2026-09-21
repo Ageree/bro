@@ -12,7 +12,12 @@ import { resolveModeValue } from "@agent/lib/mode";
 export function resolveProfileMemoryBackend(
   environment: Pick<
     typeof env,
-    "BLOB_READ_WRITE_TOKEN" | "BLOB_STORE_ID" | "NODE_ENV" | "VERCEL_ENV"
+    | "BLOB_READ_WRITE_TOKEN"
+    | "BLOB_STORE_ID"
+    | "EVE_MEMORY_BLOB_READ_WRITE_TOKEN"
+    | "EVE_MEMORY_BLOB_STORE_ID"
+    | "NODE_ENV"
+    | "VERCEL_ENV"
   >
 ) {
   if (environment.NODE_ENV !== "production") {
@@ -26,12 +31,26 @@ export function resolveProfileMemoryBackend(
     };
   }
 
-  return environment.VERCEL_ENV === undefined &&
+  if (
+    environment.VERCEL_ENV === undefined &&
     environment.BLOB_READ_WRITE_TOKEN
-    ? {
-        kind: "vercel-blob" as const,
-        options: { token: environment.BLOB_READ_WRITE_TOKEN },
-      }
+  ) {
+    return {
+      kind: "vercel-blob" as const,
+      options: { token: environment.BLOB_READ_WRITE_TOKEN },
+    };
+  }
+  if (environment.EVE_MEMORY_BLOB_STORE_ID) {
+    return {
+      kind: "vercel-blob" as const,
+      options: { storeId: environment.EVE_MEMORY_BLOB_STORE_ID },
+    };
+  }
+  const token =
+    environment.EVE_MEMORY_BLOB_READ_WRITE_TOKEN ??
+    environment.BLOB_READ_WRITE_TOKEN;
+  return token
+    ? { kind: "vercel-blob" as const, options: { token } }
     : { kind: "automatic" as const };
 }
 

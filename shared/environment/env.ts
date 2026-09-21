@@ -103,6 +103,7 @@ export const env = createEnv({
       secretEncryptionKeySchema,
       "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
     ),
+    SUPERMEMORY_API_KEY: browserUseApiKeySchema.optional(),
 
     // Optional
     BLOB_READ_WRITE_TOKEN: requiredValue.optional(),
@@ -137,6 +138,8 @@ export const env = createEnv({
     DATABASE_DRIVER: z
       .enum(["node-postgres", "neon-http"])
       .default("node-postgres"),
+    EVE_MEMORY_BLOB_READ_WRITE_TOKEN: requiredValue.optional(),
+    EVE_MEMORY_BLOB_STORE_ID: requiredValue.optional(),
     // Usage ceilings per workspace: messages on the local day, browser errands
     // on the local month. A deployment without YooKassa keys never leaves the
     // free column.

@@ -1,15 +1,14 @@
 import { otel } from "eve/instrumentation/otel";
 
 /**
- * Process-wide OpenTelemetry settings. Keeps the content capture the agent had
- * before eve 0.62 replaced `agent/instrumentation.ts`: model and tool inputs
- * and outputs on every span, plus the inbound channel request span.
+ * Process-wide OpenTelemetry settings. Traces operations without copying user
+ * messages, remembered facts, tool payloads, or model responses into spans.
  */
 export default otel({
   traceChannelRequests: true,
   tracePolicy: () => ({
     emit: true,
-    recordInputs: true,
-    recordOutputs: true,
+    recordInputs: false,
+    recordOutputs: false,
   }),
 });

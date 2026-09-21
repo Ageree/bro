@@ -134,6 +134,13 @@
       "when": 1789740834337,
       "tag": "0018_easy_butterfly",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1789986921571,
+      "tag": "0019_sad_eternity",
+      "breakpoints": true
     }
   ]
 }
