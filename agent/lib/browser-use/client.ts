@@ -74,7 +74,15 @@ const secretBindingSchema = z.object({
   }),
 });
 
+const customProxySchema = z.object({
+  host: z.string().min(1),
+  password: z.string().min(1).optional(),
+  port: z.number().int().positive().max(65_535),
+  username: z.string().min(1).optional(),
+});
+
 const createRunInputSchema = z.object({
+  customProxy: customProxySchema.optional(),
   maxCostUsd: z.number().positive().optional(),
   model: z.string().min(1).optional(),
   profileId: z.string().min(1).optional(),
@@ -111,6 +119,7 @@ export async function createBrowserUseProfile(name: string, userId: string) {
 
 export async function createBrowserUseRun(input: BrowserUseCreateRunInput) {
   const {
+    customProxy,
     maxCostUsd,
     model,
     profileId,
@@ -124,7 +133,7 @@ export async function createBrowserUseRun(input: BrowserUseCreateRunInput) {
       "POST",
       "/runs",
       JSON.stringify({
-        browserSettings: { profileId, proxyCountryCode },
+        browserSettings: { customProxy, profileId, proxyCountryCode },
         maxCostUsd,
         model,
         secretBindings,
