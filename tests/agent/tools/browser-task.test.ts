@@ -407,6 +407,7 @@ describe("browser_task anti-bot checks", () => {
       "Solve any CAPTCHA or anti-bot check yourself, right away"
     );
     expect(task).toContain("drag the slider");
+    expect(task).toContain("This is never the person's job");
     expect(task).toContain(
       "Stop with NEEDS: captcha only if the check still blocks the page"
     );

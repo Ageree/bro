@@ -116,6 +116,10 @@ describe("agent instructions", () => {
     expect(selected?.content).toContain('`action: "continue"`');
     expect(selected?.content).toContain("`allowPayment: true`");
     expect(selected?.content).toContain("Капчу запуск просто решает");
+    expect(selected?.content).toContain("Человек капчу не решает никогда");
+    expect(selected?.content).toContain(
+      "Капча в этот список не входит ни при каких обстоятельствах"
+    );
     expect(selected?.content).toContain("`NEEDS: captcha`");
     expect(selected?.content).toContain("На `continue` не передавай `site`");
     expect(selected?.content).toContain("Ссылку на живой просмотр шли только");
