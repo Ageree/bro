@@ -153,7 +153,10 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-function browserRunRow(completedAt: Date | null = null) {
+function browserRunRow(
+  completedAt: Date | null = null,
+  outcome: string | null = null
+) {
   return {
     completedAt,
     conversationChannel: "photon",
@@ -162,7 +165,7 @@ function browserRunRow(completedAt: Date | null = null) {
     createdByUserId: "better-auth:alice",
     id: runId,
     liveViewUrl,
-    outcome: null,
+    outcome,
     profileId: "profile-1",
     replyAnchorMessageId: null,
     rootSessionId: "session-1",
@@ -201,10 +204,11 @@ function continuationNote(
 async function continueErrand(input: {
   readonly allowPayment?: boolean;
   readonly completedAt?: Date;
+  readonly outcome?: string;
   readonly site?: string;
 }) {
   readBrowserRunForScope.mockResolvedValue(
-    browserRunRow(input.completedAt ?? null)
+    browserRunRow(input.completedAt ?? null, input.outcome ?? null)
   );
   const { browserTask } = await import("@agent/tools/browser_task");
   return browserTask.execute(
@@ -389,7 +393,7 @@ describe("browser_task continuation", () => {
       expect.objectContaining({ liveViewUrl: null, sessionId: freshSessionId })
     );
     expect(continuationNote(result)).toContain(
-      "opened a new one on the same profile"
+      "opened a fresh browser on the same profile"
     );
   });
 });
@@ -414,6 +418,26 @@ describe("browser_task anti-bot checks", () => {
     expect(String(createBrowserUseRun.mock.calls[0]?.[0].task)).toContain(
       "Solve any CAPTCHA or anti-bot check yourself, right away"
     );
+  });
+
+  it("opens a fresh browser when the run ended against an anti-bot check", async () => {
+    await continueErrand({
+      completedAt: new Date(),
+      outcome: "Result: остановился на проверке\nNeeds: captcha",
+    });
+
+    expect(createBrowserUseRun).toHaveBeenCalledOnce();
+    expect(createBrowserUseRun.mock.calls[0]?.[0].sessionId).toBeUndefined();
+    expect(createBrowserUseRun.mock.calls[0]?.[0].profileId).toBe("profile-1");
+  });
+
+  it("stays in the same browser for every other outcome", async () => {
+    await continueErrand({
+      completedAt: new Date(),
+      outcome: "Result: ждёт код\nNeeds: sms_code",
+    });
+
+    expect(createBrowserUseRun.mock.calls[0]?.[0].sessionId).toBe(sessionId);
   });
 
   it("keeps a follow-up on the errand's own site", async () => {
