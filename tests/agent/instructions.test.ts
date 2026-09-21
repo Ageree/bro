@@ -115,6 +115,8 @@ describe("agent instructions", () => {
     expect(selected?.content).toContain("ровно один запуск");
     expect(selected?.content).toContain('`action: "continue"`');
     expect(selected?.content).toContain("`allowPayment: true`");
+    expect(selected?.content).toContain("Капча — это работа запуска");
+    expect(selected?.content).toContain("`NEEDS: captcha`");
     expect(selected?.content).toContain("Ссылку на живой просмотр шли только");
     expect(selected?.content).toContain("придёт позже отдельным сообщением");
   });

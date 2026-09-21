@@ -392,6 +392,26 @@ describe("browser_task continuation", () => {
   });
 });
 
+describe("browser_task anti-bot checks", () => {
+  it("tells a started errand to clear a CAPTCHA itself", async () => {
+    await startErrand("");
+
+    const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
+    expect(task).toContain("Anti-bot checks are part of this errand");
+    expect(task).toContain(
+      "Stop with NEEDS: captcha only after those attempts"
+    );
+  });
+
+  it("carries the same rule into a follow-up run", async () => {
+    await continueErrand({ completedAt: new Date() });
+
+    expect(String(createBrowserUseRun.mock.calls[0]?.[0].task)).toContain(
+      "Anti-bot checks are part of this errand"
+    );
+  });
+});
+
 describe("browser_task known facts", () => {
   const contact = serializeContactVaultPayload({
     dateOfBirth: "1990-04-12",
