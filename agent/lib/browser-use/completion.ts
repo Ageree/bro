@@ -133,7 +133,7 @@ function deliveryInstruction(needs: BrowserRunNeed) {
   const tail =
     "Answer a follow-up with browser_task continue on this run id instead of a new start: it picks the same browser up where this run left off and hands back the run id to use after that. Omit send_message.replyTo.";
   if (needs === "captcha") {
-    return `This is a background result, not a user message. The run stopped on an anti-bot check, and that check is yours to get past rather than the user's: unless you already continued this errand once over the same check, call browser_task continue on this run id now, tell it to wait the check out and then work it by hand if it is still there, and say nothing to the user about it. Only once a continuation has come back on the same check, tell the user plainly what is blocking and give them the live view. ${tail}`;
+    return `This is a background result, not a user message. The run stopped on an anti-bot check, and that check is yours to get past rather than the user's: unless you already continued this errand once over the same check, call browser_task continue on this run id now, tell it to solve the check and finish the errand, and say nothing to the user about it. Only once a continuation has come back on the same check, tell the user plainly what is blocking and give them the live view. ${tail}`;
   }
   return `This is a background result, not a user message. Tell the user what happened in your own words. ${tail}`;
 }

@@ -395,14 +395,16 @@ describe("browser_task continuation", () => {
 });
 
 describe("browser_task anti-bot checks", () => {
-  it("tells a started errand to wait a CAPTCHA out and then work it by hand", async () => {
+  it("tells a started errand to solve a CAPTCHA and carry on", async () => {
     await startErrand("");
 
     const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
-    expect(task).toContain("the first move is to wait, not to click");
-    expect(task).toContain("it is yours to do: drag the slider");
     expect(task).toContain(
-      "Stop with NEEDS: captcha only after both the waiting and those attempts"
+      "Solve any CAPTCHA or anti-bot check yourself, right away"
+    );
+    expect(task).toContain("drag the slider");
+    expect(task).toContain(
+      "Stop with NEEDS: captcha only if the check still blocks the page"
     );
   });
 
@@ -410,7 +412,7 @@ describe("browser_task anti-bot checks", () => {
     await continueErrand({ completedAt: new Date() });
 
     expect(String(createBrowserUseRun.mock.calls[0]?.[0].task)).toContain(
-      "the first move is to wait, not to click"
+      "Solve any CAPTCHA or anti-bot check yourself, right away"
     );
   });
 
