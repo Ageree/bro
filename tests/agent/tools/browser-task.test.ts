@@ -150,6 +150,10 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.stubEnv("BROWSER_USE_MAX_COST_USD", "");
+  vi.stubEnv("BROWSER_USE_PROXY_HOST", "");
+  vi.stubEnv("BROWSER_USE_PROXY_PORT", "");
+  vi.stubEnv("BROWSER_USE_PROXY_USERNAME", "");
+  vi.stubEnv("BROWSER_USE_PROXY_PASSWORD", "");
   vi.clearAllMocks();
 });
 
@@ -395,6 +399,31 @@ describe("browser_task continuation", () => {
     expect(continuationNote(result)).toContain(
       "opened a fresh browser on the same profile"
     );
+  });
+});
+
+describe("browser_task proxy", () => {
+  it("uses the hosted pool when no proxy of our own is configured", async () => {
+    await startErrand("");
+
+    expect(createBrowserUseRun.mock.calls[0]?.[0].customProxy).toBeUndefined();
+    expect(createBrowserUseRun.mock.calls[0]?.[0].proxyCountryCode).toBe("ru");
+  });
+
+  it("sends the deployment's own proxy with the run", async () => {
+    vi.stubEnv("BROWSER_USE_PROXY_HOST", "proxy.example.com");
+    vi.stubEnv("BROWSER_USE_PROXY_PORT", "8080");
+    vi.stubEnv("BROWSER_USE_PROXY_USERNAME", "bro");
+    vi.stubEnv("BROWSER_USE_PROXY_PASSWORD", "secret");
+
+    await startErrand("");
+
+    expect(createBrowserUseRun.mock.calls[0]?.[0].customProxy).toEqual({
+      host: "proxy.example.com",
+      password: "secret",
+      port: 8080,
+      username: "bro",
+    });
   });
 });
 

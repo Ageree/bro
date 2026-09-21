@@ -65,6 +65,24 @@ const inputSchema = z.object({
     ),
 });
 
+/**
+ * The deployment's own proxy, when it has one. Browser Use takes it per run and
+ * neither stores it nor hands it to a follow-up, so every run this tool starts
+ * asks for it again; without a host and a port the hosted pool is used, picked
+ * by country.
+ */
+function customProxy() {
+  const host = env.BROWSER_USE_PROXY_HOST;
+  const port = env.BROWSER_USE_PROXY_PORT;
+  if (host === undefined || port === undefined) return undefined;
+  return {
+    host,
+    password: env.BROWSER_USE_PROXY_PASSWORD,
+    port,
+    username: env.BROWSER_USE_PROXY_USERNAME,
+  };
+}
+
 const liveViewPollMs = 1_000;
 const liveViewPollAttempts = 8;
 
@@ -386,6 +404,7 @@ export const browserTask = defineTool({
         site: input.site,
       });
       const run = await createBrowserUseRun({
+        customProxy: customProxy(),
         maxCostUsd: env.BROWSER_USE_MAX_COST_USD,
         model: env.BROWSER_USE_MODEL,
         profileId,
@@ -494,6 +513,7 @@ export const browserTask = defineTool({
       // carries the sign-in, so dropping the session keeps the account and
       // gets a fresh browser on a fresh address.
       const followUp = await createFollowUpRun({
+        customProxy: customProxy(),
         maxCostUsd: env.BROWSER_USE_MAX_COST_USD,
         model: env.BROWSER_USE_MODEL,
         profileId,

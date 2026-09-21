@@ -122,6 +122,19 @@ export const env = createEnv({
       .positive("BROWSER_USE_MAX_COST_USD must be greater than zero")
       .default(1),
     BROWSER_USE_MODEL: requiredValue.default(defaultBrowserUseModel),
+    // A proxy of the deployment's own, for a shop whose wall knows the hosted
+    // pool by sight. Browser Use takes it per run and never stores it, so all
+    // four parts travel with every run this agent starts. Host and port are
+    // what turn it on; an open proxy needs no credentials.
+    BROWSER_USE_PROXY_HOST: requiredValue.optional(),
+    BROWSER_USE_PROXY_PASSWORD: requiredValue.optional(),
+    BROWSER_USE_PROXY_PORT: z.coerce
+      .number()
+      .int()
+      .positive("BROWSER_USE_PROXY_PORT must be a port number")
+      .max(65_535, "BROWSER_USE_PROXY_PORT must be a port number")
+      .optional(),
+    BROWSER_USE_PROXY_USERNAME: requiredValue.optional(),
     BROWSER_USE_PROXY_COUNTRY: z
       .string()
       .trim()
