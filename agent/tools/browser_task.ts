@@ -274,6 +274,15 @@ async function workspaceProfileId(scope: {
   return saveBrowserProfileId(scope, profile.id);
 }
 
+/**
+ * Whether the finished run ended against an anti-bot wall. The outcome column
+ * holds the coordinator's own summary, whose `Needs:` line is the labelled
+ * value the run reported.
+ */
+function endedOnAntiBotCheck(outcome: string | null | undefined) {
+  return /^needs:[ \t]*captcha[ \t]*$/imu.test(outcome ?? "");
+}
+
 const terminalRunStatuses = new Set<BrowserUseRunStatus>([
   "cancelled",
   "completed",
@@ -306,11 +315,12 @@ async function trackedRunIsLive(runId: string, completedAt: Date | null) {
  * browser on the same profile, where the signed-in cookies live.
  */
 async function createFollowUpRun(input: BrowserUseCreateRunInput) {
+  const asked = input.sessionId !== undefined;
   try {
-    return { reusedSession: true, run: await createBrowserUseRun(input) };
+    return { reusedSession: asked, run: await createBrowserUseRun(input) };
   } catch (error) {
     if (!(error instanceof BrowserUseError)) throw error;
-    if (error.status === 409) return { reusedSession: true, run: undefined };
+    if (error.status === 409) return { reusedSession: asked, run: undefined };
     if (error.status !== 400 && error.status !== 404) throw error;
     return {
       reusedSession: false,
@@ -477,13 +487,18 @@ export const browserTask = defineTool({
         browserRunFacts(scope),
       ]);
       const profileId = row.profileId ?? (await workspaceProfileId(scope));
+      // A browser that lost to an anti-bot wall keeps losing: the shop has
+      // already judged that address and that browser, and a follow-up queued
+      // into it meets the same verdict however well it is written. The profile
+      // carries the sign-in, so dropping the session keeps the account and
+      // gets a fresh browser on a fresh address.
       const followUp = await createFollowUpRun({
         maxCostUsd: env.BROWSER_USE_MAX_COST_USD,
         model: env.BROWSER_USE_MODEL,
         profileId,
         proxyCountryCode: env.BROWSER_USE_PROXY_COUNTRY,
         secretBindings: secrets.bindings,
-        sessionId: row.sessionId,
+        sessionId: endedOnAntiBotCheck(row.outcome) ? undefined : row.sessionId,
         task: composeBrowserContinuation({
           aliases: secrets.aliases,
           errand: row.task,
@@ -526,10 +541,10 @@ export const browserTask = defineTool({
         boundSecrets: secrets.aliases,
         liveViewUrl,
         note: [
-          `This errand now continues as run ${followUp.run.id} in the same browser. Use that run id from here on: ${runId} is finished and takes no further follow-up.`,
+          `This errand now continues as run ${followUp.run.id}${followUp.reusedSession ? " in the same browser" : ""}. Use that run id from here on: ${runId} is finished and takes no further follow-up.`,
           followUp.reusedSession
             ? undefined
-            : "The previous browser session was gone, so the follow-up opened a new one on the same profile; the signed-in cookies came with it.",
+            : "The previous browser session was not reused — it was gone, or it had ended against an anti-bot check — so the follow-up opened a fresh browser on the same profile, on a new address; the signed-in cookies came with it.",
           "The outcome arrives as a new message; do not poll for it.",
         ]
           .filter((line) => line !== undefined)
