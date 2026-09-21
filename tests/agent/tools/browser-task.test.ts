@@ -393,13 +393,14 @@ describe("browser_task continuation", () => {
 });
 
 describe("browser_task anti-bot checks", () => {
-  it("tells a started errand to clear a CAPTCHA itself", async () => {
+  it("tells a started errand to wait a CAPTCHA out instead of clicking it", async () => {
     await startErrand("");
 
     const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
-    expect(task).toContain("Anti-bot checks are part of this errand");
+    expect(task).toContain("the cloud browser solves it for you");
+    expect(task).toContain("do not click the challenge, do not reload it");
     expect(task).toContain(
-      "Stop with NEEDS: captcha only after those attempts"
+      "Stop with NEEDS: captcha only if the check is still"
     );
   });
 
@@ -407,7 +408,7 @@ describe("browser_task anti-bot checks", () => {
     await continueErrand({ completedAt: new Date() });
 
     expect(String(createBrowserUseRun.mock.calls[0]?.[0].task)).toContain(
-      "Anti-bot checks are part of this errand"
+      "the cloud browser solves it for you"
     );
   });
 });
