@@ -18,6 +18,7 @@ import { Badge } from "@web/components/ui/badge";
 import { Button } from "@web/components/ui/button";
 import { getLatestTurnFailure } from "../../_lib/turn-failure";
 import { messageTimestamps } from "../../_lib/message-events";
+import { statusLabel } from "./presentation";
 import type { SubagentStatus } from "@app/_lib/subagent-sessions";
 import { AgentMessage } from "../conversation/message";
 
@@ -54,7 +55,11 @@ export function SubagentTrace({
   const isRunning = status === "starting" || status === "working";
   const turnFailure = useMemo(() => getLatestTurnFailure(events), [events]);
   const error = streamError ?? turnFailure;
-  const statusLabel = error ? "Failed" : isRunning ? "Running" : status;
+  const label = error
+    ? "ошибка"
+    : isRunning
+      ? "выполняется"
+      : statusLabel(status);
   const badgeVariant = error
     ? "destructive"
     : isRunning
@@ -70,9 +75,9 @@ export function SubagentTrace({
     <section className="py-4">
       <Alert variant={alertVariant}>
         <BotIcon />
-        <AlertTitle>{target.name} trace</AlertTitle>
+        <AlertTitle>Трассировка: {target.name}</AlertTitle>
         <AlertAction>
-          <Badge variant={badgeVariant}>{statusLabel}</Badge>
+          <Badge variant={badgeVariant}>{label}</Badge>
         </AlertAction>
       </Alert>
       <div className="space-y-5 py-5">
@@ -88,7 +93,7 @@ export function SubagentTrace({
             {isLoadingOlder ? (
               <LoaderCircleIcon className="animate-spin" />
             ) : null}
-            {isLoadingOlder ? "Loading…" : "Load older messages"}
+            {isLoadingOlder ? "Загружаем…" : "Показать, что было раньше"}
           </Button>
         ) : null}
         {data.messages.map((message, index) => (

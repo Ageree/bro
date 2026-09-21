@@ -30,11 +30,11 @@ export function TracePreview({
             {agentLabel(session.name)}
           </h2>
           <p className="truncate type-caption text-muted-foreground">
-            Full task trace
+            Полная трассировка задачи
           </p>
         </div>
         <Button
-          aria-label="Close task trace"
+          aria-label="Закрыть трассировку"
           onClick={onClose}
           ref={closeButtonRef}
           size="icon-sm"

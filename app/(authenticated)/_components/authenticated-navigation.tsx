@@ -1,83 +1,77 @@
 "use client";
 
-import {
-  HistoryIcon,
-  KeyRoundIcon,
-  MessageSquareIcon,
-  PanelsTopLeftIcon,
-  UserRoundIcon,
-} from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   SidebarGroup,
   SidebarGroupContent,
-  SidebarMenu,
-  SidebarMenuButton,
-  SidebarMenuItem,
-  SidebarTrigger,
+  useSidebar,
 } from "@web/components/ui/sidebar";
 
 const navigation = [
-  {
-    href: "/workspace",
-    icon: PanelsTopLeftIcon,
-    id: "workspace",
-    label: "Кабинет",
-  },
-  { href: "/vault", icon: KeyRoundIcon, id: "vault", label: "Сейф" },
-  {
-    href: "/personal-info",
-    icon: UserRoundIcon,
-    id: "personal-info",
-    label: "Личные данные",
-  },
-  { href: "/chat", icon: MessageSquareIcon, id: "chat", label: "Чат" },
-  {
-    href: "/chat/history",
-    icon: HistoryIcon,
-    id: "history",
-    label: "Все чаты",
-  },
+  { href: "/workspace", id: "workspace", label: "Кабинет" },
+  { href: "/vault", id: "vault", label: "Сейф" },
+  { href: "/personal-info", id: "personal-info", label: "Личные данные" },
+  { href: "/chat", id: "chat", label: "Чат" },
+  { href: "/chat/history", id: "history", label: "Все чаты" },
 ] as const;
 
+/**
+ * The rail is the masthead stood on its side: a column of text under the
+ * wordmark. No icons, no pills, no filled row — the page you are on is ink,
+ * the rest is grey, and a hovered row fades like every other link here.
+ *
+ * A row is a thumb's worth of paper: the padding that makes it one is taken
+ * back off the column, so the block sits exactly where the text alone would.
+ */
 export function AuthenticatedNavigation() {
   const active = activeRoute(usePathname());
 
   return (
-    <SidebarGroup>
+    <SidebarGroup className="px-bro-rail py-0">
       <SidebarGroupContent>
         <nav aria-label="Основная навигация">
-          <SidebarMenu>
-            {navigation.map((item) => {
-              const Icon = item.icon;
-              return (
-                <SidebarMenuItem key={item.id}>
-                  <SidebarMenuButton
-                    isActive={active === item.id}
-                    render={<Link href={item.href} />}
-                  >
-                    <Icon />
-                    <span>{item.label}</span>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              );
-            })}
-          </SidebarMenu>
+          <ul className="my-[-0.5rem] flex list-none flex-col bro-rail">
+            {navigation.map((item) => (
+              <li key={item.id}>
+                <Link
+                  aria-current={active === item.id ? "page" : undefined}
+                  className="type-act block py-[0.5rem] bro-link"
+                  href={item.href}
+                >
+                  {item.label}
+                </Link>
+              </li>
+            ))}
+          </ul>
         </nav>
       </SidebarGroupContent>
     </SidebarGroup>
   );
 }
 
+/**
+ * On a narrow screen the rail is off canvas, so the page carries one line of
+ * chrome: the way to the rail, and the page you are on. Both are text —
+ * there is no hamburger on this site. «Меню» takes the header's own padding
+ * as its hit area, so the whole line is the tap.
+ */
 export function AuthenticatedMobileHeader() {
+  const { toggleSidebar } = useSidebar();
   const active = activeRoute(usePathname());
   const label = navigation.find((item) => item.id === active)?.label;
 
   return (
-    <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border/50 px-4 md:hidden">
-      <SidebarTrigger />
-      <span className="type-label">{label}</span>
+    <header className="flex items-baseline justify-between gap-4 border-b border-border px-bro-pad py-[0.85rem] md:hidden">
+      <button
+        aria-label="Открыть меню"
+        className="type-act my-[-0.85rem] py-[0.85rem] bro-link"
+        onClick={toggleSidebar}
+        type="button"
+      >
+        Меню
+      </button>
+      <span className="type-status text-muted-foreground">{label}</span>
     </header>
   );
 }

@@ -7,6 +7,10 @@ import {
   PromptInputTextarea,
   PromptInputTools,
 } from "@web/components/ai-elements/prompt-input";
+import {
+  paperComposerClassName,
+  paperComposerSubmitClassName,
+} from "../../../_lib/composer";
 import { messageContent } from "../../../_lib/message-input";
 import { api } from "@web/trpc/client";
 import type { ChatAgent } from "../chat-agent";
@@ -42,20 +46,26 @@ export function ChatInput({
 
   return (
     <div className="absolute bottom-0 left-1/2 z-20 mx-auto w-full max-w-3xl -translate-x-1/2 bg-linear-to-t from-background via-background to-transparent px-4 pt-4 pb-6 sm:px-6">
-      <PromptInput compact onSubmit={handleSubmit}>
+      <PromptInput
+        className={paperComposerClassName}
+        compact
+        onSubmit={handleSubmit}
+      >
         <PromptInputBody>
           <PromptInputTextarea
             className="min-h-0"
             disabled={agent.status === "submitted"}
-            placeholder="Send a message…"
+            placeholder="Напиши Bro…"
           />
         </PromptInputBody>
         <PromptInputFooter>
           <PromptInputTools />
           <PromptInputSubmit
+            className={paperComposerSubmitClassName}
             disabled={isRestoring}
             onStop={() => void agent.cancel()}
             status={isBusy ? agent.status : undefined}
+            variant="paper"
           />
         </PromptInputFooter>
       </PromptInput>

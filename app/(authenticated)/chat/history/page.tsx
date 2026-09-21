@@ -1,17 +1,29 @@
-import { MessageSquareIcon, PlusIcon } from "lucide-react";
+import type { Metadata } from "next";
 import Link from "next/link";
 import {
   combineChatUsage,
   formatChatUsage,
 } from "@app/(authenticated)/chat/_lib/chat-usage";
-import { Alert, AlertDescription } from "@web/components/ui/alert";
-import { Badge } from "@web/components/ui/badge";
-import { Button } from "@web/components/ui/button";
+import {
+  Actions,
+  Document,
+  DocumentTitle,
+  Row,
+  Rows,
+  Section,
+} from "@web/components/paper/document";
 import { listChats } from "@db/services/chats";
 import { requireRequestScope } from "@web/auth/request-scope";
 
+export const metadata: Metadata = { title: "Все чаты" };
+
 export const dynamic = "force-dynamic";
 
+/**
+ * Paper: the chats are a list of rows under a hairline, each one a line of
+ * text with its date set small and grey on the side. No cards, no badges —
+ * the thread Bro is actually talking in says so in words.
+ */
 export default async function AllChatsPage() {
   const scope = await requireRequestScope();
   const chats = await listChats(scope);
@@ -19,64 +31,63 @@ export default async function AllChatsPage() {
   const mainThreads = mainThreadLabels(chats);
 
   return (
-    <div className="mx-auto w-full max-w-4xl space-y-8 px-4 py-6 sm:px-6 sm:py-8">
-      <header className="flex items-start justify-between gap-6">
-        <div>
-          <h1 className="type-page-title">All chats</h1>
-          <p className="type-supporting-body mt-1 text-muted-foreground">
-            Every conversation in this workspace · Usage{" "}
-            {formatChatUsage(totalUsage)}
-          </p>
-        </div>
-        <Button nativeButton={false} render={<Link href="/chat" />} size="sm">
-          <PlusIcon />
-          New chat
-        </Button>
-      </header>
+    <Document>
+      <DocumentTitle>Все чаты</DocumentTitle>
+      <p className="type-fine text-muted-foreground">
+        Все разговоры с Bro — в браузере, в iMessage и в Telegram.
+      </p>
+      {chats.length > 0 ? (
+        <p className="type-fine text-muted-foreground">
+          Расход — {formatChatUsage(totalUsage)}
+        </p>
+      ) : null}
+      <Actions>
+        <Link className="type-act-lead bro-link" href="/chat">
+          Новый чат
+        </Link>
+      </Actions>
 
-      <section aria-label="Chat history" className="grid gap-2">
-        {chats.length === 0 ? (
-          <Alert>
-            <MessageSquareIcon />
-            <AlertDescription>No chats yet.</AlertDescription>
-          </Alert>
+      <Section
+        headingId="chats-heading"
+        state={chats.length > 0 ? chatCount(chats.length) : undefined}
+        title="История"
+      >
+        {chats.length > 0 ? (
+          <Rows>
+            {chats.map((chat) => {
+              const channel = mainThreads.get(chat.sessionId);
+              return (
+                <Row
+                  key={chat.sessionId}
+                  side={
+                    <time dateTime={chat.updatedAt}>
+                      {formatChatDate(chat.updatedAt)}
+                    </time>
+                  }
+                >
+                  <p className="truncate">
+                    <Link
+                      className="bro-link"
+                      href={`/chat/${encodeURIComponent(chat.sessionId)}`}
+                    >
+                      {channel ?? chat.title}
+                    </Link>
+                  </p>
+                  <p className="type-status text-muted-foreground">
+                    {channel ? "Главная ветка · " : ""}
+                    {formatChatUsage(chat.usage)}
+                  </p>
+                </Row>
+              );
+            })}
+          </Rows>
         ) : (
-          chats.map((chat) => (
-            <Button
-              key={chat.sessionId}
-              nativeButton={false}
-              render={
-                <Link href={`/chat/${encodeURIComponent(chat.sessionId)}`} />
-              }
-              variant="surface"
-            >
-              <MessageSquareIcon
-                className={
-                  mainThreads.has(chat.sessionId)
-                    ? "size-4 shrink-0 text-information"
-                    : "size-4 shrink-0 text-muted-foreground"
-                }
-              />
-              <span className="min-w-0 flex-1 truncate">
-                {mainThreads.get(chat.sessionId) ?? chat.title}
-              </span>
-              {mainThreads.has(chat.sessionId) ? (
-                <Badge variant="information">Main thread</Badge>
-              ) : null}
-              <span className="shrink-0 type-label text-muted-foreground">
-                {formatChatUsage(chat.usage)}
-              </span>
-              <time
-                className="shrink-0 type-label text-muted-foreground"
-                dateTime={chat.updatedAt}
-              >
-                {formatChatDate(chat.updatedAt)}
-              </time>
-            </Button>
-          ))
+          <p className="type-fine mt-[0.6rem] text-muted-foreground">
+            Пока ни одного чата — начни новый.
+          </p>
         )}
-      </section>
-    </div>
+      </Section>
+    </Document>
   );
 }
 
@@ -98,8 +109,20 @@ function mainThreadLabels(chats: Awaited<ReturnType<typeof listChats>>) {
   return labels;
 }
 
+function chatCount(count: number) {
+  const mod10 = count % 10;
+  const mod100 = count % 100;
+  const noun =
+    mod10 === 1 && mod100 !== 11
+      ? "разговор"
+      : mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)
+        ? "разговора"
+        : "разговоров";
+  return `${count.toLocaleString("ru-RU")} ${noun}`;
+}
+
 function formatChatDate(value: string) {
-  return new Intl.DateTimeFormat("en", {
+  return new Intl.DateTimeFormat("ru-RU", {
     day: "numeric",
     month: "short",
     year: "numeric",
