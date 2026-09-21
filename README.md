@@ -73,9 +73,10 @@ The one-click deploy creates and connects a private Blob store automatically.
 Vercel supplies `BLOB_STORE_ID` and a short-lived `VERCEL_OIDC_TOKEN` to each
 deployment, so there is no long-lived Blob credential to copy.
 
-OpenInstinct uses this store for persistent per-user memory and image artifacts.
-Production conversations require it because memory is recalled before each agent
-turn. Local Eve development uses process-local memory instead.
+OpenInstinct uses this store for image artifacts and as the retained source for
+the one-time migration of legacy profile memory. New profile facts are stored as
+revisioned database records. See [the memory architecture](docs/memory.md) for
+the authority, semantic-index, deletion, and rollout contracts.
 
 Ongoing undertakings use a separate `workstreams` memory slot backed by the
 application database. Run the application migrations before using this feature;
@@ -102,8 +103,7 @@ pnpm exec vercel blob create-store open-instinct-images --access private --yes -
 ```
 
 Outside Vercel, set `BLOB_READ_WRITE_TOKEN` from a private Blob store instead.
-The memory provider uses that token explicitly, and image artifact delivery uses
-the same store.
+Legacy profile import and image artifact delivery use that store.
 
 ### Photon iMessage setup
 

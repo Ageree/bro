@@ -128,6 +128,9 @@ importers:
       streamdown:
         specifier: 2.6.0
         version: 2.6.0(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      supermemory:
+        specifier: 4.25.4
+        version: 4.25.4
       tailwind-merge:
         specifier: 3.6.0
         version: 3.6.0
@@ -6772,6 +6775,10 @@ packages:
 
   stylis@4.4.0:
     resolution: {integrity: sha512-5Z9ZpRzfuH6l/UAvCPAPUo3665Nk2wLaZU3x+TLHKVzIz33+sbJqbtrYoC3KD4/uVOr2Zp+L0LySezP9OHV9yA==}
+
+  supermemory@4.25.4:
+    resolution: {integrity: sha512-97ME3rlmu7OmsXJTb9OgXOD+3VUv4Wej0ZX9xezG+LKkMwrzi4xeeAZaOJFcr0oI/QQjcHG2WOzm+und1e7MFA==}
+    hasBin: true
 
   systeminformation@5.33.4:
     resolution: {integrity: sha512-poXpX8M9NBll1NDMW1ho6qRFkjrlttfm8E/YtPmn5x0TQ1z8LoJUHg9kwr/sRDmCjktqfnFRxqsoUNpaRakeMQ==}
@@ -13801,6 +13808,8 @@ snapshots:
       '@babel/core': 7.29.7
 
   stylis@4.4.0: {}
+
+  supermemory@4.25.4: {}
 
   systeminformation@5.33.4: {}
 

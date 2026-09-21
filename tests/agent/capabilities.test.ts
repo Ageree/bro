@@ -1,6 +1,7 @@
 import type { DynamicResolveContext } from "eve/tools";
 import { describe, expect, it, vi } from "vitest";
 import personalInfoMemory from "@agent/memory/personal_info";
+import profileMemory from "@agent/memory/profile";
 import workstreamMemory from "@agent/memory/workstreams";
 import calendar from "@agent/tools/calendar";
 import contacts from "@agent/tools/contacts";
@@ -23,6 +24,12 @@ describe("authored mode capability matrix", () => {
       "gmail-send",
       "gmail-update",
       "personal_info__update",
+      "profile__find",
+      "profile__read",
+      "profile__remove_memory",
+      "profile__save_memory",
+      "profile__semantic_find",
+      "profile__update",
       "react_to_message",
       "request_vault_import",
       "request_vault_setup",
@@ -139,6 +146,23 @@ async function authoredCapabilities(authenticator: string) {
   if (workstreamTools)
     capabilities.push(
       ...Object.keys(workstreamTools).map((name) => `workstreams__${name}`)
+    );
+
+  const profileTools = await profileMemory.provider.tools({
+    ...context,
+    memory: {
+      scope: {
+        key: "profile-key",
+        namespace: "profile-namespace",
+        value: "personal:workspace",
+      },
+      slot: "profile",
+    },
+    turn: { id: "turn-1", input: [], sequence: 1 },
+  });
+  if (profileTools)
+    capabilities.push(
+      ...Object.keys(profileTools).map((name) => `profile__${name}`)
     );
 
   return capabilities.toSorted();

@@ -6,10 +6,11 @@ import {
   resolveProfileMemoryBackend,
   resolveProfileMemoryScope,
 } from "../lib/profile-memory";
+import { createProfileMemoryProvider } from "@agent/lib/memory/profile";
 import { env } from "@shared/environment";
 
 const backend = resolveProfileMemoryBackend(env);
-const provider = preserveProfileMemoryCancellation(
+const legacyProvider = preserveProfileMemoryCancellation(
   backend.kind === "vercel-blob"
     ? fileMemory({
         backend: vercelBlob(backend.options),
@@ -19,6 +20,9 @@ const provider = preserveProfileMemoryCancellation(
 
 export default defineMemory({
   description: "Remember stable facts and preferences about the current user.",
-  provider,
+  provider: createProfileMemoryProvider(
+    legacyProvider,
+    backend.kind === "vercel-blob" ? vercelBlob(backend.options) : null
+  ),
   scope: resolveProfileMemoryScope,
 });

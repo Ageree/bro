@@ -11,11 +11,25 @@ import {
   resolveProfileMemoryBackend,
   resolveProfileMemoryScope,
 } from "@agent/lib/profile-memory";
+import { parseLegacyDocument } from "@agent/lib/memory/profile";
 import { accessScopeForUser } from "@shared/identity/access-scope";
 
 const derivedWorkspaceId = accessScopeForUser("better-auth:user").workspaceId;
 
 describe("profile memory", () => {
+  it("preserves deleted-tail and empty legacy allocation watermarks", () => {
+    expect(
+      parseLegacyDocument(
+        "<!-- eve-memory-file-v1 lastAllocatedIndex=40 -->\n2: Likes trains\n"
+      )
+    ).toEqual({
+      entries: [{ index: 2, text: "Likes trains" }],
+      lastAllocatedIndex: 40,
+    });
+    expect(
+      parseLegacyDocument("<!-- eve-memory-file-v1 lastAllocatedIndex=12 -->\n")
+    ).toEqual({ entries: [], lastAllocatedIndex: 12 });
+  });
   it("uses an explicit Blob backend for an attached store in production", () => {
     expect(
       resolveProfileMemoryBackend({
@@ -46,7 +60,27 @@ describe("profile memory", () => {
         NODE_ENV: "production",
         VERCEL_ENV: "production",
       })
-    ).toEqual({ kind: "automatic" });
+    ).toEqual({ kind: "vercel-blob", options: { token: "blob-token" } });
+    expect(
+      resolveProfileMemoryBackend({
+        BLOB_READ_WRITE_TOKEN: "blob-token",
+        BLOB_STORE_ID: "blob-store",
+        EVE_MEMORY_BLOB_READ_WRITE_TOKEN: "eve-token",
+        EVE_MEMORY_BLOB_STORE_ID: "eve-store",
+        NODE_ENV: "production",
+        VERCEL_ENV: "production",
+      })
+    ).toEqual({ kind: "vercel-blob", options: { storeId: "blob-store" } });
+    expect(
+      resolveProfileMemoryBackend({
+        BLOB_READ_WRITE_TOKEN: "blob-token",
+        BLOB_STORE_ID: undefined,
+        EVE_MEMORY_BLOB_READ_WRITE_TOKEN: "eve-token",
+        EVE_MEMORY_BLOB_STORE_ID: "eve-store",
+        NODE_ENV: "production",
+        VERCEL_ENV: "production",
+      })
+    ).toEqual({ kind: "vercel-blob", options: { storeId: "eve-store" } });
     expect(
       resolveProfileMemoryBackend({
         BLOB_READ_WRITE_TOKEN: "blob-token",

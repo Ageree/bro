@@ -36,7 +36,17 @@ async function recallUserProfile(context: MemoryOperationContext) {
   if (!scope) return null;
 
   const profile = await readUserProfile(scope);
-  if (!hasUserProfileValues(profile)) return null;
+  if (!hasUserProfileValues(profile)) {
+    return {
+      messages: [
+        {
+          content:
+            "The user's model-readable Personal Info profile is empty. This replaces any earlier recalled profile.",
+          id: "user-profile",
+        },
+      ],
+    };
+  }
 
   return {
     messages: [
