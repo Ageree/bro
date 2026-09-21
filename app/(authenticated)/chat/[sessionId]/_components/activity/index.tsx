@@ -193,12 +193,12 @@ export function SubagentPanel({
         >
           <SheetHeader className="sr-only">
             <SheetTitle>
-              {selected ? `${selected.name} trace` : "Agent activity"}
+              {selected ? `Трассировка: ${selected.name}` : "Активность агента"}
             </SheetTitle>
             <SheetDescription>
               {selected
-                ? "Full trace for the selected subagent"
-                : "Conversation views, sources, and live task statuses"}
+                ? "Полная трассировка выбранного субагента"
+                : "Виды переписки, источники и статусы задач"}
             </SheetDescription>
           </SheetHeader>
           {selected ? (

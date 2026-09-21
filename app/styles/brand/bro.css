@@ -11,6 +11,9 @@
 
 @theme inline {
   --spacing-bro-pad: clamp(1.15rem, 4vw, 2rem);
+  /* The cabinet's rail is a narrow column, so it keeps the page margin at
+     its smallest: a label like «Личные данные» has to sit on one line. */
+  --spacing-bro-rail: 1.15rem;
   --ease-bro: cubic-bezier(0.22, 0.61, 0.36, 1);
 }
 
@@ -39,6 +42,18 @@
     --merit-recipe-product-title-font-family: var(--bro-family-display);
     --merit-recipe-section-title-font-family: var(--bro-family-display);
     --merit-recipe-supporting-body-font-family: var(--bro-family-text);
+
+    /* The cabinet's rail is the same paper as the page, not a panel beside
+       it: shadcn tints the sidebar a shade off white and fills a hovered or
+       current item with a rounded block. Both read as chrome, and chrome
+       here is text. The rail keeps the page white, drops the fills, and
+       marks the current page in ink against grey. */
+    --sidebar: var(--background);
+    --sidebar-foreground: var(--foreground);
+    --sidebar-accent: transparent;
+    --sidebar-accent-foreground: var(--foreground);
+    --sidebar-border: var(--border);
+    --sidebar-ring: var(--foreground);
 
     font-family: var(--bro-family-text);
     font-weight: 400;
@@ -94,6 +109,17 @@
 
   @media (prefers-reduced-motion: reduce) {
     transition: none;
+  }
+}
+
+/* The cabinet's rail is a column of links, grey until you are standing on
+   that page. The colour lives here rather than on each row so the rows stay
+   what every other link on this site is: inherited ink that fades. */
+@utility bro-rail {
+  color: var(--color-muted-foreground);
+
+  & [aria-current="page"] {
+    color: var(--color-foreground);
   }
 }
 

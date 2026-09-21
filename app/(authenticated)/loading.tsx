@@ -1,14 +1,11 @@
-import { Skeleton } from "@web/components/ui/skeleton";
-
+/** Paper waiting for its ink: the page's own measure, one quiet line. */
 export default function Loading() {
   return (
     <div
-      aria-label="Loading page"
-      className="mx-auto w-full max-w-4xl space-y-6 px-4 py-6 sm:px-6 sm:py-8"
+      aria-label="Страница загружается"
+      className="mx-auto w-full max-w-[42rem] px-bro-pad pt-[0.6rem] pb-20"
     >
-      <Skeleton className="h-8 w-48" />
-      <Skeleton className="h-28 w-full" />
-      <Skeleton className="h-28 w-full" />
+      <p className="type-fine text-muted-foreground">Загружаем…</p>
     </div>
   );
 }

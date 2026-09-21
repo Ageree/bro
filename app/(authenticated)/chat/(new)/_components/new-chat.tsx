@@ -12,6 +12,10 @@ import {
   PromptInputTextarea,
   PromptInputTools,
 } from "@web/components/ai-elements/prompt-input";
+import {
+  paperComposerClassName,
+  paperComposerSubmitClassName,
+} from "../../_lib/composer";
 import { chatTitle, messageContent } from "../../_lib/message-input";
 import { api } from "@web/trpc/client";
 
@@ -57,16 +61,20 @@ export function NewChat() {
   };
 
   return (
-    <PromptInput compact onSubmit={handleSubmit}>
+    <PromptInput
+      className={paperComposerClassName}
+      compact
+      onSubmit={handleSubmit}
+    >
       <PromptInputBody>
-        <PromptInputTextarea
-          className="min-h-0"
-          placeholder="Send a message…"
-        />
+        <PromptInputTextarea className="min-h-0" placeholder="Напиши Bro…" />
       </PromptInputBody>
       <PromptInputFooter>
         <PromptInputTools />
-        <PromptInputSubmit />
+        <PromptInputSubmit
+          className={paperComposerSubmitClassName}
+          variant="paper"
+        />
       </PromptInputFooter>
     </PromptInput>
   );

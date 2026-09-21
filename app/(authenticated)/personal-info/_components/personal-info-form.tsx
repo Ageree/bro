@@ -2,10 +2,16 @@
 
 import { type SubmitEvent, useState } from "react";
 import { z } from "zod";
-import { Alert, AlertDescription, AlertTitle } from "@web/components/ui/alert";
+import {
+  Document,
+  DocumentTitle,
+  Flash,
+  Section,
+  StatusLine,
+} from "@web/components/paper/document";
 import { Button } from "@web/components/ui/button";
+import { Field, FieldLabel } from "@web/components/ui/field";
 import { Input } from "@web/components/ui/input";
-import { Label } from "@web/components/ui/label";
 import {
   defaultTimeZone,
   userProfileSchema,
@@ -13,6 +19,11 @@ import {
 } from "@shared/user-profile/schema";
 import { api } from "@web/trpc/client";
 
+/**
+ * Paper, like the cabinet and the vault: a title, fine print, and sections
+ * divided by hairlines. A field is a hairline rectangle with its label set
+ * small and grey above it; saving is the one inverted rectangle.
+ */
 export function PersonalInfoForm({
   initialProfile,
 }: {
@@ -55,23 +66,18 @@ export function PersonalInfoForm({
   };
 
   return (
-    <div className="mx-auto flex w-full max-w-4xl min-w-0 flex-col gap-8 px-4 py-6 sm:px-6 sm:py-8">
-      <div className="space-y-2">
-        <h1 className="type-page-title">Personal info</h1>
-        <p className="type-body max-w-2xl text-muted-foreground">
-          Your agent and browser worker can use these values directly when
-          completing forms. Keep passwords and payment details in Vault.
-        </p>
-      </div>
+    <Document>
+      <DocumentTitle>Личные данные</DocumentTitle>
+      <p className="type-fine text-muted-foreground">
+        Этими данными Bro заполняет формы на сайтах — за тебя и без вопросов.
+        Пароли и карты храни в сейфе.
+      </p>
 
       {status === "error" ? (
-        <Alert variant="destructive">
-          <AlertTitle>Couldn&apos;t save personal info</AlertTitle>
-          <AlertDescription>
-            Check the email, birth date, two-letter country code, and IANA time
-            zone, then try again.
-          </AlertDescription>
-        </Alert>
+        <Flash>
+          Не сохранилось. Проверь почту, дату рождения, двухбуквенный код страны
+          и часовой пояс — и попробуй ещё раз.
+        </Flash>
       ) : null}
 
       <datalist id="personal-info-timezones">
@@ -82,116 +88,117 @@ export function PersonalInfoForm({
         ))}
       </datalist>
 
-      <form className="space-y-10" onSubmit={submit}>
-        <section aria-labelledby="identity-heading" className="space-y-4">
-          <h2 className="type-label" id="identity-heading">
-            Identity and contact
-          </h2>
-          <div className="grid gap-5 sm:grid-cols-2">
+      <form noValidate onSubmit={submit}>
+        <Section headingId="identity-heading" title="Кто ты">
+          <ProfileFields>
             <ProfileField
               autoComplete="given-name"
               defaultValue={initialProfile.firstName}
-              label="First name"
+              label="Имя"
               name="firstName"
             />
             <ProfileField
               autoComplete="family-name"
               defaultValue={initialProfile.lastName}
-              label="Last name"
+              label="Фамилия"
               name="lastName"
             />
             <ProfileField
               autoComplete="email"
               defaultValue={initialProfile.email}
-              label="Email"
+              label="Почта"
               name="email"
               type="email"
             />
             <ProfileField
               autoComplete="tel"
               defaultValue={initialProfile.phone}
-              label="Phone"
+              label="Телефон"
               name="phone"
               type="tel"
             />
             <ProfileField
               autoComplete="bday"
               defaultValue={initialProfile.dateOfBirth}
-              label="Date of birth"
+              label="Дата рождения"
               name="dateOfBirth"
               type="date"
             />
             <ProfileField
               autoComplete="off"
               defaultValue={initialProfile.timezone}
-              label="Time zone"
+              label="Часовой пояс"
               list="personal-info-timezones"
               name="timezone"
               placeholder={defaultTimeZone}
             />
-          </div>
-        </section>
+          </ProfileFields>
+        </Section>
 
-        <section aria-labelledby="address-heading" className="space-y-4">
-          <h2 className="type-label" id="address-heading">
-            Mailing address
-          </h2>
-          <div className="grid gap-5 sm:grid-cols-2">
+        <Section headingId="address-heading" title="Почтовый адрес">
+          <ProfileFields>
             <ProfileField
               autoComplete="address-line1"
               className="sm:col-span-2"
               defaultValue={initialProfile.addressLine1}
-              label="Address line 1"
+              label="Адрес, строка 1"
               name="addressLine1"
             />
             <ProfileField
               autoComplete="address-line2"
               className="sm:col-span-2"
               defaultValue={initialProfile.addressLine2}
-              label="Address line 2"
+              label="Адрес, строка 2"
               name="addressLine2"
             />
             <ProfileField
               autoComplete="address-level2"
               defaultValue={initialProfile.city}
-              label="City"
+              label="Город"
               name="city"
             />
             <ProfileField
               autoComplete="address-level1"
               defaultValue={initialProfile.region}
-              label="State / region"
+              label="Область или регион"
               name="region"
             />
             <ProfileField
               autoComplete="postal-code"
               defaultValue={initialProfile.postalCode}
-              label="Postal code"
+              label="Индекс"
               name="postalCode"
             />
             <ProfileField
               autoComplete="country"
               defaultValue={initialProfile.countryCode}
-              label="Country code"
+              label="Код страны"
               maxLength={2}
               name="countryCode"
-              placeholder="US"
+              placeholder="RU"
             />
-          </div>
-        </section>
+          </ProfileFields>
+        </Section>
 
-        <div className="flex items-center gap-3 border-t border-border/50 pt-6">
-          <Button disabled={updateProfile.isPending} type="submit">
-            {updateProfile.isPending ? "Saving…" : "Save personal info"}
-          </Button>
-          <p
-            aria-live="polite"
-            className="type-supporting-body text-muted-foreground"
+        <div className="mt-8 flex flex-wrap items-center gap-x-6 gap-y-3">
+          <Button
+            disabled={updateProfile.isPending}
+            type="submit"
+            variant="paper"
           >
-            {status === "saved" ? "Saved." : null}
-          </p>
+            {updateProfile.isPending ? "Сохраняем…" : "Сохранить"}
+          </Button>
+          <StatusLine>{status === "saved" ? "Сохранено." : null}</StatusLine>
         </div>
       </form>
+    </Document>
+  );
+}
+
+function ProfileFields({ children }: { readonly children: React.ReactNode }) {
+  return (
+    <div className="mt-[0.9rem] grid gap-[0.9rem] sm:grid-cols-2 sm:gap-x-6">
+      {children}
     </div>
   );
 }
@@ -207,16 +214,25 @@ function ProfileField({
   readonly label: string;
   readonly name: keyof UserProfile;
 }) {
+  const id = `personal-info-${name}`;
   return (
-    <div className={className ? `space-y-2 ${className}` : "space-y-2"}>
-      <Label htmlFor={`personal-info-${name}`}>{label}</Label>
+    <Field
+      className={className ? `gap-[0.35rem] ${className}` : "gap-[0.35rem]"}
+    >
+      <FieldLabel
+        className="type-field-label text-muted-foreground"
+        htmlFor={id}
+      >
+        {label}
+      </FieldLabel>
       <Input
         defaultValue={defaultValue ?? ""}
-        id={`personal-info-${name}`}
+        id={id}
         name={name}
+        variant="paper"
         {...inputProps}
       />
-    </div>
+    </Field>
   );
 }
 

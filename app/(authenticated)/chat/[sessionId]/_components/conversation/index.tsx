@@ -95,7 +95,9 @@ export function ChatConversation({
             {history.isLoadingOlder ? (
               <LoaderCircleIcon className="animate-spin" />
             ) : null}
-            {history.isLoadingOlder ? "Loading…" : "Load older messages"}
+            {history.isLoadingOlder
+              ? "Загружаем…"
+              : "Показать, что было раньше"}
           </Button>
         ) : null}
         {isRestoring && messages.length === 0 ? (
@@ -156,9 +158,9 @@ export function ChatConversation({
 }
 
 function toErrorMessage(cause: unknown): string {
-  if (!(cause instanceof Error)) return "Unable to complete the request.";
+  if (!(cause instanceof Error)) return "Не получилось выполнить запрос.";
   if (/<!doctype html|<html[\s>]/i.test(cause.message)) {
-    return "The agent runtime is unavailable. Try again in a moment.";
+    return "Агент сейчас недоступен. Попробуй через минуту.";
   }
   return cause.message;
 }
@@ -169,7 +171,7 @@ function ErrorMessage({ message }: { readonly message: string }) {
       <MessageContent>
         <Alert variant="destructive">
           <AlertCircleIcon />
-          <AlertTitle>Request failed</AlertTitle>
+          <AlertTitle>Запрос не прошёл</AlertTitle>
           <AlertDescription>{message}</AlertDescription>
         </Alert>
       </MessageContent>
@@ -183,7 +185,7 @@ function PendingThinking() {
       <MessageContent>
         <div className="type-supporting-body mb-4 flex w-full items-center gap-2 text-muted-foreground">
           <BrainIcon className="size-4" />
-          <Shimmer duration={1}>Thinking</Shimmer>
+          <Shimmer duration={1}>Думает</Shimmer>
         </div>
       </MessageContent>
     </Message>

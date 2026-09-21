@@ -5,9 +5,6 @@ import {
   SidebarFooter,
   SidebarHeader,
   SidebarInset,
-  SidebarMenu,
-  SidebarMenuButton,
-  SidebarMenuItem,
   SidebarProvider,
 } from "@web/components/ui/sidebar";
 import { requireRequestScope } from "@web/auth/request-scope";
@@ -18,6 +15,12 @@ import {
   AuthenticatedNavigation,
 } from "./_components/authenticated-navigation";
 
+/**
+ * The cabinet is paper too. The rail carries the same wordmark, on the same
+ * white, divided from the page by a hairline and nothing else — the panel,
+ * its tint and its filled rows are gone, so the rail reads as the margin of
+ * the page rather than a window beside it.
+ */
 export default async function AuthenticatedLayout({
   children,
 }: LayoutProps<"/">) {
@@ -27,19 +30,15 @@ export default async function AuthenticatedLayout({
     <TRPCProvider>
       <SidebarProvider>
         <Sidebar>
-          <SidebarHeader>
-            <SidebarMenu>
-              <SidebarMenuItem>
-                <SidebarMenuButton render={<Link href="/workspace" />}>
-                  <span className="type-nav">bro.</span>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
-            </SidebarMenu>
+          <SidebarHeader className="p-bro-rail">
+            <Link className="type-wordmark bro-link" href="/workspace">
+              bro.
+            </Link>
           </SidebarHeader>
           <SidebarContent>
             <AuthenticatedNavigation />
           </SidebarContent>
-          <SidebarFooter>
+          <SidebarFooter className="p-0">
             <AuthenticatedAccountControl />
           </SidebarFooter>
         </Sidebar>

@@ -8,16 +8,16 @@ export default function AuthenticatedError({
   readonly reset: () => void;
 }) {
   return (
-    <div className="mx-auto grid min-h-48 w-full max-w-4xl place-content-center gap-4 px-4 py-6 text-center sm:px-6 sm:py-8">
-      <div>
-        <h1 className="type-card-title">Page unavailable</h1>
-        <p className="type-supporting-body mt-1 text-muted-foreground">
-          This page could not be loaded.
-        </p>
+    <div className="mx-auto w-full max-w-[42rem] px-bro-pad pt-[0.6rem] pb-20">
+      <h1 className="type-sec-title">Страница не открылась</h1>
+      <p className="type-fine mt-[0.35rem] text-muted-foreground">
+        Что-то пошло не так на нашей стороне.
+      </p>
+      <div className="mt-4">
+        <Button onClick={reset} size="act" type="button" variant="act">
+          Попробовать ещё раз
+        </Button>
       </div>
-      <Button onClick={reset} type="button" variant="outline">
-        Try again
-      </Button>
     </div>
   );
 }
