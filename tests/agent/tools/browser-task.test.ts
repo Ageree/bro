@@ -427,6 +427,65 @@ describe("browser_task proxy", () => {
   });
 });
 
+describe("browser_task pictures", () => {
+  it("always asks a run for a screenshot of the page with the outcome", async () => {
+    await startErrand("");
+
+    const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
+    expect(task).toContain(
+      "save a screenshot of the page that shows the outcome"
+    );
+    expect(task).toContain("report/final.png");
+    expect(task).toContain("Save nothing else under report/.");
+    expect(task).not.toContain("pictures of what you found");
+  });
+
+  it("asks for pictures of the items when the person wants to see them", async () => {
+    vi.resetModules();
+    createBrowserUseRun.mockResolvedValue({
+      id: runId,
+      model: "hosted-agent",
+      sessionId,
+      status: "running",
+    });
+    const { browserTask } = await import("@agent/tools/browser_task");
+
+    await browserTask.execute(
+      {
+        action: "start",
+        collectImages: true,
+        site: "https://www.ozon.ru",
+        task: "Найди такой же фитнес-браслет и покажи фото",
+      },
+      toolContext("better-auth:alice")
+    );
+
+    const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
+    expect(task).toContain("report/final.png");
+    expect(task).toContain("also save up to 3 pictures of what you found");
+    expect(task).toContain("report/xiaomi-band-9.jpg");
+  });
+
+  it("carries a later request for pictures into the follow-up run", async () => {
+    readBrowserRunForScope.mockResolvedValue(browserRunRow(new Date()));
+    const { browserTask } = await import("@agent/tools/browser_task");
+
+    await browserTask.execute(
+      {
+        action: "continue",
+        collectImages: true,
+        runId,
+        task: "скинь фотки",
+      },
+      toolContext("better-auth:alice")
+    );
+
+    const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
+    expect(task.startsWith("скинь фотки")).toBe(true);
+    expect(task).toContain("also save up to 3 pictures of what you found");
+  });
+});
+
 describe("browser_task anti-bot checks", () => {
   it("tells a started errand to solve a CAPTCHA and carry on", async () => {
     await startErrand("");

@@ -51,6 +51,14 @@ const readBrowserUseRun = vi.hoisted(() =>
 const cancelBrowserUseRun = vi.hoisted(() =>
   vi.fn<(runId: string) => Promise<void>>()
 );
+const captureBrowserRunImages = vi.hoisted(() =>
+  vi.fn<
+    (
+      row: BrowserRunRow,
+      run: RunSummary
+    ) => Promise<{ id: string; label: string }[]>
+  >()
+);
 
 vi.mock("@db/services/browser-runs", () => ({
   claimBrowserRunCompletion,
@@ -59,6 +67,9 @@ vi.mock("@db/services/browser-runs", () => ({
 vi.mock("@agent/lib/browser-use/client", () => ({
   cancelBrowserUseRun,
   readBrowserUseRun,
+}));
+vi.mock("@agent/lib/browser-use/images", () => ({
+  captureBrowserRunImages,
 }));
 vi.mock("@agent/channels/photon", () => ({ default: { id: "photon" } }));
 
@@ -76,6 +87,7 @@ beforeEach(() => {
   claimBrowserRunCompletion
     .mockResolvedValueOnce({ ...row, completedAt: new Date() })
     .mockResolvedValue(undefined);
+  captureBrowserRunImages.mockResolvedValue([]);
 });
 
 type ChannelSend = ReturnType<ScheduleToFn>["send"];
@@ -284,6 +296,70 @@ describe("settling a browser run", () => {
       outcome: "The browser run ran out of time and was cancelled.",
       status: "failed",
     });
+    expect(send).toHaveBeenCalledOnce();
+  });
+
+  it("hands the coordinator the pictures the run saved, ready to attach", async () => {
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const screenshotId = "0d01e667-d128-4bb7-a248-1ae21db72f4f";
+    const photoId = "206c3a7e-c0b8-4317-9e34-552cff646673";
+    captureBrowserRunImages.mockResolvedValue([
+      { id: screenshotId, label: "скриншот страницы с результатом" },
+      { id: photoId, label: "xiaomi band 9" },
+    ]);
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    expect(captureBrowserRunImages).toHaveBeenCalledOnce();
+    const prompt = send.mock.calls[0]?.[0];
+    expect(prompt).toContain("![caption](/artifacts/<id>)");
+    expect(prompt).toContain(
+      `- ${screenshotId}: скриншот страницы с результатом`
+    );
+    expect(prompt).toContain(`- ${photoId}: xiaomi band 9`);
+    expect(prompt).toContain("never paste the /artifacts/ path as a bare link");
+  });
+
+  it("says nothing about pictures when the run saved none", async () => {
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    expect(send.mock.calls[0]?.[0]).not.toContain("/artifacts/");
+  });
+
+  it("still reports the errand when its pictures could not be kept", async () => {
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    captureBrowserRunImages.mockRejectedValue(new Error("Blob is down"));
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    expect(send).toHaveBeenCalledOnce();
+    expect(send.mock.calls[0]?.[0]).toContain("Result: ordered");
+  });
+
+  it("keeps no pictures from a run parked on an anti-bot check", async () => {
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    readBrowserUseRun.mockResolvedValue({
+      error: null,
+      id: runId,
+      result: "RESULT: стоит на проверке\nNEEDS: captcha",
+      sessionId: "session-1",
+      status: "completed",
+      task: "Order the usual",
+    });
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    expect(captureBrowserRunImages).not.toHaveBeenCalled();
     expect(send).toHaveBeenCalledOnce();
   });
 });

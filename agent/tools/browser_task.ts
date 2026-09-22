@@ -32,6 +32,11 @@ import {
   updateBrowserRunProgress,
 } from "@db/services/browser-runs";
 import { browserRunFacts } from "@agent/lib/browser-use/facts";
+import {
+  browserRunFinalScreenshotStem,
+  browserRunImagePrefix,
+} from "@agent/lib/browser-use/images";
+import { maximumDeliveredImageArtifacts } from "@agent/lib/image-artifact/delivery";
 import { env } from "@shared/environment";
 import { browserRunNeeds } from "@agent/lib/browser-use/outcome";
 import { browserRunQuotaGate } from "@agent/lib/billing/quota";
@@ -43,6 +48,12 @@ const inputSchema = z.object({
     .optional()
     .describe(
       "Only true when the user approved paying on this errand in this conversation. Binds the saved card to the site and its payment processors."
+    ),
+  collectImages: z
+    .boolean()
+    .optional()
+    .describe(
+      "True when the user asked for photos or pictures of what the errand finds. The run then saves pictures of the items next to the screenshot it always takes, and they come back with the outcome as artifacts to attach."
     ),
   runId: z
     .string()
@@ -119,6 +130,23 @@ function captchaLine() {
   ].join(" ");
 }
 
+/**
+ * The pictures the run leaves behind, in the one folder of its workspace the
+ * completion path reads. The page that shows the outcome is always saved: a
+ * confirmation, a basket, a search result is often easier to show than to
+ * retell. Pictures of the items only when the person wanted to see them —
+ * every extra file is a download at settlement.
+ */
+function imagesContract(collectImages: boolean) {
+  const final = `${browserRunImagePrefix}${browserRunFinalScreenshotStem}.png`;
+  return [
+    `Before your final answer, save a screenshot of the page that shows the outcome — the viewport as a person would see it — as the file ${final} in your workspace.`,
+    collectImages
+      ? `The person wants to see the items: also save up to ${String(maximumDeliveredImageArtifacts - 1)} pictures of what you found, one file per item under ${browserRunImagePrefix}, named after the item in lowercase Latin letters and dashes (for example ${browserRunImagePrefix}xiaomi-band-9.jpg) — the item's own large photo, not a thumbnail. Save nothing else under ${browserRunImagePrefix}.`
+      : `Save nothing else under ${browserRunImagePrefix}.`,
+  ].join(" ");
+}
+
 function credentialsLine(aliases: readonly string[]) {
   return aliases.length === 0
     ? "No stored credentials are available for this run. If the site asks you to sign in, stop with NEEDS: password instead of guessing one."
@@ -127,6 +155,7 @@ function credentialsLine(aliases: readonly string[]) {
 
 export function composeBrowserTask(options: {
   readonly aliases: readonly string[];
+  readonly collectImages: boolean;
   readonly errand: string;
   readonly facts: string | undefined;
   readonly site: string | undefined;
@@ -138,6 +167,7 @@ export function composeBrowserTask(options: {
     options.facts,
     credentialsLine(options.aliases),
     captchaLine(),
+    imagesContract(options.collectImages),
     outcomeContract(),
   ]
     .filter((part) => part !== undefined)
@@ -153,6 +183,7 @@ export function composeBrowserTask(options: {
  */
 export function composeBrowserContinuation(options: {
   readonly aliases: readonly string[];
+  readonly collectImages: boolean;
   readonly errand: string;
   readonly facts: string | undefined;
   readonly message: string;
@@ -169,6 +200,7 @@ export function composeBrowserContinuation(options: {
     options.facts,
     credentialsLine(options.aliases),
     captchaLine(),
+    imagesContract(options.collectImages),
     outcomeContract(),
   ]
     .filter((part) => part !== undefined)
@@ -376,7 +408,7 @@ async function waitForLiveViewUrl(
 
 export const browserTask = defineTool({
   description:
-    "Run one errand on a website through a hosted cloud browser that can sign in, fill forms, and complete a checkout. Use it when the user wants something done on a site; use web_search and web_fetch instead for reading public pages. Start exactly one run per errand and pass the site's origin so saved credentials can be bound to it. Write the errand short: the cloud browser is itself an agent, so give it the goal, the hard constraints, and what to report back — not a click-by-click script. Every follow-up for that errand — an answer, a code the user typed, a changed constraint — goes through continue with the same runId, never a second start: continue works in the same browser, on the tab and the signed-in account the run already has. When the previous run has already finished, continue starts a follow-up run in that same browser and returns a NEW runId; use that one from then on. Pass allowPayment: true on start or on continue once the user approved paying or attaching a card on this errand in this conversation — «привяжи карту» is approval to bind the saved card, not to buy anything. The person's name, phone, email and addresses from the profile and from the vault are typed into forms automatically, so never ask for a phone number or an address the user said is saved: start the errand and let the run use it. The run signs in with vault credentials the models involved never see, so never ask the user for a password: when none is stored, call request_vault_setup. The run solves CAPTCHAs and anti-bot checks itself as it goes, and they are never the user's to solve: never tell the user you cannot pass one, never ask them to pass it, and never hand them the live view for one. When a run comes back with NEEDS: captcha, continue it on the same runId, tell it to solve the check and finish the errand; the continuation opens a fresh browser on the same profile by itself when the old one is still walled. Give the user the live-view link only when the run is blocked on something only they can do — 3-D Secure, a push approval, a sign-in you cannot complete, or a check the run still could not pass after retrying — and never forward a one-time code back to the user. The run continues in the background and its result arrives later as a new message, so do not wait on it.",
+    "Run one errand on a website through a hosted cloud browser that can sign in, fill forms, and complete a checkout. Use it when the user wants something done on a site; use web_search and web_fetch instead for reading public pages. Start exactly one run per errand and pass the site's origin so saved credentials can be bound to it. Write the errand short: the cloud browser is itself an agent, so give it the goal, the hard constraints, and what to report back — not a click-by-click script. Every follow-up for that errand — an answer, a code the user typed, a changed constraint — goes through continue with the same runId, never a second start: continue works in the same browser, on the tab and the signed-in account the run already has. When the previous run has already finished, continue starts a follow-up run in that same browser and returns a NEW runId; use that one from then on. Pass allowPayment: true on start or on continue once the user approved paying or attaching a card on this errand in this conversation — «привяжи карту» is approval to bind the saved card, not to buy anything. The person's name, phone, email and addresses from the profile and from the vault are typed into forms automatically, so never ask for a phone number or an address the user said is saved: start the errand and let the run use it. The run signs in with vault credentials the models involved never see, so never ask the user for a password: when none is stored, call request_vault_setup. The run solves CAPTCHAs and anti-bot checks itself as it goes, and they are never the user's to solve: never tell the user you cannot pass one, never ask them to pass it, and never hand them the live view for one. When a run comes back with NEEDS: captcha, continue it on the same runId, tell it to solve the check and finish the errand; the continuation opens a fresh browser on the same profile by itself when the old one is still walled. Give the user the live-view link only when the run is blocked on something only they can do — 3-D Secure, a push approval, a sign-in you cannot complete, or a check the run still could not pass after retrying — and never forward a one-time code back to the user. Pass collectImages: true when the user asked for photos or pictures of what the errand finds; the run always saves a screenshot of the page with the outcome, and with the flag it saves pictures of the items too. Every saved image comes back with the outcome as an artifact id you attach in send_message as ![caption](/artifacts/id) — that is how the person gets the real picture rather than a link. The run continues in the background and its result arrives later as a new message, so do not wait on it.",
   inputSchema,
   async execute(input, context) {
     const { conversation, scope } = conversationTarget(context);
@@ -402,6 +434,7 @@ export const browserTask = defineTool({
       ]);
       const task = composeBrowserTask({
         aliases: secrets.aliases,
+        collectImages: input.collectImages === true,
         errand,
         facts,
         site: input.site,
@@ -525,6 +558,7 @@ export const browserTask = defineTool({
         sessionId: endedOnAntiBotCheck(row.outcome) ? undefined : row.sessionId,
         task: composeBrowserContinuation({
           aliases: secrets.aliases,
+          collectImages: input.collectImages === true,
           errand: row.task,
           facts,
           message: withCodeEntry(message, codeEntry),

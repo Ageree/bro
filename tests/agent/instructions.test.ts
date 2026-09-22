@@ -150,6 +150,11 @@ describe("agent instructions", () => {
       "Список одних названий без ссылок не выдавай за готовый результат"
     );
     expect(selected?.content).toContain("Не запускай бесконечные повторы");
+    expect(selected?.content).toContain("`collectImages: true`");
+    expect(selected?.content).toContain("`![подпись](/artifacts/id)`");
+    expect(selected?.content).toContain(
+      "Путь `/artifacts/...` голым текстом не шли никогда"
+    );
   });
 
   it("greets a first-contact turn in short Russian bubbles", async () => {
