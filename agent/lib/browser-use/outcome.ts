@@ -251,7 +251,8 @@ function sanitizeBrowserReportText(value: string, limit = 16_000) {
   return sanitizeBrowserOutput(tokenized, Number.MAX_SAFE_INTEGER)
     .replaceAll(
       /\uE100(\d+)\uE101/gu,
-      (_placeholder, index: string) => urls[Number(index)] ?? "[unsafe URL omitted]"
+      (_placeholder, index: string) =>
+        urls[Number(index)] ?? "[unsafe URL omitted]"
     )
     .slice(0, limit);
 }
@@ -274,7 +275,8 @@ function browserResultLinks(text: string) {
     if (!fields.success) continue;
     const { title: rawTitle, url: rawUrl } = fields.data;
     const normalizedTitle = rawTitle.replaceAll(/\s+/gu, " ").trim();
-    if (!normalizedTitle || normalizedTitle.length > maxLinkTitleLength) continue;
+    if (!normalizedTitle || normalizedTitle.length > maxLinkTitleLength)
+      continue;
     const title = sanitizeBrowserReportText(normalizedTitle, maxLinkTitleLength)
       .replaceAll(/\s+/gu, " ")
       .trim();
@@ -379,7 +381,9 @@ export function browserOutcomeSummary(
   if (structuredLinks) {
     try {
       const suppliedLinks: unknown = JSON.parse(structuredLinks);
-      suppliedLinkCount = Array.isArray(suppliedLinks) ? suppliedLinks.length : 0;
+      suppliedLinkCount = Array.isArray(suppliedLinks)
+        ? suppliedLinks.length
+        : 0;
     } catch {
       suppliedLinkCount = 0;
     }

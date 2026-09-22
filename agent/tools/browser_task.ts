@@ -660,13 +660,16 @@ export const browserTask = defineTool({
       throw new Error("That browser run is not part of this workspace.");
     const { active: row, root } = resolved;
     const activeAuth = context.session.auth.current;
-    const automaticRunId = z.string().optional().parse(
-      activeAuth?.authenticator === "browser-result"
-        ? activeAuth.attributes.browserRunId
-        : activeAuth?.authenticator === "scheduled-worker"
-          ? activeAuth.attributes.scheduledBrowserRunId
-          : undefined
-    );
+    const automaticRunId = z
+      .string()
+      .optional()
+      .parse(
+        activeAuth?.authenticator === "browser-result"
+          ? activeAuth.attributes.browserRunId
+          : activeAuth?.authenticator === "scheduled-worker"
+            ? activeAuth.attributes.scheduledBrowserRunId
+            : undefined
+      );
     if (automaticRunId && automaticRunId !== (root.activeRunId ?? root.id)) {
       throw new Error(
         "This automatic browser result is stale because the errand has moved to a newer run."

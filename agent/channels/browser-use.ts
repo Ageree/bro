@@ -134,7 +134,9 @@ export default defineChannel({
         if (auth instanceof Response) return auth;
         const input = browserDeliverySchema.parse(await request.json());
         const status = await deliverEveBrowserRun(attachSession, input);
-        return new Response(null, { status: status === "accepted" ? 202 : 409 });
+        return new Response(null, {
+          status: status === "accepted" ? 202 : 409,
+        });
       }
     ),
     POST(

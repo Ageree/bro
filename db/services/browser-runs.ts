@@ -85,10 +85,7 @@ export async function resolveBrowserRunForScope(
   return { active: active ?? root, requested, root };
 }
 
-async function readBrowserRunForScope(
-  scope: AccessScope,
-  runId: string
-) {
+async function readBrowserRunForScope(scope: AccessScope, runId: string) {
   const rows = await db
     .select()
     .from(browserRuns)

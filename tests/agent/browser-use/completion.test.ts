@@ -172,9 +172,7 @@ function delivery(reject = false) {
   return { send, to };
 }
 
-function attachedSession(
-  result: Awaited<ReturnType<Session["send"]>>
-) {
+function attachedSession(result: Awaited<ReturnType<Session["send"]>>) {
   const send = vi.fn<Session["send"]>();
   send.mockResolvedValue(result);
   const session: Session = {
