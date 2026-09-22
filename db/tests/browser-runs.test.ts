@@ -76,6 +76,41 @@ describe("browser run persistence", () => {
     );
   }, 20_000);
 
+  it("persists the selected proxy country on the scoped run", async () => {
+    const browserRuns = await browserRunsDatabase();
+    await browserRuns.createBrowserRun(alice, {
+      ...conversation(),
+      id: runId,
+      proxyCountryCode: "us",
+    });
+
+    expect(
+      (await browserRuns.readBrowserRunForScope(alice, runId))?.proxyCountryCode
+    ).toBe("us");
+    expect(
+      await browserRuns.readBrowserRunForScope(bob, runId)
+    ).toBeUndefined();
+  }, 20_000);
+
+  it("keeps legacy rows nullable and rejects an invalid country", async () => {
+    const browserRuns = await browserRunsDatabase();
+    await browserRuns.createBrowserRun(alice, { ...conversation(), id: runId });
+
+    expect(
+      (await browserRuns.readBrowserRunForScope(alice, runId))?.proxyCountryCode
+    ).toBeNull();
+    await expect(
+      browserRuns.createBrowserRun(alice, {
+        ...conversation(),
+        id: "22222222-2222-4222-8222-222222222222",
+        proxyCountryCode: "usa",
+      })
+    ).rejects.toHaveProperty(
+      "cause.message",
+      expect.stringContaining("browser_runs_proxy_country_code_check")
+    );
+  }, 20_000);
+
   it("settles a run once and stops listing it as unsettled", async () => {
     const browserRuns = await browserRunsDatabase();
     await browserRuns.createBrowserRun(alice, {

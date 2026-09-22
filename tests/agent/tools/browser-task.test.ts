@@ -166,7 +166,8 @@ afterEach(() => {
 function browserRunRow(
   completedAt: Date | null = null,
   outcome: string | null = null,
-  site: string | null = "https://taxi.yandex.ru"
+  site: string | null = "https://taxi.yandex.ru",
+  proxyCountryCode: string | null = "ru"
 ) {
   return {
     completedAt,
@@ -178,6 +179,7 @@ function browserRunRow(
     liveViewUrl,
     outcome,
     profileId: "profile-1",
+    proxyCountryCode,
     replyAnchorMessageId: null,
     rootSessionId: "session-1",
     sessionId,
@@ -189,7 +191,7 @@ function browserRunRow(
   };
 }
 
-async function startErrand(maxCostUsd: string) {
+async function startErrand(maxCostUsd: string, proxyCountryCode?: string) {
   vi.resetModules();
   vi.stubEnv("BROWSER_USE_MAX_COST_USD", maxCostUsd);
   createBrowserUseRun.mockResolvedValue({
@@ -200,7 +202,12 @@ async function startErrand(maxCostUsd: string) {
   });
   const { browserTask } = await import("@agent/tools/browser_task");
   return browserTask.execute(
-    { action: "start", site: "https://example.com", task: "Order the usual" },
+    {
+      action: "start",
+      proxyCountryCode,
+      site: "https://example.com",
+      task: "Order the usual",
+    },
     toolContext("better-auth:alice")
   );
 }
@@ -217,16 +224,26 @@ async function continueErrand(input: {
   readonly completedAt?: Date;
   readonly message?: string;
   readonly outcome?: string;
+  readonly proxyCountryCode?: string;
   readonly site?: string;
+  readonly storedProxyCountryCode?: string | null;
 }) {
   readBrowserRunForScope.mockResolvedValue(
-    browserRunRow(input.completedAt ?? null, input.outcome ?? null)
+    browserRunRow(
+      input.completedAt ?? null,
+      input.outcome ?? null,
+      "https://taxi.yandex.ru",
+      input.storedProxyCountryCode === undefined
+        ? "ru"
+        : input.storedProxyCountryCode
+    )
   );
   const { browserTask } = await import("@agent/tools/browser_task");
   return browserTask.execute(
     {
       action: "continue",
       allowPayment: input.allowPayment,
+      proxyCountryCode: input.proxyCountryCode,
       runId,
       site: input.site,
       task: input.message ?? "Код из смс 992130",
@@ -394,15 +411,21 @@ describe("browser_task continuation", () => {
         status: "running",
       });
 
-    const result = await continueErrand({});
+    const result = await continueErrand({ storedProxyCountryCode: "us" });
 
     expect(createBrowserUseRun).toHaveBeenCalledTimes(2);
     expect(createBrowserUseRun.mock.calls[0]?.[0].sessionId).toBe(sessionId);
+    expect(createBrowserUseRun.mock.calls[0]?.[0].proxyCountryCode).toBe("us");
     expect(createBrowserUseRun.mock.calls[1]?.[0].sessionId).toBeUndefined();
     expect(createBrowserUseRun.mock.calls[1]?.[0].profileId).toBe("profile-1");
+    expect(createBrowserUseRun.mock.calls[1]?.[0].proxyCountryCode).toBe("us");
     expect(createBrowserRun).toHaveBeenCalledWith(
       accessScopeForUser("better-auth:alice"),
-      expect.objectContaining({ liveViewUrl: null, sessionId: freshSessionId })
+      expect.objectContaining({
+        liveViewUrl: null,
+        proxyCountryCode: "us",
+        sessionId: freshSessionId,
+      })
     );
     expect(continuationNote(result)).toContain(
       "opened a fresh browser on the same profile"
@@ -410,25 +433,29 @@ describe("browser_task continuation", () => {
   });
 
   it("keeps the original goal across multiple follow-up rows", async () => {
-    readBrowserRunForScope.mockResolvedValue(
-      browserRunRow(
-        new Date(),
-        "RESULT: Вход выполнен\nSTATUS: partial\nNEXT: Выбрать тариф не дороже 1500 ₽"
-      )
-    );
-
     await continueErrand({
       completedAt: new Date(),
       message: "Выбери только тариф Комфорт",
+      outcome:
+        "RESULT: Вход выполнен\nSTATUS: partial\nNEXT: Выбрать тариф не дороже 1500 ₽",
+      storedProxyCountryCode: "us",
     });
 
     const persisted = createBrowserRun.mock.calls[0]?.[1];
     expect(persisted).toEqual(
-      expect.objectContaining({ task: "Войди в аккаунт на taxi.yandex.ru" })
+      expect.objectContaining({
+        proxyCountryCode: "us",
+        task: "Войди в аккаунт на taxi.yandex.ru",
+      })
     );
 
     readBrowserRunForScope.mockResolvedValue({
-      ...browserRunRow(new Date(), "RESULT: Тариф выбран\nSTATUS: partial"),
+      ...browserRunRow(
+        new Date(),
+        "RESULT: Тариф выбран\nSTATUS: partial",
+        "https://taxi.yandex.ru",
+        "us"
+      ),
       id: followUpRunId,
       task: String(persisted?.task),
     });
@@ -448,6 +475,7 @@ describe("browser_task continuation", () => {
     expect(prompt).toContain("Войди в аккаунт на taxi.yandex.ru");
     expect(prompt).toContain("Теперь закажи на 19:00");
     expect(prompt).toContain("Previous checkpoint");
+    expect(createBrowserUseRun.mock.calls[0]?.[0].proxyCountryCode).toBe("us");
   });
 
   it("reuses a safe checkpoint in a recovered session without echoing secrets", async () => {
@@ -541,6 +569,12 @@ describe("browser_task delegation contract", () => {
     });
 
     expect(start).toContain("explicit acceptance checklist");
+    expect(start).toContain(
+      "ties every hard constraint to the same exact option"
+    );
+    expect(start).toContain("enclosing offer row or card");
+    expect(start).toContain("included and excluded taxes or fees");
+    expect(start).toContain("Re-read selected dates, guests, currency");
     expect(start).toContain("never invent a preference");
     expect(start).toContain("successful click is not evidence of success");
     expect(start).toContain("try a different safe strategy");
@@ -565,6 +599,59 @@ describe("browser_task proxy", () => {
 
     expect(createBrowserUseRun.mock.calls[0]?.[0].customProxy).toBeUndefined();
     expect(createBrowserUseRun.mock.calls[0]?.[0].proxyCountryCode).toBe("ru");
+    expect(createBrowserRun).toHaveBeenCalledWith(
+      accessScopeForUser("better-auth:alice"),
+      expect.objectContaining({ proxyCountryCode: "ru" })
+    );
+  });
+
+  it("normalizes and persists an explicit start country", async () => {
+    await startErrand("", " US ");
+
+    expect(createBrowserUseRun.mock.calls[0]?.[0].proxyCountryCode).toBe("us");
+    expect(createBrowserRun).toHaveBeenCalledWith(
+      accessScopeForUser("better-auth:alice"),
+      expect.objectContaining({ proxyCountryCode: "us" })
+    );
+  });
+
+  it("rejects an invalid start country before provisioning", async () => {
+    await expect(startErrand("", "usa")).rejects.toThrow(
+      "Use a two-letter country code"
+    );
+
+    expect(browserRunQuotaGate).not.toHaveBeenCalled();
+    expect(createBrowserUseRun).not.toHaveBeenCalled();
+    expect(createBrowserRun).not.toHaveBeenCalled();
+  });
+
+  it("uses the configured fallback for a legacy run without a country", async () => {
+    await continueErrand({
+      completedAt: new Date(),
+      message: "Продолжай",
+      storedProxyCountryCode: null,
+    });
+
+    expect(createBrowserUseRun.mock.calls[0]?.[0].proxyCountryCode).toBe("ru");
+    expect(createBrowserRun).toHaveBeenCalledWith(
+      accessScopeForUser("better-auth:alice"),
+      expect.objectContaining({ proxyCountryCode: "ru" })
+    );
+  });
+
+  it("does not let a continuation replace the stored country", async () => {
+    await continueErrand({
+      completedAt: new Date(),
+      message: "Продолжай",
+      proxyCountryCode: "de",
+      storedProxyCountryCode: "us",
+    });
+
+    expect(createBrowserUseRun.mock.calls[0]?.[0].proxyCountryCode).toBe("us");
+    expect(createBrowserRun).toHaveBeenCalledWith(
+      accessScopeForUser("better-auth:alice"),
+      expect.objectContaining({ proxyCountryCode: "us" })
+    );
   });
 
   it("sends the deployment's own proxy with the run", async () => {
@@ -573,7 +660,7 @@ describe("browser_task proxy", () => {
     vi.stubEnv("BROWSER_USE_PROXY_USERNAME", "bro");
     vi.stubEnv("BROWSER_USE_PROXY_PASSWORD", "secret");
 
-    await startErrand("");
+    const result = await startErrand("", "us");
 
     expect(createBrowserUseRun.mock.calls[0]?.[0].customProxy).toEqual({
       host: "proxy.example.com",
@@ -581,6 +668,10 @@ describe("browser_task proxy", () => {
       port: 8080,
       username: "bro",
     });
+    expect(createBrowserUseRun.mock.calls[0]?.[0].proxyCountryCode).toBe("us");
+    expect(continuationNote(result)).toContain(
+      "custom proxy overrides the requested country"
+    );
   });
 });
 

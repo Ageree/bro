@@ -42,6 +42,7 @@ export const browserRuns = pgTable(
     // The origin the errand was pointed at. Recording an order reads it to
     // name the merchant, which the errand wording alone often does not.
     site: text("site"),
+    proxyCountryCode: text("proxy_country_code"),
     status: text("status", {
       enum: ["created", "running", "waiting", "done", "failed", "stopped"],
     })
@@ -95,6 +96,10 @@ export const browserRuns = pgTable(
     check(
       "browser_runs_conversation_id_check",
       sql`${table.conversationId} <> ''`
+    ),
+    check(
+      "browser_runs_proxy_country_code_check",
+      sql`${table.proxyCountryCode} IS NULL OR ${table.proxyCountryCode} ~ '^[a-z]{2}$'`
     ),
     index("browser_runs_workspace_idx").on(
       table.workspaceId,

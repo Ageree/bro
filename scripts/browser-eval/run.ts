@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -13,6 +14,7 @@ registerApplicationModuleResolution();
 
 const artifactRoot = join(homedir(), ".capy", "work", "browser-eval");
 const terminalStatuses = new Set(["completed", "failed", "cancelled"]);
+const timedOutRunIds = new Set<string>();
 
 function option(name: string) {
   const index = process.argv.indexOf(name);
@@ -170,7 +172,8 @@ async function waitForTerminal(runId: string) {
     }
     process.stdout.write("\n");
     await client.cancelBrowserUseRun(runId);
-    throw new Error(`Run ${runId} exceeded ${String(timeoutMs)}ms.`);
+    timedOutRunIds.add(runId);
+    return client.readBrowserUseRun(runId);
   };
   return poll();
 }
@@ -356,14 +359,25 @@ async function executeRun(task: string, prefix: string, reuseSession?: string) {
   const summary = await waitForTerminal(created.id);
   activeRunId = undefined;
   const rawAnswer = sanitizeBrowserOutput(summary.result ?? "", 30_000);
-  const screenshots = await captureArtifacts(created.id, prefix);
+  let screenshots: string[] = [];
+  let evidenceError: string | undefined;
+  try {
+    screenshots = await captureArtifacts(created.id, prefix);
+  } catch (error) {
+    evidenceError = sanitizeBrowserOutput(
+      error instanceof Error ? error.message : String(error),
+      2_000
+    );
+  }
   const parsed = parseBrowserOutcome(summary.result);
   const record = {
     createdModel: created.model,
     durationMs: Date.now() - runStartedAt,
+    evidenceError,
     exactLinks: exactLinks(rawAnswer),
     model: summary.model ?? created.model,
     parsedTaskStatus: resolvedBrowserOutcomeStatus(parsed),
+    promptSha256: createHash("sha256").update(summary.task).digest("hex"),
     providerError:
       sanitizeBrowserOutput(summary.error ?? "", 2_000) || undefined,
     providerStatus: summary.status,
@@ -374,23 +388,35 @@ async function executeRun(task: string, prefix: string, reuseSession?: string) {
     totalCostUsd: summary.totalCostUsd,
     totalInputTokens: summary.totalInputTokens,
     totalOutputTokens: summary.totalOutputTokens,
+    timedOut: timedOutRunIds.has(created.id),
   };
   return record;
 }
 
 const records: Awaited<ReturnType<typeof executeRun>>[] = [];
 
+function runError(record: Awaited<ReturnType<typeof executeRun>>) {
+  if (record.timedOut) {
+    return `Run ${record.runId} exceeded ${String(timeoutMs)}ms and was cancelled.`;
+  }
+  return record.providerStatus === "completed"
+    ? undefined
+    : `Run ${record.runId} ended as ${record.providerStatus}.`;
+}
+
 try {
   const initial = await executeRun(promptFor(fixture.task), "initial");
   records.push(initial);
+  executionError = runError(initial);
   const continuation = fixture.continuation;
-  if (withContinuation && continuation && sessionId) {
+  if (!executionError && withContinuation && continuation && sessionId) {
     const continued = await executeRun(
       continuationPrompt(continuation, initial.rawAnswer),
       "continuation",
       sessionId
     );
     records.push(continued);
+    executionError = runError(continued);
   }
 } catch (error) {
   executionError = sanitizeBrowserOutput(
@@ -425,6 +451,7 @@ const report = {
     continuation: withContinuation,
     maxCostUsdPerRun: maxCostUsd,
     pollMs,
+    proxyCountryCode: env.BROWSER_USE_PROXY_COUNTRY,
     timeoutMsPerRun: timeoutMs,
   },
   durationMs: Date.now() - startedAt.getTime(),
