@@ -30,7 +30,7 @@ const readBrowserRunForScope = vi.hoisted(() =>
   >(() => Promise.resolve(undefined))
 );
 const createBrowserRun = vi.hoisted(() =>
-  vi.fn<() => Promise<void>>(() => Promise.resolve())
+  vi.fn<(...args: unknown[]) => Promise<void>>(() => Promise.resolve())
 );
 const claimBrowserRunCompletion = vi.hoisted(() =>
   vi.fn<() => Promise<void>>(() => Promise.resolve())
@@ -159,7 +159,8 @@ afterEach(() => {
 
 function browserRunRow(
   completedAt: Date | null = null,
-  outcome: string | null = null
+  outcome: string | null = null,
+  site: string | null = "https://taxi.yandex.ru"
 ) {
   return {
     completedAt,
@@ -174,7 +175,7 @@ function browserRunRow(
     replyAnchorMessageId: null,
     rootSessionId: "session-1",
     sessionId,
-    site: "https://taxi.yandex.ru",
+    site,
     status: completedAt ? "done" : "running",
     task: "Войди в аккаунт на taxi.yandex.ru",
     updatedAt: new Date(),
@@ -208,6 +209,7 @@ function continuationNote(
 async function continueErrand(input: {
   readonly allowPayment?: boolean;
   readonly completedAt?: Date;
+  readonly message?: string;
   readonly outcome?: string;
   readonly site?: string;
 }) {
@@ -221,7 +223,7 @@ async function continueErrand(input: {
       allowPayment: input.allowPayment,
       runId,
       site: input.site,
-      task: "Код из смс 992130",
+      task: input.message ?? "Код из смс 992130",
     },
     toolContext("better-auth:alice")
   );
@@ -314,7 +316,7 @@ describe("browser_task continuation", () => {
         sessionId,
         site: "https://taxi.yandex.ru",
         status: "running",
-        task: "Код из смс 992130",
+        task: "Войди в аккаунт на taxi.yandex.ru",
       })
     );
     expect(result).toMatchObject({
@@ -399,6 +401,157 @@ describe("browser_task continuation", () => {
     expect(continuationNote(result)).toContain(
       "opened a fresh browser on the same profile"
     );
+  });
+
+  it("keeps the original goal across multiple follow-up rows", async () => {
+    readBrowserRunForScope.mockResolvedValue(
+      browserRunRow(
+        new Date(),
+        "RESULT: Вход выполнен\nSTATUS: partial\nNEXT: Выбрать тариф не дороже 1500 ₽"
+      )
+    );
+
+    await continueErrand({
+      completedAt: new Date(),
+      message: "Выбери только тариф Комфорт",
+    });
+
+    const persisted = createBrowserRun.mock.calls[0]?.[1] as
+      | { readonly task?: string }
+      | undefined;
+    expect(persisted).toEqual(
+      expect.objectContaining({ task: "Войди в аккаунт на taxi.yandex.ru" })
+    );
+
+    readBrowserRunForScope.mockResolvedValue({
+      ...browserRunRow(new Date(), "RESULT: Тариф выбран\nSTATUS: partial"),
+      id: followUpRunId,
+      task: String(persisted?.task),
+    });
+    createBrowserUseRun.mockClear();
+
+    const { browserTask } = await import("@agent/tools/browser_task");
+    await browserTask.execute(
+      {
+        action: "continue",
+        runId: followUpRunId,
+        task: "Теперь закажи на 19:00",
+      },
+      toolContext("better-auth:alice")
+    );
+
+    const prompt = String(createBrowserUseRun.mock.calls[0]?.[0].task);
+    expect(prompt).toContain("Войди в аккаунт на taxi.yandex.ru");
+    expect(prompt).toContain("Теперь закажи на 19:00");
+    expect(prompt).toContain("Previous checkpoint");
+  });
+
+  it("reuses a safe checkpoint in a recovered session without echoing secrets", async () => {
+    readBrowserUseRunStatus.mockResolvedValue("completed");
+    createBrowserUseRun
+      .mockRejectedValueOnce(
+        new BrowserUseError(404, "/runs", "Run, session, workspace not found")
+      )
+      .mockResolvedValue({
+        id: followUpRunId,
+        model: "hosted-agent",
+        sessionId: freshSessionId,
+        status: "running",
+      });
+
+    await continueErrand({
+      message: "Продолжай с оставшегося шага",
+      outcome: [
+        `RESULT: Бюджет 1500 ₽, год 2026. ${"Длинный итог. ".repeat(220)} код 992130 уже использован`,
+        "STATUS: partial",
+        "EVIDENCE: https://shop.example.com/product?sku=12345&color=blue",
+        "https://alice:hunter2@shop.example.com/account?sessionId=private-token",
+        "DETAILS: password=hunter2",
+        "NEXT: Подтвердить безопасный обратимый шаг",
+      ].join("\n"),
+    });
+
+    const prompt = String(createBrowserUseRun.mock.calls[1]?.[0].task);
+    expect(prompt).toContain("NEXT: Подтвердить безопасный обратимый шаг");
+    expect(prompt).toContain("Бюджет 1500 ₽, год 2026");
+    expect(prompt).toContain(
+      "https://shop.example.com/product?sku=12345&color=blue"
+    );
+    expect(prompt).not.toContain("992130");
+    expect(prompt).not.toContain("hunter2");
+    expect(prompt).not.toContain("private-token");
+    expect(prompt).not.toContain("alice:");
+  });
+
+  it("does not bind a newly supplied site when the stored site is empty", async () => {
+    readBrowserRunForScope.mockResolvedValue({
+      ...browserRunRow(new Date()),
+      site: null,
+    });
+
+    const { browserTask } = await import("@agent/tools/browser_task");
+    await browserTask.execute(
+      {
+        action: "continue",
+        runId,
+        site: "https://mail.google.com",
+        task: "Продолжай",
+      },
+      toolContext("better-auth:alice")
+    );
+
+    expect(resolveBrowserSecretBindings).toHaveBeenCalledWith(
+      accessScopeForUser("better-auth:alice"),
+      { allowPayment: false, site: undefined }
+    );
+    const created = createBrowserUseRun.mock.calls[0]?.[0];
+    expect(created?.task).not.toContain("mail.google.com");
+    expect(createBrowserRun).toHaveBeenCalledWith(
+      accessScopeForUser("better-auth:alice"),
+      expect.objectContaining({ site: null })
+    );
+  });
+});
+
+describe("browser_task delegation contract", () => {
+  it("retains constraints, handles amendments, and verifies acceptance criteria", async () => {
+    const { composeBrowserContinuation, composeBrowserTask } =
+      await import("@agent/tools/browser_task");
+    const start = composeBrowserTask({
+      aliases: [],
+      errand: "Book a refundable room under $250",
+      facts: undefined,
+      site: "https://example.com",
+    });
+    const continuation = composeBrowserContinuation({
+      aliases: [],
+      checkpoint: [
+        "RESULT: Budget 1500 ₽ in 2026; код 992130 used",
+        "EVIDENCE: https://shop.example.com/product?sku=12345&color=blue",
+        "NEXT: Keep the refundable constraint",
+      ].join("\n"),
+      errand: "Book a refundable room under $250",
+      facts: undefined,
+      message: "Change the cap to $220 but keep it refundable",
+      site: "https://example.com",
+    });
+
+    expect(start).toContain("explicit acceptance checklist");
+    expect(start).toContain("never invent a preference");
+    expect(start).toContain("successful click is not evidence of success");
+    expect(start).toContain("try a different safe strategy");
+    expect(start).toContain("STATUS: exactly complete, partial, or blocked");
+    expect(start).toContain("EVIDENCE:");
+    expect(start).toContain("NEXT:");
+    expect(continuation).toContain(
+      "amends that goal only where it explicitly conflicts"
+    );
+    expect(continuation).toContain("preserve every other hard constraint");
+    expect(continuation).toContain("do not guess which constraint to discard");
+    expect(continuation).toContain("Budget 1500 ₽ in 2026");
+    expect(continuation).toContain("product?sku=12345&color=blue");
+    expect(continuation).toContain("NEXT: Keep the refundable constraint");
+    expect(continuation).not.toContain("992130 used");
   });
 });
 

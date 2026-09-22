@@ -20,10 +20,32 @@ const runCreateResponseSchema = z.object({
 const runSummarySchema = z.object({
   error: z.string().nullable().optional(),
   id: z.string().min(1),
+  model: z
+    .unknown()
+    .transform((value) => (typeof value === "string" ? value : undefined))
+    .optional(),
   result: z.string().nullable().optional(),
   sessionId: z.string().min(1),
   status: runStatusSchema,
   task: z.string(),
+  totalCostUsd: z
+    .unknown()
+    .transform((value) =>
+      typeof value === "string" || typeof value === "number" ? value : undefined
+    )
+    .optional(),
+  totalInputTokens: z
+    .unknown()
+    .transform((value) =>
+      Number.isInteger(value) ? (value as number) : undefined
+    )
+    .optional(),
+  totalOutputTokens: z
+    .unknown()
+    .transform((value) =>
+      Number.isInteger(value) ? (value as number) : undefined
+    )
+    .optional(),
 });
 
 const runStatusResponseSchema = z.object({ status: runStatusSchema });
@@ -33,6 +55,7 @@ const runEventsResponseSchema = z.object({
     z.object({
       data: z.record(z.string(), z.json()),
       id: z.number().int(),
+      ts: z.string().optional(),
       type: z.string(),
     })
   ),
@@ -157,11 +180,15 @@ export async function readBrowserUseRunStatus(runId: string) {
   return status;
 }
 
-export async function listBrowserUseRunEvents(runId: string, limit = 100) {
+export async function listBrowserUseRunEvents(
+  runId: string,
+  limit = 100,
+  after = 0
+) {
   return runEventsResponseSchema.parse(
     await request(
       "GET",
-      `/runs/${encodeURIComponent(runId)}/events?limit=${String(limit)}`
+      `/runs/${encodeURIComponent(runId)}/events?limit=${String(limit)}&after=${String(after)}`
     )
   );
 }

@@ -147,7 +147,7 @@ describe("Browser Use client", () => {
 
   it("takes the live view url from the browser.ready event", async () => {
     const client = await loadClient();
-    stubFetch(
+    const calls = stubFetch(
       Response.json({
         events: [
           { data: { model: "hosted-agent" }, id: 1, type: "run.started" },
@@ -162,11 +162,39 @@ describe("Browser Use client", () => {
       })
     );
 
-    const page = await client.listBrowserUseRunEvents(runId);
+    const page = await client.listBrowserUseRunEvents(runId, 200, 42);
     expect(client.liveViewUrlFromEvents(page.events)).toBe(
       "https://live.browser-use.test/abc"
     );
     expect(client.liveViewUrlFromEvents([])).toBeUndefined();
+    expect(calls[0]?.url).toBe(
+      `${baseUrl}/runs/${runId}/events?limit=200&after=42`
+    );
+  });
+
+  it("reads documented run cost and model metadata without making it required", async () => {
+    const client = await loadClient();
+    stubFetch(
+      Response.json({
+        error: null,
+        id: runId,
+        model: "hosted-agent",
+        result: "RESULT: done\nNEEDS: none",
+        sessionId,
+        status: "completed",
+        task: "Research",
+        totalCostUsd: "0.42",
+        totalInputTokens: 123,
+        totalOutputTokens: 45,
+      })
+    );
+
+    await expect(client.readBrowserUseRun(runId)).resolves.toMatchObject({
+      model: "hosted-agent",
+      totalCostUsd: "0.42",
+      totalInputTokens: 123,
+      totalOutputTokens: 45,
+    });
   });
 
   it("finds the debugger endpoint of the browser this session is using", async () => {

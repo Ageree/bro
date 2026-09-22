@@ -97,13 +97,64 @@ describe("settling a browser run", () => {
 
     expect(claimBrowserRunCompletion).toHaveBeenCalledTimes(2);
     expect(claimBrowserRunCompletion).toHaveBeenNthCalledWith(1, runId, {
-      outcome: "Result: ordered\nOrder: 4417",
+      outcome: "Task status: complete\nResult: ordered\nOrder: 4417",
       status: "done",
     });
     expect(send).toHaveBeenCalledOnce();
     const prompt = send.mock.calls[0]?.[0];
-    expect(prompt).toContain(`Browser run ${runId} finished`);
+    expect(prompt).toContain(
+      `Browser run ${runId} reached a provider-terminal state`
+    );
     expect(prompt).toContain("Result: ordered");
+    expect(prompt).toContain("BEGIN UNTRUSTED BROWSER DATA");
+  });
+
+  it("does not mark provider completion as task success when work remains", async () => {
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    readBrowserUseRun.mockResolvedValue({
+      error: null,
+      id: runId,
+      result:
+        "STATUS: complete\nRESULT: reached payment\nNEEDS: 3ds\nDETAILS: approve in bank app",
+      sessionId: "session-1",
+      status: "completed",
+      task: "Order the usual",
+    });
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    expect(claimBrowserRunCompletion).toHaveBeenCalledExactlyOnceWith(runId, {
+      outcome: expect.stringContaining("Task status: blocked"),
+      status: "failed",
+    });
+    expect(send.mock.calls[0]?.[0]).toContain(
+      "The errand is blocked, not complete"
+    );
+  });
+
+  it("does not report an explicit partial result as done", async () => {
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    readBrowserUseRun.mockResolvedValue({
+      error: null,
+      id: runId,
+      result:
+        "STATUS: partial\nRESULT: found two options\nEVIDENCE: https://example.com/a\nNEEDS: none\nNEXT: verify a third option",
+      sessionId: "session-1",
+      status: "completed",
+      task: "Compare options",
+    });
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    expect(claimBrowserRunCompletion).toHaveBeenCalledExactlyOnceWith(runId, {
+      outcome: expect.stringContaining("Task status: partial"),
+      status: "failed",
+    });
+    expect(send.mock.calls[0]?.[0]).toContain("Report the useful progress");
   });
 
   it("leaves a run that has not reached a terminal status alone", async () => {

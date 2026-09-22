@@ -19,6 +19,16 @@ export const browserRunNeeds = [
 
 export type BrowserRunNeed = (typeof browserRunNeeds)[number];
 
+export const browserOutcomeStatuses = [
+  "complete",
+  "partial",
+  "blocked",
+] as const;
+
+export type BrowserOutcomeStatus =
+  | (typeof browserOutcomeStatuses)[number]
+  | "invalid";
+
 // «нет» / "none" / "-" all mean "nothing in this field".
 const emptyValue = /^(?:none|нет|-|—|n\/a|н\/д)$/iu;
 
@@ -27,49 +37,159 @@ const emptyValue = /^(?:none|нет|-|—|n\/a|н\/д)$/iu;
  * bullet, or Markdown bold around the label and sometimes the value. Missing
  * the label costs the parse the whole block, so both are tolerated.
  */
-function rawLabelledValue(text: string, label: string) {
-  const pattern = new RegExp(
-    `^[ \\t]*(?:[-*•]+[ \\t]*)?\\*{0,2}${label}\\*{0,2}[ \\t]*:[ \\t]*(.+)$`,
-    "imu"
-  );
-  return text
-    .match(pattern)?.[1]
-    ?.replaceAll(/^\*+|[\s*]+$/gu, "")
-    .trim();
+const outcomeLabels = [
+  "STATUS",
+  "RESULT",
+  "EVIDENCE",
+  "ORDER",
+  "TOTAL",
+  "NEEDS",
+  "DETAILS",
+  "NEXT",
+] as const;
+
+type OutcomeLabel = (typeof outcomeLabels)[number];
+
+const labelledLine = new RegExp(
+  `^[ \\t]*(?:[-*•]+[ \\t]*)?\\*{0,2}(${outcomeLabels.join("|")})\\*{0,2}[ \\t]*:\\*{0,2}[ \\t]*(.*)$`,
+  "iu"
+);
+
+const sensitiveUrlKeys =
+  /(?:^|[_-])(?:access[_-]?token|api[_-]?key|auth(?:orization)?|code|key|secret|session(?:id)?|sig(?:nature)?|token)(?:$|[_-])/iu;
+
+function sanitizeUrl(value: string) {
+  try {
+    const url = new URL(value);
+    if (/^(?:live\.|live-|.*browser-use)/iu.test(url.hostname)) {
+      return "[redacted live-view URL]";
+    }
+    url.username = "";
+    url.password = "";
+    for (const key of [...url.searchParams.keys()]) {
+      if (sensitiveUrlKeys.test(key)) url.searchParams.set(key, "[redacted]");
+    }
+    url.hash = "";
+    return url.toString();
+  } catch {
+    return value;
+  }
+}
+
+export function sanitizeBrowserOutput(value: string, limit = 4_000) {
+  const urls: string[] = [];
+  const withoutUrls = value.replaceAll(/https?:\/\/[^\s<>"']+/giu, (url) => {
+    const index = urls.push(sanitizeUrl(url)) - 1;
+    return `\uE000${String(index)}\uE001`;
+  });
+  return withoutUrls
+    .replaceAll(/<[^>]*>/gu, " ")
+    .replaceAll(
+      /---\s*(?:begin|end)\s+untrusted browser data\s*---/giu,
+      "[browser data marker removed]"
+    )
+    .replaceAll(
+      /\b(?:authorization\s*:\s*)?bearer\s+[^\s]+/giu,
+      "[redacted credential]"
+    )
+    .replaceAll(
+      /(^|[^\p{L}\p{N}_])(?:password|passcode|otp|one[- ]time code|sms code|token|пароль|код(?:[ \t]+из[ \t]+смс)?)[ \t]*[:=]?[ \t]*(?:\d{4,8}|\S{6,})/gimu,
+      "$1[redacted credential]"
+    )
+    .replaceAll(
+      /\uE000(\d+)\uE001/gu,
+      (_placeholder, index: string) => urls[Number(index)] ?? "[redacted URL]"
+    )
+    .replaceAll(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/gu, "")
+    .replaceAll(/[ \t]+\n/gu, "\n")
+    .trim()
+    .slice(0, limit);
+}
+
+function labelledValues(text: string) {
+  const values = new Map<OutcomeLabel, string[]>();
+  let current: OutcomeLabel | undefined;
+  for (const line of text.split(/\r?\n/u)) {
+    const match = labelledLine.exec(line);
+    if (match) {
+      current = match[1]?.toUpperCase() as OutcomeLabel;
+      if (!values.has(current)) values.set(current, []);
+      values.get(current)?.push(match[2] ?? "");
+      continue;
+    }
+    if (current !== undefined) values.get(current)?.push(line);
+  }
+  return values;
+}
+
+function rawLabelledValue(
+  values: Map<OutcomeLabel, string[]>,
+  label: OutcomeLabel
+) {
+  const value = values.get(label)?.join("\n");
+  if (value === undefined) return undefined;
+  return sanitizeBrowserOutput(value.replaceAll(/^\*+|[\s*]+$/gu, ""));
 }
 
 /** The label was written, but «нет» / "none" / "-" means it carries nothing. */
-function labelledValue(text: string, label: string) {
-  const value = rawLabelledValue(text, label);
+function labelledValue(
+  values: Map<OutcomeLabel, string[]>,
+  label: OutcomeLabel
+) {
+  const value = rawLabelledValue(values, label);
   if (!value || emptyValue.test(value)) return undefined;
   return value;
 }
 
 export function parseBrowserOutcome(result: string | null | undefined) {
   const text = (result ?? "").trim();
-  const rawNeeds = rawLabelledValue(text, "NEEDS");
+  const values = labelledValues(text);
+  const rawNeeds = rawLabelledValue(values, "NEEDS");
   const candidate = rawNeeds?.toLowerCase().replaceAll(/\s+/gu, "_");
+  const need = browserRunNeeds.find((item) => item === candidate);
+  const rawStatus = rawLabelledValue(values, "STATUS")?.toLowerCase();
+  const status: BrowserOutcomeStatus | undefined = values.has("STATUS")
+    ? (browserOutcomeStatuses.find((item) => item === rawStatus) ?? "invalid")
+    : undefined;
+  const parsedResult = labelledValue(values, "RESULT");
   return {
-    details: labelledValue(text, "DETAILS"),
+    details: labelledValue(values, "DETAILS"),
+    evidence: labelledValue(values, "EVIDENCE"),
     labelled: rawNeeds !== undefined,
-    needs: browserRunNeeds.find((need) => need === candidate) ?? "none",
-    order: labelledValue(text, "ORDER"),
-    result: labelledValue(text, "RESULT"),
-    total: labelledValue(text, "TOTAL"),
+    needs: need ?? "none",
+    protocolValid:
+      parsedResult !== undefined && values.has("NEEDS") && need !== undefined,
+    next: labelledValue(values, "NEXT"),
+    order: labelledValue(values, "ORDER"),
+    result: parsedResult,
+    status,
+    total: labelledValue(values, "TOTAL"),
   };
+}
+
+export function resolvedBrowserOutcomeStatus(
+  outcome: ReturnType<typeof parseBrowserOutcome>
+): BrowserOutcomeStatus {
+  if (!outcome.protocolValid || outcome.status === "invalid") return "invalid";
+  if (outcome.needs !== "none") return "blocked";
+  return outcome.status ?? "complete";
 }
 
 /** One compact line per fact, for the coordinator's own reading. */
 export function browserOutcomeSummary(
   outcome: ReturnType<typeof parseBrowserOutcome>,
-  fallback: string
+  fallback: string,
+  status: BrowserOutcomeStatus = resolvedBrowserOutcomeStatus(outcome)
 ) {
   const lines = [
+    `Task status: ${status}`,
     outcome.result ? `Result: ${outcome.result}` : fallback,
+    outcome.evidence ? `Evidence: ${outcome.evidence}` : undefined,
     outcome.order ? `Order: ${outcome.order}` : undefined,
     outcome.total ? `Total: ${outcome.total}` : undefined,
     outcome.needs === "none" ? undefined : `Needs: ${outcome.needs}`,
     outcome.details ? `Details: ${outcome.details}` : undefined,
+    outcome.next ? `Next: ${outcome.next}` : undefined,
   ];
   return lines.filter((line) => line !== undefined).join("\n");
 }
@@ -150,7 +270,7 @@ export function parseBrowserOrder(
     readonly task: string;
   }
 ) {
-  if (outcome.needs !== "none") return null;
+  if (resolvedBrowserOutcomeStatus(outcome) !== "complete") return null;
   const merchantOrderId = outcome.order?.trim();
   if (!merchantOrderId || merchantOrderId.length > 64) return null;
   if (
