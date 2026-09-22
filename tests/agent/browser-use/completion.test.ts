@@ -125,10 +125,12 @@ describe("settling a browser run", () => {
 
     await settleBrowserRun({ to }, runId);
 
-    expect(claimBrowserRunCompletion).toHaveBeenCalledExactlyOnceWith(runId, {
-      outcome: expect.stringContaining("Task status: blocked"),
-      status: "failed",
-    });
+    expect(claimBrowserRunCompletion).toHaveBeenCalledOnce();
+    expect(claimBrowserRunCompletion.mock.calls[0]?.[0]).toBe(runId);
+    expect(claimBrowserRunCompletion.mock.calls[0]?.[1]?.status).toBe("failed");
+    expect(claimBrowserRunCompletion.mock.calls[0]?.[1]?.outcome).toContain(
+      "Task status: blocked"
+    );
     expect(send.mock.calls[0]?.[0]).toContain(
       "The errand is blocked, not complete"
     );
@@ -150,10 +152,12 @@ describe("settling a browser run", () => {
 
     await settleBrowserRun({ to }, runId);
 
-    expect(claimBrowserRunCompletion).toHaveBeenCalledExactlyOnceWith(runId, {
-      outcome: expect.stringContaining("Task status: partial"),
-      status: "failed",
-    });
+    expect(claimBrowserRunCompletion).toHaveBeenCalledOnce();
+    expect(claimBrowserRunCompletion.mock.calls[0]?.[0]).toBe(runId);
+    expect(claimBrowserRunCompletion.mock.calls[0]?.[1]?.status).toBe("failed");
+    expect(claimBrowserRunCompletion.mock.calls[0]?.[1]?.outcome).toContain(
+      "Task status: partial"
+    );
     expect(send.mock.calls[0]?.[0]).toContain("Report the useful progress");
   });
 

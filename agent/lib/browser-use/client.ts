@@ -20,32 +20,14 @@ const runCreateResponseSchema = z.object({
 const runSummarySchema = z.object({
   error: z.string().nullable().optional(),
   id: z.string().min(1),
-  model: z
-    .unknown()
-    .transform((value) => (typeof value === "string" ? value : undefined))
-    .optional(),
+  model: z.string().optional().catch(undefined),
   result: z.string().nullable().optional(),
   sessionId: z.string().min(1),
   status: runStatusSchema,
   task: z.string(),
-  totalCostUsd: z
-    .unknown()
-    .transform((value) =>
-      typeof value === "string" || typeof value === "number" ? value : undefined
-    )
-    .optional(),
-  totalInputTokens: z
-    .unknown()
-    .transform((value) =>
-      Number.isInteger(value) ? (value as number) : undefined
-    )
-    .optional(),
-  totalOutputTokens: z
-    .unknown()
-    .transform((value) =>
-      Number.isInteger(value) ? (value as number) : undefined
-    )
-    .optional(),
+  totalCostUsd: z.union([z.string(), z.number()]).optional().catch(undefined),
+  totalInputTokens: z.number().int().nonnegative().optional().catch(undefined),
+  totalOutputTokens: z.number().int().nonnegative().optional().catch(undefined),
 });
 
 const runStatusResponseSchema = z.object({ status: runStatusSchema });

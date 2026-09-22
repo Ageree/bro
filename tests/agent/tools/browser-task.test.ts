@@ -1,6 +1,7 @@
 import type { ToolContext } from "eve/tools";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type * as browserUseClient from "@agent/lib/browser-use/client";
+import type { createBrowserRun as createBrowserRunService } from "@db/services/browser-runs";
 import {
   BrowserUseError,
   type BrowserUseCreateRunInput,
@@ -30,7 +31,12 @@ const readBrowserRunForScope = vi.hoisted(() =>
   >(() => Promise.resolve(undefined))
 );
 const createBrowserRun = vi.hoisted(() =>
-  vi.fn<(...args: unknown[]) => Promise<void>>(() => Promise.resolve())
+  vi.fn<
+    (
+      scope: AccessScope,
+      input: Parameters<typeof createBrowserRunService>[1]
+    ) => Promise<void>
+  >(() => Promise.resolve())
 );
 const claimBrowserRunCompletion = vi.hoisted(() =>
   vi.fn<() => Promise<void>>(() => Promise.resolve())
@@ -416,9 +422,7 @@ describe("browser_task continuation", () => {
       message: "Выбери только тариф Комфорт",
     });
 
-    const persisted = createBrowserRun.mock.calls[0]?.[1] as
-      | { readonly task?: string }
-      | undefined;
+    const persisted = createBrowserRun.mock.calls[0]?.[1];
     expect(persisted).toEqual(
       expect.objectContaining({ task: "Войди в аккаунт на taxi.yandex.ru" })
     );

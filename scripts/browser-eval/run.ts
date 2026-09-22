@@ -1,12 +1,13 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { registerApplicationModuleResolution } from "../lib/module-resolution.ts";
+import { z } from "zod";
 import {
-  browserEvalFixtures,
-  browserEvalTaskIds,
-  type BrowserEvalTaskId,
-} from "./fixtures.ts";
+  browserEvalEnv,
+  prepareBrowserEvalEnvironment,
+} from "../env/browser-eval.ts";
+import { registerApplicationModuleResolution } from "../lib/module-resolution.ts";
+import { browserEvalFixtures, browserEvalTaskIds } from "./fixtures.ts";
 
 registerApplicationModuleResolution();
 
@@ -27,7 +28,7 @@ function positiveNumber(name: string, fallback: number) {
   return value;
 }
 
-const taskId = option("--task") as BrowserEvalTaskId | undefined;
+const requestedTaskId = option("--task");
 const variant = option("--variant") ?? "current";
 const withContinuation = process.argv.includes("--continue");
 const maxCostUsd = positiveNumber("--max-cost", 0.5);
@@ -38,7 +39,10 @@ if (process.argv.includes("--list")) {
   console.log(browserEvalTaskIds.join("\n"));
   process.exit(0);
 }
-if (!taskId || !browserEvalTaskIds.includes(taskId)) {
+const selectedFixture = Object.entries(browserEvalFixtures).find(
+  ([taskId]) => taskId === requestedTaskId
+);
+if (!selectedFixture) {
   console.error(
     `Choose one task with --task: ${browserEvalTaskIds.join(", ")}`
   );
@@ -48,27 +52,26 @@ if (variant !== "current" && variant !== "baseline") {
   console.error("--variant must be current or baseline.");
   process.exit(2);
 }
-const selectedTaskId = taskId as BrowserEvalTaskId;
-const fixture = browserEvalFixtures[selectedTaskId];
+const [selectedTaskId, fixture] = selectedFixture;
 if (withContinuation && !fixture.continuation) {
-  console.error(`${taskId} has no continuation fixture.`);
+  console.error(`${selectedTaskId} has no continuation fixture.`);
   process.exit(2);
 }
 
 await mkdir(artifactRoot, { recursive: true });
 const startedAt = new Date();
-const slug = `${startedAt.toISOString().replaceAll(/[:.]/gu, "-")}-${taskId}-${variant}`;
+const slug = `${startedAt.toISOString().replaceAll(/[:.]/gu, "-")}-${selectedTaskId}-${variant}`;
 const artifactDirectory = join(artifactRoot, slug);
 await mkdir(artifactDirectory, { recursive: true });
 
-if (!process.env.BROWSER_USE_API_KEY?.trim()) {
+if (!browserEvalEnv.BROWSER_USE_API_KEY) {
   await writeFile(
     join(artifactDirectory, "blocked.json"),
     `${JSON.stringify(
       {
         reason: "BROWSER_USE_API_KEY is not configured.",
         status: "blocked",
-        taskId,
+        taskId: selectedTaskId,
         variant,
       },
       null,
@@ -81,7 +84,7 @@ if (!process.env.BROWSER_USE_API_KEY?.trim()) {
   process.exit(2);
 }
 
-process.env.DATABASE_URL ??= "postgresql://browser-eval.invalid/browser_eval";
+prepareBrowserEvalEnvironment();
 
 const client = await import("@agent/lib/browser-use/client");
 const { env } = await import("@shared/environment");
@@ -152,62 +155,95 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function waitForTerminal(runId: string) {
   const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
+  const poll = async (): Promise<
+    Awaited<ReturnType<typeof client.readBrowserUseRun>>
+  > => {
     const status = await client.readBrowserUseRunStatus(runId);
     process.stdout.write(`\r${runId} ${status}   `);
     if (terminalStatuses.has(status)) {
       process.stdout.write("\n");
       return client.readBrowserUseRun(runId);
     }
-    await sleep(pollMs);
-  }
-  process.stdout.write("\n");
-  await client.cancelBrowserUseRun(runId);
-  throw new Error(`Run ${runId} exceeded ${String(timeoutMs)}ms.`);
+    if (Date.now() < deadline) {
+      await sleep(pollMs);
+      return poll();
+    }
+    process.stdout.write("\n");
+    await client.cancelBrowserUseRun(runId);
+    throw new Error(`Run ${runId} exceeded ${String(timeoutMs)}ms.`);
+  };
+  return poll();
 }
 
 async function allEvents(runId: string) {
-  const events = [];
-  let after = 0;
-  const seenCursors = new Set<number>();
-  for (let pageNumber = 0; pageNumber < 20; pageNumber += 1) {
+  type Events = Awaited<
+    ReturnType<typeof client.listBrowserUseRunEvents>
+  >["events"];
+  const readPage = async (
+    after: number,
+    pagesLeft: number,
+    events: Events,
+    seenCursors: ReadonlySet<number>
+  ): Promise<Events> => {
+    if (pagesLeft <= 0) throw new Error("Event pagination exceeded 20 pages.");
     const page = await client.listBrowserUseRunEvents(runId, 200, after);
-    events.push(...page.events);
+    const collected = [...events, ...page.events];
     if (
       !page.hasMore ||
       page.nextAfter === null ||
       page.nextAfter === undefined
     ) {
-      return events;
+      return collected;
     }
     if (seenCursors.has(page.nextAfter)) {
       throw new Error(
         `Event pagination repeated cursor ${String(page.nextAfter)}.`
       );
     }
-    seenCursors.add(page.nextAfter);
-    after = page.nextAfter;
-  }
-  throw new Error("Event pagination exceeded 20 pages.");
+    const nextSeenCursors = new Set(seenCursors);
+    nextSeenCursors.add(page.nextAfter);
+    return readPage(page.nextAfter, pagesLeft - 1, collected, nextSeenCursors);
+  };
+  return readPage(0, 20, [], new Set());
 }
 
-function screenshotUrls(value: unknown, key = ""): string[] {
-  if (typeof value === "string") {
-    if (!/(?:screenshot|image)/iu.test(key) || !URL.canParse(value)) return [];
-    const protocol = new URL(value).protocol;
-    return protocol === "http:" || protocol === "https:" ? [value] : [];
+const jsonValueSchema = z.json();
+const jsonStringSchema = z.string();
+const jsonArraySchema = z.array(jsonValueSchema);
+const jsonObjectSchema = z.record(z.string(), jsonValueSchema);
+type BrowserEventValue = z.infer<typeof jsonValueSchema>;
+
+function screenshotUrls(value: BrowserEventValue, key = ""): string[] {
+  const stringValue = jsonStringSchema.safeParse(value);
+  if (stringValue.success) {
+    if (
+      !/(?:screenshot|image)/iu.test(key) ||
+      !URL.canParse(stringValue.data)
+    ) {
+      return [];
+    }
+    const protocol = new URL(stringValue.data).protocol;
+    return protocol === "http:" || protocol === "https:"
+      ? [stringValue.data]
+      : [];
   }
-  if (Array.isArray(value))
-    return value.flatMap((item) => screenshotUrls(item, key));
-  if (value && typeof value === "object") {
-    return Object.entries(value).flatMap(([childKey, child]) =>
+  const arrayValue = jsonArraySchema.safeParse(value);
+  if (arrayValue.success) {
+    return arrayValue.data.flatMap((item) => screenshotUrls(item, key));
+  }
+  const objectValue = jsonObjectSchema.safeParse(value);
+  if (objectValue.success) {
+    return Object.entries(objectValue.data).flatMap(([childKey, child]) =>
       screenshotUrls(child, childKey)
     );
   }
   return [];
 }
 
-function sanitizedEventData(value: unknown, key = ""): unknown {
+function sanitizedEventData(
+  value: BrowserEventValue,
+  key = ""
+): BrowserEventValue {
   if (
     /live|cdp|cookie|authorization|password|passcode|otp|secret|token/iu.test(
       key
@@ -215,15 +251,22 @@ function sanitizedEventData(value: unknown, key = ""): unknown {
   ) {
     return "[redacted]";
   }
-  if (/(?:screenshot|image)/iu.test(key) && typeof value === "string") {
+  const stringValue = jsonStringSchema.safeParse(value);
+  if (/(?:screenshot|image)/iu.test(key) && stringValue.success) {
     return "[captured separately when available]";
   }
-  if (typeof value === "string") return sanitizeBrowserOutput(value, 2_000);
-  if (Array.isArray(value))
-    return value.slice(0, 100).map((item) => sanitizedEventData(item, key));
-  if (value && typeof value === "object") {
+  if (stringValue.success)
+    return sanitizeBrowserOutput(stringValue.data, 2_000);
+  const arrayValue = jsonArraySchema.safeParse(value);
+  if (arrayValue.success) {
+    return arrayValue.data
+      .slice(0, 100)
+      .map((item) => sanitizedEventData(item, key));
+  }
+  const objectValue = jsonObjectSchema.safeParse(value);
+  if (objectValue.success) {
     return Object.fromEntries(
-      Object.entries(value)
+      Object.entries(objectValue.data)
         .slice(0, 100)
         .map(([childKey, child]) => [
           childKey,
@@ -239,40 +282,39 @@ async function captureArtifacts(runId: string, prefix: string) {
   const urls = [
     ...new Set(events.flatMap((event) => screenshotUrls(event.data))),
   ].slice(-6);
-  const screenshots: string[] = [];
-  for (const [index, url] of urls.entries()) {
+  const captureScreenshot = async (url: string, index: number) => {
     try {
       const response = await fetch(url, {
         signal: AbortSignal.timeout(10_000),
       });
       const contentType = response.headers.get("content-type") ?? "";
-      if (!response.ok || !contentType.startsWith("image/")) continue;
+      if (!response.ok || !contentType.startsWith("image/")) return undefined;
       const maximumBytes = 5 * 1024 * 1024;
       const declaredBytes = Number(response.headers.get("content-length"));
       if (Number.isFinite(declaredBytes) && declaredBytes > maximumBytes)
-        continue;
-      const reader = response.body?.getReader();
-      if (!reader) continue;
+        return undefined;
+      if (!response.body) return undefined;
       const chunks: Uint8Array[] = [];
       let bytes = 0;
-      for (;;) {
-        const chunk = await reader.read();
-        if (chunk.done) break;
-        bytes += chunk.value.byteLength;
+      for await (const chunk of response.body) {
+        bytes += chunk.byteLength;
         if (bytes > maximumBytes) {
-          await reader.cancel();
           throw new Error("Screenshot exceeded 5 MiB.");
         }
-        chunks.push(chunk.value);
+        chunks.push(chunk);
       }
       const extension = contentType.includes("png") ? "png" : "jpg";
       const filename = `${prefix}-screenshot-${String(index + 1)}.${extension}`;
       await writeFile(join(artifactDirectory, filename), Buffer.concat(chunks));
-      screenshots.push(filename);
+      return filename;
     } catch {
-      continue;
+      return undefined;
     }
-  }
+  };
+  const captured = await Promise.all(
+    urls.map((url, index) => captureScreenshot(url, index))
+  );
+  const screenshots = captured.filter((filename) => filename !== undefined);
   await writeFile(
     join(artifactDirectory, `${prefix}-events.json`),
     `${JSON.stringify(
@@ -293,7 +335,6 @@ function exactLinks(text: string) {
   return [...new Set(text.match(/https?:\/\/[^\s)\]}>,]+/giu) ?? [])];
 }
 
-const records: Array<Record<string, unknown>> = [];
 let sessionId: string | undefined;
 let activeRunId: string | undefined;
 let executionError: string | undefined;
@@ -334,19 +375,22 @@ async function executeRun(task: string, prefix: string, reuseSession?: string) {
     totalInputTokens: summary.totalInputTokens,
     totalOutputTokens: summary.totalOutputTokens,
   };
-  records.push(record);
   return record;
 }
 
+const records: Awaited<ReturnType<typeof executeRun>>[] = [];
+
 try {
   const initial = await executeRun(promptFor(fixture.task), "initial");
+  records.push(initial);
   const continuation = fixture.continuation;
   if (withContinuation && continuation && sessionId) {
-    await executeRun(
-      continuationPrompt(continuation, initial.rawAnswer as string),
+    const continued = await executeRun(
+      continuationPrompt(continuation, initial.rawAnswer),
       "continuation",
       sessionId
     );
+    records.push(continued);
   }
 } catch (error) {
   executionError = sanitizeBrowserOutput(
@@ -356,9 +400,9 @@ try {
   if (activeRunId) {
     try {
       await client.cancelBrowserUseRun(activeRunId);
-    } catch (error) {
+    } catch (cancellationError) {
       executionError ??= sanitizeBrowserOutput(
-        `Run cancellation failed: ${error instanceof Error ? error.message : String(error)}`,
+        `Run cancellation failed: ${cancellationError instanceof Error ? cancellationError.message : String(cancellationError)}`,
         2_000
       );
     }
@@ -367,9 +411,9 @@ try {
   if (sessionId) {
     try {
       await client.stopBrowserUseSession(sessionId);
-    } catch (error) {
+    } catch (cleanupError) {
       executionError ??= sanitizeBrowserOutput(
-        `Session cleanup failed: ${error instanceof Error ? error.message : String(error)}`,
+        `Session cleanup failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`,
         2_000
       );
     }
@@ -402,7 +446,7 @@ await writeFile(
 await writeFile(
   join(artifactDirectory, "manual-score.md"),
   [
-    `# Browser eval: ${taskId} (${variant})`,
+    `# Browser eval: ${selectedTaskId} (${variant})`,
     "",
     `Run status: **${report.status}**. Provider/model self-report is not a pass verdict.`,
     "",

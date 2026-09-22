@@ -62,7 +62,7 @@ function sanitizeUrl(value: string) {
     }
     url.username = "";
     url.password = "";
-    for (const key of [...url.searchParams.keys()]) {
+    for (const key of url.searchParams.keys()) {
       if (sensitiveUrlKeys.test(key)) url.searchParams.set(key, "[redacted]");
     }
     url.hash = "";
@@ -96,7 +96,9 @@ export function sanitizeBrowserOutput(value: string, limit = 4_000) {
       /\uE000(\d+)\uE001/gu,
       (_placeholder, index: string) => urls[Number(index)] ?? "[redacted URL]"
     )
-    .replaceAll(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/gu, "")
+    .replaceAll(/\p{Cc}/gu, (character) =>
+      ["\n", "\r", "\t"].includes(character) ? character : ""
+    )
     .replaceAll(/[ \t]+\n/gu, "\n")
     .trim()
     .slice(0, limit);
@@ -108,7 +110,10 @@ function labelledValues(text: string) {
   for (const line of text.split(/\r?\n/u)) {
     const match = labelledLine.exec(line);
     if (match) {
-      current = match[1]?.toUpperCase() as OutcomeLabel;
+      current = outcomeLabels.find(
+        (label) => label === match[1]?.toUpperCase()
+      );
+      if (current === undefined) continue;
       if (!values.has(current)) values.set(current, []);
       values.get(current)?.push(match[2] ?? "");
       continue;

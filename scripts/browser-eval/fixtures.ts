@@ -32,8 +32,4 @@ export const browserEvalFixtures = {
   },
 } as const;
 
-export type BrowserEvalTaskId = keyof typeof browserEvalFixtures;
-
-export const browserEvalTaskIds = Object.keys(
-  browserEvalFixtures
-) as BrowserEvalTaskId[];
+export const browserEvalTaskIds = Object.keys(browserEvalFixtures);

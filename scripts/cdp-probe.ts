@@ -369,7 +369,10 @@ try {
 } finally {
   const browserExited = new Promise<void>((resolve) => {
     if (browser.exitCode !== null) resolve();
-    else browser.once("exit", () => resolve());
+    else
+      browser.once("exit", () => {
+        resolve();
+      });
   });
   browser.kill();
   await Promise.race([browserExited, sleep(5_000)]);
