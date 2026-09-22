@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { put } from "@vercel/blob";
+import { del, put } from "@vercel/blob";
 import { defineDynamic, defineTool, type ToolContext } from "eve/tools";
 import { always } from "eve/tools/approval";
 import { z } from "zod";
@@ -89,11 +89,13 @@ export const gmailAttachment = defineTool({
       );
     }
     const scope = scopeFromPrincipal(caller);
-    const attachments = await Promise.all(
-      input.attachments.map(async (request) =>
-        storeGmailAttachment(ctx, scope, request)
-      )
-    );
+    // One attachment at a time: ten at the size cap, decoded together, would
+    // hold far more memory than the function has.
+    const attachments = [];
+    for (const request of input.attachments) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Sequential on purpose, to bound the bytes held at once.
+      attachments.push(await storeGmailAttachment(ctx, scope, request));
+    }
     return { attachments };
   },
 });
@@ -144,13 +146,21 @@ async function storeGmailAttachment(
     .update(scope.workspaceId)
     .digest("hex")
     .slice(0, 32)}/${id}`;
-  await put(storagePathname, Buffer.from(read.bytes), {
-    abortSignal: ctx.abortSignal,
-    access: "private",
-    addRandomSuffix: false,
-    allowOverwrite: false,
-    contentType: mediaType,
-  });
+  await put(
+    storagePathname,
+    Buffer.from(
+      read.bytes.buffer,
+      read.bytes.byteOffset,
+      read.bytes.byteLength
+    ),
+    {
+      abortSignal: ctx.abortSignal,
+      access: "private",
+      addRandomSuffix: false,
+      allowOverwrite: false,
+      contentType: mediaType,
+    }
+  );
   const saved = await saveGmailAttachmentArtifact(scope, {
     ...part,
     byteSize: read.bytes.byteLength,
@@ -160,6 +170,11 @@ async function storeGmailAttachment(
     mediaType,
     storagePathname,
   });
+  if (saved.id !== id) {
+    // A concurrent call stored the same part first; its copy is the one the
+    // artifact points at, so this upload has no reader.
+    await del(storagePathname).catch(() => undefined);
+  }
   return readyAttachment(request, saved);
 }
 

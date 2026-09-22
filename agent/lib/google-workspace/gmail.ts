@@ -279,7 +279,13 @@ export async function readGmailAttachment(
         ).data.data
       : part.body?.data;
     if (!encoded) return { kind: "missing" } as const;
-    const bytes = new Uint8Array(Buffer.from(encoded, "base64url"));
+    const decoded = Buffer.from(encoded, "base64url");
+    // A view over the decoded buffer rather than a copy of it.
+    const bytes = new Uint8Array(
+      decoded.buffer,
+      decoded.byteOffset,
+      decoded.byteLength
+    );
     if (bytes.byteLength > maxBytes) return { kind: "oversize" } as const;
     return {
       bytes,

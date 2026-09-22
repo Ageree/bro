@@ -130,6 +130,26 @@ describe("image artifact delivery", () => {
     expect(result.failedArtifactIds).toEqual([firstId]);
   });
 
+  it("leaves an artifact past the message's byte budget unread", async () => {
+    mocks.readArtifact.mockResolvedValue({
+      byteSize: 31 * 1024 * 1024,
+      contentHash: "hash",
+      filename: "archive.pdf",
+      id: secondId,
+      mediaType: "application/pdf",
+      storagePathname: "gmail-attachments/archive",
+    });
+
+    const result = await prepareImageArtifactDelivery(
+      `![archive.pdf](/artifacts/${secondId})`,
+      { rootSessionId: "root-session", scope }
+    );
+
+    expect(mocks.getBlob).not.toHaveBeenCalled();
+    expect(result.files).toEqual([]);
+    expect(result.failedArtifactIds).toEqual([secondId]);
+  });
+
   it("leaves ordinary markdown untouched without storage reads", async () => {
     const markdown = "See ![external](https://example.com/product.png).";
 

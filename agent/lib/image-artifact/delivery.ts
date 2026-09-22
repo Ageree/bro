@@ -4,6 +4,7 @@ import type { AccessScope } from "@shared/identity/access-scope";
 import { readReadyArtifact } from "@db/services/artifacts";
 import { env } from "@shared/environment";
 import {
+  maximumAttachmentBatchBytes,
   outboundFileKind,
   type OutboundFile,
 } from "../outbound-media/attachments";
@@ -57,36 +58,40 @@ export async function prepareImageArtifactDelivery(
     return { failedArtifactIds: [], files: [], text: message };
   }
 
-  const selected = references.slice(0, maximumArtifactsPerMessage);
-  const loaded = await Promise.all(
-    selected.map(async (reference) => ({
-      image: await readImageArtifact(input.scope, reference.id, {
-        rootSessionId: input.rootSessionId,
-        signal: input.signal,
-      }).catch(() => undefined),
-      reference,
-    }))
-  );
-  const failedArtifactIds = [
-    ...loaded
-      .filter((item) => item.image === undefined)
-      .map((item) => item.reference.id),
+  // One artifact at a time, within the byte budget URL attachments get, so a
+  // message of ten mail attachments cannot buffer its way out of memory.
+  const files: OutboundFile[] = [];
+  const failedArtifactIds: string[] = [];
+  let remainingBytes = maximumAttachmentBatchBytes;
+  /* oxlint-disable eslint/no-await-in-loop -- Each read sees what the message has already spent. */
+  for (const reference of references.slice(0, maximumArtifactsPerMessage)) {
+    const image = await readImageArtifact(input.scope, reference.id, {
+      maximumBytes: remainingBytes,
+      rootSessionId: input.rootSessionId,
+      signal: input.signal,
+    }).catch(() => undefined);
+    if (!image) {
+      failedArtifactIds.push(reference.id);
+      continue;
+    }
+    remainingBytes -= image.bytes.byteLength;
+    files.push({
+      data: Buffer.from(
+        image.bytes.buffer,
+        image.bytes.byteOffset,
+        image.bytes.byteLength
+      ),
+      filename: image.filename,
+      // A mail attachment can be a PDF or a video rather than a photo.
+      kind: outboundFileKind(image.mediaType),
+      mimeType: image.mediaType,
+    });
+  }
+  /* oxlint-enable eslint/no-await-in-loop */
+  failedArtifactIds.push(
     ...references
       .slice(maximumArtifactsPerMessage)
-      .map((reference) => reference.id),
-  ];
-  const files = loaded.flatMap(({ image }) =>
-    image
-      ? [
-          {
-            data: Buffer.from(image.bytes),
-            filename: image.filename,
-            // A mail attachment can be a PDF or a video rather than a photo.
-            kind: outboundFileKind(image.mediaType),
-            mimeType: image.mediaType,
-          } satisfies OutboundFile,
-        ]
-      : []
+      .map((reference) => reference.id)
   );
 
   return {
@@ -99,12 +104,16 @@ export async function prepareImageArtifactDelivery(
 async function readImageArtifact(
   scope: AccessScope,
   artifactId: string,
-  options: { readonly rootSessionId: string; readonly signal?: AbortSignal }
+  options: {
+    readonly maximumBytes: number;
+    readonly rootSessionId: string;
+    readonly signal?: AbortSignal;
+  }
 ) {
   const artifact = await readReadyArtifact(scope, artifactId, {
     rootSessionId: options.rootSessionId,
   });
-  if (!artifact) return undefined;
+  if (!artifact || artifact.byteSize > options.maximumBytes) return undefined;
   if (!env.BLOB_STORE_ID && !env.BLOB_READ_WRITE_TOKEN) return undefined;
   const result = await get(artifact.storagePathname, {
     access: "private",

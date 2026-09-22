@@ -181,8 +181,21 @@ describe("Gmail attachments", () => {
   });
 
   it("refuses bytes that outgrow the declared size", async () => {
-    const read = await readGmailAttachment(toolContext(), "message-1", "1", 4);
+    google.getMessage.mockResolvedValue({
+      data: {
+        id: "message-1",
+        payload: {
+          body: { attachmentId: "rotating-id-4", size: 2 },
+          filename: "understated.jpg",
+          mimeType: "image/jpeg",
+          partId: "4",
+        },
+      },
+    });
 
+    const read = await readGmailAttachment(toolContext(), "message-1", "4", 4);
+
+    expect(google.getAttachment).toHaveBeenCalledOnce();
     expect(read).toEqual({ kind: "oversize" });
   });
 

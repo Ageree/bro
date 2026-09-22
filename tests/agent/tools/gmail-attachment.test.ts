@@ -9,6 +9,7 @@ import type {
 } from "@db/services/gmail-attachments";
 
 const mocks = vi.hoisted(() => ({
+  del: vi.fn<typeof Blob.del>(),
   find: vi.fn<typeof findGmailAttachmentArtifact>(),
   put: vi.fn<typeof Blob.put>(),
   read: vi.fn<typeof readGmailAttachment>(),
@@ -25,6 +26,7 @@ vi.mock("@db/services/gmail-attachments", () => ({
 }));
 vi.mock("@vercel/blob", async (importOriginal) => ({
   ...(await importOriginal<typeof Blob>()),
+  del: mocks.del,
   put: mocks.put,
 }));
 
@@ -138,6 +140,27 @@ describe("gmail-attachment", () => {
       expect.objectContaining({
         markdown: `![beach.jpg](/artifacts/${artifactId})`,
         status: "ready",
+      }),
+    ]);
+  });
+
+  it("removes its own upload when a concurrent call stored the part first", async () => {
+    mocks.read.mockResolvedValue({
+      bytes: jpeg,
+      filename: "beach.jpg",
+      kind: "bytes",
+      mimeType: "image/jpeg",
+    });
+    mocks.save.mockResolvedValue(savedRow);
+    mocks.del.mockResolvedValue(undefined);
+
+    const result = await attach([{ messageId: "message-1", partId: "1" }]);
+
+    const [uploaded] = mocks.put.mock.calls[0] ?? [];
+    expect(mocks.del).toHaveBeenCalledExactlyOnceWith(uploaded);
+    expect(result.attachments).toEqual([
+      expect.objectContaining({
+        markdown: `![beach.jpg](/artifacts/${artifactId})`,
       }),
     ]);
   });

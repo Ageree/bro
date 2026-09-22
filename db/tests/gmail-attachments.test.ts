@@ -59,6 +59,17 @@ describe("Gmail attachment artifacts", () => {
     });
 
     expect(replayed.id).toBe(first.id);
+    const laterSession = await attachments.saveGmailAttachmentArtifact(alice, {
+      ...part,
+      byteSize: 8,
+      contentHash: "hash-1",
+      filename: "beach.jpg",
+      id: "00000000-0000-4000-8000-0000000000b3",
+      mediaType: "image/jpeg",
+      rootSessionId: "session-later",
+      storagePathname: "gmail-attachments/alice/later",
+    });
+    expect(laterSession.id).not.toBe(first.id);
     expect(
       await attachments.findGmailAttachmentArtifact(alice, part)
     ).toMatchObject({ id: first.id });
@@ -85,7 +96,7 @@ describe("Gmail attachment artifacts", () => {
       })
     ).toBeUndefined();
     expect(await artifacts.readReadyArtifact(bob, first.id)).toBeUndefined();
-  });
+  }, 30_000);
 });
 
 async function applyAllMigrations(database: PGlite) {
