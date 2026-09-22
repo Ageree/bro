@@ -46,7 +46,10 @@ import {
 const webhookSecret = env.IMESSAGE_WEBHOOK_SECRET;
 
 /** The bytes an iMessage post carries; Photon has no notion of a media kind. */
-type MessageFile = Pick<OutboundFile, "data" | "filename" | "mimeType">;
+type MessageFile = Pick<
+  OutboundFile,
+  "data" | "filename" | "mimeType" | "sourceUrl"
+>;
 
 /**
  * Handed to the model on the turn that created the account. The instructions
@@ -142,15 +145,11 @@ export default photonIMessageChannel({
       const requestedText = output.text;
       if (!requestedText) {
         const prepared = await attachmentDelivery(session, attachments);
-        if (prepared.links.length > 0 || prepared.files.length > 0) {
-          await thread.post(
-            outgoingMessage({
-              attachmentLinks: prepared.links,
-              files: prepared.files,
-              text: "",
-            })
-          );
-        }
+        await postBubbles(thread, session, {
+          attachmentLinks: prepared.links,
+          files: prepared.files,
+          text: "",
+        });
         markTurnDelivered(context.state, event.turnId);
         await finalizeScheduledReportDelivery(session);
         return;
@@ -335,6 +334,8 @@ async function deliverText(
     readonly text: string;
   }
 ) {
+  // Unlike Telegram, Photon uploads the files with the bubble that introduces
+  // them, so the words cannot go out before the bytes are in hand.
   const prepared = await attachmentDelivery(session, attachments);
   const caller = session.session.auth.current ?? session.session.auth.initiator;
   if (!caller) {
@@ -348,7 +349,7 @@ async function deliverText(
           ]
             .filter(Boolean)
             .join("\n\n");
-    await postBubbles(thread, {
+    await postBubbles(thread, session, {
       attachmentLinks: prepared.links,
       files: prepared.files,
       text: body,
@@ -370,7 +371,7 @@ async function deliverText(
   const failureMessage = imageArtifactFailureText(
     delivery.failedArtifactIds.length
   );
-  await postBubbles(thread, {
+  await postBubbles(thread, session, {
     attachmentLinks: prepared.links,
     files: [...delivery.files, ...prepared.files],
     text: [delivery.text, failureMessage].filter(Boolean).join("\n\n"),
@@ -401,6 +402,7 @@ function deliveredTurnId(state: ChatSdkChannelState) {
  */
 async function postBubbles(
   thread: Thread,
+  session: SessionContext,
   {
     attachmentLinks,
     files,
@@ -428,9 +430,30 @@ async function postBubbles(
   ) {
     return;
   }
-  await thread.post(
-    outgoingMessage({ attachmentLinks, files, text: last ?? "" })
-  );
+  const outgoing = outgoingMessage({
+    attachmentLinks,
+    files,
+    text: last ?? "",
+  });
+  if (files.length === 0) {
+    await thread.post(outgoing);
+    return;
+  }
+  try {
+    await thread.post(outgoing);
+  } catch (error) {
+    console.warn("[photon] file upload failed", {
+      cause: error,
+      files: files.length,
+      sessionId: session.session.id,
+    });
+    // Photon sends the words before the files, so only the links the person
+    // still needs are posted again.
+    const undelivered = files.flatMap((file) => file.sourceUrl ?? []);
+    if (undelivered.length > 0) {
+      await thread.post({ raw: undelivered.join("\n") });
+    }
+  }
 }
 
 function outgoingMessage({
