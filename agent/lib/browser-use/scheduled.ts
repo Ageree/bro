@@ -20,6 +20,7 @@ export interface ScheduledBrowserResultDelivery {
 export type ScheduledBrowserResumeStatus =
   | "accepted"
   | "not_scheduled"
+  | "retryable"
   | "stale";
 
 export async function assertScheduledBrowserTaskAllowed(context: {
@@ -74,6 +75,7 @@ export async function resumeScheduledRunForBrowserResult(
       input
     );
     if (response.status === 404) return "not_scheduled";
+    if (response.status === 425) return "retryable";
     if (response.status === 409) return "stale";
     if (!response.ok) {
       throw new Error(
@@ -120,6 +122,6 @@ export async function resumeScheduledRunForBrowserResult(
       },
       turnPolicy: "queue",
     });
-  if (result.status !== "accepted") return "stale";
+  if (result.status !== "accepted") return "retryable";
   return "accepted";
 }

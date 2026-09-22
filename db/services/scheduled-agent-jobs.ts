@@ -640,10 +640,53 @@ export async function finishScheduledAgentRunBrowserResume(
             and scheduled_job.status in ('active', 'completed')
         )
       returning browser_root.id
+    ), retired as (
+      select old_run.id
+      from "browser_runs" old_run
+      inner join "browser_runs" browser_root
+        on browser_root.id = coalesce(old_run."root_run_id", old_run.id)
+      inner join "scheduled_agent_runs" scheduled_run
+        on scheduled_run.id = ${runId}
+      inner join "scheduled_agent_jobs" scheduled_job
+        on scheduled_job.id = scheduled_run."job_id"
+      where old_run.id = ${browserRunId}
+        and browser_root."active_run_id" <> old_run.id
+        and scheduled_run.status = 'running'
+        and scheduled_run."lease_token" = ${leaseToken}
+        and scheduled_run."lease_expires_at" > ${now}
+        and scheduled_run."pending_browser_run_ids" @> jsonb_build_array(cast(${browserRunId} as text))
+        and scheduled_job.status in ('active', 'completed')
+        and old_run."workspace_id" = scheduled_job."workspace_id"
+        and old_run."created_by_user_id" = scheduled_job."created_by_user_id"
+        and old_run."conversation_channel" = scheduled_job."conversation_channel"
+        and old_run."conversation_id" = scheduled_job."conversation_id"
+        and browser_root."workspace_id" = scheduled_job."workspace_id"
+        and browser_root."created_by_user_id" = scheduled_job."created_by_user_id"
+        and browser_root."conversation_channel" = scheduled_job."conversation_channel"
+        and browser_root."conversation_id" = scheduled_job."conversation_id"
+        and (
+          (
+            old_run."scheduled_origin" = jsonb_build_object(
+              'runId', cast(${runId} as text),
+              'leaseToken', cast(${leaseToken} as text)
+            )
+            and browser_root."scheduled_origin" = old_run."scheduled_origin"
+          )
+          or (
+            old_run."scheduled_origin" is null
+            and browser_root."scheduled_origin" is null
+            and old_run."root_session_id" = scheduled_run."worker_session_id"
+            and browser_root."root_session_id" = scheduled_run."worker_session_id"
+          )
+        )
+      limit 1
     )
     update "scheduled_agent_runs" scheduled_run
     set
-      "deferred_completion_turn_id" = null,
+      "deferred_completion_turn_id" = case
+        when exists (select 1 from acknowledged) then null
+        else scheduled_run."deferred_completion_turn_id"
+      end,
       "pending_browser_run_ids" = coalesce(
         (
           select jsonb_agg(pending_id)
@@ -652,14 +695,20 @@ export async function finishScheduledAgentRunBrowserResume(
         ),
         '[]'::jsonb
       ),
-      "last_error" = null,
+      "last_error" = case
+        when exists (select 1 from acknowledged) then null
+        else scheduled_run."last_error"
+      end,
       "updated_at" = ${now}
     where scheduled_run.id = ${runId}
       and scheduled_run.status = 'running'
       and scheduled_run."lease_token" = ${leaseToken}
       and scheduled_run."lease_expires_at" > ${now}
       and scheduled_run."pending_browser_run_ids" @> jsonb_build_array(cast(${browserRunId} as text))
-      and exists (select 1 from acknowledged)
+      and (
+        exists (select 1 from acknowledged)
+        or exists (select 1 from retired)
+      )
   `);
   const [consumed] = await db
     .select({ id: scheduledAgentRuns.id })

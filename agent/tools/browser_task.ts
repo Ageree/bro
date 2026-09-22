@@ -169,6 +169,7 @@ function effectiveCapability(
  */
 function outcomeContract() {
   return [
+    "Before the labelled footer, write a complete useful report with every material fact the errand requested for each option. The footer is routing metadata and never replaces the report.",
     "Finish your final answer with these labelled lines, written in the language of the errand above:",
     "RESULT: what was actually accomplished, or why it stopped",
     "ORDER: the order, booking, or reference number, or none",
@@ -181,6 +182,8 @@ function outcomeContract() {
     "CHECKS: when a verification plan was supplied, one compact JSON object {version:1,checks:[{checkId,pageUrl,scopeSelector,selector}]} containing stable CSS locators gathered while doing the work. Do not reread pages solely to produce CHECKS.",
     "In every CHECKS locator, selector must uniquely match a strict descendant of scopeSelector. Choose the matched element's parent as the scope; never repeat the same element or selector for both fields.",
     "Use STATUS: complete only after independently reading the final page state and verifying every hard constraint. NEEDS: none alone does not mean complete. Report only URLs you actually observed, never a credential, token, one-time-code, or live-view URL.",
+    'LINKS: a JSON array of {"title":"human-readable option name","url":"https://..."} objects, or []',
+    "For every concrete option you recommend or report — product, article, hotel, ticket, restaurant, listing, or anything similar — include its actual observed destination URL in LINKS. Open the option's detail page or extract its actual anchor href from the page. Never guess or construct an ID or URL, and never substitute a live-view URL or a generic search, results, or category URL for an option link.",
   ].join("\n");
 }
 
@@ -395,9 +398,12 @@ function conversationTarget(context: ToolContext) {
   const conversationChannel = z
     .enum(["eve", "photon", "telegram"])
     .parse(auth.attributes.conversationChannel);
+  const scheduled = scheduledRunIdentity(context.session.auth);
   const conversationId =
     conversationChannel === "eve"
-      ? context.session.id
+      ? scheduled
+        ? z.string().min(1).parse(auth.attributes.conversationId)
+        : context.session.id
       : conversationChannel === "photon"
         ? z
             .string()
@@ -653,13 +659,26 @@ export const browserTask = defineTool({
     if (!resolved)
       throw new Error("That browser run is not part of this workspace.");
     const { active: row, root } = resolved;
+    const activeAuth = context.session.auth.current;
+    const automaticRunId = z.string().optional().parse(
+      activeAuth?.authenticator === "browser-result"
+        ? activeAuth.attributes.browserRunId
+        : activeAuth?.authenticator === "scheduled-worker"
+          ? activeAuth.attributes.scheduledBrowserRunId
+          : undefined
+    );
+    if (automaticRunId && automaticRunId !== (root.activeRunId ?? root.id)) {
+      throw new Error(
+        "This automatic browser result is stale because the errand has moved to a newer run."
+      );
+    }
 
     if (input.action === "continue") {
       const message = z
         .string()
         .min(1, "A continue action needs the message to pass into the run.")
         .parse(input.task);
-      const userAuth = context.session.auth.current;
+      const userAuth = activeAuth;
       const acceptsAmendment =
         userAuth?.principalType === "user" &&
         userAuth.authenticator !== "browser-result" &&
@@ -683,15 +702,7 @@ export const browserTask = defineTool({
       // the same conversation — one that would point the run at the wrong shop
       // and attach another site's credentials to it — so only the row is used.
       const site = row.site ?? undefined;
-      // Both are round trips to the cloud and neither needs the other's answer.
-      // A one-time code waiting its turn is a code closer to expiring, and the
-      // entry is worth attempting whether or not a run is still on the page:
-      // the browser outlives its run, and the field is where the code belongs.
-      const [live, codeEntry] = await Promise.all([
-        trackedRunIsLive(row.id, row.completedAt),
-        typeCodeIntoRunBrowser(row.sessionId, message),
-      ]);
-
+      const live = await trackedRunIsLive(row.id, row.completedAt);
       const transition = await claimBrowserLineageTransition({
         activeRunId: row.id,
         allowCompleted: true,
@@ -720,6 +731,7 @@ export const browserTask = defineTool({
           );
         }
       }
+      const codeEntry = await typeCodeIntoRunBrowser(row.sessionId, message);
 
       // No quota gate: `browserRunQuotaGate` counts as it reads, and a
       // continuation is the same errand the month was already charged for.

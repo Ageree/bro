@@ -370,24 +370,40 @@ describe("scheduled browser result bridge", () => {
       .update(schema.scheduledAgentJobs)
       .set({ status: "completed" })
       .where(eq(schema.scheduledAgentJobs.id, job.id));
-    const send = vi.fn<ScheduledSend>().mockResolvedValue({
-      sessionId: input.rootSessionId,
-      status: "accepted",
-    });
+    fetch.mockResolvedValueOnce(new Response(null, { status: 425 }));
+    expect(await resumeScheduledRunForBrowserResult({}, input)).toBe(
+      "retryable"
+    );
+    const send = vi
+      .fn<ScheduledSend>()
+      .mockResolvedValueOnce({ status: "session_not_active" })
+      .mockResolvedValue({
+        sessionId: input.rootSessionId,
+        status: "accepted",
+      });
     const attachSession = vi.fn<ScheduledAttachSession>(() => ({ send }));
+    expect(
+      await resumeScheduledRunForBrowserResult({ attachSession }, input)
+    ).toBe("retryable");
+    expect(
+      await pgliteDatabase.query.scheduledAgentRuns.findFirst({
+        columns: { pendingBrowserRunIds: true },
+        where: eq(schema.scheduledAgentRuns.id, claim.run.id),
+      })
+    ).toEqual({ pendingBrowserRunIds: ["browser-run-1"] });
     expect(
       await resumeScheduledRunForBrowserResult({ attachSession }, input)
     ).toBe("accepted");
     expect(attachSession).toHaveBeenCalledWith("scheduled-worker-session");
-    expect(send).toHaveBeenCalledTimes(1);
-    expect(send.mock.calls[0]?.[0]).toContain(
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(send.mock.calls[1]?.[0]).toContain(
       "Only report the fare if it drops below $300."
     );
-    expect(send.mock.calls[0]?.[0]).toContain(
+    expect(send.mock.calls[1]?.[0]).toContain(
       "Status: blocked\nEvidence: the result could not verify the fare."
     );
-    expect(send.mock.calls[0]?.[0]).not.toContain("A verified browser run");
-    expect(send.mock.calls[0]?.[1]).toMatchObject({
+    expect(send.mock.calls[1]?.[0]).not.toContain("A verified browser run");
+    expect(send.mock.calls[1]?.[1]).toMatchObject({
       auth: {
         attributes: {
           scheduledBrowserRunId: "browser-run-1",
@@ -399,6 +415,12 @@ describe("scheduled browser result bridge", () => {
       },
       turnPolicy: "queue",
     });
+    expect(
+      await pgliteDatabase.query.scheduledAgentRuns.findFirst({
+        columns: { pendingBrowserRunIds: true },
+        where: eq(schema.scheduledAgentRuns.id, claim.run.id),
+      })
+    ).toEqual({ pendingBrowserRunIds: ["browser-run-1"] });
     expect(
       await jobs.completeScheduledAgentRun(
         claim.run.id,
@@ -452,13 +474,128 @@ describe("scheduled browser result bridge", () => {
     expect(
       await resumeScheduledRunForBrowserResult({ attachSession }, secondInput)
     ).toBe("accepted");
-    expect(send).toHaveBeenCalledTimes(2);
+    expect(send).toHaveBeenCalledTimes(3);
+    const transition = await browserRunJobs.claimBrowserLineageTransition({
+      activeRunId: "browser-run-2",
+      allowCompleted: true,
+      capability: "browse",
+      expectedRevision: 0,
+      rootRunId: "browser-run-2",
+      task: "Check the amended alternate fare.",
+      verificationPlan: null,
+    });
+    if (!transition) throw new Error("Expected a claimed continuation.");
+    await browserRunJobs.markBrowserLineageCreating(
+      "browser-run-2",
+      transition.token,
+      transition.root.lineageRevision
+    );
+    await client.exec(`
+      insert into browser_runs (
+        id, workspace_id, created_by_user_id, session_id, task, status,
+        conversation_channel, conversation_id, root_session_id, scheduled_origin,
+        root_run_id, active_run_id, parent_run_id
+      ) values (
+        'browser-run-2-child', 'workspace:alice', 'alice', 'browser-session-2',
+        'Check the alternate fare.', 'running', 'telegram', 'telegram:alice',
+        'scheduled-worker-session',
+        '{"runId":"${claim.run.id}","leaseToken":"${claim.run.leaseToken}"}'::jsonb,
+        'browser-run-2', 'browser-run-2-child', 'browser-run-2'
+      )
+    `);
+    expect(
+      await browserRunJobs.finishBrowserLineageTransition({
+        childId: "browser-run-2-child",
+        lineageRevision: transition.root.lineageRevision,
+        rootRunId: "browser-run-2",
+        token: transition.token,
+      })
+    ).toBeDefined();
+    await pgliteDatabase
+      .update(schema.scheduledAgentRuns)
+      .set({
+        pendingBrowserRunIds: ["browser-run-2", "browser-run-2-child"],
+      })
+      .where(eq(schema.scheduledAgentRuns.id, claim.run.id));
     expect(
       await jobs.finishScheduledAgentRunBrowserResume(
         claim.run.id,
         claim.run.leaseToken,
         "browser-run-2",
         new Date("2099-09-20T13:00:07.000Z")
+      )
+    ).toBe(false);
+    expect(
+      await pgliteDatabase.query.scheduledAgentRuns.findFirst({
+        columns: { pendingBrowserRunIds: true },
+        where: eq(schema.scheduledAgentRuns.id, claim.run.id),
+      })
+    ).toEqual({ pendingBrowserRunIds: ["browser-run-2-child"] });
+    expect(
+      await pgliteDatabase.query.browserRuns.findFirst({
+        columns: {
+          activeRunId: true,
+          completedAt: true,
+          deliveryState: true,
+        },
+        where: eq(schema.browserRuns.id, "browser-run-2"),
+      })
+    ).toEqual({
+      activeRunId: "browser-run-2-child",
+      completedAt: null,
+      deliveryState: "pending",
+    });
+    expect(
+      await jobs.completeScheduledAgentRun(
+        claim.run.id,
+        claim.run.leaseToken,
+        "obsolete-browser-result-turn",
+        {
+          kind: "result",
+          summary: "The obsolete browser result must not finish the schedule.",
+          urgency: "normal",
+        },
+        new Date("2099-09-20T13:00:07.250Z")
+      )
+    ).toEqual({ status: "deferred" });
+    expect(
+      await browserRunJobs.claimBrowserLineageSettlement(
+        {
+          lineageRevision: transition.root.lineageRevision,
+          rootRunId: "browser-run-2",
+          runId: "browser-run-2-child",
+        },
+        {
+          finalNeed: "none",
+          finalTaskStatus: "complete",
+          outcome: "The amended alternate fare is $250.",
+          status: "done",
+          verificationReport: null,
+        }
+      )
+    ).toBeDefined();
+    expect(
+      await browserRunJobs.claimBrowserRunDelivery({
+        activeRunId: "browser-run-2-child",
+        lineageRevision: transition.root.lineageRevision,
+        rootRunId: "browser-run-2",
+      })
+    ).toBeDefined();
+    const finalInput = {
+      ...secondInput,
+      browserRunId: "browser-run-2-child",
+      outcome: "Status: complete\nEvidence: the amended fare is $250.",
+    };
+    expect(
+      await resumeScheduledRunForBrowserResult({ attachSession }, finalInput)
+    ).toBe("accepted");
+    expect(send).toHaveBeenCalledTimes(4);
+    expect(
+      await jobs.finishScheduledAgentRunBrowserResume(
+        claim.run.id,
+        claim.run.leaseToken,
+        "browser-run-2-child",
+        new Date("2099-09-20T13:00:07.750Z")
       )
     ).toBe(true);
 

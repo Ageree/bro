@@ -15,6 +15,10 @@ import {
 import { messageQuotaGate } from "@agent/lib/billing/quota";
 import { fallbackDeliveryText } from "@agent/lib/delivery-fallback";
 import { telegramMediaTurn } from "@agent/lib/inbound-media/telegram";
+import {
+  prepareAttachmentDelivery,
+  type OutboundFile,
+} from "@agent/lib/outbound-media/attachments";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { resolveTelegramReplyTarget } from "@agent/lib/reply-targets";
 import {
@@ -26,7 +30,10 @@ import {
   splitTelegramHtml,
   toTelegramHtml,
 } from "@agent/lib/telegram-format/html";
-import { sendMessageToolResultSchema } from "@shared/chat/message-delivery";
+import {
+  sendMessageToolResultSchema,
+  type MessageAttachment,
+} from "@shared/chat/message-delivery";
 import {
   reactionTextFor,
   reactToMessageToolResultSchema,
@@ -43,6 +50,18 @@ import {
 } from "../lib/image-artifact/markdown";
 
 const telegramApiBaseUrl = "https://api.telegram.org";
+/** The Bot API method and form field that uploads each kind of file. */
+const telegramUploads = {
+  audio: { field: "audio", method: "sendAudio" },
+  document: { field: "document", method: "sendDocument" },
+  photo: { field: "photo", method: "sendPhoto" },
+  video: { field: "video", method: "sendVideo" },
+} as const satisfies Record<
+  OutboundFile["kind"],
+  { readonly field: string; readonly method: string }
+>;
+/** Photos and videos ride in one album only between these counts. */
+const albumSizeRange = { maximum: 10, minimum: 2 } as const;
 const startLinkPattern =
   /^\/start(?:@[A-Za-z0-9_]+)?\s+link_(?<token>[\w-]+)$/u;
 const unlinkedHintIntervalMs = 60 * 60_000;
@@ -143,21 +162,18 @@ export default telegramChannel({
         return;
       }
 
-      const attachmentLinks = (output.attachments ?? []).map(
-        (attachment) => attachment.url
-      );
+      const attachments = output.attachments ?? [];
       const requestedText = output.text;
       if (!requestedText) {
-        if (attachmentLinks.length > 0) {
-          await sendText(context, attachmentLinks.join("\n"));
-        }
+        const prepared = await attachmentDelivery(session, attachments);
+        await uploadFiles(context, prepared.files, prepared.links);
         markTurnDelivered(context, event.turnId);
         await finalizeScheduledReportDelivery(session);
         return;
       }
 
       await deliverText(context, session, {
-        attachmentLinks,
+        attachments,
         text: requestedText,
       });
       markTurnDelivered(context, event.turnId);
@@ -181,7 +197,7 @@ export default telegramChannel({
         sessionId: session.session.id,
       });
       markTurnDelivered(context, event.turnId);
-      await deliverText(context, session, { attachmentLinks: [], text });
+      await deliverText(context, session, { attachments: [], text });
     },
     async "session.completed"(_event, _context, session) {
       const report = scheduledReportFromSession(session);
@@ -327,18 +343,41 @@ function currentTelegramMessageId(auth: SessionAuth) {
 }
 
 /**
- * Delivers one reply body: image artifacts referenced in the text are uploaded
- * as photos, and whatever remains goes out as Telegram HTML. Both `send_message`
- * and the plain-text fallback deliver through here.
+ * Downloads what `send_message` attached so it can be uploaded as real media.
+ * An attachment that could not be fetched keeps the old behaviour and travels
+ * as a link, and the reason is logged without the URL.
+ */
+async function attachmentDelivery(
+  session: SessionContext,
+  attachments: readonly MessageAttachment[]
+) {
+  const prepared = await prepareAttachmentDelivery(attachments);
+  if (prepared.failures.length > 0) {
+    console.warn("[telegram] attachment delivery failed", {
+      reasons: prepared.failures.map((failure) => failure.reason),
+      sessionId: session.session.id,
+    });
+  }
+  return {
+    files: prepared.files,
+    links: prepared.failures.map((failure) => failure.url),
+  };
+}
+
+/**
+ * Delivers one reply body: the words go out as Telegram HTML first, then the
+ * image artifacts referenced in the text and the attachments `send_message`
+ * asked for are uploaded as media. Both `send_message` and the plain-text
+ * fallback deliver through here.
  */
 async function deliverText(
   context: TelegramEventContext,
   session: SessionContext,
   {
-    attachmentLinks,
+    attachments,
     text,
   }: {
-    readonly attachmentLinks: readonly string[];
+    readonly attachments: readonly MessageAttachment[];
     readonly text: string;
   }
 ) {
@@ -354,7 +393,9 @@ async function deliverText(
           ]
             .filter(Boolean)
             .join("\n\n");
-    await sendText(context, [body, ...attachmentLinks].join("\n\n"));
+    if (body) await sendText(context, body);
+    const prepared = await attachmentDelivery(session, attachments);
+    await uploadFiles(context, prepared.files, prepared.links);
     return;
   }
 
@@ -372,16 +413,26 @@ async function deliverText(
   const failureMessage = imageArtifactFailureText(
     delivery.failedArtifactIds.length
   );
-  const body = [delivery.text, failureMessage, ...attachmentLinks]
-    .filter(Boolean)
-    .join("\n\n");
+  const body = [delivery.text, failureMessage].filter(Boolean).join("\n\n");
+  // The words are worth reading before the pictures arrive, so nothing waits
+  // on a download that may take the whole timeout.
   if (body) await sendText(context, body);
-  for (const file of delivery.files) {
-    // Photos are uploaded one at a time so a single failure cannot drop
-    // the rest of the delivery.
-    // oxlint-disable-next-line eslint/no-await-in-loop -- Telegram renders uploads in call order.
-    await sendPhoto(context, file);
-  }
+  const prepared = await attachmentDelivery(session, attachments);
+  await uploadFiles(
+    context,
+    [
+      // An image artifact was validated as an image when it was stored, so it
+      // uploads as a photo and has no public URL to fall back to.
+      ...delivery.files.map((file) => ({
+        data: file.data,
+        filename: file.filename,
+        kind: "photo" as const,
+        mimeType: file.mimeType,
+      })),
+      ...prepared.files,
+    ],
+    prepared.links
+  );
 }
 
 /**
@@ -418,39 +469,187 @@ async function sendText(context: TelegramEventContext, text: string) {
 }
 
 /**
- * eve's Telegram handle only speaks JSON, so an image artifact is uploaded
- * with a multipart `sendPhoto` call against the Bot API directly.
+ * Uploads every file of one reply and posts whatever is left as links. Photos
+ * and videos ride in albums of up to ten so Telegram shows them as galleries;
+ * anything else is uploaded on its own. A file that cannot be uploaded at all
+ * falls back to its source link.
  */
-async function sendPhoto(
+async function uploadFiles(
   context: TelegramEventContext,
-  file: {
-    readonly data: Buffer;
-    readonly filename: string;
-    readonly mimeType: string;
-  }
+  files: readonly OutboundFile[],
+  links: readonly string[]
 ) {
-  try {
-    const botToken = await resolveTelegramBotToken(telegramBotToken);
-    const form = new FormData();
-    form.set("chat_id", context.telegram.chatId);
-    form.set(
-      "photo",
-      new Blob([new Uint8Array(file.data)], { type: file.mimeType }),
-      file.filename
-    );
-    const response = await fetch(
-      `${telegramApiBaseUrl}/bot${botToken}/sendPhoto`,
-      { body: form, method: "POST" }
-    );
-    if (!response.ok) {
-      throw new Error(
-        `Telegram sendPhoto failed (${String(response.status)}).`
-      );
+  const undelivered = [...links];
+  if (files.length > 0) {
+    if (context.telegram.chatId) {
+      undelivered.push(...(await uploadMedia(context, files)));
+    } else {
+      console.warn("[telegram] upload skipped without a chat", {
+        files: files.length,
+      });
     }
+  }
+  if (undelivered.length > 0) {
+    await sendText(context, undelivered.join("\n"));
+  }
+}
+
+/** The source links of the files this reply could not upload. */
+/* oxlint-disable eslint/no-await-in-loop -- Telegram renders uploads in call order. */
+async function uploadMedia(
+  context: TelegramEventContext,
+  files: readonly OutboundFile[]
+) {
+  const undelivered: string[] = [];
+  const separate = files.filter((file) => !isAlbumFile(file));
+  const individual: OutboundFile[] = [];
+  for (const album of albums(files.filter((file) => isAlbumFile(file)))) {
+    if (album.length < albumSizeRange.minimum) {
+      individual.push(...album);
+      continue;
+    }
+    const outcome = await sendAlbum(context, album);
+    if (outcome === "sent") continue;
+    if (outcome === "retry-individually") {
+      individual.push(...album);
+      continue;
+    }
+    undelivered.push(...sourceLinks(album));
+  }
+  // Documents and audio follow the galleries they were sent with.
+  for (const file of [...individual, ...separate]) {
+    const sent = await sendFile(context, file);
+    if (!sent && file.sourceUrl) undelivered.push(file.sourceUrl);
+  }
+  return undelivered;
+}
+/* oxlint-enable eslint/no-await-in-loop */
+
+function* albums(files: readonly OutboundFile[]) {
+  for (let start = 0; start < files.length; start += albumSizeRange.maximum) {
+    yield files.slice(start, start + albumSizeRange.maximum);
+  }
+}
+
+function sourceLinks(files: readonly OutboundFile[]) {
+  return files.flatMap((file) => file.sourceUrl ?? []);
+}
+
+function isAlbumFile(file: OutboundFile) {
+  return file.kind === "photo" || file.kind === "video";
+}
+
+/**
+ * Uploads one file, retrying as a plain document when Telegram rejected the
+ * request itself: a photo past its dimension or ratio limits comes back as a
+ * 400 that the same bytes survive as a document. A refused, throttled or
+ * broken request is not worth a second upload of the same megabytes.
+ */
+async function sendFile(context: TelegramEventContext, file: OutboundFile) {
+  try {
+    await uploadFile(context, file);
+    return true;
   } catch (error) {
-    console.warn("[telegram] photo upload failed", {
+    console.warn("[telegram] file upload failed", {
       cause: error,
       filename: file.filename,
     });
+    // Telegram rejected the request itself rather than failing to serve it.
+    const rejected = error instanceof TelegramApiError && error.status === 400;
+    if (file.kind === "document" || !rejected) return false;
+  }
+  try {
+    await uploadFile(context, { ...file, kind: "document" });
+    return true;
+  } catch (error) {
+    console.warn("[telegram] file upload failed", {
+      cause: error,
+      filename: file.filename,
+    });
+    return false;
+  }
+}
+
+async function uploadFile(context: TelegramEventContext, file: OutboundFile) {
+  const { field, method } = telegramUploads[file.kind];
+  const form = new FormData();
+  form.set("chat_id", context.telegram.chatId);
+  form.set(field, fileBlob(file), file.filename);
+  await callBotApi(method, form);
+}
+
+/**
+ * Posts photos and videos as the one gallery Telegram calls a media group.
+ * A rejected group is worth retrying file by file, because one picture
+ * Telegram dislikes fails the whole call; anything else is not.
+ */
+async function sendAlbum(
+  context: TelegramEventContext,
+  files: readonly OutboundFile[]
+) {
+  const form = new FormData();
+  form.set("chat_id", context.telegram.chatId);
+  form.set(
+    "media",
+    JSON.stringify(
+      files.map((file, index) => ({
+        media: `attach://file${String(index)}`,
+        type: file.kind,
+      }))
+    )
+  );
+  for (const [index, file] of files.entries()) {
+    form.set(`file${String(index)}`, fileBlob(file), file.filename);
+  }
+  try {
+    await callBotApi("sendMediaGroup", form);
+    return "sent";
+  } catch (error) {
+    console.warn("[telegram] album upload failed", {
+      cause: error,
+      files: files.length,
+    });
+    const rejected = error instanceof TelegramApiError && error.status === 400;
+    return rejected ? "retry-individually" : "failed";
+  }
+}
+
+function fileBlob(file: OutboundFile) {
+  // A `Buffer` is typed over `ArrayBufferLike`, which `BlobPart` does not
+  // accept, so the upload pays for one copy of the bytes it is about to send.
+  return new Blob([new Uint8Array(file.data)], { type: file.mimeType });
+}
+
+/** A Bot API call the server answered with an error, and the status it used. */
+class TelegramApiError extends Error {
+  readonly status: number;
+
+  constructor(method: string, status: number, description: string | undefined) {
+    const detail = description ? `: ${description}` : "";
+    super(`Telegram ${method} failed (${String(status)})${detail}.`);
+    this.name = "TelegramApiError";
+    this.status = status;
+  }
+}
+
+const telegramErrorSchema = z.object({ description: z.string().min(1) });
+
+/**
+ * eve's Telegram handle only speaks JSON, so an upload is a multipart call
+ * against the Bot API directly.
+ */
+async function callBotApi(method: string, form: FormData) {
+  const botToken = await resolveTelegramBotToken(telegramBotToken);
+  const response = await fetch(
+    `${telegramApiBaseUrl}/bot${botToken}/${method}`,
+    { body: form, method: "POST" }
+  );
+  const body: unknown = await response.json().catch(() => undefined);
+  if (!response.ok) {
+    throw new TelegramApiError(
+      method,
+      response.status,
+      telegramErrorSchema.safeParse(body).data?.description
+    );
   }
 }

@@ -59,7 +59,9 @@ export default defineChannel({
               ? 202
               : status === "not_scheduled"
                 ? 404
-                : 409,
+                : status === "retryable"
+                  ? 425
+                  : 409,
         });
       }
     ),
