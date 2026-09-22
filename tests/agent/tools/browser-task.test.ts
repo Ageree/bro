@@ -489,6 +489,8 @@ describe("browser_task result links", () => {
     expect(task).toContain(
       'LINKS: a JSON array of {"title":"human-readable option name","url":"https://..."} objects, or []'
     );
+    expect(task).toContain("write a complete useful report");
+    expect(task).toContain("footer is routing metadata and never replaces");
     expect(task).toContain("actual observed destination URL");
     expect(task).toContain("Never guess or construct an ID or URL");
     expect(task).toContain(

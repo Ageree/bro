@@ -92,6 +92,7 @@ const liveViewPollAttempts = 8;
  */
 function outcomeContract() {
   return [
+    "Before the labelled footer, write a complete useful report with every material fact the errand requested for each option. The footer is routing metadata and never replaces the report.",
     "Finish your final answer with these labelled lines, written in the language of the errand above:",
     "RESULT: what was actually accomplished, or why it stopped",
     "ORDER: the order, booking, or reference number, or none",

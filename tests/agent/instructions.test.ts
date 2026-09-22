@@ -132,7 +132,10 @@ describe("agent instructions", () => {
     expect(selected?.content).toContain("Ссылку на живой просмотр шли только");
     expect(selected?.content).toContain("придёт позже отдельным сообщением");
     expect(selected?.content).toContain(
-      "передай человеку каждый полезный URL из `Links`"
+      "каждый оставшийся после проверки полезный URL из отчёта или `Links`"
+    );
+    expect(selected?.content).toContain(
+      "все существенные факты по каждому варианту, которые он просил"
     );
     expect(selected?.content).toContain(
       "Список одних названий без ссылок не выдавай за готовый результат"

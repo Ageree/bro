@@ -21,6 +21,7 @@ describe("browser run outcome parsing", () => {
 
     expect(outcome).toEqual({
       details: undefined,
+      hasReportLinks: false,
       labelled: true,
       links: [],
       needs: "none",
@@ -68,6 +69,46 @@ describe("browser run outcome parsing", () => {
     expect(browserOutcomeSummary(parseBrowserOutcome(""), "fallback")).toBe(
       "fallback"
     );
+  });
+
+  it("preserves multiline report facts beyond the one-line metadata fields", () => {
+    const result = [
+      "Comparison requested by the user:",
+      "Alpha has 16 GB memory and a two-year warranty.",
+      "Beta has 32 GB memory and next-day delivery.",
+      "RESULT: compared the two options",
+      "This continuation is still useful report data.",
+      "NEEDS: none",
+    ].join("\n");
+
+    const summary = browserOutcomeSummary(
+      parseBrowserOutcome(result),
+      "fallback",
+      result
+    );
+
+    expect(summary).toContain("Alpha has 16 GB memory");
+    expect(summary).toContain("Beta has 32 GB memory");
+    expect(summary).toContain("This continuation is still useful report data.");
+    expect(summary).toContain("Result: compared the two options");
+  });
+
+  it("preserves a useful unlabelled response instead of replacing it", () => {
+    const result = [
+      "The first venue has outdoor seating.",
+      "The second venue stays open later.",
+    ].join("\n");
+
+    const summary = browserOutcomeSummary(
+      parseBrowserOutcome(result),
+      "The run ended as completed.",
+      result
+    );
+
+    expect(summary).toContain("The first venue has outdoor seating.");
+    expect(summary).toContain("The second venue stays open later.");
+    expect(summary).toContain("Parsed metadata (generated locally):");
+    expect(summary).toContain("The run ended as completed.");
   });
 
   it("parses decorated multiline links and preserves them through the summary", () => {
@@ -125,6 +166,53 @@ describe("browser run outcome parsing", () => {
     expect(
       parseBrowserOutcome('NEEDS: none\nLINKS: [{"title":"broken"}').links
     ).toEqual([]);
+  });
+
+  it("does not restore rejected structured links through the retained report", () => {
+    const credentialUrl = "https://user:secret@example.com/private";
+    const liveViewUrl = "https://live.browser-use.com/session/1";
+    const malformedUrl = "https:/example.com/missing-slash";
+    const result = [
+      "RESULT: found references",
+      "NEEDS: none",
+      `LINKS: ${JSON.stringify([
+        { title: "Private", url: credentialUrl },
+        { title: "Viewer", url: liveViewUrl },
+        { title: "Malformed", url: malformedUrl },
+      ])}`,
+    ].join("\n");
+    const outcome = parseBrowserOutcome(result);
+
+    expect(outcome.links).toEqual([]);
+    expect(outcome.hasReportLinks).toBe(false);
+    const summary = browserOutcomeSummary(outcome, "fallback", result);
+    expect(summary).not.toContain(credentialUrl);
+    expect(summary).not.toContain(liveViewUrl);
+    expect(summary).not.toContain(malformedUrl);
+    expect(summary).toContain("[unsafe URL omitted]");
+  });
+
+  it("does not restore unsafe URLs through parsed metadata or fallback text", () => {
+    const credentialUrl = "https://user:example-secret@example.com/item";
+    const result = [
+      `RESULT: found an option at ${credentialUrl}`,
+      "NEEDS: none",
+      `DETAILS: see ${credentialUrl}`,
+    ].join("\n");
+
+    const summary = browserOutcomeSummary(
+      parseBrowserOutcome(result),
+      "fallback",
+      result
+    );
+    expect(summary).not.toContain(credentialUrl);
+    expect(summary.match(/\[unsafe URL omitted\]/gu)).toHaveLength(4);
+
+    const fallback = browserOutcomeSummary(
+      parseBrowserOutcome(null),
+      `The run failed at ${credentialUrl}`
+    );
+    expect(fallback).toBe("The run failed at [unsafe URL omitted]");
   });
 
   it("keeps escaped quotes and brackets inside a link title", () => {
