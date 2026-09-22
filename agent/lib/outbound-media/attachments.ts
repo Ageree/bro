@@ -205,7 +205,7 @@ async function prepareAttachment(
  * pointing at a private address is not caught; the deployment's egress rules
  * are the backstop for that.
  */
-function isBlockedHost(hostname: string) {
+export function isBlockedHost(hostname: string) {
   const host = hostname
     .replace(/^\[(?<address>.*)\]$/u, "$<address>")
     .toLowerCase()
