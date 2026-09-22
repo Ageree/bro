@@ -131,7 +131,7 @@ describe("settling a browser run", () => {
         'Result: found a useful article\nLinks: [{"title":"Useful article","url":"https://example.com/article?source=search#part-2"}]',
       status: "done",
     });
-    const prompt = String(send.mock.calls[0]?.[0]);
+    const prompt = send.mock.calls[0]?.[0];
     expect(prompt).toContain("Useful article");
     expect(prompt).toContain(
       "https://example.com/article?source=search#part-2"
@@ -156,7 +156,7 @@ describe("settling a browser run", () => {
 
     await settleBrowserRun({ to }, runId);
 
-    const prompt = String(send.mock.calls[0]?.[0]);
+    const prompt = send.mock.calls[0]?.[0];
     expect(prompt).toContain("do not present a names-only list");
     expect(prompt).toContain("Continue this run once");
     expect(prompt).toContain("Do not retry in a loop");

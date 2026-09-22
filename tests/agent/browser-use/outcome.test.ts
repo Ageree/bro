@@ -145,8 +145,8 @@ describe("browser run outcome parsing", () => {
 
   it("bounds the number and size of returned links", () => {
     const links = Array.from({ length: 25 }, (_, index) => ({
-      title: `Option ${index}`,
-      url: `https://example.com/item/${index}`,
+      title: `Option ${String(index)}`,
+      url: `https://example.com/item/${String(index)}`,
     }));
     links[0] = { title: "x".repeat(201), url: "https://example.com/too-long" };
 
