@@ -13,7 +13,10 @@ vi.mock("@vercel/blob", () => ({
   get: mocks.getBlob,
 }));
 
-import { prepareImageArtifactDelivery } from "./delivery";
+import {
+  imageArtifactFailureText,
+  prepareImageArtifactDelivery,
+} from "./delivery";
 
 const scope = { userId: "user-1", workspaceId: "workspace-1" };
 
@@ -148,6 +151,20 @@ describe("image artifact delivery", () => {
     expect(mocks.getBlob).not.toHaveBeenCalled();
     expect(result.files).toEqual([]);
     expect(result.failedArtifactIds).toEqual([secondId]);
+  });
+
+  it("names a failed artifact a file, whatever it held", () => {
+    expect(imageArtifactFailureText(0)).toBe("");
+    expect(imageArtifactFailureText(1)).toBe("Не получилось приложить файл.");
+    expect(imageArtifactFailureText(3)).toBe(
+      "Не получилось приложить 3 файла."
+    );
+    expect(imageArtifactFailureText(5)).toBe(
+      "Не получилось приложить 5 файлов."
+    );
+    expect(imageArtifactFailureText(21)).toBe(
+      "Не получилось приложить 21 файл."
+    );
   });
 
   it("leaves ordinary markdown untouched without storage reads", async () => {

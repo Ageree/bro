@@ -531,7 +531,7 @@ describe("Photon message delivery", () => {
     );
 
     expect(post).toHaveBeenCalledExactlyOnceWith({
-      raw: "Here it is.\n\nНе получилось приложить картинку.",
+      raw: "Here it is.\n\nНе получилось приложить файл.",
     });
   });
 

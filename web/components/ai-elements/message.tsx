@@ -333,8 +333,9 @@ export function ArtifactMessageImage({
 }: ComponentProps<"img"> & { readonly node?: unknown }) {
   void _node;
   // A mail attachment can be a PDF behind the same reference. When the browser
-  // cannot draw it, it stays a file the person can open.
-  const [isFile, setIsFile] = useState(false);
+  // cannot draw it, it stays a file the person can open. The fallback belongs
+  // to the source that failed, so a new source gets drawn again.
+  const [failedSource, setFailedSource] = useState<string>();
   const parsedSource = z.string().safeParse(src);
   if (!parsedSource.success || !isBrowserImageArtifactUrl(parsedSource.data)) {
     return (
@@ -344,7 +345,8 @@ export function ArtifactMessageImage({
     );
   }
 
-  if (isFile) {
+  const source = parsedSource.data;
+  if (failedSource === source) {
     return (
       <a
         className="my-3 inline-flex max-w-full items-center gap-2 rounded-lg border bg-muted px-3 py-2 type-label"
@@ -371,7 +373,7 @@ export function ArtifactMessageImage({
         decoding="async"
         loading="lazy"
         onError={() => {
-          setIsFile(true);
+          setFailedSource(source);
         }}
         referrerPolicy="no-referrer"
         src={src}

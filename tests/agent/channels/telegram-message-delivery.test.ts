@@ -681,7 +681,7 @@ describe("Telegram message delivery", () => {
     expect(request).toHaveBeenCalledExactlyOnceWith("sendMessage", {
       chat_id: "4242",
       parse_mode: "HTML",
-      text: "Here it is.\n\nНе получилось приложить картинку.",
+      text: "Here it is.\n\nНе получилось приложить файл.",
     });
   });
 

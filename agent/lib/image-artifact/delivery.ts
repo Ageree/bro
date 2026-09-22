@@ -20,29 +20,33 @@ import {
 const maximumArtifactsPerMessage = 10;
 /** How many images one browser run may save for the person. */
 export const maximumDeliveredImageArtifacts = 4;
-/** Accusative forms of «картинка» for one, a few, and many. */
-const imageCountForms = ["картинку", "картинки", "картинок"] as const;
+/**
+ * Accusative forms of «файл» for one, a few, and many. An artifact that failed
+ * may be a mail PDF as well as a picture, and its type is unknown once the
+ * read failed, so the wording names a file.
+ */
+const fileCountForms = ["файл", "файла", "файлов"] as const;
 
 /**
- * The line a person reads when an image the message referenced could not be
+ * The line a person reads when an artifact the message referenced could not be
  * attached. Russian picks the noun form from the count, so the count decides
  * the wording rather than the caller.
  */
 export function imageArtifactFailureText(count: number) {
   if (count < 1) return "";
-  if (count === 1) return "Не получилось приложить картинку.";
-  return `Не получилось приложить ${String(count)} ${imageCountForm(count)}.`;
+  if (count === 1) return "Не получилось приложить файл.";
+  return `Не получилось приложить ${String(count)} ${fileCountForm(count)}.`;
 }
 
-function imageCountForm(count: number) {
+function fileCountForm(count: number) {
   const remainderOfHundred = count % 100;
   if (remainderOfHundred >= 11 && remainderOfHundred <= 14) {
-    return imageCountForms[2];
+    return fileCountForms[2];
   }
   const remainderOfTen = count % 10;
-  if (remainderOfTen === 1) return imageCountForms[0];
-  if (remainderOfTen >= 2 && remainderOfTen <= 4) return imageCountForms[1];
-  return imageCountForms[2];
+  if (remainderOfTen === 1) return fileCountForms[0];
+  if (remainderOfTen >= 2 && remainderOfTen <= 4) return fileCountForms[1];
+  return fileCountForms[2];
 }
 
 export async function prepareImageArtifactDelivery(
