@@ -17,9 +17,7 @@ const attachmentSchema = z.object({
     .min(1)
     .max(200)
     .optional()
-    .describe(
-      "Media type of the file when it is known; the downloaded bytes decide when they disagree."
-    ),
+    .describe("Media type of the file when it is known."),
   name: z
     .string()
     .min(1)
@@ -30,6 +28,7 @@ const attachmentSchema = z.object({
     ),
   url: z
     .url()
+    .max(2048)
     .refine((url) => new URL(url).protocol === "https:", {
       message: "Attachments must use HTTPS.",
     })

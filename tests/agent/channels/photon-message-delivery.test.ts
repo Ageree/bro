@@ -337,6 +337,37 @@ describe("Photon message delivery", () => {
     });
   });
 
+  it("posts the links of attachments the upload dropped", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    stubDownloads(() => servedFile("image/jpeg"));
+    const { context, post } = handlerContext();
+    post.mockRejectedValueOnce(new Error("attachment upload rejected"));
+
+    await handleActionResult(
+      sendMessageResult({
+        attachments: [
+          { kind: "image", url: "https://media.example/first.jpg" },
+          { kind: "image", url: "https://media.example/second.jpg" },
+        ],
+        kind: "message",
+        text: "Here they are.",
+      }),
+      context,
+      sessionContext()
+    );
+
+    // The adapter posts the words before the files, so only the links repeat.
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(post.mock.calls[1]?.[0]).toEqual({
+      raw: "https://media.example/first.jpg\nhttps://media.example/second.jpg",
+    });
+    expect(warn).toHaveBeenCalledWith(
+      "[photon] file upload failed",
+      expect.objectContaining({ files: 2, sessionId: "session-1" })
+    );
+    warn.mockRestore();
+  });
+
   it("keeps an attachment it could not download as a link", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     stubDownloads(() => new Response("", { status: 404 }));
@@ -632,6 +663,28 @@ describe("Photon message delivery", () => {
       sendMessageOutputSchema.safeParse({
         link: "https://example.com/article",
       }).success
+    ).toBe(false);
+  });
+
+  it("refuses more attachments than a message can carry", () => {
+    const attachments = Array.from({ length: 11 }, (_item, index) => ({
+      kind: "image" as const,
+      url: `https://media.example/photo-${String(index)}.jpg`,
+    }));
+
+    expect(
+      sendMessageOutputSchema.safeParse({
+        attachments: attachments.slice(0, 10),
+        kind: "message",
+      }).success
+    ).toBe(true);
+    expect(
+      sendMessageOutputSchema.safeParse({ attachments, kind: "message" })
+        .success
+    ).toBe(false);
+    expect(
+      sendMessageOutputSchema.safeParse({ attachments: [], kind: "message" })
+        .success
     ).toBe(false);
   });
 
