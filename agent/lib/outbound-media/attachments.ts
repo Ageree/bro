@@ -12,12 +12,22 @@ import { resolveMediaType } from "../inbound-media/media-type";
 
 /**
  * Telegram refuses a photo upload past 10 MB, which is also the cap the
- * inbound Telegram `uploadPolicy` applies.
+ * inbound Telegram `uploadPolicy` applies. A document could go to 50 MB there,
+ * but the bytes are buffered in the function that delivers the reply, so the
+ * lower cap is what keeps one message from exhausting its memory.
  */
 export const maximumAttachmentBytes = 10 * 1024 * 1024;
+/** Ten files at the per-file cap would peak far above that same memory. */
+export const maximumAttachmentBatchBytes = 30 * 1024 * 1024;
+/** How many downloads are in flight at once, which bounds the peak. */
+const attachmentDownloadConcurrency = 3;
 
 /** Long enough for a descriptive name, short enough for every messenger. */
 const maximumFilenameLength = 120;
+/** Beyond this a trailing dot is part of the name, not an extension. */
+const maximumExtensionLength = 16;
+/** Control and format characters, and the separators that make a name a path. */
+const unsafeFilenameCharacters = /[\p{Cc}\p{Cf}/\\]/gu;
 
 /** How a channel that distinguishes media has to upload these bytes. */
 type OutboundFileKind = "audio" | "document" | "photo" | "video";
@@ -47,8 +57,8 @@ const photoMediaTypes: ReadonlySet<string> = new Set([
   "image/webp",
 ]);
 
-/** Pages are not files: an upload would hand the person the markup instead. */
-const documentMediaTypes: ReadonlySet<string> = new Set([
+/** A page is not a file: uploading it would hand the person the markup. */
+const pageMediaTypes: ReadonlySet<string> = new Set([
   "application/xhtml+xml",
   "text/html",
 ]);
@@ -80,8 +90,11 @@ const mediaTypeExtensions: ReadonlyMap<string, string> = new Map([
  * Downloads every attachment and turns it into bytes a channel can upload. One
  * attachment that cannot be fetched only costs its own upload: it comes back as
  * a failure the caller delivers as a link, which is what every channel did
- * before uploads existed.
+ * before uploads existed. Downloads run a few at a time and stop once the
+ * message has spent its byte budget, so a reply cannot buffer its way out of
+ * memory.
  */
+/* oxlint-disable eslint/no-await-in-loop -- Each batch is awaited so the next one sees what the message has spent. */
 export async function prepareAttachmentDelivery(
   attachments: readonly MessageAttachment[]
 ): Promise<{
@@ -89,11 +102,39 @@ export async function prepareAttachmentDelivery(
   readonly files: readonly OutboundFile[];
 }> {
   if (attachments.length === 0) return { failures: [], files: [] };
-  const prepared = await Promise.all(
-    attachments.map(async (attachment, index) =>
-      prepareAttachment(attachment, index)
-    )
-  );
+  const queued = attachments.map((attachment, index) => ({
+    attachment,
+    index,
+  }));
+  const prepared: (OutboundFile | AttachmentFailure)[] = [];
+  let spent = 0;
+  for (const batch of batched(queued, attachmentDownloadConcurrency)) {
+    const exhausted = spent >= maximumAttachmentBatchBytes;
+    const settled = await Promise.all(
+      batch.map(async ({ attachment, index }) =>
+        exhausted
+          ? { reason: "batch-oversize", url: attachment.url }
+          : // One attachment that breaks in an unforeseen way stays one link,
+            // rather than failing the turn that was delivering the reply.
+            prepareAttachment(attachment, index).catch(
+              (): AttachmentFailure => ({
+                reason: "unexpected",
+                url: attachment.url,
+              })
+            )
+      )
+    );
+    for (const item of settled) {
+      if ("reason" in item) {
+        prepared.push(item);
+      } else if (spent + item.data.byteLength > maximumAttachmentBatchBytes) {
+        prepared.push({ reason: "batch-oversize", url: item.sourceUrl });
+      } else {
+        spent += item.data.byteLength;
+        prepared.push(item);
+      }
+    }
+  }
   return {
     failures: prepared.flatMap((item) =>
       "reason" in item ? [{ reason: item.reason, url: item.url }] : []
@@ -101,11 +142,20 @@ export async function prepareAttachmentDelivery(
     files: prepared.flatMap((item) => ("reason" in item ? [] : [item])),
   };
 }
+/* oxlint-enable eslint/no-await-in-loop */
+
+function* batched<TItem>(items: readonly TItem[], size: number) {
+  for (let start = 0; start < items.length; start += size) {
+    yield items.slice(start, start + size);
+  }
+}
 
 async function prepareAttachment(
   attachment: MessageAttachment,
   index: number
-): Promise<OutboundFile | AttachmentFailure> {
+): Promise<
+  AttachmentFailure | (OutboundFile & { readonly sourceUrl: string })
+> {
   const url = URL.parse(attachment.url);
   if (!url) return { reason: "invalid-url", url: attachment.url };
   if (url.protocol !== "https:") {
@@ -115,7 +165,9 @@ async function prepareAttachment(
     return { reason: "blocked-host", url: attachment.url };
   }
 
-  const download = await downloadWithin(url, maximumAttachmentBytes);
+  const download = await downloadWithin(url, maximumAttachmentBytes, {
+    allowUrl: (next) => !isBlockedHost(next.hostname),
+  });
   if (download.kind !== "bytes") {
     const reason = download.kind === "oversize" ? "oversize" : download.reason;
     return { reason, url: attachment.url };
@@ -128,12 +180,18 @@ async function prepareAttachment(
     download.mediaType ?? attachment.mimeType
   );
   if (!mediaType) return { reason: "unknown-media-type", url: attachment.url };
-  if (documentMediaTypes.has(mediaType)) {
+  if (pageMediaTypes.has(mediaType) || startsPage(download.bytes)) {
     return { reason: "not-a-file", url: attachment.url };
   }
 
   return {
-    data: Buffer.from(download.bytes),
+    // The body was read into an exact-size buffer, so this views it rather
+    // than copying another ten megabytes.
+    data: Buffer.from(
+      download.bytes.buffer,
+      download.bytes.byteOffset,
+      download.bytes.byteLength
+    ),
     filename: attachmentFilename(attachment, index, mediaType),
     kind: outboundFileKind(mediaType),
     mimeType: mediaType,
@@ -142,9 +200,10 @@ async function prepareAttachment(
 }
 
 /**
- * Rejects the hosts an outbound fetch must never reach. No name is resolved
- * here, so a hostname pointing at a private address is not caught; the
- * deployment's egress rules are the backstop for that.
+ * Rejects the hosts an outbound fetch must never reach, on the URL the model
+ * supplied and on every redirect hop. No name is resolved here, so a hostname
+ * pointing at a private address is not caught; the deployment's egress rules
+ * are the backstop for that.
  */
 function isBlockedHost(hostname: string) {
   const host = hostname
@@ -154,6 +213,20 @@ function isBlockedHost(hostname: string) {
   if (isIP(host) !== 0) return true;
   if (host === "localhost" || host.endsWith(".localhost")) return true;
   return host.endsWith(".local") || host.endsWith(".internal");
+}
+
+/** Markup a server handed back under any media type it liked. */
+function startsPage(bytes: Uint8Array) {
+  const head = Buffer.from(
+    bytes.buffer,
+    bytes.byteOffset,
+    Math.min(bytes.byteLength, 64)
+  )
+    .toString("utf8")
+    .replace(/^\uFEFF/u, "")
+    .trimStart()
+    .toLowerCase();
+  return head.startsWith("<!doctype html") || head.startsWith("<html");
 }
 
 export function outboundFileKind(mediaType: string): OutboundFileKind {
@@ -174,11 +247,16 @@ function attachmentFilename(
   index: number,
   mediaType: string
 ) {
-  const name =
-    attachment.name ??
-    urlFilename(attachment.url) ??
-    `attachment-${String(index + 1)}`;
+  const chosen = safeFilename(
+    attachment.name ?? urlFilename(attachment.url) ?? ""
+  );
+  const name = chosen || `attachment-${String(index + 1)}`;
   return capFilename(withExtension(name, mediaType));
+}
+
+/** A filename cannot reach outside its folder or rewrite the line it renders on. */
+function safeFilename(name: string) {
+  return name.replace(unsafeFilenameCharacters, "").trim();
 }
 
 function urlFilename(url: string) {
@@ -197,14 +275,20 @@ function withExtension(name: string, mediaType: string) {
   if (!extension) return name;
   if (name.toLowerCase().endsWith(extension)) return name;
   const dot = name.lastIndexOf(".");
-  return `${dot > 0 ? name.slice(0, dot) : name}${extension}`;
+  // A long tail after the last dot is part of the name — `2024.06.wedding`
+  // keeps its date rather than losing everything after the first separator.
+  const replaceable = dot > 0 && name.length - dot <= 6;
+  return `${replaceable ? name.slice(0, dot) : name}${extension}`;
 }
 
 /** Shortens a name past what every messenger shows, keeping its extension. */
 export function capFilename(name: string) {
   if (name.length <= maximumFilenameLength) return name;
   const dot = name.lastIndexOf(".");
-  const extension = dot > 0 ? name.slice(dot) : "";
+  const extension =
+    dot > 0 && name.length - dot <= maximumExtensionLength
+      ? name.slice(dot)
+      : "";
   const stem = Math.max(1, maximumFilenameLength - extension.length);
   return `${name.slice(0, stem)}${extension}`;
 }

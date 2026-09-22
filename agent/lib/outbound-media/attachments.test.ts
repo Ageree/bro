@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  maximumAttachmentBatchBytes,
   maximumAttachmentBytes,
   prepareAttachmentDelivery,
 } from "./attachments";
@@ -8,7 +9,7 @@ const fetchMock =
   vi.fn<(url: string | URL, init?: RequestInit) => Promise<Response>>();
 
 function bytesOf(head: readonly number[]) {
-  const bytes = new Uint8Array(16);
+  const bytes = new Uint8Array(Math.max(16, head.length));
   bytes.set(head, 0);
   return bytes;
 }
@@ -21,6 +22,31 @@ function served(bytes: Uint8Array, contentType?: string) {
   return new Response(new Uint8Array(bytes), {
     headers: contentType ? { "content-type": contentType } : {},
   });
+}
+
+function filledJpeg(size: number) {
+  const bytes = new Uint8Array(size);
+  bytes.set([0xff, 0xd8, 0xff, 0xe0], 0);
+  return bytes;
+}
+
+/** A body whose size only shows up as it arrives, with no content-length. */
+function streamed(size: number, contentType: string) {
+  const chunk = filledJpeg(64 * 1024);
+  let sent = 0;
+  return new Response(
+    new ReadableStream({
+      pull(controller) {
+        if (sent >= size) {
+          controller.close();
+          return;
+        }
+        sent += chunk.byteLength;
+        controller.enqueue(new Uint8Array(chunk));
+      },
+    }),
+    { headers: { "content-type": contentType } }
+  );
 }
 
 beforeEach(() => {
@@ -184,6 +210,123 @@ describe("prepareAttachmentDelivery", () => {
 
     expect(delivery.failures).toEqual([{ reason: "blocked-host", url }]);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps markup served as an image as a link", async () => {
+    fetchMock.mockResolvedValueOnce(
+      served(bytesOf([...Buffer.from("<!DOCTYPE html><html>")]), "image/jpeg")
+    );
+
+    const delivery = await prepareAttachmentDelivery([
+      { kind: "image", url: "https://example.com/photo.jpg" },
+    ]);
+
+    expect(delivery.failures).toEqual([
+      { reason: "not-a-file", url: "https://example.com/photo.jpg" },
+    ]);
+  });
+
+  it("keeps a body that streams past the cap as a link", async () => {
+    fetchMock.mockResolvedValueOnce(
+      streamed(maximumAttachmentBytes + 1024, "image/jpeg")
+    );
+
+    const delivery = await prepareAttachmentDelivery([
+      { kind: "image", url: "https://media.example/huge.jpg" },
+    ]);
+
+    expect(delivery.failures).toEqual([
+      { reason: "oversize", url: "https://media.example/huge.jpg" },
+    ]);
+  });
+
+  it("never fetches a redirect target that points at a blocked host", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(null, {
+        headers: { location: "https://169.254.169.254/latest" },
+        status: 302,
+      })
+    );
+
+    const delivery = await prepareAttachmentDelivery([
+      { kind: "image", url: "https://media.example/redirect" },
+    ]);
+
+    expect(delivery.failures).toEqual([
+      { reason: "blocked-host", url: "https://media.example/redirect" },
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops downloading once the message has spent its byte budget", async () => {
+    fetchMock.mockImplementation(async () =>
+      served(filledJpeg(maximumAttachmentBytes), "image/jpeg")
+    );
+    const urls = [1, 2, 3, 4].map(
+      (index) => `https://media.example/photo-${String(index)}.jpg`
+    );
+
+    const delivery = await prepareAttachmentDelivery(
+      urls.map((url) => ({ kind: "image", url }) as const)
+    );
+
+    expect(
+      delivery.files.reduce((total, file) => total + file.data.byteLength, 0)
+    ).toBe(maximumAttachmentBatchBytes);
+    expect(delivery.files).toHaveLength(3);
+    expect(delivery.failures).toEqual([
+      { reason: "batch-oversize", url: urls[3] },
+    ]);
+    // The fourth attachment is never requested: the budget is already gone.
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("strips path separators and invisible characters from a name", async () => {
+    fetchMock.mockResolvedValueOnce(served(jpeg, "image/jpeg"));
+
+    const delivery = await prepareAttachmentDelivery([
+      {
+        kind: "image",
+        name: "../secrets\n\u202Egpj.evil",
+        url: "https://media.example/photo.jpg",
+      },
+    ]);
+
+    expect(delivery.files[0]?.filename).toBe("..secretsgpj.jpg");
+  });
+
+  it("keeps a dotted name and appends the extension", async () => {
+    fetchMock.mockResolvedValueOnce(served(jpeg, "image/jpeg"));
+
+    const delivery = await prepareAttachmentDelivery([
+      {
+        kind: "image",
+        name: "2024.06.wedding",
+        url: "https://media.example/photo",
+      },
+    ]);
+
+    expect(delivery.files[0]?.filename).toBe("2024.06.wedding.jpg");
+  });
+
+  it("keeps an attachment that broke in an unforeseen way as a link", async () => {
+    const response = served(jpeg, "image/jpeg");
+    // A response whose own fields throw escapes every guard the download has.
+    Object.defineProperty(response, "url", {
+      get() {
+        throw new Error("torn down mid-read");
+      },
+    });
+    fetchMock.mockResolvedValueOnce(response);
+
+    const delivery = await prepareAttachmentDelivery([
+      { kind: "image", url: "https://media.example/photo.jpg" },
+    ]);
+
+    expect(delivery.files).toEqual([]);
+    expect(delivery.failures).toEqual([
+      { reason: "unexpected", url: "https://media.example/photo.jpg" },
+    ]);
   });
 
   it("delivers the attachments it could fetch and links the rest", async () => {
