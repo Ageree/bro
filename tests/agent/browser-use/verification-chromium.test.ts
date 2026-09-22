@@ -1,5 +1,12 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import {
+  accessSync,
+  constants,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+} from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -22,14 +29,17 @@ import type { BrowserVerificationPlan } from "@shared/browser/verification";
 
 const chrome = [
   "/opt/pw-browsers/chromium",
-  "/usr/bin/chromium",
   "/usr/bin/google-chrome",
-].find((candidate) => candidate && existsSync(candidate));
+  "/usr/bin/google-chrome-stable",
+  "/usr/bin/chromium",
+].find(isExecutable);
 
 const serverAddressSchema = z.object({ port: z.number().int().positive() });
 
 const nativeFetch = globalThis.fetch;
 let browser: ChildProcess | undefined;
+let browserExit: Promise<BrowserExit> | undefined;
+let browserStderr = "";
 let pageServer: Server | undefined;
 let pageUrl = "";
 let profile = "";
@@ -71,11 +81,7 @@ describe.skipIf(!chrome)("browser verification against Chromium", () => {
         </script>`);
     });
     const pagePort = await listen(pageServer);
-    const reservation = createServer();
-    const debugPort = await listen(reservation);
-    await closeServer(reservation);
     pageUrl = `http://127.0.0.1:${String(pagePort)}/confirmation`;
-    debuggerUrl = `http://127.0.0.1:${String(debugPort)}`;
     profile = mkdtempSync(join(tmpdir(), "verification-chromium-"));
     browser = spawn(
       chrome ?? "",
@@ -84,27 +90,24 @@ describe.skipIf(!chrome)("browser verification against Chromium", () => {
         "--no-sandbox",
         "--disable-dev-shm-usage",
         "--remote-allow-origins=*",
-        `--remote-debugging-port=${String(debugPort)}`,
+        "--remote-debugging-port=0",
         `--user-data-dir=${profile}`,
         pageUrl,
       ],
-      { stdio: "ignore" }
+      { stdio: ["ignore", "ignore", "pipe"] }
     );
-    await waitForDebugger();
-  });
+    browser.stderr?.setEncoding("utf8");
+    browser.stderr?.on("data", (chunk: string) => {
+      browserStderr = `${browserStderr}${chunk}`.slice(-8_192);
+    });
+    browserExit = observeBrowserExit(browser);
+    debuggerUrl = await waitForDebugger(browserExit);
+  }, 15_000);
 
   afterAll(async () => {
     vi.unstubAllGlobals();
-    const exited = browser
-      ? new Promise<void>((resolve) =>
-          browser?.once("exit", () => {
-            resolve();
-          })
-        )
-      : Promise.resolve();
-    browser?.kill("SIGTERM");
     await Promise.all([
-      exited,
+      stopBrowser(),
       pageServer ? closeServer(pageServer) : Promise.resolve(),
     ]);
     if (profile)
@@ -484,12 +487,94 @@ function closeServer(server: Server) {
   });
 }
 
-async function waitForDebugger(remaining = 100): Promise<void> {
-  if (remaining === 0) throw new Error("Chromium never exposed its debugger.");
-  const ready = await nativeFetch(`${debuggerUrl}/json/version`)
-    .then((response) => response.ok)
-    .catch(() => false);
-  if (ready) return;
-  await new Promise((resolve) => setTimeout(resolve, 50));
-  return waitForDebugger(remaining - 1);
+type BrowserExit =
+  | { code: number | null; kind: "exit"; signal: NodeJS.Signals | null }
+  | { error: Error; kind: "error" };
+
+function isExecutable(candidate: string | undefined): candidate is string {
+  if (!candidate || !existsSync(candidate)) return false;
+  try {
+    accessSync(candidate, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function observeBrowserExit(child: ChildProcess) {
+  return new Promise<BrowserExit>((resolve) => {
+    child.once("error", (error) => {
+      resolve({ error, kind: "error" });
+    });
+    child.once("exit", (code, signal) => {
+      resolve({ code, kind: "exit", signal });
+    });
+  });
+}
+
+async function waitForDebugger(
+  exited: Promise<BrowserExit>,
+  deadline = Date.now() + 10_000
+): Promise<string> {
+  if (Date.now() >= deadline) throw browserStartupError();
+  const activePortFile = join(profile, "DevToolsActivePort");
+  const outcome = await Promise.race([
+    exited,
+    new Promise<undefined>((resolve) => {
+      setTimeout(resolve, 50);
+    }),
+  ]);
+  if (outcome) throw browserStartupError(outcome);
+  if (existsSync(activePortFile)) {
+    let port: number;
+    try {
+      port = Number.parseInt(
+        readFileSync(activePortFile, "utf8").split("\n", 1)[0] ?? "",
+        10
+      );
+    } catch {
+      return waitForDebugger(exited, deadline);
+    }
+    if (Number.isInteger(port) && port > 0) {
+      const url = `http://127.0.0.1:${String(port)}`;
+      const ready = await nativeFetch(`${url}/json/version`, {
+        signal: AbortSignal.timeout(250),
+      })
+        .then((response) => response.ok)
+        .catch(() => false);
+      if (ready) return url;
+    }
+  }
+  return waitForDebugger(exited, deadline);
+}
+
+function browserStartupError(outcome?: BrowserExit) {
+  const reason = outcome
+    ? outcome.kind === "error"
+      ? `spawn failed: ${outcome.error.message}`
+      : `exited with code ${String(outcome.code)} and signal ${String(outcome.signal)}`
+    : "did not expose its debugger within 10 seconds";
+  const diagnostics = browserStderr
+    .replace(/(?:https?|wss?):\/\/\S+/gu, "<redacted-browser-endpoint>")
+    .trim();
+  return new Error(
+    `Chromium ${reason} (${chrome ?? "no executable selected"}).${diagnostics ? ` stderr: ${diagnostics}` : ""}`
+  );
+}
+
+async function stopBrowser() {
+  if (!browser || !browserExit) return;
+  if (browser.exitCode !== null || browser.signalCode !== null) return;
+  browser.kill("SIGTERM");
+  const stopped = await Promise.race([
+    browserExit.then(() => true),
+    new Promise<false>((resolve) => {
+      setTimeout(() => {
+        resolve(false);
+      }, 2_000);
+    }),
+  ]);
+  if (stopped) return;
+  browser.kill("SIGKILL");
+  await browserExit;
 }
