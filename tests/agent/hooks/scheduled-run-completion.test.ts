@@ -3,6 +3,7 @@ import type { HookContext } from "eve/hooks";
 import type {
   completeScheduledAgentRun,
   deferScheduledAgentRunCompletion,
+  finishScheduledAgentRunBrowserResume,
   markScheduledAgentRunStarted,
   releaseScheduledAgentRun,
   waitForScheduledAgentRunInput,
@@ -11,6 +12,7 @@ import type {
 const services = vi.hoisted(() => ({
   complete: vi.fn<typeof completeScheduledAgentRun>(),
   deferCompletion: vi.fn<typeof deferScheduledAgentRunCompletion>(),
+  finishBrowserResume: vi.fn<typeof finishScheduledAgentRunBrowserResume>(),
   markStarted: vi.fn<typeof markScheduledAgentRunStarted>(),
   release: vi.fn<typeof releaseScheduledAgentRun>(),
   waitForInput: vi.fn<typeof waitForScheduledAgentRunInput>(),
@@ -19,6 +21,7 @@ const services = vi.hoisted(() => ({
 vi.mock("@db/services/scheduled-agent-jobs", () => ({
   completeScheduledAgentRun: services.complete,
   deferScheduledAgentRunCompletion: services.deferCompletion,
+  finishScheduledAgentRunBrowserResume: services.finishBrowserResume,
   markScheduledAgentRunStarted: services.markStarted,
   releaseScheduledAgentRun: services.release,
   waitForScheduledAgentRunInput: services.waitForInput,
@@ -95,6 +98,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   services.markStarted.mockResolvedValue(true);
   services.deferCompletion.mockResolvedValue(true);
+  services.finishBrowserResume.mockResolvedValue(true);
   services.release.mockResolvedValue("queued");
 });
 
@@ -142,6 +146,81 @@ describe("scheduled run completion hook", () => {
     );
   });
 
+  it("consumes browser deferral only when the queued browser resume turn starts", async () => {
+    const browserContext = {
+      ...context,
+      session: {
+        ...context.session,
+        auth: {
+          ...context.session.auth,
+          current: {
+            attributes: {
+              scheduledBrowserRunId: "browser-run-1",
+              scheduledRunId: runId,
+              scheduledRunLeaseToken: leaseToken,
+            },
+            authenticator: "scheduled-worker",
+            principalId: "user-1",
+            principalType: "user" as const,
+          },
+        },
+        turn: { id: "browser-resume-turn", sequence: 1 },
+      },
+    } satisfies HookContext;
+    const handler = completionHook.events?.["turn.started"];
+    await handler?.(
+      {
+        data: { sequence: 1, turnId: "browser-resume-turn" },
+        meta: { at: "2026-09-01T13:05:05.000Z", id: "event-browser-resume" },
+        type: "turn.started",
+      },
+      browserContext
+    );
+
+    expect(services.finishBrowserResume).toHaveBeenCalledExactlyOnceWith(
+      runId,
+      leaseToken,
+      "browser-run-1",
+      new Date("2026-09-01T13:05:05.000Z")
+    );
+  });
+
+  it("does not extend the lease for a stale browser resume", async () => {
+    services.finishBrowserResume.mockResolvedValue(false);
+    const browserContext = {
+      ...context,
+      session: {
+        ...context.session,
+        auth: {
+          ...context.session.auth,
+          current: {
+            attributes: {
+              scheduledBrowserRunId: "stale-browser-run",
+              scheduledRunId: runId,
+              scheduledRunLeaseToken: leaseToken,
+            },
+            authenticator: "scheduled-worker",
+            principalId: "user-1",
+            principalType: "user" as const,
+          },
+        },
+        turn: { id: "stale-browser-resume-turn", sequence: 1 },
+      },
+    } satisfies HookContext;
+    const handler = completionHook.events?.["turn.started"];
+    await handler?.(
+      {
+        data: { sequence: 1, turnId: "stale-browser-resume-turn" },
+        meta: { at: "2026-09-01T13:05:05.000Z", id: "event-stale-resume" },
+        type: "turn.started",
+      },
+      browserContext
+    );
+
+    expect(services.finishBrowserResume).toHaveBeenCalledOnce();
+    expect(services.markStarted).not.toHaveBeenCalled();
+  });
+
   it("persists the outcome for durable report delivery", async () => {
     services.complete.mockResolvedValue({
       status: "completed",
@@ -151,6 +230,7 @@ describe("scheduled run completion hook", () => {
         createdAt: new Date("2026-09-01T13:00:00.000Z"),
         deferredCompletionTurnId: null,
         id: runId,
+        pendingBrowserRunIds: [],
         pendingInputRequests: null,
         jobId: "00000000-0000-4000-8000-000000000003",
         lastError: null,
@@ -345,6 +425,7 @@ describe("scheduled run completion hook", () => {
       createdAt: new Date("2026-09-01T13:00:00.000Z"),
       id: runId,
       deferredCompletionTurnId: null,
+      pendingBrowserRunIds: [],
       pendingInputRequests: [request],
       jobId: "00000000-0000-4000-8000-000000000003",
       lastError: null,

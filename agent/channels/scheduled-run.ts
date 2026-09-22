@@ -3,6 +3,8 @@ import { localDev, routeAuth, vercelOidc } from "eve/channels/auth";
 import { parseInputResponses, resolveTextToResponses } from "eve/client";
 import { z } from "zod";
 import { dispatchScheduledReport } from "@agent/lib/schedules/report";
+import { resumeScheduledRunForBrowserResult } from "@agent/lib/browser-use/scheduled";
+import { scheduledBrowserResultSchema } from "@shared/browser/scheduled";
 import {
   claimScheduledAgentRunInput,
   finishScheduledAgentRunInput,
@@ -41,6 +43,26 @@ export default defineChannel({
     });
   },
   routes: [
+    POST(
+      "/internal/scheduled-run/browser-result",
+      async (request, { attachSession }) => {
+        const auth = await routeAuth(request, internalRouteAuth);
+        if (auth instanceof Response) return auth;
+        const input = scheduledBrowserResultSchema.parse(await request.json());
+        const status = await resumeScheduledRunForBrowserResult(
+          { attachSession },
+          input
+        );
+        return new Response(null, {
+          status:
+            status === "accepted"
+              ? 202
+              : status === "not_scheduled"
+                ? 404
+                : 409,
+        });
+      }
+    ),
     POST(
       "/internal/scheduled-run/report",
       async (request, { attachSession, to, waitUntil }) => {

@@ -1,12 +1,17 @@
 import { gateway } from "ai";
 import { revokeToken } from "@vercel/connect";
 import { z } from "zod";
+import { setBrowserAutonomyPolicy } from "@db/services/browser-autonomy";
 import { mintChannelLinkToken } from "@db/services/channel-identities";
 import { saveChat } from "@db/services/chats";
 import { replaceUserProfile } from "@db/services/user-profile";
 import { selectWorkspaceModel } from "@db/services/settings";
 import { deleteVaultItem, saveVaultItem } from "@db/services/vault";
 import { saveChatSchema } from "@shared/chat/schema";
+import {
+  broadBrowserAutonomyPolicy,
+  defaultBrowserAutonomyPolicy,
+} from "@shared/browser/autonomy";
 import { env } from "@shared/environment";
 import {
   googleWorkspaceSubject,
@@ -54,6 +59,16 @@ export const appRouter = createTRPCRouter({
     })),
   },
   settings: {
+    setBrowserAutonomy: protectedProcedure
+      .input(z.object({ broad: z.boolean() }).strict())
+      .mutation(({ ctx, input }) =>
+        setBrowserAutonomyPolicy(
+          ctx.scope,
+          input.broad
+            ? broadBrowserAutonomyPolicy
+            : defaultBrowserAutonomyPolicy
+        )
+      ),
     selectModel: protectedProcedure
       .input(z.object({ modelId: modelIdSchema }))
       .mutation(({ ctx, input }) =>

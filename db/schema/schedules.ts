@@ -128,6 +128,10 @@ export const scheduledAgentRuns = pgTable(
       .default("queued"),
     workerSessionId: text("worker_session_id"),
     deferredCompletionTurnId: text("deferred_completion_turn_id"),
+    pendingBrowserRunIds: jsonb("pending_browser_run_ids")
+      .$type<readonly string[]>()
+      .notNull()
+      .default([]),
     pendingInputRequests: jsonb("pending_input_requests").$type<
       readonly InputRequest[]
     >(),

@@ -1,8 +1,10 @@
 import { readFile } from "node:fs/promises";
 import { getVercelOidcToken } from "@vercel/oidc";
 import { z } from "zod";
+import type { BrowserDeliveryRequest } from "@agent/channels/browser-use";
 import { env } from "@shared/environment";
 import { applicationOrigin } from "@shared/environment/origin";
+import type { ScheduledBrowserResult } from "@shared/browser/scheduled";
 
 const eveDevServerSchema = z.object({
   appRoot: z.string(),
@@ -10,6 +12,8 @@ const eveDevServerSchema = z.object({
 });
 
 interface ScheduledRunRequestBodies {
+  "/internal/browser-use/delivery": BrowserDeliveryRequest;
+  "/internal/scheduled-run/browser-result": ScheduledBrowserResult;
   "/internal/scheduled-run/report": { runId: string };
   "/internal/scheduled-run/respond": {
     answer: string;

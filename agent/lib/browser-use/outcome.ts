@@ -43,6 +43,7 @@ const outcomeLabels = [
   "NEEDS",
   "DETAILS",
   "NEXT",
+  "CHECKS",
 ] as const;
 
 type OutcomeLabel = (typeof outcomeLabels)[number];

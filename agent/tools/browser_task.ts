@@ -4,6 +4,7 @@ import { z } from "zod";
 import { resolveModeValue } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { telegramConversationIdSchema } from "@agent/lib/telegram-conversation";
+import { scheduledRunIdentity } from "@agent/lib/schedules/identity";
 import {
   BrowserUseError,
   browserUseConfigured,
@@ -13,7 +14,6 @@ import {
   findBrowserUseSessionCdpUrl,
   listBrowserUseRunEvents,
   liveViewUrlFromEvents,
-  queueBrowserUseSessionMessage,
   readBrowserUseRunStatus,
   type BrowserUseCreateRunInput,
   type BrowserUseRunStatus,
@@ -24,13 +24,30 @@ import {
 } from "@agent/lib/browser-use/cdp";
 import { resolveBrowserSecretBindings } from "@agent/lib/browser-use/secrets";
 import {
-  claimBrowserRunCompletion,
+  claimBrowserLineageTransition,
+  cancelBrowserLineage,
   createBrowserRun,
+  failBrowserLineageTransition,
+  finishBrowserLineageTransition,
+  markBrowserLineageCreating,
+  prepareBrowserLineageTask,
+  readBrowserRun,
+  recordBrowserLineageCancellationResult,
   readBrowserProfileId,
-  readBrowserRunForScope,
+  resolveBrowserRunForScope,
   saveBrowserProfileId,
   updateBrowserRunProgress,
 } from "@db/services/browser-runs";
+import { browserTaskApproval } from "@agent/lib/browser-use/approval";
+import { assertScheduledBrowserTaskAllowed } from "@agent/lib/browser-use/scheduled";
+import {
+  browserCapabilitySchema,
+  type BrowserCapability,
+} from "@shared/browser/autonomy";
+import {
+  browserVerificationPlanSchema,
+  type BrowserVerificationPlan,
+} from "@shared/browser/verification";
 import { browserRunFacts } from "@agent/lib/browser-use/facts";
 import { env } from "@shared/environment";
 import {
@@ -46,39 +63,66 @@ const proxyCountryCodeSchema = z
   .toLowerCase()
   .regex(/^[a-z]{2}$/u, "Use a two-letter country code such as us or ru.");
 
-const inputSchema = z.object({
-  action: z.enum(["start", "continue", "cancel", "status"]),
-  allowPayment: z
-    .boolean()
-    .optional()
-    .describe(
-      "Only true when the user approved paying on this errand in this conversation. Binds the saved card to the site and its payment processors."
-    ),
-  runId: z
-    .string()
-    .min(1)
-    .optional()
-    .describe("The run id returned by start. Required for every other action."),
-  proxyCountryCode: proxyCountryCodeSchema
-    .optional()
-    .describe(
-      "For start only, the two-letter country whose network region should match the target market. Continue keeps the original run's country. This does not set the user's address, currency, or offer location."
-    ),
-  site: z
-    .string()
-    .optional()
-    .describe(
-      "The website origin the errand is about, such as https://www.example.com. Saved credentials are bound to this origin only."
-    ),
-  task: z
-    .string()
-    .min(1)
-    .max(8_000)
-    .optional()
-    .describe(
-      "For start, the errand in the user's own language. For continue, the answer, code, or changed constraint to pass into the running errand."
-    ),
-});
+export const browserTaskInputSchema = z
+  .object({
+    action: z.enum(["start", "continue", "cancel", "status"]),
+    capability: browserCapabilitySchema
+      .optional()
+      .describe(
+        "The strongest effect required by this actual user goal. It grants no authority outside that goal, and continue must not downgrade the stored capability."
+      ),
+    verificationPlan: browserVerificationPlanSchema
+      .optional()
+      .describe(
+        "Code-verifiable acceptance checks for this errand. Provide this for new tasks with checkable page outcomes. Set purpose order_reference only on the exact merchant reference check and order_total only on its fresh RUB numeric total check."
+      ),
+    allowPayment: z
+      .boolean()
+      .optional()
+      .describe(
+        "Only true when this errand explicitly requires a purchase, paid booking, or card attachment and purchase is authorized by stored policy or native approval. This only binds the saved card; attaching it does not authorize buying."
+      ),
+    runId: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        "The run id returned by start. Required for every other action."
+      ),
+    proxyCountryCode: proxyCountryCodeSchema
+      .optional()
+      .describe(
+        "For start only, the two-letter country whose network region should match the target market. Continue keeps the original run's country. This does not set the user's address, currency, or offer location."
+      ),
+    site: z
+      .string()
+      .optional()
+      .describe(
+        "The website origin the errand is about, such as https://www.example.com. Saved credentials are bound to this origin only."
+      ),
+    task: z
+      .string()
+      .min(1)
+      .max(8_000)
+      .optional()
+      .describe(
+        "For start, the errand in the user's own language. For continue, the answer, code, or changed constraint to pass into the running errand."
+      ),
+  })
+  .superRefine((input, context) => {
+    if (
+      input.allowPayment === true &&
+      input.capability !== undefined &&
+      input.capability !== "purchase"
+    ) {
+      context.addIssue({
+        code: "custom",
+        message:
+          "allowPayment requires purchase capability; card attachment remains limited to the stated goal and does not authorize buying.",
+        path: ["capability"],
+      });
+    }
+  });
 
 /**
  * The deployment's own proxy, when it has one. Browser Use takes it per run and
@@ -100,6 +144,24 @@ function customProxy() {
 
 const liveViewPollMs = 1_000;
 const liveViewPollAttempts = 8;
+const capabilityRank: Record<BrowserCapability, number> = {
+  browse: 0,
+  prepare: 1,
+  purchase: 2,
+  send: 2,
+  "account-change": 2,
+  delete: 2,
+};
+
+function effectiveCapability(
+  stored: BrowserCapability,
+  requested: BrowserCapability | undefined
+) {
+  if (!requested || capabilityRank[requested] < capabilityRank[stored]) {
+    return stored;
+  }
+  return requested;
+}
 
 /**
  * The contract every run ends with. The labels are fixed so the outcome parses
@@ -116,6 +178,8 @@ function outcomeContract() {
     "STATUS: exactly complete, partial, or blocked",
     "EVIDENCE: observed page URLs and facts that prove the result, one per line; omit when there is none",
     "NEXT: unfinished subgoals and hard constraints a continuation must preserve, one per line; omit only when nothing remains",
+    "CHECKS: when a verification plan was supplied, one compact JSON object {version:1,checks:[{checkId,pageUrl,scopeSelector,selector}]} containing stable CSS locators gathered while doing the work. Do not reread pages solely to produce CHECKS.",
+    "In every CHECKS locator, selector must uniquely match a strict descendant of scopeSelector. Choose the matched element's parent as the scope; never repeat the same element or selector for both fields.",
     "Use STATUS: complete only after independently reading the final page state and verifying every hard constraint. NEEDS: none alone does not mean complete. Report only URLs you actually observed, never a credential, token, one-time-code, or live-view URL.",
   ].join("\n");
 }
@@ -158,6 +222,7 @@ export function composeBrowserTask(options: {
   readonly errand: string;
   readonly facts: string | undefined;
   readonly site: string | undefined;
+  readonly verificationPlan?: BrowserVerificationPlan;
 }) {
   return [
     options.site
@@ -167,6 +232,9 @@ export function composeBrowserTask(options: {
     credentialsLine(options.aliases),
     captchaLine(),
     executionGuidance(),
+    options.verificationPlan
+      ? `Independent verification plan (preserve exactly; collect locators while working and keep relevant pages open):\n${JSON.stringify(options.verificationPlan)}`
+      : "No independent verification plan was supplied. Never describe the result as independently verified.",
     outcomeContract(),
   ]
     .filter((part) => part !== undefined)
@@ -187,6 +255,7 @@ export function composeBrowserContinuation(options: {
   readonly facts: string | undefined;
   readonly message: string;
   readonly site: string | undefined;
+  readonly verificationPlan?: BrowserVerificationPlan;
 }) {
   const checkpoint = safeCheckpoint(options.checkpoint);
   return [
@@ -205,6 +274,9 @@ export function composeBrowserContinuation(options: {
     credentialsLine(options.aliases),
     captchaLine(),
     executionGuidance(),
+    options.verificationPlan
+      ? `Independent verification plan (preserve exactly; collect locators while working and keep relevant pages open):\n${JSON.stringify(options.verificationPlan)}`
+      : "No independent verification plan was supplied. Never describe the result as independently verified.",
     outcomeContract(),
   ]
     .filter((part) => part !== undefined)
@@ -308,7 +380,7 @@ async function typeCodeIntoRunBrowser(sessionId: string, message: string) {
     return entry;
   } catch (error) {
     console.warn("[browser-use] the code could not be typed into the page", {
-      cause: error,
+      errorName: error instanceof Error ? error.name : "unknown",
       sessionId,
     });
     return undefined;
@@ -388,7 +460,7 @@ async function trackedRunIsLive(runId: string, completedAt: Date | null) {
     return !terminalRunStatuses.has(await readBrowserUseRunStatus(runId));
   } catch (error) {
     console.warn("[browser-use] run status could not be read", {
-      cause: error,
+      errorName: error instanceof Error ? error.name : "unknown",
       runId,
     });
     return false;
@@ -431,7 +503,7 @@ async function waitForLiveViewUrl(
     if (liveViewUrl) return liveViewUrl;
   } catch (error) {
     console.warn("[browser-use] live view lookup failed", {
-      cause: error,
+      errorName: error instanceof Error ? error.name : "unknown",
       runId,
     });
     return undefined;
@@ -441,10 +513,62 @@ async function waitForLiveViewUrl(
 
 export const browserTask = defineTool({
   description:
-    "Run one errand on a website through a hosted cloud browser that can sign in, fill forms, and complete a checkout. Use it when the user wants something done on a site; use web_search and web_fetch instead for reading public pages. Start exactly one run per errand and pass the site's origin so saved credentials can be bound to it. On start, proxyCountryCode can match the website's target market; use us for international services with no location-specific requirement, and do not infer a region from the conversation language. The country controls network routing, not the user's address, currency, or verified offer location, and continue cannot change it. Write the errand short: the cloud browser is itself an agent, so give it the goal, the hard constraints, and what to report back — not a click-by-click script. Every follow-up for that errand — an answer, a code the user typed, a changed constraint — goes through continue with the same runId, never a second start: continue works in the same browser, on the tab and the signed-in account the run already has. When the previous run has already finished, continue starts a follow-up run in that same browser and returns a NEW runId; use that one from then on. Pass allowPayment: true on start or on continue once the user approved paying or attaching a card on this errand in this conversation — «привяжи карту» is approval to bind the saved card, not to buy anything. The person's name, phone, email and addresses from the profile and from the vault are typed into forms automatically, so never ask for a phone number or an address the user said is saved: start the errand and let the run use it. The run signs in with vault credentials the models involved never see, so never ask the user for a password: when none is stored, call request_vault_setup. The run solves CAPTCHAs and anti-bot checks itself as it goes, and they are never the user's to solve: never tell the user you cannot pass one, never ask them to pass it, and never hand them the live view for one. When a run comes back with NEEDS: captcha, continue it on the same runId, tell it to solve the check and finish the errand; the continuation opens a fresh browser on the same profile by itself when the old one is still walled. Give the user the live-view link only when the run is blocked on something only they can do — 3-D Secure, a push approval, a sign-in you cannot complete, or a check the run still could not pass after retrying — and never forward a one-time code back to the user. The run continues in the background and its result arrives later as a new message, so do not wait on it.",
-  inputSchema,
+    "Run one errand on a website through a hosted cloud browser that can sign in, fill forms, and complete a checkout. Use it when the user wants something done on a site; use web_search and web_fetch instead for reading public pages. Start exactly one run per errand and pass the site's origin so saved credentials can be bound to it. Declare capability as the strongest effect required by the actual user goal; it grants no authority outside that goal, and continue cannot downgrade it. On start, proxyCountryCode can match the website's target market; use us for international services with no location-specific requirement, and do not infer a region from the conversation language. The country controls network routing, not the user's address, currency, or verified offer location, and continue cannot change it. Write the errand short: the cloud browser is itself an agent, so give it the goal, the hard constraints, and what to report back — not a click-by-click script. Every follow-up for that errand — an answer, a code the user typed, a changed constraint — goes through continue with the current runId, never a second start. Continue preserves the browser, tab, signed-in account, goal, and acceptance plan, but creates a tracked successor run and returns its NEW runId; use that one from then on. Set allowPayment only when the errand requires a purchase, paid booking, or card attachment and purchase is authorized by stored policy or native approval; it only binds the saved card, and card attachment does not authorize buying. The person's name, phone, email and addresses from the profile and from the vault are typed into forms automatically, so never ask for a phone number or an address the user said is saved: start the errand and let the run use it. The run signs in with vault credentials the models involved never see, so never ask the user for a password: when none is stored, call request_vault_setup. The run solves CAPTCHAs and anti-bot checks itself as it goes, and they are never the user's to solve: never tell the user you cannot pass one, never ask them to pass it, and never hand them the live view for one. When a run comes back with NEEDS: captcha, continue it on the same runId and tell it to solve the check and finish the errand. Give the user the live-view link only when the run is blocked on something only they can do — 3-D Secure, a push approval, or a sign-in you cannot complete — and never forward a one-time code back to the user. The run continues in the background and its result arrives later as a new message, so do not wait on it.",
+  inputSchema: browserTaskInputSchema,
+  approval: async (context) => {
+    const parsed = browserTaskInputSchema.safeParse(context.toolInput);
+    if (!parsed.success) {
+      return browserTaskApproval(context);
+    }
+    if (parsed.data.action === "start") {
+      return await browserTaskApproval({
+        ...context,
+        toolInput: {
+          ...parsed.data,
+          capability:
+            parsed.data.allowPayment === true
+              ? "purchase"
+              : (parsed.data.capability ?? "browse"),
+        },
+      });
+    }
+    if (parsed.data.action !== "continue" || !parsed.data.runId) {
+      return browserTaskApproval(context);
+    }
+    const auth = context.session.auth.current;
+    if (auth?.principalType !== "user") return browserTaskApproval(context);
+    try {
+      const resolved = await resolveBrowserRunForScope(
+        scopeFromPrincipal(auth),
+        parsed.data.runId
+      );
+      if (!resolved) return "user-approval";
+      const acceptsAmendment =
+        auth.authenticator !== "browser-result" &&
+        auth.authenticator !== "scheduled-worker";
+      const requestedCapability =
+        parsed.data.allowPayment === true ? "purchase" : parsed.data.capability;
+      return await browserTaskApproval({
+        ...context,
+        toolInput: {
+          ...parsed.data,
+          capability: acceptsAmendment
+            ? effectiveCapability(resolved.root.capability, requestedCapability)
+            : resolved.root.capability,
+          allowPayment:
+            parsed.data.allowPayment === true &&
+            (acceptsAmendment || resolved.root.capability === "purchase"),
+        },
+      });
+    } catch {
+      return "user-approval";
+    }
+  },
   async execute(input, context) {
     const { conversation, scope } = conversationTarget(context);
+    if (input.action === "start" || input.action === "continue") {
+      await assertScheduledBrowserTaskAllowed(context);
+    }
 
     if (input.action === "start") {
       const errand = z
@@ -473,6 +597,7 @@ export const browserTask = defineTool({
         errand,
         facts,
         site: input.site,
+        verificationPlan: input.verificationPlan,
       });
       const proxy = customProxy();
       const run = await createBrowserUseRun({
@@ -487,12 +612,18 @@ export const browserTask = defineTool({
       await createBrowserRun(scope, {
         ...conversation,
         id: run.id,
+        capability:
+          input.allowPayment === true
+            ? "purchase"
+            : (input.capability ?? "browse"),
         profileId,
         proxyCountryCode,
         sessionId: run.sessionId,
         site: input.site ?? null,
         status: "running",
         task: errand,
+        scheduledOrigin: scheduledRunIdentity(context.session.auth) ?? null,
+        verificationPlan: input.verificationPlan ?? null,
       });
       const liveViewUrl = await waitForLiveViewUrl(run.id);
       if (liveViewUrl) {
@@ -518,16 +649,34 @@ export const browserTask = defineTool({
       .string()
       .min(1, "This action needs the runId returned by start.")
       .parse(input.runId);
-    const row = await readBrowserRunForScope(scope, runId);
-    if (!row)
+    const resolved = await resolveBrowserRunForScope(scope, runId);
+    if (!resolved)
       throw new Error("That browser run is not part of this workspace.");
+    const { active: row, root } = resolved;
 
     if (input.action === "continue") {
       const message = z
         .string()
         .min(1, "A continue action needs the message to pass into the run.")
         .parse(input.task);
-      const allowPayment = input.allowPayment === true;
+      const userAuth = context.session.auth.current;
+      const acceptsAmendment =
+        userAuth?.principalType === "user" &&
+        userAuth.authenticator !== "browser-result" &&
+        userAuth.authenticator !== "scheduled-worker";
+      const allowPayment =
+        input.allowPayment === true &&
+        (acceptsAmendment || root.capability === "purchase");
+      const verificationPlan =
+        acceptsAmendment && input.verificationPlan
+          ? input.verificationPlan
+          : (root.verificationPlan ?? undefined);
+      const capability = acceptsAmendment
+        ? effectiveCapability(
+            root.capability,
+            input.allowPayment === true ? "purchase" : input.capability
+          )
+        : root.capability;
       // The errand's origin is fixed when it starts: the browser is already on
       // that site, signed in, and the run's secrets are bound to it. A site the
       // model passes on a follow-up can only be a mix-up with another errand in
@@ -539,45 +688,37 @@ export const browserTask = defineTool({
       // entry is worth attempting whether or not a run is still on the page:
       // the browser outlives its run, and the field is where the code belongs.
       const [live, codeEntry] = await Promise.all([
-        trackedRunIsLive(runId, row.completedAt),
+        trackedRunIsLive(row.id, row.completedAt),
         typeCodeIntoRunBrowser(row.sessionId, message),
       ]);
 
-      // A live run already carries the secrets it was created with, so a plain
-      // follow-up is just a message on its queue. Bindings exist per run only:
-      // a card the person has only now approved needs a run of its own.
-      if (live && !allowPayment) {
-        await queueBrowserUseSessionMessage(
-          row.sessionId,
-          withCodeEntry(message, codeEntry)
+      const transition = await claimBrowserLineageTransition({
+        activeRunId: row.id,
+        allowCompleted: true,
+        allowSupersede: acceptsAmendment,
+        capability,
+        expectedRevision: root.lineageRevision,
+        rootRunId: root.id,
+        task: message,
+        verificationPlan: verificationPlan ?? null,
+      });
+      if (!transition) {
+        throw new Error(
+          "This browser errand changed while the continuation was being prepared. Retry with its current run id."
         );
-        return {
-          note:
-            codeEntryNote(codeEntry) === undefined
-              ? "The message was queued into the running errand. Its outcome still arrives as a new message."
-              : "The code went straight into the page, and the message was queued into the running errand as well. Its outcome still arrives as a new message.",
-          runId,
-          status: row.status,
-        };
       }
       if (live) {
         try {
-          await cancelBrowserUseRun(runId);
+          await cancelBrowserUseRun(row.id);
         } catch (error) {
           console.warn(
             "[browser-use] the replaced run could not be cancelled",
             {
-              cause: error,
-              runId,
+              errorName: error instanceof Error ? error.name : "unknown",
+              runId: row.id,
             }
           );
         }
-        // Claiming the completion here is what keeps the webhook and the
-        // poller from reporting the replaced run as an outcome of its own.
-        await claimBrowserRunCompletion(runId, {
-          outcome: "Заменён продолжением с привязанной картой",
-          status: "stopped",
-        });
       }
 
       // No quota gate: `browserRunQuotaGate` counts as it reads, and a
@@ -594,46 +735,114 @@ export const browserTask = defineTool({
       // into it meets the same verdict however well it is written. The profile
       // carries the sign-in, so dropping the session keeps the account and
       // gets a fresh browser on a fresh address.
-      const followUp = await createFollowUpRun({
-        customProxy: customProxy(),
-        maxCostUsd: env.BROWSER_USE_MAX_COST_USD,
-        model: env.BROWSER_USE_MODEL,
-        profileId,
-        proxyCountryCode,
-        secretBindings: secrets.bindings,
-        sessionId: endedOnAntiBotCheck(row.outcome) ? undefined : row.sessionId,
-        task: composeBrowserContinuation({
-          aliases: secrets.aliases,
-          checkpoint: row.outcome ?? undefined,
-          errand: row.task,
-          facts,
-          message: withCodeEntry(message, codeEntry),
-          site,
-        }),
+      const continuationTask = composeBrowserContinuation({
+        aliases: secrets.aliases,
+        checkpoint: row.outcome ?? undefined,
+        errand: root.task,
+        facts,
+        message: withCodeEntry(message, codeEntry),
+        site,
+        verificationPlan,
       });
-      if (!followUp.run) {
-        await queueBrowserUseSessionMessage(
-          row.sessionId,
-          withCodeEntry(message, codeEntry)
+      const prepared = await prepareBrowserLineageTask({
+        lineageRevision: transition.root.lineageRevision,
+        rootRunId: root.id,
+        task: continuationTask,
+        token: transition.token,
+      });
+      if (!prepared)
+        throw new Error(
+          "The browser continuation was cancelled before it started."
         );
-        return {
-          note: "The browser session was busy with another run, so the message was queued onto it instead. Keep using this run id; the outcome arrives as a new message.",
-          runId,
-          status: row.status,
-        };
+      const creating = await markBrowserLineageCreating(
+        root.id,
+        transition.token,
+        transition.root.lineageRevision
+      );
+      if (!creating)
+        throw new Error(
+          "The browser continuation was cancelled before it started."
+        );
+      let followUp;
+      try {
+        followUp = await createFollowUpRun({
+          customProxy: customProxy(),
+          maxCostUsd: env.BROWSER_USE_MAX_COST_USD,
+          model: env.BROWSER_USE_MODEL,
+          profileId,
+          proxyCountryCode,
+          secretBindings: secrets.bindings,
+          sessionId: endedOnAntiBotCheck(row.outcome)
+            ? undefined
+            : row.sessionId,
+          task: prepared.task,
+        });
+      } catch (error) {
+        if (
+          error instanceof BrowserUseError &&
+          error.status >= 400 &&
+          error.status < 500
+        ) {
+          await failBrowserLineageTransition(
+            root.id,
+            transition.token,
+            transition.root.lineageRevision
+          );
+        }
+        throw error;
+      }
+      if (!followUp.run) {
+        await failBrowserLineageTransition(
+          root.id,
+          transition.token,
+          transition.root.lineageRevision
+        );
+        throw new Error(
+          "The browser session is busy. Retry this continuation after its active run settles."
+        );
       }
 
       await createBrowserRun(scope, {
         ...conversation,
         id: followUp.run.id,
+        activeRunId: followUp.run.id,
+        capability,
         liveViewUrl: followUp.reusedSession ? row.liveViewUrl : null,
         profileId,
         proxyCountryCode,
         sessionId: followUp.run.sessionId,
         site: site ?? null,
         status: "running",
-        task: row.task,
+        parentRunId: row.id,
+        rootRunId: root.id,
+        scheduledOrigin: root.scheduledOrigin,
+        task: root.task,
+        verificationPlan: verificationPlan ?? null,
       });
+      const installed = await finishBrowserLineageTransition({
+        capability,
+        childId: followUp.run.id,
+        lineageRevision: transition.root.lineageRevision,
+        rootRunId: root.id,
+        sessionId: followUp.run.sessionId,
+        token: transition.token,
+        verificationPlan: verificationPlan ?? null,
+      });
+      if (!installed) {
+        const current = await readBrowserRun(root.id);
+        if (
+          current?.activeRunId !== followUp.run.id &&
+          !(
+            current?.lineageToken === transition.token &&
+            current.lineageState === "recovering"
+          )
+        ) {
+          await cancelBrowserUseRun(followUp.run.id).catch(() => undefined);
+        }
+        throw new Error(
+          "The continuation was cancelled or amended before it became active."
+        );
+      }
       const inheritedLiveViewUrl = followUp.reusedSession
         ? row.liveViewUrl
         : null;
@@ -661,21 +870,52 @@ export const browserTask = defineTool({
     }
 
     if (input.action === "cancel") {
-      await cancelBrowserUseRun(runId);
-      await claimBrowserRunCompletion(runId, {
-        outcome: "The user cancelled this browser run.",
+      const cancelled = await cancelBrowserLineage(
+        root.id,
+        root.lineageRevision
+      );
+      if (!cancelled) {
+        throw new Error(
+          "This browser errand changed before it could be cancelled. Retry with its current run id."
+        );
+      }
+      try {
+        await cancelBrowserUseRun(row.id);
+        await recordBrowserLineageCancellationResult({
+          confirmed: true,
+          lineageRevision: cancelled.lineageRevision,
+          rootRunId: root.id,
+        });
+      } catch (error) {
+        await recordBrowserLineageCancellationResult({
+          confirmed: false,
+          lineageRevision: cancelled.lineageRevision,
+          rootRunId: root.id,
+        });
+        console.warn("[browser-use] cancelled lineage provider stop failed", {
+          errorName: error instanceof Error ? error.name : "unknown",
+          runId: row.id,
+        });
+        return {
+          note: "The errand is cancelled locally, but the provider stop could not be confirmed.",
+          runId: row.id,
+          status: "stopped",
+        };
+      }
+      return {
+        note: "The errand was cancelled and the provider confirmed the stop.",
+        runId: row.id,
         status: "stopped",
-      });
-      return { runId, status: "stopped" };
+      };
     }
 
-    const status = row.completedAt
-      ? row.status
-      : await readBrowserUseRunStatus(runId);
+    const status = root.completedAt
+      ? root.status
+      : await readBrowserUseRunStatus(row.id);
     return {
       liveViewUrl: row.liveViewUrl ?? undefined,
-      outcome: row.outcome ?? undefined,
-      runId,
+      outcome: root.outcome ?? undefined,
+      runId: row.id,
       status,
     };
   },

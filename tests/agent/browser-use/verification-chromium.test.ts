@@ -1,0 +1,495 @@
+import { spawn, type ChildProcess } from "node:child_process";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { createServer, type Server } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
+
+let debuggerUrl = "";
+const findBrowserUseSessionCdpUrl = vi.hoisted(() =>
+  vi.fn<
+    (sessionId: string, signal?: AbortSignal) => Promise<string | undefined>
+  >(async () => debuggerUrl)
+);
+
+vi.mock("@agent/lib/browser-use/client", () => ({
+  findBrowserUseSessionCdpUrl,
+}));
+
+import { verifyBrowserRun } from "@agent/lib/browser-use/verification";
+import type { BrowserVerificationPlan } from "@shared/browser/verification";
+
+const chrome = [
+  "/opt/pw-browsers/chromium",
+  "/usr/bin/chromium",
+  "/usr/bin/google-chrome",
+].find((candidate) => candidate && existsSync(candidate));
+
+const serverAddressSchema = z.object({ port: z.number().int().positive() });
+
+const nativeFetch = globalThis.fetch;
+let browser: ChildProcess | undefined;
+let pageServer: Server | undefined;
+let pageUrl = "";
+let profile = "";
+
+describe.skipIf(!chrome)("browser verification against Chromium", () => {
+  beforeAll(async () => {
+    pageServer = createServer((_request, response) => {
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      response.end(`<!doctype html>
+        <style>.hidden-price { display: none }</style>
+        <main id="app">
+          <section id="offer"><h1 class="title">Blue mug</h1><p class="price">$19.99</p></section>
+          <section id="offers">
+            <article><h2 class="first-title">First mug</h2></article>
+            <article><p class="second-price">$12.00</p></article>
+          </section>
+          <section id="stale"><p class="hidden-price">$1.00</p></section>
+          <div style="opacity:0"><section id="ancestor-hidden"><p class="price">$1.00</p></section></div>
+          <section id="hidden-child"><div class="visible-wrapper" style="padding:4px"><span hidden>$1.00</span></div></section>
+          <section id="form"><input class="quantity" value="3"></section>
+          <section id="secret"><input class="password" type="password" value="never-return-this"></section>
+          <section id="identifier-secrets">
+            <input id="api_key" value="raw-api-secret">
+            <div id="auth_token">raw-auth-secret</div>
+          </section>
+          <article id="outer-offer">
+            <article><p class="inner-price">$12.00</p></article>
+            <article><p class="inner-terms">Free delivery</p></article>
+          </article>
+          <section id="long-evidence">
+            <p class="long-absence">${"a".repeat(1100)} forbidden phrase</p>
+            <p class="long-number">$10.00 ${"b".repeat(1100)} $999.00</p>
+          </section>
+        </main>
+        <script>
+          Document.prototype.querySelectorAll = () => { throw new Error("main-world trap"); };
+          Element.prototype.querySelectorAll = () => { throw new Error("main-world trap"); };
+          JSON.stringify = () => "corrupted";
+        </script>`);
+    });
+    const pagePort = await listen(pageServer);
+    const reservation = createServer();
+    const debugPort = await listen(reservation);
+    await closeServer(reservation);
+    pageUrl = `http://127.0.0.1:${String(pagePort)}/confirmation`;
+    debuggerUrl = `http://127.0.0.1:${String(debugPort)}`;
+    profile = mkdtempSync(join(tmpdir(), "verification-chromium-"));
+    browser = spawn(
+      chrome ?? "",
+      [
+        "--headless=new",
+        "--no-sandbox",
+        "--disable-dev-shm-usage",
+        "--remote-allow-origins=*",
+        `--remote-debugging-port=${String(debugPort)}`,
+        `--user-data-dir=${profile}`,
+        pageUrl,
+      ],
+      { stdio: "ignore" }
+    );
+    await waitForDebugger();
+  });
+
+  afterAll(async () => {
+    vi.unstubAllGlobals();
+    const exited = browser
+      ? new Promise<void>((resolve) =>
+          browser?.once("exit", () => {
+            resolve();
+          })
+        )
+      : Promise.resolve();
+    browser?.kill("SIGTERM");
+    await Promise.all([
+      exited,
+      pageServer ? closeServer(pageServer) : Promise.resolve(),
+    ]);
+    if (profile)
+      rmSync(profile, {
+        force: true,
+        maxRetries: 5,
+        recursive: true,
+        retryDelay: 100,
+      });
+  });
+
+  it("reads visible DOM and safe form values in an isolated world", async () => {
+    const report = await verify(
+      [
+        check("title", {
+          caseSensitive: false,
+          expected: "Blue mug",
+          kind: "text_exact",
+        }),
+        check("quantity", {
+          caseSensitive: true,
+          expected: "3",
+          kind: "text_exact",
+        }),
+      ],
+      [
+        locator("title", "#offer", ".title"),
+        locator("quantity", "#form", ".quantity"),
+      ]
+    );
+
+    expect(report.verdict).toBe("verified");
+    expect(report.elapsedMs).toBeLessThanOrEqual(3_000);
+  });
+
+  it("rejects resolved body aliases and hidden stale values", async () => {
+    const broad = await verify(
+      [
+        check("title", {
+          caseSensitive: false,
+          expected: "Blue mug",
+          kind: "text_exact",
+        }),
+      ],
+      [locator("title", ":is(body)", "#offer .title")]
+    );
+    const hidden = await verify(
+      [
+        check("price", {
+          currency: "USD",
+          decimalSeparator: ".",
+          kind: "number",
+          maximum: 5,
+        }),
+      ],
+      [locator("price", "#stale", ".hidden-price")]
+    );
+    const hiddenByAncestor = await verify(
+      [
+        check("price", {
+          currency: "USD",
+          decimalSeparator: ".",
+          kind: "number",
+          maximum: 5,
+        }),
+      ],
+      [locator("price", "#ancestor-hidden", ".price")]
+    );
+    const hiddenChild = await verify(
+      [
+        check("price", {
+          currency: "USD",
+          decimalSeparator: ".",
+          kind: "number",
+          maximum: 5,
+        }),
+      ],
+      [locator("price", "#hidden-child", ".visible-wrapper")]
+    );
+
+    expect(broad.verdict).toBe("unverified");
+    expect(hidden.verdict).toBe("unverified");
+    expect(hiddenByAncestor.verdict).toBe("unverified");
+    expect(hiddenChild.verdict).toBe("unverified");
+  });
+
+  it("distinguishes zero, multiple, and grouped-missing DOM matches", async () => {
+    const zero = await verify(
+      [
+        check("title", {
+          caseSensitive: false,
+          expected: "Blue mug",
+          kind: "text_exact",
+        }),
+      ],
+      [locator("title", "#offer", "#offer")]
+    );
+    const multiple = await verify(
+      [
+        check("candidate", {
+          caseSensitive: false,
+          expected: "First mug",
+          kind: "text_contains",
+        }),
+      ],
+      [locator("candidate", "#offers", "article")]
+    );
+    const groupedChecks = [
+      {
+        ...check("title", {
+          caseSensitive: false,
+          expected: "Blue mug",
+          kind: "text_exact",
+        }),
+        groupId: "offer",
+      },
+      {
+        ...check("price", {
+          currency: "USD",
+          decimalSeparator: ".",
+          kind: "number",
+          maximum: 20,
+        }),
+        groupId: "offer",
+      },
+    ] satisfies BrowserVerificationPlan["checks"];
+    const grouped = await verify(groupedChecks, [
+      locator("title", "#offer", ".missing-title"),
+      locator("price", "#offer", ".price"),
+    ]);
+
+    expect(zero.defects[0]?.code).toBe("missing_evidence");
+    expect(multiple.defects[0]?.code).toBe("ambiguous_match");
+    expect(grouped.defects).toContainEqual(
+      expect.objectContaining({ checkId: "title", code: "missing_evidence" })
+    );
+    expect(grouped.defects.some(({ code }) => code === "group_mismatch")).toBe(
+      false
+    );
+  });
+
+  it("never returns a sensitive form value", async () => {
+    const report = await verify(
+      [
+        check("password", {
+          caseSensitive: true,
+          expected: "never-return-this",
+          kind: "text_exact",
+        }),
+      ],
+      [locator("password", "#secret", ".password")]
+    );
+
+    expect(report.verdict).toBe("unverified");
+    expect(report.defects[0]?.code).toBe("sensitive_evidence");
+    expect(JSON.stringify(report)).not.toContain("never-return-this");
+  });
+
+  it("never reads token or API-key identifier evidence", async () => {
+    const apiKey = await verify(
+      [
+        check("api-secret", {
+          caseSensitive: true,
+          expected: "raw-api-secret",
+          kind: "text_exact",
+        }),
+      ],
+      [locator("api-secret", "#identifier-secrets", "#api_key")]
+    );
+    const authToken = await verify(
+      [
+        check("auth-secret", {
+          caseSensitive: true,
+          expected: "raw-auth-secret",
+          kind: "text_exact",
+        }),
+      ],
+      [locator("auth-secret", "#identifier-secrets", "#auth_token")]
+    );
+
+    expect(apiKey.defects[0]?.code).toBe("sensitive_evidence");
+    expect(authToken.defects[0]?.code).toBe("sensitive_evidence");
+    expect(JSON.stringify([apiKey, authToken])).not.toMatch(
+      /raw-(?:api|auth)-secret/u
+    );
+  });
+
+  it("rejects grouped fields resolved from different candidate containers", async () => {
+    const checks = [
+      {
+        ...check("title", {
+          caseSensitive: false,
+          expected: "First mug",
+          kind: "text_exact",
+        }),
+        groupId: "offer",
+      },
+      {
+        ...check("price", {
+          currency: "USD",
+          decimalSeparator: ".",
+          kind: "number",
+          maximum: 20,
+        }),
+        groupId: "offer",
+      },
+      {
+        ...check("terms", {
+          caseSensitive: false,
+          expected: "Free delivery",
+          kind: "text_contains",
+        }),
+        groupId: "offer",
+        mandatory: false,
+      },
+    ] satisfies BrowserVerificationPlan["checks"];
+
+    const report = await verify(checks, [
+      locator("title", "#offers", ".first-title"),
+      locator("price", "#offers", ".second-price"),
+      locator("terms", "#offers", ".missing-terms"),
+    ]);
+
+    expect(report.verdict).toBe("unverified");
+    expect(report.defects.some(({ code }) => code === "group_mismatch")).toBe(
+      true
+    );
+  });
+
+  it("prefers nested candidate identity over an outer candidate scope", async () => {
+    const checks = [
+      {
+        ...check("price", {
+          currency: "USD",
+          decimalSeparator: ".",
+          kind: "number",
+          maximum: 20,
+        }),
+        groupId: "offer",
+      },
+      {
+        ...check("terms", {
+          caseSensitive: false,
+          expected: "Free delivery",
+          kind: "text_exact",
+        }),
+        groupId: "offer",
+      },
+    ] satisfies BrowserVerificationPlan["checks"];
+
+    const report = await verify(checks, [
+      locator("price", "#outer-offer", ".inner-price"),
+      locator("terms", "#outer-offer", ".inner-terms"),
+    ]);
+
+    expect(report.verdict).toBe("unverified");
+    expect(report.defects.some(({ code }) => code === "group_mismatch")).toBe(
+      true
+    );
+  });
+
+  it("never decides absence or numeric bounds from truncated text", async () => {
+    const absence = await verify(
+      [
+        check("absence", {
+          caseSensitive: false,
+          expected: "forbidden phrase",
+          kind: "text_absent",
+        }),
+      ],
+      [locator("absence", "#long-evidence", ".long-absence")]
+    );
+    const numeric = await verify(
+      [
+        check("number", {
+          currency: "USD",
+          decimalSeparator: ".",
+          kind: "number",
+          maximum: 20,
+        }),
+      ],
+      [locator("number", "#long-evidence", ".long-number")]
+    );
+
+    expect(absence.verdict).toBe("unverified");
+    expect(numeric.verdict).toBe("unverified");
+  });
+
+  it("uses the live isolated-world URL instead of a stale target URL", async () => {
+    const staleUrl = `${pageUrl}?stale=1`;
+    vi.stubGlobal(
+      "fetch",
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const response = await nativeFetch(input, init);
+        const requestedUrl =
+          input instanceof Request
+            ? input.url
+            : input instanceof URL
+              ? input.href
+              : input;
+        if (requestedUrl !== `${debuggerUrl}/json`) return response;
+        const targets = z
+          .array(
+            z.looseObject({
+              type: z.string().optional(),
+              url: z.string().optional(),
+            })
+          )
+          .parse(await response.json());
+        for (const target of targets) {
+          if (target.type === "page") target.url = staleUrl;
+        }
+        return Response.json(targets);
+      }
+    );
+    const report = await verify(
+      [
+        check("title", {
+          caseSensitive: false,
+          expected: "Blue mug",
+          kind: "text_exact",
+        }),
+      ],
+      [locator("title", "#offer", ".title", staleUrl)]
+    );
+    vi.unstubAllGlobals();
+
+    expect(report.verdict).toBe("unverified");
+    expect(report.defects[0]?.code).toBe("page_missing");
+  });
+});
+
+function check(
+  id: string,
+  predicate: BrowserVerificationPlan["checks"][number]["predicate"]
+) {
+  return { description: id, id, mandatory: true, predicate };
+}
+
+function locator(
+  checkId: string,
+  scopeSelector: string,
+  selector: string,
+  source = pageUrl
+) {
+  return { checkId, pageUrl: source, scopeSelector, selector };
+}
+
+function verify(
+  checks: BrowserVerificationPlan["checks"],
+  locators: ReturnType<typeof locator>[]
+) {
+  return verifyBrowserRun({
+    plan: { checks, version: 1 },
+    result: `RESULT: done\nNEEDS: none\nCHECKS: ${JSON.stringify({ checks: locators, version: 1 })}`,
+    sessionId: "probe-session",
+  });
+}
+
+function listen(server: Server) {
+  return new Promise<number>((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      const parsed = serverAddressSchema.safeParse(address);
+      if (!parsed.success) throw new Error("The probe server has no TCP port.");
+      resolve(parsed.data.port);
+    });
+  });
+}
+
+function closeServer(server: Server) {
+  return new Promise<void>((resolve) => {
+    server.closeAllConnections();
+    server.close(() => {
+      resolve();
+    });
+  });
+}
+
+async function waitForDebugger(remaining = 100): Promise<void> {
+  if (remaining === 0) throw new Error("Chromium never exposed its debugger.");
+  const ready = await nativeFetch(`${debuggerUrl}/json/version`)
+    .then((response) => response.ok)
+    .catch(() => false);
+  if (ready) return;
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  return waitForDebugger(remaining - 1);
+}

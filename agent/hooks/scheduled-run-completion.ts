@@ -1,27 +1,58 @@
 import { defineHook } from "eve/hooks";
+import { z } from "zod";
 import { scheduledRunIdentity } from "@agent/lib/schedules/identity";
 import { scheduledRunOutcomeSchema } from "@shared/schedules/outcome";
 import {
   completeScheduledAgentRun,
   deferScheduledAgentRunCompletion,
+  finishScheduledAgentRunBrowserResume,
   markScheduledAgentRunStarted,
   releaseScheduledAgentRun,
   waitForScheduledAgentRunInput,
 } from "@db/services/scheduled-agent-jobs";
 
 const workerRuntimeLimitMs = 6 * 60 * 60_000;
+const scheduledBrowserResumeIdentitySchema = z.object({
+  scheduledBrowserRunId: z.string().min(1),
+});
 
 export default defineHook({
   events: {
     async "turn.started"(event, ctx) {
       const identity = scheduledRunIdentity(ctx.session.auth);
       if (!identity) return;
+      const now = new Date(event.meta.at);
+      const browserResume =
+        ctx.session.auth.current?.authenticator === "scheduled-worker"
+          ? scheduledBrowserResumeIdentitySchema.safeParse(
+              ctx.session.auth.current.attributes
+            )
+          : undefined;
+      const browserRunId = browserResume?.success
+        ? browserResume.data.scheduledBrowserRunId
+        : undefined;
+      if (browserRunId) {
+        const consumed = await finishScheduledAgentRunBrowserResume(
+          identity.runId,
+          identity.leaseToken,
+          browserRunId,
+          now
+        );
+        if (!consumed) {
+          console.warn("[scheduled-run] browser resume was stale", {
+            browserRunId,
+            runId: identity.runId,
+            sessionId: ctx.session.id,
+          });
+          return;
+        }
+      }
       const started = await markScheduledAgentRunStarted(
         identity.runId,
         identity.leaseToken,
         ctx.session.id,
         workerRuntimeLimitMs,
-        new Date(event.meta.at)
+        now
       );
       if (!started) {
         console.warn("[scheduled-run] worker started with a stale lease", {

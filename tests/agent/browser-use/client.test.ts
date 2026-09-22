@@ -26,6 +26,7 @@ interface StubbedCall {
   readonly body: string;
   readonly headers: Headers;
   readonly method: string;
+  readonly signal: AbortSignal | null | undefined;
   readonly url: string;
 }
 
@@ -37,12 +38,18 @@ function stubFetch(...responses: readonly Response[]) {
     "fetch",
     (
       url: URL,
-      init: { body?: string; headers: HeadersInit; method: string }
+      init: {
+        body?: string;
+        headers: HeadersInit;
+        method: string;
+        signal?: AbortSignal | null;
+      }
     ) => {
       calls.push({
         body: init.body ?? "",
         headers: new Headers(init.headers),
         method: init.method,
+        signal: init.signal,
         url: url.toString(),
       });
       const response = responses[Math.min(index, responses.length - 1)];
@@ -52,6 +59,15 @@ function stubFetch(...responses: readonly Response[]) {
     }
   );
   return calls;
+}
+
+function recoverySummary(index: number, owner = sessionId) {
+  return {
+    id: `${String(index).padStart(8, "0")}-1111-4111-8111-111111111111`,
+    sessionId: owner,
+    status: "completed",
+    task: `Recovery marker ${String(index)}`,
+  };
 }
 
 describe("Browser Use client", () => {
@@ -121,6 +137,17 @@ describe("Browser Use client", () => {
     expect(failure.status).toBe(503);
     expect(failure.message).toContain("upstream exploded");
     expect(calls).toHaveLength(2);
+  });
+
+  it("does not retry run creation because the POST has no idempotency key", async () => {
+    const client = await loadClient();
+    const calls = stubFetch(new Response("upstream exploded", { status: 503 }));
+
+    await expect(
+      client.createBrowserUseRun({ task: "Do this once" })
+    ).rejects.toThrow("upstream exploded");
+
+    expect(calls).toHaveLength(1);
   });
 
   it("reads a run status, queues a session message and stops a session", async () => {
@@ -340,6 +367,41 @@ describe("Browser Use client", () => {
     });
   });
 
+  it("lists at most fifty runs for one session across cursor pages", async () => {
+    const client = await loadClient();
+    const calls = stubFetch(
+      Response.json({
+        hasMore: true,
+        nextCursor: "next page/+",
+        runs: [
+          ...Array.from({ length: 25 }, (_, index) => recoverySummary(index)),
+          recoverySummary(99, "99999999-9999-4999-8999-999999999999"),
+        ],
+      }),
+      Response.json({
+        hasMore: true,
+        nextCursor: "ignored",
+        runs: Array.from({ length: 30 }, (_, index) =>
+          recoverySummary(index + 25)
+        ),
+      })
+    );
+
+    const runs = await client.listBrowserUseRunsBySession(sessionId);
+
+    expect(runs).toHaveLength(50);
+    expect(runs[0]).toEqual({
+      id: "00000000-1111-4111-8111-111111111111",
+      sessionId,
+      status: "completed",
+      task: "Recovery marker 0",
+    });
+    expect(calls.map(({ url }) => url)).toEqual([
+      `${baseUrl}/runs?sessionId=${sessionId}&limit=25`,
+      `${baseUrl}/runs?sessionId=${sessionId}&limit=25&cursor=next+page%2F%2B`,
+    ]);
+  });
+
   it("finds the debugger endpoint of the browser this session is using", async () => {
     const client = await loadClient();
     const calls = stubFetch(
@@ -369,11 +431,15 @@ describe("Browser Use client", () => {
       })
     );
 
-    await expect(client.findBrowserUseSessionCdpUrl(sessionId)).resolves.toBe(
-      "wss://cdp.browser-use.test/live"
-    );
+    const controller = new AbortController();
+    await expect(
+      client.findBrowserUseSessionCdpUrl(sessionId, controller.signal)
+    ).resolves.toBe("wss://cdp.browser-use.test/live");
     expect(calls[0]?.method).toBe("GET");
-    expect(calls[0]?.url).toBe(`${baseUrl}/browsers`);
+    expect(calls[0]?.signal).toBe(controller.signal);
+    expect(calls[0]?.url).toBe(
+      `${baseUrl}/browsers?agentSessionId=${sessionId}&filterBy=active&pageSize=100&pageNumber=1`
+    );
   });
 
   it("reports no endpoint when this session has no browser up", async () => {

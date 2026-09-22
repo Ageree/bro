@@ -1,7 +1,8 @@
 import type { ToolContext } from "eve/tools";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type * as browserUseClient from "@agent/lib/browser-use/client";
-import type { createBrowserRun as createBrowserRunService } from "@db/services/browser-runs";
+import type * as BrowserRuns from "@db/services/browser-runs";
+import type * as BrowserScheduled from "@agent/lib/browser-use/scheduled";
 import {
   BrowserUseError,
   type BrowserUseCreateRunInput,
@@ -21,25 +22,73 @@ const sessionId = "22222222-2222-4222-8222-222222222222";
 const followUpRunId = "33333333-3333-4333-8333-333333333333";
 const freshSessionId = "44444444-4444-4444-8444-444444444444";
 const liveViewUrl = "https://live.browser-use.com/session-1";
+const transitionToken = "55555555-5555-4555-8555-555555555555";
+const verificationPlan = {
+  checks: [
+    {
+      description: "Confirmation is visible",
+      id: "confirmation",
+      mandatory: true,
+      predicate: {
+        caseSensitive: false,
+        expected: "confirmed",
+        kind: "text_contains" as const,
+      },
+    },
+  ],
+  version: 1 as const,
+};
+type BrowserRunRow = Awaited<ReturnType<typeof BrowserRuns.createBrowserRun>>;
 
 const readBrowserRunForScope = vi.hoisted(() =>
+  vi.fn<(scope: AccessScope, id: string) => Promise<BrowserRunRow | undefined>>(
+    () => Promise.resolve(undefined)
+  )
+);
+const createBrowserRun = vi.hoisted(() =>
+  vi.fn<typeof BrowserRuns.createBrowserRun>()
+);
+const resolveBrowserRunForScope = vi.hoisted(() =>
   vi.fn<
     (
       scope: AccessScope,
       id: string
-    ) => Promise<ReturnType<typeof browserRunRow> | undefined>
-  >(() => Promise.resolve(undefined))
+    ) => Promise<
+      | {
+          active: BrowserRunRow;
+          requested: BrowserRunRow;
+          root: BrowserRunRow;
+        }
+      | undefined
+    >
+  >()
 );
-const createBrowserRun = vi.hoisted(() =>
-  vi.fn<
-    (
-      scope: AccessScope,
-      input: Parameters<typeof createBrowserRunService>[1]
-    ) => Promise<void>
-  >(() => Promise.resolve())
+const claimBrowserLineageTransition = vi.hoisted(() =>
+  vi.fn<typeof BrowserRuns.claimBrowserLineageTransition>()
 );
-const claimBrowserRunCompletion = vi.hoisted(() =>
-  vi.fn<() => Promise<void>>(() => Promise.resolve())
+const markBrowserLineageCreating = vi.hoisted(() =>
+  vi.fn<typeof BrowserRuns.markBrowserLineageCreating>()
+);
+const finishBrowserLineageTransition = vi.hoisted(() =>
+  vi.fn<typeof BrowserRuns.finishBrowserLineageTransition>()
+);
+const failBrowserLineageTransition = vi.hoisted(() =>
+  vi.fn<typeof BrowserRuns.failBrowserLineageTransition>()
+);
+const cancelBrowserLineage = vi.hoisted(() =>
+  vi.fn<typeof BrowserRuns.cancelBrowserLineage>()
+);
+const prepareBrowserLineageTask = vi.hoisted(() =>
+  vi.fn<typeof BrowserRuns.prepareBrowserLineageTask>()
+);
+const readBrowserRun = vi.hoisted(() =>
+  vi.fn<typeof BrowserRuns.readBrowserRun>()
+);
+const recordBrowserLineageCancellationResult = vi.hoisted(() =>
+  vi.fn<typeof BrowserRuns.recordBrowserLineageCancellationResult>()
+);
+const assertScheduledBrowserTaskAllowed = vi.hoisted(() =>
+  vi.fn<typeof BrowserScheduled.assertScheduledBrowserTaskAllowed>()
 );
 const browserRunQuotaGate = vi.hoisted(() =>
   vi.fn<() => Promise<{ allowed: boolean; note: string | undefined }>>(() =>
@@ -57,9 +106,6 @@ const createBrowserUseRun = vi.hoisted(() =>
   >()
 );
 const cancelBrowserUseRun = vi.hoisted(() =>
-  vi.fn<() => Promise<void>>(() => Promise.resolve())
-);
-const queueBrowserUseSessionMessage = vi.hoisted(() =>
   vi.fn<() => Promise<void>>(() => Promise.resolve())
 );
 const readBrowserUseRunStatus = vi.hoisted(() =>
@@ -100,12 +146,19 @@ const readAccountPhoneNumber = vi.hoisted(() =>
 type Unused = () => never;
 
 vi.mock("@db/services/browser-runs", () => ({
-  claimBrowserRunCompletion,
+  cancelBrowserLineage,
+  claimBrowserLineageTransition,
   createBrowserRun,
+  failBrowserLineageTransition,
+  finishBrowserLineageTransition,
+  markBrowserLineageCreating,
+  prepareBrowserLineageTask,
+  readBrowserRun,
+  recordBrowserLineageCancellationResult,
   readBrowserProfileId: vi.fn<() => Promise<string>>(() =>
     Promise.resolve("profile-1")
   ),
-  readBrowserRunForScope,
+  resolveBrowserRunForScope,
   saveBrowserProfileId: vi.fn<Unused>(),
   updateBrowserRunProgress: vi.fn<() => Promise<void>>(() => Promise.resolve()),
 }));
@@ -115,6 +168,9 @@ vi.mock("@db/services/vault", () => ({ readVaultItems, readVaultSecret }));
 vi.mock("@agent/lib/billing/quota", () => ({ browserRunQuotaGate }));
 vi.mock("@agent/lib/browser-use/secrets", () => ({
   resolveBrowserSecretBindings,
+}));
+vi.mock("@agent/lib/browser-use/scheduled", () => ({
+  assertScheduledBrowserTaskAllowed,
 }));
 // The error class travels from the real module: the tool decides what to do
 // with a 409 or a 404 by testing against it.
@@ -130,11 +186,46 @@ vi.mock("@agent/lib/browser-use/client", async (importOriginal) => ({
     Promise.reject(new Error("no events in this test"))
   ),
   liveViewUrlFromEvents: vi.fn<Unused>(),
-  queueBrowserUseSessionMessage,
   readBrowserUseRunStatus,
 }));
 
 beforeEach(() => {
+  const transitioned = {
+    ...browserRunRow(),
+    activeRunId: `pending:${transitionToken}`,
+    lineageRevision: 1,
+    lineageState: "claimed" as const,
+    lineageTask: `[BRO_TRANSITION:${transitionToken}]\nContinue`,
+    lineageToken: transitionToken,
+  };
+  claimBrowserLineageTransition.mockResolvedValue({
+    marker: `pending:${transitionToken}`,
+    root: transitioned,
+    task: `[BRO_TRANSITION:${transitionToken}]\nContinue`,
+    token: transitionToken,
+  });
+  markBrowserLineageCreating.mockResolvedValue({
+    ...transitioned,
+    lineageState: "creating",
+  });
+  finishBrowserLineageTransition.mockResolvedValue({
+    ...transitioned,
+    activeRunId: followUpRunId,
+    lineageState: "active",
+  });
+  failBrowserLineageTransition.mockResolvedValue(browserRunRow());
+  cancelBrowserLineage.mockResolvedValue({
+    ...browserRunRow(new Date()),
+    lineageRevision: 1,
+    lineageState: "cancelled",
+    status: "stopped",
+  });
+  prepareBrowserLineageTask.mockImplementation(async (input) => ({
+    row: transitioned,
+    task: `[BRO_TRANSITION:${input.token}]\n${input.task}`,
+  }));
+  assertScheduledBrowserTaskAllowed.mockResolvedValue(undefined);
+  recordBrowserLineageCancellationResult.mockResolvedValue(browserRunRow());
   browserRunQuotaGate.mockResolvedValue({ allowed: true, note: undefined });
   readBrowserRunForScope.mockResolvedValue(undefined);
   readUserProfile.mockResolvedValue(emptyUserProfile);
@@ -152,6 +243,10 @@ beforeEach(() => {
     sessionId,
     status: "running",
   });
+  resolveBrowserRunForScope.mockImplementation(async (scope, id) => {
+    const value = await readBrowserRunForScope(scope, id);
+    return value ? { active: value, requested: value, root: value } : undefined;
+  });
 });
 
 afterEach(() => {
@@ -168,26 +263,52 @@ function browserRunRow(
   outcome: string | null = null,
   site: string | null = "https://taxi.yandex.ru",
   proxyCountryCode: string | null = "ru"
-) {
+): BrowserRunRow {
   return {
+    activeRunId: runId,
+    capability: "browse" as const,
     completedAt,
     conversationChannel: "photon",
     conversationId: "imessage:chat-1",
     createdAt: new Date(),
     createdByUserId: "better-auth:alice",
     id: runId,
+    lineageRevision: 0,
+    lineagePreviousRunId: null,
+    lineageRecoveryClaimedAt: null,
+    lineageRecoveryToken: null,
+    lineageState: "active" as const,
+    lineageTask: null,
+    lineageToken: null,
     liveViewUrl,
     outcome,
     profileId: "profile-1",
     proxyCountryCode,
     replyAnchorMessageId: null,
     rootSessionId: "session-1",
+    rootRunId: runId,
+    scheduledOrigin: null,
     sessionId,
     site,
     status: completedAt ? "done" : "running",
     task: "Войди в аккаунт на taxi.yandex.ru",
     updatedAt: new Date(),
     workspaceId: accessScopeForUser("better-auth:alice").workspaceId,
+    deliveryClaimedAt: null,
+    deliveredAt: null,
+    deliveryState: "pending" as const,
+    deliveryToken: null,
+    parentRunId: null,
+    repairClaimedAt: null,
+    repairCount: 0,
+    repairDeadline: null,
+    repairState: "none" as const,
+    repairTask: null,
+    repairToken: null,
+    verificationPlan: null,
+    verificationReport: null,
+    finalNeed: null,
+    finalTaskStatus: null,
   };
 }
 
@@ -268,6 +389,43 @@ describe("browser_task cost ceiling", () => {
   });
 });
 
+describe("browser_task payment capability invariant", () => {
+  it("persists purchase capability whenever payment secrets are requested", async () => {
+    const { browserTask } = await import("@agent/tools/browser_task");
+    createBrowserUseRun.mockResolvedValue({
+      id: runId,
+      model: "hosted-agent",
+      sessionId,
+      status: "running",
+    });
+    await browserTask.execute(
+      {
+        action: "start",
+        allowPayment: true,
+        site: "https://example.com",
+        task: "Attach the saved card without buying",
+      },
+      toolContext("better-auth:alice")
+    );
+    expect(createBrowserRun).toHaveBeenCalledWith(
+      accessScopeForUser("better-auth:alice"),
+      expect.objectContaining({ capability: "purchase" })
+    );
+  });
+
+  it("rejects an explicit non-purchase capability with allowPayment", async () => {
+    const { browserTaskInputSchema } =
+      await import("@agent/tools/browser_task");
+    const parsed = browserTaskInputSchema.safeParse({
+      action: "start",
+      allowPayment: true,
+      capability: "browse",
+      task: "Attach card",
+    });
+    expect(parsed.success).toBe(false);
+  });
+});
+
 describe("browser_task monthly quota", () => {
   it("records the site the errand was pointed at", async () => {
     await startErrand("");
@@ -300,16 +458,214 @@ describe("browser_task monthly quota", () => {
   });
 });
 
+describe("browser_task scheduled ownership", () => {
+  it("reserves scheduled completion before provisioning and persists its origin", async () => {
+    const context = toolContext("better-auth:alice");
+    context.session.auth.current.authenticator = "scheduled-worker";
+    Object.assign(context.session.auth.current.attributes, {
+      scheduledRunId: "11111111-1111-4111-8111-111111111111",
+      scheduledRunLeaseToken: "22222222-2222-4222-8222-222222222222",
+    });
+    const { browserTask } = await import("@agent/tools/browser_task");
+    createBrowserUseRun.mockResolvedValue({
+      id: runId,
+      model: "hosted-agent",
+      sessionId,
+      status: "running",
+    });
+    await browserTask.execute(
+      { action: "start", site: "https://example.com", task: "Check status" },
+      context
+    );
+    expect(assertScheduledBrowserTaskAllowed).toHaveBeenCalledBefore(
+      createBrowserUseRun
+    );
+    expect(createBrowserRun).toHaveBeenCalledWith(
+      accessScopeForUser("better-auth:alice"),
+      expect.objectContaining({
+        scheduledOrigin: {
+          leaseToken: "22222222-2222-4222-8222-222222222222",
+          runId: "11111111-1111-4111-8111-111111111111",
+        },
+      })
+    );
+  });
+});
+
+describe("browser_task verification plan", () => {
+  it("persists a declared plan and gives the operator its exact checks", async () => {
+    const { browserTask } = await import("@agent/tools/browser_task");
+    createBrowserUseRun.mockResolvedValue({
+      id: runId,
+      model: "hosted-agent",
+      sessionId,
+      status: "running",
+    });
+    await browserTask.execute(
+      {
+        action: "start",
+        capability: "browse",
+        site: "https://example.com",
+        task: "Confirm the account",
+        verificationPlan,
+      },
+      toolContext("better-auth:alice")
+    );
+    expect(createBrowserRun).toHaveBeenCalledWith(
+      accessScopeForUser("better-auth:alice"),
+      expect.objectContaining({ verificationPlan })
+    );
+    expect(createBrowserUseRun.mock.calls[0]?.[0].task).toContain(
+      JSON.stringify(verificationPlan)
+    );
+  });
+
+  it("preserves the stored plan when a continuation omits it", async () => {
+    const stored = { ...browserRunRow(new Date()), verificationPlan };
+    readBrowserRunForScope.mockResolvedValue(stored);
+    resolveBrowserRunForScope.mockResolvedValue({
+      active: stored,
+      requested: stored,
+      root: stored,
+    });
+    const { browserTask } = await import("@agent/tools/browser_task");
+    await browserTask.execute(
+      { action: "continue", runId, task: "Continue" },
+      toolContext("better-auth:alice")
+    );
+    expect(claimBrowserLineageTransition).toHaveBeenCalledWith(
+      expect.objectContaining({ capability: "browse", verificationPlan })
+    );
+    expect(createBrowserRun).toHaveBeenCalledWith(
+      accessScopeForUser("better-auth:alice"),
+      expect.objectContaining({ verificationPlan })
+    );
+  });
+
+  it("does not let a browser-result continuation elevate capability or replace acceptance", async () => {
+    const stored = { ...browserRunRow(new Date()), verificationPlan };
+    readBrowserRunForScope.mockResolvedValue(stored);
+    resolveBrowserRunForScope.mockResolvedValue({
+      active: stored,
+      requested: stored,
+      root: stored,
+    });
+    const context = toolContext("better-auth:alice");
+    context.session.auth.current.authenticator = "browser-result";
+    const originalCheck = verificationPlan.checks[0];
+    if (!originalCheck) throw new Error("Expected the verification check.");
+    const replacement = {
+      ...verificationPlan,
+      checks: [{ ...originalCheck, id: "weaker-check" }],
+    };
+    const { browserTask } = await import("@agent/tools/browser_task");
+    await browserTask.execute(
+      {
+        action: "continue",
+        allowPayment: true,
+        capability: "purchase",
+        runId,
+        task: "Operator asks for broader authority",
+        verificationPlan: replacement,
+      },
+      context
+    );
+    expect(resolveBrowserSecretBindings).toHaveBeenCalledWith(
+      accessScopeForUser("better-auth:alice"),
+      { allowPayment: false, site: "https://taxi.yandex.ru" }
+    );
+    expect(createBrowserRun).toHaveBeenCalledWith(
+      accessScopeForUser("better-auth:alice"),
+      expect.objectContaining({ capability: "browse", verificationPlan })
+    );
+  });
+});
+
 describe("browser_task continuation", () => {
-  it("queues the message while the tracked run is still live", async () => {
+  it("replaces a live run with a tracked same-session successor", async () => {
     const result = await continueErrand({});
 
-    expect(queueBrowserUseSessionMessage).toHaveBeenCalledExactlyOnceWith(
-      sessionId,
-      "Код из смс 992130"
+    expect(cancelBrowserUseRun).toHaveBeenCalledExactlyOnceWith(runId);
+    const successorInput = createBrowserUseRun.mock.calls[0]?.[0];
+    expect(successorInput?.sessionId).toBe(sessionId);
+    expect(successorInput?.task).toContain(
+      `[BRO_TRANSITION:${transitionToken}]`
     );
-    expect(createBrowserUseRun).not.toHaveBeenCalled();
-    expect(result).toMatchObject({ runId, status: "running" });
+    expect(createBrowserRun).toHaveBeenCalledWith(
+      accessScopeForUser("better-auth:alice"),
+      expect.objectContaining({
+        id: followUpRunId,
+        parentRunId: runId,
+        rootRunId: runId,
+      })
+    );
+    expect(result).toMatchObject({
+      previousRunId: runId,
+      runId: followUpRunId,
+      status: "running",
+    });
+  });
+
+  it("keeps a manual create ambiguity recoverable instead of unwinding its marker", async () => {
+    readBrowserUseRunStatus.mockResolvedValue("completed");
+    createBrowserUseRun.mockRejectedValue(
+      new Error("connection reset after send")
+    );
+    await expect(continueErrand({ completedAt: new Date() })).rejects.toThrow(
+      "connection reset"
+    );
+    expect(failBrowserLineageTransition).not.toHaveBeenCalled();
+  });
+
+  it("logically cancels before a provider cancellation failure", async () => {
+    const stored = browserRunRow();
+    readBrowserRunForScope.mockResolvedValue(stored);
+    resolveBrowserRunForScope.mockResolvedValue({
+      active: stored,
+      requested: stored,
+      root: stored,
+    });
+    cancelBrowserUseRun.mockRejectedValueOnce(
+      new Error("provider unavailable")
+    );
+    const { browserTask } = await import("@agent/tools/browser_task");
+    const result = await browserTask.execute(
+      { action: "cancel", runId },
+      toolContext("better-auth:alice")
+    );
+    expect(result).toMatchObject({ runId, status: "stopped" });
+    expect("note" in result ? result.note : undefined).toContain(
+      "could not be confirmed"
+    );
+    expect(cancelBrowserLineage).toHaveBeenCalledBefore(cancelBrowserUseRun);
+    expect(recordBrowserLineageCancellationResult).toHaveBeenCalledWith({
+      confirmed: false,
+      lineageRevision: 1,
+      rootRunId: runId,
+    });
+  });
+
+  it("routes status from an old run id to the actual active head", async () => {
+    const root = browserRunRow();
+    const active = {
+      ...browserRunRow(),
+      id: followUpRunId,
+      parentRunId: runId,
+      rootRunId: runId,
+    };
+    resolveBrowserRunForScope.mockResolvedValue({
+      active,
+      requested: root,
+      root: { ...root, activeRunId: followUpRunId },
+    });
+    readBrowserUseRunStatus.mockResolvedValue("waiting");
+    const { browserTask } = await import("@agent/tools/browser_task");
+    const result = await browserTask.execute(
+      { action: "status", runId },
+      toolContext("better-auth:alice")
+    );
+    expect(readBrowserUseRunStatus).toHaveBeenCalledWith(followUpRunId);
+    expect(result).toMatchObject({ runId: followUpRunId, status: "waiting" });
   });
 
   it("starts a follow-up run in the same session once the run has finished", async () => {
@@ -321,7 +677,6 @@ describe("browser_task continuation", () => {
 
     const result = await continueErrand({});
 
-    expect(queueBrowserUseSessionMessage).not.toHaveBeenCalled();
     const created = createBrowserUseRun.mock.calls[0]?.[0];
     expect(created?.sessionId).toBe(sessionId);
     expect(created?.secretBindings).toHaveLength(2);
@@ -368,10 +723,6 @@ describe("browser_task continuation", () => {
     const result = await continueErrand({ allowPayment: true });
 
     expect(cancelBrowserUseRun).toHaveBeenCalledExactlyOnceWith(runId);
-    expect(claimBrowserRunCompletion).toHaveBeenCalledExactlyOnceWith(runId, {
-      outcome: "Заменён продолжением с привязанной картой",
-      status: "stopped",
-    });
     expect(resolveBrowserSecretBindings).toHaveBeenCalledWith(
       accessScopeForUser("better-auth:alice"),
       { allowPayment: true, site: "https://taxi.yandex.ru" }
@@ -379,23 +730,24 @@ describe("browser_task continuation", () => {
     expect(createBrowserUseRun.mock.calls[0]?.[0].secretBindings).toEqual([
       { alias: "card_number" },
     ]);
+    expect(createBrowserRun).toHaveBeenCalledWith(
+      accessScopeForUser("better-auth:alice"),
+      expect.objectContaining({ capability: "purchase" })
+    );
     expect(result).toMatchObject({ runId: followUpRunId });
   });
 
-  it("falls back to the queue when the session is already busy", async () => {
+  it("fails closed when a completed session is unexpectedly busy", async () => {
     readBrowserUseRunStatus.mockResolvedValue("failed");
     createBrowserUseRun.mockRejectedValue(
       new BrowserUseError(409, "/runs", "The session already has an active run")
     );
 
-    const result = await continueErrand({});
-
-    expect(queueBrowserUseSessionMessage).toHaveBeenCalledExactlyOnceWith(
-      sessionId,
-      "Код из смс 992130"
+    await expect(continueErrand({})).rejects.toThrow(
+      "The browser session is busy"
     );
+
     expect(createBrowserRun).not.toHaveBeenCalled();
-    expect(result).toMatchObject({ runId });
   });
 
   it("opens a fresh session on the same profile when the old one is gone", async () => {

@@ -32,6 +32,19 @@ const runSummarySchema = z.object({
 
 const runStatusResponseSchema = z.object({ status: runStatusSchema });
 
+const recoveryRunSchema = runSummarySchema.pick({
+  id: true,
+  sessionId: true,
+  status: true,
+  task: true,
+});
+
+const runListResponseSchema = z.object({
+  hasMore: z.boolean().default(false),
+  nextCursor: z.string().nullable().optional(),
+  runs: z.array(runSummarySchema),
+});
+
 const runEventsResponseSchema = z.object({
   events: z.array(
     z.object({
@@ -165,6 +178,31 @@ export async function readBrowserUseRunStatus(runId: string) {
   return status;
 }
 
+export async function listBrowserUseRunsBySession(
+  sessionId: string
+): Promise<z.infer<typeof recoveryRunSchema>[]> {
+  return listBrowserUseRunPage(sessionId);
+}
+
+async function listBrowserUseRunPage(
+  sessionId: string,
+  cursor?: string,
+  collected: z.infer<typeof recoveryRunSchema>[] = []
+): Promise<z.infer<typeof recoveryRunSchema>[]> {
+  const query = new URLSearchParams({ sessionId, limit: "25" });
+  if (cursor) query.set("cursor", cursor);
+  const page = runListResponseSchema.parse(
+    await request("GET", `/runs?${query.toString()}`)
+  );
+  const matching = page.runs
+    .filter((run) => run.sessionId === sessionId)
+    .map((run) => recoveryRunSchema.parse(run));
+  const runs = [...collected, ...matching].slice(0, 50);
+  const nextCursor = page.hasMore ? (page.nextCursor ?? undefined) : undefined;
+  if (runs.length === 50 || !nextCursor) return runs;
+  return listBrowserUseRunPage(sessionId, nextCursor, runs);
+}
+
 export async function listBrowserUseRunEvents(
   runId: string,
   limit = 100,
@@ -197,9 +235,17 @@ export async function queueBrowserUseSessionMessage(
  * until it is stopped or hits the four-hour cap — so a code can still be typed
  * into the page the person is looking at.
  */
-export async function findBrowserUseSessionCdpUrl(sessionId: string) {
+export async function findBrowserUseSessionCdpUrl(
+  sessionId: string,
+  signal?: AbortSignal
+) {
   const { items } = browserSessionListSchema.parse(
-    await request("GET", "/browsers")
+    await request(
+      "GET",
+      `/browsers?agentSessionId=${encodeURIComponent(sessionId)}&filterBy=active&pageSize=100&pageNumber=1`,
+      undefined,
+      { signal }
+    )
   );
   const browser = items.find(
     (item) => item.agentSessionId === sessionId && item.status === "active"
@@ -209,7 +255,9 @@ export async function findBrowserUseSessionCdpUrl(sessionId: string) {
 
 export async function cancelBrowserUseRun(runId: string) {
   return runSummarySchema.parse(
-    await request("POST", `/runs/${encodeURIComponent(runId)}/cancel`, "{}")
+    await request("POST", `/runs/${encodeURIComponent(runId)}/cancel`, "{}", {
+      retry: true,
+    })
   );
 }
 
@@ -269,7 +317,8 @@ export function liveViewUrlFromEvents(
 async function request(
   method: "DELETE" | "GET" | "PATCH" | "POST",
   path: string,
-  body?: string
+  body?: string,
+  controls: { retry?: boolean; signal?: AbortSignal } = {}
 ) {
   const apiKey = env.BROWSER_USE_API_KEY;
   if (!apiKey) throw new Error("BROWSER_USE_API_KEY is not configured.");
@@ -283,13 +332,15 @@ async function request(
       "X-Browser-Use-API-Key": apiKey,
     },
     method,
+    signal: controls.signal,
   };
   if (body !== undefined) init.body = body;
 
   let response = await fetch(url, init);
   // One retry only. Browser Use throttles per project, and a second failure
   // means the caller should surface the problem rather than queue more load.
-  if (response.status === 429 || response.status >= 500) {
+  const retry = controls.retry ?? (method === "GET" || method === "PATCH");
+  if (retry && (response.status === 429 || response.status >= 500)) {
     response = await fetch(url, init);
   }
   const text = await response.text();
