@@ -74,8 +74,8 @@ vi.mock(import("eve/channels/telegram"), async (importOriginal) => {
     },
   };
 });
-vi.mock("@db/services/browser-images", () => ({
-  async readReadyBrowserImageArtifact(
+vi.mock("@db/services/artifacts", () => ({
+  async readReadyArtifact(
     scope: AccessScope,
     id: string,
     options: { readonly rootSessionId: string; readonly signal?: AbortSignal }

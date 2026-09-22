@@ -1,7 +1,7 @@
 import { get } from "@vercel/blob";
 import { z } from "zod";
 import { getAuthSession } from "@db/services/auth/session";
-import { readReadyBrowserImageArtifact } from "@db/services/browser-images";
+import { readReadyArtifact } from "@db/services/artifacts";
 import { accessScopeForUser } from "@shared/identity/access-scope";
 import { env } from "@shared/environment";
 
@@ -32,7 +32,7 @@ export async function GET(
   headers.set("content-type", opened.artifact.mediaType);
   headers.set(
     "content-disposition",
-    contentDisposition(opened.artifact.filename)
+    contentDisposition(opened.artifact.filename, opened.artifact.mediaType)
   );
   return new Response(opened.result.stream, { headers, status: 200 });
 }
@@ -42,11 +42,8 @@ async function openArtifact(
   artifactId: string,
   options: { readonly ifNoneMatch?: string; readonly signal?: AbortSignal }
 ) {
-  const artifact = await readReadyBrowserImageArtifact(scope, artifactId);
-  const byteSize = artifact?.byteSize;
-  const filename = artifact?.filename;
-  const mediaType = artifact?.mediaType;
-  if (!artifact || !byteSize || !filename || !mediaType) return undefined;
+  const artifact = await readReadyArtifact(scope, artifactId);
+  if (!artifact) return undefined;
   if (!env.BLOB_STORE_ID && !env.BLOB_READ_WRITE_TOKEN) return undefined;
   const result = await get(artifact.storagePathname, {
     access: "private",
@@ -56,10 +53,11 @@ async function openArtifact(
   if (!result) return undefined;
   if (
     result.statusCode === 200 &&
-    (result.blob.size !== byteSize || result.blob.contentType !== mediaType)
+    (result.blob.size !== artifact.byteSize ||
+      result.blob.contentType !== artifact.mediaType)
   )
     return undefined;
-  return { artifact: { ...artifact, byteSize, filename, mediaType }, result };
+  return { artifact, result };
 }
 
 function notFound() {
@@ -78,7 +76,13 @@ function privateImageHeaders() {
   });
 }
 
-function contentDisposition(filename: string) {
+/**
+ * Images open in place. Anything else, such as a PDF from a mail attachment,
+ * downloads: the sandbox policy on this response keeps a browser from
+ * rendering it inline.
+ */
+function contentDisposition(filename: string, mediaType: string) {
   const ascii = filename.replace(/[^\x20-\x7e]/gu, "_").replace(/["\\]/gu, "_");
-  return `inline; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
+  const disposition = mediaType.startsWith("image/") ? "inline" : "attachment";
+  return `${disposition}; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
 }

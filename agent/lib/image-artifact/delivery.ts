@@ -1,15 +1,19 @@
 import { createHash } from "node:crypto";
 import { get } from "@vercel/blob";
 import type { AccessScope } from "@shared/identity/access-scope";
-import { readReadyBrowserImageArtifact } from "@db/services/browser-images";
-import { maximumBrowserImageBytes } from "@shared/browser/artifact";
+import { readReadyArtifact } from "@db/services/artifacts";
 import { env } from "@shared/environment";
+import {
+  outboundFileKind,
+  type OutboundFile,
+} from "../outbound-media/attachments";
 import {
   extractImageArtifactMarkdownReferences,
   stripImageArtifactMarkdownReferences,
 } from "./markdown";
 
-const maximumDeliveredImageArtifacts = 4;
+// Ten is the Telegram album limit, the same cap `send_message` attachments use.
+const maximumDeliveredImageArtifacts = 10;
 /** Accusative forms of «картинка» for one, a few, and many. */
 const imageCountForms = ["картинку", "картинки", "картинок"] as const;
 
@@ -33,12 +37,6 @@ function imageCountForm(count: number) {
   if (remainderOfTen === 1) return imageCountForms[0];
   if (remainderOfTen >= 2 && remainderOfTen <= 4) return imageCountForms[1];
   return imageCountForms[2];
-}
-
-interface ImageArtifactFile {
-  readonly data: Buffer;
-  readonly filename: string;
-  readonly mimeType: string;
 }
 
 export async function prepareImageArtifactDelivery(
@@ -78,8 +76,10 @@ export async function prepareImageArtifactDelivery(
           {
             data: Buffer.from(image.bytes),
             filename: image.filename,
+            // A mail attachment can be a PDF or a video rather than a photo.
+            kind: outboundFileKind(image.mediaType),
             mimeType: image.mediaType,
-          } satisfies ImageArtifactFile,
+          } satisfies OutboundFile,
         ]
       : []
   );
@@ -96,16 +96,10 @@ async function readImageArtifact(
   artifactId: string,
   options: { readonly rootSessionId: string; readonly signal?: AbortSignal }
 ) {
-  const artifact = await readReadyBrowserImageArtifact(scope, artifactId, {
+  const artifact = await readReadyArtifact(scope, artifactId, {
     rootSessionId: options.rootSessionId,
   });
-  if (
-    !artifact?.byteSize ||
-    !artifact.contentHash ||
-    !artifact.filename ||
-    !artifact.mediaType
-  )
-    return undefined;
+  if (!artifact) return undefined;
   if (!env.BLOB_STORE_ID && !env.BLOB_READ_WRITE_TOKEN) return undefined;
   const result = await get(artifact.storagePathname, {
     access: "private",
@@ -126,7 +120,7 @@ async function readImageArtifact(
       const { done, value } = await reader.read();
       if (done) break;
       total += value.byteLength;
-      if (total > maximumBrowserImageBytes) return undefined;
+      if (total > artifact.byteSize) return undefined;
       chunks.push(value);
     }
     /* oxlint-enable eslint/no-await-in-loop */

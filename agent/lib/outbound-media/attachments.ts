@@ -156,7 +156,7 @@ function isBlockedHost(hostname: string) {
   return host.endsWith(".local") || host.endsWith(".internal");
 }
 
-function outboundFileKind(mediaType: string): OutboundFileKind {
+export function outboundFileKind(mediaType: string): OutboundFileKind {
   if (photoMediaTypes.has(mediaType)) return "photo";
   if (mediaType.startsWith("video/")) return "video";
   if (mediaType.startsWith("audio/")) return "audio";
@@ -200,7 +200,8 @@ function withExtension(name: string, mediaType: string) {
   return `${dot > 0 ? name.slice(0, dot) : name}${extension}`;
 }
 
-function capFilename(name: string) {
+/** Shortens a name past what every messenger shows, keeping its extension. */
+export function capFilename(name: string) {
   if (name.length <= maximumFilenameLength) return name;
   const dot = name.lastIndexOf(".");
   const extension = dot > 0 ? name.slice(dot) : "";

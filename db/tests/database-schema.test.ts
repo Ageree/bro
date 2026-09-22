@@ -14,6 +14,7 @@ import {
   channelLinkTokens,
   chats,
   encryptedSecrets,
+  gmailAttachmentArtifacts,
   onboardingRequests,
   scheduledAgentJobs,
   scheduledAgentRuns,
@@ -92,6 +93,7 @@ describe("database schema", () => {
       chats.createdAt,
       chats.updatedAt,
       encryptedSecrets.updatedAt,
+      gmailAttachmentArtifacts.createdAt,
       userProfiles.updatedAt,
       vaultItems.createdAt,
       vaultItems.updatedAt,
@@ -104,6 +106,7 @@ describe("database schema", () => {
     expect(userProfiles.dateOfBirth.getSQLType()).toBe("date");
     expect(chats.costUsd.getSQLType()).toBe("numeric(16, 8)");
     expect(browserImageArtifacts.id.getSQLType()).toBe("uuid");
+    expect(gmailAttachmentArtifacts.id.getSQLType()).toBe("uuid");
     expect(encryptedSecrets.id.getSQLType()).toBe("text");
     expect(vaultItems.id.getSQLType()).toBe("text");
   });
@@ -114,6 +117,7 @@ describe("database schema", () => {
       browserImageArtifacts,
       browserSessions,
       browserTraces,
+      gmailAttachmentArtifacts,
       scheduledAgentJobs,
     ]) {
       const foreignKeys = getTableConfig(table).foreignKeys;

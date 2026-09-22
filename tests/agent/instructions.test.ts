@@ -74,6 +74,16 @@ describe("agent instructions", () => {
     );
   });
 
+  it("forwards mail attachments as private artifacts", async () => {
+    const resolve = roleInstructions.events["turn.started"];
+    expect(resolve).toBeDefined();
+    if (!resolve) return;
+
+    const selected = await resolve({}, dynamicContext("photon-imessage"));
+    expect(selected?.content).toContain("передай их в `gmail-attachment`");
+    expect(selected?.content).toContain("`![имя](/artifacts/id)`");
+  });
+
   it("omits message style from scheduled workers", async () => {
     const resolve = messageStyle.events["turn.started"];
     expect(resolve).toBeDefined();

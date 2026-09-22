@@ -141,6 +141,13 @@
       "when": 1789986921571,
       "tag": "0019_sad_eternity",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1790095450343,
+      "tag": "0020_lucky_dakota_north",
+      "breakpoints": true
     }
   ]
 }

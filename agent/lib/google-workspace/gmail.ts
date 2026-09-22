@@ -205,26 +205,89 @@ function minimizeMessage(message: GmailMessage) {
   };
 }
 
+/**
+ * The files attached to one message, found wherever they sit in the MIME tree.
+ * A part is named by its `partId`: Gmail hands out a fresh `attachmentId`, a
+ * few hundred characters long, on every read of the same message, so the
+ * stable part number is what `gmail-attachment` asks for.
+ */
 function collectAttachments(part: GmailPart | undefined): {
-  attachmentId: string;
   filename: string;
+  mimeType: string | null;
+  partId: string;
   size: number;
 }[] {
   if (!part) return [];
   const own =
-    part.filename && part.body?.attachmentId
+    part.filename && part.partId && (part.body?.attachmentId || part.body?.data)
       ? [
           {
-            attachmentId: part.body.attachmentId,
             filename: part.filename,
+            mimeType: part.mimeType ?? null,
+            partId: part.partId,
             size: part.body.size ?? 0,
           },
         ]
       : [];
-  const nested = (part.parts ?? []).flatMap((child) => {
-    return collectAttachments(child);
-  });
+  const nested = (part.parts ?? []).flatMap((child) =>
+    collectAttachments(child)
+  );
   return [...own, ...nested];
+}
+
+function findAttachmentPart(
+  part: GmailPart | undefined,
+  partId: string
+): GmailPart | undefined {
+  if (!part) return undefined;
+  if (part.partId === partId && part.filename) return part;
+  for (const child of part.parts ?? []) {
+    const found = findAttachmentPart(child, partId);
+    if (found) return found;
+  }
+  return undefined;
+}
+
+/**
+ * Downloads one attachment of one message within `maxBytes`. The size Gmail
+ * reports is checked before the bytes are fetched, and the decoded bytes are
+ * checked again, so an oversized file is never buffered twice.
+ */
+export async function readGmailAttachment(
+  ctx: ToolContext,
+  messageId: string,
+  partId: string,
+  maxBytes: number
+) {
+  return withGmail(ctx, async (client) => {
+    const { data: message } = await client.users.messages.get(
+      { format: "full", id: messageId, userId: "me" },
+      { signal: ctx.abortSignal }
+    );
+    const part = findAttachmentPart(message.payload, partId);
+    const filename = part?.filename;
+    if (!part || !filename) return { kind: "missing" } as const;
+    if ((part.body?.size ?? 0) > maxBytes) return { kind: "oversize" } as const;
+
+    const attachmentId = part.body?.attachmentId;
+    const encoded = attachmentId
+      ? (
+          await client.users.messages.attachments.get(
+            { id: attachmentId, messageId, userId: "me" },
+            { signal: ctx.abortSignal }
+          )
+        ).data.data
+      : part.body?.data;
+    if (!encoded) return { kind: "missing" } as const;
+    const bytes = new Uint8Array(Buffer.from(encoded, "base64url"));
+    if (bytes.byteLength > maxBytes) return { kind: "oversize" } as const;
+    return {
+      bytes,
+      filename,
+      kind: "bytes",
+      mimeType: part.mimeType ?? undefined,
+    } as const;
+  });
 }
 
 function safeHeader(value: string) {
