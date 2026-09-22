@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+export const maximumBrowserImageBytes = 8 * 1024 * 1024;
+
 export const browserImageSourceKinds = [
   "element",
   "full_page",

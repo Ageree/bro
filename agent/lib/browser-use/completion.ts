@@ -13,6 +13,7 @@ import {
   type BrowserUseRunStatus,
 } from "./client";
 import { recordOrder } from "@db/services/orders";
+import { captureBrowserRunImages, type BrowserRunImage } from "./images";
 import {
   browserOutcomeSummary,
   parseBrowserOrder,
@@ -65,14 +66,42 @@ export async function settleBrowserRun(
     status: settledStatus(run.status),
   });
   if (!claimed) return;
-  await recordBrowserRunOrder(claimed, run.result);
+  // Neither needs the other, and both come before the report: the order row
+  // so «где мой заказ» finds it, the images so the report can attach them. A
+  // run parked on an anti-bot check is continued without a word to the person,
+  // so there is nothing to show from it.
+  const [images] = await Promise.all([
+    parsed.needs === "captcha" ? [] : safeBrowserRunImages(claimed, run),
+    recordBrowserRunOrder(claimed, run.result),
+  ]);
   await deliverBrowserRunOutcome(
     delivery,
     claimed,
     outcome,
     parsed.needs,
-    parsed.links.length > 0 || parsed.hasReportLinks
+    parsed.links.length > 0 || parsed.hasReportLinks,
+    images
   );
+}
+
+/**
+ * The pictures the run saved, or none. A picture that could not be kept never
+ * costs the report: the errand still happened and the person is still owed
+ * its outcome.
+ */
+async function safeBrowserRunImages(
+  row: BrowserRunRow,
+  run: Awaited<ReturnType<typeof readBrowserUseRun>>
+) {
+  try {
+    return await captureBrowserRunImages(row, run);
+  } catch (error) {
+    console.warn("[browser-use] run images could not be captured", {
+      cause: error,
+      runId: row.id,
+    });
+    return [];
+  }
 }
 
 /**
@@ -125,7 +154,7 @@ export async function expireBrowserRun(
     status: "failed",
   });
   if (!claimed) return;
-  await deliverBrowserRunOutcome(delivery, claimed, outcome, "none", false);
+  await deliverBrowserRunOutcome(delivery, claimed, outcome, "none", false, []);
 }
 
 /**
@@ -149,12 +178,26 @@ function deliveryInstruction(needs: BrowserRunNeed, hasLinks: boolean) {
   return `This is a background result, not a user message. Tell the user what happened in your own words. Include the material per-option facts the user requested, not only names and URLs. ${links} ${tail}`;
 }
 
+/**
+ * The artifacts the run left behind, as the coordinator is told about them.
+ * An id in this list is what turns «скинь фото» into a photo: written into
+ * the message as an image reference, the channel uploads the picture itself.
+ */
+function imagesBlock(images: readonly BrowserRunImage[]) {
+  if (images.length === 0) return undefined;
+  return [
+    "Images this run saved, ready to send. Attach one by writing ![caption](/artifacts/<id>) in the send_message text — the channel uploads the picture itself, so never paste the /artifacts/ path as a bare link. Attach when the person asked for a photo or a screenshot, or when the outcome is easier to show than to tell; otherwise leave them out.",
+    ...images.map((image) => `- ${image.id}: ${image.label}`),
+  ].join("\n");
+}
+
 async function deliverBrowserRunOutcome(
   delivery: BrowserRunDelivery,
   row: BrowserRunRow,
   outcome: string,
   needs: BrowserRunNeed,
-  hasLinks: boolean
+  hasLinks: boolean,
+  images: readonly BrowserRunImage[]
 ) {
   const options = {
     auth: {
@@ -179,6 +222,7 @@ async function deliverBrowserRunOutcome(
     row.liveViewUrl
       ? `Live view (share only for 3-D Secure, a push approval or a manual sign-in — never for an anti-bot check): ${row.liveViewUrl}`
       : undefined,
+    imagesBlock(images),
     deliveryInstruction(needs, hasLinks),
   ]
     .filter((line) => line !== undefined)

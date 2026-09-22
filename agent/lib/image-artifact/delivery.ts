@@ -12,8 +12,13 @@ import {
   stripImageArtifactMarkdownReferences,
 } from "./markdown";
 
-// Ten is the Telegram album limit, the same cap `send_message` attachments use.
-const maximumDeliveredImageArtifacts = 10;
+/**
+ * How many artifacts one message may carry: the Telegram album limit, the
+ * same cap `send_message` attachments use.
+ */
+const maximumArtifactsPerMessage = 10;
+/** How many images one browser run may save for the person. */
+export const maximumDeliveredImageArtifacts = 4;
 /** Accusative forms of «картинка» for one, a few, and many. */
 const imageCountForms = ["картинку", "картинки", "картинок"] as const;
 
@@ -52,7 +57,7 @@ export async function prepareImageArtifactDelivery(
     return { failedArtifactIds: [], files: [], text: message };
   }
 
-  const selected = references.slice(0, maximumDeliveredImageArtifacts);
+  const selected = references.slice(0, maximumArtifactsPerMessage);
   const loaded = await Promise.all(
     selected.map(async (reference) => ({
       image: await readImageArtifact(input.scope, reference.id, {
@@ -67,7 +72,7 @@ export async function prepareImageArtifactDelivery(
       .filter((item) => item.image === undefined)
       .map((item) => item.reference.id),
     ...references
-      .slice(maximumDeliveredImageArtifacts)
+      .slice(maximumArtifactsPerMessage)
       .map((reference) => reference.id),
   ];
   const files = loaded.flatMap(({ image }) =>

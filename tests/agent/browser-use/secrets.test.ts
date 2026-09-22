@@ -213,6 +213,7 @@ describe("browser secret bindings", () => {
 
     const task = composeBrowserTask({
       aliases: bound.aliases,
+      collectImages: false,
       errand: "Вызови такси домой",
       facts: "Known details you may type into forms:\nName: Ivan Petrov",
       site: "https://taxi.yandex.ru",
@@ -233,6 +234,7 @@ describe("browser secret bindings", () => {
     });
     const continuation = composeBrowserContinuation({
       aliases: bound.aliases,
+      collectImages: false,
       errand: "Войди в аккаунт",
       facts: "Known details you may type into forms:\nPhone: +79991234567",
       message: "Привяжи карту, она есть в сейфе",
@@ -262,6 +264,7 @@ describe("browser secret bindings", () => {
     expect(
       composeBrowserTask({
         aliases: bound.aliases,
+        collectImages: false,
         errand: "Order groceries",
         facts: undefined,
         site: undefined,
