@@ -14,7 +14,7 @@ import { code } from "@streamdown/code";
 import { math } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
 import type { UIMessage } from "ai";
-import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
+import { ChevronLeftIcon, ChevronRightIcon, FileIcon } from "lucide-react";
 import type { ComponentProps, HTMLAttributes, ReactElement } from "react";
 import {
   Children,
@@ -332,12 +332,31 @@ export function ArtifactMessageImage({
   ...props
 }: ComponentProps<"img"> & { readonly node?: unknown }) {
   void _node;
+  // A mail attachment can be a PDF behind the same reference. When the browser
+  // cannot draw it, it stays a file the person can open. The fallback belongs
+  // to the source that failed, so a new source gets drawn again.
+  const [failedSource, setFailedSource] = useState<string>();
   const parsedSource = z.string().safeParse(src);
   if (!parsedSource.success || !isBrowserImageArtifactUrl(parsedSource.data)) {
     return (
       <span className="text-muted-foreground">
         Image not displayed: {alt ?? "external image"}
       </span>
+    );
+  }
+
+  const source = parsedSource.data;
+  if (failedSource === source) {
+    return (
+      <a
+        className="my-3 inline-flex max-w-full items-center gap-2 rounded-lg border bg-muted px-3 py-2 type-label"
+        href={parsedSource.data}
+        rel="noreferrer"
+        target="_blank"
+      >
+        <FileIcon className="size-4 shrink-0 text-muted-foreground" />
+        <span className="truncate">{alt ?? "Attachment"}</span>
+      </a>
     );
   }
 
@@ -353,6 +372,9 @@ export function ArtifactMessageImage({
         )}
         decoding="async"
         loading="lazy"
+        onError={() => {
+          setFailedSource(source);
+        }}
         referrerPolicy="no-referrer"
         src={src}
       />

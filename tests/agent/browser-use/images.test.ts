@@ -413,6 +413,7 @@ describe("capturing the pictures a browser run leaves behind", () => {
       {
         data: Buffer.from(finalPng),
         filename: "final.png",
+        kind: "photo",
         mimeType: "image/png",
       },
     ]);
