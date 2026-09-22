@@ -22,6 +22,7 @@ describe("browser run outcome parsing", () => {
     expect(outcome).toEqual({
       details: undefined,
       labelled: true,
+      links: [],
       needs: "none",
       order: "4417",
       result: "такси вызвано к подъезду",
@@ -67,6 +68,94 @@ describe("browser run outcome parsing", () => {
     expect(browserOutcomeSummary(parseBrowserOutcome(""), "fallback")).toBe(
       "fallback"
     );
+  });
+
+  it("parses decorated multiline links and preserves them through the summary", () => {
+    const result = [
+      "RESULT: found two options",
+      "NEEDS: none",
+      "- **LINKS:**",
+      "```json",
+      "[",
+      '  {"title":"First option","url":"https://example.com/item?id=1#details"},',
+      '  {"title":"Second option","url":"http://other.example/path?q=two"},',
+      '  {"title":"Duplicate","url":"https://example.com/item?id=1#details"}',
+      "]",
+      "```",
+    ].join("\n");
+
+    const outcome = parseBrowserOutcome(result);
+
+    expect(outcome.links).toEqual([
+      {
+        title: "First option",
+        url: "https://example.com/item?id=1#details",
+      },
+      {
+        title: "Second option",
+        url: "http://other.example/path?q=two",
+      },
+    ]);
+    expect(
+      parseBrowserOutcome(browserOutcomeSummary(outcome, "fallback")).links
+    ).toEqual(outcome.links);
+  });
+
+  it("drops malformed and unsafe links without damaging valid destinations", () => {
+    const links = JSON.stringify([
+      { title: "Valid", url: "https://example.com/item?ref=search#reviews" },
+      { title: "Missing slashes", url: "https:example.com/item" },
+      { title: "Missing slash", url: "https:/example.com/item" },
+      { title: "Empty authority", url: "https:///example.com/item" },
+      { title: "Backslash", url: "https://example.com\\item" },
+      { title: "Script", url: "javascript:alert(1)" },
+      { title: "Credentials", url: "https://user:secret@example.com/item" },
+      { title: "Live browser", url: "https://live.browser-use.com/session/1" },
+      { title: "Control", url: "https://example.com/item\nnext" },
+      { title: "Relative", url: "/item/1" },
+      { title: 42, url: "https://example.com/not-a-title" },
+    ]);
+
+    expect(parseBrowserOutcome(`NEEDS: none\nLINKS: ${links}`).links).toEqual([
+      {
+        title: "Valid",
+        url: "https://example.com/item?ref=search#reviews",
+      },
+    ]);
+    expect(
+      parseBrowserOutcome('NEEDS: none\nLINKS: [{"title":"broken"}').links
+    ).toEqual([]);
+  });
+
+  it("keeps escaped quotes and brackets inside a link title", () => {
+    const links = JSON.stringify([
+      {
+        title: 'The "practical [guide]"',
+        url: "https://example.com/guide?section=%5Bintro%5D#part",
+      },
+    ]);
+
+    expect(parseBrowserOutcome(`NEEDS: none\nLINKS: ${links}`).links).toEqual([
+      {
+        title: 'The "practical [guide]"',
+        url: "https://example.com/guide?section=%5Bintro%5D#part",
+      },
+    ]);
+  });
+
+  it("bounds the number and size of returned links", () => {
+    const links = Array.from({ length: 25 }, (_, index) => ({
+      title: `Option ${index}`,
+      url: `https://example.com/item/${index}`,
+    }));
+    links[0] = { title: "x".repeat(201), url: "https://example.com/too-long" };
+
+    const outcome = parseBrowserOutcome(
+      `NEEDS: none\nLINKS: ${JSON.stringify(links)}`
+    );
+
+    expect(outcome.links).toHaveLength(19);
+    expect(outcome.links.at(-1)?.url).toBe("https://example.com/item/19");
   });
 });
 

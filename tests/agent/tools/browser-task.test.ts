@@ -481,6 +481,30 @@ describe("browser_task anti-bot checks", () => {
   });
 });
 
+describe("browser_task result links", () => {
+  it("requires actual observed option destinations on a started errand", async () => {
+    await startErrand("");
+
+    const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
+    expect(task).toContain(
+      'LINKS: a JSON array of {"title":"human-readable option name","url":"https://..."} objects, or []'
+    );
+    expect(task).toContain("actual observed destination URL");
+    expect(task).toContain("Never guess or construct an ID or URL");
+    expect(task).toContain(
+      "never substitute a live-view URL or a generic search, results, or category URL"
+    );
+  });
+
+  it("carries the same link contract into a follow-up run", async () => {
+    await continueErrand({ completedAt: new Date() });
+
+    const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
+    expect(task).toContain("LINKS:");
+    expect(task).toContain("actual anchor href");
+  });
+});
+
 describe("browser_task known facts", () => {
   const contact = serializeContactVaultPayload({
     dateOfBirth: "1990-04-12",

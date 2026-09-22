@@ -65,7 +65,13 @@ export async function settleBrowserRun(
   });
   if (!claimed) return;
   await recordBrowserRunOrder(claimed, run.result);
-  await deliverBrowserRunOutcome(delivery, claimed, outcome, parsed.needs);
+  await deliverBrowserRunOutcome(
+    delivery,
+    claimed,
+    outcome,
+    parsed.needs,
+    parsed.links.length > 0
+  );
 }
 
 /**
@@ -118,7 +124,7 @@ export async function expireBrowserRun(
     status: "failed",
   });
   if (!claimed) return;
-  await deliverBrowserRunOutcome(delivery, claimed, outcome, "none");
+  await deliverBrowserRunOutcome(delivery, claimed, outcome, "none", false);
 }
 
 /**
@@ -130,20 +136,24 @@ export async function expireBrowserRun(
  * the run is not getting through, and then the person is told the errand
  * stopped — never asked to go and solve the check themselves.
  */
-function deliveryInstruction(needs: BrowserRunNeed) {
+function deliveryInstruction(needs: BrowserRunNeed, hasLinks: boolean) {
   const tail =
     "Answer a follow-up with browser_task continue on this run id instead of a new start: it picks the same browser up where this run left off and hands back the run id to use after that. Omit send_message.replyTo.";
   if (needs === "captcha") {
     return `This is a background result, not a user message. The run stopped on an anti-bot check, and that check is yours to get past rather than the user's: unless you already continued this errand once over the same check, call browser_task continue on this run id now, tell it to solve the check and finish the errand, and say nothing to the user about it. Only once a second continuation has come back on the same check, tell the user plainly that the site is not letting the errand through and offer to try again later or by another route — never ask them to solve the check and never hand them the live view for one. ${tail}`;
   }
-  return `This is a background result, not a user message. Tell the user what happened in your own words. ${tail}`;
+  const links = hasLinks
+    ? "Include every relevant returned link with its human-readable name. Use labelled Markdown links in web and Telegram text; the existing iMessage compiler will keep each name and URL human-readable."
+    : "If this errand searched for concrete options and the result names options without their destination links, do not present a names-only list as a completed result. Continue this run once to collect the actual observed links when that can complete the errand; otherwise tell the user clearly that the links could not be obtained. Do not retry in a loop.";
+  return `This is a background result, not a user message. Tell the user what happened in your own words. ${links} ${tail}`;
 }
 
 async function deliverBrowserRunOutcome(
   delivery: BrowserRunDelivery,
   row: BrowserRunRow,
   outcome: string,
-  needs: BrowserRunNeed
+  needs: BrowserRunNeed,
+  hasLinks: boolean
 ) {
   const options = {
     auth: {
@@ -166,7 +176,7 @@ async function deliverBrowserRunOutcome(
     row.liveViewUrl
       ? `Live view (share only for 3-D Secure, a push approval or a manual sign-in — never for an anti-bot check): ${row.liveViewUrl}`
       : undefined,
-    deliveryInstruction(needs),
+    deliveryInstruction(needs, hasLinks),
   ]
     .filter((line) => line !== undefined)
     .join("\n\n");

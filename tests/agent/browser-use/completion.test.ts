@@ -106,6 +106,62 @@ describe("settling a browser run", () => {
     expect(prompt).toContain("Result: ordered");
   });
 
+  it("persists validated links and requires named links in the final response", async () => {
+    readBrowserUseRun.mockResolvedValue({
+      error: null,
+      id: runId,
+      result: [
+        "RESULT: found a useful article",
+        "ORDER: none",
+        "NEEDS: none",
+        'LINKS: [{"title":"Useful article","url":"https://example.com/article?source=search#part-2"}]',
+      ].join("\n"),
+      sessionId: "session-1",
+      status: "completed",
+      task: "Find an article",
+    });
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    expect(claimBrowserRunCompletion).toHaveBeenCalledWith(runId, {
+      outcome:
+        'Result: found a useful article\nLinks: [{"title":"Useful article","url":"https://example.com/article?source=search#part-2"}]',
+      status: "done",
+    });
+    const prompt = String(send.mock.calls[0]?.[0]);
+    expect(prompt).toContain("Useful article");
+    expect(prompt).toContain(
+      "https://example.com/article?source=search#part-2"
+    );
+    expect(prompt).toContain("Include every relevant returned link");
+    expect(prompt).toContain("labelled Markdown links in web and Telegram");
+    expect(prompt).toContain("iMessage compiler");
+  });
+
+  it("does not let a names-only option search masquerade as complete", async () => {
+    readBrowserUseRun.mockResolvedValue({
+      error: null,
+      id: runId,
+      result: "RESULT: found Hotel One and Hotel Two\nNEEDS: none\nLINKS: []",
+      sessionId: "session-1",
+      status: "completed",
+      task: "Find hotels",
+    });
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    const prompt = String(send.mock.calls[0]?.[0]);
+    expect(prompt).toContain("do not present a names-only list");
+    expect(prompt).toContain("Continue this run once");
+    expect(prompt).toContain("Do not retry in a loop");
+  });
+
   it("leaves a run that has not reached a terminal status alone", async () => {
     const { settleBrowserRun } =
       await import("@agent/lib/browser-use/completion");

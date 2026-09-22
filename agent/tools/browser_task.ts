@@ -98,6 +98,8 @@ function outcomeContract() {
     "TOTAL: the amount charged or shown, or none",
     `NEEDS: exactly one of ${browserRunNeeds.join(", ")}`,
     "DETAILS: the one thing a person must supply or decide, or none",
+    'LINKS: a JSON array of {"title":"human-readable option name","url":"https://..."} objects, or []',
+    "For every concrete option you recommend or report — product, article, hotel, ticket, restaurant, listing, or anything similar — include its actual observed destination URL in LINKS. Open the option's detail page or extract its actual anchor href from the page. Never guess or construct an ID or URL, and never substitute a live-view URL or a generic search, results, or category URL for an option link.",
   ].join("\n");
 }
 
