@@ -67,6 +67,9 @@ const browserSessionSchema = z.object({
 
 const browserSessionListSchema = z.object({
   items: z.array(browserSessionSchema),
+  pageNumber: z.number().int().positive().optional(),
+  pageSize: z.number().int().positive().optional(),
+  totalItems: z.number().int().nonnegative().optional(),
 });
 
 const secretBindingSchema = z.object({
@@ -211,7 +214,40 @@ export async function cancelBrowserUseRun(runId: string) {
 }
 
 export async function stopBrowserUseSession(sessionId: string) {
+  const browsers = await listActiveBrowserUseSessions(sessionId);
+  await Promise.all(
+    browsers.map((browser) =>
+      request(
+        "PATCH",
+        `/browsers/${encodeURIComponent(browser.id)}`,
+        JSON.stringify({ action: "stop" })
+      )
+    )
+  );
   await request("DELETE", `/sessions/${encodeURIComponent(sessionId)}`);
+}
+
+async function listActiveBrowserUseSessions(
+  agentSessionId: string,
+  pageNumber = 1,
+  collected: z.infer<typeof browserSessionSchema>[] = []
+): Promise<z.infer<typeof browserSessionSchema>[]> {
+  const page = browserSessionListSchema.parse(
+    await request(
+      "GET",
+      `/browsers?agentSessionId=${encodeURIComponent(agentSessionId)}&filterBy=active&pageSize=100&pageNumber=${String(pageNumber)}`
+    )
+  );
+  const matching = page.items.filter(
+    (item) => item.agentSessionId === agentSessionId && item.status === "active"
+  );
+  const items = [...collected, ...matching];
+  const hasNextPage =
+    page.totalItems === undefined
+      ? page.items.length === 100
+      : pageNumber * (page.pageSize ?? 100) < page.totalItems;
+  if (!hasNextPage) return items;
+  return listActiveBrowserUseSessions(agentSessionId, pageNumber + 1, items);
 }
 
 /**
@@ -231,7 +267,7 @@ export function liveViewUrlFromEvents(
 }
 
 async function request(
-  method: "DELETE" | "GET" | "POST",
+  method: "DELETE" | "GET" | "PATCH" | "POST",
   path: string,
   body?: string
 ) {

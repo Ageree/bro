@@ -128,6 +128,16 @@ describe("Browser Use client", () => {
     const calls = stubFetch(
       Response.json({ status: "completed" }),
       Response.json({ id: 7, sessionId, status: "pending" }),
+      Response.json({
+        items: [
+          {
+            agentSessionId: sessionId,
+            id: "browser-active",
+            status: "active",
+          },
+        ],
+      }),
+      Response.json({ id: "browser-active", status: "stopped" }),
       new Response(null, { status: 204 })
     );
 
@@ -140,9 +150,142 @@ describe("Browser Use client", () => {
     expect(calls.map((call) => `${call.method} ${call.url}`)).toEqual([
       `GET ${baseUrl}/runs/${runId}/status`,
       `POST ${baseUrl}/sessions/${sessionId}/queue`,
+      `GET ${baseUrl}/browsers?agentSessionId=${sessionId}&filterBy=active&pageSize=100&pageNumber=1`,
+      `PATCH ${baseUrl}/browsers/browser-active`,
       `DELETE ${baseUrl}/sessions/${sessionId}`,
     ]);
     expect(JSON.parse(calls[1]?.body ?? "")).toEqual({ text: "123456" });
+    expect(JSON.parse(calls[3]?.body ?? "")).toEqual({ action: "stop" });
+  });
+
+  it("keeps the agent session when stopping its browser fails", async () => {
+    const client = await loadClient();
+    const calls = stubFetch(
+      Response.json({
+        items: [
+          {
+            agentSessionId: sessionId,
+            id: "browser-active",
+            status: "active",
+          },
+        ],
+        pageNumber: 1,
+        pageSize: 100,
+        totalItems: 1,
+      }),
+      new Response("stop failed", { status: 503 }),
+      new Response("stop failed", { status: 503 })
+    );
+
+    await expect(client.stopBrowserUseSession(sessionId)).rejects.toThrow(
+      "stop failed"
+    );
+
+    expect(calls.map((call) => `${call.method} ${call.url}`)).toEqual([
+      `GET ${baseUrl}/browsers?agentSessionId=${sessionId}&filterBy=active&pageSize=100&pageNumber=1`,
+      `PATCH ${baseUrl}/browsers/browser-active`,
+      `PATCH ${baseUrl}/browsers/browser-active`,
+    ]);
+  });
+
+  it("stops matching active browsers across every result page", async () => {
+    const client = await loadClient();
+    const calls = stubFetch(
+      Response.json({
+        items: [
+          {
+            agentSessionId: sessionId,
+            id: "browser-first",
+            status: "active",
+          },
+        ],
+        pageNumber: 1,
+        pageSize: 100,
+        totalItems: 101,
+      }),
+      Response.json({
+        items: [
+          {
+            agentSessionId: sessionId,
+            id: "browser-last",
+            status: "active",
+          },
+        ],
+        pageNumber: 2,
+        pageSize: 100,
+        totalItems: 101,
+      }),
+      Response.json({ id: "browser-first", status: "stopped" }),
+      Response.json({ id: "browser-last", status: "stopped" }),
+      new Response(null, { status: 204 })
+    );
+
+    await client.stopBrowserUseSession(sessionId);
+
+    expect(calls.map((call) => `${call.method} ${call.url}`)).toEqual([
+      `GET ${baseUrl}/browsers?agentSessionId=${sessionId}&filterBy=active&pageSize=100&pageNumber=1`,
+      `GET ${baseUrl}/browsers?agentSessionId=${sessionId}&filterBy=active&pageSize=100&pageNumber=2`,
+      `PATCH ${baseUrl}/browsers/browser-first`,
+      `PATCH ${baseUrl}/browsers/browser-last`,
+      `DELETE ${baseUrl}/sessions/${sessionId}`,
+    ]);
+  });
+
+  it("continues a full page when pagination metadata is absent", async () => {
+    const client = await loadClient();
+    const calls = stubFetch(
+      Response.json({
+        items: Array.from({ length: 100 }, (_, index) => ({
+          agentSessionId:
+            index === 0 ? sessionId : "99999999-9999-4999-8999-999999999999",
+          id: `browser-${String(index)}`,
+          status: "active",
+        })),
+      }),
+      Response.json({ items: [] }),
+      Response.json({ id: "browser-0", status: "stopped" }),
+      new Response(null, { status: 204 })
+    );
+
+    await client.stopBrowserUseSession(sessionId);
+
+    expect(calls.map((call) => `${call.method} ${call.url}`)).toEqual([
+      `GET ${baseUrl}/browsers?agentSessionId=${sessionId}&filterBy=active&pageSize=100&pageNumber=1`,
+      `GET ${baseUrl}/browsers?agentSessionId=${sessionId}&filterBy=active&pageSize=100&pageNumber=2`,
+      `PATCH ${baseUrl}/browsers/browser-0`,
+      `DELETE ${baseUrl}/sessions/${sessionId}`,
+    ]);
+  });
+
+  it("deletes the agent session without touching unrelated or stopped browsers", async () => {
+    const client = await loadClient();
+    const calls = stubFetch(
+      Response.json({
+        items: [
+          {
+            agentSessionId: "99999999-9999-4999-8999-999999999999",
+            id: "browser-unrelated",
+            status: "active",
+          },
+          {
+            agentSessionId: sessionId,
+            id: "browser-stopped",
+            status: "stopped",
+          },
+        ],
+        pageNumber: 1,
+        pageSize: 100,
+        totalItems: 0,
+      }),
+      new Response(null, { status: 204 })
+    );
+
+    await client.stopBrowserUseSession(sessionId);
+
+    expect(calls.map((call) => `${call.method} ${call.url}`)).toEqual([
+      `GET ${baseUrl}/browsers?agentSessionId=${sessionId}&filterBy=active&pageSize=100&pageNumber=1`,
+      `DELETE ${baseUrl}/sessions/${sessionId}`,
+    ]);
   });
 
   it("takes the live view url from the browser.ready event", async () => {
