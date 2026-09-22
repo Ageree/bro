@@ -115,6 +115,7 @@ type MessageHandlerParameters = Parameters<typeof handleMessageCompleted>;
 describe("Photon message delivery", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.unstubAllGlobals();
     scheduleDeliveryCapture.finalize.mockResolvedValue(true);
     scheduleDeliveryCapture.release.mockResolvedValue(true);
   });
@@ -281,8 +282,9 @@ describe("Photon message delivery", () => {
     ["audio", "audio/mpeg", "voice.mp3"],
     ["file", "application/pdf", "brief.pdf"],
   ] as const)(
-    "delivers a %s attachment as a link Photon cannot upload",
+    "uploads a %s attachment as a message file",
     async (kind, mimeType, name) => {
+      stubDownloads(() => servedFile(mimeType));
       const { context, post } = handlerContext();
       const url = `https://media.example/${name}`;
 
@@ -295,11 +297,15 @@ describe("Photon message delivery", () => {
         sessionContext()
       );
 
-      expect(post).toHaveBeenCalledExactlyOnceWith({ raw: url });
+      expect(post).toHaveBeenCalledExactlyOnceWith({
+        files: [{ data: Buffer.from(fileBytes), filename: name, mimeType }],
+        raw: "",
+      });
     }
   );
 
-  it("keeps message text with its attachment links", async () => {
+  it("uploads an attachment alongside the message text", async () => {
+    stubDownloads(() => servedFile("image/jpeg"));
     const { context, post } = handlerContext();
 
     await handleActionResult(
@@ -320,8 +326,73 @@ describe("Photon message delivery", () => {
     );
 
     expect(post).toHaveBeenCalledExactlyOnceWith({
+      files: [
+        {
+          data: Buffer.from(fileBytes),
+          filename: "result.jpg",
+          mimeType: "image/jpeg",
+        },
+      ],
+      raw: "Here it is.",
+    });
+  });
+
+  it("posts the links of attachments the upload dropped", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    stubDownloads(() => servedFile("image/jpeg"));
+    const { context, post } = handlerContext();
+    post.mockRejectedValueOnce(new Error("attachment upload rejected"));
+
+    await handleActionResult(
+      sendMessageResult({
+        attachments: [
+          { kind: "image", url: "https://media.example/first.jpg" },
+          { kind: "image", url: "https://media.example/second.jpg" },
+        ],
+        kind: "message",
+        text: "Here they are.",
+      }),
+      context,
+      sessionContext()
+    );
+
+    // The adapter posts the words before the files, so only the links repeat.
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(post.mock.calls[1]?.[0]).toEqual({
+      raw: "https://media.example/first.jpg\nhttps://media.example/second.jpg",
+    });
+    expect(warn).toHaveBeenCalledWith(
+      "[photon] file upload failed",
+      expect.objectContaining({ files: 2, sessionId: "session-1" })
+    );
+    warn.mockRestore();
+  });
+
+  it("keeps an attachment it could not download as a link", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    stubDownloads(() => new Response("", { status: 404 }));
+    const { context, post } = handlerContext();
+
+    await handleActionResult(
+      sendMessageResult({
+        attachments: [
+          { kind: "image", url: "https://media.example/result.png" },
+        ],
+        kind: "message",
+        text: "Here it is.",
+      }),
+      context,
+      sessionContext()
+    );
+
+    expect(post).toHaveBeenCalledExactlyOnceWith({
       raw: "Here it is.\n\nhttps://media.example/result.png",
     });
+    expect(warn).toHaveBeenCalledWith("[photon] attachment delivery failed", {
+      reasons: ["http 404"],
+      sessionId: "session-1",
+    });
+    warn.mockRestore();
   });
 
   it("uploads scoped artifact files with the message", async () => {
@@ -595,6 +666,28 @@ describe("Photon message delivery", () => {
     ).toBe(false);
   });
 
+  it("refuses more attachments than a message can carry", () => {
+    const attachments = Array.from({ length: 11 }, (_item, index) => ({
+      kind: "image" as const,
+      url: `https://media.example/photo-${String(index)}.jpg`,
+    }));
+
+    expect(
+      sendMessageOutputSchema.safeParse({
+        attachments: attachments.slice(0, 10),
+        kind: "message",
+      }).success
+    ).toBe(true);
+    expect(
+      sendMessageOutputSchema.safeParse({ attachments, kind: "message" })
+        .success
+    ).toBe(false);
+    expect(
+      sendMessageOutputSchema.safeParse({ attachments: [], kind: "message" })
+        .success
+    ).toBe(false);
+  });
+
   it("enforces the native link URL constraints", () => {
     const prefix = "https://example.com/";
     const maximumLengthLink = `${prefix}${"a".repeat(2048 - prefix.length)}`;
@@ -619,6 +712,23 @@ describe("Photon message delivery", () => {
     ).toBe(false);
   });
 });
+
+/** Bytes with no signature of their own, so the served media type decides. */
+const fileBytes = new Uint8Array(16);
+
+function servedFile(mimeType: string) {
+  return new Response(new Uint8Array(fileBytes), {
+    headers: { "content-type": mimeType },
+  });
+}
+
+/** Attachment bytes are downloaded before a post, which Photon never does. */
+function stubDownloads(respond: () => Response) {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn<typeof fetch>().mockImplementation(async () => respond())
+  );
+}
 
 function sendMessageResult(
   output: ActionHandlerParameters[0]["result"] extends { output: infer Output }
