@@ -29,6 +29,7 @@ describe("browser run outcome parsing", () => {
       next: undefined,
       order: "4417",
       protocolValid: true,
+      report: "Заказ оформлен.",
       result: "такси вызвано к подъезду",
       status: undefined,
       total: "620 ₽",
@@ -103,6 +104,78 @@ describe("browser run outcome parsing", () => {
     expect(browserOutcomeSummary(outcome, "fallback")).toContain(
       "Evidence: - Hotel A"
     );
+  });
+
+  it("keeps the substantive report before the labelled protocol block", () => {
+    const outcome = parseBrowserOutcome(
+      [
+        "| # | Title | Updated | URL |",
+        "|---|---|---|---|",
+        "| 1 | Meta: Language Model Unavailable | Sep 20, 2026 | https://github.com/microsoft/vscode/issues/253137 |",
+        "| 2 | Meta: Sorry, no response was returned | Sep 19, 2026 | https://github.com/microsoft/vscode/issues/253126 |",
+        "| 3 | Dataverse MCP Server schema invalid | Sep 17, 2026 | https://github.com/microsoft/vscode/issues/326912 |",
+        "",
+        "RESULT: Found and verified exactly three open bug issues mentioning notebook.",
+        "ORDER: none",
+        "TOTAL: none",
+        "NEEDS: none",
+        "DETAILS: none",
+        "STATUS: complete",
+        "EVIDENCE: https://github.com/microsoft/vscode/issues?q=is%3Aissue%20is%3Aopen%20label%3Abug",
+        "NEXT: none",
+      ].join("\n")
+    );
+
+    expect(outcome.report).toContain("| # | Title | Updated | URL |");
+    expect(outcome.report).toContain("Meta: Language Model Unavailable");
+    expect(outcome.result).toBe(
+      "Found and verified exactly three open bug issues mentioning notebook."
+    );
+    const summary = browserOutcomeSummary(outcome, "fallback");
+    expect(summary).toContain("Report: | # | Title | Updated | URL |");
+    expect(summary.match(/Meta: Language Model Unavailable/gu)).toHaveLength(1);
+  });
+
+  it("sanitizes the report preamble and omits an exact duplicate result", () => {
+    const privateReport = parseBrowserOutcome(
+      [
+        "Password: hunter22 · https://user:pass@example.com/report?token=secret&view=table",
+        "RESULT: safe result",
+        "NEEDS: none",
+      ].join("\n")
+    );
+    const duplicate = parseBrowserOutcome(
+      "Same useful result\nRESULT: Same useful result\nNEEDS: none"
+    );
+
+    expect(privateReport.report).not.toContain("hunter22");
+    expect(privateReport.report).not.toContain("user:pass");
+    expect(privateReport.report).not.toContain("token=secret");
+    expect(privateReport.report).toContain("view=table");
+    expect(duplicate.report).toBeUndefined();
+  });
+
+  it("bounds a long report without consuming the continuation checkpoint", () => {
+    const outcome = parseBrowserOutcome(
+      `${"report ".repeat(800)}\nRESULT: partial work\nNEEDS: none\nNEXT: retain the original hard constraints`
+    );
+
+    expect(outcome.report).toHaveLength(4_000);
+    expect(outcome.next).toBe("retain the original hard constraints");
+  });
+
+  it("retains an unlabelled answer as evidence without inferring success", () => {
+    const outcome = parseBrowserOutcome(
+      "| Title | URL |\n| Useful issue | https://example.com/issues/1 |"
+    );
+
+    expect(outcome.report).toContain("| Useful issue |");
+    expect(outcome.protocolValid).toBe(false);
+    expect(resolvedBrowserOutcomeStatus(outcome)).toBe("invalid");
+    expect(browserOutcomeSummary(outcome, "fallback")).toContain(
+      "Task status: invalid\nReport: | Title | URL |"
+    );
+    expect(parseBrowserOutcome("   \n\t").report).toBeUndefined();
   });
 
   it("fails malformed new statuses conservatively and strips active markup", () => {
@@ -212,6 +285,24 @@ describe("order parsing", () => {
       status: "placed",
       title: "Кроссовки Nike куплены",
     });
+  });
+
+  it("uses RESULT rather than the report preamble as the order title", () => {
+    const result = purchase([
+      "Comparison table title that must not become the order title",
+      "RESULT: Кроссовки Nike куплены",
+      "ORDER: WB-4K7X2",
+      "TOTAL: 5 499,00 ₽",
+      "NEEDS: none",
+    ]);
+
+    expect(
+      parseBrowserOrder(parseBrowserOutcome(result), {
+        result,
+        site: "https://www.wildberries.ru",
+        task: "купи кроссовки",
+      })
+    ).toMatchObject({ title: "Кроссовки Nike куплены" });
   });
 
   it("records nothing for a run that still needs something", () => {

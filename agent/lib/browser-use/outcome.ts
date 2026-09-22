@@ -34,6 +34,7 @@ const emptyValue = /^(?:none|нет|-|—|n\/a|н\/д)$/iu;
  * the label costs the parse the whole block, so both are tolerated.
  */
 const outcomeLabels = [
+  "REPORT",
   "STATUS",
   "RESULT",
   "EVIDENCE",
@@ -142,6 +143,16 @@ function labelledValue(
   return value;
 }
 
+function outcomePreamble(text: string) {
+  const lines = text.split(/\r?\n/u);
+  const firstLabel = lines.findIndex((line) => labelledLine.test(line));
+  if (firstLabel === 0) return undefined;
+  const preamble = sanitizeBrowserOutput(
+    firstLabel === -1 ? text : lines.slice(0, firstLabel).join("\n")
+  );
+  return preamble || undefined;
+}
+
 export function parseBrowserOutcome(result: string | null | undefined) {
   const text = (result ?? "").trim();
   const values = labelledValues(text);
@@ -153,6 +164,7 @@ export function parseBrowserOutcome(result: string | null | undefined) {
     ? (browserOutcomeStatuses.find((item) => item === rawStatus) ?? "invalid")
     : undefined;
   const parsedResult = labelledValue(values, "RESULT");
+  const report = labelledValue(values, "REPORT") ?? outcomePreamble(text);
   return {
     details: labelledValue(values, "DETAILS"),
     evidence: labelledValue(values, "EVIDENCE"),
@@ -160,6 +172,11 @@ export function parseBrowserOutcome(result: string | null | undefined) {
     needs: need ?? "none",
     protocolValid:
       parsedResult !== undefined && values.has("NEEDS") && need !== undefined,
+    report:
+      report?.replaceAll(/\s+/gu, " ").toLowerCase() ===
+      parsedResult?.replaceAll(/\s+/gu, " ").toLowerCase()
+        ? undefined
+        : report,
     next: labelledValue(values, "NEXT"),
     order: labelledValue(values, "ORDER"),
     result: parsedResult,
@@ -184,6 +201,7 @@ export function browserOutcomeSummary(
 ) {
   const lines = [
     `Task status: ${status}`,
+    outcome.report ? `Report: ${outcome.report}` : undefined,
     outcome.result ? `Result: ${outcome.result}` : fallback,
     outcome.evidence ? `Evidence: ${outcome.evidence}` : undefined,
     outcome.order ? `Order: ${outcome.order}` : undefined,

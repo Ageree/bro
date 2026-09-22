@@ -109,6 +109,47 @@ describe("settling a browser run", () => {
     expect(prompt).toContain("BEGIN UNTRUSTED BROWSER DATA");
   });
 
+  it("delivers a substantive report written before the protocol block", async () => {
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    readBrowserUseRun.mockResolvedValue({
+      error: null,
+      id: runId,
+      result: [
+        "| # | Title | Updated | URL |",
+        "|---|---|---|---|",
+        "| 1 | Meta: Language Model Unavailable | Sep 20, 2026 | https://github.com/microsoft/vscode/issues/253137 |",
+        "| 2 | Meta: Sorry, no response was returned | Sep 19, 2026 | https://github.com/microsoft/vscode/issues/253126 |",
+        "| 3 | Dataverse MCP Server schema invalid | Sep 17, 2026 | https://github.com/microsoft/vscode/issues/326912 |",
+        "",
+        "RESULT: Found and verified exactly three open bug issues mentioning notebook.",
+        "ORDER: none",
+        "TOTAL: none",
+        "NEEDS: none",
+        "DETAILS: none",
+        "STATUS: complete",
+        "EVIDENCE: https://github.com/microsoft/vscode/issues?q=is%3Aissue%20is%3Aopen%20label%3Abug",
+        "NEXT: none",
+      ].join("\n"),
+      sessionId: "session-1",
+      status: "completed",
+      task: "Find current notebook issues",
+    });
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    const stored = claimBrowserRunCompletion.mock.calls[0]?.[1]?.outcome;
+    expect(stored).toContain("Report: | # | Title | Updated | URL |");
+    expect(stored).toContain("Meta: Language Model Unavailable");
+    expect(stored).toContain(
+      "Result: Found and verified exactly three open bug issues mentioning notebook."
+    );
+    expect(send.mock.calls[0]?.[0]).toContain(
+      "Meta: Language Model Unavailable"
+    );
+  });
+
   it("does not mark provider completion as task success when work remains", async () => {
     const { settleBrowserRun } =
       await import("@agent/lib/browser-use/completion");
