@@ -19,11 +19,7 @@ export const browserRunNeeds = [
 
 export type BrowserRunNeed = (typeof browserRunNeeds)[number];
 
-export const browserOutcomeStatuses = [
-  "complete",
-  "partial",
-  "blocked",
-] as const;
+const browserOutcomeStatuses = ["complete", "partial", "blocked"] as const;
 
 export type BrowserOutcomeStatus =
   | (typeof browserOutcomeStatuses)[number]
