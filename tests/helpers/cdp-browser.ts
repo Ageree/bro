@@ -28,6 +28,7 @@ const commandSchema = z.object({
       contextId: z.number().int().optional(),
       expression: z.string().optional(),
       flatten: z.boolean().optional(),
+      format: z.string().optional(),
       frameId: z.string().optional(),
     })
     .default({}),
@@ -54,6 +55,8 @@ interface Injection {
 export interface CdpBrowserFixture {
   /** What the injected program answers, per execution context id. */
   readonly injections: Readonly<Record<number, Injection>>;
+  /** The base64 image `Page.captureScreenshot` answers with. */
+  readonly screenshot?: string;
   /** Keyed by session id; the page's own session is the empty string. */
   readonly sessions: Readonly<Record<string, FrameFixture>>;
 }
@@ -189,6 +192,9 @@ export async function startFakeCdpBrowser(
       const next = contextIds.size + 1;
       contextIds.set(frameId, next);
       return { executionContextId: next };
+    }
+    if (method === "Page.captureScreenshot") {
+      return { data: fixture.screenshot ?? "" };
     }
     if (method === "Runtime.evaluate") {
       const contextId = params.contextId ?? 0;

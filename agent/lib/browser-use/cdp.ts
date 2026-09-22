@@ -221,7 +221,9 @@ interface CdpCommand {
   readonly contextId?: number;
   readonly expression?: string;
   readonly flatten?: boolean;
+  readonly format?: "jpeg" | "png";
   readonly frameId?: string;
+  readonly quality?: number;
   readonly returnByValue?: boolean;
   readonly waitForDebuggerOnStart?: boolean;
   readonly worldName?: string;
@@ -300,6 +302,35 @@ export async function typeOneTimeCodeOverCdp(
       submitted: applied?.submitted === true,
       typed: applied?.typed === true,
     };
+  } finally {
+    connection.close();
+  }
+}
+
+const screenshotSchema = z.object({ data: z.base64().min(1) });
+
+/** JPEG at this quality keeps a full-HD viewport well under the artifact cap
+ *  and still reads as the page, text included. */
+const screenshotQuality = 85;
+
+/**
+ * The viewport of the page the run's browser is showing, exactly as a person
+ * looking at the live view would see it. A finished run leaves its browser up,
+ * so the page it ended on — the basket, the confirmation, the search it
+ * settled on — is still there to be photographed without asking the cloud
+ * agent for anything.
+ */
+export async function captureViewportOverCdp(cdpUrl: string) {
+  const connection = await connect(cdpUrl);
+  try {
+    const shot = screenshotSchema.safeParse(
+      await connection.call("Page.captureScreenshot", {
+        format: "jpeg",
+        quality: screenshotQuality,
+      })
+    );
+    if (!shot.success) throw new Error("The browser returned no screenshot.");
+    return new Uint8Array(Buffer.from(shot.data.data, "base64"));
   } finally {
     connection.close();
   }

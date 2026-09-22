@@ -9,7 +9,8 @@ import {
   stripImageArtifactMarkdownReferences,
 } from "./markdown";
 
-const maximumDeliveredImageArtifacts = 4;
+/** How many images one message, and one browser run, may carry. */
+export const maximumDeliveredImageArtifacts = 4;
 /** Accusative forms of «картинка» for one, a few, and many. */
 const imageCountForms = ["картинку", "картинки", "картинок"] as const;
 

@@ -124,6 +124,11 @@ describe("agent instructions", () => {
     expect(selected?.content).toContain("На `continue` не передавай `site`");
     expect(selected?.content).toContain("Ссылку на живой просмотр шли только");
     expect(selected?.content).toContain("придёт позже отдельным сообщением");
+    expect(selected?.content).toContain("`collectImages: true`");
+    expect(selected?.content).toContain("`![подпись](/artifacts/id)`");
+    expect(selected?.content).toContain(
+      "Путь `/artifacts/...` голым текстом не шли никогда"
+    );
   });
 
   it("greets a first-contact turn in short Russian bubbles", async () => {
