@@ -8,39 +8,32 @@ import { sendMessageOutputSchema } from "@shared/chat/message-delivery";
 
 /** What a conversation channel can do with a delivered message. */
 interface ChannelDelivery {
-  /** Whether the channel can deliver an attachment referenced by URL. */
-  readonly attachmentUrls: boolean;
   /** Whether reactions can only be added, or added and removed. */
   readonly reactions: "add" | "toggle";
 }
 
 // A channel that is missing from this table gets plain message delivery only.
 const channelDelivery = new Map<string, ChannelDelivery>([
-  ["channel:eve", { attachmentUrls: true, reactions: "add" }],
-  ["channel:photon", { attachmentUrls: false, reactions: "toggle" }],
-  ["channel:telegram", { attachmentUrls: false, reactions: "toggle" }],
+  ["channel:eve", { reactions: "add" }],
+  ["channel:photon", { reactions: "toggle" }],
+  ["channel:telegram", { reactions: "toggle" }],
 ]);
 
-function defineSendMessage(delivery: ChannelDelivery | undefined) {
+function defineSendMessage() {
   return defineTool({
     description:
-      "Send exactly one user-visible message to the current conversation. This is the delivery path for questions, progress updates, blockers, and final answers that need words. Choose kind message for plain text, private image artifacts, and HTTPS attachments; text and attachments may be combined. Text is delivered exactly as written, so write it like a brief natural text message and do not use Markdown. Set replyTo to record which message is being answered: use current for an ordinary answer, clarification, status update, or follow-up prompted by the current user message, including when the user changes topics; use task with a task ID from Eve's Task state for delayed background work; and use automation with the automation ID supplied by a scheduled report. Omit replyTo only when the message is genuinely standalone and does not answer any particular user message, such as an unsolicited announcement or proactive notice, or when no applicable handle is available. Use only handles present in the current context. Choose kind link with a URL to send a standalone native preview. Put an ordinary URL in message text when a preview is not wanted. Call send_message multiple times only when you intentionally want separate messages. Call it directly without an assistant-text preamble, and do not repeat delivered content afterward.",
+      "Send exactly one user-visible message to the current conversation. This is the delivery path for questions, progress updates, blockers, and final answers that need words. Choose kind message for plain text, private image artifacts, and HTTPS attachments; text and attachments may be combined. Text is delivered exactly as written, so write it like a brief natural text message and do not use Markdown. Attachments are downloaded and uploaded to the conversation, so the person receives real photos and files rather than links: give the direct HTTPS URL of the file itself, such as an image URL, never a page that contains it, and note that the image URLs on a page can be read with web_fetch because its Markdown keeps ![alt](src). Up to 10 attachments ride on one message and each must be about 10 MB or smaller; an attachment that cannot be downloaded falls back to a link. Set replyTo to record which message is being answered: use current for an ordinary answer, clarification, status update, or follow-up prompted by the current user message, including when the user changes topics; use task with a task ID from Eve's Task state for delayed background work; and use automation with the automation ID supplied by a scheduled report. Omit replyTo only when the message is genuinely standalone and does not answer any particular user message, such as an unsolicited announcement or proactive notice, or when no applicable handle is available. Use only handles present in the current context. Choose kind link with a URL to send a standalone native preview. Put an ordinary URL in message text when a preview is not wanted. Call send_message multiple times only when you intentionally want separate messages. Call it directly without an assistant-text preamble, and do not repeat delivered content afterward.",
     inputSchema: sendMessageOutputSchema,
     execute(message) {
       return message;
     },
     toModelOutput(output) {
       const message = sendMessageOutputSchema.safeParse(output);
-      const unsupported = [
-        message.data?.replyTo
-          ? "Native quoted replies are unavailable on this channel, so it was delivered as an ordinary message."
-          : undefined,
-        delivery?.attachmentUrls === false &&
-        message.data?.kind === "message" &&
-        message.data.attachments
-          ? "Attachment uploads from a URL are unavailable on this channel, so each attachment was delivered as a link."
-          : undefined,
-      ].filter((note) => note !== undefined);
+      const unsupported = message.data?.replyTo
+        ? [
+            "Native quoted replies are unavailable on this channel, so it was delivered as an ordinary message.",
+          ]
+        : [];
       return toolOutput.text(
         [
           "The message was submitted to the active channel. Do not repeat it in assistant text.",
@@ -75,7 +68,7 @@ export default defineDynamic({
   events: {
     "turn.started": (_event, context) => {
       const delivery = channelDelivery.get(context.channel.kind ?? "");
-      const send_message = defineSendMessage(delivery);
+      const send_message = defineSendMessage();
       const messageOnly = { send_message };
       const interactive = delivery
         ? { react_to_message: defineReactToMessage(delivery), send_message }

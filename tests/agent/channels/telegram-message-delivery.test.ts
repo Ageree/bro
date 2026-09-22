@@ -280,7 +280,8 @@ describe("Telegram message delivery", () => {
     });
   });
 
-  it("delivers a URL attachment as a link", async () => {
+  it("uploads a URL attachment as a real photo", async () => {
+    const network = stubNetwork();
     const { context, request } = handlerContext();
 
     await handleActionResult(
@@ -289,9 +290,154 @@ describe("Telegram message delivery", () => {
           {
             kind: "image",
             mimeType: "image/png",
-            name: "result.png",
-            url: "https://media.example/result.png",
+            url: "https://media.example/result.jpg",
           },
+        ],
+        kind: "message",
+        text: "Here it is.",
+      }),
+      context,
+      sessionContext()
+    );
+
+    expect(request).toHaveBeenCalledExactlyOnceWith("sendMessage", {
+      chat_id: "4242",
+      parse_mode: "HTML",
+      text: "Here it is.",
+    });
+    const [upload] = botApiCalls(network);
+    expect(upload?.method).toBe("sendPhoto");
+    expect(upload?.form.get("chat_id")).toBe("4242");
+    const photo = upload?.form.get("photo");
+    expect(photo).toBeInstanceOf(File);
+    expect(photo instanceof File ? photo.name : "").toBe("result.jpg");
+    expect(photo instanceof File ? photo.type : "").toBe("image/jpeg");
+    await expect(
+      photo instanceof File ? photo.bytes() : undefined
+    ).resolves.toEqual(jpegBytes);
+  });
+
+  it("sends two image attachments as one album", async () => {
+    const network = stubNetwork();
+    const { context } = handlerContext();
+
+    await handleActionResult(
+      sendMessageResult({
+        attachments: [
+          { kind: "image", url: "https://media.example/first.jpg" },
+          { kind: "image", url: "https://media.example/second.jpg" },
+        ],
+        kind: "message",
+        text: "Two good ones.",
+      }),
+      context,
+      sessionContext()
+    );
+
+    const calls = botApiCalls(network);
+    expect(calls.map((call) => call.method)).toEqual(["sendMediaGroup"]);
+    expect(calls[0]?.form.get("media")).toBe(
+      JSON.stringify([
+        { media: "attach://file0", type: "photo" },
+        { media: "attach://file1", type: "photo" },
+      ])
+    );
+    expect(calls[0]?.form.get("file0")).toBeInstanceOf(File);
+    expect(calls[0]?.form.get("file1")).toBeInstanceOf(File);
+  });
+
+  it("sends each photo on its own when the album call fails", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const network = stubNetwork({
+      telegram: (method) =>
+        new Response("{}", { status: method === "sendMediaGroup" ? 500 : 200 }),
+    });
+    const { context } = handlerContext();
+
+    await handleActionResult(
+      sendMessageResult({
+        attachments: [
+          { kind: "image", url: "https://media.example/first.jpg" },
+          { kind: "image", url: "https://media.example/second.jpg" },
+        ],
+        kind: "message",
+        text: "Two good ones.",
+      }),
+      context,
+      sessionContext()
+    );
+
+    expect(botApiCalls(network).map((call) => call.method)).toEqual([
+      "sendMediaGroup",
+      "sendPhoto",
+      "sendPhoto",
+    ]);
+    warn.mockRestore();
+  });
+
+  it("retries a photo Telegram refused as a document", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const network = stubNetwork({
+      telegram: (method) =>
+        new Response("{}", { status: method === "sendPhoto" ? 400 : 200 }),
+    });
+    const { context } = handlerContext();
+
+    await handleActionResult(
+      sendMessageResult({
+        attachments: [{ kind: "image", url: "https://media.example/wide.jpg" }],
+        kind: "message",
+        text: "Here it is.",
+      }),
+      context,
+      sessionContext()
+    );
+
+    const calls = botApiCalls(network);
+    expect(calls.map((call) => call.method)).toEqual([
+      "sendPhoto",
+      "sendDocument",
+    ]);
+    expect(calls[1]?.form.get("document")).toBeInstanceOf(File);
+    warn.mockRestore();
+  });
+
+  it("uploads a document attachment with sendDocument", async () => {
+    const network = stubNetwork({
+      download: () =>
+        new Response(new Uint8Array(pdfBytes), {
+          headers: { "content-type": "application/pdf" },
+        }),
+    });
+    const { context } = handlerContext();
+
+    await handleActionResult(
+      sendMessageResult({
+        attachments: [{ kind: "file", url: "https://media.example/brief.pdf" }],
+        kind: "message",
+        text: "The brief.",
+      }),
+      context,
+      sessionContext()
+    );
+
+    const [upload] = botApiCalls(network);
+    expect(upload?.method).toBe("sendDocument");
+    const document = upload?.form.get("document");
+    expect(document instanceof File ? document.name : "").toBe("brief.pdf");
+  });
+
+  it("delivers an attachment it could not download as a link", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const network = stubNetwork({
+      download: () => new Response("", { status: 404 }),
+    });
+    const { context, request } = handlerContext();
+
+    await handleActionResult(
+      sendMessageResult({
+        attachments: [
+          { kind: "image", url: "https://media.example/result.png" },
         ],
         kind: "message",
         text: "Here it is.",
@@ -305,6 +451,12 @@ describe("Telegram message delivery", () => {
       parse_mode: "HTML",
       text: "Here it is.\n\nhttps://media.example/result.png",
     });
+    expect(botApiCalls(network)).toEqual([]);
+    expect(warn).toHaveBeenCalledWith("[telegram] attachment delivery failed", {
+      reasons: ["http 404"],
+      sessionId: "session-1",
+    });
+    warn.mockRestore();
   });
 
   it("uploads an image artifact with a multipart sendPhoto call", async () => {
@@ -426,6 +578,55 @@ describe("Telegram message delivery", () => {
     });
   });
 });
+
+const jpegBytes = new Uint8Array(16);
+jpegBytes.set([0xff, 0xd8, 0xff, 0xe0], 0);
+const pdfBytes = new Uint8Array(16);
+pdfBytes.set([...Buffer.from("%PDF-1.7")], 0);
+
+/** The absolute URL one fetch call targeted, however it was addressed. */
+function requestUrl(input: RequestInfo | URL) {
+  return new Request(input).url;
+}
+
+/**
+ * Routes one fetch mock between the attachment downloads and the Bot API,
+ * which the channel reaches directly because eve's handle only speaks JSON.
+ */
+function stubNetwork(
+  routes: {
+    readonly download?: (url: string) => Response;
+    readonly telegram?: (method: string) => Response;
+  } = {}
+) {
+  const network = vi
+    .fn<typeof fetch>()
+    .mockImplementation(async (input: RequestInfo | URL) => {
+      const url = requestUrl(input);
+      const method = url.split("/").at(-1) ?? "";
+      if (url.startsWith("https://api.telegram.org")) {
+        return routes.telegram?.(method) ?? new Response("{}", { status: 200 });
+      }
+      return (
+        routes.download?.(url) ??
+        new Response(new Uint8Array(jpegBytes), {
+          headers: { "content-type": "image/jpeg" },
+        })
+      );
+    });
+  vi.stubGlobal("fetch", network);
+  return network;
+}
+
+function botApiCalls(network: ReturnType<typeof stubNetwork>) {
+  return network.mock.calls.flatMap(([input, init]) => {
+    const url = requestUrl(input);
+    if (!url.startsWith("https://api.telegram.org")) return [];
+    const form = init?.body;
+    if (!(form instanceof FormData)) return [];
+    return [{ form, method: url.split("/").at(-1) ?? "" }];
+  });
+}
 
 function sendMessageResult(
   output: ActionHandlerParameters[0]["result"] extends { output: infer Output }

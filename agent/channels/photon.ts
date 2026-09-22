@@ -12,9 +12,16 @@ import { messageQuotaGate } from "@agent/lib/billing/quota";
 import { fallbackDeliveryText } from "@agent/lib/delivery-fallback";
 import { photonMediaTurn } from "@agent/lib/inbound-media/photon";
 import { voiceFailedNote } from "@agent/lib/inbound-media/turn-content";
+import {
+  prepareAttachmentDelivery,
+  type OutboundFile,
+} from "@agent/lib/outbound-media/attachments";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { ensureVerifiedPhoneUser } from "@db/services/auth/phone-user";
-import { sendMessageToolResultSchema } from "@shared/chat/message-delivery";
+import {
+  sendMessageToolResultSchema,
+  type MessageAttachment,
+} from "@shared/chat/message-delivery";
 import { reactToMessageToolResultSchema } from "@shared/chat/reaction";
 import { accessScopeForUser } from "@shared/identity/access-scope";
 import { normalizeAuthPhoneNumber } from "@shared/identity/phone-number";
@@ -37,6 +44,9 @@ import {
 } from "@agent/lib/schedules/report-lifecycle";
 
 const webhookSecret = env.IMESSAGE_WEBHOOK_SECRET;
+
+/** The bytes an iMessage post carries; Photon has no notion of a media kind. */
+type MessageFile = Pick<OutboundFile, "data" | "filename" | "mimeType">;
 
 /**
  * Handed to the model on the turn that created the account. The instructions
@@ -128,13 +138,18 @@ export default photonIMessageChannel({
         return;
       }
 
-      const attachmentLinks = (output.attachments ?? []).map(
-        (attachment) => attachment.url
-      );
+      const attachments = output.attachments ?? [];
       const requestedText = output.text;
       if (!requestedText) {
-        if (attachmentLinks.length > 0) {
-          await thread.post({ raw: attachmentLinks.join("\n") });
+        const prepared = await attachmentDelivery(session, attachments);
+        if (prepared.links.length > 0 || prepared.files.length > 0) {
+          await thread.post(
+            outgoingMessage({
+              attachmentLinks: prepared.links,
+              files: prepared.files,
+              text: "",
+            })
+          );
         }
         markTurnDelivered(context.state, event.turnId);
         await finalizeScheduledReportDelivery(session);
@@ -142,7 +157,7 @@ export default photonIMessageChannel({
       }
 
       await deliverText(thread, session, {
-        attachmentLinks,
+        attachments,
         text: requestedText,
       });
       markTurnDelivered(context.state, event.turnId);
@@ -168,7 +183,7 @@ export default photonIMessageChannel({
         sessionId: session.session.id,
       });
       markTurnDelivered(context.state, event.turnId);
-      await deliverText(thread, session, { attachmentLinks: [], text });
+      await deliverText(thread, session, { attachments: [], text });
     },
     async "session.completed"(_event, _context, session) {
       const report = scheduledReportFromSession(session);
@@ -282,21 +297,45 @@ async function markReadBestEffort(thread: Thread, messageId: string) {
 }
 
 /**
- * Delivers one reply body: image artifacts referenced in the text ride along as
- * message files, and the words go out as bubbles. Both `send_message` and the
- * plain-text fallback deliver through here.
+ * Downloads what `send_message` attached so it can ride along as real message
+ * files. An attachment that could not be fetched keeps the old behaviour and
+ * travels as a link, and the reason is logged without the URL.
+ */
+async function attachmentDelivery(
+  session: SessionContext,
+  attachments: readonly MessageAttachment[]
+) {
+  const prepared = await prepareAttachmentDelivery(attachments);
+  if (prepared.failures.length > 0) {
+    console.warn("[photon] attachment delivery failed", {
+      reasons: prepared.failures.map((failure) => failure.reason),
+      sessionId: session.session.id,
+    });
+  }
+  return {
+    files: prepared.files,
+    links: prepared.failures.map((failure) => failure.url),
+  };
+}
+
+/**
+ * Delivers one reply body: image artifacts referenced in the text and the
+ * attachments `send_message` asked for ride along as message files, and the
+ * words go out as bubbles. Both `send_message` and the plain-text fallback
+ * deliver through here.
  */
 async function deliverText(
   thread: Thread,
   session: SessionContext,
   {
-    attachmentLinks,
+    attachments,
     text,
   }: {
-    readonly attachmentLinks: readonly string[];
+    readonly attachments: readonly MessageAttachment[];
     readonly text: string;
   }
 ) {
+  const prepared = await attachmentDelivery(session, attachments);
   const caller = session.session.auth.current ?? session.session.auth.initiator;
   if (!caller) {
     const references = extractImageArtifactMarkdownReferences(text);
@@ -309,7 +348,11 @@ async function deliverText(
           ]
             .filter(Boolean)
             .join("\n\n");
-    await postBubbles(thread, { attachmentLinks, files: [], text: body });
+    await postBubbles(thread, {
+      attachmentLinks: prepared.links,
+      files: prepared.files,
+      text: body,
+    });
     return;
   }
 
@@ -328,8 +371,8 @@ async function deliverText(
     delivery.failedArtifactIds.length
   );
   await postBubbles(thread, {
-    attachmentLinks,
-    files: delivery.files,
+    attachmentLinks: prepared.links,
+    files: [...delivery.files, ...prepared.files],
     text: [delivery.text, failureMessage].filter(Boolean).join("\n\n"),
   });
 }
@@ -364,11 +407,7 @@ async function postBubbles(
     text,
   }: {
     readonly attachmentLinks: readonly string[];
-    readonly files: readonly {
-      readonly data: Buffer;
-      readonly filename: string;
-      readonly mimeType: string;
-    }[];
+    readonly files: readonly MessageFile[];
     readonly text: string;
   }
 ) {
@@ -400,19 +439,23 @@ function outgoingMessage({
   text,
 }: {
   readonly attachmentLinks: readonly string[];
-  readonly files: readonly {
-    readonly data: Buffer;
-    readonly filename: string;
-    readonly mimeType: string;
-  }[];
+  readonly files: readonly MessageFile[];
   readonly text: string;
 }) {
-  // Photon uploads message files but ignores attachments referenced by URL, so
-  // a requested attachment is delivered as a link the recipient can open.
+  // An attachment whose bytes could not be fetched is delivered as a link the
+  // recipient can open, which is all Photon can do without the file itself.
   const body = [text, ...attachmentLinks].filter(Boolean).join("\n\n");
   const outgoing: Extract<AdapterPostableMessage, { raw: string }> = {
     raw: body,
   };
-  if (files.length > 0) outgoing.files = [...files];
+  if (files.length > 0) {
+    // Photon takes the bytes only; how a channel would upload them is not
+    // part of an iMessage attachment.
+    outgoing.files = files.map(({ data, filename, mimeType }) => ({
+      data,
+      filename,
+      mimeType,
+    }));
+  }
   return outgoing;
 }

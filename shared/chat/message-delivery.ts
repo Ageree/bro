@@ -9,13 +9,36 @@ const replyReferenceSchema = z.discriminatedUnion("kind", [
 export type ReplyReference = z.infer<typeof replyReferenceSchema>;
 
 const attachmentSchema = z.object({
-  kind: z.enum(["image", "video", "audio", "file"]),
-  mimeType: z.string().min(1).max(200).optional(),
-  name: z.string().min(1).max(180).optional(),
-  url: z.url().refine((url) => new URL(url).protocol === "https:", {
-    message: "Attachments must use HTTPS.",
-  }),
+  kind: z
+    .enum(["image", "video", "audio", "file"])
+    .describe("What the file is, so the channel can render it natively."),
+  mimeType: z
+    .string()
+    .min(1)
+    .max(200)
+    .optional()
+    .describe(
+      "Media type of the file when it is known; the downloaded bytes decide when they disagree."
+    ),
+  name: z
+    .string()
+    .min(1)
+    .max(180)
+    .optional()
+    .describe(
+      "Filename the recipient sees. Defaults to the name in the URL path."
+    ),
+  url: z
+    .url()
+    .refine((url) => new URL(url).protocol === "https:", {
+      message: "Attachments must use HTTPS.",
+    })
+    .describe(
+      "Direct HTTPS URL of the file itself, e.g. an image URL, not a page containing it."
+    ),
 });
+
+export type MessageAttachment = z.infer<typeof attachmentSchema>;
 
 const nativeLinkSchema = z
   .url()
@@ -25,7 +48,9 @@ const nativeLinkSchema = z
   });
 
 const messageOutputFields = {
-  attachments: z.array(attachmentSchema).min(1).max(4).optional(),
+  // Ten is the Telegram album limit, the narrowest cap of the channels that
+  // upload attachments natively.
+  attachments: z.array(attachmentSchema).min(1).max(10).optional(),
   kind: z.literal("message"),
   text: z.string().trim().min(1).max(20_000).optional(),
 };
