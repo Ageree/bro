@@ -9,6 +9,8 @@ import { localDayKey, localMonthKey } from "@shared/calendar/local-period";
 import {
   browserQuotaNote,
   browserRunAllowance,
+  imageGenerationAllowance,
+  imageQuotaNote,
   messageAllowance,
   messagePaywallText,
   withinAllowance,
@@ -88,4 +90,30 @@ export async function browserRunQuotaGate(
     return { allowed: true, note: undefined };
   }
   return { allowed: false, note: browserQuotaNote(payUrl()) };
+}
+
+/**
+ * Counts one drawn picture against the local month. Every edit is another
+ * paid call, so it counts like the first picture. The refusal is written for
+ * the model, which relays it to the person in its own words.
+ *
+ * With `USAGE_LIMITS` off (the closed-beta default) every picture is allowed
+ * and `countUsage` is skipped, since it exists only to feed this gate.
+ */
+export async function imageGenerationQuotaGate(
+  scope: AccessScope,
+  now = new Date()
+) {
+  if (env.USAGE_LIMITS === "off") return { allowed: true, note: undefined };
+
+  const { paid, timeZone } = await billingWindow(scope, now);
+  const count = await countUsage(
+    scope,
+    "image_generations",
+    localMonthKey(now, timeZone)
+  );
+  if (withinAllowance(count, imageGenerationAllowance(paid))) {
+    return { allowed: true, note: undefined };
+  }
+  return { allowed: false, note: imageQuotaNote(payUrl()) };
 }

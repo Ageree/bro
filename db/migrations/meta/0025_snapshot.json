@@ -1,6 +1,6 @@
 {
-  "id": "711b244e-20da-4d01-b83b-822635f58e8e",
-  "prevId": "e21f10f7-1ec6-4051-a1c7-50eda0189b68",
+  "id": "1b3a738d-e649-4bb4-add9-b58a05acda2e",
+  "prevId": "711b244e-20da-4d01-b83b-822635f58e8e",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -1227,6 +1227,32 @@
           "primaryKey": false,
           "notNull": true,
           "default": 0
+        },
+        "payment_allowed": {
+          "name": "payment_allowed",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "captcha_attempt": {
+          "name": "captcha_attempt",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "retry_at": {
+          "name": "retry_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "retried_as_run_id": {
+          "name": "retried_as_run_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -1271,6 +1297,21 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "browser_runs_retry_idx": {
+          "name": "browser_runs_retry_idx",
+          "columns": [
+            {
+              "expression": "retry_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -1299,6 +1340,10 @@
         "browser_runs_conversation_id_check": {
           "name": "browser_runs_conversation_id_check",
           "value": "\"browser_runs\".\"conversation_id\" <> ''"
+        },
+        "browser_runs_captcha_attempt_check": {
+          "name": "browser_runs_captcha_attempt_check",
+          "value": "\"browser_runs\".\"captcha_attempt\" >= 1"
         }
       },
       "isRLSEnabled": false
@@ -3150,6 +3195,140 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.spend_entries": {
+      "name": "spend_entries",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "workspace_id": {
+          "name": "workspace_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "browser_run_id": {
+          "name": "browser_run_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "period_key": {
+          "name": "period_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "merchant": {
+          "name": "merchant",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "category": {
+          "name": "category",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "amount_rub": {
+          "name": "amount_rub",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "fee_rub": {
+          "name": "fee_rub",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'reserved'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "spend_entries_period_idx": {
+          "name": "spend_entries_period_idx",
+          "columns": [
+            {
+              "expression": "workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "period_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "spend_entries_workspace_id_fkey": {
+          "name": "spend_entries_workspace_id_fkey",
+          "tableFrom": "spend_entries",
+          "tableTo": "workspaces",
+          "columnsFrom": ["workspace_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "spend_entries_browser_run_uidx": {
+          "name": "spend_entries_browser_run_uidx",
+          "nullsNotDistinct": false,
+          "columns": ["browser_run_id"]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "spend_entries_status_check": {
+          "name": "spend_entries_status_check",
+          "value": "\"spend_entries\".\"status\" IN ('reserved', 'charged', 'released')"
+        },
+        "spend_entries_amounts_check": {
+          "name": "spend_entries_amounts_check",
+          "value": "\"spend_entries\".\"amount_rub\" >= 0 AND \"spend_entries\".\"fee_rub\" >= 0"
+        },
+        "spend_entries_period_key_check": {
+          "name": "spend_entries_period_key_check",
+          "value": "\"spend_entries\".\"period_key\" <> ''"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.usage_counters": {
       "name": "usage_counters",
       "schema": "",
@@ -3423,7 +3602,7 @@
       "checkConstraints": {
         "settings_key_check": {
           "name": "settings_key_check",
-          "value": "\"settings\".\"key\" IN ('gateway_model', 'google_workspace_access')"
+          "value": "\"settings\".\"key\" IN ('gateway_model', 'google_workspace_access', 'spend_limit')"
         }
       },
       "isRLSEnabled": false
