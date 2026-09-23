@@ -62,6 +62,17 @@ describe("quota gates with USAGE_LIMITS off", () => {
     expect(mocks.countUsage).not.toHaveBeenCalled();
     expect(mocks.readBillingState).not.toHaveBeenCalled();
   });
+
+  it("allows every picture without touching usage counters", async () => {
+    const { imageGenerationQuotaGate } =
+      await import("@agent/lib/billing/quota");
+
+    const gate = await imageGenerationQuotaGate(scope);
+
+    expect(gate).toEqual({ allowed: true, note: undefined });
+    expect(mocks.countUsage).not.toHaveBeenCalled();
+    expect(mocks.readBillingState).not.toHaveBeenCalled();
+  });
 });
 
 describe("quota gates with USAGE_LIMITS on", () => {
@@ -85,5 +96,25 @@ describe("quota gates with USAGE_LIMITS on", () => {
 
     expect(gate.allowed).toBe(false);
     expect(gate.note).toContain("Лимит браузерных поручений");
+  });
+
+  it("counts a picture on the local month and turns it away past the ceiling", async () => {
+    mocks.env.USAGE_LIMITS = "on";
+    mocks.countUsage.mockResolvedValueOnce(11);
+    const { imageGenerationQuotaGate } =
+      await import("@agent/lib/billing/quota");
+
+    const gate = await imageGenerationQuotaGate(
+      scope,
+      new Date("2026-09-30T23:30:00.000Z")
+    );
+
+    expect(mocks.countUsage).toHaveBeenCalledExactlyOnceWith(
+      scope,
+      "image_generations",
+      "2026-10"
+    );
+    expect(gate.allowed).toBe(false);
+    expect(gate.note).toContain("Лимит картинок");
   });
 });

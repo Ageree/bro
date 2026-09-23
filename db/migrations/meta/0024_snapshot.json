@@ -1,5 +1,5 @@
 {
-  "id": "3fc2431b-c1ea-43ae-a46b-8659110cb67f",
+  "id": "711b244e-20da-4d01-b83b-822635f58e8e",
   "prevId": "e21f10f7-1ec6-4051-a1c7-50eda0189b68",
   "version": "7",
   "dialect": "postgresql",
@@ -1625,8 +1625,8 @@
       },
       "isRLSEnabled": false
     },
-    "public.drive_file_artifacts": {
-      "name": "drive_file_artifacts",
+    "public.generated_image_artifacts": {
+      "name": "generated_image_artifacts",
       "schema": "",
       "columns": {
         "id": {
@@ -1654,14 +1654,20 @@
           "primaryKey": false,
           "notNull": true
         },
-        "drive_file_id": {
-          "name": "drive_file_id",
+        "idempotency_key": {
+          "name": "idempotency_key",
           "type": "text",
           "primaryKey": false,
           "notNull": true
         },
-        "drive_version": {
-          "name": "drive_version",
+        "prompt": {
+          "name": "prompt",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "model": {
+          "name": "model",
           "type": "text",
           "primaryKey": false,
           "notNull": true
@@ -1705,8 +1711,8 @@
         }
       },
       "indexes": {
-        "drive_file_artifacts_session_file_uidx": {
-          "name": "drive_file_artifacts_session_file_uidx",
+        "generated_image_artifacts_workspace_idempotency_uidx": {
+          "name": "generated_image_artifacts_workspace_idempotency_uidx",
           "columns": [
             {
               "expression": "workspace_id",
@@ -1715,19 +1721,7 @@
               "nulls": "last"
             },
             {
-              "expression": "root_session_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "drive_file_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "drive_version",
+              "expression": "idempotency_key",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -1738,8 +1732,8 @@
           "method": "btree",
           "with": {}
         },
-        "drive_file_artifacts_workspace_created_idx": {
-          "name": "drive_file_artifacts_workspace_created_idx",
+        "generated_image_artifacts_workspace_created_idx": {
+          "name": "generated_image_artifacts_workspace_created_idx",
           "columns": [
             {
               "expression": "workspace_id",
@@ -1761,9 +1755,9 @@
         }
       },
       "foreignKeys": {
-        "drive_file_artifacts_membership_fkey": {
-          "name": "drive_file_artifacts_membership_fkey",
-          "tableFrom": "drive_file_artifacts",
+        "generated_image_artifacts_membership_fkey": {
+          "name": "generated_image_artifacts_membership_fkey",
+          "tableFrom": "generated_image_artifacts",
           "tableTo": "workspace_memberships",
           "columnsFrom": ["workspace_id", "created_by_user_id"],
           "columnsTo": ["workspace_id", "user_id"],
@@ -1775,9 +1769,9 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {
-        "drive_file_artifacts_byte_size_check": {
-          "name": "drive_file_artifacts_byte_size_check",
-          "value": "\"drive_file_artifacts\".\"byte_size\" > 0"
+        "generated_image_artifacts_byte_size_check": {
+          "name": "generated_image_artifacts_byte_size_check",
+          "value": "\"generated_image_artifacts\".\"byte_size\" > 0"
         }
       },
       "isRLSEnabled": false
@@ -3216,7 +3210,7 @@
       "checkConstraints": {
         "usage_counters_kind_check": {
           "name": "usage_counters_kind_check",
-          "value": "\"usage_counters\".\"kind\" IN ('messages', 'browser_runs', 'paywall_notices')"
+          "value": "\"usage_counters\".\"kind\" IN ('messages', 'browser_runs', 'image_generations', 'paywall_notices')"
         },
         "usage_counters_period_key_check": {
           "name": "usage_counters_period_key_check",

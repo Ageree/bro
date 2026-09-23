@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   browserQuotaNote,
   browserRunAllowance,
+  imageGenerationAllowance,
+  imageQuotaNote,
   localDayKey,
   localMonthKey,
   messageAllowance,
@@ -27,6 +29,8 @@ describe("usage limits", () => {
     expect(messageAllowance(true)).toBe(500);
     expect(browserRunAllowance(false)).toBe(5);
     expect(browserRunAllowance(true)).toBe(60);
+    expect(imageGenerationAllowance(false)).toBe(10);
+    expect(imageGenerationAllowance(true)).toBe(100);
   });
 
   it("delivers the whole allowance and turns away the one after it", () => {
@@ -43,5 +47,7 @@ describe("usage limits", () => {
     expect(messagePaywallText(undefined)).not.toContain("http");
     expect(browserQuotaNote(payUrl)).toContain(payUrl);
     expect(browserQuotaNote(undefined)).not.toContain("http");
+    expect(imageQuotaNote(payUrl)).toContain(payUrl);
+    expect(imageQuotaNote(undefined)).not.toContain("http");
   });
 });
