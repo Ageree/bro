@@ -8,6 +8,81 @@ const checkIdSchema = z
 
 export const browserVerificationDateSchema = z.iso.date();
 
+function parseUrl(value: string) {
+  try {
+    return new URL(value);
+  } catch {
+    return undefined;
+  }
+}
+
+function sensitiveUrlKey(value: string) {
+  const normalized = value.replaceAll(/[^a-z0-9]/giu, "").toLowerCase();
+  return (
+    normalized === "key" ||
+    normalized === "code" ||
+    /(?:token|authorization|credential|signature|secret|password|session|apikey|accesskey|privatekey|secretkey|signed)/u.test(
+      normalized
+    )
+  );
+}
+
+function decodeNestedUrlValue(value: string) {
+  let decoded = value;
+  for (let depth = 0; depth < 2; depth += 1) {
+    if (!/%[0-9a-f]{2}/iu.test(decoded)) return decoded;
+    try {
+      decoded = decodeURIComponent(decoded);
+    } catch {
+      return undefined;
+    }
+  }
+  return /%[0-9a-f]{2}/iu.test(decoded) ? undefined : decoded;
+}
+
+function safeUrlParameters(parameters: URLSearchParams, depth: number) {
+  for (const [key, value] of parameters) {
+    if (sensitiveUrlKey(key)) return false;
+    const decoded = decodeNestedUrlValue(value);
+    if (decoded === undefined) return false;
+    const nestedUrl = parseUrl(decoded);
+    if (nestedUrl) {
+      if (depth >= 2 || !safeHttpUrl(nestedUrl, depth + 1)) return false;
+      continue;
+    }
+    if (decoded.includes("=")) {
+      if (
+        depth >= 2 ||
+        !safeUrlParameters(
+          new URLSearchParams(decoded.replace(/^[?#]/u, "")),
+          depth + 1
+        )
+      )
+        return false;
+    }
+  }
+  return true;
+}
+
+function safeHttpUrl(url: URL, depth = 0) {
+  return (
+    (url.protocol === "http:" || url.protocol === "https:") &&
+    !url.username &&
+    !url.password &&
+    safeUrlParameters(url.searchParams, depth) &&
+    safeUrlParameters(new URLSearchParams(url.hash.slice(1)), depth)
+  );
+}
+
+export const browserVerificationSafeUrlSchema = z
+  .url()
+  .max(2_048)
+  .refine((value) => {
+    const url = parseUrl(value);
+    return url !== undefined && safeHttpUrl(url);
+  }, "A verified link must be a safe HTTP or HTTPS URL.")
+  .transform((value) => parseUrl(value)?.toString() ?? value);
+
 const partialDateSchema = z
   .string()
   .regex(/^--(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])$/u)
@@ -18,6 +93,12 @@ const partialDateSchema = z
 
 const predicateSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("text_present") }).strict(),
+  z
+    .object({
+      expected: browserVerificationSafeUrlSchema.optional(),
+      kind: z.literal("link"),
+    })
+    .strict(),
   z
     .object({
       caseSensitive: z.boolean().default(false),
@@ -198,7 +279,13 @@ const observedCheckSchema = z.object({
   observedAt: z.iso.datetime(),
   pageUrl: z.url().max(2_048),
   status: z.enum(["passed", "failed", "unverified"]),
-  value: z.union([z.number(), browserVerificationDateSchema]).optional(),
+  value: z
+    .union([
+      z.number(),
+      browserVerificationDateSchema,
+      browserVerificationSafeUrlSchema,
+    ])
+    .optional(),
 });
 
 const verificationDefectSchema = z.object({

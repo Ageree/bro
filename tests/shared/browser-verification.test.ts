@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   browserVerificationPlanSchema,
   browserVerificationProofSchema,
+  browserVerificationSafeUrlSchema,
 } from "@shared/browser/verification";
 
 interface PredicateFixture {
@@ -223,6 +224,77 @@ describe("browser verification contracts", () => {
         ],
         version: 1,
       }).success
+    ).toBe(false);
+  });
+
+  it("accepts safe capture or expected link predicates only", () => {
+    expect(acceptsPredicate({ kind: "link" })).toBe(true);
+    expect(
+      acceptsPredicate({
+        expected: "https://downloads.test/releases/app.zip#checksums",
+        kind: "link",
+      })
+    ).toBe(true);
+    expect(
+      acceptsPredicate({
+        expected: "HTTPS://EXAMPLE.COM/files",
+        kind: "link",
+      })
+    ).toBe(true);
+    expect(
+      browserVerificationSafeUrlSchema.parse("HTTPS://EXAMPLE.COM/files")
+    ).toBe("https://example.com/files");
+    expect(
+      acceptsPredicate({
+        expected:
+          "https://example.com/?url=https%3A%2F%2Fother.example%2Fdocs%3Fpage%3D1%23section",
+        kind: "link",
+      })
+    ).toBe(true);
+    expect(
+      acceptsPredicate({ expected: "/releases/app.zip", kind: "link" })
+    ).toBe(false);
+    expect(
+      acceptsPredicate({
+        expected: "https://user:secret@downloads.test/app.zip",
+        kind: "link",
+      })
+    ).toBe(false);
+    expect(
+      acceptsPredicate({
+        expected: "https://downloads.test/app.zip?access_token=secret",
+        kind: "link",
+      })
+    ).toBe(false);
+    expect(
+      acceptsPredicate({
+        expected: "https://downloads.test/app.zip#access_token=secret",
+        kind: "link",
+      })
+    ).toBe(false);
+    expect(
+      acceptsPredicate({
+        expected:
+          "https://example.com/?url=https%3A%2F%2Fother.example%2F%3Faccess_token%3Dtest-secret",
+        kind: "link",
+      })
+    ).toBe(false);
+    expect(
+      acceptsPredicate({
+        expected:
+          "https://example.com/#url=https%3A%2F%2Fother.example%2F%3Faccess_token%3Dtest-secret",
+        kind: "link",
+      })
+    ).toBe(false);
+    expect(
+      acceptsPredicate({
+        expected:
+          "https://example.com/?url=https%2525253A%2525252F%2525252Fother.example",
+        kind: "link",
+      })
+    ).toBe(false);
+    expect(
+      acceptsPredicate({ expected: "javascript:alert(1)", kind: "link" })
     ).toBe(false);
   });
 });

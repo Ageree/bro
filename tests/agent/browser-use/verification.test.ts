@@ -859,6 +859,26 @@ describe("browser verification", () => {
         minimum: 12,
       },
     ],
+    [
+      ".5",
+      null,
+      {
+        decimalSeparator: ".",
+        kind: "number",
+        maximum: 5,
+        minimum: 5,
+      },
+    ],
+    [
+      "2½",
+      null,
+      {
+        decimalSeparator: ".",
+        kind: "number",
+        maximum: 2,
+        minimum: 2,
+      },
+    ],
   ] as const)(
     "fails closed for ambiguous or incomplete scalar evidence: %s",
     async (text, machineDate, predicate) => {
@@ -905,6 +925,124 @@ describe("browser verification", () => {
       expect(report.defects[0]?.code).toBe("invalid_evidence");
     }
   );
+
+  it("preserves a Unicode minus sign in the canonical numeric value", async () => {
+    const signedPlan = {
+      checks: [
+        {
+          description: "Signed percentage",
+          id: "percentage",
+          mandatory: true,
+          predicate: {
+            decimalSeparator: ".",
+            kind: "number" as const,
+            maximum: -0.18,
+            minimum: -0.18,
+          },
+        },
+      ],
+      version: 1 as const,
+    } satisfies BrowserVerificationPlan;
+    FakeSocket.observations = [
+      {
+        broadScope: false,
+        candidateId: 1,
+        checkId: "percentage",
+        matchCount: 1,
+        scopeCount: 1,
+        sensitive: false,
+        text: "−0.18%",
+        truncated: false,
+        visible: true,
+      },
+    ];
+
+    const report = await verifyBrowserRun({
+      plan: signedPlan,
+      result: result([
+        {
+          checkId: "percentage",
+          pageUrl,
+          scopeSelector: "#result",
+          selector: ".percentage",
+        },
+      ]),
+      sessionId,
+    });
+
+    expect(report.verdict).toBe("verified");
+    expect(report.observedChecks[0]?.value).toBe(-0.18);
+  });
+
+  it("captures only safe canonical link values", async () => {
+    const linkPlan = {
+      checks: [
+        {
+          description: "Download URL",
+          id: "download",
+          mandatory: true,
+          predicate: {
+            expected: "https://downloads.test/releases/app.zip",
+            kind: "link" as const,
+          },
+        },
+      ],
+      version: 1 as const,
+    };
+    const observe = (href: string) => {
+      FakeSocket.observations = [
+        {
+          broadScope: false,
+          candidateId: 1,
+          checkId: "download",
+          href,
+          matchCount: 1,
+          scopeCount: 1,
+          sensitive: false,
+          text: "app.zip",
+          truncated: false,
+          visible: true,
+        },
+      ];
+      return verifyBrowserRun({
+        plan: linkPlan,
+        result: result([
+          {
+            checkId: "download",
+            pageUrl,
+            scopeSelector: "#result",
+            selector: ".download",
+          },
+        ]),
+        sessionId,
+      });
+    };
+
+    const safe = await observe("https://downloads.test/releases/app.zip");
+    const unsafe = await observe(
+      "https://downloads.test/releases/app.zip?access_token=secret"
+    );
+    const nestedUnsafe = await observe(
+      "https://example.com/?url=https%3A%2F%2Fother.example%2F%3Faccess_token%3Dnested-secret"
+    );
+    const fragmentUnsafe = await observe(
+      "https://example.com/#url=https%3A%2F%2Fother.example%2F%3Faccess_token%3Dfragment-secret"
+    );
+
+    expect(safe.verdict).toBe("verified");
+    expect(safe.observedChecks[0]).toEqual(
+      expect.objectContaining({
+        observation: "app.zip",
+        value: "https://downloads.test/releases/app.zip",
+      })
+    );
+    expect(unsafe.verdict).toBe("unverified");
+    expect(nestedUnsafe.verdict).toBe("unverified");
+    expect(fragmentUnsafe.verdict).toBe("unverified");
+    expect(
+      JSON.stringify([unsafe, nestedUnsafe, fragmentUnsafe])
+    ).not.toContain("secret");
+  });
 
   it("applies one hard deadline across discovery and websocket connect", async () => {
     class NeverOpeningSocket extends EventTarget {

@@ -84,6 +84,24 @@ describe.skipIf(!chrome)("browser verification against Chromium", () => {
             <tr><td class="first-name">Mercury</td><td>First planet</td></tr>
             <tr><td>Venus</td><td class="second-date">2026-10-16</td></tr>
           </table>
+          <div id="releases">
+            <section id="release-a">
+              <h2 class="release-name">Release A</h2>
+              <time class="release-date" datetime="2026-09-22">Yesterday</time>
+              <ul><li><a class="asset-link" href="/downloads/app.zip#checksums">app.zip</a></li></ul>
+            </section>
+            <section id="release-b">
+              <h2 class="release-name">Release B</h2>
+              <time class="release-date" datetime="2026-09-23">Today</time>
+            </section>
+          </div>
+          <section id="link-safety">
+            <a class="hidden-link" href="/downloads/hidden.zip" hidden>hidden.zip</a>
+            <a class="sensitive-link" href="/downloads/app.zip?access_token=raw-secret">secret.zip</a>
+            <a class="fragment-token-link" href="/downloads/app.zip#access_token=fragment-secret">fragment-secret.zip</a>
+            <a class="credential-link" href="https://user:credential-secret@downloads.test/app.zip">credential.zip</a>
+            <a class="invalid-link" href="javascript:alert(1)">invalid.zip</a>
+          </section>
           <section id="long-evidence">
             <p class="long-absence">${"a".repeat(1100)} forbidden phrase</p>
             <p class="long-number">$10.00 ${"b".repeat(1100)} $999.00</p>
@@ -241,6 +259,65 @@ describe.skipIf(!chrome)("browser verification against Chromium", () => {
     expect(hidden.defects[0]?.code).toBe("invalid_evidence");
     expect(sensitive.verdict).toBe("unverified");
     expect(sensitive.defects[0]?.code).toBe("sensitive_evidence");
+  });
+
+  it("resolves and captures a visible relative anchor href", async () => {
+    const checks = [
+      {
+        ...check("asset-label", { kind: "text_present" }),
+        groupId: "asset",
+        purpose: "identity" as const,
+      },
+      {
+        ...check("asset-url", { kind: "link" }),
+        groupId: "asset",
+      },
+    ] satisfies BrowserVerificationPlan["checks"];
+    const report = await verify(checks, [
+      locator("asset-label", "#release-a", ".asset-link"),
+      locator("asset-url", "#release-a", ".asset-link"),
+    ]);
+
+    expect(report.verdict).toBe("verified");
+    expect(report.observedChecks).toContainEqual(
+      expect.objectContaining({
+        checkId: "asset-label",
+        observation: "app.zip",
+      })
+    );
+    expect(report.observedChecks).toContainEqual(
+      expect.objectContaining({
+        checkId: "asset-url",
+        observation: "app.zip",
+        value: `${new URL(pageUrl).origin}/downloads/app.zip#checksums`,
+      })
+    );
+  });
+
+  it("rejects hidden, credentialed, sensitive-token, and non-HTTP hrefs", async () => {
+    const verifyLink = (id: string, selector: string) =>
+      verify(
+        [check(id, { kind: "link" })],
+        [locator(id, "#link-safety", selector)]
+      );
+
+    const hidden = await verifyLink("hidden-link", ".hidden-link");
+    const sensitive = await verifyLink("sensitive-link", ".sensitive-link");
+    const fragment = await verifyLink(
+      "fragment-token-link",
+      ".fragment-token-link"
+    );
+    const credential = await verifyLink("credential-link", ".credential-link");
+    const invalid = await verifyLink("invalid-link", ".invalid-link");
+
+    expect(hidden.verdict).toBe("unverified");
+    expect(sensitive.verdict).toBe("unverified");
+    expect(fragment.verdict).toBe("unverified");
+    expect(credential.verdict).toBe("unverified");
+    expect(invalid.verdict).toBe("unverified");
+    expect(
+      JSON.stringify([hidden, sensitive, fragment, credential, invalid])
+    ).not.toMatch(/raw-secret|fragment-secret|credential-secret/u);
   });
 
   it("rejects resolved body aliases and hidden stale values", async () => {
@@ -453,6 +530,30 @@ describe.skipIf(!chrome)("browser verification against Chromium", () => {
     const report = await verify(checks, [
       locator("name", "#facts", ".first-name"),
       locator("date", "#facts", ".second-date"),
+    ]);
+
+    expect(report.verdict).toBe("unverified");
+    expect(report.defects.some(({ code }) => code === "group_mismatch")).toBe(
+      true
+    );
+  });
+
+  it("rejects grouped fields resolved from different semantic sections", async () => {
+    const checks = [
+      {
+        ...check("name", { kind: "text_present" }),
+        groupId: "release",
+        purpose: "identity" as const,
+      },
+      {
+        ...check("date", { expected: "2026-09-23", kind: "date" }),
+        groupId: "release",
+      },
+    ] satisfies BrowserVerificationPlan["checks"];
+
+    const report = await verify(checks, [
+      locator("name", "#releases", "#release-a .release-name"),
+      locator("date", "#releases", "#release-b .release-date"),
     ]);
 
     expect(report.verdict).toBe("unverified");

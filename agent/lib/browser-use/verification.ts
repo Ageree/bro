@@ -4,6 +4,7 @@ import {
   browserVerificationPlanSchema,
   browserVerificationProofSchema,
   browserVerificationReportSchema,
+  browserVerificationSafeUrlSchema,
   type BrowserVerificationPlan,
   type BrowserVerificationProof,
   type BrowserVerificationReport,
@@ -48,6 +49,7 @@ const domObservationSchema = z.object({
   broadScope: z.boolean(),
   candidateId: z.number().int().nonnegative().nullable(),
   checkId: z.string(),
+  href: z.string().max(2_049).nullable().default(null),
   machineDate: z.string().max(65).nullable().default(null),
   matchCount: z.number().int().nonnegative(),
   scopeCount: z.number().int().nonnegative(),
@@ -65,7 +67,7 @@ const domReadSchema = z.object({
 const domReadProgram = `function (locators) {
   const queryDocument = (selector) => Document.prototype.querySelectorAll.call(document, selector);
   const queryElement = (element, selector) => Element.prototype.querySelectorAll.call(element, selector);
-  const candidateSelector = "[data-offer-id], [data-product-id], [data-item-id], [data-testid*='offer'], [data-testid*='product'], [data-testid*='card'], [role='listitem'], [role='row'], article, li, tr";
+  const candidateSelector = "[data-offer-id], [data-product-id], [data-item-id], [data-testid*='offer'], [data-testid*='product'], [data-testid*='card'], [role='listitem'], [role='row'], article, li, section, tr";
   const candidateIds = new WeakMap();
   let nextCandidateId = 1;
   const identity = (element) => {
@@ -98,7 +100,7 @@ const domReadProgram = `function (locators) {
     }
     return true;
   };
-  const miss = (checkId, scopeCount, matchCount, broadScope = false) => ({ checkId, scopeCount, matchCount, broadScope, candidateId: null, machineDate: null, sensitive: false, text: "", truncated: false, visible: false });
+  const miss = (checkId, scopeCount, matchCount, broadScope = false) => ({ checkId, scopeCount, matchCount, broadScope, candidateId: null, href: null, machineDate: null, sensitive: false, text: "", truncated: false, visible: false });
   const observations = locators.map((locator) => {
     let scopes;
     try { scopes = Array.from(queryDocument(locator.scopeSelector)); }
@@ -122,12 +124,14 @@ const domReadProgram = `function (locators) {
     const nearest = Element.prototype.closest.call(element, candidateSelector);
     const candidate = nearest && scope.contains(nearest) ? nearest : scopeIsCandidate ? scope : null;
     const value = element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement ? element.value : element instanceof HTMLElement ? element.innerText : element.textContent || "";
+    const rawHref = element instanceof HTMLAnchorElement ? element.href : null;
+    const href = rawHref === null ? null : String(rawHref).slice(0, 2049);
     const rawMachineDate = element instanceof HTMLInputElement && element.type === "date" ? element.value : element.getAttribute("datetime");
     const machineDate = rawMachineDate === null ? null : String(rawMachineDate).slice(0, 65);
     const normalized = String(value).replace(/\\s+/g, " ").trim();
     const truncated = normalized.length > 1000;
     const text = normalized.slice(0, 1000);
-    return { checkId: locator.checkId, scopeCount: 1, matchCount: 1, broadScope: false, candidateId: identity(candidate), machineDate, sensitive: false, text, truncated, visible: true };
+    return { checkId: locator.checkId, scopeCount: 1, matchCount: 1, broadScope: false, candidateId: identity(candidate), href, machineDate, sensitive: false, text, truncated, visible: true };
   });
   return { observations, pageUrl: String(location.href) };
 }`;
@@ -281,6 +285,7 @@ export async function verifyBrowserRun(
             broadScope: observation.broadScope,
             candidateId: observation.candidateId,
             checkId: observation.checkId,
+            href: observation.href,
             machineDate: observation.machineDate,
             matchCount: observation.matchCount,
             observedAt,
@@ -755,6 +760,39 @@ function evaluateCheck(
       },
     };
   }
+  if (predicate.kind === "link") {
+    const href = browserVerificationSafeUrlSchema.safeParse(evidence.href);
+    if (!href.success) {
+      return unverified(
+        check.id,
+        "The link evidence is missing, invalid, or sensitive.",
+        evidence,
+        "invalid_evidence"
+      );
+    }
+    const passed =
+      predicate.expected === undefined || href.data === predicate.expected;
+    return {
+      defects: passed
+        ? []
+        : [
+            {
+              checkId: check.id,
+              code: "acceptance_failed",
+              message:
+                "The observed link does not satisfy the acceptance check.",
+            },
+          ],
+      observation: {
+        checkId: check.id,
+        observation: sanitizeObservation(text),
+        observedAt: evidence.observedAt,
+        pageUrl: evidence.pageUrl,
+        status: passed ? "passed" : "failed",
+        value: href.data,
+      },
+    };
+  }
   if (predicate.kind === "date") {
     const date = parseDateEvidence(
       text,
@@ -877,13 +915,14 @@ function parseNumber(
     USD: /(?:\$|\bUSD\b)/iu,
   } as const;
   if (currency && !currencyPattern[currency].test(text)) return undefined;
-  const matches = [...text.matchAll(/[+-]?\d(?:[\d \u00a0.,]*\d)?/gu)];
+  const matches = [...text.matchAll(/[+\-−]?\d(?:[\d \u00a0.,]*\d)?/gu)];
   if (
     matches.some((match) => {
       const start = match.index;
       const end = start + match[0].length;
       return (
-        /\p{L}/u.test(text[start - 1] ?? "") || /\p{L}/u.test(text[end] ?? "")
+        /[\p{L}\p{N}.,]/u.test(text[start - 1] ?? "") ||
+        /[\p{L}\p{N}]/u.test(text[end] ?? "")
       );
     })
   )
@@ -901,8 +940,9 @@ function parseNumber(
   const parts = raw.split(decimalSeparator);
   if (parts.length > 2) return undefined;
   const [integer = "", fraction] = parts;
-  const sign = /^[+-]/u.exec(integer)?.[0] ?? "";
-  const signless = integer.replace(/^[+-]/u, "");
+  const rawSign = /^[+\-−]/u.exec(integer)?.[0] ?? "";
+  const sign = rawSign === "−" ? "-" : rawSign;
+  const signless = integer.replace(/^[+\-−]/u, "");
   const escapedThousandsSeparator = thousandsSeparator === "." ? "\\." : ",";
   const plainInteger = /^\d+$/u.test(signless);
   const spacedInteger = /^\d{1,3}(?:[ \u00a0]\d{3})+$/u.test(signless);

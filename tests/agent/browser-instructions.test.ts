@@ -107,6 +107,9 @@ describe("browser autonomy instructions", () => {
     expect(selected?.content).toContain(
       "Само присутствие текста не доказывает бесплатность"
     );
+    expect(selected?.content).toContain(
+      "проверяй его отдельным предикатом `link`, а запрошенную подпись — отдельным текстовым предикатом: видимая подпись не доказывает URL"
+    );
     expect(selected?.content).toContain("все запрошенные факты этого варианта");
     expect(selected?.content).toContain(
       "Фильтры и состояние всей страницы проверяй отдельно"
@@ -134,6 +137,9 @@ describe("browser autonomy instructions", () => {
       "Every groupId must contain an identity text_exact, text_contains, or text_present predicate"
     );
     expect(description).toContain("never use presence alone to prove");
+    expect(description).toContain(
+      "A collection or group heading does not identify its nested concrete items"
+    );
     expect(description).toContain("Keep page-wide scope checks ungrouped");
     expect(description).toContain("leave it explicitly unverified");
   });
