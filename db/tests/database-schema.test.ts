@@ -263,7 +263,7 @@ describe("migration deployment policy", () => {
     const run = (vercelEnv: string) =>
       execFileSync("/bin/sh", ["-c", dryRun], {
         encoding: "utf8",
-        env: { VERCEL_ENV: vercelEnv },
+        env: { NODE_ENV: "test", VERCEL_ENV: vercelEnv },
       });
     expect(run("preview")).not.toContain("MIGRATE");
     expect(run("production")).toContain("MIGRATE");
