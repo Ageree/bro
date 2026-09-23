@@ -9,7 +9,7 @@ import {
 import { z } from "zod";
 import { resolvePhotonReplyTarget } from "@agent/lib/reply-targets";
 import { messageQuotaGate } from "@agent/lib/billing/quota";
-import { fallbackDeliveryText } from "@agent/lib/delivery-fallback";
+import { fallbackDeliveryText } from "@agent/lib/delivery/fallback";
 import { photonMediaTurn } from "@agent/lib/inbound-media/photon";
 import { voiceFailedNote } from "@agent/lib/inbound-media/turn-content";
 import {
@@ -105,6 +105,7 @@ export default photonIMessageChannel({
             reaction.data.output.type
           );
         }
+        markTurnDelivered(context.state, event.turnId);
         await finalizeScheduledReportDelivery(session);
         return;
       }
