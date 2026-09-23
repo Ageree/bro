@@ -87,6 +87,25 @@
   Gateway не оборачивается: в `eve dev` eve подставляет свою авторизацию
   Gateway только для строк.
 
+- `POST /eve/v1/session` отвечает `202` с id, как только Workflow принял
+  запуск, а `session.started` приходит только с первым сообщением. Поэтому
+  владельца сессии записывает обёртка этого маршрута в `agent/channels/eve.ts`,
+  а не только хук `agent/hooks/session-owner.ts`: иначе ранний `GET …/stream`
+  получал `403 Session not found`.
+- Пометку `first-contact` решает `workspaces.introduced_at`, которое канал
+  занимает условным UPDATE в `onMessage` (`claimWorkspaceIntroduction`), а не
+  таблица `chats`: переезд из Convex строк `chats` не пишет. Занимать метку можно
+  только для сообщения, которое точно запустит ход.
+- Любой сбой вызова модели приходит в канал как `turn.failed` с
+  `code: "MODEL_CALL_FAILED"`, включая переполнение контекста; «скоро вернусь»
+  говорим только при статусе 402/429/5xx из `details`.
+
+## OpenRouter
+
+- `GET /api/v1/credits` принимает только management-ключ, обычный ключ
+  инференса получает 403. Поэтому проверка баланса
+  (`agent/lib/model/credits.ts`) ждёт отдельный `OPENROUTER_MANAGEMENT_KEY`.
+
 ## Vercel
 
 - Не публикуйте свои маршруты каналов eve (`/webhooks`,

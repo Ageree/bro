@@ -10,7 +10,7 @@ import {
 } from "@db/services/onboarding-requests";
 import { recordOrder } from "@db/services/orders";
 import { createPhotonSharedUser } from "@db/services/photon-users";
-import { ensureScope } from "@db/services/scope";
+import { claimWorkspaceIntroduction, ensureScope } from "@db/services/scope";
 import { patchUserProfile, readUserProfile } from "@db/services/user-profile";
 import { saveVaultItem } from "@db/services/vault";
 import {
@@ -253,7 +253,12 @@ async function migrateTenant(
   const scope = account
     ? accessScopeForUser(`better-auth:${account.userId}`)
     : undefined;
-  if (scope && !dryRun) await ensureScope(scope);
+  if (scope && !dryRun) {
+    await ensureScope(scope);
+    // A person carried over from Convex has met Bro already; their first
+    // message after the move must not be treated as a first contact.
+    await claimWorkspaceIntroduction(scope);
+  }
 
   const notes: string[] = [];
 

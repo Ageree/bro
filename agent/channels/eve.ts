@@ -1,4 +1,4 @@
-import { eveChannel } from "eve/channels/eve";
+import { defaultEveAuth, eveChannel } from "eve/channels/eve";
 import {
   ForbiddenError,
   localDev,
@@ -6,7 +6,10 @@ import {
   UnauthenticatedError,
 } from "eve/channels/auth";
 import { z } from "zod";
-import { isSessionOwned } from "@db/services/sessions";
+import { claimSession, isSessionOwned } from "@db/services/sessions";
+import { ensureScope } from "@db/services/scope";
+import { firstContactContext } from "@agent/lib/first-contact";
+import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import {
   accessScopeForUser,
   type AccessScope,
@@ -69,6 +72,19 @@ const authenticate: Parameters<typeof routeAuth>[1] = [
 
 const channel = eveChannel({
   auth: authenticate,
+  // Someone who signs up on the web and writes there first meets Bro here, so
+  // this channel opens a workspace's first conversation the same way the
+  // messaging channels do.
+  async onMessage(context) {
+    const auth = defaultEveAuth(context);
+    // Route auth above resolves a workspace user or has already refused the
+    // request, so a missing caller is a broken invariant, not a guest.
+    if (!auth) throw new Error("An eve message arrived without a caller.");
+    return {
+      auth,
+      context: await firstContactContext(scopeFromPrincipal(auth)),
+    };
+  },
   events: {
     async "action.result"(event, _channel, session) {
       if (
@@ -122,16 +138,26 @@ const ownedCallbackRoutes = new Set([
   "/eve/v1/task-input/:token",
 ]);
 
+const sessionCreationRoute = "/eve/v1/session";
+
 export default {
   ...channel,
   // oxlint-disable-next-line oxc/no-map-spread -- Keep Eve's original route definitions intact when adding the app authorization boundary.
   routes: channel.routes.map((route) => {
-    if (
-      route.transport === "websocket" ||
-      !ownedCallbackRoutes.has(route.path)
-    ) {
-      return route;
+    if (route.transport === "websocket") return route;
+    if (route.method === "POST" && route.path === sessionCreationRoute) {
+      return {
+        ...route,
+        async handler(request, context) {
+          const principal = await routeAuth(request, authenticate);
+          if (principal instanceof Response) return principal;
+          const response = await route.handler(request, context);
+          await claimCreatedSession(principal, response);
+          return response;
+        },
+      };
     }
+    if (!ownedCallbackRoutes.has(route.path)) return route;
     return {
       ...route,
       async handler(request, context) {
@@ -142,6 +168,43 @@ export default {
     };
   }),
 } satisfies typeof channel;
+
+/**
+ * Records who owns a session before its id reaches the browser. eve answers
+ * the create request as soon as Workflow accepts the run, and `session.started`
+ * (where the owner hook claims it) fires only once the first message arrives,
+ * so a client that opened the stream right away used to be refused as a
+ * stranger to its own new session.
+ */
+async function claimCreatedSession(
+  principal: Parameters<typeof scopeFromPrincipal>[0],
+  response: Response
+) {
+  if (!response.ok) return;
+  const sessionId =
+    response.headers.get("x-eve-session-id") ??
+    createdSessionSchema.safeParse(
+      await response
+        .clone()
+        .json()
+        .catch(() => undefined)
+    ).data?.sessionId;
+  if (!sessionId) return;
+  const scope = scopeFromPrincipal(principal);
+  try {
+    await ensureScope(scope);
+    await claimSession(scope, sessionId);
+  } catch (error) {
+    // The session exists either way. The owner hook claims it with the first
+    // message, and the stream route waits for that claim.
+    console.warn("[eve] session ownership was not recorded at creation", {
+      cause: error,
+      sessionId,
+    });
+  }
+}
+
+const createdSessionSchema = z.object({ sessionId: z.string().min(1) });
 
 // Routes without a session subject. Every other eve route must name a session
 // this caller owns, either in the path or inside a hook token.

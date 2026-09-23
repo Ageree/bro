@@ -115,6 +115,59 @@ describe("workstream memory", () => {
     ).rejects.toThrow("changed");
   });
 
+  // A meme edit in one chat was told «your capital tracker page is ready»
+  // because the whole active index, next steps included, reached every chat.
+  it("recalls another conversation's work by title only", async () => {
+    await saveWorkstream(
+      alice,
+      "key-a",
+      {
+        id: "capital-tracker",
+        expectedRevision: 0,
+        content: {
+          ...content,
+          title: "Capital tracker",
+          objective: "Build a capital tracker page.",
+          nextStep: "Tell the user the tracker page is ready.",
+        },
+      },
+      "save-tracker",
+      "tracker-session"
+    );
+    await saveWorkstream(
+      alice,
+      "key-a",
+      { id: "autumn-trip", expectedRevision: 0, content },
+      "save-trip",
+      "meme-session"
+    );
+
+    expect(
+      await recallWorkstreams(alice, "key-a", "meme-session")
+    ).toStrictEqual({
+      current: [
+        {
+          id: "autumn-trip",
+          revision: 1,
+          title: "Autumn trip",
+          objective: content.objective,
+          status: "active",
+          nextStep: content.nextStep,
+        },
+      ],
+      elsewhere: [
+        { id: "capital-tracker", title: "Capital tracker", status: "active" },
+      ],
+      hasMore: false,
+    });
+    const recall = await workstreamMemory.provider.recall["turn.started"](
+      context("meme-session")
+    );
+    const index = recall?.messages[0]?.content ?? "";
+    expect(index).toContain("never mention, report on, or continue it here");
+    expect(index).not.toContain("tracker page is ready");
+  });
+
   it("isolates records by both authenticated workspace and Eve memory scope", async () => {
     await saveWorkstream(
       alice,
@@ -128,7 +181,9 @@ describe("workstream memory", () => {
       await readWorkstream(alice, "preview-key", "autumn-trip")
     ).toBeNull();
     expect((await findWorkstreams(bob, "key-a", {})).items).toEqual([]);
-    expect((await recallWorkstreams(alice, "preview-key")).items).toEqual([]);
+    expect(
+      await recallWorkstreams(alice, "preview-key", "first")
+    ).toMatchObject({ current: [], elsewhere: [] });
     await expect(
       saveWorkstream(
         bob,
@@ -288,7 +343,10 @@ describe("workstream memory", () => {
       )
     ).rejects.toThrow("forgotten");
     expect(await readWorkstream(alice, "key-a", "autumn-trip")).toBeNull();
-    expect((await recallWorkstreams(alice, "key-a")).items).toEqual([]);
+    expect(await recallWorkstreams(alice, "key-a", "first")).toMatchObject({
+      current: [],
+      elsewhere: [],
+    });
     const [tombstone] = await database.select().from(schema.workstreams);
     expect(tombstone).toMatchObject({
       id: "autumn-trip",
@@ -318,10 +376,12 @@ describe("workstream memory", () => {
         );
       })
     );
-    expect(await recallWorkstreams(alice, "key-a")).toMatchObject({
+    expect(await recallWorkstreams(alice, "key-a", "first")).toMatchObject({
       hasMore: true,
     });
-    expect((await recallWorkstreams(alice, "key-a")).items).toHaveLength(8);
+    expect(
+      (await recallWorkstreams(alice, "key-a", "first")).current
+    ).toHaveLength(8);
     const first = await findWorkstreams(alice, "key-a", {});
     const second = await findWorkstreams(alice, "key-a", {
       offset: first.nextOffset ?? 0,
