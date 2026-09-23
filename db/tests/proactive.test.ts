@@ -289,6 +289,69 @@ describe("proactive watches", { timeout: 30_000 }, () => {
     expect(await jobs.listRecoverableScheduledReports(later)).toEqual([]);
     expect(await jobs.listRecoverableScheduledReports(morning)).toHaveLength(1);
   });
+
+  it("closes a run parked on a question when its report is dropped", async () => {
+    const { db, jobs, proactive } = await openDatabase();
+    await proactive.recordProactiveTarget(alice, telegram, now);
+    const [watch] = await proactive.claimDueProactiveWatches({
+      leaseForMs: 15 * 60_000,
+      limit: 10,
+      now,
+    });
+    if (!watch) throw new Error("Expected a due watch.");
+    const runId = await proactive.queueProactiveRun({
+      jobId: watch.jobId,
+      mailCheckedAt: now,
+      now,
+      signals: [flight],
+      workspaceId: alice.workspaceId,
+    });
+    const [claim] = await jobs.claimReadyScheduledAgentRuns({
+      kind: "proactive",
+      leaseForMs: 60_000,
+      limit: 10,
+      now,
+    });
+    if (!runId || !claim?.run.leaseToken) throw new Error("Expected a claim.");
+    await jobs.waitForScheduledAgentRunInput(runId, claim.run.leaseToken, [
+      {
+        action: {
+          callId: "call-question",
+          input: { prompt: "Check you in?" },
+          kind: "tool-call" as const,
+          toolName: "ask_question",
+        },
+        allowFreeform: true,
+        kind: "question" as const,
+        prompt: "Check you in?",
+        requestId: "request-question",
+      },
+    ]);
+    const report = await jobs.claimScheduledReport(runId, now);
+    if (!report?.run.reportLeaseToken) throw new Error("Expected a report.");
+
+    expect(
+      await jobs.dropScheduledReport(runId, report.run.reportLeaseToken, now)
+    ).toBe(true);
+    expect(
+      await db.query.scheduledAgentRuns.findFirst({
+        columns: {
+          pendingInputRequests: true,
+          reportStatus: true,
+          status: true,
+        },
+      })
+    ).toEqual({
+      pendingInputRequests: null,
+      reportStatus: "suppressed",
+      status: "completed",
+    });
+    expect(
+      await jobs.listRecoverableScheduledReports(
+        new Date(now.getTime() + 60 * 60_000)
+      )
+    ).toEqual([]);
+  });
 });
 
 // Every case starts from a clone of one migrated database: replaying all

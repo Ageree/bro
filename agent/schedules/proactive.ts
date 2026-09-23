@@ -59,7 +59,8 @@ async function checkWorkspace(
   watch: Awaited<ReturnType<typeof claimDueProactiveWatches>>[number],
   now: Date
 ) {
-  const quietUntil = quietHoursEnd(now, resolveTimeZone(watch.timezone));
+  const timeZone = resolveTimeZone(watch.timezone);
+  const quietUntil = quietHoursEnd(now, timeZone);
   if (quietUntil) {
     // The watermark stays put, so the morning check picks up the night's mail.
     await deferProactiveWatch(watch.workspaceId, quietUntil);
@@ -71,6 +72,7 @@ async function checkWorkspace(
       {
         mailAfter: mailSearchStart(watch.mailCheckedAt, now),
         now,
+        timeZone,
       }
     );
     if (probe.state !== "connected") {
@@ -89,11 +91,17 @@ async function checkWorkspace(
       await advanceProactiveWatermark(watch.workspaceId, now);
       return;
     }
+    const signals = selectRunSignals(unseen);
+    // Mail that did not fit into this run is still unseen; leaving the
+    // watermark where it was lets the next check hand it over.
+    const mailLeftOver = unseen.some(
+      (signal) => signal.source === "gmail" && !signals.includes(signal)
+    );
     const runId = await queueProactiveRun({
       jobId: watch.jobId,
-      mailCheckedAt: now,
+      mailCheckedAt: mailLeftOver ? watch.mailCheckedAt : now,
       now,
-      signals: selectRunSignals(unseen),
+      signals,
       workspaceId: watch.workspaceId,
     });
     console.info("[proactive] check found new signals", {

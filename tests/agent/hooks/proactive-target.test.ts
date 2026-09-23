@@ -28,6 +28,16 @@ describe("proactive target hook", () => {
     );
   });
 
+  it("ignores a finished browser errand waking an older conversation", async () => {
+    await startTurn("browser-result", {
+      conversationChannel: "telegram",
+      conversationId: "100::",
+      workspaceId,
+    });
+
+    expect(record).not.toHaveBeenCalled();
+  });
+
   it("ignores the web chat and background turns", async () => {
     await startTurn("eve-web", {
       conversationChannel: "eve",
@@ -54,6 +64,10 @@ describe("proactive target hook", () => {
         workspaceId,
       })
     ).resolves.toBeUndefined();
+    expect(record).toHaveBeenCalledExactlyOnceWith(
+      { userId: "user-1", workspaceId },
+      { conversationChannel: "photon", conversationId: "imessage:chat-1" }
+    );
   });
 });
 

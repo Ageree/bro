@@ -2,7 +2,7 @@ import { quietHoursEnd } from "@agent/lib/proactive/quiet-hours";
 import {
   claimScheduledReport,
   deferScheduledReport,
-  finalizeScheduledReport,
+  dropScheduledReport,
 } from "@db/services/scheduled-agent-jobs";
 import {
   readProactiveMessages,
@@ -27,7 +27,7 @@ export async function holdProactiveReport(
     const claimed = await claimScheduledReport(report.runId, now);
     const leaseToken = claimed?.run.reportLeaseToken;
     if (leaseToken) {
-      await finalizeScheduledReport(report.runId, leaseToken, "suppressed");
+      await dropScheduledReport(report.runId, leaseToken, now);
     }
     return true;
   }

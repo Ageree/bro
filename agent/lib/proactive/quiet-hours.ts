@@ -28,8 +28,8 @@ function localMinuteOfDay(now: Date, timeZone: string) {
 
 /**
  * When the current quiet window ends, or `undefined` outside it. The end is
- * counted in local minutes, so a DST shift that night can move it by an hour,
- * which only delays a morning check.
+ * first counted in local minutes and then corrected by the local clock at
+ * that instant, so a night with a DST shift still ends at 08:00 local.
  */
 export function quietHoursEnd(now: Date, timeZone: string) {
   const minute = localMinuteOfDay(now, timeZone);
@@ -40,5 +40,7 @@ export function quietHoursEnd(now: Date, timeZone: string) {
       ? minutesPerDay - minute + quietEndMinute
       : quietEndMinute - minute;
   const startOfMinute = now.getTime() - (now.getTime() % 60_000);
-  return new Date(startOfMinute + remaining * 60_000);
+  const estimate = startOfMinute + remaining * 60_000;
+  const drift = quietEndMinute - localMinuteOfDay(new Date(estimate), timeZone);
+  return new Date(estimate + drift * 60_000);
 }

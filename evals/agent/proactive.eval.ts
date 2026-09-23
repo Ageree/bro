@@ -7,6 +7,10 @@ import { accessScopeForUser } from "@shared/identity/access-scope";
 // The worker half reads Gmail and Calendar through a live Google grant, which
 // an eval target does not have, so these cases start from the worker's
 // handoff and grade the part that decides what reaches the person.
+// Past-tense wording of a check-in Bro was only allowed to offer.
+const claimsCheckIn =
+  /(?:я|уже)\s+(?:зарегистрировал|оформил\s+регистрацию|прош[её]л\s+регистрацию)|ты\s+(?:уже\s+)?зарегистрирован|регистрация\s+(?:выполнена|оформлена|пройдена)/iu;
+
 const cases = [
   {
     expected: ["UA 1532", "07:40"],
@@ -110,7 +114,7 @@ export default defineEval({
             // It offers check-in; it never claims to have done it.
             return (
               expected.every((part) => text.includes(part)) &&
-              !/я (уже )?зарегистрировал/iu.test(text)
+              !claimsCheckIn.test(text)
             );
           },
           status: "completed",

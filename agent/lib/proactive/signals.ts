@@ -7,8 +7,9 @@ const mailOverlapMs = 10 * 60_000;
 /** Mail older than a day is not news, however long the checks paused. */
 const mailLookbackLimitMs = 24 * 60 * 60_000;
 /**
- * One run reads at most this many items. Events past the cap come back on the
- * next check; mail past it is skipped, which only happens after a long pause.
+ * One run reads at most this many items. Whatever is left over is still
+ * unseen, so the next check hands it over (the schedule keeps the mail
+ * watermark where it was for that).
  */
 const maxSignalsPerRun = 12;
 
@@ -50,9 +51,28 @@ export function gmailSignals(
   );
 }
 
+const localDateFormatters = new Map<string, Intl.DateTimeFormat>();
+
+/** `YYYY-MM-DD` of `now` on the person's own calendar. */
+function localDate(now: Date, timeZone: string) {
+  let formatter = localDateFormatters.get(timeZone);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat("en-CA", {
+      day: "2-digit",
+      month: "2-digit",
+      timeZone,
+      year: "numeric",
+    });
+    localDateFormatters.set(timeZone, formatter);
+  }
+  return formatter.format(now);
+}
+
 /**
  * Events that have not started yet. The key carries the start, so an event
  * moved to another time counts as new; a cancelled one is nothing to act on.
+ * An all-day event has only a date, so it counts as started from that day on
+ * in the person's zone: today's holiday or a trip already under way is not new.
  */
 export function calendarSignals(
   events: readonly {
@@ -63,12 +83,17 @@ export function calendarSignals(
     } | null;
     readonly status?: string | null;
   }[],
-  now: Date
+  now: Date,
+  timeZone: string
 ) {
+  const today = localDate(now, timeZone);
   return events.flatMap((event): ProactiveSignal[] => {
     const start = event.start?.dateTime ?? event.start?.date;
     if (!event.id || !start || event.status === "cancelled") return [];
-    if (event.start?.dateTime && Date.parse(start) < now.getTime()) return [];
+    const started = event.start?.dateTime
+      ? Date.parse(start) < now.getTime()
+      : start <= today;
+    if (started) return [];
     return [
       {
         dedupeKey: `${event.id}@${start}`,

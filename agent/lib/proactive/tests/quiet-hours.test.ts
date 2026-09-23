@@ -27,6 +27,17 @@ describe("proactive quiet hours", () => {
     ).toEqual(new Date("2026-09-23T12:00:00.000Z"));
   });
 
+  it("still ends at 08:00 local on a night the clocks change", () => {
+    // 23:30 EDT before the fall-back; 08:00 EST is 13:00 UTC.
+    expect(
+      quietHoursEnd(new Date("2026-11-01T03:30:00.000Z"), "America/New_York")
+    ).toEqual(new Date("2026-11-01T13:00:00.000Z"));
+    // 23:30 EST before the spring-forward; 08:00 EDT is 12:00 UTC.
+    expect(
+      quietHoursEnd(new Date("2026-03-08T04:30:00.000Z"), "America/New_York")
+    ).toEqual(new Date("2026-03-08T12:00:00.000Z"));
+  });
+
   it("reads the hour in the person's zone, not the server's", () => {
     const now = new Date("2026-09-23T20:30:00.000Z");
     expect(quietHoursEnd(now, "Europe/Moscow")).toBeDefined();

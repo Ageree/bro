@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   claimScheduledReport,
   deferScheduledReport,
-  finalizeScheduledReport,
+  dropScheduledReport,
 } from "@db/services/scheduled-agent-jobs";
 import type {
   readProactiveMessages,
@@ -12,7 +12,7 @@ import type {
 const reports = vi.hoisted(() => ({
   claim: vi.fn<typeof claimScheduledReport>(),
   defer: vi.fn<typeof deferScheduledReport>(),
-  finalize: vi.fn<typeof finalizeScheduledReport>(),
+  drop: vi.fn<typeof dropScheduledReport>(),
 }));
 const profile = vi.hoisted(() => ({
   enabled: vi.fn<typeof readProactiveMessages>(),
@@ -22,7 +22,7 @@ const profile = vi.hoisted(() => ({
 vi.mock("@db/services/scheduled-agent-jobs", () => ({
   claimScheduledReport: reports.claim,
   deferScheduledReport: reports.defer,
-  finalizeScheduledReport: reports.finalize,
+  dropScheduledReport: reports.drop,
 }));
 vi.mock("@db/services/user-profile", () => ({
   readProactiveMessages: profile.enabled,
@@ -70,10 +70,10 @@ describe("proactive report delivery", () => {
     expect(
       await holdProactiveReport(report, new Date("2026-09-23T12:00:00.000Z"))
     ).toBe(true);
-    expect(reports.finalize).toHaveBeenCalledExactlyOnceWith(
+    expect(reports.drop).toHaveBeenCalledExactlyOnceWith(
       report.runId,
       "lease",
-      "suppressed"
+      new Date("2026-09-23T12:00:00.000Z")
     );
   });
 });

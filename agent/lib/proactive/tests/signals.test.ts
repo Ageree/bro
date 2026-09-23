@@ -54,10 +54,13 @@ describe("proactive signals", () => {
             status: "cancelled",
           },
           { id: "ongoing", start: { dateTime: "2026-09-23T11:00:00Z" } },
+          { id: "trip", start: { date: "2026-09-21" } },
+          { id: "today", start: { date: "2026-09-23" } },
           { id: "holiday", start: { date: "2026-09-24" } },
           { id: null, start: { dateTime: "2026-09-24T10:00:00Z" } },
         ],
-        now
+        now,
+        "Europe/Moscow"
       )
     ).toEqual([
       {
@@ -75,14 +78,26 @@ describe("proactive signals", () => {
     ]);
   });
 
+  it("dates an all-day event on the person's own calendar", () => {
+    // Already 24 September in Moscow, still the 23rd in Los Angeles.
+    const lateEvening = new Date("2026-09-23T22:30:00.000Z");
+    const birthday = [{ id: "birthday", start: { date: "2026-09-24" } }];
+    expect(calendarSignals(birthday, lateEvening, "Europe/Moscow")).toEqual([]);
+    expect(
+      calendarSignals(birthday, lateEvening, "America/Los_Angeles")
+    ).toHaveLength(1);
+  });
+
   it("treats a moved event as a new signal", () => {
     const [before] = calendarSignals(
       [{ id: "flight", start: { dateTime: "2026-09-24T07:40:00Z" } }],
-      now
+      now,
+      "Europe/Moscow"
     );
     const [after] = calendarSignals(
       [{ id: "flight", start: { dateTime: "2026-09-24T09:10:00Z" } }],
-      now
+      now,
+      "Europe/Moscow"
     );
     expect(before?.dedupeKey).not.toBe(after?.dedupeKey);
   });
@@ -93,7 +108,8 @@ describe("proactive signals", () => {
     );
     const events = calendarSignals(
       [{ id: "flight", start: { dateTime: "2026-09-24T07:40:00Z" } }],
-      now
+      now,
+      "Europe/Moscow"
     );
     const selected = selectRunSignals([...mail, ...events]);
     expect(selected).toHaveLength(12);

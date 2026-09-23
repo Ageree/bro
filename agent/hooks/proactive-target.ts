@@ -16,7 +16,14 @@ export default defineHook({
     async "turn.started"(_event, ctx) {
       if (resolveModeValue(ctx, { interactive: true }) !== true) return;
       const caller = ctx.session.auth.current;
-      if (caller?.principalType !== "user") return;
+      // A finished browser errand wakes the conversation it started in, which
+      // is not necessarily where the person talks now.
+      if (
+        caller?.principalType !== "user" ||
+        caller.authenticator === "browser-result"
+      ) {
+        return;
+      }
       const conversation = conversationSchema.safeParse(caller.attributes);
       if (!conversation.success) return;
       try {

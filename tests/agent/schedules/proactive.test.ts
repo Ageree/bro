@@ -90,6 +90,7 @@ describe("proactive schedule", () => {
       {
         mailAfter: new Date("2026-09-23T11:35:00.000Z"),
         now: afternoon,
+        timeZone: "Europe/Moscow",
       }
     );
     expect(proactive.queue).toHaveBeenCalledExactlyOnceWith({
@@ -102,6 +103,25 @@ describe("proactive schedule", () => {
     expect(proactive.advance).not.toHaveBeenCalled();
     expect(jobs.claimRuns).toHaveBeenCalledWith(
       expect.objectContaining({ kind: "proactive" })
+    );
+  });
+
+  it("keeps the watermark while new mail is left over for the next run", async () => {
+    const mail = Array.from({ length: 15 }, (_, index) => ({
+      dedupeKey: `m${String(index)}`,
+      itemId: `m${String(index)}`,
+      source: "gmail" as const,
+      threadId: `t${String(index)}`,
+    }));
+    probe.mockResolvedValue({ signals: mail, state: "connected" });
+
+    await runSchedule(vi.fn<ScheduleToFn>());
+
+    expect(proactive.queue).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        mailCheckedAt: watch().mailCheckedAt,
+        signals: mail.slice(0, 12),
+      })
     );
   });
 
