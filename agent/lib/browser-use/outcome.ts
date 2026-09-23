@@ -128,6 +128,13 @@ function labelledValues(text: string) {
   return values;
 }
 
+export function browserOutcomeChecks(result: string | null | undefined) {
+  return labelledValues(result ?? "")
+    .get("CHECKS")
+    ?.join("\n")
+    .trim();
+}
+
 function rawLabelledValue(
   values: Map<OutcomeLabel, string[]>,
   label: OutcomeLabel

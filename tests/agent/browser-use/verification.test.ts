@@ -218,6 +218,49 @@ describe("browser verification", () => {
     );
   });
 
+  it.each(["LINKS: []", "NEXT: none\nSTATUS: complete\nLINKS: []"])(
+    "bounds the CHECKS packet before following protocol fields: %s",
+    async (following) => {
+      const report = await verifyBrowserRun({
+        plan,
+        result: `${result()}\n${following}`,
+        sessionId,
+      });
+
+      expect(report.verdict).toBe("verified");
+      expect(report.observedChecks).toHaveLength(plan.checks.length);
+    }
+  );
+
+  it("preserves multiline CHECKS JSON before a decorated LINKS field", async () => {
+    const report = await verifyBrowserRun({
+      plan,
+      result: `RESULT: done\nNEEDS: none\n**CHECKS:**\n${JSON.stringify({ version: 1, checks: evidence() }, null, 2)}\n- **LINKS:** []`,
+      sessionId,
+    });
+
+    expect(report.verdict).toBe("verified");
+    expect(report.observedChecks).toHaveLength(plan.checks.length);
+  });
+
+  it.each([
+    "CHECKS: not-json\nLINKS: []",
+    `${result()}\nLINKS: []\n${result()}`,
+  ])(
+    "rejects an invalid CHECKS block even with valid LINKS: %s",
+    async (packet) => {
+      const report = await verifyBrowserRun({
+        plan,
+        result: packet,
+        sessionId,
+      });
+
+      expect(report.verdict).toBe("unverified");
+      expect(report.defects[0]?.code).toBe("invalid_evidence");
+      expect(findBrowserUseSessionCdpUrl).not.toHaveBeenCalled();
+    }
+  );
+
   it("keeps a concrete predicate mismatch separate from unknown", async () => {
     FakeSocket.observations = [
       FakeSocket.observations[0],

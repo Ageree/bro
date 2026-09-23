@@ -8,12 +8,11 @@ import {
   type BrowserVerificationReport,
 } from "@shared/browser/verification";
 import { findBrowserUseSessionCdpUrl } from "./client";
+import { browserOutcomeChecks } from "./outcome";
 
 const defaultDeadlineMs = 3_000;
 const maximumConcurrentPages = 4;
 const forbiddenScopeSelector = /^(?:\*|:root|html|body)$/iu;
-const checksLine =
-  /^[ \t]*(?:[-*•]+[ \t]*)?\*{0,2}CHECKS\*{0,2}[ \t]*:\*{0,2}[ \t]*(.*)$/imu;
 
 const targetSchema = z.object({
   type: z.string().optional(),
@@ -343,13 +342,8 @@ export async function verifyBrowserRun(
 }
 
 function parseProof(result: string | null | undefined) {
-  const text = result ?? "";
-  const match = checksLine.exec(text);
-  if (!match) return undefined;
-  const json = [match[1] ?? "", text.slice(match.index + match[0].length)]
-    .filter(Boolean)
-    .join("\n")
-    .trim();
+  const json = browserOutcomeChecks(result);
+  if (json === undefined) return undefined;
   try {
     return browserVerificationProofSchema.safeParse(JSON.parse(json));
   } catch {
