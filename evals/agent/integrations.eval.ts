@@ -149,4 +149,22 @@ export default [
       );
     },
   }),
+  defineEval({
+    description:
+      "Looks for a document in Google Drive instead of asking for it",
+    tags: [...agentEvalTags, "integrations", "routing"],
+    async test(t) {
+      const turn = await t.send(
+        "My passport scan is in my Google Drive. Find it and tell me when it expires."
+      );
+      turn.expectOk();
+      t.check(
+        turn.toolCalls.map((call) => call.name),
+        satisfies<string[]>(
+          (names) => names.includes("drive-search"),
+          "searches Drive for the passport"
+        )
+      );
+    },
+  }),
 ];

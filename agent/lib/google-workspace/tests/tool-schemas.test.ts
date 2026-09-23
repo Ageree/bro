@@ -3,6 +3,7 @@ import { z } from "zod";
 import { calendarEventSchema } from "@agent/lib/google-workspace/calendar";
 import { gmailComposeSchema } from "@agent/lib/google-workspace/gmail";
 import { connectApp } from "@agent/tools/connect_app";
+import { driveRead, driveSearch } from "@agent/tools/drive";
 import { notionAddTask } from "@agent/tools/notion";
 import { slackSendMessage } from "@agent/tools/slack";
 
@@ -15,6 +16,8 @@ describe("Google Workspace tool input schemas", () => {
     ["gmail-send", gmailComposeSchema],
     ["calendar-create-event", calendarEventSchema],
     ["connect_app", connectApp.inputSchema],
+    ["drive-read", driveRead.inputSchema],
+    ["drive-search", driveSearch.inputSchema],
     ["notion-add-task", notionAddTask.inputSchema],
     ["slack-send-message", slackSendMessage.inputSchema],
   ])("%s has no regex lookaround", (_name, schema) => {
