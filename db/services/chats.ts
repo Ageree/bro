@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, ne } from "drizzle-orm";
 import { z } from "zod";
 import type { AccessScope } from "@shared/identity/access-scope";
 import {
@@ -58,6 +58,28 @@ export async function readChat(scope: AccessScope, sessionId: string) {
     .limit(1);
   const row = chatRowSchema.optional().parse(rows[0]);
   return row ? toChatSummary(row) : undefined;
+}
+
+/**
+ * Whether this workspace has talked to Bro in any conversation other than the
+ * given session, in any channel. A chat row is written when a session receives
+ * its first message.
+ */
+export async function hasOtherConversations(
+  scope: AccessScope,
+  sessionId: string
+) {
+  const rows = await db
+    .select({ sessionId: chats.sessionId })
+    .from(chats)
+    .where(
+      and(
+        eq(chats.workspaceId, scope.workspaceId),
+        ne(chats.sessionId, sessionId)
+      )
+    )
+    .limit(1);
+  return rows.length > 0;
 }
 
 export async function saveChat(

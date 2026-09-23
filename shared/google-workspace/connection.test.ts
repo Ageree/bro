@@ -1,16 +1,22 @@
 import type * as ConnectModule from "@vercel/connect";
-import type { getTokenResponse, startAuthorization } from "@vercel/connect";
+import type {
+  getTokenResponse,
+  revokeToken,
+  startAuthorization,
+} from "@vercel/connect";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { env } from "@shared/environment";
 
 const connect = vi.hoisted(() => ({
   getTokenResponse: vi.fn<typeof getTokenResponse>(),
+  revokeToken: vi.fn<typeof revokeToken>(),
   startAuthorization: vi.fn<typeof startAuthorization>(),
 }));
 
 vi.mock("@vercel/connect", async (importOriginal) => ({
   ...(await importOriginal<typeof ConnectModule>()),
   getTokenResponse: connect.getTokenResponse,
+  revokeToken: connect.revokeToken,
   startAuthorization: connect.startAuthorization,
 }));
 
@@ -21,8 +27,11 @@ import {
   UserAuthorizationRequiredError,
 } from "@vercel/connect";
 import {
+  googleWorkspaceScopes,
+  googleWorkspaceSubject,
   googleWorkspaceTokenParams,
   readGoogleWorkspaceConnection,
+  revokeGoogleWorkspaceGrant,
   startGoogleWorkspaceAuthorization,
 } from "./connection";
 
@@ -45,13 +54,36 @@ describe("readGoogleWorkspaceConnection", () => {
       name: "Ada Lovelace",
     });
 
-    await expect(readGoogleWorkspaceConnection(userId)).resolves.toEqual({
+    await expect(
+      readGoogleWorkspaceConnection(userId, "full")
+    ).resolves.toEqual({
+      access: "full",
       accountLabel: "Ada Lovelace",
       state: "connected",
     });
     expect(connect.getTokenResponse).toHaveBeenCalledExactlyOnceWith(
       env.GOOGLE_CONNECTOR_UID,
-      googleWorkspaceTokenParams(userId),
+      googleWorkspaceTokenParams(userId, "full"),
+      { forceRefresh: true }
+    );
+  });
+
+  it("reads a read-only grant with read scopes and reports its level", async () => {
+    connect.getTokenResponse.mockResolvedValue(grantedToken);
+
+    await expect(
+      readGoogleWorkspaceConnection(userId, "read_only")
+    ).resolves.toEqual({
+      access: "read_only",
+      accountLabel: null,
+      state: "connected",
+    });
+    expect(connect.getTokenResponse).toHaveBeenCalledExactlyOnceWith(
+      env.GOOGLE_CONNECTOR_UID,
+      {
+        scopes: [...googleWorkspaceScopes.read_only],
+        subject: googleWorkspaceSubject(userId),
+      },
       { forceRefresh: true }
     );
   });
@@ -63,11 +95,17 @@ describe("readGoogleWorkspaceConnection", () => {
     });
     connect.getTokenResponse.mockResolvedValueOnce(grantedToken);
 
-    await expect(readGoogleWorkspaceConnection(userId)).resolves.toEqual({
+    await expect(
+      readGoogleWorkspaceConnection(userId, "full")
+    ).resolves.toEqual({
+      access: "full",
       accountLabel: "ada@example.com",
       state: "connected",
     });
-    await expect(readGoogleWorkspaceConnection(userId)).resolves.toEqual({
+    await expect(
+      readGoogleWorkspaceConnection(userId, "full")
+    ).resolves.toEqual({
+      access: "full",
       accountLabel: null,
       state: "connected",
     });
@@ -79,7 +117,10 @@ describe("readGoogleWorkspaceConnection", () => {
   ])("reports %s as disconnected", async (_description, error) => {
     connect.getTokenResponse.mockRejectedValue(error);
 
-    await expect(readGoogleWorkspaceConnection(userId)).resolves.toEqual({
+    await expect(
+      readGoogleWorkspaceConnection(userId, "full")
+    ).resolves.toEqual({
+      access: "full",
       accountLabel: null,
       state: "disconnected",
     });
@@ -101,7 +142,10 @@ describe("readGoogleWorkspaceConnection", () => {
   ])("reports %s as unavailable", async (_description, error) => {
     connect.getTokenResponse.mockRejectedValue(error);
 
-    await expect(readGoogleWorkspaceConnection(userId)).resolves.toEqual({
+    await expect(
+      readGoogleWorkspaceConnection(userId, "full")
+    ).resolves.toEqual({
+      access: "full",
       accountLabel: null,
       state: "unavailable",
     });
@@ -115,7 +159,10 @@ describe("readGoogleWorkspaceConnection", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     connect.getTokenResponse.mockRejectedValue(error);
 
-    await expect(readGoogleWorkspaceConnection(userId)).resolves.toEqual({
+    await expect(
+      readGoogleWorkspaceConnection(userId, "full")
+    ).resolves.toEqual({
+      access: "full",
       accountLabel: null,
       state: "error",
     });
@@ -139,16 +186,30 @@ describe("startGoogleWorkspaceAuthorization", () => {
     await expect(
       startGoogleWorkspaceAuthorization(
         userId,
+        "read_only",
         "https://example.com/workspace?google=connected"
       )
     ).resolves.toBe("https://accounts.google.com/o/oauth2/v2/auth?state=abc");
     expect(connect.startAuthorization).toHaveBeenCalledExactlyOnceWith(
       env.GOOGLE_CONNECTOR_UID,
-      googleWorkspaceTokenParams(userId),
+      googleWorkspaceTokenParams(userId, "read_only"),
       {
         callbackUrl: "https://example.com/workspace?google=connected",
         expiresInMs: 10 * 60_000,
       }
+    );
+  });
+});
+
+describe("revokeGoogleWorkspaceGrant", () => {
+  it("revokes the user's grant whatever its level", async () => {
+    connect.revokeToken.mockResolvedValue(undefined);
+
+    await revokeGoogleWorkspaceGrant(userId);
+
+    expect(connect.revokeToken).toHaveBeenCalledExactlyOnceWith(
+      env.GOOGLE_CONNECTOR_UID,
+      { subject: googleWorkspaceSubject(userId) }
     );
   });
 });

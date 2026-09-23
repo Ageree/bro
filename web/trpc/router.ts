@@ -1,15 +1,20 @@
+import { TRPCError } from "@trpc/server";
 import { gateway } from "ai";
-import { revokeToken } from "@vercel/connect";
 import { z } from "zod";
 import { mintChannelLinkToken } from "@db/services/channel-identities";
 import { saveChat } from "@db/services/chats";
 import { replaceUserProfile } from "@db/services/user-profile";
-import { selectWorkspaceModel } from "@db/services/settings";
+import {
+  getGoogleWorkspaceAccess,
+  selectGoogleWorkspaceAccess,
+  selectWorkspaceModel,
+} from "@db/services/settings";
 import { deleteVaultItem, saveVaultItem } from "@db/services/vault";
 import { saveChatSchema } from "@shared/chat/schema";
-import { env } from "@shared/environment";
 import {
-  googleWorkspaceSubject,
+  googleWorkspaceAccessSchema,
+  readGoogleWorkspaceConnection,
+  revokeGoogleWorkspaceGrant,
   startGoogleWorkspaceAuthorization,
 } from "@shared/google-workspace/connection";
 import { telegramLinkUrl } from "@shared/identity/telegram-link";
@@ -29,20 +34,41 @@ export const appRouter = createTRPCRouter({
   },
   googleWorkspace: {
     update: protectedProcedure
-      .input(z.enum(["connect", "disconnect"]))
+      .input(
+        z.discriminatedUnion("action", [
+          z.object({
+            access: googleWorkspaceAccessSchema,
+            action: z.literal("connect"),
+          }),
+          z.object({ action: z.literal("disconnect") }),
+        ])
+      )
       .mutation(async ({ ctx, input }) => {
-        if (input === "disconnect") {
-          await revokeToken(env.GOOGLE_CONNECTOR_UID, {
-            subject: googleWorkspaceSubject(ctx.scope.userId),
-          });
+        if (input.action === "disconnect") {
+          await revokeGoogleWorkspaceGrant(ctx.scope.userId);
           return { redirectTo: "/workspace?google=disconnected" };
         }
 
+        // A new flow never starts over a live grant: Google would keep the
+        // old grant's scopes under the new one. The cabinet offers a level
+        // only while no grant exists, so this answers a stale page.
+        const current = await readGoogleWorkspaceConnection(
+          ctx.scope.userId,
+          await getGoogleWorkspaceAccess(ctx.scope)
+        );
+        if (current.state === "connected") {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "Google is already connected; disconnect it first.",
+          });
+        }
+        await selectGoogleWorkspaceAccess(ctx.scope, input.access);
         const callbackUrl = new URL("/workspace", ctx.origin);
         callbackUrl.searchParams.set("google", "connected");
         return {
           redirectTo: await startGoogleWorkspaceAuthorization(
             ctx.scope.userId,
+            input.access,
             callbackUrl.toString()
           ),
         };

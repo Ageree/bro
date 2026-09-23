@@ -1,6 +1,7 @@
 import type * as GmailPackage from "@googleapis/gmail";
 import type { ToolContext } from "eve/tools";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { accessScopeForUser } from "@shared/identity/access-scope";
 
 interface GmailPart {
   readonly body?: {
@@ -38,6 +39,10 @@ const google = vi.hoisted(() => ({
   >(),
 }));
 
+vi.mock("@db/services/settings", () => ({
+  getGoogleWorkspaceAccess: async () => "read_only",
+}));
+
 vi.mock("@googleapis/gmail", async (importOriginal) => ({
   ...(await importOriginal<typeof GmailPackage>()),
   gmail: () => ({
@@ -56,6 +61,7 @@ import {
   readGmailThread,
 } from "@agent/lib/google-workspace/gmail";
 
+const scope = accessScopeForUser("better-auth:user-1");
 const photo = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 4]);
 const payload: GmailPart = {
   mimeType: "multipart/mixed",
@@ -226,7 +232,15 @@ function toolContext() {
       throw new Error("Authorization is outside this focused test.");
     },
     session: {
-      auth: { current: null, initiator: null },
+      auth: {
+        current: {
+          attributes: { workspaceId: scope.workspaceId },
+          authenticator: "gmail-attachment-test",
+          principalId: scope.userId,
+          principalType: "user",
+        },
+        initiator: null,
+      },
       id: "session-1",
       turn: { id: "turn-1", sequence: 0 },
     },

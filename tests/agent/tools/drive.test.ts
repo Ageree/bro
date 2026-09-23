@@ -69,14 +69,17 @@ beforeEach(() => {
 });
 
 describe("Drive access", () => {
-  it("asks Google for read-only Drive access alongside the existing scopes", () => {
-    expect(googleWorkspaceScopes).toContain(
-      "https://www.googleapis.com/auth/drive.readonly"
-    );
-    expect(googleWorkspaceScopes).not.toContain(
-      "https://www.googleapis.com/auth/drive"
-    );
-  });
+  it.each(["full", "read_only"] as const)(
+    "asks Google for read-only Drive access at the %s level",
+    (access) => {
+      expect(googleWorkspaceScopes[access]).toContain(
+        "https://www.googleapis.com/auth/drive.readonly"
+      );
+      expect(googleWorkspaceScopes[access]).not.toContain(
+        "https://www.googleapis.com/auth/drive"
+      );
+    }
+  );
 });
 
 describe("drive-read", () => {

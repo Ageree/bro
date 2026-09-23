@@ -1,5 +1,9 @@
 import type { ToolContext } from "eve/tools";
 import { describe, expect, it, vi } from "vitest";
+vi.mock("@db/services/settings", () => ({
+  getGoogleWorkspaceAccess: async () => "full",
+}));
+
 import { withGoogleAuth } from "@agent/lib/google-workspace/client";
 
 function toolContext(requireAuth: ToolContext["requireAuth"]) {
@@ -17,7 +21,15 @@ function toolContext(requireAuth: ToolContext["requireAuth"]) {
     },
     requireAuth,
     session: {
-      auth: { current: null, initiator: null },
+      auth: {
+        current: {
+          attributes: { workspaceId: "personal:workspace" },
+          authenticator: "photon-imessage",
+          principalId: "user-1",
+          principalType: "user",
+        },
+        initiator: null,
+      },
       id: "session-1",
       turn: { id: "turn-1", sequence: 0 },
     },
