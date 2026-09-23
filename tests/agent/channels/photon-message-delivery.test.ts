@@ -724,7 +724,23 @@ describe("Photon message delivery", () => {
     });
   });
 
-  it("keeps other turn failures out of the conversation", async () => {
+  it("answers someone writing in English in English", async () => {
+    const { context, post } = handlerContext();
+
+    await handleTurnFailed(
+      modelCallFailure(),
+      context,
+      englishSessionContext()
+    );
+
+    expect(post).toHaveBeenCalledExactlyOnceWith({
+      raw: "taking a quick nap, back soon",
+    });
+  });
+
+  // Like Telegram, a failure that is not the provider's still gets a line
+  // rather than silence, and «back soon» is kept for real outages.
+  it("apologizes for other turn failures", async () => {
     const { context, post } = handlerContext();
 
     await handleTurnFailed(
@@ -733,7 +749,9 @@ describe("Photon message delivery", () => {
       sessionContext()
     );
 
-    expect(post).not.toHaveBeenCalled();
+    expect(post).toHaveBeenCalledExactlyOnceWith({
+      raw: "Что-то сломалось, пока я разбирался с твоей просьбой. Попробуй ещё раз.",
+    });
   });
 
   it("leaves a failed scheduled report to its retry", async () => {
@@ -756,9 +774,28 @@ const fileBytes = new Uint8Array(16);
 function modelCallFailure(): TurnFailedEvent {
   return {
     code: "MODEL_CALL_FAILED",
+    details: { statusCode: 402 },
     message: 'OpenRouter 402: "This request requires more credits"',
     sequence: 2,
     turnId: "turn-1",
+  };
+}
+
+function englishSessionContext() {
+  const session = sessionContext();
+  const caller = session.session.auth.current;
+  return {
+    ...session,
+    session: {
+      ...session.session,
+      auth: {
+        ...session.session.auth,
+        current: {
+          ...caller,
+          attributes: { ...caller.attributes, replyLanguage: "en" },
+        },
+      },
+    },
   };
 }
 

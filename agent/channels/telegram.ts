@@ -15,7 +15,9 @@ import {
 import { messageQuotaGate } from "@agent/lib/billing/quota";
 import {
   fallbackDeliveryText,
-  modelOutageNotice,
+  replyLanguageFor,
+  sessionReplyLanguage,
+  turnFailureNotice,
 } from "@agent/lib/delivery-fallback";
 import { firstContactContext } from "@agent/lib/first-contact";
 import { telegramMediaTurn } from "@agent/lib/inbound-media/telegram";
@@ -222,8 +224,7 @@ export default telegramChannel({
       if (!scheduledReportFromSession(session)) {
         await sendText(
           context,
-          modelOutageNotice(event) ??
-            "Что-то сломалось, пока я разбирался с твоей просьбой. Попробуй ещё раз."
+          turnFailureNotice(event, sessionReplyLanguage(session.session.auth))
         );
       }
     },
@@ -276,6 +277,7 @@ export default telegramChannel({
         conversationId: telegramContinuationToken({
           chatId: message.chat.id,
         }),
+        replyLanguage: replyLanguageFor(message.text || message.caption),
         telegramChatId: message.chat.id,
         telegramMessageId: message.messageId,
         telegramUserId: from.id,
@@ -283,18 +285,19 @@ export default telegramChannel({
       },
       principalId,
     };
-    // An account linked from the web cabinet may never have written before,
-    // so the introduction follows the workspace's first message here too.
-    const turnContext = await firstContactContext(scope);
     // Photos, documents and voice notes are resolved to bytes and text here,
     // because eve's lazy resolver drops a photo the Bot API serves without an
     // image content type and never reads a voice note at all.
     const media = await telegramMediaTurn(message);
-    if (media === undefined) return { auth: sessionAuth, context: turnContext };
-    if (media.notice) await context.telegram.sendMessage(media.notice);
+    if (media?.notice) await context.telegram.sendMessage(media.notice);
     // A voice note nobody could transcribe leaves nothing to answer, so the
     // retry line above is the whole reply and no model turn starts.
-    if (media.message === undefined) return null;
+    if (media !== undefined && media.message === undefined) return null;
+    // An account linked from the web cabinet may never have written before,
+    // so the introduction follows the workspace's first message here too. It
+    // is claimed only now, once this message is sure to start a turn.
+    const turnContext = await firstContactContext(scope);
+    if (media === undefined) return { auth: sessionAuth, context: turnContext };
     return { auth: sessionAuth, context: turnContext, message: media.message };
   },
 });

@@ -34,6 +34,8 @@ describe("scheduled agent jobs", () => {
       "0012_harsh_domino.sql",
       "0013_last_christian_walker.sql",
       "0014_uneven_vector.sql",
+      // `ensureScope` writes every workspace column, introduced_at included.
+      "0022_lying_jetstream.sql",
     ]) {
       await applyMigration(client, migration);
     }

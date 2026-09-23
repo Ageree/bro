@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import type { AccessScope } from "@shared/identity/access-scope";
 import { db, workspaceMemberships, workspaces } from "@db";
 
@@ -38,4 +38,22 @@ export async function readWorkspaceScope(
     .limit(1);
   const userId = rows[0]?.userId;
   return userId ? { userId, workspaceId } : null;
+}
+
+/**
+ * Marks the workspace as introduced and reports whether this call did it. The
+ * update only matches a workspace nobody has introduced yet, so of two first
+ * messages that arrive together (a voice note and its text, a photo album)
+ * exactly one carries the introduction.
+ */
+export async function claimWorkspaceIntroduction(scope: AccessScope) {
+  await ensureScope(scope);
+  const claimed = await db
+    .update(workspaces)
+    .set({ introducedAt: new Date() })
+    .where(
+      and(eq(workspaces.id, scope.workspaceId), isNull(workspaces.introducedAt))
+    )
+    .returning({ id: workspaces.id });
+  return claimed.length > 0;
 }

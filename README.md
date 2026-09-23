@@ -262,12 +262,17 @@ reaches the model as a line starting with `[голосовое]`; when nothing c
 transcribed and the message has no text, the person is asked to retry and no
 model turn runs.
 
-When the model provider refuses a turn (out of credits, down), Telegram and
-iMessage answer the person with «я прилёг, скоро вернусь» instead of silence.
-To hear about it before people do, set `OPENROUTER_MANAGEMENT_KEY` (the credits
-endpoint rejects an inference key) and `OWNER_TELEGRAM_CHAT_ID`: once an hour
-the schedule reads the OpenRouter balance and, while it is below
+When the model provider refuses a turn (out of credits, rate limited, down),
+Telegram and iMessage answer the person with a short «я прилёг, скоро вернусь»
+(or its English twin for someone writing in English) instead of silence; any
+other failed turn gets a short apology. To hear about an empty balance before
+people do, set `OPENROUTER_MANAGEMENT_KEY` (the credits endpoint rejects an
+inference key) and `TELEGRAM_OWNER_CHAT_ID`. Every ten minutes the schedule
+reads the OpenRouter balance and, when it falls below
 `OPENROUTER_CREDITS_ALERT_USD` (default 5), messages the owner through the bot.
+The alert repeats once a day while the balance stays low, sooner if it keeps
+halving, and re-arms once the balance recovers; its state lives in
+`operational_alerts`.
 
 ## Landing and onboarding
 

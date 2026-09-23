@@ -11,7 +11,9 @@ import { resolvePhotonReplyTarget } from "@agent/lib/reply-targets";
 import { messageQuotaGate } from "@agent/lib/billing/quota";
 import {
   fallbackDeliveryText,
-  modelOutageNotice,
+  replyLanguageFor,
+  sessionReplyLanguage,
+  turnFailureNotice,
 } from "@agent/lib/delivery-fallback";
 import { firstContactContext } from "@agent/lib/first-contact";
 import { photonMediaTurn } from "@agent/lib/inbound-media/photon";
@@ -195,12 +197,16 @@ export default photonIMessageChannel({
     },
     async "turn.failed"(event, context, session) {
       await releaseScheduledReportDelivery(session, event.message);
-      // A failed reporting turn is retried from its lease. A person waiting on
-      // their own message would otherwise hear nothing while the model
-      // provider is down, so they get one short line without the internals.
-      const notice = modelOutageNotice(event);
-      if (!notice || scheduledReportFromSession(session)) return;
-      await context.thread?.post({ raw: notice });
+      // A failed reporting turn is retried from its lease, so only a person
+      // waiting on their own message is told, in one short line without the
+      // internals, that the turn broke.
+      if (scheduledReportFromSession(session)) return;
+      await context.thread?.post({
+        raw: turnFailureNotice(
+          event,
+          sessionReplyLanguage(session.session.auth)
+        ),
+      });
     },
   },
   async onMessage(context, message) {
@@ -246,6 +252,7 @@ export default photonIMessageChannel({
         phoneNumber,
         photonMessageId: message.id,
         photonThreadId: context.thread.id,
+        replyLanguage: replyLanguageFor(message.text),
         workspaceId: scope.workspaceId,
       },
       principalId,

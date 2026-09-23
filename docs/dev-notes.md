@@ -55,13 +55,13 @@
   владельца сессии записывает обёртка этого маршрута в `agent/channels/eve.ts`,
   а не только хук `agent/hooks/session-owner.ts`: иначе ранний `GET …/stream`
   получал `403 Session not found`.
+- Пометку `first-contact` решает `workspaces.introduced_at`, которое канал
+  занимает условным UPDATE в `onMessage` (`claimWorkspaceIntroduction`), а не
+  таблица `chats`: переезд из Convex строк `chats` не пишет. Занимать метку можно
+  только для сообщения, которое точно запустит ход.
 - Любой сбой вызова модели приходит в канал как `turn.failed` с
-  `code: "MODEL_CALL_FAILED"`; 4xx провайдера (402 «нет кредитов») eve считает
-  терминальным. Текст для человека — `modelOutageNotice` в
-  `agent/lib/delivery-fallback.ts`.
-- Пометка `first-contact` ставится по таблице `chats`: строка появляется на
-  `message.received`, так что пустая история воркспейса в `onMessage` канала и
-  есть его первое сообщение (`agent/lib/first-contact.ts`).
+  `code: "MODEL_CALL_FAILED"`, включая переполнение контекста; «скоро вернусь»
+  говорим только при статусе 402/429/5xx из `details`.
 
 ## OpenRouter
 

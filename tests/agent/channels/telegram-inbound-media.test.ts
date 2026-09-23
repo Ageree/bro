@@ -9,7 +9,7 @@ import type {
   findChannelIdentity,
   redeemChannelLinkToken,
 } from "@db/services/channel-identities";
-import type { hasConversationHistory } from "@db/services/chats";
+import type * as ScopeService from "@db/services/scope";
 import { syntheticCafOpus } from "@tests/helpers/synthetic-caf";
 // oxlint-disable-next-line import/no-unassigned-import -- Loads the production module so the mocked channel factory can capture its configuration.
 import "@agent/channels/telegram";
@@ -23,7 +23,7 @@ const capture = vi.hoisted(() => ({
   // SAFETY: The mock factory fills this object with the real environment before any test runs.
   env: {} as Record<string, string | undefined>,
   findIdentity: vi.fn<typeof findChannelIdentity>(),
-  hasConversationHistory: vi.fn<typeof hasConversationHistory>(),
+  claimIntroduction: vi.fn<typeof ScopeService.claimWorkspaceIntroduction>(),
   messageQuotaGate: vi.fn<
     () => Promise<{
       allowed: boolean;
@@ -55,8 +55,9 @@ vi.mock("@db/services/channel-identities", () => ({
   findChannelIdentity: capture.findIdentity,
   redeemChannelLinkToken: vi.fn<typeof redeemChannelLinkToken>(),
 }));
-vi.mock("@db/services/chats", () => ({
-  hasConversationHistory: capture.hasConversationHistory,
+vi.mock("@db/services/scope", async (importOriginal) => ({
+  ...(await importOriginal<typeof ScopeService>()),
+  claimWorkspaceIntroduction: capture.claimIntroduction,
 }));
 vi.mock("@agent/lib/billing/quota", () => ({
   messageQuotaGate: capture.messageQuotaGate,
@@ -108,7 +109,7 @@ describe("Telegram inbound media", () => {
       allowed: true,
       paywallText: undefined,
     });
-    capture.hasConversationHistory.mockResolvedValue(true);
+    capture.claimIntroduction.mockResolvedValue(false);
   });
 
   afterEach(() => {
@@ -189,6 +190,8 @@ describe("Telegram inbound media", () => {
 
     expect(sent).toHaveBeenCalledOnce();
     expect(sent.mock.calls[0]?.[0]).toContain("Не расслышал голосовое");
+    // No turn runs, so the introduction stays for the message that has one.
+    expect(capture.claimIntroduction).not.toHaveBeenCalled();
   });
 
   it("says voice is unsupported when the deployment has no OpenRouter key", async () => {

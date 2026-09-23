@@ -1,13 +1,13 @@
 import type { EveChannelInput } from "eve/channels/eve";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { hasConversationHistory } from "@db/services/chats";
+import type * as ScopeService from "@db/services/scope";
 import { accessScopeForUser } from "@shared/identity/access-scope";
 
 const capture = vi.hoisted(() => {
   const configs: EveChannelInput[] = [];
   return {
     configs,
-    hasConversationHistory: vi.fn<typeof hasConversationHistory>(),
+    claimIntroduction: vi.fn<typeof ScopeService.claimWorkspaceIntroduction>(),
   };
 });
 
@@ -21,8 +21,9 @@ vi.mock(import("eve/channels/eve"), async (importOriginal) => {
     },
   };
 });
-vi.mock("@db/services/chats", () => ({
-  hasConversationHistory: capture.hasConversationHistory,
+vi.mock("@db/services/scope", async (importOriginal) => ({
+  ...(await importOriginal<typeof ScopeService>()),
+  claimWorkspaceIntroduction: capture.claimIntroduction,
 }));
 
 // Loads the production channel so the mocked factory captures its configuration.
@@ -60,20 +61,18 @@ describe("Eve first contact", () => {
   });
 
   it("introduces Bro when the workspace's first message comes from the web", async () => {
-    capture.hasConversationHistory.mockResolvedValue(false);
+    capture.claimIntroduction.mockResolvedValue(true);
 
     const result = await onMessage(messageContext(), "привет");
 
     expect(result.auth).toBe(caller);
-    expect(capture.hasConversationHistory).toHaveBeenCalledExactlyOnceWith(
-      scope
-    );
+    expect(capture.claimIntroduction).toHaveBeenCalledExactlyOnceWith(scope);
     expect(result.context?.join("\n")).toContain("`first-contact`");
   });
 
   // Every new web chat is a new session, which is no reason to meet again.
   it("keeps a new web session of an existing workspace free of the marker", async () => {
-    capture.hasConversationHistory.mockResolvedValue(true);
+    capture.claimIntroduction.mockResolvedValue(false);
 
     const result = await onMessage(
       { eve: { ...messageContext().eve, sessionId: "wrun_new" } },

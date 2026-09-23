@@ -18,6 +18,14 @@ export const workspaces = pgTable("workspaces", {
   })
     .defaultNow()
     .notNull(),
+  // When Bro introduced itself to this workspace. The first message claims it
+  // with a conditional update, so exactly one turn ever carries the
+  // `first-contact` marker; workspaces that predate the column were backfilled.
+  introducedAt: timestamp("introduced_at", {
+    mode: "date",
+    precision: 3,
+    withTimezone: true,
+  }),
 });
 
 export const userProfiles = pgTable(

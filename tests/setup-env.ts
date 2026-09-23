@@ -22,7 +22,7 @@ const unsetEnvironment = [
   "OPENROUTER_STT_FALLBACK_MODEL",
   "OPENROUTER_STT_LANGUAGE",
   "OPENROUTER_STT_MODEL",
-  "OWNER_TELEGRAM_CHAT_ID",
+  "TELEGRAM_OWNER_CHAT_ID",
 ];
 
 for (const [name, value] of Object.entries(testEnvironment)) {

@@ -2,7 +2,7 @@ import type { PhotonIMessageChannelConfig } from "eve/channels/photon";
 import { Message } from "chat";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type * as EnvModule from "@shared/environment";
-import type { hasConversationHistory } from "@db/services/chats";
+import type * as ScopeService from "@db/services/scope";
 // oxlint-disable-next-line import/no-unassigned-import -- Loads the production module so the mocked channel factory can capture its configuration.
 import "@agent/channels/photon";
 
@@ -17,7 +17,7 @@ const capture = vi.hoisted(() => ({
       paywallText: string | undefined;
     }>
   >(),
-  hasConversationHistory: vi.fn<typeof hasConversationHistory>(),
+  claimIntroduction: vi.fn<typeof ScopeService.claimWorkspaceIntroduction>(),
   post: vi.fn<InboundContext["thread"]["post"]>(),
 }));
 
@@ -49,8 +49,9 @@ vi.mock("@db/services/auth/phone-user", () => ({
 vi.mock("@agent/lib/billing/quota", () => ({
   messageQuotaGate: capture.messageQuotaGate,
 }));
-vi.mock("@db/services/chats", () => ({
-  hasConversationHistory: capture.hasConversationHistory,
+vi.mock("@db/services/scope", async (importOriginal) => ({
+  ...(await importOriginal<typeof ScopeService>()),
+  claimWorkspaceIntroduction: capture.claimIntroduction,
 }));
 
 const onMessage = capture.config?.onMessage;
@@ -65,7 +66,7 @@ describe("Photon inbound authentication", () => {
       allowed: true,
       paywallText: undefined,
     });
-    capture.hasConversationHistory.mockResolvedValue(true);
+    capture.claimIntroduction.mockResolvedValue(false);
   });
 
   it("verifies webhooks with the configured Photon signing secret", () => {
@@ -147,7 +148,7 @@ describe("Photon inbound authentication", () => {
       created: true,
       userId: "user-new",
     });
-    capture.hasConversationHistory.mockResolvedValue(false);
+    capture.claimIntroduction.mockResolvedValue(true);
 
     const result = await onMessage(
       threadContext(),
@@ -188,7 +189,7 @@ describe("Photon inbound authentication", () => {
   // gets an account that already exists, and is still meeting Bro now.
   it("introduces Bro on the workspace's first message even for an existing account", async () => {
     capture.ensureUser.mockResolvedValue({ created: false, userId: "user-1" });
-    capture.hasConversationHistory.mockResolvedValue(false);
+    capture.claimIntroduction.mockResolvedValue(true);
 
     const result = await onMessage(
       threadContext(),

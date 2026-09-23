@@ -77,7 +77,9 @@ const channel = eveChannel({
   // messaging channels do.
   async onMessage(context) {
     const auth = defaultEveAuth(context);
-    if (!auth) return { auth };
+    // Route auth above resolves a workspace user or has already refused the
+    // request, so a missing caller is a broken invariant, not a guest.
+    if (!auth) throw new Error("An eve message arrived without a caller.");
     return {
       auth,
       context: await firstContactContext(scopeFromPrincipal(auth)),

@@ -25,6 +25,7 @@ describe("database services", () => {
     await applySchemaAdoptionMigration(client);
     await applyNativeTypesMigration(client);
     await applyChatChannelMigration(client);
+    await applyWorkspaceIntroductionMigration(client);
 
     const pgliteDatabase = drizzle(client, { schema });
     // SAFETY: PGlite implements the query-builder surface exercised by these services despite using a different Drizzle driver.
@@ -97,7 +98,9 @@ describe("database services", () => {
 
     await sessions.claimSession(alice, "session-imessage");
     expect(await chats.listChats(alice)).toEqual([]);
-    expect(await chats.hasConversationHistory(alice)).toBe(false);
+    expect(await chats.hasOtherConversations(alice, "session-alice")).toBe(
+      false
+    );
 
     await sessions.claimSession(bob, "session-alice");
     expect(await sessions.isSessionOwned(alice, "session-alice")).toBe(true);
@@ -118,13 +121,10 @@ describe("database services", () => {
       sessionId: "session-imessage",
     });
 
-    expect(await chats.hasConversationHistory(alice)).toBe(true);
-    expect(
-      await chats.hasConversationHistory(alice, {
-        exceptSessionId: "session-alice",
-      })
-    ).toBe(true);
-    expect(await chats.hasConversationHistory(bob)).toBe(false);
+    expect(await chats.hasOtherConversations(alice, "session-alice")).toBe(
+      true
+    );
+    expect(await chats.hasOtherConversations(bob, "session-bob")).toBe(false);
 
     const aliceChat = await chats.readChat(alice, "session-alice");
     expect(aliceChat?.title).toBe("Updated title");
@@ -279,6 +279,19 @@ async function applyNativeTypesMigration(database: PGlite) {
 async function applyChatChannelMigration(database: PGlite) {
   const migration = await readFile(
     new URL("../migrations/0011_faulty_unicorn.sql", import.meta.url),
+    "utf8"
+  );
+  /* oxlint-disable eslint/no-await-in-loop -- SQL migration statements must execute in file order. */
+  for (const statement of migration.split("--> statement-breakpoint")) {
+    if (statement.trim()) await database.exec(statement);
+  }
+  /* oxlint-enable eslint/no-await-in-loop */
+}
+
+// `ensureScope` writes every workspace column, introduced_at included.
+async function applyWorkspaceIntroductionMigration(database: PGlite) {
+  const migration = await readFile(
+    new URL("../migrations/0022_lying_jetstream.sql", import.meta.url),
     "utf8"
   );
   /* oxlint-disable eslint/no-await-in-loop -- SQL migration statements must execute in file order. */

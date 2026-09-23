@@ -3,7 +3,7 @@ import { Message, type Attachment } from "chat";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import type * as EnvModule from "@shared/environment";
-import type { hasConversationHistory } from "@db/services/chats";
+import type * as ScopeService from "@db/services/scope";
 import { syntheticCafOpus } from "@tests/helpers/synthetic-caf";
 // oxlint-disable-next-line import/no-unassigned-import -- Loads the production module so the mocked channel factory can capture its configuration.
 import "@agent/channels/photon";
@@ -22,7 +22,7 @@ const capture = vi.hoisted(() => ({
       paywallText: string | undefined;
     }>
   >(),
-  hasConversationHistory: vi.fn<typeof hasConversationHistory>(),
+  claimIntroduction: vi.fn<typeof ScopeService.claimWorkspaceIntroduction>(),
   markRead: vi.fn<(threadId: string, messageId: string) => Promise<void>>(),
   post: vi.fn<InboundContext["thread"]["post"]>(),
 }));
@@ -50,8 +50,9 @@ vi.mock(import("eve/channels/photon"), async (importOriginal) => {
 vi.mock("@db/services/auth/phone-user", () => ({
   ensureVerifiedPhoneUser: capture.ensureUser,
 }));
-vi.mock("@db/services/chats", () => ({
-  hasConversationHistory: capture.hasConversationHistory,
+vi.mock("@db/services/scope", async (importOriginal) => ({
+  ...(await importOriginal<typeof ScopeService>()),
+  claimWorkspaceIntroduction: capture.claimIntroduction,
 }));
 vi.mock("@agent/lib/billing/quota", () => ({
   messageQuotaGate: capture.messageQuotaGate,
@@ -85,7 +86,7 @@ describe("Photon inbound media", () => {
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
     capture.env.OPENROUTER_API_KEY = "openrouter-test-key";
     capture.ensureUser.mockResolvedValue({ created: false, userId: "user-1" });
-    capture.hasConversationHistory.mockResolvedValue(true);
+    capture.claimIntroduction.mockResolvedValue(false);
     capture.messageQuotaGate.mockResolvedValue({
       allowed: true,
       paywallText: undefined,
@@ -108,7 +109,7 @@ describe("Photon inbound media", () => {
 
   it("reads a photo from the Photon message and keeps the first-contact context", async () => {
     capture.ensureUser.mockResolvedValue({ created: true, userId: "user-new" });
-    capture.hasConversationHistory.mockResolvedValue(false);
+    capture.claimIntroduction.mockResolvedValue(true);
     const read = reader(png);
 
     const result = await onMessage(
@@ -203,7 +204,7 @@ describe("Photon inbound media", () => {
 
   it("still opens the first-contact turn when the very first message is an unusable voice note", async () => {
     capture.ensureUser.mockResolvedValue({ created: true, userId: "user-new" });
-    capture.hasConversationHistory.mockResolvedValue(false);
+    capture.claimIntroduction.mockResolvedValue(true);
     fetchMock.mockResolvedValue(
       new Response(JSON.stringify({ error: "unauthorized" }), { status: 401 })
     );

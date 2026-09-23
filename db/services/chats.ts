@@ -61,14 +61,13 @@ export async function readChat(scope: AccessScope, sessionId: string) {
 }
 
 /**
- * Whether this workspace has talked to Bro before, in any channel. A chat row
- * is written when a session receives its first message, so before that write
- * an empty workspace means the message being handled is its first ever. The
- * current session can be left out to ask about every other conversation.
+ * Whether this workspace has talked to Bro in any conversation other than the
+ * given session, in any channel. A chat row is written when a session receives
+ * its first message.
  */
-export async function hasConversationHistory(
+export async function hasOtherConversations(
   scope: AccessScope,
-  { exceptSessionId }: { readonly exceptSessionId?: string } = {}
+  sessionId: string
 ) {
   const rows = await db
     .select({ sessionId: chats.sessionId })
@@ -76,9 +75,7 @@ export async function hasConversationHistory(
     .where(
       and(
         eq(chats.workspaceId, scope.workspaceId),
-        exceptSessionId === undefined
-          ? undefined
-          : ne(chats.sessionId, exceptSessionId)
+        ne(chats.sessionId, sessionId)
       )
     )
     .limit(1);

@@ -2,7 +2,7 @@ import { defineDynamic, defineInstructions } from "eve/instructions";
 import { z } from "zod";
 import { resolveModeValue } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
-import { hasConversationHistory } from "@db/services/chats";
+import { hasOtherConversations } from "@db/services/chats";
 
 /**
  * A new session looks like a first meeting to the model, and without this a
@@ -25,9 +25,10 @@ export default defineDynamic({
       ) {
         return null;
       }
-      const known = await hasConversationHistory(scopeFromPrincipal(caller), {
-        exceptSessionId: context.session.id,
-      });
+      const known = await hasOtherConversations(
+        scopeFromPrincipal(caller),
+        context.session.id
+      );
       return known
         ? defineInstructions({ content: acquaintanceInstructions })
         : null;

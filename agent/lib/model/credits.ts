@@ -1,9 +1,17 @@
 import { z } from "zod";
+import {
+  claimOperationalAlert,
+  clearOperationalAlert,
+} from "@db/services/operational-alerts";
 import { env } from "@shared/environment";
 
 const creditsUrl = "https://openrouter.ai/api/v1/credits";
 const telegramApiBaseUrl = "https://api.telegram.org";
 const requestTimeoutMs = 10_000;
+const alertKey = "openrouter-low-credits";
+/** A low balance is repeated at most once a day unless it keeps falling. */
+const alertRepeatAfterMs = 24 * 60 * 60_000;
+const alertMinimumDropUsd = 1;
 
 const creditsResponseSchema = z.object({
   data: z.object({
@@ -20,7 +28,7 @@ const creditsResponseSchema = z.object({
 function creditCheckSettings() {
   const managementKey = env.OPENROUTER_MANAGEMENT_KEY;
   const botToken = env.TELEGRAM_BOT_TOKEN;
-  const ownerChatId = env.OWNER_TELEGRAM_CHAT_ID;
+  const ownerChatId = env.TELEGRAM_OWNER_CHAT_ID;
   if (!managementKey || !botToken || !ownerChatId) return undefined;
   return {
     botToken,
@@ -31,26 +39,41 @@ function creditCheckSettings() {
 }
 
 /**
- * The balance is read on the first minute of every hour, which keeps the
- * check to 24 cheap requests a day on a schedule that ticks every minute.
+ * The balance is read every ten minutes. What was already said lives in the
+ * database, so a skipped tick only delays the check and a repeated one cannot
+ * alert twice.
  */
 export function creditCheckDue(now: Date) {
-  return now.getUTCMinutes() === 0;
+  return now.getUTCMinutes() % 10 === 0;
 }
 
 /**
- * Reads the OpenRouter balance and tells the owner in Telegram when it is
- * below the threshold. Nothing is remembered between checks, so a low balance
- * is repeated once an hour until someone tops it up: when credits run out,
- * every person's turn fails, so a reminder is worth more than a quiet chat.
+ * Reads the OpenRouter balance and tells the owner in Telegram when it falls
+ * below the threshold. The alert repeats once a day while the balance stays
+ * low, sooner when it keeps halving, and is re-armed once it recovers.
  */
-export async function checkOpenRouterCredits() {
+export async function checkOpenRouterCredits(now = new Date()) {
   const settings = creditCheckSettings();
   if (!settings) return;
   try {
     const remainingUsd = await readRemainingCredits(settings.managementKey);
-    if (remainingUsd >= settings.thresholdUsd) return;
-    await notifyOwner(settings, creditAlertText(remainingUsd, settings));
+    if (remainingUsd >= settings.thresholdUsd) {
+      await clearOperationalAlert(alertKey, now);
+      return;
+    }
+    const claimed = await claimOperationalAlert(alertKey, remainingUsd, {
+      minimumDrop: alertMinimumDropUsd,
+      now,
+      repeatAfterMs: alertRepeatAfterMs,
+    });
+    if (!claimed) return;
+    try {
+      await notifyOwner(settings, creditAlertText(remainingUsd, settings));
+    } catch (error) {
+      // An alert nobody received must not hold back the next one for a day.
+      await clearOperationalAlert(alertKey, now);
+      throw error;
+    }
   } catch (error) {
     console.warn("[openrouter] credit balance check failed", { cause: error });
   }

@@ -1,14 +1,14 @@
 import type { DynamicResolveContext } from "eve/instructions";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { hasConversationHistory } from "@db/services/chats";
+import type { hasOtherConversations } from "@db/services/chats";
 import acquaintance from "@agent/instructions/70-acquaintance";
 
 const mocks = vi.hoisted(() => ({
-  hasConversationHistory: vi.fn<typeof hasConversationHistory>(),
+  hasOtherConversations: vi.fn<typeof hasOtherConversations>(),
 }));
 
 vi.mock("@db/services/chats", () => ({
-  hasConversationHistory: mocks.hasConversationHistory,
+  hasOtherConversations: mocks.hasOtherConversations,
 }));
 
 const resolve = acquaintance.events["turn.started"];
@@ -24,19 +24,19 @@ describe("acquaintance context", () => {
   // A fresh web chat of a long-standing account used to open with
   // «привет, я бро — беру на себя разную рутину…».
   it("tells the model a new chat is not a new acquaintance", async () => {
-    mocks.hasConversationHistory.mockResolvedValue(true);
+    mocks.hasOtherConversations.mockResolvedValue(true);
 
     const selected = await resolve({}, dynamicContext("authjs"));
 
-    expect(mocks.hasConversationHistory).toHaveBeenCalledExactlyOnceWith(
+    expect(mocks.hasOtherConversations).toHaveBeenCalledExactlyOnceWith(
       { userId: "user-1", workspaceId: "personal:workspace" },
-      { exceptSessionId: "session-new" }
+      "session-new"
     );
     expect(selected?.content).toContain("не представляйся");
   });
 
   it("stays out of the workspace's very first conversation", async () => {
-    mocks.hasConversationHistory.mockResolvedValue(false);
+    mocks.hasOtherConversations.mockResolvedValue(false);
 
     expect(await resolve({}, dynamicContext("authjs"))).toBeNull();
   });
@@ -44,7 +44,7 @@ describe("acquaintance context", () => {
   it("stays out of background work", async () => {
     expect(await resolve({}, dynamicContext("scheduled-worker"))).toBeNull();
     expect(await resolve({}, dynamicContext("scheduled-result"))).toBeNull();
-    expect(mocks.hasConversationHistory).not.toHaveBeenCalled();
+    expect(mocks.hasOtherConversations).not.toHaveBeenCalled();
   });
 });
 

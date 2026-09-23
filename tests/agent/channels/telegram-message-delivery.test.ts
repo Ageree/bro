@@ -754,6 +754,40 @@ describe("Telegram message delivery", () => {
     });
   });
 
+  it("answers someone writing in English in English", async () => {
+    const { context, request } = handlerContext();
+
+    await handleTurnFailed(
+      modelCallFailure(),
+      context,
+      englishSessionContext()
+    );
+
+    expect(request).toHaveBeenCalledExactlyOnceWith("sendMessage", {
+      chat_id: "4242",
+      parse_mode: "HTML",
+      text: "taking a quick nap, back soon",
+    });
+  });
+
+  // An overflowing context or a rejected request also fails as
+  // MODEL_CALL_FAILED, and «back soon» would not be true there.
+  it("keeps the apology for a model call the provider rejected", async () => {
+    const { context, request } = handlerContext();
+
+    await handleTurnFailed(
+      { ...modelCallFailure(), details: { statusCode: 400 } },
+      context,
+      sessionContext()
+    );
+
+    expect(request).toHaveBeenCalledExactlyOnceWith("sendMessage", {
+      chat_id: "4242",
+      parse_mode: "HTML",
+      text: "Что-то сломалось, пока я разбирался с твоей просьбой. Попробуй ещё раз.",
+    });
+  });
+
   it("keeps the generic apology for other turn failures", async () => {
     const { context, request } = handlerContext();
 
@@ -792,9 +826,28 @@ pdfBytes.set([...Buffer.from("%PDF-1.7")], 0);
 function modelCallFailure(): TurnFailedEvent {
   return {
     code: "MODEL_CALL_FAILED",
+    details: { statusCode: 402 },
     message: 'OpenRouter 402: "This request requires more credits"',
     sequence: 2,
     turnId: "turn-1",
+  };
+}
+
+function englishSessionContext() {
+  const session = sessionContext();
+  const caller = session.session.auth.current;
+  return {
+    ...session,
+    session: {
+      ...session.session,
+      auth: {
+        ...session.session.auth,
+        current: {
+          ...caller,
+          attributes: { ...caller.attributes, replyLanguage: "en" },
+        },
+      },
+    },
   };
 }
 
