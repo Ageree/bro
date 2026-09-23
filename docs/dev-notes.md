@@ -37,12 +37,28 @@
 
 - eve закреплён на `0.62.0` с патчем `patches/eve@0.62.0.patch`. Обновление
   версии означает перевыпуск патча; порядок описан в `patches/README.md`.
+- Веб-чат (канал eve) достижим только через `attachSession(sessionId)`: адреса
+  продолжения у него нет, и `to(...)` из расписания туда не доставит. Хендлер
+  расписания получает `attachSession` из нашего патча eve; им пользуется
+  `agent/schedules/browser-runs.ts`.
 - Всё, что попадает в историю сообщений, должно сериализоваться в JSON. Сырой
   `Uint8Array` в `FilePart` ломал durable-замыкание динамических инструментов:
   `save_memory`, `update` и `workstreams` молча пропадали до конца сессии
   («Dynamic tool resolver failed — Expected a JSON-serializable value»). Байты
   файлов кладутся base64-строкой (коммит `2ed484c`).
 
+- В eve нет настройки `toolChoice`. Доставку через `send_message` в
+  интерактивных ходах форсирует резолвер модели на `step.started`
+  (`agent/agent.ts`): пока последнее сообщение человека без ответа, модель
+  OpenRouter оборачивается middleware с `toolChoice: required`
+  (`agent/lib/model/openrouter.ts`). `ctx.messages` там несут eve-поле `kind`:
+  `user` у человека, `execution.background_task` у фонового пробуждения,
+  которое по инструкциям может промолчать (`agent/lib/delivery/pending.ts`).
+  Не форсируются: ходы `browser-result` (антибот-проверку модель продолжает
+  молча), шаги после десятого без ответа, `anthropic/*` с reasoning (Anthropic
+  отвергает принудительный инструмент при extended thinking). Строковый id
+  Gateway не оборачивается: в `eve dev` eve подставляет свою авторизацию
+  Gateway только для строк.
 - `eve info` в 0.62 не печатает подключения ни в тексте, ни в `--json`. Что
   подключения собрались, видно в `.eve/compile/compiled-agent-manifest.json`
   (ключ `connections`), который `eve info` пишет при компиляции.
@@ -63,9 +79,11 @@
 - `@googleapis/drive` закреплён на 22: версии 25+ тянут `google-auth-library`
   11, и его `OAuth2Client` не совместим по типам с клиентом из `client.ts`,
   общим для Gmail, Calendar и People.
-- Токен Google запрашивается со всем списком `googleWorkspaceScopes`. Грант,
-  выданный до появления в списке `drive.readonly`, этот скоуп не покрывает:
-  Google у такого человека нужно переподключить через `connect_google`.
+- Грант Google, выданный до появления скоупа в `googleWorkspaceScopes`
+  (например `drive.readonly`), его не покрывает. Если такой токен всё же
+  дошёл до API, Google отвечает 403 insufficient scopes, а не 401, поэтому
+  `withGoogleAuth` на обоих ответах зовёт `ctx.requireAuth` и заново
+  спрашивает согласие (`agent/lib/google-workspace/client.ts`).
 
 ## Notion и Slack
 
@@ -81,8 +99,16 @@
 - Не публикуйте свои маршруты каналов eve (`/webhooks`,
   `/internal/scheduled-run`) в Build Output: вебхуки отвечали 200, но Vercel
   Workflow переставал вызывать `/.well-known/workflow/v1/flow`, и ни один ход
-  не запускался. Откачено в `bb5b1a0`; вебхук Browser Use обслуживает поллер
-  раз в минуту.
+  не запускался. Откачено в `bb5b1a0`. Следствие: в продакшене до eve доходит
+  только `/eve/v1/*`, а `/webhooks/browser-use` и `/internal/scheduled-run/*`
+  не работают. Не стройте доставку на вызове своих маршрутов: вебхук Browser
+  Use заменяет поллер раз в минуту.
+
+## Браузерные поручения
+
+- Итог поручения хранится в `browser_runs.report` и доставляется отдельно от
+  завершения под арендой (`report_claimed_at`): сбой доставки не теряет итог,
+  поллер повторяет её, а `browser_task status` отдаёт недоставленный итог.
 
 ## Память Бро
 
