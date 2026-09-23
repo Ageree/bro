@@ -29,6 +29,11 @@
   изменение с точки зрения пользователя.
 - В свежей облачной сессии нет `node_modules`: перед `pnpm check` и
   `pnpm build` нужен `pnpm install`.
+- eve требует Node 24 (`.node-version`), а в облачной сессии стоит Node 22:
+  `npx -y node@24 --version` скачивает его, дальше положите этот бинарник первым
+  в `PATH`. `pnpm build` и `pnpm eval:list` без `.env.local` падают на проверке
+  окружения: хватает заглушек `DATABASE_URL`, `DATABASE_URL_UNPOOLED`,
+  `BETTER_AUTH_URL`, `BETTER_AUTH_SECRET` и `SECRET_ENCRYPTION_KEY`.
 - `pnpm check` включает knip: новый каталог с точками входа (как
   `agent/instrumentation/`) надо добавить в `knip.config.ts`, иначе его файлы
   считаются неиспользуемыми.
