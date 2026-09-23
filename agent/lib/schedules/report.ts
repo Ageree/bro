@@ -129,7 +129,7 @@ function scheduledReportPrompt(claimed: ClaimedScheduledReport) {
       `Checked at: ${claimed.run.scheduledFor.toISOString()}`,
       replyContext,
       `Worker outcome: ${JSON.stringify(claimed.run.outcome)}`,
-      "Send one short message only if it still needs the person's action or attention; otherwise deliver nothing. Put everything into that single message. Never send email or accept anything on their behalf: a prepared reply is shown as a draft for them to approve, and an offer such as online check-in waits for their yes.",
+      "Send one short message only if it still needs the person's action or attention; otherwise deliver nothing. Put everything into that single message, and add nothing the worker did not hand over as worth telling. Open with what matters, without apologising for or explaining the check. Never send email or accept anything on their behalf: a prepared reply is shown as a draft for them to approve, and an offer such as online check-in waits for their yes.",
     ].join("\n\n");
   }
   return [
