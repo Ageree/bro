@@ -4,7 +4,8 @@ import type {
   revokeToken,
   startAuthorization,
 } from "@vercel/connect";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import { env } from "@shared/environment";
 
 const connect = vi.hoisted(() => ({
@@ -43,9 +44,48 @@ const grantedToken = {
   token: "ya29.token",
 };
 
+const tokenInfo = vi.fn<typeof fetch>();
+
 describe("readGoogleWorkspaceConnection", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    tokenInfo.mockResolvedValue(Response.json({ access_type: "offline" }));
+    vi.stubGlobal("fetch", tokenInfo);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("flags a grant Google issued without offline access", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    connect.getTokenResponse.mockResolvedValue(grantedToken);
+    tokenInfo.mockResolvedValue(Response.json({ access_type: "online" }));
+
+    await expect(
+      readGoogleWorkspaceConnection(userId, "full")
+    ).resolves.toMatchObject({ state: "connected" });
+    const [endpoint, init] = tokenInfo.mock.calls[0] ?? [];
+    expect(endpoint).toBe("https://oauth2.googleapis.com/tokeninfo");
+    expect(
+      z.instanceof(URLSearchParams).parse(init?.body).get("access_token")
+    ).toBe("ya29.token");
+    expect(warn).toHaveBeenCalledExactlyOnceWith(
+      expect.stringContaining("no offline access")
+    );
+    warn.mockRestore();
+  });
+
+  it("keeps a connected grant connected when tokeninfo fails", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    connect.getTokenResponse.mockResolvedValue(grantedToken);
+    tokenInfo.mockRejectedValue(new TypeError("fetch failed"));
+
+    await expect(
+      readGoogleWorkspaceConnection(userId, "full")
+    ).resolves.toMatchObject({ state: "connected" });
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 
   it("re-validates the grant and labels it with the connector name", async () => {
@@ -115,6 +155,7 @@ describe("readGoogleWorkspaceConnection", () => {
     ["authorization required", new UserAuthorizationRequiredError("authorize")],
     ["no valid token", new NoValidTokenError("revoked")],
   ])("reports %s as disconnected", async (_description, error) => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
     connect.getTokenResponse.mockRejectedValue(error);
 
     await expect(
@@ -124,6 +165,8 @@ describe("readGoogleWorkspaceConnection", () => {
       accountLabel: null,
       state: "disconnected",
     });
+    expect(info).toHaveBeenCalledOnce();
+    info.mockRestore();
   });
 
   it.each([
@@ -176,7 +219,7 @@ describe("startGoogleWorkspaceAuthorization", () => {
     vi.clearAllMocks();
   });
 
-  it("mints a ten-minute authorization for the user's subject", async () => {
+  it("mints a ten-minute authorization that makes Google show consent", async () => {
     connect.startAuthorization.mockResolvedValue({
       request: "req_1",
       url: "https://accounts.google.com/o/oauth2/v2/auth?state=abc",
@@ -196,6 +239,7 @@ describe("startGoogleWorkspaceAuthorization", () => {
       {
         callbackUrl: "https://example.com/workspace?google=connected",
         expiresInMs: 10 * 60_000,
+        prompt: "consent",
       }
     );
   });

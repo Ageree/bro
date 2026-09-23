@@ -1,4 +1,8 @@
 import { auth } from "@googleapis/gmail";
+import type {
+  ConnectAuthorizationOptions,
+  ConnectOptions,
+} from "@vercel/connect";
 import { connect, type EveAuthorizationOptions } from "@vercel/connect/eve";
 import type { SessionContext } from "eve/context";
 import type { ToolContext } from "eve/tools";
@@ -9,12 +13,22 @@ import { getGoogleWorkspaceAccess } from "@db/services/settings";
 import { env } from "@shared/environment";
 import {
   type GoogleWorkspaceAccess,
+  googleWorkspaceConsentPrompt,
   googleWorkspaceSubject,
   googleWorkspaceScopes,
 } from "@shared/google-workspace/connection";
 
+// The eve adapter spreads `connectOptions` into `startAuthorization`, so the
+// consent prompt reaches the chat's sign-in card too; its `getToken` calls
+// ignore the field.
+const googleWorkspaceConnectOptions: ConnectOptions &
+  Pick<ConnectAuthorizationOptions, "prompt"> = {
+  prompt: googleWorkspaceConsentPrompt,
+};
+
 export function googleWorkspaceAuthOptions(access: GoogleWorkspaceAccess) {
   return {
+    connectOptions: googleWorkspaceConnectOptions,
     connector: env.GOOGLE_CONNECTOR_UID,
     createSubject(principal) {
       if (principal.type !== "user") {

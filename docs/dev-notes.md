@@ -86,6 +86,29 @@
   отвергает принудительный инструмент при extended thinking). Строковый id
   Gateway не оборачивается: в `eve dev` eve подставляет свою авторизацию
   Gateway только для строк.
+- `eve info` в 0.62 не печатает подключения ни в тексте, ни в `--json`. Что
+  подключения собрались, видно в `.eve/compile/compiled-agent-manifest.json`
+  (ключ `connections`), который `eve info` пишет при компиляции.
+- MCP-подключение отдаёт список инструментов только с токеном пользователя:
+  `connection_search` без подключённого аккаунта паркует ход на авторизации.
+  OpenAPI-подключение строит инструменты из спецификации без токена, и
+  подтверждение спрашивается до входа. Поэтому Notion и Slack сделаны
+  OpenAPI-подключениями (`agent/connections/`), а записи идут через
+  `notion-add-task` и `slack-send-message`, которые сами находят базу и адресата.
+- Агентские эвалы в облачной сессии: `pnpm eval:agent` требует ключ Gateway
+  и Docker. Хватает `OPENROUTER_API_KEY`, локального Postgres (`initdb` от
+  не-root пользователя), `pnpm db:migrate` и прямого
+  `eve eval agent --tag <тег>` с `DATABASE_URL`, `BETTER_AUTH_URL=http://127.0.0.1:9`
+  и `NODE_ENV=development`. Кейсы с `t.judge` без Gateway не оценятся.
+
+## Notion и Slack
+
+- Коннекторы Vercel Connect задаются `NOTION_CONNECTOR_UID` и
+  `SLACK_CONNECTOR_UID` (по умолчанию `notion` и `slack`). Настройка Notion:
+  `eve link`, затем `eve add connection/notion --non-interactive --skip-install`.
+  Готового `connection/slack` в реестре eve нет (`channel/slack` делает бота,
+  а не пишет от имени человека); коннектор Slack создаётся вручную с
+  user-скоупами из `agent/lib/connected-apps/auth.ts`.
 
 - `POST /eve/v1/session` отвечает `202` с id, как только Workflow принял
   запуск, а `session.started` приходит только с первым сообщением. Поэтому
@@ -161,6 +184,17 @@
   отзывает грант (`revokeGoogleWorkspaceGrant`), иначе у Google остаются широкие
   scopes старого гранта. Запись в режиме только чтения отсекается политикой
   подтверждения `googleWriteApproval` до карточки, а не ошибкой Google.
+- Google выдаёт refresh-токен, только когда экран согласия реально
+  показывается. Кто уже давал доступ этому OAuth-клиенту, проходит без
+  экрана, и Vercel Connect получает часовой токен без продления: через час
+  Google «отключается», утренние сводки и сканер падают. Поэтому оба пути
+  авторизации (кабинет/`connect_google` и карточка входа eve через
+  `connectOptions`) шлют `prompt: "consent"`. `access_type=offline` задаёт
+  сам коннектор, SDK его не передаёт. Чтение подключения спрашивает Google
+  tokeninfo и пишет в лог `grant has no offline access`, если грант онлайн
+  (`shared/google-workspace/connection.ts`). Кроме явного отключения и смены
+  уровня доступа, код гранты не отзывает: `evict` из eve без `revoke`
+  только чистит кэш.
 - Ответ на письмо строится из Gmail `id` исходного письма (`replyToMessageId`):
   инструмент сам читает Message-ID/References/Subject и `threadId`. Поле
   `messageId` в выдаче чтения переименовано в `rfcMessageId`, чтобы модель не
