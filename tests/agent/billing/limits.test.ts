@@ -2,12 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   browserQuotaNote,
   browserRunAllowance,
-  localDayKey,
-  localMonthKey,
   messageAllowance,
   messagePaywallText,
   withinAllowance,
 } from "@agent/lib/billing/limits";
+import { localDayKey, localMonthKey } from "@shared/calendar/local-period";
 
 // 23:30 UTC on the last day of September is already October in Vladivostok and
 // still September in Moscow: the two zones disagree about both keys at once.

@@ -3,13 +3,16 @@ import {
   browserUseConfigured,
   readBrowserUseRunStatus,
 } from "@agent/lib/browser-use/client";
+import { startCaptchaRetry } from "@agent/lib/browser-use/captcha-retry";
 import {
   deliverBrowserRunReport,
   expireBrowserRun,
+  reportWalledBrowserRun,
   settleBrowserRun,
   type BrowserRunDelivery,
 } from "@agent/lib/browser-use/completion";
 import {
+  claimDueBrowserRunRetries,
   listPendingBrowserRunReports,
   listUnsettledBrowserRuns,
 } from "@db/services/browser-runs";
@@ -37,6 +40,11 @@ async function reconcileBrowserRuns(delivery: BrowserRunDelivery) {
     staleBefore: new Date(now.getTime() - settleAfterMs),
   });
   await Promise.all(runs.map((run) => reconcileBrowserRun(delivery, run, now)));
+  // Errands parked on an anti-bot wall get their next attempt when it is due.
+  const retries = await claimDueBrowserRunRetries(now, pollLimit);
+  await Promise.all(
+    retries.map((retry) => retryWalledBrowserRun(delivery, retry, now))
+  );
   // A report still pending here is one whose delivery failed; it is retried
   // every poll until it lands or runs out of attempts.
   const reports = await listPendingBrowserRunReports(pollLimit);
@@ -65,6 +73,24 @@ async function reconcileBrowserRun(
     }
   } catch (error) {
     console.warn("[browser-use] run reconciliation failed", {
+      cause: error,
+      runId: run.id,
+    });
+  }
+}
+
+async function retryWalledBrowserRun(
+  delivery: BrowserRunDelivery,
+  run: Awaited<ReturnType<typeof claimDueBrowserRunRetries>>[number],
+  now: Date
+) {
+  try {
+    const retry = await startCaptchaRetry(run, now);
+    if (retry.status === "exhausted") {
+      await reportWalledBrowserRun(delivery, run.id);
+    }
+  } catch (error) {
+    console.warn("[browser-use] anti-bot retry failed", {
       cause: error,
       runId: run.id,
     });

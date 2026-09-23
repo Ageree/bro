@@ -238,6 +238,32 @@ export async function findBrowserUseSessionCdpUrl(sessionId: string) {
   return browser?.cdpUrl ?? undefined;
 }
 
+/**
+ * Stop every live browser a session holds. A profile keeps the cookies of
+ * the browsers that ran on it — the sign-ins and the trust a site handed out
+ * after a passed check — and stopping the browser is what hands them back to
+ * the profile now rather than whenever the idle cleanup gets to it. It also
+ * guarantees the next run on the profile a fresh browser.
+ */
+export async function stopBrowserUseSessionBrowsers(sessionId: string) {
+  const { items } = browserSessionListSchema.parse(
+    await request("GET", "/browsers")
+  );
+  const live = items.filter(
+    (item) => item.agentSessionId === sessionId && item.status === "active"
+  );
+  await Promise.all(
+    live.map((item) =>
+      request(
+        "PATCH",
+        `/browsers/${encodeURIComponent(item.id)}`,
+        JSON.stringify({ action: "stop" })
+      )
+    )
+  );
+  return live.length;
+}
+
 export async function cancelBrowserUseRun(runId: string) {
   return runSummarySchema.parse(
     await request("POST", `/runs/${encodeURIComponent(runId)}/cancel`, "{}")
@@ -265,7 +291,7 @@ export function liveViewUrlFromEvents(
 }
 
 async function request(
-  method: "DELETE" | "GET" | "POST",
+  method: "DELETE" | "GET" | "PATCH" | "POST",
   path: string,
   body?: string
 ) {

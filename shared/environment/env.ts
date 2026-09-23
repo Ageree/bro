@@ -135,6 +135,16 @@ export const env = createEnv({
       .max(65_535, "BROWSER_USE_PROXY_PORT must be a port number")
       .optional(),
     BROWSER_USE_PROXY_USERNAME: requiredValue.optional(),
+    // How the proxy provider is asked for a different exit: a username with
+    // `{session}` where a per-attempt token goes (sticky-session syntax such
+    // as `user-session-{session}`). A background retry after an anti-bot wall
+    // uses it; without it the retries alternate with the hosted pool instead.
+    BROWSER_USE_PROXY_ROTATING_USERNAME: requiredValue
+      .refine(
+        (value) => value.includes("{session}"),
+        "BROWSER_USE_PROXY_ROTATING_USERNAME must contain {session}"
+      )
+      .optional(),
     BROWSER_USE_PROXY_COUNTRY: z
       .string()
       .trim()

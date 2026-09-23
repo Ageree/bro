@@ -9,6 +9,10 @@ import {
   accessScopeForUser,
   type AccessScope,
 } from "@shared/identity/access-scope";
+import type {
+  AutoPaymentDecision,
+  AutoPaymentRequest,
+} from "@shared/spending/limit";
 import { emptyUserProfile } from "@shared/user-profile/schema";
 import {
   serializeAddressVaultPayload,
@@ -90,20 +94,59 @@ const readVaultSecret = vi.hoisted(() =>
 const readAccountPhoneNumber = vi.hoisted(() =>
   vi.fn<() => Promise<string | undefined>>(() => Promise.resolve(undefined))
 );
+const cancelBrowserRunRetry = vi.hoisted(() =>
+  vi.fn<(runId: string) => Promise<boolean>>(() => Promise.resolve(false))
+);
+const reserveAutoPayment = vi.hoisted(() =>
+  vi.fn<
+    (
+      scope: AccessScope,
+      input: {
+        browserRunId: string;
+        periodKey: string;
+        request: AutoPaymentRequest;
+      }
+    ) => Promise<AutoPaymentDecision>
+  >()
+);
+const moveSpendReservation = vi.hoisted(() =>
+  vi.fn<(fromRunId: string, toRunId: string) => Promise<void>>(() =>
+    Promise.resolve()
+  )
+);
+const settleSpendReservation = vi.hoisted(() =>
+  vi.fn<(runId: string, outcome: { charged: boolean }) => Promise<void>>(() =>
+    Promise.resolve()
+  )
+);
 
 type Unused = () => never;
 
 vi.mock("@db/services/browser-runs", () => ({
+  cancelBrowserRunRetry,
   claimBrowserRunCompletion,
   createBrowserRun,
   readBrowserProfileId: vi.fn<() => Promise<string>>(() =>
     Promise.resolve("profile-1")
   ),
   readBrowserRunForScope,
+  // No retry chains here: the latest run is the one asked for.
+  readLatestBrowserRunForScope: (scope: AccessScope, id: string) =>
+    readBrowserRunForScope(scope, id),
   saveBrowserProfileId: vi.fn<Unused>(),
   updateBrowserRunProgress: vi.fn<() => Promise<void>>(() => Promise.resolve()),
 }));
-vi.mock("@db/services/user-profile", () => ({ readUserProfile }));
+vi.mock("@db/services/spending", () => ({
+  moveSpendReservation,
+  reserveAutoPayment,
+  settleSpendReservation,
+}));
+vi.mock("@db/services/user-profile", () => ({
+  readUserProfile,
+  readWorkspaceTimeZone: vi.fn<() => Promise<string>>(() =>
+    Promise.resolve("Europe/Moscow")
+  ),
+}));
 vi.mock("@db/services/users", () => ({ readAccountPhoneNumber }));
 vi.mock("@db/services/vault", () => ({ readVaultItems, readVaultSecret }));
 vi.mock("@agent/lib/billing/quota", () => ({ browserRunQuotaGate }));
@@ -157,6 +200,11 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
+/** A row with no background retry waiting, typed as the column is. */
+function noRetryAt(): Date | null {
+  return null;
+}
+
 function browserRunRow(
   completedAt: Date | null = null,
   outcome: string | null = null
@@ -172,6 +220,7 @@ function browserRunRow(
     outcome,
     profileId: "profile-1",
     replyAnchorMessageId: null,
+    retryAt: noRetryAt(),
     rootSessionId: "session-1",
     sessionId,
     site: "https://taxi.yandex.ru",
@@ -712,3 +761,312 @@ function toolContext(principalId: string) {
     toolName: "browser_task",
   } satisfies ToolContext;
 }
+
+describe("browser_task standing spend limit", () => {
+  async function startPaidErrand(withinSpendLimit: {
+    feeRub?: number;
+    recurring?: boolean;
+    totalRub: number;
+  }) {
+    vi.resetModules();
+    createBrowserUseRun.mockResolvedValue({
+      id: runId,
+      model: "hosted-agent",
+      sessionId,
+      status: "running",
+    });
+    const { browserTask } = await import("@agent/tools/browser_task");
+    return browserTask.execute(
+      {
+        action: "start",
+        allowPayment: true,
+        site: "https://www.shop.example",
+        task: "Купи корм для кота",
+        withinSpendLimit: {
+          category: "Зоотовары",
+          currency: "RUB",
+          feeRub: withinSpendLimit.feeRub ?? 0,
+          recurring: withinSpendLimit.recurring ?? false,
+          totalRub: withinSpendLimit.totalRub,
+        },
+      },
+      toolContext("better-auth:alice")
+    );
+  }
+
+  it("pays within the limit without asking and caps the run at that amount", async () => {
+    reserveAutoPayment.mockResolvedValue({
+      allowed: true,
+      basis: "limit",
+      exposureRub: 1500,
+      remainingAfterRub: 3500,
+    });
+
+    const result = await startPaidErrand({ totalRub: 1500 });
+
+    const reservation = reserveAutoPayment.mock.calls[0]?.[1];
+    expect(reservation?.periodKey).toMatch(/^\d{4}-\d{2}$/u);
+    expect(reservation?.request).toEqual({
+      amount: 1500,
+      category: "зоотовары",
+      currency: "RUB",
+      fee: 0,
+      merchant: "shop.example",
+      recurring: false,
+    });
+    expect(resolveBrowserSecretBindings).toHaveBeenCalledWith(
+      accessScopeForUser("better-auth:alice"),
+      { allowPayment: true, site: "https://www.shop.example" }
+    );
+    const task = createBrowserUseRun.mock.calls[0]?.[0].task ?? "";
+    expect(task).toContain("Payment is pre-approved up to");
+    expect(task).toContain("stop before confirming with NEEDS: payment");
+    // The placeholder the reservation was made under now names the run.
+    const placeholder = reservation?.browserRunId ?? "";
+    expect(placeholder).toMatch(/^pending:/u);
+    expect(moveSpendReservation).toHaveBeenCalledExactlyOnceWith(
+      placeholder,
+      runId
+    );
+    expect(createBrowserRun.mock.calls[0]).toEqual([
+      accessScopeForUser("better-auth:alice"),
+      expect.objectContaining({ paymentAllowed: true }),
+    ]);
+    expect(result).toMatchObject({ runId, status: "running" });
+    expect(continuationNote(result)).toContain("do not ask them about it");
+  });
+
+  it("books something free without a reservation", async () => {
+    reserveAutoPayment.mockResolvedValue({ allowed: true, basis: "free" });
+
+    await startPaidErrand({ totalRub: 0 });
+
+    const task = createBrowserUseRun.mock.calls[0]?.[0].task ?? "";
+    expect(task).toContain("only because this costs nothing");
+    expect(moveSpendReservation).not.toHaveBeenCalled();
+  });
+
+  it("starts nothing and asks when the payment is over the limit", async () => {
+    reserveAutoPayment.mockResolvedValue({
+      allowed: false,
+      reason: "over_limit",
+      remainingRub: 800,
+    });
+
+    const result = await startPaidErrand({ totalRub: 12_000 });
+
+    expect(result).toMatchObject({ status: "needs_approval" });
+    expect(continuationNote(result)).toContain("more than is left");
+    expect(continuationNote(result)).toContain("Ask the user once");
+    expect(createBrowserUseRun).not.toHaveBeenCalled();
+    expect(resolveBrowserSecretBindings).not.toHaveBeenCalled();
+    // A refused payment does not cost the month an errand either.
+    expect(browserRunQuotaGate).not.toHaveBeenCalled();
+  });
+
+  it("gives the reservation back when the run never starts", async () => {
+    reserveAutoPayment.mockResolvedValue({
+      allowed: true,
+      basis: "limit",
+      exposureRub: 1500,
+      remainingAfterRub: 3500,
+    });
+    vi.resetModules();
+    createBrowserUseRun.mockRejectedValue(new Error("Browser Use is down"));
+    const { browserTask } = await import("@agent/tools/browser_task");
+
+    await expect(
+      browserTask.execute(
+        {
+          action: "start",
+          allowPayment: true,
+          site: "https://shop.example",
+          task: "Купи корм",
+          withinSpendLimit: {
+            currency: "RUB",
+            feeRub: 0,
+            recurring: false,
+            totalRub: 1500,
+          },
+        },
+        toolContext("better-auth:alice")
+      )
+    ).rejects.toThrow("Browser Use is down");
+
+    const placeholder = reserveAutoPayment.mock.calls[0]?.[1].browserRunId;
+    expect(settleSpendReservation).toHaveBeenCalledExactlyOnceWith(
+      placeholder,
+      { charged: false }
+    );
+  });
+
+  it("keeps an explicitly approved payment off the limit", async () => {
+    vi.resetModules();
+    createBrowserUseRun.mockResolvedValue({
+      id: runId,
+      model: "hosted-agent",
+      sessionId,
+      status: "running",
+    });
+    const { browserTask } = await import("@agent/tools/browser_task");
+
+    await browserTask.execute(
+      {
+        action: "start",
+        allowPayment: true,
+        site: "https://shop.example",
+        task: "Купи корм — я разрешаю оплату",
+      },
+      toolContext("better-auth:alice")
+    );
+
+    expect(reserveAutoPayment).not.toHaveBeenCalled();
+    expect(createBrowserUseRun.mock.calls[0]?.[0].task).not.toContain(
+      "pre-approved"
+    );
+  });
+
+  it("carries an errand's reservation into its follow-up run", async () => {
+    await continueErrand({ completedAt: new Date() });
+
+    expect(moveSpendReservation).toHaveBeenCalledExactlyOnceWith(
+      runId,
+      followUpRunId
+    );
+  });
+
+  it("withdraws a waiting background retry when the person steps in", async () => {
+    readBrowserRunForScope.mockResolvedValue({
+      ...browserRunRow(new Date(), "Needs: captcha"),
+      retryAt: new Date(Date.now() + 60_000),
+    });
+    const { browserTask } = await import("@agent/tools/browser_task");
+
+    await browserTask.execute(
+      { action: "continue", runId, task: "Возьми другой корм" },
+      toolContext("better-auth:alice")
+    );
+
+    expect(cancelBrowserRunRetry).toHaveBeenCalledExactlyOnceWith(runId);
+    expect(createBrowserUseRun.mock.calls[0]?.[0].sessionId).toBeUndefined();
+  });
+});
+
+describe("browser_task spend limit on a follow-up", () => {
+  async function continueOnLimit(totalRub: number) {
+    readBrowserRunForScope.mockResolvedValue(browserRunRow(new Date()));
+    const { browserTask } = await import("@agent/tools/browser_task");
+    return browserTask.execute(
+      {
+        action: "continue",
+        allowPayment: true,
+        runId,
+        task: "Оформляй",
+        withinSpendLimit: {
+          currency: "RUB",
+          feeRub: 0,
+          recurring: false,
+          totalRub,
+        },
+      },
+      toolContext("better-auth:alice")
+    );
+  }
+
+  it("keeps the old reservation when the new decision is a refusal", async () => {
+    reserveAutoPayment.mockResolvedValue({
+      allowed: false,
+      reason: "over_limit",
+      remainingRub: 100,
+    });
+
+    const result = await continueOnLimit(4000);
+
+    expect(result).toMatchObject({ runId, status: "needs_approval" });
+    expect(settleSpendReservation).not.toHaveBeenCalled();
+    expect(createBrowserUseRun).not.toHaveBeenCalled();
+  });
+
+  it("replaces the old reservation once the follow-up run exists", async () => {
+    reserveAutoPayment.mockResolvedValue({
+      allowed: true,
+      basis: "limit",
+      exposureRub: 1500,
+      remainingAfterRub: 0,
+    });
+
+    await continueOnLimit(1500);
+
+    const placeholder = reserveAutoPayment.mock.calls[0]?.[1].browserRunId;
+    expect(moveSpendReservation).toHaveBeenCalledExactlyOnceWith(
+      placeholder,
+      followUpRunId
+    );
+    expect(settleSpendReservation).toHaveBeenCalledExactlyOnceWith(runId, {
+      charged: false,
+    });
+    expect(createBrowserUseRun.mock.calls[0]?.[0].task).toContain(
+      "Payment is pre-approved up to"
+    );
+  });
+
+  it("releases the new reservation when a busy session only takes the message", async () => {
+    reserveAutoPayment.mockResolvedValue({
+      allowed: true,
+      basis: "limit",
+      exposureRub: 1500,
+      remainingAfterRub: 0,
+    });
+    createBrowserUseRun.mockRejectedValueOnce(
+      new BrowserUseError(409, "/runs", "busy")
+    );
+
+    await continueOnLimit(1500);
+
+    const placeholder = reserveAutoPayment.mock.calls[0]?.[1].browserRunId;
+    expect(settleSpendReservation).toHaveBeenCalledExactlyOnceWith(
+      placeholder,
+      { charged: false }
+    );
+    expect(moveSpendReservation).not.toHaveBeenCalled();
+  });
+});
+
+describe("browser_task on an errand waiting for a background retry", () => {
+  it("cancels the pending retry instead of a run that already ended", async () => {
+    readBrowserRunForScope.mockResolvedValue({
+      ...browserRunRow(new Date(), "Needs: captcha"),
+      retryAt: new Date(Date.now() + 60_000),
+    });
+    cancelBrowserRunRetry.mockResolvedValueOnce(true);
+    const { browserTask } = await import("@agent/tools/browser_task");
+
+    const result = await browserTask.execute(
+      { action: "cancel", runId },
+      toolContext("better-auth:alice")
+    );
+
+    expect(result).toEqual({ runId, status: "stopped" });
+    expect(cancelBrowserUseRun).not.toHaveBeenCalled();
+    expect(claimBrowserRunCompletion).not.toHaveBeenCalled();
+    expect(settleSpendReservation).toHaveBeenCalledExactlyOnceWith(runId, {
+      charged: false,
+    });
+  });
+
+  it("reports the errand as still in progress without naming the check", async () => {
+    readBrowserRunForScope.mockResolvedValue({
+      ...browserRunRow(new Date(), "Needs: captcha"),
+      retryAt: new Date(Date.now() + 60_000),
+    });
+    const { browserTask } = await import("@agent/tools/browser_task");
+
+    const result = await browserTask.execute(
+      { action: "status", runId },
+      toolContext("better-auth:alice")
+    );
+
+    expect(continuationNote(result)).toContain("still in progress");
+    expect(readBrowserUseRunStatus).not.toHaveBeenCalled();
+  });
+});

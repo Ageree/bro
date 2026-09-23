@@ -1,0 +1,115 @@
+import { randomUUID } from "node:crypto";
+import { env } from "@shared/environment";
+import {
+  createBrowserRun,
+  markBrowserRunRetried,
+  parkBrowserRunForRetry,
+  type readBrowserRun,
+} from "@db/services/browser-runs";
+import { moveSpendReservation } from "@db/services/spending";
+import { createBrowserUseRun, readBrowserUseRun } from "./client";
+import { retryProxySettings } from "./proxy";
+import { resolveBrowserSecretBindings } from "./secrets";
+
+type BrowserRunRow = NonNullable<Awaited<ReturnType<typeof readBrowserRun>>>;
+
+/**
+ * How long an errand keeps trying a site that walls it off before the person
+ * hears about it. Attempt 1 is the run they started; the waits between the
+ * attempts after it grow, so a wall that lifts in a couple of minutes costs a
+ * couple of minutes and one that does not is given about half an hour.
+ */
+export const maximumCaptchaAttempts = 5;
+const retryDelaysMinutes = [2, 5, 9, 14] as const;
+
+export const captchaRetryWindowMinutes = retryDelaysMinutes.reduce(
+  (sum, minutes) => sum + minutes,
+  0
+);
+
+/**
+ * When the next attempt runs after attempt `failedAttempt` lost to an
+ * anti-bot check, or nothing when the errand is out of attempts.
+ */
+export function captchaRetryAt(failedAttempt: number, now: Date) {
+  if (failedAttempt >= maximumCaptchaAttempts) return undefined;
+  const index = Math.min(Math.max(failedAttempt, 1), retryDelaysMinutes.length);
+  const minutes = retryDelaysMinutes[index - 1] ?? 1;
+  return new Date(now.getTime() + minutes * 60_000);
+}
+
+const retryMarker = "[Retry after an anti-bot check]";
+
+/**
+ * The previous attempt's instruction with a note about where this one
+ * stands. The note replaces the one before it rather than piling up. The
+ * waiting advice is Browser Use's own: its solver works a challenge by
+ * itself, and a reload or a click in the middle restarts it.
+ */
+export function captchaRetryTask(previousTask: string, attempt: number) {
+  const base = previousTask.split(`\n\n${retryMarker}`, 1)[0] ?? previousTask;
+  return [
+    base,
+    [
+      retryMarker,
+      `An anti-bot check stopped the previous attempt, so this is attempt ${String(attempt)} of ${String(maximumCaptchaAttempts)}: a fresh browser on a different network address, with the same saved profile, cookies and sign-ins.`,
+      "Go straight to the site and do the errand. When a check appears, first give the browser's built-in solver about ten seconds without reloading or clicking into it; then solve whatever is still there yourself.",
+    ].join(" "),
+  ].join("\n\n");
+}
+
+/**
+ * Start the next attempt of an errand parked on an anti-bot wall: a new run on
+ * the same profile, with no session so it gets a new browser, through another
+ * exit. The conversation keeps the old run id and is followed to this one.
+ * A start that fails counts as a failed attempt and is parked again, until the
+ * attempts run out and the caller reports the wall.
+ */
+export async function startCaptchaRetry(row: BrowserRunRow, now = new Date()) {
+  const attempt = row.captchaAttempt + 1;
+  try {
+    const scope = { userId: row.createdByUserId, workspaceId: row.workspaceId };
+    const [previous, secrets] = await Promise.all([
+      readBrowserUseRun(row.id),
+      resolveBrowserSecretBindings(scope, {
+        allowPayment: row.paymentAllowed,
+        site: row.site ?? undefined,
+      }),
+    ]);
+    const run = await createBrowserUseRun({
+      ...retryProxySettings(attempt, randomUUID().replaceAll("-", "")),
+      maxCostUsd: env.BROWSER_USE_MAX_COST_USD,
+      model: env.BROWSER_USE_MODEL,
+      profileId: row.profileId ?? undefined,
+      secretBindings: secrets.bindings,
+      task: captchaRetryTask(previous.task, attempt),
+    });
+    await createBrowserRun(scope, {
+      captchaAttempt: attempt,
+      conversationChannel: row.conversationChannel,
+      conversationId: row.conversationId,
+      id: run.id,
+      paymentAllowed: row.paymentAllowed,
+      profileId: row.profileId,
+      replyAnchorMessageId: row.replyAnchorMessageId,
+      rootSessionId: row.rootSessionId,
+      sessionId: run.sessionId,
+      site: row.site,
+      status: "running",
+      task: row.task,
+    });
+    await markBrowserRunRetried(row.id, run.id);
+    await moveSpendReservation(row.id, run.id);
+    return { runId: run.id, status: "started" as const };
+  } catch (error) {
+    console.warn("[browser-use] the anti-bot retry could not start", {
+      attempt,
+      cause: error,
+      runId: row.id,
+    });
+    const retryAt = captchaRetryAt(attempt, now);
+    if (retryAt === undefined) return { status: "exhausted" as const };
+    await parkBrowserRunForRetry(row.id, { captchaAttempt: attempt, retryAt });
+    return { status: "parked" as const };
+  }
+}

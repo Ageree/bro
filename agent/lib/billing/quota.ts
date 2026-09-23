@@ -5,11 +5,10 @@ import { yooKassaConfigured } from "@db/services/yookassa";
 import type { AccessScope } from "@shared/identity/access-scope";
 import { env } from "@shared/environment";
 import { applicationOrigin } from "@shared/environment/origin";
+import { localDayKey, localMonthKey } from "@shared/calendar/local-period";
 import {
   browserQuotaNote,
   browserRunAllowance,
-  localDayKey,
-  localMonthKey,
   messageAllowance,
   messagePaywallText,
   withinAllowance,

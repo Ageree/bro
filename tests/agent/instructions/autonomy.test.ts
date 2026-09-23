@@ -1,0 +1,122 @@
+import type { DynamicResolveContext } from "eve/instructions";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { listSpendEntries, readSpendLimit } from "@db/services/spending";
+import type { readWorkspaceTimeZone } from "@db/services/user-profile";
+import autonomy, {
+  spendLimitInstructions,
+} from "@agent/instructions/15-autonomy";
+import { formatRub } from "@shared/spending/limit";
+
+const mocks = vi.hoisted(() => ({
+  listSpendEntries: vi.fn<typeof listSpendEntries>(),
+  readSpendLimit: vi.fn<typeof readSpendLimit>(),
+  readWorkspaceTimeZone: vi.fn<typeof readWorkspaceTimeZone>(),
+}));
+
+vi.mock("@db/services/spending", () => ({
+  listSpendEntries: mocks.listSpendEntries,
+  readSpendLimit: mocks.readSpendLimit,
+}));
+vi.mock("@db/services/user-profile", () => ({
+  readWorkspaceTimeZone: mocks.readWorkspaceTimeZone,
+}));
+
+const resolve = autonomy.events["turn.started"];
+if (!resolve) {
+  throw new Error("Autonomy must be resolved at the start of a turn.");
+}
+
+const monthly = {
+  currency: "RUB" as const,
+  excluded: ["алкоголь"],
+  rules: [
+    { category: null, limitRub: 5000, merchant: null },
+    { category: "такси", limitRub: 1000, merchant: null },
+  ],
+  version: 1 as const,
+};
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  mocks.readSpendLimit.mockResolvedValue(undefined);
+  mocks.listSpendEntries.mockResolvedValue([]);
+  mocks.readWorkspaceTimeZone.mockResolvedValue("Europe/Moscow");
+});
+
+describe("autonomy defaults", () => {
+  it("tells the model to act on a stated default instead of asking", async () => {
+    const selected = await resolve({}, dynamicContext("photon-imessage"));
+    const content = selected?.content ?? "";
+
+    expect(content).toContain("готовый результат, а не вопросы");
+    expect(content).toContain("«взял на 19:00 — поменяю, если что»");
+    expect(content).toContain("бесплатную бронь с бесплатной отменой");
+    expect(content).toContain("без внешних участников");
+    expect(content).toContain("`withinSpendLimit`");
+    expect(content).toContain("подписка или автопродление");
+    expect(content).toContain("Лимит трат без спроса не задан");
+  });
+
+  it("holds for background work too, but not for a scheduled report", async () => {
+    expect(
+      (await resolve({}, dynamicContext("scheduled-worker")))?.content
+    ).toContain("# Самостоятельность");
+    expect(await resolve({}, dynamicContext("scheduled-result"))).toBeNull();
+  });
+
+  it("gives the model this month's limit and what is left of it", async () => {
+    mocks.readSpendLimit.mockResolvedValue(monthly);
+    mocks.listSpendEntries.mockResolvedValue([
+      { amountRub: 600, category: "такси", feeRub: 0, merchant: null },
+    ]);
+
+    const selected = await resolve({}, dynamicContext("photon-imessage"));
+
+    expect(mocks.listSpendEntries).toHaveBeenCalledExactlyOnceWith(
+      { userId: "user-1", workspaceId: "personal:workspace" },
+      expect.stringMatching(/^\d{4}-\d{2}$/u)
+    );
+    expect(selected?.content).toContain(`осталось ${formatRub(4400)}`);
+    expect(selected?.content).toContain(`осталось ${formatRub(400)}`);
+    expect(selected?.content).toContain("Без спроса никогда: алкоголь.");
+  });
+
+  it("keeps the rules for a turn without a workspace", async () => {
+    const context = dynamicContext("photon-imessage");
+    const anonymous = {
+      ...context,
+      session: { ...context.session, auth: { current: null, initiator: null } },
+    } satisfies DynamicResolveContext;
+
+    const selected = await resolve({}, anonymous);
+
+    expect(selected?.content).toContain("# Самостоятельность");
+    expect(mocks.readSpendLimit).not.toHaveBeenCalled();
+  });
+
+  it("names the exclusions even without a limit", () => {
+    expect(spendLimitInstructions({ ...monthly, rules: [] }, [])).toContain(
+      "Без спроса никогда: алкоголь."
+    );
+  });
+});
+
+function dynamicContext(authenticator: string) {
+  return {
+    model: null,
+    channel: { kind: "channel:photon", metadata: {} },
+    messages: [],
+    session: {
+      auth: {
+        current: {
+          attributes: { workspaceId: "personal:workspace" },
+          authenticator,
+          principalId: "user-1",
+          principalType: "user",
+        },
+        initiator: null,
+      },
+      id: "session-1",
+    },
+  } satisfies DynamicResolveContext;
+}

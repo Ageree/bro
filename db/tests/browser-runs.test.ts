@@ -76,6 +76,62 @@ describe("browser run persistence", () => {
     );
   }, 20_000);
 
+  it("queues a walled run for its retry and follows the errand to the retry", async () => {
+    const browserRuns = await browserRunsDatabase();
+    const retryId = "55555555-5555-4555-8555-555555555555";
+    const now = new Date("2026-09-23T12:00:00.000Z");
+    await browserRuns.createBrowserRun(alice, { ...conversation(), id: runId });
+    await browserRuns.claimBrowserRunCompletion(runId, {
+      outcome: "Needs: captcha",
+      status: "done",
+    });
+    await browserRuns.parkBrowserRunForRetry(runId, {
+      captchaAttempt: 1,
+      retryAt: new Date(now.getTime() + 2 * 60_000),
+    });
+
+    expect(await browserRuns.claimDueBrowserRunRetries(now, 10)).toEqual([]);
+    const later = new Date(now.getTime() + 3 * 60_000);
+    const due = await browserRuns.claimDueBrowserRunRetries(later, 10);
+    expect(due.map((row) => [row.id, row.status, row.retryAt])).toEqual([
+      [runId, "waiting", null],
+    ]);
+    // Claimed once: a second poll finds nothing.
+    expect(await browserRuns.claimDueBrowserRunRetries(later, 10)).toEqual([]);
+
+    await browserRuns.createBrowserRun(alice, {
+      ...conversation(),
+      captchaAttempt: 2,
+      id: retryId,
+    });
+    await browserRuns.markBrowserRunRetried(runId, retryId);
+    const latest = await browserRuns.readLatestBrowserRunForScope(alice, runId);
+    expect(latest?.id).toBe(retryId);
+    expect(latest?.captchaAttempt).toBe(2);
+    expect(
+      await browserRuns.readLatestBrowserRunForScope(bob, runId)
+    ).toBeUndefined();
+    // A run that was handed over is never parked again.
+    await browserRuns.parkBrowserRunForRetry(runId, {
+      captchaAttempt: 2,
+      retryAt: now,
+    });
+    expect(await browserRuns.claimDueBrowserRunRetries(later, 10)).toEqual([]);
+  }, 20_000);
+
+  it("withdraws a pending retry only once", async () => {
+    const browserRuns = await browserRunsDatabase();
+    await browserRuns.createBrowserRun(alice, { ...conversation(), id: runId });
+    await browserRuns.parkBrowserRunForRetry(runId, {
+      captchaAttempt: 1,
+      retryAt: new Date(),
+    });
+
+    expect(await browserRuns.cancelBrowserRunRetry(runId)).toBe(true);
+    expect(await browserRuns.cancelBrowserRunRetry(runId)).toBe(false);
+    expect((await browserRuns.readBrowserRun(runId))?.status).toBe("stopped");
+  }, 20_000);
+
   it("settles a run once and stops listing it as unsettled", async () => {
     const browserRuns = await browserRunsDatabase();
     await browserRuns.createBrowserRun(alice, {

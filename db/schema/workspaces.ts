@@ -92,7 +92,7 @@ export const settings = pgTable(
   "settings",
   {
     workspaceId: text("workspace_id").notNull(),
-    key: text("key", { enum: ["gateway_model"] }).notNull(),
+    key: text("key", { enum: ["gateway_model", "spend_limit"] }).notNull(),
     value: text("value").notNull(),
   },
   (table) => [
@@ -105,7 +105,10 @@ export const settings = pgTable(
       columns: [table.workspaceId],
       foreignColumns: [workspaces.id],
     }).onDelete("cascade"),
-    check("settings_key_check", sql`${table.key} = 'gateway_model'`),
+    check(
+      "settings_key_check",
+      sql`${table.key} IN ('gateway_model', 'spend_limit')`
+    ),
   ]
 );
 

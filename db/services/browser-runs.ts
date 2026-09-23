@@ -7,6 +7,7 @@ import {
   isNotNull,
   isNull,
   lt,
+  lte,
   or,
   sql,
 } from "drizzle-orm";
@@ -120,6 +121,94 @@ export async function claimBrowserRunCompletion(
     .where(and(eq(browserRuns.id, runId), isNull(browserRuns.completedAt)))
     .returning();
   return row;
+}
+
+/**
+ * Park a settled run that lost to an anti-bot wall until its background
+ * retry is due. The run keeps its completion claim, so neither the webhook nor
+ * the poller settles it again; only the retry queue picks it back up.
+ */
+export async function parkBrowserRunForRetry(
+  runId: string,
+  input: { readonly captchaAttempt: number; readonly retryAt: Date }
+) {
+  await db
+    .update(browserRuns)
+    .set({
+      captchaAttempt: input.captchaAttempt,
+      retryAt: input.retryAt,
+      status: "waiting",
+      updatedAt: new Date(),
+    })
+    .where(and(eq(browserRuns.id, runId), isNull(browserRuns.retriedAsRunId)));
+}
+
+function retryDue(now: Date) {
+  return and(
+    isNotNull(browserRuns.retryAt),
+    lte(browserRuns.retryAt, now),
+    isNull(browserRuns.retriedAsRunId)
+  );
+}
+
+/**
+ * Take the parked runs whose retry is due. Clearing `retry_at` is the claim:
+ * a second poller re-evaluates the condition on the updated row and skips it.
+ */
+export async function claimDueBrowserRunRetries(now: Date, limit: number) {
+  const due = db
+    .select({ id: browserRuns.id })
+    .from(browserRuns)
+    .where(retryDue(now))
+    .orderBy(asc(browserRuns.retryAt))
+    .limit(limit);
+  return db
+    .update(browserRuns)
+    .set({ retryAt: null, updatedAt: now })
+    .where(and(inArray(browserRuns.id, due), retryDue(now)))
+    .returning();
+}
+
+/** Withdraw a pending retry; true when there was one to withdraw. */
+export async function cancelBrowserRunRetry(runId: string) {
+  const rows = await db
+    .update(browserRuns)
+    .set({ retryAt: null, status: "stopped", updatedAt: new Date() })
+    .where(and(eq(browserRuns.id, runId), isNotNull(browserRuns.retryAt)))
+    .returning({ id: browserRuns.id });
+  return rows.length > 0;
+}
+
+export async function markBrowserRunRetried(runId: string, retryRunId: string) {
+  await db
+    .update(browserRuns)
+    .set({
+      retriedAsRunId: retryRunId,
+      status: "stopped",
+      updatedAt: new Date(),
+    })
+    .where(eq(browserRuns.id, runId));
+}
+
+// A chain longer than the retry cap is not one this code builds.
+const maximumRetryHops = 10;
+
+/**
+ * The run that carries the errand now. A background retry replaces a run
+ * the conversation still knows by its old id, so a follow-up or a status
+ * check addressed to that id is followed to the newest run of the chain.
+ */
+export async function readLatestBrowserRunForScope(
+  scope: AccessScope,
+  runId: string,
+  hops = 0
+): Promise<Awaited<ReturnType<typeof readBrowserRunForScope>>> {
+  const row = await readBrowserRunForScope(scope, runId);
+  if (!row?.retriedAsRunId || hops >= maximumRetryHops) return row;
+  return (
+    (await readLatestBrowserRunForScope(scope, row.retriedAsRunId, hops + 1)) ??
+    row
+  );
 }
 
 export async function listUnsettledBrowserRuns(options: {

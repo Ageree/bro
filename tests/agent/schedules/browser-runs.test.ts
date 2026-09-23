@@ -78,6 +78,7 @@ vi.mock("@db/services/browser-runs", () => ({
     currentRow().reportAttempts += 1;
     return Promise.resolve({ ...currentRow() });
   },
+  claimDueBrowserRunRetries: () => Promise.resolve([]),
   finishBrowserRunReport: () => {
     currentRow().reportClaimedAt = null;
     currentRow().reportDeliveredAt = new Date();
@@ -106,6 +107,10 @@ vi.mock("@db/services/browser-runs", () => ({
 vi.mock("@db/services/orders", () => ({
   recordOrder: vi.fn<() => Promise<void>>(),
 }));
+vi.mock("@db/services/spending", () => ({
+  readSpendEntryForRun: () => Promise.resolve(undefined),
+  settleSpendReservation: () => Promise.resolve(undefined),
+}));
 vi.mock("@agent/lib/browser-use/client", () => ({
   browserUseConfigured: () => true,
   cancelBrowserUseRun: vi.fn<() => Promise<void>>(),
@@ -119,6 +124,7 @@ vi.mock("@agent/lib/browser-use/client", () => ({
       task: "Find a hotel",
     }),
   readBrowserUseRunStatus: () => Promise.resolve("completed"),
+  stopBrowserUseSessionBrowsers: () => Promise.resolve(1),
 }));
 vi.mock("@agent/lib/browser-use/images", () => ({
   captureBrowserRunImages: () => Promise.resolve([]),
