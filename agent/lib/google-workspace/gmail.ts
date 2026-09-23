@@ -3,6 +3,7 @@ import { gmail, type gmail_v1 } from "@googleapis/gmail";
 import type { ToolContext } from "eve/tools";
 import { z } from "zod";
 import { withGoogleAuth } from "./client";
+import { emailAddressSchema } from "./email";
 
 type GmailMessage = gmail_v1.Schema$Message;
 type GmailPart = gmail_v1.Schema$MessagePart;
@@ -19,13 +20,13 @@ export const GMAIL_UPDATE_ACTIONS = [
 export type GmailUpdateAction = (typeof GMAIL_UPDATE_ACTIONS)[number];
 
 export const gmailSendSchema = z.object({
-  bcc: z.array(z.email()).max(20).default([]),
+  bcc: z.array(emailAddressSchema).max(20).default([]),
   body: z.string().min(1).max(100_000),
-  cc: z.array(z.email()).max(20).default([]),
+  cc: z.array(emailAddressSchema).max(20).default([]),
   inReplyTo: z.string().max(998).optional(),
   subject: z.string().min(1).max(998),
   threadId: z.string().max(200).optional(),
-  to: z.array(z.email()).min(1).max(20),
+  to: z.array(emailAddressSchema).min(1).max(20),
 });
 
 export async function searchGmail(
