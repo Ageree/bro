@@ -570,6 +570,44 @@ describe("settling a browser run", () => {
     expect(prompt).toContain("as a receipt");
   });
 
+  it("counts a payment that went through without an order number", async () => {
+    readSpendEntryForRun.mockResolvedValue({
+      amountRub: 1500,
+      category: null,
+      feeRub: 0,
+      merchant: "shop.example",
+      periodKey: "2026-09",
+      status: "reserved",
+    });
+    settleSpendReservation.mockResolvedValue({
+      amountRub: 1200,
+      category: null,
+      feeRub: 0,
+      merchant: "shop.example",
+      periodKey: "2026-09",
+      status: "charged",
+    });
+    readBrowserUseRun.mockResolvedValue({
+      error: null,
+      id: runId,
+      result: `RESULT: оплатил\nORDER: ${"x".repeat(80)}\nTOTAL: 1 200 ₽\nNEEDS: none`,
+      sessionId: "session-1",
+      status: "completed",
+      task: "Order the usual",
+    });
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    // No order row takes an 80-character id, and the money is gone all the same.
+    expect(settleSpendReservation).toHaveBeenCalledExactlyOnceWith(runId, {
+      amountRub: 1200,
+      charged: true,
+    });
+  });
+
   it("tells the person plainly when the run paid more than the limit allowed", async () => {
     readSpendEntryForRun.mockResolvedValue({
       amountRub: 1500,

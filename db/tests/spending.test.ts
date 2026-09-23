@@ -313,16 +313,34 @@ describe("spend limit persistence", () => {
     }
   }, 30_000);
 
-  it("records nothing for a free booking", async () => {
+  it("binds no card for a free booking without a limit, and tracks one under it", async () => {
     const spending = await spendingDatabase();
 
-    const decision = await spending.reserveAutoPayment(alice, {
-      browserRunId: "run-free",
+    expect(
+      await spending.reserveAutoPayment(alice, {
+        browserRunId: "run-free",
+        periodKey: "2026-09",
+        request: payment(0),
+      })
+    ).toEqual({ allowed: false, reason: "no_limit" });
+    expect(await spending.readSpendEntryForRun("run-free")).toBeUndefined();
+
+    await spending.updateSpendLimit(alice, () => monthly);
+    const guarantee = await spending.reserveAutoPayment(alice, {
+      browserRunId: "run-guarantee",
       periodKey: "2026-09",
       request: payment(0),
     });
-
-    expect(decision).toEqual({ allowed: true, basis: "free" });
-    expect(await spending.readSpendEntryForRun("run-free")).toBeUndefined();
+    expect(guarantee).toEqual({
+      allowed: true,
+      exposureRub: 0,
+      remainingAfterRub: 5000,
+    });
+    // The row is there so a later no-show charge on the bound card settles
+    // against the month.
+    expect(await spending.readSpendEntryForRun("run-guarantee")).toMatchObject({
+      amountRub: 0,
+      status: "reserved",
+    });
   }, 30_000);
 });

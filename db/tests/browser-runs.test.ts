@@ -93,11 +93,15 @@ describe("browser run persistence", () => {
     expect(await browserRuns.claimDueBrowserRunRetries(now, 10)).toEqual([]);
     const later = new Date(now.getTime() + 3 * 60_000);
     const due = await browserRuns.claimDueBrowserRunRetries(later, 10);
+    const lease = new Date(later.getTime() + 10 * 60_000);
     expect(due.map((row) => [row.id, row.status, row.retryAt])).toEqual([
-      [runId, "waiting", null],
+      [runId, "waiting", lease],
     ]);
-    // Claimed once: a second poll finds nothing.
+    // Claimed once: a second poll finds nothing while the lease holds…
     expect(await browserRuns.claimDueBrowserRunRetries(later, 10)).toEqual([]);
+    // …and a poller that died before the handoff has not lost the errand.
+    const reclaimed = await browserRuns.claimDueBrowserRunRetries(lease, 10);
+    expect(reclaimed.map((row) => row.id)).toEqual([runId]);
 
     expect(
       await browserRuns.handOffBrowserRunRetry(runId, {
@@ -107,6 +111,7 @@ describe("browser run persistence", () => {
         sessionId: "browser-session-2",
       })
     ).toBe(true);
+    expect((await browserRuns.readBrowserRun(runId))?.retryAt).toBeNull();
     const latest = await browserRuns.readLatestBrowserRunForScope(alice, runId);
     expect(latest?.id).toBe(retryId);
     expect(latest?.captchaAttempt).toBe(2);
@@ -121,7 +126,7 @@ describe("browser run persistence", () => {
         retryAt: now,
       })
     ).toBe(false);
-    expect(await browserRuns.claimDueBrowserRunRetries(later, 10)).toEqual([]);
+    expect(await browserRuns.claimDueBrowserRunRetries(lease, 10)).toEqual([]);
   }, 20_000);
 
   it("lets no retry start for an errand the person stopped", async () => {

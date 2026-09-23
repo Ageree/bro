@@ -8,6 +8,7 @@ import {
 import {
   cancelBrowserUseRun,
   createBrowserUseRun,
+  findRecentBrowserUseRunByTaskLine,
   readBrowserUseRun,
 } from "./client";
 import { retryProxySettings } from "./proxy";
@@ -48,7 +49,11 @@ const retryMarker = "[Retry after an anti-bot check]";
  * waiting advice is Browser Use's own: its solver works a challenge by
  * itself, and a reload or a click in the middle restarts it.
  */
-export function captchaRetryTask(previousTask: string, attempt: number) {
+export function captchaRetryTask(
+  previousTask: string,
+  attempt: number,
+  reference: string
+) {
   const base = previousTask.split(`\n\n${retryMarker}`, 1)[0] ?? previousTask;
   return [
     base,
@@ -57,7 +62,19 @@ export function captchaRetryTask(previousTask: string, attempt: number) {
       `An anti-bot check stopped the previous attempt, so this is attempt ${String(attempt)} of ${String(maximumCaptchaAttempts)}: a fresh browser on a different network address, with the same saved profile, cookies and sign-ins.`,
       "Go straight to the site and do the errand. When a check appears, first give the browser's built-in solver about ten seconds without reloading or clicking into it; then solve whatever is still there yourself.",
     ].join(" "),
+    reference,
   ].join("\n\n");
+}
+
+/**
+ * The line that names one attempt of one errand in the retry's task. The
+ * claim on a parked run is a lease, so a poller that died between starting
+ * the retry and handing the errand to it leaves the row to be claimed again;
+ * this line is how the next claim finds that run and adopts it instead of
+ * starting a second browser beside it.
+ */
+function retryReference(runId: string, attempt: number) {
+  return `(Background retry ${String(attempt)} of errand ${runId}; for bookkeeping only.)`;
 }
 
 /**
@@ -85,7 +102,8 @@ async function abandonRetryRun(runId: string) {
  * old row is still waiting; a run started for an errand that was stopped
  * meanwhile is cancelled at once. A start that fails counts as a failed
  * attempt and is parked again, until the attempts run out and the caller
- * reports the wall.
+ * reports the wall. A run this attempt already started before its poller
+ * died is found by its reference line and adopted, not started again.
  */
 export async function startCaptchaRetry(row: BrowserRunRow, now = new Date()) {
   if (row.captchaAttempt >= maximumCaptchaAttempts) {
@@ -105,14 +123,17 @@ export async function startCaptchaRetry(row: BrowserRunRow, now = new Date()) {
         site: row.site ?? undefined,
       }),
     ]);
-    const run = await createBrowserUseRun({
-      ...retryProxySettings(attempt, randomUUID().replaceAll("-", "")),
-      maxCostUsd: env.BROWSER_USE_MAX_COST_USD,
-      model: env.BROWSER_USE_MODEL,
-      profileId: row.profileId ?? undefined,
-      secretBindings: secrets.bindings,
-      task: captchaRetryTask(previous.task, attempt),
-    });
+    const reference = retryReference(row.id, attempt);
+    const run =
+      (await findRecentBrowserUseRunByTaskLine(reference)) ??
+      (await createBrowserUseRun({
+        ...retryProxySettings(attempt, randomUUID().replaceAll("-", "")),
+        maxCostUsd: env.BROWSER_USE_MAX_COST_USD,
+        model: env.BROWSER_USE_MODEL,
+        profileId: row.profileId ?? undefined,
+        secretBindings: secrets.bindings,
+        task: captchaRetryTask(previous.task, attempt, reference),
+      }));
     let handedOff = false;
     try {
       handedOff = await handOffBrowserRunRetry(row.id, {

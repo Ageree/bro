@@ -135,12 +135,66 @@ describe("spend_limit changes", () => {
     expect(spendLimitApproval({ action: "read" }, monthly)).toBe(
       "not-applicable"
     );
+    // Clearing a rule nothing else stands above takes its permission away.
+    expect(
+      spendLimitApproval(
+        { action: "clear", merchant: "ozon.ru" },
+        {
+          ...monthly,
+          rules: [{ category: null, limitRub: 500, merchant: "ozon.ru" }],
+        }
+      )
+    ).toBe("not-applicable");
     // A set that cannot be read is treated as widening.
     expect(
       spendLimitApproval(
         { action: "set", limitRub: 100, merchant: "озон" },
         monthly
       )
+    ).toBe("user-approval");
+  });
+
+  it("asks before clearing a ceiling that sits under a broader rule", () => {
+    // 5 000 ₽ overall and 500 ₽ on ozon.ru: clearing the ozon.ru rule lifts
+    // ozon.ru to 5 000 ₽.
+    const withShop = {
+      ...monthly,
+      rules: [
+        ...monthly.rules,
+        { category: null, limitRub: 500, merchant: "ozon.ru" },
+      ],
+    };
+    expect(
+      applySpendLimitChange(withShop, {
+        action: "clear",
+        merchant: "https://www.ozon.ru/",
+      }).rules
+    ).toEqual(monthly.rules);
+    expect(
+      spendLimitApproval(
+        { action: "clear", merchant: "https://www.ozon.ru/" },
+        withShop
+      )
+    ).toBe("user-approval");
+
+    // A category rule crossing a shop rule is a ceiling on their overlap too.
+    const crossing = {
+      ...monthly,
+      rules: [
+        { category: "еда", limitRub: 3000, merchant: null },
+        { category: null, limitRub: 500, merchant: "ozon.ru" },
+      ],
+    };
+    expect(
+      spendLimitApproval({ action: "clear", merchant: "ozon.ru" }, crossing)
+    ).toBe("user-approval");
+    // Clearing everything leaves nothing to pay under.
+    expect(spendLimitApproval({ action: "clear" }, withShop)).toBe(
+      "not-applicable"
+    );
+    // A clear that cannot be checked against the policy is treated as widening.
+    expect(
+      spendLimitApproval({ action: "clear", merchant: "озон" }, withShop)
     ).toBe("user-approval");
   });
 });

@@ -88,10 +88,10 @@ async function reconcileBrowserRun(
 const retryAgainAfterMs = 60_000;
 
 /**
- * The claim cleared the row's retry time, so a step that throws here would
- * drop the errand for good. It is parked again for the next poll instead —
- * marked as out of attempts when it was, so that poll reports the wall rather
- * than starting another run.
+ * A step that throws here would otherwise leave the errand until the claim's
+ * lease runs out. It is parked again for the next poll instead — marked as
+ * out of attempts when it was, so that poll reports the wall rather than
+ * starting another run.
  */
 async function retryWalledBrowserRun(
   delivery: BrowserRunDelivery,

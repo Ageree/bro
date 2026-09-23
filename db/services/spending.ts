@@ -175,18 +175,18 @@ export async function reserveAutoPayment(
           )
         );
     }
-    if (decision.basis === "limit") {
-      await tx.insert(spendEntries).values({
-        amountRub: wholeRubles(input.request.amount),
-        browserRunId: input.browserRunId,
-        category: input.request.category,
-        feeRub: wholeRubles(input.request.fee),
-        id: randomUUID(),
-        merchant: input.request.merchant,
-        periodKey: input.periodKey,
-        workspaceId: scope.workspaceId,
-      });
-    }
+    // A card guarantee reserves nothing yet still gets its row: whatever the
+    // bound card is charged later settles against it.
+    await tx.insert(spendEntries).values({
+      amountRub: wholeRubles(input.request.amount),
+      browserRunId: input.browserRunId,
+      category: input.request.category,
+      feeRub: wholeRubles(input.request.fee),
+      id: randomUUID(),
+      merchant: input.request.merchant,
+      periodKey: input.periodKey,
+      workspaceId: scope.workspaceId,
+    });
     return decision;
   });
 }
@@ -266,6 +266,7 @@ export async function listStaleSpendReservations(
       createdByUserId: browserRuns.createdByUserId,
       orderPriceRub: orders.priceRub,
       outcome: browserRuns.outcome,
+      status: browserRuns.status,
       workspaceId: browserRuns.workspaceId,
     })
     .from(spendEntries)

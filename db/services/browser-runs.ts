@@ -163,9 +163,14 @@ function retryDue(now: Date) {
   );
 }
 
+// Long enough for one retry to start and be handed the errand.
+const retryClaimLeaseMs = 10 * 60_000;
+
 /**
- * Take the parked runs whose retry is due. Clearing `retry_at` is the claim:
- * a second poller re-evaluates the condition on the updated row and skips it.
+ * Take the parked runs whose retry is due. Pushing `retry_at` out by a lease
+ * is the claim: a second poller re-evaluates the condition on the updated row
+ * and skips it, and a poller that dies before the handoff leaves the row to
+ * be claimed again once the lease runs out, rather than losing the errand.
  * The row stays `waiting` until the retry takes it over, so a cancel in the
  * meantime still lands on it and the handoff sees it.
  */
@@ -178,7 +183,10 @@ export async function claimDueBrowserRunRetries(now: Date, limit: number) {
     .limit(limit);
   return db
     .update(browserRuns)
-    .set({ retryAt: null, updatedAt: now })
+    .set({
+      retryAt: new Date(now.getTime() + retryClaimLeaseMs),
+      updatedAt: now,
+    })
     .where(and(inArray(browserRuns.id, due), retryDue(now)))
     .returning();
 }
@@ -226,6 +234,7 @@ export async function handOffBrowserRunRetry(
       .update(browserRuns)
       .set({
         retriedAsRunId: retry.id,
+        retryAt: null,
         status: "stopped",
         updatedAt: new Date(),
       })

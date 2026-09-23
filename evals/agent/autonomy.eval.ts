@@ -82,15 +82,11 @@ function limitTotal(input: ToolInput) {
 }
 
 /**
- * A free booking needs no payment at all, or at most a card held on the
- * standing limit with nothing charged and nothing at stake.
+ * A free booking needs no payment permission at all: without a limit the
+ * person set, not even a card held as a guarantee.
  */
 function startedFree(input: ToolInput) {
-  if (input.action !== "start") return false;
-  if (input.allowPayment !== true) return true;
-  return z
-    .object({ feeRub: z.literal(0).default(0), totalRub: z.literal(0) })
-    .safeParse(input.withinSpendLimit).success;
+  return input.action === "start" && input.allowPayment !== true;
 }
 
 export default [

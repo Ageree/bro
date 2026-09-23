@@ -121,7 +121,6 @@ describe("the auto-payment decision", () => {
   it("pays within what is left of the month", () => {
     expect(decideAutoPayment(policy(), payment(), [groceries])).toEqual({
       allowed: true,
-      basis: "limit",
       exposureRub: 1500,
       remainingAfterRub: 2300,
     });
@@ -153,10 +152,28 @@ describe("the auto-payment decision", () => {
     ).toMatchObject({ allowed: true, exposureRub: 1500 });
   });
 
-  it("books anything free without a limit at all", () => {
+  it("never binds the card for a free booking without a limit that covers it", () => {
+    // A card guarantee charges nothing today and still puts the card on file.
+    const guarantee = payment({ amount: 0, fee: 0 });
+
+    expect(decideAutoPayment(undefined, guarantee, [])).toEqual({
+      allowed: false,
+      reason: "no_limit",
+    });
     expect(
-      decideAutoPayment(undefined, payment({ amount: 0, fee: 0 }), [])
-    ).toEqual({ allowed: true, basis: "free" });
+      decideAutoPayment(
+        policy({
+          rules: [{ category: null, limitRub: 3000, merchant: "other.example" }],
+        }),
+        guarantee,
+        []
+      )
+    ).toEqual({ allowed: false, reason: "no_rule" });
+    expect(decideAutoPayment(policy(), guarantee, [])).toEqual({
+      allowed: true,
+      exposureRub: 0,
+      remainingAfterRub: 5000,
+    });
   });
 
   it("asks for any paid purchase when no limit is set", () => {
@@ -202,6 +219,13 @@ describe("the auto-payment decision", () => {
   it("asks when the checkout is in another currency", () => {
     expect(
       decideAutoPayment(policy(), payment({ currency: "usd" }), [])
+    ).toEqual({ allowed: false, reason: "currency" });
+    // $50 is well under 5 000 as a number and still not the person's roubles.
+    expect(
+      decideAutoPayment(policy(), payment({ amount: 50, currency: "USD" }), [])
+    ).toEqual({ allowed: false, reason: "currency" });
+    expect(
+      decideAutoPayment(policy(), payment({ amount: 0, currency: "EUR" }), [])
     ).toEqual({ allowed: false, reason: "currency" });
   });
 

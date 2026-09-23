@@ -26,9 +26,8 @@ import {
 } from "./captcha-retry";
 import {
   releaseBrowserRunSpend,
+  reportedCharge,
   settleBrowserRunSpend,
-  type SpendCharge,
-  totalIsForeign,
 } from "./spend";
 import { recordOrder } from "@db/services/orders";
 import { captureBrowserRunImages, type BrowserRunImage } from "./images";
@@ -115,10 +114,10 @@ export async function settleBrowserRun(
     safeBrowserRunSpend(
       claimed,
       parsed.needs,
-      order && {
-        foreignCurrency: totalIsForeign(parsed.total),
-        priceRub: order.priceRub,
-      }
+      reportedCharge(parsed, {
+        completed: run.status === "completed",
+        report: run.result,
+      })
     ),
     recordBrowserRunOrder(claimed, order),
   ]);
@@ -160,13 +159,13 @@ async function persistProfileCookies(sessionId: string, runId: string) {
 /**
  * The spend-limit note for the report, or none. A ledger that cannot be
  * reached never costs the report: the reservation stays open, and the
- * poller's `reconcileSpendReservations` closes it from the recorded order a
+ * poller's `reconcileSpendReservations` closes it from what the run reported a
  * few minutes later.
  */
 async function safeBrowserRunSpend(
   row: BrowserRunRow,
   needs: BrowserRunNeed,
-  charge: SpendCharge | null
+  charge: ReturnType<typeof reportedCharge>
 ) {
   try {
     return await settleBrowserRunSpend(

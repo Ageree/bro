@@ -18,6 +18,11 @@ const createBrowserUseRun = vi.hoisted(() =>
 const readBrowserUseRun = vi.hoisted(() =>
   vi.fn<(runId: string) => Promise<{ task: string }>>()
 );
+const findRecentBrowserUseRunByTaskLine = vi.hoisted(() =>
+  vi.fn<
+    (line: string) => Promise<{ id: string; sessionId: string } | undefined>
+  >(() => Promise.resolve(undefined))
+);
 const cancelBrowserUseRun = vi.hoisted(() =>
   vi.fn<(runId: string) => Promise<void>>(() => Promise.resolve())
 );
@@ -56,6 +61,7 @@ const resolveBrowserSecretBindings = vi.hoisted(() =>
 vi.mock("@agent/lib/browser-use/client", () => ({
   cancelBrowserUseRun,
   createBrowserUseRun,
+  findRecentBrowserUseRunByTaskLine,
   readBrowserUseRun,
 }));
 vi.mock("@db/services/browser-runs", () => ({
@@ -106,6 +112,7 @@ beforeEach(() => {
   vi.stubEnv("BROWSER_USE_PROXY_ROTATING_USERNAME", "");
   readBrowserRun.mockResolvedValue({ retriedAsRunId: null, status: "waiting" });
   handOffBrowserRunRetry.mockResolvedValue(true);
+  findRecentBrowserUseRunByTaskLine.mockResolvedValue(undefined);
   readBrowserUseRun.mockResolvedValue({ task: "Купи корм\n\nSite: …" });
   createBrowserUseRun.mockResolvedValue({
     id: retryRunId,
@@ -147,12 +154,14 @@ describe("the anti-bot retry policy", () => {
     const { captchaRetryTask } =
       await import("@agent/lib/browser-use/captcha-retry");
 
-    const second = captchaRetryTask("Купи корм", 2);
-    const third = captchaRetryTask(second, 3);
+    const second = captchaRetryTask("Купи корм", 2, "(ref 2)");
+    const third = captchaRetryTask(second, 3, "(ref 3)");
 
     expect(second).toContain("attempt 2 of 5");
     expect(third).toContain("attempt 3 of 5");
     expect(third).not.toContain("attempt 2 of 5");
+    expect(third).not.toContain("(ref 2)");
+    expect(third.endsWith("\n\n(ref 3)")).toBe(true);
     expect(third.startsWith("Купи корм\n\n")).toBe(true);
     expect(third).toContain("about ten seconds");
   });
@@ -186,6 +195,41 @@ describe("the anti-bot retry policy", () => {
       task: "Купи корм",
     });
     expect(cancelBrowserUseRun).not.toHaveBeenCalled();
+  });
+
+  it("adopts the run an earlier claim started before it died", async () => {
+    findRecentBrowserUseRunByTaskLine.mockResolvedValue({
+      id: "orphan-run",
+      sessionId: "orphan-session",
+    });
+    const { startCaptchaRetry } =
+      await import("@agent/lib/browser-use/captcha-retry");
+
+    const result = await startCaptchaRetry(parkedRow(1));
+
+    expect(result).toEqual({ runId: "orphan-run", status: "started" });
+    // It looked for this very attempt of this very errand…
+    const line = findRecentBrowserUseRunByTaskLine.mock.calls[0]?.[0] ?? "";
+    expect(line).toContain(runId);
+    expect(line).toContain("retry 2");
+    // …and handed the errand to it instead of starting a second browser.
+    expect(createBrowserUseRun).not.toHaveBeenCalled();
+    expect(handOffBrowserRunRetry.mock.calls[0]?.[1]).toMatchObject({
+      captchaAttempt: 2,
+      id: "orphan-run",
+      sessionId: "orphan-session",
+    });
+  });
+
+  it("writes the line a later claim looks for into the retry's task", async () => {
+    const { startCaptchaRetry } =
+      await import("@agent/lib/browser-use/captcha-retry");
+
+    await startCaptchaRetry(parkedRow(1));
+
+    const line = findRecentBrowserUseRunByTaskLine.mock.calls[0]?.[0] ?? "";
+    const task = createBrowserUseRun.mock.calls[0]?.[0].task ?? "";
+    expect(task.split("\n")).toContain(line);
   });
 
   it("starts nothing for an errand the person already stopped", async () => {

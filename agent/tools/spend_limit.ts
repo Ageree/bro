@@ -161,24 +161,59 @@ export function applySpendLimitChange(
   return current;
 }
 
+/** Whether some shop and category would fall under both rules at once. */
+function rulesOverlap(first: SpendTarget, second: SpendTarget) {
+  const compatible = (a: string | null, b: string | null) =>
+    a === null || b === null || a === b;
+  return (
+    compatible(first.merchant, second.merchant) &&
+    compatible(first.category, second.category)
+  );
+}
+
+/**
+ * Removing a rule is only narrowing when nothing else covers what it covered:
+ * then its shops and categories lose permission altogether. When a broader or
+ * crossing rule remains — 5 000 ₽ overall beside 500 ₽ on ozon.ru — the rule
+ * was a ceiling under it, and removing it lifts ozon.ru to 5 000 ₽.
+ */
+function clearWidens(input: SpendLimitInput, policy: SpendLimitPolicy) {
+  if (input.merchant === undefined && input.category === undefined) {
+    return false;
+  }
+  const target = targetFrom(input);
+  const removed = policy.rules.filter((rule) => sameRuleScope(rule, target));
+  const kept = policy.rules.filter((rule) => !sameRuleScope(rule, target));
+  return removed.some((rule) => kept.some((other) => rulesOverlap(rule, other)));
+}
+
 /**
  * Anything that lets Bro pay more on its own is the person's to confirm on
  * the native card; a browser report or a fetched page asking for a higher
- * limit never gets it by talking. Lowering a rule, clearing and excluding only
- * take permission away, so they happen at once. A set that cannot be read is
+ * limit never gets it by talking. Lowering a rule, clearing a rule nothing
+ * else stands above, and excluding only take permission away, so they happen
+ * at once. A change that cannot be read, or checked against the policy, is
  * treated as widening.
  */
 export function spendLimitApproval(
   input: Partial<SpendLimitInput> | undefined,
   policy: SpendLimitPolicy | undefined
 ): ApprovalStatus {
-  if (input?.action === "include") return "user-approval";
-  if (input?.action !== "set") return "not-applicable";
-  const parsed = inputSchema.safeParse(input);
-  if (!parsed.success || parsed.data.limitRub === undefined) {
+  if (input?.action === "read" || input?.action === "exclude") {
+    return "not-applicable";
+  }
+  if (input?.action !== "set" && input?.action !== "clear") {
     return "user-approval";
   }
+  const parsed = inputSchema.safeParse(input);
+  if (!parsed.success) return "user-approval";
   try {
+    if (parsed.data.action === "clear") {
+      return policy && clearWidens(parsed.data, policy)
+        ? "user-approval"
+        : "not-applicable";
+    }
+    if (parsed.data.limitRub === undefined) return "user-approval";
     const target = targetFrom(parsed.data);
     const existing = policy?.rules.find((rule) => sameRuleScope(rule, target));
     return existing && parsed.data.limitRub <= existing.limitRub
@@ -216,7 +251,7 @@ export const spendLimit = defineTool({
   approval: async ({ session, toolInput }) =>
     spendLimitApproval(
       toolInput,
-      toolInput?.action === "set"
+      toolInput?.action === "set" || toolInput?.action === "clear"
         ? await readSpendLimit(callerScope({ session }))
         : undefined
     ),

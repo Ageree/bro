@@ -6,6 +6,7 @@ interface StaleReservation {
   createdByUserId: string;
   orderPriceRub: number | null;
   outcome: string | null;
+  status: "done" | "failed" | "running" | "stopped" | "waiting";
   workspaceId: string;
 }
 
@@ -62,6 +63,7 @@ function stale(overrides: Partial<StaleReservation>): StaleReservation {
     createdByUserId: "better-auth:alice",
     orderPriceRub: null,
     outcome: "Result: done\nNeeds: none",
+    status: "done",
     workspaceId: "workspace:alice",
     ...overrides,
   };
@@ -74,10 +76,10 @@ beforeEach(() => {
 });
 
 describe("closing spend reservations the settle path left open", () => {
-  it("charges one whose run recorded an order and releases one that did not", async () => {
+  it("charges one whose run recorded an order and releases one that failed before paying", async () => {
     listStaleSpendReservations.mockResolvedValue([
       stale({ browserRunId: "run-paid", orderPriceRub: 1200 }),
-      stale({ browserRunId: "run-idle" }),
+      stale({ browserRunId: "run-idle", status: "failed" }),
     ]);
     const { reconcileSpendReservations } =
       await import("@agent/lib/browser-use/spend");
@@ -93,6 +95,31 @@ describe("closing spend reservations the settle path left open", () => {
     });
     expect(settleSpendReservation).toHaveBeenCalledWith("run-idle", {
       charged: false,
+    });
+  });
+
+  it("charges a payment that reported no order, by its total or by what was reserved", async () => {
+    listStaleSpendReservations.mockResolvedValue([
+      stale({
+        browserRunId: "run-no-order",
+        outcome: "Result: оплатил\nTotal: 1 100 ₽",
+      }),
+      stale({ browserRunId: "run-silent" }),
+    ]);
+    const { reconcileSpendReservations } =
+      await import("@agent/lib/browser-use/spend");
+
+    await reconcileSpendReservations(now);
+
+    expect(settleSpendReservation).toHaveBeenCalledWith("run-no-order", {
+      amountRub: 1100,
+      charged: true,
+    });
+    // It completed on a pre-approved payment without stopping to ask, so the
+    // whole reserved amount counts.
+    expect(settleSpendReservation).toHaveBeenCalledWith("run-silent", {
+      amountRub: 1500,
+      charged: true,
     });
   });
 
@@ -126,5 +153,70 @@ describe("reading the currency of a reported total", () => {
     expect(totalIsForeign("1200 руб.")).toBe(false);
     expect(totalIsForeign("1200")).toBe(false);
     expect(totalIsForeign(undefined)).toBe(false);
+  });
+});
+
+describe("reading a charge from what the run reported", () => {
+  it("settles by the charge, not by the order number", async () => {
+    const { reportedCharge } = await import("@agent/lib/browser-use/spend");
+    const finished = { completed: true, report: null };
+
+    expect(
+      reportedCharge({ needs: "none", order: undefined, total: "990 ₽" }, finished)
+    ).toEqual({ foreignCurrency: false, priceRub: 990, recurring: false });
+    expect(
+      reportedCharge(
+        { needs: "none", order: "A-1", total: "$50" },
+        { completed: false, report: null }
+      )
+    ).toEqual({ foreignCurrency: true, priceRub: undefined, recurring: false });
+    // Stopped to ask, or failed without a word of money: nothing was paid.
+    expect(
+      reportedCharge({ needs: "payment", order: undefined, total: "990 ₽" }, finished)
+    ).toBeNull();
+    expect(
+      reportedCharge(
+        { needs: "none", order: undefined, total: undefined },
+        { completed: false, report: null }
+      )
+    ).toBeNull();
+  });
+
+  it("hears a subscription in the words even when the flag says otherwise", async () => {
+    const { mentionsRecurringCharge, reportedCharge } =
+      await import("@agent/lib/browser-use/spend");
+
+    expect(mentionsRecurringCharge("Оформил подписку на месяц")).toBe(true);
+    expect(mentionsRecurringCharge(null, "Auto-renews every year")).toBe(true);
+    expect(mentionsRecurringCharge("с автопродлением")).toBe(true);
+    expect(mentionsRecurringCharge("Купи корм для кота", undefined)).toBe(false);
+    expect(
+      reportedCharge(
+        { needs: "none", order: "1", total: "299 ₽" },
+        { completed: true, report: "Первый месяц 299 ₽, дальше автопродление" }
+      )?.recurring
+    ).toBe(true);
+  });
+
+  it("tells the person when a paid run speaks of a renewal", async () => {
+    settleSpendReservation.mockResolvedValue({
+      ...reserved,
+      amountRub: 299,
+      status: "charged",
+    });
+    const { settleBrowserRunSpend } =
+      await import("@agent/lib/browser-use/spend");
+
+    const note = await settleBrowserRunSpend(
+      {
+        createdByUserId: "better-auth:alice",
+        id: "run-1",
+        workspaceId: "workspace:alice",
+      },
+      "none",
+      { foreignCurrency: false, priceRub: 299, recurring: true }
+    );
+
+    expect(note).toContain("offer to cancel the renewal");
   });
 });

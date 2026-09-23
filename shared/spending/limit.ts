@@ -162,10 +162,8 @@ export interface AutoPaymentRequest extends SpendTarget {
 }
 
 export type AutoPaymentDecision =
-  | { readonly allowed: true; readonly basis: "free" }
   | {
       readonly allowed: true;
-      readonly basis: "limit";
       readonly exposureRub: number;
       readonly remainingAfterRub: number;
     }
@@ -182,12 +180,14 @@ export type AutoPaymentDecision =
     };
 
 /**
- * Whether Bro may pay for this without asking. Free is free: a booking that
- * charges nothing and can be cancelled for nothing needs no limit at all. A
- * payment has to fit every rule that covers it — the merchant's or category's
- * own ceiling and the general one alike — so a narrow rule never widens what
- * the person allowed overall. A subscription is never Bro's to start, and an
- * exclusion is never overridden.
+ * Whether Bro may bind the card and pay for this without asking. Only a limit
+ * the person set and that covers this shop and category allows it — a card
+ * guarantee that charges nothing today binds the card all the same, so a
+ * zero total is no permission of its own. A payment has to fit every rule
+ * that covers it — the merchant's or category's own ceiling and the general
+ * one alike — so a narrow rule never widens what the person allowed overall.
+ * The limit is in roubles and so is the total it allows. A subscription is
+ * never Bro's to start, and an exclusion is never overridden.
  */
 export function decideAutoPayment(
   policy: SpendLimitPolicy | undefined,
@@ -198,20 +198,18 @@ export function decideAutoPayment(
   if (policy && isExcluded(policy, request)) {
     return { allowed: false, reason: "excluded" };
   }
-  const exposureRub = wholeRubles(request.amount) + wholeRubles(request.fee);
-  if (exposureRub === 0) return { allowed: true, basis: "free" };
   if (!policy) return { allowed: false, reason: "no_limit" };
   if (request.currency.trim().toUpperCase() !== policy.currency) {
     return { allowed: false, reason: "currency" };
   }
   const remainingRub = remainingForTarget(policy, request, entries);
   if (remainingRub === undefined) return { allowed: false, reason: "no_rule" };
+  const exposureRub = wholeRubles(request.amount) + wholeRubles(request.fee);
   if (exposureRub > remainingRub) {
     return { allowed: false, reason: "over_limit", remainingRub };
   }
   return {
     allowed: true,
-    basis: "limit",
     exposureRub,
     remainingAfterRub: remainingRub - exposureRub,
   };

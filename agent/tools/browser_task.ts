@@ -57,6 +57,7 @@ import { maximumDeliveredImageArtifacts } from "@agent/lib/image-artifact/delive
 import { env } from "@shared/environment";
 import { browserRunNeeds } from "@agent/lib/browser-use/outcome";
 import { customProxy } from "@agent/lib/browser-use/proxy";
+import { mentionsRecurringCharge } from "@agent/lib/browser-use/spend";
 import { browserRunQuotaGate } from "@agent/lib/billing/quota";
 
 const inputSchema = z.object({
@@ -65,7 +66,7 @@ const inputSchema = z.object({
     .boolean()
     .optional()
     .describe(
-      "True when the user approved paying on this errand in this conversation, or when withinSpendLimit is set and the payment fits the user's standing spend limit. Binds the saved card to the site and its payment processors."
+      "True when the user approved paying on this errand in this conversation, or together with withinSpendLimit when the payment may fit the standing spend limit the user set. Binds the saved card to the site and its payment processors — a card guarantee that charges nothing today binds it all the same, so it needs one of the two as well."
     ),
   withinSpendLimit: z
     .object({
@@ -79,8 +80,9 @@ const inputSchema = z.object({
       currency: z
         .string()
         .length(3)
-        .default(spendLimitCurrency)
-        .describe("ISO code of the checkout's currency."),
+        .describe(
+          "ISO code of the currency the checkout shows its total in, as seen on the page. Only RUB can fit the limit."
+        ),
       feeRub: z
         .number()
         .nonnegative()
@@ -98,12 +100,12 @@ const inputSchema = z.object({
         .number()
         .nonnegative()
         .describe(
-          "What the checkout charges now. 0 for a free booking or registration."
+          "What the checkout charges now. 0 for a card guarantee that charges nothing today."
         ),
     })
     .optional()
     .describe(
-      "Set together with allowPayment: true when the user did not approve this payment in the conversation but it may fit their standing spend limit, or costs nothing at all. The tool checks it against the limit and the month's spending, reserves it, and tells the run not to pay a kopeck more; when it does not fit, nothing starts and you ask the user."
+      "Set together with allowPayment: true when the user did not approve this payment in the conversation but it may fit the standing spend limit they set. The tool checks it against the limit and the month's spending, reserves it, and tells the run not to pay a kopeck more; when there is no limit or it does not fit, nothing starts and you ask the user."
     ),
   collectImages: z
     .boolean()
@@ -492,14 +494,19 @@ export function spendCapLine(
 ) {
   const stop =
     "stop before confirming with NEEDS: payment, and put the real total and every fee in TOTAL and DETAILS";
-  if (decision.basis === "free") {
-    return `Payment is pre-approved only because this costs nothing: nothing is charged now and cancelling is free. If the checkout wants to charge anything now, holds a non-refundable fee, deposit or no-show penalty, or starts a subscription, do not confirm — ${stop}.`;
+  // A dollar figure under the rouble cap is not under it: the run is the one
+  // that sees which currency the page charges in.
+  const roubles = `The permission is in Russian roubles only: if the checkout shows its total in any other currency, or cannot say which, do not pay — ${stop}.`;
+  const recurring =
+    "A subscription, a trial that turns into one, auto-renewal or any other repeating charge is never covered.";
+  if (decision.exposureRub === 0) {
+    return `The saved card may be attached only as a guarantee: nothing may be charged now, and cancelling must be free. If the checkout wants to charge anything now or holds a non-refundable fee, deposit or no-show penalty, do not confirm — ${stop}. ${recurring} ${roubles}`;
   }
   const fee =
     payment.feeRub > 0
       ? ` (${formatRub(payment.totalRub)} now plus up to ${formatRub(payment.feeRub)} in non-refundable fees)`
       : "";
-  return `Payment is pre-approved up to ${formatRub(decision.exposureRub)} in total${fee}, including every fee, deposit and cancellation penalty. Before you confirm, check the final amount on the page. If it is higher, if a fee appears that was not counted, or if it is a subscription or a repeating charge, do not pay — ${stop}. A paid order still ends with ORDER and TOTAL filled in as usual.`;
+  return `Payment is pre-approved up to ${formatRub(decision.exposureRub)} in total${fee}, including every fee, deposit and cancellation penalty. Before you confirm, check the final amount on the page. If it is higher, if a fee appears that was not counted, or if it is a subscription or a repeating charge, do not pay — ${stop}. ${recurring} ${roubles} A paid order still ends with ORDER and TOTAL filled in as usual; a payment that went through without an order number still reports its TOTAL.`;
 }
 
 function spendRefusalNote(
@@ -526,25 +533,31 @@ async function spendPeriodKey(scope: AccessScope) {
  * Check a payment against the standing limit and hold its share of the month
  * under a placeholder until the run exists. The placeholder is renamed to the
  * run id once Browser Use hands one back, or released if the run never starts.
+ * The errand's words and what the run last reported are read for a
+ * subscription as well: the coordinator's `recurring` flag is not the only
+ * thing standing between the limit and a repeating charge.
  */
 async function reserveSpendForRun(
   scope: AccessScope,
   payment: SpendLimitInput,
-  site: string | undefined,
-  replacingRunId?: string
+  errand: {
+    readonly replacingRunId?: string;
+    readonly site: string | undefined;
+    readonly texts: readonly (string | null | undefined)[];
+  }
 ) {
   const placeholder = `pending:${crypto.randomUUID()}`;
   const decision = await reserveAutoPayment(scope, {
     browserRunId: placeholder,
     periodKey: await spendPeriodKey(scope),
-    replacingRunId,
+    replacingRunId: errand.replacingRunId,
     request: {
       amount: payment.totalRub,
       category: normalizeCategory(payment.category),
       currency: payment.currency,
       fee: payment.feeRub,
-      merchant: normalizeMerchant(site),
-      recurring: payment.recurring,
+      merchant: normalizeMerchant(errand.site),
+      recurring: payment.recurring || mentionsRecurringCharge(...errand.texts),
     },
   });
   return { decision, placeholder };
@@ -678,7 +691,10 @@ export const browserTask = defineTool({
       // count against the month's errands or provision anything.
       const spend =
         allowPayment && input.withinSpendLimit
-          ? await reserveSpendForRun(scope, input.withinSpendLimit, input.site)
+          ? await reserveSpendForRun(scope, input.withinSpendLimit, {
+              site: input.site,
+              texts: [errand],
+            })
           : undefined;
       if (spend && !spend.decision.allowed) {
         return {
@@ -686,10 +702,9 @@ export const browserTask = defineTool({
           status: "needs_approval",
         };
       }
-      const placeholder =
-        spend?.decision.allowed && spend.decision.basis === "limit"
-          ? spend.placeholder
-          : undefined;
+      const placeholder = spend?.decision.allowed
+        ? spend.placeholder
+        : undefined;
       const started = await releasedOnFailure(placeholder, async () => {
         // The monthly ceiling is checked before anything is provisioned: a
         // refused errand must not cost a remote profile or a bound secret.
@@ -756,7 +771,7 @@ export const browserTask = defineTool({
         note: [
           "The run continues in the background. Its outcome arrives as a new message; do not poll for it.",
           spend?.decision.allowed
-            ? "The payment is covered by the user's standing spend limit, so do not ask them about it: report the receipt once the outcome arrives."
+            ? `The payment fits the standing spend limit the user set (${formatRub(spend.decision.exposureRub)} reserved, ${formatRub(spend.decision.remainingAfterRub)} left this month), so do not ask them about it: report the receipt once the outcome arrives.`
             : undefined,
         ]
           .filter((line) => line !== undefined)
@@ -794,7 +809,11 @@ export const browserTask = defineTool({
       // carries the new one: a refusal leaves the old reservation in place.
       const spend =
         allowPayment && input.withinSpendLimit
-          ? await reserveSpendForRun(scope, input.withinSpendLimit, site, runId)
+          ? await reserveSpendForRun(scope, input.withinSpendLimit, {
+              replacingRunId: runId,
+              site,
+              texts: [row.task, row.outcome, message],
+            })
           : undefined;
       if (spend && !spend.decision.allowed) {
         return {
@@ -803,10 +822,9 @@ export const browserTask = defineTool({
           status: "needs_approval",
         };
       }
-      const placeholder =
-        spend?.decision.allowed && spend.decision.basis === "limit"
-          ? spend.placeholder
-          : undefined;
+      const placeholder = spend?.decision.allowed
+        ? spend.placeholder
+        : undefined;
       const instruction =
         spend?.decision.allowed && input.withinSpendLimit
           ? `${message}\n\n${spendCapLine(input.withinSpendLimit, spend.decision)}`

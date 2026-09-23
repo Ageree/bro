@@ -1052,7 +1052,6 @@ describe("browser_task standing spend limit", () => {
   it("pays within the limit without asking and caps the run at that amount", async () => {
     reserveAutoPayment.mockResolvedValue({
       allowed: true,
-      basis: "limit",
       exposureRub: 1500,
       remainingAfterRub: 3500,
     });
@@ -1091,14 +1090,80 @@ describe("browser_task standing spend limit", () => {
     expect(continuationNote(result)).toContain("do not ask them about it");
   });
 
-  it("books something free without a reservation", async () => {
-    reserveAutoPayment.mockResolvedValue({ allowed: true, basis: "free" });
+  it("holds a card guarantee on the limit with nothing to charge", async () => {
+    reserveAutoPayment.mockResolvedValue({
+      allowed: true,
+      exposureRub: 0,
+      remainingAfterRub: 5000,
+    });
 
     await startPaidErrand({ totalRub: 0 });
 
     const task = createBrowserUseRun.mock.calls[0]?.[0].task ?? "";
-    expect(task).toContain("only because this costs nothing");
-    expect(moveSpendReservation).not.toHaveBeenCalled();
+    expect(task).toContain("only as a guarantee: nothing may be charged now");
+    expect(task).toContain("Russian roubles only");
+    // The zero reservation still travels with the run, so a no-show charge
+    // later settles against the month.
+    expect(moveSpendReservation).toHaveBeenCalledOnce();
+  });
+
+  it("binds no card for a free booking when no limit covers it", async () => {
+    reserveAutoPayment.mockResolvedValue({
+      allowed: false,
+      reason: "no_limit",
+    });
+
+    const result = await startPaidErrand({ totalRub: 0 });
+
+    expect(result).toMatchObject({ status: "needs_approval" });
+    expect(continuationNote(result)).toContain("has not set a standing");
+    expect(resolveBrowserSecretBindings).not.toHaveBeenCalled();
+    expect(createBrowserUseRun).not.toHaveBeenCalled();
+  });
+
+  it("tells the run the permission is in roubles only", async () => {
+    reserveAutoPayment.mockResolvedValue({
+      allowed: true,
+      exposureRub: 1500,
+      remainingAfterRub: 3500,
+    });
+
+    await startPaidErrand({ totalRub: 1500 });
+
+    const task = createBrowserUseRun.mock.calls[0]?.[0].task ?? "";
+    expect(task).toContain(
+      "if the checkout shows its total in any other currency, or cannot say which, do not pay"
+    );
+    expect(task).toContain("never covered");
+  });
+
+  it("reads a subscription in the errand whatever the recurring flag says", async () => {
+    reserveAutoPayment.mockResolvedValue({
+      allowed: false,
+      reason: "recurring",
+    });
+    vi.resetModules();
+    const { browserTask } = await import("@agent/tools/browser_task");
+
+    const result = await browserTask.execute(
+      {
+        action: "start",
+        allowPayment: true,
+        site: "https://www.shop.example",
+        task: "Оформи подписку на доставку корма раз в месяц",
+        withinSpendLimit: {
+          currency: "RUB",
+          feeRub: 0,
+          recurring: false,
+          totalRub: 900,
+        },
+      },
+      toolContext("better-auth:alice")
+    );
+
+    expect(reserveAutoPayment.mock.calls[0]?.[1].request.recurring).toBe(true);
+    expect(result).toMatchObject({ status: "needs_approval" });
+    expect(createBrowserUseRun).not.toHaveBeenCalled();
   });
 
   it("starts nothing and asks when the payment is over the limit", async () => {
@@ -1122,7 +1187,6 @@ describe("browser_task standing spend limit", () => {
   it("gives the reservation back when the run never starts", async () => {
     reserveAutoPayment.mockResolvedValue({
       allowed: true,
-      basis: "limit",
       exposureRub: 1500,
       remainingAfterRub: 3500,
     });
@@ -1158,7 +1222,6 @@ describe("browser_task standing spend limit", () => {
   it("gives the reservation back when the month's errands are used up", async () => {
     reserveAutoPayment.mockResolvedValue({
       allowed: true,
-      basis: "limit",
       exposureRub: 1500,
       remainingAfterRub: 3500,
     });
@@ -1292,7 +1355,6 @@ describe("browser_task spend limit on a follow-up", () => {
   it("replaces the old reservation once the follow-up run exists", async () => {
     reserveAutoPayment.mockResolvedValue({
       allowed: true,
-      basis: "limit",
       exposureRub: 1500,
       remainingAfterRub: 0,
     });
@@ -1315,7 +1377,6 @@ describe("browser_task spend limit on a follow-up", () => {
   it("releases the new reservation when a busy session only takes the message", async () => {
     reserveAutoPayment.mockResolvedValue({
       allowed: true,
-      basis: "limit",
       exposureRub: 1500,
       remainingAfterRub: 0,
     });

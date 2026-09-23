@@ -46,6 +46,12 @@ const workspaceFileListSchema = z.object({
   nextCursor: z.string().nullable().optional(),
 });
 
+const runListSchema = z.object({
+  hasMore: z.boolean().optional(),
+  nextCursor: z.string().nullable().optional(),
+  runs: z.array(runSummarySchema),
+});
+
 const runStatusResponseSchema = z.object({ status: runStatusSchema });
 
 const runEventsResponseSchema = z.object({
@@ -162,6 +168,28 @@ export async function createBrowserUseRun(input: BrowserUseCreateRunInput) {
       })
     )
   );
+}
+
+/**
+ * The newest run whose task carries this exact line, looked for among the
+ * project's most recent runs, newest first. Browser Use takes no idempotency
+ * key, so a line written into the task is how a run started just before a
+ * crash is found again rather than started twice.
+ */
+export async function findRecentBrowserUseRunByTaskLine(
+  line: string,
+  pages = 3,
+  cursor?: string
+): Promise<z.infer<typeof runSummarySchema> | undefined> {
+  const query = new URLSearchParams({ limit: "50" });
+  if (cursor !== undefined) query.set("cursor", cursor);
+  const page = runListSchema.parse(
+    await request("GET", `/runs?${query.toString()}`)
+  );
+  const found = page.runs.find((run) => run.task.split("\n").includes(line));
+  if (found) return found;
+  if (pages <= 1 || !page.hasMore || !page.nextCursor) return undefined;
+  return findRecentBrowserUseRunByTaskLine(line, pages - 1, page.nextCursor);
 }
 
 export async function readBrowserUseRun(runId: string) {
