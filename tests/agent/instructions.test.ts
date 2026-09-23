@@ -151,8 +151,20 @@ describe("agent instructions", () => {
       "Добавь в поручение сохранённые предпочтения человека"
     );
     expect(selected?.content).toContain(
-      "Для поиска, сравнения цен и подготовки заказа или брони до шага оплаты карта не нужна"
+      "Для поиска, сравнения цен и подготовки заказа или брони карта не нужна"
     );
+    expect(selected?.content).toContain(
+      "сам доводит до конца всё бесплатное и бесплатно отменяемое"
+    );
+    expect(selected?.content).toContain("Граница — деньги и необратимость");
+    expect(selected?.content).toContain(
+      "останавливается с `NEEDS: payment` и суммой в `TOTAL`"
+    );
+    expect(selected?.content).toContain(
+      "оплата при получении или на месте, невозвратный тариф, штраф за отмену"
+    );
+    expect(selected?.content).toContain("на запасных запуск идёт гостем");
+    expect(selected?.content).toContain("это просьба, а не жёсткий предел");
     expect(selected?.content).toContain("Частичный результат передай честно");
     expect(selected?.content).toContain('`action: "continue"`');
     expect(selected?.content).toContain("`allowPayment: true`");

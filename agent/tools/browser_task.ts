@@ -175,11 +175,40 @@ function searchLine() {
   return [
     "Honour the exact kind of thing the errand asks for: a hotel is not a hostel, a dorm bed or a room in a flat; a direct flight has no stops; «free cancellation» means only such rates. Leave out options of the wrong kind rather than filling the list with them, and say so if too few of the right kind were left.",
     "When the site you are on cannot do the errand — it does not serve the country or the address, it finds nothing, everything is sold out or over budget — do not stop there. Move on to the fallback sites the errand names, or to another well-known site that serves the same place, and widen sensibly before giving up: a neighbouring area, a nearby date, a close alternative. Say in the report what you widened and which sites you tried.",
+    "Saved sign-ins exist only for the errand's own site. On a fallback site go on as a guest, and when it will not let you without an account, skip it for the next one rather than stopping with NEEDS: password.",
   ].join(" ");
 }
 
-function budgetLine() {
-  return `Spend about ${String(searchBudgetMinutes)} minutes searching and comparing, not more, and do not spend them retrying one site. When that time is up, stop and report the best options found so far, saying plainly which parts are partial and what you did not get to check. The budget is for searching: once you are completing an order or a booking the errand asked for, finish it rather than abandoning it at the mark.`;
+/**
+ * The line between staging and committing is money, not the button: the
+ * person wants a finished result, so anything free and freely undone is the
+ * run's to complete, and anything that charges or binds them to a charge
+ * waits for their word — a pay-at-the-property booking with a cancellation
+ * fee is a commitment even though nothing is taken today.
+ */
+function paymentLine(allowPayment: boolean) {
+  if (allowPayment) return undefined;
+  return [
+    "Nothing has been approved to pay for or to commit money to on this errand.",
+    "Finish on your own what costs nothing and can be undone for free: a reservation with free cancellation (a table, an appointment, a slot), a registration for a free event, a basket with the delivery details filled in.",
+    "Anything that charges or commits money stops on the page with its final button, unpressed: any charge or prepayment, binding a card, pay on delivery, pay at the property, a non-refundable rate, a cancellation fee. Stage it up to that last step, then end with NEEDS: payment and the TOTAL the page shows.",
+  ].join(" ");
+}
+
+/**
+ * A request, not a cap: nothing stops the run at the mark. It asks for the
+ * best partial result instead of the forty-five minutes one search once took.
+ * Finishing a purchase past it is only right once paying was approved.
+ */
+function budgetLine(allowPayment: boolean) {
+  return [
+    `Spend about ${String(searchBudgetMinutes)} minutes searching and comparing, not more, and do not spend them retrying one site. When that time is up, stop and report the best options found so far, saying plainly which parts are partial and what you did not get to check.`,
+    allowPayment
+      ? "The budget is for searching: once you are completing the order or the booking the errand asked for, finish it rather than abandoning it at the mark."
+      : undefined,
+  ]
+    .filter((line) => line !== undefined)
+    .join(" ");
 }
 
 function credentialsLine(aliases: readonly string[]) {
@@ -190,6 +219,7 @@ function credentialsLine(aliases: readonly string[]) {
 
 export function composeBrowserTask(options: {
   readonly aliases: readonly string[];
+  readonly allowPayment: boolean;
   readonly collectImages: boolean;
   readonly errand: string;
   readonly facts: string | undefined;
@@ -202,7 +232,8 @@ export function composeBrowserTask(options: {
       : options.errand,
     homeLine(options.home),
     searchLine(),
-    budgetLine(),
+    paymentLine(options.allowPayment),
+    budgetLine(options.allowPayment),
     options.facts,
     credentialsLine(options.aliases),
     captchaLine(),
@@ -218,14 +249,18 @@ export function composeBrowserTask(options: {
  * message leads, because it is the instruction; everything after it only says
  * where that instruction lands. The tab, the cookies and the agent's memory of
  * the errand are still there, so telling it to start over would undo the
- * sign-in the person is following up about.
+ * sign-in the person is following up about. Only a follow-up that goes on
+ * searching gets the time budget: a code or a confirmation has nothing to
+ * search for, and a budget there only invites the run to wander off.
  */
 export function composeBrowserContinuation(options: {
   readonly aliases: readonly string[];
+  readonly allowPayment: boolean;
   readonly collectImages: boolean;
   readonly errand: string;
   readonly facts: string | undefined;
   readonly message: string;
+  readonly searching: boolean;
   readonly site: string | undefined;
 }) {
   return [
@@ -236,7 +271,8 @@ export function composeBrowserContinuation(options: {
     ]
       .filter((line) => line !== undefined)
       .join("\n"),
-    budgetLine(),
+    paymentLine(options.allowPayment),
+    options.searching ? budgetLine(options.allowPayment) : undefined,
     options.facts,
     credentialsLine(options.aliases),
     captchaLine(),
@@ -369,12 +405,38 @@ async function workspaceProfileId(scope: {
 }
 
 /**
- * Whether the finished run ended against an anti-bot wall. The outcome column
- * holds the coordinator's own summary, whose `Needs:` line is the labelled
- * value the run reported.
+ * What the finished run stopped on. The outcome column holds the
+ * coordinator's own summary, whose `Needs:` line is the labelled value the
+ * run reported.
  */
-function endedOnAntiBotCheck(outcome: string | null | undefined) {
-  return /^needs:[ \t]*captcha[ \t]*$/imu.test(outcome ?? "");
+function endedNeeding(outcome: string | null | undefined) {
+  return /^needs:[ \t]*([a-z0-9_]+)[ \t]*$/imu
+    .exec(outcome ?? "")?.[1]
+    ?.toLowerCase();
+}
+
+/** Stops a follow-up only confirms or unlocks: there is nothing to search. */
+const confirmationNeeds = new Set<string>([
+  "3ds",
+  "email_code",
+  "password",
+  "payment",
+  "push",
+  "sms_code",
+]);
+
+/**
+ * Whether a follow-up goes on searching. A short reply that carries a code —
+ * «Код из смс 992130» as much as a bare «992130» — or an answer to a run that
+ * stopped on a code, a sign-in or a payment, is a confirmation; anything else
+ * — a changed constraint, «поищи ещё», a run that stopped on a question or a
+ * wall — is more searching. Looser than `oneTimeCodeFromMessage` on purpose:
+ * a wrong guess here only costs one line of the prompt, not a typed field.
+ */
+function followUpSearches(message: string, outcome: string | null) {
+  const text = message.trim();
+  if (text.length <= 40 && /(?:^|\D)\d{4,8}(?:\D|$)/u.test(text)) return false;
+  return !confirmationNeeds.has(endedNeeding(outcome) ?? "");
 }
 
 const terminalRunStatuses = new Set<BrowserUseRunStatus>([
@@ -448,7 +510,7 @@ async function waitForLiveViewUrl(
 
 export const browserTask = defineTool({
   description:
-    "Run one errand on a website through a hosted cloud browser that can sign in, fill forms, and complete a checkout. Use it when the user wants something done on a site; use web_search and web_fetch instead for reading public pages. Start exactly one run per errand and pass the site's origin so saved credentials can be bound to it; pick a site that serves the user's country and address, preferring local marketplaces over a global brand site that does not ship there. Write the errand short: the cloud browser is itself an agent, so give it the goal, the hard constraints in the user's own words, the saved preferences that bear on it, two or three fallback sites, and what to report back — not a click-by-click script. The run is told the user's city and country from Personal Info and to report its best partial results after about 15 minutes of searching. Searching, comparing and staging an order or a booking up to the payment step need no card and no allowPayment: start such an errand right away. Every follow-up for that errand — an answer, a code the user typed, a changed constraint — goes through continue with the same runId, never a second start: continue works in the same browser, on the tab and the signed-in account the run already has. When the previous run has already finished, continue starts a follow-up run in that same browser and returns a NEW runId; use that one from then on. Pass allowPayment: true on start or on continue once the user approved paying or attaching a card on this errand in this conversation — «привяжи карту» is approval to bind the saved card, not to buy anything. The person's name, phone, email and addresses from the profile and from the vault are typed into forms automatically, so never ask for a phone number or an address the user said is saved: start the errand and let the run use it. The run signs in with vault credentials the models involved never see, so never ask the user for a password: when none is stored, call request_vault_setup. The run solves CAPTCHAs and anti-bot checks itself as it goes, and they are never the user's to solve: never tell the user you cannot pass one, never ask them to pass it, and never hand them the live view for one. When a run comes back with NEEDS: captcha, continue it on the same runId, tell it to solve the check and finish the errand; the continuation opens a fresh browser on the same profile by itself when the old one is still walled. Give the user the live-view link only when the run is blocked on something only they can do — 3-D Secure, a push approval, a sign-in you cannot complete, or a check the run still could not pass after retrying — and never forward a one-time code back to the user. Pass collectImages: true when the user asked for photos or pictures of what the errand finds; the run always saves a screenshot of the page with the outcome, and with the flag it saves pictures of the items too. Every saved image comes back with the outcome as an artifact id you attach in send_message as ![caption](/artifacts/id) — that is how the person gets the real picture rather than a link. The run continues in the background and its result arrives later as a new message, so do not wait on it.",
+    "Run one errand on a website through a hosted cloud browser that can sign in, fill forms, and complete a checkout. Use it when the user wants something done on a site; use web_search and web_fetch instead for reading public pages. Start exactly one run per errand and pass the site's origin so saved credentials can be bound to it; pick a site that serves the user's country and address, preferring local marketplaces over a global brand site that does not ship there. Write the errand short: the cloud browser is itself an agent, so give it the goal, the hard constraints in the user's own words, the saved preferences that bear on it, two or three fallback sites, and what to report back — not a click-by-click script. The run is told the user's city and country from Personal Info and asked to report its best partial results after about 15 minutes of searching. Searching, comparing and staging an order or a booking need no card and no allowPayment: start such an errand right away. Without allowPayment the run finishes on its own only what is free and freely cancelled — a reservation with free cancellation, a free registration, a basket — and stops before the final step of anything that charges or commits money (prepayment, binding a card, pay on delivery or at the property, a non-refundable rate, a cancellation fee) with NEEDS: payment and the TOTAL; ask the user in one sentence and continue with allowPayment: true once they agree. Every follow-up for that errand — an answer, a code the user typed, a changed constraint — goes through continue with the same runId, never a second start: continue works in the same browser, on the tab and the signed-in account the run already has. When the previous run has already finished, continue starts a follow-up run in that same browser and returns a NEW runId; use that one from then on. Pass allowPayment: true on start or on continue once the user approved paying or attaching a card on this errand in this conversation — «привяжи карту» is approval to bind the saved card, not to buy anything. The person's name, phone, email and addresses from the profile and from the vault are typed into forms automatically, so never ask for a phone number or an address the user said is saved: start the errand and let the run use it. The run signs in with vault credentials the models involved never see, so never ask the user for a password: when none is stored, call request_vault_setup. The run solves CAPTCHAs and anti-bot checks itself as it goes, and they are never the user's to solve: never tell the user you cannot pass one, never ask them to pass it, and never hand them the live view for one. When a run comes back with NEEDS: captcha, continue it on the same runId, tell it to solve the check and finish the errand; the continuation opens a fresh browser on the same profile by itself when the old one is still walled. Give the user the live-view link only when the run is blocked on something only they can do — 3-D Secure, a push approval, a sign-in you cannot complete, or a check the run still could not pass after retrying — and never forward a one-time code back to the user. Pass collectImages: true when the user asked for photos or pictures of what the errand finds; the run always saves a screenshot of the page with the outcome, and with the flag it saves pictures of the items too. Every saved image comes back with the outcome as an artifact id you attach in send_message as ![caption](/artifacts/id) — that is how the person gets the real picture rather than a link. The run continues in the background and its result arrives later as a new message, so do not wait on it.",
   inputSchema,
   async execute(input, context) {
     const { conversation, scope } = conversationTarget(context);
@@ -474,6 +536,7 @@ export const browserTask = defineTool({
       ]);
       const task = composeBrowserTask({
         aliases: secrets.aliases,
+        allowPayment: input.allowPayment === true,
         collectImages: input.collectImages === true,
         errand,
         facts: facts.details,
@@ -596,13 +659,16 @@ export const browserTask = defineTool({
         profileId,
         proxyCountryCode: env.BROWSER_USE_PROXY_COUNTRY,
         secretBindings: secrets.bindings,
-        sessionId: endedOnAntiBotCheck(row.outcome) ? undefined : row.sessionId,
+        sessionId:
+          endedNeeding(row.outcome) === "captcha" ? undefined : row.sessionId,
         task: composeBrowserContinuation({
           aliases: secrets.aliases,
+          allowPayment,
           collectImages: input.collectImages === true,
           errand: row.task,
           facts: facts.details,
           message: withCodeEntry(message, codeEntry),
+          searching: followUpSearches(message, row.outcome),
           site,
         }),
       });

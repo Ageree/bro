@@ -134,8 +134,11 @@ const regionNames = new Intl.DisplayNames(["en"], { type: "region" });
 function profileHome(profile: Awaited<ReturnType<typeof readUserProfile>>) {
   const code = profile.countryCode?.toUpperCase();
   const country = code ? (regionNames.of(code) ?? code) : undefined;
-  const parts = [profile.city ?? undefined, country].filter(
-    (part) => part !== undefined
+  // The city is free text from a form, and it lands inside a sentence of the
+  // run's instructions: a line break there would start a paragraph of its own.
+  const city = profile.city?.replaceAll(/\s+/gu, " ").trim();
+  const parts = [city, country].filter(
+    (part) => part !== undefined && part.length > 0
   );
   return parts.length === 0 ? undefined : parts.join(", ");
 }
