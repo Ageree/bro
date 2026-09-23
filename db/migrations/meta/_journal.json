@@ -169,6 +169,13 @@
       "when": 1790198763997,
       "tag": "0023_safe_squirrel_girl",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1790201070428,
+      "tag": "0024_bright_lila_cheney",
+      "breakpoints": true
     }
   ]
 }

@@ -14,7 +14,10 @@ migrate tables.
   schema and commit the SQL, snapshot, and journal together.
 
 Run `pnpm db:migrate` explicitly for local or operator-managed environments.
-Vercel runs the uncached Turbo `db:migrate` task before `build:vercel`. The
+Vercel runs the uncached Turbo `db:migrate:deploy` task before `build:vercel`.
+It migrates production builds and skips preview builds: in this project preview
+deployments receive the production `DATABASE_URL_UNPOOLED`, so a preview of an
+unmerged branch would otherwise apply its migrations to the production database. The
 package command delegates directly to `drizzle-kit migrate`. Migration commands
 use `@next/env` to load the same root `.env*` precedence as Next.js; an injected
 `DATABASE_URL_UNPOOLED` remains authoritative. Each Vercel environment must

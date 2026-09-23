@@ -154,9 +154,14 @@ export const env = createEnv({
     EVE_MEMORY_BLOB_READ_WRITE_TOKEN: requiredValue.optional(),
     EVE_MEMORY_BLOB_STORE_ID: requiredValue.optional(),
     // Usage ceilings per workspace: messages on the local day, browser errands
-    // on the local month. A deployment without YooKassa keys never leaves the
-    // free column.
+    // and drawn pictures on the local month. A deployment without YooKassa
+    // keys never leaves the free column.
     FREE_BROWSER_RUNS_PER_MONTH: z.coerce.number().int().positive().default(5),
+    FREE_IMAGE_GENERATIONS_PER_MONTH: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(10),
     FREE_MESSAGES_PER_DAY: z.coerce.number().int().positive().default(30),
     GOOGLE_CONNECTOR_UID: requiredValue.default("google/open-instinct"),
     IMESSAGE_PHONE_NUMBER: requiredValue
@@ -171,6 +176,9 @@ export const env = createEnv({
     NODE_ENV: z
       .enum(["development", "production", "test"])
       .default("production"),
+    // Vercel Connect connectors for the person's own Notion and Slack
+    // (see docs/dev-notes.md for how each is set up).
+    NOTION_CONNECTOR_UID: requiredValue.default("notion"),
     // OpenRouter replaces AI Gateway routing whenever its key is present.
     OPENROUTER_API_KEY: openRouterApiKeySchema.optional(),
     // The balance check alerts the owner below this many dollars of
@@ -181,6 +189,11 @@ export const env = createEnv({
       .number()
       .positive("OPENROUTER_CREDITS_ALERT_USD must be greater than zero")
       .default(5),
+    // `generate_image` draws and edits pictures through OpenRouter's Image API
+    // with the same key; the model has to accept reference images.
+    OPENROUTER_IMAGE_MODEL: trimmedValue.default(
+      "google/gemini-3.1-flash-image"
+    ),
     OPENROUTER_MANAGEMENT_KEY: openRouterApiKeySchema.optional(),
     OPENROUTER_MODEL: trimmedValue.default("deepseek/deepseek-v4.1-flash"),
     OPENROUTER_MODEL_CONTEXT_TOKENS: z.coerce
@@ -210,9 +223,15 @@ export const env = createEnv({
       "qwen/qwen3-asr-flash-2026-02-10"
     ),
     PAID_BROWSER_RUNS_PER_MONTH: z.coerce.number().int().positive().default(60),
+    PAID_IMAGE_GENERATIONS_PER_MONTH: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(100),
     PAID_MESSAGES_PER_DAY: z.coerce.number().int().positive().default(500),
     // One month of paid access, in whole roubles.
     PRICE_RUB: z.coerce.number().int().positive().default(2000),
+    SLACK_CONNECTOR_UID: requiredValue.default("slack"),
     TELEGRAM_BOT_TOKEN: requiredValue.optional(),
     TELEGRAM_BOT_USERNAME: requiredValue
       .refine(

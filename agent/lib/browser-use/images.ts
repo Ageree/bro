@@ -1,10 +1,10 @@
 import type { readBrowserRun } from "@db/services/browser-runs";
 import {
   captureImageArtifact,
-  imageArtifactStorageConfigured,
   type ImageArtifactCapture,
 } from "@agent/lib/image-artifact/capture";
 import { maximumDeliveredImageArtifacts } from "@agent/lib/image-artifact/delivery";
+import { imageArtifactStorageConfigured } from "@agent/lib/image-artifact/storage";
 import { downloadWithin } from "@agent/lib/inbound-media/download";
 import { maximumBrowserImageBytes } from "@shared/browser/artifact";
 import { captureViewportOverCdp } from "./cdp";
