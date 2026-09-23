@@ -367,9 +367,27 @@ try {
     check(entry.searched >= 1, "empty: the document was still searched");
   }
 } finally {
+  const browserExited = new Promise<void>((resolve) => {
+    if (browser.exitCode !== null) resolve();
+    else
+      browser.once("exit", () => {
+        resolve();
+      });
+  });
   browser.kill();
-  server.close();
-  rmSync(userDataDir, { force: true, recursive: true });
+  await Promise.race([browserExited, sleep(5_000)]);
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
+  rmSync(userDataDir, {
+    force: true,
+    maxRetries: 5,
+    recursive: true,
+    retryDelay: 100,
+  });
 }
 
 console.log(

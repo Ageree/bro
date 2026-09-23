@@ -14,6 +14,7 @@ import {
 } from "drizzle-orm";
 import { inputRequestSchema, type InputRequest } from "eve/client";
 import type { AccessScope } from "@shared/identity/access-scope";
+import type { ScheduledBrowserResultOwner } from "@shared/browser/scheduled";
 import {
   computeNextRun,
   computeLatestRun,
@@ -24,7 +25,7 @@ import {
   scheduledRunOutcomeSchema,
   type ScheduledRunOutcome,
 } from "@shared/schedules/outcome";
-import { db, scheduledAgentJobs, scheduledAgentRuns } from "@db";
+import { browserRuns, db, scheduledAgentJobs, scheduledAgentRuns } from "@db";
 
 const exhaustedRunOutcome = {
   kind: "blocked",
@@ -295,6 +296,7 @@ export async function claimReadyScheduledAgentRuns(options: {
       .set({
         attempts: sql`${scheduledAgentRuns.attempts} + 1`,
         deferredCompletionTurnId: null,
+        pendingBrowserRunIds: [],
         leaseExpiresAt,
         leaseToken,
         retryAt: null,
@@ -361,7 +363,13 @@ export async function markScheduledAgentRunStarted(
       and(
         eq(scheduledAgentRuns.id, runId),
         eq(scheduledAgentRuns.status, "running"),
-        eq(scheduledAgentRuns.leaseToken, leaseToken)
+        eq(scheduledAgentRuns.leaseToken, leaseToken),
+        sql`${scheduledAgentRuns.leaseExpiresAt} > ${now}`,
+        sql`exists (
+          select 1 from ${scheduledAgentJobs}
+          where ${scheduledAgentJobs.id} = ${scheduledAgentRuns.jobId}
+            and ${scheduledAgentJobs.status} in ('active', 'completed')
+        )`
       )
     )
     .returning({ id: scheduledAgentRuns.id });
@@ -399,6 +407,33 @@ export async function waitForScheduledAgentRunInput(
   return run ? parseRun(run) : undefined;
 }
 
+export async function isScheduledAgentRunBrowserTaskAllowed(
+  runId: string,
+  leaseToken: string,
+  workerSessionId: string,
+  now = new Date()
+) {
+  const [run] = await db
+    .select({ id: scheduledAgentRuns.id })
+    .from(scheduledAgentRuns)
+    .innerJoin(
+      scheduledAgentJobs,
+      eq(scheduledAgentRuns.jobId, scheduledAgentJobs.id)
+    )
+    .where(
+      and(
+        eq(scheduledAgentRuns.id, runId),
+        eq(scheduledAgentRuns.status, "running"),
+        eq(scheduledAgentRuns.leaseToken, leaseToken),
+        eq(scheduledAgentRuns.workerSessionId, workerSessionId),
+        sql`${scheduledAgentRuns.leaseExpiresAt} > ${now}`,
+        inArray(scheduledAgentJobs.status, ["active", "completed"])
+      )
+    )
+    .limit(1);
+  return run !== undefined;
+}
+
 export async function deferScheduledAgentRunCompletion(
   runId: string,
   leaseToken: string,
@@ -407,10 +442,7 @@ export async function deferScheduledAgentRunCompletion(
 ) {
   const [run] = await db
     .update(scheduledAgentRuns)
-    .set({
-      deferredCompletionTurnId: turnId,
-      updatedAt: now,
-    })
+    .set({ deferredCompletionTurnId: turnId, updatedAt: now })
     .where(
       and(
         eq(scheduledAgentRuns.id, runId),
@@ -420,6 +452,283 @@ export async function deferScheduledAgentRunCompletion(
     )
     .returning({ id: scheduledAgentRuns.id });
   return run !== undefined;
+}
+
+function ownedBrowserRootsOutstanding() {
+  return sql`exists (
+    select 1 from "browser_runs" browser_root
+    inner join "scheduled_agent_jobs" scheduled_job
+      on scheduled_job.id = "scheduled_agent_runs"."job_id"
+    where (
+        browser_root."scheduled_origin" @> jsonb_build_object(
+          'runId', "scheduled_agent_runs".id::text,
+          'leaseToken', "scheduled_agent_runs"."lease_token"::text
+        )
+        or (
+          browser_root."scheduled_origin" is null
+          and browser_root."root_session_id" = "scheduled_agent_runs"."worker_session_id"
+        )
+      )
+      and browser_root."workspace_id" = scheduled_job."workspace_id"
+      and browser_root."created_by_user_id" = scheduled_job."created_by_user_id"
+      and browser_root."conversation_channel" = scheduled_job."conversation_channel"
+      and browser_root."conversation_id" = scheduled_job."conversation_id"
+      and (browser_root."root_run_id" is null or browser_root.id = browser_root."root_run_id")
+      and (
+        browser_root."completed_at" is null
+        or browser_root."delivery_state" <> 'acked'
+      )
+  )`;
+}
+
+export async function claimScheduledAgentRunBrowserResume(
+  owner: ScheduledBrowserResultOwner & { readonly rootSessionId: string },
+  browserRunId: string,
+  now = new Date()
+) {
+  const runIdentity = owner.scheduledOrigin
+    ? and(
+        eq(scheduledAgentRuns.id, owner.scheduledOrigin.runId),
+        eq(scheduledAgentRuns.leaseToken, owner.scheduledOrigin.leaseToken)
+      )
+    : owner.rootSessionId
+      ? eq(scheduledAgentRuns.workerSessionId, owner.rootSessionId)
+      : sql`false`;
+  const browserOrigin = owner.scheduledOrigin
+    ? sql`${browserRuns.scheduledOrigin} = ${JSON.stringify(owner.scheduledOrigin)}::jsonb`
+    : isNull(browserRuns.scheduledOrigin);
+  const [claimed] = await db
+    .update(scheduledAgentRuns)
+    .set({
+      pendingBrowserRunIds: sql`case
+        when ${scheduledAgentRuns.pendingBrowserRunIds} @> jsonb_build_array(cast(${browserRunId} as text))
+          then ${scheduledAgentRuns.pendingBrowserRunIds}
+        else ${scheduledAgentRuns.pendingBrowserRunIds} || jsonb_build_array(cast(${browserRunId} as text))
+      end`,
+      updatedAt: now,
+    })
+    .where(
+      and(
+        eq(scheduledAgentRuns.status, "running"),
+        runIdentity,
+        isNotNull(scheduledAgentRuns.leaseToken),
+        sql`${scheduledAgentRuns.leaseExpiresAt} > ${now}`,
+        sql`exists (
+          select 1 from ${scheduledAgentJobs}
+          where ${scheduledAgentJobs.id} = ${scheduledAgentRuns.jobId}
+            and ${scheduledAgentJobs.status} in ('active', 'completed')
+            and ${scheduledAgentJobs.workspaceId} = ${owner.workspaceId}
+            and ${scheduledAgentJobs.createdByUserId} = ${owner.createdByUserId}
+            and ${scheduledAgentJobs.conversationChannel} = ${owner.conversationChannel}
+            and ${scheduledAgentJobs.conversationId} = ${owner.conversationId}
+        )`,
+        sql`exists (
+          select 1 from ${browserRuns}
+          where ${browserRuns.rootSessionId} = ${owner.rootSessionId}
+            and ${browserRuns.workspaceId} = ${owner.workspaceId}
+            and ${browserRuns.createdByUserId} = ${owner.createdByUserId}
+            and ${browserRuns.conversationChannel} = ${owner.conversationChannel}
+            and ${browserRuns.conversationId} = ${owner.conversationId}
+            and (${browserRuns.rootRunId} is null or ${browserRuns.id} = ${browserRuns.rootRunId})
+            and ${browserRuns.activeRunId} = ${browserRunId}
+            and ${browserOrigin}
+        )`
+      )
+    )
+    .returning({ id: scheduledAgentRuns.id });
+  if (!claimed) return undefined;
+  const rows = await db
+    .select({ job: scheduledAgentJobs, run: scheduledAgentRuns })
+    .from(scheduledAgentRuns)
+    .innerJoin(
+      scheduledAgentJobs,
+      eq(scheduledAgentRuns.jobId, scheduledAgentJobs.id)
+    )
+    .where(eq(scheduledAgentRuns.id, claimed.id))
+    .limit(1);
+  const owned = rows[0];
+  return owned
+    ? { job: parseJob(owned.job), run: parseRun(owned.run) }
+    : undefined;
+}
+
+export async function getScheduledAgentRunForBrowserResult(
+  owner: ScheduledBrowserResultOwner,
+  now = new Date()
+) {
+  const runIdentity = owner.scheduledOrigin
+    ? and(
+        eq(scheduledAgentRuns.id, owner.scheduledOrigin.runId),
+        eq(scheduledAgentRuns.leaseToken, owner.scheduledOrigin.leaseToken)
+      )
+    : owner.rootSessionId
+      ? eq(scheduledAgentRuns.workerSessionId, owner.rootSessionId)
+      : sql`false`;
+  const rows = await db
+    .select({ job: scheduledAgentJobs, run: scheduledAgentRuns })
+    .from(scheduledAgentRuns)
+    .innerJoin(
+      scheduledAgentJobs,
+      eq(scheduledAgentRuns.jobId, scheduledAgentJobs.id)
+    )
+    .where(
+      and(
+        runIdentity,
+        eq(scheduledAgentJobs.workspaceId, owner.workspaceId),
+        eq(scheduledAgentJobs.createdByUserId, owner.createdByUserId),
+        eq(scheduledAgentJobs.conversationChannel, owner.conversationChannel),
+        eq(scheduledAgentJobs.conversationId, owner.conversationId)
+      )
+    )
+    .limit(1);
+  const owned = rows[0];
+  if (!owned) return undefined;
+  const active =
+    (owned.job.status === "active" || owned.job.status === "completed") &&
+    owned.run.status === "running" &&
+    owned.run.leaseToken !== null &&
+    owned.run.leaseExpiresAt !== null &&
+    owned.run.leaseExpiresAt > now;
+  return {
+    active,
+    job: parseJob(owned.job),
+    run: parseRun(owned.run),
+  };
+}
+
+export async function finishScheduledAgentRunBrowserResume(
+  runId: string,
+  leaseToken: string,
+  browserRunId: string,
+  now = new Date()
+) {
+  await db.execute(sql`
+    with acknowledged as (
+      update "browser_runs" browser_root
+      set
+        "delivered_at" = coalesce(browser_root."delivered_at", ${now}),
+        "delivery_state" = 'acked',
+        "updated_at" = ${now}
+      where (browser_root."root_run_id" is null or browser_root.id = browser_root."root_run_id")
+        and browser_root."active_run_id" = ${browserRunId}
+        and browser_root."completed_at" is not null
+        and browser_root."delivery_state" in ('claimed', 'ambiguous', 'acked')
+        and (
+          browser_root."scheduled_origin" = jsonb_build_object(
+            'runId', cast(${runId} as text),
+            'leaseToken', cast(${leaseToken} as text)
+          )
+          or (
+            browser_root."scheduled_origin" is null
+            and exists (
+              select 1 from "scheduled_agent_runs" legacy_run
+              where legacy_run.id = ${runId}
+                and legacy_run."worker_session_id" = browser_root."root_session_id"
+            )
+          )
+        )
+        and exists (
+          select 1
+          from "scheduled_agent_runs" scheduled_run
+          inner join "scheduled_agent_jobs" scheduled_job
+            on scheduled_job.id = scheduled_run."job_id"
+          where scheduled_run.id = ${runId}
+            and scheduled_run.status = 'running'
+            and scheduled_run."lease_token" = ${leaseToken}
+            and scheduled_run."lease_expires_at" > ${now}
+            and scheduled_run."pending_browser_run_ids" @> jsonb_build_array(cast(${browserRunId} as text))
+            and scheduled_job.status in ('active', 'completed')
+        )
+      returning browser_root.id
+    ), retired as (
+      select old_run.id
+      from "browser_runs" old_run
+      inner join "browser_runs" browser_root
+        on browser_root.id = coalesce(old_run."root_run_id", old_run.id)
+      inner join "scheduled_agent_runs" scheduled_run
+        on scheduled_run.id = ${runId}
+      inner join "scheduled_agent_jobs" scheduled_job
+        on scheduled_job.id = scheduled_run."job_id"
+      where old_run.id = ${browserRunId}
+        and browser_root."active_run_id" <> old_run.id
+        and scheduled_run.status = 'running'
+        and scheduled_run."lease_token" = ${leaseToken}
+        and scheduled_run."lease_expires_at" > ${now}
+        and scheduled_run."pending_browser_run_ids" @> jsonb_build_array(cast(${browserRunId} as text))
+        and scheduled_job.status in ('active', 'completed')
+        and old_run."workspace_id" = scheduled_job."workspace_id"
+        and old_run."created_by_user_id" = scheduled_job."created_by_user_id"
+        and old_run."conversation_channel" = scheduled_job."conversation_channel"
+        and old_run."conversation_id" = scheduled_job."conversation_id"
+        and browser_root."workspace_id" = scheduled_job."workspace_id"
+        and browser_root."created_by_user_id" = scheduled_job."created_by_user_id"
+        and browser_root."conversation_channel" = scheduled_job."conversation_channel"
+        and browser_root."conversation_id" = scheduled_job."conversation_id"
+        and (
+          (
+            old_run."scheduled_origin" = jsonb_build_object(
+              'runId', cast(${runId} as text),
+              'leaseToken', cast(${leaseToken} as text)
+            )
+            and browser_root."scheduled_origin" = old_run."scheduled_origin"
+          )
+          or (
+            old_run."scheduled_origin" is null
+            and browser_root."scheduled_origin" is null
+            and old_run."root_session_id" = scheduled_run."worker_session_id"
+            and browser_root."root_session_id" = scheduled_run."worker_session_id"
+          )
+        )
+      limit 1
+    )
+    update "scheduled_agent_runs" scheduled_run
+    set
+      "deferred_completion_turn_id" = case
+        when exists (select 1 from acknowledged) then null
+        else scheduled_run."deferred_completion_turn_id"
+      end,
+      "pending_browser_run_ids" = coalesce(
+        (
+          select jsonb_agg(pending_id)
+          from jsonb_array_elements_text(scheduled_run."pending_browser_run_ids") pending_id
+          where pending_id <> ${browserRunId}
+        ),
+        '[]'::jsonb
+      ),
+      "last_error" = case
+        when exists (select 1 from acknowledged) then null
+        else scheduled_run."last_error"
+      end,
+      "updated_at" = ${now}
+    where scheduled_run.id = ${runId}
+      and scheduled_run.status = 'running'
+      and scheduled_run."lease_token" = ${leaseToken}
+      and scheduled_run."lease_expires_at" > ${now}
+      and scheduled_run."pending_browser_run_ids" @> jsonb_build_array(cast(${browserRunId} as text))
+      and (
+        exists (select 1 from acknowledged)
+        or exists (select 1 from retired)
+      )
+  `);
+  const [consumed] = await db
+    .select({ id: scheduledAgentRuns.id })
+    .from(scheduledAgentRuns)
+    .where(
+      and(
+        eq(scheduledAgentRuns.id, runId),
+        eq(scheduledAgentRuns.status, "running"),
+        eq(scheduledAgentRuns.leaseToken, leaseToken),
+        sql`not (${scheduledAgentRuns.pendingBrowserRunIds} @> jsonb_build_array(cast(${browserRunId} as text)))`,
+        sql`exists (
+          select 1 from ${browserRuns}
+          where (${browserRuns.rootRunId} is null or ${browserRuns.id} = ${browserRuns.rootRunId})
+            and ${browserRuns.activeRunId} = ${browserRunId}
+            and ${browserRuns.deliveryState} = 'acked'
+        )`
+      )
+    )
+    .limit(1);
+  return consumed !== undefined;
 }
 
 export async function getScheduledAgentRunInput(
@@ -520,6 +829,7 @@ export async function restoreScheduledAgentRunInput(
     .update(scheduledAgentRuns)
     .set({
       deferredCompletionTurnId: null,
+      pendingBrowserRunIds: [],
       lastError: errorMessage.slice(0, 2_000),
       leaseExpiresAt: null,
       status: "waiting_for_input",
@@ -543,6 +853,7 @@ export async function finishScheduledAgentRunInput(
     .update(scheduledAgentRuns)
     .set({
       deferredCompletionTurnId: null,
+      pendingBrowserRunIds: [],
       pendingInputRequests: null,
       lastError: null,
       reportLeaseExpiresAt: null,
@@ -566,18 +877,33 @@ export async function completeScheduledAgentRun(
   outcome: ScheduledRunOutcome,
   completedAt = new Date()
 ) {
+  const hasOutstandingBrowserRoot = ownedBrowserRootsOutstanding();
+  const hasPendingBrowserResume = sql`jsonb_array_length(${scheduledAgentRuns.pendingBrowserRunIds}) > 0`;
   const completionCondition =
     outcome.kind === "nothing_to_report"
-      ? isNull(scheduledAgentRuns.deferredCompletionTurnId)
-      : or(
+      ? and(
           isNull(scheduledAgentRuns.deferredCompletionTurnId),
-          ne(scheduledAgentRuns.deferredCompletionTurnId, turnId)
+          sql`not (${hasPendingBrowserResume})`,
+          sql`not (${hasOutstandingBrowserRoot})`
+        )
+      : or(
+          and(
+            isNull(scheduledAgentRuns.deferredCompletionTurnId),
+            sql`not (${hasPendingBrowserResume})`,
+            sql`not (${hasOutstandingBrowserRoot})`
+          ),
+          and(
+            ne(scheduledAgentRuns.deferredCompletionTurnId, turnId),
+            sql`not (${hasPendingBrowserResume})`,
+            sql`not (${hasOutstandingBrowserRoot})`
+          )
         );
   const [run] = await db
     .update(scheduledAgentRuns)
     .set({
       completedAt,
       deferredCompletionTurnId: null,
+      pendingBrowserRunIds: [],
       pendingInputRequests: null,
       lastError: null,
       leaseExpiresAt: null,
@@ -597,22 +923,41 @@ export async function completeScheduledAgentRun(
         eq(scheduledAgentRuns.id, runId),
         eq(scheduledAgentRuns.status, "running"),
         eq(scheduledAgentRuns.leaseToken, leaseToken),
-        completionCondition
+        sql`${scheduledAgentRuns.leaseExpiresAt} > ${completedAt}`,
+        completionCondition,
+        sql`exists (
+          select 1 from ${scheduledAgentJobs}
+          where ${scheduledAgentJobs.id} = ${scheduledAgentRuns.jobId}
+            and ${scheduledAgentJobs.status} in ('active', 'completed')
+        )`
       )
     )
     .returning();
   if (run) return { status: "completed" as const, run: parseRun(run) };
-  const deferred = await db.query.scheduledAgentRuns.findFirst({
-    columns: { id: true },
-    where: and(
-      eq(scheduledAgentRuns.id, runId),
-      eq(scheduledAgentRuns.status, "running"),
-      eq(scheduledAgentRuns.leaseToken, leaseToken),
-      outcome.kind === "nothing_to_report"
-        ? isNotNull(scheduledAgentRuns.deferredCompletionTurnId)
-        : eq(scheduledAgentRuns.deferredCompletionTurnId, turnId)
-    ),
-  });
+  const [deferred] = await db
+    .select({ id: scheduledAgentRuns.id })
+    .from(scheduledAgentRuns)
+    .where(
+      and(
+        eq(scheduledAgentRuns.id, runId),
+        eq(scheduledAgentRuns.status, "running"),
+        eq(scheduledAgentRuns.leaseToken, leaseToken),
+        sql`${scheduledAgentRuns.leaseExpiresAt} > ${completedAt}`,
+        sql`exists (
+          select 1 from ${scheduledAgentJobs}
+          where ${scheduledAgentJobs.id} = ${scheduledAgentRuns.jobId}
+            and ${scheduledAgentJobs.status} in ('active', 'completed')
+        )`,
+        or(
+          outcome.kind === "nothing_to_report"
+            ? isNotNull(scheduledAgentRuns.deferredCompletionTurnId)
+            : eq(scheduledAgentRuns.deferredCompletionTurnId, turnId),
+          hasPendingBrowserResume,
+          hasOutstandingBrowserRoot
+        )
+      )
+    )
+    .limit(1);
   return deferred ? { status: "deferred" as const } : undefined;
 }
 
@@ -634,6 +979,7 @@ export async function releaseScheduledAgentRun(
     .update(scheduledAgentRuns)
     .set({
       deferredCompletionTurnId: null,
+      pendingBrowserRunIds: [],
       lastError: errorMessage.slice(0, 2_000),
       leaseExpiresAt: null,
       leaseToken: null,

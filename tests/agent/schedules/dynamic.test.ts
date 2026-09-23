@@ -333,6 +333,7 @@ function scheduledClaim(): Awaited<
       createdAt: new Date("2026-09-02T13:00:00.000Z"),
       deferredCompletionTurnId: null,
       id: "00000000-0000-4000-8000-000000000002",
+      pendingBrowserRunIds: [],
       pendingInputRequests: null,
       jobId: "00000000-0000-4000-8000-000000000001",
       lastError: null,

@@ -15,12 +15,14 @@ import {
 import { Button } from "@web/components/ui/button";
 import { getAuthSession } from "@db/services/auth/session";
 import { paidPeriodDays, readBillingState } from "@db/services/billing";
+import { getBrowserAutonomyPolicy } from "@db/services/browser-autonomy";
 import { readChannelIdentity } from "@db/services/channel-identities";
 import { getWorkspaceModelId } from "@db/services/settings";
 import { readUserProfile } from "@db/services/user-profile";
 import { listVaultItems } from "@db/services/vault";
 import { yooKassaConfigured } from "@db/services/yookassa";
 import { env } from "@shared/environment";
+import { hasBroadBrowserAutonomy } from "@shared/browser/autonomy";
 import {
   type GoogleWorkspaceConnection,
   readGoogleWorkspaceConnection,
@@ -31,6 +33,7 @@ import { photonConfigured } from "@shared/photon/credentials";
 import { resolveTimeZone } from "@shared/user-profile/schema";
 import { requireRequestScope } from "@web/auth/request-scope";
 import { GoogleWorkspaceAction } from "./_components/google-workspace-action";
+import { BrowserAutonomy } from "./_components/browser-autonomy";
 import { ModelSelector } from "./_components/model-selector";
 import { TelegramLinkAction } from "./_components/telegram-link-action";
 
@@ -73,6 +76,7 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
     billing,
     profile,
     vaultItems,
+    browserAutonomy,
   ] = await Promise.all([
     getAuthSession(requestHeaders),
     readGoogleWorkspaceConnection(scope.userId),
@@ -81,6 +85,7 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
     readBillingState(scope),
     readUserProfile(scope),
     listVaultItems(scope),
+    getBrowserAutonomyPolicy(scope),
   ]);
   const openRouter = openRouterActive();
   const imageStorageReady = Boolean(
@@ -133,6 +138,35 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
       />
       <VaultSection items={vaultItems} />
       <TimeZoneSection timeZone={timeZone} />
+
+      <Section
+        headingId="browser-autonomy-heading"
+        state={
+          hasBroadBrowserAutonomy(browserAutonomy) ? "Разрешено" : "По запросу"
+        }
+        title="Действия на сайтах"
+      >
+        <Rows>
+          <Row
+            side={
+              <BrowserAutonomy
+                broad={hasBroadBrowserAutonomy(browserAutonomy)}
+              />
+            }
+          >
+            <p>Выполнять поручения без повторных подтверждений</p>
+            <p className="type-status text-muted-foreground">
+              Просмотр сайтов и подготовка всегда выполняются автоматически.
+              Отдельное разрешение позволяет в рамках твоих поручений покупать и
+              бронировать, отправлять, менять аккаунты и удалять данные.
+            </p>
+            <p className="type-status text-muted-foreground">
+              Это делегирование Bro, а не техническая гарантия контроля каждого
+              клика на внешнем сайте. Разрешение можно отозвать переключателем.
+            </p>
+          </Row>
+        </Rows>
+      </Section>
 
       <Section headingId="connections-heading" title="Подключения">
         <Rows>

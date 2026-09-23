@@ -11,6 +11,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   vi.resetModules();
+  vi.useRealTimers();
 });
 
 async function loadClient() {
@@ -26,6 +27,7 @@ interface StubbedCall {
   readonly body: string;
   readonly headers: Headers;
   readonly method: string;
+  readonly signal: AbortSignal | null | undefined;
   readonly url: string;
 }
 
@@ -37,12 +39,18 @@ function stubFetch(...responses: readonly Response[]) {
     "fetch",
     (
       url: URL,
-      init: { body?: string; headers: HeadersInit; method: string }
+      init: {
+        body?: string;
+        headers: HeadersInit;
+        method: string;
+        signal?: AbortSignal | null;
+      }
     ) => {
       calls.push({
         body: init.body ?? "",
         headers: new Headers(init.headers),
         method: init.method,
+        signal: init.signal,
         url: url.toString(),
       });
       const response = responses[Math.min(index, responses.length - 1)];
@@ -52,6 +60,15 @@ function stubFetch(...responses: readonly Response[]) {
     }
   );
   return calls;
+}
+
+function recoverySummary(index: number, owner = sessionId) {
+  return {
+    id: `${String(index).padStart(8, "0")}-1111-4111-8111-111111111111`,
+    sessionId: owner,
+    status: "completed",
+    task: `Recovery marker ${String(index)}`,
+  };
 }
 
 describe("Browser Use client", () => {
@@ -123,11 +140,159 @@ describe("Browser Use client", () => {
     expect(calls).toHaveLength(2);
   });
 
+  it("briefly retries a newly accepted run that is not visible yet", async () => {
+    vi.useFakeTimers();
+    const client = await loadClient();
+    const calls = stubFetch(
+      new Response('{"detail":"run not found"}', { status: 404 }),
+      Response.json({ status: "dispatching" })
+    );
+
+    const pending = client.readBrowserUseRunStatus(runId);
+    await vi.advanceTimersByTimeAsync(250);
+
+    await expect(pending).resolves.toBe("dispatching");
+    expect(calls).toHaveLength(2);
+    expect(calls.every((call) => call.method === "GET")).toBe(true);
+  });
+
+  it("stops retrying a run id that stays missing after the grace window", async () => {
+    vi.useFakeTimers();
+    const client = await loadClient();
+    const calls = stubFetch(
+      new Response('{"detail":"run not found"}', { status: 404 })
+    );
+
+    const pending = client.readBrowserUseRunStatus(runId);
+    await Promise.all([
+      vi.runAllTimersAsync(),
+      expect(pending).rejects.toMatchObject({ status: 404 }),
+    ]);
+    expect(calls).toHaveLength(5);
+    expect(calls.every((call) => call.method === "GET")).toBe(true);
+  });
+
+  it("does not start another GET when a slow 404 consumes the grace window", async () => {
+    vi.useFakeTimers();
+    const client = await loadClient();
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", (url: URL, init: RequestInit) => {
+      calls.push(`${init.method ?? "GET"} ${url.toString()}`);
+      return new Promise<Response>((resolve) =>
+        setTimeout(() => {
+          resolve(new Response("not found", { status: 404 }));
+        }, 2_900)
+      );
+    });
+
+    const pending = client.readBrowserUseRunStatus(runId);
+    await Promise.all([
+      vi.runAllTimersAsync(),
+      expect(pending).rejects.toMatchObject({ status: 404 }),
+    ]);
+
+    expect(calls).toEqual([`GET ${baseUrl}/runs/${runId}/status`]);
+  });
+
+  it("aborts a hung status GET at the overall grace deadline", async () => {
+    vi.useFakeTimers();
+    const client = await loadClient();
+    const calls: string[] = [];
+    vi.spyOn(AbortSignal, "timeout").mockImplementation((delayMs) => {
+      const controller = new AbortController();
+      setTimeout(() => {
+        controller.abort(new DOMException("timed out", "TimeoutError"));
+      }, delayMs);
+      return controller.signal;
+    });
+    vi.stubGlobal(
+      "fetch",
+      (url: URL, init: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          calls.push(`${init.method ?? "GET"} ${url.toString()}`);
+          init.signal?.addEventListener("abort", () => {
+            reject(new DOMException("timed out", "TimeoutError"));
+          });
+        })
+    );
+
+    const pending = client.readBrowserUseRunStatus(runId);
+    await Promise.all([
+      vi.advanceTimersByTimeAsync(3_000),
+      expect(pending).rejects.toMatchObject({ name: "TimeoutError" }),
+    ]);
+
+    expect(calls).toEqual([`GET ${baseUrl}/runs/${runId}/status`]);
+  });
+
+  it("returns an already visible status without waiting or retrying", async () => {
+    vi.useFakeTimers();
+    const client = await loadClient();
+    const calls = stubFetch(Response.json({ status: "running" }));
+
+    await expect(client.readBrowserUseRunStatus(runId)).resolves.toBe(
+      "running"
+    );
+
+    expect(calls).toHaveLength(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each([401, 403])(
+    "does not apply visibility retries to a %s auth failure",
+    async (status) => {
+      vi.useFakeTimers();
+      const client = await loadClient();
+      const calls = stubFetch(new Response("unauthorized", { status }));
+
+      await expect(client.readBrowserUseRunStatus(runId)).rejects.toMatchObject(
+        { status }
+      );
+
+      expect(calls).toHaveLength(1);
+      expect(vi.getTimerCount()).toBe(0);
+    }
+  );
+
+  it("does not apply visibility retries to a malformed success response", async () => {
+    vi.useFakeTimers();
+    const client = await loadClient();
+    const calls = stubFetch(Response.json({ status: "unknown" }));
+
+    await expect(client.readBrowserUseRunStatus(runId)).rejects.toBeInstanceOf(
+      Error
+    );
+
+    expect(calls).toHaveLength(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("does not retry run creation because the POST has no idempotency key", async () => {
+    const client = await loadClient();
+    const calls = stubFetch(new Response("upstream exploded", { status: 503 }));
+
+    await expect(
+      client.createBrowserUseRun({ task: "Do this once" })
+    ).rejects.toThrow("upstream exploded");
+
+    expect(calls).toHaveLength(1);
+  });
+
   it("reads a run status, queues a session message and stops a session", async () => {
     const client = await loadClient();
     const calls = stubFetch(
       Response.json({ status: "completed" }),
       Response.json({ id: 7, sessionId, status: "pending" }),
+      Response.json({
+        items: [
+          {
+            agentSessionId: sessionId,
+            id: "browser-active",
+            status: "active",
+          },
+        ],
+      }),
+      Response.json({ id: "browser-active", status: "stopped" }),
       new Response(null, { status: 204 })
     );
 
@@ -140,14 +305,147 @@ describe("Browser Use client", () => {
     expect(calls.map((call) => `${call.method} ${call.url}`)).toEqual([
       `GET ${baseUrl}/runs/${runId}/status`,
       `POST ${baseUrl}/sessions/${sessionId}/queue`,
+      `GET ${baseUrl}/browsers?agentSessionId=${sessionId}&filterBy=active&pageSize=100&pageNumber=1`,
+      `PATCH ${baseUrl}/browsers/browser-active`,
       `DELETE ${baseUrl}/sessions/${sessionId}`,
     ]);
     expect(JSON.parse(calls[1]?.body ?? "")).toEqual({ text: "123456" });
+    expect(JSON.parse(calls[3]?.body ?? "")).toEqual({ action: "stop" });
+  });
+
+  it("keeps the agent session when stopping its browser fails", async () => {
+    const client = await loadClient();
+    const calls = stubFetch(
+      Response.json({
+        items: [
+          {
+            agentSessionId: sessionId,
+            id: "browser-active",
+            status: "active",
+          },
+        ],
+        pageNumber: 1,
+        pageSize: 100,
+        totalItems: 1,
+      }),
+      new Response("stop failed", { status: 503 }),
+      new Response("stop failed", { status: 503 })
+    );
+
+    await expect(client.stopBrowserUseSession(sessionId)).rejects.toThrow(
+      "stop failed"
+    );
+
+    expect(calls.map((call) => `${call.method} ${call.url}`)).toEqual([
+      `GET ${baseUrl}/browsers?agentSessionId=${sessionId}&filterBy=active&pageSize=100&pageNumber=1`,
+      `PATCH ${baseUrl}/browsers/browser-active`,
+      `PATCH ${baseUrl}/browsers/browser-active`,
+    ]);
+  });
+
+  it("stops matching active browsers across every result page", async () => {
+    const client = await loadClient();
+    const calls = stubFetch(
+      Response.json({
+        items: [
+          {
+            agentSessionId: sessionId,
+            id: "browser-first",
+            status: "active",
+          },
+        ],
+        pageNumber: 1,
+        pageSize: 100,
+        totalItems: 101,
+      }),
+      Response.json({
+        items: [
+          {
+            agentSessionId: sessionId,
+            id: "browser-last",
+            status: "active",
+          },
+        ],
+        pageNumber: 2,
+        pageSize: 100,
+        totalItems: 101,
+      }),
+      Response.json({ id: "browser-first", status: "stopped" }),
+      Response.json({ id: "browser-last", status: "stopped" }),
+      new Response(null, { status: 204 })
+    );
+
+    await client.stopBrowserUseSession(sessionId);
+
+    expect(calls.map((call) => `${call.method} ${call.url}`)).toEqual([
+      `GET ${baseUrl}/browsers?agentSessionId=${sessionId}&filterBy=active&pageSize=100&pageNumber=1`,
+      `GET ${baseUrl}/browsers?agentSessionId=${sessionId}&filterBy=active&pageSize=100&pageNumber=2`,
+      `PATCH ${baseUrl}/browsers/browser-first`,
+      `PATCH ${baseUrl}/browsers/browser-last`,
+      `DELETE ${baseUrl}/sessions/${sessionId}`,
+    ]);
+  });
+
+  it("continues a full page when pagination metadata is absent", async () => {
+    const client = await loadClient();
+    const calls = stubFetch(
+      Response.json({
+        items: Array.from({ length: 100 }, (_, index) => ({
+          agentSessionId:
+            index === 0 ? sessionId : "99999999-9999-4999-8999-999999999999",
+          id: `browser-${String(index)}`,
+          status: "active",
+        })),
+      }),
+      Response.json({ items: [] }),
+      Response.json({ id: "browser-0", status: "stopped" }),
+      new Response(null, { status: 204 })
+    );
+
+    await client.stopBrowserUseSession(sessionId);
+
+    expect(calls.map((call) => `${call.method} ${call.url}`)).toEqual([
+      `GET ${baseUrl}/browsers?agentSessionId=${sessionId}&filterBy=active&pageSize=100&pageNumber=1`,
+      `GET ${baseUrl}/browsers?agentSessionId=${sessionId}&filterBy=active&pageSize=100&pageNumber=2`,
+      `PATCH ${baseUrl}/browsers/browser-0`,
+      `DELETE ${baseUrl}/sessions/${sessionId}`,
+    ]);
+  });
+
+  it("deletes the agent session without touching unrelated or stopped browsers", async () => {
+    const client = await loadClient();
+    const calls = stubFetch(
+      Response.json({
+        items: [
+          {
+            agentSessionId: "99999999-9999-4999-8999-999999999999",
+            id: "browser-unrelated",
+            status: "active",
+          },
+          {
+            agentSessionId: sessionId,
+            id: "browser-stopped",
+            status: "stopped",
+          },
+        ],
+        pageNumber: 1,
+        pageSize: 100,
+        totalItems: 0,
+      }),
+      new Response(null, { status: 204 })
+    );
+
+    await client.stopBrowserUseSession(sessionId);
+
+    expect(calls.map((call) => `${call.method} ${call.url}`)).toEqual([
+      `GET ${baseUrl}/browsers?agentSessionId=${sessionId}&filterBy=active&pageSize=100&pageNumber=1`,
+      `DELETE ${baseUrl}/sessions/${sessionId}`,
+    ]);
   });
 
   it("takes the live view url from the browser.ready event", async () => {
     const client = await loadClient();
-    stubFetch(
+    const calls = stubFetch(
       Response.json({
         events: [
           { data: { model: "hosted-agent" }, id: 1, type: "run.started" },
@@ -162,11 +460,74 @@ describe("Browser Use client", () => {
       })
     );
 
-    const page = await client.listBrowserUseRunEvents(runId);
+    const page = await client.listBrowserUseRunEvents(runId, 200, 42);
     expect(client.liveViewUrlFromEvents(page.events)).toBe(
       "https://live.browser-use.test/abc"
     );
     expect(client.liveViewUrlFromEvents([])).toBeUndefined();
+    expect(calls[0]?.url).toBe(
+      `${baseUrl}/runs/${runId}/events?limit=200&after=42`
+    );
+  });
+
+  it("reads documented run cost and model metadata without making it required", async () => {
+    const client = await loadClient();
+    stubFetch(
+      Response.json({
+        error: null,
+        id: runId,
+        model: "hosted-agent",
+        result: "RESULT: done\nNEEDS: none",
+        sessionId,
+        status: "completed",
+        task: "Research",
+        totalCostUsd: "0.42",
+        totalInputTokens: 123,
+        totalOutputTokens: 45,
+      })
+    );
+
+    await expect(client.readBrowserUseRun(runId)).resolves.toMatchObject({
+      model: "hosted-agent",
+      totalCostUsd: "0.42",
+      totalInputTokens: 123,
+      totalOutputTokens: 45,
+    });
+  });
+
+  it("lists at most fifty runs for one session across cursor pages", async () => {
+    const client = await loadClient();
+    const calls = stubFetch(
+      Response.json({
+        hasMore: true,
+        nextCursor: "next page/+",
+        runs: [
+          ...Array.from({ length: 25 }, (_, index) => recoverySummary(index)),
+          recoverySummary(99, "99999999-9999-4999-8999-999999999999"),
+        ],
+      }),
+      Response.json({
+        hasMore: true,
+        nextCursor: "ignored",
+        runs: Array.from({ length: 30 }, (_, index) =>
+          recoverySummary(index + 25)
+        ),
+      })
+    );
+
+    const runs = await client.listBrowserUseRunsBySession(sessionId);
+
+    expect(runs).toHaveLength(50);
+    expect(runs[0]).toEqual({
+      id: "00000000-1111-4111-8111-111111111111",
+      sessionId,
+      status: "completed",
+      task: "Recovery marker 0",
+    });
+    expect(calls.map(({ url }) => url)).toEqual([
+      `${baseUrl}/runs?sessionId=${sessionId}&limit=25`,
+      `${baseUrl}/runs?sessionId=${sessionId}&limit=25&cursor=next+page%2F%2B`,
+    ]);
   });
 
   it("finds the debugger endpoint of the browser this session is using", async () => {
@@ -198,11 +559,15 @@ describe("Browser Use client", () => {
       })
     );
 
-    await expect(client.findBrowserUseSessionCdpUrl(sessionId)).resolves.toBe(
-      "wss://cdp.browser-use.test/live"
-    );
+    const controller = new AbortController();
+    await expect(
+      client.findBrowserUseSessionCdpUrl(sessionId, controller.signal)
+    ).resolves.toBe("wss://cdp.browser-use.test/live");
     expect(calls[0]?.method).toBe("GET");
-    expect(calls[0]?.url).toBe(`${baseUrl}/browsers`);
+    expect(calls[0]?.signal).toBe(controller.signal);
+    expect(calls[0]?.url).toBe(
+      `${baseUrl}/browsers?agentSessionId=${sessionId}&filterBy=active&pageSize=100&pageNumber=1`
+    );
   });
 
   it("reports no endpoint when this session has no browser up", async () => {

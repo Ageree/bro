@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { PGlite } from "@electric-sql/pglite";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -9,6 +9,81 @@ afterEach(async () => {
 });
 
 describe("database migrations", () => {
+  it("marks historical completed browser runs non-replayable during lifecycle adoption", async () => {
+    const database = createDatabase();
+    const directory = new URL("../migrations/", import.meta.url);
+    const names = (await readdir(directory))
+      .filter((name) => name.endsWith(".sql") && !name.startsWith("0022_"))
+      .toSorted();
+    await applyMigrationSequence(database, names);
+    await database.exec(`
+      INSERT INTO "user" (id, name, email, "emailVerified", "createdAt", "updatedAt")
+      VALUES ('browser-user', 'Browser User', 'browser@example.com', false, now(), now());
+      INSERT INTO workspaces (id, created_at) VALUES ('browser-workspace', now());
+      INSERT INTO workspace_memberships (workspace_id, user_id, role, created_at)
+      VALUES ('browser-workspace', 'browser-user', 'owner', now());
+      INSERT INTO browser_runs (
+        id, workspace_id, created_by_user_id, session_id, task, status,
+        outcome, conversation_channel, conversation_id, completed_at
+      ) VALUES (
+        'historical-complete', 'browser-workspace', 'browser-user',
+        'browser-session', 'Old completed errand', 'done', 'Old outcome',
+        'eve', 'conversation-1', now()
+      );
+    `);
+    await applyMigration(database, "0022_magenta_tony_stark.sql");
+    const result = await database.query<{ deliveryState: string }>(`
+      SELECT delivery_state AS "deliveryState"
+      FROM browser_runs
+      WHERE id = 'historical-complete'
+        AND delivery_state = 'pending'
+    `);
+    expect(result.rows).toEqual([]);
+    await expect(
+      database.query(
+        `SELECT delivery_state FROM browser_runs WHERE id = 'historical-complete'`
+      )
+    ).resolves.toMatchObject({ rows: [{ delivery_state: "ambiguous" }] });
+  }, 20_000);
+
+  it("reconciles renumbered browser migrations without resetting durable deliveries", async () => {
+    const database = createDatabase();
+    const directory = new URL("../migrations/", import.meta.url);
+    const names = (await readdir(directory))
+      .filter((name) => name.endsWith(".sql"))
+      .toSorted();
+    await applyMigrationSequence(database, names);
+    await database.exec(`
+      INSERT INTO "user" (id, name, email, "emailVerified", "createdAt", "updatedAt")
+      VALUES ('browser-user', 'Browser User', 'browser@example.com', false, now(), now());
+      INSERT INTO workspaces (id, created_at) VALUES ('browser-workspace', now());
+      INSERT INTO workspace_memberships (workspace_id, user_id, role, created_at)
+      VALUES ('browser-workspace', 'browser-user', 'owner', now());
+      INSERT INTO browser_runs (
+        id, workspace_id, created_by_user_id, session_id, task, status,
+        outcome, conversation_channel, conversation_id, completed_at,
+        root_run_id, active_run_id, lineage_revision, delivery_state,
+        delivery_token, delivered_at, proxy_country_code
+      ) SELECT
+        state, 'browser-workspace', 'browser-user', 'browser-session',
+        'Completed errand', 'done', 'Verified outcome', 'eve', 'conversation-1',
+        now(), state, state || '-child', 3, state,
+        CASE WHEN state = 'claimed' THEN 'delivery-claim' END,
+        CASE WHEN state = 'acked' THEN now() END, 'us'
+      FROM unnest(ARRAY['pending', 'claimed', 'acked', 'ambiguous']) AS state;
+    `);
+    const select = `SELECT id, root_run_id, active_run_id, lineage_revision,
+      delivery_state, delivery_token, delivered_at, proxy_country_code
+      FROM browser_runs ORDER BY id`;
+    const before = await database.query(select);
+
+    await applyMigration(database, "0021_browser_run_proxy_country.sql");
+    await applyMigration(database, "0022_magenta_tony_stark.sql");
+
+    expect((await database.query(select)).rows).toEqual(before.rows);
+    expect(before.rows).toHaveLength(4);
+  }, 20_000);
+
   it("creates a validated schema and keeps adoption migrations idempotent", async () => {
     const database = createDatabase();
 
@@ -319,6 +394,17 @@ async function applyMigration(database: PGlite, name: string) {
     if (statement.trim()) await database.exec(statement);
   }
   /* oxlint-enable eslint/no-await-in-loop */
+}
+
+async function applyMigrationSequence(
+  database: PGlite,
+  names: readonly string[],
+  index = 0
+): Promise<void> {
+  const name = names[index];
+  if (!name) return;
+  await applyMigration(database, name);
+  await applyMigrationSequence(database, names, index + 1);
 }
 
 async function pendingConstraintCount(database: PGlite) {

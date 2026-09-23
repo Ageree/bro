@@ -16,6 +16,7 @@ export default {
     "evals/**/*.eval.ts",
     "evals/evals.config.ts",
     // A one-off maintenance CLI, run by hand rather than from package.json.
+    "scripts/browser-eval/run.ts",
     "scripts/migrate-from-convex.ts",
     "taze.config.ts",
   ],

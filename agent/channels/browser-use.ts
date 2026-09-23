@@ -1,7 +1,11 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { defineChannel, POST } from "eve/channels";
+import { localDev, routeAuth, vercelOidc } from "eve/channels/auth";
 import { z } from "zod";
-import { settleBrowserRun } from "@agent/lib/browser-use/completion";
+import {
+  deliverEveBrowserRun,
+  settleBrowserRun,
+} from "@agent/lib/browser-use/completion";
 import { readBrowserRun } from "@db/services/browser-runs";
 import { env } from "@shared/environment";
 
@@ -12,6 +16,13 @@ import { env } from "@shared/environment";
  * window bounds replay; the delivered outcome is made idempotent downstream.
  */
 const signatureSkewSeconds = 300;
+const internalRouteAuth = [vercelOidc(), localDev()];
+
+export const browserDeliverySchema = z.strictObject({
+  lineageRevision: z.int().nonnegative(),
+  rootRunId: z.uuid(),
+});
+export type BrowserDeliveryRequest = z.infer<typeof browserDeliverySchema>;
 
 const webhookEventSchema = z.object({
   payload: z.looseObject({
@@ -116,6 +127,18 @@ export default defineChannel({
     throw new Error("The Browser Use channel only accepts webhook deliveries.");
   },
   routes: [
+    POST(
+      "/internal/browser-use/delivery",
+      async (request, { attachSession }) => {
+        const auth = await routeAuth(request, internalRouteAuth);
+        if (auth instanceof Response) return auth;
+        const input = browserDeliverySchema.parse(await request.json());
+        const status = await deliverEveBrowserRun(attachSession, input);
+        return new Response(null, {
+          status: status === "accepted" ? 202 : 409,
+        });
+      }
+    ),
     POST(
       "/webhooks/browser-use",
       async (request, { attachSession, to, waitUntil }) => {
