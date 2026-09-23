@@ -94,17 +94,6 @@
   `eve eval agent --tag <тег>` с `DATABASE_URL`, `BETTER_AUTH_URL=http://127.0.0.1:9`
   и `NODE_ENV=development`. Кейсы с `t.judge` без Gateway не оценятся.
 
-## Google
-
-- `@googleapis/drive` закреплён на 22: версии 25+ тянут `google-auth-library`
-  11, и его `OAuth2Client` не совместим по типам с клиентом из `client.ts`,
-  общим для Gmail, Calendar и People.
-- Грант Google, выданный до появления скоупа в `googleWorkspaceScopes`
-  (например `drive.readonly`), его не покрывает. Если такой токен всё же
-  дошёл до API, Google отвечает 403 insufficient scopes, а не 401, поэтому
-  `withGoogleAuth` на обоих ответах зовёт `ctx.requireAuth` и заново
-  спрашивает согласие (`agent/lib/google-workspace/client.ts`).
-
 ## Notion и Slack
 
 - Коннекторы Vercel Connect задаются `NOTION_CONNECTOR_UID` и
