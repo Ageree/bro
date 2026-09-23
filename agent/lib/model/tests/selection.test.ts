@@ -106,7 +106,7 @@ describe("model selection", () => {
 
     const { openRouterSelection } = await import("@agent/lib/model/openrouter");
     const selection = openRouterSelection("deepseek/deepseek-v4.1-flash", {
-      requireToolCall: true,
+      toolChoice: "required",
     });
     const sendMessage = {
       inputSchema: { type: "object" },
@@ -124,17 +124,51 @@ describe("model selection", () => {
     expect(doGenerate.mock.calls[1]?.[0].toolChoice).toBeUndefined();
   });
 
+  it("makes a looping turn end in text", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
+    vi.stubEnv("OPENROUTER_REASONING_EFFORT", "medium");
+    const doGenerate = vi.fn<LanguageModelV4["doGenerate"]>();
+    openRouter.chat.mockImplementation((modelId) => ({
+      doGenerate,
+      doStream: vi.fn<LanguageModelV4["doStream"]>(),
+      modelId,
+      provider: "openrouter.chat",
+      specificationVersion: "v4",
+      supportedUrls: {},
+    }));
+
+    const { openRouterSelection } = await import("@agent/lib/model/openrouter");
+    // Anthropic rejects only a forced tool call while thinking, not `none`.
+    const selection = openRouterSelection("anthropic/claude-sonnet-4.5", {
+      toolChoice: "none",
+    });
+    await selection.model.doGenerate({
+      prompt: [],
+      tools: [
+        {
+          inputSchema: { type: "object" },
+          name: "send_message",
+          type: "function",
+        },
+      ],
+    });
+
+    expect(doGenerate.mock.calls[0]?.[0]).toMatchObject({
+      toolChoice: { type: "none" },
+    });
+  });
+
   it.each([
-    ["no tool call is required", "deepseek/deepseek-v4.1-flash", false, "off"],
+    ["no tool call is required", "deepseek/deepseek-v4.1-flash", "auto", "off"],
     [
       "Anthropic thinks before answering",
       "anthropic/claude-sonnet-4.5",
-      true,
+      "required",
       "medium",
     ],
-  ])(
+  ] as const)(
     "hands back the provider model untouched when %s",
-    async (_case, modelId, requireToolCall, effort) => {
+    async (_case, modelId, toolChoice, effort) => {
       vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
       vi.stubEnv("OPENROUTER_REASONING_EFFORT", effort);
       const providerModel = { modelId };
@@ -142,7 +176,7 @@ describe("model selection", () => {
 
       const { openRouterSelection } =
         await import("@agent/lib/model/openrouter");
-      const selection = openRouterSelection(modelId, { requireToolCall });
+      const selection = openRouterSelection(modelId, { toolChoice });
 
       expect(selection.model).toBe(providerModel);
     }

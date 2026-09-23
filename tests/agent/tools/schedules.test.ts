@@ -217,7 +217,7 @@ describe("schedule tools", () => {
   });
 
   it("omits messaging capabilities outside their valid turns", async () => {
-    const resolveMessaging = messaging.events["turn.started"];
+    const resolveMessaging = messaging.events["step.started"];
     expect(resolveMessaging).toBeDefined();
     if (!resolveMessaging) return;
 
