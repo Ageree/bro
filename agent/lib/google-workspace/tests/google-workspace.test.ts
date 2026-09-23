@@ -1,6 +1,8 @@
+import { connect } from "@vercel/connect/eve";
 import type { SessionContext } from "eve/context";
 import type { Approval, ApprovalPolicy } from "eve/tools/approval";
 import { describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import type { getGoogleWorkspaceAccess } from "@db/services/settings";
 import { accessScopeForUser } from "@shared/identity/access-scope";
 
@@ -52,6 +54,43 @@ describe("Google Workspace", () => {
       });
       expect(googleWorkspaceAuthOptions(access).validate).toBe(true);
     }
+  });
+
+  it("asks Google for consent from the chat sign-in card so the grant can refresh", async () => {
+    // An unsigned token that is not expired is all the OIDC reader checks.
+    const claims = btoa(JSON.stringify({ exp: 4_102_444_800 }));
+    vi.stubEnv("VERCEL_OIDC_TOKEN", `e30.${claims}.sig`);
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+      Response.json({
+        request: "req_1",
+        url: "https://accounts.google.com/o/oauth2/v2/auth",
+        verifier: "ver_1",
+      })
+    );
+    vi.stubGlobal("fetch", fetch);
+
+    try {
+      const auth = connect(googleWorkspaceAuthOptions("full"));
+      if (!("startAuthorization" in auth)) {
+        throw new Error("Google authorization must be interactive.");
+      }
+      await auth.startAuthorization({
+        callbackUrl: "https://example.com/hook",
+        connection: { url: "https://www.googleapis.com" },
+        principal: { id: userId, issuer: "better-auth", type: "user" },
+      });
+    } finally {
+      vi.unstubAllGlobals();
+      vi.unstubAllEnvs();
+    }
+
+    const [endpoint, init] = fetch.mock.calls[0] ?? [];
+    expect(endpoint).toEqual(expect.stringContaining("/v1/connect/authorize/"));
+    expect(JSON.parse(z.string().parse(init?.body))).toMatchObject({
+      prompt: "consent",
+      scopes: [...googleWorkspaceScopes.full],
+      subject: googleWorkspaceSubject(userId),
+    });
   });
 
   it("grants a read-only workspace no scope that can write", () => {

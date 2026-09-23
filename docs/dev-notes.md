@@ -152,6 +152,17 @@
   отзывает грант (`revokeGoogleWorkspaceGrant`), иначе у Google остаются широкие
   scopes старого гранта. Запись в режиме только чтения отсекается политикой
   подтверждения `googleWriteApproval` до карточки, а не ошибкой Google.
+- Google выдаёт refresh-токен, только когда экран согласия реально
+  показывается. Кто уже давал доступ этому OAuth-клиенту, проходит без
+  экрана, и Vercel Connect получает часовой токен без продления: через час
+  Google «отключается», утренние сводки и сканер падают. Поэтому оба пути
+  авторизации (кабинет/`connect_google` и карточка входа eve через
+  `connectOptions`) шлют `prompt: "consent"`. `access_type=offline` задаёт
+  сам коннектор, SDK его не передаёт. Чтение подключения спрашивает Google
+  tokeninfo и пишет в лог `grant has no offline access`, если грант онлайн
+  (`shared/google-workspace/connection.ts`). Кроме явного отключения и смены
+  уровня доступа, код гранты не отзывает: `evict` из eve без `revoke`
+  только чистит кэш.
 - Ответ на письмо строится из Gmail `id` исходного письма (`replyToMessageId`):
   инструмент сам читает Message-ID/References/Subject и `threadId`. Поле
   `messageId` в выдаче чтения переименовано в `rfcMessageId`, чтобы модель не
