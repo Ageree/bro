@@ -71,7 +71,10 @@ describe("proactive schedule", () => {
     proactive.filterUnseen.mockImplementation((_workspaceId, candidates) =>
       Promise.resolve([...candidates])
     );
-    proactive.queue.mockResolvedValue("00000000-0000-4000-8000-000000000002");
+    proactive.queue.mockResolvedValue({
+      runId: "00000000-0000-4000-8000-000000000002",
+      status: "queued",
+    });
     jobs.claimRuns.mockResolvedValue([]);
     jobs.setSession.mockResolvedValue(true);
   });
@@ -96,6 +99,7 @@ describe("proactive schedule", () => {
     expect(proactive.queue).toHaveBeenCalledExactlyOnceWith({
       jobId: "00000000-0000-4000-8000-000000000001",
       mailCheckedAt: afternoon,
+      maxRunsPerDay: 12,
       now: afternoon,
       signals: [flight],
       workspaceId: "workspace:alice",
@@ -106,7 +110,7 @@ describe("proactive schedule", () => {
     );
   });
 
-  it("keeps the watermark while new mail is left over for the next run", async () => {
+  it("turns a backlog into one catch-up run with the newest mail", async () => {
     const mail = Array.from({ length: 15 }, (_, index) => ({
       dedupeKey: `m${String(index)}`,
       itemId: `m${String(index)}`,
@@ -119,7 +123,7 @@ describe("proactive schedule", () => {
 
     expect(proactive.queue).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({
-        mailCheckedAt: watch().mailCheckedAt,
+        mailCheckedAt: afternoon,
         signals: mail.slice(0, 12),
       })
     );

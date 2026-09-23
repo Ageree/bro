@@ -7,9 +7,9 @@ const mailOverlapMs = 10 * 60_000;
 /** Mail older than a day is not news, however long the checks paused. */
 const mailLookbackLimitMs = 24 * 60 * 60_000;
 /**
- * One run reads at most this many items. Whatever is left over is still
- * unseen, so the next check hands it over (the schedule keeps the mail
- * watermark where it was for that).
+ * One run reads at most this many items. After a pause this bounds the single
+ * catch-up run: older mail past the cap is skipped rather than drained in
+ * batches. Events past the cap come back on the next check.
  */
 const maxSignalsPerRun = 12;
 
@@ -24,11 +24,12 @@ export function mailSearchStart(mailCheckedAt: Date, now: Date) {
 }
 
 /**
- * Inbox mail since `after`, without promotions, social notifications and the
- * person's own messages. Package and travel notices sit in Updates and stay.
+ * Inbox mail since `after`, without promotions, social notifications, mailing
+ * lists and the person's own messages. Package and check-in notices sit in
+ * Updates, so Updates stays.
  */
 export function gmailProbeQuery(after: Date) {
-  return `in:inbox after:${String(Math.floor(after.getTime() / 1_000))} -category:promotions -category:social -from:me`;
+  return `in:inbox after:${String(Math.floor(after.getTime() / 1_000))} -category:promotions -category:social -category:forums -from:me`;
 }
 
 export function gmailSignals(

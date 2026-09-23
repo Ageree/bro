@@ -3,6 +3,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { queueProactiveRun } from "@db/services/proactive";
 import * as schema from "../schema";
 
 const databases: PGlite[] = [];
@@ -36,6 +37,10 @@ const bossMail = {
   source: "gmail" as const,
   threadId: "t1",
 };
+
+function queuedRunId(result: Awaited<ReturnType<typeof queueProactiveRun>>) {
+  return result.status === "queued" ? result.runId : undefined;
+}
 
 // The first case migrates the shared template database, which takes seconds.
 describe("proactive watches", { timeout: 30_000 }, () => {
@@ -118,13 +123,16 @@ describe("proactive watches", { timeout: 30_000 }, () => {
         bossMail,
       ])
     ).toEqual([flight, bossMail]);
-    const runId = await proactive.queueProactiveRun({
-      jobId: watch.jobId,
-      mailCheckedAt: now,
-      now,
-      signals: [flight, bossMail],
-      workspaceId: alice.workspaceId,
-    });
+    const runId = queuedRunId(
+      await proactive.queueProactiveRun({
+        maxRunsPerDay: 12,
+        jobId: watch.jobId,
+        mailCheckedAt: now,
+        now,
+        signals: [flight, bossMail],
+        workspaceId: alice.workspaceId,
+      })
+    );
     expect(runId).toBeDefined();
     if (!runId) return;
     expect(await proactive.listProactiveRunSignals(runId)).toEqual([
@@ -146,13 +154,14 @@ describe("proactive watches", { timeout: 30_000 }, () => {
     const later = new Date(now.getTime() + 15 * 60_000);
     expect(
       await proactive.queueProactiveRun({
+        maxRunsPerDay: 12,
         jobId: watch.jobId,
         mailCheckedAt: later,
         now: later,
         signals: [nextMail],
         workspaceId: alice.workspaceId,
       })
-    ).toBeUndefined();
+    ).toEqual({ status: "busy" });
     expect(
       await proactive.filterUnseenProactiveSignals(alice.workspaceId, [
         nextMail,
@@ -177,6 +186,50 @@ describe("proactive watches", { timeout: 30_000 }, () => {
     expect(claim?.job.kind).toBe("proactive");
   });
 
+  it("stops starting runs for a workspace past its daily cap", async () => {
+    const { jobs, proactive } = await openDatabase();
+    await proactive.recordProactiveTarget(alice, telegram, now);
+    const [watch] = await proactive.claimDueProactiveWatches({
+      leaseForMs: 15 * 60_000,
+      limit: 10,
+      now,
+    });
+    if (!watch) throw new Error("Expected a due watch.");
+    const queue = (at: Date, signal: typeof bossMail) =>
+      proactive.queueProactiveRun({
+        jobId: watch.jobId,
+        mailCheckedAt: at,
+        maxRunsPerDay: 1,
+        now: at,
+        signals: [signal],
+        workspaceId: alice.workspaceId,
+      });
+
+    const first = queuedRunId(await queue(now, bossMail));
+    const [claim] = await jobs.claimReadyScheduledAgentRuns({
+      kind: "proactive",
+      leaseForMs: 60_000,
+      limit: 10,
+      now,
+    });
+    if (!first || !claim?.run.leaseToken) throw new Error("Expected a run.");
+    await jobs.completeScheduledAgentRun(
+      first,
+      claim.run.leaseToken,
+      "turn-1",
+      { kind: "nothing_to_report", reason: "Nothing new." },
+      now
+    );
+
+    const nextMail = { ...bossMail, dedupeKey: "m2", itemId: "m2" };
+    const evening = new Date(now.getTime() + 8 * 60 * 60_000);
+    expect(await queue(evening, nextMail)).toEqual({ status: "capped" });
+    const nextDay = new Date(now.getTime() + 24 * 60 * 60_000 + 60_000);
+    expect(await queue(nextDay, nextMail)).toMatchObject({
+      status: "queued",
+    });
+  });
+
   it("forgets dedupe keys past the retention window", async () => {
     const { proactive } = await openDatabase();
     await proactive.recordProactiveTarget(alice, telegram, now);
@@ -187,6 +240,7 @@ describe("proactive watches", { timeout: 30_000 }, () => {
     });
     if (!watch) throw new Error("Expected a due watch.");
     await proactive.queueProactiveRun({
+      maxRunsPerDay: 12,
       jobId: watch.jobId,
       mailCheckedAt: now,
       now,
@@ -217,13 +271,16 @@ describe("proactive watches", { timeout: 30_000 }, () => {
       now,
     });
     if (!watch) throw new Error("Expected a due watch.");
-    const runId = await proactive.queueProactiveRun({
-      jobId: watch.jobId,
-      mailCheckedAt: now,
-      now,
-      signals: [flight],
-      workspaceId: alice.workspaceId,
-    });
+    const runId = queuedRunId(
+      await proactive.queueProactiveRun({
+        maxRunsPerDay: 12,
+        jobId: watch.jobId,
+        mailCheckedAt: now,
+        now,
+        signals: [flight],
+        workspaceId: alice.workspaceId,
+      })
+    );
     if (!runId) throw new Error("Expected a queued run.");
 
     // Three failed dispatches dead-letter the run without a report.
@@ -250,13 +307,16 @@ describe("proactive watches", { timeout: 30_000 }, () => {
 
     // A completed run's report can be held back until quiet hours end.
     const later = new Date(at.getTime() + 60 * 60_000);
-    const nextRunId = await proactive.queueProactiveRun({
-      jobId: watch.jobId,
-      mailCheckedAt: later,
-      now: later,
-      signals: [bossMail],
-      workspaceId: alice.workspaceId,
-    });
+    const nextRunId = queuedRunId(
+      await proactive.queueProactiveRun({
+        maxRunsPerDay: 12,
+        jobId: watch.jobId,
+        mailCheckedAt: later,
+        now: later,
+        signals: [bossMail],
+        workspaceId: alice.workspaceId,
+      })
+    );
     if (!nextRunId) throw new Error("Expected a second run.");
     const [claim] = await jobs.claimReadyScheduledAgentRuns({
       kind: "proactive",
@@ -299,13 +359,16 @@ describe("proactive watches", { timeout: 30_000 }, () => {
       now,
     });
     if (!watch) throw new Error("Expected a due watch.");
-    const runId = await proactive.queueProactiveRun({
-      jobId: watch.jobId,
-      mailCheckedAt: now,
-      now,
-      signals: [flight],
-      workspaceId: alice.workspaceId,
-    });
+    const runId = queuedRunId(
+      await proactive.queueProactiveRun({
+        maxRunsPerDay: 12,
+        jobId: watch.jobId,
+        mailCheckedAt: now,
+        now,
+        signals: [flight],
+        workspaceId: alice.workspaceId,
+      })
+    );
     const [claim] = await jobs.claimReadyScheduledAgentRuns({
       kind: "proactive",
       leaseForMs: 60_000,

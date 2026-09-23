@@ -26,6 +26,11 @@ import { resolveTimeZone } from "@shared/user-profile/schema";
 // Each workspace is looked at every 15 minutes; the cron only spreads the
 // checks. A missing Google grant is re-read a few times a day, not every tick.
 const checkEveryMs = 15 * 60_000;
+/**
+ * At most this many model runs per workspace in any 24 hours; past it, new
+ * signals wait. Twelve covers a heavy day of mail that matters.
+ */
+const maxRunsPerDay = 12;
 const disconnectedRetryMs = 6 * 60 * 60_000;
 const signalRetentionMs = 14 * 24 * 60 * 60_000;
 const workerStartupLimitMs = 5 * 60_000;
@@ -91,22 +96,21 @@ async function checkWorkspace(
       await advanceProactiveWatermark(watch.workspaceId, now);
       return;
     }
-    const signals = selectRunSignals(unseen);
-    // Mail that did not fit into this run is still unseen; leaving the
-    // watermark where it was lets the next check hand it over.
-    const mailLeftOver = unseen.some(
-      (signal) => signal.source === "gmail" && !signals.includes(signal)
-    );
-    const runId = await queueProactiveRun({
+    // After a pause (a reconnect, the end of quiet hours, turning proactive
+    // messages back on) the backlog becomes one catch-up run with the newest
+    // items; the watermark moves past the rest instead of queuing batch after
+    // batch of old mail.
+    const queued = await queueProactiveRun({
       jobId: watch.jobId,
-      mailCheckedAt: mailLeftOver ? watch.mailCheckedAt : now,
+      mailCheckedAt: now,
+      maxRunsPerDay,
       now,
-      signals,
+      signals: selectRunSignals(unseen),
       workspaceId: watch.workspaceId,
     });
     console.info("[proactive] check found new signals", {
-      queued: runId !== undefined,
       signalCount: unseen.length,
+      status: queued.status,
       workspaceId: watch.workspaceId,
     });
   } catch (error) {

@@ -20,9 +20,9 @@ describe("proactive signals", () => {
     );
   });
 
-  it("searches only new inbox mail that is not promotional or the person's own", () => {
+  it("searches only new inbox mail that is not promotional, a mailing list or the person's own", () => {
     expect(gmailProbeQuery(new Date("2026-09-23T11:35:00.000Z"))).toBe(
-      "in:inbox after:1790163300 -category:promotions -category:social -from:me"
+      "in:inbox after:1790163300 -category:promotions -category:social -category:forums -from:me"
     );
   });
 

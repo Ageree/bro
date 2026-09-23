@@ -1,5 +1,7 @@
 import type { DynamicResolveContext } from "eve/tools";
+import { readdirSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import personalInfoMemory from "@agent/memory/personal_info";
 import profileMemory from "@agent/memory/profile";
 import workstreamMemory from "@agent/memory/workstreams";
@@ -77,6 +79,96 @@ describe("authored mode capability matrix", () => {
     ).toEqual(["calendar-list-events", "gmail-read-thread", "gmail-search"]);
   });
 
+  it("leaves Bro's own checks no tool beyond reading new mail and events", async () => {
+    vi.stubEnv("BROWSER_USE_API_KEY", "browser-use-test-key");
+    const context = dynamicContext("scheduled-worker", {
+      scheduledRunKind: "proactive",
+    });
+    const directory = new URL("../../agent/tools/", import.meta.url);
+    const names = await Promise.all(
+      readdirSync(directory)
+        .filter((file) => file.endsWith(".ts"))
+        .map(async (file) => {
+          const name = file.replace(/\.ts$/u, "");
+          const dynamic = dynamicToolModuleSchema.safeParse(
+            await import(new URL(file, directory).href)
+          );
+          // A module without a turn resolver is a static tool of its own name.
+          if (!dynamic.success) return [name];
+          const resolved = await dynamic.data.default.events["turn.started"](
+            {},
+            context
+          );
+          if (!resolved) return [];
+          return "execute" in resolved ? [name] : Object.keys(resolved);
+        })
+    );
+    // Only this test's stub is undone; the suite's own environment stays.
+    vi.stubEnv("BROWSER_USE_API_KEY", undefined);
+
+    // ask_question and task_cancel are eve-native tools that cannot be gated
+    // per mode; neither reaches outside the session. The gateway web_search is
+    // provider-managed; with OpenRouter the search is ours and gated (below).
+    expect(names.flat().toSorted()).toEqual([
+      "ask_question",
+      "calendar-list-events",
+      "gmail-read-thread",
+      "gmail-search",
+      "task_cancel",
+      "web_search",
+    ]);
+  });
+
+  it("keeps page fetching and photo search in the modes that had them", async () => {
+    const pageTools = [
+      (await import("@agent/tools/web_fetch")).default,
+      (await import("@agent/tools/find_images")).default,
+    ];
+    const byRole = await Promise.all(
+      ["photon-imessage", "scheduled-worker", "scheduled-result"].map(
+        async (role) =>
+          (
+            await Promise.all(
+              pageTools.map(async (definition) =>
+                Object.keys(
+                  (await definition.events["turn.started"]?.(
+                    {},
+                    dynamicContext(role)
+                  )) ?? {}
+                )
+              )
+            )
+          ).flat()
+      )
+    );
+    for (const names of byRole) {
+      expect(names).toEqual(["web_fetch", "find_images"]);
+    }
+  });
+
+  it("withholds the OpenRouter web search from Bro's own checks only", async () => {
+    vi.resetModules();
+    vi.stubEnv("OPENROUTER_API_KEY", "sk-or-v1-test");
+    const dynamic = dynamicToolModuleSchema.safeParse(
+      await import("@agent/tools/web_search")
+    );
+    vi.stubEnv("OPENROUTER_API_KEY", undefined);
+    vi.resetModules();
+    expect(dynamic.success).toBe(true);
+    if (!dynamic.success) return;
+    const resolve = dynamic.data.default.events["turn.started"];
+
+    expect(
+      await resolve(
+        {},
+        dynamicContext("scheduled-worker", { scheduledRunKind: "proactive" })
+      )
+    ).toBeNull();
+    expect(
+      Object.keys((await resolve({}, dynamicContext("photon-imessage"))) ?? {})
+    ).toEqual(["web_search"]);
+  });
+
   it("adds browser_task only to a deployment configured for Browser Use", async () => {
     const unconfigured = await loadBrowserTask("");
     const resolveUnconfigured = unconfigured.events["turn.started"];
@@ -118,6 +210,17 @@ describe("authored mode capability matrix", () => {
       "send_message",
     ]);
   });
+});
+
+/** A tool module whose default export resolves its tools per turn. */
+const dynamicToolModuleSchema = z.object({
+  default: z.object({
+    events: z.object({
+      "turn.started": z.custom<
+        NonNullable<(typeof calendar)["events"]["turn.started"]>
+      >((value) => z.function().safeParse(value).success),
+    }),
+  }),
 });
 
 // The Browser Use key comes from the environment, so each expectation loads

@@ -9,8 +9,9 @@
  * Nothing here logs a URL: a listing link can carry a personal token.
  */
 
-import { defineTool } from "eve/tools";
+import { defineDynamic, defineTool } from "eve/tools";
 import { z } from "zod";
+import { resolveModeValue } from "@agent/lib/mode";
 import {
   baseMediaType,
   isImageMediaType,
@@ -159,7 +160,7 @@ const inputSchema = z.object({
     ),
 });
 
-export default defineTool({
+export const findImages = defineTool({
   description:
     "Find the real photos on a web page so they can be sent with send_message attachments. Give it the page URL, such as a flat or car listing, a product card, an article or a place. It reads og:image, img src, srcset and lazy-load attributes, picture sources, JSON-LD and inline gallery data, drops icons, logos, sprites, avatars and tracking pixels, and keeps only candidates that download as an image of a known size. Returns direct HTTPS image URLs best first, with media type, byte size, dimensions and alt text when known; put the best of them in send_message attachments with kind image. When the page sits behind an anti-bot check the call fails with a message saying so: tell the person plainly that the site blocked automated access rather than implying the page has no photos.",
   inputSchema,
@@ -912,3 +913,15 @@ function positiveInteger(value: string | null | undefined) {
   const number = Number(value);
   return Number.isSafeInteger(number) && number > 0 ? number : undefined;
 }
+
+export default defineDynamic({
+  events: {
+    // Fetching an arbitrary page is out of reach of Bro's own mail checks.
+    "turn.started": (_event, context) =>
+      resolveModeValue(context, {
+        interactive: { find_images: findImages },
+        "scheduled-report": { find_images: findImages },
+        "scheduled-worker": { find_images: findImages },
+      }),
+  },
+});

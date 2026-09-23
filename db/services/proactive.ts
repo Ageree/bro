@@ -1,4 +1,4 @@
-import { and, eq, inArray, lt, lte, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, lt, lte, sql } from "drizzle-orm";
 import type { AccessScope } from "@shared/identity/access-scope";
 import {
   db,
@@ -214,13 +214,15 @@ export async function filterUnseenProactiveSignals<
 
 /**
  * Queues one proactive run carrying the new signals and moves the watermark,
- * all at once. While an earlier run is still open nothing is queued and the
- * watermark stays, so the next check hands the same signals over instead of
- * starting a second message in parallel.
+ * all at once. Nothing is queued, and the watermark stays so the next check
+ * hands the same signals over, while an earlier run is still open (no second
+ * message in parallel) or once the workspace had `maxRunsPerDay` runs in the
+ * last 24 hours (a busy inbox never turns into a model run per check).
  */
 export async function queueProactiveRun(input: {
   readonly jobId: string;
   readonly mailCheckedAt: Date;
+  readonly maxRunsPerDay: number;
   readonly now: Date;
   readonly signals: readonly ProactiveSignal[];
   readonly workspaceId: string;
@@ -238,7 +240,22 @@ export async function queueProactiveRun(input: {
         )
       )
       .limit(1);
-    if (open) return undefined;
+    if (open) return { status: "busy" as const };
+    const [recent] = await transaction
+      .select({ count: sql<number>`count(*)::int` })
+      .from(scheduledAgentRuns)
+      .where(
+        and(
+          eq(scheduledAgentRuns.jobId, input.jobId),
+          gt(
+            scheduledAgentRuns.scheduledFor,
+            new Date(input.now.getTime() - 24 * 60 * 60_000)
+          )
+        )
+      );
+    if ((recent?.count ?? 0) >= input.maxRunsPerDay) {
+      return { status: "capped" as const };
+    }
     const [run] = await transaction
       .insert(scheduledAgentRuns)
       .values({
@@ -251,7 +268,7 @@ export async function queueProactiveRun(input: {
         target: [scheduledAgentRuns.jobId, scheduledAgentRuns.scheduledFor],
       })
       .returning({ id: scheduledAgentRuns.id });
-    if (!run) return undefined;
+    if (!run) return { status: "busy" as const };
     await transaction
       .insert(proactiveSignals)
       .values(
@@ -275,7 +292,7 @@ export async function queueProactiveRun(input: {
       .update(scheduledAgentJobs)
       .set({ lastRunAt: input.now, updatedAt: input.now })
       .where(eq(scheduledAgentJobs.id, input.jobId));
-    return run.id;
+    return { runId: run.id, status: "queued" as const };
   });
 }
 

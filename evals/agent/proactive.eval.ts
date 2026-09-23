@@ -54,9 +54,11 @@ export default defineEval({
 
     const runCase = async (testCase: (typeof cases)[number], index: number) => {
       const now = new Date(Date.now() + index * 1_000);
-      const runId = await queueProactiveRun({
+      const queued = await queueProactiveRun({
         jobId: watch.jobId,
         mailCheckedAt: now,
+        // The eval database outlives one run; the cap is not under test here.
+        maxRunsPerDay: Number.MAX_SAFE_INTEGER,
         now,
         signals: [
           {
@@ -68,6 +70,7 @@ export default defineEval({
         ],
         workspaceId: scope.workspaceId,
       });
+      const runId = queued.status === "queued" ? queued.runId : undefined;
       const claims = await claimReadyScheduledAgentRuns({
         kind: "proactive",
         leaseForMs: 60_000,
