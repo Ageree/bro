@@ -11,6 +11,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   vi.resetModules();
+  vi.useRealTimers();
 });
 
 async function loadClient() {
@@ -137,6 +138,133 @@ describe("Browser Use client", () => {
     expect(failure.status).toBe(503);
     expect(failure.message).toContain("upstream exploded");
     expect(calls).toHaveLength(2);
+  });
+
+  it("briefly retries a newly accepted run that is not visible yet", async () => {
+    vi.useFakeTimers();
+    const client = await loadClient();
+    const calls = stubFetch(
+      new Response('{"detail":"run not found"}', { status: 404 }),
+      Response.json({ status: "dispatching" })
+    );
+
+    const pending = client.readBrowserUseRunStatus(runId);
+    await vi.advanceTimersByTimeAsync(250);
+
+    await expect(pending).resolves.toBe("dispatching");
+    expect(calls).toHaveLength(2);
+    expect(calls.every((call) => call.method === "GET")).toBe(true);
+  });
+
+  it("stops retrying a run id that stays missing after the grace window", async () => {
+    vi.useFakeTimers();
+    const client = await loadClient();
+    const calls = stubFetch(
+      new Response('{"detail":"run not found"}', { status: 404 })
+    );
+
+    const pending = client.readBrowserUseRunStatus(runId);
+    await Promise.all([
+      vi.runAllTimersAsync(),
+      expect(pending).rejects.toMatchObject({ status: 404 }),
+    ]);
+    expect(calls).toHaveLength(5);
+    expect(calls.every((call) => call.method === "GET")).toBe(true);
+  });
+
+  it("does not start another GET when a slow 404 consumes the grace window", async () => {
+    vi.useFakeTimers();
+    const client = await loadClient();
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", (url: URL, init: RequestInit) => {
+      calls.push(`${init.method ?? "GET"} ${url.toString()}`);
+      return new Promise<Response>((resolve) =>
+        setTimeout(() => {
+          resolve(new Response("not found", { status: 404 }));
+        }, 2_900)
+      );
+    });
+
+    const pending = client.readBrowserUseRunStatus(runId);
+    await Promise.all([
+      vi.runAllTimersAsync(),
+      expect(pending).rejects.toMatchObject({ status: 404 }),
+    ]);
+
+    expect(calls).toEqual([`GET ${baseUrl}/runs/${runId}/status`]);
+  });
+
+  it("aborts a hung status GET at the overall grace deadline", async () => {
+    vi.useFakeTimers();
+    const client = await loadClient();
+    const calls: string[] = [];
+    vi.spyOn(AbortSignal, "timeout").mockImplementation((delayMs) => {
+      const controller = new AbortController();
+      setTimeout(() => {
+        controller.abort(new DOMException("timed out", "TimeoutError"));
+      }, delayMs);
+      return controller.signal;
+    });
+    vi.stubGlobal(
+      "fetch",
+      (url: URL, init: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          calls.push(`${init.method ?? "GET"} ${url.toString()}`);
+          init.signal?.addEventListener("abort", () => {
+            reject(new DOMException("timed out", "TimeoutError"));
+          });
+        })
+    );
+
+    const pending = client.readBrowserUseRunStatus(runId);
+    await Promise.all([
+      vi.advanceTimersByTimeAsync(3_000),
+      expect(pending).rejects.toMatchObject({ name: "TimeoutError" }),
+    ]);
+
+    expect(calls).toEqual([`GET ${baseUrl}/runs/${runId}/status`]);
+  });
+
+  it("returns an already visible status without waiting or retrying", async () => {
+    vi.useFakeTimers();
+    const client = await loadClient();
+    const calls = stubFetch(Response.json({ status: "running" }));
+
+    await expect(client.readBrowserUseRunStatus(runId)).resolves.toBe(
+      "running"
+    );
+
+    expect(calls).toHaveLength(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each([401, 403])(
+    "does not apply visibility retries to a %s auth failure",
+    async (status) => {
+      vi.useFakeTimers();
+      const client = await loadClient();
+      const calls = stubFetch(new Response("unauthorized", { status }));
+
+      await expect(client.readBrowserUseRunStatus(runId)).rejects.toMatchObject(
+        { status }
+      );
+
+      expect(calls).toHaveLength(1);
+      expect(vi.getTimerCount()).toBe(0);
+    }
+  );
+
+  it("does not apply visibility retries to a malformed success response", async () => {
+    vi.useFakeTimers();
+    const client = await loadClient();
+    const calls = stubFetch(Response.json({ status: "unknown" }));
+
+    await expect(client.readBrowserUseRunStatus(runId)).rejects.toBeInstanceOf(
+      Error
+    );
+
+    expect(calls).toHaveLength(1);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("does not retry run creation because the POST has no idempotency key", async () => {

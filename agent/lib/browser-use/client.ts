@@ -215,10 +215,47 @@ export async function listBrowserUseWorkspaceFiles(
 }
 
 export async function readBrowserUseRunStatus(runId: string) {
-  const { status } = runStatusResponseSchema.parse(
-    await request("GET", `/runs/${encodeURIComponent(runId)}/status`)
-  );
-  return status;
+  const path = `/runs/${encodeURIComponent(runId)}/status`;
+  const visibilityRetryDelaysMs = [250, 500, 750, 1_000, 500] as const;
+  const attemptDelaysMs = [0, ...visibilityRetryDelaysMs];
+  const deadline = Date.now() + 3_000;
+  const attemptStatus = async (
+    attempt: number,
+    lastNotFound?: BrowserUseError
+  ): Promise<BrowserUseRunStatus> => {
+    const throwGraceFailure = (): never => {
+      if (lastNotFound) throw lastNotFound;
+      throw new Error("Browser Use run status visibility grace expired.");
+    };
+    const delayMs = attemptDelaysMs[attempt];
+    if (delayMs === undefined || (attempt > 0 && Date.now() >= deadline))
+      return throwGraceFailure();
+    if (delayMs > 0) {
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) return throwGraceFailure();
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.min(delayMs, remainingMs))
+      );
+      if (Date.now() >= deadline) return throwGraceFailure();
+    }
+    try {
+      const { status } = runStatusResponseSchema.parse(
+        await request("GET", path, undefined, {
+          signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())),
+        })
+      );
+      return status;
+    } catch (error) {
+      if (
+        !(error instanceof BrowserUseError) ||
+        error.status !== 404 ||
+        attempt === attemptDelaysMs.length - 1
+      )
+        throw error;
+      return attemptStatus(attempt + 1, error);
+    }
+  };
+  return attemptStatus(0);
 }
 
 export async function listBrowserUseRunsBySession(
