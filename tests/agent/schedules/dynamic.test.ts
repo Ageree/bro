@@ -268,6 +268,7 @@ async function runSchedule(to: ScheduleToFn) {
       principalId: "test-app",
       principalType: "app",
     },
+    attachSession: vi.fn<ScheduleHandlerArgs["attachSession"]>(),
     to,
     waitUntil(backgroundTask) {
       task = backgroundTask;
