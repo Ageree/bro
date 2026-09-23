@@ -1,8 +1,4 @@
-import { createHash } from "node:crypto";
-import { get } from "@vercel/blob";
 import type { AccessScope } from "@shared/identity/access-scope";
-import { readReadyArtifact } from "@db/services/artifacts";
-import { env } from "@shared/environment";
 import {
   maximumAttachmentBatchBytes,
   outboundFileKind,
@@ -12,6 +8,7 @@ import {
   extractImageArtifactMarkdownReferences,
   stripImageArtifactMarkdownReferences,
 } from "./markdown";
+import { readImageArtifact } from "./storage";
 
 /**
  * How many artifacts one message may carry: the Telegram album limit, the
@@ -102,61 +99,5 @@ export async function prepareImageArtifactDelivery(
     failedArtifactIds,
     files,
     text: stripImageArtifactMarkdownReferences(message),
-  };
-}
-
-async function readImageArtifact(
-  scope: AccessScope,
-  artifactId: string,
-  options: {
-    readonly maximumBytes: number;
-    readonly rootSessionId: string;
-    readonly signal?: AbortSignal;
-  }
-) {
-  const artifact = await readReadyArtifact(scope, artifactId, {
-    rootSessionId: options.rootSessionId,
-  });
-  if (!artifact || artifact.byteSize > options.maximumBytes) return undefined;
-  if (!env.BLOB_STORE_ID && !env.BLOB_READ_WRITE_TOKEN) return undefined;
-  const result = await get(artifact.storagePathname, {
-    access: "private",
-    abortSignal: options.signal,
-  });
-  if (result?.statusCode !== 200) return undefined;
-  if (
-    result.blob.size !== artifact.byteSize ||
-    result.blob.contentType !== artifact.mediaType
-  )
-    return undefined;
-  const reader = result.stream.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  try {
-    /* oxlint-disable eslint/no-await-in-loop -- Blob response chunks form an ordered stream. */
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      total += value.byteLength;
-      if (total > artifact.byteSize) return undefined;
-      chunks.push(value);
-    }
-    /* oxlint-enable eslint/no-await-in-loop */
-  } finally {
-    reader.releaseLock();
-  }
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  if (createHash("sha256").update(bytes).digest("hex") !== artifact.contentHash)
-    return undefined;
-  return {
-    bytes,
-    filename: artifact.filename,
-    id: artifact.id,
-    mediaType: artifact.mediaType,
   };
 }

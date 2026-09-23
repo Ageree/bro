@@ -1,6 +1,6 @@
 {
-  "id": "711b244e-20da-4d01-b83b-822635f58e8e",
-  "prevId": "e21f10f7-1ec6-4051-a1c7-50eda0189b68",
+  "id": "56305739-3ba0-41e2-a81d-a159980b8429",
+  "prevId": "711b244e-20da-4d01-b83b-822635f58e8e",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -1621,6 +1621,163 @@
         "chats_cost_usd_check": {
           "name": "chats_cost_usd_check",
           "value": "\"chats\".\"cost_usd\" IS NULL OR \"chats\".\"cost_usd\" >= 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.drive_file_artifacts": {
+      "name": "drive_file_artifacts",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "workspace_id": {
+          "name": "workspace_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_by_user_id": {
+          "name": "created_by_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "root_session_id": {
+          "name": "root_session_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "drive_file_id": {
+          "name": "drive_file_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "drive_version": {
+          "name": "drive_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "filename": {
+          "name": "filename",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "media_type": {
+          "name": "media_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "byte_size": {
+          "name": "byte_size",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "content_hash": {
+          "name": "content_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "storage_pathname": {
+          "name": "storage_pathname",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "drive_file_artifacts_session_file_uidx": {
+          "name": "drive_file_artifacts_session_file_uidx",
+          "columns": [
+            {
+              "expression": "workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "root_session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "drive_file_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "drive_version",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "drive_file_artifacts_workspace_created_idx": {
+          "name": "drive_file_artifacts_workspace_created_idx",
+          "columns": [
+            {
+              "expression": "workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "first"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "drive_file_artifacts_membership_fkey": {
+          "name": "drive_file_artifacts_membership_fkey",
+          "tableFrom": "drive_file_artifacts",
+          "tableTo": "workspace_memberships",
+          "columnsFrom": ["workspace_id", "created_by_user_id"],
+          "columnsTo": ["workspace_id", "user_id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "drive_file_artifacts_byte_size_check": {
+          "name": "drive_file_artifacts_byte_size_check",
+          "value": "\"drive_file_artifacts\".\"byte_size\" > 0"
         }
       },
       "isRLSEnabled": false

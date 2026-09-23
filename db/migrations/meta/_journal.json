@@ -173,8 +173,15 @@
     {
       "idx": 24,
       "version": "7",
-      "when": 1790199776789,
-      "tag": "0024_mysterious_invisible_woman",
+      "when": 1790201070428,
+      "tag": "0024_bright_lila_cheney",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1790202612928,
+      "tag": "0025_bouncy_lady_mastermind",
       "breakpoints": true
     }
   ]
