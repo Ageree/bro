@@ -2,6 +2,7 @@ import type { Session } from "eve/channels";
 import type { ScheduleToFn } from "eve/schedules";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type * as BrowserClient from "@agent/lib/browser-use/client";
+import type * as BrowserImages from "@agent/lib/browser-use/images";
 import type * as BrowserScheduled from "@agent/lib/browser-use/scheduled";
 import type * as BrowserVerification from "@agent/lib/browser-use/verification";
 import type * as ScheduleRequest from "@agent/lib/schedules/request";
@@ -136,12 +137,7 @@ const listBrowserUseRunsBySession = vi.hoisted(() =>
   vi.fn<typeof BrowserClient.listBrowserUseRunsBySession>()
 );
 const captureBrowserRunImages = vi.hoisted(() =>
-  vi.fn<
-    (
-      row: BrowserRunRow,
-      run: RunSummary
-    ) => Promise<{ id: string; label: string }[]>
-  >()
+  vi.fn<typeof BrowserImages.captureBrowserRunImages>()
 );
 
 vi.mock("@db/services/browser-runs", () => ({
