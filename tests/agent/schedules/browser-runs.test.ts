@@ -79,6 +79,7 @@ vi.mock("@db/services/browser-runs", () => ({
     return Promise.resolve({ ...currentRow() });
   },
   claimDueBrowserRunRetries: () => Promise.resolve([]),
+  parkBrowserRunForRetry: () => Promise.resolve(true),
   finishBrowserRunReport: () => {
     currentRow().reportClaimedAt = null;
     currentRow().reportDeliveredAt = new Date();
@@ -108,7 +109,9 @@ vi.mock("@db/services/orders", () => ({
   recordOrder: vi.fn<() => Promise<void>>(),
 }));
 vi.mock("@db/services/spending", () => ({
+  listStaleSpendReservations: () => Promise.resolve([]),
   readSpendEntryForRun: () => Promise.resolve(undefined),
+  releaseAbandonedSpendReservations: () => Promise.resolve(),
   settleSpendReservation: () => Promise.resolve(undefined),
 }));
 vi.mock("@agent/lib/browser-use/client", () => ({

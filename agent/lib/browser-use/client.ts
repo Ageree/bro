@@ -238,14 +238,33 @@ export async function findBrowserUseSessionCdpUrl(sessionId: string) {
   return browser?.cdpUrl ?? undefined;
 }
 
+const sessionInfoSchema = z.object({
+  latestRunId: z.string().min(1),
+  status: runStatusSchema,
+});
+
 /**
- * Stop every live browser a session holds. A profile keeps the cookies of
+ * Stop every live browser a session holds, once the run that just settled is
+ * still the session's latest and it has ended. A profile keeps the cookies of
  * the browsers that ran on it — the sign-ins and the trust a site handed out
  * after a passed check — and stopping the browser is what hands them back to
- * the profile now rather than whenever the idle cleanup gets to it. It also
- * guarantees the next run on the profile a fresh browser.
+ * the profile now rather than whenever the idle cleanup gets to it. A
+ * follow-up that started in the same session in the meantime owns the browser
+ * now, and keeps it.
  */
-export async function stopBrowserUseSessionBrowsers(sessionId: string) {
+export async function stopBrowserUseSessionBrowsers(
+  sessionId: string,
+  settledRunId: string
+) {
+  const session = sessionInfoSchema.parse(
+    await request("GET", `/sessions/${encodeURIComponent(sessionId)}`)
+  );
+  if (
+    session.latestRunId !== settledRunId ||
+    !["cancelled", "completed", "failed"].includes(session.status)
+  ) {
+    return 0;
+  }
   const { items } = browserSessionListSchema.parse(
     await request("GET", "/browsers")
   );

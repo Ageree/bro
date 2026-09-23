@@ -24,9 +24,12 @@ const spendRuleSchema = z.object({
   merchant: merchantSchema.nullable(),
 });
 
+// A shop and a category are excluded separately: a category called «example»
+// must not block every payment to a host that ends in `.example`.
 export const spendLimitPolicySchema = z.object({
   currency: z.literal(spendLimitCurrency),
-  excluded: z.array(labelSchema).max(50),
+  excludedCategories: z.array(labelSchema).max(50),
+  excludedMerchants: z.array(merchantSchema).max(50),
   rules: z.array(spendRuleSchema).max(20),
   version: z.literal(1),
 });
@@ -125,11 +128,22 @@ export function remainingForTarget(
 }
 
 function isExcluded(policy: SpendLimitPolicy, target: SpendTarget) {
-  return policy.excluded.some(
-    (label) =>
-      label === target.category ||
-      (target.merchant !== null && merchantCovers(label, target.merchant))
+  return (
+    (target.category !== null &&
+      policy.excludedCategories.includes(target.category)) ||
+    policy.excludedMerchants.some((merchant) =>
+      merchantCovers(merchant, target.merchant)
+    )
   );
+}
+
+/** Every exclusion as the person reads it: shops first, then categories. */
+export function exclusionLabels(policy: SpendLimitPolicy | undefined) {
+  if (!policy) return [];
+  return [
+    ...policy.excludedMerchants,
+    ...policy.excludedCategories.map((category) => `«${category}»`),
+  ];
 }
 
 /** A decimal or an overstated amount is rounded up, never down. */

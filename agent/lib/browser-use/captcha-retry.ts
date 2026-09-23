@@ -1,13 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { env } from "@shared/environment";
 import {
-  createBrowserRun,
-  markBrowserRunRetried,
+  handOffBrowserRunRetry,
   parkBrowserRunForRetry,
-  type readBrowserRun,
+  readBrowserRun,
 } from "@db/services/browser-runs";
-import { moveSpendReservation } from "@db/services/spending";
-import { createBrowserUseRun, readBrowserUseRun } from "./client";
+import {
+  cancelBrowserUseRun,
+  createBrowserUseRun,
+  readBrowserUseRun,
+} from "./client";
 import { retryProxySettings } from "./proxy";
 import { resolveBrowserSecretBindings } from "./secrets";
 
@@ -59,15 +61,42 @@ export function captchaRetryTask(previousTask: string, attempt: number) {
 }
 
 /**
+ * Stop a run that was started but could not be handed the errand. Never
+ * fatal: the caller is already on its way out with a better error.
+ */
+async function abandonRetryRun(runId: string) {
+  try {
+    await cancelBrowserUseRun(runId);
+  } catch (error) {
+    console.warn("[browser-use] the orphaned retry could not be cancelled", {
+      cause: error,
+      runId,
+    });
+  }
+}
+
+/**
  * Start the next attempt of an errand parked on an anti-bot wall: a new run on
  * the same profile, with no session so it gets a new browser, through another
  * exit. The conversation keeps the old run id and is followed to this one.
- * A start that fails counts as a failed attempt and is parked again, until the
- * attempts run out and the caller reports the wall.
+ *
+ * The person may stop the errand at any moment, so the row is read again
+ * before anything starts, and the handoff to the new run only lands while the
+ * old row is still waiting; a run started for an errand that was stopped
+ * meanwhile is cancelled at once. A start that fails counts as a failed
+ * attempt and is parked again, until the attempts run out and the caller
+ * reports the wall.
  */
 export async function startCaptchaRetry(row: BrowserRunRow, now = new Date()) {
+  if (row.captchaAttempt >= maximumCaptchaAttempts) {
+    return { status: "exhausted" as const };
+  }
   const attempt = row.captchaAttempt + 1;
   try {
+    const current = await readBrowserRun(row.id);
+    if (current?.status !== "waiting" || current.retriedAsRunId) {
+      return { status: "stopped" as const };
+    }
     const scope = { userId: row.createdByUserId, workspaceId: row.workspaceId };
     const [previous, secrets] = await Promise.all([
       readBrowserUseRun(row.id),
@@ -84,22 +113,30 @@ export async function startCaptchaRetry(row: BrowserRunRow, now = new Date()) {
       secretBindings: secrets.bindings,
       task: captchaRetryTask(previous.task, attempt),
     });
-    await createBrowserRun(scope, {
-      captchaAttempt: attempt,
-      conversationChannel: row.conversationChannel,
-      conversationId: row.conversationId,
-      id: run.id,
-      paymentAllowed: row.paymentAllowed,
-      profileId: row.profileId,
-      replyAnchorMessageId: row.replyAnchorMessageId,
-      rootSessionId: row.rootSessionId,
-      sessionId: run.sessionId,
-      site: row.site,
-      status: "running",
-      task: row.task,
-    });
-    await markBrowserRunRetried(row.id, run.id);
-    await moveSpendReservation(row.id, run.id);
+    let handedOff = false;
+    try {
+      handedOff = await handOffBrowserRunRetry(row.id, {
+        captchaAttempt: attempt,
+        conversationChannel: row.conversationChannel,
+        conversationId: row.conversationId,
+        id: run.id,
+        paymentAllowed: row.paymentAllowed,
+        profileId: row.profileId,
+        replyAnchorMessageId: row.replyAnchorMessageId,
+        rootSessionId: row.rootSessionId,
+        sessionId: run.sessionId,
+        site: row.site,
+        status: "running",
+        task: row.task,
+      });
+    } catch (error) {
+      await abandonRetryRun(run.id);
+      throw error;
+    }
+    if (!handedOff) {
+      await abandonRetryRun(run.id);
+      return { status: "stopped" as const };
+    }
     return { runId: run.id, status: "started" as const };
   } catch (error) {
     console.warn("[browser-use] the anti-bot retry could not start", {

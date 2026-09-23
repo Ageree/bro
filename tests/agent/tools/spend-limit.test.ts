@@ -6,7 +6,8 @@ import {
 
 const monthly = {
   currency: "RUB" as const,
-  excluded: [],
+  excludedCategories: [],
+  excludedMerchants: [],
   rules: [{ category: null, limitRub: 5000, merchant: null }],
   version: 1 as const,
 };
@@ -38,7 +39,7 @@ describe("spend_limit changes", () => {
   it("clears one scope, or every rule while keeping the exclusions", () => {
     const policy = {
       ...monthly,
-      excluded: ["алкоголь"],
+      excludedCategories: ["алкоголь"],
       rules: [
         ...monthly.rules,
         { category: "такси", limitRub: 1000, merchant: null },
@@ -55,19 +56,28 @@ describe("spend_limit changes", () => {
     });
   });
 
-  it("excludes and re-includes a shop or a category once", () => {
+  it("excludes and re-includes a shop or a category once, each in its own list", () => {
     const excluded = applySpendLimitChange(
-      applySpendLimitChange(monthly, { action: "exclude", merchant: "wb.ru" }),
-      { action: "exclude", merchant: "https://wb.ru" }
+      applySpendLimitChange(
+        applySpendLimitChange(monthly, {
+          action: "exclude",
+          merchant: "wb.ru",
+        }),
+        { action: "exclude", merchant: "https://wb.ru" }
+      ),
+      { action: "exclude", category: "Алкоголь" }
     );
-    expect(excluded.excluded).toEqual(["wb.ru"]);
-    expect(
-      applySpendLimitChange(excluded, { action: "include", merchant: "wb.ru" })
-        .excluded
-    ).toEqual([]);
+    expect(excluded.excludedMerchants).toEqual(["wb.ru"]);
+    expect(excluded.excludedCategories).toEqual(["алкоголь"]);
+    const included = applySpendLimitChange(excluded, {
+      action: "include",
+      merchant: "wb.ru",
+    });
+    expect(included.excludedMerchants).toEqual([]);
+    expect(included.excludedCategories).toEqual(["алкоголь"]);
   });
 
-  it("refuses a set without an amount or a merchant that is not a host", () => {
+  it("refuses a set without an amount, a merchant that is not a host or a blank category", () => {
     expect(() => applySpendLimitChange(monthly, { action: "set" })).toThrow(
       "Set needs the monthly amount in roubles."
     );
@@ -78,22 +88,59 @@ describe("spend_limit changes", () => {
         merchant: "озон",
       })
     ).toThrow("site or host name");
+    // A blank category would otherwise turn a narrow rule into the general one.
+    expect(() =>
+      applySpendLimitChange(monthly, {
+        action: "set",
+        category: "   ",
+        limitRub: 100,
+      })
+    ).toThrow("non-empty word");
     expect(() => applySpendLimitChange(monthly, { action: "exclude" })).toThrow(
       "Name the shop or the category"
     );
   });
 
   it("asks the person to confirm only what widens the permission", () => {
-    expect(spendLimitApproval({ action: "set", limitRub: 5000 })).toBe(
+    // A new rule, and a higher one, let Bro pay more.
+    expect(
+      spendLimitApproval({ action: "set", limitRub: 3000 }, undefined)
+    ).toBe("user-approval");
+    expect(spendLimitApproval({ action: "set", limitRub: 7000 }, monthly)).toBe(
       "user-approval"
     );
-    expect(spendLimitApproval({ action: "include", merchant: "wb.ru" })).toBe(
-      "user-approval"
-    );
-    expect(spendLimitApproval({ action: "clear" })).toBe("not-applicable");
-    expect(spendLimitApproval({ action: "exclude", category: "еда" })).toBe(
+    expect(
+      spendLimitApproval(
+        { action: "set", limitRub: 1000, merchant: "ozon.ru" },
+        monthly
+      )
+    ).toBe("user-approval");
+    expect(
+      spendLimitApproval({ action: "include", merchant: "wb.ru" }, monthly)
+    ).toBe("user-approval");
+    // Lowering or keeping a rule, clearing, excluding and reading only take
+    // permission away or change nothing.
+    expect(spendLimitApproval({ action: "set", limitRub: 3000 }, monthly)).toBe(
       "not-applicable"
     );
-    expect(spendLimitApproval({ action: "read" })).toBe("not-applicable");
+    expect(spendLimitApproval({ action: "set", limitRub: 5000 }, monthly)).toBe(
+      "not-applicable"
+    );
+    expect(spendLimitApproval({ action: "clear" }, monthly)).toBe(
+      "not-applicable"
+    );
+    expect(
+      spendLimitApproval({ action: "exclude", category: "еда" }, monthly)
+    ).toBe("not-applicable");
+    expect(spendLimitApproval({ action: "read" }, monthly)).toBe(
+      "not-applicable"
+    );
+    // A set that cannot be read is treated as widening.
+    expect(
+      spendLimitApproval(
+        { action: "set", limitRub: 100, merchant: "озон" },
+        monthly
+      )
+    ).toBe("user-approval");
   });
 });

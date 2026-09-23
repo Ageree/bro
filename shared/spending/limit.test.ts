@@ -15,7 +15,8 @@ import {
 function policy(overrides: Partial<SpendLimitPolicy> = {}): SpendLimitPolicy {
   return {
     currency: "RUB",
-    excluded: [],
+    excludedCategories: [],
+    excludedMerchants: [],
     rules: [{ category: null, limitRub: 5000, merchant: null }],
     version: 1,
     ...overrides,
@@ -172,7 +173,10 @@ describe("the auto-payment decision", () => {
   });
 
   it("never pays an excluded merchant or category", () => {
-    const excluded = policy({ excluded: ["shop.example", "алкоголь"] });
+    const excluded = policy({
+      excludedCategories: ["алкоголь"],
+      excludedMerchants: ["shop.example"],
+    });
 
     expect(
       decideAutoPayment(excluded, payment({ merchant: "pay.shop.example" }), [])
@@ -184,6 +188,15 @@ describe("the auto-payment decision", () => {
         []
       )
     ).toEqual({ allowed: false, reason: "excluded" });
+  });
+
+  it("keeps a category exclusion from matching a shop's host", () => {
+    // Excluding the category «example» says nothing about shop.example.
+    const excluded = policy({ excludedCategories: ["example"] });
+
+    expect(
+      decideAutoPayment(excluded, payment({ category: "еда" }), [])
+    ).toMatchObject({ allowed: true });
   });
 
   it("asks when the checkout is in another currency", () => {

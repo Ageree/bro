@@ -18,29 +18,31 @@ const createBrowserUseRun = vi.hoisted(() =>
 const readBrowserUseRun = vi.hoisted(() =>
   vi.fn<(runId: string) => Promise<{ task: string }>>()
 );
-const createBrowserRun = vi.hoisted(() =>
+const cancelBrowserUseRun = vi.hoisted(() =>
+  vi.fn<(runId: string) => Promise<void>>(() => Promise.resolve())
+);
+const handOffBrowserRunRetry = vi.hoisted(() =>
   vi.fn<
     (
-      scope: AccessScope,
-      input: { readonly captchaAttempt: number; readonly id: string }
-    ) => Promise<void>
-  >(() => Promise.resolve())
+      fromRunId: string,
+      retry: { readonly captchaAttempt: number; readonly id: string }
+    ) => Promise<boolean>
+  >(() => Promise.resolve(true))
 );
-const markBrowserRunRetried = vi.hoisted(() =>
-  vi.fn<(runId: string, retryRunId: string) => Promise<void>>(() =>
-    Promise.resolve()
-  )
+const readBrowserRun = vi.hoisted(() =>
+  vi.fn<
+    (
+      runId: string
+    ) => Promise<{ retriedAsRunId: string | null; status: string } | undefined>
+  >(() => Promise.resolve({ retriedAsRunId: null, status: "waiting" }))
 );
 const parkBrowserRunForRetry = vi.hoisted(() =>
   vi.fn<
     (
       runId: string,
       input: { captchaAttempt: number; retryAt: Date }
-    ) => Promise<void>
-  >(() => Promise.resolve())
-);
-const moveSpendReservation = vi.hoisted(() =>
-  vi.fn<(from: string, to: string) => Promise<void>>(() => Promise.resolve())
+    ) => Promise<boolean>
+  >(() => Promise.resolve(true))
 );
 const resolveBrowserSecretBindings = vi.hoisted(() =>
   vi.fn<
@@ -52,15 +54,15 @@ const resolveBrowserSecretBindings = vi.hoisted(() =>
 );
 
 vi.mock("@agent/lib/browser-use/client", () => ({
+  cancelBrowserUseRun,
   createBrowserUseRun,
   readBrowserUseRun,
 }));
 vi.mock("@db/services/browser-runs", () => ({
-  createBrowserRun,
-  markBrowserRunRetried,
+  handOffBrowserRunRetry,
   parkBrowserRunForRetry,
+  readBrowserRun,
 }));
-vi.mock("@db/services/spending", () => ({ moveSpendReservation }));
 vi.mock("@agent/lib/browser-use/secrets", () => ({
   resolveBrowserSecretBindings,
 }));
@@ -97,6 +99,13 @@ function parkedRow(captchaAttempt: number) {
 
 beforeEach(() => {
   vi.resetModules();
+  // Every case starts from the hosted pool, whatever the shell exports.
+  vi.stubEnv("BROWSER_USE_PROXY_HOST", "");
+  vi.stubEnv("BROWSER_USE_PROXY_PORT", "");
+  vi.stubEnv("BROWSER_USE_PROXY_USERNAME", "");
+  vi.stubEnv("BROWSER_USE_PROXY_ROTATING_USERNAME", "");
+  readBrowserRun.mockResolvedValue({ retriedAsRunId: null, status: "waiting" });
+  handOffBrowserRunRetry.mockResolvedValue(true);
   readBrowserUseRun.mockResolvedValue({ task: "Купи корм\n\nSite: …" });
   createBrowserUseRun.mockResolvedValue({
     id: retryRunId,
@@ -107,10 +116,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  vi.stubEnv("BROWSER_USE_PROXY_HOST", "");
-  vi.stubEnv("BROWSER_USE_PROXY_PORT", "");
-  vi.stubEnv("BROWSER_USE_PROXY_USERNAME", "");
-  vi.stubEnv("BROWSER_USE_PROXY_ROTATING_USERNAME", "");
   vi.clearAllMocks();
 });
 
@@ -169,7 +174,10 @@ describe("the anti-bot retry policy", () => {
       { userId: "better-auth:alice", workspaceId: "workspace:alice" },
       { allowPayment: true, site: "https://shop.example" }
     );
-    expect(createBrowserRun.mock.calls[0]?.[1]).toMatchObject({
+    // The new row, the link and the reservation move in one handoff.
+    expect(handOffBrowserRunRetry).toHaveBeenCalledOnce();
+    expect(handOffBrowserRunRetry.mock.calls[0]?.[0]).toBe(runId);
+    expect(handOffBrowserRunRetry.mock.calls[0]?.[1]).toMatchObject({
       captchaAttempt: 2,
       conversationId: "imessage:chat-1",
       id: retryRunId,
@@ -177,14 +185,54 @@ describe("the anti-bot retry policy", () => {
       replyAnchorMessageId: "message-1",
       task: "Купи корм",
     });
-    expect(markBrowserRunRetried).toHaveBeenCalledExactlyOnceWith(
-      runId,
-      retryRunId
-    );
-    expect(moveSpendReservation).toHaveBeenCalledExactlyOnceWith(
-      runId,
-      retryRunId
-    );
+    expect(cancelBrowserUseRun).not.toHaveBeenCalled();
+  });
+
+  it("starts nothing for an errand the person already stopped", async () => {
+    readBrowserRun.mockResolvedValue({
+      retriedAsRunId: null,
+      status: "stopped",
+    });
+    const { startCaptchaRetry } =
+      await import("@agent/lib/browser-use/captcha-retry");
+
+    expect(await startCaptchaRetry(parkedRow(1))).toEqual({
+      status: "stopped",
+    });
+    expect(createBrowserUseRun).not.toHaveBeenCalled();
+  });
+
+  it("cancels the new run when the errand was stopped while it started", async () => {
+    handOffBrowserRunRetry.mockResolvedValue(false);
+    const { startCaptchaRetry } =
+      await import("@agent/lib/browser-use/captcha-retry");
+
+    expect(await startCaptchaRetry(parkedRow(1))).toEqual({
+      status: "stopped",
+    });
+    expect(cancelBrowserUseRun).toHaveBeenCalledExactlyOnceWith(retryRunId);
+    expect(parkBrowserRunForRetry).not.toHaveBeenCalled();
+  });
+
+  it("cancels the new run and parks again when the handoff cannot be recorded", async () => {
+    handOffBrowserRunRetry.mockRejectedValue(new Error("database is down"));
+    const { startCaptchaRetry } =
+      await import("@agent/lib/browser-use/captcha-retry");
+
+    expect(await startCaptchaRetry(parkedRow(1))).toEqual({ status: "parked" });
+    // No untracked run is left paying in the cloud.
+    expect(cancelBrowserUseRun).toHaveBeenCalledExactlyOnceWith(retryRunId);
+    expect(parkBrowserRunForRetry).toHaveBeenCalledOnce();
+  });
+
+  it("starts nothing once the attempts are used up", async () => {
+    const { startCaptchaRetry } =
+      await import("@agent/lib/browser-use/captcha-retry");
+
+    expect(await startCaptchaRetry(parkedRow(5))).toEqual({
+      status: "exhausted",
+    });
+    expect(createBrowserUseRun).not.toHaveBeenCalled();
   });
 
   it("counts a retry that could not start and parks the errand again", async () => {
@@ -200,7 +248,7 @@ describe("the anti-bot retry policy", () => {
       captchaAttempt: 3,
       retryAt: new Date("2026-09-23T12:09:00.000Z"),
     });
-    expect(markBrowserRunRetried).not.toHaveBeenCalled();
+    expect(handOffBrowserRunRetry).not.toHaveBeenCalled();
   });
 
   it("gives up when the last attempt cannot start either", async () => {

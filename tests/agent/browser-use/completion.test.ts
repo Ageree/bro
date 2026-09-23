@@ -56,15 +56,17 @@ const cancelBrowserUseRun = vi.hoisted(() =>
   vi.fn<(runId: string) => Promise<void>>()
 );
 const stopBrowserUseSessionBrowsers = vi.hoisted(() =>
-  vi.fn<(sessionId: string) => Promise<number>>(() => Promise.resolve(1))
+  vi.fn<(sessionId: string, runId: string) => Promise<number>>(() =>
+    Promise.resolve(1)
+  )
 );
 const parkBrowserRunForRetry = vi.hoisted(() =>
   vi.fn<
     (
       runId: string,
       input: { captchaAttempt: number; retryAt: Date }
-    ) => Promise<void>
-  >(() => Promise.resolve())
+    ) => Promise<boolean>
+  >(() => Promise.resolve(true))
 );
 
 interface SpendEntryRow {
@@ -147,6 +149,7 @@ const releaseBrowserRunReport = vi.hoisted(() =>
 
 vi.mock("@db/services/browser-runs", () => ({
   claimBrowserRunCompletion,
+  finishWalledBrowserRun: vi.fn<() => Promise<void>>(() => Promise.resolve()),
   parkBrowserRunForRetry,
   claimBrowserRunReport,
   finishBrowserRunReport,
@@ -486,7 +489,8 @@ describe("settling a browser run", () => {
     expect(retryAt?.getTime()).toBeGreaterThanOrEqual(before + 2 * 60_000);
     // Stopping the walled browser writes its cookies back to the profile.
     expect(stopBrowserUseSessionBrowsers).toHaveBeenCalledExactlyOnceWith(
-      "session-1"
+      "session-1",
+      runId
     );
   });
 
@@ -517,6 +521,10 @@ describe("settling a browser run", () => {
     expect(prompt).toContain("through 5 attempts over about 30 minutes");
     expect(prompt).toContain("start it there now with browser_task start");
     expect(prompt).toContain("Never ask the user to solve the check");
+    expect(prompt).toContain("ask before going there");
+    // The link to the walled browser never reaches the coordinator.
+    expect(prompt).not.toContain("Live view (share only");
+    expect(prompt).not.toContain(row.liveViewUrl);
   });
 
   it("reports a payment made on the standing limit as a receipt", async () => {
@@ -560,6 +568,84 @@ describe("settling a browser run", () => {
       `Left under the limit this month: ${formatRub(3800)}`
     );
     expect(prompt).toContain("as a receipt");
+  });
+
+  it("tells the person plainly when the run paid more than the limit allowed", async () => {
+    readSpendEntryForRun.mockResolvedValue({
+      amountRub: 1500,
+      category: null,
+      feeRub: 0,
+      merchant: "shop.example",
+      periodKey: "2026-09",
+      status: "reserved",
+    });
+    settleSpendReservation.mockResolvedValue({
+      amountRub: 1900,
+      category: null,
+      feeRub: 0,
+      merchant: "shop.example",
+      periodKey: "2026-09",
+      status: "charged",
+    });
+    readBrowserUseRun.mockResolvedValue({
+      error: null,
+      id: runId,
+      result: "RESULT: оплатил\nORDER: 4417\nTOTAL: 1 900 ₽\nNEEDS: none",
+      sessionId: "session-1",
+      status: "completed",
+      task: "Order the usual",
+    });
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    // The ledger records what was paid, not what was allowed.
+    expect(settleSpendReservation).toHaveBeenCalledExactlyOnceWith(runId, {
+      amountRub: 1900,
+      charged: true,
+    });
+    expect(send.mock.calls[0]?.[0]).toContain("went past what they allowed");
+  });
+
+  it("does not read a foreign-currency total as roubles", async () => {
+    readSpendEntryForRun.mockResolvedValue({
+      amountRub: 1500,
+      category: null,
+      feeRub: 0,
+      merchant: "shop.example",
+      periodKey: "2026-09",
+      status: "reserved",
+    });
+    settleSpendReservation.mockResolvedValue({
+      amountRub: 1500,
+      category: null,
+      feeRub: 0,
+      merchant: "shop.example",
+      periodKey: "2026-09",
+      status: "charged",
+    });
+    readBrowserUseRun.mockResolvedValue({
+      error: null,
+      id: runId,
+      result: "RESULT: paid\nORDER: 4417\nTOTAL: $200\nNEEDS: none",
+      sessionId: "session-1",
+      status: "completed",
+      task: "Order the usual",
+    });
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    // $200 is not 200 ₽: the reserved amount is what is counted.
+    expect(settleSpendReservation).toHaveBeenCalledExactlyOnceWith(runId, {
+      amountRub: 1500,
+      charged: true,
+    });
+    expect(send.mock.calls[0]?.[0]).toContain("not in roubles");
   });
 
   it("gives the reservation back when the run stopped before paying", async () => {

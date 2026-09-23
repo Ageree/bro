@@ -24,13 +24,13 @@ import {
 } from "@agent/lib/browser-use/cdp";
 import { resolveBrowserSecretBindings } from "@agent/lib/browser-use/secrets";
 import {
-  cancelBrowserRunRetry,
   claimBrowserRunCompletion,
   createBrowserRun,
   finishBrowserRunReport,
   readBrowserProfileId,
   readLatestBrowserRunForScope,
   saveBrowserProfileId,
+  stopBrowserRunErrand,
   updateBrowserRunProgress,
 } from "@db/services/browser-runs";
 import {
@@ -530,12 +530,14 @@ async function spendPeriodKey(scope: AccessScope) {
 async function reserveSpendForRun(
   scope: AccessScope,
   payment: SpendLimitInput,
-  site: string | undefined
+  site: string | undefined,
+  replacingRunId?: string
 ) {
   const placeholder = `pending:${crypto.randomUUID()}`;
   const decision = await reserveAutoPayment(scope, {
     browserRunId: placeholder,
     periodKey: await spendPeriodKey(scope),
+    replacingRunId,
     request: {
       amount: payment.totalRub,
       category: normalizeCategory(payment.category),
@@ -567,6 +569,27 @@ async function releasedOnFailure<T>(
 
 async function releaseReservation(browserRunId: string) {
   await settleSpendReservation(browserRunId, { charged: false });
+}
+
+/**
+ * Recording a run that already exists in the cloud failed: nothing here would
+ * ever settle it, so it is stopped and whatever it held is given back.
+ */
+async function recordStartedRun<T>(runId: string, record: () => Promise<T>) {
+  try {
+    await record();
+  } catch (error) {
+    try {
+      await cancelBrowserUseRun(runId);
+    } catch (cancelError) {
+      console.warn("[browser-use] the unrecorded run could not be cancelled", {
+        cause: cancelError,
+        runId,
+      });
+    }
+    await releaseReservation(runId);
+    throw error;
+  }
 }
 
 const terminalRunStatuses = new Set<BrowserUseRunStatus>([
@@ -711,16 +734,18 @@ export const browserTask = defineTool({
       }
       const { profileId, run, secrets } = started;
       if (placeholder) await moveSpendReservation(placeholder, run.id);
-      await createBrowserRun(scope, {
-        ...conversation,
-        id: run.id,
-        paymentAllowed: allowPayment,
-        profileId,
-        sessionId: run.sessionId,
-        site: input.site ?? null,
-        status: "running",
-        task: errand,
-      });
+      await recordStartedRun(run.id, () =>
+        createBrowserRun(scope, {
+          ...conversation,
+          id: run.id,
+          paymentAllowed: allowPayment,
+          profileId,
+          sessionId: run.sessionId,
+          site: input.site ?? null,
+          status: "running",
+          task: errand,
+        })
+      );
       const liveViewUrl = await waitForLiveViewUrl(run.id);
       if (liveViewUrl) {
         await updateBrowserRunProgress(run.id, { liveViewUrl });
@@ -769,7 +794,7 @@ export const browserTask = defineTool({
       // carries the new one: a refusal leaves the old reservation in place.
       const spend =
         allowPayment && input.withinSpendLimit
-          ? await reserveSpendForRun(scope, input.withinSpendLimit, site)
+          ? await reserveSpendForRun(scope, input.withinSpendLimit, site, runId)
           : undefined;
       if (spend && !spend.decision.allowed) {
         return {
@@ -787,9 +812,6 @@ export const browserTask = defineTool({
           ? `${message}\n\n${spendCapLine(input.withinSpendLimit, spend.decision)}`
           : message;
       const continued = await releasedOnFailure(placeholder, async () => {
-        // The person is steering the errand now, so a background retry that was
-        // still waiting would only race this follow-up.
-        if (row.retryAt) await cancelBrowserRunRetry(runId);
         // Both are round trips to the cloud and neither needs the other's answer.
         // A one-time code waiting its turn is a code closer to expiring, and the
         // entry is worth attempting whether or not a run is still on the page:
@@ -837,6 +859,10 @@ export const browserTask = defineTool({
             outcome: "Заменён продолжением с привязанной картой",
             status: "stopped",
           });
+        } else {
+          // The person is steering a settled errand now: a background retry
+          // waiting for it, or being started, would only race this follow-up.
+          await stopBrowserRunErrand(runId);
         }
 
         // No quota gate: `browserRunQuotaGate` counts as it reads, and a
@@ -901,23 +927,30 @@ export const browserTask = defineTool({
       }
       const { followUp, profileId, reusedSession, secrets } = continued;
       if (placeholder) {
+        // The decision already released what this errand held before.
         await moveSpendReservation(placeholder, followUp.id);
+      } else if (allowPayment) {
+        // The person approved this payment themselves: it is theirs, not the
+        // standing limit's, so an earlier reservation no longer applies.
         await releaseReservation(runId);
       } else {
-        // Whatever this errand still had reserved travels with it.
+        // Whatever this errand still had reserved travels with it: a code
+        // that completes a payment on the limit is still that payment.
         await moveSpendReservation(runId, followUp.id);
       }
-      await createBrowserRun(scope, {
-        ...conversation,
-        id: followUp.id,
-        liveViewUrl: reusedSession ? row.liveViewUrl : null,
-        paymentAllowed: allowPayment,
-        profileId,
-        sessionId: followUp.sessionId,
-        site: site ?? null,
-        status: "running",
-        task: message,
-      });
+      await recordStartedRun(followUp.id, () =>
+        createBrowserRun(scope, {
+          ...conversation,
+          id: followUp.id,
+          liveViewUrl: reusedSession ? row.liveViewUrl : null,
+          paymentAllowed: allowPayment,
+          profileId,
+          sessionId: followUp.sessionId,
+          site: site ?? null,
+          status: "running",
+          task: message,
+        })
+      );
       const inheritedLiveViewUrl = reusedSession ? row.liveViewUrl : null;
       const liveViewUrl =
         inheritedLiveViewUrl ?? (await waitForLiveViewUrl(followUp.id));
@@ -943,16 +976,18 @@ export const browserTask = defineTool({
     }
 
     if (input.action === "cancel") {
-      // A run parked for a retry has already finished in the cloud; what is
-      // left to cancel is the retry.
-      if (!(await cancelBrowserRunRetry(runId))) {
+      // A settled run has nothing left to cancel in the cloud; stopping its
+      // row is what keeps a background retry from starting for it, including
+      // one the poller is starting right now.
+      if (!row.completedAt) {
         await cancelBrowserUseRun(runId);
         await claimBrowserRunCompletion(runId, {
           outcome: "The user cancelled this browser run.",
           status: "stopped",
         });
       }
-      await settleSpendReservation(runId, { charged: false });
+      await stopBrowserRunErrand(runId);
+      await releaseReservation(runId);
       return { runId, status: "stopped" };
     }
 

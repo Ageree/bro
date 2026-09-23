@@ -28,7 +28,8 @@ if (!resolve) {
 
 const monthly = {
   currency: "RUB" as const,
-  excluded: ["алкоголь"],
+  excludedCategories: ["алкоголь"],
+  excludedMerchants: [],
   rules: [
     { category: null, limitRub: 5000, merchant: null },
     { category: "такси", limitRub: 1000, merchant: null },
@@ -78,7 +79,7 @@ describe("autonomy defaults", () => {
     );
     expect(selected?.content).toContain(`осталось ${formatRub(4400)}`);
     expect(selected?.content).toContain(`осталось ${formatRub(400)}`);
-    expect(selected?.content).toContain("Без спроса никогда: алкоголь.");
+    expect(selected?.content).toContain("Без спроса никогда: «алкоголь».");
   });
 
   it("keeps the rules for a turn without a workspace", async () => {
@@ -96,7 +97,7 @@ describe("autonomy defaults", () => {
 
   it("names the exclusions even without a limit", () => {
     expect(spendLimitInstructions({ ...monthly, rules: [] }, [])).toContain(
-      "Без спроса никогда: алкоголь."
+      "Без спроса никогда: «алкоголь»."
     );
   });
 });

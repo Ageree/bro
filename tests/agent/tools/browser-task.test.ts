@@ -103,7 +103,7 @@ const readVaultSecret = vi.hoisted(() =>
 const readAccountPhoneNumber = vi.hoisted(() =>
   vi.fn<() => Promise<string | undefined>>(() => Promise.resolve(undefined))
 );
-const cancelBrowserRunRetry = vi.hoisted(() =>
+const stopBrowserRunErrand = vi.hoisted(() =>
   vi.fn<(runId: string) => Promise<boolean>>(() => Promise.resolve(false))
 );
 const reserveAutoPayment = vi.hoisted(() =>
@@ -113,6 +113,7 @@ const reserveAutoPayment = vi.hoisted(() =>
       input: {
         browserRunId: string;
         periodKey: string;
+        replacingRunId?: string;
         request: AutoPaymentRequest;
       }
     ) => Promise<AutoPaymentDecision>
@@ -132,7 +133,6 @@ const settleSpendReservation = vi.hoisted(() =>
 type Unused = () => never;
 
 vi.mock("@db/services/browser-runs", () => ({
-  cancelBrowserRunRetry,
   claimBrowserRunCompletion,
   createBrowserRun,
   readBrowserProfileId: vi.fn<() => Promise<string>>(() =>
@@ -143,6 +143,7 @@ vi.mock("@db/services/browser-runs", () => ({
   readLatestBrowserRunForScope: (scope: AccessScope, id: string) =>
     readBrowserRunForScope(scope, id),
   saveBrowserProfileId: vi.fn<Unused>(),
+  stopBrowserRunErrand,
   updateBrowserRunProgress: vi.fn<() => Promise<void>>(() => Promise.resolve()),
 }));
 vi.mock("@db/services/spending", () => ({
@@ -1154,6 +1155,30 @@ describe("browser_task standing spend limit", () => {
     );
   });
 
+  it("gives the reservation back when the month's errands are used up", async () => {
+    reserveAutoPayment.mockResolvedValue({
+      allowed: true,
+      basis: "limit",
+      exposureRub: 1500,
+      remainingAfterRub: 3500,
+    });
+    browserRunQuotaGate.mockResolvedValue({
+      allowed: false,
+      note: "Лимит браузерных поручений на этот месяц исчерпан.",
+    });
+
+    const result = await startPaidErrand({ totalRub: 1500 });
+
+    expect(result).toMatchObject({ status: "quota_exhausted" });
+    const placeholder = reserveAutoPayment.mock.calls[0]?.[1].browserRunId;
+    expect(settleSpendReservation).toHaveBeenCalledExactlyOnceWith(
+      placeholder,
+      { charged: false }
+    );
+    expect(createBrowserUseRun).not.toHaveBeenCalled();
+    expect(resolveBrowserSecretBindings).not.toHaveBeenCalled();
+  });
+
   it("keeps an explicitly approved payment off the limit", async () => {
     vi.resetModules();
     createBrowserUseRun.mockResolvedValue({
@@ -1201,8 +1226,31 @@ describe("browser_task standing spend limit", () => {
       toolContext("better-auth:alice")
     );
 
-    expect(cancelBrowserRunRetry).toHaveBeenCalledExactlyOnceWith(runId);
+    expect(stopBrowserRunErrand).toHaveBeenCalledExactlyOnceWith(runId);
     expect(createBrowserUseRun.mock.calls[0]?.[0].sessionId).toBeUndefined();
+  });
+
+  it("releases a standing-limit reservation once the person approves the payment themselves", async () => {
+    await continueErrand({ allowPayment: true, completedAt: new Date() });
+
+    expect(settleSpendReservation).toHaveBeenCalledExactlyOnceWith(runId, {
+      charged: false,
+    });
+    expect(moveSpendReservation).not.toHaveBeenCalled();
+  });
+
+  it("stops the new run and gives its reservation back when it cannot be recorded", async () => {
+    createBrowserRun.mockRejectedValueOnce(new Error("database is down"));
+
+    await expect(continueErrand({ completedAt: new Date() })).rejects.toThrow(
+      "database is down"
+    );
+
+    expect(cancelBrowserUseRun).toHaveBeenCalledExactlyOnceWith(followUpRunId);
+    expect(settleSpendReservation).toHaveBeenCalledExactlyOnceWith(
+      followUpRunId,
+      { charged: false }
+    );
   });
 });
 
@@ -1251,14 +1299,14 @@ describe("browser_task spend limit on a follow-up", () => {
 
     await continueOnLimit(1500);
 
-    const placeholder = reserveAutoPayment.mock.calls[0]?.[1].browserRunId;
+    const reservation = reserveAutoPayment.mock.calls[0]?.[1];
+    // The errand's own earlier share is replaced, not counted twice.
+    expect(reservation?.replacingRunId).toBe(runId);
     expect(moveSpendReservation).toHaveBeenCalledExactlyOnceWith(
-      placeholder,
+      reservation?.browserRunId,
       followUpRunId
     );
-    expect(settleSpendReservation).toHaveBeenCalledExactlyOnceWith(runId, {
-      charged: false,
-    });
+    expect(settleSpendReservation).not.toHaveBeenCalled();
     expect(createBrowserUseRun.mock.calls[0]?.[0].task).toContain(
       "Payment is pre-approved up to"
     );
@@ -1287,12 +1335,12 @@ describe("browser_task spend limit on a follow-up", () => {
 });
 
 describe("browser_task on an errand waiting for a background retry", () => {
-  it("cancels the pending retry instead of a run that already ended", async () => {
+  it("stops the pending retry instead of cancelling a run that already ended", async () => {
     readBrowserRunForScope.mockResolvedValue({
       ...browserRunRow(new Date(), "Needs: captcha"),
       retryAt: new Date(Date.now() + 60_000),
+      status: "waiting",
     });
-    cancelBrowserRunRetry.mockResolvedValueOnce(true);
     const { browserTask } = await import("@agent/tools/browser_task");
 
     const result = await browserTask.execute(
@@ -1301,6 +1349,7 @@ describe("browser_task on an errand waiting for a background retry", () => {
     );
 
     expect(result).toEqual({ runId, status: "stopped" });
+    expect(stopBrowserRunErrand).toHaveBeenCalledExactlyOnceWith(runId);
     expect(cancelBrowserUseRun).not.toHaveBeenCalled();
     expect(claimBrowserRunCompletion).not.toHaveBeenCalled();
     expect(settleSpendReservation).toHaveBeenCalledExactlyOnceWith(runId, {
@@ -1309,9 +1358,11 @@ describe("browser_task on an errand waiting for a background retry", () => {
   });
 
   it("reports the errand as still in progress without naming the check", async () => {
+    // A parked run is `waiting`, never `done`, until its retry takes over.
     readBrowserRunForScope.mockResolvedValue({
       ...browserRunRow(new Date(), "Needs: captcha"),
       retryAt: new Date(Date.now() + 60_000),
+      status: "waiting",
     });
     const { browserTask } = await import("@agent/tools/browser_task");
 
@@ -1320,6 +1371,7 @@ describe("browser_task on an errand waiting for a background retry", () => {
       toolContext("better-auth:alice")
     );
 
+    expect(result).toMatchObject({ status: "waiting" });
     expect(continuationNote(result)).toContain("still in progress");
     expect(readBrowserUseRunStatus).not.toHaveBeenCalled();
   });

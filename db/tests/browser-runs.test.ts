@@ -99,36 +99,67 @@ describe("browser run persistence", () => {
     // Claimed once: a second poll finds nothing.
     expect(await browserRuns.claimDueBrowserRunRetries(later, 10)).toEqual([]);
 
-    await browserRuns.createBrowserRun(alice, {
-      ...conversation(),
-      captchaAttempt: 2,
-      id: retryId,
-    });
-    await browserRuns.markBrowserRunRetried(runId, retryId);
+    expect(
+      await browserRuns.handOffBrowserRunRetry(runId, {
+        ...conversation(),
+        captchaAttempt: 2,
+        id: retryId,
+        sessionId: "browser-session-2",
+      })
+    ).toBe(true);
     const latest = await browserRuns.readLatestBrowserRunForScope(alice, runId);
     expect(latest?.id).toBe(retryId);
     expect(latest?.captchaAttempt).toBe(2);
+    expect(latest?.createdByUserId).toBe(alice.userId);
     expect(
       await browserRuns.readLatestBrowserRunForScope(bob, runId)
     ).toBeUndefined();
-    // A run that was handed over is never parked again.
-    await browserRuns.parkBrowserRunForRetry(runId, {
-      captchaAttempt: 2,
-      retryAt: now,
-    });
+    // A run that was handed over is never parked or handed over again.
+    expect(
+      await browserRuns.parkBrowserRunForRetry(runId, {
+        captchaAttempt: 2,
+        retryAt: now,
+      })
+    ).toBe(false);
     expect(await browserRuns.claimDueBrowserRunRetries(later, 10)).toEqual([]);
   }, 20_000);
 
-  it("withdraws a pending retry only once", async () => {
+  it("lets no retry start for an errand the person stopped", async () => {
     const browserRuns = await browserRunsDatabase();
+    const now = new Date("2026-09-23T12:00:00.000Z");
     await browserRuns.createBrowserRun(alice, { ...conversation(), id: runId });
+    await browserRuns.claimBrowserRunCompletion(runId, {
+      outcome: "Needs: captcha",
+      status: "done",
+    });
     await browserRuns.parkBrowserRunForRetry(runId, {
       captchaAttempt: 1,
-      retryAt: new Date(),
+      retryAt: now,
     });
+    // The poller claims the retry, then the person cancels before it starts.
+    expect(await browserRuns.claimDueBrowserRunRetries(now, 10)).toHaveLength(
+      1
+    );
+    expect(await browserRuns.stopBrowserRunErrand(runId)).toBe(true);
 
-    expect(await browserRuns.cancelBrowserRunRetry(runId)).toBe(true);
-    expect(await browserRuns.cancelBrowserRunRetry(runId)).toBe(false);
+    expect(
+      await browserRuns.handOffBrowserRunRetry(runId, {
+        ...conversation(),
+        captchaAttempt: 2,
+        id: "55555555-5555-4555-8555-555555555555",
+        sessionId: "browser-session-2",
+      })
+    ).toBe(false);
+    expect(
+      await browserRuns.readBrowserRun("55555555-5555-4555-8555-555555555555")
+    ).toBeUndefined();
+    // Nor can the settle path park it again afterwards.
+    expect(
+      await browserRuns.parkBrowserRunForRetry(runId, {
+        captchaAttempt: 1,
+        retryAt: now,
+      })
+    ).toBe(false);
     expect((await browserRuns.readBrowserRun(runId))?.status).toBe("stopped");
   }, 20_000);
 

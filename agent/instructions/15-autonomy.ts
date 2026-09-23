@@ -8,6 +8,7 @@ import { localMonthKey } from "@shared/calendar/local-period";
 import type { AccessScope } from "@shared/identity/access-scope";
 import {
   describeSpendRule,
+  exclusionLabels,
   formatRub,
   remainingUnderRule,
   type SpendEntry,
@@ -25,12 +26,15 @@ export function spendLimitInstructions(
   policy: SpendLimitPolicy | undefined,
   entries: readonly SpendEntry[]
 ) {
+  const excluded = exclusionLabels(policy);
+  const never =
+    excluded.length > 0
+      ? `Без спроса никогда: ${excluded.join(", ")}.`
+      : undefined;
   if (!policy || policy.rules.length === 0) {
     return [
       "Лимит трат без спроса не задан: платить без разрешения человека можно только то, что бесплатно.",
-      policy && policy.excluded.length > 0
-        ? `Без спроса никогда: ${policy.excluded.join(", ")}.`
-        : undefined,
+      never,
     ]
       .filter((line) => line !== undefined)
       .join("\n");
@@ -41,9 +45,7 @@ export function spendLimitInstructions(
       (rule) =>
         `- ${describeSpendRule(rule)}: потрачено ${formatRub(spentUnderRule(rule, entries))}, осталось ${formatRub(remainingUnderRule(rule, entries))}.`
     ),
-    policy.excluded.length > 0
-      ? `Без спроса никогда: ${policy.excluded.join(", ")}.`
-      : undefined,
+    never,
   ]
     .filter((line) => line !== undefined)
     .join("\n");

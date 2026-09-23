@@ -20,10 +20,17 @@ describe("workspace spend limit", () => {
       createElement(SpendLimitSection, {
         entries: [
           { amountRub: 1200, category: "еда", feeRub: 0, merchant: "ozon.ru" },
+          {
+            amountRub: 400,
+            category: "дом",
+            feeRub: 0,
+            merchant: "wildberries.ru",
+          },
         ],
         policy: {
           currency: "RUB",
-          excluded: ["алкоголь"],
+          excludedCategories: ["алкоголь"],
+          excludedMerchants: ["wb.ru"],
           rules: [
             { category: null, limitRub: 5000, merchant: null },
             { category: null, limitRub: 2000, merchant: "ozon.ru" },
@@ -35,9 +42,12 @@ describe("workspace spend limit", () => {
 
     expect(html).toContain(`до ${formatRub(5000)} в месяц`);
     expect(html).toContain(`до ${formatRub(2000)} в месяц на ozon.ru`);
-    expect(html).toContain(`осталось ${formatRub(3800)}`);
-    expect(html).toContain(`осталось ${formatRub(800)}`);
+    // The general rule counts both shops; the ozon.ru rule only its own.
+    expect(html).toContain(`потрачено ${formatRub(1600)}`);
+    expect(html).toContain(`осталось ${formatRub(3400)}`);
     expect(html).toContain(`потрачено ${formatRub(1200)}`);
-    expect(html).toContain("алкоголь");
+    expect(html).toContain(`осталось ${formatRub(800)}`);
+    expect(html).toContain("«алкоголь»");
+    expect(html).toContain("wb.ru");
   });
 });

@@ -2,6 +2,7 @@ import { Meter, Row, Rows, Section } from "@web/components/paper/document";
 import { Badge } from "@web/components/ui/badge";
 import {
   describeSpendRule,
+  exclusionLabels,
   formatRub,
   remainingUnderRule,
   type SpendEntry,
@@ -22,7 +23,7 @@ export function SpendLimitSection({
   readonly policy: SpendLimitPolicy | undefined;
 }) {
   const rules = policy?.rules ?? [];
-  const excluded = policy?.excluded ?? [];
+  const excluded = exclusionLabels(policy);
 
   return (
     <Section
