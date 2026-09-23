@@ -198,6 +198,61 @@ describe("Telegram message delivery", () => {
     expect(request).not.toHaveBeenCalled();
   });
 
+  it("does not follow a reaction with the text written after it", async () => {
+    const { context, request } = handlerContext();
+
+    await handleActionResult(
+      reactToMessageResult({ operation: "add", type: "thumbs_up" }),
+      context,
+      sessionContext()
+    );
+    request.mockClear();
+    await handleMessageCompleted(
+      assistantMessage("Поставил лайк."),
+      context,
+      sessionContext()
+    );
+
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("still rescues plain text in a later turn after a delivered one", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { context, request } = handlerContext();
+
+    await handleActionResult(
+      sendMessageResult({ kind: "message", text: "Готово." }),
+      context,
+      sessionContext()
+    );
+    request.mockClear();
+    await handleMessageCompleted(
+      { ...assistantMessage("Не могу это сделать."), turnId: "turn-2" },
+      context,
+      sessionContext()
+    );
+
+    expect(request).toHaveBeenCalledOnce();
+    warn.mockRestore();
+  });
+
+  it("drops the delivery marker from rescued plain text", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { context, request } = handlerContext();
+
+    await handleMessageCompleted(
+      assistantMessage("Не могу это сделать.\nDELIVERY_COMPLETE"),
+      context,
+      sessionContext()
+    );
+
+    expect(JSON.stringify(request.mock.calls)).not.toContain(
+      "DELIVERY_COMPLETE"
+    );
+    expect(request).toHaveBeenCalledOnce();
+    warn.mockRestore();
+  });
+
   it("leaves text that only introduces a tool call undelivered", async () => {
     const { context, request } = handlerContext();
 

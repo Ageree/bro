@@ -14,7 +14,7 @@ import {
   replyLanguageFor,
   sessionReplyLanguage,
   turnFailureNotice,
-} from "@agent/lib/delivery-fallback";
+} from "@agent/lib/delivery/fallback";
 import { firstContactContext } from "@agent/lib/first-contact";
 import { photonMediaTurn } from "@agent/lib/inbound-media/photon";
 import { voiceFailedNote } from "@agent/lib/inbound-media/turn-content";
@@ -104,6 +104,7 @@ export default photonIMessageChannel({
             reaction.data.output.type
           );
         }
+        markTurnDelivered(context.state, event.turnId);
         await finalizeScheduledReportDelivery(session);
         return;
       }

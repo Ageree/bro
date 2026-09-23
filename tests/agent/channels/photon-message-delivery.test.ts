@@ -184,6 +184,59 @@ describe("Photon message delivery", () => {
     expect(post).not.toHaveBeenCalled();
   });
 
+  it("does not follow a reaction with the text written after it", async () => {
+    const { context, post } = handlerContext();
+
+    await handleActionResult(
+      reactToMessageResult({ operation: "add", type: "thumbs_up" }),
+      context,
+      sessionContext()
+    );
+    post.mockClear();
+    await handleMessageCompleted(
+      assistantMessage("Поставил лайк."),
+      context,
+      sessionContext()
+    );
+
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it("still rescues plain text in a later turn after a posted one", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { context, post } = handlerContext();
+
+    await handleActionResult(
+      sendMessageResult({ kind: "message", text: "Готово." }),
+      context,
+      sessionContext()
+    );
+    post.mockClear();
+    await handleMessageCompleted(
+      { ...assistantMessage("Не могу это сделать."), turnId: "turn-2" },
+      context,
+      sessionContext()
+    );
+
+    expect(post).toHaveBeenCalledOnce();
+    warn.mockRestore();
+  });
+
+  it("drops the delivery marker from rescued plain text", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { context, post } = handlerContext();
+
+    await handleMessageCompleted(
+      assistantMessage("Не могу это сделать.\nDELIVERY_COMPLETE"),
+      context,
+      sessionContext()
+    );
+
+    expect(JSON.stringify(post.mock.calls)).not.toContain("DELIVERY_COMPLETE");
+    expect(post).toHaveBeenCalledOnce();
+    warn.mockRestore();
+  });
+
   it("leaves text that only introduces a tool call unposted", async () => {
     const { context, post } = handlerContext();
 

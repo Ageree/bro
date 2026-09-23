@@ -1,6 +1,6 @@
 {
-  "id": "805ca9ef-fe76-4dce-a32f-8d796f35b0ce",
-  "prevId": "4a213a95-e859-44d3-aebe-cf835d0143f7",
+  "id": "e21f10f7-1ec6-4051-a1c7-50eda0189b68",
+  "prevId": "805ca9ef-fe76-4dce-a32f-8d796f35b0ce",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -2333,6 +2333,44 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.operational_alerts": {
+      "name": "operational_alerts",
+      "schema": "",
+      "columns": {
+        "key": {
+          "name": "key",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "last_sent_at": {
+          "name": "last_sent_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_value": {
+          "name": "last_value",
+          "type": "numeric(16, 8)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.orders": {
       "name": "orders",
       "schema": "",
@@ -3426,6 +3464,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "introduced_at": {
+          "name": "introduced_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {},

@@ -213,9 +213,11 @@ describe("browser secret bindings", () => {
 
     const task = composeBrowserTask({
       aliases: bound.aliases,
+      allowPayment: true,
       collectImages: false,
       errand: "Вызови такси домой",
       facts: "Known details you may type into forms:\nName: Ivan Petrov",
+      home: "Moscow, Russia",
       site: "https://taxi.yandex.ru",
     });
     for (const secret of [password, cardNumber, securityCode]) {
@@ -234,10 +236,12 @@ describe("browser secret bindings", () => {
     });
     const continuation = composeBrowserContinuation({
       aliases: bound.aliases,
+      allowPayment: true,
       collectImages: false,
       errand: "Войди в аккаунт",
       facts: "Known details you may type into forms:\nPhone: +79991234567",
       message: "Привяжи карту, она есть в сейфе",
+      searching: false,
       site: "https://taxi.yandex.ru",
     });
 
@@ -264,9 +268,11 @@ describe("browser secret bindings", () => {
     expect(
       composeBrowserTask({
         aliases: bound.aliases,
+        allowPayment: false,
         collectImages: false,
         errand: "Order groceries",
         facts: undefined,
+        home: undefined,
         site: undefined,
       })
     ).toContain("No stored credentials are available");

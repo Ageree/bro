@@ -18,7 +18,7 @@ import {
   replyLanguageFor,
   sessionReplyLanguage,
   turnFailureNotice,
-} from "@agent/lib/delivery-fallback";
+} from "@agent/lib/delivery/fallback";
 import { firstContactContext } from "@agent/lib/first-contact";
 import { telegramMediaTurn } from "@agent/lib/inbound-media/telegram";
 import {
@@ -138,6 +138,7 @@ export default telegramChannel({
                   },
                 ],
         });
+        markTurnDelivered(context, event.turnId);
         await finalizeScheduledReportDelivery(session);
         return;
       }
