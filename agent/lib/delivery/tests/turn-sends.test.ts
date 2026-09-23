@@ -36,6 +36,36 @@ describe("sendSkipReason", () => {
     ).toBeUndefined();
   });
 
+  it.each([
+    [
+      "the return flight after the outbound one",
+      "Рейс SU 1234 Москва—Сочи 12 октября, вылет в 08:40 из Шереметьево, место у окна.",
+      "Рейс SU 1235 Сочи—Москва 19 октября, вылет в 18:05 из Сочи, место у окна.",
+    ],
+    [
+      "the second option after the first",
+      "Вариант 1: Отель «Морской», 4 звезды, 7 400 ₽ за ночь, завтрак включён.",
+      "Вариант 2: Отель «Горный», 4 звезды, 6 900 ₽ за ночь, завтрак включён.",
+    ],
+    [
+      "a reminder that differs in name and time",
+      "Готово, напомню тебе позвонить Ане завтра в 10:00.",
+      "Готово, напомню тебе позвонить Пете завтра в 11:00.",
+    ],
+    [
+      "the next quiz question",
+      "Вопрос 3: какая река самая длинная в Европе?",
+      "Вопрос 4: какая река самая длинная в Азии?",
+    ],
+    [
+      "a confirmation question after the result",
+      "Нашёл столик в «Пушкине» на 20:00 на двоих.",
+      "Бронировать столик в «Пушкине» на 20:00 на двоих?",
+    ],
+  ])("delivers %s from the same template", (_case, first, second) => {
+    expect(sendSkipReason(message(second), [sent(first)])).toBeUndefined();
+  });
+
   it("delivers the same caption with different photos", () => {
     const first = sentMessageOf(photo("https://media.example/1.jpg"));
 
@@ -104,17 +134,21 @@ describe("turnSends", () => {
     });
   });
 
-  it("ends a turn that repeated itself", () => {
-    expect(
-      turnMustEnd([
-        userMessage("оформи возврат"),
-        ...sendMessage("a", "Оформляю возврат"),
-        ...sendMessage("b", "Оформляю возврат", {
-          type: "text",
-          value: skippedSendNotice("duplicate"),
-        }),
-      ])
-    ).toBe(true);
+  it("ends a turn only once it keeps repeating itself", () => {
+    const repeat = (id: string) =>
+      sendMessage(id, "Оформляю возврат", {
+        type: "text",
+        value: skippedSendNotice("duplicate"),
+      });
+    const once = [
+      userMessage("оформи возврат"),
+      ...sendMessage("a", "Оформляю возврат"),
+      ...repeat("b"),
+    ];
+
+    // The model may still owe a real answer after one dropped repeat.
+    expect(turnMustEnd(once)).toBe(false);
+    expect(turnMustEnd([...once, ...repeat("c")])).toBe(true);
   });
 
   it("ends a turn that reached the message limit", () => {

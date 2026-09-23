@@ -115,39 +115,25 @@ describe("interactive delivery enforcement", () => {
     );
   });
 
-  it("makes a turn that repeated a delivered message end in text", async () => {
+  it("makes a turn that keeps repeating a delivered message end in text", async () => {
+    await agent.model.events["step.started"]?.(
+      {},
+      interactiveContext([...delivered, ...skippedRepeat("call-2")])
+    );
+    // One dropped repeat may still precede a real answer.
+    expect(services.modelSelection).toHaveBeenLastCalledWith(
+      "openai/gpt-5.6-sol-fast",
+      { toolChoice: "auto" }
+    );
+
     await agent.model.events["step.started"]?.(
       {},
       interactiveContext([
         ...delivered,
-        {
-          content: [
-            {
-              input: { kind: "message", text: "Готово" },
-              toolCallId: "call-2",
-              toolName: "send_message",
-              type: "tool-call" as const,
-            },
-          ],
-          role: "assistant" as const,
-        },
-        {
-          content: [
-            {
-              output: {
-                type: "text" as const,
-                value: skippedSendNotice("duplicate"),
-              },
-              toolCallId: "call-2",
-              toolName: "send_message",
-              type: "tool-result" as const,
-            },
-          ],
-          role: "tool" as const,
-        },
+        ...skippedRepeat("call-2"),
+        ...skippedRepeat("call-3"),
       ])
     );
-
     expect(services.modelSelection).toHaveBeenLastCalledWith(
       "openai/gpt-5.6-sol-fast",
       { toolChoice: "none" }
@@ -195,6 +181,36 @@ describe("interactive delivery enforcement", () => {
     );
   });
 });
+
+function skippedRepeat(toolCallId: string) {
+  return [
+    {
+      content: [
+        {
+          input: { kind: "message", text: "Готово" },
+          toolCallId,
+          toolName: "send_message",
+          type: "tool-call" as const,
+        },
+      ],
+      role: "assistant" as const,
+    },
+    {
+      content: [
+        {
+          output: {
+            type: "text" as const,
+            value: skippedSendNotice("duplicate"),
+          },
+          toolCallId,
+          toolName: "send_message",
+          type: "tool-result" as const,
+        },
+      ],
+      role: "tool" as const,
+    },
+  ];
+}
 
 function humanMessage(text: string) {
   // eve adds `kind` to every user-role message it keeps in history.

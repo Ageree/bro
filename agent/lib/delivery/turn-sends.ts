@@ -10,14 +10,25 @@ import { sendMessageOutputSchema } from "@shared/chat/message-delivery";
 export const turnMessageLimit = 6;
 
 /**
- * Two texts at least this similar are the same message said twice. A loop
- * rarely repeats itself byte for byte: it trims a word or swaps punctuation.
+ * Two texts at least this similar are the same message said twice, provided
+ * they carry the same specifics. A loop rarely repeats itself byte for byte:
+ * it trims a word or swaps punctuation.
  */
 const nearDuplicateSimilarity = 0.9;
 
-/** What a delivered send is compared by: its words and exact attachments. */
+/**
+ * Skips a turn may take before it is ended. One dropped repeat can precede a
+ * real answer the model still has to send; a second means it is looping.
+ */
+const skipsBeforeEnd = 2;
+
+/**
+ * What a delivered send is compared by: its words, exact attachments, and the
+ * specifics that make two messages from one template different.
+ */
 const sentMessageSchema = z.object({
   attachments: z.array(z.string()),
+  specifics: z.array(z.string()),
   text: z.string(),
 });
 
@@ -31,7 +42,7 @@ type SkipReason = "duplicate" | "limit";
 const skippedPrefix = "Not delivered:";
 
 const skipNotices = {
-  duplicate: `${skippedPrefix} the person already received this message in this turn. Do not send it again. End the turn now without calling send_message.`,
+  duplicate: `${skippedPrefix} the person already received this message in this turn. Do not send it again. Send only something new that is still missing; if nothing is, end the turn now without calling send_message.`,
   limit: `${skippedPrefix} this turn already delivered ${String(turnMessageLimit)} messages, the most one reply may take. End the turn now without calling any tool.`,
 } as const satisfies Record<SkipReason, string>;
 
@@ -47,12 +58,41 @@ function normalizedText(text: string) {
   return words || lower.replace(/\s+/gu, " ").trim();
 }
 
+/**
+ * Numbers, dates, times, codes, names, and links as written: two messages
+ * from one template, such as the outbound and the return flight or option 1
+ * and option 2, differ only in these, so they are never repeats of each other.
+ */
+function specificsOf(text: string) {
+  const tokens = text
+    .normalize("NFKC")
+    .split(/\s+/u)
+    .map((token) => token.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ""))
+    .filter(
+      (token) =>
+        /\p{N}/u.test(token) || /^\p{Lu}/u.test(token) || token.includes("://")
+    );
+  // A capital that only opens a sentence is not a specific.
+  const sentenceStarts = new Set(
+    [...text.matchAll(/(?:^|[.!?…]\s+)([\p{L}]+)/gu)].flatMap(([, word]) =>
+      word && !/^\p{Lu}{2,}$/u.test(word) ? [word] : []
+    )
+  );
+  return [...new Set(tokens)]
+    .filter((token) => !sentenceStarts.has(token))
+    .toSorted();
+}
+
 /** The comparable form of a message `send_message` was asked to send. */
 export function sentMessageOf(message: OutgoingMessage): SentMessage {
-  if (message.kind === "link") return { attachments: [message.url], text: "" };
+  if (message.kind === "link") {
+    return { attachments: [message.url], specifics: [], text: "" };
+  }
+  const text = message.text ?? "";
   return {
     attachments: (message.attachments ?? []).map(({ url }) => url).toSorted(),
-    text: normalizedText(message.text ?? ""),
+    specifics: specificsOf(text),
+    text: normalizedText(text),
   };
 }
 
@@ -79,8 +119,12 @@ function similarity(left: string, right: string) {
 }
 
 function isRepeat(message: SentMessage, earlier: SentMessage) {
+  if (message.attachments.join("\n") !== earlier.attachments.join("\n")) {
+    return false;
+  }
+  if (message.text === earlier.text) return true;
   return (
-    message.attachments.join("\n") === earlier.attachments.join("\n") &&
+    message.specifics.join("\n") === earlier.specifics.join("\n") &&
     similarity(message.text, earlier.text) >= nearDuplicateSimilarity
   );
 }
@@ -158,11 +202,11 @@ export function turnSends(messages: readonly ModelMessage[]) {
 }
 
 /**
- * Whether the turn has to end now: the model already repeated a delivered
- * message or used up the limit, so another step may only write the closing
+ * Whether the turn has to end now: the model kept repeating delivered
+ * messages or used up the limit, so another step may only write the closing
  * text.
  */
 export function turnMustEnd(messages: readonly ModelMessage[]) {
   const { delivered, skipped } = turnSends(messages);
-  return skipped > 0 || delivered.length >= turnMessageLimit;
+  return skipped >= skipsBeforeEnd || delivered.length >= turnMessageLimit;
 }

@@ -86,7 +86,7 @@ describe("send_message in a looping turn", () => {
       skipped: "duplicate",
     });
     expect(modelOutput?.type === "text" ? modelOutput.value : "").toContain(
-      "End the turn now"
+      "Do not send it again"
     );
   });
 
