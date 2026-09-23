@@ -81,7 +81,22 @@ async function callSlack(
     signal: ctx.abortSignal,
   });
   if (response.status === 401) ctx.requireAuth(auth);
-  const payload = slackResponseSchema.parse(await response.json());
+  if (response.status === 429) {
+    const retryAfter = response.headers.get("retry-after");
+    throw new Error(
+      `Slack is rate limiting ${method}; try again${retryAfter ? ` in ${retryAfter} s` : " shortly"}.`
+    );
+  }
+  // An outage or a proxy answers with HTML, not Slack's JSON envelope.
+  const parsed = slackResponseSchema.safeParse(
+    await response.json().catch(() => undefined)
+  );
+  if (!parsed.success) {
+    throw new Error(
+      `Slack ${method} answered ${String(response.status)} without its JSON response.`
+    );
+  }
+  const payload = parsed.data;
   if (!payload.ok) {
     if (payload.error && revokedGrantErrors.has(payload.error)) {
       ctx.requireAuth(auth);
@@ -155,14 +170,27 @@ function describeMember(member: Member) {
         member.profile.display_name,
         member.name,
       ].find((value) => value !== undefined && value.length > 0) ?? member.id,
-    handle: member.name,
+    handle: `@${member.name}`,
     title: member.profile.title?.length ? member.profile.title : null,
   };
 }
 
-type Recipient =
-  | { kind: "user"; id: string; name: string }
-  | { kind: "conversation"; id: string; name: string };
+interface Recipient {
+  readonly handle: string | null;
+  readonly id: string;
+  readonly kind: "user" | "conversation";
+  readonly name: string;
+}
+
+function userRecipient(member: Member): Recipient {
+  const described = describeMember(member);
+  return {
+    handle: described.handle,
+    id: member.id,
+    kind: "user",
+    name: described.name,
+  };
+}
 
 async function resolveRecipient(
   ctx: ToolContext,
@@ -173,11 +201,16 @@ async function resolveRecipient(
   | { status: "not_found" }
 > {
   if (userIdPattern.test(to)) {
-    return { recipient: { id: to, kind: "user", name: to }, status: "found" };
+    // Named in the result too, so the person sees who the ID was.
+    const payload = await callSlack(ctx, "users.info", { user: to }, "read");
+    const member = memberSchema.parse(
+      z.object({ user: z.unknown() }).parse(payload).user
+    );
+    return { recipient: userRecipient(member), status: "found" };
   }
   if (conversationIdPattern.test(to)) {
     return {
-      recipient: { id: to, kind: "conversation", name: to },
+      recipient: { handle: null, id: to, kind: "conversation", name: to },
       status: "found",
     };
   }
@@ -198,6 +231,7 @@ async function resolveRecipient(
     return channel
       ? {
           recipient: {
+            handle: null,
             id: channel.id,
             kind: "conversation",
             name: `#${channel.name ?? wanted}`,
@@ -222,14 +256,7 @@ async function resolveRecipient(
     const member = memberSchema.parse(
       z.object({ user: z.unknown() }).parse(payload).user
     );
-    return {
-      recipient: {
-        id: member.id,
-        kind: "user",
-        name: describeMember(member).name,
-      },
-      status: "found",
-    };
+    return { recipient: userRecipient(member), status: "found" };
   }
 
   const members = await listAll(ctx, "users.list", { limit: 200 }, (payload) =>
@@ -245,7 +272,7 @@ async function resolveRecipient(
   const [only] = matches;
   if (matches.length === 1 && only) {
     return {
-      recipient: { id: only.id, kind: "user", name: describeMember(only).name },
+      recipient: userRecipient(only),
       status: "found",
     };
   }
@@ -261,7 +288,7 @@ async function resolveRecipient(
 export const slackSendMessage = defineTool({
   approval: always(),
   description:
-    "Send a Slack message as the person, from their own Slack account. This requires user approval. Call it directly with the recipient as the person named them — a first or full name, @handle, email, #channel, or a Slack user or channel ID — and the exact message text; the tool finds the recipient itself, so no lookup is needed first. Returns status `sent`; `ambiguous` with candidate people (nothing was sent: ask the person which one and call again with that candidate's id); or `not_found` (nothing was sent).",
+    "Send a Slack message as the person, from their own Slack account. This requires user approval. Call it directly with the recipient as the person named them — a first or full name, @handle, email, #channel, or a Slack user or channel ID — and the exact message text; the tool finds the recipient itself, so no lookup is needed first. Returns status `sent`; `ambiguous` with candidate people (nothing was sent: ask the person which one, then call again with that candidate's @handle, which the approval card shows in place of a bare ID); or `not_found` (nothing was sent). A sent result names the resolved recipient; tell the person who it went to.",
   inputSchema: z.object({
     text: z.string().trim().min(1).max(4_000),
     to: z
@@ -302,7 +329,7 @@ export const slackSendMessage = defineTool({
       );
     return {
       channel,
-      recipient: recipient.name,
+      recipient: { handle: recipient.handle, name: recipient.name },
       status: "sent" as const,
       ts: posted.ts,
     };

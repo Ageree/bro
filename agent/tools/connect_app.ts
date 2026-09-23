@@ -51,10 +51,7 @@ export const connectApp = defineTool({
     }
     if (connection.state === "error") return { detail: retry, status: "error" };
 
-    const callbackUrl = new URL(
-      `/workspace?connected=${input.app}`,
-      applicationOrigin()
-    );
+    const callbackUrl = new URL("/workspace", applicationOrigin());
     try {
       const url = await startConnectedAppAuthorization(
         input.app,

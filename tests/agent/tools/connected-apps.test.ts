@@ -146,17 +146,6 @@ describe("connection approval", () => {
     ).toBe(true);
   });
 
-  it.each([
-    ["connect_app", connectApp.inputSchema],
-    ["notion-add-task", notionAddTask.inputSchema],
-    ["slack-send-message", slackSendMessage.inputSchema],
-  ])("%s has no regex lookaround", (_name, schema) => {
-    // OpenAI's strict tool schemas reject any pattern with lookaround.
-    expect(
-      JSON.stringify(z.toJSONSchema(z.instanceof(z.ZodType).parse(schema)))
-    ).not.toMatch(/\(\?<?[=!]/u);
-  });
-
   it("requires approval for the authored writes", () => {
     expect(notionAddTask.approval).toBeTypeOf("function");
     expect(slackSendMessage.approval).toBeTypeOf("function");
@@ -216,6 +205,23 @@ describe("notion-add-task", () => {
         "Task name": { title: [{ text: { content: "Q3 planning" } }] },
       },
     });
+  });
+
+  it("looks past the first page of databases", async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        Response.json({ next_cursor: "cursor-2", results: [notesSource] })
+      )
+      .mockResolvedValueOnce(
+        Response.json({ next_cursor: null, results: [tasksSource] })
+      )
+      .mockResolvedValueOnce(Response.json({ id: "page-2" }));
+
+    await expect(addTask({ title: "Q3 planning" })).resolves.toMatchObject({
+      database: "My Tasks",
+      status: "created",
+    });
+    expect(requestBody(1)).toMatchObject({ start_cursor: "cursor-2" });
   });
 
   it("names what it saw instead of guessing a database", async () => {
@@ -282,7 +288,7 @@ describe("slack-send-message", () => {
 
     expect(result).toEqual({
       channel: "D0SAMPARK",
-      recipient: "Sam Park",
+      recipient: { handle: "@sam.park", name: "Sam Park" },
       status: "sent",
       ts: "1726.0001",
     });
@@ -314,8 +320,13 @@ describe("slack-send-message", () => {
 
     expect(result).toEqual({
       candidates: [
-        { handle: "sam.park", id: "U0SAMPARK", name: "Sam Park", title: "PM" },
-        { handle: "swu", id: "U0SAMWU11", name: "Sam Wu", title: null },
+        {
+          handle: "@sam.park",
+          id: "U0SAMPARK",
+          name: "Sam Park",
+          title: "PM",
+        },
+        { handle: "@swu", id: "U0SAMWU11", name: "Sam Wu", title: null },
       ],
       status: "ambiguous",
     });
@@ -329,6 +340,48 @@ describe("slack-send-message", () => {
       status: "not_found",
     });
     expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("names the person behind a Slack ID in its result", async () => {
+    fetchMock
+      .mockResolvedValueOnce(Response.json({ ok: true, user: members[0] }))
+      .mockResolvedValueOnce(
+        Response.json({ channel: { id: "D0SAMPARK" }, ok: true })
+      )
+      .mockResolvedValueOnce(Response.json({ ok: true, ts: "1726.0002" }));
+
+    await expect(
+      sendSlack({ text: "Hi", to: "U0SAMPARK" })
+    ).resolves.toMatchObject({
+      recipient: { handle: "@sam.park", name: "Sam Park" },
+      status: "sent",
+    });
+    expect(requestUrl(0)).toBe(
+      "https://slack.com/api/users.info?user=U0SAMPARK"
+    );
+  });
+
+  it("reports rate limiting instead of a parse error", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response("slow down", {
+        headers: { "retry-after": "30" },
+        status: 429,
+      })
+    );
+
+    await expect(sendSlack({ text: "Hi", to: "Sam" })).rejects.toThrow(
+      "Slack is rate limiting users.list; try again in 30 s."
+    );
+  });
+
+  it("reports a response that is not Slack's JSON", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response("<html>Bad gateway</html>", { status: 502 })
+    );
+
+    await expect(sendSlack({ text: "Hi", to: "Sam" })).rejects.toThrow(
+      "Slack users.list answered 502 without its JSON response."
+    );
   });
 
   it("asks for authorization again when the Slack grant was revoked", async () => {

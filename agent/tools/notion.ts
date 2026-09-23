@@ -19,8 +19,12 @@ const dataSourceSchema = z.object({
 type DataSource = z.infer<typeof dataSourceSchema>;
 
 const searchResultsSchema = z.object({
+  next_cursor: z.string().nullish(),
   results: z.array(z.unknown()),
 });
+
+/** Pages of data sources read while looking for the tasks database. */
+const maximumSearchPages = 4;
 
 const createdPageSchema = z.object({
   id: z.string(),
@@ -84,6 +88,7 @@ interface NotionSearchRequest {
   filter: { property: "object"; value: "data_source" };
   page_size: number;
   query?: string;
+  start_cursor?: string;
 }
 
 type NotionPropertyValue =
@@ -152,13 +157,19 @@ export const notionAddTask = defineTool({
       page_size: 50,
     };
     if (input.database) search.query = input.database;
-    const searched = searchResultsSchema.parse(
-      await notionRequest(ctx, "/v1/search", search)
-    );
-    const sources = searched.results.flatMap((result) => {
-      const parsed = dataSourceSchema.safeParse(result);
-      return parsed.success && !parsed.data.in_trash ? [parsed.data] : [];
-    });
+    const sources: DataSource[] = [];
+    for (let page = 0; page < maximumSearchPages; page += 1) {
+      const searched = searchResultsSchema.parse(
+        // oxlint-disable-next-line eslint/no-await-in-loop -- Each page needs the previous page's cursor.
+        await notionRequest(ctx, "/v1/search", search)
+      );
+      for (const result of searched.results) {
+        const parsed = dataSourceSchema.safeParse(result);
+        if (parsed.success && !parsed.data.in_trash) sources.push(parsed.data);
+      }
+      if (!searched.next_cursor) break;
+      search.start_cursor = searched.next_cursor;
+    }
     const target = chooseDataSource(sources, input.database);
     const titleProperty = target && propertyNamed(target, "title");
     if (!target || !titleProperty) {
