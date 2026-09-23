@@ -6,21 +6,24 @@
  *
  * The resolver reads the photos from the turn's history, where a tool cannot
  * see them, and keeps only small references in the durable closure: eve's
- * sandbox path when it staged the attachment, otherwise a private Blob copy.
+ * sandbox path when it staged the attachment, otherwise a private Blob copy
+ * made once, on the turn the photo arrived. Each drawn picture counts against
+ * the workspace's monthly image quota before the paid call.
  * Nothing here logs a prompt or a picture: both can be personal.
  */
 
 import type { DynamicResolveContext } from "eve";
 import { defineDynamic, defineTool, type ToolContext } from "eve/tools";
 import { z } from "zod";
+import { imageGenerationQuotaGate } from "@agent/lib/billing/quota";
+import { imageGenerationScope } from "@agent/lib/image-artifact/generation";
 import {
+  describePrivateImage,
   readImageArtifact,
   readPrivateImage,
-  imageArtifactStorageConfigured,
   storePrivateImage,
 } from "@agent/lib/image-artifact/storage";
 import { sniffMediaType } from "@agent/lib/inbound-media/media-type";
-import { resolveModeValue } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import {
   findGeneratedImageArtifact,
@@ -66,25 +69,9 @@ const imageResponseSchema = z.object({
 export default defineDynamic({
   events: {
     async "turn.started"(_event, context) {
-      if (resolveModeValue(context, { interactive: true }) !== true) {
-        return null;
-      }
-      const caller =
-        context.session.auth.current ?? context.session.auth.initiator;
-      // Pictures are kept per workspace user; a caller without a workspace
-      // gets no tool rather than a failed turn.
-      if (
-        caller?.principalType !== "user" ||
-        !z.string().min(1).safeParse(caller.attributes.workspaceId).success ||
-        env.OPENROUTER_API_KEY === undefined ||
-        !imageArtifactStorageConfigured()
-      ) {
-        return null;
-      }
-      const photos = await collectPersonPhotos(
-        scopeFromPrincipal(caller),
-        context.messages
-      );
+      const scope = imageGenerationScope(context);
+      if (!scope) return null;
+      const photos = await collectPersonPhotos(scope, context.messages);
       return defineTool({
         description: `Draw a new picture, or change one, and get it back as a private artifact: birthday and holiday cards, invitations, posters, stickers, memes, illustrations, a pet or a person from the person's photos placed into a scene. Put the returned markdown line, exactly as returned, into the text of one send_message call and the chat receives a real photo. To change a picture («brighter», «add a hat», «bigger letters») call again with a prompt describing the whole result and pass that picture's artifact in images; never start over from scratch for an edit. ${describePhotos(photos)}`,
         inputSchema: z.object({
@@ -192,17 +179,23 @@ function inlinePhoto(base64: string) {
 
 /**
  * The newest photos in the person's own messages. A photo eve staged in the
- * sandbox is kept by its path; one still inline is copied into private Blob,
- * once, under its content hash. A photo that cannot be kept is left out
- * rather than failing the turn.
+ * sandbox is kept by its path, with no call to any store. A photo still
+ * inline is copied into private Blob once, on the turn it arrives; on later
+ * turns only its content hash is recomputed to name that copy, so a turn
+ * that draws nothing makes no storage calls. A photo that cannot be kept is
+ * left out rather than failing the turn.
  */
 async function collectPersonPhotos(
   scope: AccessScope,
   messages: readonly ModelMessage[]
 ) {
-  const found: { readonly caption: string; readonly data: PhotoData }[] = [];
-  for (const message of messages.toReversed()) {
-    if (found.length >= maximumPhotos) break;
+  const incoming = messages.findLastIndex((message) => message.role === "user");
+  const found: {
+    readonly arrived: boolean;
+    readonly caption: string;
+    readonly data: PhotoData;
+  }[] = [];
+  for (const [index, message] of messages.entries()) {
     if (message.role !== "user" || !Array.isArray(message.content)) continue;
     const caption = message.content
       .flatMap((part) => (part.type === "text" ? [part.text] : []))
@@ -218,28 +211,33 @@ async function collectPersonPhotos(
             ? part.data
             : undefined;
       const parsed = photoDataSchema.safeParse(data);
-      if (parsed.success) found.push({ caption, data: parsed.data });
+      if (parsed.success) {
+        found.push({ arrived: index === incoming, caption, data: parsed.data });
+      }
     }
   }
   const photos = await Promise.all(
     found
+      .toReversed()
       .slice(0, maximumPhotos)
-      .map(async ({ caption, data }) =>
-        keepPhoto(scope, caption, data).catch(() => undefined)
-      )
+      .map(async (photo) => keepPhoto(scope, photo).catch(() => undefined))
   );
   return photos.filter((photo) => photo !== undefined);
 }
 
 async function keepPhoto(
   scope: AccessScope,
-  caption: string,
-  data: PhotoData
+  photo: {
+    readonly arrived: boolean;
+    readonly caption: string;
+    readonly data: PhotoData;
+  }
 ): Promise<PersonPhoto> {
+  const { arrived, caption, data } = photo;
   if (data.source === "sandbox") return { caption, ...data };
-  const stored = await storePrivateImage(scope, data.bytes, {
-    reference: true,
-  });
+  const stored = arrived
+    ? await storePrivateImage(scope, data.bytes, "reference")
+    : describePrivateImage(scope, data.bytes, "reference");
   return {
     byteSize: stored.byteSize,
     caption,
@@ -272,6 +270,12 @@ async function generateImage(
   const idempotencyKey = `${ctx.session.id}:${ctx.session.turn.id}:${ctx.callId}`;
   const drawn = await findGeneratedImageArtifact(scope, idempotencyKey);
   if (drawn) return readyImage(drawn);
+  // Counted only for a call that is about to pay: a replay found above is
+  // not a second picture.
+  const quota = await imageGenerationQuotaGate(scope);
+  if (!quota.allowed) {
+    return { note: quota.note, status: "quota_exhausted" as const };
+  }
 
   const references = await readReferences(scope, input, ctx, photos);
   const model = env.OPENROUTER_IMAGE_MODEL;
@@ -318,7 +322,8 @@ async function generateImage(
   }
   const stored = await storePrivateImage(
     scope,
-    new Uint8Array(Buffer.from(image.b64_json, "base64"))
+    new Uint8Array(Buffer.from(image.b64_json, "base64")),
+    "generated"
   );
   return readyImage(
     await saveGeneratedImageArtifact(scope, {

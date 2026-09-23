@@ -4,6 +4,7 @@ import type { ToolContext } from "eve/tools";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import type * as Blob from "@vercel/blob";
+import type { imageGenerationQuotaGate } from "@agent/lib/billing/quota";
 import type { readReadyArtifact } from "@db/services/artifacts";
 import type {
   findGeneratedImageArtifact,
@@ -13,8 +14,8 @@ import type {
 const mocks = vi.hoisted(() => ({
   find: vi.fn<typeof findGeneratedImageArtifact>(),
   get: vi.fn<typeof Blob.get>(),
-  head: vi.fn<typeof Blob.head>(),
   put: vi.fn<typeof Blob.put>(),
+  quota: vi.fn<typeof imageGenerationQuotaGate>(),
   readArtifact: vi.fn<typeof readReadyArtifact>(),
   save: vi.fn<typeof saveGeneratedImageArtifact>(),
 }));
@@ -22,8 +23,10 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@vercel/blob", async (importOriginal) => ({
   ...(await importOriginal<typeof Blob>()),
   get: mocks.get,
-  head: mocks.head,
   put: mocks.put,
+}));
+vi.mock("@agent/lib/billing/quota", () => ({
+  imageGenerationQuotaGate: mocks.quota,
 }));
 vi.mock("@db/services/generated-images", () => ({
   findGeneratedImageArtifact: mocks.find,
@@ -32,10 +35,6 @@ vi.mock("@db/services/generated-images", () => ({
 vi.mock("@db/services/artifacts", () => ({
   readReadyArtifact: mocks.readArtifact,
 }));
-
-// The real error class, so the tool tells a missing object from a failure.
-const { BlobNotFoundError } =
-  await vi.importActual<typeof Blob>("@vercel/blob");
 
 /** The OpenRouter Image API request this tool is expected to send. */
 const requestBodySchema = z.object({
@@ -92,7 +91,7 @@ beforeEach(() => {
     })
   );
   mocks.find.mockResolvedValue(undefined);
-  mocks.head.mockRejectedValue(new BlobNotFoundError());
+  mocks.quota.mockResolvedValue({ allowed: true, note: undefined });
   mocks.put.mockImplementation(async (pathname) => ({
     contentDisposition: "",
     contentType: "image/png",
@@ -132,8 +131,7 @@ describe("generate_image", () => {
     expect(mocks.put).not.toHaveBeenCalled();
   });
 
-  it("lists the person's photos newest first and keeps each one privately once", async () => {
-    mocks.head.mockResolvedValueOnce(headResult());
+  it("lists the person's photos newest first and copies only the one that just arrived", async () => {
     const tool = await resolveTool(
       dynamicContext([
         photoMessage(
@@ -151,10 +149,10 @@ describe("generate_image", () => {
     expect(tool.description).toContain(
       "1 — sent with «вот наш пёс Бублик»; 2 — sent with «старое фото»"
     );
-    // The first photo was already stored; only the other one is uploaded.
+    // The older photo was copied on the turn it arrived; only the new one is.
     expect(mocks.put).toHaveBeenCalledOnce();
     expect(mocks.put.mock.calls[0]?.[0]).toBe(
-      `browser-images/user-1/${sha256(earlierPicture)}`
+      `reference-photos/user-1/${sha256(dogPhoto)}`
     );
     expect(mocks.put.mock.calls[0]?.[2]).toMatchObject({ access: "private" });
   });
@@ -196,7 +194,7 @@ describe("generate_image", () => {
 
     const storedPicture = mocks.put.mock.calls.at(-1);
     expect(storedPicture?.[0]).toBe(
-      `browser-images/user-1/${sha256(drawnPicture)}`
+      `generated-images/user-1/${sha256(drawnPicture)}`
     );
     expect(storedPicture?.[2]).toMatchObject({
       access: "private",
@@ -214,7 +212,7 @@ describe("generate_image", () => {
       prompt:
         'Birthday card for Sam with the dog in a party hat, text "С днём рождения, Сэм!"',
       rootSessionId: "session-1",
-      storagePathname: `browser-images/user-1/${sha256(drawnPicture)}`,
+      storagePathname: `generated-images/user-1/${sha256(drawnPicture)}`,
     });
     expect(result).toEqual({
       artifact: `/artifacts/${drawnId}`,
@@ -261,7 +259,7 @@ describe("generate_image", () => {
       filename: "picture.png",
       id: earlierId,
       mediaType: "image/png",
-      storagePathname: "browser-images/user-1/earlier",
+      storagePathname: "generated-images/user-1/earlier",
     });
     mocks.get.mockResolvedValue(blobResult(earlierPicture, "image/png"));
     const tool = await resolveTool(dynamicContext([]));
@@ -297,7 +295,7 @@ describe("generate_image", () => {
       model: "test/image-model",
       prompt: "A cake",
       rootSessionId: "session-1",
-      storagePathname: "browser-images/user-1/drawn",
+      storagePathname: "generated-images/user-1/drawn",
       workspaceId: scope.workspaceId,
     });
     const tool = await resolveTool(dynamicContext([]));
@@ -305,7 +303,26 @@ describe("generate_image", () => {
     const result = await execute(tool, { prompt: "A cake" });
 
     expect(fetchMock).not.toHaveBeenCalled();
+    expect(mocks.quota).not.toHaveBeenCalled();
     expect(result).toMatchObject({ artifact: `/artifacts/${drawnId}` });
+  });
+
+  it("draws nothing once the month's pictures run out", async () => {
+    mocks.quota.mockResolvedValue({
+      allowed: false,
+      note: "Лимит картинок на этот месяц исчерпан.",
+    });
+    const tool = await resolveTool(dynamicContext([]));
+
+    const result = await execute(tool, { prompt: "A cake" });
+
+    expect(mocks.quota).toHaveBeenCalledExactlyOnceWith(scope);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mocks.save).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      note: "Лимит картинок на этот месяц исчерпан.",
+      status: "quota_exhausted",
+    });
   });
 
   it("fails with a reason the model can act on", async () => {
@@ -458,10 +475,4 @@ function blobResult(bytes: Uint8Array<ArrayBuffer>, contentType: string) {
     statusCode: 200,
     stream: new Response(bytes).body,
   } as Awaited<ReturnType<typeof Blob.get>>;
-}
-
-function headResult() {
-  // SAFETY: Only the fact that the object exists matters to the tool.
-  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- A complete head result would add unrelated metadata.
-  return {} as Awaited<ReturnType<typeof Blob.head>>;
 }

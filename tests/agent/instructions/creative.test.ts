@@ -26,6 +26,14 @@ describe("creative instructions", () => {
     expect(content).toContain("ты ведёшь игру сам");
   });
 
+  it("does not promise pictures to a caller without a workspace", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
+
+    const content = await resolveContent("photon-imessage", {});
+
+    expect(content).toContain("Рисовать картинки на этом сервере нельзя");
+  });
+
   it("leaves scheduled work without games or pictures", async () => {
     vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
 
@@ -34,15 +42,21 @@ describe("creative instructions", () => {
   });
 });
 
-async function resolveContent(authenticator: string) {
+async function resolveContent(
+  authenticator: string,
+  attributes: Record<string, string> = { workspaceId: "personal:workspace" }
+) {
   const creative = (await import("@agent/instructions/60-creative")).default;
   const resolve = creative.events["turn.started"];
   if (!resolve) throw new Error("Creative instructions resolve per turn.");
-  const selected = await resolve({}, dynamicContext(authenticator));
+  const selected = await resolve({}, dynamicContext(authenticator, attributes));
   return selected?.content;
 }
 
-function dynamicContext(authenticator: string) {
+function dynamicContext(
+  authenticator: string,
+  attributes: Record<string, string>
+) {
   return {
     channel: { kind: "channel:photon", metadata: {} },
     messages: [],
@@ -50,7 +64,7 @@ function dynamicContext(authenticator: string) {
     session: {
       auth: {
         current: {
-          attributes: {},
+          attributes,
           authenticator,
           principalId: "user-1",
           principalType: "user",

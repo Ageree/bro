@@ -1,14 +1,23 @@
 import { createHash } from "node:crypto";
-import { BlobNotFoundError, get, head, put } from "@vercel/blob";
+import { get, put } from "@vercel/blob";
 import type { AccessScope } from "@shared/identity/access-scope";
 import { readReadyArtifact } from "@db/services/artifacts";
 import { sniffMediaType } from "@agent/lib/inbound-media/media-type";
 import { maximumBrowserImageBytes } from "@shared/browser/artifact";
 import { env } from "@shared/environment";
 
-/** Where private images live in the Blob store. */
-const storagePrefix = "browser-images";
+/**
+ * The Blob folder for each kind of private image. Browser captures keep the
+ * folder their existing objects already live in.
+ */
+const storageFolders = {
+  browser: "browser-images",
+  generated: "generated-images",
+  reference: "reference-photos",
+} as const;
 const storageCacheSeconds = 365 * 24 * 60 * 60;
+
+type PrivateImageKind = keyof typeof storageFolders;
 
 /** The image types every channel can show, with the extension each is filed
  *  under. Anything else is not kept, whatever its name claimed. */
@@ -45,20 +54,17 @@ export function imageArtifactStorageConfigured() {
 }
 
 /**
- * Puts image bytes into the private store under their content hash: the same
- * picture stored twice lands on the same object, which is why overwriting is
- * allowed — the bytes are identical by construction. A `reference` photo,
- * kept only to hand to an image model, may be HEIC and is not uploaded again
- * when its object is already there.
+ * Where image bytes live in the private store, without touching it: the path
+ * is the content hash, so the same picture always names the same object.
  *
  * The media type is read from the bytes, never taken from a file name or a
  * header: a page saved as `.png` is still a page, and the channels would
  * upload it to a person as a photo that does not open.
  */
-export async function storePrivateImage(
+export function describePrivateImage(
   scope: AccessScope,
   bytes: Uint8Array,
-  options: { readonly reference?: boolean } = {}
+  kind: PrivateImageKind
 ) {
   if (bytes.byteLength === 0) {
     throw new Error("An image artifact cannot be empty.");
@@ -67,43 +73,42 @@ export async function storePrivateImage(
     throw new Error("The image is larger than an artifact may be.");
   }
   const mediaType = sniffMediaType(bytes);
-  const extensions = options.reference
-    ? referenceImageExtensions
-    : imageExtensions;
+  const extensions =
+    kind === "reference" ? referenceImageExtensions : imageExtensions;
   const extension =
     mediaType === undefined ? undefined : extensions.get(mediaType);
   if (mediaType === undefined || extension === undefined) {
     throw new Error("The file is not an image an artifact may hold.");
   }
   const contentHash = createHash("sha256").update(bytes).digest("hex");
-  const stored = {
+  return {
     byteSize: bytes.byteLength,
     contentHash,
     extension,
     mediaType,
-    storagePathname: `${storagePrefix}/${storageSegment(scope.userId)}/${contentHash}`,
+    storagePathname: `${storageFolders[kind]}/${storageSegment(scope.userId)}/${contentHash}`,
   };
-  if (options.reference && (await isStored(stored.storagePathname))) {
-    return stored;
-  }
+}
+
+/**
+ * Puts image bytes into the private store under their content hash. The same
+ * picture stored twice lands on the same object, which is why overwriting is
+ * allowed — the bytes are identical by construction.
+ */
+export async function storePrivateImage(
+  scope: AccessScope,
+  bytes: Uint8Array,
+  kind: PrivateImageKind
+) {
+  const stored = describePrivateImage(scope, bytes, kind);
   await put(stored.storagePathname, Buffer.from(bytes), {
     access: "private",
     addRandomSuffix: false,
     allowOverwrite: true,
     cacheControlMaxAge: storageCacheSeconds,
-    contentType: mediaType,
+    contentType: stored.mediaType,
   });
   return stored;
-}
-
-async function isStored(pathname: string) {
-  try {
-    await head(pathname);
-    return true;
-  } catch (error) {
-    if (error instanceof BlobNotFoundError) return false;
-    throw error;
-  }
 }
 
 /**

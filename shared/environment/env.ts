@@ -154,9 +154,14 @@ export const env = createEnv({
     EVE_MEMORY_BLOB_READ_WRITE_TOKEN: requiredValue.optional(),
     EVE_MEMORY_BLOB_STORE_ID: requiredValue.optional(),
     // Usage ceilings per workspace: messages on the local day, browser errands
-    // on the local month. A deployment without YooKassa keys never leaves the
-    // free column.
+    // and drawn pictures on the local month. A deployment without YooKassa
+    // keys never leaves the free column.
     FREE_BROWSER_RUNS_PER_MONTH: z.coerce.number().int().positive().default(5),
+    FREE_IMAGE_GENERATIONS_PER_MONTH: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(10),
     FREE_MESSAGES_PER_DAY: z.coerce.number().int().positive().default(30),
     GOOGLE_CONNECTOR_UID: requiredValue.default("google/open-instinct"),
     IMESSAGE_PHONE_NUMBER: requiredValue
@@ -206,6 +211,11 @@ export const env = createEnv({
       "qwen/qwen3-asr-flash-2026-02-10"
     ),
     PAID_BROWSER_RUNS_PER_MONTH: z.coerce.number().int().positive().default(60),
+    PAID_IMAGE_GENERATIONS_PER_MONTH: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(100),
     PAID_MESSAGES_PER_DAY: z.coerce.number().int().positive().default(500),
     // One month of paid access, in whole roubles.
     PRICE_RUB: z.coerce.number().int().positive().default(2000),

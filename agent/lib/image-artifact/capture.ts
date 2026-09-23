@@ -23,7 +23,7 @@ export async function captureImageArtifact(
   scope: AccessScope,
   input: ImageArtifactCapture
 ) {
-  const stored = await storePrivateImage(scope, input.bytes);
+  const stored = await storePrivateImage(scope, input.bytes, "browser");
   const row = await createReadyBrowserImageArtifact(scope, {
     browserSessionId: input.browserSessionId,
     byteSize: stored.byteSize,

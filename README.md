@@ -315,14 +315,17 @@ the number a phone already has instead of buying a second Photon user.
 `USAGE_LIMITS` включает или выключает лимиты целиком; по умолчанию `off` —
 закрытая бета идёт без лимитов по решению владельца, и оплата в чате не
 предлагается. При `USAGE_LIMITS=on` лимиты считаются по рабочему
-пространству: сообщения — за местный день, браузерные поручения — за местный
-месяц. `FREE_MESSAGES_PER_DAY` (30), `PAID_MESSAGES_PER_DAY` (500),
-`FREE_BROWSER_RUNS_PER_MONTH` (5), `PAID_BROWSER_RUNS_PER_MONTH` (60).
+пространству: сообщения — за местный день, браузерные поручения и
+нарисованные картинки — за местный месяц. `FREE_MESSAGES_PER_DAY` (30),
+`PAID_MESSAGES_PER_DAY` (500), `FREE_BROWSER_RUNS_PER_MONTH` (5),
+`PAID_BROWSER_RUNS_PER_MONTH` (60), `FREE_IMAGE_GENERATIONS_PER_MONTH` (10),
+`PAID_IMAGE_GENERATIONS_PER_MONTH` (100).
 Местный день и месяц берутся из таймзоны в Personal Info, по умолчанию
 `Europe/Moscow`. За лимитом сообщений человек один раз в день получает
 сообщение о лимите со ссылкой на оплату, остальные сообщения тихо
-отбрасываются; за лимитом поручений `browser_task` не запускается и
-возвращает модели объяснение.
+отбрасываются; за лимитом поручений `browser_task` не запускается, а за
+лимитом картинок `generate_image` не рисует, и оба возвращают модели
+объяснение.
 
 ## Google Workspace connection
 
