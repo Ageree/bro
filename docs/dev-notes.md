@@ -29,13 +29,14 @@
   изменение с точки зрения пользователя.
 - В свежей облачной сессии нет `node_modules`: перед `pnpm check` и
   `pnpm build` нужен `pnpm install`.
-- Нужен Node 24 (`.node-version`). В облачном контейнере по умолчанию Node 22,
-  и на нём `tests/agent/capabilities.test.ts` падает с «SyntaxError: Unexpected
-  identifier 'r'» при импорте `agent/tools/schedules.ts`. Node 24 ставится через
-  `/opt/nvm/nvm.sh` (`nvm install 24`), дальше — `PATH` на его `bin`.
-- `pnpm build` локально требует `DATABASE_URL` и `BETTER_AUTH_URL` (сбор
-  данных страниц импортирует `@db` и origin); для проверки сборки хватает
-  заглушек, к базе он не подключается. CI сборку не запускает.
+- Проекту нужен Node 24, а в облачном контейнере по умолчанию Node 22: на нём
+  `pnpm check` валит ~12 наборов тестов с «SyntaxError: Unexpected identifier
+  'r'», и на чистой ветке тоже. Бинарь ставится без root:
+  `npm pack node-linux-x64@24` в scratchpad, распаковать, добавить его `bin` в
+  начало `PATH`.
+- `pnpm build` без `.env.local` падает на сборе данных страниц: нужны
+  `DATABASE_URL`, `BETTER_AUTH_URL` и `BETTER_AUTH_SECRET`. Для локальной
+  проверки хватает заглушек, к базе сборка не подключается.
 - `pnpm check` включает knip: новый каталог с точками входа (как
   `agent/instrumentation/`) надо добавить в `knip.config.ts`, иначе его файлы
   считаются неиспользуемыми.
@@ -53,6 +54,10 @@
   `save_memory`, `update` и `workstreams` молча пропадали до конца сессии
   («Dynamic tool resolver failed — Expected a JSON-serializable value»). Байты
   файлов кладутся base64-строкой (коммит `2ed484c`).
+- Текст поручения Browser Use собирается в `agent/tools/browser_task.ts`
+  (`composeBrowserTask`) и проверяется юнит-тестами по дословным фразам. Evals
+  на `browser_task` нет: инструмент появляется только с `BROWSER_USE_API_KEY`,
+  и каждый кейс запускал бы настоящий платный прогон.
 
 - Колбэки динамических инструментов (`execute`, `approval` и др.) пишите
   инлайн в `defineTool()` или ссылкой на идентификатор: сборка eve ставит
