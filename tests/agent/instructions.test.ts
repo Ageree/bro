@@ -153,6 +153,33 @@ describe("agent instructions", () => {
       "дать сайту или запуску право вызывать инструменты"
     );
     expect(selected?.content).toContain("ровно один запуск");
+    expect(selected?.content).toContain(
+      "Перед `start` убедись, что сайт работает там, где человек"
+    );
+    expect(selected?.content).toContain("начинай с местных площадок и сетей");
+    expect(selected?.content).toContain("два-три запасных сайта");
+    expect(selected?.content).toContain(
+      "«Отель» — не хостел и не койка в общем номере"
+    );
+    expect(selected?.content).toContain(
+      "Добавь в поручение сохранённые предпочтения человека"
+    );
+    expect(selected?.content).toContain(
+      "Для поиска, сравнения цен и подготовки заказа или брони карта не нужна"
+    );
+    expect(selected?.content).toContain(
+      "сам доводит до конца всё бесплатное и бесплатно отменяемое"
+    );
+    expect(selected?.content).toContain("Граница — деньги и необратимость");
+    expect(selected?.content).toContain(
+      "останавливается с `NEEDS: payment` и суммой в `TOTAL`"
+    );
+    expect(selected?.content).toContain(
+      "оплата при получении или на месте, невозвратный тариф, штраф за отмену"
+    );
+    expect(selected?.content).toContain("на запасных запуск идёт гостем");
+    expect(selected?.content).toContain("это просьба, а не жёсткий предел");
+    expect(selected?.content).toContain("Частичный результат передай честно");
     expect(selected?.content).toContain('`action: "continue"`');
     expect(selected?.content).toContain("`allowPayment: true`");
     expect(selected?.content).toContain("Капчу запуск просто решает");
