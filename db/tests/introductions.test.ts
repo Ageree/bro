@@ -47,15 +47,21 @@ describe("workspace introduction", () => {
       const names = (await readdir(directory))
         .filter((name) => name.endsWith(".sql"))
         .toSorted();
-      const introducing = names.findIndex((name) => name.startsWith("0022_"));
+      const migrations = await Promise.all(
+        names.map(async (name) => readFile(new URL(name, directory), "utf8"))
+      );
+      // Found by what it does, since migrations are renumbered whenever
+      // another branch lands one first.
+      const introducing = migrations.findIndex((migration) =>
+        migration.includes('ADD COLUMN "introduced_at"')
+      );
       /* oxlint-disable eslint/no-await-in-loop -- SQL migration statements must execute in file order. */
-      for (const [index, name] of names.entries()) {
+      for (const [index, migration] of migrations.entries()) {
         if (index === introducing) {
           await legacy.exec(
             "INSERT INTO workspaces (id) VALUES ('workspace-legacy')"
           );
         }
-        const migration = await readFile(new URL(name, directory), "utf8");
         for (const statement of migration.split("--> statement-breakpoint")) {
           if (statement.trim()) await legacy.exec(statement);
         }
