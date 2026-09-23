@@ -64,7 +64,7 @@ const inputSchema = z.object({
     .string()
     .optional()
     .describe(
-      "The website origin the errand is about, such as https://www.example.com. Saved credentials are bound to this origin only."
+      "The website origin the errand starts on, such as https://www.example.com — one that serves the person's country and address. Saved credentials are bound to this origin only; name fallback sites in the task text."
     ),
   task: z
     .string()
@@ -72,7 +72,7 @@ const inputSchema = z.object({
     .max(8_000)
     .optional()
     .describe(
-      "For start, the errand in the user's own language. For continue, the answer, code, or changed constraint to pass into the running errand."
+      "For start, the errand in the user's own language: the goal, the hard constraints including the user's own words for what they want (a hotel, not a hostel), the saved preferences that bear on it, and two or three fallback sites to try if the first cannot do it. For continue, the answer, code, or changed constraint to pass into the running errand."
     ),
 });
 
@@ -147,6 +147,40 @@ function imagesContract(collectImages: boolean) {
   ].join(" ");
 }
 
+/**
+ * Where the person lives decides which sites can do the errand at all: a
+ * global shop that will not ship to the country is a dead end the run only
+ * discovers at checkout. An errand about somewhere else — a trip, a hotel, a
+ * rental in another city — names that place itself, and it wins.
+ */
+function homeLine(home: string | undefined) {
+  if (home === undefined) return undefined;
+  return [
+    `The person lives in ${home} (from their profile). Unless the errand names another place, deliveries, pickups, prices and availability are for there.`,
+    "Before you commit to a site, check that it sells, ships or serves there. A site that refuses the country or the address is the wrong site, not the end of the errand: move to one that serves the place, preferring the local marketplaces and chains people there actually use. If the brand or shop the errand names does not operate there, find the same item from a local seller and say so in the report.",
+    "When the errand is about another place, that place wins, and this only tells you the person's country and currency.",
+  ].join(" ");
+}
+
+/** Searching past this is how an errand spent 45 minutes checking three hotels. */
+const searchBudgetMinutes = 15;
+
+/**
+ * How to search when the first try comes up empty. The coordinator names the
+ * fallback sites in the errand; this is what makes the run use them, and keeps
+ * the words the person chose from being traded for whatever the site has.
+ */
+function searchLine() {
+  return [
+    "Honour the exact kind of thing the errand asks for: a hotel is not a hostel, a dorm bed or a room in a flat; a direct flight has no stops; «free cancellation» means only such rates. Leave out options of the wrong kind rather than filling the list with them, and say so if too few of the right kind were left.",
+    "When the site you are on cannot do the errand — it does not serve the country or the address, it finds nothing, everything is sold out or over budget — do not stop there. Move on to the fallback sites the errand names, or to another well-known site that serves the same place, and widen sensibly before giving up: a neighbouring area, a nearby date, a close alternative. Say in the report what you widened and which sites you tried.",
+  ].join(" ");
+}
+
+function budgetLine() {
+  return `Spend about ${String(searchBudgetMinutes)} minutes searching and comparing, not more, and do not spend them retrying one site. When that time is up, stop and report the best options found so far, saying plainly which parts are partial and what you did not get to check. The budget is for searching: once you are completing an order or a booking the errand asked for, finish it rather than abandoning it at the mark.`;
+}
+
 function credentialsLine(aliases: readonly string[]) {
   return aliases.length === 0
     ? "No stored credentials are available for this run. If the site asks you to sign in, stop with NEEDS: password instead of guessing one."
@@ -158,12 +192,16 @@ export function composeBrowserTask(options: {
   readonly collectImages: boolean;
   readonly errand: string;
   readonly facts: string | undefined;
+  readonly home: string | undefined;
   readonly site: string | undefined;
 }) {
   return [
     options.site
       ? `${options.errand}\n\nSite: ${options.site}`
       : options.errand,
+    homeLine(options.home),
+    searchLine(),
+    budgetLine(),
     options.facts,
     credentialsLine(options.aliases),
     captchaLine(),
@@ -197,6 +235,7 @@ export function composeBrowserContinuation(options: {
     ]
       .filter((line) => line !== undefined)
       .join("\n"),
+    budgetLine(),
     options.facts,
     credentialsLine(options.aliases),
     captchaLine(),
@@ -408,7 +447,7 @@ async function waitForLiveViewUrl(
 
 export const browserTask = defineTool({
   description:
-    "Run one errand on a website through a hosted cloud browser that can sign in, fill forms, and complete a checkout. Use it when the user wants something done on a site; use web_search and web_fetch instead for reading public pages. Start exactly one run per errand and pass the site's origin so saved credentials can be bound to it. Write the errand short: the cloud browser is itself an agent, so give it the goal, the hard constraints, and what to report back — not a click-by-click script. Every follow-up for that errand — an answer, a code the user typed, a changed constraint — goes through continue with the same runId, never a second start: continue works in the same browser, on the tab and the signed-in account the run already has. When the previous run has already finished, continue starts a follow-up run in that same browser and returns a NEW runId; use that one from then on. Pass allowPayment: true on start or on continue once the user approved paying or attaching a card on this errand in this conversation — «привяжи карту» is approval to bind the saved card, not to buy anything. The person's name, phone, email and addresses from the profile and from the vault are typed into forms automatically, so never ask for a phone number or an address the user said is saved: start the errand and let the run use it. The run signs in with vault credentials the models involved never see, so never ask the user for a password: when none is stored, call request_vault_setup. The run solves CAPTCHAs and anti-bot checks itself as it goes, and they are never the user's to solve: never tell the user you cannot pass one, never ask them to pass it, and never hand them the live view for one. When a run comes back with NEEDS: captcha, continue it on the same runId, tell it to solve the check and finish the errand; the continuation opens a fresh browser on the same profile by itself when the old one is still walled. Give the user the live-view link only when the run is blocked on something only they can do — 3-D Secure, a push approval, a sign-in you cannot complete, or a check the run still could not pass after retrying — and never forward a one-time code back to the user. Pass collectImages: true when the user asked for photos or pictures of what the errand finds; the run always saves a screenshot of the page with the outcome, and with the flag it saves pictures of the items too. Every saved image comes back with the outcome as an artifact id you attach in send_message as ![caption](/artifacts/id) — that is how the person gets the real picture rather than a link. The run continues in the background and its result arrives later as a new message, so do not wait on it.",
+    "Run one errand on a website through a hosted cloud browser that can sign in, fill forms, and complete a checkout. Use it when the user wants something done on a site; use web_search and web_fetch instead for reading public pages. Start exactly one run per errand and pass the site's origin so saved credentials can be bound to it; pick a site that serves the user's country and address, preferring local marketplaces over a global brand site that does not ship there. Write the errand short: the cloud browser is itself an agent, so give it the goal, the hard constraints in the user's own words, the saved preferences that bear on it, two or three fallback sites, and what to report back — not a click-by-click script. The run is told the user's city and country from Personal Info and to report its best partial results after about 15 minutes of searching. Searching, comparing and staging an order or a booking up to the payment step need no card and no allowPayment: start such an errand right away. Every follow-up for that errand — an answer, a code the user typed, a changed constraint — goes through continue with the same runId, never a second start: continue works in the same browser, on the tab and the signed-in account the run already has. When the previous run has already finished, continue starts a follow-up run in that same browser and returns a NEW runId; use that one from then on. Pass allowPayment: true on start or on continue once the user approved paying or attaching a card on this errand in this conversation — «привяжи карту» is approval to bind the saved card, not to buy anything. The person's name, phone, email and addresses from the profile and from the vault are typed into forms automatically, so never ask for a phone number or an address the user said is saved: start the errand and let the run use it. The run signs in with vault credentials the models involved never see, so never ask the user for a password: when none is stored, call request_vault_setup. The run solves CAPTCHAs and anti-bot checks itself as it goes, and they are never the user's to solve: never tell the user you cannot pass one, never ask them to pass it, and never hand them the live view for one. When a run comes back with NEEDS: captcha, continue it on the same runId, tell it to solve the check and finish the errand; the continuation opens a fresh browser on the same profile by itself when the old one is still walled. Give the user the live-view link only when the run is blocked on something only they can do — 3-D Secure, a push approval, a sign-in you cannot complete, or a check the run still could not pass after retrying — and never forward a one-time code back to the user. Pass collectImages: true when the user asked for photos or pictures of what the errand finds; the run always saves a screenshot of the page with the outcome, and with the flag it saves pictures of the items too. Every saved image comes back with the outcome as an artifact id you attach in send_message as ![caption](/artifacts/id) — that is how the person gets the real picture rather than a link. The run continues in the background and its result arrives later as a new message, so do not wait on it.",
   inputSchema,
   async execute(input, context) {
     const { conversation, scope } = conversationTarget(context);
@@ -436,7 +475,8 @@ export const browserTask = defineTool({
         aliases: secrets.aliases,
         collectImages: input.collectImages === true,
         errand,
-        facts,
+        facts: facts.details,
+        home: facts.home,
         site: input.site,
       });
       const run = await createBrowserUseRun({
@@ -560,7 +600,7 @@ export const browserTask = defineTool({
           aliases: secrets.aliases,
           collectImages: input.collectImages === true,
           errand: row.task,
-          facts,
+          facts: facts.details,
           message: withCodeEntry(message, codeEntry),
           site,
         }),

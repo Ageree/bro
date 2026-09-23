@@ -216,6 +216,7 @@ describe("browser secret bindings", () => {
       collectImages: false,
       errand: "Вызови такси домой",
       facts: "Known details you may type into forms:\nName: Ivan Petrov",
+      home: "Moscow, Russia",
       site: "https://taxi.yandex.ru",
     });
     for (const secret of [password, cardNumber, securityCode]) {
@@ -267,6 +268,7 @@ describe("browser secret bindings", () => {
         collectImages: false,
         errand: "Order groceries",
         facts: undefined,
+        home: undefined,
         site: undefined,
       })
     ).toContain("No stored credentials are available");

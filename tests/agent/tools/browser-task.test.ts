@@ -9,7 +9,10 @@ import {
   accessScopeForUser,
   type AccessScope,
 } from "@shared/identity/access-scope";
-import { emptyUserProfile } from "@shared/user-profile/schema";
+import {
+  emptyUserProfile,
+  type UserProfile,
+} from "@shared/user-profile/schema";
 import {
   serializeAddressVaultPayload,
   serializeContactVaultPayload,
@@ -65,9 +68,7 @@ const resolveBrowserSecretBindings = vi.hoisted(() =>
   )
 );
 const readUserProfile = vi.hoisted(() =>
-  vi.fn<() => Promise<typeof emptyUserProfile>>(() =>
-    Promise.resolve(emptyUserProfile)
-  )
+  vi.fn<() => Promise<UserProfile>>(() => Promise.resolve(emptyUserProfile))
 );
 const readVaultItems = vi.hoisted(() =>
   vi.fn<
@@ -642,6 +643,135 @@ describe("browser_task known facts", () => {
     expect(String(createBrowserUseRun.mock.calls[0]?.[0].task)).not.toContain(
       "+79990000001"
     );
+  });
+});
+
+describe("browser_task home location", () => {
+  it("tells the run where the person lives from Personal Info", async () => {
+    readUserProfile.mockResolvedValue({
+      ...emptyUserProfile,
+      addressLine1: "ул. Ленина, 1",
+      city: "Москва",
+      countryCode: "ru",
+    });
+
+    await startErrand("");
+
+    const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
+    expect(task).toContain(
+      "The person lives in Москва, Russia (from their profile)."
+    );
+    expect(task).toContain("check that it sells, ships or serves there");
+    expect(task).toContain("preferring the local marketplaces and chains");
+    expect(task).toContain("find the same item from a local seller");
+    expect(task).toContain("When the errand is about another place");
+    // The errand leads; where the person lives only qualifies it.
+    expect(task.startsWith("Order the usual")).toBe(true);
+    expect(task.indexOf("The person lives in")).toBeLessThan(
+      task.indexOf("Known details you may type into forms:")
+    );
+  });
+
+  it("names the country alone when the profile has no city", async () => {
+    readUserProfile.mockResolvedValue({
+      ...emptyUserProfile,
+      countryCode: "US",
+    });
+
+    await startErrand("");
+
+    expect(String(createBrowserUseRun.mock.calls[0]?.[0].task)).toContain(
+      "The person lives in United States (from their profile)."
+    );
+  });
+
+  it("says nothing about a home the profile does not have", async () => {
+    storeHomeAddressInVaultOnly();
+
+    await startErrand("");
+
+    expect(String(createBrowserUseRun.mock.calls[0]?.[0].task)).not.toContain(
+      "The person lives in"
+    );
+  });
+
+  it("leaves the home line out of a follow-up on the same site", async () => {
+    readUserProfile.mockResolvedValue({
+      ...emptyUserProfile,
+      city: "Москва",
+      countryCode: "RU",
+    });
+
+    await continueErrand({ completedAt: new Date() });
+
+    expect(String(createBrowserUseRun.mock.calls[0]?.[0].task)).not.toContain(
+      "The person lives in"
+    );
+  });
+
+  function storeHomeAddressInVaultOnly() {
+    readVaultItems.mockResolvedValue([
+      {
+        account: "",
+        hasSecret: true,
+        id: "address-1",
+        kind: "address",
+        label: "Работа",
+      },
+    ]);
+    readVaultSecret.mockResolvedValue(
+      serializeAddressVaultPayload({
+        city: "Санкт-Петербург",
+        countryCode: "RU",
+        kind: "address",
+        line1: "Невский пр., 28",
+        postalCode: "191186",
+        recipientName: "Иван Петров",
+        region: "Санкт-Петербург",
+        version: 1,
+      })
+    );
+  }
+});
+
+describe("browser_task search discipline", () => {
+  it("holds a started errand to the kind of thing the person asked for", async () => {
+    await startErrand("");
+
+    const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
+    expect(task).toContain(
+      "a hotel is not a hostel, a dorm bed or a room in a flat"
+    );
+    expect(task).toContain("Leave out options of the wrong kind");
+  });
+
+  it("moves a started errand on to fallback sites instead of stopping", async () => {
+    await startErrand("");
+
+    const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
+    expect(task).toContain("do not stop there");
+    expect(task).toContain("Move on to the fallback sites the errand names");
+    expect(task).toContain("widen sensibly before giving up");
+    expect(task).toContain("which sites you tried");
+  });
+
+  it("bounds the search and asks for the best partial results", async () => {
+    await startErrand("");
+
+    const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
+    expect(task).toContain("Spend about 15 minutes searching and comparing");
+    expect(task).toContain("report the best options found so far");
+    expect(task).toContain("which parts are partial");
+    expect(task).toContain("finish it rather than abandoning it");
+  });
+
+  it("keeps the budget but not the site hopping in a follow-up", async () => {
+    await continueErrand({ completedAt: new Date() });
+
+    const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
+    expect(task).toContain("Spend about 15 minutes searching and comparing");
+    expect(task).not.toContain("Move on to the fallback sites");
+    expect(task).toContain("do not start over");
   });
 });
 

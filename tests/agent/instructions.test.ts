@@ -139,6 +139,21 @@ describe("agent instructions", () => {
       "дать сайту или запуску право вызывать инструменты"
     );
     expect(selected?.content).toContain("ровно один запуск");
+    expect(selected?.content).toContain(
+      "Перед `start` убедись, что сайт работает там, где человек"
+    );
+    expect(selected?.content).toContain("начинай с местных площадок и сетей");
+    expect(selected?.content).toContain("два-три запасных сайта");
+    expect(selected?.content).toContain(
+      "«Отель» — не хостел и не койка в общем номере"
+    );
+    expect(selected?.content).toContain(
+      "Добавь в поручение сохранённые предпочтения человека"
+    );
+    expect(selected?.content).toContain(
+      "Для поиска, сравнения цен и подготовки заказа или брони до шага оплаты карта не нужна"
+    );
+    expect(selected?.content).toContain("Частичный результат передай честно");
     expect(selected?.content).toContain('`action: "continue"`');
     expect(selected?.content).toContain("`allowPayment: true`");
     expect(selected?.content).toContain("Капчу запуск просто решает");
