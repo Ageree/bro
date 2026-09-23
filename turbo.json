@@ -27,7 +27,7 @@
       "outputs": [".next/**", "!.next/cache/**", "next-env.d.ts"]
     },
     "build:vercel": {
-      "dependsOn": ["db:migrate"],
+      "dependsOn": ["db:migrate:deploy"],
       "env": [
         "ACCESS_*",
         "BETTER_AUTH_*",
@@ -53,6 +53,11 @@
     "db:migrate": {
       "cache": false,
       "env": ["DATABASE_URL_UNPOOLED"],
+      "inputs": ["$TURBO_DEFAULT$", ".env*"]
+    },
+    "db:migrate:deploy": {
+      "cache": false,
+      "env": ["DATABASE_URL_UNPOOLED", "VERCEL_ENV"],
       "inputs": ["$TURBO_DEFAULT$", ".env*"]
     },
     "dev:app": {
