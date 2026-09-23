@@ -6,7 +6,7 @@ regenerating the patch below against the new dist.
 
 ## Remaining patches
 
-`eve@0.62.0.patch` carries two independent hunks:
+`eve@0.62.0.patch` carries three independent hunks:
 
 - The declaration bridge redirects Eve's incomplete bundled Chat SDK
   declaration exports to the explicitly installed `chat` package. Eve's runtime
@@ -26,13 +26,25 @@ regenerating the patch below against the new dist.
   ignores `voice`, `audio` and `video_note`, and the Photon adapter exposes no
   URL for an attachment. Drop the hunk once Eve's inbound hooks accept a turn
   message override natively.
+- The schedule session handle gives a schedule's `run` handler the same
+  `attachSession(sessionId)` a route handler gets. `channel/schedule.js`
+  `ScheduleDispatcher.triggerInScope` adds
+  `attachSession:e=>createSession(e,this.runtime)` to the handler args, and
+  `public/definitions/schedule.d.ts` declares it on `ScheduleHandlerArgs`. An
+  eve web chat has no channel continuation address, so `to(...)` cannot reach
+  it, and the app's own channel routes (`/webhooks/*`, `/internal/*`) are not
+  routed to the eve service on Vercel. Without the handle,
+  `agent/schedules/browser-runs.ts` could not report a finished browser errand
+  back into the web chat. Drop the hunk once `ScheduleHandlerArgs` carries
+  `attachSession` itself.
 
 To change the patch, run `pnpm patch eve@0.62.0`, edit the files in the
-reported directory, and `pnpm patch-commit <dir>` so both hunks and the
+reported directory, and `pnpm patch-commit <dir>` so every hunk and the
 lockfile hash stay consistent. When upgrading Eve, first check the new dist:
 the bridge goes away once `dist/src/compiled/chat/index.d.ts` resolves on its
-own, and the override goes away once `TelegramInboundResult` and
-`PhotonInboundResult` declare `message` themselves.
+own, the override once `TelegramInboundResult` and `PhotonInboundResult`
+declare `message` themselves, and the schedule handle once
+`ScheduleHandlerArgs` declares `attachSession`.
 
 Photon's iMessage adapter posts into a conversation without a reply anchor, so
 no provider reply option is patched in any more.
