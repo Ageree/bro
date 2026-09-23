@@ -13,8 +13,10 @@ import {
   gmailProbeQuery,
   gmailSignals,
 } from "@agent/lib/proactive/signals";
+import { getGoogleWorkspaceAccess } from "@db/services/settings";
 import { env } from "@shared/environment";
 import { googleWorkspaceTokenParams } from "@shared/google-workspace/connection";
+import type { AccessScope } from "@shared/identity/access-scope";
 
 const probeTimeoutMs = 20_000;
 
@@ -24,14 +26,17 @@ const probeTimeoutMs = 20_000;
  * grant is gone reports that instead of failing the tick.
  */
 export async function probeGoogleSignals(
-  userId: string,
+  scope: AccessScope,
   window: { readonly mailAfter: Date; readonly now: Date }
 ) {
+  // The grant's scopes follow the access level the person connected with;
+  // asking with the other level's scopes finds no grant at all.
+  const access = await getGoogleWorkspaceAccess(scope);
   let token: string;
   try {
     ({ token } = await getTokenResponse(
       env.GOOGLE_CONNECTOR_UID,
-      googleWorkspaceTokenParams(userId)
+      googleWorkspaceTokenParams(scope.userId, access)
     ));
   } catch (error) {
     if (

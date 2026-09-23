@@ -114,7 +114,8 @@ const handleActionResult =
   telegramChannelCapture.config?.events?.["action.result"];
 const handleMessageCompleted =
   telegramChannelCapture.config?.events?.["message.completed"];
-if (!handleActionResult || !handleMessageCompleted) {
+const handleTurnFailed = telegramChannelCapture.config?.events?.["turn.failed"];
+if (!handleActionResult || !handleMessageCompleted || !handleTurnFailed) {
   throw new Error(
     "The Telegram channel must configure action result delivery."
   );
@@ -122,6 +123,7 @@ if (!handleActionResult || !handleMessageCompleted) {
 
 type ActionHandlerParameters = Parameters<typeof handleActionResult>;
 type MessageHandlerParameters = Parameters<typeof handleMessageCompleted>;
+type TurnFailedEvent = Parameters<typeof handleTurnFailed>[0];
 
 describe("Telegram message delivery", () => {
   beforeEach(() => {
@@ -194,6 +196,61 @@ describe("Telegram message delivery", () => {
     );
 
     expect(request).not.toHaveBeenCalled();
+  });
+
+  it("does not follow a reaction with the text written after it", async () => {
+    const { context, request } = handlerContext();
+
+    await handleActionResult(
+      reactToMessageResult({ operation: "add", type: "thumbs_up" }),
+      context,
+      sessionContext()
+    );
+    request.mockClear();
+    await handleMessageCompleted(
+      assistantMessage("Поставил лайк."),
+      context,
+      sessionContext()
+    );
+
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("still rescues plain text in a later turn after a delivered one", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { context, request } = handlerContext();
+
+    await handleActionResult(
+      sendMessageResult({ kind: "message", text: "Готово." }),
+      context,
+      sessionContext()
+    );
+    request.mockClear();
+    await handleMessageCompleted(
+      { ...assistantMessage("Не могу это сделать."), turnId: "turn-2" },
+      context,
+      sessionContext()
+    );
+
+    expect(request).toHaveBeenCalledOnce();
+    warn.mockRestore();
+  });
+
+  it("drops the delivery marker from rescued plain text", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { context, request } = handlerContext();
+
+    await handleMessageCompleted(
+      assistantMessage("Не могу это сделать.\nDELIVERY_COMPLETE"),
+      context,
+      sessionContext()
+    );
+
+    expect(JSON.stringify(request.mock.calls)).not.toContain(
+      "DELIVERY_COMPLETE"
+    );
+    expect(request).toHaveBeenCalledOnce();
+    warn.mockRestore();
   });
 
   it("leaves text that only introduces a tool call undelivered", async () => {
@@ -739,12 +796,115 @@ describe("Telegram message delivery", () => {
       reaction: [],
     });
   });
+
+  it("tells the person Bro is resting when the model provider fails", async () => {
+    const { context, request } = handlerContext();
+
+    await handleTurnFailed(modelCallFailure(), context, sessionContext());
+
+    expect(request).toHaveBeenCalledExactlyOnceWith("sendMessage", {
+      chat_id: "4242",
+      parse_mode: "HTML",
+      text: "я прилёг, скоро вернусь",
+    });
+  });
+
+  it("answers someone writing in English in English", async () => {
+    const { context, request } = handlerContext();
+
+    await handleTurnFailed(
+      modelCallFailure(),
+      context,
+      englishSessionContext()
+    );
+
+    expect(request).toHaveBeenCalledExactlyOnceWith("sendMessage", {
+      chat_id: "4242",
+      parse_mode: "HTML",
+      text: "taking a quick nap, back soon",
+    });
+  });
+
+  // An overflowing context or a rejected request also fails as
+  // MODEL_CALL_FAILED, and «back soon» would not be true there.
+  it("keeps the apology for a model call the provider rejected", async () => {
+    const { context, request } = handlerContext();
+
+    await handleTurnFailed(
+      { ...modelCallFailure(), details: { statusCode: 400 } },
+      context,
+      sessionContext()
+    );
+
+    expect(request).toHaveBeenCalledExactlyOnceWith("sendMessage", {
+      chat_id: "4242",
+      parse_mode: "HTML",
+      text: "Что-то сломалось, пока я разбирался с твоей просьбой. Попробуй ещё раз.",
+    });
+  });
+
+  it("keeps the generic apology for other turn failures", async () => {
+    const { context, request } = handlerContext();
+
+    await handleTurnFailed(
+      { ...modelCallFailure(), code: "TOOL_FAILED", message: "boom" },
+      context,
+      sessionContext()
+    );
+
+    expect(request).toHaveBeenCalledExactlyOnceWith("sendMessage", {
+      chat_id: "4242",
+      parse_mode: "HTML",
+      text: "Что-то сломалось, пока я разбирался с твоей просьбой. Попробуй ещё раз.",
+    });
+  });
+
+  it("leaves a failed scheduled report to its retry", async () => {
+    const { context, request } = handlerContext();
+
+    await handleTurnFailed(
+      modelCallFailure(),
+      context,
+      sessionContext("scheduled-result")
+    );
+
+    expect(request).not.toHaveBeenCalled();
+    expect(scheduleDeliveryCapture.release).toHaveBeenCalledOnce();
+  });
 });
 
 const jpegBytes = new Uint8Array(16);
 jpegBytes.set([0xff, 0xd8, 0xff, 0xe0], 0);
 const pdfBytes = new Uint8Array(16);
 pdfBytes.set([...Buffer.from("%PDF-1.7")], 0);
+
+function modelCallFailure(): TurnFailedEvent {
+  return {
+    code: "MODEL_CALL_FAILED",
+    details: { statusCode: 402 },
+    message: 'OpenRouter 402: "This request requires more credits"',
+    sequence: 2,
+    turnId: "turn-1",
+  };
+}
+
+function englishSessionContext() {
+  const session = sessionContext();
+  const caller = session.session.auth.current;
+  return {
+    ...session,
+    session: {
+      ...session.session,
+      auth: {
+        ...session.session.auth,
+        current: {
+          ...caller,
+          attributes: { ...caller.attributes, replyLanguage: "en" },
+        },
+      },
+    },
+  };
+}
 
 function telegramError(status: number, description?: string) {
   return new Response(

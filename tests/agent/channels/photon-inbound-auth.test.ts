@@ -2,6 +2,7 @@ import type { PhotonIMessageChannelConfig } from "eve/channels/photon";
 import { Message } from "chat";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type * as EnvModule from "@shared/environment";
+import type * as ScopeService from "@db/services/scope";
 // oxlint-disable-next-line import/no-unassigned-import -- Loads the production module so the mocked channel factory can capture its configuration.
 import "@agent/channels/photon";
 
@@ -16,6 +17,7 @@ const capture = vi.hoisted(() => ({
       paywallText: string | undefined;
     }>
   >(),
+  claimIntroduction: vi.fn<typeof ScopeService.claimWorkspaceIntroduction>(),
   post: vi.fn<InboundContext["thread"]["post"]>(),
 }));
 
@@ -47,6 +49,10 @@ vi.mock("@db/services/auth/phone-user", () => ({
 vi.mock("@agent/lib/billing/quota", () => ({
   messageQuotaGate: capture.messageQuotaGate,
 }));
+vi.mock("@db/services/scope", async (importOriginal) => ({
+  ...(await importOriginal<typeof ScopeService>()),
+  claimWorkspaceIntroduction: capture.claimIntroduction,
+}));
 
 const onMessage = capture.config?.onMessage;
 if (!onMessage) {
@@ -60,6 +66,7 @@ describe("Photon inbound authentication", () => {
       allowed: true,
       paywallText: undefined,
     });
+    capture.claimIntroduction.mockResolvedValue(false);
   });
 
   it("verifies webhooks with the configured Photon signing secret", () => {
@@ -141,6 +148,7 @@ describe("Photon inbound authentication", () => {
       created: true,
       userId: "user-new",
     });
+    capture.claimIntroduction.mockResolvedValue(true);
 
     const result = await onMessage(
       threadContext(),
@@ -175,6 +183,20 @@ describe("Photon inbound authentication", () => {
 
     expect(silent).toBeNull();
     expect(capture.post).toHaveBeenCalledTimes(1);
+  });
+
+  // Someone who signed up on the web and writes to iMessage for the first time
+  // gets an account that already exists, and is still meeting Bro now.
+  it("introduces Bro on the workspace's first message even for an existing account", async () => {
+    capture.ensureUser.mockResolvedValue({ created: false, userId: "user-1" });
+    capture.claimIntroduction.mockResolvedValue(true);
+
+    const result = await onMessage(
+      threadContext(),
+      photonMessage("+15550100011")
+    );
+
+    expect(result?.context?.join("\n")).toContain("`first-contact`");
   });
 
   it("says nothing about a first contact for a returning person", async () => {

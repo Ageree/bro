@@ -105,12 +105,14 @@ const handleActionResult =
   photonChannelCapture.config?.events?.["action.result"];
 const handleMessageCompleted =
   photonChannelCapture.config?.events?.["message.completed"];
-if (!handleActionResult || !handleMessageCompleted) {
+const handleTurnFailed = photonChannelCapture.config?.events?.["turn.failed"];
+if (!handleActionResult || !handleMessageCompleted || !handleTurnFailed) {
   throw new Error("The Photon channel must configure action result delivery.");
 }
 
 type ActionHandlerParameters = Parameters<typeof handleActionResult>;
 type MessageHandlerParameters = Parameters<typeof handleMessageCompleted>;
+type TurnFailedEvent = Parameters<typeof handleTurnFailed>[0];
 
 describe("Photon message delivery", () => {
   beforeEach(() => {
@@ -180,6 +182,59 @@ describe("Photon message delivery", () => {
     );
 
     expect(post).not.toHaveBeenCalled();
+  });
+
+  it("does not follow a reaction with the text written after it", async () => {
+    const { context, post } = handlerContext();
+
+    await handleActionResult(
+      reactToMessageResult({ operation: "add", type: "thumbs_up" }),
+      context,
+      sessionContext()
+    );
+    post.mockClear();
+    await handleMessageCompleted(
+      assistantMessage("Поставил лайк."),
+      context,
+      sessionContext()
+    );
+
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it("still rescues plain text in a later turn after a posted one", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { context, post } = handlerContext();
+
+    await handleActionResult(
+      sendMessageResult({ kind: "message", text: "Готово." }),
+      context,
+      sessionContext()
+    );
+    post.mockClear();
+    await handleMessageCompleted(
+      { ...assistantMessage("Не могу это сделать."), turnId: "turn-2" },
+      context,
+      sessionContext()
+    );
+
+    expect(post).toHaveBeenCalledOnce();
+    warn.mockRestore();
+  });
+
+  it("drops the delivery marker from rescued plain text", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { context, post } = handlerContext();
+
+    await handleMessageCompleted(
+      assistantMessage("Не могу это сделать.\nDELIVERY_COMPLETE"),
+      context,
+      sessionContext()
+    );
+
+    expect(JSON.stringify(post.mock.calls)).not.toContain("DELIVERY_COMPLETE");
+    expect(post).toHaveBeenCalledOnce();
+    warn.mockRestore();
   });
 
   it("leaves text that only introduces a tool call unposted", async () => {
@@ -711,10 +766,91 @@ describe("Photon message delivery", () => {
       }).success
     ).toBe(false);
   });
+
+  it("tells the person Bro is resting when the model provider fails", async () => {
+    const { context, post } = handlerContext();
+
+    await handleTurnFailed(modelCallFailure(), context, sessionContext());
+
+    expect(post).toHaveBeenCalledExactlyOnceWith({
+      raw: "я прилёг, скоро вернусь",
+    });
+  });
+
+  it("answers someone writing in English in English", async () => {
+    const { context, post } = handlerContext();
+
+    await handleTurnFailed(
+      modelCallFailure(),
+      context,
+      englishSessionContext()
+    );
+
+    expect(post).toHaveBeenCalledExactlyOnceWith({
+      raw: "taking a quick nap, back soon",
+    });
+  });
+
+  // Like Telegram, a failure that is not the provider's still gets a line
+  // rather than silence, and «back soon» is kept for real outages.
+  it("apologizes for other turn failures", async () => {
+    const { context, post } = handlerContext();
+
+    await handleTurnFailed(
+      { ...modelCallFailure(), code: "TOOL_FAILED", message: "boom" },
+      context,
+      sessionContext()
+    );
+
+    expect(post).toHaveBeenCalledExactlyOnceWith({
+      raw: "Что-то сломалось, пока я разбирался с твоей просьбой. Попробуй ещё раз.",
+    });
+  });
+
+  it("leaves a failed scheduled report to its retry", async () => {
+    const { context, post } = handlerContext();
+
+    await handleTurnFailed(
+      modelCallFailure(),
+      context,
+      sessionContext("scheduled-result")
+    );
+
+    expect(post).not.toHaveBeenCalled();
+    expect(scheduleDeliveryCapture.release).toHaveBeenCalledOnce();
+  });
 });
 
 /** Bytes with no signature of their own, so the served media type decides. */
 const fileBytes = new Uint8Array(16);
+
+function modelCallFailure(): TurnFailedEvent {
+  return {
+    code: "MODEL_CALL_FAILED",
+    details: { statusCode: 402 },
+    message: 'OpenRouter 402: "This request requires more credits"',
+    sequence: 2,
+    turnId: "turn-1",
+  };
+}
+
+function englishSessionContext() {
+  const session = sessionContext();
+  const caller = session.session.auth.current;
+  return {
+    ...session,
+    session: {
+      ...session.session,
+      auth: {
+        ...session.session.auth,
+        current: {
+          ...caller,
+          attributes: { ...caller.attributes, replyLanguage: "en" },
+        },
+      },
+    },
+  };
+}
 
 function servedFile(mimeType: string) {
   return new Response(new Uint8Array(fileBytes), {

@@ -1,5 +1,4 @@
 import { defineDynamic, defineTool } from "eve/tools";
-import { always } from "eve/tools/approval";
 import { z } from "zod";
 import {
   calendarEventSchema,
@@ -7,6 +6,7 @@ import {
   createCalendarEvent,
   listCalendarEvents,
 } from "@agent/lib/google-workspace/calendar";
+import { googleWriteApproval } from "@agent/lib/google-workspace/client";
 import { resolveModeValue } from "@agent/lib/mode";
 
 export const calendarListEvents = defineTool({
@@ -38,7 +38,7 @@ export const calendarCheckAvailability = defineTool({
 });
 
 export const calendarCreateEvent = defineTool({
-  approval: always(),
+  approval: (ctx) => googleWriteApproval(ctx, "user-approval"),
   description:
     "Create a confirmed private Google Calendar event. This requires user approval and sends updates to attendees.",
   inputSchema: calendarEventSchema,

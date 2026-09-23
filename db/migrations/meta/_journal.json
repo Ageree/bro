@@ -152,8 +152,29 @@
     {
       "idx": 21,
       "version": "7",
-      "when": 1790194217676,
-      "tag": "0021_hard_omega_sentinel",
+      "when": 1790193980751,
+      "tag": "0021_tense_thunderbolt",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1790197817220,
+      "tag": "0022_handy_ben_urich",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1790198763997,
+      "tag": "0023_safe_squirrel_girl",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1790199715315,
+      "tag": "0024_illegal_night_nurse",
       "breakpoints": true
     }
   ]

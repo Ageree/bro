@@ -29,10 +29,14 @@
   изменение с точки зрения пользователя.
 - В свежей облачной сессии нет `node_modules`: перед `pnpm check` и
   `pnpm build` нужен `pnpm install`.
-- Нужен Node 24 (`.node-version`). В облачном контейнере стоит Node 22, и под
-  ним vitest валит десяток файлов с `SyntaxError: Unexpected identifier 'r'`
-  ещё до тестов. Скачайте Node 24 с nodejs.org в scratchpad и поставьте его
-  первым в `PATH`.
+- Проекту нужен Node 24, а в облачном контейнере по умолчанию Node 22: на нём
+  `pnpm check` валит ~12 наборов тестов с «SyntaxError: Unexpected identifier
+  'r'», и на чистой ветке тоже. Бинарь ставится без root:
+  `npm pack node-linux-x64@24` в scratchpad, распаковать, добавить его `bin` в
+  начало `PATH`.
+- `pnpm build` без `.env.local` падает на сборе данных страниц: нужны
+  `DATABASE_URL`, `BETTER_AUTH_URL` и `BETTER_AUTH_SECRET`. Для локальной
+  проверки хватает заглушек, к базе сборка не подключается.
 - Тест БД на PGlite с `vi.resetModules()` между кейсами должен заново
   импортировать `@db` и подменять `db` в каждом кейсе: иначе сервисы получают
   свежий модуль с настоящим `pg.Pool` и кейс висит до таймаута
@@ -45,11 +49,53 @@
 
 - eve закреплён на `0.62.0` с патчем `patches/eve@0.62.0.patch`. Обновление
   версии означает перевыпуск патча; порядок описан в `patches/README.md`.
+- Веб-чат (канал eve) достижим только через `attachSession(sessionId)`: адреса
+  продолжения у него нет, и `to(...)` из расписания туда не доставит. Хендлер
+  расписания получает `attachSession` из нашего патча eve; им пользуется
+  `agent/schedules/browser-runs.ts`.
 - Всё, что попадает в историю сообщений, должно сериализоваться в JSON. Сырой
   `Uint8Array` в `FilePart` ломал durable-замыкание динамических инструментов:
   `save_memory`, `update` и `workstreams` молча пропадали до конца сессии
   («Dynamic tool resolver failed — Expected a JSON-serializable value»). Байты
   файлов кладутся base64-строкой (коммит `2ed484c`).
+- Текст поручения Browser Use собирается в `agent/tools/browser_task.ts`
+  (`composeBrowserTask`) и проверяется юнит-тестами по дословным фразам. Evals
+  на `browser_task` нет: инструмент появляется только с `BROWSER_USE_API_KEY`,
+  и каждый кейс запускал бы настоящий платный прогон.
+
+- Колбэки динамических инструментов (`execute`, `approval` и др.) пишите
+  инлайн в `defineTool()` или ссылкой на идентификатор: сборка eve ставит
+  durable-дескриптор только им. Вызов фабрики вида `approval: policy("x")`
+  ломает резолвер в рантайме («callback 'approvalRequest' does not have a
+  durable descriptor»), а юнит-тесты этого не ловят; нужно
+  `approval: (ctx) => policy(ctx, "x")`. Проверить можно
+  `transformDynamicToolExecute(file, code)` из
+  `eve/dist/src/internal/workflow-bundle/dynamic-tool-transform.js`.
+- В eve нет настройки `toolChoice`. Доставку через `send_message` в
+  интерактивных ходах форсирует резолвер модели на `step.started`
+  (`agent/agent.ts`): пока последнее сообщение человека без ответа, модель
+  OpenRouter оборачивается middleware с `toolChoice: required`
+  (`agent/lib/model/openrouter.ts`). `ctx.messages` там несут eve-поле `kind`:
+  `user` у человека, `execution.background_task` у фонового пробуждения,
+  которое по инструкциям может промолчать (`agent/lib/delivery/pending.ts`).
+  Не форсируются: ходы `browser-result` (антибот-проверку модель продолжает
+  молча), шаги после десятого без ответа, `anthropic/*` с reasoning (Anthropic
+  отвергает принудительный инструмент при extended thinking). Строковый id
+  Gateway не оборачивается: в `eve dev` eve подставляет свою авторизацию
+  Gateway только для строк.
+
+- `POST /eve/v1/session` отвечает `202` с id, как только Workflow принял
+  запуск, а `session.started` приходит только с первым сообщением. Поэтому
+  владельца сессии записывает обёртка этого маршрута в `agent/channels/eve.ts`,
+  а не только хук `agent/hooks/session-owner.ts`: иначе ранний `GET …/stream`
+  получал `403 Session not found`.
+- Пометку `first-contact` решает `workspaces.introduced_at`, которое канал
+  занимает условным UPDATE в `onMessage` (`claimWorkspaceIntroduction`), а не
+  таблица `chats`: переезд из Convex строк `chats` не пишет. Занимать метку можно
+  только для сообщения, которое точно запустит ход.
+- Любой сбой вызова модели приходит в канал как `turn.failed` с
+  `code: "MODEL_CALL_FAILED"`, включая переполнение контекста; «скоро вернусь»
+  говорим только при статусе 402/429/5xx из `details`.
 
 - `eve dev` никогда не запускает расписания по cron. Прогнать одно вручную:
   `POST /eve/v1/dev/schedules/<имя>` (например `proactive`, затем `dynamic`,
@@ -58,13 +104,39 @@
   или Календарь, требует живого гранта Vercel Connect, поэтому
   `evals/agent/proactive.eval.ts` начинает с передачи воркера.
 
+## OpenRouter
+
+- `GET /api/v1/credits` принимает только management-ключ, обычный ключ
+  инференса получает 403. Поэтому проверка баланса
+  (`agent/lib/model/credits.ts`) ждёт отдельный `OPENROUTER_MANAGEMENT_KEY`.
+
 ## Vercel
 
 - Не публикуйте свои маршруты каналов eve (`/webhooks`,
   `/internal/scheduled-run`) в Build Output: вебхуки отвечали 200, но Vercel
   Workflow переставал вызывать `/.well-known/workflow/v1/flow`, и ни один ход
-  не запускался. Откачено в `bb5b1a0`; вебхук Browser Use обслуживает поллер
-  раз в минуту.
+  не запускался. Откачено в `bb5b1a0`. Следствие: в продакшене до eve доходит
+  только `/eve/v1/*`, а `/webhooks/browser-use` и `/internal/scheduled-run/*`
+  не работают. Не стройте доставку на вызове своих маршрутов: вебхук Browser
+  Use заменяет поллер раз в минуту.
+
+## Браузерные поручения
+
+- Итог поручения хранится в `browser_runs.report` и доставляется отдельно от
+  завершения под арендой (`report_claimed_at`): сбой доставки не теряет итог,
+  поллер повторяет её, а `browser_task status` отдаёт недоставленный итог.
+
+## Google
+
+- Уровень доступа Google (`full` / `read_only`) хранится в `settings` под
+  ключом `google_workspace_access`; нет записи — `full`. Смена уровня сначала
+  отзывает грант (`revokeGoogleWorkspaceGrant`), иначе у Google остаются широкие
+  scopes старого гранта. Запись в режиме только чтения отсекается политикой
+  подтверждения `googleWriteApproval` до карточки, а не ошибкой Google.
+- Ответ на письмо строится из Gmail `id` исходного письма (`replyToMessageId`):
+  инструмент сам читает Message-ID/References/Subject и `threadId`. Поле
+  `messageId` в выдаче чтения переименовано в `rfcMessageId`, чтобы модель не
+  путала его с Gmail `id`, который берут остальные `gmail-*`.
 
 ## Проактивные сообщения
 

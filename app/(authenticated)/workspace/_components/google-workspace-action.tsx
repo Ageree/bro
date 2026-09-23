@@ -10,8 +10,13 @@ export function GoogleWorkspaceAction({
   readonly state?: GoogleWorkspaceConnection["state"];
 }) {
   const update = api.googleWorkspace.update.useMutation({
-    onError: () => {
-      window.location.assign("/workspace?google=unavailable");
+    onError: (error) => {
+      // A grant appeared since the page rendered: show it as it is now.
+      window.location.assign(
+        error.data?.code === "CONFLICT"
+          ? "/workspace"
+          : "/workspace?google=unavailable"
+      );
     },
     onSuccess: ({ redirectTo }) => {
       window.location.assign(redirectTo);
@@ -23,18 +28,46 @@ export function GoogleWorkspaceAction({
   // A read that failed just now is not a missing grant: no OAuth from here.
   if (state === "error") return <span>Google не отвечает</span>;
 
-  const action = state === "connected" ? "disconnect" : "connect";
+  if (state === "connected") {
+    return (
+      <Button
+        disabled={update.isPending}
+        onClick={() => {
+          update.mutate({ action: "disconnect" });
+        }}
+        size="act-sm"
+        type="button"
+        variant="act"
+      >
+        Отключить
+      </Button>
+    );
+  }
+
   return (
-    <Button
-      disabled={update.isPending}
-      onClick={() => {
-        update.mutate(action);
-      }}
-      size="act-sm"
-      type="button"
-      variant="act"
-    >
-      {state === "connected" ? "Отключить" : "Подключить"}
-    </Button>
+    <span className="flex flex-wrap justify-end gap-x-4 gap-y-1">
+      <Button
+        disabled={update.isPending}
+        onClick={() => {
+          update.mutate({ access: "full", action: "connect" });
+        }}
+        size="act-sm"
+        type="button"
+        variant="act"
+      >
+        Подключить
+      </Button>
+      <Button
+        disabled={update.isPending}
+        onClick={() => {
+          update.mutate({ access: "read_only", action: "connect" });
+        }}
+        size="act-sm"
+        type="button"
+        variant="act"
+      >
+        Только чтение
+      </Button>
+    </span>
   );
 }

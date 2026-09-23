@@ -66,10 +66,13 @@ async function checkWorkspace(
     return;
   }
   try {
-    const probe = await probeGoogleSignals(watch.createdByUserId, {
-      mailAfter: mailSearchStart(watch.mailCheckedAt, now),
-      now,
-    });
+    const probe = await probeGoogleSignals(
+      { userId: watch.createdByUserId, workspaceId: watch.workspaceId },
+      {
+        mailAfter: mailSearchStart(watch.mailCheckedAt, now),
+        now,
+      }
+    );
     if (probe.state !== "connected") {
       await deferProactiveWatch(
         watch.workspaceId,

@@ -34,13 +34,10 @@ describe("scheduled agent jobs", () => {
       "0012_harsh_domino.sql",
       "0013_last_christian_walker.sql",
       "0014_uneven_vector.sql",
-      "0015_greedy_black_tom.sql",
-      "0016_oval_moira_mactaggert.sql",
-      "0017_talented_penance.sql",
-      "0018_easy_butterfly.sql",
-      "0019_sad_eternity.sql",
-      "0020_lucky_dakota_north.sql",
-      "0021_hard_omega_sentinel.sql",
+      // `ensureScope` writes every workspace column, introduced_at included.
+      "0023_safe_squirrel_girl.sql",
+      // The job kind that keeps proactive checks out of the task dispatcher.
+      "0024_illegal_night_nurse.sql",
     ]) {
       await applyMigration(client, migration);
     }

@@ -3,6 +3,7 @@ import { gmail, type gmail_v1 } from "@googleapis/gmail";
 import type { ToolContext } from "eve/tools";
 import { z } from "zod";
 import { withGoogleAuth } from "./client";
+import { emailAddressSchema } from "./email";
 
 type GmailMessage = gmail_v1.Schema$Message;
 type GmailPart = gmail_v1.Schema$MessagePart;
@@ -18,15 +19,39 @@ export const GMAIL_UPDATE_ACTIONS = [
 
 export type GmailUpdateAction = (typeof GMAIL_UPDATE_ACTIONS)[number];
 
-export const gmailSendSchema = z.object({
-  bcc: z.array(z.email()).max(20).default([]),
-  body: z.string().min(1).max(100_000),
-  cc: z.array(z.email()).max(20).default([]),
-  inReplyTo: z.string().max(998).optional(),
-  subject: z.string().min(1).max(998),
-  threadId: z.string().max(200).optional(),
-  to: z.array(z.email()).min(1).max(20),
-});
+export const gmailComposeSchema = z
+  .object({
+    bcc: z.array(emailAddressSchema).max(20).default([]),
+    body: z.string().min(1).max(100_000),
+    cc: z.array(emailAddressSchema).max(20).default([]),
+    replyToMessageId: z
+      .string()
+      .min(1)
+      .max(200)
+      .optional()
+      .describe(
+        "When answering an email: the Gmail message `id` (from gmail-search or gmail-read-thread) of the message being answered. The email then joins that message's thread with In-Reply-To and References set, and its subject becomes `Re: <original subject>`. Omit only for a brand-new conversation."
+      ),
+    subject: z
+      .string()
+      .min(1)
+      .max(998)
+      .optional()
+      .describe(
+        "Required for a new email. Ignored for a reply, which keeps the thread's subject so Gmail threads it."
+      ),
+    to: z.array(emailAddressSchema).min(1).max(20),
+  })
+  .refine(
+    (input) =>
+      input.replyToMessageId !== undefined || input.subject !== undefined,
+    {
+      message: "A new email needs a subject; a reply needs replyToMessageId.",
+      path: ["subject"],
+    }
+  );
+
+export type GmailCompose = z.infer<typeof gmailComposeSchema>;
 
 export async function searchGmail(
   ctx: ToolContext,
@@ -101,14 +126,111 @@ export async function updateGmail(
   return { action, updatedCount: ids.length };
 }
 
-export async function sendGmail(
+/** The headers of the message a reply answers, as Gmail stores them. */
+export interface GmailReplyTarget {
+  readonly inReplyTo: string | null;
+  readonly messageId: string | null;
+  readonly references: string | null;
+  readonly subject: string | null;
+  readonly threadId: string | null;
+}
+
+export async function sendGmail(ctx: ToolContext, payload: GmailCompose) {
+  return withGmail(ctx, async (client) => {
+    const requestBody = await composeRequest(ctx, client, payload);
+    const { data } = await client.users.messages.send(
+      { requestBody, userId: "me" },
+      { signal: ctx.abortSignal }
+    );
+    return data;
+  });
+}
+
+/** Saves an email as a Gmail draft, in the answered thread for a reply. */
+export async function draftGmail(ctx: ToolContext, payload: GmailCompose) {
+  return withGmail(ctx, async (client) => {
+    const message = await composeRequest(ctx, client, payload);
+    const { data } = await client.users.drafts.create(
+      { requestBody: { message }, userId: "me" },
+      { signal: ctx.abortSignal }
+    );
+    return data;
+  });
+}
+
+async function composeRequest(
   ctx: ToolContext,
-  payload: z.infer<typeof gmailSendSchema>
+  client: ReturnType<typeof gmail>,
+  payload: GmailCompose
 ) {
+  const replyTo = payload.replyToMessageId
+    ? await readReplyTarget(ctx, client, payload.replyToMessageId)
+    : undefined;
   const stableId = createHash("sha256")
     .update(`${ctx.session.id}:${ctx.callId}`)
     .digest("hex")
     .slice(0, 48);
+  const raw = Buffer.from(
+    composeGmailMessage(payload, {
+      messageId: `<openinstinct-${stableId}@local>`,
+      replyTo,
+    }),
+    "utf8"
+  ).toString("base64url");
+  const threadId = replyTo?.threadId;
+  return threadId ? { raw, threadId } : { raw };
+}
+
+async function readReplyTarget(
+  ctx: ToolContext,
+  client: ReturnType<typeof gmail>,
+  id: string
+): Promise<GmailReplyTarget> {
+  const { data } = await client.users.messages.get(
+    {
+      format: "metadata",
+      id,
+      metadataHeaders: ["Message-ID", "References", "In-Reply-To", "Subject"],
+      userId: "me",
+    },
+    { signal: ctx.abortSignal }
+  );
+  return {
+    inReplyTo: header(data.payload, "In-Reply-To"),
+    messageId: header(data.payload, "Message-ID"),
+    references: header(data.payload, "References"),
+    subject: header(data.payload, "Subject"),
+    threadId: data.threadId ?? null,
+  };
+}
+
+/** A reply chain keeps at most this many ancestors in References. */
+const maximumReferences = 20;
+
+/**
+ * Builds the RFC 5322 message Gmail sends or drafts. A reply names the
+ * answered message in In-Reply-To, extends its References chain, and keeps
+ * its subject: Gmail threads a message only when all three line up with the
+ * thread id.
+ */
+export function composeGmailMessage(
+  payload: GmailCompose,
+  options: {
+    readonly messageId: string;
+    readonly replyTo?: GmailReplyTarget | undefined;
+  }
+) {
+  const replyTo = options.replyTo;
+  const subject = replyTo
+    ? replySubject(replyTo.subject ?? payload.subject ?? "")
+    : (payload.subject ?? "");
+  const parent = replyTo?.messageId ? safeHeader(replyTo.messageId) : null;
+  const references = parent
+    ? [
+        ...angleAddresses(replyTo?.references ?? replyTo?.inReplyTo ?? ""),
+        parent,
+      ].slice(-maximumReferences)
+    : [];
   const headers = [
     `To: ${payload.to.map(safeHeader).join(", ")}`,
     ...(payload.cc.length
@@ -117,35 +239,53 @@ export async function sendGmail(
     ...(payload.bcc.length
       ? [`Bcc: ${payload.bcc.map(safeHeader).join(", ")}`]
       : []),
-    `Subject: ${safeHeader(payload.subject)}`,
-    `Message-ID: <openinstinct-${stableId}@local>`,
-    ...(payload.inReplyTo
-      ? [
-          `In-Reply-To: ${safeHeader(payload.inReplyTo)}`,
-          `References: ${safeHeader(payload.inReplyTo)}`,
-        ]
+    `Subject: ${encodeHeaderValue(safeHeader(subject))}`,
+    `Message-ID: ${options.messageId}`,
+    ...(parent
+      ? [`In-Reply-To: ${parent}`, `References: ${references.join("\r\n ")}`]
       : []),
     "MIME-Version: 1.0",
     'Content-Type: text/plain; charset="UTF-8"',
-    "Content-Transfer-Encoding: 8bit",
+    "Content-Transfer-Encoding: base64",
   ];
-  const raw = Buffer.from(
-    `${headers.join("\r\n")}\r\n\r\n${payload.body}`,
-    "utf8"
-  ).toString("base64url");
-  return withGmail(ctx, async (client) => {
-    const requestBody = payload.threadId
-      ? { raw, threadId: payload.threadId }
-      : { raw };
-    const { data } = await client.users.messages.send(
-      {
-        requestBody,
-        userId: "me",
-      },
-      { signal: ctx.abortSignal }
-    );
-    return data;
-  });
+  const body = Buffer.from(payload.body, "utf8")
+    .toString("base64")
+    .replace(/.{76}/gu, "$&\r\n");
+  return `${headers.join("\r\n")}\r\n\r\n${body}`;
+}
+
+/** `Re: <subject>`, without stacking prefixes on an ongoing thread. */
+export function replySubject(subject: string) {
+  const trimmed = safeHeader(subject);
+  return /^re:/iu.test(trimmed) ? trimmed : `Re: ${trimmed}`.trim();
+}
+
+function angleAddresses(value: string) {
+  return value.match(/<[^<>\s]+>/gu) ?? [];
+}
+
+/**
+ * A header value as RFC 2047 encoded words when it is not plain ASCII, so a
+ * Cyrillic subject reaches every client intact. Each word stays within the
+ * 75-character limit and never splits a character.
+ */
+export function encodeHeaderValue(value: string) {
+  if (/^[\x20-\x7e]*$/u.test(value)) return value;
+  const words: string[] = [];
+  let chunk = "";
+  for (const character of value) {
+    if (Buffer.byteLength(chunk + character, "utf8") > 45) {
+      words.push(chunk);
+      chunk = "";
+    }
+    chunk += character;
+  }
+  if (chunk) words.push(chunk);
+  return words
+    .map(
+      (word) => `=?UTF-8?B?${Buffer.from(word, "utf8").toString("base64")}?=`
+    )
+    .join("\r\n ");
 }
 
 export function gmailUpdateLabels(action: GmailUpdateAction) {
@@ -197,7 +337,7 @@ function minimizeMessage(message: GmailMessage) {
     from: header(message.payload, "From"),
     id: message.id ?? null,
     labels: message.labelIds ?? [],
-    messageId: header(message.payload, "Message-ID"),
+    rfcMessageId: header(message.payload, "Message-ID"),
     snippet: redactGoogleText(message.snippet ?? "", 500),
     subject: header(message.payload, "Subject"),
     threadId: message.threadId ?? null,

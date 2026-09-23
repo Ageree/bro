@@ -7,6 +7,7 @@ export * from "./chats";
 export * from "./gmail-attachments";
 export * from "./memory";
 export * from "./onboarding-requests";
+export * from "./operational-alerts";
 export * from "./orders";
 export * from "./proactive";
 export * from "./schedules";

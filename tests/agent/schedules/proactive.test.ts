@@ -85,10 +85,13 @@ describe("proactive schedule", () => {
 
     await runSchedule(vi.fn<ScheduleToFn>());
 
-    expect(probe).toHaveBeenCalledExactlyOnceWith("better-auth:alice", {
-      mailAfter: new Date("2026-09-23T11:35:00.000Z"),
-      now: afternoon,
-    });
+    expect(probe).toHaveBeenCalledExactlyOnceWith(
+      { userId: "better-auth:alice", workspaceId: "workspace:alice" },
+      {
+        mailAfter: new Date("2026-09-23T11:35:00.000Z"),
+        now: afternoon,
+      }
+    );
     expect(proactive.queue).toHaveBeenCalledExactlyOnceWith({
       jobId: "00000000-0000-4000-8000-000000000001",
       mailCheckedAt: afternoon,
@@ -205,6 +208,7 @@ async function runSchedule(to: ScheduleToFn) {
       principalId: "test-app",
       principalType: "app",
     },
+    attachSession: vi.fn<ScheduleHandlerArgs["attachSession"]>(),
     to,
     waitUntil(backgroundTask) {
       task = backgroundTask;
