@@ -42,9 +42,20 @@ export async function findWorkstreams(
   };
 }
 
-export async function recallWorkstreams(scope: AccessScope, scopeKey: string) {
+/**
+ * The active index recalled into every interactive turn. Work saved from this
+ * session comes first and in full; work from the person's other conversations
+ * is reduced to its title, so an unrelated chat is not handed a next step it
+ * would feel obliged to report on.
+ */
+export async function recallWorkstreams(
+  scope: AccessScope,
+  scopeKey: string,
+  sessionId: string
+) {
+  const inThisSession = sql<boolean>`coalesce(${workstreams.sessionId} = ${sessionId}, false)`;
   const rows = await db
-    .select()
+    .select({ inThisSession, workstream: workstreams })
     .from(workstreams)
     .where(
       and(
@@ -53,10 +64,20 @@ export async function recallWorkstreams(scope: AccessScope, scopeKey: string) {
         sql`${workstreams.content}->>'status' IN ('active', 'waiting')`
       )
     )
-    .orderBy(desc(workstreams.updatedAt), workstreams.id)
+    .orderBy(desc(inThisSession), desc(workstreams.updatedAt), workstreams.id)
     .limit(9);
+  const recalled = rows.slice(0, 8);
   return {
-    items: rows.slice(0, 8).map(workstreamSummary),
+    current: recalled
+      .filter((row) => row.inThisSession)
+      .map((row) => workstreamSummary(row.workstream)),
+    elsewhere: recalled
+      .filter((row) => !row.inThisSession)
+      .map(({ workstream }) => ({
+        id: workstream.id,
+        title: workstream.content?.title,
+        status: workstream.content?.status,
+      })),
     hasMore: rows.length > 8,
   };
 }

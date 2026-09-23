@@ -9,7 +9,13 @@ import {
 import { z } from "zod";
 import { resolvePhotonReplyTarget } from "@agent/lib/reply-targets";
 import { messageQuotaGate } from "@agent/lib/billing/quota";
-import { fallbackDeliveryText } from "@agent/lib/delivery/fallback";
+import {
+  fallbackDeliveryText,
+  replyLanguageFor,
+  sessionReplyLanguage,
+  turnFailureNotice,
+} from "@agent/lib/delivery/fallback";
+import { firstContactContext } from "@agent/lib/first-contact";
 import { photonMediaTurn } from "@agent/lib/inbound-media/photon";
 import { voiceFailedNote } from "@agent/lib/inbound-media/turn-content";
 import {
@@ -50,13 +56,6 @@ type MessageFile = Pick<
   OutboundFile,
   "data" | "filename" | "mimeType" | "sourceUrl"
 >;
-
-/**
- * Handed to the model on the turn that created the account. The instructions
- * look for the `first-contact` marker and introduce Bro once, in Russian.
- */
-const firstContactContext =
-  "Пометка `first-contact`: аккаунт этого человека создан прямо сейчас, это его первое в жизни сообщение, и знакомства ещё не было.";
 
 // Photon signs its own webhook deliveries. Without the signing secret nothing
 // can be verified, so reject the delivery with the missing configuration.
@@ -197,8 +196,18 @@ export default photonIMessageChannel({
         "Scheduled result reporting was cancelled."
       );
     },
-    async "turn.failed"(event, _context, session) {
+    async "turn.failed"(event, context, session) {
       await releaseScheduledReportDelivery(session, event.message);
+      // A failed reporting turn is retried from its lease, so only a person
+      // waiting on their own message is told, in one short line without the
+      // internals, that the turn broke.
+      if (scheduledReportFromSession(session)) return;
+      await context.thread?.post({
+        raw: turnFailureNotice(
+          event,
+          sessionReplyLanguage(session.session.auth)
+        ),
+      });
     },
   },
   async onMessage(context, message) {
@@ -244,13 +253,14 @@ export default photonIMessageChannel({
         phoneNumber,
         photonMessageId: message.id,
         photonThreadId: context.thread.id,
+        replyLanguage: replyLanguageFor(message.text),
         workspaceId: scope.workspaceId,
       },
       principalId,
     };
-    // The account was created by this very message, so the turn is the first
-    // one this person ever had and the instructions introduce Bro once.
-    const turnContext = account.created ? [firstContactContext] : [];
+    // The first message this workspace ever sent, from any channel, is the
+    // turn on which the instructions introduce Bro once.
+    const turnContext = await firstContactContext(scope);
     // Photos and voice notes are read from the Photon message here, because
     // the adapter exposes no URL for them and the model otherwise sees nothing.
     const media = await photonMediaTurn(message);
@@ -258,9 +268,9 @@ export default photonIMessageChannel({
     if (media.notice) await context.thread.post({ raw: media.notice });
     if (media.message === undefined) {
       // A first message that is an unusable voice note still gets its turn:
-      // the first-contact introduction happens only on the turn that created
-      // the account, and the model can ask the person to type instead.
-      if (account.created) {
+      // the first-contact introduction happens only on the workspace's first
+      // message, and the model can ask the person to type instead.
+      if (turnContext.length > 0) {
         return {
           auth: sessionAuth,
           context: turnContext,

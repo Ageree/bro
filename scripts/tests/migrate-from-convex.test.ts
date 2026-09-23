@@ -157,7 +157,10 @@ describe("Convex import", () => {
       failed: 0,
     });
     expect(await database.select().from(schema.user)).toHaveLength(2);
-    expect(await database.select().from(schema.workspaces)).toHaveLength(2);
+    const workspaces = await database.select().from(schema.workspaces);
+    expect(workspaces).toHaveLength(2);
+    // People carried over from Convex have met Bro already.
+    expect(workspaces.every((row) => row.introducedAt !== null)).toBe(true);
     expect(await database.select().from(schema.vaultItems)).toHaveLength(2);
     expect(await database.select().from(schema.payments)).toHaveLength(1);
     expect(await database.select().from(schema.orders)).toHaveLength(1);
