@@ -143,6 +143,25 @@ describe("browser autonomy instructions", () => {
     expect(description).toContain("Keep page-wide scope checks ungrouped");
     expect(description).toContain("leave it explicitly unverified");
   });
+
+  it("routes explicit browser requirements through browser_task", async () => {
+    const selected = await resolveBrowserInstructions(context());
+
+    expect(selected?.content).toContain(
+      "прямо просит открыть или использовать браузер"
+    );
+    expect(selected?.content).toContain(
+      "только когда в просьбе нет требования к браузеру"
+    );
+
+    const { browserTask } = await import("@agent/tools/browser_task");
+    expect(browserTask.description).toContain(
+      "explicitly asks to open or use a browser"
+    );
+    expect(browserTask.description).toContain(
+      "only when the request has no browser-specific requirement"
+    );
+  });
 });
 
 async function resolveBrowserInstructions(
