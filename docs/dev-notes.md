@@ -59,6 +59,14 @@
   на `browser_task` нет: инструмент появляется только с `BROWSER_USE_API_KEY`,
   и каждый кейс запускал бы настоящий платный прогон.
 
+- Колбэки динамических инструментов (`execute`, `approval` и др.) пишите
+  инлайн в `defineTool()` или ссылкой на идентификатор: сборка eve ставит
+  durable-дескриптор только им. Вызов фабрики вида `approval: policy("x")`
+  ломает резолвер в рантайме («callback 'approvalRequest' does not have a
+  durable descriptor»), а юнит-тесты этого не ловят; нужно
+  `approval: (ctx) => policy(ctx, "x")`. Проверить можно
+  `transformDynamicToolExecute(file, code)` из
+  `eve/dist/src/internal/workflow-bundle/dynamic-tool-transform.js`.
 - В eve нет настройки `toolChoice`. Доставку через `send_message` в
   интерактивных ходах форсирует резолвер модели на `step.started`
   (`agent/agent.ts`): пока последнее сообщение человека без ответа, модель
@@ -87,6 +95,18 @@
 - Итог поручения хранится в `browser_runs.report` и доставляется отдельно от
   завершения под арендой (`report_claimed_at`): сбой доставки не теряет итог,
   поллер повторяет её, а `browser_task status` отдаёт недоставленный итог.
+
+## Google
+
+- Уровень доступа Google (`full` / `read_only`) хранится в `settings` под
+  ключом `google_workspace_access`; нет записи — `full`. Смена уровня сначала
+  отзывает грант (`revokeGoogleWorkspaceGrant`), иначе у Google остаются широкие
+  scopes старого гранта. Запись в режиме только чтения отсекается политикой
+  подтверждения `googleWriteApproval` до карточки, а не ошибкой Google.
+- Ответ на письмо строится из Gmail `id` исходного письма (`replyToMessageId`):
+  инструмент сам читает Message-ID/References/Subject и `threadId`. Поле
+  `messageId` в выдаче чтения переименовано в `rfcMessageId`, чтобы модель не
+  путала его с Gmail `id`, который берут остальные `gmail-*`.
 
 ## Память Бро
 
