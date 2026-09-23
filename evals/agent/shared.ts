@@ -38,3 +38,27 @@ export function assertPlainTextDelivery(t: EveEvalContext, text: string) {
     )
   );
 }
+
+/**
+ * Joins every text bubble the turns delivered. Bro splits longer replies
+ * into several `send_message` calls, so a single-delivery lookup misses them.
+ */
+export async function requireDeliveredTexts(
+  t: EveEvalContext,
+  ...turns: EveEvalTurn[]
+) {
+  const text = [...new Set(turns)]
+    .flatMap((turn) => turn.toolCalls)
+    .filter(
+      (call) => call.name === "send_message" && call.status === "completed"
+    )
+    .map((call) => sendMessageOutputSchema.safeParse(call.input))
+    .flatMap((parsed) =>
+      parsed.success && parsed.data.kind === "message" ? [parsed.data.text] : []
+    )
+    .join("\n")
+    .trim();
+
+  await t.require(text.length > 0, equals(true));
+  return text;
+}

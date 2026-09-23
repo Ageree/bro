@@ -1,6 +1,7 @@
 import { defineEval } from "eve/evals";
 import { satisfies } from "eve/evals/expect";
-import { agentEvalTags, requireDeliveredText } from "@evals/agent/shared";
+import { z } from "zod";
+import { agentEvalTags, requireDeliveredTexts } from "@evals/agent/shared";
 
 export default [
   defineEval({
@@ -14,7 +15,7 @@ export default [
       turn.expectOk();
       turn.succeeded();
       turn.notCalledTool("browser_task");
-      const text = await requireDeliveredText(t, turn);
+      const text = await requireDeliveredTexts(t, turn);
       t.check(
         text,
         satisfies<string>(
@@ -35,37 +36,42 @@ export default [
       "Starts a browser search for a flight instead of refusing without a card",
     tags: [...agentEvalTags, "capability", "browser"],
     async test(t) {
-      const { browserUseConfigured } =
+      const { browserUseConfigured, cancelBrowserUseRun } =
         await import("@agent/lib/browser-use/client");
       if (!browserUseConfigured())
         t.skip("browser_task needs BROWSER_USE_API_KEY");
 
-      const turn = await t.send(
-        "Get me the cheapest nonstop flight from New York to Chicago this Friday morning. There's no card in the vault yet. You have a cloud browser, go ahead."
-      );
-      turn.expectOk();
-      turn.succeeded();
-      turn.calledTool("browser_task", {
-        input: (input) =>
-          input.action === "start" && input.allowPayment !== true,
-        count: 1,
-      });
-      const text = await requireDeliveredText(t, turn);
-      t.judge(
-        "The response says it started searching for the New York to Chicago flight in the browser and will bring it up to payment or ask before paying. It does not refuse, and it does not claim a ticket was bought.",
-        { on: text }
-      )
-        .label("stages instead of refusing")
-        .atLeast(0.8);
-
-      // Stop the real run so the eval does not keep a browser working.
-      const cancelled = await turn.session.send(
-        "Actually, cancel that search."
-      );
-      cancelled.expectOk();
-      cancelled
-        .calledTool("browser_task", { input: { action: "cancel" } })
-        .soft();
+      const runIds: string[] = [];
+      try {
+        const turn = await t.send(
+          "Get me the cheapest nonstop flight from New York to Chicago this Friday morning. There's no card in the vault yet. You have a cloud browser, go ahead."
+        );
+        for (const call of turn.toolCalls) {
+          const output = z
+            .object({ runId: z.string() })
+            .safeParse(call.name === "browser_task" ? call.output : undefined);
+          if (output.success) runIds.push(output.data.runId);
+        }
+        turn.expectOk();
+        turn.succeeded();
+        turn.calledTool("browser_task", {
+          input: (input) =>
+            input.action === "start" && input.allowPayment !== true,
+          count: 1,
+        });
+        const text = await requireDeliveredTexts(t, turn);
+        t.judge(
+          "The response says it started searching for the New York to Chicago flight in the browser and will bring it up to payment or ask before paying. It does not refuse, and it does not claim a ticket was bought.",
+          { on: text }
+        )
+          .label("stages instead of refusing")
+          .atLeast(0.8);
+      } finally {
+        // The run is real and paid; stop it even when a gate above failed.
+        await Promise.allSettled(
+          runIds.map((runId) => cancelBrowserUseRun(runId))
+        );
+      }
     },
   }),
 ];

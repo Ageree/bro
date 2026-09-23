@@ -1,6 +1,6 @@
 import { defineEval } from "eve/evals";
 import { includes, satisfies } from "eve/evals/expect";
-import { agentEvalTags, requireDeliveredText } from "@evals/agent/shared";
+import { agentEvalTags, requireDeliveredTexts } from "@evals/agent/shared";
 
 const deliveryTools = new Set(["send_message", "react_to_message"]);
 
@@ -32,7 +32,7 @@ export default [
           : turn;
       final.expectOk();
       final.succeeded();
-      const text = await requireDeliveredText(t, final);
+      const text = await requireDeliveredTexts(t, turn, final);
       t.check(text, includes(/notion/iu));
       t.check(text, includes(/slack/iu));
       t.judge(
@@ -52,7 +52,7 @@ export default [
       const turn = await t.send(prompt);
       turn.expectOk();
       turn.succeeded();
-      const text = await requireDeliveredText(t, turn);
+      const text = await requireDeliveredTexts(t, turn);
       const sources = [
         prompt,
         ...turn.toolCalls
