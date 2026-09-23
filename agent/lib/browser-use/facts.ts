@@ -123,12 +123,33 @@ async function safeAccountPhoneNumber(scope: AccessScope) {
   }
 }
 
+const regionNames = new Intl.DisplayNames(["en"], { type: "region" });
+
 /**
- * Everything the run is allowed to know about the person, as one block. The
- * profile comes first, then the vault's contact and address cards, and the
- * account's own sign-in phone only when nothing else supplied one — the errand
- * that stalls on «номер телефона для входа» is the case this last line exists
- * for.
+ * Where the person lives, in words a site's own country picker would use:
+ * «Moscow, Russia» rather than a code. Only the profile's own city and
+ * country count: the vault can hold several addresses with none marked as
+ * home, and the errand text names any other place it is about.
+ */
+function profileHome(profile: Awaited<ReturnType<typeof readUserProfile>>) {
+  const code = profile.countryCode?.toUpperCase();
+  const country = code ? (regionNames.of(code) ?? code) : undefined;
+  // The city is free text from a form, and it lands inside a sentence of the
+  // run's instructions: a line break there would start a paragraph of its own.
+  const city = profile.city?.replaceAll(/\s+/gu, " ").trim();
+  const parts = [city, country].filter(
+    (part) => part !== undefined && part.length > 0
+  );
+  return parts.length === 0 ? undefined : parts.join(", ");
+}
+
+/**
+ * Everything the run is allowed to know about the person. `details` is one
+ * block of form values: the profile comes first, then the vault's contact and
+ * address cards, and the account's own sign-in phone only when nothing else
+ * supplied one — the errand that stalls on «номер телефона для входа» is the
+ * case this last line exists for. `home` is the profile's city and country,
+ * which decide which sites can serve the errand at all.
  */
 export async function browserRunFacts(scope: AccessScope) {
   const [profile, vault, accountPhone] = await Promise.all([
@@ -153,5 +174,9 @@ export async function browserRunFacts(scope: AccessScope) {
       (entry) =>
         `${entry.key}${entry.label ? ` (${entry.label})` : ""}: ${entry.value}`
     );
-  return lines.length === 0 ? undefined : [factsHeader, ...lines].join("\n");
+  return {
+    details:
+      lines.length === 0 ? undefined : [factsHeader, ...lines].join("\n"),
+    home: profileHome(profile),
+  };
 }

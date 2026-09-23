@@ -10,12 +10,15 @@ const connectedPattern = /подключ[её]н/iu;
 const notConfiguredPattern = /не подключ[её]н/iu;
 const notConnectedPattern = /не подключ|не настро|недоступ/iu;
 const retryLaterPattern = /не отвеча|попробу/iu;
+const disconnectedPattern = /отключ|отозва/iu;
 
 function deliveryMatches(
   result: z.infer<typeof connectGoogleResultSchema>,
   delivered: string
 ) {
   if (result.status === "authorize") return delivered.includes(result.url);
+  if (result.status === "disconnected")
+    return disconnectedPattern.test(delivered);
   if (result.status === "not_configured") {
     return notConfiguredPattern.test(delivered) && !urlPattern.test(delivered);
   }

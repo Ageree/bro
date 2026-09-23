@@ -2,7 +2,10 @@ import type {
   OpenRouterChatSettings,
   OpenRouterProviderSettings,
 } from "@openrouter/ai-sdk-provider";
+import type { wrapLanguageModel } from "ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+type LanguageModelV4 = ReturnType<typeof wrapLanguageModel>;
 
 const openRouter = vi.hoisted(() => {
   const chat =
@@ -88,6 +91,62 @@ describe("model selection", () => {
       },
     });
   });
+
+  it("makes a step that must reach the person call a tool", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
+    const doGenerate = vi.fn<LanguageModelV4["doGenerate"]>();
+    openRouter.chat.mockImplementation((modelId) => ({
+      doGenerate,
+      doStream: vi.fn<LanguageModelV4["doStream"]>(),
+      modelId,
+      provider: "openrouter.chat",
+      specificationVersion: "v4",
+      supportedUrls: {},
+    }));
+
+    const { openRouterSelection } = await import("@agent/lib/model/openrouter");
+    const selection = openRouterSelection("deepseek/deepseek-v4.1-flash", {
+      requireToolCall: true,
+    });
+    const sendMessage = {
+      inputSchema: { type: "object" },
+      name: "send_message",
+      type: "function",
+    } as const;
+    await selection.model.doGenerate({ prompt: [], tools: [sendMessage] });
+    await selection.model.doGenerate({ prompt: [] });
+
+    expect(selection.model.modelId).toBe("deepseek/deepseek-v4.1-flash");
+    expect(doGenerate.mock.calls[0]?.[0]).toMatchObject({
+      toolChoice: { type: "required" },
+    });
+    // Compaction calls carry no tools, and `required` would reject them.
+    expect(doGenerate.mock.calls[1]?.[0].toolChoice).toBeUndefined();
+  });
+
+  it.each([
+    ["no tool call is required", "deepseek/deepseek-v4.1-flash", false, "off"],
+    [
+      "Anthropic thinks before answering",
+      "anthropic/claude-sonnet-4.5",
+      true,
+      "medium",
+    ],
+  ])(
+    "hands back the provider model untouched when %s",
+    async (_case, modelId, requireToolCall, effort) => {
+      vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
+      vi.stubEnv("OPENROUTER_REASONING_EFFORT", effort);
+      const providerModel = { modelId };
+      openRouter.chat.mockReturnValue(providerModel);
+
+      const { openRouterSelection } =
+        await import("@agent/lib/model/openrouter");
+      const selection = openRouterSelection(modelId, { requireToolCall });
+
+      expect(selection.model).toBe(providerModel);
+    }
+  );
 
   it("pins the configured provider order and reasoning effort", async () => {
     vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");

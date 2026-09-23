@@ -16,13 +16,17 @@ import { Button } from "@web/components/ui/button";
 import { getAuthSession } from "@db/services/auth/session";
 import { paidPeriodDays, readBillingState } from "@db/services/billing";
 import { readChannelIdentity } from "@db/services/channel-identities";
-import { getWorkspaceModelId } from "@db/services/settings";
+import {
+  getGoogleWorkspaceAccess,
+  getWorkspaceModelId,
+} from "@db/services/settings";
 import { readUserProfile } from "@db/services/user-profile";
 import { listVaultItems } from "@db/services/vault";
 import { yooKassaConfigured } from "@db/services/yookassa";
 import { env } from "@shared/environment";
 import {
   type GoogleWorkspaceConnection,
+  googleWorkspaceDisconnectNotice,
   readGoogleWorkspaceConnection,
 } from "@shared/google-workspace/connection";
 import { telegramLinkConfigured } from "@shared/identity/telegram-link";
@@ -75,7 +79,9 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
     vaultItems,
   ] = await Promise.all([
     getAuthSession(requestHeaders),
-    readGoogleWorkspaceConnection(scope.userId),
+    getGoogleWorkspaceAccess(scope).then(async (access) =>
+      readGoogleWorkspaceConnection(scope.userId, access)
+    ),
     getWorkspaceModelId(scope),
     telegramConfigured ? readChannelIdentity(scope, "telegram") : undefined,
     readBillingState(scope),
@@ -120,6 +126,9 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
           Google Workspace недоступен: на этом деплое ещё нет рабочего
           коннектора Google OAuth.
         </Flash>
+      ) : null}
+      {google === "disconnected" ? (
+        <Flash>Google отключён. {googleWorkspaceDisconnectNotice}</Flash>
       ) : null}
 
       <LimitsSection paid={billing.paid} paidUntil={billing.paidUntil} />
@@ -200,13 +209,17 @@ function telegramLinkedAs(username: string | null) {
 
 function googleWorkspaceDescription(connection: GoogleWorkspaceConnection) {
   const state = connection.state;
-  return state === "connected"
-    ? (connection.accountLabel ?? "Gmail, Календарь и Контакты подключены.")
-    : state === "unavailable"
-      ? "Подключи коннектор Google OAuth через Vercel Connect, чтобы включить."
-      : state === "error"
-        ? "Google не отвечает, попробуй позже."
-        : "Gmail, Календарь и Контакты через твой аккаунт Google.";
+  if (state === "connected") {
+    const account = connection.accountLabel ?? "Gmail, Календарь и Контакты";
+    return connection.access === "read_only"
+      ? `${account} · только чтение: Бро читает почту, календарь и контакты, но ничего не отправляет и не меняет.`
+      : `${account} · полный доступ: письма уходят только после твоего подтверждения, черновики и разбор входящих — без него.`;
+  }
+  return state === "unavailable"
+    ? "Подключи коннектор Google OAuth через Vercel Connect, чтобы включить."
+    : state === "error"
+      ? "Google не отвечает, попробуй позже."
+      : "Gmail, Календарь и Контакты через твой аккаунт Google. «Только чтение» не даёт Бро ничего отправлять и менять. Отключить можно в любой момент.";
 }
 
 /** The lead actions under the title: text, like on the landing. */
