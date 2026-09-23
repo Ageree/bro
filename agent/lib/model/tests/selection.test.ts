@@ -2,7 +2,10 @@ import type {
   OpenRouterChatSettings,
   OpenRouterProviderSettings,
 } from "@openrouter/ai-sdk-provider";
+import type { wrapLanguageModel } from "ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+type LanguageModelV4 = ReturnType<typeof wrapLanguageModel>;
 
 const openRouter = vi.hoisted(() => {
   const chat =
@@ -87,6 +90,52 @@ describe("model selection", () => {
         providerOptions: { openrouter: { reasoning: { enabled: false } } },
       },
     });
+  });
+
+  it("makes a step that must reach the person call a tool", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
+    const doGenerate = vi.fn<LanguageModelV4["doGenerate"]>();
+    openRouter.chat.mockImplementation((modelId) => ({
+      doGenerate,
+      doStream: vi.fn<LanguageModelV4["doStream"]>(),
+      modelId,
+      provider: "openrouter.chat",
+      specificationVersion: "v4",
+      supportedUrls: {},
+    }));
+
+    const { openRouterSelection } = await import("@agent/lib/model/openrouter");
+    const selection = openRouterSelection("deepseek/deepseek-v4.1-flash", {
+      requireToolCall: true,
+    });
+    const sendMessage = {
+      inputSchema: { type: "object" },
+      name: "send_message",
+      type: "function",
+    } as const;
+    await selection.model.doGenerate({ prompt: [], tools: [sendMessage] });
+    await selection.model.doGenerate({ prompt: [] });
+
+    expect(selection.model.modelId).toBe("deepseek/deepseek-v4.1-flash");
+    expect(doGenerate.mock.calls[0]?.[0]).toMatchObject({
+      toolChoice: { type: "required" },
+    });
+    // Compaction calls carry no tools, and `required` would reject them.
+    expect(doGenerate.mock.calls[1]?.[0].toolChoice).toBeUndefined();
+  });
+
+  it("leaves the tool choice to the model otherwise", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
+
+    const { modelSelection } = await import("@agent/lib/model/selection");
+    const selection = modelSelection("deepseek/deepseek-v4.1-flash", {
+      requireToolCall: false,
+    });
+
+    expect(selection).toMatchObject({
+      model: { modelId: "deepseek/deepseek-v4.1-flash" },
+    });
+    expect(selection).not.toHaveProperty("model.doGenerate");
   });
 
   it("pins the configured provider order and reasoning effort", async () => {

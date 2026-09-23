@@ -29,6 +29,11 @@
   изменение с точки зрения пользователя.
 - В свежей облачной сессии нет `node_modules`: перед `pnpm check` и
   `pnpm build` нужен `pnpm install`.
+- `pnpm check` и `pnpm build` требуют Node 24 (`.node-version`); в облачной
+  сессии по умолчанию Node 22, и часть тестов падает с `SyntaxError` ещё на
+  импорте. Помогает `nvm install 24`. `pnpm build` без переменных окружения
+  падает на сборе данных страниц; для локальной проверки хватает заглушек из
+  `tests/setup-env.ts`. CI гоняет только `pnpm check`.
 - `pnpm check` включает knip: новый каталог с точками входа (как
   `agent/instrumentation/`) надо добавить в `knip.config.ts`, иначе его файлы
   считаются неиспользуемыми.
@@ -42,6 +47,16 @@
   `save_memory`, `update` и `workstreams` молча пропадали до конца сессии
   («Dynamic tool resolver failed — Expected a JSON-serializable value»). Байты
   файлов кладутся base64-строкой (коммит `2ed484c`).
+
+- В eve нет настройки `toolChoice`. Доставку через `send_message` в
+  интерактивных ходах форсирует резолвер модели на `step.started`
+  (`agent/agent.ts`): пока последнее сообщение человека без ответа, модель
+  OpenRouter оборачивается middleware с `toolChoice: required`
+  (`agent/lib/model/openrouter.ts`). `ctx.messages` там несут eve-поле `kind`:
+  `user` у человека, `execution.background_task` у фонового пробуждения,
+  которое по инструкциям может промолчать (`agent/lib/delivery/pending.ts`).
+  Строковый id Gateway не оборачивается: в `eve dev` eve подставляет свою
+  авторизацию Gateway только для строк.
 
 ## Vercel
 

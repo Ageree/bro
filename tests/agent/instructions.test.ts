@@ -101,6 +101,20 @@ describe("agent instructions", () => {
     );
   });
 
+  it("keeps every interactive reply in the person's language and plain text", async () => {
+    const resolve = messageStyle.events["turn.started"];
+    expect(resolve).toBeDefined();
+    if (!resolve) return;
+
+    const selected = await resolve({}, dynamicContext("photon-imessage"));
+    expect(selected?.content).toContain(
+      "Отвечай на языке последнего сообщения человека"
+    );
+    expect(selected?.content).toContain(
+      "Отказ, уточняющий вопрос, сообщение о сбое"
+    );
+  });
+
   it("says there is no browser until Browser Use is configured", async () => {
     const resolve = (await loadBrowserInstructions("")).events["turn.started"];
     expect(resolve).toBeDefined();

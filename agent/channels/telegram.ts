@@ -13,7 +13,7 @@ import {
   redeemChannelLinkToken,
 } from "@db/services/channel-identities";
 import { messageQuotaGate } from "@agent/lib/billing/quota";
-import { fallbackDeliveryText } from "@agent/lib/delivery-fallback";
+import { fallbackDeliveryText } from "@agent/lib/delivery/fallback";
 import { telegramMediaTurn } from "@agent/lib/inbound-media/telegram";
 import {
   prepareAttachmentDelivery,
@@ -132,6 +132,7 @@ export default telegramChannel({
                   },
                 ],
         });
+        markTurnDelivered(context, event.turnId);
         await finalizeScheduledReportDelivery(session);
         return;
       }

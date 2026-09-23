@@ -1,4 +1,5 @@
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
+import { wrapLanguageModel, type LanguageModelMiddleware } from "ai";
 import type { AgentModelOptionsDefinition } from "eve";
 import { env } from "@shared/environment";
 import { applicationOrigin } from "@shared/environment/origin";
@@ -46,15 +47,33 @@ function reasoningOptions(): AgentModelOptionsDefinition {
   return { providerOptions: { openrouter: { reasoning: { effort } } } };
 }
 
+/**
+ * eve exposes no tool choice option, so a model call that must pick a tool
+ * gets it from middleware. A call without tools, such as compaction, is left
+ * alone because `required` with nothing to call is an invalid request.
+ */
+const toolCallRequired: LanguageModelMiddleware = {
+  async transformParams({ params }) {
+    if (!params.tools?.length) return params;
+    return { ...params, toolChoice: { type: "required" } };
+  },
+};
+
 /** eve model selection that calls OpenRouter directly instead of the Gateway. */
-export function openRouterSelection(modelId: string) {
+export function openRouterSelection(
+  modelId: string,
+  options: { readonly requireToolCall: boolean }
+) {
   const openrouter = createOpenRouter({
     apiKey: env.OPENROUTER_API_KEY,
     headers: attributionHeaders(),
   });
+  const model = openrouter.chat(modelId, { provider: providerRouting() });
 
   return {
-    model: openrouter.chat(modelId, { provider: providerRouting() }),
+    model: options.requireToolCall
+      ? wrapLanguageModel({ middleware: toolCallRequired, model })
+      : model,
     // eve resolves an omitted context window from the AI Gateway catalog,
     // which does not list OpenRouter model ids.
     modelContextWindowTokens: env.OPENROUTER_MODEL_CONTEXT_TOKENS,
