@@ -65,6 +65,12 @@ Run the validation the task requests. When it does not establish the behavior yo
 - `package.json` `name` is the eve agent identity, not a cosmetic label. eve derives the Vercel Workflow queue namespace from it (`__eve<hex(name)>_wkf_workflow_*`), used both for the flow function's `experimentalTriggers` consumer and for the runtime `WORKFLOW_QUEUE_NAMESPACE`. Renaming it moves every agent turn onto a brand-new queue topic and strands in-flight runs. Keep it `local-vault-assistant`; do product branding in instructions, UI, and user-facing copy.
 - Run `pnpm check` and `pnpm build` before handing off changes.
 
+## Session notes
+
+Agent sessions do not remember earlier sessions; a cloud session starts from a fresh clone. `docs/dev-notes.md` is the shared memory between them, and `CLAUDE.md` loads it into every Claude Code session. Read it before starting work.
+
+When you learn something a later session would otherwise rediscover the hard way (a non-obvious cause of a failure, an eve, Vercel, or CI constraint, a decision and its reason), add or correct a short entry there in the same PR, and remove entries that became wrong. Do not record task history, what the code or this file already says, secrets, tokens, internal hostnames, or user data.
+
 ## Code organization
 
 - Treat `shared` as a narrow contract boundary, not a default destination for application code. A file belongs there only when at least two of `agent`, `app`, `web`, and `db` consume it; put database access in `db/services`, agent behavior under `agent`, and route or section behavior with its route.
