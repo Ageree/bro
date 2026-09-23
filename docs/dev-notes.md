@@ -47,6 +47,19 @@
   («Dynamic tool resolver failed — Expected a JSON-serializable value»). Байты
   файлов кладутся base64-строкой (коммит `2ed484c`).
 
+- В eve нет настройки `toolChoice`. Доставку через `send_message` в
+  интерактивных ходах форсирует резолвер модели на `step.started`
+  (`agent/agent.ts`): пока последнее сообщение человека без ответа, модель
+  OpenRouter оборачивается middleware с `toolChoice: required`
+  (`agent/lib/model/openrouter.ts`). `ctx.messages` там несут eve-поле `kind`:
+  `user` у человека, `execution.background_task` у фонового пробуждения,
+  которое по инструкциям может промолчать (`agent/lib/delivery/pending.ts`).
+  Не форсируются: ходы `browser-result` (антибот-проверку модель продолжает
+  молча), шаги после десятого без ответа, `anthropic/*` с reasoning (Anthropic
+  отвергает принудительный инструмент при extended thinking). Строковый id
+  Gateway не оборачивается: в `eve dev` eve подставляет свою авторизацию
+  Gateway только для строк.
+
 ## Vercel
 
 - Не публикуйте свои маршруты каналов eve (`/webhooks`,
