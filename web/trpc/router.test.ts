@@ -1,11 +1,29 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as Chats from "@db/services/chats";
 import * as Settings from "@db/services/settings";
+import * as GoogleWorkspace from "@shared/google-workspace/connection";
 import type { AccessScope } from "@shared/identity/access-scope";
 import { appRouter } from "./router";
 
 const saveChatMock = vi.spyOn(Chats, "saveChat");
 const selectModelMock = vi.spyOn(Settings, "selectWorkspaceModel");
+const googleAccessMock = vi.spyOn(Settings, "getGoogleWorkspaceAccess");
+const selectGoogleAccessMock = vi.spyOn(
+  Settings,
+  "selectGoogleWorkspaceAccess"
+);
+const readGoogleMock = vi.spyOn(
+  GoogleWorkspace,
+  "readGoogleWorkspaceConnection"
+);
+const startGoogleMock = vi.spyOn(
+  GoogleWorkspace,
+  "startGoogleWorkspaceAuthorization"
+);
+const revokeGoogleMock = vi.spyOn(
+  GoogleWorkspace,
+  "revokeGoogleWorkspaceGrant"
+);
 
 const scope = {
   userId: "user-1",
@@ -56,5 +74,59 @@ describe("appRouter", () => {
         .chats.save({ sessionId: "" })
     ).rejects.toThrow("Too small");
     expect(saveChatMock).not.toHaveBeenCalled();
+  });
+
+  it("starts Google OAuth at the chosen level when no grant exists", async () => {
+    googleAccessMock.mockResolvedValue("full");
+    readGoogleMock.mockResolvedValue({
+      access: "full",
+      accountLabel: null,
+      state: "disconnected",
+    });
+    selectGoogleAccessMock.mockResolvedValue(undefined);
+    startGoogleMock.mockResolvedValue("https://accounts.google.com/auth");
+
+    await expect(
+      appRouter
+        .createCaller({ origin: "https://example.com", scope })
+        .googleWorkspace.update({ access: "read_only", action: "connect" })
+    ).resolves.toEqual({ redirectTo: "https://accounts.google.com/auth" });
+    expect(selectGoogleAccessMock).toHaveBeenCalledExactlyOnceWith(
+      scope,
+      "read_only"
+    );
+    expect(startGoogleMock).toHaveBeenCalledExactlyOnceWith(
+      scope.userId,
+      "read_only",
+      "https://example.com/workspace?google=connected"
+    );
+  });
+
+  it("refuses to start Google OAuth over a live grant", async () => {
+    googleAccessMock.mockResolvedValue("full");
+    readGoogleMock.mockResolvedValue({
+      access: "full",
+      accountLabel: "ada@example.com",
+      state: "connected",
+    });
+
+    await expect(
+      appRouter
+        .createCaller({ origin: "https://example.com", scope })
+        .googleWorkspace.update({ access: "read_only", action: "connect" })
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(selectGoogleAccessMock).not.toHaveBeenCalled();
+    expect(startGoogleMock).not.toHaveBeenCalled();
+  });
+
+  it("revokes the Google grant on disconnect", async () => {
+    revokeGoogleMock.mockResolvedValue(undefined);
+
+    await expect(
+      appRouter
+        .createCaller({ origin: "https://example.com", scope })
+        .googleWorkspace.update({ action: "disconnect" })
+    ).resolves.toEqual({ redirectTo: "/workspace?google=disconnected" });
+    expect(revokeGoogleMock).toHaveBeenCalledExactlyOnceWith(scope.userId);
   });
 });

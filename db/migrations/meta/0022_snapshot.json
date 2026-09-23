@@ -1,6 +1,6 @@
 {
-  "id": "4a213a95-e859-44d3-aebe-cf835d0143f7",
-  "prevId": "1239f2cf-1f86-437a-b736-d0b2bc77ae8e",
+  "id": "805ca9ef-fe76-4dce-a32f-8d796f35b0ce",
+  "prevId": "4a213a95-e859-44d3-aebe-cf835d0143f7",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -3234,7 +3234,7 @@
       "checkConstraints": {
         "settings_key_check": {
           "name": "settings_key_check",
-          "value": "\"settings\".\"key\" = 'gateway_model'"
+          "value": "\"settings\".\"key\" IN ('gateway_model', 'google_workspace_access')"
         }
       },
       "isRLSEnabled": false

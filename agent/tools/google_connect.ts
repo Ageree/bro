@@ -1,5 +1,6 @@
 import { defineDynamic, defineTool } from "eve/tools";
 import { z } from "zod";
+import { googleWorkspaceAccess } from "@agent/lib/google-workspace/client";
 import { resolveModeValue } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import {
@@ -42,11 +43,24 @@ const unreachable = {
   status: "error",
 } as const satisfies ConnectGoogleResult;
 
+const revokedWithoutLink = {
+  detail:
+    "Старый доступ к Google уже отозван, а новую ссылку получить не удалось: сейчас Google отключён. Попробуй через минуту — пришлю ссылку на подключение.",
+  status: "error",
+} as const satisfies ConnectGoogleResult;
+
 export const connectGoogle = defineTool({
-  approval: ({ toolInput }) =>
-    toolInput?.action === "disconnect" ? "user-approval" : "not-applicable",
+  // Disconnecting and changing the level both revoke the current grant, so
+  // either waits for the person; a plain check or reconnect at the same
+  // level does not.
+  approval: async (ctx) =>
+    ctx.toolInput?.action === "disconnect" ||
+    (ctx.toolInput?.access !== undefined &&
+      ctx.toolInput.access !== (await googleWorkspaceAccess(ctx)))
+      ? "user-approval"
+      : "not-applicable",
   description:
-    "Check, connect, change, or disconnect the user's Google account (Gmail, Calendar, Contacts) for this workspace. Call this immediately, without clarifying questions, whenever the user asks to connect, link, or give you access to Gmail, Google, their mail, calendar, or contacts, asks whether their mail is connected, asks for read-only access or to limit or widen what you may do in Google, or asks to disconnect or revoke Google; and whenever a gmail-*, calendar-*, or contacts-* tool fails because authorization is missing. `access` picks the grant: `read_only` (read mail, calendar, and contacts; never send, draft, change, or create) or `full` (also send with approval, save drafts, tidy the inbox, create events); omit it to keep the current level. The result is one of: status `connected` with the account label and access level, meaning no setup is needed and the task can proceed; status `authorize` with a URL that must be delivered to the user with send_message (kind `link`, or the bare URL on its own line of a message) — the link expires in 10 minutes, and once the user finishes the Google consent screen the tools work at that access level; when `previousGrantRevoked` is true the old grant is already gone, so say that Google is disconnected until they open the link; status `disconnected` (action `disconnect`, after the user approves) with a notice of what happens to their data, which must be relayed plainly; status `not_configured`, meaning this deployment has no Google OAuth connector attached, which must be told to the user plainly and never presented as success; or status `error`, meaning Google's connection service did not answer just now — relay the detail and suggest trying again in a minute, without claiming Google is not set up.",
+    "Check, connect, change, or disconnect the user's Google account (Gmail, Calendar, Contacts) for this workspace. Call this immediately, without clarifying questions, whenever the user asks to connect, link, or give you access to Gmail, Google, their mail, calendar, or contacts, asks whether their mail is connected, asks for read-only access or to limit or widen what you may do in Google, or asks to disconnect or revoke Google; and whenever a gmail-*, calendar-*, or contacts-* tool fails because authorization is missing. `access` picks the grant: `read_only` (read mail, calendar, and contacts; never send, draft, change, or create) or `full` (also send with approval, save drafts, tidy the inbox, create events); omit it to keep the current level. The result is one of: status `connected` with the account label and access level, meaning no setup is needed and the task can proceed; status `authorize` with a URL that must be delivered to the user with send_message (kind `link`, or the bare URL on its own line of a message) — the link expires in 10 minutes, and once the user finishes the Google consent screen the tools work at that access level; when `previousGrantRevoked` is true the old grant is already gone, so say that Google is disconnected until they open the link; status `disconnected` (action `disconnect`, after the user approves) with a notice of what happens to their data, which must be relayed plainly; status `not_configured`, meaning this deployment has no Google OAuth connector attached, which must be told to the user plainly and never presented as success; or status `error`, meaning Google's connection service did not answer just now — relay the detail (it says when the old grant is already revoked) and suggest trying again in a minute, without claiming Google is not set up. Disconnecting and changing the access level wait for the user's approval.",
   inputSchema: z.object({
     access: googleWorkspaceAccessSchema
       .optional()
@@ -104,11 +118,13 @@ export const connectGoogle = defineTool({
       applicationOrigin()
     );
     let url: string;
+    let revoked = false;
     try {
       // A grant at another level goes first: Google would keep its wider
       // scopes alive under the narrower one.
       if (connection.state === "connected") {
         await revokeGoogleWorkspaceGrant(scope.userId);
+        revoked = true;
       }
       if (access !== current) await selectGoogleWorkspaceAccess(scope, access);
       url = await startGoogleWorkspaceAuthorization(
@@ -119,8 +135,9 @@ export const connectGoogle = defineTool({
     } catch (error) {
       console.warn("[google-workspace] authorization start failed", {
         message: error instanceof Error ? error.message : String(error),
+        revoked,
       });
-      return unreachable;
+      return revoked ? revokedWithoutLink : unreachable;
     }
     return {
       access,

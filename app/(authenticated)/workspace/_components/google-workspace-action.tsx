@@ -10,8 +10,13 @@ export function GoogleWorkspaceAction({
   readonly state?: GoogleWorkspaceConnection["state"];
 }) {
   const update = api.googleWorkspace.update.useMutation({
-    onError: () => {
-      window.location.assign("/workspace?google=unavailable");
+    onError: (error) => {
+      // A grant appeared since the page rendered: show it as it is now.
+      window.location.assign(
+        error.data?.code === "CONFLICT"
+          ? "/workspace"
+          : "/workspace?google=unavailable"
+      );
     },
     onSuccess: ({ redirectTo }) => {
       window.location.assign(redirectTo);

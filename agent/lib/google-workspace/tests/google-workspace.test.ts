@@ -111,7 +111,7 @@ describe("Google Workspace", () => {
     expect(await approvalOf(gmailUpdate)).toEqual(refusal);
     expect(await approvalOf(calendarCreateEvent)).toEqual(refusal);
     expect(
-      await googleWriteApproval("user-approval")(sessionContext())
+      await googleWriteApproval(sessionContext(), "user-approval")
     ).toEqual(refusal);
   });
 

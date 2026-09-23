@@ -247,27 +247,48 @@ describe("connect_google execution", () => {
     expect(googleWorkspaceDisconnectNotice).toMatch(/заказы/u);
   });
 
-  it("asks before disconnecting and not before connecting", async () => {
+  it("asks before disconnecting or changing the level, not before connecting", async () => {
     const approval = connectGoogle.approval;
-    if (approval === undefined)
+    if (approval === undefined) {
       throw new Error("connect_google has no policy.");
+    }
     const policy = "request" in approval ? approval.request : approval;
     const context = toolContext();
+    const decide = async (toolInput: {
+      readonly access?: "full" | "read_only";
+      readonly action: "connect" | "disconnect";
+    }) => policy({ ...context, approvedTools: new Set(), toolInput });
 
-    expect(
-      await policy({
-        ...context,
-        approvedTools: new Set(),
-        toolInput: { action: "disconnect" },
-      })
-    ).toBe("user-approval");
-    expect(
-      await policy({
-        ...context,
-        approvedTools: new Set(),
-        toolInput: { access: "read_only", action: "connect" },
-      })
-    ).toBe("not-applicable");
+    expect(await decide({ action: "disconnect" })).toBe("user-approval");
+    expect(await decide({ access: "read_only", action: "connect" })).toBe(
+      "user-approval"
+    );
+    expect(await decide({ access: "full", action: "connect" })).toBe(
+      "not-applicable"
+    );
+    expect(await decide({ action: "connect" })).toBe("not-applicable");
+    expect(settings.access).toHaveBeenCalledWith(scope);
+  });
+
+  it("says Google is disconnected when the old grant is revoked but no link comes", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    connect.getTokenResponse.mockResolvedValue(grantedToken);
+    connect.startAuthorization.mockRejectedValue(
+      new ConnectError("bad gateway", { status: 502 })
+    );
+
+    const result = await connectGoogle.execute(
+      { access: "read_only", action: "connect" },
+      toolContext()
+    );
+
+    expect(connect.revokeToken).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({ status: "error" });
+    expect(result).toHaveProperty(
+      "detail",
+      expect.stringMatching(/уже отозван.*Google отключён/u)
+    );
+    warn.mockRestore();
   });
 
   it("treats a missing token like a revoked grant", async () => {

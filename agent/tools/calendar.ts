@@ -38,7 +38,7 @@ export const calendarCheckAvailability = defineTool({
 });
 
 export const calendarCreateEvent = defineTool({
-  approval: googleWriteApproval("user-approval"),
+  approval: (ctx) => googleWriteApproval(ctx, "user-approval"),
   description:
     "Create a confirmed private Google Calendar event. This requires user approval and sends updates to attendees.",
   inputSchema: calendarEventSchema,

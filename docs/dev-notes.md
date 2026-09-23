@@ -44,19 +44,40 @@
 
 - eve закреплён на `0.62.0` с патчем `patches/eve@0.62.0.patch`. Обновление
   версии означает перевыпуск патча; порядок описан в `patches/README.md`.
+- Веб-чат (канал eve) достижим только через `attachSession(sessionId)`: адреса
+  продолжения у него нет, и `to(...)` из расписания туда не доставит. Хендлер
+  расписания получает `attachSession` из нашего патча eve; им пользуется
+  `agent/schedules/browser-runs.ts`.
 - Всё, что попадает в историю сообщений, должно сериализоваться в JSON. Сырой
   `Uint8Array` в `FilePart` ломал durable-замыкание динамических инструментов:
   `save_memory`, `update` и `workstreams` молча пропадали до конца сессии
   («Dynamic tool resolver failed — Expected a JSON-serializable value»). Байты
   файлов кладутся base64-строкой (коммит `2ed484c`).
 
+- Колбэки динамических инструментов (`execute`, `approval` и др.) пишите
+  инлайн в `defineTool()` или ссылкой на идентификатор: сборка eve ставит
+  durable-дескриптор только им. Вызов фабрики вида `approval: policy("x")`
+  ломает резолвер в рантайме («callback 'approvalRequest' does not have a
+  durable descriptor»), а юнит-тесты этого не ловят; нужно
+  `approval: (ctx) => policy(ctx, "x")`. Проверить можно
+  `transformDynamicToolExecute(file, code)` из
+  `eve/dist/src/internal/workflow-bundle/dynamic-tool-transform.js`.
+
 ## Vercel
 
 - Не публикуйте свои маршруты каналов eve (`/webhooks`,
   `/internal/scheduled-run`) в Build Output: вебхуки отвечали 200, но Vercel
   Workflow переставал вызывать `/.well-known/workflow/v1/flow`, и ни один ход
-  не запускался. Откачено в `bb5b1a0`; вебхук Browser Use обслуживает поллер
-  раз в минуту.
+  не запускался. Откачено в `bb5b1a0`. Следствие: в продакшене до eve доходит
+  только `/eve/v1/*`, а `/webhooks/browser-use` и `/internal/scheduled-run/*`
+  не работают. Не стройте доставку на вызове своих маршрутов: вебхук Browser
+  Use заменяет поллер раз в минуту.
+
+## Браузерные поручения
+
+- Итог поручения хранится в `browser_runs.report` и доставляется отдельно от
+  завершения под арендой (`report_claimed_at`): сбой доставки не теряет итог,
+  поллер повторяет её, а `browser_task status` отдаёт недоставленный итог.
 
 ## Google
 

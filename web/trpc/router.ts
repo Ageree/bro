@@ -1,9 +1,11 @@
+import { TRPCError } from "@trpc/server";
 import { gateway } from "ai";
 import { z } from "zod";
 import { mintChannelLinkToken } from "@db/services/channel-identities";
 import { saveChat } from "@db/services/chats";
 import { replaceUserProfile } from "@db/services/user-profile";
 import {
+  getGoogleWorkspaceAccess,
   selectGoogleWorkspaceAccess,
   selectWorkspaceModel,
 } from "@db/services/settings";
@@ -11,6 +13,7 @@ import { deleteVaultItem, saveVaultItem } from "@db/services/vault";
 import { saveChatSchema } from "@shared/chat/schema";
 import {
   googleWorkspaceAccessSchema,
+  readGoogleWorkspaceConnection,
   revokeGoogleWorkspaceGrant,
   startGoogleWorkspaceAuthorization,
 } from "@shared/google-workspace/connection";
@@ -46,8 +49,19 @@ export const appRouter = createTRPCRouter({
           return { redirectTo: "/workspace?google=disconnected" };
         }
 
-        // The cabinet offers a level only while no grant exists, so the
-        // flow started here never leaves a wider grant behind.
+        // A new flow never starts over a live grant: Google would keep the
+        // old grant's scopes under the new one. The cabinet offers a level
+        // only while no grant exists, so this answers a stale page.
+        const current = await readGoogleWorkspaceConnection(
+          ctx.scope.userId,
+          await getGoogleWorkspaceAccess(ctx.scope)
+        );
+        if (current.state === "connected") {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "Google is already connected; disconnect it first.",
+          });
+        }
         await selectGoogleWorkspaceAccess(ctx.scope, input.access);
         const callbackUrl = new URL("/workspace", ctx.origin);
         callbackUrl.searchParams.set("google", "connected");

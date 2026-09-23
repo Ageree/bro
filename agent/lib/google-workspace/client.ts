@@ -40,7 +40,9 @@ const googleWorkspaceAuthKeys = {
 } satisfies Record<GoogleWorkspaceAccess, string | undefined>;
 
 /** The Google access level of the workspace this session acts for. */
-async function googleWorkspaceAccess(ctx: Pick<SessionContext, "session">) {
+export async function googleWorkspaceAccess(
+  ctx: Pick<SessionContext, "session">
+) {
   const caller = ctx.session.auth.current ?? ctx.session.auth.initiator;
   if (!caller) {
     throw new Error("Google Workspace requires an authenticated Bro user.");
@@ -52,19 +54,20 @@ export const googleReadOnlyWriteRefusal =
   "Google подключён только на чтение: Бро видит почту, календарь и контакты, но ничего не отправляет, не сохраняет черновики и не меняет. Скажи человеку это прямо. Чтобы разрешить действие, он переподключает Google с полным доступом: connect_google с access `full` или кнопка в кабинете.";
 
 /**
- * Approval policy for a Google write. A read-only workspace is refused
+ * Approval decision for a Google write. A read-only workspace is refused
  * before any prompt, with a reason the model relays; otherwise the write
  * asks the person (`user-approval`) or runs (`not-applicable`) as given.
+ * Tools call it from an inline `approval` arrow: eve stamps a durable
+ * descriptor only on callbacks authored inline in `defineTool()`, and a
+ * dynamic tool with a returned closure fails to resolve.
  */
-export function googleWriteApproval(
+export async function googleWriteApproval(
+  ctx: Pick<SessionContext, "session">,
   whenWritable: "not-applicable" | "user-approval"
-) {
-  return async (
-    ctx: Pick<SessionContext, "session">
-  ): Promise<ApprovalStatus> =>
-    (await googleWorkspaceAccess(ctx)) === "read_only"
-      ? { reason: googleReadOnlyWriteRefusal, type: "denied" }
-      : whenWritable;
+): Promise<ApprovalStatus> {
+  return (await googleWorkspaceAccess(ctx)) === "read_only"
+    ? { reason: googleReadOnlyWriteRefusal, type: "denied" }
+    : whenWritable;
 }
 
 export async function withGoogleAuth<T>(

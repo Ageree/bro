@@ -3,6 +3,7 @@ import { gmail, type gmail_v1 } from "@googleapis/gmail";
 import type { ToolContext } from "eve/tools";
 import { z } from "zod";
 import { withGoogleAuth } from "./client";
+import { emailAddressSchema } from "./email";
 
 type GmailMessage = gmail_v1.Schema$Message;
 type GmailPart = gmail_v1.Schema$MessagePart;
@@ -20,9 +21,9 @@ export type GmailUpdateAction = (typeof GMAIL_UPDATE_ACTIONS)[number];
 
 export const gmailComposeSchema = z
   .object({
-    bcc: z.array(z.email()).max(20).default([]),
+    bcc: z.array(emailAddressSchema).max(20).default([]),
     body: z.string().min(1).max(100_000),
-    cc: z.array(z.email()).max(20).default([]),
+    cc: z.array(emailAddressSchema).max(20).default([]),
     replyToMessageId: z
       .string()
       .min(1)
@@ -39,7 +40,7 @@ export const gmailComposeSchema = z
       .describe(
         "Required for a new email. Ignored for a reply, which keeps the thread's subject so Gmail threads it."
       ),
-    to: z.array(z.email()).min(1).max(20),
+    to: z.array(emailAddressSchema).min(1).max(20),
   })
   .refine(
     (input) =>

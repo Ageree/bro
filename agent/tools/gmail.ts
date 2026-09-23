@@ -212,7 +212,7 @@ function failedAttachment(request: GmailAttachmentRequest, reason: string) {
 }
 
 export const gmailUpdate = defineTool({
-  approval: googleWriteApproval("not-applicable"),
+  approval: (ctx) => googleWriteApproval(ctx, "not-applicable"),
   description:
     "Apply one reversible Gmail state change to exact message IDs: archive, move to inbox, mark read or unread, or star or unstar.",
   inputSchema: z.object({
@@ -232,7 +232,7 @@ const replyFlow =
   "To answer an email, find it with gmail-search or gmail-read-thread and pass its Gmail `id` as replyToMessageId: the tool then threads the email under that message (threadId, In-Reply-To, References) and keeps the thread's subject. Send the reply to the person who wrote that message (its `from`, or its Reply-To) unless told otherwise. Never answer an email as a new message without replyToMessageId.";
 
 export const gmailSend = defineTool({
-  approval: googleWriteApproval("user-approval"),
+  approval: (ctx) => googleWriteApproval(ctx, "user-approval"),
   description: `Send an email from the authenticated user's Gmail account. This requires user approval; put the exact recipients, subject, and full text in the call so the approval card shows them. ${replyFlow}`,
   inputSchema: gmailComposeSchema,
   async execute(input, ctx) {
@@ -247,7 +247,7 @@ export const gmailSend = defineTool({
 });
 
 export const gmailDraft = defineTool({
-  approval: googleWriteApproval("not-applicable"),
+  approval: (ctx) => googleWriteApproval(ctx, "not-applicable"),
   description: `Save an email as a draft in the user's Gmail Drafts without sending it; the person reviews and sends it from Gmail. Needs no approval because nothing leaves the mailbox. Use it when asked to draft, prepare, or write a reply for later, and for replies drafted during inbox triage or a morning brief. Write the draft in the person's own voice and language. ${replyFlow}`,
   inputSchema: gmailComposeSchema,
   async execute(input, ctx) {

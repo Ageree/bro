@@ -290,7 +290,7 @@ async function applyChatChannelMigration(database: PGlite) {
 
 async function applyGoogleWorkspaceAccessMigration(database: PGlite) {
   const migration = await readFile(
-    new URL("../migrations/0021_spotty_dexter_bennett.sql", import.meta.url),
+    new URL("../migrations/0022_handy_ben_urich.sql", import.meta.url),
     "utf8"
   );
   /* oxlint-disable eslint/no-await-in-loop -- SQL migration statements must execute in file order. */
