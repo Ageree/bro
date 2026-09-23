@@ -69,11 +69,17 @@ export function openRouterSelection(
     headers: attributionHeaders(),
   });
   const model = openrouter.chat(modelId, { provider: providerRouting() });
+  // OpenRouter sends `required` to Anthropic as a forced tool call, which
+  // Anthropic rejects while extended thinking is on.
+  const forcedToolAllowed =
+    !modelId.startsWith("anthropic/") ||
+    env.OPENROUTER_REASONING_EFFORT === "off";
 
   return {
-    model: options.requireToolCall
-      ? wrapLanguageModel({ middleware: toolCallRequired, model })
-      : model,
+    model:
+      options.requireToolCall && forcedToolAllowed
+        ? wrapLanguageModel({ middleware: toolCallRequired, model })
+        : model,
     // eve resolves an omitted context window from the AI Gateway catalog,
     // which does not list OpenRouter model ids.
     modelContextWindowTokens: env.OPENROUTER_MODEL_CONTEXT_TOKENS,

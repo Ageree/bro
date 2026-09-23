@@ -124,19 +124,29 @@ describe("model selection", () => {
     expect(doGenerate.mock.calls[1]?.[0].toolChoice).toBeUndefined();
   });
 
-  it("leaves the tool choice to the model otherwise", async () => {
-    vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
+  it.each([
+    ["no tool call is required", "deepseek/deepseek-v4.1-flash", false, "off"],
+    [
+      "Anthropic thinks before answering",
+      "anthropic/claude-sonnet-4.5",
+      true,
+      "medium",
+    ],
+  ])(
+    "hands back the provider model untouched when %s",
+    async (_case, modelId, requireToolCall, effort) => {
+      vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
+      vi.stubEnv("OPENROUTER_REASONING_EFFORT", effort);
+      const providerModel = { modelId };
+      openRouter.chat.mockReturnValue(providerModel);
 
-    const { modelSelection } = await import("@agent/lib/model/selection");
-    const selection = modelSelection("deepseek/deepseek-v4.1-flash", {
-      requireToolCall: false,
-    });
+      const { openRouterSelection } =
+        await import("@agent/lib/model/openrouter");
+      const selection = openRouterSelection(modelId, { requireToolCall });
 
-    expect(selection).toMatchObject({
-      model: { modelId: "deepseek/deepseek-v4.1-flash" },
-    });
-    expect(selection).not.toHaveProperty("model.doGenerate");
-  });
+      expect(selection.model).toBe(providerModel);
+    }
+  );
 
   it("pins the configured provider order and reasoning effort", async () => {
     vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");

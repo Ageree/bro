@@ -78,6 +78,21 @@ describe("awaitsDelivery", () => {
     ).toBe(false);
   });
 
+  it("stops forcing a reply after ten model steps without one", () => {
+    const steps = (count: number) =>
+      Array.from({ length: count }, () => [
+        toolCall("web_search"),
+        toolResult("web_search", { type: "text", value: "результаты" }),
+      ]).flat();
+
+    expect(awaitsDelivery([userMessage("найди билеты"), ...steps(9)])).toBe(
+      true
+    );
+    expect(awaitsDelivery([userMessage("найди билеты"), ...steps(10)])).toBe(
+      false
+    );
+  });
+
   it("has nothing to wait on without a person's message", () => {
     expect(awaitsDelivery([])).toBe(false);
     expect(awaitsDelivery([userMessage("summary", "context.compaction")])).toBe(

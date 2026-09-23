@@ -114,6 +114,30 @@ describe("interactive delivery enforcement", () => {
     );
   });
 
+  it("leaves a browser run's result free to stay silent", async () => {
+    await agent.model.events["step.started"]?.(
+      {},
+      interactiveContext(pending, "browser-result")
+    );
+
+    expect(services.modelSelection).toHaveBeenLastCalledWith(
+      "openai/gpt-5.6-sol-fast",
+      { requireToolCall: false }
+    );
+  });
+
+  it("never forces a tool on a scheduled report, which may stay suppressed", async () => {
+    await agent.model.events["step.started"]?.(
+      {},
+      interactiveContext(pending, "scheduled-result")
+    );
+
+    expect(services.modelSelection).toHaveBeenLastCalledWith(
+      "openai/gpt-5.6-sol-fast",
+      { requireToolCall: false }
+    );
+  });
+
   it("never forces a tool on a scheduled worker, which answers in text", async () => {
     services.isActive.mockResolvedValue(true);
 
@@ -141,7 +165,8 @@ function humanMessage(text: string) {
 }
 
 function interactiveContext(
-  messages: DynamicResolveContext["messages"]
+  messages: DynamicResolveContext["messages"],
+  authenticator = "telegram"
 ): DynamicResolveContext {
   return {
     channel: { kind: "channel:telegram" },
@@ -151,7 +176,7 @@ function interactiveContext(
       auth: {
         current: {
           attributes: { workspaceId: "workspace-1" },
-          authenticator: "telegram",
+          authenticator,
           principalId: "user-1",
           principalType: "user",
         },

@@ -29,11 +29,6 @@
   изменение с точки зрения пользователя.
 - В свежей облачной сессии нет `node_modules`: перед `pnpm check` и
   `pnpm build` нужен `pnpm install`.
-- `pnpm check` и `pnpm build` требуют Node 24 (`.node-version`); в облачной
-  сессии по умолчанию Node 22, и часть тестов падает с `SyntaxError` ещё на
-  импорте. Помогает `nvm install 24`. `pnpm build` без переменных окружения
-  падает на сборе данных страниц; для локальной проверки хватает заглушек из
-  `tests/setup-env.ts`. CI гоняет только `pnpm check`.
 - `pnpm check` включает knip: новый каталог с точками входа (как
   `agent/instrumentation/`) надо добавить в `knip.config.ts`, иначе его файлы
   считаются неиспользуемыми.
@@ -59,8 +54,11 @@
   (`agent/lib/model/openrouter.ts`). `ctx.messages` там несут eve-поле `kind`:
   `user` у человека, `execution.background_task` у фонового пробуждения,
   которое по инструкциям может промолчать (`agent/lib/delivery/pending.ts`).
-  Строковый id Gateway не оборачивается: в `eve dev` eve подставляет свою
-  авторизацию Gateway только для строк.
+  Не форсируются: ходы `browser-result` (антибот-проверку модель продолжает
+  молча), шаги после десятого без ответа, `anthropic/*` с reasoning (Anthropic
+  отвергает принудительный инструмент при extended thinking). Строковый id
+  Gateway не оборачивается: в `eve dev` eve подставляет свою авторизацию
+  Gateway только для строк.
 
 ## Vercel
 
