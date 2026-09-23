@@ -19,6 +19,7 @@ describe("authored mode capability matrix", () => {
       "calendar-create-event",
       "calendar-list-events",
       "contacts-search",
+      "gmail-attachment",
       "gmail-read-thread",
       "gmail-search",
       "gmail-send",
@@ -50,6 +51,7 @@ describe("authored mode capability matrix", () => {
       "calendar-check-availability",
       "calendar-list-events",
       "contacts-search",
+      "gmail-attachment",
       "gmail-read-thread",
       "gmail-search",
     ]);

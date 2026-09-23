@@ -1,6 +1,6 @@
 {
-  "id": "df1d6592-0cd5-4155-9989-6158fdb052c1",
-  "prevId": "1239f2cf-1f86-437a-b736-d0b2bc77ae8e",
+  "id": "74e9f6bc-ffc9-4649-be96-783db53d6ab5",
+  "prevId": "df1d6592-0cd5-4155-9989-6158fdb052c1",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -1189,6 +1189,168 @@
           "primaryKey": false,
           "notNull": false
         },
+        "scheduled_origin": {
+          "name": "scheduled_origin",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "root_run_id": {
+          "name": "root_run_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "active_run_id": {
+          "name": "active_run_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "parent_run_id": {
+          "name": "parent_run_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "lineage_revision": {
+          "name": "lineage_revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "lineage_state": {
+          "name": "lineage_state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'active'"
+        },
+        "lineage_token": {
+          "name": "lineage_token",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "lineage_task": {
+          "name": "lineage_task",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "lineage_previous_run_id": {
+          "name": "lineage_previous_run_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "lineage_recovery_token": {
+          "name": "lineage_recovery_token",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "lineage_recovery_claimed_at": {
+          "name": "lineage_recovery_claimed_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "capability": {
+          "name": "capability",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'browse'"
+        },
+        "verification_plan": {
+          "name": "verification_plan",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "verification_report": {
+          "name": "verification_report",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "final_task_status": {
+          "name": "final_task_status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "final_need": {
+          "name": "final_need",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "repair_count": {
+          "name": "repair_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "repair_state": {
+          "name": "repair_state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'none'"
+        },
+        "repair_token": {
+          "name": "repair_token",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "repair_task": {
+          "name": "repair_task",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "repair_claimed_at": {
+          "name": "repair_claimed_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "repair_deadline": {
+          "name": "repair_deadline",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "delivery_state": {
+          "name": "delivery_state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'pending'"
+        },
+        "delivery_token": {
+          "name": "delivery_token",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "delivery_claimed_at": {
+          "name": "delivery_claimed_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "delivered_at": {
+          "name": "delivered_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp (3) with time zone",
@@ -1284,6 +1446,30 @@
         "browser_runs_proxy_country_code_check": {
           "name": "browser_runs_proxy_country_code_check",
           "value": "\"browser_runs\".\"proxy_country_code\" IS NULL OR \"browser_runs\".\"proxy_country_code\" ~ '^[a-z]{2}$'"
+        },
+        "browser_runs_capability_check": {
+          "name": "browser_runs_capability_check",
+          "value": "\"browser_runs\".\"capability\" IN ('browse', 'prepare', 'purchase', 'send', 'account-change', 'delete')"
+        },
+        "browser_runs_lineage_state_check": {
+          "name": "browser_runs_lineage_state_check",
+          "value": "\"browser_runs\".\"lineage_state\" IN ('active', 'claimed', 'creating', 'recovering', 'failed', 'cancelled')"
+        },
+        "browser_runs_final_task_status_check": {
+          "name": "browser_runs_final_task_status_check",
+          "value": "\"browser_runs\".\"final_task_status\" IS NULL OR \"browser_runs\".\"final_task_status\" IN ('complete', 'partial', 'blocked', 'invalid')"
+        },
+        "browser_runs_repair_state_check": {
+          "name": "browser_runs_repair_state_check",
+          "value": "\"browser_runs\".\"repair_state\" IN ('none', 'claimed', 'creating', 'running', 'failed')"
+        },
+        "browser_runs_delivery_state_check": {
+          "name": "browser_runs_delivery_state_check",
+          "value": "\"browser_runs\".\"delivery_state\" IN ('pending', 'claimed', 'acked', 'ambiguous')"
+        },
+        "browser_runs_repair_count_check": {
+          "name": "browser_runs_repair_count_check",
+          "value": "\"browser_runs\".\"repair_count\" BETWEEN 0 AND 1"
         }
       },
       "isRLSEnabled": false
@@ -2532,6 +2718,13 @@
           "primaryKey": false,
           "notNull": false
         },
+        "pending_browser_run_ids": {
+          "name": "pending_browser_run_ids",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
         "pending_input_requests": {
           "name": "pending_input_requests",
           "type": "jsonb",
@@ -3062,7 +3255,7 @@
       "checkConstraints": {
         "settings_key_check": {
           "name": "settings_key_check",
-          "value": "\"settings\".\"key\" = 'gateway_model'"
+          "value": "\"settings\".\"key\" IN ('gateway_model', 'browser_autonomy')"
         }
       },
       "isRLSEnabled": false

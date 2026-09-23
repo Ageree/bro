@@ -13,7 +13,7 @@ describe("database migrations", () => {
     const database = createDatabase();
     const directory = new URL("../migrations/", import.meta.url);
     const names = (await readdir(directory))
-      .filter((name) => name.endsWith(".sql") && !name.startsWith("0021_"))
+      .filter((name) => name.endsWith(".sql") && !name.startsWith("0022_"))
       .toSorted();
     await applyMigrationSequence(database, names);
     await database.exec(`
@@ -31,7 +31,7 @@ describe("database migrations", () => {
         'eve', 'conversation-1', now()
       );
     `);
-    await applyMigration(database, "0021_magenta_tony_stark.sql");
+    await applyMigration(database, "0022_magenta_tony_stark.sql");
     const result = await database.query<{ deliveryState: string }>(`
       SELECT delivery_state AS "deliveryState"
       FROM browser_runs

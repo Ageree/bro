@@ -6,14 +6,17 @@ const firstId = "0d01e667-d128-4bb7-a248-1ae21db72f4f";
 const secondId = "206c3a7e-c0b8-4317-9e34-552cff646673";
 const mocks = vi.hoisted(() => ({ getBlob: vi.fn(), readArtifact: vi.fn() }));
 
-vi.mock("@db/services/browser-images", () => ({
-  readReadyBrowserImageArtifact: mocks.readArtifact,
+vi.mock("@db/services/artifacts", () => ({
+  readReadyArtifact: mocks.readArtifact,
 }));
 vi.mock("@vercel/blob", () => ({
   get: mocks.getBlob,
 }));
 
-import { prepareImageArtifactDelivery } from "./delivery";
+import {
+  imageArtifactFailureText,
+  prepareImageArtifactDelivery,
+} from "./delivery";
 
 const scope = { userId: "user-1", workspaceId: "workspace-1" };
 
@@ -62,6 +65,7 @@ describe("image artifact delivery", () => {
       {
         data: Buffer.from([1, 2, 3]),
         filename: "product.png",
+        kind: "photo",
         mimeType: "image/png",
       },
     ]);
@@ -80,6 +84,87 @@ describe("image artifact delivery", () => {
     expect(result.files).toHaveLength(1);
     expect(result.failedArtifactIds).toEqual([secondId]);
     expect(result.text).toBe("");
+  });
+
+  it("delivers a mail attachment artifact as the kind of file it is", async () => {
+    mocks.readArtifact.mockResolvedValue({
+      byteSize: 3,
+      contentHash:
+        "039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81",
+      filename: "invoice.pdf",
+      id: secondId,
+      mediaType: "application/pdf",
+      storagePathname: "gmail-attachments/invoice",
+    });
+    mocks.getBlob.mockResolvedValue({
+      blob: { contentType: "application/pdf", size: 3 },
+      statusCode: 200,
+      stream: new Response(new Uint8Array([1, 2, 3])).body,
+    });
+
+    const result = await prepareImageArtifactDelivery(
+      `![invoice.pdf](/artifacts/${secondId})`,
+      { rootSessionId: "root-session", scope }
+    );
+
+    expect(result.files).toEqual([
+      {
+        data: Buffer.from([1, 2, 3]),
+        filename: "invoice.pdf",
+        kind: "document",
+        mimeType: "application/pdf",
+      },
+    ]);
+  });
+
+  it("rejects stored bytes that outgrow the recorded size", async () => {
+    mocks.getBlob.mockResolvedValue({
+      blob: { contentType: "image/png", size: 3 },
+      statusCode: 200,
+      stream: new Response(new Uint8Array([1, 2, 3, 4])).body,
+    });
+
+    const result = await prepareImageArtifactDelivery(
+      `![First](/artifacts/${firstId})`,
+      { rootSessionId: "root-session", scope }
+    );
+
+    expect(result.files).toEqual([]);
+    expect(result.failedArtifactIds).toEqual([firstId]);
+  });
+
+  it("leaves an artifact past the message's byte budget unread", async () => {
+    mocks.readArtifact.mockResolvedValue({
+      byteSize: 31 * 1024 * 1024,
+      contentHash: "hash",
+      filename: "archive.pdf",
+      id: secondId,
+      mediaType: "application/pdf",
+      storagePathname: "gmail-attachments/archive",
+    });
+
+    const result = await prepareImageArtifactDelivery(
+      `![archive.pdf](/artifacts/${secondId})`,
+      { rootSessionId: "root-session", scope }
+    );
+
+    expect(mocks.getBlob).not.toHaveBeenCalled();
+    expect(result.files).toEqual([]);
+    expect(result.failedArtifactIds).toEqual([secondId]);
+  });
+
+  it("names a failed artifact a file, whatever it held", () => {
+    expect(imageArtifactFailureText(0)).toBe("");
+    expect(imageArtifactFailureText(1)).toBe("Не получилось приложить файл.");
+    expect(imageArtifactFailureText(3)).toBe(
+      "Не получилось приложить 3 файла."
+    );
+    expect(imageArtifactFailureText(5)).toBe(
+      "Не получилось приложить 5 файлов."
+    );
+    expect(imageArtifactFailureText(21)).toBe(
+      "Не получилось приложить 21 файл."
+    );
   });
 
   it("leaves ordinary markdown untouched without storage reads", async () => {

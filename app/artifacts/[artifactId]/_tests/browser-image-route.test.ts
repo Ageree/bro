@@ -12,8 +12,8 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@db/services/auth/session", () => ({
   getAuthSession: mocks.getAuthSession,
 }));
-vi.mock("@db/services/browser-images", () => ({
-  readReadyBrowserImageArtifact: mocks.readArtifact,
+vi.mock("@db/services/artifacts", () => ({
+  readReadyArtifact: mocks.readArtifact,
 }));
 vi.mock("@vercel/blob", () => ({
   get: mocks.getBlob,
@@ -52,6 +52,33 @@ describe("browser image route", () => {
       "Product%20image.png"
     );
     expect(new Uint8Array(await response.arrayBuffer())).toEqual(png);
+  });
+
+  it("downloads a non-image artifact instead of rendering it", async () => {
+    const pdf = new TextEncoder().encode("%PDF-1.7");
+    mocks.readArtifact.mockResolvedValue({
+      byteSize: pdf.byteLength,
+      filename: "Счёт.pdf",
+      mediaType: "application/pdf",
+      storagePathname: "gmail-attachments/invoice",
+    });
+    mocks.getBlob.mockResolvedValue({
+      blob: {
+        contentType: "application/pdf",
+        etag: '"etag"',
+        size: pdf.byteLength,
+      },
+      statusCode: 200,
+      stream: new Response(pdf).body,
+    });
+
+    const response = await GET(request(), context());
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("application/pdf");
+    expect(response.headers.get("content-disposition")).toMatch(
+      /^attachment; filename="____\.pdf"; filename\*=UTF-8''%D0%A1/u
+    );
   });
 
   it("passes conditional ETags through to private Blob", async () => {

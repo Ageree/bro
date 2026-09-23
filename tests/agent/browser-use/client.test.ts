@@ -450,6 +450,58 @@ describe("Browser Use client", () => {
     ).resolves.toBeUndefined();
   });
 
+  it("lists a run's saved pictures with their download links", async () => {
+    const client = await loadClient();
+    const workspaceId = "33333333-3333-4333-8333-333333333333";
+    const calls = stubFetch(
+      Response.json({
+        files: [
+          {
+            lastModified: "2026-09-22T10:05:00Z",
+            path: "report/final.png",
+            size: 2048,
+            url: "https://workspace.browser-use.test/final.png?signature=x",
+          },
+        ],
+        hasMore: false,
+        nextCursor: null,
+      })
+    );
+
+    const listed = await client.listBrowserUseWorkspaceFiles(
+      workspaceId,
+      "report/"
+    );
+
+    expect(listed.files[0]?.path).toBe("report/final.png");
+    const url = new URL(calls[0]?.url ?? "");
+    expect(url.pathname).toBe(`/api/v4/workspaces/${workspaceId}/files`);
+    expect(url.searchParams.get("prefix")).toBe("report/");
+    expect(url.searchParams.get("includeUrls")).toBe("true");
+    expect(calls[0]?.method).toBe("GET");
+  });
+
+  it("reads the workspace a finished run saved its files into", async () => {
+    const client = await loadClient();
+    stubFetch(
+      Response.json({
+        createdAt: "2026-09-22T10:00:00Z",
+        error: null,
+        id: runId,
+        result: "RESULT: done",
+        sessionId,
+        status: "completed",
+        task: "Order the usual",
+        workspaceId: "33333333-3333-4333-8333-333333333333",
+      })
+    );
+
+    const run = await client.readBrowserUseRun(runId);
+
+    expect(run.workspaceId).toBe("33333333-3333-4333-8333-333333333333");
+    expect(run.createdAt).toBe("2026-09-22T10:00:00Z");
+  });
+
   it("refuses to call the API without a configured key", async () => {
     vi.resetModules();
     vi.stubEnv("BROWSER_USE_API_KEY", "");

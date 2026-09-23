@@ -1,5 +1,5 @@
 {
-  "id": "df1d6592-0cd5-4155-9989-6158fdb052c1",
+  "id": "1239f2cf-1f86-437a-b736-d0b2bc77ae8e",
   "prevId": "9c80ae55-752a-4b45-bb3c-fc7ebdf2e811",
   "version": "7",
   "dialect": "postgresql",
@@ -1140,12 +1140,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "proxy_country_code": {
-          "name": "proxy_country_code",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "status": {
           "name": "status",
           "type": "text",
@@ -1280,10 +1274,6 @@
         "browser_runs_conversation_id_check": {
           "name": "browser_runs_conversation_id_check",
           "value": "\"browser_runs\".\"conversation_id\" <> ''"
-        },
-        "browser_runs_proxy_country_code_check": {
-          "name": "browser_runs_proxy_country_code_check",
-          "value": "\"browser_runs\".\"proxy_country_code\" IS NULL OR \"browser_runs\".\"proxy_country_code\" ~ '^[a-z]{2}$'"
         }
       },
       "isRLSEnabled": false
@@ -1606,6 +1596,163 @@
         "chats_cost_usd_check": {
           "name": "chats_cost_usd_check",
           "value": "\"chats\".\"cost_usd\" IS NULL OR \"chats\".\"cost_usd\" >= 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.gmail_attachment_artifacts": {
+      "name": "gmail_attachment_artifacts",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "workspace_id": {
+          "name": "workspace_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_by_user_id": {
+          "name": "created_by_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "root_session_id": {
+          "name": "root_session_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "gmail_message_id": {
+          "name": "gmail_message_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "gmail_part_id": {
+          "name": "gmail_part_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "filename": {
+          "name": "filename",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "media_type": {
+          "name": "media_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "byte_size": {
+          "name": "byte_size",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "content_hash": {
+          "name": "content_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "storage_pathname": {
+          "name": "storage_pathname",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "gmail_attachment_artifacts_session_part_uidx": {
+          "name": "gmail_attachment_artifacts_session_part_uidx",
+          "columns": [
+            {
+              "expression": "workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "root_session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "gmail_message_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "gmail_part_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "gmail_attachment_artifacts_workspace_created_idx": {
+          "name": "gmail_attachment_artifacts_workspace_created_idx",
+          "columns": [
+            {
+              "expression": "workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "first"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "gmail_attachment_artifacts_membership_fkey": {
+          "name": "gmail_attachment_artifacts_membership_fkey",
+          "tableFrom": "gmail_attachment_artifacts",
+          "tableTo": "workspace_memberships",
+          "columnsFrom": ["workspace_id", "created_by_user_id"],
+          "columnsTo": ["workspace_id", "user_id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "gmail_attachment_artifacts_byte_size_check": {
+          "name": "gmail_attachment_artifacts_byte_size_check",
+          "value": "\"gmail_attachment_artifacts\".\"byte_size\" > 0"
         }
       },
       "isRLSEnabled": false

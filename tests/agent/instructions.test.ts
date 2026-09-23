@@ -74,6 +74,16 @@ describe("agent instructions", () => {
     );
   });
 
+  it("forwards mail attachments as private artifacts", async () => {
+    const resolve = roleInstructions.events["turn.started"];
+    expect(resolve).toBeDefined();
+    if (!resolve) return;
+
+    const selected = await resolve({}, dynamicContext("photon-imessage"));
+    expect(selected?.content).toContain("передай их в `gmail-attachment`");
+    expect(selected?.content).toContain("`![имя](/artifacts/id)`");
+  });
+
   it("omits message style from scheduled workers", async () => {
     const resolve = messageStyle.events["turn.started"];
     expect(resolve).toBeDefined();
@@ -150,6 +160,11 @@ describe("agent instructions", () => {
       "Список одних названий без ссылок не выдавай за готовый результат"
     );
     expect(selected?.content).toContain("Не запускай бесконечные повторы");
+    expect(selected?.content).toContain("`collectImages: true`");
+    expect(selected?.content).toContain("`![подпись](/artifacts/id)`");
+    expect(selected?.content).toContain(
+      "Путь `/artifacts/...` голым текстом не шли никогда"
+    );
   });
 
   it("greets a first-contact turn in short Russian bubbles", async () => {

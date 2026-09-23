@@ -420,17 +420,9 @@ async function deliverText(
   const prepared = await attachmentDelivery(session, attachments);
   await uploadFiles(
     context,
-    [
-      // An image artifact was validated as an image when it was stored, so it
-      // uploads as a photo and has no public URL to fall back to.
-      ...delivery.files.map((file) => ({
-        data: file.data,
-        filename: file.filename,
-        kind: "photo" as const,
-        mimeType: file.mimeType,
-      })),
-      ...prepared.files,
-    ],
+    // An artifact has no public URL, so a failed upload has no link to fall
+    // back to.
+    [...delivery.files, ...prepared.files],
     prepared.links
   );
 }

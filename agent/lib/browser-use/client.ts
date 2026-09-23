@@ -18,6 +18,7 @@ const runCreateResponseSchema = z.object({
 });
 
 const runSummarySchema = z.object({
+  createdAt: z.string().optional(),
   error: z.string().nullable().optional(),
   id: z.string().min(1),
   model: z.string().optional().catch(undefined),
@@ -28,6 +29,25 @@ const runSummarySchema = z.object({
   totalCostUsd: z.union([z.string(), z.number()]).optional().catch(undefined),
   totalInputTokens: z.number().int().nonnegative().optional().catch(undefined),
   totalOutputTokens: z.number().int().nonnegative().optional().catch(undefined),
+  // The files the run saved live here, and every run in a session shares it.
+  workspaceId: z.string().nullable().optional(),
+});
+
+/**
+ * A file the run left in its workspace. The download URL is presigned and
+ * dies after sixty seconds, so it is fetched in the same breath as the list.
+ */
+const workspaceFileSchema = z.object({
+  lastModified: z.string(),
+  path: z.string().min(1),
+  size: z.number().int().nonnegative(),
+  url: z.string().nullable().optional(),
+});
+
+const workspaceFileListSchema = z.object({
+  files: z.array(workspaceFileSchema),
+  hasMore: z.boolean().optional(),
+  nextCursor: z.string().nullable().optional(),
 });
 
 const runStatusResponseSchema = z.object({ status: runStatusSchema });
@@ -168,6 +188,29 @@ export async function createBrowserUseRun(input: BrowserUseCreateRunInput) {
 export async function readBrowserUseRun(runId: string) {
   return runSummarySchema.parse(
     await request("GET", `/runs/${encodeURIComponent(runId)}`)
+  );
+}
+
+/**
+ * The files under one prefix of a run's workspace, each with its presigned
+ * download URL. A single page is enough: the caller keeps a handful of images,
+ * and a workspace that grew past a hundred files under the prefix is not one
+ * the run was asked to fill.
+ */
+export async function listBrowserUseWorkspaceFiles(
+  workspaceId: string,
+  prefix: string
+) {
+  const query = new URLSearchParams({
+    includeUrls: "true",
+    limit: "100",
+    prefix,
+  });
+  return workspaceFileListSchema.parse(
+    await request(
+      "GET",
+      `/workspaces/${encodeURIComponent(workspaceId)}/files?${query.toString()}`
+    )
   );
 }
 

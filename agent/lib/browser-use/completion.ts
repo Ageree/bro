@@ -30,6 +30,7 @@ import {
   readBrowserUseRun,
   type BrowserUseRunStatus,
 } from "./client";
+import { captureBrowserRunImages, type BrowserRunImage } from "./images";
 import {
   browserOutcomeSummary,
   browserRunNeeds,
@@ -347,12 +348,15 @@ export async function settleBrowserRun(
     run.result,
     taskStatus
   );
+  const images =
+    parsed.needs === "captcha" ? [] : await safeBrowserRunImages(row, run);
   const outcome = [
     `Independent verification: ${verification.verdict}`,
     verification.defects.length
       ? `Verification defects: ${verification.defects.map((defect) => defect.message).join("; ")}`
       : undefined,
     freshVerificationFacts(verification),
+    imagesBlock(images),
     operator
       ? `Operator-reported (unverified except where reflected in fresh observations):\n${operator}`
       : undefined,
@@ -385,6 +389,29 @@ export async function settleBrowserRun(
     parsed.needs,
     taskStatus
   );
+}
+
+async function safeBrowserRunImages(
+  row: BrowserRunRow,
+  run: Awaited<ReturnType<typeof readBrowserUseRun>>
+) {
+  try {
+    return await captureBrowserRunImages(row, run);
+  } catch (error) {
+    console.warn("[browser-use] run images could not be captured", {
+      errorName: error instanceof Error ? error.name : "unknown",
+      runId: row.id,
+    });
+    return [];
+  }
+}
+
+function imagesBlock(images: readonly BrowserRunImage[]) {
+  if (images.length === 0) return undefined;
+  return [
+    "Images this run saved, ready to send. Attach one by writing ![caption](/artifacts/<id>) in the send_message text — the channel uploads the picture itself, so never paste the /artifacts/ path as a bare link. Attach when the person asked for a photo or a screenshot, or when the outcome is easier to show than to tell; otherwise leave them out.",
+    ...images.map((image) => `- ${image.id}: ${image.label}`),
+  ].join("\n");
 }
 
 async function recordBrowserRunOrder(

@@ -230,7 +230,7 @@ export async function claimBrowserLineageTransition(options: {
 }) {
   const token = randomUUID();
   const marker = `pending:${token}`;
-  const markedTask = `[BRO_TRANSITION:${token}]\n${options.task}`;
+  const markedTask = `${options.task}\n\n[BRO_TRANSITION:${token}]`;
   const [root] = await db
     .update(browserRuns)
     .set({
@@ -314,7 +314,7 @@ export async function prepareBrowserLineageTask(options: {
   readonly task: string;
   readonly token: string;
 }) {
-  const task = `[BRO_TRANSITION:${options.token}]\n${options.task}`;
+  const task = `${options.task}\n\n[BRO_TRANSITION:${options.token}]`;
   const [row] = await db
     .update(browserRuns)
     .set({ lineageTask: task, updatedAt: new Date() })

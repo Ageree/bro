@@ -74,8 +74,8 @@ vi.mock(import("eve/channels/telegram"), async (importOriginal) => {
     },
   };
 });
-vi.mock("@db/services/browser-images", () => ({
-  async readReadyBrowserImageArtifact(
+vi.mock("@db/services/artifacts", () => ({
+  async readReadyArtifact(
     scope: AccessScope,
     id: string,
     options: { readonly rootSessionId: string; readonly signal?: AbortSignal }
@@ -681,7 +681,7 @@ describe("Telegram message delivery", () => {
     expect(request).toHaveBeenCalledExactlyOnceWith("sendMessage", {
       chat_id: "4242",
       parse_mode: "HTML",
-      text: "Here it is.\n\nНе получилось приложить картинку.",
+      text: "Here it is.\n\nНе получилось приложить файл.",
     });
   });
 
