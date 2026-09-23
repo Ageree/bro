@@ -124,7 +124,7 @@ describe("model selection", () => {
     expect(doGenerate.mock.calls[1]?.[0].toolChoice).toBeUndefined();
   });
 
-  it("makes a looping turn end in text", async () => {
+  it("forwards toolChoice none, even for Anthropic with reasoning on", async () => {
     vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
     vi.stubEnv("OPENROUTER_REASONING_EFFORT", "medium");
     const doGenerate = vi.fn<LanguageModelV4["doGenerate"]>();
@@ -138,7 +138,9 @@ describe("model selection", () => {
     }));
 
     const { openRouterSelection } = await import("@agent/lib/model/openrouter");
-    // Anthropic rejects only a forced tool call while thinking, not `none`.
+    // Anthropic's extended thinking allows tool_choice auto and none and
+    // rejects only a forced tool, so `none` is not downgraded like `required`.
+    // The provider is mocked: this checks the forwarding, not Anthropic.
     const selection = openRouterSelection("anthropic/claude-sonnet-4.5", {
       toolChoice: "none",
     });

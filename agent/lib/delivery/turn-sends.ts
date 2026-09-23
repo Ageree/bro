@@ -70,7 +70,11 @@ function specificsOf(text: string) {
     .map((token) => token.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ""))
     .filter(
       (token) =>
-        /\p{N}/u.test(token) || /^\p{Lu}/u.test(token) || token.includes("://")
+        /\p{N}/u.test(token) ||
+        /^\p{Lu}/u.test(token) ||
+        // Identifier-shaped codes such as `order_ab` or `abc-def`.
+        /[\p{L}\p{N}][-_][\p{L}\p{N}]/u.test(token) ||
+        token.includes("://")
     );
   // A capital that only opens a sentence is not a specific.
   const sentenceStarts = new Set(
