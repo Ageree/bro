@@ -13,7 +13,11 @@ import {
   redeemChannelLinkToken,
 } from "@db/services/channel-identities";
 import { messageQuotaGate } from "@agent/lib/billing/quota";
-import { fallbackDeliveryText } from "@agent/lib/delivery-fallback";
+import {
+  fallbackDeliveryText,
+  modelOutageNotice,
+} from "@agent/lib/delivery-fallback";
+import { firstContactContext } from "@agent/lib/first-contact";
 import { telegramMediaTurn } from "@agent/lib/inbound-media/telegram";
 import {
   prepareAttachmentDelivery,
@@ -218,7 +222,8 @@ export default telegramChannel({
       if (!scheduledReportFromSession(session)) {
         await sendText(
           context,
-          "Что-то сломалось, пока я разбирался с твоей просьбой. Попробуй ещё раз."
+          modelOutageNotice(event) ??
+            "Что-то сломалось, пока я разбирался с твоей просьбой. Попробуй ещё раз."
         );
       }
     },
@@ -278,16 +283,19 @@ export default telegramChannel({
       },
       principalId,
     };
+    // An account linked from the web cabinet may never have written before,
+    // so the introduction follows the workspace's first message here too.
+    const turnContext = await firstContactContext(scope);
     // Photos, documents and voice notes are resolved to bytes and text here,
     // because eve's lazy resolver drops a photo the Bot API serves without an
     // image content type and never reads a voice note at all.
     const media = await telegramMediaTurn(message);
-    if (media === undefined) return { auth: sessionAuth };
+    if (media === undefined) return { auth: sessionAuth, context: turnContext };
     if (media.notice) await context.telegram.sendMessage(media.notice);
     // A voice note nobody could transcribe leaves nothing to answer, so the
     // retry line above is the whole reply and no model turn starts.
     if (media.message === undefined) return null;
-    return { auth: sessionAuth, message: media.message };
+    return { auth: sessionAuth, context: turnContext, message: media.message };
   },
 });
 

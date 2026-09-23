@@ -262,6 +262,13 @@ reaches the model as a line starting with `[голосовое]`; when nothing c
 transcribed and the message has no text, the person is asked to retry and no
 model turn runs.
 
+When the model provider refuses a turn (out of credits, down), Telegram and
+iMessage answer the person with «я прилёг, скоро вернусь» instead of silence.
+To hear about it before people do, set `OPENROUTER_MANAGEMENT_KEY` (the credits
+endpoint rejects an inference key) and `OWNER_TELEGRAM_CHAT_ID`: once an hour
+the schedule reads the OpenRouter balance and, while it is below
+`OPENROUTER_CREDITS_ALERT_USD` (default 5), messages the owner through the bot.
+
 ## Landing and onboarding
 
 `/` is a public Russian landing page and the signed-in workspace lives at

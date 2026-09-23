@@ -105,12 +105,14 @@ const handleActionResult =
   photonChannelCapture.config?.events?.["action.result"];
 const handleMessageCompleted =
   photonChannelCapture.config?.events?.["message.completed"];
-if (!handleActionResult || !handleMessageCompleted) {
+const handleTurnFailed = photonChannelCapture.config?.events?.["turn.failed"];
+if (!handleActionResult || !handleMessageCompleted || !handleTurnFailed) {
   throw new Error("The Photon channel must configure action result delivery.");
 }
 
 type ActionHandlerParameters = Parameters<typeof handleActionResult>;
 type MessageHandlerParameters = Parameters<typeof handleMessageCompleted>;
+type TurnFailedEvent = Parameters<typeof handleTurnFailed>[0];
 
 describe("Photon message delivery", () => {
   beforeEach(() => {
@@ -711,10 +713,54 @@ describe("Photon message delivery", () => {
       }).success
     ).toBe(false);
   });
+
+  it("tells the person Bro is resting when the model provider fails", async () => {
+    const { context, post } = handlerContext();
+
+    await handleTurnFailed(modelCallFailure(), context, sessionContext());
+
+    expect(post).toHaveBeenCalledExactlyOnceWith({
+      raw: "я прилёг, скоро вернусь",
+    });
+  });
+
+  it("keeps other turn failures out of the conversation", async () => {
+    const { context, post } = handlerContext();
+
+    await handleTurnFailed(
+      { ...modelCallFailure(), code: "TOOL_FAILED", message: "boom" },
+      context,
+      sessionContext()
+    );
+
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it("leaves a failed scheduled report to its retry", async () => {
+    const { context, post } = handlerContext();
+
+    await handleTurnFailed(
+      modelCallFailure(),
+      context,
+      sessionContext("scheduled-result")
+    );
+
+    expect(post).not.toHaveBeenCalled();
+    expect(scheduleDeliveryCapture.release).toHaveBeenCalledOnce();
+  });
 });
 
 /** Bytes with no signature of their own, so the served media type decides. */
 const fileBytes = new Uint8Array(16);
+
+function modelCallFailure(): TurnFailedEvent {
+  return {
+    code: "MODEL_CALL_FAILED",
+    message: 'OpenRouter 402: "This request requires more credits"',
+    sequence: 2,
+    turnId: "turn-1",
+  };
+}
 
 function servedFile(mimeType: string) {
   return new Response(new Uint8Array(fileBytes), {

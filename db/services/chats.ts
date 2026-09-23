@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, ne } from "drizzle-orm";
 import { z } from "zod";
 import type { AccessScope } from "@shared/identity/access-scope";
 import {
@@ -58,6 +58,31 @@ export async function readChat(scope: AccessScope, sessionId: string) {
     .limit(1);
   const row = chatRowSchema.optional().parse(rows[0]);
   return row ? toChatSummary(row) : undefined;
+}
+
+/**
+ * Whether this workspace has talked to Bro before, in any channel. A chat row
+ * is written when a session receives its first message, so before that write
+ * an empty workspace means the message being handled is its first ever. The
+ * current session can be left out to ask about every other conversation.
+ */
+export async function hasConversationHistory(
+  scope: AccessScope,
+  { exceptSessionId }: { readonly exceptSessionId?: string } = {}
+) {
+  const rows = await db
+    .select({ sessionId: chats.sessionId })
+    .from(chats)
+    .where(
+      and(
+        eq(chats.workspaceId, scope.workspaceId),
+        exceptSessionId === undefined
+          ? undefined
+          : ne(chats.sessionId, exceptSessionId)
+      )
+    )
+    .limit(1);
+  return rows.length > 0;
 }
 
 export async function saveChat(

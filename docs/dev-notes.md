@@ -29,6 +29,9 @@
   изменение с точки зрения пользователя.
 - В свежей облачной сессии нет `node_modules`: перед `pnpm check` и
   `pnpm build` нужен `pnpm install`.
+- Тесты требуют Node 24 (`.node-version`). На Node 22 часть наборов, например
+  `tests/agent/channels/eve-channel-auth.test.ts`, падает при загрузке с
+  «SyntaxError: Unexpected identifier 'r'».
 - `pnpm check` включает knip: новый каталог с точками входа (как
   `agent/instrumentation/`) надо добавить в `knip.config.ts`, иначе его файлы
   считаются неиспользуемыми.
@@ -42,6 +45,25 @@
   `save_memory`, `update` и `workstreams` молча пропадали до конца сессии
   («Dynamic tool resolver failed — Expected a JSON-serializable value»). Байты
   файлов кладутся base64-строкой (коммит `2ed484c`).
+
+- `POST /eve/v1/session` отвечает `202` с id, как только Workflow принял
+  запуск, а `session.started` приходит только с первым сообщением. Поэтому
+  владельца сессии записывает обёртка этого маршрута в `agent/channels/eve.ts`,
+  а не только хук `agent/hooks/session-owner.ts`: иначе ранний `GET …/stream`
+  получал `403 Session not found`.
+- Любой сбой вызова модели приходит в канал как `turn.failed` с
+  `code: "MODEL_CALL_FAILED"`; 4xx провайдера (402 «нет кредитов») eve считает
+  терминальным. Текст для человека — `modelOutageNotice` в
+  `agent/lib/delivery-fallback.ts`.
+- Пометка `first-contact` ставится по таблице `chats`: строка появляется на
+  `message.received`, так что пустая история воркспейса в `onMessage` канала и
+  есть его первое сообщение (`agent/lib/first-contact.ts`).
+
+## OpenRouter
+
+- `GET /api/v1/credits` принимает только management-ключ, обычный ключ
+  инференса получает 403. Поэтому проверка баланса
+  (`agent/lib/model/credits.ts`) ждёт отдельный `OPENROUTER_MANAGEMENT_KEY`.
 
 ## Vercel
 

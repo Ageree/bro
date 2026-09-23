@@ -97,6 +97,7 @@ describe("database services", () => {
 
     await sessions.claimSession(alice, "session-imessage");
     expect(await chats.listChats(alice)).toEqual([]);
+    expect(await chats.hasConversationHistory(alice)).toBe(false);
 
     await sessions.claimSession(bob, "session-alice");
     expect(await sessions.isSessionOwned(alice, "session-alice")).toBe(true);
@@ -116,6 +117,14 @@ describe("database services", () => {
       channel: "channel:photon",
       sessionId: "session-imessage",
     });
+
+    expect(await chats.hasConversationHistory(alice)).toBe(true);
+    expect(
+      await chats.hasConversationHistory(alice, {
+        exceptSessionId: "session-alice",
+      })
+    ).toBe(true);
+    expect(await chats.hasConversationHistory(bob)).toBe(false);
 
     const aliceChat = await chats.readChat(alice, "session-alice");
     expect(aliceChat?.title).toBe("Updated title");

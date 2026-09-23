@@ -11,6 +11,7 @@ import type {
   findChannelIdentity,
   redeemChannelLinkToken,
 } from "@db/services/channel-identities";
+import type { hasConversationHistory } from "@db/services/chats";
 // oxlint-disable-next-line import/no-unassigned-import -- Loads the production module so the mocked channel factory can capture its configuration.
 import "@agent/channels/telegram";
 
@@ -18,6 +19,7 @@ const capture = vi.hoisted(() => ({
   // SAFETY: The mocked channel factory replaces this value during module loading.
   config: undefined as TelegramChannelConfig | undefined,
   findIdentity: vi.fn<typeof findChannelIdentity>(),
+  hasConversationHistory: vi.fn<typeof hasConversationHistory>(),
   messageQuotaGate: vi.fn<
     () => Promise<{
       allowed: boolean;
@@ -52,6 +54,9 @@ vi.mock(import("eve/channels/telegram"), async (importOriginal) => {
 vi.mock("@db/services/channel-identities", () => ({
   findChannelIdentity: capture.findIdentity,
   redeemChannelLinkToken: capture.redeemToken,
+}));
+vi.mock("@db/services/chats", () => ({
+  hasConversationHistory: capture.hasConversationHistory,
 }));
 vi.mock("@agent/lib/billing/quota", () => ({
   messageQuotaGate: capture.messageQuotaGate,
@@ -92,6 +97,7 @@ describe("Telegram inbound authentication", () => {
       allowed: true,
       paywallText: undefined,
     });
+    capture.hasConversationHistory.mockResolvedValue(true);
   });
 
   it("ignores group chats without replying", async () => {
@@ -134,6 +140,22 @@ describe("Telegram inbound authentication", () => {
     expect(result?.auth?.attributes.workspaceId).toMatch(
       /^personal:[0-9a-f]{32}$/
     );
+    expect(result?.context).toEqual([]);
+  });
+
+  // An account linked from the web cabinet may never have written to Bro,
+  // so its first Telegram message is where the introduction happens.
+  it("introduces Bro on the workspace's first message", async () => {
+    capture.findIdentity.mockResolvedValue(channelIdentity());
+    capture.hasConversationHistory.mockResolvedValue(false);
+    const { context } = inboundContext();
+
+    const result = await onMessage(context, telegramMessage());
+
+    expect(capture.hasConversationHistory).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: "better-auth:user-1" })
+    );
+    expect(result?.context?.join("\n")).toContain("`first-contact`");
   });
 
   it("answers an over-limit message with one paywall message a day", async () => {

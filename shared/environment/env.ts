@@ -173,6 +173,15 @@ export const env = createEnv({
       .default("production"),
     // OpenRouter replaces AI Gateway routing whenever its key is present.
     OPENROUTER_API_KEY: openRouterApiKeySchema.optional(),
+    // The hourly balance check alerts the owner below this many dollars of
+    // OpenRouter credit. It needs OPENROUTER_MANAGEMENT_KEY, since the credits
+    // endpoint refuses an inference key, and OWNER_TELEGRAM_CHAT_ID to reach
+    // anyone.
+    OPENROUTER_CREDITS_ALERT_USD: z.coerce
+      .number()
+      .positive("OPENROUTER_CREDITS_ALERT_USD must be greater than zero")
+      .default(5),
+    OPENROUTER_MANAGEMENT_KEY: openRouterApiKeySchema.optional(),
     OPENROUTER_MODEL: trimmedValue.default("deepseek/deepseek-v4.1-flash"),
     OPENROUTER_MODEL_CONTEXT_TOKENS: z.coerce
       .number()
@@ -200,6 +209,16 @@ export const env = createEnv({
     OPENROUTER_STT_MODEL: trimmedValue.default(
       "qwen/qwen3-asr-flash-2026-02-10"
     ),
+    // The owner's own Telegram chat with the bot, where operational alerts
+    // such as a running-out OpenRouter balance go.
+    OWNER_TELEGRAM_CHAT_ID: z
+      .string()
+      .trim()
+      .refine(
+        (value) => /^-?\d+$/u.test(value),
+        "OWNER_TELEGRAM_CHAT_ID must be a numeric Telegram chat id"
+      )
+      .optional(),
     PAID_BROWSER_RUNS_PER_MONTH: z.coerce.number().int().positive().default(60),
     PAID_MESSAGES_PER_DAY: z.coerce.number().int().positive().default(500),
     // One month of paid access, in whole roubles.

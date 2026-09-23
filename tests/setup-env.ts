@@ -12,6 +12,8 @@ const testEnvironment = {
 // opt into OpenRouter explicitly and otherwise exercise the AI Gateway path.
 const unsetEnvironment = [
   "OPENROUTER_API_KEY",
+  "OPENROUTER_CREDITS_ALERT_USD",
+  "OPENROUTER_MANAGEMENT_KEY",
   "OPENROUTER_MODEL",
   "OPENROUTER_MODEL_CONTEXT_TOKENS",
   "OPENROUTER_PROVIDER_ORDER",
@@ -20,6 +22,7 @@ const unsetEnvironment = [
   "OPENROUTER_STT_FALLBACK_MODEL",
   "OPENROUTER_STT_LANGUAGE",
   "OPENROUTER_STT_MODEL",
+  "OWNER_TELEGRAM_CHAT_ID",
 ];
 
 for (const [name, value] of Object.entries(testEnvironment)) {

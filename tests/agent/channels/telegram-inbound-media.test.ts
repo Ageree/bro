@@ -9,6 +9,7 @@ import type {
   findChannelIdentity,
   redeemChannelLinkToken,
 } from "@db/services/channel-identities";
+import type { hasConversationHistory } from "@db/services/chats";
 import { syntheticCafOpus } from "@tests/helpers/synthetic-caf";
 // oxlint-disable-next-line import/no-unassigned-import -- Loads the production module so the mocked channel factory can capture its configuration.
 import "@agent/channels/telegram";
@@ -22,6 +23,7 @@ const capture = vi.hoisted(() => ({
   // SAFETY: The mock factory fills this object with the real environment before any test runs.
   env: {} as Record<string, string | undefined>,
   findIdentity: vi.fn<typeof findChannelIdentity>(),
+  hasConversationHistory: vi.fn<typeof hasConversationHistory>(),
   messageQuotaGate: vi.fn<
     () => Promise<{
       allowed: boolean;
@@ -52,6 +54,9 @@ vi.mock(import("eve/channels/telegram"), async (importOriginal) => {
 vi.mock("@db/services/channel-identities", () => ({
   findChannelIdentity: capture.findIdentity,
   redeemChannelLinkToken: vi.fn<typeof redeemChannelLinkToken>(),
+}));
+vi.mock("@db/services/chats", () => ({
+  hasConversationHistory: capture.hasConversationHistory,
 }));
 vi.mock("@agent/lib/billing/quota", () => ({
   messageQuotaGate: capture.messageQuotaGate,
@@ -103,6 +108,7 @@ describe("Telegram inbound media", () => {
       allowed: true,
       paywallText: undefined,
     });
+    capture.hasConversationHistory.mockResolvedValue(true);
   });
 
   afterEach(() => {
