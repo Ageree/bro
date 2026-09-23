@@ -85,6 +85,7 @@
     "db:check": "drizzle-kit check --config db/drizzle.config.ts",
     "db:generate": "drizzle-kit generate --config db/drizzle.config.ts",
     "db:migrate": "drizzle-kit migrate --config db/drizzle.config.ts",
+    "db:migrate:deploy": "if [ \"$VERCEL_ENV\" = preview ]; then echo 'db:migrate skipped: preview deployments share the production database'; else drizzle-kit migrate --config db/drizzle.config.ts; fi",
     "deps:check": "taze --no-github-actions --no-node-version --fail-on-outdated",
     "deploy": "turbo run deploy:app",
     "deploy:app": "eve deploy",
