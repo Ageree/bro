@@ -1,5 +1,9 @@
 import { defineSchedule, type ScheduleToFn } from "eve/schedules";
 import scheduledRunChannel from "@agent/channels/scheduled-run";
+import {
+  checkOpenRouterCredits,
+  creditCheckDue,
+} from "@agent/lib/model/credits";
 import { dispatchScheduledReport } from "@agent/lib/schedules/report";
 import { postScheduledReport } from "@agent/lib/schedules/request";
 import {
@@ -16,6 +20,9 @@ export default defineSchedule({
   cron: "* * * * *",
   run({ to, waitUntil }) {
     waitUntil(dispatchDueWork(to));
+    // A run out of model credit fails every turn, so the owner hears about a
+    // low balance from this tick before people hear silence.
+    if (creditCheckDue(new Date())) waitUntil(checkOpenRouterCredits());
   },
 });
 

@@ -183,6 +183,15 @@ export const env = createEnv({
       .default("production"),
     // OpenRouter replaces AI Gateway routing whenever its key is present.
     OPENROUTER_API_KEY: openRouterApiKeySchema.optional(),
+    // The balance check alerts the owner below this many dollars of
+    // OpenRouter credit. It needs OPENROUTER_MANAGEMENT_KEY, since the credits
+    // endpoint refuses an inference key, and TELEGRAM_OWNER_CHAT_ID to reach
+    // anyone.
+    OPENROUTER_CREDITS_ALERT_USD: z.coerce
+      .number()
+      .positive("OPENROUTER_CREDITS_ALERT_USD must be greater than zero")
+      .default(5),
+    OPENROUTER_MANAGEMENT_KEY: openRouterApiKeySchema.optional(),
     OPENROUTER_MODEL: trimmedValue.default("deepseek/deepseek-v4.1-flash"),
     OPENROUTER_MODEL_CONTEXT_TOKENS: z.coerce
       .number()
@@ -219,6 +228,16 @@ export const env = createEnv({
       .refine(
         (value) => /^[A-Za-z0-9_]{5,32}$/u.test(value),
         "TELEGRAM_BOT_USERNAME must be the bot handle without a leading @"
+      )
+      .optional(),
+    // The owner's own Telegram chat with the bot, where operational alerts
+    // such as a running-out OpenRouter balance go.
+    TELEGRAM_OWNER_CHAT_ID: z
+      .string()
+      .trim()
+      .refine(
+        (value) => /^-?\d+$/u.test(value),
+        "TELEGRAM_OWNER_CHAT_ID must be a numeric Telegram chat id"
       )
       .optional(),
     TELEGRAM_WEBHOOK_SECRET_TOKEN: requiredValue.optional(),

@@ -18,6 +18,14 @@ export const workspaces = pgTable("workspaces", {
   })
     .defaultNow()
     .notNull(),
+  // When Bro introduced itself to this workspace. The first message claims it
+  // with a conditional update, so exactly one turn ever carries the
+  // `first-contact` marker; workspaces that predate the column were backfilled.
+  introducedAt: timestamp("introduced_at", {
+    mode: "date",
+    precision: 3,
+    withTimezone: true,
+  }),
 });
 
 export const userProfiles = pgTable(
@@ -92,7 +100,9 @@ export const settings = pgTable(
   "settings",
   {
     workspaceId: text("workspace_id").notNull(),
-    key: text("key", { enum: ["gateway_model", "spend_limit"] }).notNull(),
+    key: text("key", {
+      enum: ["gateway_model", "google_workspace_access", "spend_limit"],
+    }).notNull(),
     value: text("value").notNull(),
   },
   (table) => [
@@ -107,7 +117,7 @@ export const settings = pgTable(
     }).onDelete("cascade"),
     check(
       "settings_key_check",
-      sql`${table.key} IN ('gateway_model', 'spend_limit')`
+      sql`${table.key} IN ('gateway_model', 'google_workspace_access', 'spend_limit')`
     ),
   ]
 );

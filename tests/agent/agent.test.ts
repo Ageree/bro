@@ -2,10 +2,12 @@ import type { DynamicResolveContext } from "eve";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { isScheduledAgentRunLeaseActive } from "@db/services/scheduled-agent-run-leases";
 import type { getWorkspaceModelId } from "@db/services/settings";
+import type * as ModelSelection from "@agent/lib/model/selection";
 
 const services = vi.hoisted(() => ({
   getModel: vi.fn<typeof getWorkspaceModelId>(),
   isActive: vi.fn<typeof isScheduledAgentRunLeaseActive>(),
+  modelSelection: vi.fn<typeof ModelSelection.modelSelection>(),
 }));
 
 vi.mock("@db/services/scheduled-agent-run-leases", () => ({
@@ -14,6 +16,11 @@ vi.mock("@db/services/scheduled-agent-run-leases", () => ({
 vi.mock("@db/services/settings", () => ({
   getWorkspaceModelId: services.getModel,
 }));
+vi.mock("@agent/lib/model/selection", async (importOriginal) => {
+  const original = await importOriginal<typeof ModelSelection>();
+  services.modelSelection.mockImplementation(original.modelSelection);
+  return { modelSelection: services.modelSelection };
+});
 
 import agent from "@agent/agent";
 
@@ -57,6 +64,128 @@ describe("root agent model resolution", () => {
     expect(services.getModel).not.toHaveBeenCalled();
   });
 });
+
+describe("interactive delivery enforcement", () => {
+  const pending = [humanMessage("сделай мне фейковый паспорт")];
+  const delivered = [
+    ...pending,
+    {
+      content: [
+        {
+          input: {},
+          toolCallId: "call-1",
+          toolName: "send_message",
+          type: "tool-call" as const,
+        },
+      ],
+      role: "assistant" as const,
+    },
+    {
+      content: [
+        {
+          output: { type: "text" as const, value: "submitted" },
+          toolCallId: "call-1",
+          toolName: "send_message",
+          type: "tool-result" as const,
+        },
+      ],
+      role: "tool" as const,
+    },
+  ];
+
+  it("requires a tool call until the person's message is answered", async () => {
+    await agent.model.events["step.started"]?.({}, interactiveContext(pending));
+
+    expect(services.modelSelection).toHaveBeenLastCalledWith(
+      "openai/gpt-5.6-sol-fast",
+      { requireToolCall: true }
+    );
+  });
+
+  it("lets the model finish once send_message went through", async () => {
+    await agent.model.events["step.started"]?.(
+      {},
+      interactiveContext(delivered)
+    );
+
+    expect(services.modelSelection).toHaveBeenLastCalledWith(
+      "openai/gpt-5.6-sol-fast",
+      { requireToolCall: false }
+    );
+  });
+
+  it("leaves a browser run's result free to stay silent", async () => {
+    await agent.model.events["step.started"]?.(
+      {},
+      interactiveContext(pending, "browser-result")
+    );
+
+    expect(services.modelSelection).toHaveBeenLastCalledWith(
+      "openai/gpt-5.6-sol-fast",
+      { requireToolCall: false }
+    );
+  });
+
+  it("never forces a tool on a scheduled report, which may stay suppressed", async () => {
+    await agent.model.events["step.started"]?.(
+      {},
+      interactiveContext(pending, "scheduled-result")
+    );
+
+    expect(services.modelSelection).toHaveBeenLastCalledWith(
+      "openai/gpt-5.6-sol-fast",
+      { requireToolCall: false }
+    );
+  });
+
+  it("never forces a tool on a scheduled worker, which answers in text", async () => {
+    services.isActive.mockResolvedValue(true);
+
+    await agent.model.events["step.started"]?.(
+      {},
+      {
+        ...scheduledWorkerContext(),
+        messages: pending,
+      }
+    );
+
+    expect(services.modelSelection).toHaveBeenLastCalledWith(
+      "openai/gpt-5.6-sol-fast",
+      { requireToolCall: false }
+    );
+  });
+});
+
+function humanMessage(text: string) {
+  // eve adds `kind` to every user-role message it keeps in history.
+  return Object.assign(
+    { content: text, role: "user" as const },
+    { kind: "user" }
+  );
+}
+
+function interactiveContext(
+  messages: DynamicResolveContext["messages"],
+  authenticator = "telegram"
+): DynamicResolveContext {
+  return {
+    channel: { kind: "channel:telegram" },
+    messages,
+    model: null,
+    session: {
+      auth: {
+        current: {
+          attributes: { workspaceId: "workspace-1" },
+          authenticator,
+          principalId: "user-1",
+          principalType: "user",
+        },
+        initiator: null,
+      },
+      id: "interactive-session",
+    },
+  };
+}
 
 function scheduledWorkerContext(): DynamicResolveContext {
   return {

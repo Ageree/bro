@@ -29,6 +29,14 @@
   изменение с точки зрения пользователя.
 - В свежей облачной сессии нет `node_modules`: перед `pnpm check` и
   `pnpm build` нужен `pnpm install`.
+- Проекту нужен Node 24, а в облачном контейнере по умолчанию Node 22: на нём
+  `pnpm check` валит ~12 наборов тестов с «SyntaxError: Unexpected identifier
+  'r'», и на чистой ветке тоже. Бинарь ставится без root:
+  `npm pack node-linux-x64@24` в scratchpad, распаковать, добавить его `bin` в
+  начало `PATH`.
+- `pnpm build` без `.env.local` падает на сборе данных страниц: нужны
+  `DATABASE_URL`, `BETTER_AUTH_URL` и `BETTER_AUTH_SECRET`. Для локальной
+  проверки хватает заглушек, к базе сборка не подключается.
 - `pnpm check` включает knip: новый каталог с точками входа (как
   `agent/instrumentation/`) надо добавить в `knip.config.ts`, иначе его файлы
   считаются неиспользуемыми.
@@ -46,6 +54,50 @@
   `save_memory`, `update` и `workstreams` молча пропадали до конца сессии
   («Dynamic tool resolver failed — Expected a JSON-serializable value»). Байты
   файлов кладутся base64-строкой (коммит `2ed484c`).
+- Текст поручения Browser Use собирается в `agent/tools/browser_task.ts`
+  (`composeBrowserTask`) и проверяется юнит-тестами по дословным фразам. Evals
+  на `browser_task` нет: инструмент появляется только с `BROWSER_USE_API_KEY`,
+  и каждый кейс запускал бы настоящий платный прогон.
+
+- Колбэки динамических инструментов (`execute`, `approval` и др.) пишите
+  инлайн в `defineTool()` или ссылкой на идентификатор: сборка eve ставит
+  durable-дескриптор только им. Вызов фабрики вида `approval: policy("x")`
+  ломает резолвер в рантайме («callback 'approvalRequest' does not have a
+  durable descriptor»), а юнит-тесты этого не ловят; нужно
+  `approval: (ctx) => policy(ctx, "x")`. Проверить можно
+  `transformDynamicToolExecute(file, code)` из
+  `eve/dist/src/internal/workflow-bundle/dynamic-tool-transform.js`.
+- В eve нет настройки `toolChoice`. Доставку через `send_message` в
+  интерактивных ходах форсирует резолвер модели на `step.started`
+  (`agent/agent.ts`): пока последнее сообщение человека без ответа, модель
+  OpenRouter оборачивается middleware с `toolChoice: required`
+  (`agent/lib/model/openrouter.ts`). `ctx.messages` там несут eve-поле `kind`:
+  `user` у человека, `execution.background_task` у фонового пробуждения,
+  которое по инструкциям может промолчать (`agent/lib/delivery/pending.ts`).
+  Не форсируются: ходы `browser-result` (антибот-проверку модель продолжает
+  молча), шаги после десятого без ответа, `anthropic/*` с reasoning (Anthropic
+  отвергает принудительный инструмент при extended thinking). Строковый id
+  Gateway не оборачивается: в `eve dev` eve подставляет свою авторизацию
+  Gateway только для строк.
+
+- `POST /eve/v1/session` отвечает `202` с id, как только Workflow принял
+  запуск, а `session.started` приходит только с первым сообщением. Поэтому
+  владельца сессии записывает обёртка этого маршрута в `agent/channels/eve.ts`,
+  а не только хук `agent/hooks/session-owner.ts`: иначе ранний `GET …/stream`
+  получал `403 Session not found`.
+- Пометку `first-contact` решает `workspaces.introduced_at`, которое канал
+  занимает условным UPDATE в `onMessage` (`claimWorkspaceIntroduction`), а не
+  таблица `chats`: переезд из Convex строк `chats` не пишет. Занимать метку можно
+  только для сообщения, которое точно запустит ход.
+- Любой сбой вызова модели приходит в канал как `turn.failed` с
+  `code: "MODEL_CALL_FAILED"`, включая переполнение контекста; «скоро вернусь»
+  говорим только при статусе 402/429/5xx из `details`.
+
+## OpenRouter
+
+- `GET /api/v1/credits` принимает только management-ключ, обычный ключ
+  инференса получает 403. Поэтому проверка баланса
+  (`agent/lib/model/credits.ts`) ждёт отдельный `OPENROUTER_MANAGEMENT_KEY`.
 
 ## Vercel
 
@@ -85,6 +137,18 @@
 - Итог на странице видит только облачный агент, поэтому потолок суммы
   продублирован в тексте поручения (`spendCapLine`): больше разрешённого он
   платить не должен и останавливается с `NEEDS: payment`.
+
+## Google
+
+- Уровень доступа Google (`full` / `read_only`) хранится в `settings` под
+  ключом `google_workspace_access`; нет записи — `full`. Смена уровня сначала
+  отзывает грант (`revokeGoogleWorkspaceGrant`), иначе у Google остаются широкие
+  scopes старого гранта. Запись в режиме только чтения отсекается политикой
+  подтверждения `googleWriteApproval` до карточки, а не ошибкой Google.
+- Ответ на письмо строится из Gmail `id` исходного письма (`replyToMessageId`):
+  инструмент сам читает Message-ID/References/Subject и `threadId`. Поле
+  `messageId` в выдаче чтения переименовано в `rfcMessageId`, чтобы модель не
+  путала его с Gmail `id`, который берут остальные `gmail-*`.
 
 ## Память Бро
 

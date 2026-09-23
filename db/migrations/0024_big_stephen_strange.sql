@@ -25,4 +25,4 @@ ALTER TABLE "spend_entries" ADD CONSTRAINT "spend_entries_workspace_id_fkey" FOR
 CREATE INDEX "spend_entries_period_idx" ON "spend_entries" USING btree ("workspace_id","period_key");--> statement-breakpoint
 CREATE INDEX "browser_runs_retry_idx" ON "browser_runs" USING btree ("retry_at");--> statement-breakpoint
 ALTER TABLE "browser_runs" ADD CONSTRAINT "browser_runs_captcha_attempt_check" CHECK ("browser_runs"."captcha_attempt" >= 1);--> statement-breakpoint
-ALTER TABLE "settings" ADD CONSTRAINT "settings_key_check" CHECK ("settings"."key" IN ('gateway_model', 'spend_limit'));
+ALTER TABLE "settings" ADD CONSTRAINT "settings_key_check" CHECK ("settings"."key" IN ('gateway_model', 'google_workspace_access', 'spend_limit'));
