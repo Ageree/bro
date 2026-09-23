@@ -1,4 +1,15 @@
-import { and, asc, eq, inArray, isNull, lt } from "drizzle-orm";
+import {
+  and,
+  asc,
+  eq,
+  gt,
+  inArray,
+  isNotNull,
+  isNull,
+  lt,
+  or,
+  sql,
+} from "drizzle-orm";
 import type { AccessScope } from "@shared/identity/access-scope";
 import { browserProfiles, browserRuns, db } from "@db";
 import { ensureScope } from "./scope";
@@ -6,6 +17,13 @@ import { ensureScope } from "./scope";
 type BrowserRunInsert = typeof browserRuns.$inferInsert;
 
 const activeBrowserRunStatuses = ["created", "running", "waiting"] as const;
+
+// A delivery that has not landed within the lease is presumed dead and may be
+// retried; one that failed this many times, or whose run settled this long
+// ago, is left for `browser_task status` to surface instead.
+const reportLeaseMs = 2 * 60_000;
+const maximumReportAttempts = 10;
+const reportRetryWindowMs = 24 * 60 * 60_000;
 
 export async function readBrowserProfileId(scope: AccessScope) {
   const rows = await db
@@ -120,4 +138,76 @@ export async function listUnsettledBrowserRuns(options: {
     )
     .orderBy(asc(browserRuns.createdAt))
     .limit(options.limit);
+}
+
+/**
+ * Keep the report a settled run owes its conversation. It stays pending until
+ * a delivery lands, so an unreachable conversation delays the report instead
+ * of losing it.
+ */
+export async function saveBrowserRunReport(runId: string, report: string) {
+  await db
+    .update(browserRuns)
+    .set({ report, updatedAt: new Date() })
+    .where(eq(browserRuns.id, runId));
+}
+
+function reportPending(now: Date) {
+  return and(
+    isNotNull(browserRuns.report),
+    isNull(browserRuns.reportDeliveredAt),
+    lt(browserRuns.reportAttempts, maximumReportAttempts),
+    gt(browserRuns.completedAt, new Date(now.getTime() - reportRetryWindowMs)),
+    or(
+      isNull(browserRuns.reportClaimedAt),
+      lt(browserRuns.reportClaimedAt, new Date(now.getTime() - reportLeaseMs))
+    )
+  );
+}
+
+/**
+ * Take the lease on delivering a pending report. The webhook and the poller
+ * can both reach for the same report; only the holder of a fresh lease sends.
+ */
+export async function claimBrowserRunReport(runId: string) {
+  const now = new Date();
+  const [row] = await db
+    .update(browserRuns)
+    .set({
+      reportAttempts: sql`${browserRuns.reportAttempts} + 1`,
+      reportClaimedAt: now,
+      updatedAt: now,
+    })
+    .where(and(eq(browserRuns.id, runId), reportPending(now)))
+    .returning();
+  return row;
+}
+
+export async function finishBrowserRunReport(runId: string) {
+  const now = new Date();
+  await db
+    .update(browserRuns)
+    .set({ reportClaimedAt: null, reportDeliveredAt: now, updatedAt: now })
+    .where(
+      and(eq(browserRuns.id, runId), isNull(browserRuns.reportDeliveredAt))
+    );
+}
+
+/** Give the lease back so the next poll retries the delivery at once. */
+export async function releaseBrowserRunReport(runId: string) {
+  await db
+    .update(browserRuns)
+    .set({ reportClaimedAt: null, updatedAt: new Date() })
+    .where(
+      and(eq(browserRuns.id, runId), isNull(browserRuns.reportDeliveredAt))
+    );
+}
+
+export async function listPendingBrowserRunReports(limit: number) {
+  return db
+    .select({ id: browserRuns.id })
+    .from(browserRuns)
+    .where(reportPending(new Date()))
+    .orderBy(asc(browserRuns.completedAt))
+    .limit(limit);
 }

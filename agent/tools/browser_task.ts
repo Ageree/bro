@@ -26,6 +26,7 @@ import { resolveBrowserSecretBindings } from "@agent/lib/browser-use/secrets";
 import {
   claimBrowserRunCompletion,
   createBrowserRun,
+  finishBrowserRunReport,
   readBrowserProfileId,
   readBrowserRunForScope,
   saveBrowserProfileId,
@@ -665,8 +666,15 @@ export const browserTask = defineTool({
     const status = row.completedAt
       ? row.status
       : await readBrowserUseRunStatus(runId);
+    // A report that never reached the conversation is handed over here, and
+    // counts as delivered: the poller must not repeat what this turn says.
+    const undelivered = row.report !== null && row.reportDeliveredAt === null;
+    if (undelivered) await finishBrowserRunReport(runId);
     return {
       liveViewUrl: row.liveViewUrl ?? undefined,
+      note: undelivered
+        ? "This outcome never reached the conversation as its own message. Tell the user what happened now."
+        : undefined,
       outcome: row.outcome ?? undefined,
       runId,
       status,
