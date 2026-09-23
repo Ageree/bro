@@ -11,13 +11,14 @@ import {
 import { workspaces } from "./workspaces";
 
 /**
- * `messages` and `browser_runs` are the two metered actions; `paywall_notices`
- * is the counter that keeps the over-limit reply to one bubble a day, and it
+ * `messages`, `browser_runs` and `image_generations` are the metered actions;
+ * `paywall_notices` is the counter that keeps the over-limit reply to one bubble a day, and it
  * is a counter rather than a flag so the same atomic increment decides it.
  */
 export const usageCounterKinds = [
   "messages",
   "browser_runs",
+  "image_generations",
   "paywall_notices",
 ] as const;
 
@@ -54,7 +55,7 @@ export const usageCounters = pgTable(
     }).onDelete("cascade"),
     check(
       "usage_counters_kind_check",
-      sql`${table.kind} IN ('messages', 'browser_runs', 'paywall_notices')`
+      sql`${table.kind} IN ('messages', 'browser_runs', 'image_generations', 'paywall_notices')`
     ),
     check("usage_counters_period_key_check", sql`${table.periodKey} <> ''`),
   ]
