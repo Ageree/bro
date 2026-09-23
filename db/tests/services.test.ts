@@ -25,6 +25,7 @@ describe("database services", () => {
     await applySchemaAdoptionMigration(client);
     await applyNativeTypesMigration(client);
     await applyChatChannelMigration(client);
+    await applyGoogleWorkspaceAccessMigration(client);
 
     const pgliteDatabase = drizzle(client, { schema });
     // SAFETY: PGlite implements the query-builder surface exercised by these services despite using a different Drizzle driver.
@@ -192,6 +193,14 @@ describe("database services", () => {
     expect(await settings.getWorkspaceModelId(bob)).toBe(
       "openai/gpt-5.6-sol-fast"
     );
+
+    expect(await settings.getGoogleWorkspaceAccess(alice)).toBe("full");
+    await settings.selectGoogleWorkspaceAccess(alice, "read_only");
+    expect(await settings.getGoogleWorkspaceAccess(alice)).toBe("read_only");
+    expect(await settings.getGoogleWorkspaceAccess(bob)).toBe("full");
+    expect(await settings.getWorkspaceModelId(alice)).toBe("openai/test");
+    await settings.selectGoogleWorkspaceAccess(alice, "full");
+    expect(await settings.getGoogleWorkspaceAccess(alice)).toBe("full");
   }, 15_000);
 });
 
@@ -270,6 +279,18 @@ async function applyNativeTypesMigration(database: PGlite) {
 async function applyChatChannelMigration(database: PGlite) {
   const migration = await readFile(
     new URL("../migrations/0011_faulty_unicorn.sql", import.meta.url),
+    "utf8"
+  );
+  /* oxlint-disable eslint/no-await-in-loop -- SQL migration statements must execute in file order. */
+  for (const statement of migration.split("--> statement-breakpoint")) {
+    if (statement.trim()) await database.exec(statement);
+  }
+  /* oxlint-enable eslint/no-await-in-loop */
+}
+
+async function applyGoogleWorkspaceAccessMigration(database: PGlite) {
+  const migration = await readFile(
+    new URL("../migrations/0021_spotty_dexter_bennett.sql", import.meta.url),
     "utf8"
   );
   /* oxlint-disable eslint/no-await-in-loop -- SQL migration statements must execute in file order. */

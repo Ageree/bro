@@ -1,20 +1,44 @@
 import type { DynamicResolveContext, ToolContext } from "eve/tools";
 import type * as ConnectModule from "@vercel/connect";
-import type { getTokenResponse, startAuthorization } from "@vercel/connect";
+import type {
+  getTokenResponse,
+  revokeToken,
+  startAuthorization,
+} from "@vercel/connect";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type {
+  getGoogleWorkspaceAccess,
+  selectGoogleWorkspaceAccess,
+} from "@db/services/settings";
 import { env } from "@shared/environment";
-import { googleWorkspaceTokenParams } from "@shared/google-workspace/connection";
+import {
+  googleWorkspaceDisconnectNotice,
+  googleWorkspaceSubject,
+  googleWorkspaceTokenParams,
+} from "@shared/google-workspace/connection";
 import { accessScopeForUser } from "@shared/identity/access-scope";
 
 const connect = vi.hoisted(() => ({
   getTokenResponse: vi.fn<typeof getTokenResponse>(),
+  revokeToken: vi.fn<typeof revokeToken>(),
   startAuthorization: vi.fn<typeof startAuthorization>(),
+}));
+
+const settings = vi.hoisted(() => ({
+  access: vi.fn<typeof getGoogleWorkspaceAccess>(),
+  select: vi.fn<typeof selectGoogleWorkspaceAccess>(),
 }));
 
 vi.mock("@vercel/connect", async (importOriginal) => ({
   ...(await importOriginal<typeof ConnectModule>()),
   getTokenResponse: connect.getTokenResponse,
+  revokeToken: connect.revokeToken,
   startAuthorization: connect.startAuthorization,
+}));
+
+vi.mock("@db/services/settings", () => ({
+  getGoogleWorkspaceAccess: settings.access,
+  selectGoogleWorkspaceAccess: settings.select,
 }));
 
 import {
@@ -67,9 +91,14 @@ describe("connect_google exposure", () => {
   });
 });
 
+const connectInput = { action: "connect" } as const;
+
 describe("connect_google execution", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    settings.access.mockResolvedValue("full");
+    settings.select.mockResolvedValue(undefined);
+    connect.revokeToken.mockResolvedValue(undefined);
   });
 
   it("reports the connected Google account without minting a link", async () => {
@@ -78,13 +107,16 @@ describe("connect_google execution", () => {
       name: "ada@example.com",
     });
 
-    await expect(connectGoogle.execute({}, toolContext())).resolves.toEqual({
+    await expect(
+      connectGoogle.execute(connectInput, toolContext())
+    ).resolves.toEqual({
+      access: "full",
       account: "ada@example.com",
       status: "connected",
     });
     expect(connect.getTokenResponse).toHaveBeenCalledExactlyOnceWith(
       env.GOOGLE_CONNECTOR_UID,
-      googleWorkspaceTokenParams(scope.userId),
+      googleWorkspaceTokenParams(scope.userId, "full"),
       { forceRefresh: true }
     );
     expect(connect.startAuthorization).not.toHaveBeenCalled();
@@ -96,19 +128,146 @@ describe("connect_google execution", () => {
     );
     connect.startAuthorization.mockResolvedValue(authorization);
 
-    await expect(connectGoogle.execute({}, toolContext())).resolves.toEqual({
+    await expect(
+      connectGoogle.execute(connectInput, toolContext())
+    ).resolves.toEqual({
+      access: "full",
       expiresInMinutes: 10,
+      previousGrantRevoked: false,
       status: "authorize",
       url: authorization.url,
     });
+    expect(connect.revokeToken).not.toHaveBeenCalled();
+    expect(settings.select).not.toHaveBeenCalled();
     expect(connect.startAuthorization).toHaveBeenCalledExactlyOnceWith(
       env.GOOGLE_CONNECTOR_UID,
-      googleWorkspaceTokenParams(scope.userId),
+      googleWorkspaceTokenParams(scope.userId, "full"),
       {
         callbackUrl: "https://example.com/workspace?google=connected",
         expiresInMs: 10 * 60_000,
       }
     );
+  });
+
+  it("reports a read-only grant at its level", async () => {
+    settings.access.mockResolvedValue("read_only");
+    connect.getTokenResponse.mockResolvedValue(grantedToken);
+
+    await expect(
+      connectGoogle.execute(connectInput, toolContext())
+    ).resolves.toEqual({
+      access: "read_only",
+      account: null,
+      status: "connected",
+    });
+    expect(connect.getTokenResponse).toHaveBeenCalledExactlyOnceWith(
+      env.GOOGLE_CONNECTOR_UID,
+      googleWorkspaceTokenParams(scope.userId, "read_only"),
+      { forceRefresh: true }
+    );
+  });
+
+  it("connects read-only when asked, storing the level before OAuth", async () => {
+    connect.getTokenResponse.mockRejectedValue(
+      new UserAuthorizationRequiredError("authorize first")
+    );
+    connect.startAuthorization.mockResolvedValue(authorization);
+
+    await expect(
+      connectGoogle.execute(
+        { access: "read_only", action: "connect" },
+        toolContext()
+      )
+    ).resolves.toMatchObject({
+      access: "read_only",
+      previousGrantRevoked: false,
+      status: "authorize",
+    });
+    expect(connect.revokeToken).not.toHaveBeenCalled();
+    expect(settings.select).toHaveBeenCalledExactlyOnceWith(scope, "read_only");
+    expect(connect.startAuthorization).toHaveBeenCalledExactlyOnceWith(
+      env.GOOGLE_CONNECTOR_UID,
+      googleWorkspaceTokenParams(scope.userId, "read_only"),
+      expect.anything()
+    );
+  });
+
+  it("revokes a full grant before re-authorizing read-only", async () => {
+    connect.getTokenResponse.mockResolvedValue(grantedToken);
+    connect.startAuthorization.mockResolvedValue(authorization);
+
+    await expect(
+      connectGoogle.execute(
+        { access: "read_only", action: "connect" },
+        toolContext()
+      )
+    ).resolves.toEqual({
+      access: "read_only",
+      expiresInMinutes: 10,
+      previousGrantRevoked: true,
+      status: "authorize",
+      url: authorization.url,
+    });
+    expect(connect.revokeToken).toHaveBeenCalledExactlyOnceWith(
+      env.GOOGLE_CONNECTOR_UID,
+      { subject: googleWorkspaceSubject(scope.userId) }
+    );
+    expect(settings.select).toHaveBeenCalledExactlyOnceWith(scope, "read_only");
+    expect(connect.revokeToken.mock.invocationCallOrder[0]).toBeLessThan(
+      connect.startAuthorization.mock.invocationCallOrder[0] ?? 0
+    );
+  });
+
+  it("keeps a grant already at the asked level", async () => {
+    connect.getTokenResponse.mockResolvedValue(grantedToken);
+
+    await expect(
+      connectGoogle.execute(
+        { access: "full", action: "connect" },
+        toolContext()
+      )
+    ).resolves.toMatchObject({ access: "full", status: "connected" });
+    expect(connect.revokeToken).not.toHaveBeenCalled();
+    expect(connect.startAuthorization).not.toHaveBeenCalled();
+  });
+
+  it("disconnects by revoking the grant and says what Bro keeps", async () => {
+    await expect(
+      connectGoogle.execute({ action: "disconnect" }, toolContext())
+    ).resolves.toEqual({
+      notice: googleWorkspaceDisconnectNotice,
+      status: "disconnected",
+    });
+    expect(connect.revokeToken).toHaveBeenCalledExactlyOnceWith(
+      env.GOOGLE_CONNECTOR_UID,
+      { subject: googleWorkspaceSubject(scope.userId) }
+    );
+    expect(connect.getTokenResponse).not.toHaveBeenCalled();
+    expect(googleWorkspaceDisconnectNotice).toMatch(/память/u);
+    expect(googleWorkspaceDisconnectNotice).toMatch(/заказы/u);
+  });
+
+  it("asks before disconnecting and not before connecting", async () => {
+    const approval = connectGoogle.approval;
+    if (approval === undefined)
+      throw new Error("connect_google has no policy.");
+    const policy = "request" in approval ? approval.request : approval;
+    const context = toolContext();
+
+    expect(
+      await policy({
+        ...context,
+        approvedTools: new Set(),
+        toolInput: { action: "disconnect" },
+      })
+    ).toBe("user-approval");
+    expect(
+      await policy({
+        ...context,
+        approvedTools: new Set(),
+        toolInput: { access: "read_only", action: "connect" },
+      })
+    ).toBe("not-applicable");
   });
 
   it("treats a missing token like a revoked grant", async () => {
@@ -118,7 +277,7 @@ describe("connect_google execution", () => {
     connect.startAuthorization.mockResolvedValue(authorization);
 
     await expect(
-      connectGoogle.execute({}, toolContext())
+      connectGoogle.execute(connectInput, toolContext())
     ).resolves.toMatchObject({ status: "authorize", url: authorization.url });
   });
 
@@ -127,7 +286,9 @@ describe("connect_google execution", () => {
       new Error("connector google/open-instinct is not attached")
     );
 
-    await expect(connectGoogle.execute({}, toolContext())).resolves.toEqual({
+    await expect(
+      connectGoogle.execute(connectInput, toolContext())
+    ).resolves.toEqual({
       detail:
         "Google на этом деплое не подключён: нужно прикрепить Google OAuth-коннектор в Vercel.",
       status: "not_configured",
@@ -141,7 +302,9 @@ describe("connect_google execution", () => {
       new ConnectError("bad gateway", { status: 502 })
     );
 
-    await expect(connectGoogle.execute({}, toolContext())).resolves.toEqual({
+    await expect(
+      connectGoogle.execute(connectInput, toolContext())
+    ).resolves.toEqual({
       detail: "Google сейчас не отвечает, попробуй через минуту.",
       status: "error",
     });
@@ -158,7 +321,9 @@ describe("connect_google execution", () => {
       new ConnectError("bad gateway", { status: 502 })
     );
 
-    await expect(connectGoogle.execute({}, toolContext())).resolves.toEqual({
+    await expect(
+      connectGoogle.execute(connectInput, toolContext())
+    ).resolves.toEqual({
       detail: "Google сейчас не отвечает, попробуй через минуту.",
       status: "error",
     });
@@ -170,7 +335,7 @@ describe("connect_google execution", () => {
   it("requires an authenticated user", async () => {
     await expect(
       connectGoogle.execute(
-        {},
+        connectInput,
         focusedToolContext({
           session: {
             auth: { current: null, initiator: null },

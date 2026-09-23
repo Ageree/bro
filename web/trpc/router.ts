@@ -1,15 +1,17 @@
 import { gateway } from "ai";
-import { revokeToken } from "@vercel/connect";
 import { z } from "zod";
 import { mintChannelLinkToken } from "@db/services/channel-identities";
 import { saveChat } from "@db/services/chats";
 import { replaceUserProfile } from "@db/services/user-profile";
-import { selectWorkspaceModel } from "@db/services/settings";
+import {
+  selectGoogleWorkspaceAccess,
+  selectWorkspaceModel,
+} from "@db/services/settings";
 import { deleteVaultItem, saveVaultItem } from "@db/services/vault";
 import { saveChatSchema } from "@shared/chat/schema";
-import { env } from "@shared/environment";
 import {
-  googleWorkspaceSubject,
+  googleWorkspaceAccessSchema,
+  revokeGoogleWorkspaceGrant,
   startGoogleWorkspaceAuthorization,
 } from "@shared/google-workspace/connection";
 import { telegramLinkUrl } from "@shared/identity/telegram-link";
@@ -29,20 +31,30 @@ export const appRouter = createTRPCRouter({
   },
   googleWorkspace: {
     update: protectedProcedure
-      .input(z.enum(["connect", "disconnect"]))
+      .input(
+        z.discriminatedUnion("action", [
+          z.object({
+            access: googleWorkspaceAccessSchema,
+            action: z.literal("connect"),
+          }),
+          z.object({ action: z.literal("disconnect") }),
+        ])
+      )
       .mutation(async ({ ctx, input }) => {
-        if (input === "disconnect") {
-          await revokeToken(env.GOOGLE_CONNECTOR_UID, {
-            subject: googleWorkspaceSubject(ctx.scope.userId),
-          });
+        if (input.action === "disconnect") {
+          await revokeGoogleWorkspaceGrant(ctx.scope.userId);
           return { redirectTo: "/workspace?google=disconnected" };
         }
 
+        // The cabinet offers a level only while no grant exists, so the
+        // flow started here never leaves a wider grant behind.
+        await selectGoogleWorkspaceAccess(ctx.scope, input.access);
         const callbackUrl = new URL("/workspace", ctx.origin);
         callbackUrl.searchParams.set("google", "connected");
         return {
           redirectTo: await startGoogleWorkspaceAuthorization(
             ctx.scope.userId,
+            input.access,
             callbackUrl.toString()
           ),
         };

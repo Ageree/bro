@@ -29,6 +29,13 @@
   изменение с точки зрения пользователя.
 - В свежей облачной сессии нет `node_modules`: перед `pnpm check` и
   `pnpm build` нужен `pnpm install`.
+- Нужен Node 24 (`.node-version`). В облачном контейнере по умолчанию Node 22,
+  и на нём `tests/agent/capabilities.test.ts` падает с «SyntaxError: Unexpected
+  identifier 'r'» при импорте `agent/tools/schedules.ts`. Node 24 ставится через
+  `/opt/nvm/nvm.sh` (`nvm install 24`), дальше — `PATH` на его `bin`.
+- `pnpm build` локально требует `DATABASE_URL` и `BETTER_AUTH_URL` (сбор
+  данных страниц импортирует `@db` и origin); для проверки сборки хватает
+  заглушек, к базе он не подключается. CI сборку не запускает.
 - `pnpm check` включает knip: новый каталог с точками входа (как
   `agent/instrumentation/`) надо добавить в `knip.config.ts`, иначе его файлы
   считаются неиспользуемыми.
@@ -50,6 +57,18 @@
   Workflow переставал вызывать `/.well-known/workflow/v1/flow`, и ни один ход
   не запускался. Откачено в `bb5b1a0`; вебхук Browser Use обслуживает поллер
   раз в минуту.
+
+## Google
+
+- Уровень доступа Google (`full` / `read_only`) хранится в `settings` под
+  ключом `google_workspace_access`; нет записи — `full`. Смена уровня сначала
+  отзывает грант (`revokeGoogleWorkspaceGrant`), иначе у Google остаются широкие
+  scopes старого гранта. Запись в режиме только чтения отсекается политикой
+  подтверждения `googleWriteApproval` до карточки, а не ошибкой Google.
+- Ответ на письмо строится из Gmail `id` исходного письма (`replyToMessageId`):
+  инструмент сам читает Message-ID/References/Subject и `threadId`. Поле
+  `messageId` в выдаче чтения переименовано в `rfcMessageId`, чтобы модель не
+  путала его с Gmail `id`, который берут остальные `gmail-*`.
 
 ## Память Бро
 

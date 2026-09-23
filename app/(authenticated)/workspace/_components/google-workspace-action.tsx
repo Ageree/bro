@@ -23,18 +23,46 @@ export function GoogleWorkspaceAction({
   // A read that failed just now is not a missing grant: no OAuth from here.
   if (state === "error") return <span>Google не отвечает</span>;
 
-  const action = state === "connected" ? "disconnect" : "connect";
+  if (state === "connected") {
+    return (
+      <Button
+        disabled={update.isPending}
+        onClick={() => {
+          update.mutate({ action: "disconnect" });
+        }}
+        size="act-sm"
+        type="button"
+        variant="act"
+      >
+        Отключить
+      </Button>
+    );
+  }
+
   return (
-    <Button
-      disabled={update.isPending}
-      onClick={() => {
-        update.mutate(action);
-      }}
-      size="act-sm"
-      type="button"
-      variant="act"
-    >
-      {state === "connected" ? "Отключить" : "Подключить"}
-    </Button>
+    <span className="flex flex-wrap justify-end gap-x-4 gap-y-1">
+      <Button
+        disabled={update.isPending}
+        onClick={() => {
+          update.mutate({ access: "full", action: "connect" });
+        }}
+        size="act-sm"
+        type="button"
+        variant="act"
+      >
+        Подключить
+      </Button>
+      <Button
+        disabled={update.isPending}
+        onClick={() => {
+          update.mutate({ access: "read_only", action: "connect" });
+        }}
+        size="act-sm"
+        type="button"
+        variant="act"
+      >
+        Только чтение
+      </Button>
+    </span>
   );
 }
