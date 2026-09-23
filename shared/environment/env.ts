@@ -176,6 +176,9 @@ export const env = createEnv({
     NODE_ENV: z
       .enum(["development", "production", "test"])
       .default("production"),
+    // Vercel Connect connectors for the person's own Notion and Slack
+    // (see docs/dev-notes.md for how each is set up).
+    NOTION_CONNECTOR_UID: requiredValue.default("notion"),
     // OpenRouter replaces AI Gateway routing whenever its key is present.
     OPENROUTER_API_KEY: openRouterApiKeySchema.optional(),
     // The balance check alerts the owner below this many dollars of
@@ -228,6 +231,7 @@ export const env = createEnv({
     PAID_MESSAGES_PER_DAY: z.coerce.number().int().positive().default(500),
     // One month of paid access, in whole roubles.
     PRICE_RUB: z.coerce.number().int().positive().default(2000),
+    SLACK_CONNECTOR_UID: requiredValue.default("slack"),
     TELEGRAM_BOT_TOKEN: requiredValue.optional(),
     TELEGRAM_BOT_USERNAME: requiredValue
       .refine(
