@@ -12,6 +12,7 @@ const testEnvironment = {
 // opt into OpenRouter explicitly and otherwise exercise the AI Gateway path.
 const unsetEnvironment = [
   "OPENROUTER_API_KEY",
+  "OPENROUTER_IMAGE_MODEL",
   "OPENROUTER_MODEL",
   "OPENROUTER_MODEL_CONTEXT_TOKENS",
   "OPENROUTER_PROVIDER_ORDER",

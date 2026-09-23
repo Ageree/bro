@@ -262,6 +262,21 @@ reaches the model as a line starting with `[голосовое]`; when nothing c
 transcribed and the message has no text, the person is asked to retry and no
 model turn runs.
 
+### Pictures and chat games
+
+With `OPENROUTER_API_KEY` and private Blob storage, the agent gets a
+`generate_image` tool that draws through OpenRouter's Image API. The model is
+`OPENROUTER_IMAGE_MODEL` (default `google/gemini-3.1-flash-image`) and must accept
+reference images: the person's photos from the conversation (up to the four
+newest) and earlier pictures travel as references, so a card can show the
+person's own dog and "make it brighter" edits the last version instead of
+starting over. Pictures are stored as private artifacts and reach Telegram and
+iMessage as real photos through `send_message`. Without the key or the store the
+tool is not offered, and the agent says plainly that it cannot draw.
+
+Chat games need no configuration: the agent hosts trivia and other games in the
+conversation one question per message, reacts to answers, and keeps score.
+
 ## Landing and onboarding
 
 `/` is a public Russian landing page and the signed-in workspace lives at

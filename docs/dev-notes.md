@@ -29,6 +29,14 @@
   изменение с точки зрения пользователя.
 - В свежей облачной сессии нет `node_modules`: перед `pnpm check` и
   `pnpm build` нужен `pnpm install`.
+- В облачном контейнере по умолчанию Node 22, а проект требует 24
+  (`engines`, `.node-version`). На 22 `tests/agent/browser-use/completion.test.ts`
+  падает с `SyntaxError`; `nvm install 24` и запуск проверок под ним.
+- `pnpm build` — это только `next build`, и локально ему нужны заглушки
+  `DATABASE_URL`, `BETTER_AUTH_URL`, `BETTER_AUTH_SECRET`,
+  `SECRET_ENCRYPTION_KEY` (значения из `tests/setup-env.ts` подходят). Агент
+  eve собирает `pnpm build:eve`: только он проверяет durable-замыкания
+  динамических инструментов.
 - `pnpm check` включает knip: новый каталог с точками входа (как
   `agent/instrumentation/`) надо добавить в `knip.config.ts`, иначе его файлы
   считаются неиспользуемыми.
@@ -42,6 +50,12 @@
   `save_memory`, `update` и `workstreams` молча пропадали до конца сессии
   («Dynamic tool resolver failed — Expected a JSON-serializable value»). Байты
   файлов кладутся base64-строкой (коммит `2ed484c`).
+
+- Инструмент не видит историю сообщений: в `ToolContext` её нет. Фото
+  человека `generate_image` берёт в резолвере `turn.started` из
+  `ctx.messages` и кладёт в замыкание только ссылки: путь `eve-sandbox:`,
+  если eve уже положил вложение в песочницу, иначе копию в приватном Blob
+  (`agent/tools/generate_image.ts`).
 
 ## Vercel
 

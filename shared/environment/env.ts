@@ -173,6 +173,11 @@ export const env = createEnv({
       .default("production"),
     // OpenRouter replaces AI Gateway routing whenever its key is present.
     OPENROUTER_API_KEY: openRouterApiKeySchema.optional(),
+    // `generate_image` draws and edits pictures through OpenRouter's Image API
+    // with the same key; the model has to accept reference images.
+    OPENROUTER_IMAGE_MODEL: trimmedValue.default(
+      "google/gemini-3.1-flash-image"
+    ),
     OPENROUTER_MODEL: trimmedValue.default("deepseek/deepseek-v4.1-flash"),
     OPENROUTER_MODEL_CONTEXT_TOKENS: z.coerce
       .number()
