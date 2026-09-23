@@ -1,5 +1,6 @@
 import { relations, sql } from "drizzle-orm";
 import {
+  boolean,
   check,
   date,
   foreignKey,
@@ -39,6 +40,9 @@ export const userProfiles = pgTable(
     // resolves here first, so a person who moves is metered on their own
     // calendar rather than on Moscow's.
     timezone: text("timezone"),
+    // Whether Bro may write first about new mail and upcoming events. It is a
+    // setting rather than Personal Info, so the form and the model never see it.
+    proactiveMessages: boolean("proactive_messages").notNull().default(true),
     updatedAt: timestamp("updated_at", {
       mode: "date",
       precision: 3,

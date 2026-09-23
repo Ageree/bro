@@ -326,6 +326,35 @@ describe("scheduled run completion hook", () => {
     );
   });
 
+  it("records nothing to report when the worker ends with the empty-delivery marker", async () => {
+    const completed = completionHook.events?.["message.completed"];
+    await completed?.(
+      {
+        data: {
+          finishReason: "stop",
+          message: " <eve-empty-delivery/> ",
+          sequence: 0,
+          stepIndex: 0,
+          turnId: "turn-1",
+        },
+        meta: { at: "2026-09-01T13:01:00.000Z", id: "event-empty" },
+        type: "message.completed",
+      },
+      context
+    );
+
+    expect(services.complete).toHaveBeenCalledWith(
+      runId,
+      leaseToken,
+      "turn-1",
+      {
+        kind: "nothing_to_report",
+        reason: "The scheduled task produced no useful update.",
+      },
+      new Date("2026-09-01T13:01:00.000Z")
+    );
+  });
+
   it("parks the worker and queues its question for delivery", async () => {
     const request = {
       action: {

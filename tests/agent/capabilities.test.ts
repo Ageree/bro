@@ -7,10 +7,19 @@ import calendar from "@agent/tools/calendar";
 import contacts from "@agent/tools/contacts";
 import gmail from "@agent/tools/gmail";
 import messaging from "@agent/tools/messaging";
+import proactiveMessageTools from "@agent/tools/proactive_messages";
 import schedules from "@agent/tools/schedules";
 import vault from "@agent/tools/vault";
 
-const groupedTools = [calendar, contacts, gmail, messaging, schedules, vault];
+const groupedTools = [
+  calendar,
+  contacts,
+  gmail,
+  messaging,
+  proactiveMessageTools,
+  schedules,
+  vault,
+];
 
 describe("authored mode capability matrix", () => {
   it("gives interactive turns the authored coordinator capabilities", async () => {
@@ -25,6 +34,7 @@ describe("authored mode capability matrix", () => {
       "gmail-send",
       "gmail-update",
       "personal_info__update",
+      "proactive_messages",
       "profile__find",
       "profile__read",
       "profile__remove_memory",
@@ -57,6 +67,14 @@ describe("authored mode capability matrix", () => {
     ]);
   });
 
+  it("gives Bro's own checks only the read tools that look at new mail and events", async () => {
+    expect(
+      await authoredCapabilities("scheduled-worker", {
+        scheduledRunKind: "proactive",
+      })
+    ).toEqual(["calendar-list-events", "gmail-read-thread", "gmail-search"]);
+  });
+
   it("adds browser_task only to a deployment configured for Browser Use", async () => {
     const unconfigured = await loadBrowserTask("");
     const resolveUnconfigured = unconfigured.events["turn.started"];
@@ -76,6 +94,12 @@ describe("authored mode capability matrix", () => {
         async (role) => resolve({}, dynamicContext(role))
       )
     );
+    expect(
+      await resolve(
+        {},
+        dynamicContext("scheduled-worker", { scheduledRunKind: "proactive" })
+      )
+    ).toBeNull();
 
     for (const tools of resolved.slice(0, 2)) {
       expect(tools && !("execute" in tools) ? Object.keys(tools) : []).toEqual([
@@ -102,8 +126,11 @@ async function loadBrowserTask(apiKey: string) {
   return (await import("@agent/tools/browser_task")).default;
 }
 
-async function authoredCapabilities(authenticator: string) {
-  const context = dynamicContext(authenticator);
+async function authoredCapabilities(
+  authenticator: string,
+  initiatorAttributes?: Record<string, string>
+) {
+  const context = dynamicContext(authenticator, initiatorAttributes);
   const capabilities: string[] = [];
 
   const resolvedGroups = await Promise.all(
@@ -170,20 +197,29 @@ async function authoredCapabilities(authenticator: string) {
   return capabilities.toSorted();
 }
 
-function dynamicContext(authenticator: string) {
+function dynamicContext(
+  authenticator: string,
+  initiatorAttributes?: Record<string, string>
+) {
+  const current = {
+    attributes: { workspaceId: "personal:workspace" },
+    authenticator,
+    principalId: "user-1",
+    principalType: "user",
+  };
   return {
     model: null,
     channel: { kind: "channel:photon", metadata: {} },
     messages: [],
     session: {
       auth: {
-        current: {
-          attributes: { workspaceId: "personal:workspace" },
-          authenticator,
-          principalId: "user-1",
-          principalType: "user",
-        },
-        initiator: null,
+        current,
+        initiator: initiatorAttributes
+          ? {
+              ...current,
+              attributes: { ...current.attributes, ...initiatorAttributes },
+            }
+          : null,
       },
       id: "session-1",
     },

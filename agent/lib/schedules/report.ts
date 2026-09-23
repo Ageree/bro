@@ -123,6 +123,15 @@ function scheduledReportPrompt(claimed: ClaimedScheduledReport) {
   if (!claimed.run.outcome) {
     throw new Error("A completed scheduled run requires an outcome.");
   }
+  if (claimed.job.kind === "proactive") {
+    return [
+      "Your own background check of the person's mail and calendar found something. Nobody asked for this check, so you would be writing first.",
+      `Checked at: ${claimed.run.scheduledFor.toISOString()}`,
+      replyContext,
+      `Worker outcome: ${JSON.stringify(claimed.run.outcome)}`,
+      "Send one short message only if it still needs the person's action or attention; otherwise deliver nothing. Put everything into that single message. Never send email or accept anything on their behalf: a prepared reply is shown as a draft for them to approve, and an offer such as online check-in waits for their yes.",
+    ].join("\n\n");
+  }
   return [
     "A background scheduled run has completed.",
     `Original task: ${claimed.job.prompt}`,

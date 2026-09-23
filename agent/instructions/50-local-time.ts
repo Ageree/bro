@@ -31,6 +31,7 @@ export default defineDynamic({
         !z.string().safeParse(caller.attributes.workspaceId).success ||
         resolveModeValue(context, {
           interactive: true,
+          "proactive-worker": true,
           "scheduled-worker": true,
         }) !== true
       ) {

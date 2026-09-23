@@ -8,6 +8,7 @@ export * from "./gmail-attachments";
 export * from "./memory";
 export * from "./onboarding-requests";
 export * from "./orders";
+export * from "./proactive";
 export * from "./schedules";
 export * from "./sessions";
 export * from "./usage";

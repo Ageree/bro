@@ -18,6 +18,34 @@ describe("agent instructions", () => {
     expect(selected?.content).toContain(phrase);
   });
 
+  it("gives Bro's own mail and calendar checks the proactive role", async () => {
+    const resolve = roleInstructions.events["turn.started"];
+    expect(resolve).toBeDefined();
+    if (!resolve) return;
+
+    const context = dynamicContext("scheduled-worker", "scheduled-worker");
+    const proactive = {
+      ...context,
+      session: {
+        ...context.session,
+        auth: {
+          ...context.session.auth,
+          initiator: {
+            attributes: { scheduledRunKind: "proactive" },
+            authenticator: "scheduled-worker",
+            principalId: "user-1",
+            principalType: "user",
+          },
+        },
+      },
+    } satisfies DynamicResolveContext;
+    const selected = await resolve({}, proactive);
+    expect(selected?.content).toContain("без просьбы человека");
+    expect(selected?.content).toContain("Личное и социальное");
+    expect(selected?.content).toContain("`<eve-empty-delivery/>`");
+    expect(selected?.content).not.toContain("заведённую человеком");
+  });
+
   it("limits scheduled-result turns to reporting", async () => {
     const resolve = roleInstructions.events["turn.started"];
     expect(resolve).toBeDefined();

@@ -10,6 +10,7 @@ import {
 } from "@db/services/scheduled-agent-jobs";
 
 const workerRuntimeLimitMs = 6 * 60 * 60_000;
+const emptyDeliveryMarker = "<eve-empty-delivery/>";
 
 export default defineHook({
   events: {
@@ -99,7 +100,10 @@ export default defineHook({
         logDeadLetterReportQueued(status, identity.runId, ctx.session.id);
         return;
       }
-      const message = event.data.message?.trim().slice(0, 4_000);
+      const text = event.data.message?.trim().slice(0, 4_000);
+      // A worker told that delivery is conditional ends with eve's marker when
+      // it found nothing; that is no result, not a result saying so.
+      const message = text === emptyDeliveryMarker ? undefined : text;
       const outcome = scheduledRunOutcomeSchema.parse(
         message
           ? {

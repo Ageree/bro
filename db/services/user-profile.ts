@@ -79,3 +79,33 @@ async function writeUserProfile(scope: AccessScope, profile: UserProfile) {
       set: { ...profile, updatedAt },
     });
 }
+
+/** Whether Bro may write first; on until the person turns it off. */
+export async function readProactiveMessages(scope: AccessScope) {
+  const rows = await db
+    .select({ proactiveMessages: userProfiles.proactiveMessages })
+    .from(userProfiles)
+    .where(eq(userProfiles.workspaceId, scope.workspaceId))
+    .limit(1);
+  return rows[0]?.proactiveMessages ?? true;
+}
+
+export async function setProactiveMessages(
+  scope: AccessScope,
+  enabled: boolean
+) {
+  await ensureScope(scope);
+  const updatedAt = new Date();
+  await db
+    .insert(userProfiles)
+    .values({
+      proactiveMessages: enabled,
+      updatedAt,
+      workspaceId: scope.workspaceId,
+    })
+    .onConflictDoUpdate({
+      target: userProfiles.workspaceId,
+      set: { proactiveMessages: enabled, updatedAt },
+    });
+  return enabled;
+}

@@ -59,6 +59,9 @@ export default defineDynamic({
           "calendar-create-event": calendarCreateEvent,
           "calendar-list-events": calendarListEvents,
         },
+        "proactive-worker": {
+          "calendar-list-events": calendarListEvents,
+        },
         "scheduled-worker": {
           "calendar-check-availability": calendarCheckAvailability,
           "calendar-list-events": calendarListEvents,

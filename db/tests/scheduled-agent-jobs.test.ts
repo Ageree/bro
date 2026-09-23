@@ -34,6 +34,13 @@ describe("scheduled agent jobs", () => {
       "0012_harsh_domino.sql",
       "0013_last_christian_walker.sql",
       "0014_uneven_vector.sql",
+      "0015_greedy_black_tom.sql",
+      "0016_oval_moira_mactaggert.sql",
+      "0017_talented_penance.sql",
+      "0018_easy_butterfly.sql",
+      "0019_sad_eternity.sql",
+      "0020_lucky_dakota_north.sql",
+      "0021_hard_omega_sentinel.sql",
     ]) {
       await applyMigration(client, migration);
     }
@@ -237,7 +244,14 @@ describe("scheduled agent jobs", () => {
       await jobs.listRecoverableScheduledReports(
         new Date("2026-09-01T13:07:00.000Z")
       )
-    ).toEqual([{ conversationChannel: "photon", runId: claim.run.id }]);
+    ).toEqual([
+      {
+        conversationChannel: "photon",
+        jobKind: "task",
+        runId: claim.run.id,
+        scope: alice,
+      },
+    ]);
     const retriedQuestionReport = await jobs.claimScheduledReport(
       claim.run.id,
       new Date("2026-09-01T13:07:00.000Z")
