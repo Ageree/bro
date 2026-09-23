@@ -1,3 +1,4 @@
+import type { Session } from "eve/channels";
 import type { ScheduleToFn } from "eve/schedules";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -5,7 +6,7 @@ const runId = "11111111-1111-4111-8111-111111111111";
 
 interface BrowserRunRow {
   completedAt: Date | null;
-  conversationChannel: "photon";
+  conversationChannel: "eve" | "photon";
   conversationId: string;
   createdByUserId: string;
   id: string;
@@ -60,9 +61,60 @@ const captureBrowserRunImages = vi.hoisted(() =>
   >()
 );
 
+// The pending report and its delivery lease, as the row would hold them.
+interface ReportLedger {
+  claimed: boolean;
+  delivered: boolean;
+  report?: string;
+  row?: BrowserRunRow;
+}
+
+type ClaimedReport = BrowserRunRow & {
+  report: string;
+  reportAttempts: number;
+};
+
+const ledger = vi.hoisted((): ReportLedger => ({
+  claimed: false,
+  delivered: false,
+}));
+const saveBrowserRunReport = vi.hoisted(() =>
+  vi.fn<(runId: string, report: string) => Promise<void>>((_runId, report) => {
+    ledger.report = report;
+    return Promise.resolve();
+  })
+);
+const claimBrowserRunReport = vi.hoisted(() =>
+  vi.fn<(runId: string) => Promise<ClaimedReport | undefined>>(() => {
+    const { report, row: claimedRow } = ledger;
+    if (!report || !claimedRow || ledger.claimed || ledger.delivered) {
+      return Promise.resolve(undefined);
+    }
+    ledger.claimed = true;
+    return Promise.resolve({ ...claimedRow, report, reportAttempts: 1 });
+  })
+);
+const finishBrowserRunReport = vi.hoisted(() =>
+  vi.fn<(runId: string) => Promise<void>>(() => {
+    ledger.claimed = false;
+    ledger.delivered = true;
+    return Promise.resolve();
+  })
+);
+const releaseBrowserRunReport = vi.hoisted(() =>
+  vi.fn<(runId: string) => Promise<void>>(() => {
+    ledger.claimed = false;
+    return Promise.resolve();
+  })
+);
+
 vi.mock("@db/services/browser-runs", () => ({
   claimBrowserRunCompletion,
+  claimBrowserRunReport,
+  finishBrowserRunReport,
   readBrowserRun,
+  releaseBrowserRunReport,
+  saveBrowserRunReport,
 }));
 vi.mock("@agent/lib/browser-use/client", () => ({
   cancelBrowserUseRun,
@@ -75,6 +127,10 @@ vi.mock("@agent/channels/photon", () => ({ default: { id: "photon" } }));
 
 beforeEach(() => {
   vi.clearAllMocks();
+  ledger.claimed = false;
+  ledger.delivered = false;
+  delete ledger.report;
+  ledger.row = row;
   readBrowserRun.mockResolvedValue(row);
   readBrowserUseRun.mockResolvedValue({
     error: null,
@@ -363,3 +419,90 @@ describe("settling a browser run", () => {
     expect(send).toHaveBeenCalledOnce();
   });
 });
+
+describe("reporting into an eve chat", () => {
+  const eveRow: BrowserRunRow = {
+    ...row,
+    conversationChannel: "eve",
+    conversationId: "eve-session-1",
+  };
+
+  beforeEach(() => {
+    readBrowserRun.mockResolvedValue(eveRow);
+    claimBrowserRunCompletion
+      .mockReset()
+      .mockResolvedValueOnce({ ...eveRow, completedAt: new Date() })
+      .mockResolvedValue(undefined);
+    ledger.row = eveRow;
+  });
+
+  it("sends the outcome into the exact session the errand started in", async () => {
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { attachSession, send } = sessionHandle("accepted");
+    const { to } = delivery();
+
+    await settleBrowserRun({ attachSession, to }, runId);
+
+    expect(attachSession).toHaveBeenCalledExactlyOnceWith("eve-session-1");
+    expect(send).toHaveBeenCalledOnce();
+    expect(send.mock.calls[0]?.[0]).toContain(`Browser run ${runId} finished`);
+    expect(send.mock.calls[0]?.[1]).toMatchObject({ turnPolicy: "queue" });
+    expect(finishBrowserRunReport).toHaveBeenCalledExactlyOnceWith(runId);
+  });
+
+  it("keeps the outcome pending when no session handle is at hand", async () => {
+    const { deliverBrowserRunReport, settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    expect(ledger.report).toContain(`Browser run ${runId} finished`);
+    expect(finishBrowserRunReport).not.toHaveBeenCalled();
+    expect(releaseBrowserRunReport).toHaveBeenCalledExactlyOnceWith(runId);
+
+    const { attachSession, send } = sessionHandle("accepted");
+    await deliverBrowserRunReport({ attachSession, to }, runId);
+
+    expect(send).toHaveBeenCalledOnce();
+    expect(send.mock.calls[0]?.[0]).toBe(ledger.report);
+    expect(ledger.delivered).toBe(true);
+  });
+
+  it("keeps the outcome pending when the session does not accept it", async () => {
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { attachSession, send } = sessionHandle("session_not_active");
+    const { to } = delivery();
+
+    await settleBrowserRun({ attachSession, to }, runId);
+
+    expect(send).toHaveBeenCalledOnce();
+    expect(finishBrowserRunReport).not.toHaveBeenCalled();
+    expect(releaseBrowserRunReport).toHaveBeenCalledExactlyOnceWith(runId);
+    expect(ledger.delivered).toBe(false);
+  });
+});
+
+function sessionHandle(status: "accepted" | "session_not_active") {
+  const send = vi.fn<Session["send"]>(() =>
+    Promise.resolve(
+      status === "accepted"
+        ? { sessionId: "eve-session-1", status }
+        : { retryable: true, status }
+    )
+  );
+  const attachSession = vi.fn<(sessionId: string) => Session>((id) => ({
+    cancel: vi.fn<Session["cancel"]>(),
+    clear: vi.fn<Session["clear"]>(),
+    compact: vi.fn<Session["compact"]>(),
+    getEventStream: vi.fn<Session["getEventStream"]>(),
+    getStreamTailIndex: vi.fn<Session["getStreamTailIndex"]>(),
+    id,
+    reset: vi.fn<Session["reset"]>(),
+    respond: vi.fn<Session["respond"]>(),
+    send,
+  }));
+  return { attachSession, send };
+}

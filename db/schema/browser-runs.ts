@@ -3,6 +3,7 @@ import {
   check,
   foreignKey,
   index,
+  integer,
   pgTable,
   text,
   timestamp,
@@ -74,6 +75,24 @@ export const browserRuns = pgTable(
       precision: 3,
       withTimezone: true,
     }),
+    // The message that reports the settled run back into its conversation.
+    // Settling and delivering are separate steps: a run can settle where its
+    // conversation cannot be reached (an eve session from the cron), and the
+    // report waits here until a delivery lands instead of being lost with it.
+    report: text("report"),
+    reportDeliveredAt: timestamp("report_delivered_at", {
+      mode: "date",
+      precision: 3,
+      withTimezone: true,
+    }),
+    // A lease, not a status: the webhook and the poller may both try to
+    // deliver, and whoever holds a fresh claim is the one sending.
+    reportClaimedAt: timestamp("report_claimed_at", {
+      mode: "date",
+      precision: 3,
+      withTimezone: true,
+    }),
+    reportAttempts: integer("report_attempts").notNull().default(0),
   },
   (table) => [
     foreignKey({

@@ -3,9 +3,10 @@ import { calendar, type calendar_v3 } from "@googleapis/calendar";
 import type { ToolContext } from "eve/tools";
 import { z } from "zod";
 import { googleApiErrorStatus, withGoogleAuth } from "./client";
+import { emailAddressSchema } from "./email";
 
 export const calendarEventSchema = z.object({
-  attendees: z.array(z.email()).max(50).default([]),
+  attendees: z.array(emailAddressSchema).max(50).default([]),
   calendarId: z.string().default("primary"),
   description: z.string().max(8_000).optional(),
   end: z.iso.datetime({ offset: true }),
