@@ -5,7 +5,7 @@ import type {
   revokeToken,
   startAuthorization,
 } from "@vercel/connect";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   getGoogleWorkspaceAccess,
   selectGoogleWorkspaceAccess,
@@ -99,6 +99,15 @@ describe("connect_google execution", () => {
     settings.access.mockResolvedValue("full");
     settings.select.mockResolvedValue(undefined);
     connect.revokeToken.mockResolvedValue(undefined);
+    // The connection read asks Google's tokeninfo whether the grant is offline.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ access_type: "offline" }))
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it("reports the connected Google account without minting a link", async () => {
@@ -145,6 +154,7 @@ describe("connect_google execution", () => {
       {
         callbackUrl: "https://example.com/workspace?google=connected",
         expiresInMs: 10 * 60_000,
+        prompt: "consent",
       }
     );
   });
