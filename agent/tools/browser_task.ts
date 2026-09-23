@@ -74,7 +74,7 @@ export const browserTaskInputSchema = z
     verificationPlan: browserVerificationPlanSchema
       .optional()
       .describe(
-        "Code-verifiable acceptance checks for this errand. Provide this for new tasks with checkable page outcomes. Set purpose order_reference only on the exact merchant reference check and order_total only on its fresh RUB numeric total check."
+        "Before start, map every explicit constraint and requested fact to its own mandatory code-verifiable predicate; description text is not a check. Check both date endpoints and occupancy separately, require a currency-qualified numeric amount rather than currency text alone, and give requested refund, deadline, bathroom, or similar per-option facts their own predicates. Use one groupId only for facts of the same concrete offer, product, or rate; page-wide filters, dates, and occupancy need their own mandatory checks and must not be forced into an offer group. A negative safety check is not completion evidence. Never invent an unknown expected value: use supplied values or bounds and fresh numeric observations or known page labels. If any explicit requirement cannot be covered within budget, treat the plan as partial and never call the whole goal independently verified. Set purpose order_reference only on the exact merchant reference check and order_total only on its fresh RUB numeric total check."
       ),
     allowPayment: z
       .boolean()

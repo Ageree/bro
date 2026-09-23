@@ -79,6 +79,48 @@ describe("browser autonomy instructions", () => {
     expect(autonomy.get).not.toHaveBeenCalled();
     expect(selected?.content).toContain("нет сохранённого согласия");
   });
+
+  it("requires complete predicate coverage and preserves a supplied URL", async () => {
+    const selected = await resolveBrowserInstructions(context());
+
+    expect(selected?.content).toContain("**каждое** явное ограничение");
+    expect(selected?.content).toContain("каждый запрошенный факт");
+    expect(selected?.content).toContain(
+      "текст `description` сам по себе проверкой не считается"
+    );
+    expect(selected?.content).toContain(
+      "Начальная и конечная даты, число гостей и размещение"
+    );
+    expect(selected?.content).toContain("одна надпись `EUR` не проверяет цену");
+    expect(selected?.content).toContain("срок отмены, отдельную ванную");
+    expect(selected?.content).toContain(
+      "только факты одного конкретного предложения"
+    );
+    expect(selected?.content).toContain(
+      "даты и число гостей должны иметь собственные обязательные проверки"
+    );
+    expect(selected?.content).toContain(
+      "не называй всю цель независимо подтверждённой по частичному плану"
+    );
+    expect(selected?.content).toContain("дословно сохрани его в поручении");
+    expect(selected?.content).toContain("не заменяй его сайтом из примера");
+
+    const { browserTaskInputSchema } =
+      await import("@agent/tools/browser_task");
+    const description =
+      browserTaskInputSchema.shape.verificationPlan.description;
+    expect(description).toContain("every explicit constraint");
+    expect(description).toContain("description text is not a check");
+    expect(description).toContain("both date endpoints and occupancy");
+    expect(description).toContain("currency-qualified numeric amount");
+    expect(description).toContain("refund, deadline, bathroom");
+    expect(description).toContain("same concrete offer, product, or rate");
+    expect(description).toContain(
+      "page-wide filters, dates, and occupancy need their own mandatory checks"
+    );
+    expect(description).toContain("negative safety check");
+    expect(description).toContain("treat the plan as partial");
+  });
 });
 
 async function resolveBrowserInstructions(
