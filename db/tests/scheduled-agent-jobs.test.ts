@@ -37,7 +37,7 @@ describe("scheduled agent jobs", () => {
       // `ensureScope` writes every workspace column, introduced_at included.
       "0023_safe_squirrel_girl.sql",
       // The job kind that keeps proactive checks out of the task dispatcher.
-      "0024_tired_archangel.sql",
+      "0025_oval_wraith.sql",
     ]) {
       await applyMigration(client, migration);
     }
