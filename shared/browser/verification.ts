@@ -122,6 +122,7 @@ const predicateSchema = z.discriminatedUnion("kind", [
     .strict(),
   z
     .object({
+      capture: z.literal(true).optional(),
       currency: z.enum(["EUR", "GBP", "RUB", "USD"]).optional(),
       decimalSeparator: z.enum([",", "."]),
       kind: z.literal("number"),
@@ -131,8 +132,14 @@ const predicateSchema = z.discriminatedUnion("kind", [
     })
     .strict()
     .refine(
-      ({ maximum, minimum }) => maximum !== undefined || minimum !== undefined,
+      ({ capture, maximum, minimum }) =>
+        capture === true || maximum !== undefined || minimum !== undefined,
       { message: "A numeric check needs a minimum or maximum." }
+    )
+    .refine(
+      ({ capture, maximum, minimum }) =>
+        capture !== true || (maximum === undefined && minimum === undefined),
+      { message: "A numeric capture cannot include bounds." }
     )
     .refine(
       ({ maximum, minimum }) =>
@@ -141,6 +148,7 @@ const predicateSchema = z.discriminatedUnion("kind", [
     ),
   z
     .object({
+      capture: z.literal(true).optional(),
       expected: z
         .union([browserVerificationDateSchema, partialDateSchema])
         .optional(),
@@ -149,8 +157,9 @@ const predicateSchema = z.discriminatedUnion("kind", [
       minimum: browserVerificationDateSchema.optional(),
     })
     .strict()
-    .superRefine(({ expected, maximum, minimum }, context) => {
+    .superRefine(({ capture, expected, maximum, minimum }, context) => {
       if (
+        capture !== true &&
         expected === undefined &&
         maximum === undefined &&
         minimum === undefined
@@ -158,6 +167,16 @@ const predicateSchema = z.discriminatedUnion("kind", [
         context.addIssue({
           code: "custom",
           message: "A date check needs an expected date or a boundary.",
+        });
+      if (
+        capture === true &&
+        (expected !== undefined ||
+          maximum !== undefined ||
+          minimum !== undefined)
+      )
+        context.addIssue({
+          code: "custom",
+          message: "A date capture cannot include expectations or bounds.",
         });
       if (
         expected !== undefined &&

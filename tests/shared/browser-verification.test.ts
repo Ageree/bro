@@ -7,6 +7,7 @@ import {
 
 interface PredicateFixture {
   readonly caseSensitive?: boolean;
+  readonly capture?: true;
   readonly decimalSeparator?: "." | ",";
   readonly expected?: string;
   readonly kind: string;
@@ -174,6 +175,17 @@ describe("browser verification contracts", () => {
     );
     expect(acceptsPredicate({ expected: "--02-30", kind: "date" })).toBe(false);
     expect(acceptsPredicate({ kind: "date" })).toBe(false);
+    expect(acceptsPredicate({ capture: true, kind: "date" })).toBe(true);
+    expect(
+      acceptsPredicate({ capture: true, expected: "2026-10-16", kind: "date" })
+    ).toBe(false);
+    expect(
+      acceptsPredicate({
+        capture: true,
+        kind: "date",
+        minimum: "2026-01-01",
+      })
+    ).toBe(false);
     expect(
       acceptsPredicate({
         expected: "--10-16",
@@ -295,6 +307,27 @@ describe("browser verification contracts", () => {
     ).toBe(false);
     expect(
       acceptsPredicate({ expected: "javascript:alert(1)", kind: "link" })
+    ).toBe(false);
+  });
+
+  it("requires numeric bounds or an explicit exclusive capture mode", () => {
+    expect(
+      acceptsPredicate({
+        capture: true,
+        decimalSeparator: ",",
+        kind: "number",
+      })
+    ).toBe(true);
+    expect(acceptsPredicate({ decimalSeparator: ",", kind: "number" })).toBe(
+      false
+    );
+    expect(
+      acceptsPredicate({
+        capture: true,
+        decimalSeparator: ",",
+        kind: "number",
+        minimum: 1,
+      })
     ).toBe(false);
   });
 });

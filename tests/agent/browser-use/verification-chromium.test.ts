@@ -69,6 +69,7 @@ describe.skipIf(!chrome)("browser verification against Chromium", () => {
             <p class="russian-date">16 октября 2026 г.</p>
             <p class="russian-partial-date">15 октября</p>
             <p class="number-words">Two adults</p>
+            <p class="fx-rate">92,1234 ₽</p>
             <p class="unknown-identity">Release v4.2.0</p>
           </section>
           <section id="secret"><input class="password" type="password" value="never-return-this"></section>
@@ -181,11 +182,13 @@ describe.skipIf(!chrome)("browser verification against Chromium", () => {
       [
         check("date", { expected: "2026-10-16", kind: "date" }),
         check("custom-date", { expected: "2026-09-22", kind: "date" }),
+        check("captured-machine-date", { capture: true, kind: "date" }),
         check("localized-date", {
           kind: "date",
           maximum: "2026-12-31",
           minimum: "2026-01-01",
         }),
+        check("captured-localized-date", { capture: true, kind: "date" }),
         check("localized-partial-date", {
           expected: "--10-15",
           kind: "date",
@@ -197,6 +200,12 @@ describe.skipIf(!chrome)("browser verification against Chromium", () => {
           minimum: 2,
           numberWords: "en",
         }),
+        check("fx-rate", {
+          capture: true,
+          currency: "RUB",
+          decimalSeparator: ",",
+          kind: "number",
+        }),
         {
           ...check("captured-name", { kind: "text_present" }),
           purpose: "identity",
@@ -205,9 +214,12 @@ describe.skipIf(!chrome)("browser verification against Chromium", () => {
       [
         locator("date", "#formats", ".relative-date"),
         locator("custom-date", "#formats", ".custom-date"),
+        locator("captured-machine-date", "#formats", ".relative-date"),
         locator("localized-date", "#formats", ".russian-date"),
+        locator("captured-localized-date", "#formats", ".russian-date"),
         locator("localized-partial-date", "#formats", ".russian-partial-date"),
         locator("quantity-words", "#formats", ".number-words"),
+        locator("fx-rate", "#formats", ".fx-rate"),
         locator("captured-name", "#formats", ".unknown-identity"),
       ]
     );
@@ -218,6 +230,27 @@ describe.skipIf(!chrome)("browser verification against Chromium", () => {
         checkId: "date",
         observation: "Tomorrow",
         value: "2026-10-16",
+      })
+    );
+    expect(report.observedChecks).toContainEqual(
+      expect.objectContaining({
+        checkId: "captured-machine-date",
+        observation: "Tomorrow",
+        value: "2026-10-16",
+      })
+    );
+    expect(report.observedChecks).toContainEqual(
+      expect.objectContaining({
+        checkId: "captured-localized-date",
+        observation: "16 октября 2026 г.",
+        value: "2026-10-16",
+      })
+    );
+    expect(report.observedChecks).toContainEqual(
+      expect.objectContaining({
+        checkId: "fx-rate",
+        observation: "92,1234 ₽",
+        value: 92.1234,
       })
     );
     expect(report.observedChecks).toContainEqual(
@@ -239,6 +272,16 @@ describe.skipIf(!chrome)("browser verification against Chromium", () => {
     const report = await verify(
       [check("date", { expected: "2026-10-16", kind: "date" })],
       [locator("date", "#formats", ".conflicting-date")]
+    );
+
+    expect(report.verdict).toBe("unverified");
+    expect(report.defects[0]?.code).toBe("invalid_evidence");
+  });
+
+  it("does not capture a visible date with no year", async () => {
+    const report = await verify(
+      [check("date", { capture: true, kind: "date" })],
+      [locator("date", "#formats", ".russian-partial-date")]
     );
 
     expect(report.verdict).toBe("unverified");

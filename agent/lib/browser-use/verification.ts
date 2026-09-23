@@ -739,8 +739,9 @@ function evaluateCheck(
       );
     }
     const passed =
-      (predicate.minimum === undefined || value >= predicate.minimum) &&
-      (predicate.maximum === undefined || value <= predicate.maximum);
+      predicate.capture === true ||
+      ((predicate.minimum === undefined || value >= predicate.minimum) &&
+        (predicate.maximum === undefined || value <= predicate.maximum));
     return {
       defects: passed
         ? []
@@ -753,6 +754,7 @@ function evaluateCheck(
           ],
       observation: {
         checkId: check.id,
+        observation: sanitizeObservation(text),
         observedAt: evidence.observedAt,
         pageUrl: evidence.pageUrl,
         status: passed ? "passed" : "failed",
@@ -807,12 +809,14 @@ function evaluateCheck(
         "invalid_evidence"
       );
     }
-    const passed = predicate.expected
-      ? date.comparison === predicate.expected
-      : (predicate.minimum === undefined ||
-          date.comparison >= predicate.minimum) &&
-        (predicate.maximum === undefined ||
-          date.comparison <= predicate.maximum);
+    const passed =
+      predicate.capture === true ||
+      (predicate.expected
+        ? date.comparison === predicate.expected
+        : (predicate.minimum === undefined ||
+            date.comparison >= predicate.minimum) &&
+          (predicate.maximum === undefined ||
+            date.comparison <= predicate.maximum));
     return {
       defects: passed
         ? []
@@ -951,8 +955,13 @@ function parseNumber(
     "u"
   ).test(signless);
   if (!plainInteger && !spacedInteger && !punctuatedInteger) return undefined;
-  if (fraction !== undefined && !/^\d{1,2}$/u.test(fraction)) return undefined;
+  if (fraction !== undefined && !/^\d{1,12}$/u.test(fraction)) return undefined;
   const normalizedInteger = signless.replaceAll(/[ \u00a0.,]/gu, "");
+  const significantDigits = `${normalizedInteger}${fraction ?? ""}`.replace(
+    /^0+/u,
+    ""
+  ).length;
+  if (significantDigits > 15) return undefined;
   const normalized = `${sign}${normalizedInteger}${fraction === undefined ? "" : `.${fraction}`}`;
   const value = Number(normalized);
   return Number.isFinite(value) ? value : undefined;

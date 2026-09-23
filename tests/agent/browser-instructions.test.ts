@@ -86,10 +86,25 @@ describe("browser autonomy instructions", () => {
     expect(selected?.content).toContain("каждое явное ограничение");
     expect(selected?.content).toContain("каждый запрошенный факт");
     expect(selected?.content).toContain(
+      "Для каждого нового `start` обязательно составь непустой `verificationPlan`"
+    );
+    expect(selected?.content).toContain(
       "`description` объясняет проверку, но никогда не служит доказательством"
     );
     expect(selected?.content).toContain(
       "Даты задавай каноническим предикатом `date`"
+    );
+    expect(selected?.content).toContain(
+      "Каждую запрошенную дату с неизвестным заранее значением проверяй отдельным предикатом даты с `capture: true`"
+    );
+    expect(selected?.content).toContain(
+      "сохрани именно их вместо `capture` и никогда не придумывай неизвестный год"
+    );
+    expect(selected?.content).toContain(
+      "Каждое запрошенное количество, курс или сумму с неизвестным заранее значением проверяй отдельным числовым предикатом с `capture: true`"
+    );
+    expect(selected?.content).toContain(
+      "один `capture` это ограничение не проверяет"
     );
     expect(selected?.content).toContain(
       "не названный человеком год, количество, цену"
@@ -108,7 +123,10 @@ describe("browser autonomy instructions", () => {
       "Само присутствие текста не доказывает бесплатность"
     );
     expect(selected?.content).toContain(
-      "проверяй его отдельным предикатом `link`, а запрошенную подпись — отдельным текстовым предикатом: видимая подпись не доказывает URL"
+      "проверяй `href` его ссылки отдельным предикатом `link`, а запрошенную подпись — отдельным текстовым предикатом: видимая подпись не доказывает URL"
+    );
+    expect(selected?.content).toContain(
+      "`pageUrl` хранит адрес документа и контекст навигации"
     );
     expect(selected?.content).toContain("все запрошенные факты этого варианта");
     expect(selected?.content).toContain(
@@ -128,7 +146,20 @@ describe("browser autonomy instructions", () => {
     expect(description).toContain("option identity");
     expect(description).toContain("description text is never evidence");
     expect(description).toContain("canonical typed date predicates");
+    expect(description).toContain("Required for every start");
+    expect(description).toContain(
+      "every requested date whose value is not known in advance"
+    );
+    expect(description).toContain(
+      "preserve any expected date or date bounds supplied by the user"
+    );
     expect(description).toContain("numberWords");
+    expect(description).toContain(
+      "add its own number predicate with capture true"
+    );
+    expect(description).toContain(
+      "capture alone does not verify that constraint"
+    );
     expect(description).toContain(
       "never guess display strings, an unspecified year"
     );
@@ -137,6 +168,9 @@ describe("browser autonomy instructions", () => {
       "Every groupId must contain an identity text_exact, text_contains, or text_present predicate"
     );
     expect(description).toContain("never use presence alone to prove");
+    expect(description).toContain(
+      "Evidence pageUrl records the document and navigation context"
+    );
     expect(description).toContain(
       "A collection or group heading does not identify its nested concrete items"
     );

@@ -105,6 +105,16 @@ function assertGroupedPlanIdentity(plan: BrowserVerificationPlan | undefined) {
   if (defect) throw new Error(defect.message);
 }
 
+const missingStartPlanMessage =
+  "A start action requires a nonempty verificationPlan covering every explicit constraint, requested fact, and concrete option identity. Build the plan before starting; do not run first and invent checks from the result.";
+
+function assertStartVerificationPlan(
+  plan: BrowserVerificationPlan | undefined
+) {
+  if (!plan) throw new Error(missingStartPlanMessage);
+  assertGroupedPlanIdentity(plan);
+}
+
 export const browserTaskInputSchema = z
   .object({
     action: z.enum(["start", "continue", "cancel", "status"]),
@@ -116,7 +126,7 @@ export const browserTaskInputSchema = z
     verificationPlan: browserVerificationPlanSchema
       .optional()
       .describe(
-        "Before start, map every explicit constraint, requested fact, and option identity to separate mandatory predicates; description text is never evidence. Keep each qualifying property separate from dates, quantities, and amounts. Use canonical typed date predicates, and exact numeric quantity predicates with numberWords when the page language may spell the count out; never guess display strings, an unspecified year, or an expected value. Capture a requested unknown name or other fresh visible text with text_present, but never use presence alone to prove a qualifier such as free cancellation, a condition, date, or price. Use a link predicate for every requested destination URL and a separate text predicate for every requested label; a visible label does not prove its URL. Put every requested per-option fact and one positive identity check in that exact offer's groupId; terms, prices, dates, counts, and negative checks do not identify an offer. A collection or group heading does not identify its nested concrete items: give each item its own identity group, keep that item's label, URL, and facts together, and never mix different entities in one group. Keep page-wide scope checks ungrouped; a date belonging to one entity may stay in that entity's group. Every groupId must contain an identity text_exact, text_contains, or text_present predicate, or an order_reference positive exact/contains predicate. If a fact's meaning is unknown, leave it explicitly unverified rather than treating a schema-valid partial plan as verification of the whole goal. Set purpose order_reference only on the exact merchant reference check and order_total only on its fresh RUB numeric total check."
+        "Required for every start. Before start, map every explicit constraint, requested fact, and option identity to separate mandatory predicates; description text is never evidence. Keep each qualifying property separate from dates, quantities, and amounts. Use canonical typed date predicates, and exact numeric quantity predicates with numberWords when the page language may spell the count out; never guess display strings, an unspecified year, or an expected value. For every requested date whose value is not known in advance, use its own date predicate with capture true; preserve any expected date or date bounds supplied by the user instead of replacing them with capture, and never invent an unknown year. For every requested numeric quantity, rate, or amount whose value is not known in advance, add its own number predicate with capture true instead of omitting the fact or inventing a bound. When the user supplied a numeric constraint, use the actual minimum or maximum from the request; capture alone does not verify that constraint. Capture a requested unknown name or other fresh visible text with text_present, but never use presence alone to prove a qualifier such as free cancellation, a condition, date, or price. Use a link predicate for every requested destination anchor URL and a separate text predicate for every requested label; a visible label does not prove its URL. Evidence pageUrl records the document and navigation context where a check was observed; it is not an anchor href and does not justify a synthetic html or body link check for the current document location. Put every requested per-option fact and one positive identity check in that exact offer's groupId; terms, prices, dates, counts, and negative checks do not identify an offer. A collection or group heading does not identify its nested concrete items: give each item its own identity group, keep that item's label, URL, and facts together, and never mix different entities in one group. Keep page-wide scope checks ungrouped; a date belonging to one entity may stay in that entity's group. Every groupId must contain an identity text_exact, text_contains, or text_present predicate, or an order_reference positive exact/contains predicate. If a fact's meaning is unknown, leave it explicitly unverified rather than treating a schema-valid partial plan as verification of the whole goal. Set purpose order_reference only on the exact merchant reference check and order_total only on its fresh RUB numeric total check."
       ),
     allowPayment: z
       .boolean()
@@ -171,7 +181,14 @@ export const browserTaskInputSchema = z
       });
     }
 
-    if (input.action === "start" && input.verificationPlan) {
+    if (input.action === "start") {
+      if (!input.verificationPlan) {
+        context.addIssue({
+          code: "custom",
+          message: missingStartPlanMessage,
+          path: ["verificationPlan"],
+        });
+      }
       for (const defect of groupedPlanDefects(input.verificationPlan)) {
         context.addIssue({
           code: "custom",
@@ -238,7 +255,7 @@ function outcomeContract() {
     "EVIDENCE: observed page URLs and facts that prove the result, one per line; omit when there is none",
     "NEXT: unfinished subgoals and hard constraints a continuation must preserve, one per line; omit only when nothing remains",
     "CHECKS: when a verification plan was supplied, one compact JSON object {version:1,checks:[{checkId,pageUrl,scopeSelector,selector}]} containing stable CSS locators gathered while doing the work. Do not reread pages solely to produce CHECKS.",
-    "In every CHECKS locator, selector must uniquely match a strict descendant of scopeSelector. Choose the matched element's parent as the scope; never repeat the same element or selector for both fields.",
+    "In every CHECKS locator, selector must uniquely match a strict descendant of scopeSelector; never use html or body as the scope. For every set of checks sharing a groupId in the plan, use exactly the same pageUrl and scopeSelector for all of their CHECKS entries: choose one narrow container for that concrete entity, then use narrower child selectors for its identity and every fact instead of giving each field a different parent scope. Never repeat the same element or selector for both fields. A link check's selector must match the real anchor element whose href is being verified.",
     "Use STATUS: complete only after independently reading the final page state and verifying every hard constraint. NEEDS: none alone does not mean complete. Report only URLs you actually observed, never a credential, token, one-time-code, or live-view URL.",
     'LINKS: a JSON array of {"title":"human-readable option name","url":"https://..."} objects, or []',
     "For every concrete option you recommend or report — product, article, hotel, ticket, restaurant, listing, or anything similar — include its actual observed destination URL in LINKS. Open the option's detail page or extract its actual anchor href from the page. Never guess or construct an ID or URL, and never substitute a live-view URL or a generic search, results, or category URL for an option link.",
@@ -649,6 +666,9 @@ export const browserTask = defineTool({
   },
   async execute(input, context) {
     const { conversation, scope } = conversationTarget(context);
+    if (input.action === "start") {
+      assertStartVerificationPlan(input.verificationPlan);
+    }
     if (input.action === "start" || input.action === "continue") {
       await assertScheduledBrowserTaskAllowed(context);
     }
@@ -661,7 +681,6 @@ export const browserTask = defineTool({
       const proxyCountryCode = proxyCountryCodeSchema.parse(
         input.proxyCountryCode ?? env.BROWSER_USE_PROXY_COUNTRY
       );
-      assertGroupedPlanIdentity(input.verificationPlan);
       // The monthly ceiling is checked before anything is provisioned: a
       // refused errand must not cost a remote profile or a bound secret.
       const quota = await browserRunQuotaGate(scope);

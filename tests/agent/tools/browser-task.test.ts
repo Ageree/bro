@@ -343,6 +343,7 @@ async function startErrand(maxCostUsd: string, proxyCountryCode?: string) {
       proxyCountryCode,
       site: "https://example.com",
       task: "Order the usual",
+      verificationPlan,
     },
     toolContext("better-auth:alice")
   );
@@ -419,6 +420,7 @@ describe("browser_task payment capability invariant", () => {
         allowPayment: true,
         site: "https://example.com",
         task: "Attach the saved card without buying",
+        verificationPlan,
       },
       toolContext("better-auth:alice")
     );
@@ -489,7 +491,12 @@ describe("browser_task scheduled ownership", () => {
       status: "running",
     });
     await browserTask.execute(
-      { action: "start", site: "https://example.com", task: "Check status" },
+      {
+        action: "start",
+        site: "https://example.com",
+        task: "Check status",
+        verificationPlan,
+      },
       context
     );
     expect(assertScheduledBrowserTaskAllowed).toHaveBeenCalledBefore(
@@ -525,7 +532,12 @@ describe("browser_task scheduled ownership", () => {
     });
     const { browserTask } = await import("@agent/tools/browser_task");
     await browserTask.execute(
-      { action: "start", site: "https://example.com", task: "Check status" },
+      {
+        action: "start",
+        site: "https://example.com",
+        task: "Check status",
+        verificationPlan,
+      },
       context
     );
     expect(createBrowserRun).toHaveBeenCalledWith(
@@ -544,6 +556,48 @@ describe("browser_task scheduled ownership", () => {
 });
 
 describe("browser_task verification plan", () => {
+  it("describes unknown numeric capture and anchor link evidence separately", async () => {
+    const { browserTaskInputSchema } =
+      await import("@agent/tools/browser_task");
+    const description =
+      browserTaskInputSchema.shape.verificationPlan.description;
+
+    expect(description).toContain(
+      "every requested numeric quantity, rate, or amount"
+    );
+    expect(description).toContain("number predicate with capture true");
+    expect(description).toContain(
+      "pageUrl records the document and navigation context"
+    );
+    expect(description).toContain("not an anchor href");
+  });
+
+  it("rejects a missing start plan before reserving or provisioning anything", async () => {
+    const { browserTask, browserTaskInputSchema } =
+      await import("@agent/tools/browser_task");
+    const input = {
+      action: "start",
+      capability: "browse",
+      site: "https://example.com",
+      task: "Read the requested facts",
+    } satisfies Parameters<typeof browserTask.execute>[0];
+    const parsed = browserTaskInputSchema.safeParse(input);
+
+    expect(parsed.success).toBe(false);
+    expect(parsed.error?.issues[0]?.message).toContain(
+      "requires a nonempty verificationPlan"
+    );
+    await expect(
+      browserTask.execute(input, toolContext("better-auth:alice"))
+    ).rejects.toThrow("requires a nonempty verificationPlan");
+
+    expect(assertScheduledBrowserTaskAllowed).not.toHaveBeenCalled();
+    expect(browserRunQuotaGate).not.toHaveBeenCalled();
+    expect(resolveBrowserSecretBindings).not.toHaveBeenCalled();
+    expect(createBrowserUseRun).not.toHaveBeenCalled();
+    expect(createBrowserRun).not.toHaveBeenCalled();
+  });
+
   it("rejects an unidentified offer group before any paid start work", async () => {
     const { browserTask, browserTaskInputSchema } =
       await import("@agent/tools/browser_task");
@@ -1315,6 +1369,14 @@ describe("browser_task delegation contract", () => {
       "ties every hard constraint to the same exact option"
     );
     expect(start).toContain("enclosing offer row or card");
+    expect(start).toContain("never use html or body as the scope");
+    expect(start).toContain("use exactly the same pageUrl and scopeSelector");
+    expect(start).toContain(
+      "use narrower child selectors for its identity and every fact"
+    );
+    expect(start).toContain(
+      "selector must match the real anchor element whose href is being verified"
+    );
     expect(start).toContain("included and excluded taxes or fees");
     expect(start).toContain("Re-read selected dates, guests, currency");
     expect(start).toContain("never invent a preference");
@@ -1446,6 +1508,7 @@ describe("browser_task pictures", () => {
         collectImages: true,
         site: "https://www.ozon.ru",
         task: "Найди такой же фитнес-браслет и покажи фото",
+        verificationPlan,
       },
       toolContext("better-auth:alice")
     );

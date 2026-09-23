@@ -378,7 +378,7 @@ describe("browser verification", () => {
         },
       ],
       version: 1 as const,
-    };
+    } satisfies BrowserVerificationPlan;
     FakeSocket.observations = [
       {
         broadScope: false,
@@ -692,6 +692,7 @@ describe("browser verification", () => {
       null,
       { expected: "--10-16", kind: "date" },
     ],
+    ["15 октября", null, { capture: true, kind: "date" }],
     [
       "Tomorrow",
       "2026-10-16Tgarbage",
@@ -879,6 +880,15 @@ describe("browser verification", () => {
         minimum: 2,
       },
     ],
+    [
+      "1.1234567890123",
+      null,
+      {
+        capture: true,
+        decimalSeparator: ".",
+        kind: "number",
+      },
+    ],
   ] as const)(
     "fails closed for ambiguous or incomplete scalar evidence: %s",
     async (text, machineDate, predicate) => {
@@ -925,6 +935,84 @@ describe("browser verification", () => {
       expect(report.defects[0]?.code).toBe("invalid_evidence");
     }
   );
+
+  it("captures only full canonical dates from locale or machine evidence", async () => {
+    const capturePlan = {
+      checks: [
+        {
+          description: "Localized date",
+          id: "localized-date",
+          mandatory: true,
+          predicate: { capture: true, kind: "date" as const },
+        },
+        {
+          description: "Machine date",
+          id: "machine-date",
+          mandatory: true,
+          predicate: { capture: true, kind: "date" as const },
+        },
+      ],
+      version: 1 as const,
+    } satisfies BrowserVerificationPlan;
+    FakeSocket.observations = [
+      {
+        broadScope: false,
+        candidateId: 1,
+        checkId: "localized-date",
+        matchCount: 1,
+        scopeCount: 1,
+        sensitive: false,
+        text: "16 октября 2026 г.",
+        truncated: false,
+        visible: true,
+      },
+      {
+        broadScope: false,
+        candidateId: 1,
+        checkId: "machine-date",
+        machineDate: "2026-09-22T15:13:35Z",
+        matchCount: 1,
+        scopeCount: 1,
+        sensitive: false,
+        text: "Today",
+        truncated: false,
+        visible: true,
+      },
+    ];
+
+    const report = await verifyBrowserRun({
+      plan: capturePlan,
+      result: result([
+        {
+          checkId: "localized-date",
+          pageUrl,
+          scopeSelector: "#result",
+          selector: ".localized-date",
+        },
+        {
+          checkId: "machine-date",
+          pageUrl,
+          scopeSelector: "#result",
+          selector: ".machine-date",
+        },
+      ]),
+      sessionId,
+    });
+
+    expect(report.verdict).toBe("verified");
+    expect(report.observedChecks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          observation: "16 октября 2026 г.",
+          value: "2026-10-16",
+        }),
+        expect.objectContaining({
+          observation: "Today",
+          value: "2026-09-22",
+        }),
+      ])
+    );
+  });
 
   it("preserves a Unicode minus sign in the canonical numeric value", async () => {
     const signedPlan = {
@@ -973,6 +1061,74 @@ describe("browser verification", () => {
     expect(report.verdict).toBe("verified");
     expect(report.observedChecks[0]?.value).toBe(-0.18);
   });
+
+  it.each([
+    [
+      "92,1234 ₽",
+      {
+        capture: true,
+        currency: "RUB",
+        decimalSeparator: ",",
+        kind: "number",
+      },
+      92.1234,
+    ],
+    [
+      "1.234567",
+      {
+        capture: true,
+        decimalSeparator: ".",
+        kind: "number",
+      },
+      1.234567,
+    ],
+  ] as const)(
+    "captures an unconstrained high-precision scalar: %s",
+    async (text, predicate, expected) => {
+      const capturePlan = {
+        checks: [
+          {
+            description: "Fresh scalar",
+            id: "scalar",
+            mandatory: true,
+            predicate,
+          },
+        ],
+        version: 1,
+      } satisfies BrowserVerificationPlan;
+      FakeSocket.observations = [
+        {
+          broadScope: false,
+          candidateId: 1,
+          checkId: "scalar",
+          matchCount: 1,
+          scopeCount: 1,
+          sensitive: false,
+          text,
+          truncated: false,
+          visible: true,
+        },
+      ];
+
+      const report = await verifyBrowserRun({
+        plan: capturePlan,
+        result: result([
+          {
+            checkId: "scalar",
+            pageUrl,
+            scopeSelector: "#result",
+            selector: ".scalar",
+          },
+        ]),
+        sessionId,
+      });
+
+      expect(report.verdict).toBe("verified");
+      expect(report.observedChecks[0]).toEqual(
+        expect.objectContaining({ observation: text, value: expected })
+      );
+    }
+  );
 
   it("captures only safe canonical link values", async () => {
     const linkPlan = {
