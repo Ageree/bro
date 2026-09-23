@@ -83,24 +83,36 @@ describe("browser autonomy instructions", () => {
   it("requires complete predicate coverage and preserves a supplied URL", async () => {
     const selected = await resolveBrowserInstructions(context());
 
-    expect(selected?.content).toContain("**каждое** явное ограничение");
+    expect(selected?.content).toContain("каждое явное ограничение");
     expect(selected?.content).toContain("каждый запрошенный факт");
     expect(selected?.content).toContain(
-      "текст `description` сам по себе проверкой не считается"
+      "`description` объясняет проверку, но никогда не служит доказательством"
     );
     expect(selected?.content).toContain(
-      "Начальная и конечная даты, число гостей и размещение"
-    );
-    expect(selected?.content).toContain("одна надпись `EUR` не проверяет цену");
-    expect(selected?.content).toContain("срок отмены, отдельную ванную");
-    expect(selected?.content).toContain(
-      "только факты одного конкретного предложения"
+      "Даты задавай каноническим предикатом `date`"
     );
     expect(selected?.content).toContain(
-      "даты и число гостей должны иметь собственные обязательные проверки"
+      "не названный человеком год, количество, цену"
+    );
+    expect(selected?.content).toContain("срок отмены, ванную");
+    expect(selected?.content).toContain(
+      "только проверки одного конкретного предложения"
     );
     expect(selected?.content).toContain(
-      "не называй всю цель независимо подтверждённой по частичному плану"
+      'проверку его идентичности с `purpose: "identity"`'
+    );
+    expect(selected?.content).toContain(
+      "неизвестное до открытия сайта название можно получить через `text_present`"
+    );
+    expect(selected?.content).toContain(
+      "Само присутствие текста не доказывает бесплатность"
+    );
+    expect(selected?.content).toContain("все запрошенные факты этого варианта");
+    expect(selected?.content).toContain(
+      "Фильтры и состояние всей страницы проверяй отдельно"
+    );
+    expect(selected?.content).toContain(
+      "не превращает частичный план в независимую проверку всей цели"
     );
     expect(selected?.content).toContain("дословно сохрани его в поручении");
     expect(selected?.content).toContain("не заменяй его сайтом из примера");
@@ -110,16 +122,20 @@ describe("browser autonomy instructions", () => {
     const description =
       browserTaskInputSchema.shape.verificationPlan.description;
     expect(description).toContain("every explicit constraint");
-    expect(description).toContain("description text is not a check");
-    expect(description).toContain("both date endpoints and occupancy");
-    expect(description).toContain("currency-qualified numeric amount");
-    expect(description).toContain("refund, deadline, bathroom");
-    expect(description).toContain("same concrete offer, product, or rate");
+    expect(description).toContain("option identity");
+    expect(description).toContain("description text is never evidence");
+    expect(description).toContain("canonical typed date predicates");
+    expect(description).toContain("numberWords");
     expect(description).toContain(
-      "page-wide filters, dates, and occupancy need their own mandatory checks"
+      "never guess display strings, an unspecified year"
     );
-    expect(description).toContain("negative safety check");
-    expect(description).toContain("treat the plan as partial");
+    expect(description).toContain("one positive identity check");
+    expect(description).toContain(
+      "Every groupId must contain an identity text_exact, text_contains, or text_present predicate"
+    );
+    expect(description).toContain("never use presence alone to prove");
+    expect(description).toContain("Keep page-wide scope checks ungrouped");
+    expect(description).toContain("leave it explicitly unverified");
   });
 });
 

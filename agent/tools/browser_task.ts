@@ -68,6 +68,43 @@ const proxyCountryCodeSchema = z
   .toLowerCase()
   .regex(/^[a-z]{2}$/u, "Use a two-letter country code such as us or ru.");
 
+function groupedPlanDefects(plan: BrowserVerificationPlan | undefined) {
+  if (!plan) return [];
+  const groupedChecks = new Map<
+    string,
+    { firstIndex: number; hasIdentity: boolean }
+  >();
+  for (const [index, check] of plan.checks.entries()) {
+    if (!check.groupId) continue;
+    const group = groupedChecks.get(check.groupId) ?? {
+      firstIndex: index,
+      hasIdentity: false,
+    };
+    const positiveIdentity =
+      (check.purpose === "identity" || check.purpose === "order_reference") &&
+      (check.predicate.kind === "text_exact" ||
+        check.predicate.kind === "text_contains");
+    const capturedIdentity =
+      check.purpose === "identity" && check.predicate.kind === "text_present";
+    group.hasIdentity ||=
+      check.mandatory && (positiveIdentity || capturedIdentity);
+    groupedChecks.set(check.groupId, group);
+  }
+  return [...groupedChecks]
+    .filter(([, group]) => !group.hasIdentity)
+    .map(([groupId, group]) => ({
+      checkIndex: group.firstIndex,
+      message: `Group ${groupId} needs a mandatory positive text check with purpose identity or order_reference in that same group. Add the exact known identity, or capture an identity not known in advance with an identity text_present check. A price, term, date, quantity, description, or negative check is not identity evidence.`,
+    }));
+}
+
+function assertGroupedPlanIdentity(plan: BrowserVerificationPlan | undefined) {
+  if (!plan) return;
+  const normalized = browserVerificationPlanSchema.parse(plan);
+  const defect = groupedPlanDefects(normalized)[0];
+  if (defect) throw new Error(defect.message);
+}
+
 export const browserTaskInputSchema = z
   .object({
     action: z.enum(["start", "continue", "cancel", "status"]),
@@ -79,7 +116,7 @@ export const browserTaskInputSchema = z
     verificationPlan: browserVerificationPlanSchema
       .optional()
       .describe(
-        "Before start, map every explicit constraint and requested fact to its own mandatory code-verifiable predicate; description text is not a check. Check both date endpoints and occupancy separately, require a currency-qualified numeric amount rather than currency text alone, and give requested refund, deadline, bathroom, or similar per-option facts their own predicates. Use one groupId only for facts of the same concrete offer, product, or rate; page-wide filters, dates, and occupancy need their own mandatory checks and must not be forced into an offer group. A negative safety check is not completion evidence. Never invent an unknown expected value: use supplied values or bounds and fresh numeric observations or known page labels. If any explicit requirement cannot be covered within budget, treat the plan as partial and never call the whole goal independently verified. Set purpose order_reference only on the exact merchant reference check and order_total only on its fresh RUB numeric total check."
+        "Before start, map every explicit constraint, requested fact, and option identity to separate mandatory predicates; description text is never evidence. Keep each qualifying property separate from dates, quantities, and amounts. Use canonical typed date predicates, and exact numeric quantity predicates with numberWords when the page language may spell the count out; never guess display strings, an unspecified year, or an expected value. Capture a requested unknown name or other fresh visible text with text_present, but never use presence alone to prove a qualifier such as free cancellation, a condition, date, or price. Put every requested per-option fact and one positive identity check in that exact offer's groupId; terms, prices, dates, counts, and negative checks do not identify an offer. Keep page-wide scope checks ungrouped; a date belonging to one entity may stay in that entity's group. Every groupId must contain an identity text_exact, text_contains, or text_present predicate, or an order_reference positive exact/contains predicate. If a fact's meaning is unknown, leave it explicitly unverified rather than treating a schema-valid partial plan as verification of the whole goal. Set purpose order_reference only on the exact merchant reference check and order_total only on its fresh RUB numeric total check."
       ),
     allowPayment: z
       .boolean()
@@ -132,6 +169,16 @@ export const browserTaskInputSchema = z
           "allowPayment requires purchase capability; card attachment remains limited to the stated goal and does not authorize buying.",
         path: ["capability"],
       });
+    }
+
+    if (input.action === "start" && input.verificationPlan) {
+      for (const defect of groupedPlanDefects(input.verificationPlan)) {
+        context.addIssue({
+          code: "custom",
+          message: defect.message,
+          path: ["verificationPlan", "checks", defect.checkIndex, "groupId"],
+        });
+      }
     }
   });
 
@@ -496,12 +543,10 @@ async function trackedRunIsLive(runId: string, completedAt: Date | null) {
   if (completedAt) return false;
   try {
     return !terminalRunStatuses.has(await readBrowserUseRunStatus(runId));
-  } catch (error) {
-    console.warn("[browser-use] run status could not be read", {
-      errorName: error instanceof Error ? error.name : "unknown",
-      runId,
-    });
-    return false;
+  } catch {
+    throw new Error(
+      "The browser run status could not be confirmed, so continuing could duplicate an action. Retry after its status can be read."
+    );
   }
 }
 
@@ -551,7 +596,7 @@ async function waitForLiveViewUrl(
 
 export const browserTask = defineTool({
   description:
-    "Run one errand on a website through a hosted cloud browser that can sign in, fill forms, and complete a checkout. Use it when the user wants something done on a site; use web_search and web_fetch instead for reading public pages. Start exactly one run per errand and pass the site's origin so saved credentials can be bound to it. Declare capability as the strongest effect required by the actual user goal; it grants no authority outside that goal, and continue cannot downgrade it. On start, proxyCountryCode can match the website's target market; use us for international services with no location-specific requirement, and do not infer a region from the conversation language. The country controls network routing, not the user's address, currency, or verified offer location, and continue cannot change it. Write the errand short: the cloud browser is itself an agent, so give it the goal, the hard constraints, and what to report back — not a click-by-click script. Every follow-up for that errand — an answer, a code the user typed, a changed constraint — goes through continue with the current runId, never a second start. Continue preserves the browser, tab, signed-in account, goal, and acceptance plan, but creates a tracked successor run and returns its NEW runId; use that one from then on. Set allowPayment only when the errand requires a purchase, paid booking, or card attachment and purchase is authorized by stored policy or native approval; it only binds the saved card, and card attachment does not authorize buying. The person's name, phone, email and addresses from the profile and from the vault are typed into forms automatically, so never ask for a phone number or an address the user said is saved: start the errand and let the run use it. The run signs in with vault credentials the models involved never see, so never ask the user for a password: when none is stored, call request_vault_setup. The run solves CAPTCHAs and anti-bot checks itself as it goes, and they are never the user's to solve: never tell the user you cannot pass one, never ask them to pass it, and never hand them the live view for one. When a run comes back with NEEDS: captcha, continue it on the same runId and tell it to solve the check and finish the errand. Give the user the live-view link only when the run is blocked on something only they can do — 3-D Secure, a push approval, or a sign-in you cannot complete — and never forward a one-time code back to the user. Pass collectImages: true when the user asked for photos or pictures of what the errand finds; the run always saves a screenshot of the page with the outcome, and with the flag it saves pictures of the items too. Every saved image comes back with the outcome as an artifact id you attach in send_message as ![caption](/artifacts/id) — that is how the person gets the real picture rather than a link. The run continues in the background and its result arrives later as a new message, so do not wait on it.",
+    "Run one errand on a website through a hosted cloud browser that can sign in, fill forms, and complete a checkout. Use it when the user wants something done on a site; use web_search and web_fetch instead for reading public pages. Start exactly one run per errand and pass the site's origin so saved credentials can be bound to it. Declare capability as the strongest effect required by the actual user goal; it grants no authority outside that goal, and continue cannot downgrade it. On start, proxyCountryCode can match the website's target market; use us for international services with no location-specific requirement, and do not infer a region from the conversation language. The country controls network routing, not the user's address, currency, or verified offer location, and continue cannot change it. Write the errand short: the cloud browser is itself an agent, so give it the goal, the hard constraints, and what to report back — not a click-by-click script. Before start, give every requested fact its own semantic verification predicate and put a positive identity check in every offer group; descriptions and partial plans are not evidence. Every follow-up for that errand — an answer, a code the user typed, a changed constraint — goes through continue with the current runId, never a second start. Continue preserves the browser, tab, signed-in account, goal, and acceptance plan, but creates a tracked successor run and returns its NEW runId; use that one from then on. Set allowPayment only when the errand requires a purchase, paid booking, or card attachment and purchase is authorized by stored policy or native approval; it only binds the saved card, and card attachment does not authorize buying. The person's name, phone, email and addresses from the profile and from the vault are typed into forms automatically, so never ask for a phone number or an address the user said is saved: start the errand and let the run use it. The run signs in with vault credentials the models involved never see, so never ask the user for a password: when none is stored, call request_vault_setup. The run solves CAPTCHAs and anti-bot checks itself as it goes, and they are never the user's to solve: never tell the user you cannot pass one, never ask them to pass it, and never hand them the live view for one. When a run comes back with NEEDS: captcha, continue it on the same runId and tell it to solve the check and finish the errand. Give the user the live-view link only when the run is blocked on something only they can do — 3-D Secure, a push approval, or a sign-in you cannot complete — and never forward a one-time code back to the user. Pass collectImages: true when the user asked for photos or pictures of what the errand finds; the run always saves a screenshot of the page with the outcome, and with the flag it saves pictures of the items too. Every saved image comes back with the outcome as an artifact id you attach in send_message as ![caption](/artifacts/id) — that is how the person gets the real picture rather than a link. The run continues in the background and its result arrives later as a new message, so do not wait on it.",
   inputSchema: browserTaskInputSchema,
   approval: async (context) => {
     const parsed = browserTaskInputSchema.safeParse(context.toolInput);
@@ -616,6 +661,7 @@ export const browserTask = defineTool({
       const proxyCountryCode = proxyCountryCodeSchema.parse(
         input.proxyCountryCode ?? env.BROWSER_USE_PROXY_COUNTRY
       );
+      assertGroupedPlanIdentity(input.verificationPlan);
       // The monthly ceiling is checked before anything is provisioned: a
       // refused errand must not cost a remote profile or a bound secret.
       const quota = await browserRunQuotaGate(scope);
@@ -719,6 +765,9 @@ export const browserTask = defineTool({
         userAuth?.principalType === "user" &&
         userAuth.authenticator !== "browser-result" &&
         userAuth.authenticator !== "scheduled-worker";
+      if (acceptsAmendment && input.verificationPlan) {
+        assertGroupedPlanIdentity(input.verificationPlan);
+      }
       const allowPayment =
         input.allowPayment === true &&
         (acceptsAmendment || root.capability === "purchase");
@@ -755,15 +804,28 @@ export const browserTask = defineTool({
         );
       }
       if (live) {
+        let cancellationConfirmed: boolean;
         try {
-          await cancelBrowserUseRun(row.id);
-        } catch (error) {
-          console.warn(
-            "[browser-use] the replaced run could not be cancelled",
-            {
-              errorName: error instanceof Error ? error.name : "unknown",
-              runId: row.id,
-            }
+          const cancelled = await cancelBrowserUseRun(row.id);
+          cancellationConfirmed = terminalRunStatuses.has(cancelled.status);
+        } catch {
+          cancellationConfirmed = false;
+        }
+        if (!cancellationConfirmed) {
+          try {
+            await failBrowserLineageTransition(
+              root.id,
+              transition.token,
+              transition.root.lineageRevision
+            );
+          } catch {
+            console.warn(
+              "[browser-use] continuation claim rollback could not be confirmed",
+              { rootRunId: root.id }
+            );
+          }
+          throw new Error(
+            "The active browser run could not be confirmed stopped, so continuing could duplicate an action. Retry after it reaches a terminal state."
           );
         }
       }

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {
+  browserVerificationDateSchema,
   browserVerificationPlanSchema,
   browserVerificationProofSchema,
   browserVerificationReportSchema,
@@ -47,6 +48,7 @@ const domObservationSchema = z.object({
   broadScope: z.boolean(),
   candidateId: z.number().int().nonnegative().nullable(),
   checkId: z.string(),
+  machineDate: z.string().max(65).nullable().default(null),
   matchCount: z.number().int().nonnegative(),
   scopeCount: z.number().int().nonnegative(),
   sensitive: z.boolean(),
@@ -63,7 +65,7 @@ const domReadSchema = z.object({
 const domReadProgram = `function (locators) {
   const queryDocument = (selector) => Document.prototype.querySelectorAll.call(document, selector);
   const queryElement = (element, selector) => Element.prototype.querySelectorAll.call(element, selector);
-  const candidateSelector = "[data-offer-id], [data-product-id], [data-item-id], [data-testid*='offer'], [data-testid*='product'], [data-testid*='card'], [role='listitem'], article, li";
+  const candidateSelector = "[data-offer-id], [data-product-id], [data-item-id], [data-testid*='offer'], [data-testid*='product'], [data-testid*='card'], [role='listitem'], [role='row'], article, li, tr";
   const candidateIds = new WeakMap();
   let nextCandidateId = 1;
   const identity = (element) => {
@@ -96,7 +98,7 @@ const domReadProgram = `function (locators) {
     }
     return true;
   };
-  const miss = (checkId, scopeCount, matchCount, broadScope = false) => ({ checkId, scopeCount, matchCount, broadScope, candidateId: null, sensitive: false, text: "", truncated: false, visible: false });
+  const miss = (checkId, scopeCount, matchCount, broadScope = false) => ({ checkId, scopeCount, matchCount, broadScope, candidateId: null, machineDate: null, sensitive: false, text: "", truncated: false, visible: false });
   const observations = locators.map((locator) => {
     let scopes;
     try { scopes = Array.from(queryDocument(locator.scopeSelector)); }
@@ -120,10 +122,12 @@ const domReadProgram = `function (locators) {
     const nearest = Element.prototype.closest.call(element, candidateSelector);
     const candidate = nearest && scope.contains(nearest) ? nearest : scopeIsCandidate ? scope : null;
     const value = element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement ? element.value : element instanceof HTMLElement ? element.innerText : element.textContent || "";
+    const rawMachineDate = element instanceof HTMLInputElement && element.type === "date" ? element.value : element.getAttribute("datetime");
+    const machineDate = rawMachineDate === null ? null : String(rawMachineDate).slice(0, 65);
     const normalized = String(value).replace(/\\s+/g, " ").trim();
     const truncated = normalized.length > 1000;
     const text = normalized.slice(0, 1000);
-    return { checkId: locator.checkId, scopeCount: 1, matchCount: 1, broadScope: false, candidateId: identity(candidate), sensitive: false, text, truncated, visible: true };
+    return { checkId: locator.checkId, scopeCount: 1, matchCount: 1, broadScope: false, candidateId: identity(candidate), machineDate, sensitive: false, text, truncated, visible: true };
   });
   return { observations, pageUrl: String(location.href) };
 }`;
@@ -277,6 +281,7 @@ export async function verifyBrowserRun(
             broadScope: observation.broadScope,
             candidateId: observation.candidateId,
             checkId: observation.checkId,
+            machineDate: observation.machineDate,
             matchCount: observation.matchCount,
             observedAt,
             pageUrl: observedPageUrl,
@@ -717,7 +722,8 @@ function evaluateCheck(
     const value = parseNumber(
       text,
       predicate.decimalSeparator,
-      predicate.currency
+      predicate.currency,
+      predicate.numberWords
     );
     if (value === undefined) {
       return unverified(
@@ -746,6 +752,68 @@ function evaluateCheck(
         pageUrl: evidence.pageUrl,
         status: passed ? "passed" : "failed",
         value,
+      },
+    };
+  }
+  if (predicate.kind === "date") {
+    const date = parseDateEvidence(
+      text,
+      evidence.machineDate,
+      predicate.expected?.startsWith("--") ?? false
+    );
+    if (date?.comparison === undefined) {
+      return unverified(
+        check.id,
+        "The date evidence is missing, ambiguous, or conflicting.",
+        evidence,
+        "invalid_evidence"
+      );
+    }
+    const passed = predicate.expected
+      ? date.comparison === predicate.expected
+      : (predicate.minimum === undefined ||
+          date.comparison >= predicate.minimum) &&
+        (predicate.maximum === undefined ||
+          date.comparison <= predicate.maximum);
+    return {
+      defects: passed
+        ? []
+        : [
+            {
+              checkId: check.id,
+              code: "acceptance_failed",
+              message:
+                "The observed date does not satisfy the acceptance check.",
+            },
+          ],
+      observation: {
+        checkId: check.id,
+        observation: sanitizeObservation(text || date.comparison),
+        observedAt: evidence.observedAt,
+        pageUrl: evidence.pageUrl,
+        status: passed ? "passed" : "failed",
+        value: date.canonical,
+      },
+    };
+  }
+  if (predicate.kind === "text_present") {
+    const passed = text.length > 0;
+    return {
+      defects: passed
+        ? []
+        : [
+            {
+              checkId: check.id,
+              code: "acceptance_failed",
+              message: "The observed text is empty.",
+            },
+          ],
+      observation: {
+        checkId: check.id,
+        observation: sanitizeObservation(text),
+        observedAt: evidence.observedAt,
+        pageUrl: evidence.pageUrl,
+        status: passed ? "passed" : "failed",
       },
     };
   }
@@ -799,7 +867,8 @@ function unverified(
 function parseNumber(
   text: string,
   decimalSeparator: "." | ",",
-  currency: "EUR" | "GBP" | "RUB" | "USD" | undefined
+  currency: "EUR" | "GBP" | "RUB" | "USD" | undefined,
+  numberWords: "en" | "ru" | undefined
 ) {
   const currencyPattern = {
     EUR: /(?:€|\bEUR\b)/iu,
@@ -808,25 +877,340 @@ function parseNumber(
     USD: /(?:\$|\bUSD\b)/iu,
   } as const;
   if (currency && !currencyPattern[currency].test(text)) return undefined;
-  const candidates = text.match(/[+-]?\d(?:[\d \u00a0.,]*\d)?/gu) ?? [];
+  const matches = [...text.matchAll(/[+-]?\d(?:[\d \u00a0.,]*\d)?/gu)];
+  if (
+    matches.some((match) => {
+      const start = match.index;
+      const end = start + match[0].length;
+      return (
+        /\p{L}/u.test(text[start - 1] ?? "") || /\p{L}/u.test(text[end] ?? "")
+      );
+    })
+  )
+    return undefined;
+  const candidates = matches.map((match) => match[0]);
+  const wordCandidates = numberWords ? parseNumberWords(text, numberWords) : [];
+  if (wordCandidates === undefined) return undefined;
+  if (candidates.length === 0)
+    return wordCandidates.length === 1 ? wordCandidates[0] : undefined;
+  if (wordCandidates.length > 0) return undefined;
   if (candidates.length !== 1) return undefined;
-  const raw = candidates[0].replaceAll(/[ \u00a0]/gu, "");
+  const raw = candidates[0];
+  if (raw === undefined) return undefined;
   const thousandsSeparator = decimalSeparator === "." ? "," : ".";
   const parts = raw.split(decimalSeparator);
   if (parts.length > 2) return undefined;
   const [integer = "", fraction] = parts;
+  const sign = /^[+-]/u.exec(integer)?.[0] ?? "";
   const signless = integer.replace(/^[+-]/u, "");
-  const groups = signless.split(thousandsSeparator);
-  if (
-    groups.length > 1 &&
-    (groups[0]?.length === 0 ||
-      groups.slice(1).some((part) => part.length !== 3))
-  )
-    return undefined;
+  const escapedThousandsSeparator = thousandsSeparator === "." ? "\\." : ",";
+  const plainInteger = /^\d+$/u.test(signless);
+  const spacedInteger = /^\d{1,3}(?:[ \u00a0]\d{3})+$/u.test(signless);
+  const punctuatedInteger = new RegExp(
+    `^\\d{1,3}(?:${escapedThousandsSeparator}\\d{3})+$`,
+    "u"
+  ).test(signless);
+  if (!plainInteger && !spacedInteger && !punctuatedInteger) return undefined;
   if (fraction !== undefined && !/^\d{1,2}$/u.test(fraction)) return undefined;
-  const normalized = `${integer.replaceAll(thousandsSeparator, "")}${fraction === undefined ? "" : `.${fraction}`}`;
+  const normalizedInteger = signless.replaceAll(/[ \u00a0.,]/gu, "");
+  const normalized = `${sign}${normalizedInteger}${fraction === undefined ? "" : `.${fraction}`}`;
   const value = Number(normalized);
   return Number.isFinite(value) ? value : undefined;
+}
+
+const englishNumberWords = new Map(
+  [
+    "zero",
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "ten",
+    "eleven",
+    "twelve",
+    "thirteen",
+    "fourteen",
+    "fifteen",
+    "sixteen",
+    "seventeen",
+    "eighteen",
+    "nineteen",
+    "twenty",
+  ].map((word, value) => [word, value])
+);
+
+const russianNumberWords = new Map<string, number>([
+  ["ноль", 0],
+  ["один", 1],
+  ["одна", 1],
+  ["одно", 1],
+  ["два", 2],
+  ["две", 2],
+  ["три", 3],
+  ["четыре", 4],
+  ["пять", 5],
+  ["шесть", 6],
+  ["семь", 7],
+  ["восемь", 8],
+  ["девять", 9],
+  ["десять", 10],
+  ["одиннадцать", 11],
+  ["двенадцать", 12],
+  ["тринадцать", 13],
+  ["четырнадцать", 14],
+  ["пятнадцать", 15],
+  ["шестнадцать", 16],
+  ["семнадцать", 17],
+  ["восемнадцать", 18],
+  ["девятнадцать", 19],
+  ["двадцать", 20],
+]);
+
+const unsupportedNumberWords: Record<"en" | "ru", ReadonlySet<string>> = {
+  en: new Set([
+    "minus",
+    "negative",
+    "plus",
+    "thirty",
+    "forty",
+    "fifty",
+    "sixty",
+    "seventy",
+    "eighty",
+    "ninety",
+    "hundred",
+    "hundreds",
+    "thousand",
+    "thousands",
+    "million",
+    "millions",
+    "billion",
+    "billions",
+    "trillion",
+    "trillions",
+    "dozen",
+    "dozens",
+    "score",
+    "gross",
+    "half",
+    "halves",
+    "quarter",
+    "quarters",
+    "point",
+    "decimal",
+    "decimals",
+    "tenth",
+    "tenths",
+    "hundredth",
+    "hundredths",
+  ]),
+  ru: new Set([
+    "минус",
+    "плюс",
+    "отрицательный",
+    "отрицательная",
+    "отрицательное",
+    "тридцать",
+    "сорок",
+    "пятьдесят",
+    "шестьдесят",
+    "семьдесят",
+    "восемьдесят",
+    "девяносто",
+    "сто",
+    "сотня",
+    "сотни",
+    "сотен",
+    "двести",
+    "триста",
+    "четыреста",
+    "пятьсот",
+    "шестьсот",
+    "семьсот",
+    "восемьсот",
+    "девятьсот",
+    "тысяча",
+    "тысячи",
+    "тысяч",
+    "миллион",
+    "миллиона",
+    "миллионов",
+    "миллиард",
+    "миллиарда",
+    "миллиардов",
+    "триллион",
+    "триллиона",
+    "триллионов",
+    "дюжина",
+    "дюжины",
+    "дюжин",
+    "половина",
+    "половиной",
+    "половины",
+    "четверть",
+    "четверти",
+    "целая",
+    "целых",
+    "десятая",
+    "десятых",
+  ]),
+} as const;
+
+function parseNumberWords(text: string, language: "en" | "ru") {
+  const dictionary =
+    language === "en" ? englishNumberWords : russianNumberWords;
+  const words = text.toLocaleLowerCase(language).match(/\p{L}+/gu) ?? [];
+  if (words.some((word) => unsupportedNumberWords[language].has(word)))
+    return undefined;
+  return words.flatMap((word) => {
+    const value = dictionary.get(word);
+    return value === undefined ? [] : [value];
+  });
+}
+
+const monthNames = new Map<string, number>([
+  ["january", 1],
+  ["jan", 1],
+  ["february", 2],
+  ["feb", 2],
+  ["march", 3],
+  ["mar", 3],
+  ["april", 4],
+  ["apr", 4],
+  ["may", 5],
+  ["june", 6],
+  ["jun", 6],
+  ["july", 7],
+  ["jul", 7],
+  ["august", 8],
+  ["aug", 8],
+  ["september", 9],
+  ["sep", 9],
+  ["sept", 9],
+  ["october", 10],
+  ["oct", 10],
+  ["november", 11],
+  ["nov", 11],
+  ["december", 12],
+  ["dec", 12],
+  ["январь", 1],
+  ["января", 1],
+  ["февраль", 2],
+  ["февраля", 2],
+  ["март", 3],
+  ["марта", 3],
+  ["апрель", 4],
+  ["апреля", 4],
+  ["май", 5],
+  ["мая", 5],
+  ["июнь", 6],
+  ["июня", 6],
+  ["июль", 7],
+  ["июля", 7],
+  ["август", 8],
+  ["августа", 8],
+  ["сентябрь", 9],
+  ["сентября", 9],
+  ["октябрь", 10],
+  ["октября", 10],
+  ["ноябрь", 11],
+  ["ноября", 11],
+  ["декабрь", 12],
+  ["декабря", 12],
+]);
+
+function parseDateEvidence(
+  text: string,
+  machineDate: string | null,
+  partial: boolean
+) {
+  if (machineDate !== null && machineDate.length > 64) return undefined;
+  if (/(?<!\d)\d{1,4}[/.]\d{1,2}[/.]\d{1,4}(?!\d)/u.test(text))
+    return undefined;
+  const fullDates = new Set<string>();
+  const monthDays = new Set<string>();
+  const add = (year: number | undefined, month: number, day: number) => {
+    const fullDate = `${String(year ?? 2000).padStart(4, "0")}-${padDatePart(month)}-${padDatePart(day)}`;
+    if (!browserVerificationDateSchema.safeParse(fullDate).success)
+      return false;
+    const monthDay = `--${padDatePart(month)}-${padDatePart(day)}`;
+    monthDays.add(monthDay);
+    if (year !== undefined) fullDates.add(fullDate);
+    return true;
+  };
+  for (const match of text.matchAll(/(?<!\d)(\d{4})-(\d{2})-(\d{2})(?!\d)/gu))
+    if (!add(Number(match[1]), Number(match[2]), Number(match[3])))
+      return undefined;
+  const names = [...monthNames.keys()].join("|");
+  const monthFirst = new RegExp(
+    `(?<![\\p{L}\\p{N}])(${names})\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:,?\\s+(\\d{4}))?(?![\\p{L}\\p{N}])`,
+    "giu"
+  );
+  const dayFirst = new RegExp(
+    `(?<![\\p{L}\\p{N}])(\\d{1,2})(?:st|nd|rd|th)?\\s+(${names})\\.?(?:,?\\s+(?:г\\.?\\s*)?(\\d{4})(?:\\s*г\\.?)?)?(?![\\p{L}\\p{N}])`,
+    "giu"
+  );
+  for (const match of text.matchAll(monthFirst)) {
+    if (
+      !add(
+        match[3] === undefined ? undefined : Number(match[3]),
+        monthNames.get(match[1]?.toLocaleLowerCase() ?? "") ?? 0,
+        Number(match[2])
+      )
+    )
+      return undefined;
+  }
+  for (const match of text.matchAll(dayFirst)) {
+    if (
+      !add(
+        match[3] === undefined ? undefined : Number(match[3]),
+        monthNames.get(match[2]?.toLocaleLowerCase() ?? "") ?? 0,
+        Number(match[1])
+      )
+    )
+      return undefined;
+  }
+  if (machineDate !== null) {
+    const utcDateTime =
+      /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?) UTC$/u.exec(
+        machineDate
+      );
+    const normalizedMachineDate = utcDateTime
+      ? utcDateTime[0].replace(" ", "T").replace(/ UTC$/u, "Z")
+      : machineDate;
+    const parsedMachineDate = browserVerificationDateSchema.safeParse(
+      normalizedMachineDate
+    );
+    const parsedMachineDateTime = z.iso
+      .datetime({ local: true, offset: true })
+      .safeParse(normalizedMachineDate);
+    if (!parsedMachineDate.success && !parsedMachineDateTime.success)
+      return undefined;
+    const canonical = normalizedMachineDate.slice(0, 10);
+    if (
+      !add(
+        Number(canonical.slice(0, 4)),
+        Number(canonical.slice(5, 7)),
+        Number(canonical.slice(8, 10))
+      )
+    )
+      return undefined;
+  }
+  if (monthDays.size !== 1 || fullDates.size > 1) return undefined;
+  const canonical = fullDates.size === 1 ? [...fullDates][0] : undefined;
+  return {
+    canonical,
+    comparison: partial ? [...monthDays][0] : canonical,
+  };
+}
+
+function padDatePart(value: number) {
+  return String(value).padStart(2, "0");
 }
 
 function normalizeText(value: string) {

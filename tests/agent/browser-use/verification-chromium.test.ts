@@ -60,6 +60,17 @@ describe.skipIf(!chrome)("browser verification against Chromium", () => {
           <div style="opacity:0"><section id="ancestor-hidden"><p class="price">$1.00</p></section></div>
           <section id="hidden-child"><div class="visible-wrapper" style="padding:4px"><span hidden>$1.00</span></div></section>
           <section id="form"><input class="quantity" value="3"></section>
+          <section id="formats">
+            <time class="relative-date" datetime="2026-10-16T12:30:00Z">Tomorrow</time>
+            <custom-date class="custom-date" datetime="2026-09-22 15:13:35 UTC">Published yesterday</custom-date>
+            <custom-date class="hidden-custom-date" datetime="2026-09-22T15:13:35Z" hidden>Hidden date</custom-date>
+            <custom-date id="access_token" datetime="2026-09-22T15:13:35Z">Sensitive date</custom-date>
+            <time class="conflicting-date" datetime="2026-10-17">16 October 2026</time>
+            <p class="russian-date">16 октября 2026 г.</p>
+            <p class="russian-partial-date">15 октября</p>
+            <p class="number-words">Two adults</p>
+            <p class="unknown-identity">Release v4.2.0</p>
+          </section>
           <section id="secret"><input class="password" type="password" value="never-return-this"></section>
           <section id="identifier-secrets">
             <input id="api_key" value="raw-api-secret">
@@ -69,6 +80,10 @@ describe.skipIf(!chrome)("browser verification against Chromium", () => {
             <article><p class="inner-price">$12.00</p></article>
             <article><p class="inner-terms">Free delivery</p></article>
           </article>
+          <table id="facts">
+            <tr><td class="first-name">Mercury</td><td>First planet</td></tr>
+            <tr><td>Venus</td><td class="second-date">2026-10-16</td></tr>
+          </table>
           <section id="long-evidence">
             <p class="long-absence">${"a".repeat(1100)} forbidden phrase</p>
             <p class="long-number">$10.00 ${"b".repeat(1100)} $999.00</p>
@@ -141,6 +156,91 @@ describe.skipIf(!chrome)("browser verification against Chromium", () => {
 
     expect(report.verdict).toBe("verified");
     expect(report.elapsedMs).toBeLessThanOrEqual(3_000);
+  });
+
+  it("verifies canonical dates, number words, and captured identity text", async () => {
+    const report = await verify(
+      [
+        check("date", { expected: "2026-10-16", kind: "date" }),
+        check("custom-date", { expected: "2026-09-22", kind: "date" }),
+        check("localized-date", {
+          kind: "date",
+          maximum: "2026-12-31",
+          minimum: "2026-01-01",
+        }),
+        check("localized-partial-date", {
+          expected: "--10-15",
+          kind: "date",
+        }),
+        check("quantity-words", {
+          decimalSeparator: ".",
+          kind: "number",
+          maximum: 2,
+          minimum: 2,
+          numberWords: "en",
+        }),
+        {
+          ...check("captured-name", { kind: "text_present" }),
+          purpose: "identity",
+        },
+      ],
+      [
+        locator("date", "#formats", ".relative-date"),
+        locator("custom-date", "#formats", ".custom-date"),
+        locator("localized-date", "#formats", ".russian-date"),
+        locator("localized-partial-date", "#formats", ".russian-partial-date"),
+        locator("quantity-words", "#formats", ".number-words"),
+        locator("captured-name", "#formats", ".unknown-identity"),
+      ]
+    );
+
+    expect(report.verdict).toBe("verified");
+    expect(report.observedChecks).toContainEqual(
+      expect.objectContaining({
+        checkId: "date",
+        observation: "Tomorrow",
+        value: "2026-10-16",
+      })
+    );
+    expect(report.observedChecks).toContainEqual(
+      expect.objectContaining({
+        checkId: "custom-date",
+        observation: "Published yesterday",
+        value: "2026-09-22",
+      })
+    );
+    expect(report.observedChecks).toContainEqual(
+      expect.objectContaining({
+        checkId: "captured-name",
+        observation: "Release v4.2.0",
+      })
+    );
+  });
+
+  it("fails closed when visible and machine-readable dates disagree", async () => {
+    const report = await verify(
+      [check("date", { expected: "2026-10-16", kind: "date" })],
+      [locator("date", "#formats", ".conflicting-date")]
+    );
+
+    expect(report.verdict).toBe("unverified");
+    expect(report.defects[0]?.code).toBe("invalid_evidence");
+  });
+
+  it("does not use hidden or sensitive custom-element datetime evidence", async () => {
+    const hidden = await verify(
+      [check("date", { expected: "2026-09-22", kind: "date" })],
+      [locator("date", "#formats", ".hidden-custom-date")]
+    );
+    const sensitive = await verify(
+      [check("date", { expected: "2026-09-22", kind: "date" })],
+      [locator("date", "#formats", "#access_token")]
+    );
+
+    expect(hidden.verdict).toBe("unverified");
+    expect(hidden.defects[0]?.code).toBe("invalid_evidence");
+    expect(sensitive.verdict).toBe("unverified");
+    expect(sensitive.defects[0]?.code).toBe("sensitive_evidence");
   });
 
   it("rejects resolved body aliases and hidden stale values", async () => {
@@ -329,6 +429,30 @@ describe.skipIf(!chrome)("browser verification against Chromium", () => {
       locator("title", "#offers", ".first-title"),
       locator("price", "#offers", ".second-price"),
       locator("terms", "#offers", ".missing-terms"),
+    ]);
+
+    expect(report.verdict).toBe("unverified");
+    expect(report.defects.some(({ code }) => code === "group_mismatch")).toBe(
+      true
+    );
+  });
+
+  it("rejects grouped fields resolved from different semantic table rows", async () => {
+    const checks = [
+      {
+        ...check("name", { kind: "text_present" }),
+        groupId: "fact",
+        purpose: "identity" as const,
+      },
+      {
+        ...check("date", { expected: "2026-10-16", kind: "date" }),
+        groupId: "fact",
+      },
+    ] satisfies BrowserVerificationPlan["checks"];
+
+    const report = await verify(checks, [
+      locator("name", "#facts", ".first-name"),
+      locator("date", "#facts", ".second-date"),
     ]);
 
     expect(report.verdict).toBe("unverified");

@@ -4,6 +4,33 @@ import {
   browserVerificationProofSchema,
 } from "@shared/browser/verification";
 
+interface PredicateFixture {
+  readonly caseSensitive?: boolean;
+  readonly decimalSeparator?: "." | ",";
+  readonly expected?: string;
+  readonly kind: string;
+  readonly maximum?: number | string;
+  readonly minimum?: number | string;
+}
+
+function acceptsPredicate(
+  predicate: PredicateFixture,
+  purpose?: "identity" | "order_reference"
+) {
+  return browserVerificationPlanSchema.safeParse({
+    checks: [
+      {
+        description: "Verification evidence",
+        id: "evidence",
+        mandatory: true,
+        predicate,
+        purpose,
+      },
+    ],
+    version: 1,
+  }).success;
+}
+
 describe("browser verification contracts", () => {
   it("bounds plans and rejects duplicate stable ids", () => {
     const check = {
@@ -115,6 +142,82 @@ describe("browser verification contracts", () => {
               expected: "ABC",
               kind: "text_absent",
             },
+            purpose: "order_reference",
+          },
+        ],
+        version: 1,
+      }).success
+    ).toBe(false);
+  });
+
+  it("accepts exact, partial, and bounded date predicates only in valid combinations", () => {
+    expect(acceptsPredicate({ expected: "2026-10-16", kind: "date" })).toBe(
+      true
+    );
+    expect(acceptsPredicate({ expected: "--10-16", kind: "date" })).toBe(true);
+    expect(acceptsPredicate({ expected: "0001-01-01", kind: "date" })).toBe(
+      true
+    );
+    expect(acceptsPredicate({ expected: "0099-12-31", kind: "date" })).toBe(
+      true
+    );
+    expect(
+      acceptsPredicate({
+        kind: "date",
+        maximum: "2025-12-31",
+        minimum: "2025-01-01",
+      })
+    ).toBe(true);
+    expect(acceptsPredicate({ expected: "2025-02-29", kind: "date" })).toBe(
+      false
+    );
+    expect(acceptsPredicate({ expected: "--02-30", kind: "date" })).toBe(false);
+    expect(acceptsPredicate({ kind: "date" })).toBe(false);
+    expect(
+      acceptsPredicate({
+        expected: "--10-16",
+        kind: "date",
+        minimum: "2025-01-01",
+      })
+    ).toBe(false);
+    expect(
+      acceptsPredicate({
+        kind: "date",
+        maximum: "2025-01-01",
+        minimum: "2025-12-31",
+      })
+    ).toBe(false);
+  });
+
+  it("allows identity only for positive text predicates", () => {
+    expect(
+      acceptsPredicate(
+        { caseSensitive: false, expected: "SKU-1", kind: "text_exact" },
+        "identity"
+      )
+    ).toBe(true);
+    expect(acceptsPredicate({ kind: "text_present" }, "identity")).toBe(true);
+    expect(
+      acceptsPredicate(
+        { decimalSeparator: ".", kind: "number", minimum: 1 },
+        "identity"
+      )
+    ).toBe(false);
+    expect(
+      acceptsPredicate(
+        { caseSensitive: false, expected: "old", kind: "text_absent" },
+        "identity"
+      )
+    ).toBe(false);
+
+    expect(
+      browserVerificationPlanSchema.safeParse({
+        checks: [
+          {
+            description: "Order reference",
+            id: "reference",
+            mandatory: true,
+            predicate: { kind: "text_present" },
             purpose: "order_reference",
           },
         ],

@@ -567,6 +567,345 @@ describe("browser verification", () => {
     );
   });
 
+  it.each([
+    ["16 October 2026", null, { expected: "2026-10-16", kind: "date" }],
+    ["16 октября 2026 г.", null, { expected: "2026-10-16", kind: "date" }],
+    ["октября 16 2026", null, { expected: "2026-10-16", kind: "date" }],
+    ["October 16", null, { expected: "--10-16", kind: "date" }],
+    ["15 октября", null, { expected: "--10-15", kind: "date" }],
+    [
+      "Published 2025-06-12",
+      null,
+      {
+        kind: "date",
+        maximum: "2025-12-31",
+        minimum: "2025-01-01",
+      },
+    ],
+    [
+      "Published yesterday",
+      "2026-09-22 15:13:35 UTC",
+      { expected: "2026-09-22", kind: "date" },
+    ],
+    [
+      "Two adults",
+      null,
+      {
+        decimalSeparator: ".",
+        kind: "number",
+        maximum: 2,
+        minimum: 2,
+        numberWords: "en",
+      },
+    ],
+    [
+      "две персоны",
+      null,
+      {
+        decimalSeparator: ".",
+        kind: "number",
+        maximum: 2,
+        minimum: 2,
+        numberWords: "ru",
+      },
+    ],
+    [
+      "Итого 1 234,56 ₽",
+      null,
+      {
+        currency: "RUB",
+        decimalSeparator: ",",
+        kind: "number",
+        maximum: 1234.56,
+        minimum: 1234.56,
+      },
+    ],
+    [
+      "Total $1,234.56",
+      null,
+      {
+        currency: "USD",
+        decimalSeparator: ".",
+        kind: "number",
+        maximum: 1234.56,
+        minimum: 1234.56,
+      },
+    ],
+  ] as const)(
+    "verifies deterministic date and number formats: %s",
+    async (text, machineDate, predicate) => {
+      const checkPlan = {
+        checks: [
+          {
+            description: "Format evidence",
+            id: "format",
+            mandatory: true,
+            predicate,
+          },
+        ],
+        version: 1,
+      } satisfies BrowserVerificationPlan;
+      FakeSocket.observations = [
+        {
+          broadScope: false,
+          candidateId: 1,
+          checkId: "format",
+          machineDate,
+          matchCount: 1,
+          scopeCount: 1,
+          sensitive: false,
+          text,
+          truncated: false,
+          visible: true,
+        },
+      ];
+
+      const report = await verifyBrowserRun({
+        plan: checkPlan,
+        result: result([
+          {
+            checkId: "format",
+            pageUrl,
+            scopeSelector: "#result",
+            selector: ".format",
+          },
+        ]),
+        sessionId,
+      });
+
+      expect(report.verdict).toBe("verified");
+    }
+  );
+
+  it.each([
+    ["10/11/2026", null, { expected: "2026-10-11", kind: "date" }],
+    ["31 February 2026", null, { expected: "2026-02-28", kind: "date" }],
+    ["16 October", null, { expected: "2026-10-16", kind: "date" }],
+    ["16 October 2026", "2026-10-17", { expected: "2026-10-16", kind: "date" }],
+    [
+      "16 October 2026 and 17 October 2026",
+      null,
+      { expected: "2026-10-16", kind: "date" },
+    ],
+    [
+      "16 October 2025 and 16 October 2026",
+      null,
+      { expected: "--10-16", kind: "date" },
+    ],
+    [
+      "Tomorrow",
+      "2026-10-16Tgarbage",
+      { expected: "2026-10-16", kind: "date" },
+    ],
+    [
+      "Tomorrow",
+      "2026-10-16 25:13:35 UTC",
+      { expected: "2026-10-16", kind: "date" },
+    ],
+    [
+      "Tomorrow",
+      "2026-10-16 15:13:35 UTC later",
+      { expected: "2026-10-16", kind: "date" },
+    ],
+    [
+      "Two adults, one room",
+      null,
+      {
+        decimalSeparator: ".",
+        kind: "number",
+        maximum: 2,
+        minimum: 2,
+        numberWords: "en",
+      },
+    ],
+    [
+      "2 or two",
+      null,
+      {
+        decimalSeparator: ".",
+        kind: "number",
+        maximum: 2,
+        minimum: 2,
+        numberWords: "en",
+      },
+    ],
+    [
+      "Twenty thousand guests",
+      null,
+      {
+        decimalSeparator: ".",
+        kind: "number",
+        maximum: 20,
+        minimum: 20,
+        numberWords: "en",
+      },
+    ],
+    [
+      "one hundred items",
+      null,
+      {
+        decimalSeparator: ".",
+        kind: "number",
+        maximum: 1,
+        minimum: 1,
+        numberWords: "en",
+      },
+    ],
+    [
+      "one and a half portions",
+      null,
+      {
+        decimalSeparator: ".",
+        kind: "number",
+        maximum: 1,
+        minimum: 1,
+        numberWords: "en",
+      },
+    ],
+    [
+      "двадцать тысяч гостей",
+      null,
+      {
+        decimalSeparator: ".",
+        kind: "number",
+        maximum: 20,
+        minimum: 20,
+        numberWords: "ru",
+      },
+    ],
+    [
+      "одна с половиной порции",
+      null,
+      {
+        decimalSeparator: ".",
+        kind: "number",
+        maximum: 1,
+        minimum: 1,
+        numberWords: "ru",
+      },
+    ],
+    [
+      "thirty two adults",
+      null,
+      {
+        decimalSeparator: ".",
+        kind: "number",
+        maximum: 2,
+        minimum: 2,
+        numberWords: "en",
+      },
+    ],
+    [
+      "fifty-two adults",
+      null,
+      {
+        decimalSeparator: ".",
+        kind: "number",
+        maximum: 2,
+        minimum: 2,
+        numberWords: "en",
+      },
+    ],
+    [
+      "two dozen items",
+      null,
+      {
+        decimalSeparator: ".",
+        kind: "number",
+        maximum: 2,
+        minimum: 2,
+        numberWords: "en",
+      },
+    ],
+    [
+      "минус два",
+      null,
+      {
+        decimalSeparator: ".",
+        kind: "number",
+        maximum: 2,
+        minimum: 2,
+        numberWords: "ru",
+      },
+    ],
+    [
+      "две сотни",
+      null,
+      {
+        decimalSeparator: ".",
+        kind: "number",
+        maximum: 2,
+        minimum: 2,
+        numberWords: "ru",
+      },
+    ],
+    [
+      "2k",
+      null,
+      {
+        decimalSeparator: ".",
+        kind: "number",
+        maximum: 2,
+        minimum: 2,
+      },
+    ],
+    [
+      "1 2",
+      null,
+      {
+        decimalSeparator: ".",
+        kind: "number",
+        maximum: 12,
+        minimum: 12,
+      },
+    ],
+  ] as const)(
+    "fails closed for ambiguous or incomplete scalar evidence: %s",
+    async (text, machineDate, predicate) => {
+      const checkPlan = {
+        checks: [
+          {
+            description: "Ambiguous evidence",
+            id: "format",
+            mandatory: true,
+            predicate,
+          },
+        ],
+        version: 1,
+      } satisfies BrowserVerificationPlan;
+      FakeSocket.observations = [
+        {
+          broadScope: false,
+          candidateId: 1,
+          checkId: "format",
+          machineDate,
+          matchCount: 1,
+          scopeCount: 1,
+          sensitive: false,
+          text,
+          truncated: false,
+          visible: true,
+        },
+      ];
+
+      const report = await verifyBrowserRun({
+        plan: checkPlan,
+        result: result([
+          {
+            checkId: "format",
+            pageUrl,
+            scopeSelector: "#result",
+            selector: ".format",
+          },
+        ]),
+        sessionId,
+      });
+
+      expect(report.verdict).toBe("unverified");
+      expect(report.defects[0]?.code).toBe("invalid_evidence");
+    }
+  );
+
   it("applies one hard deadline across discovery and websocket connect", async () => {
     class NeverOpeningSocket extends EventTarget {
       close() {

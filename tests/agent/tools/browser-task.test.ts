@@ -107,7 +107,7 @@ const createBrowserUseRun = vi.hoisted(() =>
   >()
 );
 const cancelBrowserUseRun = vi.hoisted(() =>
-  vi.fn<() => Promise<void>>(() => Promise.resolve())
+  vi.fn<typeof browserUseClient.cancelBrowserUseRun>()
 );
 const readBrowserUseRunStatus = vi.hoisted(() =>
   vi.fn<() => Promise<string>>(() => Promise.resolve("running"))
@@ -228,6 +228,12 @@ beforeEach(() => {
     lineageRevision: 1,
     lineageState: "cancelled",
     status: "stopped",
+  });
+  cancelBrowserUseRun.mockResolvedValue({
+    id: runId,
+    sessionId,
+    status: "cancelled",
+    task: "Cancelled before replacement",
   });
   prepareBrowserLineageTask.mockImplementation(async (input) => ({
     row: transitioned,
@@ -538,6 +544,207 @@ describe("browser_task scheduled ownership", () => {
 });
 
 describe("browser_task verification plan", () => {
+  it("rejects an unidentified offer group before any paid start work", async () => {
+    const { browserTask, browserTaskInputSchema } =
+      await import("@agent/tools/browser_task");
+    const input = {
+      action: "start",
+      allowPayment: true,
+      capability: "purchase",
+      site: "https://example.com",
+      task: "Buy the matching offer",
+      verificationPlan: {
+        checks: [
+          {
+            description: "The grouped offer price is within budget",
+            groupId: "offer",
+            id: "offer-price",
+            mandatory: true,
+            predicate: {
+              currency: "USD",
+              decimalSeparator: ".",
+              kind: "number",
+              maximum: 200,
+            },
+          },
+        ],
+        version: 1,
+      },
+    } satisfies Parameters<typeof browserTask.execute>[0];
+    const parsed = browserTaskInputSchema.safeParse(input);
+
+    expect(parsed.success).toBe(false);
+    expect(parsed.error?.issues[0]?.message).toContain(
+      "Group offer needs a mandatory positive text check"
+    );
+    await expect(
+      browserTask.execute(input, toolContext("better-auth:alice"))
+    ).rejects.toThrow("Group offer needs a mandatory positive text check");
+    expect(browserRunQuotaGate).not.toHaveBeenCalled();
+    expect(resolveBrowserSecretBindings).not.toHaveBeenCalled();
+    expect(createBrowserUseRun).not.toHaveBeenCalled();
+    expect(createBrowserRun).not.toHaveBeenCalled();
+  });
+
+  it("normalizes defaults and rejects an invalid base predicate before paid start work", async () => {
+    const { browserTask } = await import("@agent/tools/browser_task");
+    const malformedInput = {
+      action: "start",
+      allowPayment: true,
+      capability: "purchase",
+      site: "https://example.com",
+      task: "Buy only after verification",
+      verificationPlan: {
+        checks: [
+          {
+            description: "The amount is present",
+            id: "amount",
+            mandatory: true,
+            predicate: {
+              decimalSeparator: ".",
+              kind: "number",
+            },
+          },
+        ],
+        version: 1,
+      },
+    } satisfies Parameters<typeof browserTask.execute>[0];
+    const amountCheck = malformedInput.verificationPlan.checks[0];
+    if (!amountCheck) throw new Error("Expected the amount check fixture.");
+    expect(Reflect.deleteProperty(amountCheck, "mandatory")).toBe(true);
+    expect("mandatory" in amountCheck).toBe(false);
+
+    await expect(
+      browserTask.execute(malformedInput, toolContext("better-auth:alice"))
+    ).rejects.toThrow("A numeric check needs a minimum or maximum");
+
+    expect(browserRunQuotaGate).not.toHaveBeenCalled();
+    expect(resolveBrowserSecretBindings).not.toHaveBeenCalled();
+    expect(createBrowserUseRun).not.toHaveBeenCalled();
+    expect(createBrowserRun).not.toHaveBeenCalled();
+  });
+
+  it("accepts an offer group with a positive identity check", async () => {
+    const { browserTaskInputSchema } =
+      await import("@agent/tools/browser_task");
+    const parsed = browserTaskInputSchema.safeParse({
+      action: "start",
+      capability: "browse",
+      site: "https://example.com",
+      task: "Find the matching offer",
+      verificationPlan: {
+        checks: [
+          {
+            description: "The offer is the requested item",
+            groupId: "offer",
+            id: "offer-identity",
+            mandatory: true,
+            predicate: {
+              kind: "text_present",
+            },
+            purpose: "identity",
+          },
+          {
+            description: "The same offer is within budget",
+            groupId: "offer",
+            id: "offer-price",
+            mandatory: true,
+            predicate: {
+              currency: "USD",
+              decimalSeparator: ".",
+              kind: "number",
+              maximum: 200,
+            },
+          },
+        ],
+        version: 1,
+      },
+    });
+
+    expect(parsed.success).toBe(true);
+  });
+
+  it("validates an explicit replacement plan on continue", async () => {
+    const stored = { ...browserRunRow(new Date()), verificationPlan };
+    readBrowserRunForScope.mockResolvedValue(stored);
+    resolveBrowserRunForScope.mockResolvedValue({
+      active: stored,
+      requested: stored,
+      root: stored,
+    });
+    const { browserTask } = await import("@agent/tools/browser_task");
+    const input = {
+      action: "continue",
+      runId,
+      task: "Use this replacement plan",
+      verificationPlan: {
+        checks: [
+          {
+            description: "Terms are shown for the grouped offer",
+            groupId: "offer",
+            id: "offer-terms",
+            mandatory: true,
+            predicate: {
+              caseSensitive: false,
+              expected: "refundable",
+              kind: "text_contains",
+            },
+          },
+        ],
+        version: 1,
+      },
+    } satisfies Parameters<typeof browserTask.execute>[0];
+    await expect(
+      browserTask.execute(input, toolContext("better-auth:alice"))
+    ).rejects.toThrow("Group offer needs a mandatory positive text check");
+    expect(claimBrowserLineageTransition).not.toHaveBeenCalled();
+    expect(findBrowserUseSessionCdpUrl).not.toHaveBeenCalled();
+    expect(typeOneTimeCodeOverCdp).not.toHaveBeenCalled();
+    expect(createBrowserUseRun).not.toHaveBeenCalled();
+  });
+
+  it("accepts an order group with its exact positive reference", async () => {
+    const { browserTaskInputSchema } =
+      await import("@agent/tools/browser_task");
+    const parsed = browserTaskInputSchema.safeParse({
+      action: "continue",
+      runId,
+      task: "Verify the replacement plan",
+      verificationPlan: {
+        checks: [
+          {
+            description: "The merchant reference identifies this order",
+            groupId: "order",
+            id: "order-reference",
+            mandatory: true,
+            predicate: {
+              caseSensitive: false,
+              expected: "ORD-123",
+              kind: "text_exact",
+            },
+            purpose: "order_reference",
+          },
+          {
+            description: "The same order has the expected total",
+            groupId: "order",
+            id: "order-total",
+            mandatory: true,
+            predicate: {
+              currency: "RUB",
+              decimalSeparator: ".",
+              kind: "number",
+              minimum: 1,
+            },
+            purpose: "order_total",
+          },
+        ],
+        version: 1,
+      },
+    });
+
+    expect(parsed.success).toBe(true);
+  });
+
   it("persists a declared plan and gives the operator its exact checks", async () => {
     const { browserTask } = await import("@agent/tools/browser_task");
     createBrowserUseRun.mockResolvedValue({
@@ -604,7 +811,7 @@ describe("browser_task verification plan", () => {
     if (!originalCheck) throw new Error("Expected the verification check.");
     const replacement = {
       ...verificationPlan,
-      checks: [{ ...originalCheck, id: "weaker-check" }],
+      checks: [{ ...originalCheck, groupId: "offer", id: "weaker-check" }],
     };
     const { browserTask } = await import("@agent/tools/browser_task");
     await browserTask.execute(
@@ -669,7 +876,27 @@ describe("browser_task verification plan", () => {
     const { browserTask } = await import("@agent/tools/browser_task");
     await expect(
       browserTask.execute(
-        { action: "continue", runId, task: "Continue" },
+        {
+          action: "continue",
+          runId,
+          task: "Continue",
+          verificationPlan: {
+            checks: [
+              {
+                description: "A grouped term without identity",
+                groupId: "offer",
+                id: "offer-term",
+                mandatory: true,
+                predicate: {
+                  caseSensitive: false,
+                  expected: "included",
+                  kind: "text_contains",
+                },
+              },
+            ],
+            version: 1,
+          },
+        },
         context
       )
     ).resolves.toMatchObject({ status: "running" });
@@ -709,6 +936,49 @@ describe("browser_task continuation", () => {
       runId: followUpRunId,
       status: "running",
     });
+  });
+
+  it("rolls back without typing or replacing when cancellation fails", async () => {
+    cancelBrowserUseRun.mockRejectedValueOnce(
+      new Error("provider unavailable")
+    );
+
+    await expect(continueErrand({})).rejects.toThrow(
+      "active browser run could not be confirmed stopped"
+    );
+
+    expect(failBrowserLineageTransition).toHaveBeenCalledExactlyOnceWith(
+      runId,
+      transitionToken,
+      1
+    );
+    expect(findBrowserUseSessionCdpUrl).not.toHaveBeenCalled();
+    expect(typeOneTimeCodeOverCdp).not.toHaveBeenCalled();
+    expect(resolveBrowserSecretBindings).not.toHaveBeenCalled();
+    expect(createBrowserUseRun).not.toHaveBeenCalled();
+  });
+
+  it("rolls back without typing or replacing after a nonterminal cancellation acknowledgement", async () => {
+    cancelBrowserUseRun.mockResolvedValueOnce({
+      id: runId,
+      sessionId,
+      status: "running",
+      task: "Still active",
+    });
+
+    await expect(continueErrand({})).rejects.toThrow(
+      "active browser run could not be confirmed stopped"
+    );
+
+    expect(failBrowserLineageTransition).toHaveBeenCalledExactlyOnceWith(
+      runId,
+      transitionToken,
+      1
+    );
+    expect(findBrowserUseSessionCdpUrl).not.toHaveBeenCalled();
+    expect(typeOneTimeCodeOverCdp).not.toHaveBeenCalled();
+    expect(resolveBrowserSecretBindings).not.toHaveBeenCalled();
+    expect(createBrowserUseRun).not.toHaveBeenCalled();
   });
 
   it("keeps a manual create ambiguity recoverable instead of unwinding its marker", async () => {
@@ -817,6 +1087,21 @@ describe("browser_task continuation", () => {
 
     expect(readBrowserUseRunStatus).not.toHaveBeenCalled();
     expect(createBrowserUseRun).toHaveBeenCalledOnce();
+  });
+
+  it("stops before claiming or writing when live status is unknown", async () => {
+    readBrowserUseRunStatus.mockRejectedValue(
+      new Error("status remained unavailable")
+    );
+
+    await expect(continueErrand({})).rejects.toThrow(
+      "status could not be confirmed"
+    );
+
+    expect(claimBrowserLineageTransition).not.toHaveBeenCalled();
+    expect(findBrowserUseSessionCdpUrl).not.toHaveBeenCalled();
+    expect(typeOneTimeCodeOverCdp).not.toHaveBeenCalled();
+    expect(createBrowserUseRun).not.toHaveBeenCalled();
   });
 
   it("replaces a live run when a card has to be bound to it", async () => {

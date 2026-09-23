@@ -6,7 +6,18 @@ const checkIdSchema = z
   .max(48)
   .regex(/^[a-z0-9]+(?:[._-][a-z0-9]+)*$/u);
 
+export const browserVerificationDateSchema = z.iso.date();
+
+const partialDateSchema = z
+  .string()
+  .regex(/^--(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])$/u)
+  .refine(
+    (value) =>
+      browserVerificationDateSchema.safeParse(`2000-${value.slice(2)}`).success
+  );
+
 const predicateSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("text_present") }).strict(),
   z
     .object({
       caseSensitive: z.boolean().default(false),
@@ -35,6 +46,7 @@ const predicateSchema = z.discriminatedUnion("kind", [
       kind: z.literal("number"),
       maximum: z.number().optional(),
       minimum: z.number().optional(),
+      numberWords: z.enum(["en", "ru"]).optional(),
     })
     .strict()
     .refine(
@@ -46,6 +58,40 @@ const predicateSchema = z.discriminatedUnion("kind", [
         maximum === undefined || minimum === undefined || minimum <= maximum,
       { message: "A numeric minimum cannot exceed its maximum." }
     ),
+  z
+    .object({
+      expected: z
+        .union([browserVerificationDateSchema, partialDateSchema])
+        .optional(),
+      kind: z.literal("date"),
+      maximum: browserVerificationDateSchema.optional(),
+      minimum: browserVerificationDateSchema.optional(),
+    })
+    .strict()
+    .superRefine(({ expected, maximum, minimum }, context) => {
+      if (
+        expected === undefined &&
+        maximum === undefined &&
+        minimum === undefined
+      )
+        context.addIssue({
+          code: "custom",
+          message: "A date check needs an expected date or a boundary.",
+        });
+      if (
+        expected !== undefined &&
+        (maximum !== undefined || minimum !== undefined)
+      )
+        context.addIssue({
+          code: "custom",
+          message: "An expected date cannot be combined with date boundaries.",
+        });
+      if (minimum !== undefined && maximum !== undefined && minimum > maximum)
+        context.addIssue({
+          code: "custom",
+          message: "A date minimum cannot exceed its maximum.",
+        });
+    }),
 ]);
 
 const verificationCheckSchema = z
@@ -55,10 +101,22 @@ const verificationCheckSchema = z
     id: checkIdSchema,
     mandatory: z.boolean().default(true),
     predicate: predicateSchema,
-    purpose: z.enum(["order_reference", "order_total"]).optional(),
+    purpose: z.enum(["identity", "order_reference", "order_total"]).optional(),
   })
   .strict()
   .superRefine((check, context) => {
+    if (
+      check.purpose === "identity" &&
+      check.predicate.kind !== "text_present" &&
+      check.predicate.kind !== "text_exact" &&
+      check.predicate.kind !== "text_contains"
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "An identity purpose needs a positive text predicate.",
+        path: ["predicate"],
+      });
+    }
     if (
       check.purpose === "order_reference" &&
       check.predicate.kind !== "text_exact" &&
@@ -140,7 +198,7 @@ const observedCheckSchema = z.object({
   observedAt: z.iso.datetime(),
   pageUrl: z.url().max(2_048),
   status: z.enum(["passed", "failed", "unverified"]),
-  value: z.number().optional(),
+  value: z.union([z.number(), browserVerificationDateSchema]).optional(),
 });
 
 const verificationDefectSchema = z.object({
