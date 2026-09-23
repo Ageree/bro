@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { getTableConfig } from "drizzle-orm/pg-core";
 import { describe, expect, it } from "vitest";
@@ -194,6 +195,7 @@ describe("migration deployment policy", () => {
           "db:generate": z.string(),
           "build:vercel": z.string(),
           "db:migrate": z.string(),
+          "db:migrate:deploy": z.string(),
         }),
       })
       .parse(
@@ -206,6 +208,10 @@ describe("migration deployment policy", () => {
         tasks: z.object({
           "build:vercel": z.object({ dependsOn: z.array(z.string()) }),
           "db:migrate": z.object({
+            cache: z.boolean(),
+            env: z.array(z.string()),
+          }),
+          "db:migrate:deploy": z.object({
             cache: z.boolean(),
             env: z.array(z.string()),
           }),
@@ -236,10 +242,32 @@ describe("migration deployment policy", () => {
     );
     expect(packageManifest.devDependencies).toHaveProperty("@next/env");
     expect(packageManifest.devDependencies).not.toHaveProperty("dotenv-cli");
-    expect(turbo.tasks["build:vercel"].dependsOn).toContain("db:migrate");
+    expect(turbo.tasks["build:vercel"].dependsOn).toEqual([
+      "db:migrate:deploy",
+    ]);
     expect(turbo.tasks["db:migrate"].cache).toBe(false);
     expect(turbo.tasks["db:migrate"].env).toEqual(["DATABASE_URL_UNPOOLED"]);
+    expect(turbo.tasks["db:migrate:deploy"].cache).toBe(false);
+    expect(turbo.tasks["db:migrate:deploy"].env).toEqual([
+      "DATABASE_URL_UNPOOLED",
+      "VERCEL_ENV",
+    ]);
     expect(vercel.buildCommand).toBe("pnpm turbo run build:vercel");
+
+    // Preview deployments receive the production database URL, so a preview
+    // build of an unmerged branch must never migrate it.
+    const deploy = packageManifest.scripts["db:migrate:deploy"];
+    const migrateCommand = packageManifest.scripts["db:migrate"];
+    expect(deploy).toContain(migrateCommand);
+    const dryRun = deploy.replace(migrateCommand, "echo MIGRATE");
+    const run = (vercelEnv: string) =>
+      execFileSync("/bin/sh", ["-c", dryRun], {
+        encoding: "utf8",
+        env: { NODE_ENV: "test", VERCEL_ENV: vercelEnv },
+      });
+    expect(run("preview")).not.toContain("MIGRATE");
+    expect(run("production")).toContain("MIGRATE");
+    expect(run("")).toContain("MIGRATE");
   });
 
   it("adopts existing tables without request-time DDL", async () => {
