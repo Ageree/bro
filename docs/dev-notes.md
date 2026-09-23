@@ -43,6 +43,39 @@
   («Dynamic tool resolver failed — Expected a JSON-serializable value»). Байты
   файлов кладутся base64-строкой (коммит `2ed484c`).
 
+- `eve info` в 0.62 не печатает подключения ни в тексте, ни в `--json`. Что
+  подключения собрались, видно в `.eve/compile/compiled-agent-manifest.json`
+  (ключ `connections`), который `eve info` пишет при компиляции.
+- MCP-подключение отдаёт список инструментов только с токеном пользователя:
+  `connection_search` без подключённого аккаунта паркует ход на авторизации.
+  OpenAPI-подключение строит инструменты из спецификации без токена, и
+  подтверждение спрашивается до входа. Поэтому Notion и Slack сделаны
+  OpenAPI-подключениями (`agent/connections/`), а записи идут через
+  `notion-add-task` и `slack-send-message`, которые сами находят базу и адресата.
+- Агентские эвалы в облачной сессии: `pnpm eval:agent` требует ключ Gateway
+  и Docker. Хватает `OPENROUTER_API_KEY`, локального Postgres (`initdb` от
+  не-root пользователя), `pnpm db:migrate` и прямого
+  `eve eval agent --tag <тег>` с `DATABASE_URL`, `BETTER_AUTH_URL=http://127.0.0.1:9`
+  и `NODE_ENV=development`. Кейсы с `t.judge` без Gateway не оценятся.
+
+## Google
+
+- `@googleapis/drive` закреплён на 22: версии 25+ тянут `google-auth-library`
+  11, и его `OAuth2Client` не совместим по типам с клиентом из `client.ts`,
+  общим для Gmail, Calendar и People.
+- Токен Google запрашивается со всем списком `googleWorkspaceScopes`. Грант,
+  выданный до появления в списке `drive.readonly`, этот скоуп не покрывает:
+  Google у такого человека нужно переподключить через `connect_google`.
+
+## Notion и Slack
+
+- Коннекторы Vercel Connect задаются `NOTION_CONNECTOR_UID` и
+  `SLACK_CONNECTOR_UID` (по умолчанию `notion` и `slack`). Настройка Notion:
+  `eve link`, затем `eve add connection/notion --non-interactive --skip-install`.
+  Готового `connection/slack` в реестре eve нет (`channel/slack` делает бота,
+  а не пишет от имени человека); коннектор Slack создаётся вручную с
+  user-скоупами из `agent/lib/connected-apps/auth.ts`.
+
 ## Vercel
 
 - Не публикуйте свои маршруты каналов eve (`/webhooks`,

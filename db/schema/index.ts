@@ -4,6 +4,7 @@ export * from "./browser";
 export * from "./browser-runs";
 export * from "./channel-identities";
 export * from "./chats";
+export * from "./drive-files";
 export * from "./gmail-attachments";
 export * from "./memory";
 export * from "./onboarding-requests";

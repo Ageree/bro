@@ -19,6 +19,7 @@ export const googleWorkspaceScopes = [
   "https://www.googleapis.com/auth/calendar.events",
   "https://www.googleapis.com/auth/calendar.freebusy",
   "https://www.googleapis.com/auth/contacts.readonly",
+  "https://www.googleapis.com/auth/drive.readonly",
 ] as const;
 
 /** How long a minted Google authorization link stays valid. */
