@@ -99,6 +99,108 @@ describe("send_message in a looping turn", () => {
   });
 });
 
+describe("send_message reply language", () => {
+  const russianReply = {
+    kind: "message" as const,
+    text: "Нашёл отличное место: «Пушкин» на Тверском, столик на четверых есть.",
+  };
+  const englishReply = {
+    kind: "message" as const,
+    text: "Found a great spot: Pushkin on Tverskoy, and they have a table for four.",
+  };
+
+  it("bounces a Russian reply to an English message for a rewrite", async () => {
+    const sendMessage = await resolveSendMessage("channel:eve", [
+      personMessage("find a dinner spot for four tomorrow at 7:30"),
+    ]);
+
+    const output = await sendMessage.execute(russianReply, toolContext());
+    expect(output).toEqual({ language: "en", skipped: "language" });
+    expect(sendMessageOutputSchema.safeParse(output).success).toBe(false);
+    const modelOutput = await sendMessage.toModelOutput?.({
+      language: "en",
+      skipped: "language",
+    });
+    expect(modelOutput?.type === "text" ? modelOutput.value : "").toContain(
+      "Rewrite the same message in English"
+    );
+    expect(await sendMessage.execute(englishReply, toolContext())).toEqual(
+      englishReply
+    );
+  });
+
+  it("bounces an English reply to a Russian message", async () => {
+    const sendMessage = await resolveSendMessage("channel:eve", [
+      personMessage("найди, где поужинать вчетвером завтра в 19:30"),
+    ]);
+
+    expect(await sendMessage.execute(englishReply, toolContext())).toEqual({
+      language: "ru",
+      skipped: "language",
+    });
+    expect(await sendMessage.execute(russianReply, toolContext())).toEqual(
+      russianReply
+    );
+  });
+
+  it("lets a Russian reply with an English brand through", async () => {
+    const sendMessage = await resolveSendMessage("channel:eve", [
+      personMessage("что купить, iPhone или Pixel?"),
+    ]);
+    const reply = { kind: "message" as const, text: "Бери iPhone 17 Pro" };
+
+    expect(await sendMessage.execute(reply, toolContext())).toEqual(reply);
+  });
+
+  it("gives up bouncing after two retries in a turn", async () => {
+    const bounced = (id: string) => [
+      {
+        content: [
+          {
+            input: russianReply,
+            toolCallId: id,
+            toolName: "send_message",
+            type: "tool-call" as const,
+          },
+        ],
+        role: "assistant" as const,
+      },
+      {
+        content: [
+          {
+            output: {
+              type: "text" as const,
+              value:
+                "Not delivered, wrong language: the person wrote in English.",
+            },
+            toolCallId: id,
+            toolName: "send_message",
+            type: "tool-result" as const,
+          },
+        ],
+        role: "tool" as const,
+      },
+    ];
+    const sendMessage = await resolveSendMessage("channel:eve", [
+      personMessage("find a dinner spot for four tomorrow at 7:30"),
+      ...bounced("call-1"),
+      ...bounced("call-2"),
+    ]);
+
+    expect(await sendMessage.execute(russianReply, toolContext())).toEqual(
+      russianReply
+    );
+  });
+});
+
+function personMessage(text: string) {
+  // eve adds `kind` to every user-role message it keeps in history.
+  return Object.assign(
+    { content: text, role: "user" as const },
+    { kind: "user" }
+  );
+}
+
 async function resolveSendMessage(
   channel: string,
   messages: DynamicResolveContext["messages"] = []

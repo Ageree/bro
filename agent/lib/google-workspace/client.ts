@@ -1,3 +1,4 @@
+import { setTimeout } from "node:timers/promises";
 import { auth } from "@googleapis/gmail";
 import type {
   ConnectAuthorizationOptions,
@@ -104,6 +105,30 @@ export async function googleWriteApproval(
     : whenWritable;
 }
 
+/**
+ * What the model reads when Google keeps refusing for rate or quota. A quota
+ * error once came back to the person as «Google не подключён», which sent
+ * them to reconnect a working account.
+ */
+export const googleRateLimitMessage =
+  "Google временно ограничил запросы к этому аккаунту (лимит частоты или квоты API). Это не отключение: Google подключён, connect_google не нужен. Не повторяй вызовы Google в этом ходе; ответь тем, что уже есть, и скажи человеку: «Google временно ограничил запросы, повторю через минуту».";
+
+/** A Google API call refused for rate or quota even after backing off. */
+export class GoogleRateLimitError extends Error {
+  override readonly name = "GoogleRateLimitError";
+
+  constructor(options?: ErrorOptions) {
+    super(googleRateLimitMessage, options);
+  }
+}
+
+/**
+ * Waits before each retry of a rate-limited call. Gmail's per-user limit is
+ * per second, so a short pause usually clears it; a longer one would only hold
+ * the step while the model waits.
+ */
+const rateLimitBackoffMs = [1_000, 3_000] as const;
+
 export async function withGoogleAuth<T>(
   ctx: ToolContext,
   execute: (authClient: InstanceType<typeof auth.OAuth2>) => Promise<T>
@@ -116,13 +141,20 @@ export async function withGoogleAuth<T>(
   const authClient = new auth.OAuth2();
   authClient.setCredentials({ access_token: token });
 
-  try {
-    return await execute(authClient);
-  } catch (error) {
-    if (googleApiErrorStatus(error) === 401) {
-      ctx.requireAuth(provider, options);
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Each retry waits for the one before it.
+      return await execute(authClient);
+    } catch (error) {
+      if (googleApiErrorStatus(error) === 401) {
+        ctx.requireAuth(provider, options);
+      }
+      if (!isGoogleRateLimit(error)) throw error;
+      const delay = rateLimitBackoffMs[attempt];
+      if (delay === undefined) throw new GoogleRateLimitError({ cause: error });
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Backing off is the point.
+      await setTimeout(delay, undefined, { signal: ctx.abortSignal });
     }
-    throw error;
   }
 }
 
@@ -133,4 +165,42 @@ const googleApiErrorSchema = z.object({
 export function googleApiErrorStatus(cause: unknown) {
   const result = googleApiErrorSchema.safeParse(cause);
   return result.success ? result.data.response.status : undefined;
+}
+
+/** Reasons Google gives for a refusal that passes once calls slow down. */
+const rateLimitReasons = new Set([
+  "dailyLimitExceeded",
+  "quotaExceeded",
+  "rateLimitExceeded",
+  "userRateLimitExceeded",
+]);
+
+const googleErrorBodySchema = z.object({
+  response: z.object({
+    data: z.object({
+      error: z.object({
+        errors: z.array(z.object({ reason: z.string() })).optional(),
+        message: z.string().optional(),
+        status: z.string().optional(),
+      }),
+    }),
+  }),
+});
+
+/**
+ * Whether Google refused for rate or quota: always a 429, and a 403 whose
+ * reason or message says so. Other 403s — a missing scope, a disabled API —
+ * are real refusals and are not retried.
+ */
+export function isGoogleRateLimit(cause: unknown) {
+  const status = googleApiErrorStatus(cause);
+  if (status === 429) return true;
+  if (status !== 403) return false;
+  const error =
+    googleErrorBodySchema.safeParse(cause).data?.response.data.error;
+  return (
+    (error?.errors ?? []).some(({ reason }) => rateLimitReasons.has(reason)) ||
+    error?.status === "RESOURCE_EXHAUSTED" ||
+    /quota|rate limit/iu.test(error?.message ?? "")
+  );
 }

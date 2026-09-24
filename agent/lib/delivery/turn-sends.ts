@@ -1,6 +1,7 @@
 import type { ModelMessage } from "ai";
 import { z } from "zod";
 import { sendMessageOutputSchema } from "@shared/chat/message-delivery";
+import { type ReplyLanguage, wrongReplyLanguage } from "./language";
 
 /**
  * User-visible messages one turn may deliver. Nothing Bro does in a single
@@ -149,6 +150,43 @@ export function sendSkipReason(
   return undefined;
 }
 
+/**
+ * Sends a turn may have bounced for the wrong language. A model that cannot
+ * switch keeps writing the same way; after this many retries its message goes
+ * out rather than the person getting nothing.
+ */
+const languageRetries = 2;
+
+const wrongLanguagePrefix = "Not delivered, wrong language:";
+
+const wrongLanguageNotices = {
+  en: `${wrongLanguagePrefix} the person wrote in English, but this message is in Russian. Rewrite the same message in English and call send_message again.`,
+  ru: `${wrongLanguagePrefix} человек пишет по-русски, а это сообщение на английском. Перепиши его по-русски и снова вызови send_message.`,
+} as const satisfies Record<ReplyLanguage, string>;
+
+/** The tool result the model reads for a send bounced for its language. */
+export function wrongLanguageNotice(language: ReplyLanguage) {
+  return wrongLanguageNotices[language];
+}
+
+/**
+ * Whether a send must be bounced because it is plainly not in the language
+ * the person wrote in, while the turn still has retries for that.
+ */
+export function bouncesForLanguage(
+  outgoing: OutgoingMessage,
+  expected: ReplyLanguage | null,
+  languageSkips: number
+) {
+  return (
+    expected !== null &&
+    languageSkips < languageRetries &&
+    outgoing.kind === "message" &&
+    outgoing.text !== undefined &&
+    wrongReplyLanguage(outgoing.text, expected)
+  );
+}
+
 const taggedMessageSchema = z.object({ kind: z.string() });
 
 /**
@@ -167,20 +205,21 @@ function startsTurn(message: ModelMessage) {
   );
 }
 
-function currentTurnMessages(messages: readonly ModelMessage[]) {
+export function currentTurnMessages(messages: readonly ModelMessage[]) {
   const start = messages.findLastIndex(startsTurn);
   return start === -1 ? messages : messages.slice(start + 1);
 }
 
 /**
  * What `send_message` did so far in the current turn: the messages that
- * reached the person, and how many sends were dropped as repeats or over the
- * limit.
+ * reached the person, how many sends were dropped as repeats or over the
+ * limit, and how many bounced for their language.
  */
 export function turnSends(messages: readonly ModelMessage[]) {
   const inputs = new Map<string, OutgoingMessage>();
   const delivered: SentMessage[] = [];
   let skipped = 0;
+  let languageSkips = 0;
   for (const message of currentTurnMessages(messages)) {
     const parts = Array.isArray(message.content) ? message.content : [];
     for (const part of parts) {
@@ -196,13 +235,20 @@ export function turnSends(messages: readonly ModelMessage[]) {
         skipped += 1;
         continue;
       }
+      if (
+        output.type === "text" &&
+        output.value.startsWith(wrongLanguagePrefix)
+      ) {
+        languageSkips += 1;
+        continue;
+      }
       if (output.type.startsWith("error") || output.type === "execution-denied")
         continue;
       const input = inputs.get(part.toolCallId);
       if (input) delivered.push(sentMessageOf(input));
     }
   }
-  return { delivered, skipped };
+  return { delivered, languageSkips, skipped };
 }
 
 /**

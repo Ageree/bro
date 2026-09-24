@@ -99,7 +99,7 @@ describe("interactive delivery enforcement", () => {
 
     expect(services.modelSelection).toHaveBeenLastCalledWith(
       "openai/gpt-5.6-sol-fast",
-      { toolChoice: "required" }
+      { replyLanguage: "ru", toolChoice: "required" }
     );
   });
 
@@ -111,7 +111,7 @@ describe("interactive delivery enforcement", () => {
 
     expect(services.modelSelection).toHaveBeenLastCalledWith(
       "openai/gpt-5.6-sol-fast",
-      { toolChoice: "auto" }
+      { replyLanguage: "ru", toolChoice: "auto" }
     );
   });
 
@@ -123,7 +123,7 @@ describe("interactive delivery enforcement", () => {
     // One dropped repeat may still precede a real answer.
     expect(services.modelSelection).toHaveBeenLastCalledWith(
       "openai/gpt-5.6-sol-fast",
-      { toolChoice: "auto" }
+      { replyLanguage: "ru", toolChoice: "auto" }
     );
 
     await agent.model.events["step.started"]?.(
@@ -136,7 +136,22 @@ describe("interactive delivery enforcement", () => {
     );
     expect(services.modelSelection).toHaveBeenLastCalledWith(
       "openai/gpt-5.6-sol-fast",
-      { toolChoice: "none" }
+      { replyLanguage: "ru", toolChoice: "none" }
+    );
+  });
+
+  it("holds the reply to the language of the person's latest message", async () => {
+    await agent.model.events["step.started"]?.(
+      {},
+      interactiveContext([
+        ...delivered,
+        humanMessage("thanks, and what about tomorrow?"),
+      ])
+    );
+
+    expect(services.modelSelection).toHaveBeenLastCalledWith(
+      "openai/gpt-5.6-sol-fast",
+      { replyLanguage: "en", toolChoice: "required" }
     );
   });
 
@@ -148,7 +163,7 @@ describe("interactive delivery enforcement", () => {
 
     expect(services.modelSelection).toHaveBeenLastCalledWith(
       "openai/gpt-5.6-sol-fast",
-      { toolChoice: "auto" }
+      { replyLanguage: "ru", toolChoice: "auto" }
     );
   });
 
