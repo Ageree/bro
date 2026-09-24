@@ -115,7 +115,12 @@ describe("interactive delivery enforcement", () => {
 
     expect(services.modelSelection).toHaveBeenLastCalledWith(
       "openai/gpt-5.6-sol-fast",
-      { replyNote: note("ru"), toolChoice: "required" }
+      {
+        delivered: false,
+        replyNote: note("ru"),
+        toolChoice: "required",
+        withheldTools: [],
+      }
     );
   });
 
@@ -129,7 +134,12 @@ describe("interactive delivery enforcement", () => {
     // not read it as a new request to answer.
     expect(services.modelSelection).toHaveBeenLastCalledWith(
       "openai/gpt-5.6-sol-fast",
-      { replyNote: note("ru", true), toolChoice: "auto" }
+      {
+        delivered: true,
+        replyNote: note("ru", true),
+        toolChoice: "auto",
+        withheldTools: [],
+      }
     );
   });
 
@@ -141,7 +151,51 @@ describe("interactive delivery enforcement", () => {
 
     expect(services.modelSelection).toHaveBeenLastCalledWith(
       "openai/gpt-5.6-sol-fast",
-      { replyNote: note("ru", true), toolChoice: "none" }
+      {
+        delivered: true,
+        replyNote: note("ru", true),
+        toolChoice: "none",
+        withheldTools: [],
+      }
+    );
+  });
+
+  it("offers ask_question no more once the turn asked the person", async () => {
+    await agent.model.events["step.started"]?.(
+      {},
+      interactiveContext([
+        ...pending,
+        {
+          content: [
+            {
+              input: { prompt: "Какие действия выполнить?" },
+              toolCallId: "call-q",
+              toolName: "ask_question",
+              type: "tool-call" as const,
+            },
+          ],
+          role: "assistant" as const,
+        },
+        {
+          content: [
+            {
+              output: {
+                type: "json" as const,
+                value: { optionId: "both", status: "answered" },
+              },
+              toolCallId: "call-q",
+              toolName: "ask_question",
+              type: "tool-result" as const,
+            },
+          ],
+          role: "tool" as const,
+        },
+      ])
+    );
+
+    expect(services.modelSelection).toHaveBeenLastCalledWith(
+      "openai/gpt-5.6-sol-fast",
+      expect.objectContaining({ withheldTools: ["ask_question"] })
     );
   });
 
@@ -156,7 +210,12 @@ describe("interactive delivery enforcement", () => {
 
     expect(services.modelSelection).toHaveBeenLastCalledWith(
       "openai/gpt-5.6-sol-fast",
-      { replyNote: note("en"), toolChoice: "required" }
+      {
+        delivered: false,
+        replyNote: note("en"),
+        toolChoice: "required",
+        withheldTools: [],
+      }
     );
   });
 
@@ -168,7 +227,12 @@ describe("interactive delivery enforcement", () => {
 
     expect(services.modelSelection).toHaveBeenLastCalledWith(
       "openai/gpt-5.6-sol-fast",
-      { replyNote: note("ru"), toolChoice: "auto" }
+      {
+        delivered: false,
+        replyNote: note("ru"),
+        toolChoice: "auto",
+        withheldTools: [],
+      }
     );
   });
 
@@ -181,7 +245,12 @@ describe("interactive delivery enforcement", () => {
     // The report answers in the language of the conversation it continues.
     expect(services.modelSelection).toHaveBeenLastCalledWith(
       "openai/gpt-5.6-sol-fast",
-      { replyNote: note("ru"), toolChoice: "auto" }
+      {
+        delivered: false,
+        replyNote: note("ru"),
+        toolChoice: "auto",
+        withheldTools: [],
+      }
     );
   });
 
@@ -198,7 +267,12 @@ describe("interactive delivery enforcement", () => {
 
     expect(services.modelSelection).toHaveBeenLastCalledWith(
       "openai/gpt-5.6-sol-fast",
-      { replyNote: undefined, toolChoice: "auto" }
+      {
+        delivered: false,
+        replyNote: undefined,
+        toolChoice: "auto",
+        withheldTools: [],
+      }
     );
     // A worker writes to the report turn, not to the person.
     expect(services.getFormOfAddress).not.toHaveBeenCalled();

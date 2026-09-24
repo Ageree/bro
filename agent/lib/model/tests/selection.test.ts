@@ -2,8 +2,10 @@ import type {
   OpenRouterChatSettings,
   OpenRouterProviderSettings,
 } from "@openrouter/ai-sdk-provider";
-import type { wrapLanguageModel } from "ai";
+import { generateText, streamText, tool, type wrapLanguageModel } from "ai";
+import { convertArrayToReadableStream, MockLanguageModelV4 } from "ai/test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 
 type LanguageModelV4 = ReturnType<typeof wrapLanguageModel>;
 
@@ -165,6 +167,40 @@ describe("model selection", () => {
     expect(doGenerate.mock.calls[1]?.[0].prompt).toEqual([person]);
   });
 
+  it("takes a withheld tool out of the step and leaves compaction alone", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
+    const doGenerate = vi.fn<LanguageModelV4["doGenerate"]>();
+    openRouter.chat.mockImplementation((modelId) => ({
+      doGenerate,
+      doStream: vi.fn<LanguageModelV4["doStream"]>(),
+      modelId,
+      provider: "openrouter.chat",
+      specificationVersion: "v4",
+      supportedUrls: {},
+    }));
+
+    const { openRouterSelection } = await import("@agent/lib/model/openrouter");
+    const selection = openRouterSelection("openai/gpt-6-luna", {
+      toolChoice: "required",
+      withheldTools: ["ask_question"],
+    });
+    const tools = ["ask_question", "send_message"].map((name) => ({
+      inputSchema: { type: "object" } as const,
+      name,
+      type: "function" as const,
+    }));
+    await selection.model.doGenerate({ prompt: [], tools });
+    await selection.model.doGenerate({ prompt: [] });
+
+    expect(
+      doGenerate.mock.calls[0]?.[0].tools?.map(({ name }) => name)
+    ).toEqual(["send_message"]);
+    expect(doGenerate.mock.calls[0]?.[0]).toMatchObject({
+      toolChoice: { type: "required" },
+    });
+    expect(doGenerate.mock.calls[1]?.[0].tools).toBeUndefined();
+  });
+
   it("forwards toolChoice none, even for Anthropic with reasoning on", async () => {
     vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
     vi.stubEnv("OPENROUTER_REASONING_EFFORT", "medium");
@@ -198,6 +234,117 @@ describe("model selection", () => {
 
     expect(doGenerate.mock.calls[0]?.[0]).toMatchObject({
       toolChoice: { type: "none" },
+    });
+  });
+
+  describe("after the turn's reply was delivered", () => {
+    const usage = {
+      inputTokens: {
+        cacheRead: undefined,
+        cacheWrite: undefined,
+        noCache: 10,
+        total: 10,
+      },
+      outputTokens: { reasoning: undefined, text: 0, total: 0 },
+    };
+    const stop = { raw: "stop", unified: "stop" } as const;
+    const tools = {
+      send_message: tool({
+        inputSchema: z.object({ text: z.string() }),
+      }),
+    };
+
+    function silentModel() {
+      return new MockLanguageModelV4({
+        doGenerate: async () => ({
+          content: [],
+          finishReason: stop,
+          usage,
+          warnings: [],
+        }),
+        doStream: async () => ({
+          stream: convertArrayToReadableStream([
+            { type: "stream-start" as const, warnings: [] },
+            { finishReason: stop, type: "finish" as const, usage },
+          ]),
+        }),
+      });
+    }
+
+    async function selectionFor(
+      model: MockLanguageModelV4,
+      delivered: boolean
+    ) {
+      vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
+      openRouter.chat.mockReturnValue(model);
+      const { openRouterSelection } =
+        await import("@agent/lib/model/openrouter");
+      return openRouterSelection("openai/gpt-6-luna", {
+        delivered,
+        toolChoice: "auto",
+      });
+    }
+
+    it("turns a step that says nothing into eve's empty delivery", async () => {
+      const selection = await selectionFor(silentModel(), true);
+
+      const generated = await generateText({
+        model: selection.model,
+        prompt: "done?",
+        tools,
+      });
+      const streamed = streamText({
+        model: selection.model,
+        prompt: "done?",
+        tools,
+      });
+
+      expect(generated.text).toBe("<eve-empty-delivery/>");
+      expect(await streamed.text).toBe("<eve-empty-delivery/>");
+      expect(await streamed.finishReason).toBe("stop");
+    });
+
+    it("keeps a step that wrote text or called a tool as it is", async () => {
+      const model = new MockLanguageModelV4({
+        doStream: async () => ({
+          stream: convertArrayToReadableStream([
+            { type: "stream-start" as const, warnings: [] },
+            {
+              input: JSON.stringify({ text: "Ещё одно" }),
+              toolCallId: "call-1",
+              toolName: "send_message",
+              type: "tool-call" as const,
+            },
+            {
+              finishReason: { raw: "tool_calls", unified: "tool-calls" },
+              type: "finish" as const,
+              usage,
+            },
+          ]),
+        }),
+      });
+      const selection = await selectionFor(model, true);
+
+      const streamed = streamText({
+        model: selection.model,
+        prompt: "done?",
+        tools,
+      });
+
+      expect(await streamed.text).toBe("");
+      expect(await streamed.toolCalls).toHaveLength(1);
+    });
+
+    it("leaves an empty answer to eve before anything was delivered", async () => {
+      const selection = await selectionFor(silentModel(), false);
+
+      const generated = await generateText({
+        model: selection.model,
+        prompt: "hello",
+        tools,
+      });
+
+      expect(generated.text).toBe("");
     });
   });
 

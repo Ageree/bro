@@ -1,6 +1,6 @@
 import type { ModelMessage } from "ai";
 import { describe, expect, it } from "vitest";
-import { awaitsDelivery } from "@agent/lib/delivery/pending";
+import { awaitsDelivery, turnDelivered } from "@agent/lib/delivery/pending";
 import { rewriteSendNotice } from "@agent/lib/delivery/turn-sends";
 
 describe("awaitsDelivery", () => {
@@ -112,6 +112,48 @@ describe("awaitsDelivery", () => {
     expect(awaitsDelivery([userMessage("summary", "context.compaction")])).toBe(
       false
     );
+  });
+});
+
+describe("turnDelivered", () => {
+  it("is true once this turn's reply reached the person, whoever started it", () => {
+    expect(
+      turnDelivered([
+        userMessage("Browser run finished."),
+        toolCall("send_message"),
+        toolResult("send_message", { type: "text", value: "submitted" }),
+      ])
+    ).toBe(true);
+    expect(
+      turnDelivered([
+        userMessage("спасибо"),
+        toolCall("react_to_message"),
+        toolResult("react_to_message", { type: "text", value: "submitted" }),
+        userMessage("memory", "memory.recall"),
+      ])
+    ).toBe(true);
+  });
+
+  it("is false before the reply, after a dropped send, and for an earlier turn's reply", () => {
+    expect(turnDelivered([userMessage("привет")])).toBe(false);
+    expect(
+      turnDelivered([
+        userMessage("код 123456"),
+        toolCall("send_message"),
+        toolResult("send_message", {
+          type: "text",
+          value: rewriteSendNotice("browser"),
+        }),
+      ])
+    ).toBe(false);
+    expect(
+      turnDelivered([
+        userMessage("привет"),
+        toolCall("send_message"),
+        toolResult("send_message", { type: "text", value: "submitted" }),
+        userMessage("а ещё?"),
+      ])
+    ).toBe(false);
   });
 });
 

@@ -45,6 +45,22 @@ beforeEach(() => {
 });
 
 describe("autonomy defaults", () => {
+  it("acts on explicit requests instead of confirming them", async () => {
+    const selected = await resolve({}, dynamicContext("photon-imessage"));
+    const content = selected?.content ?? "";
+
+    expect(content).toContain("## Прямая просьба — уже решение");
+    expect(content).toContain(
+      "«Сохранить?», «Правильно понял?», «Какие действия выполнить?» на такое не спрашивай никогда"
+    );
+    expect(content).toContain(
+      "Несколько просьб в одном сообщении — выполни все"
+    );
+    expect(content).toContain(
+      "Один вопрос на просьбу; после ответа делай, второй раз не спрашивай"
+    );
+  });
+
   it("tells the model to act on a stated default instead of asking", async () => {
     const selected = await resolve({}, dynamicContext("photon-imessage"));
     const content = selected?.content ?? "";

@@ -261,6 +261,25 @@
   задан, работает умолчание из `shared/environment/env.ts`). Она не принимает
   `temperature` (OpenRouter его молча отбрасывает) и повторяет `send_message`,
   от чего держит `turn-sends.ts`. Кабинет с моделью в `settings` её не меняет.
+- luna, когда ответ уже доставлен, почти всегда отвечает пустым шагом
+  (`content: null`, `finish: stop`) и при `toolChoice: auto`, и при `none`.
+  eve считает это сбоем модели: переспрашивает раз и валит ход
+  `MODEL_CALL_FAILED` («did not return a response»), а Telegram пишет
+  «что-то сломалось» под готовым ответом. После доставки в ходе
+  (`turnDelivered`) middleware `quietEndMiddleware` в `openrouter.ts`
+  подменяет пустой шаг меткой `<eve-empty-delivery/>`, и ход кончается
+  чисто. Строковому id Gateway это не достаётся.
+- Описание нативного `ask_question` переписано в `agent/tools/ask_question.ts`:
+  поведение «ждать ответа» eve хранит в неперечисляемом
+  `Symbol.for("eve.tool-behavior")`, копия через spread его теряет, поэтому
+  символ переносится явно (тест `tests/agent/tools/ask-question.test.ts`).
+  После вопроса в ходе (ответ продолжает тот же ход) `ask_question` из шага
+  убирается (`withheldTools`, `agent/lib/delivery/questions.ts`).
+- `generate_image` есть только в ходе, начатом человеком, где он просит
+  картинку словами, прислал фото или картинка/фото были в двух последних его
+  ходах (`pictureRequested` в `agent/lib/image-artifact/generation.ts`):
+  luna рисовала «робота, который ждёт» после СМС-кода. Смена набора
+  инструментов ломает кэш промпта только в таких ходах.
 - OpenAI (и Azure за OpenRouter) отвергает весь запрос, если `pattern` в
   схеме инструмента не его диалект регулярок: `\p{Cc}`, именованные группы
   `(?<x>…)`. DeepSeek такое пропускает, поэтому смена модели уронила каждый

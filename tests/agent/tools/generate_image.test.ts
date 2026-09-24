@@ -72,6 +72,10 @@ const earlierPicture = image(
 const drawnId = "5b0c7f84-6b6b-4f2c-9d53-0d5ad4b7f001";
 const earlierId = "0d01e667-d128-4bb7-a248-1ae21db72f4f";
 const scope = { userId: "user-1", workspaceId: "personal:workspace" };
+const request = Object.assign(
+  { content: "нарисуй открытку на день рождения", role: "user" as const },
+  { kind: "user" }
+);
 
 beforeEach(() => {
   vi.resetModules();
@@ -122,8 +126,89 @@ describe("generate_image", () => {
     expect(await resolve(dynamicContext([]))).toBeNull();
   });
 
+  it("is offered only when the person asked for a picture or sent a photo", async () => {
+    // After an SMS code a model drew «a cute robot waiting» nobody asked for.
+    expect(
+      await resolve(dynamicContext([personText("код от госуслуг: 123456")]))
+    ).toBeNull();
+    // A browser report mentions the images a run saved; it is not a request.
+    expect(
+      await resolve(
+        dynamicContext(
+          [personText("Browser run finished. Images this run saved.")],
+          "browser-result"
+        )
+      )
+    ).toBeNull();
+    expect(
+      await resolve(
+        dynamicContext([
+          request,
+          personText("task finished", "execution.background_task"),
+        ])
+      )
+    ).toBeNull();
+
+    expect(await resolve(dynamicContext([request]))).not.toBeNull();
+    expect(
+      await resolve(
+        dynamicContext([
+          photoMessage("", Buffer.from(dogPhoto).toString("base64")),
+        ])
+      )
+    ).not.toBeNull();
+  });
+
+  it("stays offered for an edit right after a picture, and only then", async () => {
+    const drawn = [
+      request,
+      {
+        content: [
+          {
+            input: { prompt: "A birthday card" },
+            toolCallId: "call-0",
+            toolName: "generate_image",
+            type: "tool-call" as const,
+          },
+        ],
+        role: "assistant" as const,
+      },
+    ];
+
+    expect(
+      await resolve(dynamicContext([...drawn, personText("а можно ярче?")]))
+    ).not.toBeNull();
+    expect(
+      await resolve(
+        dynamicContext([
+          ...drawn,
+          personText("спасибо"),
+          personText("что у меня завтра?"),
+          personText("а погода?"),
+        ])
+      )
+    ).toBeNull();
+  });
+
+  it.each([
+    ["сделай открытку маме на др", true],
+    ["нарисуй кота в шляпе", true],
+    ["хочу мем про понедельник", true],
+    ["draw me a cat", true],
+    ["make a birthday card for Sam", true],
+    ["напиши Борису, что я опоздаю", false],
+    ["не хочу плакать", false],
+    ["imagine a world without memes", true],
+    ["imagine a quiet evening", false],
+    ["закажи рисовую кашу", false],
+  ])("reads «%s» as a picture request: %s", async (text, expected) => {
+    const { pictureRequested } =
+      await import("@agent/lib/image-artifact/generation");
+    expect(pictureRequested([personText(text)])).toBe(expected);
+  });
+
   it("tells the model when there are no photos to draw from", async () => {
-    const tool = await resolveTool(dynamicContext([]));
+    const tool = await resolveTool(dynamicContext([request]));
 
     expect(tool.description).toContain(
       "The person has sent no photos in this conversation."
@@ -262,7 +347,7 @@ describe("generate_image", () => {
       storagePathname: "generated-images/user-1/earlier",
     });
     mocks.get.mockResolvedValue(blobResult(earlierPicture, "image/png"));
-    const tool = await resolveTool(dynamicContext([]));
+    const tool = await resolveTool(dynamicContext([request]));
 
     await execute(tool, {
       images: [`![картинка](/artifacts/${earlierId})`],
@@ -298,7 +383,7 @@ describe("generate_image", () => {
       storagePathname: "generated-images/user-1/drawn",
       workspaceId: scope.workspaceId,
     });
-    const tool = await resolveTool(dynamicContext([]));
+    const tool = await resolveTool(dynamicContext([request]));
 
     const result = await execute(tool, { prompt: "A cake" });
 
@@ -312,7 +397,7 @@ describe("generate_image", () => {
       allowed: false,
       note: "Лимит картинок на этот месяц исчерпан.",
     });
-    const tool = await resolveTool(dynamicContext([]));
+    const tool = await resolveTool(dynamicContext([request]));
 
     const result = await execute(tool, { prompt: "A cake" });
 
@@ -326,7 +411,7 @@ describe("generate_image", () => {
   });
 
   it("fails with a reason the model can act on", async () => {
-    const tool = await resolveTool(dynamicContext([]));
+    const tool = await resolveTool(dynamicContext([request]));
 
     await expect(
       execute(tool, { photos: [1], prompt: "The dog" })
@@ -383,6 +468,11 @@ async function execute(
     throw new Error("generate_image returns one result, not a stream.");
   }
   return result;
+}
+
+function personText(text: string, kind = "user") {
+  // eve adds `kind` to every user-role message it keeps in history.
+  return Object.assign({ content: text, role: "user" as const }, { kind });
 }
 
 function photoMessage(caption: string, data: string | URL) {

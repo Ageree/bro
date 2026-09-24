@@ -3,7 +3,8 @@ import { scheduledRunIdentity } from "@agent/lib/schedules/identity";
 import { isScheduledAgentRunLeaseActive } from "@db/services/scheduled-agent-run-leases";
 import { getFormOfAddress, getWorkspaceModelId } from "@db/services/settings";
 import { personLanguage, replyDirective } from "@agent/lib/delivery/language";
-import { awaitsDelivery } from "@agent/lib/delivery/pending";
+import { turnAskedQuestion } from "@agent/lib/delivery/questions";
+import { awaitsDelivery, turnDelivered } from "@agent/lib/delivery/pending";
 import { turnMustEnd, turnSends } from "@agent/lib/delivery/turn-sends";
 import { readsMustEnd } from "@agent/lib/google-workspace/turn-reads";
 import { resolveModeValue } from "@agent/lib/mode";
@@ -69,6 +70,10 @@ export default defineAgent({
           writesToPerson ? getFormOfAddress(scope) : undefined,
         ]);
         return modelSelection(modelId, {
+          // After the reply, a step with nothing to add may come back empty
+          // (gpt-6-luna does it almost every time); it ends the turn rather
+          // than failing a turn the person already has the answer to.
+          delivered: turnDelivered(ctx.messages),
           replyNote: formOfAddress
             ? replyDirective({
                 // Once the reply is out, the note must not read as a new
@@ -84,6 +89,12 @@ export default defineAgent({
               : requireToolCall
                 ? "required"
                 : "auto",
+          // One question per request, then Bro acts on the answer: a second
+          // `ask_question` in the same turn is how a helper becomes an
+          // interrogation. Approval cards stay, each is its action's consent.
+          withheldTools: turnAskedQuestion(ctx.messages)
+            ? ["ask_question"]
+            : [],
         });
       },
     },

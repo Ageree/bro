@@ -194,4 +194,26 @@ export default [
       }
     },
   }),
+  /**
+   * In the benchmark a voice note with three plain requests got back
+   * «Какие действия выполнить?» with the three as options: everything was
+   * already said, and each action that needs consent brings its own card.
+   */
+  defineEval({
+    description:
+      "Acts on every explicit request in one voice note instead of asking which to do",
+    tags: [...agentEvalTags, "autonomy"],
+    async test(t) {
+      let turn: EveEvalTurn | undefined;
+      try {
+        turn = await t.send(
+          "[голосовое] слушай, короче, запиши меня завтра в барбершоп на профсоюзной, к артуру, часов на семь. и напомни в восемь маме позвонить, у неё днюха. а, и в пятницу созвон с петровым в 15:30, поставь"
+        );
+        turn.expectOk();
+        checkNoQuestionBeforeCard(t, turn);
+      } finally {
+        await cancelStartedRuns(turn);
+      }
+    },
+  }),
 ];
