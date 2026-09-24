@@ -33,6 +33,7 @@ describe("source layout", () => {
       "browser",
       "calendar",
       "chat",
+      "composio",
       "environment",
       "google-workspace",
       "identity",

@@ -2,6 +2,7 @@ import { defineDynamic, defineTool } from "eve/tools";
 import { z } from "zod";
 import { searchGoogleContacts } from "@agent/lib/google-workspace/contacts";
 import { resolveModeValue } from "@agent/lib/mode";
+import { googleWorkspaceConfigured } from "@shared/google-workspace/connection";
 
 export const contactsSearch = defineTool({
   description:
@@ -18,9 +19,11 @@ export const contactsSearch = defineTool({
 export default defineDynamic({
   events: {
     "turn.started": (_event, context) =>
-      resolveModeValue(context, {
-        interactive: { "contacts-search": contactsSearch },
-        "scheduled-worker": { "contacts-search": contactsSearch },
-      }),
+      googleWorkspaceConfigured()
+        ? resolveModeValue(context, {
+            interactive: { "contacts-search": contactsSearch },
+            "scheduled-worker": { "contacts-search": contactsSearch },
+          })
+        : null,
   },
 });

@@ -4,6 +4,13 @@ const testEnvironment = {
   BETTER_AUTH_SECRET: "test-auth-secret-0123456789abcdefghijklmnop",
   BETTER_AUTH_URL: "https://example.com",
   BLOB_READ_WRITE_TOKEN: "vercel_blob_rw_test",
+  // A fake project: tests reach Composio only through a stubbed fetch, and a
+  // real key in the host shell must never be the one they send.
+  COMPOSIO_API_KEY: "test-composio-key",
+  COMPOSIO_GOOGLE_AUTH_CONFIG_ID: "ac_google_full",
+  COMPOSIO_GOOGLE_READ_ONLY_AUTH_CONFIG_ID: "ac_google_read_only",
+  COMPOSIO_NOTION_AUTH_CONFIG_ID: "ac_notion",
+  COMPOSIO_SLACK_AUTH_CONFIG_ID: "ac_slack",
   DATABASE_URL: "postgresql://user:password@example.com/database",
   SECRET_ENCRYPTION_KEY: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
 };

@@ -25,6 +25,11 @@ import { listSpendEntries, readSpendLimit } from "@db/services/spending";
 import { readUserProfile } from "@db/services/user-profile";
 import { listVaultItems } from "@db/services/vault";
 import { yooKassaConfigured } from "@db/services/yookassa";
+import { cabinetAppSchema, connectedAppNames } from "@shared/composio/catalog";
+import {
+  connectedAppConfigured,
+  readConnectedApp,
+} from "@shared/composio/connected-apps";
 import { env } from "@shared/environment";
 import {
   type GoogleWorkspaceConnection,
@@ -37,6 +42,7 @@ import { photonConfigured } from "@shared/photon/credentials";
 import { localMonthKey } from "@shared/calendar/local-period";
 import { resolveTimeZone } from "@shared/user-profile/schema";
 import { requireRequestScope } from "@web/auth/request-scope";
+import { ConnectedAppAction } from "./_components/connected-app-action";
 import { GoogleWorkspaceAction } from "./_components/google-workspace-action";
 import { ModelSelector } from "./_components/model-selector";
 import { SpendLimitSection } from "./_components/spend-limit-section";
@@ -69,7 +75,10 @@ const vaultKindLabels: Partial<Record<VaultPreviewItem["kind"], string>> = {
 };
 
 export default async function Page({ searchParams }: PageProps<"/workspace">) {
-  const google = (await searchParams).google;
+  const { google, status } = await searchParams;
+  const shownApps = cabinetAppSchema.options.filter((app) =>
+    connectedAppConfigured(app)
+  );
   const requestHeaders = await headers();
   const scope = await requireRequestScope();
   const telegramConfigured = telegramLinkConfigured();
@@ -82,6 +91,7 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
     profile,
     vaultItems,
     spendLimit,
+    appConnections,
   ] = await Promise.all([
     getAuthSession(requestHeaders),
     getGoogleWorkspaceAccess(scope).then(async (access) =>
@@ -93,6 +103,12 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
     readUserProfile(scope),
     listVaultItems(scope),
     readSpendLimit(scope),
+    Promise.all(
+      shownApps.map(async (app) => ({
+        app,
+        connection: await readConnectedApp(app, scope.userId),
+      }))
+    ),
   ]);
   if (google === "connected" && googleWorkspace.state === "connected") {
     // Connect sends the person back here after consent. Bro's own mail and
@@ -147,9 +163,12 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
 
       {google === "unavailable" ? (
         <Flash>
-          Google Workspace недоступен: на этом деплое ещё нет рабочего
-          коннектора Google OAuth.
+          Google недоступен: подключение Google на этом деплое не настроено или
+          сейчас не отвечает.
         </Flash>
+      ) : null}
+      {status === "failed" ? (
+        <Flash>Подключение не завершилось. Попробуй ещё раз.</Flash>
       ) : null}
       {google === "disconnected" ? (
         <Flash>Google отключён. {googleWorkspaceDisconnectNotice}</Flash>
@@ -180,6 +199,23 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
               {googleWorkspaceDescription(googleWorkspace)}
             </p>
           </Row>
+          {appConnections.map(({ app, connection }) => (
+            <Row
+              key={app}
+              side={
+                <ConnectedAppAction
+                  app={app}
+                  name={connectedAppNames[app]}
+                  state={connection.state}
+                />
+              }
+            >
+              <p>{connectedAppNames[app]}</p>
+              <p className="type-status text-muted-foreground">
+                {connectedAppDescription(app, connection)}
+              </p>
+            </Row>
+          ))}
           {telegramConfigured ? (
             <Row
               side={
@@ -239,16 +275,41 @@ function telegramLinkedAs(username: string | null) {
 function googleWorkspaceDescription(connection: GoogleWorkspaceConnection) {
   const state = connection.state;
   if (state === "connected") {
-    const account = connection.accountLabel ?? "Gmail, Календарь и Контакты";
+    const account =
+      connection.accountLabel ?? "Gmail, Календарь, Контакты и Диск";
     return connection.access === "read_only"
-      ? `${account} · только чтение: Бро читает почту, календарь и контакты, но ничего не отправляет и не меняет.`
+      ? `${account} · только чтение: Бро читает почту, календарь, контакты и Диск, но ничего не отправляет и не меняет.`
       : `${account} · полный доступ: письма уходят только после твоего подтверждения, черновики и разбор входящих — без него.`;
   }
   return state === "unavailable"
-    ? "Подключи коннектор Google OAuth через Vercel Connect, чтобы включить."
+    ? "Подключение Google на этом деплое не настроено: нужен Composio."
     : state === "error"
       ? "Google не отвечает, попробуй позже."
-      : "Gmail, Календарь и Контакты через твой аккаунт Google. «Только чтение» не даёт Бро ничего отправлять и менять. Отключить можно в любой момент.";
+      : "Gmail, Календарь, Контакты, Диск и Таблицы через твой аккаунт Google. «Только чтение» не даёт Бро ничего отправлять и менять; экран Google всё равно покажет полный список разрешений, запрет на запись держит сам Бро. Отключить можно в любой момент.";
+}
+
+const connectedAppPurposes = {
+  notion: "Бро ставит задачи и читает страницы в твоём Notion.",
+  slack:
+    "Бро читает каналы и личные сообщения и пишет от твоего имени — только после твоего подтверждения.",
+} as const satisfies Record<(typeof cabinetAppSchema.options)[number], string>;
+
+function connectedAppDescription(
+  app: (typeof cabinetAppSchema.options)[number],
+  connection: Awaited<ReturnType<typeof readConnectedApp>>
+) {
+  if (connection.state === "connected") {
+    return [connection.accountLabel, connectedAppPurposes[app]]
+      .filter((part) => part !== null)
+      .join(" · ");
+  }
+  if (connection.state === "unavailable") {
+    return `Подключение ${connectedAppNames[app]} на этом деплое не настроено.`;
+  }
+  if (connection.state === "error") {
+    return `${connectedAppNames[app]} не отвечает, попробуй позже.`;
+  }
+  return `Не подключён. ${connectedAppPurposes[app]} Отключить можно в любой момент.`;
 }
 
 /** The lead actions under the title: text, like on the landing. */

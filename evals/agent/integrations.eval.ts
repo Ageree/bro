@@ -1,10 +1,10 @@
 import { defineEval, type EveEvalContext } from "eve/evals";
 import { equals, satisfies } from "eve/evals/expect";
 import { z } from "zod";
-import { connectedAppConfigured } from "@agent/lib/connected-apps/auth";
 import { connectAppResultSchema } from "@agent/tools/connect_app";
 import { agentEvalTags } from "@evals/agent/shared";
 import { sendMessageOutputSchema } from "@shared/chat/message-delivery";
+import { connectedAppConfigured } from "@shared/composio/connected-apps";
 
 const approvalTools = [
   "calendar-create-event",
@@ -52,13 +52,12 @@ export default [
       "Puts a Notion task, a calendar block, and a Slack message up for approval together",
     tags: [...agentEvalTags, "integrations", "approval"],
     async test(t) {
-      // The Notion and Slack tools exist only with their connectors.
-      const configured = await Promise.all([
-        connectedAppConfigured("notion"),
-        connectedAppConfigured("slack"),
-      ]);
-      if (!configured.every(Boolean)) {
-        t.skip("This target has no Notion or Slack connector.");
+      // The Notion and Slack tools exist only where Composio can connect them.
+      if (
+        !connectedAppConfigured("notion") ||
+        !connectedAppConfigured("slack")
+      ) {
+        t.skip("This target cannot connect Notion and Slack through Composio.");
       }
       const turn = await t.send(
         "Add 'Q3 planning' to my Notion tasks, put a 30-minute block on Thursday afternoon for it, and Slack Sam that it's on."

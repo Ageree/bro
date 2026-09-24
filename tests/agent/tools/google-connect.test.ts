@@ -1,40 +1,17 @@
 import type { DynamicResolveContext, ToolContext } from "eve/tools";
-import type * as ConnectModule from "@vercel/connect";
-import type {
-  getTokenResponse,
-  revokeToken,
-  startAuthorization,
-} from "@vercel/connect";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { wakeProactiveWatch } from "@db/services/proactive";
 import type {
   getGoogleWorkspaceAccess,
   selectGoogleWorkspaceAccess,
 } from "@db/services/settings";
-import { env } from "@shared/environment";
-import {
-  googleWorkspaceDisconnectNotice,
-  googleWorkspaceSubject,
-  googleWorkspaceTokenParams,
-} from "@shared/google-workspace/connection";
+import { googleWorkspaceDisconnectNotice } from "@shared/google-workspace/connection";
 import { accessScopeForUser } from "@shared/identity/access-scope";
-
-const connect = vi.hoisted(() => ({
-  getTokenResponse: vi.fn<typeof getTokenResponse>(),
-  revokeToken: vi.fn<typeof revokeToken>(),
-  startAuthorization: vi.fn<typeof startAuthorization>(),
-}));
+import { type FakeComposio, fakeComposio } from "@tests/helpers/composio";
 
 const settings = vi.hoisted(() => ({
   access: vi.fn<typeof getGoogleWorkspaceAccess>(),
   select: vi.fn<typeof selectGoogleWorkspaceAccess>(),
-}));
-
-vi.mock("@vercel/connect", async (importOriginal) => ({
-  ...(await importOriginal<typeof ConnectModule>()),
-  getTokenResponse: connect.getTokenResponse,
-  revokeToken: connect.revokeToken,
-  startAuthorization: connect.startAuthorization,
 }));
 
 const proactive = vi.hoisted(() => ({
@@ -49,26 +26,9 @@ vi.mock("@db/services/proactive", () => ({
   wakeProactiveWatch: proactive.wake,
 }));
 
-import {
-  ConnectError,
-  NoValidTokenError,
-  UserAuthorizationRequiredError,
-} from "@vercel/connect";
 import googleConnect, { connectGoogle } from "@agent/tools/google_connect";
 
 const scope = accessScopeForUser("better-auth:user-1");
-
-const grantedToken = {
-  connector: { id: "cn_1", type: "oauth", uid: env.GOOGLE_CONNECTOR_UID },
-  expiresAt: Date.now() + 3_600_000,
-  token: "ya29.token",
-};
-
-const authorization = {
-  request: "req_1",
-  url: "https://accounts.google.com/o/oauth2/v2/auth?state=abc",
-  verifier: "ver_1",
-};
 
 describe("connect_google exposure", () => {
   it.each(["channel:photon", "channel:telegram"])(
@@ -101,28 +61,49 @@ describe("connect_google exposure", () => {
 
 const connectInput = { action: "connect" } as const;
 
+let composio: FakeComposio;
+
+/** Link requests the fake Composio received, oldest first. */
+function linkRequests() {
+  return composio.requests
+    .filter(({ path }) => path === "/connected_accounts/link")
+    .map(({ body }) => body);
+}
+
+function revokes() {
+  return composio.requests.filter(({ path }) => path.endsWith("/revoke"));
+}
+
+/** Makes the fake Composio fail every Connect Link request with a 502. */
+function failLinks() {
+  const route = composio.fetch.getMockImplementation();
+  composio.fetch.mockImplementation(async (input, init) => {
+    const url = input instanceof Request ? input.url : input.toString();
+    if (url.endsWith("/connected_accounts/link")) {
+      return Response.json({ error: { message: "down" } }, { status: 502 });
+    }
+    if (!route) throw new Error("The fake Composio has no route.");
+    return route(input, init);
+  });
+}
+
 describe("connect_google execution", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    composio = fakeComposio();
     settings.access.mockResolvedValue("full");
     settings.select.mockResolvedValue(undefined);
     proactive.wake.mockResolvedValue(false);
-    connect.revokeToken.mockResolvedValue(undefined);
-    // The connection read asks Google's tokeninfo whether the grant is offline.
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => Response.json({ access_type: "offline" }))
-    );
   });
 
   afterEach(() => {
-    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
   });
 
   it("reports the connected Google account without minting a link", async () => {
-    connect.getTokenResponse.mockResolvedValue({
-      ...grantedToken,
-      name: "ada@example.com",
+    composio.connect({
+      displayName: "ada@example.com",
+      toolkit: "googlesuper",
     });
 
     await expect(
@@ -132,22 +113,12 @@ describe("connect_google execution", () => {
       account: "ada@example.com",
       status: "connected",
     });
-    expect(connect.getTokenResponse).toHaveBeenCalledExactlyOnceWith(
-      env.GOOGLE_CONNECTOR_UID,
-      googleWorkspaceTokenParams(scope.userId, "full"),
-      { forceRefresh: true }
-    );
-    expect(connect.startAuthorization).not.toHaveBeenCalled();
+    expect(linkRequests()).toEqual([]);
     // Bro's own checks, parked on the missing grant, resume right away.
     expect(proactive.wake).toHaveBeenCalledExactlyOnceWith(scope);
   });
 
   it("mints an authorization link that returns to the workspace page", async () => {
-    connect.getTokenResponse.mockRejectedValue(
-      new UserAuthorizationRequiredError("authorize first")
-    );
-    connect.startAuthorization.mockResolvedValue(authorization);
-
     await expect(
       connectGoogle.execute(connectInput, toolContext())
     ).resolves.toEqual({
@@ -155,27 +126,25 @@ describe("connect_google execution", () => {
       expiresInMinutes: 10,
       previousGrantRevoked: false,
       status: "authorize",
-      url: authorization.url,
+      url: "https://connect.composio.dev/link/lk_1",
     });
-    expect(connect.revokeToken).not.toHaveBeenCalled();
+    expect(revokes()).toEqual([]);
     expect(settings.select).not.toHaveBeenCalled();
-    expect(connect.startAuthorization).toHaveBeenCalledExactlyOnceWith(
-      env.GOOGLE_CONNECTOR_UID,
+    expect(linkRequests()).toEqual([
       {
-        ...googleWorkspaceTokenParams(scope.userId, "full"),
-        additionalParams: { access_type: "offline" },
+        auth_config_id: "ac_google_full",
+        callback_url: "https://example.com/workspace?google=connected",
+        user_id: scope.userId,
       },
-      {
-        callbackUrl: "https://example.com/workspace?google=connected",
-        expiresInMs: 10 * 60_000,
-        prompt: "consent",
-      }
-    );
+    ]);
   });
 
-  it("reports a read-only grant at its level", async () => {
+  it("reports a read-only account at its level", async () => {
     settings.access.mockResolvedValue("read_only");
-    connect.getTokenResponse.mockResolvedValue(grantedToken);
+    composio.connect({
+      authConfigId: "ac_google_read_only",
+      toolkit: "googlesuper",
+    });
 
     await expect(
       connectGoogle.execute(connectInput, toolContext())
@@ -184,19 +153,9 @@ describe("connect_google execution", () => {
       account: null,
       status: "connected",
     });
-    expect(connect.getTokenResponse).toHaveBeenCalledExactlyOnceWith(
-      env.GOOGLE_CONNECTOR_UID,
-      googleWorkspaceTokenParams(scope.userId, "read_only"),
-      { forceRefresh: true }
-    );
   });
 
-  it("connects read-only when asked, storing the level before OAuth", async () => {
-    connect.getTokenResponse.mockRejectedValue(
-      new UserAuthorizationRequiredError("authorize first")
-    );
-    connect.startAuthorization.mockResolvedValue(authorization);
-
+  it("connects read-only when asked, storing the level before the link", async () => {
     await expect(
       connectGoogle.execute(
         { access: "read_only", action: "connect" },
@@ -207,45 +166,39 @@ describe("connect_google execution", () => {
       previousGrantRevoked: false,
       status: "authorize",
     });
-    expect(connect.revokeToken).not.toHaveBeenCalled();
+    expect(revokes()).toEqual([]);
     expect(settings.select).toHaveBeenCalledExactlyOnceWith(scope, "read_only");
-    expect(connect.startAuthorization).toHaveBeenCalledExactlyOnceWith(
-      env.GOOGLE_CONNECTOR_UID,
-      expect.objectContaining(
-        googleWorkspaceTokenParams(scope.userId, "read_only")
-      ),
-      expect.anything()
-    );
+    expect(linkRequests()).toEqual([
+      expect.objectContaining({ auth_config_id: "ac_google_read_only" }),
+    ]);
   });
 
-  it("revokes a full grant before re-authorizing read-only", async () => {
-    connect.getTokenResponse.mockResolvedValue(grantedToken);
-    connect.startAuthorization.mockResolvedValue(authorization);
+  it("revokes a full account before connecting read-only", async () => {
+    composio.connect({ id: "ca_full", toolkit: "googlesuper" });
 
     await expect(
       connectGoogle.execute(
         { access: "read_only", action: "connect" },
         toolContext()
       )
-    ).resolves.toEqual({
+    ).resolves.toMatchObject({
       access: "read_only",
-      expiresInMinutes: 10,
       previousGrantRevoked: true,
       status: "authorize",
-      url: authorization.url,
     });
-    expect(connect.revokeToken).toHaveBeenCalledExactlyOnceWith(
-      env.GOOGLE_CONNECTOR_UID,
-      { subject: googleWorkspaceSubject(scope.userId) }
-    );
     expect(settings.select).toHaveBeenCalledExactlyOnceWith(scope, "read_only");
-    expect(connect.revokeToken.mock.invocationCallOrder[0]).toBeLessThan(
-      connect.startAuthorization.mock.invocationCallOrder[0] ?? 0
-    );
+    const writes = composio.requests
+      .filter(({ method }) => method !== "GET")
+      .map(({ method, path }) => `${method} ${path}`);
+    expect(writes).toEqual([
+      "POST /connected_accounts/ca_full/revoke",
+      "DELETE /connected_accounts/ca_full",
+      "POST /connected_accounts/link",
+    ]);
   });
 
-  it("keeps a grant already at the asked level", async () => {
-    connect.getTokenResponse.mockResolvedValue(grantedToken);
+  it("keeps an account already at the asked level", async () => {
+    composio.connect({ toolkit: "googlesuper" });
 
     await expect(
       connectGoogle.execute(
@@ -253,22 +206,21 @@ describe("connect_google execution", () => {
         toolContext()
       )
     ).resolves.toMatchObject({ access: "full", status: "connected" });
-    expect(connect.revokeToken).not.toHaveBeenCalled();
-    expect(connect.startAuthorization).not.toHaveBeenCalled();
+    expect(revokes()).toEqual([]);
+    expect(linkRequests()).toEqual([]);
   });
 
-  it("disconnects by revoking the grant and says what Bro keeps", async () => {
+  it("disconnects by revoking the account and says what Bro keeps", async () => {
+    composio.connect({ id: "ca_full", toolkit: "googlesuper" });
+
     await expect(
       connectGoogle.execute({ action: "disconnect" }, toolContext())
     ).resolves.toEqual({
       notice: googleWorkspaceDisconnectNotice,
       status: "disconnected",
     });
-    expect(connect.revokeToken).toHaveBeenCalledExactlyOnceWith(
-      env.GOOGLE_CONNECTOR_UID,
-      { subject: googleWorkspaceSubject(scope.userId) }
-    );
-    expect(connect.getTokenResponse).not.toHaveBeenCalled();
+    expect(composio.accounts).toEqual([]);
+    expect(revokes()).toHaveLength(1);
     expect(googleWorkspaceDisconnectNotice).toMatch(/память/u);
     expect(googleWorkspaceDisconnectNotice).toMatch(/заказы/u);
   });
@@ -296,57 +248,46 @@ describe("connect_google execution", () => {
     expect(settings.access).toHaveBeenCalledWith(scope);
   });
 
-  it("says Google is disconnected when the old grant is revoked but no link comes", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    connect.getTokenResponse.mockResolvedValue(grantedToken);
-    connect.startAuthorization.mockRejectedValue(
-      new ConnectError("bad gateway", { status: 502 })
-    );
+  it("says Google is disconnected when the old account is revoked but no link comes", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    composio.connect({ toolkit: "googlesuper" });
+    failLinks();
 
     const result = await connectGoogle.execute(
       { access: "read_only", action: "connect" },
       toolContext()
     );
 
-    expect(connect.revokeToken).toHaveBeenCalledOnce();
+    expect(revokes()).toHaveLength(1);
     expect(result).toMatchObject({ status: "error" });
     expect(result).toHaveProperty(
       "detail",
       expect.stringMatching(/уже отозван.*Google отключён/u)
     );
-    warn.mockRestore();
   });
 
-  it("treats a missing token like a revoked grant", async () => {
-    connect.getTokenResponse.mockRejectedValue(
-      new NoValidTokenError("no token")
-    );
-    connect.startAuthorization.mockResolvedValue(authorization);
-
-    await expect(
-      connectGoogle.execute(connectInput, toolContext())
-    ).resolves.toMatchObject({ status: "authorize", url: authorization.url });
-  });
-
-  it("says Google is not configured instead of throwing", async () => {
-    connect.getTokenResponse.mockRejectedValue(
-      new Error("connector google/open-instinct is not attached")
+  it("says Google is not configured when Composio refuses the setup", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    composio.fetch.mockResolvedValue(
+      Response.json(
+        { error: { message: "Invalid API key", slug: "APIKey_InvalidAPIKey" } },
+        { status: 401 }
+      )
     );
 
     await expect(
       connectGoogle.execute(connectInput, toolContext())
     ).resolves.toEqual({
       detail:
-        "Google на этом деплое не подключён: нужно прикрепить Google OAuth-коннектор в Vercel.",
+        "Google на этом деплое не настроен: Composio не принял настройки подключения Google.",
       status: "not_configured",
     });
-    expect(connect.startAuthorization).not.toHaveBeenCalled();
   });
 
-  it("asks for a retry when Vercel Connect is down instead of calling Google unconfigured", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    connect.getTokenResponse.mockRejectedValue(
-      new ConnectError("bad gateway", { status: 502 })
+  it("asks for a retry when Composio is down instead of calling Google unconfigured", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    composio.fetch.mockResolvedValue(
+      Response.json({ error: { message: "down" } }, { status: 502 })
     );
 
     await expect(
@@ -355,18 +296,12 @@ describe("connect_google execution", () => {
       detail: "Google сейчас не отвечает, попробуй через минуту.",
       status: "error",
     });
-    expect(connect.startAuthorization).not.toHaveBeenCalled();
-    warn.mockRestore();
+    expect(linkRequests()).toEqual([]);
   });
 
   it("asks for a retry when minting the link fails instead of throwing", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    connect.getTokenResponse.mockRejectedValue(
-      new UserAuthorizationRequiredError("authorize first")
-    );
-    connect.startAuthorization.mockRejectedValue(
-      new ConnectError("bad gateway", { status: 502 })
-    );
+    failLinks();
 
     await expect(
       connectGoogle.execute(connectInput, toolContext())
@@ -374,9 +309,7 @@ describe("connect_google execution", () => {
       detail: "Google сейчас не отвечает, попробуй через минуту.",
       status: "error",
     });
-    expect(connect.startAuthorization).toHaveBeenCalledOnce();
     expect(warn).toHaveBeenCalledOnce();
-    warn.mockRestore();
   });
 
   it("requires an authenticated user", async () => {
@@ -391,7 +324,7 @@ describe("connect_google execution", () => {
         })
       )
     ).rejects.toThrow("An authenticated user is required to connect Google.");
-    expect(connect.getTokenResponse).not.toHaveBeenCalled();
+    expect(composio.requests).toEqual([]);
   });
 });
 

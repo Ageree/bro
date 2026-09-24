@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as Chats from "@db/services/chats";
 import * as Settings from "@db/services/settings";
+import * as ConnectedApps from "@shared/composio/connected-apps";
 import * as GoogleWorkspace from "@shared/google-workspace/connection";
 import type { AccessScope } from "@shared/identity/access-scope";
 import { appRouter } from "./router";
@@ -24,6 +25,10 @@ const revokeGoogleMock = vi.spyOn(
   GoogleWorkspace,
   "revokeGoogleWorkspaceGrant"
 );
+
+const readAppMock = vi.spyOn(ConnectedApps, "readConnectedApp");
+const startAppMock = vi.spyOn(ConnectedApps, "startConnectedAppAuthorization");
+const disconnectAppMock = vi.spyOn(ConnectedApps, "disconnectConnectedApp");
 
 const scope = {
   userId: "user-1",
@@ -128,5 +133,60 @@ describe("appRouter", () => {
         .googleWorkspace.update({ action: "disconnect" })
     ).resolves.toEqual({ redirectTo: "/workspace?google=disconnected" });
     expect(revokeGoogleMock).toHaveBeenCalledExactlyOnceWith(scope.userId);
+  });
+
+  it("starts connecting Notion when no account exists", async () => {
+    readAppMock.mockResolvedValue({
+      accountLabel: null,
+      state: "disconnected",
+    });
+    startAppMock.mockResolvedValue("https://connect.composio.dev/link/lk_1");
+
+    await expect(
+      appRouter
+        .createCaller({ origin: "https://example.com", scope })
+        .connectedApps.update({ action: "connect", app: "notion" })
+    ).resolves.toEqual({
+      redirectTo: "https://connect.composio.dev/link/lk_1",
+    });
+    expect(startAppMock).toHaveBeenCalledExactlyOnceWith(
+      "notion",
+      scope.userId,
+      "https://example.com/workspace?app=notion"
+    );
+  });
+
+  it("refuses to connect an app over a live account", async () => {
+    readAppMock.mockResolvedValue({ accountLabel: "Ada", state: "connected" });
+
+    await expect(
+      appRouter
+        .createCaller({ origin: "https://example.com", scope })
+        .connectedApps.update({ action: "connect", app: "slack" })
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(startAppMock).not.toHaveBeenCalled();
+  });
+
+  it("disconnects an app for the signed-in person", async () => {
+    disconnectAppMock.mockResolvedValue(undefined);
+
+    await expect(
+      appRouter
+        .createCaller({ origin: "https://example.com", scope })
+        .connectedApps.update({ action: "disconnect", app: "slack" })
+    ).resolves.toEqual({ redirectTo: "/workspace" });
+    expect(disconnectAppMock).toHaveBeenCalledExactlyOnceWith(
+      "slack",
+      scope.userId
+    );
+  });
+
+  it("offers only the cabinet's apps", async () => {
+    await expect(
+      appRouter
+        .createCaller({ origin: "https://example.com", scope })
+        // @ts-expect-error -- Todoist connects in chat, not from the cabinet.
+        .connectedApps.update({ action: "connect", app: "todoist" })
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 });

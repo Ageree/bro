@@ -30,6 +30,7 @@ vi.mock("@vercel/blob", async (importOriginal) => ({
   put: mocks.put,
 }));
 
+import { GoogleApiError } from "@agent/lib/google-workspace/client";
 import { gmailAttachment } from "@agent/tools/gmail";
 
 const artifactId = "0d01e667-d128-4bb7-a248-1ae21db72f4f";
@@ -169,7 +170,7 @@ describe("gmail-attachment", () => {
     mocks.read
       .mockResolvedValueOnce({ kind: "oversize" })
       .mockResolvedValueOnce({ kind: "missing" })
-      .mockRejectedValueOnce({ response: { status: 404 } })
+      .mockRejectedValueOnce(new GoogleApiError(404, undefined))
       .mockResolvedValueOnce({
         bytes: jpeg,
         filename: "beach.jpg",
@@ -197,14 +198,14 @@ describe("gmail-attachment", () => {
   });
 
   it("lets an authorization failure fail the call", async () => {
-    mocks.read.mockRejectedValue({ response: { status: 401 } });
+    mocks.read.mockRejectedValue(new GoogleApiError(401, undefined));
 
     await expect(
       gmailAttachment.execute(
         { attachments: [{ messageId: "message-1", partId: "1" }] },
         toolContext()
       )
-    ).rejects.toEqual({ response: { status: 401 } });
+    ).rejects.toMatchObject({ status: 401 });
   });
 
   it("refuses a call without an authenticated user", async () => {
