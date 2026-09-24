@@ -59,6 +59,29 @@ describe("awaitsDelivery", () => {
     ).toBe(false);
   });
 
+  it.each(["Скажи, сколько будет 2+2", "Посчитай чаевые с 3 400"])(
+    "keeps waiting after only a reaction to «%s» (review #5)",
+    (text) => {
+      expect(
+        awaitsDelivery([
+          userMessage(text),
+          toolCall("react_to_message"),
+          toolResult("react_to_message", { type: "text", value: "submitted" }),
+        ])
+      ).toBe(true);
+    }
+  );
+
+  it("lets a reaction answer a plain thank-you", () => {
+    expect(
+      awaitsDelivery([
+        userMessage("спасибо, супер!"),
+        toolCall("react_to_message"),
+        toolResult("react_to_message", { type: "text", value: "submitted" }),
+      ])
+    ).toBe(false);
+  });
+
   it.each(["error-text", "execution-denied"] as const)(
     "keeps waiting after a send_message that ended in %s",
     (type) => {

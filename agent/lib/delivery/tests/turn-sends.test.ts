@@ -343,6 +343,102 @@ describe("sendRefusal in a browser report's turn", () => {
     ).toBeUndefined();
   });
 
+  it.each([
+    ["a heading", "Вот что нашёл:"],
+    ["a question on its own", "Какой вариант берём?"],
+    ["a status", "Секунду, смотрю, что нашёл браузер."],
+  ])(
+    "delivers the result after %s sent before it (review #0)",
+    (_case, first) => {
+      const opened = [report, ...sendMessage("first", first)];
+
+      expect(
+        refusal(opened, "Сапсан 18:40 за 5 200 ₽ и Ласточка 19:10 за 3 100 ₽.")
+      ).toBeUndefined();
+    }
+  );
+
+  it("returns a first message that only announces the result", () => {
+    expect(refusal([report], "Секунду, смотрю, что нашёл браузер.")).toEqual({
+      rewrite: "report",
+    });
+    // An announcement carrying the result is the result.
+    expect(
+      refusal([report], "Нашёл: Сапсан 18:40 за 5 200 ₽, пришлю ссылку.")
+    ).toBeUndefined();
+  });
+
+  it.each([
+    [
+      "ran out of credits",
+      { type: "json" as const, value: { status: "unavailable" } },
+    ],
+    [
+      "was refused",
+      { type: "json" as const, value: { status: "needs_approval" } },
+    ],
+    ["failed", { type: "error-text" as const, value: "Browser Use 500" }],
+  ])(
+    "delivers the news that the errand's continue %s (review #2)",
+    (_case, output) => {
+      const failed = [
+        ...told,
+        {
+          content: [
+            {
+              input: { action: "continue" },
+              toolCallId: "continue-1",
+              toolName: "browser_task",
+              type: "tool-call" as const,
+            },
+          ],
+          role: "assistant" as const,
+        },
+        {
+          content: [
+            {
+              output,
+              toolCallId: "continue-1",
+              toolName: "browser_task",
+              type: "tool-result" as const,
+            },
+          ],
+          role: "tool" as const,
+        },
+      ];
+
+      expect(
+        refusal(failed, "Сервис браузера сейчас недоступен, бронь не сделана.")
+      ).toBeUndefined();
+    }
+  );
+
+  it("delivers another errand's outcome that status handed over (review #9)", () => {
+    const other = [
+      ...told,
+      ...toolStep("browser_task", {
+        outcome: "Result: tickets ordered, order 123, 1 085 ₽.",
+        runId: "run-2",
+        status: "done",
+      }),
+    ];
+    const own = [
+      ...told,
+      ...toolStep("browser_task", {
+        outcome: "Result: readings submitted.",
+        runId: "run-1",
+        status: "done",
+      }),
+    ];
+
+    expect(
+      refusal(other, "Билеты оформлены, заказ №123, 1 085 ₽.")
+    ).toBeUndefined();
+    expect(refusal(own, "Показания 123,4 и 234,5 приняты в mos.ru.")).toEqual({
+      skipped: "reported",
+    });
+  });
+
   it("leaves a person's turn free to say more", () => {
     const history = [
       userMessage("передай показания"),
@@ -407,6 +503,34 @@ describe("sendRefusal on a status before any work", () => {
     ],
   ])("delivers an answer with %s", (_case, text) => {
     expect(refusal([userMessage("что умеешь?")], text)).toBeUndefined();
+  });
+
+  it("lets «пришлю, как найду» through about an errand already at work (review #10)", () => {
+    const history = [
+      userMessage("найди билеты в Сочи на 9 октября"),
+      ...toolStep("browser_task", { runId: "run-1", status: "running" }),
+      ...sendMessage("started", "Ищу билеты в Сочи, пришлю варианты."),
+      userMessage("ок, жду"),
+    ];
+
+    expect(refusal(history, "Хорошо, пришлю, как найду.")).toBeUndefined();
+    // Once the run has reported, a new errand is not at work any more.
+    const reported = [
+      ...history,
+      userMessage(`${backgroundTurnMarker}\n\nBrowser run run-1 finished.`),
+      ...sendMessage("result", "Нашёл: Сапсан 18:40 за 5 200 ₽."),
+      userMessage("найди отель там же"),
+    ];
+    expect(refusal(reported, "Ищу отель, пришлю варианты.")).toEqual({
+      rewrite: "status",
+    });
+  });
+
+  it("never tells the model to start an errand a second time (review #10)", () => {
+    const notice = rewriteSendNotice("status");
+
+    expect(notice).not.toMatch(/start it/u);
+    expect(notice).toContain("Never start the same errand twice");
   });
 
   it("checks no status in a turn Bro opened", () => {
@@ -526,6 +650,62 @@ describe("sendRefusal on claims no tool made", () => {
         "Привет, я Бро. Делаю за тебя скучное: ищу и сравниваю, разбираю почту, календарь и Google Диск, ставлю напоминания. С этой просьбой не помогу."
       )
     ).toBeUndefined();
+  });
+
+  it.each([
+    "Записал: встреча с Артуром в пятницу в календаре.",
+    "Добавил встречу, она уже в календаре.",
+  ])("returns «%s» when no calendar tool ran (review #6)", (text) => {
+    expect(
+      refusal([userMessage("запиши встречу с Артуром в пятницу")], text)
+    ).toEqual({ rewrite: "calendar" });
+  });
+
+  it("delivers a calendar event the apps tool created (review #11)", () => {
+    const request = userMessage(
+      "поставь встречу с Анной в четверг 15:00 в мой Outlook"
+    );
+    const outlook: ModelMessage[] = [
+      request,
+      {
+        content: [
+          {
+            input: {
+              action: "run",
+              app: "outlook",
+              tool: "OUTLOOK_CALENDAR_CREATE_EVENT",
+            },
+            toolCallId: "apps-1",
+            toolName: "apps",
+            type: "tool-call" as const,
+          },
+        ],
+        role: "assistant" as const,
+      },
+      {
+        content: [
+          {
+            output: {
+              type: "json" as const,
+              value: { result: { id: "event-1" }, status: "done" },
+            },
+            toolCallId: "apps-1",
+            toolName: "apps",
+            type: "tool-result" as const,
+          },
+        ],
+        role: "tool" as const,
+      },
+    ];
+
+    expect(
+      refusal(outlook, "Добавил встречу в календарь Outlook на четверг 15:00.")
+    ).toBeUndefined();
+    // A spreadsheet row is no calendar event.
+    const sheet = [request, ...toolStep("apps", { status: "done" })];
+    expect(
+      refusal(sheet, "Добавил встречу в календарь Outlook на четверг 15:00.")
+    ).toEqual({ rewrite: "calendar" });
   });
 
   it("reads a sentence about the person's calendar as no claim", () => {

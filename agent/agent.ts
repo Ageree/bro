@@ -14,6 +14,7 @@ import {
   outcomeToldEarlier,
   turnActed,
   turnDelivered,
+  turnHandedErrandOn,
   turnTookNoStep,
 } from "@agent/lib/delivery/pending";
 import { reportedBrowserRunId } from "@agent/lib/browser-use/report-caller";
@@ -66,7 +67,7 @@ export default defineAgent({
         // (`agent/lib/google-workspace/turn-reads.ts`). A browser report's
         // turn past its answer may still owe the errand a `continue` — the
         // one card for the option the run found — so it loses only its
-        // messages.
+        // messages, until it calls a tool after the dropped send.
         //
         // A report sent again after its lease — it waited behind a long turn
         // of the person's, or `browser_task status` handed it over — has
@@ -80,7 +81,18 @@ export default defineAgent({
           (outcomeToldEarlier(ctx.messages, reportRunId) ||
             (await browserRunReportDelivered(reportRunId)));
         const pastAnswer = turnMustEnd(ctx.messages);
-        const reportPastAnswer = pastAnswer && reportRunId !== undefined;
+        const sends = turnSends(ctx.messages);
+        const reportPastAnswer =
+          pastAnswer && reportRunId !== undefined && !sends.workAfterSkip;
+        // A report turn with nothing to say sent no message of its own, so
+        // Telegram and iMessage would post whatever text it ends with; DeepSeek
+        // writes a line («Отчёт уже доставлен») where gpt-6-luna stayed empty.
+        // So does one that handed the errand on in a quiet `continue`.
+        const silent =
+          staleReport ||
+          (reportRunId !== undefined &&
+            !turnDelivered(ctx.messages) &&
+            turnHandedErrandOn(ctx.messages));
         // A report — a browser run's or a schedule's — is Bro's own turn.
         // Its question goes out as a message, so the person's reply starts a
         // turn of their own: only there does `schedules-answer` resume a
@@ -126,7 +138,7 @@ export default defineAgent({
             ? replyDirective({
                 // Once the reply is out, the note must not read as a new
                 // request: answering it is how one turn sent six messages.
-                answered: turnSends(ctx.messages).delivered.length > 0,
+                answered: sends.delivered.length > 0,
                 formOfAddress,
                 language: replyLanguage,
               })
@@ -147,6 +159,7 @@ export default defineAgent({
             turnDelivered(ctx.messages) ||
             (reportRunId !== undefined && turnActed(ctx.messages)),
           replyNote: notes.length > 0 ? notes.join("\n\n") : undefined,
+          silent,
           toolChoice:
             staleReport ||
             (pastAnswer && !reportPastAnswer) ||
