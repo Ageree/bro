@@ -217,7 +217,7 @@ export default photonIMessageChannel({
     // answers would land in front of the whole group, so groups are ignored,
     // as the Telegram channel does. Photon marks a direct chat GUID `;-;` and
     // a group one `;+;`.
-    if (context.thread.isDM === false || context.thread.id.includes(";+;")) {
+    if (!context.thread.isDM || context.thread.id.includes(";+;")) {
       console.warn("[photon] ignoring a group chat message", {
         threadId: context.thread.id,
       });

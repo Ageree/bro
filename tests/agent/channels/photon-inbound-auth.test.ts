@@ -235,18 +235,17 @@ type InboundContext = Parameters<
 >[0];
 
 interface ThreadIdentity {
-  readonly thread: Pick<InboundContext["thread"], "id" | "post"> &
-    Partial<Pick<InboundContext["thread"], "isDM">>;
+  readonly thread: Pick<InboundContext["thread"], "id" | "isDM" | "post">;
 }
 
 function threadContext(
   id = "imessage:iMessage;-;+15550100011",
-  options?: { readonly isDM?: boolean }
+  options: { readonly isDM: boolean } = { isDM: true }
 ): InboundContext {
   const identity: ThreadIdentity = {
     thread: { id, ...options, post: capture.post },
   };
-  // SAFETY: The inbound policy reads only the thread id and `post` from this context.
+  // SAFETY: The inbound policy reads only the thread id, `isDM` and `post` from this context.
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- A complete Chat SDK thread mock would add unrelated methods.
   return identity as InboundContext;
 }
