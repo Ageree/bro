@@ -246,6 +246,10 @@
 
 ## OpenRouter
 
+- Модель по умолчанию — `openai/gpt-6-luna` (`OPENROUTER_MODEL` в Vercel не
+  задан, работает умолчание из `shared/environment/env.ts`). Она не принимает
+  `temperature` (OpenRouter его молча отбрасывает) и повторяет `send_message`,
+  от чего держит `turn-sends.ts`. Кабинет с моделью в `settings` её не меняет.
 - `GET /api/v1/credits` принимает только management-ключ, обычный ключ
   инференса получает 403. Поэтому проверка баланса
   (`agent/lib/model/credits.ts`) ждёт отдельный `OPENROUTER_MANAGEMENT_KEY`.

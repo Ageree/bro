@@ -205,7 +205,7 @@ export const env = createEnv({
       "google/gemini-3.1-flash-image"
     ),
     OPENROUTER_MANAGEMENT_KEY: openRouterApiKeySchema.optional(),
-    OPENROUTER_MODEL: trimmedValue.default("deepseek/deepseek-v4.1-flash"),
+    OPENROUTER_MODEL: trimmedValue.default("openai/gpt-6-luna"),
     OPENROUTER_MODEL_CONTEXT_TOKENS: z.coerce
       .number()
       .int()
