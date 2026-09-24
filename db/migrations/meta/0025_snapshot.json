@@ -1,5 +1,5 @@
 {
-  "id": "56305739-3ba0-41e2-a81d-a159980b8429",
+  "id": "143197bd-3a47-4206-af88-84f83861261a",
   "prevId": "711b244e-20da-4d01-b83b-822635f58e8e",
   "version": "7",
   "dialect": "postgresql",
@@ -1625,163 +1625,6 @@
       },
       "isRLSEnabled": false
     },
-    "public.drive_file_artifacts": {
-      "name": "drive_file_artifacts",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "workspace_id": {
-          "name": "workspace_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_by_user_id": {
-          "name": "created_by_user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "root_session_id": {
-          "name": "root_session_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "drive_file_id": {
-          "name": "drive_file_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "drive_version": {
-          "name": "drive_version",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "filename": {
-          "name": "filename",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "media_type": {
-          "name": "media_type",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "byte_size": {
-          "name": "byte_size",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "content_hash": {
-          "name": "content_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "storage_pathname": {
-          "name": "storage_pathname",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp (3) with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "drive_file_artifacts_session_file_uidx": {
-          "name": "drive_file_artifacts_session_file_uidx",
-          "columns": [
-            {
-              "expression": "workspace_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "root_session_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "drive_file_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "drive_version",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "drive_file_artifacts_workspace_created_idx": {
-          "name": "drive_file_artifacts_workspace_created_idx",
-          "columns": [
-            {
-              "expression": "workspace_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": false,
-              "nulls": "first"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "drive_file_artifacts_membership_fkey": {
-          "name": "drive_file_artifacts_membership_fkey",
-          "tableFrom": "drive_file_artifacts",
-          "tableTo": "workspace_memberships",
-          "columnsFrom": ["workspace_id", "created_by_user_id"],
-          "columnsTo": ["workspace_id", "user_id"],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "drive_file_artifacts_byte_size_check": {
-          "name": "drive_file_artifacts_byte_size_check",
-          "value": "\"drive_file_artifacts\".\"byte_size\" > 0"
-        }
-      },
-      "isRLSEnabled": false
-    },
     "public.generated_image_artifacts": {
       "name": "generated_image_artifacts",
       "schema": "",
@@ -2805,6 +2648,226 @@
       },
       "isRLSEnabled": false
     },
+    "public.proactive_signals": {
+      "name": "proactive_signals",
+      "schema": "",
+      "columns": {
+        "workspace_id": {
+          "name": "workspace_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source": {
+          "name": "source",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "dedupe_key": {
+          "name": "dedupe_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "item_id": {
+          "name": "item_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "thread_id": {
+          "name": "thread_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "run_id": {
+          "name": "run_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "proactive_signals_run_idx": {
+          "name": "proactive_signals_run_idx",
+          "columns": [
+            {
+              "expression": "run_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "proactive_signals_created_idx": {
+          "name": "proactive_signals_created_idx",
+          "columns": [
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "proactive_signals_run_id_scheduled_agent_runs_id_fk": {
+          "name": "proactive_signals_run_id_scheduled_agent_runs_id_fk",
+          "tableFrom": "proactive_signals",
+          "tableTo": "scheduled_agent_runs",
+          "columnsFrom": ["run_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "proactive_signals_workspace_id_fkey": {
+          "name": "proactive_signals_workspace_id_fkey",
+          "tableFrom": "proactive_signals",
+          "tableTo": "workspaces",
+          "columnsFrom": ["workspace_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "proactive_signals_pkey": {
+          "name": "proactive_signals_pkey",
+          "columns": ["workspace_id", "source", "dedupe_key"]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "proactive_signals_source_check": {
+          "name": "proactive_signals_source_check",
+          "value": "\"proactive_signals\".\"source\" IN ('gmail', 'calendar')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.proactive_watches": {
+      "name": "proactive_watches",
+      "schema": "",
+      "columns": {
+        "workspace_id": {
+          "name": "workspace_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "created_by_user_id": {
+          "name": "created_by_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "job_id": {
+          "name": "job_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "mail_checked_at": {
+          "name": "mail_checked_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "next_check_at": {
+          "name": "next_check_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "google_state": {
+          "name": "google_state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'unknown'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "proactive_watches_due_idx": {
+          "name": "proactive_watches_due_idx",
+          "columns": [
+            {
+              "expression": "next_check_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "proactive_watches_job_id_scheduled_agent_jobs_id_fk": {
+          "name": "proactive_watches_job_id_scheduled_agent_jobs_id_fk",
+          "tableFrom": "proactive_watches",
+          "tableTo": "scheduled_agent_jobs",
+          "columnsFrom": ["job_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "proactive_watches_membership_fkey": {
+          "name": "proactive_watches_membership_fkey",
+          "tableFrom": "proactive_watches",
+          "tableTo": "workspace_memberships",
+          "columnsFrom": ["workspace_id", "created_by_user_id"],
+          "columnsTo": ["workspace_id", "user_id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "proactive_watches_google_state_check": {
+          "name": "proactive_watches_google_state_check",
+          "value": "\"proactive_watches\".\"google_state\" IN ('unknown', 'connected', 'disconnected')"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.scheduled_agent_jobs": {
       "name": "scheduled_agent_jobs",
       "schema": "",
@@ -2827,6 +2890,13 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'task'"
         },
         "prompt": {
           "name": "prompt",
@@ -2996,6 +3066,10 @@
         "scheduled_agent_jobs_conversation_id_check": {
           "name": "scheduled_agent_jobs_conversation_id_check",
           "value": "\"scheduled_agent_jobs\".\"conversation_id\" <> ''"
+        },
+        "scheduled_agent_jobs_kind_check": {
+          "name": "scheduled_agent_jobs_kind_check",
+          "value": "\"scheduled_agent_jobs\".\"kind\" IN ('task', 'proactive')"
         },
         "scheduled_agent_jobs_missed_run_policy_check": {
           "name": "scheduled_agent_jobs_missed_run_policy_check",
@@ -3666,6 +3740,13 @@
           "type": "text",
           "primaryKey": false,
           "notNull": false
+        },
+        "proactive_messages": {
+          "name": "proactive_messages",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
         },
         "updated_at": {
           "name": "updated_at",

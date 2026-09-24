@@ -1,5 +1,6 @@
 import { relations, sql } from "drizzle-orm";
 import {
+  boolean,
   check,
   date,
   foreignKey,
@@ -47,6 +48,9 @@ export const userProfiles = pgTable(
     // resolves here first, so a person who moves is metered on their own
     // calendar rather than on Moscow's.
     timezone: text("timezone"),
+    // Whether Bro may write first about new mail and upcoming events. It is a
+    // setting rather than Personal Info, so the form and the model never see it.
+    proactiveMessages: boolean("proactive_messages").notNull().default(true),
     updatedAt: timestamp("updated_at", {
       mode: "date",
       precision: 3,
@@ -101,7 +105,7 @@ export const settings = pgTable(
   {
     workspaceId: text("workspace_id").notNull(),
     key: text("key", {
-      enum: ["gateway_model", "google_workspace_access"],
+      enum: ["gateway_model", "google_workspace_access", "spend_limit"],
     }).notNull(),
     value: text("value").notNull(),
   },
@@ -117,7 +121,7 @@ export const settings = pgTable(
     }).onDelete("cascade"),
     check(
       "settings_key_check",
-      sql`${table.key} IN ('gateway_model', 'google_workspace_access')`
+      sql`${table.key} IN ('gateway_model', 'google_workspace_access', 'spend_limit')`
     ),
   ]
 );

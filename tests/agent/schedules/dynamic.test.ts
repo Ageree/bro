@@ -42,6 +42,13 @@ vi.mock("@agent/channels/photon", () => ({
 vi.mock("@agent/lib/schedules/request", () => ({
   postScheduledReport: requests.report,
 }));
+// Every tick queues the credit check as a second background task, the way a
+// tenth-minute tick does, so each case proves the dispatch is awaited too.
+// The check itself has its own tests and never reaches OpenRouter here.
+vi.mock("@agent/lib/model/credits", () => ({
+  checkOpenRouterCredits: vi.fn<() => Promise<void>>(() => Promise.resolve()),
+  creditCheckDue: () => true,
+}));
 vi.mock("@agent/channels/scheduled-run", () => ({
   default: { channel: "scheduled-run" },
 }));
@@ -108,7 +115,12 @@ describe("dynamic schedule dispatch", () => {
   it("delivers recoverable iMessage reports through the schedule channel handle", async () => {
     const report = scheduledReport();
     services.listReports.mockResolvedValue([
-      { conversationChannel: "photon", runId: report.run.id },
+      {
+        conversationChannel: "photon",
+        jobKind: "task",
+        runId: report.run.id,
+        scope: { userId: "user-1", workspaceId: "workspace-1" },
+      },
     ]);
     services.claimReports.mockResolvedValue(report);
     const send = vi
@@ -128,7 +140,12 @@ describe("dynamic schedule dispatch", () => {
   it("keeps Eve debug reports on its active-session callback", async () => {
     const report = scheduledReport();
     services.listReports.mockResolvedValue([
-      { conversationChannel: "eve", runId: report.run.id },
+      {
+        conversationChannel: "eve",
+        jobKind: "task",
+        runId: report.run.id,
+        scope: { userId: "user-1", workspaceId: "workspace-1" },
+      },
     ]);
     const to = vi.fn<ScheduleToFn>();
 
@@ -208,6 +225,24 @@ describe("scheduled report delivery", () => {
     );
   });
 
+  it("frames a proactive report as writing first, once, without acting", async () => {
+    const report = scheduledReport();
+    report.job.kind = "proactive";
+    services.claimReports.mockResolvedValue(report);
+    const send = vi
+      .fn<ReturnType<ScheduleToFn>["send"]>()
+      .mockResolvedValue(workerSession("main-session"));
+    const to = vi.fn<ScheduleToFn>(() => ({ send }));
+
+    await dispatchScheduledReport({ to }, report.run.id);
+
+    const prompt = send.mock.calls[0]?.[0];
+    expect(prompt).toContain("Nobody asked for this check");
+    expect(prompt).toContain("Send one short message only if");
+    expect(prompt).toContain("shown as a draft for them to approve");
+    expect(prompt).not.toContain("Original task:");
+  });
+
   it("routes Eve reports to the stored debug session", async () => {
     const report = scheduledReport();
     report.job.conversationChannel = "eve";
@@ -260,7 +295,9 @@ describe("scheduled report delivery", () => {
 });
 
 async function runSchedule(to: ScheduleToFn) {
-  let task: Promise<unknown> | undefined;
+  // Every tenth minute the schedule also queues the credit check; each
+  // background task is awaited, not only the last one handed over.
+  const tasks: Promise<unknown>[] = [];
   const args: ScheduleHandlerArgs = {
     appAuth: {
       attributes: {},
@@ -271,11 +308,11 @@ async function runSchedule(to: ScheduleToFn) {
     attachSession: vi.fn<ScheduleHandlerArgs["attachSession"]>(),
     to,
     waitUntil(backgroundTask) {
-      task = backgroundTask;
+      tasks.push(backgroundTask);
     },
   };
   dynamicSchedule.run(args);
-  await task;
+  await Promise.all(tasks);
 }
 
 const resultOutcome = {
@@ -309,6 +346,7 @@ function scheduledClaim(): Awaited<
       createdAt: new Date("2026-09-01T12:00:00.000Z"),
       createdByUserId: "user-1",
       id: "00000000-0000-4000-8000-000000000001",
+      kind: "task",
       lastError: null,
       lastRunAt: new Date("2026-09-02T13:00:00.000Z"),
       conversationChannel: "photon",

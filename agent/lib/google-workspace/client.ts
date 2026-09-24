@@ -1,4 +1,8 @@
 import { auth } from "@googleapis/gmail";
+import type {
+  ConnectAuthorizationOptions,
+  ConnectOptions,
+} from "@vercel/connect";
 import { connect, type EveAuthorizationOptions } from "@vercel/connect/eve";
 import type { SessionContext } from "eve/context";
 import type { ToolContext } from "eve/tools";
@@ -9,12 +13,23 @@ import { getGoogleWorkspaceAccess } from "@db/services/settings";
 import { env } from "@shared/environment";
 import {
   type GoogleWorkspaceAccess,
+  googleWorkspaceConsentPrompt,
   googleWorkspaceSubject,
   googleWorkspaceScopes,
+  warnWhenGrantCannotRefresh,
 } from "@shared/google-workspace/connection";
+
+// The eve adapter spreads `connectOptions` into `startAuthorization`, so the
+// consent prompt reaches the chat's sign-in card too; its `getToken` calls
+// ignore the field.
+const googleWorkspaceConnectOptions: ConnectOptions &
+  Pick<ConnectAuthorizationOptions, "prompt"> = {
+  prompt: googleWorkspaceConsentPrompt,
+};
 
 export function googleWorkspaceAuthOptions(access: GoogleWorkspaceAccess) {
   return {
+    connectOptions: googleWorkspaceConnectOptions,
     connector: env.GOOGLE_CONNECTOR_UID,
     createSubject(principal) {
       if (principal.type !== "user") {
@@ -27,9 +42,28 @@ export function googleWorkspaceAuthOptions(access: GoogleWorkspaceAccess) {
   } satisfies EveAuthorizationOptions;
 }
 
+/**
+ * The eve provider for one access level. A person who signs in from the
+ * chat card never opens the cabinet, so the grant's offline check runs right
+ * after authorization completes; it is not awaited and only logs.
+ */
+export function googleWorkspaceProvider(access: GoogleWorkspaceAccess) {
+  const provider = connect(googleWorkspaceAuthOptions(access));
+  return {
+    ...provider,
+    async completeAuthorization(
+      input: Parameters<typeof provider.completeAuthorization>[0]
+    ) {
+      const result = await provider.completeAuthorization(input);
+      void warnWhenGrantCannotRefresh(result.token);
+      return result;
+    },
+  };
+}
+
 const googleWorkspaceAuth = {
-  full: connect(googleWorkspaceAuthOptions("full")),
-  read_only: connect(googleWorkspaceAuthOptions("read_only")),
+  full: googleWorkspaceProvider("full"),
+  read_only: googleWorkspaceProvider("read_only"),
 };
 
 // Both providers share one connector, so the read-only one carries its own

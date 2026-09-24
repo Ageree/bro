@@ -3,6 +3,7 @@ import { scheduledRunIdentity } from "@agent/lib/schedules/identity";
 import { isScheduledAgentRunLeaseActive } from "@db/services/scheduled-agent-run-leases";
 import { getWorkspaceModelId } from "@db/services/settings";
 import { awaitsDelivery } from "@agent/lib/delivery/pending";
+import { turnMustEnd } from "@agent/lib/delivery/turn-sends";
 import { resolveModeValue } from "@agent/lib/mode";
 import { modelSelection } from "@agent/lib/model/selection";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
@@ -30,6 +31,10 @@ export default defineAgent({
         // browser run's result arrives as a message too, but the run parked
         // on an anti-bot check is continued without a word to the person
         // (`agent/lib/browser-use/completion.ts`), so that turn stays free.
+        //
+        // A turn that already repeated a delivered message or used up its
+        // message limit is looping: its next step may only write text, which
+        // ends the turn (`agent/lib/delivery/turn-sends.ts`).
         const requireToolCall =
           caller.authenticator !== "browser-result" &&
           (resolveModeValue(ctx, {
@@ -38,7 +43,13 @@ export default defineAgent({
             false);
         return modelSelection(
           await getWorkspaceModelId(scopeFromPrincipal(caller)),
-          { requireToolCall }
+          {
+            toolChoice: turnMustEnd(ctx.messages)
+              ? "none"
+              : requireToolCall
+                ? "required"
+                : "auto",
+          }
         );
       },
     },
