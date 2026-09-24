@@ -16,7 +16,10 @@ import type { DynamicResolveContext } from "eve";
 import { defineDynamic, defineTool, type ToolContext } from "eve/tools";
 import { z } from "zod";
 import { imageGenerationQuotaGate } from "@agent/lib/billing/quota";
-import { imageGenerationScope } from "@agent/lib/image-artifact/generation";
+import {
+  imageGenerationScope,
+  pictureRequested,
+} from "@agent/lib/image-artifact/generation";
 import {
   describePrivateImage,
   readImageArtifact,
@@ -24,6 +27,7 @@ import {
   storePrivateImage,
 } from "@agent/lib/image-artifact/storage";
 import { sniffMediaType } from "@agent/lib/inbound-media/media-type";
+import { startedByPerson } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import {
   findGeneratedImageArtifact,
@@ -70,7 +74,16 @@ export default defineDynamic({
   events: {
     async "turn.started"(_event, context) {
       const scope = imageGenerationScope(context);
-      if (!scope) return null;
+      // Only the person's own request for a picture, or a photo they sent to
+      // work with, puts the paid tool within reach: never a browser report,
+      // a code or a question.
+      if (
+        !scope ||
+        !startedByPerson(context) ||
+        !pictureRequested(context.messages)
+      ) {
+        return null;
+      }
       const photos = await collectPersonPhotos(scope, context.messages);
       return defineTool({
         description: `Draw a new picture, or change one, and get it back as a private artifact: birthday and holiday cards, invitations, posters, stickers, memes, illustrations, a pet or a person from the person's photos placed into a scene. Put the returned markdown line, exactly as returned, into the text of one send_message call and the chat receives a real photo. To change a picture («brighter», «add a hat», «bigger letters») call again with a prompt describing the whole result and pass that picture's artifact in images; never start over from scratch for an edit. ${describePhotos(photos)}`,

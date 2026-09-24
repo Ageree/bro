@@ -1,6 +1,6 @@
 import type { ModelMessage } from "ai";
 import { z } from "zod";
-import { sendReachedPerson } from "./turn-sends";
+import { currentTurnMessages, sendReachedPerson } from "./turn-sends";
 
 /** Tools whose successful call is the reply a person actually sees. */
 const deliveryToolNames = new Set(["send_message", "react_to_message"]);
@@ -57,4 +57,12 @@ export function awaitsDelivery(messages: readonly ModelMessage[]) {
     if (kind === "execution.background_task") return false;
   }
   return false;
+}
+
+/**
+ * Whether the current turn already got a `send_message` or
+ * `react_to_message` through to the person, whoever started it.
+ */
+export function turnDelivered(messages: readonly ModelMessage[]) {
+  return currentTurnMessages(messages).some(deliveredByTool);
 }

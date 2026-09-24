@@ -71,6 +71,25 @@ function toolChoiceMiddleware(
 }
 
 /**
+ * Takes tools out of one step's offer. The history keeps its earlier calls
+ * of them; the model just cannot make another. A call without tools, such as
+ * compaction, is left alone.
+ */
+function withheldToolsMiddleware(
+  names: readonly string[]
+): LanguageModelMiddleware {
+  return {
+    async transformParams({ params }) {
+      if (!params.tools?.length) return params;
+      return {
+        ...params,
+        tools: params.tools.filter((tool) => !names.includes(tool.name)),
+      };
+    },
+  };
+}
+
+/**
  * Appends the reply note (language, Bro's voice, how to address the person,
  * `agent/lib/delivery/language.ts`) as the last system message of the prompt.
  * At the end it does not break the cached prefix, and it is the freshest thing
@@ -89,12 +108,113 @@ function replyNoteMiddleware(note: string): LanguageModelMiddleware {
   };
 }
 
+/**
+ * eve's own marker for a step that deliberately says nothing: a final text
+ * equal to it ends the turn with `message: null` instead of a reply
+ * (`eve/dist/src/shared/empty-delivery.js`, not exported).
+ */
+const emptyDeliveryMarker = "<eve-empty-delivery/>";
+
+/** One part of a model's streamed answer, as middleware sees it. */
+type StreamPart =
+  Awaited<
+    ReturnType<NonNullable<LanguageModelMiddleware["wrapStream"]>>
+  >["stream"] extends ReadableStream<infer Part>
+    ? Part
+    : never;
+
+/** What a model's whole answer holds, as middleware sees it. */
+type GeneratedContent = Awaited<
+  ReturnType<NonNullable<LanguageModelMiddleware["wrapGenerate"]>>
+>["content"];
+
+/**
+ * Whether a step produced nothing eve can keep: no visible text and no tool
+ * call. Reasoning alone is still an empty response to eve.
+ */
+function saidNothing(content: GeneratedContent) {
+  return !content.some(
+    (part) =>
+      part.type === "tool-call" ||
+      (part.type === "text" && part.text.trim().length > 0)
+  );
+}
+
+/**
+ * Once a turn's reply reached the person, a model with nothing more to say
+ * may answer with no text and no tool call at all: `openai/gpt-6-luna` does
+ * it after almost every delivery, whether `toolChoice` is `auto` or `none`.
+ * eve treats that as a broken model call, re-asks once with «answer now from
+ * the tool results» and then fails the turn (`MODEL_CALL_FAILED`, «The model
+ * did not return a response»), so a delivered answer ended in a failed turn
+ * and Telegram posted «что-то сломалось» under it. Here such a step becomes
+ * eve's empty-delivery marker, which ends the turn cleanly and delivers
+ * nothing. A step that did write text or call a tool is passed as it is.
+ */
+function quietEndMiddleware(): LanguageModelMiddleware {
+  return {
+    async wrapGenerate({ doGenerate, params }) {
+      const result = await doGenerate();
+      if (!params.tools?.length || !saidNothing(result.content)) return result;
+      if (result.finishReason.unified === "content-filter") return result;
+      return {
+        ...result,
+        content: [
+          ...result.content,
+          { text: emptyDeliveryMarker, type: "text" as const },
+        ],
+      };
+    },
+    async wrapStream({ doStream, params }) {
+      const result = await doStream();
+      if (!params.tools?.length) return result;
+      let spoke = false;
+      const stream = result.stream.pipeThrough(
+        new TransformStream<StreamPart, StreamPart>({
+          transform(part, controller) {
+            if (
+              part.type === "tool-call" ||
+              part.type === "tool-input-start" ||
+              (part.type === "text-delta" && part.delta.trim().length > 0)
+            ) {
+              spoke = true;
+            }
+            if (
+              part.type === "finish" &&
+              !spoke &&
+              part.finishReason.unified !== "content-filter"
+            ) {
+              const id = "quiet-end";
+              controller.enqueue({ id, type: "text-start" });
+              controller.enqueue({
+                delta: emptyDeliveryMarker,
+                id,
+                type: "text-delta",
+              });
+              controller.enqueue({ id, type: "text-end" });
+            }
+            controller.enqueue(part);
+          },
+        })
+      );
+      return { ...result, stream };
+    },
+  };
+}
+
 /** eve model selection that calls OpenRouter directly instead of the Gateway. */
 export function openRouterSelection(
   modelId: string,
   options: {
+    /**
+     * The turn already delivered its reply, so a step that says nothing ends
+     * it instead of failing it.
+     */
+    readonly delivered?: boolean;
     readonly replyNote?: string;
     readonly toolChoice: StepToolChoice;
+    /** Tools this step may not call, though the turn has them. */
+    readonly withheldTools?: readonly string[];
   }
 ) {
   const openrouter = createOpenRouter({
@@ -112,9 +232,12 @@ export function openRouterSelection(
       ? "auto"
       : options.toolChoice;
 
+  const withheld = options.withheldTools ?? [];
   const middleware = [
+    ...(withheld.length > 0 ? [withheldToolsMiddleware(withheld)] : []),
     ...(toolChoice === "auto" ? [] : [toolChoiceMiddleware(toolChoice)]),
     ...(options.replyNote ? [replyNoteMiddleware(options.replyNote)] : []),
+    ...(options.delivered ? [quietEndMiddleware()] : []),
   ];
 
   return {

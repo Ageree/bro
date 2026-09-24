@@ -13,19 +13,26 @@ import { openRouterSelection, type StepToolChoice } from "./openrouter";
  * id string ignores it and relies on the instructions, the channel fallback,
  * and `send_message` dropping repeats. `replyNote` likewise travels only
  * with the direct model; a Gateway id relies on the instructions, which carry
- * the same voice and the person's stored form of address.
+ * the same voice and the person's stored form of address. So does
+ * `delivered`, which lets a step that says nothing after the turn's reply end
+ * the turn instead of failing it, and `withheldTools`, which a Gateway id
+ * keeps offering.
  */
 export function modelSelection(
   modelId: string,
   options: {
+    readonly delivered?: boolean;
     readonly replyNote?: string;
     readonly toolChoice?: StepToolChoice;
+    readonly withheldTools?: readonly string[];
   } = {}
 ) {
   return openRouterActive()
     ? openRouterSelection(modelId, {
+        delivered: options.delivered,
         replyNote: options.replyNote,
         toolChoice: options.toolChoice ?? "auto",
+        withheldTools: options.withheldTools,
       })
     : modelId;
 }

@@ -8,6 +8,7 @@ import {
 
 const preferenceCanary = "quiet-car preference on train trips";
 const teaCanary = "пьёт только улун без сахара";
+const berthCanary = "в поезде беру только нижнюю полку";
 
 /**
  * Forget a canary an earlier session saved. A memory from another
@@ -29,6 +30,31 @@ async function forgetCanary(t: EveEvalContext, canary: string) {
 }
 
 export default [
+  /**
+   * In the benchmark «запомни: …» got back «Сохранить их?» on a card: the
+   * person had already said to remember it.
+   */
+  defineEval({
+    description: "Saves what the person says to remember without asking first",
+    tags: [...agentEvalTags, "memory", "autonomy"],
+    async test(t) {
+      try {
+        const turn = await t.send(
+          `Кстати, запомни: ${berthCanary}, в самолёте у прохода, свинину не ем.`
+        );
+        turn.expectOk();
+        turn.succeeded();
+        turn.notCalledTool("ask_question");
+        turn.calledTool("profile__save_memory", { status: "completed" });
+        t.check(
+          turn.session.pendingInputRequests.length,
+          satisfies<number>((count) => count === 0, "no card or question")
+        );
+      } finally {
+        await forgetCanary(t, berthCanary);
+      }
+    },
+  }),
   defineEval({
     description:
       "Deletes nothing when asked to forget what this conversation saved and it saved nothing",
