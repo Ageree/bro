@@ -211,6 +211,29 @@ describe("browser run persistence", () => {
       "Result: ordered"
     );
   }, 20_000);
+
+  it("counts every overdue report, not only the fifty it lists", async () => {
+    const browserRuns = await browserRunsDatabase();
+    const settled = new Date(Date.now() - 10 * 60_000);
+    await Promise.all(
+      Array.from({ length: 52 }, (_, index) =>
+        browserRuns.createBrowserRun(alice, {
+          ...conversation(),
+          completedAt: settled,
+          id: `overdue-run-${String(index)}`,
+          report: "RESULT: done",
+          status: "done",
+        })
+      )
+    );
+
+    const overdue = await browserRuns.listOverdueBrowserRunReports(
+      new Date(Date.now() - 2 * 60_000)
+    );
+
+    expect(overdue).toHaveLength(50);
+    expect(overdue[0]?.total).toBe(52);
+  }, 20_000);
 });
 
 async function applyMigrations(database: PGlite) {
