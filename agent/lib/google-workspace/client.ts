@@ -146,7 +146,14 @@ export async function withGoogleAuth<T>(
       // oxlint-disable-next-line eslint/no-await-in-loop -- Each retry waits for the one before it.
       return await execute(authClient);
     } catch (error) {
-      if (googleApiErrorStatus(error) === 401) {
+      // A grant from before a scope joined `googleWorkspaceScopes` still yields
+      // a token, and Google answers it with 403 rather than 401; both mean the
+      // person has to consent again. A read-only workspace never reaches a
+      // write call, so its scope 403s are stale grants too.
+      if (
+        googleApiErrorStatus(error) === 401 ||
+        isInsufficientScopeError(error)
+      ) {
         ctx.requireAuth(provider, options);
       }
       if (!isGoogleRateLimit(error)) throw error;
@@ -167,6 +174,66 @@ export function googleApiErrorStatus(cause: unknown) {
   return result.success ? result.data.response.status : undefined;
 }
 
+const reasonsSchema = z
+  .array(z.object({ reason: z.string().optional() }))
+  .default([]);
+
+const googleErrorBodySchema = z.object({
+  error: z.object({
+    details: reasonsSchema,
+    errors: reasonsSchema,
+    message: z.string().optional(),
+    status: z.string().optional(),
+  }),
+});
+
+const errorResponseSchema = z.object({
+  response: z.object({ data: z.unknown() }),
+});
+
+/**
+ * The parsed error body of a failed call, or nothing. A download requested as
+ * `arraybuffer` gets its error body as bytes too.
+ */
+function googleErrorBody(cause: unknown) {
+  const data = errorResponseSchema.safeParse(cause).data?.response.data;
+  const text =
+    data instanceof ArrayBuffer
+      ? new TextDecoder().decode(data)
+      : z.string().safeParse(data).data;
+  let body: unknown = data;
+  if (text !== undefined) {
+    try {
+      body = JSON.parse(text);
+    } catch {
+      return undefined;
+    }
+  }
+  return googleErrorBodySchema.safeParse(body).data?.error;
+}
+
+function errorReasons(error: NonNullable<ReturnType<typeof googleErrorBody>>) {
+  return [...error.errors, ...error.details].flatMap(({ reason }) =>
+    reason === undefined ? [] : [reason]
+  );
+}
+
+/** The reasons Google gives a token that lacks a scope the call needs. */
+const insufficientScopeReasons = new Set([
+  "ACCESS_TOKEN_SCOPE_INSUFFICIENT",
+  "insufficientPermissions",
+]);
+
+/** Whether Google refused the call because the grant lacks a scope. */
+function isInsufficientScopeError(cause: unknown) {
+  if (googleApiErrorStatus(cause) !== 403) return false;
+  const error = googleErrorBody(cause);
+  return (
+    error !== undefined &&
+    errorReasons(error).some((reason) => insufficientScopeReasons.has(reason))
+  );
+}
+
 /** Reasons Google gives for a refusal that passes once calls slow down. */
 const rateLimitReasons = new Set([
   "dailyLimitExceeded",
@@ -174,18 +241,6 @@ const rateLimitReasons = new Set([
   "rateLimitExceeded",
   "userRateLimitExceeded",
 ]);
-
-const googleErrorBodySchema = z.object({
-  response: z.object({
-    data: z.object({
-      error: z.object({
-        errors: z.array(z.object({ reason: z.string() })).optional(),
-        message: z.string().optional(),
-        status: z.string().optional(),
-      }),
-    }),
-  }),
-});
 
 /**
  * Whether Google refused for rate or quota: always a 429, and a 403 whose
@@ -196,11 +251,11 @@ export function isGoogleRateLimit(cause: unknown) {
   const status = googleApiErrorStatus(cause);
   if (status === 429) return true;
   if (status !== 403) return false;
-  const error =
-    googleErrorBodySchema.safeParse(cause).data?.response.data.error;
+  const error = googleErrorBody(cause);
+  if (error === undefined) return false;
   return (
-    (error?.errors ?? []).some(({ reason }) => rateLimitReasons.has(reason)) ||
-    error?.status === "RESOURCE_EXHAUSTED" ||
-    /quota|rate limit/iu.test(error?.message ?? "")
+    errorReasons(error).some((reason) => rateLimitReasons.has(reason)) ||
+    error.status === "RESOURCE_EXHAUSTED" ||
+    /quota|rate limit/iu.test(error.message ?? "")
   );
 }

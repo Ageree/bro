@@ -2,6 +2,7 @@ import type { ModelMessage, ToolResultPart } from "ai";
 import { z } from "zod";
 import { currentTurnMessages } from "@agent/lib/delivery/turn-sends";
 import { googleRateLimitMessage } from "./client";
+import { driveReadInputSchema, driveSearchInputSchema } from "./drive";
 import {
   gmailReadThreadInputSchema,
   gmailSearchInputSchema,
@@ -46,6 +47,14 @@ const googleReadCallSchema = z.discriminatedUnion("toolName", [
     input: gmailReadThreadInputSchema,
     toolName: z.literal("gmail-read-thread"),
   }),
+  z.object({
+    input: driveSearchInputSchema,
+    toolName: z.literal("drive-search"),
+  }),
+  z.object({
+    input: driveReadInputSchema,
+    toolName: z.literal("drive-read"),
+  }),
 ]);
 
 type GoogleReadCall = z.infer<typeof googleReadCallSchema>;
@@ -55,9 +64,13 @@ type GoogleReadCall = z.infer<typeof googleReadCallSchema>;
  * is recognised whether or not the model spelled out a default.
  */
 export function googleReadKey(call: GoogleReadCall) {
-  return call.toolName === "gmail-search"
-    ? `${call.toolName}\u0000${String(call.input.maxResults)}\u0000${call.input.query.trim()}`
-    : `${call.toolName}\u0000${call.input.threadId.trim()}`;
+  const target =
+    call.toolName === "gmail-search" || call.toolName === "drive-search"
+      ? `${String(call.input.maxResults)}\u0000${call.input.query.trim()}`
+      : call.toolName === "gmail-read-thread"
+        ? call.input.threadId.trim()
+        : call.input.fileId;
+  return `${call.toolName}\u0000${target}`;
 }
 
 /** What the current turn's guarded reads did so far. */

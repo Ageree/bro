@@ -27,7 +27,7 @@ describe("googleReadKey", () => {
   });
 });
 
-describe("the per-turn Gmail read guard", () => {
+describe("the per-turn Google read guard", () => {
   it("answers the same search twice in a turn from what the turn has", () => {
     const reads = turnReads([person("разбери почту"), ...search("call-1")]);
     const key = searchKey(inbox.query);
@@ -137,6 +137,34 @@ describe("the per-turn Gmail read guard", () => {
     expect(readRefusalReason(searchKey(inbox.query), reads)).toBeUndefined();
   });
 
+  it("counts Drive reads against the same turn", () => {
+    const history = [
+      person("найди паспорт на Диске"),
+      ...driveRead("call-1", "file-1"),
+      ...Array.from({ length: turnReadLimits.interactive - 1 }, (_, index) =>
+        search(`call-${String(index + 2)}`, undefined, `query ${String(index)}`)
+      ).flat(),
+    ];
+    const reads = turnReads(history);
+
+    expect(readRefusalReason(driveReadKey("file-1"), reads)).toBe("duplicate");
+    expect(readRefusalReason(driveReadKey("file-2"), reads)).toBe("limit");
+  });
+
+  it("stops Drive reads once Google refused for quota", () => {
+    const reads = turnReads([
+      person("найди паспорт на Диске"),
+      ...driveRead("call-1", "file-1", {
+        type: "error-text",
+        value: googleRateLimitMessage,
+      }),
+    ]);
+
+    expect(readRefusalReason(searchKey(inbox.query), reads)).toBe(
+      "rate_limited"
+    );
+  });
+
   it("ends a turn that keeps asking for refused reads", () => {
     const refused = (id: string) =>
       search(id, { type: "text", value: readRefusalNotice("duplicate") });
@@ -208,6 +236,39 @@ function gmailUpdate(
     {
       content: [
         { output, toolCallId, toolName: "gmail-update", type: "tool-result" },
+      ],
+      role: "tool",
+    },
+  ];
+}
+
+function driveReadKey(fileId: string) {
+  return googleReadKey({ input: { fileId }, toolName: "drive-read" });
+}
+
+function driveRead(
+  toolCallId: string,
+  fileId: string,
+  output: ToolResultPart["output"] = {
+    type: "json",
+    value: { kind: "text", text: "Passport" },
+  }
+): ModelMessage[] {
+  return [
+    {
+      content: [
+        {
+          input: { fileId },
+          toolCallId,
+          toolName: "drive-read",
+          type: "tool-call",
+        },
+      ],
+      role: "assistant",
+    },
+    {
+      content: [
+        { output, toolCallId, toolName: "drive-read", type: "tool-result" },
       ],
       role: "tool",
     },

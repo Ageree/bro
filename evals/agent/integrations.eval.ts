@@ -157,6 +157,26 @@ export default [
   }),
   defineEval({
     description:
+      "Looks for a document in Google Drive instead of asking for it",
+    tags: [...agentEvalTags, "integrations", "routing"],
+    async test(t) {
+      const turn = await t.send(
+        "My passport scan is in my Google Drive. Find it and tell me when it expires."
+      );
+      turn.expectOk();
+      // The eval user has no Google grant, so the search parks on
+      // authorization and nothing can be read: this gates the routing only.
+      t.check(
+        turn.toolCalls.map((call) => call.name),
+        satisfies<string[]>(
+          (names) => names.includes("drive-search"),
+          "searches Drive for the passport"
+        )
+      );
+    },
+  }),
+  defineEval({
+    description:
       "Runs an approved calendar write even after memory changed, and reports only its result",
     tags: [...agentEvalTags, "integrations", "approval", "honesty", "memory"],
     async test(t) {

@@ -34,6 +34,7 @@ export const googleWorkspaceScopes = {
     "https://www.googleapis.com/auth/calendar.events",
     "https://www.googleapis.com/auth/calendar.freebusy",
     "https://www.googleapis.com/auth/contacts.readonly",
+    "https://www.googleapis.com/auth/drive.readonly",
   ],
   read_only: [
     "openid",
@@ -42,6 +43,7 @@ export const googleWorkspaceScopes = {
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/calendar.readonly",
     "https://www.googleapis.com/auth/contacts.readonly",
+    "https://www.googleapis.com/auth/drive.readonly",
   ],
 } as const satisfies Record<GoogleWorkspaceAccess, readonly string[]>;
 
@@ -50,7 +52,7 @@ export const googleWorkspaceScopes = {
  * chat.
  */
 export const googleWorkspaceDisconnectNotice =
-  "Отключение отзывает доступ Бро к Google: он больше не читает почту, календарь и контакты и ничего в них не меняет. Сами письма, черновики и события в Google остаются как были. У Бро остаётся то, что уже сохранено у него: память о тебе, история чатов (в том числе пересказы писем), заказы и файлы из писем, которые он тебе уже переслал. Что-то из памяти можно попросить забыть. Проверить, что доступа не осталось, можно в настройках аккаунта Google, раздел «Сторонние приложения и сервисы».";
+  "Отключение отзывает доступ Бро к Google: он больше не читает почту, календарь, контакты и Диск и ничего в них не меняет. Сами письма, черновики и события в Google остаются как были. У Бро остаётся то, что уже сохранено у него: память о тебе, история чатов (в том числе пересказы писем), заказы и файлы из писем, которые он тебе уже переслал. Что-то из памяти можно попросить забыть. Проверить, что доступа не осталось, можно в настройках аккаунта Google, раздел «Сторонние приложения и сервисы».";
 
 /**
  * OAuth `prompt` for every Google authorization. Google hands out a refresh

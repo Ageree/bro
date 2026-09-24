@@ -129,6 +129,17 @@
   человек просил на другом языке. Отчёт браузера приходит user-сообщением на
   английском, язык по нему не определяется.
 
+## Google
+
+- `@googleapis/drive` закреплён на 22: версии 25+ тянут `google-auth-library`
+  11, и его `OAuth2Client` не совместим по типам с клиентом из `client.ts`,
+  общим для Gmail, Calendar и People.
+- Грант Google, выданный до появления скоупа в `googleWorkspaceScopes`
+  (например `drive.readonly`), его не покрывает. Если такой токен всё же
+  дошёл до API, Google отвечает 403 insufficient scopes, а не 401, поэтому
+  `withGoogleAuth` на обоих ответах зовёт `ctx.requireAuth` и заново
+  спрашивает согласие (`agent/lib/google-workspace/client.ts`).
+
 ## Notion и Slack
 
 - Коннекторы Vercel Connect задаются `NOTION_CONNECTOR_UID` и
@@ -265,9 +276,10 @@
   инструмент сам читает Message-ID/References/Subject и `threadId`. Поле
   `messageId` в выдаче чтения переименовано в `rfcMessageId`, чтобы модель не
   путала его с Gmail `id`, который берут остальные `gmail-*`.
-- Чтения Gmail резолвятся на `step.started` и видят, что ход уже читал
-  (`agent/lib/google-workspace/turn-reads.ts`): повтор того же запроса (до
-  записи в Google в этом ходе: почта или календарь, который шлёт приглашения), чтение сверх 20 (у фоновых воркеров 60) и любое
+- Чтения Gmail и Диска резолвятся на `step.started` и видят, что ход уже читал
+  (`agent/lib/google-workspace/turn-reads.ts`, общий счёт на оба): повтор того
+  же запроса (до записи в Google в этом ходе: почта или календарь, который
+  шлёт приглашения), чтение сверх 20 (у фоновых воркеров 60) и любое
   чтение после отказа Google по квоте отвечаются без Google, а три таких
   отказа завершают ход через `toolChoice: none`. Квота приходит и
   как 429, и как 403 с `rateLimitExceeded`; `withGoogleAuth` ждёт 1 и 3 с,
