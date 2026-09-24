@@ -14,12 +14,12 @@ export const webFetchTool = defineTool({
 
 export default defineDynamic({
   events: {
-    // Bro's own mail checks read untrusted mail, so they get no way to carry
-    // what they read to a URL an email chose.
+    // Bro's own mail checks read untrusted mail, and a report turn is handed
+    // what a worker read; neither gets a way to carry that to a URL an email
+    // chose. A report turn only delivers, so it never needed the web.
     "turn.started": (_event, context) =>
       resolveModeValue(context, {
         interactive: { web_fetch: webFetchTool },
-        "scheduled-report": { web_fetch: webFetchTool },
         "scheduled-worker": { web_fetch: webFetchTool },
       }),
   },

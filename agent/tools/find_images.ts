@@ -916,11 +916,11 @@ function positiveInteger(value: string | null | undefined) {
 
 export default defineDynamic({
   events: {
-    // Fetching an arbitrary page is out of reach of Bro's own mail checks.
+    // Fetching an arbitrary page is out of reach of Bro's own mail checks and
+    // of report turns, which only deliver what a worker handed over.
     "turn.started": (_event, context) =>
       resolveModeValue(context, {
         interactive: { find_images: findImages },
-        "scheduled-report": { find_images: findImages },
         "scheduled-worker": { find_images: findImages },
       }),
   },

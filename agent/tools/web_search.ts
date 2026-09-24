@@ -49,9 +49,10 @@ function formatResults(results: readonly WebSearchResult[]) {
  * `defineTool()` values. `OPENROUTER_API_KEY` is present in the build
  * environment, so this is the same decision the runtime would make.
  *
- * The OpenRouter tool is ours, so it is withheld from Bro's own mail checks:
- * a search query could carry what an untrusted email asked it to. The gateway
- * tool is provider-managed and cannot be gated per mode.
+ * The OpenRouter tool is ours, so it is withheld from Bro's own mail checks
+ * and from report turns: a search query could carry what an untrusted email
+ * asked it to. The gateway tool is provider-managed and cannot be gated per
+ * mode.
  */
 export default openRouterActive()
   ? defineDynamic({
@@ -59,7 +60,6 @@ export default openRouterActive()
         "turn.started": (_event, context) =>
           resolveModeValue(context, {
             interactive: { web_search: openRouterWebSearch },
-            "scheduled-report": { web_search: openRouterWebSearch },
             "scheduled-worker": { web_search: openRouterWebSearch },
           }),
       },

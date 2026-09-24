@@ -217,7 +217,9 @@ export async function filterUnseenProactiveSignals<
  * all at once. Nothing is queued, and the watermark stays so the next check
  * hands the same signals over, while an earlier run is still open (no second
  * message in parallel) or once the workspace had `maxRunsPerDay` runs in the
- * last 24 hours (a busy inbox never turns into a model run per check).
+ * last 24 hours (a busy inbox never turns into a model run per check). A run
+ * carrying a calendar event passes the cap: events are few, and one that
+ * waited for the cap to reset could start before anyone heard of it.
  */
 export async function queueProactiveRun(input: {
   readonly jobId: string;
@@ -253,7 +255,10 @@ export async function queueProactiveRun(input: {
           )
         )
       );
-    if ((recent?.count ?? 0) >= input.maxRunsPerDay) {
+    const carriesEvent = input.signals.some(
+      (signal) => signal.source === "calendar"
+    );
+    if (!carriesEvent && (recent?.count ?? 0) >= input.maxRunsPerDay) {
       return { status: "capped" as const };
     }
     const [run] = await transaction

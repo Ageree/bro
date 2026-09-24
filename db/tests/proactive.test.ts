@@ -195,7 +195,7 @@ describe("proactive watches", { timeout: 30_000 }, () => {
       now,
     });
     if (!watch) throw new Error("Expected a due watch.");
-    const queue = (at: Date, signal: typeof bossMail) =>
+    const queue = (at: Date, signal: typeof bossMail | typeof flight) =>
       proactive.queueProactiveRun({
         jobId: watch.jobId,
         mailCheckedAt: at,
@@ -224,7 +224,34 @@ describe("proactive watches", { timeout: 30_000 }, () => {
     const nextMail = { ...bossMail, dedupeKey: "m2", itemId: "m2" };
     const evening = new Date(now.getTime() + 8 * 60 * 60_000);
     expect(await queue(evening, nextMail)).toEqual({ status: "capped" });
-    const nextDay = new Date(now.getTime() + 24 * 60 * 60_000 + 60_000);
+    // An upcoming event must not wait for the cap to reset: it could start
+    // before then.
+    const tomorrowFlight = {
+      ...flight,
+      dedupeKey: "flight@2026-09-24T19:00:00Z",
+    };
+    const flightRun = queuedRunId(await queue(evening, tomorrowFlight));
+    expect(flightRun).toBeDefined();
+    const [flightClaim] = await jobs.claimReadyScheduledAgentRuns({
+      kind: "proactive",
+      leaseForMs: 60_000,
+      limit: 10,
+      now: evening,
+    });
+    if (!flightRun || !flightClaim?.run.leaseToken) {
+      throw new Error("Expected the flight run to be claimed.");
+    }
+    await jobs.completeScheduledAgentRun(
+      flightRun,
+      flightClaim.run.leaseToken,
+      "turn-2",
+      { kind: "nothing_to_report", reason: "Handled." },
+      evening
+    );
+    // The flight run counts too: the cap stays on until a day after it.
+    const firstExpired = new Date(now.getTime() + 24 * 60 * 60_000 + 60_000);
+    expect(await queue(firstExpired, nextMail)).toEqual({ status: "capped" });
+    const nextDay = new Date(evening.getTime() + 24 * 60 * 60_000 + 60_000);
     expect(await queue(nextDay, nextMail)).toMatchObject({
       status: "queued",
     });
