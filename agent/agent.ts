@@ -3,13 +3,32 @@ import { scheduledRunIdentity } from "@agent/lib/schedules/identity";
 import { isScheduledAgentRunLeaseActive } from "@db/services/scheduled-agent-run-leases";
 import { getFormOfAddress, getWorkspaceModelId } from "@db/services/settings";
 import { personLanguage, replyDirective } from "@agent/lib/delivery/language";
-import { turnAskedQuestion } from "@agent/lib/delivery/questions";
-import { awaitsDelivery, turnDelivered } from "@agent/lib/delivery/pending";
+import {
+  actionsHeldForAnswer,
+  heldForAnswerNote,
+  turnAskedQuestion,
+  turnAwaitsAnswer,
+} from "@agent/lib/delivery/questions";
+import {
+  awaitsDelivery,
+  turnActed,
+  turnDelivered,
+  turnTookNoStep,
+} from "@agent/lib/delivery/pending";
+import { reportedBrowserRunId } from "@agent/lib/browser-use/report-caller";
+import { browserRunReportDelivered } from "@db/services/browser-runs";
 import { turnMustEnd, turnSends } from "@agent/lib/delivery/turn-sends";
 import { readsMustEnd } from "@agent/lib/google-workspace/turn-reads";
 import { resolveModeValue } from "@agent/lib/mode";
 import { modelSelection } from "@agent/lib/model/selection";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
+
+/**
+ * What a report turn is told when its report already reached the person in
+ * an earlier turn.
+ */
+const staleReportNote =
+  "This browser report already reached the person in an earlier turn. Do not tell them again and do not act on it: end this turn now, without a word.";
 
 export default defineAgent({
   defaultTools: false,
@@ -31,9 +50,11 @@ export default defineAgent({
         // A person's message is answered only through send_message or
         // react_to_message; plain assistant text is internal. Until one of
         // them goes through, an interactive step may not end in text. A
-        // browser run's result arrives as a message too, but the run parked
-        // on an anti-bot check is continued without a word to the person
-        // (`agent/lib/browser-use/completion.ts`), so that turn stays free.
+        // browser run's result arrives as a message too. Its first step must
+        // call a tool: gpt-6-luna answered reports with an empty step, and
+        // the turn failed before the person heard anything. The steps after
+        // it stay free, so a report can still end in a quiet `continue` on
+        // the errand (`agent/lib/browser-use/completion.ts`).
         //
         // A turn whose send was dropped — a repeat, or a rephrased status
         // with nothing new — or that used up its message limit is past its
@@ -41,10 +62,22 @@ export default defineAgent({
         // (`agent/lib/delivery/turn-sends.ts`). So is one that
         // keeps asking Google for reads the turn guard refuses
         // (`agent/lib/google-workspace/turn-reads.ts`).
+        //
+        // A report sent again after its lease — it waited behind a long turn
+        // of the person's, or `browser_task status` handed it over — has
+        // already reached them. That turn says nothing and ends.
+        const reportRunId = reportedBrowserRunId(ctx.session.auth.current);
+        const reportFirstStep =
+          reportRunId !== undefined && turnTookNoStep(ctx.messages);
+        const staleReport =
+          reportFirstStep && (await browserRunReportDelivered(reportRunId));
         const requireToolCall =
-          caller.authenticator !== "browser-result" &&
+          !staleReport &&
           (resolveModeValue(ctx, {
-            interactive: awaitsDelivery(ctx.messages),
+            interactive:
+              reportRunId === undefined
+                ? awaitsDelivery(ctx.messages)
+                : reportFirstStep,
           }) ??
             false);
         // The reply follows the language of the person's latest message,
@@ -69,12 +102,9 @@ export default defineAgent({
           getWorkspaceModelId(scope),
           writesToPerson ? getFormOfAddress(scope) : undefined,
         ]);
-        return modelSelection(modelId, {
-          // After the reply, a step with nothing to add may come back empty
-          // (gpt-6-luna does it almost every time); it ends the turn rather
-          // than failing a turn the person already has the answer to.
-          delivered: turnDelivered(ctx.messages),
-          replyNote: formOfAddress
+        const heldForAnswer = turnAwaitsAnswer(ctx.messages);
+        const notes = [
+          formOfAddress
             ? replyDirective({
                 // Once the reply is out, the note must not read as a new
                 // request: answering it is how one turn sent six messages.
@@ -83,8 +113,26 @@ export default defineAgent({
                 language: replyLanguage,
               })
             : undefined,
+          staleReport ? staleReportNote : undefined,
+          // A tool that vanished without a word is one the model says it
+          // used anyway.
+          heldForAnswer ? heldForAnswerNote : undefined,
+        ].filter((note) => note !== undefined);
+        return modelSelection(modelId, {
+          // After the reply, a step with nothing to add may come back empty
+          // (gpt-6-luna does it almost every time); it ends the turn rather
+          // than failing a turn the person already has the answer to. So
+          // does a report turn after a quiet `continue`, and one whose
+          // report the person already has.
+          delivered:
+            staleReport ||
+            turnDelivered(ctx.messages) ||
+            (reportRunId !== undefined && turnActed(ctx.messages)),
+          replyNote: notes.length > 0 ? notes.join("\n\n") : undefined,
           toolChoice:
-            turnMustEnd(ctx.messages) || readsMustEnd(ctx.messages)
+            staleReport ||
+            turnMustEnd(ctx.messages) ||
+            readsMustEnd(ctx.messages)
               ? "none"
               : requireToolCall
                 ? "required"
@@ -92,9 +140,12 @@ export default defineAgent({
           // One question per request, then Bro acts on the answer: a second
           // `ask_question` in the same turn is how a helper becomes an
           // interrogation. Approval cards stay, each is its action's consent.
-          withheldTools: turnAskedQuestion(ctx.messages)
-            ? ["ask_question"]
-            : [],
+          // A question sent as a message is answered in the person's next
+          // message, so until then nothing it asked about is undone.
+          withheldTools: [
+            ...(turnAskedQuestion(ctx.messages) ? ["ask_question"] : []),
+            ...(heldForAnswer ? actionsHeldForAnswer : []),
+          ],
         });
       },
     },

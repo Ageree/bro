@@ -85,7 +85,7 @@ describe("auth proxy matcher", () => {
 
   it("leaves provider webhook verification to the Eve channel", async () => {
     const response = await proxy(
-      new NextRequest("https://example.com/webhooks/browser-use", {
+      new NextRequest("https://example.com/eve/v1/browser-use", {
         method: "POST",
       })
     );

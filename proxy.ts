@@ -16,7 +16,7 @@ export async function proxy(request: NextRequest) {
     pathname.startsWith("/api/auth/") ||
     pathname === "/eve/v1/health" ||
     // Provider webhooks verify their own signatures inside the channel.
-    pathname.startsWith("/webhooks/") ||
+    pathname === "/eve/v1/browser-use" ||
     pathname === "/eve/v1/dev/schedules/dynamic"
   ) {
     return NextResponse.next();

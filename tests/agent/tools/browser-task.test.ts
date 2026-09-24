@@ -10,7 +10,9 @@ import {
 } from "vitest";
 import { z } from "zod";
 import type * as browserUseClient from "@agent/lib/browser-use/client";
+import type * as browserUseSecrets from "@agent/lib/browser-use/secrets";
 import type * as browserUseCredits from "@agent/lib/browser-use/credits";
+import type * as browserRunsService from "@db/services/browser-runs";
 import {
   BrowserUseError,
   type BrowserUseCreateRunInput,
@@ -221,7 +223,9 @@ const reportBrowserUseOutOfCredits = vi.hoisted(() =>
 
 type Unused = () => never;
 
-vi.mock("@db/services/browser-runs", () => ({
+vi.mock("@db/services/browser-runs", async (importOriginal) => ({
+  browserRunReportOwed: (await importOriginal<typeof browserRunsService>())
+    .browserRunReportOwed,
   claimBrowserRunCompletion,
   closeQueuedBrowserRun,
   countQueuedBrowserRuns,
@@ -266,7 +270,9 @@ vi.mock("@db/services/user-profile", () => ({
 vi.mock("@db/services/users", () => ({ readAccountPhoneNumber }));
 vi.mock("@db/services/vault", () => ({ readVaultItems, readVaultSecret }));
 vi.mock("@agent/lib/billing/quota", () => ({ browserRunQuotaGate }));
-vi.mock("@agent/lib/browser-use/secrets", () => ({
+vi.mock("@agent/lib/browser-use/secrets", async (importOriginal) => ({
+  browserSecretAliases: (await importOriginal<typeof browserUseSecrets>())
+    .browserSecretAliases,
   resolveBrowserSecretBindings,
 }));
 // The error class travels from the real module: the tool decides what to do
@@ -598,6 +604,21 @@ describe("browser_task continuation", () => {
       status: "running",
     });
     expect(continuationNote(result)).toContain(followUpRunId);
+    // The aliases alone read as noise: the note says the login is there.
+    expect(continuationNote(result)).toContain(
+      "The user's saved sign-in for this site is in the vault and bound to this run"
+    );
+    expect(continuationNote(result)).toContain(
+      "do not call request_vault_setup for this site unless the run's outcome reports Needs: password"
+    );
+  });
+
+  it("says nothing about a sign-in when none is bound", async () => {
+    readBrowserUseRunStatus.mockResolvedValue("completed");
+
+    const result = await continueErrand({});
+
+    expect(continuationNote(result)).not.toContain("saved sign-in");
   });
 
   it("treats a settled row as terminal without asking the cloud again", async () => {
@@ -3279,6 +3300,49 @@ describe("browser_task finds the option before the one card", () => {
         conversation
       )
     ).toBe("not-applicable");
+  });
+
+  it("shows no card for a continue sent while the search is still running", async () => {
+    const { browserTaskApproval } = await import("@agent/tools/browser_task");
+    // RU 24.09, d07: ten seconds after the start, before any slot was found.
+    readBrowserRunForScope.mockResolvedValue(browserRunRow());
+    const early = {
+      action: "continue" as const,
+      allowSubmit: true,
+      runId,
+      submission: {
+        ...cardSubmission,
+        personalData: ["полис ОМС", "телефон", "дата рождения"],
+        when: "следующая неделя, после 18:00",
+      },
+      task: "Запиши на найденный слот",
+    };
+
+    const refusal = await browserTaskApproval(early, conversation);
+
+    expect(refusal).toMatchObject({ type: "denied" });
+    expect(JSON.stringify(refusal)).toContain(
+      "this errand is still searching and has not reported an option yet"
+    );
+    expect(JSON.stringify(refusal)).toContain(
+      "Do not ask the user to approve anything now"
+    );
+    // A slot the person named themselves is one option: it goes on the card.
+    expect(
+      await browserTaskApproval(
+        { ...early, submission: cardSubmission },
+        conversation
+      )
+    ).toBe("user-approval");
+    // An errand retried past an anti-bot wall has found nothing yet either.
+    readBrowserRunForScope.mockResolvedValue({
+      ...browserRunRow(new Date(), "Result: проверка\nNeeds: captcha"),
+      retryAt: new Date(),
+      status: "waiting",
+    });
+    expect(await browserTaskApproval(early, conversation)).toMatchObject({
+      type: "denied",
+    });
   });
 
   it("asks once, on the card that names what the search found", async () => {

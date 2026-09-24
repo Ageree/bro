@@ -101,7 +101,9 @@ pnpm bench follow --out DIR --case d01-online-task --background-wait-min 30
 
 `--kind` у `send` — `hint` (по умолчанию для `--text`, считается
 подсказкой), `answer` (ответ о факте, которого у Бро не было), `approval`,
-`code`.
+`code`. Кейс, вставший на вопросе (`waiting-for-tester`), помнит
+неотправленные сообщения сценария (`driver.remainingSteps` в записи), и
+`send --kind answer` после ответа досылает их по порядку, как `run`.
 
 ### Журналы
 

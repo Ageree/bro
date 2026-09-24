@@ -25,7 +25,7 @@ const paymentProcessorHosts = [
   "pay.alfabank.ru",
 ];
 
-const browserSecretAliases = {
+export const browserSecretAliases = {
   cardCvc: "card_cvc",
   cardExpiry: "card_expiry",
   cardHolder: "card_holder",

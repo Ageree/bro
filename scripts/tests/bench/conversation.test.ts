@@ -348,6 +348,125 @@ describe("followCase", () => {
   }, 20_000);
 });
 
+describe("continueCase after a question", () => {
+  const question: MessageStreamEvent = {
+    data: {
+      requests: [
+        {
+          action: {
+            callId: "call_q",
+            input: {},
+            kind: "tool-call",
+            toolName: "ask_question",
+          },
+          allowFreeform: true,
+          kind: "question",
+          prompt: "Сохранить их?",
+          requestId: "req_q",
+        },
+      ],
+      sequence: 0,
+      stepIndex: 0,
+      turnId,
+    },
+    meta: meta(),
+    type: "input.requested",
+  };
+  const answered: MessageStreamEvent = {
+    data: {
+      resolutions: [
+        { kind: "question", outcome: "answered", requestId: "req_q" },
+      ],
+      sequence: 0,
+      stepIndex: 0,
+      turnId,
+    },
+    meta: meta(),
+    type: "input.resolved",
+  };
+  const steps: PlannedStep[] = [
+    step,
+    { ...step, at: "T+7д", text: "бронь с верандой на субботу" },
+    { ...step, at: "T+7д", text: "а в Казани?" },
+  ];
+
+  it("sends the rest of the script once the tester answers", async () => {
+    // RU 24.09, d13: the case ended «completed» after the answer, and the
+    // two later probes were never sent.
+    const fake = await startFakeEve((post) => {
+      if (post.route === "create")
+        return [turnStarted(), question, sessionWaiting()];
+      if (post.inputResponses) return turn(answered, delivered("сохранил"));
+      return turn(delivered(`ответ на: ${JSON.stringify(post.message)}`));
+    });
+    stopFake = () => fake.close();
+    const settings = await settingsFor(fake.url);
+    const client = new Client({ host: fake.url });
+
+    const first = await runCase(client, benchCase, steps, [], settings);
+
+    expect(first.driver.status).toBe("waiting-for-tester");
+    expect(first.driver.remainingSteps.map((each) => each.text)).toEqual([
+      "бронь с верандой на субботу",
+      "а в Казани?",
+    ]);
+    // The record on disk carries them to the next `pnpm bench send`.
+    const saved = await readRunRecord(settings.outDir, "case-under-test");
+    expect(saved.driver.remainingSteps).toHaveLength(2);
+
+    const record = await continueCase(client, saved, settings, {
+      code: undefined,
+      kind: "answer",
+      respond: (pending) =>
+        pending.map((request) => ({
+          requestId: request.requestId,
+          text: "yes",
+        })),
+      text: "yes",
+    });
+
+    expect(fake.posts.map((post) => post.message ?? "(ответ)")).toEqual([
+      "привет",
+      "(ответ)",
+      "бронь с верандой на субботу",
+      "а в Казани?",
+    ]);
+    expect(record.driver.turns.map((turnNote) => turnNote.kind)).toEqual([
+      "script",
+      "answer",
+      "script",
+      "script",
+    ]);
+    expect(record.driver.remainingSteps).toEqual([]);
+    expect(record.driver.status).toBe("completed");
+  });
+
+  it("does not run the script on for a hint", async () => {
+    const fake = await startFakeEve((post) =>
+      post.route === "create"
+        ? [turnStarted(), question, sessionWaiting()]
+        : turn(delivered("жду ответа"))
+    );
+    stopFake = () => fake.close();
+    const settings = await settingsFor(fake.url);
+    const client = new Client({ host: fake.url });
+    const first = await runCase(client, benchCase, steps, [], settings);
+
+    const record = await continueCase(client, first, settings, {
+      code: undefined,
+      kind: "hint",
+      respond: () => undefined,
+      text: "ну что там?",
+    });
+
+    expect(fake.posts.map((post) => post.message)).toEqual([
+      "привет",
+      "ну что там?",
+    ]);
+    expect(record.driver.remainingSteps).toHaveLength(2);
+  });
+});
+
 describe("continueCase", () => {
   it("sends a code into the same conversation and never writes it down", async () => {
     const fake = await startFakeEve((post) =>

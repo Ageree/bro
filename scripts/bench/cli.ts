@@ -40,6 +40,8 @@ const usage = `Бенчмарк Бро: драйвер разговоров че
                     [--dry-run]
   pnpm bench send   --out DIR --case ID (--text T | --code C | --option ID)
                     [--kind hint|answer|approval|code] [--attach FILE] [--voice FILE]
+                    (--kind answer отвечает на вопрос, на котором кейс встал,
+                    и досылает оставшиеся сообщения сценария)
   pnpm bench follow --out DIR --case ID [--background-wait-min 20]
 
 По умолчанию хост https://brobro.tech, cookie ~/.bro-bench/cookies.txt.

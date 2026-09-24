@@ -2,7 +2,10 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { defineChannel, POST } from "eve/channels";
 import { z } from "zod";
 import { settleBrowserRun } from "@agent/lib/browser-use/completion";
-import { readBrowserRun } from "@db/services/browser-runs";
+import {
+  listOpenBrowserRunIdsInSession,
+  readBrowserRun,
+} from "@db/services/browser-runs";
 import { env } from "@shared/environment";
 
 /**
@@ -108,6 +111,31 @@ function jsonObject(body: string) {
   }
 }
 
+/**
+ * The runs of this deployment an event is about. A task event names the run;
+ * a session event names only the cloud browser session, which holds the
+ * errand's open run. Settling checks the run's own status, so a run that is
+ * still working is left alone.
+ */
+async function webhookRunIds(
+  payload: z.infer<typeof webhookEventSchema>["payload"]
+) {
+  const runId = payload.run_id ?? payload.task_id;
+  if (runId) return (await readBrowserRun(runId)) ? [runId] : [];
+  if (!payload.session_id) return [];
+  if (await readBrowserRun(payload.session_id)) return [payload.session_id];
+  return listOpenBrowserRunIdsInSession(payload.session_id);
+}
+
+/**
+ * Served under `/eve/v1/`, the only prefix that reaches eve in production: a
+ * route of its own in the Build Output stopped Vercel Workflow from running
+ * turns (`bb5b1a0`). Browser Use signs up only V2 task and V3 session
+ * events; a V4 run has none, and the poller's live watch
+ * (`agent/schedules/browser-runs.ts`) is what reports it within seconds.
+ */
+const browserUseWebhookPath = "/eve/v1/browser-use";
+
 export default defineChannel({
   audience() {
     return "unknown";
@@ -117,7 +145,7 @@ export default defineChannel({
   },
   routes: [
     POST(
-      "/webhooks/browser-use",
+      browserUseWebhookPath,
       async (request, { attachSession, to, waitUntil }) => {
         const secret = env.BROWSER_USE_WEBHOOK_SECRET;
         if (!secret) return new Response(null, { status: 401 });
@@ -141,14 +169,12 @@ export default defineChannel({
         if (status !== undefined && !terminalStatuses.has(status)) {
           return new Response(null, { status: 200 });
         }
-        const runId = payload.run_id ?? payload.task_id ?? payload.session_id;
-        if (!runId) return new Response(null, { status: 200 });
+        const runIds = await webhookRunIds(payload);
         // An id this deployment never started is someone else's run, or a
         // dashboard test ping. Nothing to settle, and nothing to report.
-        if (!(await readBrowserRun(runId))) {
-          return new Response(null, { status: 200 });
+        for (const runId of runIds) {
+          waitUntil(settleBrowserRun({ attachSession, to }, runId));
         }
-        waitUntil(settleBrowserRun({ attachSession, to }, runId));
         return new Response(null, { status: 200 });
       }
     ),
