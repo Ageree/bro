@@ -4,7 +4,7 @@ import { isScheduledAgentRunLeaseActive } from "@db/services/scheduled-agent-run
 import { getFormOfAddress, getWorkspaceModelId } from "@db/services/settings";
 import { personLanguage, replyDirective } from "@agent/lib/delivery/language";
 import { awaitsDelivery } from "@agent/lib/delivery/pending";
-import { turnMustEnd } from "@agent/lib/delivery/turn-sends";
+import { turnMustEnd, turnSends } from "@agent/lib/delivery/turn-sends";
 import { readsMustEnd } from "@agent/lib/google-workspace/turn-reads";
 import { resolveModeValue } from "@agent/lib/mode";
 import { modelSelection } from "@agent/lib/model/selection";
@@ -34,9 +34,10 @@ export default defineAgent({
         // on an anti-bot check is continued without a word to the person
         // (`agent/lib/browser-use/completion.ts`), so that turn stays free.
         //
-        // A turn that already repeated a delivered message or used up its
-        // message limit is looping: its next step may only write text, which
-        // ends the turn (`agent/lib/delivery/turn-sends.ts`). So is one that
+        // A turn whose send was dropped — a repeat, or a rephrased status
+        // with nothing new — or that used up its message limit is past its
+        // answer: its next step may only write text, which ends the turn
+        // (`agent/lib/delivery/turn-sends.ts`). So is one that
         // keeps asking Google for reads the turn guard refuses
         // (`agent/lib/google-workspace/turn-reads.ts`).
         const requireToolCall =
@@ -69,7 +70,13 @@ export default defineAgent({
         ]);
         return modelSelection(modelId, {
           replyNote: formOfAddress
-            ? replyDirective({ formOfAddress, language: replyLanguage })
+            ? replyDirective({
+                // Once the reply is out, the note must not read as a new
+                // request: answering it is how one turn sent six messages.
+                answered: turnSends(ctx.messages).delivered.length > 0,
+                formOfAddress,
+                language: replyLanguage,
+              })
             : undefined,
           toolChoice:
             turnMustEnd(ctx.messages) || readsMustEnd(ctx.messages)

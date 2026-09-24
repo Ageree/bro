@@ -1,6 +1,6 @@
 import { defineHook } from "eve/hooks";
 import { scheduledRunIdentity } from "@agent/lib/schedules/identity";
-import { scheduledRunOutcomeSchema } from "@shared/schedules/outcome";
+import { workerOutcome } from "@agent/lib/schedules/outcome";
 import {
   completeScheduledAgentRun,
   deferScheduledAgentRunCompletion,
@@ -99,19 +99,7 @@ export default defineHook({
         logDeadLetterReportQueued(status, identity.runId, ctx.session.id);
         return;
       }
-      const message = event.data.message?.trim().slice(0, 4_000);
-      const outcome = scheduledRunOutcomeSchema.parse(
-        message
-          ? {
-              kind: "result",
-              summary: message,
-              urgency: "normal",
-            }
-          : {
-              kind: "nothing_to_report",
-              reason: "The scheduled task produced no useful update.",
-            }
-      );
+      const outcome = workerOutcome(event.data.message);
       const completed = await completeScheduledAgentRun(
         identity.runId,
         identity.leaseToken,

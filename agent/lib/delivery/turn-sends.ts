@@ -1,140 +1,110 @@
 import type { ModelMessage, ToolResultPart } from "ai";
 import { z } from "zod";
 import { sendMessageOutputSchema } from "@shared/chat/message-delivery";
+import { isBackgroundTurnText } from "@shared/chat/background-turn";
+import {
+  type UnperformedClaim,
+  turnActions,
+  unperformedClaim,
+  unperformedClaims,
+} from "./claims";
+import {
+  addsNothingNew,
+  codesOf,
+  namesOf,
+  namesShared,
+  nearDuplicateSimilarity,
+  normalizedText,
+  properNamesOf,
+  questionsOf,
+  type SentMessage,
+  similarity,
+} from "./novelty";
 
 /**
- * User-visible messages one turn may deliver. Nothing Bro does in a single
- * turn needs more, and a model stuck in a loop would otherwise post dozens of
- * copies to a chat the person cannot stop.
+ * User-visible messages one turn may deliver. A reply is one message; a
+ * second one is for news — a question, another option — and a third is
+ * already a lot to read. A model stuck in a loop would otherwise post copy
+ * after copy to a chat the person cannot stop.
  */
-export const turnMessageLimit = 6;
+export const turnMessageLimit = 3;
 
 /**
- * Two texts at least this similar are the same message said twice, provided
- * they carry the same specifics. A loop rarely repeats itself byte for byte:
- * it trims a word or swaps punctuation.
+ * Sends a turn may have dropped before it is ended. A dropped send means the
+ * model is past its answer and only rephrasing it, so the next step may only
+ * write the closing text.
  */
-const nearDuplicateSimilarity = 0.9;
+const skipsBeforeEnd = 1;
 
 /**
- * Skips a turn may take before it is ended. One dropped repeat can precede a
- * real answer the model still has to send; a second means it is looping.
+ * Sends returned for a rewrite before one goes through as written. A model
+ * that keeps the same claim twice is left to it, rather than leaving the
+ * person without a reply.
  */
-const skipsBeforeEnd = 2;
-
-/**
- * What a delivered send is compared by: its words, exact attachments, and the
- * specifics that make two messages from one template different.
- */
-const sentMessageSchema = z.object({
-  attachments: z.array(z.string()),
-  /** Numbers, dates, times, codes, and links exactly as written. */
-  codes: z.array(z.string()),
-  /** Capitalized words, lower-cased: names, places, and sentence openers. */
-  names: z.array(z.string()),
-  text: z.string(),
-});
-
-export type SentMessage = z.infer<typeof sentMessageSchema>;
+const rewritesBeforeYield = 2;
 
 /** A `send_message` call after its input passed the tool's schema. */
 type OutgoingMessage = z.infer<typeof sendMessageOutputSchema>;
 
-type SkipReason = "duplicate" | "limit";
+const skipReasonSchema = z.enum(["duplicate", "limit", "stale"]);
+
+type SkipReason = z.infer<typeof skipReasonSchema>;
+
+/**
+ * What `send_message` returns instead of the message when it drops a send or
+ * sends it back for a rewrite. Channels deliver only results that parse as a
+ * message, so neither reaches the person.
+ */
+export const sendRefusalSchema = z.union([
+  z.object({ skipped: skipReasonSchema }),
+  z.object({ rewrite: z.enum(unperformedClaims) }),
+]);
 
 const skippedPrefix = "Not delivered:";
+const rewritePrefix = "Not delivered, rewrite it:";
 
 const skipNotices = {
-  duplicate: `${skippedPrefix} the person already received this message in this turn. Do not send it again. Send only something new that is still missing; if nothing is, end the turn now without calling send_message.`,
+  duplicate: `${skippedPrefix} the person already received this message in this turn. Do not send it again: the reply is complete, so end the turn now without calling any tool.`,
   limit: `${skippedPrefix} this turn already delivered ${String(turnMessageLimit)} messages, the most one reply may take. End the turn now without calling any tool.`,
+  stale: `${skippedPrefix} it adds nothing to what this turn already sent — no new result, number, link, name, option or question, only the same status in other words. The person already has your answer and knows the outcome will follow. End the turn now without calling any tool.`,
 } as const satisfies Record<SkipReason, string>;
+
+const rewriteNotices = {
+  browser: `${rewritePrefix} it says something already happened on the site — a code entered, a page opened, a new code requested, a slot confirmed, a booking or an order made — but the browser run in this turn was only handed the errand and has done nothing yet (status running). Say that you started it or passed the message on and that you will send what it finds; claim only what a tool result in this turn shows.`,
+  calendar: `${rewritePrefix} it says the calendar is being or has been changed, but no calendar event was created, changed or deleted in this turn. Make the change with the calendar tool first and report its result, or say you will add it once the person confirms the details; never present a slot you picked yourself as booked.`,
+} as const satisfies Record<UnperformedClaim, string>;
 
 /** The tool result the model reads for a send that was dropped. */
 export function skippedSendNotice(reason: SkipReason) {
   return skipNotices[reason];
 }
 
-function normalizedText(text: string) {
-  const lower = text.normalize("NFKC").toLocaleLowerCase();
-  const words = lower.replace(/[^\p{L}\p{N}]+/gu, " ").trim();
-  // A message of only emoji or punctuation is compared as written.
-  return words || lower.replace(/\s+/gu, " ").trim();
-}
-
-/**
- * Numbers, dates, times, codes, and links exactly as written, before any
- * normalization: two messages from one template, such as the outbound and the
- * return flight, or payment links that differ only in punctuation, differ in
- * these, so they are never repeats of each other.
- */
-function codesOf(text: string) {
-  const tokens = text
-    .normalize("NFKC")
-    .split(/\s+/u)
-    .map((token) => token.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}/]+$/gu, ""))
-    .filter(
-      (token) =>
-        /\p{N}/u.test(token) ||
-        // Identifier-shaped codes such as `order_ab` or `abc-def`.
-        /[\p{L}\p{N}][-_][\p{L}\p{N}]/u.test(token) ||
-        token.includes("://")
-    );
-  return [...new Set(tokens)].toSorted();
-}
-
-/**
- * Every capitalized word, the first one of a sentence included, so «Анна
- * придёт» and «Мария придёт» stay different messages.
- */
-function namesOf(text: string) {
-  const words = text.normalize("NFKC").match(/\p{Lu}[\p{L}\p{M}]*/gu) ?? [];
-  return [...new Set(words.map((word) => word.toLocaleLowerCase()))].toSorted();
+/** The tool result the model reads for a send it has to rewrite. */
+export function rewriteSendNotice(claim: UnperformedClaim) {
+  return rewriteNotices[claim];
 }
 
 /** The comparable form of a message `send_message` was asked to send. */
 export function sentMessageOf(message: OutgoingMessage): SentMessage {
   if (message.kind === "link") {
-    return { attachments: [message.url], codes: [], names: [], text: "" };
+    return {
+      attachments: [message.url],
+      codes: [],
+      names: [],
+      properNames: [],
+      questions: [],
+      text: "",
+    };
   }
   const text = message.text ?? "";
   return {
     attachments: (message.attachments ?? []).map(({ url }) => url).toSorted(),
     codes: codesOf(text),
     names: namesOf(text),
+    properNames: properNamesOf(text),
+    questions: questionsOf(text),
     text: normalizedText(text),
   };
-}
-
-function bigrams(text: string) {
-  const counts = new Map<string, number>();
-  for (let index = 0; index < text.length - 1; index += 1) {
-    const pair = text.slice(index, index + 2);
-    counts.set(pair, (counts.get(pair) ?? 0) + 1);
-  }
-  return counts;
-}
-
-/** Sørensen–Dice similarity of two texts over character bigrams, 0 to 1. */
-function similarity(left: string, right: string) {
-  if (left === right) return 1;
-  if (left.length < 2 || right.length < 2) return 0;
-  const leftPairs = bigrams(left);
-  const rightPairs = bigrams(right);
-  let shared = 0;
-  for (const [pair, count] of leftPairs) {
-    shared += Math.min(count, rightPairs.get(pair) ?? 0);
-  }
-  return (2 * shared) / (left.length - 1 + (right.length - 1));
-}
-
-/**
- * Whether each name of one message also occurs as a word of the other. A
- * sentence opener that only changed case, «Готово! Напомню» after «Готово,
- * напомню», still occurs; a different person or place does not.
- */
-function namesShared(message: SentMessage, other: SentMessage) {
-  const words = new Set(other.text.split(" "));
-  return message.names.every((name) => words.has(name));
 }
 
 function isRepeat(message: SentMessage, earlier: SentMessage) {
@@ -147,31 +117,57 @@ function isRepeat(message: SentMessage, earlier: SentMessage) {
   );
 }
 
-/**
- * Why a send must not reach the person, given what this turn already
- * delivered, or nothing when it may go out.
- */
-export function sendSkipReason(
+/** Whether a message says again what one of the delivered ones said. */
+export function repeatsDelivered(
   outgoing: OutgoingMessage,
   delivered: readonly SentMessage[]
-): SkipReason | undefined {
-  if (delivered.length >= turnMessageLimit) return "limit";
+) {
   const message = sentMessageOf(outgoing);
-  if (delivered.some((earlier) => isRepeat(message, earlier))) {
-    return "duplicate";
+  return delivered.some((earlier) => isRepeat(message, earlier));
+}
+
+/**
+ * Why a send must not reach the person as written, given what this turn
+ * already did, or nothing when it may go out. A skip drops it for good; a
+ * claim sends it back to be rewritten.
+ */
+export function sendRefusal(
+  outgoing: OutgoingMessage,
+  turn: ReturnType<typeof turnSends>
+): z.infer<typeof sendRefusalSchema> | undefined {
+  const { delivered } = turn;
+  if (delivered.length >= turnMessageLimit) return { skipped: "limit" };
+  if (repeatsDelivered(outgoing, delivered)) return { skipped: "duplicate" };
+  if (
+    addsNothingNew(sentMessageOf(outgoing), delivered, {
+      afterWork: turn.workSinceDelivery,
+    })
+  ) {
+    return { skipped: "stale" };
   }
+  if (turn.rewrites >= rewritesBeforeYield || outgoing.kind !== "message") {
+    return undefined;
+  }
+  const claim = unperformedClaim(outgoing.text ?? "", turn.actions);
+  return claim ? { rewrite: claim } : undefined;
+}
+
+function refusalOf(output: ToolResultPart["output"]) {
+  if (output.type !== "text") return undefined;
+  if (output.value.startsWith(skippedPrefix)) return "skipped" as const;
+  if (output.value.startsWith(rewritePrefix)) return "rewrite" as const;
   return undefined;
 }
 
 /**
  * Whether a `send_message` result is a message the person received: not a
- * failure, a refusal, or a send this guard dropped.
+ * failure, a refusal, or a send this guard dropped or returned.
  */
 export function sendReachedPerson(output: ToolResultPart["output"]) {
   if (output.type.startsWith("error") || output.type === "execution-denied") {
     return false;
   }
-  return !(output.type === "text" && output.value.startsWith(skippedPrefix));
+  return refusalOf(output) === undefined;
 }
 
 const taggedMessageSchema = z.object({ kind: z.string() });
@@ -197,41 +193,69 @@ export function currentTurnMessages(messages: readonly ModelMessage[]) {
   return start === -1 ? messages : messages.slice(start + 1);
 }
 
+function openingText(message: ModelMessage | undefined) {
+  if (!message) return "";
+  if (!Array.isArray(message.content)) return message.content;
+  return message.content
+    .flatMap((part) => (part.type === "text" ? [part.text] : []))
+    .join("\n");
+}
+
+/** Tools whose result is the reply itself rather than work towards it. */
+const deliveryTools = new Set(["react_to_message", "send_message"]);
+
 /**
  * What `send_message` did so far in the current turn: the messages that
- * reached the person, and how many sends were dropped as repeats or over the
- * limit.
+ * reached the person, how many sends were dropped or sent back for a
+ * rewrite, whether other tools ran since the last delivery, and what the
+ * turn did that a message could claim. It rides in the durable closure of
+ * `send_message`, so it stays plain JSON.
  */
 export function turnSends(messages: readonly ModelMessage[]) {
+  const start = messages.findLastIndex(startsTurn);
+  const turn = start === -1 ? messages : messages.slice(start + 1);
   const inputs = new Map<string, OutgoingMessage>();
   const delivered: SentMessage[] = [];
   let skipped = 0;
-  for (const message of currentTurnMessages(messages)) {
+  let rewrites = 0;
+  let workSinceDelivery = false;
+  for (const message of turn) {
     const parts = Array.isArray(message.content) ? message.content : [];
     for (const part of parts) {
       if (part.type === "tool-call" && part.toolName === "send_message") {
         const input = sendMessageOutputSchema.safeParse(part.input).data;
         if (input) inputs.set(part.toolCallId, input);
       }
-      if (part.type !== "tool-result" || part.toolName !== "send_message") {
+      if (part.type !== "tool-result") continue;
+      if (!deliveryTools.has(part.toolName)) {
+        workSinceDelivery = true;
         continue;
       }
-      const { output } = part;
-      if (output.type === "text" && output.value.startsWith(skippedPrefix)) {
-        skipped += 1;
-        continue;
-      }
-      if (!sendReachedPerson(output)) continue;
+      if (part.toolName !== "send_message") continue;
+      const refusal = refusalOf(part.output);
+      if (refusal === "skipped") skipped += 1;
+      if (refusal === "rewrite") rewrites += 1;
+      if (!sendReachedPerson(part.output)) continue;
       const input = inputs.get(part.toolCallId);
-      if (input) delivered.push(sentMessageOf(input));
+      if (!input) continue;
+      delivered.push(sentMessageOf(input));
+      workSinceDelivery = false;
     }
   }
-  return { delivered, skipped };
+  return {
+    actions: turnActions(turn, start === -1 ? [] : messages.slice(0, start), {
+      background: isBackgroundTurnText(openingText(messages[start])),
+    }),
+    delivered,
+    rewrites,
+    skipped,
+    workSinceDelivery,
+  };
 }
 
 /**
- * Whether the turn has to end now: the model kept repeating delivered
- * messages or used up the limit, so another step may only write the closing
+ * Whether the turn has to end now: the model sent something that added
+ * nothing, or used up the limit, so another step may only write the closing
  * text.
  */
 export function turnMustEnd(messages: readonly ModelMessage[]) {

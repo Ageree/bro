@@ -1,5 +1,6 @@
 import type { ModelMessage } from "ai";
 import { z } from "zod";
+import { sendReachedPerson } from "./turn-sends";
 
 /** Tools whose successful call is the reply a person actually sees. */
 const deliveryToolNames = new Set(["send_message", "react_to_message"]);
@@ -15,6 +16,10 @@ function userMessageKind(message: ModelMessage) {
   return taggedMessageSchema.safeParse(message).data?.kind ?? "user";
 }
 
+/**
+ * A send `send_message` dropped or returned for a rewrite completes too, but
+ * nobody received it, so the person is still waiting.
+ */
 function deliveredByTool(message: ModelMessage) {
   return (
     message.role === "tool" &&
@@ -22,9 +27,7 @@ function deliveredByTool(message: ModelMessage) {
       (part) =>
         part.type === "tool-result" &&
         deliveryToolNames.has(part.toolName) &&
-        !["error-json", "error-text", "execution-denied"].includes(
-          part.output.type
-        )
+        sendReachedPerson(part.output)
     )
   );
 }

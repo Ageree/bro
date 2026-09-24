@@ -19,11 +19,9 @@ describe("send_message channel notes", () => {
         text: "Here it is.",
       });
 
-      expect(output).toEqual({
-        type: "text",
-        value:
-          "The message was submitted to the active channel. Do not repeat it in assistant text.",
-      });
+      expect(output?.type === "text" ? output.value : "").toMatch(
+        /^The message was submitted to the active channel\. Do not repeat or rephrase it/u
+      );
     }
   );
 
@@ -87,6 +85,51 @@ describe("send_message in a looping turn", () => {
     });
     expect(modelOutput?.type === "text" ? modelOutput.value : "").toContain(
       "Do not send it again"
+    );
+  });
+
+  it("returns a claim the run has not made yet for a rewrite", async () => {
+    const claim = {
+      kind: "message" as const,
+      text: "код ввёл — кабинет открылся, смотрю штрафы.",
+    };
+    const sendMessage = await resolveSendMessage("channel:eve", [
+      personMessage("код от госуслуг: 123456"),
+      {
+        content: [
+          {
+            input: { action: "continue" },
+            toolCallId: "call-1",
+            toolName: "browser_task",
+            type: "tool-call" as const,
+          },
+        ],
+        role: "assistant" as const,
+      },
+      {
+        content: [
+          {
+            output: {
+              type: "json" as const,
+              value: { runId: "run-2", status: "running" },
+            },
+            toolCallId: "call-1",
+            toolName: "browser_task",
+            type: "tool-result" as const,
+          },
+        ],
+        role: "tool" as const,
+      },
+    ]);
+
+    const output = await sendMessage.execute(claim, toolContext());
+    expect(output).toEqual({ rewrite: "browser" });
+    expect(sendMessageOutputSchema.safeParse(output).success).toBe(false);
+    const modelOutput = await sendMessage.toModelOutput?.({
+      rewrite: "browser",
+    });
+    expect(modelOutput?.type === "text" ? modelOutput.value : "").toContain(
+      "has done nothing yet"
     );
   });
 

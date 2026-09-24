@@ -112,6 +112,19 @@ const ownWordsOnly =
   "Это про твои собственные слова человеку; письма и тексты, которые пишешь от его имени или для других людей, пиши в нужном им роде и обращении.";
 
 /**
+ * The note comes after everything else in the prompt, so once the reply went
+ * out it sits right after its tool result and reads like a fresh request or a
+ * remark on what was just sent. In the 24.09 benchmark the model answered it
+ * six times in one turn — «перешёл на «вы»» after a note that says the
+ * person asked for «вы» — and opened another with «Прошу прощения,
+ * поправлюсь». After a delivery the note says it is neither.
+ */
+const answeredNotes = {
+  en: "Your reply to the person's latest message has already been delivered in this turn. This note is not a new message and not a remark on what you sent: do not answer it, repeat, restate or correct what was sent. It only sets the style of a further message, which you send only with something new; otherwise end the turn without calling any tool.",
+  ru: "Ответ на последнее сообщение человека в этом ходе уже доставлен. Эта пометка — не новое сообщение и не замечание к отправленному: не отвечай на неё, не повторяй, не пересказывай и не поправляй отправленное. Она лишь задаёт стиль следующего сообщения, а его шли, только если есть что-то новое; иначе закончи ход без вызова инструментов.",
+} as const satisfies Record<ReplyLanguage, string>;
+
+/**
  * The note the model reads last on every step that may write to the person.
  * Standing rules sit in the middle of a long Russian prompt, and a small
  * model ignored them: it answered English in Russian, spoke of itself in
@@ -125,14 +138,18 @@ const ownWordsOnly =
  * what they want.
  */
 export function replyDirective({
+  answered = false,
   formOfAddress,
   language,
 }: {
+  /** Whether this turn already delivered a message to the person. */
+  readonly answered?: boolean;
   readonly formOfAddress: FormOfAddress;
   readonly language: ReplyLanguage | undefined;
 }) {
   if (language === "en") {
     return [
+      ...(answered ? [answeredNotes.en] : []),
       replyLanguageDirectives.en,
       ...(formOfAddress.name
         ? [`Call the person «${formOfAddress.name}», as they asked.`]
@@ -144,9 +161,13 @@ export function replyDirective({
     ...russianAddress(formOfAddress),
     ownWordsOnly,
   ];
-  return language === "ru"
-    ? [replyLanguageDirectives.ru, ...voice].join(" ")
-    : ["Когда пишешь человеку по-русски:", ...voice].join(" ");
+  return [
+    ...(answered ? [answeredNotes.ru] : []),
+    ...(language === "ru"
+      ? [replyLanguageDirectives.ru]
+      : ["Когда пишешь человеку по-русски:"]),
+    ...voice,
+  ].join(" ");
 }
 
 /**

@@ -1,6 +1,7 @@
 import type { ModelMessage } from "ai";
 import { describe, expect, it } from "vitest";
 import { awaitsDelivery } from "@agent/lib/delivery/pending";
+import { rewriteSendNotice } from "@agent/lib/delivery/turn-sends";
 
 describe("awaitsDelivery", () => {
   it("waits on a person's message nothing has answered yet", () => {
@@ -46,6 +47,19 @@ describe("awaitsDelivery", () => {
       ).toBe(true);
     }
   );
+
+  it("keeps waiting after a send returned for a rewrite", () => {
+    expect(
+      awaitsDelivery([
+        userMessage("код 123456"),
+        toolCall("send_message"),
+        toolResult("send_message", {
+          type: "text",
+          value: rewriteSendNotice("browser"),
+        }),
+      ])
+    ).toBe(true);
+  });
 
   it("waits again when the person writes after a delivered reply", () => {
     expect(

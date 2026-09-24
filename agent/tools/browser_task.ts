@@ -179,6 +179,17 @@ const inputSchema = z.object({
     ),
 });
 
+/**
+ * `running` only means the run was handed the errand. A second after
+ * `continue` with a code, Bro told the person «код ввёл — кабинет открылся»
+ * and «запросил новый код», and nothing had happened on the site yet.
+ * `send_message` also returns such a claim for a rewrite
+ * (`agent/lib/delivery/claims.ts`).
+ */
+function nothingDoneYetNote(codeTyped = false) {
+  return `Nothing ${codeTyped ? "else " : ""}has happened on the site yet: the run has only been handed this. Tell the user you started it (or passed their message on) and that you will send what it finds; never say that ${codeTyped ? "" : "a code was entered, "}a page opened, a new code was requested, or anything was confirmed, booked or ordered until its outcome says so.`;
+}
+
 const liveViewPollMs = 1_000;
 const liveViewPollAttempts = 8;
 
@@ -426,11 +437,20 @@ function budgetLine(allowPayment: boolean) {
  * person heard nothing until they asked. Ending the run at once is what
  * makes the question reach them within the minute: the poller settles it on
  * its next tick, and the page stays open for the answer.
+ *
+ * On 24.09 a Госуслуги run still sat on the SMS page a quarter of an hour
+ * later, the whole search budget: the SMS reached the person's phone, Bro had
+ * not asked for it, and the code expired before it was typed. The rule came
+ * after the home, search and budget paragraphs, where the budget read as
+ * leave to wait and «move on to another site» as a way around the prompt, so
+ * it now comes straight after the errand, says why waiting cannot work, and
+ * outranks both.
  */
 function personStepLine() {
   return [
-    "When the site asks for something only the person has — a one-time code sent by SMS or email, an approval in their app, a 3-D Secure step, or a password that is not attached — stop there at once: do not wait for a code to arrive, do not reload, resend the code or look for another way in.",
-    "End your final answer right away with NEEDS: sms_code, email_code, push, 3ds or password, and say in DETAILS what the page asks for and where the code went (the masked phone number or email it shows). The page stays open, and the person's answer is typed into it.",
+    "First rule of this run: when the site asks for something only the person has — a one-time code sent by SMS or email, an approval in their app, a 3-D Secure step, or a password that is not attached — and this task does not already give it to you, stop there at once and end your final answer.",
+    "Nobody can give you that code while you are running: it goes to the person's phone or inbox, and they can hand it over only after your final answer reaches them. Waiting on the page, reloading, resending the code or looking for another way in or another site only lets the code expire. This comes before the time budget and the fallback sites below.",
+    "End your final answer with NEEDS: sms_code, email_code, push, 3ds or password, and say in DETAILS what the page asks for and where the code went (the masked phone number or email it shows). The page stays open, and the person's answer is typed into it.",
   ].join(" ");
 }
 
@@ -454,6 +474,7 @@ export function composeBrowserTask(options: {
     options.site
       ? `${options.errand}\n\nSite: ${options.site}`
       : options.errand,
+    personStepLine(),
     homeLine(options.home),
     searchLine(),
     commitmentLine(options.consent),
@@ -461,7 +482,6 @@ export function composeBrowserTask(options: {
     budgetLine(options.allowPayment),
     options.consent ? options.facts : undefined,
     credentialsLine(options.aliases),
-    personStepLine(),
     captchaLine(),
     imagesContract(options.collectImages),
     outcomeContract(),
@@ -500,6 +520,7 @@ export function composeBrowserContinuation(options: {
     ]
       .filter((line) => line !== undefined)
       .join("\n"),
+    personStepLine(),
     options.done === true && options.consent === undefined
       ? errandDoneLine
       : undefined,
@@ -508,7 +529,6 @@ export function composeBrowserContinuation(options: {
     options.searching ? budgetLine(options.allowPayment) : undefined,
     options.consent ? options.facts : undefined,
     credentialsLine(options.aliases),
-    personStepLine(),
     captchaLine(),
     imagesContract(options.collectImages),
     outcomeContract(),
@@ -1589,6 +1609,7 @@ export const browserTask = defineTool({
         liveViewUrl,
         note: [
           "The run continues in the background. Its outcome arrives as a new message; do not poll for it.",
+          nothingDoneYetNote(),
           spend?.decision.allowed
             ? `The payment fits the standing spend limit the user set (${formatRub(spend.decision.exposureRub)} reserved, ${formatRub(spend.decision.remainingAfterRub)} left this month), so do not ask them about it: report the receipt once the outcome arrives.`
             : undefined,
@@ -1757,10 +1778,12 @@ export const browserTask = defineTool({
             carriesPayment: true,
             kind: "replied" as const,
             reply: {
-              note:
+              note: [
                 codeEntryNote(codeEntry) === undefined
                   ? "The message was queued into the running errand. Its outcome still arrives as a new message."
                   : "The code went straight into the page, and the message was queued into the running errand as well. Its outcome still arrives as a new message.",
+                nothingDoneYetNote(codeEntryNote(codeEntry) !== undefined),
+              ].join(" "),
               runId,
               status: row.status,
             },
@@ -1961,6 +1984,7 @@ export const browserTask = defineTool({
             ? undefined
             : "The previous browser session was not reused — it was gone, or it had ended against an anti-bot check — so the follow-up opened a fresh browser on the same profile, on a new address; the signed-in cookies came with it.",
           "The outcome arrives as a new message; do not poll for it.",
+          nothingDoneYetNote(),
         ]
           .filter((line) => line !== undefined)
           .join(" "),

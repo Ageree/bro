@@ -1027,13 +1027,15 @@ export async function deferScheduledReport(
 
 /**
  * Ends a claimed report that must reach nobody, e.g. after the person turned
- * proactive messages off. Unlike a suppressed report, it also closes a run
+ * proactive messages off (`suppressed`), or when the worker handed nothing
+ * over (`not_needed`). Unlike a suppressed report, it also closes a run
  * parked on a question, since that question will now never be asked.
  */
 export async function dropScheduledReport(
   runId: string,
   reportLeaseToken: string,
-  now = new Date()
+  now = new Date(),
+  reportStatus: "not_needed" | "suppressed" = "suppressed"
 ) {
   const [run] = await db
     .update(scheduledAgentRuns)
@@ -1044,7 +1046,7 @@ export async function dropScheduledReport(
       pendingInputRequests: null,
       reportLeaseExpiresAt: null,
       reportLeaseToken: null,
-      reportStatus: "suppressed",
+      reportStatus,
       status: sql`CASE WHEN ${scheduledAgentRuns.status} = 'waiting_for_input' THEN 'completed' ELSE ${scheduledAgentRuns.status} END`,
       updatedAt: now,
     })

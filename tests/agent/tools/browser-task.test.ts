@@ -3363,4 +3363,48 @@ describe("browser_task finds the option before the one card", () => {
     expect(task).toContain("end with NEEDS: decision");
     expect(task).toContain("NEEDS: payment");
   });
+
+  it("ends a run at a code prompt before any budget or fallback site", async () => {
+    // A Госуслуги run sat on the SMS page for its whole search budget, and
+    // the code the person got expired before anyone asked for it.
+    const { composeBrowserContinuation, composeBrowserTask } =
+      await import("@agent/tools/browser_task");
+
+    const task = composeBrowserTask({
+      aliases: ["login_username", "login_password"],
+      allowPayment: false,
+      collectImages: false,
+      consent: undefined,
+      errand: "Посмотри штрафы и налоги в личном кабинете",
+      facts: undefined,
+      home: "Москва, Россия",
+      site: "https://www.gosuslugi.ru",
+    });
+    const rule = task.indexOf("First rule of this run");
+
+    expect(rule).toBeGreaterThan(
+      task.indexOf("Site: https://www.gosuslugi.ru")
+    );
+    expect(rule).toBeLessThan(task.indexOf("The person lives in"));
+    expect(rule).toBeLessThan(task.indexOf("minutes searching"));
+    expect(task).toContain(
+      "Nobody can give you that code while you are running"
+    );
+    expect(task).toContain("This comes before the time budget");
+
+    const continuation = composeBrowserContinuation({
+      aliases: [],
+      allowPayment: false,
+      collectImages: false,
+      consent: undefined,
+      errand: "Посмотри штрафы",
+      facts: undefined,
+      message: "Код истёк. Запроси новый код.",
+      searching: true,
+      site: "https://www.gosuslugi.ru",
+    });
+    expect(continuation.indexOf("First rule of this run")).toBeLessThan(
+      continuation.indexOf("minutes searching")
+    );
+  });
 });
