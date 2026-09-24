@@ -4,14 +4,22 @@ import {
   readBrowserUseRunStatus,
 } from "@agent/lib/browser-use/client";
 import {
+  maximumCaptchaAttempts,
+  startCaptchaRetry,
+} from "@agent/lib/browser-use/captcha-retry";
+import { reconcileSpendReservations } from "@agent/lib/browser-use/spend";
+import {
   deliverBrowserRunReport,
   expireBrowserRun,
+  reportWalledBrowserRun,
   settleBrowserRun,
   type BrowserRunDelivery,
 } from "@agent/lib/browser-use/completion";
 import {
+  claimDueBrowserRunRetries,
   listPendingBrowserRunReports,
   listUnsettledBrowserRuns,
+  parkBrowserRunForRetry,
 } from "@db/services/browser-runs";
 
 // A webhook that never arrives must not strand an errand, so every open run is
@@ -37,6 +45,12 @@ async function reconcileBrowserRuns(delivery: BrowserRunDelivery) {
     staleBefore: new Date(now.getTime() - settleAfterMs),
   });
   await Promise.all(runs.map((run) => reconcileBrowserRun(delivery, run, now)));
+  // Errands parked on an anti-bot wall get their next attempt when it is due.
+  const retries = await claimDueBrowserRunRetries(now, pollLimit);
+  await Promise.all(
+    retries.map((retry) => retryWalledBrowserRun(delivery, retry, now))
+  );
+  await safeReconcileSpend(now);
   // A report still pending here is one whose delivery failed; it is retried
   // every poll until it lands or runs out of attempts.
   const reports = await listPendingBrowserRunReports(pollLimit);
@@ -67,6 +81,53 @@ async function reconcileBrowserRun(
     console.warn("[browser-use] run reconciliation failed", {
       cause: error,
       runId: run.id,
+    });
+  }
+}
+
+const retryAgainAfterMs = 60_000;
+
+/**
+ * A step that throws here would otherwise leave the errand until the claim's
+ * lease runs out. It is parked again for the next poll instead — marked as
+ * out of attempts when it was, so that poll reports the wall rather than
+ * starting another run.
+ */
+async function retryWalledBrowserRun(
+  delivery: BrowserRunDelivery,
+  run: Awaited<ReturnType<typeof claimDueBrowserRunRetries>>[number],
+  now: Date
+) {
+  let exhausted = run.captchaAttempt >= maximumCaptchaAttempts;
+  try {
+    const retry = await startCaptchaRetry(run, now);
+    exhausted = retry.status === "exhausted";
+    if (exhausted) await reportWalledBrowserRun(delivery, run.id);
+  } catch (error) {
+    console.warn("[browser-use] anti-bot retry failed", {
+      cause: error,
+      runId: run.id,
+    });
+    try {
+      await parkBrowserRunForRetry(run.id, {
+        captchaAttempt: exhausted ? maximumCaptchaAttempts : run.captchaAttempt,
+        retryAt: new Date(now.getTime() + retryAgainAfterMs),
+      });
+    } catch (parkError) {
+      console.warn("[browser-use] the failed retry could not be parked", {
+        cause: parkError,
+        runId: run.id,
+      });
+    }
+  }
+}
+
+async function safeReconcileSpend(now: Date) {
+  try {
+    await reconcileSpendReservations(now);
+  } catch (error) {
+    console.warn("[browser-use] spend reservations could not be reconciled", {
+      cause: error,
     });
   }
 }

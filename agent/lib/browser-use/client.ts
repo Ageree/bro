@@ -46,6 +46,12 @@ const workspaceFileListSchema = z.object({
   nextCursor: z.string().nullable().optional(),
 });
 
+const runListSchema = z.object({
+  hasMore: z.boolean().optional(),
+  nextCursor: z.string().nullable().optional(),
+  runs: z.array(runSummarySchema),
+});
+
 const runStatusResponseSchema = z.object({ status: runStatusSchema });
 
 const runEventsResponseSchema = z.object({
@@ -164,6 +170,28 @@ export async function createBrowserUseRun(input: BrowserUseCreateRunInput) {
   );
 }
 
+/**
+ * The newest run whose task carries this exact line, looked for among the
+ * project's most recent runs, newest first. Browser Use takes no idempotency
+ * key, so a line written into the task is how a run started just before a
+ * crash is found again rather than started twice.
+ */
+export async function findRecentBrowserUseRunByTaskLine(
+  line: string,
+  pages = 3,
+  cursor?: string
+): Promise<z.infer<typeof runSummarySchema> | undefined> {
+  const query = new URLSearchParams({ limit: "50" });
+  if (cursor !== undefined) query.set("cursor", cursor);
+  const page = runListSchema.parse(
+    await request("GET", `/runs?${query.toString()}`)
+  );
+  const found = page.runs.find((run) => run.task.split("\n").includes(line));
+  if (found) return found;
+  if (pages <= 1 || !page.hasMore || !page.nextCursor) return undefined;
+  return findRecentBrowserUseRunByTaskLine(line, pages - 1, page.nextCursor);
+}
+
 export async function readBrowserUseRun(runId: string) {
   return runSummarySchema.parse(
     await request("GET", `/runs/${encodeURIComponent(runId)}`)
@@ -238,6 +266,51 @@ export async function findBrowserUseSessionCdpUrl(sessionId: string) {
   return browser?.cdpUrl ?? undefined;
 }
 
+const sessionInfoSchema = z.object({
+  latestRunId: z.string().min(1),
+  status: runStatusSchema,
+});
+
+/**
+ * Stop every live browser a session holds, once the run that just settled is
+ * still the session's latest and it has ended. A profile keeps the cookies of
+ * the browsers that ran on it — the sign-ins and the trust a site handed out
+ * after a passed check — and stopping the browser is what hands them back to
+ * the profile now rather than whenever the idle cleanup gets to it. A
+ * follow-up that started in the same session in the meantime owns the browser
+ * now, and keeps it.
+ */
+export async function stopBrowserUseSessionBrowsers(
+  sessionId: string,
+  settledRunId: string
+) {
+  const session = sessionInfoSchema.parse(
+    await request("GET", `/sessions/${encodeURIComponent(sessionId)}`)
+  );
+  if (
+    session.latestRunId !== settledRunId ||
+    !["cancelled", "completed", "failed"].includes(session.status)
+  ) {
+    return 0;
+  }
+  const { items } = browserSessionListSchema.parse(
+    await request("GET", "/browsers")
+  );
+  const live = items.filter(
+    (item) => item.agentSessionId === sessionId && item.status === "active"
+  );
+  await Promise.all(
+    live.map((item) =>
+      request(
+        "PATCH",
+        `/browsers/${encodeURIComponent(item.id)}`,
+        JSON.stringify({ action: "stop" })
+      )
+    )
+  );
+  return live.length;
+}
+
 export async function cancelBrowserUseRun(runId: string) {
   return runSummarySchema.parse(
     await request("POST", `/runs/${encodeURIComponent(runId)}/cancel`, "{}")
@@ -265,7 +338,7 @@ export function liveViewUrlFromEvents(
 }
 
 async function request(
-  method: "DELETE" | "GET" | "POST",
+  method: "DELETE" | "GET" | "PATCH" | "POST",
   path: string,
   body?: string
 ) {

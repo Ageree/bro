@@ -105,7 +105,7 @@ export const settings = pgTable(
   {
     workspaceId: text("workspace_id").notNull(),
     key: text("key", {
-      enum: ["gateway_model", "google_workspace_access"],
+      enum: ["gateway_model", "google_workspace_access", "spend_limit"],
     }).notNull(),
     value: text("value").notNull(),
   },
@@ -121,7 +121,7 @@ export const settings = pgTable(
     }).onDelete("cascade"),
     check(
       "settings_key_check",
-      sql`${table.key} IN ('gateway_model', 'google_workspace_access')`
+      sql`${table.key} IN ('gateway_model', 'google_workspace_access', 'spend_limit')`
     ),
   ]
 );
