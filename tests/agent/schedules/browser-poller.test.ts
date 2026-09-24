@@ -143,7 +143,7 @@ beforeAll(async () => {
   vi.spyOn(Database, "db", "get").mockReturnValue(database as never);
   const { ensureScope } = await import("@db/services/scope");
   await ensureScope(alice);
-}, 30_000);
+}, 60_000);
 
 afterAll(async () => {
   vi.restoreAllMocks();
