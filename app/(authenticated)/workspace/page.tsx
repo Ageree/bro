@@ -16,6 +16,7 @@ import { Button } from "@web/components/ui/button";
 import { getAuthSession } from "@db/services/auth/session";
 import { paidPeriodDays, readBillingState } from "@db/services/billing";
 import { readChannelIdentity } from "@db/services/channel-identities";
+import { wakeProactiveWatch } from "@db/services/proactive";
 import {
   getGoogleWorkspaceAccess,
   getWorkspaceModelId,
@@ -93,15 +94,30 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
     listVaultItems(scope),
     readSpendLimit(scope),
   ]);
+  if (google === "connected" && googleWorkspace.state === "connected") {
+    // Connect sends the person back here after consent. Bro's own mail and
+    // calendar checks, put off for hours while no grant existed, resume now.
+    // A plain visit wakes nothing: a grant the checks cannot use would leave
+    // its backoff every time the cabinet opens.
+    try {
+      await wakeProactiveWatch(scope);
+    } catch (error) {
+      console.warn("[proactive] could not wake the checks", { cause: error });
+    }
+  }
   const openRouter = openRouterActive();
   const imageStorageReady = Boolean(
     env.BLOB_STORE_ID ?? env.BLOB_READ_WRITE_TOKEN
   );
   const browserReady = env.BROWSER_USE_API_KEY !== undefined;
   const timeZone = resolveTimeZone(profile.timezone);
-  const spendEntries = spendLimit
-    ? await listSpendEntries(scope, localMonthKey(new Date(), timeZone))
-    : [];
+  const spendMonth = localMonthKey(new Date(), timeZone);
+  const [spendEntries, standingEntries] = spendLimit
+    ? await Promise.all([
+        listSpendEntries(scope, spendMonth),
+        listSpendEntries(scope, spendMonth, { source: "standing" }),
+      ])
+    : [[], []];
   const when = new Intl.DateTimeFormat("ru-RU", {
     dateStyle: "long",
     timeStyle: "short",
@@ -140,7 +156,11 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
       ) : null}
 
       <LimitsSection paid={billing.paid} paidUntil={billing.paidUntil} />
-      <SpendLimitSection entries={spendEntries} policy={spendLimit} />
+      <SpendLimitSection
+        entries={spendEntries}
+        policy={spendLimit}
+        standingEntries={standingEntries}
+      />
       <PaymentsSection
         paid={billing.paid}
         paidUntil={billing.paidUntil}

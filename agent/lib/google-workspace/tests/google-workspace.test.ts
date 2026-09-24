@@ -7,6 +7,7 @@ import type {
 } from "eve/tools/approval";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
+import type { wakeProactiveWatch } from "@db/services/proactive";
 import type { getGoogleWorkspaceAccess } from "@db/services/settings";
 import { accessScopeForUser } from "@shared/identity/access-scope";
 
@@ -14,8 +15,15 @@ const settings = vi.hoisted(() => ({
   access: vi.fn<typeof getGoogleWorkspaceAccess>(),
 }));
 
+const proactive = vi.hoisted(() => ({
+  wake: vi.fn<typeof wakeProactiveWatch>(),
+}));
+
 vi.mock("@db/services/settings", () => ({
   getGoogleWorkspaceAccess: settings.access,
+}));
+vi.mock("@db/services/proactive", () => ({
+  wakeProactiveWatch: proactive.wake,
 }));
 
 import { parseCalendarAvailability } from "@agent/lib/google-workspace/calendar";
@@ -105,7 +113,8 @@ describe("Google Workspace", () => {
     });
   });
 
-  it("checks the grant for offline access once chat sign-in completes", async () => {
+  it("checks the grant and wakes Bro's own checks once chat sign-in completes", async () => {
+    proactive.wake.mockResolvedValue(true);
     const claims = btoa(JSON.stringify({ exp: 4_102_444_800 }));
     vi.stubEnv("VERCEL_OIDC_TOKEN", `e30.${claims}.sig`);
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
@@ -127,9 +136,16 @@ describe("Google Workspace", () => {
           callback: { method: "GET", params: {} },
           callbackUrl: "https://example.com/hook",
           connection: { url: "https://www.googleapis.com" },
-          principal: { id: userId, issuer: "better-auth", type: "user" },
+          principal: {
+            attributes: { workspaceId: scope.workspaceId },
+            id: userId,
+            issuer: "better-auth",
+            type: "user",
+          },
         })
       ).resolves.toMatchObject({ token: "ya29.fresh" });
+      // A check that found no grant had put the next one off for hours.
+      expect(proactive.wake).toHaveBeenCalledExactlyOnceWith(scope);
       await vi.waitFor(() => {
         expect(warn).toHaveBeenCalledExactlyOnceWith(
           expect.stringContaining("no offline access")

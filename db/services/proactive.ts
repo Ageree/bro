@@ -18,23 +18,102 @@ type ProactiveConversation = Pick<
   typeof scheduledAgentJobs.$inferInsert,
   "conversationChannel" | "conversationId"
 >;
+type RememberedConversations = Pick<
+  typeof proactiveWatches.$inferSelect,
+  "messengerChannel" | "messengerConversationId" | "webConversationId"
+>;
 
 /** The hidden job's prompt; a report turn reads it as the original task. */
 const proactiveJobPrompt =
   "Проверить новую почту и события календаря на ближайшие сутки и написать человеку первым, только если есть что-то, требующее действия.";
 
+const rememberedColumns = {
+  messengerChannel: proactiveWatches.messengerChannel,
+  messengerConversationId: proactiveWatches.messengerConversationId,
+  webConversationId: proactiveWatches.webConversationId,
+};
+
+/** What the watch remembers once the person wrote from `conversation`. */
+function remember(
+  current: RememberedConversations,
+  conversation: ProactiveConversation
+): RememberedConversations {
+  return conversation.conversationChannel === "eve"
+    ? { ...current, webConversationId: conversation.conversationId }
+    : {
+        ...current,
+        messengerChannel: conversation.conversationChannel,
+        messengerConversationId: conversation.conversationId,
+      };
+}
+
+/** The Telegram or iMessage chat the person last wrote from, if any. */
+export function rememberedMessenger(remembered: RememberedConversations) {
+  return remembered.messengerChannel && remembered.messengerConversationId
+    ? {
+        conversationChannel: remembered.messengerChannel,
+        conversationId: remembered.messengerConversationId,
+      }
+    : undefined;
+}
+
 /**
- * Remembers the conversation Bro may write first to: the latest one the
- * person talked from. A first call creates the hidden `proactive` job and the
- * watch, starting the mail watermark now so old mail is never replayed.
+ * Where Bro writes first: the messenger the person last wrote from, since it
+ * has pushes and the web chat shows only what is on screen when someone opens
+ * it. The web chat is the target only for a person with no messenger at all.
  */
-export async function recordProactiveTarget(
-  scope: AccessScope,
-  conversation: ProactiveConversation,
-  now = new Date()
+function preferredConversation(
+  remembered: RememberedConversations,
+  fallback: ProactiveConversation
+): ProactiveConversation {
+  const messenger = rememberedMessenger(remembered);
+  if (messenger) return messenger;
+  return remembered.webConversationId
+    ? {
+        conversationChannel: "eve",
+        conversationId: remembered.webConversationId,
+      }
+    : fallback;
+}
+
+function sameConversation(
+  left: ProactiveConversation,
+  right: ProactiveConversation
 ) {
-  const [current] = await db
+  return (
+    left.conversationChannel === right.conversationChannel &&
+    left.conversationId === right.conversationId
+  );
+}
+
+function sameRemembered(
+  left: RememberedConversations,
+  right: RememberedConversations
+) {
+  return (
+    left.messengerChannel === right.messengerChannel &&
+    left.messengerConversationId === right.messengerConversationId &&
+    left.webConversationId === right.webConversationId
+  );
+}
+
+/** The chats a workspace's person last wrote from, when they ever did. */
+export async function readRememberedConversations(workspaceId: string) {
+  const [remembered] = await db
+    .select(rememberedColumns)
+    .from(proactiveWatches)
+    .where(eq(proactiveWatches.workspaceId, workspaceId))
+    .limit(1);
+  return remembered;
+}
+
+function readWatchTarget(
+  executor: Pick<typeof db, "select">,
+  workspaceId: string
+) {
+  return executor
     .select({
+      ...rememberedColumns,
       conversationChannel: scheduledAgentJobs.conversationChannel,
       conversationId: scheduledAgentJobs.conversationId,
       jobId: proactiveWatches.jobId,
@@ -44,23 +123,55 @@ export async function recordProactiveTarget(
       scheduledAgentJobs,
       eq(proactiveWatches.jobId, scheduledAgentJobs.id)
     )
-    .where(eq(proactiveWatches.workspaceId, scope.workspaceId))
+    .where(eq(proactiveWatches.workspaceId, workspaceId))
     .limit(1);
-  if (
-    current?.conversationChannel === conversation.conversationChannel &&
-    current.conversationId === conversation.conversationId
-  ) {
-    return "unchanged" as const;
-  }
+}
+
+/**
+ * Remembers the chat the person talks from: the latest messenger and the
+ * latest web chat, each on its own. The hidden job writes to the preferred
+ * one (`preferredConversation`), so a person who lives in Telegram and once
+ * opened the web chat keeps getting reminders with a push. A first call
+ * creates the hidden `proactive` job and the watch, starting the mail
+ * watermark now so old mail is never replayed.
+ */
+export async function recordProactiveTarget(
+  scope: AccessScope,
+  conversation: ProactiveConversation,
+  now = new Date()
+): Promise<"created" | "moved" | "remembered" | "unchanged"> {
+  const [current] = await readWatchTarget(db, scope.workspaceId);
   if (current) {
-    await db
-      .update(scheduledAgentJobs)
-      .set({ ...conversation, updatedAt: now })
-      .where(eq(scheduledAgentJobs.id, current.jobId));
-    return "moved" as const;
+    const remembered = remember(current, conversation);
+    if (
+      sameRemembered(remembered, current) &&
+      sameConversation(preferredConversation(remembered, current), current)
+    ) {
+      return "unchanged" as const;
+    }
+    return db.transaction(async (transaction) => {
+      // Two chats may write at once; each builds on what the other left.
+      const [locked] = await readWatchTarget(
+        transaction,
+        scope.workspaceId
+      ).for("update", { of: proactiveWatches });
+      if (!locked) return "unchanged" as const;
+      const next = remember(locked, conversation);
+      const target = preferredConversation(next, locked);
+      await transaction
+        .update(proactiveWatches)
+        .set({ ...next, updatedAt: now })
+        .where(eq(proactiveWatches.workspaceId, scope.workspaceId));
+      if (sameConversation(target, locked)) return "remembered" as const;
+      await transaction
+        .update(scheduledAgentJobs)
+        .set({ ...target, updatedAt: now })
+        .where(eq(scheduledAgentJobs.id, locked.jobId));
+      return "moved" as const;
+    });
   }
   await ensureScope(scope);
-  return db.transaction(async (transaction) => {
+  const created = await db.transaction(async (transaction) => {
     const [job] = await transaction
       .insert(scheduledAgentJobs)
       .values({
@@ -88,6 +199,14 @@ export async function recordProactiveTarget(
         createdAt: now,
         createdByUserId: scope.userId,
         jobId: job.id,
+        ...remember(
+          {
+            messengerChannel: null,
+            messengerConversationId: null,
+            webConversationId: null,
+          },
+          conversation
+        ),
         mailCheckedAt: now,
         nextCheckAt: now,
         updatedAt: now,
@@ -100,16 +219,21 @@ export async function recordProactiveTarget(
       await transaction
         .delete(scheduledAgentJobs)
         .where(eq(scheduledAgentJobs.id, job.id));
-      return "unchanged" as const;
+      return "raced" as const;
     }
     return "created" as const;
   });
+  // This chat is still remembered on the watch the other turn created.
+  return created === "raced"
+    ? recordProactiveTarget(scope, conversation, now)
+    : created;
 }
 
 /**
  * Leases the watches due for a check. The lease is the next check time
- * itself, so a crashed tick simply retries after `leaseForMs`. Workspaces
- * that opted out are never claimed.
+ * itself, so a crashed tick simply retries after `leaseForMs`; each claim
+ * carries it as `leaseUntil`, which the check's own deferral must still find
+ * (`deferProactiveWatch`). Workspaces that opted out are never claimed.
  */
 export async function claimDueProactiveWatches(options: {
   readonly leaseForMs: number;
@@ -146,33 +270,78 @@ export async function claimDueProactiveWatches(options: {
       .limit(options.limit)
       .for("update", { of: proactiveWatches, skipLocked: true });
     if (due.length === 0) return [];
+    const leaseUntil = new Date(options.now.getTime() + options.leaseForMs);
     await transaction
       .update(proactiveWatches)
-      .set({
-        nextCheckAt: new Date(options.now.getTime() + options.leaseForMs),
-        updatedAt: options.now,
-      })
+      .set({ nextCheckAt: leaseUntil, updatedAt: options.now })
       .where(
         inArray(
           proactiveWatches.workspaceId,
           due.map((watch) => watch.workspaceId)
         )
       );
-    return due;
+    return due.map((watch) => Object.assign(watch, { leaseUntil }));
   });
 }
 
-/** Pushes the next check out, e.g. past quiet hours or a missing grant. */
+type ClaimedProactiveWatch = Awaited<
+  ReturnType<typeof claimDueProactiveWatches>
+>[number];
+
+/**
+ * Pushes the next check out, e.g. past quiet hours or a missing grant. It
+ * lands only while the claim is untouched: a Google connection completed
+ * during the check woke the watch (`wakeProactiveWatch`), and the check's
+ * «no grant, look again in six hours» would otherwise bury it. Returns
+ * whether the deferral landed.
+ */
 export async function deferProactiveWatch(
-  workspaceId: string,
+  claim: Pick<
+    ClaimedProactiveWatch,
+    "googleState" | "leaseUntil" | "workspaceId"
+  >,
   nextCheckAt: Date,
-  googleState?: (typeof proactiveWatches.$inferSelect)["googleState"]
+  googleState?: ClaimedProactiveWatch["googleState"]
 ) {
-  await db
+  const deferred = await db
     .update(proactiveWatches)
     // Drizzle leaves a column out of the update when its value is undefined.
     .set({ googleState, nextCheckAt, updatedAt: new Date() })
-    .where(eq(proactiveWatches.workspaceId, workspaceId));
+    .where(
+      and(
+        eq(proactiveWatches.workspaceId, claim.workspaceId),
+        eq(proactiveWatches.nextCheckAt, claim.leaseUntil),
+        eq(proactiveWatches.googleState, claim.googleState)
+      )
+    )
+    .returning({ workspaceId: proactiveWatches.workspaceId });
+  return deferred.length > 0;
+}
+
+/**
+ * Brings the next check forward once Google is connected again, from the
+ * cabinet or from the chat. A check that found no grant waits hours before
+ * looking again, so a person who connects right after it would otherwise
+ * hear nothing until then. A watch without a working grant (`disconnected`,
+ * or `unknown` before its first check) is due now, which also voids the
+ * lease of a check in flight, so that check's deferral misses. A connected
+ * watch keeps its cadence and only forgets its state, which voids a deferral
+ * all the same. Returns whether the next check moved forward.
+ */
+export async function wakeProactiveWatch(
+  scope: Pick<AccessScope, "workspaceId">,
+  now = new Date()
+) {
+  const woken = await db
+    .update(proactiveWatches)
+    .set({
+      googleState: "unknown",
+      nextCheckAt: sql`CASE WHEN ${proactiveWatches.googleState} = 'connected' THEN ${proactiveWatches.nextCheckAt} ELSE ${now.toISOString()}::timestamptz END`,
+      updatedAt: now,
+    })
+    .where(eq(proactiveWatches.workspaceId, scope.workspaceId))
+    .returning({ nextCheckAt: proactiveWatches.nextCheckAt });
+  return woken.some((watch) => watch.nextCheckAt.getTime() === now.getTime());
 }
 
 /** Moves the mail watermark when a check found nothing new to hand over. */

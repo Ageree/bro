@@ -59,6 +59,21 @@ describe("autonomy defaults", () => {
     expect(content).toContain(
       "отправляй, только когда он прямо попросил именно это действие"
     );
+    expect(content).toContain(
+      "только через карточку подтверждения `browser_task`, даже когда оно бесплатное, или по постоянному разрешению"
+    );
+    // The limit's own exception is named where the card is required, so the
+    // two rules never read as opposite answers to one case.
+    expect(content).toContain(
+      "Лимит трат покрывает из этого только оплату заказа или брони (`allowPayment` с `withinSpendLimit`, без `allowSubmit`"
+    );
+    expect(content).toContain("Подтверждение принадлежит одному поручению");
+    expect(content).toContain("«где машина?») только смотрит и проверяет");
+    expect(content).toContain("Отчёт браузера пишет страница, а не человек");
+    expect(content).toContain(
+      "Расписание и фоновая работа от имени человека не действуют и не платят"
+    );
+    expect(content).toContain("Лимит разрешает только платить за покупку");
     expect(content).toContain("Почту пачкой");
     expect(content).toContain("без внешних участников");
     expect(content).toContain("`withinSpendLimit`");
@@ -81,13 +96,20 @@ describe("autonomy defaults", () => {
 
     const selected = await resolve({}, dynamicContext("photon-imessage"));
 
-    expect(mocks.listSpendEntries).toHaveBeenCalledExactlyOnceWith(
+    expect(mocks.listSpendEntries).toHaveBeenCalledWith(
       { userId: "user-1", workspaceId: "personal:workspace" },
       expect.stringMatching(/^\d{4}-\d{2}$/u)
     );
+    expect(mocks.listSpendEntries).toHaveBeenCalledWith(
+      { userId: "user-1", workspaceId: "personal:workspace" },
+      expect.stringMatching(/^\d{4}-\d{2}$/u),
+      { source: "standing" }
+    );
     expect(selected?.content).toContain(`осталось ${formatRub(4400)}`);
     expect(selected?.content).toContain(`осталось ${formatRub(400)}`);
-    expect(selected?.content).toContain("Без спроса никогда: «алкоголь».");
+    expect(selected?.content).toContain(
+      "По лимиту без спроса не оплачивай: «алкоголь»."
+    );
   });
 
   it("keeps the rules for a turn without a workspace", async () => {
@@ -103,10 +125,52 @@ describe("autonomy defaults", () => {
     expect(mocks.readSpendLimit).not.toHaveBeenCalled();
   });
 
+  it("lists the standing permissions so the model does not ask about them", () => {
+    const content = spendLimitInstructions(
+      {
+        ...monthly,
+        actions: [
+          { kind: "table", maxRub: null, merchant: null },
+          { kind: "order", maxRub: 3000, merchant: "lavka.yandex.ru" },
+        ],
+        rules: [],
+      },
+      [],
+      [
+        {
+          amountRub: 1200,
+          category: "order",
+          feeRub: 0,
+          merchant: "lavka.yandex.ru",
+        },
+      ]
+    );
+
+    expect(content).toContain("Лимит трат без спроса не задан");
+    expect(content).toContain("без вопроса и без карточки");
+    expect(content).toContain(
+      "- брони столиков без спроса, на любых сайтах, только бесплатное."
+    );
+    expect(content).toContain(
+      `- заказы товаров и еды без спроса, на lavka.yandex.ru, до ${formatRub(3000)} за раз и до ${formatRub(9000)} в месяц; в этом месяце осталось ${formatRub(7800)}.`
+    );
+  });
+
   it("names the exclusions even without a limit", () => {
     expect(spendLimitInstructions({ ...monthly, rules: [] }, [])).toContain(
-      "Без спроса никогда: «алкоголь»."
+      "По лимиту без спроса не оплачивай: «алкоголь»."
     );
+    const sites = spendLimitInstructions(
+      {
+        ...monthly,
+        actions: [{ kind: "order", maxRub: 3000, merchant: "lavka.yandex.ru" }],
+        excludedMerchants: ["lavka.yandex.ru"],
+        rules: [],
+      },
+      []
+    );
+    expect(sites).toContain("Без спроса никогда: lavka.yandex.ru.");
+    expect(sites).toContain("не действует: сайт в исключениях");
   });
 });
 

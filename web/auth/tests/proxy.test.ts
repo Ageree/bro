@@ -83,15 +83,6 @@ describe("auth proxy matcher", () => {
     );
   });
 
-  it("leaves scheduled-run authorization to the Eve channel", async () => {
-    const response = await proxy(
-      new NextRequest("https://example.com/internal/scheduled-run/start")
-    );
-
-    expect(response.headers.get("x-middleware-next")).toBe("1");
-    expect(getAuthSession).not.toHaveBeenCalled();
-  });
-
   it("leaves provider webhook verification to the Eve channel", async () => {
     const response = await proxy(
       new NextRequest("https://example.com/webhooks/browser-use", {

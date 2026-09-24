@@ -12,6 +12,7 @@ import {
 } from "@web/components/ai-elements/question";
 import { Alert, AlertDescription, AlertTitle } from "@web/components/ui/alert";
 import { Button } from "@web/components/ui/button";
+import { withApprovalCard } from "@shared/chat/approval-card";
 import type { InputResponse } from "eve/client";
 import type { RespondToAgentInput } from "./types";
 
@@ -102,8 +103,19 @@ export function InputRequestActions({
   readonly onInputResponses: RespondToAgentInput;
   readonly part: EveDynamicToolPart;
 }) {
-  const inputRequest = part.toolMetadata?.eve?.inputRequest;
-  if (!inputRequest) return null;
+  const requested = part.toolMetadata?.eve?.inputRequest;
+  if (!requested) return null;
+  // eve titles a card «Approve tool call: <tool>»; the person reads what it
+  // lets through instead — the booking, the standing permission, the limit.
+  // The web chat speaks Russian, as the rest of the product does.
+  const inputRequest = withApprovalCard(
+    {
+      ...requested,
+      action: { input: part.input, toolName: part.toolName },
+    },
+    "ru"
+  );
+  const [title, ...details] = inputRequest.prompt.split("\n");
 
   const inputResponse = part.toolMetadata.eve.inputResponse;
   const selectedOption = inputRequest.options?.find(
@@ -112,8 +124,11 @@ export function InputRequestActions({
 
   return (
     <Alert variant="warning">
-      <AlertTitle>{inputRequest.prompt}</AlertTitle>
+      <AlertTitle>{title}</AlertTitle>
       <AlertDescription>
+        {details.length > 0 ? (
+          <p className="whitespace-pre-line">{details.join("\n")}</p>
+        ) : null}
         {inputResponse ? (
           <p>
             Responded:{" "}

@@ -14,8 +14,10 @@ import { workspaceMemberships, workspaces } from "./workspaces";
 
 /**
  * One row per workspace Bro may write to first. The conversation it writes to
- * lives on the hidden `proactive` job; this row keeps the check cadence and the
- * mail watermark the next check searches from.
+ * lives on the hidden `proactive` job; this row keeps the check cadence, the
+ * mail watermark the next check searches from, and the chats the person last
+ * wrote from: a messenger has pushes, the web chat only what is on screen, so
+ * the job writes to the messenger whenever there is one.
  */
 export const proactiveWatches = pgTable(
   "proactive_watches",
@@ -35,6 +37,13 @@ export const proactiveWatches = pgTable(
       precision: 3,
       withTimezone: true,
     }).notNull(),
+    // The Telegram or iMessage chat the person last wrote from.
+    messengerChannel: text("messenger_channel", {
+      enum: ["photon", "telegram"],
+    }),
+    messengerConversationId: text("messenger_conversation_id"),
+    // The web chat session the person last wrote from.
+    webConversationId: text("web_conversation_id"),
     googleState: text("google_state", {
       enum: ["unknown", "connected", "disconnected"],
     })
@@ -67,6 +76,12 @@ export const proactiveWatches = pgTable(
     check(
       "proactive_watches_google_state_check",
       sql`${table.googleState} IN ('unknown', 'connected', 'disconnected')`
+    ),
+    check(
+      "proactive_watches_messenger_check",
+      // Each column is tested for NULL on its own: a comparison with NULL is
+      // itself NULL, and CHECK lets a NULL through.
+      sql`(${table.messengerChannel} IS NULL AND ${table.messengerConversationId} IS NULL) OR (${table.messengerChannel} IS NOT NULL AND ${table.messengerChannel} IN ('photon', 'telegram') AND ${table.messengerConversationId} IS NOT NULL AND ${table.messengerConversationId} <> '')`
     ),
     index("proactive_watches_due_idx").on(table.nextCheckAt),
   ]

@@ -85,7 +85,9 @@ function parkedRow(captchaAttempt: number) {
     liveViewUrl: null,
     outcome: "Needs: captcha",
     paymentAllowed: true,
+    pendingTask: null,
     profileId: "profile-1",
+    queueRevision: 0,
     replyAnchorMessageId: "message-1",
     report: null,
     reportAttempts: 0,
@@ -97,6 +99,13 @@ function parkedRow(captchaAttempt: number) {
     sessionId: "walled-session",
     site: "https://shop.example",
     status: "waiting" as const,
+    // What the person confirmed on the card when the errand started.
+    submission: {
+      personalData: ["имя", "телефон", "адрес"],
+      what: "заказ корма для кота",
+      where: "shop.example",
+      forWhom: "Алиса",
+    },
     task: "Купи корм",
     updatedAt: new Date(),
     workspaceId: "workspace:alice",
@@ -192,6 +201,8 @@ describe("the anti-bot retry policy", () => {
       id: retryRunId,
       paymentAllowed: true,
       replyAnchorMessageId: "message-1",
+      // The retry is the same errand, so the person's confirmation stays.
+      submission: parkedRow(1).submission,
       task: "Купи корм",
     });
     expect(cancelBrowserUseRun).not.toHaveBeenCalled();

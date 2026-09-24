@@ -1,7 +1,11 @@
-import { defineOpenAPIConnection } from "eve/connections";
+import { defineDynamic, defineOpenAPIConnection } from "eve/connections";
 import { approveAllButReads } from "@agent/lib/connected-apps/approval";
-import { connectedAppAuth } from "@agent/lib/connected-apps/auth";
+import {
+  connectedAppAuth,
+  connectedAppConfigured,
+} from "@agent/lib/connected-apps/auth";
 import { slackApiBaseUrl } from "@agent/lib/connected-apps/slack";
+import { env } from "@shared/environment";
 
 const cursor = {
   description: "Pagination cursor from the previous page's next_cursor.",
@@ -62,12 +66,14 @@ const readOperations = [
 
 // Slack publishes no current OpenAPI document, so the few read methods Bro
 // needs are pinned here. Sending goes through `slack-send-message`, which
-// finds the recipient itself and waits for approval.
-export default defineOpenAPIConnection({
+// finds the recipient itself and waits for approval. It exists only on a
+// deployment with a Slack connector.
+const slack = defineOpenAPIConnection({
   baseUrl: slackApiBaseUrl,
   description:
     "The person's own Slack workspace, read-only: find people and channels, read channel and DM history and threads, and search messages. To send a Slack message, use the slack-send-message tool.",
   auth: connectedAppAuth("slack"),
+  instanceKey: env.SLACK_CONNECTOR_UID,
   approval: approveAllButReads(readOperations),
   operations: { allow: readOperations },
   spec: {
@@ -146,5 +152,12 @@ export default defineOpenAPIConnection({
         [required("email", "Email address.")]
       ),
     },
+  },
+});
+
+export default defineDynamic({
+  events: {
+    "turn.started": async () =>
+      (await connectedAppConfigured("slack")) ? slack : null,
   },
 });

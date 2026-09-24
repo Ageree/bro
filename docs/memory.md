@@ -7,6 +7,11 @@ search index as the source of truth.
 - Workstreams own goals, constraints, decisions, evidence, and unresolved work.
 - Profile memory owns durable facts, people, organizations, decisions, and
   preferences as revisioned Postgres records.
+- Workspace settings own how Bro addresses the person («ты» or «вы», and the
+  name they asked to be called by) under the `form_of_address` key. The
+  `form_of_address` tool writes it, and every step's reply note repeats it, so
+  the choice holds in every chat and channel instead of depending on the model
+  noticing a profile record.
 - Eve owns current conversation history and compaction.
 - Supermemory is an optional semantic index for non-local profile records. Its
   search results are identifiers only: Bro re-reads the current Postgres record
@@ -36,6 +41,24 @@ requests permanent provider-document deletion. It does not erase existing chat
 messages, historical infrastructure backups, or third-party logs. Telemetry is
 configured to omit message, model, and tool payloads so new facts are not copied
 into operational traces.
+
+## Where the data lives
+
+Bro is a hosted service, not software on the person's own machine or server,
+and the interactive instructions (`agent/instructions/content/role/interactive.md`,
+«Как ты устроен») tell people exactly this; keep the two in sync.
+
+- The app and the agent run on Vercel; eve keeps conversation state in Vercel
+  Workflow.
+- Postgres on Neon holds the workspace, memory, schedules, orders, and the
+  vault. Vault secrets are AES-256-GCM ciphertext under
+  `SECRET_ENCRYPTION_KEY` (`db/services/vault.ts`); no model reads them.
+- Files and generated pictures go to a private Vercel Blob store.
+- Google, Notion, and Slack grants live in Vercel Connect, not in Bro's
+  database.
+- Model providers see the conversation they answer, Browser Use sees the
+  pages and vault values of the task it runs, and Supermemory indexes
+  non-local profile facts when `SUPERMEMORY_API_KEY` is set.
 
 ## Deployment
 

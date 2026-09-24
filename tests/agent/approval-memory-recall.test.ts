@@ -3,7 +3,7 @@ import { MockLanguageModelV4 } from "ai/test";
 import { describe, expect, it, vi } from "vitest";
 import type { ApprovalStatus } from "eve/tools/approval";
 import { z } from "zod";
-import { paymentApproval } from "@agent/tools/browser_task";
+import { browserTaskApproval } from "@agent/tools/browser_task";
 import { spendLimitApproval } from "@agent/tools/spend_limit";
 
 /**
@@ -97,11 +97,34 @@ const gatedCalls = [
   {
     input: { action: "continue", allowPayment: true, runId: "run_1" },
     policy: () =>
-      paymentApproval({
-        action: "continue",
-        allowPayment: true,
-        runId: "run_1",
-      }),
+      browserTaskApproval(
+        {
+          action: "continue",
+          allowPayment: true,
+          runId: "run_1",
+          submission: {
+            forWhom: "Алиса",
+            personalData: ["имя", "адрес"],
+            kind: "order",
+            what: "заказ корма для кота",
+            where: "shop.example",
+          },
+        },
+        {
+          session: {
+            auth: {
+              current: {
+                attributes: {},
+                authenticator: "photon-imessage",
+                issuer: "photon",
+                principalId: "better-auth:alice",
+                principalType: "user",
+              },
+              initiator: null,
+            },
+          },
+        }
+      ),
     toolName: "browser_task",
   },
   {
@@ -161,8 +184,8 @@ describe("an approved tool call after a memory recall", () => {
           },
         }),
         // eve hands the policy's answer to the AI SDK the same way.
-        toolApproval: () => {
-          const status = policy();
+        toolApproval: async () => {
+          const status = await policy();
           if (status === true) return "user-approval";
           if (status === false) return "not-applicable";
           return status;

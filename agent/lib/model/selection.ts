@@ -1,4 +1,3 @@
-import type { ReplyLanguage } from "@agent/lib/delivery/language";
 import { openRouterActive } from "@shared/model/provider";
 import { openRouterSelection, type StepToolChoice } from "./openrouter";
 
@@ -12,19 +11,20 @@ import { openRouterSelection, type StepToolChoice } from "./openrouter";
  * `toolChoice` makes the step call some tool (`required`) or end the turn in
  * text (`none`). Only the direct OpenRouter model can carry that, so a Gateway
  * id string ignores it and relies on the instructions, the channel fallback,
- * and `send_message` dropping repeats. `replyLanguage` likewise travels only
- * with the direct model; `send_message` holds the language for both.
+ * and `send_message` dropping repeats. `replyNote` likewise travels only
+ * with the direct model; a Gateway id relies on the instructions, which carry
+ * the same voice and the person's stored form of address.
  */
 export function modelSelection(
   modelId: string,
   options: {
-    readonly replyLanguage?: ReplyLanguage;
+    readonly replyNote?: string;
     readonly toolChoice?: StepToolChoice;
   } = {}
 ) {
   return openRouterActive()
     ? openRouterSelection(modelId, {
-        replyLanguage: options.replyLanguage,
+        replyNote: options.replyNote,
         toolChoice: options.toolChoice ?? "auto",
       })
     : modelId;

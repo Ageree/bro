@@ -135,6 +135,24 @@ describe("Browser Use client", () => {
     ]);
   });
 
+  it("never adopts a cancelled run that carries the line", async () => {
+    const client = await loadClient();
+    const line = "(Queued errand queued:1, change 1; for bookkeeping only.)";
+    stubFetch(
+      Response.json({
+        hasMore: false,
+        runs: [
+          { id: "given-up", sessionId, status: "cancelled", task: line },
+          { id: "live", sessionId, status: "running", task: line },
+        ],
+      })
+    );
+
+    expect((await client.findRecentBrowserUseRunByTaskLine(line))?.id).toBe(
+      "live"
+    );
+  });
+
   it("stops looking after the pages it was given", async () => {
     const client = await loadClient();
     const calls = stubFetch(
@@ -164,6 +182,67 @@ describe("Browser Use client", () => {
     expect(failure.status).toBe(503);
     expect(failure.message).toContain("upstream exploded");
     expect(calls).toHaveLength(2);
+  });
+
+  it("does not repeat a start Browser Use refused for want of a free browser", async () => {
+    const client = await loadClient();
+    const calls = stubFetch(
+      Response.json(
+        {
+          detail: "Too many concurrent active sessions",
+          retry_after_seconds: 90,
+        },
+        { status: 429 }
+      )
+    );
+
+    const failure = await client
+      .createBrowserUseRun({ task: "Найди отель" })
+      .catch((cause: unknown) => cause);
+
+    expect(client.browserUseBusy(failure)).toBe(true);
+    expect(client.browserUseOutOfCredits(failure)).toBe(false);
+    expect(failure).toMatchObject({ retryAfterMs: 90_000, status: 429 });
+    expect(calls).toHaveLength(1);
+  });
+
+  it("reads an edge throttle's wait from its header and knows a 402", async () => {
+    const client = await loadClient();
+    stubFetch(
+      new Response('{"error":"rate_limited"}', {
+        headers: { "retry-after": "300" },
+        status: 429,
+      })
+    );
+    const throttled = await client
+      .readBrowserUseRunStatus(runId)
+      .catch((cause: unknown) => cause);
+    expect(throttled).toMatchObject({ retryAfterMs: 300_000 });
+
+    // The header may name the moment instead of the seconds.
+    stubFetch(
+      new Response('{"error":"rate_limited"}', {
+        headers: {
+          "retry-after": new Date(Date.now() + 120_000).toUTCString(),
+        },
+        status: 429,
+      })
+    );
+    const dated = await client
+      .createBrowserUseRun({ task: "Найди отель" })
+      .catch((cause: unknown) => cause);
+    expect(client.browserUseBusy(dated)).toBe(true);
+    const datedWaitMs = client.browserUseBusy(dated)
+      ? dated.retryAfterMs
+      : undefined;
+    expect(datedWaitMs).toBeGreaterThan(115_000);
+    expect(datedWaitMs).toBeLessThanOrEqual(120_000);
+
+    stubFetch(new Response("Insufficient credits", { status: 402 }));
+    const broke = await client
+      .createBrowserUseRun({ task: "Найди отель" })
+      .catch((cause: unknown) => cause);
+    expect(client.browserUseOutOfCredits(broke)).toBe(true);
   });
 
   it("reads a run status, queues a session message and stops a session", async () => {

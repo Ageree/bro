@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import type { AccessScope } from "@shared/identity/access-scope";
 import {
   emptyUserProfile,
@@ -9,6 +9,7 @@ import {
   type UserProfilePatch,
 } from "@shared/user-profile/schema";
 import { db, userProfiles } from "@db";
+import { followScheduleTimeZone } from "./scheduled-agent-jobs";
 import { ensureScope } from "./scope";
 
 const selection = {
@@ -51,8 +52,7 @@ export async function replaceUserProfile(
 ) {
   await ensureScope(scope);
   const profile = parseUserProfile(input);
-  await writeUserProfile(scope, profile);
-  return profile;
+  return writeUserProfile(scope, () => profile);
 }
 
 export async function patchUserProfile(
@@ -60,24 +60,51 @@ export async function patchUserProfile(
   input: UserProfilePatch
 ) {
   const patch = userProfilePatchSchema.parse(input);
-  const profile = parseUserProfile({
-    ...(await readUserProfile(scope)),
-    ...patch,
-  });
   await ensureScope(scope);
-  await writeUserProfile(scope, profile);
-  return profile;
+  return writeUserProfile(scope, (current) =>
+    parseUserProfile({ ...current, ...patch })
+  );
 }
 
-async function writeUserProfile(scope: AccessScope, profile: UserProfile) {
-  const updatedAt = new Date();
-  await db
-    .insert(userProfiles)
-    .values({ ...profile, updatedAt, workspaceId: scope.workspaceId })
-    .onConflictDoUpdate({
-      target: userProfiles.workspaceId,
-      set: { ...profile, updatedAt },
-    });
+/**
+ * Writes the profile `change` makes of the stored one. Profile changes run
+ * one at a time per workspace (the lock is on the workspace, since a first
+ * change has no row to lock), so a patch builds on the latest profile and
+ * the schedules move from the zone actually replaced. The move commits with
+ * the profile: a failure leaves neither, and a retry still finds the change.
+ */
+async function writeUserProfile(
+  scope: AccessScope,
+  change: (current: UserProfile) => UserProfile
+) {
+  return db.transaction(async (transaction) => {
+    await transaction.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended(${`user_profile:${scope.workspaceId}`}, 0))`
+    );
+    const [stored] = await transaction
+      .select(selection)
+      .from(userProfiles)
+      .where(eq(userProfiles.workspaceId, scope.workspaceId))
+      .limit(1);
+    const profile = change(parseUserProfile(stored ?? emptyUserProfile));
+    const updatedAt = new Date();
+    await transaction
+      .insert(userProfiles)
+      .values({ ...profile, updatedAt, workspaceId: scope.workspaceId })
+      .onConflictDoUpdate({
+        target: userProfiles.workspaceId,
+        set: { ...profile, updatedAt },
+      });
+    // «В 10 утра» means 10:00 wherever the person lives now.
+    await followScheduleTimeZone(
+      scope,
+      resolveTimeZone(stored?.timezone),
+      resolveTimeZone(profile.timezone),
+      updatedAt,
+      transaction
+    );
+    return profile;
+  });
 }
 
 /** Whether Bro may write first; on until the person turns it off. */

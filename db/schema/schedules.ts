@@ -1,5 +1,5 @@
 import { relations, sql } from "drizzle-orm";
-import type { InputRequest } from "eve/client";
+import type { InputRequest, InputResponse } from "eve/client";
 import {
   check,
   foreignKey,
@@ -141,6 +141,10 @@ export const scheduledAgentRuns = pgTable(
     pendingInputRequests: jsonb("pending_input_requests").$type<
       readonly InputRequest[]
     >(),
+    // The person's answer to `pendingInputRequests`, waiting for the
+    // `dynamic` tick to hand it to the worker session: only a schedule
+    // handler holds that session, since the app's own routes never reach eve.
+    inputResponses: jsonb("input_responses").$type<readonly InputResponse[]>(),
     outcome: jsonb("outcome"),
     reportStatus: text("report_status", {
       enum: [

@@ -1,10 +1,14 @@
 import type { DynamicResolveContext } from "eve";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { isScheduledAgentRunLeaseActive } from "@db/services/scheduled-agent-run-leases";
-import type { getWorkspaceModelId } from "@db/services/settings";
+import type {
+  getFormOfAddress,
+  getWorkspaceModelId,
+} from "@db/services/settings";
 import type * as ModelSelection from "@agent/lib/model/selection";
 
 const services = vi.hoisted(() => ({
+  getFormOfAddress: vi.fn<typeof getFormOfAddress>(),
   getModel: vi.fn<typeof getWorkspaceModelId>(),
   isActive: vi.fn<typeof isScheduledAgentRunLeaseActive>(),
   modelSelection: vi.fn<typeof ModelSelection.modelSelection>(),
@@ -14,6 +18,7 @@ vi.mock("@db/services/scheduled-agent-run-leases", () => ({
   isScheduledAgentRunLeaseActive: services.isActive,
 }));
 vi.mock("@db/services/settings", () => ({
+  getFormOfAddress: services.getFormOfAddress,
   getWorkspaceModelId: services.getModel,
 }));
 vi.mock("@agent/lib/model/selection", async (importOriginal) => {
@@ -23,7 +28,9 @@ vi.mock("@agent/lib/model/selection", async (importOriginal) => {
 });
 
 import agent from "@agent/agent";
+import { replyDirective } from "@agent/lib/delivery/language";
 import { skippedSendNotice } from "@agent/lib/delivery/turn-sends";
+import { defaultFormOfAddress } from "@shared/chat/form-of-address";
 
 const runId = "00000000-0000-4000-8000-000000000001";
 const oldLeaseToken = "00000000-0000-4000-8000-000000000002";
@@ -32,7 +39,12 @@ const retryLeaseToken = "00000000-0000-4000-8000-000000000003";
 beforeEach(() => {
   vi.clearAllMocks();
   services.getModel.mockResolvedValue("openai/gpt-5.6-sol-fast");
+  services.getFormOfAddress.mockResolvedValue(defaultFormOfAddress);
 });
+
+function note(language: "en" | "ru" | undefined) {
+  return replyDirective({ formOfAddress: defaultFormOfAddress, language });
+}
 
 describe("root agent model resolution", () => {
   it("accepts a valid retry lease forwarded into an older Eve session", async () => {
@@ -99,7 +111,7 @@ describe("interactive delivery enforcement", () => {
 
     expect(services.modelSelection).toHaveBeenLastCalledWith(
       "openai/gpt-5.6-sol-fast",
-      { replyLanguage: "ru", toolChoice: "required" }
+      { replyNote: note("ru"), toolChoice: "required" }
     );
   });
 
@@ -111,7 +123,7 @@ describe("interactive delivery enforcement", () => {
 
     expect(services.modelSelection).toHaveBeenLastCalledWith(
       "openai/gpt-5.6-sol-fast",
-      { replyLanguage: "ru", toolChoice: "auto" }
+      { replyNote: note("ru"), toolChoice: "auto" }
     );
   });
 
@@ -123,7 +135,7 @@ describe("interactive delivery enforcement", () => {
     // One dropped repeat may still precede a real answer.
     expect(services.modelSelection).toHaveBeenLastCalledWith(
       "openai/gpt-5.6-sol-fast",
-      { replyLanguage: "ru", toolChoice: "auto" }
+      { replyNote: note("ru"), toolChoice: "auto" }
     );
 
     await agent.model.events["step.started"]?.(
@@ -136,7 +148,7 @@ describe("interactive delivery enforcement", () => {
     );
     expect(services.modelSelection).toHaveBeenLastCalledWith(
       "openai/gpt-5.6-sol-fast",
-      { replyLanguage: "ru", toolChoice: "none" }
+      { replyNote: note("ru"), toolChoice: "none" }
     );
   });
 
@@ -151,7 +163,7 @@ describe("interactive delivery enforcement", () => {
 
     expect(services.modelSelection).toHaveBeenLastCalledWith(
       "openai/gpt-5.6-sol-fast",
-      { replyLanguage: "en", toolChoice: "required" }
+      { replyNote: note("en"), toolChoice: "required" }
     );
   });
 
@@ -163,7 +175,7 @@ describe("interactive delivery enforcement", () => {
 
     expect(services.modelSelection).toHaveBeenLastCalledWith(
       "openai/gpt-5.6-sol-fast",
-      { replyLanguage: "ru", toolChoice: "auto" }
+      { replyNote: note("ru"), toolChoice: "auto" }
     );
   });
 
@@ -173,9 +185,10 @@ describe("interactive delivery enforcement", () => {
       interactiveContext(pending, "scheduled-result")
     );
 
+    // The report answers in the language of the conversation it continues.
     expect(services.modelSelection).toHaveBeenLastCalledWith(
       "openai/gpt-5.6-sol-fast",
-      { toolChoice: "auto" }
+      { replyNote: note("ru"), toolChoice: "auto" }
     );
   });
 
@@ -192,8 +205,10 @@ describe("interactive delivery enforcement", () => {
 
     expect(services.modelSelection).toHaveBeenLastCalledWith(
       "openai/gpt-5.6-sol-fast",
-      { toolChoice: "auto" }
+      { replyNote: undefined, toolChoice: "auto" }
     );
+    // A worker writes to the report turn, not to the person.
+    expect(services.getFormOfAddress).not.toHaveBeenCalled();
   });
 });
 

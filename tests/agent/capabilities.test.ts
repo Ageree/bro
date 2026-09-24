@@ -7,6 +7,7 @@ import profileMemory from "@agent/memory/profile";
 import workstreamMemory from "@agent/memory/workstreams";
 import calendar from "@agent/tools/calendar";
 import contacts from "@agent/tools/contacts";
+import formOfAddressTools from "@agent/tools/form_of_address";
 import gmail from "@agent/tools/gmail";
 import messaging from "@agent/tools/messaging";
 import proactiveMessageTools from "@agent/tools/proactive_messages";
@@ -16,6 +17,7 @@ import vault from "@agent/tools/vault";
 const groupedTools = [
   calendar,
   contacts,
+  formOfAddressTools,
   gmail,
   messaging,
   proactiveMessageTools,
@@ -32,6 +34,7 @@ describe("authored mode capability matrix", () => {
       "calendar-list-events",
       "calendar-update-event",
       "contacts-search",
+      "form_of_address",
       "gmail-attachment",
       "gmail-draft",
       "gmail-read-thread",
@@ -181,7 +184,8 @@ describe("authored mode capability matrix", () => {
 
   it("adds browser_task only to a deployment configured for Browser Use", async () => {
     const unconfigured = await loadBrowserTask("");
-    const resolveUnconfigured = unconfigured.events["turn.started"];
+    // Resolved per step, to count the errands the turn already started.
+    const resolveUnconfigured = unconfigured.events["step.started"];
     expect(resolveUnconfigured).toBeDefined();
     if (!resolveUnconfigured) return;
     expect(
@@ -189,7 +193,7 @@ describe("authored mode capability matrix", () => {
     ).toBeNull();
 
     const configured = await loadBrowserTask("browser-use-test-key");
-    const resolve = configured.events["turn.started"];
+    const resolve = configured.events["step.started"];
     expect(resolve).toBeDefined();
     if (!resolve) return;
 

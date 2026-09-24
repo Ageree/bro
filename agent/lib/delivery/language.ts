@@ -1,5 +1,7 @@
 import type { ModelMessage } from "ai";
 import { z } from "zod";
+import { isBackgroundTurnText } from "@shared/chat/background-turn";
+import type { FormOfAddress } from "@shared/chat/form-of-address";
 
 /** The languages Bro holds a reply to; any other one is left to the model. */
 export type ReplyLanguage = "en" | "ru";
@@ -57,7 +59,8 @@ export function messageLanguage(text: string): ReplyLanguage | undefined {
 
 /**
  * The language of the latest message the person wrote themselves. Context,
- * memory, background wakeups and browser reports are skipped, and so is a
+ * memory, background wakeups, browser reports and scheduled or proactive
+ * reports (English prompts Bro writes to itself) are skipped, and so is a
  * message that names no clear language, so «ok» after an English exchange
  * keeps it English.
  */
@@ -69,7 +72,9 @@ export function personLanguage(
     const kind = taggedMessageSchema.safeParse(message).data?.kind ?? "user";
     if (kind !== "user") continue;
     const text = messageText(message);
-    if (browserRunReportPattern.test(text)) continue;
+    if (browserRunReportPattern.test(text) || isBackgroundTurnText(text)) {
+      continue;
+    }
     const language = messageLanguage(text);
     if (language) return language;
   }
@@ -82,12 +87,83 @@ const replyLanguageDirectives = {
 } as const satisfies Record<ReplyLanguage, string>;
 
 /**
- * The note the model reads last on every step. The standing rule sits in the
- * middle of a long Russian prompt, and a small model answering English in
- * Russian ignored it; a short note at the end of the prompt is not buried.
- * It is guidance, never a filter on sends: a translation or a text the
- * person asked for in another language is exactly what they want.
+ * Bro is «бро», and a small model writing Russian slipped into the feminine
+ * («сделаю сама», «я готова») whatever the long prompt said.
  */
-export function replyLanguageDirective(language: ReplyLanguage) {
-  return replyLanguageDirectives[language];
+const masculineVoice =
+  "О себе пиши в мужском роде: «сделал», «нашёл», «готов», «сам», «уверен», а не «сделала», «нашла», «готова», «сама», «уверена».";
+
+function russianAddress({ formal, name }: FormOfAddress) {
+  return [
+    formal
+      ? "Человек просил обращаться к нему на «вы»: «вы», «вам», «ваш», «посмотрите», «хотите» — в каждом сообщении, без «ты», пока он сам не попросит снова на «ты»."
+      : "К человеку обращайся на «ты», если он не просил обращаться к нему на «вы».",
+    ...(name
+      ? [`Обращайся к человеку по имени «${name}», как он просил.`]
+      : []),
+  ];
+}
+
+/**
+ * The voice is Bro's own: a letter, a post or a message written for the
+ * person or on their behalf keeps the gender and address that text needs.
+ */
+const ownWordsOnly =
+  "Это про твои собственные слова человеку; письма и тексты, которые пишешь от его имени или для других людей, пиши в нужном им роде и обращении.";
+
+/**
+ * The note the model reads last on every step that may write to the person.
+ * Standing rules sit in the middle of a long Russian prompt, and a small
+ * model ignored them: it answered English in Russian, spoke of itself in
+ * the feminine, and went back to «ты» in a new chat after the person asked
+ * for «вы». A short note at the end of the prompt is not buried.
+ *
+ * `language` is the person's latest clear language; without one (a bare
+ * «ok», a scheduled report) the Russian voice rules still hold for whatever
+ * the model writes in Russian. It is guidance, never a filter on sends: a
+ * translation or a text the person asked for in another language is exactly
+ * what they want.
+ */
+export function replyDirective({
+  formOfAddress,
+  language,
+}: {
+  readonly formOfAddress: FormOfAddress;
+  readonly language: ReplyLanguage | undefined;
+}) {
+  if (language === "en") {
+    return [
+      replyLanguageDirectives.en,
+      ...(formOfAddress.name
+        ? [`Call the person «${formOfAddress.name}», as they asked.`]
+        : []),
+    ].join(" ");
+  }
+  const voice = [
+    masculineVoice,
+    ...russianAddress(formOfAddress),
+    ownWordsOnly,
+  ];
+  return language === "ru"
+    ? [replyLanguageDirectives.ru, ...voice].join(" ")
+    : ["Когда пишешь человеку по-русски:", ...voice].join(" ");
+}
+
+/**
+ * The form of address the person chose, for the turn's instructions: a
+ * Gateway model id carries no per-step note, so without this it would never
+ * learn the choice. Nothing when they never chose.
+ */
+export function chosenFormOfAddress(formOfAddress: FormOfAddress) {
+  if (!formOfAddress.formal && !formOfAddress.name) return undefined;
+  return russianAddress(formOfAddress).join(" ");
+}
+
+/**
+ * What `form_of_address` answers once the choice is saved. The turn's
+ * instructions were resolved before it, and a Gateway model gets no per-step
+ * note, so the tool result is where the rest of the turn learns the new form.
+ */
+export function savedFormOfAddressNote(formOfAddress: FormOfAddress) {
+  return `Saved. From this reply on, this replaces anything said earlier in this turn about how to address the person: ${russianAddress(formOfAddress).join(" ")}`;
 }

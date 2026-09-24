@@ -1,4 +1,9 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
+import {
+  defaultFormOfAddress,
+  type FormOfAddress,
+  formOfAddressSchema,
+} from "@shared/chat/form-of-address";
 import {
   defaultGoogleWorkspaceAccess,
   type GoogleWorkspaceAccess,
@@ -12,11 +17,17 @@ import { db, settings } from "@db";
 // the active provider addresses.
 const workspaceModelKey = "gateway_model";
 const googleWorkspaceAccessKey = "google_workspace_access";
+const formOfAddressKey = "form_of_address";
 
 type SettingKey = typeof settings.$inferInsert.key;
+type Database = Pick<typeof db, "insert" | "select">;
 
-async function readSetting(scope: AccessScope, key: SettingKey) {
-  const rows = await db
+async function readSetting(
+  scope: AccessScope,
+  key: SettingKey,
+  database: Database = db
+) {
+  const rows = await database
     .select({ value: settings.value })
     .from(settings)
     .where(
@@ -29,9 +40,10 @@ async function readSetting(scope: AccessScope, key: SettingKey) {
 async function writeSetting(
   scope: AccessScope,
   key: SettingKey,
-  value: string
+  value: string,
+  database: Database = db
 ) {
-  await db
+  await database
     .insert(settings)
     .values({ key, value, workspaceId: scope.workspaceId })
     .onConflictDoUpdate({
@@ -70,4 +82,55 @@ export async function selectGoogleWorkspaceAccess(
   access: GoogleWorkspaceAccess
 ) {
   await writeSetting(scope, googleWorkspaceAccessKey, access);
+}
+
+function parseFormOfAddress(value: string | undefined) {
+  if (value === undefined) return defaultFormOfAddress;
+  try {
+    const parsed = formOfAddressSchema.safeParse(JSON.parse(value));
+    return parsed.success ? parsed.data : defaultFormOfAddress;
+  } catch {
+    return defaultFormOfAddress;
+  }
+}
+
+/**
+ * How Bro addresses the person in every chat and channel of the workspace:
+ * «ты» and no chosen name until they ask otherwise.
+ */
+export async function getFormOfAddress(
+  scope: AccessScope
+): Promise<FormOfAddress> {
+  return parseFormOfAddress(await readSetting(scope, formOfAddressKey));
+}
+
+/**
+ * Applies what the person asked to change and keeps the rest; `name: null`
+ * drops the chosen name. Changes are merged one at a time per workspace, so
+ * «на вы» from one chat and a new name from another both stay. The lock is
+ * on the workspace and key, since no row may exist yet to lock.
+ */
+export async function updateFormOfAddress(
+  scope: AccessScope,
+  change: Partial<FormOfAddress>
+) {
+  return db.transaction(async (transaction) => {
+    await transaction.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended(${`${formOfAddressKey}:${scope.workspaceId}`}, 0))`
+    );
+    const current = parseFormOfAddress(
+      await readSetting(scope, formOfAddressKey, transaction)
+    );
+    const next = formOfAddressSchema.parse({
+      formal: change.formal ?? current.formal,
+      name: change.name === undefined ? current.name : change.name,
+    });
+    await writeSetting(
+      scope,
+      formOfAddressKey,
+      JSON.stringify(next),
+      transaction
+    );
+    return next;
+  });
 }

@@ -47,6 +47,34 @@ export function resolveModeValue<T>(
   return valueByMode[sessionAgentMode(context.session.auth)] ?? null;
 }
 
+/**
+ * The channels a person writes to Bro through: the web chat, the local dev
+ * sign-in the benchmark drives, Telegram and iMessage. Every other caller is
+ * Bro writing to itself — a browser run's report (`browser-result`), a
+ * schedule's worker, its answer or its report — and speaks for nobody.
+ */
+const personAuthenticators = new Set([
+  "authjs",
+  "local-dev",
+  "photon-imessage",
+  "telegram-webhook",
+]);
+
+/**
+ * Whether this turn was started by the person's own message. The report of a
+ * browser run is an interactive turn too, but its text is the page's, not
+ * the person's: a standing permission or an earlier confirmation must never
+ * act on it, only a card the person answers.
+ */
+export function startedByPerson(context: AgentModeContext) {
+  if (resolveModeValue(context, { interactive: true }) !== true) return false;
+  const caller = context.session.auth.current ?? context.session.auth.initiator;
+  return (
+    caller?.principalType === "user" &&
+    personAuthenticators.has(caller.authenticator)
+  );
+}
+
 export function resolveModeInstructions(
   context: DynamicResolveContext,
   contentByMode: Partial<Record<AgentMode, string>>

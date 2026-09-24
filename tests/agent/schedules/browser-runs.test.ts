@@ -24,6 +24,7 @@ interface BrowserRunState {
   site: string | null;
   status: string;
   task: string;
+  updatedAt: Date;
   workspaceId: string;
 }
 
@@ -45,6 +46,7 @@ function freshRow(): BrowserRunState {
     site: null,
     status: "running",
     task: "Find a hotel",
+    updatedAt: new Date(Date.now() - 5 * 60_000),
     workspaceId: "workspace:user-1",
   };
 }
@@ -93,8 +95,17 @@ vi.mock("@db/services/browser-runs", () => ({
         ? [{ id: currentRow().id }]
         : []
     ),
-  listUnsettledBrowserRuns: () =>
-    Promise.resolve(currentRow().completedAt ? [] : [{ ...currentRow() }]),
+  claimNextQueuedBrowserRun: () => Promise.resolve(undefined),
+  listOverdueBrowserRunReports: () => Promise.resolve([]),
+  // One take per poll: the row is checked once, like the real round-robin.
+  takeUnsettledBrowserRuns: ({ checkedBefore }: { checkedBefore: Date }) => {
+    const row = currentRow();
+    if (row.completedAt || row.updatedAt >= checkedBefore) {
+      return Promise.resolve([]);
+    }
+    row.updatedAt = new Date(checkedBefore.getTime() + 1);
+    return Promise.resolve([{ ...row }]);
+  },
   readBrowserRun: () => Promise.resolve({ ...currentRow() }),
   releaseBrowserRunReport: () => {
     currentRow().reportClaimedAt = null;
@@ -131,6 +142,10 @@ vi.mock("@agent/lib/browser-use/client", () => ({
 }));
 vi.mock("@agent/lib/browser-use/images", () => ({
   captureBrowserRunImages: () => Promise.resolve([]),
+}));
+vi.mock("@agent/lib/owner-alert", () => ({
+  alertOwner: () => Promise.resolve(false),
+  clearOwnerAlert: () => Promise.resolve(),
 }));
 vi.mock("@agent/channels/photon", () => ({ default: { id: "photon" } }));
 vi.mock("@agent/channels/telegram", () => ({ default: { id: "telegram" } }));

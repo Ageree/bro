@@ -1,7 +1,11 @@
-import { defineOpenAPIConnection } from "eve/connections";
+import { defineDynamic, defineOpenAPIConnection } from "eve/connections";
 import { approveAllButReads } from "@agent/lib/connected-apps/approval";
-import { connectedAppAuth } from "@agent/lib/connected-apps/auth";
+import {
+  connectedAppAuth,
+  connectedAppConfigured,
+} from "@agent/lib/connected-apps/auth";
 import { notionApi } from "@agent/lib/connected-apps/notion";
+import { env } from "@shared/environment";
 
 /** Operations that only read the person's workspace. */
 const readOperations = [
@@ -31,16 +35,24 @@ const writeOperations = [
 // The registry's "OpenAPI · User" Notion scaffold rather than its MCP one: the
 // spec is public, so the tools are discoverable and approval can be asked
 // before the person has connected Notion, and the same REST grant serves
-// `notion-add-task`.
-export default defineOpenAPIConnection({
+// `notion-add-task`. It exists only on a deployment with a Notion connector.
+const notion = defineOpenAPIConnection({
   spec: notionApi.spec,
   baseUrl: notionApi.baseUrl,
   description:
     "The person's own Notion workspace: search pages and databases (data sources), read and query them, and create or edit pages and comments. To add a task to their Notion tasks, prefer the notion-add-task tool.",
   auth: connectedAppAuth("notion"),
+  instanceKey: env.NOTION_CONNECTOR_UID,
   approval: approveAllButReads(readOperations),
   operations: { allow: [...readOperations, ...writeOperations] },
   toolCall: {
     providedArguments: { "Notion-Version": notionApi.version },
+  },
+});
+
+export default defineDynamic({
+  events: {
+    "turn.started": async () =>
+      (await connectedAppConfigured("notion")) ? notion : null,
   },
 });

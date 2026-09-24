@@ -1,5 +1,7 @@
 import {
   defaultTelegramAuth,
+  registerTelegramFreeformPrompt,
+  renderTelegramInputRequest,
   resolveTelegramBotToken,
   telegramChannel,
   telegramContinuationToken,
@@ -19,6 +21,7 @@ import {
   sessionReplyLanguage,
   turnFailureNotice,
 } from "@agent/lib/delivery/fallback";
+import { withApprovalCard } from "@shared/chat/approval-card";
 import { firstContactContext } from "@agent/lib/first-contact";
 import { telegramMediaTurn } from "@agent/lib/inbound-media/telegram";
 import {
@@ -205,6 +208,30 @@ export default telegramChannel({
       });
       markTurnDelivered(context, event.turnId);
       await deliverText(context, session, { attachments: [], text });
+    },
+    // eve's own card, except that an approval says what it lets through — a
+    // browser errand's submission, a standing permission, a spend limit —
+    // instead of only the tool's name.
+    async "input.requested"(event, context, session) {
+      const language = sessionReplyLanguage(session.session.auth);
+      /* oxlint-disable eslint/no-await-in-loop -- Each card is posted in request order, and a freeform prompt is registered against its own message. */
+      for (const request of event.requests) {
+        const rendered = renderTelegramInputRequest(
+          withApprovalCard(request, language),
+          context.state
+        );
+        const posted = await context.telegram.post({
+          reply_markup: rendered.replyMarkup,
+          text: rendered.text,
+        });
+        if (rendered.freeformRequestId !== undefined && posted.id) {
+          registerTelegramFreeformPrompt(context.state, {
+            messageId: posted.id,
+            requestId: rendered.freeformRequestId,
+          });
+        }
+      }
+      /* oxlint-enable eslint/no-await-in-loop */
     },
     async "session.completed"(_event, _context, session) {
       const report = scheduledReportFromSession(session);

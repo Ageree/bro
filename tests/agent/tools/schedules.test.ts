@@ -10,6 +10,7 @@ import type {
   getScheduledAgentRunInput,
   getScheduledAgentRunInputForReport,
   listScheduledAgentJobs,
+  submitScheduledAgentRunAnswer,
   updateScheduledAgentJob,
 } from "@db/services/scheduled-agent-jobs";
 
@@ -18,6 +19,7 @@ const services = vi.hoisted(() => ({
   getInput: vi.fn<typeof getScheduledAgentRunInput>(),
   getInputForReport: vi.fn<typeof getScheduledAgentRunInputForReport>(),
   list: vi.fn<typeof listScheduledAgentJobs>(),
+  submitAnswer: vi.fn<typeof submitScheduledAgentRunAnswer>(),
   update: vi.fn<typeof updateScheduledAgentJob>(),
 }));
 
@@ -26,20 +28,36 @@ vi.mock("@db/services/scheduled-agent-jobs", () => ({
   getScheduledAgentRunInput: services.getInput,
   getScheduledAgentRunInputForReport: services.getInputForReport,
   listScheduledAgentJobs: services.list,
+  submitScheduledAgentRunAnswer: services.submitAnswer,
   updateScheduledAgentJob: services.update,
 }));
 
 import messaging from "@agent/tools/messaging";
 import schedules, {
+  answerSchedule,
   createSchedule,
   listSchedules,
   updateSchedule,
 } from "@agent/tools/schedules";
 
+const airportQuestion = {
+  action: {
+    callId: "call-question",
+    input: { prompt: "Which airport should I use?" },
+    kind: "tool-call" as const,
+    toolName: "ask_question",
+  },
+  allowFreeform: true,
+  kind: "question" as const,
+  prompt: "Which airport should I use?",
+  requestId: "request-airport",
+};
+
 describe("schedule tools", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null)));
+    services.submitAnswer.mockResolvedValue(true);
   });
 
   it("lets interactive and reporting turns resume scheduled input", async () => {
@@ -65,6 +83,7 @@ describe("schedule tools", () => {
     }
     services.getInput.mockResolvedValue({
       leaseToken: "00000000-0000-4000-8000-000000000003",
+      pendingInputRequests: [airportQuestion],
       runId: "00000000-0000-4000-8000-000000000002",
     });
     await answer.execute(
@@ -74,22 +93,23 @@ describe("schedule tools", () => {
       },
       toolContext("schedules-answer", "photon-imessage")
     );
+    // The answer may come from any of the person's chats.
     expect(services.getInput).toHaveBeenCalledExactlyOnceWith(
       { userId: "user-1", workspaceId: "workspace-1" },
-      {
-        conversationChannel: "photon",
-        conversationId: "imessage:dm:chat-1",
-      },
       "00000000-0000-4000-8000-000000000002"
     );
-
-    expect(fetch).toHaveBeenCalledWith(
-      new URL("https://example.com/internal/scheduled-run/respond"),
-      expect.objectContaining({ method: "POST" })
+    // It is stored for the `dynamic` tick, never posted to an app route
+    // that eve on Vercel would not receive.
+    expect(services.submitAnswer).toHaveBeenCalledExactlyOnceWith(
+      "00000000-0000-4000-8000-000000000002",
+      "00000000-0000-4000-8000-000000000003",
+      [{ requestId: "request-airport", text: "DCA" }]
     );
+    expect(fetch).not.toHaveBeenCalled();
 
     services.getInputForReport.mockResolvedValue({
       leaseToken: "00000000-0000-4000-8000-000000000003",
+      pendingInputRequests: [airportQuestion],
       runId: "00000000-0000-4000-8000-000000000002",
     });
     const reportTools = await resolve({}, dynamicContext("scheduled-result"));
@@ -111,6 +131,11 @@ describe("schedule tools", () => {
       "00000000-0000-4000-8000-000000000002",
       "00000000-0000-4000-8000-000000000004"
     );
+    expect(services.submitAnswer).toHaveBeenLastCalledWith(
+      "00000000-0000-4000-8000-000000000002",
+      "00000000-0000-4000-8000-000000000003",
+      [{ requestId: "request-airport", text: "LGA" }]
+    );
 
     await expect(
       reportAnswer.execute(
@@ -122,6 +147,44 @@ describe("schedule tools", () => {
       )
     ).rejects.toThrow("This reporting turn cannot resume that run.");
     expect(services.getInput).toHaveBeenCalledOnce();
+  });
+
+  it("rejects an answer that matches none of the pending choices", async () => {
+    services.getInput.mockResolvedValue({
+      leaseToken: "00000000-0000-4000-8000-000000000003",
+      pendingInputRequests: [
+        {
+          ...airportQuestion,
+          allowFreeform: false,
+          options: [
+            { id: "dca", label: "DCA" },
+            { id: "iad", label: "IAD" },
+          ],
+        },
+      ],
+      runId: "00000000-0000-4000-8000-000000000002",
+    });
+
+    await expect(
+      answerSchedule.execute(
+        {
+          answer: "Heathrow",
+          runId: "00000000-0000-4000-8000-000000000002",
+        },
+        toolContext("schedules-answer", "telegram")
+      )
+    ).rejects.toThrow("That answer does not match the pending choices.");
+    expect(services.submitAnswer).not.toHaveBeenCalled();
+
+    await answerSchedule.execute(
+      { answer: "IAD", runId: "00000000-0000-4000-8000-000000000002" },
+      toolContext("schedules-answer", "telegram")
+    );
+    expect(services.submitAnswer).toHaveBeenCalledExactlyOnceWith(
+      "00000000-0000-4000-8000-000000000002",
+      "00000000-0000-4000-8000-000000000003",
+      [{ optionId: "iad", requestId: "request-airport" }]
+    );
   });
 
   it("creates a schedule without a multiplexed action field", async () => {
@@ -176,13 +239,11 @@ describe("schedule tools", () => {
     );
 
     expect(inputProperties(listSchedules.inputSchema)).toEqual([]);
-    expect(services.list).toHaveBeenCalledExactlyOnceWith(
-      { userId: "user-1", workspaceId: "workspace-1" },
-      {
-        conversationChannel: "photon",
-        conversationId: "imessage:dm:chat-1",
-      }
-    );
+    // Every schedule of the person, whichever chat asks.
+    expect(services.list).toHaveBeenCalledExactlyOnceWith({
+      userId: "user-1",
+      workspaceId: "workspace-1",
+    });
     expect(result).toEqual([scheduleListSummary(job)]);
   });
 
@@ -206,10 +267,6 @@ describe("schedule tools", () => {
     ]);
     expect(services.update).toHaveBeenCalledExactlyOnceWith(
       { userId: "user-1", workspaceId: "workspace-1" },
-      {
-        conversationChannel: "photon",
-        conversationId: "imessage:dm:chat-1",
-      },
       job.id,
       { status: "paused" }
     );
@@ -457,6 +514,7 @@ function scheduledJob(
 function scheduleSummary(job: ReturnType<typeof scheduledJob>) {
   return {
     createdAt: job.createdAt.toISOString(),
+    createdIn: job.conversationChannel === "eve" ? "web chat" : "iMessage",
     id: job.id,
     lastError: job.lastError,
     lastRunAt: job.lastRunAt?.toISOString() ?? null,

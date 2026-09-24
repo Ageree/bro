@@ -251,7 +251,7 @@ type InboundContext = Parameters<
 >[0];
 
 interface ThreadIdentity {
-  readonly thread: Pick<InboundContext["thread"], "id" | "post"> & {
+  readonly thread: Pick<InboundContext["thread"], "id" | "isDM" | "post"> & {
     /** The iMessage adapter's read receipt, the only adapter call the policy makes. */
     readonly adapter: { readonly markRead: typeof capture.markRead };
   };
@@ -262,6 +262,7 @@ function threadContext() {
     thread: {
       adapter: { markRead: capture.markRead },
       id: "imessage:iMessage;-;+15550100011",
+      isDM: true,
       post: capture.post,
     },
   };

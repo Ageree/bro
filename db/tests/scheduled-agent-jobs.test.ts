@@ -1,8 +1,9 @@
 /* oxlint-disable eslint/no-await-in-loop -- Migrations and their statements must be applied in order. */
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ZodError, z } from "zod";
 import * as Database from "@db";
 import * as schema from "../schema";
 
@@ -18,27 +19,13 @@ describe("scheduled agent jobs", () => {
   it("materializes one occurrence, leases its worker, and persists reporting", async () => {
     const client = new PGlite();
     databases.push(client);
-    for (const migration of [
-      "0000_fluffy_the_spike.sql",
-      "0001_better-auth.sql",
-      "0002_heavy_celestials.sql",
-      "0003_unusual_fabian_cortez.sql",
-      "0004_kind_manta.sql",
-      "0005_brave_kang.sql",
-      "0006_illegal_tattoo.sql",
-      "0007_known_fenris.sql",
-      "0008_black_sandman.sql",
-      "0009_cold_power_man.sql",
-      "0010_rapid_cerise.sql",
-      "0011_faulty_unicorn.sql",
-      "0012_harsh_domino.sql",
-      "0013_last_christian_walker.sql",
-      "0014_uneven_vector.sql",
-      // `ensureScope` writes every workspace column, introduced_at included.
-      "0023_safe_squirrel_girl.sql",
-      // The job kind that keeps proactive checks out of the task dispatcher.
-      "0025_oval_wraith.sql",
-    ]) {
+    // Every migration, in order: a later one may backfill from any table.
+    const migrations = (
+      await readdir(new URL("../migrations", import.meta.url))
+    )
+      .filter((name) => name.endsWith(".sql"))
+      .toSorted();
+    for (const migration of migrations) {
       await applyMigration(client, migration);
     }
 
@@ -77,30 +64,22 @@ describe("scheduled agent jobs", () => {
       },
       now
     );
-    expect(await jobs.listScheduledAgentJobs(bob, aliceConversation)).toEqual(
-      []
-    );
-    expect(await jobs.listScheduledAgentJobs(alice, bobConversation)).toEqual(
-      []
-    );
-    expect(await jobs.listScheduledAgentJobs(alice, aliceConversation)).toEqual(
-      [{ ...created, latestRun: null }]
-    );
+    expect(await jobs.listScheduledAgentJobs(bob)).toEqual([]);
+    expect(await jobs.listScheduledAgentJobs(alice)).toEqual([
+      { ...created, latestRun: null },
+    ]);
     await jobs.updateScheduledAgentJob(
       alice,
-      aliceConversation,
       created.id,
       { prompt: "Check for a meaningful price change." },
       new Date("2026-09-01T12:30:00.000Z")
     );
-    expect(await jobs.listScheduledAgentJobs(alice, aliceConversation)).toEqual(
-      [
-        expect.objectContaining({
-          nextRunAt: new Date("2026-09-01T13:00:00.000Z"),
-          prompt: "Check for a meaningful price change.",
-        }),
-      ]
-    );
+    expect(await jobs.listScheduledAgentJobs(alice)).toEqual([
+      expect.objectContaining({
+        nextRunAt: new Date("2026-09-01T13:00:00.000Z"),
+        prompt: "Check for a meaningful price change.",
+      }),
+    ]);
 
     const dueAt = new Date("2026-09-01T13:00:00.000Z");
     await jobs.materializeDueScheduledAgentRuns({ limit: 25, now: dueAt });
@@ -167,10 +146,7 @@ describe("scheduled agent jobs", () => {
         workerStartedAt
       )
     ).toBe(false);
-    const [listedJob] = await jobs.listScheduledAgentJobs(
-      alice,
-      aliceConversation
-    );
+    const [listedJob] = await jobs.listScheduledAgentJobs(alice);
     expect(listedJob?.latestRun).toMatchObject({
       id: claim.run.id,
       startedAt: workerStartedAt,
@@ -264,27 +240,46 @@ describe("scheduled agent jobs", () => {
       "delivered"
     );
     expect(
-      await jobs.getScheduledAgentRunInput(bob, aliceConversation, claim.run.id)
+      await jobs.getScheduledAgentRunInput(bob, claim.run.id)
     ).toBeUndefined();
     expect(
-      await jobs.getScheduledAgentRunInput(alice, bobConversation, claim.run.id)
-    ).toBeUndefined();
-    expect(
-      await jobs.getScheduledAgentRunInput(
-        alice,
-        aliceConversation,
-        claim.run.id
-      )
+      await jobs.getScheduledAgentRunInput(alice, claim.run.id)
     ).toMatchObject({
       leaseToken: claim.run.leaseToken,
+      pendingInputRequests: [question],
     });
-    const resumed = await jobs.claimScheduledAgentRunInput(
-      claim.run.id,
-      claim.run.leaseToken,
-      new Date("2026-09-01T13:02:00.000Z")
-    );
-    expect(resumed).toMatchObject({
-      run: { pendingInputRequests: [question], status: "running" },
+    const answer = [{ requestId: "request-question", text: "LGA" }];
+    expect(
+      await jobs.submitScheduledAgentRunAnswer(
+        claim.run.id,
+        "00000000-0000-4000-8000-000000000099",
+        answer
+      )
+    ).toBe(false);
+    expect(
+      await jobs.submitScheduledAgentRunAnswer(
+        claim.run.id,
+        claim.run.leaseToken,
+        answer,
+        new Date("2026-09-01T13:01:50.000Z")
+      )
+    ).toBe(true);
+    const answered = await Promise.all([
+      jobs.claimAnsweredScheduledAgentRuns({
+        limit: 25,
+        now: new Date("2026-09-01T13:02:00.000Z"),
+      }),
+      jobs.claimAnsweredScheduledAgentRuns({
+        limit: 25,
+        now: new Date("2026-09-01T13:02:00.000Z"),
+      }),
+    ]);
+    const answeredRuns = answered.flat().map(({ run }) => run);
+    expect(answeredRuns).toHaveLength(1);
+    expect(answeredRuns[0]).toMatchObject({
+      inputResponses: answer,
+      pendingInputRequests: [question],
+      status: "running",
     });
     await jobs.finishScheduledAgentRunInput(
       claim.run.id,
@@ -427,24 +422,17 @@ describe("scheduled agent jobs", () => {
     expect(await jobs.listRecoverableScheduledReports(dueAt)).toEqual([]);
 
     expect(
-      await jobs.updateScheduledAgentJob(bob, aliceConversation, created.id, {
+      await jobs.updateScheduledAgentJob(bob, created.id, {
         status: "paused",
       })
     ).toBeUndefined();
-    expect(
-      await jobs.updateScheduledAgentJob(alice, bobConversation, created.id, {
-        status: "paused",
-      })
-    ).toBeUndefined();
-    expect(await jobs.listScheduledAgentJobs(alice, aliceConversation)).toEqual(
-      [
-        expect.objectContaining({
-          nextRunAt: new Date("2026-09-01T14:00:00.000Z"),
-          status: "active",
-        }),
-      ]
-    );
-    await jobs.updateScheduledAgentJob(alice, aliceConversation, created.id, {
+    expect(await jobs.listScheduledAgentJobs(alice)).toEqual([
+      expect.objectContaining({
+        nextRunAt: new Date("2026-09-01T14:00:00.000Z"),
+        status: "active",
+      }),
+    ]);
+    await jobs.updateScheduledAgentJob(alice, created.id, {
       status: "paused",
     });
     await jobs.createScheduledAgentJob(
@@ -496,15 +484,9 @@ describe("scheduled agent jobs", () => {
       });
     }
 
-    expect(await jobs.listScheduledAgentJobs(bob, bobConversation)).toEqual([
+    expect(await jobs.listScheduledAgentJobs(bob)).toEqual([
       expect.objectContaining({ lastError: "Source unavailable." }),
     ]);
-    expect(
-      await jobs.listScheduledAgentJobs(bob, {
-        conversationChannel: "photon",
-        conversationId: "imessage:another-chat",
-      })
-    ).toEqual([]);
 
     const [acceptedRun] = await pgliteDatabase
       .insert(schema.scheduledAgentRuns)
@@ -565,6 +547,281 @@ describe("scheduled agent jobs", () => {
     });
   }, 20_000);
 });
+
+describe("handing an answer to a waiting worker", { timeout: 30_000 }, () => {
+  const alice = { userId: "alice", workspaceId: "workspace:alice" };
+  const askedAt = new Date("2026-09-01T13:00:00.000Z");
+  const answer = [{ requestId: "request-question", text: "LGA" }];
+
+  it("lets a later tick take over a hand-off whose tick died", async () => {
+    const { jobs } = await openDatabase();
+    const run = await answeredRun(jobs);
+    const handOffAt = new Date("2026-09-01T13:05:00.000Z");
+    const [claim] = await jobs.claimAnsweredScheduledAgentRuns({
+      limit: 25,
+      now: handOffAt,
+    });
+    expect(claim?.run).toMatchObject({ id: run.id, status: "running" });
+    // The tick dies before the worker gets the answer. While its short
+    // lease holds, nobody else hands the answer over…
+    expect(
+      await jobs.claimAnsweredScheduledAgentRuns({
+        limit: 25,
+        now: new Date("2026-09-01T13:09:00.000Z"),
+      })
+    ).toEqual([]);
+    // …and once it lapses, the next tick does.
+    const [retaken] = await jobs.claimAnsweredScheduledAgentRuns({
+      limit: 25,
+      now: new Date("2026-09-01T13:10:00.000Z"),
+    });
+    expect(retaken?.run).toMatchObject({
+      id: run.id,
+      inputResponses: answer,
+      leaseToken: run.leaseToken,
+      status: "running",
+    });
+
+    // A worker that took its answer runs on under a worker's lease.
+    const tookAt = new Date("2026-09-01T13:10:01.000Z");
+    await jobs.finishScheduledAgentRunInput(run.id, run.leaseToken, tookAt);
+    expect(
+      await jobs.claimAnsweredScheduledAgentRuns({
+        limit: 25,
+        now: new Date("2026-09-01T15:00:00.000Z"),
+      })
+    ).toEqual([]);
+    const leases = await import("@db/services/scheduled-agent-run-leases");
+    expect(
+      await leases.isScheduledAgentRunLeaseActive(
+        run.id,
+        run.leaseToken,
+        new Date("2026-09-01T18:00:00.000Z")
+      )
+    ).toBe(true);
+  });
+
+  it("ends a run whose worker is gone and tells the person", async () => {
+    const { db, jobs } = await openDatabase();
+    const run = await answeredRun(jobs);
+    const handOffAt = new Date("2026-09-01T13:05:00.000Z");
+    await jobs.claimAnsweredScheduledAgentRuns({ limit: 25, now: handOffAt });
+
+    await jobs.restoreScheduledAgentRunInput(
+      run.id,
+      run.leaseToken,
+      "The scheduled session is no longer active.",
+      null,
+      handOffAt
+    );
+
+    expect(
+      await db.query.scheduledAgentRuns.findFirst({
+        where: (runs, { eq }) => eq(runs.id, run.id),
+      })
+    ).toMatchObject({
+      inputResponses: null,
+      leaseToken: null,
+      outcome: { kind: "blocked" },
+      pendingInputRequests: null,
+      reportStatus: "pending",
+      status: "dead_letter",
+    });
+    // The person can no longer answer into it, and its report goes out.
+    expect(await jobs.getScheduledAgentRunInput(alice, run.id)).toBeUndefined();
+    expect(await jobs.listRecoverableScheduledReports(handOffAt)).toMatchObject(
+      [{ runId: run.id }]
+    );
+  });
+
+  it("keeps the answer for a worker still starting", async () => {
+    const { jobs } = await openDatabase();
+    const run = await answeredRun(jobs);
+    const handOffAt = new Date("2026-09-01T13:05:00.000Z");
+    await jobs.claimAnsweredScheduledAgentRuns({ limit: 25, now: handOffAt });
+
+    await jobs.restoreScheduledAgentRunInput(
+      run.id,
+      run.leaseToken,
+      "The scheduled session is no longer active.",
+      { at: new Date("2026-09-01T13:06:00.000Z") },
+      handOffAt
+    );
+
+    expect(
+      await jobs.claimAnsweredScheduledAgentRuns({
+        limit: 25,
+        now: new Date("2026-09-01T13:06:00.000Z"),
+      })
+    ).toMatchObject([{ run: { id: run.id, inputResponses: answer } }]);
+  });
+
+  /** A run whose worker asked, whose question reached the person, answered. */
+  async function answeredRun(
+    jobs: Awaited<ReturnType<typeof openDatabase>>["jobs"]
+  ) {
+    const scope = await import("@db/services/scope");
+    await scope.ensureScope(alice);
+    await jobs.createScheduledAgentJob(
+      alice,
+      {
+        conversationChannel: "telegram",
+        conversationId: "100::",
+        missedRunPolicy: "run_latest",
+        prompt: "Book the airport transfer.",
+        timing: { at: askedAt.toISOString(), kind: "once" },
+      },
+      new Date("2026-09-01T12:00:00.000Z")
+    );
+    await jobs.materializeDueScheduledAgentRuns({ limit: 25, now: askedAt });
+    const [claim] = await jobs.claimReadyScheduledAgentRuns({
+      leaseForMs: 21_600_000,
+      limit: 25,
+      now: askedAt,
+    });
+    const leaseToken = claim?.run.leaseToken;
+    if (!claim || !leaseToken) throw new Error("Expected one leased run.");
+    await jobs.setScheduledRunSession(claim.run.id, leaseToken, "worker");
+    await jobs.waitForScheduledAgentRunInput(
+      claim.run.id,
+      leaseToken,
+      [
+        {
+          action: {
+            callId: "call-question",
+            input: { prompt: "Which airport?" },
+            kind: "tool-call",
+            toolName: "ask_question",
+          },
+          allowFreeform: true,
+          kind: "question",
+          prompt: "Which airport?",
+          requestId: "request-question",
+        },
+      ],
+      askedAt
+    );
+    const report = await jobs.claimScheduledReport(claim.run.id, askedAt);
+    if (!report?.run.reportLeaseToken) throw new Error("Expected a report.");
+    await jobs.finalizeScheduledReport(
+      claim.run.id,
+      report.run.reportLeaseToken,
+      "delivered"
+    );
+    const submitted = await jobs.submitScheduledAgentRunAnswer(
+      claim.run.id,
+      leaseToken,
+      answer,
+      new Date("2026-09-01T13:04:00.000Z")
+    );
+    if (!submitted) throw new Error("Expected the answer to be stored.");
+    return { id: claim.run.id, leaseToken };
+  }
+});
+
+describe("following the person's timezone", { timeout: 30_000 }, () => {
+  const alice = { userId: "alice", workspaceId: "workspace:alice" };
+  const now = new Date("2026-09-24T09:00:00.000Z");
+  // «Каждое 5-е число в 10 утра».
+  const rent = {
+    conversationChannel: "telegram" as const,
+    conversationId: "100::",
+    missedRunPolicy: "run_latest" as const,
+    prompt: "Напомнить оплатить квартиру.",
+    timing: {
+      dayOfMonth: 5,
+      frequency: "monthly" as const,
+      kind: "calendar" as const,
+      localTime: "10:00",
+      timezone: "Europe/Moscow",
+    },
+  };
+
+  it("moves the schedules to the zone the profile ends with when two changes race", async () => {
+    const { jobs, profiles } = await openDatabase();
+    const scope = await import("@db/services/scope");
+    await scope.ensureScope(alice);
+    const job = await jobs.createScheduledAgentJob(alice, rent, now);
+
+    await Promise.all([
+      profiles.patchUserProfile(alice, { timezone: "Asia/Yekaterinburg" }),
+      profiles.patchUserProfile(alice, { timezone: "Asia/Novosibirsk" }),
+      profiles.patchUserProfile(alice, { firstName: "Алиса" }),
+    ]);
+
+    const profile = await profiles.readUserProfile(alice);
+    expect(profile.firstName).toBe("Алиса");
+    const [listed] = await jobs.listScheduledAgentJobs(alice);
+    expect(listed).toMatchObject({
+      id: job.id,
+      timing: { timezone: profile.timezone },
+    });
+  });
+
+  it("keeps the old zone when the schedules could not follow", async () => {
+    const { db, jobs, profiles } = await openDatabase();
+    const scope = await import("@db/services/scope");
+    await scope.ensureScope(alice);
+    await jobs.createScheduledAgentJob(alice, rent, now);
+    // A stored schedule the move cannot read makes it fail midway.
+    await db.insert(schema.scheduledAgentJobs).values({
+      ...rent,
+      createdByUserId: alice.userId,
+      nextRunAt: now,
+      status: "active",
+      timing: { kind: "calendar", timezone: "Europe/Moscow" },
+      workspaceId: alice.workspaceId,
+    });
+
+    await expect(
+      profiles.patchUserProfile(alice, { timezone: "Asia/Yekaterinburg" })
+    ).rejects.toBeInstanceOf(ZodError);
+
+    expect((await profiles.readUserProfile(alice)).timezone).toBeNull();
+    const stored = await db.query.scheduledAgentJobs.findMany({
+      columns: { timing: true },
+    });
+    expect(
+      stored.map(
+        ({ timing }) =>
+          z.object({ timezone: z.string() }).parse(timing).timezone
+      )
+    ).toEqual(["Europe/Moscow", "Europe/Moscow"]);
+  });
+});
+
+let migrated: Promise<Blob> | undefined;
+
+// Each case starts from a clone of one migrated database.
+async function openDatabase() {
+  migrated ??= (async () => {
+    const template = new PGlite();
+    const migrations = (
+      await readdir(new URL("../migrations", import.meta.url))
+    )
+      .filter((name) => name.endsWith(".sql"))
+      .toSorted();
+    for (const migration of migrations) {
+      await applyMigration(template, migration);
+    }
+    const dump = await template.dumpDataDir("none");
+    await template.close();
+    return dump;
+  })();
+  const client = new PGlite({ loadDataDir: await migrated });
+  databases.push(client);
+  const pgliteDatabase = drizzle(client, { schema });
+  // Modules are reset between cases, so the services must see this copy.
+  const freshDatabase = await import("@db");
+  // SAFETY: PGlite implements the query-builder surface exercised by this service while retaining the shared Drizzle schema.
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- The focused test swaps only the database driver.
+  vi.spyOn(freshDatabase, "db", "get").mockReturnValue(pgliteDatabase as never);
+  return {
+    db: pgliteDatabase,
+    jobs: await import("@db/services/scheduled-agent-jobs"),
+    profiles: await import("@db/services/user-profile"),
+  };
+}
 
 async function applyMigration(database: PGlite, filename: string) {
   const source = await readFile(

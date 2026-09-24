@@ -49,6 +49,8 @@ function labelledValue(text: string, label: string) {
 
 const linksLabel =
   /^[ \t]*(?:[-*•]+[ \t]*)?\*{0,2}LINKS\*{0,2}[ \t]*:[ \t]*/imu;
+const itemsLabel =
+  /^[ \t]*(?:[-*•]+[ \t]*)?\*{0,2}ITEMS\*{0,2}[ \t]*:[ \t]*/imu;
 const maxLinksJsonLength = 16_000;
 const maxBrowserResultLinks = 20;
 const maxLinkTitleLength = 200;
@@ -60,16 +62,18 @@ const browserResultLinkFields = z.object({
   url: z.string(),
 });
 
-function linksJson(text: string) {
-  const label = linksLabel.exec(text);
+/** The JSON array written after a label, cut out by bracket depth. */
+function labelledJsonArray(
+  text: string,
+  labelPattern: RegExp,
+  maxLength = maxLinksJsonLength
+) {
+  const label = labelPattern.exec(text);
   if (!label) return undefined;
   const rest = text.slice(label.index + label[0].length);
   const openingOffset = rest.search(/\[/u);
   if (openingOffset < 0 || openingOffset > 32) return undefined;
-  const candidate = rest.slice(
-    openingOffset,
-    openingOffset + maxLinksJsonLength
-  );
+  const candidate = rest.slice(openingOffset, openingOffset + maxLength);
   let depth = 0;
   let quoted = false;
   let escaped = false;
@@ -121,7 +125,7 @@ function validatedBrowserResultUrl(rawUrl: string) {
 }
 
 function browserResultLinks(text: string) {
-  const json = linksJson(text);
+  const json = labelledJsonArray(text, linksLabel);
   if (!json) return [];
   let values: unknown;
   try {
@@ -146,6 +150,81 @@ function browserResultLinks(text: string) {
     links.push({ title, url });
   }
   return links;
+}
+
+const maxBrowserResultItems = 30;
+const maxItemFieldLength = 400;
+/**
+ * Room for every item the run may report at full size: a name, three fields
+ * and a long product URL come to about 4 000 characters, and a basket of 30
+ * lines with shop links outgrew the LINKS bound and was dropped whole.
+ */
+const maxItemsJsonLength = maxBrowserResultItems * 4_000;
+const itemText = z
+  .union([z.string(), z.number()])
+  .nullish()
+  .transform((value) => {
+    if (value === null || value === undefined) return undefined;
+    const text = String(value).replaceAll(/\s+/gu, " ").trim();
+    if (!text || emptyValue.test(text)) return undefined;
+    return text.slice(0, maxItemFieldLength);
+  });
+const browserResultItemFields = z.object({
+  details: itemText,
+  name: z.string(),
+  price: itemText,
+  quantity: itemText,
+  url: z.string().nullish(),
+});
+
+/**
+ * What the run found, one entry per option, basket line or slot: a basket
+ * reported as «1 337,10 ₽» and hotels as «4 found» told the person nothing
+ * they could choose from. A link is kept only when it passes the same check
+ * as LINKS; an item without one still counts.
+ */
+function browserResultItems(text: string) {
+  const json = labelledJsonArray(text, itemsLabel, maxItemsJsonLength);
+  if (!json) return [];
+  let values: unknown;
+  try {
+    values = JSON.parse(json);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(values)) return [];
+  return values.slice(0, maxBrowserResultItems).flatMap((value) => {
+    const fields = browserResultItemFields.safeParse(value);
+    if (!fields.success) return [];
+    const name = fields.data.name.replaceAll(/\s+/gu, " ").trim();
+    if (!name || name.length > maxLinkTitleLength) return [];
+    return [
+      {
+        details: fields.data.details,
+        name,
+        price: fields.data.price,
+        quantity: fields.data.quantity,
+        url: fields.data.url
+          ? validatedBrowserResultUrl(fields.data.url)
+          : undefined,
+      },
+    ];
+  });
+}
+
+/** One line per item, for the coordinator to turn into the person's list. */
+function itemLines(items: ReturnType<typeof browserResultItems>) {
+  return items.map((item, index) =>
+    [
+      `${String(index + 1)}. ${item.name}`,
+      item.price,
+      item.quantity ? `qty ${item.quantity}` : undefined,
+      item.details,
+      item.url,
+    ]
+      .filter((part) => part !== undefined)
+      .join(" — ")
+  );
 }
 
 function browserReport(report: string | null | undefined) {
@@ -175,6 +254,7 @@ export function parseBrowserOutcome(result: string | null | undefined) {
   return {
     details: labelledValue(text, "DETAILS"),
     hasReportLinks: browserReport(text)?.hasLinks ?? false,
+    items: browserResultItems(text),
     labelled: rawNeeds !== undefined,
     links: browserResultLinks(text),
     needs: browserRunNeeds.find((need) => need === candidate) ?? "none",
@@ -196,6 +276,9 @@ export function browserOutcomeSummary(
     outcome.total ? `Total: ${outcome.total}` : undefined,
     outcome.needs === "none" ? undefined : `Needs: ${outcome.needs}`,
     outcome.details ? `Details: ${outcome.details}` : undefined,
+    outcome.items.length > 0
+      ? ["Items:", ...itemLines(outcome.items)].join("\n")
+      : undefined,
     outcome.links.length > 0
       ? `Links: ${JSON.stringify(outcome.links)}`
       : undefined,

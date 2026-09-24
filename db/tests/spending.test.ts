@@ -83,7 +83,24 @@ describe("spend limit persistence", () => {
     expect(await spending.readSpendLimit(alice)).toEqual(monthly);
     expect(await spending.readSpendLimit(bob)).toBeUndefined();
 
-    await spending.updateSpendLimit(alice, () => ({ ...monthly, rules: [] }));
+    // Standing permissions alone are still a policy.
+    const tables = { kind: "table" as const, maxRub: null, merchant: null };
+    await spending.updateSpendLimit(alice, () => ({
+      ...monthly,
+      actions: [tables],
+      rules: [],
+    }));
+    expect(await spending.readSpendLimit(alice)).toEqual({
+      ...monthly,
+      actions: [tables],
+      rules: [],
+    });
+
+    await spending.updateSpendLimit(alice, () => ({
+      ...monthly,
+      actions: [],
+      rules: [],
+    }));
     expect(await spending.readSpendLimit(alice)).toBeUndefined();
   }, 30_000);
 
@@ -342,5 +359,72 @@ describe("spend limit persistence", () => {
       amountRub: 0,
       status: "reserved",
     });
+  }, 30_000);
+});
+
+describe("card and standing-permission payments", () => {
+  const taxi = { kind: "taxi" as const, maxRub: 1500, merchant: null };
+
+  it("records a card's payment without touching the spend limit", async () => {
+    const spending = await spendingDatabase();
+    await spending.updateSpendLimit(alice, () => monthly);
+
+    expect(
+      await spending.reserveConsentPayment(alice, {
+        amountRub: 1000,
+        browserRunId: "pending:card",
+        category: "taxi",
+        merchant: "taxi.yandex.ru",
+        periodKey: "2026-09",
+        source: "card",
+      })
+    ).toEqual({ allowed: true });
+    await spending.moveSpendReservation("pending:card", "run-card");
+
+    expect(await spending.readSpendEntryForRun("run-card")).toMatchObject({
+      amountRub: 1000,
+      source: "card",
+      status: "reserved",
+    });
+    // The limit still has its whole month, and so does every permission.
+    expect(await spending.listSpendEntries(alice, "2026-09")).toEqual([]);
+    expect(
+      await spending.listSpendEntries(alice, "2026-09", { source: "standing" })
+    ).toEqual([]);
+  }, 30_000);
+
+  it("holds a standing permission's payments to its month", async () => {
+    const spending = await spendingDatabase();
+    const hold = (browserRunId: string, replacingRunId?: string) =>
+      spending.reserveConsentPayment(alice, {
+        amountRub: 1500,
+        browserRunId,
+        category: "taxi",
+        merchant: "taxi.yandex.ru",
+        periodKey: "2026-09",
+        replacingRunId,
+        source: "standing",
+        standing: taxi,
+      });
+
+    expect(await hold("run-1")).toEqual({ allowed: true });
+    expect(await hold("run-2")).toEqual({ allowed: true });
+    expect(await hold("run-3")).toEqual({ allowed: true });
+    // Three rides at the ceiling are the default month.
+    expect(await hold("run-4")).toEqual({ allowed: false, remainingRub: 0 });
+    // A follow-up replaces its errand's own hold instead of counting twice.
+    expect(await hold("pending:follow-up", "run-3")).toEqual({ allowed: true });
+    expect(await spending.readSpendEntryForRun("run-3")).toMatchObject({
+      status: "released",
+    });
+    // A run that already had a released row still takes the new one.
+    await spending.moveSpendReservation("pending:follow-up", "run-3");
+    expect(await spending.readSpendEntryForRun("run-3")).toMatchObject({
+      source: "standing",
+      status: "reserved",
+    });
+    expect(
+      await spending.listSpendEntries(alice, "2026-09", { source: "standing" })
+    ).toHaveLength(3);
   }, 30_000);
 });

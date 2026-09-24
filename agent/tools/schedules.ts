@@ -1,12 +1,13 @@
+import { parseInputResponses, resolveTextToResponses } from "eve/client";
 import { defineDynamic, defineTool, type ToolContext } from "eve/tools";
 import { z } from "zod";
 import { resolveModeValue } from "@agent/lib/mode";
 import { scheduledReportIdentity } from "@agent/lib/schedules/identity";
-import { postScheduledRunRoute } from "@agent/lib/schedules/request";
 import {
   scheduleListSummary,
   scheduleOwner,
   scheduleReplyAnchor,
+  scheduleScope,
   scheduleSummary,
 } from "@agent/lib/schedules/tools";
 import { scheduleTimingSchema } from "@shared/schedules/timing";
@@ -15,12 +16,13 @@ import {
   getScheduledAgentRunInput,
   getScheduledAgentRunInputForReport,
   listScheduledAgentJobs,
+  submitScheduledAgentRunAnswer,
   updateScheduledAgentJob,
 } from "@db/services/scheduled-agent-jobs";
 
 export const createSchedule = defineTool({
   description:
-    "Create a one-time, fixed-interval, or timezone-aware calendar job for this conversation. Use calendar timing for human wall-clock recurrence so it remains stable across daylight saving time. Summarize the exact requested work in prompt.",
+    "Create a one-time, fixed-interval, or timezone-aware calendar job for the person. Human recurrence is a calendar rule in the person's timezone, which stays on the same wall-clock time across daylight saving time and months of different length: «каждое 5-е число» is frequency monthly with dayOfMonth 5, «в последний день месяца» dayOfMonth \"last\", «каждое второе воскресенье» monthly_weekday with occurrence 2 and weekday 0, «по понедельникам и средам» weekly with weekdays [1, 3], «каждый будний день» weekdays, «каждый год 12 марта» yearly. Use interval only for a fixed count of minutes or hours, never for months or years. Summarize the exact requested work in prompt. A scheduled run can never act in the user's name or pay — no booking, appointment, application, job application, receipt or order: it only checks, searches and stages up to the final step, and its report asks the user to confirm in the conversation. So for «записывай, как только появится слот» schedule the check and say the booking itself waits for the user's confirmation.",
   inputSchema: z.object({
     missedRunPolicy: z.enum(["run_latest", "catch_up"]).default("run_latest"),
     prompt: z.string().trim().min(1).max(8_000),
@@ -42,11 +44,10 @@ export const createSchedule = defineTool({
 
 export const listSchedules = defineTool({
   description:
-    "List the authenticated user's one-time and recurring jobs for this conversation. Use this before changing a schedule when the target is ambiguous.",
+    "List all of the authenticated user's one-time and recurring jobs, whichever chat or channel each was made in. Use this before changing a schedule when the target is ambiguous.",
   inputSchema: z.object({}),
   async execute(_input, context) {
-    const owner = scheduleOwner(context);
-    return (await listScheduledAgentJobs(owner.scope, owner.conversation)).map(
+    return (await listScheduledAgentJobs(scheduleScope(context))).map(
       scheduleListSummary
     );
   },
@@ -67,13 +68,11 @@ const updateScheduleInputSchema = z
 
 export const updateSchedule = defineTool({
   description:
-    "Update, pause, resume, or delete one of the authenticated user's scheduled jobs. Set status paused or active to pause or resume it. List schedules first when the target is ambiguous.",
+    "Update, pause, resume, or delete one of the authenticated user's scheduled jobs, whichever chat it was made in. Set status paused or active to pause or resume it. List schedules first when the target is ambiguous.",
   inputSchema: updateScheduleInputSchema,
   async execute({ id, ...patch }, context) {
-    const owner = scheduleOwner(context);
     const job = await updateScheduledAgentJob(
-      owner.scope,
-      owner.conversation,
+      scheduleScope(context),
       id,
       patch
     );
@@ -84,7 +83,7 @@ export const updateSchedule = defineTool({
 
 export const answerSchedule = defineTool({
   description:
-    "Resume a scheduled task that is waiting for input. During scheduled reporting, use existing conversation context when it clearly answers the request. During an interactive turn, pass the user's answer exactly as given.",
+    "Resume a scheduled task that is waiting for input. During scheduled reporting, use existing conversation context when it clearly answers the request. During an interactive turn, pass the user's answer exactly as given. The task picks the answer up within a minute or two.",
   inputSchema: z.strictObject({
     answer: z.string().trim().min(1).max(8_000),
     runId: z.uuid(),
@@ -94,22 +93,21 @@ export const answerSchedule = defineTool({
     if (!pending) {
       throw new Error("That scheduled task is not waiting for input.");
     }
-    const response = await postScheduledRunRoute(
-      "/internal/scheduled-run/respond",
-      {
-        answer,
-        leaseToken: pending.leaseToken,
-        runId: pending.runId,
-      }
+    const responses = parseInputResponses(
+      resolveTextToResponses(answer, pending.pendingInputRequests)
     );
-    if (!response.ok) {
-      throw new Error(
-        response.status === 422
-          ? "That answer does not match the pending choices."
-          : "The scheduled task could not be resumed."
-      );
+    if (responses.length === 0) {
+      throw new Error("That answer does not match the pending choices.");
     }
-    return { resumed: true, runId };
+    const saved = await submitScheduledAgentRunAnswer(
+      pending.runId,
+      pending.leaseToken,
+      responses
+    );
+    if (!saved) {
+      throw new Error("That scheduled task is not waiting for input.");
+    }
+    return { accepted: true, runId };
   },
 });
 
@@ -130,10 +128,7 @@ export default defineDynamic({
 
 async function pendingScheduledRun(context: ToolContext, runId: string) {
   const resolvePending = resolveModeValue(context, {
-    interactive: () => {
-      const owner = scheduleOwner(context);
-      return getScheduledAgentRunInput(owner.scope, owner.conversation, runId);
-    },
+    interactive: () => getScheduledAgentRunInput(scheduleScope(context), runId),
     "scheduled-report": () => {
       const report = scheduledReportIdentity(context.session.auth);
       if (!report || report.runId !== runId) {

@@ -16,6 +16,7 @@ interface SpendEntryRow {
   feeRub: number;
   merchant: string | null;
   periodKey: string;
+  source: "card" | "limit" | "standing";
   status: "charged" | "released" | "reserved";
 }
 
@@ -53,6 +54,7 @@ const reserved: SpendEntryRow = {
   feeRub: 0,
   merchant: "shop.example",
   periodKey: "2026-09",
+  source: "limit",
   status: "reserved",
 };
 
@@ -226,5 +228,84 @@ describe("reading a charge from what the run reported", () => {
     );
 
     expect(note).toContain("offer to cancel the renewal");
+  });
+});
+
+describe("checking a card's or a standing permission's payment", () => {
+  const run = {
+    createdByUserId: "better-auth:alice",
+    id: "run-1",
+    workspaceId: "workspace:alice",
+  };
+
+  it("tells the person when a run paid past what the card allowed", async () => {
+    const card = { ...reserved, amountRub: 1000, source: "card" as const };
+    readSpendEntryForRun.mockResolvedValue(card);
+    settleSpendReservation.mockResolvedValue({
+      ...card,
+      amountRub: 1600,
+      status: "charged",
+    });
+    const { settleBrowserRunSpend } =
+      await import("@agent/lib/browser-use/spend");
+
+    const note = await settleBrowserRunSpend(run, "none", {
+      foreignCurrency: false,
+      priceRub: 1600,
+      recurring: false,
+    });
+
+    expect(settleSpendReservation).toHaveBeenCalledExactlyOnceWith("run-1", {
+      amountRub: 1600,
+      charged: true,
+    });
+    expect(note).toContain(
+      "on the approval card the person confirmed: 1\u00a0600 ₽."
+    );
+    expect(note).toContain(
+      "more than the 1\u00a0000 ₽ the approval card the person confirmed allowed"
+    );
+    expect(note).not.toContain("spend limit");
+  });
+
+  it("speaks of the standing permission, not the limit", async () => {
+    const standing = {
+      ...reserved,
+      amountRub: 1500,
+      category: "taxi",
+      source: "standing" as const,
+    };
+    readSpendEntryForRun.mockResolvedValue(standing);
+    settleSpendReservation.mockResolvedValue({
+      ...standing,
+      amountRub: 870,
+      status: "charged",
+    });
+    const { settleBrowserRunSpend } =
+      await import("@agent/lib/browser-use/spend");
+
+    const note = await settleBrowserRunSpend(run, "none", {
+      foreignCurrency: false,
+      priceRub: 870,
+      recurring: false,
+    });
+
+    expect(note).toContain(
+      "This errand paid on its own under the person's standing permission"
+    );
+    expect(note).not.toContain("spend limit");
+  });
+
+  it("gives a card's hold back quietly when nothing was paid", async () => {
+    readSpendEntryForRun.mockResolvedValue({ ...reserved, source: "card" });
+    const { settleBrowserRunSpend } =
+      await import("@agent/lib/browser-use/spend");
+
+    const note = await settleBrowserRunSpend(run, "payment", null);
+
+    expect(settleSpendReservation).toHaveBeenCalledExactlyOnceWith("run-1", {
+      charged: false,
+    });
+    expect(note).toBeUndefined();
   });
 });

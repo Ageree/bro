@@ -5,10 +5,12 @@ import {
   foreignKey,
   index,
   integer,
+  jsonb,
   pgTable,
   text,
   timestamp,
 } from "drizzle-orm/pg-core";
+import type { ConfirmedSubmission } from "@shared/browser/submission";
 import { workspaceMemberships } from "./workspaces";
 
 export const browserProfiles = pgTable(
@@ -34,18 +36,29 @@ export const browserRuns = pgTable(
   {
     // The Browser Use Cloud run id owns this row: every webhook delivery and
     // every poll addresses a run by it, so a second key would only add a way
-    // for the two to disagree.
+    // for the two to disagree. An errand queued before Browser Use had a free
+    // browser for it has no run yet and holds a `queued:` id until it starts.
     id: text("id").primaryKey(),
     workspaceId: text("workspace_id").notNull(),
     createdByUserId: text("created_by_user_id").notNull(),
-    sessionId: text("session_id").notNull(),
+    // Null only on an errand queued before it had a browser: such a row holds
+    // a `queued:` id, and its run carries the session once it starts.
+    sessionId: text("session_id"),
     profileId: text("profile_id"),
     task: text("task").notNull(),
     // The origin the errand was pointed at. Recording an order reads it to
     // name the merchant, which the errand wording alone often does not.
     site: text("site"),
     status: text("status", {
-      enum: ["created", "running", "waiting", "done", "failed", "stopped"],
+      enum: [
+        "created",
+        "queued",
+        "running",
+        "waiting",
+        "done",
+        "failed",
+        "stopped",
+      ],
     })
       .notNull()
       .default("created"),
@@ -97,11 +110,15 @@ export const browserRuns = pgTable(
     // Whether the run was started with the saved card bound. A background
     // retry binds the same secrets again, so it has to know.
     paymentAllowed: boolean("payment_allowed").notNull().default(false),
+    // What the person approved on the card to submit in their name, or null
+    // when the errand may only look. The errand's follow-ups and background
+    // retries carry it; a new errand starts without one.
+    submission: jsonb("submission").$type<ConfirmedSubmission>(),
     // Which attempt of its errand this run is against an anti-bot wall: the
     // run the person started is 1, each background retry adds one.
     captchaAttempt: integer("captcha_attempt").notNull().default(1),
-    // A run parked on an anti-bot check waits here for its background retry;
-    // the poller claims it by clearing the column.
+    // A run parked on an anti-bot check, or an errand queued while Browser
+    // Use had no free browser, waits here for the poller to start it.
     retryAt: timestamp("retry_at", {
       mode: "date",
       precision: 3,
@@ -110,6 +127,13 @@ export const browserRuns = pgTable(
     // The run that took the errand over, so a follow-up or a status check on
     // this id finds where the errand lives now.
     retriedAsRunId: text("retried_as_run_id"),
+    // The full instruction a queued errand starts with, composed when the
+    // person asked for it; cleared once a run carries it.
+    pendingTask: text("pending_task"),
+    // How many times the person changed a queued errand. The poller starts a
+    // run from the revision it read and hands the errand over only while it
+    // is still that one; a change that landed in between restarts it.
+    queueRevision: integer("queue_revision").notNull().default(0),
   },
   (table) => [
     foreignKey({
@@ -122,7 +146,11 @@ export const browserRuns = pgTable(
     }).onDelete("cascade"),
     check(
       "browser_runs_status_check",
-      sql`${table.status} IN ('created', 'running', 'waiting', 'done', 'failed', 'stopped')`
+      sql`${table.status} IN ('created', 'queued', 'running', 'waiting', 'done', 'failed', 'stopped')`
+    ),
+    check(
+      "browser_runs_session_id_check",
+      sql`${table.sessionId} IS NOT NULL OR ${table.id} LIKE 'queued:%'`
     ),
     check(
       "browser_runs_conversation_channel_check",

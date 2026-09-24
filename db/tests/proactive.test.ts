@@ -24,6 +24,10 @@ const photon = {
   conversationChannel: "photon" as const,
   conversationId: "imessage:chat-alice",
 };
+const web = {
+  conversationChannel: "eve" as const,
+  conversationId: "web-session-alice",
+};
 const now = new Date("2026-09-23T12:00:00.000Z");
 const flight = {
   dedupeKey: "flight@2026-09-24T07:40:00Z",
@@ -59,7 +63,7 @@ describe("proactive watches", { timeout: 30_000 }, () => {
 
     // The hidden job is neither a task the person can list nor one the
     // task dispatcher materializes.
-    expect(await jobs.listScheduledAgentJobs(alice, photon)).toEqual([]);
+    expect(await jobs.listScheduledAgentJobs(alice)).toEqual([]);
     expect(
       await jobs.materializeDueScheduledAgentRuns({
         limit: 10,
@@ -443,6 +447,312 @@ describe("proactive watches", { timeout: 30_000 }, () => {
     ).toEqual([]);
   });
 });
+
+describe("remembered chats", { timeout: 30_000 }, () => {
+  it("keeps the messenger and the web chat apart, preferring the messenger", async () => {
+    const { db, proactive } = await openDatabase();
+
+    expect(await proactive.recordProactiveTarget(alice, web, now)).toBe(
+      "created"
+    );
+    expect(await proactive.recordProactiveTarget(alice, telegram, now)).toBe(
+      "moved"
+    );
+    expect(await proactive.recordProactiveTarget(alice, web, now)).toBe(
+      "unchanged"
+    );
+    const newerWeb = { ...web, conversationId: "web-session-alice-2" };
+    expect(await proactive.recordProactiveTarget(alice, newerWeb, now)).toBe(
+      "remembered"
+    );
+    expect(await proactive.recordProactiveTarget(alice, photon, now)).toBe(
+      "moved"
+    );
+
+    const watch = await db.query.proactiveWatches.findFirst({
+      with: { job: true },
+    });
+    expect(watch).toMatchObject({
+      job: photon,
+      messengerChannel: "photon",
+      messengerConversationId: photon.conversationId,
+      webConversationId: newerWeb.conversationId,
+    });
+  });
+
+  it("remembers both chats when they start talking at the same moment", async () => {
+    const { db, proactive } = await openDatabase();
+
+    await Promise.all([
+      proactive.recordProactiveTarget(alice, web, now),
+      proactive.recordProactiveTarget(alice, telegram, now),
+    ]);
+
+    const watch = await db.query.proactiveWatches.findFirst({
+      with: { job: true },
+    });
+    expect(watch).toMatchObject({
+      job: telegram,
+      messengerConversationId: telegram.conversationId,
+      webConversationId: web.conversationId,
+    });
+    expect(await db.query.scheduledAgentJobs.findMany()).toHaveLength(1);
+  });
+
+  it("refuses a messenger remembered without its chat, or a chat without its messenger", async () => {
+    const { db, proactive } = await openDatabase();
+    await proactive.recordProactiveTarget(alice, telegram, now);
+    const { proactiveWatches } = await import("@db");
+
+    expect(
+      await refusal(
+        db.update(proactiveWatches).set({ messengerConversationId: null })
+      )
+    ).toContain("proactive_watches_messenger_check");
+    expect(
+      await refusal(db.update(proactiveWatches).set({ messengerChannel: null }))
+    ).toContain("proactive_watches_messenger_check");
+    await expect(
+      db
+        .update(proactiveWatches)
+        .set({ messengerChannel: null, messengerConversationId: null })
+    ).resolves.toBeDefined();
+  });
+
+  it("recovers the messenger of a person whose target had moved to the web chat", async () => {
+    const client = new PGlite();
+    databases.push(client);
+    const migrations = (
+      await readdir(new URL("../migrations", import.meta.url))
+    )
+      .filter((name) => name.endsWith(".sql"))
+      .toSorted();
+    const sources = await Promise.all(
+      migrations.map((name) =>
+        readFile(new URL(`../migrations/${name}`, import.meta.url), "utf8")
+      )
+    );
+    const index = sources.findIndex((source) =>
+      source.includes('ADD COLUMN IF NOT EXISTS "web_conversation_id"')
+    );
+    expect(index).toBeGreaterThan(0);
+    for (const migration of migrations.slice(0, index)) {
+      await applyMigration(client, migration);
+    }
+    await client.exec(`
+      INSERT INTO "user" ("id", "name", "email") VALUES ('bob', 'Bob', 'bob@example.com');
+      INSERT INTO workspaces ("id") VALUES ('w-alice'), ('w-bob'), ('w-carol'), ('w-dave');
+      INSERT INTO workspace_memberships ("workspace_id", "user_id", "role") VALUES
+        ('w-alice', 'alice', 'owner'), ('w-bob', 'bob', 'owner'),
+        ('w-carol', 'carol', 'owner'), ('w-dave', 'dave', 'owner');
+      INSERT INTO scheduled_agent_jobs
+        ("id", "workspace_id", "created_by_user_id", "kind", "prompt", "conversation_channel", "conversation_id", "timing", "updated_at")
+      VALUES
+        ('00000000-0000-4000-8000-00000000000a', 'w-alice', 'alice', 'proactive', 'check', 'eve', 'web-alice', '{}', '2026-09-20'),
+        ('00000000-0000-4000-8000-00000000000b', 'w-alice', 'alice', 'task', 'pill', 'telegram', '100::', '{}', '2026-09-01'),
+        ('00000000-0000-4000-8000-00000000000c', 'w-bob', 'bob', 'proactive', 'check', 'eve', 'web-bob', '{}', '2026-09-20'),
+        ('00000000-0000-4000-8000-00000000000d', 'w-carol', 'carol', 'proactive', 'check', 'telegram', '200::', '{}', '2026-09-20'),
+        ('00000000-0000-4000-8000-00000000000e', 'w-dave', 'dave', 'proactive', 'check', 'eve', 'web-dave', '{}', '2026-09-20');
+      INSERT INTO proactive_watches ("workspace_id", "created_by_user_id", "job_id", "mail_checked_at", "next_check_at") VALUES
+        ('w-alice', 'alice', '00000000-0000-4000-8000-00000000000a', now(), now()),
+        ('w-bob', 'bob', '00000000-0000-4000-8000-00000000000c', now(), now()),
+        ('w-carol', 'carol', '00000000-0000-4000-8000-00000000000d', now(), now()),
+        ('w-dave', 'dave', '00000000-0000-4000-8000-00000000000e', now(), now());
+      INSERT INTO browser_runs ("id", "workspace_id", "created_by_user_id", "session_id", "task", "status", "conversation_channel", "conversation_id", "created_at")
+      VALUES ('run-1', 'w-alice', 'alice', 'browser-session-1', 'errand', 'done', 'photon', 'imessage:alice', '2026-09-10');
+      INSERT INTO channel_identities ("channel", "external_user_id", "chat_id", "user_id", "workspace_id")
+      VALUES ('telegram', 'tg-bob', '300', 'bob', 'w-bob');
+    `);
+
+    // Applied twice: the second run changes nothing.
+    await applyMigration(client, migrations[index] ?? "");
+    await applyMigration(client, migrations[index] ?? "");
+
+    const { rows } = await client.query<{
+      conversation_channel: string;
+      conversation_id: string;
+      messenger_channel: string | null;
+      messenger_conversation_id: string | null;
+      web_conversation_id: string | null;
+      workspace_id: string;
+    }>(`
+      SELECT "watch"."workspace_id", "watch"."messenger_channel",
+        "watch"."messenger_conversation_id", "watch"."web_conversation_id",
+        "job"."conversation_channel", "job"."conversation_id"
+      FROM proactive_watches AS "watch"
+      JOIN scheduled_agent_jobs AS "job" ON "job"."id" = "watch"."job_id"
+      ORDER BY "watch"."workspace_id"
+    `);
+    expect(rows).toEqual([
+      // The errand in iMessage is newer than the Telegram schedule.
+      {
+        conversation_channel: "photon",
+        conversation_id: "imessage:alice",
+        messenger_channel: "photon",
+        messenger_conversation_id: "imessage:alice",
+        web_conversation_id: "web-alice",
+        workspace_id: "w-alice",
+      },
+      // A linked Telegram account is a messenger too.
+      {
+        conversation_channel: "telegram",
+        conversation_id: "300::",
+        messenger_channel: "telegram",
+        messenger_conversation_id: "300::",
+        web_conversation_id: "web-bob",
+        workspace_id: "w-bob",
+      },
+      {
+        conversation_channel: "telegram",
+        conversation_id: "200::",
+        messenger_channel: "telegram",
+        messenger_conversation_id: "200::",
+        web_conversation_id: null,
+        workspace_id: "w-carol",
+      },
+      // No messenger anywhere: the web chat stays the target.
+      {
+        conversation_channel: "eve",
+        conversation_id: "web-dave",
+        messenger_channel: null,
+        messenger_conversation_id: null,
+        web_conversation_id: "web-dave",
+        workspace_id: "w-dave",
+      },
+    ]);
+  });
+});
+
+describe("waking the checks when Google connects", { timeout: 30_000 }, () => {
+  it("brings the next check forward for a watch parked on a missing grant", async () => {
+    const { proactive } = await openDatabase();
+    await proactive.recordProactiveTarget(alice, web, now);
+    const lease = { leaseForMs: 15 * 60_000, limit: 10, now };
+    const [claim] = await proactive.claimDueProactiveWatches(lease);
+    if (!claim) throw new Error("Expected the new watch to be due.");
+    // The probe found no grant, so the next look is hours away.
+    expect(
+      await proactive.deferProactiveWatch(
+        claim,
+        new Date(now.getTime() + 6 * 60 * 60_000),
+        "disconnected"
+      )
+    ).toBe(true);
+    const connectedAt = new Date(now.getTime() + 20 * 60_000);
+    const later = { ...lease, now: connectedAt };
+    expect(await proactive.claimDueProactiveWatches(later)).toEqual([]);
+
+    expect(await proactive.wakeProactiveWatch(alice, connectedAt)).toBe(true);
+
+    expect(await proactive.claimDueProactiveWatches(later)).toMatchObject([
+      { googleState: "unknown", workspaceId: alice.workspaceId },
+    ]);
+  });
+
+  it("keeps a connection made while a probe of a parked watch was in flight", async () => {
+    const { proactive } = await openDatabase();
+    await proactive.recordProactiveTarget(alice, web, now);
+    const lease = { leaseForMs: 15 * 60_000, limit: 10, now };
+    const [first] = await proactive.claimDueProactiveWatches(lease);
+    if (!first) throw new Error("Expected the new watch to be due.");
+    await proactive.deferProactiveWatch(
+      first,
+      new Date(now.getTime() + 6 * 60 * 60_000),
+      "disconnected"
+    );
+    // Six hours later the parked watch is probed again…
+    const recheckAt = new Date(now.getTime() + 6 * 60 * 60_000);
+    const recheck = { ...lease, now: recheckAt };
+    const [probing] = await proactive.claimDueProactiveWatches(recheck);
+    if (!probing) throw new Error("Expected the parked watch to be due.");
+    expect(probing.googleState).toBe("disconnected");
+    // …and the person finishes consent before the probe, still without a
+    // grant in hand, reports back.
+    const connectedAt = new Date(recheckAt.getTime() + 2_000);
+    expect(await proactive.wakeProactiveWatch(alice, connectedAt)).toBe(true);
+
+    expect(
+      await proactive.deferProactiveWatch(
+        probing,
+        new Date(recheckAt.getTime() + 6 * 60 * 60_000),
+        "disconnected"
+      )
+    ).toBe(false);
+    expect(
+      await proactive.claimDueProactiveWatches({ ...lease, now: connectedAt })
+    ).toMatchObject([
+      { googleState: "unknown", workspaceId: alice.workspaceId },
+    ]);
+  });
+
+  it("keeps a connection made during the very first probe", async () => {
+    const { proactive } = await openDatabase();
+    await proactive.recordProactiveTarget(alice, web, now);
+    const lease = { leaseForMs: 15 * 60_000, limit: 10, now };
+    const [probing] = await proactive.claimDueProactiveWatches(lease);
+    if (!probing) throw new Error("Expected the new watch to be due.");
+    expect(probing.googleState).toBe("unknown");
+
+    const connectedAt = new Date(now.getTime() + 2_000);
+    expect(await proactive.wakeProactiveWatch(alice, connectedAt)).toBe(true);
+
+    expect(
+      await proactive.deferProactiveWatch(
+        probing,
+        new Date(now.getTime() + 6 * 60 * 60_000),
+        "disconnected"
+      )
+    ).toBe(false);
+    expect(
+      await proactive.claimDueProactiveWatches({ ...lease, now: connectedAt })
+    ).toHaveLength(1);
+  });
+
+  it("leaves a connected watch on its own cadence", async () => {
+    const { proactive } = await openDatabase();
+    await proactive.recordProactiveTarget(alice, web, now);
+    await proactive.advanceProactiveWatermark(alice.workspaceId, now);
+    const lease = { leaseForMs: 15 * 60_000, limit: 10, now };
+    const [probing] = await proactive.claimDueProactiveWatches(lease);
+    if (!probing) throw new Error("Expected the connected watch to be due.");
+
+    // Its next check time is the live lease of the check in progress.
+    expect(await proactive.wakeProactiveWatch(alice, now)).toBe(false);
+    expect(await proactive.claimDueProactiveWatches(lease)).toEqual([]);
+    // The grant was renewed while the probe still saw it missing: the probe
+    // does not park the watch for hours, the lease brings the next look.
+    expect(
+      await proactive.deferProactiveWatch(
+        probing,
+        new Date(now.getTime() + 6 * 60 * 60_000),
+        "disconnected"
+      )
+    ).toBe(false);
+    expect(
+      await proactive.claimDueProactiveWatches({
+        ...lease,
+        now: probing.leaseUntil,
+      })
+    ).toHaveLength(1);
+    // A workspace that never talked to Bro has nothing to wake.
+    expect(
+      await proactive.wakeProactiveWatch({ workspaceId: "workspace:bob" }, now)
+    ).toBe(false);
+  });
+});
+
+/** Why the database refused a write, or undefined when it took it. */
+async function refusal(write: Promise<unknown>) {
+  try {
+    await write;
+  } catch (error) {
+    // Drizzle wraps the database's own error as the cause.
+    return error instanceof Error && error.cause instanceof Error
+      ? error.cause.message
+      : String(error);
+  }
+  return undefined;
+}
 
 // Every case starts from a clone of one migrated database: replaying all
 // migrations per case is slow enough to starve the rest of the suite.

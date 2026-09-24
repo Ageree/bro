@@ -150,7 +150,7 @@ describe("proactive schedule", () => {
 
     expect(probe).not.toHaveBeenCalled();
     expect(proactive.defer).toHaveBeenCalledExactlyOnceWith(
-      "workspace:alice",
+      watch(),
       new Date("2026-09-24T05:00:00.000Z")
     );
   });
@@ -161,7 +161,7 @@ describe("proactive schedule", () => {
     await runSchedule(vi.fn<ScheduleToFn>());
 
     expect(proactive.defer).toHaveBeenCalledExactlyOnceWith(
-      "workspace:alice",
+      watch(),
       new Date("2026-09-23T18:00:00.000Z"),
       "disconnected"
     );
@@ -247,6 +247,7 @@ function watch(): Awaited<ReturnType<typeof claimDueProactiveWatches>>[number] {
     createdByUserId: "better-auth:alice",
     googleState: "connected",
     jobId: "00000000-0000-4000-8000-000000000001",
+    leaseUntil: new Date("2026-09-23T12:15:00.000Z"),
     mailCheckedAt: new Date("2026-09-23T11:45:00.000Z"),
     timezone: "Europe/Moscow",
     workspaceId: "workspace:alice",
@@ -291,6 +292,7 @@ function proactiveClaim(): Awaited<
       leaseExpiresAt: new Date("2026-09-23T12:05:00.000Z"),
       leaseToken: "00000000-0000-4000-8000-000000000003",
       outcome: null,
+      inputResponses: null,
       pendingInputRequests: null,
       reportLeaseExpiresAt: null,
       reportLeaseToken: null,

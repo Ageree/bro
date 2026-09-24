@@ -75,7 +75,9 @@ describe("workspace introduction", () => {
     } finally {
       await legacy.close();
     }
-  });
+    // It replays every migration on a fresh PGlite, and each new one adds to
+    // that; under a loaded runner the default 5 s was not enough.
+  }, 30_000);
 
   it("is never claimed for a workspace that was already introduced", async () => {
     const scope = { userId: "bob", workspaceId: "workspace-bob" };

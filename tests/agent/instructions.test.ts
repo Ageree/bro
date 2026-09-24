@@ -106,6 +106,34 @@ describe("agent instructions", () => {
     expect(selected?.content).toContain("Письма о безопасности аккаунта");
   });
 
+  it("computes numbers with a tool and takes changing facts from a fresh search", async () => {
+    const resolve = executionSafety.events["turn.started"];
+    if (!resolve) throw new Error("Execution safety resolves per turn.");
+
+    for (const role of ["photon-imessage", "scheduled-worker"]) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- One role at a time keeps the failure readable.
+      const selected = await resolve({}, dynamicContext(role));
+      expect(selected?.content).toContain("считай через `calculate`");
+      expect(selected?.content).toContain("со ссылкой на источник");
+      expect(selected?.content).toContain(
+        "только когда в этом ходе был вызов инструмента"
+      );
+    }
+  });
+
+  it("describes Bro as a hosted service and connections by their live status", async () => {
+    const resolve = roleInstructions.events["turn.started"];
+    if (!resolve) throw new Error("Role instructions resolve per turn.");
+
+    const selected = await resolve({}, dynamicContext("photon-imessage"));
+    expect(selected?.content).not.toMatch(/(?:его|собственн\S*) сервер/u);
+    expect(selected?.content).toContain("Ты облачный сервис");
+    expect(selected?.content).toContain("AES-256-GCM");
+    expect(selected?.content).toContain(
+      "Нет среди инструментов `notion-add-task` — значит, Notion на этом деплое не настроен"
+    );
+  });
+
   it("treats personal information as recalled context instead of a read tool", async () => {
     const resolve = roleInstructions.events["turn.started"];
     expect(resolve).toBeDefined();
@@ -167,6 +195,20 @@ describe("agent instructions", () => {
     );
   });
 
+  it("keeps Bro masculine, on «ты» by default, and free of calques", async () => {
+    const resolve = messageStyle.events["turn.started"];
+    expect(resolve).toBeDefined();
+    if (!resolve) return;
+
+    const selected = await resolve({}, dynamicContext("photon-imessage"));
+    expect(selected?.content).toContain(
+      "о себе по-русски говори в мужском роде"
+    );
+    expect(selected?.content).toContain("По умолчанию к человеку на «ты»");
+    expect(selected?.content).toContain("через `form_of_address`");
+    expect(selected?.content).toContain("«сделать звонок» — «позвонить»");
+  });
+
   it("says there is no browser until Browser Use is configured", async () => {
     const resolve = (await loadBrowserInstructions("")).events["turn.started"];
     expect(resolve).toBeDefined();
@@ -224,6 +266,18 @@ describe("agent instructions", () => {
     );
     expect(selected?.content).not.toContain(
       "сам доводит до конца всё бесплатное и бесплатно отменяемое"
+    );
+    // Acting in the person's name is confirmed on one card that shows it,
+    // payment included.
+    expect(selected?.content).toContain(
+      "`allowSubmit` всегда идёт вместе с `submission` и показывает человеку одну нативную карточку подтверждения"
+    );
+    expect(selected?.content).toContain(
+      "Карточка с `chargeRub` — это и разрешение заплатить"
+    );
+    expect(selected?.content).toContain("Подтверждение принадлежит поручению.");
+    expect(selected?.content).toContain(
+      "В расписаниях и фоновой работе `allowSubmit` и `allowPayment` отклоняются всегда"
     );
     expect(selected?.content).toContain("Граница — деньги и необратимость");
     expect(selected?.content).toContain(

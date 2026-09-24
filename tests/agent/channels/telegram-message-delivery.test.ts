@@ -3,9 +3,11 @@ import type {
   TelegramContext,
 } from "eve/channels/telegram";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import type * as Blob from "@vercel/blob";
 import type * as EnvModule from "@shared/environment";
 import type { AccessScope } from "@shared/identity/access-scope";
+import { formatRub } from "@shared/spending/limit";
 import type {
   findChannelIdentity,
   redeemChannelLinkToken,
@@ -115,7 +117,14 @@ const handleActionResult =
 const handleMessageCompleted =
   telegramChannelCapture.config?.events?.["message.completed"];
 const handleTurnFailed = telegramChannelCapture.config?.events?.["turn.failed"];
-if (!handleActionResult || !handleMessageCompleted || !handleTurnFailed) {
+const handleInputRequested =
+  telegramChannelCapture.config?.events?.["input.requested"];
+if (
+  !handleActionResult ||
+  !handleMessageCompleted ||
+  !handleTurnFailed ||
+  !handleInputRequested
+) {
   throw new Error(
     "The Telegram channel must configure action result delivery."
   );
@@ -124,6 +133,7 @@ if (!handleActionResult || !handleMessageCompleted || !handleTurnFailed) {
 type ActionHandlerParameters = Parameters<typeof handleActionResult>;
 type MessageHandlerParameters = Parameters<typeof handleMessageCompleted>;
 type TurnFailedEvent = Parameters<typeof handleTurnFailed>[0];
+type InputRequestedEvent = Parameters<typeof handleInputRequested>[0];
 
 describe("Telegram message delivery", () => {
   beforeEach(() => {
@@ -839,7 +849,7 @@ describe("Telegram message delivery", () => {
     expect(request).toHaveBeenCalledExactlyOnceWith("sendMessage", {
       chat_id: "4242",
       parse_mode: "HTML",
-      text: "Что-то сломалось, пока я разбирался с твоей просьбой. Попробуй ещё раз.",
+      text: "Что-то сломалось, пока я разбирался с просьбой. Можно попробовать ещё раз.",
     });
   });
 
@@ -855,7 +865,7 @@ describe("Telegram message delivery", () => {
     expect(request).toHaveBeenCalledExactlyOnceWith("sendMessage", {
       chat_id: "4242",
       parse_mode: "HTML",
-      text: "Что-то сломалось, пока я разбирался с твоей просьбой. Попробуй ещё раз.",
+      text: "Что-то сломалось, пока я разбирался с просьбой. Можно попробовать ещё раз.",
     });
   });
 
@@ -870,6 +880,141 @@ describe("Telegram message delivery", () => {
 
     expect(request).not.toHaveBeenCalled();
     expect(scheduleDeliveryCapture.release).toHaveBeenCalledOnce();
+  });
+});
+
+function approvalRequest(
+  toolName: string,
+  input: InputRequestedEvent["requests"][number]["action"]["input"]
+) {
+  return {
+    action: { callId: "call-1", input, kind: "tool-call" as const, toolName },
+    allowFreeform: false,
+    display: "confirmation" as const,
+    kind: "tool-approval" as const,
+    options: [
+      { id: "approve", label: "Approve" },
+      { id: "cancel", label: "Cancel" },
+    ],
+    prompt: `Approve tool call: ${toolName}`,
+    requestId: "approval-1",
+  };
+}
+
+function inputRequested(
+  request: ReturnType<typeof approvalRequest>
+): InputRequestedEvent {
+  return { requests: [request], sequence: 3, stepIndex: 0, turnId: "turn-1" };
+}
+
+function cardContext() {
+  const post = vi.fn<TelegramContext["telegram"]["post"]>();
+  post.mockResolvedValue({ id: "501", raw: {} });
+  const state = { chatId: "4242" };
+  return {
+    context: handlerEventContext({
+      state,
+      telegram: { chatId: "4242", post },
+    }),
+    post,
+    state,
+  };
+}
+
+const postedCardSchema = z.object({
+  reply_markup: z.unknown(),
+  text: z.string(),
+});
+
+describe("Telegram approval cards", () => {
+  it("shows what a browser errand will submit in the person's name", async () => {
+    const { context, post, state } = cardContext();
+
+    await handleInputRequested(
+      inputRequested(
+        approvalRequest("browser_task", {
+          action: "start",
+          allowSubmit: true,
+          site: "https://www.gosuslugi.ru",
+          submission: {
+            amount: "бесплатно",
+            forWhom: "Алиса",
+            personalData: ["имя", "СНИЛС", "паспорт", "почта"],
+            what: "заявление на справку об отсутствии судимости",
+            where: "Госуслуги (gosuslugi.ru)",
+          },
+          task: "Подай на справку об отсутствии судимости",
+        })
+      ),
+      context,
+      sessionContext()
+    );
+
+    const body = postedCardSchema.parse(post.mock.calls[0]?.[0]);
+    expect(body.text).toBe(
+      [
+        "Подтверждение действия:",
+        "Что: заявление на справку об отсутствии судимости",
+        "Где: Госуслуги (gosuslugi.ru)",
+        "От чьего имени: Алиса",
+        "Стоимость: бесплатно",
+        "Какие данные уйдут: имя, СНИЛС, паспорт, почта",
+        "Сайт: https://www.gosuslugi.ru",
+      ].join("\n")
+    );
+    // The buttons answer the same request, labelled in the person's language.
+    expect(JSON.stringify(body.reply_markup)).toContain("Подтвердить");
+    expect(JSON.stringify(body.reply_markup)).toContain("Отмена");
+    expect(JSON.stringify(state)).toContain('"optionId":"approve"');
+    expect(JSON.stringify(state)).toContain('"requestId":"approval-1"');
+  });
+
+  it("says on the one card how much the errand may pay", async () => {
+    const { context, post } = cardContext();
+
+    await handleInputRequested(
+      inputRequested(
+        approvalRequest("browser_task", {
+          action: "start",
+          allowSubmit: true,
+          site: "https://taxi.yandex.ru",
+          submission: {
+            amount: "около 900 ₽ по тарифу «Комфорт»",
+            chargeRub: 900,
+            forWhom: "Алиса",
+            kind: "taxi",
+            personalData: ["имя", "телефон"],
+            what: "такси домой",
+            where: "Яндекс Go (taxi.yandex.ru)",
+          },
+          task: "Закажи такси домой",
+        })
+      ),
+      context,
+      sessionContext()
+    );
+
+    const body = postedCardSchema.parse(post.mock.calls[0]?.[0]);
+    expect(body.text).toContain("Стоимость: около 900 ₽ по тарифу «Комфорт»");
+    expect(body.text).toContain(
+      `Оплата сохранённой картой, не больше ${formatRub(1000)}`
+    );
+  });
+
+  it("leaves every other approval card as eve renders it", async () => {
+    const { context, post } = cardContext();
+
+    await handleInputRequested(
+      inputRequested(
+        approvalRequest("gmail-send", { subject: "Привет", to: ["a@b.c"] })
+      ),
+      context,
+      sessionContext()
+    );
+
+    const body = postedCardSchema.parse(post.mock.calls[0]?.[0]);
+    expect(body.text).toBe("Approve tool call: gmail-send");
+    expect(JSON.stringify(body.reply_markup)).toContain("Approve");
   });
 });
 

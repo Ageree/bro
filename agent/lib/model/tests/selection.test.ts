@@ -124,7 +124,7 @@ describe("model selection", () => {
     expect(doGenerate.mock.calls[1]?.[0].toolChoice).toBeUndefined();
   });
 
-  it("ends every step's prompt with the person's reply language", async () => {
+  it("ends every step's prompt with the reply note", async () => {
     vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
     const doGenerate = vi.fn<LanguageModelV4["doGenerate"]>();
     openRouter.chat.mockImplementation((modelId) => ({
@@ -138,7 +138,7 @@ describe("model selection", () => {
 
     const { openRouterSelection } = await import("@agent/lib/model/openrouter");
     const selection = openRouterSelection("deepseek/deepseek-v4.1-flash", {
-      replyLanguage: "en",
+      replyNote: "Reply language for this turn: English.",
       toolChoice: "auto",
     });
     const sendMessage = {
