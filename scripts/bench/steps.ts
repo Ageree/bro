@@ -8,7 +8,8 @@ import { caseFixtures, type FixtureFile } from "./fixtures.ts";
  * «[3 фото: …]» stands for photos, «[ресторан]» asks the tester to name a
  * real one, «(отключить Google)» is something the tester does by hand, and
  * «T+7д, новый разговор» opens a fresh conversation a week later. The driver
- * keeps the order and the conversation breaks but not the waits.
+ * keeps the order and the conversation breaks, and a paced run keeps the
+ * waits too: a step due later is left for `pnpm bench next` (`stepOffsetMs`).
  */
 
 /** The transcript marker the messenger channels put before a voice note. */
@@ -114,6 +115,30 @@ export function planCase(
     };
   }
   return { kind: "ready", notes, steps };
+}
+
+const offsetUnits: ReadonlyMap<string, number> = new Map([
+  ["d", 86_400_000],
+  ["h", 3_600_000],
+  ["min", 60_000],
+  ["w", 604_800_000],
+  ["д", 86_400_000],
+  ["мин", 60_000],
+  ["нед", 604_800_000],
+  ["ч", 3_600_000],
+]);
+
+/**
+ * How long after the first message a scripted step is due: «T+10мин» is ten
+ * minutes, «T+7д, новый разговор» a week; «T+0» and «настройка» are due at
+ * once.
+ */
+export function stepOffsetMs(at: string) {
+  const match = /T\s*\+\s*(\d+)\s*(мин|min|нед|ч|h|д|d|w)?/iu.exec(at);
+  if (!match) return 0;
+  return (
+    Number(match[1]) * (offsetUnits.get((match[2] ?? "").toLowerCase()) ?? 0)
+  );
 }
 
 /** Parses `--fill '[ресторан]=Хачапури и вино'` values. */

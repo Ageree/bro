@@ -94,21 +94,53 @@ const driverStatusSchema = z.enum([
   "completed",
   "failed",
   "needs-authorization",
+  /** `observe` watched the session; watching again picks up from there. */
+  "observing",
+  /** The next scripted step is due later («T+7д»): `pnpm bench next`. */
+  "scheduled",
   "timed-out",
   "waiting-for-tester",
 ]);
 
 export type DriverStatus = z.infer<typeof driverStatusSchema>;
 
+/**
+ * Who sent a tester turn and whether it is a hint (§2.1). `probe` is a
+ * message the test's criteria call for but its script does not list (d12
+ * «сдвинь на 7:30»), `cleanup` asks Bro to remove what the test created;
+ * neither is a hint.
+ */
 const testerTurnKindSchema = z.enum([
   "approval",
   "answer",
+  "cleanup",
   "code",
   "hint",
+  "probe",
   "script",
 ]);
 
 export type TesterTurnKind = z.infer<typeof testerTurnKindSchema>;
+
+/** Where a message Bro wrote on its own reached the tester. */
+const observationChannelSchema = z.enum(["imessage", "telegram", "web"]);
+
+export type ObservationChannel = z.infer<typeof observationChannelSchema>;
+
+/**
+ * A message Bro sent without being asked, when it arrived: read from the
+ * session stream by `observe`, or pasted by the tester from a messenger the
+ * driver cannot read (`send --kind observed`).
+ */
+const observationSchema = z.object({
+  at: z.string(),
+  channel: observationChannelSchema,
+  /** 23:00–07:00 on the tester's clock: «не ночью» in d10 and d11. */
+  night: z.boolean(),
+  sessionId: z.string().nullable(),
+  source: z.enum(["stream", "tester"]),
+  text: z.string(),
+});
 
 /**
  * One run's record. The first block is the benchmark's required fields; the
@@ -133,6 +165,12 @@ export const runRecordSchema = z.object({
     ),
     fixtures: z.array(z.object({ file: z.string(), shows: z.string() })),
     host: z.string().min(1),
+    observations: z.array(observationSchema).default([]),
+    /**
+     * Scripted steps wait for their «T+…» (`run` without `--compress`):
+     * `next` sends each when it is due.
+     */
+    paced: z.boolean().default(false),
     pendingInputs: z.array(inputRequestSchema),
     /**
      * Scripted messages not sent yet because the case stopped on a question
@@ -202,6 +240,23 @@ const compactJson = (value: ToolPayload, limit: number) =>
 // the message itself.
 const quietResults = new Set(["send_message", "react_to_message"]);
 
+/** What Bro delivered to the person in this event, if it is a delivery. */
+export function deliveredText(event: MessageStreamEvent) {
+  if (event.type !== "action.result" || event.data.status !== "completed") {
+    return undefined;
+  }
+  const delivered = sendMessageToolResultSchema.safeParse(event.data.result);
+  if (!delivered.success) return undefined;
+  const output = delivered.data.output;
+  if (output.kind === "link") return `(ссылка) ${output.url}`;
+  const attachments = (output.attachments ?? []).map(
+    (attachment) => attachment.url
+  );
+  const suffix =
+    attachments.length > 0 ? ` [вложения: ${attachments.join(", ")}]` : "";
+  return `${output.text ?? ""}${suffix}`;
+}
+
 /** The readable log line for one event, or nothing for stream noise. */
 export function describeEvent(event: MessageStreamEvent) {
   switch (event.type) {
@@ -236,19 +291,8 @@ export function describeEvent(event: MessageStreamEvent) {
           event.data.error?.message ?? compactJson(result.output, 300);
         return `   ! ${result.toolName} ${event.data.status}: ${reason}`;
       }
-      const delivered = sendMessageToolResultSchema.safeParse(result);
-      if (delivered.success) {
-        const output = delivered.data.output;
-        if (output.kind === "link") return `<- Бро (ссылка): ${output.url}`;
-        const attachments = (output.attachments ?? []).map(
-          (attachment) => attachment.url
-        );
-        const suffix =
-          attachments.length > 0
-            ? ` [вложения: ${attachments.join(", ")}]`
-            : "";
-        return `<- Бро: ${output.text ?? ""}${suffix}`;
-      }
+      const delivered = deliveredText(event);
+      if (delivered !== undefined) return `<- Бро: ${delivered}`;
       if (quietResults.has(result.toolName)) {
         return `   ${result.toolName}: ${compactJson(result.output, 200)}`;
       }

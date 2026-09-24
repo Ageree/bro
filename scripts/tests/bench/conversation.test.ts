@@ -9,6 +9,9 @@ import type { BenchCase } from "../../bench/cases.ts";
 import {
   continueCase,
   followCase,
+  nextCase,
+  noteObservation,
+  observeCase,
   runCase,
   type DriverSettings,
 } from "../../bench/conversation.ts";
@@ -50,6 +53,7 @@ async function settingsFor(host: string, backgroundWaitMs = 0) {
     host,
     nudges: 1,
     outDir: await mkdtemp(join(tmpdir(), "bench-run-")),
+    paced: false,
     tester: "тест",
     timeZone: "Europe/Moscow",
     turnTimeoutMs: 20_000,
@@ -494,5 +498,195 @@ describe("continueCase", () => {
       )
     );
     for (const text of written) expect(text).not.toContain("481516");
+  });
+});
+
+describe("paced runs and nextCase", () => {
+  const weekLater: PlannedStep[] = [
+    step,
+    {
+      ...step,
+      at: "T+7д, новый разговор",
+      newConversation: true,
+      text: "через неделю",
+    },
+  ];
+
+  it("stops before a step due in a week and sends it only when asked", async () => {
+    const fake = await startFakeEve((post) =>
+      turn(delivered(`ответ на: ${JSON.stringify(post.message)}`))
+    );
+    stopFake = () => fake.close();
+    const settings = { ...(await settingsFor(fake.url)), paced: true };
+    const client = new Client({ host: fake.url });
+
+    const first = await runCase(client, benchCase, weekLater, [], settings);
+
+    expect(fake.posts.map((post) => post.message)).toEqual(["привет"]);
+    expect(first.driver.status).toBe("scheduled");
+    expect(first.driver.statusDetail).toContain("«T+7д, новый разговор»");
+    expect(first.driver.statusDetail).toContain("pnpm bench next");
+    expect(first.driver.remainingSteps.map((each) => each.text)).toEqual([
+      "через неделю",
+    ]);
+
+    // Not due yet: nothing goes out.
+    const waiting = await nextCase(client, first, settings, { early: false });
+    expect(fake.posts).toHaveLength(1);
+    expect(waiting.driver.status).toBe("scheduled");
+
+    const done = await nextCase(client, waiting, settings, { early: true });
+    expect(fake.posts.map((post) => [post.route, post.message])).toEqual([
+      ["create", "привет"],
+      ["create", "через неделю"],
+    ]);
+    expect(done.driver.status).toBe("completed");
+    expect(done.driver.remainingSteps).toEqual([]);
+    expect(done.driver.turns.map((turnNote) => turnNote.at)).toEqual([
+      "T+0",
+      "T+7д, новый разговор",
+    ]);
+  });
+
+  it("stays scheduled after a cleanup turn between the steps", async () => {
+    const fake = await startFakeEve(() => turn(delivered("ок")));
+    stopFake = () => fake.close();
+    const settings = { ...(await settingsFor(fake.url)), paced: true };
+    const client = new Client({ host: fake.url });
+    const first = await runCase(client, benchCase, weekLater, [], settings);
+
+    const record = await continueCase(client, first, settings, {
+      code: undefined,
+      kind: "cleanup",
+      respond: () => undefined,
+      text: "удали, что запомнил",
+    });
+
+    expect(record.hints).toBe(0);
+    expect(record.driver.status).toBe("scheduled");
+    expect(record.driver.remainingSteps).toHaveLength(1);
+  });
+
+  it("refuses to run the script on past an unanswered question", async () => {
+    const question: MessageStreamEvent = {
+      data: {
+        requests: [
+          {
+            action: {
+              callId: "call_q",
+              input: {},
+              kind: "tool-call",
+              toolName: "ask_question",
+            },
+            allowFreeform: true,
+            kind: "question",
+            prompt: "В каком городе?",
+            requestId: "req_q",
+          },
+        ],
+        sequence: 0,
+        stepIndex: 0,
+        turnId,
+      },
+      meta: meta(),
+      type: "input.requested",
+    };
+    const fake = await startFakeEve(() => [
+      turnStarted(),
+      question,
+      sessionWaiting(),
+    ]);
+    stopFake = () => fake.close();
+    const settings = { ...(await settingsFor(fake.url)), paced: true };
+    const client = new Client({ host: fake.url });
+    const first = await runCase(client, benchCase, weekLater, [], settings);
+
+    await expect(
+      nextCase(client, first, settings, { early: true })
+    ).rejects.toThrow(/answer first/u);
+  });
+});
+
+describe("observeCase", () => {
+  const deliveredAt = (text: string, at: string): MessageStreamEvent => ({
+    ...delivered(text),
+    meta: { at, id: `evt_at_${at}` },
+  });
+
+  it("keeps what Bro wrote on its own after the fixtures went in, night flagged", async () => {
+    const fake = await startFakeEve(() => []);
+    stopFake = () => fake.close();
+    fake.append([
+      deliveredAt("старое, до засева", "2026-09-24T15:00:00.000Z"),
+      deliveredAt("СДЭК задерживает посылку", "2026-09-24T18:40:00.000Z"),
+    ]);
+    setTimeout(() => {
+      // 23:30 in Moscow: a night message.
+      fake.append([deliveredAt("не спишь?", "2026-09-24T20:30:00.000Z")]);
+    }, 200);
+    const settings = await settingsFor(fake.url);
+    const client = new Client({ host: fake.url });
+
+    const record = await observeCase(client, benchCase, undefined, settings, {
+      channel: "web",
+      durationMs: 1200,
+      notes: ["T+0: ничего не отправлять, наблюдать"],
+      sessionId: "wrun_fake",
+      since: new Date("2026-09-24T18:00:00.000Z"),
+    });
+
+    expect(fake.posts).toEqual([]);
+    expect(record.driver.status).toBe("observing");
+    expect(
+      record.driver.observations.map((each) => [each.at, each.night, each.text])
+    ).toEqual([
+      ["2026-09-24T21:40:00+03:00", false, "СДЭК задерживает посылку"],
+      ["2026-09-24T23:30:00+03:00", true, "не спишь?"],
+    ]);
+    expect(record.driver.sessions).toEqual([
+      { sessionId: "wrun_fake", streamIndex: 3 },
+    ]);
+
+    // Watching again the next morning picks up only what is new.
+    fake.append([
+      deliveredAt("доброе утро, вот сводка", "2026-09-25T05:00:00.000Z"),
+    ]);
+    const again = await observeCase(client, benchCase, record, settings, {
+      channel: "web",
+      durationMs: 0,
+      notes: [],
+      sessionId: undefined,
+      since: new Date(),
+    });
+    expect(again.driver.observations.map((each) => each.text)).toEqual([
+      "СДЭК задерживает посылку",
+      "не спишь?",
+      "доброе утро, вот сводка",
+    ]);
+  }, 20_000);
+
+  it("records what the tester pasted from Telegram without sending anything", async () => {
+    const settings = await settingsFor("http://127.0.0.1:9");
+
+    const record = await noteObservation(benchCase, undefined, settings, {
+      at: new Date("2026-09-25T03:40:00.000Z"),
+      channel: "telegram",
+      notes: [],
+      text: "Регистрация на рейс открыта",
+    });
+
+    expect(record.driver.status).toBe("observing");
+    expect(record.driver.observations).toEqual([
+      {
+        at: "2026-09-25T06:40:00+03:00",
+        channel: "telegram",
+        night: true,
+        sessionId: null,
+        source: "tester",
+        text: "Регистрация на рейс открыта",
+      },
+    ]);
+    const saved = await readRunRecord(settings.outDir, "case-under-test");
+    expect(saved.driver.observations).toHaveLength(1);
   });
 });
