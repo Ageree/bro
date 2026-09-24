@@ -420,7 +420,8 @@ const retryAfterBodySchema = z.object({
 
 /**
  * The wait a throttled reply asked for: `retry_after_seconds` in a project
- * throttle's body, or the `Retry-After` header an edge throttle sends.
+ * throttle's body, or the `Retry-After` header an edge throttle sends — in
+ * seconds or as an HTTP date, both of which the header allows.
  */
 function throttleWaitMs(header: string | null, body: string) {
   let seconds: number | undefined;
@@ -430,10 +431,12 @@ function throttleWaitMs(header: string | null, body: string) {
   } catch {
     seconds = undefined;
   }
-  if (seconds === undefined && header !== null && /^\d+$/u.test(header)) {
-    seconds = Number(header);
-  }
-  return seconds === undefined ? undefined : seconds * 1_000;
+  if (seconds !== undefined) return seconds * 1_000;
+  const value = header?.trim();
+  if (!value) return undefined;
+  if (/^\d+$/u.test(value)) return Number(value) * 1_000;
+  const until = Date.parse(value);
+  return Number.isNaN(until) ? undefined : Math.max(until - Date.now(), 0);
 }
 
 function parseJson(text: string, path: string, status: number) {
