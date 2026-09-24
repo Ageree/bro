@@ -99,6 +99,38 @@ describe("send_message in a looping turn", () => {
   });
 });
 
+describe("send_message and the reply language", () => {
+  // The language is a prompt directive, never a filter: a translation the
+  // person asked for is in the other language on purpose.
+  it.each([
+    [
+      "an English translation for a Russian speaker",
+      "Переведи на английский: «Встреча переносится на пятницу, 15:00».",
+      "The meeting is moved to Friday at 3 PM. Please confirm that works for you.",
+    ],
+    [
+      "a Russian text for an English speaker",
+      "Write a short note in Russian for my landlord saying the rent will be two days late.",
+      "Здравствуйте! Хочу предупредить, что оплата аренды в этом месяце задержится на два дня.",
+    ],
+  ])("delivers %s as written", async (_case, request, reply) => {
+    const sendMessage = await resolveSendMessage("channel:eve", [
+      personMessage(request),
+    ]);
+    const message = { kind: "message" as const, text: reply };
+
+    expect(await sendMessage.execute(message, toolContext())).toEqual(message);
+  });
+});
+
+function personMessage(text: string) {
+  // eve adds `kind` to every user-role message it keeps in history.
+  return Object.assign(
+    { content: text, role: "user" as const },
+    { kind: "user" }
+  );
+}
+
 async function resolveSendMessage(
   channel: string,
   messages: DynamicResolveContext["messages"] = []

@@ -76,6 +76,98 @@ describe("browser run persistence", () => {
     );
   }, 20_000);
 
+  it("queues a walled run for its retry and follows the errand to the retry", async () => {
+    const browserRuns = await browserRunsDatabase();
+    const retryId = "55555555-5555-4555-8555-555555555555";
+    const now = new Date("2026-09-23T12:00:00.000Z");
+    await browserRuns.createBrowserRun(alice, { ...conversation(), id: runId });
+    await browserRuns.claimBrowserRunCompletion(runId, {
+      outcome: "Needs: captcha",
+      status: "done",
+    });
+    await browserRuns.parkBrowserRunForRetry(runId, {
+      captchaAttempt: 1,
+      retryAt: new Date(now.getTime() + 2 * 60_000),
+    });
+
+    expect(await browserRuns.claimDueBrowserRunRetries(now, 10)).toEqual([]);
+    const later = new Date(now.getTime() + 3 * 60_000);
+    const due = await browserRuns.claimDueBrowserRunRetries(later, 10);
+    const lease = new Date(later.getTime() + 10 * 60_000);
+    expect(due.map((row) => [row.id, row.status, row.retryAt])).toEqual([
+      [runId, "waiting", lease],
+    ]);
+    // Claimed once: a second poll finds nothing while the lease holds…
+    expect(await browserRuns.claimDueBrowserRunRetries(later, 10)).toEqual([]);
+    // …and a poller that died before the handoff has not lost the errand.
+    const reclaimed = await browserRuns.claimDueBrowserRunRetries(lease, 10);
+    expect(reclaimed.map((row) => row.id)).toEqual([runId]);
+
+    expect(
+      await browserRuns.handOffBrowserRunRetry(runId, {
+        ...conversation(),
+        captchaAttempt: 2,
+        id: retryId,
+        sessionId: "browser-session-2",
+      })
+    ).toBe(true);
+    expect((await browserRuns.readBrowserRun(runId))?.retryAt).toBeNull();
+    const latest = await browserRuns.readLatestBrowserRunForScope(alice, runId);
+    expect(latest?.id).toBe(retryId);
+    expect(latest?.captchaAttempt).toBe(2);
+    expect(latest?.createdByUserId).toBe(alice.userId);
+    expect(
+      await browserRuns.readLatestBrowserRunForScope(bob, runId)
+    ).toBeUndefined();
+    // A run that was handed over is never parked or handed over again.
+    expect(
+      await browserRuns.parkBrowserRunForRetry(runId, {
+        captchaAttempt: 2,
+        retryAt: now,
+      })
+    ).toBe(false);
+    expect(await browserRuns.claimDueBrowserRunRetries(lease, 10)).toEqual([]);
+  }, 20_000);
+
+  it("lets no retry start for an errand the person stopped", async () => {
+    const browserRuns = await browserRunsDatabase();
+    const now = new Date("2026-09-23T12:00:00.000Z");
+    await browserRuns.createBrowserRun(alice, { ...conversation(), id: runId });
+    await browserRuns.claimBrowserRunCompletion(runId, {
+      outcome: "Needs: captcha",
+      status: "done",
+    });
+    await browserRuns.parkBrowserRunForRetry(runId, {
+      captchaAttempt: 1,
+      retryAt: now,
+    });
+    // The poller claims the retry, then the person cancels before it starts.
+    expect(await browserRuns.claimDueBrowserRunRetries(now, 10)).toHaveLength(
+      1
+    );
+    expect(await browserRuns.stopBrowserRunErrand(runId)).toBe(true);
+
+    expect(
+      await browserRuns.handOffBrowserRunRetry(runId, {
+        ...conversation(),
+        captchaAttempt: 2,
+        id: "55555555-5555-4555-8555-555555555555",
+        sessionId: "browser-session-2",
+      })
+    ).toBe(false);
+    expect(
+      await browserRuns.readBrowserRun("55555555-5555-4555-8555-555555555555")
+    ).toBeUndefined();
+    // Nor can the settle path park it again afterwards.
+    expect(
+      await browserRuns.parkBrowserRunForRetry(runId, {
+        captchaAttempt: 1,
+        retryAt: now,
+      })
+    ).toBe(false);
+    expect((await browserRuns.readBrowserRun(runId))?.status).toBe("stopped");
+  }, 20_000);
+
   it("settles a run once and stops listing it as unsettled", async () => {
     const browserRuns = await browserRunsDatabase();
     await browserRuns.createBrowserRun(alice, {

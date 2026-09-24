@@ -20,6 +20,7 @@ import {
   getGoogleWorkspaceAccess,
   getWorkspaceModelId,
 } from "@db/services/settings";
+import { listSpendEntries, readSpendLimit } from "@db/services/spending";
 import { readUserProfile } from "@db/services/user-profile";
 import { listVaultItems } from "@db/services/vault";
 import { yooKassaConfigured } from "@db/services/yookassa";
@@ -32,10 +33,12 @@ import {
 import { telegramLinkConfigured } from "@shared/identity/telegram-link";
 import { openRouterActive } from "@shared/model/provider";
 import { photonConfigured } from "@shared/photon/credentials";
+import { localMonthKey } from "@shared/calendar/local-period";
 import { resolveTimeZone } from "@shared/user-profile/schema";
 import { requireRequestScope } from "@web/auth/request-scope";
 import { GoogleWorkspaceAction } from "./_components/google-workspace-action";
 import { ModelSelector } from "./_components/model-selector";
+import { SpendLimitSection } from "./_components/spend-limit-section";
 import { TelegramLinkAction } from "./_components/telegram-link-action";
 
 export const metadata: Metadata = { title: "Кабинет" };
@@ -77,6 +80,7 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
     billing,
     profile,
     vaultItems,
+    spendLimit,
   ] = await Promise.all([
     getAuthSession(requestHeaders),
     getGoogleWorkspaceAccess(scope).then(async (access) =>
@@ -87,6 +91,7 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
     readBillingState(scope),
     readUserProfile(scope),
     listVaultItems(scope),
+    readSpendLimit(scope),
   ]);
   const openRouter = openRouterActive();
   const imageStorageReady = Boolean(
@@ -94,6 +99,9 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
   );
   const browserReady = env.BROWSER_USE_API_KEY !== undefined;
   const timeZone = resolveTimeZone(profile.timezone);
+  const spendEntries = spendLimit
+    ? await listSpendEntries(scope, localMonthKey(new Date(), timeZone))
+    : [];
   const when = new Intl.DateTimeFormat("ru-RU", {
     dateStyle: "long",
     timeStyle: "short",
@@ -132,6 +140,7 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
       ) : null}
 
       <LimitsSection paid={billing.paid} paidUntil={billing.paidUntil} />
+      <SpendLimitSection entries={spendEntries} policy={spendLimit} />
       <PaymentsSection
         paid={billing.paid}
         paidUntil={billing.paidUntil}

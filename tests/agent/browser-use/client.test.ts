@@ -104,6 +104,49 @@ describe("Browser Use client", () => {
     });
   });
 
+  it("finds a recent run by an exact task line, a page at a time", async () => {
+    const client = await loadClient();
+    const line = "(Background retry 2 of errand run-1; for bookkeeping only.)";
+    const summary = (id: string, task: string) => ({
+      id,
+      sessionId,
+      status: "running",
+      task,
+    });
+    const calls = stubFetch(
+      Response.json({
+        hasMore: true,
+        nextCursor: "page-2",
+        runs: [summary("other", `Купи\n\n${line} and more`)],
+      }),
+      Response.json({
+        hasMore: true,
+        nextCursor: "page-3",
+        runs: [summary("orphan", `Купи\n\n${line}`)],
+      })
+    );
+
+    const found = await client.findRecentBrowserUseRunByTaskLine(line);
+
+    expect(found?.id).toBe("orphan");
+    expect(calls.map((call) => call.url)).toEqual([
+      `${baseUrl}/runs?limit=50`,
+      `${baseUrl}/runs?limit=50&cursor=page-2`,
+    ]);
+  });
+
+  it("stops looking after the pages it was given", async () => {
+    const client = await loadClient();
+    const calls = stubFetch(
+      Response.json({ hasMore: true, nextCursor: "next", runs: [] })
+    );
+
+    expect(
+      await client.findRecentBrowserUseRunByTaskLine("missing", 2)
+    ).toBeUndefined();
+    expect(calls).toHaveLength(2);
+  });
+
   it("retries a server error once and reports the status with a body excerpt", async () => {
     const client = await loadClient();
     const calls = stubFetch(

@@ -58,6 +58,16 @@ describe("sendSkipReason", () => {
       "Готово, заказ оформлен, номер заказа order_cd, трек придёт письмом.",
     ],
     [
+      "the same news about a different person opening the sentence",
+      "Анна придёт завтра в 10:00, я предупредил охрану.",
+      "Мария придёт завтра в 10:00, я предупредил охрану.",
+    ],
+    [
+      "a payment link that differs only in punctuation",
+      "Ссылка на оплату счёта: https://pay.example/inv-1-2",
+      "Ссылка на оплату счёта: https://pay.example/inv_1.2",
+    ],
+    [
       "the next quiz question",
       "Вопрос 3: какая река самая длинная в Европе?",
       "Вопрос 4: какая река самая длинная в Азии?",
@@ -186,6 +196,24 @@ describe("turnSends", () => {
       ])
     ).toBe(false);
   });
+
+  it("skips a send whose attachment is a relative artifact path", () => {
+    // A browser result offers `/artifacts/<id>` images; a model that put one
+    // into `attachments` once made this parse throw «Invalid URL» and failed
+    // the turn's model selection.
+    const history = [
+      userMessage("найди машину"),
+      ...sendMessage("call-1", "Вот машина", undefined, [
+        { kind: "image", url: "/artifacts/abc" },
+      ]),
+    ];
+
+    expect(turnSends(history)).toEqual({
+      delivered: [],
+      skipped: 0,
+    });
+    expect(() => turnMustEnd(history)).not.toThrow();
+  });
 });
 
 function message(text: string) {
@@ -219,13 +247,17 @@ function frameworkMessage(kind: string): ModelMessage {
 function sendMessage(
   toolCallId: string,
   text: string,
-  output: ToolResultPart["output"] = { type: "text", value: "submitted" }
+  output: ToolResultPart["output"] = { type: "text", value: "submitted" },
+  attachments?: readonly { kind: string; url: string }[]
 ): ModelMessage[] {
   return [
     {
       content: [
         {
-          input: message(text),
+          input:
+            attachments === undefined
+              ? message(text)
+              : { ...message(text), attachments },
           toolCallId,
           toolName: "send_message",
           type: "tool-call",

@@ -31,6 +31,7 @@ describe("source layout", () => {
     expect(files("web")).toEqual([]);
     expect(directories("shared")).toEqual([
       "browser",
+      "calendar",
       "chat",
       "environment",
       "google-workspace",
@@ -39,6 +40,7 @@ describe("source layout", () => {
       "model",
       "photon",
       "schedules",
+      "spending",
       "user-profile",
       "vault",
       "workstreams",

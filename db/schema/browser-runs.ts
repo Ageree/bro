@@ -1,5 +1,6 @@
 import { relations, sql } from "drizzle-orm";
 import {
+  boolean,
   check,
   foreignKey,
   index,
@@ -93,6 +94,22 @@ export const browserRuns = pgTable(
       withTimezone: true,
     }),
     reportAttempts: integer("report_attempts").notNull().default(0),
+    // Whether the run was started with the saved card bound. A background
+    // retry binds the same secrets again, so it has to know.
+    paymentAllowed: boolean("payment_allowed").notNull().default(false),
+    // Which attempt of its errand this run is against an anti-bot wall: the
+    // run the person started is 1, each background retry adds one.
+    captchaAttempt: integer("captcha_attempt").notNull().default(1),
+    // A run parked on an anti-bot check waits here for its background retry;
+    // the poller claims it by clearing the column.
+    retryAt: timestamp("retry_at", {
+      mode: "date",
+      precision: 3,
+      withTimezone: true,
+    }),
+    // The run that took the errand over, so a follow-up or a status check on
+    // this id finds where the errand lives now.
+    retriedAsRunId: text("retried_as_run_id"),
   },
   (table) => [
     foreignKey({
@@ -122,6 +139,11 @@ export const browserRuns = pgTable(
     index("browser_runs_pending_idx").on(
       table.status,
       table.updatedAt.asc().nullsLast()
+    ),
+    index("browser_runs_retry_idx").on(table.retryAt),
+    check(
+      "browser_runs_captcha_attempt_check",
+      sql`${table.captchaAttempt} >= 1`
     ),
   ]
 );
