@@ -109,9 +109,12 @@ Telegram отбрасывает группы, iMessage принимает тол
 10. **Расписания помесячно и из любого чата.** «Каждое 5-е» стало интервалом
     43 200 минут; `schedules-list` в новом чате пуст. `shared/schedules/timing.ts`,
     `agent/lib/schedules/tools.ts`.
-11. **Русский язык.** Бро о себе в женском роде («сделаю сама»), опечатки,
+11. ~~**Русский язык.** Бро о себе в женском роде («сделаю сама»), опечатки,
     сохранённое «на вы» не держится в других чатах.
-    `agent/instructions/content/message-style.md`, `agent/lib/delivery/language.ts`.
+    `agent/instructions/content/message-style.md`, `agent/lib/delivery/language.ts`.~~
+    Сделано: мужской род и обращение в пометке каждого шага, «вы» и имя в
+    `settings.form_of_address` (инструмент `form_of_address`), частые ошибки
+    русской речи в `message-style.md`, эвалы `evals/agent/language.eval.ts`.
 12. **Модель по замеру.** Кандидаты `xiaomi/mimo-v2.6-flash` ($0.14 / $0.28 за
     1M) и `openai/gpt-6-luna-pro` ($0.10 / $0.50) против
     `deepseek/deepseek-v4.1-flash` ($0.14 / $0.42); картинки —

@@ -7,6 +7,7 @@ import profileMemory from "@agent/memory/profile";
 import workstreamMemory from "@agent/memory/workstreams";
 import calendar from "@agent/tools/calendar";
 import contacts from "@agent/tools/contacts";
+import formOfAddressTools from "@agent/tools/form_of_address";
 import gmail from "@agent/tools/gmail";
 import messaging from "@agent/tools/messaging";
 import proactiveMessageTools from "@agent/tools/proactive_messages";
@@ -16,6 +17,7 @@ import vault from "@agent/tools/vault";
 const groupedTools = [
   calendar,
   contacts,
+  formOfAddressTools,
   gmail,
   messaging,
   proactiveMessageTools,
@@ -32,6 +34,7 @@ describe("authored mode capability matrix", () => {
       "calendar-list-events",
       "calendar-update-event",
       "contacts-search",
+      "form_of_address",
       "gmail-attachment",
       "gmail-draft",
       "gmail-read-thread",

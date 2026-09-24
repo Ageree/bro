@@ -1,10 +1,12 @@
 import type { ModelMessage } from "ai";
 import { describe, expect, it } from "vitest";
 import {
+  chosenFormOfAddress,
   messageLanguage,
   personLanguage,
-  replyLanguageDirective,
+  replyDirective,
 } from "@agent/lib/delivery/language";
+import { defaultFormOfAddress } from "@shared/chat/form-of-address";
 
 describe("messageLanguage", () => {
   it.each([
@@ -54,14 +56,77 @@ describe("personLanguage", () => {
   });
 });
 
-describe("replyLanguageDirective", () => {
+describe("replyDirective", () => {
+  const formal = { formal: true, name: null };
+
   it("leaves requested translations in the language asked for", () => {
-    expect(replyLanguageDirective("ru")).toContain(
-      "Текст, который человек попросил на другом языке (перевод"
+    expect(
+      replyDirective({ formOfAddress: defaultFormOfAddress, language: "ru" })
+    ).toContain("Текст, который человек попросил на другом языке (перевод");
+    expect(
+      replyDirective({ formOfAddress: defaultFormOfAddress, language: "en" })
+    ).toContain("Text the person asked for in another language (a translation");
+  });
+
+  it("makes Bro speak of himself in the masculine in Russian", () => {
+    const note = replyDirective({
+      formOfAddress: defaultFormOfAddress,
+      language: "ru",
+    });
+    expect(note).toMatch(/^Язык ответа в этом ходе — русский/u);
+    expect(note).toContain("О себе пиши в мужском роде: «сделал»");
+    expect(note).toContain("а не «сделала»");
+    // The voice is Bro's own, not the one of a letter written for the person.
+    expect(note).toContain("письма и тексты, которые пишешь от его имени");
+  });
+
+  it("keeps «ты» unless the person asked for «вы»", () => {
+    const informal = replyDirective({
+      formOfAddress: defaultFormOfAddress,
+      language: "ru",
+    });
+    expect(informal).toContain("К человеку обращайся на «ты»");
+
+    const note = replyDirective({ formOfAddress: formal, language: "ru" });
+    expect(note).toContain("Человек просил обращаться к нему на «вы»");
+    expect(note).toContain("без «ты»");
+    expect(note).not.toContain("К человеку обращайся на «ты»");
+  });
+
+  it("calls the person by the name they chose", () => {
+    const formOfAddress = { formal: false, name: "Саша" };
+    expect(replyDirective({ formOfAddress, language: "ru" })).toContain(
+      "по имени «Саша»"
     );
-    expect(replyLanguageDirective("en")).toContain(
-      "Text the person asked for in another language (a translation"
+    expect(replyDirective({ formOfAddress, language: "en" })).toContain(
+      "Call the person «Саша»"
     );
+  });
+
+  it("holds the Russian voice when the language is unclear", () => {
+    const note = replyDirective({ formOfAddress: formal, language: undefined });
+    expect(note).toMatch(/^Когда пишешь человеку по-русски:/u);
+    expect(note).toContain("в мужском роде");
+    expect(note).toContain("на «вы»");
+    expect(note).not.toContain("Язык ответа");
+  });
+
+  it("gives an English reply no Russian grammar rules", () => {
+    const note = replyDirective({ formOfAddress: formal, language: "en" });
+    expect(note).toMatch(/^Reply language for this turn: English\./u);
+    expect(note).not.toMatch(/\p{Script=Cyrillic}/u);
+  });
+});
+
+describe("chosenFormOfAddress", () => {
+  it("says nothing until the person chose", () => {
+    expect(chosenFormOfAddress(defaultFormOfAddress)).toBeUndefined();
+  });
+
+  it("states «вы» and the chosen name", () => {
+    const chosen = chosenFormOfAddress({ formal: true, name: "Мария" });
+    expect(chosen).toContain("на «вы»");
+    expect(chosen).toContain("по имени «Мария»");
   });
 });
 

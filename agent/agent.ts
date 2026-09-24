@@ -1,8 +1,8 @@
 import { defineAgent, defineDynamic } from "eve";
 import { scheduledRunIdentity } from "@agent/lib/schedules/identity";
 import { isScheduledAgentRunLeaseActive } from "@db/services/scheduled-agent-run-leases";
-import { getWorkspaceModelId } from "@db/services/settings";
-import { personLanguage } from "@agent/lib/delivery/language";
+import { getFormOfAddress, getWorkspaceModelId } from "@db/services/settings";
+import { personLanguage, replyDirective } from "@agent/lib/delivery/language";
 import { awaitsDelivery } from "@agent/lib/delivery/pending";
 import { turnMustEnd } from "@agent/lib/delivery/turn-sends";
 import { readsMustEnd } from "@agent/lib/google-workspace/turn-reads";
@@ -46,23 +46,35 @@ export default defineAgent({
           }) ??
             false);
         // The reply follows the language of the person's latest message,
-        // which the long Russian prompt otherwise outweighs.
+        // which the long Russian prompt otherwise outweighs, and so do Bro's
+        // own gender and the form of address the person chose, which hold in
+        // every chat and channel of the workspace. Only turns that write to
+        // the person carry them.
         const replyLanguage =
           resolveModeValue(ctx, {
             interactive: personLanguage(ctx.messages),
           }) ?? undefined;
-        return modelSelection(
-          await getWorkspaceModelId(scopeFromPrincipal(caller)),
-          {
-            replyLanguage,
-            toolChoice:
-              turnMustEnd(ctx.messages) || readsMustEnd(ctx.messages)
-                ? "none"
-                : requireToolCall
-                  ? "required"
-                  : "auto",
-          }
-        );
+        const writesToPerson =
+          resolveModeValue(ctx, {
+            interactive: true,
+            "scheduled-report": true,
+          }) ?? false;
+        const scope = scopeFromPrincipal(caller);
+        const [modelId, formOfAddress] = await Promise.all([
+          getWorkspaceModelId(scope),
+          writesToPerson ? getFormOfAddress(scope) : undefined,
+        ]);
+        return modelSelection(modelId, {
+          replyNote: formOfAddress
+            ? replyDirective({ formOfAddress, language: replyLanguage })
+            : undefined,
+          toolChoice:
+            turnMustEnd(ctx.messages) || readsMustEnd(ctx.messages)
+              ? "none"
+              : requireToolCall
+                ? "required"
+                : "auto",
+        });
       },
     },
   }),

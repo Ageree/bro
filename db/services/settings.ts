@@ -1,5 +1,10 @@
 import { and, eq } from "drizzle-orm";
 import {
+  defaultFormOfAddress,
+  type FormOfAddress,
+  formOfAddressSchema,
+} from "@shared/chat/form-of-address";
+import {
   defaultGoogleWorkspaceAccess,
   type GoogleWorkspaceAccess,
   googleWorkspaceAccessSchema,
@@ -12,6 +17,7 @@ import { db, settings } from "@db";
 // the active provider addresses.
 const workspaceModelKey = "gateway_model";
 const googleWorkspaceAccessKey = "google_workspace_access";
+const formOfAddressKey = "form_of_address";
 
 type SettingKey = typeof settings.$inferInsert.key;
 
@@ -70,4 +76,41 @@ export async function selectGoogleWorkspaceAccess(
   access: GoogleWorkspaceAccess
 ) {
   await writeSetting(scope, googleWorkspaceAccessKey, access);
+}
+
+function parseFormOfAddress(value: string | undefined) {
+  if (value === undefined) return defaultFormOfAddress;
+  try {
+    const parsed = formOfAddressSchema.safeParse(JSON.parse(value));
+    return parsed.success ? parsed.data : defaultFormOfAddress;
+  } catch {
+    return defaultFormOfAddress;
+  }
+}
+
+/**
+ * How Bro addresses the person in every chat and channel of the workspace:
+ * «ты» and no chosen name until they ask otherwise.
+ */
+export async function getFormOfAddress(
+  scope: AccessScope
+): Promise<FormOfAddress> {
+  return parseFormOfAddress(await readSetting(scope, formOfAddressKey));
+}
+
+/**
+ * Applies what the person asked to change and keeps the rest; `name: null`
+ * drops the chosen name.
+ */
+export async function updateFormOfAddress(
+  scope: AccessScope,
+  change: Partial<FormOfAddress>
+) {
+  const current = await getFormOfAddress(scope);
+  const next = formOfAddressSchema.parse({
+    formal: change.formal ?? current.formal,
+    name: change.name === undefined ? current.name : change.name,
+  });
+  await writeSetting(scope, formOfAddressKey, JSON.stringify(next));
+  return next;
 }

@@ -7,6 +7,11 @@ search index as the source of truth.
 - Workstreams own goals, constraints, decisions, evidence, and unresolved work.
 - Profile memory owns durable facts, people, organizations, decisions, and
   preferences as revisioned Postgres records.
+- Workspace settings own how Bro addresses the person («ты» or «вы», and the
+  name they asked to be called by) under the `form_of_address` key. The
+  `form_of_address` tool writes it, and every step's reply note repeats it, so
+  the choice holds in every chat and channel instead of depending on the model
+  noticing a profile record.
 - Eve owns current conversation history and compaction.
 - Supermemory is an optional semantic index for non-local profile records. Its
   search results are identifiers only: Bro re-reads the current Postgres record
