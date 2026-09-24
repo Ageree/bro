@@ -1,6 +1,11 @@
 import type { ModelMessage } from "ai";
 import { z } from "zod";
-import { currentTurnMessages, sendReachedPerson } from "./turn-sends";
+import { settledOutcomeRun } from "./browser-report";
+import {
+  currentTurnMessages,
+  sendReachedPerson,
+  startsTurn,
+} from "./turn-sends";
 
 /** Tools whose successful call is the reply a person actually sees. */
 const deliveryToolNames = new Set(["send_message", "react_to_message"]);
@@ -83,6 +88,42 @@ export function turnActed(messages: readonly ModelMessage[]) {
           part.output.type !== "execution-denied"
       )
   );
+}
+
+/**
+ * Whether an earlier turn of this conversation already told the person how
+ * a browser run ended: `browser_task status` handed over its outcome — the
+ * person asked «ну что там?» while the run's report still waited behind
+ * their turn — and a message got through after it. The report turn that
+ * follows would give them the same result a second time.
+ */
+export function outcomeToldEarlier(
+  messages: readonly ModelMessage[],
+  runId: string
+) {
+  const start = messages.findLastIndex(startsTurn);
+  let handedOver = false;
+  for (const message of start === -1 ? [] : messages.slice(0, start)) {
+    if (startsTurn(message)) handedOver = false;
+    if (message.role !== "tool") continue;
+    for (const part of message.content) {
+      if (part.type !== "tool-result") continue;
+      if (
+        part.toolName === "browser_task" &&
+        settledOutcomeRun(part.output) === runId
+      ) {
+        handedOver = true;
+      }
+      if (
+        handedOver &&
+        part.toolName === "send_message" &&
+        sendReachedPerson(part.output)
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 /**

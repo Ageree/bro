@@ -88,17 +88,54 @@ export function properNamesOf(text: string) {
   ].toSorted();
 }
 
-/** The questions a message asks, one normalized sentence each. */
-export function questionsOf(text: string) {
+function sentencesOf(text: string) {
   return text
     .normalize("NFKC")
     .split(/(?<=[.!?…])\s+|\n+/u)
     .map((sentence) =>
       sentence.replace(/[\s»"')\]\p{Extended_Pictographic}]+$/gu, "")
-    )
+    );
+}
+
+/** The questions a message asks, one normalized sentence each. */
+export function questionsOf(text: string) {
+  return sentencesOf(text)
     .filter((sentence) => sentence.endsWith("?"))
     .map(normalizedText)
     .filter((question) => question.length > 0);
+}
+
+/**
+ * Verbs that ask the person to hand something over or decide: a code, a
+ * confirmation in their bank app, a choice — «пришли код», «подтвердите
+ * вход», «send me the code».
+ */
+const requestVerbs =
+  /(?<!\p{L})(?:пришли|пришлите|скинь|скиньте|отправь|отправьте|продиктуй|продиктуйте|подтверди|подтвердите|одобри|одобрите|введи|введите|выбери|выберите|назови|назовите|ответь|ответьте|send me|confirm|approve|enter|choose|pick|reply)(?!\p{L})/iu;
+
+/**
+ * Asking to be told, which a condition turns into a courtesy: «напиши, если
+ * что» asks for nothing.
+ */
+const tellVerbs =
+  /(?<!\p{L})(?:напиши|напишите|скажи|скажите|дай знать|дайте знать|tell me|let me know)(?!\p{L})/iu;
+
+const condition = /(?<!\p{L})(?:если|if)(?!\p{L})/iu;
+
+/**
+ * What a message asks the person to do or hand over, one normalized sentence
+ * each: a request without a question mark is still something only they can
+ * answer.
+ */
+export function requestsOf(text: string) {
+  return sentencesOf(text)
+    .filter(
+      (sentence) =>
+        requestVerbs.test(sentence) ||
+        (tellVerbs.test(sentence) && !condition.test(sentence))
+    )
+    .map(normalizedText)
+    .filter((request) => request.length > 0);
 }
 
 /**
@@ -112,6 +149,7 @@ export interface SentMessage {
   readonly names: readonly string[];
   readonly properNames: readonly string[];
   readonly questions: readonly string[];
+  readonly requests: readonly string[];
   readonly text: string;
 }
 
@@ -168,6 +206,77 @@ function sameFact(code: string, known: string) {
  */
 const statusWords =
   /(?:^| )(?:пока|смотрю|ищу|проверяю|продолжаю|жду|ждём|ждем|как только|как будет|как придёт|как придет|пришлю|напишу|отпишусь|сообщу|скину|в работе|работает|в процессе|still|as soon as|will send|will let you know|working on|keep you posted)(?= |$)/u;
+
+/**
+ * Words of a message that puts its answer off: the result is to come in a
+ * later message — «пришлю», «напишу, как только…», «as soon as».
+ */
+const laterWords =
+  /(?:^| )(?:пришлю|напишу|отпишусь|сообщу|скину|дам знать|вернусь|как только|as soon as|will send|will let you know|get back to you|keep you posted)(?= |$)/u;
+
+/**
+ * Words of a short line that only says the work is under way: «смотрю
+ * почту», «секунду, проверю». In a longer message they may describe what Bro
+ * does in general («ищу билеты, бронирую столики»), so they count only in a
+ * line this short.
+ */
+const busyWords =
+  /(?:^| )(?:смотрю|ищу|проверяю|уточняю|выясняю|разбираюсь|собираю|секунду|минутку|сейчас (?:посмотрю|проверю|найду|поищу|узнаю|гляну|уточню|соберу|сделаю)|looking|checking|searching|one moment|one sec)(?= |$)/u;
+
+const busyLineLength = 80;
+
+/**
+ * Whether a message announces work instead of reporting it: it says Bro is
+ * on it, or that the answer will come later.
+ */
+export function announcesWork(message: SentMessage) {
+  return (
+    laterWords.test(message.text) ||
+    (message.text.length <= busyLineLength && busyWords.test(message.text))
+  );
+}
+
+function isLink(code: string) {
+  return code.includes("://") || code.includes("/artifacts/");
+}
+
+/** Whether some of `asks` is not close to anything in `asked`. */
+function asksAnew(asks: readonly string[], asked: readonly string[]) {
+  return asks.some(
+    (ask) =>
+      !asked.some((known) => similarity(ask, known) >= sameQuestionSimilarity)
+  );
+}
+
+/**
+ * Whether a message puts something to the person that the delivered ones did
+ * not: a picture, a link, a question, or a request — a code, a confirmation,
+ * a choice. What a browser run found is told once; a message that only says
+ * it again, adds a detail or corrects itself is the same result a second
+ * time.
+ */
+export function asksOrShowsNew(
+  message: SentMessage,
+  delivered: readonly SentMessage[]
+) {
+  const attachments = new Set(delivered.flatMap((sent) => sent.attachments));
+  if (message.attachments.some((attachment) => !attachments.has(attachment))) {
+    return true;
+  }
+  const links = new Set(
+    delivered.flatMap((sent) => sent.codes.filter((code) => isLink(code)))
+  );
+  if (message.codes.some((code) => isLink(code) && !links.has(code))) {
+    return true;
+  }
+  const asked = delivered.flatMap((sent) => [
+    ...sent.questions,
+    ...sent.requests,
+  ]);
+  return (
+    asksAnew(message.questions, asked) || asksAnew(message.requests, asked)
+  );
+}
 
 /**
  * Whether a message tells the person nothing the turn has not already told

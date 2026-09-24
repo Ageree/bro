@@ -277,13 +277,15 @@ describe("interactive delivery enforcement", () => {
       interactiveContext(pending, "browser-result", reportAttributes)
     );
 
+    // A question in a report goes out as a message, so the person's reply
+    // starts a turn of their own.
     expect(services.modelSelection).toHaveBeenLastCalledWith(
       "openai/gpt-5.6-sol-fast",
       {
         delivered: false,
         replyNote: note("ru"),
         toolChoice: "required",
-        withheldTools: [],
+        withheldTools: ["ask_question"],
       }
     );
 
@@ -329,7 +331,7 @@ describe("interactive delivery enforcement", () => {
         delivered: true,
         replyNote: note("ru"),
         toolChoice: "auto",
-        withheldTools: [],
+        withheldTools: ["ask_question"],
       }
     );
   });
@@ -353,20 +355,87 @@ describe("interactive delivery enforcement", () => {
     );
   });
 
+  it("ends a report turn whose outcome an earlier turn already told", async () => {
+    // «ну что там?» took the outcome from `browser_task status` while the
+    // report waited behind that turn; the report must not tell it again.
+    const statusTold = [
+      humanMessage("ну что там с заказом?"),
+      toolCallStep("browser_task", "call-status", { action: "status" }),
+      toolResultStep("browser_task", "call-status", {
+        outcome: "Result: корзина собрана, 1 085,95 ₽.",
+        runId: "browser-run-1",
+        status: "done",
+      }),
+      ...delivered.slice(1),
+    ];
+
+    await agent.model.events["step.started"]?.(
+      {},
+      interactiveContext(
+        [...statusTold, humanMessage("report")],
+        "browser-result",
+        reportAttributes
+      )
+    );
+
+    const [, options] = services.modelSelection.mock.lastCall ?? [];
+    expect(options?.toolChoice).toBe("none");
+    expect(options?.replyNote).toContain(
+      "This browser report already reached the person in an earlier turn"
+    );
+    expect(services.browserRunReportDelivered).not.toHaveBeenCalled();
+
+    // Another run's outcome, or one nobody was told, leaves the report be.
+    await agent.model.events["step.started"]?.(
+      {},
+      interactiveContext(
+        [...statusTold.slice(0, 3), humanMessage("report")],
+        "browser-result",
+        reportAttributes
+      )
+    );
+    expect(services.modelSelection.mock.lastCall?.[1]?.toolChoice).toBe(
+      "required"
+    );
+  });
+
+  it("lets a report turn past its answer still act on the errand", async () => {
+    await agent.model.events["step.started"]?.(
+      {},
+      interactiveContext(
+        [...delivered, ...skippedRepeat("call-2")],
+        "browser-result",
+        reportAttributes
+      )
+    );
+
+    // Its messages are done, but the one card for the option the run found
+    // may still follow.
+    const [, options] = services.modelSelection.mock.lastCall ?? [];
+    expect(options?.toolChoice).toBe("auto");
+    expect(options?.withheldTools).toEqual([
+      "ask_question",
+      "react_to_message",
+      "send_message",
+    ]);
+  });
+
   it("never forces a tool on a scheduled report, which may stay suppressed", async () => {
     await agent.model.events["step.started"]?.(
       {},
       interactiveContext(pending, "scheduled-result")
     );
 
-    // The report answers in the language of the conversation it continues.
+    // The report answers in the language of the conversation it continues,
+    // and puts a waiting run's question as a message: the person's reply
+    // must start their own turn, where `schedules-answer` takes it.
     expect(services.modelSelection).toHaveBeenLastCalledWith(
       "openai/gpt-5.6-sol-fast",
       {
         delivered: false,
         replyNote: note("ru"),
         toolChoice: "auto",
-        withheldTools: [],
+        withheldTools: ["ask_question"],
       }
     );
   });
@@ -424,6 +493,35 @@ function skippedRepeat(toolCallId: string) {
       role: "tool" as const,
     },
   ];
+}
+
+function toolCallStep(
+  toolName: string,
+  toolCallId: string,
+  input: Record<string, string>
+) {
+  return {
+    content: [{ input, toolCallId, toolName, type: "tool-call" as const }],
+    role: "assistant" as const,
+  };
+}
+
+function toolResultStep(
+  toolName: string,
+  toolCallId: string,
+  value: Record<string, string>
+) {
+  return {
+    content: [
+      {
+        output: { type: "json" as const, value },
+        toolCallId,
+        toolName,
+        type: "tool-result" as const,
+      },
+    ],
+    role: "tool" as const,
+  };
 }
 
 function humanMessage(text: string) {

@@ -1,5 +1,5 @@
 import type { ModelMessage, ToolResultPart } from "ai";
-import { z } from "zod";
+import { browserAnswer } from "./browser-report";
 
 /**
  * A message that reports as done what no tool did. In the benchmark Bro wrote
@@ -26,25 +26,8 @@ const calendarWriteTools = new Set([
   "calendar-update-event",
 ]);
 
-const browserAnswerSchema = z.object({
-  note: z.string().optional(),
-  status: z.string().optional(),
-});
-
 function succeeded(output: ToolResultPart["output"]) {
   return !output.type.startsWith("error") && output.type !== "execution-denied";
-}
-
-function browserAnswer(output: ToolResultPart["output"]) {
-  if (output.type === "json") {
-    return browserAnswerSchema.safeParse(output.value).data;
-  }
-  if (output.type !== "text") return undefined;
-  try {
-    return browserAnswerSchema.safeParse(JSON.parse(output.value)).data;
-  } catch {
-    return undefined;
-  }
 }
 
 function toolResults(messages: readonly ModelMessage[]) {
@@ -196,6 +179,16 @@ function sentencesOf(text: string) {
     .filter((sentence) => !otherTime.test(sentence));
 }
 
+/**
+ * The parts of a sentence between commas, colons and dashes. A calendar
+ * claim puts the verb and the calendar in one of them («ставлю в календарь
+ * слот 11:00»); a list of what Bro does only has them side by side
+ * («разбираю почту, календарь и Диск, ставлю напоминания»).
+ */
+function clausesOf(sentence: string) {
+  return sentence.split(/[,:—–()]/u);
+}
+
 function escaped(phrase: string) {
   return phrase.replaceAll(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
@@ -234,11 +227,13 @@ export function unperformedClaim(
     const verbs = actions.calendarWrittenEarlier
       ? calendarPresentVerbs
       : [...calendarPresentVerbs, ...calendarPastVerbs];
-    const claimed = sentences.some(
-      (sentence) =>
-        calendarNoun.test(sentence.replaceAll(theirCalendar, "")) &&
-        says(sentence, verbs)
-    );
+    const claimed = sentences
+      .flatMap(clausesOf)
+      .some(
+        (clause) =>
+          calendarNoun.test(clause.replaceAll(theirCalendar, "")) &&
+          says(clause, verbs)
+      );
     if (claimed) return "calendar";
   }
   return undefined;
