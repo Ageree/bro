@@ -1,5 +1,5 @@
 import { defineEval } from "eve/evals";
-import { equals, satisfies } from "eve/evals/expect";
+import { satisfies } from "eve/evals/expect";
 import { sendMessageOutputSchema } from "@shared/chat/message-delivery";
 import { agentEvalTags } from "@evals/agent/shared";
 import { accessScopeForUser } from "@shared/identity/access-scope";
@@ -76,15 +76,9 @@ export default defineEval({
       );
       if (!runId) throw new Error("The scheduled run was not persisted.");
 
-      const reportResponse = await t.target.fetch(
-        "/internal/scheduled-run/report",
-        {
-          body: JSON.stringify({ runId }),
-          headers: { "content-type": "application/json" },
-          method: "POST",
-        }
-      );
-      await t.require(reportResponse.status, equals(202));
+      // The next minute tick delivers the report into the web chat through
+      // the schedule's session handle, as it does in production.
+      await t.target.dispatchSchedule("dynamic");
 
       const report = await t.target.attachSession(initial.sessionId, {
         startIndex: mainEventIndex,

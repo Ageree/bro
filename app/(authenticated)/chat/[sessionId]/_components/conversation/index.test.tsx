@@ -2,6 +2,7 @@ import type { MessageStreamEvent } from "eve/client";
 import type { EveMessage } from "eve/react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import { backgroundTurnMarker } from "@shared/chat/background-turn";
 import { ChatConversation } from ".";
 import type { ChatAgent } from "../chat-agent";
 
@@ -49,6 +50,40 @@ describe("chat conversation", () => {
     expect(markup).toContain("The visible iMessage response.");
     expect(markup).not.toContain("Internal assistant narration");
     expect(markup).not.toContain("DELIVERY_COMPLETE");
+  });
+
+  it("shows a proactive message without the prompt Bro wrote to itself", () => {
+    const agent = {
+      data: {
+        messages: [
+          message(
+            "turn-1:user",
+            `${backgroundTurnMarker}\n\nYour own background check of the person's mail and calendar found something.`
+          ),
+          {
+            id: "turn-1:assistant",
+            metadata: { status: "complete", turnId: "turn-1" },
+            parts: [{ state: "done", text: "DELIVERY_COMPLETE", type: "text" }],
+            role: "assistant",
+          },
+        ],
+      },
+      error: undefined,
+      events: [sendMessageResult("Рейс UA 1532 завтра в 07:40.")],
+      respond: async () => undefined,
+      status: "ready",
+    } satisfies Pick<
+      ChatAgent,
+      "data" | "error" | "events" | "respond" | "status"
+    >;
+
+    const markup = renderToStaticMarkup(
+      <ChatConversation agent={agent} traceView="imessage" />
+    );
+
+    expect(markup).toContain("Рейс UA 1532 завтра в 07:40.");
+    expect(markup).not.toContain("background check");
+    expect(markup).not.toContain(backgroundTurnMarker);
   });
 
   it("hides runtime errors from the iMessage transcript", () => {

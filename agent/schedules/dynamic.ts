@@ -1,4 +1,4 @@
-import { defineSchedule, type ScheduleToFn } from "eve/schedules";
+import { defineSchedule, type ScheduleHandlerArgs } from "eve/schedules";
 import scheduledRunChannel from "@agent/channels/scheduled-run";
 import {
   checkOpenRouterCredits,
@@ -6,7 +6,6 @@ import {
 } from "@agent/lib/model/credits";
 import { holdProactiveReport } from "@agent/lib/proactive/delivery";
 import { dispatchScheduledReport } from "@agent/lib/schedules/report";
-import { postScheduledReport } from "@agent/lib/schedules/request";
 import {
   claimReadyScheduledAgentRuns,
   listRecoverableScheduledReports,
@@ -17,17 +16,25 @@ import {
 
 const workerStartupLimitMs = 5 * 60_000;
 
+/**
+ * What a report needs to reach its conversation: `to` addresses a messaging
+ * chat, and the session handle is the only way into a web chat. Web reports
+ * used to go through the app's own `/internal/scheduled-run/report` route,
+ * which Vercel never routes to eve, so none of them arrived.
+ */
+type ReportDelivery = Pick<ScheduleHandlerArgs, "attachSession" | "to">;
+
 export default defineSchedule({
   cron: "* * * * *",
-  run({ to, waitUntil }) {
-    waitUntil(dispatchDueWork(to));
+  run({ attachSession, to, waitUntil }) {
+    waitUntil(dispatchDueWork({ attachSession, to }));
     // A run out of model credit fails every turn, so the owner hears about a
     // low balance from this tick before people hear silence.
     if (creditCheckDue(new Date())) waitUntil(checkOpenRouterCredits());
   },
 });
 
-async function dispatchDueWork(to: ScheduleToFn) {
+async function dispatchDueWork(delivery: ReportDelivery) {
   const now = new Date();
   const materializedRunIds = await materializeDueScheduledAgentRuns({
     limit: 25,
@@ -47,13 +54,13 @@ async function dispatchDueWork(to: ScheduleToFn) {
     });
   }
   await Promise.all([
-    ...runs.map((claim) => executeScheduledRun(to, claim)),
-    ...reports.map((report) => dispatchRecoverableReport(to, report)),
+    ...runs.map((claim) => executeScheduledRun(delivery, claim)),
+    ...reports.map((report) => dispatchRecoverableReport(delivery, report)),
   ]);
 }
 
 async function executeScheduledRun(
-  to: ScheduleToFn,
+  delivery: ReportDelivery,
   claim: Awaited<ReturnType<typeof claimReadyScheduledAgentRuns>>[number]
 ) {
   const leaseToken = claim.run.leaseToken;
@@ -65,12 +72,14 @@ async function executeScheduledRun(
     scheduledFor: claim.run.scheduledFor.toISOString(),
   });
   try {
-    const session = await to(scheduledRunChannel, {
-      restart: claim.run.workerSessionId !== null,
-      runId: claim.run.id,
-    }).send(scheduledRunPrompt(claim), {
-      auth: scheduledWorkerAuth(claim),
-    });
+    const session = await delivery
+      .to(scheduledRunChannel, {
+        restart: claim.run.workerSessionId !== null,
+        runId: claim.run.id,
+      })
+      .send(scheduledRunPrompt(claim), {
+        auth: scheduledWorkerAuth(claim),
+      });
     const persisted = await setScheduledRunSession(
       claim.run.id,
       leaseToken,
@@ -96,7 +105,7 @@ async function executeScheduledRun(
       error instanceof Error ? error.message : String(error)
     );
     if (status === "dead_letter") {
-      await dispatchRecoverableReport(to, {
+      await dispatchRecoverableReport(delivery, {
         conversationChannel: claim.job.conversationChannel,
         jobKind: claim.job.kind,
         runId: claim.run.id,
@@ -110,15 +119,13 @@ async function executeScheduledRun(
 }
 
 async function dispatchRecoverableReport(
-  to: ScheduleToFn,
+  delivery: ReportDelivery,
   report: Awaited<ReturnType<typeof listRecoverableScheduledReports>>[number]
 ) {
   if (report.jobKind === "proactive" && (await holdProactiveReport(report))) {
     return;
   }
-  return report.conversationChannel === "eve"
-    ? postScheduledReport(report.runId)
-    : dispatchScheduledReport({ to }, report.runId);
+  return dispatchScheduledReport(delivery, report.runId);
 }
 
 function scheduledRunPrompt(

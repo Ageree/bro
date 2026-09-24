@@ -3,6 +3,7 @@ import { z } from "zod";
 import { googleWorkspaceAccess } from "@agent/lib/google-workspace/client";
 import { resolveModeValue } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
+import { wakeProactiveWatch } from "@db/services/proactive";
 import {
   getGoogleWorkspaceAccess,
   selectGoogleWorkspaceAccess,
@@ -110,6 +111,15 @@ export const connectGoogle = defineTool({
     }
     if (connection.state === "error") return unreachable;
     if (connection.state === "connected" && access === current) {
+      // Someone who just finished consent from the link asks whether it
+      // worked; Bro's own checks, parked on the missing grant, resume now.
+      try {
+        await wakeProactiveWatch(scope);
+      } catch (error) {
+        console.warn("[proactive] could not wake the checks", {
+          cause: error,
+        });
+      }
       return { access, account: connection.accountLabel, status: "connected" };
     }
 

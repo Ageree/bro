@@ -5,11 +5,13 @@ import type {
   ConnectOptions,
 } from "@vercel/connect";
 import { connect, type EveAuthorizationOptions } from "@vercel/connect/eve";
+import type { ConnectionPrincipal } from "eve/connections";
 import type { SessionContext } from "eve/context";
 import type { ToolContext } from "eve/tools";
 import type { ApprovalStatus } from "eve/tools/approval";
 import { z } from "zod";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
+import { wakeProactiveWatch } from "@db/services/proactive";
 import { getGoogleWorkspaceAccess } from "@db/services/settings";
 import { env } from "@shared/environment";
 import {
@@ -46,7 +48,9 @@ export function googleWorkspaceAuthOptions(access: GoogleWorkspaceAccess) {
 /**
  * The eve provider for one access level. A person who signs in from the
  * chat card never opens the cabinet, so the grant's offline check runs right
- * after authorization completes; it is not awaited and only logs.
+ * after authorization completes; it is not awaited and only logs. The same
+ * moment wakes Bro's own mail and calendar checks, which a missing grant had
+ * put off for hours.
  */
 export function googleWorkspaceProvider(access: GoogleWorkspaceAccess) {
   const provider = connect(googleWorkspaceAuthOptions(access));
@@ -57,9 +61,23 @@ export function googleWorkspaceProvider(access: GoogleWorkspaceAccess) {
     ) {
       const result = await provider.completeAuthorization(input);
       void warnWhenGrantCannotRefresh(result.token);
+      await wakeProactiveChecks(input.principal);
       return result;
     },
   };
+}
+
+async function wakeProactiveChecks(principal: ConnectionPrincipal) {
+  // eve hands over the session caller's attributes, its workspace included.
+  if (principal.type !== "user" || !principal.attributes?.workspaceId) return;
+  try {
+    await wakeProactiveWatch(scopeFromPrincipal(principal));
+  } catch (error) {
+    // The grant is stored either way; the checks come back on their own.
+    console.warn("[proactive] could not wake the checks after connect", {
+      cause: error,
+    });
+  }
 }
 
 const googleWorkspaceAuth = {

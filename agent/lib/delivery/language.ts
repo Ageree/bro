@@ -1,5 +1,6 @@
 import type { ModelMessage } from "ai";
 import { z } from "zod";
+import { isBackgroundTurnText } from "@shared/chat/background-turn";
 
 /** The languages Bro holds a reply to; any other one is left to the model. */
 export type ReplyLanguage = "en" | "ru";
@@ -57,7 +58,8 @@ export function messageLanguage(text: string): ReplyLanguage | undefined {
 
 /**
  * The language of the latest message the person wrote themselves. Context,
- * memory, background wakeups and browser reports are skipped, and so is a
+ * memory, background wakeups, browser reports and scheduled or proactive
+ * reports (English prompts Bro writes to itself) are skipped, and so is a
  * message that names no clear language, so «ok» after an English exchange
  * keeps it English.
  */
@@ -69,7 +71,9 @@ export function personLanguage(
     const kind = taggedMessageSchema.safeParse(message).data?.kind ?? "user";
     if (kind !== "user") continue;
     const text = messageText(message);
-    if (browserRunReportPattern.test(text)) continue;
+    if (browserRunReportPattern.test(text) || isBackgroundTurnText(text)) {
+      continue;
+    }
     const language = messageLanguage(text);
     if (language) return language;
   }

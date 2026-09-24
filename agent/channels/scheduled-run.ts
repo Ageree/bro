@@ -2,7 +2,6 @@ import { defineChannel, POST } from "eve/channels";
 import { localDev, routeAuth, vercelOidc } from "eve/channels/auth";
 import { parseInputResponses, resolveTextToResponses } from "eve/client";
 import { z } from "zod";
-import { dispatchScheduledReport } from "@agent/lib/schedules/report";
 import {
   claimScheduledAgentRunInput,
   finishScheduledAgentRunInput,
@@ -13,7 +12,6 @@ const scheduledRunTargetSchema = z.strictObject({
   restart: z.boolean().optional(),
   runId: z.uuid(),
 });
-const reportSchema = z.strictObject({ runId: z.uuid() });
 const respondSchema = z.strictObject({
   answer: z.string().trim().min(1).max(8_000),
   leaseToken: z.uuid(),
@@ -40,21 +38,9 @@ export default defineChannel({
       title: `Scheduled run ${target.runId}`,
     });
   },
+  // Reports go out from the `dynamic` schedule, which holds the session
+  // handle a web chat needs; this app's own routes never reach eve on Vercel.
   routes: [
-    POST(
-      "/internal/scheduled-run/report",
-      async (request, { attachSession, to, waitUntil }) => {
-        const auth = await routeAuth(request, internalRouteAuth);
-        if (auth instanceof Response) return auth;
-        const parsed = reportSchema.safeParse(await request.json());
-        if (parsed.success) {
-          waitUntil(
-            dispatchScheduledReport({ attachSession, to }, parsed.data.runId)
-          );
-        }
-        return new Response(null, { status: 202 });
-      }
-    ),
     POST(
       "/internal/scheduled-run/respond",
       async (request, { attachSession }) => {

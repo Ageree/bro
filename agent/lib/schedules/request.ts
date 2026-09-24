@@ -10,7 +10,6 @@ const eveDevServerSchema = z.object({
 });
 
 interface ScheduledRunRequestBodies {
-  "/internal/scheduled-run/report": { runId: string };
   "/internal/scheduled-run/respond": {
     answer: string;
     leaseToken: string;
@@ -53,16 +52,4 @@ async function scheduledRunOrigin() {
     }
   }
   return applicationOrigin();
-}
-
-export async function postScheduledReport(runId: string) {
-  const response = await postScheduledRunRoute(
-    "/internal/scheduled-run/report",
-    { runId }
-  );
-  if (!response.ok) {
-    throw new Error(
-      `Scheduled report callback failed (${String(response.status)}).`
-    );
-  }
 }
