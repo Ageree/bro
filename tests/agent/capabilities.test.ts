@@ -90,15 +90,16 @@ describe("authored mode capability matrix", () => {
         .filter((file) => file.endsWith(".ts"))
         .map(async (file) => {
           const name = file.replace(/\.ts$/u, "");
-          const dynamic = dynamicToolModuleSchema.safeParse(
-            await import(new URL(file, directory).href)
-          );
-          // A module without a turn resolver is a static tool of its own name.
-          if (!dynamic.success) return [name];
-          const resolved = await dynamic.data.default.events["turn.started"](
-            {},
-            context
-          );
+          const loaded: unknown = await import(new URL(file, directory).href);
+          const perTurn = dynamicToolModuleSchema.safeParse(loaded);
+          // Messaging resolves per step to see what the turn already sent.
+          const perStep = stepToolModuleSchema.safeParse(loaded);
+          const resolve = perTurn.success
+            ? perTurn.data.default.events["turn.started"]
+            : perStep.data?.default.events["step.started"];
+          // A module without a resolver is a static tool of its own name.
+          if (!resolve) return [name];
+          const resolved = await resolve({}, context);
           if (!resolved) return [];
           return "execute" in resolved ? [name] : Object.keys(resolved);
         })
@@ -212,14 +213,21 @@ describe("authored mode capability matrix", () => {
   });
 });
 
+const toolResolverSchema = z.custom<
+  NonNullable<(typeof calendar)["events"]["turn.started"]>
+>((value) => z.function().safeParse(value).success);
+
 /** A tool module whose default export resolves its tools per turn. */
 const dynamicToolModuleSchema = z.object({
   default: z.object({
-    events: z.object({
-      "turn.started": z.custom<
-        NonNullable<(typeof calendar)["events"]["turn.started"]>
-      >((value) => z.function().safeParse(value).success),
-    }),
+    events: z.object({ "turn.started": toolResolverSchema }),
+  }),
+});
+
+/** A tool module whose default export resolves its tools before each step. */
+const stepToolModuleSchema = z.object({
+  default: z.object({
+    events: z.object({ "step.started": toolResolverSchema }),
   }),
 });
 
