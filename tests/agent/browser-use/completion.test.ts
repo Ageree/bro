@@ -1,6 +1,6 @@
 import type { Session } from "eve/channels";
 import type { ScheduleToFn } from "eve/schedules";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { formatRub } from "@shared/spending/limit";
 
 const runId = "11111111-1111-4111-8111-111111111111";
@@ -184,6 +184,12 @@ vi.mock("@agent/lib/browser-use/images", () => ({
   captureBrowserRunImages,
 }));
 vi.mock("@agent/channels/photon", () => ({ default: { id: "photon" } }));
+
+// The first import transforms the channels the report is sent through, which
+// under a full parallel run can outlast one test's five seconds by itself.
+beforeAll(async () => {
+  await import("@agent/lib/browser-use/completion");
+}, 60_000);
 
 beforeEach(() => {
   vi.clearAllMocks();

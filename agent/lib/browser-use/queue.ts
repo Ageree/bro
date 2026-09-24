@@ -1,0 +1,272 @@
+import { env } from "@shared/environment";
+import type { AccessScope } from "@shared/identity/access-scope";
+import {
+  closeQueuedBrowserRun,
+  countQueuedBrowserRuns,
+  createQueuedBrowserRun,
+  handOffBrowserRunRetry,
+  parkQueuedBrowserRun,
+  readBrowserRun,
+} from "@db/services/browser-runs";
+import {
+  BrowserUseError,
+  type BrowserUseCreateRunInput,
+  browserUseBusy,
+  browserUseOutOfCredits,
+  cancelBrowserUseRun,
+  createBrowserUseRun,
+  findRecentBrowserUseRunByTaskLine,
+} from "./client";
+import {
+  browserUseCreditsRestored,
+  reportBrowserUseOutOfCredits,
+} from "./credits";
+import { customProxy } from "./proxy";
+import { resolveBrowserSecretBindings } from "./secrets";
+import { releaseBrowserRunSpend } from "./spend";
+
+type BrowserRunRow = NonNullable<Awaited<ReturnType<typeof readBrowserRun>>>;
+
+/**
+ * Browser Use runs only so many browsers at once, and past that answers 429
+ * to every start. A turn used to retry the start on the spot — one did 77
+ * times — which only kept the cap full. The errand waits here instead: the
+ * poller tries the longest-waiting one each minute, and a busy answer ends
+ * that minute's tries, since the next errand would get the same answer.
+ */
+const queueRetryMs = 60_000;
+/** A throttle may ask for a longer pause; five minutes is the most we wait. */
+const maximumQueueRetryMs = 5 * 60_000;
+/** Past this the person hears that the errand did not start, not silence. */
+const queueWindowMs = 90 * 60_000;
+
+export function queueRetryAt(now: Date, retryAfterMs?: number) {
+  const wait = Math.min(
+    Math.max(retryAfterMs ?? queueRetryMs, queueRetryMs),
+    maximumQueueRetryMs
+  );
+  return new Date(now.getTime() + wait);
+}
+
+/**
+ * A rough promise for the person: each errand ahead takes a slot as one frees
+ * up, and slots free up every few minutes. It is said as «about», never as a
+ * time.
+ */
+function expectedStartMinutes(ahead: number) {
+  return Math.min(2 + ahead * 3, 30);
+}
+
+/**
+ * Whether new errands go straight to the back of the line: while anything is
+ * queued, the cap was full a minute ago, and a start now would only take the
+ * slot the queued errand is about to get — or add one more 429.
+ */
+export async function browserQueueOccupied() {
+  return (await countQueuedBrowserRuns()) > 0;
+}
+
+/**
+ * Queue an errand that could not start now. It keeps everything the person
+ * decided for it — the composed instruction, the card they confirmed, the
+ * card they allowed to pay with — so the run the poller starts later is the
+ * same errand they asked for, and follows-ups on its id reach that run.
+ */
+export async function queueBrowserErrand(
+  scope: AccessScope,
+  input: Omit<
+    Parameters<typeof createQueuedBrowserRun>[1],
+    "pendingTask" | "retryAt"
+  > & {
+    readonly composedTask: string;
+    readonly retryAfterMs?: number;
+  },
+  now = new Date()
+) {
+  const ahead = await countQueuedBrowserRuns();
+  const { composedTask, retryAfterMs, ...row } = input;
+  const queued = await createQueuedBrowserRun(scope, {
+    ...row,
+    pendingTask: composedTask,
+    retryAt: queueRetryAt(now, retryAfterMs),
+  });
+  const minutes = expectedStartMinutes(ahead);
+  return {
+    minutes,
+    note: queuedErrandNote(ahead, minutes),
+    runId: queued.id,
+  };
+}
+
+function queuedErrandNote(ahead: number, minutes: number) {
+  return [
+    `The cloud browser service has no free browser right now${ahead > 0 ? ` and ${String(ahead)} other errand${ahead === 1 ? " is" : "s are"} waiting` : ""}, so this errand is queued and starts by itself as soon as one frees up — in about ${String(minutes)} minutes.`,
+    `Tell the user in one short line that you queued it and will start in about ${String(minutes)} minutes; the outcome arrives as a new message like any other.`,
+    "Do not call browser_task start again for this errand: it would only queue a second copy. status, continue and cancel work on this run id, and follow the errand to its run once it starts.",
+  ].join(" ");
+}
+
+/** The model-facing note for `status` on an errand still in the queue. */
+export function queuedStatusNote(row: Pick<BrowserRunRow, "retryAt">) {
+  const next = row.retryAt
+    ? ` The next try is at ${row.retryAt.toISOString()}.`
+    : "";
+  return `The errand is still queued: the cloud browser service had no free browser for it yet, and it starts by itself as soon as one frees up.${next} Say so in one short line; do not start it again.`;
+}
+
+function queueReference(runId: string) {
+  return `(Queued errand ${runId}; for bookkeeping only.)`;
+}
+
+async function abandonStartedRun(runId: string) {
+  try {
+    await cancelBrowserUseRun(runId);
+  } catch (error) {
+    console.warn(
+      "[browser-use] the orphaned queued run could not be cancelled",
+      {
+        cause: error,
+        runId,
+      }
+    );
+  }
+}
+
+/**
+ * A queued follow-up goes back into the browser its errand was using. When
+ * that session is gone or busy, it opens a fresh browser on the same profile
+ * instead, where the sign-ins live.
+ */
+async function createRunInSession(input: BrowserUseCreateRunInput) {
+  try {
+    return await createBrowserUseRun(input);
+  } catch (error) {
+    if (
+      input.sessionId === undefined ||
+      !(error instanceof BrowserUseError) ||
+      ![400, 404, 409].includes(error.status)
+    ) {
+      throw error;
+    }
+    return createBrowserUseRun({ ...input, sessionId: undefined });
+  }
+}
+
+/**
+ * Close a queued errand that is not going to start. What it held is given
+ * back; the caller reports the outcome to the person through the report path
+ * every settled run uses, so it survives a delivery that fails now.
+ */
+async function giveUpQueuedErrand(row: BrowserRunRow, outcome: string) {
+  const closed = await closeQueuedBrowserRun(row.id, {
+    outcome,
+    status: "failed",
+  });
+  if (closed) await releaseBrowserRunSpend(closed.id);
+  return closed;
+}
+
+/**
+ * Start one queued errand: a run with the instruction composed when the
+ * person asked, on the workspace profile, with the site's secrets bound
+ * afresh. The row is read again first, since the person may have cancelled
+ * it; a run started for an errand stopped in the meantime is cancelled. A
+ * poller that died between starting the run and handing the errand over
+ * left a run carrying the errand's reference line, and the next claim adopts
+ * it instead of starting a second browser.
+ */
+export async function startQueuedBrowserRun(
+  row: BrowserRunRow,
+  now = new Date()
+): Promise<
+  | { readonly status: "busy" | "started" | "stopped" }
+  | {
+      readonly closed: BrowserRunRow | undefined;
+      readonly outcome: string;
+      readonly status: "expired" | "no_credits";
+    }
+> {
+  const current = await readBrowserRun(row.id);
+  if (current?.status !== "queued" || current.retriedAsRunId) {
+    return { status: "stopped" };
+  }
+  if (now.getTime() - current.createdAt.getTime() > queueWindowMs) {
+    const outcome = `The errand never started: the cloud browser service had no free browser for it for ${String(Math.round(queueWindowMs / 60_000))} minutes. Nothing was done on the site. Tell the user so plainly and offer to start it again.`;
+    return {
+      closed: await giveUpQueuedErrand(current, outcome),
+      outcome,
+      status: "expired",
+    };
+  }
+  const scope = {
+    userId: current.createdByUserId,
+    workspaceId: current.workspaceId,
+  };
+  const reference = queueReference(current.id);
+  let run: { readonly id: string; readonly sessionId: string };
+  try {
+    const secrets = await resolveBrowserSecretBindings(scope, {
+      allowPayment: current.paymentAllowed,
+      site: current.site ?? undefined,
+    });
+    run =
+      (await findRecentBrowserUseRunByTaskLine(reference)) ??
+      (await createRunInSession({
+        customProxy: customProxy(),
+        maxCostUsd: env.BROWSER_USE_MAX_COST_USD,
+        model: env.BROWSER_USE_MODEL,
+        profileId: current.profileId ?? undefined,
+        proxyCountryCode: env.BROWSER_USE_PROXY_COUNTRY,
+        secretBindings: secrets.bindings,
+        sessionId: current.sessionId ?? undefined,
+        task: `${current.pendingTask ?? current.task}\n\n${reference}`,
+      }));
+  } catch (error) {
+    if (browserUseBusy(error)) {
+      await parkQueuedBrowserRun(
+        current.id,
+        queueRetryAt(now, error.retryAfterMs)
+      );
+      return { status: "busy" };
+    }
+    if (browserUseOutOfCredits(error)) {
+      await reportBrowserUseOutOfCredits(error);
+      const outcome =
+        "The errand never started: the cloud browser service ran out of credits, and the owner has been notified to top it up. Nothing was done on the site. Tell the user so honestly in one short line and offer to start it again later.";
+      return {
+        closed: await giveUpQueuedErrand(current, outcome),
+        outcome,
+        status: "no_credits",
+      };
+    }
+    throw error;
+  }
+  await browserUseCreditsRestored();
+  let handedOff: boolean;
+  try {
+    handedOff = await handOffBrowserRunRetry(current.id, {
+      conversationChannel: current.conversationChannel,
+      conversationId: current.conversationId,
+      id: run.id,
+      paymentAllowed: current.paymentAllowed,
+      profileId: current.profileId,
+      replyAnchorMessageId: current.replyAnchorMessageId,
+      rootSessionId: current.rootSessionId,
+      sessionId: run.sessionId,
+      site: current.site,
+      status: "running",
+      // The run is the errand the person confirmed on the card, so it
+      // carries that confirmation — and only that one.
+      submission: current.submission,
+      task: current.task,
+    });
+  } catch (error) {
+    await abandonStartedRun(run.id);
+    throw error;
+  }
+  if (!handedOff) {
+    await abandonStartedRun(run.id);
+    return { status: "stopped" };
+  }
+  return { status: "started" };
+}

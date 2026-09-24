@@ -125,12 +125,41 @@ export type BrowserUseCreateRunInput = z.infer<typeof createRunInputSchema>;
 /** A Browser Use Cloud reply that was not a 2xx, with enough of the body to act on. */
 export class BrowserUseError extends Error {
   readonly status: number;
+  /** How long Browser Use asked the caller to wait, when it said. */
+  readonly retryAfterMs: number | undefined;
 
-  constructor(status: number, path: string, body: string) {
+  constructor(
+    status: number,
+    path: string,
+    body: string,
+    retryAfterMs?: number
+  ) {
     super(`Browser Use ${String(status)} on ${path}: ${body.slice(0, 300)}`);
     this.name = "BrowserUseError";
     this.status = status;
+    this.retryAfterMs = retryAfterMs;
   }
+}
+
+/**
+ * Browser Use has no browser free for another run: the project is at its
+ * concurrent-session allowance, or throttled. A run started now would get the
+ * same answer, so the errand waits in the queue instead
+ * (`agent/lib/browser-use/queue.ts`).
+ */
+export function browserUseBusy(error: unknown): error is BrowserUseError {
+  return error instanceof BrowserUseError && error.status === 429;
+}
+
+/**
+ * The project has no credits left, or the key hit its spend cap. Nothing
+ * starts until the owner tops it up, so the person is told so plainly and the
+ * owner is alerted (`agent/lib/browser-use/credits.ts`).
+ */
+export function browserUseOutOfCredits(
+  error: unknown
+): error is BrowserUseError {
+  return error instanceof BrowserUseError && error.status === 402;
 }
 
 export function browserUseConfigured() {
@@ -358,15 +387,49 @@ async function request(
   if (body !== undefined) init.body = body;
 
   let response = await fetch(url, init);
-  // One retry only. Browser Use throttles per project, and a second failure
-  // means the caller should surface the problem rather than queue more load.
-  if (response.status === 429 || response.status >= 500) {
+  // One retry only, and only for a read or a request that is safe to repeat.
+  // A POST that failed may still have started a run or queued a message, and
+  // a 429 on one is the concurrent-session cap, which the next second does
+  // not lift: the caller queues the errand instead of hammering the API.
+  if (
+    method !== "POST" &&
+    (response.status === 429 || response.status >= 500)
+  ) {
     response = await fetch(url, init);
   }
   const text = await response.text();
-  if (!response.ok) throw new BrowserUseError(response.status, path, text);
+  if (!response.ok) {
+    throw new BrowserUseError(
+      response.status,
+      path,
+      text,
+      throttleWaitMs(response.headers.get("retry-after"), text)
+    );
+  }
   if (!text) return {};
   return parseJson(text, path, response.status);
+}
+
+const retryAfterBodySchema = z.object({
+  retry_after_seconds: z.number().nonnegative(),
+});
+
+/**
+ * The wait a throttled reply asked for: `retry_after_seconds` in a project
+ * throttle's body, or the `Retry-After` header an edge throttle sends.
+ */
+function throttleWaitMs(header: string | null, body: string) {
+  let seconds: number | undefined;
+  try {
+    seconds = retryAfterBodySchema.safeParse(JSON.parse(body)).data
+      ?.retry_after_seconds;
+  } catch {
+    seconds = undefined;
+  }
+  if (seconds === undefined && header !== null && /^\d+$/u.test(header)) {
+    seconds = Number(header);
+  }
+  return seconds === undefined ? undefined : seconds * 1_000;
 }
 
 function parseJson(text: string, path: string, status: number) {

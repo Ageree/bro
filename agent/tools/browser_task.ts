@@ -7,7 +7,9 @@ import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { telegramConversationIdSchema } from "@agent/lib/telegram-conversation";
 import {
   BrowserUseError,
+  browserUseBusy,
   browserUseConfigured,
+  browserUseOutOfCredits,
   cancelBrowserUseRun,
   createBrowserUseProfile,
   createBrowserUseRun,
@@ -26,6 +28,7 @@ import {
 import { resolveBrowserSecretBindings } from "@agent/lib/browser-use/secrets";
 import {
   claimBrowserRunCompletion,
+  closeQueuedBrowserRun,
   createBrowserRun,
   finishBrowserRunReport,
   readBrowserProfileId,
@@ -34,6 +37,7 @@ import {
   saveBrowserProfileId,
   stopBrowserRunErrand,
   updateBrowserRunProgress,
+  updateQueuedBrowserRun,
 } from "@db/services/browser-runs";
 import {
   moveSpendReservation,
@@ -65,6 +69,21 @@ import { browserRunNeeds } from "@agent/lib/browser-use/outcome";
 import { customProxy } from "@agent/lib/browser-use/proxy";
 import { mentionsRecurringCharge } from "@agent/lib/browser-use/spend";
 import { browserRunQuotaGate } from "@agent/lib/billing/quota";
+import {
+  turnBrowserStarts,
+  turnStartLimit,
+  turnStartLimitNotice,
+} from "@agent/lib/browser-use/turn-starts";
+import {
+  browserUseCreditsRestored,
+  browserUseOutOfCreditsNote,
+  reportBrowserUseOutOfCredits,
+} from "@agent/lib/browser-use/credits";
+import {
+  browserQueueOccupied,
+  queueBrowserErrand,
+  queuedStatusNote,
+} from "@agent/lib/browser-use/queue";
 
 const inputSchema = z.object({
   action: z.enum(["start", "continue", "cancel", "status"]),
@@ -168,6 +187,8 @@ function outcomeContract() {
     `NEEDS: exactly one of ${browserRunNeeds.join(", ")}`,
     "DETAILS: the one thing a person must supply or decide, or none",
     'LINKS: a JSON array of {"title":"human-readable option name","url":"https://..."} objects, or []',
+    'ITEMS: a JSON array with one object per option, basket line or slot you report — {"name":"…","price":"as the page shows it, with the currency","quantity":"…","url":"its observed https:// URL or null","details":"what the person needs to choose: dates or the slot, cancellation terms, delivery date, rating"} — or []',
+    "For a basket, a cart or an order, ITEMS lists every line in it with its price and quantity, not only the TOTAL; for a search, every option you report.",
     "For every concrete option you recommend or report — product, article, hotel, ticket, restaurant, listing, or anything similar — include its actual observed destination URL in LINKS. Open the option's detail page or extract its actual anchor href from the page. Never guess or construct an ID or URL, and never substitute a live-view URL or a generic search, results, or category URL for an option link.",
   ].join("\n");
 }
@@ -319,6 +340,20 @@ function budgetLine(allowPayment: boolean) {
     .join(" ");
 }
 
+/**
+ * A run that met a code prompt used to sit on the page waiting for the code
+ * to arrive — the cloud agent has no way to ask for it mid-run — and the
+ * person heard nothing until they asked. Ending the run at once is what
+ * makes the question reach them within the minute: the poller settles it on
+ * its next tick, and the page stays open for the answer.
+ */
+function personStepLine() {
+  return [
+    "When the site asks for something only the person has — a one-time code sent by SMS or email, an approval in their app, a 3-D Secure step, or a password that is not attached — stop there at once: do not wait for a code to arrive, do not reload, resend the code or look for another way in.",
+    "End your final answer right away with NEEDS: sms_code, email_code, push, 3ds or password, and say in DETAILS what the page asks for and where the code went (the masked phone number or email it shows). The page stays open, and the person's answer is typed into it.",
+  ].join(" ");
+}
+
 function credentialsLine(aliases: readonly string[]) {
   return aliases.length === 0
     ? "No stored credentials are available for this run. If the site asks you to sign in, stop with NEEDS: password instead of guessing one."
@@ -346,6 +381,7 @@ export function composeBrowserTask(options: {
     budgetLine(options.allowPayment),
     options.consent ? options.facts : undefined,
     credentialsLine(options.aliases),
+    personStepLine(),
     captchaLine(),
     imagesContract(options.collectImages),
     outcomeContract(),
@@ -387,6 +423,7 @@ export function composeBrowserContinuation(options: {
     options.searching ? budgetLine(options.allowPayment) : undefined,
     options.consent ? options.facts : undefined,
     credentialsLine(options.aliases),
+    personStepLine(),
     captchaLine(),
     imagesContract(options.collectImages),
     outcomeContract(),
@@ -823,11 +860,67 @@ async function waitForLiveViewUrl(
   return waitForLiveViewUrl(runId, attemptsLeft - 1);
 }
 
+/**
+ * A follow-up on an errand still waiting for a browser. Nothing runs yet, so
+ * the message joins the instruction the errand will start with, and a
+ * submission the person confirmed now goes with it. Paying needs the card
+ * bound to a run, and the payment step has not come: that waits until the
+ * errand has started and reached it.
+ */
+async function continueQueuedErrand(
+  row: NonNullable<Awaited<ReturnType<typeof readLatestBrowserRunForScope>>>,
+  options: {
+    readonly allowPayment: boolean;
+    readonly confirmedNow: SubmissionConsent | undefined;
+    readonly consent: SubmissionConsent | undefined;
+    readonly message: string;
+    readonly scope: AccessScope;
+  }
+) {
+  if (options.allowPayment) {
+    return {
+      note: "Nothing changed: this errand is still queued for a free browser and has not reached any payment step. Once it has started and stops at the payment, continue it with allowPayment then.",
+      runId: row.id,
+      status: "queued",
+    };
+  }
+  const details = options.confirmedNow
+    ? (await browserRunFacts(options.scope)).details
+    : undefined;
+  const pendingTask = [
+    row.pendingTask ?? row.task,
+    `Update from the person before this errand started, which takes precedence over the errand above: ${options.message}`,
+    options.confirmedNow ? commitmentLine(options.consent) : undefined,
+    details,
+  ]
+    .filter((part) => part !== undefined)
+    .join("\n\n");
+  const updated = await updateQueuedBrowserRun(row.id, {
+    pendingTask,
+    submission:
+      options.confirmedNow?.kind === "card"
+        ? options.confirmedNow.submission
+        : row.submission,
+  });
+  if (!updated) {
+    return {
+      note: "The errand started just now, so this message did not reach it. Call browser_task continue again with the same run id to pass it on.",
+      runId: row.id,
+      status: "running",
+    };
+  }
+  return {
+    note: "The errand is still queued for a free browser; this update is now part of it and applies from the moment it starts. Its outcome arrives as a new message.",
+    runId: row.id,
+    status: "queued",
+  };
+}
+
 export const browserTask = defineTool({
   approval: ({ session, toolInput }) =>
     browserTaskApproval(toolInput, { session }),
   description:
-    "Run one errand on a website through a hosted cloud browser that can sign in, fill forms, and complete a checkout. Use it when the user wants something done on a site; use web_search and web_fetch instead for reading public pages. Start exactly one run per errand and pass the site's origin so saved credentials can be bound to it; pick a site that serves the user's country and address, preferring local marketplaces over a global brand site that does not ship there. Write the errand short: the cloud browser is itself an agent, so give it the goal, the hard constraints in the user's own words, the saved preferences that bear on it, two or three fallback sites, and what to report back — not a click-by-click script. The run is told the user's city and country from Personal Info and asked to report its best partial results after about 15 minutes of searching. Searching and comparing need no card and no approval: start such an errand right away. Doing anything in the user's name — booking or reserving (even free and freely cancelled), making an appointment, signing up, ordering, filing an application, applying to a job, issuing a receipt, or sending a request, message or contact form, or typing their name, phone, email or address into a site — needs allowSubmit: true with submission, which you set only when the user explicitly asked for exactly that; a request to find or recommend options ends at the recommendation, so leave it unset and offer the booking as the next step. allowSubmit always puts a native approval card in front of the user that shows submission — what, where, for whom, which of their details go, the date or slot and the cost — so call the tool with it filled in straight away instead of asking in text first; once confirmed, the run submits exactly that and nothing else. A confirmed errand keeps its confirmation through its follow-ups and background retries; a new errand needs its own card. A scheduled or background run is refused allowSubmit and allowPayment: there it only searches and stages. Without allowPayment the run stops before the final step of anything that charges or commits money (prepayment, binding a card, pay on delivery or at the property, a non-refundable rate, a cancellation fee) with NEEDS: payment and the TOTAL; ask the user in one sentence and continue with allowPayment: true once they agree — or, without asking, with allowPayment: true and withinSpendLimit when the payment may fit the user's standing spend limit: the tool decides, reserves the amount and caps the run; when it answers needs_approval, ask the user once. Every follow-up for that errand — an answer, a code the user typed, a changed constraint — goes through continue with the same runId, never a second start: continue works in the same browser, on the tab and the signed-in account the run already has. When the previous run has already finished, continue starts a follow-up run in that same browser and returns a NEW runId; use that one from then on. Pass allowPayment: true on start or on continue once the user approved paying or attaching a card on this errand in this conversation — «привяжи карту» is approval to bind the saved card, not to buy anything; without withinSpendLimit the user also confirms it on a native approval card before anything starts, so pass submission naming what is bought, where and the total. With allowSubmit, the person's name, phone, email and addresses from the profile and from the vault are typed into forms automatically, so never ask for a phone number or an address the user said is saved: start the errand and let the run use it. The run signs in with vault credentials the models involved never see, so never ask the user for a password: when none is stored, call request_vault_setup. The run solves CAPTCHAs and anti-bot checks itself as it goes, and they are never the user's to solve: never tell the user you cannot pass one, never ask them to pass it, and never hand them the live view for one. A run the site stops at an anti-bot check is retried in the background by itself — a fresh browser on another address, on the same profile, up to five attempts over about half an hour — and its result reaches you only once the errand is done or the site stayed blocked; status and continue on the old runId follow the errand to its newest run. Give the user the live-view link only when the run is blocked on something only they can do — 3-D Secure, a push approval, a sign-in you cannot complete — and never forward a one-time code back to the user. Pass collectImages: true when the user asked for photos or pictures of what the errand finds; the run always saves a screenshot of the page with the outcome, and with the flag it saves pictures of the items too. Every saved image comes back with the outcome as an artifact id you attach in send_message as ![caption](/artifacts/id) — that is how the person gets the real picture rather than a link. The run continues in the background and its result arrives later as a new message, so do not wait on it.",
+    "Run one errand on a website through a hosted cloud browser that can sign in, fill forms, and complete a checkout. Use it when the user wants something done on a site; use web_search and web_fetch instead for reading public pages. Start exactly one run per errand and pass the site's origin so saved credentials can be bound to it; pick a site that serves the user's country and address, preferring local marketplaces over a global brand site that does not ship there. Write the errand short: the cloud browser is itself an agent, so give it the goal, the hard constraints in the user's own words, the saved preferences that bear on it, two or three fallback sites, and what to report back — not a click-by-click script. The run is told the user's city and country from Personal Info and asked to report its best partial results after about 15 minutes of searching. Searching and comparing need no card and no approval: start such an errand right away. Doing anything in the user's name — booking or reserving (even free and freely cancelled), making an appointment, signing up, ordering, filing an application, applying to a job, issuing a receipt, or sending a request, message or contact form, or typing their name, phone, email or address into a site — needs allowSubmit: true with submission, which you set only when the user explicitly asked for exactly that; a request to find or recommend options ends at the recommendation, so leave it unset and offer the booking as the next step. allowSubmit always puts a native approval card in front of the user that shows submission — what, where, for whom, which of their details go, the date or slot and the cost — so call the tool with it filled in straight away instead of asking in text first; once confirmed, the run submits exactly that and nothing else. A confirmed errand keeps its confirmation through its follow-ups and background retries; a new errand needs its own card. A scheduled or background run is refused allowSubmit and allowPayment: there it only searches and stages. Without allowPayment the run stops before the final step of anything that charges or commits money (prepayment, binding a card, pay on delivery or at the property, a non-refundable rate, a cancellation fee) with NEEDS: payment and the TOTAL; ask the user in one sentence and continue with allowPayment: true once they agree — or, without asking, with allowPayment: true and withinSpendLimit when the payment may fit the user's standing spend limit: the tool decides, reserves the amount and caps the run; when it answers needs_approval, ask the user once. Every follow-up for that errand — an answer, a code the user typed, a changed constraint — goes through continue with the same runId, never a second start: continue works in the same browser, on the tab and the signed-in account the run already has. When the previous run has already finished, continue starts a follow-up run in that same browser and returns a NEW runId; use that one from then on. Pass allowPayment: true on start or on continue once the user approved paying or attaching a card on this errand in this conversation — «привяжи карту» is approval to bind the saved card, not to buy anything; without withinSpendLimit the user also confirms it on a native approval card before anything starts, so pass submission naming what is bought, where and the total. With allowSubmit, the person's name, phone, email and addresses from the profile and from the vault are typed into forms automatically, so never ask for a phone number or an address the user said is saved: start the errand and let the run use it. The run signs in with vault credentials the models involved never see, so never ask the user for a password: when none is stored, call request_vault_setup. The run solves CAPTCHAs and anti-bot checks itself as it goes, and they are never the user's to solve: never tell the user you cannot pass one, never ask them to pass it, and never hand them the live view for one. A run the site stops at an anti-bot check is retried in the background by itself — a fresh browser on another address, on the same profile, up to five attempts over about half an hour — and its result reaches you only once the errand is done or the site stayed blocked; status and continue on the old runId follow the errand to its newest run. Give the user the live-view link only when the run is blocked on something only they can do — 3-D Secure, a push approval, a sign-in you cannot complete — and never forward a one-time code back to the user. Pass collectImages: true when the user asked for photos or pictures of what the errand finds; the run always saves a screenshot of the page with the outcome, and with the flag it saves pictures of the items too. Every saved image comes back with the outcome as an artifact id you attach in send_message as ![caption](/artifacts/id) — that is how the person gets the real picture rather than a link. When the cloud browser service is at capacity, start answers status queued with a queued: run id: the errand starts by itself within minutes, so tell the user it is queued and never start it again; status unavailable means the service is out of credits, and nothing starts until the owner tops it up. The run continues in the background and its result arrives later as a new message, so do not wait on it.",
   inputSchema,
   async execute(input, context) {
     const { conversation, scope } = conversationTarget(context);
@@ -886,22 +979,72 @@ export const browserTask = defineTool({
           home: facts.home,
           site: input.site,
         });
-        const run = await createBrowserUseRun({
-          customProxy: customProxy(),
-          maxCostUsd: env.BROWSER_USE_MAX_COST_USD,
-          model: env.BROWSER_USE_MODEL,
-          profileId,
-          proxyCountryCode: env.BROWSER_USE_PROXY_COUNTRY,
-          secretBindings: secrets.bindings,
-          task,
-        });
-        return { kind: "started" as const, profileId, run, secrets };
+        // While errands wait for a browser, the cap was full a minute ago:
+        // this one joins the back of the line instead of taking the slot
+        // the first in line is about to get.
+        if (await browserQueueOccupied()) {
+          return { kind: "queued" as const, profileId, task };
+        }
+        try {
+          const run = await createBrowserUseRun({
+            customProxy: customProxy(),
+            maxCostUsd: env.BROWSER_USE_MAX_COST_USD,
+            model: env.BROWSER_USE_MODEL,
+            profileId,
+            proxyCountryCode: env.BROWSER_USE_PROXY_COUNTRY,
+            secretBindings: secrets.bindings,
+            task,
+          });
+          return { kind: "started" as const, profileId, run, secrets };
+        } catch (error) {
+          if (browserUseBusy(error)) {
+            return {
+              kind: "queued" as const,
+              profileId,
+              retryAfterMs: error.retryAfterMs,
+              task,
+            };
+          }
+          if (browserUseOutOfCredits(error)) {
+            await reportBrowserUseOutOfCredits(error);
+            return { kind: "no_credits" as const };
+          }
+          throw error;
+        }
       });
       if (started.kind === "quota_exhausted") {
         if (placeholder) await releaseReservation(placeholder);
         return { note: started.note, status: "quota_exhausted" };
       }
+      if (started.kind === "no_credits") {
+        if (placeholder) await releaseReservation(placeholder);
+        return { note: browserUseOutOfCreditsNote, status: "unavailable" };
+      }
+      if (started.kind === "queued") {
+        // The errand waits with everything the person decided for it: the
+        // card they confirmed and the payment they allowed start with it.
+        const queued = await releasedOnFailure(placeholder, () =>
+          queueBrowserErrand(scope, {
+            ...conversation,
+            composedTask: started.task,
+            paymentAllowed: allowPayment,
+            profileId: started.profileId,
+            retryAfterMs: started.retryAfterMs,
+            site: input.site ?? null,
+            submission: consent?.kind === "card" ? consent.submission : null,
+            task: errand,
+          })
+        );
+        if (placeholder) await moveSpendReservation(placeholder, queued.runId);
+        return {
+          note: queued.note,
+          runId: queued.runId,
+          startsInMinutes: queued.minutes,
+          status: "queued",
+        };
+      }
       const { profileId, run, secrets } = started;
+      await browserUseCreditsRestored();
       if (placeholder) await moveSpendReservation(placeholder, run.id);
       await recordStartedRun(run.id, () =>
         createBrowserRun(scope, {
@@ -971,6 +1114,15 @@ export const browserTask = defineTool({
       // the same conversation — one that would point the run at the wrong shop
       // and attach another site's credentials to it — so the row wins.
       const site = row.site ?? input.site ?? undefined;
+      if (row.status === "queued") {
+        return continueQueuedErrand(row, {
+          allowPayment,
+          confirmedNow,
+          consent,
+          message,
+          scope,
+        });
+      }
       // A fresh decision on the standing limit is made with whatever this
       // errand already holds still counted, and replaces it only once a run
       // carries the new one: a refusal leaves the old reservation in place.
@@ -1003,7 +1155,9 @@ export const browserTask = defineTool({
         // the browser outlives its run, and the field is where the code belongs.
         const [live, codeEntry] = await Promise.all([
           trackedRunIsLive(runId, row.completedAt),
-          typeCodeIntoRunBrowser(row.sessionId, message),
+          row.sessionId === null
+            ? undefined
+            : typeCodeIntoRunBrowser(row.sessionId, message),
         ]);
 
         // A live run already carries the secrets it was created with, so a plain
@@ -1012,7 +1166,7 @@ export const browserTask = defineTool({
         // submission confirmed on this call rides on the message with the
         // details it may type, and stays with the errand for its follow-ups;
         // one confirmed earlier is already in the run's own instructions.
-        if (live && !allowPayment) {
+        if (live && !allowPayment && row.sessionId !== null) {
           const details = confirmedNow
             ? (await browserRunFacts(scope)).details
             : undefined;
@@ -1077,28 +1231,55 @@ export const browserTask = defineTool({
         // into it meets the same verdict however well it is written. The profile
         // carries the sign-in, so dropping the session keeps the account and
         // gets a fresh browser on a fresh address.
-        const followUp = await createFollowUpRun({
-          customProxy: customProxy(),
-          maxCostUsd: env.BROWSER_USE_MAX_COST_USD,
-          model: env.BROWSER_USE_MODEL,
-          profileId,
-          proxyCountryCode: env.BROWSER_USE_PROXY_COUNTRY,
-          secretBindings: secrets.bindings,
-          sessionId:
-            endedNeeding(row.outcome) === "captcha" ? undefined : row.sessionId,
-          task: composeBrowserContinuation({
-            aliases: secrets.aliases,
-            allowPayment,
-            consent,
-            collectImages: input.collectImages === true,
-            errand: row.task,
-            facts: facts.details,
-            message: withCodeEntry(instruction, codeEntry),
-            searching: followUpSearches(message, row.outcome),
-            site,
-          }),
+        const sessionId =
+          endedNeeding(row.outcome) === "captcha"
+            ? undefined
+            : (row.sessionId ?? undefined);
+        const continuation = composeBrowserContinuation({
+          aliases: secrets.aliases,
+          allowPayment,
+          consent,
+          collectImages: input.collectImages === true,
+          errand: row.task,
+          facts: facts.details,
+          message: withCodeEntry(instruction, codeEntry),
+          searching: followUpSearches(message, row.outcome),
+          site,
         });
+        let followUp: Awaited<ReturnType<typeof createFollowUpRun>>;
+        try {
+          followUp = await createFollowUpRun({
+            customProxy: customProxy(),
+            maxCostUsd: env.BROWSER_USE_MAX_COST_USD,
+            model: env.BROWSER_USE_MODEL,
+            profileId,
+            proxyCountryCode: env.BROWSER_USE_PROXY_COUNTRY,
+            secretBindings: secrets.bindings,
+            sessionId,
+            task: continuation,
+          });
+        } catch (error) {
+          // The follow-up waits for a browser like any errand, with its
+          // session remembered so it lands in the same tab if it still can.
+          if (browserUseBusy(error)) {
+            return {
+              continuation,
+              kind: "queued" as const,
+              profileId,
+              retryAfterMs: error.retryAfterMs,
+              sessionId,
+            };
+          }
+          if (browserUseOutOfCredits(error)) {
+            await reportBrowserUseOutOfCredits(error);
+            return { kind: "no_credits" as const };
+          }
+          throw error;
+        }
         if (!followUp.run) {
+          if (row.sessionId === null) {
+            throw new Error("A busy browser session needs its session id.");
+          }
           // Bindings exist per run, so a busy session takes the message but
           // not the card: whatever was reserved for it is not going to be paid.
           await queueBrowserUseSessionMessage(
@@ -1122,23 +1303,52 @@ export const browserTask = defineTool({
           secrets,
         };
       });
-      if (continued.kind === "replied") {
+      if (continued.kind === "replied" || continued.kind === "no_credits") {
         if (placeholder) await releaseReservation(placeholder);
-        return continued.reply;
+        return continued.kind === "replied"
+          ? continued.reply
+          : { note: browserUseOutOfCreditsNote, runId, status: "unavailable" };
+      }
+      const carrySpend = async (toRunId: string) => {
+        if (placeholder) {
+          // The decision already released what this errand held before.
+          await moveSpendReservation(placeholder, toRunId);
+        } else if (allowPayment) {
+          // The person approved this payment themselves: it is theirs, not
+          // the standing limit's, so an earlier reservation no longer applies.
+          await releaseReservation(runId);
+        } else {
+          // Whatever this errand still had reserved travels with it: a code
+          // that completes a payment on the limit is still that payment.
+          await moveSpendReservation(runId, toRunId);
+        }
+      };
+      if (continued.kind === "queued") {
+        const queued = await releasedOnFailure(placeholder, () =>
+          queueBrowserErrand(scope, {
+            ...conversation,
+            composedTask: continued.continuation,
+            paymentAllowed: allowPayment,
+            profileId: continued.profileId,
+            retryAfterMs: continued.retryAfterMs,
+            sessionId: continued.sessionId ?? null,
+            site: site ?? null,
+            submission: consent?.kind === "card" ? consent.submission : null,
+            task: message,
+          })
+        );
+        await carrySpend(queued.runId);
+        return {
+          note: `${queued.note} This follow-up replaces run ${runId}, which takes no further follow-up: use the new run id from here on.`,
+          previousRunId: runId,
+          runId: queued.runId,
+          startsInMinutes: queued.minutes,
+          status: "queued",
+        };
       }
       const { followUp, profileId, reusedSession, secrets } = continued;
-      if (placeholder) {
-        // The decision already released what this errand held before.
-        await moveSpendReservation(placeholder, followUp.id);
-      } else if (allowPayment) {
-        // The person approved this payment themselves: it is theirs, not the
-        // standing limit's, so an earlier reservation no longer applies.
-        await releaseReservation(runId);
-      } else {
-        // Whatever this errand still had reserved travels with it: a code
-        // that completes a payment on the limit is still that payment.
-        await moveSpendReservation(runId, followUp.id);
-      }
+      await browserUseCreditsRestored();
+      await carrySpend(followUp.id);
       await recordStartedRun(followUp.id, () =>
         createBrowserRun(scope, {
           ...conversation,
@@ -1178,6 +1388,27 @@ export const browserTask = defineTool({
     }
 
     if (input.action === "cancel") {
+      if (row.status === "queued") {
+        const closed = await closeQueuedBrowserRun(runId, {
+          outcome: "The user cancelled this errand before it started.",
+          status: "stopped",
+        });
+        if (closed) {
+          await releaseReservation(runId);
+          return { runId, status: "stopped" };
+        }
+        // It started in the meantime: cancel the run that carries it now.
+        const started = await readLatestBrowserRunForScope(scope, runId);
+        if (!started || started.id === runId)
+          return { runId, status: "stopped" };
+        await cancelBrowserUseRun(started.id);
+        await claimBrowserRunCompletion(started.id, {
+          outcome: "The user cancelled this browser run.",
+          status: "stopped",
+        });
+        await releaseReservation(started.id);
+        return { runId: started.id, status: "stopped" };
+      }
       // A settled run has nothing left to cancel in the cloud; stopping its
       // row is what keeps a background retry from starting for it, including
       // one the poller is starting right now.
@@ -1193,6 +1424,9 @@ export const browserTask = defineTool({
       return { runId, status: "stopped" };
     }
 
+    if (row.status === "queued") {
+      return { note: queuedStatusNote(row), runId, status: "queued" };
+    }
     const status = row.completedAt
       ? row.status
       : await readBrowserUseRunStatus(runId);
@@ -1206,7 +1440,7 @@ export const browserTask = defineTool({
         [
           runId === requestedRunId
             ? undefined
-            : `The errand was retried in the background after an anti-bot check and now lives in run ${runId}; use that id from here on.`,
+            : `The errand ${requestedRunId.startsWith("queued:") ? "waited in the queue for a free browser and has started" : "was retried in the background after an anti-bot check"}; it now lives in run ${runId}. Use that id from here on.`,
           row.retryAt
             ? "The site stopped this attempt at an anti-bot check, and the next attempt starts by itself in a fresh browser shortly. The errand is still in progress: say so without mentioning the check."
             : undefined,
@@ -1223,14 +1457,38 @@ export const browserTask = defineTool({
   },
 });
 
+/**
+ * The same tool once the turn has started as many errands as one reply may:
+ * a further start is answered without reaching Browser Use, and everything
+ * else still works on the errands the turn has.
+ */
+const browserTaskAfterStartLimit = defineTool({
+  approval: ({ session, toolInput }) =>
+    browserTaskApproval(toolInput, { session }),
+  description: browserTask.description,
+  inputSchema,
+  async execute(input, context) {
+    if (input.action === "start") {
+      return { note: turnStartLimitNotice, status: "start_limit" };
+    }
+    return browserTask.execute(input, context);
+  },
+});
+
 export default defineDynamic({
   events: {
-    "turn.started": (_event, context) =>
-      browserUseConfigured()
-        ? resolveModeValue(context, {
-            interactive: { browser_task: browserTask },
-            "scheduled-worker": { browser_task: browserTask },
-          })
-        : null,
+    // Resolved before every model step, so a turn that keeps starting
+    // errands meets the limit instead of Browser Use's concurrency cap.
+    "step.started": (_event, context) => {
+      if (!browserUseConfigured()) return null;
+      const tool =
+        turnBrowserStarts(context.messages) >= turnStartLimit
+          ? browserTaskAfterStartLimit
+          : browserTask;
+      return resolveModeValue(context, {
+        interactive: { browser_task: tool },
+        "scheduled-worker": { browser_task: tool },
+      });
+    },
   },
 });

@@ -85,6 +85,7 @@ function parkedRow(captchaAttempt: number) {
     liveViewUrl: null,
     outcome: "Needs: captcha",
     paymentAllowed: true,
+    pendingTask: null,
     profileId: "profile-1",
     replyAnchorMessageId: "message-1",
     report: null,

@@ -141,8 +141,15 @@ export async function captureBrowserRunImages(
   row: BrowserRunRow,
   run: BrowserUseRunSummary
 ): Promise<BrowserRunImage[]> {
-  const rootSessionId = row.rootSessionId;
-  if (!rootSessionId || !imageArtifactStorageConfigured()) return [];
+  const { rootSessionId, sessionId: browserSessionId } = row;
+  // Only a queued errand has no browser session, and it never settles here.
+  if (
+    !rootSessionId ||
+    !browserSessionId ||
+    !imageArtifactStorageConfigured()
+  ) {
+    return [];
+  }
   const saved = selectBrowserRunImages(
     await listRunImageFiles(row, run),
     run.createdAt
@@ -152,7 +159,7 @@ export async function captureBrowserRunImages(
   const files = savedFinal
     ? saved
     : saved.slice(0, maximumDeliveredImageArtifacts - 1);
-  const context = { rootSessionId, row };
+  const context = { browserSessionId, rootSessionId, row };
   const [viewport, captured] = await Promise.all([
     savedFinal ? undefined : settled(row, "viewport", captureViewport(context)),
     Promise.all(
@@ -165,6 +172,8 @@ export async function captureBrowserRunImages(
 }
 
 interface RunImageContext {
+  /** The Browser Use session the run worked in. */
+  readonly browserSessionId: string;
   readonly rootSessionId: string;
   readonly row: BrowserRunRow;
 }
@@ -231,7 +240,7 @@ async function captureSavedImage(context: RunImageContext, file: RunImageFile) {
 }
 
 async function captureViewport(context: RunImageContext) {
-  const cdpUrl = await findBrowserUseSessionCdpUrl(context.row.sessionId);
+  const cdpUrl = await findBrowserUseSessionCdpUrl(context.browserSessionId);
   if (cdpUrl === undefined) return undefined;
   return keep(context, {
     bytes: await captureViewportOverCdp(cdpUrl),
@@ -254,7 +263,7 @@ function keep(
     { userId: row.createdByUserId, workspaceId: row.workspaceId },
     {
       ...image,
-      browserSessionId: row.sessionId,
+      browserSessionId: context.browserSessionId,
       rootSessionId: context.rootSessionId,
       workerSessionId: row.id,
     }
