@@ -58,6 +58,16 @@ describe("sendSkipReason", () => {
       "Готово, заказ оформлен, номер заказа order_cd, трек придёт письмом.",
     ],
     [
+      "the same news about a different person opening the sentence",
+      "Анна придёт завтра в 10:00, я предупредил охрану.",
+      "Мария придёт завтра в 10:00, я предупредил охрану.",
+    ],
+    [
+      "a payment link that differs only in punctuation",
+      "Ссылка на оплату счёта: https://pay.example/inv-1-2",
+      "Ссылка на оплату счёта: https://pay.example/inv_1.2",
+    ],
+    [
       "the next quiz question",
       "Вопрос 3: какая река самая длинная в Европе?",
       "Вопрос 4: какая река самая длинная в Азии?",

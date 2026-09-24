@@ -90,15 +90,18 @@ describe("authored mode capability matrix", () => {
         .filter((file) => file.endsWith(".ts"))
         .map(async (file) => {
           const name = file.replace(/\.ts$/u, "");
-          const dynamic = dynamicToolModuleSchema.safeParse(
-            await import(new URL(file, directory).href)
+          const toolModule: unknown = await import(
+            new URL(file, directory).href
           );
-          // A module without a turn resolver is a static tool of its own name.
-          if (!dynamic.success) return [name];
-          const resolved = await dynamic.data.default.events["turn.started"](
-            {},
-            context
-          );
+          const perTurn = dynamicToolModuleSchema.safeParse(toolModule).data;
+          // Messaging resolves per step to see what the turn already sent.
+          const perStep = stepToolModuleSchema.safeParse(toolModule).data;
+          const resolve =
+            perTurn?.default.events["turn.started"] ??
+            perStep?.default.events["step.started"];
+          // A module without a resolver is a static tool of its own name.
+          if (!resolve) return [name];
+          const resolved = await resolve({}, context);
           if (!resolved) return [];
           return "execute" in resolved ? [name] : Object.keys(resolved);
         })
@@ -218,6 +221,16 @@ const dynamicToolModuleSchema = z.object({
     events: z.object({
       "turn.started": z.custom<
         NonNullable<(typeof calendar)["events"]["turn.started"]>
+      >((value) => z.function().safeParse(value).success),
+    }),
+  }),
+});
+
+const stepToolModuleSchema = z.object({
+  default: z.object({
+    events: z.object({
+      "step.started": z.custom<
+        NonNullable<(typeof messaging)["events"]["step.started"]>
       >((value) => z.function().safeParse(value).success),
     }),
   }),
