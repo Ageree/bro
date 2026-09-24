@@ -68,8 +68,9 @@ describe("web_search tool selection", () => {
 
     const tool = await loadTool();
 
-    expect(tool.default).toBe(tool.openRouterWebSearch);
-    expect(tool.default).not.toHaveProperty("kind");
+    // Resolved per turn, so Bro's own mail checks can go without it
+    // (`tests/agent/capabilities.test.ts` covers which modes get it).
+    expect(tool.default).toMatchObject({ kind: "eve:dynamic" });
     expect(tool.openRouterWebSearch.execute).toBeTypeOf("function");
   });
 

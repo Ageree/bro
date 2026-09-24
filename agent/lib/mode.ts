@@ -16,13 +16,27 @@ function agentMode(authenticator: string | undefined) {
   return "interactive" as const;
 }
 
-type AgentMode = ReturnType<typeof agentMode>;
+type AgentMode = ReturnType<typeof agentMode> | "proactive-worker";
+
+// Bro's own mail and calendar checks run as scheduled workers with a
+// narrower toolset and their own role, so they are a mode of their own.
+function workerMode(
+  worker: Pick<
+    NonNullable<AgentModeContext["session"]["auth"]["initiator"]>,
+    "attributes"
+  >
+) {
+  return worker.attributes.scheduledRunKind === "proactive"
+    ? ("proactive-worker" as const)
+    : ("scheduled-worker" as const);
+}
 
 function sessionAgentMode(auth: AgentModeContext["session"]["auth"]) {
   if (auth.initiator?.authenticator === "scheduled-worker") {
-    return "scheduled-worker" as const;
+    return workerMode(auth.initiator);
   }
   const caller = auth.current ?? auth.initiator;
+  if (caller?.authenticator === "scheduled-worker") return workerMode(caller);
   return agentMode(caller?.authenticator);
 }
 

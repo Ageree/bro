@@ -4,6 +4,7 @@ import {
   checkOpenRouterCredits,
   creditCheckDue,
 } from "@agent/lib/model/credits";
+import { holdProactiveReport } from "@agent/lib/proactive/delivery";
 import { dispatchScheduledReport } from "@agent/lib/schedules/report";
 import { postScheduledReport } from "@agent/lib/schedules/request";
 import {
@@ -97,16 +98,24 @@ async function executeScheduledRun(
     if (status === "dead_letter") {
       await dispatchRecoverableReport(to, {
         conversationChannel: claim.job.conversationChannel,
+        jobKind: claim.job.kind,
         runId: claim.run.id,
+        scope: {
+          userId: claim.job.createdByUserId,
+          workspaceId: claim.job.workspaceId,
+        },
       });
     }
   }
 }
 
-function dispatchRecoverableReport(
+async function dispatchRecoverableReport(
   to: ScheduleToFn,
   report: Awaited<ReturnType<typeof listRecoverableScheduledReports>>[number]
 ) {
+  if (report.jobKind === "proactive" && (await holdProactiveReport(report))) {
+    return;
+  }
   return report.conversationChannel === "eve"
     ? postScheduledReport(report.runId)
     : dispatchScheduledReport({ to }, report.runId);

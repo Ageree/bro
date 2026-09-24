@@ -36,6 +36,8 @@ describe("scheduled agent jobs", () => {
       "0014_uneven_vector.sql",
       // `ensureScope` writes every workspace column, introduced_at included.
       "0023_safe_squirrel_girl.sql",
+      // The job kind that keeps proactive checks out of the task dispatcher.
+      "0025_oval_wraith.sql",
     ]) {
       await applyMigration(client, migration);
     }
@@ -239,7 +241,14 @@ describe("scheduled agent jobs", () => {
       await jobs.listRecoverableScheduledReports(
         new Date("2026-09-01T13:07:00.000Z")
       )
-    ).toEqual([{ conversationChannel: "photon", runId: claim.run.id }]);
+    ).toEqual([
+      {
+        conversationChannel: "photon",
+        jobKind: "task",
+        runId: claim.run.id,
+        scope: alice,
+      },
+    ]);
     const retriedQuestionReport = await jobs.claimScheduledReport(
       claim.run.id,
       new Date("2026-09-01T13:07:00.000Z")

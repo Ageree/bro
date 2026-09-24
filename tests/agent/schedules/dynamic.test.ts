@@ -108,7 +108,12 @@ describe("dynamic schedule dispatch", () => {
   it("delivers recoverable iMessage reports through the schedule channel handle", async () => {
     const report = scheduledReport();
     services.listReports.mockResolvedValue([
-      { conversationChannel: "photon", runId: report.run.id },
+      {
+        conversationChannel: "photon",
+        jobKind: "task",
+        runId: report.run.id,
+        scope: { userId: "user-1", workspaceId: "workspace-1" },
+      },
     ]);
     services.claimReports.mockResolvedValue(report);
     const send = vi
@@ -128,7 +133,12 @@ describe("dynamic schedule dispatch", () => {
   it("keeps Eve debug reports on its active-session callback", async () => {
     const report = scheduledReport();
     services.listReports.mockResolvedValue([
-      { conversationChannel: "eve", runId: report.run.id },
+      {
+        conversationChannel: "eve",
+        jobKind: "task",
+        runId: report.run.id,
+        scope: { userId: "user-1", workspaceId: "workspace-1" },
+      },
     ]);
     const to = vi.fn<ScheduleToFn>();
 
@@ -206,6 +216,24 @@ describe("scheduled report delivery", () => {
     expect(send.mock.calls[0]?.[0]).toContain(
       "Pass this exact value as send_message.replyTo for every user-visible message about this scheduled task."
     );
+  });
+
+  it("frames a proactive report as writing first, once, without acting", async () => {
+    const report = scheduledReport();
+    report.job.kind = "proactive";
+    services.claimReports.mockResolvedValue(report);
+    const send = vi
+      .fn<ReturnType<ScheduleToFn>["send"]>()
+      .mockResolvedValue(workerSession("main-session"));
+    const to = vi.fn<ScheduleToFn>(() => ({ send }));
+
+    await dispatchScheduledReport({ to }, report.run.id);
+
+    const prompt = send.mock.calls[0]?.[0];
+    expect(prompt).toContain("Nobody asked for this check");
+    expect(prompt).toContain("Send one short message only if");
+    expect(prompt).toContain("shown as a draft for them to approve");
+    expect(prompt).not.toContain("Original task:");
   });
 
   it("routes Eve reports to the stored debug session", async () => {
@@ -309,6 +337,7 @@ function scheduledClaim(): Awaited<
       createdAt: new Date("2026-09-01T12:00:00.000Z"),
       createdByUserId: "user-1",
       id: "00000000-0000-4000-8000-000000000001",
+      kind: "task",
       lastError: null,
       lastRunAt: new Date("2026-09-02T13:00:00.000Z"),
       conversationChannel: "photon",
