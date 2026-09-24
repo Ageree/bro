@@ -803,7 +803,7 @@ describe("Photon message delivery", () => {
     );
 
     expect(post).toHaveBeenCalledExactlyOnceWith({
-      raw: "Что-то сломалось, пока я разбирался с твоей просьбой. Попробуй ещё раз.",
+      raw: "Что-то сломалось, пока я разбирался с просьбой. Можно попробовать ещё раз.",
     });
   });
 

@@ -1,0 +1,2 @@
+ALTER TABLE "settings" DROP CONSTRAINT IF EXISTS "settings_key_check";--> statement-breakpoint
+ALTER TABLE "settings" ADD CONSTRAINT "settings_key_check" CHECK ("settings"."key" IN ('form_of_address', 'gateway_model', 'google_workspace_access', 'spend_limit'));

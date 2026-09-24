@@ -848,7 +848,7 @@ describe("Telegram message delivery", () => {
     expect(request).toHaveBeenCalledExactlyOnceWith("sendMessage", {
       chat_id: "4242",
       parse_mode: "HTML",
-      text: "Что-то сломалось, пока я разбирался с твоей просьбой. Попробуй ещё раз.",
+      text: "Что-то сломалось, пока я разбирался с просьбой. Можно попробовать ещё раз.",
     });
   });
 
@@ -864,7 +864,7 @@ describe("Telegram message delivery", () => {
     expect(request).toHaveBeenCalledExactlyOnceWith("sendMessage", {
       chat_id: "4242",
       parse_mode: "HTML",
-      text: "Что-то сломалось, пока я разбирался с твоей просьбой. Попробуй ещё раз.",
+      text: "Что-то сломалось, пока я разбирался с просьбой. Можно попробовать ещё раз.",
     });
   });
 

@@ -204,6 +204,13 @@
       "when": 1790248959437,
       "tag": "0028_youthful_warbound",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1790253130392,
+      "tag": "0029_superb_patch",
+      "breakpoints": true
     }
   ]
 }

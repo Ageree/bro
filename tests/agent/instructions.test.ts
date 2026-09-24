@@ -195,6 +195,20 @@ describe("agent instructions", () => {
     );
   });
 
+  it("keeps Bro masculine, on «ты» by default, and free of calques", async () => {
+    const resolve = messageStyle.events["turn.started"];
+    expect(resolve).toBeDefined();
+    if (!resolve) return;
+
+    const selected = await resolve({}, dynamicContext("photon-imessage"));
+    expect(selected?.content).toContain(
+      "о себе по-русски говори в мужском роде"
+    );
+    expect(selected?.content).toContain("По умолчанию к человеку на «ты»");
+    expect(selected?.content).toContain("через `form_of_address`");
+    expect(selected?.content).toContain("«сделать звонок» — «позвонить»");
+  });
+
   it("says there is no browser until Browser Use is configured", async () => {
     const resolve = (await loadBrowserInstructions("")).events["turn.started"];
     expect(resolve).toBeDefined();

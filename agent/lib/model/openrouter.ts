@@ -1,10 +1,6 @@
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import { wrapLanguageModel, type LanguageModelMiddleware } from "ai";
 import type { AgentModelOptionsDefinition } from "eve";
-import {
-  replyLanguageDirective,
-  type ReplyLanguage,
-} from "@agent/lib/delivery/language";
 import { env } from "@shared/environment";
 import { applicationOrigin } from "@shared/environment/origin";
 
@@ -75,23 +71,19 @@ function toolChoiceMiddleware(
 }
 
 /**
- * Appends the reply language as the last system note of the prompt. At the
- * end it does not break the cached prefix, and it is the freshest thing the
- * model reads before it writes. A call without tools, such as compaction,
+ * Appends the reply note (language, Bro's voice, how to address the person,
+ * `agent/lib/delivery/language.ts`) as the last system message of the prompt.
+ * At the end it does not break the cached prefix, and it is the freshest thing
+ * the model reads before it writes. A call without tools, such as compaction,
  * writes nothing to the person and is left alone.
  */
-function replyLanguageMiddleware(
-  language: ReplyLanguage
-): LanguageModelMiddleware {
+function replyNoteMiddleware(note: string): LanguageModelMiddleware {
   return {
     async transformParams({ params }) {
       if (!params.tools?.length) return params;
       return {
         ...params,
-        prompt: [
-          ...params.prompt,
-          { content: replyLanguageDirective(language), role: "system" },
-        ],
+        prompt: [...params.prompt, { content: note, role: "system" }],
       };
     },
   };
@@ -101,7 +93,7 @@ function replyLanguageMiddleware(
 export function openRouterSelection(
   modelId: string,
   options: {
-    readonly replyLanguage?: ReplyLanguage;
+    readonly replyNote?: string;
     readonly toolChoice: StepToolChoice;
   }
 ) {
@@ -122,9 +114,7 @@ export function openRouterSelection(
 
   const middleware = [
     ...(toolChoice === "auto" ? [] : [toolChoiceMiddleware(toolChoice)]),
-    ...(options.replyLanguage
-      ? [replyLanguageMiddleware(options.replyLanguage)]
-      : []),
+    ...(options.replyNote ? [replyNoteMiddleware(options.replyNote)] : []),
   ];
 
   return {
