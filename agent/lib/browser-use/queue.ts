@@ -174,17 +174,39 @@ async function giveUpQueuedErrand(row: BrowserRunRow, outcome: string) {
 }
 
 /**
- * Start one queued errand: a run with the instruction composed when the
- * person asked, on the workspace profile, with the site's secrets bound
- * afresh. The row is read again first, since the person may have cancelled
- * it; a run started for an errand stopped in the meantime is cancelled. A
- * `continue` that lands while the run is being started changed what the
- * errand should start with: the hand-off refuses the run built from the
- * revision read before it, which is cancelled, and the errand goes back to the
- * front of the line to start again with the change (`changed`). A poller that
- * died between starting the run and handing the errand over left a run
- * carrying the errand's reference line, and the next claim adopts it instead
- * of starting a second browser.
+ * Start a cloud run for the errand as the person left it: the instruction
+ * composed when they asked, on the workspace profile and in the browser a
+ * follow-up was using, with the site's secrets bound afresh.
+ */
+async function createQueuedRun(row: BrowserRunRow, reference: string) {
+  const secrets = await resolveBrowserSecretBindings(
+    { userId: row.createdByUserId, workspaceId: row.workspaceId },
+    { allowPayment: row.paymentAllowed, site: row.site ?? undefined }
+  );
+  return createRunInSession({
+    customProxy: customProxy(),
+    maxCostUsd: env.BROWSER_USE_MAX_COST_USD,
+    model: env.BROWSER_USE_MODEL,
+    profileId: row.profileId ?? undefined,
+    proxyCountryCode: env.BROWSER_USE_PROXY_COUNTRY,
+    secretBindings: secrets.bindings,
+    sessionId: row.sessionId ?? undefined,
+    task: `${row.pendingTask ?? row.task}\n\n${reference}`,
+  });
+}
+
+/**
+ * Start one queued errand. The row is read again first, since the person may
+ * have cancelled it; a run started for an errand stopped in the meantime is
+ * cancelled. A `continue` that lands while the run is being started changed
+ * what the errand should start with: the hand-off refuses the run built from
+ * the revision read before it, which is cancelled, and the errand goes back to
+ * the front of the line to start again with the change (`changed`). A poller
+ * that died between starting the run and handing the errand over left a run
+ * carrying the errand's reference line. The next claim looks for it before
+ * anything else — before the queue window can close the errand and before
+ * the vault is asked for secrets — and adopts it instead of starting a second
+ * browser or leaving the first one working untracked.
  */
 export async function startQueuedBrowserRun(
   row: BrowserRunRow,
@@ -201,37 +223,13 @@ export async function startQueuedBrowserRun(
   if (current?.status !== "queued" || current.retriedAsRunId) {
     return { status: "stopped" };
   }
-  if (now.getTime() - current.createdAt.getTime() > queueWindowMs) {
-    const outcome = `The errand never started: the cloud browser service had no free browser for it for ${String(Math.round(queueWindowMs / 60_000))} minutes. Nothing was done on the site. Tell the user so plainly and offer to start it again.`;
-    return {
-      closed: await giveUpQueuedErrand(current, outcome),
-      outcome,
-      status: "expired",
-    };
-  }
-  const scope = {
-    userId: current.createdByUserId,
-    workspaceId: current.workspaceId,
-  };
+  const expired = now.getTime() - current.createdAt.getTime() > queueWindowMs;
   const reference = queueReference(current);
-  let run: { readonly id: string; readonly sessionId: string };
+  let run: { readonly id: string; readonly sessionId: string } | undefined;
   try {
-    const secrets = await resolveBrowserSecretBindings(scope, {
-      allowPayment: current.paymentAllowed,
-      site: current.site ?? undefined,
-    });
     run =
       (await findRecentBrowserUseRunByTaskLine(reference)) ??
-      (await createRunInSession({
-        customProxy: customProxy(),
-        maxCostUsd: env.BROWSER_USE_MAX_COST_USD,
-        model: env.BROWSER_USE_MODEL,
-        profileId: current.profileId ?? undefined,
-        proxyCountryCode: env.BROWSER_USE_PROXY_COUNTRY,
-        secretBindings: secrets.bindings,
-        sessionId: current.sessionId ?? undefined,
-        task: `${current.pendingTask ?? current.task}\n\n${reference}`,
-      }));
+      (expired ? undefined : await createQueuedRun(current, reference));
   } catch (error) {
     if (browserUseBusy(error)) {
       await parkQueuedBrowserRun(
@@ -251,6 +249,14 @@ export async function startQueuedBrowserRun(
       };
     }
     throw error;
+  }
+  if (!run) {
+    const outcome = `The errand never started: the cloud browser service had no free browser for it for ${String(Math.round(queueWindowMs / 60_000))} minutes. Nothing was done on the site. Tell the user so plainly and offer to start it again.`;
+    return {
+      closed: await giveUpQueuedErrand(current, outcome),
+      outcome,
+      status: "expired",
+    };
   }
   await browserUseCreditsRestored();
   let handedOff: boolean;
