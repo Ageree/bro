@@ -376,6 +376,25 @@
   ограничения через `DO $$`): превью этой ветки до #173 успели прогнать её
   ранние версии по общей базе, и её объекты там уже могут быть.
 
+## Бенчмарк
+
+- Драйвер (`scripts/bench/`) держит курсор сессии сам: `MessageResponse` из
+  `eve/client` двигает `ClientSession.state.streamIndex` только когда ход
+  дочитан, а ручной `session.stream()` сдаётся после нескольких пустых
+  переподключений, задолго до итога браузерного поручения. Поэтому ожидание
+  фонового итога переоткрывает поток до своего дедлайна
+  (`awaitBackground` в `scripts/bench/conversation.ts`).
+- `eve dev` (и `next dev` через `withEve`) без Docker сам ставит `just-bash`
+  в `devDependencies`, а проверка зависимостей pnpm перед `pnpm <script>`
+  после этого переписывает `pnpm-lock.yaml` и `pnpm-workspace.yaml`
+  (`allowBuilds: set this to true or false`). Не коммитьте это: откатите и
+  `pnpm install --frozen-lockfile`.
+- Локально (`NODE_ENV=development`, `BETTER_AUTH_URL` на loopback) вход по
+  телефону принимает любой код одним `POST /api/auth/phone-number/verify`
+  (`localPhoneAuthBypassEnabled`), но Google, Notion и Slack там не работают:
+  без `vc link` Vercel Connect отвечает «x-vercel-oidc-token header is
+  missing». Кейсы с почтой и календарём гоняются только на проде.
+
 ## Память Бро
 
 - Устройство памяти описано в `docs/memory.md`. Запись в неё идёт только через
