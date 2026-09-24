@@ -280,7 +280,7 @@ export async function claimDueProactiveWatches(options: {
           due.map((watch) => watch.workspaceId)
         )
       );
-    return due.map((watch) => ({ ...watch, leaseUntil }));
+    return due.map((watch) => Object.assign(watch, { leaseUntil }));
   });
 }
 

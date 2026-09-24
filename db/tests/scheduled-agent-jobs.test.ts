@@ -3,6 +3,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ZodError, z } from "zod";
 import * as Database from "@db";
 import * as schema from "../schema";
 
@@ -628,9 +629,9 @@ describe("handing an answer to a waiting worker", { timeout: 30_000 }, () => {
     });
     // The person can no longer answer into it, and its report goes out.
     expect(await jobs.getScheduledAgentRunInput(alice, run.id)).toBeUndefined();
-    expect(
-      await jobs.listRecoverableScheduledReports(handOffAt)
-    ).toMatchObject([{ runId: run.id }]);
+    expect(await jobs.listRecoverableScheduledReports(handOffAt)).toMatchObject(
+      [{ runId: run.id }]
+    );
   });
 
   it("keeps the answer for a worker still starting", async () => {
@@ -774,17 +775,18 @@ describe("following the person's timezone", { timeout: 30_000 }, () => {
 
     await expect(
       profiles.patchUserProfile(alice, { timezone: "Asia/Yekaterinburg" })
-    ).rejects.toThrow();
+    ).rejects.toBeInstanceOf(ZodError);
 
     expect((await profiles.readUserProfile(alice)).timezone).toBeNull();
+    const stored = await db.query.scheduledAgentJobs.findMany({
+      columns: { timing: true },
+    });
     expect(
-      await db.query.scheduledAgentJobs.findMany({
-        columns: { timing: true },
-      })
-    ).toEqual([
-      { timing: expect.objectContaining({ timezone: "Europe/Moscow" }) },
-      { timing: expect.objectContaining({ timezone: "Europe/Moscow" }) },
-    ]);
+      stored.map(
+        ({ timing }) =>
+          z.object({ timezone: z.string() }).parse(timing).timezone
+      )
+    ).toEqual(["Europe/Moscow", "Europe/Moscow"]);
   });
 });
 
@@ -810,10 +812,10 @@ async function openDatabase() {
   databases.push(client);
   const pgliteDatabase = drizzle(client, { schema });
   // Modules are reset between cases, so the services must see this copy.
-  const Database = await import("@db");
+  const freshDatabase = await import("@db");
   // SAFETY: PGlite implements the query-builder surface exercised by this service while retaining the shared Drizzle schema.
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- The focused test swaps only the database driver.
-  vi.spyOn(Database, "db", "get").mockReturnValue(pgliteDatabase as never);
+  vi.spyOn(freshDatabase, "db", "get").mockReturnValue(pgliteDatabase as never);
   return {
     db: pgliteDatabase,
     jobs: await import("@db/services/scheduled-agent-jobs"),

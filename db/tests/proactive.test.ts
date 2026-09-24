@@ -504,12 +504,14 @@ describe("remembered chats", { timeout: 30_000 }, () => {
     await proactive.recordProactiveTarget(alice, telegram, now);
     const { proactiveWatches } = await import("@db");
 
-    await expect(
-      db.update(proactiveWatches).set({ messengerConversationId: null })
-    ).rejects.toThrow();
-    await expect(
-      db.update(proactiveWatches).set({ messengerChannel: null })
-    ).rejects.toThrow();
+    expect(
+      await refusal(
+        db.update(proactiveWatches).set({ messengerConversationId: null })
+      )
+    ).toContain("proactive_watches_messenger_check");
+    expect(
+      await refusal(db.update(proactiveWatches).set({ messengerChannel: null }))
+    ).toContain("proactive_watches_messenger_check");
     await expect(
       db
         .update(proactiveWatches)
@@ -738,6 +740,19 @@ describe("waking the checks when Google connects", { timeout: 30_000 }, () => {
     ).toBe(false);
   });
 });
+
+/** Why the database refused a write, or undefined when it took it. */
+async function refusal(write: Promise<unknown>) {
+  try {
+    await write;
+  } catch (error) {
+    // Drizzle wraps the database's own error as the cause.
+    return error instanceof Error && error.cause instanceof Error
+      ? error.cause.message
+      : String(error);
+  }
+  return undefined;
+}
 
 // Every case starts from a clone of one migrated database: replaying all
 // migrations per case is slow enough to starve the rest of the suite.
