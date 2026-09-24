@@ -13,6 +13,7 @@ export * from "./orders";
 export * from "./proactive";
 export * from "./schedules";
 export * from "./sessions";
+export * from "./spending";
 export * from "./usage";
 export * from "./vault";
 export * from "./workspaces";

@@ -29,7 +29,10 @@ const skipsBeforeEnd = 2;
  */
 const sentMessageSchema = z.object({
   attachments: z.array(z.string()),
-  specifics: z.array(z.string()),
+  /** Numbers, dates, times, codes, and links exactly as written. */
+  codes: z.array(z.string()),
+  /** Capitalized words, lower-cased: names, places, and sentence openers. */
+  names: z.array(z.string()),
   text: z.string(),
 });
 
@@ -60,43 +63,45 @@ function normalizedText(text: string) {
 }
 
 /**
- * Numbers, dates, times, codes, names, and links as written: two messages
- * from one template, such as the outbound and the return flight or option 1
- * and option 2, differ only in these, so they are never repeats of each other.
+ * Numbers, dates, times, codes, and links exactly as written, before any
+ * normalization: two messages from one template, such as the outbound and the
+ * return flight, or payment links that differ only in punctuation, differ in
+ * these, so they are never repeats of each other.
  */
-function specificsOf(text: string) {
+function codesOf(text: string) {
   const tokens = text
     .normalize("NFKC")
     .split(/\s+/u)
-    .map((token) => token.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ""))
+    .map((token) => token.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}/]+$/gu, ""))
     .filter(
       (token) =>
         /\p{N}/u.test(token) ||
-        /^\p{Lu}/u.test(token) ||
         // Identifier-shaped codes such as `order_ab` or `abc-def`.
         /[\p{L}\p{N}][-_][\p{L}\p{N}]/u.test(token) ||
         token.includes("://")
     );
-  // A capital that only opens a sentence is not a specific.
-  const sentenceStarts = new Set(
-    [...text.matchAll(/(?:^|[.!?…]\s+)([\p{L}]+)/gu)].flatMap(([, word]) =>
-      word && !/^\p{Lu}{2,}$/u.test(word) ? [word] : []
-    )
-  );
-  return [...new Set(tokens)]
-    .filter((token) => !sentenceStarts.has(token))
-    .toSorted();
+  return [...new Set(tokens)].toSorted();
+}
+
+/**
+ * Every capitalized word, the first one of a sentence included, so «Анна
+ * придёт» and «Мария придёт» stay different messages.
+ */
+function namesOf(text: string) {
+  const words = text.normalize("NFKC").match(/\p{Lu}[\p{L}\p{M}]*/gu) ?? [];
+  return [...new Set(words.map((word) => word.toLocaleLowerCase()))].toSorted();
 }
 
 /** The comparable form of a message `send_message` was asked to send. */
 export function sentMessageOf(message: OutgoingMessage): SentMessage {
   if (message.kind === "link") {
-    return { attachments: [message.url], specifics: [], text: "" };
+    return { attachments: [message.url], codes: [], names: [], text: "" };
   }
   const text = message.text ?? "";
   return {
     attachments: (message.attachments ?? []).map(({ url }) => url).toSorted(),
-    specifics: specificsOf(text),
+    codes: codesOf(text),
+    names: namesOf(text),
     text: normalizedText(text),
   };
 }
@@ -123,13 +128,22 @@ function similarity(left: string, right: string) {
   return (2 * shared) / (left.length - 1 + (right.length - 1));
 }
 
+/**
+ * Whether each name of one message also occurs as a word of the other. A
+ * sentence opener that only changed case, «Готово! Напомню» after «Готово,
+ * напомню», still occurs; a different person or place does not.
+ */
+function namesShared(message: SentMessage, other: SentMessage) {
+  const words = new Set(other.text.split(" "));
+  return message.names.every((name) => words.has(name));
+}
+
 function isRepeat(message: SentMessage, earlier: SentMessage) {
-  if (message.attachments.join("\n") !== earlier.attachments.join("\n")) {
-    return false;
-  }
-  if (message.text === earlier.text) return true;
   return (
-    message.specifics.join("\n") === earlier.specifics.join("\n") &&
+    message.attachments.join("\n") === earlier.attachments.join("\n") &&
+    message.codes.join("\n") === earlier.codes.join("\n") &&
+    namesShared(message, earlier) &&
+    namesShared(earlier, message) &&
     similarity(message.text, earlier.text) >= nearDuplicateSimilarity
   );
 }

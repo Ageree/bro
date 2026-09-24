@@ -1,10 +1,12 @@
 import type { Session } from "eve/channels";
 import type { ScheduleToFn } from "eve/schedules";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { formatRub } from "@shared/spending/limit";
 
 const runId = "11111111-1111-4111-8111-111111111111";
 
 interface BrowserRunRow {
+  captchaAttempt: number;
   completedAt: Date | null;
   conversationChannel: "eve" | "photon";
   conversationId: string;
@@ -16,6 +18,7 @@ interface BrowserRunRow {
 }
 
 const row: BrowserRunRow = {
+  captchaAttempt: 1,
   completedAt: null,
   conversationChannel: "photon" as const,
   conversationId: "imessage:chat-1",
@@ -51,6 +54,42 @@ const readBrowserUseRun = vi.hoisted(() =>
 );
 const cancelBrowserUseRun = vi.hoisted(() =>
   vi.fn<(runId: string) => Promise<void>>()
+);
+const stopBrowserUseSessionBrowsers = vi.hoisted(() =>
+  vi.fn<(sessionId: string, runId: string) => Promise<number>>(() =>
+    Promise.resolve(1)
+  )
+);
+const parkBrowserRunForRetry = vi.hoisted(() =>
+  vi.fn<
+    (
+      runId: string,
+      input: { captchaAttempt: number; retryAt: Date }
+    ) => Promise<boolean>
+  >(() => Promise.resolve(true))
+);
+
+interface SpendEntryRow {
+  amountRub: number;
+  category: string | null;
+  feeRub: number;
+  merchant: string | null;
+  periodKey: string;
+  status: "charged" | "released" | "reserved";
+}
+
+const readSpendEntryForRun = vi.hoisted(() =>
+  vi.fn<(runId: string) => Promise<SpendEntryRow | undefined>>(() =>
+    Promise.resolve(undefined)
+  )
+);
+const settleSpendReservation = vi.hoisted(() =>
+  vi.fn<
+    (
+      runId: string,
+      outcome: { amountRub?: number; charged: boolean }
+    ) => Promise<SpendEntryRow | undefined>
+  >(() => Promise.resolve(undefined))
 );
 const captureBrowserRunImages = vi.hoisted(() =>
   vi.fn<
@@ -110,14 +149,35 @@ const releaseBrowserRunReport = vi.hoisted(() =>
 
 vi.mock("@db/services/browser-runs", () => ({
   claimBrowserRunCompletion,
+  finishWalledBrowserRun: vi.fn<() => Promise<void>>(() => Promise.resolve()),
+  parkBrowserRunForRetry,
   claimBrowserRunReport,
   finishBrowserRunReport,
   readBrowserRun,
   releaseBrowserRunReport,
   saveBrowserRunReport,
 }));
+vi.mock("@db/services/spending", () => ({
+  listSpendEntries: () =>
+    Promise.resolve([
+      { amountRub: 1200, category: null, feeRub: 0, merchant: "shop.example" },
+    ]),
+  readSpendEntryForRun,
+  readSpendLimit: () =>
+    Promise.resolve({
+      currency: "RUB",
+      excluded: [],
+      rules: [{ category: null, limitRub: 5000, merchant: null }],
+      version: 1,
+    }),
+  settleSpendReservation,
+}));
+vi.mock("@db/services/orders", () => ({
+  recordOrder: vi.fn<() => Promise<void>>(() => Promise.resolve()),
+}));
 vi.mock("@agent/lib/browser-use/client", () => ({
   cancelBrowserUseRun,
+  stopBrowserUseSessionBrowsers,
   readBrowserUseRun,
 }));
 vi.mock("@agent/lib/browser-use/images", () => ({
@@ -127,6 +187,8 @@ vi.mock("@agent/channels/photon", () => ({ default: { id: "photon" } }));
 
 beforeEach(() => {
   vi.clearAllMocks();
+  readSpendEntryForRun.mockResolvedValue(undefined);
+  settleSpendReservation.mockResolvedValue(undefined);
   ledger.claimed = false;
   ledger.delivered = false;
   delete ledger.report;
@@ -352,6 +414,9 @@ describe("settling a browser run", () => {
       outcome: "The browser run ran out of time and was cancelled.",
       status: "failed",
     });
+    expect(settleSpendReservation).toHaveBeenCalledExactlyOnceWith(runId, {
+      charged: false,
+    });
     expect(send).toHaveBeenCalledOnce();
   });
 
@@ -400,7 +465,7 @@ describe("settling a browser run", () => {
     expect(send.mock.calls[0]?.[0]).toContain("Result: ordered");
   });
 
-  it("keeps no pictures from a run parked on an anti-bot check", async () => {
+  it("parks a walled run for a background retry and tells nobody", async () => {
     const { settleBrowserRun } =
       await import("@agent/lib/browser-use/completion");
     readBrowserUseRun.mockResolvedValue({
@@ -412,11 +477,270 @@ describe("settling a browser run", () => {
       task: "Order the usual",
     });
     const { send, to } = delivery();
+    const before = Date.now();
 
     await settleBrowserRun({ to }, runId);
 
     expect(captureBrowserRunImages).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+    expect(saveBrowserRunReport).not.toHaveBeenCalled();
+    expect(parkBrowserRunForRetry).toHaveBeenCalledOnce();
+    const retryAt = parkBrowserRunForRetry.mock.calls[0]?.[1].retryAt;
+    expect(retryAt?.getTime()).toBeGreaterThanOrEqual(before + 2 * 60_000);
+    // Stopping the walled browser writes its cookies back to the profile.
+    expect(stopBrowserUseSessionBrowsers).toHaveBeenCalledExactlyOnceWith(
+      "session-1",
+      runId
+    );
+  });
+
+  it("reports the wall once the attempts have run out, without the live view", async () => {
+    claimBrowserRunCompletion.mockReset().mockResolvedValueOnce({
+      ...row,
+      captchaAttempt: 5,
+      completedAt: new Date(),
+    });
+    readBrowserUseRun.mockResolvedValue({
+      error: null,
+      id: runId,
+      result: "RESULT: стоит на проверке\nNEEDS: captcha",
+      sessionId: "session-1",
+      status: "completed",
+      task: "Order the usual",
+    });
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    expect(parkBrowserRunForRetry).not.toHaveBeenCalled();
+    expect(captureBrowserRunImages).not.toHaveBeenCalled();
     expect(send).toHaveBeenCalledOnce();
+    const prompt = send.mock.calls[0]?.[0] ?? "";
+    expect(prompt).toContain("through 5 attempts over about 30 minutes");
+    expect(prompt).toContain("start it there now with browser_task start");
+    expect(prompt).toContain("Never ask the user to solve the check");
+    expect(prompt).toContain("ask before going there");
+    // The link to the walled browser never reaches the coordinator.
+    expect(prompt).not.toContain("Live view (share only");
+    expect(prompt).not.toContain(row.liveViewUrl);
+  });
+
+  it("reports a payment made on the standing limit as a receipt", async () => {
+    readSpendEntryForRun.mockResolvedValue({
+      amountRub: 1500,
+      category: null,
+      feeRub: 0,
+      merchant: "shop.example",
+      periodKey: "2026-09",
+      status: "reserved",
+    });
+    settleSpendReservation.mockResolvedValue({
+      amountRub: 1200,
+      category: null,
+      feeRub: 0,
+      merchant: "shop.example",
+      periodKey: "2026-09",
+      status: "charged",
+    });
+    readBrowserUseRun.mockResolvedValue({
+      error: null,
+      id: runId,
+      result: "RESULT: оплатил\nORDER: 4417\nTOTAL: 1 200 ₽\nNEEDS: none",
+      sessionId: "session-1",
+      status: "completed",
+      task: "Order the usual",
+    });
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    expect(settleSpendReservation).toHaveBeenCalledExactlyOnceWith(runId, {
+      amountRub: 1200,
+      charged: true,
+    });
+    const prompt = send.mock.calls[0]?.[0] ?? "";
+    expect(prompt).toContain(`standing spend limit: ${formatRub(1200)}`);
+    expect(prompt).toContain(
+      `Left under the limit this month: ${formatRub(3800)}`
+    );
+    expect(prompt).toContain("as a receipt");
+  });
+
+  it("counts a payment that went through without an order number", async () => {
+    readSpendEntryForRun.mockResolvedValue({
+      amountRub: 1500,
+      category: null,
+      feeRub: 0,
+      merchant: "shop.example",
+      periodKey: "2026-09",
+      status: "reserved",
+    });
+    settleSpendReservation.mockResolvedValue({
+      amountRub: 1200,
+      category: null,
+      feeRub: 0,
+      merchant: "shop.example",
+      periodKey: "2026-09",
+      status: "charged",
+    });
+    readBrowserUseRun.mockResolvedValue({
+      error: null,
+      id: runId,
+      result: `RESULT: оплатил\nORDER: ${"x".repeat(80)}\nTOTAL: 1 200 ₽\nNEEDS: none`,
+      sessionId: "session-1",
+      status: "completed",
+      task: "Order the usual",
+    });
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    // No order row takes an 80-character id, and the money is gone all the same.
+    expect(settleSpendReservation).toHaveBeenCalledExactlyOnceWith(runId, {
+      amountRub: 1200,
+      charged: true,
+    });
+  });
+
+  it("tells the person plainly when the run paid more than the limit allowed", async () => {
+    readSpendEntryForRun.mockResolvedValue({
+      amountRub: 1500,
+      category: null,
+      feeRub: 0,
+      merchant: "shop.example",
+      periodKey: "2026-09",
+      status: "reserved",
+    });
+    settleSpendReservation.mockResolvedValue({
+      amountRub: 1900,
+      category: null,
+      feeRub: 0,
+      merchant: "shop.example",
+      periodKey: "2026-09",
+      status: "charged",
+    });
+    readBrowserUseRun.mockResolvedValue({
+      error: null,
+      id: runId,
+      result: "RESULT: оплатил\nORDER: 4417\nTOTAL: 1 900 ₽\nNEEDS: none",
+      sessionId: "session-1",
+      status: "completed",
+      task: "Order the usual",
+    });
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    // The ledger records what was paid, not what was allowed.
+    expect(settleSpendReservation).toHaveBeenCalledExactlyOnceWith(runId, {
+      amountRub: 1900,
+      charged: true,
+    });
+    expect(send.mock.calls[0]?.[0]).toContain("went past what they allowed");
+  });
+
+  it("does not read a foreign-currency total as roubles", async () => {
+    readSpendEntryForRun.mockResolvedValue({
+      amountRub: 1500,
+      category: null,
+      feeRub: 0,
+      merchant: "shop.example",
+      periodKey: "2026-09",
+      status: "reserved",
+    });
+    settleSpendReservation.mockResolvedValue({
+      amountRub: 1500,
+      category: null,
+      feeRub: 0,
+      merchant: "shop.example",
+      periodKey: "2026-09",
+      status: "charged",
+    });
+    readBrowserUseRun.mockResolvedValue({
+      error: null,
+      id: runId,
+      result: "RESULT: paid\nORDER: 4417\nTOTAL: $200\nNEEDS: none",
+      sessionId: "session-1",
+      status: "completed",
+      task: "Order the usual",
+    });
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    // $200 is not 200 ₽: the reserved amount is what is counted.
+    expect(settleSpendReservation).toHaveBeenCalledExactlyOnceWith(runId, {
+      amountRub: 1500,
+      charged: true,
+    });
+    expect(send.mock.calls[0]?.[0]).toContain("not in roubles");
+  });
+
+  it("gives the reservation back when the run stopped before paying", async () => {
+    readSpendEntryForRun.mockResolvedValue({
+      amountRub: 1500,
+      category: null,
+      feeRub: 0,
+      merchant: "shop.example",
+      periodKey: "2026-09",
+      status: "reserved",
+    });
+    readBrowserUseRun.mockResolvedValue({
+      error: null,
+      id: runId,
+      result: "RESULT: итог выше разрешённого\nTOTAL: 2 400 ₽\nNEEDS: payment",
+      sessionId: "session-1",
+      status: "completed",
+      task: "Order the usual",
+    });
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    expect(settleSpendReservation).toHaveBeenCalledExactlyOnceWith(runId, {
+      charged: false,
+    });
+    expect(send.mock.calls[0]?.[0]).toContain("with the real total");
+  });
+
+  it("keeps the reservation while the payment waits on a code", async () => {
+    readSpendEntryForRun.mockResolvedValue({
+      amountRub: 1500,
+      category: null,
+      feeRub: 0,
+      merchant: "shop.example",
+      periodKey: "2026-09",
+      status: "reserved",
+    });
+    readBrowserUseRun.mockResolvedValue({
+      error: null,
+      id: runId,
+      result: "RESULT: ждёт код 3-D Secure\nNEEDS: 3ds",
+      sessionId: "session-1",
+      status: "completed",
+      task: "Order the usual",
+    });
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    expect(settleSpendReservation).not.toHaveBeenCalled();
+    // The page still waits for the code, so its browser stays up.
+    expect(stopBrowserUseSessionBrowsers).not.toHaveBeenCalled();
   });
 });
 

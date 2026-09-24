@@ -257,7 +257,7 @@ function looksLikeCardNumber(value: string) {
 }
 
 /** «1 299,00 ₽» and «620 руб» alike, in whole roubles. */
-function priceRubFromTotal(total: string) {
+export function priceRubFromTotal(total: string) {
   const digits = /\d[\d\s]*(?:[.,]\d{1,2})?/u.exec(total)?.[0];
   if (!digits) return undefined;
   const amount = Number.parseFloat(
