@@ -248,7 +248,9 @@ describe("proactive watches", { timeout: 30_000 }, () => {
       { kind: "nothing_to_report", reason: "Handled." },
       evening
     );
-    // The flight run counts too, so the cap lifts a day after it.
+    // The flight run counts too: the cap stays on until a day after it.
+    const firstExpired = new Date(now.getTime() + 24 * 60 * 60_000 + 60_000);
+    expect(await queue(firstExpired, nextMail)).toEqual({ status: "capped" });
     const nextDay = new Date(evening.getTime() + 24 * 60 * 60_000 + 60_000);
     expect(await queue(nextDay, nextMail)).toMatchObject({
       status: "queued",

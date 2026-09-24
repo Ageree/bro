@@ -82,8 +82,8 @@ export default defineEval({
       });
       const claim = claims.find((candidate) => candidate.run.id === runId);
       const leaseToken = claim?.run.leaseToken;
-      if (!runId || !leaseToken) {
-        throw new Error("The proactive run was not queued and claimed.");
+      if (!leaseToken) {
+        throw new Error("The queued proactive run was not claimed.");
       }
       await completeScheduledAgentRun(runId, leaseToken, `eval-${runId}`, {
         kind: "result",
