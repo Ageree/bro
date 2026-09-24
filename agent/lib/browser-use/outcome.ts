@@ -63,16 +63,17 @@ const browserResultLinkFields = z.object({
 });
 
 /** The JSON array written after a label, cut out by bracket depth. */
-function labelledJsonArray(text: string, labelPattern: RegExp) {
+function labelledJsonArray(
+  text: string,
+  labelPattern: RegExp,
+  maxLength = maxLinksJsonLength
+) {
   const label = labelPattern.exec(text);
   if (!label) return undefined;
   const rest = text.slice(label.index + label[0].length);
   const openingOffset = rest.search(/\[/u);
   if (openingOffset < 0 || openingOffset > 32) return undefined;
-  const candidate = rest.slice(
-    openingOffset,
-    openingOffset + maxLinksJsonLength
-  );
+  const candidate = rest.slice(openingOffset, openingOffset + maxLength);
   let depth = 0;
   let quoted = false;
   let escaped = false;
@@ -153,6 +154,12 @@ function browserResultLinks(text: string) {
 
 const maxBrowserResultItems = 30;
 const maxItemFieldLength = 400;
+/**
+ * Room for every item the run may report at full size: a name, three fields
+ * and a long product URL come to about 4 000 characters, and a basket of 30
+ * lines with shop links outgrew the LINKS bound and was dropped whole.
+ */
+const maxItemsJsonLength = maxBrowserResultItems * 4_000;
 const itemText = z
   .union([z.string(), z.number()])
   .nullish()
@@ -177,7 +184,7 @@ const browserResultItemFields = z.object({
  * as LINKS; an item without one still counts.
  */
 function browserResultItems(text: string) {
-  const json = labelledJsonArray(text, itemsLabel);
+  const json = labelledJsonArray(text, itemsLabel, maxItemsJsonLength);
   if (!json) return [];
   let values: unknown;
   try {
