@@ -212,6 +212,30 @@ describe("browser run persistence", () => {
     );
   }, 20_000);
 
+  it("lets only an errand queued before it had a browser go without a session", async () => {
+    const browserRuns = await browserRunsDatabase();
+    const { sessionId: _sessionId, ...withoutSession } = conversation();
+
+    await expect(
+      browserRuns.createBrowserRun(alice, {
+        ...withoutSession,
+        id: runId,
+        status: "running",
+      })
+    ).rejects.toThrow();
+
+    const queued = await browserRuns.createQueuedBrowserRun(alice, {
+      ...withoutSession,
+      pendingTask: "Order the usual, composed",
+      retryAt: new Date(),
+    });
+    const closed = await browserRuns.closeQueuedBrowserRun(queued.id, {
+      outcome: "never started",
+      status: "failed",
+    });
+    expect(closed).toMatchObject({ sessionId: null, status: "failed" });
+  }, 20_000);
+
   it("counts every overdue report, not only the fifty it lists", async () => {
     const browserRuns = await browserRunsDatabase();
     const settled = new Date(Date.now() - 10 * 60_000);

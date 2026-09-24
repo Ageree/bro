@@ -538,8 +538,8 @@ describe("remembered chats", { timeout: 30_000 }, () => {
         ('w-bob', 'bob', '00000000-0000-4000-8000-00000000000c', now(), now()),
         ('w-carol', 'carol', '00000000-0000-4000-8000-00000000000d', now(), now()),
         ('w-dave', 'dave', '00000000-0000-4000-8000-00000000000e', now(), now());
-      INSERT INTO browser_runs ("id", "workspace_id", "created_by_user_id", "task", "status", "conversation_channel", "conversation_id", "created_at")
-      VALUES ('run-1', 'w-alice', 'alice', 'errand', 'done', 'photon', 'imessage:alice', '2026-09-10');
+      INSERT INTO browser_runs ("id", "workspace_id", "created_by_user_id", "session_id", "task", "status", "conversation_channel", "conversation_id", "created_at")
+      VALUES ('run-1', 'w-alice', 'alice', 'browser-session-1', 'errand', 'done', 'photon', 'imessage:alice', '2026-09-10');
       INSERT INTO channel_identities ("channel", "external_user_id", "chat_id", "user_id", "workspace_id")
       VALUES ('telegram', 'tg-bob', '300', 'bob', 'w-bob');
     `);

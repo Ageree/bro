@@ -1352,6 +1352,10 @@
           "name": "browser_runs_status_check",
           "value": "\"browser_runs\".\"status\" IN ('created', 'queued', 'running', 'waiting', 'done', 'failed', 'stopped')"
         },
+        "browser_runs_session_id_check": {
+          "name": "browser_runs_session_id_check",
+          "value": "\"browser_runs\".\"session_id\" IS NOT NULL OR \"browser_runs\".\"id\" LIKE 'queued:%'"
+        },
         "browser_runs_conversation_channel_check": {
           "name": "browser_runs_conversation_channel_check",
           "value": "\"browser_runs\".\"conversation_channel\" IN ('eve', 'photon', 'telegram')"
