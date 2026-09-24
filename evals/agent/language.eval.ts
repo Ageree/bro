@@ -30,11 +30,19 @@ function checkMasculine(t: EveEvalContext, text: string) {
   );
 }
 
+/**
+ * A quoted title is not Bro's own words: «Кто угодно, кроме тебя» is a film
+ * a formal reply may still recommend.
+ */
+function ownWords(text: string) {
+  return text.replaceAll(/«[^»]*»|"[^"]*"|“[^”]*”/gu, " ");
+}
+
 function checkFormal(t: EveEvalContext, text: string, label: string) {
   t.check(
     text,
     satisfies<string>(
-      (value) => !informalPronoun.test(value),
+      (value) => !informalPronoun.test(ownWords(value)),
       `${label}: no «ты» or «твой» after the person asked for «вы»`
     )
   );
@@ -91,7 +99,11 @@ export default [
           "formal right after asking"
         );
 
-        const next = await t.send("а что-нибудь полегче, детектив?");
+        // `t.send` opens a new chat each time; the follow-up belongs to this
+        // one, or the model rightly says it cannot see what came before.
+        const next = await asked.session.send(
+          "а что-нибудь полегче, детектив?"
+        );
         next.expectOk();
         next.succeeded();
         checkFormal(
