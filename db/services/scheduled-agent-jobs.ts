@@ -38,6 +38,13 @@ const exhaustedRunOutcome = {
   userActionNeeded: "Try the task again or update the schedule.",
 } satisfies ScheduledRunOutcome;
 
+const abandonedInputOutcome = {
+  kind: "blocked",
+  summary:
+    "The scheduled task stopped while waiting for the answer: its background session ended before the answer reached it.",
+  userActionNeeded: "Ask for the task again.",
+} satisfies ScheduledRunOutcome;
+
 export interface CreateScheduledAgentJob {
   readonly conversationChannel: "eve" | "photon" | "telegram";
   readonly conversationId: string;
@@ -184,16 +191,19 @@ export async function updateScheduledAgentJob(
  * Moves the person's calendar schedules kept in their old timezone to the new
  * one, so «в 10 утра» stays 10:00 where they live now. A schedule set in
  * another zone on purpose («по Нью-Йорку») keeps its zone, and a one-time
- * reminder is an instant that does not move.
+ * reminder is an instant that does not move. It runs in the transaction of
+ * the profile change (`database`), so the zone and the schedules move
+ * together or not at all.
  */
 export async function followScheduleTimeZone(
   scope: AccessScope,
   from: string,
   to: string,
-  now = new Date()
+  now = new Date(),
+  database: Pick<typeof db, "query" | "update"> = db
 ) {
   if (from === to) return 0;
-  const jobs = await db.query.scheduledAgentJobs.findMany({
+  const jobs = await database.query.scheduledAgentJobs.findMany({
     where: and(
       ownedTasks(scope),
       sql`${scheduledAgentJobs.timing}->>'kind' = 'calendar'`,
@@ -205,7 +215,7 @@ export async function followScheduleTimeZone(
       const timing = storedScheduleTimingSchema.parse(job.timing);
       if (timing.kind !== "calendar") return false;
       const followed = { ...timing, timezone: to };
-      const [updated] = await db
+      const [updated] = await database
         .update(scheduledAgentJobs)
         .set({
           nextRunAt:
@@ -572,9 +582,17 @@ export async function submitScheduledAgentRunAnswer(
   return run !== undefined;
 }
 
+/** How long a tick holds an answer it is handing to the worker. */
+const answerHandOffMs = 5 * 60_000;
+/** How long a worker that took its answer may run, as a dispatched one. */
+const resumedWorkerLeaseMs = 6 * 60 * 60_000;
+
 /**
  * Leases the answered runs back to `running`, the way the worker holds them,
- * so exactly one tick resumes each worker session.
+ * so exactly one tick resumes each worker session. Until the worker takes
+ * the answer (`finishScheduledAgentRunInput`) the run keeps it and the lease
+ * is short: a tick that died mid hand-off leaves it to a later tick instead
+ * of stranding the run as running.
  */
 export async function claimAnsweredScheduledAgentRuns(options: {
   readonly limit: number;
@@ -590,8 +608,15 @@ export async function claimAnsweredScheduledAgentRuns(options: {
       )
       .where(
         and(
-          eq(scheduledAgentRuns.status, "waiting_for_input"),
+          or(
+            eq(scheduledAgentRuns.status, "waiting_for_input"),
+            and(
+              eq(scheduledAgentRuns.status, "running"),
+              lte(scheduledAgentRuns.leaseExpiresAt, options.now)
+            )
+          ),
           isNotNull(scheduledAgentRuns.inputResponses),
+          isNotNull(scheduledAgentRuns.pendingInputRequests),
           isNotNull(scheduledAgentRuns.leaseToken),
           isNotNull(scheduledAgentRuns.workerSessionId),
           or(
@@ -604,7 +629,7 @@ export async function claimAnsweredScheduledAgentRuns(options: {
       .limit(options.limit)
       .for("update", { of: scheduledAgentRuns, skipLocked: true });
     if (answered.length === 0) return [];
-    const leaseExpiresAt = new Date(options.now.getTime() + 6 * 60 * 60_000);
+    const leaseExpiresAt = new Date(options.now.getTime() + answerHandOffMs);
     await transaction
       .update(scheduledAgentRuns)
       .set({
@@ -632,9 +657,11 @@ export async function claimAnsweredScheduledAgentRuns(options: {
 }
 
 /**
- * Puts a run whose answer did not reach the worker back to waiting. A
- * transient failure keeps the answer for a later tick; a worker session that
- * is gone never takes it, so the answer is dropped.
+ * Puts a run whose answer did not reach the worker back to waiting, with the
+ * answer, for a later tick (`retry`). A worker session that is gone never
+ * takes it and nothing else can resume the run, so without `retry` the run
+ * ends as failed and its report tells the person, the way a run out of
+ * attempts does; a proactive check nobody asked for ends quietly.
  */
 export async function restoreScheduledAgentRunInput(
   runId: string,
@@ -643,26 +670,58 @@ export async function restoreScheduledAgentRunInput(
   retry: { readonly at: Date } | null,
   now = new Date()
 ) {
+  const held = and(
+    eq(scheduledAgentRuns.id, runId),
+    eq(scheduledAgentRuns.status, "running"),
+    eq(scheduledAgentRuns.leaseToken, leaseToken)
+  );
+  const lastError = errorMessage.slice(0, 2_000);
+  if (retry) {
+    await db
+      .update(scheduledAgentRuns)
+      .set({
+        deferredCompletionTurnId: null,
+        lastError,
+        leaseExpiresAt: null,
+        retryAt: retry.at,
+        status: "waiting_for_input",
+        updatedAt: now,
+      })
+      .where(held);
+    return;
+  }
+  const run = await db.query.scheduledAgentRuns.findFirst({
+    columns: { id: true },
+    where: held,
+    with: { job: { columns: { kind: true } } },
+  });
+  if (!run) return;
   await db
     .update(scheduledAgentRuns)
     .set({
+      completedAt: now,
       deferredCompletionTurnId: null,
-      inputResponses: retry ? scheduledAgentRuns.inputResponses : null,
-      lastError: errorMessage.slice(0, 2_000),
+      inputResponses: null,
+      lastError,
       leaseExpiresAt: null,
-      retryAt: retry?.at ?? null,
-      status: "waiting_for_input",
+      leaseToken: null,
+      outcome: abandonedInputOutcome,
+      pendingInputRequests: null,
+      reportLeaseExpiresAt: null,
+      reportLeaseToken: null,
+      reportSequence: sql`${scheduledAgentRuns.reportSequence} + 1`,
+      reportStatus: exhaustedReportStatus(run.job.kind),
+      retryAt: null,
+      status: "dead_letter",
       updatedAt: now,
     })
-    .where(
-      and(
-        eq(scheduledAgentRuns.id, runId),
-        eq(scheduledAgentRuns.status, "running"),
-        eq(scheduledAgentRuns.leaseToken, leaseToken)
-      )
-    );
+    .where(held);
 }
 
+/**
+ * The worker took the answer and runs on under the same lease, now as long
+ * as a dispatched worker may run.
+ */
 export async function finishScheduledAgentRunInput(
   runId: string,
   leaseToken: string,
@@ -673,6 +732,7 @@ export async function finishScheduledAgentRunInput(
     .set({
       deferredCompletionTurnId: null,
       inputResponses: null,
+      leaseExpiresAt: new Date(now.getTime() + resumedWorkerLeaseMs),
       pendingInputRequests: null,
       lastError: null,
       reportLeaseExpiresAt: null,

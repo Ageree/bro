@@ -231,8 +231,9 @@ export async function recordProactiveTarget(
 
 /**
  * Leases the watches due for a check. The lease is the next check time
- * itself, so a crashed tick simply retries after `leaseForMs`. Workspaces
- * that opted out are never claimed.
+ * itself, so a crashed tick simply retries after `leaseForMs`; each claim
+ * carries it as `leaseUntil`, which the check's own deferral must still find
+ * (`deferProactiveWatch`). Workspaces that opted out are never claimed.
  */
 export async function claimDueProactiveWatches(options: {
   readonly leaseForMs: number;
@@ -269,42 +270,63 @@ export async function claimDueProactiveWatches(options: {
       .limit(options.limit)
       .for("update", { of: proactiveWatches, skipLocked: true });
     if (due.length === 0) return [];
+    const leaseUntil = new Date(options.now.getTime() + options.leaseForMs);
     await transaction
       .update(proactiveWatches)
-      .set({
-        nextCheckAt: new Date(options.now.getTime() + options.leaseForMs),
-        updatedAt: options.now,
-      })
+      .set({ nextCheckAt: leaseUntil, updatedAt: options.now })
       .where(
         inArray(
           proactiveWatches.workspaceId,
           due.map((watch) => watch.workspaceId)
         )
       );
-    return due;
+    return due.map((watch) => Object.assign(watch, { leaseUntil }));
   });
 }
 
-/** Pushes the next check out, e.g. past quiet hours or a missing grant. */
+type ClaimedProactiveWatch = Awaited<
+  ReturnType<typeof claimDueProactiveWatches>
+>[number];
+
+/**
+ * Pushes the next check out, e.g. past quiet hours or a missing grant. It
+ * lands only while the claim is untouched: a Google connection completed
+ * during the check woke the watch (`wakeProactiveWatch`), and the check's
+ * «no grant, look again in six hours» would otherwise bury it. Returns
+ * whether the deferral landed.
+ */
 export async function deferProactiveWatch(
-  workspaceId: string,
+  claim: Pick<
+    ClaimedProactiveWatch,
+    "googleState" | "leaseUntil" | "workspaceId"
+  >,
   nextCheckAt: Date,
-  googleState?: (typeof proactiveWatches.$inferSelect)["googleState"]
+  googleState?: ClaimedProactiveWatch["googleState"]
 ) {
-  await db
+  const deferred = await db
     .update(proactiveWatches)
     // Drizzle leaves a column out of the update when its value is undefined.
     .set({ googleState, nextCheckAt, updatedAt: new Date() })
-    .where(eq(proactiveWatches.workspaceId, workspaceId));
+    .where(
+      and(
+        eq(proactiveWatches.workspaceId, claim.workspaceId),
+        eq(proactiveWatches.nextCheckAt, claim.leaseUntil),
+        eq(proactiveWatches.googleState, claim.googleState)
+      )
+    )
+    .returning({ workspaceId: proactiveWatches.workspaceId });
+  return deferred.length > 0;
 }
 
 /**
  * Brings the next check forward once Google is connected again, from the
  * cabinet or from the chat. A check that found no grant waits hours before
  * looking again, so a person who connects right after it would otherwise
- * hear nothing until then. Only a watch parked on a missing grant moves: a
- * connected one keeps its cadence, and its next check time may be the live
- * lease of a check in progress. Returns whether a watch was woken.
+ * hear nothing until then. A watch without a working grant (`disconnected`,
+ * or `unknown` before its first check) is due now, which also voids the
+ * lease of a check in flight, so that check's deferral misses. A connected
+ * watch keeps its cadence and only forgets its state, which voids a deferral
+ * all the same. Returns whether the next check moved forward.
  */
 export async function wakeProactiveWatch(
   scope: Pick<AccessScope, "workspaceId">,
@@ -312,15 +334,14 @@ export async function wakeProactiveWatch(
 ) {
   const woken = await db
     .update(proactiveWatches)
-    .set({ googleState: "unknown", nextCheckAt: now, updatedAt: now })
-    .where(
-      and(
-        eq(proactiveWatches.workspaceId, scope.workspaceId),
-        eq(proactiveWatches.googleState, "disconnected")
-      )
-    )
-    .returning({ workspaceId: proactiveWatches.workspaceId });
-  return woken.length > 0;
+    .set({
+      googleState: "unknown",
+      nextCheckAt: sql`CASE WHEN ${proactiveWatches.googleState} = 'connected' THEN ${proactiveWatches.nextCheckAt} ELSE ${now.toISOString()}::timestamptz END`,
+      updatedAt: now,
+    })
+    .where(eq(proactiveWatches.workspaceId, scope.workspaceId))
+    .returning({ nextCheckAt: proactiveWatches.nextCheckAt });
+  return woken.some((watch) => watch.nextCheckAt.getTime() === now.getTime());
 }
 
 /** Moves the mail watermark when a check found nothing new to hand over. */

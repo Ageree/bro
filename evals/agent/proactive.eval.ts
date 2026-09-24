@@ -44,10 +44,9 @@ export default defineEval({
     const { queueProactiveRun } = await import("@db/services/proactive");
     const { claimReadyScheduledAgentRuns, completeScheduledAgentRun } =
       await import("@db/services/scheduled-agent-jobs");
-    const { patchUserProfile, readUserProfile } =
-      await import("@db/services/user-profile");
+    const { readUserProfile } = await import("@db/services/user-profile");
     const { quietHoursEnd } = await import("@agent/lib/proactive/quiet-hours");
-    const { db, proactiveWatches } = await import("@db");
+    const { db, proactiveWatches, userProfiles } = await import("@db");
     const { eq } = await import("drizzle-orm");
     const scope = accessScopeForUser("better-auth:browser-benchmark");
 
@@ -72,9 +71,20 @@ export default defineEval({
       );
     const awakeZone = Intl.supportedValuesOf("timeZone").find(awake);
     if (!awakeZone) throw new Error("No time zone is awake right now.");
-    if (!timezone || !awake(timezone)) {
-      await patchUserProfile(scope, { timezone: awakeZone });
-    }
+    // The zone is set on the profile row directly: `patchUserProfile` would
+    // also move the benchmark person's calendar schedules to it and back.
+    const setTimeZone = async (zone: string | null) => {
+      const updatedAt = new Date();
+      await db
+        .insert(userProfiles)
+        .values({ timezone: zone, updatedAt, workspaceId: scope.workspaceId })
+        .onConflictDoUpdate({
+          target: userProfiles.workspaceId,
+          set: { timezone: zone, updatedAt },
+        });
+    };
+    const zoneOverridden = !timezone || !awake(timezone);
+    if (zoneOverridden) await setTimeZone(awakeZone);
 
     const runCase = async (testCase: (typeof cases)[number], index: number) => {
       const now = new Date(Date.now() + index * 1_000);
@@ -150,7 +160,7 @@ export default defineEval({
       await runCase(cases[0], 0);
       await runCase(cases[1], 1);
     } finally {
-      await patchUserProfile(scope, { timezone });
+      if (zoneOverridden) await setTimeZone(timezone);
     }
   },
 });

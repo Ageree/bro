@@ -3106,7 +3106,7 @@
         },
         "proactive_watches_messenger_check": {
           "name": "proactive_watches_messenger_check",
-          "value": "(\"proactive_watches\".\"messenger_channel\" IS NULL AND \"proactive_watches\".\"messenger_conversation_id\" IS NULL) OR (\"proactive_watches\".\"messenger_channel\" IN ('photon', 'telegram') AND \"proactive_watches\".\"messenger_conversation_id\" <> '')"
+          "value": "(\"proactive_watches\".\"messenger_channel\" IS NULL AND \"proactive_watches\".\"messenger_conversation_id\" IS NULL) OR (\"proactive_watches\".\"messenger_channel\" IS NOT NULL AND \"proactive_watches\".\"messenger_channel\" IN ('photon', 'telegram') AND \"proactive_watches\".\"messenger_conversation_id\" IS NOT NULL AND \"proactive_watches\".\"messenger_conversation_id\" <> '')"
         }
       },
       "isRLSEnabled": false

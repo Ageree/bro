@@ -79,7 +79,9 @@ export const proactiveWatches = pgTable(
     ),
     check(
       "proactive_watches_messenger_check",
-      sql`(${table.messengerChannel} IS NULL AND ${table.messengerConversationId} IS NULL) OR (${table.messengerChannel} IN ('photon', 'telegram') AND ${table.messengerConversationId} <> '')`
+      // Each column is tested for NULL on its own: a comparison with NULL is
+      // itself NULL, and CHECK lets a NULL through.
+      sql`(${table.messengerChannel} IS NULL AND ${table.messengerConversationId} IS NULL) OR (${table.messengerChannel} IS NOT NULL AND ${table.messengerChannel} IN ('photon', 'telegram') AND ${table.messengerConversationId} IS NOT NULL AND ${table.messengerConversationId} <> '')`
     ),
     index("proactive_watches_due_idx").on(table.nextCheckAt),
   ]

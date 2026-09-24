@@ -99,6 +99,20 @@ describe("form of address", { timeout: 60_000 }, () => {
     });
   });
 
+  it("keeps both of two changes asked for at the same moment", async () => {
+    const { settings } = await workspaceDatabase();
+
+    await Promise.all([
+      settings.updateFormOfAddress(alice, { formal: true }),
+      settings.updateFormOfAddress(alice, { name: "Саша" }),
+    ]);
+
+    expect(await settings.getFormOfAddress(alice)).toEqual({
+      formal: true,
+      name: "Саша",
+    });
+  });
+
   it("stores a name and refuses anything that is not one", async () => {
     const { settings } = await workspaceDatabase();
 

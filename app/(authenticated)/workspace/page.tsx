@@ -94,9 +94,11 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
     listVaultItems(scope),
     readSpendLimit(scope),
   ]);
-  if (googleWorkspace.state === "connected") {
+  if (google === "connected" && googleWorkspace.state === "connected") {
     // Connect sends the person back here after consent. Bro's own mail and
     // calendar checks, put off for hours while no grant existed, resume now.
+    // A plain visit wakes nothing: a grant the checks cannot use would leave
+    // its backoff every time the cabinet opens.
     try {
       await wakeProactiveWatch(scope);
     } catch (error) {
