@@ -2443,7 +2443,13 @@ describe("browser_task when Browser Use is at its cap or out of credits", () => 
 
     expect(result).toMatchObject({ status: "unavailable" });
     expect(continuationNote(result)).toContain(
-      "the cloud browser service is out of credits right now, and the owner has already been notified"
+      "the cloud browser service is unavailable right now"
+    );
+    // A 402 may be the key's spend cap, and the owner's alert may not have
+    // gone out: the note claims neither, and stops every further call.
+    expect(continuationNote(result)).not.toContain("notified");
+    expect(continuationNote(result)).toContain(
+      "Do not call browser_task start or continue again in this turn"
     );
     expect(reportBrowserUseOutOfCredits).toHaveBeenCalledExactlyOnceWith(
       failure

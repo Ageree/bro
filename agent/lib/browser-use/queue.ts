@@ -243,7 +243,7 @@ export async function startQueuedBrowserRun(
     if (browserUseOutOfCredits(error)) {
       await reportBrowserUseOutOfCredits(error);
       const outcome =
-        "The errand never started: the cloud browser service ran out of credits, and the owner has been notified to top it up. Nothing was done on the site. Tell the user so honestly in one short line and offer to start it again later.";
+        "The errand never started: the cloud browser service became unavailable (it refused new runs for billing reasons, which only the service owner can fix). Nothing was done on the site. Tell the user so honestly in one short line and offer to start it again later.";
       return {
         closed: await giveUpQueuedErrand(current, outcome),
         outcome,

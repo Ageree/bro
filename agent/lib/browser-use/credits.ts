@@ -5,12 +5,14 @@ const alertKey = "browser-use-no-credits";
 const alertRepeatAfterMs = 6 * 60 * 60_000;
 
 /**
- * What the coordinator tells the person when Browser Use refused to start a
- * run for want of credits. Nothing it tries again this turn will start, and
- * the fix is the owner's, who has already been told.
+ * What the coordinator tells the person when Browser Use refused to start or
+ * continue a run with a 402. The cause may be the project's balance or the
+ * key's spend cap, and the owner's alert may not have gone out, so the note
+ * claims neither: it says the service is unavailable, which is all the person
+ * needs. Nothing it tries on Browser Use again this turn will work.
  */
 export const browserUseOutOfCreditsNote =
-  "Nothing was started: the cloud browser service is out of credits right now, and the owner has already been notified to top it up. Tell the user honestly in one short sentence that the browser service is temporarily unavailable because its balance ran out, that the owner knows, and offer what you can do without a browser (web_search, web_fetch) or to try again later. Do not call browser_task start again in this turn and do not promise a time.";
+  "Nothing was started: the cloud browser service is unavailable right now (it refused new runs for billing reasons, which only the service owner can fix). Tell the user honestly in one short sentence that the browser service is temporarily unavailable, and offer what you can do without a browser (web_search, web_fetch) or to try again later. Do not call browser_task start or continue again in this turn and do not promise a time.";
 
 /**
  * Browser Use answered 402: the project has no credits, or the key reached

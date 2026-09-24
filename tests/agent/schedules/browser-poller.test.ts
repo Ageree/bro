@@ -612,7 +612,9 @@ describe("the browser queue", () => {
 
     expect((await readRun(queued.id))?.status).toBe("failed");
     expect(send).toHaveBeenCalledOnce();
-    expect(sentText(send.mock.calls[0]?.[0])).toContain("ran out of credits");
+    expect(sentText(send.mock.calls[0]?.[0])).toContain(
+      "the cloud browser service became unavailable"
+    );
     expect(alertOwner).toHaveBeenCalledWith(
       "browser-use-no-credits",
       expect.stringContaining("402"),
