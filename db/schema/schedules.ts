@@ -20,6 +20,12 @@ export const scheduledAgentJobs = pgTable(
     id: uuid("id").defaultRandom().primaryKey(),
     workspaceId: text("workspace_id").notNull(),
     createdByUserId: text("created_by_user_id").notNull(),
+    // `task` is a schedule the person asked for. `proactive` is the one hidden
+    // job per workspace that carries Bro's own mail and calendar checks, so
+    // they reuse the worker and report lifecycle without showing up as a task.
+    kind: text("kind", { enum: ["task", "proactive"] })
+      .notNull()
+      .default("task"),
     prompt: text("prompt").notNull(),
     conversationChannel: text("conversation_channel", {
       enum: ["eve", "photon", "telegram"],
@@ -80,6 +86,10 @@ export const scheduledAgentJobs = pgTable(
     check(
       "scheduled_agent_jobs_conversation_id_check",
       sql`${table.conversationId} <> ''`
+    ),
+    check(
+      "scheduled_agent_jobs_kind_check",
+      sql`${table.kind} IN ('task', 'proactive')`
     ),
     check(
       "scheduled_agent_jobs_missed_run_policy_check",

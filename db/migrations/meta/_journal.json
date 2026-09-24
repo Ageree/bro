@@ -176,6 +176,13 @@
       "when": 1790201070428,
       "tag": "0024_bright_lila_cheney",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1790202119813,
+      "tag": "0025_oval_wraith",
+      "breakpoints": true
     }
   ]
 }

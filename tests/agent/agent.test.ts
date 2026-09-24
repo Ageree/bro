@@ -23,6 +23,7 @@ vi.mock("@agent/lib/model/selection", async (importOriginal) => {
 });
 
 import agent from "@agent/agent";
+import { skippedSendNotice } from "@agent/lib/delivery/turn-sends";
 
 const runId = "00000000-0000-4000-8000-000000000001";
 const oldLeaseToken = "00000000-0000-4000-8000-000000000002";
@@ -98,7 +99,7 @@ describe("interactive delivery enforcement", () => {
 
     expect(services.modelSelection).toHaveBeenLastCalledWith(
       "openai/gpt-5.6-sol-fast",
-      { requireToolCall: true }
+      { toolChoice: "required" }
     );
   });
 
@@ -110,7 +111,32 @@ describe("interactive delivery enforcement", () => {
 
     expect(services.modelSelection).toHaveBeenLastCalledWith(
       "openai/gpt-5.6-sol-fast",
-      { requireToolCall: false }
+      { toolChoice: "auto" }
+    );
+  });
+
+  it("makes a turn that keeps repeating a delivered message end in text", async () => {
+    await agent.model.events["step.started"]?.(
+      {},
+      interactiveContext([...delivered, ...skippedRepeat("call-2")])
+    );
+    // One dropped repeat may still precede a real answer.
+    expect(services.modelSelection).toHaveBeenLastCalledWith(
+      "openai/gpt-5.6-sol-fast",
+      { toolChoice: "auto" }
+    );
+
+    await agent.model.events["step.started"]?.(
+      {},
+      interactiveContext([
+        ...delivered,
+        ...skippedRepeat("call-2"),
+        ...skippedRepeat("call-3"),
+      ])
+    );
+    expect(services.modelSelection).toHaveBeenLastCalledWith(
+      "openai/gpt-5.6-sol-fast",
+      { toolChoice: "none" }
     );
   });
 
@@ -122,7 +148,7 @@ describe("interactive delivery enforcement", () => {
 
     expect(services.modelSelection).toHaveBeenLastCalledWith(
       "openai/gpt-5.6-sol-fast",
-      { requireToolCall: false }
+      { toolChoice: "auto" }
     );
   });
 
@@ -134,7 +160,7 @@ describe("interactive delivery enforcement", () => {
 
     expect(services.modelSelection).toHaveBeenLastCalledWith(
       "openai/gpt-5.6-sol-fast",
-      { requireToolCall: false }
+      { toolChoice: "auto" }
     );
   });
 
@@ -151,10 +177,40 @@ describe("interactive delivery enforcement", () => {
 
     expect(services.modelSelection).toHaveBeenLastCalledWith(
       "openai/gpt-5.6-sol-fast",
-      { requireToolCall: false }
+      { toolChoice: "auto" }
     );
   });
 });
+
+function skippedRepeat(toolCallId: string) {
+  return [
+    {
+      content: [
+        {
+          input: { kind: "message", text: "Готово" },
+          toolCallId,
+          toolName: "send_message",
+          type: "tool-call" as const,
+        },
+      ],
+      role: "assistant" as const,
+    },
+    {
+      content: [
+        {
+          output: {
+            type: "text" as const,
+            value: skippedSendNotice("duplicate"),
+          },
+          toolCallId,
+          toolName: "send_message",
+          type: "tool-result" as const,
+        },
+      ],
+      role: "tool" as const,
+    },
+  ];
+}
 
 function humanMessage(text: string) {
   // eve adds `kind` to every user-role message it keeps in history.

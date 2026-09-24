@@ -48,21 +48,32 @@ function reasoningOptions(): AgentModelOptionsDefinition {
 }
 
 /**
- * eve exposes no tool choice option, so a model call that must pick a tool
- * gets it from middleware. A call without tools, such as compaction, is left
- * alone because `required` with nothing to call is an invalid request.
+ * How a step may use its tools: `required` must call one, `none` may only
+ * write text, which ends the turn, and `auto` leaves it to the model.
  */
-const toolCallRequired: LanguageModelMiddleware = {
-  async transformParams({ params }) {
-    if (!params.tools?.length) return params;
-    return { ...params, toolChoice: { type: "required" } };
-  },
-};
+export type StepToolChoice = "auto" | "none" | "required";
+
+/**
+ * eve exposes no tool choice option, so a model call that must or must not
+ * pick a tool gets it from middleware. A call without tools, such as
+ * compaction, is left alone because `required` with nothing to call is an
+ * invalid request.
+ */
+function toolChoiceMiddleware(
+  type: Exclude<StepToolChoice, "auto">
+): LanguageModelMiddleware {
+  return {
+    async transformParams({ params }) {
+      if (!params.tools?.length) return params;
+      return { ...params, toolChoice: { type } };
+    },
+  };
+}
 
 /** eve model selection that calls OpenRouter directly instead of the Gateway. */
 export function openRouterSelection(
   modelId: string,
-  options: { readonly requireToolCall: boolean }
+  options: { readonly toolChoice: StepToolChoice }
 ) {
   const openrouter = createOpenRouter({
     apiKey: env.OPENROUTER_API_KEY,
@@ -70,16 +81,23 @@ export function openRouterSelection(
   });
   const model = openrouter.chat(modelId, { provider: providerRouting() });
   // OpenRouter sends `required` to Anthropic as a forced tool call, which
-  // Anthropic rejects while extended thinking is on.
+  // Anthropic rejects while extended thinking is on. `none` is accepted.
   const forcedToolAllowed =
     !modelId.startsWith("anthropic/") ||
     env.OPENROUTER_REASONING_EFFORT === "off";
+  const toolChoice =
+    options.toolChoice === "required" && !forcedToolAllowed
+      ? "auto"
+      : options.toolChoice;
 
   return {
     model:
-      options.requireToolCall && forcedToolAllowed
-        ? wrapLanguageModel({ middleware: toolCallRequired, model })
-        : model,
+      toolChoice === "auto"
+        ? model
+        : wrapLanguageModel({
+            middleware: toolChoiceMiddleware(toolChoice),
+            model,
+          }),
     // eve resolves an omitted context window from the AI Gateway catalog,
     // which does not list OpenRouter model ids.
     modelContextWindowTokens: env.OPENROUTER_MODEL_CONTEXT_TOKENS,

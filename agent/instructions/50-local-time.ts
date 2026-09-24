@@ -9,14 +9,20 @@ import { readWorkspaceTimeZone } from "@db/services/user-profile";
  * and «завтра» from whatever it guesses, and every schedule, delivery window
  * and «во сколько» it derives from that guess is wrong by a working day.
  */
-export function localTimeInstructions(now: Date, timeZone: string) {
+export function localTimeInstructions(
+  now: Date,
+  timeZone: string,
+  canSaveTimeZone = true
+) {
   const localTime = new Intl.DateTimeFormat("ru-RU", {
     dateStyle: "full",
     timeStyle: "short",
     timeZone,
   }).format(now);
+  const clock = `Сейчас у человека ${localTime} (таймзона ${timeZone}). Считай «сегодня», «завтра» и «на выходных» от этого времени, а не от чего-то своего.`;
+  if (!canSaveTimeZone) return clock;
   return [
-    `Сейчас у человека ${localTime} (таймзона ${timeZone}). Считай «сегодня», «завтра» и «на выходных» от этого времени, а не от чего-то своего.`,
+    clock,
     "Если он называет город или таймзону, а в Personal Info её нет или она другая — сохрани поле `timezone` через `personal_info__update` именем зоны IANA, например Europe/Moscow.",
   ].join("\n");
 }
@@ -26,20 +32,24 @@ export default defineDynamic({
     async "turn.started"(_event, context) {
       const caller =
         context.session.auth.current ?? context.session.auth.initiator;
+      // Bro's own checks read the clock but have no profile to write to.
+      const canSaveTimeZone = resolveModeValue(context, {
+        interactive: true,
+        "proactive-worker": false,
+        "scheduled-worker": true,
+      });
       if (
         caller?.principalType !== "user" ||
         !z.string().safeParse(caller.attributes.workspaceId).success ||
-        resolveModeValue(context, {
-          interactive: true,
-          "scheduled-worker": true,
-        }) !== true
+        canSaveTimeZone === null
       ) {
         return null;
       }
       return defineInstructions({
         content: localTimeInstructions(
           new Date(),
-          await readWorkspaceTimeZone(scopeFromPrincipal(caller))
+          await readWorkspaceTimeZone(scopeFromPrincipal(caller)),
+          canSaveTimeZone
         ),
       });
     },

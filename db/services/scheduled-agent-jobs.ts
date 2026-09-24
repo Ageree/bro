@@ -47,6 +47,16 @@ export interface UpdateScheduledAgentJob {
   readonly timing?: ScheduleTiming;
 }
 
+/**
+ * A person asked for a task, so its failure is theirs to hear about. A
+ * proactive check nobody asked for fails quietly: the next one covers it.
+ */
+function exhaustedReportStatus(
+  kind: (typeof scheduledAgentJobs.$inferSelect)["kind"]
+) {
+  return kind === "proactive" ? ("not_needed" as const) : ("pending" as const);
+}
+
 function parseJob<T extends typeof scheduledAgentJobs.$inferSelect>(job: T) {
   return { ...job, timing: scheduleTimingSchema.parse(job.timing) };
 }
@@ -106,6 +116,7 @@ export async function listScheduledAgentJobs(
         conversation.conversationChannel
       ),
       eq(scheduledAgentJobs.conversationId, conversation.conversationId),
+      eq(scheduledAgentJobs.kind, "task"),
       sql`${scheduledAgentJobs.status} <> 'deleted'`
     ),
     with: {
@@ -144,6 +155,7 @@ export async function updateScheduledAgentJob(
         conversation.conversationChannel
       ),
       eq(scheduledAgentJobs.conversationId, conversation.conversationId),
+      eq(scheduledAgentJobs.kind, "task"),
       sql`${scheduledAgentJobs.status} <> 'deleted'`
     ),
   });
@@ -186,6 +198,7 @@ export async function materializeDueScheduledAgentRuns(options: {
       .from(scheduledAgentJobs)
       .where(
         and(
+          eq(scheduledAgentJobs.kind, "task"),
           eq(scheduledAgentJobs.status, "active"),
           lte(scheduledAgentJobs.nextRunAt, options.now)
         )
@@ -231,6 +244,8 @@ export async function materializeDueScheduledAgentRuns(options: {
 }
 
 export async function claimReadyScheduledAgentRuns(options: {
+  /** Which jobs' runs to claim; each kind has its own dispatcher. */
+  readonly kind?: (typeof scheduledAgentJobs.$inferSelect)["kind"];
   readonly leaseForMs: number;
   readonly limit: number;
   readonly now: Date;
@@ -245,6 +260,7 @@ export async function claimReadyScheduledAgentRuns(options: {
       )
       .where(
         and(
+          eq(scheduledAgentJobs.kind, options.kind ?? "task"),
           or(
             eq(scheduledAgentRuns.status, "queued"),
             and(
@@ -273,7 +289,7 @@ export async function claimReadyScheduledAgentRuns(options: {
           leaseToken: null,
           outcome: exhaustedRunOutcome,
           reportSequence: sql`${scheduledAgentRuns.reportSequence} + 1`,
-          reportStatus: "pending",
+          reportStatus: exhaustedReportStatus(options.kind ?? "task"),
           retryAt: null,
           status: "dead_letter",
           updatedAt: options.now,
@@ -627,6 +643,7 @@ export async function releaseScheduledAgentRun(
       eq(scheduledAgentRuns.id, runId),
       eq(scheduledAgentRuns.leaseToken, leaseToken)
     ),
+    with: { job: { columns: { kind: true } } },
   });
   if (!run) return undefined;
   const dead = run.attempts >= 3;
@@ -641,7 +658,9 @@ export async function releaseScheduledAgentRun(
       reportSequence: dead
         ? sql`${scheduledAgentRuns.reportSequence} + 1`
         : scheduledAgentRuns.reportSequence,
-      reportStatus: dead ? "pending" : run.reportStatus,
+      reportStatus: dead
+        ? exhaustedReportStatus(run.job.kind)
+        : run.reportStatus,
       retryAt: dead ? null : new Date(now.getTime() + 5 * 60_000),
       status: dead ? "dead_letter" : "queued",
       updatedAt: now,
@@ -696,7 +715,10 @@ export async function listRecoverableScheduledReports(
     const reports = await transaction
       .select({
         conversationChannel: scheduledAgentJobs.conversationChannel,
+        createdByUserId: scheduledAgentJobs.createdByUserId,
+        jobKind: scheduledAgentJobs.kind,
         run: scheduledAgentRuns,
+        workspaceId: scheduledAgentJobs.workspaceId,
       })
       .from(scheduledAgentRuns)
       .innerJoin(
@@ -711,7 +733,13 @@ export async function listRecoverableScheduledReports(
             "waiting_for_input",
           ]),
           or(
-            eq(scheduledAgentRuns.reportStatus, "pending"),
+            and(
+              eq(scheduledAgentRuns.reportStatus, "pending"),
+              or(
+                isNull(scheduledAgentRuns.retryAt),
+                lte(scheduledAgentRuns.retryAt, now)
+              )
+            ),
             and(
               eq(scheduledAgentRuns.reportStatus, "queued"),
               lte(scheduledAgentRuns.reportLeaseExpiresAt, now)
@@ -745,11 +773,75 @@ export async function listRecoverableScheduledReports(
           )
         );
     }
-    return reports.map(({ conversationChannel, run }) => ({
-      conversationChannel,
-      runId: run.id,
-    }));
+    return reports.map(
+      ({
+        conversationChannel,
+        createdByUserId,
+        jobKind,
+        run,
+        workspaceId,
+      }) => ({
+        conversationChannel,
+        jobKind,
+        runId: run.id,
+        scope: { userId: createdByUserId, workspaceId },
+      })
+    );
   });
+}
+
+/**
+ * Holds a pending report back until `until`. A finished run no longer needs
+ * `retryAt` for itself, so the same column times its report.
+ */
+export async function deferScheduledReport(
+  runId: string,
+  until: Date,
+  now = new Date()
+) {
+  await db
+    .update(scheduledAgentRuns)
+    .set({ retryAt: until, updatedAt: now })
+    .where(
+      and(
+        eq(scheduledAgentRuns.id, runId),
+        eq(scheduledAgentRuns.reportStatus, "pending")
+      )
+    );
+}
+
+/**
+ * Ends a claimed report that must reach nobody, e.g. after the person turned
+ * proactive messages off. Unlike a suppressed report, it also closes a run
+ * parked on a question, since that question will now never be asked.
+ */
+export async function dropScheduledReport(
+  runId: string,
+  reportLeaseToken: string,
+  now = new Date()
+) {
+  const [run] = await db
+    .update(scheduledAgentRuns)
+    .set({
+      completedAt: sql`coalesce(${scheduledAgentRuns.completedAt}, ${now})`,
+      leaseExpiresAt: null,
+      leaseToken: null,
+      pendingInputRequests: null,
+      reportLeaseExpiresAt: null,
+      reportLeaseToken: null,
+      reportStatus: "suppressed",
+      status: sql`CASE WHEN ${scheduledAgentRuns.status} = 'waiting_for_input' THEN 'completed' ELSE ${scheduledAgentRuns.status} END`,
+      updatedAt: now,
+    })
+    .where(
+      and(
+        eq(scheduledAgentRuns.id, runId),
+        eq(scheduledAgentRuns.reportLeaseToken, reportLeaseToken),
+        eq(scheduledAgentRuns.reportStatus, "queued")
+      )
+    )
+    .returning({ id: scheduledAgentRuns.id });
+  return run !== undefined;
 }
 
 export async function releaseScheduledReport(

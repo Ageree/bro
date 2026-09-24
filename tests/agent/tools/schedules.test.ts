@@ -217,7 +217,7 @@ describe("schedule tools", () => {
   });
 
   it("omits messaging capabilities outside their valid turns", async () => {
-    const resolveMessaging = messaging.events["turn.started"];
+    const resolveMessaging = messaging.events["step.started"];
     expect(resolveMessaging).toBeDefined();
     if (!resolveMessaging) return;
 
@@ -432,6 +432,7 @@ function scheduledJob(
     createdAt: new Date("2026-09-01T12:00:00.000Z"),
     createdByUserId: "user-1",
     id: "00000000-0000-4000-8000-000000000001",
+    kind: "task",
     lastError: null,
     lastRunAt: null,
     latestRun: null,
