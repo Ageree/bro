@@ -1,8 +1,8 @@
 import { parseInputResponses, resolveTextToResponses } from "eve/client";
 import { defineDynamic, defineTool, type ToolContext } from "eve/tools";
 import { z } from "zod";
-import { resolveModeValue } from "@agent/lib/mode";
-import { scheduledReportIdentity } from "@agent/lib/schedules/identity";
+import { resolveModeValue, startedByPerson } from "@agent/lib/mode";
+import { shownScheduledQuestions } from "@agent/lib/schedules/question";
 import {
   scheduleListSummary,
   scheduleOwner,
@@ -14,7 +14,6 @@ import { scheduleTimingSchema } from "@shared/schedules/timing";
 import {
   createScheduledAgentJob,
   getScheduledAgentRunInput,
-  getScheduledAgentRunInputForReport,
   listScheduledAgentJobs,
   submitScheduledAgentRunAnswer,
   updateScheduledAgentJob,
@@ -81,64 +80,88 @@ export const updateSchedule = defineTool({
   },
 });
 
-export const answerSchedule = defineTool({
-  description:
-    "Resume a scheduled task that is waiting for input. During scheduled reporting, use existing conversation context when it clearly answers the request. During an interactive turn, pass the user's answer exactly as given. The task picks the answer up within a minute or two.",
-  inputSchema: z.strictObject({
-    answer: z.string().trim().min(1).max(8_000),
-    runId: z.uuid(),
-  }),
-  async execute({ answer, runId }, context) {
-    const pending = await pendingScheduledRun(context, runId);
-    if (!pending) {
-      throw new Error("That scheduled task is not waiting for input.");
-    }
-    const responses = parseInputResponses(
-      resolveTextToResponses(answer, pending.pendingInputRequests)
-    );
-    if (responses.length === 0) {
-      throw new Error("That answer does not match the pending choices.");
-    }
-    const saved = await submitScheduledAgentRunAnswer(
-      pending.runId,
-      pending.leaseToken,
-      responses
-    );
-    if (!saved) {
-      throw new Error("That scheduled task is not waiting for input.");
-    }
-    return { accepted: true, runId };
-  },
+const answerScheduleInputSchema = z.strictObject({
+  answer: z.string().trim().min(1).max(8_000),
+  runId: z.uuid(),
 });
+
+const notThePersonRefusal =
+  "Nothing was sent: only the user's own reply answers a scheduled task's question, in the turn their message started. Never answer it yourself.";
+
+const notShownRefusal =
+  "Nothing was sent: that scheduled task's question was never put to the user in this conversation, so nothing they wrote here answers it. Never answer a scheduled question yourself or guess what the user would say; if their message is about something else, just do what it asks.";
+
+/**
+ * `shown` names the runs whose question this conversation put to the
+ * person. Only their own reply to one of those resumes the run: a model
+ * that answered for them — from the conversation, or from nothing, as one
+ * did in a turn about a message to a friend — is refused.
+ */
+function defineAnswerSchedule(shown: readonly string[]) {
+  return defineTool({
+    description:
+      "Resume a scheduled task that asked the user a question in this conversation, with the user's own answer. Call it only when the user's message replies to that question, passing their answer exactly as given. Never answer for them — not from earlier context, not with a guess, not to tidy up an old task — and never call it for a question this conversation did not show them. The task picks the answer up within a minute or two.",
+    inputSchema: answerScheduleInputSchema,
+    async execute({ answer, runId }, context) {
+      if (!startedByPerson(context)) throw new Error(notThePersonRefusal);
+      if (!shown.includes(runId)) throw new Error(notShownRefusal);
+      return submitAnswer(context, runId, answer);
+    },
+  });
+}
+
+/** The tool with no question shown yet, for a turn that has none. */
+export const answerSchedule = defineAnswerSchedule([]);
+
+async function submitAnswer(
+  context: ToolContext,
+  runId: string,
+  answer: string
+) {
+  const pending = await getScheduledAgentRunInput(
+    scheduleScope(context),
+    runId
+  );
+  if (!pending) {
+    throw new Error("That scheduled task is not waiting for input.");
+  }
+  const responses = parseInputResponses(
+    resolveTextToResponses(answer, pending.pendingInputRequests)
+  );
+  if (responses.length === 0) {
+    throw new Error("That answer does not match the pending choices.");
+  }
+  const saved = await submitScheduledAgentRunAnswer(
+    pending.runId,
+    pending.leaseToken,
+    responses
+  );
+  if (!saved) {
+    throw new Error("That scheduled task is not waiting for input.");
+  }
+  return { accepted: true, runId };
+}
 
 export default defineDynamic({
   events: {
-    "turn.started": (_event, context) =>
-      resolveModeValue(context, {
-        interactive: {
-          "schedules-answer": answerSchedule,
-          "schedules-create": createSchedule,
-          "schedules-list": listSchedules,
-          "schedules-update": updateSchedule,
-        },
-        "scheduled-report": { "schedules-answer": answerSchedule },
-      }),
+    // A scheduled report turn, a browser report or a worker speaks for
+    // nobody, so only a turn the person's own message started may answer.
+    "turn.started": (_event, context) => {
+      const managing = {
+        "schedules-create": createSchedule,
+        "schedules-list": listSchedules,
+        "schedules-update": updateSchedule,
+      };
+      const answering = {
+        ...managing,
+        "schedules-answer": defineAnswerSchedule(
+          shownScheduledQuestions(context.messages)
+        ),
+      };
+
+      const interactive: Partial<typeof answering> & typeof managing =
+        startedByPerson(context) ? answering : managing;
+      return resolveModeValue(context, { interactive });
+    },
   },
 });
-
-async function pendingScheduledRun(context: ToolContext, runId: string) {
-  const resolvePending = resolveModeValue(context, {
-    interactive: () => getScheduledAgentRunInput(scheduleScope(context), runId),
-    "scheduled-report": () => {
-      const report = scheduledReportIdentity(context.session.auth);
-      if (!report || report.runId !== runId) {
-        throw new Error("This reporting turn cannot resume that run.");
-      }
-      return getScheduledAgentRunInputForReport(
-        report.runId,
-        report.leaseToken
-      );
-    },
-  });
-  return resolvePending?.();
-}

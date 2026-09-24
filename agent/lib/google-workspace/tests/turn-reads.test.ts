@@ -72,7 +72,7 @@ describe("the per-turn Google read guard", () => {
   it("caps the reads one turn makes", () => {
     const history = [
       person("разбери почту"),
-      ...Array.from({ length: turnReadLimits.interactive }, (_, index) =>
+      ...Array.from({ length: turnReadLimits.interactive.reads }, (_, index) =>
         search(`call-${String(index)}`, undefined, `query ${String(index)}`)
       ).flat(),
     ];
@@ -85,7 +85,7 @@ describe("the per-turn Google read guard", () => {
   it("gives a background worker more reads than a reply", () => {
     const history = [
       person("разбери почту"),
-      ...Array.from({ length: turnReadLimits.interactive }, (_, index) =>
+      ...Array.from({ length: turnReadLimits.interactive.reads }, (_, index) =>
         search(`call-${String(index)}`, undefined, `query ${String(index)}`)
       ).flat(),
     ];
@@ -147,8 +147,14 @@ describe("the per-turn Google read guard", () => {
     const history = [
       person("найди паспорт на Диске"),
       ...driveRead("call-1", "file-1"),
-      ...Array.from({ length: turnReadLimits.interactive - 1 }, (_, index) =>
-        search(`call-${String(index + 2)}`, undefined, `query ${String(index)}`)
+      ...Array.from(
+        { length: turnReadLimits.interactive.reads - 1 },
+        (_, index) =>
+          search(
+            `call-${String(index + 2)}`,
+            undefined,
+            `query ${String(index)}`
+          )
       ).flat(),
     ];
     const reads = turnReads(history);
@@ -169,6 +175,90 @@ describe("the per-turn Google read guard", () => {
     expect(readRefusalReason(searchKey(inbox.query), reads)).toBe(
       "rate_limited"
     );
+  });
+
+  it("stops searching once several searches found nothing", () => {
+    const empty = { type: "json" as const, value: { messages: [] } };
+    const history = [
+      person("там в почте счёт от репетитора, разберись"),
+      ...Array.from(
+        { length: turnReadLimits.interactive.emptySearches },
+        (_, index) =>
+          search(`call-${String(index)}`, empty, `репетитор ${String(index)}`)
+      ).flat(),
+    ];
+    const reads = turnReads(history);
+
+    expect(reads.emptySearches).toBe(turnReadLimits.interactive.emptySearches);
+    expect(readRefusalReason(searchKey("from:tutor"), reads)).toBe(
+      "empty_searches"
+    );
+    expect(
+      readRefusalReason(
+        googleReadKey({
+          input: { maxResults: 10, query: "счёт" },
+          toolName: "drive-search",
+        }),
+        reads
+      )
+    ).toBe("empty_searches");
+    // Reading a thread the turn already found is not another guess.
+    expect(
+      readRefusalReason(
+        googleReadKey({
+          input: { threadId: "thread-1" },
+          toolName: "gmail-read-thread",
+        }),
+        reads
+      )
+    ).toBeUndefined();
+    expect(readRefusalNotice("empty_searches")).toContain(
+      "tell the person plainly that you did not find it"
+    );
+    // One search short of the budget still runs.
+    expect(
+      readRefusalReason(
+        searchKey("from:tutor"),
+        turnReads(history.slice(0, -2))
+      )
+    ).toBeUndefined();
+  });
+
+  it("counts only searches that came back empty", () => {
+    const empty = { type: "json" as const, value: { files: [] } };
+    const history = [
+      person("найди счёт"),
+      ...Array.from(
+        { length: turnReadLimits.interactive.emptySearches - 1 },
+        (_, index) =>
+          search(`call-${String(index)}`, undefined, `счёт ${String(index)}`)
+      ).flat(),
+      ...driveSearch("call-drive", empty),
+    ];
+
+    expect(turnReads(history).emptySearches).toBe(1);
+    expect(
+      readRefusalReason(searchKey("from:tutor"), turnReads(history))
+    ).toBeUndefined();
+  });
+
+  it("gives a background worker more empty searches", () => {
+    const empty = { type: "json" as const, value: { messages: [] } };
+    const history = [
+      person("проверь почту"),
+      ...Array.from(
+        { length: turnReadLimits.interactive.emptySearches },
+        (_, index) =>
+          search(`call-${String(index)}`, empty, `query ${String(index)}`)
+      ).flat(),
+    ];
+
+    expect(
+      readRefusalReason(
+        searchKey("one more"),
+        turnReads(history, turnReadLimits.background)
+      )
+    ).toBeUndefined();
   });
 
   it("ends a turn that keeps asking for refused reads", () => {
@@ -288,6 +378,31 @@ function driveRead(
   ];
 }
 
+function driveSearch(
+  toolCallId: string,
+  output: ToolResultPart["output"]
+): ModelMessage[] {
+  return [
+    {
+      content: [
+        {
+          input: { query: "счёт" },
+          toolCallId,
+          toolName: "drive-search",
+          type: "tool-call",
+        },
+      ],
+      role: "assistant",
+    },
+    {
+      content: [
+        { output, toolCallId, toolName: "drive-search", type: "tool-result" },
+      ],
+      role: "tool",
+    },
+  ];
+}
+
 function calendarWrite(toolCallId: string, toolName: string): ModelMessage[] {
   return [
     {
@@ -324,7 +439,10 @@ function searchKey(query: string, maxResults = 10) {
 
 function search(
   toolCallId: string,
-  output: ToolResultPart["output"] = { type: "json", value: { messages: [] } },
+  output: ToolResultPart["output"] = {
+    type: "json",
+    value: { messages: [{ id: "message-1" }] },
+  },
   query = inbox.query,
   maxResults?: number
 ): ModelMessage[] {

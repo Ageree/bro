@@ -14,8 +14,18 @@ import {
  * of them the same `gmail-search`, and the run as a whole collected 293
  * quota errors; nothing a person asks for in one message needs more reads.
  * A background worker triaging a whole inbox on schedule gets more room.
+ *
+ * Searches that found nothing have a budget of their own: asked to sort out
+ * «счёт от репетитора», a turn ran 25 Gmail searches with ever new words,
+ * nearly all of them empty. Past a handful, another guess at the words will
+ * not find it either; the sender or the date from the person will.
  */
-export const turnReadLimits = { background: 60, interactive: 20 } as const;
+export const turnReadLimits = {
+  background: { emptySearches: 15, reads: 60 },
+  interactive: { emptySearches: 6, reads: 20 },
+} as const;
+
+type TurnReadLimits = (typeof turnReadLimits)[keyof typeof turnReadLimits];
 
 /**
  * Google writes after which what the turn read may no longer be what the
@@ -81,6 +91,10 @@ export interface TurnReads {
   readonly count: number;
   /** Reads this turn may make before the guard refuses more. */
   readonly limit: number;
+  /** Searches this turn ran that found nothing. */
+  readonly emptySearches: number;
+  /** Empty searches after which the guard refuses another search. */
+  readonly emptySearchLimit: number;
   /** Keys of reads that returned a result the model already holds. */
   readonly done: readonly string[];
   /** Whether a read this turn ended in Google's rate or quota refusal. */
@@ -89,12 +103,17 @@ export interface TurnReads {
   readonly refused: number;
 }
 
-export type RefusalReason = "duplicate" | "limit" | "rate_limited";
+export type RefusalReason =
+  | "duplicate"
+  | "empty_searches"
+  | "limit"
+  | "rate_limited";
 
 const refusedPrefix = "Not run:";
 
 const refusalNotices = {
   duplicate: `${refusedPrefix} this exact call already ran in this turn and its result is above. Use that result instead of calling again; if you need something else, change the query.`,
+  empty_searches: `${refusedPrefix} this turn already ran several searches that found nothing, and guessing more words will not find it either. Stop searching now: tell the person plainly that you did not find it, and ask one short question that would — who sent it, roughly when it came, or what the subject or the file was called.`,
   limit: `${refusedPrefix} this turn already made the most Google reads one reply may take. Stop reading and answer the person with what you have.`,
   rate_limited: `${refusedPrefix} ${googleRateLimitMessage}`,
 } as const satisfies Record<RefusalReason, string>;
@@ -113,6 +132,26 @@ function succeeded(output: ToolResultPart["output"]) {
   return !output.type.startsWith("error") && output.type !== "execution-denied";
 }
 
+/** The reads whose result is a list that can come back empty. */
+const searchTools = new Set(["drive-search", "gmail-search"]);
+
+function isSearchKey(key: string) {
+  return searchTools.has(key.slice(0, key.indexOf("\u0000")));
+}
+
+const searchResultSchema = z.union([
+  z.object({ messages: z.array(z.unknown()) }),
+  z.object({ files: z.array(z.unknown()) }),
+]);
+
+/** Whether a search came back with an empty list. */
+function foundNothing(output: ToolResultPart["output"]) {
+  if (output.type !== "json") return false;
+  const result = searchResultSchema.safeParse(output.value).data;
+  if (result === undefined) return false;
+  return ("messages" in result ? result.messages : result.files).length === 0;
+}
+
 function isRateLimitFailure(output: ToolResultPart["output"]) {
   return (
     output.type.startsWith("error") &&
@@ -126,11 +165,12 @@ function isRateLimitFailure(output: ToolResultPart["output"]) {
  */
 export function turnReads(
   messages: readonly ModelMessage[],
-  limit: number = turnReadLimits.interactive
+  limits: TurnReadLimits = turnReadLimits.interactive
 ): TurnReads {
   const keys = new Map<string, string>();
   const done = new Set<string>();
   let count = 0;
+  let emptySearches = 0;
   let rateLimited = false;
   let refused = 0;
   for (const message of currentTurnMessages(messages)) {
@@ -155,9 +195,18 @@ export function turnReads(
       count += 1;
       if (isRateLimitFailure(part.output)) rateLimited = true;
       else if (succeeded(part.output)) done.add(key);
+      if (isSearchKey(key) && foundNothing(part.output)) emptySearches += 1;
     }
   }
-  return { count, done: [...done], limit, rateLimited, refused };
+  return {
+    count,
+    done: [...done],
+    emptySearchLimit: limits.emptySearches,
+    emptySearches,
+    limit: limits.reads,
+    rateLimited,
+    refused,
+  };
 }
 
 /**
@@ -197,6 +246,9 @@ export function readRefusalReason(
 ): RefusalReason | undefined {
   if (reads.rateLimited) return "rate_limited";
   if (reads.done.includes(key)) return "duplicate";
+  if (isSearchKey(key) && reads.emptySearches >= reads.emptySearchLimit) {
+    return "empty_searches";
+  }
   if (reads.count >= reads.limit) return "limit";
   return undefined;
 }

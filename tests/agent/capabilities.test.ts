@@ -217,10 +217,10 @@ describe("authored mode capability matrix", () => {
     expect(resolved[2]).toBeNull();
   });
 
-  it("limits authored scheduled reporting tools to delivery or resuming its own run", async () => {
+  it("limits authored scheduled reporting tools to delivery", async () => {
+    // Only the person's own reply resumes a run waiting on their answer.
     expect(await authoredCapabilities("scheduled-result")).toEqual([
       "request_vault_setup",
-      "schedules-answer",
       "send_message",
     ]);
   });

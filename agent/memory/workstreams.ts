@@ -99,8 +99,18 @@ export default defineMemory({
             ),
         }),
         forget: defineTool({
+          // Work built up in another conversation goes only on the person's
+          // own confirmation of it, as a profile memory does.
+          approval: async ({ session, toolInput }) => {
+            if (toolInput === undefined) return "user-approval";
+            const workstream = await readWorkstream(scope, key, toolInput.id);
+            if (workstream === null) return "not-applicable";
+            return workstream.sessionId === session.id
+              ? "not-applicable"
+              : "user-approval";
+          },
           description:
-            "Forget a workstream when the user asks. Read it first and pass its current revision. Erases saved content and source references; existing conversation history is unchanged. Does not cancel any running job or schedule.",
+            "Forget a workstream the user named themselves. When the request is broad or unclear, forget nothing: ask one short question and wait for the answer. Read it first and pass its current revision; one saved in another conversation is forgotten only after the user confirms it on a card. Erases saved content and source references; existing conversation history is unchanged. Does not cancel any running job or schedule.",
           inputSchema: forgetWorkstreamSchema,
           execute: (input, ctx) =>
             forgetWorkstream(

@@ -20,9 +20,10 @@ import type {
   createQueuedBrowserRun as recordQueuedBrowserRun,
   updateQueuedBrowserRun as updateQueuedRun,
 } from "@db/services/browser-runs";
-import type {
-  BrowserSubmission,
-  ConfirmedSubmission,
+import {
+  type BrowserSubmission,
+  type ConfirmedSubmission,
+  paymentCeilingRub,
 } from "@shared/browser/submission";
 import {
   accessScopeForUser,
@@ -358,7 +359,7 @@ const cardSubmission: BrowserSubmission = {
   personalData: ["имя", "телефон"],
   kind: "appointment",
   what: "запись к терапевту",
-  when: "ближайший слот 29.09–03.10",
+  when: "вторник 30.09, 09:40",
   where: "поликлиника №12 через ЕМИАС (emias.info)",
 };
 
@@ -1158,7 +1159,7 @@ describe("browser_task payment boundary", () => {
     expect(task).toContain("What: запись к терапевту");
     expect(task).toContain("Where: поликлиника №12 через ЕМИАС (emias.info)");
     expect(task).toContain("In the name of: Алиса");
-    expect(task).toContain("When: ближайший слот 29.09–03.10");
+    expect(task).toContain("When: вторник 30.09, 09:40");
     expect(task).toContain(
       "The person's details the site may receive: имя, телефон"
     );
@@ -2222,7 +2223,12 @@ describe("browser_task approval", () => {
           // Another site than the one the permission names.
           [
             "https://www.ozon.ru",
-            { ...taxiSubmission, chargeRub: 1200, kind: "order" },
+            {
+              ...taxiSubmission,
+              amount: "1 200 ₽",
+              chargeRub: 1200,
+              kind: "order",
+            },
           ],
           // A site the person excluded from anything without asking.
           ["https://gett.com", taxiSubmission],
@@ -3064,5 +3070,229 @@ describe("browser_task consent boundaries", () => {
       );
       expect(settleSpendReservation).not.toHaveBeenCalled();
     });
+  });
+});
+
+/** A start that asks to act in the person's name on a card. */
+function submitStart(submission: BrowserSubmission, site = "https://rzd.ru") {
+  return {
+    action: "start" as const,
+    allowSubmit: true,
+    site,
+    submission,
+    task: "Возьми сапсан в питер",
+  };
+}
+
+describe("browser_task finds the option before the one card", () => {
+  const conversation = approvalSession("photon-imessage");
+  // «Возьми сапсан в питер на пятницу через неделю, после 18:00, обратно в
+  // воскресенье вечером, места у окна, до 6 тыс» — as the benchmark's card
+  // read before any search.
+  const sapsanWindow: BrowserSubmission = {
+    amount: "до 12 000 ₽ за оба билета",
+    chargeRub: 12_400,
+    forWhom: "Алиса",
+    kind: "booking",
+    personalData: ["имя", "паспорт", "телефон", "почта"],
+    what: "билеты на «Сапсан» Москва — Санкт-Петербург и обратно, места у окна",
+    when: "туда — пт 03.10 после 18:00; обратно — вс 05.10 вечером",
+    where: "РЖД (rzd.ru)",
+  };
+  // The same errand once the search found the trains.
+  const sapsanFound: BrowserSubmission = {
+    amount: "11 480 ₽ за два билета",
+    chargeRub: 11_480,
+    forWhom: "Алиса",
+    kind: "booking",
+    personalData: ["имя", "паспорт", "телефон", "почта"],
+    what: "«Сапсан» №781 Москва — Санкт-Петербург, место 34 у окна, и №788 обратно, место 12 у окна",
+    when: "пт 03.10, 18:40 туда; вс 05.10, 19:10 обратно",
+    where: "РЖД (rzd.ru)",
+  };
+  const pushkinTable: BrowserSubmission = {
+    amount: "бесплатно",
+    forWhom: "Алиса",
+    kind: "table",
+    personalData: ["имя", "телефон"],
+    what: "столик на двоих",
+    when: "сегодня, 19:00",
+    where: "ресторан «Пушкин» (cafe-pushkin.ru)",
+  };
+
+  it("sends an errand whose option is still to be found to a search first", async () => {
+    const { browserTask, browserTaskApproval } =
+      await import("@agent/tools/browser_task");
+
+    const refusals = await Promise.all(
+      [
+        sapsanWindow,
+        // «Закажи на озоне тот же корм»: the basket's total is a guess.
+        {
+          amount: "около 2 400 ₽",
+          chargeRub: 2400,
+          forWhom: "Алиса",
+          kind: "order" as const,
+          personalData: ["имя", "телефон", "адрес"],
+          what: "корм для кошки, как в прошлый раз",
+          where: "Ozon (ozon.ru)",
+        },
+        // «Запиши к терапевту на следующей неделе»: no slot yet.
+        { ...cardSubmission, when: "на следующей неделе, до обеда" },
+      ].map(async (submission) =>
+        browserTaskApproval(submitStart(submission), conversation)
+      )
+    );
+
+    for (const refusal of refusals) {
+      expect(refusal).toMatchObject({ type: "denied" });
+      expect(JSON.stringify(refusal)).toContain(
+        "start the errand without allowSubmit"
+      );
+    }
+    expect(JSON.stringify(refusals[0])).toContain(
+      "«до 12 000 ₽ за оба билета»"
+    );
+    // The tool holds its own start to the same rule.
+    await expect(
+      browserTask.execute(
+        submitStart(sapsanWindow),
+        toolContext("better-auth:alice")
+      )
+    ).rejects.toThrow("start the errand without allowSubmit");
+    expect(createBrowserUseRun).not.toHaveBeenCalled();
+  });
+
+  it("puts a named table on the card at once", async () => {
+    const { browserTaskApproval, openSubmissionTerms } =
+      await import("@agent/tools/browser_task");
+
+    expect(
+      await browserTaskApproval(
+        submitStart(pushkinTable, "https://cafe-pushkin.ru"),
+        conversation
+      )
+    ).toBe("user-approval");
+    expect(openSubmissionTerms(sapsanFound)).toEqual([]);
+    expect(openSubmissionTerms(cardSubmission)).toEqual([]);
+    // An hour said the way people say it is still one slot.
+    expect(
+      openSubmissionTerms({ ...cardSubmission, when: "1 октября, 10 утра" })
+    ).toEqual([]);
+    expect(
+      openSubmissionTerms({ ...cardSubmission, when: "в пятницу вечером" })
+    ).toEqual(["when «в пятницу вечером»"]);
+    expect(openSubmissionTerms(sapsanWindow)).toEqual([
+      "when «туда — пт 03.10 после 18:00; обратно — вс 05.10 вечером»",
+      "cost «до 12 000 ₽ за оба билета»",
+    ]);
+  });
+
+  it("lets a standing permission start without a card, found or not", async () => {
+    const { browserTaskApproval } = await import("@agent/tools/browser_task");
+    readSpendLimit.mockResolvedValue(
+      standingPolicy([{ kind: "order", maxRub: 3000, merchant: null }])
+    );
+
+    expect(
+      await browserTaskApproval(
+        submitStart(
+          {
+            amount: "около 2 000 ₽",
+            chargeRub: 2000,
+            forWhom: "Алиса",
+            kind: "order",
+            personalData: ["имя", "адрес"],
+            what: "продукты по списку",
+            where: "Лавка (lavka.yandex.ru)",
+          },
+          "https://lavka.yandex.ru"
+        ),
+        conversation
+      )
+    ).toBe("not-applicable");
+  });
+
+  it("asks once, on the card that names what the search found", async () => {
+    const { browserTaskApproval } = await import("@agent/tools/browser_task");
+    // The search ran without consent and stopped on the chosen trains.
+    readBrowserRunForScope.mockResolvedValue(
+      browserRunRow(
+        new Date(),
+        "Result: выбраны поезда, места у окна\nNeeds: decision"
+      )
+    );
+    const found = {
+      action: "continue" as const,
+      allowSubmit: true,
+      runId,
+      submission: sapsanFound,
+      task: "Оформляй выбранные поезда",
+    };
+
+    // Whether the person or the run's report continues it, the card shows.
+    expect(await browserTaskApproval(found, conversation)).toBe(
+      "user-approval"
+    );
+    expect(
+      await browserTaskApproval(found, approvalSession("browser-result"))
+    ).toBe("user-approval");
+    // Once confirmed, the payment step and a code need no second card.
+    readBrowserRunForScope.mockResolvedValue(
+      browserRunRow(null, null, {
+        ...sapsanFound,
+        paymentCapRub: paymentCeilingRub(11_480),
+      })
+    );
+    expect(
+      await browserTaskApproval(
+        { action: "continue", allowPayment: true, runId, task: "Код 4821" },
+        conversation
+      )
+    ).toBe("not-applicable");
+  });
+
+  it("continues on the checkout page the search left open, with the card's terms", async () => {
+    await continueErrand({
+      allowSubmit: true,
+      completedAt: new Date(),
+      outcome: "Result: выбраны поезда\nNeeds: decision",
+      submission: sapsanFound,
+      task: "Оформляй выбранные поезда",
+    });
+
+    const created = createBrowserUseRun.mock.calls[0]?.[0];
+    // The same browser, so the seats the search picked are still picked.
+    expect(created?.sessionId).toBe(sessionId);
+    expect(created?.task).toContain(
+      "Keep the tab that is open and the account already signed in"
+    );
+    expect(created?.task).toContain(
+      "The person confirmed on an approval card this one submission in their name."
+    );
+    expect(created?.task).toContain("What: «Сапсан» №781");
+    expect(created?.task).toContain("Payment is pre-approved up to");
+  });
+
+  it("tells a search for something to buy to stage the best option", async () => {
+    const { composeBrowserTask } = await import("@agent/tools/browser_task");
+
+    const task = composeBrowserTask({
+      aliases: [],
+      allowPayment: false,
+      collectImages: false,
+      consent: undefined,
+      errand: "Возьми сапсан в питер на пятницу после 18:00",
+      facts: undefined,
+      home: undefined,
+      site: "https://rzd.ru",
+    });
+
+    expect(task).toContain(
+      "choose the one option that best fits every condition of the errand"
+    );
+    expect(task).toContain("Put that option first in ITEMS");
+    expect(task).toContain("end with NEEDS: decision");
+    expect(task).toContain("NEEDS: payment");
   });
 });

@@ -7,6 +7,10 @@ import {
 } from "@db/services/scheduled-agent-jobs";
 import { telegramChatIdFromConversationId } from "@agent/lib/telegram-conversation";
 import { backgroundTurnMarker } from "@shared/chat/background-turn";
+import {
+  internalRunIdLabel,
+  waitingQuestionHeading,
+} from "@agent/lib/schedules/question";
 import photon from "../../channels/photon";
 import telegram from "../../channels/telegram";
 
@@ -152,13 +156,13 @@ function scheduledReportTask(
     : "No reply handle is available for this automation. Omit send_message.replyTo.";
   if (claimed.run.pendingInputRequests) {
     return [
-      "A background scheduled run is waiting for the user before it can continue.",
+      waitingQuestionHeading,
       `Original task: ${claimed.job.prompt}`,
       `Scheduled for: ${claimed.run.scheduledFor.toISOString()}`,
       replyContext,
-      `Internal run ID: ${claimed.run.id}`,
+      `${internalRunIdLabel} ${claimed.run.id}`,
       `Pending request: ${JSON.stringify(claimed.run.pendingInputRequests)}`,
-      "First check whether the existing conversation clearly answers the request. If it does, call schedules-answer now. Otherwise ask the user clearly, keeping the internal run ID out of the user-visible message so schedules-answer can resume this run after they reply.",
+      "Ask the user the question clearly in one message, keeping the internal run ID out of it. Never answer it yourself, not even from what the conversation already says: only the user's own reply resumes this run, through schedules-answer in the turn their message starts.",
     ].join("\n\n");
   }
   if (!claimed.run.outcome) {

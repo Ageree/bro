@@ -124,6 +124,35 @@ export async function readMemory(
   return row ? memoryResult(row) : null;
 }
 
+/**
+ * What a current memory says and which conversation last wrote it, or null
+ * when there is no such memory. Forgetting one another conversation saved
+ * is the person's to confirm.
+ */
+export async function readMemorySource(
+  scope: AccessScope,
+  scopeKey: string,
+  index: number
+) {
+  const [row] = await db
+    .select({
+      content: memoryRecords.content,
+      sourceSessionId: memoryRecords.sourceSessionId,
+    })
+    .from(memoryRecords)
+    .where(
+      and(
+        recordIdentity(scope, scopeKey, index),
+        isNotNull(memoryRecords.content),
+        currentValidity()
+      )
+    )
+    .limit(1);
+  return row?.content
+    ? { sourceSessionId: row.sourceSessionId, text: row.content.text }
+    : null;
+}
+
 export async function saveMemory(
   scope: AccessScope,
   scopeKey: string,

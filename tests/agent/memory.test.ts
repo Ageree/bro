@@ -21,7 +21,11 @@ import {
   saveMemory,
   updateMemory,
 } from "@db/services/memory/records";
-import { parseLegacyRecall } from "@agent/lib/memory/profile";
+import {
+  memoryRemovalApproval,
+  parseLegacyRecall,
+} from "@agent/lib/memory/profile";
+import { withApprovalCard } from "@shared/chat/approval-card";
 import {
   claimMemorySyncJobs,
   completeMemorySyncJob,
@@ -212,5 +216,83 @@ describe("durable profile memory", () => {
       leaseUntil: null,
       status: "pending",
     });
+  });
+});
+
+describe("forgetting a memory without the person's word", () => {
+  it("forgets what this conversation saved at once and older memories only on a card", async () => {
+    await saveMemory(
+      alice,
+      "scope-a",
+      { text: "Любит суши." },
+      "earlier:save",
+      { sessionId: "earlier-session", turnId: "turn" }
+    );
+    await saveMemory(
+      alice,
+      "scope-a",
+      { text: "Живёт в Казани." },
+      "this:save",
+      { sessionId: "this-session", turnId: "turn" }
+    );
+
+    // A correction of what this conversation just saved needs no card.
+    expect(
+      await memoryRemovalApproval(alice, "scope-a", "this-session", {
+        index: 1,
+      })
+    ).toBe("not-applicable");
+    // «Удали всё, что ты запомнил в этом разговоре»: a memory from another
+    // conversation is not forgotten on the model's reading of that.
+    const unnamed = await memoryRemovalApproval(
+      alice,
+      "scope-a",
+      "this-session",
+      { index: 0 }
+    );
+    expect(unnamed).toMatchObject({ type: "denied" });
+    // The model is told the text the card will show.
+    expect(JSON.stringify(unnamed)).toContain("«Любит суши.»");
+    expect(
+      await memoryRemovalApproval(alice, "scope-a", "this-session", {
+        index: 0,
+        text: "Любит роллы.",
+      })
+    ).toMatchObject({ type: "denied" });
+    // Named exactly as it reads, it goes to the person on a card.
+    expect(
+      await memoryRemovalApproval(alice, "scope-a", "this-session", {
+        index: 0,
+        text: "  любит  суши. ",
+      })
+    ).toBe("user-approval");
+    // Another workspace's memory is none of this call's business.
+    expect(
+      await memoryRemovalApproval(bob, "scope-a", "this-session", { index: 0 })
+    ).toBe("not-applicable");
+  });
+
+  it("shows the person the memory's own text on the card", () => {
+    const card = withApprovalCard(
+      {
+        action: {
+          input: { index: 0, text: "Любит суши." },
+          toolName: "profile__remove_memory",
+        },
+        kind: "tool-approval",
+        options: [
+          { id: "approve", label: "Approve" },
+          { id: "cancel", label: "Cancel" },
+        ],
+        prompt: "Approve tool call: profile__remove_memory",
+      },
+      "ru"
+    );
+
+    expect(card.prompt).toBe("Забыть из памяти:\n«Любит суши.»");
+    expect(card.options.map((option) => option.label)).toEqual([
+      "Подтвердить",
+      "Отмена",
+    ]);
   });
 });

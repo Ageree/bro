@@ -39,6 +39,7 @@ const cardText = {
     limitInclude: "Pay without asking again on",
     limitSet:
       "Spend limit — payments within it go through without asking from now on:",
+    memoryForget: "Forget this from memory:",
     permissionFooter:
       "It holds in the conversation until it is taken back; each errand stays on its own site, and background work never uses it.",
     permissionRevoke: "Take back the standing permission:",
@@ -50,6 +51,7 @@ const cardText = {
     when: "When",
     what: "What",
     where: "Where",
+    workstreamForget: "Forget the saved work on",
   },
   ru: {
     amount: "Стоимость",
@@ -64,6 +66,7 @@ const cardText = {
     limitInclude: "Снова платить без спроса",
     limitSet:
       "Лимит трат без спроса — в этих пределах оплата дальше без подтверждения:",
+    memoryForget: "Забыть из памяти:",
     permissionFooter:
       "Действует в разговоре, пока его не снимут; каждое поручение остаётся на своём сайте, фоновая работа им не пользуется.",
     permissionRevoke: "Снять постоянное разрешение:",
@@ -75,6 +78,7 @@ const cardText = {
     when: "Когда",
     what: "Что",
     where: "Где",
+    workstreamForget: "Забыть сохранённое дело",
   },
 } as const;
 
@@ -295,6 +299,19 @@ function cardPrompt(
     const call = spendLimitCallSchema.safeParse(action.input);
     return call.success
       ? spendLimitPrompt(call.data, text, language)
+      : undefined;
+  }
+  // Forgetting what another conversation saved: the record as it reads.
+  if (action.toolName === "profile__remove_memory") {
+    const call = z.object({ text: z.string() }).safeParse(action.input);
+    return call.success
+      ? `${text.memoryForget}\n«${oneLine(call.data.text)}»`
+      : undefined;
+  }
+  if (action.toolName === "workstreams__forget") {
+    const call = z.object({ id: z.string() }).safeParse(action.input);
+    return call.success
+      ? `${text.workstreamForget} «${oneLine(call.data.id)}»`
       : undefined;
   }
   return undefined;

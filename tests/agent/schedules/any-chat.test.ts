@@ -4,7 +4,8 @@ import { drizzle } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
 import type { Session } from "eve/channels";
 import type { ScheduleHandlerArgs, ScheduleToFn } from "eve/schedules";
-import type { ToolContext } from "eve/tools";
+import type { DynamicResolveContext, ToolContext } from "eve/tools";
+import type { ModelMessage } from "ai";
 import {
   afterAll,
   afterEach,
@@ -33,7 +34,8 @@ import {
 import { ensureScope } from "@db/services/scope";
 import { patchUserProfile } from "@db/services/user-profile";
 import dynamicSchedule from "@agent/schedules/dynamic";
-import {
+import { backgroundTurnMarker } from "@shared/chat/background-turn";
+import schedulesTools, {
   answerSchedule,
   createSchedule,
   listSchedules,
@@ -225,21 +227,30 @@ describe("schedules belong to the person, not the chat", () => {
     ]);
   });
 
-  it("resumes a waiting run with an answer given in another chat", async () => {
+  it("resumes a waiting run with the answer given in the chat that asked", async () => {
     const run = await waitingRun();
+    const answer = await answerInChat(alice, run.id);
 
-    const result = await answerSchedule.execute(
+    const result = await answer.execute(
       { answer: "LGA", runId: run.id },
-      toolContext("schedules-answer", alice, web)
+      toolContext("schedules-answer", alice, telegram, "telegram-webhook")
     );
     expect(result).toEqual({ accepted: true, runId: run.id });
     // Someone else's chat cannot answer it.
     await expect(
-      answerSchedule.execute(
+      (await answerInChat(bob, run.id)).execute(
         { answer: "DCA", runId: run.id },
-        toolContext("schedules-answer", bob, telegram)
+        toolContext("schedules-answer", bob, telegram, "telegram-webhook")
       )
     ).rejects.toThrow("That scheduled task is not waiting for input.");
+    // Nor can a chat the question never reached, or a model answering
+    // without it.
+    await expect(
+      answerSchedule.execute(
+        { answer: "DCA", runId: run.id },
+        toolContext("schedules-answer", alice, web, "authjs")
+      )
+    ).rejects.toThrow("never put to the user in this conversation");
 
     const respond = vi
       .fn<Session["respond"]>()
@@ -345,10 +356,72 @@ async function waitingRun() {
   return claim.run;
 }
 
+/**
+ * The answer tool of a Telegram turn whose chat was asked the run's
+ * question: the report turn brought it here and delivered it.
+ */
+async function answerInChat(scope: typeof alice, runId: string) {
+  const current = {
+    attributes: { ...telegram, workspaceId: scope.workspaceId },
+    authenticator: "telegram-webhook",
+    principalId: scope.userId,
+    principalType: "user",
+  };
+  const messages: ModelMessage[] = [
+    {
+      content: [
+        backgroundTurnMarker,
+        "A background scheduled run is waiting for the user before it can continue.",
+        `Internal run ID: ${runId}`,
+      ].join("\n\n"),
+      role: "user",
+    },
+    {
+      content: [
+        {
+          input: { kind: "message", text: "Какой аэропорт?" },
+          toolCallId: "call-send",
+          toolName: "send_message",
+          type: "tool-call",
+        },
+      ],
+      role: "assistant",
+    },
+    {
+      content: [
+        {
+          output: { type: "json", value: { kind: "message" } },
+          toolCallId: "call-send",
+          toolName: "send_message",
+          type: "tool-result",
+        },
+      ],
+      role: "tool",
+    },
+    { content: "LGA", role: "user" },
+  ];
+  const resolve = schedulesTools.events["turn.started"];
+  const tools = resolve
+    ? await resolve({}, {
+        channel: { kind: "channel:telegram", metadata: {} },
+        messages,
+        model: null,
+        session: { auth: { current, initiator: null }, id: "telegram" },
+      } satisfies DynamicResolveContext)
+    : null;
+  const answer =
+    tools && "schedules-answer" in tools
+      ? tools["schedules-answer"]
+      : undefined;
+  if (!answer) throw new Error("Expected the schedules-answer tool.");
+  return answer;
+}
+
 function toolContext(
   toolName: string,
   scope: typeof alice,
-  conversation: { conversationChannel: string; conversationId: string }
+  conversation: { conversationChannel: string; conversationId: string },
+  authenticator = "test"
 ) {
   return {
     abortSignal: new AbortController().signal,
@@ -369,7 +442,7 @@ function toolContext(
       auth: {
         current: {
           attributes: { ...conversation, workspaceId: scope.workspaceId },
-          authenticator: "test",
+          authenticator,
           principalId: scope.userId,
           principalType: "user",
         },

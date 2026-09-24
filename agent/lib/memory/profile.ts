@@ -6,6 +6,7 @@ import {
 } from "eve/memory";
 import type { MemoryDocumentBackend } from "eve/memory/file";
 import { defineTool } from "eve/tools";
+import type { ApprovalStatus } from "eve/tools/approval";
 import { z } from "zod";
 import { resolveModeValue } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
@@ -17,6 +18,7 @@ import {
   listCurrentMemories,
   memoryScopeNeedsLegacyImport,
   readMemory,
+  readMemorySource,
   saveMemory,
   semanticMemoryEnabled,
   updateMemory,
@@ -29,8 +31,63 @@ import {
   saveMemorySchema,
   updateMemorySchema,
 } from "@shared/memory/schema";
+import type { AccessScope } from "@shared/identity/access-scope";
 
 const profileBudgetBytes = 6 * 1_024;
+
+const removeMemoryInputSchema = forgetMemorySchema.extend({
+  text: z
+    .string()
+    .trim()
+    .min(1)
+    .max(2_048)
+    .optional()
+    .describe(
+      "The memory's text exactly as the profile lists it. The confirmation card shows it to the user; required for a memory another conversation saved."
+    ),
+});
+
+function comparableText(text: string) {
+  return text
+    .normalize("NFKC")
+    .toLocaleLowerCase()
+    .replaceAll(/[«»"“”„]/gu, "")
+    .replaceAll(/\s+/gu, " ")
+    .trim();
+}
+
+/**
+ * Whether forgetting a memory needs the person's word on a card. Asked to
+ * «удали всё, что ты запомнил про меня в этом разговоре», the model listed
+ * four memories from earlier conversations, asked which to remove, and
+ * removed all four in the same turn without an answer. What the person
+ * built up over other conversations goes only on their own confirmation of
+ * that record; a memory this conversation saved is a correction of what was
+ * just said, and goes at once. The card shows the record's own text, so a
+ * call that names it differently is sent back with the text to show.
+ */
+export async function memoryRemovalApproval(
+  scope: AccessScope,
+  scopeKey: string,
+  sessionId: string,
+  input: z.infer<typeof removeMemoryInputSchema> | undefined
+): Promise<ApprovalStatus> {
+  if (input === undefined) return "user-approval";
+  const record = await readMemorySource(scope, scopeKey, input.index);
+  // Nothing current to forget: the call only confirms it is gone.
+  if (record === null) return "not-applicable";
+  if (record.sourceSessionId === sessionId) return "not-applicable";
+  if (
+    input.text === undefined ||
+    comparableText(input.text) !== comparableText(record.text)
+  ) {
+    return {
+      reason: `Nothing was forgotten. Memory ${String(input.index)} was saved in another conversation, so the user confirms forgetting it on a card that shows its text: «${record.text}». Forget it only if the user named it themselves; then call again with text set to exactly that. If they did not name it, ask them one short question instead and wait for the answer.`,
+      type: "denied",
+    };
+  }
+  return "user-approval";
+}
 
 export function createProfileMemoryProvider(
   legacyProvider: MemoryProvider,
@@ -71,14 +128,16 @@ export function createProfileMemoryProvider(
           execute: ({ index }) => readMemory(scope, scopeKey, index),
         }),
         remove_memory: defineTool({
+          approval: ({ session, toolInput }) =>
+            memoryRemovalApproval(scope, scopeKey, session.id, toolInput),
           description:
-            "Forget one durable memory at the user's request or when it is wrong. Existing conversation history and external retention are unchanged.",
-          inputSchema: forgetMemorySchema,
-          execute: (input, toolContext) =>
+            "Forget one durable memory the user named themselves, or one this conversation just saved wrong. When the request is broad or unclear («удали всё про меня», «забудь, что запомнил в этом разговоре» with nothing saved here), forget nothing: ask one short question and end the turn, then act only on the answer. A memory saved in another conversation is forgotten only after the user confirms it on a card that shows its text, so pass that text exactly as the profile lists it. Existing conversation history and external retention are unchanged.",
+          inputSchema: removeMemoryInputSchema,
+          execute: ({ expectedRevision, index }, toolContext) =>
             forgetMemory(
               scope,
               scopeKey,
-              input,
+              { expectedRevision, index },
               `${toolContext.session.id}:${toolContext.callId}`
             ),
         }),
