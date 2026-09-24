@@ -250,6 +250,11 @@
   задан, работает умолчание из `shared/environment/env.ts`). Она не принимает
   `temperature` (OpenRouter его молча отбрасывает) и повторяет `send_message`,
   от чего держит `turn-sends.ts`. Кабинет с моделью в `settings` её не меняет.
+- OpenAI (и Azure за OpenRouter) отвергает весь запрос, если `pattern` в
+  схеме инструмента не его диалект регулярок: `\p{Cc}`, именованные группы
+  `(?<x>…)`. DeepSeek такое пропускает, поэтому смена модели уронила каждый
+  ход. В схемах входа инструментов — только простые регулярки, остальное в
+  `.refine()` (`shared/browser/submission.ts`).
 - `GET /api/v1/credits` принимает только management-ключ, обычный ключ
   инференса получает 403. Поэтому проверка баланса
   (`agent/lib/model/credits.ts`) ждёт отдельный `OPENROUTER_MANAGEMENT_KEY`.

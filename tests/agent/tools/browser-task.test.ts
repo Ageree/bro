@@ -8,6 +8,7 @@ import {
   it,
   vi,
 } from "vitest";
+import { z } from "zod";
 import type * as browserUseClient from "@agent/lib/browser-use/client";
 import type * as browserUseCredits from "@agent/lib/browser-use/credits";
 import {
@@ -2920,6 +2921,16 @@ describe("browser_task consent boundaries", () => {
         }).success
       ).toBe(false);
       expect(browserSubmissionSchema.safeParse(table).success).toBe(true);
+    });
+
+    it("keeps the card's line check out of the tool schema OpenAI reads", async () => {
+      const { browserSubmissionSchema } =
+        await import("@shared/browser/submission");
+
+      // OpenAI rejects the whole request when a `pattern` uses `\p{…}`.
+      expect(
+        JSON.stringify(z.toJSONSchema(browserSubmissionSchema))
+      ).not.toContain('"pattern"');
     });
 
     it("treats a run that failed or was cancelled as spent too", async () => {
