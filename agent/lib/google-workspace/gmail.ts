@@ -19,6 +19,20 @@ export const GMAIL_UPDATE_ACTIONS = [
 
 export type GmailUpdateAction = (typeof GMAIL_UPDATE_ACTIONS)[number];
 
+export const gmailSearchInputSchema = z.object({
+  maxResults: z.number().int().min(1).max(25).default(10),
+  query: z.string().min(1).max(1_000),
+});
+
+export const gmailReadThreadInputSchema = z.object({
+  threadId: z.string().min(1).max(200),
+});
+
+export const gmailUpdateInputSchema = z.object({
+  messageIds: z.array(z.string().min(1).max(200)).min(1).max(100),
+  update: z.enum(GMAIL_UPDATE_ACTIONS),
+});
+
 export const gmailComposeSchema = z
   .object({
     bcc: z.array(emailAddressSchema).max(20).default([]),
@@ -53,6 +67,13 @@ export const gmailComposeSchema = z
 
 export type GmailCompose = z.infer<typeof gmailComposeSchema>;
 
+/**
+ * Metadata reads a search keeps in flight at once. Gmail limits concurrent
+ * requests per user, and 25 parallel reads from one search were enough to
+ * draw «Too many concurrent requests» on their own.
+ */
+const searchReadConcurrency = 5;
+
 export async function searchGmail(
   ctx: ToolContext,
   query: string,
@@ -63,30 +84,28 @@ export async function searchGmail(
       { maxResults, q: query, userId: "me" },
       { signal: ctx.abortSignal }
     );
-    const messages = await Promise.all(
-      (listed.data.messages ?? []).flatMap(({ id }) =>
-        id
-          ? [
-              client.users.messages.get(
-                {
-                  format: "metadata",
-                  id,
-                  metadataHeaders: [
-                    "From",
-                    "To",
-                    "Subject",
-                    "Date",
-                    "Message-ID",
-                  ],
-                  userId: "me",
-                },
-                { signal: ctx.abortSignal }
-              ),
-            ]
-          : []
-      )
+    const ids = (listed.data.messages ?? []).flatMap(({ id }) =>
+      id ? [id] : []
     );
-    return messages.map(({ data }) => minimizeMessage(data));
+    const messages = [];
+    for (let start = 0; start < ids.length; start += searchReadConcurrency) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Batches bound the requests in flight.
+      const batch = await Promise.all(
+        ids.slice(start, start + searchReadConcurrency).map((id) =>
+          client.users.messages.get(
+            {
+              format: "metadata",
+              id,
+              metadataHeaders: ["From", "To", "Subject", "Date", "Message-ID"],
+              userId: "me",
+            },
+            { signal: ctx.abortSignal }
+          )
+        )
+      );
+      messages.push(...batch.map(({ data }) => minimizeMessage(data)));
+    }
+    return messages;
   });
 }
 
@@ -108,22 +127,91 @@ export async function readGmailThread(ctx: ToolContext, threadId: string) {
   });
 }
 
+/**
+ * Messages one turn may change through `gmail-update` without asking. Triage
+ * that archived 23 emails and a refund question that marked 12 read changed
+ * the mailbox in bulk on their own; past this, the person confirms a card.
+ */
+export const gmailUpdateWithoutApproval = 3;
+
+/**
+ * Whether a `gmail-update` call needs approval, counting the messages the
+ * turn already changed (`updatedInTurn`) so a bulk change split into small
+ * calls still asks.
+ */
+export function gmailUpdateNeedsApproval(
+  input: { readonly messageIds?: readonly string[] } | undefined,
+  updatedInTurn = 0
+) {
+  return (
+    new Set(input?.messageIds ?? []).size + updatedInTurn >
+    gmailUpdateWithoutApproval
+  );
+}
+
+/**
+ * Account-security mail in the inbox: Google's own sign-in and security
+ * notices, and the usual subjects of alerts, sign-ins, password changes and
+ * verification codes from anyone else. Such mail stays in the inbox whatever
+ * triage decides, so the person still sees it.
+ */
+export const gmailSecurityAlertQuery = [
+  "in:inbox {",
+  "from:accounts.google.com",
+  "from:no-reply@accounts.google.com",
+  'subject:"security alert"',
+  'subject:"оповещение системы безопасности"',
+  'subject:"new sign-in"',
+  'subject:"sign-in attempt"',
+  'subject:"новый вход"',
+  'subject:"вход в аккаунт"',
+  'subject:"password changed"',
+  'subject:"пароль изменён"',
+  'subject:"пароль изменен"',
+  'subject:"verification code"',
+  'subject:"код подтверждения"',
+  'subject:"2-step verification"',
+  "}",
+].join(" ");
+
 export async function updateGmail(
   ctx: ToolContext,
   messageIds: string[],
   action: GmailUpdateAction
 ) {
-  const ids = [...new Set(messageIds)];
-  await withGmail(ctx, async (client) =>
-    client.users.messages.batchModify(
-      {
-        requestBody: { ids, ...gmailUpdateLabels(action) },
-        userId: "me",
-      },
-      { signal: ctx.abortSignal }
-    )
+  const requested = [...new Set(messageIds)];
+  return withGmail(ctx, async (client) => {
+    const alerts =
+      action === "archive"
+        ? await inboxSecurityAlerts(client, ctx.abortSignal)
+        : new Set<string>();
+    const kept = requested.filter((id) => alerts.has(id));
+    const ids = requested.filter((id) => !alerts.has(id));
+    if (ids.length > 0) {
+      await client.users.messages.batchModify(
+        {
+          requestBody: { ids, ...gmailUpdateLabels(action) },
+          userId: "me",
+        },
+        { signal: ctx.abortSignal }
+      );
+    }
+    return { action, keptSecurityAlerts: kept, updatedCount: ids.length };
+  });
+}
+
+/** Ids of the security alerts now in the inbox, found by one cheap search. */
+async function inboxSecurityAlerts(
+  client: ReturnType<typeof gmail>,
+  signal: AbortSignal
+) {
+  const { data } = await client.users.messages.list(
+    { maxResults: 500, q: gmailSecurityAlertQuery, userId: "me" },
+    { signal }
   );
-  return { action, updatedCount: ids.length };
+  return new Set(
+    (data.messages ?? []).flatMap((message) => (message.id ? [message.id] : []))
+  );
 }
 
 /** The headers of the message a reply answers, as Gmail stores them. */

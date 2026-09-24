@@ -69,7 +69,9 @@ const cancelBrowserUseRun = vi.hoisted(() =>
   vi.fn<() => Promise<void>>(() => Promise.resolve())
 );
 const queueBrowserUseSessionMessage = vi.hoisted(() =>
-  vi.fn<() => Promise<void>>(() => Promise.resolve())
+  vi.fn<(sessionId: string, message: string) => Promise<void>>(() =>
+    Promise.resolve()
+  )
 );
 const readBrowserUseRunStatus = vi.hoisted(() =>
   vi.fn<() => Promise<string>>(() => Promise.resolve("running"))
@@ -248,7 +250,11 @@ function browserRunRow(
   };
 }
 
-async function startErrand(maxCostUsd: string, allowPayment?: boolean) {
+async function startErrand(
+  maxCostUsd: string,
+  allowPayment?: boolean,
+  allowSubmit?: boolean
+) {
   vi.resetModules();
   vi.stubEnv("BROWSER_USE_MAX_COST_USD", maxCostUsd);
   createBrowserUseRun.mockResolvedValue({
@@ -262,6 +268,7 @@ async function startErrand(maxCostUsd: string, allowPayment?: boolean) {
     {
       action: "start",
       allowPayment,
+      allowSubmit,
       site: "https://example.com",
       task: "Order the usual",
     },
@@ -278,6 +285,7 @@ function continuationNote(
 
 async function continueErrand(input: {
   readonly allowPayment?: boolean;
+  readonly allowSubmit?: boolean;
   readonly completedAt?: Date;
   readonly outcome?: string;
   readonly site?: string;
@@ -291,6 +299,7 @@ async function continueErrand(input: {
     {
       action: "continue",
       allowPayment: input.allowPayment,
+      allowSubmit: input.allowSubmit,
       runId,
       site: input.site,
       task: input.task ?? "Код из смс 992130",
@@ -357,6 +366,20 @@ describe("browser_task continuation", () => {
     );
     expect(createBrowserUseRun).not.toHaveBeenCalled();
     expect(result).toMatchObject({ runId, status: "running" });
+  });
+
+  it("hands a live run the person's approval to submit with their details", async () => {
+    readAccountPhoneNumber.mockResolvedValue("+79990000001");
+
+    await continueErrand({ allowSubmit: true, task: "Да, бронируй" });
+
+    const queued = String(queueBrowserUseSessionMessage.mock.calls[0]?.[1]);
+    expect(queued.startsWith("Да, бронируй")).toBe(true);
+    expect(queued).toContain(
+      "The person asked for this errand to be carried out in their name"
+    );
+    expect(queued).toContain("Phone: +79990000001");
+    expect(createBrowserUseRun).not.toHaveBeenCalled();
   });
 
   it("starts a follow-up run in the same session once the run has finished", async () => {
@@ -683,7 +706,7 @@ describe("browser_task known facts", () => {
   it("types the vault's contact and address cards into the errand", async () => {
     storeVaultCards();
 
-    await startErrand("");
+    await startErrand("", undefined, true);
 
     const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
     expect(task).toContain("Name (Мои данные): Иван Петров");
@@ -698,11 +721,24 @@ describe("browser_task known facts", () => {
   it("falls back to the account's sign-in phone when nothing else has one", async () => {
     readAccountPhoneNumber.mockResolvedValue("+79990000001");
 
-    await startErrand("");
+    await startErrand("", undefined, true);
 
     expect(String(createBrowserUseRun.mock.calls[0]?.[0].task)).toContain(
       "Phone: +79990000001"
     );
+  });
+
+  it("keeps every personal detail out of an errand not approved to submit", async () => {
+    storeVaultCards();
+    readAccountPhoneNumber.mockResolvedValue("+79990000001");
+
+    await startErrand("");
+
+    const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
+    expect(task).not.toContain("Known details you may type into forms:");
+    expect(task).not.toContain("+79991234567");
+    expect(task).not.toContain("+79990000001");
+    expect(task).not.toContain("ул. Ленина");
   });
 
   it("keeps the account phone out of the errand once one is known", async () => {
@@ -726,7 +762,7 @@ describe("browser_task home location", () => {
       countryCode: "ru",
     });
 
-    await startErrand("");
+    await startErrand("", undefined, true);
 
     const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
     expect(task).toContain(
@@ -905,9 +941,7 @@ describe("browser_task payment boundary", () => {
     expect(task).toContain(
       "Nothing has been approved to pay for or to commit money to on this errand."
     );
-    expect(task).toContain(
-      "a reservation with free cancellation (a table, an appointment, a slot), a registration for a free event, a basket with the delivery details filled in"
-    );
+    expect(task).not.toContain("Finish on your own what costs nothing");
     expect(task).toContain(
       "any charge or prepayment, binding a card, pay on delivery, pay at the property, a non-refundable rate, a cancellation fee"
     );
@@ -915,6 +949,45 @@ describe("browser_task payment boundary", () => {
       "end with NEEDS: payment and the TOTAL the page shows"
     );
     expect(task).not.toContain("finish it rather than abandoning it");
+  });
+
+  it("keeps an errand not approved to submit from acting in the person's name", async () => {
+    await startErrand("");
+
+    const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
+    expect(task).toContain(
+      "The person has not approved acting in their name on this errand."
+    );
+    expect(task).toContain(
+      "Never book or reserve anything (not even with free cancellation)"
+    );
+    expect(task).toContain(
+      "never submit a contact form, request, application, callback or message to a business or a person"
+    );
+    expect(task).toContain(
+      "Never type the person's name, phone number, email or address into any site."
+    );
+    expect(task).toContain(
+      "when the errand asks you to find or recommend something, the recommendation is the end of the errand"
+    );
+  });
+
+  it("lets an errand the person asked for submit with their details", async () => {
+    await startErrand("", undefined, true);
+
+    const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
+    expect(task).toContain(
+      "The person asked for this errand to be carried out in their name"
+    );
+    expect(task).not.toContain("has not approved acting in their name");
+  });
+
+  it("treats paying for an errand as asking for it to be done", async () => {
+    await startErrand("", true);
+
+    expect(String(createBrowserUseRun.mock.calls[0]?.[0].task)).toContain(
+      "The person asked for this errand to be carried out in their name"
+    );
   });
 
   it("lets an approved errand finish the purchase past the search budget", async () => {

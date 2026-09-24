@@ -1,6 +1,10 @@
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import { wrapLanguageModel, type LanguageModelMiddleware } from "ai";
 import type { AgentModelOptionsDefinition } from "eve";
+import {
+  replyLanguageDirective,
+  type ReplyLanguage,
+} from "@agent/lib/delivery/language";
 import { env } from "@shared/environment";
 import { applicationOrigin } from "@shared/environment/origin";
 
@@ -70,10 +74,36 @@ function toolChoiceMiddleware(
   };
 }
 
+/**
+ * Appends the reply language as the last system note of the prompt. At the
+ * end it does not break the cached prefix, and it is the freshest thing the
+ * model reads before it writes. A call without tools, such as compaction,
+ * writes nothing to the person and is left alone.
+ */
+function replyLanguageMiddleware(
+  language: ReplyLanguage
+): LanguageModelMiddleware {
+  return {
+    async transformParams({ params }) {
+      if (!params.tools?.length) return params;
+      return {
+        ...params,
+        prompt: [
+          ...params.prompt,
+          { content: replyLanguageDirective(language), role: "system" },
+        ],
+      };
+    },
+  };
+}
+
 /** eve model selection that calls OpenRouter directly instead of the Gateway. */
 export function openRouterSelection(
   modelId: string,
-  options: { readonly toolChoice: StepToolChoice }
+  options: {
+    readonly replyLanguage?: ReplyLanguage;
+    readonly toolChoice: StepToolChoice;
+  }
 ) {
   const openrouter = createOpenRouter({
     apiKey: env.OPENROUTER_API_KEY,
@@ -90,14 +120,18 @@ export function openRouterSelection(
       ? "auto"
       : options.toolChoice;
 
+  const middleware = [
+    ...(toolChoice === "auto" ? [] : [toolChoiceMiddleware(toolChoice)]),
+    ...(options.replyLanguage
+      ? [replyLanguageMiddleware(options.replyLanguage)]
+      : []),
+  ];
+
   return {
     model:
-      toolChoice === "auto"
+      middleware.length === 0
         ? model
-        : wrapLanguageModel({
-            middleware: toolChoiceMiddleware(toolChoice),
-            model,
-          }),
+        : wrapLanguageModel({ middleware, model }),
     // eve resolves an omitted context window from the AI Gateway catalog,
     // which does not list OpenRouter model ids.
     modelContextWindowTokens: env.OPENROUTER_MODEL_CONTEXT_TOKENS,

@@ -181,7 +181,7 @@ function startsTurn(message: ModelMessage) {
   );
 }
 
-function currentTurnMessages(messages: readonly ModelMessage[]) {
+export function currentTurnMessages(messages: readonly ModelMessage[]) {
   const start = messages.findLastIndex(startsTurn);
   return start === -1 ? messages : messages.slice(start + 1);
 }

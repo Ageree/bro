@@ -85,8 +85,16 @@ function limitTotal(input: ToolInput) {
  * A free booking needs no payment permission at all: without a limit the
  * person set, not even a card held as a guarantee.
  */
+/**
+ * A free booking the person asked for: the run may act in their name
+ * (`allowSubmit`) but has nothing to pay.
+ */
 function startedFree(input: ToolInput) {
-  return input.action === "start" && input.allowPayment !== true;
+  return (
+    input.action === "start" &&
+    input.allowPayment !== true &&
+    input.allowSubmit === true
+  );
 }
 
 export default [

@@ -85,6 +85,27 @@ describe("agent instructions", () => {
     expect(selected?.content).toContain("Нативная карточка подтверждения");
   });
 
+  it("keeps recommendations and inbox triage from acting in the person's name", async () => {
+    const resolve = executionSafety.events["turn.started"];
+    expect(resolve).toBeDefined();
+    if (!resolve) return;
+
+    const selected = await resolve({}, dynamicContext("photon-imessage"));
+    expect(selected?.content).toContain(
+      "Просьба найти, подобрать, сравнить или посоветовать заканчивается рекомендацией"
+    );
+    expect(selected?.content).toContain(
+      "не бронируй столик, слот, запись или визит (даже бесплатно и с бесплатной отменой)"
+    );
+    expect(selected?.content).toContain(
+      "не отправляй на сайт или в форму его имя, телефон, почту или адрес"
+    );
+    expect(selected?.content).toContain(
+      "не помечай прочитанным то, что просто прочитал"
+    );
+    expect(selected?.content).toContain("Письма о безопасности аккаунта");
+  });
+
   it("treats personal information as recalled context instead of a read tool", async () => {
     const resolve = roleInstructions.events["turn.started"];
     expect(resolve).toBeDefined();
@@ -137,6 +158,9 @@ describe("agent instructions", () => {
     const selected = await resolve({}, dynamicContext("photon-imessage"));
     expect(selected?.content).toContain(
       "Отвечай на языке последнего сообщения человека"
+    );
+    expect(selected?.content).toContain(
+      "то, что правила написаны по-русски, не значит, что отвечать надо по-русски"
     );
     expect(selected?.content).toContain(
       "Отказ, уточняющий вопрос, сообщение о сбое"
@@ -193,9 +217,12 @@ describe("agent instructions", () => {
       "Добавь в поручение сохранённые предпочтения человека"
     );
     expect(selected?.content).toContain(
-      "Для поиска, сравнения цен и подготовки заказа или брони карта не нужна"
+      "Для поиска и сравнения цен карта и разрешение не нужны"
     );
     expect(selected?.content).toContain(
+      "только с `allowSubmit: true`. Ставь его, только когда человек прямо попросил именно это"
+    );
+    expect(selected?.content).not.toContain(
       "сам доводит до конца всё бесплатное и бесплатно отменяемое"
     );
     expect(selected?.content).toContain("Граница — деньги и необратимость");

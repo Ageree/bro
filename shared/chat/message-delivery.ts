@@ -8,6 +8,17 @@ const replyReferenceSchema = z.discriminatedUnion("kind", [
 
 export type ReplyReference = z.infer<typeof replyReferenceSchema>;
 
+/**
+ * Whether a string is an absolute HTTPS URL. zod 4 still runs a refinement
+ * after `z.url()` rejected the value, so the check must not assume it parses:
+ * a throwing `new URL` escapes `safeParse`, and `turnSends` parses every
+ * earlier `send_message` input in the model resolver, where a relative
+ * `/artifacts/…` attachment once failed the whole turn.
+ */
+function isHttpsUrl(url: string) {
+  return URL.parse(url)?.protocol === "https:";
+}
+
 const attachmentSchema = z.object({
   kind: z
     .enum(["image", "video", "audio", "file"])
@@ -29,22 +40,19 @@ const attachmentSchema = z.object({
   url: z
     .url()
     .max(2048)
-    .refine((url) => new URL(url).protocol === "https:", {
+    .refine(isHttpsUrl, {
       message: "Attachments must use HTTPS.",
     })
     .describe(
-      "Direct HTTPS URL of the file itself, e.g. an image URL, not a page containing it."
+      "Direct HTTPS URL of the file itself, e.g. an image URL, not a page containing it. A private artifact (/artifacts/<id>) is not an attachment: write it into the text as ![caption](/artifacts/<id>)."
     ),
 });
 
 export type MessageAttachment = z.infer<typeof attachmentSchema>;
 
-const nativeLinkSchema = z
-  .url()
-  .max(2048)
-  .refine((url) => new URL(url).protocol === "https:", {
-    message: "Native links must use HTTPS.",
-  });
+const nativeLinkSchema = z.url().max(2048).refine(isHttpsUrl, {
+  message: "Native links must use HTTPS.",
+});
 
 const messageOutputFields = {
   // Ten is the Telegram album limit, the narrowest cap of the channels that
