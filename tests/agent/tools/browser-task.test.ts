@@ -1437,3 +1437,35 @@ describe("browser_task on an errand waiting for a background retry", () => {
     expect(readBrowserUseRunStatus).not.toHaveBeenCalled();
   });
 });
+
+describe("browser_task payment approval", () => {
+  it("puts a card bound on the user's say-so in front of the user", async () => {
+    const { paymentApproval } = await import("@agent/tools/browser_task");
+
+    expect(paymentApproval({ action: "start", allowPayment: true })).toBe(
+      "user-approval"
+    );
+    expect(paymentApproval({ action: "continue", allowPayment: true })).toBe(
+      "user-approval"
+    );
+    // The standing limit is its own approval, checked by the tool.
+    expect(
+      paymentApproval({
+        action: "start",
+        allowPayment: true,
+        withinSpendLimit: {
+          currency: "RUB",
+          feeRub: 0,
+          recurring: false,
+          totalRub: 1500,
+        },
+      })
+    ).toBe("not-applicable");
+    // Searching, staging and the other actions bind nothing.
+    expect(paymentApproval({ action: "start" })).toBe("not-applicable");
+    expect(paymentApproval({ action: "status", allowPayment: true })).toBe(
+      "not-applicable"
+    );
+    expect(paymentApproval(undefined)).toBe("not-applicable");
+  });
+});

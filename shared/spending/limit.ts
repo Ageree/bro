@@ -127,6 +127,68 @@ export function remainingForTarget(
   return Math.min(...covering.map((rule) => remainingUnderRule(rule, entries)));
 }
 
+/**
+ * Whether `outer` covers everything `inner` covers. Every payment counted
+ * against `inner` then counts against `outer` too, so an outer rule with a
+ * limit no higher always leaves no more than the inner one does.
+ */
+function ruleContains(outer: SpendRule, inner: SpendRule) {
+  return (
+    (outer.merchant === null ||
+      merchantCovers(outer.merchant, inner.merchant)) &&
+    (outer.category === null || outer.category === inner.category)
+  );
+}
+
+/**
+ * Whether a policy change lets Bro pay more anywhere, judged with the same
+ * coverage the payment decision uses — a rule for `ozon.ru` also binds
+ * `pay.ozon.ru`. For every shop and category the policies name, before or
+ * after, the change widens when permission appears where there was none (a
+ * new rule, a lifted exclusion), or when a ceiling that bound the target is
+ * gone or higher and no rule at least as broad, with a limit no higher, still
+ * binds it. That holds whatever the month has spent, so no spending can make
+ * a change judged narrowing pay more.
+ */
+export function policyWidens(
+  before: SpendLimitPolicy | undefined,
+  after: SpendLimitPolicy
+) {
+  const rulesBefore = before?.rules ?? [];
+  const policies = before ? [before, after] : [after];
+  // A merchant nothing names is bound only by the rules without a merchant,
+  // exactly like no merchant at all; the same goes for categories.
+  const merchants = new Set<string | null>([null]);
+  const categories = new Set<string | null>([null]);
+  for (const policy of policies) {
+    for (const rule of policy.rules) {
+      merchants.add(rule.merchant);
+      categories.add(rule.category);
+    }
+    for (const merchant of policy.excludedMerchants) merchants.add(merchant);
+    for (const category of policy.excludedCategories) categories.add(category);
+  }
+  return [...merchants].some((merchant) =>
+    [...categories].some((category) => {
+      const target = { category, merchant };
+      const bound = after.rules.filter((rule) => ruleApplies(rule, target));
+      if (bound.length === 0 || isExcluded(after, target)) return false;
+      const bindingBefore = rulesBefore.filter((rule) =>
+        ruleApplies(rule, target)
+      );
+      if (!before || bindingBefore.length === 0 || isExcluded(before, target)) {
+        return true;
+      }
+      return bindingBefore.some(
+        (old) =>
+          !bound.some(
+            (rule) => ruleContains(rule, old) && rule.limitRub <= old.limitRub
+          )
+      );
+    })
+  );
+}
+
 function isExcluded(policy: SpendLimitPolicy, target: SpendTarget) {
   return (
     (target.category !== null &&

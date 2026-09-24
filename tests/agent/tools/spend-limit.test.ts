@@ -3,6 +3,7 @@ import {
   applySpendLimitChange,
   spendLimitApproval,
 } from "@agent/tools/spend_limit";
+import { decideAutoPayment } from "@shared/spending/limit";
 
 const monthly = {
   currency: "RUB" as const,
@@ -112,12 +113,23 @@ describe("spend_limit changes", () => {
     expect(
       spendLimitApproval(
         { action: "set", limitRub: 1000, merchant: "ozon.ru" },
-        monthly
+        { ...monthly, rules: [] }
       )
     ).toBe("user-approval");
+    // Lifting an exclusion lets the general rule pay that shop again.
     expect(
-      spendLimitApproval({ action: "include", merchant: "wb.ru" }, monthly)
+      spendLimitApproval(
+        { action: "include", merchant: "wb.ru" },
+        { ...monthly, excludedMerchants: ["wb.ru"] }
+      )
     ).toBe("user-approval");
+    // A narrower rule under the general one only adds a ceiling.
+    expect(
+      spendLimitApproval(
+        { action: "set", limitRub: 1000, merchant: "ozon.ru" },
+        monthly
+      )
+    ).toBe("not-applicable");
     // Lowering or keeping a rule, clearing, excluding and reading only take
     // permission away or change nothing.
     expect(spendLimitApproval({ action: "set", limitRub: 3000 }, monthly)).toBe(
@@ -196,5 +208,51 @@ describe("spend_limit changes", () => {
     expect(
       spendLimitApproval({ action: "clear", merchant: "озон" }, withShop)
     ).toBe("user-approval");
+  });
+  it("sees a subdomain rule under the one being cleared, as payments do", () => {
+    // ozon.ru at 100 ₽ binds pay.ozon.ru too; clearing it leaves pay.ozon.ru
+    // with 5 000 ₽, so a 3 000 ₽ payment there would go through.
+    const nested = {
+      ...monthly,
+      rules: [
+        { category: null, limitRub: 100, merchant: "ozon.ru" },
+        { category: null, limitRub: 5000, merchant: "pay.ozon.ru" },
+      ],
+    };
+    const payment = {
+      amount: 3000,
+      category: null,
+      currency: "RUB",
+      fee: 0,
+      merchant: "pay.ozon.ru",
+      recurring: false,
+    };
+    expect(decideAutoPayment(nested, payment, [])).toMatchObject({
+      allowed: false,
+      reason: "over_limit",
+    });
+    const cleared = applySpendLimitChange(nested, {
+      action: "clear",
+      merchant: "ozon.ru",
+    });
+    expect(decideAutoPayment(cleared, payment, [])).toMatchObject({
+      allowed: true,
+    });
+
+    expect(
+      spendLimitApproval({ action: "clear", merchant: "ozon.ru" }, nested)
+    ).toBe("user-approval");
+    // Raising the subdomain's own rule past the parent's changes nothing a
+    // payment can use, and lowering it only narrows.
+    expect(
+      spendLimitApproval(
+        { action: "set", limitRub: 50, merchant: "pay.ozon.ru" },
+        nested
+      )
+    ).toBe("not-applicable");
+    // Clearing the subdomain rule leaves ozon.ru's 100 ₽ binding it.
+    expect(
+      spendLimitApproval({ action: "clear", merchant: "pay.ozon.ru" }, nested)
+    ).toBe("not-applicable");
   });
 });

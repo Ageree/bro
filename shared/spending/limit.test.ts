@@ -4,6 +4,7 @@ import {
   decideAutoPayment,
   normalizeCategory,
   normalizeMerchant,
+  policyWidens,
   remainingForTarget,
   remainingUnderRule,
   type SpendEntry,
@@ -266,5 +267,53 @@ describe("the auto-payment decision", () => {
         { ...groceries, amountRub: 4900 },
       ])
     ).toEqual({ allowed: false, reason: "over_limit", remainingRub: 100 });
+  });
+});
+
+describe("whether a policy change widens what Bro may pay", () => {
+  const rules = (...list: SpendLimitPolicy["rules"]) => policy({ rules: list });
+  const general = { category: null, limitRub: 5000, merchant: null };
+  const ozon = { category: null, limitRub: 100, merchant: "ozon.ru" };
+  const payOzon = { category: null, limitRub: 5000, merchant: "pay.ozon.ru" };
+  const food = { category: "еда", limitRub: 1000, merchant: null };
+
+  it("widens when a new permission appears or a limit goes up", () => {
+    expect(policyWidens(undefined, rules(general))).toBe(true);
+    expect(
+      policyWidens(rules(general), rules({ ...general, limitRub: 6000 }))
+    ).toBe(true);
+    expect(
+      policyWidens(
+        policy({ excludedMerchants: ["wb.ru"] }),
+        policy({ excludedMerchants: [] })
+      )
+    ).toBe(true);
+  });
+
+  it("follows subdomains the way payments do", () => {
+    // Without ozon.ru at 100 ₽, pay.ozon.ru answers only to its own 5 000 ₽.
+    expect(policyWidens(rules(ozon, payOzon), rules(payOzon))).toBe(true);
+    // Without pay.ozon.ru, ozon.ru's 100 ₽ still binds it.
+    expect(policyWidens(rules(ozon, payOzon), rules(ozon))).toBe(false);
+  });
+
+  it("widens when a crossing ceiling goes, whatever the limits say", () => {
+    // A rule for ozon.ru does not contain one for «еда»: food bought on ozon.ru
+    // with the food month nearly spent would get the whole ozon.ru limit.
+    const ozonAtThousand = { ...ozon, limitRub: 1000 };
+    expect(
+      policyWidens(rules(food, ozonAtThousand), rules(ozonAtThousand))
+    ).toBe(true);
+  });
+
+  it("narrows by lowering, adding a narrower ceiling, or clearing everything", () => {
+    expect(
+      policyWidens(rules(general), rules({ ...general, limitRub: 3000 }))
+    ).toBe(false);
+    expect(policyWidens(rules(general), rules(general, ozon))).toBe(false);
+    expect(policyWidens(rules(general, ozon), rules())).toBe(false);
+    expect(
+      policyWidens(rules(general), policy({ excludedCategories: ["еда"] }))
+    ).toBe(false);
   });
 });
