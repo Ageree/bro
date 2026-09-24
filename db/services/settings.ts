@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import {
   defaultFormOfAddress,
   type FormOfAddress,
@@ -20,9 +20,14 @@ const googleWorkspaceAccessKey = "google_workspace_access";
 const formOfAddressKey = "form_of_address";
 
 type SettingKey = typeof settings.$inferInsert.key;
+type Database = Pick<typeof db, "insert" | "select">;
 
-async function readSetting(scope: AccessScope, key: SettingKey) {
-  const rows = await db
+async function readSetting(
+  scope: AccessScope,
+  key: SettingKey,
+  database: Database = db
+) {
+  const rows = await database
     .select({ value: settings.value })
     .from(settings)
     .where(
@@ -35,9 +40,10 @@ async function readSetting(scope: AccessScope, key: SettingKey) {
 async function writeSetting(
   scope: AccessScope,
   key: SettingKey,
-  value: string
+  value: string,
+  database: Database = db
 ) {
-  await db
+  await database
     .insert(settings)
     .values({ key, value, workspaceId: scope.workspaceId })
     .onConflictDoUpdate({
@@ -100,17 +106,31 @@ export async function getFormOfAddress(
 
 /**
  * Applies what the person asked to change and keeps the rest; `name: null`
- * drops the chosen name.
+ * drops the chosen name. Changes are merged one at a time per workspace, so
+ * «на вы» from one chat and a new name from another both stay. The lock is
+ * on the workspace and key, since no row may exist yet to lock.
  */
 export async function updateFormOfAddress(
   scope: AccessScope,
   change: Partial<FormOfAddress>
 ) {
-  const current = await getFormOfAddress(scope);
-  const next = formOfAddressSchema.parse({
-    formal: change.formal ?? current.formal,
-    name: change.name === undefined ? current.name : change.name,
+  return db.transaction(async (transaction) => {
+    await transaction.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended(${`${formOfAddressKey}:${scope.workspaceId}`}, 0))`
+    );
+    const current = parseFormOfAddress(
+      await readSetting(scope, formOfAddressKey, transaction)
+    );
+    const next = formOfAddressSchema.parse({
+      formal: change.formal ?? current.formal,
+      name: change.name === undefined ? current.name : change.name,
+    });
+    await writeSetting(
+      scope,
+      formOfAddressKey,
+      JSON.stringify(next),
+      transaction
+    );
+    return next;
   });
-  await writeSetting(scope, formOfAddressKey, JSON.stringify(next));
-  return next;
 }
