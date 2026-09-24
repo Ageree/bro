@@ -6,7 +6,7 @@ import {
   requireDeliveredText,
 } from "@evals/agent/shared";
 import {
-  sendSkipReason,
+  repeatsDelivered,
   sentMessageOf,
   turnMessageLimit,
 } from "@agent/lib/delivery/turn-sends";
@@ -164,6 +164,11 @@ const loopCases = [
       "Давай викторину по географии: задавай мне вопросы по одному и жди ответа.",
   },
   {
+    // Six rephrased «перешёл на «вы»» in one turn of the 24.09 benchmark.
+    description: "Acknowledges a switch to «вы» once instead of rephrasing it",
+    prompt: "Давай со мной на вы, я так привык.",
+  },
+  {
     description: "Confirms saved preferences once instead of repeating it",
     prompt:
       "Запомни: я не ем мясо, пью только кофе без сахара, летаю у окна и не люблю звонки до десяти утра.",
@@ -195,12 +200,8 @@ const loopEvals = loopCases.map((testCase) =>
       );
       // Parallel sends in one step do not see each other, so one repeated
       // pair can slip through; the next step drops any further repeat.
-      const repeats = delivered.filter(
-        (message, index) =>
-          sendSkipReason(
-            message,
-            delivered.slice(0, index).map(sentMessageOf)
-          ) === "duplicate"
+      const repeats = delivered.filter((message, index) =>
+        repeatsDelivered(message, delivered.slice(0, index).map(sentMessageOf))
       ).length;
       t.check(
         repeats,

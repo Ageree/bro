@@ -175,7 +175,8 @@ describe("CaseJournal", () => {
         "789 01",
         "4111 1111",
         "Малышева",
-        "51",
+        // Not a bare "51": the log's clock can read 19:51.
+        "д. 51",
       ]) {
         expect(text).not.toContain(secret);
       }

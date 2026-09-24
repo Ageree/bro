@@ -1,21 +1,23 @@
 import type { ModelMessage, ToolResultPart } from "ai";
 import { describe, expect, it } from "vitest";
 import {
-  sendSkipReason,
+  repeatsDelivered,
+  rewriteSendNotice,
+  sendReachedPerson,
+  sendRefusal,
   sentMessageOf,
   skippedSendNotice,
   turnMessageLimit,
   turnMustEnd,
   turnSends,
 } from "@agent/lib/delivery/turn-sends";
+import { backgroundTurnMarker } from "@shared/chat/background-turn";
 
 const callRestaurant = "Пришли название ресторана — я позвоню.";
 
-describe("sendSkipReason", () => {
-  const delivered = [sent(callRestaurant)];
-
+describe("sendRefusal", () => {
   it("lets the first message of a turn through", () => {
-    expect(sendSkipReason(message(callRestaurant), [])).toBeUndefined();
+    expect(refusal([userMessage("найди")], callRestaurant)).toBeUndefined();
   });
 
   it.each([
@@ -24,16 +26,9 @@ describe("sendSkipReason", () => {
     ["other punctuation", "Пришли название ресторана, я позвоню!"],
     ["a near copy", "Пришли название ресторана — и я позвоню."],
   ])("drops %s as a repeat", (_case, text) => {
-    expect(sendSkipReason(message(text), delivered)).toBe("duplicate");
-  });
-
-  it("delivers a different message in the same turn", () => {
     expect(
-      sendSkipReason(
-        message("Нашёл три варианта, вот лучший: «Пушкин», столик на 19:00."),
-        delivered
-      )
-    ).toBeUndefined();
+      refusal([userMessage("найди"), ...sendMessage("a", callRestaurant)], text)
+    ).toEqual({ skipped: "duplicate" });
   });
 
   it.each([
@@ -77,37 +72,320 @@ describe("sendSkipReason", () => {
       "Нашёл столик в «Пушкине» на 20:00 на двоих.",
       "Бронировать столик в «Пушкине» на 20:00 на двоих?",
     ],
-  ])("delivers %s from the same template", (_case, first, second) => {
-    expect(sendSkipReason(message(second), [sent(first)])).toBeUndefined();
+    [
+      "a place the first message did not name",
+      "Столик на 20:00 свободен.",
+      "Ещё есть веранда в «Пушкине» на то же время 20:00.",
+    ],
+  ])("delivers %s right after it", (_case, first, second) => {
+    expect(
+      refusal([userMessage("найди"), ...sendMessage("a", first)], second)
+    ).toBeUndefined();
   });
 
   it("delivers the same caption with different photos", () => {
-    const first = sentMessageOf(photo("https://media.example/1.jpg"));
+    const history = [
+      userMessage("покажи"),
+      ...sendInput("a", photo("https://media.example/1.jpg")),
+    ];
 
     expect(
-      sendSkipReason(photo("https://media.example/2.jpg"), [first])
+      sendRefusal(photo("https://media.example/2.jpg"), turnSends(history))
     ).toBeUndefined();
-    expect(sendSkipReason(photo("https://media.example/1.jpg"), [first])).toBe(
-      "duplicate"
-    );
+    expect(
+      sendRefusal(photo("https://media.example/1.jpg"), turnSends(history))
+    ).toEqual({ skipped: "duplicate" });
   });
 
   it("drops a repeated native link", () => {
     const link = { kind: "link" as const, url: "https://brobro.tech/x" };
-    const first = sentMessageOf(link);
 
-    expect(sendSkipReason(link, [first])).toBe("duplicate");
+    expect(repeatsDelivered(link, [sentMessageOf(link)])).toBe(true);
   });
 
   it("stops every send once the turn used up its limit", () => {
-    const full = Array.from({ length: turnMessageLimit }, (_, index) =>
-      sent(`Сообщение номер ${String(index)} про совсем разные вещи`)
+    const sends = Array.from({ length: turnMessageLimit }, (_, index) =>
+      sendMessage(`call-${String(index)}`, `Вопрос номер ${String(index)}?`)
     );
+    const full = [userMessage("викторину"), ...sends.flat()];
 
-    expect(sendSkipReason(message("Совершенно новое"), full)).toBe("limit");
+    expect(refusal(full, "Вопрос номер 9?")).toEqual({ skipped: "limit" });
     expect(
-      sendSkipReason(message("Совершенно новое"), full.slice(1))
+      refusal([userMessage("викторину"), ...sends.slice(1).flat()], "Вопрос 9?")
     ).toBeUndefined();
+  });
+});
+
+/**
+ * Turns from the production benchmark of 24.09.2026: after the first
+ * message went out, the model kept rephrasing it, step after step. Each
+ * later text is what it sent next.
+ */
+describe("sendRefusal on rephrased replies from the benchmark", () => {
+  it.each([
+    [
+      "«на вы» said six times (d15)",
+      [toolStep("form_of_address", { formal: true })],
+      "перешёл на «вы», так и буду обращаться.\n\nпо барбершопу напомню: запись пока не ушла, жду, пока вы подтвердите карточку. после этого сразу найду салон с артуром на профсоюзной и пришлю название, адрес, время и цену.",
+      [
+        "готово, теперь на «вы».\n\nнапоминаю: запись в барбершоп ещё не ушла — жду вашего подтверждения карточки. как подтвердите, найду салон с артуром на профсоюзной и пришлю название, адрес, время и цену.",
+        "записал: теперь только «вы».\n\nи напомню про барбершоп — запись пока не ушла, жду вашего подтверждения карточки. как подтвердите, найду салон с артуром на профсоюзной и сразу пришлю название, адрес, время и цену.",
+        "записал, дальше только на «вы».\n\nпо барбершопу: запись ещё не ушла, жду, пока вы подтвердите карточку. после этого найду салон с артуром на профсоюзной и пришлю название, адрес, время и цену.",
+        "перешёл на «вы», так и останется.\n\nи напоминание: запись в барбершоп пока не ушла — жду, пока вы подтвердите карточку. как подтвердите, сразу найду салон с артуром на профсоюзной и пришлю название, адрес, время и цену.",
+      ],
+    ],
+    [
+      "no address, said again and again (d15)",
+      [toolStep("list_orders", { orders: [] })],
+      "адреса нет, и название не скажу — записи-то не было. карточку на барбершоп ты не подтвердил, так что в салон никто не звонил и не писал.\n\nв заказах тоже пусто по этой части — там висит только неоплаченный заказ №1234567 на 1580 ₽.\n\nскажи «запиши» — отправлю поручение заново, и как найдётся салон с артуром на профсоюзной, пришлю название, адрес и время.",
+      [
+        "готово, жду отмашку. скажи «запиши» — и как только найдётся барбершоп с артуром на профсоюзной, сразу скину название, адрес и время.",
+        "название и адрес пока никакие — записи не было, карточку ты не подтвердил. в заказах по барбершопу тоже пусто.\n\nскажи «запиши» — отправлю поручение заново, и как только найдётся салон с артуром на профсоюзной, сразу пришлю название, адрес и время.",
+        "названия и адреса пока нет — записи в барбершоп не было, карточку ты не подтвердил, так что салон я не искал и не бронировал. в заказах по этому делу тоже пусто.\n\nскажи «запиши» — отправлю поручение заново, найду барбершоп с артуром на профсоюзной и сразу пришлю название, адрес и время.",
+      ],
+    ],
+    [
+      "the same answer with an apology (d18)",
+      [toolStep("gmail-search", { messages: [] })],
+      "Посмотрел почту: письма с записью к стоматологу на эту пятницу нет — последнее такое от Euromed в апреле 2024. Скажите время и клинику, поставлю в календарь и вызову такси.\n\nЛёше написать «освобожусь не раньше восьми»? Скажите, куда — я вижу только телефон +79990000000, почты нет.",
+      [
+        "Прошу прощения, поправлюсь: письма с записью к стоматологу на эту пятницу в почте нет — последнее такое от Euromed датировано апрелем 2024. Назовите время и клинику, и я поставлю приём в календарь и вызову такси с запасом.\n\nЛёше написать «освобожусь не раньше восьми»? Вижу только телефон +79990000000, почты нет — скажите, куда отправлять.",
+        "По почте поискал: письма с записью к стоматологу на эту пятницу нет, последнее такое от Euromed датировано апрелем 2024. Назовите время и клинику — поставлю приём в календарь и вызову такси с запасом.\n\nЛёше написать «освобожусь не раньше восьми»? Вижу только телефон +79990000000, почты нет — скажите, куда отправлять.",
+        "Я поискал в почте: письма с записью к стоматологу на эту пятницу нет. Последнее такое — от Euromed, апрель 2024, и оно не про эту неделю. Назовите время и клинику, и я поставлю приём в календарь и вызову такси с запасом.\n\nЛёше написать «освобожусь не раньше восьми»? Я вижу только его телефон +79990000000, почты нет — скажите, куда отправлять.",
+      ],
+    ],
+    [
+      "«запуск ещё работает» in other words (d05)",
+      [toolStep("browser_task", { outcome: "Result: …", status: "done" })],
+      "Пока так: заказ ещё не размещён. Лавка не подошла, и запуск собрал корзину в Перекрёстке — вышло 1 085,95 ₽ за товары, доставка от 99 ₽. Слот к 20:00 пока не подтверждён, сайт просит выбрать адрес доставки.\n\nПродолжаю: подтверждаю адрес и проверяю слот к восьми. Как только соберётся точный состав и итог, пришлю отдельно — там же будет, что удалось заменить.",
+      [
+        "Коротко: запуск ещё работает — сайт сейчас проверяет слот к 20:00 и добирает корзину. Ориентир по деньгам: около 1 086 ₽ за товары плюс доставка от 99 ₽.\n\nТочный состав, итоговую сумму, время доставки и список замен пришлю отдельным сообщением, как только сайт ответит.",
+        "Запуск всё ещё в работе: сайт проверяет слот к 20:00 и добирает корзину. Ориентир по деньгам — около 1 086 ₽ за товары плюс доставка от 99 ₽.\n\nТочный состав, итоговую сумму, время доставки и список замен пришлю отдельным сообщением, как только сайт ответит.",
+      ],
+    ],
+    [
+      "«пока смотрю» after the run was handed the code (d06)",
+      [toolStep("browser_task", { runId: "run-2", status: "running" })],
+      "код передал, жду, что покажет страница. отпишусь с результатом.",
+      [
+        "пока смотрю — как только кабинет отдаст данные, пришлю штрафы, налоги и срок загранника.",
+        "как только страница отдаст данные — пришлю одним сообщением: штрафы, налоги и дату окончания загранника.",
+      ],
+    ],
+    [
+      "«ищу сам» after the answer (d02)",
+      [toolStep("browser_task", { runId: "run-1", status: "running" })],
+      "Понял: Москва — Сочи туда в пятницу 9 октября утром, обратно в понедельник 12-го вечером, с багажом, место у прохода, до 20 000 ₽ туда-обратно.\n\nИщу варианты сейчас — займёт минут пятнадцать, пришлю ссылки на лучшие.",
+      [
+        "Ищу сам, ничего дополнительно не нужно — как только увижу варианты, пришлю их тебе со ссылками.",
+        "Поиск идёт в фоне: смотрю утренние вылеты 9 октября и вечерние обратные 12-го, с багажом и местом у прохода, до 20 000 ₽. Как будут варианты — сразу пришлю ссылки.",
+      ],
+    ],
+  ])("drops each rephrasing of %s", (_case, work, first, next) => {
+    const history = [
+      userMessage("сообщение человека"),
+      ...work.flat(),
+      ...sendMessage("first", first),
+    ];
+
+    for (const text of next) {
+      const refused = refusal(history, text);
+      expect(
+        refused && "skipped" in refused ? refused.skipped : refused
+      ).toMatch(/^(?:duplicate|stale)$/u);
+    }
+  });
+
+  it("still delivers a question the first message did not ask (d02)", () => {
+    const history = [
+      userMessage("найди билеты и зарегистрируй меня"),
+      ...sendMessage(
+        "first",
+        "Ищу варианты сейчас — займёт минут пятнадцать, пришлю ссылки на лучшие. Сам зарегистрировать не могу, но заведу проверку."
+      ),
+    ];
+
+    expect(
+      refusal(
+        history,
+        "Уточни одну вещь: ставить проверку регистрации на утро среды или на сутки до вылета? Как скажешь — заведу сразу."
+      )
+    ).toBeUndefined();
+    const asked = [
+      ...history,
+      ...sendMessage(
+        "second",
+        "Уточни одну вещь: ставить проверку регистрации на утро среды или на сутки до вылета?"
+      ),
+    ];
+    expect(
+      refusal(
+        asked,
+        "Остался один вопрос: проверку регистрации поставить на утро среды или за сутки до вылета?"
+      )
+    ).toEqual({ skipped: "stale" });
+  });
+
+  it("delivers what further work found, even in words alone", () => {
+    const history = [
+      userMessage("найди письмо от клиники"),
+      ...sendMessage("ack", "Смотрю почту."),
+      ...toolStep("gmail-search", { messages: [] }),
+    ];
+
+    expect(
+      refusal(
+        history,
+        "Письма от клиники нет. Скажи, как она называется — поищу по названию."
+      )
+    ).toBeUndefined();
+  });
+
+  it("drops status after further work when it tells nothing new", () => {
+    const history = [
+      userMessage("что с заказом?"),
+      ...sendMessage(
+        "first",
+        "Корзина в Перекрёстке собрана: 1 085,95 ₽, слот к 20:00 проверяю."
+      ),
+      ...toolStep("browser_task", { runId: "run-3", status: "running" }),
+    ];
+
+    expect(
+      refusal(
+        history,
+        "Продолжаю в том же браузере: сейчас проверяю слот к 20:00 и добираю корзину. Как только сайт даст точный состав — напишу вам сразу."
+      )
+    ).toEqual({ skipped: "stale" });
+  });
+});
+
+describe("sendRefusal on claims no tool made", () => {
+  const codeHandedOver = [
+    userMessage("код от госуслуг: 123456"),
+    ...toolStep("browser_task", {
+      note: "This errand now continues as run run-2 in the same browser.",
+      runId: "run-2",
+      status: "running",
+    }),
+  ];
+
+  it.each([
+    "код принял, ввёл — кабинет открылся, смотрю штрафы, налоги и срок загранника. отпишусь с результатом.",
+    "запросил новый код — госуслуги должны прислать свежую смс на ваш номер. как придёт, скиньте его, и я сразу продолжу.",
+    "залез в личный кабинет на госуслугах — смотрю штрафы, налоги и срок загранника.",
+    "Продолжаю в том же браузере: адрес подтвердил, сейчас проверяю слот к 20:00.",
+  ])("returns «%s» right after the run was handed work", (text) => {
+    expect(refusal(codeHandedOver, text)).toEqual({ rewrite: "browser" });
+  });
+
+  it.each([
+    "код передал в браузер — как страница его примет, пришлю штрафы, налоги и срок загранника.",
+    "Код ещё не ввёл: запуск только получил его. Итог пришлю, как будет.",
+    "В прошлый раз код ввёл, но он истёк — передал новый.",
+    "ты подтвердил карточку — передал запуску.",
+  ])("delivers «%s»", (text) => {
+    expect(refusal(codeHandedOver, text)).toBeUndefined();
+  });
+
+  it("lets «ввёл» through once the tool typed the code itself", () => {
+    const typed = [
+      userMessage("код 123456"),
+      ...toolStep("browser_task", {
+        note: "The code went straight into the page, and the message was queued into the running errand as well.",
+        runId: "run-2",
+        status: "running",
+      }),
+    ];
+
+    expect(refusal(typed, "код ввёл, жду, что покажет страница.")).toBe(
+      undefined
+    );
+    expect(refusal(typed, "код ввёл — кабинет открылся.")).toEqual({
+      rewrite: "browser",
+    });
+  });
+
+  it("checks no browser claim in a turn a run's report opened", () => {
+    const report = [
+      userMessage(`${backgroundTurnMarker}\n\nBrowser run run-1 finished.`),
+      ...toolStep("browser_task", { runId: "run-2", status: "running" }),
+    ];
+
+    expect(
+      refusal(report, "Код ввёл, кабинет открылся — дальше смотрю налоги.")
+    ).toBeUndefined();
+  });
+
+  it("returns a calendar slot no tool booked (d18)", () => {
+    const history = [
+      userMessage("поставь в календарь стоматолога в пятницу"),
+      ...toolStep("gmail-search", { messages: [] }),
+    ];
+
+    expect(
+      refusal(
+        history,
+        "Письма нет. Пока ставлю в календарь по умолчанию слот 11:00–12:00 на пятницу, 25 сентября, — поправлю, как назовёте точное время."
+      )
+    ).toEqual({ rewrite: "calendar" });
+    expect(
+      refusal(
+        history,
+        "Письма нет. Скажите время и клинику — поставлю в календарь."
+      )
+    ).toBeUndefined();
+  });
+
+  it("reads a sentence about the person's calendar as no claim", () => {
+    expect(
+      refusal(
+        [userMessage("запомни, что по пятницам у меня зал")],
+        "Записал: по пятницам у тебя в календаре зал, учту."
+      )
+    ).toBeUndefined();
+  });
+
+  it("delivers a calendar change the turn made (d15)", () => {
+    const history = [
+      userMessage("созвон с петровым в пятницу в 15:30, поставь"),
+      ...toolStep("calendar-create-event", { created: true }),
+    ];
+
+    expect(
+      refusal(
+        history,
+        "созвон с петровым в пятницу в 15:30 поставил в календарь."
+      )
+    ).toBeUndefined();
+  });
+
+  it("reads a past-tense calendar claim as an earlier turn's write", () => {
+    const history = [
+      userMessage("созвон с петровым в пятницу в 15:30, поставь"),
+      ...toolStep("calendar-create-event", { created: true }),
+      ...sendMessage("a", "Поставил."),
+      userMessage("а созвон точно в календаре?"),
+    ];
+
+    expect(
+      refusal(history, "Да, поставил в календарь на пятницу, 15:30.")
+    ).toBeUndefined();
+    expect(
+      refusal(history, "Сейчас ставлю в календарь ещё раз на 15:30.")
+    ).toEqual({ rewrite: "calendar" });
+  });
+
+  it("lets a claim through once the model kept it twice", () => {
+    const claim = "код ввёл — кабинет открылся.";
+    const rewritten = [
+      ...codeHandedOver,
+      ...sendMessage("a", claim, textOutput(rewriteSendNotice("browser"))),
+      ...sendMessage("b", claim, textOutput(rewriteSendNotice("browser"))),
+    ];
+
+    expect(turnSends(rewritten).rewrites).toBe(2);
+    expect(refusal(rewritten, claim)).toBeUndefined();
   });
 });
 
@@ -122,48 +400,98 @@ describe("turnSends", () => {
       ...sendMessage("b", "Нашёл: она в Пулково"),
     ];
 
-    expect(turnSends(history)).toEqual({
+    expect(turnSends(history)).toMatchObject({
       delivered: [sent("Ищу посылку"), sent("Нашёл: она в Пулково")],
+      rewrites: 0,
       skipped: 0,
+      workSinceDelivery: false,
     });
     expect(turnMustEnd(history)).toBe(false);
   });
 
-  it("ignores a send that failed or was dropped", () => {
+  it("notes other work since the last delivery, but not a reaction", () => {
+    const acknowledged = [
+      userMessage("найди посылку"),
+      ...sendMessage("a", "Ищу посылку"),
+      ...toolStep("react_to_message", { type: "thumbs_up" }),
+    ];
+
+    expect(turnSends(acknowledged).workSinceDelivery).toBe(false);
+    expect(
+      turnSends([
+        ...acknowledged,
+        ...toolStep("gmail-search", { messages: [] }),
+      ]).workSinceDelivery
+    ).toBe(true);
+  });
+
+  it("ignores a send that failed, was dropped or returned", () => {
     const history = [
       userMessage("оформи возврат"),
       ...sendMessage("a", "Оформляю возврат"),
-      ...sendMessage("b", "Оформляю возврат", {
-        type: "text",
-        value: skippedSendNotice("duplicate"),
-      }),
+      ...sendMessage(
+        "b",
+        "Оформляю возврат",
+        textOutput(skippedSendNotice("duplicate"))
+      ),
       ...sendMessage("c", "Не вышло", {
         type: "error-text",
         value: "invalid",
       }),
+      ...sendMessage(
+        "d",
+        "Запросил код",
+        textOutput(rewriteSendNotice("browser"))
+      ),
     ];
 
-    expect(turnSends(history)).toEqual({
+    expect(turnSends(history)).toMatchObject({
       delivered: [sent("Оформляю возврат")],
+      rewrites: 1,
       skipped: 1,
     });
   });
 
-  it("ends a turn only once it keeps repeating itself", () => {
-    const repeat = (id: string) =>
-      sendMessage(id, "Оформляю возврат", {
-        type: "text",
-        value: skippedSendNotice("duplicate"),
-      });
+  it("never counts a refused send as reaching the person", () => {
+    expect(sendReachedPerson(textOutput(skippedSendNotice("stale")))).toBe(
+      false
+    );
+    expect(sendReachedPerson(textOutput(rewriteSendNotice("calendar")))).toBe(
+      false
+    );
+    expect(sendReachedPerson(textOutput("submitted"))).toBe(true);
+  });
+
+  it("ends a turn after its first dropped send", () => {
     const once = [
       userMessage("оформи возврат"),
       ...sendMessage("a", "Оформляю возврат"),
-      ...repeat("b"),
     ];
 
-    // The model may still owe a real answer after one dropped repeat.
     expect(turnMustEnd(once)).toBe(false);
-    expect(turnMustEnd([...once, ...repeat("c")])).toBe(true);
+    expect(
+      turnMustEnd([
+        ...once,
+        ...sendMessage(
+          "b",
+          "Пока оформляю",
+          textOutput(skippedSendNotice("stale"))
+        ),
+      ])
+    ).toBe(true);
+  });
+
+  it("does not end a turn over a send returned for a rewrite", () => {
+    expect(
+      turnMustEnd([
+        userMessage("код 1234"),
+        ...sendMessage(
+          "a",
+          "Ввёл код",
+          textOutput(rewriteSendNotice("browser"))
+        ),
+      ])
+    ).toBe(false);
   });
 
   it("ends a turn that reached the message limit", () => {
@@ -208,13 +536,14 @@ describe("turnSends", () => {
       ]),
     ];
 
-    expect(turnSends(history)).toEqual({
-      delivered: [],
-      skipped: 0,
-    });
+    expect(turnSends(history)).toMatchObject({ delivered: [], skipped: 0 });
     expect(() => turnMustEnd(history)).not.toThrow();
   });
 });
+
+function refusal(history: readonly ModelMessage[], text: string) {
+  return sendRefusal(message(text), turnSends(history));
+}
 
 function message(text: string) {
   return { kind: "message" as const, text };
@@ -232,6 +561,10 @@ function sent(text: string) {
   return sentMessageOf(message(text));
 }
 
+function textOutput(value: string): ToolResultPart["output"] {
+  return { type: "text", value };
+}
+
 function userMessage(text: string): ModelMessage {
   // eve adds `kind` to every user-role message it keeps in history.
   return Object.assign(
@@ -244,9 +577,45 @@ function frameworkMessage(kind: string): ModelMessage {
   return Object.assign({ content: "context", role: "user" as const }, { kind });
 }
 
+let toolSteps = 0;
+
+function toolStep(
+  toolName: string,
+  value: Extract<ToolResultPart["output"], { type: "json" }>["value"]
+): ModelMessage[] {
+  toolSteps += 1;
+  const toolCallId = `${toolName}-${String(toolSteps)}`;
+  return [
+    {
+      content: [{ input: {}, toolCallId, toolName, type: "tool-call" }],
+      role: "assistant",
+    },
+    {
+      content: [
+        {
+          output: { type: "json", value },
+          toolCallId,
+          toolName,
+          type: "tool-result",
+        },
+      ],
+      role: "tool",
+    },
+  ];
+}
+
 function sendMessage(
   toolCallId: string,
   text: string,
+  output: ToolResultPart["output"] = { type: "text", value: "submitted" },
+  attachments?: readonly { kind: string; url: string }[]
+): ModelMessage[] {
+  return sendInput(toolCallId, message(text), output, attachments);
+}
+
+function sendInput(
+  toolCallId: string,
+  input: ReturnType<typeof message> | ReturnType<typeof photo>,
   output: ToolResultPart["output"] = { type: "text", value: "submitted" },
   attachments?: readonly { kind: string; url: string }[]
 ): ModelMessage[] {
@@ -254,10 +623,7 @@ function sendMessage(
     {
       content: [
         {
-          input:
-            attachments === undefined
-              ? message(text)
-              : { ...message(text), attachments },
+          input: attachments === undefined ? input : { ...input, attachments },
           toolCallId,
           toolName: "send_message",
           type: "tool-call",

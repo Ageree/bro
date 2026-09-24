@@ -8,6 +8,7 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { resolveModeValue } from "@agent/lib/mode";
+import { comparableMemoryText } from "@agent/lib/memory/profile";
 import {
   findWorkstreams,
   forgetWorkstream,
@@ -21,6 +22,17 @@ import {
   saveWorkstreamSchema,
   workstreamIdSchema,
 } from "@shared/workstreams/schema";
+
+const forgetWorkstreamInputSchema = forgetWorkstreamSchema.extend({
+  title: z
+    .string()
+    .trim()
+    .min(1)
+    .max(100)
+    .describe(
+      "The workstream's title exactly as saved. The confirmation card shows it to the user when another conversation saved the work."
+    ),
+});
 
 function interactiveWorkstreamScope(
   context: Pick<MemoryScopeContext, "session">
@@ -100,23 +112,33 @@ export default defineMemory({
         }),
         forget: defineTool({
           // Work built up in another conversation goes only on the person's
-          // own confirmation of it, as a profile memory does.
+          // own confirmation of it, as a profile memory does, on a card that
+          // shows its saved title rather than a slug.
           approval: async ({ session, toolInput }) => {
             if (toolInput === undefined) return "user-approval";
             const workstream = await readWorkstream(scope, key, toolInput.id);
-            if (workstream === null) return "not-applicable";
-            return workstream.sessionId === session.id
-              ? "not-applicable"
-              : "user-approval";
+            if (!workstream?.content) return "not-applicable";
+            if (workstream.sessionId === session.id) return "not-applicable";
+            const { title } = workstream.content;
+            if (
+              comparableMemoryText(toolInput.title) !==
+              comparableMemoryText(title)
+            ) {
+              return {
+                reason: `Nothing was forgotten. Workstream ${toolInput.id} was saved in another conversation, so the user confirms forgetting it on a card that shows its title: «${title}». Forget it only if the user named it themselves; then call again with title set to exactly that. If they did not name it, ask them one short question instead and wait for the answer.`,
+                type: "denied",
+              };
+            }
+            return "user-approval";
           },
           description:
-            "Forget a workstream the user named themselves. When the request is broad or unclear, forget nothing: ask one short question and wait for the answer. Read it first and pass its current revision; one saved in another conversation is forgotten only after the user confirms it on a card. Erases saved content and source references; existing conversation history is unchanged. Does not cancel any running job or schedule.",
-          inputSchema: forgetWorkstreamSchema,
-          execute: (input, ctx) =>
+            "Forget a workstream the user named themselves. When the request is broad or unclear, forget nothing: ask one short question and wait for the answer. Read it first and pass its current revision and its title exactly as saved; one saved in another conversation is forgotten only after the user confirms it on a card that shows that title. Erases saved content and source references; existing conversation history is unchanged. Does not cancel any running job or schedule.",
+          inputSchema: forgetWorkstreamInputSchema,
+          execute: ({ expectedRevision, id }, ctx) =>
             forgetWorkstream(
               scope,
               key,
-              input,
+              { expectedRevision, id },
               `${ctx.session.id}:${ctx.callId}`
             ),
         }),

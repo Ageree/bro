@@ -297,6 +297,70 @@ describe("scheduled run completion hook", () => {
     );
   });
 
+  // The proactive worker's replies from the 24.09 benchmark: reasoning, then
+  // the marker. Each one reached a report turn, which told the person
+  // «почту и календарь проверил — нового ничего».
+  it.each([
+    "No new mail; calendar events are routine (workout, test block, blog draft) — nothing needing action. No flights, no consequential items.\n\n<eve-empty-delivery/>",
+    "Разряды: письмо ByteByteGo — рассылка (разряд 5, не передаётся). Событие «Созвон с Петровым» — обычная встреча из календаря (разряд 5). Передавать нечего.\n\n<eve-empty-delivery/>",
+    "Разряды: письмо ByteByteGo — рассылка (разряд 5). Передавать нечего.",
+  ])(
+    "records a reply that hands nothing over as nothing to report",
+    async (message) => {
+      const completed = completionHook.events?.["message.completed"];
+      await completed?.(
+        {
+          data: {
+            finishReason: "stop",
+            message,
+            sequence: 0,
+            stepIndex: 0,
+            turnId: "turn-1",
+          },
+          meta: { at: "2026-09-01T13:01:00.000Z", id: "event-empty" },
+          type: "message.completed",
+        },
+        context
+      );
+
+      expect(services.complete).toHaveBeenCalledWith(
+        runId,
+        leaseToken,
+        "turn-1",
+        expect.objectContaining({ kind: "nothing_to_report" }),
+        new Date("2026-09-01T13:01:00.000Z")
+      );
+    }
+  );
+
+  it("keeps a handover that only leaves the rest out", async () => {
+    const message =
+      "Рейс SU 1234 завтра в 08:40 из Шереметьево, регистрация уже открыта. Остальное передавать нечего.";
+    const completed = completionHook.events?.["message.completed"];
+    await completed?.(
+      {
+        data: {
+          finishReason: "stop",
+          message,
+          sequence: 0,
+          stepIndex: 0,
+          turnId: "turn-1",
+        },
+        meta: { at: "2026-09-01T13:01:00.000Z", id: "event-flight" },
+        type: "message.completed",
+      },
+      context
+    );
+
+    expect(services.complete).toHaveBeenCalledWith(
+      runId,
+      leaseToken,
+      "turn-1",
+      { kind: "result", summary: message, urgency: "normal" },
+      new Date("2026-09-01T13:01:00.000Z")
+    );
+  });
+
   it("bounds a long final handoff before persisting it", async () => {
     const completed = completionHook.events?.["message.completed"];
     await completed?.(

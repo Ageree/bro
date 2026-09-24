@@ -42,8 +42,12 @@ beforeEach(() => {
   services.getFormOfAddress.mockResolvedValue(defaultFormOfAddress);
 });
 
-function note(language: "en" | "ru" | undefined) {
-  return replyDirective({ formOfAddress: defaultFormOfAddress, language });
+function note(language: "en" | "ru" | undefined, answered = false) {
+  return replyDirective({
+    answered,
+    formOfAddress: defaultFormOfAddress,
+    language,
+  });
 }
 
 describe("root agent model resolution", () => {
@@ -85,7 +89,7 @@ describe("interactive delivery enforcement", () => {
     {
       content: [
         {
-          input: {},
+          input: { kind: "message", text: "С этим не помогу." },
           toolCallId: "call-1",
           toolName: "send_message",
           type: "tool-call" as const,
@@ -121,34 +125,23 @@ describe("interactive delivery enforcement", () => {
       interactiveContext(delivered)
     );
 
+    // The note after a delivery says the reply is out, so the model does
+    // not read it as a new request to answer.
     expect(services.modelSelection).toHaveBeenLastCalledWith(
       "openai/gpt-5.6-sol-fast",
-      { replyNote: note("ru"), toolChoice: "auto" }
+      { replyNote: note("ru", true), toolChoice: "auto" }
     );
   });
 
-  it("makes a turn that keeps repeating a delivered message end in text", async () => {
+  it("makes a turn whose send was dropped end in text", async () => {
     await agent.model.events["step.started"]?.(
       {},
       interactiveContext([...delivered, ...skippedRepeat("call-2")])
     );
-    // One dropped repeat may still precede a real answer.
-    expect(services.modelSelection).toHaveBeenLastCalledWith(
-      "openai/gpt-5.6-sol-fast",
-      { replyNote: note("ru"), toolChoice: "auto" }
-    );
 
-    await agent.model.events["step.started"]?.(
-      {},
-      interactiveContext([
-        ...delivered,
-        ...skippedRepeat("call-2"),
-        ...skippedRepeat("call-3"),
-      ])
-    );
     expect(services.modelSelection).toHaveBeenLastCalledWith(
       "openai/gpt-5.6-sol-fast",
-      { replyNote: note("ru"), toolChoice: "none" }
+      { replyNote: note("ru", true), toolChoice: "none" }
     );
   });
 

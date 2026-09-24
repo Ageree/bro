@@ -26,6 +26,7 @@ import {
   saveWorkstream,
 } from "@db/services/workstreams";
 import workstreamMemory from "@agent/memory/workstreams";
+import { withApprovalCard } from "@shared/chat/approval-card";
 import {
   saveWorkstreamSchema,
   type WorkstreamContent,
@@ -99,10 +100,11 @@ describe("workstream memory", () => {
       { id: "autumn-trip", expectedRevision: 1, content: corrected },
       { ...later, callId: "correct", toolName: "workstreams__save" }
     );
+    // The correction does not move the work into the later conversation.
     expect(await readWorkstream(alice, "key-a", "autumn-trip")).toMatchObject({
       revision: 2,
       content: corrected,
-      sessionId: "later",
+      sessionId: "first",
     });
     await expect(
       saveWorkstream(
@@ -166,6 +168,71 @@ describe("workstream memory", () => {
     const index = recall?.messages[0]?.content ?? "";
     expect(index).toContain("never mention, report on, or continue it here");
     expect(index).not.toContain("tracker page is ready");
+  });
+
+  it("forgets another conversation's work only on a card with its title, even after saving it here", async () => {
+    const first = context("first");
+    const firstTools = await workstreamMemory.provider.tools(first);
+    const later = context("later");
+    const laterTools = await workstreamMemory.provider.tools(later);
+    if (!firstTools || !laterTools) throw new Error("Expected tools.");
+    await firstTools.save.execute(
+      { id: "autumn-trip", expectedRevision: 0, content },
+      { ...first, callId: "save", toolName: "workstreams__save" }
+    );
+    // Saving it in the later conversation must not make it that
+    // conversation's own: save-then-forget would erase it with no card.
+    await laterTools.save.execute(
+      {
+        id: "autumn-trip",
+        expectedRevision: 1,
+        content: { ...content, nextStep: "Check afternoon fares." },
+      },
+      { ...later, callId: "save", toolName: "workstreams__save" }
+    );
+
+    const named = {
+      expectedRevision: 2,
+      id: "autumn-trip",
+      title: "Autumn trip",
+    };
+
+    expect(await forgetDecision("later", named)).toBe("user-approval");
+    // A title other than the saved one never reaches the card; the model
+    // is told what the card will show.
+    const misnamed = await forgetDecision("later", {
+      ...named,
+      title: "Old test data",
+    });
+    expect(misnamed).toMatchObject({ type: "denied" });
+    expect(JSON.stringify(misnamed)).toContain("«Autumn trip»");
+    // The conversation that started the work forgets it at once.
+    expect(await forgetDecision("first", named)).toBe("not-applicable");
+    // Nothing saved under the id: nothing to confirm.
+    expect(
+      await forgetDecision("later", { ...named, id: "no-such-work" })
+    ).toBe("not-applicable");
+
+    const card = withApprovalCard(
+      {
+        action: { input: named, toolName: "workstreams__forget" },
+        kind: "tool-approval",
+        options: [
+          { id: "approve", label: "Approve" },
+          { id: "cancel", label: "Cancel" },
+        ],
+        prompt: "Approve tool call: workstreams__forget",
+      },
+      "ru"
+    );
+    expect(card.prompt).toBe("Забыть сохранённое дело «Autumn trip»");
+
+    await laterTools.forget.execute(named, {
+      ...later,
+      callId: "forget",
+      toolName: "workstreams__forget",
+    });
+    expect(await readWorkstream(alice, "key-a", "autumn-trip")).toBeNull();
   });
 
   it("isolates records by both authenticated workspace and Eve memory scope", async () => {
@@ -473,6 +540,25 @@ describe("workstream memory", () => {
     ).rejects.toBe(reason);
   });
 });
+
+/** What the `workstreams__forget` policy decides for a call in a session. */
+async function forgetDecision(
+  sessionId: string,
+  toolInput: { expectedRevision: number; id: string; title: string }
+) {
+  const session = context(sessionId);
+  const approval = (await workstreamMemory.provider.tools(session))?.forget
+    .approval;
+  if (approval === undefined) throw new Error("Expected a forget policy.");
+  const policy = "request" in approval ? approval.request : approval;
+  return policy({
+    ...session,
+    approvedTools: new Set(),
+    callId: "forget",
+    toolInput,
+    toolName: "workstreams__forget",
+  });
+}
 
 function context(sessionId: string, authenticator = "authjs") {
   return {

@@ -2,7 +2,7 @@ import { parseInputResponses, resolveTextToResponses } from "eve/client";
 import { defineDynamic, defineTool, type ToolContext } from "eve/tools";
 import { z } from "zod";
 import { resolveModeValue, startedByPerson } from "@agent/lib/mode";
-import { shownScheduledQuestions } from "@agent/lib/schedules/question";
+import { answerableScheduledQuestions } from "@agent/lib/schedules/question";
 import {
   scheduleListSummary,
   scheduleOwner,
@@ -88,30 +88,8 @@ const answerScheduleInputSchema = z.strictObject({
 const notThePersonRefusal =
   "Nothing was sent: only the user's own reply answers a scheduled task's question, in the turn their message started. Never answer it yourself.";
 
-const notShownRefusal =
-  "Nothing was sent: that scheduled task's question was never put to the user in this conversation, so nothing they wrote here answers it. Never answer a scheduled question yourself or guess what the user would say; if their message is about something else, just do what it asks.";
-
-/**
- * `shown` names the runs whose question this conversation put to the
- * person. Only their own reply to one of those resumes the run: a model
- * that answered for them — from the conversation, or from nothing, as one
- * did in a turn about a message to a friend — is refused.
- */
-function defineAnswerSchedule(shown: readonly string[]) {
-  return defineTool({
-    description:
-      "Resume a scheduled task that asked the user a question in this conversation, with the user's own answer. Call it only when the user's message replies to that question, passing their answer exactly as given. Never answer for them — not from earlier context, not with a guess, not to tidy up an old task — and never call it for a question this conversation did not show them. The task picks the answer up within a minute or two.",
-    inputSchema: answerScheduleInputSchema,
-    async execute({ answer, runId }, context) {
-      if (!startedByPerson(context)) throw new Error(notThePersonRefusal);
-      if (!shown.includes(runId)) throw new Error(notShownRefusal);
-      return submitAnswer(context, runId, answer);
-    },
-  });
-}
-
-/** The tool with no question shown yet, for a turn that has none. */
-export const answerSchedule = defineAnswerSchedule([]);
+const notRepliedRefusal =
+  "Nothing was sent: the user's latest message is not a reply to that scheduled task's question, which was not put to them in this conversation right before they wrote it. Never answer a scheduled question yourself or guess what the user would say; if their message is about something else, just do what it asks.";
 
 async function submitAnswer(
   context: ToolContext,
@@ -152,11 +130,28 @@ export default defineDynamic({
         "schedules-list": listSchedules,
         "schedules-update": updateSchedule,
       };
+      // Only the person's own reply to a question put to them right before
+      // it resumes a run: a model that answered for them — from the
+      // conversation, from an old question they wrote past, or from
+      // nothing, as one did in a turn about a message to a friend — is
+      // refused.
+      const answerable = answerableScheduledQuestions(context.messages);
       const answering = {
         ...managing,
-        "schedules-answer": defineAnswerSchedule(
-          shownScheduledQuestions(context.messages)
-        ),
+        "schedules-answer": defineTool({
+          description:
+            "Resume a scheduled task whose question was put to the user in this conversation right before their latest message, with the user's own answer. Call it only when that message replies to the question, passing their answer exactly as given. Never answer for them — not from earlier context, not with a guess, not to tidy up an old task — and never call it for a question they were not just shown. The task picks the answer up within a minute or two.",
+          inputSchema: answerScheduleInputSchema,
+          async execute({ answer, runId }, toolContext) {
+            if (!startedByPerson(toolContext)) {
+              throw new Error(notThePersonRefusal);
+            }
+            if (!answerable.includes(runId)) {
+              throw new Error(notRepliedRefusal);
+            }
+            return submitAnswer(toolContext, runId, answer);
+          },
+        }),
       };
 
       const interactive: Partial<typeof answering> & typeof managing =

@@ -36,7 +36,6 @@ import { patchUserProfile } from "@db/services/user-profile";
 import dynamicSchedule from "@agent/schedules/dynamic";
 import { backgroundTurnMarker } from "@shared/chat/background-turn";
 import schedulesTools, {
-  answerSchedule,
   createSchedule,
   listSchedules,
   updateSchedule,
@@ -246,11 +245,11 @@ describe("schedules belong to the person, not the chat", () => {
     // Nor can a chat the question never reached, or a model answering
     // without it.
     await expect(
-      answerSchedule.execute(
+      (await answerInChat(alice, run.id, { shown: false })).execute(
         { answer: "DCA", runId: run.id },
         toolContext("schedules-answer", alice, web, "authjs")
       )
-    ).rejects.toThrow("never put to the user in this conversation");
+    ).rejects.toThrow("is not a reply to that scheduled task's question");
 
     const respond = vi
       .fn<Session["respond"]>()
@@ -358,16 +357,24 @@ async function waitingRun() {
 
 /**
  * The answer tool of a Telegram turn whose chat was asked the run's
- * question: the report turn brought it here and delivered it.
+ * question — the report turn brought it here and delivered it — or, when
+ * not `shown`, of a web chat turn the question never reached.
  */
-async function answerInChat(scope: typeof alice, runId: string) {
+async function answerInChat(
+  scope: typeof alice,
+  runId: string,
+  { shown }: { shown: boolean } = { shown: true }
+) {
   const current = {
-    attributes: { ...telegram, workspaceId: scope.workspaceId },
-    authenticator: "telegram-webhook",
+    attributes: {
+      ...(shown ? telegram : web),
+      workspaceId: scope.workspaceId,
+    },
+    authenticator: shown ? "telegram-webhook" : "authjs",
     principalId: scope.userId,
     principalType: "user",
   };
-  const messages: ModelMessage[] = [
+  const question: ModelMessage[] = [
     {
       content: [
         backgroundTurnMarker,
@@ -398,15 +405,24 @@ async function answerInChat(scope: typeof alice, runId: string) {
       ],
       role: "tool",
     },
+  ];
+  const messages: ModelMessage[] = [
+    ...(shown ? question : []),
     { content: "LGA", role: "user" },
   ];
   const resolve = schedulesTools.events["turn.started"];
   const tools = resolve
     ? await resolve({}, {
-        channel: { kind: "channel:telegram", metadata: {} },
+        channel: {
+          kind: shown ? "channel:telegram" : "channel:eve",
+          metadata: {},
+        },
         messages,
         model: null,
-        session: { auth: { current, initiator: null }, id: "telegram" },
+        session: {
+          auth: { current, initiator: null },
+          id: shown ? "telegram" : web.conversationId,
+        },
       } satisfies DynamicResolveContext)
     : null;
   const answer =

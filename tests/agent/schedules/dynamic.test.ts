@@ -335,6 +335,32 @@ describe("scheduled report delivery", () => {
     expect(prompt).not.toContain("Original task:");
   });
 
+  it("starts no report turn for a worker that handed nothing over", async () => {
+    // Stored before the completion hook learned to read the marker, or held
+    // until the morning: the report turn it got wrote «нового ничего».
+    const report = scheduledReport();
+    report.job.kind = "proactive";
+    report.run.outcome = {
+      kind: "result",
+      summary:
+        "No new mail; calendar events are routine — nothing needing action.\n\n<eve-empty-delivery/>",
+      urgency: "normal",
+    };
+    services.claimReports.mockResolvedValue(report);
+    const send = vi.fn<ReturnType<ScheduleToFn>["send"]>();
+    const to = vi.fn<ScheduleToFn>(() => ({ send }));
+
+    await dispatchScheduledReport({ to }, report.run.id);
+
+    expect(send).not.toHaveBeenCalled();
+    expect(services.dropReport).toHaveBeenCalledExactlyOnceWith(
+      report.run.id,
+      report.run.reportLeaseToken,
+      expect.any(Date),
+      "not_needed"
+    );
+  });
+
   it("routes web chat reports to the stored session", async () => {
     const report = scheduledReport();
     report.delivery.conversationChannel = "eve";

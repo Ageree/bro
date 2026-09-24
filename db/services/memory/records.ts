@@ -125,8 +125,8 @@ export async function readMemory(
 }
 
 /**
- * What a current memory says and which conversation last wrote it, or null
- * when there is no such memory. Forgetting one another conversation saved
+ * What a current memory says and which conversation saved it, or null when
+ * there is no such memory. Forgetting one another conversation saved
  * is the person's to confirm.
  */
 export async function readMemorySource(
@@ -247,12 +247,17 @@ export async function saveMemory(
   });
 }
 
+/**
+ * Replaces a memory's content. The record keeps the conversation that saved
+ * it: a correction here does not make an older memory this conversation's
+ * own, which would let an update followed by a removal forget it without the
+ * person's confirmation.
+ */
 export async function updateMemory(
   scope: AccessScope,
   scopeKey: string,
   input: z.input<typeof updateMemorySchema>,
-  operationId: string,
-  source: { sessionId: string; turnId: string }
+  operationId: string
 ) {
   const parsed = updateMemorySchema.parse(input);
   await ensureMemoryScope(scope, scopeKey);
@@ -272,8 +277,6 @@ export async function updateMemory(
         content: parsed.content,
         lastOperationId: operationId,
         revision: parsed.expectedRevision + 1,
-        sourceSessionId: source.sessionId,
-        sourceTurnId: source.turnId,
         updatedAt: new Date(),
       })
       .where(

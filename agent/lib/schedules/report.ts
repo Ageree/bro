@@ -6,6 +6,7 @@ import {
   releaseScheduledReport,
 } from "@db/services/scheduled-agent-jobs";
 import { telegramChatIdFromConversationId } from "@agent/lib/telegram-conversation";
+import { reportNeeded } from "@agent/lib/schedules/outcome";
 import { backgroundTurnMarker } from "@shared/chat/background-turn";
 import {
   internalRunIdLabel,
@@ -36,6 +37,20 @@ export async function dispatchScheduledReport(
   const claimed = await claimScheduledReport(runId);
   const leaseToken = claimed?.run.reportLeaseToken;
   if (!claimed || !leaseToken) return;
+  // A worker that handed nothing over gets no report turn: given one, the
+  // model still wrote «почту и календарь проверил — нового ничего». The
+  // completion hook already records such a run as nothing to report; this
+  // catches one stored before it, or held until the morning.
+  const { outcome, pendingInputRequests } = claimed.run;
+  if (!pendingInputRequests && outcome && !reportNeeded(outcome)) {
+    await dropScheduledReport(
+      claimed.run.id,
+      leaseToken,
+      new Date(),
+      "not_needed"
+    );
+    return;
+  }
   try {
     for (const target of [claimed.delivery, ...claimed.fallbacks]) {
       // oxlint-disable-next-line eslint/no-await-in-loop -- The next chat is tried only once this one turned out to have ended.

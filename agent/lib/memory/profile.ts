@@ -47,7 +47,11 @@ const removeMemoryInputSchema = forgetMemorySchema.extend({
     ),
 });
 
-function comparableText(text: string) {
+/**
+ * A memory's text as a confirmation card compares it: a call that names the
+ * record with other quotes, case or spacing still names the same record.
+ */
+export function comparableMemoryText(text: string) {
   return text
     .normalize("NFKC")
     .toLocaleLowerCase()
@@ -79,7 +83,7 @@ export async function memoryRemovalApproval(
   if (record.sourceSessionId === sessionId) return "not-applicable";
   if (
     input.text === undefined ||
-    comparableText(input.text) !== comparableText(record.text)
+    comparableMemoryText(input.text) !== comparableMemoryText(record.text)
   ) {
     return {
       reason: `Nothing was forgotten. Memory ${String(input.index)} was saved in another conversation, so the user confirms forgetting it on a card that shows its text: «${record.text}». Forget it only if the user named it themselves; then call again with text set to exactly that. If they did not name it, ask them one short question instead and wait for the answer.`,
@@ -182,8 +186,7 @@ export function createProfileMemoryProvider(
               scope,
               scopeKey,
               input,
-              `${toolContext.session.id}:${toolContext.callId}`,
-              source
+              `${toolContext.session.id}:${toolContext.callId}`
             ),
         }),
       };

@@ -124,6 +124,27 @@ describe("replyDirective", () => {
     expect(note).not.toContain("Язык ответа");
   });
 
+  it("says the reply is out once the turn delivered one", () => {
+    // Read after a delivered reply, the plain note looked like a new request:
+    // one benchmark turn answered «перешёл на «вы»» six times.
+    const note = replyDirective({
+      answered: true,
+      formOfAddress: formal,
+      language: "ru",
+    });
+    expect(note).toMatch(
+      /^Ответ на последнее сообщение человека в этом ходе уже доставлен\./u
+    );
+    expect(note).toContain("не замечание к отправленному");
+    expect(note).toContain("на «вы»");
+    expect(
+      replyDirective({ answered: true, formOfAddress: formal, language: "en" })
+    ).toMatch(/^Your reply to the person's latest message has already/u);
+    expect(
+      replyDirective({ formOfAddress: formal, language: "ru" })
+    ).not.toContain("уже доставлен");
+  });
+
   it("gives an English reply no Russian grammar rules", () => {
     const note = replyDirective({ formOfAddress: formal, language: "en" });
     expect(note).toMatch(/^Reply language for this turn: English\./u);

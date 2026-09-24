@@ -146,7 +146,7 @@ describe("schedule tools", () => {
         },
         toolContext("schedules-answer", "photon-imessage")
       )
-    ).rejects.toThrow("never put to the user in this conversation");
+    ).rejects.toThrow(notReplied);
     // The report turn brought the question here but never delivered it.
     const undelivered = await answerTool(
       dynamicContext("photon-imessage", "channel:photon", [
@@ -159,8 +159,57 @@ describe("schedule tools", () => {
         { answer: "DCA", runId },
         toolContext("schedules-answer", "photon-imessage")
       )
-    ).rejects.toThrow("never put to the user in this conversation");
+    ).rejects.toThrow(notReplied);
     expect(services.getInput).not.toHaveBeenCalled();
+  });
+
+  it("refuses an old question the person already wrote past", async () => {
+    // The airport question reached the chat days ago; the person wrote about
+    // something else and now asks about dinner. Their message answers
+    // nothing, and the model must not settle the old run for them.
+    const answer = await answerTool(
+      dynamicContext("photon-imessage", "channel:photon", [
+        person("Найди мне рейс в Вашингтон на пятницу"),
+        ...questionShown(runId),
+        person("Напиши Лёше, что я опоздаю"),
+        ...assistantSend("Написал Лёше."),
+        person("Забронируй столик на вечер"),
+      ])
+    );
+
+    await expect(
+      answer.execute(
+        { answer: "DCA", runId },
+        toolContext("schedules-answer", "photon-imessage")
+      )
+    ).rejects.toThrow(notReplied);
+    expect(services.getInput).not.toHaveBeenCalled();
+
+    // Another report in between — a browser run's result — does not end the
+    // person's chance to reply: their next message still answers.
+    const browserReport = person(
+      `${backgroundTurnMarker}\n\nBrowser run 123 finished.`
+    );
+    const reply = await answerTool(
+      dynamicContext("telegram-webhook", "channel:telegram", [
+        person("Напиши Лёше, что я опоздаю"),
+        ...questionShown(runId),
+        browserReport,
+        ...assistantSend("Столик забронирован."),
+        person("DCA"),
+      ])
+    );
+    services.getInput.mockResolvedValue({
+      leaseToken,
+      pendingInputRequests: [airportQuestion],
+      runId,
+    });
+    expect(
+      await reply.execute(
+        { answer: "DCA", runId },
+        toolContext("schedules-answer", "telegram-webhook")
+      )
+    ).toEqual({ accepted: true, runId });
   });
 
   it("rejects an answer that matches none of the pending choices", async () => {
@@ -181,6 +230,7 @@ describe("schedule tools", () => {
     const answer = await answerTool(
       dynamicContext("telegram-webhook", "channel:telegram", [
         ...questionShown(runId),
+        person("Heathrow"),
       ])
     );
 
@@ -381,6 +431,36 @@ describe("schedule tools", () => {
 
 const runId = "00000000-0000-4000-8000-000000000002";
 const leaseToken = "00000000-0000-4000-8000-000000000003";
+const notReplied = "is not a reply to that scheduled task's question";
+
+/** A step of Bro's that delivered a message to the chat. */
+function assistantSend(text: string): ModelMessage[] {
+  const toolCallId = `call-${text}`;
+  return [
+    {
+      content: [
+        {
+          input: { kind: "message", text },
+          toolCallId,
+          toolName: "send_message",
+          type: "tool-call",
+        },
+      ],
+      role: "assistant",
+    },
+    {
+      content: [
+        {
+          output: { type: "json", value: { kind: "message", text } },
+          toolCallId,
+          toolName: "send_message",
+          type: "tool-result",
+        },
+      ],
+      role: "tool",
+    },
+  ];
+}
 
 function person(text: string): ModelMessage {
   // eve adds `kind` to every user-role message it keeps in history.
