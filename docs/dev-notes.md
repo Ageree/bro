@@ -157,6 +157,13 @@
   Готового `connection/slack` в реестре eve нет (`channel/slack` делает бота,
   а не пишет от имени человека); коннектор Slack создаётся вручную с
   user-скоупами из `agent/lib/connected-apps/auth.ts`.
+- `notion-add-task`, `slack-send-message` и подключения `notion`/`slack`
+  (динамические, `agent/connections/`) есть только при коннекторе на деплое:
+  `connectedAppConfigured` спрашивает `getConnectorMetadata` и помнит ответ
+  5 минут на инстанс. Без них модель говорила «Notion и Slack подключены» при
+  `not_configured`. Сбой Vercel Connect инструменты оставляет: иначе одобрение,
+  припаркованное до сбоя, не найдёт свой инструмент. Без OIDC-токена (локальный
+  `eve dev`) их нет, и эвалы с ними делают `t.skip`.
 
 - Некоторые модели (в бенчмарке `openai/gpt-6-luna`) в одном ходе шлют
   один и тот же `send_message` десятки раз. Форсирование из #165 тут ни при

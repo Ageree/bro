@@ -106,6 +106,34 @@ describe("agent instructions", () => {
     expect(selected?.content).toContain("Письма о безопасности аккаунта");
   });
 
+  it("computes numbers with a tool and takes changing facts from a fresh search", async () => {
+    const resolve = executionSafety.events["turn.started"];
+    if (!resolve) throw new Error("Execution safety resolves per turn.");
+
+    for (const role of ["photon-imessage", "scheduled-worker"]) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- One role at a time keeps the failure readable.
+      const selected = await resolve({}, dynamicContext(role));
+      expect(selected?.content).toContain("считай через `calculate`");
+      expect(selected?.content).toContain("со ссылкой на источник");
+      expect(selected?.content).toContain(
+        "только когда в этом ходе был вызов инструмента"
+      );
+    }
+  });
+
+  it("describes Bro as a hosted service and connections by their live status", async () => {
+    const resolve = roleInstructions.events["turn.started"];
+    if (!resolve) throw new Error("Role instructions resolve per turn.");
+
+    const selected = await resolve({}, dynamicContext("photon-imessage"));
+    expect(selected?.content).not.toMatch(/(?:его|собственн\S*) сервер/u);
+    expect(selected?.content).toContain("Ты облачный сервис");
+    expect(selected?.content).toContain("AES-256-GCM");
+    expect(selected?.content).toContain(
+      "Нет среди инструментов `notion-add-task` — значит, Notion на этом деплое не настроен"
+    );
+  });
+
   it("treats personal information as recalled context instead of a read tool", async () => {
     const resolve = roleInstructions.events["turn.started"];
     expect(resolve).toBeDefined();

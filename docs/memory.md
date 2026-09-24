@@ -37,6 +37,24 @@ messages, historical infrastructure backups, or third-party logs. Telemetry is
 configured to omit message, model, and tool payloads so new facts are not copied
 into operational traces.
 
+## Where the data lives
+
+Bro is a hosted service, not software on the person's own machine or server,
+and the interactive instructions (`agent/instructions/content/role/interactive.md`,
+«Как ты устроен») tell people exactly this; keep the two in sync.
+
+- The app and the agent run on Vercel; eve keeps conversation state in Vercel
+  Workflow.
+- Postgres on Neon holds the workspace, memory, schedules, orders, and the
+  vault. Vault secrets are AES-256-GCM ciphertext under
+  `SECRET_ENCRYPTION_KEY` (`db/services/vault.ts`); no model reads them.
+- Files and generated pictures go to a private Vercel Blob store.
+- Google, Notion, and Slack grants live in Vercel Connect, not in Bro's
+  database.
+- Model providers see the conversation they answer, Browser Use sees the
+  pages and vault values of the task it runs, and Supermemory indexes
+  non-local profile facts when `SUPERMEMORY_API_KEY` is set.
+
 ## Deployment
 
 1. Apply the Drizzle migrations before deploying the application code.

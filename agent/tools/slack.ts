@@ -1,7 +1,10 @@
 import { defineDynamic, defineTool, type ToolContext } from "eve/tools";
 import { always } from "eve/tools/approval";
 import { z } from "zod";
-import { connectedAppAuth } from "@agent/lib/connected-apps/auth";
+import {
+  connectedAppAuth,
+  connectedAppConfigured,
+} from "@agent/lib/connected-apps/auth";
 import { slackApiBaseUrl } from "@agent/lib/connected-apps/slack";
 import { resolveModeValue } from "@agent/lib/mode";
 
@@ -336,11 +339,15 @@ export const slackSendMessage = defineTool({
   },
 });
 
+// Without a connector on this deployment the tool would only fail, and its
+// presence reads to the model as a connected account.
 export default defineDynamic({
   events: {
-    "turn.started": (_event, context) =>
-      resolveModeValue(context, {
+    async "turn.started"(_event, context) {
+      const tools = resolveModeValue(context, {
         interactive: { "slack-send-message": slackSendMessage },
-      }),
+      });
+      return tools && (await connectedAppConfigured("slack")) ? tools : null;
+    },
   },
 });
