@@ -6,7 +6,7 @@ regenerating the patch below against the new dist.
 
 ## Remaining patches
 
-`eve@0.62.0.patch` carries four independent hunks:
+`eve@0.62.0.patch` carries five independent hunks:
 
 - The declaration bridge redirects Eve's incomplete bundled Chat SDK
   declaration exports to the explicitly installed `chat` package. Eve's runtime
@@ -50,14 +50,22 @@ regenerating the patch below against the new dist.
   assistant message when the history ends with an approval response.
   `tests/agent/approval-memory-recall.test.ts` covers it. Drop the hunk once
   eve keeps the approval tail last on its own.
+- A replayed approved call that throws still reports its result.
+  `harness/emission.js` emitted `action.result` for a `tool-error` only when
+  the call was requested in the same model step, so a failed replay vanished
+  from the stream and from the eval facts. The added branch emits it for a call
+  that did not appear in the step. `evals/agent/integrations.eval.ts` relies on
+  it. Drop the hunk once eve emits replayed tool errors on its own.
 
 To change the patch, run `pnpm patch eve@0.62.0`, edit the files in the
 reported directory, and `pnpm patch-commit <dir>` so every hunk and the
 lockfile hash stay consistent. When upgrading Eve, first check the new dist:
 the bridge goes away once `dist/src/compiled/chat/index.d.ts` resolves on its
 own, the override once `TelegramInboundResult` and `PhotonInboundResult`
-declare `message` themselves, and the schedule handle once
-`ScheduleHandlerArgs` declares `attachSession`.
+declare `message` themselves, the schedule handle once
+`ScheduleHandlerArgs` declares `attachSession`, and the approval hunks once
+`tests/agent/approval-memory-recall.test.ts` and the approval eval in
+`evals/agent/integrations.eval.ts` pass without them.
 
 Photon's iMessage adapter posts into a conversation without a reply anchor, so
 no provider reply option is patched in any more.
@@ -66,5 +74,5 @@ The old Eve patches for `ask_question` and `task_cancel` exports are no longer
 needed: both now have public entry points. Callback authorization is composed
 in `agent/channels/eve.ts` using public `defineChannel` and `routeAuth` APIs.
 
-Apart from the memory recall placement above, no task-loop or
-prompt-placement patch is applied locally.
+Apart from the memory recall placement and the replayed tool error above, no
+task-loop or prompt-placement patch is applied locally.

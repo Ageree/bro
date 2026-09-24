@@ -96,8 +96,11 @@
   конец истории, и одобрение молча терялось: модель заново просила
   подтверждение, а действие не выполнялось. Чинит хунк в
   `patches/eve@0.62.0.patch` (`insertBeforeApprovalTail`), проверяет
-  `tests/agent/approval-memory-recall.test.ts`. Ничего не добавляйте в
-  историю после ответа на одобрение.
+  `tests/agent/approval-memory-recall.test.ts` и эвал со сменой памяти в
+  `evals/agent/integrations.eval.ts`. Ничего не добавляйте в историю после
+  ответа на одобрение. Если повтор одобренного вызова падает, `action.result`
+  отдаёт только второй хунк патча (`harness/emission.js`); без него ошибка
+  пропадает из потока, и эвал её не видит.
 - `eve info` в 0.62 не печатает подключения ни в тексте, ни в `--json`. Что
   подключения собрались, видно в `.eve/compile/compiled-agent-manifest.json`
   (ключ `connections`), который `eve info` пишет при компиляции.
