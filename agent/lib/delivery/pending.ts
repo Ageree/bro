@@ -1,6 +1,7 @@
 import type { ModelMessage } from "ai";
 import { z } from "zod";
 import { settledOutcomeRun } from "./browser-report";
+import { questionsOf } from "./novelty";
 import {
   currentTurnMessages,
   sendReachedPerson,
@@ -45,20 +46,49 @@ function deliveredByTool(message: ModelMessage) {
  */
 const forcedStepLimit = 10;
 
+/** Whether a tool message holds a call of `toolName` that reached the person. */
+function reachedPerson(message: ModelMessage, toolName: string) {
+  return (
+    message.role === "tool" &&
+    message.content.some(
+      (part) =>
+        part.type === "tool-result" &&
+        part.toolName === toolName &&
+        sendReachedPerson(part.output)
+    )
+  );
+}
+
+function messageText(message: ModelMessage) {
+  if (!Array.isArray(message.content)) return message.content;
+  return message.content
+    .flatMap((part) => (part.type === "text" ? [part.text] : []))
+    .join("\n");
+}
+
 /**
  * Whether the latest message a person wrote is still waiting for a
- * `send_message` or `react_to_message` that went through. A wakeup from a
+ * `send_message` or `react_to_message` that went through. A reaction answers
+ * «спасибо!», not a question: on 24.09 DeepSeek met «What is 2 plus 2?» with
+ * 😂, and the «4» it wrote next never reached the person. A wakeup from a
  * finished background task is not a person talking, and the instructions let
  * the model keep such a wakeup silent, so it never counts as waiting.
  */
 export function awaitsDelivery(messages: readonly ModelMessage[]) {
   let steps = 0;
+  let reaction = false;
   for (const message of messages.toReversed()) {
-    if (deliveredByTool(message)) return false;
+    if (reachedPerson(message, "send_message")) return false;
+    if (reachedPerson(message, "react_to_message")) reaction = true;
     if (message.role === "assistant") steps += 1;
     if (message.role !== "user") continue;
     const kind = userMessageKind(message);
-    if (kind === "user") return steps < forcedStepLimit;
+    if (kind === "user") {
+      if (reaction && questionsOf(messageText(message)).length === 0) {
+        return false;
+      }
+      return steps < forcedStepLimit;
+    }
     if (kind === "execution.background_task") return false;
   }
   return false;

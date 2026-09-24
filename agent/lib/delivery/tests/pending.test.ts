@@ -38,6 +38,27 @@ describe("awaitsDelivery", () => {
     }
   );
 
+  it("keeps waiting after only a reaction to a question", () => {
+    // DeepSeek met «What is 2 plus 2?» with 😂 and wrote «4» as plain text,
+    // which never reached the person.
+    const reaction = [
+      toolCall("react_to_message"),
+      toolResult("react_to_message", { type: "text", value: "submitted" }),
+    ];
+
+    expect(
+      awaitsDelivery([userMessage("What is 2 plus 2?"), ...reaction])
+    ).toBe(true);
+    expect(
+      awaitsDelivery([
+        userMessage("What is 2 plus 2?"),
+        ...reaction,
+        toolCall("send_message"),
+        toolResult("send_message", { type: "text", value: "submitted" }),
+      ])
+    ).toBe(false);
+  });
+
   it.each(["error-text", "execution-denied"] as const)(
     "keeps waiting after a send_message that ended in %s",
     (type) => {
