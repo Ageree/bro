@@ -122,6 +122,19 @@ export interface SpendEntry extends SpendTarget {
 }
 
 /**
+ * A shop, site or category the call named, or none. gpt-6-luna fills every
+ * optional parameter: a revoke meant for every site came as `merchant: ""`,
+ * then `"*"`, and read as a scope that could not be understood — the two
+ * needless cards of the RU benchmark's d14. Blank and `*` mean every one,
+ * exactly as leaving the field out does; a card still shows what a widening
+ * allows.
+ */
+export function givenScope(value: string | undefined) {
+  const text = value?.trim();
+  return text === undefined || text === "" || text === "*" ? undefined : text;
+}
+
+/**
  * `https://www.ozon.ru/cart` and `ozon.ru` are the same merchant. Anything
  * that is not a host name is not a merchant the limit can be scoped to.
  */

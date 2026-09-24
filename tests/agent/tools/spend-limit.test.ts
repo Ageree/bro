@@ -126,7 +126,7 @@ describe("spend_limit changes", () => {
     expect(included.excludedCategories).toEqual(["алкоголь"]);
   });
 
-  it("refuses a set without an amount, a merchant that is not a host or a blank category", () => {
+  it("refuses a set without an amount, a merchant that is not a host or an exclusion of nothing", () => {
     expect(() => applySpendLimitChange(monthly, { action: "set" })).toThrow(
       "Set needs the monthly amount in roubles."
     );
@@ -137,17 +137,50 @@ describe("spend_limit changes", () => {
         merchant: "озон",
       })
     ).toThrow("site or host name");
-    // A blank category would otherwise turn a narrow rule into the general one.
     expect(() =>
-      applySpendLimitChange(monthly, {
+      applySpendLimitChange(monthly, { action: "exclude", category: "" })
+    ).toThrow("Name the shop or the category");
+  });
+
+  /**
+   * gpt-6-luna fills every optional parameter, a scope it means to leave out
+   * included, as `""` or `"*"`. That is every shop and every category.
+   */
+  it("reads a blank or «*» shop or category as every one", () => {
+    const policy = {
+      ...monthly,
+      rules: [
+        ...monthly.rules,
+        { category: "такси", limitRub: 1000, merchant: null },
+      ],
+    };
+
+    expect(
+      applySpendLimitChange(policy, {
+        action: "clear",
+        category: "",
+        merchant: "*",
+      }).rules
+    ).toEqual([]);
+    expect(
+      applySpendLimitChange(policy, {
         action: "set",
         category: "   ",
         limitRub: 100,
-      })
-    ).toThrow("non-empty word");
-    expect(() => applySpendLimitChange(monthly, { action: "exclude" })).toThrow(
-      "Name the shop or the category"
-    );
+        merchant: "",
+      }).rules
+    ).toEqual([
+      { category: "такси", limitRub: 1000, merchant: null },
+      { category: null, limitRub: 100, merchant: null },
+    ]);
+    // The general rule a blank set makes is still confirmed on its card
+    // when it lets Bro pay more.
+    expect(
+      spendLimitApproval(
+        { action: "set", category: "", limitRub: 3000, merchant: "" },
+        undefined
+      )
+    ).toBe("user-approval");
   });
 
   it("asks the person to confirm only what widens the permission", () => {
@@ -229,11 +262,18 @@ describe("spend_limit changes", () => {
         "not-applicable"
       );
     }
+    // Exactly what gpt-6-luna sends for «больше не трать без спроса».
+    expect(
+      spendLimitApproval(
+        { action: "clear", category: "", merchant: "" },
+        monthly
+      )
+    ).toBe("not-applicable");
     expect(
       denialReason(
-        spendLimitApproval({ action: "clear", category: "  " }, monthly)
+        spendLimitApproval({ action: "clear", merchant: "озон" }, monthly)
       )
-    ).toContain("For every category, leave category out.");
+    ).toContain("For every shop, leave merchant out.");
   });
 
   it("asks before clearing a ceiling that sits under a broader rule", () => {

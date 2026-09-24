@@ -15,6 +15,7 @@ import type { AccessScope } from "@shared/identity/access-scope";
 import {
   attemptPolicyChange,
   describeSpendRule,
+  givenScope,
   normalizeCategory,
   normalizeMerchant,
   policyWidens,
@@ -71,16 +72,18 @@ function callerScope(context: Pick<ToolContext, "session">) {
 }
 
 function targetFrom(input: SpendLimitInput): SpendTarget {
-  const merchant = normalizeMerchant(input.merchant);
-  if (input.merchant !== undefined && merchant === null) {
+  const namedMerchant = givenScope(input.merchant);
+  const merchant = normalizeMerchant(namedMerchant);
+  if (namedMerchant !== undefined && merchant === null) {
     throw new Error(
       "A merchant is its site or host name, such as ozon.ru. For every shop, leave merchant out."
     );
   }
-  // A category that says nothing must not quietly turn a narrow rule into the
-  // general one.
-  const category = normalizeCategory(input.category);
-  if (input.category !== undefined && category === null) {
+  // A blank category is every category, as leaving it out is: a set that
+  // turns out general asks on its card when it lets Bro pay more.
+  const namedCategory = givenScope(input.category);
+  const category = normalizeCategory(namedCategory);
+  if (namedCategory !== undefined && category === null) {
     throw new Error(
       "A category is a non-empty word, such as «еда». For every category, leave category out."
     );
@@ -133,14 +136,14 @@ export function applySpendLimitChange(
     // goes, and so does every standing permission that pays — a taxi or an
     // order Bro pays for on its own is spending without asking too. Free
     // permissions and the exclusions stay for the next limit.
-    if (input.merchant === undefined && input.category === undefined) {
+    const target = targetFrom(input);
+    if (target.merchant === null && target.category === null) {
       return {
         ...current,
         actions: current.actions?.filter((rule) => rule.maxRub === null),
         rules: [],
       };
     }
-    const target = targetFrom(input);
     return {
       ...current,
       rules: current.rules.filter((rule) => !sameRuleScope(rule, target)),

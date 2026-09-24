@@ -15,6 +15,7 @@ import type { AccessScope } from "@shared/identity/access-scope";
 import {
   attemptPolicyChange,
   describeStandingAction,
+  givenScope,
   normalizeMerchant,
   policyWidens,
   remainingUnderStandingAction,
@@ -88,8 +89,9 @@ function callerScope(context: Pick<ToolContext, "session">) {
 }
 
 function scopeFrom(input: StandingPermissionInput) {
-  const merchant = normalizeMerchant(input.merchant);
-  if (input.merchant !== undefined && merchant === null) {
+  const named = givenScope(input.merchant);
+  const merchant = normalizeMerchant(named);
+  if (named !== undefined && merchant === null) {
     throw new Error(
       "A site is its own host name, such as lavka.yandex.ru — not a shared hosting suffix such as tilda.ws. For every site, leave merchant out."
     );
@@ -136,8 +138,8 @@ export function applyStandingPermissionChange(
       actions: actions.filter(
         (rule) =>
           !(
-            (input.kind === undefined || rule.kind === scope.kind) &&
-            (input.merchant === undefined || rule.merchant === scope.merchant)
+            (scope.kind === null || rule.kind === scope.kind) &&
+            (scope.merchant === null || rule.merchant === scope.merchant)
           )
       ),
     };

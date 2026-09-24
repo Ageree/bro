@@ -11,6 +11,7 @@ import {
   standingPermission,
   standingPermissionApproval,
 } from "@agent/tools/standing_permission";
+import { withApprovalCard } from "@shared/chat/approval-card";
 import {
   describeStandingAction,
   type SpendLimitPolicy,
@@ -211,7 +212,7 @@ describe("standing_permission approval", () => {
     expect(
       denialReason(
         standingPermissionApproval(
-          { action: "revoke", merchant: "" },
+          { action: "revoke", merchant: "озон" },
           undefined
         )
       )
@@ -225,6 +226,52 @@ describe("standing_permission approval", () => {
         )
       )
     ).toContain("at least its ceiling per errand");
+  });
+
+  /**
+   * gpt-6-luna fills every optional parameter. In the d14 eval its revoke
+   * was exactly this, then the same with `merchant: "*"`.
+   */
+  it("reads a blank or «*» site as every site, as leaving it out does", () => {
+    const policy = { ...monthly, actions: [tables, taxi, lavka] };
+    const lunaRevoke = {
+      action: "revoke" as const,
+      kind: "taxi" as const,
+      maxRub: 1500,
+      merchant: "",
+      monthRub: 4500,
+    };
+
+    expect(standingPermissionApproval(lunaRevoke, policy)).toBe(
+      "not-applicable"
+    );
+    expect(applyStandingPermissionChange(policy, lunaRevoke).actions).toEqual([
+      tables,
+      lavka,
+    ]);
+    expect(
+      applyStandingPermissionChange(policy, { action: "revoke", merchant: "*" })
+        .actions
+    ).toEqual([]);
+    expect(
+      standingPermissionApproval({ action: "revoke", merchant: " " }, undefined)
+    ).toBe("not-applicable");
+  });
+
+  it("shows a permission without a site as one on every site", () => {
+    const card = withApprovalCard(
+      {
+        action: {
+          input: { action: "allow", kind: "taxi", maxRub: 1500, merchant: "" },
+          toolName: "standing_permission",
+        },
+        kind: "tool-approval",
+        prompt: "Approve tool call: standing_permission",
+      },
+      "ru"
+    );
+
+    expect(card.prompt).toContain("заказы такси без спроса, на любых сайтах");
   });
 });
 
