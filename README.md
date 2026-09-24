@@ -340,57 +340,44 @@ the number a phone already has instead of buying a second Photon user.
 лимитом картинок `generate_image` не рисует, и оба возвращают модели
 объяснение.
 
-## Google Workspace connection
+## Connected apps (Google, Notion, Slack and more)
 
-OpenInstinct can use a user's Gmail, Calendar, and read-only Contacts through a
-user-scoped Google OAuth grant. Vercel Connect stores and refreshes the tokens;
-OpenInstinct stores only the stable user identity used to request them. Gmail
-access deliberately uses `gmail.modify`, not the permanent-delete
-`mail.google.com` scope.
+People connect their own accounts through [Composio](https://composio.dev):
+Composio stores and refreshes the grants, and Bro calls the apps through
+Composio's proxy and tools with the person's connected account id, so no
+provider token ever reaches Bro. The Composio `user_id` is the Bro user id.
+Without `COMPOSIO_API_KEY` the integrations are absent.
 
-1. In one Google Cloud project, configure the OAuth consent screen and enable
-   the Gmail API, Google Calendar API, and People API.
-2. Create OAuth web credentials. Add
-   `https://connect.vercel.com/callback` as an authorized redirect URI, then
-   download the client-secret JSON.
-3. Vercel expects top-level `clientId` and `clientSecret` keys, not Google's
-   nested `web.client_id` and `web.client_secret` download. Convert the download
-   into a temporary file outside the repository, then create and attach the
-   connector:
-
-   ```bash
-   vercel link
-   google_credentials_file="$(mktemp)"
-   jq '{clientId: .web.client_id, clientSecret: .web.client_secret}' /absolute/path/to/downloaded-client-secret.json > "$google_credentials_file"
-   vercel connect create google --connection-method oauth --name open-instinct --data @"$google_credentials_file"
-   rm -f "$google_credentials_file"
-   vercel connect attach <returned-connector-uid> --project <your-vercel-project> --environment production --yes
-   vercel env pull
-   ```
-
-   Never commit either credential file.
-
-4. Set `GOOGLE_CONNECTOR_UID` to the returned UID and redeploy. The default is
-   `google/open-instinct`.
+1. Create a Composio project and a project API key; set `COMPOSIO_API_KEY`.
+2. Create Composio-managed OAuth auth configs and set their ids:
+   - `googlesuper` for Gmail, Calendar, Drive, Contacts, Sheets and Docs in
+     one consent → `COMPOSIO_GOOGLE_AUTH_CONFIG_ID`, and optionally a second
+     one for the read-only level → `COMPOSIO_GOOGLE_READ_ONLY_AUTH_CONFIG_ID`
+     (without it read-only reuses the full one and Bro refuses writes itself);
+   - `notion` → `COMPOSIO_NOTION_AUTH_CONFIG_ID`;
+   - `slack` with user-token scopes → `COMPOSIO_SLACK_AUTH_CONFIG_ID`.
+     Scopes (`credentials.scopes` of the managed config): full Google —
+     `userinfo.email`, `userinfo.profile`, `https://mail.google.com/`,
+     `calendar`, `contacts.readonly`, `drive`, `spreadsheets`, `documents`;
+     read-only Google — the same without `spreadsheets` and `documents`; Slack —
+     `channels:history,channels:read,chat:write,groups:history,groups:read,im:history,im:read,im:write,mpim:history,mpim:read,search:read,users:read,users:read.email`
+     (Composio sends them as `user_scope`); Notion takes none. Other apps
+     reached through the `apps` tool get a managed auth config on first connect.
+3. People connect from the chat (a sign-in card, `connect_google`,
+   `connect_app`) or from `/workspace`; disconnecting revokes and deletes the
+   Composio connected account.
 
 Gotchas:
 
-- Attach the connector separately to every Vercel environment that should use
-  it. A production attachment does not make preview or local development work.
-- The Gmail read/modify scope is restricted. A Google OAuth app in Testing mode
-  only works for listed test users, and those grants expire after seven days.
-  Broader distribution requires Google's OAuth verification and may require a
-  security assessment.
-- The scopes requested here must also be declared on the Google consent screen.
-  After changing scopes or enabled APIs, disconnect and reconnect the account so
-  Google issues a grant with the new access.
-- The grant is keyed to the authenticated OpenInstinct user. iMessage reaches
-  the same grant only when its verified phone number maps to that Better Auth
-  account.
+- Composio's managed Google app is approved for broad scopes only; narrower
+  read-only scopes outside its approved set can be blocked by Google. A truly
+  narrow read-only grant needs your own Google OAuth client in its own auth
+  config.
+- Sending email, creating calendar events, adding Notion tasks, posting to
+  Slack and every write through `apps` always require approval. Calendar
+  events with attendees send Google invitations.
 - Google Contacts search uses a provider-side lazy cache, so a contact created
   moments ago may not appear immediately.
-- Sending email and creating confirmed calendar events always require approval.
-  Calendar events with attendees send Google invitations.
 
 ## Local development
 

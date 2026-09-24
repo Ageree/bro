@@ -151,12 +151,6 @@
 - `eve info` в 0.62 не печатает подключения ни в тексте, ни в `--json`. Что
   подключения собрались, видно в `.eve/compile/compiled-agent-manifest.json`
   (ключ `connections`), который `eve info` пишет при компиляции.
-- MCP-подключение отдаёт список инструментов только с токеном пользователя:
-  `connection_search` без подключённого аккаунта паркует ход на авторизации.
-  OpenAPI-подключение строит инструменты из спецификации без токена, и
-  подтверждение спрашивается до входа. Поэтому Notion и Slack сделаны
-  OpenAPI-подключениями (`agent/connections/`), а записи идут через
-  `notion-add-task` и `slack-send-message`, которые сами находят базу и адресата.
 - Агентские эвалы в облачной сессии: `pnpm eval:agent` требует ключ Gateway
   и Docker. Хватает `OPENROUTER_API_KEY`, локального Postgres (`initdb` от
   не-root пользователя), `pnpm db:migrate` и прямого
@@ -186,32 +180,62 @@
   `session.started`/`turn.started` и видят историю без входящего сообщения
   (`context/dynamic-instruction-lifecycle.js`).
 
-## Google
+## Composio: Google, Notion, Slack и другие приложения
 
-- `@googleapis/drive` закреплён на 22: версии 25+ тянут `google-auth-library`
-  11, и его `OAuth2Client` не совместим по типам с клиентом из `client.ts`,
-  общим для Gmail, Calendar и People.
-- Грант Google, выданный до появления скоупа в `googleWorkspaceScopes`
-  (например `drive.readonly`), его не покрывает. Если такой токен всё же
-  дошёл до API, Google отвечает 403 insufficient scopes, а не 401, поэтому
-  `withGoogleAuth` на обоих ответах зовёт `ctx.requireAuth` и заново
-  спрашивает согласие (`agent/lib/google-workspace/client.ts`).
+- Гранты людей живут в Composio, токены провайдеров к Бро не попадают.
+  «Токен», который eve кэширует для инструмента, — id подключённого аккаунта
+  (`ca_…`); вызовы идут через прокси Composio (`/tools/execute/proxy`) или его
+  инструменты (`/tools/execute/<SLUG>`). Провайдер eve —
+  `defineInteractiveAuthorization` (`agent/lib/composio/authorization.ts`):
+  без активного аккаунта ход паркуется на карточке со ссылкой Connect Link,
+  чей callback — URL eve. Composio дописывает к нему `status` и
+  `connected_account_id`; засчитывается только аккаунт, выпущенный этой ссылкой.
+- `user_id` в Composio — id пользователя Бро (`better-auth:<id>`,
+  `scopeFromPrincipal(...).userId`). Google — тулкит `googlesuper`, одно
+  согласие на Gmail, Календарь, Диск, Контакты, Таблицы и Документы; аккаунт
+  засчитывается только под auth config своего уровня
+  (`COMPOSIO_GOOGLE_AUTH_CONFIG_ID`, `COMPOSIO_GOOGLE_READ_ONLY_AUTH_CONFIG_ID`)
+  и со статусом `ACTIVE`. Notion и Slack — `COMPOSIO_NOTION_AUTH_CONFIG_ID` и
+  `COMPOSIO_SLACK_AUTH_CONFIG_ID` (у Slack user-скоупы: пишет от имени
+  человека). Остальным приложениям `apps` берёт auth config тулкита из
+  проекта или создаёт управляемый при первом подключении
+  (`shared/composio/connected-apps.ts`). Без `COMPOSIO_API_KEY` интеграций нет.
+- Управляемое Google-приложение Composio одобрено только на широкие скоупы
+  (`mail.google.com`, `calendar`, `drive`, `contacts.readonly`,
+  `spreadsheets`, `documents`), а неодобренные узкие `*.readonly` Google может
+  заблокировать («App is blocked»). Поэтому read-only-конфиг просит те же
+  широкие скоупы без Таблиц и Документов, а запись отсекает политика
+  (`googleWriteApproval`, `apps`). Для узкого гранта нужен свой OAuth-клиент
+  в отдельном auth config.
+- Прокси: только абсолютный URL на регистрируемом домене тулкита
+  (`*.googleapis.com` у `googlesuper`, иначе 400
+  `ExternalProxy_OriginMismatch`). Повторяющиеся параметры (`metadataHeaders`)
+  — в query самого URL: из `parameters` доходит только последнее значение.
+  Ответ — HTTP 200 с настоящим `status` апстрима внутри; JSON приходит
+  разобранным, текст — строкой, файл — `binary_data` со ссылкой на скачивание
+  (`proxyBodyBytes`). Нет аккаунта — 404 `ConnectedAccount_ResourceNotFound`,
+  его инструменты переводят в `requireAuth`.
+- Отзыв у Google снимает грант всего OAuth-клиента, а клиент у Composio один
+  на оба уровня. Поэтому отключение и смена уровня сначала синхронно отзывают
+  (`POST …/revoke`) и удаляют аккаунты и только потом выпускают ссылку, а
+  уборка старых аккаунтов после нового входа их только удаляет
+  (`pruneConnectedAccounts`): отзыв убил бы и новый вход.
+- Ответы `GET /connected_accounts` маскируют секреты (документация Composio),
+  но несут `state.val`; схема аккаунта берёт из него только `displayName`
+  (адрес Google). Не печатайте ответы аккаунтов целиком.
+- `apps` — белый список тулкитов в коде и только ход человека. Инструмент
+  считается чтением лишь с тегом `readOnlyHint`, без `create/update/
+destructiveHint` и без глагола записи в slug; всё прочее — карточка с
+  `summary` и аргументами. У `google` открыты только Таблицы, Документы и
+  Презентации: почту и календарь ведут свои инструменты с лимитами хода.
+- Локально (`eve dev`, эвалы) Google, Notion и Slack работают как на проде при
+  `COMPOSIO_API_KEY` и id конфигов в `.env.local`, Vercel OIDC не нужен.
+  Пользователь эвалов без аккаунта паркуется на карточке входа.
+- Тесты ходят в Composio только через `fakeComposio()`
+  (`tests/helpers/composio.ts`, подменяет `fetch`); `tests/setup-env.ts`
+  ставит фиктивный ключ, чтобы настоящий из shell не ушёл в запросы.
 
-## Notion и Slack
-
-- Коннекторы Vercel Connect задаются `NOTION_CONNECTOR_UID` и
-  `SLACK_CONNECTOR_UID` (по умолчанию `notion` и `slack`). Настройка Notion:
-  `eve link`, затем `eve add connection/notion --non-interactive --skip-install`.
-  Готового `connection/slack` в реестре eve нет (`channel/slack` делает бота,
-  а не пишет от имени человека); коннектор Slack создаётся вручную с
-  user-скоупами из `agent/lib/connected-apps/auth.ts`.
-- `notion-add-task`, `slack-send-message` и подключения `notion`/`slack`
-  (динамические, `agent/connections/`) есть только при коннекторе на деплое:
-  `connectedAppConfigured` спрашивает `getConnectorMetadata` и помнит ответ
-  5 минут на инстанс. Без них модель говорила «Notion и Slack подключены» при
-  `not_configured`. Сбой Vercel Connect инструменты оставляет: иначе одобрение,
-  припаркованное до сбоя, не найдёт свой инструмент. Без OIDC-токена (локальный
-  `eve dev`) их нет, и эвалы с ними делают `t.skip`.
+## Ход и доставка
 
 - Модели в одном ходе шлют `send_message` снова и снова, перефразируя
   («пока смотрю», «как только… пришлю»). Форсирование тут ни при чём: после
@@ -255,7 +279,7 @@
   `POST /eve/v1/dev/schedules/<имя>` (например `proactive`, затем `dynamic`,
   чтобы доставить отчёт).
 - Evals eve умеют подменять модель, но не инструменты. Всё, что читает Gmail
-  или Календарь, требует живого гранта Vercel Connect, поэтому
+  или Календарь, требует живого аккаунта Google в Composio, поэтому
   `evals/agent/proactive.eval.ts` начинает с передачи воркера.
 
 ## OpenRouter
@@ -320,8 +344,6 @@
   открытые запуски, смотрит их каждые 4 с до 45 с от старта и кончается до
   следующего тика (`watchLiveBrowserRuns`): итог доходит за ~5–15 с, а не за
   минуту. Без открытых запусков тик кончается сразу.
-- Коннекторы Vercel Connect токен облачной сессии создать не может (403 на
-  `create_connector`): их создаёт владелец в дашборде.
 
 ## Браузерные поручения
 
@@ -504,23 +526,13 @@
 
 - Уровень доступа Google (`full` / `read_only`) хранится в `settings` под
   ключом `google_workspace_access`; нет записи — `full`. Смена уровня сначала
-  отзывает грант (`revokeGoogleWorkspaceGrant`), иначе у Google остаются широкие
-  scopes старого гранта. Запись в режиме только чтения отсекается политикой
-  подтверждения `googleWriteApproval` до карточки, а не ошибкой Google.
-- Google отваливался ровно через час после каждого подключения, потому что у
-  коннектора Vercel Connect (`GOOGLE_CONNECTOR_UID`) был выключен тип гранта
-  «Refresh Tokens»: Connect хранил только часовой access-токен (Default Token
-  Lifetime 3600 с) и продлить его не мог. `access_type=offline` и
-  `prompt=consent` в Authorization Endpoint были, но без этого переключателя
-  они не помогают. Если Google снова «отключается» через час — сначала
-  проверьте Grant Types → Refresh Tokens у коннектора. Код дополнительно шлёт
-  `prompt: "consent"` (кабинет и карточка eve) и `access_type=offline` в
-  `additionalParams` из кабинета. Проверка tokeninfo пишет в лог
-  `grant has no offline access`, если грант онлайн; выключенные Refresh
-  Tokens она не ловит, потому что Google-то грант выдал офлайн
-  (`shared/google-workspace/connection.ts`). Кроме явного отключения и смены
-  уровня доступа, код гранты не отзывает: `evict` из eve без `revoke` только
-  чистит кэш.
+  отзывает и удаляет аккаунты Google (`revokeGoogleWorkspaceGrant`), затем
+  выпускает ссылку под конфигом нового уровня. Запись в режиме только чтения
+  отсекается политикой `googleWriteApproval` до карточки; её отказ велит
+  сказать, что действие недоступно, и не уговаривать на полный доступ (RU d06).
+- Грант старше скоупа, который нужен вызову, Google встречает 403 insufficient
+  scopes, а не 401, поэтому `withGoogleAuth` на обоих ответах зовёт
+  `ctx.requireAuth` и заново спрашивает согласие.
 - Ответ на письмо строится из Gmail `id` исходного письма (`replyToMessageId`):
   инструмент сам читает Message-ID/References/Subject и `threadId`. Поле
   `messageId` в выдаче чтения переименовано в `rfcMessageId`, чтобы модель не
@@ -616,9 +628,9 @@
   `pnpm install --frozen-lockfile`.
 - Локально (`NODE_ENV=development`, `BETTER_AUTH_URL` на loopback) вход по
   телефону принимает любой код одним `POST /api/auth/phone-number/verify`
-  (`localPhoneAuthBypassEnabled`), но Google, Notion и Slack там не работают:
-  без `vc link` Vercel Connect отвечает «x-vercel-oidc-token header is
-  missing». Кейсы с почтой и календарём гоняются только на проде.
+  (`localPhoneAuthBypassEnabled`). Google, Notion и Slack работают и там, если
+  в `.env.local` есть переменные `COMPOSIO_*`, но аккаунт Google у локального
+  пользователя свой: кейсы с почтой и календарём гоняются на проде.
 
 ## Память Бро
 
