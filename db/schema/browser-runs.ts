@@ -41,7 +41,8 @@ export const browserRuns = pgTable(
     id: text("id").primaryKey(),
     workspaceId: text("workspace_id").notNull(),
     createdByUserId: text("created_by_user_id").notNull(),
-    // Null only while the errand is queued: no browser session exists yet.
+    // Null only on an errand queued before it had a browser: such a row holds
+    // a `queued:` id, and its run carries the session once it starts.
     sessionId: text("session_id"),
     profileId: text("profile_id"),
     task: text("task").notNull(),
@@ -146,6 +147,10 @@ export const browserRuns = pgTable(
     check(
       "browser_runs_status_check",
       sql`${table.status} IN ('created', 'queued', 'running', 'waiting', 'done', 'failed', 'stopped')`
+    ),
+    check(
+      "browser_runs_session_id_check",
+      sql`${table.sessionId} IS NOT NULL OR ${table.id} LIKE 'queued:%'`
     ),
     check(
       "browser_runs_conversation_channel_check",

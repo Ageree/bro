@@ -272,8 +272,9 @@ async function watchOverdueReports(now: Date) {
       return;
     }
     const oldest = overdue[0]?.completedAt ?? now;
+    const count = overdue[0]?.total ?? overdue.length;
     console.warn("[browser-use] reports overdue", {
-      count: overdue.length,
+      count,
       oldestMinutes: Math.round((now.getTime() - oldest.getTime()) / 60_000),
       runs: overdue.map((row) => ({
         attempts: row.reportAttempts,
@@ -283,7 +284,7 @@ async function watchOverdueReports(now: Date) {
     });
     await alertOwner(
       overdueAlertKey,
-      `Итоги браузерных поручений не доходят до людей: ${String(overdue.length)} шт. дольше двух минут, самый старый — ${String(Math.round((now.getTime() - oldest.getTime()) / 60_000))} мин. Подробности в логах по «[browser-use] reports overdue».`,
+      `Итоги браузерных поручений не доходят до людей: ${String(count)} шт. дольше двух минут, самый старый — ${String(Math.round((now.getTime() - oldest.getTime()) / 60_000))} мин. Подробности в логах по «[browser-use] reports overdue».`,
       { now, repeatAfterMs: overdueAlertRepeatAfterMs }
     );
   } catch (error) {

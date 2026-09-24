@@ -219,6 +219,25 @@ describe("Browser Use client", () => {
       .catch((cause: unknown) => cause);
     expect(throttled).toMatchObject({ retryAfterMs: 300_000 });
 
+    // The header may name the moment instead of the seconds.
+    stubFetch(
+      new Response('{"error":"rate_limited"}', {
+        headers: {
+          "retry-after": new Date(Date.now() + 120_000).toUTCString(),
+        },
+        status: 429,
+      })
+    );
+    const dated = await client
+      .createBrowserUseRun({ task: "Найди отель" })
+      .catch((cause: unknown) => cause);
+    expect(client.browserUseBusy(dated)).toBe(true);
+    const datedWaitMs = client.browserUseBusy(dated)
+      ? dated.retryAfterMs
+      : undefined;
+    expect(datedWaitMs).toBeGreaterThan(115_000);
+    expect(datedWaitMs).toBeLessThanOrEqual(120_000);
+
     stubFetch(new Response("Insufficient credits", { status: 402 }));
     const broke = await client
       .createBrowserUseRun({ task: "Найди отель" })

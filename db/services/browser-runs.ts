@@ -564,7 +564,8 @@ export async function releaseBrowserRunReport(runId: string) {
  * Reports of settled runs that have not reached their conversation although
  * the run ended more than `settledBefore` ago — each one is a person who
  * thinks their errand is still going. Waiting for a code or a decision
- * counts: those are the reports that must land within the minute.
+ * counts: those are the reports that must land within the minute. At most
+ * 50 are listed, oldest first; `total` on each counts all of them.
  */
 export async function listOverdueBrowserRunReports(
   settledBefore: Date,
@@ -576,6 +577,8 @@ export async function listOverdueBrowserRunReports(
       conversationChannel: browserRuns.conversationChannel,
       id: browserRuns.id,
       reportAttempts: browserRuns.reportAttempts,
+      // A window count is taken before the limit applies.
+      total: sql<number>`(count(*) over ())::int`,
     })
     .from(browserRuns)
     .where(

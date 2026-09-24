@@ -1,4 +1,5 @@
 import { PGlite } from "@electric-sql/pglite";
+import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
 import type { Session } from "eve/channels";
@@ -61,9 +62,13 @@ vi.mock("@agent/lib/owner-alert", () => ({
 vi.mock("@agent/lib/browser-use/images", () => ({
   captureBrowserRunImages: () => Promise.resolve([]),
 }));
+// The vault can be made to fail, the way a transient outage does.
+const vaultFails = vi.hoisted(() => ({ value: false }));
 vi.mock("@agent/lib/browser-use/secrets", () => ({
   resolveBrowserSecretBindings: () =>
-    Promise.resolve({ aliases: [], bindings: [] }),
+    vaultFails.value
+      ? Promise.reject(new Error("vault unavailable"))
+      : Promise.resolve({ aliases: [], bindings: [] }),
 }));
 vi.mock("@db/services/orders", () => ({
   recordOrder: vi.fn<() => Promise<void>>(() => Promise.resolve()),
@@ -144,7 +149,21 @@ vi.mock("@agent/lib/browser-use/client", async (importOriginal) => {
         status: "running",
       });
     },
-    findRecentBrowserUseRunByTaskLine: () => Promise.resolve(undefined),
+    // Like Browser Use's run list: a live run whose task has the line.
+    findRecentBrowserUseRunByTaskLine: (line: string) => {
+      const found = [...cloud.runs].find(
+        ([id, run]) =>
+          !cloud.cancelled.includes(id) && run.task.split("\n").includes(line)
+      );
+      return Promise.resolve(
+        found && {
+          id: found[0],
+          sessionId: found[1].sessionId,
+          status: found[1].status,
+          task: found[1].task,
+        }
+      );
+    },
     readBrowserUseRun: (runId: string) => {
       const run = known(runId);
       return Promise.resolve({
@@ -187,6 +206,7 @@ beforeEach(async () => {
   cloud.cancelled.length = 0;
   cloud.created.length = 0;
   parkFails.value = false;
+  vaultFails.value = false;
   cloud.failing.clear();
   cloud.nextCreate.length = 0;
   cloud.runs.clear();
@@ -571,6 +591,47 @@ describe("the browser queue", () => {
     });
   }, 30_000);
 
+  it("adopts the run a dead poller started before asking the vault or the clock", async () => {
+    const queued = await queuedErrand(0);
+    const expired = await queuedErrand(1);
+    // This one has waited past the queue window.
+    await database
+      .update(schema.browserRuns)
+      .set({ createdAt: minutesAgo(120) })
+      .where(eq(schema.browserRuns.id, expired.id));
+    // A poller started both runs and died before handing the errands over.
+    for (const [index, row] of [queued, expired].entries()) {
+      cloud.runs.set(`orphan-run-${String(index)}`, {
+        result: null,
+        sessionId: `orphan-session-${String(index)}`,
+        status: "running",
+        task: `Полный текст поручения ${String(index)}\n\n(Queued errand ${row.id}; for bookkeeping only.)`,
+      });
+    }
+    vaultFails.value = true;
+    const { attachSession, send } = webChat();
+
+    await tick(attachSession);
+
+    // Neither run is left working untracked, and neither errand is told it
+    // never started.
+    expect(cloud.created).toHaveLength(0);
+    expect(cloud.cancelled).toHaveLength(0);
+    expect(await readRun(queued.id)).toMatchObject({
+      retriedAsRunId: "orphan-run-0",
+      status: "stopped",
+    });
+    expect(await readRun(expired.id)).toMatchObject({
+      retriedAsRunId: "orphan-run-1",
+      status: "stopped",
+    });
+    expect(await readRun("orphan-run-1")).toMatchObject({
+      sessionId: "orphan-session-1",
+      status: "running",
+    });
+    expect(send).not.toHaveBeenCalled();
+  }, 30_000);
+
   it("finishes the tick when a failed start cannot even be parked", async () => {
     const { createBrowserRun } = await import("@db/services/browser-runs");
     // A report whose earlier delivery failed waits for this tick's retry.
@@ -612,7 +673,9 @@ describe("the browser queue", () => {
 
     expect((await readRun(queued.id))?.status).toBe("failed");
     expect(send).toHaveBeenCalledOnce();
-    expect(sentText(send.mock.calls[0]?.[0])).toContain("ran out of credits");
+    expect(sentText(send.mock.calls[0]?.[0])).toContain(
+      "the cloud browser service became unavailable"
+    );
     expect(alertOwner).toHaveBeenCalledWith(
       "browser-use-no-credits",
       expect.stringContaining("402"),

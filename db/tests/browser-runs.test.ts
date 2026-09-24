@@ -2,6 +2,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import * as schema from "../schema";
 
 const databases: PGlite[] = [];
@@ -210,6 +211,59 @@ describe("browser run persistence", () => {
     expect((await browserRuns.readBrowserRun(runId))?.outcome).toBe(
       "Result: ordered"
     );
+  }, 20_000);
+
+  it("lets only an errand queued before it had a browser go without a session", async () => {
+    const browserRuns = await browserRunsDatabase();
+    const { sessionId: _sessionId, ...withoutSession } = conversation();
+
+    const refused = await browserRuns
+      .createBrowserRun(alice, {
+        ...withoutSession,
+        id: runId,
+        status: "running",
+      })
+      .catch((cause: unknown) => cause);
+    const constraintRefusal = z.object({
+      cause: z.object({
+        message: z.string().includes("browser_runs_session_id_check"),
+      }),
+    });
+    expect(constraintRefusal.safeParse(refused).success).toBe(true);
+
+    const queued = await browserRuns.createQueuedBrowserRun(alice, {
+      ...withoutSession,
+      pendingTask: "Order the usual, composed",
+      retryAt: new Date(),
+    });
+    const closed = await browserRuns.closeQueuedBrowserRun(queued.id, {
+      outcome: "never started",
+      status: "failed",
+    });
+    expect(closed).toMatchObject({ sessionId: null, status: "failed" });
+  }, 20_000);
+
+  it("counts every overdue report, not only the fifty it lists", async () => {
+    const browserRuns = await browserRunsDatabase();
+    const settled = new Date(Date.now() - 10 * 60_000);
+    await Promise.all(
+      Array.from({ length: 52 }, (_, index) =>
+        browserRuns.createBrowserRun(alice, {
+          ...conversation(),
+          completedAt: settled,
+          id: `overdue-run-${String(index)}`,
+          report: "RESULT: done",
+          status: "done",
+        })
+      )
+    );
+
+    const overdue = await browserRuns.listOverdueBrowserRunReports(
+      new Date(Date.now() - 2 * 60_000)
+    );
+
+    expect(overdue).toHaveLength(50);
+    expect(overdue[0]?.total).toBe(52);
   }, 20_000);
 });
 

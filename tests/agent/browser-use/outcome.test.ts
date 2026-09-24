@@ -407,6 +407,25 @@ describe("browser run items", () => {
     expect(summary).not.toContain("live.browser-use.com");
   });
 
+  it("keeps a full basket whose JSON is longer than the LINKS bound", () => {
+    const lines = Array.from({ length: 30 }, (_, index) => ({
+      details: `Доставка завтра, продавец ${"№".repeat(200)}`,
+      name: `Товар ${String(index + 1)}`,
+      price: "1 000 ₽",
+      quantity: 1,
+      url: `https://www.ozon.ru/product/${String(index + 1)}?${"a".repeat(300)}`,
+    }));
+    const json = JSON.stringify(lines);
+    expect(json.length).toBeGreaterThan(16_000);
+
+    const { items } = parseBrowserOutcome(
+      ["RESULT: корзина собрана", `ITEMS: ${json}`].join("\n")
+    );
+
+    expect(items).toHaveLength(30);
+    expect(items.at(-1)?.name).toBe("Товар 30");
+  });
+
   it("reads no items from a report without the line or with broken JSON", () => {
     expect(parseBrowserOutcome("RESULT: done\nNEEDS: none").items).toEqual([]);
     expect(
