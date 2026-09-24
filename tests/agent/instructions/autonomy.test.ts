@@ -111,6 +111,29 @@ describe("autonomy defaults", () => {
     expect(mocks.readSpendLimit).not.toHaveBeenCalled();
   });
 
+  it("lists the standing permissions so the model does not ask about them", () => {
+    const content = spendLimitInstructions(
+      {
+        ...monthly,
+        actions: [
+          { kind: "table", maxRub: null, merchant: null },
+          { kind: "order", maxRub: 3000, merchant: "lavka.yandex.ru" },
+        ],
+        rules: [],
+      },
+      []
+    );
+
+    expect(content).toContain("Лимит трат без спроса не задан");
+    expect(content).toContain("без вопроса и без карточки");
+    expect(content).toContain(
+      "- брони столиков без спроса, только бесплатное."
+    );
+    expect(content).toContain(
+      `- заказы товаров и еды без спроса, на lavka.yandex.ru, до ${formatRub(3000)} за раз.`
+    );
+  });
+
   it("names the exclusions even without a limit", () => {
     expect(spendLimitInstructions({ ...monthly, rules: [] }, [])).toContain(
       "Без спроса никогда: «алкоголь»."

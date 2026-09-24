@@ -270,16 +270,35 @@
   (что, где, для кого, какие данные, когда, сколько), а запуск получает ровно
   эти рамки: политика `browserTaskApproval` в `agent/tools/browser_task.ts`.
   Подтверждение хранится в `browser_runs.submission` и переходит только на
-  `continue` и капча-повторы того же поручения. Лимит трат покрывает лишь
-  оплату заказа (`allowPayment` + `withinSpendLimit` без `allowSubmit`).
+  `continue`, капча-повторы и старт из очереди того же поручения. Лимит трат
+  покрывает лишь оплату заказа (`allowPayment` + `withinSpendLimit` без
+  `allowSubmit`).
+- Владелец: «спросить один раз, и всё». Поэтому одно поручение — одна
+  карточка: `submission.chargeRub` делает её и разрешением платить до суммы
+  с запасом 10% (не меньше 100 и не больше 1 000 ₽, `paymentCeilingRub`),
+  потолок лежит в `browser_runs.submission.paymentCapRub`, и `continue` на
+  шаге оплаты, код, повтор и очередь идут без второй карточки. Политика
+  `browserTaskApproval` асинхронная: читает строку поручения и политику и
+  решает той же `consentFor`, что и `execute`, иначе карточка и полномочия
+  запуска разойдутся. Новая карточка — только при изменении слота, места,
+  данных или сумме выше потолка (`sameSubmission` сравнивает дословно).
+- Постоянные разрешения («бронируй столики сам», «такси до 1 500 ₽») — поле
+  `actions` той же политики `spend_limit`, а не свой ключ `settings`: ключи
+  ограничены CHECK, новый требовал бы миграции. Пишет их `standing_permission`,
+  расширение подтверждается карточкой через общий `policyWidens`, покрытие
+  решает `decideStandingAction`. Оплата по разрешению, как и по карточке, в
+  `spend_entries` не пишется: потолок на поручение, а не на месяц.
 - В фоне (`scheduled-worker`, `proactive-worker`, ход-отчёт) политика
   отклоняет `allowSubmit` и `allowPayment` сразу, а не карточкой: ожидающий
   ввод воркера может «ответить» модель хода-отчёта (`schedules-answer`).
 - eve подписывает карточку одобрения в мессенджерах только «Approve tool
   call: <инструмент>», ввод вызова видно лишь в веб-чате. Детали карточки
   `browser_task` Telegram рисует сам (`input.requested` в
-  `agent/channels/telegram.ts`, текст — `agent/lib/browser-use/approval-card.ts`);
-  у iMessage рендер карточки внутренний в eve, там пока голый заголовок.
+  `agent/channels/telegram.ts`, текст — `agent/lib/browser-use/approval-card.ts`).
+  В iMessage кнопок нет, а eve принимает ответ текстом, только если он равен
+  id, английской метке или номеру варианта (`channel/resolve-text.js`), так
+  что «Подтвердить» не сработает: `input.requested` в `agent/channels/photon.ts`
+  пишет детали и нумерует варианты (`agent/lib/imessage-text/input-requests.ts`).
 
 - Антибот-стену модель не видит: `settleBrowserRun` паркует запуск
   (`retry_at`), поллер заводит повтор на том же профиле, до 5 попыток за ~30
@@ -343,8 +362,9 @@
 - Подтверждение `spend_limit` решает `policyWidens` (`shared/spending/limit.ts`)
   на той же проверке покрытия, что и платёж: правило `ozon.ru` покрывает и
   `pay.ozon.ru`. Сравнение по точному совпадению магазина пропускало `clear`,
-  поднимавший потолок поддомену. `allowPayment` без `withinSpendLimit` всегда
-  идёт через нативную карточку (`paymentApproval` в `browser_task`).
+  поднимавший потолок поддомену. `allowPayment` без `withinSpendLimit` идёт
+  через нативную карточку, если его не покрывает уже подтверждённое поручение
+  или постоянное разрешение.
 
 ## Google
 

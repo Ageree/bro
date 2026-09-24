@@ -70,7 +70,7 @@ export async function readSpendLimit(scope: AccessScope) {
 /**
  * Change the policy under the workspace lock, so two turns editing it at once
  * both land instead of the later one writing over the earlier. A policy with
- * no rules and no exclusions is no policy: the row goes.
+ * no rules, standing permissions or exclusions is no policy: the row goes.
  */
 export async function updateSpendLimit(
   scope: AccessScope,
@@ -84,6 +84,7 @@ export async function updateSpendLimit(
     );
     if (
       validated.rules.length === 0 &&
+      (validated.actions ?? []).length === 0 &&
       validated.excludedMerchants.length === 0 &&
       validated.excludedCategories.length === 0
     ) {

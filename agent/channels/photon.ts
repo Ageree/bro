@@ -39,6 +39,7 @@ import {
 } from "../lib/image-artifact/delivery";
 import { toIMessageBubbles } from "../lib/imessage-text/bubbles";
 import { toIMessageText } from "../lib/imessage-text/compile";
+import { iMessageInputRequestsText } from "../lib/imessage-text/input-requests";
 import {
   extractImageArtifactMarkdownReferences,
   stripImageArtifactMarkdownReferences,
@@ -183,6 +184,18 @@ export default photonIMessageChannel({
       });
       markTurnDelivered(context.state, event.turnId);
       await deliverText(thread, session, { attachments: [], text });
+    },
+    // eve's own card, which iMessage shows only as its bare title, put into
+    // words: a browser errand's card says what it will submit in the
+    // person's name, and every option gets the number that answers it.
+    async "input.requested"(event, context, session) {
+      if (!context.thread || event.requests.length === 0) return;
+      await context.thread.post({
+        raw: iMessageInputRequestsText(
+          event.requests,
+          sessionReplyLanguage(session.session.auth)
+        ),
+      });
     },
     async "session.completed"(_event, _context, session) {
       const report = scheduledReportFromSession(session);

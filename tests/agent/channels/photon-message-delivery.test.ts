@@ -821,6 +821,119 @@ describe("Photon message delivery", () => {
   });
 });
 
+const handleInputRequested =
+  photonChannelCapture.config?.events?.["input.requested"];
+if (!handleInputRequested) {
+  throw new Error("The Photon channel must render input requests itself.");
+}
+type InputRequestedEvent = Parameters<typeof handleInputRequested>[0];
+
+function approval(
+  toolName: string,
+  input: InputRequestedEvent["requests"][number]["action"]["input"]
+): InputRequestedEvent {
+  return {
+    requests: [
+      {
+        action: { callId: "call-1", input, kind: "tool-call", toolName },
+        allowFreeform: false,
+        display: "confirmation",
+        kind: "tool-approval",
+        options: [
+          { id: "approve", label: "Approve" },
+          { id: "cancel", label: "Cancel" },
+        ],
+        prompt: `Approve tool call: ${toolName}`,
+        requestId: "approval-1",
+      },
+    ],
+    sequence: 3,
+    stepIndex: 0,
+    turnId: "turn-1",
+  };
+}
+
+describe("Photon approval cards", () => {
+  const booking = {
+    action: "start",
+    allowSubmit: true,
+    site: "https://cafe-pushkin.ru",
+    submission: {
+      amount: "бесплатно",
+      forWhom: "Алиса",
+      kind: "table",
+      personalData: ["имя", "телефон"],
+      what: "столик на двоих",
+      when: "сегодня, 20:00",
+      where: "ресторан «Пушкин» (cafe-pushkin.ru)",
+    },
+    task: "Забронируй столик в «Пушкине» на 20:00",
+  };
+
+  it("says what a browser errand will submit and how to answer it", async () => {
+    const { context, post } = handlerContext();
+
+    await handleInputRequested(
+      approval("browser_task", booking),
+      context,
+      sessionContext()
+    );
+
+    expect(post).toHaveBeenCalledExactlyOnceWith({
+      raw: [
+        [
+          "Подтверждение действия от твоего имени:",
+          "Что: столик на двоих",
+          "Где: ресторан «Пушкин» (cafe-pushkin.ru)",
+          "От чьего имени: Алиса",
+          "Когда: сегодня, 20:00",
+          "Стоимость: бесплатно",
+          "Какие данные уйдут: имя, телефон",
+          "Сайт: https://cafe-pushkin.ru",
+        ].join("\n"),
+        "1 — Подтвердить\n2 — Отмена",
+        // eve resolves a reply that is the option's number.
+        "Ответь цифрой: 1 или 2.",
+      ].join("\n\n"),
+    });
+  });
+
+  it("answers in the person's language", async () => {
+    const { context, post } = handlerContext();
+
+    await handleInputRequested(
+      approval("browser_task", booking),
+      context,
+      englishSessionContext()
+    );
+
+    const [message] = post.mock.calls[0] ?? [];
+    expect(JSON.stringify(message)).toContain(
+      "Confirm before I do this in your name:"
+    );
+    expect(JSON.stringify(message)).toContain("1 — Approve");
+    expect(JSON.stringify(message)).toContain("Reply with the number: 1 or 2.");
+  });
+
+  it("numbers the options of every other request as well", async () => {
+    const { context, post } = handlerContext();
+
+    await handleInputRequested(
+      approval("gmail-send", { subject: "Привет", to: ["a@b.c"] }),
+      context,
+      sessionContext()
+    );
+
+    expect(post).toHaveBeenCalledExactlyOnceWith({
+      raw: [
+        "Approve tool call: gmail-send",
+        "1 — Approve\n2 — Cancel",
+        "Ответь цифрой: 1 или 2.",
+      ].join("\n\n"),
+    });
+  });
+});
+
 /** Bytes with no signature of their own, so the served media type decides. */
 const fileBytes = new Uint8Array(16);
 

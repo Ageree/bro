@@ -1,12 +1,16 @@
 import { z } from "zod";
+import { browserSubmissionKinds } from "@shared/browser/submission";
 
 /**
- * The standing permission a person gives with «можешь тратить до N ₽ без
- * спроса»: how much Bro may pay per calendar month without asking first,
- * optionally narrowed to one merchant or one category, and what it must never
- * pay for on its own. Amounts are whole roubles — a spending ceiling has no use
- * for kopecks, and rounding the exposure up keeps every comparison on the safe
- * side.
+ * Everything a person has let Bro do without asking, in one policy. The
+ * spend limit they give with «можешь тратить до N ₽ без спроса»: how much Bro
+ * may pay per calendar month, optionally narrowed to one merchant or one
+ * category. The standing permissions they give with «бронируй столики сам» or
+ * «в Лавке заказывай без подтверждения до 3000 ₽»: a kind of errand, a site or
+ * both that Bro does in their name without an approval card, with a ceiling
+ * per errand for the paid ones. And what it must never do on its own. Amounts
+ * are whole roubles — a spending ceiling has no use for kopecks, and rounding
+ * the exposure up keeps every comparison on the safe side.
  */
 export const spendLimitCurrency = "RUB";
 
@@ -24,6 +28,24 @@ const spendRuleSchema = z.object({
   merchant: merchantSchema.nullable(),
 });
 
+const standingActionKindSchema = z
+  .enum(browserSubmissionKinds)
+  .exclude(["other"]);
+
+/**
+ * One standing permission. A rule without a ceiling covers only what is free:
+ * binding the card, even as a guarantee, needs a ceiling the person named.
+ */
+const standingActionSchema = z
+  .object({
+    kind: standingActionKindSchema.nullable(),
+    maxRub: z.number().int().positive().max(10_000_000).nullable(),
+    merchant: merchantSchema.nullable(),
+  })
+  .refine((rule) => rule.kind !== null || rule.merchant !== null, {
+    message: "A standing permission names a kind of errand, a site or both.",
+  });
+
 // A shop and a category are excluded separately: a category called «example»
 // must not block every payment to a host that ends in `.example`.
 export const spendLimitPolicySchema = z.object({
@@ -31,10 +53,16 @@ export const spendLimitPolicySchema = z.object({
   excludedCategories: z.array(labelSchema).max(50),
   excludedMerchants: z.array(merchantSchema).max(50),
   rules: z.array(spendRuleSchema).max(20),
+  // Written after the limit itself: a policy saved before standing
+  // permissions existed has none.
+  actions: z.array(standingActionSchema).max(30).optional(),
   version: z.literal(1),
 });
 
 export type SpendRule = z.infer<typeof spendRuleSchema>;
+export type StandingAction = z.infer<typeof standingActionSchema>;
+export type StandingActionKind = z.infer<typeof standingActionKindSchema>;
+export const standingActionKinds = standingActionKindSchema.options;
 export type SpendLimitPolicy = z.infer<typeof spendLimitPolicySchema>;
 
 /** What a payment is filed under: the shop it goes to and what it is for. */
@@ -141,6 +169,18 @@ function ruleContains(outer: SpendRule, inner: SpendRule) {
 }
 
 /**
+ * Whether a policy change lets Bro do more without asking anywhere: pay more
+ * on the monthly limit, or act in the person's name on an errand no standing
+ * permission covered before.
+ */
+export function policyWidens(
+  before: SpendLimitPolicy | undefined,
+  after: SpendLimitPolicy
+) {
+  return spendRulesWiden(before, after) || actionsWiden(before, after);
+}
+
+/**
  * Whether a policy change lets Bro pay more anywhere, judged with the same
  * coverage the payment decision uses — a rule for `ozon.ru` also binds
  * `pay.ozon.ru`. For every shop and category the policies name, before or
@@ -150,7 +190,7 @@ function ruleContains(outer: SpendRule, inner: SpendRule) {
  * binds it. That holds whatever the month has spent, so no spending can make
  * a change judged narrowing pay more.
  */
-export function policyWidens(
+function spendRulesWiden(
   before: SpendLimitPolicy | undefined,
   after: SpendLimitPolicy
 ) {
@@ -187,6 +227,140 @@ export function policyWidens(
       );
     })
   );
+}
+
+function actionKindCovers(
+  rule: StandingAction,
+  kind: StandingActionKind | "other" | null
+) {
+  return rule.kind === null || rule.kind === kind;
+}
+
+function actionMerchantCovers(rule: StandingAction, merchant: string | null) {
+  return rule.merchant === null || merchantCovers(rule.merchant, merchant);
+}
+
+/**
+ * Whether the policy lets Bro act on errands of this kind (any kind when
+ * null) on this site without a card, paying up to `capRub` on each.
+ */
+function actionAllows(
+  policy: SpendLimitPolicy,
+  kind: StandingActionKind | null,
+  merchant: string | null,
+  capRub: number
+) {
+  if (isExcluded(policy, { category: null, merchant })) return false;
+  return (policy.actions ?? []).some(
+    (rule) =>
+      actionKindCovers(rule, kind) &&
+      actionMerchantCovers(rule, merchant) &&
+      (rule.maxRub ?? 0) >= capRub
+  );
+}
+
+/**
+ * Whether the change lets Bro act without a card somewhere it could not, or
+ * pay more per errand there: for every site either policy names, and for a
+ * site none names, each rule after the change must already be allowed before
+ * it — for the same kinds, with a ceiling at least as high. Lifting an
+ * exclusion under an existing rule widens the same way.
+ */
+function actionsWiden(
+  before: SpendLimitPolicy | undefined,
+  after: SpendLimitPolicy
+) {
+  const policies = before ? [before, after] : [after];
+  const merchants = new Set<string | null>([null]);
+  for (const policy of policies) {
+    for (const rule of policy.actions ?? []) merchants.add(rule.merchant);
+    for (const merchant of policy.excludedMerchants) merchants.add(merchant);
+  }
+  return (after.actions ?? []).some((rule) =>
+    [...merchants].some(
+      (merchant) =>
+        actionMerchantCovers(rule, merchant) &&
+        !isExcluded(after, { category: null, merchant }) &&
+        !(
+          before !== undefined &&
+          actionAllows(before, rule.kind, merchant, rule.maxRub ?? 0)
+        )
+    )
+  );
+}
+
+export interface StandingActionRequest {
+  /** What the errand costs in roubles, when it is paid. */
+  readonly chargeRub: number | undefined;
+  readonly kind: StandingActionKind | "other";
+  readonly merchant: string | null;
+  /** The errand binds the card, whatever it costs. */
+  readonly paying: boolean;
+  /** A subscription or any other repeating charge. */
+  readonly recurring: boolean;
+}
+
+/**
+ * Whether a standing permission lets Bro do this errand in the person's name
+ * without a card, and the most it may pay on it. A free errand needs a rule
+ * for its kind or its site; a paid one also needs the rule's ceiling to hold
+ * its cost, and then the run may pay up to that ceiling. A site the person
+ * excluded and a repeating charge always go back to the card.
+ */
+export function decideStandingAction(
+  policy: SpendLimitPolicy | undefined,
+  request: StandingActionRequest
+) {
+  if (!policy) return undefined;
+  if (isExcluded(policy, { category: null, merchant: request.merchant })) {
+    return undefined;
+  }
+  const paying = request.paying || request.chargeRub !== undefined;
+  if (paying && request.recurring) return undefined;
+  const charge = wholeRubles(request.chargeRub ?? 0);
+  const [rule] = (policy.actions ?? [])
+    .filter(
+      (candidate) =>
+        actionKindCovers(candidate, request.kind) &&
+        actionMerchantCovers(candidate, request.merchant) &&
+        (!paying || (candidate.maxRub !== null && charge <= candidate.maxRub))
+    )
+    .toSorted((left, right) => (right.maxRub ?? 0) - (left.maxRub ?? 0));
+  if (!rule) return undefined;
+  return { capRub: paying ? (rule.maxRub ?? 0) : undefined, rule };
+}
+
+export function sameActionScope(
+  rule: StandingAction,
+  scope: Pick<StandingAction, "kind" | "merchant">
+) {
+  return rule.kind === scope.kind && rule.merchant === scope.merchant;
+}
+
+/** How each kind of errand reads to the person. */
+const standingActionLabels: Record<StandingActionKind, string> = {
+  appointment: "записи к врачам и на услуги",
+  application: "заявления и заявки",
+  booking: "брони жилья, билетов и аренды",
+  job_application: "отклики на вакансии",
+  message: "сообщения и заявки исполнителям",
+  order: "заказы товаров и еды",
+  table: "брони столиков",
+  taxi: "заказы такси",
+};
+
+/** «заказы такси без спроса, до 1 500 ₽ за раз» — how a permission reads. */
+export function describeStandingAction(rule: StandingAction) {
+  const what = rule.kind === null ? "всё" : standingActionLabels[rule.kind];
+  return [
+    `${what} без спроса`,
+    rule.merchant === null ? undefined : `на ${rule.merchant}`,
+    rule.maxRub === null
+      ? "только бесплатное"
+      : `до ${formatRub(rule.maxRub)} за раз`,
+  ]
+    .filter((part) => part !== undefined)
+    .join(", ");
 }
 
 function isExcluded(policy: SpendLimitPolicy, target: SpendTarget) {

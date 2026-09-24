@@ -267,9 +267,13 @@ describe("agent instructions", () => {
     expect(selected?.content).not.toContain(
       "сам доводит до конца всё бесплатное и бесплатно отменяемое"
     );
-    // Acting in the person's name is confirmed on a card that shows it.
+    // Acting in the person's name is confirmed on one card that shows it,
+    // payment included.
     expect(selected?.content).toContain(
-      "`allowSubmit` всегда идёт вместе с `submission` и всегда показывает человеку нативную карточку подтверждения"
+      "`allowSubmit` всегда идёт вместе с `submission` и показывает человеку одну нативную карточку подтверждения"
+    );
+    expect(selected?.content).toContain(
+      "Карточка с `chargeRub` — это и разрешение заплатить"
     );
     expect(selected?.content).toContain("Подтверждение принадлежит поручению.");
     expect(selected?.content).toContain(

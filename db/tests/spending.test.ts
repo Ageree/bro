@@ -83,7 +83,24 @@ describe("spend limit persistence", () => {
     expect(await spending.readSpendLimit(alice)).toEqual(monthly);
     expect(await spending.readSpendLimit(bob)).toBeUndefined();
 
-    await spending.updateSpendLimit(alice, () => ({ ...monthly, rules: [] }));
+    // Standing permissions alone are still a policy.
+    const tables = { kind: "table" as const, maxRub: null, merchant: null };
+    await spending.updateSpendLimit(alice, () => ({
+      ...monthly,
+      actions: [tables],
+      rules: [],
+    }));
+    expect(await spending.readSpendLimit(alice)).toEqual({
+      ...monthly,
+      actions: [tables],
+      rules: [],
+    });
+
+    await spending.updateSpendLimit(alice, () => ({
+      ...monthly,
+      actions: [],
+      rules: [],
+    }));
     expect(await spending.readSpendLimit(alice)).toBeUndefined();
   }, 30_000);
 

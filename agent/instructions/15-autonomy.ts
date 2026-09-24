@@ -8,6 +8,7 @@ import { localMonthKey } from "@shared/calendar/local-period";
 import type { AccessScope } from "@shared/identity/access-scope";
 import {
   describeSpendRule,
+  describeStandingAction,
   exclusionLabels,
   formatRub,
   remainingUnderRule,
@@ -31,24 +32,35 @@ export function spendLimitInstructions(
     excluded.length > 0
       ? `Без спроса никогда: ${excluded.join(", ")}.`
       : undefined;
-  if (!policy || policy.rules.length === 0) {
-    return [
-      "Лимит трат без спроса не задан: платить без разрешения человека можно только то, что бесплатно.",
-      never,
-    ]
-      .filter((line) => line !== undefined)
-      .join("\n");
-  }
-  return [
-    "Лимит трат без спроса на этот месяц:",
-    ...policy.rules.map(
-      (rule) =>
-        `- ${describeSpendRule(rule)}: потрачено ${formatRub(spentUnderRule(rule, entries))}, осталось ${formatRub(remainingUnderRule(rule, entries))}.`
-    ),
-    never,
-  ]
+  const limit =
+    !policy || policy.rules.length === 0
+      ? [
+          "Лимит трат без спроса не задан: платить без разрешения человека можно только то, что бесплатно.",
+        ]
+      : [
+          "Лимит трат без спроса на этот месяц:",
+          ...policy.rules.map(
+            (rule) =>
+              `- ${describeSpendRule(rule)}: потрачено ${formatRub(spentUnderRule(rule, entries))}, осталось ${formatRub(remainingUnderRule(rule, entries))}.`
+          ),
+        ];
+  return [...limit, ...standingPermissionLines(policy), never]
     .filter((line) => line !== undefined)
     .join("\n");
+}
+
+/**
+ * The errands the person let Bro do without a card. Without them in the
+ * prompt the model asks in text about exactly what the person asked it to
+ * stop asking about.
+ */
+function standingPermissionLines(policy: SpendLimitPolicy | undefined) {
+  const actions = policy?.actions ?? [];
+  if (actions.length === 0) return [];
+  return [
+    "Постоянные разрешения — в разговоре с человеком такие поручения запускай сразу, без вопроса и без карточки (инструмент сверит сам; фоновая работа от его имени не действует и с ними):",
+    ...actions.map((rule) => `- ${describeStandingAction(rule)}.`),
+  ];
 }
 
 async function currentSpendLimit(scope: AccessScope, now: Date) {

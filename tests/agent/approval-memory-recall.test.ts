@@ -105,6 +105,7 @@ const gatedCalls = [
           submission: {
             forWhom: "Алиса",
             personalData: ["имя", "адрес"],
+            kind: "order",
             what: "заказ корма для кота",
             where: "shop.example",
           },
@@ -183,8 +184,8 @@ describe("an approved tool call after a memory recall", () => {
           },
         }),
         // eve hands the policy's answer to the AI SDK the same way.
-        toolApproval: () => {
-          const status = policy();
+        toolApproval: async () => {
+          const status = await policy();
           if (status === true) return "user-approval";
           if (status === false) return "not-applicable";
           return status;

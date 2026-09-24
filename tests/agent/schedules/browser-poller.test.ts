@@ -357,6 +357,26 @@ describe("the browser run poller", () => {
     );
   }, 30_000);
 
+  it("answers a payment stop with one card, not a question in text", async () => {
+    await runningErrand(
+      "payment-run",
+      [
+        "Корзина собрана, дошёл до оплаты.",
+        "RESULT: остановился перед оплатой",
+        "TOTAL: 2 400 ₽",
+        "NEEDS: payment",
+      ].join("\n")
+    );
+    const { attachSession, send } = webChat();
+
+    await tick(attachSession);
+
+    const report = sentText(send.mock.calls[0]?.[0]);
+    expect(report).toContain(
+      "do not ask in text: continue this run now with allowSubmit and the errand's submission carrying the real total in chargeRub"
+    );
+  }, 30_000);
+
   it("reports a basket and hotels as a list of what the run found", async () => {
     await runningErrand(
       "basket-run",
@@ -446,6 +466,7 @@ describe("the browser run poller", () => {
 const cardSubmission: BrowserSubmission = {
   forWhom: "Алиса",
   personalData: ["имя", "телефон"],
+  kind: "table",
   what: "бронь столика на двоих",
   when: "пятница, 19:00",
   where: "ресторан «Пушкин»",

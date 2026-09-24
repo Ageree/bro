@@ -20,14 +20,20 @@ import type {
   createQueuedBrowserRun as recordQueuedBrowserRun,
   updateQueuedBrowserRun as updateQueuedRun,
 } from "@db/services/browser-runs";
-import type { BrowserSubmission } from "@shared/browser/submission";
+import type {
+  BrowserSubmission,
+  ConfirmedSubmission,
+} from "@shared/browser/submission";
 import {
   accessScopeForUser,
   type AccessScope,
 } from "@shared/identity/access-scope";
-import type {
-  AutoPaymentDecision,
-  AutoPaymentRequest,
+import {
+  type AutoPaymentDecision,
+  type AutoPaymentRequest,
+  formatRub,
+  type SpendLimitPolicy,
+  type StandingAction,
 } from "@shared/spending/limit";
 import {
   emptyUserProfile,
@@ -147,6 +153,12 @@ const settleSpendReservation = vi.hoisted(() =>
   )
 );
 
+const readSpendLimit = vi.hoisted(() =>
+  vi.fn<(scope: AccessScope) => Promise<SpendLimitPolicy | undefined>>(() =>
+    Promise.resolve(undefined)
+  )
+);
+
 const countQueuedBrowserRuns = vi.hoisted(() =>
   vi.fn<() => Promise<number>>(() => Promise.resolve(0))
 );
@@ -210,6 +222,7 @@ vi.mock("@agent/lib/browser-use/credits", async (importOriginal) => ({
 }));
 vi.mock("@db/services/spending", () => ({
   moveSpendReservation,
+  readSpendLimit,
   reserveAutoPayment,
   settleSpendReservation,
 }));
@@ -251,6 +264,7 @@ beforeAll(async () => {
 }, 60_000);
 
 beforeEach(() => {
+  readSpendLimit.mockResolvedValue(undefined);
   countQueuedBrowserRuns.mockResolvedValue(0);
   browserRunQuotaGate.mockResolvedValue({ allowed: true, note: undefined });
   readBrowserRunForScope.mockResolvedValue(undefined);
@@ -285,15 +299,33 @@ function noRetryAt(): Date | null {
   return null;
 }
 
+/** The instruction a queued errand starts with, typed as the column is. */
+function noPendingTask(): string | null {
+  return null;
+}
+
 /** The row's browser session, typed as the column is: a queued errand has none. */
 function rowSessionId(): string | null {
   return sessionId;
+}
+
+/** A policy of standing permissions alone, without a monthly limit. */
+function standingPolicy(actions: StandingAction[]): SpendLimitPolicy {
+  return {
+    actions,
+    currency: "RUB",
+    excludedCategories: [],
+    excludedMerchants: [],
+    rules: [],
+    version: 1,
+  };
 }
 
 /** What the person confirmed on the card in these tests. */
 const cardSubmission: BrowserSubmission = {
   forWhom: "Алиса",
   personalData: ["имя", "телефон"],
+  kind: "appointment",
   what: "запись к терапевту",
   when: "ближайший слот 29.09–03.10",
   where: "поликлиника №12 через ЕМИАС (emias.info)",
@@ -302,7 +334,7 @@ const cardSubmission: BrowserSubmission = {
 function browserRunRow(
   completedAt: Date | null = null,
   outcome: string | null = null,
-  submission: BrowserSubmission | null = null
+  submission: ConfirmedSubmission | null = null
 ) {
   return {
     completedAt,
@@ -313,6 +345,9 @@ function browserRunRow(
     id: runId,
     liveViewUrl,
     outcome,
+    // An errand whose consent named its cost was started with the card bound.
+    paymentAllowed: submission?.paymentCapRub !== undefined,
+    pendingTask: noPendingTask(),
     profileId: "profile-1",
     replyAnchorMessageId: null,
     retryAt: noRetryAt(),
@@ -370,7 +405,7 @@ async function continueErrand(input: {
   readonly allowSubmit?: boolean;
   readonly authenticator?: string;
   readonly completedAt?: Date;
-  readonly confirmed?: BrowserSubmission;
+  readonly confirmed?: ConfirmedSubmission;
   readonly outcome?: string;
   readonly site?: string;
   readonly submission?: BrowserSubmission;
@@ -1136,7 +1171,7 @@ describe("browser_task payment boundary", () => {
         },
         toolContext("better-auth:alice")
       )
-    ).rejects.toThrow("acting in the user's name needs submission");
+    ).rejects.toThrow("acting in the user's name or paying needs submission");
     expect(createBrowserUseRun).not.toHaveBeenCalled();
   });
 
@@ -1206,6 +1241,169 @@ describe("browser_task payment boundary", () => {
     const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
     expect(task).not.toContain("Nothing has been approved to pay for");
     expect(task).toContain("finish it rather than abandoning it at the mark");
+  });
+});
+
+describe("browser_task one question per errand", () => {
+  const taxi: BrowserSubmission = {
+    amount: "около 900 ₽ по тарифу «Комфорт»",
+    chargeRub: 900,
+    forWhom: "Алиса",
+    kind: "taxi",
+    personalData: ["имя", "телефон"],
+    what: "заказ такси домой",
+    when: "сейчас",
+    where: "Яндекс Go (taxi.yandex.ru)",
+  };
+
+  async function start(submission: BrowserSubmission, authenticator?: string) {
+    vi.resetModules();
+    createBrowserUseRun.mockResolvedValue({
+      id: runId,
+      model: "hosted-agent",
+      sessionId,
+      status: "running",
+    });
+    const { browserTask } = await import("@agent/tools/browser_task");
+    return browserTask.execute(
+      {
+        action: "start",
+        allowSubmit: true,
+        site: "https://taxi.yandex.ru",
+        submission,
+        task: "Закажи такси домой",
+      },
+      toolContext("better-auth:alice", authenticator)
+    );
+  }
+
+  it("pays within the total the one card approved, without a second card", async () => {
+    await start(taxi);
+
+    const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
+    expect(task).toContain(
+      "The person confirmed on an approval card this one submission in their name."
+    );
+    // 900 ₽ and the 100 ₽ margin a small order gets.
+    expect(task).toContain(`Payment is pre-approved up to ${formatRub(1000)}`);
+    expect(task).not.toContain("Nothing has been approved to pay for");
+    expect(resolveBrowserSecretBindings).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ allowPayment: true })
+    );
+    expect(createBrowserRun.mock.calls[0]?.[1]).toMatchObject({
+      paymentAllowed: true,
+      submission: { ...taxi, paymentCapRub: 1000 },
+    });
+  });
+
+  it("keeps a free errand's card from binding the card", async () => {
+    await start(cardSubmission);
+
+    const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
+    expect(task).toContain("Nothing has been approved to pay for");
+    expect(createBrowserRun.mock.calls[0]?.[1]).toMatchObject({
+      paymentAllowed: false,
+    });
+  });
+
+  it("carries the approved payment into the follow-up after the payment stop", async () => {
+    await continueErrand({
+      completedAt: new Date(),
+      confirmed: { ...taxi, paymentCapRub: 1000 },
+      outcome: "Result: готово к оплате\nNeeds: payment",
+      task: "Оплачивай",
+    });
+
+    const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
+    expect(task).toContain(`Payment is pre-approved up to ${formatRub(1000)}`);
+    expect(task).not.toContain("Nothing has been approved to pay for");
+    expect(createBrowserRun.mock.calls[0]?.[1]).toMatchObject({
+      paymentAllowed: true,
+      submission: { ...taxi, paymentCapRub: 1000 },
+    });
+  });
+
+  it("queues a code into a live paid run instead of replacing it", async () => {
+    await continueErrand({
+      allowPayment: true,
+      confirmed: { ...taxi, paymentCapRub: 1000 },
+      submission: taxi,
+      task: "Код 4821",
+    });
+
+    // The run was started with the card bound, so it keeps going.
+    expect(cancelBrowserUseRun).not.toHaveBeenCalled();
+    expect(createBrowserUseRun).not.toHaveBeenCalled();
+    expect(queueBrowserUseSessionMessage).toHaveBeenCalledOnce();
+  });
+
+  it("does the errand on a standing permission without a card and says so", async () => {
+    readSpendLimit.mockResolvedValue(
+      standingPolicy([{ kind: "taxi", maxRub: 1500, merchant: null }])
+    );
+
+    const result = await start(taxi);
+
+    const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
+    expect(task).toContain(
+      "The person gave a standing permission that covers this one submission in their name (заказы такси без спроса"
+    );
+    // The permission's own ceiling holds the run, not the card's margin.
+    expect(task).toContain(`Payment is pre-approved up to ${formatRub(1500)}`);
+    expect(continuationNote(result)).toContain("No approval card was shown");
+    expect(createBrowserRun.mock.calls[0]?.[1]).toMatchObject({
+      paymentAllowed: true,
+      submission: { ...taxi, paymentCapRub: 1500 },
+    });
+  });
+
+  it("never lets a standing permission act from the background", async () => {
+    readSpendLimit.mockResolvedValue(
+      standingPolicy([{ kind: "taxi", maxRub: 1500, merchant: null }])
+    );
+
+    await expect(start(taxi, "scheduled-worker")).rejects.toThrow(
+      "cannot act in the user's name"
+    );
+    expect(createBrowserUseRun).not.toHaveBeenCalled();
+  });
+
+  it("keeps an approved payment with an errand still waiting in the queue", async () => {
+    readBrowserRunForScope.mockResolvedValue({
+      ...browserRunRow(),
+      id: "queued:errand-1",
+      pendingTask: "Закажи такси домой\n\nNothing has been approved to pay for",
+      sessionId: null,
+      status: "queued",
+    });
+    const { browserTask } = await import("@agent/tools/browser_task");
+
+    const result = await browserTask.execute(
+      {
+        action: "continue",
+        allowPayment: true,
+        runId: "queued:errand-1",
+        submission: taxi,
+        task: "Оплачивай картой",
+      },
+      toolContext("better-auth:alice")
+    );
+
+    expect(result).toMatchObject({ status: "queued" });
+    expect(continuationNote(result)).not.toContain("Nothing changed");
+    const [queuedId, update] = updateQueuedBrowserRun.mock.calls[0] ?? [];
+    expect(queuedId).toBe("queued:errand-1");
+    expect(update).toMatchObject({
+      paymentAllowed: true,
+      submission: { ...taxi, paymentCapRub: 1000 },
+    });
+    expect(String(update?.pendingTask)).toContain(
+      `Payment is pre-approved up to ${formatRub(1000)}`
+    );
+    expect(String(update?.pendingTask)).toContain(
+      "the earlier line saying nothing was approved to pay no longer applies"
+    );
   });
 });
 
@@ -1521,6 +1719,7 @@ describe("browser_task standing spend limit", () => {
           amount: "1 500 ₽",
           forWhom: "Алиса",
           personalData: ["имя", "адрес"],
+          kind: "order",
           what: "заказ корма для кота",
           where: "shop.example",
         },
@@ -1763,13 +1962,17 @@ describe("browser_task background runs", () => {
 });
 
 function approvalSession(authenticator: string, scheduledRunKind?: string) {
-  const attributes: Record<string, string> =
-    scheduledRunKind === undefined ? {} : { scheduledRunKind };
+  const attributes = new Map([
+    ["workspaceId", accessScopeForUser("better-auth:alice").workspaceId],
+  ]);
+  if (scheduledRunKind !== undefined) {
+    attributes.set("scheduledRunKind", scheduledRunKind);
+  }
   return {
     session: {
       auth: {
         current: {
-          attributes,
+          attributes: Object.fromEntries(attributes),
           authenticator,
           issuer: "open-instinct",
           principalId: "better-auth:alice",
@@ -1789,44 +1992,228 @@ describe("browser_task approval", () => {
     recurring: false,
     totalRub: 1500,
   };
+  const taxiSubmission: BrowserSubmission = {
+    amount: "около 900 ₽ по тарифу «Комфорт»",
+    chargeRub: 900,
+    forWhom: "Алиса",
+    kind: "taxi",
+    personalData: ["имя", "телефон"],
+    what: "заказ такси домой",
+    when: "сейчас",
+    where: "Яндекс Go (taxi.yandex.ru)",
+  };
+  const tableSubmission: BrowserSubmission = {
+    amount: "бесплатно",
+    forWhom: "Алиса",
+    kind: "table",
+    personalData: ["имя", "телефон"],
+    what: "столик на двоих",
+    when: "сегодня, 20:00",
+    where: "ресторан «Пушкин» (cafe-pushkin.ru)",
+  };
 
   it("puts every submission in the person's name in front of them on a card", async () => {
     const { browserTaskApproval } = await import("@agent/tools/browser_task");
 
-    for (const action of ["start", "continue"] as const) {
-      expect(
+    const statuses = await Promise.all([
+      ...(["start", "continue"] as const).map(async (action) =>
         browserTaskApproval(
           { action, allowSubmit: true, submission: cardSubmission },
           conversation
         )
-      ).toBe("user-approval");
-    }
-    // In every conversation channel, the web chat included.
-    for (const authenticator of ["telegram-webhook", "better-auth"]) {
-      expect(
+      ),
+      // In every conversation channel, the web chat included.
+      ...["telegram-webhook", "better-auth"].map(async (authenticator) =>
         browserTaskApproval(
           { action: "start", allowSubmit: true, submission: cardSubmission },
           approvalSession(authenticator)
         )
-      ).toBe("user-approval");
-    }
+      ),
+    ]);
+    expect(statuses).toEqual(statuses.map(() => "user-approval"));
   });
 
   it("puts a card bound on the user's say-so in front of the user", async () => {
     const { browserTaskApproval } = await import("@agent/tools/browser_task");
 
     expect(
-      browserTaskApproval(
+      await browserTaskApproval(
         { action: "start", allowPayment: true, submission: cardSubmission },
         conversation
       )
     ).toBe("user-approval");
     expect(
-      browserTaskApproval(
+      await browserTaskApproval(
         { action: "continue", allowPayment: true, submission: cardSubmission },
         conversation
       )
     ).toBe("user-approval");
+  });
+
+  it("asks once for a paid errand: the card that names the total is the payment's too", async () => {
+    const { browserTaskApproval } = await import("@agent/tools/browser_task");
+
+    expect(
+      await browserTaskApproval(
+        {
+          action: "start",
+          allowSubmit: true,
+          site: "https://taxi.yandex.ru",
+          submission: taxiSubmission,
+          task: "Закажи такси домой",
+        },
+        conversation
+      )
+    ).toBe("user-approval");
+    // The run stops at the payment step, and the follow-up pays within what
+    // the card approved: no second card.
+    readBrowserRunForScope.mockResolvedValue(
+      browserRunRow(new Date(), "Result: готово к оплате\nNeeds: payment", {
+        ...taxiSubmission,
+        paymentCapRub: 1000,
+      })
+    );
+    const statuses = await Promise.all(
+      (
+        [
+          { action: "continue", allowPayment: true, runId, task: "Оплачивай" },
+          {
+            action: "continue",
+            allowSubmit: true,
+            runId,
+            submission: { ...taxiSubmission, chargeRub: 980 },
+            task: "Итог 980 ₽, оплачивай",
+          },
+          { action: "continue", allowSubmit: true, runId, task: "Код 4821" },
+        ] as const
+      ).map(async (input) => browserTaskApproval(input, conversation))
+    );
+    expect(statuses).toEqual(statuses.map(() => "not-applicable"));
+  });
+
+  it("asks again only when the errand changed or costs more than approved", async () => {
+    const { browserTaskApproval } = await import("@agent/tools/browser_task");
+    readBrowserRunForScope.mockResolvedValue(
+      browserRunRow(new Date(), "Needs: payment", {
+        ...taxiSubmission,
+        paymentCapRub: 1000,
+      })
+    );
+
+    const statuses = await Promise.all(
+      [
+        { ...taxiSubmission, chargeRub: 1400 },
+        { ...taxiSubmission, where: "Ситимобил (city-mobil.ru)" },
+        { ...taxiSubmission, personalData: ["имя", "телефон", "паспорт"] },
+      ].map(async (submission) =>
+        browserTaskApproval(
+          {
+            action: "continue",
+            allowSubmit: true,
+            runId,
+            submission,
+            task: "Бери",
+          },
+          conversation
+        )
+      )
+    );
+    expect(statuses).toEqual(statuses.map(() => "user-approval"));
+    // A free errand whose card named no total pays only on a card of its own.
+    readBrowserRunForScope.mockResolvedValue(
+      browserRunRow(new Date(), "Needs: payment", cardSubmission)
+    );
+    expect(
+      await browserTaskApproval(
+        {
+          action: "continue",
+          allowPayment: true,
+          runId,
+          submission: { ...cardSubmission, chargeRub: 1500 },
+          task: "Оплачивай",
+        },
+        conversation
+      )
+    ).toBe("user-approval");
+  });
+
+  it("does not ask when a standing permission covers the errand", async () => {
+    const { browserTaskApproval } = await import("@agent/tools/browser_task");
+    readSpendLimit.mockResolvedValue(
+      standingPolicy([
+        { kind: "table", maxRub: null, merchant: null },
+        { kind: "taxi", maxRub: 1500, merchant: null },
+      ])
+    );
+
+    expect(
+      await browserTaskApproval(
+        {
+          action: "start",
+          allowSubmit: true,
+          site: "https://cafe-pushkin.ru",
+          submission: tableSubmission,
+          task: "Забронируй столик в «Пушкине» на 20:00",
+        },
+        conversation
+      )
+    ).toBe("not-applicable");
+    expect(
+      await browserTaskApproval(
+        {
+          action: "start",
+          allowSubmit: true,
+          site: "https://taxi.yandex.ru",
+          submission: taxiSubmission,
+          task: "Закажи такси домой",
+        },
+        conversation
+      )
+    ).toBe("not-applicable");
+  });
+
+  it("still asks when the standing permission does not cover the errand", async () => {
+    const { browserTaskApproval } = await import("@agent/tools/browser_task");
+    readSpendLimit.mockResolvedValue({
+      ...standingPolicy([
+        { kind: "taxi", maxRub: 1500, merchant: null },
+        { kind: "order", maxRub: 3000, merchant: "lavka.yandex.ru" },
+        { kind: "table", maxRub: null, merchant: null },
+      ]),
+      excludedMerchants: ["gett.com"],
+    });
+
+    const statuses = await Promise.all(
+      (
+        [
+          // Over the permission's ceiling.
+          ["https://taxi.yandex.ru", { ...taxiSubmission, chargeRub: 2400 }],
+          // Another site than the one the permission names.
+          [
+            "https://www.ozon.ru",
+            { ...taxiSubmission, chargeRub: 1200, kind: "order" },
+          ],
+          // A site the person excluded from anything without asking.
+          ["https://gett.com", taxiSubmission],
+          // Another kind of errand.
+          ["https://emias.info", cardSubmission],
+          // A free-only permission does not bind the card, even as a guarantee.
+          ["https://cafe-pushkin.ru", { ...tableSubmission, chargeRub: 0 }],
+        ] as const
+      ).map(async ([site, submission]) =>
+        browserTaskApproval(
+          {
+            action: "start",
+            allowSubmit: true,
+            site,
+            submission,
+            task: "Сделай",
+          },
+          conversation
+        )
+      )
+    );
+    expect(statuses).toEqual(statuses.map(() => "user-approval"));
   });
 
   it("does not let the spend limit stand in for a submission's card", async () => {
@@ -1834,14 +2221,14 @@ describe("browser_task approval", () => {
 
     // The standing limit is its own approval for paying, checked by the tool.
     expect(
-      browserTaskApproval(
+      await browserTaskApproval(
         { action: "start", allowPayment: true, withinSpendLimit: onLimit },
         conversation
       )
     ).toBe("not-applicable");
     // Anything else in the person's name still meets the card.
     expect(
-      browserTaskApproval(
+      await browserTaskApproval(
         {
           action: "start",
           allowPayment: true,
@@ -1857,11 +2244,15 @@ describe("browser_task approval", () => {
   it("refuses a card without the details it has to show", async () => {
     const { browserTaskApproval } = await import("@agent/tools/browser_task");
 
-    for (const input of [
-      { action: "start", allowSubmit: true },
-      { action: "continue", allowPayment: true },
-    ] as const) {
-      const status = browserTaskApproval(input, conversation);
+    const statuses = await Promise.all(
+      (
+        [
+          { action: "start", allowSubmit: true },
+          { action: "continue", allowPayment: true },
+        ] as const
+      ).map(async (input) => browserTaskApproval(input, conversation))
+    );
+    for (const status of statuses) {
       expect(status).toMatchObject({ type: "denied" });
       expect(JSON.stringify(status)).toContain("needs submission");
     }
@@ -1869,29 +2260,44 @@ describe("browser_task approval", () => {
 
   it("refuses scheduled, proactive and background workers outright", async () => {
     const { browserTaskApproval } = await import("@agent/tools/browser_task");
+    // Not even a standing permission lets a worker act in the person's name.
+    readSpendLimit.mockResolvedValue(
+      standingPolicy([{ kind: null, maxRub: 100_000, merchant: "emias.info" }])
+    );
 
-    for (const worker of [
+    const workers = [
       approvalSession("scheduled-worker"),
       approvalSession("scheduled-worker", "proactive"),
       approvalSession("scheduled-result"),
-    ]) {
-      for (const input of [
-        { action: "start", allowSubmit: true, submission: cardSubmission },
-        { action: "continue", allowSubmit: true, submission: cardSubmission },
-        { action: "start", allowPayment: true, submission: cardSubmission },
-        { action: "start", allowPayment: true, withinSpendLimit: onLimit },
-      ] as const) {
-        const status = browserTaskApproval(input, worker);
-        expect(status).toMatchObject({ type: "denied" });
-        expect(JSON.stringify(status)).toContain(
-          "cannot act in the user's name"
-        );
-      }
-      // Looking needs nobody's word, in the background as anywhere.
-      expect(browserTaskApproval({ action: "start" }, worker)).toBe(
-        "not-applicable"
-      );
+    ];
+    const acting = [
+      { action: "start", allowSubmit: true, submission: cardSubmission },
+      {
+        action: "start",
+        allowSubmit: true,
+        site: "https://emias.info",
+        submission: cardSubmission,
+      },
+      { action: "continue", allowSubmit: true, submission: cardSubmission },
+      { action: "start", allowPayment: true, submission: cardSubmission },
+      { action: "start", allowPayment: true, withinSpendLimit: onLimit },
+    ] as const;
+    const refusals = await Promise.all(
+      workers.flatMap((worker) =>
+        acting.map(async (input) => browserTaskApproval(input, worker))
+      )
+    );
+    for (const status of refusals) {
+      expect(status).toMatchObject({ type: "denied" });
+      expect(JSON.stringify(status)).toContain("cannot act in the user's name");
     }
+    // Looking needs nobody's word, in the background as anywhere.
+    const looking = await Promise.all(
+      workers.map(async (worker) =>
+        browserTaskApproval({ action: "start" }, worker)
+      )
+    );
+    expect(looking).toEqual(workers.map(() => "not-applicable"));
   });
 
   it("refuses a worker resumed by the person's answer all the same", async () => {
@@ -1906,7 +2312,7 @@ describe("browser_task approval", () => {
     };
 
     expect(
-      browserTaskApproval(
+      await browserTaskApproval(
         { action: "start", allowSubmit: true, submission: cardSubmission },
         resumed
       )
@@ -1916,19 +2322,21 @@ describe("browser_task approval", () => {
   it("asks nothing for looking, staging or the other actions", async () => {
     const { browserTaskApproval } = await import("@agent/tools/browser_task");
 
-    expect(browserTaskApproval({ action: "start" }, conversation)).toBe(
+    expect(await browserTaskApproval({ action: "start" }, conversation)).toBe(
       "not-applicable"
     );
     expect(
-      browserTaskApproval({ action: "continue", runId }, conversation)
+      await browserTaskApproval({ action: "continue", runId }, conversation)
     ).toBe("not-applicable");
     expect(
-      browserTaskApproval(
+      await browserTaskApproval(
         { action: "status", allowPayment: true, allowSubmit: true },
         conversation
       )
     ).toBe("not-applicable");
-    expect(browserTaskApproval(undefined, conversation)).toBe("not-applicable");
+    expect(await browserTaskApproval(undefined, conversation)).toBe(
+      "not-applicable"
+    );
   });
 });
 

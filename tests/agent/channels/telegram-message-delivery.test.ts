@@ -7,6 +7,7 @@ import { z } from "zod";
 import type * as Blob from "@vercel/blob";
 import type * as EnvModule from "@shared/environment";
 import type { AccessScope } from "@shared/identity/access-scope";
+import { formatRub } from "@shared/spending/limit";
 import type {
   findChannelIdentity,
   redeemChannelLinkToken,
@@ -966,6 +967,38 @@ describe("Telegram approval cards", () => {
     expect(JSON.stringify(body.reply_markup)).toContain("Отмена");
     expect(JSON.stringify(state)).toContain('"optionId":"approve"');
     expect(JSON.stringify(state)).toContain('"requestId":"approval-1"');
+  });
+
+  it("says on the one card how much the errand may pay", async () => {
+    const { context, post } = cardContext();
+
+    await handleInputRequested(
+      inputRequested(
+        approvalRequest("browser_task", {
+          action: "start",
+          allowSubmit: true,
+          site: "https://taxi.yandex.ru",
+          submission: {
+            amount: "около 900 ₽ по тарифу «Комфорт»",
+            chargeRub: 900,
+            forWhom: "Алиса",
+            kind: "taxi",
+            personalData: ["имя", "телефон"],
+            what: "такси домой",
+            where: "Яндекс Go (taxi.yandex.ru)",
+          },
+          task: "Закажи такси домой",
+        })
+      ),
+      context,
+      sessionContext()
+    );
+
+    const body = postedCardSchema.parse(post.mock.calls[0]?.[0]);
+    expect(body.text).toContain("Стоимость: около 900 ₽ по тарифу «Комфорт»");
+    expect(body.text).toContain(
+      `Оплата сохранённой картой, не больше ${formatRub(1000)}`
+    );
   });
 
   it("leaves every other approval card as eve renders it", async () => {

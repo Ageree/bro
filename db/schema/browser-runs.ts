@@ -10,7 +10,7 @@ import {
   text,
   timestamp,
 } from "drizzle-orm/pg-core";
-import type { BrowserSubmission } from "@shared/browser/submission";
+import type { ConfirmedSubmission } from "@shared/browser/submission";
 import { workspaceMemberships } from "./workspaces";
 
 export const browserProfiles = pgTable(
@@ -112,7 +112,7 @@ export const browserRuns = pgTable(
     // What the person approved on the card to submit in their name, or null
     // when the errand may only look. The errand's follow-ups and background
     // retries carry it; a new errand starts without one.
-    submission: jsonb("submission").$type<BrowserSubmission>(),
+    submission: jsonb("submission").$type<ConfirmedSubmission>(),
     // Which attempt of its errand this run is against an anti-bot wall: the
     // run the person started is 1, each background retry adds one.
     captchaAttempt: integer("captcha_attempt").notNull().default(1),

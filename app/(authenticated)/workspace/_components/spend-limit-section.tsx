@@ -2,6 +2,7 @@ import { Meter, Row, Rows, Section } from "@web/components/paper/document";
 import { Badge } from "@web/components/ui/badge";
 import {
   describeSpendRule,
+  describeStandingAction,
   exclusionLabels,
   formatRub,
   remainingUnderRule,
@@ -11,9 +12,10 @@ import {
 } from "@shared/spending/limit";
 
 /**
- * The standing permission to pay without asking, as it stands this month.
- * It is set in the chat, in the person's own words, so the cabinet only shows
- * it: what is allowed, what is spent, what is left and what is never paid.
+ * What Bro may do without asking, as it stands this month: the limit to pay
+ * without asking, the errands it does without a card, and what it never does
+ * on its own. It is set in the chat, in the person's own words, so the
+ * cabinet only shows it: what is allowed, what is spent, what is left.
  */
 export function SpendLimitSection({
   entries,
@@ -23,12 +25,13 @@ export function SpendLimitSection({
   readonly policy: SpendLimitPolicy | undefined;
 }) {
   const rules = policy?.rules ?? [];
+  const actions = policy?.actions ?? [];
   const excluded = exclusionLabels(policy);
 
   return (
     <Section
       headingId="spend-limit-heading"
-      state={rules.length > 0 ? "Включены" : "Не заданы"}
+      state={rules.length > 0 || actions.length > 0 ? "Включены" : "Не заданы"}
       title="Траты без спроса"
     >
       {rules.length > 0 ? (
@@ -56,6 +59,18 @@ export function SpendLimitSection({
           пределах и присылать чек.
         </p>
       )}
+      {actions.length > 0 ? (
+        <div className="mt-[0.6rem]">
+          <p className="type-fine text-muted-foreground">Без подтверждения:</p>
+          <ul className="mt-1 flex flex-col gap-1">
+            {actions.map((rule) => (
+              <li key={`${rule.kind ?? ""}:${rule.merchant ?? ""}`}>
+                {describeStandingAction(rule)}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
       {excluded.length > 0 ? (
         <div className="mt-[0.6rem] flex flex-wrap items-center gap-2">
           <span className="type-fine text-muted-foreground">
@@ -70,7 +85,7 @@ export function SpendLimitSection({
       ) : null}
       <p className="type-fine mt-[0.6rem] text-muted-foreground">
         Подписки, платежи не в рублях и сборы сверх остатка Bro всегда согласует
-        с тобой. Изменить или снять лимит — напиши ему в чат.
+        с тобой. Изменить или снять лимит и разрешения — напиши ему в чат.
       </p>
     </Section>
   );

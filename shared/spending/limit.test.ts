@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   type AutoPaymentRequest,
   decideAutoPayment,
+  decideStandingAction,
+  describeStandingAction,
+  formatRub,
   normalizeCategory,
   normalizeMerchant,
   policyWidens,
@@ -10,6 +13,7 @@ import {
   type SpendEntry,
   type SpendLimitPolicy,
   spentUnderRule,
+  type StandingActionRequest,
   wholeRubles,
 } from "./limit";
 
@@ -341,6 +345,169 @@ describe("whether a policy change widens what Bro may pay", () => {
     expect(policyWidens(rules(general, ozon), rules())).toBe(false);
     expect(
       policyWidens(rules(general), policy({ excludedCategories: ["еда"] }))
+    ).toBe(false);
+  });
+});
+
+function standingRequest(
+  overrides: Partial<StandingActionRequest> = {}
+): StandingActionRequest {
+  return {
+    chargeRub: undefined,
+    kind: "table",
+    merchant: "cafe-pushkin.ru",
+    paying: false,
+    recurring: false,
+    ...overrides,
+  };
+}
+
+describe("standing permissions", () => {
+  const actions = (...list: NonNullable<SpendLimitPolicy["actions"]>) =>
+    policy({ actions: list });
+  const tables = { kind: "table" as const, maxRub: null, merchant: null };
+  const taxiRule = { kind: "taxi" as const, maxRub: 1500, merchant: null };
+  const lavka = {
+    kind: "order" as const,
+    maxRub: 3000,
+    merchant: "lavka.yandex.ru",
+  };
+  const general = { category: null, limitRub: 5000, merchant: null };
+
+  it("covers a free errand of the kind on any site", () => {
+    expect(decideStandingAction(actions(tables), standingRequest())).toEqual({
+      capRub: undefined,
+      rule: tables,
+    });
+  });
+
+  it("covers a paid errand under the ceiling and pays up to that ceiling", () => {
+    expect(
+      decideStandingAction(
+        actions(taxiRule),
+        standingRequest({
+          chargeRub: 900,
+          kind: "taxi",
+          merchant: "taxi.yandex.ru",
+        })
+      )
+    ).toEqual({ capRub: 1500, rule: taxiRule });
+    expect(
+      decideStandingAction(
+        actions(lavka),
+        standingRequest({
+          chargeRub: 2990,
+          kind: "order",
+          merchant: "lavka.yandex.ru",
+        })
+      )
+    ).toMatchObject({ capRub: 3000 });
+  });
+
+  it("does not cover another kind, another site or a higher cost", () => {
+    for (const other of [
+      standingRequest({ kind: "appointment" }),
+      standingRequest({ chargeRub: 2400, kind: "taxi" }),
+      standingRequest({ chargeRub: 500, kind: "order", merchant: "ozon.ru" }),
+      // A free-only permission never binds the card, not even as a guarantee.
+      standingRequest({ chargeRub: 0 }),
+      standingRequest({ paying: true }),
+    ]) {
+      expect(
+        decideStandingAction(actions(tables, taxiRule, lavka), other)
+      ).toBeUndefined();
+    }
+    expect(decideStandingAction(undefined, standingRequest())).toBeUndefined();
+  });
+
+  it("never covers an excluded site or a repeating charge", () => {
+    expect(
+      decideStandingAction(
+        policy({ actions: [taxiRule], excludedMerchants: ["gett.com"] }),
+        standingRequest({ chargeRub: 500, kind: "taxi", merchant: "gett.com" })
+      )
+    ).toBeUndefined();
+    expect(
+      decideStandingAction(
+        actions(lavka),
+        standingRequest({
+          chargeRub: 299,
+          kind: "order",
+          merchant: "lavka.yandex.ru",
+          recurring: true,
+        })
+      )
+    ).toBeUndefined();
+  });
+
+  it("lets a permission for a whole site cover every kind there and on its subdomains", () => {
+    const site = { kind: null, maxRub: 5000, merchant: "ozon.ru" };
+    expect(
+      decideStandingAction(
+        actions(site),
+        standingRequest({
+          chargeRub: 1200,
+          kind: "other",
+          merchant: "pay.ozon.ru",
+        })
+      )
+    ).toMatchObject({ capRub: 5000 });
+    expect(
+      decideStandingAction(
+        actions(site),
+        standingRequest({
+          chargeRub: 1200,
+          kind: "other",
+          merchant: "ozon.com",
+        })
+      )
+    ).toBeUndefined();
+  });
+
+  it("reads to the person as what, where and up to how much", () => {
+    expect(describeStandingAction(tables)).toBe(
+      "брони столиков без спроса, только бесплатное"
+    );
+    expect(describeStandingAction(lavka)).toBe(
+      `заказы товаров и еды без спроса, на lavka.yandex.ru, до ${formatRub(3000)} за раз`
+    );
+  });
+
+  it("widens with a new permission, a higher ceiling or a lifted exclusion", () => {
+    expect(policyWidens(undefined, actions(tables))).toBe(true);
+    expect(policyWidens(actions(taxiRule), actions(taxiRule, tables))).toBe(
+      true
+    );
+    expect(
+      policyWidens(actions(taxiRule), actions({ ...taxiRule, maxRub: 2000 }))
+    ).toBe(true);
+    expect(
+      policyWidens(actions(lavka), actions({ ...lavka, merchant: null }))
+    ).toBe(true);
+    expect(
+      policyWidens(
+        policy({ actions: [taxiRule], excludedMerchants: ["gett.com"] }),
+        actions(taxiRule)
+      )
+    ).toBe(true);
+  });
+
+  it("narrows by revoking, lowering a ceiling or narrowing to one site", () => {
+    expect(policyWidens(actions(taxiRule, tables), actions(tables))).toBe(
+      false
+    );
+    expect(
+      policyWidens(actions(taxiRule), actions({ ...taxiRule, maxRub: 1000 }))
+    ).toBe(false);
+    expect(
+      policyWidens(actions({ ...lavka, merchant: null }), actions(lavka))
+    ).toBe(false);
+    // Taking the permissions away leaves the monthly limit as it was.
+    expect(
+      policyWidens(
+        policy({ actions: [taxiRule], rules: [general] }),
+        policy({ rules: [general] })
+      )
     ).toBe(false);
   });
 });

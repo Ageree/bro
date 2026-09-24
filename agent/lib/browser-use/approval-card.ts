@@ -1,5 +1,9 @@
 import { z } from "zod";
-import { browserSubmissionSchema } from "@shared/browser/submission";
+import {
+  browserSubmissionSchema,
+  paymentCeilingRub,
+} from "@shared/browser/submission";
+import { formatRub } from "@shared/spending/limit";
 import type { ReplyLanguage } from "@agent/lib/delivery/language";
 
 /**
@@ -13,7 +17,9 @@ import type { ReplyLanguage } from "@agent/lib/delivery/language";
 const confirmedCallSchema = z.object({
   allowPayment: z.boolean().optional(),
   site: z.string().optional(),
-  submission: browserSubmissionSchema,
+  // The card does not show the kind, and a call parked before kinds existed
+  // still deserves its details.
+  submission: browserSubmissionSchema.partial({ kind: true }),
 });
 
 const cardText = {
@@ -22,6 +28,8 @@ const cardText = {
     approve: "Approve",
     cancel: "Cancel",
     card: "Pays with the saved card",
+    cardUpTo: "Pays with the saved card, up to",
+    guarantee: "The saved card as a guarantee only, nothing charged",
     forWhom: "In the name of",
     personalData: "Your details sent",
     site: "Site",
@@ -35,6 +43,8 @@ const cardText = {
     approve: "Подтвердить",
     cancel: "Отмена",
     card: "Оплата сохранённой картой",
+    cardUpTo: "Оплата сохранённой картой, не больше",
+    guarantee: "Сохранённая карта только в гарантию, без списания",
     forWhom: "От чьего имени",
     personalData: "Какие данные уйдут",
     site: "Сайт",
@@ -44,6 +54,24 @@ const cardText = {
     where: "Где",
   },
 } as const;
+
+/**
+ * Whether the card pays, and up to what: a card that names the rouble total
+ * approves paying it with the small margin the tool allows, and says so.
+ */
+function paymentLine(
+  call: z.infer<typeof confirmedCallSchema>,
+  text: (typeof cardText)[keyof typeof cardText]
+) {
+  const { chargeRub } = call.submission;
+  if (chargeRub !== undefined) {
+    const ceiling = paymentCeilingRub(chargeRub);
+    return ceiling === 0
+      ? text.guarantee
+      : `${text.cardUpTo} ${formatRub(ceiling)}`;
+  }
+  return call.allowPayment === true ? text.card : undefined;
+}
 
 /** The card's text for a confirmed `browser_task` call. */
 function browserTaskApprovalPrompt(
@@ -60,7 +88,7 @@ function browserTaskApprovalPrompt(
     submission.when ? `${text.when}: ${submission.when}` : undefined,
     submission.amount ? `${text.amount}: ${submission.amount}` : undefined,
     `${text.personalData}: ${submission.personalData.length > 0 ? submission.personalData.join(", ") : "—"}`,
-    call.allowPayment === true ? text.card : undefined,
+    paymentLine(call, text),
     call.site ? `${text.site}: ${call.site}` : undefined,
   ]
     .filter((line) => line !== undefined)

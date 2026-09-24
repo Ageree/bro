@@ -50,4 +50,26 @@ describe("workspace spend limit", () => {
     expect(html).toContain("«алкоголь»");
     expect(html).toContain("wb.ru");
   });
+
+  it("shows the errands Bro does without a card", () => {
+    const html = renderToStaticMarkup(
+      createElement(SpendLimitSection, {
+        entries: [],
+        policy: {
+          actions: [{ kind: "taxi", maxRub: 1500, merchant: null }],
+          currency: "RUB",
+          excludedCategories: [],
+          excludedMerchants: [],
+          rules: [],
+          version: 1,
+        },
+      })
+    );
+
+    expect(html).toContain("Включены");
+    expect(html).toContain("Без подтверждения");
+    expect(html).toContain(
+      `заказы такси без спроса, до ${formatRub(1500)} за раз`
+    );
+  });
 });

@@ -216,9 +216,11 @@ describe("browser secret bindings", () => {
       allowPayment: true,
       collectImages: false,
       consent: {
-        kind: "card",
+        by: "card",
+        kind: "confirmed",
         submission: {
           personalData: ["имя", "телефон"],
+          kind: "taxi",
           what: "заказ такси домой",
           where: "Яндекс Такси",
           forWhom: "Иван Петров",
