@@ -115,7 +115,10 @@ describe("schedule tools", () => {
     expect(await resolve({}, resumedWorkerContext())).toBeNull();
 
     const answer = await answerTool(
-      dynamicContext("photon-imessage", "channel:photon", questionShown(runId))
+      dynamicContext("photon-imessage", "channel:photon", [
+        ...questionShown(runId),
+        person("LGA"),
+      ])
     );
     await expect(
       answer.execute(
@@ -147,42 +150,77 @@ describe("schedule tools", () => {
         toolContext("schedules-answer", "photon-imessage")
       )
     ).rejects.toThrow(notReplied);
-    // The report turn brought the question here but never delivered it.
-    const undelivered = await answerTool(
-      dynamicContext("photon-imessage", "channel:photon", [
-        ...questionShown(runId).slice(0, 1),
-        person("DCA"),
+    // The report turn brought the question here but never delivered it:
+    // with nothing to reply to, the tool is not there at all.
+    expect(
+      await offeredTools(
+        dynamicContext("photon-imessage", "channel:photon", [
+          ...questionShown(runId).slice(0, 1),
+          person("DCA"),
+        ])
+      )
+    ).not.toContain("schedules-answer");
+    expect(services.getInput).not.toHaveBeenCalled();
+  });
+
+  it("offers no answer to a run when the person's message replies to no question of one", async () => {
+    // RU d15: Bro asked its own question with ask_question, the person
+    // answered, and the model passed the answer to schedules-answer.
+    const tools = await offeredTools(
+      dynamicContext("telegram-webhook", "channel:telegram", [
+        person(
+          "запиши меня завтра в барбершоп к артуру, напомни в восемь маме позвонить"
+        ),
+        {
+          content: [
+            {
+              input: { prompt: "На какое время записать?" },
+              toolCallId: "call-ask",
+              toolName: "ask_question",
+              type: "tool-call",
+            },
+          ],
+          role: "assistant",
+        },
+        {
+          content: [
+            {
+              output: {
+                type: "json",
+                value: { status: "answered", text: "на семь вечера" },
+              },
+              toolCallId: "call-ask",
+              toolName: "ask_question",
+              type: "tool-result",
+            },
+          ],
+          role: "tool",
+        },
       ])
     );
-    await expect(
-      undelivered.execute(
-        { answer: "DCA", runId },
-        toolContext("schedules-answer", "photon-imessage")
-      )
-    ).rejects.toThrow(notReplied);
-    expect(services.getInput).not.toHaveBeenCalled();
+
+    expect(tools).toEqual([
+      "schedules-create",
+      "schedules-list",
+      "schedules-update",
+    ]);
   });
 
   it("refuses an old question the person already wrote past", async () => {
     // The airport question reached the chat days ago; the person wrote about
     // something else and now asks about dinner. Their message answers
-    // nothing, and the model must not settle the old run for them.
-    const answer = await answerTool(
-      dynamicContext("photon-imessage", "channel:photon", [
-        person("Найди мне рейс в Вашингтон на пятницу"),
-        ...questionShown(runId),
-        person("Напиши Лёше, что я опоздаю"),
-        ...assistantSend("Написал Лёше."),
-        person("Забронируй столик на вечер"),
-      ])
-    );
-
-    await expect(
-      answer.execute(
-        { answer: "DCA", runId },
-        toolContext("schedules-answer", "photon-imessage")
+    // nothing, so there is no run for the model to settle for them.
+    expect(
+      await offeredTools(
+        dynamicContext("photon-imessage", "channel:photon", [
+          person("Найди мне рейс в Вашингтон на пятницу"),
+          ...questionShown(runId),
+          person("Напиши Лёше, что я опоздаю"),
+          ...assistantSend("Написал Лёше."),
+          person("Забронируй столик на вечер"),
+        ])
       )
-    ).rejects.toThrow(notReplied);
+    ).not.toContain("schedules-answer");
     expect(services.getInput).not.toHaveBeenCalled();
 
     // Another report in between — a browser run's result — does not end the
@@ -510,6 +548,12 @@ function questionShown(id: string): ModelMessage[] {
       role: "tool",
     },
   ];
+}
+
+async function offeredTools(context: DynamicResolveContext) {
+  const resolve = schedules.events["turn.started"];
+  const tools = resolve ? await resolve({}, context) : null;
+  return tools && !("execute" in tools) ? Object.keys(tools) : [];
 }
 
 async function answerTool(context: DynamicResolveContext) {

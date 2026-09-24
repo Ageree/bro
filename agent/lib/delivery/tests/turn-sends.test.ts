@@ -260,6 +260,187 @@ describe("sendRefusal on rephrased replies from the benchmark", () => {
   });
 });
 
+/**
+ * A browser run's result, as its report turn opens (RU 24.09: the result
+ * came twice in d05, d06, d08 and d18, and d08 corrected itself).
+ */
+describe("sendRefusal in a browser report's turn", () => {
+  const report = userMessage(
+    `${backgroundTurnMarker}\n\nBrowser run run-1 finished.\n\nResult: readings submitted.`
+  );
+  const told = [
+    report,
+    ...sendMessage(
+      "result",
+      "Передал показания в mos.ru: горячая вода 123,4, холодная 234,5. Приняли, следующий приём с 15-го."
+    ),
+  ];
+
+  it.each([
+    [
+      "a correction of the same result (d08)",
+      "Поправка: на фото был электросчётчик, а не вода — день 12345, ночь 6789. Передал их в Мосэнергосбыт.",
+    ],
+    [
+      "the same result with a detail added",
+      "Кстати, показания приняты в 14:05, квитанция придёт на почту до 1-го числа.",
+    ],
+    [
+      "the same result restated",
+      "Итог: показания воды 123,4 и 234,5 ушли в mos.ru, всё принято.",
+    ],
+  ])("drops %s", (_case, text) => {
+    expect(refusal(told, text)).toEqual({ skipped: "reported" });
+  });
+
+  it.each([
+    [
+      "a request for a code",
+      "Мосэнергосбыт прислал код на +7 999 000-00-00 — пришли его, введу сам.",
+    ],
+    ["a question", "Поставить напоминание передать показания в октябре?"],
+    ["a new link", "Квитанция за сентябрь: https://example.ru/receipt/9"],
+  ])("delivers %s after the result", (_case, text) => {
+    expect(refusal(told, text)).toBeUndefined();
+  });
+
+  it("delivers a picture the result did not carry", () => {
+    expect(
+      sendRefusal(photo("https://media.example/receipt.jpg"), turnSends(told))
+    ).toBeUndefined();
+  });
+
+  it("does not ask the same thing twice", () => {
+    const asked = [
+      ...told,
+      ...sendMessage("ask", "Пришли код из СМС — введу сам."),
+    ];
+
+    expect(refusal(asked, "Жду код из СМС: пришли его сюда.")).toEqual({
+      skipped: "reported",
+    });
+  });
+
+  it("drops a message after a quiet continue: the run reports on its own", () => {
+    const continued = [
+      ...told,
+      ...toolStep("browser_task", { runId: "run-2", status: "running" }),
+    ];
+
+    expect(
+      refusal(continued, "Передаю ещё и электричество: день 12345, ночь 6789.")
+    ).toEqual({ skipped: "reported" });
+  });
+
+  it("delivers what other work of the turn did since", () => {
+    const reminded = [
+      ...told,
+      ...toolStep("schedules-create", { id: "job-1", status: "active" }),
+    ];
+
+    expect(
+      refusal(reminded, "Поставил напоминание на 15 октября, 10:00.")
+    ).toBeUndefined();
+  });
+
+  it("leaves a person's turn free to say more", () => {
+    const history = [
+      userMessage("передай показания"),
+      ...sendMessage(
+        "result",
+        "Передал показания в mos.ru: горячая вода 123,4, холодная 234,5."
+      ),
+    ];
+
+    expect(
+      refusal(history, "Поправка: электросчётчик — день 12345, ночь 6789.")
+    ).toBeUndefined();
+  });
+});
+
+describe("sendRefusal on a status before any work", () => {
+  it.each([
+    ["«смотрю почту»", "найди письмо от клиники", "Смотрю почту, секунду."],
+    [
+      "a promise of the answer later",
+      "что у меня завтра в календаре?",
+      "Сейчас посмотрю календарь и напишу, что там завтра.",
+    ],
+    [
+      "the request echoed with a promise",
+      "найди билеты в Сочи на 9 октября",
+      "Ищу билеты в Сочи на 9 октября — как найду, пришлю варианты.",
+    ],
+  ])("returns %s for a rewrite", (_case, request, text) => {
+    expect(refusal([userMessage(request)], text)).toEqual({
+      rewrite: "status",
+    });
+  });
+
+  it("lets it through once the turn has started the work", () => {
+    const started = [
+      userMessage("найди билеты в Сочи на 9 октября"),
+      ...toolStep("browser_task", { runId: "run-1", status: "running" }),
+    ];
+
+    expect(
+      refusal(
+        started,
+        "Ищу билеты в Сочи на 9 октября — как найду, пришлю варианты."
+      )
+    ).toBeUndefined();
+  });
+
+  it.each([
+    [
+      "a question",
+      "Сейчас посмотрю — тебе на какое время удобнее, утро или вечер?",
+    ],
+    ["a request", "Пришли код из СМС — введу и напишу, что там."],
+    [
+      "a fact the person did not name",
+      "Кафе работает до 22:00, если что-то поменяется — напишу.",
+    ],
+    [
+      "a longer answer about what Bro does",
+      "Ищу билеты и отели, бронирую столики, записываю к врачу, напоминаю о делах и разбираю почту.",
+    ],
+  ])("delivers an answer with %s", (_case, text) => {
+    expect(refusal([userMessage("что умеешь?")], text)).toBeUndefined();
+  });
+
+  it("checks no status in a turn Bro opened", () => {
+    expect(
+      refusal(
+        [
+          userMessage(
+            `${backgroundTurnMarker}\n\nA scheduled run has completed.`
+          ),
+        ],
+        "Смотрю почту, секунду."
+      )
+    ).toBeUndefined();
+  });
+
+  it("lets a status through once the model kept it twice", () => {
+    const rewritten = [
+      userMessage("найди письмо от клиники"),
+      ...sendMessage(
+        "a",
+        "Смотрю почту.",
+        textOutput(rewriteSendNotice("status"))
+      ),
+      ...sendMessage(
+        "b",
+        "Смотрю почту.",
+        textOutput(rewriteSendNotice("status"))
+      ),
+    ];
+
+    expect(refusal(rewritten, "Смотрю почту.")).toBeUndefined();
+  });
+});
+
 describe("sendRefusal on claims no tool made", () => {
   const codeHandedOver = [
     userMessage("код от госуслуг: 123456"),
@@ -333,6 +514,16 @@ describe("sendRefusal on claims no tool made", () => {
       refusal(
         history,
         "Письма нет. Скажите время и клинику — поставлю в календарь."
+      )
+    ).toBeUndefined();
+  });
+
+  it("reads a list of what Bro does as no calendar claim", () => {
+    // An introduction on DeepSeek went back for a rewrite twice over it.
+    expect(
+      refusal(
+        [userMessage("сделай мне справку от врача")],
+        "Привет, я Бро. Делаю за тебя скучное: ищу и сравниваю, разбираю почту, календарь и Google Диск, ставлю напоминания. С этой просьбой не помогу."
       )
     ).toBeUndefined();
   });

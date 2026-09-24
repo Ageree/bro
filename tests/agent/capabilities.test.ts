@@ -27,6 +27,8 @@ const groupedTools = [
 
 describe("authored mode capability matrix", () => {
   it("gives interactive turns the authored coordinator capabilities", async () => {
+    // `schedules-answer` joins them only in a turn that replies to a
+    // scheduled run's question (`tests/agent/tools/schedules.test.ts`).
     expect(await authoredCapabilities("photon-imessage")).toEqual([
       "calendar-check-availability",
       "calendar-create-event",
@@ -52,7 +54,6 @@ describe("authored mode capability matrix", () => {
       "react_to_message",
       "request_vault_import",
       "request_vault_setup",
-      "schedules-answer",
       "schedules-create",
       "schedules-list",
       "schedules-update",

@@ -1,4 +1,4 @@
-import { defineEval, type EveEvalContext } from "eve/evals";
+import { defineEval, type EveEvalContext, type EveEvalTurn } from "eve/evals";
 import { includes, satisfies } from "eve/evals/expect";
 import { sendMessageOutputSchema } from "@shared/chat/message-delivery";
 import { reactToMessageOutputSchema } from "@shared/chat/reaction";
@@ -75,6 +75,22 @@ Nothing has been purchased. Tell me the useful result as you would in our normal
   },
 ];
 
+/**
+ * Arithmetic goes through `calculate` (`agent/instructions/content/
+ * execution-safety.md`), so a sum may take that one tool besides the reply;
+ * anything else is work the question did not need.
+ */
+function checkReplyOnly(t: EveEvalContext, turn: EveEvalTurn) {
+  t.check(
+    turn.toolCalls.map((call) => call.name),
+    satisfies<string[]>(
+      (names) =>
+        names.every((name) => name === "calculate" || name === "send_message"),
+      "the turn used no tool besides the reply and calculate"
+    )
+  );
+}
+
 const textEvals = cases.map((testCase) =>
   defineEval({
     description: testCase.description,
@@ -86,7 +102,7 @@ const textEvals = cases.map((testCase) =>
       turn.calledTool("send_message", { count: 1 });
       turn.notCalledTool("web_search");
       turn.notCalledTool("web_fetch");
-      turn.maxToolCalls(1);
+      checkReplyOnly(t, turn);
       const text = await requireDeliveredText(t, turn);
       assertPlainTextDelivery(t, text);
       testCase.verify(t, text);
@@ -103,7 +119,7 @@ const reactionEvals = [
       answered.expectOk();
       await requireDeliveredText(t, answered);
 
-      const thanked = await t.send("perfect, thanks!");
+      const thanked = await answered.session.send("perfect, thanks!");
       thanked.expectOk();
       thanked.succeeded();
       thanked.calledTool("react_to_message", {
@@ -130,12 +146,14 @@ const reactionEvals = [
       answered.expectOk();
       await requireDeliveredText(t, answered);
 
-      const followUp = await t.send("thanks! what is 9 multiplied by 8?");
+      const followUp = await answered.session.send(
+        "thanks! what is 9 multiplied by 8?"
+      );
       followUp.expectOk();
       followUp.succeeded();
       followUp.calledTool("send_message", { count: 1, status: "completed" });
       followUp.notCalledTool("react_to_message");
-      followUp.maxToolCalls(1);
+      checkReplyOnly(t, followUp);
       const text = await requireDeliveredText(t, followUp);
       assertPlainTextDelivery(t, text);
       t.check(text, includes("72"));
@@ -239,7 +257,7 @@ const replyEvals = [
         status: "completed",
       });
       turn.notCalledTool("react_to_message");
-      turn.maxToolCalls(1);
+      checkReplyOnly(t, turn);
     },
   }),
   defineEval({
@@ -264,7 +282,7 @@ const replyEvals = [
         status: "completed",
       });
       await requireDeliveredText(t, question);
-      const answer = await t.send(
+      const answer = await question.session.send(
         "Boston. Briefly confirm that you will focus there."
       );
       answer.expectOk();
@@ -294,7 +312,7 @@ const replyEvals = [
       first.expectOk();
       await requireDeliveredText(t, first);
 
-      const second = await t.send(
+      const second = await first.session.send(
         "Separate question: what is the capital of France? Keep it brief."
       );
       second.expectOk();

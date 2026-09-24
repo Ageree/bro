@@ -128,8 +128,8 @@ describe("OpenRouter web search", () => {
       "HTTP-Referer": "https://openinstinct.example",
       "X-Title": "Bro",
     });
-    expect(request.body.model).toBe("openai/gpt-6-luna");
-    // Left unset, an OpenAI model gets its slow native search.
+    expect(request.body.model).toBe("deepseek/deepseek-v4.1-flash");
+    // Left unset, OpenRouter picks the model's native search, slow on OpenAI.
     expect(request.body.plugins).toEqual([
       { engine: "exa", id: "web", max_results: 8 },
     ]);

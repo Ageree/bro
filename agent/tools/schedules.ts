@@ -154,8 +154,12 @@ export default defineDynamic({
         }),
       };
 
+      // Nor is the tool there without such a question: offered in every
+      // turn, it drew in the answer to Bro's own `ask_question` (RU d15).
       const interactive: Partial<typeof answering> & typeof managing =
-        startedByPerson(context) ? answering : managing;
+        startedByPerson(context) && answerable.length > 0
+          ? answering
+          : managing;
       return resolveModeValue(context, { interactive });
     },
   },

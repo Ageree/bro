@@ -279,7 +279,7 @@ halving, and re-arms once the balance recovers; its state lives in
 
 With `OPENROUTER_API_KEY` and private Blob storage, the agent gets a
 `generate_image` tool that draws through OpenRouter's Image API. The model is
-`OPENROUTER_IMAGE_MODEL` (default `google/gemini-3.1-flash-image`) and must accept
+`OPENROUTER_IMAGE_MODEL` (default `google/gemini-3.1-flash-lite-image`) and must accept
 reference images: the person's photos from the conversation (up to the four
 newest) and earlier pictures travel as references, so a card can show the
 person's own dog and "make it brighter" edits the last version instead of

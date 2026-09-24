@@ -66,6 +66,8 @@ const createdTimingSchema = z.object({
   timing: z.record(z.string(), z.unknown()),
 });
 
+const createdPromptSchema = z.object({ prompt: z.string() });
+
 const exactEvals = cases.map((testCase) =>
   defineEval({
     description: testCase.description,
@@ -74,8 +76,19 @@ const exactEvals = cases.map((testCase) =>
       const turn = await t.send(testCase.prompt);
       turn.expectOk();
       turn.succeeded();
+      // The task is the reminder text, word for word; a model may frame it
+      // as an instruction («Send the reminder: …») around it.
+      const { prompt, ...expected } = testCase.expected;
       turn.calledTool("schedules-create", {
-        input: (input) => isDeepStrictEqual(input, testCase.expected),
+        input: (input) => {
+          const { prompt: _created, ...rest } = input;
+          return (
+            createdPromptSchema
+              .safeParse(input)
+              .data?.prompt.includes(prompt) === true &&
+            isDeepStrictEqual(rest, expected)
+          );
+        },
         status: "completed",
         count: 1,
       });

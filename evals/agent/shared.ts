@@ -75,11 +75,17 @@ async function closeQueuedRun(runId: string) {
   return (await readBrowserRun(runId))?.retriedAsRunId ?? undefined;
 }
 
+/**
+ * The one message the turn got through to the person. A send the runtime
+ * dropped as a repeat or returned for a rewrite completes too, but reached
+ * nobody (`agent/lib/delivery/turn-sends.ts`), so it is not counted.
+ */
 export async function requireDeliveredText(
   t: EveEvalContext,
   turn: EveEvalTurn
 ) {
   const delivery = turn.requireToolCall("send_message", {
+    output: (output) => sendMessageOutputSchema.safeParse(output).success,
     status: "completed",
   });
   const parsed = sendMessageOutputSchema.safeParse(delivery.input);
@@ -120,7 +126,11 @@ export async function requireDeliveredTexts(
   const text = [...new Set(turns)]
     .flatMap((turn) => turn.toolCalls)
     .filter(
-      (call) => call.name === "send_message" && call.status === "completed"
+      (call) =>
+        call.name === "send_message" &&
+        call.status === "completed" &&
+        // A send the runtime dropped or returned reached nobody.
+        sendMessageOutputSchema.safeParse(call.output).success
     )
     .map((call) => sendMessageOutputSchema.safeParse(call.input))
     .flatMap((parsed) =>
