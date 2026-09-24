@@ -124,7 +124,7 @@ describe("authored mode capability matrix", () => {
     ]);
   });
 
-  it("keeps page fetching and photo search in the modes that had them", async () => {
+  it("fetches pages and photos only in conversations and user-set tasks", async () => {
     const pageTools = [
       (await import("@agent/tools/web_fetch")).default,
       (await import("@agent/tools/find_images")).default,
@@ -146,12 +146,16 @@ describe("authored mode capability matrix", () => {
           ).flat()
       )
     );
-    for (const names of byRole) {
-      expect(names).toEqual(["web_fetch", "find_images"]);
-    }
+    expect(byRole).toEqual([
+      ["web_fetch", "find_images"],
+      ["web_fetch", "find_images"],
+      // A report turn only delivers what a worker read, untrusted mail
+      // included, so it has no way to send that anywhere.
+      [],
+    ]);
   });
 
-  it("withholds the OpenRouter web search from Bro's own checks only", async () => {
+  it("withholds the OpenRouter web search from Bro's own checks and reports", async () => {
     vi.resetModules();
     vi.stubEnv("OPENROUTER_API_KEY", "sk-or-v1-test");
     const dynamic = dynamicToolModuleSchema.safeParse(
@@ -169,6 +173,7 @@ describe("authored mode capability matrix", () => {
         dynamicContext("scheduled-worker", { scheduledRunKind: "proactive" })
       )
     ).toBeNull();
+    expect(await resolve({}, dynamicContext("scheduled-result"))).toBeNull();
     expect(
       Object.keys((await resolve({}, dynamicContext("photon-imessage"))) ?? {})
     ).toEqual(["web_search"]);

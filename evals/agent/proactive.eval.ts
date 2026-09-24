@@ -70,7 +70,10 @@ export default defineEval({
         ],
         workspaceId: scope.workspaceId,
       });
-      const runId = queued.status === "queued" ? queued.runId : undefined;
+      if (queued.status !== "queued") {
+        throw new Error(`The proactive run was not queued (${queued.status}).`);
+      }
+      const runId = queued.runId;
       const claims = await claimReadyScheduledAgentRuns({
         kind: "proactive",
         leaseForMs: 60_000,
