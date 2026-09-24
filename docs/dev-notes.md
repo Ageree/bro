@@ -614,6 +614,17 @@
   после этого переписывает `pnpm-lock.yaml` и `pnpm-workspace.yaml`
   (`allowBuilds: set this to true or false`). Не коммитьте это: откатите и
   `pnpm install --frozen-lockfile`.
+- Прокси Composio (`POST /api/v3/tools/execute/proxy`) отвечает HTTP 200 и на
+  ошибку Google: статус и тело Google — в полях `status` и `data`, проверять
+  надо их (`scripts/bench/account/google.ts`). `GET /connected_accounts`
+  отдаёт и данные подключения: из ответа берут только `id`, `status`,
+  `user_id`.
+- Cookie веб-входа читает поток любой сессии своего воркспейса, и ветки
+  мессенджера тоже (проверено на Telegram; id — ссылки `/chat/<id>` в
+  `/chat/history`): владельца сессии хук `agent/hooks/session-owner.ts`
+  пишет для всех каналов.
+  Поэтому `pnpm bench observe` видит сообщения Бро в мессенджере; ложится ли
+  туда ход-отчёт проактивной проверки, ещё не наблюдали.
 - Локально (`NODE_ENV=development`, `BETTER_AUTH_URL` на loopback) вход по
   телефону принимает любой код одним `POST /api/auth/phone-number/verify`
   (`localPhoneAuthBypassEnabled`), но Google, Notion и Slack там не работают:
