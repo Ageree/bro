@@ -54,17 +54,15 @@ describe("scheduled run requests", () => {
     mocks.env.VERCEL_ENV = "preview";
     mocks.env.VERCEL_URL = "openinstinct-preview.vercel.app";
 
-    await postScheduledRunRoute("/internal/scheduled-run/report", {
-      runId: "run-1",
-    });
+    await postScheduledRunRoute("/internal/scheduled-run/respond", answer);
 
     expect(mocks.getToken).toHaveBeenCalledOnce();
     expect(fetch).toHaveBeenCalledWith(
       new URL(
-        "https://openinstinct-preview.vercel.app/internal/scheduled-run/report"
+        "https://openinstinct-preview.vercel.app/internal/scheduled-run/respond"
       ),
       expect.objectContaining({
-        body: JSON.stringify({ runId: "run-1" }),
+        body: JSON.stringify(answer),
         method: "POST",
         redirect: "error",
       })
@@ -77,11 +75,7 @@ describe("scheduled run requests", () => {
   });
 
   it("leaves local callbacks to Eve local development authentication", async () => {
-    await postScheduledRunRoute("/internal/scheduled-run/respond", {
-      answer: "Logan",
-      leaseToken: "lease-1",
-      runId: "run-1",
-    });
+    await postScheduledRunRoute("/internal/scheduled-run/respond", answer);
 
     expect(mocks.getToken).not.toHaveBeenCalled();
     expect(fetch).toHaveBeenCalledWith(
@@ -96,13 +90,11 @@ describe("scheduled run requests", () => {
   it("falls back to the application origin outside Next development", async () => {
     mocks.env.NODE_ENV = "test";
 
-    await postScheduledRunRoute("/internal/scheduled-run/report", {
-      runId: "run-1",
-    });
+    await postScheduledRunRoute("/internal/scheduled-run/respond", answer);
 
     expect(mocks.readFile).not.toHaveBeenCalled();
     expect(fetch).toHaveBeenCalledWith(
-      new URL("https://example.com/internal/scheduled-run/report"),
+      new URL("https://example.com/internal/scheduled-run/respond"),
       expect.objectContaining({ method: "POST", redirect: "error" })
     );
   });
@@ -115,16 +107,16 @@ describe("scheduled run requests", () => {
       })
     );
 
-    await postScheduledRunRoute("/internal/scheduled-run/report", {
-      runId: "run-1",
-    });
+    await postScheduledRunRoute("/internal/scheduled-run/respond", answer);
 
     expect(fetch).toHaveBeenCalledWith(
-      new URL("https://example.com/internal/scheduled-run/report"),
+      new URL("https://example.com/internal/scheduled-run/respond"),
       expect.objectContaining({ method: "POST", redirect: "error" })
     );
   });
 });
+
+const answer = { answer: "Logan", leaseToken: "lease-1", runId: "run-1" };
 
 function sentHeaders() {
   const call = vi.mocked(fetch).mock.calls[0];

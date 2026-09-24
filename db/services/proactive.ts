@@ -25,8 +25,9 @@ const proactiveJobPrompt =
 
 /**
  * Remembers the conversation Bro may write first to: the latest one the
- * person talked from. A first call creates the hidden `proactive` job and the
- * watch, starting the mail watermark now so old mail is never replayed.
+ * person talked from, in any channel, the web chat included. A first call
+ * creates the hidden `proactive` job and the watch, starting the mail
+ * watermark now so old mail is never replayed.
  */
 export async function recordProactiveTarget(
   scope: AccessScope,
@@ -173,6 +174,31 @@ export async function deferProactiveWatch(
     // Drizzle leaves a column out of the update when its value is undefined.
     .set({ googleState, nextCheckAt, updatedAt: new Date() })
     .where(eq(proactiveWatches.workspaceId, workspaceId));
+}
+
+/**
+ * Brings the next check forward once Google is connected again, from the
+ * cabinet or from the chat. A check that found no grant waits hours before
+ * looking again, so a person who connects right after it would otherwise
+ * hear nothing until then. Only a watch parked on a missing grant moves: a
+ * connected one keeps its cadence, and its next check time may be the live
+ * lease of a check in progress. Returns whether a watch was woken.
+ */
+export async function wakeProactiveWatch(
+  scope: Pick<AccessScope, "workspaceId">,
+  now = new Date()
+) {
+  const woken = await db
+    .update(proactiveWatches)
+    .set({ googleState: "unknown", nextCheckAt: now, updatedAt: now })
+    .where(
+      and(
+        eq(proactiveWatches.workspaceId, scope.workspaceId),
+        eq(proactiveWatches.googleState, "disconnected")
+      )
+    )
+    .returning({ workspaceId: proactiveWatches.workspaceId });
+  return woken.length > 0;
 }
 
 /** Moves the mail watermark when a check found nothing new to hand over. */

@@ -24,6 +24,10 @@ const photon = {
   conversationChannel: "photon" as const,
   conversationId: "imessage:chat-alice",
 };
+const web = {
+  conversationChannel: "eve" as const,
+  conversationId: "web-session-alice",
+};
 const now = new Date("2026-09-23T12:00:00.000Z");
 const flight = {
   dedupeKey: "flight@2026-09-24T07:40:00Z",
@@ -441,6 +445,46 @@ describe("proactive watches", { timeout: 30_000 }, () => {
         new Date(now.getTime() + 60 * 60_000)
       )
     ).toEqual([]);
+  });
+});
+
+describe("waking the checks when Google connects", { timeout: 30_000 }, () => {
+  it("brings the next check forward for a watch parked on a missing grant", async () => {
+    const { proactive } = await openDatabase();
+    await proactive.recordProactiveTarget(alice, web, now);
+    const lease = { leaseForMs: 15 * 60_000, limit: 10, now };
+    expect(await proactive.claimDueProactiveWatches(lease)).toHaveLength(1);
+    // The probe found no grant, so the next look is hours away.
+    await proactive.deferProactiveWatch(
+      alice.workspaceId,
+      new Date(now.getTime() + 6 * 60 * 60_000),
+      "disconnected"
+    );
+    const connectedAt = new Date(now.getTime() + 20 * 60_000);
+    const later = { ...lease, now: connectedAt };
+    expect(await proactive.claimDueProactiveWatches(later)).toEqual([]);
+
+    expect(await proactive.wakeProactiveWatch(alice, connectedAt)).toBe(true);
+
+    expect(await proactive.claimDueProactiveWatches(later)).toMatchObject([
+      { googleState: "unknown", workspaceId: alice.workspaceId },
+    ]);
+  });
+
+  it("leaves a connected watch on its own cadence", async () => {
+    const { proactive } = await openDatabase();
+    await proactive.recordProactiveTarget(alice, web, now);
+    await proactive.advanceProactiveWatermark(alice.workspaceId, now);
+    const lease = { leaseForMs: 15 * 60_000, limit: 10, now };
+    expect(await proactive.claimDueProactiveWatches(lease)).toHaveLength(1);
+
+    // Its next check time is the live lease of the check in progress.
+    expect(await proactive.wakeProactiveWatch(alice, now)).toBe(false);
+    expect(await proactive.claimDueProactiveWatches(lease)).toEqual([]);
+    // A workspace that never talked to Bro has nothing to wake.
+    expect(
+      await proactive.wakeProactiveWatch({ workspaceId: "workspace:bob" }, now)
+    ).toBe(false);
   });
 });
 

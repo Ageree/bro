@@ -1,4 +1,5 @@
 import { AlertCircleIcon, BrainIcon, LoaderCircleIcon } from "lucide-react";
+import type { EveMessage } from "eve/react";
 import { Fragment, useMemo } from "react";
 import {
   imessageTimestamps,
@@ -16,6 +17,7 @@ import { Message, MessageContent } from "@web/components/ai-elements/message";
 import { Shimmer } from "@web/components/ai-elements/shimmer";
 import { Alert, AlertDescription, AlertTitle } from "@web/components/ui/alert";
 import { Button } from "@web/components/ui/button";
+import { isBackgroundTurnText } from "@shared/chat/background-turn";
 import { AgentMessage } from "./message";
 import type { ChatAgent } from "../chat-agent";
 
@@ -109,6 +111,11 @@ export function ChatConversation({
           if (showPendingThinking && message.id === pendingAssistantMessageId) {
             return null;
           }
+          // A scheduled or proactive report is Bro's own prompt to itself;
+          // the person sees only what Bro sent them from it.
+          if (traceView === "imessage" && isBackgroundTurnMessage(message)) {
+            return null;
+          }
 
           const deliveries =
             traceView === "imessage"
@@ -155,6 +162,12 @@ export function ChatConversation({
       <ConversationScrollButton />
     </Conversation>
   );
+}
+
+function isBackgroundTurnMessage(message: EveMessage) {
+  if (message.role !== "user") return false;
+  const text = message.parts.find((part) => part.type === "text");
+  return text?.type === "text" && isBackgroundTurnText(text.text);
 }
 
 function toErrorMessage(cause: unknown): string {

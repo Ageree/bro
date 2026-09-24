@@ -1,6 +1,7 @@
 import type { Session } from "eve/channels";
 import type { ScheduleHandlerArgs, ScheduleToFn } from "eve/schedules";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import type {
   claimReadyScheduledAgentRuns,
   claimScheduledReport,
@@ -22,9 +23,6 @@ const services = vi.hoisted(() => ({
   releaseRun: vi.fn<typeof releaseScheduledAgentRun>(),
   setSession: vi.fn<typeof setScheduledRunSession>(),
 }));
-const requests = vi.hoisted(() => ({
-  report: vi.fn<(runId: string) => Promise<void>>(),
-}));
 
 vi.mock("@db/services/scheduled-agent-jobs", () => ({
   claimReadyScheduledAgentRuns: services.claimRuns,
@@ -39,9 +37,6 @@ vi.mock("@db/services/scheduled-agent-jobs", () => ({
 vi.mock("@agent/channels/photon", () => ({
   default: { channel: "photon" },
 }));
-vi.mock("@agent/lib/schedules/request", () => ({
-  postScheduledReport: requests.report,
-}));
 // Every tick queues the credit check as a second background task, the way a
 // tenth-minute tick does, so each case proves the dispatch is awaited too.
 // The check itself has its own tests and never reaches OpenRouter here.
@@ -55,6 +50,7 @@ vi.mock("@agent/channels/scheduled-run", () => ({
 
 import dynamicSchedule from "@agent/schedules/dynamic";
 import { dispatchScheduledReport } from "@agent/lib/schedules/report";
+import { backgroundTurnMarker } from "@shared/chat/background-turn";
 
 describe("dynamic schedule dispatch", () => {
   beforeEach(() => {
@@ -64,7 +60,7 @@ describe("dynamic schedule dispatch", () => {
     services.claimRuns.mockResolvedValue([]);
     services.releaseRun.mockResolvedValue("queued");
     services.setSession.mockResolvedValue(true);
-    requests.report.mockResolvedValue();
+    services.releaseReport.mockResolvedValue(true);
   });
 
   it("hands due work directly to the scheduled-run channel", async () => {
@@ -130,15 +126,18 @@ describe("dynamic schedule dispatch", () => {
 
     await runSchedule(to);
 
-    expect(requests.report).not.toHaveBeenCalled();
     expect(send.mock.calls[0]?.[1]).toMatchObject({
       auth: { authenticator: "scheduled-result" },
       turnPolicy: "queue",
     });
   });
 
-  it("keeps Eve debug reports on its active-session callback", async () => {
+  it("delivers a web chat report through the schedule's own session handle", async () => {
+    // The app's own routes never reach eve on Vercel, so a web chat report
+    // must not go through one.
     const report = scheduledReport();
+    report.job.conversationChannel = "eve";
+    report.job.conversationId = "web-session";
     services.listReports.mockResolvedValue([
       {
         conversationChannel: "eve",
@@ -147,12 +146,25 @@ describe("dynamic schedule dispatch", () => {
         scope: { userId: "user-1", workspaceId: "workspace-1" },
       },
     ]);
+    services.claimReports.mockResolvedValue(report);
+    const send = vi
+      .fn<Session["send"]>()
+      .mockResolvedValue({ sessionId: "web-session", status: "accepted" });
+    const attachSession = vi
+      .fn<ScheduleHandlerArgs["attachSession"]>()
+      .mockReturnValue(workerSession("web-session", send));
     const to = vi.fn<ScheduleToFn>();
+    const fetch = vi.spyOn(globalThis, "fetch");
 
-    await runSchedule(to);
+    await runSchedule(to, attachSession);
 
+    expect(attachSession).toHaveBeenCalledExactlyOnceWith("web-session");
     expect(to).not.toHaveBeenCalled();
-    expect(requests.report).toHaveBeenCalledExactlyOnceWith(report.run.id);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(send.mock.calls[0]?.[1]).toMatchObject({
+      auth: { authenticator: "scheduled-result" },
+      turnPolicy: "queue",
+    });
   });
 
   it("reports a worker that exhausts its dispatch attempts", async () => {
@@ -179,7 +191,6 @@ describe("dynamic schedule dispatch", () => {
       claim.run.leaseToken,
       "Workflow did not accept the candidate."
     );
-    expect(requests.report).not.toHaveBeenCalled();
     expect(services.claimReports).toHaveBeenCalledExactlyOnceWith(claim.run.id);
   });
 });
@@ -237,13 +248,18 @@ describe("scheduled report delivery", () => {
     await dispatchScheduledReport({ to }, report.run.id);
 
     const prompt = send.mock.calls[0]?.[0];
+    // The web chat hides the prompt by this line; a messaging chat never
+    // shows it.
+    expect(z.string().parse(prompt).startsWith(backgroundTurnMarker)).toBe(
+      true
+    );
     expect(prompt).toContain("Nobody asked for this check");
     expect(prompt).toContain("Send one short message only if");
     expect(prompt).toContain("shown as a draft for them to approve");
     expect(prompt).not.toContain("Original task:");
   });
 
-  it("routes Eve reports to the stored debug session", async () => {
+  it("routes web chat reports to the stored session", async () => {
     const report = scheduledReport();
     report.job.conversationChannel = "eve";
     report.job.conversationId = "web-session";
@@ -269,7 +285,7 @@ describe("scheduled report delivery", () => {
     expect(send.mock.calls[0]?.[1].turnPolicy).toBe("queue");
   });
 
-  it("suppresses reports for inactive Eve debug sessions", async () => {
+  it("suppresses reports for a web chat session that has ended", async () => {
     const report = scheduledReport();
     report.job.conversationChannel = "eve";
     report.job.conversationId = "retired-session";
@@ -292,9 +308,38 @@ describe("scheduled report delivery", () => {
       "suppressed"
     );
   });
+
+  it("retries a web chat report while its session is still starting", async () => {
+    const report = scheduledReport();
+    report.job.conversationChannel = "eve";
+    report.job.conversationId = "starting-session";
+    services.claimReports.mockResolvedValue(report);
+    const send = vi
+      .fn<Session["send"]>()
+      .mockResolvedValue({ retryable: true, status: "session_not_active" });
+    const attachSession = vi
+      .fn<(sessionId: string) => Session>()
+      .mockReturnValue(workerSession("starting-session", send));
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    await dispatchScheduledReport(
+      { attachSession, to: vi.fn<ScheduleToFn>() },
+      report.run.id
+    );
+
+    expect(services.finalizeReport).not.toHaveBeenCalled();
+    expect(services.releaseReport).toHaveBeenCalledExactlyOnceWith(
+      report.run.id,
+      report.run.reportLeaseToken,
+      "The web chat session is not ready for the report."
+    );
+  });
 });
 
-async function runSchedule(to: ScheduleToFn) {
+async function runSchedule(
+  to: ScheduleToFn,
+  attachSession = vi.fn<ScheduleHandlerArgs["attachSession"]>()
+) {
   // Every tenth minute the schedule also queues the credit check; each
   // background task is awaited, not only the last one handed over.
   const tasks: Promise<unknown>[] = [];
@@ -305,7 +350,7 @@ async function runSchedule(to: ScheduleToFn) {
       principalId: "test-app",
       principalType: "app",
     },
-    attachSession: vi.fn<ScheduleHandlerArgs["attachSession"]>(),
+    attachSession,
     to,
     waitUntil(backgroundTask) {
       tasks.push(backgroundTask);

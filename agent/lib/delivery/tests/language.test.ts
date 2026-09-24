@@ -5,6 +5,7 @@ import {
   personLanguage,
   replyLanguageDirective,
 } from "@agent/lib/delivery/language";
+import { backgroundTurnMarker } from "@shared/chat/background-turn";
 
 describe("messageLanguage", () => {
   it.each([
@@ -45,6 +46,18 @@ describe("personLanguage", () => {
         person("Browser run run_1 finished.\n\nErrand: найди машину"),
       ])
     ).toBe("en");
+  });
+
+  it("skips a proactive or scheduled report Bro wrote to itself", () => {
+    expect(
+      personLanguage([
+        person("найди мне рейс в Казань"),
+        person(
+          `${backgroundTurnMarker}\n\nYour own background check of the person's mail and calendar found something.`
+        ),
+        person("ок"),
+      ])
+    ).toBe("ru");
   });
 
   it("keeps the language through a reply without one", () => {

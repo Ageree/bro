@@ -38,10 +38,35 @@ describe("proactive target hook", () => {
     expect(record).not.toHaveBeenCalled();
   });
 
-  it("ignores the web chat and background turns", async () => {
-    await startTurn("eve-web", {
+  it("follows the person into the web chat, addressed by its session", async () => {
+    await startTurn("authjs", { conversationChannel: "eve", workspaceId });
+
+    expect(record).toHaveBeenCalledExactlyOnceWith(
+      { userId: "user-1", workspaceId },
+      { conversationChannel: "eve", conversationId: "session-1" }
+    );
+  });
+
+  it("ignores a subagent's own session inside the web chat", async () => {
+    await startTurn(
+      "authjs",
+      { conversationChannel: "eve", workspaceId },
+      {
+        parent: {
+          callId: "call-1",
+          rootSessionId: "session-0",
+          sessionId: "session-0",
+          turn: { id: "turn-0", sequence: 0 },
+        },
+      }
+    );
+
+    expect(record).not.toHaveBeenCalled();
+  });
+
+  it("ignores background turns", async () => {
+    await startTurn("scheduled-result", {
       conversationChannel: "eve",
-      conversationId: "session-1",
       workspaceId,
     });
     await startTurn("scheduled-result", {
@@ -73,7 +98,8 @@ describe("proactive target hook", () => {
 
 async function startTurn(
   authenticator: string,
-  attributes: Record<string, string>
+  attributes: Record<string, string>,
+  session: Pick<HookContext["session"], "parent"> = {}
 ) {
   const handler = targetHook.events?.["turn.started"];
   const context = {
@@ -97,6 +123,7 @@ async function startTurn(
       },
       id: "session-1",
       turn: { id: "turn-1", sequence: 0 },
+      ...session,
     },
   } satisfies HookContext;
   // SAFETY: the hook reads no field of the event, only the context.

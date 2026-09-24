@@ -6,6 +6,7 @@ import type {
   startAuthorization,
 } from "@vercel/connect";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { wakeProactiveWatch } from "@db/services/proactive";
 import type {
   getGoogleWorkspaceAccess,
   selectGoogleWorkspaceAccess,
@@ -36,9 +37,16 @@ vi.mock("@vercel/connect", async (importOriginal) => ({
   startAuthorization: connect.startAuthorization,
 }));
 
+const proactive = vi.hoisted(() => ({
+  wake: vi.fn<typeof wakeProactiveWatch>(),
+}));
+
 vi.mock("@db/services/settings", () => ({
   getGoogleWorkspaceAccess: settings.access,
   selectGoogleWorkspaceAccess: settings.select,
+}));
+vi.mock("@db/services/proactive", () => ({
+  wakeProactiveWatch: proactive.wake,
 }));
 
 import {
@@ -98,6 +106,7 @@ describe("connect_google execution", () => {
     vi.clearAllMocks();
     settings.access.mockResolvedValue("full");
     settings.select.mockResolvedValue(undefined);
+    proactive.wake.mockResolvedValue(false);
     connect.revokeToken.mockResolvedValue(undefined);
     // The connection read asks Google's tokeninfo whether the grant is offline.
     vi.stubGlobal(
@@ -129,6 +138,8 @@ describe("connect_google execution", () => {
       { forceRefresh: true }
     );
     expect(connect.startAuthorization).not.toHaveBeenCalled();
+    // Bro's own checks, parked on the missing grant, resume right away.
+    expect(proactive.wake).toHaveBeenCalledExactlyOnceWith(scope);
   });
 
   it("mints an authorization link that returns to the workspace page", async () => {
