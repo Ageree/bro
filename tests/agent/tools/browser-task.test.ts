@@ -13,6 +13,8 @@ import {
   BrowserUseError,
   type BrowserUseCreateRunInput,
 } from "@agent/lib/browser-use/client";
+import type { createBrowserRun as recordBrowserRun } from "@db/services/browser-runs";
+import type { BrowserSubmission } from "@shared/browser/submission";
 import {
   accessScopeForUser,
   type AccessScope,
@@ -45,7 +47,14 @@ const readBrowserRunForScope = vi.hoisted(() =>
   >(() => Promise.resolve(undefined))
 );
 const createBrowserRun = vi.hoisted(() =>
-  vi.fn<() => Promise<void>>(() => Promise.resolve())
+  vi.fn<(...args: Parameters<typeof recordBrowserRun>) => Promise<void>>(() =>
+    Promise.resolve()
+  )
+);
+const recordBrowserRunSubmission = vi.hoisted(() =>
+  vi.fn<(runId: string, submission: BrowserSubmission) => Promise<void>>(() =>
+    Promise.resolve()
+  )
 );
 const claimBrowserRunCompletion = vi.hoisted(() =>
   vi.fn<() => Promise<void>>(() => Promise.resolve())
@@ -144,6 +153,7 @@ vi.mock("@db/services/browser-runs", () => ({
   // No retry chains here: the latest run is the one asked for.
   readLatestBrowserRunForScope: (scope: AccessScope, id: string) =>
     readBrowserRunForScope(scope, id),
+  recordBrowserRunSubmission,
   saveBrowserProfileId: vi.fn<Unused>(),
   stopBrowserRunErrand,
   updateBrowserRunProgress: vi.fn<() => Promise<void>>(() => Promise.resolve()),
@@ -224,9 +234,19 @@ function noRetryAt(): Date | null {
   return null;
 }
 
+/** What the person confirmed on the card in these tests. */
+const cardSubmission: BrowserSubmission = {
+  forWhom: "Алиса",
+  personalData: ["имя", "телефон"],
+  what: "запись к терапевту",
+  when: "ближайший слот 29.09–03.10",
+  where: "поликлиника №12 через ЕМИАС (emias.info)",
+};
+
 function browserRunRow(
   completedAt: Date | null = null,
-  outcome: string | null = null
+  outcome: string | null = null,
+  submission: BrowserSubmission | null = null
 ) {
   return {
     completedAt,
@@ -244,6 +264,7 @@ function browserRunRow(
     sessionId,
     site: "https://taxi.yandex.ru",
     status: completedAt ? "done" : "running",
+    submission,
     task: "Войди в аккаунт на taxi.yandex.ru",
     updatedAt: new Date(),
     workspaceId: accessScopeForUser("better-auth:alice").workspaceId,
@@ -269,6 +290,11 @@ async function startErrand(
       action: "start",
       allowPayment,
       allowSubmit,
+      // The approval card's details travel with every confirmed call.
+      submission:
+        allowSubmit === true || allowPayment === true
+          ? cardSubmission
+          : undefined,
       site: "https://example.com",
       task: "Order the usual",
     },
@@ -286,13 +312,20 @@ function continuationNote(
 async function continueErrand(input: {
   readonly allowPayment?: boolean;
   readonly allowSubmit?: boolean;
+  readonly authenticator?: string;
   readonly completedAt?: Date;
+  readonly confirmed?: BrowserSubmission;
   readonly outcome?: string;
   readonly site?: string;
+  readonly submission?: BrowserSubmission;
   readonly task?: string;
 }) {
   readBrowserRunForScope.mockResolvedValue(
-    browserRunRow(input.completedAt ?? null, input.outcome ?? null)
+    browserRunRow(
+      input.completedAt ?? null,
+      input.outcome ?? null,
+      input.confirmed ?? null
+    )
   );
   const { browserTask } = await import("@agent/tools/browser_task");
   return browserTask.execute(
@@ -302,9 +335,14 @@ async function continueErrand(input: {
       allowSubmit: input.allowSubmit,
       runId,
       site: input.site,
+      submission:
+        input.submission ??
+        (input.allowSubmit === true || input.allowPayment === true
+          ? cardSubmission
+          : undefined),
       task: input.task ?? "Код из смс 992130",
     },
-    toolContext("better-auth:alice")
+    toolContext("better-auth:alice", input.authenticator)
   );
 }
 
@@ -371,15 +409,31 @@ describe("browser_task continuation", () => {
   it("hands a live run the person's approval to submit with their details", async () => {
     readAccountPhoneNumber.mockResolvedValue("+79990000001");
 
-    await continueErrand({ allowSubmit: true, task: "Да, бронируй" });
+    await continueErrand({ allowSubmit: true, task: "Да, записывай" });
 
     const queued = String(queueBrowserUseSessionMessage.mock.calls[0]?.[1]);
-    expect(queued.startsWith("Да, бронируй")).toBe(true);
+    expect(queued.startsWith("Да, записывай")).toBe(true);
     expect(queued).toContain(
-      "The person asked for this errand to be carried out in their name"
+      "The person confirmed on an approval card this one submission in their name."
     );
+    expect(queued).toContain("What: запись к терапевту");
     expect(queued).toContain("Phone: +79990000001");
     expect(createBrowserUseRun).not.toHaveBeenCalled();
+    // Its later follow-ups carry the same confirmation.
+    expect(recordBrowserRunSubmission).toHaveBeenCalledExactlyOnceWith(
+      runId,
+      cardSubmission
+    );
+  });
+
+  it("queues a code into a confirmed live run without restating the card", async () => {
+    await continueErrand({ confirmed: cardSubmission });
+
+    expect(queueBrowserUseSessionMessage).toHaveBeenCalledExactlyOnceWith(
+      sessionId,
+      "Код из смс 992130"
+    );
+    expect(recordBrowserRunSubmission).not.toHaveBeenCalled();
   });
 
   it("starts a follow-up run in the same session once the run has finished", async () => {
@@ -972,22 +1026,99 @@ describe("browser_task payment boundary", () => {
     );
   });
 
-  it("lets an errand the person asked for submit with their details", async () => {
+  it("lets a confirmed errand submit exactly what the card showed", async () => {
     await startErrand("", undefined, true);
 
     const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
     expect(task).toContain(
-      "The person asked for this errand to be carried out in their name"
+      "The person confirmed on an approval card this one submission in their name."
+    );
+    expect(task).toContain("What: запись к терапевту");
+    expect(task).toContain("Where: поликлиника №12 через ЕМИАС (emias.info)");
+    expect(task).toContain("In the name of: Алиса");
+    expect(task).toContain("When: ближайший слот 29.09–03.10");
+    expect(task).toContain(
+      "The person's details the site may receive: имя, телефон"
+    );
+    expect(task).toContain(
+      "stop before the final button with NEEDS: decision and say in DETAILS what differs"
     );
     expect(task).not.toContain("has not approved acting in their name");
+    // The confirmation belongs to this errand and travels with its row.
+    expect(createBrowserRun.mock.calls[0]?.[1]).toMatchObject({
+      submission: cardSubmission,
+    });
+  });
+
+  it("records no confirmation for an errand that only looks", async () => {
+    await startErrand("");
+
+    expect(createBrowserRun.mock.calls[0]?.[1]).toMatchObject({
+      submission: null,
+    });
   });
 
   it("treats paying for an errand as asking for it to be done", async () => {
     await startErrand("", true);
 
     expect(String(createBrowserUseRun.mock.calls[0]?.[0].task)).toContain(
-      "The person asked for this errand to be carried out in their name"
+      "The person confirmed on an approval card this one submission in their name."
     );
+  });
+
+  it("refuses to act in the person's name without the card's details", async () => {
+    vi.resetModules();
+    const { browserTask } = await import("@agent/tools/browser_task");
+
+    await expect(
+      browserTask.execute(
+        {
+          action: "start",
+          allowSubmit: true,
+          site: "https://www.gosuslugi.ru",
+          task: "Подай заявление на справку об отсутствии судимости",
+        },
+        toolContext("better-auth:alice")
+      )
+    ).rejects.toThrow("acting in the user's name needs submission");
+    expect(createBrowserUseRun).not.toHaveBeenCalled();
+  });
+
+  it("carries the errand's confirmation into its follow-up run", async () => {
+    await continueErrand({
+      completedAt: new Date(),
+      confirmed: cardSubmission,
+      outcome: "Result: нужен код из смс\nNeeds: sms_code",
+    });
+
+    const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
+    expect(task).toContain(
+      "The person confirmed on an approval card this one submission in their name."
+    );
+    expect(task).toContain("What: запись к терапевту");
+    expect(createBrowserRun.mock.calls[0]?.[1]).toMatchObject({
+      id: followUpRunId,
+      submission: cardSubmission,
+    });
+  });
+
+  it("holds a changed submission to what the person confirmed now", async () => {
+    const changed = { ...cardSubmission, when: "четверг 02.10, 10:30" };
+
+    await continueErrand({
+      allowSubmit: true,
+      completedAt: new Date(),
+      confirmed: cardSubmission,
+      submission: changed,
+      task: "Бери четверг в 10:30",
+    });
+
+    const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
+    expect(task).toContain("When: четверг 02.10, 10:30");
+    expect(task).not.toContain("When: ближайший слот");
+    expect(createBrowserRun.mock.calls[0]?.[1]).toMatchObject({
+      submission: changed,
+    });
   });
 
   it("lets an approved errand finish the purchase past the search budget", async () => {
@@ -1052,7 +1183,7 @@ describe("browser_task scoping", () => {
   });
 });
 
-function toolContext(principalId: string) {
+function toolContext(principalId: string, authenticator = "photon-imessage") {
   return {
     abortSignal: AbortSignal.abort(),
     callId: "call-1",
@@ -1076,7 +1207,7 @@ function toolContext(principalId: string) {
             conversationId: "imessage:chat-1",
             workspaceId: accessScopeForUser(principalId).workspaceId,
           },
-          authenticator: "photon-imessage",
+          authenticator,
           issuer: "open-instinct",
           principalId,
           principalType: "user",
@@ -1330,6 +1461,13 @@ describe("browser_task standing spend limit", () => {
         action: "start",
         allowPayment: true,
         site: "https://shop.example",
+        submission: {
+          amount: "1 500 ₽",
+          forWhom: "Алиса",
+          personalData: ["имя", "адрес"],
+          what: "заказ корма для кота",
+          where: "shop.example",
+        },
         task: "Купи корм — я разрешаю оплату",
       },
       toolContext("better-auth:alice")
@@ -1511,34 +1649,229 @@ describe("browser_task on an errand waiting for a background retry", () => {
   });
 });
 
-describe("browser_task payment approval", () => {
-  it("puts a card bound on the user's say-so in front of the user", async () => {
-    const { paymentApproval } = await import("@agent/tools/browser_task");
+describe("browser_task background runs", () => {
+  it("never lets a scheduled worker start an errand in the person's name", async () => {
+    vi.resetModules();
+    const { browserTask } = await import("@agent/tools/browser_task");
 
-    expect(paymentApproval({ action: "start", allowPayment: true })).toBe(
-      "user-approval"
-    );
-    expect(paymentApproval({ action: "continue", allowPayment: true })).toBe(
-      "user-approval"
-    );
-    // The standing limit is its own approval, checked by the tool.
-    expect(
-      paymentApproval({
-        action: "start",
-        allowPayment: true,
-        withinSpendLimit: {
-          currency: "RUB",
-          feeRub: 0,
-          recurring: false,
-          totalRub: 1500,
+    await expect(
+      browserTask.execute(
+        {
+          action: "start",
+          allowSubmit: true,
+          site: "https://www.gosuslugi.ru",
+          submission: cardSubmission,
+          task: "Подай заявление",
         },
-      })
+        toolContext("better-auth:alice", "scheduled-worker")
+      )
+    ).rejects.toThrow("cannot act in the user's name");
+    expect(createBrowserUseRun).not.toHaveBeenCalled();
+  });
+
+  it("lets a scheduled worker look without the person's details", async () => {
+    vi.resetModules();
+    const { browserTask } = await import("@agent/tools/browser_task");
+
+    await browserTask.execute(
+      {
+        action: "start",
+        site: "https://emias.info",
+        task: "Проверь свободные слоты к терапевту",
+      },
+      toolContext("better-auth:alice", "scheduled-worker")
+    );
+
+    expect(String(createBrowserUseRun.mock.calls[0]?.[0].task)).toContain(
+      "The person has not approved acting in their name on this errand."
+    );
+  });
+
+  it("does not act on the person's confirmation from a scheduled worker", async () => {
+    await continueErrand({
+      authenticator: "scheduled-worker",
+      completedAt: new Date(),
+      confirmed: cardSubmission,
+      task: "Проверь, появился ли слот",
+    });
+
+    const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
+    expect(task).toContain(
+      "The person has not approved acting in their name on this errand."
+    );
+    expect(task).not.toContain("What: запись к терапевту");
+    expect(createBrowserRun.mock.calls[0]?.[1]).toMatchObject({
+      submission: null,
+    });
+  });
+});
+
+function approvalSession(authenticator: string, scheduledRunKind?: string) {
+  const attributes: Record<string, string> =
+    scheduledRunKind === undefined ? {} : { scheduledRunKind };
+  return {
+    session: {
+      auth: {
+        current: {
+          attributes,
+          authenticator,
+          issuer: "open-instinct",
+          principalId: "better-auth:alice",
+          principalType: "user" as const,
+        },
+        initiator: null,
+      },
+    },
+  };
+}
+
+describe("browser_task approval", () => {
+  const conversation = approvalSession("photon-imessage");
+  const onLimit = {
+    currency: "RUB",
+    feeRub: 0,
+    recurring: false,
+    totalRub: 1500,
+  };
+
+  it("puts every submission in the person's name in front of them on a card", async () => {
+    const { browserTaskApproval } = await import("@agent/tools/browser_task");
+
+    for (const action of ["start", "continue"] as const) {
+      expect(
+        browserTaskApproval(
+          { action, allowSubmit: true, submission: cardSubmission },
+          conversation
+        )
+      ).toBe("user-approval");
+    }
+    // In every conversation channel, the web chat included.
+    for (const authenticator of ["telegram-webhook", "better-auth"]) {
+      expect(
+        browserTaskApproval(
+          { action: "start", allowSubmit: true, submission: cardSubmission },
+          approvalSession(authenticator)
+        )
+      ).toBe("user-approval");
+    }
+  });
+
+  it("puts a card bound on the user's say-so in front of the user", async () => {
+    const { browserTaskApproval } = await import("@agent/tools/browser_task");
+
+    expect(
+      browserTaskApproval(
+        { action: "start", allowPayment: true, submission: cardSubmission },
+        conversation
+      )
+    ).toBe("user-approval");
+    expect(
+      browserTaskApproval(
+        { action: "continue", allowPayment: true, submission: cardSubmission },
+        conversation
+      )
+    ).toBe("user-approval");
+  });
+
+  it("does not let the spend limit stand in for a submission's card", async () => {
+    const { browserTaskApproval } = await import("@agent/tools/browser_task");
+
+    // The standing limit is its own approval for paying, checked by the tool.
+    expect(
+      browserTaskApproval(
+        { action: "start", allowPayment: true, withinSpendLimit: onLimit },
+        conversation
+      )
     ).toBe("not-applicable");
-    // Searching, staging and the other actions bind nothing.
-    expect(paymentApproval({ action: "start" })).toBe("not-applicable");
-    expect(paymentApproval({ action: "status", allowPayment: true })).toBe(
+    // Anything else in the person's name still meets the card.
+    expect(
+      browserTaskApproval(
+        {
+          action: "start",
+          allowPayment: true,
+          allowSubmit: true,
+          submission: cardSubmission,
+          withinSpendLimit: onLimit,
+        },
+        conversation
+      )
+    ).toBe("user-approval");
+  });
+
+  it("refuses a card without the details it has to show", async () => {
+    const { browserTaskApproval } = await import("@agent/tools/browser_task");
+
+    for (const input of [
+      { action: "start", allowSubmit: true },
+      { action: "continue", allowPayment: true },
+    ] as const) {
+      const status = browserTaskApproval(input, conversation);
+      expect(status).toMatchObject({ type: "denied" });
+      expect(JSON.stringify(status)).toContain("needs submission");
+    }
+  });
+
+  it("refuses scheduled, proactive and background workers outright", async () => {
+    const { browserTaskApproval } = await import("@agent/tools/browser_task");
+
+    for (const worker of [
+      approvalSession("scheduled-worker"),
+      approvalSession("scheduled-worker", "proactive"),
+      approvalSession("scheduled-result"),
+    ]) {
+      for (const input of [
+        { action: "start", allowSubmit: true, submission: cardSubmission },
+        { action: "continue", allowSubmit: true, submission: cardSubmission },
+        { action: "start", allowPayment: true, submission: cardSubmission },
+        { action: "start", allowPayment: true, withinSpendLimit: onLimit },
+      ] as const) {
+        const status = browserTaskApproval(input, worker);
+        expect(status).toMatchObject({ type: "denied" });
+        expect(JSON.stringify(status)).toContain(
+          "cannot act in the user's name"
+        );
+      }
+      // Looking needs nobody's word, in the background as anywhere.
+      expect(browserTaskApproval({ action: "start" }, worker)).toBe(
+        "not-applicable"
+      );
+    }
+  });
+
+  it("refuses a worker resumed by the person's answer all the same", async () => {
+    const { browserTaskApproval } = await import("@agent/tools/browser_task");
+    const resumed = {
+      session: {
+        auth: {
+          current: conversation.session.auth.current,
+          initiator: approvalSession("scheduled-worker").session.auth.current,
+        },
+      },
+    };
+
+    expect(
+      browserTaskApproval(
+        { action: "start", allowSubmit: true, submission: cardSubmission },
+        resumed
+      )
+    ).toMatchObject({ type: "denied" });
+  });
+
+  it("asks nothing for looking, staging or the other actions", async () => {
+    const { browserTaskApproval } = await import("@agent/tools/browser_task");
+
+    expect(browserTaskApproval({ action: "start" }, conversation)).toBe(
       "not-applicable"
     );
-    expect(paymentApproval(undefined)).toBe("not-applicable");
+    expect(
+      browserTaskApproval({ action: "continue", runId }, conversation)
+    ).toBe("not-applicable");
+    expect(
+      browserTaskApproval(
+        { action: "status", allowPayment: true, allowSubmit: true },
+        conversation
+      )
+    ).toBe("not-applicable");
+    expect(browserTaskApproval(undefined, conversation)).toBe("not-applicable");
   });
 });

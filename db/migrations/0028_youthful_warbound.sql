@@ -1,0 +1,1 @@
+ALTER TABLE "browser_runs" ADD COLUMN IF NOT EXISTS "submission" jsonb;

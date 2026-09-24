@@ -59,6 +59,14 @@ describe("autonomy defaults", () => {
     expect(content).toContain(
       "отправляй, только когда он прямо попросил именно это действие"
     );
+    expect(content).toContain(
+      "только через карточку подтверждения `browser_task`, даже когда оно бесплатное и даже при лимите трат"
+    );
+    expect(content).toContain("Подтверждение принадлежит одному поручению");
+    expect(content).toContain(
+      "Расписание и фоновая работа от имени человека не действуют и не платят"
+    );
+    expect(content).toContain("Лимит разрешает только платить за покупку");
     expect(content).toContain("Почту пачкой");
     expect(content).toContain("без внешних участников");
     expect(content).toContain("`withinSpendLimit`");

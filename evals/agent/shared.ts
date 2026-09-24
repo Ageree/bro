@@ -5,6 +5,37 @@ import { sendMessageOutputSchema } from "@shared/chat/message-delivery";
 
 export const agentEvalTags = ["agent", "behavior"] as const;
 
+export async function skipWithoutBrowser(t: EveEvalContext) {
+  const { browserUseConfigured } =
+    await import("@agent/lib/browser-use/client");
+  if (!browserUseConfigured()) t.skip("browser_task needs BROWSER_USE_API_KEY");
+}
+
+const startedRunSchema = z.object({ runId: z.string().min(1) });
+
+/**
+ * Stop every real run the session started, straight through Browser Use, so
+ * a failed gate or judge never leaves a browser working and billing. Runs in
+ * `finally`: it must not depend on the model agreeing to cancel.
+ */
+export async function cancelStartedRuns(turn: EveEvalTurn | undefined) {
+  if (!turn) return;
+  const { cancelBrowserUseRun } = await import("@agent/lib/browser-use/client");
+  const runIds = turn.toolCalls
+    .filter((call) => call.name === "browser_task")
+    .map((call) => startedRunSchema.safeParse(call.output).data?.runId)
+    .filter((runId) => runId !== undefined);
+  await Promise.all(
+    runIds.map(async (runId) => {
+      try {
+        await cancelBrowserUseRun(runId);
+      } catch {
+        // Already finished or already cancelled: nothing left to stop.
+      }
+    })
+  );
+}
+
 export async function requireDeliveredText(
   t: EveEvalContext,
   turn: EveEvalTurn

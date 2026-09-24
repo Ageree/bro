@@ -30,6 +30,7 @@ import {
   finishBrowserRunReport,
   readBrowserProfileId,
   readLatestBrowserRunForScope,
+  recordBrowserRunSubmission,
   saveBrowserProfileId,
   stopBrowserRunErrand,
   updateBrowserRunProgress,
@@ -40,6 +41,10 @@ import {
   settleSpendReservation,
 } from "@db/services/spending";
 import { readWorkspaceTimeZone } from "@db/services/user-profile";
+import {
+  type BrowserSubmission,
+  browserSubmissionSchema,
+} from "@shared/browser/submission";
 import { localMonthKey } from "@shared/calendar/local-period";
 import {
   type AutoPaymentDecision,
@@ -112,7 +117,12 @@ const inputSchema = z.object({
     .boolean()
     .optional()
     .describe(
-      "Only true when the user explicitly asked in this conversation for this errand to be done in their name: to book or reserve, sign them up, place an order, or send a request, application, message or contact form (for example «забронируй», «запиши меня», «оставь заявку», «закажи»). A request to find, compare, choose or recommend is not that: leave it unset, and the run stops at the options without typing the user's name, phone, email or address anywhere. Pass it on start and again on every continue of such an errand, or when the user approves a booking or request the run found."
+      "Only true when the user explicitly asked in this conversation for this errand to be done in their name: to book or reserve, make an appointment or sign them up, place an order, file an application, apply to a job, issue a receipt, or send a request, message or contact form (for example «забронируй», «запиши меня к врачу», «подай заявление», «откликнись», «оставь заявку», «закажи»). A request to find, compare, choose or recommend is not that: leave it unset, and the run stops at the options without typing the user's name, phone, email or address anywhere. Always pass submission with it: the user confirms exactly that on a native approval card before anything starts, and the run may submit nothing else. On a continue of an errand the user already confirmed — a code, an answer — leave it unset: the confirmation stays with that errand. Set it on a continue only for a submission the errand did not have yet or one that changed (the slot or item the user just picked), which asks the user again. A scheduled or background run can never act in the user's name, and a new errand never inherits another's confirmation."
+    ),
+  submission: browserSubmissionSchema
+    .optional()
+    .describe(
+      "What the approval card shows the user and the run is held to: what exactly is submitted, where, for whom, which of their details the site receives, the date or slot, and the cost. Required with allowSubmit, and with allowPayment when there is no withinSpendLimit. Fill it from the request and what is already known; for a slot not chosen yet, give the window the run may pick from."
     ),
   collectImages: z
     .boolean()
@@ -226,25 +236,56 @@ function searchLine() {
 }
 
 /**
- * Acting in the person's name is theirs to ask for, even when it is free: a
- * benchmark run asked only for a dinner recommendation started booking the
- * table, and one about assembling furniture filed a Profi.ru request with the
- * person's phone number. Without `allowSubmit` the run only looks, and it is
- * not given the person's details to type anywhere. With it, a free booking
- * with free cancellation the person asked for is finished without asking
- * again (`agent/instructions/content/autonomy.md`).
+ * Who allowed the run to act in the person's name, and to do what. The
+ * approval card is the person's own confirmation of one described submission;
+ * the standing spend limit only covers paying for an order on a site it
+ * covers. Neither is a model's reading of the conversation.
  */
-function commitmentLine(allowSubmit: boolean) {
-  if (allowSubmit) {
+type SubmissionConsent =
+  | { readonly kind: "card"; readonly submission: BrowserSubmission }
+  | { readonly kind: "spend-limit" };
+
+function submissionTerms(submission: BrowserSubmission) {
+  return [
+    `What: ${submission.what}`,
+    `Where: ${submission.where}`,
+    `In the name of: ${submission.forWhom}`,
+    submission.when ? `When: ${submission.when}` : undefined,
+    submission.amount ? `Cost: ${submission.amount}` : undefined,
+    `The person's details the site may receive: ${submission.personalData.length > 0 ? submission.personalData.join(", ") : "none"}`,
+  ]
+    .filter((line) => line !== undefined)
+    .join("\n");
+}
+
+/**
+ * Acting in the person's name is theirs to confirm, even when it is free: a
+ * benchmark run asked only for a dinner recommendation started booking the
+ * table, one about assembling furniture filed a Profi.ru request with the
+ * person's phone number, and runs the model allowed on its own filed a
+ * Gosuslugi application, a tax receipt, a doctor's appointment and job
+ * applications. Without consent the run only looks, and it is not given the
+ * person's details to type anywhere. With a card it may submit exactly what
+ * the card showed (`agent/instructions/content/autonomy.md`).
+ */
+function commitmentLine(consent: SubmissionConsent | undefined) {
+  if (consent?.kind === "card") {
     return [
-      "The person asked for this errand to be carried out in their name: you may fill in and submit the booking, order, registration, request or form the errand names, with the known details below. Finish on your own what costs nothing and can be undone for free: a reservation with free cancellation, a registration for a free event, a basket with the delivery details filled in.",
-      "Submit only what the errand names: no extra sign-ups, newsletters, messages to other people or businesses, or a second booking.",
+      "The person confirmed on an approval card this one submission in their name. You may fill it in and press its final button, with the known details below:",
+      submissionTerms(consent.submission),
+      "Submit nothing beyond it: no other slot, organisation, item or amount, no second booking, order or application, no extra sign-ups, newsletters or messages, and none of the person's details beyond those listed. When the page would submit something that differs — a slot outside that time, a higher cost, another organisation, more of their details than listed — stop before the final button with NEEDS: decision and say in DETAILS what differs.",
+    ].join("\n");
+  }
+  if (consent?.kind === "spend-limit") {
+    return [
+      "The person's standing spend limit covers paying for the order this errand names: you may complete that checkout in their name, with the known details below.",
+      "That checkout is all you may submit for them: never book an appointment, file an application or a request, apply to a job, register or sign up, and never send a message or a form to a business or a person on this errand.",
     ].join(" ");
   }
   return [
-    "The person has not approved acting in their name on this errand. Never book or reserve anything (not even with free cancellation), never register, sign up or place an order, and never submit a contact form, request, application, callback or message to a business or a person.",
+    "The person has not approved acting in their name on this errand. Never book or reserve anything (not even with free cancellation), never make an appointment, register, sign up, apply or place an order, and never submit a contact form, request, application, callback or message to a business or a person.",
     "Never type the person's name, phone number, email or address into any site. Search, compare and read only, then report the options with their links: when the errand asks you to find or recommend something, the recommendation is the end of the errand.",
-    "If going further would need a booking, a request or the person's details, stop there and end with NEEDS: decision, saying in DETAILS what you would submit and where.",
+    "If going further would need a booking, a request or the person's details, stop there and end with NEEDS: decision, saying in DETAILS what you would submit, where, and when.",
   ].join(" ");
 }
 
@@ -287,8 +328,8 @@ function credentialsLine(aliases: readonly string[]) {
 export function composeBrowserTask(options: {
   readonly aliases: readonly string[];
   readonly allowPayment: boolean;
-  readonly allowSubmit: boolean;
   readonly collectImages: boolean;
+  readonly consent: SubmissionConsent | undefined;
   readonly errand: string;
   readonly facts: string | undefined;
   readonly home: string | undefined;
@@ -300,10 +341,10 @@ export function composeBrowserTask(options: {
       : options.errand,
     homeLine(options.home),
     searchLine(),
-    commitmentLine(options.allowSubmit),
+    commitmentLine(options.consent),
     paymentLine(options.allowPayment),
     budgetLine(options.allowPayment),
-    options.allowSubmit ? options.facts : undefined,
+    options.consent ? options.facts : undefined,
     credentialsLine(options.aliases),
     captchaLine(),
     imagesContract(options.collectImages),
@@ -325,8 +366,8 @@ export function composeBrowserTask(options: {
 export function composeBrowserContinuation(options: {
   readonly aliases: readonly string[];
   readonly allowPayment: boolean;
-  readonly allowSubmit: boolean;
   readonly collectImages: boolean;
+  readonly consent: SubmissionConsent | undefined;
   readonly errand: string;
   readonly facts: string | undefined;
   readonly message: string;
@@ -341,10 +382,10 @@ export function composeBrowserContinuation(options: {
     ]
       .filter((line) => line !== undefined)
       .join("\n"),
-    commitmentLine(options.allowSubmit),
+    commitmentLine(options.consent),
     paymentLine(options.allowPayment),
     options.searching ? budgetLine(options.allowPayment) : undefined,
-    options.allowSubmit ? options.facts : undefined,
+    options.consent ? options.facts : undefined,
     credentialsLine(options.aliases),
     captchaLine(),
     imagesContract(options.collectImages),
@@ -541,21 +582,80 @@ export function spendCapLine(
   return `Payment is pre-approved up to ${formatRub(decision.exposureRub)} in total${fee}, including every fee, deposit and cancellation penalty. Before you confirm, check the final amount on the page. If it is higher, if a fee appears that was not counted, or if it is a subscription or a repeating charge, do not pay — ${stop}. ${recurring} ${roubles} A paid order still ends with ORDER and TOTAL filled in as usual; a payment that went through without an order number still reports its TOTAL.`;
 }
 
+type BrowserTaskInput = Partial<z.infer<typeof inputSchema>>;
+
 /**
- * A card bound on the person's say-so is confirmed by the person, not by the
- * model's reading of the conversation: a web page or an email that talks the
- * model into «the user agreed» still meets the native card. A payment on the
- * standing limit carries `withinSpendLimit` instead, and the limit itself is
- * the approval the tool checks.
+ * Whether this call is the person's own confirmation to take: a submission in
+ * their name, or a payment not on the standing limit. A payment on the limit
+ * carries `withinSpendLimit` instead, and the limit is the approval the tool
+ * checks; it covers the checkout it pays for and nothing else.
  */
-export function paymentApproval(
-  input: Partial<z.infer<typeof inputSchema>> | undefined
+function confirmsOnCard(input: BrowserTaskInput) {
+  return (
+    input.allowSubmit === true ||
+    (input.allowPayment === true && input.withinSpendLimit === undefined)
+  );
+}
+
+/** Only a person in the conversation can confirm acting in their name. */
+function inConversation(context: Parameters<typeof resolveModeValue>[0]) {
+  return resolveModeValue(context, { interactive: true }) === true;
+}
+
+const backgroundConsentRefusal =
+  "A scheduled or background run cannot act in the user's name or pay: nobody is there to confirm it. Start or continue the errand without allowSubmit and allowPayment to search, check and stage it up to the final step, and hand the result over so the user can confirm it in the conversation.";
+
+const missingSubmissionRefusal =
+  "Nothing was started: acting in the user's name needs submission — what exactly, where, for whom, which of their details the site receives, the date or slot, and the cost — so the approval card can show it. Call again with submission filled in.";
+
+/**
+ * The approval policy of `browser_task`. Submitting in the person's name —
+ * a booking, an appointment, an application, a job application, a receipt,
+ * an order — and paying off the standing limit are confirmed by the person on
+ * a native card that shows what the call will submit, not by the model's
+ * reading of the conversation: a web page or an email that talks the model
+ * into «the user agreed» still meets the card. A scheduled, proactive or
+ * background worker has nobody to show a card to — and its pending input can
+ * be answered by the report turn's model — so it is refused outright.
+ */
+export function browserTaskApproval(
+  input: BrowserTaskInput | undefined,
+  context: Parameters<typeof resolveModeValue>[0]
 ): ApprovalStatus {
-  return (input?.action === "start" || input?.action === "continue") &&
-    input.allowPayment === true &&
-    input.withinSpendLimit === undefined
-    ? "user-approval"
-    : "not-applicable";
+  if (input?.action !== "start" && input?.action !== "continue") {
+    return "not-applicable";
+  }
+  if (input.allowSubmit !== true && input.allowPayment !== true) {
+    return "not-applicable";
+  }
+  if (!inConversation(context)) {
+    return { reason: backgroundConsentRefusal, type: "denied" };
+  }
+  if (!confirmsOnCard(input)) return "not-applicable";
+  if (input.submission === undefined) {
+    return { reason: missingSubmissionRefusal, type: "denied" };
+  }
+  return "user-approval";
+}
+
+/**
+ * What this call itself allows, once its policy let it through. The card's
+ * submission is read again here: the run is held to exactly what the person
+ * saw.
+ */
+function consentFromInput(
+  input: BrowserTaskInput,
+  context: ToolContext
+): SubmissionConsent | undefined {
+  if (input.allowSubmit !== true && input.allowPayment !== true) {
+    return undefined;
+  }
+  if (!inConversation(context)) throw new Error(backgroundConsentRefusal);
+  if (!confirmsOnCard(input)) return { kind: "spend-limit" };
+  if (input.submission === undefined) {
+    throw new Error(missingSubmissionRefusal);
+  }
+  return { kind: "card", submission: input.submission };
 }
 
 function spendRefusalNote(
@@ -724,9 +824,10 @@ async function waitForLiveViewUrl(
 }
 
 export const browserTask = defineTool({
-  approval: ({ toolInput }) => paymentApproval(toolInput),
+  approval: ({ session, toolInput }) =>
+    browserTaskApproval(toolInput, { session }),
   description:
-    "Run one errand on a website through a hosted cloud browser that can sign in, fill forms, and complete a checkout. Use it when the user wants something done on a site; use web_search and web_fetch instead for reading public pages. Start exactly one run per errand and pass the site's origin so saved credentials can be bound to it; pick a site that serves the user's country and address, preferring local marketplaces over a global brand site that does not ship there. Write the errand short: the cloud browser is itself an agent, so give it the goal, the hard constraints in the user's own words, the saved preferences that bear on it, two or three fallback sites, and what to report back — not a click-by-click script. The run is told the user's city and country from Personal Info and asked to report its best partial results after about 15 minutes of searching. Searching and comparing need no card and no approval: start such an errand right away. Doing anything in the user's name — booking or reserving (even free and freely cancelled), signing up, ordering, or sending a request, message or contact form, or typing their name, phone, email or address into a site — needs allowSubmit: true, which you set only when the user explicitly asked for exactly that; a request to find or recommend options ends at the recommendation, so leave it unset and offer the booking as the next step. With allowSubmit the run finishes on its own what is free and freely cancelled — a reservation with free cancellation, a free registration, a basket. Without allowPayment the run stops before the final step of anything that charges or commits money (prepayment, binding a card, pay on delivery or at the property, a non-refundable rate, a cancellation fee) with NEEDS: payment and the TOTAL; ask the user in one sentence and continue with allowPayment: true once they agree — or, without asking, with allowPayment: true and withinSpendLimit when the payment may fit the user's standing spend limit: the tool decides, reserves the amount and caps the run; when it answers needs_approval, ask the user once. Every follow-up for that errand — an answer, a code the user typed, a changed constraint — goes through continue with the same runId, never a second start: continue works in the same browser, on the tab and the signed-in account the run already has. When the previous run has already finished, continue starts a follow-up run in that same browser and returns a NEW runId; use that one from then on. Pass allowPayment: true on start or on continue once the user approved paying or attaching a card on this errand in this conversation — «привяжи карту» is approval to bind the saved card, not to buy anything; without withinSpendLimit the user also confirms it on a native approval card before anything starts. With allowSubmit, the person's name, phone, email and addresses from the profile and from the vault are typed into forms automatically, so never ask for a phone number or an address the user said is saved: start the errand and let the run use it. The run signs in with vault credentials the models involved never see, so never ask the user for a password: when none is stored, call request_vault_setup. The run solves CAPTCHAs and anti-bot checks itself as it goes, and they are never the user's to solve: never tell the user you cannot pass one, never ask them to pass it, and never hand them the live view for one. A run the site stops at an anti-bot check is retried in the background by itself — a fresh browser on another address, on the same profile, up to five attempts over about half an hour — and its result reaches you only once the errand is done or the site stayed blocked; status and continue on the old runId follow the errand to its newest run. Give the user the live-view link only when the run is blocked on something only they can do — 3-D Secure, a push approval, a sign-in you cannot complete — and never forward a one-time code back to the user. Pass collectImages: true when the user asked for photos or pictures of what the errand finds; the run always saves a screenshot of the page with the outcome, and with the flag it saves pictures of the items too. Every saved image comes back with the outcome as an artifact id you attach in send_message as ![caption](/artifacts/id) — that is how the person gets the real picture rather than a link. The run continues in the background and its result arrives later as a new message, so do not wait on it.",
+    "Run one errand on a website through a hosted cloud browser that can sign in, fill forms, and complete a checkout. Use it when the user wants something done on a site; use web_search and web_fetch instead for reading public pages. Start exactly one run per errand and pass the site's origin so saved credentials can be bound to it; pick a site that serves the user's country and address, preferring local marketplaces over a global brand site that does not ship there. Write the errand short: the cloud browser is itself an agent, so give it the goal, the hard constraints in the user's own words, the saved preferences that bear on it, two or three fallback sites, and what to report back — not a click-by-click script. The run is told the user's city and country from Personal Info and asked to report its best partial results after about 15 minutes of searching. Searching and comparing need no card and no approval: start such an errand right away. Doing anything in the user's name — booking or reserving (even free and freely cancelled), making an appointment, signing up, ordering, filing an application, applying to a job, issuing a receipt, or sending a request, message or contact form, or typing their name, phone, email or address into a site — needs allowSubmit: true with submission, which you set only when the user explicitly asked for exactly that; a request to find or recommend options ends at the recommendation, so leave it unset and offer the booking as the next step. allowSubmit always puts a native approval card in front of the user that shows submission — what, where, for whom, which of their details go, the date or slot and the cost — so call the tool with it filled in straight away instead of asking in text first; once confirmed, the run submits exactly that and nothing else. A confirmed errand keeps its confirmation through its follow-ups and background retries; a new errand needs its own card. A scheduled or background run is refused allowSubmit and allowPayment: there it only searches and stages. Without allowPayment the run stops before the final step of anything that charges or commits money (prepayment, binding a card, pay on delivery or at the property, a non-refundable rate, a cancellation fee) with NEEDS: payment and the TOTAL; ask the user in one sentence and continue with allowPayment: true once they agree — or, without asking, with allowPayment: true and withinSpendLimit when the payment may fit the user's standing spend limit: the tool decides, reserves the amount and caps the run; when it answers needs_approval, ask the user once. Every follow-up for that errand — an answer, a code the user typed, a changed constraint — goes through continue with the same runId, never a second start: continue works in the same browser, on the tab and the signed-in account the run already has. When the previous run has already finished, continue starts a follow-up run in that same browser and returns a NEW runId; use that one from then on. Pass allowPayment: true on start or on continue once the user approved paying or attaching a card on this errand in this conversation — «привяжи карту» is approval to bind the saved card, not to buy anything; without withinSpendLimit the user also confirms it on a native approval card before anything starts, so pass submission naming what is bought, where and the total. With allowSubmit, the person's name, phone, email and addresses from the profile and from the vault are typed into forms automatically, so never ask for a phone number or an address the user said is saved: start the errand and let the run use it. The run signs in with vault credentials the models involved never see, so never ask the user for a password: when none is stored, call request_vault_setup. The run solves CAPTCHAs and anti-bot checks itself as it goes, and they are never the user's to solve: never tell the user you cannot pass one, never ask them to pass it, and never hand them the live view for one. A run the site stops at an anti-bot check is retried in the background by itself — a fresh browser on another address, on the same profile, up to five attempts over about half an hour — and its result reaches you only once the errand is done or the site stayed blocked; status and continue on the old runId follow the errand to its newest run. Give the user the live-view link only when the run is blocked on something only they can do — 3-D Secure, a push approval, a sign-in you cannot complete — and never forward a one-time code back to the user. Pass collectImages: true when the user asked for photos or pictures of what the errand finds; the run always saves a screenshot of the page with the outcome, and with the flag it saves pictures of the items too. Every saved image comes back with the outcome as an artifact id you attach in send_message as ![caption](/artifacts/id) — that is how the person gets the real picture rather than a link. The run continues in the background and its result arrives later as a new message, so do not wait on it.",
   inputSchema,
   async execute(input, context) {
     const { conversation, scope } = conversationTarget(context);
@@ -738,7 +839,7 @@ export const browserTask = defineTool({
         .parse(input.task);
       const allowPayment = input.allowPayment === true;
       // Paying for an errand is asking for it to be done in one's name.
-      const allowSubmit = input.allowSubmit === true || allowPayment;
+      const consent = consentFromInput(input, context);
       // A payment on the standing limit is decided first: a refusal must not
       // count against the month's errands or provision anything.
       const spend =
@@ -775,7 +876,7 @@ export const browserTask = defineTool({
         const task = composeBrowserTask({
           aliases: secrets.aliases,
           allowPayment,
-          allowSubmit,
+          consent,
           collectImages: input.collectImages === true,
           errand:
             spend?.decision.allowed && input.withinSpendLimit
@@ -811,6 +912,7 @@ export const browserTask = defineTool({
           sessionId: run.sessionId,
           site: input.site ?? null,
           status: "running",
+          submission: consent?.kind === "card" ? consent.submission : null,
           task: errand,
         })
       );
@@ -851,7 +953,18 @@ export const browserTask = defineTool({
         .min(1, "A continue action needs the message to pass into the run.")
         .parse(input.task);
       const allowPayment = input.allowPayment === true;
-      const allowSubmit = input.allowSubmit === true || allowPayment;
+      // A confirmation stays with its errand: a code or an answer on a
+      // confirmed errand needs no second card. A background worker never
+      // acts on it, and a new submission on this call is confirmed afresh.
+      const confirmedNow = consentFromInput(input, context);
+      const confirmedBefore: SubmissionConsent | undefined =
+        row.submission && inConversation(context)
+          ? { kind: "card", submission: row.submission }
+          : undefined;
+      const consent =
+        confirmedNow?.kind === "card"
+          ? confirmedNow
+          : (confirmedBefore ?? confirmedNow);
       // The errand's origin is fixed when it starts: the browser is already on
       // that site, signed in, and the run's secrets are bound to it. A site the
       // model passes on a follow-up can only be a mix-up with another errand in
@@ -896,22 +1009,26 @@ export const browserTask = defineTool({
         // A live run already carries the secrets it was created with, so a plain
         // follow-up is just a message on its queue. Bindings exist per run only:
         // a card the person has only now approved needs a run of its own. A
-        // submission approved now rides on the message with the details it may
-        // type, which is harmless when the run already had both.
+        // submission confirmed on this call rides on the message with the
+        // details it may type, and stays with the errand for its follow-ups;
+        // one confirmed earlier is already in the run's own instructions.
         if (live && !allowPayment) {
-          const details = allowSubmit
+          const details = confirmedNow
             ? (await browserRunFacts(scope)).details
             : undefined;
           await queueBrowserUseSessionMessage(
             row.sessionId,
             [
               withCodeEntry(message, codeEntry),
-              allowSubmit ? commitmentLine(true) : undefined,
+              confirmedNow ? commitmentLine(consent) : undefined,
               details,
             ]
               .filter((part) => part !== undefined)
               .join("\n\n")
           );
+          if (confirmedNow?.kind === "card") {
+            await recordBrowserRunSubmission(runId, confirmedNow.submission);
+          }
           return {
             kind: "replied" as const,
             reply: {
@@ -972,7 +1089,7 @@ export const browserTask = defineTool({
           task: composeBrowserContinuation({
             aliases: secrets.aliases,
             allowPayment,
-            allowSubmit,
+            consent,
             collectImages: input.collectImages === true,
             errand: row.task,
             facts: facts.details,
@@ -1032,6 +1149,7 @@ export const browserTask = defineTool({
           sessionId: followUp.sessionId,
           site: site ?? null,
           status: "running",
+          submission: consent?.kind === "card" ? consent.submission : null,
           task: message,
         })
       );
