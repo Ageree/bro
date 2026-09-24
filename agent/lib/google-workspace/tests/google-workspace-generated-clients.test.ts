@@ -15,7 +15,11 @@ vi.mock("@db/services/settings", () => ({
   getGoogleWorkspaceAccess: settings.access,
 }));
 
-import { createCalendarEvent } from "@agent/lib/google-workspace/calendar";
+import {
+  createCalendarEvent,
+  deleteCalendarEvent,
+  updateCalendarEvent,
+} from "@agent/lib/google-workspace/calendar";
 import { withGoogleAuth } from "@agent/lib/google-workspace/client";
 import { searchGoogleContacts } from "@agent/lib/google-workspace/contacts";
 import { draftGmail, sendGmail } from "@agent/lib/google-workspace/gmail";
@@ -255,6 +259,96 @@ describe("generated Google Workspace clients", () => {
     expect(insert.mock.calls[0]?.[1]).toEqual({ signal: ctx.abortSignal });
     expect(get).toHaveBeenCalledWith(
       { calendarId: "primary", eventId },
+      { signal: ctx.abortSignal }
+    );
+  });
+
+  it("moves a Calendar event in place and tells its attendees", async () => {
+    settings.access.mockResolvedValue("full");
+    const ctx = toolContext();
+    const client = CalendarApi.calendar({ version: "v3" });
+    const patch = vi
+      .fn<
+        (
+          request: {
+            calendarId: string;
+            eventId: string;
+            requestBody: CalendarApi.calendar_v3.Schema$Event;
+            sendUpdates?: string;
+          },
+          options: RequestOptions
+        ) => Promise<{ data: { id: string } }>
+      >()
+      .mockResolvedValue({ data: { id: "event-1" } });
+    Object.defineProperty(client.events, "patch", { value: patch });
+    googleClients({ calendar: client });
+
+    await expect(
+      updateCalendarEvent(ctx, {
+        calendarId: "primary",
+        end: "2026-09-25T11:00:00+03:00",
+        eventId: "event-1",
+        start: "2026-09-25T10:00:00+03:00",
+        timezone: "Europe/Moscow",
+      })
+    ).resolves.toEqual({ id: "event-1" });
+
+    expect(patch).toHaveBeenCalledExactlyOnceWith(
+      {
+        calendarId: "primary",
+        eventId: "event-1",
+        requestBody: {
+          description: undefined,
+          end: {
+            dateTime: "2026-09-25T11:00:00+03:00",
+            timeZone: "Europe/Moscow",
+          },
+          location: undefined,
+          start: {
+            dateTime: "2026-09-25T10:00:00+03:00",
+            timeZone: "Europe/Moscow",
+          },
+          summary: undefined,
+        },
+        sendUpdates: "all",
+      },
+      { signal: ctx.abortSignal }
+    );
+  });
+
+  it("deletes a Calendar event and treats one already gone as deleted", async () => {
+    settings.access.mockResolvedValue("full");
+    const ctx = toolContext();
+    const client = CalendarApi.calendar({ version: "v3" });
+    const remove = vi
+      .fn<
+        (
+          request: {
+            calendarId: string;
+            eventId: string;
+            sendUpdates?: string;
+          },
+          options: RequestOptions
+        ) => Promise<{ data: undefined }>
+      >()
+      .mockResolvedValueOnce({ data: undefined })
+      .mockRejectedValueOnce(new GoogleApiError(410))
+      .mockRejectedValueOnce(new GoogleApiError(403));
+    Object.defineProperty(client.events, "delete", { value: remove });
+    googleClients({ calendar: client });
+    const input = { calendarId: "primary", eventId: "event-1" };
+
+    await expect(deleteCalendarEvent(ctx, input)).resolves.toEqual({
+      alreadyDeleted: false,
+    });
+    await expect(deleteCalendarEvent(ctx, input)).resolves.toEqual({
+      alreadyDeleted: true,
+    });
+    await expect(deleteCalendarEvent(ctx, input)).rejects.toBeInstanceOf(
+      GoogleApiError
+    );
+    expect(remove).toHaveBeenCalledWith(
+      { ...input, sendUpdates: "all" },
       { signal: ctx.abortSignal }
     );
   });

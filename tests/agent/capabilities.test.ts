@@ -28,7 +28,9 @@ describe("authored mode capability matrix", () => {
     expect(await authoredCapabilities("photon-imessage")).toEqual([
       "calendar-check-availability",
       "calendar-create-event",
+      "calendar-delete-event",
       "calendar-list-events",
+      "calendar-update-event",
       "contacts-search",
       "gmail-attachment",
       "gmail-draft",

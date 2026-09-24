@@ -16,6 +16,40 @@ export const calendarEventSchema = z.object({
   timezone: z.string().min(1).default("UTC"),
 });
 
+/**
+ * A change to one existing event: any of its title, notes, place, or time.
+ * A new time names both ends, so the event never ends before it starts.
+ */
+export const calendarEventUpdateSchema = z
+  .object({
+    calendarId: z.string().default("primary"),
+    description: z.string().max(8_000).optional(),
+    end: z.iso.datetime({ offset: true }).optional(),
+    eventId: z.string().min(1),
+    location: z.string().max(1_000).optional(),
+    start: z.iso.datetime({ offset: true }).optional(),
+    summary: z.string().min(1).max(1_000).optional(),
+    timezone: z.string().min(1).optional(),
+  })
+  .refine(
+    (input) => (input.start === undefined) === (input.end === undefined),
+    {
+      message: "Pass start and end together to move an event.",
+    }
+  )
+  .refine(
+    (input) =>
+      [input.summary, input.description, input.location, input.start].some(
+        (value) => value !== undefined
+      ),
+    { message: "Pass at least one field to change." }
+  );
+
+export const calendarEventDeleteSchema = z.object({
+  calendarId: z.string().default("primary"),
+  eventId: z.string().min(1),
+});
+
 export async function listCalendarEvents(
   ctx: ToolContext,
   input: {
@@ -121,6 +155,60 @@ export async function createCalendarEvent(
         { signal: ctx.abortSignal }
       );
       return data;
+    }
+  });
+}
+
+/** Moves or renames one event and tells its attendees. */
+export async function updateCalendarEvent(
+  ctx: ToolContext,
+  input: z.infer<typeof calendarEventUpdateSchema>
+) {
+  const time = (dateTime: string | undefined) =>
+    dateTime === undefined ? undefined : { dateTime, timeZone: input.timezone };
+  return withCalendar(ctx, async (client) => {
+    const { data } = await client.events.patch(
+      {
+        calendarId: input.calendarId,
+        eventId: input.eventId,
+        requestBody: {
+          description: input.description,
+          end: time(input.end),
+          location: input.location,
+          start: time(input.start),
+          summary: input.summary,
+        },
+        sendUpdates: "all",
+      },
+      { signal: ctx.abortSignal }
+    );
+    return data;
+  });
+}
+
+/**
+ * Deletes one event and tells its attendees. An event that is already gone
+ * counts as deleted, so a retried call does not fail.
+ */
+export async function deleteCalendarEvent(
+  ctx: ToolContext,
+  input: z.infer<typeof calendarEventDeleteSchema>
+) {
+  return withCalendar(ctx, async (client) => {
+    try {
+      await client.events.delete(
+        {
+          calendarId: input.calendarId,
+          eventId: input.eventId,
+          sendUpdates: "all",
+        },
+        { signal: ctx.abortSignal }
+      );
+      return { alreadyDeleted: false };
+    } catch (error) {
+      const status = googleApiErrorStatus(error);
+      if (status !== 404 && status !== 410) throw error;
+      return { alreadyDeleted: true };
     }
   });
 }

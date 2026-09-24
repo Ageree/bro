@@ -29,7 +29,11 @@ import {
   gmailUpdateLabels,
   gmailUpdateNeedsApproval,
 } from "@agent/lib/google-workspace/gmail";
-import { calendarCreateEvent } from "@agent/tools/calendar";
+import {
+  calendarCreateEvent,
+  calendarDeleteEvent,
+  calendarUpdateEvent,
+} from "@agent/tools/calendar";
 import {
   gmailDraft,
   gmailReadThread,
@@ -183,6 +187,8 @@ describe("Google Workspace", () => {
 
     expect(await approvalOf(gmailSend)).toBe("user-approval");
     expect(await approvalOf(calendarCreateEvent)).toBe("user-approval");
+    expect(await approvalOf(calendarUpdateEvent)).toBe("user-approval");
+    expect(await approvalOf(calendarDeleteEvent)).toBe("user-approval");
     expect(await approvalOf(gmailDraft)).toBe("not-applicable");
     expect(await approvalOf(gmailUpdate)).toBe("not-applicable");
     expect(settings.access).toHaveBeenCalledWith(scope);
@@ -225,6 +231,8 @@ describe("Google Workspace", () => {
     expect(await approvalOf(gmailDraft)).toEqual(refusal);
     expect(await approvalOf(gmailUpdate)).toEqual(refusal);
     expect(await approvalOf(calendarCreateEvent)).toEqual(refusal);
+    expect(await approvalOf(calendarUpdateEvent)).toEqual(refusal);
+    expect(await approvalOf(calendarDeleteEvent)).toEqual(refusal);
     expect(
       await googleWriteApproval(sessionContext(), "user-approval")
     ).toEqual(refusal);
