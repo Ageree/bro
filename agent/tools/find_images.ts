@@ -12,6 +12,7 @@
 import { defineDynamic, defineTool } from "eve/tools";
 import { z } from "zod";
 import { resolveModeValue } from "@agent/lib/mode";
+import { challengeWording } from "@agent/lib/web-page/challenge";
 import {
   baseMediaType,
   isImageMediaType,
@@ -64,8 +65,6 @@ const refusalStatuses: ReadonlySet<number> = new Set([403, 429]);
 const challengeMarkers =
   /challenge-platform|cf-chl-|cf_chl_|ddos-guard|_incapsula_resource|px-captcha|__qrator|showcaptcha|captcha-delivery\.com/iu;
 const challengePageBytes = 200_000;
-const challengeTitles =
-  /just a moment|attention required|access denied|доступ ограничен|доступ запрещ|вы не робот|are you a robot|подтвердите, что вы человек|captcha/iu;
 
 /** Where sites send a client they want to check, such as `/showcaptcha`. */
 const challengePath = /captcha|challenge/iu;
@@ -277,7 +276,7 @@ function isChallengePage(html: string) {
     return true;
   }
   const title = scanTitle(html);
-  return title !== undefined && challengeTitles.test(title);
+  return title !== undefined && challengeWording.test(title);
 }
 
 type FetchFailure =
