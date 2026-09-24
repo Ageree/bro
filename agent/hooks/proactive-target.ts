@@ -44,14 +44,16 @@ export default defineHook({
 /**
  * Where the person talks now. The web chat has no address but its session: a
  * report reaches it through a handle on that exact session, and the message
- * waits in the chat for the next time the person opens it. A subagent's own
- * session is never one the person reads.
+ * waits in the chat for the next time the person opens it. A subagent's
+ * session is never where the person talks.
  */
 function proactiveConversation(session: HookContext["session"]) {
+  // A subagent inherits its parent's caller, messenger chat included, and
+  // may still run after the person moved to another chat.
+  if (session.parent) return undefined;
   const attributes = session.auth.current?.attributes;
   const messaging = messagingConversationSchema.safeParse(attributes);
   if (messaging.success) return messaging.data;
-  if (session.parent) return undefined;
   return webConversationSchema.safeParse(attributes).success
     ? { conversationChannel: "eve" as const, conversationId: session.id }
     : undefined;

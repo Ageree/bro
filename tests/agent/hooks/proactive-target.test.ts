@@ -64,6 +64,27 @@ describe("proactive target hook", () => {
     expect(record).not.toHaveBeenCalled();
   });
 
+  it("ignores a subagent that inherited its parent's messenger chat", async () => {
+    await startTurn(
+      "telegram-bot",
+      {
+        conversationChannel: "telegram",
+        conversationId: "100::",
+        workspaceId,
+      },
+      {
+        parent: {
+          callId: "call-1",
+          rootSessionId: "session-0",
+          sessionId: "session-0",
+          turn: { id: "turn-0", sequence: 0 },
+        },
+      }
+    );
+
+    expect(record).not.toHaveBeenCalled();
+  });
+
   it("ignores background turns", async () => {
     await startTurn("scheduled-result", {
       conversationChannel: "eve",
