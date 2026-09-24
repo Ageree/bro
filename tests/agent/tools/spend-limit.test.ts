@@ -1,9 +1,34 @@
-import { describe, expect, it } from "vitest";
+import type { ApprovalStatus } from "eve/tools/approval";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
+import type {
+  listSpendEntries,
+  readSpendLimit,
+  updateSpendLimit,
+} from "@db/services/spending";
 import {
   applySpendLimitChange,
+  spendLimit,
   spendLimitApproval,
 } from "@agent/tools/spend_limit";
-import { decideAutoPayment } from "@shared/spending/limit";
+import {
+  decideAutoPayment,
+  describeSpendRule,
+  describeStandingAction,
+  type SpendLimitPolicy,
+} from "@shared/spending/limit";
+import { toolContext } from "@tests/helpers/tool-context";
+
+const mocks = vi.hoisted(() => ({
+  listSpendEntries: vi.fn<typeof listSpendEntries>(),
+  readSpendLimit: vi.fn<typeof readSpendLimit>(),
+  updateSpendLimit: vi.fn<typeof updateSpendLimit>(),
+}));
+
+vi.mock("@db/services/spending", () => mocks);
+vi.mock("@db/services/user-profile", () => ({
+  readWorkspaceTimeZone: () => Promise.resolve("Europe/Moscow"),
+}));
 
 const monthly = {
   currency: "RUB" as const,
@@ -180,13 +205,35 @@ describe("spend_limit changes", () => {
         }
       )
     ).toBe("not-applicable");
-    // A set that cannot be read is treated as widening.
+    // A set that cannot be made changes nothing: it is refused with its
+    // reason, not put on a card that could only fail.
     expect(
-      spendLimitApproval(
-        { action: "set", limitRub: 100, merchant: "озон" },
-        monthly
+      denialReason(
+        spendLimitApproval(
+          { action: "set", limitRub: 100, merchant: "озон" },
+          monthly
+        )
       )
-    ).toBe("user-approval");
+    ).toContain("For every shop, leave merchant out.");
+    // A call that cannot be read at all is treated as widening.
+    expect(spendLimitApproval(undefined, monthly)).toBe("user-approval");
+  });
+
+  /**
+   * In the RU benchmark (d14) «никогда ничего не оплачивай без моего ок»
+   * brought a card to clear a limit: clearing it all never widens.
+   */
+  it("clears without a card, whether or not a limit exists", () => {
+    for (const policy of [undefined, monthly, { ...monthly, rules: [] }]) {
+      expect(spendLimitApproval({ action: "clear" }, policy)).toBe(
+        "not-applicable"
+      );
+    }
+    expect(
+      denialReason(
+        spendLimitApproval({ action: "clear", category: "  " }, monthly)
+      )
+    ).toContain("For every category, leave category out.");
   });
 
   it("asks before clearing a ceiling that sits under a broader rule", () => {
@@ -227,10 +274,10 @@ describe("spend_limit changes", () => {
     expect(spendLimitApproval({ action: "clear" }, withShop)).toBe(
       "not-applicable"
     );
-    // A clear that cannot be checked against the policy is treated as widening.
+    // A clear that cannot be made is refused with its reason.
     expect(
       spendLimitApproval({ action: "clear", merchant: "озон" }, withShop)
-    ).toBe("user-approval");
+    ).toMatchObject({ type: "denied" });
   });
   it("sees a subdomain rule under the one being cleared, as payments do", () => {
     // ozon.ru at 100 ₽ binds pay.ozon.ru too; clearing it leaves pay.ozon.ru
@@ -279,3 +326,68 @@ describe("spend_limit changes", () => {
     ).toBe("not-applicable");
   });
 });
+
+describe("spend_limit clear", () => {
+  let stored: SpendLimitPolicy | undefined;
+
+  beforeEach(() => {
+    stored = undefined;
+    mocks.readSpendLimit.mockImplementation(() => Promise.resolve(stored));
+    mocks.updateSpendLimit.mockImplementation((_scope, change) => {
+      stored = change(stored);
+      return Promise.resolve(stored);
+    });
+    mocks.listSpendEntries.mockResolvedValue([]);
+  });
+
+  it("says that there was nothing to clear when no limit was set", async () => {
+    const result = await clear({ action: "clear" });
+
+    expect(result).toMatchObject({ cleared: [], rules: [] });
+    expect(noteOf(result)).toContain("There was no spend limit to clear");
+  });
+
+  it("names the rules and the paid permissions it took back", async () => {
+    const taxi = { kind: "taxi" as const, maxRub: 1500, merchant: null };
+    const tables = { kind: "table" as const, maxRub: null, merchant: null };
+    stored = { ...monthly, actions: [tables, taxi] };
+
+    const result = await clear({ action: "clear" });
+
+    expect(result).toMatchObject({
+      cleared: monthly.rules.map(describeSpendRule),
+      rules: [],
+      takenBackPermissions: [describeStandingAction(taxi)],
+    });
+    expect(noteOf(result)).toBeUndefined();
+    expect(stored).toMatchObject({ actions: [tables], rules: [] });
+  });
+
+  it("keeps the other rules and says so when the scope named none", async () => {
+    stored = monthly;
+
+    const result = await clear({ action: "clear", merchant: "ozon.ru" });
+
+    expect(result).toMatchObject({ cleared: [], rules: [{ limitRub: 5000 }] });
+    expect(noteOf(result)).toContain("the rules listed here still hold");
+  });
+});
+
+/** Why the policy refused a call without a card, when it did. */
+function denialReason(status: ApprovalStatus) {
+  return z
+    .object({ reason: z.string(), type: z.literal("denied") })
+    .safeParse(status).data?.reason;
+}
+
+function noteOf(result: Awaited<ReturnType<typeof clear>>) {
+  return "note" in result ? result.note : undefined;
+}
+
+async function clear(input: Parameters<typeof applySpendLimitChange>[1]) {
+  const result = await spendLimit.execute(input, toolContext("spend_limit"));
+  if (Symbol.asyncIterator in result) {
+    throw new Error("spend_limit answers with one result.");
+  }
+  return result;
+}

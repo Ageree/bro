@@ -213,6 +213,50 @@ function ruleContains(outer: SpendRule, inner: SpendRule) {
 }
 
 /**
+ * The policy a change leaves, or why it cannot be made: the change throws on
+ * a scope it cannot read, and what it leaves must still be a policy the store
+ * accepts. A change that cannot be made changes nothing, so it is refused
+ * with its reason instead of being put on a card that could only fail.
+ */
+export function attemptPolicyChange(
+  change: () => SpendLimitPolicy
+): { readonly policy: SpendLimitPolicy } | { readonly reason: string } {
+  let changed: SpendLimitPolicy;
+  try {
+    changed = change();
+  } catch (error) {
+    return { reason: error instanceof Error ? error.message : String(error) };
+  }
+  const parsed = spendLimitPolicySchema.safeParse(changed);
+  return parsed.success
+    ? { policy: parsed.data }
+    : { reason: parsed.error.issues[0]?.message ?? "Invalid policy." };
+}
+
+/**
+ * What a change took back, as the person reads it: the limit's rules and the
+ * standing permissions whose scope is gone after it. One that stays under
+ * the same scope with another ceiling was changed, not taken back.
+ */
+export function withdrawnPermissions(
+  before: SpendLimitPolicy | undefined,
+  after: SpendLimitPolicy | undefined
+) {
+  const actionsAfter = after?.actions ?? [];
+  const rulesAfter = after?.rules ?? [];
+  return {
+    permissions: (before?.actions ?? [])
+      .filter(
+        (rule) => !actionsAfter.some((kept) => sameActionScope(kept, rule))
+      )
+      .map(describeStandingAction),
+    rules: (before?.rules ?? [])
+      .filter((rule) => !rulesAfter.some((kept) => sameRuleScope(kept, rule)))
+      .map(describeSpendRule),
+  };
+}
+
+/**
  * Whether a policy change lets Bro do more without asking anywhere: pay more
  * on the monthly limit, or act in the person's name on an errand no standing
  * permission covered before.

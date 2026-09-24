@@ -1,11 +1,32 @@
-import { describe, expect, it } from "vitest";
+import type { ApprovalStatus } from "eve/tools/approval";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
+import type {
+  listSpendEntries,
+  readSpendLimit,
+  updateSpendLimit,
+} from "@db/services/spending";
 import {
   applyStandingPermissionChange,
   standingPermission,
   standingPermissionApproval,
 } from "@agent/tools/standing_permission";
-import type { SpendLimitPolicy } from "@shared/spending/limit";
+import {
+  describeStandingAction,
+  type SpendLimitPolicy,
+} from "@shared/spending/limit";
+import { toolContext } from "@tests/helpers/tool-context";
+
+const mocks = vi.hoisted(() => ({
+  listSpendEntries: vi.fn<typeof listSpendEntries>(),
+  readSpendLimit: vi.fn<typeof readSpendLimit>(),
+  updateSpendLimit: vi.fn<typeof updateSpendLimit>(),
+}));
+
+vi.mock("@db/services/spending", () => mocks);
+vi.mock("@db/services/user-profile", () => ({
+  readWorkspaceTimeZone: () => Promise.resolve("Europe/Moscow"),
+}));
 
 function inputSchemaAccepts(
   input: Parameters<typeof applyStandingPermissionChange>[1]
@@ -154,15 +175,108 @@ describe("standing_permission approval", () => {
     ).toBe(false);
   });
 
-  it("treats a change it cannot read as widening", () => {
-    expect(
-      standingPermissionApproval(
-        { action: "allow", merchant: "not a site" },
-        undefined
-      )
-    ).toBe("user-approval");
+  it("treats a call it cannot read as widening", () => {
     expect(standingPermissionApproval(undefined, undefined)).toBe(
       "user-approval"
     );
   });
+
+  /**
+   * In the RU benchmark (d14) a hard rule brought a card to revoke: taking
+   * permission back never needs the person's word, whatever there is to take.
+   */
+  it("never asks a card to take back a permission, even one that does not exist", () => {
+    for (const policy of [undefined, monthly, { ...monthly, actions: [] }]) {
+      expect(standingPermissionApproval({ action: "revoke" }, policy)).toBe(
+        "not-applicable"
+      );
+      expect(
+        standingPermissionApproval(
+          { action: "revoke", kind: "message" },
+          policy
+        )
+      ).toBe("not-applicable");
+    }
+  });
+
+  it("refuses a change it cannot make with its reason instead of a card", () => {
+    expect(
+      denialReason(
+        standingPermissionApproval(
+          { action: "allow", merchant: "not a site" },
+          undefined
+        )
+      )
+    ).toContain("For every site, leave merchant out.");
+    expect(
+      denialReason(
+        standingPermissionApproval(
+          { action: "revoke", merchant: "" },
+          undefined
+        )
+      )
+    ).toContain("Nothing changed");
+    // A month below the ceiling per errand is no policy the store keeps.
+    expect(
+      denialReason(
+        standingPermissionApproval(
+          { action: "allow", kind: "taxi", maxRub: 1500, monthRub: 1000 },
+          undefined
+        )
+      )
+    ).toContain("at least its ceiling per errand");
+  });
 });
+
+/** Why the policy refused a call without a card, when it did. */
+function denialReason(status: ApprovalStatus) {
+  return z
+    .object({ reason: z.string(), type: z.literal("denied") })
+    .safeParse(status).data?.reason;
+}
+
+describe("standing_permission revoke", () => {
+  let stored: SpendLimitPolicy | undefined;
+
+  beforeEach(() => {
+    stored = undefined;
+    mocks.readSpendLimit.mockImplementation(() => Promise.resolve(stored));
+    mocks.updateSpendLimit.mockImplementation((_scope, change) => {
+      stored = change(stored);
+      return Promise.resolve(stored);
+    });
+    mocks.listSpendEntries.mockResolvedValue([]);
+  });
+
+  it("says that nothing was taken back when no permission existed", async () => {
+    const result = await revoke({ action: "revoke" });
+
+    expect(result).toMatchObject({ permissions: [], takenBack: [] });
+    expect(result.note).toContain("nothing was taken back");
+  });
+
+  it("names the permission it took back and keeps the rest", async () => {
+    stored = { ...monthly, actions: [tables, taxi] };
+
+    const result = await revoke({ action: "revoke", kind: "taxi" });
+
+    expect(result).toMatchObject({
+      permissions: [{ kind: "table" }],
+      takenBack: [describeStandingAction(taxi)],
+    });
+    expect(result.note).toBeUndefined();
+  });
+});
+
+async function revoke(
+  input: Parameters<typeof applyStandingPermissionChange>[1]
+) {
+  const result = await standingPermission.execute(
+    input,
+    toolContext("standing_permission")
+  );
+  if (Symbol.asyncIterator in result) {
+    throw new Error("standing_permission answers with one result.");
+  }
+  return result;
+}

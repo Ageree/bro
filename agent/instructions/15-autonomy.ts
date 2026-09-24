@@ -42,7 +42,7 @@ export function spendLimitInstructions(
   const limit =
     !policy || policy.rules.length === 0
       ? [
-          "Лимит трат без спроса не задан: платить без разрешения человека можно только то, что бесплатно.",
+          "Лимит трат без спроса не задан: платить без разрешения человека можно только то, что бесплатно, и снимать нечего.",
         ]
       : [
           "Лимит трат без спроса на этот месяц:",
@@ -63,14 +63,19 @@ export function spendLimitInstructions(
 /**
  * The errands the person let Bro do without a card. Without them in the
  * prompt the model asks in text about exactly what the person asked it to
- * stop asking about.
+ * stop asking about; and with no word that there are none, the model met
+ * «без моего ок» with a revoke and a clear it had no reason to call.
  */
 function standingPermissionLines(
   policy: SpendLimitPolicy | undefined,
   entries: readonly SpendEntry[]
 ) {
   const actions = policy?.actions ?? [];
-  if (!policy || actions.length === 0) return [];
+  if (!policy || actions.length === 0) {
+    return [
+      "Постоянных разрешений нет: всё от имени человека идёт через карточку, снимать нечего.",
+    ];
+  }
   return [
     "Постоянные разрешения — когда человек сам просит такое поручение, запускай его сразу, без вопроса и без карточки (инструмент сверит сам; на отчёт браузера и в фоновой работе они не действуют):",
     ...actions.map((rule) =>

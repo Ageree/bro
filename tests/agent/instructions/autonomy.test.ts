@@ -172,6 +172,28 @@ describe("autonomy defaults", () => {
     );
   });
 
+  it("says there is nothing to take back without a limit or permissions", async () => {
+    const content =
+      (await resolve({}, dynamicContext("photon-imessage")))?.content ?? "";
+
+    expect(content).toContain(
+      "Лимит трат без спроса не задан: платить без разрешения человека можно только то, что бесплатно, и снимать нечего."
+    );
+    expect(content).toContain(
+      "Постоянных разрешений нет: всё от имени человека идёт через карточку, снимать нечего."
+    );
+    // With permissions in place, the line that there are none goes.
+    expect(
+      spendLimitInstructions(
+        {
+          ...monthly,
+          actions: [{ kind: "table", maxRub: null, merchant: null }],
+        },
+        []
+      )
+    ).not.toContain("Постоянных разрешений нет");
+  });
+
   it("names the exclusions even without a limit", () => {
     expect(spendLimitInstructions({ ...monthly, rules: [] }, [])).toContain(
       "По лимиту без спроса не оплачивай: «алкоголь»."
