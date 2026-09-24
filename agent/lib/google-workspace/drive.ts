@@ -6,15 +6,35 @@ import { withGoogleAuth } from "./client";
 const fileFields =
   "id,name,mimeType,size,modifiedTime,version,webViewLink,owners(displayName,emailAddress)";
 
+/** Drive MIME type filters for the file kinds people ask for by name. */
+const kindFilters = {
+  document: "mimeType = 'application/vnd.google-apps.document'",
+  image: "mimeType contains 'image/'",
+  pdf: "mimeType = 'application/pdf'",
+  presentation: "mimeType = 'application/vnd.google-apps.presentation'",
+  spreadsheet: "mimeType = 'application/vnd.google-apps.spreadsheet'",
+} as const;
+
 export const driveSearchInputSchema = z.object({
+  kind: z
+    .enum(["document", "image", "pdf", "presentation", "spreadsheet"])
+    .optional()
+    .describe(
+      "Only files of this type. For `the latest PDF` pass `pdf` and no query."
+    ),
   maxResults: z.number().int().min(1).max(25).default(10),
   query: z
     .string()
     .trim()
     .min(1)
     .max(200)
-    .describe("Words from the file's name or content, e.g. `passport`."),
+    .optional()
+    .describe(
+      "Words from the file's name or content, e.g. `passport`. Omit to list the most recently modified files."
+    ),
 });
+
+type DriveSearchInput = z.output<typeof driveSearchInputSchema>;
 
 export const driveReadInputSchema = z.object({
   fileId: z.string().trim().min(1).max(200),
@@ -67,24 +87,61 @@ function driveString(value: string) {
   return `'${value.replaceAll("\\", "\\\\").replaceAll("'", "\\'")}'`;
 }
 
+/**
+ * Word matches read before sorting. Drive cannot order a `fullText` search, so
+ * a word search pages through up to this many matches to find the newest.
+ */
+const maximumWordMatches = 300;
+
+/** Largest page Drive returns for one `files.list` call. */
+const drivePageSize = 100;
+
+/**
+ * Files matching the search, newest first. Drive refuses `orderBy` together
+ * with a `fullText` term, so a search by words collects its matches page by
+ * page and sorts them itself.
+ */
 export async function searchDrive(
   ctx: ToolContext,
-  query: string,
-  maxResults: number
+  { kind, maxResults, query }: DriveSearchInput
 ) {
-  const literal = driveString(query);
+  const terms = ["trashed = false"];
+  if (query !== undefined) {
+    const literal = driveString(query);
+    terms.push(`(name contains ${literal} or fullText contains ${literal})`);
+  }
+  if (kind !== undefined) terms.push(kindFilters[kind]);
+  const request = {
+    fields: `nextPageToken,files(${fileFields})`,
+    includeItemsFromAllDrives: true,
+    q: terms.join(" and "),
+    supportsAllDrives: true,
+  };
   return withDrive(ctx, async (client) => {
-    const { data } = await client.files.list(
-      {
-        fields: `files(${fileFields})`,
-        includeItemsFromAllDrives: true,
-        pageSize: maxResults,
-        q: `trashed = false and (name contains ${literal} or fullText contains ${literal})`,
-        supportsAllDrives: true,
-      },
-      { signal: ctx.abortSignal }
-    );
-    return (data.files ?? []).map(minimizeFile);
+    if (query === undefined) {
+      const { data } = await client.files.list(
+        { ...request, orderBy: "modifiedTime desc", pageSize: maxResults },
+        { signal: ctx.abortSignal }
+      );
+      return (data.files ?? []).map(minimizeFile);
+    }
+    const files: drive_v3.Schema$File[] = [];
+    let pageToken: string | undefined;
+    do {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Each page needs the token of the one before it.
+      const { data } = await client.files.list(
+        { ...request, pageSize: drivePageSize, pageToken },
+        { signal: ctx.abortSignal }
+      );
+      files.push(...(data.files ?? []));
+      pageToken = data.nextPageToken ?? undefined;
+    } while (pageToken !== undefined && files.length < maximumWordMatches);
+    return files
+      .map(minimizeFile)
+      .toSorted((a, b) =>
+        (b.modifiedTime ?? "").localeCompare(a.modifiedTime ?? "")
+      )
+      .slice(0, maxResults);
   });
 }
 

@@ -94,11 +94,10 @@ describe("drive-search", () => {
       throw new Error("drive-search returns one result, not a stream.");
     }
 
-    expect(mocks.search).toHaveBeenCalledExactlyOnceWith(
-      context,
-      "passport",
-      5
-    );
+    expect(mocks.search).toHaveBeenCalledExactlyOnceWith(context, {
+      maxResults: 5,
+      query: "passport",
+    });
     expect(result).toEqual({ files: [file] });
   });
 });
