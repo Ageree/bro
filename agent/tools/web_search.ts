@@ -10,22 +10,22 @@ import {
 
 export const openRouterWebSearch = defineTool({
   description:
-    "Search the web for real-time information. Use this to find up-to-date information about current events, recent developments, or topics that may have changed since the knowledge cutoff. Returns a short list of pages with their titles, URLs, and one-line summaries; read a page with web_fetch when its summary is not enough.",
+    "Search the web for real-time information: current events, prices, places, services, schedules and anything that may have changed since the knowledge cutoff. Returns up to eight pages, each with its title, URL and an excerpt of what the page says; the excerpt often already shows a price, an average bill, opening hours or an address. Read a page with web_fetch when its excerpt is not enough.",
   inputSchema: webSearchInputSchema,
-  async execute(input) {
+  async execute(input, ctx) {
     try {
-      return formatResults(await searchWeb(input));
+      return formatResults(await searchWeb(input, ctx.abortSignal));
     } catch (error) {
-      const reason =
-        error instanceof Error
-          ? error.name === "TimeoutError"
-            ? "the search timed out"
-            : error.message
-          : "the search could not be completed";
-      return `search failed: ${reason}`;
+      if (ctx.abortSignal.aborted) throw error;
+      return `search failed: ${failureReason(error)}. Do not repeat this query as is: try one shorter or differently worded query${input.sites ? " or drop sites" : ""}, or read a page you already know with web_fetch.`;
     }
   },
 });
+
+function failureReason(cause: unknown) {
+  if (!(cause instanceof Error)) return "the search could not be completed";
+  return cause.name === "TimeoutError" ? "the search timed out" : cause.message;
+}
 
 function formatResults(results: readonly WebSearchResult[]) {
   return results

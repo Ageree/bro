@@ -37,6 +37,7 @@ function toolContext() {
 
 beforeEach(() => {
   vi.resetModules();
+  vi.useFakeTimers();
   fetchMock.mockReset();
   for (const [name, value] of Object.entries(requiredEnvironment)) {
     vi.stubEnv(name, value);
@@ -45,6 +46,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
 });
@@ -124,15 +126,23 @@ describe("web_search tool selection", () => {
 
   it("surfaces a failed search as tool result text", async () => {
     vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
-    fetchMock.mockResolvedValue(
-      new Response(JSON.stringify({ error: "upstream" }), { status: 503 })
+    fetchMock.mockImplementation(
+      async () =>
+        new Response(JSON.stringify({ error: "upstream" }), { status: 503 })
     );
 
     const { openRouterWebSearch } = await loadTool();
+    const pending = openRouterWebSearch.execute(
+      { query: "ставка" },
+      toolContext()
+    );
+    await vi.runAllTimersAsync();
 
-    expect(
-      await openRouterWebSearch.execute({ query: "ставка" }, toolContext())
-    ).toContain("search failed: OpenRouter 503");
+    const text = await pending;
+    expect(text).toContain("search failed: OpenRouter 503");
+    // Both engines were already asked; the model should not hammer them.
+    expect(text).toContain("Do not repeat this query as is");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("names a timeout instead of leaking the abort error", async () => {
@@ -142,9 +152,14 @@ describe("web_search tool selection", () => {
     fetchMock.mockRejectedValue(timeout);
 
     const { openRouterWebSearch } = await loadTool();
+    const pending = openRouterWebSearch.execute(
+      { query: "ставка", sites: ["2gis.ru"] },
+      toolContext()
+    );
+    await vi.runAllTimersAsync();
 
-    expect(
-      await openRouterWebSearch.execute({ query: "ставка" }, toolContext())
-    ).toBe("search failed: the search timed out");
+    const text = await pending;
+    expect(text).toMatch(/^search failed: the search timed out\. /u);
+    expect(text).toContain("or drop sites");
   });
 });
