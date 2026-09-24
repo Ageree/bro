@@ -158,7 +158,7 @@
   Google «отключается», утренние сводки и сканер падают. Поэтому оба пути
   авторизации (кабинет/`connect_google` и карточка входа eve через
   `connectOptions`) шлют `prompt: "consent"`. `access_type=offline` задаёт
-  сам коннектор, SDK его не передаёт. Чтение подключения спрашивает Google
+  сам коннектор, SDK его не передаёт. Чтение подключения, не дожидаясь, спрашивает Google
   tokeninfo и пишет в лог `grant has no offline access`, если грант онлайн
   (`shared/google-workspace/connection.ts`). Кроме явного отключения и смены
   уровня доступа, код гранты не отзывает: `evict` из eve без `revoke`
