@@ -448,6 +448,161 @@ describe("proactive watches", { timeout: 30_000 }, () => {
   });
 });
 
+describe("remembered chats", { timeout: 30_000 }, () => {
+  it("keeps the messenger and the web chat apart, preferring the messenger", async () => {
+    const { db, proactive } = await openDatabase();
+
+    expect(await proactive.recordProactiveTarget(alice, web, now)).toBe(
+      "created"
+    );
+    expect(await proactive.recordProactiveTarget(alice, telegram, now)).toBe(
+      "moved"
+    );
+    expect(await proactive.recordProactiveTarget(alice, web, now)).toBe(
+      "unchanged"
+    );
+    const newerWeb = { ...web, conversationId: "web-session-alice-2" };
+    expect(await proactive.recordProactiveTarget(alice, newerWeb, now)).toBe(
+      "remembered"
+    );
+    expect(await proactive.recordProactiveTarget(alice, photon, now)).toBe(
+      "moved"
+    );
+
+    const watch = await db.query.proactiveWatches.findFirst({
+      with: { job: true },
+    });
+    expect(watch).toMatchObject({
+      job: photon,
+      messengerChannel: "photon",
+      messengerConversationId: photon.conversationId,
+      webConversationId: newerWeb.conversationId,
+    });
+  });
+
+  it("remembers both chats when they start talking at the same moment", async () => {
+    const { db, proactive } = await openDatabase();
+
+    await Promise.all([
+      proactive.recordProactiveTarget(alice, web, now),
+      proactive.recordProactiveTarget(alice, telegram, now),
+    ]);
+
+    const watch = await db.query.proactiveWatches.findFirst({
+      with: { job: true },
+    });
+    expect(watch).toMatchObject({
+      job: telegram,
+      messengerConversationId: telegram.conversationId,
+      webConversationId: web.conversationId,
+    });
+    expect(await db.query.scheduledAgentJobs.findMany()).toHaveLength(1);
+  });
+
+  it("recovers the messenger of a person whose target had moved to the web chat", async () => {
+    const client = new PGlite();
+    databases.push(client);
+    const migrations = (
+      await readdir(new URL("../migrations", import.meta.url))
+    )
+      .filter((name) => name.endsWith(".sql"))
+      .toSorted();
+    const sources = await Promise.all(
+      migrations.map((name) =>
+        readFile(new URL(`../migrations/${name}`, import.meta.url), "utf8")
+      )
+    );
+    const index = sources.findIndex((source) =>
+      source.includes('ADD COLUMN IF NOT EXISTS "web_conversation_id"')
+    );
+    expect(index).toBeGreaterThan(0);
+    for (const migration of migrations.slice(0, index)) {
+      await applyMigration(client, migration);
+    }
+    await client.exec(`
+      INSERT INTO "user" ("id", "name", "email") VALUES ('bob', 'Bob', 'bob@example.com');
+      INSERT INTO workspaces ("id") VALUES ('w-alice'), ('w-bob'), ('w-carol'), ('w-dave');
+      INSERT INTO workspace_memberships ("workspace_id", "user_id", "role") VALUES
+        ('w-alice', 'alice', 'owner'), ('w-bob', 'bob', 'owner'),
+        ('w-carol', 'carol', 'owner'), ('w-dave', 'dave', 'owner');
+      INSERT INTO scheduled_agent_jobs
+        ("id", "workspace_id", "created_by_user_id", "kind", "prompt", "conversation_channel", "conversation_id", "timing", "updated_at")
+      VALUES
+        ('00000000-0000-4000-8000-00000000000a', 'w-alice', 'alice', 'proactive', 'check', 'eve', 'web-alice', '{}', '2026-09-20'),
+        ('00000000-0000-4000-8000-00000000000b', 'w-alice', 'alice', 'task', 'pill', 'telegram', '100::', '{}', '2026-09-01'),
+        ('00000000-0000-4000-8000-00000000000c', 'w-bob', 'bob', 'proactive', 'check', 'eve', 'web-bob', '{}', '2026-09-20'),
+        ('00000000-0000-4000-8000-00000000000d', 'w-carol', 'carol', 'proactive', 'check', 'telegram', '200::', '{}', '2026-09-20'),
+        ('00000000-0000-4000-8000-00000000000e', 'w-dave', 'dave', 'proactive', 'check', 'eve', 'web-dave', '{}', '2026-09-20');
+      INSERT INTO proactive_watches ("workspace_id", "created_by_user_id", "job_id", "mail_checked_at", "next_check_at") VALUES
+        ('w-alice', 'alice', '00000000-0000-4000-8000-00000000000a', now(), now()),
+        ('w-bob', 'bob', '00000000-0000-4000-8000-00000000000c', now(), now()),
+        ('w-carol', 'carol', '00000000-0000-4000-8000-00000000000d', now(), now()),
+        ('w-dave', 'dave', '00000000-0000-4000-8000-00000000000e', now(), now());
+      INSERT INTO browser_runs ("id", "workspace_id", "created_by_user_id", "task", "status", "conversation_channel", "conversation_id", "created_at")
+      VALUES ('run-1', 'w-alice', 'alice', 'errand', 'done', 'photon', 'imessage:alice', '2026-09-10');
+      INSERT INTO channel_identities ("channel", "external_user_id", "chat_id", "user_id", "workspace_id")
+      VALUES ('telegram', 'tg-bob', '300', 'bob', 'w-bob');
+    `);
+
+    // Applied twice: the second run changes nothing.
+    await applyMigration(client, migrations[index] ?? "");
+    await applyMigration(client, migrations[index] ?? "");
+
+    const { rows } = await client.query<{
+      conversation_channel: string;
+      conversation_id: string;
+      messenger_channel: string | null;
+      messenger_conversation_id: string | null;
+      web_conversation_id: string | null;
+      workspace_id: string;
+    }>(`
+      SELECT "watch"."workspace_id", "watch"."messenger_channel",
+        "watch"."messenger_conversation_id", "watch"."web_conversation_id",
+        "job"."conversation_channel", "job"."conversation_id"
+      FROM proactive_watches AS "watch"
+      JOIN scheduled_agent_jobs AS "job" ON "job"."id" = "watch"."job_id"
+      ORDER BY "watch"."workspace_id"
+    `);
+    expect(rows).toEqual([
+      // The errand in iMessage is newer than the Telegram schedule.
+      {
+        conversation_channel: "photon",
+        conversation_id: "imessage:alice",
+        messenger_channel: "photon",
+        messenger_conversation_id: "imessage:alice",
+        web_conversation_id: "web-alice",
+        workspace_id: "w-alice",
+      },
+      // A linked Telegram account is a messenger too.
+      {
+        conversation_channel: "telegram",
+        conversation_id: "300::",
+        messenger_channel: "telegram",
+        messenger_conversation_id: "300::",
+        web_conversation_id: "web-bob",
+        workspace_id: "w-bob",
+      },
+      {
+        conversation_channel: "telegram",
+        conversation_id: "200::",
+        messenger_channel: "telegram",
+        messenger_conversation_id: "200::",
+        web_conversation_id: null,
+        workspace_id: "w-carol",
+      },
+      // No messenger anywhere: the web chat stays the target.
+      {
+        conversation_channel: "eve",
+        conversation_id: "web-dave",
+        messenger_channel: null,
+        messenger_conversation_id: null,
+        web_conversation_id: "web-dave",
+        workspace_id: "w-dave",
+      },
+    ]);
+  });
+});
+
 describe("waking the checks when Google connects", { timeout: 30_000 }, () => {
   it("brings the next check forward for a watch parked on a missing grant", async () => {
     const { proactive } = await openDatabase();

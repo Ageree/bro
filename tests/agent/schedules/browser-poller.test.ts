@@ -17,6 +17,7 @@ import { z } from "zod";
 import * as Database from "@db";
 import * as schema from "@db/schema";
 import type * as browserUseClient from "@agent/lib/browser-use/client";
+import type * as browserRunsService from "@db/services/browser-runs";
 import { backgroundTurnMarker } from "@shared/chat/background-turn";
 import type { BrowserSubmission } from "@shared/browser/submission";
 
@@ -32,11 +33,14 @@ interface CloudRun {
 }
 
 const cloud = vi.hoisted(() => ({
+  // What happens while Browser Use is starting a run, e.g. a `continue`.
+  beforeCreate: new Array<() => Promise<void>>(),
+  cancelled: new Array<string>(),
   created: new Array<{ sessionId?: string; task: string }>(),
   // Runs whose status Browser Use keeps failing to answer.
   failing: new Set<string>(),
   // What the next create answers: a new run, or Browser Use's refusal.
-  nextCreate: new Array<"busy" | "no_credits" | "ok">(),
+  nextCreate: new Array<"busy" | "down" | "no_credits" | "ok">(),
   runs: new Map<string, CloudRun>(),
 }));
 
@@ -64,6 +68,20 @@ vi.mock("@agent/lib/browser-use/secrets", () => ({
 vi.mock("@db/services/orders", () => ({
   recordOrder: vi.fn<() => Promise<void>>(() => Promise.resolve()),
 }));
+// The real queue service, except that parking can be made to fail.
+const parkFails = vi.hoisted(() => ({ value: false }));
+vi.mock("@db/services/browser-runs", async (importOriginal) => {
+  const original = await importOriginal<typeof browserRunsService>();
+  return {
+    ...original,
+    parkQueuedBrowserRun: (
+      ...args: Parameters<typeof original.parkQueuedBrowserRun>
+    ) =>
+      parkFails.value
+        ? Promise.reject(new Error("connection terminated"))
+        : original.parkQueuedBrowserRun(...args),
+  };
+});
 vi.mock("@agent/channels/photon", () => ({ default: { id: "photon" } }));
 vi.mock("@agent/channels/telegram", () => ({ default: { id: "telegram" } }));
 vi.mock("@agent/lib/browser-use/client", async (importOriginal) => {
@@ -81,9 +99,21 @@ vi.mock("@agent/lib/browser-use/client", async (importOriginal) => {
   return {
     ...original,
     browserUseConfigured: () => true,
-    cancelBrowserUseRun: () => Promise.resolve(),
-    createBrowserUseRun: (input: { sessionId?: string; task: string }) => {
+    cancelBrowserUseRun: (runId: string) => {
+      cloud.cancelled.push(runId);
+      return Promise.resolve();
+    },
+    createBrowserUseRun: async (input: {
+      sessionId?: string;
+      task: string;
+    }) => {
+      await cloud.beforeCreate.shift()?.();
       const next = cloud.nextCreate.shift() ?? "ok";
+      if (next === "down") {
+        return Promise.reject(
+          new original.BrowserUseError(500, "/runs", "internal error")
+        );
+      }
       if (next === "busy") {
         return Promise.reject(
           new original.BrowserUseError(
@@ -153,7 +183,10 @@ afterAll(async () => {
 beforeEach(async () => {
   await database.delete(schema.spendEntries);
   await database.delete(schema.browserRuns);
+  cloud.beforeCreate.length = 0;
+  cloud.cancelled.length = 0;
   cloud.created.length = 0;
+  parkFails.value = false;
   cloud.failing.clear();
   cloud.nextCreate.length = 0;
   cloud.runs.clear();
@@ -479,6 +512,73 @@ describe("the browser queue", () => {
     expect((await readLatestBrowserRunForScope(alice, queued.id))?.id).toBe(
       "cloud-run-1"
     );
+  }, 30_000);
+
+  it("restarts an errand the person changed while its run was starting", async () => {
+    const queued = await queuedErrand(0, cardSubmission);
+    const { updateQueuedBrowserRun } =
+      await import("@db/services/browser-runs");
+    // The person's `continue` lands after the poller read the errand and
+    // while Browser Use is starting the run from that reading.
+    let continued: boolean | undefined;
+    cloud.beforeCreate.push(async () => {
+      continued = await updateQueuedBrowserRun(queued.id, {
+        pendingTask: "Полный текст поручения 0\n\nUpdate: столик у окна",
+      });
+    });
+    const { attachSession } = webChat();
+
+    await tick(attachSession);
+
+    // The tool told the person the update is part of the errand: it is.
+    expect(continued).toBe(true);
+    expect(cloud.created).toHaveLength(2);
+    expect(cloud.created[0]?.task).not.toContain("столик у окна");
+    expect(cloud.cancelled).toEqual(["cloud-run-1"]);
+    expect(cloud.created[1]?.task).toContain("столик у окна");
+    expect(cloud.created[1]?.task).toContain(
+      `(Queued errand ${queued.id}, change 1; for bookkeeping only.)`
+    );
+    expect(await readRun(queued.id)).toMatchObject({
+      retriedAsRunId: "cloud-run-2",
+      status: "stopped",
+    });
+    expect(await readRun("cloud-run-1")).toBeUndefined();
+    expect(await readRun("cloud-run-2")).toMatchObject({
+      status: "running",
+      submission: cardSubmission,
+    });
+  }, 30_000);
+
+  it("finishes the tick when a failed start cannot even be parked", async () => {
+    const { createBrowserRun } = await import("@db/services/browser-runs");
+    // A report whose earlier delivery failed waits for this tick's retry.
+    await createBrowserRun(alice, {
+      completedAt: minutesAgo(1),
+      conversationChannel: "eve",
+      conversationId: "web-session",
+      id: "undelivered-run",
+      outcome: "нашёл отели",
+      report: "RESULT: нашёл отели",
+      rootSessionId: "web-session",
+      sessionId: "session-undelivered-run",
+      status: "done",
+      task: "Найди отель в Казани",
+    });
+    const queued = await queuedErrand(0);
+    cloud.nextCreate.push("down");
+    parkFails.value = true;
+    const { attachSession, send } = webChat();
+
+    await tick(attachSession);
+
+    // Redelivery comes after the queue in the tick, and still ran.
+    expect(send).toHaveBeenCalledOnce();
+    expect(
+      (await readRun("undelivered-run"))?.reportDeliveredAt
+    ).toBeInstanceOf(Date);
+    // The claim's lease puts the errand back in line later.
+    expect((await readRun(queued.id))?.status).toBe("queued");
   }, 30_000);
 
   it("closes a queued errand, tells the person and alerts the owner when credits run out", async () => {

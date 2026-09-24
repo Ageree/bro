@@ -29,12 +29,8 @@ import {
   scheduledRunOutcomeSchema,
   type ScheduledRunOutcome,
 } from "@shared/schedules/outcome";
-import {
-  db,
-  proactiveWatches,
-  scheduledAgentJobs,
-  scheduledAgentRuns,
-} from "@db";
+import { db, scheduledAgentJobs, scheduledAgentRuns } from "@db";
+import { readRememberedConversations, rememberedMessenger } from "./proactive";
 
 const exhaustedRunOutcome = {
   kind: "blocked",
@@ -823,46 +819,73 @@ export async function claimScheduledReport(runId: string, now = new Date()) {
   if (!claimedWithJob) return undefined;
   const { job, ...run } = claimedWithJob;
   return {
-    delivery: await reportConversation(job),
+    ...(await reportConversations(job)),
     job: parseJob(job),
     run: parseRun(run),
   };
 }
 
 /**
- * Where a report goes: the conversation the person last talked from, in any
- * channel, which `recordProactiveTarget` keeps current for the workspace. A
- * web chat is a session nobody reopens once they start a new one, so the chat
- * a schedule was made in is only the fallback. Its reply anchor points into
- * that chat and goes along only when the report lands there.
+ * Where a report goes, and where it goes instead when that chat has ended. A
+ * messenger has pushes, so the report goes to the Telegram or iMessage chat
+ * the person last wrote from, whichever chat the schedule was set up in; the
+ * latest web chat gets it only when a schedule set up in the web chat belongs
+ * to a person with no messenger. A web chat ends (a session lives 30 days, and
+ * nobody reopens one after starting another), so the chat the schedule was set
+ * up in and then the latest messenger follow as fallbacks. The hidden
+ * proactive job already names the preferred chat (`recordProactiveTarget`).
+ * The reply anchor points into the schedule's own chat and goes along only
+ * when the report lands there.
  */
-async function reportConversation(job: typeof scheduledAgentJobs.$inferSelect) {
+async function reportConversations(
+  job: typeof scheduledAgentJobs.$inferSelect
+) {
   const own = {
     conversationChannel: job.conversationChannel,
     conversationId: job.conversationId,
-    replyAnchorMessageId: job.replyAnchorMessageId,
   };
-  if (job.kind !== "task") return own;
-  const [latest] = await db
-    .select({
-      conversationChannel: scheduledAgentJobs.conversationChannel,
-      conversationId: scheduledAgentJobs.conversationId,
-    })
-    .from(proactiveWatches)
-    .innerJoin(
-      scheduledAgentJobs,
-      eq(proactiveWatches.jobId, scheduledAgentJobs.id)
+  const remembered = await readRememberedConversations(job.workspaceId);
+  const messenger = remembered && rememberedMessenger(remembered);
+  const latestWeb =
+    own.conversationChannel === "eve" && remembered?.webConversationId
+      ? {
+          conversationChannel: "eve" as const,
+          conversationId: remembered.webConversationId,
+        }
+      : undefined;
+  const primary = messenger ?? latestWeb ?? own;
+  const withAnchor = (conversation: typeof own) => ({
+    ...conversation,
+    replyAnchorMessageId: sameConversation(conversation, own)
+      ? job.replyAnchorMessageId
+      : null,
+  });
+  const fallbacks = [own, messenger]
+    .filter((conversation) => conversation !== undefined)
+    .filter(
+      (conversation, index, list) =>
+        !sameConversation(conversation, primary) &&
+        list.findIndex((other) => sameConversation(other, conversation)) ===
+          index
     )
-    .where(eq(proactiveWatches.workspaceId, job.workspaceId))
-    .limit(1);
-  if (
-    !latest ||
-    (latest.conversationChannel === own.conversationChannel &&
-      latest.conversationId === own.conversationId)
-  ) {
-    return own;
-  }
-  return { ...latest, replyAnchorMessageId: null };
+    .map(withAnchor);
+  return { delivery: withAnchor(primary), fallbacks };
+}
+
+function sameConversation(
+  left: Pick<
+    typeof scheduledAgentJobs.$inferSelect,
+    "conversationChannel" | "conversationId"
+  >,
+  right: Pick<
+    typeof scheduledAgentJobs.$inferSelect,
+    "conversationChannel" | "conversationId"
+  >
+) {
+  return (
+    left.conversationChannel === right.conversationChannel &&
+    left.conversationId === right.conversationId
+  );
 }
 
 export async function listRecoverableScheduledReports(

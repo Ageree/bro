@@ -1,5 +1,5 @@
 /* oxlint-disable eslint/no-await-in-loop -- Migrations and their statements must be applied in order. */
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -18,29 +18,13 @@ describe("scheduled agent jobs", () => {
   it("materializes one occurrence, leases its worker, and persists reporting", async () => {
     const client = new PGlite();
     databases.push(client);
-    for (const migration of [
-      "0000_fluffy_the_spike.sql",
-      "0001_better-auth.sql",
-      "0002_heavy_celestials.sql",
-      "0003_unusual_fabian_cortez.sql",
-      "0004_kind_manta.sql",
-      "0005_brave_kang.sql",
-      "0006_illegal_tattoo.sql",
-      "0007_known_fenris.sql",
-      "0008_black_sandman.sql",
-      "0009_cold_power_man.sql",
-      "0010_rapid_cerise.sql",
-      "0011_faulty_unicorn.sql",
-      "0012_harsh_domino.sql",
-      "0013_last_christian_walker.sql",
-      "0014_uneven_vector.sql",
-      // `ensureScope` writes every workspace column, introduced_at included.
-      "0023_safe_squirrel_girl.sql",
-      // The job kind that keeps proactive checks out of the task dispatcher.
-      "0025_oval_wraith.sql",
-      // The person's answer, kept for the `dynamic` tick to hand over.
-      "0030_neat_iron_fist.sql",
-    ]) {
+    // Every migration, in order: a later one may backfill from any table.
+    const migrations = (
+      await readdir(new URL("../migrations", import.meta.url))
+    )
+      .filter((name) => name.endsWith(".sql"))
+      .toSorted();
+    for (const migration of migrations) {
       await applyMigration(client, migration);
     }
 

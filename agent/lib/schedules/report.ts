@@ -13,89 +13,32 @@ import telegram from "../../channels/telegram";
 type ClaimedScheduledReport = NonNullable<
   Awaited<ReturnType<typeof claimScheduledReport>>
 >;
+type ReportTarget = ClaimedScheduledReport["delivery"];
+interface ReportDelivery {
+  readonly attachSession?: AttachSessionFn;
+  readonly to: ScheduleToFn;
+}
 
+/**
+ * Hand a finished run's report to the chat it goes to. A web chat that has
+ * ended passes the report on to the next chat in line (the schedule's own,
+ * then the latest messenger); only when none is left is it suppressed.
+ */
 export async function dispatchScheduledReport(
-  delivery: {
-    readonly attachSession?: AttachSessionFn;
-    readonly to: ScheduleToFn;
-  },
+  delivery: ReportDelivery,
   runId: string
 ) {
   const claimed = await claimScheduledReport(runId);
   const leaseToken = claimed?.run.reportLeaseToken;
   if (!claimed || !leaseToken) return;
-  const { delivery: target } = claimed;
-  console.info("[scheduled-run] dispatching report", {
-    channel: target.conversationChannel,
-    reportSequence: claimed.run.reportSequence,
-    runId: claimed.run.id,
-    runStatus: claimed.run.status,
-  });
-  const attributes = scheduledReportAttributes(claimed, leaseToken);
-  const options = {
-    auth: {
-      attributes,
-      authenticator: "scheduled-result",
-      issuer: "open-instinct",
-      principalId: claimed.job.createdByUserId,
-      principalType: "user" as const,
-    },
-    turnPolicy: "queue" as const,
-  };
   try {
-    const prompt = scheduledReportPrompt(claimed);
-    if (target.conversationChannel === "photon") {
-      const session = await delivery
-        .to(photon, {
-          adapterName: "imessage",
-          threadId: target.conversationId,
-        })
-        .send(prompt, options);
-      console.info("[scheduled-run] report session accepted", {
-        channel: target.conversationChannel,
-        reportSequence: claimed.run.reportSequence,
-        runId: claimed.run.id,
-        sessionId: session.id,
-      });
-      return;
-    }
-    if (target.conversationChannel === "telegram") {
-      const chatId = telegramChatIdFromConversationId(target.conversationId);
-      if (!chatId) {
-        throw new Error("A Telegram scheduled report requires a chat id.");
+    for (const target of [claimed.delivery, ...claimed.fallbacks]) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- The next chat is tried only once this one turned out to have ended.
+      if (await sendScheduledReport(delivery, claimed, target, leaseToken)) {
+        return;
       }
-      const session = await delivery
-        .to(telegram, { chatId })
-        .send(prompt, options);
-      console.info("[scheduled-run] report session accepted", {
-        channel: target.conversationChannel,
-        reportSequence: claimed.run.reportSequence,
-        runId: claimed.run.id,
-        sessionId: session.id,
-      });
-      return;
     }
-    // A web chat has no address to send to, only a handle on its session.
-    if (!delivery.attachSession) {
-      throw new Error("A web chat report requires a session handle.");
-    }
-    const result = await delivery
-      .attachSession(target.conversationId)
-      .send(prompt, options);
-    if (result.status === "session_not_active") {
-      // A session still starting up takes the report on a later tick; one
-      // that ended (sessions live 30 days) never will.
-      if (result.retryable === true) {
-        throw new Error("The web chat session is not ready for the report.");
-      }
-      await finalizeScheduledReport(claimed.run.id, leaseToken, "suppressed");
-    }
-    console.info("[scheduled-run] report turn accepted", {
-      channel: target.conversationChannel,
-      reportSequence: claimed.run.reportSequence,
-      resultStatus: result.status,
-      runId: claimed.run.id,
-    });
+    await finalizeScheduledReport(claimed.run.id, leaseToken, "suppressed");
   } catch (error) {
     const released = await releaseScheduledReport(
       claimed.run.id,
@@ -111,12 +54,97 @@ export async function dispatchScheduledReport(
   }
 }
 
-function scheduledReportPrompt(claimed: ClaimedScheduledReport) {
-  return [backgroundTurnMarker, scheduledReportTask(claimed)].join("\n\n");
+/** False when the target is a web chat session that has ended. */
+async function sendScheduledReport(
+  delivery: ReportDelivery,
+  claimed: ClaimedScheduledReport,
+  target: ReportTarget,
+  leaseToken: string
+) {
+  console.info("[scheduled-run] dispatching report", {
+    channel: target.conversationChannel,
+    reportSequence: claimed.run.reportSequence,
+    runId: claimed.run.id,
+    runStatus: claimed.run.status,
+  });
+  const options = {
+    auth: {
+      attributes: scheduledReportAttributes(claimed, target, leaseToken),
+      authenticator: "scheduled-result",
+      issuer: "open-instinct",
+      principalId: claimed.job.createdByUserId,
+      principalType: "user" as const,
+    },
+    turnPolicy: "queue" as const,
+  };
+  const prompt = scheduledReportPrompt(claimed, target);
+  if (target.conversationChannel === "photon") {
+    const session = await delivery
+      .to(photon, {
+        adapterName: "imessage",
+        threadId: target.conversationId,
+      })
+      .send(prompt, options);
+    console.info("[scheduled-run] report session accepted", {
+      channel: target.conversationChannel,
+      reportSequence: claimed.run.reportSequence,
+      runId: claimed.run.id,
+      sessionId: session.id,
+    });
+    return true;
+  }
+  if (target.conversationChannel === "telegram") {
+    const chatId = telegramChatIdFromConversationId(target.conversationId);
+    if (!chatId) {
+      throw new Error("A Telegram scheduled report requires a chat id.");
+    }
+    const session = await delivery
+      .to(telegram, { chatId })
+      .send(prompt, options);
+    console.info("[scheduled-run] report session accepted", {
+      channel: target.conversationChannel,
+      reportSequence: claimed.run.reportSequence,
+      runId: claimed.run.id,
+      sessionId: session.id,
+    });
+    return true;
+  }
+  // A web chat has no address to send to, only a handle on its session.
+  if (!delivery.attachSession) {
+    throw new Error("A web chat report requires a session handle.");
+  }
+  const result = await delivery
+    .attachSession(target.conversationId)
+    .send(prompt, options);
+  console.info("[scheduled-run] report turn accepted", {
+    channel: target.conversationChannel,
+    reportSequence: claimed.run.reportSequence,
+    resultStatus: result.status,
+    runId: claimed.run.id,
+  });
+  if (result.status !== "session_not_active") return true;
+  // A session still starting up takes the report on a later tick; one that
+  // ended (sessions live 30 days) never will.
+  if (result.retryable === true) {
+    throw new Error("The web chat session is not ready for the report.");
+  }
+  return false;
 }
 
-function scheduledReportTask(claimed: ClaimedScheduledReport) {
-  const replyContext = claimed.delivery.replyAnchorMessageId
+function scheduledReportPrompt(
+  claimed: ClaimedScheduledReport,
+  target: ReportTarget
+) {
+  return [backgroundTurnMarker, scheduledReportTask(claimed, target)].join(
+    "\n\n"
+  );
+}
+
+function scheduledReportTask(
+  claimed: ClaimedScheduledReport,
+  target: ReportTarget
+) {
+  const replyContext = target.replyAnchorMessageId
     ? `Reply handle: {"kind":"automation","id":"${claimed.job.id}"}. Pass this exact value as send_message.replyTo for every user-visible message about this scheduled task. Omit replyTo only when the message is genuinely unrelated to the scheduled task.`
     : "No reply handle is available for this automation. Omit send_message.replyTo.";
   if (claimed.run.pendingInputRequests) {
@@ -154,9 +182,9 @@ function scheduledReportTask(claimed: ClaimedScheduledReport) {
 
 function scheduledReportAttributes(
   claimed: ClaimedScheduledReport,
+  delivery: ReportTarget,
   leaseToken: string
 ) {
-  const { delivery } = claimed;
   const attributes = new Map<string, string>([
     ["conversationChannel", delivery.conversationChannel],
     ["conversationId", delivery.conversationId],

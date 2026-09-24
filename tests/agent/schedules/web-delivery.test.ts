@@ -34,6 +34,9 @@ import { backgroundTurnMarker } from "@shared/chat/background-turn";
 // The real `dynamic` tick runs against a real schema; only the channels it
 // hands work to and the credit check stay outside.
 vi.mock("@agent/channels/photon", () => ({ default: { channel: "photon" } }));
+vi.mock("@agent/channels/telegram", () => ({
+  default: { channel: "telegram" },
+}));
 vi.mock("@agent/channels/scheduled-run", () => ({
   default: { channel: "scheduled-run" },
 }));
@@ -49,9 +52,17 @@ const telegram = {
   conversationChannel: "telegram" as const,
   conversationId: "100::",
 };
+const photon = {
+  conversationChannel: "photon" as const,
+  conversationId: "imessage:chat-alice",
+};
 const web = {
   conversationChannel: "eve" as const,
   conversationId: "web-session-alice",
+};
+const newerWeb = {
+  conversationChannel: "eve" as const,
+  conversationId: "web-session-alice-2",
 };
 // Midday in the default zone: quiet hours would hold a proactive report back.
 const now = new Date("2026-09-23T12:00:00.000Z");
@@ -79,51 +90,9 @@ afterAll(async () => {
 });
 
 describe("reports reach the web chat", () => {
-  it("writes first into the web chat the person last talked from", async () => {
-    await recordProactiveTarget(alice, telegram, now);
-    expect(await recordProactiveTarget(alice, web, now)).toBe("moved");
-    const [watch] = await claimDueProactiveWatches({
-      leaseForMs: 15 * 60_000,
-      limit: 10,
-      now,
-    });
-    if (!watch) throw new Error("Expected a due watch.");
-    // The check found a «flight tomorrow» mail nobody asked about.
-    const queued = await queueProactiveRun({
-      jobId: watch.jobId,
-      mailCheckedAt: now,
-      maxRunsPerDay: 12,
-      now,
-      signals: [
-        {
-          dedupeKey: "m-flight",
-          itemId: "m-flight",
-          source: "gmail",
-          threadId: "t-flight",
-        },
-      ],
-      workspaceId: alice.workspaceId,
-    });
-    const [claim] = await claimReadyScheduledAgentRuns({
-      kind: "proactive",
-      leaseForMs: 60_000,
-      limit: 10,
-      now,
-    });
-    if (queued.status !== "queued" || !claim?.run.leaseToken) {
-      throw new Error("Expected a claimed proactive run.");
-    }
-    await completeScheduledAgentRun(
-      queued.runId,
-      claim.run.leaseToken,
-      "turn-1",
-      {
-        kind: "result",
-        summary: "Рейс SU 1234 завтра в 07:40, регистрация открыта.",
-        urgency: "time_sensitive",
-      },
-      now
-    );
+  it("writes first into the web chat of a person with no messenger", async () => {
+    expect(await recordProactiveTarget(alice, web, now)).toBe("created");
+    const runId = await completedFlightCheck();
 
     const delivery = reportDelivery();
     await runDynamicTick(delivery);
@@ -141,7 +110,7 @@ describe("reports reach the web chat", () => {
     expect(attributes).toMatchObject({
       conversationChannel: "eve",
       conversationId: web.conversationId,
-      scheduledRunId: queued.runId,
+      scheduledRunId: runId,
     });
 
     // While the report turn runs, the next tick does not send it again.
@@ -151,44 +120,15 @@ describe("reports reach the web chat", () => {
 
     // The web chat's `send_message` result settles the report.
     const leaseToken = z.uuid().parse(attributes?.scheduledReportLeaseToken);
-    expect(
-      await finalizeScheduledReport(queued.runId, leaseToken, "delivered")
-    ).toBe(true);
+    expect(await finalizeScheduledReport(runId, leaseToken, "delivered")).toBe(
+      true
+    );
   });
 
   it("delivers a scheduled task's result into the web chat it was set up in", async () => {
     // The person wrote from the web chat and set the task up there.
     await recordProactiveTarget(alice, web, now);
-    const job = await createScheduledAgentJob(
-      alice,
-      {
-        ...web,
-        missedRunPolicy: "run_latest",
-        prompt: "Watch the price.",
-        timing: {
-          at: new Date(now.getTime() + 60_000).toISOString(),
-          kind: "once",
-        },
-      },
-      now
-    );
-    vi.setSystemTime(new Date(now.getTime() + 2 * 60_000));
-
-    const workerSend = vi
-      .fn<ReturnType<ScheduleToFn>["send"]>()
-      .mockResolvedValue(session("worker-session"));
-    const dispatch = reportDelivery(workerSend);
-    await runDynamicTick(dispatch);
-    expect(dispatch.to).toHaveBeenCalledOnce();
-    const run = await database.query.scheduledAgentRuns.findFirst({
-      where: eq(schema.scheduledAgentRuns.jobId, job.id),
-    });
-    if (!run?.leaseToken) throw new Error("Expected a leased run.");
-    await completeScheduledAgentRun(run.id, run.leaseToken, "turn-1", {
-      kind: "result",
-      summary: "The price fell to $95.",
-      urgency: "normal",
-    });
+    await completedTask(web, "The price fell to $95.");
 
     const delivery = reportDelivery();
     await runDynamicTick(delivery);
@@ -205,19 +145,278 @@ describe("reports reach the web chat", () => {
   });
 });
 
-/** The handles a schedule tick gets, recording what reached each channel. */
-function reportDelivery(
-  workerSend = vi.fn<ReturnType<ScheduleToFn>["send"]>()
+describe("a messenger wins over the web chat", () => {
+  it("keeps writing first to Telegram after the person opened the web chat", async () => {
+    expect(await recordProactiveTarget(alice, telegram, now)).toBe("created");
+    // One visit to the web chat must not take the pushes away.
+    expect(await recordProactiveTarget(alice, web, now)).toBe("remembered");
+    await completedFlightCheck();
+
+    const delivery = reportDelivery();
+    await runDynamicTick(delivery);
+
+    expect(delivery.attachSession).not.toHaveBeenCalled();
+    expect(delivery.to).toHaveBeenCalledExactlyOnceWith(
+      { channel: "telegram" },
+      { chatId: "100" }
+    );
+    expect(
+      z.string().parse(delivery.messengerSend.mock.calls[0]?.[0])
+    ).toContain("SU 1234");
+  });
+
+  it("moves to the messenger the person starts using, and stays there", async () => {
+    expect(await recordProactiveTarget(alice, web, now)).toBe("created");
+    expect(await recordProactiveTarget(alice, telegram, now)).toBe("moved");
+    expect(await recordProactiveTarget(alice, newerWeb, now)).toBe(
+      "remembered"
+    );
+    expect(await recordProactiveTarget(alice, newerWeb, now)).toBe("unchanged");
+    // Among messengers, the one written from last.
+    expect(await recordProactiveTarget(alice, photon, now)).toBe("moved");
+
+    const watch = await database.query.proactiveWatches.findFirst({
+      with: { job: true },
+    });
+    expect(watch).toMatchObject({
+      job: { ...photon, kind: "proactive" },
+      messengerChannel: "photon",
+      messengerConversationId: photon.conversationId,
+      webConversationId: newerWeb.conversationId,
+    });
+  });
+
+  it("sends a reminder set up in the web chat to the person's messenger", async () => {
+    await recordProactiveTarget(alice, telegram, now);
+    await recordProactiveTarget(alice, web, now);
+    await completedTask(web, "Пора выпить таблетку.", "web-message");
+
+    const delivery = reportDelivery();
+    await runDynamicTick(delivery);
+
+    expect(delivery.attachSession).not.toHaveBeenCalled();
+    expect(delivery.to).toHaveBeenCalledExactlyOnceWith(
+      { channel: "telegram" },
+      { chatId: "100" }
+    );
+    const [prompt, options] = delivery.messengerSend.mock.calls[0] ?? [];
+    expect(prompt).toContain("Пора выпить таблетку.");
+    // The web chat's reply anchor means nothing in Telegram.
+    expect(prompt).toContain("No reply handle is available");
+    expect(options?.auth?.attributes).toMatchObject({
+      conversationChannel: "telegram",
+      conversationId: telegram.conversationId,
+    });
+  });
+
+  it("sends a reminder set up in iMessage to the Telegram chat the person uses now, never to the web", async () => {
+    await recordProactiveTarget(alice, photon, now);
+    await recordProactiveTarget(alice, telegram, now);
+    await recordProactiveTarget(alice, web, now);
+    await completedTask(photon, "Пора выпить таблетку.", "imessage-message");
+
+    const delivery = reportDelivery();
+    await runDynamicTick(delivery);
+
+    expect(delivery.attachSession).not.toHaveBeenCalled();
+    expect(delivery.to).toHaveBeenCalledExactlyOnceWith(
+      { channel: "telegram" },
+      { chatId: "100" }
+    );
+    expect(
+      delivery.messengerSend.mock.calls[0]?.[1]?.auth?.attributes
+    ).not.toHaveProperty("photonReplyAnchorMessageId");
+  });
+});
+
+describe("a report outlives the web chat it was meant for", () => {
+  it("falls back to the web chat the schedule was set up in", async () => {
+    await recordProactiveTarget(alice, web, now);
+    const runId = await completedTask(web, "Пора выпить таблетку.", "anchor");
+    // The person started a new web chat since, and it has ended too.
+    await recordProactiveTarget(alice, newerWeb, now);
+
+    const delivery = reportDelivery({
+      [newerWeb.conversationId]: "ended",
+      [web.conversationId]: "accepted",
+    });
+    await runDynamicTick(delivery);
+
+    expect(delivery.attachSession.mock.calls).toEqual([
+      [newerWeb.conversationId],
+      [web.conversationId],
+    ]);
+    const [prompt, options] = delivery.send.mock.calls[1] ?? [];
+    // Back in its own chat, the report may reply to the original message.
+    expect(prompt).toContain("Reply handle");
+    expect(options?.auth?.attributes).toMatchObject({
+      conversationChannel: "eve",
+      conversationId: web.conversationId,
+    });
+    expect(await reportStatus(runId)).toBe("queued");
+  });
+
+  it("suppresses the report only once every chat it could go to has ended", async () => {
+    await recordProactiveTarget(alice, web, now);
+    const runId = await completedTask(web, "Пора выпить таблетку.");
+    await recordProactiveTarget(alice, newerWeb, now);
+
+    const delivery = reportDelivery({
+      [newerWeb.conversationId]: "ended",
+      [web.conversationId]: "ended",
+    });
+    await runDynamicTick(delivery);
+
+    expect(delivery.attachSession).toHaveBeenCalledTimes(2);
+    expect(await reportStatus(runId)).toBe("suppressed");
+  });
+
+  it("waits for a web chat that is still starting instead of skipping it", async () => {
+    await recordProactiveTarget(alice, web, now);
+    const runId = await completedTask(web, "Пора выпить таблетку.");
+    await recordProactiveTarget(alice, newerWeb, now);
+
+    const delivery = reportDelivery({
+      [newerWeb.conversationId]: "starting",
+      [web.conversationId]: "accepted",
+    });
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    await runDynamicTick(delivery);
+
+    expect(delivery.attachSession).toHaveBeenCalledExactlyOnceWith(
+      newerWeb.conversationId
+    );
+    expect(await reportStatus(runId)).toBe("pending");
+  });
+});
+
+/** A proactive check that found a «flight tomorrow» mail, run and finished. */
+async function completedFlightCheck() {
+  const [watch] = await claimDueProactiveWatches({
+    leaseForMs: 15 * 60_000,
+    limit: 10,
+    now,
+  });
+  if (!watch) throw new Error("Expected a due watch.");
+  const queued = await queueProactiveRun({
+    jobId: watch.jobId,
+    mailCheckedAt: now,
+    maxRunsPerDay: 12,
+    now,
+    signals: [
+      {
+        dedupeKey: "m-flight",
+        itemId: "m-flight",
+        source: "gmail",
+        threadId: "t-flight",
+      },
+    ],
+    workspaceId: alice.workspaceId,
+  });
+  const [claim] = await claimReadyScheduledAgentRuns({
+    kind: "proactive",
+    leaseForMs: 60_000,
+    limit: 10,
+    now,
+  });
+  if (queued.status !== "queued" || !claim?.run.leaseToken) {
+    throw new Error("Expected a claimed proactive run.");
+  }
+  await completeScheduledAgentRun(
+    queued.runId,
+    claim.run.leaseToken,
+    "turn-1",
+    {
+      kind: "result",
+      summary: "Рейс SU 1234 завтра в 07:40, регистрация открыта.",
+      urgency: "time_sensitive",
+    },
+    now
+  );
+  return queued.runId;
+}
+
+/** A one-off task set up in `conversation`, run by its worker and finished. */
+async function completedTask(
+  conversation: typeof telegram | typeof photon | typeof web,
+  summary: string,
+  replyAnchorMessageId?: string
 ) {
-  const send = vi
-    .fn<Session["send"]>()
-    .mockResolvedValue({ sessionId: web.conversationId, status: "accepted" });
+  const job = await createScheduledAgentJob(
+    alice,
+    {
+      ...conversation,
+      missedRunPolicy: "run_latest",
+      prompt: "Напомнить про таблетку.",
+      replyAnchorMessageId,
+      timing: {
+        at: new Date(now.getTime() + 60_000).toISOString(),
+        kind: "once",
+      },
+    },
+    now
+  );
+  vi.setSystemTime(new Date(now.getTime() + 2 * 60_000));
+  const workerSend = vi
+    .fn<ReturnType<ScheduleToFn>["send"]>()
+    .mockResolvedValue(session("worker-session"));
+  const dispatch = {
+    attachSession: vi.fn<ScheduleHandlerArgs["attachSession"]>(),
+    to: vi.fn<ScheduleToFn>(() => ({ send: workerSend })),
+  };
+  await runDynamicTick(dispatch);
+  expect(dispatch.to).toHaveBeenCalledExactlyOnceWith(
+    { channel: "scheduled-run" },
+    expect.anything()
+  );
+  const run = await database.query.scheduledAgentRuns.findFirst({
+    where: eq(schema.scheduledAgentRuns.jobId, job.id),
+  });
+  if (!run?.leaseToken) throw new Error("Expected a leased run.");
+  await completeScheduledAgentRun(run.id, run.leaseToken, "turn-1", {
+    kind: "result",
+    summary,
+    urgency: "normal",
+  });
+  return run.id;
+}
+
+async function reportStatus(runId: string) {
+  const run = await database.query.scheduledAgentRuns.findFirst({
+    where: eq(schema.scheduledAgentRuns.id, runId),
+  });
+  return run?.reportStatus;
+}
+
+/**
+ * The handles a schedule tick gets, recording what reached each channel. Each
+ * web chat session answers as `webChats` says; any other is live.
+ */
+function reportDelivery(
+  webChats: Record<string, "accepted" | "ended" | "starting"> = {}
+) {
+  const send = vi.fn<Session["send"]>();
+  const messengerSend = vi
+    .fn<ReturnType<ScheduleToFn>["send"]>()
+    .mockResolvedValue(session("messenger-session"));
   return {
     attachSession: vi
       .fn<ScheduleHandlerArgs["attachSession"]>()
-      .mockReturnValue(session(web.conversationId, send)),
+      .mockImplementation((id) => {
+        const state = webChats[id] ?? "accepted";
+        send.mockResolvedValueOnce(
+          state === "accepted"
+            ? { sessionId: id, status: "accepted" }
+            : {
+                retryable: state === "starting",
+                status: "session_not_active",
+              }
+        );
+        return session(id, send);
+      }),
+    messengerSend,
     send,
-    to: vi.fn<ScheduleToFn>(() => ({ send: workerSend })),
+    to: vi.fn<ScheduleToFn>(() => ({ send: messengerSend })),
   };
 }
 

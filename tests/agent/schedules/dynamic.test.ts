@@ -553,6 +553,7 @@ function scheduledReport(): NonNullable<
       conversationId: claim.job.conversationId,
       replyAnchorMessageId: claim.job.replyAnchorMessageId,
     },
+    fallbacks: [],
     job: claim.job,
     run: {
       ...claim.run,

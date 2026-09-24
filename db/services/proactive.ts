@@ -18,24 +18,102 @@ type ProactiveConversation = Pick<
   typeof scheduledAgentJobs.$inferInsert,
   "conversationChannel" | "conversationId"
 >;
+type RememberedConversations = Pick<
+  typeof proactiveWatches.$inferSelect,
+  "messengerChannel" | "messengerConversationId" | "webConversationId"
+>;
 
 /** The hidden job's prompt; a report turn reads it as the original task. */
 const proactiveJobPrompt =
   "Проверить новую почту и события календаря на ближайшие сутки и написать человеку первым, только если есть что-то, требующее действия.";
 
+const rememberedColumns = {
+  messengerChannel: proactiveWatches.messengerChannel,
+  messengerConversationId: proactiveWatches.messengerConversationId,
+  webConversationId: proactiveWatches.webConversationId,
+};
+
+/** What the watch remembers once the person wrote from `conversation`. */
+function remember(
+  current: RememberedConversations,
+  conversation: ProactiveConversation
+): RememberedConversations {
+  return conversation.conversationChannel === "eve"
+    ? { ...current, webConversationId: conversation.conversationId }
+    : {
+        ...current,
+        messengerChannel: conversation.conversationChannel,
+        messengerConversationId: conversation.conversationId,
+      };
+}
+
+/** The Telegram or iMessage chat the person last wrote from, if any. */
+export function rememberedMessenger(remembered: RememberedConversations) {
+  return remembered.messengerChannel && remembered.messengerConversationId
+    ? {
+        conversationChannel: remembered.messengerChannel,
+        conversationId: remembered.messengerConversationId,
+      }
+    : undefined;
+}
+
 /**
- * Remembers the conversation Bro may write first to: the latest one the
- * person talked from, in any channel, the web chat included. A first call
- * creates the hidden `proactive` job and the watch, starting the mail
- * watermark now so old mail is never replayed.
+ * Where Bro writes first: the messenger the person last wrote from, since it
+ * has pushes and the web chat shows only what is on screen when someone opens
+ * it. The web chat is the target only for a person with no messenger at all.
  */
-export async function recordProactiveTarget(
-  scope: AccessScope,
-  conversation: ProactiveConversation,
-  now = new Date()
+function preferredConversation(
+  remembered: RememberedConversations,
+  fallback: ProactiveConversation
+): ProactiveConversation {
+  const messenger = rememberedMessenger(remembered);
+  if (messenger) return messenger;
+  return remembered.webConversationId
+    ? {
+        conversationChannel: "eve",
+        conversationId: remembered.webConversationId,
+      }
+    : fallback;
+}
+
+function sameConversation(
+  left: ProactiveConversation,
+  right: ProactiveConversation
 ) {
-  const [current] = await db
+  return (
+    left.conversationChannel === right.conversationChannel &&
+    left.conversationId === right.conversationId
+  );
+}
+
+function sameRemembered(
+  left: RememberedConversations,
+  right: RememberedConversations
+) {
+  return (
+    left.messengerChannel === right.messengerChannel &&
+    left.messengerConversationId === right.messengerConversationId &&
+    left.webConversationId === right.webConversationId
+  );
+}
+
+/** The chats a workspace's person last wrote from, when they ever did. */
+export async function readRememberedConversations(workspaceId: string) {
+  const [remembered] = await db
+    .select(rememberedColumns)
+    .from(proactiveWatches)
+    .where(eq(proactiveWatches.workspaceId, workspaceId))
+    .limit(1);
+  return remembered;
+}
+
+function readWatchTarget(
+  executor: Pick<typeof db, "select">,
+  workspaceId: string
+) {
+  return executor
     .select({
+      ...rememberedColumns,
       conversationChannel: scheduledAgentJobs.conversationChannel,
       conversationId: scheduledAgentJobs.conversationId,
       jobId: proactiveWatches.jobId,
@@ -45,23 +123,55 @@ export async function recordProactiveTarget(
       scheduledAgentJobs,
       eq(proactiveWatches.jobId, scheduledAgentJobs.id)
     )
-    .where(eq(proactiveWatches.workspaceId, scope.workspaceId))
+    .where(eq(proactiveWatches.workspaceId, workspaceId))
     .limit(1);
-  if (
-    current?.conversationChannel === conversation.conversationChannel &&
-    current.conversationId === conversation.conversationId
-  ) {
-    return "unchanged" as const;
-  }
+}
+
+/**
+ * Remembers the chat the person talks from: the latest messenger and the
+ * latest web chat, each on its own. The hidden job writes to the preferred
+ * one (`preferredConversation`), so a person who lives in Telegram and once
+ * opened the web chat keeps getting reminders with a push. A first call
+ * creates the hidden `proactive` job and the watch, starting the mail
+ * watermark now so old mail is never replayed.
+ */
+export async function recordProactiveTarget(
+  scope: AccessScope,
+  conversation: ProactiveConversation,
+  now = new Date()
+): Promise<"created" | "moved" | "remembered" | "unchanged"> {
+  const [current] = await readWatchTarget(db, scope.workspaceId);
   if (current) {
-    await db
-      .update(scheduledAgentJobs)
-      .set({ ...conversation, updatedAt: now })
-      .where(eq(scheduledAgentJobs.id, current.jobId));
-    return "moved" as const;
+    const remembered = remember(current, conversation);
+    if (
+      sameRemembered(remembered, current) &&
+      sameConversation(preferredConversation(remembered, current), current)
+    ) {
+      return "unchanged" as const;
+    }
+    return db.transaction(async (transaction) => {
+      // Two chats may write at once; each builds on what the other left.
+      const [locked] = await readWatchTarget(
+        transaction,
+        scope.workspaceId
+      ).for("update", { of: proactiveWatches });
+      if (!locked) return "unchanged" as const;
+      const next = remember(locked, conversation);
+      const target = preferredConversation(next, locked);
+      await transaction
+        .update(proactiveWatches)
+        .set({ ...next, updatedAt: now })
+        .where(eq(proactiveWatches.workspaceId, scope.workspaceId));
+      if (sameConversation(target, locked)) return "remembered" as const;
+      await transaction
+        .update(scheduledAgentJobs)
+        .set({ ...target, updatedAt: now })
+        .where(eq(scheduledAgentJobs.id, locked.jobId));
+      return "moved" as const;
+    });
   }
   await ensureScope(scope);
-  return db.transaction(async (transaction) => {
+  const created = await db.transaction(async (transaction) => {
     const [job] = await transaction
       .insert(scheduledAgentJobs)
       .values({
@@ -89,6 +199,14 @@ export async function recordProactiveTarget(
         createdAt: now,
         createdByUserId: scope.userId,
         jobId: job.id,
+        ...remember(
+          {
+            messengerChannel: null,
+            messengerConversationId: null,
+            webConversationId: null,
+          },
+          conversation
+        ),
         mailCheckedAt: now,
         nextCheckAt: now,
         updatedAt: now,
@@ -101,10 +219,14 @@ export async function recordProactiveTarget(
       await transaction
         .delete(scheduledAgentJobs)
         .where(eq(scheduledAgentJobs.id, job.id));
-      return "unchanged" as const;
+      return "raced" as const;
     }
     return "created" as const;
   });
+  // This chat is still remembered on the watch the other turn created.
+  return created === "raced"
+    ? recordProactiveTarget(scope, conversation, now)
+    : created;
 }
 
 /**

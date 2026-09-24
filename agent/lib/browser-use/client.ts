@@ -203,7 +203,9 @@ export async function createBrowserUseRun(input: BrowserUseCreateRunInput) {
  * The newest run whose task carries this exact line, looked for among the
  * project's most recent runs, newest first. Browser Use takes no idempotency
  * key, so a line written into the task is how a run started just before a
- * crash is found again rather than started twice.
+ * crash is found again rather than started twice. A cancelled run was given
+ * up on purpose — its errand was stopped or changed meanwhile — and is never
+ * adopted.
  */
 export async function findRecentBrowserUseRunByTaskLine(
   line: string,
@@ -215,7 +217,9 @@ export async function findRecentBrowserUseRunByTaskLine(
   const page = runListSchema.parse(
     await request("GET", `/runs?${query.toString()}`)
   );
-  const found = page.runs.find((run) => run.task.split("\n").includes(line));
+  const found = page.runs.find(
+    (run) => run.status !== "cancelled" && run.task.split("\n").includes(line)
+  );
   if (found) return found;
   if (pages <= 1 || !page.hasMore || !page.nextCursor) return undefined;
   return findRecentBrowserUseRunByTaskLine(line, pages - 1, page.nextCursor);

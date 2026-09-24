@@ -135,6 +135,24 @@ describe("Browser Use client", () => {
     ]);
   });
 
+  it("never adopts a cancelled run that carries the line", async () => {
+    const client = await loadClient();
+    const line = "(Queued errand queued:1, change 1; for bookkeeping only.)";
+    stubFetch(
+      Response.json({
+        hasMore: false,
+        runs: [
+          { id: "given-up", sessionId, status: "cancelled", task: line },
+          { id: "live", sessionId, status: "running", task: line },
+        ],
+      })
+    );
+
+    expect((await client.findRecentBrowserUseRunByTaskLine(line))?.id).toBe(
+      "live"
+    );
+  });
+
   it("stops looking after the pages it was given", async () => {
     const client = await loadClient();
     const calls = stubFetch(

@@ -210,7 +210,16 @@ async function drainBrowserQueue(
       cause: error,
       runId: row.id,
     });
-    await parkQueuedBrowserRun(row.id, queueRetryAt(now));
+    try {
+      await parkQueuedBrowserRun(row.id, queueRetryAt(now));
+    } catch (parkError) {
+      // The claim's lease puts it back in line anyway; the rest of the tick
+      // (spend, redelivery, overdue reports) must not stop here.
+      console.warn("[browser-use] the queued errand could not be parked", {
+        cause: parkError,
+        runId: row.id,
+      });
+    }
     return drainBrowserQueue(delivery, now, startsLeft - 1);
   }
   if (result.status === "expired" || result.status === "no_credits") {

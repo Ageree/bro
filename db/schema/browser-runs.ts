@@ -129,6 +129,10 @@ export const browserRuns = pgTable(
     // The full instruction a queued errand starts with, composed when the
     // person asked for it; cleared once a run carries it.
     pendingTask: text("pending_task"),
+    // How many times the person changed a queued errand. The poller starts a
+    // run from the revision it read and hands the errand over only while it
+    // is still that one; a change that landed in between restarts it.
+    queueRevision: integer("queue_revision").notNull().default(0),
   },
   (table) => [
     foreignKey({

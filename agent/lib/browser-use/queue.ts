@@ -114,8 +114,15 @@ export function queuedStatusNote(row: Pick<BrowserRunRow, "retryAt">) {
   return `The errand is still queued: the cloud browser service had no free browser for it yet, and it starts by itself as soon as one frees up.${next} Say so in one short line; do not start it again.`;
 }
 
-function queueReference(runId: string) {
-  return `(Queued errand ${runId}; for bookkeeping only.)`;
+/**
+ * The line that finds a run started for this errand again after a poller
+ * died. It names the revision too: a run started before the person changed
+ * the errand carries the old instruction and must not be adopted for the new.
+ */
+function queueReference(row: Pick<BrowserRunRow, "id" | "queueRevision">) {
+  const revision =
+    row.queueRevision > 0 ? `, change ${String(row.queueRevision)}` : "";
+  return `(Queued errand ${row.id}${revision}; for bookkeeping only.)`;
 }
 
 async function abandonStartedRun(runId: string) {
@@ -171,15 +178,19 @@ async function giveUpQueuedErrand(row: BrowserRunRow, outcome: string) {
  * person asked, on the workspace profile, with the site's secrets bound
  * afresh. The row is read again first, since the person may have cancelled
  * it; a run started for an errand stopped in the meantime is cancelled. A
- * poller that died between starting the run and handing the errand over
- * left a run carrying the errand's reference line, and the next claim adopts
- * it instead of starting a second browser.
+ * `continue` that lands while the run is being started changed what the
+ * errand should start with: the hand-off refuses the run built from the
+ * revision read before it, which is cancelled, and the errand goes back to the
+ * front of the line to start again with the change (`changed`). A poller that
+ * died between starting the run and handing the errand over left a run
+ * carrying the errand's reference line, and the next claim adopts it instead
+ * of starting a second browser.
  */
 export async function startQueuedBrowserRun(
   row: BrowserRunRow,
   now = new Date()
 ): Promise<
-  | { readonly status: "busy" | "started" | "stopped" }
+  | { readonly status: "busy" | "changed" | "started" | "stopped" }
   | {
       readonly closed: BrowserRunRow | undefined;
       readonly outcome: string;
@@ -202,7 +213,7 @@ export async function startQueuedBrowserRun(
     userId: current.createdByUserId,
     workspaceId: current.workspaceId,
   };
-  const reference = queueReference(current.id);
+  const reference = queueReference(current);
   let run: { readonly id: string; readonly sessionId: string };
   try {
     const secrets = await resolveBrowserSecretBindings(scope, {
@@ -244,29 +255,37 @@ export async function startQueuedBrowserRun(
   await browserUseCreditsRestored();
   let handedOff: boolean;
   try {
-    handedOff = await handOffBrowserRunRetry(current.id, {
-      conversationChannel: current.conversationChannel,
-      conversationId: current.conversationId,
-      id: run.id,
-      paymentAllowed: current.paymentAllowed,
-      profileId: current.profileId,
-      replyAnchorMessageId: current.replyAnchorMessageId,
-      rootSessionId: current.rootSessionId,
-      sessionId: run.sessionId,
-      site: current.site,
-      status: "running",
-      // The run is the errand the person confirmed on the card, so it
-      // carries that confirmation — and only that one.
-      submission: current.submission,
-      task: current.task,
-    });
+    handedOff = await handOffBrowserRunRetry(
+      current.id,
+      {
+        conversationChannel: current.conversationChannel,
+        conversationId: current.conversationId,
+        id: run.id,
+        paymentAllowed: current.paymentAllowed,
+        profileId: current.profileId,
+        replyAnchorMessageId: current.replyAnchorMessageId,
+        rootSessionId: current.rootSessionId,
+        sessionId: run.sessionId,
+        site: current.site,
+        status: "running",
+        // The run is the errand the person confirmed on the card, so it
+        // carries that confirmation — and only that one.
+        submission: current.submission,
+        task: current.task,
+      },
+      { queueRevision: current.queueRevision }
+    );
   } catch (error) {
     await abandonStartedRun(run.id);
     throw error;
   }
   if (!handedOff) {
     await abandonStartedRun(run.id);
-    return { status: "stopped" };
+    // Still queued means the person changed it while the run was starting:
+    // it is due again at once, and starts with the change.
+    return (await parkQueuedBrowserRun(current.id, now))
+      ? { status: "changed" }
+      : { status: "stopped" };
   }
   return { status: "started" };
 }

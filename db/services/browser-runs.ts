@@ -237,11 +237,14 @@ export async function finishWalledBrowserRun(runId: string) {
  * Hand a parked or queued errand to the run that was just started for it, in
  * one transaction: the new row, the link from the old one and the spend
  * reservation move together or not at all. False when the old row was
- * stopped in the meantime — the caller then cancels the run it started.
+ * stopped in the meantime — the caller then cancels the run it started — or,
+ * given the `queueRevision` the run was started from, when the person changed
+ * the queued errand since: that run carries the old instruction.
  */
 export async function handOffBrowserRunRetry(
   fromRunId: string,
-  retry: Omit<BrowserRunInsert, "createdByUserId" | "workspaceId">
+  retry: Omit<BrowserRunInsert, "createdByUserId" | "workspaceId">,
+  options: { readonly queueRevision?: number } = {}
 ) {
   return db.transaction(async (tx) => {
     const now = new Date();
@@ -261,7 +264,10 @@ export async function handOffBrowserRunRetry(
         and(
           eq(browserRuns.id, fromRunId),
           inArray(browserRuns.status, ["queued", "waiting"]),
-          isNull(browserRuns.retriedAsRunId)
+          isNull(browserRuns.retriedAsRunId),
+          options.queueRevision === undefined
+            ? undefined
+            : eq(browserRuns.queueRevision, options.queueRevision)
         )
       )
       .returning({
@@ -442,7 +448,11 @@ export async function updateQueuedBrowserRun(
 ) {
   const rows = await db
     .update(browserRuns)
-    .set({ ...input, updatedAt: new Date() })
+    .set({
+      ...input,
+      queueRevision: sql`${browserRuns.queueRevision} + 1`,
+      updatedAt: new Date(),
+    })
     .where(
       and(
         eq(browserRuns.id, runId),

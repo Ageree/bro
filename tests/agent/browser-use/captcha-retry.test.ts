@@ -87,6 +87,7 @@ function parkedRow(captchaAttempt: number) {
     paymentAllowed: true,
     pendingTask: null,
     profileId: "profile-1",
+    queueRevision: 0,
     replyAnchorMessageId: "message-1",
     report: null,
     reportAttempts: 0,

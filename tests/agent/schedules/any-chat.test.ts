@@ -169,8 +169,9 @@ describe("schedules belong to the person, not the chat", () => {
     ).rejects.toThrow("Schedule not found.");
   });
 
-  it("delivers the report into the chat the person talks from now", async () => {
-    // Set up in Telegram, the person has since moved to the web chat.
+  it("keeps the report in the messenger after the person opened the web chat", async () => {
+    // Set up in Telegram; the person has since written from the web chat
+    // once, which has no pushes: «напомни в 9» must still reach Telegram.
     await recordProactiveTarget(alice, telegram, now);
     const job = await createScheduledAgentJob(
       alice,
@@ -195,24 +196,27 @@ describe("schedules belong to the person, not the chat", () => {
       urgency: "normal",
     });
 
-    const handles = scheduleHandles();
+    const reportSend = vi
+      .fn<ReturnType<ScheduleToFn>["send"]>()
+      .mockResolvedValue(session("telegram-session"));
+    const handles = scheduleHandles(reportSend);
     await runDynamicTick(handles);
 
-    expect(handles.attachSession).toHaveBeenCalledExactlyOnceWith(
-      web.conversationId
+    expect(handles.attachSession).not.toHaveBeenCalled();
+    expect(handles.to).toHaveBeenCalledExactlyOnceWith(
+      { channel: "telegram" },
+      { chatId: "100" }
     );
-    expect(handles.to).not.toHaveBeenCalled();
-    const [prompt, options] = handles.send.mock.calls[0] ?? [];
+    const [prompt, options] = reportSend.mock.calls[0] ?? [];
     expect(prompt).toContain("Пора оплатить квартиру.");
-    // The Telegram reply anchor means nothing in the web chat.
-    expect(prompt).toContain("No reply handle is available");
+    // The report lands in the chat the schedule was set up in, so the reply
+    // anchor goes along.
+    expect(prompt).toContain("Reply handle");
     expect(options?.auth?.attributes).toMatchObject({
-      conversationChannel: "eve",
-      conversationId: web.conversationId,
+      conversationChannel: "telegram",
+      conversationId: telegram.conversationId,
+      telegramReplyAnchorMessageId: "telegram-message",
     });
-    expect(options?.auth?.attributes).not.toHaveProperty(
-      "telegramReplyAnchorMessageId"
-    );
     // The next occurrence is the 5th of November, not 30 days later.
     expect(await listScheduledAgentJobs(alice)).toEqual([
       expect.objectContaining({
