@@ -35,17 +35,27 @@ function attributionHeaders() {
 const keyOrderedHosts = ["alibaba", "morph", "wafer"];
 
 /**
+ * Sail Research broke `deepseek/deepseek-v4.1-flash` tool calls on 24.09:
+ * «invalid or incomplete DSML tool-call block» and «reasoning marker while
+ * reasoning was disabled», 36 failed calls in one eval run, whose turns then
+ * timed out.
+ */
+const brokenHosts = ["sail-research"];
+
+const skippedHosts = [...keyOrderedHosts, ...brokenHosts];
+
+/**
  * `OPENROUTER_PROVIDER_ORDER=baseten,fireworks` pins the upstream hosts. Left
  * unset, OpenRouter keeps its own sticky routing, which preserves the prompt
- * cache across turns. Either way the key-ordered hosts are skipped.
+ * cache across turns. Either way the hosts above are skipped.
  */
 function providerRouting() {
   const order = env.OPENROUTER_PROVIDER_ORDER?.split(",")
     .map((slug) => slug.trim().toLowerCase())
     .filter((slug) => slug.length > 0);
   return order && order.length > 0
-    ? { ignore: keyOrderedHosts, order }
-    : { ignore: keyOrderedHosts };
+    ? { ignore: skippedHosts, order }
+    : { ignore: skippedHosts };
 }
 
 /**
