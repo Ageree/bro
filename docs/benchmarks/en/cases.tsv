@@ -1,0 +1,63 @@
+d03_reco	Find a dinner spot for four tomorrow at 7:30, walking distance from my hotel, vegetarian-friendly, not a chain, under $40 a head.
+d16_content	Make a birthday image for Sam with our dog on it, then a quick trivia game about 90s movies for the group chat.
+d07_routine	Every weekday at 7am, send me my calendar for the day, any emails I still owe a reply to, and the weather.
+d10_mem_a	I always want aisle seats and I don't eat pork.
+d12_phone	Call the restaurant and ask if they can seat eight on Saturday at 8, and whether they have a private room.
+d01_online_task	Book me a hotel in Chicago for Friday and Saturday next week, under $250 a night, near the Loop, with free cancellation.
+d02_travel	Book me a round-trip flight from New York to Chicago, leaving Friday morning and back Sunday evening, aisle seat, under $400. Check me in when the window opens and send the boarding pass.
+d04_purchase	Order the same coffee beans I bought last time from Amazon, two bags, to my home address.
+d08_integrations	Add 'Q3 planning' to my Notion tasks, put a 30-minute block on Thursday afternoon for it, and Slack Sam that it's on.
+d13_group	I'm adding you to a group chat with three friends. Find a dinner date that works for all four of us and book it.
+uc_add_event	Add dinner with Sam on Thursday at 7 to my calendar.
+uc_visa	I need to apply for a UK visa. Book a refundable multi-leg flight and a refundable hotel, pull my bank statement, find my passport photo in my email, write a day-by-day itinerary, and fill out the application form.
+uc_dentist	Find a well-reviewed dentist near me that takes DMS insurance, fill in the new-patient forms, and book the first slot that fits my calendar. Call them if the website will not do it.
+uc_points	Find me a business class seat from Barcelona to Los Angeles on November 12. Use my points or any cheaper routing; the cash fare is $6,500 and I won't pay that.
+uc_hotel	Book me a hotel near Nevsky Prospekt 28, St Petersburg for October 9-11, under 9000 rubles a night, with free cancellation.
+uc_dmv	Book me the earliest GIBDD appointment to replace my driver's license near my home, then list the documents I need and fill in whatever forms you can.
+uc_family_flights	help me find flights to Cancun for the three of us for a wedding.
+uc_tracker	Build me a personal net worth tracker: find my existing data, set up a page I can open on my phone, and keep my login in your vault.
+uc_deck	Use my ManaBox collection and the current EDHREC meta to build a Commander deck around Atraxa from cards I already own.
+uc_drop	The Supreme drop goes live at 11am Thursday. Buy the box logo hoodie in size M the moment it opens, with my vaulted card. Ping me when it is confirmed.
+uc_conflicts	Keep an eye on our family calendar and tell me if anything conflicts or looks wrong.
+uc_missing_delivery	My CDEK package 1587342290 never arrived. Call them, find out where it is, and get it redelivered.
+uc_checkin	Check me in for my Aeroflot flight tomorrow the moment the window opens, pick an aisle seat if you can, and send me the boarding pass.
+uc_junk	Go through my inbox and move promotional and junk threads to trash. Follow my rules, ask before anything irreversible, and tell me what you moved.
+uc_intake	When a new client messages me, find out what they need, quote my rates, negotiate within my range, book them, and follow up if they go quiet.
+uc_group_meeting	Set up a meeting with Anya, Dima, Oleg and Katya next week, work around everyone's calendars, and update the group if anything moves.
+uc_energy	Compare electricity tariffs for our flat in Moscow, get offers from the main providers, and switch us to the best one.
+uc_company_brief	Build me a daily brief of what public and private AI related companies are publishing.
+uc_apartment	Find two-bedroom apartments in Khamovniki under 150,000 rubles a month, and apply to the ones that fit my criteria.
+uc_webinars	My learning goals this half are LLM evals and product analytics. Each week, check these sites for webinars that fit, make sure I'm free, and register me.
+uc_recurring	find every recurring charge on me
+uc_remodel	Every Monday, check what the contractor said was due last week, and if there's been no update, send them a polite nudge asking for a status and a date.
+uc_payments_sheet	Go through my email and look for payments after September 1. Then open up my budgeting spreadsheet and append them to the bottom of the list so that they are in chronological order. Follow the existing template.
+uc_meme_edit	Pull the top bobo memes from this week and cut them into a 15-second edit with music.
+uc_followups	Every evening, go through today's Granola transcripts and list every action item I own, every follow-up I promised, and everything I'm waiting on from someone else.
+uc_brief_telegram	Brief me every morning on Telegram: overnight news, repo activity, and what's on today.
+uc_morning_drafts	Every morning, brief me on what came in overnight, draft replies to anything that needs one, and flag calendar conflicts.
+uc_ikea	Order the KALLAX shelf 2x4 from IKEA to my apartment and book someone on Profi.ru to deliver and assemble it this weekend.
+uc_lunch	Order me lunch from Vkusno i Tochka, my usual, delivered to the office by 12:30.
+uc_call_friend	Call Misha and confirm the time and address for tomorrow's party, then text me what they said.
+uc_study	I take the IELTS in three days and can study about ten hours. Plan my sessions by section and quiz me on the weak spots.
+uc_trip	Plan a weekend in Kazan for six of us: train from Moscow, the sights, a dinner for six near the Kazan Palace hotel, and tickets to the ballet on Saturday.
+uc_kindle	Reflow this PDF into a Kindle-ready document and email it to my Kindle address.
+uc_car	Book me a car for October 10-12 near Pulkovo airport, something mid-size under 5000 rubles a day.
+uc_reorder	Order two 250g bags of Tasty Coffee Ethiopia Yirgacheffe to my address. Get it to checkout and stop before paying so I can approve.
+uc_claims	Hook into dub.co and review all affiliate claims against our internal logs. Find fraud, remove it, pay the real people, repeat on a schedule, and ping me when you need me.
+uc_content_desk	Set up six bots for my content: one researches topics, one writes, one designs, one schedules, one edits, one reports on what performed. Each does one narrow job and hands off.
+uc_launch_day	Here's our Product Hunt login. Watch our ranking all day, reply to every comment, and post an update to Slack each hour.
+uc_chief_of_staff	You are my chief of staff. Keep a running record of what each of my other bots is working on, and stop any of them starting work another has already done.
+uc_fax	Fax this document to Tinkoff bank so they refund the late fee, and let me know when they confirm.
+uc_ads_sheet	Every morning, pull yesterday's ad performance, update the numbers in the sheet, flag creatives to refresh in Canva, and list any new leads that need a Calendly invite.
+uc_ads_rule	Build ad creatives from our site and socials, run them, and shut off anything under 2.0 ROAS. Show me before anything goes live.
+uc_outreach	Every morning, build a queue of warm prospects from my inbox and CRM, draft the outreach, and wait for my approval before anything is sent.
+uc_kids	Monitor the emails about my kids' activities and make calendar invites cc'ing the other parents. Pre-alert me to conflicts and draft emails with suggested fixes.
+uc_sell_tickets	Watch my travel calendar. Whenever I'm out of town for a CSKA home game, list those tickets for sale.
+uc_guardrails	Before you get access to my Gmail, install Superagent's Context Guardrails on yourself and show me what it will block.
+uc_ship	Change the homepage headline to "Бро делает скучные дела за тебя" and make the signup button green.
+uc_insurance	Get me quotes for apartment insurance on my home address with the same coverage as my current policy, and tell me which is worth switching to.
+uc_voice	I want to write a piece about why personal AI agents live in messengers. Let's talk through the angle, then draft it.
+uc_triage	Only show me email that needs me. For those, draft a reply in my voice and learn from what I change.
+uc_fares	Watch fares from Moscow to Istanbul for November and text me the moment a good one appears.
+uc_watch_x	Check X every 15 minutes for anything trending in AI agents and message me the moment a wave starts.
+uc_refund	Read my email thread with xAI about the failed Grok payment, write a response that makes the case, and send it.
