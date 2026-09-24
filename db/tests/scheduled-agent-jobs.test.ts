@@ -39,7 +39,7 @@ describe("scheduled agent jobs", () => {
       // The job kind that keeps proactive checks out of the task dispatcher.
       "0025_oval_wraith.sql",
       // The person's answer, kept for the `dynamic` tick to hand over.
-      "0029_omniscient_colleen_wing.sql",
+      "0030_neat_iron_fist.sql",
     ]) {
       await applyMigration(client, migration);
     }
