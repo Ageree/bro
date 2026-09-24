@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { calendarEventSchema } from "@agent/lib/google-workspace/calendar";
+import {
+  calendarEventDeleteSchema,
+  calendarEventSchema,
+  calendarEventUpdateSchema,
+} from "@agent/lib/google-workspace/calendar";
 import { gmailComposeSchema } from "@agent/lib/google-workspace/gmail";
 import { connectApp } from "@agent/tools/connect_app";
 import { notionAddTask } from "@agent/tools/notion";
@@ -14,6 +18,8 @@ describe("Google Workspace tool input schemas", () => {
   it.each([
     ["gmail-send", gmailComposeSchema],
     ["calendar-create-event", calendarEventSchema],
+    ["calendar-update-event", calendarEventUpdateSchema],
+    ["calendar-delete-event", calendarEventDeleteSchema],
     ["connect_app", connectApp.inputSchema],
     ["notion-add-task", notionAddTask.inputSchema],
     ["slack-send-message", slackSendMessage.inputSchema],
@@ -31,5 +37,22 @@ describe("Google Workspace tool input schemas", () => {
     expect(
       gmailComposeSchema.safeParse({ ...base, to: ["bad@"] }).success
     ).toBe(false);
+  });
+
+  it("moves an event only with both ends and never changes nothing", () => {
+    const event = { eventId: "event-1" };
+    const start = "2026-09-25T10:00:00+03:00";
+    const end = "2026-09-25T11:00:00+03:00";
+    expect(
+      calendarEventUpdateSchema.safeParse({ ...event, end, start }).success
+    ).toBe(true);
+    expect(
+      calendarEventUpdateSchema.safeParse({ ...event, summary: "Созвон" })
+        .success
+    ).toBe(true);
+    expect(
+      calendarEventUpdateSchema.safeParse({ ...event, start }).success
+    ).toBe(false);
+    expect(calendarEventUpdateSchema.safeParse(event).success).toBe(false);
   });
 });

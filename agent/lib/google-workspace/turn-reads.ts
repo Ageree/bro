@@ -17,10 +17,18 @@ import {
 export const turnReadLimits = { background: 60, interactive: 20 } as const;
 
 /**
- * Gmail writes after which what the turn read may no longer be what the
- * mailbox holds: a search repeated after archiving must reach Google.
+ * Google writes after which what the turn read may no longer be what the
+ * mailbox holds: a search repeated after archiving must reach Google, and a
+ * calendar change mails invitations or cancellations.
  */
-const gmailWriteTools = new Set(["gmail-draft", "gmail-send", "gmail-update"]);
+const googleWriteTools = new Set([
+  "calendar-create-event",
+  "calendar-delete-event",
+  "calendar-update-event",
+  "gmail-draft",
+  "gmail-send",
+  "gmail-update",
+]);
 
 /**
  * Reads a turn may have refused before it is ended. The model gets told it
@@ -98,7 +106,7 @@ function isRateLimitFailure(output: ToolResultPart["output"]) {
 }
 
 /**
- * What the guarded reads of the current turn did, from its history. A Gmail
+ * What the guarded reads of the current turn did, from its history. A Google
  * write clears what the turn read before it, so reading again runs.
  */
 export function turnReads(
@@ -119,7 +127,7 @@ export function turnReads(
         continue;
       }
       if (part.type !== "tool-result") continue;
-      if (gmailWriteTools.has(part.toolName) && succeeded(part.output)) {
+      if (googleWriteTools.has(part.toolName) && succeeded(part.output)) {
         done.clear();
         continue;
       }

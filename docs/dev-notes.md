@@ -244,15 +244,17 @@
   отзывает грант (`revokeGoogleWorkspaceGrant`), иначе у Google остаются широкие
   scopes старого гранта. Запись в режиме только чтения отсекается политикой
   подтверждения `googleWriteApproval` до карточки, а не ошибкой Google.
-- Google выдаёт refresh-токен, только если в запросе авторизации есть
-  `access_type=offline`, и только когда экран согласия реально показан.
-  `prompt: "consent"` шлют оба пути авторизации: кабинет/`connect_google` и
-  карточка входа eve (через `connectOptions`). `access_type` SDK не
-  передаёт: кабинет шлёт его в поле `additionalParams` эндпоинта authorize, а
-  карточке eve нужен `authorizationUrlParams` коннектора. Одного `prompt`
-  мало: после #174 грант всё равно пропал. Если грант онлайн, проверка
-  tokeninfo пишет в лог `grant has no offline access`; она идёт без ожидания
-  при чтении подключения и после входа из чата
+- Google отваливался ровно через час после каждого подключения, потому что у
+  коннектора Vercel Connect (`GOOGLE_CONNECTOR_UID`) был выключен тип гранта
+  «Refresh Tokens»: Connect хранил только часовой access-токен (Default Token
+  Lifetime 3600 с) и продлить его не мог. `access_type=offline` и
+  `prompt=consent` в Authorization Endpoint были, но без этого переключателя
+  они не помогают. Если Google снова «отключается» через час — сначала
+  проверьте Grant Types → Refresh Tokens у коннектора. Код дополнительно шлёт
+  `prompt: "consent"` (кабинет и карточка eve) и `access_type=offline` в
+  `additionalParams` из кабинета. Проверка tokeninfo пишет в лог
+  `grant has no offline access`, если грант онлайн; выключенные Refresh
+  Tokens она не ловит, потому что Google-то грант выдал офлайн
   (`shared/google-workspace/connection.ts`). Кроме явного отключения и смены
   уровня доступа, код гранты не отзывает: `evict` из eve без `revoke` только
   чистит кэш.
@@ -262,7 +264,7 @@
   путала его с Gmail `id`, который берут остальные `gmail-*`.
 - Чтения Gmail резолвятся на `step.started` и видят, что ход уже читал
   (`agent/lib/google-workspace/turn-reads.ts`): повтор того же запроса (до
-  записи в почту в этом ходе), чтение сверх 20 (у фоновых воркеров 60) и любое
+  записи в Google в этом ходе: почта или календарь, который шлёт приглашения), чтение сверх 20 (у фоновых воркеров 60) и любое
   чтение после отказа Google по квоте отвечаются без Google, а три таких
   отказа завершают ход через `toolChoice: none`. Квота приходит и
   как 429, и как 403 с `rateLimitExceeded`; `withGoogleAuth` ждёт 1 и 3 с,

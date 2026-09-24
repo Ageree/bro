@@ -102,6 +102,18 @@ describe("the per-turn Gmail read guard", () => {
     expect(readRefusalReason(searchKey(inbox.query), reads)).toBeUndefined();
   });
 
+  it("reads again after the turn moved or deleted a calendar event", () => {
+    for (const toolName of ["calendar-update-event", "calendar-delete-event"]) {
+      const reads = turnReads([
+        person("перенеси встречу и проверь почту"),
+        ...search("call-1"),
+        ...calendarWrite("call-2", toolName),
+      ]);
+
+      expect(readRefusalReason(searchKey(inbox.query), reads)).toBeUndefined();
+    }
+  });
+
   it("keeps the result when the mailbox change was refused", () => {
     const reads = turnReads([
       person("архивируй рассылки"),
@@ -196,6 +208,33 @@ function gmailUpdate(
     {
       content: [
         { output, toolCallId, toolName: "gmail-update", type: "tool-result" },
+      ],
+      role: "tool",
+    },
+  ];
+}
+
+function calendarWrite(toolCallId: string, toolName: string): ModelMessage[] {
+  return [
+    {
+      content: [
+        {
+          input: { eventId: "event-1" },
+          toolCallId,
+          toolName,
+          type: "tool-call",
+        },
+      ],
+      role: "assistant",
+    },
+    {
+      content: [
+        {
+          output: { type: "json", value: { eventId: "event-1" } },
+          toolCallId,
+          toolName,
+          type: "tool-result",
+        },
       ],
       role: "tool",
     },
