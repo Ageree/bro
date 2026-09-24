@@ -99,7 +99,7 @@ async function resumeAnsweredRun(
       return;
     }
     // A worker still starting takes the answer on a later tick; one that
-    // ended never will, so the answer is dropped with the reason.
+    // ended never will, so the run ends and a later tick reports it.
     await restoreScheduledAgentRunInput(
       claim.run.id,
       leaseToken,
