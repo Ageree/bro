@@ -56,6 +56,17 @@ describe("decideInputRequest", () => {
     expect(decision).toMatchObject({ response: { optionId: "approve" } });
   });
 
+  it("cancels an event update: it can mail the event's existing guests", () => {
+    const decision = decideInputRequest(
+      approvalCard("calendar-update-event", {
+        eventId: "evt_1",
+        start: "2026-09-25T15:00:00+05:00",
+      }),
+      ownDataTools
+    );
+    expect(decision).toMatchObject({ response: { optionId: "cancel" } });
+  });
+
   it("cancels an event that would invite someone", () => {
     const decision = decideInputRequest(
       approvalCard("calendar-create-event", {

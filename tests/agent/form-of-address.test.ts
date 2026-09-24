@@ -166,7 +166,13 @@ describe("form of address", { timeout: 60_000 }, () => {
     );
 
     // Asking back for «ты» anywhere takes effect everywhere.
-    await tool.execute({ formal: false }, toolContext("eve", "web-session"));
+    const switched = await tool.execute(
+      { formal: false },
+      toolContext("eve", "web-session")
+    );
+    // The turn's instructions still say «вы»; the tool result is what the
+    // rest of this turn reads, on a Gateway model too.
+    expect(JSON.stringify(switched)).toContain("К человеку обращайся на «ты»");
     await agent.model.events["step.started"]?.(
       {},
       context("telegram", "telegram-session", [person("ну что там?")])

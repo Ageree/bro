@@ -408,11 +408,20 @@ const commandSchema = z.enum([
   "verify",
 ]);
 
-if (values.help || positionals.length === 0) {
+const [commandName, ...extraPositionals] = positionals;
+
+if (values.help || commandName === undefined) {
   console.log(usage);
 } else {
-  const command = commandSchema.safeParse(positionals[0]);
-  if (!command.success) {
+  const command = commandSchema.safeParse(commandName);
+  // A stray word is refused, not ignored: `pnpm bench run typo` would
+  // otherwise run every case against production.
+  if (!command.success || extraPositionals.length > 0) {
+    console.error(
+      command.success
+        ? `Лишние аргументы: ${extraPositionals.join(" ")}. Кейсы выбираются флагами --case, --group, --suite, --risk.\n`
+        : `Нет такой команды: ${commandName}.\n`
+    );
     console.error(usage);
     process.exitCode = 2;
   } else {

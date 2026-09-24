@@ -3,10 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client, type MessageStreamEvent } from "eve/client";
 import { afterEach, describe, expect, it } from "vitest";
+import { backgroundTurnMarker } from "@shared/chat/background-turn";
 import { ownDataTools } from "../../bench/approvals.ts";
 import type { BenchCase } from "../../bench/cases.ts";
 import {
   continueCase,
+  followCase,
   runCase,
   type DriverSettings,
 } from "../../bench/conversation.ts";
@@ -95,6 +97,16 @@ const delivered = (text: string) =>
   toolResult("send_message", { kind: "message", text });
 const browserRunning = () =>
   toolResult("browser_task", { runId: "run_1", status: "running" });
+/** The message a finished errand's outcome arrives as. */
+const browserReport = (runId = "run_1"): MessageStreamEvent => ({
+  data: {
+    message: `${backgroundTurnMarker}\n\nBrowser run ${runId} finished.\n\nOutcome: two trains.`,
+    sequence: 0,
+    turnId,
+  },
+  meta: meta(),
+  type: "message.received",
+});
 const turn = (...inner: MessageStreamEvent[]): MessageStreamEvent[] => [
   turnStarted(),
   ...inner,
@@ -231,7 +243,7 @@ describe("runCase and background errands", () => {
     );
     stopFake = () => fake.close();
     setTimeout(() => {
-      fake.append(turn(delivered("нашёл два поезда")));
+      fake.append(turn(browserReport(), delivered("нашёл два поезда")));
     }, 300);
 
     const settings = await settingsFor(fake.url, 10_000);
@@ -277,6 +289,62 @@ describe("runCase and background errands", () => {
       "script",
       "hint",
     ]);
+    // «всё ещё ищу» is not the report: the case is not done.
+    expect(record.driver.status).toBe("timed-out");
+    expect(record.driver.backgroundRuns).toEqual(["run_1"]);
+  }, 20_000);
+
+  it("keeps waiting after a nudge until the report itself arrives", async () => {
+    const fake = await startFakeEve((post) => {
+      if (post.message !== "ну что там?") {
+        return turn(browserRunning(), delivered("запустил"));
+      }
+      setTimeout(() => {
+        fake.append(turn(browserReport(), delivered("нашёл два поезда")));
+      }, 300);
+      return turn(delivered("всё ещё ищу"));
+    });
+    stopFake = () => fake.close();
+
+    const settings = await settingsFor(fake.url, 1500);
+    const record = await runCase(
+      new Client({ host: fake.url }),
+      benchCase,
+      [step],
+      [],
+      settings
+    );
+
+    expect(record.hints).toBe(1);
+    expect(record.driver.status).toBe("completed");
+    expect(record.driver.backgroundRuns).toEqual([]);
+    const log = await readFile(
+      join(settings.outDir, "case-under-test.log"),
+      "utf8"
+    );
+    expect(log).toContain("<- Бро: нашёл два поезда");
+  }, 20_000);
+});
+
+describe("followCase", () => {
+  it("records a timeout, not completion, when the report never comes", async () => {
+    const fake = await startFakeEve(() =>
+      turn(browserRunning(), delivered("запустил"))
+    );
+    stopFake = () => fake.close();
+    const settings = await settingsFor(fake.url);
+    const client = new Client({ host: fake.url });
+    const first = await runCase(client, benchCase, [step], [], settings);
+    expect(first.driver.status).toBe("timed-out");
+
+    const record = await followCase(client, first, {
+      ...settings,
+      backgroundWaitMs: 500,
+    });
+
+    expect(record.driver.status).toBe("timed-out");
+    expect(record.driver.statusDetail).toContain("не пришёл");
+    expect(record.driver.backgroundRuns).toEqual(["run_1"]);
   }, 20_000);
 });
 

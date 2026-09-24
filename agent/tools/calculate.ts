@@ -88,12 +88,59 @@ function parseDecimal(text: string, approximate = false) {
     : rational(digits, scale, approximate);
 }
 
+/**
+ * A nonzero value as `significand × 2^exponent`, the significand in [1, 2).
+ * `Number(n) / Number(d)` gives 0 or NaN once either side passes 1e308, as
+ * in `1e-400`, although its root `1e-200` is an ordinary double.
+ */
+function binaryParts(a: Rational) {
+  const n = a.n < 0n ? -a.n : a.n;
+  // 64 significant bits of n / d, whichever side is larger.
+  const scale = 64 - (bitLength(n) - bitLength(a.d));
+  const top =
+    scale >= 0 ? (n << BigInt(scale)) / a.d : n / (a.d << BigInt(-scale));
+  const topBits = bitLength(top) - 1;
+  return {
+    exponent: topBits - scale,
+    significand: Number(top) / 2 ** topBits,
+  };
+}
+
+/** The smallest double with full precision; below it digits get lost. */
+const smallestNormal = 2 ** -1022;
+
 function toNumber(a: Rational) {
-  const value = Number(a.n) / Number(a.d);
+  if (a.n === 0n) return 0;
+  const { exponent, significand } = binaryParts(a);
+  const value = (a.n < 0n ? -significand : significand) * 2 ** exponent;
   if (!Number.isFinite(value)) {
     throw new CalculationError("The number is too large for this function.");
   }
+  if (Math.abs(value) < smallestNormal) {
+    throw new CalculationError("The number is too small for this function.");
+  }
   return value;
+}
+
+/**
+ * A positive base to a fractional power. A base a double cannot hold is
+ * raised through its binary exponent instead, so `sqrt(1e-400)` is `1e-200`,
+ * not `0`.
+ */
+function fractionalPower(base: Rational, exponent: number) {
+  if (base.n === 0n) return fromNumber(0 ** exponent);
+  const parts = binaryParts(base);
+  if (Math.abs(parts.exponent) < 1000) {
+    return fromNumber(toNumber(base) ** exponent);
+  }
+  const scaled = parts.exponent * exponent;
+  const whole = Math.floor(scaled);
+  const value =
+    parts.significand ** exponent * 2 ** (scaled - whole) * 2 ** whole;
+  if (Math.abs(value) < smallestNormal) {
+    throw new CalculationError("The result is too small to compute.");
+  }
+  return fromNumber(value);
 }
 
 function fromNumber(value: number) {
@@ -147,7 +194,7 @@ function power(base: Rational, exponent: Rational) {
         "A negative number has no real fractional power."
       );
     }
-    return fromNumber(toNumber(base) ** toNumber(exponent));
+    return fractionalPower(base, toNumber(exponent));
   }
   const times = exponent.n < 0n ? -exponent.n : exponent.n;
   const bits = Math.max(bitLength(base.n), bitLength(base.d));

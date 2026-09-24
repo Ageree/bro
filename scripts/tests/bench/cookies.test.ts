@@ -27,6 +27,33 @@ describe("cookieHeader", () => {
     expect(cookieHeader(jar, new URL("http://brobro.tech"))).toBeUndefined();
   });
 
+  it("keeps a host-only cookie off subdomains", () => {
+    const scoped = [
+      "brobro.tech\tFALSE\t/\tTRUE\t0\thost_only\ta",
+      ".brobro.tech\tTRUE\t/\tTRUE\t0\twhole_domain\tb",
+    ].join("\n");
+
+    expect(cookieHeader(scoped, production)).toBe(
+      "host_only=a; whole_domain=b"
+    );
+    expect(cookieHeader(scoped, new URL("https://stage.brobro.tech"))).toBe(
+      "whole_domain=b"
+    );
+  });
+
+  it("sends a path-scoped cookie only inside its path", () => {
+    const scoped = [
+      "brobro.tech\tFALSE\t/foo\tTRUE\t0\tfoo\ta",
+      "brobro.tech\tFALSE\t/foo/\tTRUE\t0\tfoo_slash\tb",
+    ].join("\n");
+    const at = (path: string) =>
+      cookieHeader(scoped, new URL(path, production));
+
+    expect(at("/foo")).toBe("foo=a");
+    expect(at("/foo/bar")).toBe("foo=a; foo_slash=b");
+    expect(at("/foobar")).toBeUndefined();
+  });
+
   it("accepts a file with one Cookie header line", () => {
     expect(
       cookieHeader("Cookie: better-auth.session_token=xyz\n", production)

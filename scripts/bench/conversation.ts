@@ -69,7 +69,10 @@ class CaseRun {
     this.journal = journal;
     this.record = record;
     this.settings = settings;
-    this.tracker = new TurnTracker(record.driver.pendingInputs);
+    this.tracker = new TurnTracker(
+      record.driver.pendingInputs,
+      record.driver.backgroundRuns
+    );
   }
 
   async observe(session: ClientSession, event: MessageStreamEvent) {
@@ -83,6 +86,7 @@ class CaseRun {
     driver.status = status;
     driver.statusDetail = detail;
     driver.pendingInputs = [...this.tracker.pending.values()];
+    driver.backgroundRuns = this.tracker.backgroundRuns();
     for (const { state } of this.#handles) {
       const known = driver.sessions.find(
         (cursor) => cursor.sessionId === state.sessionId
@@ -95,12 +99,29 @@ class CaseRun {
     await this.journal.save(this.record);
   }
 
-  /** Saves where the case ended: blocked on a person, or done. */
+  /**
+   * Saves where the case ended: blocked on a person, still waiting for a
+   * browser errand's result, or done.
+   */
   async settle() {
     const blocked = this.tracker.blocked();
-    await (blocked
-      ? this.save(blocked[0], blocked[1])
-      : this.save("completed"));
+    if (blocked) {
+      await this.save(blocked[0], blocked[1]);
+      return;
+    }
+    if (this.tracker.awaitingBackground()) {
+      const { backgroundWaitMs } = this.settings;
+      const waited =
+        backgroundWaitMs > 0
+          ? `фоновый итог не пришёл за ${String(Math.round(backgroundWaitMs / 60_000))} мин`
+          : "фоновое поручение ещё идёт, ожидание выключено";
+      await this.save(
+        "timed-out",
+        `${waited}; дождаться: pnpm bench follow --out ${this.settings.outDir} --case ${this.record.caseId}`
+      );
+      return;
+    }
+    await this.save("completed");
   }
 
   async noteTurn(
@@ -275,6 +296,7 @@ function newRecord(
     cleanupDone: false,
     codesRequested: 0,
     driver: {
+      backgroundRuns: [],
       decisions: [],
       fixtures: steps.flatMap((step) =>
         step.files.map((file) => ({ file: file.path, shows: file.shows }))

@@ -158,3 +158,12 @@ export function chosenFormOfAddress(formOfAddress: FormOfAddress) {
   if (!formOfAddress.formal && !formOfAddress.name) return undefined;
   return russianAddress(formOfAddress).join(" ");
 }
+
+/**
+ * What `form_of_address` answers once the choice is saved. The turn's
+ * instructions were resolved before it, and a Gateway model gets no per-step
+ * note, so the tool result is where the rest of the turn learns the new form.
+ */
+export function savedFormOfAddressNote(formOfAddress: FormOfAddress) {
+  return `Saved. From this reply on, this replaces anything said earlier in this turn about how to address the person: ${russianAddress(formOfAddress).join(" ")}`;
+}

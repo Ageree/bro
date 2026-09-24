@@ -28,10 +28,11 @@ export function cookieHeader(text: string, host: URL, now = new Date()) {
   const jar = jarLines.map((line) => line.split("\t"));
   if (jar.length > 0 && jar.every((fields) => fields.length === 7)) {
     const pairs = jar.flatMap(
-      ([domain, , path, secure, expires, name, value]) => {
+      ([domain, includeSubdomains, path, secure, expires, name, value]) => {
         if (!domain || !path || !name || value === undefined) return [];
-        if (!domainMatches(domain, host.hostname)) return [];
-        if (!host.pathname.startsWith(path)) return [];
+        if (!domainMatches(domain, includeSubdomains === "TRUE", host.hostname))
+          return [];
+        if (!pathMatches(path, host.pathname)) return [];
         if (secure === "TRUE" && host.protocol !== "https:") return [];
         const expiresAt = Number(expires);
         if (expiresAt > 0 && expiresAt * 1000 <= now.getTime()) return [];
@@ -45,10 +46,22 @@ export function cookieHeader(text: string, host: URL, now = new Date()) {
   return header.replace(/^cookie:\s*/iu, "");
 }
 
-function domainMatches(domain: string, hostname: string) {
+/** A host-only cookie (`FALSE` in the jar) goes to its exact host alone. */
+function domainMatches(
+  domain: string,
+  includeSubdomains: boolean,
+  hostname: string
+) {
   const bare = domain.replace(/^\./u, "").toLowerCase();
   const host = hostname.toLowerCase();
-  return host === bare || host.endsWith(`.${bare}`);
+  return host === bare || (includeSubdomains && host.endsWith(`.${bare}`));
+}
+
+/** RFC 6265 §5.1.4: `/foo` covers `/foo` and `/foo/…`, not `/foobar`. */
+function pathMatches(cookiePath: string, requestPath: string) {
+  if (requestPath === cookiePath) return true;
+  if (!requestPath.startsWith(cookiePath)) return false;
+  return cookiePath.endsWith("/") || requestPath[cookiePath.length] === "/";
 }
 
 /** Reads a cookie file and fails loudly when it has nothing for `host`. */

@@ -133,6 +133,24 @@ describe("calculate", () => {
     });
   });
 
+  it("takes roots of numbers a double cannot hold instead of returning 0", async () => {
+    const results = await run(
+      "x = sqrt(1e-400)",
+      "x * 1e200",
+      "sqrt(9e400) / 1e200",
+      "pow(8e-390, 1/3) * 1e130"
+    );
+    expect(
+      results.slice(1).map((result) => ("value" in result ? result.value : ""))
+    ).toEqual(["1", "3", "2"]);
+    expect((await value("sqrt((1e-400)^2)")).error).toBe(
+      "The result is too small to compute."
+    );
+    expect((await value("pow(2, 1e-400)")).error).toBe(
+      "The number is too small for this function."
+    );
+  });
+
   it("reports a failing line and still computes the others", async () => {
     const results = await run("1 / 0", "2 + 2", "x * 2");
     expect(results).toEqual([

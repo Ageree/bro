@@ -120,6 +120,18 @@ describe("planCase", () => {
     );
   });
 
+  it("skips a group-chat test as unsupported, not as a missing --fill", () => {
+    const plan = planCase(
+      byId("d17-groups"),
+      parseFills(["[в группе из четырёх]=что угодно"])
+    );
+
+    expect(plan.kind).toBe("skipped");
+    if (plan.kind !== "skipped") return;
+    expect(plan.reason).toContain("групповом чате");
+    expect(plan.reason).not.toContain("--fill");
+  });
+
   it("skips a test that only observes", () => {
     expect(planCase(byId("d10-proactive"), noFills).kind).toBe("skipped");
   });
