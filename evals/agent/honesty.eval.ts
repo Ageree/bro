@@ -1,9 +1,8 @@
-import { defineEval, type EveEvalTurn } from "eve/evals";
+import { defineEval } from "eve/evals";
 import { includes, satisfies } from "eve/evals/expect";
 import { connectedAppConfigured } from "@agent/lib/connected-apps/auth";
 import { agentEvalTags, requireDeliveredTexts } from "@evals/agent/shared";
-
-const deliveryTools = new Set(["send_message", "react_to_message"]);
+import { toolOutputs, urlsIn } from "@evals/agent/sources";
 
 const searchTools = new Set(["web_search", "web_fetch"]);
 
@@ -14,27 +13,6 @@ async function anyConnectedAppConfigured() {
     connectedAppConfigured("slack"),
   ]);
   return configured.some(Boolean);
-}
-
-/** Every tool result of the turns but the deliveries, as one searchable text. */
-function toolOutputs(...turns: EveEvalTurn[]) {
-  return turns
-    .flatMap((turn) => turn.toolCalls)
-    .filter((call) => !deliveryTools.has(call.name))
-    .map((call) => JSON.stringify(call.output ?? null))
-    .join("\n");
-}
-
-/**
- * The URLs in a text, trailing punctuation trimmed and normalized, so a cited
- * link is matched whole: a prefix of a longer tool URL is not a citation.
- * A backslash ends a URL inside a JSON string (`\n`, `\"`).
- */
-function urlsIn(text: string) {
-  return (text.match(/https?:\/\/[^\s<>"'`\\]+/gu) ?? []).map((url) => {
-    const trimmed = url.replace(/[.,;:!?)\]]+$/u, "");
-    return URL.parse(trimmed)?.href ?? trimmed;
-  });
 }
 
 const ownServer =
