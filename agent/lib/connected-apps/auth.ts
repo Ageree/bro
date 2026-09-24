@@ -3,6 +3,7 @@ import {
   ConnectorInstallationRequiredError,
   type ConnectTokenParams,
   type ConnectTokenSubject,
+  getConnectorMetadata,
   getTokenResponse,
   NoValidTokenError,
   startAuthorization,
@@ -115,6 +116,61 @@ function isTransientConnectError(error: ConnectError) {
 }
 
 /**
+ * Whether a failure before or from Vercel Connect is worth retrying shortly.
+ * fetch reports a network failure as a TypeError; anything else thrown before
+ * the request, such as a missing Vercel OIDC token, is configuration.
+ */
+function isTransientFailure(error: Error) {
+  return error instanceof ConnectError
+    ? isTransientConnectError(error)
+    : error instanceof TypeError;
+}
+
+/** How long a known connector state is trusted before it is checked again. */
+const connectorStateLifetimeMs = 5 * 60_000;
+
+const connectorStates = new Map<
+  ConnectedApp,
+  { readonly checkedAt: number; readonly state: Promise<boolean | undefined> }
+>();
+
+async function readConnectorAttached(app: ConnectedApp) {
+  try {
+    await getConnectorMetadata(appSettings[app].connector);
+    return true;
+  } catch (error) {
+    if (!(error instanceof Error && isTransientFailure(error))) return false;
+    console.warn("[connected-apps] connector check failed", {
+      app,
+      status: error instanceof ConnectError ? error.status : undefined,
+    });
+    return undefined;
+  }
+}
+
+/**
+ * Whether this deployment has a connector for the app at all, whoever the
+ * person is. The Notion and Slack tools and connections exist only then, so
+ * the model cannot take a missing connector for a connected account. A
+ * Vercel Connect outage keeps them: an approval parked before it must still
+ * find its tool when the turn resumes. The answer is kept for a few minutes
+ * per instance, since every turn asks.
+ */
+export async function connectedAppConfigured(app: ConnectedApp) {
+  const now = Date.now();
+  const cached = connectorStates.get(app);
+  if (cached && now - cached.checkedAt < connectorStateLifetimeMs) {
+    return (await cached.state) ?? true;
+  }
+  const state = readConnectorAttached(app);
+  connectorStates.set(app, { checkedAt: now, state });
+  const attached = await state;
+  // An unknown answer is asked again on the next turn.
+  if (attached === undefined) connectorStates.delete(app);
+  return attached ?? true;
+}
+
+/**
  * Reads the live grant for one app. `unavailable` means the deployment has
  * no working connector for it; `error` means Vercel Connect did not answer
  * just now and the same read may succeed shortly.
@@ -143,13 +199,9 @@ export async function readConnectedApp(
     if (error instanceof ConnectorInstallationRequiredError) {
       return { accountLabel: null, state: "unavailable" };
     }
-    // fetch reports a network failure as a TypeError; anything else thrown
-    // before the request, such as a missing Vercel OIDC token, is configuration.
-    const transient =
-      error instanceof ConnectError
-        ? isTransientConnectError(error)
-        : error instanceof TypeError;
-    if (!transient) return { accountLabel: null, state: "unavailable" };
+    if (!(error instanceof Error && isTransientFailure(error))) {
+      return { accountLabel: null, state: "unavailable" };
+    }
     console.warn("[connected-apps] connection check failed", {
       app,
       code: error instanceof ConnectError ? error.code : undefined,

@@ -1,27 +1,34 @@
-import type { ApprovalContext } from "eve/tools/approval";
-import type { ToolContext } from "eve/tools";
+import type { ApprovalContext, ApprovalPolicy } from "eve/tools/approval";
+import type { DynamicResolveContext, ToolContext } from "eve/tools";
 import type * as ConnectModule from "@vercel/connect";
-import type { getTokenResponse, startAuthorization } from "@vercel/connect";
+import type {
+  getConnectorMetadata,
+  getTokenResponse,
+  startAuthorization,
+} from "@vercel/connect";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
 const connect = vi.hoisted(() => ({
+  getConnectorMetadata: vi.fn<typeof getConnectorMetadata>(),
   getTokenResponse: vi.fn<typeof getTokenResponse>(),
   startAuthorization: vi.fn<typeof startAuthorization>(),
 }));
 
 vi.mock("@vercel/connect", async (importOriginal) => ({
   ...(await importOriginal<typeof ConnectModule>()),
+  getConnectorMetadata: connect.getConnectorMetadata,
   getTokenResponse: connect.getTokenResponse,
   startAuthorization: connect.startAuthorization,
 }));
 
 import {
+  ConnectError,
   ConnectorInstallationRequiredError,
   UserAuthorizationRequiredError,
 } from "@vercel/connect";
-import notionConnection from "@agent/connections/notion";
-import slackConnection from "@agent/connections/slack";
+import notionConnections from "@agent/connections/notion";
+import slackConnections from "@agent/connections/slack";
 import { connectApp } from "@agent/tools/connect_app";
 import { notionAddTask } from "@agent/tools/notion";
 import { slackSendMessage } from "@agent/tools/slack";
@@ -98,10 +105,72 @@ async function connectTo(app: "notion" | "slack") {
   return result;
 }
 
-function decide(approval: typeof notionConnection.approval, toolName: string) {
-  if (!approval) throw new Error("Expected an approval policy.");
-  const policy = "request" in approval ? approval.request : approval;
-  return policy({
+const attachedConnector = {
+  createdAt: 0,
+  id: "scl_1",
+  name: "connector",
+  service: "oauth",
+  type: "oauth",
+  uid: "connector",
+  updatedAt: 0,
+  vendor: {},
+};
+
+function resolveContext(
+  authenticator = "photon-imessage",
+  initiatorAttributes?: Record<string, string>
+) {
+  const current = {
+    attributes: { workspaceId: "personal:workspace" },
+    authenticator,
+    principalId: "user-1",
+    principalType: "user",
+  };
+  return {
+    channel: { kind: "channel:photon", metadata: {} },
+    messages: [],
+    model: null,
+    session: {
+      auth: {
+        current,
+        initiator: initiatorAttributes
+          ? {
+              ...current,
+              attributes: { ...current.attributes, ...initiatorAttributes },
+            }
+          : null,
+      },
+      id: "session-1",
+    },
+  } satisfies DynamicResolveContext;
+}
+
+/** The parts of one resolved OpenAPI connection these tests look at. */
+const resolvedConnectionSchema = z.object({
+  approval: z.custom<ApprovalPolicy>(
+    (value) => z.function().safeParse(value).success
+  ),
+  baseUrl: z.string(),
+  operations: z.unknown(),
+});
+
+/** The one connection a dynamic connection file resolves for this turn. */
+async function resolveConnection(
+  connections: typeof notionConnections,
+  context: DynamicResolveContext = resolveContext()
+) {
+  const resolved = await connections.events["turn.started"]?.({}, context);
+  return resolved ? resolvedConnectionSchema.parse(resolved) : null;
+}
+
+async function requireConnection(connections: typeof notionConnections) {
+  const connection = await resolveConnection(connections);
+  if (!connection) throw new Error("Expected one resolved connection.");
+  return connection;
+}
+
+function decide(approval: ApprovalPolicy, toolName: string) {
+  return approval({
     ...toolContext(),
     approvedTools: new Set<string>(),
     toolInput: {},
@@ -121,8 +190,12 @@ function requestBody(call: number) {
 }
 
 describe("connection approval", () => {
-  it("lets Notion reads through and asks before every write", () => {
-    const approval = notionConnection.approval;
+  beforeEach(() => {
+    connect.getConnectorMetadata.mockResolvedValue(attachedConnector);
+  });
+
+  it("lets Notion reads through and asks before every write", async () => {
+    const { approval } = await requireConnection(notionConnections);
     expect(decide(approval, "notion__post-search")).toBe("not-applicable");
     expect(decide(approval, "notion__retrieve-page-markdown")).toBe(
       "not-applicable"
@@ -132,12 +205,12 @@ describe("connection approval", () => {
     expect(decide(approval, "notion__something-new")).toBe("user-approval");
   });
 
-  it("keeps Slack's connection read-only", () => {
-    const approval = slackConnection.approval;
+  it("keeps Slack's connection read-only", async () => {
+    const { approval, operations } = await requireConnection(slackConnections);
     expect(decide(approval, "slack__users_list")).toBe("not-applicable");
     const allowed = z
       .object({ allow: z.array(z.string()) })
-      .parse(slackConnection.operations).allow;
+      .parse(operations).allow;
     expect(allowed).not.toContain("chat_postMessage");
     expect(
       allowed.every((operation) =>
@@ -434,5 +507,98 @@ describe("connect_app", () => {
     const scopes = connect.getTokenResponse.mock.calls[0]?.[1]?.scopes ?? [];
     expect(scopes).toContain("chat:write");
     expect(scopes).toContain("users:read");
+  });
+});
+
+describe("Notion and Slack exist only with a connector on the deployment", () => {
+  // The connector check is kept per instance, so each case loads fresh modules.
+  async function load() {
+    vi.resetModules();
+    const [notionTools, slackTools, notion, slack] = await Promise.all([
+      import("@agent/tools/notion"),
+      import("@agent/tools/slack"),
+      import("@agent/connections/notion"),
+      import("@agent/connections/slack"),
+    ]);
+    return {
+      async connections() {
+        return [
+          await resolveConnection(notion.default),
+          await resolveConnection(slack.default),
+        ].map((connection) => connection !== null);
+      },
+      async tools(context: DynamicResolveContext = resolveContext()) {
+        const resolved = await Promise.all(
+          [notionTools.default, slackTools.default].map(async (definition) =>
+            definition.events["turn.started"]?.({}, context)
+          )
+        );
+        return resolved.flatMap((tools) =>
+          tools && !("execute" in tools) ? Object.keys(tools) : []
+        );
+      },
+    };
+  }
+
+  it("hides the tools and connections when Vercel Connect has no connector", async () => {
+    connect.getConnectorMetadata.mockRejectedValue(
+      new ConnectError("Connector not found", { status: 404 })
+    );
+    const apps = await load();
+
+    expect(await apps.tools()).toEqual([]);
+    expect(await apps.connections()).toEqual([false, false]);
+    expect(connect.getConnectorMetadata.mock.calls.map(([uid]) => uid)).toEqual(
+      ["notion", "slack"]
+    );
+  });
+
+  it("hides them when the deployment cannot reach Vercel Connect at all", async () => {
+    connect.getConnectorMetadata.mockRejectedValue(
+      new Error("The 'x-vercel-oidc-token' header is missing")
+    );
+    const apps = await load();
+
+    expect(await apps.tools()).toEqual([]);
+    expect(await apps.connections()).toEqual([false, false]);
+  });
+
+  it("offers them with a connector and asks Vercel Connect once per app", async () => {
+    connect.getConnectorMetadata.mockResolvedValue(attachedConnector);
+    const apps = await load();
+
+    expect(await apps.tools()).toEqual([
+      "notion-add-task",
+      "slack-send-message",
+    ]);
+    expect(await apps.connections()).toEqual([true, true]);
+    expect(await apps.tools()).toHaveLength(2);
+    expect(connect.getConnectorMetadata).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps them through a Vercel Connect outage and asks again next turn", async () => {
+    connect.getConnectorMetadata.mockRejectedValue(
+      new ConnectError("Service unavailable", { status: 503 })
+    );
+    const apps = await load();
+
+    expect(await apps.tools()).toEqual([
+      "notion-add-task",
+      "slack-send-message",
+    ]);
+    expect(await apps.tools()).toHaveLength(2);
+    expect(connect.getConnectorMetadata).toHaveBeenCalledTimes(4);
+  });
+
+  it("leaves them out of Bro's own checks without asking Vercel Connect", async () => {
+    connect.getConnectorMetadata.mockResolvedValue(attachedConnector);
+    const apps = await load();
+
+    expect(
+      await apps.tools(
+        resolveContext("scheduled-worker", { scheduledRunKind: "proactive" })
+      )
+    ).toEqual([]);
+    expect(connect.getConnectorMetadata).not.toHaveBeenCalled();
   });
 });
