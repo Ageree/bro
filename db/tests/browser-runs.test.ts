@@ -2,6 +2,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import * as schema from "../schema";
 
 const databases: PGlite[] = [];
@@ -216,13 +217,19 @@ describe("browser run persistence", () => {
     const browserRuns = await browserRunsDatabase();
     const { sessionId: _sessionId, ...withoutSession } = conversation();
 
-    await expect(
-      browserRuns.createBrowserRun(alice, {
+    const refused = await browserRuns
+      .createBrowserRun(alice, {
         ...withoutSession,
         id: runId,
         status: "running",
       })
-    ).rejects.toThrow();
+      .catch((cause: unknown) => cause);
+    const constraintRefusal = z.object({
+      cause: z.object({
+        message: z.string().includes("browser_runs_session_id_check"),
+      }),
+    });
+    expect(constraintRefusal.safeParse(refused).success).toBe(true);
 
     const queued = await browserRuns.createQueuedBrowserRun(alice, {
       ...withoutSession,
