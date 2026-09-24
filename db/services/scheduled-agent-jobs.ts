@@ -191,16 +191,19 @@ export async function updateScheduledAgentJob(
  * Moves the person's calendar schedules kept in their old timezone to the new
  * one, so «в 10 утра» stays 10:00 where they live now. A schedule set in
  * another zone on purpose («по Нью-Йорку») keeps its zone, and a one-time
- * reminder is an instant that does not move.
+ * reminder is an instant that does not move. It runs in the transaction of
+ * the profile change (`database`), so the zone and the schedules move
+ * together or not at all.
  */
 export async function followScheduleTimeZone(
   scope: AccessScope,
   from: string,
   to: string,
-  now = new Date()
+  now = new Date(),
+  database: Pick<typeof db, "query" | "update"> = db
 ) {
   if (from === to) return 0;
-  const jobs = await db.query.scheduledAgentJobs.findMany({
+  const jobs = await database.query.scheduledAgentJobs.findMany({
     where: and(
       ownedTasks(scope),
       sql`${scheduledAgentJobs.timing}->>'kind' = 'calendar'`,
@@ -212,7 +215,7 @@ export async function followScheduleTimeZone(
       const timing = storedScheduleTimingSchema.parse(job.timing);
       if (timing.kind !== "calendar") return false;
       const followed = { ...timing, timezone: to };
-      const [updated] = await db
+      const [updated] = await database
         .update(scheduledAgentJobs)
         .set({
           nextRunAt:

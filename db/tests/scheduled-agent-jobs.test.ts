@@ -718,6 +718,76 @@ describe("handing an answer to a waiting worker", { timeout: 30_000 }, () => {
   }
 });
 
+describe("following the person's timezone", { timeout: 30_000 }, () => {
+  const alice = { userId: "alice", workspaceId: "workspace:alice" };
+  const now = new Date("2026-09-24T09:00:00.000Z");
+  // «Каждое 5-е число в 10 утра».
+  const rent = {
+    conversationChannel: "telegram" as const,
+    conversationId: "100::",
+    missedRunPolicy: "run_latest" as const,
+    prompt: "Напомнить оплатить квартиру.",
+    timing: {
+      dayOfMonth: 5,
+      frequency: "monthly" as const,
+      kind: "calendar" as const,
+      localTime: "10:00",
+      timezone: "Europe/Moscow",
+    },
+  };
+
+  it("moves the schedules to the zone the profile ends with when two changes race", async () => {
+    const { jobs, profiles } = await openDatabase();
+    const scope = await import("@db/services/scope");
+    await scope.ensureScope(alice);
+    const job = await jobs.createScheduledAgentJob(alice, rent, now);
+
+    await Promise.all([
+      profiles.patchUserProfile(alice, { timezone: "Asia/Yekaterinburg" }),
+      profiles.patchUserProfile(alice, { timezone: "Asia/Novosibirsk" }),
+      profiles.patchUserProfile(alice, { firstName: "Алиса" }),
+    ]);
+
+    const profile = await profiles.readUserProfile(alice);
+    expect(profile.firstName).toBe("Алиса");
+    const [listed] = await jobs.listScheduledAgentJobs(alice);
+    expect(listed).toMatchObject({
+      id: job.id,
+      timing: { timezone: profile.timezone },
+    });
+  });
+
+  it("keeps the old zone when the schedules could not follow", async () => {
+    const { db, jobs, profiles } = await openDatabase();
+    const scope = await import("@db/services/scope");
+    await scope.ensureScope(alice);
+    await jobs.createScheduledAgentJob(alice, rent, now);
+    // A stored schedule the move cannot read makes it fail midway.
+    await db.insert(schema.scheduledAgentJobs).values({
+      ...rent,
+      createdByUserId: alice.userId,
+      nextRunAt: now,
+      status: "active",
+      timing: { kind: "calendar", timezone: "Europe/Moscow" },
+      workspaceId: alice.workspaceId,
+    });
+
+    await expect(
+      profiles.patchUserProfile(alice, { timezone: "Asia/Yekaterinburg" })
+    ).rejects.toThrow();
+
+    expect((await profiles.readUserProfile(alice)).timezone).toBeNull();
+    expect(
+      await db.query.scheduledAgentJobs.findMany({
+        columns: { timing: true },
+      })
+    ).toEqual([
+      { timing: expect.objectContaining({ timezone: "Europe/Moscow" }) },
+      { timing: expect.objectContaining({ timezone: "Europe/Moscow" }) },
+    ]);
+  });
+});
+
 let migrated: Promise<Blob> | undefined;
 
 // Each case starts from a clone of one migrated database.
@@ -747,6 +817,7 @@ async function openDatabase() {
   return {
     db: pgliteDatabase,
     jobs: await import("@db/services/scheduled-agent-jobs"),
+    profiles: await import("@db/services/user-profile"),
   };
 }
 
