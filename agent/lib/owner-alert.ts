@@ -1,11 +1,15 @@
+import { z } from "zod";
 import {
   claimOperationalAlert,
   clearOperationalAlert,
+  confirmOperationalAlert,
+  releaseOperationalAlertClaim,
 } from "@db/services/operational-alerts";
 import { env } from "@shared/environment";
 
 const telegramApiBaseUrl = "https://api.telegram.org";
 const requestTimeoutMs = 10_000;
+const telegramReplySchema = z.object({ ok: z.boolean() });
 
 /**
  * Tell the deployment's owner, in their Telegram chat, about a condition only
@@ -13,8 +17,9 @@ const requestTimeoutMs = 10_000;
  * What was already said lives in `operational_alerts`, so two ticks that see
  * the same condition cannot both send, and the alert repeats only once
  * `repeatAfterMs` has passed or the value fell to half. An alert nobody
- * received is forgotten at once, so the next tick tries again. False when
- * nothing was sent: no owner chat is configured, or it was already said.
+ * received is forgotten at once, so the next tick tries again; a sender that
+ * died mid-send leaves a claim that lapses in two minutes. False when nothing
+ * was sent: no owner chat is configured, or it was already said.
  */
 export async function alertOwner(
   key: string,
@@ -30,20 +35,29 @@ export async function alertOwner(
   const ownerChatId = env.TELEGRAM_OWNER_CHAT_ID;
   if (!botToken || !ownerChatId) return false;
   const now = options.now ?? new Date();
-  const claimed = await claimOperationalAlert(key, options.value ?? 0, {
+  const claim = await claimOperationalAlert(key, options.value ?? 0, {
     // Without a drop that counts, only time repeats the alert.
     minimumDrop: options.minimumDrop ?? Number.MAX_SAFE_INTEGER,
     now,
     repeatAfterMs: options.repeatAfterMs,
   });
-  if (!claimed) return false;
+  if (!claim) return false;
   try {
     await sendOwnerMessage(botToken, ownerChatId, text);
-    return true;
   } catch (error) {
-    await clearOperationalAlert(key, now);
+    await releaseOperationalAlertClaim(key, claim, now);
     throw error;
   }
+  try {
+    await confirmOperationalAlert(key, claim, now);
+  } catch (error) {
+    // It was sent; at worst the claim lapses and the owner hears it twice.
+    console.warn("[owner-alert] the sent alert could not be recorded", {
+      cause: error,
+      key,
+    });
+  }
+  return true;
 }
 
 /** The condition is over: the next time it happens, the owner hears at once. */
@@ -65,7 +79,12 @@ async function sendOwnerMessage(
       signal: AbortSignal.timeout(requestTimeoutMs),
     }
   );
-  if (!response.ok) {
+  // Telegram reports a refused message in the body's `ok`, which a proxy or
+  // an edge in between may carry with a 2xx.
+  const accepted = telegramReplySchema.safeParse(
+    await response.json().catch(() => undefined)
+  ).data?.ok;
+  if (!response.ok || accepted !== true) {
     throw new Error(
       `Telegram owner alert failed (${String(response.status)}).`
     );
