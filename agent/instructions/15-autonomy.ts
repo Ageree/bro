@@ -9,12 +9,13 @@ import type { AccessScope } from "@shared/identity/access-scope";
 import {
   describeSpendRule,
   describeStandingAction,
-  exclusionLabels,
   formatRub,
   remainingUnderRule,
+  remainingUnderStandingAction,
   type SpendEntry,
   type SpendLimitPolicy,
   spentUnderRule,
+  standingActionOverridden,
 } from "@shared/spending/limit";
 import autonomy from "./content/autonomy.md?raw";
 
@@ -25,13 +26,19 @@ import autonomy from "./content/autonomy.md?raw";
  */
 export function spendLimitInstructions(
   policy: SpendLimitPolicy | undefined,
-  entries: readonly SpendEntry[]
+  entries: readonly SpendEntry[],
+  standingEntries: readonly SpendEntry[] = []
 ) {
-  const excluded = exclusionLabels(policy);
-  const never =
-    excluded.length > 0
-      ? `Без спроса никогда: ${excluded.join(", ")}.`
-      : undefined;
+  const sites = policy?.excludedMerchants ?? [];
+  const categories = policy?.excludedCategories ?? [];
+  // A category is the spend limit's: standing permissions are per kind of
+  // errand and no category matches them.
+  const never = [
+    sites.length > 0 ? `Без спроса никогда: ${sites.join(", ")}.` : undefined,
+    categories.length > 0
+      ? `По лимиту без спроса не оплачивай: ${categories.map((category) => `«${category}»`).join(", ")}.`
+      : undefined,
+  ];
   const limit =
     !policy || policy.rules.length === 0
       ? [
@@ -44,7 +51,11 @@ export function spendLimitInstructions(
               `- ${describeSpendRule(rule)}: потрачено ${formatRub(spentUnderRule(rule, entries))}, осталось ${formatRub(remainingUnderRule(rule, entries))}.`
           ),
         ];
-  return [...limit, ...standingPermissionLines(policy), never]
+  return [
+    ...limit,
+    ...standingPermissionLines(policy, standingEntries),
+    ...never,
+  ]
     .filter((line) => line !== undefined)
     .join("\n");
 }
@@ -54,12 +65,21 @@ export function spendLimitInstructions(
  * prompt the model asks in text about exactly what the person asked it to
  * stop asking about.
  */
-function standingPermissionLines(policy: SpendLimitPolicy | undefined) {
+function standingPermissionLines(
+  policy: SpendLimitPolicy | undefined,
+  entries: readonly SpendEntry[]
+) {
   const actions = policy?.actions ?? [];
-  if (actions.length === 0) return [];
+  if (!policy || actions.length === 0) return [];
   return [
-    "Постоянные разрешения — в разговоре с человеком такие поручения запускай сразу, без вопроса и без карточки (инструмент сверит сам; фоновая работа от его имени не действует и с ними):",
-    ...actions.map((rule) => `- ${describeStandingAction(rule)}.`),
+    "Постоянные разрешения — когда человек сам просит такое поручение, запускай его сразу, без вопроса и без карточки (инструмент сверит сам; на отчёт браузера и в фоновой работе они не действуют):",
+    ...actions.map((rule) =>
+      standingActionOverridden(policy, rule)
+        ? `- ${describeStandingAction(rule)} — не действует: сайт в исключениях.`
+        : rule.maxRub === null
+          ? `- ${describeStandingAction(rule)}.`
+          : `- ${describeStandingAction(rule)}; в этом месяце осталось ${formatRub(remainingUnderStandingAction(rule, entries))}.`
+    ),
   ];
 }
 
@@ -68,10 +88,14 @@ async function currentSpendLimit(scope: AccessScope, now: Date) {
     readSpendLimit(scope),
     readWorkspaceTimeZone(scope),
   ]);
-  const entries = policy
-    ? await listSpendEntries(scope, localMonthKey(now, timeZone))
-    : [];
-  return spendLimitInstructions(policy, entries);
+  const month = localMonthKey(now, timeZone);
+  const [entries, standingEntries] = policy
+    ? await Promise.all([
+        listSpendEntries(scope, month),
+        listSpendEntries(scope, month, { source: "standing" }),
+      ])
+    : [[], []];
+  return spendLimitInstructions(policy, entries, standingEntries);
 }
 
 export default defineDynamic({

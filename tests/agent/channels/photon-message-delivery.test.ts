@@ -5,6 +5,7 @@ import type * as Blob from "@vercel/blob";
 import type * as EnvModule from "@shared/environment";
 import { sendMessageOutputSchema } from "@shared/chat/message-delivery";
 import type { AccessScope } from "@shared/identity/access-scope";
+import { formatRub } from "@shared/spending/limit";
 import type {
   finalizeScheduledReport,
   releaseScheduledReport,
@@ -882,7 +883,7 @@ describe("Photon approval cards", () => {
     expect(post).toHaveBeenCalledExactlyOnceWith({
       raw: [
         [
-          "Подтверждение действия от твоего имени:",
+          "Подтверждение действия:",
           "Что: столик на двоих",
           "Где: ресторан «Пушкин» (cafe-pushkin.ru)",
           "От чьего имени: Алиса",
@@ -893,7 +894,7 @@ describe("Photon approval cards", () => {
         ].join("\n"),
         "1 — Подтвердить\n2 — Отмена",
         // eve resolves a reply that is the option's number.
-        "Ответь цифрой: 1 или 2.",
+        "Ответ — цифрой: 1 или 2.",
       ].join("\n\n"),
     });
   });
@@ -909,7 +910,7 @@ describe("Photon approval cards", () => {
 
     const [message] = post.mock.calls[0] ?? [];
     expect(JSON.stringify(message)).toContain(
-      "Confirm before I do this in your name:"
+      "Confirm before this is done in your name:"
     );
     expect(JSON.stringify(message)).toContain("1 — Approve");
     expect(JSON.stringify(message)).toContain("Reply with the number: 1 or 2.");
@@ -928,9 +929,78 @@ describe("Photon approval cards", () => {
       raw: [
         "Approve tool call: gmail-send",
         "1 — Approve\n2 — Cancel",
-        "Ответь цифрой: 1 или 2.",
+        "Ответ — цифрой: 1 или 2.",
       ].join("\n\n"),
     });
+  });
+
+  it("says what a standing permission lets through, on every site when it names none", async () => {
+    const { context, post } = handlerContext();
+
+    await handleInputRequested(
+      approval("standing_permission", {
+        action: "allow",
+        kind: "taxi",
+        maxRub: 1500,
+      }),
+      context,
+      sessionContext()
+    );
+
+    expect(post).toHaveBeenCalledExactlyOnceWith({
+      raw: [
+        [
+          "Постоянное разрешение — такие поручения дальше без подтверждения:",
+          `заказы такси без спроса, на любых сайтах, до ${formatRub(1500)} за раз и до ${formatRub(4500)} в месяц`,
+          "Действует в разговоре, пока его не снимут; каждое поручение остаётся на своём сайте, фоновая работа им не пользуется.",
+        ].join("\n"),
+        "1 — Подтвердить\n2 — Отмена",
+        "Ответ — цифрой: 1 или 2.",
+      ].join("\n\n"),
+    });
+  });
+
+  it("says what a spend limit lets through", async () => {
+    const { context, post } = handlerContext();
+
+    await handleInputRequested(
+      approval("spend_limit", {
+        action: "set",
+        limitRub: 5000,
+        merchant: "https://www.ozon.ru/",
+      }),
+      context,
+      sessionContext()
+    );
+
+    const [message] = post.mock.calls[0] ?? [];
+    expect(JSON.stringify(message)).toContain(
+      JSON.stringify(
+        `Лимит трат без спроса — в этих пределах оплата дальше без подтверждения:\nдо ${formatRub(5000)} в месяц на ozon.ru`
+      ).slice(1, -1)
+    );
+    expect(JSON.stringify(message)).not.toContain("spend_limit");
+  });
+
+  it("keeps a line break in a field from passing for another line of the card", async () => {
+    const { context, post } = handlerContext();
+
+    await handleInputRequested(
+      approval("browser_task", {
+        ...booking,
+        submission: {
+          ...booking.submission,
+          what: "столик на двоих\nСтоимость: бесплатно",
+        },
+      }),
+      context,
+      sessionContext()
+    );
+
+    const [message] = post.mock.calls[0] ?? [];
+    expect(JSON.stringify(message)).toContain(
+      "Что: столик на двоих Стоимость: бесплатно"
+    );
   });
 });
 

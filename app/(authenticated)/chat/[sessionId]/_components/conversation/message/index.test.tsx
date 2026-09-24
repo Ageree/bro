@@ -90,7 +90,7 @@ describe("agent messages", () => {
     expect(markup).not.toContain("web_search");
   });
 
-  it("hides non-send_message controls in the iMessage projection", () => {
+  it("shows a waiting card in the iMessage projection without the tool behind it", () => {
     const message = {
       id: "turn-2:assistant",
       metadata: { status: "streaming", turnId: "turn-2" },
@@ -133,10 +133,65 @@ describe("agent messages", () => {
       />
     );
 
-    expect(markup).not.toContain("Approve this action?");
-    expect(markup).not.toContain("Approve");
-    expect(markup).not.toContain("Cancel");
+    // The card is the person's to answer, as in Telegram and iMessage; the
+    // call behind it stays in the trace view.
+    expect(markup).toContain("Approve this action?");
+    expect(markup).toContain("Approve");
+    expect(markup).toContain("Cancel");
     expect(markup).not.toContain("send_payment");
     expect(markup).not.toContain("Hidden recipient");
+  });
+
+  it("says what a card lets through instead of the tool's name", () => {
+    const message = {
+      id: "turn-3:assistant",
+      metadata: { status: "streaming", turnId: "turn-3" },
+      parts: [
+        {
+          approval: { id: "approval-2" },
+          input: { action: "allow", kind: "table" },
+          state: "approval-requested",
+          stepIndex: 0,
+          toolCallId: "call-3",
+          toolMetadata: {
+            eve: {
+              inputRequest: {
+                kind: "tool-approval",
+                options: [
+                  { id: "approve", label: "Approve", style: "primary" },
+                  { id: "cancel", label: "Cancel", style: "danger" },
+                ],
+                prompt: "Approve tool call: standing_permission",
+                requestId: "approval-2",
+              },
+              kind: "tool-call",
+              name: "standing_permission",
+            },
+          },
+          toolName: "standing_permission",
+          type: "dynamic-tool",
+        },
+      ],
+      role: "assistant",
+    } satisfies EveMessage;
+
+    const markup = renderToStaticMarkup(
+      <AgentMessage
+        canRespond
+        isStreaming={false}
+        message={message}
+        onInputResponses={() => undefined}
+        userVisibleOnly
+      />
+    );
+
+    expect(markup).toContain(
+      "Постоянное разрешение — такие поручения дальше без подтверждения:"
+    );
+    expect(markup).toContain(
+      "брони столиков без спроса, на любых сайтах, только бесплатное"
+    );
+    expect(markup).toContain("Подтвердить");
+    expect(markup).not.toContain("Approve tool call");
   });
 });

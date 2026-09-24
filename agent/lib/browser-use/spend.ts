@@ -7,7 +7,11 @@ import {
   settleSpendReservation,
 } from "@db/services/spending";
 import { z } from "zod";
-import { formatRub, remainingForTarget } from "@shared/spending/limit";
+import {
+  formatRub,
+  remainingForStandingPayment,
+  remainingForTarget,
+} from "@shared/spending/limit";
 import {
   browserRunNeeds,
   type BrowserRunNeed,
@@ -111,23 +115,54 @@ export function reportedCharge(
   };
 }
 
-async function remainingLine(
-  run: SpendRun,
-  entry: NonNullable<Awaited<ReturnType<typeof readSpendEntryForRun>>>
-) {
+type HeldEntry = NonNullable<Awaited<ReturnType<typeof readSpendEntryForRun>>>;
+
+async function remainingLine(run: SpendRun, entry: HeldEntry) {
+  if (entry.source === "card") return undefined;
   const scope = { userId: run.createdByUserId, workspaceId: run.workspaceId };
   const [policy, entries] = await Promise.all([
     readSpendLimit(scope),
-    listSpendEntries(scope, entry.periodKey),
+    listSpendEntries(scope, entry.periodKey, { source: entry.source }),
   ]);
-  const remaining = policy && remainingForTarget(policy, entry, entries);
-  return remaining === undefined
-    ? undefined
+  if (!policy) return undefined;
+  const remaining =
+    entry.source === "standing"
+      ? remainingForStandingPayment(policy, entry, entries)
+      : remainingForTarget(policy, entry, entries);
+  if (remaining === undefined) return undefined;
+  return entry.source === "standing"
+    ? `Left under the standing permission this month: ${formatRub(remaining)}.`
     : `Left under the limit this month: ${formatRub(remaining)}.`;
 }
 
 /**
- * Close the spend-limit reservation of a settled run and say what the
+ * How the report speaks of what allowed a payment, by what the payment was
+ * held on: the monthly spend limit, the approval card the person confirmed
+ * with its total, or a standing permission.
+ */
+const heldOn = {
+  card: {
+    allowed: "the approval card the person confirmed",
+    paid: "This errand paid with the saved card, on the approval card the person confirmed",
+    receipt:
+      "Tell the person as a receipt — what was bought, where, the total and the order number.",
+  },
+  limit: {
+    allowed: "the limit",
+    paid: "This errand paid on its own under the person's standing spend limit",
+    receipt:
+      "Tell the person as a receipt — what was bought, where, the total and the order number — and how much of the limit is left. They did not approve this payment in the conversation and do not need to now.",
+  },
+  standing: {
+    allowed: "their standing permission",
+    paid: "This errand paid on its own under the person's standing permission",
+    receipt:
+      "Tell the person as a receipt — what was bought, where, the total and the order number — and how much of the permission's month is left. They did not approve this payment in the conversation and do not need to now.",
+  },
+} as const;
+
+/**
+ * Close the payment reservation of a settled run and say what the
  * coordinator should tell the person about it. An order is a charge and gets
  * reported as a receipt; a run still waiting on a code keeps its reservation
  * for a day; anything else ends without a charge and gives the money back to
@@ -137,7 +172,8 @@ async function remainingLine(
  * reports above the reserved amount, or in another currency, has already
  * happened, so it is recorded — the reserved amount when the real one cannot
  * be read in roubles — and the person is told plainly that it went past what
- * they allowed.
+ * they allowed, whether the limit, the card or a standing permission allowed
+ * it.
  */
 export async function settleBrowserRunSpend(
   run: SpendRun,
@@ -148,6 +184,7 @@ export async function settleBrowserRunSpend(
 ) {
   const entry = await readSpendEntryForRun(run.id);
   if (entry?.status !== "reserved") return undefined;
+  const words = heldOn[entry.source];
   if (charge) {
     const allowedRub = entry.amountRub + entry.feeRub;
     const { priceRub } = charge;
@@ -161,21 +198,21 @@ export async function settleBrowserRunSpend(
         ? `, plus up to ${formatRub(charged.feeRub)} in fees that can still be charged`
         : "";
     const overrun = charge.foreignCurrency
-      ? `The run reported the total in another currency, not in roubles as the limit allowed; ${formatRub(allowedRub)} is counted against the limit. Tell the person plainly that this payment was not in roubles and give them the total exactly as the run reported it.`
+      ? `The run reported the total in another currency, not in roubles as ${words.allowed} allowed; ${formatRub(allowedRub)} is recorded for it. Tell the person plainly that this payment was not in roubles and give them the total exactly as the run reported it.`
       : priceRub === undefined
-        ? `The run did not report a total that reads as roubles, so the whole ${formatRub(allowedRub)} it was allowed is counted against the limit. Tell the person the payment most likely went through, and that the real amount is on the shop's receipt.`
+        ? `The run did not report a total that reads as roubles, so the whole ${formatRub(allowedRub)} it was allowed is recorded for it. Tell the person the payment most likely went through, and that the real amount is on the shop's receipt.`
         : priceRub > allowedRub
-          ? `The run reported ${formatRub(priceRub)}, more than the ${formatRub(allowedRub)} the limit allowed. Tell the person plainly that this payment went past what they allowed, and by how much.`
+          ? `The run reported ${formatRub(priceRub)}, more than the ${formatRub(allowedRub)} ${words.allowed} allowed. Tell the person plainly that this payment went past what they allowed, and by how much.`
           : undefined;
     const renewal = charge.recurring
-      ? "The run's report speaks of a subscription or an automatic renewal, which the limit never covers. Tell the person plainly and offer to cancel the renewal."
+      ? `The run's report speaks of a subscription or an automatic renewal, which ${words.allowed} never covers. Tell the person plainly and offer to cancel the renewal.`
       : undefined;
     return [
-      `This errand paid on its own under the person's standing spend limit: ${formatRub(charged.amountRub)}${fee}.`,
+      `${words.paid}: ${formatRub(charged.amountRub)}${fee}.`,
       overrun,
       renewal,
       await remainingLine(run, charged),
-      "Tell the person as a receipt — what was bought, where, the total and the order number — and how much of the limit is left. They did not approve this payment in the conversation and do not need to now.",
+      words.receipt,
     ]
       .filter((line) => line !== undefined)
       .join(" ");
@@ -188,6 +225,9 @@ export async function settleBrowserRunSpend(
     return undefined;
   }
   await settleSpendReservation(run.id, { charged: false });
+  // A card or a standing permission that paid nothing leaves the errand as
+  // the run reported it: its own stop says what comes next.
+  if (entry.source !== "limit") return undefined;
   return "Nothing was charged under the person's standing spend limit, and the amount reserved for this errand is back in the month. If the run stopped before paying because the checkout did not match what the limit allowed — a higher total, an extra fee, a subscription — ask the person once, with the real total, before paying.";
 }
 

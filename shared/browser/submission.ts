@@ -19,6 +19,24 @@ export const browserSubmissionKinds = [
 ] as const;
 
 /**
+ * One line of the approval card. Each field is its own line on the card and
+ * in the run's instructions, so a value with a line break in it could pass
+ * for a field of its own — another «Сумма», another rule for the run — and
+ * is refused rather than drawn.
+ */
+function cardLine(max: number) {
+  return z
+    .string()
+    .trim()
+    .min(1)
+    .max(max)
+    .regex(
+      /^[^\p{Cc}\u2028\u2029]*$/u,
+      "One line of plain text, without line breaks or control characters."
+    );
+}
+
+/**
  * What a browser errand may submit in the person's name, as the person saw
  * it on the approval card. The card is the permission: a run is held to what
  * it names, and the errand's follow-ups and background retries carry it, but
@@ -30,50 +48,27 @@ export const browserSubmissionSchema = z.object({
     .describe(
       "What kind of action it is: appointment (a doctor, a salon, any service slot), table (a restaurant table), taxi, order (goods, food, groceries), booking (a stay, tickets, a rental), application (an application or request to an agency, Gosuslugi included), job_application, message (a message, contact form or request to a business or a tradesperson), other. The user's standing permissions are matched on it."
     ),
-  what: z
-    .string()
-    .trim()
-    .min(1)
-    .max(300)
-    .describe(
-      "Exactly what will be submitted in the user's name, in the user's language: «запись к терапевту», «заявление на справку об отсутствии судимости», «отклики на 3 вакансии Python-разработчика», «чек в „Мой налог“ на 15 000 ₽», «заказ такси до Шереметьево»."
-    ),
-  where: z
-    .string()
-    .trim()
-    .min(1)
-    .max(200)
-    .describe(
-      "Who receives it and on which site: «Госуслуги (gosuslugi.ru)», «поликлиника по прикреплению через ЕМИАС (emias.info)», «hh.ru»."
-    ),
-  forWhom: z
-    .string()
-    .trim()
-    .min(1)
-    .max(120)
-    .describe(
-      "Whose name it is in: the user, or the family member it is for, by name when known."
-    ),
+  what: cardLine(300).describe(
+    "Exactly what will be submitted in the user's name, in the user's language: «запись к терапевту», «заявление на справку об отсутствии судимости», «отклики на 3 вакансии Python-разработчика», «чек в „Мой налог“ на 15 000 ₽», «заказ такси до Шереметьево»."
+  ),
+  where: cardLine(200).describe(
+    "Who receives it and on which site: «Госуслуги (gosuslugi.ru)», «поликлиника по прикреплению через ЕМИАС (emias.info)», «hh.ru»."
+  ),
+  forWhom: cardLine(120).describe(
+    "Whose name it is in: the user, or the family member it is for, by name when known."
+  ),
   personalData: z
-    .array(z.string().trim().min(1).max(60))
+    .array(cardLine(60))
     .max(12)
     .describe(
       "Which of the person's details the site will receive, in the user's language: «имя», «телефон», «почта», «адрес», «дата рождения», «паспорт», «СНИЛС», «полис ОМС», «резюме». Empty only when nothing personal is sent."
     ),
-  when: z
-    .string()
-    .trim()
-    .min(1)
-    .max(200)
+  when: cardLine(200)
     .optional()
     .describe(
       "The date, time or slot, or the window the run may pick one from: «ближайший свободный слот 29.09–03.10, до обеда». Leave out when there is none."
     ),
-  amount: z
-    .string()
-    .trim()
-    .min(1)
-    .max(120)
+  amount: cardLine(120)
     .optional()
     .describe(
       "What it costs the person, fees included: «бесплатно», «госпошлина 0 ₽», «около 900 ₽ по тарифу „Комфорт“»."
@@ -98,6 +93,13 @@ export type BrowserSubmission = z.infer<typeof browserSubmissionSchema>;
  */
 export type ConfirmedSubmission = Omit<BrowserSubmission, "kind"> &
   Partial<Pick<BrowserSubmission, "kind">> & {
+    /**
+     * The one host, with its subdomains, the errand may submit on, when a
+     * standing permission rather than a card allowed it: nobody saw a card
+     * naming the place, so the run is held to the site the permission is
+     * for, or the errand's own site for a permission by kind alone.
+     */
+    readonly boundHost?: string;
     readonly paymentCapRub?: number;
   };
 

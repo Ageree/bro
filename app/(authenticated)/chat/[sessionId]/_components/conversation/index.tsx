@@ -124,7 +124,7 @@ export function ChatConversation({
           if (deliveries) {
             return (
               <Fragment key={message.id}>
-                {deliveries.map((delivery) => (
+                {deliveries.map((delivery, deliveryIndex) => (
                   <AgentMessage
                     canRespond={!isBusy && agent.status !== "resuming"}
                     isStreaming={false}
@@ -132,6 +132,7 @@ export function ChatConversation({
                     message={{ ...message, id: delivery.id }}
                     onInputResponses={(responses) => agent.respond(responses)}
                     sentMessageParts={delivery.parts}
+                    showInputRequests={deliveryIndex === deliveries.length - 1}
                     timestamp={delivery.timestamp}
                     userVisibleOnly
                   />

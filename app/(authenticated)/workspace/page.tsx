@@ -109,9 +109,13 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
   );
   const browserReady = env.BROWSER_USE_API_KEY !== undefined;
   const timeZone = resolveTimeZone(profile.timezone);
-  const spendEntries = spendLimit
-    ? await listSpendEntries(scope, localMonthKey(new Date(), timeZone))
-    : [];
+  const spendMonth = localMonthKey(new Date(), timeZone);
+  const [spendEntries, standingEntries] = spendLimit
+    ? await Promise.all([
+        listSpendEntries(scope, spendMonth),
+        listSpendEntries(scope, spendMonth, { source: "standing" }),
+      ])
+    : [[], []];
   const when = new Intl.DateTimeFormat("ru-RU", {
     dateStyle: "long",
     timeStyle: "short",
@@ -150,7 +154,11 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
       ) : null}
 
       <LimitsSection paid={billing.paid} paidUntil={billing.paidUntil} />
-      <SpendLimitSection entries={spendEntries} policy={spendLimit} />
+      <SpendLimitSection
+        entries={spendEntries}
+        policy={spendLimit}
+        standingEntries={standingEntries}
+      />
       <PaymentsSection
         paid={billing.paid}
         paidUntil={billing.paidUntil}

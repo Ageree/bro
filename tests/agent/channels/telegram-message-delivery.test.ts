@@ -953,7 +953,7 @@ describe("Telegram approval cards", () => {
     const body = postedCardSchema.parse(post.mock.calls[0]?.[0]);
     expect(body.text).toBe(
       [
-        "Подтверждение действия от твоего имени:",
+        "Подтверждение действия:",
         "Что: заявление на справку об отсутствии судимости",
         "Где: Госуслуги (gosuslugi.ru)",
         "От чьего имени: Алиса",
