@@ -1,4 +1,5 @@
 import type { ModelMessage } from "ai";
+import { z } from "zod";
 import { isBackgroundTurnText } from "@shared/chat/background-turn";
 import { sendReachedPerson, startsTurn } from "@agent/lib/delivery/turn-sends";
 
@@ -33,21 +34,43 @@ function scheduledQuestionRunId(text: string) {
   return runIdPattern.exec(text)?.[1];
 }
 
+const taggedMessageSchema = z.object({ kind: z.string() });
+
 /**
- * The scheduled runs whose question this conversation actually put to the
- * person: the report turn that brought it here delivered a message. Only an
- * answer to one of these can be the person's answer — in the benchmark a
- * turn about something else resumed an old run with a reply the model made
- * up, and a question that never reached this chat has nobody here to answer
- * it.
+ * Whether a turn-starting message is one the person wrote: not a background
+ * wakeup, and not a prompt Bro wrote to itself, such as a scheduled report or
+ * a browser run's result.
  */
-export function shownScheduledQuestions(messages: readonly ModelMessage[]) {
-  const shown = new Set<string>();
+function writtenByPerson(message: ModelMessage, text: string) {
+  const kind = taggedMessageSchema.safeParse(message).data?.kind ?? "user";
+  return kind === "user" && !isBackgroundTurnText(text);
+}
+
+/**
+ * The scheduled runs whose question the person's latest message may be
+ * replying to: a report turn delivered it to them after their previous
+ * message and before this one. Only an answer to one of these can be the
+ * person's answer. In the benchmark a turn about something else resumed an
+ * old run with a reply the model made up; a question that never reached this
+ * chat has nobody here to answer it, and one the person already wrote past
+ * without answering is theirs to come back to, not the model's to settle.
+ */
+export function answerableScheduledQuestions(
+  messages: readonly ModelMessage[]
+) {
+  let sincePersonWrote = new Set<string>();
+  let answerable = new Set<string>();
   let asking: string | undefined;
   for (const message of messages) {
     if (message.role === "user") {
-      if (startsTurn(message)) {
-        asking = scheduledQuestionRunId(messageText(message));
+      if (!startsTurn(message)) continue;
+      const text = messageText(message);
+      if (writtenByPerson(message, text)) {
+        answerable = sincePersonWrote;
+        sincePersonWrote = new Set();
+        asking = undefined;
+      } else {
+        asking = scheduledQuestionRunId(text);
       }
       continue;
     }
@@ -58,7 +81,7 @@ export function shownScheduledQuestions(messages: readonly ModelMessage[]) {
         part.toolName === "send_message" &&
         sendReachedPerson(part.output)
     );
-    if (delivered) shown.add(asking);
+    if (delivered) sincePersonWrote.add(asking);
   }
-  return [...shown];
+  return [...answerable];
 }

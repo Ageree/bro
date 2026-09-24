@@ -308,10 +308,14 @@ function cardPrompt(
       ? `${text.memoryForget}\n«${oneLine(call.data.text)}»`
       : undefined;
   }
+  // The saved work by the title its policy checked against the record; a
+  // call parked before titles were passed is named by its id.
   if (action.toolName === "workstreams__forget") {
-    const call = z.object({ id: z.string() }).safeParse(action.input);
+    const call = z
+      .object({ id: z.string(), title: z.string().optional() })
+      .safeParse(action.input);
     return call.success
-      ? `${text.workstreamForget} «${oneLine(call.data.id)}»`
+      ? `${text.workstreamForget} «${oneLine(call.data.title ?? call.data.id)}»`
       : undefined;
   }
   return undefined;

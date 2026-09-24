@@ -43,7 +43,7 @@ export async function findWorkstreams(
 }
 
 /**
- * The active index recalled into every interactive turn. Work saved from this
+ * The active index recalled into every interactive turn. Work started in this
  * session comes first and in full; work from the person's other conversations
  * is reduced to its title, so an unrelated chat is not handed a next step it
  * would feel obliged to report on.
@@ -154,11 +154,13 @@ export async function saveWorkstream(
           "Workstream memory is full (100 records). Ask which obsolete workstream to forget before adding another."
         );
     }
+    // An update keeps the conversation the work was started in: saving it
+    // here does not make it this conversation's own, which would let a save
+    // followed by `forget` erase it without the person's confirmation.
     const values = {
       content,
       lastOperationId: operationId,
       revision: expectedRevision + 1,
-      sessionId,
       updatedAt: new Date(),
     };
     const [saved] = current
@@ -175,7 +177,13 @@ export async function saveWorkstream(
           .returning()
       : await transaction
           .insert(workstreams)
-          .values({ ...values, id, scopeKey, workspaceId: scope.workspaceId })
+          .values({
+            ...values,
+            id,
+            scopeKey,
+            sessionId,
+            workspaceId: scope.workspaceId,
+          })
           .returning();
     if (!saved) throw new Error("The workstream could not be saved.");
     return workstreamResult(saved);

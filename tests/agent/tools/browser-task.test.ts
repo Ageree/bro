@@ -3199,6 +3199,63 @@ describe("browser_task finds the option before the one card", () => {
     ]);
   });
 
+  it("tells one concrete option from a window or a budget", async () => {
+    const { openSubmissionTerms } = await import("@agent/tools/browser_task");
+    const room: BrowserSubmission = {
+      amount: "18 400 ₽",
+      forWhom: "Алиса",
+      kind: "booking",
+      personalData: ["имя", "телефон"],
+      what: "двухместный номер в отеле «Норд»",
+      when: "12–14 октября, 2 ночи",
+      where: "Островок (ostrovok.ru)",
+    };
+    const cases: readonly (Partial<
+      Pick<BrowserSubmission, "amount" | "when">
+    > & { open: boolean })[] = [
+      // One slot, however it is phrased around the exact time or stay.
+      { open: false, when: "12–14 октября, 2 ночи" },
+      { open: false, when: "с 12 по 14 октября" },
+      { open: false, when: "12.10–14.10, заезд с 14:00" },
+      { open: false, when: "сегодня вечером в 19:00" },
+      { open: false, when: "суббота, обед 13:00" },
+      { open: false, when: "завтра утром, 9:30" },
+      { open: false, when: "1 октября, 10 утра" },
+      { open: false, when: "пт 03.10 — 18:40" },
+      { open: false, when: "вторник 30.09, 09:40" },
+      // Still a window.
+      { open: true, when: "после 18:00" },
+      { open: true, when: "до 19:00" },
+      { open: true, when: "18:00–20:00" },
+      { open: true, when: "в 19:00 или в 20:00" },
+      { open: true, when: "в пятницу вечером" },
+      { open: true, when: "на следующей неделе, до обеда" },
+      { open: true, when: "в выходные" },
+      { open: true, when: "ближайший свободный слот" },
+      // One price, words after it included.
+      { amount: "2 490 ₽ с доставкой до двери", open: false },
+      { amount: "3 100 ₽, от продавца Ozon", open: false },
+      { amount: "11 480 ₽ за два билета", open: false },
+      { amount: "бесплатно", open: false },
+      // Still a budget, a guess or a range.
+      { amount: "5 000–6 000 ₽", open: true },
+      { amount: "5000 - 6000 руб.", open: true },
+      { amount: "до 12 000 ₽ за оба билета", open: true },
+      { amount: "от 5 000 ₽", open: true },
+      { amount: "около 2 400 ₽", open: true },
+      { amount: "~3 000 ₽", open: true },
+      { amount: "бюджет 3 000 ₽", open: true },
+    ];
+
+    for (const { open, ...change } of cases) {
+      const terms = openSubmissionTerms({ ...room, ...change });
+      expect({ ...change, open: terms.length > 0 }).toEqual({
+        ...change,
+        open,
+      });
+    }
+  });
+
   it("lets a standing permission start without a card, found or not", async () => {
     const { browserTaskApproval } = await import("@agent/tools/browser_task");
     readSpendLimit.mockResolvedValue(

@@ -86,8 +86,7 @@ describe("durable profile memory", () => {
         expectedRevision: 1,
         index: 0,
       },
-      "session:update",
-      { sessionId: "session", turnId: "turn-2" }
+      "session:update"
     );
     expect(corrected).toMatchObject({ index: 0, revision: 2 });
     await expect(
@@ -99,8 +98,7 @@ describe("durable profile memory", () => {
           expectedRevision: 1,
           index: 0,
         },
-        "session:stale",
-        { sessionId: "session", turnId: "turn-3" }
+        "session:stale"
       )
     ).rejects.toThrow("changed");
 
@@ -269,6 +267,53 @@ describe("forgetting a memory without the person's word", () => {
     // Another workspace's memory is none of this call's business.
     expect(
       await memoryRemovalApproval(bob, "scope-a", "this-session", { index: 0 })
+    ).toBe("not-applicable");
+  });
+
+  it("keeps an older memory's origin when this conversation corrects it", async () => {
+    await saveMemory(
+      alice,
+      "scope-a",
+      { text: "Любит суши." },
+      "earlier:save",
+      { sessionId: "earlier-session", turnId: "turn" }
+    );
+    // An update here does not make the memory this conversation's own, so
+    // update-then-remove cannot forget it without the card.
+    await updateMemory(
+      alice,
+      "scope-a",
+      {
+        content: {
+          aliases: [],
+          category: "preference",
+          localOnly: false,
+          relatedIndexes: [],
+          text: "Не любит суши.",
+          validUntil: null,
+        },
+        expectedRevision: 1,
+        index: 0,
+      },
+      "this:update"
+    );
+
+    expect(
+      await memoryRemovalApproval(alice, "scope-a", "this-session", {
+        index: 0,
+      })
+    ).toMatchObject({ type: "denied" });
+    expect(
+      await memoryRemovalApproval(alice, "scope-a", "this-session", {
+        index: 0,
+        text: "Не любит суши.",
+      })
+    ).toBe("user-approval");
+    // The conversation that saved it still corrects its own memory at once.
+    expect(
+      await memoryRemovalApproval(alice, "scope-a", "earlier-session", {
+        index: 0,
+      })
     ).toBe("not-applicable");
   });
 

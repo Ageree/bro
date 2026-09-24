@@ -742,16 +742,56 @@ const pickedKinds = new Set<BrowserSubmission["kind"]>([
 ]);
 
 /**
- * A date or time that is still a window: «после 18:00», «вечером», «на
- * следующей неделе». A part of the day after an hour — «в 10 утра», «в 7
- * вечера» — is that hour, not a window.
+ * A date or time that stays a window whatever else it names: «после 18:00»,
+ * «до 19:00», «ближайший свободный», «в 19:00 или в 20:00», «18:00–20:00».
  */
-const openWhenPattern =
-  /(?<!\p{L})(?:после|позже|раньше|до\s+\d|не\s+позднее|ближайш|люб[ыоуая]|свободн|удобн|обед|недел|выходн|месяц|окн[оа]|или|примерно|около|after|before|any|earliest|evening|morning|afternoon|week|between)|(?<!\p{L})(?<!\d\s*)(?:вечер|утр|дн[её]м|ноч)|\d\s*[–—]\s*\d|\d\s+-\s+\d/iu;
+const windowWhenPattern =
+  /(?<!\p{L})(?:после|позже|раньше|до\s+\d|не\s+позднее|не\s+раньше|ближайш|люб[ыоуаяе]|свободн|удобн|окн[оа]|примерно|около|между|after|before|earliest|latest|between|around)|(?<!\p{L})(?:или|or|any)(?!\p{L})|(?<![\d.:])\d{1,2}(?::\d{2})?\s*[–—-]\s*\d{1,2}:\d{2}|\d{1,2}:\d{2}\s*[–—-]\s*\d{1,2}(?!\d|[./]\d)/iu;
 
-/** A cost that is still a budget or a guess: «до 12 000 ₽», «около 2 500 ₽». */
+/** An explicit clock time: «19:00», «9:30». */
+const clockTimePattern = /(?<![\d:])\d{1,2}:\d{2}(?![\d:])/u;
+
+const monthNames =
+  "январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec";
+
+/**
+ * The dates of a stay: «12–14 октября», «с 12 по 14 октября», «12.10–14.10»,
+ * «2 ночи». A check-in and check-out day name one stay, not a window.
+ */
+const stayDatesPattern = new RegExp(
+  [
+    `\\d{1,2}\\s*[–—-]\\s*\\d{1,2}\\s+(?:${monthNames})`,
+    `(?<!\\p{L})с\\s+\\d{1,2}(?:\\s+(?:${monthNames})\\p{L}*)?\\s+по\\s+\\d{1,2}`,
+    String.raw`\d{1,2}\.\d{1,2}(?:\.\d{2,4})?\s*[–—-]\s*\d{1,2}\.\d{1,2}`,
+    String.raw`(?<!\p{L})\d+\s+(?:ноч(?:ь|и|ей)|nights?)(?!\p{L})`,
+  ].join("|"),
+  "iu"
+);
+
+/**
+ * A date or time that is a window unless an exact time or the dates of a
+ * stay pin it down: «вечером», «в обед», «на следующей неделе», «в
+ * выходные», «1–3». A part of the day after an hour — «в 10 утра», «в 7
+ * вечера» — is that hour.
+ */
+const vagueWhenPattern =
+  /(?<!\p{L})(?:обед|недел|выходн|месяц|evening|morning|afternoon|noon|week|weekend|month)|(?<!\p{L})(?<!\d\s*)(?:вечер|утр|дн[её]м|ноч)|\d\s*[–—]\s*\d|\d\s+-\s+\d/iu;
+
+/** Whether a card's date or slot still names a window instead of one slot. */
+function openWhen(when: string) {
+  if (windowWhenPattern.test(when)) return true;
+  if (clockTimePattern.test(when) || stayDatesPattern.test(when)) return false;
+  return vagueWhenPattern.test(when);
+}
+
+/**
+ * A cost that is still a budget, a guess or a range: «до 12 000 ₽», «около
+ * 2 500 ₽», «5 000–6 000 ₽», «бюджет 3 000». A budget word counts only in
+ * front of a number, so «2 490 ₽ с доставкой до двери» or «3 100 ₽, от
+ * продавца Ozon» is one price with words after it.
+ */
 const openAmountPattern =
-  /(?<!\p{L})(?:до|от|не\s+более|не\s+больше|не\s+дороже|в\s+пределах|максимум|бюджет|около|примерно|ориентировочно|up\s+to|about|around|under|max)(?!\p{L})|[≈~]/iu;
+  /(?<!\p{L})(?:до|от|не\s+более|не\s+больше|не\s+дороже|не\s+выше|в\s+пределах|максимум|минимум|около|примерно|ориентировочно|приблизительно|порядка|up\s+to|about|around|under|max|from|approx\.?)\s*:?\s*[$€₽]?\s*\d|(?<!\p{L})(?:бюджет|budget|или|or)(?!\p{L})|[≈~]|\d\s*(?:₽|руб\.?|р\.)?\s*[–—-]\s*[$€₽]?\s*\d/iu;
 
 /**
  * What in a card for a new errand is still open — a window instead of a
@@ -766,7 +806,7 @@ export function openSubmissionTerms(submission: BrowserSubmission) {
   const open: string[] = [];
   if (submission.when === undefined) {
     if (submission.kind !== "order") open.push("no date or slot");
-  } else if (openWhenPattern.test(submission.when)) {
+  } else if (openWhen(submission.when)) {
     open.push(`when «${submission.when}»`);
   }
   if (submission.amount === undefined) {
