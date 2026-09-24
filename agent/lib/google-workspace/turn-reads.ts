@@ -65,11 +65,13 @@ type GoogleReadCall = z.infer<typeof googleReadCallSchema>;
  */
 export function googleReadKey(call: GoogleReadCall) {
   const target =
-    call.toolName === "gmail-search" || call.toolName === "drive-search"
+    call.toolName === "gmail-search"
       ? `${String(call.input.maxResults)}\u0000${call.input.query.trim()}`
-      : call.toolName === "gmail-read-thread"
-        ? call.input.threadId.trim()
-        : call.input.fileId;
+      : call.toolName === "drive-search"
+        ? `${String(call.input.maxResults)}\u0000${call.input.kind ?? ""}\u0000${call.input.query ?? ""}`
+        : call.toolName === "gmail-read-thread"
+          ? call.input.threadId.trim()
+          : call.input.fileId;
   return `${call.toolName}\u0000${target}`;
 }
 

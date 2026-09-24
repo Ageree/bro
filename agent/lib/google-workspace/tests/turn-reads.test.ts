@@ -25,6 +25,12 @@ describe("googleReadKey", () => {
     expect(defaulted.done).toEqual([searchKey(inbox.query)]);
     expect(searchKey(inbox.query, 5)).not.toBe(searchKey(inbox.query));
   });
+
+  it("tells Drive searches for another file type apart", () => {
+    expect(driveSearchKey("pdf")).not.toBe(driveSearchKey("image"));
+    expect(driveSearchKey("pdf")).not.toBe(driveSearchKey(undefined, "pdf"));
+    expect(driveSearchKey("pdf", "отчёт")).toBe(driveSearchKey("pdf", "отчёт"));
+  });
 });
 
 describe("the per-turn Google read guard", () => {
@@ -240,6 +246,13 @@ function gmailUpdate(
       role: "tool",
     },
   ];
+}
+
+function driveSearchKey(kind?: "pdf" | "image", query?: string) {
+  return googleReadKey({
+    input: { kind, maxResults: 10, query },
+    toolName: "drive-search",
+  });
 }
 
 function driveReadKey(fileId: string) {
