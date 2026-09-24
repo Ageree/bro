@@ -306,6 +306,33 @@ describe("whether a policy change widens what Bro may pay", () => {
     ).toBe(true);
   });
 
+  it("asks before dropping a parent ceiling even when the child's limit is lower", () => {
+    // The smallest limit stays 100 ₽ either way, but what is left does not:
+    // with 4 950 ₽ spent elsewhere on ozon.ru, pay.ozon.ru has 50 ₽ before
+    // the clear and 100 ₽ after it.
+    const parent = { category: null, limitRub: 5000, merchant: "ozon.ru" };
+    const child = { category: null, limitRub: 100, merchant: "pay.ozon.ru" };
+    const spentElsewhere: SpendEntry = {
+      amountRub: 4950,
+      category: null,
+      feeRub: 0,
+      merchant: "market.ozon.ru",
+    };
+    const request = payment({
+      amount: 80,
+      category: null,
+      merchant: "pay.ozon.ru",
+    });
+
+    expect(
+      decideAutoPayment(rules(parent, child), request, [spentElsewhere])
+    ).toMatchObject({ allowed: false, remainingRub: 50 });
+    expect(
+      decideAutoPayment(rules(child), request, [spentElsewhere])
+    ).toMatchObject({ allowed: true });
+    expect(policyWidens(rules(parent, child), rules(child))).toBe(true);
+  });
+
   it("narrows by lowering, adding a narrower ceiling, or clearing everything", () => {
     expect(
       policyWidens(rules(general), rules({ ...general, limitRub: 3000 }))
