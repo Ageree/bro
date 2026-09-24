@@ -16,6 +16,7 @@ import { Button } from "@web/components/ui/button";
 import { getAuthSession } from "@db/services/auth/session";
 import { paidPeriodDays, readBillingState } from "@db/services/billing";
 import { readChannelIdentity } from "@db/services/channel-identities";
+import { wakeProactiveWatch } from "@db/services/proactive";
 import {
   getGoogleWorkspaceAccess,
   getWorkspaceModelId,
@@ -93,6 +94,15 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
     listVaultItems(scope),
     readSpendLimit(scope),
   ]);
+  if (googleWorkspace.state === "connected") {
+    // Connect sends the person back here after consent. Bro's own mail and
+    // calendar checks, put off for hours while no grant existed, resume now.
+    try {
+      await wakeProactiveWatch(scope);
+    } catch (error) {
+      console.warn("[proactive] could not wake the checks", { cause: error });
+    }
+  }
   const openRouter = openRouterActive();
   const imageStorageReady = Boolean(
     env.BLOB_STORE_ID ?? env.BLOB_READ_WRITE_TOKEN

@@ -107,6 +107,20 @@ export async function updateBrowserRunProgress(
 }
 
 /**
+ * Record what the person just approved on the card for a run that is still
+ * working, so its later follow-ups carry the same permission.
+ */
+export async function recordBrowserRunSubmission(
+  runId: string,
+  submission: NonNullable<BrowserRunInsert["submission"]>
+) {
+  await db
+    .update(browserRuns)
+    .set({ submission, updatedAt: new Date() })
+    .where(eq(browserRuns.id, runId));
+}
+
+/**
  * Settle a run exactly once. The `completed_at IS NULL` guard is what keeps a
  * webhook delivery and the reconciling poller from both reporting the same
  * outcome into the user's conversation; the loser gets `undefined`.

@@ -185,9 +185,10 @@ describe("interactive delivery enforcement", () => {
       interactiveContext(pending, "scheduled-result")
     );
 
+    // The report answers in the language of the conversation it continues.
     expect(services.modelSelection).toHaveBeenLastCalledWith(
       "openai/gpt-5.6-sol-fast",
-      { replyNote: note(undefined), toolChoice: "auto" }
+      { replyNote: note("ru"), toolChoice: "auto" }
     );
   });
 

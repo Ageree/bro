@@ -49,10 +49,13 @@ export default defineAgent({
         // which the long Russian prompt otherwise outweighs, and so do Bro's
         // own gender and the form of address the person chose, which hold in
         // every chat and channel of the workspace. Only turns that write to
-        // the person carry them.
+        // the person carry them. A scheduled report continues the person's
+        // conversation, so it follows their language too; its own English
+        // prompt opens with the background-turn marker and is skipped.
         const replyLanguage =
           resolveModeValue(ctx, {
             interactive: personLanguage(ctx.messages),
+            "scheduled-report": personLanguage(ctx.messages),
           }) ?? undefined;
         const writesToPerson =
           resolveModeValue(ctx, {

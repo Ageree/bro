@@ -30,10 +30,11 @@ const turnFailureTexts = {
     en: "taking a quick nap, back soon",
     ru: "я прилёг, скоро вернусь",
   },
-  // Anything else that broke the turn, where trying again may well help.
+  // Anything else that broke the turn, where trying again may well help. It
+  // reads right whether the person chose «ты» or «вы» (`form_of_address`).
   failure: {
     en: "Something broke while I was working on your request. Please try again.",
-    ru: "Что-то сломалось, пока я разбирался с твоей просьбой. Попробуй ещё раз.",
+    ru: "Что-то сломалось, пока я разбирался с просьбой. Можно попробовать ещё раз.",
   },
 } as const satisfies Record<string, Record<ReplyLanguage, string>>;
 

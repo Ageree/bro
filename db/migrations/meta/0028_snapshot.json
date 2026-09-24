@@ -1,5 +1,5 @@
 {
-  "id": "f05e44b1-0972-4269-a939-34f0b78f9803",
+  "id": "22d0e8db-97fa-4d20-9934-0577365c0872",
   "prevId": "1eb759ed-a06d-4da1-befa-da34a0d1837c",
   "version": "7",
   "dialect": "postgresql",
@@ -1234,6 +1234,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": false
+        },
+        "submission": {
+          "name": "submission",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
         },
         "captcha_attempt": {
           "name": "captcha_attempt",
@@ -3990,7 +3996,7 @@
       "checkConstraints": {
         "settings_key_check": {
           "name": "settings_key_check",
-          "value": "\"settings\".\"key\" IN ('form_of_address', 'gateway_model', 'google_workspace_access', 'spend_limit')"
+          "value": "\"settings\".\"key\" IN ('gateway_model', 'google_workspace_access', 'spend_limit')"
         }
       },
       "isRLSEnabled": false

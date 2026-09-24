@@ -6,6 +6,7 @@ import {
   releaseScheduledReport,
 } from "@db/services/scheduled-agent-jobs";
 import { telegramChatIdFromConversationId } from "@agent/lib/telegram-conversation";
+import { backgroundTurnMarker } from "@shared/chat/background-turn";
 import photon from "../../channels/photon";
 import telegram from "../../channels/telegram";
 
@@ -75,13 +76,19 @@ export async function dispatchScheduledReport(
       });
       return;
     }
+    // A web chat has no address to send to, only a handle on its session.
     if (!delivery.attachSession) {
-      throw new Error("Eve debug reports require an active session handle.");
+      throw new Error("A web chat report requires a session handle.");
     }
     const result = await delivery
       .attachSession(claimed.job.conversationId)
       .send(prompt, options);
     if (result.status === "session_not_active") {
+      // A session still starting up takes the report on a later tick; one
+      // that ended (sessions live 30 days) never will.
+      if (result.retryable === true) {
+        throw new Error("The web chat session is not ready for the report.");
+      }
       await finalizeScheduledReport(claimed.run.id, leaseToken, "suppressed");
     }
     console.info("[scheduled-run] report turn accepted", {
@@ -106,6 +113,10 @@ export async function dispatchScheduledReport(
 }
 
 function scheduledReportPrompt(claimed: ClaimedScheduledReport) {
+  return [backgroundTurnMarker, scheduledReportTask(claimed)].join("\n\n");
+}
+
+function scheduledReportTask(claimed: ClaimedScheduledReport) {
   const replyContext = claimed.job.replyAnchorMessageId
     ? `Reply handle: {"kind":"automation","id":"${claimed.job.id}"}. Pass this exact value as send_message.replyTo for every user-visible message about this scheduled task. Omit replyTo only when the message is genuinely unrelated to the scheduled task.`
     : "No reply handle is available for this automation. Omit send_message.replyTo.";

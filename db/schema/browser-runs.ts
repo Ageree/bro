@@ -5,10 +5,12 @@ import {
   foreignKey,
   index,
   integer,
+  jsonb,
   pgTable,
   text,
   timestamp,
 } from "drizzle-orm/pg-core";
+import type { BrowserSubmission } from "@shared/browser/submission";
 import { workspaceMemberships } from "./workspaces";
 
 export const browserProfiles = pgTable(
@@ -97,6 +99,10 @@ export const browserRuns = pgTable(
     // Whether the run was started with the saved card bound. A background
     // retry binds the same secrets again, so it has to know.
     paymentAllowed: boolean("payment_allowed").notNull().default(false),
+    // What the person approved on the card to submit in their name, or null
+    // when the errand may only look. The errand's follow-ups and background
+    // retries carry it; a new errand starts without one.
+    submission: jsonb("submission").$type<BrowserSubmission>(),
     // Which attempt of its errand this run is against an anti-bot wall: the
     // run the person started is 1, each background retry adds one.
     captchaAttempt: integer("captcha_attempt").notNull().default(1),

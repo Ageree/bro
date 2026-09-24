@@ -5,6 +5,7 @@ import type { DynamicResolveContext } from "eve";
 import type { ToolContext } from "eve/tools";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type * as ModelSelection from "@agent/lib/model/selection";
+import { backgroundTurnMarker } from "@shared/chat/background-turn";
 import * as schema from "@db/schema";
 
 const selection = vi.hoisted(() => ({
@@ -169,14 +170,31 @@ describe("form of address", { timeout: 60_000 }, () => {
     ).not.toContain("на «вы»:");
   });
 
-  it("gives a scheduled report the voice but not a worker", async () => {
+  it("holds the voice in a scheduled report that continues a chat", async () => {
     const { agent, settings } = await workspaceDatabase();
     selection.modelSelection.mockReturnValue("openai/gpt-5.6-sol-fast");
     await settings.updateFormOfAddress(alice, { formal: true });
+    // The report turn's own prompt is English and opens with the marker.
+    const reportPrompt = person(
+      `${backgroundTurnMarker}\n\nA background scheduled run finished. Original task: check the weather.`
+    );
 
     await agent.model.events["step.started"]?.(
       {},
-      context("scheduled-result", "report-session", [])
+      context("scheduled-result", "web-session", [
+        person("напомни завтра про погоду"),
+        reportPrompt,
+      ])
+    );
+    const note = selection.modelSelection.mock.lastCall?.[1]?.replyNote;
+    expect(note).toMatch(/^Язык ответа в этом ходе — русский/u);
+    expect(note).toContain("на «вы»");
+    expect(note).toContain("в мужском роде");
+
+    // A report in a fresh session has no words of the person to go by.
+    await agent.model.events["step.started"]?.(
+      {},
+      context("scheduled-result", "report-session", [reportPrompt])
     );
     expect(selection.modelSelection.mock.lastCall?.[1]?.replyNote).toMatch(
       /^Когда пишешь человеку по-русски:.*на «вы»/u
