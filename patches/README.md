@@ -6,7 +6,7 @@ regenerating the patch below against the new dist.
 
 ## Remaining patches
 
-`eve@0.62.0.patch` carries five independent hunks:
+`eve@0.62.0.patch` carries six independent hunks:
 
 - The declaration bridge redirects Eve's incomplete bundled Chat SDK
   declaration exports to the explicitly installed `chat` package. Eve's runtime
@@ -56,6 +56,21 @@ regenerating the patch below against the new dist.
   from the stream and from the eval facts. The added branch emits it for a call
   that did not appear in the step. `evals/agent/integrations.eval.ts` relies on
   it. Drop the hunk once eve emits replayed tool errors on its own.
+- Turn tools survive a fresh process. Dynamic tool callbacks live in an
+  in-process registry, while their metadata persists with the session, so a
+  step that runs after a deploy or a cold start rebinds them first.
+  `context/dynamic-tool-lifecycle.js` `rebindMissingCompiledDynamicToolCallbacks`
+  re-ran only resolvers marked for rebinding (eve's memory provider tools) yet
+  counted every ordinary turn tool that was still unbound as a failed rebind,
+  and threw `Dynamic tool callback rebind did not restore`. The step failed
+  before `turn.started` could resolve the tools again, so every later message
+  failed the same way and the session died. The hunk never throws: a step in
+  the middle of a turn (`execution/session/turn-step.js` passes
+  `turnInProgress`) rebuilds ordinary turn resolvers from scratch too, a tool
+  that still cannot be restored stays in the turn and fails only its own call,
+  and `context/build-dynamic-tools.js` `missingCallbackError` tells the model
+  that the call did not run. `tests/agent/dynamic-tool-rebind.test.ts` covers
+  it. Drop the hunk once eve restores or fails closed per call on its own.
 
 To change the patch, run `pnpm patch eve@0.62.0`, edit the files in the
 reported directory, and `pnpm patch-commit <dir>` so every hunk and the
@@ -63,9 +78,10 @@ lockfile hash stay consistent. When upgrading Eve, first check the new dist:
 the bridge goes away once `dist/src/compiled/chat/index.d.ts` resolves on its
 own, the override once `TelegramInboundResult` and `PhotonInboundResult`
 declare `message` themselves, the schedule handle once
-`ScheduleHandlerArgs` declares `attachSession`, and the approval hunks once
+`ScheduleHandlerArgs` declares `attachSession`, the approval hunks once
 `tests/agent/approval-memory-recall.test.ts` and the approval eval in
-`evals/agent/integrations.eval.ts` pass without them.
+`evals/agent/integrations.eval.ts` pass without them, and the rebind hunk once
+`tests/agent/dynamic-tool-rebind.test.ts` passes without it.
 
 Photon's iMessage adapter posts into a conversation without a reply anchor, so
 no provider reply option is patched in any more.
@@ -74,5 +90,6 @@ The old Eve patches for `ask_question` and `task_cancel` exports are no longer
 needed: both now have public entry points. Callback authorization is composed
 in `agent/channels/eve.ts` using public `defineChannel` and `routeAuth` APIs.
 
-Apart from the memory recall placement and the replayed tool error above, no
-task-loop or prompt-placement patch is applied locally.
+Apart from the memory recall placement, the replayed tool error and the
+dynamic tool rebind above, no task-loop or prompt-placement patch is applied
+locally.

@@ -103,9 +103,12 @@ Telegram отбрасывает группы, iMessage принимает тол
 
 ## P2
 
-9. **Сессия не умирает после деплоя.** FatalError «Dynamic tool callback
+9. ~~**Сессия не умирает после деплоя.** FatalError «Dynamic tool callback
    rebind did not restore» посреди разговора (`patches/eve@0.62.0.patch`):
-   пересобирать инструменты с нуля, эвал «деплой посреди ожидающей сессии».
+   пересобирать инструменты с нуля, эвал «деплой посреди ожидающей сессии».~~
+   Сделано: хунк перепривязки в `patches/eve@0.62.0.patch`, деплой посреди
+   сессии симулирует `tests/agent/dynamic-tool-rebind.test.ts` (эвал eve
+   процесс не перезапускает).
 10. **Расписания помесячно и из любого чата.** «Каждое 5-е» стало интервалом
     43 200 минут; `schedules-list` в новом чате пуст. `shared/schedules/timing.ts`,
     `agent/lib/schedules/tools.ts`.
