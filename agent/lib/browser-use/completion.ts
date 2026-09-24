@@ -38,6 +38,11 @@ import {
   parseBrowserOutcome,
   type BrowserRunNeed,
 } from "./outcome";
+import {
+  browserRunNeedGuidance,
+  laterStepInstruction,
+  placedOrderInstruction,
+} from "./guidance";
 
 /**
  * Both completion paths — the Browser Use webhook and the reconciling poller —
@@ -92,18 +97,26 @@ export async function settleBrowserRun(
     parsed.needs === "captcha"
       ? captchaRetryAt(row.captchaAttempt, new Date())
       : undefined;
+  const order = mayPlaceOrder(row)
+    ? parseBrowserOrder(parsed, {
+        result: run.result,
+        site: row.site,
+        task: row.task,
+      })
+    : null;
+  const reportFacts = {
+    hasItems: parsed.items.length > 0,
+    hasLinks,
+    needs: parsed.needs,
+    next: parsed.next,
+    ordered: order?.status === "placed",
+    outcome,
+  };
   const claimed = await claimBrowserRunCompletion(runId, {
     outcome,
     // The plain report is kept with the claim, so the person hears about the
     // run even when this settle is cut off before the full report is ready.
-    report: retryAt
-      ? undefined
-      : browserRunReport(row, {
-          hasItems: parsed.items.length > 0,
-          hasLinks,
-          needs: parsed.needs,
-          outcome,
-        }),
+    report: retryAt ? undefined : browserRunReport(row, reportFacts),
     status: settledStatus(run.status),
   });
   if (!claimed) return;
@@ -119,11 +132,6 @@ export async function settleBrowserRun(
       return;
     }
   }
-  const order = parseBrowserOrder(parsed, {
-    result: run.result,
-    site: claimed.site,
-    task: claimed.task,
-  });
   // Neither needs the other, and both come before the report: the order row
   // so «где мой заказ» finds it, the images so the report can attach them. A
   // run that lost to an anti-bot check has nothing to show.
@@ -147,15 +155,18 @@ export async function settleBrowserRun(
   await reportBrowserRun(
     delivery,
     claimed.id,
-    browserRunReport(claimed, {
-      hasItems: parsed.items.length > 0,
-      hasLinks,
-      images,
-      needs: parsed.needs,
-      outcome,
-      spend,
-    })
+    browserRunReport(claimed, { ...reportFacts, images, spend })
   );
+}
+
+/**
+ * Whether the run could have placed an order at all: only one that acted in
+ * the person's name or paid. A run that only looked — reading the site's
+ * order history for «закажи то же, что в прошлый раз» — reports the old
+ * order's number, and that is not an order Bro placed.
+ */
+function mayPlaceOrder(row: BrowserRunRow) {
+  return row.paymentAllowed || row.submission !== null;
 }
 
 /**
@@ -315,42 +326,6 @@ export async function reportClosedBrowserRun(
   );
 }
 
-/** What a card for an option the run found names, so it is one option. */
-const concreteOptionTerms =
-  "what — the train or flight and its departure, the room, the item and seller, the doctor and slot; the seats or quantity; the date and time; and the real total with every fee in chargeRub";
-
-/**
- * A declined card used to end the errand in «билеты не куплены, скажи —
- * запущу заново», with nothing found shown. The options are still there.
- */
-const declinedCardLine =
-  "If the user declines that card, nothing is lost: show them the options this run found, each with its price and link, and ask what to change — another time, seat, item or price — instead of saying only that nothing was booked or bought.";
-
-/**
- * What the person has to hand over for an errand stopped on them, said
- * first and in one line: the site is holding the page open, and a code
- * expires in minutes. A code or an approval comes back through `continue`,
- * which types it straight into the page.
- */
-const personStepInstructions: Partial<Record<BrowserRunNeed, string>> = {
-  "3ds":
-    "The payment is waiting for the user's 3-D Secure confirmation: first thing, in one short line, ask them to confirm it in their bank app or give them the live view to enter the bank's code, and say you will carry on once they are done.",
-  email_code:
-    "The site is waiting for a one-time code it sent by email: first thing, in one short line, ask the user for that code, naming where it was sent if Details says, and say you will type it in yourself. When they send it, pass it with browser_task continue on this run id.",
-  password:
-    "The site asks for a sign-in the run has no password for: first thing, in one short line, tell the user which site, and call request_vault_setup so they can save the password; never ask for the password in chat.",
-  // A run that searched first stops here with the option it picked: one card
-  // naming that option answers it, never a question in text before it.
-  decision: `The run stopped at the final step without acting in the user's name. When the user asked for this errand to be done — booked, bought, ordered, signed up — and the report names an option that fits their conditions, do not ask in text: continue this run now with allowSubmit and a submission naming exactly that option (${concreteOptionTerms}), so the user confirms it on one card. When no option fits, or the user only asked to find or compare, show the options and ask one short question. ${declinedCardLine}`,
-  // A run stops here only when paying was not approved, or the total came
-  // out above what was: one card with the real total answers it, never a
-  // question in text and a card after it.
-  payment: `The run stopped before paying, with the total in Total. When the user asked for this errand to be done — ordered, booked, bought — and not only found or compared, do not ask in text: continue this run now with allowSubmit and a submission naming exactly the option it staged (${concreteOptionTerms}), so the user confirms it on one card, or with allowPayment and withinSpendLimit when it fits their standing spend limit. When they only asked to find or compare, give them the total and offer to order. ${declinedCardLine}`,
-  push: "The site is waiting for the user to approve the sign-in in their app: first thing, in one short line, ask them to confirm it there and tell you when they have, then pass that on with browser_task continue on this run id.",
-  sms_code:
-    "The site is waiting for a one-time code it sent by SMS: first thing, in one short line, ask the user for that code, naming the phone it went to if Details says, and say you will type it in yourself. When they send it, pass it with browser_task continue on this run id.",
-};
-
 /**
  * What the coordinator is asked to do with the run it just got back. An
  * anti-bot wall only reaches it once the background retries are spent, and
@@ -360,9 +335,14 @@ const personStepInstructions: Partial<Record<BrowserRunNeed, string>> = {
  */
 function deliveryInstruction(
   needs: BrowserRunNeed,
-  hasLinks: boolean,
-  hasItems: boolean
+  facts: {
+    readonly hasItems: boolean;
+    readonly hasLinks: boolean;
+    readonly next: boolean;
+    readonly ordered: boolean;
+  }
 ) {
+  const { hasItems, hasLinks } = facts;
   const tail =
     "Answer a follow-up with browser_task continue on this run id instead of a new start: it picks the same browser up where this run left off and hands back the run id to use after that. Omit send_message.replyTo.";
   if (needs === "captcha") {
@@ -376,10 +356,12 @@ function deliveryInstruction(
     : undefined;
   return [
     "This is a background result, not a user message.",
-    personStepInstructions[needs],
+    browserRunNeedGuidance(needs),
     "Tell the user what happened in your own words. Include the material per-option facts the user requested, not only names and URLs.",
+    facts.ordered ? placedOrderInstruction : undefined,
     items,
     links,
+    facts.next ? laterStepInstruction : undefined,
     tail,
   ]
     .filter((line) => line !== undefined)
@@ -406,6 +388,8 @@ function browserRunReport(
     readonly hasLinks?: boolean;
     readonly images?: readonly BrowserRunImage[];
     readonly needs: BrowserRunNeed;
+    readonly next?: string;
+    readonly ordered?: boolean;
     readonly outcome: string;
     readonly spend?: string;
   }
@@ -426,11 +410,12 @@ function browserRunReport(
       : undefined,
     imagesBlock(images),
     options.spend,
-    deliveryInstruction(
-      needs,
-      options.hasLinks === true,
-      options.hasItems === true
-    ),
+    deliveryInstruction(needs, {
+      hasItems: options.hasItems === true,
+      hasLinks: options.hasLinks === true,
+      next: options.next !== undefined,
+      ordered: options.ordered === true,
+    }),
   ]
     .filter((line) => line !== undefined)
     .join("\n\n");

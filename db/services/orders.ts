@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { desc, eq } from "drizzle-orm";
+import { desc, eq, sql } from "drizzle-orm";
 import type { AccessScope } from "@shared/identity/access-scope";
 import { db, orders } from "@db";
 import { ensureScope } from "./scope";
@@ -10,7 +10,9 @@ type OrderInsert = typeof orders.$inferInsert;
  * Upserts one order on its merchant order number. Both completion paths — the
  * Browser Use webhook and the reconciling poller — may settle the same run, and
  * the parse is deterministic, so a second write lands on the same row instead
- * of duplicating the purchase.
+ * of duplicating the purchase. A later report of the same order that lists no
+ * lines — the run that only confirmed 3-D Secure — keeps the lines already
+ * recorded.
  */
 export async function recordOrder(
   scope: AccessScope,
@@ -24,6 +26,7 @@ export async function recordOrder(
       target: [orders.workspaceId, orders.merchant, orders.merchantOrderId],
       set: {
         browserRunId: order.browserRunId ?? null,
+        items: sql`coalesce(excluded.items, ${orders.items})`,
         pickup: order.pickup ?? null,
         priceRub: order.priceRub,
         status: order.status ?? "placed",

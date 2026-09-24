@@ -26,49 +26,79 @@ function fact(
   return [{ key, label: named?.length ? named : undefined, value: trimmed }];
 }
 
-function profileFacts(profile: Awaited<ReturnType<typeof readUserProfile>>) {
-  const name = [profile.firstName, profile.lastName]
-    .filter((part) => part !== null)
-    .join(" ");
-  const address = [
+type Profile = Awaited<ReturnType<typeof readUserProfile>>;
+
+function joinedAddress(parts: readonly (string | null | undefined)[]) {
+  return parts.filter((part) => part !== null && part !== undefined).join(", ");
+}
+
+function profileAddress(profile: Profile) {
+  return joinedAddress([
     profile.addressLine1,
     profile.addressLine2,
     profile.postalCode,
     profile.city,
     profile.region,
     profile.countryCode,
-  ]
+  ]);
+}
+
+function profileFacts(profile: Profile) {
+  const name = [profile.firstName, profile.lastName]
     .filter((part) => part !== null)
-    .join(", ");
+    .join(" ");
   return [
     ...fact("Name", undefined, name),
     ...fact("Phone", undefined, profile.phone),
     ...fact("Email", undefined, profile.email),
-    ...fact("Address", undefined, address),
+    ...fact("Address", undefined, profileAddress(profile)),
   ];
 }
 
-function vaultCardFacts(
-  card: { readonly kind: string; readonly label: string },
+/** A vault card the run may use, read and parsed once. */
+type VaultCard =
+  | {
+      readonly contact: NonNullable<
+        ReturnType<typeof parseContactVaultPayload>
+      >;
+      readonly kind: "contact";
+      readonly label: string;
+    }
+  | {
+      readonly address: NonNullable<
+        ReturnType<typeof parseAddressVaultPayload>
+      >;
+      readonly kind: "address";
+      readonly label: string;
+    };
+
+function parsedVaultCard(
+  item: { readonly kind: string; readonly label: string },
   secret: string | undefined
-) {
+): VaultCard[] {
   if (!secret) return [];
-  if (card.kind === "contact") {
+  if (item.kind === "contact") {
     const contact = parseContactVaultPayload(secret);
-    if (!contact) return [];
-    return [
-      ...fact("Name", card.label, contact.fullName),
-      ...fact("Phone", card.label, contact.phone),
-      ...fact("Email", card.label, contact.email),
-      ...fact("Date of birth", card.label, contact.dateOfBirth),
-    ];
+    return contact ? [{ contact, kind: "contact", label: item.label }] : [];
   }
   const address = parseAddressVaultPayload(secret);
-  if (!address) return [];
+  return address ? [{ address, kind: "address", label: item.label }] : [];
+}
+
+function vaultCardFacts(card: VaultCard) {
+  if (card.kind === "contact") {
+    return [
+      ...fact("Name", card.label, card.contact.fullName),
+      ...fact("Phone", card.label, card.contact.phone),
+      ...fact("Email", card.label, card.contact.email),
+      ...fact("Date of birth", card.label, card.contact.dateOfBirth),
+    ];
+  }
+  const { address } = card;
   return fact(
     "Address",
     card.label,
-    [
+    joinedAddress([
       address.recipientName,
       address.line1,
       address.line2,
@@ -76,9 +106,7 @@ function vaultCardFacts(
       address.city,
       address.region,
       address.countryCode,
-    ]
-      .filter((part) => part !== undefined)
-      .join(", ")
+    ])
   );
 }
 
@@ -87,7 +115,7 @@ function vaultCardFacts(
  * a run pointed at two saved addresses can pick «Домашний адрес» over
  * «Рабочий» instead of stopping to ask which one the person meant.
  */
-async function vaultFacts(scope: AccessScope) {
+async function vaultCards(scope: AccessScope) {
   const items = (await readVaultItems(scope)).filter(
     (item) =>
       item.hasSecret && (item.kind === "contact" || item.kind === "address")
@@ -98,12 +126,12 @@ async function vaultFacts(scope: AccessScope) {
       secret: await readVaultSecret(scope, item.id),
     }))
   );
-  return secrets.flatMap(({ item, secret }) => vaultCardFacts(item, secret));
+  return secrets.flatMap(({ item, secret }) => parsedVaultCard(item, secret));
 }
 
-async function safeVaultFacts(scope: AccessScope) {
+async function safeVaultCards(scope: AccessScope) {
   try {
-    return await vaultFacts(scope);
+    return await vaultCards(scope);
   } catch (error) {
     console.warn("[browser-use] vault facts could not be read", {
       cause: error,
@@ -123,6 +151,52 @@ async function safeAccountPhoneNumber(scope: AccessScope) {
   }
 }
 
+/**
+ * Where the person's things can be delivered: the profile's street address
+ * and the vault's address cards, each without the recipient's name. A city
+ * and a country alone are not an address — they are the `home` line. The
+ * card's label goes first, so «Домашний адрес» can win over «Работа».
+ */
+function deliveryAddresses(profile: Profile, cards: readonly VaultCard[]) {
+  const addresses = [
+    ...(profile.addressLine1 === null
+      ? []
+      : fact("Address", undefined, profileAddress(profile))),
+    ...cards.flatMap((card) =>
+      card.kind === "address"
+        ? fact(
+            "Address",
+            card.label,
+            joinedAddress([
+              card.address.line1,
+              card.address.line2,
+              card.address.postalCode,
+              card.address.city,
+              card.address.region,
+              card.address.countryCode,
+            ])
+          )
+        : []
+    ),
+  ];
+  const seen = new Set<string>();
+  return addresses
+    .filter((entry) => {
+      const key = entry.value.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .map((entry) => {
+      // Free text from a form, and each address is one line of the run's
+      // instructions: a line break would start a paragraph of its own.
+      const value = entry.value.replaceAll(/\s+/gu, " ");
+      return entry.label
+        ? `${entry.label.replaceAll(/\s+/gu, " ")}: ${value}`
+        : value;
+    });
+}
+
 const regionNames = new Intl.DisplayNames(["en"], { type: "region" });
 
 /**
@@ -131,7 +205,7 @@ const regionNames = new Intl.DisplayNames(["en"], { type: "region" });
  * country count: the vault can hold several addresses with none marked as
  * home, and the errand text names any other place it is about.
  */
-function profileHome(profile: Awaited<ReturnType<typeof readUserProfile>>) {
+function profileHome(profile: Profile) {
   const code = profile.countryCode?.toUpperCase();
   const country = code ? (regionNames.of(code) ?? code) : undefined;
   // The city is free text from a form, and it lands inside a sentence of the
@@ -149,15 +223,18 @@ function profileHome(profile: Awaited<ReturnType<typeof readUserProfile>>) {
  * address cards, and the account's own sign-in phone only when nothing else
  * supplied one — the errand that stalls on «номер телефона для входа» is the
  * case this last line exists for. `home` is the profile's city and country,
- * which decide which sites can serve the errand at all.
+ * which decide which sites can serve the errand at all. `addresses` are the
+ * delivery addresses alone, with no name, phone or email: what a delivery
+ * errand may type into a site's address picker before anyone confirmed an
+ * order.
  */
 export async function browserRunFacts(scope: AccessScope) {
-  const [profile, vault, accountPhone] = await Promise.all([
+  const [profile, cards, accountPhone] = await Promise.all([
     readUserProfile(scope),
-    safeVaultFacts(scope),
+    safeVaultCards(scope),
     safeAccountPhoneNumber(scope),
   ]);
-  const known = [...profileFacts(profile), ...vault];
+  const known = [...profileFacts(profile), ...cards.flatMap(vaultCardFacts)];
   const facts = known.some((entry) => entry.key === "Phone")
     ? known
     : [...known, ...fact("Phone", undefined, accountPhone)];
@@ -175,6 +252,7 @@ export async function browserRunFacts(scope: AccessScope) {
         `${entry.key}${entry.label ? ` (${entry.label})` : ""}: ${entry.value}`
     );
   return {
+    addresses: deliveryAddresses(profile, cards),
     details:
       lines.length === 0 ? undefined : [factsHeader, ...lines].join("\n"),
     home: profileHome(profile),

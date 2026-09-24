@@ -52,6 +52,16 @@ export const browserSubmissionSchema = z.object({
   what: cardLine(300).describe(
     "Exactly what will be submitted in the user's name, in the user's language: «запись к терапевту», «заявление на справку об отсутствии судимости», «отклики на 3 вакансии Python-разработчика», «чек в „Мой налог“ на 15 000 ₽», «заказ такси до Шереметьево»."
   ),
+  // A basket's lines, each its own line of the card: «корзина на 1 337 ₽»
+  // alone did not say what the person was paying for.
+  items: z
+    .array(cardLine(160))
+    .min(1)
+    .max(30)
+    .optional()
+    .describe(
+      "For an order or a basket, one line per position exactly as the run staged it — the item with its variant, weight or size, the quantity and the price: «Корм Whiskas с кроликом 1,9 кг × 2 — 1 298 ₽». The card lists them and the run submits exactly these. Leave out for anything that is not a basket."
+    ),
   where: cardLine(200).describe(
     "Who receives it and on which site: «Госуслуги (gosuslugi.ru)», «поликлиника по прикреплению через ЕМИАС (emias.info)», «hh.ru»."
   ),

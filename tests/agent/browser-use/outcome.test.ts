@@ -285,6 +285,7 @@ describe("order parsing", () => {
         task: "купи кроссовки",
       })
     ).toEqual({
+      items: null,
       merchant: "wb",
       merchantOrderId: "WB-4K7X2",
       pickup: "Ленина 1, ячейка 12",
@@ -370,6 +371,70 @@ describe("order parsing", () => {
         task: "отмени заказ",
       })
     ).toMatchObject({ merchant: "ozon", status: "cancelled" });
+  });
+
+  it("keeps a placed order placed when its terms mention cancelling", () => {
+    // «отменить можно до…» is a term of the order, not its fate.
+    const result = purchase([
+      "Заказ оформлен. Отменить можно бесплатно до 18:00.",
+      "RESULT: заказ оформлен, доставка сегодня 19:00–20:00, бесплатная отмена",
+      "ORDER: 46000123456781",
+      "TOTAL: 1 337,10 ₽",
+      "NEEDS: none",
+    ]);
+
+    expect(
+      parseBrowserOrder(parseBrowserOutcome(result), {
+        result,
+        site: "https://lavka.yandex.ru",
+        task: "Собери корзину и оплати, если можно отменить бесплатно",
+      })
+    ).toMatchObject({ status: "placed" });
+  });
+
+  it("keeps the basket's lines with the order", () => {
+    const result = purchase([
+      "RESULT: заказ оплачен",
+      "ORDER: 46000123-0001",
+      "TOTAL: 1 298 ₽",
+      "NEEDS: none",
+      'ITEMS: [{"name":"Корм Whiskas с кроликом, 1,9 кг","price":"649 ₽","quantity":"2","url":"https://www.ozon.ru/product/1","details":"доставка завтра"}]',
+    ]);
+
+    expect(
+      parseBrowserOrder(parseBrowserOutcome(result), {
+        result,
+        site: "https://www.ozon.ru",
+        task: "Повтори заказ корма",
+      })?.items
+    ).toEqual([
+      {
+        name: "Корм Whiskas с кроликом, 1,9 кг",
+        price: "649 ₽",
+        quantity: "2",
+        url: "https://www.ozon.ru/product/1",
+      },
+    ]);
+  });
+});
+
+describe("a later step of the errand", () => {
+  it("reads when it opens and keeps it in the summary", () => {
+    const outcome = parseBrowserOutcome(
+      [
+        "RESULT: рейс SU1124 найден",
+        "NEEDS: decision",
+        "NEXT: онлайн-регистрация откроется за 24 часа до вылета, 03.10 в 09:30",
+      ].join("\n")
+    );
+
+    expect(outcome.next).toBe(
+      "онлайн-регистрация откроется за 24 часа до вылета, 03.10 в 09:30"
+    );
+    expect(browserOutcomeSummary(outcome, "fallback")).toContain(
+      "Next: онлайн-регистрация откроется за 24 часа до вылета, 03.10 в 09:30"
+    );
+    expect(parseBrowserOutcome("NEXT: none").next).toBeUndefined();
   });
 });
 

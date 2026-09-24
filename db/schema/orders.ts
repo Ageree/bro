@@ -4,6 +4,7 @@ import {
   foreignKey,
   index,
   integer,
+  jsonb,
   pgTable,
   text,
   timestamp,
@@ -13,6 +14,18 @@ import { workspaces } from "./workspaces";
 
 export const orderMerchants = ["wb", "ozon", "other"] as const;
 export const orderStatuses = ["placed", "cancelled", "unknown"] as const;
+
+/**
+ * One line of an order as the run that placed it reported it: the price and
+ * the quantity as the page showed them, and the item's own page when the
+ * run saw it.
+ */
+interface OrderItem {
+  readonly name: string;
+  readonly price?: string;
+  readonly quantity?: string;
+  readonly url?: string;
+}
 
 /**
  * What a finished browser errand bought, so «где мой заказ» is answered from
@@ -31,6 +44,9 @@ export const orders = pgTable(
     priceRub: integer("price_rub").notNull(),
     status: text("status", { enum: orderStatuses }).notNull().default("placed"),
     pickup: text("pickup"),
+    // The basket's lines, or null when the run reported none (and on every
+    // order recorded before they were kept).
+    items: jsonb("items").$type<readonly OrderItem[]>(),
     browserRunId: text("browser_run_id"),
     createdAt: timestamp("created_at", {
       mode: "date",

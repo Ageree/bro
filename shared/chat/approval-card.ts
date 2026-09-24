@@ -34,6 +34,7 @@ const cardText = {
     cardUpTo: "Pays with the saved card, up to",
     forWhom: "In the name of",
     guarantee: "The saved card as a guarantee only, nothing charged",
+    items: "Items",
     limitChange: "Change the spend limit:",
     limitClear: "Take back the rule",
     limitInclude: "Pay without asking again on",
@@ -61,6 +62,7 @@ const cardText = {
     cardUpTo: "Оплата сохранённой картой, не больше",
     forWhom: "От чьего имени",
     guarantee: "Сохранённая карта только в гарантию, без списания",
+    items: "Состав",
     limitChange: "Изменение лимита трат без спроса:",
     limitClear: "Снять правило",
     limitInclude: "Снова платить без спроса",
@@ -103,6 +105,7 @@ const confirmedCallSchema = z.object({
     // Drawn line by line below, so a stray line break costs nothing here.
     amount: z.string().optional(),
     forWhom: z.string(),
+    items: z.array(z.string()).optional(),
     personalData: z.array(z.string()),
     what: z.string(),
     when: z.string().optional(),
@@ -134,9 +137,14 @@ function browserTaskPrompt(
   text: CardText
 ) {
   const { submission } = call;
+  const items = submission.items ?? [];
   return [
     text.title,
     `${text.what}: ${oneLine(submission.what)}`,
+    // A basket is confirmed line by line: what is in it, not only its total.
+    ...(items.length > 0
+      ? [`${text.items}:`, ...items.map((item) => `• ${oneLine(item)}`)]
+      : []),
     `${text.where}: ${oneLine(submission.where)}`,
     `${text.forWhom}: ${oneLine(submission.forWhom)}`,
     submission.when ? `${text.when}: ${oneLine(submission.when)}` : undefined,
