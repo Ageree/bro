@@ -66,7 +66,8 @@ export function mentionsRecurringCharge(
   ...texts: readonly (string | null | undefined)[]
 ) {
   return texts.some(
-    (text) => text !== null && text !== undefined && recurringChargePattern.test(text)
+    (text) =>
+      text !== null && text !== undefined && recurringChargePattern.test(text)
   );
 }
 

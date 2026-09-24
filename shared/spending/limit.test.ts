@@ -163,7 +163,9 @@ describe("the auto-payment decision", () => {
     expect(
       decideAutoPayment(
         policy({
-          rules: [{ category: null, limitRub: 3000, merchant: "other.example" }],
+          rules: [
+            { category: null, limitRub: 3000, merchant: "other.example" },
+          ],
         }),
         guarantee,
         []

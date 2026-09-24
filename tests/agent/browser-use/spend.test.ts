@@ -162,7 +162,10 @@ describe("reading a charge from what the run reported", () => {
     const finished = { completed: true, report: null };
 
     expect(
-      reportedCharge({ needs: "none", order: undefined, total: "990 ₽" }, finished)
+      reportedCharge(
+        { needs: "none", order: undefined, total: "990 ₽" },
+        finished
+      )
     ).toEqual({ foreignCurrency: false, priceRub: 990, recurring: false });
     expect(
       reportedCharge(
@@ -172,7 +175,10 @@ describe("reading a charge from what the run reported", () => {
     ).toEqual({ foreignCurrency: true, priceRub: undefined, recurring: false });
     // Stopped to ask, or failed without a word of money: nothing was paid.
     expect(
-      reportedCharge({ needs: "payment", order: undefined, total: "990 ₽" }, finished)
+      reportedCharge(
+        { needs: "payment", order: undefined, total: "990 ₽" },
+        finished
+      )
     ).toBeNull();
     expect(
       reportedCharge(
@@ -189,7 +195,9 @@ describe("reading a charge from what the run reported", () => {
     expect(mentionsRecurringCharge("Оформил подписку на месяц")).toBe(true);
     expect(mentionsRecurringCharge(null, "Auto-renews every year")).toBe(true);
     expect(mentionsRecurringCharge("с автопродлением")).toBe(true);
-    expect(mentionsRecurringCharge("Купи корм для кота", undefined)).toBe(false);
+    expect(mentionsRecurringCharge("Купи корм для кота", undefined)).toBe(
+      false
+    );
     expect(
       reportedCharge(
         { needs: "none", order: "1", total: "299 ₽" },

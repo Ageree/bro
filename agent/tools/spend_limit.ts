@@ -161,13 +161,16 @@ export function applySpendLimitChange(
   return current;
 }
 
+/** A rule field that is empty covers every value of it. */
+function scopesMeet(first: string | null, second: string | null) {
+  return first === null || second === null || first === second;
+}
+
 /** Whether some shop and category would fall under both rules at once. */
 function rulesOverlap(first: SpendTarget, second: SpendTarget) {
-  const compatible = (a: string | null, b: string | null) =>
-    a === null || b === null || a === b;
   return (
-    compatible(first.merchant, second.merchant) &&
-    compatible(first.category, second.category)
+    scopesMeet(first.merchant, second.merchant) &&
+    scopesMeet(first.category, second.category)
   );
 }
 
@@ -184,7 +187,9 @@ function clearWidens(input: SpendLimitInput, policy: SpendLimitPolicy) {
   const target = targetFrom(input);
   const removed = policy.rules.filter((rule) => sameRuleScope(rule, target));
   const kept = policy.rules.filter((rule) => !sameRuleScope(rule, target));
-  return removed.some((rule) => kept.some((other) => rulesOverlap(rule, other)));
+  return removed.some((rule) =>
+    kept.some((other) => rulesOverlap(rule, other))
+  );
 }
 
 /**
