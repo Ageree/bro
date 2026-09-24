@@ -18,6 +18,7 @@ import { parseCalendarAvailability } from "@agent/lib/google-workspace/calendar"
 import {
   googleReadOnlyWriteRefusal,
   googleWorkspaceAuthOptions,
+  googleWorkspaceProvider,
   googleWriteApproval,
 } from "@agent/lib/google-workspace/client";
 import { gmailUpdateLabels } from "@agent/lib/google-workspace/gmail";
@@ -91,6 +92,46 @@ describe("Google Workspace", () => {
       scopes: [...googleWorkspaceScopes.full],
       subject: googleWorkspaceSubject(userId),
     });
+  });
+
+  it("checks the grant for offline access once chat sign-in completes", async () => {
+    const claims = btoa(JSON.stringify({ exp: 4_102_444_800 }));
+    vi.stubEnv("VERCEL_OIDC_TOKEN", `e30.${claims}.sig`);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(
+        Response.json({
+          connector: { id: "cn_1", type: "oauth", uid: "google" },
+          expiresAt: Date.now() + 3_600_000,
+          token: "ya29.fresh",
+        })
+      )
+      .mockResolvedValueOnce(Response.json({ access_type: "online" }));
+    vi.stubGlobal("fetch", fetch);
+
+    try {
+      await expect(
+        googleWorkspaceProvider("full").completeAuthorization({
+          callback: { method: "GET", params: {} },
+          callbackUrl: "https://example.com/hook",
+          connection: { url: "https://www.googleapis.com" },
+          principal: { id: userId, issuer: "better-auth", type: "user" },
+        })
+      ).resolves.toMatchObject({ token: "ya29.fresh" });
+      await vi.waitFor(() => {
+        expect(warn).toHaveBeenCalledExactlyOnceWith(
+          expect.stringContaining("no offline access")
+        );
+      });
+    } finally {
+      warn.mockRestore();
+      vi.unstubAllGlobals();
+      vi.unstubAllEnvs();
+    }
+    expect(fetch.mock.calls[1]?.[0]).toBe(
+      "https://oauth2.googleapis.com/tokeninfo"
+    );
   });
 
   it("grants a read-only workspace no scope that can write", () => {
