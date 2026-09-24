@@ -1,3 +1,4 @@
+import { parseInputResponses } from "eve/client";
 import { defineSchedule, type ScheduleHandlerArgs } from "eve/schedules";
 import scheduledRunChannel from "@agent/channels/scheduled-run";
 import {
@@ -7,10 +8,13 @@ import {
 import { holdProactiveReport } from "@agent/lib/proactive/delivery";
 import { dispatchScheduledReport } from "@agent/lib/schedules/report";
 import {
+  claimAnsweredScheduledAgentRuns,
   claimReadyScheduledAgentRuns,
+  finishScheduledAgentRunInput,
   listRecoverableScheduledReports,
   materializeDueScheduledAgentRuns,
   releaseScheduledAgentRun,
+  restoreScheduledAgentRunInput,
   setScheduledRunSession,
 } from "@db/services/scheduled-agent-jobs";
 
@@ -46,8 +50,15 @@ async function dispatchDueWork(delivery: ReportDelivery) {
     now,
   });
   const reports = await listRecoverableScheduledReports(now, 25);
-  if (materializedRunIds.length > 0 || runs.length > 0 || reports.length > 0) {
+  const answered = await claimAnsweredScheduledAgentRuns({ limit: 25, now });
+  if (
+    materializedRunIds.length > 0 ||
+    runs.length > 0 ||
+    reports.length > 0 ||
+    answered.length > 0
+  ) {
     console.info("[scheduled-run] schedule tick found work", {
+      answeredRunCount: answered.length,
       claimedRunCount: runs.length,
       materializedRunCount: materializedRunIds.length,
       recoverableReportCount: reports.length,
@@ -56,7 +67,79 @@ async function dispatchDueWork(delivery: ReportDelivery) {
   await Promise.all([
     ...runs.map((claim) => executeScheduledRun(delivery, claim)),
     ...reports.map((report) => dispatchRecoverableReport(delivery, report)),
+    ...answered.map((claim) => resumeAnsweredRun(delivery, claim)),
   ]);
+}
+
+/**
+ * Hands the person's answer to the worker session waiting on it.
+ * `schedules-answer` only stores the answer: the app's own routes never reach
+ * eve on Vercel, and only a schedule handler holds the worker's session.
+ */
+async function resumeAnsweredRun(
+  delivery: ReportDelivery,
+  claim: Awaited<ReturnType<typeof claimAnsweredScheduledAgentRuns>>[number]
+) {
+  const { inputResponses, leaseToken, workerSessionId } = claim.run;
+  if (!inputResponses || !leaseToken || !workerSessionId) {
+    throw new Error("An answered scheduled run requires its worker session.");
+  }
+  try {
+    const result = await delivery
+      .attachSession(workerSessionId)
+      .respond(parseInputResponses(inputResponses), {
+        auth: scheduledInputAuth(claim),
+      });
+    if (result.status === "accepted") {
+      await finishScheduledAgentRunInput(claim.run.id, leaseToken);
+      console.info("[scheduled-run] answer handed to worker", {
+        runId: claim.run.id,
+        sessionId: workerSessionId,
+      });
+      return;
+    }
+    // A worker still starting takes the answer on a later tick; one that
+    // ended never will, so the answer is dropped with the reason.
+    await restoreScheduledAgentRunInput(
+      claim.run.id,
+      leaseToken,
+      "The scheduled session is no longer active.",
+      result.retryable === true ? { at: new Date(Date.now() + 60_000) } : null
+    );
+  } catch (error) {
+    console.warn("[scheduled-run] answer hand-off failed", {
+      cause: error,
+      runId: claim.run.id,
+    });
+    await restoreScheduledAgentRunInput(
+      claim.run.id,
+      leaseToken,
+      error instanceof Error ? error.message : String(error),
+      { at: new Date(Date.now() + 5 * 60_000) }
+    );
+  }
+}
+
+function scheduledInputAuth(
+  claim: Awaited<ReturnType<typeof claimAnsweredScheduledAgentRuns>>[number]
+) {
+  const attributes = new Map<string, string>([
+    ["conversationChannel", claim.job.conversationChannel],
+    ["conversationId", claim.job.conversationId],
+    ["scheduleId", claim.job.id],
+    ["scheduledRunId", claim.run.id],
+    ["workspaceId", claim.job.workspaceId],
+  ]);
+  if (claim.job.kind === "proactive") {
+    attributes.set("scheduledRunKind", "proactive");
+  }
+  return {
+    attributes: Object.fromEntries(attributes),
+    authenticator: "scheduled-input",
+    issuer: "open-instinct",
+    principalId: claim.job.createdByUserId,
+    principalType: "user" as const,
+  };
 }
 
 async function executeScheduledRun(

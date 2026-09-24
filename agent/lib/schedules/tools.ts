@@ -7,11 +7,22 @@ import type {
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { telegramConversationIdSchema } from "@agent/lib/telegram-conversation";
 
-export function scheduleOwner(context: ToolContext) {
+function scheduleCaller(context: ToolContext) {
   const auth = context.session.auth.current;
   if (auth?.principalType !== "user") {
     throw new Error("An authenticated user is required to manage schedules.");
   }
+  return auth;
+}
+
+/** Whose schedules these are: the person's, from any chat or channel. */
+export function scheduleScope(context: ToolContext) {
+  return scopeFromPrincipal(scheduleCaller(context));
+}
+
+/** The person and the chat a new schedule is made in. */
+export function scheduleOwner(context: ToolContext) {
+  const auth = scheduleCaller(context);
   const conversationChannel = z
     .enum(["eve", "photon", "telegram"])
     .parse(auth.attributes.conversationChannel);
@@ -42,11 +53,19 @@ export function scheduleReplyAnchor(context: ToolContext) {
   return messageId.success ? messageId.data : undefined;
 }
 
+// The chat a schedule was made in, named the way the person knows it.
+const createdInLabel = {
+  eve: "web chat",
+  photon: "iMessage",
+  telegram: "Telegram",
+} as const;
+
 export function scheduleSummary(
   job: Awaited<ReturnType<typeof createScheduledAgentJob>>
 ) {
   return {
     createdAt: job.createdAt.toISOString(),
+    createdIn: createdInLabel[job.conversationChannel],
     id: job.id,
     lastError: job.lastError,
     lastRunAt: job.lastRunAt?.toISOString() ?? null,

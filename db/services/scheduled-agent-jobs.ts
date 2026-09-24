@@ -12,19 +12,29 @@ import {
   or,
   sql,
 } from "drizzle-orm";
-import { inputRequestSchema, type InputRequest } from "eve/client";
+import {
+  inputRequestSchema,
+  inputResponseSchema,
+  type InputRequest,
+  type InputResponse,
+} from "eve/client";
 import type { AccessScope } from "@shared/identity/access-scope";
 import {
   computeNextRun,
   computeLatestRun,
-  scheduleTimingSchema,
+  storedScheduleTimingSchema,
   type ScheduleTiming,
 } from "@shared/schedules/timing";
 import {
   scheduledRunOutcomeSchema,
   type ScheduledRunOutcome,
 } from "@shared/schedules/outcome";
-import { db, scheduledAgentJobs, scheduledAgentRuns } from "@db";
+import {
+  db,
+  proactiveWatches,
+  scheduledAgentJobs,
+  scheduledAgentRuns,
+} from "@db";
 
 const exhaustedRunOutcome = {
   kind: "blocked",
@@ -58,12 +68,15 @@ function exhaustedReportStatus(
 }
 
 function parseJob<T extends typeof scheduledAgentJobs.$inferSelect>(job: T) {
-  return { ...job, timing: scheduleTimingSchema.parse(job.timing) };
+  return { ...job, timing: storedScheduleTimingSchema.parse(job.timing) };
 }
 
 function parseRun<T extends typeof scheduledAgentRuns.$inferSelect>(run: T) {
   return {
     ...run,
+    inputResponses: run.inputResponses
+      ? inputResponseSchema.array().min(1).parse(run.inputResponses)
+      : null,
     pendingInputRequests: run.pendingInputRequests
       ? inputRequestSchema.array().min(1).parse(run.pendingInputRequests)
       : null,
@@ -99,26 +112,23 @@ export async function createScheduledAgentJob(
   return parseJob(job);
 }
 
-export async function listScheduledAgentJobs(
-  scope: AccessScope,
-  conversation: Pick<
-    CreateScheduledAgentJob,
-    "conversationChannel" | "conversationId"
-  >
-) {
+/**
+ * A schedule belongs to the person, not to the chat it was made in: any of
+ * their conversations, in any channel, sees and manages all of them.
+ */
+function ownedTasks(scope: AccessScope) {
+  return and(
+    eq(scheduledAgentJobs.workspaceId, scope.workspaceId),
+    eq(scheduledAgentJobs.createdByUserId, scope.userId),
+    eq(scheduledAgentJobs.kind, "task"),
+    sql`${scheduledAgentJobs.status} <> 'deleted'`
+  );
+}
+
+export async function listScheduledAgentJobs(scope: AccessScope) {
   const jobs = await db.query.scheduledAgentJobs.findMany({
     orderBy: asc(scheduledAgentJobs.nextRunAt),
-    where: and(
-      eq(scheduledAgentJobs.workspaceId, scope.workspaceId),
-      eq(scheduledAgentJobs.createdByUserId, scope.userId),
-      eq(
-        scheduledAgentJobs.conversationChannel,
-        conversation.conversationChannel
-      ),
-      eq(scheduledAgentJobs.conversationId, conversation.conversationId),
-      eq(scheduledAgentJobs.kind, "task"),
-      sql`${scheduledAgentJobs.status} <> 'deleted'`
-    ),
+    where: ownedTasks(scope),
     with: {
       runs: {
         limit: 1,
@@ -137,30 +147,16 @@ export async function listScheduledAgentJobs(
 
 export async function updateScheduledAgentJob(
   scope: AccessScope,
-  conversation: Pick<
-    CreateScheduledAgentJob,
-    "conversationChannel" | "conversationId"
-  >,
   id: string,
   patch: UpdateScheduledAgentJob,
   now = new Date()
 ) {
   const current = await db.query.scheduledAgentJobs.findFirst({
-    where: and(
-      eq(scheduledAgentJobs.id, id),
-      eq(scheduledAgentJobs.workspaceId, scope.workspaceId),
-      eq(scheduledAgentJobs.createdByUserId, scope.userId),
-      eq(
-        scheduledAgentJobs.conversationChannel,
-        conversation.conversationChannel
-      ),
-      eq(scheduledAgentJobs.conversationId, conversation.conversationId),
-      eq(scheduledAgentJobs.kind, "task"),
-      sql`${scheduledAgentJobs.status} <> 'deleted'`
-    ),
+    where: and(eq(scheduledAgentJobs.id, id), ownedTasks(scope)),
   });
   if (!current) return undefined;
-  const timing = patch.timing ?? scheduleTimingSchema.parse(current.timing);
+  const timing =
+    patch.timing ?? storedScheduleTimingSchema.parse(current.timing);
   const status = patch.status ?? current.status;
   const shouldRecompute =
     patch.timing !== undefined ||
@@ -188,6 +184,55 @@ export async function updateScheduledAgentJob(
   return job ? parseJob(job) : undefined;
 }
 
+/**
+ * Moves the person's calendar schedules kept in their old timezone to the new
+ * one, so «в 10 утра» stays 10:00 where they live now. A schedule set in
+ * another zone on purpose («по Нью-Йорку») keeps its zone, and a one-time
+ * reminder is an instant that does not move.
+ */
+export async function followScheduleTimeZone(
+  scope: AccessScope,
+  from: string,
+  to: string,
+  now = new Date()
+) {
+  if (from === to) return 0;
+  const jobs = await db.query.scheduledAgentJobs.findMany({
+    where: and(
+      ownedTasks(scope),
+      sql`${scheduledAgentJobs.timing}->>'kind' = 'calendar'`,
+      sql`${scheduledAgentJobs.timing}->>'timezone' = ${from}`
+    ),
+  });
+  const moved = await Promise.all(
+    jobs.map(async (job) => {
+      const timing = storedScheduleTimingSchema.parse(job.timing);
+      if (timing.kind !== "calendar") return false;
+      const followed = { ...timing, timezone: to };
+      const [updated] = await db
+        .update(scheduledAgentJobs)
+        .set({
+          nextRunAt:
+            job.status === "active"
+              ? computeNextRun(followed, now)
+              : job.nextRunAt,
+          revision: sql`${scheduledAgentJobs.revision} + 1`,
+          timing: followed,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(scheduledAgentJobs.id, job.id),
+            eq(scheduledAgentJobs.revision, job.revision)
+          )
+        )
+        .returning({ id: scheduledAgentJobs.id });
+      return updated !== undefined;
+    })
+  );
+  return moved.filter(Boolean).length;
+}
+
 export async function materializeDueScheduledAgentRuns(options: {
   readonly limit: number;
   readonly now: Date;
@@ -209,7 +254,7 @@ export async function materializeDueScheduledAgentRuns(options: {
     const createdRunIds = await Promise.all(
       due.map(async (job) => {
         if (!job.nextRunAt) return undefined;
-        const timing = scheduleTimingSchema.parse(job.timing);
+        const timing = storedScheduleTimingSchema.parse(job.timing);
         const scheduledFor =
           job.missedRunPolicy === "catch_up"
             ? job.nextRunAt
@@ -397,6 +442,7 @@ export async function waitForScheduledAgentRunInput(
   const [run] = await db
     .update(scheduledAgentRuns)
     .set({
+      inputResponses: null,
       pendingInputRequests: parsedRequests,
       leaseExpiresAt: null,
       reportSequence: sql`${scheduledAgentRuns.reportSequence} + 1`,
@@ -438,12 +484,13 @@ export async function deferScheduledAgentRunCompletion(
   return run !== undefined;
 }
 
+/**
+ * The question a person's run is waiting on, whichever of their chats they
+ * answer from: the report may have reached a different one than the schedule
+ * was made in.
+ */
 export async function getScheduledAgentRunInput(
   scope: AccessScope,
-  conversation: Pick<
-    CreateScheduledAgentJob,
-    "conversationChannel" | "conversationId"
-  >,
   runId: string
 ) {
   const pending = await db.query.scheduledAgentRuns.findFirst({
@@ -458,8 +505,6 @@ export async function getScheduledAgentRunInput(
     !pending ||
     pending.job.workspaceId !== scope.workspaceId ||
     pending.job.createdByUserId !== scope.userId ||
-    pending.job.conversationChannel !== conversation.conversationChannel ||
-    pending.job.conversationId !== conversation.conversationId ||
     !pending.leaseToken ||
     !pending.pendingInputRequests ||
     !pending.workerSessionId
@@ -468,6 +513,7 @@ export async function getScheduledAgentRunInput(
   }
   return {
     leaseToken: pending.leaseToken,
+    pendingInputRequests: parseRun(pending).pendingInputRequests ?? [],
     runId: pending.id,
   };
 }
@@ -491,53 +537,124 @@ export async function getScheduledAgentRunInputForReport(
   ) {
     return undefined;
   }
-  return { leaseToken: pending.leaseToken, runId: pending.id };
+  return {
+    leaseToken: pending.leaseToken,
+    pendingInputRequests: parseRun(pending).pendingInputRequests ?? [],
+    runId: pending.id,
+  };
 }
 
-export async function claimScheduledAgentRunInput(
+/**
+ * Keeps the person's answer on the waiting run. Only a schedule handler holds
+ * the worker session that must receive it, so the next `dynamic` tick hands
+ * it over (`claimAnsweredScheduledAgentRuns`). A later answer replaces one
+ * not yet handed over.
+ */
+export async function submitScheduledAgentRunAnswer(
   runId: string,
   leaseToken: string,
+  inputResponses: readonly InputResponse[],
   now = new Date()
 ) {
-  const [claimed] = await db
+  const [run] = await db
     .update(scheduledAgentRuns)
     .set({
-      leaseExpiresAt: new Date(now.getTime() + 6 * 60 * 60_000),
-      status: "running",
+      inputResponses: inputResponseSchema.array().min(1).parse(inputResponses),
+      lastError: null,
+      retryAt: null,
       updatedAt: now,
     })
     .where(
       and(
         eq(scheduledAgentRuns.id, runId),
         eq(scheduledAgentRuns.status, "waiting_for_input"),
-        eq(scheduledAgentRuns.leaseToken, leaseToken)
+        eq(scheduledAgentRuns.leaseToken, leaseToken),
+        isNotNull(scheduledAgentRuns.workerSessionId)
       )
     )
-    .returning();
-  if (!claimed?.pendingInputRequests || !claimed.workerSessionId) {
-    return undefined;
-  }
-  const claimedWithJob = await db.query.scheduledAgentRuns.findFirst({
-    where: eq(scheduledAgentRuns.id, claimed.id),
-    with: { job: true },
-  });
-  if (!claimedWithJob) return undefined;
-  const { job, ...run } = claimedWithJob;
-  return { job: parseJob(job), run: parseRun(run) };
+    .returning({ id: scheduledAgentRuns.id });
+  return run !== undefined;
 }
 
+/**
+ * Leases the answered runs back to `running`, the way the worker holds them,
+ * so exactly one tick resumes each worker session.
+ */
+export async function claimAnsweredScheduledAgentRuns(options: {
+  readonly limit: number;
+  readonly now: Date;
+}) {
+  return db.transaction(async (transaction) => {
+    const answered = await transaction
+      .select({ job: scheduledAgentJobs, run: scheduledAgentRuns })
+      .from(scheduledAgentRuns)
+      .innerJoin(
+        scheduledAgentJobs,
+        eq(scheduledAgentRuns.jobId, scheduledAgentJobs.id)
+      )
+      .where(
+        and(
+          eq(scheduledAgentRuns.status, "waiting_for_input"),
+          isNotNull(scheduledAgentRuns.inputResponses),
+          isNotNull(scheduledAgentRuns.leaseToken),
+          isNotNull(scheduledAgentRuns.workerSessionId),
+          or(
+            isNull(scheduledAgentRuns.retryAt),
+            lte(scheduledAgentRuns.retryAt, options.now)
+          )
+        )
+      )
+      .orderBy(asc(scheduledAgentRuns.updatedAt))
+      .limit(options.limit)
+      .for("update", { of: scheduledAgentRuns, skipLocked: true });
+    if (answered.length === 0) return [];
+    const leaseExpiresAt = new Date(options.now.getTime() + 6 * 60 * 60_000);
+    await transaction
+      .update(scheduledAgentRuns)
+      .set({
+        leaseExpiresAt,
+        retryAt: null,
+        status: "running",
+        updatedAt: options.now,
+      })
+      .where(
+        inArray(
+          scheduledAgentRuns.id,
+          answered.map(({ run }) => run.id)
+        )
+      );
+    return answered.map(({ job, run }) => ({
+      job: parseJob(job),
+      run: parseRun({
+        ...run,
+        leaseExpiresAt,
+        retryAt: null,
+        status: "running" as const,
+      }),
+    }));
+  });
+}
+
+/**
+ * Puts a run whose answer did not reach the worker back to waiting. A
+ * transient failure keeps the answer for a later tick; a worker session that
+ * is gone never takes it, so the answer is dropped.
+ */
 export async function restoreScheduledAgentRunInput(
   runId: string,
   leaseToken: string,
   errorMessage: string,
+  retry: { readonly at: Date } | null,
   now = new Date()
 ) {
   await db
     .update(scheduledAgentRuns)
     .set({
       deferredCompletionTurnId: null,
+      inputResponses: retry ? scheduledAgentRuns.inputResponses : null,
       lastError: errorMessage.slice(0, 2_000),
       leaseExpiresAt: null,
+      retryAt: retry?.at ?? null,
       status: "waiting_for_input",
       updatedAt: now,
     })
@@ -559,6 +676,7 @@ export async function finishScheduledAgentRunInput(
     .update(scheduledAgentRuns)
     .set({
       deferredCompletionTurnId: null,
+      inputResponses: null,
       pendingInputRequests: null,
       lastError: null,
       reportLeaseExpiresAt: null,
@@ -704,7 +822,47 @@ export async function claimScheduledReport(runId: string, now = new Date()) {
   });
   if (!claimedWithJob) return undefined;
   const { job, ...run } = claimedWithJob;
-  return { job: parseJob(job), run: parseRun(run) };
+  return {
+    delivery: await reportConversation(job),
+    job: parseJob(job),
+    run: parseRun(run),
+  };
+}
+
+/**
+ * Where a report goes: the conversation the person last talked from, in any
+ * channel, which `recordProactiveTarget` keeps current for the workspace. A
+ * web chat is a session nobody reopens once they start a new one, so the chat
+ * a schedule was made in is only the fallback. Its reply anchor points into
+ * that chat and goes along only when the report lands there.
+ */
+async function reportConversation(job: typeof scheduledAgentJobs.$inferSelect) {
+  const own = {
+    conversationChannel: job.conversationChannel,
+    conversationId: job.conversationId,
+    replyAnchorMessageId: job.replyAnchorMessageId,
+  };
+  if (job.kind !== "task") return own;
+  const [latest] = await db
+    .select({
+      conversationChannel: scheduledAgentJobs.conversationChannel,
+      conversationId: scheduledAgentJobs.conversationId,
+    })
+    .from(proactiveWatches)
+    .innerJoin(
+      scheduledAgentJobs,
+      eq(proactiveWatches.jobId, scheduledAgentJobs.id)
+    )
+    .where(eq(proactiveWatches.workspaceId, job.workspaceId))
+    .limit(1);
+  if (
+    !latest ||
+    (latest.conversationChannel === own.conversationChannel &&
+      latest.conversationId === own.conversationId)
+  ) {
+    return own;
+  }
+  return { ...latest, replyAnchorMessageId: null };
 }
 
 export async function listRecoverableScheduledReports(

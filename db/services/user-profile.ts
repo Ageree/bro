@@ -9,6 +9,7 @@ import {
   type UserProfilePatch,
 } from "@shared/user-profile/schema";
 import { db, userProfiles } from "@db";
+import { followScheduleTimeZone } from "./scheduled-agent-jobs";
 import { ensureScope } from "./scope";
 
 const selection = {
@@ -71,6 +72,7 @@ export async function patchUserProfile(
 
 async function writeUserProfile(scope: AccessScope, profile: UserProfile) {
   const updatedAt = new Date();
+  const previousTimeZone = await readWorkspaceTimeZone(scope);
   await db
     .insert(userProfiles)
     .values({ ...profile, updatedAt, workspaceId: scope.workspaceId })
@@ -78,6 +80,11 @@ async function writeUserProfile(scope: AccessScope, profile: UserProfile) {
       target: userProfiles.workspaceId,
       set: { ...profile, updatedAt },
     });
+  // «В 10 утра» means 10:00 wherever the person lives now.
+  const timeZone = resolveTimeZone(profile.timezone);
+  if (timeZone !== previousTimeZone) {
+    await followScheduleTimeZone(scope, previousTimeZone, timeZone, updatedAt);
+  }
 }
 
 /** Whether Bro may write first; on until the person turns it off. */

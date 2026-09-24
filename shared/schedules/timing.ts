@@ -2,7 +2,8 @@ import { z } from "zod";
 
 const localTimeSchema = z
   .string()
-  .regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/u, "Use a 24-hour HH:MM time.");
+  .regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/u, "Use a 24-hour HH:MM time.")
+  .describe("Wall-clock time in the timezone, 24-hour HH:MM.");
 
 const timezoneSchema = z
   .string()
@@ -17,42 +18,124 @@ const timezoneSchema = z
       }
     },
     { message: "Use a valid IANA timezone." }
+  )
+  .describe("IANA timezone of the person, e.g. Europe/Moscow.");
+
+const weekdaySchema = z
+  .number()
+  .int()
+  .min(0)
+  .max(6)
+  .describe("Day of the week: 0 Sunday, 1 Monday … 6 Saturday.");
+
+const dayOfMonthSchema = z
+  .union([z.number().int().min(1).max(31), z.literal("last")])
+  .describe(
+    'Day of the month, or "last". A day the month lacks (31 in April, 30 in February) falls on its last day.'
   );
 
-export const scheduleTimingSchema = z
-  .discriminatedUnion("kind", [
-    z.strictObject({
-      at: z.iso.datetime({ offset: true }),
-      kind: z.literal("once"),
-    }),
-    z.strictObject({
-      anchoredAt: z.iso.datetime({ offset: true }),
-      everyMinutes: z.number().int().min(1).max(525_600),
-      kind: z.literal("interval"),
-    }),
-    z.strictObject({
-      frequency: z.enum(["daily", "weekdays", "weekly"]),
-      kind: z.literal("calendar"),
-      localTime: localTimeSchema,
-      timezone: timezoneSchema,
-      weekday: z.number().int().min(0).max(6).optional(),
-    }),
-  ])
-  .superRefine((timing, context) => {
-    if (
-      timing.kind === "calendar" &&
-      timing.frequency === "weekly" &&
-      timing.weekday === undefined
-    ) {
-      context.addIssue({
-        code: "custom",
-        message: "Weekly schedules require a weekday.",
-        path: ["weekday"],
-      });
-    }
-  });
+const calendarBase = {
+  kind: z.literal("calendar"),
+  localTime: localTimeSchema,
+  timezone: timezoneSchema,
+};
 
-export type ScheduleTiming = z.infer<typeof scheduleTimingSchema>;
+const monthDays = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+const calendarTimingSchema = z.discriminatedUnion("frequency", [
+  z.strictObject({ ...calendarBase, frequency: z.literal("daily") }),
+  // Monday to Friday.
+  z.strictObject({ ...calendarBase, frequency: z.literal("weekdays") }),
+  z.strictObject({
+    ...calendarBase,
+    frequency: z.literal("weekly"),
+    weekdays: z
+      .array(weekdaySchema)
+      .min(1)
+      .max(7)
+      .refine((days) => new Set(days).size === days.length, {
+        message: "List each weekday once.",
+      })
+      .describe(
+        "The days of the week it runs on, e.g. [1, 3] for Mon and Wed."
+      ),
+  }),
+  z.strictObject({
+    ...calendarBase,
+    dayOfMonth: dayOfMonthSchema,
+    frequency: z.literal("monthly"),
+  }),
+  // «Каждое второе воскресенье месяца», «в последнюю пятницу».
+  z.strictObject({
+    ...calendarBase,
+    frequency: z.literal("monthly_weekday"),
+    occurrence: z
+      .union([z.number().int().min(1).max(4), z.literal("last")])
+      .describe('Which such weekday of the month: 1 to 4, or "last".'),
+    weekday: weekdaySchema,
+  }),
+  z
+    .strictObject({
+      ...calendarBase,
+      dayOfMonth: dayOfMonthSchema,
+      frequency: z.literal("yearly"),
+      month: z.number().int().min(1).max(12).describe("Month, 1 January."),
+    })
+    .refine(
+      ({ dayOfMonth, month }) =>
+        dayOfMonth === "last" || dayOfMonth <= (monthDays[month - 1] ?? 31),
+      { message: "That month has fewer days.", path: ["dayOfMonth"] }
+    ),
+]);
+
+// A whole month or year of minutes drifts off the calendar: «каждое 5-е»
+// stored as 43 200 minutes moved a day earlier every 31-day month.
+const calendarLikeIntervalDays = new Set([28, 29, 30, 31, 365, 366]);
+
+const intervalTimingSchema = z.strictObject({
+  anchoredAt: z.iso.datetime({ offset: true }),
+  everyMinutes: z.number().int().min(1).max(525_600),
+  kind: z.literal("interval"),
+});
+
+/**
+ * What a schedule tool accepts. Month- and year-based recurrence is a
+ * calendar rule in the person's timezone, never a fixed count of minutes.
+ */
+export const scheduleTimingSchema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    at: z.iso.datetime({ offset: true }),
+    kind: z.literal("once"),
+  }),
+  intervalTimingSchema.refine(
+    ({ everyMinutes }) =>
+      everyMinutes % 1_440 !== 0 ||
+      !calendarLikeIntervalDays.has(everyMinutes / 1_440),
+    {
+      message:
+        "A month or a year is not a fixed number of minutes: use calendar timing with frequency monthly or yearly.",
+      path: ["everyMinutes"],
+    }
+  ),
+  calendarTimingSchema,
+]);
+
+// Weekly schedules written before `weekdays` named their single day.
+const legacyWeeklyTimingSchema = z.strictObject({
+  ...calendarBase,
+  frequency: z.literal("weekly"),
+  weekday: weekdaySchema,
+});
+
+/** Everything a stored schedule may hold, older shapes included. */
+export const storedScheduleTimingSchema = z.union([
+  scheduleTimingSchema,
+  intervalTimingSchema,
+  legacyWeeklyTimingSchema,
+]);
+
+export type ScheduleTiming = z.infer<typeof storedScheduleTimingSchema>;
+type CalendarTiming = Extract<ScheduleTiming, { kind: "calendar" }>;
 
 interface ZonedParts {
   readonly day: number;
@@ -60,12 +143,17 @@ interface ZonedParts {
   readonly minute: number;
   readonly month: number;
   readonly second: number;
-  readonly weekday: number;
+  readonly year: number;
+}
+
+/** A date on the calendar, independent of any timezone; `month` is 1-based. */
+interface CivilDate {
+  readonly day: number;
+  readonly month: number;
   readonly year: number;
 }
 
 const formatters = new Map<string, Intl.DateTimeFormat>();
-const weekdays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 function zonedParts(at: number, timezone: string): ZonedParts {
   let formatter = formatters.get(timezone);
@@ -78,7 +166,6 @@ function zonedParts(at: number, timezone: string): ZonedParts {
       month: "2-digit",
       second: "2-digit",
       timeZone: timezone,
-      weekday: "short",
       year: "numeric",
     });
     formatters.set(timezone, formatter);
@@ -92,7 +179,6 @@ function zonedParts(at: number, timezone: string): ZonedParts {
     minute: Number(value("minute")),
     month: Number(value("month")),
     second: Number(value("second")),
-    weekday: Math.max(0, weekdays.indexOf(value("weekday"))),
     year: Number(value("year")),
   };
 }
@@ -111,24 +197,182 @@ function zoneOffset(at: number, timezone: string) {
   );
 }
 
+/**
+ * The instant a wall-clock time happens in `timezone`. A time skipped by a
+ * spring-forward gap happens an hour later, the way a phone alarm fires.
+ */
 function fromWallClock(
   timezone: string,
-  year: number,
-  month: number,
-  day: number,
+  date: CivilDate,
   hour: number,
   minute: number
 ) {
-  const naive = Date.UTC(year, month - 1, day, hour, minute);
+  const naive = Date.UTC(date.year, date.month - 1, date.day, hour, minute);
   const firstPass = naive - zoneOffset(naive, timezone);
   const resolved = naive - zoneOffset(firstPass, timezone);
   const readBack = zonedParts(resolved, timezone);
   if (readBack.hour === hour && readBack.minute === minute) return resolved;
 
-  const shifted = Date.UTC(year, month - 1, day, hour + 1, minute);
+  const shifted = Date.UTC(
+    date.year,
+    date.month - 1,
+    date.day,
+    hour + 1,
+    minute
+  );
   return (
     shifted - zoneOffset(shifted - zoneOffset(shifted, timezone), timezone)
   );
+}
+
+function civilDate(year: number, month: number, day: number): CivilDate {
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return {
+    day: date.getUTCDate(),
+    month: date.getUTCMonth() + 1,
+    year: date.getUTCFullYear(),
+  };
+}
+
+function daysInMonth(year: number, month: number) {
+  return new Date(Date.UTC(year, month, 0)).getUTCDate();
+}
+
+function weekdayOf(date: CivilDate) {
+  return new Date(Date.UTC(date.year, date.month - 1, date.day)).getUTCDay();
+}
+
+function compareDates(left: CivilDate, right: CivilDate) {
+  return (
+    Date.UTC(left.year, left.month - 1, left.day) -
+    Date.UTC(right.year, right.month - 1, right.day)
+  );
+}
+
+function dayInMonth(
+  dayOfMonth: number | "last",
+  year: number,
+  month: number
+): CivilDate {
+  const last = daysInMonth(year, month);
+  return {
+    day: dayOfMonth === "last" ? last : Math.min(dayOfMonth, last),
+    month,
+    year,
+  };
+}
+
+function weekdayInMonth(
+  timing: Extract<CalendarTiming, { frequency: "monthly_weekday" }>,
+  year: number,
+  month: number
+): CivilDate {
+  if (timing.occurrence === "last") {
+    const last = daysInMonth(year, month);
+    const lastWeekday = weekdayOf({ day: last, month, year });
+    return {
+      day: last - ((lastWeekday - timing.weekday + 7) % 7),
+      month,
+      year,
+    };
+  }
+  const firstWeekday = weekdayOf({ day: 1, month, year });
+  return {
+    day:
+      1 +
+      ((timing.weekday - firstWeekday + 7) % 7) +
+      (timing.occurrence - 1) * 7,
+    month,
+    year,
+  };
+}
+
+function runsOnDay(timing: CalendarTiming, date: CivilDate) {
+  const weekday = weekdayOf(date);
+  if (timing.frequency === "weekdays") return weekday >= 1 && weekday <= 5;
+  if (timing.frequency !== "weekly") return true;
+  return "weekdays" in timing
+    ? timing.weekdays.includes(weekday)
+    : timing.weekday === weekday;
+}
+
+/**
+ * The calendar dates a rule falls on, walking from `from` (inclusive) in
+ * `direction`. The few steps each rule takes always cover one occurrence
+ * past `from`, since every month has each rule's (clamped) day.
+ */
+function* occurrenceDates(
+  timing: CalendarTiming,
+  from: CivilDate,
+  direction: 1 | -1
+): Generator<CivilDate> {
+  const onOrPast = (date: CivilDate) =>
+    compareDates(date, from) * direction >= 0;
+  if (
+    timing.frequency === "daily" ||
+    timing.frequency === "weekdays" ||
+    timing.frequency === "weekly"
+  ) {
+    for (let offset = 0; offset <= 8; offset += 1) {
+      const date = civilDate(
+        from.year,
+        from.month,
+        from.day + offset * direction
+      );
+      if (runsOnDay(timing, date)) yield date;
+    }
+    return;
+  }
+  if (timing.frequency === "yearly") {
+    for (let offset = 0; offset <= 2; offset += 1) {
+      const date = dayInMonth(
+        timing.dayOfMonth,
+        from.year + offset * direction,
+        timing.month
+      );
+      if (onOrPast(date)) yield date;
+    }
+    return;
+  }
+  for (let offset = 0; offset <= 2; offset += 1) {
+    const { month, year } = civilDate(
+      from.year,
+      from.month + offset * direction,
+      1
+    );
+    const date =
+      timing.frequency === "monthly"
+        ? dayInMonth(timing.dayOfMonth, year, month)
+        : weekdayInMonth(timing, year, month);
+    if (onOrPast(date)) yield date;
+  }
+}
+
+/**
+ * The first occurrence strictly after `after` (`direction` 1) or the last
+ * one at or before it (`direction` -1), computed on the calendar of the
+ * rule's own timezone, so DST and month lengths never shift it.
+ */
+function calendarOccurrence(
+  timing: CalendarTiming,
+  reference: Date,
+  direction: 1 | -1
+) {
+  const [hourText, minuteText] = timing.localTime.split(":");
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  const local = zonedParts(reference.getTime(), timing.timezone);
+  for (const date of occurrenceDates(timing, local, direction)) {
+    const candidate = fromWallClock(timing.timezone, date, hour, minute);
+    if (
+      direction === 1
+        ? candidate > reference.getTime()
+        : candidate <= reference.getTime()
+    ) {
+      return new Date(candidate);
+    }
+  }
+  return null;
 }
 
 export function computeNextRun(
@@ -148,31 +392,7 @@ export function computeNextRun(
     return new Date(anchor + (elapsedIntervals + 1) * interval);
   }
 
-  const [hourText, minuteText] = timing.localTime.split(":");
-  const hour = Number(hourText);
-  const minute = Number(minuteText);
-  const start = zonedParts(after.getTime(), timing.timezone);
-  for (let offset = 0; offset <= 14; offset += 1) {
-    const day = new Date(
-      Date.UTC(start.year, start.month - 1, start.day) + offset * 86_400_000
-    );
-    const candidate = fromWallClock(
-      timing.timezone,
-      day.getUTCFullYear(),
-      day.getUTCMonth() + 1,
-      day.getUTCDate(),
-      hour,
-      minute
-    );
-    if (candidate <= after.getTime()) continue;
-    const weekday = zonedParts(candidate, timing.timezone).weekday;
-    if (timing.frequency === "weekdays" && (weekday === 0 || weekday === 6)) {
-      continue;
-    }
-    if (timing.frequency === "weekly" && weekday !== timing.weekday) continue;
-    return new Date(candidate);
-  }
-  return null;
+  return calendarOccurrence(timing, after, 1);
 }
 
 export function computeLatestRun(
@@ -193,29 +413,5 @@ export function computeLatestRun(
     );
   }
 
-  const [hourText, minuteText] = timing.localTime.split(":");
-  const hour = Number(hourText);
-  const minute = Number(minuteText);
-  const start = zonedParts(at.getTime(), timing.timezone);
-  for (let offset = 0; offset <= 14; offset += 1) {
-    const day = new Date(
-      Date.UTC(start.year, start.month - 1, start.day) - offset * 86_400_000
-    );
-    const candidate = fromWallClock(
-      timing.timezone,
-      day.getUTCFullYear(),
-      day.getUTCMonth() + 1,
-      day.getUTCDate(),
-      hour,
-      minute
-    );
-    if (candidate > at.getTime()) continue;
-    const weekday = zonedParts(candidate, timing.timezone).weekday;
-    if (timing.frequency === "weekdays" && (weekday === 0 || weekday === 6)) {
-      continue;
-    }
-    if (timing.frequency === "weekly" && weekday !== timing.weekday) continue;
-    return new Date(candidate);
-  }
-  return null;
+  return calendarOccurrence(timing, at, -1);
 }

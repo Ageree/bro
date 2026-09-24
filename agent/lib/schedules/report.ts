@@ -24,8 +24,9 @@ export async function dispatchScheduledReport(
   const claimed = await claimScheduledReport(runId);
   const leaseToken = claimed?.run.reportLeaseToken;
   if (!claimed || !leaseToken) return;
+  const { delivery: target } = claimed;
   console.info("[scheduled-run] dispatching report", {
-    channel: claimed.job.conversationChannel,
+    channel: target.conversationChannel,
     reportSequence: claimed.run.reportSequence,
     runId: claimed.run.id,
     runStatus: claimed.run.status,
@@ -43,25 +44,23 @@ export async function dispatchScheduledReport(
   };
   try {
     const prompt = scheduledReportPrompt(claimed);
-    if (claimed.job.conversationChannel === "photon") {
+    if (target.conversationChannel === "photon") {
       const session = await delivery
         .to(photon, {
           adapterName: "imessage",
-          threadId: claimed.job.conversationId,
+          threadId: target.conversationId,
         })
         .send(prompt, options);
       console.info("[scheduled-run] report session accepted", {
-        channel: claimed.job.conversationChannel,
+        channel: target.conversationChannel,
         reportSequence: claimed.run.reportSequence,
         runId: claimed.run.id,
         sessionId: session.id,
       });
       return;
     }
-    if (claimed.job.conversationChannel === "telegram") {
-      const chatId = telegramChatIdFromConversationId(
-        claimed.job.conversationId
-      );
+    if (target.conversationChannel === "telegram") {
+      const chatId = telegramChatIdFromConversationId(target.conversationId);
       if (!chatId) {
         throw new Error("A Telegram scheduled report requires a chat id.");
       }
@@ -69,7 +68,7 @@ export async function dispatchScheduledReport(
         .to(telegram, { chatId })
         .send(prompt, options);
       console.info("[scheduled-run] report session accepted", {
-        channel: claimed.job.conversationChannel,
+        channel: target.conversationChannel,
         reportSequence: claimed.run.reportSequence,
         runId: claimed.run.id,
         sessionId: session.id,
@@ -81,7 +80,7 @@ export async function dispatchScheduledReport(
       throw new Error("A web chat report requires a session handle.");
     }
     const result = await delivery
-      .attachSession(claimed.job.conversationId)
+      .attachSession(target.conversationId)
       .send(prompt, options);
     if (result.status === "session_not_active") {
       // A session still starting up takes the report on a later tick; one
@@ -92,7 +91,7 @@ export async function dispatchScheduledReport(
       await finalizeScheduledReport(claimed.run.id, leaseToken, "suppressed");
     }
     console.info("[scheduled-run] report turn accepted", {
-      channel: claimed.job.conversationChannel,
+      channel: target.conversationChannel,
       reportSequence: claimed.run.reportSequence,
       resultStatus: result.status,
       runId: claimed.run.id,
@@ -117,7 +116,7 @@ function scheduledReportPrompt(claimed: ClaimedScheduledReport) {
 }
 
 function scheduledReportTask(claimed: ClaimedScheduledReport) {
-  const replyContext = claimed.job.replyAnchorMessageId
+  const replyContext = claimed.delivery.replyAnchorMessageId
     ? `Reply handle: {"kind":"automation","id":"${claimed.job.id}"}. Pass this exact value as send_message.replyTo for every user-visible message about this scheduled task. Omit replyTo only when the message is genuinely unrelated to the scheduled task.`
     : "No reply handle is available for this automation. Omit send_message.replyTo.";
   if (claimed.run.pendingInputRequests) {
@@ -157,26 +156,27 @@ function scheduledReportAttributes(
   claimed: ClaimedScheduledReport,
   leaseToken: string
 ) {
+  const { delivery } = claimed;
   const attributes = new Map<string, string>([
-    ["conversationChannel", claimed.job.conversationChannel],
-    ["conversationId", claimed.job.conversationId],
+    ["conversationChannel", delivery.conversationChannel],
+    ["conversationId", delivery.conversationId],
     ["scheduleId", claimed.job.id],
     ["scheduledReportLeaseToken", leaseToken],
     ["scheduledReportSequence", String(claimed.run.reportSequence)],
     ["scheduledRunId", claimed.run.id],
     ["workspaceId", claimed.job.workspaceId],
   ]);
-  if (claimed.job.replyAnchorMessageId) {
-    if (claimed.job.conversationChannel === "photon") {
+  if (delivery.replyAnchorMessageId) {
+    if (delivery.conversationChannel === "photon") {
       attributes.set(
         "photonReplyAnchorMessageId",
-        claimed.job.replyAnchorMessageId
+        delivery.replyAnchorMessageId
       );
     }
-    if (claimed.job.conversationChannel === "telegram") {
+    if (delivery.conversationChannel === "telegram") {
       attributes.set(
         "telegramReplyAnchorMessageId",
-        claimed.job.replyAnchorMessageId
+        delivery.replyAnchorMessageId
       );
     }
   }

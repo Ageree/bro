@@ -74,9 +74,6 @@ importers:
       '@vercel/connect':
         specifier: ^2.0.0
         version: 2.0.0(ai@7.0.107(zod@4.5.4))(better-auth@1.7.2(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@electric-sql/pglite@0.5.8)(@neondatabase/serverless@1.1.0)(@opentelemetry/api@1.9.1)(@types/pg@8.23.1)(kysely@0.29.5)(pg@8.23.0))(next@16.3.3(@babel/core@7.29.7)(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(pg@8.23.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(vitest@4.1.11(@edge-runtime/vm@3.2.0)(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(vite@8.2.2(@types/node@24.13.3)(esbuild@0.27.0)(jiti@2.7.0)(tsx@4.21.0)(yaml@2.9.0))))(eve@0.62.0(patch_hash=ef24b293e3076ca3242b2bc94e9462b9edcb077267ced0b0cbd9e2135326b658)(@opentelemetry/api@1.9.1)(ai@7.0.107(zod@4.5.4)))
-      '@vercel/oidc':
-        specifier: 3.8.5
-        version: 3.8.5
       ai:
         specifier: ^7.0.107
         version: 7.0.107(zod@4.5.4)

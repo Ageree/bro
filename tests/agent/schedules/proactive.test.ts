@@ -291,6 +291,7 @@ function proactiveClaim(): Awaited<
       leaseExpiresAt: new Date("2026-09-23T12:05:00.000Z"),
       leaseToken: "00000000-0000-4000-8000-000000000003",
       outcome: null,
+      inputResponses: null,
       pendingInputRequests: null,
       reportLeaseExpiresAt: null,
       reportLeaseToken: null,
