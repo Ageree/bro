@@ -148,6 +148,9 @@ export async function startCaptchaRetry(row: BrowserRunRow, now = new Date()) {
         sessionId: run.sessionId,
         site: row.site,
         status: "running",
+        // The retry is the same errand, so it carries the person's approval
+        // to submit, and nothing more: its task is the previous attempt's.
+        submission: row.submission,
         task: row.task,
       });
     } catch (error) {
