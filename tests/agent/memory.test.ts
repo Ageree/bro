@@ -24,8 +24,10 @@ import {
 import {
   memoryRemovalApproval,
   parseLegacyRecall,
+  renderProfile,
 } from "@agent/lib/memory/profile";
 import { withApprovalCard } from "@shared/chat/approval-card";
+import { memoryContentSchema } from "@shared/memory/schema";
 import {
   claimMemorySyncJobs,
   completeMemorySyncJob,
@@ -341,3 +343,83 @@ describe("forgetting a memory without the person's word", () => {
     ]);
   });
 });
+
+/**
+ * In the RU benchmark (d14) «никогда ничего не оплачивай и никому не пиши
+ * без моего ок» was not kept anywhere. A rule is saved as one and read back
+ * first, as a boundary that only restricts.
+ */
+describe("the person's rules in the profile", () => {
+  it("keeps a stated rule and shows it first, apart from the facts", async () => {
+    await saveMemory(
+      alice,
+      "scope-a",
+      { category: "preference", text: "Любит суши." },
+      "save:sushi",
+      { sessionId: "session", turnId: "turn-1" }
+    );
+    await saveMemory(
+      alice,
+      "scope-a",
+      {
+        category: "rule",
+        text: "Никогда ничего не оплачивать и никому не писать без моего ок.",
+      },
+      "save:rule",
+      { sessionId: "session", turnId: "turn-2" }
+    );
+
+    const profile = renderProfile(
+      await listCurrentMemories(alice, "scope-a")
+    ).split("\n");
+
+    expect(profile.slice(2)).toEqual([
+      "## Rules the user set",
+      expect.stringContaining("A rule only restricts you"),
+      "1 (revision 1, rule): Никогда ничего не оплачивать и никому не писать без моего ок.",
+      "## Other records",
+      "0 (revision 1, preference): Любит суши.",
+    ]);
+  });
+
+  it("reads as it always did while the person has set no rule", () => {
+    const profile = renderProfile([
+      currentRecord(0, { text: "Живёт в Казани." }),
+    ]);
+
+    expect(profile).not.toContain("##");
+    expect(profile).toContain("0 (revision 1, fact): Живёт в Казани.");
+  });
+
+  it("keeps the rules when the facts no longer fit", () => {
+    const profile = renderProfile([
+      ...Array.from({ length: 30 }, (_, index) =>
+        currentRecord(index, {
+          text: `Факт ${String(index)}: ${"подробности ".repeat(40)}`,
+        })
+      ),
+      currentRecord(99, {
+        category: "rule",
+        text: "Не трогать рабочую почту.",
+      }),
+    ]);
+
+    expect(profile).toContain(
+      "99 (revision 1, rule): Не трогать рабочую почту."
+    );
+    expect(profile).toContain("More memories exist");
+  });
+});
+
+/** A current record as recall lists it. */
+function currentRecord(
+  index: number,
+  content: Parameters<typeof memoryContentSchema.parse>[0]
+) {
+  return {
+    content: memoryContentSchema.parse(content),
+    index,
+    revision: 1,
+    updatedAt: "2026-09-24T10:00:00.000Z",
+  };
+}

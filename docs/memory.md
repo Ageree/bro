@@ -5,8 +5,9 @@ search index as the source of truth.
 
 - Personal Info owns typed reusable form fields in Postgres.
 - Workstreams own goals, constraints, decisions, evidence, and unresolved work.
-- Profile memory owns durable facts, people, organizations, decisions, and
-  preferences as revisioned Postgres records.
+- Profile memory owns durable facts, people, organizations, decisions,
+  preferences, and the rules the person set for Bro as revisioned Postgres
+  records.
 - Workspace settings own how Bro addresses the person («ты» or «вы», and the
   name they asked to be called by) under the `form_of_address` key. The
   `form_of_address` tool writes it, and every step's reply note repeats it, so
@@ -16,6 +17,15 @@ search index as the source of truth.
 - Supermemory is an optional semantic index for non-local profile records. Its
   search results are identifiers only: Bro re-reads the current Postgres record
   before adding any result to model context.
+
+A profile record with the category `rule` is a boundary the person set for Bro
+in their own message («никогда ничего не оплачивай и никому не пиши без моего
+ок», «никогда не пиши маме»). Recall shows rules first, under their own
+heading, as restrictions that hold in every conversation and background run and
+never authorize or order anything, so a rule an email slipped in can only make
+Bro more careful. Where a rule takes away what the spend limit or a standing
+permission allows, Bro narrows that policy in the same turn; narrowing never
+needs an approval card. A rule is forgotten like any other record.
 
 Profile records are partitioned by both authenticated workspace and Eve's
 deployment-aware memory scope key. Updates use optimistic revisions. Forgetting

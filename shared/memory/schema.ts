@@ -1,11 +1,15 @@
 import { z } from "zod";
 
+// A rule is a boundary the person set for Bro («без моего ок ничего не
+// оплачивай», «никогда не пиши маме»): recall shows it first, as something
+// that only restricts.
 const memoryCategorySchema = z.enum([
   "fact",
   "preference",
   "person",
   "organization",
   "decision",
+  "rule",
 ]);
 
 export const memoryIndexSchema = z
@@ -49,7 +53,11 @@ const memoryAliasSchema = z
 
 export const memoryContentSchema = z.strictObject({
   text: safeMemoryTextSchema,
-  category: memoryCategorySchema.default("fact"),
+  category: memoryCategorySchema
+    .default("fact")
+    .describe(
+      "rule: a boundary the user set for you in their own message — what you never do, or never without their OK («без моего ок ничего не оплачивай», «никогда не пиши маме», «не трогай рабочую почту»)."
+    ),
   aliases: z.array(memoryAliasSchema).max(12).default([]),
   relatedIndexes: z.array(memoryIndexSchema).max(12).default([]),
   validUntil: z.iso.datetime({ offset: true }).nullable().default(null),

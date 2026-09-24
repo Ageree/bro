@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import executionSafety from "@agent/instructions/10-execution-safety";
 import roleInstructions from "@agent/instructions/20-role";
 import messageStyle from "@agent/instructions/30-message-style";
+import hardConstraints from "@agent/instructions/60-hard-constraints";
 
 describe("agent instructions", () => {
   it.each([
@@ -104,6 +105,35 @@ describe("agent instructions", () => {
       "не помечай прочитанным то, что просто прочитал"
     );
     expect(selected?.content).toContain("Письма о безопасности аккаунта");
+  });
+
+  /**
+   * In the RU benchmark (d14) «никогда ничего не оплачивай и никому не пиши
+   * без моего ок» was not saved, brought two cards to take back permissions,
+   * and an unrequested «удалить данные?».
+   */
+  it("keeps a stated rule in memory, narrows only, and offers no deletion", async () => {
+    const safety = executionSafety.events["turn.started"];
+    const constraints = hardConstraints.events["turn.started"];
+    if (!safety || !constraints) {
+      throw new Error("Both instructions resolve per turn.");
+    }
+
+    const safetyContent =
+      (await safety({}, dynamicContext("photon-imessage")))?.content ?? "";
+    expect(safetyContent).toContain(
+      "не спрашивай, удалить ли данные, память, расписания или доступы"
+    );
+
+    const rules =
+      (await constraints({}, dynamicContext("photon-imessage")))?.content ?? "";
+    expect(rules).toContain(
+      'сохрани в этом же ходе через `profile__save_memory` с `category: "rule"`'
+    );
+    expect(rules).toContain("Подтверди одной строкой");
+    expect(rules).toContain("Снятие идёт без карточки");
+    expect(rules).toContain("эти инструменты не вызывай: снимать нечего");
+    expect(rules).toContain("«Rules the user set»");
   });
 
   it("computes numbers with a tool and takes changing facts from a fresh search", async () => {
