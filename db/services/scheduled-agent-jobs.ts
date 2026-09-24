@@ -524,32 +524,6 @@ export async function getScheduledAgentRunInput(
   };
 }
 
-export async function getScheduledAgentRunInputForReport(
-  runId: string,
-  reportLeaseToken: string
-) {
-  const pending = await db.query.scheduledAgentRuns.findFirst({
-    where: and(
-      eq(scheduledAgentRuns.id, runId),
-      eq(scheduledAgentRuns.status, "waiting_for_input"),
-      eq(scheduledAgentRuns.reportStatus, "queued"),
-      eq(scheduledAgentRuns.reportLeaseToken, reportLeaseToken)
-    ),
-  });
-  if (
-    !pending?.leaseToken ||
-    !pending.pendingInputRequests ||
-    !pending.workerSessionId
-  ) {
-    return undefined;
-  }
-  return {
-    leaseToken: pending.leaseToken,
-    pendingInputRequests: parseRun(pending).pendingInputRequests ?? [],
-    runId: pending.id,
-  };
-}
-
 /**
  * Keeps the person's answer on the waiting run. Only a schedule handler holds
  * the worker session that must receive it, so the next `dynamic` tick hands

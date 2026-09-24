@@ -3,12 +3,12 @@ import type {
   ToolContext,
   ToolDefinition,
 } from "eve/tools";
+import type { ModelMessage } from "ai";
 import { z } from "zod";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   createScheduledAgentJob,
   getScheduledAgentRunInput,
-  getScheduledAgentRunInputForReport,
   listScheduledAgentJobs,
   submitScheduledAgentRunAnswer,
   updateScheduledAgentJob,
@@ -17,7 +17,6 @@ import type {
 const services = vi.hoisted(() => ({
   create: vi.fn<typeof createScheduledAgentJob>(),
   getInput: vi.fn<typeof getScheduledAgentRunInput>(),
-  getInputForReport: vi.fn<typeof getScheduledAgentRunInputForReport>(),
   list: vi.fn<typeof listScheduledAgentJobs>(),
   submitAnswer: vi.fn<typeof submitScheduledAgentRunAnswer>(),
   update: vi.fn<typeof updateScheduledAgentJob>(),
@@ -26,15 +25,14 @@ const services = vi.hoisted(() => ({
 vi.mock("@db/services/scheduled-agent-jobs", () => ({
   createScheduledAgentJob: services.create,
   getScheduledAgentRunInput: services.getInput,
-  getScheduledAgentRunInputForReport: services.getInputForReport,
   listScheduledAgentJobs: services.list,
   submitScheduledAgentRunAnswer: services.submitAnswer,
   updateScheduledAgentJob: services.update,
 }));
 
+import { backgroundTurnMarker } from "@shared/chat/background-turn";
 import messaging from "@agent/tools/messaging";
 import schedules, {
-  answerSchedule,
   createSchedule,
   listSchedules,
   updateSchedule,
@@ -60,98 +58,114 @@ describe("schedule tools", () => {
     services.submitAnswer.mockResolvedValue(true);
   });
 
-  it("lets interactive and reporting turns resume scheduled input", async () => {
-    const resolve = schedules.events["turn.started"];
-    expect(resolve).toBeDefined();
-    if (!resolve) return;
-
-    expect(await resolve({}, dynamicContext("scheduled-worker"))).toBeNull();
-    expect(await resolve({}, resumedWorkerContext())).toBeNull();
-    expect(
-      await resolve({}, dynamicContext("scheduled-result"))
-    ).not.toBeNull();
-    const interactiveTools = await resolve(
-      {},
-      dynamicContext("photon-imessage")
+  it("resumes a run with the person's answer to the question this chat showed", async () => {
+    const answer = await answerTool(
+      dynamicContext("photon-imessage", "channel:photon", [
+        ...questionShown(runId),
+        person("DCA"),
+      ])
     );
-    const answer =
-      interactiveTools && !("execute" in interactiveTools)
-        ? interactiveTools["schedules-answer"]
-        : null;
-    if (!answer) {
-      throw new Error("Expected the schedules-answer tool.");
-    }
     services.getInput.mockResolvedValue({
-      leaseToken: "00000000-0000-4000-8000-000000000003",
+      leaseToken,
       pendingInputRequests: [airportQuestion],
-      runId: "00000000-0000-4000-8000-000000000002",
+      runId,
     });
+
     await answer.execute(
-      {
-        answer: "DCA",
-        runId: "00000000-0000-4000-8000-000000000002",
-      },
+      { answer: "DCA", runId },
       toolContext("schedules-answer", "photon-imessage")
     );
-    // The answer may come from any of the person's chats.
     expect(services.getInput).toHaveBeenCalledExactlyOnceWith(
       { userId: "user-1", workspaceId: "workspace-1" },
-      "00000000-0000-4000-8000-000000000002"
+      runId
     );
     // It is stored for the `dynamic` tick, never posted to an app route
     // that eve on Vercel would not receive.
     expect(services.submitAnswer).toHaveBeenCalledExactlyOnceWith(
-      "00000000-0000-4000-8000-000000000002",
-      "00000000-0000-4000-8000-000000000003",
+      runId,
+      leaseToken,
       [{ requestId: "request-airport", text: "DCA" }]
     );
     expect(fetch).not.toHaveBeenCalled();
+  });
 
-    services.getInputForReport.mockResolvedValue({
-      leaseToken: "00000000-0000-4000-8000-000000000003",
-      pendingInputRequests: [airportQuestion],
-      runId: "00000000-0000-4000-8000-000000000002",
-    });
-    const reportTools = await resolve({}, dynamicContext("scheduled-result"));
-    const reportAnswer =
-      reportTools && !("execute" in reportTools)
-        ? reportTools["schedules-answer"]
-        : null;
-    if (!reportAnswer) {
-      throw new Error("Expected the schedules-answer reporting tool.");
+  it("never lets a turn the person did not start answer for them", async () => {
+    const resolve = schedules.events["turn.started"];
+    if (!resolve) throw new Error("Expected a turn resolver.");
+
+    // A scheduled report, a browser report and a worker speak for nobody.
+    const resolved = await Promise.all(
+      ["scheduled-result", "browser-result", "scheduled-worker"].map(
+        async (authenticator) =>
+          resolve(
+            {},
+            dynamicContext(
+              authenticator,
+              "channel:photon",
+              questionShown(runId)
+            )
+          )
+      )
+    );
+    for (const tools of resolved) {
+      expect(
+        tools && !("execute" in tools) ? Object.keys(tools) : []
+      ).not.toContain("schedules-answer");
     }
-    await reportAnswer.execute(
-      {
-        answer: "LGA",
-        runId: "00000000-0000-4000-8000-000000000002",
-      },
-      scheduledReportToolContext()
+    expect(await resolve({}, resumedWorkerContext())).toBeNull();
+
+    const answer = await answerTool(
+      dynamicContext("photon-imessage", "channel:photon", questionShown(runId))
     );
-    expect(services.getInputForReport).toHaveBeenCalledExactlyOnceWith(
-      "00000000-0000-4000-8000-000000000002",
-      "00000000-0000-4000-8000-000000000004"
-    );
-    expect(services.submitAnswer).toHaveBeenLastCalledWith(
-      "00000000-0000-4000-8000-000000000002",
-      "00000000-0000-4000-8000-000000000003",
-      [{ requestId: "request-airport", text: "LGA" }]
+    await expect(
+      answer.execute(
+        { answer: "LGA", runId },
+        toolContext("schedules-answer", "browser-result")
+      )
+    ).rejects.toThrow("only the user's own reply answers");
+    expect(services.getInput).not.toHaveBeenCalled();
+    expect(services.submitAnswer).not.toHaveBeenCalled();
+  });
+
+  it("refuses to answer a question this chat never showed the person", async () => {
+    // «Напиши Лёше, что я опоздаю»: nothing in this chat asked about the
+    // budget table, so the model's made-up answer for an old run goes nowhere.
+    const otherRun = "00000000-0000-4000-8000-000000000009";
+    const answer = await answerTool(
+      dynamicContext("photon-imessage", "channel:photon", [
+        ...questionShown(runId),
+        person("Напиши Лёше, что я опоздаю"),
+      ])
     );
 
     await expect(
-      reportAnswer.execute(
+      answer.execute(
         {
-          answer: "LGA",
-          runId: "00000000-0000-4000-8000-000000000002",
+          answer: "Таблица бюджета не найдена, дождаться ссылки",
+          runId: otherRun,
         },
-        toolContext("schedules-answer", "scheduled-result")
+        toolContext("schedules-answer", "photon-imessage")
       )
-    ).rejects.toThrow("This reporting turn cannot resume that run.");
-    expect(services.getInput).toHaveBeenCalledOnce();
+    ).rejects.toThrow("never put to the user in this conversation");
+    // The report turn brought the question here but never delivered it.
+    const undelivered = await answerTool(
+      dynamicContext("photon-imessage", "channel:photon", [
+        ...questionShown(runId).slice(0, 1),
+        person("DCA"),
+      ])
+    );
+    await expect(
+      undelivered.execute(
+        { answer: "DCA", runId },
+        toolContext("schedules-answer", "photon-imessage")
+      )
+    ).rejects.toThrow("never put to the user in this conversation");
+    expect(services.getInput).not.toHaveBeenCalled();
   });
 
   it("rejects an answer that matches none of the pending choices", async () => {
     services.getInput.mockResolvedValue({
-      leaseToken: "00000000-0000-4000-8000-000000000003",
+      leaseToken,
       pendingInputRequests: [
         {
           ...airportQuestion,
@@ -162,27 +176,29 @@ describe("schedule tools", () => {
           ],
         },
       ],
-      runId: "00000000-0000-4000-8000-000000000002",
+      runId,
     });
+    const answer = await answerTool(
+      dynamicContext("telegram-webhook", "channel:telegram", [
+        ...questionShown(runId),
+      ])
+    );
 
     await expect(
-      answerSchedule.execute(
-        {
-          answer: "Heathrow",
-          runId: "00000000-0000-4000-8000-000000000002",
-        },
-        toolContext("schedules-answer", "telegram")
+      answer.execute(
+        { answer: "Heathrow", runId },
+        toolContext("schedules-answer", "telegram-webhook")
       )
     ).rejects.toThrow("That answer does not match the pending choices.");
     expect(services.submitAnswer).not.toHaveBeenCalled();
 
-    await answerSchedule.execute(
-      { answer: "IAD", runId: "00000000-0000-4000-8000-000000000002" },
-      toolContext("schedules-answer", "telegram")
+    await answer.execute(
+      { answer: "IAD", runId },
+      toolContext("schedules-answer", "telegram-webhook")
     );
     expect(services.submitAnswer).toHaveBeenCalledExactlyOnceWith(
-      "00000000-0000-4000-8000-000000000002",
-      "00000000-0000-4000-8000-000000000003",
+      runId,
+      leaseToken,
       [{ optionId: "iad", requestId: "request-airport" }]
     );
   });
@@ -363,11 +379,79 @@ describe("schedule tools", () => {
   });
 });
 
-function dynamicContext(authenticator: string, kind = "channel:scheduled-run") {
+const runId = "00000000-0000-4000-8000-000000000002";
+const leaseToken = "00000000-0000-4000-8000-000000000003";
+
+function person(text: string): ModelMessage {
+  // eve adds `kind` to every user-role message it keeps in history.
+  return Object.assign(
+    { content: text, role: "user" as const },
+    {
+      kind: "user",
+    }
+  );
+}
+
+/** A report turn that put the run's question to the person. */
+function questionShown(id: string): ModelMessage[] {
+  return [
+    person(
+      [
+        backgroundTurnMarker,
+        "A background scheduled run is waiting for the user before it can continue.",
+        "Original task: Check flights to Washington.",
+        `Internal run ID: ${id}`,
+        `Pending request: ${JSON.stringify([airportQuestion])}`,
+      ].join("\n\n")
+    ),
+    {
+      content: [
+        {
+          input: { kind: "message", text: "Какой аэропорт взять?" },
+          toolCallId: "call-send",
+          toolName: "send_message",
+          type: "tool-call",
+        },
+      ],
+      role: "assistant",
+    },
+    {
+      content: [
+        {
+          output: {
+            type: "json",
+            value: { kind: "message", text: "Какой аэропорт взять?" },
+          },
+          toolCallId: "call-send",
+          toolName: "send_message",
+          type: "tool-result",
+        },
+      ],
+      role: "tool",
+    },
+  ];
+}
+
+async function answerTool(context: DynamicResolveContext) {
+  const resolve = schedules.events["turn.started"];
+  const tools = resolve ? await resolve({}, context) : null;
+  const answer =
+    tools && "schedules-answer" in tools
+      ? tools["schedules-answer"]
+      : undefined;
+  if (!answer) throw new Error("Expected the schedules-answer tool.");
+  return answer;
+}
+
+function dynamicContext(
+  authenticator: string,
+  kind = "channel:scheduled-run",
+  messages: ModelMessage[] = []
+) {
   return {
     model: null,
     channel: { kind, metadata: {} },
-    messages: [],
+    messages,
     session: {
       auth: {
         current: {
@@ -442,30 +526,6 @@ function toolContext(
       turn: { id: "turn-1", sequence: 0 },
     },
     toolName,
-  } satisfies ToolContext;
-}
-
-function scheduledReportToolContext() {
-  const context = toolContext("schedules-answer", "scheduled-result");
-  const current = context.session.auth.current;
-  return {
-    ...context,
-    session: {
-      ...context.session,
-      auth: {
-        ...context.session.auth,
-        current: {
-          ...current,
-          attributes: {
-            ...current.attributes,
-            scheduleId: "00000000-0000-4000-8000-000000000001",
-            scheduledReportLeaseToken: "00000000-0000-4000-8000-000000000004",
-            scheduledReportSequence: "1",
-            scheduledRunId: "00000000-0000-4000-8000-000000000002",
-          },
-        },
-      },
-    },
   } satisfies ToolContext;
 }
 

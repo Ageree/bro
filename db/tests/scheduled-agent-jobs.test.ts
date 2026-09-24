@@ -191,18 +191,6 @@ describe("scheduled agent jobs", () => {
     if (!questionReport?.run.reportLeaseToken) {
       throw new Error("Expected the pending question to be reportable.");
     }
-    expect(
-      await jobs.getScheduledAgentRunInputForReport(
-        claim.run.id,
-        questionReport.run.reportLeaseToken
-      )
-    ).toMatchObject({ leaseToken: claim.run.leaseToken });
-    expect(
-      await jobs.getScheduledAgentRunInputForReport(
-        claim.run.id,
-        "00000000-0000-4000-8000-000000000099"
-      )
-    ).toBeUndefined();
     await jobs.finalizeScheduledReport(
       claim.run.id,
       questionReport.run.reportLeaseToken,

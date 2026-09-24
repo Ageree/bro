@@ -42,7 +42,7 @@ describe("model provider environment", () => {
 
     expect(env.OPENROUTER_API_KEY).toBe("sk-or-test");
     expect(openRouterActive()).toBe(true);
-    expect(defaultModelId()).toBe("deepseek/deepseek-v4.1-flash");
+    expect(defaultModelId()).toBe("openai/gpt-6-luna");
     expect(env.OPENROUTER_MODEL_CONTEXT_TOKENS).toBe(1_000_000);
     expect(env.OPENROUTER_REASONING_EFFORT).toBe("off");
     expect(env.OPENROUTER_PROVIDER_ORDER).toBeUndefined();

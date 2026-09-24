@@ -1,4 +1,4 @@
-import type { ModelMessage } from "ai";
+import type { ModelMessage, ToolResultPart } from "ai";
 import { z } from "zod";
 import { sendMessageOutputSchema } from "@shared/chat/message-delivery";
 
@@ -163,6 +163,17 @@ export function sendSkipReason(
   return undefined;
 }
 
+/**
+ * Whether a `send_message` result is a message the person received: not a
+ * failure, a refusal, or a send this guard dropped.
+ */
+export function sendReachedPerson(output: ToolResultPart["output"]) {
+  if (output.type.startsWith("error") || output.type === "execution-denied") {
+    return false;
+  }
+  return !(output.type === "text" && output.value.startsWith(skippedPrefix));
+}
+
 const taggedMessageSchema = z.object({ kind: z.string() });
 
 /**
@@ -170,7 +181,7 @@ const taggedMessageSchema = z.object({ kind: z.string() });
  * compaction messages are injected inside a running turn; anything else, a
  * person's message or a background wakeup, starts a new one.
  */
-function startsTurn(message: ModelMessage) {
+export function startsTurn(message: ModelMessage) {
   if (message.role !== "user") return false;
   const kind = taggedMessageSchema.safeParse(message).data?.kind ?? "user";
   return !(
@@ -210,8 +221,7 @@ export function turnSends(messages: readonly ModelMessage[]) {
         skipped += 1;
         continue;
       }
-      if (output.type.startsWith("error") || output.type === "execution-denied")
-        continue;
+      if (!sendReachedPerson(output)) continue;
       const input = inputs.get(part.toolCallId);
       if (input) delivered.push(sentMessageOf(input));
     }

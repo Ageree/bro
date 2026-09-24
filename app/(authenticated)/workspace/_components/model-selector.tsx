@@ -48,6 +48,7 @@ const priceFormatter = new Intl.NumberFormat("en-US", {
 // OpenRouter publishes thousands of ids, so the workspace takes one as text
 // rather than mirroring a catalogue the deployment cannot filter by entitlement.
 const openRouterSuggestions = [
+  "openai/gpt-6-luna",
   "deepseek/deepseek-v4.1-flash",
   "anthropic/claude-sonnet-4.5",
   "openai/gpt-5.6-mini",

@@ -393,8 +393,9 @@ describe("the browser run poller", () => {
 
     const report = sentText(send.mock.calls[0]?.[0]);
     expect(report).toContain(
-      "do not ask in text: continue this run now with allowSubmit and the errand's submission carrying the real total in chargeRub"
+      "do not ask in text: continue this run now with allowSubmit and a submission naming exactly the option it staged"
     );
+    expect(report).toContain("the real total with every fee in chargeRub");
   }, 30_000);
 
   it("reports a basket and hotels as a list of what the run found", async () => {

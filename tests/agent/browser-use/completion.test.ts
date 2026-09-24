@@ -731,6 +731,44 @@ describe("settling a browser run", () => {
     expect(send.mock.calls[0]?.[0]).toContain("with the real total");
   });
 
+  it("turns the option a search staged into one card, and keeps it on a declined card", async () => {
+    readBrowserUseRun.mockResolvedValue({
+      error: null,
+      id: runId,
+      result: [
+        "Picked the best fit and stopped before the passenger details.",
+        "RESULT: выбран «Сапсан» №781 в 18:40, место 34 у окна",
+        "TOTAL: 5 740 ₽",
+        "NEEDS: decision",
+        "DETAILS: подтвердить покупку",
+        'ITEMS: [{"name":"Сапсан №781, пт 03.10 18:40","price":"5 740 ₽","quantity":"1","url":"https://ticket.rzd.ru/781","details":"место 34 у окна"},{"name":"Сапсан №783, пт 03.10 19:40","price":"6 120 ₽","quantity":"1","url":"https://ticket.rzd.ru/783","details":"место 12 у окна"}]',
+      ].join("\n"),
+      sessionId: "session-1",
+      status: "completed",
+      task: "Возьми сапсан в питер",
+    });
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    const prompt = send.mock.calls[0]?.[0];
+    // One card naming the option the run found, not a question before it.
+    expect(prompt).toContain(
+      "continue this run now with allowSubmit and a submission naming exactly that option"
+    );
+    expect(prompt).toContain("the train or flight and its departure");
+    expect(prompt).toContain("the real total with every fee in chargeRub");
+    // A declined card still leaves the person with what was found.
+    expect(prompt).toContain(
+      "If the user declines that card, nothing is lost: show them the options this run found, each with its price and link"
+    );
+    expect(prompt).toContain("Сапсан №783");
+    // The page stays open on the checkout for the card's follow-up.
+    expect(stopBrowserUseSessionBrowsers).not.toHaveBeenCalled();
+  });
+
   it("keeps the reservation while the payment waits on a code", async () => {
     readSpendEntryForRun.mockResolvedValue({
       amountRub: 1500,
