@@ -3,7 +3,6 @@ import type { ScheduleToFn } from "eve/schedules";
 import {
   claimBrowserRunCompletion,
   claimBrowserRunReport,
-  finishBrowserRunReport,
   finishWalledBrowserRun,
   parkBrowserRunForRetry,
   readBrowserRun,
@@ -81,16 +80,33 @@ export async function settleBrowserRun(
     run.error ?? `The run ended as ${run.status}.`,
     run.result
   );
-  const claimed = await claimBrowserRunCompletion(runId, {
-    outcome,
-    status: settledStatus(run.status),
-  });
-  if (!claimed) return;
+  const hasLinks =
+    parsed.links.length > 0 ||
+    parsed.hasReportLinks ||
+    parsed.items.some((item) => item.url !== undefined);
   // An anti-bot wall is retried in the background, in a fresh browser on
   // another address, and the person hears nothing until the errand is done
   // or the attempts have run out.
+  const retryAt =
+    parsed.needs === "captcha"
+      ? captchaRetryAt(row.captchaAttempt, new Date())
+      : undefined;
+  const claimed = await claimBrowserRunCompletion(runId, {
+    outcome,
+    // The plain report is kept with the claim, so the person hears about the
+    // run even when this settle is cut off before the full report is ready.
+    report: retryAt
+      ? undefined
+      : browserRunReport(row, {
+          hasItems: parsed.items.length > 0,
+          hasLinks,
+          needs: parsed.needs,
+          outcome,
+        }),
+    status: settledStatus(run.status),
+  });
+  if (!claimed) return;
   if (parsed.needs === "captcha") {
-    const retryAt = captchaRetryAt(claimed.captchaAttempt, new Date());
     if (retryAt) {
       // A park that does not land means the person stopped the errand in
       // the moment since the claim: there is nothing to retry or to report.
@@ -132,10 +148,7 @@ export async function settleBrowserRun(
     claimed.id,
     browserRunReport(claimed, {
       hasItems: parsed.items.length > 0,
-      hasLinks:
-        parsed.links.length > 0 ||
-        parsed.hasReportLinks ||
-        parsed.items.some((item) => item.url !== undefined),
+      hasLinks,
       images,
       needs: parsed.needs,
       outcome,
@@ -435,6 +448,13 @@ async function reportBrowserRun(
  * Send a settled run's pending report into its conversation. Whoever holds
  * the delivery lease sends; a failed send gives the lease back and leaves the
  * report pending for the reconciling poller to try again.
+ *
+ * A send the conversation accepted is not yet a report the person has: the
+ * turn it starts may fail before it says anything (a model that comes back
+ * empty), or never run. So the lease is kept, and the report counts as
+ * delivered only once its turn reached the person
+ * (`agent/hooks/browser-run-report.ts`); otherwise it goes out again when
+ * the turn fails or the lease runs out.
  */
 export async function deliverBrowserRunReport(
   delivery: BrowserRunDelivery,
@@ -443,10 +463,7 @@ export async function deliverBrowserRunReport(
   const row = await claimBrowserRunReport(runId);
   if (!row?.report) return;
   try {
-    if (await sendBrowserRunReport(delivery, row, row.report)) {
-      await finishBrowserRunReport(runId);
-      return;
-    }
+    if (await sendBrowserRunReport(delivery, row, row.report)) return;
   } catch (error) {
     console.warn("[browser-use] outcome delivery failed", {
       attempt: row.reportAttempts,

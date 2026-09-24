@@ -265,6 +265,122 @@ describe("browser run persistence", () => {
     expect(overdue).toHaveLength(50);
     expect(overdue[0]?.total).toBe(52);
   }, 20_000);
+
+  it("keeps the plain report with the claim, so a settle cut off after it still reports", async () => {
+    const browserRuns = await browserRunsDatabase();
+    await browserRuns.createBrowserRun(alice, {
+      ...conversation(),
+      id: runId,
+      status: "running",
+    });
+
+    const claimed = await browserRuns.claimBrowserRunCompletion(runId, {
+      outcome: "нашёл отели",
+      report: "Browser run finished: нашёл отели",
+      status: "done",
+    });
+
+    expect(claimed).toMatchObject({
+      report: "Browser run finished: нашёл отели",
+      reportDeliveredAt: null,
+    });
+    expect(claimed?.reportClaimedAt).toBeInstanceOf(Date);
+    // The settler is still adding pictures under its lease.
+    expect(await browserRuns.listPendingBrowserRunReports(10)).toEqual([]);
+    expect(await browserRuns.hasLiveBrowserRuns()).toBe(false);
+
+    // The settle never came back: once the lease runs out, the plain report
+    // is what goes out, and the overdue watch sees it.
+    vi.useFakeTimers({ now: Date.now() + 3 * 60_000, toFake: ["Date"] });
+    try {
+      expect(await browserRuns.listPendingBrowserRunReports(10)).toEqual([
+        { id: runId },
+      ]);
+      expect(await browserRuns.hasLiveBrowserRuns()).toBe(true);
+      expect(
+        await browserRuns.listOverdueBrowserRunReports(
+          new Date(Date.now() - 2 * 60_000)
+        )
+      ).toMatchObject([{ id: runId }]);
+    } finally {
+      vi.useRealTimers();
+    }
+  }, 20_000);
+
+  it("puts a report whose turn failed back in line, three times at most", async () => {
+    const browserRuns = await browserRunsDatabase();
+    await browserRuns.createBrowserRun(alice, {
+      ...conversation(),
+      completedAt: new Date(),
+      id: runId,
+      report: "Browser run finished",
+      status: "done",
+    });
+
+    async function failedTurn(attempt: number) {
+      const claimed = await browserRuns.claimBrowserRunReport(runId);
+      expect(claimed?.reportAttempts).toBe(attempt);
+      // The turn it started is running: no second copy goes out meanwhile.
+      await browserRuns.renewBrowserRunReportLease(runId);
+      expect(await browserRuns.listPendingBrowserRunReports(10)).toEqual([]);
+      expect(await browserRuns.reopenBrowserRunReport(runId)).toEqual({
+        retried: true,
+      });
+      expect(await browserRuns.listPendingBrowserRunReports(10)).toEqual([
+        { id: runId },
+      ]);
+    }
+    await failedTurn(1);
+    await failedTurn(2);
+    await browserRuns.claimBrowserRunReport(runId);
+    expect(await browserRuns.reopenBrowserRunReport(runId)).toEqual({
+      retried: false,
+    });
+    // Given up: not sent again, but still owed — the owner hears of it and
+    // `browser_task status` hands it over.
+    expect(await browserRuns.listPendingBrowserRunReports(10)).toEqual([]);
+    expect(
+      await browserRuns.listOverdueBrowserRunReports(new Date(Date.now() + 1))
+    ).toMatchObject([{ id: runId }]);
+  }, 20_000);
+
+  it("never reopens a report its turn already delivered", async () => {
+    const browserRuns = await browserRunsDatabase();
+    await browserRuns.createBrowserRun(alice, {
+      ...conversation(),
+      completedAt: new Date(),
+      id: runId,
+      report: "Browser run finished",
+      status: "done",
+    });
+    await browserRuns.claimBrowserRunReport(runId);
+    await browserRuns.finishBrowserRunReport(runId);
+
+    expect(await browserRuns.reopenBrowserRunReport(runId)).toBeUndefined();
+    expect(await browserRuns.listPendingBrowserRunReports(10)).toEqual([]);
+  }, 20_000);
+
+  it("finds the open run of a Browser Use session", async () => {
+    const browserRuns = await browserRunsDatabase();
+    await browserRuns.createBrowserRun(alice, {
+      ...conversation(),
+      id: runId,
+      status: "running",
+    });
+    await browserRuns.createBrowserRun(alice, {
+      ...conversation(),
+      completedAt: new Date(),
+      id: "finished-run",
+      status: "done",
+    });
+
+    expect(
+      await browserRuns.listOpenBrowserRunIdsInSession("browser-session-1")
+    ).toEqual([runId]);
+    expect(
+      await browserRuns.listOpenBrowserRunIdsInSession("another-session")
+    ).toEqual([]);
+  }, 20_000);
 });
 
 async function applyMigrations(database: PGlite) {

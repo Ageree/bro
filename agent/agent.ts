@@ -3,8 +3,16 @@ import { scheduledRunIdentity } from "@agent/lib/schedules/identity";
 import { isScheduledAgentRunLeaseActive } from "@db/services/scheduled-agent-run-leases";
 import { getFormOfAddress, getWorkspaceModelId } from "@db/services/settings";
 import { personLanguage, replyDirective } from "@agent/lib/delivery/language";
-import { turnAskedQuestion } from "@agent/lib/delivery/questions";
-import { awaitsDelivery, turnDelivered } from "@agent/lib/delivery/pending";
+import {
+  actionsHeldForAnswer,
+  turnAskedQuestion,
+  turnAwaitsAnswer,
+} from "@agent/lib/delivery/questions";
+import {
+  awaitsDelivery,
+  turnDelivered,
+  turnTookNoStep,
+} from "@agent/lib/delivery/pending";
 import { turnMustEnd, turnSends } from "@agent/lib/delivery/turn-sends";
 import { readsMustEnd } from "@agent/lib/google-workspace/turn-reads";
 import { resolveModeValue } from "@agent/lib/mode";
@@ -31,9 +39,11 @@ export default defineAgent({
         // A person's message is answered only through send_message or
         // react_to_message; plain assistant text is internal. Until one of
         // them goes through, an interactive step may not end in text. A
-        // browser run's result arrives as a message too, but the run parked
-        // on an anti-bot check is continued without a word to the person
-        // (`agent/lib/browser-use/completion.ts`), so that turn stays free.
+        // browser run's result arrives as a message too. Its first step must
+        // call a tool: gpt-6-luna answered reports with an empty step, and
+        // the turn failed before the person heard anything. The steps after
+        // it stay free, so a report can still end in a quiet `continue` on
+        // the errand (`agent/lib/browser-use/completion.ts`).
         //
         // A turn whose send was dropped — a repeat, or a rephrased status
         // with nothing new — or that used up its message limit is past its
@@ -42,11 +52,12 @@ export default defineAgent({
         // keeps asking Google for reads the turn guard refuses
         // (`agent/lib/google-workspace/turn-reads.ts`).
         const requireToolCall =
-          caller.authenticator !== "browser-result" &&
-          (resolveModeValue(ctx, {
-            interactive: awaitsDelivery(ctx.messages),
-          }) ??
-            false);
+          resolveModeValue(ctx, {
+            interactive:
+              caller.authenticator === "browser-result"
+                ? turnTookNoStep(ctx.messages)
+                : awaitsDelivery(ctx.messages),
+          }) ?? false;
         // The reply follows the language of the person's latest message,
         // which the long Russian prompt otherwise outweighs, and so do Bro's
         // own gender and the form of address the person chose, which hold in
@@ -92,9 +103,12 @@ export default defineAgent({
           // One question per request, then Bro acts on the answer: a second
           // `ask_question` in the same turn is how a helper becomes an
           // interrogation. Approval cards stay, each is its action's consent.
-          withheldTools: turnAskedQuestion(ctx.messages)
-            ? ["ask_question"]
-            : [],
+          // A question sent as a message is answered in the person's next
+          // message, so until then nothing it asked about is undone.
+          withheldTools: [
+            ...(turnAskedQuestion(ctx.messages) ? ["ask_question"] : []),
+            ...(turnAwaitsAnswer(ctx.messages) ? actionsHeldForAnswer : []),
+          ],
         });
       },
     },

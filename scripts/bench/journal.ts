@@ -79,6 +79,17 @@ const sessionCursorSchema = z.object({
   streamIndex: z.number().int().nonnegative(),
 });
 
+/** A scripted message, as `planCase` builds it (`steps.ts`). */
+const plannedStepSchema = z.object({
+  at: z.string(),
+  files: z.array(
+    z.object({ mediaType: z.string(), path: z.string(), shows: z.string() })
+  ),
+  manual: z.string().optional(),
+  newConversation: z.boolean(),
+  text: z.string(),
+});
+
 const driverStatusSchema = z.enum([
   "completed",
   "failed",
@@ -123,6 +134,11 @@ export const runRecordSchema = z.object({
     fixtures: z.array(z.object({ file: z.string(), shows: z.string() })),
     host: z.string().min(1),
     pendingInputs: z.array(inputRequestSchema),
+    /**
+     * Scripted messages not sent yet because the case stopped on a question
+     * to the tester; `send --kind answer` sends them after the answer.
+     */
+    remainingSteps: z.array(plannedStepSchema).default([]),
     riskLevel: z.string().nullable(),
     scriptNotes: z.array(z.string()),
     sessions: z.array(sessionCursorSchema),

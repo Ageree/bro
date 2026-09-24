@@ -1,6 +1,9 @@
 import type { ModelMessage } from "ai";
 import { describe, expect, it } from "vitest";
-import { turnAskedQuestion } from "@agent/lib/delivery/questions";
+import {
+  turnAskedQuestion,
+  turnAwaitsAnswer,
+} from "@agent/lib/delivery/questions";
 
 describe("turnAskedQuestion", () => {
   it("holds from the question through the answer that resumes the turn", () => {
@@ -32,6 +35,69 @@ describe("turnAskedQuestion", () => {
     ).toBe(false);
   });
 });
+
+describe("turnAwaitsAnswer", () => {
+  it("holds after a question that reached the person, until their next message", () => {
+    // RU 24.09, d02: asked, and deleted the schedule three seconds later.
+    const asked = [
+      person("найди билеты в сочи"),
+      sent("Проверка продаж уже не нужна. Остановить её сейчас или оставить?"),
+      delivered("send_message"),
+    ];
+
+    expect(turnAwaitsAnswer(asked)).toBe(true);
+    expect(turnAwaitsAnswer([...asked, person("останови")])).toBe(false);
+  });
+
+  it("ignores statements, links with a query string and dropped sends", () => {
+    expect(
+      turnAwaitsAnswer([
+        person("что там с Госуслугами?"),
+        sent(
+          "Добавь вход в сейф: https://brobro.tech/vault?setup=vault&kind=login"
+        ),
+        delivered("send_message"),
+        sent("[Сейф](https://brobro.tech/vault?setup=vault) — ссылка выше."),
+        delivered("send_message"),
+      ])
+    ).toBe(false);
+    expect(
+      turnAwaitsAnswer([
+        person("найди билеты"),
+        sent("Удалить проверку?"),
+        result("send_message", "Not delivered: this repeats a message."),
+      ])
+    ).toBe(false);
+  });
+});
+
+function sent(text: string): ModelMessage {
+  return {
+    content: [
+      {
+        input: { kind: "message", text },
+        toolCallId: "call-1",
+        toolName: "send_message",
+        type: "tool-call",
+      },
+    ],
+    role: "assistant",
+  };
+}
+
+function delivered(toolName: string) {
+  return {
+    content: [
+      {
+        output: { type: "json" as const, value: { kind: "message" } },
+        toolCallId: "call-1",
+        toolName,
+        type: "tool-result" as const,
+      },
+    ],
+    role: "tool" as const,
+  } satisfies ModelMessage;
+}
 
 function person(text: string): ModelMessage {
   // eve adds `kind` to every user-role message it keeps in history.

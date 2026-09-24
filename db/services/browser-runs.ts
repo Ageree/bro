@@ -1,6 +1,7 @@
 import {
   and,
   asc,
+  desc,
   eq,
   gt,
   inArray,
@@ -26,6 +27,28 @@ const activeBrowserRunStatuses = ["created", "running", "waiting"] as const;
 const reportLeaseMs = 2 * 60_000;
 const maximumReportAttempts = 10;
 const reportRetryWindowMs = 24 * 60 * 60_000;
+
+/**
+ * Whether a run's report is owed and nobody is delivering it: kept, not
+ * delivered, and with no live lease — a report turn queued or at work in the
+ * conversation holds one, and handing the report over beside it would tell
+ * the person twice.
+ */
+export function browserRunReportOwed(
+  row: Pick<
+    BrowserRunInsert,
+    "report" | "reportClaimedAt" | "reportDeliveredAt"
+  >,
+  now = new Date()
+) {
+  return (
+    row.report !== null &&
+    row.report !== undefined &&
+    !row.reportDeliveredAt &&
+    (!row.reportClaimedAt ||
+      row.reportClaimedAt.getTime() < now.getTime() - reportLeaseMs)
+  );
+}
 
 export async function readBrowserProfileId(scope: AccessScope) {
   const rows = await db
@@ -124,15 +147,31 @@ export async function recordBrowserRunSubmission(
  * Settle a run exactly once. The `completed_at IS NULL` guard is what keeps a
  * webhook delivery and the reconciling poller from both reporting the same
  * outcome into the user's conversation; the loser gets `undefined`.
+ *
+ * A `report` given here is kept in the same write, under a delivery lease the
+ * settler holds while it adds the pictures and the spend note. A settle cut
+ * off after the claim used to leave a closed run with no report at all:
+ * nothing listed it as unsettled, pending or overdue, and the person never
+ * heard. Now the plain report is delivered once that lease runs out.
  */
 export async function claimBrowserRunCompletion(
   runId: string,
-  input: Pick<BrowserRunInsert, "outcome" | "status">
+  input: Pick<BrowserRunInsert, "outcome" | "status"> & {
+    readonly report?: string;
+  }
 ) {
   const completedAt = new Date();
+  const { report, ...settled } = input;
   const [row] = await db
     .update(browserRuns)
-    .set({ ...input, completedAt, updatedAt: completedAt })
+    .set({
+      ...settled,
+      completedAt,
+      updatedAt: completedAt,
+      // Drizzle leaves an undefined column as it is.
+      report,
+      reportClaimedAt: report === undefined ? undefined : completedAt,
+    })
     .where(and(eq(browserRuns.id, runId), isNull(browserRuns.completedAt)))
     .returning();
   return row;
@@ -500,13 +539,16 @@ export async function closeQueuedBrowserRun(
 /**
  * Keep the report a settled run owes its conversation. It stays pending until
  * a delivery lands, so an unreachable conversation delays the report instead
- * of losing it.
+ * of losing it. The settler's lease on the plain report it claimed with is
+ * given back here: the full report is the one to deliver now.
  */
 export async function saveBrowserRunReport(runId: string, report: string) {
   await db
     .update(browserRuns)
-    .set({ report, updatedAt: new Date() })
-    .where(eq(browserRuns.id, runId));
+    .set({ report, reportClaimedAt: null, updatedAt: new Date() })
+    .where(
+      and(eq(browserRuns.id, runId), isNull(browserRuns.reportDeliveredAt))
+    );
 }
 
 function reportPending(now: Date) {
@@ -561,6 +603,53 @@ export async function releaseBrowserRunReport(runId: string) {
 }
 
 /**
+ * The conversation took the report and a turn is working on it: the lease
+ * starts over, so a report turn that runs a while is not sent a second time.
+ */
+export async function renewBrowserRunReportLease(runId: string) {
+  const now = new Date();
+  await db
+    .update(browserRuns)
+    .set({ reportClaimedAt: now, updatedAt: now })
+    .where(
+      and(
+        eq(browserRuns.id, runId),
+        isNotNull(browserRuns.report),
+        isNull(browserRuns.reportDeliveredAt)
+      )
+    );
+}
+
+/** Report turns that fail before reaching the person are retried this often. */
+const maximumFailedReportTurns = 3;
+
+/**
+ * The report turn failed before anything reached the person — the model
+ * came back empty, the provider failed. The report goes back in line for the
+ * next poll, a few times; after that it stays undelivered, where the overdue
+ * watch tells the owner and `browser_task status` hands it over.
+ */
+export async function reopenBrowserRunReport(runId: string) {
+  const now = new Date();
+  const [row] = await db
+    .update(browserRuns)
+    .set({
+      reportAttempts: sql`case when ${browserRuns.reportAttempts} >= ${maximumFailedReportTurns} then ${maximumReportAttempts} else ${browserRuns.reportAttempts} end`,
+      reportClaimedAt: null,
+      updatedAt: now,
+    })
+    .where(
+      and(
+        eq(browserRuns.id, runId),
+        isNotNull(browserRuns.report),
+        isNull(browserRuns.reportDeliveredAt)
+      )
+    )
+    .returning({ reportAttempts: browserRuns.reportAttempts });
+  return row && { retried: row.reportAttempts < maximumReportAttempts };
+}
+
+/**
  * Reports of settled runs that have not reached their conversation although
  * the run ended more than `settledBefore` ago — each one is a person who
  * thinks their errand is still going. Waiting for a code or a decision
@@ -603,4 +692,43 @@ export async function listPendingBrowserRunReports(limit: number) {
     .where(reportPending(new Date()))
     .orderBy(asc(browserRuns.completedAt))
     .limit(limit);
+}
+
+/**
+ * Whether anything is still in flight for the poller to watch: a run Browser
+ * Use is still working on, or a report waiting to be sent again.
+ */
+export async function hasLiveBrowserRuns() {
+  const now = new Date();
+  const [row] = await db
+    .select({ id: browserRuns.id })
+    .from(browserRuns)
+    .where(
+      or(
+        and(
+          isNull(browserRuns.completedAt),
+          inArray(browserRuns.status, activeBrowserRunStatuses)
+        ),
+        reportPending(now)
+      )
+    )
+    .limit(1);
+  return row !== undefined;
+}
+
+/** The runs still open in one Browser Use session, newest first. */
+export async function listOpenBrowserRunIdsInSession(sessionId: string) {
+  const rows = await db
+    .select({ id: browserRuns.id })
+    .from(browserRuns)
+    .where(
+      and(
+        eq(browserRuns.sessionId, sessionId),
+        isNull(browserRuns.completedAt),
+        inArray(browserRuns.status, activeBrowserRunStatuses)
+      )
+    )
+    .orderBy(desc(browserRuns.createdAt))
+    .limit(5);
+  return rows.map((row) => row.id);
 }

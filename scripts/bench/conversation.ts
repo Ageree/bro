@@ -303,6 +303,7 @@ function newRecord(
       ),
       host: settings.host,
       pendingInputs: [],
+      remainingSteps: [],
       riskLevel: benchCase.riskLevel ?? null,
       scriptNotes: [...scriptNotes],
       sessions: [],
@@ -339,6 +340,71 @@ async function failRun(run: CaseRun, error: Error) {
   );
 }
 
+/**
+ * Sends scripted messages in order, answering the cards the rules decide
+ * after each. Stops at a question for the tester and keeps the steps still
+ * to send, so `send --kind answer` can pick the script up after the answer.
+ * Returns the session the last message went to, or undefined when the case
+ * stopped.
+ */
+async function sendSteps(
+  run: CaseRun,
+  client: Client,
+  steps: readonly PlannedStep[],
+  options: {
+    /** Files and voice notes of the whole run go with its first message. */
+    readonly extrasOnFirst: boolean;
+    readonly session: ClientSession | undefined;
+  }
+) {
+  let { session } = options;
+  const { settings } = run;
+  for (const [index, step] of steps.entries()) {
+    if (step.manual) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- the log follows the script
+      await run.journal.line(`   вручную (драйвер пропускает): ${step.manual}`);
+    }
+    const extras = options.extrasOnFirst && index === 0;
+    // oxlint-disable-next-line eslint/no-await-in-loop -- a step reads its own files
+    const message = await messageContent(
+      step.text,
+      [...step.files, ...(extras ? settings.extraFiles : [])],
+      extras ? settings.voice : []
+    );
+    const opened = step.newConversation ? undefined : session;
+    // oxlint-disable-next-line eslint/no-await-in-loop -- steps of one case are sequential
+    session = await exchange(run, async (signal) => {
+      if (opened) {
+        await run.noteTurn(opened, "script", step.at, step.text);
+        return {
+          events: await opened.send(message, { signal }),
+          session: opened,
+        };
+      }
+      const created = await client.sessions.create({ message, signal });
+      await run.noteTurn(created.session, "script", step.at, step.text);
+      return { events: created.response, session: created.session };
+    });
+    // oxlint-disable-next-line eslint/no-await-in-loop -- steps of one case are sequential
+    await settleInputs(run, session);
+    run.record.driver.remainingSteps = steps.slice(index + 1).map((rest) => ({
+      at: rest.at,
+      files: [...rest.files],
+      manual: rest.manual,
+      newConversation: rest.newConversation,
+      text: rest.text,
+    }));
+    if (run.tracker.blocked()) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- the case ends here
+      await run.settle();
+      return undefined;
+    }
+    // oxlint-disable-next-line eslint/no-await-in-loop -- saved after every step so a crash keeps the transcript
+    await run.save("completed");
+  }
+  return session;
+}
+
 /** Runs a planned case from its first message to a settled end. */
 export async function runCase(
   client: Client,
@@ -366,44 +432,12 @@ export async function runCase(
       scriptNotes.map((note) => `   сценарий: ${note}`).join("\n")
     );
   }
-  let session: ClientSession | undefined;
   try {
-    for (const [index, step] of steps.entries()) {
-      if (step.manual) {
-        // oxlint-disable-next-line eslint/no-await-in-loop -- the log follows the script
-        await journal.line(`   вручную (драйвер пропускает): ${step.manual}`);
-      }
-      const first = index === 0;
-      // oxlint-disable-next-line eslint/no-await-in-loop -- a step reads its own files
-      const message = await messageContent(
-        step.text,
-        [...step.files, ...(first ? settings.extraFiles : [])],
-        first ? settings.voice : []
-      );
-      const opened = step.newConversation ? undefined : session;
-      // oxlint-disable-next-line eslint/no-await-in-loop -- steps of one case are sequential
-      session = await exchange(run, async (signal) => {
-        if (opened) {
-          await run.noteTurn(opened, "script", step.at, step.text);
-          return {
-            events: await opened.send(message, { signal }),
-            session: opened,
-          };
-        }
-        const created = await client.sessions.create({ message, signal });
-        await run.noteTurn(created.session, "script", step.at, step.text);
-        return { events: created.response, session: created.session };
-      });
-      // oxlint-disable-next-line eslint/no-await-in-loop -- steps of one case are sequential
-      await settleInputs(run, session);
-      if (run.tracker.blocked()) {
-        // oxlint-disable-next-line eslint/no-await-in-loop -- the case ends here
-        await run.settle();
-        return run.record;
-      }
-      // oxlint-disable-next-line eslint/no-await-in-loop -- saved after every step so a crash keeps the transcript
-      await run.save("completed");
-    }
+    const session = await sendSteps(run, client, steps, {
+      extrasOnFirst: true,
+      session: undefined,
+    });
+    if (run.tracker.blocked()) return run.record;
     if (session) await finishBackground(run, session);
     await run.settle();
   } catch (error) {
@@ -415,7 +449,12 @@ export async function runCase(
   return run.record;
 }
 
-/** A tester's message, card answer or code in a case's latest session. */
+/**
+ * A tester's message, card answer or code in a case's latest session. An
+ * answer to the question the case stopped on also sends the rest of the
+ * script: d13 and d15 used to end «completed» right after the answer, with
+ * their later probes never sent.
+ */
 export async function continueCase(
   client: Client,
   record: RunRecord,
@@ -465,7 +504,29 @@ export async function continueCase(
       }));
     }
     await settleInputs(run, session);
-    if (!run.tracker.blocked()) await finishBackground(run, session);
+    if (run.tracker.blocked()) {
+      await run.settle();
+      return run.record;
+    }
+    const remaining =
+      input.kind === "answer"
+        ? record.driver.remainingSteps.map((rest) => ({
+            at: rest.at,
+            files: rest.files,
+            manual: rest.manual,
+            newConversation: rest.newConversation,
+            text: rest.text,
+          }))
+        : [];
+    const last =
+      remaining.length > 0
+        ? await sendSteps(run, client, remaining, {
+            extrasOnFirst: false,
+            session,
+          })
+        : session;
+    if (run.tracker.blocked()) return run.record;
+    if (last) await finishBackground(run, last);
     await run.settle();
   } catch (error) {
     await failRun(

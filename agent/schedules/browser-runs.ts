@@ -25,6 +25,7 @@ import { alertOwner, clearOwnerAlert } from "@agent/lib/owner-alert";
 import {
   claimDueBrowserRunRetries,
   claimNextQueuedBrowserRun,
+  hasLiveBrowserRuns,
   listOverdueBrowserRunReports,
   listPendingBrowserRunReports,
   parkBrowserRunForRetry,
@@ -32,11 +33,12 @@ import {
   takeUnsettledBrowserRuns,
 } from "@db/services/browser-runs";
 
-// A webhook that never arrives must not strand an errand, so every open run is
-// reconciled from the cheap status endpoint until it reaches a terminal state.
-// The schedule also holds a session handle, which is the only way to reach an
-// eve chat, so every conversation gets its report from here without a webhook.
-const settleAfterMs = 30_000;
+// Browser Use sends no webhook for a v4 run ("for V4 run monitoring, poll"),
+// so every open run is reconciled from the cheap status endpoint until it
+// reaches a terminal state. The schedule also holds a session handle, which is
+// the only way to reach an eve chat, so every conversation gets its report
+// from here.
+const settleAfterMs = 5_000;
 const abandonAfterMs = 45 * 60_000;
 const pollLimit = 25;
 /**
@@ -50,6 +52,19 @@ const maximumQueueStartsPerPoll = 5;
 const reportOverdueAfterMs = 2 * 60_000;
 const overdueAlertKey = "browser-use-undelivered-reports";
 const overdueAlertRepeatAfterMs = 6 * 60 * 60_000;
+/**
+ * Cron ticks once a minute, and a report that waits for the next tick waited
+ * up to a minute after the run was done. While runs are open, each tick keeps
+ * looking at them this often, so a finished run reaches its person within
+ * seconds.
+ */
+const livePollIntervalMs = 4_000;
+/**
+ * How long a tick keeps watching. It has to end before the next tick: Nitro
+ * answers a tick that finds this task still running with the running
+ * promise, so a watch that overran would cost the next minute its own.
+ */
+const liveWatchMs = 45_000;
 
 export default defineSchedule({
   cron: "* * * * *",
@@ -61,6 +76,7 @@ export default defineSchedule({
 
 async function reconcileBrowserRuns(delivery: BrowserRunDelivery) {
   const now = new Date();
+  const watchUntil = now.getTime() + liveWatchMs;
   await reconcileUnsettledBrowserRuns(delivery, now);
   // Errands parked on an anti-bot wall get their next attempt when it is due.
   const retries = await claimDueBrowserRunRetries(now, pollLimit);
@@ -72,11 +88,48 @@ async function reconcileBrowserRuns(delivery: BrowserRunDelivery) {
   await safeReconcileSpend(now);
   // A report still pending here is one whose delivery failed; it is retried
   // every poll until it lands or runs out of attempts.
+  await redeliverPendingReports(delivery);
+  await watchOverdueReports(new Date());
+  await watchLiveBrowserRuns(delivery, watchUntil);
+}
+
+async function redeliverPendingReports(delivery: BrowserRunDelivery) {
   const reports = await listPendingBrowserRunReports(pollLimit);
   await Promise.all(
     reports.map((report) => redeliverBrowserRunReport(delivery, report.id))
   );
-  await watchOverdueReports(new Date());
+}
+
+/**
+ * Between ticks, look at the open runs every few seconds and settle the ones
+ * that finished, and send again a report whose turn failed. Nothing open,
+ * nothing to watch: the tick ends at once.
+ */
+async function watchLiveBrowserRuns(
+  delivery: BrowserRunDelivery,
+  until: number
+): Promise<void> {
+  if (Date.now() + livePollIntervalMs > until) return;
+  if (!(await safeHasLiveBrowserRuns())) return;
+  await new Promise((resolve) => setTimeout(resolve, livePollIntervalMs));
+  try {
+    await reconcileUnsettledBrowserRuns(delivery, new Date());
+    await redeliverPendingReports(delivery);
+  } catch (error) {
+    console.warn("[browser-use] live run watch failed", { cause: error });
+  }
+  return watchLiveBrowserRuns(delivery, until);
+}
+
+async function safeHasLiveBrowserRuns() {
+  try {
+    return await hasLiveBrowserRuns();
+  } catch (error) {
+    console.warn("[browser-use] open runs could not be read", {
+      cause: error,
+    });
+    return false;
+  }
 }
 
 /**

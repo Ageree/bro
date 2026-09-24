@@ -27,6 +27,7 @@ function recordFor(journal: CaseJournal, promptSent: string): RunRecord {
       fixtures: [],
       host: "http://127.0.0.1:9",
       pendingInputs: [],
+      remainingSteps: [],
       riskLevel: null,
       scriptNotes: [],
       // An id that looks like a card number stays as it is.

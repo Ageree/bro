@@ -66,3 +66,15 @@ export function awaitsDelivery(messages: readonly ModelMessage[]) {
 export function turnDelivered(messages: readonly ModelMessage[]) {
   return currentTurnMessages(messages).some(deliveredByTool);
 }
+
+/**
+ * Whether the current turn has not taken a model step yet. A browser report
+ * is made to call a tool on this step only: a model that answered the report
+ * with nothing at all failed the turn before the person heard a word, while
+ * the steps after it stay free to end quietly (`agent/agent.ts`).
+ */
+export function turnTookNoStep(messages: readonly ModelMessage[]) {
+  return !currentTurnMessages(messages).some(
+    (message) => message.role === "assistant"
+  );
+}

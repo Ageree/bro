@@ -219,10 +219,103 @@ describe("interactive delivery enforcement", () => {
     );
   });
 
-  it("leaves a browser run's result free to stay silent", async () => {
+  it("holds what a question asked about until the person answers", async () => {
+    await agent.model.events["step.started"]?.(
+      {},
+      interactiveContext([
+        humanMessage("найди билеты в сочи"),
+        {
+          content: [
+            {
+              input: {
+                kind: "message",
+                text: "Проверка уже не нужна. Остановить её или оставить?",
+              },
+              toolCallId: "call-1",
+              toolName: "send_message",
+              type: "tool-call" as const,
+            },
+          ],
+          role: "assistant" as const,
+        },
+        {
+          content: [
+            {
+              output: { type: "text" as const, value: "submitted" },
+              toolCallId: "call-1",
+              toolName: "send_message",
+              type: "tool-result" as const,
+            },
+          ],
+          role: "tool" as const,
+        },
+      ])
+    );
+
+    expect(services.modelSelection).toHaveBeenLastCalledWith(
+      "openai/gpt-5.6-sol-fast",
+      expect.objectContaining({
+        withheldTools: [
+          "calendar-delete-event",
+          "calendar-update-event",
+          "profile__remove_memory",
+          "schedules-update",
+          "workstreams__forget",
+        ],
+      })
+    );
+  });
+
+  it("makes a browser run's result act on its first step, then leaves it free", async () => {
+    // An empty first step failed the report turn before the person heard
+    // anything (gpt-6-luna, 24.09).
     await agent.model.events["step.started"]?.(
       {},
       interactiveContext(pending, "browser-result")
+    );
+
+    expect(services.modelSelection).toHaveBeenLastCalledWith(
+      "openai/gpt-5.6-sol-fast",
+      {
+        delivered: false,
+        replyNote: note("ru"),
+        toolChoice: "required",
+        withheldTools: [],
+      }
+    );
+
+    // After a step that did something other than reply — a quiet continue
+    // on the errand — the turn may end without a message.
+    await agent.model.events["step.started"]?.(
+      {},
+      interactiveContext(
+        [
+          ...pending,
+          {
+            content: [
+              {
+                input: { action: "continue" },
+                toolCallId: "call-2",
+                toolName: "browser_task",
+                type: "tool-call" as const,
+              },
+            ],
+            role: "assistant" as const,
+          },
+          {
+            content: [
+              {
+                output: { type: "json" as const, value: { status: "running" } },
+                toolCallId: "call-2",
+                toolName: "browser_task",
+                type: "tool-result" as const,
+              },
+            ],
+            role: "tool" as const,
+          },
+        ],
+        "browser-result"
+      )
     );
 
     expect(services.modelSelection).toHaveBeenLastCalledWith(

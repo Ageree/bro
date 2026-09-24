@@ -65,10 +65,13 @@ function currentRow() {
 vi.mock("@db/services/browser-runs", () => ({
   claimBrowserRunCompletion: (
     _id: string,
-    input: { outcome: string; status: string }
+    input: { outcome: string; report?: string; status: string }
   ) => {
     if (currentRow().completedAt) return Promise.resolve(undefined);
-    Object.assign(currentRow(), input, { completedAt: new Date() });
+    const completedAt = new Date();
+    Object.assign(currentRow(), input, { completedAt });
+    // The settler holds the plain report's lease while it finishes it.
+    if (input.report !== undefined) currentRow().reportClaimedAt = completedAt;
     return Promise.resolve({ ...currentRow() });
   },
   claimBrowserRunReport: () => {
@@ -81,6 +84,7 @@ vi.mock("@db/services/browser-runs", () => ({
     return Promise.resolve({ ...currentRow() });
   },
   claimDueBrowserRunRetries: () => Promise.resolve([]),
+  hasLiveBrowserRuns: () => Promise.resolve(false),
   parkBrowserRunForRetry: () => Promise.resolve(true),
   finishBrowserRunReport: () => {
     currentRow().reportClaimedAt = null;
@@ -113,6 +117,7 @@ vi.mock("@db/services/browser-runs", () => ({
   },
   saveBrowserRunReport: (_id: string, report: string) => {
     currentRow().report = report;
+    currentRow().reportClaimedAt = null;
     return Promise.resolve();
   },
 }));
@@ -220,7 +225,9 @@ describe("reconciling a browser run started from the web chat", () => {
     });
     expect(to).not.toHaveBeenCalled();
     expect(currentRow().status).toBe("done");
-    expect(currentRow().reportDeliveredAt).toBeInstanceOf(Date);
+    // Handed over, not yet heard: the report turn confirms it.
+    expect(currentRow().reportClaimedAt).toBeInstanceOf(Date);
+    expect(currentRow().reportDeliveredAt).toBeNull();
   });
 
   it("keeps an undelivered outcome and delivers it on a later poll", async () => {
@@ -240,7 +247,7 @@ describe("reconciling a browser run started from the web chat", () => {
 
     expect(send).toHaveBeenCalledTimes(3);
     expect(send.mock.calls[2]?.[0]).toBe(currentRow().report);
-    expect(currentRow().reportDeliveredAt).toBeInstanceOf(Date);
+    expect(currentRow().reportClaimedAt).toBeInstanceOf(Date);
     expect(currentRow().reportAttempts).toBe(3);
   });
 });

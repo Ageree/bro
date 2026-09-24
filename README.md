@@ -141,10 +141,11 @@ The tool, and the instructions that describe it, appear only when
 operate a website.
 
 1. Create a Browser Use Cloud project and copy its API key.
-2. Register a webhook for `https://<your-host>/webhooks/browser-use` in the
-   Browser Use dashboard and copy its signing secret. Completion is also
-   reconciled by a once-a-minute poller, so the webhook is an optimization, not
-   a requirement.
+2. Register a webhook for `https://<your-host>/eve/v1/browser-use` in the
+   Browser Use dashboard (Settings → Webhooks) and copy its signing secret.
+   Optional: Browser Use sends webhooks for V2 tasks and V3 sessions only, and
+   the errands run on the V4 API. Completion is found by the poller, which
+   checks open runs every few seconds while any are running.
 3. Set the variables in the host's encrypted environment:
 
 ```bash

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BrowserUseCreateRunInput } from "@agent/lib/browser-use/client";
+import type * as browserUseSecrets from "@agent/lib/browser-use/secrets";
 import type { AccessScope } from "@shared/identity/access-scope";
 
 const runId = "11111111-1111-4111-8111-111111111111";
@@ -69,7 +70,9 @@ vi.mock("@db/services/browser-runs", () => ({
   parkBrowserRunForRetry,
   readBrowserRun,
 }));
-vi.mock("@agent/lib/browser-use/secrets", () => ({
+vi.mock("@agent/lib/browser-use/secrets", async (importOriginal) => ({
+  browserSecretAliases: (await importOriginal<typeof browserUseSecrets>())
+    .browserSecretAliases,
   resolveBrowserSecretBindings,
 }));
 

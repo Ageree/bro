@@ -21,7 +21,15 @@ vi.mock("@agent/lib/browser-use/completion", () => ({
   expireBrowserRun: vi.fn<() => Promise<void>>(),
   settleBrowserRun,
 }));
-vi.mock("@db/services/browser-runs", () => ({ readBrowserRun }));
+const listOpenBrowserRunIdsInSession = vi.hoisted(() =>
+  vi.fn<(sessionId: string) => Promise<string[]>>((sessionId) =>
+    Promise.resolve(sessionId === "cloud-session" ? [runId] : [])
+  )
+);
+vi.mock("@db/services/browser-runs", () => ({
+  listOpenBrowserRunIdsInSession,
+  readBrowserRun,
+}));
 
 afterEach(() => {
   // Clearing every stub would also drop the values tests/setup-env.ts installs.
@@ -37,7 +45,7 @@ async function loadRoute(webhookSecret: string | undefined) {
   const route = channel.default.routes.find(
     (candidate) =>
       candidate.transport !== "websocket" &&
-      candidate.path === "/webhooks/browser-use"
+      candidate.path === "/eve/v1/browser-use"
   );
   if (!route || route.transport === "websocket") {
     throw new Error("The Browser Use webhook route is unavailable.");
@@ -66,7 +74,7 @@ function deliver(
     waitUntil: (task: Promise<unknown>) => pending.push(task),
   } satisfies RouteHandlerArgs;
   const response = handler(
-    new Request("https://assistant.example/webhooks/browser-use", {
+    new Request("https://assistant.example/eve/v1/browser-use", {
       body: options.body,
       headers: {
         "content-type": "application/json",
@@ -118,6 +126,24 @@ describe("Browser Use webhook", () => {
   it("settles a run on a verified terminal delivery", async () => {
     const { canonical, handler } = await loadRoute(secret);
     const event = terminalEvent(runId);
+    const timestamp = nowSeconds();
+    const { pending, response } = deliver(handler, {
+      body: JSON.stringify(event),
+      signature: sign(canonical(event), timestamp, secret),
+      timestamp,
+    });
+
+    expect((await response).status).toBe(200);
+    await Promise.all(pending);
+    expect(settleBrowserRun).toHaveBeenCalledWith(expect.anything(), runId);
+  });
+
+  it("settles the open run of a session a session event names", async () => {
+    const { canonical, handler } = await loadRoute(secret);
+    const event = {
+      payload: { session_id: "cloud-session", status: "idle" },
+      type: "session.status.update",
+    };
     const timestamp = nowSeconds();
     const { pending, response } = deliver(handler, {
       body: JSON.stringify(event),

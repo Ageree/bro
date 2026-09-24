@@ -18,6 +18,7 @@ import { z } from "zod";
 import * as Database from "@db";
 import * as schema from "@db/schema";
 import type * as browserUseClient from "@agent/lib/browser-use/client";
+import type * as browserUseSecrets from "@agent/lib/browser-use/secrets";
 import type * as browserRunsService from "@db/services/browser-runs";
 import { backgroundTurnMarker } from "@shared/chat/background-turn";
 import type { BrowserSubmission } from "@shared/browser/submission";
@@ -40,6 +41,8 @@ const cloud = vi.hoisted(() => ({
   created: new Array<{ sessionId?: string; task: string }>(),
   // Runs whose status Browser Use keeps failing to answer.
   failing: new Set<string>(),
+  // How many times a run's status was asked.
+  statusChecks: 0,
   // What the next create answers: a new run, or Browser Use's refusal.
   nextCreate: new Array<"busy" | "down" | "no_credits" | "ok">(),
   runs: new Map<string, CloudRun>(),
@@ -64,7 +67,9 @@ vi.mock("@agent/lib/browser-use/images", () => ({
 }));
 // The vault can be made to fail, the way a transient outage does.
 const vaultFails = vi.hoisted(() => ({ value: false }));
-vi.mock("@agent/lib/browser-use/secrets", () => ({
+vi.mock("@agent/lib/browser-use/secrets", async (importOriginal) => ({
+  browserSecretAliases: (await importOriginal<typeof browserUseSecrets>())
+    .browserSecretAliases,
   resolveBrowserSecretBindings: () =>
     vaultFails.value
       ? Promise.reject(new Error("vault unavailable"))
@@ -73,12 +78,17 @@ vi.mock("@agent/lib/browser-use/secrets", () => ({
 vi.mock("@db/services/orders", () => ({
   recordOrder: vi.fn<() => Promise<void>>(() => Promise.resolve()),
 }));
-// The real queue service, except that parking can be made to fail.
+// The real queue service, except that parking can be made to fail. The live
+// watch between ticks is off unless a case turns it on: it sleeps, and only
+// the case that drives the clock can wait it out.
 const parkFails = vi.hoisted(() => ({ value: false }));
+const liveWatch = vi.hoisted(() => ({ value: false }));
 vi.mock("@db/services/browser-runs", async (importOriginal) => {
   const original = await importOriginal<typeof browserRunsService>();
   return {
     ...original,
+    hasLiveBrowserRuns: () =>
+      liveWatch.value ? original.hasLiveBrowserRuns() : Promise.resolve(false),
     parkQueuedBrowserRun: (
       ...args: Parameters<typeof original.parkQueuedBrowserRun>
     ) =>
@@ -175,8 +185,10 @@ vi.mock("@agent/lib/browser-use/client", async (importOriginal) => {
         task: run.task,
       });
     },
-    readBrowserUseRunStatus: (runId: string) =>
-      Promise.resolve(known(runId).status),
+    readBrowserUseRunStatus: (runId: string) => {
+      cloud.statusChecks += 1;
+      return Promise.resolve(known(runId).status);
+    },
     stopBrowserUseSessionBrowsers: () => Promise.resolve(0),
   };
 });
@@ -206,6 +218,8 @@ beforeEach(async () => {
   cloud.cancelled.length = 0;
   cloud.created.length = 0;
   parkFails.value = false;
+  liveWatch.value = false;
+  cloud.statusChecks = 0;
   vaultFails.value = false;
   cloud.failing.clear();
   cloud.nextCreate.length = 0;
@@ -307,7 +321,8 @@ describe("the browser run poller", () => {
 
     expect(send).toHaveBeenCalledTimes(60);
     const rows = await Promise.all(runIds.map(readRun));
-    expect(rows.every((row) => row?.reportDeliveredAt instanceof Date)).toBe(
+    // Handed to the chat under a lease; its turn confirms the delivery.
+    expect(rows.every((row) => row?.reportClaimedAt instanceof Date)).toBe(
       true
     );
   }, 60_000);
@@ -349,6 +364,44 @@ describe("the browser run poller", () => {
     expect(sentText(send.mock.calls[0]?.[0])).toContain("finished-run");
   }, 60_000);
 
+  it("reports a run that finishes between ticks within seconds", async () => {
+    liveWatch.value = true;
+    vi.useFakeTimers({ now: new Date(), toFake: ["Date", "setTimeout"] });
+    await runningErrand("live-run", "RESULT: нашёл отели\nNEEDS: none");
+    const cloudRun = cloud.runs.get("live-run");
+    if (!cloudRun) throw new Error("The cloud run is missing.");
+    cloudRun.status = "running";
+    const { attachSession, send } = webChat();
+
+    const finished = { value: false };
+    const ticking = tick(attachSession).then(() => {
+      finished.value = true;
+      return finished.value;
+    });
+    // The tick's own pass finds the run still working.
+    await vi.waitFor(() => {
+      expect(cloud.statusChecks).toBeGreaterThanOrEqual(1);
+    });
+    expect(send).not.toHaveBeenCalled();
+    cloudRun.status = "completed";
+    const finishedAt = Date.now();
+    // The watch sleeps on the fake clock; the database answers in real time.
+    async function runClock(secondsLeft: number): Promise<void> {
+      if (finished.value || secondsLeft === 0) return;
+      await vi.advanceTimersByTimeAsync(1_000);
+      await new Promise((resolve) => setImmediate(resolve));
+      return runClock(secondsLeft - 1);
+    }
+    await runClock(20);
+    await ticking;
+
+    // One look of the live watch, not the next minute's tick; and with
+    // nothing left open, the tick ends there.
+    expect(send).toHaveBeenCalledOnce();
+    expect(sentText(send.mock.calls[0]?.[0])).toContain("live-run");
+    expect(Date.now() - finishedAt).toBeLessThanOrEqual(8_000);
+  }, 30_000);
+
   it("asks the person for the SMS code on the very next poll", async () => {
     await runningErrand(
       "gosuslugi-run",
@@ -372,7 +425,7 @@ describe("the browser run poller", () => {
     expect(report).toContain(
       "The site is waiting for a one-time code it sent by SMS: first thing, in one short line, ask the user for that code"
     );
-    expect((await readRun("gosuslugi-run"))?.reportDeliveredAt).toBeInstanceOf(
+    expect((await readRun("gosuslugi-run"))?.reportClaimedAt).toBeInstanceOf(
       Date
     );
   }, 30_000);
@@ -657,9 +710,9 @@ describe("the browser queue", () => {
 
     // Redelivery comes after the queue in the tick, and still ran.
     expect(send).toHaveBeenCalledOnce();
-    expect(
-      (await readRun("undelivered-run"))?.reportDeliveredAt
-    ).toBeInstanceOf(Date);
+    expect((await readRun("undelivered-run"))?.reportClaimedAt).toBeInstanceOf(
+      Date
+    );
     // The claim's lease puts the errand back in line later.
     expect((await readRun(queued.id))?.status).toBe("queued");
   }, 30_000);
