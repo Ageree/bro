@@ -20,19 +20,21 @@
 
 - Вход. `POST /api/auth/phone-number/send-otp` с `{"phoneNumber": "+7…"}` и
   заголовком `Origin: https://brobro.tech`; код из SMS присылает владелец. Потом
-  `POST /api/auth/phone-number/verify` с `{"phoneNumber", "code"}` через
+  `POST /api/auth/phone-number/verify` с
+  `{"phoneNumber": "+7…", "code": "<код из SMS>"}` через
   `curl -c cookies.txt`. Cookie `better-auth.*` из этого файла и есть сессия.
   Файл держите вне репозитория и с правами 600.
 - Клиент. `new Client({ host, headers: { cookie, origin: host } })` из
   `eve/client` — тот же, что у веб-чата. `client.sessions.create({ message })`
-  открывает разговор, `session.send(text)` и `session.respond([{ requestId,
-optionId | text }])` продолжают его, `client.sessions.attach(id, { streamIndex })`
+  открывает разговор, `session.send(text)` и `session.respond(responses)`
+  продолжают его (ответ на карточку — `requestId` и `optionId` или `text`),
+  `client.sessions.attach(id, { streamIndex })`
   и `session.stream({ follow })` дочитывают фоновые события (итоги браузера,
   расписаний). Читайте поток до `session.waiting`.
 - Журнал. Сохраняйте каждое событие в `<case>.events.jsonl`, а в читаемый
   лог — вызовы инструментов, `send_message`, карточки `input.requested` и
   `authorization.required`. По ним ставятся оценки.
-- Параллельность — не больше 5 разговоров: Browser Use отвечает 429 «Too many
+- Параллельность — не больше 4 разговоров: с пяти Browser Use отвечает 429 «Too many
   concurrent active sessions», и Бро начинает повторять запуск (задача 1).
 
 ## Правила прогона
@@ -40,9 +42,12 @@ optionId | text }])` продолжают его, `client.sessions.attach(id, { 
 - Не одобрять оплату, бронь, запись, заявление, отклик и письмо или сообщение
   третьему лицу. Браузер может дойти только до страницы оплаты или
   подтверждения. Такие карточки — «Отмена».
-- Коды входа (Госуслуги, mos.ru, Ozon, Яндекс ID, hh.ru) вводит только
-  владелец, вживую. Логины он сам сохраняет в сейфе Бро по ссылке
-  `request_vault_setup`; в чат пароли не пишутся.
+- Коды входа (Госуслуги, mos.ru, Ozon, Яндекс ID, hh.ru) — только вживую и с
+  разрешения владельца. Логины он сам сохраняет в сейфе Бро по ссылке
+  `request_vault_setup`; пароли в чат не пишутся. Код из SMS владелец пишет Бро
+  в чат сам (так Бро и устроен: `browser_task` просит код в разговоре), а если
+  разговор ведёт драйвер — присылает оркестратору, который сразу пересылает его
+  в тот же разговор. Коды нигде не сохраняются и не повторяются.
 - После прогона убрать за собой: тестовые расписания, записи памяти и события
   календаря — через самого Бро, с проверкой в новой сессии.
 - Нет прогона — пустая клетка, а не догадка. Оценка по опубликованным якорям с
