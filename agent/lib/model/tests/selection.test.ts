@@ -124,6 +124,47 @@ describe("model selection", () => {
     expect(doGenerate.mock.calls[1]?.[0].toolChoice).toBeUndefined();
   });
 
+  it("ends every step's prompt with the person's reply language", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
+    const doGenerate = vi.fn<LanguageModelV4["doGenerate"]>();
+    openRouter.chat.mockImplementation((modelId) => ({
+      doGenerate,
+      doStream: vi.fn<LanguageModelV4["doStream"]>(),
+      modelId,
+      provider: "openrouter.chat",
+      specificationVersion: "v4",
+      supportedUrls: {},
+    }));
+
+    const { openRouterSelection } = await import("@agent/lib/model/openrouter");
+    const selection = openRouterSelection("deepseek/deepseek-v4.1-flash", {
+      replyLanguage: "en",
+      toolChoice: "auto",
+    });
+    const sendMessage = {
+      inputSchema: { type: "object" },
+      name: "send_message",
+      type: "function",
+    } as const;
+    const person = {
+      content: [{ text: "find a dinner spot", type: "text" as const }],
+      role: "user" as const,
+    };
+    await selection.model.doGenerate({
+      prompt: [person],
+      tools: [sendMessage],
+    });
+    await selection.model.doGenerate({ prompt: [person] });
+
+    const prompt = doGenerate.mock.calls[0]?.[0].prompt ?? [];
+    expect(prompt).toHaveLength(2);
+    expect(prompt.at(-1)).toMatchObject({ role: "system" });
+    expect(JSON.stringify(prompt.at(-1))).toContain("English");
+    expect(doGenerate.mock.calls[0]?.[0].toolChoice).toBeUndefined();
+    // Compaction writes nothing to the person and keeps its prompt.
+    expect(doGenerate.mock.calls[1]?.[0].prompt).toEqual([person]);
+  });
+
   it("forwards toolChoice none, even for Anthropic with reasoning on", async () => {
     vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
     vi.stubEnv("OPENROUTER_REASONING_EFFORT", "medium");

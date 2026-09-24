@@ -52,6 +52,14 @@ describe("autonomy defaults", () => {
     expect(content).toContain("готовый результат, а не вопросы");
     expect(content).toContain("«взял на 19:00 — поменяю, если что»");
     expect(content).toContain("бесплатную бронь с бесплатной отменой");
+    expect(content).toContain("Когда человек сам попросил забронировать");
+    expect(content).toContain(
+      "заканчивается рекомендацией. Не бронируй, не записывай и не оставляй заявку сам"
+    );
+    expect(content).toContain(
+      "отправляй, только когда он прямо попросил именно это действие"
+    );
+    expect(content).toContain("Почту пачкой");
     expect(content).toContain("без внешних участников");
     expect(content).toContain("`withinSpendLimit`");
     expect(content).toContain("подписка или автопродление");

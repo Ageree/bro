@@ -1,5 +1,5 @@
-import { defineEval, type EveEvalContext } from "eve/evals";
-import { satisfies } from "eve/evals/expect";
+import { defineEval, type EveEvalContext, type EveEvalTurn } from "eve/evals";
+import { equals, includes, satisfies } from "eve/evals/expect";
 import {
   agentEvalTags,
   assertPlainTextDelivery,
@@ -27,6 +27,35 @@ function assertRussianDelivery(t: EveEvalContext, text: string) {
       );
     }, "delivery is written in Russian from the first word")
   );
+}
+
+/**
+ * An English reply is in English: most of its letters are Latin, with at
+ * most the odd Russian name.
+ */
+function assertEnglishDelivery(t: EveEvalContext, text: string) {
+  t.check(
+    text,
+    satisfies<string>((value) => {
+      const letters = value.match(/\p{L}/gu) ?? [];
+      const cyrillic = letters.filter((letter) => /[а-яё]/iu.test(letter));
+      return (
+        /^[^\p{L}]*[a-z]/iu.test(value) && cyrillic.length <= letters.length / 5
+      );
+    }, "delivery is written in English from the first word")
+  );
+}
+
+/**
+ * The messages that actually reached the person. A send bounced for its
+ * language or as a repeat completes too, but its output is not a message.
+ */
+function deliveredTexts(turn: EveEvalTurn) {
+  return turn.toolCalls.flatMap((call) => {
+    if (call.name !== "send_message" || call.status !== "completed") return [];
+    const output = sendMessageOutputSchema.safeParse(call.output).data;
+    return output?.kind === "message" && output.text ? [output.text] : [];
+  });
 }
 
 // Refusals and clarifying questions are where a model most often answered in
@@ -68,6 +97,62 @@ const replyEvals = cases.map((testCase) =>
     },
   })
 );
+
+// A production benchmark answered 83 of 106 English prompts in Russian: the
+// long Russian prompt outweighed the rule to follow the person's language.
+const languageEvals = [
+  defineEval({
+    description: "Answers an English message in English",
+    tags: [...agentEvalTags, "conversation", "delivery", "language", "smoke"],
+    async test(t) {
+      const turn = await t.send(
+        "Give me one quick tip for falling asleep faster tonight."
+      );
+      turn.expectOk();
+      turn.succeeded();
+      const texts = deliveredTexts(turn);
+      await t.require(texts.length > 0, equals(true));
+      for (const text of texts) assertEnglishDelivery(t, text);
+    },
+  }),
+  defineEval({
+    description: "Answers a Russian message in Russian",
+    tags: [...agentEvalTags, "conversation", "delivery", "language", "smoke"],
+    async test(t) {
+      const turn = await t.send(
+        "Дай один быстрый совет, как сегодня быстрее уснуть."
+      );
+      turn.expectOk();
+      turn.succeeded();
+      const texts = deliveredTexts(turn);
+      await t.require(texts.length > 0, equals(true));
+      for (const text of texts) assertRussianDelivery(t, text);
+    },
+  }),
+  defineEval({
+    description: "Switches to English when the person switches",
+    tags: [...agentEvalTags, "conversation", "delivery", "language"],
+    async test(t) {
+      const first = await t.send("Сколько будет 12 умножить на 4?");
+      first.expectOk();
+      for (const text of deliveredTexts(first)) {
+        assertRussianDelivery(t, text);
+      }
+
+      const second = await t.send(
+        "Thanks! Now answer in one sentence: what is the capital of Canada?"
+      );
+      second.expectOk();
+      second.succeeded();
+      const texts = deliveredTexts(second);
+      await t.require(texts.length > 0, equals(true));
+      for (const text of texts) {
+        assertEnglishDelivery(t, text);
+        t.check(text, includes("Ottawa"));
+      }
+    },
+  }),
+];
 
 // Production benchmark turns where a model posted the same reply dozens of
 // times in one turn. Whatever the model does, the person may receive at most
@@ -128,4 +213,4 @@ const loopEvals = loopCases.map((testCase) =>
   })
 );
 
-export default [...replyEvals, ...loopEvals];
+export default [...replyEvals, ...languageEvals, ...loopEvals];
