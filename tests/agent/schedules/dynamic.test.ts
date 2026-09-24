@@ -42,6 +42,12 @@ vi.mock("@agent/channels/photon", () => ({
 vi.mock("@agent/lib/schedules/request", () => ({
   postScheduledReport: requests.report,
 }));
+// The credit check runs on the wall clock's tenth minutes; it has its own
+// tests and must not reach OpenRouter from these.
+vi.mock("@agent/lib/model/credits", () => ({
+  checkOpenRouterCredits: vi.fn<() => Promise<void>>(() => Promise.resolve()),
+  creditCheckDue: () => false,
+}));
 vi.mock("@agent/channels/scheduled-run", () => ({
   default: { channel: "scheduled-run" },
 }));
@@ -288,7 +294,9 @@ describe("scheduled report delivery", () => {
 });
 
 async function runSchedule(to: ScheduleToFn) {
-  let task: Promise<unknown> | undefined;
+  // Every tenth minute the schedule also queues the credit check; each
+  // background task is awaited, not only the last one handed over.
+  const tasks: Promise<unknown>[] = [];
   const args: ScheduleHandlerArgs = {
     appAuth: {
       attributes: {},
@@ -299,11 +307,11 @@ async function runSchedule(to: ScheduleToFn) {
     attachSession: vi.fn<ScheduleHandlerArgs["attachSession"]>(),
     to,
     waitUntil(backgroundTask) {
-      task = backgroundTask;
+      tasks.push(backgroundTask);
     },
   };
   dynamicSchedule.run(args);
-  await task;
+  await Promise.all(tasks);
 }
 
 const resultOutcome = {
