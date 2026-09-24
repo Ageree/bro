@@ -146,8 +146,9 @@ export function isNight(date: Date, timeZone: string) {
 }
 
 /**
- * A moment the tester names by hand: an ISO time with its offset, or
- * `hh:mm` / `YYYY-MM-DD hh:mm` on the tester's own clock.
+ * A past moment the tester names by hand: an ISO time with its offset, or
+ * `hh:mm` / `YYYY-MM-DD hh:mm` on the tester's own clock. A bare `hh:mm` is
+ * its latest occurrence up to now; a later explicit time is refused.
  */
 export function parseLocalMoment(text: string, now: Date, timeZone: string) {
   const trimmed = text.trim();
@@ -155,15 +156,20 @@ export function parseLocalMoment(text: string, now: Date, timeZone: string) {
     trimmed
   );
   if (local) {
-    const today = localDay(now, timeZone);
-    const day = local[1]
-      ? {
-          day: Number(local[3]),
-          month: Number(local[2]),
-          year: Number(local[1]),
-        }
-      : today;
-    return zonedInstant(day, local[4] ?? "", timeZone);
+    const time = local[4] ?? "";
+    if (!local[1]) {
+      // `--since 21:00` the next morning means last evening, not tonight.
+      const today = zonedInstant(localDay(now, timeZone), time, timeZone);
+      return today.getTime() <= now.getTime()
+        ? today
+        : zonedInstant(addDays(localDay(now, timeZone), -1), time, timeZone);
+    }
+    const day = {
+      day: Number(local[3]),
+      month: Number(local[2]),
+      year: Number(local[1]),
+    };
+    return notAhead(zonedInstant(day, time, timeZone), now, text);
   }
   if (!/(?:Z|[+-]\d{2}:?\d{2})$/u.test(trimmed)) {
     throw new Error(
@@ -174,5 +180,16 @@ export function parseLocalMoment(text: string, now: Date, timeZone: string) {
   if (Number.isNaN(parsed.getTime())) {
     throw new Error(`Not a time: ${JSON.stringify(text)}.`);
   }
-  return parsed;
+  return notAhead(parsed, now, text);
+}
+
+/**
+ * `--since` and `--at` name a moment that has passed; a future one would
+ * make `observe` skip everything Bro sent before it.
+ */
+function notAhead(moment: Date, now: Date, text: string) {
+  if (moment.getTime() > now.getTime()) {
+    throw new Error(`${JSON.stringify(text)} is in the future.`);
+  }
+  return moment;
 }
