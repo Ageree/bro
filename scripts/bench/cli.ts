@@ -6,6 +6,17 @@ import { parseArgs } from "node:util";
 import { Client, type InputRequest } from "eve/client";
 import { z } from "zod";
 import { benchEnv } from "../env/bench.ts";
+import { caseFixtureSets } from "./account/catalog.ts";
+import { composioProxy, findGoogleAccount } from "./account/composio.ts";
+import { googleAccount } from "./account/google.ts";
+import { defaultManifestFile, readManifest } from "./account/manifest.ts";
+import {
+  caseFixtureState,
+  cleanFixtures,
+  describeFixtures,
+  planFixtures,
+  seedFixtures,
+} from "./account/seed.ts";
 import { ownDataTools, responseFromText } from "./approvals.ts";
 import {
   loadCases,
@@ -14,15 +25,23 @@ import {
   selectCases,
   type BenchCase,
 } from "./cases.ts";
+import { parseLocalMoment } from "./clock.ts";
 import { defaultCookieFile, readCookieHeader } from "./cookies.ts";
 import {
   continueCase,
   followCase,
+  nextCase,
+  noteObservation,
+  observeCase,
   runCase,
   type DriverSettings,
 } from "./conversation.ts";
 import { readRunRecord, type RunRecord } from "./journal.ts";
-import { sendSignInCode, sessionExpiry, verifySignInCode } from "./sign-in.ts";
+import {
+  sendSignInCode,
+  signedInSession,
+  verifySignInCode,
+} from "./sign-in.ts";
 import { parseFills, planCase } from "./steps.ts";
 
 const usage = `Бенчмарк Бро: драйвер разговоров через eve/client.
@@ -31,32 +50,54 @@ const usage = `Бенчмарк Бро: драйвер разговоров че
   pnpm bench otp    [--host URL] --phone +7…
   pnpm bench verify [--host URL] --phone +7… [--code C | код в stdin] [--cookie-file PATH]
 
+Заготовки в Google-аккаунте тестировщика (письма, события, файл в Диске):
+  pnpm bench fixtures list  [отбор как у list]
+  pnpm bench fixtures seed  --case ID,… [--dry-run [--mailbox ADDR]] [--track N]
+                            [--spread-min 150] [--user-id ID | --account ca_…]
+  pnpm bench fixtures clean [--case ID,…] [--dry-run]
+                            (без --case убирает всё засеянное)
+
 Прогон:
   pnpm bench list   [--suite ru|en] [--case id,…] [--group d13|13|категория] [--risk read-only]
   pnpm bench run    [отбор как у list] [--host URL] [--cookie-file PATH] [--out DIR]
                     [--fill '[ресторан]=Хачапури и вино'] [--attach FILE] [--voice FILE]
-                    [--approve tool] [--concurrency 4] [--max-steps N]
+                    [--approve tool] [--concurrency 4] [--max-steps N] [--compress]
                     [--background-wait-min 20] [--nudges 1] [--turn-timeout-min 15]
                     [--dry-run]
+                    (шаг сценария «T+7д» ждёт своего срока: pnpm bench next;
+                    --compress шлёт все шаги сразу)
+  pnpm bench next   --out DIR --case ID [--early]
+                    (следующие шаги сценария, когда подошёл их срок)
   pnpm bench send   --out DIR --case ID (--text T | --code C | --option ID)
-                    [--kind hint|answer|approval|code] [--attach FILE] [--voice FILE]
+                    [--kind hint|answer|approval|code|probe|cleanup] [--attach FILE] [--voice FILE]
                     (--kind answer отвечает на вопрос, на котором кейс встал,
                     и досылает оставшиеся сообщения сценария)
+  pnpm bench send   --out DIR --case ID --kind observed --text T
+                    [--channel telegram|imessage|web] [--at 06:40]
+                    (ничего не отправляет: записывает, что Бро написал сам в мессенджер)
+  pnpm bench observe --out DIR --case ID [--session ID] [--minutes 60] [--since 21:00]
+                    (смотрит разговор и записывает, что Бро пишет сам; ничего не шлёт)
   pnpm bench follow --out DIR --case ID [--background-wait-min 20]
 
-По умолчанию хост https://brobro.tech, cookie ~/.bro-bench/cookies.txt.
+По умолчанию хост https://brobro.tech, cookie ~/.bro-bench/cookies.txt,
+заготовки ~/.bro-bench/fixtures.json.
 Журналы: <out>/<case>.events.jsonl, <case>.log, <case>.json (запись прогона).
 Правила ответов на карточки и подсказок — docs/benchmarks/README.md.`;
 
 const options = {
+  account: { type: "string" },
   approve: { multiple: true, type: "string" },
+  at: { type: "string" },
   attach: { multiple: true, type: "string" },
   "background-wait-min": { type: "string" },
   case: { multiple: true, type: "string" },
+  channel: { type: "string" },
   code: { type: "string" },
+  compress: { type: "boolean" },
   concurrency: { type: "string" },
   "cookie-file": { type: "string" },
   "dry-run": { type: "boolean" },
+  early: { type: "boolean" },
   "max-steps": { type: "string" },
   fill: { multiple: true, type: "string" },
   group: { multiple: true, type: "string" },
@@ -64,14 +105,21 @@ const options = {
   hint: { type: "string" },
   host: { type: "string" },
   kind: { type: "string" },
+  mailbox: { type: "string" },
+  minutes: { type: "string" },
   nudges: { type: "string" },
   option: { type: "string" },
   out: { type: "string" },
   phone: { type: "string" },
   risk: { multiple: true, type: "string" },
+  session: { type: "string" },
+  since: { type: "string" },
+  "spread-min": { type: "string" },
   suite: { multiple: true, type: "string" },
   text: { type: "string" },
+  track: { type: "string" },
   "turn-timeout-min": { type: "string" },
+  "user-id": { type: "string" },
   voice: { multiple: true, type: "string" },
 } as const;
 
@@ -94,11 +142,28 @@ const list = (items: readonly string[] | undefined) =>
 
 const minutesSchema = z.coerce.number().nonnegative();
 const countSchema = z.coerce.number().int().nonnegative();
-const turnKindSchema = z.enum(["hint", "answer", "approval", "code"]);
+const sendKindSchema = z.enum([
+  "answer",
+  "approval",
+  "cleanup",
+  "code",
+  "hint",
+  "observed",
+  "probe",
+]);
+const channelSchema = z.enum(["imessage", "telegram", "web"]);
+// A СДЭК track is ten digits; the tester's own parcel makes d11 checkable.
+const trackSchema = z.string().regex(/^\d{10,14}$/u, "--track is 10–14 digits");
+const defaultTrack = "1094857362";
 
 function minutes(value: string | undefined, fallback: number) {
   return Math.round(minutesSchema.parse(value ?? fallback) * 60_000);
 }
+
+const chosenCases = (flags: Values) =>
+  [flags.case, flags.group, flags.suite, flags.risk].some(
+    (items) => list(items).length > 0
+  );
 
 async function selected(flags: Values) {
   const cases = await loadCases(parseSuites(list(flags.suite)));
@@ -121,8 +186,8 @@ const cookieFile = (flags: Values) =>
 async function connection(flags: Values, recordedHost?: string) {
   const host = targetHost(flags, recordedHost);
   const cookie = await readCookieHeader(cookieFile(flags), host);
-  const expires = await sessionExpiry(host, cookie);
-  console.log(`${host.origin}: сессия до ${expires.toISOString()}`);
+  const { expiresAt } = await signedInSession(host, cookie);
+  console.log(`${host.origin}: сессия до ${expiresAt.toISOString()}`);
   const client = new Client({
     headers: { cookie, origin: host.origin },
     host: host.origin,
@@ -142,6 +207,7 @@ function settings(flags: Values, host: string, outDir: string): DriverSettings {
     host,
     nudges: countSchema.parse(flags.nudges ?? 1),
     outDir,
+    paced: flags.compress !== true,
     tester: benchEnv.BENCH_TESTER,
     timeZone: benchEnv.BENCH_TIMEZONE,
     turnTimeoutMs: minutes(flags["turn-timeout-min"], 15),
@@ -152,8 +218,18 @@ function settings(flags: Values, host: string, outDir: string): DriverSettings {
 function summaryLine(record: RunRecord) {
   const { driver } = record;
   const detail = driver.statusDetail ? ` — ${driver.statusDetail}` : "";
-  return `${record.caseId}: ${driver.status}${detail} (подсказок ${String(record.hints)}, карточек ${String(driver.decisions.length)}) → ${record.transcript}`;
+  const observed =
+    driver.observations.length > 0
+      ? `, наблюдений ${String(driver.observations.length)}`
+      : "";
+  return `${record.caseId}: ${driver.status}${detail} (подсказок ${String(record.hints)}, карточек ${String(driver.decisions.length)}${observed}) → ${record.transcript}`;
 }
+
+/** The script as the record's notes: what the tester does and when. */
+const scriptNotes = (benchCase: BenchCase) =>
+  benchCase.script.map(
+    (entry) => `${entry.at}: ${entry.send ?? entry.note ?? "без сообщения"}`
+  );
 
 async function listCommand(flags: Values) {
   const fills = parseFills(list(flags.fill));
@@ -167,8 +243,10 @@ async function listCommand(flags: Values) {
       benchCase.needsSetup.length > 0
         ? ` | нужно: ${benchCase.needsSetup.join("; ")}`
         : "";
+    const sets = caseFixtureSets.get(benchCase.id);
+    const fixtures = sets ? ` | заготовки: ${sets.join(", ")}` : "";
     console.log(
-      `${benchCase.id}\t${benchCase.riskLevel ?? "—"}\t${state}\t${benchCase.title}${setup}`
+      `${benchCase.id}\t${benchCase.riskLevel ?? "—"}\t${state}\t${benchCase.title}${setup}${fixtures}`
     );
   }
 }
@@ -222,6 +300,21 @@ async function runCommand(flags: Values) {
   }
   if (ready.length === 0) throw new Error("No case to run.");
 
+  // What the account was seeded with goes into each record for the
+  // reviewer; a case run without its letters is flagged before it starts.
+  const manifest = await readManifest(defaultManifestFile);
+  const fixtureNotes = new Map(
+    ready.map(({ benchCase }) => {
+      const state = caseFixtureState(manifest, benchCase.id);
+      if (state.missing.length > 0) {
+        console.warn(
+          `${benchCase.id}: не засеяны заготовки ${state.missing.join(", ")} — pnpm bench fixtures seed --case ${benchCase.id}`
+        );
+      }
+      return [benchCase.id, state.notes] as const;
+    })
+  );
+
   const maxSteps = flags["max-steps"]
     ? countSchema.min(1).parse(flags["max-steps"])
     : Number.POSITIVE_INFINITY;
@@ -259,12 +352,15 @@ async function runCommand(flags: Values) {
         maxSteps < plan.steps.length
           ? plan.steps.slice(0, maxSteps)
           : plan.steps,
-        maxSteps < plan.steps.length
-          ? [
-              ...plan.notes,
-              `драйвер отправил ${String(maxSteps)} из ${String(plan.steps.length)} сообщений (--max-steps)`,
-            ]
-          : plan.notes,
+        [
+          ...plan.notes,
+          ...(fixtureNotes.get(benchCase.id) ?? []),
+          ...(maxSteps < plan.steps.length
+            ? [
+                `драйвер отправил ${String(maxSteps)} из ${String(plan.steps.length)} сообщений (--max-steps)`,
+              ]
+            : []),
+        ],
         driverSettings
       );
       records.push(record);
@@ -299,7 +395,69 @@ function recordLocation(flags: Values) {
   return { caseId, outDir: resolve(outDir) };
 }
 
+async function oneCase(caseId: string) {
+  const [benchCase] = selectCases(await loadCases(), {
+    groups: [],
+    ids: [caseId],
+    risks: [],
+  });
+  if (!benchCase) throw new Error(`Unknown case id: ${caseId}`);
+  return benchCase;
+}
+
+const missingFileSchema = z.object({ code: z.literal("ENOENT") });
+
+/** The case's record in `outDir`, or nothing for a case not started there. */
+async function existingRecord(outDir: string, caseId: string) {
+  try {
+    return await readRunRecord(outDir, caseId);
+  } catch (error) {
+    if (missingFileSchema.safeParse(error).success) return undefined;
+    throw error;
+  }
+}
+
+/** `send --kind observed`: a message Bro wrote in a messenger, pasted in. */
+async function recordObservedCommand(flags: Values) {
+  const { caseId, outDir } = recordLocation(flags);
+  if (flags.text === undefined) {
+    throw new Error(
+      "Paste what arrived with --text; --kind observed sends nothing."
+    );
+  }
+  const benchCase = await oneCase(caseId);
+  const existing = await existingRecord(outDir, caseId);
+  const timeZone = benchEnv.BENCH_TIMEZONE;
+  const host = targetHost(flags, existing?.driver.host).origin;
+  const record = await noteObservation(
+    benchCase,
+    existing,
+    settings(flags, host, outDir),
+    {
+      at: flags.at
+        ? parseLocalMoment(flags.at, new Date(), timeZone)
+        : new Date(),
+      channel: channelSchema.parse(flags.channel ?? "telegram"),
+      notes: scriptNotes(benchCase),
+      text: flags.text,
+    }
+  );
+  console.log(summaryLine(record));
+}
+
 async function sendCommand(flags: Values) {
+  const kind = sendKindSchema.parse(
+    flags.kind ??
+      (flags.code === undefined
+        ? flags.option === undefined
+          ? "hint"
+          : "approval"
+        : "code")
+  );
+  if (kind === "observed") {
+    await recordObservedCommand(flags);
+    return;
+  }
   const { caseId, outDir } = recordLocation(flags);
   const record = await readRunRecord(outDir, caseId);
   const given = [flags.text, flags.code, flags.option].filter(
@@ -309,14 +467,6 @@ async function sendCommand(flags: Values) {
     throw new Error("Pass exactly one of --text, --code or --option.");
   }
   const text = flags.text ?? flags.code ?? flags.option ?? "";
-  const kind = turnKindSchema.parse(
-    flags.kind ??
-      (flags.code === undefined
-        ? flags.option === undefined
-          ? "hint"
-          : "approval"
-        : "code")
-  );
   const { client, host } = await connection(flags, record.driver.host);
   const respond = (pending: readonly InputRequest[]) => {
     const [request, ...others] = pending;
@@ -354,6 +504,186 @@ async function followCommand(flags: Values) {
   console.log(summaryLine(updated));
 }
 
+async function nextCommand(flags: Values) {
+  const { caseId, outDir } = recordLocation(flags);
+  const record = await readRunRecord(outDir, caseId);
+  const { client, host } = await connection(flags, record.driver.host);
+  const updated = await nextCase(
+    client,
+    record,
+    settings(flags, host, outDir),
+    { early: flags.early === true }
+  );
+  console.log(summaryLine(updated));
+}
+
+async function observeCommand(flags: Values) {
+  const { caseId, outDir } = recordLocation(flags);
+  const benchCase = await oneCase(caseId);
+  const existing = await existingRecord(outDir, caseId);
+  const timeZone = benchEnv.BENCH_TIMEZONE;
+  const fixtures = caseFixtureState(
+    await readManifest(defaultManifestFile),
+    caseId
+  );
+  const { client, host } = await connection(flags, existing?.driver.host);
+  await mkdir(outDir, { recursive: true });
+  const record = await observeCase(
+    client,
+    benchCase,
+    existing,
+    settings(flags, host, outDir),
+    {
+      channel: channelSchema.parse(flags.channel ?? "web"),
+      durationMs: minutes(flags.minutes, 60),
+      notes: [...scriptNotes(benchCase), ...fixtures.notes],
+      sessionId: flags.session,
+      // A conversation never read before is read from when its case's
+      // fixtures went in: what Bro wrote about them before the watch began
+      // counts too.
+      since: flags.since
+        ? parseLocalMoment(flags.since, new Date(), timeZone)
+        : (fixtures.seededAt ?? new Date()),
+    }
+  );
+  for (const observation of record.driver.observations) {
+    console.log(
+      `  ${observation.at}${observation.night ? " (ночь)" : ""} ${observation.channel}: ${observation.text.slice(0, 160)}`
+    );
+  }
+  console.log(summaryLine(record));
+}
+
+function composioKey() {
+  const key = benchEnv.COMPOSIO_API_KEY;
+  if (!key) throw new Error("Set COMPOSIO_API_KEY (Composio project API key).");
+  return key;
+}
+
+/** The Bro user the tester signed in as, whose Google connection is used. */
+async function broUserId(flags: Values) {
+  if (flags["user-id"]) return flags["user-id"];
+  const host = targetHost(flags);
+  const cookie = await readCookieHeader(cookieFile(flags), host);
+  return (await signedInSession(host, cookie)).userId;
+}
+
+async function fixturesListCommand(flags: Values) {
+  const manifest = await readManifest(defaultManifestFile);
+  const cases = (await selected(flags)).filter((benchCase) =>
+    caseFixtureSets.has(benchCase.id)
+  );
+  for (const benchCase of cases) {
+    const sets = caseFixtureSets.get(benchCase.id) ?? [];
+    console.log(`${benchCase.id}\t${sets.join(", ")}\t${benchCase.title}`);
+    for (const set of sets) {
+      const entries = manifest.sets.filter((entry) => entry.set === set);
+      if (entries.length === 0) console.log(`  ${set}: не засеяно`);
+      for (const entry of entries) {
+        const items = manifest.items.filter(
+          (item) =>
+            item.account === entry.account && item.key.startsWith(`${set}/`)
+        ).length;
+        console.log(
+          `  ${set}: ${entry.complete ? "засеяно" : "засев не закончен"} ${entry.seededAt} в ${entry.mailbox} (${entry.account}), объектов ${String(items)}`
+        );
+        for (const line of entry.expect) console.log(`    проверить: ${line}`);
+      }
+    }
+  }
+}
+
+async function fixturesSeedCommand(flags: Values) {
+  if (!chosenCases(flags)) {
+    throw new Error(
+      "Choose the cases to seed: --case d09-email,… (or --group / --suite)."
+    );
+  }
+  const caseIds = (await selected(flags))
+    .map((benchCase) => benchCase.id)
+    .filter((caseId) => caseFixtureSets.has(caseId));
+  if (caseIds.length === 0) {
+    throw new Error(
+      "None of the chosen cases needs fixtures: pnpm bench fixtures list."
+    );
+  }
+  const timeZone = benchEnv.BENCH_TIMEZONE;
+  const track = trackSchema.parse(flags.track ?? defaultTrack);
+  const now = new Date();
+  if (flags["dry-run"]) {
+    const context = {
+      mailbox: flags.mailbox ?? "tester@example.com",
+      now,
+      timeZone,
+      track,
+    };
+    console.log(
+      `Засев (пробный, Google не трогается), ящик ${context.mailbox}, пояс ${timeZone}:`
+    );
+    for (const line of describeFixtures(
+      planFixtures(caseIds, context),
+      timeZone
+    )) {
+      console.log(line);
+    }
+    return;
+  }
+  const apiKey = composioKey();
+  const account =
+    flags.account ?? (await findGoogleAccount(apiKey, await broUserId(flags)));
+  const google = googleAccount(composioProxy(apiKey, account));
+  const mailbox = await google.mailbox();
+  console.log(`Засев в ${mailbox} (Composio ${account}), пояс ${timeZone}`);
+  const context = { mailbox, now, timeZone, track };
+  const plan = planFixtures(caseIds, context);
+  await seedFixtures({
+    account,
+    context,
+    google,
+    log: (line) => {
+      console.log(line);
+    },
+    manifestPath: defaultManifestFile,
+    plan,
+    spreadMs: minutes(flags["spread-min"], 0),
+  });
+  // What was actually seeded: a set seeded earlier keeps that seed's dates.
+  const manifest = await readManifest(defaultManifestFile);
+  for (const set of plan) {
+    const entry = manifest.sets.find(
+      (known) => known.account === account && known.set === set.id
+    );
+    for (const line of entry?.expect ?? []) {
+      console.log(`${set.id}: проверить — ${line}`);
+    }
+  }
+  console.log(`Убрать: pnpm bench fixtures clean --case ${caseIds.join(",")}`);
+}
+
+async function fixturesCleanCommand(flags: Values) {
+  const dryRun = flags["dry-run"] === true;
+  const apiKey = dryRun ? "" : composioKey();
+  await cleanFixtures({
+    caseIds: chosenCases(flags)
+      ? (await selected(flags)).map((benchCase) => benchCase.id)
+      : undefined,
+    dryRun,
+    google: (account) => googleAccount(composioProxy(apiKey, account)),
+    log: (line) => {
+      console.log(line);
+    },
+    manifestPath: defaultManifestFile,
+  });
+}
+
+const fixturesCommands = {
+  clean: fixturesCleanCommand,
+  list: fixturesListCommand,
+  seed: fixturesSeedCommand,
+} as const;
+
+const fixturesActionSchema = z.enum(["clean", "list", "seed"]);
+
 function phoneNumber(flags: Values) {
   const phone = flags.phone ?? benchEnv.BENCH_PHONE;
   if (!phone) throw new Error("Pass --phone +7… (or set BENCH_PHONE).");
@@ -386,15 +716,20 @@ async function verifyCommand(flags: Values) {
   if (!/^\d{4,8}$/u.test(code)) throw new Error("The code is 4 to 8 digits.");
   const file = cookieFile(flags);
   await verifySignInCode(host, phoneNumber(flags), code, file);
-  const expires = await sessionExpiry(host, await readCookieHeader(file, host));
+  const { expiresAt } = await signedInSession(
+    host,
+    await readCookieHeader(file, host)
+  );
   console.log(
-    `Сессия сохранена в ${file} (права 600), действует до ${expires.toISOString()}.`
+    `Сессия сохранена в ${file} (права 600), действует до ${expiresAt.toISOString()}.`
   );
 }
 
 const commands = {
   follow: followCommand,
   list: listCommand,
+  next: nextCommand,
+  observe: observeCommand,
   otp: otpCommand,
   run: runCommand,
   send: sendCommand,
@@ -402,8 +737,11 @@ const commands = {
 } as const;
 
 const commandSchema = z.enum([
+  "fixtures",
   "follow",
   "list",
+  "next",
+  "observe",
   "otp",
   "run",
   "send",
@@ -416,17 +754,35 @@ if (values.help || commandName === undefined) {
   console.log(usage);
 } else {
   const command = commandSchema.safeParse(commandName);
+  const [action, ...stray] =
+    command.data === "fixtures"
+      ? extraPositionals
+      : [undefined, ...extraPositionals];
+  const fixturesAction =
+    command.data === "fixtures"
+      ? fixturesActionSchema.safeParse(action)
+      : undefined;
   // A stray word is refused, not ignored: `pnpm bench run typo` would
   // otherwise run every case against production.
-  if (!command.success || extraPositionals.length > 0) {
+  if (!command.success) {
+    console.error(`Нет такой команды: ${commandName}.\n`);
+    console.error(usage);
+    process.exitCode = 2;
+  } else if (fixturesAction?.success === false) {
     console.error(
-      command.success
-        ? `Лишние аргументы: ${extraPositionals.join(" ")}. Кейсы выбираются флагами --case, --group, --suite, --risk.\n`
-        : `Нет такой команды: ${commandName}.\n`
+      `После fixtures нужно seed, clean или list, а не ${action ?? "ничего"}.\n`
     );
     console.error(usage);
     process.exitCode = 2;
-  } else {
+  } else if (stray.length > 0) {
+    console.error(
+      `Лишние аргументы: ${stray.join(" ")}. Кейсы выбираются флагами --case, --group, --suite, --risk.\n`
+    );
+    console.error(usage);
+    process.exitCode = 2;
+  } else if (fixturesAction?.success) {
+    await fixturesCommands[fixturesAction.data](values);
+  } else if (command.data !== "fixtures") {
     await commands[command.data](values);
   }
 }

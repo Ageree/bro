@@ -39,4 +39,37 @@ describe("pnpm bench", () => {
     expect(result.status).toBe(2);
     expect(result.stderr).toContain("Нет такой команды: runn");
   });
+
+  it("wants seed, clean or list after fixtures", () => {
+    const result = bench("fixtures", "sow");
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain(
+      "После fixtures нужно seed, clean или list"
+    );
+  });
+
+  it("prints what seeding would insert without reaching Composio", () => {
+    const result = bench(
+      "fixtures",
+      "seed",
+      "--case",
+      "d10-proactive,d05_email",
+      "--dry-run",
+      "--mailbox",
+      "someone@gmail.com"
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("flight-ru — рейс завтра из Внуково");
+    expect(result.stdout).toContain("<someone+sam@gmail.com>");
+    expect(result.stdout).toContain("проверить:");
+  });
+
+  it("does not seed every case at once by accident", () => {
+    const result = bench("fixtures", "seed");
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("Choose the cases to seed");
+  });
 });

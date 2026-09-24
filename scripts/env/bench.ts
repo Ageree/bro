@@ -22,5 +22,10 @@ export const benchEnv = createEnv({
       .optional(),
     BENCH_TESTER: z.string().trim().min(1).default("драйвер"),
     BENCH_TIMEZONE: z.string().trim().min(1).default("Europe/Moscow"),
+    /**
+     * `fixtures seed` and `clean` reach the tester's Google account through
+     * Composio's proxy with this key; nothing else in the driver needs it.
+     */
+    COMPOSIO_API_KEY: z.string().trim().min(1).optional(),
   },
 });

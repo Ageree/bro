@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { caseFixtureSets } from "../../bench/account/catalog.ts";
 import { loadCases, selectCases } from "../../bench/cases.ts";
 import { caseFixtures } from "../../bench/fixtures.ts";
-import { parseFills, planCase } from "../../bench/steps.ts";
+import { parseFills, planCase, stepOffsetMs } from "../../bench/steps.ts";
 
 const cases = await loadCases();
 const byId = (id: string) => {
@@ -17,8 +18,15 @@ describe("loadCases", () => {
       78
     );
     expect(cases.filter((benchCase) => benchCase.suite === "en")).toHaveLength(
-      63
+      67
     );
+  });
+
+  it("names only published cases in the account fixtures", () => {
+    const known = new Set(cases.map((benchCase) => benchCase.id));
+    expect(
+      [...caseFixtureSets.keys()].filter((caseId) => !known.has(caseId))
+    ).toEqual([]);
   });
 
   it("keeps a dimension's whole script", () => {
@@ -134,6 +142,35 @@ describe("planCase", () => {
 
   it("skips a test that only observes", () => {
     expect(planCase(byId("d10-proactive"), noFills).kind).toBe("skipped");
+    // The English suite writes «say nothing» as a manual action.
+    const english = planCase(byId("d15_restraint"), noFills);
+    expect(english.kind).toBe("skipped");
+    expect(english.kind === "skipped" ? english.reason : "").toContain(
+      "say nothing"
+    );
+  });
+});
+
+describe("stepOffsetMs", () => {
+  it("reads how long after the first message a step is due", () => {
+    const minute = 60_000;
+    expect(
+      [
+        "T+0",
+        "настройка",
+        "T+10мин",
+        "T+1ч",
+        "T+7д, новый разговор",
+        "T+7д, после плана поездки",
+      ].map(stepOffsetMs)
+    ).toEqual([
+      0,
+      0,
+      10 * minute,
+      60 * minute,
+      7 * 24 * 60 * minute,
+      7 * 24 * 60 * minute,
+    ]);
   });
 });
 

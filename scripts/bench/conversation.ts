@@ -8,15 +8,18 @@ import type {
 import { setTimeout as sleep } from "node:timers/promises";
 import { decideInputRequest } from "./approvals.ts";
 import type { BenchCase } from "./cases.ts";
+import { isNight } from "./clock.ts";
 import {
   CaseJournal,
+  deliveredText,
   isoWithOffset,
   type DriverStatus,
+  type ObservationChannel,
   type RunRecord,
   type TesterTurnKind,
 } from "./journal.ts";
 import { messageContent, type OutgoingFile } from "./media.ts";
-import type { PlannedStep } from "./steps.ts";
+import { stepOffsetMs, type PlannedStep } from "./steps.ts";
 import { TurnTracker } from "./tracker.ts";
 
 /**
@@ -37,12 +40,20 @@ export interface DriverSettings {
   /** Follow-and-ask rounds while a background errand stays silent. */
   readonly nudges: number;
   readonly outDir: string;
+  /** A new run keeps the script's «T+…» waits; kept in its record. */
+  readonly paced: boolean;
   readonly tester: string;
   readonly timeZone: string;
   /** Upper bound for one turn, approvals included. */
   readonly turnTimeoutMs: number;
   readonly voice: readonly string[];
 }
+
+/**
+ * A step due this soon is waited for in place (d15's «T+10мин»); a later one
+ * ends the run as `scheduled` until `pnpm bench next`.
+ */
+const inlineWaitMs = 15 * 60_000;
 
 class TurnTimeoutError extends Error {
   constructor(timeoutMs: number) {
@@ -57,6 +68,8 @@ class CaseRun {
   readonly record: RunRecord;
   readonly settings: DriverSettings;
   readonly tracker: TurnTracker;
+  /** The scripted step the run stopped before because it is due later. */
+  deferred: { readonly at: string; readonly dueAt: Date } | undefined;
   // A response moves its session's cursor only once its turn is read, so
   // the record takes the cursors from the handles when it is saved.
   readonly #handles = new Set<ClientSession>();
@@ -73,6 +86,11 @@ class CaseRun {
       record.driver.pendingInputs,
       record.driver.backgroundRuns
     );
+  }
+
+  /** Saves this session's cursor with the record even if nothing arrives. */
+  attach(session: ClientSession) {
+    this.#handles.add(session);
   }
 
   async observe(session: ClientSession, event: MessageStreamEvent) {
@@ -121,6 +139,20 @@ class CaseRun {
       );
       return;
     }
+    // A paced case still has its later steps after a hint or a cleanup turn.
+    const [nextStep] = this.record.driver.remainingSteps;
+    const deferred =
+      this.deferred ??
+      (this.record.driver.paced && nextStep
+        ? { at: nextStep.at, dueAt: this.dueAt(nextStep.at) }
+        : undefined);
+    if (deferred) {
+      await this.save(
+        "scheduled",
+        `следующий шаг «${deferred.at}» — не раньше ${isoWithOffset(deferred.dueAt, this.settings.timeZone)}: pnpm bench next --out ${this.settings.outDir} --case ${this.record.caseId}`
+      );
+      return;
+    }
     await this.save("completed");
   }
 
@@ -141,7 +173,24 @@ class CaseRun {
     if (kind === "code") this.record.codesRequested += 1;
     await this.journal.line(`== тестировщик (${kind}, ${at}): ${text}`);
   }
+
+  /** When a scripted step is due: its «T+…» after the run started. */
+  dueAt(at: string) {
+    return new Date(Date.parse(this.record.startedAt) + stepOffsetMs(at));
+  }
 }
+
+const savedStep = (step: PlannedStep) => ({
+  at: step.at,
+  files: [...step.files],
+  manual: step.manual,
+  newConversation: step.newConversation,
+  text: step.text,
+});
+
+const plannedSteps = (
+  saved: RunRecord["driver"]["remainingSteps"]
+): PlannedStep[] => saved.map((step) => ({ ...step, manual: step.manual }));
 
 /**
  * Reads a turn's events until its boundary. An authorization request parks
@@ -302,6 +351,8 @@ function newRecord(
         step.files.map((file) => ({ file: file.path, shows: file.shows }))
       ),
       host: settings.host,
+      observations: [],
+      paced: settings.paced,
       pendingInputs: [],
       remainingSteps: [],
       riskLevel: benchCase.riskLevel ?? null,
@@ -344,14 +395,17 @@ async function failRun(run: CaseRun, error: Error) {
  * Sends scripted messages in order, answering the cards the rules decide
  * after each. Stops at a question for the tester and keeps the steps still
  * to send, so `send --kind answer` can pick the script up after the answer.
- * Returns the session the last message went to, or undefined when the case
- * stopped.
+ * A paced run also stops before a step due later than `inlineWaitMs` from
+ * now and keeps it for `next`. Returns the session the last message went
+ * to, or undefined when the case stopped on a question.
  */
 async function sendSteps(
   run: CaseRun,
   client: Client,
   steps: readonly PlannedStep[],
   options: {
+    /** `next --early`: the first step goes now, whatever its «T+…». */
+    readonly early: boolean;
     /** Files and voice notes of the whole run go with its first message. */
     readonly extrasOnFirst: boolean;
     readonly session: ClientSession | undefined;
@@ -359,7 +413,27 @@ async function sendSteps(
 ) {
   let { session } = options;
   const { settings } = run;
+  run.deferred = undefined;
   for (const [index, step] of steps.entries()) {
+    const dueAt = run.dueAt(step.at);
+    const wait = dueAt.getTime() - Date.now();
+    if (
+      run.record.driver.paced &&
+      wait > 0 &&
+      !(options.early && index === 0)
+    ) {
+      if (wait > inlineWaitMs) {
+        run.deferred = { at: step.at, dueAt };
+        run.record.driver.remainingSteps = steps.slice(index).map(savedStep);
+        return session;
+      }
+      // oxlint-disable-next-line eslint/no-await-in-loop -- the log follows the script
+      await run.journal.line(
+        `== драйвер ждёт шаг «${step.at}» до ${isoWithOffset(dueAt, settings.timeZone)}`
+      );
+      // oxlint-disable-next-line eslint/no-await-in-loop -- a short «T+10мин» wait is kept in place
+      await sleep(wait);
+    }
     if (step.manual) {
       // oxlint-disable-next-line eslint/no-await-in-loop -- the log follows the script
       await run.journal.line(`   вручную (драйвер пропускает): ${step.manual}`);
@@ -387,13 +461,7 @@ async function sendSteps(
     });
     // oxlint-disable-next-line eslint/no-await-in-loop -- steps of one case are sequential
     await settleInputs(run, session);
-    run.record.driver.remainingSteps = steps.slice(index + 1).map((rest) => ({
-      at: rest.at,
-      files: [...rest.files],
-      manual: rest.manual,
-      newConversation: rest.newConversation,
-      text: rest.text,
-    }));
+    run.record.driver.remainingSteps = steps.slice(index + 1).map(savedStep);
     if (run.tracker.blocked()) {
       // oxlint-disable-next-line eslint/no-await-in-loop -- the case ends here
       await run.settle();
@@ -434,6 +502,7 @@ export async function runCase(
   }
   try {
     const session = await sendSteps(run, client, steps, {
+      early: true,
       extrasOnFirst: true,
       session: undefined,
     });
@@ -509,18 +578,11 @@ export async function continueCase(
       return run.record;
     }
     const remaining =
-      input.kind === "answer"
-        ? record.driver.remainingSteps.map((rest) => ({
-            at: rest.at,
-            files: rest.files,
-            manual: rest.manual,
-            newConversation: rest.newConversation,
-            text: rest.text,
-          }))
-        : [];
+      input.kind === "answer" ? plannedSteps(record.driver.remainingSteps) : [];
     const last =
       remaining.length > 0
         ? await sendSteps(run, client, remaining, {
+            early: false,
             extrasOnFirst: false,
             session,
           })
@@ -564,5 +626,263 @@ export async function followCase(
       error instanceof Error ? error : new Error(String(error))
     );
   }
+  return run.record;
+}
+
+/**
+ * Sends the scripted steps that are due now — «T+7д» a week after the run
+ * started — into the case's conversation, or into a new one where the
+ * script says «новый разговор», and stops again before a step due later.
+ * `early` sends the first remaining step at once.
+ */
+export async function nextCase(
+  client: Client,
+  record: RunRecord,
+  settings: DriverSettings,
+  options: { readonly early: boolean }
+) {
+  const steps = plannedSteps(record.driver.remainingSteps);
+  if (steps.length === 0) {
+    throw new Error(`${record.caseId}: every scripted step has been sent.`);
+  }
+  if (
+    record.driver.pendingInputs.some((request) => request.kind === "question")
+  ) {
+    throw new Error(
+      `${record.caseId}: Bro is waiting for the tester's answer first: pnpm bench send --kind answer --out ${settings.outDir} --case ${record.caseId} --text …`
+    );
+  }
+  const journal = new CaseJournal(
+    settings.outDir,
+    record.caseId,
+    settings.timeZone
+  );
+  const run = new CaseRun(journal, record, settings);
+  const cursor = record.driver.sessions.at(-1);
+  const session = cursor
+    ? client.sessions.attach(cursor.sessionId, {
+        streamIndex: cursor.streamIndex,
+      })
+    : undefined;
+  const turnsBefore = record.driver.turns.length;
+  try {
+    if (session) {
+      // Whatever Bro wrote since the driver last looked; `send` would skip it.
+      for await (const event of session.stream({ follow: false })) {
+        await run.observe(session, event);
+      }
+    }
+    const last = await sendSteps(run, client, steps, {
+      early: options.early,
+      extrasOnFirst: false,
+      session,
+    });
+    if (run.tracker.blocked()) return run.record;
+    // Background errands are waited for only after a message went out.
+    if (last && run.record.driver.turns.length > turnsBefore) {
+      await finishBackground(run, last);
+    }
+    await run.settle();
+  } catch (error) {
+    await failRun(
+      run,
+      error instanceof Error ? error : new Error(String(error))
+    );
+  }
+  return run.record;
+}
+
+/** Keeps what arrived: the time Bro sent it, by the tester's clock. */
+function noteArrival(
+  run: CaseRun,
+  observation: {
+    readonly at: Date;
+    readonly channel: ObservationChannel;
+    readonly sessionId: string | null;
+    readonly text: string;
+  }
+) {
+  const { timeZone } = run.settings;
+  run.record.driver.observations.push({
+    at: isoWithOffset(observation.at, timeZone),
+    channel: observation.channel,
+    night: isNight(observation.at, timeZone),
+    sessionId: observation.sessionId,
+    source: observation.sessionId === null ? "tester" : "stream",
+    text: observation.text,
+  });
+}
+
+/** A case's record to go on with, or a fresh one for a case only watched. */
+async function observationRun(
+  benchCase: BenchCase,
+  existing: RunRecord | undefined,
+  settings: DriverSettings,
+  notes: readonly string[]
+) {
+  const journal = new CaseJournal(
+    settings.outDir,
+    benchCase.id,
+    settings.timeZone
+  );
+  if (existing) return new CaseRun(journal, existing, settings);
+  await journal.open();
+  const run = new CaseRun(
+    journal,
+    newRecord(benchCase, settings, journal, [], notes),
+    settings
+  );
+  await journal.line(
+    `=== ${benchCase.id}: ${benchCase.title} (${settings.host}), наблюдение`
+  );
+  if (notes.length > 0) {
+    await journal.line(notes.map((note) => `   сценарий: ${note}`).join("\n"));
+  }
+  return run;
+}
+
+/**
+ * Watches a conversation for what Bro writes on its own — the flight of d10,
+ * the evening of d11, the 8:00 digest of d12 — and sends nothing. Every
+ * message is kept in `driver.observations` with the time Bro sent it, so a
+ * night message shows as one. A session the driver has not read before is
+ * read from `since`, not from its first message; one it has read goes on
+ * from its cursor, so running `observe` again the next morning catches up.
+ */
+export async function observeCase(
+  client: Client,
+  benchCase: BenchCase,
+  existing: RunRecord | undefined,
+  settings: DriverSettings,
+  options: {
+    readonly channel: ObservationChannel;
+    readonly durationMs: number;
+    readonly notes: readonly string[];
+    readonly sessionId: string | undefined;
+    readonly since: Date;
+  }
+) {
+  const run = await observationRun(
+    benchCase,
+    existing,
+    settings,
+    options.notes
+  );
+  const sessionId =
+    options.sessionId ?? run.record.driver.sessions.at(-1)?.sessionId;
+  if (!sessionId) {
+    throw new Error(
+      `${benchCase.id} has no conversation yet: name the one to watch with --session <id> (the id in /chat/<id>).`
+    );
+  }
+  const known = run.record.driver.sessions.find(
+    (cursor) => cursor.sessionId === sessionId
+  );
+  const session = client.sessions.attach(sessionId, {
+    streamIndex: known?.streamIndex ?? 0,
+  });
+  run.attach(session);
+  const until = new Date(Date.now() + options.durationMs);
+  // A case with scripted steps still due stays `scheduled`: watching it
+  // between steps must not hide what `next` has left to send.
+  const { status: before, statusDetail: beforeDetail } = run.record.driver;
+  const keepStatus =
+    before === "scheduled" && run.record.driver.remainingSteps.length > 0;
+  const saveWatch = () =>
+    keepStatus
+      ? run.save(before, beforeDetail)
+      : run.save(
+          "observing",
+          `наблюдение до ${isoWithOffset(until, settings.timeZone)}, сообщений: ${String(run.record.driver.observations.length)}; продолжить: pnpm bench observe --out ${settings.outDir} --case ${benchCase.id}`
+        );
+  const see = async (event: MessageStreamEvent) => {
+    await run.observe(session, event);
+    const text = deliveredText(event);
+    if (text === undefined) return;
+    noteArrival(run, {
+      at: new Date(event.meta.at),
+      channel: options.channel,
+      sessionId,
+      text,
+    });
+    await saveWatch();
+  };
+  await run.journal.line(
+    `== драйвер наблюдает за ${sessionId} до ${isoWithOffset(until, settings.timeZone)}, ничего не отправляя`
+  );
+  try {
+    for await (const event of session.stream({
+      follow: false,
+      startIndex: known ? session.state.streamIndex : 0,
+    })) {
+      if (known || Date.parse(event.meta.at) >= options.since.getTime()) {
+        await see(event);
+      }
+    }
+    // A stream gives up after a few idle reconnects; it is reopened until
+    // the watch ends.
+    while (Date.now() < until.getTime()) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => {
+        controller.abort();
+      }, until.getTime() - Date.now());
+      try {
+        // oxlint-disable-next-line eslint/no-await-in-loop -- one stream at a time, reopened in order
+        for await (const event of session.stream({
+          signal: controller.signal,
+        })) {
+          await see(event);
+        }
+      } catch (error) {
+        if (!controller.signal.aborted) throw error;
+      } finally {
+        clearTimeout(timer);
+      }
+      // oxlint-disable-next-line eslint/no-await-in-loop -- the cursor is kept after every reopen
+      await saveWatch();
+      // oxlint-disable-next-line eslint/no-await-in-loop -- a pause before reopening an idle stream
+      if (!controller.signal.aborted) await sleep(1000);
+    }
+    await saveWatch();
+  } catch (error) {
+    await failRun(
+      run,
+      error instanceof Error ? error : new Error(String(error))
+    );
+  }
+  return run.record;
+}
+
+/**
+ * Records a message the tester saw in a messenger the driver cannot read
+ * (`send --kind observed`): proactive messages go to the person's last
+ * Telegram or iMessage chat, not to the web chat.
+ */
+export async function noteObservation(
+  benchCase: BenchCase,
+  existing: RunRecord | undefined,
+  settings: DriverSettings,
+  observation: {
+    readonly at: Date;
+    readonly channel: ObservationChannel;
+    readonly notes: readonly string[];
+    readonly text: string;
+  }
+) {
+  const run = await observationRun(
+    benchCase,
+    existing,
+    settings,
+    observation.notes
+  );
+  noteArrival(run, { ...observation, sessionId: null });
+  await run.journal.line(
+    `== пришло в ${observation.channel} в ${isoWithOffset(observation.at, settings.timeZone)} (вставил тестировщик): ${observation.text}`
+  );
+  // A case only watched so far stays `observing`; any other keeps its state.
+  await run.save(
+    existing ? existing.driver.status : "observing",
+    existing ? existing.driver.statusDetail : null
+  );
   return run.record;
 }

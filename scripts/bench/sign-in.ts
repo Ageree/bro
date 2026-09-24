@@ -49,14 +49,19 @@ export async function verifySignInCode(
 }
 
 const sessionSchema = z
-  .object({ session: z.object({ expiresAt: z.coerce.date() }) })
+  .object({
+    session: z.object({ expiresAt: z.coerce.date() }),
+    user: z.object({ id: z.string().min(1) }),
+  })
   .nullable();
 
 /**
- * When the cookie's session expires. Throws when the site no longer knows
- * the session, so a run fails before its first message instead of on it.
+ * When the cookie's session expires, and whose it is: the Bro user id is
+ * what the tester's Google connection in Composio is filed under. Throws
+ * when the site no longer knows the session, so a run fails before its
+ * first message instead of on it.
  */
-export async function sessionExpiry(host: URL, cookie: string) {
+export async function signedInSession(host: URL, cookie: string) {
   const response = await fetch(new URL("/api/auth/get-session", host), {
     headers: { cookie, origin: host.origin },
     redirect: "manual",
@@ -69,5 +74,8 @@ export async function sessionExpiry(host: URL, cookie: string) {
       `${host.origin} does not know this session any more: sign in again with \`pnpm bench otp\` and \`pnpm bench verify\`.`
     );
   }
-  return session.data.session.expiresAt;
+  return {
+    expiresAt: session.data.session.expiresAt,
+    userId: session.data.user.id,
+  };
 }
