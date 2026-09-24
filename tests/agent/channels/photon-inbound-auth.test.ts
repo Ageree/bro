@@ -95,6 +95,22 @@ describe("Photon inbound authentication", () => {
     expect(capture.ensureUser).not.toHaveBeenCalled();
   });
 
+  it("ignores a group chat before it can open anyone's own session", async () => {
+    const group = threadContext("imessage:iMessage;+;chat123456789");
+
+    await expect(
+      onMessage(group, photonMessage("+15550100011"))
+    ).resolves.toBeNull();
+    await expect(
+      onMessage(
+        threadContext("imessage:any;-;+15550100011", { isDM: false }),
+        photonMessage("+15550100011")
+      )
+    ).resolves.toBeNull();
+    expect(capture.ensureUser).not.toHaveBeenCalled();
+    expect(capture.post).not.toHaveBeenCalled();
+  });
+
   it("drops messages whose phone number has no usable account", async () => {
     capture.ensureUser.mockResolvedValue(undefined);
 
@@ -219,12 +235,16 @@ type InboundContext = Parameters<
 >[0];
 
 interface ThreadIdentity {
-  readonly thread: Pick<InboundContext["thread"], "id" | "post">;
+  readonly thread: Pick<InboundContext["thread"], "id" | "post"> &
+    Partial<Pick<InboundContext["thread"], "isDM">>;
 }
 
-function threadContext(): InboundContext {
+function threadContext(
+  id = "imessage:iMessage;-;+15550100011",
+  options?: { readonly isDM?: boolean }
+): InboundContext {
   const identity: ThreadIdentity = {
-    thread: { id: "imessage:iMessage;-;+15550100011", post: capture.post },
+    thread: { id, ...options, post: capture.post },
   };
   // SAFETY: The inbound policy reads only the thread id and `post` from this context.
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- A complete Chat SDK thread mock would add unrelated methods.

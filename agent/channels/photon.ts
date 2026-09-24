@@ -212,6 +212,17 @@ export default photonIMessageChannel({
   },
   async onMessage(context, message) {
     if (message.author.isBot || message.author.isMe) return null;
+    // Bro works only in a person's own chat. In a group every member's number
+    // would open that member's session — mail, calendar, memory — and its
+    // answers would land in front of the whole group, so groups are ignored,
+    // as the Telegram channel does. Photon marks a direct chat GUID `;-;` and
+    // a group one `;+;`.
+    if (context.thread.isDM === false || context.thread.id.includes(";+;")) {
+      console.warn("[photon] ignoring a group chat message", {
+        threadId: context.thread.id,
+      });
+      return null;
+    }
 
     const auth = defaultPhotonAuth(message);
     const phoneNumber = normalizeAuthPhoneNumber(message.author.userName);
