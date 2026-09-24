@@ -42,11 +42,12 @@ vi.mock("@agent/channels/photon", () => ({
 vi.mock("@agent/lib/schedules/request", () => ({
   postScheduledReport: requests.report,
 }));
-// The credit check runs on the wall clock's tenth minutes; it has its own
-// tests and must not reach OpenRouter from these.
+// Every tick queues the credit check as a second background task, the way a
+// tenth-minute tick does, so each case proves the dispatch is awaited too.
+// The check itself has its own tests and never reaches OpenRouter here.
 vi.mock("@agent/lib/model/credits", () => ({
   checkOpenRouterCredits: vi.fn<() => Promise<void>>(() => Promise.resolve()),
-  creditCheckDue: () => false,
+  creditCheckDue: () => true,
 }));
 vi.mock("@agent/channels/scheduled-run", () => ({
   default: { channel: "scheduled-run" },
