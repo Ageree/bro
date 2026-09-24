@@ -1,61 +1,31 @@
-import type { ToolContext } from "eve/tools";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
+import {
+  composioToolContext,
+  type FakeComposio,
+  fakeComposio,
+} from "@tests/helpers/composio";
+
 vi.mock("@db/services/settings", () => ({
   getGoogleWorkspaceAccess: async () => "full",
 }));
 
-import { withGoogleAuth } from "@agent/lib/google-workspace/client";
+import {
+  GoogleApiError,
+  withGoogleAuth,
+} from "@agent/lib/google-workspace/client";
 
-function toolContext(requireAuth: ToolContext["requireAuth"]) {
-  return {
-    abortSignal: new AbortController().signal,
-    callId: "call-1",
-    async getSandbox() {
-      throw new Error("Sandbox access is outside this focused test.");
-    },
-    getSkill() {
-      throw new Error("Skill access is outside this focused test.");
-    },
-    async getToken() {
-      return { token: "ya29.token" };
-    },
-    requireAuth,
-    session: {
-      auth: {
-        current: {
-          attributes: { workspaceId: "personal:workspace" },
-          authenticator: "photon-imessage",
-          principalId: "user-1",
-          principalType: "user",
-        },
-        initiator: null,
-      },
-      id: "session-1",
-      turn: { id: "turn-1", sequence: 0 },
-    },
-    toolName: "drive-search",
-  } satisfies ToolContext;
-}
+const profileUrl = "https://gmail.googleapis.com/gmail/v1/users/me/profile";
 
-/** The JSON error body Google API calls answer with. */
-interface GoogleErrorBody {
-  error: {
-    code: number;
-    details?: { "@type": string; reason: string }[];
-    errors: { domain: string; reason: string }[];
-    message: string;
-    status?: string;
-  };
-}
+let composio: FakeComposio;
 
-/** The shape gaxios gives a failed Google API call. */
-function googleError(status: number, data: GoogleErrorBody | ArrayBuffer) {
-  return Object.assign(new Error(`Google answered ${String(status)}`), {
-    response: { data, status },
-  });
-}
+beforeEach(() => {
+  vi.clearAllMocks();
+  composio = fakeComposio();
+  composio.connect({ id: "ca_google", toolkit: "googlesuper" });
+});
 
-const insufficientScopeBody: GoogleErrorBody = {
+const insufficientScopeBody = {
   error: {
     code: 403,
     details: [
@@ -70,64 +40,107 @@ const insufficientScopeBody: GoogleErrorBody = {
   },
 };
 
-/** A Google call that fails with `error`. */
-function failWith(error: Error) {
-  return async function failingCall(): Promise<never> {
-    throw error;
-  };
-}
-
-async function callFailingWith(error: Error) {
-  const requireAuth = vi.fn<ToolContext["requireAuth"]>(() => {
-    throw new Error("authorization required");
-  });
+async function readProfile() {
+  const ctx = composioToolContext("ca_google");
   let outcome: unknown;
   try {
-    await withGoogleAuth(toolContext(requireAuth), failWith(error));
+    outcome = await withGoogleAuth(ctx, async (google) =>
+      google.json(z.object({ emailAddress: z.string() }), { url: profileUrl })
+    );
   } catch (cause) {
     outcome = cause;
   }
-  return { outcome, requireAuth };
+  return { ctx, outcome };
 }
 
 describe("withGoogleAuth", () => {
-  it("asks for consent again when the token was rejected", async () => {
-    const { requireAuth } = await callFailingWith(
-      googleError(401, {
-        error: { code: 401, errors: [], message: "Invalid Credentials" },
-      })
+  it("calls Google through Composio's proxy with the person's account", async () => {
+    composio.proxy.mockResolvedValue({
+      data: { emailAddress: "ada@example.com" },
+    });
+
+    const { ctx, outcome } = await readProfile();
+
+    expect(outcome).toEqual({ emailAddress: "ada@example.com" });
+    expect(ctx.getToken).toHaveBeenCalledWith(expect.anything(), {
+      authKey: "google-workspace",
+    });
+    const [request] = composio.proxy.mock.calls[0] ?? [];
+    expect(request?.connectedAccountId).toBe("ca_google");
+    expect(request?.method).toBe("GET");
+    expect(request?.url.toString()).toBe(profileUrl);
+    // Composio signs the call; Bro never holds or sends a Google token.
+    expect(request?.headers).toEqual({});
+    const [, init] = composio.fetch.mock.calls[0] ?? [];
+    expect(new Headers(init?.headers).get("x-api-key")).toBe(
+      "test-composio-key"
     );
-    expect(requireAuth).toHaveBeenCalledOnce();
+  });
+
+  it("asks for consent again when Google rejects the grant", async () => {
+    composio.proxy.mockResolvedValue({
+      data: {
+        error: { code: 401, errors: [], message: "Invalid Credentials" },
+      },
+      status: 401,
+    });
+
+    const { ctx } = await readProfile();
+
+    expect(ctx.requireAuth).toHaveBeenCalledOnce();
+    expect(ctx.requireAuth.mock.calls[0]?.[0]).toBe(
+      ctx.getToken.mock.calls[0]?.[0]
+    );
   });
 
   it("asks for consent again when the grant predates a scope", async () => {
-    const { outcome, requireAuth } = await callFailingWith(
-      googleError(403, insufficientScopeBody)
-    );
-    expect(requireAuth).toHaveBeenCalledOnce();
+    composio.proxy.mockResolvedValue({
+      data: insufficientScopeBody,
+      status: 403,
+    });
+
+    const { ctx, outcome } = await readProfile();
+
+    expect(ctx.requireAuth).toHaveBeenCalledOnce();
     expect(outcome).toEqual(new Error("authorization required"));
   });
 
-  it("reads the scope error from a download's byte body", async () => {
-    const bytes = new TextEncoder().encode(
-      JSON.stringify(insufficientScopeBody)
-    );
-    const { requireAuth } = await callFailingWith(
-      googleError(403, bytes.buffer)
-    );
-    expect(requireAuth).toHaveBeenCalledOnce();
+  it("reads the scope error from a body the proxy left as text", async () => {
+    composio.proxy.mockResolvedValue({
+      data: JSON.stringify(insufficientScopeBody),
+      status: 403,
+    });
+
+    const { ctx } = await readProfile();
+
+    expect(ctx.requireAuth).toHaveBeenCalledOnce();
+  });
+
+  it("asks for consent again when Composio no longer has the account", async () => {
+    composio.accounts.splice(0);
+
+    const { ctx } = await readProfile();
+
+    expect(ctx.requireAuth).toHaveBeenCalledOnce();
+    expect(composio.proxy).not.toHaveBeenCalled();
   });
 
   it("leaves a file the person cannot open as the call's own failure", async () => {
-    const fileError = googleError(403, {
-      error: {
-        code: 403,
-        errors: [{ domain: "global", reason: "insufficientFilePermissions" }],
-        message: "The user does not have sufficient permissions for file.",
+    composio.proxy.mockResolvedValue({
+      data: {
+        error: {
+          code: 403,
+          errors: [{ domain: "global", reason: "insufficientFilePermissions" }],
+          message: "The user does not have sufficient permissions for file.",
+        },
       },
+      status: 403,
     });
-    const { outcome, requireAuth } = await callFailingWith(fileError);
-    expect(requireAuth).not.toHaveBeenCalled();
-    expect(outcome).toBe(fileError);
+
+    const { ctx, outcome } = await readProfile();
+
+    expect(ctx.requireAuth).not.toHaveBeenCalled();
+    expect(outcome).toBeInstanceOf(GoogleApiError);
+    expect(outcome).toMatchObject({ status: 403 });
   });
 });

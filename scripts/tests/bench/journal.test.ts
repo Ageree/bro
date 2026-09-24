@@ -26,6 +26,8 @@ function recordFor(journal: CaseJournal, promptSent: string): RunRecord {
       decisions: [],
       fixtures: [],
       host: "http://127.0.0.1:9",
+      observations: [],
+      paced: false,
       pendingInputs: [],
       remainingSteps: [],
       riskLevel: null,

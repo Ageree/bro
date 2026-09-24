@@ -1,80 +1,76 @@
-import type * as DrivePackage from "@googleapis/drive";
-import type { ToolContext } from "eve/tools";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { accessScopeForUser } from "@shared/identity/access-scope";
-
-const google = vi.hoisted(() => ({
-  list: vi.fn<
-    (request: {
-      readonly orderBy?: string;
-      readonly pageSize: number;
-      readonly pageToken?: string;
-      readonly q: string;
-    }) => Promise<{
-      data: {
-        files: { id: string; modifiedTime: string; name: string }[];
-        nextPageToken?: string;
-      };
-    }>
-  >(),
-}));
+import {
+  composioToolContext,
+  type FakeComposio,
+  fakeComposio,
+} from "@tests/helpers/composio";
 
 vi.mock("@db/services/settings", () => ({
   getGoogleWorkspaceAccess: async () => "read_only",
 }));
 
-vi.mock("@googleapis/drive", async (importOriginal) => ({
-  ...(await importOriginal<typeof DrivePackage>()),
-  drive: () => ({ files: { list: google.list } }),
-}));
-
 import { searchDrive } from "@agent/lib/google-workspace/drive";
 
-const scope = accessScopeForUser("better-auth:user-1");
+let composio: FakeComposio;
+
+const threeFiles = {
+  files: [
+    { id: "old", modifiedTime: "2025-07-07T13:56:37.000Z", name: "a.pdf" },
+    { id: "new", modifiedTime: "2025-07-07T14:18:41.000Z", name: "b.pdf" },
+    { id: "mid", modifiedTime: "2025-07-07T14:03:21.000Z", name: "c.pdf" },
+  ],
+};
 
 beforeEach(() => {
   vi.clearAllMocks();
-  google.list.mockResolvedValue({
-    data: {
-      files: [
-        { id: "old", modifiedTime: "2025-07-07T13:56:37.000Z", name: "a.pdf" },
-        { id: "new", modifiedTime: "2025-07-07T14:18:41.000Z", name: "b.pdf" },
-        { id: "mid", modifiedTime: "2025-07-07T14:03:21.000Z", name: "c.pdf" },
-      ],
-    },
+  composio = fakeComposio();
+  composio.connect({
+    authConfigId: "ac_google_read_only",
+    id: "ca_google",
+    toolkit: "googlesuper",
   });
+  composio.proxy.mockResolvedValue({ data: threeFiles });
 });
+
+/** The query string of the n-th Drive list call. */
+function listQuery(call = 0) {
+  const url = composio.proxy.mock.calls[call]?.[0].url;
+  expect(url?.pathname).toBe("/drive/v3/files");
+  return url?.searchParams;
+}
 
 describe("searchDrive", () => {
   it("lists the newest files of a kind through Drive's own ordering", async () => {
-    await searchDrive(toolContext(), { kind: "pdf", maxResults: 5 });
+    await searchDrive(composioToolContext("ca_google"), {
+      kind: "pdf",
+      maxResults: 5,
+    });
 
-    expect(google.list).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({
-        orderBy: "modifiedTime desc",
-        pageSize: 5,
-        q: "trashed = false and mimeType = 'application/pdf'",
-      }),
-      expect.anything()
+    expect(composio.proxy).toHaveBeenCalledOnce();
+    const query = listQuery();
+    expect(query?.get("orderBy")).toBe("modifiedTime desc");
+    expect(query?.get("pageSize")).toBe("5");
+    expect(query?.get("q")).toBe(
+      "trashed = false and mimeType = 'application/pdf'"
     );
   });
 
   it("searches words without orderBy, which Drive refuses with fullText", async () => {
-    await searchDrive(toolContext(), {
+    await searchDrive(composioToolContext("ca_google"), {
       kind: "pdf",
       maxResults: 10,
       query: "O'Brien",
     });
 
-    const [request] = google.list.mock.calls[0] ?? [];
-    expect(request?.orderBy).toBeUndefined();
-    expect(request?.q).toBe(
+    const query = listQuery();
+    expect(query?.has("orderBy")).toBe(false);
+    expect(query?.get("q")).toBe(
       "trashed = false and (name contains 'O\\'Brien' or fullText contains 'O\\'Brien') and mimeType = 'application/pdf'"
     );
   });
 
   it("returns the files newest first", async () => {
-    const files = await searchDrive(toolContext(), {
+    const files = await searchDrive(composioToolContext("ca_google"), {
       maxResults: 10,
       query: "pdf",
     });
@@ -83,7 +79,7 @@ describe("searchDrive", () => {
   });
 
   it("sorts every page of a word search before keeping the newest", async () => {
-    google.list
+    composio.proxy
       .mockResolvedValueOnce({
         data: {
           files: [
@@ -100,49 +96,15 @@ describe("searchDrive", () => {
         },
       });
 
-    const files = await searchDrive(toolContext(), {
+    const files = await searchDrive(composioToolContext("ca_google"), {
       maxResults: 1,
       query: "отчёт",
     });
 
     expect(files.map(({ id }) => id)).toEqual(["new"]);
-    expect(google.list).toHaveBeenCalledTimes(2);
-    expect(google.list.mock.calls[1]?.[0]).toMatchObject({
-      pageSize: 100,
-      pageToken: "page-2",
-    });
+    expect(composio.proxy).toHaveBeenCalledTimes(2);
+    const second = listQuery(1);
+    expect(second?.get("pageSize")).toBe("100");
+    expect(second?.get("pageToken")).toBe("page-2");
   });
 });
-
-function toolContext() {
-  return {
-    abortSignal: new AbortController().signal,
-    callId: "call-1",
-    async getSandbox() {
-      throw new Error("Sandbox access is outside this focused test.");
-    },
-    getSkill() {
-      throw new Error("Skill access is outside this focused test.");
-    },
-    async getToken() {
-      return { token: "google-access-token" };
-    },
-    requireAuth() {
-      throw new Error("Authorization is outside this focused test.");
-    },
-    session: {
-      auth: {
-        current: {
-          attributes: { workspaceId: scope.workspaceId },
-          authenticator: "drive-search-test",
-          principalId: scope.userId,
-          principalType: "user",
-        },
-        initiator: null,
-      },
-      id: "session-1",
-      turn: { id: "turn-1", sequence: 0 },
-    },
-    toolName: "drive-search",
-  } satisfies ToolContext;
-}

@@ -12,6 +12,7 @@ import {
 } from "@agent/lib/google-workspace/calendar";
 import { googleWriteApproval } from "@agent/lib/google-workspace/client";
 import { resolveModeValue } from "@agent/lib/mode";
+import { googleWorkspaceConfigured } from "@shared/google-workspace/connection";
 
 export const calendarListEvents = defineTool({
   description:
@@ -84,21 +85,23 @@ export const calendarDeleteEvent = defineTool({
 export default defineDynamic({
   events: {
     "turn.started": (_event, context) =>
-      resolveModeValue(context, {
-        interactive: {
-          "calendar-check-availability": calendarCheckAvailability,
-          "calendar-create-event": calendarCreateEvent,
-          "calendar-delete-event": calendarDeleteEvent,
-          "calendar-list-events": calendarListEvents,
-          "calendar-update-event": calendarUpdateEvent,
-        },
-        "proactive-worker": {
-          "calendar-list-events": calendarListEvents,
-        },
-        "scheduled-worker": {
-          "calendar-check-availability": calendarCheckAvailability,
-          "calendar-list-events": calendarListEvents,
-        },
-      }),
+      googleWorkspaceConfigured()
+        ? resolveModeValue(context, {
+            interactive: {
+              "calendar-check-availability": calendarCheckAvailability,
+              "calendar-create-event": calendarCreateEvent,
+              "calendar-delete-event": calendarDeleteEvent,
+              "calendar-list-events": calendarListEvents,
+              "calendar-update-event": calendarUpdateEvent,
+            },
+            "proactive-worker": {
+              "calendar-list-events": calendarListEvents,
+            },
+            "scheduled-worker": {
+              "calendar-check-availability": calendarCheckAvailability,
+              "calendar-list-events": calendarListEvents,
+            },
+          })
+        : null,
   },
 });

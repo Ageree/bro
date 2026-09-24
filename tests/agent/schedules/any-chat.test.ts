@@ -243,13 +243,10 @@ describe("schedules belong to the person, not the chat", () => {
       )
     ).rejects.toThrow("That scheduled task is not waiting for input.");
     // Nor can a chat the question never reached, or a model answering
-    // without it.
-    await expect(
-      (await answerInChat(alice, run.id, { shown: false })).execute(
-        { answer: "DCA", runId: run.id },
-        toolContext("schedules-answer", alice, web, "authjs")
-      )
-    ).rejects.toThrow("is not a reply to that scheduled task's question");
+    // without it: there the tool is not even offered.
+    await expect(answerInChat(alice, run.id, { shown: false })).rejects.toThrow(
+      "Expected the schedules-answer tool."
+    );
 
     const respond = vi
       .fn<Session["respond"]>()

@@ -32,12 +32,14 @@ describe("environment", () => {
     expect(env).toMatchObject(requiredEnvironment);
   });
 
-  it("provides the Google connector default without enabling iMessage", async () => {
-    vi.stubEnv("GOOGLE_CONNECTOR_UID", "");
+  it("leaves Composio and iMessage off when they are not set", async () => {
+    vi.stubEnv("COMPOSIO_API_KEY", "");
+    vi.stubEnv("COMPOSIO_GOOGLE_AUTH_CONFIG_ID", "");
 
     const { env } = await import("@shared/environment");
 
-    expect(env.GOOGLE_CONNECTOR_UID).toBe("google/open-instinct");
+    expect(env.COMPOSIO_API_KEY).toBeUndefined();
+    expect(env.COMPOSIO_GOOGLE_AUTH_CONFIG_ID).toBeUndefined();
     expect(env.IMESSAGE_PROJECT_ID).toBeUndefined();
     expect(env.IMESSAGE_PROJECT_SECRET).toBeUndefined();
     expect(env.IMESSAGE_WEBHOOK_SECRET).toBeUndefined();
@@ -79,8 +81,10 @@ describe("environment", () => {
     }
   );
 
-  it("accepts connector and Photon project overrides", async () => {
-    vi.stubEnv("GOOGLE_CONNECTOR_UID", "google/custom");
+  it("accepts Composio and Photon project settings", async () => {
+    // A key pasted with a line break would break the header it travels in.
+    vi.stubEnv("COMPOSIO_API_KEY", "ak_test\nkey ");
+    vi.stubEnv("COMPOSIO_GOOGLE_AUTH_CONFIG_ID", " ac_custom ");
     vi.stubEnv("IMESSAGE_PROJECT_ID", "photon-project");
     vi.stubEnv("IMESSAGE_PROJECT_SECRET", "photon-secret");
     vi.stubEnv("IMESSAGE_WEBHOOK_SECRET", "photon-webhook-secret");
@@ -88,7 +92,8 @@ describe("environment", () => {
 
     const { env } = await import("@shared/environment");
 
-    expect(env.GOOGLE_CONNECTOR_UID).toBe("google/custom");
+    expect(env.COMPOSIO_API_KEY).toBe("ak_testkey");
+    expect(env.COMPOSIO_GOOGLE_AUTH_CONFIG_ID).toBe("ac_custom");
     expect(env.IMESSAGE_PROJECT_ID).toBe("photon-project");
     expect(env.IMESSAGE_PROJECT_SECRET).toBe("photon-secret");
     expect(env.IMESSAGE_WEBHOOK_SECRET).toBe("photon-webhook-secret");

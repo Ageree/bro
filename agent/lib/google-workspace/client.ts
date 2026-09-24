@@ -1,70 +1,49 @@
 import { setTimeout } from "node:timers/promises";
-import { auth } from "@googleapis/gmail";
-import type {
-  ConnectAuthorizationOptions,
-  ConnectOptions,
-} from "@vercel/connect";
-import { connect, type EveAuthorizationOptions } from "@vercel/connect/eve";
 import type { ConnectionPrincipal } from "eve/connections";
 import type { SessionContext } from "eve/context";
 import type { ToolContext } from "eve/tools";
 import type { ApprovalStatus } from "eve/tools/approval";
 import { z } from "zod";
+import { composioAuthorization } from "@agent/lib/composio/authorization";
+import { composioProxy, proxyBodyBytes } from "@agent/lib/composio/proxy";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { wakeProactiveWatch } from "@db/services/proactive";
 import { getGoogleWorkspaceAccess } from "@db/services/settings";
-import { env } from "@shared/environment";
+import { ComposioError, isMissingConnectedAccount } from "@shared/composio/api";
 import {
   type GoogleWorkspaceAccess,
-  googleWorkspaceConsentPrompt,
-  googleWorkspaceSubject,
-  googleWorkspaceScopes,
-  warnWhenGrantCannotRefresh,
+  googleWorkspaceAuthConfigId,
 } from "@shared/google-workspace/connection";
 
-// The eve adapter spreads `connectOptions` into `startAuthorization`, so the
-// consent prompt reaches the chat's sign-in card too; its `getToken` calls
-// ignore the field.
-const googleWorkspaceConnectOptions: ConnectOptions &
-  Pick<ConnectAuthorizationOptions, "prompt"> = {
-  prompt: googleWorkspaceConsentPrompt,
-};
-
-export function googleWorkspaceAuthOptions(access: GoogleWorkspaceAccess) {
-  return {
-    connectOptions: googleWorkspaceConnectOptions,
-    connector: env.GOOGLE_CONNECTOR_UID,
-    createSubject(principal) {
-      if (principal.type !== "user") {
-        throw new Error("Google Workspace requires an authenticated Bro user.");
-      }
-      return googleWorkspaceSubject(principal.id);
-    },
-    tokenParams: { scopes: [...googleWorkspaceScopes[access]] },
-    validate: true,
-  } satisfies EveAuthorizationOptions;
-}
+/**
+ * eve's auth-flow key per level: a pending sign-in or cached account at one
+ * level is never served for the other.
+ */
+const googleWorkspaceAuthKeys = {
+  full: "google-workspace",
+  read_only: "google-workspace-read-only",
+} satisfies Record<GoogleWorkspaceAccess, string>;
 
 /**
- * The eve provider for one access level. A person who signs in from the
- * chat card never opens the cabinet, so the grant's offline check runs right
- * after authorization completes; it is not awaited and only logs. The same
- * moment wakes Bro's own mail and calendar checks, which a missing grant had
- * put off for hours.
+ * The eve authorization for one Google access level: the person's active
+ * `googlesuper` account under that level's Composio auth config. A person
+ * who connects from the chat card never opens the cabinet, so finishing
+ * consent wakes Bro's own mail and calendar checks, which a missing grant
+ * had put off for hours.
  */
 export function googleWorkspaceProvider(access: GoogleWorkspaceAccess) {
-  const provider = connect(googleWorkspaceAuthOptions(access));
-  return {
-    ...provider,
-    async completeAuthorization(
-      input: Parameters<typeof provider.completeAuthorization>[0]
-    ) {
-      const result = await provider.completeAuthorization(input);
-      void warnWhenGrantCannotRefresh(result.token);
-      await wakeProactiveChecks(input.principal);
-      return result;
+  return composioAuthorization({
+    accounts: {
+      authConfigId: async () => googleWorkspaceAuthConfigId(access),
+      async filter() {
+        const authConfigId = googleWorkspaceAuthConfigId(access);
+        return authConfigId ? { authConfigIds: [authConfigId] } : undefined;
+      },
     },
-  };
+    authKey: googleWorkspaceAuthKeys[access],
+    displayName: "Google",
+    onConnected: wakeProactiveChecks,
+  });
 }
 
 async function wakeProactiveChecks(principal: ConnectionPrincipal) {
@@ -73,7 +52,7 @@ async function wakeProactiveChecks(principal: ConnectionPrincipal) {
   try {
     await wakeProactiveWatch(scopeFromPrincipal(principal));
   } catch (error) {
-    // The grant is stored either way; the checks come back on their own.
+    // The account is connected either way; the checks come back on their own.
     console.warn("[proactive] could not wake the checks after connect", {
       cause: error,
     });
@@ -84,13 +63,6 @@ const googleWorkspaceAuth = {
   full: googleWorkspaceProvider("full"),
   read_only: googleWorkspaceProvider("read_only"),
 };
-
-// Both providers share one connector, so the read-only one carries its own
-// key: a token cached for one scope set is never served for the other.
-const googleWorkspaceAuthKeys = {
-  full: undefined,
-  read_only: "google-workspace-read-only",
-} satisfies Record<GoogleWorkspaceAccess, string | undefined>;
 
 /** The Google access level of the workspace this session acts for. */
 export async function googleWorkspaceAccess(
@@ -103,8 +75,29 @@ export async function googleWorkspaceAccess(
   return getGoogleWorkspaceAccess(scopeFromPrincipal(caller));
 }
 
+/**
+ * The person's own Google connected account for this session's level, the
+ * sign-in card when there is none. Other tools that act on the same Google
+ * connection (Sheets and Docs through `apps`) take it from here.
+ */
+export async function googleConnectedAccount(ctx: ToolContext) {
+  const access = await googleWorkspaceAccess(ctx);
+  const provider = googleWorkspaceAuth[access];
+  const options = { authKey: googleWorkspaceAuthKeys[access] };
+  const { token } = await ctx.getToken(provider, options);
+  return {
+    connectedAccountId: token,
+    requireAuth: () => ctx.requireAuth(provider, options),
+  };
+}
+
+/**
+ * What the model reads when a Google write meets a read-only workspace. The
+ * person chose read-only on purpose: the refusal says the action is not
+ * available and leaves widening the access to the person.
+ */
 export const googleReadOnlyWriteRefusal =
-  "Google подключён только на чтение: Бро видит почту, календарь и контакты, но ничего не отправляет, не сохраняет черновики и не меняет. Скажи человеку это прямо. Чтобы разрешить действие, он переподключает Google с полным доступом: connect_google с access `full` или кнопка в кабинете.";
+  "Не сделано: Google подключён только на чтение, и в этом режиме Бро ничего не отправляет, не сохраняет черновики и не меняет в почте, календаре, контактах и документах. Скажи человеку прямо, что в режиме только чтения это действие недоступно, и сделай то, что можно без записи (например, дай готовый текст, чтобы он отправил сам). Не предлагай и не уговаривай перейти на полный доступ: человек сам выбрал «только чтение». Полный доступ подключай (connect_google с access `full`), только если человек сам об этом попросит.";
 
 /**
  * Approval decision for a Google write. A read-only workspace is refused
@@ -140,58 +133,6 @@ export class GoogleRateLimitError extends Error {
   }
 }
 
-/**
- * Waits before each retry of a rate-limited call. Gmail's per-user limit is
- * per second, so a short pause usually clears it; a longer one would only hold
- * the step while the model waits.
- */
-const rateLimitBackoffMs = [1_000, 3_000] as const;
-
-export async function withGoogleAuth<T>(
-  ctx: ToolContext,
-  execute: (authClient: InstanceType<typeof auth.OAuth2>) => Promise<T>
-) {
-  const access = await googleWorkspaceAccess(ctx);
-  const provider = googleWorkspaceAuth[access];
-  const authKey = googleWorkspaceAuthKeys[access];
-  const options = authKey ? { authKey } : undefined;
-  const { token } = await ctx.getToken(provider, options);
-  const authClient = new auth.OAuth2();
-  authClient.setCredentials({ access_token: token });
-
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      // oxlint-disable-next-line eslint/no-await-in-loop -- Each retry waits for the one before it.
-      return await execute(authClient);
-    } catch (error) {
-      // A grant from before a scope joined `googleWorkspaceScopes` still yields
-      // a token, and Google answers it with 403 rather than 401; both mean the
-      // person has to consent again. A read-only workspace never reaches a
-      // write call, so its scope 403s are stale grants too.
-      if (
-        googleApiErrorStatus(error) === 401 ||
-        isInsufficientScopeError(error)
-      ) {
-        ctx.requireAuth(provider, options);
-      }
-      if (!isGoogleRateLimit(error)) throw error;
-      const delay = rateLimitBackoffMs[attempt];
-      if (delay === undefined) throw new GoogleRateLimitError({ cause: error });
-      // oxlint-disable-next-line eslint/no-await-in-loop -- Backing off is the point.
-      await setTimeout(delay, undefined, { signal: ctx.abortSignal });
-    }
-  }
-}
-
-const googleApiErrorSchema = z.object({
-  response: z.object({ status: z.number() }),
-});
-
-export function googleApiErrorStatus(cause: unknown) {
-  const result = googleApiErrorSchema.safeParse(cause);
-  return result.success ? result.data.response.status : undefined;
-}
-
 const reasonsSchema = z
   .array(z.object({ reason: z.string().optional() }))
   .default([]);
@@ -205,38 +146,171 @@ const googleErrorBodySchema = z.object({
   }),
 });
 
-const errorResponseSchema = z.object({
-  response: z.object({ data: z.unknown() }),
+/** A text body that may hold JSON, such as an error the proxy left unparsed. */
+const jsonTextSchema = z.string().transform((text) => {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    parsed = undefined;
+  }
+  return parsed;
 });
 
 /**
- * The parsed error body of a failed call, or nothing. A download requested as
- * `arraybuffer` gets its error body as bytes too.
+ * Google's error body as the proxy passes it on: parsed JSON, or text such
+ * as an HTML error page, which yields nothing.
  */
-function googleErrorBody(cause: unknown) {
-  const data = errorResponseSchema.safeParse(cause).data?.response.data;
-  const text =
-    data instanceof ArrayBuffer
-      ? new TextDecoder().decode(data)
-      : z.string().safeParse(data).data;
-  let body: unknown = data;
-  if (text !== undefined) {
-    try {
-      body = JSON.parse(text);
-    } catch {
-      return undefined;
-    }
+const googleErrorSchema = z.union([
+  googleErrorBodySchema,
+  jsonTextSchema.pipe(googleErrorBodySchema),
+]);
+
+type GoogleErrorDetails = z.output<typeof googleErrorBodySchema>["error"];
+
+/** A Google API call Google answered with an error status. */
+export class GoogleApiError extends Error {
+  override readonly name = "GoogleApiError";
+  /** Google's own error, when its body said one. */
+  readonly error: GoogleErrorDetails | undefined;
+  readonly status: number;
+
+  constructor(status: number, error: GoogleErrorDetails | undefined) {
+    super(
+      `Google answered ${String(status)}${error?.message ? `: ${error.message}` : "."}`
+    );
+    this.error = error;
+    this.status = status;
   }
-  return googleErrorBodySchema.safeParse(body).data?.error;
 }
 
-function errorReasons(error: NonNullable<ReturnType<typeof googleErrorBody>>) {
+type GoogleMethod = "DELETE" | "GET" | "PATCH" | "POST" | "PUT";
+
+type QueryValue = boolean | number | string | readonly string[] | undefined;
+
+/**
+ * An absolute Google API URL with its query string; a list value repeats its
+ * parameter, as `metadataHeaders` needs.
+ */
+export function googleUrl(
+  base: string,
+  path: string,
+  query: Readonly<Record<string, QueryValue>> = {}
+) {
+  const url = new URL(`${base}${path}`);
+  for (const [name, value] of Object.entries(query)) {
+    if (value === undefined) continue;
+    for (const item of Array.isArray(value) ? value : [value]) {
+      url.searchParams.append(name, String(item));
+    }
+  }
+  return url.toString();
+}
+
+/**
+ * Google's REST APIs for one connected account, called through Composio's
+ * proxy. A non-2xx answer throws {@link GoogleApiError}.
+ */
+export function googleClient(connectedAccountId: string, signal: AbortSignal) {
+  async function send(request: {
+    readonly body?: object;
+    readonly method?: GoogleMethod;
+    readonly url: string;
+  }) {
+    const response = await composioProxy(connectedAccountId, {
+      body: request.body,
+      method: request.method ?? "GET",
+      signal,
+      url: request.url,
+    });
+    if (response.status < 200 || response.status >= 300) {
+      throw new GoogleApiError(
+        response.status,
+        googleErrorSchema.safeParse(response.data).data?.error
+      );
+    }
+    return response;
+  }
+  return {
+    /** A JSON call, its answer checked against `schema`. */
+    async json<Schema extends z.ZodType>(
+      schema: Schema,
+      request: Parameters<typeof send>[0]
+    ): Promise<z.output<Schema>> {
+      const response = await send(request);
+      return schema.parse(response.data ?? {});
+    },
+    /** A download (Drive media or export) as bytes within `maxBytes`. */
+    async download(url: string, maxBytes: number) {
+      return proxyBodyBytes(await send({ url }), maxBytes, signal);
+    },
+  };
+}
+
+export type GoogleClient = ReturnType<typeof googleClient>;
+
+/**
+ * Waits before each retry of a rate-limited call. Gmail's per-user limit is
+ * per second, so a short pause usually clears it; a longer one would only hold
+ * the step while the model waits.
+ */
+const rateLimitBackoffMs = [1_000, 3_000] as const;
+
+/**
+ * Runs Google calls for the person behind this tool call. A rejected grant —
+ * a 401, a grant without a scope the call needs, an account Composio no
+ * longer has — shows the sign-in card again; a rate or quota refusal is
+ * retried after a short wait and then reported as such.
+ */
+export async function withGoogleAuth<T>(
+  ctx: ToolContext,
+  execute: (client: GoogleClient) => Promise<T>
+) {
+  const { connectedAccountId, requireAuth } = await googleConnectedAccount(ctx);
+  const client = googleClient(connectedAccountId, ctx.abortSignal);
+
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Each retry waits for the one before it.
+      return await execute(client);
+    } catch (error) {
+      // A grant from before a scope joined the auth config still works, and
+      // Google answers it with 403 rather than 401; both mean the person has
+      // to consent again. A read-only workspace never reaches a write call,
+      // so its scope 403s are stale grants too.
+      if (
+        googleApiErrorStatus(error) === 401 ||
+        isInsufficientScopeError(error) ||
+        isMissingConnectedAccount(error)
+      ) {
+        requireAuth();
+      }
+      if (!isGoogleRateLimit(error)) throw error;
+      const delay = rateLimitBackoffMs[attempt];
+      if (delay === undefined) throw new GoogleRateLimitError({ cause: error });
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Backing off is the point.
+      await setTimeout(delay, undefined, { signal: ctx.abortSignal });
+    }
+  }
+}
+
+/** The status Google answered a failed call with, or nothing. */
+export function googleApiErrorStatus(cause: unknown) {
+  return cause instanceof GoogleApiError ? cause.status : undefined;
+}
+
+/** The parsed error of a failed Google call, or nothing. */
+function googleErrorBody(cause: unknown) {
+  return cause instanceof GoogleApiError ? cause.error : undefined;
+}
+
+function errorReasons(error: GoogleErrorDetails) {
   return [...error.errors, ...error.details].flatMap(({ reason }) =>
     reason === undefined ? [] : [reason]
   );
 }
 
-/** The reasons Google gives a token that lacks a scope the call needs. */
+/** The reasons Google gives a grant that lacks a scope the call needs. */
 const insufficientScopeReasons = new Set([
   "ACCESS_TOKEN_SCOPE_INSUFFICIENT",
   "insufficientPermissions",
@@ -261,11 +335,13 @@ const rateLimitReasons = new Set([
 ]);
 
 /**
- * Whether Google refused for rate or quota: always a 429, and a 403 whose
- * reason or message says so. Other 403s — a missing scope, a disabled API —
- * are real refusals and are not retried.
+ * Whether the call was refused for rate or quota: Google's 429 and a 403
+ * whose reason or message says so, or Composio throttling the proxy itself.
+ * Other 403s — a missing scope, a disabled API — are real refusals and are
+ * not retried.
  */
 export function isGoogleRateLimit(cause: unknown) {
+  if (cause instanceof ComposioError) return cause.status === 429;
   const status = googleApiErrorStatus(cause);
   if (status === 429) return true;
   if (status !== 403) return false;

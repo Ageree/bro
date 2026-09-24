@@ -84,6 +84,9 @@ const browserUseApiKeySchema = z
 // failure mode when a pasted newline survives into the environment.
 const openRouterApiKeySchema = browserUseApiKeySchema;
 
+// A Composio project key goes out as a header as well.
+const composioApiKeySchema = browserUseApiKeySchema;
+
 export const env = createEnv({
   server: {
     // Required
@@ -155,6 +158,16 @@ export const env = createEnv({
       )
       .default("ru"),
     BROWSER_USE_WEBHOOK_SECRET: requiredValue.optional(),
+    // Composio keeps each person's Google, Notion and Slack grants and calls
+    // those APIs for Bro; without the key every integration is absent. The
+    // auth config ids name the project's OAuth setups per app (see
+    // docs/dev-notes.md); a read-only Google level without its own config
+    // falls back to the full one and is held by Bro's own refusals.
+    COMPOSIO_API_KEY: composioApiKeySchema.optional(),
+    COMPOSIO_GOOGLE_AUTH_CONFIG_ID: trimmedValue.optional(),
+    COMPOSIO_GOOGLE_READ_ONLY_AUTH_CONFIG_ID: trimmedValue.optional(),
+    COMPOSIO_NOTION_AUTH_CONFIG_ID: trimmedValue.optional(),
+    COMPOSIO_SLACK_AUTH_CONFIG_ID: trimmedValue.optional(),
     // Which Drizzle driver `db/index.ts` builds. Deployments keep the pooled
     // TCP client; `neon-http` exists for a maintenance run from a machine that
     // can only reach the database over HTTPS.
@@ -173,7 +186,6 @@ export const env = createEnv({
       .positive()
       .default(10),
     FREE_MESSAGES_PER_DAY: z.coerce.number().int().positive().default(30),
-    GOOGLE_CONNECTOR_UID: requiredValue.default("google/open-instinct"),
     IMESSAGE_PHONE_NUMBER: requiredValue
       .refine(
         (value) => isE164PhoneNumber(value),
@@ -186,9 +198,6 @@ export const env = createEnv({
     NODE_ENV: z
       .enum(["development", "production", "test"])
       .default("production"),
-    // Vercel Connect connectors for the person's own Notion and Slack
-    // (see docs/dev-notes.md for how each is set up).
-    NOTION_CONNECTOR_UID: requiredValue.default("notion"),
     // OpenRouter replaces AI Gateway routing whenever its key is present.
     OPENROUTER_API_KEY: openRouterApiKeySchema.optional(),
     // The balance check alerts the owner below this many dollars of
@@ -202,10 +211,10 @@ export const env = createEnv({
     // `generate_image` draws and edits pictures through OpenRouter's Image API
     // with the same key; the model has to accept reference images.
     OPENROUTER_IMAGE_MODEL: trimmedValue.default(
-      "google/gemini-3.1-flash-image"
+      "google/gemini-3.1-flash-lite-image"
     ),
     OPENROUTER_MANAGEMENT_KEY: openRouterApiKeySchema.optional(),
-    OPENROUTER_MODEL: trimmedValue.default("openai/gpt-6-luna"),
+    OPENROUTER_MODEL: trimmedValue.default("deepseek/deepseek-v4.1-flash"),
     OPENROUTER_MODEL_CONTEXT_TOKENS: z.coerce
       .number()
       .int()
@@ -241,7 +250,6 @@ export const env = createEnv({
     PAID_MESSAGES_PER_DAY: z.coerce.number().int().positive().default(500),
     // One month of paid access, in whole roubles.
     PRICE_RUB: z.coerce.number().int().positive().default(2000),
-    SLACK_CONNECTOR_UID: requiredValue.default("slack"),
     TELEGRAM_BOT_TOKEN: requiredValue.optional(),
     TELEGRAM_BOT_USERNAME: requiredValue
       .refine(

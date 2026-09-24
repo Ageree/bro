@@ -33,6 +33,8 @@ type TurnReadLimits = (typeof turnReadLimits)[keyof typeof turnReadLimits];
  * calendar change mails invitations or cancellations.
  */
 const googleWriteTools = new Set([
+  // A Sheets or Docs edit through `apps` changes what drive-read returns.
+  "apps",
   "calendar-create-event",
   "calendar-delete-event",
   "calendar-update-event",

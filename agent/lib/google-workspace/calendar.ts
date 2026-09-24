@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
-import { calendar, type calendar_v3 } from "@googleapis/calendar";
 import type { ToolContext } from "eve/tools";
 import { z } from "zod";
-import { googleApiErrorStatus, withGoogleAuth } from "./client";
+import { googleApiErrorStatus, googleUrl, withGoogleAuth } from "./client";
 import { emailAddressSchema } from "./email";
+
+/** The Google Calendar REST API. */
+export const calendarApi = "https://www.googleapis.com/calendar/v3";
 
 export const calendarEventSchema = z.object({
   attendees: z.array(emailAddressSchema).max(50).default([]),
@@ -50,6 +52,49 @@ export const calendarEventDeleteSchema = z.object({
   eventId: z.string().min(1),
 });
 
+const eventTimeSchema = z.object({
+  date: z.string().optional(),
+  dateTime: z.string().optional(),
+  timeZone: z.string().optional(),
+});
+
+/** An event as Google returns it, the fields Bro asks for and reads. */
+const googleEventSchema = z.object({
+  attendees: z
+    .array(
+      z.object({
+        email: z.string().optional(),
+        responseStatus: z.string().optional(),
+      })
+    )
+    .optional(),
+  description: z.string().optional(),
+  end: eventTimeSchema.optional(),
+  htmlLink: z.string().optional(),
+  id: z.string().optional(),
+  location: z.string().optional(),
+  start: eventTimeSchema.optional(),
+  status: z.string().optional(),
+  summary: z.string().optional(),
+});
+
+export const calendarEventListSchema = z.object({
+  items: z.array(googleEventSchema).optional(),
+});
+
+/** One calendar's events at `path`, relative to the calendar. */
+function eventsUrl(
+  calendarId: string,
+  path: string,
+  query?: Parameters<typeof googleUrl>[2]
+) {
+  return googleUrl(
+    calendarApi,
+    `/calendars/${encodeURIComponent(calendarId)}/events${path}`,
+    query
+  );
+}
+
 export async function listCalendarEvents(
   ctx: ToolContext,
   input: {
@@ -59,10 +104,9 @@ export async function listCalendarEvents(
     timeMin: string;
   }
 ) {
-  return withCalendar(ctx, async (client) => {
-    const { data } = await client.events.list(
-      {
-        calendarId: input.calendarId,
+  return withGoogleAuth(ctx, async (google) => {
+    const listed = await google.json(calendarEventListSchema, {
+      url: eventsUrl(input.calendarId, "", {
         fields:
           "items(id,status,summary,description,location,start,end,attendees(email,responseStatus),htmlLink)",
         maxResults: input.maxResults,
@@ -70,12 +114,34 @@ export async function listCalendarEvents(
         singleEvents: true,
         timeMax: input.timeMax,
         timeMin: input.timeMin,
-      },
-      { signal: ctx.abortSignal }
-    );
-    return { events: data.items ?? [] };
+      }),
+    });
+    return { events: listed.items ?? [] };
   });
 }
+
+const freeBusyResponseSchema = z.object({
+  calendars: z
+    .record(
+      z.string(),
+      z.object({
+        busy: z
+          .array(z.object({ end: z.string(), start: z.string() }))
+          .optional(),
+        errors: z
+          .array(
+            z.object({
+              domain: z.string().optional(),
+              reason: z.string().optional(),
+            })
+          )
+          .optional(),
+      })
+    )
+    .optional(),
+  timeMax: z.string().optional(),
+  timeMin: z.string().optional(),
+});
 
 export async function checkCalendarAvailability(
   ctx: ToolContext,
@@ -86,24 +152,24 @@ export async function checkCalendarAvailability(
     timezone: string;
   }
 ) {
-  return withCalendar(ctx, async (client) => {
-    const { data } = await client.freebusy.query(
-      {
-        requestBody: {
+  return withGoogleAuth(ctx, async (google) =>
+    parseCalendarAvailability(
+      await google.json(freeBusyResponseSchema, {
+        body: {
           items: input.calendars.map((id) => ({ id })),
           timeMax: input.timeMax,
           timeMin: input.timeMin,
           timeZone: input.timezone,
         },
-      },
-      { signal: ctx.abortSignal }
-    );
-    return parseCalendarAvailability(data);
-  });
+        method: "POST",
+        url: googleUrl(calendarApi, "/freeBusy"),
+      })
+    )
+  );
 }
 
 export function parseCalendarAvailability(
-  value: calendar_v3.Schema$FreeBusyResponse
+  value: z.output<typeof freeBusyResponseSchema>
 ) {
   const failures = Object.entries(value.calendars ?? {}).flatMap(
     ([calendarId, calendarResult]) =>
@@ -127,34 +193,30 @@ export async function createCalendarEvent(
     .update(`${ctx.session.id}:${ctx.callId}`)
     .digest("hex")
     .slice(0, 32);
-  return withCalendar(ctx, async (client) => {
+  return withGoogleAuth(ctx, async (google) => {
     try {
-      const { data } = await client.events.insert(
-        {
-          calendarId: payload.calendarId,
-          requestBody: {
-            attendees: payload.attendees.map((email) => ({ email })),
-            description: payload.description,
-            end: { dateTime: payload.end, timeZone: payload.timezone },
-            id: eventId,
-            location: payload.location,
-            start: { dateTime: payload.start, timeZone: payload.timezone },
-            status: "confirmed",
-            summary: payload.summary,
-            visibility: "private",
-          },
-          sendUpdates: payload.attendees.length ? "all" : "none",
+      return await google.json(googleEventSchema, {
+        body: {
+          attendees: payload.attendees.map((email) => ({ email })),
+          description: payload.description,
+          end: { dateTime: payload.end, timeZone: payload.timezone },
+          id: eventId,
+          location: payload.location,
+          start: { dateTime: payload.start, timeZone: payload.timezone },
+          status: "confirmed",
+          summary: payload.summary,
+          visibility: "private",
         },
-        { signal: ctx.abortSignal }
-      );
-      return data;
+        method: "POST",
+        url: eventsUrl(payload.calendarId, "", {
+          sendUpdates: payload.attendees.length ? "all" : "none",
+        }),
+      });
     } catch (error) {
       if (googleApiErrorStatus(error) !== 409) throw error;
-      const { data } = await client.events.get(
-        { calendarId: payload.calendarId, eventId },
-        { signal: ctx.abortSignal }
-      );
-      return data;
+      return google.json(googleEventSchema, {
+        url: eventsUrl(payload.calendarId, `/${encodeURIComponent(eventId)}`),
+      });
     }
   });
 }
@@ -166,24 +228,25 @@ export async function updateCalendarEvent(
 ) {
   const time = (dateTime: string | undefined) =>
     dateTime === undefined ? undefined : { dateTime, timeZone: input.timezone };
-  return withCalendar(ctx, async (client) => {
-    const { data } = await client.events.patch(
-      {
-        calendarId: input.calendarId,
-        eventId: input.eventId,
-        requestBody: {
-          description: input.description,
-          end: time(input.end),
-          location: input.location,
-          start: time(input.start),
-          summary: input.summary,
-        },
-        sendUpdates: "all",
+  return withGoogleAuth(ctx, async (google) =>
+    google.json(googleEventSchema, {
+      body: {
+        description: input.description,
+        end: time(input.end),
+        location: input.location,
+        start: time(input.start),
+        summary: input.summary,
       },
-      { signal: ctx.abortSignal }
-    );
-    return data;
-  });
+      method: "PATCH",
+      url: eventsUrl(
+        input.calendarId,
+        `/${encodeURIComponent(input.eventId)}`,
+        {
+          sendUpdates: "all",
+        }
+      ),
+    })
+  );
 }
 
 /**
@@ -194,16 +257,16 @@ export async function deleteCalendarEvent(
   ctx: ToolContext,
   input: z.infer<typeof calendarEventDeleteSchema>
 ) {
-  return withCalendar(ctx, async (client) => {
+  return withGoogleAuth(ctx, async (google) => {
     try {
-      await client.events.delete(
-        {
-          calendarId: input.calendarId,
-          eventId: input.eventId,
-          sendUpdates: "all",
-        },
-        { signal: ctx.abortSignal }
-      );
+      await google.json(z.unknown(), {
+        method: "DELETE",
+        url: eventsUrl(
+          input.calendarId,
+          `/${encodeURIComponent(input.eventId)}`,
+          { sendUpdates: "all" }
+        ),
+      });
       return { alreadyDeleted: false };
     } catch (error) {
       const status = googleApiErrorStatus(error);
@@ -211,13 +274,4 @@ export async function deleteCalendarEvent(
       return { alreadyDeleted: true };
     }
   });
-}
-
-function withCalendar<T>(
-  ctx: ToolContext,
-  execute: (client: ReturnType<typeof calendar>) => Promise<T>
-) {
-  return withGoogleAuth(ctx, (auth) =>
-    execute(calendar({ auth, version: "v3" }))
-  );
 }

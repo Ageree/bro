@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  attemptPolicyChange,
   type AutoPaymentRequest,
   decideAutoPayment,
   decideStandingAction,
@@ -20,6 +21,7 @@ import {
   spentUnderRule,
   type StandingActionRequest,
   wholeRubles,
+  withdrawnPermissions,
 } from "./limit";
 
 function policy(overrides: Partial<SpendLimitPolicy> = {}): SpendLimitPolicy {
@@ -53,6 +55,9 @@ const groceries: SpendEntry = {
   feeRub: 0,
   merchant: "shop.example",
 };
+/** A standing permission to order taxis anywhere, up to 1 500 ₽ a ride. */
+const taxiRides = { kind: "taxi" as const, maxRub: 1500, merchant: null };
+
 const taxi: SpendEntry = {
   amountRub: 600,
   category: "такси",
@@ -351,6 +356,65 @@ describe("whether a policy change widens what Bro may pay", () => {
     expect(
       policyWidens(rules(general), policy({ excludedCategories: ["еда"] }))
     ).toBe(false);
+  });
+
+  it("never widens by taking permissions back, from nothing or from any policy", () => {
+    const lavka = {
+      kind: "order" as const,
+      maxRub: 3000,
+      merchant: "lavka.yandex.ru",
+    };
+    const before = policy({
+      actions: [taxiRides, lavka],
+      excludedMerchants: ["wb.ru"],
+      rules: [general, ozon],
+    });
+    expect(policyWidens(undefined, policy({ rules: [] }))).toBe(false);
+    expect(policyWidens(before, { ...before, actions: [lavka] })).toBe(false);
+    expect(policyWidens(before, { ...before, actions: [] })).toBe(false);
+    expect(policyWidens(before, { ...before, actions: [], rules: [] })).toBe(
+      false
+    );
+  });
+});
+
+describe("a policy change as the person reads it", () => {
+  const tables = { kind: "table" as const, maxRub: null, merchant: null };
+
+  it("keeps a change the store accepts, and says why it cannot make another", () => {
+    expect(attemptPolicyChange(() => policy())).toEqual({ policy: policy() });
+    expect(
+      attemptPolicyChange(() => {
+        throw new Error("A merchant is its site or host name.");
+      })
+    ).toEqual({ reason: "A merchant is its site or host name." });
+    const refused = attemptPolicyChange(() =>
+      policy({ actions: [{ ...taxiRides, monthRub: 1000 }] })
+    );
+    expect("reason" in refused ? refused.reason : "").toContain(
+      "at least its ceiling"
+    );
+  });
+
+  it("names what a change took back, not what it only re-priced", () => {
+    const before = policy({ actions: [tables, taxiRides] });
+
+    expect(
+      withdrawnPermissions(before, policy({ actions: [tables], rules: [] }))
+    ).toEqual({
+      permissions: [describeStandingAction(taxiRides)],
+      rules: [`до ${formatRub(5000)} в месяц`],
+    });
+    expect(
+      withdrawnPermissions(
+        before,
+        policy({ actions: [tables, { ...taxiRides, maxRub: 1000 }] })
+      )
+    ).toEqual({ permissions: [], rules: [] });
+    expect(withdrawnPermissions(undefined, undefined)).toEqual({
+      permissions: [],
+      rules: [],
+    });
   });
 });
 

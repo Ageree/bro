@@ -122,6 +122,19 @@ export interface SpendEntry extends SpendTarget {
 }
 
 /**
+ * A shop, site or category the call named, or none. gpt-6-luna fills every
+ * optional parameter: a revoke meant for every site came as `merchant: ""`,
+ * then `"*"`, and read as a scope that could not be understood — the two
+ * needless cards of the RU benchmark's d14. Blank and `*` mean every one,
+ * exactly as leaving the field out does; a card still shows what a widening
+ * allows.
+ */
+export function givenScope(value: string | undefined) {
+  const text = value?.trim();
+  return text === undefined || text === "" || text === "*" ? undefined : text;
+}
+
+/**
  * `https://www.ozon.ru/cart` and `ozon.ru` are the same merchant. Anything
  * that is not a host name is not a merchant the limit can be scoped to.
  */
@@ -210,6 +223,50 @@ function ruleContains(outer: SpendRule, inner: SpendRule) {
       merchantCovers(outer.merchant, inner.merchant)) &&
     (outer.category === null || outer.category === inner.category)
   );
+}
+
+/**
+ * The policy a change leaves, or why it cannot be made: the change throws on
+ * a scope it cannot read, and what it leaves must still be a policy the store
+ * accepts. A change that cannot be made changes nothing, so it is refused
+ * with its reason instead of being put on a card that could only fail.
+ */
+export function attemptPolicyChange(
+  change: () => SpendLimitPolicy
+): { readonly policy: SpendLimitPolicy } | { readonly reason: string } {
+  let changed: SpendLimitPolicy;
+  try {
+    changed = change();
+  } catch (error) {
+    return { reason: error instanceof Error ? error.message : String(error) };
+  }
+  const parsed = spendLimitPolicySchema.safeParse(changed);
+  return parsed.success
+    ? { policy: parsed.data }
+    : { reason: parsed.error.issues[0]?.message ?? "Invalid policy." };
+}
+
+/**
+ * What a change took back, as the person reads it: the limit's rules and the
+ * standing permissions whose scope is gone after it. One that stays under
+ * the same scope with another ceiling was changed, not taken back.
+ */
+export function withdrawnPermissions(
+  before: SpendLimitPolicy | undefined,
+  after: SpendLimitPolicy | undefined
+) {
+  const actionsAfter = after?.actions ?? [];
+  const rulesAfter = after?.rules ?? [];
+  return {
+    permissions: (before?.actions ?? [])
+      .filter(
+        (rule) => !actionsAfter.some((kept) => sameActionScope(kept, rule))
+      )
+      .map(describeStandingAction),
+    rules: (before?.rules ?? [])
+      .filter((rule) => !rulesAfter.some((kept) => sameRuleScope(kept, rule)))
+      .map(describeSpendRule),
+  };
 }
 
 /**

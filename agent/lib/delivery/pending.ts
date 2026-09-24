@@ -1,6 +1,12 @@
 import type { ModelMessage } from "ai";
 import { z } from "zod";
-import { currentTurnMessages, sendReachedPerson } from "./turn-sends";
+import { settledOutcomeRun } from "./browser-report";
+import { questionsOf } from "./novelty";
+import {
+  currentTurnMessages,
+  sendReachedPerson,
+  startsTurn,
+} from "./turn-sends";
 
 /** Tools whose successful call is the reply a person actually sees. */
 const deliveryToolNames = new Set(["send_message", "react_to_message"]);
@@ -40,20 +46,49 @@ function deliveredByTool(message: ModelMessage) {
  */
 const forcedStepLimit = 10;
 
+/** Whether a tool message holds a call of `toolName` that reached the person. */
+function reachedPerson(message: ModelMessage, toolName: string) {
+  return (
+    message.role === "tool" &&
+    message.content.some(
+      (part) =>
+        part.type === "tool-result" &&
+        part.toolName === toolName &&
+        sendReachedPerson(part.output)
+    )
+  );
+}
+
+function messageText(message: ModelMessage) {
+  if (!Array.isArray(message.content)) return message.content;
+  return message.content
+    .flatMap((part) => (part.type === "text" ? [part.text] : []))
+    .join("\n");
+}
+
 /**
  * Whether the latest message a person wrote is still waiting for a
- * `send_message` or `react_to_message` that went through. A wakeup from a
+ * `send_message` or `react_to_message` that went through. A reaction answers
+ * «спасибо!», not a question: on 24.09 DeepSeek met «What is 2 plus 2?» with
+ * 😂, and the «4» it wrote next never reached the person. A wakeup from a
  * finished background task is not a person talking, and the instructions let
  * the model keep such a wakeup silent, so it never counts as waiting.
  */
 export function awaitsDelivery(messages: readonly ModelMessage[]) {
   let steps = 0;
+  let reaction = false;
   for (const message of messages.toReversed()) {
-    if (deliveredByTool(message)) return false;
+    if (reachedPerson(message, "send_message")) return false;
+    if (reachedPerson(message, "react_to_message")) reaction = true;
     if (message.role === "assistant") steps += 1;
     if (message.role !== "user") continue;
     const kind = userMessageKind(message);
-    if (kind === "user") return steps < forcedStepLimit;
+    if (kind === "user") {
+      if (reaction && questionsOf(messageText(message)).length === 0) {
+        return false;
+      }
+      return steps < forcedStepLimit;
+    }
     if (kind === "execution.background_task") return false;
   }
   return false;
@@ -83,6 +118,42 @@ export function turnActed(messages: readonly ModelMessage[]) {
           part.output.type !== "execution-denied"
       )
   );
+}
+
+/**
+ * Whether an earlier turn of this conversation already told the person how
+ * a browser run ended: `browser_task status` handed over its outcome — the
+ * person asked «ну что там?» while the run's report still waited behind
+ * their turn — and a message got through after it. The report turn that
+ * follows would give them the same result a second time.
+ */
+export function outcomeToldEarlier(
+  messages: readonly ModelMessage[],
+  runId: string
+) {
+  const start = messages.findLastIndex(startsTurn);
+  let handedOver = false;
+  for (const message of start === -1 ? [] : messages.slice(0, start)) {
+    if (startsTurn(message)) handedOver = false;
+    if (message.role !== "tool") continue;
+    for (const part of message.content) {
+      if (part.type !== "tool-result") continue;
+      if (
+        part.toolName === "browser_task" &&
+        settledOutcomeRun(part.output) === runId
+      ) {
+        handedOver = true;
+      }
+      if (
+        handedOver &&
+        part.toolName === "send_message" &&
+        sendReachedPerson(part.output)
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 /**

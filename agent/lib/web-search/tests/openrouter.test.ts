@@ -14,7 +14,14 @@ const requestBodySchema = z.object({
   max_tokens: z.number(),
   messages: z.array(z.object({ content: z.string(), role: z.string() })),
   model: z.string(),
-  plugins: z.array(z.object({ id: z.string(), max_results: z.number() })),
+  plugins: z.array(
+    z.strictObject({
+      engine: z.string(),
+      id: z.string(),
+      include_domains: z.array(z.string()).optional(),
+      max_results: z.number(),
+    })
+  ),
   reasoning: z.object({ enabled: z.boolean() }),
   temperature: z.number(),
 });
@@ -23,6 +30,7 @@ interface SearchRequest {
   readonly body: string;
   readonly headers: Record<string, string>;
   readonly method: string;
+  readonly signal: AbortSignal;
 }
 
 function completion(message: {
@@ -54,6 +62,10 @@ function failure(status: number) {
   return new Response(JSON.stringify({ error: "upstream" }), { status });
 }
 
+function namedError(name: string) {
+  return Object.assign(new Error(`${name} from fetch`), { name });
+}
+
 async function loadSearchWeb() {
   const openrouter = await import("@agent/lib/web-search/openrouter");
   return openrouter.searchWeb;
@@ -69,8 +81,23 @@ function requestAt(index: number) {
   return { body: requestBodySchema.parse(JSON.parse(init.body)), init, url };
 }
 
+function turnSignal() {
+  return new AbortController().signal;
+}
+
+/** Runs the pause before the retry out and returns what the search threw. */
+async function failureOf(pending: Promise<readonly object[]>) {
+  const thrown = pending.then(
+    () => "no failure",
+    (cause: unknown) => String(cause)
+  );
+  await vi.runAllTimersAsync();
+  return await thrown;
+}
+
 beforeEach(() => {
   vi.resetModules();
+  vi.useFakeTimers();
   fetchMock.mockReset();
   for (const [name, value] of Object.entries(requiredEnvironment)) {
     vi.stubEnv(name, value);
@@ -79,16 +106,17 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
 });
 
 describe("OpenRouter web search", () => {
-  it("asks the chat completions endpoint for the web plugin", async () => {
+  it("searches through Exa and reads only the citations", async () => {
     fetchMock.mockResolvedValue(oneCitation());
 
     const searchWeb = await loadSearchWeb();
-    await searchWeb({ query: "курс рубля", recency: "week" });
+    await searchWeb({ query: "курс рубля" }, turnSignal());
 
     expect(fetchMock).toHaveBeenCalledOnce();
     const request = requestAt(0);
@@ -100,29 +128,41 @@ describe("OpenRouter web search", () => {
       "HTTP-Referer": "https://openinstinct.example",
       "X-Title": "Bro",
     });
-    expect(request.body.model).toBe("openai/gpt-6-luna");
-    expect(request.body.max_tokens).toBe(700);
-    expect(request.body.plugins).toEqual([{ id: "web", max_results: 8 }]);
+    expect(request.body.model).toBe("deepseek/deepseek-v4.1-flash");
+    // Left unset, OpenRouter picks the model's native search, slow on OpenAI.
+    expect(request.body.plugins).toEqual([
+      { engine: "exa", id: "web", max_results: 8 },
+    ]);
+    // Nothing the model writes is read, so it writes next to nothing.
+    expect(request.body.max_tokens).toBe(16);
     expect(request.body.reasoning).toEqual({ enabled: false });
     expect(request.body.temperature).toBe(0);
-    expect(request.body.messages).toHaveLength(2);
-    expect(request.body.messages.at(0)?.role).toBe("system");
-    expect(request.body.messages.at(0)?.content).toContain("last week");
-    expect(request.body.messages.at(1)).toEqual({
+    expect(request.body.messages.at(-1)).toEqual({
       content: "курс рубля",
       role: "user",
     });
   });
 
-  it("omits the recency hint when the model did not ask for one", async () => {
+  it("limits the search to the sites the model named", async () => {
     fetchMock.mockResolvedValue(oneCitation());
 
     const searchWeb = await loadSearchWeb();
-    await searchWeb({ query: "anything" });
-
-    expect(requestAt(0).body.messages.at(0)?.content).not.toContain(
-      "Prefer pages published"
+    await searchWeb(
+      {
+        query: "Авокадо Чистопрудный бульвар",
+        sites: ["https://www.2gis.ru/", " Yandex.ru/maps ", "2gis.ru"],
+      },
+      turnSignal()
     );
+
+    expect(requestAt(0).body.plugins).toEqual([
+      {
+        engine: "exa",
+        id: "web",
+        include_domains: ["2gis.ru", "yandex.ru/maps"],
+        max_results: 8,
+      },
+    ]);
   });
 
   it("uses the configured search model instead of the inference default", async () => {
@@ -131,75 +171,62 @@ describe("OpenRouter web search", () => {
     fetchMock.mockResolvedValue(oneCitation());
 
     const searchWeb = await loadSearchWeb();
-    await searchWeb({ query: "anything" });
+    await searchWeb({ query: "anything" }, turnSignal());
 
     expect(requestAt(0).body.model).toBe("openai/gpt-5.6-sol-fast");
   });
 
-  it("reads results from url_citation annotations", async () => {
+  it("reads results and their excerpts from url_citation annotations", async () => {
     fetchMock.mockResolvedValue(
       completion({
         annotations: [
           {
             type: "url_citation",
             url_citation: {
-              content: "Rates  moved\nsharply today.",
-              title: " Central bank ",
-              url: "https://bank.example/rates",
+              content:
+                "# Кафе Авокадо\n\n...\n\n![фото](https://img.example/1.jpg)[\u200BЧистопрудный бул., 12](https://maps.example/house/12) · Чистые пруды 7 мин. пешком\n\n[...]\n\nСредний чек ~1200₽\n\n...",
+              title: " Кафе Авокадо ",
+              url: "https://restoran.example/avokado",
             },
           },
           { type: "file_citation" },
           {
             type: "url_citation",
-            url_citation: { url: "https://bank.example/rates" },
+            url_citation: { url: "https://restoran.example/avokado" },
+          },
+          {
+            type: "url_citation",
+            url_citation: { title: "Bad", url: "not-a-url" },
           },
           {
             type: "url_citation",
             url_citation: { title: "Second", url: "https://news.example/two" },
           },
         ],
-        content: '[{"title":"Ignored","url":"https://ignored.example"}]',
+        content: "OK",
       })
     );
 
     const searchWeb = await loadSearchWeb();
 
-    expect(await searchWeb({ query: "rates" })).toEqual([
+    expect(await searchWeb({ query: "авокадо" }, turnSignal())).toEqual([
       {
-        snippet: "Rates moved sharply today.",
-        title: "Central bank",
-        url: "https://bank.example/rates",
+        snippet:
+          "Кафе Авокадо … Чистопрудный бул., 12 · Чистые пруды 7 мин. пешком … Средний чек ~1200₽",
+        title: "Кафе Авокадо",
+        url: "https://restoran.example/avokado",
       },
       { snippet: "", title: "Second", url: "https://news.example/two" },
     ]);
   });
 
-  it("falls back to the JSON array the model wrote", async () => {
-    fetchMock.mockResolvedValue(
-      completion({
-        content: [
-          "Here you go:",
-          "```json",
-          '[{"title":"One","url":"https://one.example","snippet":"First"},',
-          ' {"title":"Bad","url":"not-a-url","snippet":"Dropped"}]',
-          "```",
-        ].join("\n"),
-      })
-    );
-
-    const searchWeb = await loadSearchWeb();
-
-    expect(await searchWeb({ query: "rates" })).toEqual([
-      { snippet: "First", title: "One", url: "https://one.example" },
-    ]);
-  });
-
-  it("returns at most eight results", async () => {
+  it("keeps up to 500 characters of each excerpt and at most eight results", async () => {
     fetchMock.mockResolvedValue(
       completion({
         annotations: Array.from({ length: 12 }, (_value, index) => ({
           type: "url_citation",
           url_citation: {
+            content: "слово ".repeat(200),
             title: `Result ${String(index)}`,
             url: `https://example.com/${String(index)}`,
           },
@@ -208,61 +235,126 @@ describe("OpenRouter web search", () => {
     );
 
     const searchWeb = await loadSearchWeb();
+    const results = await searchWeb({ query: "rates" }, turnSignal());
 
-    expect(await searchWeb({ query: "rates" })).toHaveLength(8);
+    expect(results).toHaveLength(8);
+    expect(results[0]?.snippet).toHaveLength(500);
   });
 
-  it("retries once on a throttled reply", async () => {
+  it("hands a throttled search to Perplexity after a short pause", async () => {
     fetchMock
       .mockResolvedValueOnce(failure(429))
       .mockResolvedValueOnce(oneCitation());
 
     const searchWeb = await loadSearchWeb();
+    const pending = searchWeb({ query: "rates" }, turnSignal());
+    await vi.advanceTimersByTimeAsync(499);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1);
 
-    expect(await searchWeb({ query: "rates" })).toHaveLength(1);
+    expect(await pending).toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(requestAt(1).body.plugins).toEqual([
+      { engine: "perplexity", id: "web", max_results: 8 },
+    ]);
+  });
+
+  it("gives each attempt its own time limit and retries one that ran out", async () => {
+    fetchMock
+      .mockRejectedValueOnce(namedError("TimeoutError"))
+      .mockResolvedValueOnce(oneCitation());
+
+    const searchWeb = await loadSearchWeb();
+    const pending = searchWeb({ query: "rates" }, turnSignal());
+    await vi.runAllTimersAsync();
+
+    expect(await pending).toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [first, second] = fetchMock.mock.calls.map(([, init]) => init);
+    expect(first?.signal).not.toBe(second?.signal);
+  });
+
+  it("retries when OpenRouter could not be reached", async () => {
+    fetchMock
+      .mockRejectedValueOnce(new TypeError("fetch failed"))
+      .mockResolvedValueOnce(oneCitation());
+
+    const searchWeb = await loadSearchWeb();
+    const pending = searchWeb({ query: "rates" }, turnSignal());
+    await vi.runAllTimersAsync();
+
+    expect(await pending).toHaveLength(1);
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  it("reports a server failure that survives the retry", async () => {
-    fetchMock.mockResolvedValue(failure(503));
+  it("asks the other engine when the first found nothing", async () => {
+    fetchMock
+      .mockResolvedValueOnce(completion({ content: "OK" }))
+      .mockResolvedValueOnce(oneCitation());
 
     const searchWeb = await loadSearchWeb();
+    const pending = searchWeb({ query: "rates" }, turnSignal());
+    await vi.runAllTimersAsync();
 
-    await expect(searchWeb({ query: "rates" })).rejects.toThrow(
-      "OpenRouter 503"
-    );
+    expect(await pending).toHaveLength(1);
+    expect(requestAt(1).body.plugins[0]?.engine).toBe("perplexity");
+  });
+
+  it("reports the failure that survives the retry", async () => {
+    fetchMock.mockImplementation(async () => failure(503));
+
+    const searchWeb = await loadSearchWeb();
+    expect(
+      await failureOf(searchWeb({ query: "rates" }, turnSignal()))
+    ).toContain("OpenRouter 503");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports nothing found after both engines came back empty", async () => {
+    fetchMock.mockImplementation(async () => completion({ content: "OK" }));
+
+    const searchWeb = await loadSearchWeb();
+    expect(
+      await failureOf(searchWeb({ query: "rates" }, turnSignal()))
+    ).toContain("nothing was found");
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("does not retry a rejected request", async () => {
-    fetchMock.mockResolvedValue(failure(400));
+    fetchMock.mockResolvedValue(failure(402));
 
     const searchWeb = await loadSearchWeb();
 
-    await expect(searchWeb({ query: "rates" })).rejects.toThrow(
-      "OpenRouter 400"
+    await expect(searchWeb({ query: "rates" }, turnSignal())).rejects.toThrow(
+      "OpenRouter 402"
     );
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 
-  it("rejects a reply that carries neither citations nor a JSON array", async () => {
-    fetchMock.mockResolvedValue(
-      completion({ content: "I could not find anything." })
-    );
+  it("does not retry once the turn itself was aborted", async () => {
+    const turn = new AbortController();
+    fetchMock.mockImplementation(async () => {
+      turn.abort();
+      throw namedError("AbortError");
+    });
 
     const searchWeb = await loadSearchWeb();
 
-    await expect(searchWeb({ query: "rates" })).rejects.toThrow("no results");
+    await expect(searchWeb({ query: "rates" }, turn.signal)).rejects.toThrow(
+      "AbortError from fetch"
+    );
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 
   it("rejects a body that is not an OpenRouter completion", async () => {
-    fetchMock.mockResolvedValue(new Response("<html>gateway</html>"));
+    fetchMock.mockImplementation(
+      async () => new Response("<html>gateway</html>")
+    );
 
     const searchWeb = await loadSearchWeb();
-
-    await expect(searchWeb({ query: "rates" })).rejects.toThrow(
-      "unusable body"
-    );
+    expect(
+      await failureOf(searchWeb({ query: "rates" }, turnSignal()))
+    ).toContain("unusable body");
   });
 
   it("refuses to search without a key", async () => {
@@ -270,7 +362,7 @@ describe("OpenRouter web search", () => {
 
     const searchWeb = await loadSearchWeb();
 
-    await expect(searchWeb({ query: "rates" })).rejects.toThrow(
+    await expect(searchWeb({ query: "rates" }, turnSignal())).rejects.toThrow(
       "OPENROUTER_API_KEY is not configured."
     );
     expect(fetchMock).not.toHaveBeenCalled();

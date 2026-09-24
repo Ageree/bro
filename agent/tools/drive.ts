@@ -37,6 +37,7 @@ import {
   saveDriveFileArtifact,
 } from "@db/services/drive-files";
 import { env } from "@shared/environment";
+import { googleWorkspaceConfigured } from "@shared/google-workspace/connection";
 
 /**
  * `reads` is what the current turn's Google reads already did: Drive shares
@@ -211,6 +212,7 @@ export default defineDynamic({
     // Resolved before every model step, so the read tools know what the
     // current turn already asked Google.
     "step.started": (_event, context) => {
+      if (!googleWorkspaceConfigured()) return null;
       const reads = turnReads(
         context.messages,
         resolveModeValue(context, {

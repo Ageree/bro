@@ -3,7 +3,6 @@ import type { KnipConfig } from "knip";
 export default {
   entry: [
     "agent/channels/**/*.ts",
-    "agent/connections/**/*.ts",
     "agent/hooks/**/*.ts",
     "agent/instructions/**/*.ts",
     // eve discovers each path-named instrumentation file in this directory.

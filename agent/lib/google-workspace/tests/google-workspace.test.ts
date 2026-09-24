@@ -1,15 +1,14 @@
-import { connect } from "@vercel/connect/eve";
 import type { SessionContext } from "eve/context";
 import type {
   Approval,
   ApprovalContext,
   ApprovalPolicy,
 } from "eve/tools/approval";
-import { describe, expect, it, vi } from "vitest";
-import { z } from "zod";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { wakeProactiveWatch } from "@db/services/proactive";
 import type { getGoogleWorkspaceAccess } from "@db/services/settings";
 import { accessScopeForUser } from "@shared/identity/access-scope";
+import { type FakeComposio, fakeComposio } from "@tests/helpers/composio";
 
 const settings = vi.hoisted(() => ({
   access: vi.fn<typeof getGoogleWorkspaceAccess>(),
@@ -29,7 +28,6 @@ vi.mock("@db/services/proactive", () => ({
 import { parseCalendarAvailability } from "@agent/lib/google-workspace/calendar";
 import {
   googleReadOnlyWriteRefusal,
-  googleWorkspaceAuthOptions,
   googleWorkspaceProvider,
   googleWriteApproval,
 } from "@agent/lib/google-workspace/client";
@@ -49,142 +47,139 @@ import {
   gmailSend,
   gmailUpdate,
 } from "@agent/tools/gmail";
-import {
-  googleWorkspaceScopes,
-  googleWorkspaceSubject,
-  googleWorkspaceTokenParams,
-} from "@shared/google-workspace/connection";
 
 const userId = "better-auth:user-123";
 const scope = accessScopeForUser(userId);
+const principal = {
+  attributes: { workspaceId: scope.workspaceId },
+  id: userId,
+  issuer: "better-auth",
+  type: "user" as const,
+};
+
+let composio: FakeComposio;
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  composio = fakeComposio();
+});
 
 describe("Google Workspace", () => {
-  it("uses explicit least-privilege scope sets", () => {
-    for (const scopes of Object.values(googleWorkspaceScopes)) {
-      expect(scopes).not.toContain("*");
-      expect(scopes).not.toContain("https://mail.google.com/");
-    }
-    for (const access of ["full", "read_only"] as const) {
-      expect(googleWorkspaceTokenParams(userId, access)).toEqual({
-        scopes: [...googleWorkspaceScopes[access]],
-        subject: googleWorkspaceSubject(userId),
-      });
-      expect(googleWorkspaceAuthOptions(access).tokenParams).toEqual({
-        scopes: [...googleWorkspaceScopes[access]],
-      });
-      expect(googleWorkspaceAuthOptions(access).validate).toBe(true);
-    }
-  });
+  it("finds the person's active Google account at the level, or asks to sign in", async () => {
+    composio.connect({
+      id: "ca_other_user",
+      toolkit: "googlesuper",
+      userId: "better-auth:someone-else",
+    });
+    composio.connect({
+      authConfigId: "ac_google_read_only",
+      id: "ca_read",
+      toolkit: "googlesuper",
+      userId,
+    });
+    const full = googleWorkspaceProvider("full");
 
-  it("asks Google for consent from the chat sign-in card so the grant can refresh", async () => {
-    // An unsigned token that is not expired is all the OIDC reader checks.
-    const claims = btoa(JSON.stringify({ exp: 4_102_444_800 }));
-    vi.stubEnv("VERCEL_OIDC_TOKEN", `e30.${claims}.sig`);
-    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
-      Response.json({
-        request: "req_1",
-        url: "https://accounts.google.com/o/oauth2/v2/auth",
-        verifier: "ver_1",
+    await expect(
+      full.getToken({ connection: { url: "" }, principal })
+    ).rejects.toMatchObject({ name: "ConnectionAuthorizationRequiredError" });
+
+    composio.connect({ id: "ca_full", toolkit: "googlesuper", userId });
+    await expect(
+      full.getToken({ connection: { url: "" }, principal })
+    ).resolves.toEqual({ token: "ca_full" });
+    await expect(
+      googleWorkspaceProvider("read_only").getToken({
+        connection: { url: "" },
+        principal,
       })
-    );
-    vi.stubGlobal("fetch", fetch);
+    ).resolves.toEqual({ token: "ca_read" });
+  });
 
-    try {
-      const auth = connect(googleWorkspaceAuthOptions("full"));
-      if (!("startAuthorization" in auth)) {
-        throw new Error("Google authorization must be interactive.");
-      }
-      await auth.startAuthorization({
-        callbackUrl: "https://example.com/hook",
-        connection: { url: "https://www.googleapis.com" },
-        principal: { id: userId, issuer: "better-auth", type: "user" },
-      });
-    } finally {
-      vi.unstubAllGlobals();
-      vi.unstubAllEnvs();
-    }
+  it("puts a Composio Connect Link for the person on the chat sign-in card", async () => {
+    const started = await googleWorkspaceProvider("full").startAuthorization({
+      callbackUrl: "https://example.com/eve/v1/connections/google/callback/a/b",
+      connection: { url: "" },
+      principal,
+    });
 
-    const [endpoint, init] = fetch.mock.calls[0] ?? [];
-    expect(endpoint).toEqual(expect.stringContaining("/v1/connect/authorize/"));
-    expect(JSON.parse(z.string().parse(init?.body))).toMatchObject({
-      prompt: "consent",
-      scopes: [...googleWorkspaceScopes.full],
-      subject: googleWorkspaceSubject(userId),
+    expect(started).toEqual({
+      challenge: {
+        displayName: "Google",
+        expiresAt: "2026-09-24T12:10:00.000Z",
+        url: "https://connect.composio.dev/link/lk_1",
+      },
+      resume: { connectedAccountId: "ca_link_1" },
+    });
+    expect(
+      composio.requests.find(({ path }) => path === "/connected_accounts/link")
+        ?.body
+    ).toEqual({
+      auth_config_id: "ac_google_full",
+      callback_url:
+        "https://example.com/eve/v1/connections/google/callback/a/b",
+      user_id: userId,
     });
   });
 
-  it("checks the grant and wakes Bro's own checks once chat sign-in completes", async () => {
+  it("completes sign-in only with the account the link made, then wakes Bro's own checks", async () => {
     proactive.wake.mockResolvedValue(true);
-    const claims = btoa(JSON.stringify({ exp: 4_102_444_800 }));
-    vi.stubEnv("VERCEL_OIDC_TOKEN", `e30.${claims}.sig`);
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    const fetch = vi
-      .fn<typeof globalThis.fetch>()
-      .mockResolvedValueOnce(
-        Response.json({
-          connector: { id: "cn_1", type: "oauth", uid: "google" },
-          expiresAt: Date.now() + 3_600_000,
-          token: "ya29.fresh",
-        })
-      )
-      .mockResolvedValueOnce(Response.json({ access_type: "online" }));
-    vi.stubGlobal("fetch", fetch);
-
-    try {
-      await expect(
-        googleWorkspaceProvider("full").completeAuthorization({
-          callback: { method: "GET", params: {} },
-          callbackUrl: "https://example.com/hook",
-          connection: { url: "https://www.googleapis.com" },
-          principal: {
-            attributes: { workspaceId: scope.workspaceId },
-            id: userId,
-            issuer: "better-auth",
-            type: "user",
-          },
-        })
-      ).resolves.toMatchObject({ token: "ya29.fresh" });
-      // A check that found no grant had put the next one off for hours.
-      expect(proactive.wake).toHaveBeenCalledExactlyOnceWith(scope);
-      await vi.waitFor(() => {
-        expect(warn).toHaveBeenCalledExactlyOnceWith(
-          expect.stringContaining("no offline access")
-        );
-      });
-    } finally {
-      warn.mockRestore();
-      vi.unstubAllGlobals();
-      vi.unstubAllEnvs();
-    }
-    expect(fetch.mock.calls[1]?.[0]).toBe(
-      "https://oauth2.googleapis.com/tokeninfo"
-    );
-  });
-
-  it("grants a read-only workspace no scope that can write", () => {
-    expect(googleWorkspaceScopes.read_only).toEqual([
-      "openid",
-      "email",
-      "profile",
-      "https://www.googleapis.com/auth/gmail.readonly",
-      "https://www.googleapis.com/auth/calendar.readonly",
-      "https://www.googleapis.com/auth/contacts.readonly",
-      "https://www.googleapis.com/auth/drive.readonly",
-    ]);
-    for (const granted of googleWorkspaceScopes.read_only) {
-      expect(granted).not.toMatch(/modify|compose|send|calendar\.events$/u);
-    }
-    expect(googleWorkspaceScopes.full).toContain(
-      "https://www.googleapis.com/auth/gmail.modify"
-    );
-  });
-
-  it("uses a user-scoped connector subject", () => {
-    expect(googleWorkspaceSubject(userId)).toEqual({
-      id: userId,
-      issuer: "openinstinct",
-      type: "user",
+    const older = composio.connect({
+      id: "ca_older",
+      toolkit: "googlesuper",
+      userId,
     });
+    const provider = googleWorkspaceProvider("full");
+    const { resume } = await provider.startAuthorization({
+      callbackUrl: "https://example.com/hook",
+      connection: { url: "" },
+      principal,
+    });
+    const minted = composio.accounts.find(
+      ({ id }) => id === resume?.connectedAccountId
+    );
+    if (minted) minted.status = "ACTIVE";
+
+    await expect(
+      provider.completeAuthorization({
+        callback: {
+          method: "GET",
+          params: { connected_account_id: "ca_link_2", status: "success" },
+        },
+        callbackUrl: "https://example.com/hook",
+        connection: { url: "" },
+        principal,
+        resume,
+      })
+    ).resolves.toEqual({ token: "ca_link_2" });
+    // A check that found no grant had put the next one off for hours.
+    expect(proactive.wake).toHaveBeenCalledExactlyOnceWith(scope);
+    // One connection: the older account is removed without revoking the
+    // grant the new one may share.
+    expect(composio.accounts.map(({ id }) => id)).toEqual(["ca_link_2"]);
+    expect(older.status).toBe("ACTIVE");
+    expect(composio.requests.some(({ path }) => path.endsWith("/revoke"))).toBe(
+      false
+    );
+  });
+
+  it("fails sign-in the person declined without waking anything", async () => {
+    const provider = googleWorkspaceProvider("full");
+    const { resume } = await provider.startAuthorization({
+      callbackUrl: "https://example.com/hook",
+      connection: { url: "" },
+      principal,
+    });
+
+    await expect(
+      provider.completeAuthorization({
+        callback: { method: "GET", params: { status: "failed" } },
+        callbackUrl: "https://example.com/hook",
+        connection: { url: "" },
+        principal,
+        resume,
+      })
+    ).rejects.toMatchObject({ name: "ConnectionAuthorizationFailedError" });
+    expect(proactive.wake).not.toHaveBeenCalled();
   });
 
   it("maps reversible Gmail actions", () => {
@@ -252,6 +247,12 @@ describe("Google Workspace", () => {
     expect(
       await googleWriteApproval(sessionContext(), "user-approval")
     ).toEqual(refusal);
+    // The person chose read-only: Bro says the action is unavailable and
+    // does not push for full access (RU d06).
+    expect(googleReadOnlyWriteRefusal).toContain("недоступно");
+    expect(googleReadOnlyWriteRefusal).toContain(
+      "Не предлагай и не уговаривай перейти на полный доступ"
+    );
   });
 
   it("does not treat calendar API errors as availability", () => {

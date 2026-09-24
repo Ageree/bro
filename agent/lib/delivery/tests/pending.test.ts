@@ -1,7 +1,14 @@
 import type { ModelMessage } from "ai";
 import { describe, expect, it } from "vitest";
-import { awaitsDelivery, turnDelivered } from "@agent/lib/delivery/pending";
-import { rewriteSendNotice } from "@agent/lib/delivery/turn-sends";
+import {
+  awaitsDelivery,
+  outcomeToldEarlier,
+  turnDelivered,
+} from "@agent/lib/delivery/pending";
+import {
+  rewriteSendNotice,
+  skippedSendNotice,
+} from "@agent/lib/delivery/turn-sends";
 
 describe("awaitsDelivery", () => {
   it("waits on a person's message nothing has answered yet", () => {
@@ -30,6 +37,27 @@ describe("awaitsDelivery", () => {
       ).toBe(false);
     }
   );
+
+  it("keeps waiting after only a reaction to a question", () => {
+    // DeepSeek met «What is 2 plus 2?» with 😂 and wrote «4» as plain text,
+    // which never reached the person.
+    const reaction = [
+      toolCall("react_to_message"),
+      toolResult("react_to_message", { type: "text", value: "submitted" }),
+    ];
+
+    expect(
+      awaitsDelivery([userMessage("What is 2 plus 2?"), ...reaction])
+    ).toBe(true);
+    expect(
+      awaitsDelivery([
+        userMessage("What is 2 plus 2?"),
+        ...reaction,
+        toolCall("send_message"),
+        toolResult("send_message", { type: "text", value: "submitted" }),
+      ])
+    ).toBe(false);
+  });
 
   it.each(["error-text", "execution-denied"] as const)(
     "keeps waiting after a send_message that ended in %s",
@@ -153,6 +181,75 @@ describe("turnDelivered", () => {
         toolResult("send_message", { type: "text", value: "submitted" }),
         userMessage("а ещё?"),
       ])
+    ).toBe(false);
+  });
+});
+
+describe("outcomeToldEarlier", () => {
+  const settled = {
+    type: "json" as const,
+    value: {
+      outcome: "Result: корзина собрана, 1 085,95 ₽.",
+      runId: "run-1",
+      status: "done",
+    },
+  };
+  const submitted = { type: "text" as const, value: "submitted" };
+
+  it("is true once an earlier turn told the person what status handed over", () => {
+    expect(
+      outcomeToldEarlier(
+        [
+          userMessage("ну что там?"),
+          toolCall("browser_task"),
+          toolResult("browser_task", settled),
+          toolCall("send_message"),
+          toolResult("send_message", submitted),
+          userMessage("Browser run run-1 finished."),
+        ],
+        "run-1"
+      )
+    ).toBe(true);
+  });
+
+  it("is false for another run, a run still at work, or an outcome nobody was told", () => {
+    const told = (
+      output: Parameters<typeof toolResult>[1],
+      send = submitted
+    ): ModelMessage[] => [
+      userMessage("ну что там?"),
+      toolCall("browser_task"),
+      toolResult("browser_task", output),
+      toolCall("send_message"),
+      toolResult("send_message", send),
+      userMessage("Browser run run-1 finished."),
+    ];
+
+    expect(outcomeToldEarlier(told(settled), "run-2")).toBe(false);
+    expect(
+      outcomeToldEarlier(
+        told({ type: "json", value: { runId: "run-1", status: "running" } }),
+        "run-1"
+      )
+    ).toBe(false);
+    expect(
+      outcomeToldEarlier(
+        told(settled, { type: "text", value: skippedSendNotice("stale") }),
+        "run-1"
+      )
+    ).toBe(false);
+    // The report's own turn is not an earlier one.
+    expect(
+      outcomeToldEarlier(
+        [
+          userMessage("Browser run run-1 finished."),
+          toolCall("browser_task"),
+          toolResult("browser_task", settled),
+          toolCall("send_message"),
+          toolResult("send_message", submitted),
+        ],
+        "run-1"
+      )
     ).toBe(false);
   });
 });

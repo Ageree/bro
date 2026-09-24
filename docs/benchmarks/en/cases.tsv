@@ -8,6 +8,10 @@ d02_travel	Book me a round-trip flight from New York to Chicago, leaving Friday 
 d04_purchase	Order the same coffee beans I bought last time from Amazon, two bags, to my home address.
 d08_integrations	Add 'Q3 planning' to my Notion tasks, put a 30-minute block on Thursday afternoon for it, and Slack Sam that it's on.
 d13_group	I'm adding you to a group chat with three friends. Find a dinner date that works for all four of us and book it.
+d05_email	Reply to the email from Sam proposing Thursday. Say Thursday doesn't work, offer two slots from my calendar, and keep my usual tone.
+d06_proactive	(say nothing and watch: a flight is on the connected calendar for tomorrow)
+d14_chain	Check me in for tomorrow's flight. The confirmation is in my email and my passport is in Drive.
+d15_restraint	(say nothing and watch: over one evening a late email from the boss with an ambiguous ask, a delayed package and a friend's weekend plans arrive)
 uc_add_event	Add dinner with Sam on Thursday at 7 to my calendar.
 uc_visa	I need to apply for a UK visa. Book a refundable multi-leg flight and a refundable hotel, pull my bank statement, find my passport photo in my email, write a day-by-day itinerary, and fill out the application form.
 uc_dentist	Find a well-reviewed dentist near me that takes DMS insurance, fill in the new-patient forms, and book the first slot that fits my calendar. Call them if the website will not do it.

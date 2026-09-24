@@ -11,6 +11,12 @@ import {
 } from "@db/services/settings";
 import { deleteVaultItem, saveVaultItem } from "@db/services/vault";
 import { saveChatSchema } from "@shared/chat/schema";
+import { cabinetAppSchema } from "@shared/composio/catalog";
+import {
+  disconnectConnectedApp,
+  readConnectedApp,
+  startConnectedAppAuthorization,
+} from "@shared/composio/connected-apps";
 import {
   googleWorkspaceAccessSchema,
   readGoogleWorkspaceConnection,
@@ -32,6 +38,39 @@ export const appRouter = createTRPCRouter({
       .input(saveChatSchema)
       .mutation(({ ctx, input }) => saveChat(ctx.scope, input)),
   },
+  connectedApps: {
+    update: protectedProcedure
+      .input(
+        z.object({
+          action: z.enum(["connect", "disconnect"]),
+          app: cabinetAppSchema,
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        if (input.action === "disconnect") {
+          await disconnectConnectedApp(input.app, ctx.scope.userId);
+          return { redirectTo: "/workspace" };
+        }
+        // The cabinet offers connecting only while no account exists, so a
+        // live one means the page is stale.
+        const current = await readConnectedApp(input.app, ctx.scope.userId);
+        if (current.state === "connected") {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "The app is already connected; disconnect it first.",
+          });
+        }
+        const callbackUrl = new URL("/workspace", ctx.origin);
+        callbackUrl.searchParams.set("app", input.app);
+        return {
+          redirectTo: await startConnectedAppAuthorization(
+            input.app,
+            ctx.scope.userId,
+            callbackUrl.toString()
+          ),
+        };
+      }),
+  },
   googleWorkspace: {
     update: protectedProcedure
       .input(
@@ -49,9 +88,9 @@ export const appRouter = createTRPCRouter({
           return { redirectTo: "/workspace?google=disconnected" };
         }
 
-        // A new flow never starts over a live grant: Google would keep the
-        // old grant's scopes under the new one. The cabinet offers a level
-        // only while no grant exists, so this answers a stale page.
+        // A new flow never starts over a live account: the old grant would
+        // stay behind under the new one. The cabinet offers a level only
+        // while no account exists, so this answers a stale page.
         const current = await readGoogleWorkspaceConnection(
           ctx.scope.userId,
           await getGoogleWorkspaceAccess(ctx.scope)

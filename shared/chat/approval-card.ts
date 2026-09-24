@@ -4,9 +4,14 @@ import {
   paymentCeilingRub,
 } from "@shared/browser/submission";
 import {
+  connectedAppNames,
+  connectedAppSchema,
+} from "@shared/composio/catalog";
+import {
   describeSpendRule,
   describeStandingAction,
   formatRub,
+  givenScope,
   normalizeCategory,
   normalizeMerchant,
   type SpendRule,
@@ -28,18 +33,27 @@ import {
 const cardText = {
   en: {
     amount: "Cost",
+    app: "App",
+    appAction: "Action",
+    appArguments: "Data",
+    appTool: "Tool",
     approve: "Approve",
     cancel: "Cancel",
     card: "Pays with the saved card",
     cardUpTo: "Pays with the saved card, up to",
     forWhom: "In the name of",
     guarantee: "The saved card as a guarantee only, nothing charged",
+    items: "Items",
     limitChange: "Change the spend limit:",
     limitClear: "Take back the rule",
     limitInclude: "Pay without asking again on",
     limitSet:
       "Spend limit — payments within it go through without asking from now on:",
     memoryForget: "Forget this from memory:",
+    notionDatabase: "Database",
+    notionDue: "Due",
+    notionNotes: "Notes",
+    notionTask: "Add a task to Notion:",
     permissionFooter:
       "It holds in the conversation until it is taken back; each errand stays on its own site, and background work never uses it.",
     permissionRevoke: "Take back the standing permission:",
@@ -47,6 +61,9 @@ const cardText = {
       "Standing permission — such errands go ahead without asking from now on:",
     personalData: "Details sent",
     site: "Site",
+    slackMessage: "Send a Slack message:",
+    slackText: "Text",
+    slackTo: "To",
     title: "Confirm before this is done in your name:",
     when: "When",
     what: "What",
@@ -55,18 +72,27 @@ const cardText = {
   },
   ru: {
     amount: "Стоимость",
+    app: "Приложение",
+    appAction: "Действие",
+    appArguments: "Данные",
+    appTool: "Инструмент",
     approve: "Подтвердить",
     cancel: "Отмена",
     card: "Оплата сохранённой картой",
     cardUpTo: "Оплата сохранённой картой, не больше",
     forWhom: "От чьего имени",
     guarantee: "Сохранённая карта только в гарантию, без списания",
+    items: "Состав",
     limitChange: "Изменение лимита трат без спроса:",
     limitClear: "Снять правило",
     limitInclude: "Снова платить без спроса",
     limitSet:
       "Лимит трат без спроса — в этих пределах оплата дальше без подтверждения:",
     memoryForget: "Забыть из памяти:",
+    notionDatabase: "База",
+    notionDue: "Срок",
+    notionNotes: "Заметки",
+    notionTask: "Добавить задачу в Notion:",
     permissionFooter:
       "Действует в разговоре, пока его не снимут; каждое поручение остаётся на своём сайте, фоновая работа им не пользуется.",
     permissionRevoke: "Снять постоянное разрешение:",
@@ -74,6 +100,9 @@ const cardText = {
       "Постоянное разрешение — такие поручения дальше без подтверждения:",
     personalData: "Какие данные уйдут",
     site: "Сайт",
+    slackMessage: "Отправить сообщение в Slack:",
+    slackText: "Текст",
+    slackTo: "Кому",
     title: "Подтверждение действия:",
     when: "Когда",
     what: "Что",
@@ -103,6 +132,7 @@ const confirmedCallSchema = z.object({
     // Drawn line by line below, so a stray line break costs nothing here.
     amount: z.string().optional(),
     forWhom: z.string(),
+    items: z.array(z.string()).optional(),
     personalData: z.array(z.string()),
     what: z.string(),
     when: z.string().optional(),
@@ -134,9 +164,14 @@ function browserTaskPrompt(
   text: CardText
 ) {
   const { submission } = call;
+  const items = submission.items ?? [];
   return [
     text.title,
     `${text.what}: ${oneLine(submission.what)}`,
+    // A basket is confirmed line by line: what is in it, not only its total.
+    ...(items.length > 0
+      ? [`${text.items}:`, ...items.map((item) => `• ${oneLine(item)}`)]
+      : []),
     `${text.where}: ${oneLine(submission.where)}`,
     `${text.forWhom}: ${oneLine(submission.forWhom)}`,
     submission.when ? `${text.when}: ${oneLine(submission.when)}` : undefined,
@@ -209,19 +244,18 @@ function standingPermissionPrompt(
   language: CardLanguage
 ) {
   if (call.action === "read") return undefined;
+  const site = givenScope(call.merchant);
   const rule: StandingAction = {
     kind: call.kind ?? null,
     maxRub: call.maxRub ?? null,
     merchant:
-      call.merchant === undefined
-        ? null
-        : (normalizeMerchant(call.merchant) ?? oneLine(call.merchant)),
+      site === undefined ? null : (normalizeMerchant(site) ?? oneLine(site)),
     monthRub: call.maxRub === undefined ? null : (call.monthRub ?? null),
   };
   if (call.action === "revoke") {
     return [
       text.permissionRevoke,
-      call.kind === undefined && call.merchant === undefined
+      call.kind === undefined && site === undefined
         ? "—"
         : describeStandingActionIn(language, rule),
     ].join("\n");
@@ -247,14 +281,12 @@ function spendLimitPrompt(
   language: CardLanguage
 ) {
   if (call.action === "read") return undefined;
+  const shop = givenScope(call.merchant);
   const merchant =
-    call.merchant === undefined
-      ? null
-      : (normalizeMerchant(call.merchant) ?? oneLine(call.merchant));
+    shop === undefined ? null : (normalizeMerchant(shop) ?? oneLine(shop));
+  const named = givenScope(call.category);
   const category =
-    call.category === undefined
-      ? null
-      : (normalizeCategory(call.category) ?? oneLine(call.category));
+    named === undefined ? null : (normalizeCategory(named) ?? oneLine(named));
   const scope = [merchant, category === null ? null : `«${category}»`]
     .filter((part) => part !== null)
     .join(", ");
@@ -279,6 +311,114 @@ function spendLimitPrompt(
   return text.limitChange;
 }
 
+const notionTaskCallSchema = z.object({
+  database: z.string().optional(),
+  due: z.string().optional(),
+  notes: z.string().optional(),
+  title: z.string(),
+});
+
+/** The card for adding a Notion task: the task as it will read there. */
+function notionTaskPrompt(
+  call: z.infer<typeof notionTaskCallSchema>,
+  text: CardText
+) {
+  return [
+    text.notionTask,
+    `«${oneLine(call.title)}»`,
+    call.due ? `${text.notionDue}: ${oneLine(call.due)}` : undefined,
+    call.database
+      ? `${text.notionDatabase}: ${oneLine(call.database)}`
+      : undefined,
+    call.notes
+      ? `${text.notionNotes}: ${clipped(oneLine(call.notes))}`
+      : undefined,
+  ]
+    .filter((line) => line !== undefined)
+    .join("\n");
+}
+
+const slackMessageCallSchema = z.object({ text: z.string(), to: z.string() });
+
+/** The card for a Slack message: who gets it and exactly what it says. */
+function slackMessagePrompt(
+  call: z.infer<typeof slackMessageCallSchema>,
+  text: CardText
+) {
+  return [
+    text.slackMessage,
+    `${text.slackTo}: ${oneLine(call.to)}`,
+    `${text.slackText}: ${oneLine(call.text)}`,
+  ].join("\n");
+}
+
+/** Longest value a card line shows; the rest is cut with an ellipsis. */
+const cardValueLength = 200;
+
+function clipped(value: string) {
+  return value.length > cardValueLength
+    ? `${value.slice(0, cardValueLength)}…`
+    : value;
+}
+
+/** Argument lines one `apps` card lists before cutting the rest. */
+const cardArgumentLines = 12;
+
+const appsCallSchema = z.object({
+  action: z.literal("run"),
+  app: z.string(),
+  arguments: z.string().optional(),
+  summary: z.string().optional(),
+  tool: z.string(),
+});
+
+/** The app an `apps` card names, as the person knows it. */
+function appName(app: string) {
+  if (app === "google") return "Google";
+  const known = connectedAppSchema.safeParse(app);
+  return known.success ? connectedAppNames[known.data] : oneLine(app);
+}
+
+/** One argument line of an `apps` card: the name and the value as JSON. */
+function argumentLines(argumentsJson: string | undefined) {
+  let value: unknown;
+  try {
+    value = JSON.parse(argumentsJson ?? "{}");
+  } catch {
+    return [clipped(oneLine(argumentsJson ?? ""))];
+  }
+  const entries = Object.entries(
+    z.record(z.string(), z.json()).safeParse(value).data ?? {}
+  );
+  const lines = entries
+    .slice(0, cardArgumentLines)
+    .map(
+      ([name, item]) =>
+        `  ${oneLine(name)}: ${clipped(oneLine(z.string().safeParse(item).data ?? JSON.stringify(item)))}`
+    );
+  return entries.length > cardArgumentLines ? [...lines, "  …"] : lines;
+}
+
+/**
+ * The card for an `apps` call that writes: which app, what the call does in
+ * the model's own words, the exact tool, and every argument it sends, so
+ * the words cannot promise less than the call does.
+ */
+function appsPrompt(call: z.infer<typeof appsCallSchema>, text: CardText) {
+  return [
+    text.title,
+    `${text.app}: ${appName(call.app)}`,
+    call.summary
+      ? `${text.appAction}: ${clipped(oneLine(call.summary))}`
+      : undefined,
+    `${text.appTool}: ${oneLine(call.tool)}`,
+    `${text.appArguments}:`,
+    ...argumentLines(call.arguments),
+  ]
+    .filter((line) => line !== undefined)
+    .join("\n");
+}
+
 /** The approval card's text for the call, read from its input, or none. */
 function cardPrompt(
   action: { readonly input: unknown; readonly toolName: string },
@@ -300,6 +440,18 @@ function cardPrompt(
     return call.success
       ? spendLimitPrompt(call.data, text, language)
       : undefined;
+  }
+  if (action.toolName === "notion-add-task") {
+    const call = notionTaskCallSchema.safeParse(action.input);
+    return call.success ? notionTaskPrompt(call.data, text) : undefined;
+  }
+  if (action.toolName === "slack-send-message") {
+    const call = slackMessageCallSchema.safeParse(action.input);
+    return call.success ? slackMessagePrompt(call.data, text) : undefined;
+  }
+  if (action.toolName === "apps") {
+    const call = appsCallSchema.safeParse(action.input);
+    return call.success ? appsPrompt(call.data, text) : undefined;
   }
   // Forgetting what another conversation saved: the record as it reads.
   if (action.toolName === "profile__remove_memory") {

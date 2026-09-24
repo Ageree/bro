@@ -1,12 +1,14 @@
-import { calendar } from "@googleapis/calendar";
-import { auth, gmail } from "@googleapis/gmail";
+import { z } from "zod";
 import {
-  ConnectorInstallationRequiredError,
-  getTokenResponse,
-  NoValidTokenError,
-  UserAuthorizationRequiredError,
-} from "@vercel/connect";
-import { googleApiErrorStatus } from "@agent/lib/google-workspace/client";
+  calendarApi,
+  calendarEventListSchema,
+} from "@agent/lib/google-workspace/calendar";
+import {
+  type GoogleClient,
+  googleApiErrorStatus,
+  googleClient,
+  googleUrl,
+} from "@agent/lib/google-workspace/client";
 import {
   calendarHorizonMs,
   calendarSignals,
@@ -14,8 +16,9 @@ import {
   gmailSignals,
 } from "@agent/lib/proactive/signals";
 import { getGoogleWorkspaceAccess } from "@db/services/settings";
-import { env } from "@shared/environment";
-import { googleWorkspaceTokenParams } from "@shared/google-workspace/connection";
+import { activeConnectedAccount } from "@shared/composio/accounts";
+import { isMissingConnectedAccount } from "@shared/composio/api";
+import { googleWorkspaceAuthConfigId } from "@shared/google-workspace/connection";
 import type { AccessScope } from "@shared/identity/access-scope";
 
 const probeTimeoutMs = 20_000;
@@ -26,10 +29,18 @@ const probeTimeoutMs = 20_000;
 const mailPageSize = 100;
 const maxMailPages = 5;
 
+const mailPageSchema = z.object({
+  messages: z
+    .array(z.object({ id: z.string(), threadId: z.string().optional() }))
+    .optional(),
+  nextPageToken: z.string().optional(),
+});
+
 /**
  * The cheap look that decides whether a model run is worth starting: message
- * and event ids only, two Google requests, no model call. A workspace whose
- * grant is gone reports that instead of failing the tick.
+ * and event ids only, two Google requests through Composio, no model call. A
+ * workspace without a Google account reports that instead of failing the
+ * tick.
  */
 export async function probeGoogleSignals(
   scope: AccessScope,
@@ -39,36 +50,25 @@ export async function probeGoogleSignals(
     readonly timeZone: string;
   }
 ) {
-  // The grant's scopes follow the access level the person connected with;
-  // asking with the other level's scopes finds no grant at all.
-  const access = await getGoogleWorkspaceAccess(scope);
-  let token: string;
-  try {
-    ({ token } = await getTokenResponse(
-      env.GOOGLE_CONNECTOR_UID,
-      googleWorkspaceTokenParams(scope.userId, access)
-    ));
-  } catch (error) {
-    if (
-      error instanceof UserAuthorizationRequiredError ||
-      error instanceof NoValidTokenError
-    ) {
-      return { state: "disconnected" as const };
-    }
-    if (error instanceof ConnectorInstallationRequiredError) {
-      return { state: "unavailable" as const };
-    }
-    throw error;
-  }
-  const authClient = new auth.OAuth2();
-  authClient.setCredentials({ access_token: token });
+  // The account belongs to the access level the person connected with;
+  // looking under the other level's auth config finds none.
+  const authConfigId = googleWorkspaceAuthConfigId(
+    await getGoogleWorkspaceAccess(scope)
+  );
+  if (!authConfigId) return { state: "unavailable" as const };
   const signal = AbortSignal.timeout(probeTimeoutMs);
+  const account = await activeConnectedAccount(
+    scope.userId,
+    { authConfigIds: [authConfigId] },
+    signal
+  );
+  if (!account) return { state: "disconnected" as const };
+  const google = googleClient(account.id, signal);
   try {
     const [messages, events] = await Promise.all([
-      listMailIds(authClient, gmailProbeQuery(window.mailAfter), signal),
-      calendar({ auth: authClient, version: "v3" }).events.list(
-        {
-          calendarId: "primary",
+      listMailIds(google, gmailProbeQuery(window.mailAfter)),
+      google.json(calendarEventListSchema, {
+        url: googleUrl(calendarApi, "/calendars/primary/events", {
           fields: "items(id,status,start)",
           maxResults: 25,
           orderBy: "startTime",
@@ -77,52 +77,48 @@ export async function probeGoogleSignals(
             window.now.getTime() + calendarHorizonMs
           ).toISOString(),
           timeMin: window.now.toISOString(),
-        },
-        { signal }
-      ),
+        }),
+      }),
     ]);
     return {
       signals: [
-        ...calendarSignals(
-          events.data.items ?? [],
-          window.now,
-          window.timeZone
-        ),
+        ...calendarSignals(events.items ?? [], window.now, window.timeZone),
         ...gmailSignals(messages),
       ],
       state: "connected" as const,
     };
   } catch (error) {
-    // A revoked grant surfaces here as a 401 even with a cached token.
-    if (googleApiErrorStatus(error) === 401) {
+    // A grant revoked at Google, or an account Composio dropped since the
+    // lookup, is a disconnect rather than a failed tick.
+    if (
+      googleApiErrorStatus(error) === 401 ||
+      isMissingConnectedAccount(error)
+    ) {
       return { state: "disconnected" as const };
     }
     throw error;
   }
 }
 
-async function listMailIds(
-  authClient: InstanceType<typeof auth.OAuth2>,
-  query: string,
-  signal: AbortSignal
-) {
-  const client = gmail({ auth: authClient, version: "v1" });
+async function listMailIds(google: GoogleClient, query: string) {
   const messages = [];
   let pageToken: string | undefined;
   for (let page = 0; page < maxMailPages; page += 1) {
     // oxlint-disable-next-line eslint/no-await-in-loop -- Each page needs the previous page's token.
-    const { data } = await client.users.messages.list(
-      {
-        fields: "messages(id,threadId),nextPageToken",
-        maxResults: mailPageSize,
-        pageToken,
-        q: query,
-        userId: "me",
-      },
-      { signal }
-    );
-    messages.push(...(data.messages ?? []));
-    pageToken = data.nextPageToken ?? undefined;
+    const listed = await google.json(mailPageSchema, {
+      url: googleUrl(
+        "https://gmail.googleapis.com/gmail/v1/users/me",
+        "/messages",
+        {
+          fields: "messages(id,threadId),nextPageToken",
+          maxResults: mailPageSize,
+          pageToken,
+          q: query,
+        }
+      ),
+    });
+    messages.push(...(listed.messages ?? []));
+    pageToken = listed.nextPageToken;
     if (!pageToken) break;
   }
   return messages;
