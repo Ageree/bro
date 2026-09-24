@@ -6,6 +6,20 @@ import { withGoogleAuth } from "./client";
 const fileFields =
   "id,name,mimeType,size,modifiedTime,version,webViewLink,owners(displayName,emailAddress)";
 
+export const driveSearchInputSchema = z.object({
+  maxResults: z.number().int().min(1).max(25).default(10),
+  query: z
+    .string()
+    .trim()
+    .min(1)
+    .max(200)
+    .describe("Words from the file's name or content, e.g. `passport`."),
+});
+
+export const driveReadInputSchema = z.object({
+  fileId: z.string().trim().min(1).max(200),
+});
+
 /** A download requested as `arraybuffer`, checked rather than cast. */
 const arrayBufferSchema = z.instanceof(ArrayBuffer);
 

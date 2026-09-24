@@ -1,6 +1,10 @@
 import { connect } from "@vercel/connect/eve";
 import type { SessionContext } from "eve/context";
-import type { Approval, ApprovalPolicy } from "eve/tools/approval";
+import type {
+  Approval,
+  ApprovalContext,
+  ApprovalPolicy,
+} from "eve/tools/approval";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import type { getGoogleWorkspaceAccess } from "@db/services/settings";
@@ -21,7 +25,10 @@ import {
   googleWorkspaceProvider,
   googleWriteApproval,
 } from "@agent/lib/google-workspace/client";
-import { gmailUpdateLabels } from "@agent/lib/google-workspace/gmail";
+import {
+  gmailUpdateLabels,
+  gmailUpdateNeedsApproval,
+} from "@agent/lib/google-workspace/gmail";
 import { calendarCreateEvent } from "@agent/tools/calendar";
 import {
   gmailDraft,
@@ -183,6 +190,33 @@ describe("Google Workspace", () => {
     expect(gmailReadThread.approval).toBeUndefined();
   });
 
+  it("asks before changing more than three emails at once", async () => {
+    settings.access.mockResolvedValue("full");
+
+    expect(
+      await approvalOf(gmailUpdate, { messageIds: ids(3), update: "archive" })
+    ).toBe("not-applicable");
+    expect(
+      await approvalOf(gmailUpdate, { messageIds: ids(4), update: "archive" })
+    ).toBe("user-approval");
+    expect(
+      await approvalOf(gmailUpdate, {
+        messageIds: ids(12),
+        update: "mark_read",
+      })
+    ).toBe("user-approval");
+    // The messages the turn already changed count too.
+    expect(gmailUpdateNeedsApproval({ messageIds: ["x"] }, 2)).toBe(false);
+    expect(gmailUpdateNeedsApproval({ messageIds: ["x"] }, 3)).toBe(true);
+    // The same id twice is one email.
+    expect(
+      await approvalOf(gmailUpdate, {
+        messageIds: ["a", "a", "b", "b", "c"],
+        update: "mark_read",
+      })
+    ).toBe("not-applicable");
+  });
+
   it("refuses every write in a read-only workspace before any prompt", async () => {
     settings.access.mockResolvedValue("read_only");
 
@@ -209,12 +243,23 @@ describe("Google Workspace", () => {
   });
 });
 
-async function approvalOf<TInput>(tool: {
-  readonly approval?: Approval<TInput> | undefined;
-}) {
+function ids(count: number) {
+  return Array.from(
+    { length: count },
+    (_, index) => `message-${String(index)}`
+  );
+}
+
+async function approvalOf<TInput>(
+  tool: {
+    readonly approval?: Approval<TInput> | undefined;
+  },
+  toolInput?: ApprovalContext<TInput>["toolInput"]
+) {
   const policy = policyOf(tool.approval);
   return policy({
     ...sessionContext(),
+    toolInput,
     abortSignal: new AbortController().signal,
     approvedTools: new Set(),
     callId: "call-1",

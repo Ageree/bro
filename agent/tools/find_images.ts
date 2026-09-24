@@ -152,7 +152,7 @@ const inputSchema = z.object({
     ),
   url: z
     .url()
-    .refine((url) => new URL(url).protocol === "https:", {
+    .refine((url) => URL.parse(url)?.protocol === "https:", {
       message: "The page must use HTTPS.",
     })
     .describe(

@@ -1,10 +1,7 @@
 import type { ToolContext } from "eve/tools";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type * as Blob from "@vercel/blob";
-import type {
-  readDriveFile,
-  searchDrive,
-} from "@agent/lib/google-workspace/drive";
+import type * as Drive from "@agent/lib/google-workspace/drive";
 import type {
   findDriveFileArtifact,
   saveDriveFileArtifact,
@@ -14,12 +11,13 @@ const mocks = vi.hoisted(() => ({
   del: vi.fn<typeof Blob.del>(),
   find: vi.fn<typeof findDriveFileArtifact>(),
   put: vi.fn<typeof Blob.put>(),
-  read: vi.fn<typeof readDriveFile>(),
-  search: vi.fn<typeof searchDrive>(),
+  read: vi.fn<typeof Drive.readDriveFile>(),
+  search: vi.fn<typeof Drive.searchDrive>(),
   save: vi.fn<typeof saveDriveFileArtifact>(),
 }));
 
-vi.mock("@agent/lib/google-workspace/drive", () => ({
+vi.mock("@agent/lib/google-workspace/drive", async (importOriginal) => ({
+  ...(await importOriginal<typeof Drive>()),
   readDriveFile: mocks.read,
   searchDrive: mocks.search,
 }));

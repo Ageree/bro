@@ -214,6 +214,7 @@ describe("browser secret bindings", () => {
     const task = composeBrowserTask({
       aliases: bound.aliases,
       allowPayment: true,
+      allowSubmit: true,
       collectImages: false,
       errand: "Вызови такси домой",
       facts: "Known details you may type into forms:\nName: Ivan Petrov",
@@ -237,6 +238,7 @@ describe("browser secret bindings", () => {
     const continuation = composeBrowserContinuation({
       aliases: bound.aliases,
       allowPayment: true,
+      allowSubmit: true,
       collectImages: false,
       errand: "Войди в аккаунт",
       facts: "Known details you may type into forms:\nPhone: +79991234567",
@@ -269,6 +271,7 @@ describe("browser secret bindings", () => {
       composeBrowserTask({
         aliases: bound.aliases,
         allowPayment: false,
+        allowSubmit: false,
         collectImages: false,
         errand: "Order groceries",
         facts: undefined,

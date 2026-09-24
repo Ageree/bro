@@ -2,8 +2,10 @@ import { defineAgent, defineDynamic } from "eve";
 import { scheduledRunIdentity } from "@agent/lib/schedules/identity";
 import { isScheduledAgentRunLeaseActive } from "@db/services/scheduled-agent-run-leases";
 import { getWorkspaceModelId } from "@db/services/settings";
+import { personLanguage } from "@agent/lib/delivery/language";
 import { awaitsDelivery } from "@agent/lib/delivery/pending";
 import { turnMustEnd } from "@agent/lib/delivery/turn-sends";
+import { readsMustEnd } from "@agent/lib/google-workspace/turn-reads";
 import { resolveModeValue } from "@agent/lib/mode";
 import { modelSelection } from "@agent/lib/model/selection";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
@@ -34,21 +36,31 @@ export default defineAgent({
         //
         // A turn that already repeated a delivered message or used up its
         // message limit is looping: its next step may only write text, which
-        // ends the turn (`agent/lib/delivery/turn-sends.ts`).
+        // ends the turn (`agent/lib/delivery/turn-sends.ts`). So is one that
+        // keeps asking Google for reads the turn guard refuses
+        // (`agent/lib/google-workspace/turn-reads.ts`).
         const requireToolCall =
           caller.authenticator !== "browser-result" &&
           (resolveModeValue(ctx, {
             interactive: awaitsDelivery(ctx.messages),
           }) ??
             false);
+        // The reply follows the language of the person's latest message,
+        // which the long Russian prompt otherwise outweighs.
+        const replyLanguage =
+          resolveModeValue(ctx, {
+            interactive: personLanguage(ctx.messages),
+          }) ?? undefined;
         return modelSelection(
           await getWorkspaceModelId(scopeFromPrincipal(caller)),
           {
-            toolChoice: turnMustEnd(ctx.messages)
-              ? "none"
-              : requireToolCall
-                ? "required"
-                : "auto",
+            replyLanguage,
+            toolChoice:
+              turnMustEnd(ctx.messages) || readsMustEnd(ctx.messages)
+                ? "none"
+                : requireToolCall
+                  ? "required"
+                  : "auto",
           }
         );
       },

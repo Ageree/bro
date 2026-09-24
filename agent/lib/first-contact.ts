@@ -4,7 +4,7 @@ import type { AccessScope } from "@shared/identity/access-scope";
 /**
  * Handed to the model with the first message this workspace ever sent, in any
  * channel. The instructions look for the `first-contact` marker and introduce
- * Bro once, in Russian.
+ * Bro once, in the language the person wrote in.
  */
 const firstContactMarker =
   "Пометка `first-contact`: аккаунт этого человека создан прямо сейчас, это его первое в жизни сообщение, и знакомства ещё не было.";
