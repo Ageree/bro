@@ -21,7 +21,7 @@ import {
   sessionReplyLanguage,
   turnFailureNotice,
 } from "@agent/lib/delivery/fallback";
-import { withBrowserTaskApprovalCard } from "@agent/lib/browser-use/approval-card";
+import { withApprovalCard } from "@shared/chat/approval-card";
 import { firstContactContext } from "@agent/lib/first-contact";
 import { telegramMediaTurn } from "@agent/lib/inbound-media/telegram";
 import {
@@ -209,14 +209,15 @@ export default telegramChannel({
       markTurnDelivered(context, event.turnId);
       await deliverText(context, session, { attachments: [], text });
     },
-    // eve's own card, except that a browser errand's card says what it will
-    // submit in the person's name instead of only the tool's name.
+    // eve's own card, except that an approval says what it lets through — a
+    // browser errand's submission, a standing permission, a spend limit —
+    // instead of only the tool's name.
     async "input.requested"(event, context, session) {
       const language = sessionReplyLanguage(session.session.auth);
       /* oxlint-disable eslint/no-await-in-loop -- Each card is posted in request order, and a freeform prompt is registered against its own message. */
       for (const request of event.requests) {
         const rendered = renderTelegramInputRequest(
-          withBrowserTaskApprovalCard(request, language),
+          withApprovalCard(request, language),
           context.state
         );
         const posted = await context.telegram.post({

@@ -57,6 +57,29 @@ describe("spend_limit changes", () => {
     });
   });
 
+  it("takes back the standing permissions that pay with «больше не трать без спроса»", () => {
+    const tables = { kind: "table" as const, maxRub: null, merchant: null };
+    const policy = {
+      ...monthly,
+      actions: [
+        tables,
+        { kind: "taxi" as const, maxRub: 1500, merchant: null },
+        { kind: "order" as const, maxRub: 3000, merchant: "lavka.yandex.ru" },
+      ],
+    };
+
+    expect(applySpendLimitChange(policy, { action: "clear" })).toEqual({
+      ...monthly,
+      actions: [tables],
+      rules: [],
+    });
+    // Clearing one scope of the limit leaves the permissions alone.
+    expect(
+      applySpendLimitChange(policy, { action: "clear", merchant: "ozon.ru" })
+        .actions
+    ).toEqual(policy.actions);
+  });
+
   it("excludes and re-includes a shop or a category once, each in its own list", () => {
     const excluded = applySpendLimitChange(
       applySpendLimitChange(

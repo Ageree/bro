@@ -75,6 +75,7 @@ interface SpendEntryRow {
   feeRub: number;
   merchant: string | null;
   periodKey: string;
+  source: "card" | "limit" | "standing";
   status: "charged" | "released" | "reserved";
 }
 
@@ -540,6 +541,7 @@ describe("settling a browser run", () => {
       feeRub: 0,
       merchant: "shop.example",
       periodKey: "2026-09",
+      source: "limit",
       status: "reserved",
     });
     settleSpendReservation.mockResolvedValue({
@@ -548,6 +550,7 @@ describe("settling a browser run", () => {
       feeRub: 0,
       merchant: "shop.example",
       periodKey: "2026-09",
+      source: "limit",
       status: "charged",
     });
     readBrowserUseRun.mockResolvedValue({
@@ -583,6 +586,7 @@ describe("settling a browser run", () => {
       feeRub: 0,
       merchant: "shop.example",
       periodKey: "2026-09",
+      source: "limit",
       status: "reserved",
     });
     settleSpendReservation.mockResolvedValue({
@@ -591,6 +595,7 @@ describe("settling a browser run", () => {
       feeRub: 0,
       merchant: "shop.example",
       periodKey: "2026-09",
+      source: "limit",
       status: "charged",
     });
     readBrowserUseRun.mockResolvedValue({
@@ -621,6 +626,7 @@ describe("settling a browser run", () => {
       feeRub: 0,
       merchant: "shop.example",
       periodKey: "2026-09",
+      source: "limit",
       status: "reserved",
     });
     settleSpendReservation.mockResolvedValue({
@@ -629,6 +635,7 @@ describe("settling a browser run", () => {
       feeRub: 0,
       merchant: "shop.example",
       periodKey: "2026-09",
+      source: "limit",
       status: "charged",
     });
     readBrowserUseRun.mockResolvedValue({
@@ -660,6 +667,7 @@ describe("settling a browser run", () => {
       feeRub: 0,
       merchant: "shop.example",
       periodKey: "2026-09",
+      source: "limit",
       status: "reserved",
     });
     settleSpendReservation.mockResolvedValue({
@@ -668,6 +676,7 @@ describe("settling a browser run", () => {
       feeRub: 0,
       merchant: "shop.example",
       periodKey: "2026-09",
+      source: "limit",
       status: "charged",
     });
     readBrowserUseRun.mockResolvedValue({
@@ -699,6 +708,7 @@ describe("settling a browser run", () => {
       feeRub: 0,
       merchant: "shop.example",
       periodKey: "2026-09",
+      source: "limit",
       status: "reserved",
     });
     readBrowserUseRun.mockResolvedValue({
@@ -728,6 +738,7 @@ describe("settling a browser run", () => {
       feeRub: 0,
       merchant: "shop.example",
       periodKey: "2026-09",
+      source: "limit",
       status: "reserved",
     });
     readBrowserUseRun.mockResolvedValue({

@@ -1,4 +1,5 @@
 import { isIP } from "node:net";
+import { isPublicSuffix } from "@shared/browser/public-suffixes";
 import type { AccessScope } from "@shared/identity/access-scope";
 import {
   parseLoginVaultPayload,
@@ -9,42 +10,6 @@ import type { BrowserUseSecretBinding } from "./client";
 
 /** Browser Use caps `allowedDomains` at ten bare hostnames per binding. */
 const allowedDomainLimit = 10;
-
-/**
- * Suffixes that are not a single owner: real multi-label public suffixes plus
- * shared-hosting domains where every customer is its own subdomain. A host
- * under one of these is never widened to it.
- */
-const publicSuffixes = new Set([
-  "amazonaws.com",
-  "co.il",
-  "co.in",
-  "co.jp",
-  "co.uk",
-  "com.au",
-  "com.br",
-  "com.by",
-  "com.cn",
-  "com.ge",
-  "com.kz",
-  "com.ru",
-  "com.tr",
-  "com.ua",
-  "github.io",
-  "msk.ru",
-  "myshopify.com",
-  "net.ru",
-  "org.kz",
-  "org.ru",
-  "org.uk",
-  "pages.dev",
-  "pp.ru",
-  "shopify.com",
-  "spb.ru",
-  "tilda.ws",
-  "vercel.app",
-  "wixsite.com",
-]);
 
 /**
  * Card-acceptance forms a Russian merchant may hand its checkout over to.
@@ -102,7 +67,7 @@ export function registrableDomain(host: string) {
   const labels = normalized.split(".");
   if (labels.length <= 2) return normalized;
   const lastTwo = labels.slice(-2).join(".");
-  return publicSuffixes.has(lastTwo) ? labels.slice(-3).join(".") : lastTwo;
+  return isPublicSuffix(lastTwo) ? labels.slice(-3).join(".") : lastTwo;
 }
 
 function withoutRedundantHosts(candidates: readonly string[]) {

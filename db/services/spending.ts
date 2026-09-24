@@ -1,21 +1,41 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, inArray, isNotNull, isNull, lt, ne, sql } from "drizzle-orm";
+import {
+  and,
+  eq,
+  inArray,
+  isNotNull,
+  isNull,
+  lt,
+  notInArray,
+  sql,
+} from "drizzle-orm";
 import { env } from "@shared/environment";
 import type { AccessScope } from "@shared/identity/access-scope";
 import {
   type AutoPaymentRequest,
   decideAutoPayment,
+  remainingUnderStandingAction,
   spendLimitPolicySchema,
   type SpendLimitPolicy,
+  type StandingAction,
   wholeRubles,
 } from "@shared/spending/limit";
-import { browserRuns, db, orders, settings, spendEntries } from "@db";
+import {
+  browserRuns,
+  db,
+  orders,
+  settings,
+  spendEntries,
+  type spendEntrySources,
+} from "@db";
 import { ensureScope } from "./scope";
 
 const spendLimitKey = "spend_limit";
 
 // Released rows stay for the record but no longer count against the month.
 const countedStatuses = ["reserved", "charged"] as const;
+
+type SpendSource = (typeof spendEntrySources)[number];
 
 type Database = Pick<typeof db, "execute" | "select">;
 
@@ -103,12 +123,21 @@ export async function updateSpendLimit(
   });
 }
 
+/**
+ * What already counts this month against one kind of permission: the spend
+ * limit counts its own payments, a standing permission its own, and a
+ * payment the person confirmed on a card counts against neither.
+ */
 function countedEntries(
   database: Database,
   scope: AccessScope,
   periodKey: string,
-  exceptRunId?: string
+  options: {
+    readonly exceptRunIds?: readonly string[];
+    readonly source: SpendSource;
+  }
 ) {
+  const except = options.exceptRunIds ?? [];
   return database
     .select({
       amountRub: spendEntries.amountRub,
@@ -122,16 +151,32 @@ function countedEntries(
         eq(spendEntries.workspaceId, scope.workspaceId),
         eq(spendEntries.periodKey, periodKey),
         inArray(spendEntries.status, countedStatuses),
-        exceptRunId === undefined
+        eq(spendEntries.source, options.source),
+        except.length === 0
           ? undefined
-          : ne(spendEntries.browserRunId, exceptRunId)
+          : notInArray(spendEntries.browserRunId, [...except])
       )
     );
 }
 
-/** What already counts against the month: charged and still-reserved rows. */
-export async function listSpendEntries(scope: AccessScope, periodKey: string) {
-  return countedEntries(db, scope, periodKey);
+/**
+ * What already counts against the month, charged and still-reserved: the
+ * spend limit's payments, or a standing permission's with `source`, less the
+ * errand's own reservation a new decision is about to replace.
+ */
+export async function listSpendEntries(
+  scope: AccessScope,
+  periodKey: string,
+  options: {
+    readonly exceptRunId?: string;
+    readonly source?: Exclude<SpendSource, "card">;
+  } = {}
+) {
+  return countedEntries(db, scope, periodKey, {
+    exceptRunIds:
+      options.exceptRunId === undefined ? undefined : [options.exceptRunId],
+    source: options.source ?? "limit",
+  });
 }
 
 /**
@@ -157,24 +202,15 @@ export async function reserveAutoPayment(
   return db.transaction(async (tx) => {
     await lockWorkspaceSpending(tx, scope);
     const policy = await readPolicy(tx, scope);
-    const entries = await countedEntries(
-      tx,
-      scope,
-      input.periodKey,
-      input.replacingRunId
-    );
+    const entries = await countedEntries(tx, scope, input.periodKey, {
+      exceptRunIds:
+        input.replacingRunId === undefined ? undefined : [input.replacingRunId],
+      source: "limit",
+    });
     const decision = decideAutoPayment(policy, input.request, entries);
     if (!decision.allowed) return decision;
     if (input.replacingRunId !== undefined) {
-      await tx
-        .update(spendEntries)
-        .set({ status: "released", updatedAt: new Date() })
-        .where(
-          and(
-            eq(spendEntries.browserRunId, input.replacingRunId),
-            eq(spendEntries.status, "reserved")
-          )
-        );
+      await releaseReplacedReservation(tx, input.replacingRunId);
     }
     // A card guarantee reserves nothing yet still gets its row: whatever the
     // bound card is charged later settles against it.
@@ -192,6 +228,83 @@ export async function reserveAutoPayment(
   });
 }
 
+function releaseReplacedReservation(
+  tx: Pick<typeof db, "update">,
+  browserRunId: string
+) {
+  return tx
+    .update(spendEntries)
+    .set({ status: "released", updatedAt: new Date() })
+    .where(
+      and(
+        eq(spendEntries.browserRunId, browserRunId),
+        eq(spendEntries.status, "reserved")
+      )
+    );
+}
+
+/**
+ * Hold what the person allowed an errand to pay — on the approval card that
+ * named its total, or on a standing permission — so the reconciler checks
+ * what the run reports against it and the person hears about a charge past
+ * it. A standing permission's payment also has to fit the permission's
+ * month, decided under the same workspace lock as the spend limit so two
+ * errands cannot both take its last share. `replacingRunId` is the errand's
+ * own earlier reservation, left out of the month and released once this one
+ * is granted.
+ */
+export async function reserveConsentPayment(
+  scope: AccessScope,
+  input: {
+    readonly amountRub: number;
+    readonly browserRunId: string;
+    readonly category: string | null;
+    readonly merchant: string | null;
+    readonly periodKey: string;
+    readonly replacingRunId?: string;
+    readonly source: Exclude<SpendSource, "limit">;
+    /** The permission a `standing` payment is held to. */
+    readonly standing?: StandingAction;
+  }
+) {
+  await ensureScope(scope);
+  const amountRub = wholeRubles(input.amountRub);
+  return db.transaction(async (tx) => {
+    await lockWorkspaceSpending(tx, scope);
+    if (input.standing) {
+      const entries = await countedEntries(tx, scope, input.periodKey, {
+        exceptRunIds: [
+          input.browserRunId,
+          ...(input.replacingRunId === undefined ? [] : [input.replacingRunId]),
+        ],
+        source: "standing",
+      });
+      const remainingRub = remainingUnderStandingAction(
+        input.standing,
+        entries
+      );
+      if (amountRub > remainingRub) {
+        return { allowed: false as const, remainingRub };
+      }
+    }
+    if (input.replacingRunId !== undefined) {
+      await releaseReplacedReservation(tx, input.replacingRunId);
+    }
+    await tx.insert(spendEntries).values({
+      amountRub,
+      browserRunId: input.browserRunId,
+      category: input.category,
+      feeRub: 0,
+      id: randomUUID(),
+      merchant: input.merchant,
+      periodKey: input.periodKey,
+      source: input.source,
+      workspaceId: scope.workspaceId,
+    });
+    return { allowed: true as const };
+  });
+}
+
 export async function readSpendEntryForRun(browserRunId: string) {
   const rows = await db
     .select()
@@ -203,19 +316,32 @@ export async function readSpendEntryForRun(browserRunId: string) {
 
 /**
  * Hand a reservation to the run that carries the errand on — a background
- * retry after an anti-bot wall, or a follow-up in the same browser — so the
- * payment it may still make stays counted.
+ * retry after an anti-bot wall, a follow-up in the same browser, or the run
+ * itself when a new approval replaces what it held — so the payment it may
+ * still make stays counted. A run keeps one row, so a released one already
+ * there, which counts for nothing, makes way.
  */
 export async function moveSpendReservation(fromRunId: string, toRunId: string) {
-  await db
-    .update(spendEntries)
-    .set({ browserRunId: toRunId, updatedAt: new Date() })
-    .where(
-      and(
-        eq(spendEntries.browserRunId, fromRunId),
-        eq(spendEntries.status, "reserved")
-      )
-    );
+  if (fromRunId === toRunId) return;
+  await db.transaction(async (tx) => {
+    await tx
+      .delete(spendEntries)
+      .where(
+        and(
+          eq(spendEntries.browserRunId, toRunId),
+          eq(spendEntries.status, "released")
+        )
+      );
+    await tx
+      .update(spendEntries)
+      .set({ browserRunId: toRunId, updatedAt: new Date() })
+      .where(
+        and(
+          eq(spendEntries.browserRunId, fromRunId),
+          eq(spendEntries.status, "reserved")
+        )
+      );
+  });
 }
 
 /**

@@ -1,4 +1,4 @@
-import { withBrowserTaskApprovalCard } from "@agent/lib/browser-use/approval-card";
+import { withApprovalCard } from "@shared/chat/approval-card";
 import type { ReplyLanguage } from "@agent/lib/delivery/language";
 
 /** What an iMessage needs of an eve input request to put it into words. */
@@ -20,11 +20,12 @@ const answerHint = {
     freeform: "Or reply in your own words.",
     open: "Reply with your answer.",
   },
+  // Neutral: the person may have chosen «вы» or «ты».
   ru: {
     choose: (count: number) =>
-      `Ответь цифрой: ${Array.from({ length: count }, (_, index) => String(index + 1)).join(" или ")}.`,
-    freeform: "Или ответь своими словами.",
-    open: "Ответь сообщением.",
+      `Ответ — цифрой: ${Array.from({ length: count }, (_, index) => String(index + 1)).join(" или ")}.`,
+    freeform: "Можно ответить и своими словами.",
+    open: "Ответ — сообщением.",
   },
 } as const;
 
@@ -32,11 +33,12 @@ const answerHint = {
  * One request as an iMessage. The chat has no buttons, so each option is
  * numbered: eve resolves a reply that is an option's number (as well as its
  * own id or English label), and a number is the one answer that works in any
- * language. A `browser_task` approval says what it will submit in the
- * person's name, as the Telegram card does.
+ * language. An approval says what it lets through — a submission in the
+ * person's name, a standing permission, a spend limit — as the Telegram card
+ * does.
  */
 function requestText(request: InputRequestText, language: ReplyLanguage) {
-  const shown = withBrowserTaskApprovalCard(request, language);
+  const shown = withApprovalCard(request, language);
   const hint = answerHint[language];
   const options = shown.options ?? [];
   if (options.length === 0) return [shown.prompt, hint.open].join("\n\n");

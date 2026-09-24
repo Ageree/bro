@@ -132,3 +132,41 @@ export async function requireDeliveredTexts(
   await t.require(text.length > 0, equals(true));
   return text;
 }
+
+/**
+ * A text that asks the person something. A question needs no question mark
+ * — «Уточните время», «Напиши адрес» — so a request for an answer counts as
+ * one too.
+ */
+const askingPattern =
+  /\?|(?<!\p{L})(?:уточни|подскажи|скажи|напиши|пришли|выбери|ответь|дай(?:те)? знать|нужно ли|хочешь ли|хотите ли|удобно ли|подойд[её]т ли)/iu;
+
+/** What the turn asked the person in text rather than on a card. */
+function questionTexts(turn: EveEvalTurn) {
+  return turn.toolCalls
+    .filter(
+      (call) => call.name === "send_message" && call.status === "completed"
+    )
+    .map((call) => sendMessageOutputSchema.safeParse(call.input))
+    .flatMap((parsed) =>
+      parsed.success && parsed.data.kind === "message"
+        ? [parsed.data.text ?? ""]
+        : []
+    )
+    .filter((text) => askingPattern.test(text));
+}
+
+/** The one-card contract: no question before the card, in any tool. */
+export function checkNoQuestionBeforeCard(
+  t: EveEvalContext,
+  turn: EveEvalTurn
+) {
+  turn.notCalledTool("ask_question");
+  t.check(
+    questionTexts(turn),
+    satisfies<string[]>(
+      (texts) => texts.length === 0,
+      "no question in text before the card"
+    )
+  );
+}

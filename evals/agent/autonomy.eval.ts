@@ -10,6 +10,7 @@ import { browserSubmissionSchema } from "@shared/browser/submission";
 import {
   agentEvalTags,
   cancelStartedRuns,
+  checkNoQuestionBeforeCard,
   requireDeliveredText,
   skipWithoutBrowser,
 } from "@evals/agent/shared";
@@ -62,11 +63,15 @@ function limitTotal(input: ToolInput) {
  * limit the person set, not even a card held as a guarantee.
  */
 function startedFree(input: ToolInput) {
+  const submission = browserSubmissionSchema.safeParse(input.submission);
   return (
     input.action === "start" &&
     input.allowPayment !== true &&
     input.allowSubmit === true &&
-    browserSubmissionSchema.safeParse(input.submission).success
+    submission.success &&
+    submission.data.kind === "table" &&
+    // Even a zero is a card held as a guarantee.
+    submission.data.chargeRub === undefined
   );
 }
 
@@ -91,7 +96,7 @@ export default [
           status: "pending",
           count: 1,
         });
-        turn.notCalledTool("ask_question");
+        checkNoQuestionBeforeCard(t, turn);
         turn.parked();
         const request = turn.session.requireInputRequest({
           optionIds: ["approve", "cancel"],
@@ -178,7 +183,7 @@ export default [
           status: "pending",
           count: 1,
         });
-        turn.notCalledTool("ask_question");
+        checkNoQuestionBeforeCard(t, turn);
         turn.parked();
 
         const cancelled = await turn.session.respondAll("cancel");

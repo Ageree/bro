@@ -1,9 +1,21 @@
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 import {
   applyStandingPermissionChange,
+  standingPermission,
   standingPermissionApproval,
 } from "@agent/tools/standing_permission";
 import type { SpendLimitPolicy } from "@shared/spending/limit";
+
+function inputSchemaAccepts(
+  input: Parameters<typeof applyStandingPermissionChange>[1]
+) {
+  const schema: unknown = standingPermission.inputSchema;
+  if (!(schema instanceof z.ZodType)) {
+    throw new Error("Expected the authored standing_permission schema.");
+  }
+  return schema.safeParse(input).success;
+}
 
 const monthly: SpendLimitPolicy = {
   currency: "RUB",
@@ -60,6 +72,27 @@ describe("standing_permission changes", () => {
     );
   });
 
+  it("keeps the monthly ceiling the person named with the permission", () => {
+    expect(
+      applyStandingPermissionChange(undefined, {
+        action: "allow",
+        kind: "taxi",
+        maxRub: 1500,
+        monthRub: 20_000,
+      }).actions
+    ).toEqual([{ ...taxi, monthRub: 20_000 }]);
+  });
+
+  it("refuses a shared hosting suffix as the site of a permission", () => {
+    expect(() =>
+      applyStandingPermissionChange(undefined, {
+        action: "allow",
+        kind: "table",
+        merchant: "tilda.ws",
+      })
+    ).toThrow("not a shared hosting suffix");
+  });
+
   it("refuses a permission that names neither a kind nor a site", () => {
     expect(() =>
       applyStandingPermissionChange(undefined, { action: "allow", maxRub: 500 })
@@ -95,6 +128,30 @@ describe("standing_permission approval", () => {
     expect(standingPermissionApproval({ action: "read" }, policy)).toBe(
       "not-applicable"
     );
+  });
+
+  it("asks again for a higher monthly ceiling", () => {
+    expect(
+      standingPermissionApproval(
+        { action: "allow", kind: "taxi", maxRub: 1500, monthRub: 30_000 },
+        { ...monthly, actions: [taxi] }
+      )
+    ).toBe("user-approval");
+  });
+
+  it("never lets one permission cost more than 30 000 ₽ an errand", () => {
+    expect(
+      standingPermissionApproval(
+        { action: "allow", kind: "order", maxRub: 10_000_000 },
+        undefined
+      )
+    ).toBe("user-approval");
+    expect(
+      inputSchemaAccepts({ action: "allow", kind: "order", maxRub: 30_000 })
+    ).toBe(true);
+    expect(
+      inputSchemaAccepts({ action: "allow", kind: "order", maxRub: 30_001 })
+    ).toBe(false);
   });
 
   it("treats a change it cannot read as widening", () => {

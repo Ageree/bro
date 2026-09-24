@@ -232,6 +232,13 @@
       "when": 1790257069552,
       "tag": "0032_spicy_wendigo",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1790260155772,
+      "tag": "0033_thin_vin_gonzales",
+      "breakpoints": true
     }
   ]
 }
