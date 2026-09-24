@@ -2,7 +2,13 @@ import type {
   OpenRouterChatSettings,
   OpenRouterProviderSettings,
 } from "@openrouter/ai-sdk-provider";
-import { generateText, streamText, tool, type wrapLanguageModel } from "ai";
+import {
+  generateText,
+  type JSONSchema7,
+  streamText,
+  tool,
+  type wrapLanguageModel,
+} from "ai";
 import { convertArrayToReadableStream, MockLanguageModelV4 } from "ai/test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
@@ -29,39 +35,41 @@ vi.mock("@openrouter/ai-sdk-provider", () => ({
  * `send_message` with keys in the order its zod schema lists them: `text`
  * before `kind`, and `id` before `kind` in each `replyTo` branch with one.
  */
-const sendMessageTool = {
-  inputSchema: {
-    properties: {
-      text: { type: "string" },
-      kind: { const: "message", type: "string" },
-      replyTo: {
-        oneOf: [
-          {
-            properties: { kind: { const: "current", type: "string" } },
-            type: "object",
+const sendMessageSchema: JSONSchema7 = {
+  properties: {
+    text: { type: "string" },
+    kind: { const: "message", type: "string" },
+    replyTo: {
+      oneOf: [
+        {
+          properties: { kind: { const: "current", type: "string" } },
+          type: "object",
+        },
+        {
+          properties: {
+            id: { type: "string" },
+            kind: { const: "task", type: "string" },
           },
-          {
-            properties: {
-              id: { type: "string" },
-              kind: { const: "task", type: "string" },
-            },
-            type: "object",
+          type: "object",
+        },
+        {
+          properties: {
+            id: { type: "string" },
+            kind: { enum: ["automation"], type: "string" },
           },
-          {
-            properties: {
-              id: { type: "string" },
-              kind: { enum: ["automation"], type: "string" },
-            },
-            type: "object",
-          },
-        ],
-      },
+          type: "object",
+        },
+      ],
     },
-    type: "object",
   },
+  type: "object",
+};
+
+const sendMessageTool = {
+  inputSchema: sendMessageSchema,
   name: "send_message",
-  type: "function",
-} as const;
+  type: "function" as const,
+};
 
 const requiredEnvironment = {
   BETTER_AUTH_SECRET: "test-auth-secret-0123456789abcdefghijklmnop",
