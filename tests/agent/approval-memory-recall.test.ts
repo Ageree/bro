@@ -1,7 +1,10 @@
-import { generateText, type ModelMessage, tool } from "ai";
+import { generateText, type ModelMessage, tool, type ToolCallPart } from "ai";
 import { MockLanguageModelV4 } from "ai/test";
 import { describe, expect, it, vi } from "vitest";
+import type { ApprovalStatus } from "eve/tools/approval";
 import { z } from "zod";
+import { paymentApproval } from "@agent/tools/browser_task";
+import { spendLimitApproval } from "@agent/tools/spend_limit";
 
 /**
  * eve's memory recall helpers are internal, so the test loads the patched
@@ -54,92 +57,125 @@ function recall(operationId: string, content: string) {
   };
 }
 
-const approvalTurn: ModelMessage[] = [
+function approvalTurn(
+  toolName: string,
+  input: ToolCallPart["input"]
+): ModelMessage[] {
+  return [
+    {
+      content: [
+        { input, toolCallId: "call_1", toolName, type: "tool-call" },
+        {
+          approvalId: "approval_1",
+          toolCallId: "call_1",
+          type: "tool-approval-request",
+        },
+      ],
+      role: "assistant",
+    },
+    {
+      content: [
+        {
+          approvalId: "approval_1",
+          approved: true,
+          type: "tool-approval-response",
+        },
+      ],
+      role: "tool",
+    },
+  ];
+}
+
+// The AI SDK re-checks each approved call with its policy before running it,
+// so the gated tools' real policies must keep an approved call approved.
+const gatedCalls = [
   {
-    content: [
-      {
-        input: { title: "Ужин с Сэм" },
-        toolCallId: "call_1",
-        toolName: "create_event",
-        type: "tool-call",
-      },
-      {
-        approvalId: "approval_1",
-        toolCallId: "call_1",
-        type: "tool-approval-request",
-      },
-    ],
-    role: "assistant",
+    input: { summary: "Ужин с Сэм" },
+    policy: (): ApprovalStatus => "user-approval",
+    toolName: "calendar-create-event",
   },
   {
-    content: [
-      {
-        approvalId: "approval_1",
-        approved: true,
-        type: "tool-approval-response",
-      },
-    ],
-    role: "tool",
+    input: { action: "continue", allowPayment: true, runId: "run_1" },
+    policy: () =>
+      paymentApproval({
+        action: "continue",
+        allowPayment: true,
+        runId: "run_1",
+      }),
+    toolName: "browser_task",
+  },
+  {
+    input: { action: "set", limitRub: 5000 },
+    policy: () =>
+      spendLimitApproval({ action: "set", limitRub: 5000 }, undefined),
+    toolName: "spend_limit",
   },
 ];
 
 describe("an approved tool call after a memory recall", () => {
-  it("runs once when the recalled memory changed while the approval waited", async () => {
-    const { applyMemoryRecallBatches, projectMemoryHistory } =
-      await loadMemoryState();
-    const firstTurn = applyMemoryRecallBatches({
-      ...recall("turn_0", "profile v1"),
-      history: [{ content: "Поставь ужин с Сэм на 19:00", role: "user" }],
-      state: {},
-    });
-    // Another conversation saved a memory before the person approved, so
-    // the approval turn recalls a different profile.
-    const approvedTurn = applyMemoryRecallBatches({
-      ...recall("turn_1", "profile v2"),
-      history: [...firstTurn.history, ...approvalTurn],
-      state: firstTurn.state,
-    });
-    const messages = projectMemoryHistory({
-      locks: { [lock.slot]: lock },
-      messages: approvedTurn.history,
-    });
+  it.for(gatedCalls)(
+    "runs $toolName once when the recalled memory changed while the approval waited",
+    async ({ input, policy, toolName }) => {
+      const { applyMemoryRecallBatches, projectMemoryHistory } =
+        await loadMemoryState();
+      const firstTurn = applyMemoryRecallBatches({
+        ...recall("turn_0", "profile v1"),
+        history: [{ content: "Поставь ужин с Сэм на 19:00", role: "user" }],
+        state: {},
+      });
+      // Another conversation saved a memory before the person approved, so
+      // the approval turn recalls a different profile.
+      const approvedTurn = applyMemoryRecallBatches({
+        ...recall("turn_1", "profile v2"),
+        history: [...firstTurn.history, ...approvalTurn(toolName, input)],
+        state: firstTurn.state,
+      });
+      const messages = projectMemoryHistory({
+        locks: { [lock.slot]: lock },
+        messages: approvedTurn.history,
+      });
 
-    const execute = vi.fn<() => { created: boolean }>(() => ({
-      created: true,
-    }));
-    const prompts: unknown[] = [];
-    await generateText({
-      messages,
-      model: new MockLanguageModelV4({
-        doGenerate: async (options) => {
-          prompts.push(options.prompt);
-          return {
-            content: [{ text: "Поставил", type: "text" }],
-            finishReason: { raw: "stop", unified: "stop" },
-            usage: {
-              inputTokens: {
-                cacheRead: 0,
-                cacheWrite: 0,
-                noCache: 1,
-                total: 1,
+      const execute = vi.fn<() => { created: boolean }>(() => ({
+        created: true,
+      }));
+      const prompts: unknown[] = [];
+      await generateText({
+        messages,
+        model: new MockLanguageModelV4({
+          doGenerate: async (options) => {
+            prompts.push(options.prompt);
+            return {
+              content: [{ text: "Поставил", type: "text" }],
+              finishReason: { raw: "stop", unified: "stop" },
+              usage: {
+                inputTokens: {
+                  cacheRead: 0,
+                  cacheWrite: 0,
+                  noCache: 1,
+                  total: 1,
+                },
+                outputTokens: { reasoning: 0, text: 1, total: 1 },
               },
-              outputTokens: { reasoning: 0, text: 1, total: 1 },
-            },
-            warnings: [],
-          };
-        },
-      }),
-      tools: {
-        create_event: tool({
-          execute,
-          inputSchema: z.object({ title: z.string() }),
+              warnings: [],
+            };
+          },
         }),
-      },
-    });
+        // eve hands the policy's answer to the AI SDK the same way.
+        toolApproval: () => {
+          const status = policy();
+          if (status === true) return "user-approval";
+          if (status === false) return "not-applicable";
+          return status;
+        },
+        tools: {
+          [toolName]: tool({ execute, inputSchema: z.looseObject({}) }),
+        },
+      });
 
-    expect(execute).toHaveBeenCalledOnce();
-    expect(JSON.stringify(prompts)).toContain('"type":"tool-result"');
-    expect(JSON.stringify(messages)).toContain("profile v2");
-    expect(messages.at(-1)?.role).toBe("tool");
-  });
+      expect(execute).toHaveBeenCalledOnce();
+      expect(JSON.stringify(prompts)).toContain('"type":"tool-result"');
+      expect(JSON.stringify(messages)).toContain("profile v2");
+      expect(messages.at(-1)?.role).toBe("tool");
+    }
+  );
 });
