@@ -34,7 +34,7 @@ export default defineChannel({
   routes: [
     POST(
       "/internal/scheduled-run/respond",
-      () =>
+      async () =>
         new Response("Answers reach scheduled runs through schedules-answer.", {
           status: 410,
         })
