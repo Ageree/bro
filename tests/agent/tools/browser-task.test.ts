@@ -12,7 +12,6 @@ import { z } from "zod";
 import type * as browserUseClient from "@agent/lib/browser-use/client";
 import type * as browserUseSecrets from "@agent/lib/browser-use/secrets";
 import type * as browserUseCredits from "@agent/lib/browser-use/credits";
-import type * as browserRunsService from "@db/services/browser-runs";
 import {
   BrowserUseError,
   type BrowserUseCreateRunInput,
@@ -75,6 +74,9 @@ const recordBrowserRunSubmission = vi.hoisted(() =>
 );
 const claimBrowserRunCompletion = vi.hoisted(() =>
   vi.fn<() => Promise<void>>(() => Promise.resolve())
+);
+const finishBrowserRunReport = vi.hoisted(() =>
+  vi.fn<(runId: string) => Promise<void>>(() => Promise.resolve())
 );
 const browserRunQuotaGate = vi.hoisted(() =>
   vi.fn<() => Promise<{ allowed: boolean; note: string | undefined }>>(() =>
@@ -223,14 +225,13 @@ const reportBrowserUseOutOfCredits = vi.hoisted(() =>
 
 type Unused = () => never;
 
-vi.mock("@db/services/browser-runs", async (importOriginal) => ({
-  browserRunReportOwed: (await importOriginal<typeof browserRunsService>())
-    .browserRunReportOwed,
+vi.mock("@db/services/browser-runs", () => ({
   claimBrowserRunCompletion,
   closeQueuedBrowserRun,
   countQueuedBrowserRuns,
   createBrowserRun,
   createQueuedBrowserRun,
+  finishBrowserRunReport,
   readBrowserProfileId: vi.fn<() => Promise<string>>(() =>
     Promise.resolve("profile-1")
   ),
@@ -3414,6 +3415,7 @@ describe("browser_task finds the option before the one card", () => {
       allowPayment: false,
       collectImages: false,
       consent: undefined,
+      deliveryAddresses: [],
       errand: "Возьми сапсан в питер на пятницу после 18:00",
       facts: undefined,
       home: undefined,
@@ -3439,6 +3441,7 @@ describe("browser_task finds the option before the one card", () => {
       allowPayment: false,
       collectImages: false,
       consent: undefined,
+      deliveryAddresses: [],
       errand: "Посмотри штрафы и налоги в личном кабинете",
       facts: undefined,
       home: "Москва, Россия",
@@ -3461,6 +3464,7 @@ describe("browser_task finds the option before the one card", () => {
       allowPayment: false,
       collectImages: false,
       consent: undefined,
+      deliveryAddresses: [],
       errand: "Посмотри штрафы",
       facts: undefined,
       message: "Код истёк. Запроси новый код.",
@@ -3469,6 +3473,395 @@ describe("browser_task finds the option before the one card", () => {
     });
     expect(continuation.indexOf("First rule of this run")).toBeLessThan(
       continuation.indexOf("minutes searching")
+    );
+  });
+});
+
+describe("browser_task delivery address before the card", () => {
+  const homeCard = serializeAddressVaultPayload({
+    city: "Москва",
+    countryCode: "RU",
+    kind: "address",
+    line1: "ул. Ленина, 1",
+    postalCode: "101000",
+    recipientName: "Иван Петров",
+    region: "Москва",
+    version: 1,
+  });
+
+  beforeEach(() => {
+    readUserProfile.mockResolvedValue({
+      ...emptyUserProfile,
+      addressLine1: "ул. Тверская, 7, кв. 12",
+      city: "Москва",
+      countryCode: "RU",
+      email: "ivan@example.com",
+      firstName: "Иван",
+      lastName: "Петров",
+      phone: "+79991234567",
+      postalCode: "125009",
+    });
+    readVaultItems.mockResolvedValue([
+      {
+        account: "",
+        hasSecret: true,
+        id: "address-1",
+        kind: "address",
+        label: "Домашний адрес",
+      },
+    ]);
+    readVaultSecret.mockResolvedValue(homeCard);
+  });
+
+  async function startSearch(task: string, deliveryAddress?: boolean) {
+    vi.resetModules();
+    createBrowserUseRun.mockResolvedValue({
+      id: runId,
+      model: "hosted-agent",
+      sessionId,
+      status: "running",
+    });
+    const { browserTask } = await import("@agent/tools/browser_task");
+    await browserTask.execute(
+      {
+        action: "start",
+        deliveryAddress,
+        site: "https://lavka.yandex.ru",
+        task,
+      },
+      toolContext("better-auth:alice")
+    );
+    return String(createBrowserUseRun.mock.calls[0]?.[0].task);
+  }
+
+  it("gives a delivery errand the saved address for the site's address picker only", async () => {
+    // RU 24.09, d05: the first grocery run had no address, so it could not
+    // say what would come by 20:00, and a second run was needed.
+    const task = await startSearch(
+      "Собери корзину с доставкой к 20:00: молоко 3,2%, десяток яиц, 2 авокадо"
+    );
+
+    expect(task).toContain("Delivery addresses on file:");
+    expect(task).toContain("- ул. Тверская, 7, кв. 12, 125009, Москва, RU");
+    expect(task).toContain(
+      "- Домашний адрес: ул. Ленина, 1, 101000, Москва, Москва, RU"
+    );
+    expect(task).toContain("the site's own address or delivery-zone picker");
+    expect(task).toContain(
+      "never together with a name, a phone number or an email"
+    );
+    expect(task).toContain(
+      "Never type the person's name, phone number or email into any site, and their address only where the delivery-address paragraph below allows."
+    );
+    // Everything else about the person still waits for the card.
+    expect(task).not.toContain("Known details you may type into forms:");
+    expect(task).not.toContain("Иван Петров");
+    expect(task).not.toContain("+79991234567");
+    expect(task).not.toContain("ivan@example.com");
+  });
+
+  it("takes the call's word for a delivery errand that does not say so", async () => {
+    const task = await startSearch(
+      "Собери корзину: молоко, яйца, авокадо",
+      true
+    );
+
+    expect(task).toContain("Delivery addresses on file:");
+  });
+
+  it("keeps the address out of an errand that is not about delivery", async () => {
+    const task = await startSearch(
+      "Найди ресторан на четверых в четверг в 19:30"
+    );
+
+    expect(task).not.toContain("Delivery addresses on file:");
+    expect(task).not.toContain("ул. Тверская");
+    expect(task).toContain(
+      "Never type the person's name, phone number, email or address into any site."
+    );
+  });
+
+  it("names no address the profile and the vault do not have", async () => {
+    readUserProfile.mockResolvedValue({
+      ...emptyUserProfile,
+      city: "Москва",
+      countryCode: "RU",
+    });
+    readVaultItems.mockResolvedValue([]);
+
+    const task = await startSearch("Закажи продукты с доставкой к восьми");
+
+    expect(task).not.toContain("Delivery addresses on file:");
+    expect(task).toContain(
+      "Never type the person's name, phone number, email or address into any site."
+    );
+  });
+
+  it("gives no address to a follow-up that only looks at a finished order", async () => {
+    const { composeBrowserContinuation } =
+      await import("@agent/tools/browser_task");
+    const followUp = (done: boolean) =>
+      composeBrowserContinuation({
+        aliases: [],
+        allowPayment: false,
+        collectImages: false,
+        consent: undefined,
+        deliveryAddresses: ["ул. Ленина, 1"],
+        done,
+        errand: "Закажи такси домой",
+        facts: undefined,
+        message: "Где машина?",
+        searching: false,
+        site: "https://taxi.yandex.ru",
+      });
+
+    expect(followUp(false)).toContain("Delivery addresses on file:");
+    expect(followUp(true)).not.toContain("Delivery addresses on file:");
+  });
+
+  it("leaves a confirmed errand with the details the card allowed", async () => {
+    await startErrand("", undefined, true);
+
+    const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
+    expect(task).toContain("Known details you may type into forms:");
+    expect(task).not.toContain("Delivery addresses on file:");
+  });
+});
+
+/** A search errand on Ozon with a saved login, as the run would get it. */
+async function composed(errand: string) {
+  const { composeBrowserTask } = await import("@agent/tools/browser_task");
+  return composeBrowserTask({
+    aliases: ["login_username", "login_password"],
+    allowPayment: false,
+    collectImages: false,
+    consent: undefined,
+    deliveryAddresses: [],
+    errand,
+    facts: undefined,
+    home: undefined,
+    site: "https://www.ozon.ru",
+  });
+}
+
+describe("browser_task errand text", () => {
+  it("sends an errand about a past purchase to the site's own order history", async () => {
+    // RU 24.09, d04: «закажи на озоне тот же корм коту, что в прошлый раз»
+    // names nothing a catalogue search can find.
+    const task = await composed(
+      "Закажи тот же корм коту, что в прошлый раз, две пачки, в мой пункт выдачи"
+    );
+
+    expect(task).toContain("open the site's own order history");
+    expect(task).toContain("take that exact item from the past order");
+    expect(task).toContain("which past order it came from");
+    expect(await composed("Повтори мой прошлый заказ")).toContain(
+      "open the site's own order history"
+    );
+    expect(await composed("Найди корм для кота до 1 000 ₽")).not.toContain(
+      "order history"
+    );
+  });
+
+  it("asks the run when a later step of the errand opens", async () => {
+    const task = await composed(
+      "Найди рейс в Сочи и узнай, когда откроется онлайн-регистрация"
+    );
+
+    expect(task).toContain(
+      "NEXT: when the errand is one step of something that can only be finished later"
+    );
+  });
+
+  it("holds a confirmed basket to its lines", async () => {
+    const { composeBrowserTask } = await import("@agent/tools/browser_task");
+
+    const task = composeBrowserTask({
+      aliases: [],
+      allowPayment: true,
+      collectImages: false,
+      consent: {
+        by: "card",
+        kind: "confirmed",
+        submission: {
+          chargeRub: 1_298,
+          forWhom: "Алиса",
+          items: [
+            "Корм Whiskas с кроликом 1,9 кг × 2 — 1 298 ₽",
+            "Доставка в ПВЗ — 0 ₽",
+          ],
+          kind: "order",
+          paymentCapRub: 1_428,
+          personalData: ["имя", "телефон"],
+          what: "заказ корма",
+          where: "Ozon (ozon.ru)",
+        },
+      },
+      deliveryAddresses: ["ул. Ленина, 1"],
+      errand: "Закажи корм",
+      facts: undefined,
+      home: undefined,
+      site: "https://www.ozon.ru",
+    });
+
+    expect(task).toContain(
+      [
+        "What: заказ корма",
+        "Items:",
+        "- Корм Whiskas с кроликом 1,9 кг × 2 — 1 298 ₽",
+        "- Доставка в ПВЗ — 0 ₽",
+        "Where: Ozon (ozon.ru)",
+      ].join("\n")
+    );
+    // A confirmed errand has its details already: no address paragraph.
+    expect(task).not.toContain("Delivery addresses on file:");
+  });
+
+  it("asks again when the basket on the card changes, not when it is reordered", async () => {
+    const { browserTaskApproval } = await import("@agent/tools/browser_task");
+    const food = "Корм Whiskas 1,9 кг × 2 — 1 298 ₽";
+    const bag = "Пакет — 0 ₽";
+    const basket: BrowserSubmission = {
+      chargeRub: 1_298,
+      forWhom: "Алиса",
+      items: [food, bag],
+      kind: "order",
+      personalData: ["имя", "телефон"],
+      what: "заказ корма",
+      where: "Ozon (ozon.ru)",
+    };
+    readBrowserRunForScope.mockResolvedValue(
+      browserRunRow(new Date(), "Needs: 3ds", {
+        ...basket,
+        paymentCapRub: 1_428,
+      })
+    );
+    const continued = (items: string[]) =>
+      browserTaskApproval(
+        {
+          action: "continue",
+          allowSubmit: true,
+          runId,
+          submission: { ...basket, items },
+          task: "Подтвердил в банке",
+        },
+        approvalSession("photon-imessage")
+      );
+
+    expect(await continued([bag, food])).toBe("not-applicable");
+    expect(await continued(["Корм Whiskas 1,9 кг × 3 — 1 947 ₽"])).toBe(
+      "user-approval"
+    );
+  });
+});
+
+describe("browser_task on a finished errand the person has not heard about", () => {
+  const outcome = "Result: Сапсан №781, пт 19:10, 4 200 ₽\nNeeds: decision";
+
+  function finishedRow(options: {
+    readonly delivered: boolean;
+    readonly outcome?: string;
+  }) {
+    return {
+      ...browserRunRow(new Date(), options.outcome ?? outcome),
+      report: "Browser run finished.",
+      // A report turn queued behind the person's own turn holds the lease.
+      reportClaimedAt: new Date(),
+      reportDeliveredAt: options.delivered ? new Date() : null,
+    };
+  }
+
+  async function follow(task: string, authenticator?: string) {
+    const { browserTask } = await import("@agent/tools/browser_task");
+    return browserTask.execute(
+      { action: "continue", runId, task },
+      toolContext("better-auth:alice", authenticator)
+    );
+  }
+
+  it("answers «ну что там?» with the outcome instead of a new run", async () => {
+    // RU 24.09, d01 and d02: the model continued the finished run to ask
+    // how it went, and the person heard nothing for minutes more.
+    readBrowserRunForScope.mockResolvedValue(finishedRow({ delivered: false }));
+
+    const result = await follow("Пользователь спрашивает, что с поручением");
+
+    expect(createBrowserUseRun).not.toHaveBeenCalled();
+    expect(queueBrowserUseSessionMessage).not.toHaveBeenCalled();
+    expect(stopBrowserRunErrand).not.toHaveBeenCalled();
+    expect(finishBrowserRunReport).toHaveBeenCalledExactlyOnceWith(runId);
+    expect(result).toMatchObject({ outcome, runId, status: "done" });
+    expect(continuationNote(result)).toContain("Nothing was sent to the site");
+    expect(continuationNote(result)).toContain(
+      "call continue again after telling them"
+    );
+    // What the run stopped on still decides the answer: one card, no question.
+    expect(continuationNote(result)).toContain(
+      "continue this run now with allowSubmit"
+    );
+  });
+
+  it("goes through once the person has heard the outcome", async () => {
+    readBrowserRunForScope.mockResolvedValue(finishedRow({ delivered: true }));
+
+    await follow("Поищи ещё на субботу");
+
+    expect(createBrowserUseRun).toHaveBeenCalledOnce();
+    expect(finishBrowserRunReport).not.toHaveBeenCalled();
+  });
+
+  it("passes a code on at once, heard or not", async () => {
+    readBrowserRunForScope.mockResolvedValue(
+      finishedRow({ delivered: false, outcome: "Needs: sms_code" })
+    );
+
+    await follow("992130");
+
+    expect(createBrowserUseRun).toHaveBeenCalledOnce();
+    expect(finishBrowserRunReport).not.toHaveBeenCalled();
+  });
+
+  it("lets the run's own report turn continue it", async () => {
+    readBrowserRunForScope.mockResolvedValue(finishedRow({ delivered: false }));
+
+    await follow("Collect the actual links of the options", "browser-result");
+
+    expect(createBrowserUseRun).toHaveBeenCalledOnce();
+  });
+
+  it("hands the outcome over on status and says to retell it", async () => {
+    readBrowserRunForScope.mockResolvedValue(finishedRow({ delivered: false }));
+    const { browserTask } = await import("@agent/tools/browser_task");
+
+    const result = await browserTask.execute(
+      { action: "status", runId },
+      toolContext("better-auth:alice")
+    );
+
+    expect(finishBrowserRunReport).toHaveBeenCalledExactlyOnceWith(runId);
+    expect(readBrowserUseRunStatus).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ outcome, status: "done" });
+    expect(continuationNote(result)).toContain(
+      "never reached the conversation"
+    );
+    expect(continuationNote(result)).toContain("Answer the user from it");
+    expect(continuationNote(result)).toContain(
+      "do not continue the run only to ask how it went"
+    );
+  });
+
+  it("leaves the report to its own turn when a scheduled worker looks", async () => {
+    readBrowserRunForScope.mockResolvedValue(finishedRow({ delivered: false }));
+    const { browserTask } = await import("@agent/tools/browser_task");
+
+    const result = await browserTask.execute(
+      { action: "status", runId },
+      toolContext("better-auth:alice", "scheduled-worker")
+    );
+
+    expect(finishBrowserRunReport).not.toHaveBeenCalled();
+    expect(continuationNote(result)).not.toContain(
+      "never reached the conversation"
     );
   });
 });

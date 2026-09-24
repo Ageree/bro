@@ -13,6 +13,11 @@ interface BrowserRunRow {
   createdByUserId: string;
   id: string;
   liveViewUrl: string;
+  // Whether the run could buy anything: left out, the row is taken as one
+  // that could, as every row did before orders were held to it.
+  paymentAllowed?: boolean;
+  site?: string | null;
+  submission?: { readonly what: string } | null;
   task: string;
   workspaceId: string;
 }
@@ -177,9 +182,15 @@ vi.mock("@db/services/spending", () => ({
     }),
   settleSpendReservation,
 }));
-vi.mock("@db/services/orders", () => ({
-  recordOrder: vi.fn<() => Promise<void>>(() => Promise.resolve()),
-}));
+const recordOrder = vi.hoisted(() =>
+  vi.fn<
+    (
+      scope: { userId: string; workspaceId: string },
+      order: { items: unknown; merchantOrderId: string; status: string }
+    ) => Promise<void>
+  >(() => Promise.resolve())
+);
+vi.mock("@db/services/orders", () => ({ recordOrder }));
 vi.mock("@agent/lib/browser-use/client", () => ({
   cancelBrowserUseRun,
   stopBrowserUseSessionBrowsers,
@@ -809,6 +820,124 @@ describe("settling a browser run", () => {
     expect(settleSpendReservation).not.toHaveBeenCalled();
     // The page still waits for the code, so its browser stays up.
     expect(stopBrowserUseSessionBrowsers).not.toHaveBeenCalled();
+  });
+
+  it("records a paid order with its lines and reports it as a receipt", async () => {
+    readBrowserRun.mockResolvedValue({
+      ...row,
+      paymentAllowed: true,
+      site: "https://www.ozon.ru",
+      submission: { what: "заказ корма" },
+    });
+    readBrowserUseRun.mockResolvedValue({
+      error: null,
+      id: runId,
+      result: [
+        "RESULT: заказ оплачен, доставка в ПВЗ завтра",
+        "ORDER: 46000123-0001",
+        "TOTAL: 1 298 ₽",
+        "NEEDS: none",
+        'ITEMS: [{"name":"Корм Whiskas с кроликом, 1,9 кг","price":"649 ₽","quantity":"2","url":null,"details":null}]',
+      ].join("\n"),
+      sessionId: "session-1",
+      status: "completed",
+      task: "Повтори заказ корма",
+    });
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    expect(recordOrder).toHaveBeenCalledOnce();
+    expect(recordOrder.mock.calls[0]?.[1]).toMatchObject({
+      items: [
+        {
+          name: "Корм Whiskas с кроликом, 1,9 кг",
+          price: "649 ₽",
+          quantity: "2",
+        },
+      ],
+      merchantOrderId: "46000123-0001",
+      status: "placed",
+    });
+    expect(send.mock.calls[0]?.[0]).toContain(
+      "The order went through: give the user its number, the total paid, what was ordered"
+    );
+  });
+
+  it("does not take the old order a looking run read for a new one", async () => {
+    // A run sent to the order history for «как в прошлый раз» reports the
+    // past order's number, and it acted in nobody's name.
+    readBrowserRun.mockResolvedValue({
+      ...row,
+      paymentAllowed: false,
+      site: "https://www.ozon.ru",
+      submission: null,
+    });
+    readBrowserUseRun.mockResolvedValue({
+      error: null,
+      id: runId,
+      result: [
+        "RESULT: прошлый заказ корма найден в истории заказов",
+        "ORDER: 45999000-0002",
+        "TOTAL: 1 190 ₽",
+        "NEEDS: none",
+      ].join("\n"),
+      sessionId: "session-1",
+      status: "completed",
+      task: "Найди в истории заказов прошлый корм",
+    });
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    expect(recordOrder).not.toHaveBeenCalled();
+    expect(send.mock.calls[0]?.[0]).not.toContain("The order went through");
+  });
+
+  it("asks to set up the later step the person asked for, and only then", async () => {
+    readBrowserUseRun.mockResolvedValue({
+      error: null,
+      id: runId,
+      result: [
+        "RESULT: рейс SU1124 найден, 12 400 ₽ с багажом",
+        "NEEDS: decision",
+        "NEXT: онлайн-регистрация откроется за 24 часа до вылета, 03.10 в 09:30",
+      ].join("\n"),
+      sessionId: "session-1",
+      status: "completed",
+      task: "Найди билеты в Сочи",
+    });
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    // RU 24.09, d02: «зарегистрируй, как откроется» ended with no check-in
+    // set up; a schedule nobody asked for is not the answer either.
+    const prompt = send.mock.calls[0]?.[0];
+    expect(prompt).toContain(
+      "Next: онлайн-регистрация откроется за 24 часа до вылета, 03.10 в 09:30"
+    );
+    expect(prompt).toContain("set it up now with schedules-create");
+    expect(prompt).toContain("do not end with «напиши, если нужно»");
+    expect(prompt).toContain(
+      "If the user did not ask for that step, mention when it opens once and schedule nothing."
+    );
+  });
+
+  it("says nothing about a later step the run did not report", async () => {
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    expect(send.mock.calls[0]?.[0]).not.toContain("schedules-create");
   });
 });
 

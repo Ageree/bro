@@ -258,6 +258,7 @@ export function parseBrowserOutcome(result: string | null | undefined) {
     labelled: rawNeeds !== undefined,
     links: browserResultLinks(text),
     needs: browserRunNeeds.find((need) => need === candidate) ?? "none",
+    next: labelledValue(text, "NEXT"),
     order: labelledValue(text, "ORDER"),
     result: labelledValue(text, "RESULT"),
     total: labelledValue(text, "TOTAL"),
@@ -276,6 +277,7 @@ export function browserOutcomeSummary(
     outcome.total ? `Total: ${outcome.total}` : undefined,
     outcome.needs === "none" ? undefined : `Needs: ${outcome.needs}`,
     outcome.details ? `Details: ${outcome.details}` : undefined,
+    outcome.next ? `Next: ${outcome.next}` : undefined,
     outcome.items.length > 0
       ? ["Items:", ...itemLines(outcome.items)].join("\n")
       : undefined,
@@ -301,8 +303,15 @@ type OrderStatus = "cancelled" | "placed";
 const wildberriesPattern =
   /wildberries|вайлдберр|\bwb\.ru\b|(?<![\p{L}])(?:wb|вб)(?![\p{L}])/iu;
 const ozonPattern = /ozon|озон/iu;
-const cancelledPattern =
-  /отмен(?:и|ить|ён|ен|ена|или|яю|яем)|аннулир|cancel(?:l?ed)?/iu;
+/**
+ * An order the run reports as cancelled — «заказ отменён», «отменили» — and
+ * not one whose terms mention cancelling: «отменить можно до 18:00» under a
+ * placed order recorded it as cancelled. Only the result line counts, or an
+ * errand that is itself a cancellation.
+ */
+const cancelledResultPattern =
+  /(?<!\p{L})(?:отмен(?:[её]н[аоы]?|ил[аи]?)|аннулирован\p{L}*|cancell?ed)(?!\p{L})/iu;
+const cancellingErrandPattern = /^\s*(?:отмени|аннулируй|cancel)(?!\p{L})/iu;
 const pickupPattern =
   /(?:пвз|пункт\s+выдачи|самовывоз|pickup)\s*[:\-–—]\s*(.+)/iu;
 // Digits with the separators a merchant prints inside them.
@@ -390,12 +399,23 @@ export function parseBrowserOrder(
     .exec(run.result ?? "")?.[1]
     ?.trim()
     .slice(0, 280);
-  const status: OrderStatus = cancelledPattern.test(
-    `${run.task}\n${run.result ?? ""}`
-  )
-    ? "cancelled"
-    : "placed";
+  const status: OrderStatus =
+    cancellingErrandPattern.test(run.task) ||
+    cancelledResultPattern.test(outcome.result ?? "")
+      ? "cancelled"
+      : "placed";
   return {
+    // What the basket held, so «что я заказывал» and «повтори тот заказ»
+    // can name the exact lines instead of the one-line result.
+    items:
+      outcome.items.length === 0
+        ? null
+        : outcome.items.map(({ name, price, quantity, url }) => ({
+            name,
+            price,
+            quantity,
+            url,
+          })),
     merchant: merchantFromText(run.site, run.task, run.result),
     merchantOrderId,
     pickup: pickup === undefined || pickup === "" ? null : pickup,

@@ -150,6 +150,27 @@ describe("order records", () => {
     await orders.recordOrder(bob, order);
     expect(await orders.listOrders(bob)).toHaveLength(1);
   }, 30_000);
+
+  it("keeps the basket's lines when a later report of the order lists none", async () => {
+    const { orders } = await billingDatabase();
+    const items = [
+      {
+        name: "Корм Whiskas с кроликом, 1,9 кг",
+        price: "649 ₽",
+        quantity: "2",
+      },
+    ];
+
+    await orders.recordOrder(alice, { ...order, items });
+    // The run that only got 3-D Secure through reports the same number bare.
+    const confirmed = await orders.recordOrder(alice, {
+      ...order,
+      items: null,
+    });
+
+    expect(confirmed.items).toEqual(items);
+    expect((await orders.listOrders(alice))[0]?.items).toEqual(items);
+  }, 30_000);
 });
 
 describe("workspace time zone", () => {
