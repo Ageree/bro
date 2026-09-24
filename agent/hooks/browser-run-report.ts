@@ -1,5 +1,5 @@
 import { defineHook, type HookContext } from "eve/hooks";
-import { z } from "zod";
+import { reportedBrowserRunId } from "@agent/lib/browser-use/report-caller";
 import { sendMessageToolResultSchema } from "@shared/chat/message-delivery";
 import {
   finishBrowserRunReport,
@@ -7,19 +7,13 @@ import {
   reopenBrowserRunReport,
 } from "@db/services/browser-runs";
 
-const browserReportCallerSchema = z.object({
-  attributes: z.object({ browserRunId: z.string().min(1) }),
-  authenticator: z.literal("browser-result"),
-});
-
 /**
  * The browser run whose report started this turn. A subagent inherits its
  * parent's caller, so only the conversation's own turn answers for it.
  */
 function reportedRunId(ctx: HookContext) {
   if (ctx.session.parent) return undefined;
-  return browserReportCallerSchema.safeParse(ctx.session.auth.current).data
-    ?.attributes.browserRunId;
+  return reportedBrowserRunId(ctx.session.auth.current);
 }
 
 /**
@@ -38,8 +32,13 @@ export default defineHook({
     },
     async "action.result"(event, ctx) {
       const runId = reportedRunId(ctx);
-      if (!runId || event.data.status !== "completed") return;
+      if (!runId) return;
       const { result } = event.data;
+      // A report turn at work keeps its lease however long it takes.
+      if (event.data.status !== "completed") {
+        await renewBrowserRunReportLease(runId);
+        return;
+      }
       // `browser_task` here is a continue on the errand — the person hears
       // from its own report, and a retry of this one must not repeat it.
       const handled =
@@ -47,7 +46,9 @@ export default defineHook({
         (result.kind === "tool-result" &&
           result.toolName === "browser_task" &&
           result.isError !== true);
-      if (handled) await finishBrowserRunReport(runId);
+      await (handled
+        ? finishBrowserRunReport(runId)
+        : renewBrowserRunReportLease(runId));
     },
     async "turn.completed"(_event, ctx) {
       const runId = reportedRunId(ctx);

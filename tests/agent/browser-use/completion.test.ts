@@ -149,6 +149,10 @@ const releaseBrowserRunReport = vi.hoisted(() =>
 );
 
 vi.mock("@db/services/browser-runs", () => ({
+  // The accepted report keeps its lease until its turn starts.
+  holdBrowserRunReportForTurn: vi.fn<() => Promise<void>>(() =>
+    Promise.resolve()
+  ),
   claimBrowserRunCompletion,
   finishWalledBrowserRun: vi.fn<() => Promise<void>>(() => Promise.resolve()),
   parkBrowserRunForRetry,

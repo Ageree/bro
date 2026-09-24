@@ -49,6 +49,47 @@ describe("turnAwaitsAnswer", () => {
     expect(turnAwaitsAnswer([...asked, person("останови")])).toBe(false);
   });
 
+  it("holds nothing for a question about something else", () => {
+    // A courtesy question does not put a requested deletion on hold.
+    expect(
+      turnAwaitsAnswer([
+        person("найди билеты в сочи и убери старую проверку продаж"),
+        sent("Нашёл пять вариантов. Эконом подойдёт?"),
+        delivered("send_message"),
+      ])
+    ).toBe(false);
+    // A title with a question mark in quotes asks nothing.
+    expect(
+      turnAwaitsAnswer([
+        person("что с напоминаниями?"),
+        sent("Удалил напоминание «Что дальше?» и оставил остальные."),
+        delivered("send_message"),
+      ])
+    ).toBe(false);
+  });
+
+  it("looks only at the last message the turn got through", () => {
+    expect(
+      turnAwaitsAnswer([
+        person("найди билеты в сочи"),
+        sent("Проверка продаж уже не нужна. Остановить её?"),
+        delivered("send_message"),
+        sent("Проверку оставил, как ты просил вчера."),
+        delivered("send_message"),
+      ])
+    ).toBe(false);
+  });
+
+  it("does not hold what the person asked for themselves", () => {
+    expect(
+      turnAwaitsAnswer([
+        person("удали напоминание про созвон"),
+        sent("Их два — удалить оба?"),
+        delivered("send_message"),
+      ])
+    ).toBe(false);
+  });
+
   it("ignores statements, links with a query string and dropped sends", () => {
     expect(
       turnAwaitsAnswer([

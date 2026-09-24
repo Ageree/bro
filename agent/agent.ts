@@ -5,19 +5,30 @@ import { getFormOfAddress, getWorkspaceModelId } from "@db/services/settings";
 import { personLanguage, replyDirective } from "@agent/lib/delivery/language";
 import {
   actionsHeldForAnswer,
+  heldForAnswerNote,
   turnAskedQuestion,
   turnAwaitsAnswer,
 } from "@agent/lib/delivery/questions";
 import {
   awaitsDelivery,
+  turnActed,
   turnDelivered,
   turnTookNoStep,
 } from "@agent/lib/delivery/pending";
+import { reportedBrowserRunId } from "@agent/lib/browser-use/report-caller";
+import { browserRunReportDelivered } from "@db/services/browser-runs";
 import { turnMustEnd, turnSends } from "@agent/lib/delivery/turn-sends";
 import { readsMustEnd } from "@agent/lib/google-workspace/turn-reads";
 import { resolveModeValue } from "@agent/lib/mode";
 import { modelSelection } from "@agent/lib/model/selection";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
+
+/**
+ * What a report turn is told when its report already reached the person in
+ * an earlier turn.
+ */
+const staleReportNote =
+  "This browser report already reached the person in an earlier turn. Do not tell them again and do not act on it: end this turn now, without a word.";
 
 export default defineAgent({
   defaultTools: false,
@@ -51,13 +62,24 @@ export default defineAgent({
         // (`agent/lib/delivery/turn-sends.ts`). So is one that
         // keeps asking Google for reads the turn guard refuses
         // (`agent/lib/google-workspace/turn-reads.ts`).
+        //
+        // A report sent again after its lease — it waited behind a long turn
+        // of the person's, or `browser_task status` handed it over — has
+        // already reached them. That turn says nothing and ends.
+        const reportRunId = reportedBrowserRunId(ctx.session.auth.current);
+        const reportFirstStep =
+          reportRunId !== undefined && turnTookNoStep(ctx.messages);
+        const staleReport =
+          reportFirstStep && (await browserRunReportDelivered(reportRunId));
         const requireToolCall =
-          resolveModeValue(ctx, {
+          !staleReport &&
+          (resolveModeValue(ctx, {
             interactive:
-              caller.authenticator === "browser-result"
-                ? turnTookNoStep(ctx.messages)
-                : awaitsDelivery(ctx.messages),
-          }) ?? false;
+              reportRunId === undefined
+                ? awaitsDelivery(ctx.messages)
+                : reportFirstStep,
+          }) ??
+            false);
         // The reply follows the language of the person's latest message,
         // which the long Russian prompt otherwise outweighs, and so do Bro's
         // own gender and the form of address the person chose, which hold in
@@ -80,12 +102,9 @@ export default defineAgent({
           getWorkspaceModelId(scope),
           writesToPerson ? getFormOfAddress(scope) : undefined,
         ]);
-        return modelSelection(modelId, {
-          // After the reply, a step with nothing to add may come back empty
-          // (gpt-6-luna does it almost every time); it ends the turn rather
-          // than failing a turn the person already has the answer to.
-          delivered: turnDelivered(ctx.messages),
-          replyNote: formOfAddress
+        const heldForAnswer = turnAwaitsAnswer(ctx.messages);
+        const notes = [
+          formOfAddress
             ? replyDirective({
                 // Once the reply is out, the note must not read as a new
                 // request: answering it is how one turn sent six messages.
@@ -94,8 +113,26 @@ export default defineAgent({
                 language: replyLanguage,
               })
             : undefined,
+          staleReport ? staleReportNote : undefined,
+          // A tool that vanished without a word is one the model says it
+          // used anyway.
+          heldForAnswer ? heldForAnswerNote : undefined,
+        ].filter((note) => note !== undefined);
+        return modelSelection(modelId, {
+          // After the reply, a step with nothing to add may come back empty
+          // (gpt-6-luna does it almost every time); it ends the turn rather
+          // than failing a turn the person already has the answer to. So
+          // does a report turn after a quiet `continue`, and one whose
+          // report the person already has.
+          delivered:
+            staleReport ||
+            turnDelivered(ctx.messages) ||
+            (reportRunId !== undefined && turnActed(ctx.messages)),
+          replyNote: notes.length > 0 ? notes.join("\n\n") : undefined,
           toolChoice:
-            turnMustEnd(ctx.messages) || readsMustEnd(ctx.messages)
+            staleReport ||
+            turnMustEnd(ctx.messages) ||
+            readsMustEnd(ctx.messages)
               ? "none"
               : requireToolCall
                 ? "required"
@@ -107,7 +144,7 @@ export default defineAgent({
           // message, so until then nothing it asked about is undone.
           withheldTools: [
             ...(turnAskedQuestion(ctx.messages) ? ["ask_question"] : []),
-            ...(turnAwaitsAnswer(ctx.messages) ? actionsHeldForAnswer : []),
+            ...(heldForAnswer ? actionsHeldForAnswer : []),
           ],
         });
       },

@@ -4,6 +4,7 @@ import {
   claimBrowserRunCompletion,
   claimBrowserRunReport,
   finishWalledBrowserRun,
+  holdBrowserRunReportForTurn,
   parkBrowserRunForRetry,
   readBrowserRun,
   releaseBrowserRunReport,
@@ -454,7 +455,7 @@ async function reportBrowserRun(
  * empty), or never run. So the lease is kept, and the report counts as
  * delivered only once its turn reached the person
  * (`agent/hooks/browser-run-report.ts`); otherwise it goes out again when
- * the turn fails or the lease runs out.
+ * the turn fails, or when it never started within the hand-over lease.
  */
 export async function deliverBrowserRunReport(
   delivery: BrowserRunDelivery,
@@ -463,7 +464,10 @@ export async function deliverBrowserRunReport(
   const row = await claimBrowserRunReport(runId);
   if (!row?.report) return;
   try {
-    if (await sendBrowserRunReport(delivery, row, row.report)) return;
+    if (await sendBrowserRunReport(delivery, row, row.report)) {
+      await holdBrowserRunReportForTurn(runId);
+      return;
+    }
   } catch (error) {
     console.warn("[browser-use] outcome delivery failed", {
       attempt: row.reportAttempts,

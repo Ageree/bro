@@ -8,6 +8,7 @@ import type {
 import type * as ModelSelection from "@agent/lib/model/selection";
 
 const services = vi.hoisted(() => ({
+  browserRunReportDelivered: vi.fn<(runId: string) => Promise<boolean>>(),
   getFormOfAddress: vi.fn<typeof getFormOfAddress>(),
   getModel: vi.fn<typeof getWorkspaceModelId>(),
   isActive: vi.fn<typeof isScheduledAgentRunLeaseActive>(),
@@ -16,6 +17,9 @@ const services = vi.hoisted(() => ({
 
 vi.mock("@db/services/scheduled-agent-run-leases", () => ({
   isScheduledAgentRunLeaseActive: services.isActive,
+}));
+vi.mock("@db/services/browser-runs", () => ({
+  browserRunReportDelivered: services.browserRunReportDelivered,
 }));
 vi.mock("@db/services/settings", () => ({
   getFormOfAddress: services.getFormOfAddress,
@@ -40,6 +44,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   services.getModel.mockResolvedValue("openai/gpt-5.6-sol-fast");
   services.getFormOfAddress.mockResolvedValue(defaultFormOfAddress);
+  services.browserRunReportDelivered.mockResolvedValue(false);
 });
 
 function note(language: "en" | "ru" | undefined, answered = false) {
@@ -252,18 +257,16 @@ describe("interactive delivery enforcement", () => {
       ])
     );
 
-    expect(services.modelSelection).toHaveBeenLastCalledWith(
-      "openai/gpt-5.6-sol-fast",
-      expect.objectContaining({
-        withheldTools: [
-          "calendar-delete-event",
-          "calendar-update-event",
-          "profile__remove_memory",
-          "schedules-update",
-          "workstreams__forget",
-        ],
-      })
-    );
+    const [, options] = services.modelSelection.mock.lastCall ?? [];
+    expect(options?.withheldTools).toEqual([
+      "calendar-delete-event",
+      "calendar-update-event",
+      "profile__remove_memory",
+      "schedules-update",
+      "workstreams__forget",
+    ]);
+    // The model learns why they are gone, so it does not claim it used them.
+    expect(options?.replyNote).toContain("are not available");
   });
 
   it("makes a browser run's result act on its first step, then leaves it free", async () => {
@@ -271,7 +274,7 @@ describe("interactive delivery enforcement", () => {
     // anything (gpt-6-luna, 24.09).
     await agent.model.events["step.started"]?.(
       {},
-      interactiveContext(pending, "browser-result")
+      interactiveContext(pending, "browser-result", reportAttributes)
     );
 
     expect(services.modelSelection).toHaveBeenLastCalledWith(
@@ -314,18 +317,39 @@ describe("interactive delivery enforcement", () => {
             role: "tool" as const,
           },
         ],
-        "browser-result"
+        "browser-result",
+        reportAttributes
       )
     );
 
+    // Nothing more to say after it is a clean end, not a failed turn.
     expect(services.modelSelection).toHaveBeenLastCalledWith(
       "openai/gpt-5.6-sol-fast",
       {
-        delivered: false,
+        delivered: true,
         replyNote: note("ru"),
         toolChoice: "auto",
         withheldTools: [],
       }
+    );
+  });
+
+  it("ends a report turn at once when the person already has that report", async () => {
+    services.browserRunReportDelivered.mockResolvedValue(true);
+
+    await agent.model.events["step.started"]?.(
+      {},
+      interactiveContext(pending, "browser-result", reportAttributes)
+    );
+
+    expect(services.browserRunReportDelivered).toHaveBeenCalledWith(
+      "browser-run-1"
+    );
+    const [, options] = services.modelSelection.mock.lastCall ?? [];
+    expect(options?.toolChoice).toBe("none");
+    expect(options?.delivered).toBe(true);
+    expect(options?.replyNote).toContain(
+      "This browser report already reached the person in an earlier turn"
     );
   });
 
@@ -410,9 +434,16 @@ function humanMessage(text: string) {
   );
 }
 
+/** Every browser report carries the run it reports. */
+const reportAttributes = {
+  browserRunId: "browser-run-1",
+  workspaceId: "workspace-1",
+};
+
 function interactiveContext(
   messages: DynamicResolveContext["messages"],
-  authenticator = "telegram"
+  authenticator = "telegram",
+  attributes: Readonly<Record<string, string>> = { workspaceId: "workspace-1" }
 ): DynamicResolveContext {
   return {
     channel: { kind: "channel:telegram" },
@@ -421,7 +452,7 @@ function interactiveContext(
     session: {
       auth: {
         current: {
-          attributes: { workspaceId: "workspace-1" },
+          attributes,
           authenticator,
           principalId: "user-1",
           principalType: "user",

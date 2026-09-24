@@ -344,6 +344,109 @@ describe("browser run persistence", () => {
     ).toMatchObject([{ id: runId }]);
   }, 20_000);
 
+  it("waits longer after each failed delivery instead of spending every attempt at once", async () => {
+    const browserRuns = await browserRunsDatabase();
+    await browserRuns.createBrowserRun(alice, {
+      ...conversation(),
+      completedAt: new Date(),
+      id: runId,
+      report: "Browser run finished",
+      status: "done",
+    });
+    const start = Date.now();
+    const pendingAfter = async (seconds: number) => {
+      vi.useFakeTimers({ now: start + seconds * 1_000, toFake: ["Date"] });
+      try {
+        return (await browserRuns.listPendingBrowserRunReports(10)).length > 0;
+      } finally {
+        vi.useRealTimers();
+      }
+    };
+
+    // A channel outage: the first send fails, and the poller looks every
+    // few seconds.
+    await browserRuns.claimBrowserRunReport(runId);
+    await browserRuns.releaseBrowserRunReport(runId);
+    expect(await pendingAfter(5)).toBe(false);
+    expect(await pendingAfter(29)).toBe(false);
+    expect(await pendingAfter(31)).toBe(true);
+
+    vi.useFakeTimers({ now: start + 31_000, toFake: ["Date"] });
+    try {
+      await browserRuns.claimBrowserRunReport(runId);
+      await browserRuns.releaseBrowserRunReport(runId);
+    } finally {
+      vi.useRealTimers();
+    }
+    // The second wait is twice as long.
+    expect(await pendingAfter(31 + 59)).toBe(false);
+    expect(await pendingAfter(31 + 61)).toBe(true);
+    expect((await browserRuns.readBrowserRun(runId))?.reportAttempts).toBe(2);
+  }, 20_000);
+
+  it("holds an accepted report until its queued turn had time to start", async () => {
+    const browserRuns = await browserRunsDatabase();
+    await browserRuns.createBrowserRun(alice, {
+      ...conversation(),
+      completedAt: new Date(),
+      id: runId,
+      report: "Browser run finished",
+      status: "done",
+    });
+    await browserRuns.claimBrowserRunReport(runId);
+    await browserRuns.holdBrowserRunReportForTurn(runId);
+    const start = Date.now();
+
+    vi.useFakeTimers({ now: start + 5 * 60_000, toFake: ["Date"] });
+    try {
+      // Queued behind the person's own long turn: not sent a second time.
+      expect(await browserRuns.listPendingBrowserRunReports(10)).toEqual([]);
+      expect(
+        browserRuns.browserRunReportOwed(
+          (await browserRuns.readBrowserRun(runId)) ?? { report: null }
+        )
+      ).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+    vi.useFakeTimers({ now: start + 11 * 60_000, toFake: ["Date"] });
+    try {
+      // Its turn never started: the report goes out again.
+      expect(await browserRuns.listPendingBrowserRunReports(10)).toEqual([
+        { id: runId },
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  }, 20_000);
+
+  it("keeps the lease of a plain report already sent when the full one is saved", async () => {
+    const browserRuns = await browserRunsDatabase();
+    await browserRuns.createBrowserRun(alice, {
+      ...conversation(),
+      id: runId,
+      status: "running",
+    });
+    await browserRuns.claimBrowserRunCompletion(runId, {
+      outcome: "нашёл отели",
+      report: "plain report",
+      status: "done",
+    });
+
+    // The settler finishes before anyone sent the plain report: the full
+    // report is free to go at once.
+    await browserRuns.saveBrowserRunReport(runId, "full report");
+    expect(await browserRuns.listPendingBrowserRunReports(10)).toEqual([
+      { id: runId },
+    ]);
+
+    // Sent and waiting for its turn, the report is not freed by a late save.
+    await browserRuns.claimBrowserRunReport(runId);
+    await browserRuns.holdBrowserRunReportForTurn(runId);
+    await browserRuns.saveBrowserRunReport(runId, "full report, later");
+    expect(await browserRuns.listPendingBrowserRunReports(10)).toEqual([]);
+  }, 20_000);
+
   it("never reopens a report its turn already delivered", async () => {
     const browserRuns = await browserRunsDatabase();
     await browserRuns.createBrowserRun(alice, {

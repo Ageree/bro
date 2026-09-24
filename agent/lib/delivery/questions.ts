@@ -1,6 +1,11 @@
 import type { ModelMessage } from "ai";
 import { z } from "zod";
-import { currentTurnMessages, sendReachedPerson } from "./turn-sends";
+import { isBackgroundTurnText } from "@shared/chat/background-turn";
+import {
+  currentTurnMessages,
+  sendReachedPerson,
+  startsTurn,
+} from "./turn-sends";
 
 /**
  * Tools that undo or change something the person has, which a question to
@@ -19,20 +24,64 @@ export const actionsHeldForAnswer = [
 const sentTextSchema = z.object({ text: z.string() });
 
 /**
- * Whether a message ends a sentence with a question mark. Links go first: a
- * `?` in a query string asks nothing.
+ * Words of the held actions themselves — stop, delete, remove, cancel,
+ * keep, forget, move — as a question about one uses them: «остановить или
+ * оставить?», «удалить напоминание?», «перенести созвон?».
  */
-function asksSomething(text: string) {
-  const prose = text
+const heldActionWords =
+  /(?<!\p{L})(?:остан[оа]в|приостан|удал|убер|убра|отмен|оставить|оставля|оставим|оставлю|выключ|отключ|сотри|стере|стир|забыть|забуду|забудь|перенес|передвин|пауз|stop|delete|remove|cancel|keep|forget|pause|resched|move)/iu;
+
+/** The same actions asked for: «удали», «отмени», «перенеси», «stop it». */
+const heldActionRequest =
+  /(?<!\p{L})(?:останови|приостанови|удали|убери|отмени|выключи|отключи|сотри|забудь|перенеси|передвинь|поставь\s+на\s+паузу|stop|delete|remove|cancel|forget|pause|reschedule|move)(?!\p{L})/iu;
+
+/**
+ * The prose a person reads: links, quoted titles and names go, so a `?` in a
+ * query string or in «Что дальше?» asks nothing.
+ */
+function prose(text: string) {
+  return text
     .replaceAll(/\]\([^)]*\)/gu, "]")
-    .replaceAll(/https?:\/\/\S+/giu, " ");
-  return /[?？](?=[\s»"')\]]|$)/u.test(prose);
+    .replaceAll(/https?:\/\/\S+/giu, " ")
+    .replaceAll(/«[^»]*»|"[^"]*"|“[^”]*”|„[^“”]*[“”]/gu, " ");
+}
+
+/** Whether a message asks the person about one of the held actions. */
+function asksAboutHeldAction(text: string) {
+  return prose(text)
+    .split(/(?<=[.!?？…])\s+|\n+/u)
+    .some(
+      (sentence) =>
+        /[?？]\s*$/u.test(sentence.trim()) && heldActionWords.test(sentence)
+    );
+}
+
+function messageText(message: ModelMessage) {
+  if (!Array.isArray(message.content)) return message.content;
+  return message.content
+    .flatMap((part) => (part.type === "text" ? [part.text] : []))
+    .join("\n");
 }
 
 /**
- * Whether the current turn put a question to the person in a message that
- * reached them. Their answer comes as their next message, which starts a new
- * turn; until then, what the question was about waits.
+ * Whether the person's own message that started this turn asks for one of
+ * the held actions — then the action is theirs, whatever Bro asked since.
+ */
+function personAskedForHeldAction(messages: readonly ModelMessage[]) {
+  const opening = messages.findLast(startsTurn);
+  if (opening?.role !== "user") return false;
+  const text = messageText(opening);
+  return !isBackgroundTurnText(text) && heldActionRequest.test(text);
+}
+
+/**
+ * Whether the last message the current turn got through to the person asks
+ * them about stopping, deleting, cancelling, keeping or moving something —
+ * «Остановить её сейчас или оставить?». Their answer comes as their next
+ * message, which starts a new turn; until then, those actions wait. A
+ * courtesy question («Эконом подойдёт?»), an earlier message of the turn, a
+ * quoted title with a `?`, and an action the person asked for themselves do
+ * not hold anything.
  */
 export function turnAwaitsAnswer(messages: readonly ModelMessage[]) {
   const turn = currentTurnMessages(messages);
@@ -49,19 +98,28 @@ export function turnAwaitsAnswer(messages: readonly ModelMessage[]) {
         : []
     )
   );
-  return turn.some(
-    (message) =>
-      message.role === "assistant" &&
-      Array.isArray(message.content) &&
-      message.content.some(
-        (part) =>
-          part.type === "tool-call" &&
-          part.toolName === "send_message" &&
-          delivered.has(part.toolCallId) &&
-          asksSomething(sentTextSchema.safeParse(part.input).data?.text ?? "")
-      )
-  );
+  const lastSent = turn
+    .flatMap((message) =>
+      message.role === "assistant" && Array.isArray(message.content)
+        ? message.content.flatMap((part) =>
+            part.type === "tool-call" &&
+            part.toolName === "send_message" &&
+            delivered.has(part.toolCallId)
+              ? [sentTextSchema.safeParse(part.input).data?.text ?? ""]
+              : []
+          )
+        : []
+    )
+    .at(-1);
+  if (lastSent === undefined || !asksAboutHeldAction(lastSent)) return false;
+  return !personAskedForHeldAction(messages);
 }
+
+/**
+ * What the model is told while the held actions are out of its hands, so it
+ * neither reaches for them nor says it did what it could not.
+ */
+export const heldForAnswerNote = `You asked the person a question in this turn about stopping, deleting, cancelling or moving something, and they have not answered yet. Until their next message, ${actionsHeldForAnswer.join(", ")} are not available. Do not do it and do not say it is done: end the turn and act on their answer.`;
 
 /**
  * Whether the current turn already put an `ask_question` to the person. The

@@ -540,12 +540,18 @@ export async function closeQueuedBrowserRun(
  * Keep the report a settled run owes its conversation. It stays pending until
  * a delivery lands, so an unreachable conversation delays the report instead
  * of losing it. The settler's lease on the plain report it claimed with is
- * given back here: the full report is the one to deliver now.
+ * given back here, so the full report goes out now — unless the plain one
+ * was already sent while the settle took its time: that delivery keeps its
+ * lease, and the person does not get the errand twice.
  */
 export async function saveBrowserRunReport(runId: string, report: string) {
   await db
     .update(browserRuns)
-    .set({ report, reportClaimedAt: null, updatedAt: new Date() })
+    .set({
+      report,
+      reportClaimedAt: sql`case when ${browserRuns.reportAttempts} = 0 then null else ${browserRuns.reportClaimedAt} end`,
+      updatedAt: new Date(),
+    })
     .where(
       and(eq(browserRuns.id, runId), isNull(browserRuns.reportDeliveredAt))
     );
@@ -592,11 +598,53 @@ export async function finishBrowserRunReport(runId: string) {
     );
 }
 
-/** Give the lease back so the next poll retries the delivery at once. */
+/** The wait after a failed delivery: 30 s, doubling, at most 15 minutes. */
+const firstRedeliveryDelayMs = 30_000;
+const maximumRedeliveryDelayMs = 15 * 60_000;
+
+/**
+ * A delivery failed: the report waits before the next try. The poller now
+ * looks every few seconds, and a lease given straight back spent all ten
+ * attempts in under a minute of a channel outage, after which the report
+ * was never tried again. The wait is written as a lease that lapses then
+ * (30 s after the first failure, doubling up to 15 minutes), so ten attempts
+ * cover about an hour and a half.
+ */
 export async function releaseBrowserRunReport(runId: string) {
+  const now = new Date();
   await db
     .update(browserRuns)
-    .set({ reportClaimedAt: null, updatedAt: new Date() })
+    .set({
+      reportClaimedAt: sql`${now.toISOString()}::timestamptz - make_interval(secs => ${reportLeaseMs / 1000}) + make_interval(secs => least(${firstRedeliveryDelayMs / 1000} * power(2, greatest(${browserRuns.reportAttempts} - 1, 0)), ${maximumRedeliveryDelayMs / 1000}))`,
+      updatedAt: now,
+    })
+    .where(
+      and(eq(browserRuns.id, runId), isNull(browserRuns.reportDeliveredAt))
+    );
+}
+
+/**
+ * How long a report the conversation accepted may wait for its turn. With
+ * `turnPolicy: "queue"` it waits behind a turn the person started, which can
+ * run for minutes; sent again after the plain lease, both copies ran.
+ */
+const handedOverLeaseMs = 10 * 60_000;
+
+/**
+ * The conversation accepted the report and its turn is queued: nobody sends
+ * it again until that turn had time to start. Its start renews the lease
+ * (`renewBrowserRunReportLease`), and its end settles the report.
+ */
+export async function holdBrowserRunReportForTurn(runId: string) {
+  const now = new Date();
+  await db
+    .update(browserRuns)
+    .set({
+      reportClaimedAt: new Date(
+        now.getTime() + handedOverLeaseMs - reportLeaseMs
+      ),
+      updatedAt: now,
+    })
     .where(
       and(eq(browserRuns.id, runId), isNull(browserRuns.reportDeliveredAt))
     );
@@ -618,6 +666,16 @@ export async function renewBrowserRunReportLease(runId: string) {
         isNull(browserRuns.reportDeliveredAt)
       )
     );
+}
+
+/** Whether a run's report already reached its conversation. */
+export async function browserRunReportDelivered(runId: string) {
+  const [row] = await db
+    .select({ deliveredAt: browserRuns.reportDeliveredAt })
+    .from(browserRuns)
+    .where(eq(browserRuns.id, runId))
+    .limit(1);
+  return row?.deliveredAt instanceof Date;
 }
 
 /** Report turns that fail before reaching the person are retried this often. */

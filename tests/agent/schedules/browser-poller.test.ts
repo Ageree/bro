@@ -365,6 +365,7 @@ describe("the browser run poller", () => {
   }, 60_000);
 
   it("reports a run that finishes between ticks within seconds", async () => {
+    await import("@agent/schedules/browser-runs");
     liveWatch.value = true;
     vi.useFakeTimers({ now: new Date(), toFake: ["Date", "setTimeout"] });
     await runningErrand("live-run", "RESULT: нашёл отели\nNEEDS: none");
@@ -401,6 +402,48 @@ describe("the browser run poller", () => {
     expect(sentText(send.mock.calls[0]?.[0])).toContain("live-run");
     expect(Date.now() - finishedAt).toBeLessThanOrEqual(8_000);
   }, 30_000);
+
+  it("backs off a report its chat keeps refusing instead of spending every attempt", async () => {
+    // Loaded before the clock is faked: the module runner has timers of its own.
+    await import("@agent/schedules/browser-runs");
+    liveWatch.value = true;
+    vi.useFakeTimers({ now: new Date(), toFake: ["Date", "setTimeout"] });
+    await runningErrand("refused-run", "RESULT: нашёл отели\nNEEDS: none");
+    // Another errand still running keeps the watch going all tick long.
+    await runningErrand("busy-run", "RESULT: —\nNEEDS: none");
+    const busy = cloud.runs.get("busy-run");
+    if (!busy) throw new Error("The cloud run is missing.");
+    busy.status = "running";
+    // The chat is down for the whole tick.
+    const { attachSession, send } = webChat({
+      retryable: true,
+      status: "session_not_active",
+    });
+
+    const finished = { value: false };
+    const ticking = tick(attachSession).then(() => {
+      finished.value = true;
+      return finished.value;
+    });
+    // The watch sleeps on the fake clock while the database answers in real
+    // time, so the clock moves in small steps until the tick is over.
+    async function runClock(stepsLeft: number): Promise<void> {
+      if (finished.value || stepsLeft === 0) return;
+      await vi.advanceTimersByTimeAsync(250);
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+      return runClock(stepsLeft - 1);
+    }
+    await runClock(2_000);
+    await ticking;
+
+    // Looked at every few seconds, sent twice: at once and after 30 s.
+    expect(cloud.statusChecks).toBeGreaterThan(5);
+    expect(send).toHaveBeenCalledTimes(2);
+    const row = await readRun("refused-run");
+    expect(row?.reportAttempts).toBe(2);
+    expect(row?.reportDeliveredAt).toBeNull();
+  }, 60_000);
 
   it("asks the person for the SMS code on the very next poll", async () => {
     await runningErrand(

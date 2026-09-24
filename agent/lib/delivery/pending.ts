@@ -68,6 +68,24 @@ export function turnDelivered(messages: readonly ModelMessage[]) {
 }
 
 /**
+ * Whether a tool call of the current turn went through. A browser report's
+ * turn may end in a quiet `continue` on the errand, and a model with nothing
+ * to add after it may come back empty; that ends the turn too.
+ */
+export function turnActed(messages: readonly ModelMessage[]) {
+  return currentTurnMessages(messages).some(
+    (message) =>
+      message.role === "tool" &&
+      message.content.some(
+        (part) =>
+          part.type === "tool-result" &&
+          !part.output.type.startsWith("error") &&
+          part.output.type !== "execution-denied"
+      )
+  );
+}
+
+/**
  * Whether the current turn has not taken a model step yet. A browser report
  * is made to call a tool on this step only: a model that answered the report
  * with nothing at all failed the turn before the person heard a word, while

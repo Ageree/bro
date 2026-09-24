@@ -85,6 +85,10 @@ vi.mock("@db/services/browser-runs", () => ({
   },
   claimDueBrowserRunRetries: () => Promise.resolve([]),
   hasLiveBrowserRuns: () => Promise.resolve(false),
+  holdBrowserRunReportForTurn: () => {
+    currentRow().reportClaimedAt = new Date(Date.now() + 8 * 60_000);
+    return Promise.resolve();
+  },
   parkBrowserRunForRetry: () => Promise.resolve(true),
   finishBrowserRunReport: () => {
     currentRow().reportClaimedAt = null;

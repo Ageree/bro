@@ -126,6 +126,8 @@ describe("the browser report hook", () => {
     );
 
     expect(finishBrowserRunReport).not.toHaveBeenCalled();
+    // The turn is still at work on the report: nobody sends it again.
+    expect(renewBrowserRunReportLease).toHaveBeenCalledExactlyOnceWith(runId);
   });
 
   it("counts a continue on the errand, so a retry does not repeat it", async () => {
