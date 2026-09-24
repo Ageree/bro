@@ -1,5 +1,6 @@
 import { defineDynamic, defineTool } from "eve/tools";
 import { z } from "zod";
+import { savedFormOfAddressNote } from "@agent/lib/delivery/language";
 import { resolveModeValue } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { formOfAddressSchema } from "@shared/chat/form-of-address";
@@ -22,9 +23,8 @@ export const formOfAddress = defineTool({
     if (auth?.principalType !== "user") {
       throw new Error("An authenticated user is required.");
     }
-    return {
-      formOfAddress: await updateFormOfAddress(scopeFromPrincipal(auth), input),
-    };
+    const saved = await updateFormOfAddress(scopeFromPrincipal(auth), input);
+    return { formOfAddress: saved, note: savedFormOfAddressNote(saved) };
   },
 });
 

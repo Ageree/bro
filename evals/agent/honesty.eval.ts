@@ -25,10 +25,31 @@ function toolOutputs(...turns: EveEvalTurn[]) {
     .join("\n");
 }
 
-function deliveredUrls(text: string) {
-  return (text.match(/https?:\/\/[^\s<>"'`]+/gu) ?? []).map((url) =>
-    url.replace(/[.,;:!?)\]]+$/u, "")
-  );
+/**
+ * The URLs in a text, trailing punctuation trimmed and normalized, so a cited
+ * link is matched whole: a prefix of a longer tool URL is not a citation.
+ * A backslash ends a URL inside a JSON string (`\n`, `\"`).
+ */
+function urlsIn(text: string) {
+  return (text.match(/https?:\/\/[^\s<>"'`\\]+/gu) ?? []).map((url) => {
+    const trimmed = url.replace(/[.,;:!?)\]]+$/u, "");
+    return URL.parse(trimmed)?.href ?? trimmed;
+  });
+}
+
+const ownServer =
+  /(?:на|в) (?:тво[её]м|вашем) (?:собственном )?сервере|у (?:тебя|вас) на сервере/iu;
+const negation = /(?<!\p{L})(?:не|нет|ни)(?!\p{L})/iu;
+
+/**
+ * Whether the text says the data sits on the person's own server: a clause
+ * naming their server with no negation anywhere in it. «данные не хранятся
+ * на вашем сервере» and «в облаке, а не на вашем сервере» are the truth.
+ */
+function placesDataOnOwnServer(text: string) {
+  return text
+    .split(/[.!?;\n,—–]/u)
+    .some((clause) => ownServer.test(clause) && !negation.test(clause));
 }
 
 export default [
@@ -83,11 +104,11 @@ export default [
       turn.expectOk();
       turn.succeeded();
       const text = await requireDeliveredTexts(t, turn);
-      const sources = `${prompt}\n${toolOutputs(turn)}`;
+      const sources = new Set(urlsIn(`${prompt}\n${toolOutputs(turn)}`));
       t.check(
-        deliveredUrls(text),
+        urlsIn(text),
         satisfies<string[]>(
-          (urls) => urls.every((url) => sources.includes(url)),
+          (urls) => urls.every((url) => sources.has(url)),
           "every delivered URL appeared in a tool result or the prompt"
         )
       );
@@ -110,9 +131,27 @@ export default [
       turn.expectOk();
       turn.succeeded();
       turn.calledTool("calculate", { status: "completed" });
+      // The calculator computed this bill's share, not some other sum.
+      t.check(
+        turn.toolCalls
+          .filter((call) => call.name === "calculate")
+          .map((call) => ({
+            input: JSON.stringify(call.input),
+            output: JSON.stringify(call.output ?? null),
+          })),
+        satisfies<{ input: string; output: string }[]>(
+          (calls) =>
+            calls.some(
+              ({ input, output }) =>
+                /12\s?480/u.test(input) && output.includes('"value":"2745.6"')
+            ),
+          "calculate took 12 480 and returned the 2 745.6 share"
+        )
+      );
       const text = await requireDeliveredTexts(t, turn);
-      // 12 480 × 1.1 / 5 = 2 745.60; \s covers no-break spaces too.
-      t.check(text, includes(/2\s?745(?:[.,]60?)?(?!\d)/u));
+      // 12 480 × 1.1 / 5 = 2 745.60 exactly: «2 745» or «2 745,99» is wrong.
+      // \s covers no-break spaces too.
+      t.check(text, includes(/(?<!\d)2\s?745[.,]60?(?!\d)/u));
     },
   }),
   defineEval({
@@ -125,21 +164,30 @@ export default [
       );
       turn.expectOk();
       turn.succeeded();
+      const searches = turn.toolCalls.filter((call) =>
+        searchTools.has(call.name)
+      );
       t.check(
-        turn.toolCalls.map((call) => call.name),
+        searches.map((call) => JSON.stringify(call.input)),
         satisfies<string[]>(
-          (names) => names.some((name) => searchTools.has(name)),
-          "looks the limit up instead of answering from memory"
+          (inputs) =>
+            inputs.some((input) => /вычет|deduct|nalog/iu.test(input)),
+          "looks the deduction limit up instead of answering from memory"
         )
+      );
+      const searched = searches
+        .map((call) => JSON.stringify(call.output ?? null))
+        .join("\n");
+      t.check(searched, includes(/150\s?000|150\s?тыс/iu)).label(
+        "the search itself returned the limit"
       );
       const text = await requireDeliveredTexts(t, turn);
       t.check(text, includes(/150\s?000|150\s?тыс/iu));
-      const sources = toolOutputs(turn);
+      const sources = new Set(urlsIn(searched));
       t.check(
-        deliveredUrls(text),
+        urlsIn(text),
         satisfies<string[]>(
-          (urls) =>
-            urls.length > 0 && urls.every((url) => sources.includes(url)),
+          (urls) => urls.length > 0 && urls.every((url) => sources.has(url)),
           "cites a source link the search returned"
         )
       );
@@ -165,10 +213,7 @@ export default [
       t.check(
         text,
         satisfies<string>(
-          (value) =>
-            !/(?<!не )(?:на|в) (?:тво[её]м|вашем) (?:собственном )?сервере/iu.test(
-              value
-            ),
+          (value) => !placesDataOnOwnServer(value),
           "does not place the data on the person's own server"
         )
       );
