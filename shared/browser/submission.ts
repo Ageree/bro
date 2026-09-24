@@ -22,7 +22,8 @@ export const browserSubmissionKinds = [
  * One line of the approval card. Each field is its own line on the card and
  * in the run's instructions, so a value with a line break in it could pass
  * for a field of its own — another «Сумма», another rule for the run — and
- * is refused rather than drawn.
+ * is refused rather than drawn. The check is a refinement, not `.regex()`:
+ * a `\p{Cc}` pattern in the tool schema made OpenAI reject every request.
  */
 function cardLine(max: number) {
   return z
@@ -30,8 +31,8 @@ function cardLine(max: number) {
     .trim()
     .min(1)
     .max(max)
-    .regex(
-      /^[^\p{Cc}\u2028\u2029]*$/u,
+    .refine(
+      (line) => !/[\p{Cc}\u2028\u2029]/u.test(line),
       "One line of plain text, without line breaks or control characters."
     );
 }
