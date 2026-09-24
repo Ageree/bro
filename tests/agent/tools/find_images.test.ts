@@ -1,6 +1,6 @@
 import type { ToolContext } from "eve/tools";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import findImages from "@agent/tools/find_images";
+import { findImages } from "@agent/tools/find_images";
 
 const fetchMock =
   vi.fn<(url: string | URL, init?: RequestInit) => Promise<Response>>();

@@ -63,6 +63,7 @@ export function resolveProfileMemoryScope(context: MemoryScopeContext) {
       : null;
   return resolveModeValue(context, {
     interactive: scope,
+    "proactive-worker": scope,
     "scheduled-worker": scope,
   });
 }

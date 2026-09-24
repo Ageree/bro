@@ -5,6 +5,12 @@ import {
   assertPlainTextDelivery,
   requireDeliveredText,
 } from "@evals/agent/shared";
+import {
+  sendSkipReason,
+  sentMessageOf,
+  turnMessageLimit,
+} from "@agent/lib/delivery/turn-sends";
+import { sendMessageOutputSchema } from "@shared/chat/message-delivery";
 
 /**
  * A Russian reply starts in Russian and stays in it: the first letter is
@@ -43,7 +49,7 @@ const cases = [
   },
 ];
 
-export default cases.map((testCase) =>
+const replyEvals = cases.map((testCase) =>
   defineEval({
     description: testCase.description,
     tags: [...agentEvalTags, "conversation", "delivery", "smoke"],
@@ -62,3 +68,64 @@ export default cases.map((testCase) =>
     },
   })
 );
+
+// Production benchmark turns where a model posted the same reply dozens of
+// times in one turn. Whatever the model does, the person may receive at most
+// the per-turn limit and never the same message twice.
+const loopCases = [
+  {
+    description: "Runs a quiz one question at a time instead of repeating it",
+    prompt:
+      "Давай викторину по географии: задавай мне вопросы по одному и жди ответа.",
+  },
+  {
+    description: "Confirms saved preferences once instead of repeating it",
+    prompt:
+      "Запомни: я не ем мясо, пью только кофе без сахара, летаю у окна и не люблю звонки до десяти утра.",
+  },
+];
+
+const loopEvals = loopCases.map((testCase) =>
+  defineEval({
+    description: testCase.description,
+    tags: [...agentEvalTags, "delivery", "loop"],
+    async test(t) {
+      const turn = await t.send(testCase.prompt);
+      turn.expectOk();
+      turn.succeeded();
+      const delivered = turn.toolCalls.flatMap((call) => {
+        if (call.name !== "send_message" || call.status !== "completed") {
+          return [];
+        }
+        // A dropped send completes too, but its output is not the message.
+        const output = sendMessageOutputSchema.safeParse(call.output).data;
+        return output ? [output] : [];
+      });
+      t.check(
+        delivered.length,
+        satisfies<number>(
+          (count) => count >= 1 && count <= turnMessageLimit,
+          `the turn delivers between 1 and ${String(turnMessageLimit)} messages`
+        )
+      );
+      // Parallel sends in one step do not see each other, so one repeated
+      // pair can slip through; the next step drops any further repeat.
+      const repeats = delivered.filter(
+        (message, index) =>
+          sendSkipReason(
+            message,
+            delivered.slice(0, index).map(sentMessageOf)
+          ) === "duplicate"
+      ).length;
+      t.check(
+        repeats,
+        satisfies<number>(
+          (count) => count <= 1,
+          "at most one delivered message repeats an earlier one"
+        )
+      );
+    },
+  })
+);
+
+export default [...replyEvals, ...loopEvals];

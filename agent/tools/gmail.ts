@@ -274,6 +274,10 @@ export default defineDynamic({
           "gmail-send": gmailSend,
           "gmail-update": gmailUpdate,
         },
+        "proactive-worker": {
+          "gmail-read-thread": gmailReadThread,
+          "gmail-search": gmailSearch,
+        },
         "scheduled-worker": {
           "gmail-attachment": gmailAttachment,
           "gmail-draft": gmailDraft,

@@ -37,6 +37,17 @@ describe("local time context", () => {
     expect(content).toContain("personal_info__update");
   });
 
+  it("gives Bro's own checks the clock without a profile to write to", () => {
+    const content = localTimeInstructions(
+      new Date("2026-09-18T23:30:00.000Z"),
+      "Asia/Vladivostok",
+      false
+    );
+
+    expect(content).toContain("19 сентября 2026");
+    expect(content).not.toContain("personal_info__update");
+  });
+
   it("reads the zone of the workspace that is talking", async () => {
     const selected = await resolve({}, dynamicContext("photon-imessage"));
 

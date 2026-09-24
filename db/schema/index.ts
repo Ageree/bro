@@ -10,6 +10,7 @@ export * from "./memory";
 export * from "./onboarding-requests";
 export * from "./operational-alerts";
 export * from "./orders";
+export * from "./proactive";
 export * from "./schedules";
 export * from "./sessions";
 export * from "./spending";
