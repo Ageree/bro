@@ -88,8 +88,18 @@ function driveString(value: string) {
 }
 
 /**
+ * Word matches read before sorting. Drive cannot order a `fullText` search, so
+ * a word search pages through up to this many matches to find the newest.
+ */
+const maximumWordMatches = 300;
+
+/** Largest page Drive returns for one `files.list` call. */
+const drivePageSize = 100;
+
+/**
  * Files matching the search, newest first. Drive refuses `orderBy` together
- * with a `fullText` term, so a search by words is sorted after it returns.
+ * with a `fullText` term, so a search by words collects its matches page by
+ * page and sorts them itself.
  */
 export async function searchDrive(
   ctx: ToolContext,
@@ -101,23 +111,37 @@ export async function searchDrive(
     terms.push(`(name contains ${literal} or fullText contains ${literal})`);
   }
   if (kind !== undefined) terms.push(kindFilters[kind]);
+  const request = {
+    fields: `nextPageToken,files(${fileFields})`,
+    includeItemsFromAllDrives: true,
+    q: terms.join(" and "),
+    supportsAllDrives: true,
+  };
   return withDrive(ctx, async (client) => {
-    const { data } = await client.files.list(
-      {
-        fields: `files(${fileFields})`,
-        includeItemsFromAllDrives: true,
-        orderBy: query === undefined ? "modifiedTime desc" : undefined,
-        pageSize: maxResults,
-        q: terms.join(" and "),
-        supportsAllDrives: true,
-      },
-      { signal: ctx.abortSignal }
-    );
-    return (data.files ?? [])
+    if (query === undefined) {
+      const { data } = await client.files.list(
+        { ...request, orderBy: "modifiedTime desc", pageSize: maxResults },
+        { signal: ctx.abortSignal }
+      );
+      return (data.files ?? []).map(minimizeFile);
+    }
+    const files: drive_v3.Schema$File[] = [];
+    let pageToken: string | undefined;
+    do {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Each page needs the token of the one before it.
+      const { data } = await client.files.list(
+        { ...request, pageSize: drivePageSize, pageToken },
+        { signal: ctx.abortSignal }
+      );
+      files.push(...(data.files ?? []));
+      pageToken = data.nextPageToken ?? undefined;
+    } while (pageToken !== undefined && files.length < maximumWordMatches);
+    return files
       .map(minimizeFile)
       .toSorted((a, b) =>
         (b.modifiedTime ?? "").localeCompare(a.modifiedTime ?? "")
-      );
+      )
+      .slice(0, maxResults);
   });
 }
 

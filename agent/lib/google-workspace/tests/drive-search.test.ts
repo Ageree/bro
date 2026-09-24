@@ -8,9 +8,13 @@ const google = vi.hoisted(() => ({
     (request: {
       readonly orderBy?: string;
       readonly pageSize: number;
+      readonly pageToken?: string;
       readonly q: string;
     }) => Promise<{
-      data: { files: { id: string; modifiedTime: string; name: string }[] };
+      data: {
+        files: { id: string; modifiedTime: string; name: string }[];
+        nextPageToken?: string;
+      };
     }>
   >(),
 }));
@@ -76,6 +80,37 @@ describe("searchDrive", () => {
     });
 
     expect(files.map(({ id }) => id)).toEqual(["new", "mid", "old"]);
+  });
+
+  it("sorts every page of a word search before keeping the newest", async () => {
+    google.list
+      .mockResolvedValueOnce({
+        data: {
+          files: [
+            { id: "old", modifiedTime: "2025-01-01T00:00:00.000Z", name: "a" },
+          ],
+          nextPageToken: "page-2",
+        },
+      })
+      .mockResolvedValueOnce({
+        data: {
+          files: [
+            { id: "new", modifiedTime: "2025-09-01T00:00:00.000Z", name: "b" },
+          ],
+        },
+      });
+
+    const files = await searchDrive(toolContext(), {
+      maxResults: 1,
+      query: "отчёт",
+    });
+
+    expect(files.map(({ id }) => id)).toEqual(["new"]);
+    expect(google.list).toHaveBeenCalledTimes(2);
+    expect(google.list.mock.calls[1]?.[0]).toMatchObject({
+      pageSize: 100,
+      pageToken: "page-2",
+    });
   });
 });
 
