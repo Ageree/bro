@@ -9,7 +9,7 @@ describe("recommendation instructions", () => {
       const content = await resolveContent(authenticator);
       expect(content).toContain("каждое названное условие обязательно");
       expect(content).toContain(
-        "Проверено только то, что есть в выдаче `web_search` или на странице `web_fetch` в этом ходе"
+        "Проверенным считай то, что показал результат инструмента в этом разговоре: выдача `web_search`, страница `web_fetch`, отчёт браузерного запуска"
       );
       expect(content).toContain("ссылка на источник");
       expect(content).toContain("Догадку за факт не выдавай");

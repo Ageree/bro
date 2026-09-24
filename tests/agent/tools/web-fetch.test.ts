@@ -27,7 +27,10 @@ const venueCard = page(
   `<h1>Авокадо</h1><p>${"Вегетарианская кухня, средний чек 1200 ₽, открыто до 23:00. ".repeat(10)}</p>`
 );
 
-function toolContext(abortSignal = new AbortController().signal) {
+function toolContext(
+  abortSignal = new AbortController().signal,
+  sessionId = "session-1"
+) {
   return {
     async getSandbox() {
       throw new Error("Sandbox access is outside this focused test.");
@@ -41,7 +44,7 @@ function toolContext(abortSignal = new AbortController().signal) {
     requireAuth: vi.fn<ToolContext["requireAuth"]>(),
     session: {
       auth: { current: null, initiator: null },
-      id: "session-1",
+      id: sessionId,
       turn: { id: "turn-1", sequence: 0 },
     },
     toolName: "web_fetch",
@@ -117,12 +120,38 @@ describe("web_fetch", () => {
 
     expect(result.contentType).toBe("text/plain");
     expect(result.content).toContain(
-      "the site answered with a captcha or bot check instead of the page"
+      "the page is a captcha or bot check, not the content"
     );
     expect(result.content).toContain(
       'call web_search with sites: ["yandex.ru/maps"]'
     );
     expect(result.content).toContain("restoclub.ru");
+    // Wording alone does not close the site.
+    expect(result.content).not.toContain("Do not fetch it");
+    await fetchPage(url);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("reads a short page that mentions reCAPTCHA or a block in its heading", async () => {
+    const booking = "https://receptor.example/booking";
+    const news = "https://news.example/court";
+    pageAt(
+      booking,
+      page(
+        "Бронь столика",
+        "<h1>Форма защищена reCAPTCHA</h1><form>Имя, телефон, время</form>"
+      )
+    );
+    pageAt(
+      news,
+      page(
+        "Новости",
+        "<h1>Доступ запрещён: суд оставил в силе блокировку сайта</h1><p>Подробности.</p>"
+      )
+    );
+
+    expect((await fetchPage(booking)).content).toContain("Имя, телефон");
+    expect((await fetchPage(news)).content).toContain("суд оставил в силе");
   });
 
   it("does not ask a refusing site again for a while", async () => {
@@ -173,6 +202,59 @@ describe("web_fetch", () => {
 
     await fetchPage(url);
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a refusal to the conversation that met it", async () => {
+    pageAt("https://2gis.ru/moscow/firm/1", "Forbidden", 403);
+    pageAt("https://2gis.ru/moscow/firm/2", venueCard);
+
+    await fetchPage("https://2gis.ru/moscow/firm/1");
+    const other = await fetchPage(
+      "https://2gis.ru/moscow/firm/2",
+      toolContext(undefined, "session-2")
+    );
+
+    expect(other.content).toContain("средний чек 1200 ₽");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns a page that needs a login and does not close the site", async () => {
+    pageAt("https://shop.example/orders", "Please sign in", 401);
+    pageAt("https://shop.example/catalog", venueCard);
+
+    const orders = await fetchPage("https://shop.example/orders");
+    expect(orders.content).toMatch(/^Request failed with status code: 401/u);
+
+    const catalog = await fetchPage("https://shop.example/catalog");
+    expect(catalog.content).toContain("средний чек 1200 ₽");
+  });
+
+  it("does not blame a link shortener for the site behind it", async () => {
+    pageAt("https://clck.ru/abc", "Forbidden", 403);
+    pageAt("https://clck.ru/def", venueCard);
+
+    const refused = await fetchPage("https://clck.ru/abc");
+    expect(refused.content).toContain("HTTP 403");
+
+    const next = await fetchPage("https://clck.ru/def");
+    expect(next.content).toContain("средний чек 1200 ₽");
+  });
+
+  it("forgets the oldest refusal once it remembers five hundred", async () => {
+    fetchMock.mockImplementation(
+      async () => new Response("Forbidden", { status: 403 })
+    );
+
+    for (let index = 0; index <= 500; index += 1) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Refusals are remembered in order.
+      await fetchPage(`https://blocked-${String(index)}.example/`);
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(501);
+
+    await fetchPage("https://blocked-500.example/other");
+    expect(fetchMock).toHaveBeenCalledTimes(501);
+    await fetchPage("https://blocked-0.example/other");
+    expect(fetchMock).toHaveBeenCalledTimes(502);
   });
 
   it("returns a missing page as it is", async () => {
