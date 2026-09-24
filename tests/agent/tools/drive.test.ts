@@ -32,7 +32,6 @@ vi.mock("@vercel/blob", async (importOriginal) => ({
 }));
 
 import { driveRead, driveSearch } from "@agent/tools/drive";
-import { googleWorkspaceScopes } from "@shared/google-workspace/connection";
 
 const artifactId = "0d01e667-d128-4bb7-a248-1ae21db72f4f";
 const pdf = new TextEncoder().encode("%PDF-1.7\n%passport\n");
@@ -65,20 +64,6 @@ beforeEach(() => {
     pathname: "drive-files/workspace/passport",
     url: "https://blob.example/passport",
   });
-});
-
-describe("Drive access", () => {
-  it.each(["full", "read_only"] as const)(
-    "asks Google for read-only Drive access at the %s level",
-    (access) => {
-      expect(googleWorkspaceScopes[access]).toContain(
-        "https://www.googleapis.com/auth/drive.readonly"
-      );
-      expect(googleWorkspaceScopes[access]).not.toContain(
-        "https://www.googleapis.com/auth/drive"
-      );
-    }
-  );
 });
 
 describe("drive-search", () => {

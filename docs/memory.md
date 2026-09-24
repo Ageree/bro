@@ -54,8 +54,8 @@ and the interactive instructions (`agent/instructions/content/role/interactive.m
   vault. Vault secrets are AES-256-GCM ciphertext under
   `SECRET_ENCRYPTION_KEY` (`db/services/vault.ts`); no model reads them.
 - Files and generated pictures go to a private Vercel Blob store.
-- Google, Notion, and Slack grants live in Vercel Connect, not in Bro's
-  database.
+- Google, Notion, Slack and other connected apps' grants live in Composio,
+  not in Bro's database; Bro keeps no provider token.
 - Model providers see the conversation they answer, Browser Use sees the
   pages and vault values of the task it runs, and Supermemory indexes
   non-local profile facts when `SUPERMEMORY_API_KEY` is set.

@@ -1,12 +1,64 @@
 import { createHash } from "node:crypto";
-import { gmail, type gmail_v1 } from "@googleapis/gmail";
 import type { ToolContext } from "eve/tools";
 import { z } from "zod";
-import { withGoogleAuth } from "./client";
+import { type GoogleClient, googleUrl, withGoogleAuth } from "./client";
 import { emailAddressSchema } from "./email";
 
-type GmailMessage = gmail_v1.Schema$Message;
-type GmailPart = gmail_v1.Schema$MessagePart;
+/** The person's own mailbox in the Gmail REST API. */
+const gmailApi = "https://gmail.googleapis.com/gmail/v1/users/me";
+
+const gmailHeaderSchema = z.object({ name: z.string(), value: z.string() });
+
+/** One node of a message's MIME tree, as far as Bro reads it. */
+const gmailPartSchema = z.object({
+  body: z
+    .object({
+      attachmentId: z.string().optional(),
+      data: z.string().optional(),
+      size: z.number().optional(),
+    })
+    .optional(),
+  filename: z.string().optional(),
+  headers: z.array(gmailHeaderSchema).optional(),
+  mimeType: z.string().optional(),
+  partId: z.string().optional(),
+  get parts() {
+    return z.array(gmailPartSchema).optional();
+  },
+});
+
+type GmailPart = z.infer<typeof gmailPartSchema>;
+
+const gmailMessageSchema = z.object({
+  id: z.string().optional(),
+  labelIds: z.array(z.string()).optional(),
+  payload: gmailPartSchema.optional(),
+  snippet: z.string().optional(),
+  threadId: z.string().optional(),
+});
+
+type GmailMessage = z.infer<typeof gmailMessageSchema>;
+
+const gmailMessageListSchema = z.object({
+  messages: z
+    .array(z.object({ id: z.string(), threadId: z.string().optional() }))
+    .optional(),
+  nextPageToken: z.string().optional(),
+});
+
+const gmailThreadSchema = z.object({
+  id: z.string().optional(),
+  messages: z.array(gmailMessageSchema).optional(),
+});
+
+const gmailDraftSchema = z.object({
+  id: z.string().optional(),
+  message: z
+    .object({ id: z.string().optional(), threadId: z.string().optional() })
+    .optional(),
+});
+
+const gmailAttachmentSchema = z.object({ data: z.string().optional() });
 
 export const GMAIL_UPDATE_ACTIONS = [
   "archive",
@@ -74,47 +126,46 @@ export type GmailCompose = z.infer<typeof gmailComposeSchema>;
  */
 const searchReadConcurrency = 5;
 
+function messageUrl(id: string, query?: Parameters<typeof googleUrl>[2]) {
+  return googleUrl(gmailApi, `/messages/${encodeURIComponent(id)}`, query);
+}
+
 export async function searchGmail(
   ctx: ToolContext,
   query: string,
   maxResults: number
 ) {
-  return withGmail(ctx, async (client) => {
-    const listed = await client.users.messages.list(
-      { maxResults, q: query, userId: "me" },
-      { signal: ctx.abortSignal }
-    );
-    const ids = (listed.data.messages ?? []).flatMap(({ id }) =>
-      id ? [id] : []
-    );
+  return withGoogleAuth(ctx, async (google) => {
+    const listed = await google.json(gmailMessageListSchema, {
+      url: googleUrl(gmailApi, "/messages", { maxResults, q: query }),
+    });
+    const ids = (listed.messages ?? []).map(({ id }) => id);
     const messages = [];
     for (let start = 0; start < ids.length; start += searchReadConcurrency) {
       // oxlint-disable-next-line eslint/no-await-in-loop -- Batches bound the requests in flight.
       const batch = await Promise.all(
         ids.slice(start, start + searchReadConcurrency).map((id) =>
-          client.users.messages.get(
-            {
+          google.json(gmailMessageSchema, {
+            url: messageUrl(id, {
               format: "metadata",
-              id,
               metadataHeaders: ["From", "To", "Subject", "Date", "Message-ID"],
-              userId: "me",
-            },
-            { signal: ctx.abortSignal }
-          )
+            }),
+          })
         )
       );
-      messages.push(...batch.map(({ data }) => minimizeMessage(data)));
+      messages.push(...batch.map(minimizeMessage));
     }
     return messages;
   });
 }
 
 export async function readGmailThread(ctx: ToolContext, threadId: string) {
-  return withGmail(ctx, async (client) => {
-    const { data: thread } = await client.users.threads.get(
-      { format: "full", id: threadId, userId: "me" },
-      { signal: ctx.abortSignal }
-    );
+  return withGoogleAuth(ctx, async (google) => {
+    const thread = await google.json(gmailThreadSchema, {
+      url: googleUrl(gmailApi, `/threads/${encodeURIComponent(threadId)}`, {
+        format: "full",
+      }),
+    });
     return {
       id: thread.id ?? threadId,
       messages: (thread.messages ?? []).slice(-20).map((message) =>
@@ -180,38 +231,33 @@ export async function updateGmail(
   action: GmailUpdateAction
 ) {
   const requested = [...new Set(messageIds)];
-  return withGmail(ctx, async (client) => {
+  return withGoogleAuth(ctx, async (google) => {
     const alerts =
       action === "archive"
-        ? await inboxSecurityAlerts(client, ctx.abortSignal)
+        ? await inboxSecurityAlerts(google)
         : new Set<string>();
     const kept = requested.filter((id) => alerts.has(id));
     const ids = requested.filter((id) => !alerts.has(id));
     if (ids.length > 0) {
-      await client.users.messages.batchModify(
-        {
-          requestBody: { ids, ...gmailUpdateLabels(action) },
-          userId: "me",
-        },
-        { signal: ctx.abortSignal }
-      );
+      await google.json(z.unknown(), {
+        body: { ids, ...gmailUpdateLabels(action) },
+        method: "POST",
+        url: googleUrl(gmailApi, "/messages/batchModify"),
+      });
     }
     return { action, keptSecurityAlerts: kept, updatedCount: ids.length };
   });
 }
 
 /** Ids of the security alerts now in the inbox, found by one cheap search. */
-async function inboxSecurityAlerts(
-  client: ReturnType<typeof gmail>,
-  signal: AbortSignal
-) {
-  const { data } = await client.users.messages.list(
-    { maxResults: 500, q: gmailSecurityAlertQuery, userId: "me" },
-    { signal }
-  );
-  return new Set(
-    (data.messages ?? []).flatMap((message) => (message.id ? [message.id] : []))
-  );
+async function inboxSecurityAlerts(google: GoogleClient) {
+  const listed = await google.json(gmailMessageListSchema, {
+    url: googleUrl(gmailApi, "/messages", {
+      maxResults: 500,
+      q: gmailSecurityAlertQuery,
+    }),
+  });
+  return new Set((listed.messages ?? []).map((message) => message.id));
 }
 
 /** The headers of the message a reply answers, as Gmail stores them. */
@@ -223,36 +269,39 @@ export interface GmailReplyTarget {
   readonly threadId: string | null;
 }
 
+const sentMessageSchema = z.object({
+  id: z.string().optional(),
+  threadId: z.string().optional(),
+});
+
 export async function sendGmail(ctx: ToolContext, payload: GmailCompose) {
-  return withGmail(ctx, async (client) => {
-    const requestBody = await composeRequest(ctx, client, payload);
-    const { data } = await client.users.messages.send(
-      { requestBody, userId: "me" },
-      { signal: ctx.abortSignal }
-    );
-    return data;
-  });
+  return withGoogleAuth(ctx, async (google) =>
+    google.json(sentMessageSchema, {
+      body: await composeRequest(ctx, google, payload),
+      method: "POST",
+      url: googleUrl(gmailApi, "/messages/send"),
+    })
+  );
 }
 
 /** Saves an email as a Gmail draft, in the answered thread for a reply. */
 export async function draftGmail(ctx: ToolContext, payload: GmailCompose) {
-  return withGmail(ctx, async (client) => {
-    const message = await composeRequest(ctx, client, payload);
-    const { data } = await client.users.drafts.create(
-      { requestBody: { message }, userId: "me" },
-      { signal: ctx.abortSignal }
-    );
-    return data;
-  });
+  return withGoogleAuth(ctx, async (google) =>
+    google.json(gmailDraftSchema, {
+      body: { message: await composeRequest(ctx, google, payload) },
+      method: "POST",
+      url: googleUrl(gmailApi, "/drafts"),
+    })
+  );
 }
 
 async function composeRequest(
   ctx: ToolContext,
-  client: ReturnType<typeof gmail>,
+  google: GoogleClient,
   payload: GmailCompose
 ) {
   const replyTo = payload.replyToMessageId
-    ? await readReplyTarget(ctx, client, payload.replyToMessageId)
+    ? await readReplyTarget(google, payload.replyToMessageId)
     : undefined;
   const stableId = createHash("sha256")
     .update(`${ctx.session.id}:${ctx.callId}`)
@@ -270,25 +319,21 @@ async function composeRequest(
 }
 
 async function readReplyTarget(
-  ctx: ToolContext,
-  client: ReturnType<typeof gmail>,
+  google: GoogleClient,
   id: string
 ): Promise<GmailReplyTarget> {
-  const { data } = await client.users.messages.get(
-    {
+  const message = await google.json(gmailMessageSchema, {
+    url: messageUrl(id, {
       format: "metadata",
-      id,
       metadataHeaders: ["Message-ID", "References", "In-Reply-To", "Subject"],
-      userId: "me",
-    },
-    { signal: ctx.abortSignal }
-  );
+    }),
+  });
   return {
-    inReplyTo: header(data.payload, "In-Reply-To"),
-    messageId: header(data.payload, "Message-ID"),
-    references: header(data.payload, "References"),
-    subject: header(data.payload, "Subject"),
-    threadId: data.threadId ?? null,
+    inReplyTo: header(message.payload, "In-Reply-To"),
+    messageId: header(message.payload, "Message-ID"),
+    references: header(message.payload, "References"),
+    subject: header(message.payload, "Subject"),
+    threadId: message.threadId ?? null,
   };
 }
 
@@ -397,7 +442,7 @@ export function gmailUpdateLabels(action: GmailUpdateAction) {
 function header(part: GmailPart | undefined, name: string) {
   return (
     part?.headers?.find(
-      (item) => item.name?.toLowerCase() === name.toLowerCase()
+      (item) => item.name.toLowerCase() === name.toLowerCase()
     )?.value ?? null
   );
 }
@@ -487,11 +532,10 @@ export async function readGmailAttachment(
   partId: string,
   maxBytes: number
 ) {
-  return withGmail(ctx, async (client) => {
-    const { data: message } = await client.users.messages.get(
-      { format: "full", id: messageId, userId: "me" },
-      { signal: ctx.abortSignal }
-    );
+  return withGoogleAuth(ctx, async (google) => {
+    const message = await google.json(gmailMessageSchema, {
+      url: messageUrl(messageId, { format: "full" }),
+    });
     const part = findAttachmentPart(message.payload, partId);
     const filename = part?.filename;
     if (!part || !filename) return { kind: "missing" } as const;
@@ -500,11 +544,13 @@ export async function readGmailAttachment(
     const attachmentId = part.body?.attachmentId;
     const encoded = attachmentId
       ? (
-          await client.users.messages.attachments.get(
-            { id: attachmentId, messageId, userId: "me" },
-            { signal: ctx.abortSignal }
-          )
-        ).data.data
+          await google.json(gmailAttachmentSchema, {
+            url: googleUrl(
+              gmailApi,
+              `/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}`
+            ),
+          })
+        ).data
       : part.body?.data;
     if (!encoded) return { kind: "missing" } as const;
     const decoded = Buffer.from(encoded, "base64url");
@@ -526,13 +572,6 @@ export async function readGmailAttachment(
 
 function safeHeader(value: string) {
   return value.replace(/[\r\n]+/gu, " ").trim();
-}
-
-function withGmail<T>(
-  ctx: ToolContext,
-  execute: (client: ReturnType<typeof gmail>) => Promise<T>
-) {
-  return withGoogleAuth(ctx, (auth) => execute(gmail({ auth, version: "v1" })));
 }
 
 function decodeBase64Url(value: string) {

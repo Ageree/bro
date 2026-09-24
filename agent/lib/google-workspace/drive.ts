@@ -1,10 +1,39 @@
-import { drive, type drive_v3 } from "@googleapis/drive";
 import type { ToolContext } from "eve/tools";
 import { z } from "zod";
-import { withGoogleAuth } from "./client";
+import { googleUrl, withGoogleAuth } from "./client";
+
+/** The Google Drive REST API. */
+const driveApi = "https://www.googleapis.com/drive/v3";
 
 const fileFields =
   "id,name,mimeType,size,modifiedTime,version,webViewLink,owners(displayName,emailAddress)";
+
+/** A Drive file as Google returns it, the fields Bro asks for. */
+const driveFileSchema = z.object({
+  id: z.string().optional(),
+  mimeType: z.string().optional(),
+  modifiedTime: z.string().optional(),
+  name: z.string().optional(),
+  owners: z
+    .array(
+      z.object({
+        displayName: z.string().optional(),
+        emailAddress: z.string().optional(),
+      })
+    )
+    .optional(),
+  // Drive sends sizes and versions as decimal strings.
+  size: z.string().optional(),
+  version: z.string().optional(),
+  webViewLink: z.string().optional(),
+});
+
+type GoogleDriveFile = z.infer<typeof driveFileSchema>;
+
+const driveFileListSchema = z.object({
+  files: z.array(driveFileSchema).optional(),
+  nextPageToken: z.string().optional(),
+});
 
 /** Drive MIME type filters for the file kinds people ask for by name. */
 const kindFilters = {
@@ -40,9 +69,6 @@ export const driveReadInputSchema = z.object({
   fileId: z.string().trim().min(1).max(200),
 });
 
-/** A download requested as `arraybuffer`, checked rather than cast. */
-const arrayBufferSchema = z.instanceof(ArrayBuffer);
-
 /** Longest text handed to the model from one file. */
 const maximumTextCharacters = 50_000;
 
@@ -67,7 +93,7 @@ const textTypes = new Set([
 
 type DriveFile = ReturnType<typeof minimizeFile>;
 
-function minimizeFile(file: drive_v3.Schema$File) {
+function minimizeFile(file: GoogleDriveFile) {
   return {
     id: file.id ?? "",
     mimeType: file.mimeType ?? null,
@@ -117,24 +143,30 @@ export async function searchDrive(
     q: terms.join(" and "),
     supportsAllDrives: true,
   };
-  return withDrive(ctx, async (client) => {
+  return withGoogleAuth(ctx, async (google) => {
     if (query === undefined) {
-      const { data } = await client.files.list(
-        { ...request, orderBy: "modifiedTime desc", pageSize: maxResults },
-        { signal: ctx.abortSignal }
-      );
-      return (data.files ?? []).map(minimizeFile);
+      const listed = await google.json(driveFileListSchema, {
+        url: googleUrl(driveApi, "/files", {
+          ...request,
+          orderBy: "modifiedTime desc",
+          pageSize: maxResults,
+        }),
+      });
+      return (listed.files ?? []).map(minimizeFile);
     }
-    const files: drive_v3.Schema$File[] = [];
+    const files: GoogleDriveFile[] = [];
     let pageToken: string | undefined;
     do {
       // oxlint-disable-next-line eslint/no-await-in-loop -- Each page needs the token of the one before it.
-      const { data } = await client.files.list(
-        { ...request, pageSize: drivePageSize, pageToken },
-        { signal: ctx.abortSignal }
-      );
-      files.push(...(data.files ?? []));
-      pageToken = data.nextPageToken ?? undefined;
+      const listed = await google.json(driveFileListSchema, {
+        url: googleUrl(driveApi, "/files", {
+          ...request,
+          pageSize: drivePageSize,
+          pageToken,
+        }),
+      });
+      files.push(...(listed.files ?? []));
+      pageToken = listed.nextPageToken;
     } while (pageToken !== undefined && files.length < maximumWordMatches);
     return files
       .map(minimizeFile)
@@ -145,7 +177,7 @@ export async function searchDrive(
   });
 }
 
-function decodeText(bytes: ArrayBuffer) {
+function decodeText(bytes: Uint8Array) {
   const text = new TextDecoder().decode(bytes);
   return {
     text: text.slice(0, maximumTextCharacters),
@@ -154,9 +186,18 @@ function decodeText(bytes: ArrayBuffer) {
 }
 
 /**
+ * Text downloads may be larger than a file Bro forwards; the model only ever
+ * reads the first {@link maximumTextCharacters} of them.
+ */
+const maximumTextBytes = 20 * 1024 * 1024;
+
+const tooLarge = "The file is too large to download.";
+
+/**
  * Reads one Drive file. Google Docs, Sheets, and Slides and plain text files
  * come back as text; images and PDFs within `maxBytes` as bytes; anything
- * else, or anything larger, as metadata alone.
+ * else, or anything larger, as metadata alone. Composio's proxy hands a file
+ * over as a short-lived download link, and text as the text itself.
  */
 export async function readDriveFile(
   ctx: ToolContext,
@@ -167,26 +208,27 @@ export async function readDriveFile(
   | { kind: "bytes"; file: DriveFile; bytes: Uint8Array }
   | { kind: "metadata"; file: DriveFile; reason: string }
 > {
-  return withDrive(ctx, async (client) => {
-    const options = { signal: ctx.abortSignal };
-    const { data } = await client.files.get(
-      { fields: fileFields, fileId, supportsAllDrives: true },
-      options
+  const fileUrl = (query: Parameters<typeof googleUrl>[2]) =>
+    googleUrl(driveApi, `/files/${encodeURIComponent(fileId)}`, query);
+  return withGoogleAuth(ctx, async (google) => {
+    const file = minimizeFile(
+      await google.json(driveFileSchema, {
+        url: fileUrl({ fields: fileFields, supportsAllDrives: true }),
+      })
     );
-    const file = minimizeFile(data);
     const mimeType = file.mimeType ?? "";
 
     const exportType = exportTypes.get(mimeType);
     if (exportType) {
-      const exported = await client.files.export(
-        { fileId, mimeType: exportType },
-        { ...options, responseType: "arraybuffer" }
+      const exported = await google.download(
+        googleUrl(driveApi, `/files/${encodeURIComponent(fileId)}/export`, {
+          mimeType: exportType,
+        }),
+        maximumTextBytes
       );
-      return {
-        file,
-        kind: "text",
-        ...decodeText(arrayBufferSchema.parse(exported.data)),
-      };
+      return exported.kind === "oversize"
+        ? { file, kind: "metadata", reason: tooLarge }
+        : { file, kind: "text", ...decodeText(exported.bytes) };
     }
     if (mimeType.startsWith("application/vnd.google-apps.")) {
       return {
@@ -206,33 +248,26 @@ export async function readDriveFile(
         reason: "Only text, images, and PDFs are downloaded.",
       };
     }
-    if ((file.size ?? 0) > maxBytes) {
-      return {
-        file,
-        kind: "metadata",
-        reason: "The file is too large to download.",
-      };
+    const limit = isText ? maximumTextBytes : maxBytes;
+    if ((file.size ?? 0) > limit) {
+      return { file, kind: "metadata", reason: tooLarge };
     }
-    const downloaded = await client.files.get(
-      { alt: "media", fileId, supportsAllDrives: true },
-      { ...options, responseType: "arraybuffer" }
+    const downloaded = await google.download(
+      fileUrl({ alt: "media", supportsAllDrives: true }),
+      limit
     );
-    const buffer = arrayBufferSchema.parse(downloaded.data);
-    if (isText) return { file, kind: "text", ...decodeText(buffer) };
-    if (buffer.byteLength > maxBytes) {
+    if (downloaded.kind === "oversize") {
+      return { file, kind: "metadata", reason: tooLarge };
+    }
+    if (isText) return { file, kind: "text", ...decodeText(downloaded.bytes) };
+    if (!downloaded.file) {
+      // An image or PDF that came back as text lost its bytes on the way.
       return {
         file,
         kind: "metadata",
-        reason: "The file is too large to download.",
+        reason: "The file could not be downloaded.",
       };
     }
-    return { bytes: new Uint8Array(buffer), file, kind: "bytes" };
+    return { bytes: downloaded.bytes, file, kind: "bytes" };
   });
-}
-
-function withDrive<T>(
-  ctx: ToolContext,
-  execute: (client: ReturnType<typeof drive>) => Promise<T>
-) {
-  return withGoogleAuth(ctx, (auth) => execute(drive({ auth, version: "v3" })));
 }

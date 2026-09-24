@@ -47,6 +47,7 @@ import {
   saveGmailAttachmentArtifact,
 } from "@db/services/gmail-attachments";
 import { env } from "@shared/environment";
+import { googleWorkspaceConfigured } from "@shared/google-workspace/connection";
 import type { AccessScope } from "@shared/identity/access-scope";
 
 /**
@@ -332,8 +333,10 @@ export const gmailDraft = defineTool({
 export default defineDynamic({
   events: {
     // Resolved before every model step, so the read tools know what the
-    // current turn already asked Google.
+    // current turn already asked Google. Without Google on the deployment
+    // there are none: their presence would read as a connected mailbox.
     "step.started": (_event, context) => {
+      if (!googleWorkspaceConfigured()) return null;
       const reads = turnReads(
         context.messages,
         resolveModeValue(context, {

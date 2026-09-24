@@ -1,36 +1,7 @@
-import type * as ConnectModule from "@vercel/connect";
-import type {
-  getTokenResponse,
-  revokeToken,
-  startAuthorization,
-} from "@vercel/connect";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { z } from "zod";
-import { env } from "@shared/environment";
-
-const connect = vi.hoisted(() => ({
-  getTokenResponse: vi.fn<typeof getTokenResponse>(),
-  revokeToken: vi.fn<typeof revokeToken>(),
-  startAuthorization: vi.fn<typeof startAuthorization>(),
-}));
-
-vi.mock("@vercel/connect", async (importOriginal) => ({
-  ...(await importOriginal<typeof ConnectModule>()),
-  getTokenResponse: connect.getTokenResponse,
-  revokeToken: connect.revokeToken,
-  startAuthorization: connect.startAuthorization,
-}));
-
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { type FakeComposio, fakeComposio } from "@tests/helpers/composio";
 import {
-  ConnectError,
-  ConnectorInstallationRequiredError,
-  NoValidTokenError,
-  UserAuthorizationRequiredError,
-} from "@vercel/connect";
-import {
-  googleWorkspaceScopes,
-  googleWorkspaceSubject,
-  googleWorkspaceTokenParams,
+  googleWorkspaceAuthConfigId,
   readGoogleWorkspaceConnection,
   revokeGoogleWorkspaceGrant,
   startGoogleWorkspaceAuthorization,
@@ -38,118 +9,59 @@ import {
 
 const userId = "better-auth:user-1";
 
-const grantedToken = {
-  connector: { id: "cn_1", type: "oauth", uid: env.GOOGLE_CONNECTOR_UID },
-  expiresAt: Date.now() + 3_600_000,
-  token: "ya29.token",
-};
+let composio: FakeComposio;
 
-const tokenInfo = vi.fn<typeof fetch>();
+beforeEach(() => {
+  vi.clearAllMocks();
+  composio = fakeComposio();
+});
 
-describe("readGoogleWorkspaceConnection", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    tokenInfo.mockResolvedValue(Response.json({ access_type: "offline" }));
-    vi.stubGlobal("fetch", tokenInfo);
+describe("googleWorkspaceAuthConfigId", () => {
+  it("connects each level under its own Composio auth config", () => {
+    expect(googleWorkspaceAuthConfigId("full")).toBe("ac_google_full");
+    expect(googleWorkspaceAuthConfigId("read_only")).toBe(
+      "ac_google_read_only"
+    );
   });
 
-  afterEach(() => {
-    vi.unstubAllGlobals();
+  it("falls back to the full config for read-only when none is named", async () => {
+    vi.resetModules();
+    vi.stubEnv("COMPOSIO_GOOGLE_READ_ONLY_AUTH_CONFIG_ID", "");
+    const connection = await import("./connection");
+    vi.stubEnv(
+      "COMPOSIO_GOOGLE_READ_ONLY_AUTH_CONFIG_ID",
+      "ac_google_read_only"
+    );
+
+    expect(connection.googleWorkspaceAuthConfigId("read_only")).toBe(
+      "ac_google_full"
+    );
   });
 
-  it("flags a grant Google issued without offline access", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    connect.getTokenResponse.mockResolvedValue(grantedToken);
-    tokenInfo.mockResolvedValue(Response.json({ access_type: "online" }));
+  it("offers no Google without a Composio key", async () => {
+    vi.resetModules();
+    vi.stubEnv("COMPOSIO_API_KEY", "");
+    const connection = await import("./connection");
+    vi.stubEnv("COMPOSIO_API_KEY", "test-composio-key");
 
+    expect(connection.googleWorkspaceConfigured()).toBe(false);
     await expect(
-      readGoogleWorkspaceConnection(userId, "full")
-    ).resolves.toMatchObject({ state: "connected" });
-    const [endpoint, init] = tokenInfo.mock.calls[0] ?? [];
-    expect(endpoint).toBe("https://oauth2.googleapis.com/tokeninfo");
-    expect(
-      z.instanceof(URLSearchParams).parse(init?.body).get("access_token")
-    ).toBe("ya29.token");
-    await vi.waitFor(() => {
-      expect(warn).toHaveBeenCalledExactlyOnceWith(
-        expect.stringContaining("no offline access")
-      );
-    });
-    warn.mockRestore();
-  });
-
-  it("answers without waiting for the tokeninfo check", async () => {
-    connect.getTokenResponse.mockResolvedValue(grantedToken);
-    tokenInfo.mockReturnValue(new Promise<Response>(() => undefined));
-
-    await expect(
-      readGoogleWorkspaceConnection(userId, "full")
-    ).resolves.toMatchObject({ state: "connected" });
-    expect(tokenInfo).toHaveBeenCalledOnce();
-  });
-
-  it("keeps a connected grant connected when tokeninfo fails", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    connect.getTokenResponse.mockResolvedValue(grantedToken);
-    tokenInfo.mockRejectedValue(new TypeError("fetch failed"));
-
-    await expect(
-      readGoogleWorkspaceConnection(userId, "full")
-    ).resolves.toMatchObject({ state: "connected" });
-    await vi.waitFor(() => {
-      expect(tokenInfo).toHaveBeenCalledOnce();
-    });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(warn).not.toHaveBeenCalled();
-    warn.mockRestore();
-  });
-
-  it("re-validates the grant and labels it with the connector name", async () => {
-    connect.getTokenResponse.mockResolvedValue({
-      ...grantedToken,
-      name: "Ada Lovelace",
-    });
-
-    await expect(
-      readGoogleWorkspaceConnection(userId, "full")
+      connection.readGoogleWorkspaceConnection(userId, "full")
     ).resolves.toEqual({
       access: "full",
-      accountLabel: "Ada Lovelace",
-      state: "connected",
-    });
-    expect(connect.getTokenResponse).toHaveBeenCalledExactlyOnceWith(
-      env.GOOGLE_CONNECTOR_UID,
-      googleWorkspaceTokenParams(userId, "full"),
-      { forceRefresh: true }
-    );
-  });
-
-  it("reads a read-only grant with read scopes and reports its level", async () => {
-    connect.getTokenResponse.mockResolvedValue(grantedToken);
-
-    await expect(
-      readGoogleWorkspaceConnection(userId, "read_only")
-    ).resolves.toEqual({
-      access: "read_only",
       accountLabel: null,
-      state: "connected",
+      state: "unavailable",
     });
-    expect(connect.getTokenResponse).toHaveBeenCalledExactlyOnceWith(
-      env.GOOGLE_CONNECTOR_UID,
-      {
-        scopes: [...googleWorkspaceScopes.read_only],
-        subject: googleWorkspaceSubject(userId),
-      },
-      { forceRefresh: true }
-    );
   });
+});
 
-  it("falls back to the email claim, then to no label", async () => {
-    connect.getTokenResponse.mockResolvedValueOnce({
-      ...grantedToken,
-      claims: { email: "ada@example.com" },
+describe("readGoogleWorkspaceConnection", () => {
+  it("reports the person's active account at the level with its address", async () => {
+    composio.connect({
+      displayName: "ada@example.com",
+      toolkit: "googlesuper",
+      userId,
     });
-    connect.getTokenResponse.mockResolvedValueOnce(grantedToken);
 
     await expect(
       readGoogleWorkspaceConnection(userId, "full")
@@ -158,29 +70,21 @@ describe("readGoogleWorkspaceConnection", () => {
       accountLabel: "ada@example.com",
       state: "connected",
     });
-    await expect(
-      readGoogleWorkspaceConnection(userId, "full")
-    ).resolves.toEqual({
-      access: "full",
-      accountLabel: null,
-      state: "connected",
-    });
+    const [list] = composio.requests;
+    expect(list?.path).toBe("/connected_accounts");
   });
 
-  it.each([
-    [
-      "authorization required",
-      new UserAuthorizationRequiredError(`authorize ${userId}`, {
-        code: "user_authorization_required",
-      }),
-    ],
-    [
-      "no valid token",
-      new NoValidTokenError(`no token for ${userId}`, { code: "no_token" }),
-    ],
-  ])("reports %s as disconnected", async (_description, error) => {
-    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
-    connect.getTokenResponse.mockRejectedValue(error);
+  it("does not count an account at the other level, of someone else, or unfinished", async () => {
+    composio.connect({
+      authConfigId: "ac_google_read_only",
+      toolkit: "googlesuper",
+      userId,
+    });
+    composio.connect({
+      toolkit: "googlesuper",
+      userId: "better-auth:someone-else",
+    });
+    composio.connect({ status: "EXPIRED", toolkit: "googlesuper", userId });
 
     await expect(
       readGoogleWorkspaceConnection(userId, "full")
@@ -189,69 +93,53 @@ describe("readGoogleWorkspaceConnection", () => {
       accountLabel: null,
       state: "disconnected",
     });
-    // Connect's message can name the subject, so only the code is logged.
-    expect(info).toHaveBeenCalledExactlyOnceWith(
-      "[google-workspace] no valid grant",
-      { code: error.code }
-    );
-    info.mockRestore();
   });
 
-  it.each([
-    [
-      "a connector that needs installing",
-      new ConnectorInstallationRequiredError("install", { status: 400 }),
-    ],
-    [
-      "a connector Vercel Connect does not know",
-      new ConnectError("connector not found", {
-        code: "connector_not_found",
-        status: 404,
-      }),
-    ],
-    ["a failure before the request", new Error("no OIDC token")],
-  ])("reports %s as unavailable", async (_description, error) => {
-    connect.getTokenResponse.mockRejectedValue(error);
-
-    await expect(
-      readGoogleWorkspaceConnection(userId, "full")
-    ).resolves.toEqual({
-      access: "full",
-      accountLabel: null,
-      state: "unavailable",
-    });
-  });
-
-  it.each([
-    ["an upstream failure", new ConnectError("bad gateway", { status: 502 })],
-    ["throttling", new ConnectError("slow down", { status: 429 })],
-    ["a network failure", new TypeError("fetch failed")],
-  ])("reports %s as a transient error", async (_description, error) => {
+  it("reports a Composio outage as a transient error", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    connect.getTokenResponse.mockRejectedValue(error);
+    composio.fetch.mockResolvedValue(
+      Response.json({ error: { message: "down" } }, { status: 502 })
+    );
 
     await expect(
       readGoogleWorkspaceConnection(userId, "full")
-    ).resolves.toEqual({
-      access: "full",
-      accountLabel: null,
-      state: "error",
-    });
-    expect(warn).toHaveBeenCalledOnce();
+    ).resolves.toMatchObject({ state: "error" });
+    composio.fetch.mockRejectedValue(new TypeError("fetch failed"));
+    await expect(
+      readGoogleWorkspaceConnection(userId, "full")
+    ).resolves.toMatchObject({ state: "error" });
+    expect(warn).toHaveBeenCalledTimes(2);
+    warn.mockRestore();
+  });
+
+  it("reports a key or config Composio refuses as unavailable", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    composio.fetch.mockResolvedValue(
+      Response.json(
+        { error: { message: "Invalid API key", slug: "APIKey_InvalidAPIKey" } },
+        { status: 401 }
+      )
+    );
+
+    await expect(
+      readGoogleWorkspaceConnection(userId, "full")
+    ).resolves.toMatchObject({ state: "unavailable" });
     warn.mockRestore();
   });
 });
 
 describe("startGoogleWorkspaceAuthorization", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it("mints a ten-minute offline authorization that makes Google show consent", async () => {
-    connect.startAuthorization.mockResolvedValue({
-      request: "req_1",
-      url: "https://accounts.google.com/o/oauth2/v2/auth?state=abc",
-      verifier: "ver_1",
+  it("mints a Connect Link at the level after clearing abandoned attempts", async () => {
+    const abandoned = composio.connect({
+      authConfigId: "ac_google_read_only",
+      status: "INITIATED",
+      toolkit: "googlesuper",
+      userId,
+    });
+    const active = composio.connect({
+      authConfigId: "ac_google_read_only",
+      toolkit: "googlesuper",
+      userId,
     });
 
     await expect(
@@ -260,31 +148,55 @@ describe("startGoogleWorkspaceAuthorization", () => {
         "read_only",
         "https://example.com/workspace?google=connected"
       )
-    ).resolves.toBe("https://accounts.google.com/o/oauth2/v2/auth?state=abc");
-    expect(connect.startAuthorization).toHaveBeenCalledExactlyOnceWith(
-      env.GOOGLE_CONNECTOR_UID,
-      {
-        ...googleWorkspaceTokenParams(userId, "read_only"),
-        additionalParams: { access_type: "offline" },
-      },
-      {
-        callbackUrl: "https://example.com/workspace?google=connected",
-        expiresInMs: 10 * 60_000,
-        prompt: "consent",
-      }
-    );
+    ).resolves.toMatch(/^https:\/\/connect\.composio\.dev\/link\//u);
+
+    expect(
+      composio.requests.find(({ path }) => path === "/connected_accounts/link")
+        ?.body
+    ).toEqual({
+      auth_config_id: "ac_google_read_only",
+      callback_url: "https://example.com/workspace?google=connected",
+      user_id: userId,
+    });
+    const ids = composio.accounts.map(({ id }) => id);
+    expect(ids).not.toContain(abandoned.id);
+    expect(ids).toContain(active.id);
   });
 });
 
 describe("revokeGoogleWorkspaceGrant", () => {
-  it("revokes the user's grant whatever its level", async () => {
-    connect.revokeToken.mockResolvedValue(undefined);
+  it("revokes and deletes every Google account the person holds", async () => {
+    composio.connect({ id: "ca_full", toolkit: "googlesuper", userId });
+    composio.connect({
+      authConfigId: "ac_google_read_only",
+      id: "ca_read",
+      status: "EXPIRED",
+      toolkit: "googlesuper",
+      userId,
+    });
+    composio.connect({ id: "ca_notion", toolkit: "notion", userId });
+    composio.connect({
+      id: "ca_theirs",
+      toolkit: "googlesuper",
+      userId: "better-auth:someone-else",
+    });
 
     await revokeGoogleWorkspaceGrant(userId);
 
-    expect(connect.revokeToken).toHaveBeenCalledExactlyOnceWith(
-      env.GOOGLE_CONNECTOR_UID,
-      { subject: googleWorkspaceSubject(userId) }
-    );
+    expect(composio.accounts.map(({ id }) => id).toSorted()).toEqual([
+      "ca_notion",
+      "ca_theirs",
+    ]);
+    // Only a live grant is revoked at Google, and before it is deleted.
+    expect(
+      composio.requests
+        .filter(({ method }) => method !== "GET")
+        .map(({ method, path }) => `${method} ${path}`)
+        .toSorted()
+    ).toEqual([
+      "DELETE /connected_accounts/ca_full",
+      "DELETE /connected_accounts/ca_read",
+      "POST /connected_accounts/ca_full/revoke",
+    ]);
   });
 });

@@ -1,227 +1,146 @@
-import type { ApprovalContext, ApprovalPolicy } from "eve/tools/approval";
 import type { DynamicResolveContext, ToolContext } from "eve/tools";
-import type * as ConnectModule from "@vercel/connect";
-import type {
-  getConnectorMetadata,
-  getTokenResponse,
-  startAuthorization,
-} from "@vercel/connect";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { z } from "zod";
-
-const connect = vi.hoisted(() => ({
-  getConnectorMetadata: vi.fn<typeof getConnectorMetadata>(),
-  getTokenResponse: vi.fn<typeof getTokenResponse>(),
-  startAuthorization: vi.fn<typeof startAuthorization>(),
-}));
-
-vi.mock("@vercel/connect", async (importOriginal) => ({
-  ...(await importOriginal<typeof ConnectModule>()),
-  getConnectorMetadata: connect.getConnectorMetadata,
-  getTokenResponse: connect.getTokenResponse,
-  startAuthorization: connect.startAuthorization,
-}));
-
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  ConnectError,
-  ConnectorInstallationRequiredError,
-  UserAuthorizationRequiredError,
-} from "@vercel/connect";
-import notionConnections from "@agent/connections/notion";
-import slackConnections from "@agent/connections/slack";
-import { connectApp } from "@agent/tools/connect_app";
-import { notionAddTask } from "@agent/tools/notion";
-import { slackSendMessage } from "@agent/tools/slack";
+  composioToolContext,
+  type FakeComposio,
+  fakeComposio,
+} from "@tests/helpers/composio";
+import { withApprovalCard } from "@shared/chat/approval-card";
+import { accessScopeForUser } from "@shared/identity/access-scope";
 
-const fetchMock = vi.fn<typeof fetch>();
+import connectAppTools, { connectApp } from "@agent/tools/connect_app";
+import notionTools, {
+  notionAddTask,
+  notionRead,
+  notionSearch,
+} from "@agent/tools/notion";
+import slackTools, {
+  slackRead,
+  slackSearch,
+  slackSendMessage,
+} from "@agent/tools/slack";
+
+const userId = "better-auth:user-1";
+const scope = accessScopeForUser(userId);
+
+let composio: FakeComposio;
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.stubGlobal("fetch", fetchMock);
+  composio = fakeComposio();
+  composio.connect({
+    id: "ca_notion",
+    toolkit: "notion",
+    authConfigId: "ac_notion",
+  });
+  composio.connect({
+    id: "ca_slack",
+    toolkit: "slack",
+    authConfigId: "ac_slack",
+  });
 });
 
-afterEach(() => {
-  vi.unstubAllGlobals();
-});
-
-function toolContext(requireAuth = vi.fn<ToolContext["requireAuth"]>()) {
-  return {
-    abortSignal: new AbortController().signal,
-    callId: "call-1",
-    async getSandbox() {
-      throw new Error("Sandbox access is outside this focused test.");
-    },
-    getSkill() {
-      throw new Error("Skill access is outside this focused test.");
-    },
-    async getToken() {
-      return { token: "user-token" };
-    },
-    requireAuth,
-    session: {
-      auth: {
-        current: {
-          attributes: { workspaceId: "personal:workspace" },
-          authenticator: "photon-imessage",
-          principalId: "user-1",
-          principalType: "user",
-        },
-        initiator: null,
-      },
-      id: "session-1",
-      turn: { id: "turn-1", sequence: 0 },
-    },
-    toolName: "test",
-  } satisfies ToolContext;
-}
-
-async function addTask(
-  input: Parameters<typeof notionAddTask.execute>[0],
-  context: ToolContext = toolContext()
+/** Runs a tool that returns one result rather than a stream. */
+async function run<Input, Output extends object>(
+  tool: {
+    readonly execute: (
+      input: Input,
+      context: ToolContext
+    ) => Output | Promise<Output> | AsyncIterable<Output>;
+  },
+  input: Input,
+  context: ToolContext
 ) {
-  const result = await notionAddTask.execute(input, context);
+  const result = await tool.execute(input, context);
   if (Symbol.asyncIterator in result) {
-    throw new Error("notion-add-task returns one result, not a stream.");
+    throw new Error("The tool returns one result, not a stream.");
   }
   return result;
 }
 
-async function sendSlack(
-  input: Parameters<typeof slackSendMessage.execute>[0],
-  context: ToolContext = toolContext()
-) {
-  const result = await slackSendMessage.execute(input, context);
-  if (Symbol.asyncIterator in result) {
-    throw new Error("slack-send-message returns one result, not a stream.");
-  }
-  return result;
+/** The n-th request the proxy passed to the app. */
+function proxied(call: number) {
+  const request = composio.proxy.mock.calls[call]?.[0];
+  if (!request) throw new Error(`No proxied request ${String(call)}.`);
+  return request;
 }
 
-async function connectTo(app: "notion" | "slack") {
-  const result = await connectApp.execute({ app }, toolContext());
-  if (Symbol.asyncIterator in result) {
-    throw new Error("connect_app returns one result, not a stream.");
-  }
-  return result;
-}
-
-const attachedConnector = {
-  createdAt: 0,
-  id: "scl_1",
-  name: "connector",
-  service: "oauth",
-  type: "oauth",
-  uid: "connector",
-  updatedAt: 0,
-  vendor: {},
-};
-
-function resolveContext(
-  authenticator = "photon-imessage",
-  initiatorAttributes?: Record<string, string>
-) {
-  const current = {
-    attributes: { workspaceId: "personal:workspace" },
-    authenticator,
-    principalId: "user-1",
-    principalType: "user",
-  };
+function resolveContext(authenticator = "photon-imessage") {
   return {
     channel: { kind: "channel:photon", metadata: {} },
     messages: [],
     model: null,
     session: {
       auth: {
-        current,
-        initiator: initiatorAttributes
-          ? {
-              ...current,
-              attributes: { ...current.attributes, ...initiatorAttributes },
-            }
-          : null,
+        current: {
+          attributes: { workspaceId: scope.workspaceId },
+          authenticator,
+          principalId: userId,
+          principalType: "user",
+        },
+        initiator: null,
       },
       id: "session-1",
     },
   } satisfies DynamicResolveContext;
 }
 
-/** The parts of one resolved OpenAPI connection these tests look at. */
-const resolvedConnectionSchema = z.object({
-  approval: z.custom<ApprovalPolicy>(
-    (value) => z.function().safeParse(value).success
-  ),
-  baseUrl: z.string(),
-  operations: z.unknown(),
-});
-
-/** The one connection a dynamic connection file resolves for this turn. */
-async function resolveConnection(
-  connections: typeof notionConnections,
+async function resolvedNames(
+  definition: typeof connectAppTools | typeof notionTools | typeof slackTools,
   context: DynamicResolveContext = resolveContext()
 ) {
-  const resolved = await connections.events["turn.started"]?.({}, context);
-  return resolved ? resolvedConnectionSchema.parse(resolved) : null;
+  const resolved = await definition.events["turn.started"]?.({}, context);
+  return resolved ? Object.keys(resolved).toSorted() : [];
 }
 
-async function requireConnection(connections: typeof notionConnections) {
-  const connection = await resolveConnection(connections);
-  if (!connection) throw new Error("Expected one resolved connection.");
-  return connection;
-}
+const cardOptions = [
+  { id: "approve", label: "Approve" },
+  { id: "cancel", label: "Cancel" },
+];
 
-function decide(approval: ApprovalPolicy, toolName: string) {
-  return approval({
-    ...toolContext(),
-    approvedTools: new Set<string>(),
-    toolInput: {},
-    toolName,
-  } satisfies ApprovalContext);
-}
-
-function requestUrl(call: number) {
-  return z.instanceof(URL).parse(fetchMock.mock.calls[call]?.[0]).href;
-}
-
-function requestBody(call: number) {
-  const body: unknown = JSON.parse(
-    z.string().parse(fetchMock.mock.calls[call]?.[1]?.body)
-  );
-  return body;
-}
-
-describe("connection approval", () => {
-  beforeEach(() => {
-    connect.getConnectorMetadata.mockResolvedValue(attachedConnector);
-  });
-
-  it("lets Notion reads through and asks before every write", async () => {
-    const { approval } = await requireConnection(notionConnections);
-    expect(decide(approval, "notion__post-search")).toBe("not-applicable");
-    expect(decide(approval, "notion__retrieve-page-markdown")).toBe(
-      "not-applicable"
+describe("approvals", () => {
+  it("shows the Notion task and the Slack message on their cards", () => {
+    const notion = withApprovalCard(
+      {
+        action: {
+          input: { due: "2026-09-24", title: "Q3 planning" },
+          toolName: "notion-add-task",
+        },
+        kind: "tool-approval",
+        options: cardOptions,
+        prompt: "Approve tool call: notion-add-task",
+      },
+      "ru"
     );
-    expect(decide(approval, "notion__post-page")).toBe("user-approval");
-    expect(decide(approval, "notion__patch-page")).toBe("user-approval");
-    expect(decide(approval, "notion__something-new")).toBe("user-approval");
+    const slack = withApprovalCard(
+      {
+        action: {
+          input: { text: "Встреча в четверг.\nКабинет 5", to: "Sam" },
+          toolName: "slack-send-message",
+        },
+        kind: "tool-approval",
+        options: cardOptions,
+        prompt: "Approve tool call: slack-send-message",
+      },
+      "ru"
+    );
+
+    expect(notion.prompt).toBe(
+      "Добавить задачу в Notion:\n«Q3 planning»\nСрок: 2026-09-24"
+    );
+    // A line break in the text cannot pass for another line of the card.
+    expect(slack.prompt).toBe(
+      "Отправить сообщение в Slack:\nКому: Sam\nТекст: Встреча в четверг. Кабинет 5"
+    );
   });
 
-  it("keeps Slack's connection read-only", async () => {
-    const { approval, operations } = await requireConnection(slackConnections);
-    expect(decide(approval, "slack__users_list")).toBe("not-applicable");
-    const allowed = z
-      .object({ allow: z.array(z.string()) })
-      .parse(operations).allow;
-    expect(allowed).not.toContain("chat_postMessage");
-    expect(
-      allowed.every((operation) =>
-        /^(?:conversations|search|users)_/u.test(operation)
-      )
-    ).toBe(true);
-  });
-
-  it("requires approval for the authored writes", () => {
+  it("asks before every write and lets reads run", () => {
     expect(notionAddTask.approval).toBeTypeOf("function");
     expect(slackSendMessage.approval).toBeTypeOf("function");
+    expect(notionSearch.approval).toBeUndefined();
+    expect(notionRead.approval).toBeUndefined();
+    expect(slackRead.approval).toBeUndefined();
+    expect(slackSearch.approval).toBeUndefined();
   });
 });
 
@@ -246,18 +165,17 @@ const notesSource = {
 
 describe("notion-add-task", () => {
   it("adds the task to the person's tasks database with its due date", async () => {
-    fetchMock
-      .mockResolvedValueOnce(
-        Response.json({ results: [notesSource, tasksSource] })
-      )
-      .mockResolvedValueOnce(
-        Response.json({ id: "page-1", url: "https://www.notion.so/page-1" })
-      );
+    composio.proxy
+      .mockResolvedValueOnce({ data: { results: [notesSource, tasksSource] } })
+      .mockResolvedValueOnce({
+        data: { id: "page-1", url: "https://www.notion.so/page-1" },
+      });
 
-    const result = await addTask({
-      due: "2026-09-24",
-      title: "Q3 planning",
-    });
+    const result = await run(
+      notionAddTask,
+      { due: "2026-09-24", title: "Q3 planning" },
+      composioToolContext("ca_notion")
+    );
 
     expect(result).toEqual({
       database: "My Tasks",
@@ -266,12 +184,16 @@ describe("notion-add-task", () => {
       status: "created",
       url: "https://www.notion.so/page-1",
     });
-    expect(requestUrl(0)).toBe("https://api.notion.com/v1/search");
-    expect(requestBody(0)).toEqual({
+    const search = proxied(0);
+    expect(search.connectedAccountId).toBe("ca_notion");
+    expect(search.url.toString()).toBe("https://api.notion.com/v1/search");
+    // The Notion API answers in the shape of the version asked for.
+    expect(search.headers).toEqual({ "Notion-Version": "2026-03-11" });
+    expect(search.body).toEqual({
       filter: { property: "object", value: "data_source" },
       page_size: 50,
     });
-    expect(requestBody(1)).toEqual({
+    expect(proxied(1).body).toEqual({
       parent: { data_source_id: "ds-tasks", type: "data_source_id" },
       properties: {
         Due: { date: { start: "2026-09-24" } },
@@ -281,46 +203,164 @@ describe("notion-add-task", () => {
   });
 
   it("looks past the first page of databases", async () => {
-    fetchMock
-      .mockResolvedValueOnce(
-        Response.json({ next_cursor: "cursor-2", results: [notesSource] })
-      )
-      .mockResolvedValueOnce(
-        Response.json({ next_cursor: null, results: [tasksSource] })
-      )
-      .mockResolvedValueOnce(Response.json({ id: "page-2" }));
+    composio.proxy
+      .mockResolvedValueOnce({
+        data: { next_cursor: "cursor-2", results: [notesSource] },
+      })
+      .mockResolvedValueOnce({
+        data: { next_cursor: null, results: [tasksSource] },
+      })
+      .mockResolvedValueOnce({ data: { id: "page-2" } });
 
-    await expect(addTask({ title: "Q3 planning" })).resolves.toMatchObject({
-      database: "My Tasks",
-      status: "created",
-    });
-    expect(requestBody(1)).toMatchObject({ start_cursor: "cursor-2" });
+    await expect(
+      run(
+        notionAddTask,
+        { title: "Q3 planning" },
+        composioToolContext("ca_notion")
+      )
+    ).resolves.toMatchObject({ database: "My Tasks", status: "created" });
+    expect(proxied(1).body).toMatchObject({ start_cursor: "cursor-2" });
   });
 
   it("names what it saw instead of guessing a database", async () => {
-    fetchMock.mockResolvedValueOnce(Response.json({ results: [notesSource] }));
-
-    const result = await addTask({ title: "Q3 planning" });
-
-    expect(result).toEqual({
-      databases: ["Reading notes"],
-      status: "not_found",
-    });
-    expect(fetchMock).toHaveBeenCalledOnce();
-  });
-
-  it("asks for authorization again when Notion rejects the token", async () => {
-    const requireAuth = vi.fn<ToolContext["requireAuth"]>(() => {
-      throw new Error("authorization required");
-    });
-    fetchMock.mockResolvedValueOnce(
-      Response.json({ message: "unauthorized" }, { status: 401 })
-    );
+    composio.proxy.mockResolvedValueOnce({ data: { results: [notesSource] } });
 
     await expect(
-      addTask({ title: "Q3 planning" }, toolContext(requireAuth))
+      run(
+        notionAddTask,
+        { title: "Q3 planning" },
+        composioToolContext("ca_notion")
+      )
+    ).resolves.toEqual({ databases: ["Reading notes"], status: "not_found" });
+    expect(composio.proxy).toHaveBeenCalledOnce();
+  });
+
+  it("asks for authorization again when Notion rejects the grant", async () => {
+    composio.proxy.mockResolvedValueOnce({
+      data: { message: "unauthorized" },
+      status: 401,
+    });
+    const context = composioToolContext("ca_notion");
+
+    await expect(
+      run(notionAddTask, { title: "Q3 planning" }, context)
     ).rejects.toThrow("authorization required");
-    expect(requireAuth).toHaveBeenCalledOnce();
+    expect(context.requireAuth).toHaveBeenCalledOnce();
+    expect(context.getToken.mock.calls[0]?.[1]).toEqual({
+      authKey: "composio-notion",
+    });
+  });
+
+  it("asks for authorization again when Composio no longer has the account", async () => {
+    composio.accounts.splice(0);
+    const context = composioToolContext("ca_notion");
+
+    await expect(
+      run(notionAddTask, { title: "Q3 planning" }, context)
+    ).rejects.toThrow("authorization required");
+    expect(context.requireAuth).toHaveBeenCalledOnce();
+  });
+});
+
+describe("notion-search and notion-read", () => {
+  it("finds pages and databases by title", async () => {
+    composio.proxy.mockResolvedValueOnce({
+      data: {
+        results: [
+          {
+            id: "page-1",
+            last_edited_time: "2026-09-20T10:00:00.000Z",
+            object: "page",
+            properties: {
+              Name: { title: [{ plain_text: "Q3 plan" }], type: "title" },
+            },
+            url: "https://www.notion.so/page-1",
+          },
+          tasksSource,
+          { id: "gone", in_trash: true, object: "page", properties: {} },
+        ],
+      },
+    });
+
+    await expect(
+      run(notionSearch, { query: "Q3" }, composioToolContext("ca_notion"))
+    ).resolves.toEqual({
+      results: [
+        {
+          edited: "2026-09-20T10:00:00.000Z",
+          id: "page-1",
+          kind: "page",
+          title: "Q3 plan",
+          url: "https://www.notion.so/page-1",
+        },
+        {
+          edited: null,
+          id: "ds-tasks",
+          kind: "database",
+          title: "My Tasks",
+          url: null,
+        },
+      ],
+    });
+    expect(proxied(0).body).toEqual({ page_size: 20, query: "Q3" });
+  });
+
+  it("reads a page as Markdown and a database as plain rows", async () => {
+    composio.proxy
+      .mockResolvedValueOnce({
+        data: { markdown: "# Q3 plan\n- ship it", truncated: false },
+      })
+      .mockResolvedValueOnce({
+        data: {
+          has_more: false,
+          results: [
+            {
+              id: "row-1",
+              object: "page",
+              properties: {
+                Due: {
+                  date: { end: null, start: "2026-09-30" },
+                  type: "date",
+                },
+                Status: { status: { name: "In progress" }, type: "status" },
+                "Task name": {
+                  title: [{ plain_text: "Ship Q3" }],
+                  type: "title",
+                },
+              },
+              url: "https://www.notion.so/row-1",
+            },
+          ],
+        },
+      });
+    const context = composioToolContext("ca_notion");
+
+    await expect(
+      run(notionRead, { id: "page-1", kind: "page" }, context)
+    ).resolves.toEqual({
+      kind: "page",
+      markdown: "# Q3 plan\n- ship it",
+      truncated: false,
+    });
+    await expect(
+      run(notionRead, { id: "ds-tasks", kind: "database" }, context)
+    ).resolves.toEqual({
+      kind: "database",
+      more: false,
+      rows: [
+        {
+          id: "row-1",
+          properties: {
+            Due: "2026-09-30",
+            Status: "In progress",
+            "Task name": "Ship Q3",
+          },
+          url: "https://www.notion.so/row-1",
+        },
+      ],
+    });
+    expect(proxied(0).url.pathname).toBe("/v1/pages/page-1/markdown");
+    expect(proxied(1).url.pathname).toBe("/v1/data_sources/ds-tasks/query");
   });
 });
 
@@ -345,14 +385,18 @@ const members = [
   },
 ];
 
+function sendSlack(input: { readonly text: string; readonly to: string }) {
+  return run(slackSendMessage, input, composioToolContext("ca_slack"));
+}
+
 describe("slack-send-message", () => {
   it("finds the person by name and sends them a direct message", async () => {
-    fetchMock
-      .mockResolvedValueOnce(Response.json({ members, ok: true }))
-      .mockResolvedValueOnce(
-        Response.json({ channel: { id: "D0SAMPARK" }, ok: true })
-      )
-      .mockResolvedValueOnce(Response.json({ ok: true, ts: "1726.0001" }));
+    composio.proxy
+      .mockResolvedValueOnce({ data: { members, ok: true } })
+      .mockResolvedValueOnce({
+        data: { channel: { id: "D0SAMPARK" }, ok: true },
+      })
+      .mockResolvedValueOnce({ data: { ok: true, ts: "1726.0001" } });
 
     const result = await sendSlack({
       text: "Q3 planning is on for Thursday.",
@@ -365,17 +409,22 @@ describe("slack-send-message", () => {
       status: "sent",
       ts: "1726.0001",
     });
-    expect(requestUrl(0)).toBe("https://slack.com/api/users.list?limit=200");
-    expect(requestBody(1)).toEqual({ users: "U0SAMPARK" });
-    expect(requestBody(2)).toEqual({
+    expect(proxied(0).connectedAccountId).toBe("ca_slack");
+    expect(proxied(0).method).toBe("GET");
+    expect(proxied(0).url.toString()).toBe(
+      "https://slack.com/api/users.list?limit=200"
+    );
+    expect(proxied(1).body).toEqual({ users: "U0SAMPARK" });
+    expect(proxied(2).method).toBe("POST");
+    expect(proxied(2).body).toEqual({
       channel: "D0SAMPARK",
       text: "Q3 planning is on for Thursday.",
     });
   });
 
   it("sends nothing and lists candidates when the name is ambiguous", async () => {
-    fetchMock.mockResolvedValueOnce(
-      Response.json({
+    composio.proxy.mockResolvedValueOnce({
+      data: {
         members: [
           ...members,
           {
@@ -386,12 +435,10 @@ describe("slack-send-message", () => {
           },
         ],
         ok: true,
-      })
-    );
+      },
+    });
 
-    const result = await sendSlack({ text: "Hi", to: "sam" });
-
-    expect(result).toEqual({
+    await expect(sendSlack({ text: "Hi", to: "sam" })).resolves.toEqual({
       candidates: [
         {
           handle: "@sam.park",
@@ -403,25 +450,25 @@ describe("slack-send-message", () => {
       ],
       status: "ambiguous",
     });
-    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(composio.proxy).toHaveBeenCalledOnce();
   });
 
   it("reports an unknown recipient without sending", async () => {
-    fetchMock.mockResolvedValueOnce(Response.json({ members, ok: true }));
+    composio.proxy.mockResolvedValueOnce({ data: { members, ok: true } });
 
     await expect(sendSlack({ text: "Hi", to: "Maria" })).resolves.toEqual({
       status: "not_found",
     });
-    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(composio.proxy).toHaveBeenCalledOnce();
   });
 
   it("names the person behind a Slack ID in its result", async () => {
-    fetchMock
-      .mockResolvedValueOnce(Response.json({ ok: true, user: members[0] }))
-      .mockResolvedValueOnce(
-        Response.json({ channel: { id: "D0SAMPARK" }, ok: true })
-      )
-      .mockResolvedValueOnce(Response.json({ ok: true, ts: "1726.0002" }));
+    composio.proxy
+      .mockResolvedValueOnce({ data: { ok: true, user: members[0] } })
+      .mockResolvedValueOnce({
+        data: { channel: { id: "D0SAMPARK" }, ok: true },
+      })
+      .mockResolvedValueOnce({ data: { ok: true, ts: "1726.0002" } });
 
     await expect(
       sendSlack({ text: "Hi", to: "U0SAMPARK" })
@@ -429,18 +476,17 @@ describe("slack-send-message", () => {
       recipient: { handle: "@sam.park", name: "Sam Park" },
       status: "sent",
     });
-    expect(requestUrl(0)).toBe(
+    expect(proxied(0).url.toString()).toBe(
       "https://slack.com/api/users.info?user=U0SAMPARK"
     );
   });
 
   it("reports rate limiting instead of a parse error", async () => {
-    fetchMock.mockResolvedValueOnce(
-      new Response("slow down", {
-        headers: { "retry-after": "30" },
-        status: 429,
-      })
-    );
+    composio.proxy.mockResolvedValueOnce({
+      data: "slow down",
+      headers: { "retry-after": "30" },
+      status: 429,
+    });
 
     await expect(sendSlack({ text: "Hi", to: "Sam" })).rejects.toThrow(
       "Slack is rate limiting users.list; try again in 30 s."
@@ -448,9 +494,10 @@ describe("slack-send-message", () => {
   });
 
   it("reports a response that is not Slack's JSON", async () => {
-    fetchMock.mockResolvedValueOnce(
-      new Response("<html>Bad gateway</html>", { status: 502 })
-    );
+    composio.proxy.mockResolvedValueOnce({
+      data: "<html>Bad gateway</html>",
+      status: 502,
+    });
 
     await expect(sendSlack({ text: "Hi", to: "Sam" })).rejects.toThrow(
       "Slack users.list answered 502 without its JSON response."
@@ -458,147 +505,226 @@ describe("slack-send-message", () => {
   });
 
   it("asks for authorization again when the Slack grant was revoked", async () => {
-    const requireAuth = vi.fn<ToolContext["requireAuth"]>(() => {
-      throw new Error("authorization required");
+    composio.proxy.mockResolvedValueOnce({
+      data: { error: "token_revoked", ok: false },
     });
-    fetchMock.mockResolvedValueOnce(
-      Response.json({ error: "token_revoked", ok: false })
-    );
+    const context = composioToolContext("ca_slack");
 
     await expect(
-      sendSlack({ text: "Hi", to: "Sam" }, toolContext(requireAuth))
+      run(slackSendMessage, { text: "Hi", to: "Sam" }, context)
     ).rejects.toThrow("authorization required");
-    expect(requireAuth).toHaveBeenCalledOnce();
+    expect(context.requireAuth).toHaveBeenCalledOnce();
+    expect(context.requireAuth.mock.calls[0]?.[1]).toEqual({
+      authKey: "composio-slack",
+    });
+  });
+});
+
+describe("slack-read and slack-search", () => {
+  it("reads a channel with names in place of user ids", async () => {
+    composio.proxy
+      .mockResolvedValueOnce({
+        data: {
+          channels: [{ id: "C0GENERAL1", name: "general" }],
+          ok: true,
+        },
+      })
+      .mockResolvedValueOnce({
+        data: {
+          messages: [
+            {
+              reply_count: 2,
+              text: "Ship it, <@U0SAMLEE1>?",
+              ts: "1790000000.000100",
+              user: "U0SAMPARK",
+            },
+          ],
+          ok: true,
+        },
+      })
+      .mockResolvedValueOnce({ data: { members, ok: true } });
+
+    await expect(
+      run(
+        slackRead,
+        { from: "#general", limit: 10 },
+        composioToolContext("ca_slack")
+      )
+    ).resolves.toEqual({
+      channel: "#general",
+      messages: [
+        {
+          from: "Sam Park",
+          replies: 2,
+          text: "Ship it, @Samantha Lee?",
+          threadTs: null,
+          time: "2026-09-21T14:13:20.000Z",
+          ts: "1790000000.000100",
+        },
+      ],
+      status: "messages",
+    });
+    expect(proxied(1).url.toString()).toBe(
+      "https://slack.com/api/conversations.history?channel=C0GENERAL1&limit=10"
+    );
+  });
+
+  it("searches messages with Slack's own syntax", async () => {
+    composio.proxy.mockResolvedValueOnce({
+      data: {
+        messages: {
+          matches: [
+            {
+              channel: { name: "general" },
+              permalink: "https://team.slack.com/archives/C0/p1",
+              text: "Budget is 12k",
+              ts: "1790000000.000100",
+              username: "sam.park",
+            },
+          ],
+        },
+        ok: true,
+      },
+    });
+
+    await expect(
+      run(
+        slackSearch,
+        { count: 20, query: "budget in:#general" },
+        composioToolContext("ca_slack")
+      )
+    ).resolves.toEqual({
+      matches: [
+        {
+          channel: "general",
+          from: "sam.park",
+          permalink: "https://team.slack.com/archives/C0/p1",
+          replies: 0,
+          text: "Budget is 12k",
+          threadTs: null,
+          time: "2026-09-21T14:13:20.000Z",
+          ts: "1790000000.000100",
+        },
+      ],
+    });
+    expect(proxied(0).url.searchParams.get("query")).toBe("budget in:#general");
   });
 });
 
 describe("connect_app", () => {
-  it("mints a Notion link for the user's own subject", async () => {
-    connect.getTokenResponse.mockRejectedValue(
-      new UserAuthorizationRequiredError("authorize")
-    );
-    connect.startAuthorization.mockResolvedValue({
-      request: "req_1",
-      url: "https://connect.example/authorize",
-      verifier: "ver_1",
-    });
+  it("reports a connected app without minting a link", async () => {
+    await expect(
+      run(
+        connectApp,
+        { action: "connect", app: "notion" },
+        composioToolContext("ca_notion")
+      )
+    ).resolves.toEqual({ account: null, status: "connected" });
+  });
 
-    const result = await connectTo("notion");
+  it("mints a Notion link under its auth config for the person", async () => {
+    composio.accounts.splice(0);
 
-    expect(result).toEqual({
+    await expect(
+      run(
+        connectApp,
+        { action: "connect", app: "notion" },
+        composioToolContext("ca_notion")
+      )
+    ).resolves.toEqual({
       expiresInMinutes: 10,
       status: "authorize",
-      url: "https://connect.example/authorize",
+      url: "https://connect.composio.dev/link/lk_3",
     });
-    expect(connect.startAuthorization.mock.calls[0]?.[0]).toBe("notion");
-    expect(connect.startAuthorization.mock.calls[0]?.[1]).toEqual({
-      subject: { id: "user-1", issuer: "openinstinct", type: "user" },
+    expect(
+      composio.requests.find(({ path }) => path === "/connected_accounts/link")
+        ?.body
+    ).toEqual({
+      auth_config_id: "ac_notion",
+      callback_url: "https://example.com/workspace?app=notion",
+      user_id: userId,
     });
   });
 
-  it("asks Slack for the user scopes it posts and reads with", async () => {
-    connect.getTokenResponse.mockRejectedValue(
-      new ConnectorInstallationRequiredError("install", { status: 400 })
+  it("finds or makes the project's auth config for another app", async () => {
+    await run(
+      connectApp,
+      { action: "connect", app: "todoist" },
+      composioToolContext("ca_x")
     );
 
-    const result = await connectTo("slack");
+    expect(
+      composio.requests
+        .filter(({ path }) => path.startsWith("/auth_configs"))
+        .map(({ method, path }) => `${method} ${path}`)
+    ).toEqual(["GET /auth_configs", "POST /auth_configs"]);
+    expect(
+      composio.requests.find(({ path }) => path === "/connected_accounts/link")
+        ?.body
+    ).toMatchObject({ auth_config_id: "ac_created_3" });
+  });
 
-    expect(result).toMatchObject({ status: "not_configured" });
-    const scopes = connect.getTokenResponse.mock.calls[0]?.[1]?.scopes ?? [];
-    expect(scopes).toContain("chat:write");
-    expect(scopes).toContain("users:read");
+  it("disconnects by revoking and deleting the app's accounts", async () => {
+    await expect(
+      run(
+        connectApp,
+        { action: "disconnect", app: "slack" },
+        composioToolContext("ca_slack")
+      )
+    ).resolves.toEqual({ status: "disconnected" });
+    expect(composio.accounts.map(({ id }) => id)).toEqual(["ca_notion"]);
+  });
+
+  it("asks only before disconnecting", async () => {
+    const approval = connectApp.approval;
+    if (approval === undefined) throw new Error("No approval policy.");
+    const policy = "request" in approval ? approval.request : approval;
+    const context = composioToolContext("ca_slack");
+    const decide = async (action: "connect" | "disconnect") =>
+      policy({
+        ...context,
+        approvedTools: new Set(),
+        toolInput: { action, app: "slack" },
+      });
+    expect(await decide("connect")).toBe("not-applicable");
+    expect(await decide("disconnect")).toBe("user-approval");
   });
 });
 
-describe("Notion and Slack exist only with a connector on the deployment", () => {
-  // The connector check is kept per instance, so each case loads fresh modules.
-  async function load() {
+describe("app tools exist only where the deployment can connect the app", () => {
+  it("offers Notion, Slack and connect_app in a person's turn", async () => {
+    expect(await resolvedNames(notionTools)).toEqual([
+      "notion-add-task",
+      "notion-read",
+      "notion-search",
+    ]);
+    expect(await resolvedNames(slackTools)).toEqual([
+      "slack-read",
+      "slack-search",
+      "slack-send-message",
+    ]);
+    expect(await resolvedNames(connectAppTools)).toEqual(["connect_app"]);
+  });
+
+  it("leaves them out of Bro's own background work", async () => {
+    const worker = resolveContext("scheduled-worker");
+    expect(await resolvedNames(notionTools, worker)).toEqual([]);
+    expect(await resolvedNames(slackTools, worker)).toEqual([]);
+    expect(await resolvedNames(connectAppTools, worker)).toEqual([]);
+  });
+
+  it("hides an app whose auth config the deployment does not name", async () => {
     vi.resetModules();
-    const [notionTools, slackTools, notion, slack] = await Promise.all([
-      import("@agent/tools/notion"),
-      import("@agent/tools/slack"),
-      import("@agent/connections/notion"),
-      import("@agent/connections/slack"),
-    ]);
-    return {
-      async connections() {
-        return [
-          await resolveConnection(notion.default),
-          await resolveConnection(slack.default),
-        ].map((connection) => connection !== null);
-      },
-      async tools(context: DynamicResolveContext = resolveContext()) {
-        const resolved = await Promise.all(
-          [notionTools.default, slackTools.default].map(async (definition) =>
-            definition.events["turn.started"]?.({}, context)
-          )
-        );
-        return resolved.flatMap((tools) =>
-          tools && !("execute" in tools) ? Object.keys(tools) : []
-        );
-      },
-    };
-  }
+    vi.stubEnv("COMPOSIO_NOTION_AUTH_CONFIG_ID", "");
+    const notion = await import("@agent/tools/notion");
+    const slack = await import("@agent/tools/slack");
+    vi.stubEnv("COMPOSIO_NOTION_AUTH_CONFIG_ID", "ac_notion");
 
-  it("hides the tools and connections when Vercel Connect has no connector", async () => {
-    connect.getConnectorMetadata.mockRejectedValue(
-      new ConnectError("Connector not found", { status: 404 })
-    );
-    const apps = await load();
-
-    expect(await apps.tools()).toEqual([]);
-    expect(await apps.connections()).toEqual([false, false]);
-    expect(connect.getConnectorMetadata.mock.calls.map(([uid]) => uid)).toEqual(
-      ["notion", "slack"]
-    );
-  });
-
-  it("hides them when the deployment cannot reach Vercel Connect at all", async () => {
-    connect.getConnectorMetadata.mockRejectedValue(
-      new Error("The 'x-vercel-oidc-token' header is missing")
-    );
-    const apps = await load();
-
-    expect(await apps.tools()).toEqual([]);
-    expect(await apps.connections()).toEqual([false, false]);
-  });
-
-  it("offers them with a connector and asks Vercel Connect once per app", async () => {
-    connect.getConnectorMetadata.mockResolvedValue(attachedConnector);
-    const apps = await load();
-
-    expect(await apps.tools()).toEqual([
-      "notion-add-task",
+    expect(await resolvedNames(notion.default)).toEqual([]);
+    expect(await resolvedNames(slack.default)).toEqual([
+      "slack-read",
+      "slack-search",
       "slack-send-message",
     ]);
-    expect(await apps.connections()).toEqual([true, true]);
-    expect(await apps.tools()).toHaveLength(2);
-    expect(connect.getConnectorMetadata).toHaveBeenCalledTimes(2);
-  });
-
-  it("keeps them through a Vercel Connect outage and asks again next turn", async () => {
-    connect.getConnectorMetadata.mockRejectedValue(
-      new ConnectError("Service unavailable", { status: 503 })
-    );
-    const apps = await load();
-
-    expect(await apps.tools()).toEqual([
-      "notion-add-task",
-      "slack-send-message",
-    ]);
-    expect(await apps.tools()).toHaveLength(2);
-    expect(connect.getConnectorMetadata).toHaveBeenCalledTimes(4);
-  });
-
-  it("leaves them out of Bro's own checks without asking Vercel Connect", async () => {
-    connect.getConnectorMetadata.mockResolvedValue(attachedConnector);
-    const apps = await load();
-
-    expect(
-      await apps.tools(
-        resolveContext("scheduled-worker", { scheduledRunKind: "proactive" })
-      )
-    ).toEqual([]);
-    expect(connect.getConnectorMetadata).not.toHaveBeenCalled();
   });
 });
