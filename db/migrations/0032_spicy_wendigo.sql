@@ -58,6 +58,6 @@ WHERE "watch"."job_id" = "job"."id"
 DO $$
 BEGIN
 	IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'public.proactive_watches'::regclass AND conname = 'proactive_watches_messenger_check') THEN
-		ALTER TABLE "proactive_watches" ADD CONSTRAINT "proactive_watches_messenger_check" CHECK (("proactive_watches"."messenger_channel" IS NULL AND "proactive_watches"."messenger_conversation_id" IS NULL) OR ("proactive_watches"."messenger_channel" IN ('photon', 'telegram') AND "proactive_watches"."messenger_conversation_id" <> ''));
+		ALTER TABLE "proactive_watches" ADD CONSTRAINT "proactive_watches_messenger_check" CHECK (("proactive_watches"."messenger_channel" IS NULL AND "proactive_watches"."messenger_conversation_id" IS NULL) OR ("proactive_watches"."messenger_channel" IS NOT NULL AND "proactive_watches"."messenger_channel" IN ('photon', 'telegram') AND "proactive_watches"."messenger_conversation_id" IS NOT NULL AND "proactive_watches"."messenger_conversation_id" <> ''));
 	END IF;
 END $$;
