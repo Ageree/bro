@@ -247,7 +247,7 @@ describe("startGoogleWorkspaceAuthorization", () => {
     vi.clearAllMocks();
   });
 
-  it("mints a ten-minute authorization that makes Google show consent", async () => {
+  it("mints a ten-minute offline authorization that makes Google show consent", async () => {
     connect.startAuthorization.mockResolvedValue({
       request: "req_1",
       url: "https://accounts.google.com/o/oauth2/v2/auth?state=abc",
@@ -263,7 +263,10 @@ describe("startGoogleWorkspaceAuthorization", () => {
     ).resolves.toBe("https://accounts.google.com/o/oauth2/v2/auth?state=abc");
     expect(connect.startAuthorization).toHaveBeenCalledExactlyOnceWith(
       env.GOOGLE_CONNECTOR_UID,
-      googleWorkspaceTokenParams(userId, "read_only"),
+      {
+        ...googleWorkspaceTokenParams(userId, "read_only"),
+        additionalParams: { access_type: "offline" },
+      },
       {
         callbackUrl: "https://example.com/workspace?google=connected",
         expiresInMs: 10 * 60_000,

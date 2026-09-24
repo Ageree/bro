@@ -61,6 +61,14 @@ export const googleWorkspaceDisconnectNotice =
  */
 export const googleWorkspaceConsentPrompt = "consent";
 
+/**
+ * Extra query parameters for Google's authorization URL. Without
+ * `access_type=offline` Google issues no refresh token at all, consent screen
+ * or not. The connector's own `authorizationUrlParams` should carry it too;
+ * sending it per request covers a connector that does not.
+ */
+const googleWorkspaceAuthorizationUrlParams = { access_type: "offline" };
+
 /** How long a minted Google authorization link stays valid. */
 export const googleWorkspaceAuthorizationLifetimeMs = 10 * 60_000;
 
@@ -168,7 +176,7 @@ const googleTokenInfoSchema = z.object({ access_type: z.string().optional() });
  * Google drops out an hour after connecting and scheduled runs fail with it.
  * Best effort and not awaited: it never changes the connection state.
  */
-async function warnWhenGrantCannotRefresh(accessToken: string) {
+export async function warnWhenGrantCannotRefresh(accessToken: string) {
   try {
     const response = await fetch("https://oauth2.googleapis.com/tokeninfo", {
       body: new URLSearchParams({ access_token: accessToken }),
@@ -196,9 +204,17 @@ export async function startGoogleWorkspaceAuthorization(
   access: GoogleWorkspaceAccess,
   callbackUrl: string
 ) {
+  // Vercel Connect's authorize endpoint takes `additionalParams`; the SDK
+  // types omit it but send every params field in the request body.
+  const params: ConnectTokenParams & {
+    additionalParams: Record<string, string>;
+  } = {
+    ...googleWorkspaceTokenParams(userId, access),
+    additionalParams: googleWorkspaceAuthorizationUrlParams,
+  };
   const authorization = await startAuthorization(
     env.GOOGLE_CONNECTOR_UID,
-    googleWorkspaceTokenParams(userId, access),
+    params,
     {
       callbackUrl,
       expiresInMs: googleWorkspaceAuthorizationLifetimeMs,
