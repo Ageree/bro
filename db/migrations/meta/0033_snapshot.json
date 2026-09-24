@@ -1352,6 +1352,10 @@
           "name": "browser_runs_status_check",
           "value": "\"browser_runs\".\"status\" IN ('created', 'queued', 'running', 'waiting', 'done', 'failed', 'stopped')"
         },
+        "browser_runs_session_id_check": {
+          "name": "browser_runs_session_id_check",
+          "value": "\"browser_runs\".\"session_id\" IS NOT NULL OR \"browser_runs\".\"id\" LIKE 'queued:%'"
+        },
         "browser_runs_conversation_channel_check": {
           "name": "browser_runs_conversation_channel_check",
           "value": "\"browser_runs\".\"conversation_channel\" IN ('eve', 'photon', 'telegram')"
@@ -3106,7 +3110,7 @@
         },
         "proactive_watches_messenger_check": {
           "name": "proactive_watches_messenger_check",
-          "value": "(\"proactive_watches\".\"messenger_channel\" IS NULL AND \"proactive_watches\".\"messenger_conversation_id\" IS NULL) OR (\"proactive_watches\".\"messenger_channel\" IN ('photon', 'telegram') AND \"proactive_watches\".\"messenger_conversation_id\" <> '')"
+          "value": "(\"proactive_watches\".\"messenger_channel\" IS NULL AND \"proactive_watches\".\"messenger_conversation_id\" IS NULL) OR (\"proactive_watches\".\"messenger_channel\" IS NOT NULL AND \"proactive_watches\".\"messenger_channel\" IN ('photon', 'telegram') AND \"proactive_watches\".\"messenger_conversation_id\" IS NOT NULL AND \"proactive_watches\".\"messenger_conversation_id\" <> '')"
         }
       },
       "isRLSEnabled": false
