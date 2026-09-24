@@ -499,6 +499,24 @@ describe("remembered chats", { timeout: 30_000 }, () => {
     expect(await db.query.scheduledAgentJobs.findMany()).toHaveLength(1);
   });
 
+  it("refuses a messenger remembered without its chat, or a chat without its messenger", async () => {
+    const { db, proactive } = await openDatabase();
+    await proactive.recordProactiveTarget(alice, telegram, now);
+    const { proactiveWatches } = await import("@db");
+
+    await expect(
+      db.update(proactiveWatches).set({ messengerConversationId: null })
+    ).rejects.toThrow();
+    await expect(
+      db.update(proactiveWatches).set({ messengerChannel: null })
+    ).rejects.toThrow();
+    await expect(
+      db
+        .update(proactiveWatches)
+        .set({ messengerChannel: null, messengerConversationId: null })
+    ).resolves.toBeDefined();
+  });
+
   it("recovers the messenger of a person whose target had moved to the web chat", async () => {
     const client = new PGlite();
     databases.push(client);
@@ -608,13 +626,16 @@ describe("waking the checks when Google connects", { timeout: 30_000 }, () => {
     const { proactive } = await openDatabase();
     await proactive.recordProactiveTarget(alice, web, now);
     const lease = { leaseForMs: 15 * 60_000, limit: 10, now };
-    expect(await proactive.claimDueProactiveWatches(lease)).toHaveLength(1);
+    const [claim] = await proactive.claimDueProactiveWatches(lease);
+    if (!claim) throw new Error("Expected the new watch to be due.");
     // The probe found no grant, so the next look is hours away.
-    await proactive.deferProactiveWatch(
-      alice.workspaceId,
-      new Date(now.getTime() + 6 * 60 * 60_000),
-      "disconnected"
-    );
+    expect(
+      await proactive.deferProactiveWatch(
+        claim,
+        new Date(now.getTime() + 6 * 60 * 60_000),
+        "disconnected"
+      )
+    ).toBe(true);
     const connectedAt = new Date(now.getTime() + 20 * 60_000);
     const later = { ...lease, now: connectedAt };
     expect(await proactive.claimDueProactiveWatches(later)).toEqual([]);
@@ -626,16 +647,91 @@ describe("waking the checks when Google connects", { timeout: 30_000 }, () => {
     ]);
   });
 
+  it("keeps a connection made while a probe of a parked watch was in flight", async () => {
+    const { proactive } = await openDatabase();
+    await proactive.recordProactiveTarget(alice, web, now);
+    const lease = { leaseForMs: 15 * 60_000, limit: 10, now };
+    const [first] = await proactive.claimDueProactiveWatches(lease);
+    if (!first) throw new Error("Expected the new watch to be due.");
+    await proactive.deferProactiveWatch(
+      first,
+      new Date(now.getTime() + 6 * 60 * 60_000),
+      "disconnected"
+    );
+    // Six hours later the parked watch is probed again…
+    const recheckAt = new Date(now.getTime() + 6 * 60 * 60_000);
+    const recheck = { ...lease, now: recheckAt };
+    const [probing] = await proactive.claimDueProactiveWatches(recheck);
+    if (!probing) throw new Error("Expected the parked watch to be due.");
+    expect(probing.googleState).toBe("disconnected");
+    // …and the person finishes consent before the probe, still without a
+    // grant in hand, reports back.
+    const connectedAt = new Date(recheckAt.getTime() + 2_000);
+    expect(await proactive.wakeProactiveWatch(alice, connectedAt)).toBe(true);
+
+    expect(
+      await proactive.deferProactiveWatch(
+        probing,
+        new Date(recheckAt.getTime() + 6 * 60 * 60_000),
+        "disconnected"
+      )
+    ).toBe(false);
+    expect(
+      await proactive.claimDueProactiveWatches({ ...lease, now: connectedAt })
+    ).toMatchObject([
+      { googleState: "unknown", workspaceId: alice.workspaceId },
+    ]);
+  });
+
+  it("keeps a connection made during the very first probe", async () => {
+    const { proactive } = await openDatabase();
+    await proactive.recordProactiveTarget(alice, web, now);
+    const lease = { leaseForMs: 15 * 60_000, limit: 10, now };
+    const [probing] = await proactive.claimDueProactiveWatches(lease);
+    if (!probing) throw new Error("Expected the new watch to be due.");
+    expect(probing.googleState).toBe("unknown");
+
+    const connectedAt = new Date(now.getTime() + 2_000);
+    expect(await proactive.wakeProactiveWatch(alice, connectedAt)).toBe(true);
+
+    expect(
+      await proactive.deferProactiveWatch(
+        probing,
+        new Date(now.getTime() + 6 * 60 * 60_000),
+        "disconnected"
+      )
+    ).toBe(false);
+    expect(
+      await proactive.claimDueProactiveWatches({ ...lease, now: connectedAt })
+    ).toHaveLength(1);
+  });
+
   it("leaves a connected watch on its own cadence", async () => {
     const { proactive } = await openDatabase();
     await proactive.recordProactiveTarget(alice, web, now);
     await proactive.advanceProactiveWatermark(alice.workspaceId, now);
     const lease = { leaseForMs: 15 * 60_000, limit: 10, now };
-    expect(await proactive.claimDueProactiveWatches(lease)).toHaveLength(1);
+    const [probing] = await proactive.claimDueProactiveWatches(lease);
+    if (!probing) throw new Error("Expected the connected watch to be due.");
 
     // Its next check time is the live lease of the check in progress.
     expect(await proactive.wakeProactiveWatch(alice, now)).toBe(false);
     expect(await proactive.claimDueProactiveWatches(lease)).toEqual([]);
+    // The grant was renewed while the probe still saw it missing: the probe
+    // does not park the watch for hours, the lease brings the next look.
+    expect(
+      await proactive.deferProactiveWatch(
+        probing,
+        new Date(now.getTime() + 6 * 60 * 60_000),
+        "disconnected"
+      )
+    ).toBe(false);
+    expect(
+      await proactive.claimDueProactiveWatches({
+        ...lease,
+        now: probing.leaseUntil,
+      })
+    ).toHaveLength(1);
     // A workspace that never talked to Bro has nothing to wake.
     expect(
       await proactive.wakeProactiveWatch({ workspaceId: "workspace:bob" }, now)

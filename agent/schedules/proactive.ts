@@ -68,7 +68,7 @@ async function checkWorkspace(
   const quietUntil = quietHoursEnd(now, timeZone);
   if (quietUntil) {
     // The watermark stays put, so the morning check picks up the night's mail.
-    await deferProactiveWatch(watch.workspaceId, quietUntil);
+    await deferProactiveWatch(watch, quietUntil);
     return;
   }
   try {
@@ -81,8 +81,10 @@ async function checkWorkspace(
       }
     );
     if (probe.state !== "connected") {
+      // A connection completed during the probe woke the watch; then this
+      // deferral misses and the next tick looks again.
       await deferProactiveWatch(
-        watch.workspaceId,
+        watch,
         new Date(now.getTime() + disconnectedRetryMs),
         "disconnected"
       );
