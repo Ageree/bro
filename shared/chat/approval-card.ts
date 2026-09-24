@@ -11,6 +11,7 @@ import {
   describeSpendRule,
   describeStandingAction,
   formatRub,
+  givenScope,
   normalizeCategory,
   normalizeMerchant,
   type SpendRule,
@@ -243,19 +244,18 @@ function standingPermissionPrompt(
   language: CardLanguage
 ) {
   if (call.action === "read") return undefined;
+  const site = givenScope(call.merchant);
   const rule: StandingAction = {
     kind: call.kind ?? null,
     maxRub: call.maxRub ?? null,
     merchant:
-      call.merchant === undefined
-        ? null
-        : (normalizeMerchant(call.merchant) ?? oneLine(call.merchant)),
+      site === undefined ? null : (normalizeMerchant(site) ?? oneLine(site)),
     monthRub: call.maxRub === undefined ? null : (call.monthRub ?? null),
   };
   if (call.action === "revoke") {
     return [
       text.permissionRevoke,
-      call.kind === undefined && call.merchant === undefined
+      call.kind === undefined && site === undefined
         ? "—"
         : describeStandingActionIn(language, rule),
     ].join("\n");
@@ -281,14 +281,12 @@ function spendLimitPrompt(
   language: CardLanguage
 ) {
   if (call.action === "read") return undefined;
+  const shop = givenScope(call.merchant);
   const merchant =
-    call.merchant === undefined
-      ? null
-      : (normalizeMerchant(call.merchant) ?? oneLine(call.merchant));
+    shop === undefined ? null : (normalizeMerchant(shop) ?? oneLine(shop));
+  const named = givenScope(call.category);
   const category =
-    call.category === undefined
-      ? null
-      : (normalizeCategory(call.category) ?? oneLine(call.category));
+    named === undefined ? null : (normalizeCategory(named) ?? oneLine(named));
   const scope = [merchant, category === null ? null : `«${category}»`]
     .filter((part) => part !== null)
     .join(", ");
