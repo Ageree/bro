@@ -11,29 +11,68 @@ export async function skipWithoutBrowser(t: EveEvalContext) {
   if (!browserUseConfigured()) t.skip("browser_task needs BROWSER_USE_API_KEY");
 }
 
+// Only these actions start work; `status` and `cancel` name a run another
+// call already started.
+const runStartingCallSchema = z.object({
+  action: z.enum(["start", "continue"]),
+});
 const startedRunSchema = z.object({ runId: z.string().min(1) });
 
 /**
- * Stop every real run the session started, straight through Browser Use, so
- * a failed gate or judge never leaves a browser working and billing. Runs in
- * `finally`: it must not depend on the model agreeing to cancel.
+ * Stop every real run the session started, so a failed gate or judge never
+ * leaves a browser working and billing. Runs in `finally`: it must not depend
+ * on the model agreeing to cancel.
  */
 export async function cancelStartedRuns(turn: EveEvalTurn | undefined) {
   if (!turn) return;
-  const { cancelBrowserUseRun } = await import("@agent/lib/browser-use/client");
-  const runIds = turn.toolCalls
-    .filter((call) => call.name === "browser_task")
-    .map((call) => startedRunSchema.safeParse(call.output).data?.runId)
-    .filter((runId) => runId !== undefined);
-  await Promise.all(
-    runIds.map(async (runId) => {
-      try {
-        await cancelBrowserUseRun(runId);
-      } catch {
-        // Already finished or already cancelled: nothing left to stop.
-      }
-    })
+  const runIds = new Set(
+    turn.toolCalls
+      .filter(
+        (call) =>
+          call.name === "browser_task" &&
+          runStartingCallSchema.safeParse(call.input).success
+      )
+      .map((call) => startedRunSchema.safeParse(call.output).data?.runId)
+      .filter((runId) => runId !== undefined)
   );
+  await Promise.all([...runIds].map(stopStartedRun));
+}
+
+/**
+ * A cloud run is cancelled straight through Browser Use. An errand that went
+ * to the queue has only a `queued:` row here — `eve dev` runs no poller to
+ * start it — and is closed the way `browser_task cancel` closes it: left
+ * queued, it would send every later eval's start to the back of the line.
+ */
+async function stopStartedRun(runId: string) {
+  try {
+    const cloudRunId = runId.startsWith("queued:")
+      ? await closeQueuedRun(runId)
+      : runId;
+    if (cloudRunId === undefined) return;
+    const { cancelBrowserUseRun } =
+      await import("@agent/lib/browser-use/client");
+    await cancelBrowserUseRun(cloudRunId);
+  } catch {
+    // Already finished or already cancelled: nothing left to stop.
+  }
+}
+
+/** The cloud run the errand was handed to, if it started before the close. */
+async function closeQueuedRun(runId: string) {
+  const { closeQueuedBrowserRun, readBrowserRun } =
+    await import("@db/services/browser-runs");
+  const closed = await closeQueuedBrowserRun(runId, {
+    outcome: "The eval stopped this errand before it started.",
+    status: "stopped",
+  });
+  if (closed) {
+    const { releaseBrowserRunSpend } =
+      await import("@agent/lib/browser-use/spend");
+    await releaseBrowserRunSpend(runId);
+    return undefined;
+  }
+  return (await readBrowserRun(runId))?.retriedAsRunId ?? undefined;
 }
 
 export async function requireDeliveredText(
