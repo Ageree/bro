@@ -1,5 +1,6 @@
 import { defineEval } from "eve/evals";
 import { isDeepStrictEqual } from "node:util";
+import { z } from "zod";
 import {
   agentEvalTags,
   assertPlainTextDelivery,
@@ -34,7 +35,38 @@ const cases = [
   },
 ] as const;
 
-export default cases.map((testCase) =>
+// Month-based recurrence is a calendar rule in the person's timezone:
+// «каждое 5-е» stored as 43 200 minutes drifted a day every 31-day month.
+const calendarCases = [
+  {
+    description: "Keeps «каждое 5-е число» on the 5th, not every 30 days",
+    prompt: "Напоминай каждое 5-е число в 10 утра оплатить квартиру.",
+    timing: { dayOfMonth: 5, frequency: "monthly", localTime: "10:00" },
+  },
+  {
+    description: "Runs on the last day of every month",
+    prompt:
+      "Каждый последний день месяца в 18:00 напоминай сдать показания счётчиков.",
+    timing: { dayOfMonth: "last", frequency: "monthly", localTime: "18:00" },
+  },
+  {
+    description: "Runs on the second Sunday of every month",
+    prompt:
+      "Каждое второе воскресенье месяца в 11 утра напоминай позвонить бабушке.",
+    timing: {
+      frequency: "monthly_weekday",
+      localTime: "11:00",
+      occurrence: 2,
+      weekday: 0,
+    },
+  },
+] as const;
+
+const createdTimingSchema = z.object({
+  timing: z.record(z.string(), z.unknown()),
+});
+
+const exactEvals = cases.map((testCase) =>
   defineEval({
     description: testCase.description,
     tags: [...agentEvalTags, "schedules"],
@@ -52,3 +84,33 @@ export default cases.map((testCase) =>
     },
   })
 );
+
+const calendarEvals = calendarCases.map((testCase) =>
+  defineEval({
+    description: testCase.description,
+    tags: [...agentEvalTags, "schedules"],
+    async test(t) {
+      const turn = await t.send(testCase.prompt);
+      turn.expectOk();
+      turn.succeeded();
+      turn.calledTool("schedules-create", {
+        input: (input) => {
+          const created = createdTimingSchema.safeParse(input);
+          return (
+            created.success &&
+            created.data.timing.kind === "calendar" &&
+            Object.entries(testCase.timing).every(([key, value]) =>
+              isDeepStrictEqual(created.data.timing[key], value)
+            )
+          );
+        },
+        status: "completed",
+        count: 1,
+      });
+      const text = await requireDeliveredText(t, turn);
+      assertPlainTextDelivery(t, text);
+    },
+  })
+);
+
+export default [...exactEvals, ...calendarEvals];

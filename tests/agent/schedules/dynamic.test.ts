@@ -3,20 +3,26 @@ import type { ScheduleHandlerArgs, ScheduleToFn } from "eve/schedules";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import type {
+  claimAnsweredScheduledAgentRuns,
   claimReadyScheduledAgentRuns,
   claimScheduledReport,
   finalizeScheduledReport,
+  finishScheduledAgentRunInput,
   listRecoverableScheduledReports,
   materializeDueScheduledAgentRuns,
   releaseScheduledAgentRun,
   releaseScheduledReport,
+  restoreScheduledAgentRunInput,
   setScheduledRunSession,
 } from "@db/services/scheduled-agent-jobs";
 
 const services = vi.hoisted(() => ({
+  claimAnswers: vi.fn<typeof claimAnsweredScheduledAgentRuns>(),
   claimReports: vi.fn<typeof claimScheduledReport>(),
   claimRuns: vi.fn<typeof claimReadyScheduledAgentRuns>(),
   finalizeReport: vi.fn<typeof finalizeScheduledReport>(),
+  finishInput: vi.fn<typeof finishScheduledAgentRunInput>(),
+  restoreInput: vi.fn<typeof restoreScheduledAgentRunInput>(),
   listReports: vi.fn<typeof listRecoverableScheduledReports>(),
   materialize: vi.fn<typeof materializeDueScheduledAgentRuns>(),
   releaseReport: vi.fn<typeof releaseScheduledReport>(),
@@ -25,9 +31,12 @@ const services = vi.hoisted(() => ({
 }));
 
 vi.mock("@db/services/scheduled-agent-jobs", () => ({
+  claimAnsweredScheduledAgentRuns: services.claimAnswers,
   claimReadyScheduledAgentRuns: services.claimRuns,
   claimScheduledReport: services.claimReports,
   finalizeScheduledReport: services.finalizeReport,
+  finishScheduledAgentRunInput: services.finishInput,
+  restoreScheduledAgentRunInput: services.restoreInput,
   listRecoverableScheduledReports: services.listReports,
   materializeDueScheduledAgentRuns: services.materialize,
   releaseScheduledAgentRun: services.releaseRun,
@@ -58,6 +67,7 @@ describe("dynamic schedule dispatch", () => {
     services.materialize.mockResolvedValue([]);
     services.listReports.mockResolvedValue([]);
     services.claimRuns.mockResolvedValue([]);
+    services.claimAnswers.mockResolvedValue([]);
     services.releaseRun.mockResolvedValue("queued");
     services.setSession.mockResolvedValue(true);
     services.releaseReport.mockResolvedValue(true);
@@ -136,8 +146,8 @@ describe("dynamic schedule dispatch", () => {
     // The app's own routes never reach eve on Vercel, so a web chat report
     // must not go through one.
     const report = scheduledReport();
-    report.job.conversationChannel = "eve";
-    report.job.conversationId = "web-session";
+    report.delivery.conversationChannel = "eve";
+    report.delivery.conversationId = "web-session";
     services.listReports.mockResolvedValue([
       {
         conversationChannel: "eve",
@@ -165,6 +175,72 @@ describe("dynamic schedule dispatch", () => {
       auth: { authenticator: "scheduled-result" },
       turnPolicy: "queue",
     });
+  });
+
+  it("hands a stored answer to the waiting worker session", async () => {
+    // `schedules-answer` only stores the answer; this tick owns the worker's
+    // session handle, which no app route has on Vercel.
+    const claim = answeredClaim();
+    services.claimAnswers.mockResolvedValue([claim]);
+    const respond = vi
+      .fn<Session["respond"]>()
+      .mockResolvedValue({ sessionId: "worker-session", status: "accepted" });
+    const attachSession = vi
+      .fn<ScheduleHandlerArgs["attachSession"]>()
+      .mockReturnValue({ ...workerSession("worker-session"), respond });
+    const fetch = vi.spyOn(globalThis, "fetch");
+
+    await runSchedule(vi.fn<ScheduleToFn>(), attachSession);
+
+    expect(attachSession).toHaveBeenCalledExactlyOnceWith("worker-session");
+    expect(respond).toHaveBeenCalledOnce();
+    expect(respond.mock.calls[0]?.[0]).toEqual([
+      { requestId: "request-airport", text: "LGA" },
+    ]);
+    expect(respond.mock.calls[0]?.[1]).toMatchObject({
+      auth: {
+        attributes: { scheduledRunId: claim.run.id },
+        authenticator: "scheduled-input",
+        principalId: "user-1",
+      },
+    });
+    expect(services.finishInput).toHaveBeenCalledExactlyOnceWith(
+      claim.run.id,
+      claim.run.leaseToken
+    );
+    expect(services.restoreInput).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("keeps the answer for a worker still starting and drops it for a gone one", async () => {
+    const claim = answeredClaim();
+    services.claimAnswers.mockResolvedValue([claim]);
+    const respond = vi
+      .fn<Session["respond"]>()
+      .mockResolvedValueOnce({ retryable: true, status: "session_not_active" })
+      .mockResolvedValueOnce({ status: "session_not_active" });
+    const attachSession = vi
+      .fn<ScheduleHandlerArgs["attachSession"]>()
+      .mockReturnValue({ ...workerSession("worker-session"), respond });
+
+    await runSchedule(vi.fn<ScheduleToFn>(), attachSession);
+    await runSchedule(vi.fn<ScheduleToFn>(), attachSession);
+
+    expect(services.finishInput).not.toHaveBeenCalled();
+    const [firstRestore] = services.restoreInput.mock.calls;
+    expect(firstRestore?.slice(0, 3)).toEqual([
+      claim.run.id,
+      claim.run.leaseToken,
+      "The scheduled session is no longer active.",
+    ]);
+    expect(firstRestore?.[3]?.at).toBeInstanceOf(Date);
+    expect(services.restoreInput).toHaveBeenNthCalledWith(
+      2,
+      claim.run.id,
+      claim.run.leaseToken,
+      "The scheduled session is no longer active.",
+      null
+    );
   });
 
   it("reports a worker that exhausts its dispatch attempts", async () => {
@@ -203,7 +279,7 @@ describe("scheduled report delivery", () => {
 
   it("routes iMessage reports to the stored conversation", async () => {
     const report = scheduledReport();
-    report.job.replyAnchorMessageId = "original-message";
+    report.delivery.replyAnchorMessageId = "original-message";
     services.claimReports.mockResolvedValue(report);
     const send = vi
       .fn<ReturnType<ScheduleToFn>["send"]>()
@@ -261,8 +337,8 @@ describe("scheduled report delivery", () => {
 
   it("routes web chat reports to the stored session", async () => {
     const report = scheduledReport();
-    report.job.conversationChannel = "eve";
-    report.job.conversationId = "web-session";
+    report.delivery.conversationChannel = "eve";
+    report.delivery.conversationId = "web-session";
     services.claimReports.mockResolvedValue(report);
     const send = vi.fn<Session["send"]>();
     const attached = workerSession("web-session", send);
@@ -287,8 +363,8 @@ describe("scheduled report delivery", () => {
 
   it("suppresses reports for a web chat session that has ended", async () => {
     const report = scheduledReport();
-    report.job.conversationChannel = "eve";
-    report.job.conversationId = "retired-session";
+    report.delivery.conversationChannel = "eve";
+    report.delivery.conversationId = "retired-session";
     services.claimReports.mockResolvedValue(report);
     const send = vi
       .fn<Session["send"]>()
@@ -311,8 +387,8 @@ describe("scheduled report delivery", () => {
 
   it("retries a web chat report while its session is still starting", async () => {
     const report = scheduledReport();
-    report.job.conversationChannel = "eve";
-    report.job.conversationId = "starting-session";
+    report.delivery.conversationChannel = "eve";
+    report.delivery.conversationId = "starting-session";
     services.claimReports.mockResolvedValue(report);
     const send = vi
       .fn<Session["send"]>()
@@ -417,6 +493,7 @@ function scheduledClaim(): Awaited<
       createdAt: new Date("2026-09-02T13:00:00.000Z"),
       deferredCompletionTurnId: null,
       id: "00000000-0000-4000-8000-000000000002",
+      inputResponses: null,
       pendingInputRequests: null,
       jobId: "00000000-0000-4000-8000-000000000001",
       lastError: null,
@@ -437,11 +514,45 @@ function scheduledClaim(): Awaited<
   };
 }
 
+function answeredClaim(): Awaited<
+  ReturnType<typeof claimAnsweredScheduledAgentRuns>
+>[number] {
+  const claim = scheduledClaim();
+  return {
+    job: claim.job,
+    run: {
+      ...claim.run,
+      inputResponses: [{ requestId: "request-airport", text: "LGA" }],
+      leaseExpiresAt: new Date("2026-09-02T19:00:00.000Z"),
+      pendingInputRequests: [
+        {
+          action: {
+            callId: "call-question",
+            input: { prompt: "Which airport should I use?" },
+            kind: "tool-call",
+            toolName: "ask_question",
+          },
+          allowFreeform: true,
+          kind: "question",
+          prompt: "Which airport should I use?",
+          requestId: "request-airport",
+        },
+      ],
+      workerSessionId: "worker-session",
+    },
+  };
+}
+
 function scheduledReport(): NonNullable<
   Awaited<ReturnType<typeof claimScheduledReport>>
 > {
   const claim = scheduledClaim();
   return {
+    delivery: {
+      conversationChannel: claim.job.conversationChannel,
+      conversationId: claim.job.conversationId,
+      replyAnchorMessageId: claim.job.replyAnchorMessageId,
+    },
     job: claim.job,
     run: {
       ...claim.run,

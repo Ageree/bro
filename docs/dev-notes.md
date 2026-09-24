@@ -69,9 +69,21 @@
   продолжения у него нет, и `to(...)` из расписания туда не доставит. Хендлер
   расписания получает `attachSession` из нашего патча eve; им пользуются
   `agent/schedules/browser-runs.ts` и `dynamic.ts` (отчёты расписаний и
-  проактивные). Раньше веб-отчёты шли через свой `/internal/scheduled-run/report`
-  и в продакшене не доходили ни разу; маршрут удалён. `schedules-answer` всё
-  ещё зовёт `/internal/scheduled-run/respond` — в продакшене не работает.
+  проактивные). Раньше веб-отчёты шли через свой `/internal/scheduled-run/report`,
+  а `schedules-answer` — через `/internal/scheduled-run/respond`, и в
+  продакшене не доходили ни разу. У канала `scheduled-run` остался один
+  маршрут, отвечающий 410: `eve build` в 0.62 не собирает канал без маршрутов
+  («compiled binding … is not referenced by its node manifest»). Ответ на вопрос расписания лежит в `scheduled_agent_runs.input_responses`,
+  и воркеру его отдаёт тик `dynamic` через `attachSession(...).respond`.
+- Расписание принадлежит человеку, а не чату: список и правка идут по
+  воркспейсу, а отчёт уходит в последний чат, где человек писал (цель
+  проактивных сообщений, `recordProactiveTarget`), и только без неё — в чат,
+  где расписание заведено (`reportConversation` в
+  `db/services/scheduled-agent-jobs.ts`). Веб-чат — это сессия, которую после
+  нового чата никто не откроет. Месяцы и годы — календарные правила
+  (`shared/schedules/timing.ts`), интервал в 28–31 или 365–366 суток схема
+  инструмента отвергает. Смена таймзоны в профиле переносит в новую зону
+  календарные расписания, заведённые в старой (`followScheduleTimeZone`).
 - Веб-чат показывает каждое user-сообщение сессии, включая промпт хода-отчёта.
   Промпт, который Бро пишет сам себе, начинается с `backgroundTurnMarker`
   (`shared/chat/background-turn.ts`): по нему веб его прячет, а

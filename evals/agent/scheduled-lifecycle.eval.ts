@@ -64,7 +64,7 @@ export default defineEval({
       worker.succeeded();
       worker.outputEquals(testCase.result);
 
-      const stored = (await listScheduledAgentJobs(scope, conversation)).find(
+      const stored = (await listScheduledAgentJobs(scope)).find(
         (candidate) => candidate.id === job.id
       );
       const runId = await t.require(

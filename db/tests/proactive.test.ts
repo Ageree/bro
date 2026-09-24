@@ -63,7 +63,7 @@ describe("proactive watches", { timeout: 30_000 }, () => {
 
     // The hidden job is neither a task the person can list nor one the
     // task dispatcher materializes.
-    expect(await jobs.listScheduledAgentJobs(alice, photon)).toEqual([]);
+    expect(await jobs.listScheduledAgentJobs(alice)).toEqual([]);
     expect(
       await jobs.materializeDueScheduledAgentRuns({
         limit: 10,

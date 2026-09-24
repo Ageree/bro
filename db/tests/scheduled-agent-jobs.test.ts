@@ -38,6 +38,8 @@ describe("scheduled agent jobs", () => {
       "0023_safe_squirrel_girl.sql",
       // The job kind that keeps proactive checks out of the task dispatcher.
       "0025_oval_wraith.sql",
+      // The person's answer, kept for the `dynamic` tick to hand over.
+      "0029_omniscient_colleen_wing.sql",
     ]) {
       await applyMigration(client, migration);
     }
@@ -77,30 +79,22 @@ describe("scheduled agent jobs", () => {
       },
       now
     );
-    expect(await jobs.listScheduledAgentJobs(bob, aliceConversation)).toEqual(
-      []
-    );
-    expect(await jobs.listScheduledAgentJobs(alice, bobConversation)).toEqual(
-      []
-    );
-    expect(await jobs.listScheduledAgentJobs(alice, aliceConversation)).toEqual(
-      [{ ...created, latestRun: null }]
-    );
+    expect(await jobs.listScheduledAgentJobs(bob)).toEqual([]);
+    expect(await jobs.listScheduledAgentJobs(alice)).toEqual([
+      { ...created, latestRun: null },
+    ]);
     await jobs.updateScheduledAgentJob(
       alice,
-      aliceConversation,
       created.id,
       { prompt: "Check for a meaningful price change." },
       new Date("2026-09-01T12:30:00.000Z")
     );
-    expect(await jobs.listScheduledAgentJobs(alice, aliceConversation)).toEqual(
-      [
-        expect.objectContaining({
-          nextRunAt: new Date("2026-09-01T13:00:00.000Z"),
-          prompt: "Check for a meaningful price change.",
-        }),
-      ]
-    );
+    expect(await jobs.listScheduledAgentJobs(alice)).toEqual([
+      expect.objectContaining({
+        nextRunAt: new Date("2026-09-01T13:00:00.000Z"),
+        prompt: "Check for a meaningful price change.",
+      }),
+    ]);
 
     const dueAt = new Date("2026-09-01T13:00:00.000Z");
     await jobs.materializeDueScheduledAgentRuns({ limit: 25, now: dueAt });
@@ -167,10 +161,7 @@ describe("scheduled agent jobs", () => {
         workerStartedAt
       )
     ).toBe(false);
-    const [listedJob] = await jobs.listScheduledAgentJobs(
-      alice,
-      aliceConversation
-    );
+    const [listedJob] = await jobs.listScheduledAgentJobs(alice);
     expect(listedJob?.latestRun).toMatchObject({
       id: claim.run.id,
       startedAt: workerStartedAt,
@@ -264,27 +255,46 @@ describe("scheduled agent jobs", () => {
       "delivered"
     );
     expect(
-      await jobs.getScheduledAgentRunInput(bob, aliceConversation, claim.run.id)
+      await jobs.getScheduledAgentRunInput(bob, claim.run.id)
     ).toBeUndefined();
     expect(
-      await jobs.getScheduledAgentRunInput(alice, bobConversation, claim.run.id)
-    ).toBeUndefined();
-    expect(
-      await jobs.getScheduledAgentRunInput(
-        alice,
-        aliceConversation,
-        claim.run.id
-      )
+      await jobs.getScheduledAgentRunInput(alice, claim.run.id)
     ).toMatchObject({
       leaseToken: claim.run.leaseToken,
+      pendingInputRequests: [question],
     });
-    const resumed = await jobs.claimScheduledAgentRunInput(
-      claim.run.id,
-      claim.run.leaseToken,
-      new Date("2026-09-01T13:02:00.000Z")
-    );
-    expect(resumed).toMatchObject({
-      run: { pendingInputRequests: [question], status: "running" },
+    const answer = [{ requestId: "request-question", text: "LGA" }];
+    expect(
+      await jobs.submitScheduledAgentRunAnswer(
+        claim.run.id,
+        "00000000-0000-4000-8000-000000000099",
+        answer
+      )
+    ).toBe(false);
+    expect(
+      await jobs.submitScheduledAgentRunAnswer(
+        claim.run.id,
+        claim.run.leaseToken,
+        answer,
+        new Date("2026-09-01T13:01:50.000Z")
+      )
+    ).toBe(true);
+    const answered = await Promise.all([
+      jobs.claimAnsweredScheduledAgentRuns({
+        limit: 25,
+        now: new Date("2026-09-01T13:02:00.000Z"),
+      }),
+      jobs.claimAnsweredScheduledAgentRuns({
+        limit: 25,
+        now: new Date("2026-09-01T13:02:00.000Z"),
+      }),
+    ]);
+    const answeredRuns = answered.flat().map(({ run }) => run);
+    expect(answeredRuns).toHaveLength(1);
+    expect(answeredRuns[0]).toMatchObject({
+      inputResponses: answer,
+      pendingInputRequests: [question],
+      status: "running",
     });
     await jobs.finishScheduledAgentRunInput(
       claim.run.id,
@@ -427,24 +437,17 @@ describe("scheduled agent jobs", () => {
     expect(await jobs.listRecoverableScheduledReports(dueAt)).toEqual([]);
 
     expect(
-      await jobs.updateScheduledAgentJob(bob, aliceConversation, created.id, {
+      await jobs.updateScheduledAgentJob(bob, created.id, {
         status: "paused",
       })
     ).toBeUndefined();
-    expect(
-      await jobs.updateScheduledAgentJob(alice, bobConversation, created.id, {
-        status: "paused",
-      })
-    ).toBeUndefined();
-    expect(await jobs.listScheduledAgentJobs(alice, aliceConversation)).toEqual(
-      [
-        expect.objectContaining({
-          nextRunAt: new Date("2026-09-01T14:00:00.000Z"),
-          status: "active",
-        }),
-      ]
-    );
-    await jobs.updateScheduledAgentJob(alice, aliceConversation, created.id, {
+    expect(await jobs.listScheduledAgentJobs(alice)).toEqual([
+      expect.objectContaining({
+        nextRunAt: new Date("2026-09-01T14:00:00.000Z"),
+        status: "active",
+      }),
+    ]);
+    await jobs.updateScheduledAgentJob(alice, created.id, {
       status: "paused",
     });
     await jobs.createScheduledAgentJob(
@@ -496,15 +499,9 @@ describe("scheduled agent jobs", () => {
       });
     }
 
-    expect(await jobs.listScheduledAgentJobs(bob, bobConversation)).toEqual([
+    expect(await jobs.listScheduledAgentJobs(bob)).toEqual([
       expect.objectContaining({ lastError: "Source unavailable." }),
     ]);
-    expect(
-      await jobs.listScheduledAgentJobs(bob, {
-        conversationChannel: "photon",
-        conversationId: "imessage:another-chat",
-      })
-    ).toEqual([]);
 
     const [acceptedRun] = await pgliteDatabase
       .insert(schema.scheduledAgentRuns)

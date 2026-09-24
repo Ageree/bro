@@ -1,0 +1,1 @@
+ALTER TABLE "scheduled_agent_runs" ADD COLUMN IF NOT EXISTS "input_responses" jsonb;
