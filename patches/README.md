@@ -6,7 +6,7 @@ regenerating the patch below against the new dist.
 
 ## Remaining patches
 
-`eve@0.62.0.patch` carries three independent hunks:
+`eve@0.62.0.patch` carries five independent hunks:
 
 - The declaration bridge redirects Eve's incomplete bundled Chat SDK
   declaration exports to the explicitly installed `chat` package. Eve's runtime
@@ -37,6 +37,21 @@ regenerating the patch below against the new dist.
   `agent/schedules/browser-runs.ts` could not report a finished browser errand
   back into the web chat. Drop the hunk once `ScheduleHandlerArgs` carries
   `attachSession` itself.
+- The approval replay keeps memory recall ahead of the approval response.
+  `shared/memory-state.js` `applyMemoryRecallBatches` appended recalled records
+  at the end of history. On a turn resumed by an approval, that end is the
+  `tool-approval-response` message, and the AI SDK replays approved calls only
+  while a `tool` message is last (`collectToolApprovals`). A profile or
+  workstream record that changed while the card waited, for example saved from
+  another session, landed after it, so the approved call was silently skipped:
+  no `action.result`, and the model asked again or claimed the write was done.
+  `insertBeforeApprovalReplay` puts the records before the assistant step that
+  asked for approval. Drop the hunk once eve keeps the approval response last.
+- A replayed approved call that throws still reports its result.
+  `harness/emission.js` emitted `action.result` for a `tool-error` only when
+  the call was requested in the same model step, so a failed replay vanished
+  from the stream and the eval facts. The added branch emits it for a call that
+  did not appear in the step. Drop it once eve emits replayed tool errors.
 
 To change the patch, run `pnpm patch eve@0.62.0`, edit the files in the
 reported directory, and `pnpm patch-commit <dir>` so every hunk and the
@@ -44,7 +59,8 @@ lockfile hash stay consistent. When upgrading Eve, first check the new dist:
 the bridge goes away once `dist/src/compiled/chat/index.d.ts` resolves on its
 own, the override once `TelegramInboundResult` and `PhotonInboundResult`
 declare `message` themselves, and the schedule handle once
-`ScheduleHandlerArgs` declares `attachSession`.
+`ScheduleHandlerArgs` declares `attachSession`, and the approval hunks once
+`evals/agent/integrations.eval.ts` passes without them.
 
 Photon's iMessage adapter posts into a conversation without a reply anchor, so
 no provider reply option is patched in any more.

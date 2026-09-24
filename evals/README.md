@@ -58,3 +58,6 @@ When a production failure appears, add the smallest sanitized reproduction to
 the owning family. Add a new family only when it represents a genuinely new
 contract. Avoid examples that can send, purchase, delete, or otherwise mutate
 external state; approval evals should stop while the action is still pending.
+The one exception approves a calendar write to prove the approved call runs:
+the eval user has no Google grant, so the write fails instead of mutating
+anything.
