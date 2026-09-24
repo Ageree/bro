@@ -1,5 +1,5 @@
 import { openRouterActive } from "@shared/model/provider";
-import { openRouterSelection } from "./openrouter";
+import { openRouterSelection, type StepToolChoice } from "./openrouter";
 
 /**
  * Resolves a workspace's stored model id into what eve accepts from a
@@ -8,17 +8,18 @@ import { openRouterSelection } from "./openrouter";
  * turn scopes must stay serializable, so the direct-provider handle can only be
  * returned per step.
  *
- * `requireToolCall` makes the step call some tool instead of ending with text.
- * Only the direct OpenRouter model can carry that, so a Gateway id string
- * ignores it and relies on the instructions and the channel fallback.
+ * `toolChoice` makes the step call some tool (`required`) or end the turn in
+ * text (`none`). Only the direct OpenRouter model can carry that, so a Gateway
+ * id string ignores it and relies on the instructions, the channel fallback,
+ * and `send_message` dropping repeats.
  */
 export function modelSelection(
   modelId: string,
-  options: { readonly requireToolCall?: boolean } = {}
+  options: { readonly toolChoice?: StepToolChoice } = {}
 ) {
   return openRouterActive()
     ? openRouterSelection(modelId, {
-        requireToolCall: options.requireToolCall ?? false,
+        toolChoice: options.toolChoice ?? "auto",
       })
     : modelId;
 }

@@ -110,7 +110,11 @@ async function authoredCapabilities(authenticator: string) {
 
   const resolvedGroups = await Promise.all(
     groupedTools.map(async (definition) => {
-      const resolve = definition.events["turn.started"];
+      // Messaging resolves per step to see what the turn already sent.
+      const resolve =
+        "step.started" in definition.events
+          ? definition.events["step.started"]
+          : definition.events["turn.started"];
       const resolved = resolve ? await resolve({}, context) : null;
       return resolved && !("execute" in resolved) ? Object.keys(resolved) : [];
     })
