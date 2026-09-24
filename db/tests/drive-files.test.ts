@@ -31,8 +31,11 @@ describe("Drive file artifacts", () => {
     ]);
     const alice = { userId: "alice", workspaceId: "workspace:alice" };
     const bob = { userId: "bob", workspaceId: "workspace:bob" };
+    // A teammate in Alice's own workspace: only the owning user may read it.
+    const carol = { userId: "carol", workspaceId: "workspace:alice" };
     await scope.ensureScope(alice);
     await scope.ensureScope(bob);
+    await scope.ensureScope(carol);
 
     const version = {
       driveFileId: "file-1",
@@ -66,6 +69,7 @@ describe("Drive file artifacts", () => {
     });
     expect(edited.id).not.toBe(first.id);
     expect(await files.findDriveFileArtifact(bob, version)).toBeUndefined();
+    expect(await files.findDriveFileArtifact(carol, version)).toBeUndefined();
 
     expect(
       await artifacts.readReadyArtifact(alice, first.id, {
@@ -85,6 +89,7 @@ describe("Drive file artifacts", () => {
       })
     ).toBeUndefined();
     expect(await artifacts.readReadyArtifact(bob, first.id)).toBeUndefined();
+    expect(await artifacts.readReadyArtifact(carol, first.id)).toBeUndefined();
   }, 30_000);
 });
 

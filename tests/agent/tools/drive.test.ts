@@ -15,12 +15,13 @@ const mocks = vi.hoisted(() => ({
   find: vi.fn<typeof findDriveFileArtifact>(),
   put: vi.fn<typeof Blob.put>(),
   read: vi.fn<typeof readDriveFile>(),
+  search: vi.fn<typeof searchDrive>(),
   save: vi.fn<typeof saveDriveFileArtifact>(),
 }));
 
 vi.mock("@agent/lib/google-workspace/drive", () => ({
   readDriveFile: mocks.read,
-  searchDrive: vi.fn<typeof searchDrive>(),
+  searchDrive: mocks.search,
 }));
 vi.mock("@db/services/drive-files", () => ({
   findDriveFileArtifact: mocks.find,
@@ -32,7 +33,7 @@ vi.mock("@vercel/blob", async (importOriginal) => ({
   put: mocks.put,
 }));
 
-import { driveRead } from "@agent/tools/drive";
+import { driveRead, driveSearch } from "@agent/tools/drive";
 import { googleWorkspaceScopes } from "@shared/google-workspace/connection";
 
 const artifactId = "0d01e667-d128-4bb7-a248-1ae21db72f4f";
@@ -80,6 +81,28 @@ describe("Drive access", () => {
       );
     }
   );
+});
+
+describe("drive-search", () => {
+  it("forwards the query and limit and returns the files it found", async () => {
+    mocks.search.mockResolvedValue([file]);
+    const context = toolContext();
+
+    const result = await driveSearch.execute(
+      { maxResults: 5, query: "passport" },
+      context
+    );
+    if (Symbol.asyncIterator in result) {
+      throw new Error("drive-search returns one result, not a stream.");
+    }
+
+    expect(mocks.search).toHaveBeenCalledExactlyOnceWith(
+      context,
+      "passport",
+      5
+    );
+    expect(result).toEqual({ files: [file] });
+  });
 });
 
 describe("drive-read", () => {

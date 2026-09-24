@@ -158,6 +158,8 @@ export default [
         "My passport scan is in my Google Drive. Find it and tell me when it expires."
       );
       turn.expectOk();
+      // The eval user has no Google grant, so the search parks on
+      // authorization and nothing can be read: this gates the routing only.
       t.check(
         turn.toolCalls.map((call) => call.name),
         satisfies<string[]>(
