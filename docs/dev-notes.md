@@ -71,8 +71,9 @@
   `agent/schedules/browser-runs.ts` и `dynamic.ts` (отчёты расписаний и
   проактивные). Раньше веб-отчёты шли через свой `/internal/scheduled-run/report`,
   а `schedules-answer` — через `/internal/scheduled-run/respond`, и в
-  продакшене не доходили ни разу; у канала `scheduled-run` маршрутов больше
-  нет. Ответ на вопрос расписания лежит в `scheduled_agent_runs.input_responses`,
+  продакшене не доходили ни разу. У канала `scheduled-run` остался один
+  маршрут, отвечающий 410: `eve build` в 0.62 не собирает канал без маршрутов
+  («compiled binding … is not referenced by its node manifest»). Ответ на вопрос расписания лежит в `scheduled_agent_runs.input_responses`,
   и воркеру его отдаёт тик `dynamic` через `attachSession(...).respond`.
 - Расписание принадлежит человеку, а не чату: список и правка идут по
   воркспейсу, а отчёт уходит в последний чат, где человек писал (цель

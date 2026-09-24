@@ -1,4 +1,4 @@
-import { defineChannel } from "eve/channels";
+import { defineChannel, POST } from "eve/channels";
 import { z } from "zod";
 
 const scheduledRunTargetSchema = z.strictObject({
@@ -6,7 +6,7 @@ const scheduledRunTargetSchema = z.strictObject({
   runId: z.uuid(),
 });
 
-// No routes of its own: on Vercel only `/eve/v1/*` reaches eve. Workers,
+// Nothing is served here: on Vercel only `/eve/v1/*` reaches eve. Workers,
 // their reports and the person's answers all go out from the `dynamic`
 // schedule, which holds the session handles they need.
 export default defineChannel({
@@ -28,5 +28,16 @@ export default defineChannel({
       title: `Scheduled run ${target.runId}`,
     });
   },
-  routes: [],
+  // eve 0.62 links a channel into the build only through its routes, so a
+  // channel with none fails `eve build`. The one kept answers the retired
+  // answer path with 410 and touches nothing.
+  routes: [
+    POST(
+      "/internal/scheduled-run/respond",
+      () =>
+        new Response("Answers reach scheduled runs through schedules-answer.", {
+          status: 410,
+        })
+    ),
+  ],
 });

@@ -1,14 +1,27 @@
 import type {
   ChannelResolveSession,
   ChannelSource,
+  RouteHandlerArgs,
   Session,
 } from "eve/channels";
 import { describe, expect, it, vi } from "vitest";
 import scheduledRunChannel from "@agent/channels/scheduled-run";
 
 describe("scheduled run channel handoff", () => {
-  it("exposes no routes: only /eve/v1/* reaches eve on Vercel", () => {
-    expect(scheduledRunChannel.routes).toEqual([]);
+  it("serves nothing: only /eve/v1/* reaches eve on Vercel", async () => {
+    expect(scheduledRunChannel.routes).toHaveLength(1);
+    const [route] = scheduledRunChannel.routes;
+    if (!route || route.transport === "websocket") {
+      throw new Error("Expected the retired HTTP route.");
+    }
+    const response = await route.handler(
+      new Request("https://assistant.example/internal/scheduled-run/respond", {
+        body: "{}",
+        method: "POST",
+      }),
+      unexpectedRouteContext()
+    );
+    expect(response.status).toBe(410);
   });
 
   it("starts a scheduled worker from the channel's native receive hook", async () => {
@@ -67,6 +80,22 @@ describe("scheduled run channel handoff", () => {
     expect(result.id).toBe("worker-session");
   });
 });
+
+function unexpectedRouteContext() {
+  return {
+    attachSession: unexpectedRouteRequest,
+    from: unexpectedRouteRequest,
+    params: {},
+    requestIp: null,
+    resolveSession: unexpectedRouteRequest,
+    to: unexpectedRouteRequest,
+    waitUntil: unexpectedRouteRequest,
+  } satisfies RouteHandlerArgs;
+}
+
+function unexpectedRouteRequest(): never {
+  throw new Error("The retired route must not reach any session.");
+}
 
 function workerSession(): Session {
   return {
