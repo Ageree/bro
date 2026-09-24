@@ -279,6 +279,23 @@ describe("monthly and yearly calendar rules", () => {
     ).toEqual(new Date("2027-03-28T01:30:00.000Z"));
   });
 
+  it("shifts a skipped time by the gap itself where it is half an hour", () => {
+    const timing = scheduleTimingSchema.parse({
+      frequency: "monthly_weekday",
+      kind: "calendar",
+      localTime: "02:15",
+      occurrence: 1,
+      timezone: "Australia/Lord_Howe",
+      weekday: 0,
+    });
+
+    // Lord Howe goes from +10:30 to +11:00 at 02:00 on 4 October 2026, so
+    // 02:15 is skipped and fires at 02:45 local.
+    expect(
+      computeNextRun(timing, new Date("2026-09-24T00:00:00.000Z"))
+    ).toEqual(new Date("2026-10-03T15:45:00.000Z"));
+  });
+
   it("follows the person to a new timezone at the same wall-clock time", () => {
     const inMoscow = scheduleTimingSchema.parse({
       dayOfMonth: 5,

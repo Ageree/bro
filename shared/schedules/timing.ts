@@ -199,7 +199,8 @@ function zoneOffset(at: number, timezone: string) {
 
 /**
  * The instant a wall-clock time happens in `timezone`. A time skipped by a
- * spring-forward gap happens an hour later, the way a phone alarm fires.
+ * spring-forward gap happens as much later as the gap is long, the way a
+ * phone alarm fires: an hour in Berlin, half an hour on Lord Howe Island.
  */
 function fromWallClock(
   timezone: string,
@@ -208,21 +209,15 @@ function fromWallClock(
   minute: number
 ) {
   const naive = Date.UTC(date.year, date.month - 1, date.day, hour, minute);
-  const firstPass = naive - zoneOffset(naive, timezone);
-  const resolved = naive - zoneOffset(firstPass, timezone);
+  const firstOffset = zoneOffset(naive - zoneOffset(naive, timezone), timezone);
+  const resolved = naive - firstOffset;
   const readBack = zonedParts(resolved, timezone);
   if (readBack.hour === hour && readBack.minute === minute) return resolved;
 
-  const shifted = Date.UTC(
-    date.year,
-    date.month - 1,
-    date.day,
-    hour + 1,
-    minute
-  );
-  return (
-    shifted - zoneOffset(shifted - zoneOffset(shifted, timezone), timezone)
-  );
+  // In a gap each reading of the wall clock lands on the other side of the
+  // transition, so the two passes found both offsets. The one in force before
+  // the jump (the smaller) places the time just past it, shifted by the gap.
+  return naive - Math.min(firstOffset, zoneOffset(resolved, timezone));
 }
 
 function civilDate(year: number, month: number, day: number): CivilDate {
