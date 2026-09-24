@@ -111,7 +111,7 @@ export async function googleWriteApproval(
  * them to reconnect a working account.
  */
 export const googleRateLimitMessage =
-  "Google временно ограничил запросы к этому аккаунту (лимит частоты или квоты API). Это не отключение: Google подключён, connect_google не нужен. Не повторяй вызовы Google в этом ходе; ответь тем, что уже есть, и скажи человеку: «Google временно ограничил запросы, повторю через минуту».";
+  "Google временно ограничил запросы к этому аккаунту (лимит частоты или квоты API). Это не отключение: Google подключён, connect_google не нужен. Не повторяй вызовы Google в этом ходе; ответь тем, что уже есть, и скажи человеку: «Google временно ограничил запросы — напиши мне через минуту, и я попробую снова». Не обещай повторить сам: повтора никто не запланировал.";
 
 /** A Google API call refused for rate or quota even after backing off. */
 export class GoogleRateLimitError extends Error {

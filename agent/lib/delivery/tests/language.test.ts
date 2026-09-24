@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   messageLanguage,
   personLanguage,
-  wrongReplyLanguage,
+  replyLanguageDirective,
 } from "@agent/lib/delivery/language";
 
 describe("messageLanguage", () => {
@@ -54,25 +54,14 @@ describe("personLanguage", () => {
   });
 });
 
-describe("wrongReplyLanguage", () => {
-  it("catches Russian sent to an English speaker", () => {
-    expect(
-      wrongReplyLanguage("Нашёл отличное место на Тверской, столик есть.", "en")
-    ).toBe(true);
-    expect(
-      wrongReplyLanguage("Pushkin café, table for four at 7:30 PM.", "en")
-    ).toBe(false);
-  });
-
-  it("catches English sent to a Russian speaker, not a brand name", () => {
-    expect(
-      wrongReplyLanguage(
-        "Found a great spot on Tverskaya with a free table.",
-        "ru"
-      )
-    ).toBe(true);
-    expect(wrongReplyLanguage("iPhone 17 Pro Max", "ru")).toBe(false);
-    expect(wrongReplyLanguage("Бери Pixel 10 Pro", "ru")).toBe(false);
+describe("replyLanguageDirective", () => {
+  it("leaves requested translations in the language asked for", () => {
+    expect(replyLanguageDirective("ru")).toContain(
+      "Текст, который человек попросил на другом языке (перевод"
+    );
+    expect(replyLanguageDirective("en")).toContain(
+      "Text the person asked for in another language (a translation"
+    );
   });
 });
 

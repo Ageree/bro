@@ -6,7 +6,8 @@ import {
   readRefusalNotice,
   readRefusalReason,
   readsMustEnd,
-  turnReadLimit,
+  turnGmailUpdates,
+  turnReadLimits,
   turnReads,
 } from "@agent/lib/google-workspace/turn-reads";
 
@@ -65,7 +66,7 @@ describe("the per-turn Gmail read guard", () => {
   it("caps the reads one turn makes", () => {
     const history = [
       person("разбери почту"),
-      ...Array.from({ length: turnReadLimit }, (_, index) =>
+      ...Array.from({ length: turnReadLimits.interactive }, (_, index) =>
         search(`call-${String(index)}`, undefined, `query ${String(index)}`)
       ).flat(),
     ];
@@ -73,6 +74,45 @@ describe("the per-turn Gmail read guard", () => {
     expect(readRefusalReason(searchKey("one more"), turnReads(history))).toBe(
       "limit"
     );
+  });
+
+  it("gives a background worker more reads than a reply", () => {
+    const history = [
+      person("разбери почту"),
+      ...Array.from({ length: turnReadLimits.interactive }, (_, index) =>
+        search(`call-${String(index)}`, undefined, `query ${String(index)}`)
+      ).flat(),
+    ];
+
+    expect(
+      readRefusalReason(
+        searchKey("one more"),
+        turnReads(history, turnReadLimits.background)
+      )
+    ).toBeUndefined();
+  });
+
+  it("reads again after the turn changed the mailbox", () => {
+    const reads = turnReads([
+      person("архивируй рассылки и покажи, что осталось"),
+      ...search("call-1"),
+      ...gmailUpdate("call-2", ["a", "b"]),
+    ]);
+
+    expect(readRefusalReason(searchKey(inbox.query), reads)).toBeUndefined();
+  });
+
+  it("keeps the result when the mailbox change was refused", () => {
+    const reads = turnReads([
+      person("архивируй рассылки"),
+      ...search("call-1"),
+      ...gmailUpdate("call-2", ["a"], {
+        reason: "denied",
+        type: "execution-denied",
+      }),
+    ]);
+
+    expect(readRefusalReason(searchKey(inbox.query), reads)).toBe("duplicate");
   });
 
   it("starts counting again when the person writes", () => {
@@ -108,6 +148,58 @@ function person(text: string): ModelMessage {
     { content: text, role: "user" as const },
     { kind: "user" }
   );
+}
+
+describe("turnGmailUpdates", () => {
+  it("counts every message the turn changed across calls", () => {
+    expect(
+      turnGmailUpdates([
+        person("разбери почту"),
+        ...gmailUpdate("call-1", ["a", "b", "c"]),
+        ...gmailUpdate("call-2", ["c", "d"]),
+        ...gmailUpdate("call-3", ["e"], { type: "error-text", value: "boom" }),
+      ])
+    ).toBe(4);
+  });
+
+  it("starts from zero on the person's next message", () => {
+    expect(
+      turnGmailUpdates([
+        person("разбери почту"),
+        ...gmailUpdate("call-1", ["a", "b", "c"]),
+        person("теперь ещё"),
+      ])
+    ).toBe(0);
+  });
+});
+
+function gmailUpdate(
+  toolCallId: string,
+  messageIds: string[],
+  output: ToolResultPart["output"] = {
+    type: "json",
+    value: { update: "archive", updatedCount: messageIds.length },
+  }
+): ModelMessage[] {
+  return [
+    {
+      content: [
+        {
+          input: { messageIds, update: "archive" },
+          toolCallId,
+          toolName: "gmail-update",
+          type: "tool-call",
+        },
+      ],
+      role: "assistant",
+    },
+    {
+      content: [
+        { output, toolCallId, toolName: "gmail-update", type: "tool-result" },
+      ],
+      role: "tool",
+    },
+  ];
 }
 
 function searchKey(query: string, maxResults = 10) {

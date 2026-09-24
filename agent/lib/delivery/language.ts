@@ -76,29 +76,17 @@ export function personLanguage(
   return undefined;
 }
 
-/**
- * Whether a message Bro is about to send is plainly in the other language.
- * Only a clear case counts: a Russian reply to English is mostly Cyrillic,
- * and an English reply to Russian has several Latin words and no Cyrillic,
- * so names, brands, links and codes never trip it.
- */
-export function wrongReplyLanguage(text: string, expected: ReplyLanguage) {
-  const counts = letterCounts(text);
-  if (expected === "en") {
-    return counts.cyrillic >= 12 && counts.cyrillic > counts.latin;
-  }
-  return counts.cyrillic === 0 && counts.latinWords >= 5;
-}
-
 const replyLanguageDirectives = {
-  en: "Reply language for this turn: English. The person's latest message is in English, so write every send_message text, question and draft summary in English from the first word. These instructions, stored memory, the profile, workstreams, tool results and earlier messages being in Russian do not change this.",
-  ru: "Язык ответа в этом ходе — русский: последнее сообщение человека написано по-русски, поэтому каждый send_message пиши по-русски с первого слова.",
+  en: "Reply language for this turn: English. The person's latest message is in English, so write your own words in every send_message in English from the first word. These instructions, stored memory, the profile, workstreams, tool results and earlier messages being in Russian do not change this. Text the person asked for in another language (a translation, a letter or post to write in Russian) stays in that language.",
+  ru: "Язык ответа в этом ходе — русский: последнее сообщение человека написано по-русски, поэтому свои слова в каждом send_message пиши по-русски с первого слова. Текст, который человек попросил на другом языке (перевод, письмо или пост по-английски), остаётся на том языке.",
 } as const satisfies Record<ReplyLanguage, string>;
 
 /**
  * The note the model reads last on every step. The standing rule sits in the
  * middle of a long Russian prompt, and a small model answering English in
  * Russian ignored it; a short note at the end of the prompt is not buried.
+ * It is guidance, never a filter on sends: a translation or a text the
+ * person asked for in another language is exactly what they want.
  */
 export function replyLanguageDirective(language: ReplyLanguage) {
   return replyLanguageDirectives[language];

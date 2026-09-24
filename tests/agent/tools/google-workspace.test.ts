@@ -15,6 +15,10 @@ const gmail = vi.hoisted(() => ({
   }),
 }));
 
+vi.mock("@db/services/settings", () => ({
+  getGoogleWorkspaceAccess: async () => "full",
+}));
+
 vi.mock("@agent/lib/google-workspace/gmail", async (importOriginal) => ({
   ...(await importOriginal<typeof GmailModule>()),
   searchGmail: gmail.search,
@@ -90,7 +94,73 @@ describe("Gmail reads in one turn", () => {
   });
 });
 
+describe("Gmail changes in one turn", () => {
+  it("asks for the fourth message a turn changes, split across calls", async () => {
+    const update = await resolveGmailTool("gmail-update", [
+      Object.assign(
+        { content: "triage my inbox", role: "user" as const },
+        { kind: "user" }
+      ),
+      {
+        content: [
+          {
+            input: { messageIds: ["a", "b", "c"], update: "archive" },
+            toolCallId: "call-1",
+            toolName: "gmail-update",
+            type: "tool-call" as const,
+          },
+        ],
+        role: "assistant" as const,
+      },
+      {
+        content: [
+          {
+            output: {
+              type: "json" as const,
+              value: { update: "archive", updatedCount: 3 },
+            },
+            toolCallId: "call-1",
+            toolName: "gmail-update",
+            type: "tool-result" as const,
+          },
+        ],
+        role: "tool" as const,
+      },
+    ]);
+    const { approval } = update;
+    if (!approval) throw new Error("gmail-update must decide its approval.");
+    const policy = "request" in approval ? approval.request : approval;
+    const context = toolContext();
+
+    expect(
+      await policy({
+        ...context,
+        approvedTools: new Set(),
+        session: {
+          ...context.session,
+          auth: {
+            current: {
+              attributes: { workspaceId: "personal:workspace" },
+              authenticator: "eve",
+              principalId: "user-1",
+              principalType: "user",
+            },
+            initiator: null,
+          },
+        },
+        toolInput: { messageIds: ["d"], update: "archive" },
+      })
+    ).toBe("user-approval");
+  });
+});
+
 async function resolveGmailSearch(messages: DynamicResolveContext["messages"]) {
+  return resolveGmailTool("gmail-search", messages);
+}
+
+async function resolveGmailTool<
+  const TName extends "gmail-search" | "gmail-update",
+>(name: TName, messages: DynamicResolveContext["messages"]) {
   const resolve = gmailTools.events["step.started"];
   if (!resolve) throw new Error("The Gmail tools must resolve on every step.");
   const tools = await resolve(
@@ -113,10 +183,12 @@ async function resolveGmailSearch(messages: DynamicResolveContext["messages"]) {
       },
     }
   );
-  if (!tools || !("gmail-search" in tools)) {
-    throw new Error("An interactive turn must expose gmail-search.");
+  if (!tools || !("gmail-update" in tools)) {
+    throw new Error("An interactive turn must expose the Gmail tools.");
   }
-  return tools["gmail-search"];
+  const tool = tools[name];
+  if (!tool) throw new Error(`An interactive turn must expose ${name}.`);
+  return tool;
 }
 
 function toolContext() {

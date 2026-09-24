@@ -124,7 +124,6 @@ describe("turnSends", () => {
 
     expect(turnSends(history)).toEqual({
       delivered: [sent("Ищу посылку"), sent("Нашёл: она в Пулково")],
-      languageSkips: 0,
       skipped: 0,
     });
     expect(turnMustEnd(history)).toBe(false);
@@ -146,7 +145,6 @@ describe("turnSends", () => {
 
     expect(turnSends(history)).toEqual({
       delivered: [sent("Оформляю возврат")],
-      languageSkips: 0,
       skipped: 1,
     });
   });
@@ -212,7 +210,6 @@ describe("turnSends", () => {
 
     expect(turnSends(history)).toEqual({
       delivered: [],
-      languageSkips: 0,
       skipped: 0,
     });
     expect(() => turnMustEnd(history)).not.toThrow();

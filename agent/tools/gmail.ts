@@ -13,10 +13,10 @@ import {
 } from "@agent/lib/google-workspace/client";
 import {
   draftGmail,
-  GMAIL_UPDATE_ACTIONS,
   gmailComposeSchema,
   gmailReadThreadInputSchema,
   gmailSearchInputSchema,
+  gmailUpdateInputSchema,
   gmailUpdateNeedsApproval,
   gmailUpdateWithoutApproval,
   readGmailAttachment,
@@ -30,6 +30,8 @@ import {
   readRefusalNotice,
   readRefusalReason,
   type RefusalReason,
+  turnGmailUpdates,
+  turnReadLimits,
   turnReads,
   type TurnReads,
 } from "@agent/lib/google-workspace/turn-reads";
@@ -260,33 +262,38 @@ function failedAttachment(request: GmailAttachmentRequest, reason: string) {
   };
 }
 
-export const gmailUpdate = defineTool({
-  approval: (ctx) =>
-    googleWriteApproval(
-      ctx,
-      gmailUpdateNeedsApproval(ctx.toolInput)
-        ? "user-approval"
-        : "not-applicable"
-    ),
-  description: `Apply one reversible Gmail state change to exact message IDs: archive, move to inbox, mark read or unread, or star or unstar. Change only messages the person explicitly asked to change; reading an email never needs marking it read. More than ${String(gmailUpdateWithoutApproval)} messages in one call asks the person to confirm a card. Account security alerts (sign-in, security, password and verification-code emails) are never archived: they stay in the inbox and come back in keptSecurityAlerts.`,
-  inputSchema: z.object({
-    messageIds: z.array(z.string().min(1).max(200)).min(1).max(100),
-    update: z.enum(GMAIL_UPDATE_ACTIONS),
-  }),
-  async execute(input, ctx) {
-    const updated = await updateGmail(ctx, input.messageIds, input.update);
-    const result = {
-      update: updated.action,
-      updatedCount: updated.updatedCount,
-    };
-    if (updated.keptSecurityAlerts.length === 0) return result;
-    return {
-      ...result,
-      keptSecurityAlerts: updated.keptSecurityAlerts,
-      note: "These security alerts were left in the inbox on purpose. Never archive them; mention them to the person.",
-    };
-  },
-});
+/**
+ * `updatedInTurn` is how many messages this turn already changed, so the
+ * approval card counts the whole turn rather than one call.
+ */
+function defineGmailUpdate(updatedInTurn: number) {
+  return defineTool({
+    approval: (ctx) =>
+      googleWriteApproval(
+        ctx,
+        gmailUpdateNeedsApproval(ctx.toolInput, updatedInTurn)
+          ? "user-approval"
+          : "not-applicable"
+      ),
+    description: `Apply one reversible Gmail state change to exact message IDs: archive, move to inbox, mark read or unread, or star or unstar. Change only messages the person explicitly asked to change; reading an email never needs marking it read. Changing more than ${String(gmailUpdateWithoutApproval)} messages in one turn, across all calls, asks the person to confirm a card. Account security alerts (sign-in, security, password and verification-code emails) are never archived: they stay in the inbox and come back in keptSecurityAlerts.`,
+    inputSchema: gmailUpdateInputSchema,
+    async execute(input, ctx) {
+      const updated = await updateGmail(ctx, input.messageIds, input.update);
+      const result = {
+        update: updated.action,
+        updatedCount: updated.updatedCount,
+      };
+      if (updated.keptSecurityAlerts.length === 0) return result;
+      return {
+        ...result,
+        keptSecurityAlerts: updated.keptSecurityAlerts,
+        note: "These security alerts were left in the inbox on purpose. Never archive them; mention them to the person.",
+      };
+    },
+  });
+}
+
+export const gmailUpdate = defineGmailUpdate(0);
 
 const replyFlow =
   "To answer an email, find it with gmail-search or gmail-read-thread and pass its Gmail `id` as replyToMessageId: the tool then threads the email under that message (threadId, In-Reply-To, References) and keeps the thread's subject. Send the reply to the person who wrote that message (its `from`, or its Reply-To) unless told otherwise. Never answer an email as a new message without replyToMessageId.";
@@ -327,7 +334,12 @@ export default defineDynamic({
     // Resolved before every model step, so the read tools know what the
     // current turn already asked Google.
     "step.started": (_event, context) => {
-      const reads = turnReads(context.messages);
+      const reads = turnReads(
+        context.messages,
+        resolveModeValue(context, {
+          interactive: turnReadLimits.interactive,
+        }) ?? turnReadLimits.background
+      );
       const gmailSearchTool = defineGmailSearch(reads);
       const gmailReadThreadTool = defineGmailReadThread(reads);
       return resolveModeValue(context, {
@@ -337,7 +349,7 @@ export default defineDynamic({
           "gmail-read-thread": gmailReadThreadTool,
           "gmail-search": gmailSearchTool,
           "gmail-send": gmailSend,
-          "gmail-update": gmailUpdate,
+          "gmail-update": defineGmailUpdate(turnGmailUpdates(context.messages)),
         },
         "proactive-worker": {
           "gmail-read-thread": gmailReadThreadTool,

@@ -28,6 +28,11 @@ export const gmailReadThreadInputSchema = z.object({
   threadId: z.string().min(1).max(200),
 });
 
+export const gmailUpdateInputSchema = z.object({
+  messageIds: z.array(z.string().min(1).max(200)).min(1).max(100),
+  update: z.enum(GMAIL_UPDATE_ACTIONS),
+});
+
 export const gmailComposeSchema = z
   .object({
     bcc: z.array(emailAddressSchema).max(20).default([]),
@@ -123,17 +128,25 @@ export async function readGmailThread(ctx: ToolContext, threadId: string) {
 }
 
 /**
- * Messages one `gmail-update` may change without asking. Triage that
- * archived 23 emails and a refund question that marked 12 read changed the
- * mailbox in bulk on their own; past this, the person confirms a card.
+ * Messages one turn may change through `gmail-update` without asking. Triage
+ * that archived 23 emails and a refund question that marked 12 read changed
+ * the mailbox in bulk on their own; past this, the person confirms a card.
  */
 export const gmailUpdateWithoutApproval = 3;
 
-/** Whether a `gmail-update` call changes enough messages to need approval. */
+/**
+ * Whether a `gmail-update` call needs approval, counting the messages the
+ * turn already changed (`updatedInTurn`) so a bulk change split into small
+ * calls still asks.
+ */
 export function gmailUpdateNeedsApproval(
-  input: { readonly messageIds?: readonly string[] } | undefined
+  input: { readonly messageIds?: readonly string[] } | undefined,
+  updatedInTurn = 0
 ) {
-  return new Set(input?.messageIds ?? []).size > gmailUpdateWithoutApproval;
+  return (
+    new Set(input?.messageIds ?? []).size + updatedInTurn >
+    gmailUpdateWithoutApproval
+  );
 }
 
 /**

@@ -25,7 +25,10 @@ import {
   googleWorkspaceProvider,
   googleWriteApproval,
 } from "@agent/lib/google-workspace/client";
-import { gmailUpdateLabels } from "@agent/lib/google-workspace/gmail";
+import {
+  gmailUpdateLabels,
+  gmailUpdateNeedsApproval,
+} from "@agent/lib/google-workspace/gmail";
 import { calendarCreateEvent } from "@agent/tools/calendar";
 import {
   gmailDraft,
@@ -201,6 +204,9 @@ describe("Google Workspace", () => {
         update: "mark_read",
       })
     ).toBe("user-approval");
+    // The messages the turn already changed count too.
+    expect(gmailUpdateNeedsApproval({ messageIds: ["x"] }, 2)).toBe(false);
+    expect(gmailUpdateNeedsApproval({ messageIds: ["x"] }, 3)).toBe(true);
     // The same id twice is one email.
     expect(
       await approvalOf(gmailUpdate, {
