@@ -6,7 +6,7 @@ regenerating the patch below against the new dist.
 
 ## Remaining patches
 
-`eve@0.62.0.patch` carries three independent hunks:
+`eve@0.62.0.patch` carries four independent hunks:
 
 - The declaration bridge redirects Eve's incomplete bundled Chat SDK
   declaration exports to the explicitly installed `chat` package. Eve's runtime
@@ -37,6 +37,19 @@ regenerating the patch below against the new dist.
   `agent/schedules/browser-runs.ts` could not report a finished browser errand
   back into the web chat. Drop the hunk once `ScheduleHandlerArgs` carries
   `attachSession` itself.
+- The approval-safe memory recall keeps an approved tool call executable.
+  `shared/memory-state.js` `applyMemoryRecallBatches` appended new or changed
+  recalled records after the whole history. On the turn that answers an
+  approval, the history ends with the `tool` message carrying the
+  `tool-approval-response`, and the AI SDK runs approved calls only when the
+  prompt's last message is that `tool` message. A recall that changed while
+  the approval waited (any memory saved meanwhile, in any conversation of the
+  workspace) put a `memory.load` user message last, so the approved call was
+  silently skipped and the model asked for approval again. The hunk adds
+  `insertBeforeApprovalTail`, which places the records before the last
+  assistant message when the history ends with an approval response.
+  `tests/agent/approval-memory-recall.test.ts` covers it. Drop the hunk once
+  eve keeps the approval tail last on its own.
 
 To change the patch, run `pnpm patch eve@0.62.0`, edit the files in the
 reported directory, and `pnpm patch-commit <dir>` so every hunk and the
@@ -53,4 +66,5 @@ The old Eve patches for `ask_question` and `task_cancel` exports are no longer
 needed: both now have public entry points. Callback authorization is composed
 in `agent/channels/eve.ts` using public `defineChannel` and `routeAuth` APIs.
 
-No task-loop or prompt-placement patch is applied locally.
+Apart from the memory recall placement above, no task-loop or
+prompt-placement patch is applied locally.
