@@ -27,6 +27,7 @@ import {
   completeScheduledAgentRun,
   createScheduledAgentJob,
   finalizeScheduledReport,
+  waitForScheduledAgentRunInput,
 } from "@db/services/scheduled-agent-jobs";
 import dynamicSchedule from "@agent/schedules/dynamic";
 import { backgroundTurnMarker } from "@shared/chat/background-turn";
@@ -271,6 +272,34 @@ describe("a report outlives the web chat it was meant for", () => {
     expect(await reportStatus(runId)).toBe("suppressed");
   });
 
+  it("closes a run waiting on a question once no chat is left to ask in", async () => {
+    await recordProactiveTarget(alice, web, now);
+    const runId = await waitingTask(web);
+    await recordProactiveTarget(alice, newerWeb, now);
+
+    const delivery = reportDelivery({
+      [newerWeb.conversationId]: "ended",
+      [web.conversationId]: "ended",
+    });
+    await runDynamicTick(delivery);
+
+    expect(
+      await database.query.scheduledAgentRuns.findFirst({
+        where: eq(schema.scheduledAgentRuns.id, runId),
+      })
+    ).toMatchObject({
+      pendingInputRequests: null,
+      reportStatus: "suppressed",
+      status: "completed",
+    });
+    // Nothing is left for a later tick to retry.
+    vi.setSystemTime(new Date(now.getTime() + 60 * 60_000));
+    const later = reportDelivery();
+    await runDynamicTick(later);
+    expect(later.attachSession).not.toHaveBeenCalled();
+    expect(later.to).not.toHaveBeenCalled();
+  });
+
   it("waits for a web chat that is still starting instead of skipping it", async () => {
     await recordProactiveTarget(alice, web, now);
     const runId = await completedTask(web, "Пора выпить таблетку.");
@@ -342,6 +371,43 @@ async function completedTask(
   summary: string,
   replyAnchorMessageId?: string
 ) {
+  const run = await startedTask(conversation, replyAnchorMessageId);
+  await completeScheduledAgentRun(run.id, run.leaseToken, "turn-1", {
+    kind: "result",
+    summary,
+    urgency: "normal",
+  });
+  return run.id;
+}
+
+/** A one-off task whose worker stopped to ask the person a question. */
+async function waitingTask(
+  conversation: typeof telegram | typeof photon | typeof web
+) {
+  const run = await startedTask(conversation);
+  const waiting = await waitForScheduledAgentRunInput(run.id, run.leaseToken, [
+    {
+      action: {
+        callId: "call-question",
+        input: { prompt: "Какую таблетку?" },
+        kind: "tool-call",
+        toolName: "ask_question",
+      },
+      allowFreeform: true,
+      kind: "question",
+      prompt: "Какую таблетку?",
+      requestId: "request-question",
+    },
+  ]);
+  if (!waiting) throw new Error("Expected the run to wait for input.");
+  return run.id;
+}
+
+/** A one-off task set up in `conversation`, handed to its worker. */
+async function startedTask(
+  conversation: typeof telegram | typeof photon | typeof web,
+  replyAnchorMessageId?: string
+) {
   const job = await createScheduledAgentJob(
     alice,
     {
@@ -373,12 +439,7 @@ async function completedTask(
     where: eq(schema.scheduledAgentRuns.jobId, job.id),
   });
   if (!run?.leaseToken) throw new Error("Expected a leased run.");
-  await completeScheduledAgentRun(run.id, run.leaseToken, "turn-1", {
-    kind: "result",
-    summary,
-    urgency: "normal",
-  });
-  return run.id;
+  return { id: run.id, leaseToken: run.leaseToken };
 }
 
 async function reportStatus(runId: string) {

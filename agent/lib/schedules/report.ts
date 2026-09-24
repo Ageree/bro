@@ -2,7 +2,7 @@ import type { AttachSessionFn } from "eve/channels";
 import type { ScheduleToFn } from "eve/schedules";
 import {
   claimScheduledReport,
-  finalizeScheduledReport,
+  dropScheduledReport,
   releaseScheduledReport,
 } from "@db/services/scheduled-agent-jobs";
 import { telegramChatIdFromConversationId } from "@agent/lib/telegram-conversation";
@@ -22,7 +22,8 @@ interface ReportDelivery {
 /**
  * Hand a finished run's report to the chat it goes to. A web chat that has
  * ended passes the report on to the next chat in line (the schedule's own,
- * then the latest messenger); only when none is left is it suppressed.
+ * then the latest messenger); only when none is left is it suppressed, and a
+ * run waiting on a question closes with it.
  */
 export async function dispatchScheduledReport(
   delivery: ReportDelivery,
@@ -38,7 +39,9 @@ export async function dispatchScheduledReport(
         return;
       }
     }
-    await finalizeScheduledReport(claimed.run.id, leaseToken, "suppressed");
+    // No chat is left, so a question the run waits on is never asked either:
+    // the run closes with the report instead of retrying it forever.
+    await dropScheduledReport(claimed.run.id, leaseToken);
   } catch (error) {
     const released = await releaseScheduledReport(
       claimed.run.id,

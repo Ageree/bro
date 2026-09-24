@@ -6,7 +6,7 @@ import type {
   claimAnsweredScheduledAgentRuns,
   claimReadyScheduledAgentRuns,
   claimScheduledReport,
-  finalizeScheduledReport,
+  dropScheduledReport,
   finishScheduledAgentRunInput,
   listRecoverableScheduledReports,
   materializeDueScheduledAgentRuns,
@@ -20,7 +20,7 @@ const services = vi.hoisted(() => ({
   claimAnswers: vi.fn<typeof claimAnsweredScheduledAgentRuns>(),
   claimReports: vi.fn<typeof claimScheduledReport>(),
   claimRuns: vi.fn<typeof claimReadyScheduledAgentRuns>(),
-  finalizeReport: vi.fn<typeof finalizeScheduledReport>(),
+  dropReport: vi.fn<typeof dropScheduledReport>(),
   finishInput: vi.fn<typeof finishScheduledAgentRunInput>(),
   restoreInput: vi.fn<typeof restoreScheduledAgentRunInput>(),
   listReports: vi.fn<typeof listRecoverableScheduledReports>(),
@@ -34,7 +34,7 @@ vi.mock("@db/services/scheduled-agent-jobs", () => ({
   claimAnsweredScheduledAgentRuns: services.claimAnswers,
   claimReadyScheduledAgentRuns: services.claimRuns,
   claimScheduledReport: services.claimReports,
-  finalizeScheduledReport: services.finalizeReport,
+  dropScheduledReport: services.dropReport,
   finishScheduledAgentRunInput: services.finishInput,
   restoreScheduledAgentRunInput: services.restoreInput,
   listRecoverableScheduledReports: services.listReports,
@@ -378,10 +378,9 @@ describe("scheduled report delivery", () => {
       report.run.id
     );
 
-    expect(services.finalizeReport).toHaveBeenCalledExactlyOnceWith(
+    expect(services.dropReport).toHaveBeenCalledExactlyOnceWith(
       report.run.id,
-      report.run.reportLeaseToken,
-      "suppressed"
+      report.run.reportLeaseToken
     );
   });
 
@@ -403,7 +402,7 @@ describe("scheduled report delivery", () => {
       report.run.id
     );
 
-    expect(services.finalizeReport).not.toHaveBeenCalled();
+    expect(services.dropReport).not.toHaveBeenCalled();
     expect(services.releaseReport).toHaveBeenCalledExactlyOnceWith(
       report.run.id,
       report.run.reportLeaseToken,
