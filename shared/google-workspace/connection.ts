@@ -61,6 +61,14 @@ export const googleWorkspaceDisconnectNotice =
  */
 export const googleWorkspaceConsentPrompt = "consent";
 
+/**
+ * Extra query parameters for Google's authorization URL. Without
+ * `access_type=offline` Google issues no refresh token at all, consent screen
+ * or not. The connector's own `authorizationUrlParams` should carry it too;
+ * sending it per request covers a connector that does not.
+ */
+const googleWorkspaceAuthorizationUrlParams = { access_type: "offline" };
+
 /** How long a minted Google authorization link stays valid. */
 export const googleWorkspaceAuthorizationLifetimeMs = 10 * 60_000;
 
@@ -121,7 +129,9 @@ export async function readGoogleWorkspaceConnection(
       googleWorkspaceTokenParams(userId, access),
       { forceRefresh: true }
     );
-    await warnWhenGrantCannotRefresh(response.token);
+    // Not awaited: the check only logs and must not slow the cabinet or
+    // connect_google.
+    void warnWhenGrantCannotRefresh(response.token);
     const claims = tokenClaimsSchema.safeParse(response.claims);
     return {
       access,
@@ -135,11 +145,9 @@ export async function readGoogleWorkspaceConnection(
       error instanceof NoValidTokenError
     ) {
       // Connect answers the same way for a grant never made and for one
-      // whose refresh failed; its code and message tell the two apart.
-      console.info("[google-workspace] no valid grant", {
-        code: error.code,
-        message: error.message,
-      });
+      // whose refresh failed; its code tells the two apart.
+      // Only the code: Connect's message can name the subject.
+      console.info("[google-workspace] no valid grant", { code: error.code });
       return { access, accountLabel: null, state: "disconnected" };
     }
     if (error instanceof ConnectorInstallationRequiredError) {
@@ -166,9 +174,9 @@ const googleTokenInfoSchema = z.object({ access_type: z.string().optional() });
  * Health check for the live grant: Google's tokeninfo says whether the access
  * token came from an offline grant. An `online` one has no refresh token, so
  * Google drops out an hour after connecting and scheduled runs fail with it.
- * Best effort: the check never changes the connection state.
+ * Best effort and not awaited: it never changes the connection state.
  */
-async function warnWhenGrantCannotRefresh(accessToken: string) {
+export async function warnWhenGrantCannotRefresh(accessToken: string) {
   try {
     const response = await fetch("https://oauth2.googleapis.com/tokeninfo", {
       body: new URLSearchParams({ access_token: accessToken }),
@@ -196,9 +204,17 @@ export async function startGoogleWorkspaceAuthorization(
   access: GoogleWorkspaceAccess,
   callbackUrl: string
 ) {
+  // Vercel Connect's authorize endpoint takes `additionalParams`; the SDK
+  // types omit it but send every params field in the request body.
+  const params: ConnectTokenParams & {
+    additionalParams: Record<string, string>;
+  } = {
+    ...googleWorkspaceTokenParams(userId, access),
+    additionalParams: googleWorkspaceAuthorizationUrlParams,
+  };
   const authorization = await startAuthorization(
     env.GOOGLE_CONNECTOR_UID,
-    googleWorkspaceTokenParams(userId, access),
+    params,
     {
       callbackUrl,
       expiresInMs: googleWorkspaceAuthorizationLifetimeMs,
