@@ -1,5 +1,9 @@
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
-import { wrapLanguageModel, type LanguageModelMiddleware } from "ai";
+import {
+  type JSONSchema7,
+  type LanguageModelMiddleware,
+  wrapLanguageModel,
+} from "ai";
 import type { AgentModelOptionsDefinition } from "eve";
 import { env } from "@shared/environment";
 import { applicationOrigin } from "@shared/environment/origin";
@@ -18,15 +22,30 @@ function attributionHeaders() {
 }
 
 /**
+ * Hosts that make a tool call list its keys exactly in schema order. A union
+ * then turns on key order rather than meaning, and an optional key the model
+ * writes later than the schema lists it is lost. On 24.09
+ * `deepseek/deepseek-v4.1-flash` behind them turned `schedules-create`
+ * «15 января 2099» into a daily reminder and «каждое 5-е число» or
+ * «последний день месяца» into a first or last weekday of the month (4 of 9
+ * calls on Alibaba, 2 of 3 on Wafer, 2 of 8 on Morph); every other host of
+ * the model got all of them right. Putting discriminators first
+ * (`discriminatorsFirst`) fixes the unions, not the lost keys.
+ */
+const keyOrderedHosts = ["alibaba", "morph", "wafer"];
+
+/**
  * `OPENROUTER_PROVIDER_ORDER=baseten,fireworks` pins the upstream hosts. Left
  * unset, OpenRouter keeps its own sticky routing, which preserves the prompt
- * cache across turns.
+ * cache across turns. Either way the key-ordered hosts are skipped.
  */
 function providerRouting() {
   const order = env.OPENROUTER_PROVIDER_ORDER?.split(",")
     .map((slug) => slug.trim().toLowerCase())
     .filter((slug) => slug.length > 0);
-  return order && order.length > 0 ? { order } : undefined;
+  return order && order.length > 0
+    ? { ignore: keyOrderedHosts, order }
+    : { ignore: keyOrderedHosts };
 }
 
 /**
@@ -66,6 +85,87 @@ function toolChoiceMiddleware(
     async transformParams({ params }) {
       if (!params.tools?.length) return params;
       return { ...params, toolChoice: { type } };
+    },
+  };
+}
+
+/** A schema, or `true`/`false` for one that takes anything or nothing. */
+type JSONSchema7Definition = JSONSchema7 | boolean;
+
+/** Whether a schema allows one value only, as a union's discriminator does. */
+function fixesValue(definition: JSONSchema7Definition) {
+  return (
+    definition !== true &&
+    definition !== false &&
+    (definition.const !== undefined || definition.enum?.length === 1)
+  );
+}
+
+function reordered(definition: JSONSchema7Definition): JSONSchema7Definition {
+  return definition === true || definition === false
+    ? definition
+    : discriminatorsFirst(definition);
+}
+
+function reorderedRecord(
+  definitions: Readonly<Record<string, JSONSchema7Definition>>
+) {
+  return Object.fromEntries(
+    Object.entries(definitions).map(([name, definition]) => [
+      name,
+      reordered(definition),
+    ])
+  );
+}
+
+/**
+ * The same schema with the keys that tell a union's branches apart — a
+ * `const`, or an `enum` of one value — first in every object. Hosts that
+ * decode a tool call in the order its schema lists keys pick the branch by
+ * the first key the model writes: with `id` listed before `kind`,
+ * `replyTo: {"kind": "automation", "id": …}` came out as `{"kind":
+ * "current"}` on DeepInfra, OpenInference, Alibaba and Wafer (24.09), every
+ * time. Only the order changes; what the tool accepts does not.
+ */
+function discriminatorsFirst(schema: JSONSchema7): JSONSchema7 {
+  const result: JSONSchema7 = { ...schema };
+  if (schema.properties) {
+    const properties = Object.entries(reorderedRecord(schema.properties));
+    result.properties = Object.fromEntries([
+      ...properties.filter(([, definition]) => fixesValue(definition)),
+      ...properties.filter(([, definition]) => !fixesValue(definition)),
+    ]);
+  }
+  if (schema.anyOf) result.anyOf = schema.anyOf.map(reordered);
+  if (schema.oneOf) result.oneOf = schema.oneOf.map(reordered);
+  if (schema.allOf) result.allOf = schema.allOf.map(reordered);
+  if (schema.items !== undefined) {
+    result.items = Array.isArray(schema.items)
+      ? schema.items.map(reordered)
+      : reordered(schema.items);
+  }
+  if (schema.additionalProperties !== undefined) {
+    result.additionalProperties = reordered(schema.additionalProperties);
+  }
+  if (schema.definitions) {
+    result.definitions = reorderedRecord(schema.definitions);
+  }
+  return result;
+}
+
+/** Every function tool of a step, its input schema discriminators first. */
+function discriminatorsFirstMiddleware(): LanguageModelMiddleware {
+  return {
+    async transformParams({ params }) {
+      if (!params.tools?.length) return params;
+      return {
+        ...params,
+        tools: params.tools.map((tool) =>
+          tool.type === "function"
+            ? { ...tool, inputSchema: discriminatorsFirst(tool.inputSchema) }
+            : tool
+        ),
+      };
     },
   };
 }
@@ -235,6 +335,7 @@ export function openRouterSelection(
 
   const withheld = options.withheldTools ?? [];
   const middleware = [
+    discriminatorsFirstMiddleware(),
     ...(withheld.length > 0 ? [withheldToolsMiddleware(withheld)] : []),
     ...(toolChoice === "auto" ? [] : [toolChoiceMiddleware(toolChoice)]),
     ...(options.replyNote ? [replyNoteMiddleware(options.replyNote)] : []),
@@ -242,10 +343,7 @@ export function openRouterSelection(
   ];
 
   return {
-    model:
-      middleware.length === 0
-        ? model
-        : wrapLanguageModel({ middleware, model }),
+    model: wrapLanguageModel({ middleware, model }),
     // eve resolves an omitted context window from the AI Gateway catalog,
     // which does not list OpenRouter model ids.
     modelContextWindowTokens: env.OPENROUTER_MODEL_CONTEXT_TOKENS,

@@ -25,6 +25,44 @@ vi.mock("@openrouter/ai-sdk-provider", () => ({
   createOpenRouter: openRouter.createOpenRouter,
 }));
 
+/**
+ * `send_message` with keys in the order its zod schema lists them: `text`
+ * before `kind`, and `id` before `kind` in each `replyTo` branch with one.
+ */
+const sendMessageTool = {
+  inputSchema: {
+    properties: {
+      text: { type: "string" },
+      kind: { const: "message", type: "string" },
+      replyTo: {
+        oneOf: [
+          {
+            properties: { kind: { const: "current", type: "string" } },
+            type: "object",
+          },
+          {
+            properties: {
+              id: { type: "string" },
+              kind: { const: "task", type: "string" },
+            },
+            type: "object",
+          },
+          {
+            properties: {
+              id: { type: "string" },
+              kind: { enum: ["automation"], type: "string" },
+            },
+            type: "object",
+          },
+        ],
+      },
+    },
+    type: "object",
+  },
+  name: "send_message",
+  type: "function",
+} as const;
+
 const requiredEnvironment = {
   BETTER_AUTH_SECRET: "test-auth-secret-0123456789abcdefghijklmnop",
   BETTER_AUTH_URL: "https://openinstinct.example",
@@ -81,11 +119,12 @@ describe("model selection", () => {
         "X-Title": "Bro",
       },
     });
+    // Hosts that decode tool calls in schema key order break its unions.
     expect(openRouter.chat).toHaveBeenCalledExactlyOnceWith(
       "deepseek/deepseek-v4.1-flash",
-      { provider: undefined }
+      { provider: { ignore: ["alibaba", "morph", "wafer"] } }
     );
-    expect(selection).toEqual({
+    expect(selection).toMatchObject({
       model: { modelId: "deepseek/deepseek-v4.1-flash" },
       modelContextWindowTokens: 163_840,
       modelOptions: {
@@ -357,20 +396,87 @@ describe("model selection", () => {
       "medium",
     ],
   ] as const)(
-    "hands back the provider model untouched when %s",
+    "leaves the step as it is when %s, but for the schemas' key order",
     async (_case, modelId, toolChoice, effort) => {
       vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
       vi.stubEnv("OPENROUTER_REASONING_EFFORT", effort);
-      const providerModel = { modelId };
-      openRouter.chat.mockReturnValue(providerModel);
+      const doGenerate = vi.fn<LanguageModelV4["doGenerate"]>();
+      openRouter.chat.mockImplementation(() => ({
+        doGenerate,
+        doStream: vi.fn<LanguageModelV4["doStream"]>(),
+        modelId,
+        provider: "openrouter.chat",
+        specificationVersion: "v4",
+        supportedUrls: {},
+      }));
 
       const { openRouterSelection } =
         await import("@agent/lib/model/openrouter");
       const selection = openRouterSelection(modelId, { toolChoice });
+      const prompt = [
+        {
+          content: [{ text: "hello", type: "text" as const }],
+          role: "user" as const,
+        },
+      ];
+      await selection.model.doGenerate({ prompt, tools: [sendMessageTool] });
 
-      expect(selection.model).toBe(providerModel);
+      const call = doGenerate.mock.calls[0]?.[0];
+      expect(call?.prompt).toEqual(prompt);
+      expect(call?.toolChoice).toBeUndefined();
+      expect(call?.tools).toHaveLength(1);
     }
   );
+
+  it("lists a union's discriminator first in every tool schema", async () => {
+    // Hosts that decode keys in schema order picked `replyTo` by its first
+    // key: with `id` before `kind`, an automation's reply became «current».
+    vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
+    const doGenerate = vi.fn<LanguageModelV4["doGenerate"]>();
+    openRouter.chat.mockImplementation((modelId) => ({
+      doGenerate,
+      doStream: vi.fn<LanguageModelV4["doStream"]>(),
+      modelId,
+      provider: "openrouter.chat",
+      specificationVersion: "v4",
+      supportedUrls: {},
+    }));
+
+    const { openRouterSelection } = await import("@agent/lib/model/openrouter");
+    const selection = openRouterSelection("deepseek/deepseek-v4.1-flash", {
+      toolChoice: "auto",
+    });
+    await selection.model.doGenerate({ prompt: [], tools: [sendMessageTool] });
+
+    const schema = doGenerate.mock.calls[0]?.[0].tools?.[0];
+    const replyTo = z
+      .object({
+        inputSchema: z.object({
+          properties: z.object({
+            replyTo: z.object({
+              oneOf: z.array(
+                z.object({ properties: z.record(z.string(), z.unknown()) })
+              ),
+            }),
+          }),
+        }),
+      })
+      .parse(schema).inputSchema.properties.replyTo.oneOf;
+    expect(replyTo.map((branch) => Object.keys(branch.properties))).toEqual([
+      ["kind"],
+      ["kind", "id"],
+      ["kind", "id"],
+    ]);
+    expect(
+      Object.keys(
+        z
+          .object({
+            inputSchema: z.object({ properties: z.object({}).loose() }),
+          })
+          .parse(schema).inputSchema.properties
+      )
+    ).toEqual(["kind", "text", "replyTo"]);
+  });
 
   it("pins the configured provider order and reasoning effort", async () => {
     vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
@@ -382,7 +488,12 @@ describe("model selection", () => {
 
     expect(openRouter.chat).toHaveBeenCalledExactlyOnceWith(
       "anthropic/claude-sonnet-4.5",
-      { provider: { order: ["baseten", "fireworks"] } }
+      {
+        provider: {
+          ignore: ["alibaba", "morph", "wafer"],
+          order: ["baseten", "fireworks"],
+        },
+      }
     );
     expect(selection).toMatchObject({
       modelOptions: {
