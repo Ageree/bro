@@ -181,7 +181,8 @@ describe("browser run persistence", () => {
 
     const future = new Date(Date.now() + 60_000);
     expect(
-      await browserRuns.listUnsettledBrowserRuns({
+      await browserRuns.takeUnsettledBrowserRuns({
+        checkedBefore: future,
         limit: 10,
         staleBefore: future,
       })
@@ -200,7 +201,8 @@ describe("browser run persistence", () => {
     expect(claimed?.completedAt).toBeInstanceOf(Date);
     expect(second).toBeUndefined();
     expect(
-      await browserRuns.listUnsettledBrowserRuns({
+      await browserRuns.takeUnsettledBrowserRuns({
+        checkedBefore: future,
         limit: 10,
         staleBefore: future,
       })

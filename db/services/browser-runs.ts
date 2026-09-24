@@ -234,8 +234,8 @@ export async function finishWalledBrowserRun(runId: string) {
 }
 
 /**
- * Hand a parked errand to the retry run that was just started for it, in one
- * transaction: the new row, the link from the old one and the spend
+ * Hand a parked or queued errand to the run that was just started for it, in
+ * one transaction: the new row, the link from the old one and the spend
  * reservation move together or not at all. False when the old row was
  * stopped in the meantime — the caller then cancels the run it started.
  */
@@ -244,18 +244,23 @@ export async function handOffBrowserRunRetry(
   retry: Omit<BrowserRunInsert, "createdByUserId" | "workspaceId">
 ) {
   return db.transaction(async (tx) => {
+    const now = new Date();
     const [from] = await tx
       .update(browserRuns)
       .set({
+        // A queued errand never ran: it closes here, so nothing lists it as
+        // unsettled, and its composed instruction leaves with it.
+        completedAt: sql`coalesce(${browserRuns.completedAt}, ${now})`,
+        pendingTask: null,
         retriedAsRunId: retry.id,
         retryAt: null,
         status: "stopped",
-        updatedAt: new Date(),
+        updatedAt: now,
       })
       .where(
         and(
           eq(browserRuns.id, fromRunId),
-          eq(browserRuns.status, "waiting"),
+          inArray(browserRuns.status, ["queued", "waiting"]),
           isNull(browserRuns.retriedAsRunId)
         )
       )
@@ -299,22 +304,187 @@ export async function readLatestBrowserRunForScope(
   );
 }
 
-export async function listUnsettledBrowserRuns(options: {
-  readonly limit: number;
+function unsettled(options: {
+  readonly checkedBefore: Date;
   readonly staleBefore: Date;
 }) {
-  return db
-    .select()
+  return and(
+    isNull(browserRuns.completedAt),
+    inArray(browserRuns.status, activeBrowserRunStatuses),
+    lt(browserRuns.createdAt, options.staleBefore),
+    lt(browserRuns.updatedAt, options.checkedBefore)
+  );
+}
+
+/**
+ * Take the next open runs to check against Browser Use: the ones checked
+ * longest ago, marked as checked now. Reading them oldest-created first let
+ * twenty-five runs that never settle — a run Browser Use no longer knows, one
+ * whose status could not be read — hold every slot, so a run that finished
+ * after them was not looked at until they expired 45 minutes later. Each
+ * take moves what it returns to the back of the line, and a poll takes
+ * batches until everything unchecked since `checkedBefore` has had its turn.
+ */
+export async function takeUnsettledBrowserRuns(options: {
+  readonly checkedBefore: Date;
+  readonly limit: number;
+  readonly now?: Date;
+  readonly staleBefore: Date;
+}) {
+  const next = db
+    .select({ id: browserRuns.id })
+    .from(browserRuns)
+    .where(unsettled(options))
+    .orderBy(asc(browserRuns.updatedAt))
+    .limit(options.limit);
+  const rows = await db
+    .update(browserRuns)
+    .set({ updatedAt: options.now ?? new Date() })
+    .where(and(inArray(browserRuns.id, next), unsettled(options)))
+    .returning();
+  return rows.toSorted(
+    (left, right) => left.createdAt.getTime() - right.createdAt.getTime()
+  );
+}
+
+/**
+ * Keep an errand for which Browser Use had no free browser. It holds a
+ * `queued:` id until the poller starts its run and hands it over, the way a
+ * walled run hands over to its retry.
+ */
+export async function createQueuedBrowserRun(
+  scope: AccessScope,
+  input: Omit<
+    BrowserRunInsert,
+    "createdByUserId" | "id" | "status" | "workspaceId"
+  > & {
+    readonly pendingTask: string;
+    readonly retryAt: Date;
+  }
+) {
+  return createBrowserRun(scope, {
+    ...input,
+    id: `queued:${crypto.randomUUID()}`,
+    status: "queued",
+  });
+}
+
+function queuedAndDue(now: Date) {
+  return and(
+    eq(browserRuns.status, "queued"),
+    isNull(browserRuns.retriedAsRunId),
+    isNotNull(browserRuns.retryAt),
+    lte(browserRuns.retryAt, now)
+  );
+}
+
+/** How many errands wait for a browser, across every workspace. */
+export async function countQueuedBrowserRuns() {
+  const [row] = await db
+    .select({ count: sql<number>`count(*)::int` })
     .from(browserRuns)
     .where(
+      and(eq(browserRuns.status, "queued"), isNull(browserRuns.retriedAsRunId))
+    );
+  return row?.count ?? 0;
+}
+
+/**
+ * Take the errand that has waited longest for a browser, when its next try
+ * is due. The claim is the same lease as a walled run's retry: `retry_at`
+ * moves out, so a second poller skips it, and a poller that dies leaves it to
+ * be taken again once the lease runs out. First come, first started.
+ */
+export async function claimNextQueuedBrowserRun(now: Date) {
+  const next = db
+    .select({ id: browserRuns.id })
+    .from(browserRuns)
+    .where(queuedAndDue(now))
+    .orderBy(asc(browserRuns.createdAt))
+    .limit(1);
+  const [row] = await db
+    .update(browserRuns)
+    .set({
+      retryAt: new Date(now.getTime() + retryClaimLeaseMs),
+      updatedAt: now,
+    })
+    .where(and(inArray(browserRuns.id, next), queuedAndDue(now)))
+    .returning();
+  return row;
+}
+
+/** Put a queued errand back in line until `retryAt`, unless it was stopped. */
+export async function parkQueuedBrowserRun(runId: string, retryAt: Date) {
+  const rows = await db
+    .update(browserRuns)
+    .set({ retryAt, updatedAt: new Date() })
+    .where(
       and(
-        isNull(browserRuns.completedAt),
-        inArray(browserRuns.status, activeBrowserRunStatuses),
-        lt(browserRuns.createdAt, options.staleBefore)
+        eq(browserRuns.id, runId),
+        eq(browserRuns.status, "queued"),
+        isNull(browserRuns.retriedAsRunId)
       )
     )
-    .orderBy(asc(browserRuns.createdAt))
-    .limit(options.limit);
+    .returning({ id: browserRuns.id });
+  return rows.length > 0;
+}
+
+/**
+ * The person changed a queued errand before it started: what it will start
+ * with, and what they confirmed for it. Nothing when it already started.
+ */
+export async function updateQueuedBrowserRun(
+  runId: string,
+  input: Pick<
+    Partial<BrowserRunInsert>,
+    "paymentAllowed" | "pendingTask" | "submission"
+  >
+) {
+  const rows = await db
+    .update(browserRuns)
+    .set({ ...input, updatedAt: new Date() })
+    .where(
+      and(
+        eq(browserRuns.id, runId),
+        eq(browserRuns.status, "queued"),
+        isNull(browserRuns.retriedAsRunId)
+      )
+    )
+    .returning({ id: browserRuns.id });
+  return rows.length > 0;
+}
+
+/**
+ * Close a queued errand that will not start: the person cancelled it, it
+ * waited too long, or Browser Use is out of credits. The row keeps its place
+ * in history and, when the errand ended by itself, the report the person is
+ * owed. Undefined when it had already started or been closed.
+ */
+export async function closeQueuedBrowserRun(
+  runId: string,
+  input: Pick<BrowserRunInsert, "outcome"> & {
+    readonly status: "failed" | "stopped";
+  }
+) {
+  const now = new Date();
+  const [row] = await db
+    .update(browserRuns)
+    .set({
+      ...input,
+      completedAt: now,
+      pendingTask: null,
+      retryAt: null,
+      updatedAt: now,
+    })
+    .where(
+      and(
+        eq(browserRuns.id, runId),
+        eq(browserRuns.status, "queued"),
+        isNull(browserRuns.retriedAsRunId)
+      )
+    )
+    .returning();
+  return row;
 }
 
 /**
@@ -378,6 +548,39 @@ export async function releaseBrowserRunReport(runId: string) {
     .where(
       and(eq(browserRuns.id, runId), isNull(browserRuns.reportDeliveredAt))
     );
+}
+
+/**
+ * Reports of settled runs that have not reached their conversation although
+ * the run ended more than `settledBefore` ago — each one is a person who
+ * thinks their errand is still going. Waiting for a code or a decision
+ * counts: those are the reports that must land within the minute.
+ */
+export async function listOverdueBrowserRunReports(
+  settledBefore: Date,
+  now = new Date()
+) {
+  return db
+    .select({
+      completedAt: browserRuns.completedAt,
+      conversationChannel: browserRuns.conversationChannel,
+      id: browserRuns.id,
+      reportAttempts: browserRuns.reportAttempts,
+    })
+    .from(browserRuns)
+    .where(
+      and(
+        isNotNull(browserRuns.report),
+        isNull(browserRuns.reportDeliveredAt),
+        lt(browserRuns.completedAt, settledBefore),
+        gt(
+          browserRuns.completedAt,
+          new Date(now.getTime() - reportRetryWindowMs)
+        )
+      )
+    )
+    .orderBy(asc(browserRuns.completedAt))
+    .limit(50);
 }
 
 export async function listPendingBrowserRunReports(limit: number) {

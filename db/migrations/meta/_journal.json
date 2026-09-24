@@ -204,6 +204,13 @@
       "when": 1790248959437,
       "tag": "0028_youthful_warbound",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1790251032819,
+      "tag": "0029_light_black_panther",
+      "breakpoints": true
     }
   ]
 }

@@ -22,6 +22,7 @@ describe("browser run outcome parsing", () => {
     expect(outcome).toEqual({
       details: undefined,
       hasReportLinks: false,
+      items: [],
       labelled: true,
       links: [],
       needs: "none",
@@ -369,5 +370,47 @@ describe("order parsing", () => {
         task: "отмени заказ",
       })
     ).toMatchObject({ merchant: "ozon", status: "cancelled" });
+  });
+});
+
+describe("browser run items", () => {
+  it("keeps every basket line with its price, quantity and a safe link", () => {
+    const outcome = parseBrowserOutcome(
+      [
+        "RESULT: корзина собрана",
+        "TOTAL: 1 337,10 ₽",
+        "NEEDS: payment",
+        '**ITEMS:** [{"name":"Молоко 2,5%","price":"89,90 ₽","quantity":2,"url":"https://www.ozon.ru/product/1"},{"name":"Хлеб","price":"57,30 ₽","quantity":"1","url":"https://viewer:secret@live.browser-use.com/x"},{"name":"  ","price":"1 ₽"},{"price":"без названия"}]',
+      ].join("\n")
+    );
+
+    expect(outcome.items).toEqual([
+      {
+        details: undefined,
+        name: "Молоко 2,5%",
+        price: "89,90 ₽",
+        quantity: "2",
+        url: "https://www.ozon.ru/product/1",
+      },
+      {
+        details: undefined,
+        name: "Хлеб",
+        price: "57,30 ₽",
+        quantity: "1",
+        url: undefined,
+      },
+    ]);
+    const summary = browserOutcomeSummary(outcome, "fallback");
+    expect(summary).toContain(
+      "Items:\n1. Молоко 2,5% — 89,90 ₽ — qty 2 — https://www.ozon.ru/product/1\n2. Хлеб — 57,30 ₽ — qty 1"
+    );
+    expect(summary).not.toContain("live.browser-use.com");
+  });
+
+  it("reads no items from a report without the line or with broken JSON", () => {
+    expect(parseBrowserOutcome("RESULT: done\nNEEDS: none").items).toEqual([]);
+    expect(
+      parseBrowserOutcome('RESULT: done\nITEMS: [{"name": "Отель"').items
+    ).toEqual([]);
   });
 });

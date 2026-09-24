@@ -1,4 +1,4 @@
-import type { ToolContext } from "eve/tools";
+import type { DynamicResolveContext, ToolContext } from "eve/tools";
 import {
   afterEach,
   beforeAll,
@@ -9,11 +9,17 @@ import {
   vi,
 } from "vitest";
 import type * as browserUseClient from "@agent/lib/browser-use/client";
+import type * as browserUseCredits from "@agent/lib/browser-use/credits";
 import {
   BrowserUseError,
   type BrowserUseCreateRunInput,
 } from "@agent/lib/browser-use/client";
-import type { createBrowserRun as recordBrowserRun } from "@db/services/browser-runs";
+import type {
+  closeQueuedBrowserRun as closeQueuedRun,
+  createBrowserRun as recordBrowserRun,
+  createQueuedBrowserRun as recordQueuedBrowserRun,
+  updateQueuedBrowserRun as updateQueuedRun,
+} from "@db/services/browser-runs";
 import type { BrowserSubmission } from "@shared/browser/submission";
 import {
   accessScopeForUser,
@@ -141,11 +147,45 @@ const settleSpendReservation = vi.hoisted(() =>
   )
 );
 
+const countQueuedBrowserRuns = vi.hoisted(() =>
+  vi.fn<() => Promise<number>>(() => Promise.resolve(0))
+);
+const createQueuedBrowserRun = vi.hoisted(() =>
+  vi.fn<
+    (
+      scope: AccessScope,
+      input: Parameters<typeof recordQueuedBrowserRun>[1]
+    ) => Promise<{ id: string }>
+  >(() => Promise.resolve({ id: "queued:errand-1" }))
+);
+const closeQueuedBrowserRun = vi.hoisted(() =>
+  vi.fn<
+    (
+      runId: string,
+      input: Parameters<typeof closeQueuedRun>[1]
+    ) => Promise<{ id: string } | undefined>
+  >(() => Promise.resolve({ id: "queued:errand-1" }))
+);
+const updateQueuedBrowserRun = vi.hoisted(() =>
+  vi.fn<
+    (
+      runId: string,
+      input: Parameters<typeof updateQueuedRun>[1]
+    ) => Promise<boolean>
+  >(() => Promise.resolve(true))
+);
+const reportBrowserUseOutOfCredits = vi.hoisted(() =>
+  vi.fn<(cause: unknown) => Promise<void>>(() => Promise.resolve())
+);
+
 type Unused = () => never;
 
 vi.mock("@db/services/browser-runs", () => ({
   claimBrowserRunCompletion,
+  closeQueuedBrowserRun,
+  countQueuedBrowserRuns,
   createBrowserRun,
+  createQueuedBrowserRun,
   readBrowserProfileId: vi.fn<() => Promise<string>>(() =>
     Promise.resolve("profile-1")
   ),
@@ -157,6 +197,16 @@ vi.mock("@db/services/browser-runs", () => ({
   saveBrowserProfileId: vi.fn<Unused>(),
   stopBrowserRunErrand,
   updateBrowserRunProgress: vi.fn<() => Promise<void>>(() => Promise.resolve()),
+  updateQueuedBrowserRun,
+}));
+// The owner's alert state lives in the database; what the tool does about a
+// 402 is what these tests read.
+vi.mock("@agent/lib/browser-use/credits", async (importOriginal) => ({
+  ...(await importOriginal<typeof browserUseCredits>()),
+  browserUseCreditsRestored: vi.fn<() => Promise<void>>(() =>
+    Promise.resolve()
+  ),
+  reportBrowserUseOutOfCredits,
 }));
 vi.mock("@db/services/spending", () => ({
   moveSpendReservation,
@@ -201,6 +251,7 @@ beforeAll(async () => {
 }, 60_000);
 
 beforeEach(() => {
+  countQueuedBrowserRuns.mockResolvedValue(0);
   browserRunQuotaGate.mockResolvedValue({ allowed: true, note: undefined });
   readBrowserRunForScope.mockResolvedValue(undefined);
   readUserProfile.mockResolvedValue(emptyUserProfile);
@@ -234,6 +285,11 @@ function noRetryAt(): Date | null {
   return null;
 }
 
+/** The row's browser session, typed as the column is: a queued errand has none. */
+function rowSessionId(): string | null {
+  return sessionId;
+}
+
 /** What the person confirmed on the card in these tests. */
 const cardSubmission: BrowserSubmission = {
   forWhom: "Алиса",
@@ -261,7 +317,7 @@ function browserRunRow(
     replyAnchorMessageId: null,
     retryAt: noRetryAt(),
     rootSessionId: "session-1",
-    sessionId,
+    sessionId: rowSessionId(),
     site: "https://taxi.yandex.ru",
     status: completedAt ? "done" : "running",
     submission,
@@ -1873,5 +1929,229 @@ describe("browser_task approval", () => {
       )
     ).toBe("not-applicable");
     expect(browserTaskApproval(undefined, conversation)).toBe("not-applicable");
+  });
+});
+
+function busy() {
+  return new BrowserUseError(
+    429,
+    "/runs",
+    '{"detail":"Too many concurrent active sessions"}'
+  );
+}
+
+/** One `browser_task` start of the current turn and its result. */
+function startedIn(index: number, output: { readonly status: string }) {
+  const toolCallId = `start-${String(index)}`;
+  return [
+    {
+      content: [
+        {
+          input: { action: "start", task: "Найди отель" },
+          toolCallId,
+          toolName: "browser_task",
+          type: "tool-call" as const,
+        },
+      ],
+      role: "assistant" as const,
+    },
+    {
+      content: [
+        {
+          output: { type: "json" as const, value: output },
+          toolCallId,
+          toolName: "browser_task",
+          type: "tool-result" as const,
+        },
+      ],
+      role: "tool" as const,
+    },
+  ];
+}
+
+describe("browser_task when Browser Use is at its cap or out of credits", () => {
+  async function startWith(input: {
+    readonly allowSubmit?: boolean;
+    readonly failure?: BrowserUseError;
+  }) {
+    vi.resetModules();
+    if (input.failure) createBrowserUseRun.mockRejectedValueOnce(input.failure);
+    const { browserTask } = await import("@agent/tools/browser_task");
+    return browserTask.execute(
+      {
+        action: "start",
+        allowSubmit: input.allowSubmit,
+        site: "https://restaurant.example",
+        submission: input.allowSubmit === true ? cardSubmission : undefined,
+        task: "Забронируй столик на пятницу",
+      },
+      toolContext("better-auth:alice")
+    );
+  }
+
+  it("queues the errand on a 429 instead of retrying the start", async () => {
+    const result = await startWith({ allowSubmit: true, failure: busy() });
+
+    // One refused start, not a loop of them.
+    expect(createBrowserUseRun).toHaveBeenCalledOnce();
+    expect(createBrowserRun).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      runId: "queued:errand-1",
+      status: "queued",
+    });
+    expect(continuationNote(result)).toContain(
+      "Tell the user in one short line that you queued it"
+    );
+    expect(continuationNote(result)).toContain(
+      "Do not call browser_task start again for this errand"
+    );
+    const [, queued] = createQueuedBrowserRun.mock.calls[0] ?? [];
+    // The approval the person gave on the card starts with the queued run.
+    expect(queued).toMatchObject({
+      site: "https://restaurant.example",
+      submission: cardSubmission,
+      task: "Забронируй столик на пятницу",
+    });
+    expect(String(queued?.pendingTask)).toContain(
+      "The person confirmed on an approval card this one submission"
+    );
+    expect(queued?.retryAt).toBeInstanceOf(Date);
+  });
+
+  it("joins the back of the line without asking Browser Use while others wait", async () => {
+    countQueuedBrowserRuns.mockResolvedValue(2);
+
+    const result = await startWith({});
+
+    expect(createBrowserUseRun).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ status: "queued" });
+    expect(continuationNote(result)).toContain("2 other errands are waiting");
+  });
+
+  it("tells the person plainly and alerts the owner on a 402", async () => {
+    const failure = new BrowserUseError(402, "/runs", "Insufficient credits");
+
+    const result = await startWith({ failure });
+
+    expect(result).toMatchObject({ status: "unavailable" });
+    expect(continuationNote(result)).toContain(
+      "the cloud browser service is out of credits right now, and the owner has already been notified"
+    );
+    expect(reportBrowserUseOutOfCredits).toHaveBeenCalledExactlyOnceWith(
+      failure
+    );
+    expect(createQueuedBrowserRun).not.toHaveBeenCalled();
+    expect(createBrowserRun).not.toHaveBeenCalled();
+  });
+
+  it("queues a follow-up on a 429 in the same browser session", async () => {
+    createBrowserUseRun.mockRejectedValueOnce(busy());
+
+    const result = await continueErrand({
+      completedAt: new Date(),
+      outcome: "Needs: decision",
+      task: "Возьми второй вариант",
+    });
+
+    expect(createBrowserUseRun).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({
+      previousRunId: runId,
+      runId: "queued:errand-1",
+      status: "queued",
+    });
+    const [, queued] = createQueuedBrowserRun.mock.calls[0] ?? [];
+    expect(queued).toMatchObject({
+      sessionId,
+      task: "Возьми второй вариант",
+    });
+  });
+
+  it("answers status and cancel on a queued errand without asking Browser Use", async () => {
+    readBrowserRunForScope.mockResolvedValue({
+      ...browserRunRow(),
+      id: "queued:errand-1",
+      retryAt: new Date("2026-09-24T10:00:00Z"),
+      sessionId: null,
+      status: "queued",
+    });
+    const { browserTask } = await import("@agent/tools/browser_task");
+
+    const status = await browserTask.execute(
+      { action: "status", runId: "queued:errand-1" },
+      toolContext("better-auth:alice")
+    );
+    const cancel = await browserTask.execute(
+      { action: "cancel", runId: "queued:errand-1" },
+      toolContext("better-auth:alice")
+    );
+
+    expect(status).toMatchObject({ status: "queued" });
+    expect(cancel).toMatchObject({
+      runId: "queued:errand-1",
+      status: "stopped",
+    });
+    expect(readBrowserUseRunStatus).not.toHaveBeenCalled();
+    expect(cancelBrowserUseRun).not.toHaveBeenCalled();
+    expect(closeQueuedBrowserRun).toHaveBeenCalledWith(
+      "queued:errand-1",
+      expect.objectContaining({ status: "stopped" })
+    );
+  });
+});
+
+describe("browser_task starts per turn", () => {
+  async function resolvedTool(
+    messages: readonly ReturnType<typeof startedIn>[number][]
+  ) {
+    vi.resetModules();
+    const { default: dynamic } = await import("@agent/tools/browser_task");
+    const resolve = dynamic.events["step.started"];
+    if (!resolve) throw new Error("browser_task resolves per step.");
+    const context = toolContext("better-auth:alice");
+    const tools = await resolve({}, {
+      channel: { kind: "channel:photon", metadata: {} },
+      messages: [
+        { content: "Найди отели в Казани, Сочи и Питере", role: "user" },
+        ...messages,
+      ],
+      model: null,
+      session: { auth: context.session.auth, id: context.session.id },
+    } satisfies DynamicResolveContext);
+    const tool =
+      tools && !("execute" in tools) ? tools.browser_task : undefined;
+    if (!tool || !("execute" in tool)) {
+      throw new Error("browser_task must resolve for a conversation.");
+    }
+    return tool;
+  }
+
+  it("refuses a fourth start in one turn without reaching Browser Use", async () => {
+    const tool = await resolvedTool([
+      ...startedIn(1, { status: "queued" }),
+      ...startedIn(2, { status: "running" }),
+      ...startedIn(3, { status: "running" }),
+    ]);
+
+    const result = await tool.execute(
+      { action: "start", task: "Найди отель в Сочи" },
+      toolContext("better-auth:alice")
+    );
+
+    expect(result).toMatchObject({ status: "start_limit" });
+    expect(createBrowserUseRun).not.toHaveBeenCalled();
+  });
+
+  it("still starts while the turn is under the limit", async () => {
+    const tool = await resolvedTool([
+      ...startedIn(1, { status: "running" }),
+      ...startedIn(2, { status: "running" }),
+    ]);
+
+    await tool.execute(
+      { action: "start", task: "Найди отель в Сочи" },
+      toolContext("better-auth:alice")
+    );
+
+    expect(createBrowserUseRun).toHaveBeenCalledOnce();
   });
 });

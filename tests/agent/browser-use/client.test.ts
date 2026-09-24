@@ -166,6 +166,48 @@ describe("Browser Use client", () => {
     expect(calls).toHaveLength(2);
   });
 
+  it("does not repeat a start Browser Use refused for want of a free browser", async () => {
+    const client = await loadClient();
+    const calls = stubFetch(
+      Response.json(
+        {
+          detail: "Too many concurrent active sessions",
+          retry_after_seconds: 90,
+        },
+        { status: 429 }
+      )
+    );
+
+    const failure = await client
+      .createBrowserUseRun({ task: "Найди отель" })
+      .catch((cause: unknown) => cause);
+
+    expect(client.browserUseBusy(failure)).toBe(true);
+    expect(client.browserUseOutOfCredits(failure)).toBe(false);
+    expect(failure).toMatchObject({ retryAfterMs: 90_000, status: 429 });
+    expect(calls).toHaveLength(1);
+  });
+
+  it("reads an edge throttle's wait from its header and knows a 402", async () => {
+    const client = await loadClient();
+    stubFetch(
+      new Response('{"error":"rate_limited"}', {
+        headers: { "retry-after": "300" },
+        status: 429,
+      })
+    );
+    const throttled = await client
+      .readBrowserUseRunStatus(runId)
+      .catch((cause: unknown) => cause);
+    expect(throttled).toMatchObject({ retryAfterMs: 300_000 });
+
+    stubFetch(new Response("Insufficient credits", { status: 402 }));
+    const broke = await client
+      .createBrowserUseRun({ task: "Найди отель" })
+      .catch((cause: unknown) => cause);
+    expect(client.browserUseOutOfCredits(broke)).toBe(true);
+  });
+
   it("reads a run status, queues a session message and stops a session", async () => {
     const client = await loadClient();
     const calls = stubFetch(

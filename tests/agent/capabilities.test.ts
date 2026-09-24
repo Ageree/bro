@@ -181,7 +181,8 @@ describe("authored mode capability matrix", () => {
 
   it("adds browser_task only to a deployment configured for Browser Use", async () => {
     const unconfigured = await loadBrowserTask("");
-    const resolveUnconfigured = unconfigured.events["turn.started"];
+    // Resolved per step, to count the errands the turn already started.
+    const resolveUnconfigured = unconfigured.events["step.started"];
     expect(resolveUnconfigured).toBeDefined();
     if (!resolveUnconfigured) return;
     expect(
@@ -189,7 +190,7 @@ describe("authored mode capability matrix", () => {
     ).toBeNull();
 
     const configured = await loadBrowserTask("browser-use-test-key");
-    const resolve = configured.events["turn.started"];
+    const resolve = configured.events["step.started"];
     expect(resolve).toBeDefined();
     if (!resolve) return;
 

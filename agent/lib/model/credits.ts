@@ -1,12 +1,8 @@
 import { z } from "zod";
-import {
-  claimOperationalAlert,
-  clearOperationalAlert,
-} from "@db/services/operational-alerts";
+import { alertOwner, clearOwnerAlert } from "@agent/lib/owner-alert";
 import { env } from "@shared/environment";
 
 const creditsUrl = "https://openrouter.ai/api/v1/credits";
-const telegramApiBaseUrl = "https://api.telegram.org";
 const requestTimeoutMs = 10_000;
 const alertKey = "openrouter-low-credits";
 /** A low balance is repeated at most once a day unless it keeps falling. */
@@ -27,15 +23,14 @@ const creditsResponseSchema = z.object({
  */
 function creditCheckSettings() {
   const managementKey = env.OPENROUTER_MANAGEMENT_KEY;
-  const botToken = env.TELEGRAM_BOT_TOKEN;
-  const ownerChatId = env.TELEGRAM_OWNER_CHAT_ID;
-  if (!managementKey || !botToken || !ownerChatId) return undefined;
-  return {
-    botToken,
-    managementKey,
-    ownerChatId,
-    thresholdUsd: env.OPENROUTER_CREDITS_ALERT_USD,
-  };
+  if (
+    !managementKey ||
+    !env.TELEGRAM_BOT_TOKEN ||
+    !env.TELEGRAM_OWNER_CHAT_ID
+  ) {
+    return undefined;
+  }
+  return { managementKey, thresholdUsd: env.OPENROUTER_CREDITS_ALERT_USD };
 }
 
 /**
@@ -58,22 +53,15 @@ export async function checkOpenRouterCredits(now = new Date()) {
   try {
     const remainingUsd = await readRemainingCredits(settings.managementKey);
     if (remainingUsd >= settings.thresholdUsd) {
-      await clearOperationalAlert(alertKey, now);
+      await clearOwnerAlert(alertKey, now);
       return;
     }
-    const claimed = await claimOperationalAlert(alertKey, remainingUsd, {
+    await alertOwner(alertKey, creditAlertText(remainingUsd, settings), {
       minimumDrop: alertMinimumDropUsd,
       now,
       repeatAfterMs: alertRepeatAfterMs,
+      value: remainingUsd,
     });
-    if (!claimed) return;
-    try {
-      await notifyOwner(settings, creditAlertText(remainingUsd, settings));
-    } catch (error) {
-      // An alert nobody received must not hold back the next one for a day.
-      await clearOperationalAlert(alertKey, now);
-      throw error;
-    }
   } catch (error) {
     console.warn("[openrouter] credit balance check failed", { cause: error });
   }
@@ -101,27 +89,4 @@ function creditAlertText(
     `На OpenRouter осталось $${remainingUsd.toFixed(2)} (порог $${thresholdUsd.toFixed(2)}).`,
     "Когда кредиты кончатся, Бро перестанет отвечать всем: пополни баланс на openrouter.ai/settings/credits.",
   ].join("\n");
-}
-
-async function notifyOwner(
-  {
-    botToken,
-    ownerChatId,
-  }: { readonly botToken: string; readonly ownerChatId: string },
-  text: string
-) {
-  const response = await fetch(
-    `${telegramApiBaseUrl}/bot${botToken}/sendMessage`,
-    {
-      body: JSON.stringify({ chat_id: ownerChatId, text }),
-      headers: { "Content-Type": "application/json" },
-      method: "POST",
-      signal: AbortSignal.timeout(requestTimeoutMs),
-    }
-  );
-  if (!response.ok) {
-    throw new Error(
-      `Telegram owner alert failed (${String(response.status)}).`
-    );
-  }
 }
