@@ -100,7 +100,7 @@ describe("OpenRouter web search", () => {
       "HTTP-Referer": "https://openinstinct.example",
       "X-Title": "Bro",
     });
-    expect(request.body.model).toBe("openai/gpt-6-luna");
+    expect(request.body.model).toBe("deepseek/deepseek-v4.1-flash");
     expect(request.body.max_tokens).toBe(700);
     expect(request.body.plugins).toEqual([{ id: "web", max_results: 8 }]);
     expect(request.body.reasoning).toEqual({ enabled: false });

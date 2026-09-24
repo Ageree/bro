@@ -142,8 +142,9 @@ function saidNothing(content: GeneratedContent) {
 
 /**
  * Once a turn's reply reached the person, a model with nothing more to say
- * may answer with no text and no tool call at all: `openai/gpt-6-luna` does
- * it after almost every delivery, whether `toolChoice` is `auto` or `none`.
+ * may answer with no text and no tool call at all: `openai/gpt-6-luna` did
+ * it after almost every delivery, whether `toolChoice` was `auto` or `none`
+ * (`deepseek/deepseek-v4.1-flash` writes a short closing line instead).
  * eve treats that as a broken model call, re-asks once with «answer now from
  * the tool results» and then fails the turn (`MODEL_CALL_FAILED`, «The model
  * did not return a response»), so a delivered answer ended in a failed turn
