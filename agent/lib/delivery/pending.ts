@@ -1,7 +1,7 @@
 import type { ModelMessage } from "ai";
 import { z } from "zod";
-import { settledOutcomeRun } from "./browser-report";
-import { questionsOf } from "./novelty";
+import { leavesRunAtWork, settledOutcomeRun } from "./browser-report";
+import { asksForSomething } from "./novelty";
 import {
   currentTurnMessages,
   sendReachedPerson,
@@ -69,10 +69,11 @@ function messageText(message: ModelMessage) {
 /**
  * Whether the latest message a person wrote is still waiting for a
  * `send_message` or `react_to_message` that went through. A reaction answers
- * «спасибо!», not a question: on 24.09 DeepSeek met «What is 2 plus 2?» with
- * 😂, and the «4» it wrote next never reached the person. A wakeup from a
- * finished background task is not a person talking, and the instructions let
- * the model keep such a wakeup silent, so it never counts as waiting.
+ * «спасибо!», not a question, a request or a task: on 24.09 DeepSeek met
+ * «What is 2 plus 2?» with 😂, and the «4» it wrote next never reached the
+ * person. A wakeup from a finished background task is not a person talking,
+ * and the instructions let the model keep such a wakeup silent, so it never
+ * counts as waiting.
  */
 export function awaitsDelivery(messages: readonly ModelMessage[]) {
   let steps = 0;
@@ -84,7 +85,7 @@ export function awaitsDelivery(messages: readonly ModelMessage[]) {
     if (message.role !== "user") continue;
     const kind = userMessageKind(message);
     if (kind === "user") {
-      if (reaction && questionsOf(messageText(message)).length === 0) {
+      if (reaction && !asksForSomething(messageText(message))) {
         return false;
       }
       return steps < forcedStepLimit;
@@ -116,6 +117,24 @@ export function turnActed(messages: readonly ModelMessage[]) {
           part.type === "tool-result" &&
           !part.output.type.startsWith("error") &&
           part.output.type !== "execution-denied"
+      )
+  );
+}
+
+/**
+ * Whether the current turn handed the errand on in a quiet `continue`: a
+ * browser run is at work on it and will report by itself. A report turn that
+ * did so and sent nothing has nothing more to say.
+ */
+export function turnHandedErrandOn(messages: readonly ModelMessage[]) {
+  return currentTurnMessages(messages).some(
+    (message) =>
+      message.role === "tool" &&
+      message.content.some(
+        (part) =>
+          part.type === "tool-result" &&
+          part.toolName === "browser_task" &&
+          leavesRunAtWork(part.output)
       )
   );
 }
