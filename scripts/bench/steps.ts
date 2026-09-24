@@ -34,6 +34,12 @@ export type CasePlan =
   | { readonly kind: "skipped"; readonly reason: string };
 
 const placeholderPattern = /\[[^\]]+\]/gu;
+/**
+ * «[в группе из четырёх]» says where the message is written, not what to
+ * put in it: the web chat the driver speaks through has no group chats, so
+ * no `--fill` can make such a test runnable.
+ */
+const groupChatMarker = /^\[в групп/iu;
 const manualPattern = /^\(([^)]*)\)\s*/u;
 
 export function planCase(
@@ -44,6 +50,7 @@ export function planCase(
   const steps: PlannedStep[] = [];
   const fixtures = caseFixtures.get(benchCase.id);
   const unresolved = new Set<string>();
+  let groupChat: string | undefined;
   let pendingManual: string | undefined;
 
   for (const entry of benchCase.script) {
@@ -62,6 +69,10 @@ export function planCase(
     let files: readonly FixtureFile[] = [];
     text = text.replaceAll(placeholderPattern, (placeholder) => {
       if (placeholder === voiceMarker) return placeholder;
+      if (groupChatMarker.test(placeholder)) {
+        groupChat ??= placeholder;
+        return placeholder;
+      }
       const filled = fills.get(placeholder);
       if (filled !== undefined) return filled;
       if (fixtures?.placeholder === placeholder) {
@@ -83,6 +94,12 @@ export function planCase(
     pendingManual = undefined;
   }
 
+  if (groupChat) {
+    return {
+      kind: "skipped",
+      reason: `тест идёт в групповом чате (${groupChat}), а у веб-чата драйвера групп нет: прогоняется вручную в мессенджере`,
+    };
+  }
   if (unresolved.size > 0) {
     const names = [...unresolved];
     return {

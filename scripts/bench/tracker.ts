@@ -1,28 +1,71 @@
 import type { InputRequest, MessageStreamEvent } from "eve/client";
 import { z } from "zod";
+import { isBackgroundTurnText } from "@shared/chat/background-turn";
 import type { DriverStatus } from "./journal.ts";
 
 // `browser_task` answers `running` for an errand that continues in the
-// background and reports later as a new message in the same session.
-const browserRunningSchema = z.object({
-  output: z.object({ status: z.literal("running") }),
+// background, or `queued` when every cloud browser is busy; either reports
+// later as a new message in the same session. A follow-up names the run it
+// replaces, and `status` follows an errand to its newest run.
+const browserOutputSchema = z.object({
+  output: z.object({
+    previousRunId: z.string().min(1).optional(),
+    runId: z.string().min(1),
+    status: z.string(),
+  }),
   toolName: z.literal("browser_task"),
 });
 
+const browserCallSchema = z.object({
+  callId: z.string().min(1),
+  input: z.object({ runId: z.string().min(1).optional() }),
+  kind: z.literal("tool-call"),
+  toolName: z.literal("browser_task"),
+});
+
+const backgroundStatuses = new Set(["queued", "running"]);
+
+/**
+ * A run in one of these states sends no report later: it was cancelled, or
+ * `status` handed its outcome to the turn that asked.
+ */
+const settledStatuses = new Set([
+  "cancelled",
+  "completed",
+  "failed",
+  "stopped",
+]);
+
+/**
+ * The message an errand's outcome arrives as: Bro's own prompt, opening with
+ * the background-turn marker (`agent/lib/browser-use/completion.ts`).
+ */
+const browserReportPattern = /^Browser run (\S+) finished\./mu;
+
 /**
  * What a conversation's stream says about where it stands: cards waiting
- * for an answer, an authorization Bro is parked on, and whether a browser
- * errand is still due to report. The driver decides its next move from it.
+ * for an answer, an authorization Bro is parked on, and the browser errands
+ * still due to report. The driver decides its next move from it.
+ *
+ * Only an errand's report settles it. A turn the tester or a nudge started
+ * says nothing about the errands, even when Bro answers «ещё ищу».
  */
 export class TurnTracker {
   readonly pending = new Map<string, InputRequest>();
   authorizationPending = false;
   productVersion: string | undefined;
-  #awaitingBackground = false;
-  #runningInTurn = false;
+  /** Errands due to report, oldest first. */
+  readonly #runs: Set<string>;
+  /** `browser_task` calls in flight: the run each one named. */
+  readonly #calls = new Map<string, string>();
+  #expectReport = false;
 
-  constructor(pending: readonly InputRequest[] = []) {
+  constructor(
+    pending: readonly InputRequest[] = [],
+    backgroundRuns: readonly string[] = []
+  ) {
     for (const request of pending) this.pending.set(request.requestId, request);
+    this.#runs = new Set(backgroundRuns);
   }
 
   observe(event: MessageStreamEvent) {
@@ -37,25 +80,41 @@ export class TurnTracker {
         }
         break;
       }
-      case "turn.started": {
-        this.#runningInTurn = false;
+      case "message.received": {
+        const report = event.data.kind
+          ? undefined
+          : this.#reportedRun(event.data.message);
+        if (report !== undefined) this.#settleReport(report);
         break;
       }
-      case "action.result": {
-        if (
-          event.data.status === "completed" &&
-          browserRunningSchema.safeParse(event.data.result).success
-        ) {
-          this.#awaitingBackground = true;
-          this.#runningInTurn = true;
+      case "actions.requested": {
+        for (const action of event.data.actions) {
+          const call = browserCallSchema.safeParse(action);
+          if (call.success && call.data.input.runId) {
+            this.#calls.set(call.data.callId, call.data.input.runId);
+          }
         }
         break;
       }
-      case "turn.completed":
-      case "turn.failed": {
-        // A turn that started no new errand has delivered (or dropped) the
-        // result the case was waiting for.
-        if (!this.#runningInTurn) this.#awaitingBackground = false;
+      case "action.result": {
+        const requested = this.#calls.get(event.data.result.callId);
+        this.#calls.delete(event.data.result.callId);
+        const result = browserOutputSchema.safeParse(event.data.result);
+        if (event.data.status !== "completed" || !result.success) break;
+        const { previousRunId, runId, status } = result.data.output;
+        if (backgroundStatuses.has(status)) {
+          // The errand lives on under this id; the one it replaces or
+          // was retried from will not report.
+          for (const replaced of [previousRunId, requested]) {
+            if (replaced !== undefined && replaced !== runId) {
+              this.#runs.delete(replaced);
+            }
+          }
+          this.#runs.add(runId);
+        } else if (settledStatuses.has(status)) {
+          this.#runs.delete(runId);
+          if (requested !== undefined) this.#runs.delete(requested);
+        }
         break;
       }
       case "input.requested": {
@@ -86,12 +145,37 @@ export class TurnTracker {
 
   /** Whether a browser errand this conversation started has yet to report. */
   awaitingBackground() {
-    return this.#awaitingBackground;
+    return this.#expectReport || this.#runs.size > 0;
   }
 
-  /** Follow a session as if an errand were running (`pnpm bench follow`). */
+  /** The errands still due to report, for the run record. */
+  backgroundRuns() {
+    return [...this.#runs];
+  }
+
+  /**
+   * Follow a session for its errands (`pnpm bench follow`); with none on
+   * record, as if one were running, until the next report.
+   */
   expectBackground() {
-    this.#awaitingBackground = true;
+    if (this.#runs.size === 0) this.#expectReport = true;
+  }
+
+  #reportedRun(message: string) {
+    if (!isBackgroundTurnText(message)) return undefined;
+    return browserReportPattern.exec(message)?.[1];
+  }
+
+  /**
+   * A report settles its run. One for a run the driver never saw is an
+   * errand retried in the background after an anti-bot check, or a queued
+   * one that got its browser: it settles the oldest errand still due.
+   */
+  #settleReport(runId: string) {
+    this.#expectReport = false;
+    if (this.#runs.delete(runId)) return;
+    const [oldest] = this.#runs;
+    if (oldest !== undefined) this.#runs.delete(oldest);
   }
 
   /**

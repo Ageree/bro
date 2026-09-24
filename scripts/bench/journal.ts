@@ -1,5 +1,12 @@
-import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import {
+  access,
+  appendFile,
+  mkdir,
+  readFile,
+  rename,
+  writeFile,
+} from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 import {
   inputRequestSchema,
   type ActionResultStreamEvent,
@@ -7,6 +14,7 @@ import {
 } from "eve/client";
 import { z } from "zod";
 import { sendMessageToolResultSchema } from "@shared/chat/message-delivery";
+import { maskPersonalData } from "./personal-data.ts";
 
 /**
  * Everything a reviewer scores a run from, per case:
@@ -20,7 +28,13 @@ import { sendMessageToolResultSchema } from "@shared/chat/message-delivery";
  *   the reviewer, plus the driver's own state for `pnpm bench send`.
  *
  * One-time codes never reach the disk: they are replaced with `******` before
- * a line is written (§2.5 of the benchmark forbids keeping them).
+ * a line is written (§2.5 of the benchmark forbids keeping them). Neither do
+ * passport, SNILS and card numbers or exact addresses (§2.3,
+ * `personal-data.ts`).
+ *
+ * A fresh run of a case moves the previous run's files to
+ * `previous/<case>-<time>/`: a rerun replaces the score, and the old journal
+ * is kept whole instead of being appended to.
  */
 
 const codeMask = "******";
@@ -96,6 +110,8 @@ export const runRecordSchema = z.object({
   cleanupDone: z.boolean(),
   codesRequested: z.number().int().nonnegative(),
   driver: z.object({
+    /** Browser errands still due to report, for `send` and `follow`. */
+    backgroundRuns: z.array(z.string()).default([]),
     decisions: z.array(
       z.object({
         optionId: z.string().optional(),
@@ -268,34 +284,93 @@ export function describeEvent(event: MessageStreamEvent) {
   }
 }
 
-/** Appends one case's events and log lines, masking codes on the way. */
+// One string literal of a JSON text, escapes included.
+const jsonStringLiteral = /"(?:[^"\\]|\\.)*"/gu;
+
+/**
+ * Masks every string of a JSON text, decoded first so a rule sees the text
+ * as written; the JSON stays valid whatever the mask puts in.
+ */
+function maskJsonStrings(json: string, mask: (text: string) => string) {
+  return json.replaceAll(jsonStringLiteral, (literal) =>
+    JSON.stringify(mask(z.string().parse(JSON.parse(literal))))
+  );
+}
+
+const quoted = (path: string) => JSON.stringify(path);
+
+async function exists(path: string) {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Appends one case's events and log lines, masking codes and personal data. */
 export class CaseJournal {
   readonly knownCodes = new Set<string>();
   readonly paths: ReturnType<typeof journalPaths>;
+  readonly #caseId: string;
   readonly #timeZone: string;
 
   constructor(outDir: string, caseId: string, timeZone: string) {
     this.paths = journalPaths(outDir, caseId);
+    this.#caseId = caseId;
     this.#timeZone = timeZone;
   }
 
+  /**
+   * Starts a fresh run of the case. `send` and `follow` continue a run and
+   * append to its files without calling this.
+   */
   async open() {
-    await mkdir(join(this.paths.log, ".."), { recursive: true });
+    const outDir = dirname(this.paths.log);
+    await mkdir(outDir, { recursive: true });
+    const earlier = (
+      await Promise.all(
+        Object.values(this.paths).map(async (path) =>
+          (await exists(path)) ? [path] : []
+        )
+      )
+    ).flat();
+    if (earlier.length === 0) return;
+    const stamp = new Date().toISOString().replaceAll(/[:.]/gu, "-");
+    const archive = join(outDir, "previous", `${this.#caseId}-${stamp}`);
+    await mkdir(archive, { recursive: true });
+    await Promise.all(
+      earlier.map((path) => rename(path, join(archive, basename(path))))
+    );
+    // The archived record goes on pointing at its own transcript.
+    const record = join(archive, basename(this.paths.record));
+    if (!(await exists(record))) return;
+    let text = await readFile(record, "utf8");
+    for (const path of [this.paths.log, this.paths.events]) {
+      text = text.replaceAll(
+        quoted(path),
+        quoted(join(archive, basename(path)))
+      );
+    }
+    await writeFile(record, text);
+  }
+
+  #mask(text: string) {
+    return maskCodes(maskPersonalData(text), this.knownCodes);
   }
 
   async event(sessionId: string, event: MessageStreamEvent) {
-    const line = JSON.stringify({ event, sessionId });
-    await appendFile(
-      this.paths.events,
-      `${maskCodes(line, this.knownCodes)}\n`
+    const line = maskJsonStrings(JSON.stringify({ event, sessionId }), (text) =>
+      this.#mask(text)
     );
+    await appendFile(this.paths.events, `${line}\n`);
     const readable = describeEvent(event);
     if (readable !== undefined) await this.line(readable);
   }
 
   async line(text: string) {
     const stamp = isoWithOffset(new Date(), this.#timeZone).slice(11, 19);
-    const lines = maskCodes(text, this.knownCodes)
+    const lines = this.#mask(text)
       .split("\n")
       .map((line) => `[${stamp}] ${line}`)
       .join("\n");
@@ -304,9 +379,15 @@ export class CaseJournal {
 
   async save(record: RunRecord) {
     const parsed = runRecordSchema.parse(record);
-    await writeFile(
-      this.paths.record,
-      `${maskCodes(JSON.stringify(parsed, null, 2), this.knownCodes)}\n`
+    const masked = runRecordSchema.parse(
+      JSON.parse(
+        maskJsonStrings(JSON.stringify(parsed), (text) => this.#mask(text))
+      )
     );
+    // Session and run ids are how `send` and `follow` pick the run up; a
+    // lookalike inside an id must not break that.
+    masked.driver.sessions = parsed.driver.sessions;
+    masked.driver.backgroundRuns = parsed.driver.backgroundRuns;
+    await writeFile(this.paths.record, `${JSON.stringify(masked, null, 2)}\n`);
   }
 }

@@ -1,5 +1,6 @@
 import type { MessageStreamEvent } from "eve/client";
 import { describe, expect, it } from "vitest";
+import { backgroundTurnMarker } from "@shared/chat/background-turn";
 import { TurnTracker } from "../../bench/tracker.ts";
 import { recordedEvents } from "./recorded.ts";
 
@@ -13,13 +14,16 @@ function turn(turnId: string, events: readonly MessageStreamEvent[]) {
   ] satisfies MessageStreamEvent[];
 }
 
-function browserResult(status: string): MessageStreamEvent {
+function browserResult(
+  output: Readonly<Record<string, string>>,
+  callId = `call_${output.status ?? "x"}`
+): MessageStreamEvent {
   return {
     data: {
       result: {
-        callId: `call_${status}`,
+        callId,
         kind: "tool-result",
-        output: { runId: "run_1", status },
+        output: { runId: "run_1", ...output },
         toolName: "browser_task",
       },
       sequence: 0,
@@ -31,6 +35,41 @@ function browserResult(status: string): MessageStreamEvent {
     type: "action.result",
   };
 }
+
+function browserCall(
+  callId: string,
+  input: Readonly<Record<string, string>>
+): MessageStreamEvent {
+  return {
+    data: {
+      actions: [{ callId, input, kind: "tool-call", toolName: "browser_task" }],
+      sequence: 0,
+      stepIndex: 1,
+      turnId: "turn_0",
+    },
+    meta,
+    type: "actions.requested",
+  };
+}
+
+/** The message a finished errand's outcome arrives as. */
+function browserReport(runId: string): MessageStreamEvent {
+  return {
+    data: {
+      message: `${backgroundTurnMarker}\n\nBrowser run ${runId} finished.\n\nOutcome: done.`,
+      sequence: 0,
+      turnId: "turn_1",
+    },
+    meta,
+    type: "message.received",
+  };
+}
+
+const said = (message: string): MessageStreamEvent => ({
+  data: { message, sequence: 0, turnId: "turn_1" },
+  meta,
+  type: "message.received",
+});
 
 function observeAll(
   tracker: TurnTracker,
@@ -70,28 +109,127 @@ describe("TurnTracker on recorded turns", () => {
 });
 
 describe("TurnTracker and background errands", () => {
-  it("waits for a background turn after a running browser errand", () => {
+  const running = (runId = "run_1") =>
+    browserResult({ runId, status: "running" }, `call_${runId}`);
+
+  it("waits for the errand's report after a running browser errand", () => {
     const tracker = new TurnTracker();
-    observeAll(tracker, turn("turn_0", [browserResult("running")]));
+    observeAll(tracker, turn("turn_0", [running()]));
     expect(tracker.awaitingBackground()).toBe(true);
 
-    // The report arrives as a turn nobody sent.
-    observeAll(tracker, turn("turn_1", []));
+    observeAll(tracker, turn("turn_1", [browserReport("run_1")]));
     expect(tracker.awaitingBackground()).toBe(false);
   });
 
-  it("keeps waiting when the background turn starts another run", () => {
+  it("keeps waiting through a nudge or a tester's turn that is not the report", () => {
     const tracker = new TurnTracker();
-    observeAll(tracker, turn("turn_0", [browserResult("running")]));
-    observeAll(tracker, turn("turn_1", [browserResult("running")]));
+    observeAll(tracker, turn("turn_0", [running()]));
+    observeAll(tracker, turn("turn_1", [said("ну что там?")]));
+    observeAll(tracker, turn("turn_2", [said("в казани")]));
+
+    expect(tracker.awaitingBackground()).toBe(true);
+    expect(tracker.backgroundRuns()).toEqual(["run_1"]);
+  });
+
+  it("waits for every errand started in parallel", () => {
+    const tracker = new TurnTracker();
+    observeAll(tracker, turn("turn_0", [running("run_1"), running("run_2")]));
+    observeAll(tracker, turn("turn_1", [browserReport("run_2")]));
+    expect(tracker.awaitingBackground()).toBe(true);
+
+    observeAll(tracker, turn("turn_2", [browserReport("run_1")]));
+    expect(tracker.awaitingBackground()).toBe(false);
+  });
+
+  it("keeps waiting when the report turn starts a follow-up run", () => {
+    const tracker = new TurnTracker();
+    observeAll(tracker, turn("turn_0", [running()]));
+    observeAll(
+      tracker,
+      turn("turn_1", [
+        browserReport("run_1"),
+        browserResult(
+          { previousRunId: "run_1", runId: "run_2", status: "running" },
+          "call_follow_up"
+        ),
+      ])
+    );
+
+    expect(tracker.backgroundRuns()).toEqual(["run_2"]);
+  });
+
+  it("takes a report from a background retry for the errand it continues", () => {
+    const tracker = new TurnTracker();
+    observeAll(tracker, turn("turn_0", [running()]));
+    observeAll(tracker, turn("turn_1", [browserReport("run_retry")]));
+
+    expect(tracker.awaitingBackground()).toBe(false);
+  });
+
+  it("follows `status` to the errand's newest run", () => {
+    const tracker = new TurnTracker();
+    observeAll(tracker, turn("turn_0", [running()]));
+    observeAll(
+      tracker,
+      turn("turn_1", [
+        browserCall("call_status", { action: "status", runId: "run_1" }),
+        browserResult({ runId: "run_retry", status: "running" }, "call_status"),
+      ])
+    );
+    expect(tracker.backgroundRuns()).toEqual(["run_retry"]);
+
+    observeAll(tracker, turn("turn_2", [browserReport("run_retry")]));
+    expect(tracker.awaitingBackground()).toBe(false);
+  });
+
+  it("stops waiting for a cancelled errand or one `status` reported", () => {
+    const tracker = new TurnTracker();
+    observeAll(tracker, turn("turn_0", [running("run_1"), running("run_2")]));
+    observeAll(
+      tracker,
+      turn("turn_1", [
+        browserResult({ runId: "run_1", status: "stopped" }, "call_cancel"),
+        browserResult({ runId: "run_2", status: "completed" }, "call_status"),
+      ])
+    );
+
+    expect(tracker.awaitingBackground()).toBe(false);
+  });
+
+  it("waits for a queued errand too", () => {
+    const tracker = new TurnTracker();
+    observeAll(
+      tracker,
+      turn("turn_0", [browserResult({ runId: "queued:1", status: "queued" })])
+    );
 
     expect(tracker.awaitingBackground()).toBe(true);
   });
 
   it("does not wait for an errand that never started", () => {
     const tracker = new TurnTracker();
-    observeAll(tracker, turn("turn_0", [browserResult("needs_approval")]));
+    observeAll(
+      tracker,
+      turn("turn_0", [browserResult({ status: "needs_approval" })])
+    );
 
+    expect(tracker.awaitingBackground()).toBe(false);
+  });
+
+  it("keeps the errands a saved record still waits for", () => {
+    const tracker = new TurnTracker([], ["run_1"]);
+    tracker.expectBackground();
+    observeAll(tracker, turn("turn_1", [said("ну что там?")]));
+
+    expect(tracker.awaitingBackground()).toBe(true);
+  });
+
+  it("follows a session with no errand on record until the next report", () => {
+    const tracker = new TurnTracker();
+    tracker.expectBackground();
+    expect(tracker.awaitingBackground()).toBe(true);
+
+    observeAll(tracker, turn("turn_1", [browserReport("run_9")]));
     expect(tracker.awaitingBackground()).toBe(false);
   });
 });

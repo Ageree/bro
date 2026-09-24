@@ -174,7 +174,11 @@
   пишет инструмент `form_of_address`), а не в памяти профиля: запись памяти
   в середине промпта слабая модель теряла, и в новом чате или в Telegram
   снова звучало «ты». Модели Gateway пометка не доходит, для неё выбор
-  дописывают инструкции `agent/instructions/30-message-style.ts`.
+  дописывают инструкции `agent/instructions/30-message-style.ts`, а смену
+  посреди хода — результат `form_of_address`. Язык хода Gateway-модели так не
+  передать: резолверы инструкций в eve 0.62 работают только на
+  `session.started`/`turn.started` и видят историю без входящего сообщения
+  (`context/dynamic-instruction-lifecycle.js`).
 
 ## Google
 
@@ -459,7 +463,10 @@
   дочитан, а ручной `session.stream()` сдаётся после нескольких пустых
   переподключений, задолго до итога браузерного поручения. Поэтому ожидание
   фонового итога переоткрывает поток до своего дедлайна
-  (`awaitBackground` в `scripts/bench/conversation.ts`).
+  (`awaitBackground` в `scripts/bench/conversation.ts`). Ждать перестаёт
+  только по отчёту поручения (`message.received` с `backgroundTurnMarker` и
+  «Browser run <id> finished.»): любой завершённый ход, включая ответ на
+  подсказку, раньше снимал ожидание (`scripts/bench/tracker.ts`).
 - `eve dev` (и `next dev` через `withEve`) без Docker сам ставит `just-bash`
   в `devDependencies`, а проверка зависимостей pnpm перед `pnpm <script>`
   после этого переписывает `pnpm-lock.yaml` и `pnpm-workspace.yaml`

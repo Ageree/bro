@@ -13,10 +13,13 @@ import { z } from "zod";
  * one would be a hint. The driver stops and says how to reply.
  */
 
-/** Tools whose approval only touches the tester's own data. */
+/**
+ * Tools whose approval only touches the tester's own data. An event update is
+ * not one of them: its card carries only the changed fields, and Google mails
+ * the event's existing guests about the change, whom the card never shows.
+ */
 export const ownDataTools: readonly string[] = [
   "calendar-create-event",
-  "calendar-update-event",
   "notion-add-task",
 ];
 
