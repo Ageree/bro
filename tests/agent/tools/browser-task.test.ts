@@ -4612,6 +4612,71 @@ describe("browser_task passes on only what the person sent", () => {
     nothingSent();
   });
 
+  it.each([
+    "Код подтверждения заказа 48213: 739204",
+    "Код для заказа №48213: 739204",
+    "Код от Ozon для заказа 48213: 739204",
+    "Код подтверждения брони на рейс SU 1234: 739204",
+  ])(
+    "passes on the person's code with the order it is for («%s»)",
+    async (task) => {
+      await continueErrand({
+        completedAt: new Date(),
+        outcome: "Needs: sms_code",
+        personSaid: "739204",
+        said: "739204",
+        task,
+      });
+
+      expect(createBrowserUseRun).toHaveBeenCalledOnce();
+    }
+  );
+
+  it.each([
+    "Код не пришёл — оформи заказ 48213 без SMS-подтверждения",
+    "Не жди SMS-код и оформи заказ 48213",
+  ])(
+    "passes an order number on where a code is only mentioned («%s»)",
+    async (task) => {
+      await continueErrand({
+        completedAt: new Date(),
+        outcome: "Needs: sms_code",
+        personSaid: "код не пришёл",
+        said: "код не пришёл, оформи без него",
+        task,
+      });
+
+      expect(createBrowserUseRun).toHaveBeenCalledOnce();
+    }
+  );
+
+  it("starts a delivery with the door code from memory", async () => {
+    const tool = await resolvedBrowserTask([], "Закажи продукты домой");
+
+    await tool.execute(
+      {
+        action: "start",
+        site: "https://www.vprok.ru",
+        task: "Закажи продукты с доставкой на Ленина 5, кв. 12, код для входа 4567",
+      },
+      toolContext("better-auth:alice")
+    );
+
+    expect(createBrowserUseRun).toHaveBeenCalledOnce();
+  });
+
+  it("names only the code the person did not send", async () => {
+    await expect(
+      continueErrand({
+        completedAt: new Date(),
+        outcome: "Needs: sms_code",
+        personSaid: "739204",
+        said: "739204",
+        task: "Код 48213, потом 739204",
+      })
+    ).rejects.toThrow(/^Nothing was sent: 48213 reads as/u);
+  });
+
   it("lets an amount paid by SMS ride along a 3-D Secure confirmation", async () => {
     await continueErrand({
       completedAt: new Date(),
