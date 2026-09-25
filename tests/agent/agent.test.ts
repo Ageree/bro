@@ -165,6 +165,39 @@ describe("interactive delivery enforcement", () => {
     );
   });
 
+  it("stops forcing delivery once a send failed the tool's check", async () => {
+    // RU 25.09: ten forced steps in a row each sent
+    // {"kind":"message","replyTo":{"kind":"current"}} with no text.
+    await agent.model.events["step.started"]?.(
+      {},
+      interactiveContext([
+        ...pending,
+        toolCallStep("send_message", "call-1", { kind: "message" }),
+        {
+          content: [
+            {
+              output: {
+                type: "error-text" as const,
+                value:
+                  "Invalid input for tool send_message: A message must include text or at least one attachment.",
+              },
+              toolCallId: "call-1",
+              toolName: "send_message",
+              type: "tool-result" as const,
+            },
+          ],
+          role: "tool" as const,
+        },
+      ])
+    );
+
+    const [, options] = services.modelSelection.mock.lastCall ?? [];
+    expect(options?.toolChoice).toBe("auto");
+    expect(options?.replyNote).toContain(
+      "Your last send_message call failed and reached no one"
+    );
+  });
+
   it("makes a turn whose send was dropped end in text", async () => {
     await agent.model.events["step.started"]?.(
       {},

@@ -4,6 +4,7 @@ import {
   awaitsDelivery,
   outcomeToldEarlier,
   turnDelivered,
+  turnSendFailed,
 } from "@agent/lib/delivery/pending";
 import {
   rewriteSendNotice,
@@ -202,6 +203,51 @@ describe("turnDelivered", () => {
         userMessage("привет"),
         toolCall("send_message"),
         toolResult("send_message", { type: "text", value: "submitted" }),
+        userMessage("а ещё?"),
+      ])
+    ).toBe(false);
+  });
+});
+
+/**
+ * RU 25.09: a forced step sent `{"kind":"message","replyTo":{"kind":"current"}}`
+ * with no text, and each of the next nine forced steps sent the same.
+ */
+describe("turnSendFailed", () => {
+  const noText = toolResult("send_message", {
+    type: "error-text",
+    value:
+      "Invalid input for tool send_message: A message must include text or at least one attachment.",
+  });
+
+  it("sees a send of this turn that failed the tool's check", () => {
+    expect(
+      turnSendFailed([
+        userMessage("удали всё, что ты про меня помнишь"),
+        toolCall("send_message"),
+        noText,
+      ])
+    ).toBe(true);
+  });
+
+  it("leaves a failed work tool, a send held back and an earlier turn alone", () => {
+    expect(
+      turnSendFailed([
+        userMessage("найди билеты"),
+        toolCall("web_search"),
+        toolResult("web_search", { type: "error-text", value: "timeout" }),
+        toolCall("send_message"),
+        toolResult("send_message", {
+          type: "text",
+          value: skippedSendNotice("duplicate"),
+        }),
+      ])
+    ).toBe(false);
+    expect(
+      turnSendFailed([
+        userMessage("привет"),
+        toolCall("send_message"),
+        noText,
         userMessage("а ещё?"),
       ])
     ).toBe(false);

@@ -471,6 +471,25 @@ status` (`outcomeToldEarlier`), и ход-отчёт с тихим `continue` б
   DSML tool-call block», `</think>` при выключенном reasoning), и ходы
   висели до таймаута. Исключение хостов сдвигает трафик на соседние —
   после правки списка прогоните эвалы `schedules` и `reply`.
+- Форсированный вызов (`tool_choice: required`) DeepInfra, Krea,
+  OpenInference, AtlasCloud и SiliconFlow декодируют грамматикой: ключи
+  строго в порядке схемы, любой необязательный можно пропустить. DeepSeek
+  пишет `send_message` как `kind`, `replyTo`, `text`, а схема ставила
+  `text` раньше `replyTo`, так что после `replyTo` текст дописать было
+  некуда: 25.09 ходы 8 из 12 кейсов RU-бенча слали
+  `{"kind":"message","replyTo":{"kind":"current"}}` десять шагов подряд по
+  ~90 тыс. токенов входа. Проба на истории, где прошлые вызовы шли в том же
+  порядке: пять хостов выше — без текста каждый раз, при `auto` — с текстом;
+  OpenRouter без закрепления хоста — 4 из 4 без текста. Хосты не
+  исключены: причина в схеме. Ключи `send_message` теперь в порядке модели
+  (`shared/chat/message-delivery.ts`), а в форсированном шаге `text`
+  обязателен (`forcedReplyTextMiddleware`): после правки те же хосты и
+  маршрутизация OpenRouter — 4 из 4 с текстом. Корень схемы из `oneOf` без
+  `type` StreamLake и GMICloud отвергали 400 («must be a JSON Schema of type
+  object»), Novita и NextBit — голым 400; `objectRoot` дописывает
+  `type: object`. Если `send_message` хода всё же упал, следующий шаг идёт
+  с `auto` и пометкой `failedSendNote` (`turnSendFailed` в `pending.ts`),
+  а не повторяет форсированный вызов до десятого шага.
 - Вызов модели ничем не был ограничен: 25.09 ходы d01 и d04 стояли 8,5 и
   6 минут после `browser_task start` и пошли дальше, только когда шаг
   повторился в новом процессе. `watchedModelFetch`

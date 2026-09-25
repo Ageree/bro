@@ -3,6 +3,7 @@ import type {
   OpenRouterProviderSettings,
 } from "@openrouter/ai-sdk-provider";
 import {
+  asSchema,
   generateText,
   type JSONSchema7,
   streamText,
@@ -545,6 +546,71 @@ describe("model selection", () => {
           .parse(schema).inputSchema.properties
       )
     ).toEqual(["kind", "text", "replyTo"]);
+  });
+
+  // RU 25.09: hosts that decode a forced call in schema key order sent
+  // `{"kind":"message","replyTo":{"kind":"current"}}` 120 times, no text:
+  // DeepSeek writes `replyTo` first, and `text` was listed before it.
+  it("orders send_message as DeepSeek writes it and requires its text when forced", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
+    const doGenerate = vi.fn<LanguageModelV4["doGenerate"]>();
+    openRouter.chat.mockImplementation((modelId) => ({
+      doGenerate,
+      doStream: vi.fn<LanguageModelV4["doStream"]>(),
+      modelId,
+      provider: "openrouter.chat",
+      specificationVersion: "v4",
+      supportedUrls: {},
+    }));
+    const { sendMessageOutputSchema } =
+      await import("@shared/chat/message-delivery");
+    const sendMessage = {
+      inputSchema: await asSchema(sendMessageOutputSchema).jsonSchema,
+      name: "send_message",
+      type: "function" as const,
+    };
+
+    const { openRouterSelection } = await import("@agent/lib/model/openrouter");
+    await openRouterSelection("deepseek/deepseek-v4.1-flash", {
+      toolChoice: "required",
+    }).model.doGenerate({ prompt: [], tools: [sendMessage] });
+    await openRouterSelection("deepseek/deepseek-v4.1-flash", {
+      toolChoice: "auto",
+    }).model.doGenerate({ prompt: [], tools: [sendMessage] });
+
+    const branches = doGenerate.mock.calls.map(
+      ([options]) =>
+        z
+          .object({
+            inputSchema: z.object({
+              oneOf: z.array(
+                z.object({
+                  properties: z.record(z.string(), z.unknown()),
+                  required: z.array(z.string()),
+                })
+              ),
+              // StreamLake and GMICloud refuse a root without it.
+              type: z.literal("object"),
+            }),
+          })
+          .parse(options.tools?.[0]).inputSchema.oneOf
+    );
+    const [forced, free] = branches;
+    expect(forced?.map((branch) => Object.keys(branch.properties))).toEqual([
+      ["kind", "replyTo", "text", "attachments"],
+      ["kind", "replyTo", "url"],
+    ]);
+    expect(forced?.[0]?.required).toEqual(["kind", "text"]);
+    expect(forced?.[1]?.required).not.toContain("text");
+    // A step left to the model keeps the text optional.
+    expect(free?.[0]?.required).toEqual(["kind"]);
+    // The tool itself still takes a photo without a caption.
+    expect(
+      sendMessageOutputSchema.safeParse({
+        attachments: [{ kind: "image", url: "https://example.com/cat.jpg" }],
+        kind: "message",
+      }).success
+    ).toBe(true);
   });
 
   it("keeps a host pinned for DeepSeek even when it is on the skip list", async () => {

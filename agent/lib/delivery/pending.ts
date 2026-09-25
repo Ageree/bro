@@ -109,6 +109,32 @@ export function turnDelivered(messages: readonly ModelMessage[]) {
 }
 
 /**
+ * Whether a `send_message` of the current turn came back as an error: its
+ * input failed the tool's check, or its call broke. On 25.09 (RU bench) a
+ * forced step on a host that decodes forced calls with a grammar sent
+ * `{"kind":"message","replyTo":{"kind":"current"}}` with no text, and every
+ * next forced step sent the same, ten steps and ~90k input tokens each
+ * before forcing stopped; left to the model, the eleventh step wrote the
+ * reply. So after one failed send delivery is no longer forced.
+ */
+export function turnSendFailed(messages: readonly ModelMessage[]) {
+  return currentTurnMessages(messages).some(
+    (message) =>
+      message.role === "tool" &&
+      message.content.some(
+        (part) =>
+          part.type === "tool-result" &&
+          part.toolName === "send_message" &&
+          part.output.type.startsWith("error")
+      )
+  );
+}
+
+/** What the model reads last after a `send_message` of its turn failed. */
+export const failedSendNote =
+  "Your last send_message call failed and reached no one: it had no text, or its input did not fit the tool. The person is still waiting. Call send_message once more with kind message and the whole reply in text.";
+
+/**
  * Whether a tool call of the current turn went through. A browser report's
  * turn may end in a quiet `continue` on the errand, and a model with nothing
  * to add after it may come back empty; that ends the turn too.

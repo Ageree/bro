@@ -11,11 +11,13 @@ import {
 } from "@agent/lib/delivery/questions";
 import {
   awaitsDelivery,
+  failedSendNote,
   outcomeToldEarlier,
   reportOwedSteps,
   turnActed,
   turnDelivered,
   turnHandedErrandOn,
+  turnSendFailed,
   turnTookNoStep,
 } from "@agent/lib/delivery/pending";
 import { reportedBrowserRunId } from "@agent/lib/browser-use/report-caller";
@@ -126,8 +128,13 @@ export default defineAgent({
         const reportTurn =
           reportRunId !== undefined ||
           resolveModeValue(ctx, { "scheduled-report": true }) === true;
+        // A forced step whose send failed would be forced into the same
+        // failed call again: from then on the model writes the reply itself.
+        const sendFailed =
+          sends.delivered.length === 0 && turnSendFailed(ctx.messages);
         const requireToolCall =
           !staleReport &&
+          !sendFailed &&
           (resolveModeValue(ctx, {
             interactive:
               reportRunId === undefined
@@ -180,6 +187,7 @@ export default defineAgent({
             ? declinedErrandNote
             : undefined,
           owedSteps.length > 0 ? owedStepsNote(owedSteps) : undefined,
+          writesToPerson && sendFailed ? failedSendNote : undefined,
         ].filter((note) => note !== undefined);
         return modelSelection(modelId, {
           // After the reply, a step with nothing to add may come back empty

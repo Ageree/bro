@@ -178,8 +178,32 @@ function discriminatorsFirst(schema: JSONSchema7): JSONSchema7 {
   return result;
 }
 
-/** Every function tool of a step, its input schema discriminators first. */
-function discriminatorsFirstMiddleware(): LanguageModelMiddleware {
+function isObjectSchema(definition: JSONSchema7Definition) {
+  return (
+    definition !== true && definition !== false && definition.type === "object"
+  );
+}
+
+/**
+ * A tool input that is a union of objects, typed as the object it is.
+ * StreamLake and GMICloud answer a root with `oneOf` and no `type` with 400
+ * «parameters must be a JSON Schema of type object», Novita and NextBit with
+ * a bare 400 (25.09, `send_message`), and OpenRouter then retries the step on
+ * another host. With the type all four decode it.
+ */
+function objectRoot(schema: JSONSchema7): JSONSchema7 {
+  const branches = schema.oneOf ?? schema.anyOf;
+  if (schema.type !== undefined || !branches?.every(isObjectSchema)) {
+    return schema;
+  }
+  return { type: "object", ...schema };
+}
+
+/**
+ * Every function tool of a step, its input schema discriminators first and
+ * a union of objects typed as an object.
+ */
+function toolSchemaMiddleware(): LanguageModelMiddleware {
   return {
     async transformParams({ params }) {
       if (!params.tools?.length) return params;
@@ -187,7 +211,76 @@ function discriminatorsFirstMiddleware(): LanguageModelMiddleware {
         ...params,
         tools: params.tools.map((tool) =>
           tool.type === "function"
-            ? { ...tool, inputSchema: discriminatorsFirst(tool.inputSchema) }
+            ? {
+                ...tool,
+                inputSchema: objectRoot(discriminatorsFirst(tool.inputSchema)),
+              }
+            : tool
+        ),
+      };
+    },
+  };
+}
+
+/** The tool that reaches the person, which a forced step exists to call. */
+const replyToolName = "send_message";
+
+/** A `send_message` branch for a plain message: `kind` fixed to `message`. */
+function isMessageBranch(definition: JSONSchema7Definition) {
+  if (definition === true || definition === false) return false;
+  const kind = definition.properties?.kind;
+  return (
+    kind !== undefined &&
+    kind !== true &&
+    kind !== false &&
+    kind.const === "message" &&
+    definition.properties?.text !== undefined
+  );
+}
+
+function withTextRequired(schema: JSONSchema7): JSONSchema7 {
+  if (!isMessageBranch(schema)) return schema;
+  return {
+    ...schema,
+    required: [...new Set([...(schema.required ?? []), "text"])],
+  };
+}
+
+function branchWithTextRequired(
+  definition: JSONSchema7Definition
+): JSONSchema7Definition {
+  return definition === true || definition === false
+    ? definition
+    : withTextRequired(definition);
+}
+
+/** `send_message`'s schema with the text of a plain message required. */
+function forcedReplySchema(schema: JSONSchema7): JSONSchema7 {
+  const result: JSONSchema7 = { ...withTextRequired(schema) };
+  if (schema.oneOf) result.oneOf = schema.oneOf.map(branchWithTextRequired);
+  if (schema.anyOf) result.anyOf = schema.anyOf.map(branchWithTextRequired);
+  return result;
+}
+
+/**
+ * A forced step's `send_message` with the message's `text` required. Hosts
+ * that decode a forced tool call with a grammar (DeepInfra, OpenInference,
+ * Krea, AtlasCloud, SiliconFlow on 25.09) keep the schema's key order and let
+ * any optional key be skipped: a model that wrote another key where the text
+ * belongs could only close the call without it, and did so again at every
+ * forced step. Required, the text is the one key the grammar cannot skip.
+ * Only what the host decodes changes: the tool still takes an attachment
+ * without text, and a step left to the model (`auto`) is not touched.
+ */
+function forcedReplyTextMiddleware(): LanguageModelMiddleware {
+  return {
+    async transformParams({ params }) {
+      if (!params.tools?.length) return params;
+      return {
+        ...params,
+        tools: params.tools.map((tool) =>
+          tool.type === "function" && tool.name === replyToolName
+            ? { ...tool, inputSchema: forcedReplySchema(tool.inputSchema) }
             : tool
         ),
       };
@@ -435,7 +528,8 @@ export function openRouterSelection(
 
   const withheld = options.withheldTools ?? [];
   const middleware = [
-    discriminatorsFirstMiddleware(),
+    toolSchemaMiddleware(),
+    ...(toolChoice === "required" ? [forcedReplyTextMiddleware()] : []),
     ...(withheld.length > 0 ? [withheldToolsMiddleware(withheld)] : []),
     ...(toolChoice === "auto" ? [] : [toolChoiceMiddleware(toolChoice)]),
     ...(options.replyNote ? [replyNoteMiddleware(options.replyNote)] : []),
