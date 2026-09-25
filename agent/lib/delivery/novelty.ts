@@ -154,30 +154,34 @@ export interface SentMessage {
 }
 
 /**
- * Endings a name or a noun takes as it declines: «Артур», «Артура»,
- * «Артуром»; «Лавка», «Лавке», «Лавку»; «Профсоюзная», «Профсоюзной» — and
- * an English plural.
+ * The endings one word takes as it declines, a set per declension: «Артур»,
+ * «Артура», «Артуром» and «Лавка», «Лавке», «Лавку»; «Игорь», «Игоря» and
+ * «Таня», «Тане»; «Мария», «Марии»; «Профсоюзная», «Профсоюзной»; an English
+ * plural. Two forms of one word take endings of one declension, so
+ * «Виктор» and «Виктория», «Лена» and «Леня», «Эмиль» and «Эмилия» stay two
+ * people. «Валентина» is also a case of «Валентин», and only the exact
+ * comparison of `namesShared` keeps those two apart.
  */
-const endings = new Set(
-  [
-    "",
-    "а е и й о у ы ь ю я",
-    "ам ах ая ев её ее ей ем ею ие ий им их ию ия ии",
-    "ов ое ой ом ою ую ые ый ым ых ью юю ям ях яя",
-    "ами его ему ими ого ому ыми ями",
-    "es s",
-  ].flatMap((line) => line.split(" "))
+const declensions = [
+  "- а у ом е ы ов ам ами ах и ой ою",
+  "- ь й я ю ем е и ей ею ям ями ях ев",
+  "ия ии ию ией ий ие ием иям иями иях",
+  "ая ой ую ое ый ые ых ым ыми ого ому ий ее яя юю его ему ими их им ей ью",
+  "- s es",
+].map(
+  (line) =>
+    new Set(line.split(" ").map((ending) => (ending === "-" ? "" : ending)))
 );
 
 /** Letters two forms of one word share at least. */
 const stemLength = 3;
 
 /**
- * Whether two normalized words are one word in two grammatical forms: they
- * differ only in endings after a common stem. In RU d15 (25.09) the same
- * address went out twice because the second message named «Артур» where
- * the first had «Артура». «Мария» and «Марина» share «мари», but «на» is no
- * ending, so they stay two people.
+ * Whether two normalized words are one word in two grammatical forms: after
+ * a common stem they differ only in endings of one declension. In RU d15
+ * (25.09) the same address went out twice because the second message named
+ * «Артур» where the first had «Артура». «Мария» and «Марина» share «мари»,
+ * but «на» is no ending, so they stay two people.
  */
 function sameWord(word: string, other: string) {
   if (word === other) return true;
@@ -190,7 +194,12 @@ function sameWord(word: string, other: string) {
     shared += 1;
   }
   for (let stem = shared; stem >= stemLength; stem -= 1) {
-    if (endings.has(word.slice(stem)) && endings.has(other.slice(stem))) {
+    const [ending, otherEnding] = [word.slice(stem), other.slice(stem)];
+    if (
+      declensions.some(
+        (endings) => endings.has(ending) && endings.has(otherEnding)
+      )
+    ) {
       return true;
     }
   }
@@ -213,12 +222,13 @@ function wordsOf(messages: readonly SentMessage[]) {
 /**
  * Whether each name of one message also occurs as a word of the other. A
  * sentence opener that only changed case, «Готово! Напомню» after «Готово,
- * напомню», still occurs, and so does a name in another case; a different
- * person or place does not.
+ * напомню», still occurs; a different person or place does not. The names
+ * are compared as written: two messages of one template that differ in a
+ * name, «Валентин придёт…» and «Валентина придёт…», are two list items.
  */
 export function namesShared(message: SentMessage, other: SentMessage) {
   const words = wordsOf([other]);
-  return message.names.every((name) => knownWord(name, words));
+  return message.names.every((name) => words.has(name));
 }
 
 /** Two texts at least this similar say the same thing. */
@@ -473,7 +483,7 @@ export function addsNothingNew(
  * The sentences of a message that tell rather than ask: neither a question
  * nor a request to the person.
  */
-function statementsOf(text: string) {
+export function statementsOf(text: string) {
   return sentencesOf(text).filter(
     (sentence) =>
       questionsOf(sentence).length === 0 && requestsOf(sentence).length === 0
@@ -483,17 +493,22 @@ function statementsOf(text: string) {
 /**
  * Whether a message that asks the person something wraps its question in the
  * answer told again: its other sentences name numbers, links, places or
- * people, and each of them is one a delivered message or the person's own
- * request already named. In RU d03 (25.09) the answer named two restaurants,
- * and the offer to book came wrapped in «Авокадо — единственный найденный
- * вариант… бюджет до 2 500 ₽ подтвердить не получилось»: a second telling
- * that contradicted the first. The question alone would have been news.
+ * people, at least one of them a delivered message named, and each of them
+ * one a delivered message named or the person stated themselves. In RU d03
+ * (25.09) the answer named two restaurants, and the offer to book came
+ * wrapped in «Авокадо — единственный найденный вариант… бюджет до 2 500 ₽
+ * подтвердить не получилось»: a second telling that contradicted the first.
+ * The question alone would have been news.
+ *
+ * `stated` is what the person's message states, without what it asks: the
+ * place or time they ask about («успею ли я к 18:00?») is what the answer
+ * has to tell, not something they already heard.
  */
 export function retellsAroundQuestion(
   text: string,
   message: SentMessage,
   delivered: readonly SentMessage[],
-  request: SentMessage | undefined
+  stated: SentMessage | undefined
 ) {
   if (delivered.length === 0) return false;
   if (message.questions.length === 0 && message.requests.length === 0) {
@@ -503,7 +518,9 @@ export function retellsAroundQuestion(
   if (message.attachments.some((attachment) => !attachments.has(attachment))) {
     return false;
   }
-  const told = request ? [...delivered, request] : delivered;
+  const sentCodes = delivered.flatMap((sent) => sent.codes);
+  const sentWords = wordsOf(delivered);
+  const told = stated ? [...delivered, stated] : delivered;
   const toldCodes = told.flatMap((sent) => sent.codes);
   const toldWords = wordsOf(told);
   const toldNames = new Set(delivered.flatMap((sent) => sent.properNames));
@@ -518,8 +535,11 @@ export function retellsAroundQuestion(
       namesOf(statement).filter((name) => knownWord(name, toldNames))
     )
   );
+  const repeatsSent =
+    facts.some((code) => sentCodes.some((known) => sameFact(code, known))) ||
+    names.some((name) => knownWord(name, sentWords));
   return (
-    facts.length + names.length > 0 &&
+    repeatsSent &&
     facts.every((code) => toldCodes.some((known) => sameFact(code, known))) &&
     names.every((name) => knownWord(name, toldWords))
   );
