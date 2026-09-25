@@ -57,8 +57,28 @@ const pictureWordPattern = new RegExp(
   "iu"
 );
 
+/**
+ * What a person writes to change a picture already drawn, in Russian or
+ * English: «поменяй надпись на английскую», «добавь имя на торт», «make the
+ * text English», «put the name on the cake». Only read when such a picture
+ * is in the conversation.
+ */
+const pictureEditPattern = new RegExp(
+  [
+    String.raw`(?<!\p{L})(?:надпис|подпис|текст|шрифт|букв|цвет|фон(?!\p{L}{2})|ярче|темнее|светлее|крупнее|мельче|поменя|измени|замени|исправ|передела|перерису|добав|убер|убра|встав|помест|верни)`,
+    String.raw`(?<!\p{L})(?:text|caption|font|letter(?:s|ing)?|colou?rs?|background|brighter|darker|lighter|bigger|smaller|larger|change|edit|fix|redo|remake|replace|swap|add|remove|put|move|write|spell|translate)(?!\p{L})`,
+  ].join("|"),
+  "iu"
+);
+
 /** Person turns back in which a picture or a photo keeps edits possible. */
 const recentPictureTurns = 2;
+/**
+ * Person turns back in which a message that names a change still reaches
+ * the picture: a quiz or a chat about something else in between must not
+ * leave «make the text English» without the tool (EN D16 on 24.09).
+ */
+const namedEditTurns = 20;
 
 function isPersonMessage(message: ModelMessage) {
   return (
@@ -99,24 +119,29 @@ function drewPicture(message: ModelMessage) {
  * Whether the person's message that started this turn asks for a picture:
  * it says so in words, carries a photo to work with, or follows closely on
  * a picture Bro drew or a photo the person sent, so «ярче» and «а теперь в
- * шляпе» still reach the picture. A drawing is a paid call: after an SMS
- * code a model drew «a cute robot waiting» that nobody asked for, so a turn
- * without such a request gets no `generate_image` at all.
+ * шляпе» still reach the picture. A message that names a change («make the
+ * text English») reaches a picture Bro drew further back, past a game played
+ * in between. A drawing is a paid call: after an SMS code a model drew «a cute
+ * robot waiting» that nobody asked for, so a turn without such a request
+ * gets no `generate_image` at all.
  */
 export function pictureRequested(messages: readonly ModelMessage[]) {
   const start = messages.findLastIndex(startsTurn);
   const incoming = messages[start];
   if (!incoming || !isPersonMessage(incoming)) return false;
-  if (hasPhoto(incoming) || pictureWordPattern.test(textOf(incoming))) {
-    return true;
-  }
+  const text = textOf(incoming);
+  if (hasPhoto(incoming) || pictureWordPattern.test(text)) return true;
+  const reach = pictureEditPattern.test(text)
+    ? namedEditTurns
+    : recentPictureTurns;
   let personTurns = 0;
   for (const message of messages.slice(0, start).toReversed()) {
     if (drewPicture(message)) return true;
     if (!isPersonMessage(message)) continue;
-    if (hasPhoto(message)) return true;
+    // A photo of a receipt or a meter is no picture to edit many turns on.
+    if (hasPhoto(message) && personTurns < recentPictureTurns) return true;
     personTurns += 1;
-    if (personTurns >= recentPictureTurns) return false;
+    if (personTurns >= reach) return false;
   }
   return false;
 }

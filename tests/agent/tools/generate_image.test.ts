@@ -190,6 +190,105 @@ describe("generate_image", () => {
     ).toBeNull();
   });
 
+  it("reaches a picture drawn before a quiz when the message names the change", async () => {
+    // EN D16 on 24.09: after five quiz answers «make the text English» found
+    // no generate_image and the edit never happened.
+    const quiz = [
+      request,
+      {
+        content: [
+          {
+            input: { prompt: "A birthday card for Sam with a corgi" },
+            toolCallId: "call-0",
+            toolName: "generate_image",
+            type: "tool-call" as const,
+          },
+        ],
+        role: "assistant" as const,
+      },
+      ...["B", "Titanic", "C", "не знаю", "A"].flatMap((answer) => [
+        personText(answer),
+        { content: "Верно! Следующий вопрос…", role: "assistant" as const },
+      ]),
+    ];
+
+    const { pictureRequested } =
+      await import("@agent/lib/image-artifact/generation");
+    const reaches = (text: string) =>
+      pictureRequested([...quiz, personText(text)]);
+
+    expect(
+      [
+        "make the text English",
+        "put Sam's name on the cake",
+        "поменяй надпись на английскую",
+        "добавь имя на торт",
+      ].map(reaches)
+    ).toEqual([true, true, true, true]);
+    expect(["B", "next question", "что у меня завтра?"].map(reaches)).toEqual([
+      false,
+      false,
+      false,
+    ]);
+    expect(
+      await resolve(
+        dynamicContext([...quiz, personText("make the text English")])
+      )
+    ).not.toBeNull();
+
+    // A meter photo a few turns back is no picture to edit.
+    expect(
+      pictureRequested([
+        photoMessage("показания", Buffer.from(dogPhoto).toString("base64")),
+        personText("спасибо"),
+        personText("а ещё что?"),
+        personText("добавь встречу в календарь"),
+      ])
+    ).toBe(false);
+  });
+
+  it("names the pictures this conversation drew so an edit passes the right one", async () => {
+    const tool = await resolveTool(
+      dynamicContext([
+        request,
+        {
+          content: [
+            {
+              input: { prompt: "A birthday card" },
+              toolCallId: "call-0",
+              toolName: "generate_image",
+              type: "tool-call" as const,
+            },
+          ],
+          role: "assistant" as const,
+        },
+        {
+          content: [
+            {
+              output: {
+                type: "json" as const,
+                value: {
+                  artifact: `/artifacts/${earlierId}`,
+                  markdown: `![картинка](/artifacts/${earlierId})`,
+                  status: "ready",
+                },
+              },
+              toolCallId: "call-0",
+              toolName: "generate_image",
+              type: "tool-result" as const,
+            },
+          ],
+          role: "tool" as const,
+        },
+        personText("make the text English"),
+      ])
+    );
+
+    expect(tool.description).toContain(
+      `Pictures drawn earlier in this conversation, newest first: /artifacts/${earlierId}; to change one, pass it in images.`
+    );
+  });
+
   it.each([
     ["сделай открытку маме на др", true],
     ["нарисуй кота в шляпе", true],
