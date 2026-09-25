@@ -171,6 +171,45 @@ describe("browser vault selection", () => {
     ).toBeUndefined();
   });
 
+  it("lends the Госуслуги login to a public-service site that signs in through it", () => {
+    // RU 24.09, d07: mos.ru stopped the doctor's errand at its sign-in, with
+    // the Госуслуги login saved.
+    const saved = [
+      ...entries,
+      {
+        account: "www.gosuslugi.ru · +7•••76",
+        id: "login-esia",
+        kind: "login",
+      },
+    ];
+
+    for (const site of [
+      "https://www.mos.ru",
+      "https://emias.info",
+      "https://lkfl2.nalog.ru",
+      "https://my.mosenergosbyt.ru",
+    ]) {
+      expect(
+        selectBrowserVaultItems(saved, { allowPayment: false, site })
+      ).toEqual({ gosuslugiLoginId: "login-esia", loginId: undefined });
+    }
+    // On Госуслуги itself it is the site's own login.
+    expect(
+      selectBrowserVaultItems(saved, {
+        allowPayment: false,
+        site: "https://www.gosuslugi.ru",
+      })
+    ).toEqual({ gosuslugiLoginId: undefined, loginId: "login-esia" });
+    // A shop or a bank with the same button never gets it: signing in hands
+    // the site the person's Госуслуги profile.
+    for (const site of ["https://www.ozon.ru", "https://www.tbank.ru"]) {
+      expect(
+        selectBrowserVaultItems(saved, { allowPayment: false, site })
+          .gosuslugiLoginId
+      ).toBeUndefined();
+    }
+  });
+
   it("selects the card only when payment was approved for the errand", () => {
     expect(
       selectBrowserVaultItems(entries, {
@@ -269,6 +308,42 @@ describe("browser secret bindings", () => {
     for (const secret of [password, cardNumber, securityCode]) {
       expect(continuation).not.toContain(secret);
     }
+  });
+
+  it("binds the Госуслуги login to gosuslugi.ru alone, under aliases of its own", () => {
+    const esiaPassword = "госуслуги-пароль";
+    const bound = browserSecretBindings({
+      card: undefined,
+      gosuslugiLogin: serializeLoginVaultPayload({
+        authentication: { password: esiaPassword, type: "password" },
+        identifier: { type: "phone", value: "+79991234567" },
+        kind: "login",
+        origin: "https://esia.gosuslugi.ru",
+        version: 2,
+      }),
+      login: undefined,
+      site: "https://www.mos.ru",
+    });
+
+    expect(bound.aliases).toEqual(["gosuslugi_username", "gosuslugi_password"]);
+    // Typeable on the ESIA sign-in page only, never in mos.ru's own form.
+    for (const binding of bound.bindings) {
+      expect(binding.allowedDomains).toEqual(["gosuslugi.ru"]);
+    }
+    const task = composeBrowserTask({
+      aliases: bound.aliases,
+      allowPayment: false,
+      collectImages: false,
+      consent: undefined,
+      deliveryAddress: undefined,
+      errand: "Передай показания воды",
+      facts: undefined,
+      home: undefined,
+      site: "https://www.mos.ru",
+    });
+    expect(task).toContain("Войти через Госуслуги");
+    expect(task).not.toContain(esiaPassword);
+    expect(task).not.toContain("+79991234567");
   });
 
   it("binds nothing when no vault item was selected", () => {

@@ -7,6 +7,11 @@ import {
 } from "@shared/vault/schema";
 import { readVaultItems, readVaultSecret } from "@db/services/vault";
 import type { BrowserUseSecretBinding } from "./client";
+import {
+  gosuslugiDomain,
+  isGosuslugi,
+  signsInWithGosuslugi,
+} from "./public-services";
 
 /** Browser Use caps `allowedDomains` at ten bare hostnames per binding. */
 const allowedDomainLimit = 10;
@@ -30,6 +35,8 @@ export const browserSecretAliases = {
   cardExpiry: "card_expiry",
   cardHolder: "card_holder",
   cardNumber: "card_number",
+  gosuslugiPassword: "gosuslugi_password",
+  gosuslugiUsername: "gosuslugi_username",
   loginPassword: "login_password",
   loginUsername: "login_username",
 } as const;
@@ -124,6 +131,11 @@ export function paymentAllowedDomains(site: string) {
  * registrable domain serves the errand — the account behind `taxi.yandex.ru`
  * is the one saved for `yandex.ru` or `passport.yandex.ru` — and nothing is
  * ever matched across two registrable domains.
+ *
+ * The one crossing is Госуслуги: a public-service site that signs people in
+ * through it (`signsInWithGosuslugi`) also gets the Госуслуги login, bound
+ * under aliases of its own and typeable on gosuslugi.ru alone, where the
+ * ESIA sign-in page is — never on the errand's site itself.
  */
 export function selectBrowserVaultItems(
   entries: readonly BrowserVaultEntry[],
@@ -143,11 +155,22 @@ export function selectBrowserVaultItems(
         );
       }))
     : undefined;
+  const gosuslugi =
+    host !== undefined && signsInWithGosuslugi(host) && !isGosuslugi(host)
+      ? logins.find((entry) => {
+          const stored = storedLoginHost(entry);
+          return stored !== undefined && isGosuslugi(stored);
+        })
+      : undefined;
   const payment =
     options.allowPayment && host
       ? entries.find((entry) => entry.kind === "payment")
       : undefined;
-  return { loginId: login?.id, paymentId: payment?.id };
+  return {
+    gosuslugiLoginId: gosuslugi?.id,
+    loginId: login?.id,
+    paymentId: payment?.id,
+  };
 }
 
 /** The hostname a login's account hint was prefixed with when it was saved. */
@@ -175,10 +198,32 @@ function binding(
  */
 export function browserSecretBindings(options: {
   readonly card: string | undefined;
+  readonly gosuslugiLogin?: string | undefined;
   readonly login: string | undefined;
   readonly site: string;
 }) {
   const bindings: BrowserUseSecretBinding[] = [];
+  if (options.gosuslugiLogin) {
+    const payload = parseLoginVaultPayload(options.gosuslugiLogin);
+    if (payload) {
+      bindings.push(
+        binding(
+          browserSecretAliases.gosuslugiUsername,
+          payload.identifier.value,
+          [gosuslugiDomain]
+        )
+      );
+      if (payload.authentication.type === "password") {
+        bindings.push(
+          binding(
+            browserSecretAliases.gosuslugiPassword,
+            payload.authentication.password,
+            [gosuslugiDomain]
+          )
+        );
+      }
+    }
+  }
   if (options.login) {
     const payload = parseLoginVaultPayload(options.login);
     const domains = loginAllowedDomains(
@@ -234,9 +279,17 @@ export async function resolveBrowserSecretBindings(
     await readVaultItems(scope),
     options
   );
-  const [login, card] = await Promise.all([
+  const [login, gosuslugiLogin, card] = await Promise.all([
     selected.loginId ? readVaultSecret(scope, selected.loginId) : undefined,
+    selected.gosuslugiLoginId
+      ? readVaultSecret(scope, selected.gosuslugiLoginId)
+      : undefined,
     selected.paymentId ? readVaultSecret(scope, selected.paymentId) : undefined,
   ]);
-  return browserSecretBindings({ card, login, site: options.site });
+  return browserSecretBindings({
+    card,
+    gosuslugiLogin,
+    login,
+    site: options.site,
+  });
 }

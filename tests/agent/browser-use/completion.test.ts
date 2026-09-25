@@ -993,6 +993,197 @@ describe("settling a browser run", () => {
   });
 });
 
+describe("what the report turn retells", () => {
+  const appointment = JSON.stringify({
+    bring: "полис ОМС, паспорт",
+    cancel: "в ЕМИАС до начала приёма",
+    confirmed: true,
+    place: "ГП № 219, ул. Демьяна Бедного, 8",
+    room: "каб. 312",
+    start: "2026-10-01T18:20",
+    what: "Приём терапевта",
+    who: "Иванова А. П.",
+  });
+
+  function finishedRun(result: readonly string[], task = "Запиши к терапевту") {
+    readBrowserUseRun.mockResolvedValue({
+      error: null,
+      id: runId,
+      result: result.join("\n"),
+      sessionId: "session-1",
+      status: "completed",
+      task,
+    });
+  }
+
+  it("tells every charge with what it is for, never an amount alone", async () => {
+    // RU 24.09, d06: «висит 500 ₽ к оплате» and nothing on what for.
+    finishedRun(
+      [
+        "RESULT: штрафов нет, есть начисление",
+        "NEEDS: none",
+        'CHARGES: [{"what":"Госпошлина за загранпаспорт","amount":"500 ₽","due":"30.09.2026"}]',
+      ],
+      "Проверь штрафы и налоги на Госуслугах"
+    );
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    const prompt = send.mock.calls[0]?.[0];
+    expect(prompt).toContain(
+      "Charges:\n1. Госпошлина за загранпаспорт — 500 ₽ — due 30.09.2026"
+    );
+    expect(prompt).toContain(
+      "The Charges list is what the user owes or was charged: give every charge on its own line with what it is for"
+    );
+    expect(prompt).toContain(
+      "continue this run once to open that charge and read it instead of guessing"
+    );
+    expect(prompt).not.toContain("calendar-create-event");
+  });
+
+  it("names substitutes and fees in a basket", async () => {
+    finishedRun([
+      "RESULT: корзина собрана",
+      "TOTAL: 1 512 ₽",
+      "NEEDS: payment",
+      'ITEMS: [{"name":"Яйца С0, 10 шт","price":"139 ₽","quantity":"1","replaces":"десяток яиц С1"},{"name":"Доставка","price":"99 ₽","fee":true}]',
+    ]);
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    const prompt = send.mock.calls[0]?.[0];
+    expect(prompt).toContain("substitutes «десяток яиц С1»");
+    expect(prompt).toContain("2. [fee] Доставка — 99 ₽");
+    expect(prompt).toContain(
+      "Name every substitute together with what it replaces, give each fee line"
+    );
+  });
+
+  it("puts a booking the person confirmed in their own calendar, after the message", async () => {
+    readBrowserRun.mockResolvedValue({
+      ...row,
+      submission: { what: "запись к терапевту" },
+    });
+    finishedRun([
+      "RESULT: записал к терапевту",
+      "ORDER: 4417-22",
+      "NEEDS: none",
+      `BOOKING: ${appointment}`,
+    ]);
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    const prompt = send.mock.calls[0]?.[0];
+    // RU d07: the doctor's slot never reached the calendar and nobody said
+    // what to bring.
+    expect(prompt).toContain("bring: полис ОМС, паспорт");
+    expect(prompt).toContain(
+      "Booking holds the appointment, table, stay or ticket"
+    );
+    expect(prompt).toContain("call calendar-create-event");
+    expect(prompt).toContain("attendees empty — nobody else is invited");
+    expect(prompt).toContain("First send your one message with the outcome");
+    // «Добавляю в календарь» before the calendar answered is sent back for a
+    // rewrite (`agent/lib/delivery/claims.ts`).
+    expect(prompt).toContain("in the future tense («добавлю в календарь»)");
+  });
+
+  it("puts nothing in the calendar for a booking the run only looked at or staged", async () => {
+    // A run that only read the person's existing appointments acted in
+    // nobody's name.
+    readBrowserRun.mockResolvedValue({ ...row, submission: null });
+    finishedRun([
+      "RESULT: нашёл вашу запись",
+      "NEEDS: none",
+      `BOOKING: ${appointment}`,
+    ]);
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const looked = delivery();
+
+    await settleBrowserRun({ to: looked.to }, runId);
+
+    expect(looked.send.mock.calls[0]?.[0]).toContain(
+      "Booking holds the appointment"
+    );
+    expect(looked.send.mock.calls[0]?.[0]).not.toContain(
+      "calendar-create-event"
+    );
+
+    readBrowserRun.mockResolvedValue({
+      ...row,
+      submission: { what: "запись к терапевту" },
+    });
+    claimBrowserRunCompletion
+      .mockReset()
+      .mockResolvedValueOnce({ ...row, completedAt: new Date() })
+      .mockResolvedValue(undefined);
+    ledger.claimed = false;
+    delete ledger.report;
+    finishedRun([
+      "RESULT: слот выбран, жду подтверждения",
+      "NEEDS: decision",
+      `BOOKING: ${appointment.replace('"confirmed":true', '"confirmed":false')}`,
+    ]);
+    const staged = delivery();
+
+    await settleBrowserRun({ to: staged.to }, runId);
+
+    expect(staged.send.mock.calls[0]?.[0]).not.toContain(
+      "calendar-create-event"
+    );
+  });
+
+  it("keeps a confirmed errand that stopped on the way a purchase, not a search", async () => {
+    readBrowserRun.mockResolvedValue({
+      ...row,
+      submission: { what: "заказ продуктов" },
+    });
+    finishedRun([
+      "RESULT: итог выше подтверждённого",
+      "TOTAL: 1 912 ₽",
+      "NEEDS: decision",
+      "DETAILS: доставка подорожала до 299 ₽",
+    ]);
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    expect(send.mock.calls[0]?.[0]).toContain(
+      "The user already confirmed this errand on a card or by a standing permission, so it is a purchase in progress, not a search: do not ask whether to go ahead."
+    );
+  });
+
+  it("leaves a search that stopped at its final step to the usual card", async () => {
+    readBrowserRun.mockResolvedValue({ ...row, submission: null });
+    finishedRun(["RESULT: выбран рейс", "TOTAL: 18 400 ₽", "NEEDS: decision"]);
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    const prompt = send.mock.calls[0]?.[0];
+    expect(prompt).not.toContain("purchase in progress");
+    // A seat or a check-in is only a bought ticket's (RU d02).
+    expect(prompt).toContain(
+      "a ticket search that also asks for a seat or for check-in counts"
+    );
+  });
+});
+
 describe("reporting into an eve chat", () => {
   const eveRow: BrowserRunRow = {
     ...row,

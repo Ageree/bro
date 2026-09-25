@@ -6,7 +6,15 @@ import { browserRunNeeds, type BrowserRunNeed } from "./outcome";
  * person nothing about what they were paying for.
  */
 const concreteOptionTerms =
-  "what — the train or flight and its departure, the room, the item and seller, the doctor and slot; the seats or quantity; the date and time; for a basket or an order, every line from Items in submission.items; and the real total with every fee in chargeRub";
+  "what — the train or flight and its departure, the room, the item and seller, the doctor and slot, the meter readings with each meter's serial number; the seats or quantity; the date and time; for a basket or an order, every line from Items in submission.items; and the real total with every fee in chargeRub";
+
+/**
+ * What asks for a purchase although it reads as a search: a seat and a
+ * check-in exist only on a bought ticket. «Найди билеты… место у прохода, и
+ * зарегистрируй меня» ended on a list of flights (RU 24.09, d02).
+ */
+const purchaseRequest =
+  "the user asked for this errand to be done — booked, bought, ordered, signed up, passed; a ticket search that also asks for a seat or for check-in counts, since only a bought ticket has either —";
 
 /**
  * A declined card used to end the errand in «билеты не куплены, скажи —
@@ -33,11 +41,11 @@ const personStepInstructions: Partial<Record<BrowserRunNeed, string>> = {
     "The site asks for a sign-in the run has no password for: call request_vault_setup so the user can save the password, and open your one message with a short line naming the site and giving that link; never ask for the password in chat.",
   // A run that searched first stops here with the option it picked: one card
   // naming that option answers it, never a question in text before it.
-  decision: `The run stopped at the final step without acting in the user's name. When the user asked for this errand to be done — booked, bought, ordered, signed up — and the report names an option that fits their conditions, do not ask in text: continue this run now with allowSubmit and a submission naming exactly that option (${concreteOptionTerms}), so the user confirms it on one card. When no option fits, or the user only asked to find or compare, show the options and ask one short question. ${declinedCardLine}`,
+  decision: `The run stopped at the final step without acting in the user's name. When ${purchaseRequest} and the report names an option that fits their conditions, do not ask in text: continue this run now with allowSubmit and a submission naming exactly that option (${concreteOptionTerms}), so the user confirms it on one card. When no option fits, or the user only asked to find or compare, show the options and ask one short question. ${declinedCardLine}`,
   // A run stops here only when paying was not approved, or the total came
   // out above what was: one card with the real total answers it, never a
   // question in text and a card after it.
-  payment: `The run stopped before paying, with the total in Total. When the user asked for this errand to be done — ordered, booked, bought — and not only found or compared, do not ask in text: continue this run now with allowSubmit and a submission naming exactly the option it staged (${concreteOptionTerms}), so the user confirms it on one card, or with allowPayment and withinSpendLimit when it fits their standing spend limit. When they only asked to find or compare, give them the total and offer to order. ${declinedCardLine}`,
+  payment: `The run stopped before paying, with the total in Total. When ${purchaseRequest} and not only found or compared, do not ask in text: continue this run now with allowSubmit and a submission naming exactly the option it staged (${concreteOptionTerms}), so the user confirms it on one card, or with allowPayment and withinSpendLimit when it fits their standing spend limit. When they only asked to find or compare, give them the total and offer to order. ${declinedCardLine}`,
   push: "The site is waiting for the user to approve the sign-in in their app: open your one message with a short line asking them to confirm it there and tell you when they have; what the run did so far follows in that same message. Then pass their word on with browser_task continue on this run id.",
   sms_code:
     "The site is waiting for a one-time code it sent by SMS: open your one message with a short line asking the user for that code, naming the phone it went to if Details says, and saying you will type it in yourself; what the run did and found so far follows in that same message. When they send it, pass it with browser_task continue on this run id.",
@@ -77,3 +85,47 @@ export const laterStepInstruction =
  */
 export const placedOrderInstruction =
   "The order went through: give the user its number, the total paid, what was ordered (the Items) and the delivery date, slot or pickup point. It is saved to their orders, and list_orders finds it later.";
+
+/**
+ * A basket is what the person pays for: a total without its lines, a silent
+ * substitute or a delivery fee nobody named is what the person finds out at
+ * the door (RU 24.09, d05).
+ */
+export const itemsInstruction =
+  "The Items list in the Parsed metadata is what the run found: give the user every item as a list, one line each with its name, price and quantity, the details that matter for choosing (dates or slot, cancellation terms, delivery) and its link — never only a total or a count. Name every substitute together with what it replaces, give each fee line ([fee]: delivery, service, packaging) as its own line, and the delivery slot and the total they add up to.";
+
+/**
+ * «Висит 500 ₽ к оплате» is not an answer to «нет ли у меня штрафов и
+ * налогов» (RU 24.09, d06): each charge is told with what it is for.
+ */
+export const chargesInstruction =
+  "The Charges list is what the user owes or was charged: give every charge on its own line with what it is for (for a fine the offence and the article, and the decree date; for a tax its kind and period; for a bill the service and month), the amount, the date it is due and any discount with the date it lasts until — never a count or a total alone. If the report names an amount without what it is for, say so, and continue this run once to open that charge and read it instead of guessing. Offer to pay only as a next step: paying is staged and confirmed on a card like any other payment.";
+
+/**
+ * What the person needs on the day of an appointment, a table, a stay or a
+ * trip — where, which room, what to bring, how to cancel — rather than only
+ * the time (RU 24.09, d07: no «что взять с собой»).
+ */
+export const bookingInstruction =
+  "Booking holds the appointment, table, stay or ticket: give the user its date and time, the address and the room, cabinet or seat, what to bring as the site says, and how and until when it can be cancelled or moved. When you continue this run with a card for it, put exactly that date and time and that place on the card.";
+
+/**
+ * A booking that went through belongs in the person's own calendar, with
+ * the address and what to bring: the benchmark scores a doctor's slot that
+ * never reached the calendar as half an errand (RU d07). The person's own
+ * calendar, nobody invited; creating it asks the person on the calendar
+ * tool's own card, and the message comes first, so that card is not the
+ * first thing they see. «Добавлю» is a next step, and a claim of «поставил»
+ * before the calendar answered goes back for a rewrite
+ * (`agent/lib/delivery/claims.ts`).
+ */
+export const calendarInstruction =
+  "The site confirmed this booking (Booking, confirmed) on the user's own confirmation: put it in the user's own calendar in this same turn. First send your one message with the outcome and, in it, say that you will add it to their calendar once they confirm the card — in the future tense («добавлю в календарь»), never «добавляю» or «добавил» before the calendar tool has answered. Then call calendar-create-event: summary with what and who, start and end from Booking in the user's time zone (an appointment with no end lasts an hour), location with the address and the room, and description with what to bring, how to cancel and the booking number; attendees empty — nobody else is invited. The user confirms it on its card. When there is no calendar tool, offer it in one short line instead.";
+
+/**
+ * An errand the person confirmed on a card is a purchase in progress until it
+ * goes through: a stop on the way is a changed option to confirm, never the
+ * «найти или сразу оформить?» a search ends with.
+ */
+export const confirmedErrandInstruction =
+  "The user already confirmed this errand on a card or by a standing permission, so it is a purchase in progress, not a search: do not ask whether to go ahead. The run stopped because something differs from what they confirmed, or it needs their word on the real total (Details and Total say what): continue it now with allowSubmit and a submission naming exactly the option as it stands, with its real total in chargeRub, so the user confirms the change on one card — or, when nothing fits any more, show the options and ask one short question.";

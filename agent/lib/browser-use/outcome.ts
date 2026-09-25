@@ -47,10 +47,18 @@ function labelledValue(text: string, label: string) {
   return value;
 }
 
-const linksLabel =
-  /^[ \t]*(?:[-*•]+[ \t]*)?\*{0,2}LINKS\*{0,2}[ \t]*:[ \t]*/imu;
-const itemsLabel =
-  /^[ \t]*(?:[-*•]+[ \t]*)?\*{0,2}ITEMS\*{0,2}[ \t]*:[ \t]*/imu;
+/** The start of a labelled line whose value is JSON, decorated or not. */
+function jsonLabel(label: string) {
+  return new RegExp(
+    `^[ \\t]*(?:[-*•]+[ \\t]*)?\\*{0,2}${label}\\*{0,2}[ \\t]*:[ \\t]*`,
+    "imu"
+  );
+}
+
+const linksLabel = jsonLabel("LINKS");
+const itemsLabel = jsonLabel("ITEMS");
+const chargesLabel = jsonLabel("CHARGES");
+const bookingLabel = jsonLabel("BOOKING");
 const maxLinksJsonLength = 16_000;
 const maxBrowserResultLinks = 20;
 const maxLinkTitleLength = 200;
@@ -62,17 +70,27 @@ const browserResultLinkFields = z.object({
   url: z.string(),
 });
 
-/** The JSON array written after a label, cut out by bracket depth. */
-function labelledJsonArray(
+/**
+ * The JSON array — or, with `{`, the object — written after a label, cut
+ * out by bracket depth.
+ */
+function labelledJson(
   text: string,
   labelPattern: RegExp,
-  maxLength = maxLinksJsonLength
+  maxLength = maxLinksJsonLength,
+  opening: "[" | "{" = "["
 ) {
+  const closing = opening === "[" ? "]" : "}";
   const label = labelPattern.exec(text);
   if (!label) return undefined;
   const rest = text.slice(label.index + label[0].length);
-  const openingOffset = rest.search(/\[/u);
+  const openingOffset = rest.indexOf(opening);
   if (openingOffset < 0 || openingOffset > 32) return undefined;
+  // Only the label's own bold and a code fence may stand between the label
+  // and its value: «BOOKING: none» followed by the ITEMS line is no booking.
+  if (!/^[\s`*]*(?:json)?[\s`*]*$/iu.test(rest.slice(0, openingOffset))) {
+    return undefined;
+  }
   const candidate = rest.slice(openingOffset, openingOffset + maxLength);
   let depth = 0;
   let quoted = false;
@@ -86,14 +104,31 @@ function labelledJsonArray(
       continue;
     }
     if (character === '"') quoted = true;
-    else if (character === "[") depth += 1;
-    else if (character === "]") {
+    else if (character === opening) depth += 1;
+    else if (character === closing) {
       depth -= 1;
       if (depth === 0) return candidate.slice(0, index + 1);
       if (depth < 0) return undefined;
     }
   }
   return undefined;
+}
+
+/** The parsed JSON after a label, or undefined when it is not there or broken. */
+function labelledJsonValue(
+  text: string,
+  labelPattern: RegExp,
+  maxLength?: number,
+  opening?: "[" | "{"
+) {
+  const json = labelledJson(text, labelPattern, maxLength, opening);
+  if (!json) return undefined;
+  try {
+    const value: unknown = JSON.parse(json);
+    return value;
+  } catch {
+    return undefined;
+  }
 }
 
 function validatedBrowserResultUrl(rawUrl: string) {
@@ -125,14 +160,7 @@ function validatedBrowserResultUrl(rawUrl: string) {
 }
 
 function browserResultLinks(text: string) {
-  const json = labelledJsonArray(text, linksLabel);
-  if (!json) return [];
-  let values: unknown;
-  try {
-    values = JSON.parse(json);
-  } catch {
-    return [];
-  }
+  const values = labelledJsonValue(text, linksLabel);
   if (!Array.isArray(values)) return [];
 
   const links: z.infer<typeof browserResultLinkFields>[] = [];
@@ -169,41 +197,53 @@ const itemText = z
     if (!text || emptyValue.test(text)) return undefined;
     return text.slice(0, maxItemFieldLength);
   });
+/** A flag a model writes as `true` or as `"true"`; anything else is false. */
+const flag = z
+  .unknown()
+  .optional()
+  .transform((value) => value === true || value === "true");
+
 const browserResultItemFields = z.object({
   details: itemText,
+  fee: flag,
   name: z.string(),
   price: itemText,
   quantity: itemText,
+  replaces: itemText,
   url: z.string().nullish(),
 });
+
+/** A name the report may carry: one line, not empty, not a paragraph. */
+function reportName(value: string) {
+  const name = value.replaceAll(/\s+/gu, " ").trim();
+  return name && name.length <= maxLinkTitleLength ? name : undefined;
+}
 
 /**
  * What the run found, one entry per option, basket line or slot: a basket
  * reported as «1 337,10 ₽» and hotels as «4 found» told the person nothing
  * they could choose from. A link is kept only when it passes the same check
- * as LINKS; an item without one still counts.
+ * as LINKS; an item without one still counts. A basket line may be a
+ * substitute for what the errand asked for (`replaces`) or a fee — delivery,
+ * service, packaging — which is a line of what the person pays, not an item
+ * (RU 24.09, d05: a basket with neither said nothing about either).
  */
 function browserResultItems(text: string) {
-  const json = labelledJsonArray(text, itemsLabel, maxItemsJsonLength);
-  if (!json) return [];
-  let values: unknown;
-  try {
-    values = JSON.parse(json);
-  } catch {
-    return [];
-  }
+  const values = labelledJsonValue(text, itemsLabel, maxItemsJsonLength);
   if (!Array.isArray(values)) return [];
   return values.slice(0, maxBrowserResultItems).flatMap((value) => {
     const fields = browserResultItemFields.safeParse(value);
     if (!fields.success) return [];
-    const name = fields.data.name.replaceAll(/\s+/gu, " ").trim();
-    if (!name || name.length > maxLinkTitleLength) return [];
+    const name = reportName(fields.data.name);
+    if (!name) return [];
     return [
       {
         details: fields.data.details,
+        fee: fields.data.fee,
         name,
         price: fields.data.price,
         quantity: fields.data.quantity,
+        replaces: fields.data.replaces,
         url: fields.data.url
           ? validatedBrowserResultUrl(fields.data.url)
           : undefined,
@@ -216,15 +256,107 @@ function browserResultItems(text: string) {
 function itemLines(items: ReturnType<typeof browserResultItems>) {
   return items.map((item, index) =>
     [
-      `${String(index + 1)}. ${item.name}`,
+      `${String(index + 1)}. ${item.fee ? "[fee] " : ""}${item.name}`,
       item.price,
       item.quantity ? `qty ${item.quantity}` : undefined,
+      item.replaces ? `substitutes «${item.replaces}»` : undefined,
       item.details,
       item.url,
     ]
       .filter((part) => part !== undefined)
       .join(" — ")
   );
+}
+
+const maxBrowserResultCharges = 30;
+const browserResultChargeFields = z.object({
+  amount: itemText,
+  date: itemText,
+  discount: itemText,
+  due: itemText,
+  reference: itemText,
+  what: z.string(),
+});
+
+/**
+ * Every fine, tax, duty or bill the run found, each with what it is for. On
+ * Госуслуги a run reported «штрафов нет, но висит 500 ₽ к оплате» and never
+ * said what the 500 ₽ was (RU 24.09, d06): an amount alone is not a finding
+ * the person can act on.
+ */
+function browserResultCharges(text: string) {
+  const values = labelledJsonValue(text, chargesLabel, maxItemsJsonLength);
+  if (!Array.isArray(values)) return [];
+  return values.slice(0, maxBrowserResultCharges).flatMap((value) => {
+    const fields = browserResultChargeFields.safeParse(value);
+    if (!fields.success) return [];
+    const what = itemText.parse(fields.data.what);
+    if (!what) return [];
+    return [{ ...fields.data, what }];
+  });
+}
+
+function chargeLines(charges: ReturnType<typeof browserResultCharges>) {
+  return charges.map((charge, index) =>
+    [
+      `${String(index + 1)}. ${charge.what}`,
+      charge.amount,
+      charge.date ? `dated ${charge.date}` : undefined,
+      charge.due ? `due ${charge.due}` : undefined,
+      charge.discount ? `discount ${charge.discount}` : undefined,
+      charge.reference ? `ref ${charge.reference}` : undefined,
+    ]
+      .filter((part) => part !== undefined)
+      .join(" — ")
+  );
+}
+
+const browserResultBookingFields = z.object({
+  bring: itemText,
+  cancel: itemText,
+  confirmed: flag,
+  end: itemText,
+  place: itemText,
+  reference: itemText,
+  room: itemText,
+  start: itemText,
+  what: z.string(),
+  who: itemText,
+});
+
+/**
+ * The appointment, table, stay or ticket the run booked or staged, with what
+ * the person needs on the day: the address and the room, what to bring, how
+ * to cancel. A doctor's appointment reported without «что взять с собой» and
+ * never put in the calendar was half an errand (RU 24.09, d07).
+ */
+function browserResultBooking(text: string) {
+  const value = labelledJsonValue(text, bookingLabel, 8_000, "{");
+  const fields = browserResultBookingFields.safeParse(value);
+  if (!fields.success) return undefined;
+  const what = itemText.parse(fields.data.what);
+  if (!what) return undefined;
+  return { ...fields.data, what };
+}
+
+function bookingLine(
+  booking: NonNullable<ReturnType<typeof browserResultBooking>>
+) {
+  return [
+    booking.what,
+    booking.who,
+    booking.start
+      ? `from ${booking.start}${booking.end ? ` to ${booking.end}` : ""}`
+      : undefined,
+    booking.place ? `at ${booking.place}` : undefined,
+    booking.room ? `room or seat ${booking.room}` : undefined,
+    booking.bring ? `bring: ${booking.bring}` : undefined,
+    booking.cancel ? `cancelling: ${booking.cancel}` : undefined,
+    booking.reference ? `ref ${booking.reference}` : undefined,
+    booking.confirmed ? "confirmed by the site" : "not confirmed yet",
+  ]
+    .filter((part) => part !== undefined)
+    .join(" — ");
 }
 
 function browserReport(report: string | null | undefined) {
@@ -252,6 +384,8 @@ export function parseBrowserOutcome(result: string | null | undefined) {
   const rawNeeds = rawLabelledValue(text, "NEEDS");
   const candidate = rawNeeds?.toLowerCase().replaceAll(/\s+/gu, "_");
   return {
+    booking: browserResultBooking(text),
+    charges: browserResultCharges(text),
     details: labelledValue(text, "DETAILS"),
     hasReportLinks: browserReport(text)?.hasLinks ?? false,
     items: browserResultItems(text),
@@ -281,6 +415,10 @@ export function browserOutcomeSummary(
     outcome.items.length > 0
       ? ["Items:", ...itemLines(outcome.items)].join("\n")
       : undefined,
+    outcome.charges.length > 0
+      ? ["Charges:", ...chargeLines(outcome.charges)].join("\n")
+      : undefined,
+    outcome.booking ? `Booking: ${bookingLine(outcome.booking)}` : undefined,
     outcome.links.length > 0
       ? `Links: ${JSON.stringify(outcome.links)}`
       : undefined,

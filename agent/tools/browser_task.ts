@@ -84,6 +84,7 @@ import { browserRunNeeds } from "@agent/lib/browser-use/outcome";
 import { browserRunNeedGuidance } from "@agent/lib/browser-use/guidance";
 import { outcomesHeard } from "@agent/lib/browser-use/heard";
 import { customProxy } from "@agent/lib/browser-use/proxy";
+import { publicServiceLine } from "@agent/lib/browser-use/public-services";
 import { mentionsRecurringCharge } from "@agent/lib/browser-use/spend";
 import { browserRunQuotaGate } from "@agent/lib/billing/quota";
 import {
@@ -211,13 +212,40 @@ function nothingDoneYetNote(codeTyped = false) {
  * sent the vault link twice (RU 24.09, d06).
  */
 function boundSignInNote(aliases: readonly string[]) {
-  if (!aliases.includes(browserSecretAliases.loginUsername)) return undefined;
-  const password = aliases.includes(browserSecretAliases.loginPassword);
-  return `The user's saved sign-in for this site is in the vault and bound to this run${password ? "" : " (the login without a password: the site sends its own code)"}; the run signs in with it by itself. Nothing is missing: do not tell the user their login is not saved, and do not call request_vault_setup for this site unless the run's outcome reports Needs: password.`;
+  const own = aliases.includes(browserSecretAliases.loginUsername);
+  const gosuslugi = aliases.includes(browserSecretAliases.gosuslugiUsername);
+  if (!own && !gosuslugi) return undefined;
+  const password = aliases.includes(
+    own
+      ? browserSecretAliases.loginPassword
+      : browserSecretAliases.gosuslugiPassword
+  );
+  const which = own
+    ? "The user's saved sign-in for this site is in the vault and bound to this run"
+    : "The user's saved Госуслуги login is bound to this run, and this site signs people in through Госуслуги («Войти через Госуслуги»)";
+  return `${which}${password ? "" : " (the login without a password: the site sends its own code)"}; the run signs in with it by itself. Nothing is missing: do not tell the user their login is not saved, and do not call request_vault_setup for this site unless the run's outcome reports Needs: password.`;
 }
 
 const liveViewPollMs = 1_000;
 const liveViewPollAttempts = 8;
+
+/**
+ * What a report has to say so the person can act on it. On 24.09 Госуслуги
+ * came back as «штрафов нет, но висит 500 ₽ к оплате» with nothing on what
+ * the 500 ₽ was for (d06), a grocery basket without its substitutions, fees
+ * or slot (d05), and a doctor's slot without what to bring (d07). A fact the
+ * page has but the run did not open is still the run's to find.
+ */
+function reportFactsLine() {
+  return [
+    "Report what the person needs in order to act, not only the headline:",
+    "- a fine, a tax, a duty, a bill or any other charge: what it is for — for a fine the offence and the article, the decree number and its date; for a tax its kind, what it is on and the period; for a bill the service and the month — the amount, the date it is due, and any discount with the date it lasts until exactly as the page states it. An amount alone («500 ₽ к оплате») is not a finding: open the charge and read what it is for.",
+    "- a document the errand asks about: its kind and the date it expires, never its number.",
+    "- a basket or an order: every line with its price and quantity, every substitute together with what the errand asked for that it replaces, every fee (delivery, service, packaging, small order) as a line of its own, the delivery slot or date, the minimum order when there is one, and the total.",
+    "- an appointment, a table, a stay or a ticket: who or what, the date and time, the address and the room, cabinet or seat, what to bring or have ready as the site says (a passport, the OMS policy, a referral), and how and until when it can be cancelled or moved.",
+    "When one of these is missing from what you saw, look for it on the site before you finish — the item's own page, the charge's details, the order summary, the site's rules or help page — and say plainly what the site does not show.",
+  ].join("\n");
+}
 
 /**
  * The contract every run ends with. The labels are fixed so the outcome parses
@@ -226,6 +254,7 @@ const liveViewPollAttempts = 8;
 function outcomeContract() {
   return [
     "Before the labelled footer, write a complete useful report with every material fact the errand requested for each option. The footer is routing metadata and never replaces the report.",
+    reportFactsLine(),
     "Finish your final answer with these labelled lines, written in the language of the errand above:",
     "RESULT: what was actually accomplished, or why it stopped",
     "ORDER: the order, booking, or reference number, or none",
@@ -234,8 +263,10 @@ function outcomeContract() {
     "DETAILS: the one thing a person must supply or decide, or none",
     "NEXT: when the errand is one step of something that can only be finished later — online check-in that opens before a flight, a window for passing meter readings, a payment due date, a parcel to collect by a date — what that step is and when it becomes possible, exactly as the site states it (a date and time, or a rule such as «24 hours before departure» together with the departure time), or none",
     'LINKS: a JSON array of {"title":"human-readable option name","url":"https://..."} objects, or []',
-    'ITEMS: a JSON array with one object per option, basket line or slot you report — {"name":"…","price":"as the page shows it, with the currency","quantity":"…","url":"its observed https:// URL or null","details":"what the person needs to choose: dates or the slot, cancellation terms, delivery date, rating"} — or []',
-    "For a basket, a cart or an order, ITEMS lists every line in it with its price and quantity, not only the TOTAL; for a search, every option you report.",
+    'ITEMS: a JSON array with one object per option, basket line or slot you report — {"name":"…","price":"as the page shows it, with the currency","quantity":"…","url":"its observed https:// URL or null","details":"what the person needs to choose: dates or the slot, cancellation terms, delivery date, rating","replaces":"for a substitute, what the errand asked for that it replaces, or null","fee":true only for a delivery, service, packaging or small-order fee line} — or []',
+    "For a basket, a cart or an order, ITEMS lists every line in it with its price and quantity, each substitute with what it replaces, and every fee as a line of its own, not only the TOTAL; for a search, every option you report.",
+    'CHARGES: a JSON array with one object per fine, tax, duty, bill or other charge you found — {"what":"what it is for: for a fine the offence and the article, for a tax its kind, object and period, for a bill the service and the month","amount":"…","date":"the date of the decree or the accrual","due":"the date it has to be paid by","discount":"the reduced amount and the date it lasts until, or null","reference":"the decree, bill or payment number (УИН), or null"} — or []',
+    'BOOKING: for an appointment, a table, a stay or a ticket this run booked or took up to its final step, one JSON object — {"what":"…","who":"the doctor, specialist or carrier, or null","start":"its local date and time as YYYY-MM-DDTHH:MM","end":"the same for its end, or null","place":"the address","room":"the room, cabinet, hall or seat, or null","bring":"what to bring or have ready, as the site says, or null","cancel":"how and until when it can be cancelled or moved, or null","reference":"the booking or ticket number, or null","confirmed":true only once the site confirmed the booking} — or none',
     "For every concrete option you recommend or report — product, article, hotel, ticket, restaurant, listing, or anything similar — include its actual observed destination URL in LINKS. Open the option's detail page or extract its actual anchor href from the page. Never guess or construct an ID or URL, and never substitute a live-view URL or a generic search, results, or category URL for an option link.",
   ].join("\n");
 }
@@ -299,7 +330,7 @@ function searchLine() {
   return [
     "Honour the exact kind of thing the errand asks for: a hotel is not a hostel, a dorm bed or a room in a flat; a direct flight has no stops; «free cancellation» means only such rates. Leave out options of the wrong kind rather than filling the list with them, and say so if too few of the right kind were left.",
     "When the site you are on cannot do the errand — it does not serve the country or the address, it finds nothing, everything is sold out or over budget — do not stop there. Move on to the fallback sites the errand names, or to another well-known site that serves the same place, and widen sensibly before giving up: a neighbouring area, a nearby date, a close alternative. Say in the report what you widened and which sites you tried.",
-    "Saved sign-ins exist only for the errand's own site. On a fallback site go on as a guest, and when it will not let you without an account, skip it for the next one rather than stopping with NEEDS: password.",
+    "Saved sign-ins exist only for the errand's own site; the one exception is a Госуслуги login, which also works where a site offers «Войти через Госуслуги» and sends you to the gosuslugi.ru page to type it. On a fallback site go on as a guest, and when it will not let you without an account, skip it for the next one rather than stopping with NEEDS: password.",
   ].join(" ");
 }
 
@@ -382,6 +413,15 @@ function boundSubmissionLines(submission: ConfirmedSubmission) {
 }
 
 /**
+ * A confirmed errand that stops on the way is still the purchase the person
+ * confirmed: the basket, the seat or the slot stays held on the page, so the
+ * card for what changed is followed up in this same tab rather than searched
+ * for again.
+ */
+const confirmedStopLine =
+  "If you stop before the final button, leave the page as it is — the basket filled, the seat or the slot held — and put the option as it now stands first in ITEMS with its real total, so the person confirms the change once and the follow-up finishes it in this same tab.";
+
+/**
  * Acting in the person's name is theirs to confirm, even when it is free: a
  * benchmark run asked only for a dinner recommendation started booking the
  * table, one about assembling furniture filed a Profi.ru request with the
@@ -410,6 +450,7 @@ function commitmentLine(
       submissionTerms(consent.submission),
       ...boundSubmissionLines(consent.submission),
       `Submit nothing beyond it: no other slot, organisation, item or amount, no second booking, order or application, no extra sign-ups, newsletters or messages, and none of the person's details beyond those listed. When the page would submit something that differs — a slot outside that time, ${cap === undefined ? "a higher cost" : "a total above the payment ceiling below"}, another organisation, more of their details than listed — stop before the final button with NEEDS: decision and say in DETAILS what differs.`,
+      confirmedStopLine,
       cap === undefined ? undefined : paymentCapLine(cap),
     ]
       .filter((line) => line !== undefined)
@@ -428,6 +469,7 @@ function commitmentLine(
       : "Never type the person's name, phone number, email or address into any site. Search, compare and read only, then report the options with their links: when the errand asks you to find or recommend something, the recommendation is the end of the errand.",
     "If going further would need a booking, a request or the person's details, stop there and end with NEEDS: decision, saying in DETAILS what you would submit, where, and when.",
     "When the errand asks for something to be booked, bought or ordered rather than only found, the person confirms it once you have found it: choose the one option that best fits every condition of the errand and take it as far as you can without their details or a payment — the train and seats picked, the item in the basket, the slot selected — and leave that page open. Put that option first in ITEMS with everything the person would confirm (its exact name, the date and time, the seats, the price with every fee, its link), then the next best options.",
+    "A ticket search that also asks for a seat or for check-in is such an errand, whatever verb it uses: only a bought ticket has either.",
   ].join(" ");
 }
 
@@ -486,6 +528,39 @@ const repeatOrderPattern =
 function repeatOrderLine(errand: string) {
   if (!repeatOrderPattern.test(errand)) return undefined;
   return "The errand is about something the person bought before. Sign in and open the site's own order history (such as «Мои заказы», «Заказы» or «Покупки») first, and take that exact item from the past order — the variant, weight or size, flavour and seller — rather than searching the catalogue by name; keep the delivery address or pickup point and the payment method the account already has saved. Say in the report which past order it came from and whether the seller, the price or the availability changed since. If the history cannot be opened, say so and fall back to the closest match by name, marked as such.";
+}
+
+/** An errand about travel tickets: a flight, a train, a seat on either. */
+const ticketErrandPattern =
+  /(?<!\p{L})(?:авиа\p{L}*|билет\p{L}*|рейс\p{L}*|перел[её]т\p{L}*|самол[её]т\p{L}*|сапсан\p{L}*|ласточк\p{L}*|поезд\p{L}*|ржд|аэрофлот\p{L}*|победой|победы|s7|flights?|airlines?|plane|trains?|aviasales|авиасейлс\p{L}*)(?!\p{L})/iu;
+
+/** A flight in particular: a checked bag and online check-in are its own. */
+const flightErrandPattern =
+  /(?<!\p{L})(?:авиа\p{L}*|рейс\p{L}*|перел[её]т\p{L}*|самол[её]т\p{L}*|аэрофлот\p{L}*|победой|победы|s7|flights?|airlines?|plane|aviasales|авиасейлс\p{L}*|(?:за)?регистр(?:ац|ир)\p{L}*|check-?in|багаж\p{L}*)(?!\p{L})/iu;
+
+/**
+ * What a ticket errand has to get right, which a search result does not
+ * show: the seat from the seat map, a checked bag rather than hand luggage,
+ * the price with every fee at checkout, and a metasearch price that the
+ * seller does not honour. On 24.09 the Sochi errand (d02) ended on flights
+ * with no seat, no word on the check-in window and no bag in the price.
+ */
+function ticketLine(errand: string) {
+  if (!ticketErrandPattern.test(errand)) return undefined;
+  const flight = flightErrandPattern.test(errand);
+  return [
+    "Tickets: take the seat the errand asks for — by the aisle, by the window, together — from the seat map itself and say which seat it is. When choosing a seat costs extra, report that price as a line of its own: it is paid only as part of a total the person confirmed.",
+    flight
+      ? "«С багажом» means a checked bag in the fare (20–23 kg), not only hand luggage: compare fares with the checked bag included, and when the cheapest fare has none, say what the bag adds."
+      : undefined,
+    "The price that counts is the final one at checkout with every agency or service fee, the seat and the bag; report that, not the search price.",
+    "A metasearch (Aviasales, Яндекс Путешествия, Туту) only finds: buy on the carrier's own site or at the agent it sends you to, and when the price there differs from the search result, report both.",
+    flight
+      ? "Find on the airline's own site when online check-in opens for this flight — its rules, not a guess — and give it in NEXT together with the departure date and time."
+      : undefined,
+  ]
+    .filter((line) => line !== undefined)
+    .join(" ");
 }
 
 /**
@@ -549,10 +624,29 @@ function personStepLine() {
   ].join(" ");
 }
 
+/**
+ * mos.ru, ЕМИАС, the tax service and Мосэнергосбыт take the Госуслуги
+ * account, and the person's Госуслуги login is what the vault has (RU 24.09,
+ * d07 stopped at mos.ru's sign-in). The login is typeable on gosuslugi.ru
+ * only, so the run has to take the site's own «Войти через Госуслуги» way in.
+ */
+function gosuslugiSignInLine(aliases: readonly string[]) {
+  if (!aliases.includes(browserSecretAliases.gosuslugiUsername)) {
+    return undefined;
+  }
+  const own = aliases.includes(browserSecretAliases.loginUsername);
+  return `This site signs people in through Госуслуги: choose «Войти через Госуслуги» (or «Госуслуги», «ЕСИА») on its sign-in page, and on the gosuslugi.ru page it opens use ${browserSecretAliases.gosuslugiUsername}${aliases.includes(browserSecretAliases.gosuslugiPassword) ? ` and ${browserSecretAliases.gosuslugiPassword}` : ""}. These work only on gosuslugi.ru, never in the site's own form.${own ? " Try the site's own sign-in first; use Госуслуги when that one fails." : ""} If Госуслуги then asks for a code or a confirmation, the first rule of this run applies.`;
+}
+
 function credentialsLine(aliases: readonly string[]) {
   return aliases.length === 0
     ? "No stored credentials are available for this run. If the site asks you to sign in, stop with NEEDS: password instead of guessing one."
-    : `Credentials are attached as secrets: focus the field and ask for the secret by name — ${aliases.join(", ")}. The server types the values; you never see them.`;
+    : [
+        `Credentials are attached as secrets: focus the field and ask for the secret by name — ${aliases.join(", ")}. The server types the values; you never see them.`,
+        gosuslugiSignInLine(aliases),
+      ]
+        .filter((line) => line !== undefined)
+        .join(" ");
 }
 
 export function composeBrowserTask(options: {
@@ -578,6 +672,8 @@ export function composeBrowserTask(options: {
       : options.errand,
     personStepLine(),
     repeatOrderLine(options.errand),
+    ticketLine(options.errand),
+    publicServiceLine(options.errand),
     homeLine(options.home),
     searchLine(),
     commitmentLine(options.consent, address !== undefined),
