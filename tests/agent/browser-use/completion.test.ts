@@ -1462,6 +1462,88 @@ describe("what the report turn retells", () => {
     expect(prompt).not.toContain("calendar-create-event");
   });
 
+  it("does what it can without Госуслуги once they would not let the errand in", async () => {
+    // RU 25.09, d06: Bro only offered to look in the mail «если хотите».
+    const gosuslugi = {
+      ...row,
+      captchaAttempt: 5,
+      paymentAllowed: false,
+      site: "https://www.gosuslugi.ru",
+      submission: null,
+      task: "Проверь на Госуслугах штрафы и налоги и когда кончается загранпаспорт",
+    };
+    readBrowserRun.mockResolvedValue(gosuslugi);
+    claimBrowserRunCompletion
+      .mockReset()
+      .mockResolvedValueOnce({ ...gosuslugi, completedAt: new Date() });
+    finishedRun([
+      "RESULT: Госуслуги недоступны из-за `ERR_TUNNEL_CONNECTION_FAILED`.",
+      "NEEDS: captcha",
+      "DETAILS: ERR_TUNNEL_CONNECTION_FAILED",
+    ]);
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    const prompt = send.mock.calls[0]?.[0] ?? "";
+    expect(prompt).toContain(
+      "Госуслуги did not let this errand in, and no other site stands in for them: do not start it anywhere else."
+    );
+    expect(prompt).toContain(
+      "search the user's mail and Drive yourself, before your message, for the document's expiry date"
+    );
+    expect(prompt).toContain("https://xn--90adear.xn--p1ai/check/fines");
+    expect(prompt).toContain("https://lkfl2.nalog.ru");
+  });
+
+  it("asks for the code as usual when Госуслуги only wait for it", async () => {
+    const gosuslugi = {
+      ...row,
+      site: "https://www.gosuslugi.ru",
+      task: "Проверь на Госуслугах штрафы",
+    };
+    readBrowserRun.mockResolvedValue(gosuslugi);
+    claimBrowserRunCompletion
+      .mockReset()
+      .mockResolvedValueOnce({ ...gosuslugi, completedAt: new Date() });
+    finishedRun([
+      "RESULT: вход остановился на SMS-коде",
+      "NEEDS: sms_code",
+      "DETAILS: код отправлен на `+****** ***-**-76`",
+    ]);
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    const prompt = send.mock.calls[0]?.[0] ?? "";
+    expect(prompt).toContain(
+      "The site is waiting for a one-time code it sent by SMS"
+    );
+    expect(prompt).not.toContain("Госуслуги did not let this errand in");
+  });
+
+  it("takes a code the site emailed from the person's mailbox first", async () => {
+    // RU 25.09, d04: the person could not find Ozon's letter themselves.
+    finishedRun([
+      "RESULT: остановлено на дополнительной проверке по email",
+      "NEEDS: email_code",
+      "DETAILS: ввести код из письма, отправленного на `n******6@gmail.com`",
+    ]);
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    expect(send.mock.calls[0]?.[0]).toContain(
+      'Before any message, call browser_task continue on this run id with codeFrom: "mail" and nothing else'
+    );
+  });
+
   it("names substitutes and fees in a basket", async () => {
     finishedRun([
       "RESULT: корзина собрана",

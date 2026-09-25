@@ -43,8 +43,10 @@ const declinedCardLine =
 const personStepInstructions: Partial<Record<BrowserRunNeed, string>> = {
   "3ds":
     "The payment is waiting for the user's 3-D Secure confirmation: open your one message with a short line asking them to confirm it in their bank app, or giving them the live view to enter the bank's code, and saying you will carry on once they are done; what the run did so far follows in that same message.",
+  // RU 25.09, d04: Ozon mailed a code to the person's own Gmail, Bro asked
+  // them to copy it, and they could not find it. The tool reads it itself.
   email_code:
-    "The site is waiting for a one-time code it sent by email: open your one message with a short line asking the user for that code, naming where it was sent exactly as Details masks it, and saying you will type it in yourself; what the run did and found so far follows in that same message. Then end this turn: only the user's own reply with the code continues the run, with browser_task continue on this run id — never make up a code or continue without theirs.",
+    "The site is waiting for a one-time code it sent by email. Before any message, call browser_task continue on this run id with codeFrom: \"mail\" and nothing else: when the user's Gmail is connected, the tool finds the site's own letter, reads the code and types it in itself — you never see it, and the user is not asked for it. When it answers that the code went to the run, send one message: a short line that you took the code from their mail, then what the run did and found so far. When it answers that nothing was sent, open your one message with a short line asking the user for that code, naming where it was sent exactly as Details masks it, and saying you will type it in yourself; what the run did and found so far follows in that same message. Then end this turn: only the user's own reply with the code continues the run, with browser_task continue on this run id — never make up a code or continue without theirs.",
   password:
     "The site asks for a sign-in the run has no password for: call request_vault_setup so the user can save the password, and open your one message with a short line naming the site and giving that link; never ask for the password in chat.",
   // A run that searched first stops here with the option it picked: one card
@@ -102,7 +104,7 @@ export const placedOrderInstruction =
  * the door (RU 24.09, d05).
  */
 export const itemsInstruction =
-  "The Items list in the Parsed metadata is what the run found: give the user every item as a list, one line each with its name, price and quantity, the details that matter for choosing (dates or slot, cancellation terms, delivery) and its link — never only a total or a count. Name every substitute together with what it replaces, give each fee line ([fee]: delivery, service, packaging) as its own line, and the delivery slot and the total they add up to. When the user asked for delivery at a time the run could not choose — the site offers only immediate delivery, or no slot then — say so plainly, with what the site offers instead.";
+  "The Items list in the Parsed metadata is what the run found: give the user every item as a list, one line each with its name, price and quantity, the details that matter for choosing (dates or slot, cancellation terms, delivery) and its link — never only a total or a count. Name every substitute together with what it replaces, give each fee line ([fee]: delivery, service, packaging) as its own line, and the delivery slot and the total they add up to. When the user asked for delivery at a time the run could not choose — the site offers only immediate delivery, or no slot then — say so plainly, with what the site offers instead: that confirming now brings it now («привезут минут через 10, а не к восьми»), and offer to order it closer to their time instead. Never put the time they asked for on a card as if it could be had. Name anything the run removed from or changed in the basket that was there before the errand.";
 
 /**
  * «Висит 500 ₽ к оплате» is not an answer to «нет ли у меня штрафов и

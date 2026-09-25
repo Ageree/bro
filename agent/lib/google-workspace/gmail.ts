@@ -36,6 +36,8 @@ type GmailPart = z.infer<typeof gmailPartSchema>;
 
 const gmailMessageSchema = z.object({
   id: z.string().optional(),
+  /** When Gmail received the message, in epoch milliseconds. */
+  internalDate: z.string().optional(),
   labelIds: z.array(z.string()).optional(),
   payload: gmailPartSchema.optional(),
   snippet: z.string().optional(),
@@ -1120,4 +1122,49 @@ function redactGoogleText(value: string, maxLength = 12_000) {
     redacted = redacted.replace(pattern, replacement);
   }
   return redacted;
+}
+
+/**
+ * The newest letters a query finds, whole and unredacted: when Gmail got
+ * each, its sender, subject, `Authentication-Results` and plain text. Only
+ * for Bro's own reads that never reach the model as they are — the sign-in
+ * code a site sent for an errand is read here and typed into that site
+ * (`agent/lib/browser-use/mail-code.ts`). A model-facing read goes through
+ * `searchGmail` or `readGmailThread`, which redact codes and keys.
+ */
+export async function readGmailLetters(
+  google: GoogleClient,
+  query: string,
+  maxResults: number
+) {
+  const listed = await google.json(gmailMessageListSchema, {
+    url: googleUrl(gmailApi, "/messages", { maxResults, q: query }),
+  });
+  const ids = (listed.messages ?? []).map(({ id }) => id);
+  const letters = [];
+  for (let start = 0; start < ids.length; start += searchReadConcurrency) {
+    // oxlint-disable-next-line eslint/no-await-in-loop -- Batches bound the requests in flight.
+    const batch = await Promise.all(
+      ids.slice(start, start + searchReadConcurrency).map((id) =>
+        google.json(gmailMessageSchema, {
+          url: messageUrl(id, { format: "full" }),
+        })
+      )
+    );
+    letters.push(
+      ...batch.map((message) => ({
+        authenticationResults: (message.payload?.headers ?? [])
+          .filter(
+            (item) => item.name.toLowerCase() === "authentication-results"
+          )
+          .map((item) => item.value),
+        from: header(message.payload, "From"),
+        id: message.id ?? null,
+        receivedAt: Number(message.internalDate ?? Number.NaN),
+        subject: header(message.payload, "Subject"),
+        text: plainText(message.payload),
+      }))
+    );
+  }
+  return letters;
 }

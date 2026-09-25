@@ -91,6 +91,24 @@ export function gosuslugiSignInRule(
   ].join(" ");
 }
 
+/**
+ * What the coordinator tells the person as an errand that signs in through
+ * Госуслуги starts: the code comes by SMS or in Max, and a person who knows
+ * it is coming has the phone at hand. On 25.09 (RU d06, d07) the request for
+ * it came a quarter of an hour later, out of nowhere.
+ */
+export function gosuslugiCodeNote(site: string | undefined) {
+  const host = siteHost(site);
+  if (host === undefined) return undefined;
+  if (!isGosuslugi(host) && !signsInWithGosuslugi(host)) return undefined;
+  return "Signing in through Госуслуги asks for a one-time code by SMS or in the Max app. Say so in your message now, in one line, so the user keeps the phone at hand and sends you the code as soon as you ask for it.";
+}
+
+const finesPattern = /(?<!\p{L})(?:штраф\p{L}*|гибдд|гаи|fines?)(?!\p{L})/iu;
+
+const taxesPattern =
+  /(?<!\p{L})(?:налог\p{L}*|недоимк\p{L}*|фнс|tax(?:es)?)(?!\p{L})/iu;
+
 const chargesPattern =
   /(?<!\p{L})(?:штраф\p{L}*|налог\p{L}*|пошлин\p{L}*|задолженност\p{L}*|начислени\p{L}*|недоимк\p{L}*|долг(?:и|ов|а)?|fines?|tax(?:es)?)(?!\p{L})/iu;
 
@@ -136,4 +154,37 @@ export function publicServiceLine(errand: string) {
     doctorPattern.test(errand) ? doctorHint : undefined,
   ].filter((hint) => hint !== undefined);
   return hints.length === 0 ? undefined : hints.join("\n");
+}
+
+/**
+ * What the coordinator does at once when Госуслуги would not let an errand
+ * in — the site did not load, the sign-in stalled or has no password — for
+ * the parts that do not need them. On 25.09 (RU d06) Bro only offered to
+ * look in the mail «если хотите» and to run it again, and the person got
+ * neither the passport date nor a way to check the fines. Only for the
+ * topics the errand names, and nothing here types a document number.
+ */
+export function gosuslugiFallback(site: string | null, errand: string) {
+  const host = siteHost(site ?? undefined);
+  if (host === undefined || !isGosuslugi(host)) return undefined;
+  const steps = [
+    documentsPattern.test(errand)
+      ? "search the user's mail and Drive yourself, before your message, for the document's expiry date (gmail-search and drive-search: «загранпаспорт», «паспорт», «срок действия») and give the date with where it came from, or say that nothing turned up — do not only offer to look"
+      : undefined,
+    finesPattern.test(errand)
+      ? "for fines, give the check by the car's СТС and the driving licence on the ГИБДД site, https://xn--90adear.xn--p1ai/check/fines, where the user types the numbers themselves, and say it shows fines only"
+      : undefined,
+    taxesPattern.test(errand)
+      ? "for taxes, name the tax service's personal account, https://lkfl2.nalog.ru, and offer to check there"
+      : undefined,
+  ].filter((step) => step !== undefined);
+  return [
+    "Госуслуги did not let this errand in, and no other site stands in for them: do not start it anywhere else.",
+    steps.length > 0
+      ? `Do now, in this same turn, what can be done without them: ${steps.join("; ")}.`
+      : undefined,
+    "Say plainly what did not work on Госуслуги, and offer to try them again later.",
+  ]
+    .filter((line) => line !== undefined)
+    .join(" ");
 }

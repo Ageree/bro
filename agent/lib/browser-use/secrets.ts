@@ -36,6 +36,8 @@ export const browserSecretAliases = {
   cardExpiry: "card_expiry",
   cardHolder: "card_holder",
   cardNumber: "card_number",
+  /** A code the site mailed to the person, taken from their Gmail. */
+  emailCode: "email_code",
   gosuslugiPassword: "gosuslugi_password",
   gosuslugiUsername: "gosuslugi_username",
   loginPassword: "login_password",

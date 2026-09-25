@@ -203,6 +203,46 @@ function idBefore(before: string) {
   return namedBeforePattern.test(before) || idWordBeforePattern.test(before);
 }
 
+/** A word that names a postal index: «индекс 119192», «почтовый индекс:». */
+const postalLabelPattern =
+  /(?<!\p{L})(?:(?:почтов\p{L}*\s+)?индекс\p{L}*|index|post\s*code|postal\s+code|zip(?:\s*code)?)\s*[:№]?\s*$/iu;
+
+/**
+ * A part of an address: a street, a house, a city, a region, or the word
+ * «адрес» itself. An abbreviation counts only with its full stop: a bare
+ * «к» or «д» is a preposition as often as a building.
+ */
+const addressWordPattern =
+  /(?<!\p{L})(?:улиц\p{L}*|проспект\p{L}*|переул\p{L}*|шоссе|бульвар\p{L}*|набережн\p{L}*|площад\p{L}*|проезд\p{L}*|аллея|тупик|дом|корпус\p{L}*|строени\p{L}*|квартир\p{L}*|город\p{L}*|област\p{L}*|район\p{L}*|посел\p{L}*|пос[её]л\p{L}*|село|деревн\p{L}*|микрорайон\p{L}*|адрес\p{L}*|москв\p{L}*|петербург\p{L}*|росси\p{L}*|street|avenue|road)(?!\p{L})|(?<!\p{L})(?:ул|просп|пр|пер|наб|пл|д|корп|стр|кв|г|обл|пос|мкр|st|ave|rd)\.|(?<!\p{L})(?:б-р|р-н|пр-т)(?!\p{L})/iu;
+
+/** A word for a code close before the number: «код», «SMS», «пароль». */
+const codeWordPattern =
+  /(?<!\p{L})(?:код\p{L}*|code|смс|sms|otp|парол\p{L}*|password)(?!\p{L})/iu;
+
+/** How far an address may reach from a postal index to its other parts. */
+const addressReach = 80;
+
+/**
+ * A Russian postal index among the parts of an address — «…к адресу
+ * Мичуринский проспект, 1, Москва, 119192», «119192, Москва, ул. …» — or
+ * after the word «индекс». On 25.09 (RU d04) a follow-up that named the
+ * pickup point by the person's address was refused as carrying the code
+ * «119192», and the model lost a step taking the address out. Six solid
+ * digits only, and never with a word for a code right before them.
+ */
+function postalIndex(number: string, before: string, after: string) {
+  if (!/^\d{6}$/u.test(number)) return false;
+  if (postalLabelPattern.test(before)) return true;
+  if (codeWordPattern.test(before.slice(-codeContextReach))) return false;
+  const parts = [
+    /,\s*$/u.test(before) ? before.slice(-addressReach) : undefined,
+    /^\s*,/u.test(after) ? after.slice(0, addressReach) : undefined,
+  ];
+  return parts.some(
+    (part) => part !== undefined && addressWordPattern.test(part)
+  );
+}
+
 /** Whether the number at this place is plainly an amount, a date or an id. */
 function namedOtherwise(number: string, before: string, after: string) {
   if (amountOrDate(number, before, after) || unitAfterPattern.test(after)) {
@@ -211,7 +251,7 @@ function namedOtherwise(number: string, before: string, after: string) {
   // «код подтверждения заказа 739204»: a word for the code naming the number
   // wins over the order or flight word right before it.
   if (codeNamesNumberPattern.test(before)) return false;
-  return idBefore(before);
+  return idBefore(before) || postalIndex(number, before, after);
 }
 
 function digitGroups(text: string) {

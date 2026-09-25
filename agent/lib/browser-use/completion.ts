@@ -54,6 +54,7 @@ import {
   laterStepInstruction,
   placedOrderInstruction,
 } from "./guidance";
+import { gosuslugiFallback } from "./public-services";
 
 /**
  * Both completion paths — the Browser Use webhook and the reconciling poller —
@@ -152,6 +153,7 @@ export async function settleBrowserRun(
     interrupted,
     needs: parsed.needs,
     next: parsed.next,
+    failed: status === "failed",
     ordered: order?.status === "placed",
     outcome,
     unreachable:
@@ -414,7 +416,7 @@ export async function expireBrowserRun(
   await reportBrowserRun(
     delivery,
     claimed.id,
-    browserRunReport(claimed, { needs: "none", outcome })
+    browserRunReport(claimed, { failed: true, needs: "none", outcome })
   );
 }
 
@@ -510,6 +512,8 @@ function deliveryInstruction(
     readonly interrupted?: string;
     readonly next: boolean;
     readonly ordered: boolean;
+    /** What to do without a public-service site that would not let it in. */
+    readonly stuck?: string;
     /** The network error that kept the site from loading, when that did. */
     readonly unreachable?: string;
   }
@@ -518,7 +522,9 @@ function deliveryInstruction(
   const tail =
     "Answer a follow-up with browser_task continue on this run id instead of a new start: it picks the same browser up where this run left off and hands back the run id to use after that. Omit send_message.replyTo.";
   if (needs === "captcha") {
-    return `${walledInstruction(facts.unreachable)} ${tail}`;
+    return [walledInstruction(facts.unreachable), facts.stuck, tail]
+      .filter((line) => line !== undefined)
+      .join(" ");
   }
   const links = hasLinks
     ? "Include every relevant returned link with its human-readable name. Use labelled Markdown links in web and Telegram text; the existing iMessage compiler will keep each name and URL human-readable."
@@ -530,6 +536,7 @@ function deliveryInstruction(
   return [
     "This is a background result, not a user message.",
     browserRunNeedGuidance(needs),
+    facts.stuck,
     facts.interrupted === undefined
       ? undefined
       : interruptedInstruction(facts.interrupted),
@@ -575,6 +582,8 @@ function browserRunReport(
     readonly images?: readonly BrowserRunImage[];
     /** The network error that cut off a run allowed to act. */
     readonly interrupted?: string;
+    /** The run failed or ran out of time. */
+    readonly failed?: boolean;
     readonly needs: BrowserRunNeed;
     readonly next?: string;
     readonly ordered?: boolean;
@@ -585,6 +594,18 @@ function browserRunReport(
   }
 ) {
   const { images = [], needs, outcome } = options;
+  // A site that would not let the run in — not loading, a sign-in with no
+  // password or one that stalled with nothing read — is where a
+  // public-service errand falls back to what can be done without it.
+  const stuck =
+    options.failed === true ||
+    needs === "captcha" ||
+    needs === "password" ||
+    (needs === "info" &&
+      options.hasCharges !== true &&
+      options.hasItems !== true)
+      ? gosuslugiFallback(row.site, row.task)
+      : undefined;
   return [
     // The web chat shows every user message of its session, and this one is
     // Bro's own prompt, not something the person wrote.
@@ -609,6 +630,7 @@ function browserRunReport(
       interrupted: options.interrupted,
       next: options.next !== undefined,
       ordered: options.ordered === true,
+      stuck,
       unreachable: needs === "captcha" ? options.unreachable : undefined,
     }),
   ]
