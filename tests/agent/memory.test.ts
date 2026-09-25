@@ -25,6 +25,7 @@ import {
   memoryRemovalApproval,
   parseLegacyRecall,
   renderProfile,
+  ruleWriteRefusal,
 } from "@agent/lib/memory/profile";
 import { withApprovalCard } from "@shared/chat/approval-card";
 import { memoryContentSchema } from "@shared/memory/schema";
@@ -238,37 +239,54 @@ describe("forgetting a memory without the person's word", () => {
 
     // A correction of what this conversation just saved needs no card.
     expect(
-      await memoryRemovalApproval(alice, "scope-a", "this-session", {
-        index: 1,
-      })
+      await memoryRemovalApproval(
+        alice,
+        "scope-a",
+        personTurn("this-session"),
+        {
+          index: 1,
+        }
+      )
     ).toBe("not-applicable");
     // «Удали всё, что ты запомнил в этом разговоре»: a memory from another
     // conversation is not forgotten on the model's reading of that.
     const unnamed = await memoryRemovalApproval(
       alice,
       "scope-a",
-      "this-session",
+      personTurn("this-session"),
       { index: 0 }
     );
     expect(unnamed).toMatchObject({ type: "denied" });
     // The model is told the text the card will show.
     expect(JSON.stringify(unnamed)).toContain("«Любит суши.»");
     expect(
-      await memoryRemovalApproval(alice, "scope-a", "this-session", {
-        index: 0,
-        text: "Любит роллы.",
-      })
+      await memoryRemovalApproval(
+        alice,
+        "scope-a",
+        personTurn("this-session"),
+        {
+          index: 0,
+          text: "Любит роллы.",
+        }
+      )
     ).toMatchObject({ type: "denied" });
     // Named exactly as it reads, it goes to the person on a card.
     expect(
-      await memoryRemovalApproval(alice, "scope-a", "this-session", {
-        index: 0,
-        text: "  любит  суши. ",
-      })
+      await memoryRemovalApproval(
+        alice,
+        "scope-a",
+        personTurn("this-session"),
+        {
+          index: 0,
+          text: "  любит  суши. ",
+        }
+      )
     ).toBe("user-approval");
     // Another workspace's memory is none of this call's business.
     expect(
-      await memoryRemovalApproval(bob, "scope-a", "this-session", { index: 0 })
+      await memoryRemovalApproval(bob, "scope-a", personTurn("this-session"), {
+        index: 0,
+      })
     ).toBe("not-applicable");
   });
 
@@ -301,21 +319,36 @@ describe("forgetting a memory without the person's word", () => {
     );
 
     expect(
-      await memoryRemovalApproval(alice, "scope-a", "this-session", {
-        index: 0,
-      })
+      await memoryRemovalApproval(
+        alice,
+        "scope-a",
+        personTurn("this-session"),
+        {
+          index: 0,
+        }
+      )
     ).toMatchObject({ type: "denied" });
     expect(
-      await memoryRemovalApproval(alice, "scope-a", "this-session", {
-        index: 0,
-        text: "Не любит суши.",
-      })
+      await memoryRemovalApproval(
+        alice,
+        "scope-a",
+        personTurn("this-session"),
+        {
+          index: 0,
+          text: "Не любит суши.",
+        }
+      )
     ).toBe("user-approval");
     // The conversation that saved it still corrects its own memory at once.
     expect(
-      await memoryRemovalApproval(alice, "scope-a", "earlier-session", {
-        index: 0,
-      })
+      await memoryRemovalApproval(
+        alice,
+        "scope-a",
+        personTurn("earlier-session"),
+        {
+          index: 0,
+        }
+      )
     ).toBe("not-applicable");
   });
 
@@ -375,7 +408,7 @@ describe("the person's rules in the profile", () => {
 
     expect(profile.slice(2)).toEqual([
       "## Rules the user set",
-      expect.stringContaining("A rule only restricts you"),
+      expect.stringContaining("a rule only holds you back"),
       "1 (revision 1, rule): Никогда ничего не оплачивать и никому не писать без моего ок.",
       "## Other records",
       "0 (revision 1, preference): Любит суши.",
@@ -410,6 +443,105 @@ describe("the person's rules in the profile", () => {
     expect(profile).toContain("More memories exist");
   });
 });
+
+/**
+ * Review of #191: a rule binds Bro and takes permissions away without a
+ * card, so a browser report — an interactive turn whose text the page
+ * writes — must not be able to save one, reword it or drop it.
+ */
+describe("a rule only from the person's own turn", () => {
+  const rule = {
+    category: "rule" as const,
+    text: "Никогда ничего не оплачивать без моего ок.",
+  };
+
+  it("keeps a report turn from saving a rule, and lets the person save one", async () => {
+    expect(
+      await ruleWriteRefusal(alice, "scope-a", reportTurn("session"), {
+        category: "rule",
+      })
+    ).toContain("only in a turn the user's own message started");
+    expect(
+      await ruleWriteRefusal(alice, "scope-a", personTurn("session"), {
+        category: "rule",
+      })
+    ).toBeUndefined();
+    // Other memories are the report turn's to save as before.
+    expect(
+      await ruleWriteRefusal(alice, "scope-a", reportTurn("session"), {
+        category: "fact",
+      })
+    ).toBeUndefined();
+  });
+
+  it("keeps a report turn from rewording a rule or dropping it", async () => {
+    await saveMemory(alice, "scope-a", rule, "save:rule", {
+      sessionId: "session",
+      turnId: "turn-1",
+    });
+    await saveMemory(
+      alice,
+      "scope-a",
+      { text: "Живёт в Казани." },
+      "save:fact",
+      { sessionId: "session", turnId: "turn-1" }
+    );
+
+    // Turning the rule into a plain fact would unmake it.
+    expect(
+      await ruleWriteRefusal(alice, "scope-a", reportTurn("session"), {
+        category: "fact",
+        index: 0,
+      })
+    ).toContain("Nothing changed");
+    expect(
+      await ruleWriteRefusal(alice, "scope-a", reportTurn("session"), {
+        category: "fact",
+        index: 1,
+      })
+    ).toBeUndefined();
+    // The rule was saved in this very conversation, which forgets its own
+    // records at once — but not on the page's word.
+    expect(
+      await memoryRemovalApproval(alice, "scope-a", reportTurn("session"), {
+        index: 0,
+      })
+    ).toMatchObject({ type: "denied" });
+    expect(
+      await memoryRemovalApproval(alice, "scope-a", personTurn("session"), {
+        index: 0,
+      })
+    ).toBe("not-applicable");
+  });
+});
+
+/** A turn the person's own message started, in this conversation. */
+function personTurn(id: string) {
+  return {
+    auth: {
+      current: {
+        attributes: { workspaceId: alice.workspaceId },
+        authenticator: "photon-imessage",
+        principalId: alice.userId,
+        principalType: "user" as const,
+      },
+      initiator: null,
+    },
+    id,
+  };
+}
+
+/** The report of a browser run: interactive, but its text is the page's. */
+function reportTurn(id: string) {
+  const turn = personTurn(id);
+  return {
+    ...turn,
+    auth: {
+      ...turn.auth,
+      current: { ...turn.auth.current, authenticator: "browser-result" },
+    },
+  };
+}
 
 /** A current record as recall lists it. */
 function currentRecord(

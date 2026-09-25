@@ -162,7 +162,9 @@ describe("autonomy defaults", () => {
       ]
     );
 
-    expect(content).toContain("Лимит трат без спроса не задан");
+    // The Lavka permission pays, so there is something for «не плати без
+    // ок» to clear.
+    expect(content).toContain("Лимита трат без спроса нет, но платные");
     expect(content).toContain("без вопроса и без карточки");
     expect(content).toContain(
       "- брони столиков без спроса, на любых сайтах, только бесплатное."
@@ -177,21 +179,52 @@ describe("autonomy defaults", () => {
       (await resolve({}, dynamicContext("photon-imessage")))?.content ?? "";
 
     expect(content).toContain(
-      "Лимит трат без спроса не задан: платить без разрешения человека можно только то, что бесплатно, и снимать нечего."
+      "Лимит трат без спроса не задан и платных постоянных разрешений нет: платить без разрешения человека можно только то, что бесплатно, и снимать нечего."
     );
     expect(content).toContain(
       "Постоянных разрешений нет: всё от имени человека идёт через карточку, снимать нечего."
     );
-    // With permissions in place, the line that there are none goes.
-    expect(
-      spendLimitInstructions(
-        {
-          ...monthly,
-          actions: [{ kind: "table", maxRub: null, merchant: null }],
-        },
-        []
-      )
-    ).not.toContain("Постоянных разрешений нет");
+    // With permissions in place, the line that there are none goes; a free
+    // one pays nothing, so there is still nothing to clear.
+    const free = spendLimitInstructions(
+      {
+        ...monthly,
+        actions: [{ kind: "table", maxRub: null, merchant: null }],
+        rules: [],
+      },
+      []
+    );
+    expect(free).not.toContain("Постоянных разрешений нет");
+    expect(free).toContain("снимать нечего");
+  });
+
+  /**
+   * Review of #191: «такси сам до 1 500» with no spend limit read «лимит не
+   * задан… снимать нечего», and three texts then forbade the `clear` that
+   * «ничего не оплачивай без моего ок» needs to take the taxi back.
+   */
+  it("sends «не плати без ок» to clear while a paid standing permission pays on its own", async () => {
+    const taxiOnly = {
+      ...monthly,
+      actions: [{ kind: "taxi" as const, maxRub: 1500, merchant: null }],
+      rules: [],
+    };
+    mocks.readSpendLimit.mockResolvedValue(taxiOnly);
+
+    const content =
+      (await resolve({}, dynamicContext("photon-imessage")))?.content ?? "";
+    const limitLines = spendLimitInstructions(taxiOnly, []);
+
+    expect(limitLines).not.toContain("снимать нечего");
+    expect(limitLines).toContain(
+      "Лимита трат без спроса нет, но платные постоянные разрешения ниже платят сами."
+    );
+    expect(content).toContain(
+      "снимает их одним `spend_limit` с `clear` без магазина и категории"
+    );
+    expect(content).toContain(
+      "`clear` не вызывай, только если в конце инструкций сказано, что нет ни лимита, ни платных постоянных разрешений"
+    );
   });
 
   it("names the exclusions even without a limit", () => {

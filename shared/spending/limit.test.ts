@@ -13,6 +13,8 @@ import {
   standingActionExclusions,
   standingActionMaxRub,
   standingActionOverridden,
+  standingActionsReaching,
+  standingActionWithin,
   standingMonthCapRub,
   remainingForTarget,
   remainingUnderRule,
@@ -375,6 +377,48 @@ describe("whether a policy change widens what Bro may pay", () => {
     expect(policyWidens(before, { ...before, actions: [], rules: [] })).toBe(
       false
     );
+  });
+});
+
+describe("what still holds after a permission is taken back", () => {
+  const goYandex = {
+    chargeRub: 900,
+    kind: "taxi" as const,
+    merchant: "go.yandex.ru",
+    paying: true,
+    recurring: false,
+  };
+
+  it("names exactly the permissions that still let such an errand through", () => {
+    const anywhere = policy({ actions: [taxiRides] });
+    const scope = { kind: "taxi" as const, merchant: "go.yandex.ru" };
+
+    // The permission for every site is not inside the named site…
+    expect(standingActionWithin(taxiRides, scope)).toBe(false);
+    // …so a ride there still goes without a card, and it is named.
+    expect(decideStandingAction(anywhere, goYandex)).toBeDefined();
+    expect(standingActionsReaching(anywhere, scope)).toEqual([taxiRides]);
+    // An excluded site is reached by nothing, as a ride there needs a card.
+    const excluded = policy({
+      actions: [taxiRides],
+      excludedMerchants: ["go.yandex.ru"],
+    });
+    expect(decideStandingAction(excluded, goYandex)).toBeUndefined();
+    expect(standingActionsReaching(excluded, scope)).toEqual([]);
+  });
+
+  it("counts a site's subdomains inside it", () => {
+    const lavka = {
+      kind: "order" as const,
+      maxRub: 3000,
+      merchant: "lavka.yandex.ru",
+    };
+    expect(
+      standingActionWithin(lavka, { kind: null, merchant: "yandex.ru" })
+    ).toBe(true);
+    expect(
+      standingActionWithin(lavka, { kind: "taxi", merchant: "yandex.ru" })
+    ).toBe(false);
   });
 });
 

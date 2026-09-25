@@ -3,9 +3,13 @@ import type { ToolContext } from "eve/tools";
 /**
  * The context eve hands a tool in a turn the person started from iMessage:
  * an authenticated user of one workspace, and nothing a policy tool reaches
- * for besides the session.
+ * for besides the session. `browser-result` makes it the report of a
+ * browser run instead, whose text the page writes.
  */
-export function toolContext(toolName: string) {
+export function toolContext(
+  toolName: string,
+  authenticator: "browser-result" | "photon-imessage" = "photon-imessage"
+) {
   return {
     abortSignal: new AbortController().signal,
     callId: "call-1",
@@ -25,7 +29,7 @@ export function toolContext(toolName: string) {
       auth: {
         current: {
           attributes: { workspaceId: "workspace:alice" },
-          authenticator: "photon-imessage",
+          authenticator,
           issuer: "photon",
           principalId: "alice",
           principalType: "user",
