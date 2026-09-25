@@ -1243,10 +1243,15 @@ const codeNeeds = new Set<string>([
   "sms_code",
 ]);
 
-/** Whether the errand's last run stopped for a code only the person has. */
+/**
+ * Whether the errand may be waiting for a code only the person has: its last
+ * run stopped for one, or it has not settled yet — Browser Use has no
+ * «waiting for input» status, and on 24.09 a run sat on the SMS page for its
+ * whole budget.
+ */
 function codeAwaited(row: ErrandRow) {
   return (
-    row.completedAt !== null && codeNeeds.has(endedNeeding(row.outcome) ?? "")
+    row.completedAt === null || codeNeeds.has(endedNeeding(row.outcome) ?? "")
   );
 }
 
@@ -1256,19 +1261,26 @@ function codeAwaited(row: ErrandRow) {
  * continued the run twice, in the same turn, with «Пользователь прислал
  * действующий SMS-код: 739204» — nobody had sent anything, and the site
  * rejected it twice, which can lock the account. A code reaches the site
- * only from the person's own message of this turn, digit for digit; a turn
- * Bro opened — a report, a worker — passes none at all.
+ * only from the person's own words of this turn, digit for digit; a turn the
+ * person said nothing in (`words` null) — a report, a worker — passes none.
  */
 function inventedCodeRefusal(
-  text: string,
+  texts: readonly (string | undefined)[],
   awaitingCode: boolean,
-  byPerson: boolean,
-  personWords: readonly string[]
+  words: readonly string[] | null
 ) {
-  const codes = oneTimeCodesIn(text, { awaitingCode });
+  const codes = texts.flatMap((text) => {
+    if (text === undefined) return [];
+    // What would be typed straight into the page counts too.
+    const whole = oneTimeCodeFromMessage(text);
+    return [
+      ...oneTimeCodesIn(text, { awaitingCode }),
+      ...(whole === undefined ? [] : [whole]),
+    ];
+  });
   if (codes.length === 0) return undefined;
-  if (byPerson && codesFromPerson(codes, personWords)) return undefined;
-  return "Nothing was sent: this carries a one-time code the user did not send in their own message this turn. Never make up a code, reuse an old one or fill in its digits. Ask the user for the code the site sent — in your one message, naming the phone or address exactly as the report masks it — and wait: their reply is what continues the run.";
+  if (words !== null && codesFromPerson(codes, words)) return undefined;
+  return `Nothing was sent: ${[...new Set(codes)].join(", ")} reads as a one-time code, and the user did not send it in their own message this turn. Never make up a code, reuse an old one or fill in its digits. When the site waits for a code, ask the user for it in your one message, naming the phone or address exactly as the report masks it, and wait: their reply is what continues the run. A number that is not a code — an amount, a date — leave out of task, or give it with its unit.`;
 }
 
 /**
@@ -1277,8 +1289,11 @@ function inventedCodeRefusal(
  * own reply. A turn Bro opened has nothing of theirs to pass on, and a
  * follow-up from it could only resend a code or type one it made up.
  */
-function waitingOnPersonRefusal(row: ErrandRow, byPerson: boolean) {
-  if (byPerson || row.completedAt === null) return undefined;
+function waitingOnPersonRefusal(
+  row: ErrandRow,
+  words: readonly string[] | null
+) {
+  if (words !== null || row.completedAt === null) return undefined;
   if (!answeredInPlaceNeeds.has(endedNeeding(row.outcome) ?? "")) {
     return undefined;
   }
@@ -1313,23 +1328,43 @@ function unsaidRefusal(
   return onlyAsksHowItStands(personSaid) ? statusOnly : undefined;
 }
 
-/** Why a follow-up passes on something the person did not send, if it does. */
+/**
+ * Why a call passes on something the person did not send, if it does:
+ * `words` is what they wrote this turn, null when they said nothing in it.
+ */
 function unsentWordsRefusal(
   input: BrowserTaskInput,
-  row: ErrandRow,
-  byPerson: boolean,
-  personWords: readonly string[]
+  row: ErrandRow | undefined,
+  words: readonly string[] | null
 ) {
+  if (!row) return inventedCodeRefusal([input.task], false, words);
   return (
-    waitingOnPersonRefusal(row, byPerson) ??
+    waitingOnPersonRefusal(row, words) ??
     inventedCodeRefusal(
-      [input.task, input.personSaid].join("\n"),
+      [input.task, input.personSaid],
       codeAwaited(row),
-      byPerson,
-      personWords
+      words
     ) ??
-    (byPerson ? unsaidRefusal(input.personSaid, personWords) : undefined)
+    (words === null ? undefined : unsaidRefusal(input.personSaid, words))
   );
+}
+
+/**
+ * The person's words this turn, or null when the turn is not theirs: Bro
+ * opened it, or they said nothing in it. A card they answer in a turn Bro
+ * opened resumes it on their behalf, but gives it no words of theirs.
+ */
+function turnWords(
+  context: ModeContext,
+  personWords: readonly string[] | null
+) {
+  return startedByPerson(context) ? personWords : null;
+}
+
+/** Whether `said` is a code the person sent, to type straight into the page. */
+function personCodeToType(said: string, words: readonly string[] | null) {
+  const code = oneTimeCodeFromMessage(said);
+  return code !== undefined && words !== null && codesFromPerson([code], words);
 }
 
 /**
@@ -1581,7 +1616,7 @@ function approvalScope(context: ModeContext) {
 export async function browserTaskApproval(
   input: BrowserTaskInput | undefined,
   context: ModeContext,
-  personWords?: readonly string[]
+  personWords?: readonly string[] | null
 ): Promise<ApprovalStatus> {
   if (input?.action !== "start" && input?.action !== "continue") {
     return "not-applicable";
@@ -1610,23 +1645,20 @@ export async function browserTaskApproval(
     input.action === "continue" && input.runId !== undefined
       ? await readLatestBrowserRunForScope(scope, input.runId)
       : undefined;
-  // A card for a follow-up the tool would refuse anyway — a code or words
-  // the person did not send — would ask them to confirm what they never said.
+  // Whose turn it is, decided as the tool decides it once the card is
+  // answered: by what the person wrote in it, not by who answers the card.
+  const words =
+    personWords === undefined ? undefined : turnWords(context, personWords);
+  // A card for a call the tool would refuse anyway — a code or words the
+  // person did not send — would ask them to confirm what they never said.
   const unsent =
-    personWords === undefined || !errand
-      ? undefined
-      : unsentWordsRefusal(
-          input,
-          errand,
-          startedByPerson(context),
-          personWords
-        );
+    words === undefined ? undefined : unsentWordsRefusal(input, errand, words);
   if (unsent) return { reason: unsent, type: "denied" };
   const consent = await consentFor(
     input,
     scope,
     errand,
-    startedByPerson(context)
+    words === undefined ? startedByPerson(context) : words !== null
   );
   if (!consent) return { reason: missingSubmissionRefusal, type: "denied" };
   const unchosen = unchosenOption(input, consent, errand);
@@ -1644,17 +1676,13 @@ async function consentFromInput(
   input: BrowserTaskInput,
   context: ToolContext,
   scope: AccessScope,
+  byPerson: boolean,
   errand?: ErrandRow
 ): Promise<SubmissionConsent | undefined> {
   if (!actsForPerson(input)) return undefined;
   if (!inConversation(context)) throw new Error(backgroundConsentRefusal);
   if (paysOnSpendLimit(input)) return { kind: "spend-limit" };
-  const consent = await consentFor(
-    input,
-    scope,
-    errand,
-    startedByPerson(context)
-  );
+  const consent = await consentFor(input, scope, errand, byPerson);
   if (!consent) throw new Error(missingSubmissionRefusal);
   const unchosen = unchosenOption(input, consent, errand);
   if (unchosen) throw new Error(unchosen);
@@ -1966,32 +1994,30 @@ async function continueQueuedErrand(
  * What a `browser_task` call does. `heard` names the runs whose settled
  * outcome this conversation already told the person (`outcomesHeard`): a
  * follow-up on one of them is theirs to give, not a «ну что там?» to answer
- * with the outcome again. `personWords` is the message the person opened
- * this turn with (`personWordsThisTurn`), empty when Bro opened it: a code,
- * a quote or a consent the call carries must come from there.
+ * with the outcome again. `personWords` is what the person wrote this turn
+ * (`personWordsThisTurn`), null when they said nothing in it: a code, a
+ * quote or a consent the call carries must come from there, and only such a
+ * turn is theirs — answering a card in a turn Bro opened does not make it so.
  */
 async function runBrowserTask(
   input: z.infer<typeof inputSchema>,
   context: ToolContext,
   heard: readonly string[],
-  personWords: readonly string[]
+  personWords: readonly string[] | null
 ) {
   const { conversation, scope } = conversationTarget(context);
+  const words = turnWords(context, personWords);
+  const byPerson = words !== null;
 
   if (input.action === "start") {
     const errand = z
       .string()
       .min(1, "A start action needs the errand text.")
       .parse(input.task);
-    const inventedCode = inventedCodeRefusal(
-      errand,
-      false,
-      startedByPerson(context),
-      personWords
-    );
+    const inventedCode = inventedCodeRefusal([errand], false, words);
     if (inventedCode) throw new Error(inventedCode);
     // Paying for an errand is asking for it to be done in one's name.
-    const consent = await consentFromInput(input, context, scope);
+    const consent = await consentFromInput(input, context, scope, byPerson);
     // The card or the standing permission that named the cost is the
     // permission to pay it: nobody is asked a second time at checkout.
     const allowPayment = input.allowPayment === true || consentPays(consent);
@@ -2172,17 +2198,11 @@ async function runBrowserTask(
       .string()
       .min(1, "A continue action needs the message to pass into the run.")
       .parse(input.task);
-    const byPerson = startedByPerson(context);
     // Nothing the person did not send reaches the site as theirs: a code
     // only they received, a step only they can take, words only they said.
     const refusal =
-      waitingOnPersonRefusal(row, byPerson) ??
-      inventedCodeRefusal(
-        [task, input.personSaid].join("\n"),
-        codeAwaited(row),
-        byPerson,
-        personWords
-      );
+      waitingOnPersonRefusal(row, words) ??
+      inventedCodeRefusal([task, input.personSaid], codeAwaited(row), words);
     if (refusal) throw new Error(refusal);
     // What the person wrote, and only that, is what the run hears from them.
     const said = (byPerson ? input.personSaid : undefined) ?? task;
@@ -2203,8 +2223,8 @@ async function runBrowserTask(
         status: row.status,
       };
     }
-    if (byPerson) {
-      const unsaid = unsaidRefusal(input.personSaid, personWords);
+    if (words !== null) {
+      const unsaid = unsaidRefusal(input.personSaid, words);
       if (unsaid) throw new Error(unsaid);
     }
     const message = byPerson
@@ -2213,7 +2233,13 @@ async function runBrowserTask(
     // A confirmation stays with its errand: a code, an answer or the
     // payment its card already named needs no second card. A background
     // worker never acts on it, and a changed submission is confirmed afresh.
-    const confirmedNow = await consentFromInput(input, context, scope, row);
+    const confirmedNow = await consentFromInput(
+      input,
+      context,
+      scope,
+      byPerson,
+      row
+    );
     const stillAllowed = errandStillAllowed(row);
     // A browser report or a scheduled worker never steers an errand that
     // acts in the person's name: whatever it appended would be carried out
@@ -2315,7 +2341,8 @@ async function runBrowserTask(
       // the browser outlives its run, and the field is where the code belongs.
       const [live, codeEntry] = await Promise.all([
         trackedRunIsLive(runId, row.completedAt),
-        row.sessionId === null
+        // Only a code the person sent in this turn goes into the page.
+        row.sessionId === null || !personCodeToType(said, words)
           ? undefined
           : typeCodeIntoRunBrowser(row.sessionId, said),
       ]);

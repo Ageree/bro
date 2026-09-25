@@ -71,21 +71,52 @@ function answersThisTurn(messages: readonly ModelMessage[]) {
   return answers;
 }
 
+/** A message the person wrote, not one Bro opened a turn with. */
+function isPersonMessage(message: ModelMessage) {
+  if (message.role !== "user") return false;
+  const kind = taggedMessageSchema.safeParse(message).data?.kind ?? "user";
+  return kind === "user" && !isBackgroundTurnText(messageText(message));
+}
+
 /**
- * What the person wrote in this turn: the message they opened it with and
- * their answers to its questions, and nothing when Bro opened it — a browser
- * report, a scheduled result, a wakeup, whose text a page or a worker wrote.
- * A follow-up acts on these words only.
+ * Whether the message at `index` came into a turn already under way. eve
+ * steers a message the person sends mid-turn in as one more user message:
+ * after a tool result, or right after the message whose step it cut off. A
+ * new turn follows a finished reply, and a turn Bro opens — a report, a
+ * worker's result — is queued, so it always opens its own.
+ */
+function steeredIn(messages: readonly ModelMessage[], index: number) {
+  const message = messages[index];
+  if (message === undefined || !isPersonMessage(message)) return false;
+  const before = messages
+    .slice(0, index)
+    .findLast((earlier) => earlier.role !== "user" || startsTurn(earlier));
+  return before !== undefined && (before.role === "tool" || startsTurn(before));
+}
+
+/**
+ * What the person wrote in this turn: the message that opened it, any they
+ * sent while it ran, and their answers to its questions. Null when the
+ * person said nothing in it — a turn Bro opened for a browser report, a
+ * scheduled result or a wakeup, whose text a page or a worker wrote, and
+ * which the person joins only by answering its approval card. A follow-up
+ * acts on these words only.
  */
 export function personWordsThisTurn(messages: readonly ModelMessage[]) {
-  const opening = messages.findLastIndex(startsTurn);
-  const message = opening === -1 ? undefined : messages[opening];
-  if (message?.role !== "user") return [];
-  const kind = taggedMessageSchema.safeParse(message).data?.kind ?? "user";
-  if (kind !== "user") return [];
-  const text = messageText(message);
-  if (isBackgroundTurnText(text)) return [];
-  return [text, ...answersThisTurn(messages.slice(opening + 1))];
+  let opening = messages.findLastIndex(startsTurn);
+  let first = opening;
+  const said: string[] = [];
+  while (opening !== -1) {
+    const message = messages[opening];
+    if (message !== undefined && isPersonMessage(message)) {
+      said.unshift(messageText(message));
+    }
+    first = opening;
+    if (!steeredIn(messages, opening)) break;
+    opening = messages.slice(0, opening).findLastIndex(startsTurn);
+  }
+  if (said.length === 0) return null;
+  return [...said, ...answersThisTurn(messages.slice(first + 1))];
 }
 
 /** A word that makes a number next to it a one-time code: «SMS», "OTP". */
@@ -105,9 +136,36 @@ const codeContextReach = 25;
 
 /**
  * A run of four to eight digits, as people copy a code out of a message —
- * «739204», «739 204», «73-92-04» — and not part of a longer number.
+ * «739204», «739 204», «73-92-04», «Код: 739204.» — and not part of a longer
+ * number, a date, a time or a decimal: punctuation counts as part of the
+ * number only with a digit on its far side.
  */
-const digitGroupPattern = /(?<![\d.,:])\d(?:[ \u00a0-]?\d){3,7}(?![\d.,:])/gu;
+const digitGroupPattern =
+  /(?<!\d|\d[.,:])\d(?:[ \u00a0-]?\d){3,7}(?!\d|[.,:]\d)/gu;
+
+/** A unit or a currency after a number: «4 890 ₽», «2026 год», «15 %». */
+const unitAfterPattern =
+  /^\s*(?:₽|\$|€|%|руб\p{L}*|р\.|р(?!\p{L})|rub|usd|eur|тыс\p{L}*|шт|км|мин\p{L}*|год\p{L}*|г\.|г(?!\p{L}))/iu;
+
+/**
+ * What names a number as something other than a code: a currency sign, or
+ * a flight or order prefix («SU 1234», «S7 1234», «№ 1234»).
+ */
+const namedBeforePattern =
+  /(?:[₽$€]|(?<!\p{L})(?:\p{Lu}[\p{Lu}\d]{0,2}|№|#))[\s-]?$/u;
+
+/** A month before a year: «15 октября 2026». */
+const monthBeforePattern =
+  /(?:январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр)\p{L}*\s+$/iu;
+
+/** Whether the number at this place is plainly an amount, a year or an id. */
+function namedOtherwise(before: string, after: string) {
+  return (
+    unitAfterPattern.test(after) ||
+    namedBeforePattern.test(before) ||
+    monthBeforePattern.test(before)
+  );
+}
 
 function digitGroups(text: string) {
   return [...text.matchAll(digitGroupPattern)].map((match) =>
@@ -117,9 +175,9 @@ function digitGroups(text: string) {
 
 /**
  * The one-time codes a text carries: a four-to-eight digit group a word for
- * a code leads or a word like «SMS» stands next to, or any such group at all
- * when the run is waiting for a code, where a bare number is how a code is
- * passed on.
+ * a code leads, or one a word like «SMS» stands next to, or — when the run
+ * may be waiting for a code, where a bare number is how a code is passed on
+ * — any such group that is not plainly an amount, a year or an id.
  */
 export function oneTimeCodesIn(
   text: string,
@@ -129,14 +187,16 @@ export function oneTimeCodesIn(
     const start = match.index;
     const end = start + match[0].length;
     const before = text.slice(0, start);
+    const after = text.slice(end);
     const near = [
       before.slice(-codeContextReach),
-      text.slice(end, end + codeContextReach),
+      after.slice(0, codeContextReach),
     ];
     const isCode =
-      options.awaitingCode ||
       codeLeadPattern.test(before) ||
-      near.some((words) => codeContextPattern.test(words));
+      (!namedOtherwise(before, after) &&
+        (options.awaitingCode ||
+          near.some((words) => codeContextPattern.test(words))));
     return isCode ? [match[0].replaceAll(/\D/gu, "")] : [];
   });
 }
@@ -177,10 +237,19 @@ export function quotedFromPerson(
  * билетами?», «есть новости?» — and gives the errand nothing new.
  */
 const statusQuestionPattern =
-  /^(?:(?:ну|и|а|так|бро)\s+)*(?:(?:что|как)(?:\s+(?:там|тут|дела|успехи|оно|продвигается|идет|получилось|по\s+\p{L}+|с\s+\p{L}+(?:\s+\p{L}+)?))*|есть\s+(?:новости|что\s+нибудь|результат)|новости|готово|статус|ну|и|any\s+news|any\s+update|whats\s+up|what\s+s\s+up|status|update|so|well|how\s+is\s+it\s+going|how\s+s\s+it\s+going)(?:\s+(?:там|уже|бро))*$/u;
+  /^(?:(?:ну|и|а|так|бро)\s+)*(?:(?:что|как)(?:\s+(?:там|тут|дела|успехи|оно|продвигается|идет|получилось|по\s+\p{L}+|с\s+\p{L}+(?:\s+\p{L}+)?))*|есть\s+(?:новости|что\s+нибудь|результат)|новости|статус|ну|и|any\s+news|any\s+update|whats\s+up|what\s+s\s+up|status|update|so|well|how\s+is\s+it\s+going|how\s+s\s+it\s+going)(?:\s+(?:там|уже|бро))*$/u;
+
+/**
+ * «Готово» is how a person says they confirmed a sign-in or a payment in
+ * their app, the reply Bro asks for; only «готово?» asks how things stand.
+ */
+const readyPattern =
+  /^(?:(?:ну|и|а|так|бро)\s+)*готово(?:\s+(?:там|уже|бро))*$/u;
 
 /** Whether the words only ask how the errand stands. */
 export function onlyAsksHowItStands(words: string) {
   const said = comparable(words);
-  return said.length > 0 && statusQuestionPattern.test(said);
+  if (said.length === 0) return false;
+  if (readyPattern.test(said)) return /[?？]\s*$/u.test(words);
+  return statusQuestionPattern.test(said);
 }

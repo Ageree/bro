@@ -33,6 +33,13 @@ function asked(options: readonly { id: string; label: string }[] = []) {
   } satisfies ModelMessage;
 }
 
+function replied() {
+  return {
+    content: [{ text: "Готово.", type: "text" as const }],
+    role: "assistant" as const,
+  } satisfies ModelMessage;
+}
+
 function answered(answer: { optionId?: string; text?: string }) {
   return {
     content: [
@@ -89,27 +96,87 @@ describe("the one-time codes a follow-up carries", () => {
     ).toEqual(["482913"]);
   });
 
+  it("finds a code with punctuation around it", () => {
+    for (const text of [
+      "Пользователь прислал код: 739204.",
+      "Пользователь прислал действующий SMS-код: 739204.",
+      "SMS-код:739204",
+      "Код из SMS: 739204, введи его",
+    ]) {
+      expect(oneTimeCodesIn(text, { awaitingCode: false })).toEqual(["739204"]);
+    }
+    for (const text of ["1234.56", "10:30:45", "25.09.2026", "1,234,567"]) {
+      expect(oneTimeCodesIn(text, { awaitingCode: true })).toEqual([]);
+    }
+  });
+
+  it("tells an amount, a year or an id from a code the run waits for", () => {
+    expect(
+      oneTimeCodesIn(
+        "Человек подтвердил оплату 4 890 ₽ в приложении банка, проверь",
+        { awaitingCode: true }
+      )
+    ).toEqual([]);
+    expect(
+      oneTimeCodesIn("Код 739204, заверши запись на 15 октября 2026", {
+        awaitingCode: true,
+      })
+    ).toEqual(["739204"]);
+    expect(
+      oneTimeCodesIn("Код 739204, рейс SU 1234", { awaitingCode: true })
+    ).toEqual(["739204"]);
+  });
+
   it("accepts a code only when the person wrote those very digits", () => {
     expect(codesFromPerson(["482913"], ["код 482 913"])).toBe(true);
+    // Pasted from the SMS or typed with a full stop.
+    expect(
+      codesFromPerson(
+        ["739204"],
+        ["Код для входа на Госуслуги: 739204. Никому не сообщайте его"]
+      )
+    ).toBe(true);
+    expect(codesFromPerson(["739204"], ["739204, вводи"])).toBe(true);
+    expect(codesFromPerson(["739204"], ["код:739204"])).toBe(true);
     expect(codesFromPerson(["482914"], ["код 482913"])).toBe(false);
     expect(codesFromPerson(["482913"], [])).toBe(false);
   });
 });
 
 describe("the person's words this turn", () => {
-  it("is the message they opened the turn with", () => {
+  const report = person(`${backgroundTurnMarker}\nBrowser run r-1 finished.`);
+
+  it("is the message they opened the turn with, not an earlier turn's", () => {
     expect(
-      personWordsThisTurn([person("найди такси"), person("код 482913")])
+      personWordsThisTurn([
+        person("найди такси"),
+        replied(),
+        person("код 482913"),
+      ])
     ).toEqual(["код 482913"]);
   });
 
-  it("is nothing in a turn Bro opened", () => {
+  it("keeps a message they sent while the turn ran", () => {
+    // eve steers a message sent mid-turn in as one more user message: after
+    // a tool result, or right after the message whose step it cut off.
     expect(
       personWordsThisTurn([
-        person("код 482913"),
-        person(`${backgroundTurnMarker}\nBrowser run r-1 finished.`),
+        person("739204"),
+        asked(),
+        answered({ text: "да, это он" }),
+        person("это код из смс, вводи быстрее"),
       ])
-    ).toEqual([]);
+    ).toEqual(["739204", "это код из смс, вводи быстрее", "да, это он"]);
+    expect(
+      personWordsThisTurn([replied(), person("739204"), person("вводи")])
+    ).toEqual(["739204", "вводи"]);
+  });
+
+  it("is nothing in a turn Bro opened that the person said nothing in", () => {
+    expect(personWordsThisTurn([person("код 482913"), report])).toBeNull();
+    expect(
+      personWordsThisTurn([person("код 482913"), replied(), report, asked()])
+    ).toBeNull();
     expect(
       personWordsThisTurn([
         Object.assign(
@@ -119,7 +186,18 @@ describe("the person's words this turn", () => {
           }
         ) satisfies ModelMessage,
       ])
-    ).toEqual([]);
+    ).toBeNull();
+  });
+
+  it("counts what the person wrote into a turn Bro opened", () => {
+    expect(
+      personWordsThisTurn([
+        person("найди такси"),
+        replied(),
+        report,
+        person("739204"),
+      ])
+    ).toEqual(["739204"]);
   });
 
   it("includes what they answered to a question in the turn", () => {
@@ -170,8 +248,18 @@ describe("a quote of the person", () => {
     ]) {
       expect(onlyAsksHowItStands(words)).toBe(true);
     }
-    for (const words of ["бери первый", "да", "можно до 8 тысяч", "482913"]) {
+    // «Готово» is the reply to «confirm it in the app and tell me».
+    for (const words of [
+      "бери первый",
+      "да",
+      "можно до 8 тысяч",
+      "482913",
+      "Готово",
+      "готово!",
+      "Готово.",
+    ]) {
       expect(onlyAsksHowItStands(words)).toBe(false);
     }
+    expect(onlyAsksHowItStands("Готово?")).toBe(true);
   });
 });
