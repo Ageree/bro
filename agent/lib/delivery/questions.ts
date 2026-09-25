@@ -16,9 +16,11 @@ import {
 export const actionsHeldForAnswer = [
   "calendar-delete-event",
   "calendar-update-event",
+  "profile__forget_all",
   "profile__remove_memory",
   "schedules-update",
   "workstreams__forget",
+  "workstreams__forget_all",
 ] as const;
 
 const sentTextSchema = z.object({ text: z.string() });

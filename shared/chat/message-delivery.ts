@@ -54,34 +54,30 @@ const nativeLinkSchema = z.url().max(2048).refine(isHttpsUrl, {
   message: "Native links must use HTTPS.",
 });
 
-const messageOutputFields = {
-  // Ten is the Telegram album limit, the narrowest cap of the channels that
-  // upload attachments natively.
-  attachments: z.array(attachmentSchema).min(1).max(10).optional(),
-  kind: z.literal("message"),
-  text: z.string().trim().min(1).max(20_000).optional(),
-};
-const messageContentSchema = z.strictObject(messageOutputFields);
-type MessageContent = z.infer<typeof messageContentSchema>;
-
-function requireMessageContent(
-  message: MessageContent,
-  context: z.RefinementCtx
-) {
-  if (!message.text && !message.attachments) {
-    context.addIssue({
-      code: "custom",
-      message: "A message must include text or at least one attachment.",
-    });
-  }
-}
-
-const messageOutputSchema = messageContentSchema
-  .extend({
+/**
+ * The keys in the order DeepSeek writes them: `kind`, `replyTo`, `text`.
+ * Hosts that decode a forced tool call with a grammar keep the schema's key
+ * order and let an optional key be skipped, so with `text` listed before
+ * `replyTo`, a call that opened with `replyTo` could never add its text: on
+ * 25.09 (RU bench) 120 forced calls came back as
+ * `{"kind":"message","replyTo":{"kind":"current"}}`, ten steps a turn.
+ */
+const messageOutputSchema = z
+  .strictObject({
+    kind: z.literal("message"),
     replyTo: replyReferenceSchema.optional(),
+    text: z.string().trim().min(1).max(20_000).optional(),
+    // Ten is the Telegram album limit, the narrowest cap of the channels
+    // that upload attachments natively.
+    attachments: z.array(attachmentSchema).min(1).max(10).optional(),
   })
   .superRefine((message, context) => {
-    requireMessageContent(message, context);
+    if (!message.text && !message.attachments) {
+      context.addIssue({
+        code: "custom",
+        message: "A message must include text or at least one attachment.",
+      });
+    }
   });
 
 const linkOutputSchema = z.strictObject({

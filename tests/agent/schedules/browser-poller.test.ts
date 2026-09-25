@@ -72,8 +72,7 @@ vi.mock("@agent/lib/browser-use/images", () => ({
 // The vault can be made to fail, the way a transient outage does.
 const vaultFails = vi.hoisted(() => ({ value: false }));
 vi.mock("@agent/lib/browser-use/secrets", async (importOriginal) => ({
-  browserSecretAliases: (await importOriginal<typeof browserUseSecrets>())
-    .browserSecretAliases,
+  ...(await importOriginal<typeof browserUseSecrets>()),
   resolveBrowserSecretBindings: () =>
     vaultFails.value
       ? Promise.reject(new Error("vault unavailable"))

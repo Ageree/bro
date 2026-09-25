@@ -1554,6 +1554,418 @@ describe("sendRefusal on a status before any work", () => {
   });
 });
 
+/**
+ * RU 25.09 on deepseek (d02): the person declined the `schedules-update`
+ * card, and the turn it resumed said the task was moved.
+ */
+describe("sendRefusal on claims of what a declined or failed call did not do", () => {
+  const flightsReport = userMessage(
+    `${backgroundTurnMarker}\n\nBrowser run 81b4770a-3f87-4389-8b8c-00a2f324d6e8 finished.\n\nResult: Aeroflot SU1152 + SU1123, 21 262 ₽.`
+  );
+  const moved =
+    "Кстати, поправка по регистрации: Aeroflot открывает её за 24 часа до каждого вылета, то есть туда — 8 октября в 07:20, обратно — 11 октября в 18:50. Я перенастроил вашу задачу на 8 октября, 09:20 — тогда открою регистрацию на оба рейса, выберу место у прохода и пришлю вам на подтверждение. Билет к тому моменту должен быть куплен.";
+  const declinedUpdate = [
+    flightsReport,
+    ...sendMessage(
+      "result",
+      "Нашёл только вариант дороже вашего лимита, поэтому ничего не бронировал.\n\n• Aeroflot SU1152 + SU1123, с багажом (1 место до 23 кг на сегмент) — 21 262 ₽ туда-обратно, но это без выбора места."
+    ),
+    ...toolStep("schedules-list", { jobs: [] }),
+    ...refusedStep("schedules-update", { type: "execution-denied" }, "person"),
+  ];
+
+  it("returns «перенастроил вашу задачу» after the card was declined (d02)", () => {
+    expect(refusal(declinedUpdate, moved)).toEqual({ rewrite: "declined" });
+    expect(rewriteSendNotice("declined")).toContain(
+      "Say plainly that it was not done"
+    );
+  });
+
+  it("returns it in the person's next turn too", () => {
+    expect(
+      refusal(
+        [...declinedUpdate, userMessage("ок, а регистрацию когда?")],
+        "Я перенастроил вашу задачу на 8 октября, 09:20 — тогда открою регистрацию."
+      )
+    ).toEqual({ rewrite: "declined" });
+  });
+
+  it("delivers the plain truth about the declined card", () => {
+    expect(
+      refusal(
+        declinedUpdate,
+        "Aeroflot открывает регистрацию за 24 часа, то есть 8 октября в 07:20. Задачу я не перенастраивал: вы отклонили карточку, она стоит как была."
+      )
+    ).toBeUndefined();
+  });
+
+  it.each([
+    [
+      "an email sent",
+      "gmail-send",
+      "Отправил письмо Иванову: встреча переносится на пятницу.",
+    ],
+    [
+      "a Slack message sent",
+      "slack-send-message",
+      "Отправил сообщение в Slack в канал #team.",
+    ],
+    [
+      "something remembered",
+      "profile__save_memory",
+      "Запомнил: в поезде только нижняя полка.",
+    ],
+    [
+      "a reminder set",
+      "schedules-create",
+      "Поставил напоминание позвонить маме на 20:00.",
+    ],
+    ["an order placed", "browser_task", "Заказал такси до офиса на 9:00."],
+    [
+      "everything forgotten",
+      "profile__forget_all",
+      "Всё удалил из памяти, личные данные остались в кабинете.",
+    ],
+    [
+      "an event added",
+      "calendar-create-event",
+      "Добавил в календарь созвон с Петровым на пятницу, 15:30.",
+    ],
+  ])("returns %s when its card was declined", (_case, toolName, text) => {
+    const history = [
+      userMessage("сделай, пожалуйста"),
+      ...refusedStep(toolName, { type: "execution-denied" }, "person"),
+    ];
+
+    expect(refusal(history, text)).toEqual({ rewrite: "declined" });
+  });
+
+  it("returns a memory claimed after its policy refused the call", () => {
+    const history = [
+      userMessage("забудь, что я не ем мясо"),
+      ...refusedStep(
+        "profile__remove_memory",
+        { reason: "Nothing was forgotten.", type: "execution-denied" },
+        "policy"
+      ),
+    ];
+
+    expect(refusal(history, "Удалил из памяти, что вы не едите мясо.")).toEqual(
+      { rewrite: "declined" }
+    );
+  });
+
+  it("leaves an order a run placed when a later call of the report failed", () => {
+    const report = userMessage(
+      `${backgroundTurnMarker}\n\nBrowser run run-7 finished.\n\nResult: order 48213 placed, delivery at 20:00.`
+    );
+
+    expect(
+      refusal(
+        [
+          report,
+          ...refusedStep(
+            "browser_task",
+            { type: "execution-denied" },
+            "policy"
+          ),
+        ],
+        "Заказал продукты во Вкусвилле, привезут к 20:00, заказ 48213."
+      )
+    ).toBeUndefined();
+    expect(
+      refusal(
+        [
+          userMessage("ну что там с заказом?"),
+          ...refusedStep("browser_task", {
+            type: "error-text",
+            value: "Browser Use 502",
+          }),
+        ],
+        "Заказал продукты во Вкусвилле, привезут к 20:00."
+      )
+    ).toBeUndefined();
+  });
+
+  it.each([
+    [
+      "what the inbox says someone else did",
+      "Иванов отправил письмо с договором в 14:20, ждёт подпись до пятницы.",
+    ],
+    [
+      "a letter drafted in the chat",
+      "Написал письмо Иванову, вот текст: «Добрый день! Приду в пятницу». Отправить?",
+    ],
+    ["a step still to come", "Письмо отправлю, как только подтвердите текст."],
+    ["a negated one", "Письмо Иванову не отправил: жду вашего ок."],
+  ])("delivers %s in the person's turn", (_case, text) => {
+    expect(refusal([userMessage("что там от Иванова?")], text)).toBeUndefined();
+  });
+
+  it.each([
+    [
+      "a reminder set on the event",
+      "calendar-create-event",
+      "Встреча в календаре на пятницу, 15:30. Поставил напоминание за 30 минут.",
+    ],
+    [
+      "the form of address remembered",
+      "form_of_address",
+      "Запомнил: обращаюсь к вам на «вы».",
+    ],
+    [
+      "a Slack message sent through another app's tool",
+      "apps",
+      "Отправил сообщение в Slack в канал #team.",
+    ],
+  ])("delivers %s", (_case, toolName, text) => {
+    expect(
+      refusal(
+        [
+          userMessage("сделай, пожалуйста"),
+          ...toolStep(toolName, { status: "done" }),
+        ],
+        text
+      )
+    ).toBeUndefined();
+  });
+
+  it("returns an email claimed after the send failed", () => {
+    const history = [
+      userMessage("ответь Иванову, что приду"),
+      ...refusedStep("gmail-send", { type: "error-text", value: "Gmail 500" }),
+    ];
+
+    expect(
+      refusal(history, "Ответил Иванову письмом: придёте в пятницу.")
+    ).toEqual({ rewrite: "declined" });
+  });
+
+  it.each([
+    [
+      "an email",
+      "напиши Иванову, что встреча переносится на пятницу",
+      "Отправил письмо Иванову: встреча переносится на пятницу.",
+    ],
+    [
+      "a reminder",
+      "напомни в 20:00 позвонить маме",
+      "Поставил напоминание позвонить маме на 20:00.",
+    ],
+    [
+      "something remembered",
+      "запомни: в поезде только нижняя полка",
+      "Запомнил: в поезде только нижняя полка.",
+    ],
+    [
+      "an email in English",
+      "send Ivanov the agenda",
+      "I've sent the email to Ivanov.",
+    ],
+  ])(
+    "returns %s the person asked for and no call made",
+    (_case, request, text) => {
+      expect(refusal([userMessage(request)], text)).toEqual({
+        rewrite: "undone",
+      });
+      expect(rewriteSendNotice("undone")).toContain(
+        "If you called its tool in this same step"
+      );
+    }
+  );
+
+  it.each([
+    [
+      "a record another chat saved",
+      "ты запомнил, что я не ем свинину?",
+      "Да, запомнил: свинину вы не едите.",
+    ],
+    [
+      "a letter the person asks about",
+      "а письмо Ирине ушло?",
+      "Да, отправил письмо Ирине, она уже ответила.",
+    ],
+    [
+      "a reminder the person did not ask for now",
+      "спасибо!",
+      "Поставил напоминание на завтра, 9:00, оно в списке.",
+    ],
+  ])(
+    "leaves %s alone when this turn did not ask for it",
+    (_case, request, text) => {
+      expect(refusal([userMessage(request)], text)).toBeUndefined();
+    }
+  );
+
+  /**
+   * Verification of the first version (25.09): a refusal of one tool of an
+   * action marked every later recap of another tool's success as declined.
+   */
+  it.each([
+    [
+      "a reminder set before a calendar card was declined (P2)",
+      [
+        userMessage("напомни завтра в 9 про зал"),
+        ...toolStep("schedules-create", { id: "job-1" }),
+        ...sendMessage("set", "Поставил на завтра, 9:00."),
+        userMessage("удали пятничную встречу"),
+        ...refusedStep(
+          "calendar-delete-event",
+          { type: "execution-denied" },
+          "person"
+        ),
+        ...sendMessage("kept", "Хорошо, встречу не трогаю."),
+        userMessage("а напоминание про зал стоит?"),
+      ],
+      "Да, поставил напоминание на завтра, 9:00, оно в списке.",
+    ],
+    [
+      "the form of address kept after a spend limit card was declined (P3)",
+      [
+        userMessage("обращайся ко мне на вы"),
+        ...toolStep("form_of_address", { formOfAddress: "вы" }),
+        ...sendMessage("set", "Хорошо, буду на «вы»."),
+        userMessage("плати без спроса до 5000"),
+        ...refusedStep("spend_limit", { type: "execution-denied" }, "person"),
+        ...sendMessage("kept", "Хорошо, лимит не ставлю."),
+        userMessage("ты помнишь, как ко мне обращаться?"),
+      ],
+      "Запомнил: обращаюсь к вам на «вы».",
+    ],
+    [
+      "a memory saved before a workstream save failed (P6)",
+      [
+        userMessage("запомни: я не ем свинину"),
+        ...toolStep("profile__save_memory", { index: 0 }),
+        ...sendMessage("saved", "Запомнил."),
+        userMessage("и заведи дело про визу"),
+        ...refusedStep("workstreams__save", {
+          type: "error-text",
+          value: "Invalid input",
+        }),
+        ...sendMessage("failed", "Не получилось сохранить дело."),
+        userMessage("а про свинину помнишь?"),
+      ],
+      "Да, запомнил: свинину вы не едите.",
+    ],
+  ])("delivers %s", (_case, history, text) => {
+    expect(refusal(history, text)).toBeUndefined();
+  });
+
+  it("leaves a past calendar write alone after a delete was declined (P7)", () => {
+    const history = [
+      userMessage("поставь в календарь встречу в пятницу в 15:00"),
+      ...toolStep("calendar-create-event", { id: "event-1" }),
+      ...sendMessage("added", "Добавил встречу на пятницу, 15:00."),
+      userMessage("удали её"),
+      ...refusedStep(
+        "calendar-delete-event",
+        { type: "execution-denied" },
+        "person"
+      ),
+    ];
+
+    expect(
+      refusal(history, "Пятничную встречу я добавил в календарь, она стоит.")
+    ).toBeUndefined();
+  });
+
+  it("leaves a browser task stopped in this turn after an old declined schedule card (P4)", () => {
+    const history = [
+      userMessage("перенеси задачу на 9:30"),
+      ...refusedStep(
+        "schedules-update",
+        { type: "execution-denied" },
+        "person"
+      ),
+      ...sendMessage("kept", "Хорошо, не переношу."),
+      userMessage("останови браузер"),
+      ...browserStep("cancel", { runId: "run-1", status: "stopped" }),
+    ];
+
+    expect(
+      refusal(history, "Остановил задачу, браузер закрыт.")
+    ).toBeUndefined();
+  });
+
+  it("returns a declined card only in the turn right after it", () => {
+    const later = [
+      ...declinedUpdate,
+      userMessage("ок, а регистрацию когда?"),
+      ...sendMessage("when", "Регистрация откроется 8 октября в 07:20."),
+      userMessage("а что с задачей?"),
+    ];
+
+    expect(
+      refusal(later, "Я перенастроил вашу задачу на 8 октября, 09:20.")
+    ).toBeUndefined();
+  });
+
+  it.each([
+    [
+      "the email the turn sent",
+      "gmail-send",
+      "Отправил письмо Иванову: встреча переносится на пятницу.",
+    ],
+    [
+      "the memory the turn saved",
+      "profile__save_memory",
+      "Запомнил: в поезде только нижняя полка.",
+    ],
+    [
+      "the reminder the turn set",
+      "schedules-create",
+      "Поставил напоминание позвонить маме на 20:00.",
+    ],
+  ])("delivers %s", (_case, toolName, text) => {
+    const history = [
+      userMessage("сделай, пожалуйста"),
+      ...toolStep(toolName, { id: "done-1" }),
+    ];
+
+    expect(refusal(history, text)).toBeUndefined();
+  });
+
+  it("delivers what an earlier turn did", () => {
+    const history = [
+      userMessage("напомни в 20:00 позвонить маме"),
+      ...toolStep("schedules-create", { id: "job-1" }),
+      ...sendMessage("set", "Поставил на 20:00."),
+      userMessage("а напоминание точно стоит?"),
+    ];
+
+    expect(
+      refusal(history, "Да, напоминание поставил на 20:00, оно в списке.")
+    ).toBeUndefined();
+  });
+
+  it("delivers a task handed to a browser run", () => {
+    const history = [
+      userMessage("найди билеты в Сочи"),
+      ...browserStep("start", { runId: "run-1", status: "running" }),
+    ];
+
+    expect(
+      refusal(
+        history,
+        "Поставил задачу браузеру: ищу билеты в Сочи, пришлю варианты."
+      )
+    ).toBeUndefined();
+  });
+
+  it("leaves what a report relays of work done elsewhere", () => {
+    const scheduledReport = [
+      userMessage(
+        `${backgroundTurnMarker}\n\nA scheduled run has completed.\n\nResult: the reminder was set.`
+      ),
+    ];
+
+    expect(
+      refusal(scheduledReport, "Напоминание поставил на завтра, 9:00.")
+    ).toBeUndefined();
+  });
+});
+
 describe("sendRefusal on claims no tool made", () => {
   const codeHandedOver = [
     userMessage("код от госуслуг: 123456"),
@@ -1986,6 +2398,54 @@ function frameworkMessage(kind: string): ModelMessage {
 }
 
 let toolSteps = 0;
+
+/**
+ * A tool call that did not go through: declined by the person on its
+ * approval card, refused by its policy (an automatic card nobody saw), or
+ * failed.
+ */
+function refusedStep(
+  toolName: string,
+  output: ToolResultPart["output"],
+  card?: "person" | "policy"
+): ModelMessage[] {
+  toolSteps += 1;
+  const toolCallId = `${toolName}-${String(toolSteps)}`;
+  const approvalId = `approval-${toolCallId}`;
+  return [
+    {
+      content: [
+        { input: {}, toolCallId, toolName, type: "tool-call" },
+        ...(card
+          ? [
+              {
+                approvalId,
+                isAutomatic: card === "policy",
+                toolCallId,
+                type: "tool-approval-request" as const,
+              },
+            ]
+          : []),
+      ],
+      role: "assistant",
+    },
+    {
+      content: [
+        ...(card
+          ? [
+              {
+                approvalId,
+                approved: false,
+                type: "tool-approval-response" as const,
+              },
+            ]
+          : []),
+        { output, toolCallId, toolName, type: "tool-result" },
+      ],
+      role: "tool",
+    },
+  ];
+}
 
 function toolStep(
   toolName: string,

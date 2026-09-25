@@ -36,8 +36,12 @@ import { captureBrowserRunImages, type BrowserRunImage } from "./images";
 import { within } from "./deadline";
 import {
   browserOutcomeSummary,
+  networkErrorIn,
   parseBrowserOrder,
   parseBrowserOutcome,
+  summaryUnreachableCause,
+  unreachableCause,
+  unreachableRun,
   type BrowserRunNeed,
 } from "./outcome";
 import {
@@ -108,7 +112,11 @@ export async function settleBrowserRun(
     return { kind: "open" as const, summaryStatus: run.status };
   }
 
-  const parsed = parseBrowserOutcome(run.result);
+  const { interrupted, parsed } = await networkVerdict(
+    row,
+    run,
+    parseBrowserOutcome(run.result)
+  );
   const outcome = browserOutcomeSummary(
     parsed,
     run.error ?? `The run ended as ${status}.`,
@@ -128,7 +136,7 @@ export async function settleBrowserRun(
   // Only a finished run has an order to record; one still waiting on the
   // person has bought nothing yet.
   const order =
-    parsed.needs === "none" && (await mayPlaceOrder(row))
+    parsed.needs === "none" && (await couldHaveActed(row, false))
       ? parseBrowserOrder(parsed, {
           result: run.result,
           site: row.site,
@@ -141,10 +149,15 @@ export async function settleBrowserRun(
     hasCharges: parsed.charges.length > 0,
     hasItems: parsed.items.length > 0,
     hasLinks,
+    interrupted,
     needs: parsed.needs,
     next: parsed.next,
     ordered: order?.status === "placed",
     outcome,
+    unreachable:
+      parsed.needs === "captcha"
+        ? unreachableCause(parsed, run.error)
+        : undefined,
   };
   const claimed = await claimBrowserRunCompletion(runId, {
     outcome,
@@ -236,15 +249,46 @@ function bookingState(
 }
 
 /**
- * Whether the run could have placed an order at all: only one that acted in
- * the person's name or paid. A run that only looked — reading the site's
- * order history for «закажи то же, что в прошлый раз» — reports the old
- * order's number, and that is not an order Bro placed. A follow-up that
- * finishes a payment on the spend limit — the person confirmed 3-D Secure
- * or sent the code — is started with neither, but holds the errand's
- * reservation, which only a paying errand has and its follow-ups carry.
+ * What a network error makes of a finished run. One that cannot have acted
+ * is walled off as surely as by an anti-bot check and gets the same retry
+ * when it stopped on the error with NEEDS: captcha, as it is told to, or
+ * failed on it with no report at all (RU 25.09, d06: «ERR_TUNNEL_CONNECTION_
+ * FAILED» on Госуслуги). One that may have acted is never retried on a
+ * network error, whatever it reported: it may have clicked «Заказать» or
+ * «Оплатить» before the page failed, and a retry would do it again. It
+ * reaches the person as cut off (`interrupted`, the error), to be checked
+ * before anything is repeated. A report that names no network error — an
+ * anti-bot wall among them — stands as the run gave it.
  */
-async function mayPlaceOrder(row: BrowserRunRow) {
+async function networkVerdict(
+  row: BrowserRunRow,
+  run: { readonly error?: string | null; readonly result?: string | null },
+  reported: ReturnType<typeof parseBrowserOutcome>
+): Promise<{
+  readonly interrupted?: string;
+  readonly parsed: ReturnType<typeof parseBrowserOutcome>;
+}> {
+  const error = networkErrorIn(run.result) ?? networkErrorIn(run.error);
+  const walled = reported.needs === "captcha" || unreachableRun(run);
+  if (error === undefined || !walled) return { parsed: reported };
+  if (await couldHaveActed(row, true)) {
+    return { interrupted: error, parsed: { ...reported, needs: "info" } };
+  }
+  return { parsed: { ...reported, needs: "captcha" } };
+}
+
+/**
+ * Whether the run could have acted in the person's name at all: allowed to
+ * submit or pay, or holding a reservation. A follow-up that finishes a
+ * payment on the spend limit — the person confirmed 3-D Secure or sent the
+ * code — is started with neither, but holds the errand's reservation, which
+ * only a paying errand has and its follow-ups carry. `unread` is the answer
+ * when the ledger cannot be read: no order is recorded for a run that only
+ * looked (reading the site's order history for «закажи то же, что в прошлый
+ * раз» reports the old order's number, not one Bro placed), and no network
+ * error is retried on one that may have acted.
+ */
+async function couldHaveActed(row: BrowserRunRow, unread: boolean) {
   if (row.paymentAllowed || row.submission !== null) return true;
   try {
     return (await readSpendEntryForRun(row.id)) !== undefined;
@@ -253,7 +297,7 @@ async function mayPlaceOrder(row: BrowserRunRow) {
       cause: error,
       runId: row.id,
     });
-    return false;
+    return unread;
   }
 }
 
@@ -393,6 +437,7 @@ export async function reportWalledBrowserRun(
       needs: "captcha",
       outcome:
         row.outcome ?? "The site kept the errand behind an anti-bot check.",
+      unreachable: summaryUnreachableCause(row.outcome),
     })
   );
 }
@@ -415,6 +460,38 @@ export async function reportClosedBrowserRun(
 }
 
 /**
+ * What the coordinator is told once the background retries against a wall
+ * are spent: an anti-bot check, or a site the network or the proxy never
+ * delivered (`unreachable`, the browser's error) — which is not the site
+ * refusing the errand, and is not told as one.
+ */
+function walledInstruction(unreachable: string | undefined) {
+  const attempts = `through ${String(maximumCaptchaAttempts)} attempts over about ${String(captchaRetryWindowMinutes)} minutes, each in a fresh browser on a different address; retrying it again now will not help.`;
+  const cause =
+    unreachable === undefined
+      ? `The site kept this errand behind an anti-bot check ${attempts} Never ask the user to solve the check and never hand them the live view for one.`
+      : `The site did not load at all — the connection to it failed (${unreachable}) — ${attempts} It did not refuse the errand: nothing was done there yet.`;
+  const blocked =
+    unreachable === undefined
+      ? "the original site would not let you in"
+      : "the original site could not be reached";
+  const plainly =
+    unreachable === undefined
+      ? "the site is not letting the errand through"
+      : "the site could not be reached, not that it blocked the errand";
+  return `This is a background result, not a user message. ${cause} If the user asked for the thing rather than for that shop, and another well-known site that serves them can do the same errand, start it there now with browser_task start — a new errand with the same constraints and that site's origin — and tell the user in one short line that ${blocked} and where you went instead. Acting and paying on the new site need their own permission, because an approval for the original shop does not carry over: a booking, order or application there is a new errand, so pass allowSubmit with its own submission (chargeRub when it is paid) and the user confirms it on one new approval card — this report is not their message, so no standing permission stands in for it here — or pay with a fresh withinSpendLimit decision. When the user named that shop, or no such site exists, tell the user plainly that ${plainly}, name the alternative you would try, and ask before going there.`;
+}
+
+/**
+ * A run cut off by a network error while it was allowed to act: what it
+ * clicked may have gone through, so nothing is repeated before the person
+ * has checked.
+ */
+function interruptedInstruction(error: string) {
+  return `The connection to the site failed (${error}) while this run was allowed to act in the user's name, so a submission, order, booking or payment it clicked may have gone through before the page failed. Tell the user plainly what the run reports it did last and what the page showed, and that it has to be checked — in their orders or bookings on the site, or with their bank — before anything is repeated. Never start or continue this errand to submit, order, book or pay again unless the user asks for that after checking.`;
+}
+
+/**
  * What the coordinator is asked to do with the run it just got back. An
  * anti-bot wall only reaches it once the background retries are spent, and
  * even then the person is never asked to solve the check: the errand moves to
@@ -429,15 +506,19 @@ function deliveryInstruction(
     readonly hasCharges: boolean;
     readonly hasItems: boolean;
     readonly hasLinks: boolean;
+    /** The network error that cut off a run allowed to act. */
+    readonly interrupted?: string;
     readonly next: boolean;
     readonly ordered: boolean;
+    /** The network error that kept the site from loading, when that did. */
+    readonly unreachable?: string;
   }
 ) {
   const { hasItems, hasLinks } = facts;
   const tail =
     "Answer a follow-up with browser_task continue on this run id instead of a new start: it picks the same browser up where this run left off and hands back the run id to use after that. Omit send_message.replyTo.";
   if (needs === "captcha") {
-    return `This is a background result, not a user message. The site kept this errand behind an anti-bot check through ${String(maximumCaptchaAttempts)} attempts over about ${String(captchaRetryWindowMinutes)} minutes, each in a fresh browser on a different address; retrying it again now will not help. Never ask the user to solve the check and never hand them the live view for one. If the user asked for the thing rather than for that shop, and another well-known site that serves them can do the same errand, start it there now with browser_task start — a new errand with the same constraints and that site's origin — and tell the user in one short line that the original site would not let you in and where you went instead. Acting and paying on the new site need their own permission, because an approval for the original shop does not carry over: a booking, order or application there is a new errand, so pass allowSubmit with its own submission (chargeRub when it is paid) and the user confirms it on one new approval card — this report is not their message, so no standing permission stands in for it here — or pay with a fresh withinSpendLimit decision. When the user named that shop, or no such site exists, tell the user plainly that the site is not letting the errand through, name the alternative you would try, and ask before going there. ${tail}`;
+    return `${walledInstruction(facts.unreachable)} ${tail}`;
   }
   const links = hasLinks
     ? "Include every relevant returned link with its human-readable name. Use labelled Markdown links in web and Telegram text; the existing iMessage compiler will keep each name and URL human-readable."
@@ -449,6 +530,9 @@ function deliveryInstruction(
   return [
     "This is a background result, not a user message.",
     browserRunNeedGuidance(needs),
+    facts.interrupted === undefined
+      ? undefined
+      : interruptedInstruction(facts.interrupted),
     stillBuying ? confirmedErrandInstruction : undefined,
     "Tell the user what happened in your own words. Include the material per-option facts the user requested, not only names and URLs.",
     facts.ordered ? placedOrderInstruction : undefined,
@@ -486,11 +570,15 @@ function browserRunReport(
     readonly hasItems?: boolean;
     readonly hasLinks?: boolean;
     readonly images?: readonly BrowserRunImage[];
+    /** The network error that cut off a run allowed to act. */
+    readonly interrupted?: string;
     readonly needs: BrowserRunNeed;
     readonly next?: string;
     readonly ordered?: boolean;
     readonly outcome: string;
     readonly spend?: string;
+    /** The network error a walled run named as its own outcome. */
+    readonly unreachable?: string;
   }
 ) {
   const { images = [], needs, outcome } = options;
@@ -515,8 +603,10 @@ function browserRunReport(
       hasCharges: options.hasCharges === true,
       hasItems: options.hasItems === true,
       hasLinks: options.hasLinks === true,
+      interrupted: options.interrupted,
       next: options.next !== undefined,
       ordered: options.ordered === true,
+      unreachable: needs === "captcha" ? options.unreachable : undefined,
     }),
   ]
     .filter((line) => line !== undefined)

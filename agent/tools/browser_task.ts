@@ -17,6 +17,7 @@ import {
   listBrowserUseRunEvents,
   liveViewUrlFromEvents,
   queueBrowserUseSessionMessage,
+  readBrowserUseRun,
   readBrowserUseRunStatus,
   type BrowserUseCreateRunInput,
   type BrowserUseRunStatus,
@@ -27,7 +28,10 @@ import {
 } from "@agent/lib/browser-use/cdp";
 import {
   browserSecretAliases,
+  phoneSignInDomains,
+  phoneSignInSentence,
   resolveBrowserSecretBindings,
+  signsInByPhone,
 } from "@agent/lib/browser-use/secrets";
 import {
   browserRunReportOwed,
@@ -233,7 +237,11 @@ function nothingDoneYetNote(codeTyped = false) {
 function boundSignInNote(aliases: readonly string[]) {
   const own = aliases.includes(browserSecretAliases.loginUsername);
   const gosuslugi = aliases.includes(browserSecretAliases.gosuslugiUsername);
-  if (!own && !gosuslugi) return undefined;
+  if (!own && !gosuslugi) {
+    return aliases.includes(browserSecretAliases.signinPhone)
+      ? "No login is saved for this site, so the run may sign in there with the user's own phone from Personal Info (bound for this site only) and stops once the site sends a code: then ask the user for that code. Do not call request_vault_setup for this site unless the run's outcome reports Needs: password."
+      : undefined;
+  }
   const password = aliases.includes(
     own
       ? browserSecretAliases.loginPassword
@@ -303,6 +311,38 @@ function captchaLine() {
     "This is never the person's job: they cannot see your screen and will not be asked to do it for you.",
     "Stop with NEEDS: captcha only once the page still blocks you after all of that, and put in DETAILS what it shows.",
   ].join(" ");
+}
+
+const networkErrorNames =
+  "ERR_TUNNEL_CONNECTION_FAILED, ERR_PROXY_CONNECTION_FAILED, ERR_CONNECTION_RESET, ERR_CONNECTION_REFUSED, ERR_CONNECTION_TIMED_OUT, ERR_TIMED_OUT, ERR_EMPTY_RESPONSE or «This site can't be reached»";
+
+/**
+ * A site the network or the proxy never delivers is not the errand's end:
+ * on 25.09 the Госуслуги errand (d06) stopped at «ERR_TUNNEL_CONNECTION_FAILED»
+ * with NEEDS: none, and nobody tried again. Stopping as walled sends it to
+ * the same background retry as an anti-bot check — a fresh browser on
+ * another address. A fallback site that does not load is only skipped.
+ *
+ * Only for a run that cannot act. One allowed to submit or pay may have
+ * clicked «Заказать» or «Оплатить» before the next page failed, and a retry
+ * would do it again: it reloads nothing, clicks nothing again, and reports
+ * what it clicked for the person to check.
+ */
+function unreachableLine(canAct: boolean) {
+  if (canAct) {
+    return `If a page does not load because of a network or proxy error — ${networkErrorNames} — do not reload it, go back or click anything again: a submission, order, booking or payment you already clicked may have gone through. Stop with NEEDS: info and say in DETAILS the error, the last thing you clicked and whether it submits, orders, books or pays, and what the page showed before it failed.`;
+  }
+  return `If this errand's Site does not load at all because of a network or proxy error — ${networkErrorNames} — reload it once; if it still does not load, stop with NEEDS: captcha and name the error in DETAILS: the errand is then retried by itself in a fresh browser on another network address. A fallback site that does not load you simply skip for the next one.`;
+}
+
+/**
+ * «К восьми вечера» with a basket that showed only «Доставка — 5–10 минут»
+ * (RU 25.09, d05): the run neither chose the slot nor said there was none,
+ * and the person was never told their time could not be had.
+ */
+function deliveryTimeLine(errand: string) {
+  if (!deliveryErrandPattern.test(errand)) return undefined;
+  return "When the errand names a time for the delivery («к 20:00», «к восьми вечера», «на завтра к обеду»), choose the delivery slot for that time. When the site offers only immediate delivery («5–10 минут», «через час») or no slot at that time, do not pick another time: say in DETAILS that the requested time cannot be chosen and what the site offers instead.";
 }
 
 /**
@@ -462,7 +502,8 @@ const confirmedStopLine =
  */
 function commitmentLine(
   consent: SubmissionConsent | undefined,
-  deliveryAddress = false
+  deliveryAddress = false,
+  phoneSignIn = false
 ) {
   if (consent?.kind === "confirmed") {
     const cap = consent.submission.paymentCapRub;
@@ -491,9 +532,11 @@ function commitmentLine(
   }
   return [
     "The person has not approved acting in their name on this errand. Never book or reserve anything (not even with free cancellation), never make an appointment, register, sign up, apply or place an order, and never submit a contact form, request, application, callback or message to a business or a person.",
-    deliveryAddress
-      ? "Never type the person's name, phone number or email into any site, and their address only where the delivery-address paragraph below allows. Search, compare and read only, then report the options with their links: when the errand asks you to find or recommend something, the recommendation is the end of the errand."
-      : "Never type the person's name, phone number, email or address into any site. Search, compare and read only, then report the options with their links: when the errand asks you to find or recommend something, the recommendation is the end of the errand.",
+    `${
+      deliveryAddress
+        ? "Never type the person's name, phone number or email into any site, and their address only where the delivery-address paragraph below allows."
+        : "Never type the person's name, phone number, email or address into any site."
+    }${phoneSignIn ? " Their phone goes only where the sign-in paragraph below allows, to sign in and for nothing else." : ""} Search, compare and read only, then report the options with their links: when the errand asks you to find or recommend something, the recommendation is the end of the errand.`,
     documentNumbersLine,
     "If going further would need a booking, a request or the person's details, stop there and end with NEEDS: decision, saying in DETAILS what you would submit, where, and when.",
     "When the errand asks for something to be booked, bought or ordered rather than only found, the person confirms it once you have found it: choose the one option that best fits every condition of the errand and take it as far as you can without their details or a payment — the train and seats picked, the item in the basket, the slot selected — and leave that page open. Put that option first in ITEMS with everything the person would confirm (its exact name, the date and time, the seats, the price with every fee, its link), then the next best options.",
@@ -586,6 +629,7 @@ function ticketLine(errand: string) {
     flight
       ? "«С багажом» means a checked bag in the fare (20–23 kg), not only hand luggage: compare fares with the checked bag included, and when the cheapest fare has none, say what the bag adds."
       : undefined,
+    "When the errand asks for a return too, it is one errand: search the outbound and the return in this same run, each on its own date and time window, and report both, rather than leaving the return for later.",
     "The price that counts is the final one at checkout with every agency or service fee, the seat and the bag; report that, not the search price.",
     "A metasearch (Aviasales, Яндекс Путешествия) only compares prices: you may look there, but take the ticket up to its final step only on this errand's Site, where the saved card and sign-in work. When a better fare is sold only by another seller, put it in ITEMS with its link and price and stop there with NEEDS: decision rather than staging it on that site; and when the price on the Site differs from what the metasearch showed, report both.",
     flight
@@ -673,18 +717,56 @@ function gosuslugiSignInLine(
   }
   const own = aliases.includes(browserSecretAliases.loginUsername);
   const host = site === undefined ? undefined : URL.parse(site)?.hostname;
-  return `This errand's site${host === undefined ? "" : ` (${host})`} signs people in through Госуслуги: choose «Войти через Госуслуги» (or «Госуслуги», «ЕСИА») on its own sign-in page, and on the gosuslugi.ru page it opens use ${browserSecretAliases.gosuslugiUsername}${aliases.includes(browserSecretAliases.gosuslugiPassword) ? ` and ${browserSecretAliases.gosuslugiPassword}` : ""}. They are for signing in to this errand's site only, never to another site that sends you to Госуслуги, and they work only on gosuslugi.ru, never in the site's own form.${own ? " Try the site's own sign-in first; use Госуслуги when that one fails." : ""} If Госуслуги then asks for a code or a confirmation, the first rule of this run applies.`;
+  const digits = aliases.includes(browserSecretAliases.gosuslugiPhoneDigits)
+    ? ` ${secretPhoneFieldLine(browserSecretAliases.gosuslugiUsername, browserSecretAliases.gosuslugiPhoneDigits)}`
+    : "";
+  return `This errand's site${host === undefined ? "" : ` (${host})`} signs people in through Госуслуги: choose «Войти через Госуслуги» (or «Госуслуги», «ЕСИА») on its own sign-in page, and on the gosuslugi.ru page it opens use ${browserSecretAliases.gosuslugiUsername}${aliases.includes(browserSecretAliases.gosuslugiPassword) ? ` and ${browserSecretAliases.gosuslugiPassword}` : ""}.${digits} They are for signing in to this errand's site only, never to another site that sends you to Госуслуги, and they work only on gosuslugi.ru, never in the site's own form.${own ? " Try the site's own sign-in first; use Госуслуги when that one fails." : ""} If Госуслуги then asks for a code or a confirmation, the first rule of this run applies.`;
+}
+
+/**
+ * Signing in with the person's own phone where no login is saved. Ozon,
+ * Wildberries, Самокат and Яндекс sign people in by phone and a code, and a
+ * run stopped at Ozon's sign-in with NEEDS: password (RU 25.09, d04): the
+ * person only heard «сохраните пароль в сейфе» for a site that has none.
+ * Signing in acts in nobody's name — it sends the person a code, the run
+ * stops on it, and the code reaches the site only from their own message —
+ * so it needs no card. The phone is a secret bound to the errand's own
+ * registrable domain (`signin_phone`), never text in the task: a page, a
+ * redirect or a fallback site cannot get it typed anywhere else.
+ */
+function phoneSignInLine(aliases: readonly string[], site: string | undefined) {
+  if (!aliases.includes(browserSecretAliases.signinPhone)) return undefined;
+  const host = site === undefined ? undefined : URL.parse(site)?.hostname;
+  const where = host === undefined || host === "" ? "the errand's Site" : host;
+  const [domain] = site === undefined ? [] : phoneSignInDomains(site);
+  const digits = aliases.includes(browserSecretAliases.signinPhoneDigits)
+    ? ` If the phone field already shows the country code (+7) or a mask, ask for ${browserSecretAliases.signinPhoneDigits} instead — the same number as only the 10 digits after it (no +7, no 8, no spaces); if the site rejects the format, clear the field and try once with the other one, then stop with NEEDS: info describing what the field expects.`
+    : "";
+  return `No saved password is available for ${where}. ${phoneSignInSentence}${digits} It works only on ${domain ?? where} and its own sign-in pages; never try it on another site, and no other personal detail goes with it. Stop right after the site sends the code, with NEEDS: sms_code (or push), and put the masked phone the page shows in DETAILS. If ${where} offers only a password sign-in, stop with NEEDS: password instead of guessing one.`;
+}
+
+/** How to type a saved phone login, which the run types by its alias. */
+function secretPhoneFieldLine(usernameAlias: string, digitsAlias: string) {
+  return `${usernameAlias} is a phone number. If the phone field already shows the country code (+7) or a mask, ask for ${digitsAlias} instead — the same number as only the 10 digits after it (no +7, no 8, no spaces); if the site rejects the format, clear the field and try once with the other one, then stop with NEEDS: info describing what the field expects.`;
 }
 
 function credentialsLine(aliases: readonly string[], site: string | undefined) {
-  return aliases.length === 0
-    ? "No stored credentials are available for this run. If the site asks you to sign in, stop with NEEDS: password instead of guessing one."
-    : [
-        `Credentials are attached as secrets: focus the field and ask for the secret by name — ${aliases.join(", ")}. The server types the values; you never see them.`,
-        gosuslugiSignInLine(aliases, site),
-      ]
-        .filter((line) => line !== undefined)
-        .join(" ");
+  if (aliases.length === 0) {
+    return "No stored credentials are available for this run. If the site asks you to sign in, stop with NEEDS: password instead of guessing one.";
+  }
+  return [
+    `Credentials are attached as secrets: focus the field and ask for the secret by name — ${aliases.join(", ")}. The server types the values; you never see them.`,
+    aliases.includes(browserSecretAliases.loginPhoneDigits)
+      ? secretPhoneFieldLine(
+          browserSecretAliases.loginUsername,
+          browserSecretAliases.loginPhoneDigits
+        )
+      : undefined,
+    gosuslugiSignInLine(aliases, site),
+    phoneSignInLine(aliases, site),
+  ]
+    .filter((line) => line !== undefined)
+    .join(" ");
 }
 
 export function composeBrowserTask(options: {
@@ -704,6 +786,9 @@ export function composeBrowserTask(options: {
   const address = options.consent
     ? undefined
     : deliveryAddressLine(options.deliveryAddress);
+  const phoneSignIn = options.aliases.includes(
+    browserSecretAliases.signinPhone
+  );
   return [
     options.site
       ? `${options.errand}\n\nSite: ${options.site}`
@@ -711,10 +796,11 @@ export function composeBrowserTask(options: {
     personStepLine(),
     repeatOrderLine(options.errand),
     ticketLine(options.errand),
+    deliveryTimeLine(options.errand),
     publicServiceLine(options.errand),
     homeLine(options.home),
     searchLine(),
-    commitmentLine(options.consent, address !== undefined),
+    commitmentLine(options.consent, address !== undefined, phoneSignIn),
     address,
     paymentLine(options.allowPayment),
     budgetLine(options.allowPayment),
@@ -722,6 +808,7 @@ export function composeBrowserTask(options: {
     credentialsLine(options.aliases, options.site),
     gosuslugiSignInRule(options.site, options.consent?.kind === "confirmed"),
     captchaLine(),
+    unreachableLine(options.consent !== undefined || options.allowPayment),
     imagesContract(options.collectImages),
     outcomeContract(),
   ]
@@ -758,6 +845,9 @@ export function composeBrowserContinuation(options: {
     options.consent || options.done === true
       ? undefined
       : deliveryAddressLine(options.deliveryAddress);
+  const phoneSignIn = options.aliases.includes(
+    browserSecretAliases.signinPhone
+  );
   return [
     options.message,
     [
@@ -770,7 +860,7 @@ export function composeBrowserContinuation(options: {
     options.done === true && options.consent === undefined
       ? errandDoneLine
       : undefined,
-    commitmentLine(options.consent, address !== undefined),
+    commitmentLine(options.consent, address !== undefined, phoneSignIn),
     address,
     paymentLine(options.allowPayment),
     options.searching ? budgetLine(options.allowPayment) : undefined,
@@ -778,6 +868,7 @@ export function composeBrowserContinuation(options: {
     credentialsLine(options.aliases, options.site),
     gosuslugiSignInRule(options.site, options.consent?.kind === "confirmed"),
     captchaLine(),
+    unreachableLine(options.consent !== undefined || options.allowPayment),
     imagesContract(options.collectImages),
     outcomeContract(),
   ]
@@ -1588,6 +1679,42 @@ function turnWords(
   return { personTurn, words: words.length > 0 ? words : null };
 }
 
+/**
+ * Whether a follow-up may sign in with the person's phone: the person
+ * opened this turn, or it continues — in a turn of this conversation, a
+ * browser report's — an errand started in this same session, not by a
+ * background worker, whose runs keep the worker's own session.
+ */
+function phoneSignInAllowed(
+  context: ToolContext,
+  byPerson: boolean,
+  row: ErrandRow
+) {
+  if (byPerson) return true;
+  return (
+    resolveModeValue(context, { interactive: true }) === true &&
+    row.rootSessionId === context.session.id
+  );
+}
+
+/**
+ * Whether the run a follow-up replaces was itself told to sign in with the
+ * person's phone, which only an errand whose start bound it carries on. The
+ * row's site says less: a follow-up of an errand started without one
+ * records the site it brought.
+ */
+async function ranWithPhoneSignIn(runId: string) {
+  try {
+    return signsInByPhone((await readBrowserUseRun(runId)).task);
+  } catch (error) {
+    console.warn("[browser-use] the replaced run's task could not be read", {
+      cause: error,
+      runId,
+    });
+    return false;
+  }
+}
+
 /** Whether `said` is a code the person sent, to type straight into the page. */
 function personCodeToType(said: string, words: readonly string[] | null) {
   const code = oneTimeCodeFromMessage(said);
@@ -2290,6 +2417,9 @@ async function runBrowserTask(
         workspaceProfileId(scope),
         resolveBrowserSecretBindings(scope, {
           allowPayment,
+          // Only an errand the person asked for signs in with their phone:
+          // a scheduled or background run never sends them a code.
+          phoneSignIn: byPerson,
           site: input.site,
         }),
         browserRunFacts(scope),
@@ -2651,7 +2781,16 @@ async function runBrowserTask(
       // No quota gate: `browserRunQuotaGate` counts as it reads, and a
       // continuation is the same errand the month was already charged for.
       const [secrets, facts] = await Promise.all([
-        resolveBrowserSecretBindings(scope, { allowPayment, site }),
+        resolveBrowserSecretBindings(scope, {
+          allowPayment,
+          // Only where the errand's start bound it: a follow-up never brings
+          // a host for the phone, even one an earlier follow-up recorded.
+          phoneSignIn:
+            row.site !== null &&
+            phoneSignInAllowed(context, byPerson, row) &&
+            (await ranWithPhoneSignIn(row.id)),
+          site,
+        }),
         browserRunFacts(scope),
       ]);
       const profileId = row.profileId ?? (await workspaceProfileId(scope));
@@ -2938,7 +3077,7 @@ async function runBrowserTask(
 }
 
 const browserTaskDescription =
-  "Run one errand on a website through a hosted cloud browser that can sign in, fill forms, and complete a checkout. Use it when the user wants something done on a site; use web_search and web_fetch instead for reading public pages. Start exactly one run per errand and pass the site's origin so saved credentials can be bound to it; pick a site that serves the user's country and address, preferring local marketplaces over a global brand site that does not ship there. Write the errand short: the cloud browser is itself an agent, so give it the goal, the hard constraints in the user's own words, the saved preferences that bear on it, two or three fallback sites, and what to report back — not a click-by-click script. The run is told the user's city and country from Personal Info and asked to report its best partial results after about 15 minutes of searching. Searching and comparing tickets, goods or hotels on a site need no card and no approval: start such an errand right away. Recommending a place or a person (where to dine, who can fix it) is done with web_search, web_fetch and route_time, not a run: end with one question offering the booking, and start only once the user agrees. Doing anything in the user's name — booking or reserving (even free and freely cancelled), making an appointment, signing up, ordering, filing an application, applying to a job, issuing a receipt, or sending a request, message or contact form, or typing their name, phone, email or address into a site — needs allowSubmit: true with submission, which you set only when the user explicitly asked for exactly that; a request to find or recommend options ends at the recommendation, so leave it unset and offer the booking as the next step. allowSubmit puts one native approval card in front of the user that shows submission — what, where, for whom, which of their details go, the date or slot and the cost — so it has to name the one option they confirm. When the user named it exactly (a table at a place and hour), start with it straight away. When it still has to be found (a train after 18:00 under a budget, the usual item, a doctor next week, a barbershop known only by its street), start without allowSubmit: the run picks the best fit, stages it up to the final step and reports it; once that report arrives, continue that run with allowSubmit and a submission naming exactly that option and its real total in chargeRub — the one card. Never ask in text first, and take what you do not know from the profile, memory and the vault, or a sensible default you name afterwards. When the user declines the card, nothing is lost: show the options the run found with their prices and links and ask what to change, rather than saying only that nothing was booked. When the errand is paid, put its rouble total in submission.chargeRub: that one card then also approves paying up to it with a small margin, so there is no second question about the payment. Once confirmed, the run submits exactly that and nothing else. When a standing permission the user gave (standing_permission) covers this kind of errand on this site at this cost, the tool shows no card at all in a turn the user's own message started; the run is then held to that site and that kind of errand, with no fallback site for the submission, so pass the errand's site — a permission covers no errand started without one. In the turn that reports a browser run neither a standing permission nor an earlier confirmation acts: pass the submission and the user confirms it on a card. A confirmed errand keeps its confirmation, payment included, through its follow-ups, background retries and a start from the queue until what it allowed is done: once the booking, order or payment went through, a follow-up («где машина?») only looks and checks, and a new errand, another kind, slot or organisation, or a total above what was approved needs its own card. A scheduled or background run is refused allowSubmit and allowPayment, standing permission or not, and cannot steer an errand that acts in the user's name: there it only searches and stages. A run with no payment allowed stops before the final step of anything that charges or commits money (prepayment, binding a card, pay on delivery or at the property, a non-refundable rate, a cancellation fee) with NEEDS: payment and the TOTAL. For an errand the user asked you to do, continue it then with allowSubmit and a submission naming the option it staged with the real chargeRub — the card shows the total, so do not ask in text first; or, with no card at all, with allowPayment: true and withinSpendLimit when the payment may fit the user's standing spend limit: the tool decides, reserves the amount and caps the run; when it answers needs_approval, ask the user once. Every follow-up for that errand — an answer, a code the user typed, a changed constraint — goes through continue with the same runId, never a second start: continue works in the same browser, on the tab and the signed-in account the run already has. When the previous run has already finished, continue starts a follow-up run in that same browser and returns a NEW runId; use that one from then on. «Привяжи карту» is approval to bind the saved card, not to buy anything: pass allowPayment: true with submission naming it, and the user confirms it on the card. With allowSubmit, the person's name, phone, email and addresses from the profile and from the vault are typed into forms automatically, so never ask for a phone number or an address the user said is saved: start the errand and let the run use it. Without it the run types none of them, except that an errand about delivery (deliveryAddress, or one that names delivery) gets the saved delivery address alone for the site's own address picker, so stock, slots and fees are for the user's address from the first run. The run signs in with vault credentials the models involved never see, so never ask the user for a password: when none is stored, call request_vault_setup. The run solves CAPTCHAs and anti-bot checks itself as it goes, and they are never the user's to solve: never tell the user you cannot pass one, never ask them to pass it, and never hand them the live view for one. A run the site stops at an anti-bot check is retried in the background by itself — a fresh browser on another address, on the same profile, up to five attempts over about half an hour — and its result reaches you only once the errand is done or the site stayed blocked; status and continue on the old runId follow the errand to its newest run. Give the user the live-view link only when the run is blocked on something only they can do — 3-D Secure, a push approval, a sign-in you cannot complete — and never forward a one-time code back to the user. Pass collectImages: true when the user asked for photos or pictures of what the errand finds; the run always saves a screenshot of the page with the outcome, and with the flag it saves pictures of the items too. Every saved image comes back with the outcome as an artifact id you attach in send_message as ![caption](/artifacts/id) — that is how the person gets the real picture rather than a link. When the cloud browser service is at capacity, start answers status queued with a queued: run id: the errand starts by itself within minutes, so tell the user it is queued and never start it again; status unavailable means the service is out of credits, and nothing starts until the owner tops it up. The run continues in the background and its result arrives later as a new message, so do not wait on it. When the user asks how an errand went («ну что там?»), answer from its outcome if they already heard it, or call status: for a finished run it returns the outcome to retell. continue is for something new from the user, quoted word for word in personSaid — never a code, a consent or a condition they did not write, and never to ask the run how it went; on a finished run whose outcome the user has not heard yet, it only hands that outcome back.";
+  "Run one errand on a website through a hosted cloud browser that can sign in, fill forms, and complete a checkout. Use it when the user wants something done on a site; use web_search and web_fetch instead for reading public pages. Start exactly one run per errand and pass the site's origin so saved credentials can be bound to it; pick a site that serves the user's country and address, preferring local marketplaces over a global brand site that does not ship there. Write the errand short: the cloud browser is itself an agent, so give it the goal, the hard constraints in the user's own words, the saved preferences that bear on it, two or three fallback sites, and what to report back — not a click-by-click script. A round trip is one errand: put both directions, each with its date and time window, into the one start, and the run searches and reports both — never leave the return for later. A delivery time the user named («к восьми вечера») goes into the errand too: the run takes that slot or reports that the site offers only immediate delivery, and then tell the user plainly that their time cannot be had. The run is told the user's city and country from Personal Info and asked to report its best partial results after about 15 minutes of searching. Searching and comparing tickets, goods or hotels on a site need no card and no approval: start such an errand right away. Recommending a place or a person (where to dine, who can fix it) is done with web_search, web_fetch and route_time, not a run: end with one question offering the booking, and start only once the user agrees. Doing anything in the user's name — booking or reserving (even free and freely cancelled), making an appointment, signing up, ordering, filing an application, applying to a job, issuing a receipt, or sending a request, message or contact form, or typing their name, phone, email or address into a site's form — needs allowSubmit: true with submission (signing in with their own phone, below, is the one other exception), which you set only when the user explicitly asked for exactly that; a request to find or recommend options ends at the recommendation, so leave it unset and offer the booking as the next step. allowSubmit puts one native approval card in front of the user that shows submission — what, where, for whom, which of their details go, the date or slot and the cost — so it has to name the one option they confirm. When the user named it exactly (a table at a place and hour), start with it straight away. When it still has to be found (a train after 18:00 under a budget, the usual item, a doctor next week, a barbershop known only by its street), start without allowSubmit: the run picks the best fit, stages it up to the final step and reports it; once that report arrives, continue that run with allowSubmit and a submission naming exactly that option and its real total in chargeRub — the one card. Never ask in text first, and take what you do not know from the profile, memory and the vault, or a sensible default you name afterwards. When the user declines the card, nothing is lost: show the options the run found with their prices and links and ask what to change, rather than saying only that nothing was booked. When the errand is paid, put its rouble total in submission.chargeRub: that one card then also approves paying up to it with a small margin, so there is no second question about the payment. Once confirmed, the run submits exactly that and nothing else. When a standing permission the user gave (standing_permission) covers this kind of errand on this site at this cost, the tool shows no card at all in a turn the user's own message started; the run is then held to that site and that kind of errand, with no fallback site for the submission, so pass the errand's site — a permission covers no errand started without one. In the turn that reports a browser run neither a standing permission nor an earlier confirmation acts: pass the submission and the user confirms it on a card. A confirmed errand keeps its confirmation, payment included, through its follow-ups, background retries and a start from the queue until what it allowed is done: once the booking, order or payment went through, a follow-up («где машина?») only looks and checks, and a new errand, another kind, slot or organisation, or a total above what was approved needs its own card. A scheduled or background run is refused allowSubmit and allowPayment, standing permission or not, and cannot steer an errand that acts in the user's name: there it only searches and stages. A run with no payment allowed stops before the final step of anything that charges or commits money (prepayment, binding a card, pay on delivery or at the property, a non-refundable rate, a cancellation fee) with NEEDS: payment and the TOTAL. For an errand the user asked you to do, continue it then with allowSubmit and a submission naming the option it staged with the real chargeRub — the card shows the total, so do not ask in text first; or, with no card at all, with allowPayment: true and withinSpendLimit when the payment may fit the user's standing spend limit: the tool decides, reserves the amount and caps the run; when it answers needs_approval, ask the user once. Every follow-up for that errand — an answer, a code the user typed, a changed constraint — goes through continue with the same runId, never a second start: continue works in the same browser, on the tab and the signed-in account the run already has. When the previous run has already finished, continue starts a follow-up run in that same browser and returns a NEW runId; use that one from then on. «Привяжи карту» is approval to bind the saved card, not to buy anything: pass allowPayment: true with submission naming it, and the user confirms it on the card. With allowSubmit, the person's name, phone, email and addresses from the profile and from the vault are typed into forms automatically, so never ask for a phone number or an address the user said is saved: start the errand and let the run use it. Without it the run types none of them, except that an errand about delivery (deliveryAddress, or one that names delivery) gets the saved delivery address alone for the site's own address picker, so stock, slots and fees are for the user's address from the first run, and an errand the user asked for gets their own phone only to sign in on its own site. The run signs in with vault credentials the models involved never see, so never ask the user for a password. With no login saved for the errand's site, it signs in there with the user's phone from Personal Info when the site offers sign-in by an SMS or push code, and stops once the code is sent (NEEDS: sms_code): ask the user for that code. The phone goes to the run as a secret that works only on the domain of the site passed on start — never on fallback sites, never for an errand started without a site, and a continue naming another site does not bring it. Only when the site needs a password that is not stored, call request_vault_setup. The run solves CAPTCHAs and anti-bot checks itself as it goes, and they are never the user's to solve: never tell the user you cannot pass one, never ask them to pass it, and never hand them the live view for one. A run the site stops at an anti-bot check is retried in the background by itself — a fresh browser on another address, on the same profile, up to five attempts over about half an hour — and its result reaches you only once the errand is done or the site stayed blocked; status and continue on the old runId follow the errand to its newest run. Give the user the live-view link only when the run is blocked on something only they can do — 3-D Secure, a push approval, a sign-in you cannot complete — and never forward a one-time code back to the user. Pass collectImages: true when the user asked for photos or pictures of what the errand finds; the run always saves a screenshot of the page with the outcome, and with the flag it saves pictures of the items too. Every saved image comes back with the outcome as an artifact id you attach in send_message as ![caption](/artifacts/id) — that is how the person gets the real picture rather than a link. When the cloud browser service is at capacity, start answers status queued with a queued: run id: the errand starts by itself within minutes, so tell the user it is queued and never start it again; status unavailable means the service is out of credits, and nothing starts until the owner tops it up. The run continues in the background and its result arrives later as a new message, so do not wait on it. When the user asks how an errand went («ну что там?»), answer from its outcome if they already heard it, or call status: for a finished run it returns the outcome to retell. continue is for something new from the user, quoted word for word in personSaid — never a code, a consent or a condition they did not write, and never to ask the run how it went; on a finished run whose outcome the user has not heard yet, it only hands that outcome back.";
 
 export const browserTask = defineTool({
   approval: ({ session, toolInput }) =>

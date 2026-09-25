@@ -47,8 +47,10 @@ function savedRule(turn: EveEvalTurn) {
 
 /** Tools that delete or take away what the person did not ask to lose. */
 const destructiveTools = [
+  "profile__forget_all",
   "profile__remove_memory",
   "workstreams__forget",
+  "workstreams__forget_all",
   "schedules-update",
   "calendar-delete-event",
   "personal_info__update",

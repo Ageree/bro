@@ -6,6 +6,7 @@ import {
   parsePaymentCardSecret,
 } from "@shared/vault/schema";
 import { readVaultItems, readVaultSecret } from "@db/services/vault";
+import { readOwnPhone } from "./facts";
 import type { BrowserUseSecretBinding } from "./client";
 import {
   gosuslugiDomain,
@@ -36,10 +37,62 @@ export const browserSecretAliases = {
   cardHolder: "card_holder",
   cardNumber: "card_number",
   gosuslugiPassword: "gosuslugi_password",
+  gosuslugiPhoneDigits: "gosuslugi_phone_digits",
   gosuslugiUsername: "gosuslugi_username",
   loginPassword: "login_password",
+  loginPhoneDigits: "login_phone_digits",
   loginUsername: "login_username",
+  signinPhone: "signin_phone",
+  signinPhoneDigits: "signin_phone_digits",
 } as const;
+
+/**
+ * A phone as people write it — «+7 (916) 123–45–67», «8 916 123 45 67
+ * (моб.)» — as its digits alone, with a plus only when one comes before
+ * them. Undefined when there are no digits at all.
+ */
+function compactPhone(phone: string) {
+  const digits = phone.replaceAll(/\D/gu, "");
+  if (digits === "") return undefined;
+  return /^\D*\+/u.test(phone) ? `+${digits}` : digits;
+}
+
+/**
+ * A Russian phone number as the 10 digits after +7 — what a field that
+ * already shows «+7» or a mask «+7 (___) ___-__-__» takes: Ozon rejected a
+ * saved «+7…» login typed into such a field as a malformed phone (RU 25.09,
+ * d04). Undefined for any other number.
+ */
+export function nationalPhoneDigits(phone: string) {
+  const compact = compactPhone(phone) ?? "";
+  // +7, or 7 or 8 without a plus, then ten digits of a Russian area or mobile
+  // code — never +84, +852 or any other country's number.
+  const match = /^(?:\+7|7|8)([3489]\d{9})$/u.exec(compact);
+  return match?.[1];
+}
+
+/**
+ * The sentence, word for word, that tells a run to sign in with the
+ * person's phone. It is also how a queued start, a background retry and a
+ * follow-up know the errand's start bound the phone: the bare alias can turn
+ * up in errand text a model wrote, this sentence only where the tool put it.
+ */
+export const phoneSignInSentence = `If the site asks you to sign in and offers to sign in by phone number with a code sent by SMS or a push, sign in to the person's own account there with their phone: focus the phone field and ask for the secret ${browserSecretAliases.signinPhone}.`;
+
+/**
+ * The same phone login as its 10 digits, under an alias of its own, for a
+ * field that already shows the country code: the run never sees the value,
+ * so it cannot drop the +7 itself.
+ */
+function phoneDigitsBinding(
+  alias: string,
+  identifier: { readonly type: string; readonly value: string },
+  domains: readonly string[]
+) {
+  if (identifier.type !== "phone") return [];
+  const digits = nationalPhoneDigits(identifier.value);
+  return digits === undefined ? [] : [binding(alias, digits, domains)];
+}
 
 export interface BrowserVaultEntry {
   readonly account: string;
@@ -61,6 +114,45 @@ function secretHost(raw: string) {
   if (!/^[a-z0-9.-]+$/u.test(stripped)) return undefined;
   if (isIP(stripped) !== 0) return undefined;
   return stripped;
+}
+
+/**
+ * Where the person's phone may be typed to sign in: the errand's site and
+ * every host of its registrable domain — Yandex signs people in on
+ * passport.yandex.ru for an errand on market.yandex.ru — and nowhere else.
+ * Nothing for a host whose registrable domain is a public suffix.
+ */
+export function phoneSignInDomains(site: string) {
+  const host = secretHost(site);
+  const domain = host === undefined ? undefined : registrableDomain(host);
+  if (domain === undefined || isPublicSuffix(domain)) return [];
+  return [domain];
+}
+
+/**
+ * The person's own phone, bound as a secret for signing in on the errand's
+ * site where no login is saved for it: the run types it by alias and never
+ * sees it, and Browser Use types it only on that site's registrable domain,
+ * whatever a page or a redirect asks. A Russian number goes as +7 and its
+ * ten digits too, for a field that already shows «+7».
+ */
+function phoneSignInBindings(phone: string, site: string) {
+  const domains = phoneSignInDomains(site);
+  const compact = compactPhone(phone);
+  if (domains.length === 0 || compact === undefined) return [];
+  const digits = nationalPhoneDigits(compact);
+  return [
+    // The number alone: a note written next to it in the profile is never
+    // typed into a site.
+    binding(
+      browserSecretAliases.signinPhone,
+      digits === undefined ? compact : `+7${digits}`,
+      domains
+    ),
+    ...(digits === undefined
+      ? []
+      : [binding(browserSecretAliases.signinPhoneDigits, digits, domains)]),
+  ];
 }
 
 /**
@@ -200,6 +292,8 @@ export function browserSecretBindings(options: {
   readonly card: string | undefined;
   readonly gosuslugiLogin?: string | undefined;
   readonly login: string | undefined;
+  /** The person's own phone, for a site no saved login signs in to. */
+  readonly signInPhone?: string | undefined;
   readonly site: string;
 }) {
   const bindings: BrowserUseSecretBinding[] = [];
@@ -210,6 +304,11 @@ export function browserSecretBindings(options: {
         binding(
           browserSecretAliases.gosuslugiUsername,
           payload.identifier.value,
+          [gosuslugiDomain]
+        ),
+        ...phoneDigitsBinding(
+          browserSecretAliases.gosuslugiPhoneDigits,
+          payload.identifier,
           [gosuslugiDomain]
         )
       );
@@ -236,6 +335,11 @@ export function browserSecretBindings(options: {
           browserSecretAliases.loginUsername,
           payload.identifier.value,
           domains
+        ),
+        ...phoneDigitsBinding(
+          browserSecretAliases.loginPhoneDigits,
+          payload.identifier,
+          domains
         )
       );
       if (payload.authentication.type === "password") {
@@ -248,6 +352,14 @@ export function browserSecretBindings(options: {
         );
       }
     }
+  }
+  const signedIn = bindings.some(
+    (item) =>
+      item.alias === browserSecretAliases.loginUsername ||
+      item.alias === browserSecretAliases.gosuslugiUsername
+  );
+  if (options.signInPhone !== undefined && !signedIn) {
+    bindings.push(...phoneSignInBindings(options.signInPhone, options.site));
   }
   if (options.card) {
     const card = parsePaymentCardSecret(options.card);
@@ -269,27 +381,46 @@ export function browserSecretBindings(options: {
   };
 }
 
-/** Read the selected vault secrets and bind them, all server-side. */
+/**
+ * Read the selected vault secrets and bind them, all server-side.
+ * `phoneSignIn`: the errand may sign in on its site with the person's own
+ * phone when no login is saved for it — an errand the person started.
+ */
 export async function resolveBrowserSecretBindings(
   scope: AccessScope,
-  options: { readonly allowPayment: boolean; readonly site: string | undefined }
+  options: {
+    readonly allowPayment: boolean;
+    readonly phoneSignIn?: boolean;
+    readonly site: string | undefined;
+  }
 ) {
   if (!options.site) return { aliases: [], bindings: [] };
   const selected = selectBrowserVaultItems(
     await readVaultItems(scope),
     options
   );
-  const [login, gosuslugiLogin, card] = await Promise.all([
+  const [login, gosuslugiLogin, card, signInPhone] = await Promise.all([
     selected.loginId ? readVaultSecret(scope, selected.loginId) : undefined,
     selected.gosuslugiLoginId
       ? readVaultSecret(scope, selected.gosuslugiLoginId)
       : undefined,
     selected.paymentId ? readVaultSecret(scope, selected.paymentId) : undefined,
+    options.phoneSignIn === true ? readOwnPhone(scope) : undefined,
   ]);
   return browserSecretBindings({
     card,
     gosuslugiLogin,
     login,
+    signInPhone,
     site: options.site,
   });
+}
+
+/**
+ * Whether a composed run was told to sign in with the person's phone, which
+ * only an errand whose start bound it carries on: a queued start, a
+ * background retry and a follow-up bind the phone again only then.
+ */
+export function signsInByPhone(task: string) {
+  return task.includes(phoneSignInSentence);
 }

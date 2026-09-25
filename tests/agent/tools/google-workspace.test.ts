@@ -107,6 +107,26 @@ describe("Gmail reads in one turn", () => {
     await search.execute({ maxResults: 10, query: "from:bank" }, toolContext());
     expect(gmail.search).toHaveBeenCalledOnce();
   });
+
+  it("says what to try after a search that found nothing", async () => {
+    const search = await resolveGmailSearch([
+      Object.assign(
+        {
+          content: "там в почте счёт от репетитора, разберись",
+          role: "user" as const,
+        },
+        { kind: "user" }
+      ),
+    ]);
+
+    const empty = await search.execute(
+      { maxResults: 15, query: "репетитор счёт" },
+      toolContext()
+    );
+
+    expect(empty).toMatchObject({ messages: [] });
+    expect(JSON.stringify(empty)).toContain("contain every one of these words");
+  });
 });
 
 describe("Gmail changes in one turn", () => {

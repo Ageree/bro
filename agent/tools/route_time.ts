@@ -186,12 +186,34 @@ function queryVariants(query: string) {
     .replaceAll(/[«»"“”„]/gu, "")
     .trim();
   const addressOnly = /\d/u.test(name) ? undefined : addressAfterName(address);
+  const first = addressOnly ?? parts.join(", ");
   const variants = [
-    ...(addressOnly === undefined ? [] : [addressOnly]),
+    first,
+    first.replaceAll(buildingPattern, "$1"),
     parts.join(", "),
   ];
   if (bareName.length > 0) variants.push([bareName, ...address].join(", "));
   return [...new Set(variants)];
+}
+
+/**
+ * A building of a house, «7/5 с1» or «12 к2», with the house it belongs to.
+ * The map often knows only the house: live on 25.09 «Большая Дмитровка,
+ * 7/5 с1, Москва» (RU d18, «7/5, стр. 1») came back as the street, and
+ * «Большая Дмитровка, 7/5, Москва» as the house itself.
+ */
+const buildingPattern = /(?<!\d)(\d+(?:\/\d+)?\p{L}?)\s+[кс]\d+(?!\d)/gu;
+
+/**
+ * Says so when the map found the house but not the building asked for:
+ * the time is to the house, a few steps from its building.
+ */
+function buildingNote(query: string, place: MapPlace) {
+  const asked = withHouseShorthand(query).match(buildingPattern)?.[0];
+  if (asked === undefined || /[кс]\d/u.test(place.houseNumber ?? "")) {
+    return undefined;
+  }
+  return `the map knows the house «${place.houseNumber ?? place.label}» but not its building «${asked}»; the time is to that house`;
 }
 
 /**
@@ -324,7 +346,7 @@ async function measure(
       km: route.km,
       link,
       minutes: route.minutes,
-      note: areaNote(place),
+      note: areaNote(place) ?? buildingNote(entry.query, place),
       place: place.label,
       to: entry.query,
     };

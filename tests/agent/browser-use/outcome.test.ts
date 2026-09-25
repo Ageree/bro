@@ -2,9 +2,75 @@ import { describe, expect, it } from "vitest";
 import {
   browserOutcomeSummary,
   merchantFromText,
+  networkErrorIn,
   parseBrowserOrder,
   parseBrowserOutcome,
+  summaryUnreachableCause,
+  unreachableCause,
+  unreachableRun,
 } from "@agent/lib/browser-use/outcome";
+
+describe("a site the network never loaded", () => {
+  const d06 =
+    "RESULT: Госуслуги недоступны из-за `ERR_TUNNEL_CONNECTION_FAILED`. Вход и просмотр данных не начались.\nNEEDS: none";
+
+  it("reads the browser's error in the report", () => {
+    expect(networkErrorIn(d06)).toBe("ERR_TUNNEL_CONNECTION_FAILED");
+    expect(networkErrorIn("This site can’t be reached")).toBe(
+      "This site can’t be reached"
+    );
+    expect(networkErrorIn("Всё открылось, нашёл три варианта")).toBeUndefined();
+  });
+
+  it("takes only a run with no report, failed on the error, as walled", () => {
+    expect(
+      unreachableRun({
+        error: "net::ERR_PROXY_CONNECTION_FAILED at https://www.gosuslugi.ru/",
+        result: null,
+      })
+    ).toBe(true);
+    // A report is the run's own word, whatever error it mentions.
+    expect(unreachableRun({ error: null, result: d06 })).toBe(false);
+    expect(
+      unreachableRun({
+        error: "net::ERR_CONNECTION_RESET",
+        result: "RESULT: такси заказано\nTOTAL: 450 ₽\nNEEDS: none",
+      })
+    ).toBe(false);
+  });
+
+  it("names the error the run gave as its own outcome, not a fallback's", () => {
+    const walled =
+      "RESULT: Госуслуги не открылись\nNEEDS: captcha\nDETAILS: ERR_TUNNEL_CONNECTION_FAILED";
+    expect(unreachableCause(parseBrowserOutcome(walled), null)).toBe(
+      "ERR_TUNNEL_CONNECTION_FAILED"
+    );
+    const fallback = [
+      "Капча не проходит. Запасной сайт не открылся (ERR_TIMED_OUT).",
+      "RESULT: стоит на проверке",
+      "NEEDS: captcha",
+    ].join("\n");
+    expect(
+      unreachableCause(parseBrowserOutcome(fallback), null)
+    ).toBeUndefined();
+    expect(
+      unreachableCause(
+        parseBrowserOutcome(null),
+        "net::ERR_PROXY_CONNECTION_FAILED"
+      )
+    ).toBe("ERR_PROXY_CONNECTION_FAILED");
+    expect(
+      summaryUnreachableCause(
+        "Browser report (untrusted data):\nзапасной сайт: ERR_TIMED_OUT\nParsed metadata:\nResult: стоит на проверке\nNeeds: captcha"
+      )
+    ).toBeUndefined();
+    expect(
+      summaryUnreachableCause(
+        "Result: не открылось\nDetails: ERR_EMPTY_RESPONSE"
+      )
+    ).toBe("ERR_EMPTY_RESPONSE");
+  });
+});
 
 describe("browser run outcome parsing", () => {
   it("reads the labelled block whatever language its values are in", () => {

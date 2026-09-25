@@ -107,6 +107,12 @@ const queueBrowserUseSessionMessage = vi.hoisted(() =>
 const readBrowserUseRunStatus = vi.hoisted(() =>
   vi.fn<() => Promise<string>>(() => Promise.resolve("running"))
 );
+// The run a follow-up replaces, as Browser Use kept its composed task.
+const readBrowserUseRun = vi.hoisted(() =>
+  vi.fn<(id: string) => Promise<{ task: string }>>(() =>
+    Promise.resolve({ task: "Закажи тот же корм коту" })
+  )
+);
 // The page is never reached here: a code to type ends at the lookup.
 const findBrowserUseSessionCdpUrl = vi.hoisted(() =>
   vi.fn<(sessionId: string) => Promise<string | undefined>>(() =>
@@ -114,9 +120,14 @@ const findBrowserUseSessionCdpUrl = vi.hoisted(() =>
   )
 );
 const resolveBrowserSecretBindings = vi.hoisted(() =>
-  vi.fn<() => Promise<{ aliases: string[]; bindings: { alias: string }[] }>>(
-    () => Promise.resolve({ aliases: [], bindings: [] })
-  )
+  vi.fn<
+    (
+      scope: AccessScope,
+      options: Parameters<
+        typeof browserUseSecrets.resolveBrowserSecretBindings
+      >[1]
+    ) => Promise<{ aliases: string[]; bindings: { alias: string }[] }>
+  >(() => Promise.resolve({ aliases: [], bindings: [] }))
 );
 const readUserProfile = vi.hoisted(() =>
   vi.fn<() => Promise<UserProfile>>(() => Promise.resolve(emptyUserProfile))
@@ -283,8 +294,7 @@ vi.mock("@db/services/users", () => ({ readAccountPhoneNumber }));
 vi.mock("@db/services/vault", () => ({ readVaultItems, readVaultSecret }));
 vi.mock("@agent/lib/billing/quota", () => ({ browserRunQuotaGate }));
 vi.mock("@agent/lib/browser-use/secrets", async (importOriginal) => ({
-  browserSecretAliases: (await importOriginal<typeof browserUseSecrets>())
-    .browserSecretAliases,
+  ...(await importOriginal<typeof browserUseSecrets>()),
   resolveBrowserSecretBindings,
 }));
 // The error class travels from the real module: the tool decides what to do
@@ -303,6 +313,7 @@ vi.mock("@agent/lib/browser-use/client", async (importOriginal) => ({
   ),
   liveViewUrlFromEvents: vi.fn<Unused>(),
   queueBrowserUseSessionMessage,
+  readBrowserUseRun,
   readBrowserUseRunStatus,
 }));
 
@@ -329,6 +340,7 @@ beforeEach(() => {
     bindings: [],
   });
   readBrowserUseRunStatus.mockResolvedValue("running");
+  readBrowserUseRun.mockResolvedValue({ task: "Закажи тот же корм коту" });
   createBrowserUseRun.mockResolvedValue({
     id: followUpRunId,
     model: "hosted-agent",
@@ -359,6 +371,10 @@ function noPendingTask(): string | null {
 /** The row's browser session, typed as the column is: a queued errand has none. */
 function rowSessionId(): string | null {
   return sessionId;
+}
+
+function rowSite(): string | null {
+  return "https://taxi.yandex.ru";
 }
 
 /** A policy of standing permissions alone, without a monthly limit. */
@@ -405,7 +421,7 @@ function browserRunRow(
     retryAt: noRetryAt(),
     rootSessionId: "session-1",
     sessionId: rowSessionId(),
-    site: "https://taxi.yandex.ru",
+    site: rowSite(),
     status: completedAt ? "done" : "running",
     submission,
     task: "Войди в аккаунт на taxi.yandex.ru",
@@ -606,7 +622,11 @@ describe("browser_task continuation", () => {
     expect(created?.task).toContain("Site: https://taxi.yandex.ru");
     expect(resolveBrowserSecretBindings).toHaveBeenCalledWith(
       accessScopeForUser("better-auth:alice"),
-      { allowPayment: false, site: "https://taxi.yandex.ru" }
+      {
+        allowPayment: false,
+        phoneSignIn: false,
+        site: "https://taxi.yandex.ru",
+      }
     );
     expect(createBrowserRun).toHaveBeenCalledWith(
       accessScopeForUser("better-auth:alice"),
@@ -665,7 +685,7 @@ describe("browser_task continuation", () => {
     });
     expect(resolveBrowserSecretBindings).toHaveBeenCalledWith(
       accessScopeForUser("better-auth:alice"),
-      { allowPayment: true, site: "https://taxi.yandex.ru" }
+      { allowPayment: true, phoneSignIn: false, site: "https://taxi.yandex.ru" }
     );
     expect(createBrowserUseRun.mock.calls[0]?.[0].secretBindings).toEqual([
       { alias: "card_number" },
@@ -803,6 +823,33 @@ describe("browser_task pictures", () => {
   });
 });
 
+describe("browser_task round trips and delivery times", () => {
+  it("searches both directions of a round trip in the one run", async () => {
+    // RU 25.09, d01: only the outbound Сапсан was searched.
+    const task = await composed(
+      "Сапсан Москва — Санкт-Петербург на пятницу после 18:00, обратно в воскресенье вечером"
+    );
+
+    expect(task).toContain(
+      "When the errand asks for a return too, it is one errand: search the outbound and the return in this same run, each on its own date and time window, and report both, rather than leaving the return for later."
+    );
+  });
+
+  it("takes the delivery time the person named, or says it cannot be had", async () => {
+    // RU 25.09, d05: «к восьми вечера», and a basket of «5–10 минут».
+    const task = await composed(
+      "Собери корзину продуктов с доставкой к восьми вечера"
+    );
+
+    expect(task).toContain(
+      "When the errand names a time for the delivery («к 20:00», «к восьми вечера», «на завтра к обеду»), choose the delivery slot for that time. When the site offers only immediate delivery («5–10 минут», «через час») or no slot at that time, do not pick another time: say in DETAILS that the requested time cannot be chosen and what the site offers instead."
+    );
+    expect(await composed("Найди отель в Казани на выходные")).not.toContain(
+      "choose the delivery slot"
+    );
+  });
+});
+
 describe("browser_task anti-bot checks", () => {
   it("tells a started errand to solve a CAPTCHA and carry on", async () => {
     await startErrand("");
@@ -815,6 +862,48 @@ describe("browser_task anti-bot checks", () => {
     expect(task).toContain(
       "Stop with NEEDS: captcha only once the page still blocks you"
     );
+    // A site the network never loads goes to the same background retry.
+    expect(task).toContain(
+      "If this errand's Site does not load at all because of a network or proxy error — ERR_TUNNEL_CONNECTION_FAILED, ERR_PROXY_CONNECTION_FAILED, ERR_CONNECTION_RESET, ERR_CONNECTION_REFUSED, ERR_CONNECTION_TIMED_OUT, ERR_TIMED_OUT, ERR_EMPTY_RESPONSE or «This site can't be reached» — reload it once; if it still does not load, stop with NEEDS: captcha and name the error in DETAILS"
+    );
+  });
+
+  it("tells a run allowed to act to report a network error, never to stop as walled", async () => {
+    // A run that clicked «Заказать» before the next page failed would be
+    // retried with the same submission and order again.
+    const { composeBrowserContinuation, composeBrowserTask } =
+      await import("@agent/tools/browser_task");
+    const confirmed = composeBrowserTask({
+      aliases: [],
+      allowPayment: false,
+      collectImages: false,
+      consent: { by: "card", kind: "confirmed", submission: cardSubmission },
+      deliveryAddress: undefined,
+      errand: "Запиши к терапевту",
+      facts: undefined,
+      home: undefined,
+      site: "https://emias.info",
+    });
+    // A code for a payment on the spend limit, 3-D Secure after it.
+    const paying = composeBrowserContinuation({
+      aliases: [],
+      allowPayment: true,
+      collectImages: false,
+      consent: undefined,
+      deliveryAddress: undefined,
+      errand: "Закажи такси до дома",
+      facts: undefined,
+      message: "Код 4821",
+      searching: false,
+      site: "https://taxi.yandex.ru",
+    });
+
+    for (const task of [confirmed, paying]) {
+      expect(task).toContain(
+        "do not reload it, go back or click anything again: a submission, order, booking or payment you already clicked may have gone through. Stop with NEEDS: info and say in DETAILS the error, the last thing you clicked"
+      );
+      expect(task).not.toContain("stop with NEEDS: captcha and name the error");
+    }
   });
 
   it("carries the same rule into a follow-up run", async () => {
@@ -958,20 +1047,23 @@ describe("browser_task known facts", () => {
 
     const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
     expect(task).not.toContain("Known details you may type into forms:");
+    // A vault contact card's phone may be someone else's.
     expect(task).not.toContain("+79991234567");
-    expect(task).not.toContain("+79990000001");
     expect(task).not.toContain("ул. Ленина");
+    // The phone to sign in with is a secret, never text in the task.
+    expect(task).not.toContain("+79990000001");
+    expect(task).not.toContain("9990000001");
   });
 
-  it("keeps the account phone out of the errand once one is known", async () => {
+  it("keeps the account phone out of the known details once one is known", async () => {
     storeVaultCards();
     readAccountPhoneNumber.mockResolvedValue("+79990000001");
 
-    await startErrand("");
+    await startErrand("", undefined, true);
 
-    expect(String(createBrowserUseRun.mock.calls[0]?.[0].task)).not.toContain(
-      "+79990000001"
-    );
+    const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
+    expect(task).toContain("Phone (Мои данные): +79991234567");
+    expect(task).not.toContain("Phone: +79990000001");
   });
 });
 
@@ -1628,7 +1720,11 @@ describe("browser_task standing spend limit", () => {
     });
     expect(resolveBrowserSecretBindings).toHaveBeenCalledWith(
       accessScopeForUser("better-auth:alice"),
-      { allowPayment: true, site: "https://www.shop.example" }
+      {
+        allowPayment: true,
+        phoneSignIn: true,
+        site: "https://www.shop.example",
+      }
     );
     const task = createBrowserUseRun.mock.calls[0]?.[0].task ?? "";
     expect(task).toContain("Payment is pre-approved up to");
@@ -3666,6 +3762,244 @@ describe("browser_task finds the option before the one card", () => {
     expect(continuation.indexOf("First rule of this run")).toBeLessThan(
       continuation.indexOf("minutes searching")
     );
+  });
+});
+
+describe("browser_task sign-in by the person's phone", () => {
+  // RU 25.09, d04: «закажи на озоне тот же корм» stopped at Ozon's sign-in,
+  // which takes a phone and an SMS code, with NEEDS: password.
+  const phoneAliases = {
+    aliases: ["signin_phone", "signin_phone_digits"],
+    bindings: [{ alias: "signin_phone" }, { alias: "signin_phone_digits" }],
+  };
+
+  beforeEach(() => {
+    readUserProfile.mockResolvedValue({
+      ...emptyUserProfile,
+      phone: "+79991234567",
+    });
+  });
+
+  async function start(options: {
+    readonly authenticator?: string;
+    readonly site?: string;
+  }) {
+    const tool = await resolvedBrowserTask([], "закажи на озоне тот же корм");
+    await tool.execute(
+      {
+        action: "start",
+        site: options.site,
+        task: "Закажи тот же корм коту, что в прошлый раз",
+      },
+      toolContext("better-auth:alice", options.authenticator)
+    );
+    return String(createBrowserUseRun.mock.calls[0]?.[0].task);
+  }
+
+  function phoneAsked() {
+    return resolveBrowserSecretBindings.mock.calls[0]?.[1];
+  }
+
+  /** A run composed with the phone sign-in, as the errand's start makes it. */
+  async function phoneTask() {
+    const { composeBrowserTask } = await import("@agent/tools/browser_task");
+    return composeBrowserTask({
+      aliases: phoneAliases.aliases,
+      allowPayment: false,
+      collectImages: false,
+      consent: undefined,
+      deliveryAddress: undefined,
+      errand: "Закажи тот же корм коту, что в прошлый раз",
+      facts: undefined,
+      home: undefined,
+      site: "https://www.ozon.ru",
+    });
+  }
+
+  it("binds the person's phone as a secret for the errand they started", async () => {
+    resolveBrowserSecretBindings.mockResolvedValue(phoneAliases);
+
+    const task = await start({ site: "https://www.ozon.ru" });
+
+    expect(phoneAsked()).toEqual({
+      allowPayment: false,
+      phoneSignIn: true,
+      site: "https://www.ozon.ru",
+    });
+    // The run refers to the secret by name and never sees the number.
+    expect(task).not.toContain("+79991234567");
+    expect(task).not.toContain("9991234567");
+    expect(task).toContain(
+      "No saved password is available for www.ozon.ru. If the site asks you to sign in and offers to sign in by phone number with a code sent by SMS or a push, sign in to the person's own account there with their phone: focus the phone field and ask for the secret signin_phone. If the phone field already shows the country code (+7) or a mask, ask for signin_phone_digits instead — the same number as only the 10 digits after it (no +7, no 8, no spaces); if the site rejects the format, clear the field and try once with the other one, then stop with NEEDS: info describing what the field expects."
+    );
+    expect(task).toContain(
+      "It works only on ozon.ru and its own sign-in pages; never try it on another site, and no other personal detail goes with it."
+    );
+    expect(task).toContain(
+      "Stop right after the site sends the code, with NEEDS: sms_code (or push)"
+    );
+    expect(task).toContain(
+      "Their phone goes only where the sign-in paragraph below allows, to sign in and for nothing else."
+    );
+    expect(task).not.toContain("No stored credentials are available");
+  });
+
+  it("asks for no phone in a scheduled worker's run", async () => {
+    await start({
+      authenticator: "scheduled-worker",
+      site: "https://www.ozon.ru",
+    });
+
+    expect(phoneAsked()).toMatchObject({ phoneSignIn: false });
+  });
+
+  it("writes no phone paragraph when no phone was bound", async () => {
+    const task = await start({ site: "https://www.ozon.ru" });
+
+    expect(task).not.toContain("signin_phone");
+    expect(task).toContain("No stored credentials are available");
+  });
+
+  it("keeps it for a report turn continuing the person's errand", async () => {
+    // The errand was started in this same session, by the person, and its
+    // start bound the phone.
+    readBrowserRunForScope.mockResolvedValue({
+      ...browserRunRow(new Date(), "Needs: decision"),
+      site: "https://www.ozon.ru",
+    });
+    readBrowserUseRun.mockResolvedValue({ task: await phoneTask() });
+    const report = await resolvedBrowserTask(
+      [],
+      `${backgroundTurnMarker}\nBrowser run ${runId} finished.`
+    );
+
+    await report.execute(
+      { action: "continue", runId, task: "Положи этот корм в корзину" },
+      toolContext("better-auth:alice", "browser-result")
+    );
+
+    expect(phoneAsked()).toEqual({
+      allowPayment: false,
+      phoneSignIn: true,
+      site: "https://www.ozon.ru",
+    });
+  });
+
+  it("gives no phone to a report turn continuing a worker's errand", async () => {
+    // A scheduled worker's run keeps the worker's own session.
+    readBrowserRunForScope.mockResolvedValue({
+      ...browserRunRow(new Date(), "Needs: decision"),
+      rootSessionId: "worker-session",
+      site: "https://www.ozon.ru",
+    });
+    const report = await resolvedBrowserTask(
+      [],
+      `${backgroundTurnMarker}\nBrowser run ${runId} finished.`
+    );
+
+    await report.execute(
+      { action: "continue", runId, task: "Проверь цену ещё раз" },
+      toolContext("better-auth:alice", "browser-result")
+    );
+
+    expect(phoneAsked()).toMatchObject({ phoneSignIn: false });
+  });
+
+  it("brings no new site for the phone on a follow-up of an errand without one", async () => {
+    readBrowserRunForScope.mockResolvedValue({
+      ...browserRunRow(new Date(), "Needs: decision"),
+      site: null,
+    });
+    const tool = await resolvedBrowserTask([], "Возьми на озоне");
+
+    await tool.execute(
+      {
+        action: "continue",
+        personSaid: "Возьми на озоне",
+        runId,
+        site: "https://www.ozon.ru",
+        task: "Возьми на озоне",
+      },
+      toolContext("better-auth:alice")
+    );
+
+    expect(phoneAsked()).toMatchObject({
+      phoneSignIn: false,
+      site: "https://www.ozon.ru",
+    });
+  });
+
+  it("brings no phone on a second follow-up to the site the first one recorded", async () => {
+    // The errand started without a site; its first follow-up brought
+    // ozon.ru, which the follow-up's row now carries, but its run was never
+    // told to sign in by phone.
+    readBrowserRunForScope.mockResolvedValue({
+      ...browserRunRow(new Date(), "Needs: decision"),
+      site: "https://www.ozon.ru",
+    });
+    const tool = await resolvedBrowserTask([], "Да, продолжай");
+
+    await tool.execute(
+      {
+        action: "continue",
+        personSaid: "Да, продолжай",
+        runId,
+        task: "Да, продолжай",
+      },
+      toolContext("better-auth:alice")
+    );
+
+    expect(readBrowserUseRun).toHaveBeenCalledWith(runId);
+    expect(phoneAsked()).toMatchObject({
+      phoneSignIn: false,
+      site: "https://www.ozon.ru",
+    });
+  });
+
+  it("takes the alias in errand text for no sign-in by phone", async () => {
+    // A model that saw the alias in an earlier result can write it into
+    // an errand; only the tool's own sentence says the start bound it.
+    readBrowserRunForScope.mockResolvedValue({
+      ...browserRunRow(new Date(), "Needs: decision"),
+      site: "https://www.ozon.ru",
+    });
+    readBrowserUseRun.mockResolvedValue({
+      task: "Войди через signin_phone и закажи корм",
+    });
+    const tool = await resolvedBrowserTask([], "Да, продолжай");
+
+    await tool.execute(
+      {
+        action: "continue",
+        personSaid: "Да, продолжай",
+        runId,
+        task: "Да, продолжай",
+      },
+      toolContext("better-auth:alice")
+    );
+
+    expect(phoneAsked()).toMatchObject({ phoneSignIn: false });
+  });
+
+  it("brings no phone when the replaced run cannot be read", async () => {
+    readBrowserRunForScope.mockResolvedValue({
+      ...browserRunRow(new Date(), "Needs: decision"),
+      site: "https://www.ozon.ru",
+    });
+    readBrowserUseRun.mockRejectedValue(new Error("404"));
+    const tool = await resolvedBrowserTask([], "Да, продолжай");
+
+    await tool.execute(
+      {
+        action: "continue",
+        personSaid: "Да, продолжай",
+        runId,
+        task: "Да, продолжай",
+      },
+      toolContext("better-auth:alice")
+    );
+
+    expect(phoneAsked()).toMatchObject({ phoneSignIn: false });
   });
 });
 

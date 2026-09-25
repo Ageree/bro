@@ -152,6 +152,18 @@ async function safeAccountPhoneNumber(scope: AccessScope) {
 }
 
 /**
+ * The person's own phone, to sign in with where the site sends a code: the
+ * one in Personal Info, else the one they signed in to Bro with. A vault
+ * contact card's phone may be someone else's, so it never stands in.
+ */
+function ownPhone(profile: Profile, accountPhone: string | null | undefined) {
+  const phone = [profile.phone, accountPhone]
+    .map((value) => value?.replaceAll(/\s+/gu, " ").trim())
+    .find((value) => value !== undefined && value.length > 0);
+  return phone;
+}
+
+/**
  * Where the person's things can be delivered: the profile's street address
  * first, then the vault's address cards, each without the recipient's name.
  * A city and a country alone are not an address — they are the `home` line.
@@ -292,4 +304,25 @@ export async function browserRunFacts(scope: AccessScope) {
       lines.length === 0 ? undefined : [factsHeader, ...lines].join("\n"),
     home: profileHome(profile),
   };
+}
+
+/**
+ * The person's own phone, to sign in with where the site sends a code: the
+ * one in Personal Info, else the one they signed in to Bro with.
+ */
+export async function readOwnPhone(scope: AccessScope) {
+  try {
+    const [profile, accountPhone] = await Promise.all([
+      readUserProfile(scope),
+      safeAccountPhoneNumber(scope),
+    ]);
+    return ownPhone(profile, accountPhone);
+  } catch (error) {
+    // No phone to sign in with is the run as it was before: the errand
+    // still starts, and a sign-in stops with NEEDS: password.
+    console.warn("[browser-use] the person's phone could not be read", {
+      cause: error,
+    });
+    return undefined;
+  }
 }

@@ -100,7 +100,7 @@ export const placedOrderInstruction =
  * the door (RU 24.09, d05).
  */
 export const itemsInstruction =
-  "The Items list in the Parsed metadata is what the run found: give the user every item as a list, one line each with its name, price and quantity, the details that matter for choosing (dates or slot, cancellation terms, delivery) and its link — never only a total or a count. Name every substitute together with what it replaces, give each fee line ([fee]: delivery, service, packaging) as its own line, and the delivery slot and the total they add up to.";
+  "The Items list in the Parsed metadata is what the run found: give the user every item as a list, one line each with its name, price and quantity, the details that matter for choosing (dates or slot, cancellation terms, delivery) and its link — never only a total or a count. Name every substitute together with what it replaces, give each fee line ([fee]: delivery, service, packaging) as its own line, and the delivery slot and the total they add up to. When the user asked for delivery at a time the run could not choose — the site offers only immediate delivery, or no slot then — say so plainly, with what the site offers instead.";
 
 /**
  * «Висит 500 ₽ к оплате» is not an answer to «нет ли у меня штрафов и

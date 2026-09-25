@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   browserSecretBindings,
   loginAllowedDomains,
+  nationalPhoneDigits,
+  phoneSignInSentence,
+  signsInByPhone,
   paymentAllowedDomains,
   registrableDomain,
   selectBrowserVaultItems,
@@ -226,6 +229,16 @@ describe("browser vault selection", () => {
   });
 });
 
+/** What an Ozon errand's phone secrets hold for a profile phone as written. */
+function phoneValues(signInPhone: string) {
+  return browserSecretBindings({
+    card: undefined,
+    login: undefined,
+    signInPhone,
+    site: "https://www.ozon.ru",
+  }).bindings.map((binding) => binding.source.value);
+}
+
 describe("browser secret bindings", () => {
   it("keeps every secret value inside the run request body", () => {
     const bound = browserSecretBindings({
@@ -325,11 +338,20 @@ describe("browser secret bindings", () => {
       site: "https://www.mos.ru",
     });
 
-    expect(bound.aliases).toEqual(["gosuslugi_username", "gosuslugi_password"]);
+    expect(bound.aliases).toEqual([
+      "gosuslugi_username",
+      "gosuslugi_phone_digits",
+      "gosuslugi_password",
+    ]);
     // Typeable on the ESIA sign-in page only, never in mos.ru's own form.
     for (const binding of bound.bindings) {
       expect(binding.allowedDomains).toEqual(["gosuslugi.ru"]);
     }
+    expect(
+      bound.bindings.find(
+        (binding) => binding.alias === "gosuslugi_phone_digits"
+      )?.source.value
+    ).toBe("9991234567");
     const task = composeBrowserTask({
       aliases: bound.aliases,
       allowPayment: false,
@@ -342,8 +364,158 @@ describe("browser secret bindings", () => {
       site: "https://www.mos.ru",
     });
     expect(task).toContain("Войти через Госуслуги");
+    expect(task).toContain(
+      "gosuslugi_username is a phone number. If the phone field already shows the country code (+7) or a mask, ask for gosuslugi_phone_digits instead — the same number as only the 10 digits after it (no +7, no 8, no spaces); if the site rejects the format, clear the field and try once with the other one, then stop with NEEDS: info describing what the field expects."
+    );
+    expect(task).not.toContain("9991234567");
     expect(task).not.toContain(esiaPassword);
     expect(task).not.toContain("+79991234567");
+  });
+
+  it("binds a phone login also as the 10 digits after +7", () => {
+    // RU 25.09, d04: Ozon prefills «+7», and the saved «+7…» login typed
+    // over it was rejected as a malformed phone before any code was sent.
+    const bound = browserSecretBindings({
+      card: undefined,
+      login: serializeLoginVaultPayload({
+        authentication: { password, type: "password" },
+        identifier: { type: "phone", value: "+7 999 123-45-67" },
+        kind: "login",
+        origin: "https://www.ozon.ru",
+        version: 2,
+      }),
+      site: "https://www.ozon.ru",
+    });
+
+    expect(bound.aliases).toEqual([
+      "login_username",
+      "login_phone_digits",
+      "login_password",
+    ]);
+    const [username, digits] = bound.bindings;
+    expect(digits?.source.value).toBe("9991234567");
+    expect(digits?.allowedDomains).toEqual(username?.allowedDomains);
+    const task = composeBrowserTask({
+      aliases: bound.aliases,
+      allowPayment: false,
+      collectImages: false,
+      consent: undefined,
+      deliveryAddress: undefined,
+      errand: "Закажи тот же корм",
+      facts: undefined,
+      home: undefined,
+      site: "https://www.ozon.ru",
+    });
+    expect(task).toContain(
+      "login_username is a phone number. If the phone field already shows the country code (+7) or a mask, ask for login_phone_digits instead — the same number as only the 10 digits after it (no +7, no 8, no spaces); if the site rejects the format, clear the field and try once with the other one, then stop with NEEDS: info describing what the field expects."
+    );
+    expect(task).not.toContain("9991234567");
+  });
+
+  it("binds an email login as it is", () => {
+    const bound = browserSecretBindings({
+      card: undefined,
+      login,
+      site: "https://taxi.yandex.ru",
+    });
+
+    expect(bound.aliases).toEqual(["login_username", "login_password"]);
+  });
+
+  it("reads a Russian phone as the 10 digits after +7, and no other", () => {
+    expect(nationalPhoneDigits("+79991234567")).toBe("9991234567");
+    expect(nationalPhoneDigits("8 (999) 123-45-67")).toBe("9991234567");
+    expect(nationalPhoneDigits("7 495 123-45-67")).toBe("4951234567");
+    // Profile phones are free text: any separator, and a note beside them.
+    expect(nationalPhoneDigits("+7 (916) 123–45–67")).toBe("9161234567");
+    expect(nationalPhoneDigits("8 916 123 45 67 (моб.)")).toBe("9161234567");
+    expect(nationalPhoneDigits("моб.: +7 916 123 45 67")).toBe("9161234567");
+    for (const foreign of [
+      "999 123 45 67",
+      "+1 555 123 4567",
+      "+44 20 7946 0958",
+      "+84 912 345 678",
+      "+852 9123 4567",
+      "+853 6612 3456",
+      "+81 90 1234 5678",
+      "+960 791 2345",
+      "+961 3 123 456",
+      "+7 123 456 78 90",
+    ]) {
+      expect(nationalPhoneDigits(foreign)).toBeUndefined();
+    }
+  });
+
+  it("binds the person's phone to the errand's registrable domain alone", () => {
+    const bound = browserSecretBindings({
+      card: undefined,
+      login: undefined,
+      signInPhone: "8 (999) 123-45-67",
+      site: "https://market.yandex.ru",
+    });
+
+    expect(bound.aliases).toEqual(["signin_phone", "signin_phone_digits"]);
+    // Yandex signs people in on passport.yandex.ru: the whole of yandex.ru.
+    for (const binding of bound.bindings) {
+      expect(binding.allowedDomains).toEqual(["yandex.ru"]);
+    }
+    expect(bound.bindings.map((binding) => binding.source.value)).toEqual([
+      "+79991234567",
+      "9991234567",
+    ]);
+  });
+
+  it("binds no phone where a saved login signs in, or on a public suffix", () => {
+    expect(
+      browserSecretBindings({
+        card: undefined,
+        login,
+        signInPhone: "+79991234567",
+        site: "https://taxi.yandex.ru",
+      }).aliases
+    ).toEqual(["login_username", "login_password"]);
+    expect(
+      browserSecretBindings({
+        card: undefined,
+        login: undefined,
+        signInPhone: "+79991234567",
+        site: "https://spb.ru",
+      }).aliases
+    ).toEqual([]);
+    expect(
+      browserSecretBindings({
+        card: undefined,
+        login: undefined,
+        signInPhone: "+852 9123 4567",
+        site: "https://www.ozon.ru",
+      }).bindings.map((binding) => binding.source.value)
+    ).toEqual(["+85291234567"]);
+  });
+
+  it("binds the number alone, never the note written beside it", () => {
+    // RU 25.09, d04: a field that shows «+7» takes the ten digits alone.
+    expect(phoneValues("+7 (916) 123–45–67")).toEqual([
+      "+79161234567",
+      "9161234567",
+    ]);
+    expect(phoneValues("8 916 123 45 67 (моб.)")).toEqual([
+      "+79161234567",
+      "9161234567",
+    ]);
+    expect(phoneValues("+84 912 345 678 (Вьетнам)")).toEqual(["+84912345678"]);
+    expect(phoneValues("нет")).toEqual([]);
+  });
+
+  it("knows a run signs in by phone only from the tool's own sentence", () => {
+    expect(
+      signsInByPhone(
+        `Закажи корм\n\nNo saved password is available for ozon.ru. ${phoneSignInSentence}`
+      )
+    ).toBe(true);
+    // A model can write the alias into an errand it composes.
+    expect(signsInByPhone("Войди через signin_phone и закажи корм")).toBe(
+      false
+    );
   });
 
   it("binds nothing when no vault item was selected", () => {

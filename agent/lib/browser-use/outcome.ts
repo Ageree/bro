@@ -417,6 +417,62 @@ export function parseBrowserOutcome(result: string | null | undefined) {
   };
 }
 
+/**
+ * Chrome's own words for a page the network or the proxy never delivered:
+ * «ERR_TUNNEL_CONNECTION_FAILED» ended the Госуслуги errand of RU 25.09
+ * (d06) with nothing done and no retry.
+ */
+const networkErrorPattern =
+  /ERR_(?:TUNNEL_CONNECTION_FAILED|PROXY_CONNECTION_FAILED|CONNECTION_RESET|CONNECTION_REFUSED|CONNECTION_TIMED_OUT|TIMED_OUT|EMPTY_RESPONSE)|This site can(?:'|’)t be reached/iu;
+
+/** The network error a text names, when it names one. */
+export function networkErrorIn(text: string | null | undefined) {
+  return networkErrorPattern.exec(text ?? "")?.[0];
+}
+
+/**
+ * Whether a run ended on the browser's network error and nothing else: no
+ * report at all, only a failed run's error naming it. A report — «nothing
+ * found», a question, a finished order — is the run's own word and reaches
+ * the person as written, whatever fallback site's error it mentions: a run
+ * that could not reach the errand's own site says so with NEEDS: captcha.
+ */
+export function unreachableRun(run: {
+  readonly error?: string | null;
+  readonly result?: string | null;
+}) {
+  return (
+    (run.result ?? "").trim() === "" && networkErrorIn(run.error) !== undefined
+  );
+}
+
+/**
+ * The network error a walled run names as its own outcome — in RESULT or
+ * DETAILS, or a failed run's error with no report — never one a skipped
+ * fallback site gave somewhere in the prose.
+ */
+export function unreachableCause(
+  outcome: ReturnType<typeof parseBrowserOutcome>,
+  error: string | null | undefined
+) {
+  return (
+    networkErrorIn(outcome.details) ??
+    networkErrorIn(outcome.result) ??
+    (outcome.result === undefined ? networkErrorIn(error) : undefined)
+  );
+}
+
+/**
+ * The same, read back from a kept outcome summary: its Result and Details
+ * lines, or the error a failed run left in their place.
+ */
+export function summaryUnreachableCause(summary: string | null) {
+  const own = (summary ?? "")
+    .split("\n")
+    .filter((line) => /^(?:Result|Details): |^net::ERR_/u.test(line));
+  return networkErrorIn(own.join("\n"));
+}
+
 /** One compact line per fact, for the coordinator's own reading. */
 export function browserOutcomeSummary(
   outcome: ReturnType<typeof parseBrowserOutcome>,

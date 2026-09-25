@@ -323,7 +323,11 @@ describe("agent instructions", () => {
       "Для поиска и сравнения цен карта и разрешение не нужны"
     );
     expect(selected?.content).toContain(
-      "только с `allowSubmit: true`. Ставь его, только когда человек прямо попросил именно это"
+      "только с `allowSubmit: true` (кроме входа по его телефону, см. ниже). Ставь его, только когда человек прямо попросил именно это"
+    );
+    // The phone goes as a secret for the errand's own site, never as text.
+    expect(selected?.content).toContain(
+      "Телефон запуск получает секретом, который работает только на домене `site` этого поручения"
     );
     expect(selected?.content).not.toContain(
       "сам доводит до конца всё бесплатное и бесплатно отменяемое"

@@ -623,6 +623,311 @@ describe("settling a browser run", () => {
     expect(prompt).not.toContain(row.liveViewUrl);
   });
 
+  it("retries a site the network never loaded like a walled one", async () => {
+    // RU 25.09, d06: the proxy error ended the errand; the run now stops on
+    // it with NEEDS: captcha, as its instructions say.
+    readBrowserRun.mockResolvedValue({
+      ...row,
+      paymentAllowed: false,
+      submission: null,
+    });
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    readBrowserUseRun.mockResolvedValue({
+      error: null,
+      id: runId,
+      result:
+        "RESULT: Госуслуги недоступны, вход и просмотр данных не начались.\nNEEDS: captcha\nDETAILS: ERR_TUNNEL_CONNECTION_FAILED",
+      sessionId: "session-1",
+      status: "completed",
+      task: "Посмотри штрафы",
+    });
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    expect(send).not.toHaveBeenCalled();
+    expect(parkBrowserRunForRetry).toHaveBeenCalledOnce();
+    // Its follow-up opens a fresh browser, as after any wall.
+    expect(
+      String(claimBrowserRunCompletion.mock.calls[0]?.[1].outcome)
+    ).toContain("Needs: captcha");
+  });
+
+  it("retries a run that failed on a proxy error with nothing to report", async () => {
+    readBrowserRun.mockResolvedValue({
+      ...row,
+      paymentAllowed: false,
+      submission: null,
+    });
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    readBrowserUseRun.mockResolvedValue({
+      error: "net::ERR_PROXY_CONNECTION_FAILED at https://www.gosuslugi.ru/",
+      id: runId,
+      result: null,
+      sessionId: "session-1",
+      status: "failed",
+      task: "Посмотри штрафы",
+    });
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    expect(send).not.toHaveBeenCalled();
+    expect(parkBrowserRunForRetry).toHaveBeenCalledOnce();
+  });
+
+  it("reports «nothing found» that mentions a fallback's error as it is", async () => {
+    readBrowserRun.mockResolvedValue({
+      ...row,
+      paymentAllowed: false,
+      submission: null,
+    });
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    readBrowserUseRun.mockResolvedValue({
+      error: null,
+      id: runId,
+      result: [
+        "На ozon.ru такого корма нет; wildberries.ru не открылся (ERR_TIMED_OUT), пропустил.",
+        "RESULT: товар не найден",
+        "NEEDS: none",
+      ].join("\n"),
+      sessionId: "session-1",
+      status: "completed",
+      task: "Найди корм",
+    });
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    expect(parkBrowserRunForRetry).not.toHaveBeenCalled();
+    expect(send).toHaveBeenCalledOnce();
+    expect(send.mock.calls[0]?.[0]).not.toContain("could not be reached");
+  });
+
+  it("never retries a run that may have acted, whatever the network did", async () => {
+    // A paid taxi whose connection dropped after the order: a retry would
+    // order a second one.
+    readBrowserRun.mockResolvedValue({
+      ...row,
+      paymentAllowed: true,
+      submission: null,
+    });
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    readBrowserUseRun.mockResolvedValue({
+      error: "net::ERR_CONNECTION_RESET at https://taxi.yandex.ru/",
+      id: runId,
+      result: null,
+      sessionId: "session-1",
+      status: "failed",
+      task: "Закажи такси",
+    });
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    expect(parkBrowserRunForRetry).not.toHaveBeenCalled();
+    expect(send).toHaveBeenCalledOnce();
+    const prompt = send.mock.calls[0]?.[0] ?? "";
+    expect(prompt).toContain(
+      "The connection to the site failed (ERR_CONNECTION_RESET) while this run was allowed to act in the user's name"
+    );
+    expect(prompt).not.toContain("start it there now with browser_task start");
+  });
+
+  it("never retries a run that stopped as walled after it may have ordered", async () => {
+    // It clicked «Заказать», the next page failed, and it stopped with
+    // NEEDS: captcha: a retry would start over with the same submission.
+    readBrowserRun.mockResolvedValue({
+      ...row,
+      paymentAllowed: true,
+      submission: { what: "заказ корма" },
+    });
+    readBrowserUseRun.mockResolvedValue({
+      error: null,
+      id: runId,
+      result: [
+        "RESULT: нажал «Заказать», следующая страница не загрузилась",
+        "TOTAL: 1500 ₽",
+        "NEEDS: captcha",
+        "DETAILS: ERR_CONNECTION_RESET",
+      ].join("\n"),
+      sessionId: "session-1",
+      status: "completed",
+      task: "Закажи корм",
+    });
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    expect(parkBrowserRunForRetry).not.toHaveBeenCalled();
+    expect(send).toHaveBeenCalledOnce();
+    expect(
+      String(claimBrowserRunCompletion.mock.calls[0]?.[1].outcome)
+    ).toContain("Needs: info");
+    const prompt = send.mock.calls[0]?.[0] ?? "";
+    expect(prompt).toContain(
+      "may have gone through before the page failed. Tell the user plainly what the run reports it did last"
+    );
+    expect(prompt).toContain(
+      "Never start or continue this errand to submit, order, book or pay again unless the user asks for that after checking."
+    );
+    // Neither a wall to route around nor a site that never loaded.
+    expect(prompt).not.toContain("start it there now with browser_task start");
+    expect(prompt).not.toContain("nothing was done there yet");
+  });
+
+  it("never retries a network error when the reservation cannot be read", async () => {
+    readBrowserRun.mockResolvedValue({
+      ...row,
+      paymentAllowed: false,
+      submission: null,
+    });
+    readSpendEntryForRun.mockRejectedValue(new Error("db down"));
+    readBrowserUseRun.mockResolvedValue({
+      error: "net::ERR_CONNECTION_RESET",
+      id: runId,
+      result: null,
+      sessionId: "session-1",
+      status: "failed",
+      task: "Оплати заказ",
+    });
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    expect(parkBrowserRunForRetry).not.toHaveBeenCalled();
+    expect(send).toHaveBeenCalledOnce();
+  });
+
+  it("still retries a real anti-bot wall on a run allowed to act", async () => {
+    readBrowserRun.mockResolvedValue({
+      ...row,
+      paymentAllowed: true,
+      submission: { what: "заказ корма" },
+    });
+    readBrowserUseRun.mockResolvedValue({
+      error: null,
+      id: runId,
+      result: "RESULT: стоит на проверке\nNEEDS: captcha",
+      sessionId: "session-1",
+      status: "completed",
+      task: "Закажи корм",
+    });
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    expect(send).not.toHaveBeenCalled();
+    expect(parkBrowserRunForRetry).toHaveBeenCalledOnce();
+  });
+
+  it("tells a real wall as one, whatever fallback error the report mentions", async () => {
+    const searching = {
+      ...row,
+      captchaAttempt: 5,
+      paymentAllowed: false,
+      submission: null,
+    };
+    readBrowserRun.mockResolvedValue(searching);
+    claimBrowserRunCompletion.mockReset().mockResolvedValueOnce({
+      ...row,
+      captchaAttempt: 5,
+      completedAt: new Date(),
+    });
+    readBrowserUseRun.mockResolvedValue({
+      error: null,
+      id: runId,
+      result: [
+        "Капча не проходит. Запасной сайт не открылся (ERR_TIMED_OUT).",
+        "RESULT: стоит на проверке",
+        "NEEDS: captcha",
+      ].join("\n"),
+      sessionId: "session-1",
+      status: "completed",
+      task: "Order the usual",
+    });
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    const prompt = send.mock.calls[0]?.[0] ?? "";
+    expect(prompt).toContain("anti-bot check through 5 attempts");
+    expect(prompt).not.toContain("could not be reached");
+  });
+
+  it("reports what a run found even when a page on the way did not load", async () => {
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    readBrowserUseRun.mockResolvedValue({
+      error: null,
+      id: runId,
+      result: [
+        "RESULT: нашёл два варианта; один магазин не открылся (ERR_TIMED_OUT)",
+        'ITEMS: [{"name":"Корм","price":"1 200 ₽","quantity":"1","url":"https://www.ozon.ru/product/1","details":null,"replaces":null,"fee":false}]',
+        "NEEDS: none",
+      ].join("\n"),
+      sessionId: "session-1",
+      status: "completed",
+      task: "Найди корм",
+    });
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    expect(parkBrowserRunForRetry).not.toHaveBeenCalled();
+    expect(send).toHaveBeenCalledOnce();
+  });
+
+  it("says the site could not be reached, not that it blocked the errand", async () => {
+    readBrowserRun.mockResolvedValue({
+      ...row,
+      captchaAttempt: 5,
+      paymentAllowed: false,
+      submission: null,
+    });
+    claimBrowserRunCompletion.mockReset().mockResolvedValueOnce({
+      ...row,
+      captchaAttempt: 5,
+      completedAt: new Date(),
+    });
+    readBrowserUseRun.mockResolvedValue({
+      error: null,
+      id: runId,
+      result:
+        "RESULT: Госуслуги недоступны из-за `ERR_TUNNEL_CONNECTION_FAILED`.\nNEEDS: captcha\nDETAILS: ERR_TUNNEL_CONNECTION_FAILED",
+      sessionId: "session-1",
+      status: "completed",
+      task: "Посмотри штрафы",
+    });
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    const prompt = send.mock.calls[0]?.[0] ?? "";
+    expect(prompt).toContain(
+      "The site did not load at all — the connection to it failed (ERR_TUNNEL_CONNECTION_FAILED) — through 5 attempts over about 30 minutes"
+    );
+    expect(prompt).toContain("the original site could not be reached");
+    expect(prompt).toContain(
+      "the site could not be reached, not that it blocked the errand"
+    );
+    expect(prompt).not.toContain("anti-bot check through");
+  });
+
   it("reports a payment made on the standing limit as a receipt", async () => {
     readSpendEntryForRun.mockResolvedValue({
       amountRub: 1500,

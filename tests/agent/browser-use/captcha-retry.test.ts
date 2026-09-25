@@ -74,8 +74,7 @@ vi.mock("@db/services/browser-runs", () => ({
   readBrowserRun,
 }));
 vi.mock("@agent/lib/browser-use/secrets", async (importOriginal) => ({
-  browserSecretAliases: (await importOriginal<typeof browserUseSecrets>())
-    .browserSecretAliases,
+  ...(await importOriginal<typeof browserUseSecrets>()),
   resolveBrowserSecretBindings,
 }));
 
@@ -183,6 +182,30 @@ describe("the anti-bot retry policy", () => {
     expect(third).toContain("about ten seconds");
   });
 
+  it("binds the phone again only where the errand's start was told to sign in with it", async () => {
+    const { phoneSignInSentence } =
+      await import("@agent/lib/browser-use/secrets");
+    const { startCaptchaRetry } =
+      await import("@agent/lib/browser-use/captcha-retry");
+
+    readBrowserUseRun.mockResolvedValue({
+      task: `Купи корм\n\nNo saved password is available for shop.example. ${phoneSignInSentence}`,
+    });
+    await startCaptchaRetry(parkedRow(1));
+    // An errand a model wrote with the bare alias in it binds no phone.
+    readBrowserUseRun.mockResolvedValue({
+      task: "Купи корм, войди через signin_phone",
+    });
+    await startCaptchaRetry(parkedRow(1));
+
+    expect(resolveBrowserSecretBindings.mock.calls[0]?.[1]).toMatchObject({
+      phoneSignIn: true,
+    });
+    expect(resolveBrowserSecretBindings.mock.calls[1]?.[1]).toMatchObject({
+      phoneSignIn: false,
+    });
+  });
+
   it("starts the next attempt in a fresh browser on the same profile", async () => {
     const { startCaptchaRetry } =
       await import("@agent/lib/browser-use/captcha-retry");
@@ -198,7 +221,8 @@ describe("the anti-bot retry policy", () => {
     // The card was bound before, so the retry binds it again.
     expect(resolveBrowserSecretBindings).toHaveBeenCalledWith(
       { userId: "better-auth:alice", workspaceId: "workspace:alice" },
-      { allowPayment: true, site: "https://shop.example" }
+      // The errand was not composed with the phone, so it stays unbound.
+      { allowPayment: true, phoneSignIn: false, site: "https://shop.example" }
     );
     // The new row, the link and the reservation move in one handoff.
     expect(handOffBrowserRunRetry).toHaveBeenCalledOnce();

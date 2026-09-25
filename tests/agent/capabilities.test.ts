@@ -46,6 +46,7 @@ describe("authored mode capability matrix", () => {
       "personal_info__update",
       "proactive_messages",
       "profile__find",
+      "profile__forget_all",
       "profile__read",
       "profile__remove_memory",
       "profile__save_memory",
@@ -60,6 +61,7 @@ describe("authored mode capability matrix", () => {
       "send_message",
       "workstreams__find",
       "workstreams__forget",
+      "workstreams__forget_all",
       "workstreams__read",
       "workstreams__save",
     ]);
