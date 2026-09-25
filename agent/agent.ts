@@ -18,6 +18,10 @@ import {
   turnTookNoStep,
 } from "@agent/lib/delivery/pending";
 import { reportedBrowserRunId } from "@agent/lib/browser-use/report-caller";
+import {
+  cardToolsBeforeOutcome,
+  cardToolsBeforeOutcomeNote,
+} from "@agent/lib/delivery/browser-report";
 import { browserRunReportDelivered } from "@db/services/browser-runs";
 import { turnMustEnd, turnSends } from "@agent/lib/delivery/turn-sends";
 import { readsMustEnd } from "@agent/lib/google-workspace/turn-reads";
@@ -93,6 +97,13 @@ export default defineAgent({
           (reportRunId !== undefined &&
             !turnDelivered(ctx.messages) &&
             turnHandedErrandOn(ctx.messages));
+        // A card in a browser report's turn comes after the outcome, never
+        // before it: the calendar entry for a confirmed booking follows the
+        // message that tells the booking.
+        const cardsHeld =
+          reportRunId !== undefined &&
+          !staleReport &&
+          sends.delivered.length === 0;
         // A report — a browser run's or a schedule's — is Bro's own turn.
         // Its question goes out as a message, so the person's reply starts a
         // turn of their own: only there does `schedules-answer` resume a
@@ -144,6 +155,7 @@ export default defineAgent({
               })
             : undefined,
           staleReport ? staleReportNote : undefined,
+          cardsHeld && !silent ? cardToolsBeforeOutcomeNote : undefined,
           // A tool that vanished without a word is one the model says it
           // used anyway.
           heldForAnswer ? heldForAnswerNote : undefined,
@@ -170,7 +182,8 @@ export default defineAgent({
                 : "auto",
           // One question per request, then Bro acts on the answer: a second
           // `ask_question` in the same turn is how a helper becomes an
-          // interrogation. Approval cards stay, each is its action's consent.
+          // interrogation. Approval cards stay, each is its action's consent,
+          // except before a browser report's message.
           // A question sent as a message is answered in the person's next
           // message, so until then nothing it asked about is undone.
           withheldTools: [
@@ -179,6 +192,7 @@ export default defineAgent({
               : []),
             ...(reportPastAnswer ? ["react_to_message", "send_message"] : []),
             ...(heldForAnswer ? actionsHeldForAnswer : []),
+            ...(cardsHeld ? cardToolsBeforeOutcome : []),
           ],
         });
       },

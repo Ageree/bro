@@ -32,8 +32,15 @@ vi.mock("@agent/lib/model/selection", async (importOriginal) => {
 });
 
 import agent from "@agent/agent";
+import {
+  cardToolsBeforeOutcome,
+  cardToolsBeforeOutcomeNote,
+} from "@agent/lib/delivery/browser-report";
 import { replyDirective } from "@agent/lib/delivery/language";
-import { skippedSendNotice } from "@agent/lib/delivery/turn-sends";
+import {
+  rewriteSendNotice,
+  skippedSendNotice,
+} from "@agent/lib/delivery/turn-sends";
 import { defaultFormOfAddress } from "@shared/chat/form-of-address";
 
 const runId = "00000000-0000-4000-8000-000000000001";
@@ -282,15 +289,15 @@ describe("interactive delivery enforcement", () => {
     );
 
     // A question in a report goes out as a message, so the person's reply
-    // starts a turn of their own.
+    // starts a turn of their own. No card comes before the outcome.
     expect(services.modelSelection).toHaveBeenLastCalledWith(
       "openai/gpt-5.6-sol-fast",
       {
         delivered: false,
-        replyNote: note("ru"),
+        replyNote: `${note("ru")}\n\n${cardToolsBeforeOutcomeNote}`,
         silent: false,
         toolChoice: "required",
-        withheldTools: ["ask_question"],
+        withheldTools: ["ask_question", ...cardToolsBeforeOutcome],
       }
     );
 
@@ -337,8 +344,63 @@ describe("interactive delivery enforcement", () => {
         replyNote: note("ru"),
         silent: true,
         toolChoice: "auto",
-        withheldTools: ["ask_question"],
+        withheldTools: ["ask_question", ...cardToolsBeforeOutcome],
       }
+    );
+  });
+
+  it("gives a report turn its cards only after the outcome went out", async () => {
+    // A confirmed booking goes into the person's calendar in the report's
+    // own turn. A card that came first would ask about a booking they have
+    // not heard of, and park the turn before the report counted as
+    // delivered.
+    await agent.model.events["step.started"]?.(
+      {},
+      interactiveContext(delivered, "browser-result", reportAttributes)
+    );
+
+    const [, options] = services.modelSelection.mock.lastCall ?? [];
+    expect(options?.withheldTools).toEqual(["ask_question"]);
+    expect(options?.replyNote).not.toContain(cardToolsBeforeOutcomeNote);
+
+    // A message sent back for a rewrite reached nobody: the cards wait.
+    await agent.model.events["step.started"]?.(
+      {},
+      interactiveContext(
+        [
+          ...pending,
+          toolCallStep("send_message", "call-2", {
+            kind: "message",
+            text: "Готово, сейчас всё расскажу.",
+          }),
+          {
+            content: [
+              {
+                output: {
+                  type: "text" as const,
+                  value: rewriteSendNotice("report"),
+                },
+                toolCallId: "call-2",
+                toolName: "send_message",
+                type: "tool-result" as const,
+              },
+            ],
+            role: "tool" as const,
+          },
+        ],
+        "browser-result",
+        reportAttributes
+      )
+    );
+    expect(services.modelSelection.mock.lastCall?.[1]?.withheldTools).toEqual([
+      "ask_question",
+      ...cardToolsBeforeOutcome,
+    ]);
+
+    // A turn the person started keeps its cards from the first step.
+    await agent.model.events["step.started"]?.({}, interactiveContext(pending));
+    expect(services.modelSelection.mock.lastCall?.[1]?.withheldTools).toEqual(
+      []
     );
   });
 
