@@ -363,7 +363,11 @@ export type FakeComposio = ReturnType<typeof fakeComposio>;
  */
 export function composioToolContext(
   connectedAccountId: string,
-  options: { readonly userId?: string; readonly toolName?: string } = {}
+  options: {
+    readonly authenticator?: string;
+    readonly toolName?: string;
+    readonly userId?: string;
+  } = {}
 ) {
   const userId = options.userId ?? "better-auth:user-1";
   return {
@@ -387,7 +391,7 @@ export function composioToolContext(
           attributes: {
             workspaceId: accessScopeForUser(userId).workspaceId,
           },
-          authenticator: "photon-imessage",
+          authenticator: options.authenticator ?? "photon-imessage",
           principalId: userId,
           principalType: "user" as const,
         },

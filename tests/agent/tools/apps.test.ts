@@ -19,6 +19,7 @@ vi.mock("@db/services/settings", () => ({
 }));
 
 import appsTools, { apps } from "@agent/tools/apps";
+import { composioToolReadsOnly } from "@agent/lib/composio/tools";
 import { googleReadOnlyWriteRefusal } from "@agent/lib/google-workspace/client";
 
 const userId = "better-auth:user-1";
@@ -97,17 +98,34 @@ async function run(
 }
 
 async function approvalOf(
-  input: Parameters<typeof apps.execute>[0]
+  input: Parameters<typeof apps.execute>[0],
+  authenticator = "photon-imessage"
 ): Promise<ApprovalStatus> {
   const approval = apps.approval;
   if (approval === undefined) throw new Error("apps has no approval policy.");
   const policy = "request" in approval ? approval.request : approval;
   return policy({
-    ...composioToolContext("ca_google"),
+    ...composioToolContext("ca_google", { authenticator }),
     approvedTools: new Set(),
     toolInput: input,
     toolName: "apps",
   });
+}
+
+/** An `apps` card as the person sees it in Russian. */
+function cardOf(input: Parameters<typeof apps.execute>[0]) {
+  return withApprovalCard(
+    {
+      action: { input, toolName: "apps" },
+      kind: "tool-approval",
+      options: [
+        { id: "approve", label: "Approve" },
+        { id: "cancel", label: "Cancel" },
+      ],
+      prompt: "Approve tool call: apps",
+    },
+    "ru"
+  ).prompt;
 }
 
 describe("apps search", () => {
@@ -179,6 +197,7 @@ describe("apps run", () => {
     await expect(run(input)).resolves.toEqual({
       result: { values: [["2026-09-01", "Кафе", "450"]] },
       status: "done",
+      wrote: false,
     });
     expect(composio.execute).toHaveBeenCalledExactlyOnceWith(
       "GOOGLESUPER_GET_SPREADSHEET_VALUES",
@@ -205,6 +224,18 @@ describe("apps run", () => {
       reason: googleReadOnlyWriteRefusal,
       type: "denied",
     });
+  });
+
+  it("tells the turn a write went through", async () => {
+    await expect(
+      run({
+        action: "run",
+        app: "google",
+        arguments:
+          '{"spreadsheet_id":"sheet-1","range":"A:C","values":[["x"]]}',
+        tool: "GOOGLESUPER_SPREADSHEETS_VALUES_APPEND",
+      })
+    ).resolves.toMatchObject({ status: "done", wrote: true });
   });
 
   it("asks before a tool whose name says it writes, whatever its tags", async () => {
@@ -297,7 +328,109 @@ describe("apps run", () => {
   });
 });
 
+describe("apps approval policy", () => {
+  const readSheet = {
+    action: "run" as const,
+    app: "google" as const,
+    arguments: '{"spreadsheet_id":"sheet-1"}',
+    tool: "GOOGLESUPER_GET_SPREADSHEET_VALUES",
+  };
+
+  it("asks the person even for a read in the report of a browser run", async () => {
+    expect(await approvalOf(readSheet, "browser-result")).toBe("user-approval");
+    expect(await approvalOf(readSheet, "telegram-webhook")).toBe(
+      "not-applicable"
+    );
+    expect(
+      await approvalOf(
+        { action: "search", app: "todoist", task: "list tasks" },
+        "browser-result"
+      )
+    ).toBe("not-applicable");
+  });
+
+  it("refuses a tool it cannot look up instead of skipping the card", async () => {
+    const unknown = { ...readSheet, tool: "GOOGLESUPER_GET_SHEET_NAMES" };
+    await expect(approvalOf(unknown)).resolves.toMatchObject({
+      type: "denied",
+    });
+
+    const fakeFetch = globalThis.fetch;
+    vi.stubGlobal(
+      "fetch",
+      async (input: string | URL | Request, init?: RequestInit) =>
+        new URL(input instanceof Request ? input.url : input).pathname.endsWith(
+          "/tools/TODOIST_LIST_PROJECTS"
+        )
+          ? Response.json(
+              { error: { message: "down", slug: "Internal", status: 503 } },
+              { status: 503 }
+            )
+          : fakeFetch(input, init)
+    );
+    await expect(
+      approvalOf({
+        action: "run",
+        app: "todoist",
+        arguments: "{}",
+        tool: "TODOIST_LIST_PROJECTS",
+      })
+    ).resolves.toMatchObject({ type: "denied" });
+  });
+
+  it("refuses a tool of another app and arguments that are not an object", async () => {
+    await expect(
+      approvalOf({ ...readSheet, app: "todoist" })
+    ).resolves.toMatchObject({ type: "denied" });
+    await expect(
+      approvalOf({ ...readSheet, arguments: "[1, 2]" })
+    ).resolves.toMatchObject({ type: "denied" });
+  });
+
+  it("refuses a write the card cannot show whole", async () => {
+    const write = {
+      action: "run" as const,
+      app: "todoist" as const,
+      tool: "TODOIST_DELETE_TASK",
+    };
+
+    expect(
+      await approvalOf({
+        ...write,
+        arguments: JSON.stringify({ content: "x".repeat(3_000) }),
+      })
+    ).toBe("user-approval");
+    await expect(
+      approvalOf({
+        ...write,
+        arguments: JSON.stringify({ content: "x".repeat(3_600) }),
+      })
+    ).resolves.toMatchObject({ type: "denied" });
+  });
+});
+
 describe("apps approval card", () => {
+  it("shows every argument and every value in full", () => {
+    const fields = Object.fromEntries(
+      Array.from({ length: 14 }, (_, index) => [
+        `field_${String(index)}`,
+        String(index),
+      ])
+    );
+    const body = `${"Всё хорошо. ".repeat(20)}и в конце: пароль 1234`;
+    const card = cardOf({
+      action: "run",
+      app: "outlook",
+      arguments: JSON.stringify({ ...fields, body, to: ["a@b.c"] }),
+      tool: "OUTLOOK_SEND_EMAIL",
+    });
+
+    expect(card).toContain("  field_13: 13");
+    expect(card).toContain(`  body: ${body.trim()}`);
+    expect(card).toContain('  to: ["a@b.c"]');
+    expect(card).not.toContain("…");
+  });
+
   it("names the app, what the call does, the tool and every argument", () => {
     const card = withApprovalCard(
       {
@@ -338,7 +471,7 @@ describe("apps approval card", () => {
 });
 
 describe("apps exposure", () => {
-  it("exists only in a person's own turn", async () => {
+  it("is left out of background workers", async () => {
     const resolve = appsTools.events["turn.started"];
     if (!resolve) throw new Error("apps resolves per turn.");
     const context = (authenticator: string) =>
@@ -363,7 +496,74 @@ describe("apps exposure", () => {
     expect(
       Object.keys((await resolve({}, context("photon-imessage"))) ?? {})
     ).toEqual(["apps"]);
+    // Kept in a browser report, where its policy asks for every run.
+    expect(
+      Object.keys((await resolve({}, context("browser-result"))) ?? {})
+    ).toEqual(["apps"]);
     expect(await resolve({}, context("scheduled-worker"))).toBeNull();
     expect(await resolve({}, context("scheduled-result"))).toBeNull();
+  });
+});
+
+/** A Composio tool as its catalog describes it, by slug and tags. */
+function tool(slug: string, tags: string[], toolkit = "slack") {
+  return {
+    description: "",
+    input_parameters: {},
+    name: slug,
+    slug,
+    tags,
+    toolkit: { slug: toolkit },
+  };
+}
+
+describe("composioToolReadsOnly", () => {
+  it("trusts a read-only tag only on a tool named by a read verb", () => {
+    for (const slug of [
+      "SLACK_LIST_ALL_CHANNELS",
+      "SLACK_FETCHES_CONVERSATION_HISTORY",
+      "SLACK_SEARCH_MESSAGES",
+    ]) {
+      expect(composioToolReadsOnly(tool(slug, ["readOnlyHint"]))).toBe(true);
+    }
+    for (const slug of [
+      "GOOGLESUPER_BATCH_GET_SPREADSHEET_VALUES",
+      "GOOGLESUPER_VALUES_GET",
+    ]) {
+      expect(
+        composioToolReadsOnly(tool(slug, ["readOnlyHint"], "googlesuper"))
+      ).toBe(true);
+    }
+  });
+
+  it("counts every other tool as a write, whatever its tags say", () => {
+    for (const slug of [
+      "SLACK_DELETES_A_MESSAGE_FROM_A_CHAT",
+      "SLACK_UPDATES_A_SLACK_MESSAGE",
+      "SLACK_SENDS_A_MESSAGE_TO_A_SLACK_CHANNEL",
+      "SLACK_JOIN_AN_EXISTING_CONVERSATION",
+      "SLACK_FIND_AND_REPLACE",
+      "SLACK_GET_AND_ARCHIVE",
+      "SLACK_UPSERT_ROWS",
+      "SLACK_EXECUTE_SQL",
+    ]) {
+      expect(composioToolReadsOnly(tool(slug, ["readOnlyHint"]))).toBe(false);
+    }
+    for (const slug of [
+      "GOOGLESUPER_SHEET_FROM_JSON",
+      "GOOGLESUPER_DUPLICATE_SHEET",
+    ]) {
+      expect(
+        composioToolReadsOnly(tool(slug, ["readOnlyHint"], "googlesuper"))
+      ).toBe(false);
+    }
+    expect(composioToolReadsOnly(tool("SLACK_LIST_ALL_CHANNELS", []))).toBe(
+      false
+    );
+    expect(
+      composioToolReadsOnly(
+        tool("SLACK_LIST_ALL_CHANNELS", ["readOnlyHint", "updateHint"])
+      )
+    ).toBe(false);
   });
 });

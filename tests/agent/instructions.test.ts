@@ -160,7 +160,11 @@ describe("agent instructions", () => {
     expect(selected?.content).toContain("Ты облачный сервис");
     expect(selected?.content).toContain("AES-256-GCM");
     expect(selected?.content).toContain(
-      "Нет среди инструментов `notion-add-task` — значит, Notion на этом деплое не настроен"
+      "Нет среди инструментов `connect_google` — значит, Google на этом деплое не настроен, нет `notion-add-task` — не настроен Notion"
+    );
+    // Mail is offered only where Google can be connected at all.
+    expect(selected?.content).toContain(
+      "если есть `connect_google` — что разбираешь почту"
     );
   });
 
