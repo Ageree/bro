@@ -11,6 +11,7 @@ const notConfiguredPattern = /не подключ[её]н/iu;
 const notConnectedPattern = /не подключ|не настро|недоступ/iu;
 const retryLaterPattern = /не отвеча|попробу/iu;
 const disconnectedPattern = /отключ|отозва/iu;
+const accessLevelPattern = /полн\S* доступ|только (?:на )?чтени/iu;
 
 function deliveryMatches(
   result: z.infer<typeof connectGoogleResultSchema>,
@@ -19,6 +20,9 @@ function deliveryMatches(
   if (result.status === "authorize") return delivered.includes(result.url);
   if (result.status === "disconnected")
     return disconnectedPattern.test(delivered);
+  if (result.status === "not_connected") {
+    return notConnectedPattern.test(delivered);
+  }
   if (result.status === "not_configured") {
     return notConfiguredPattern.test(delivered) && !urlPattern.test(delivered);
   }
@@ -75,6 +79,51 @@ export default [
         satisfies<string>(
           (value) => deliveryMatches(result, value),
           "delivers the tool's own outcome: its connected acknowledgement, its minted URL, or its not-configured or retry message"
+        )
+      );
+    },
+  }),
+  defineEval({
+    description:
+      "Reports the Google access level and what it allows without minting a link",
+    tags: [...agentEvalTags, "routing", "honesty"],
+    async test(t) {
+      const turn = await t.send(
+        "какой у тебя сейчас доступ к моему гуглу и что ты там можешь делать?"
+      );
+      turn.expectOk();
+      turn.succeeded();
+      const status = turn.requireToolCall("connect_google", {
+        input: { action: "status" },
+        status: "completed",
+      });
+      turn.calledTool("connect_google", { count: 1 });
+      const outcome = connectGoogleResultSchema.safeParse(status.output);
+      await t.require(outcome.success, equals(true));
+      if (!outcome.success) {
+        throw new Error("connect_google returned an unexpected result.");
+      }
+      const delivered = turn.toolCalls
+        .filter(
+          (call) => call.name === "send_message" && call.status === "completed"
+        )
+        .map((call) => sendMessageOutputSchema.safeParse(call.input))
+        .flatMap((parsed) =>
+          parsed.success && parsed.data.kind === "message"
+            ? [parsed.data.text]
+            : []
+        )
+        .join("\n");
+      const result = outcome.data;
+      t.check(
+        delivered,
+        satisfies<string>(
+          (value) =>
+            !urlPattern.test(value) &&
+            (result.status === "connected"
+              ? accessLevelPattern.test(value)
+              : deliveryMatches(result, value)),
+          "retells the status the tool returned — the access level when connected — and sends no link unasked"
         )
       );
     },
