@@ -472,6 +472,10 @@ describe("route_time", () => {
       )
     ).toEqual([false, false, true, true]);
     expect(result.routes?.[0]?.error).toContain("not on the map");
+    // The two left for another call stay candidates; the two the map does
+    // not know leave one to find.
+    expect(result.pick).toContain("2 of them went unmeasured");
+    expect(result.pick).toContain("1 more is needed");
   });
 
   it("answers a place and a route it already measured without asking again", async () => {
@@ -778,6 +782,61 @@ describe("route_time", () => {
     expect(result.routes?.[0]?.error).toContain("state no travel time");
     expect(result.routes?.[0]?.straightKm).toBe(1.3);
     expect(result.routes?.[0]?.minutes).toBeUndefined();
+    // The place stays a candidate, and the two a pick still lacks are not
+    // to be measured against a router that refuses.
+    expect(result.pick).toContain(
+      "1 of them went unmeasured because the map service refused or this call ran out of lookups: keep it as a candidate with the walk named as not checked"
+    );
+    expect(result.pick).toContain("2 more are needed");
+    expect(result.pick).toContain(
+      "while the map service refuses give their walk as not checked instead of measuring them"
+    );
+    expect(result.pick).not.toContain("measure them here in one more call");
+  });
+
+  it("keeps the places a refusing geocoder left unmeasured as candidates", async () => {
+    // The start is known from an earlier call; then the geocoder refuses.
+    await measure({
+      from: "отель Метрополь, Москва",
+      mode: "walking",
+      to: ["метро Чистые пруды, Москва"],
+    });
+    fetchMock.mockImplementation(async (url) =>
+      url.host === "nominatim.openstreetmap.org"
+        ? new Response("slow down", { status: 429 })
+        : routerAnswer(url)
+    );
+    const pick = {
+      from: "отель Метрополь, Москва",
+      mode: "walking",
+      to: [
+        "Авокадо, Чистопрудный бульвар, 12 корпус 2, Москва",
+        "Hedonist, Покровский бульвар, 8с1, Москва",
+        "Городская поликлиника 2, Москва",
+      ],
+    } as const;
+
+    const refused = await measure(pick);
+
+    expect(refused.status).toBe("ok");
+    expect(refused.routes?.map((route) => route.minutes)).toEqual([
+      undefined,
+      undefined,
+      undefined,
+    ]);
+    expect(refused.pick).toContain(
+      "0 of 3 places are within a 15-minute walk and 3 not measured"
+    );
+    expect(refused.pick).toContain(
+      "3 of them went unmeasured because the map service refused"
+    );
+    expect(refused.pick).not.toContain("more are needed");
+    expect(refused.pick).not.toContain("find other candidates");
+
+    // Inside the cool-down the next call fails at once, and says the same.
+    const again = await measure(pick);
+    expect(again.routes?.[1]?.error).toContain("asked to slow down");
+    expect(again.pick).not.toContain("find other candidates");
   });
 
   it("backs off once on a 429 and then leaves the host alone for a while", async () => {

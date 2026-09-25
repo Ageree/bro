@@ -336,7 +336,15 @@ async function measure(
     from: from.label,
     fromNote: areaNote(from),
     mode: input.mode,
-    pick: input.mode === "walking" ? pickNote(routes) : undefined,
+    pick:
+      input.mode === "walking"
+        ? pickNote(
+            routes,
+            // Places the map service or this call's lookups left unmeasured.
+            places.filter((entry) => entry.failure !== undefined).length +
+              (routerFailure === undefined ? 0 : found.length)
+          )
+        : undefined,
     routes,
     status: "ok" as const,
   };
@@ -352,21 +360,32 @@ const pickSize = 3;
  * still lacks. The rule of three verified options lived only in the prompt,
  * and on 25.09 (RU d03) gpt-6-luna answered a dinner pick with one place
  * after one round of searches: the tool result the model reads last is
- * where it takes its next step from.
+ * where it takes its next step from. A place the map service could not
+ * measure — the geocoder or the router down or asking to slow down, or this
+ * call out of lookups — stays a candidate with its walk unchecked: asking
+ * for replacements then sent the model to search and measure again against
+ * a service that was still refusing.
  */
-function pickNote(routes: readonly { readonly minutes?: number }[]) {
+function pickNote(
+  routes: readonly { readonly minutes?: number }[],
+  serviceUnmeasured: number
+) {
   const measured = routes.flatMap((route) =>
     route.minutes === undefined ? [] : [route.minutes]
   );
   const near = measured.filter((minutes) => minutes <= walkLimitMinutes);
   const unmeasured = routes.length - measured.length;
-  const lacking = pickSize - near.length;
+  const lacking = pickSize - near.length - serviceUnmeasured;
   const counted = `${String(near.length)} of ${String(routes.length)} ${routes.length === 1 ? "place is" : "places are"} within a ${String(walkLimitMinutes)}-minute walk${unmeasured > 0 ? ` and ${String(unmeasured)} not measured` : ""}`;
+  const service =
+    serviceUnmeasured > 0
+      ? ` ${String(serviceUnmeasured)} of them went unmeasured because the map service refused or this call ran out of lookups: keep ${serviceUnmeasured === 1 ? "it" : "them"} as ${serviceUnmeasured === 1 ? "a candidate" : "candidates"} with the walk named as not checked, never guess minutes and look for no replacement for ${serviceUnmeasured === 1 ? "it" : "them"}. Call route_time again only for a place whose error says to measure the rest in another call.`
+      : "";
   const next =
     lacking > 0
-      ? `${String(lacking)} more ${lacking === 1 ? "is" : "are"} needed: before you reply, find other candidates near the start that fit the rest of the conditions (web_search with sites yandex.ru/maps or 2gis.ru) and measure them here in one more call. Reply with fewer only when that search found none, and say how many fit and why`
+      ? `${String(lacking)} more ${lacking === 1 ? "is" : "are"} needed: before you reply, find other candidates near the start that fit the rest of the conditions (web_search with sites yandex.ru/maps or 2gis.ru)${serviceUnmeasured > 0 ? ", and while the map service refuses give their walk as not checked instead of measuring them" : " and measure them here in one more call"}. Reply with fewer only when that search found none, and say how many fit and why`
       : "Before you reply, check each of them against the rest of the conditions";
-  return `If these are candidates for a pick of places («где поужинать пешком от…»): ${counted}. A pick aims at ${String(pickSize)} options that each pass every condition the person named, the walk included (${String(walkLimitMinutes)} minutes unless they named their own limit). ${next}; name whatever you could not check as not checked.`;
+  return `If these are candidates for a pick of places («где поужинать пешком от…»): ${counted}. A pick aims at ${String(pickSize)} options that each pass every condition the person named, the walk included (${String(walkLimitMinutes)} minutes unless they named their own limit).${service} ${next}; name whatever you could not check as not checked.`;
 }
 
 export const routeTime = defineTool({

@@ -32,16 +32,32 @@ function failureReason(cause: unknown) {
   return cause.name === "TimeoutError" ? "the search timed out" : cause.message;
 }
 
-/** A train, a flight, a ticket or a stay: something sold for given dates. */
+/**
+ * A train, a flight, a ticket or a stay: something sold for given dates.
+ * Whole words where a stem would catch something else: «поездка», «шкаф-купе»,
+ * book shelves («полки» only as a berth), «Барнаул».
+ */
 const tripWords =
-  /(?<!\p{L})(?:поезд|жд|ж\/д|ржд|сапсан|ласточк|электричк|билет|авиабилет|рейс|перел[её]т|самол[её]т|купе|плацкарт|полк[аиуеой](?!\p{L})|отел|гостиниц|хостел|(?:trains?|flights?|tickets?|fares?|hotels?|hostels?)(?!\p{L}))/iu;
+  /(?<!\p{L})(?:поезд(?:а|е|ом|у|ов|ами|ах)?(?!\p{L})|(?:жд|ж\/д|ржд)(?!\p{L})|сапсан|ласточк|электричк|билет|авиабилет|рейс|перел[её]т|самол[её]т|(?<![\p{L}-])купе(?!\p{L})|плацкарт|(?:нижн|верхн|боков)\p{L}*\s+полк|отел|гостиниц|хостел|(?:trains?|flights?|tickets?|fares?|hotels?|hostels?)(?!\p{L}))/iu;
 
-/** A date, a day or a seat: what is on sale then, not a timetable. */
+/**
+ * A date, a day or a seat: what is on sale then, not a timetable. A date in
+ * digits has a two-digit month («03.10», «3.10.2026»), so a rating «4.5» is
+ * none; «завтра» is not «завтрак».
+ */
 const onDatesWords =
-  /\d{1,2}\s*(?:январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)|\d{1,2}\.\d{1,2}(?!\d)|(?<!\p{L})(?:завтра|послезавтра|сегодня|выходн|понедельник|вторник|сред[ау](?!\p{L})|четверг|пятниц|суббот|воскресен|недел|наличи|свободн|мест[ао]?(?!\p{L})|нижн|верхн|(?:tomorrow|tonight|weekend|monday|tuesday|wednesday|thursday|friday|saturday|sunday|week|available|availability|seats?)(?!\p{L}))/iu;
+  /\d{1,2}\s*(?:январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)|(?<![\d.])\d{1,2}\.\d{2}(?!\d)|(?<!\p{L})(?:(?:завтра|послезавтра|сегодня)(?!\p{L})|выходн|понедельник|вторник|сред[ау](?!\p{L})|четверг|пятниц|суббот|воскресен|недел|наличи|свободн|мест[ао]?(?!\p{L})|нижн|верхн|(?:tomorrow|tonight|weekend|monday|tuesday|wednesday|thursday|friday|saturday|sunday|week|available|availability|seats?)(?!\p{L}))/iu;
 
-/** A flight's status is news, not a fare. */
-const statusWords = /(?<!\p{L})(?:статус|задерж|табло|опаздыва|status|delay)/iu;
+/**
+ * Searches that are no fare: a flight's status, and a pick of a place or a
+ * person where a hotel is only a landmark or a day is only when — «где
+ * поужинать рядом с отелем в субботу», «сборка шкафа-купе завтра», «отели
+ * Казани с рейтингом 4.5». Recommending a place or a master is done
+ * without a browser (recommendations.md), and a run nobody asked for costs
+ * money.
+ */
+const notTicketWords =
+  /(?<!\p{L})(?:статус|задерж|табло|опаздыва|(?:рядом|возле|около|недалеко|пешком|напротив)(?:\s+(?:с|со|от|до))?\s+(?:отел|гостиниц|хостел)|ресторан|кафе|кофейн|бар(?:а|ы|ов)?(?!\p{L})|ужин|поужин|обед|пообед|мастер|сборк|шкаф|мебел|рейтинг|театр|концерт|спектакл|кино|выставк|музе|(?:near|by|around|close\s+to)\s+(?:the\s+)?hotel|(?:status|delay|delayed|restaurants?|cafes?|bars?|dinner|lunch|concerts?|theatre|theater|museum)(?!\p{L}))/iu;
 
 /** Sellers and searches of tickets and stays. */
 const ticketSites =
@@ -56,7 +72,7 @@ const ticketSites =
  * while their saved rule was «в поезде только нижняя полка».
  */
 function ticketSearch(input: WebSearchInput) {
-  if (statusWords.test(input.query)) return false;
+  if (notTicketWords.test(input.query)) return false;
   return (
     (tripWords.test(input.query) && onDatesWords.test(input.query)) ||
     (input.sites ?? []).some((site) => ticketSites.test(site))
