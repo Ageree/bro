@@ -958,20 +958,25 @@ describe("browser_task known facts", () => {
 
     const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
     expect(task).not.toContain("Known details you may type into forms:");
+    // A vault contact card's phone may be someone else's.
     expect(task).not.toContain("+79991234567");
-    expect(task).not.toContain("+79990000001");
     expect(task).not.toContain("ул. Ленина");
+    // The person's own phone appears once: to sign in on the errand's site.
+    expect(task.split("+79990000001")).toHaveLength(2);
+    expect(task).toContain(
+      "sign in to the person's own account there with their phone +79990000001"
+    );
   });
 
-  it("keeps the account phone out of the errand once one is known", async () => {
+  it("keeps the account phone out of the known details once one is known", async () => {
     storeVaultCards();
     readAccountPhoneNumber.mockResolvedValue("+79990000001");
 
-    await startErrand("");
+    await startErrand("", undefined, true);
 
-    expect(String(createBrowserUseRun.mock.calls[0]?.[0].task)).not.toContain(
-      "+79990000001"
-    );
+    const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
+    expect(task).toContain("Phone (Мои данные): +79991234567");
+    expect(task).not.toContain("Phone: +79990000001");
   });
 });
 
@@ -3669,6 +3674,178 @@ describe("browser_task finds the option before the one card", () => {
   });
 });
 
+describe("browser_task sign-in by the person's phone", () => {
+  // RU 25.09, d04: «закажи на озоне тот же корм» stopped at Ozon's sign-in,
+  // which takes a phone and an SMS code, with NEEDS: password.
+  const phoneLine =
+    "sign in to the person's own account there with their phone +79991234567";
+
+  beforeEach(() => {
+    readUserProfile.mockResolvedValue({
+      ...emptyUserProfile,
+      phone: "+79991234567",
+    });
+  });
+
+  async function start(options: {
+    readonly authenticator?: string;
+    readonly site?: string;
+  }) {
+    const tool = await resolvedBrowserTask([], "закажи на озоне тот же корм");
+    await tool.execute(
+      {
+        action: "start",
+        site: options.site,
+        task: "Закажи тот же корм коту, что в прошлый раз",
+      },
+      toolContext("better-auth:alice", options.authenticator)
+    );
+    return String(createBrowserUseRun.mock.calls[0]?.[0].task);
+  }
+
+  it("signs in on the errand's own site with the person's phone", async () => {
+    const task = await start({ site: "https://www.ozon.ru" });
+
+    expect(task).toContain(phoneLine);
+    expect(task).toContain(
+      "That phone is for signing in on www.ozon.ru only — its own sign-in page, which may sit on a subdomain of it — never on another site, a fallback or a site it sends you to, and no other personal detail goes with it."
+    );
+    expect(task).toContain(
+      "Stop right after the site sends the code, with NEEDS: sms_code (or push)"
+    );
+    expect(task).toContain(
+      "If www.ozon.ru offers only a password sign-in, stop with NEEDS: password"
+    );
+    // Not approved to act in their name: the phone is for signing in only.
+    expect(task).toContain(
+      "Their phone goes only where the sign-in paragraph below allows, to sign in and for nothing else."
+    );
+    expect(task).not.toContain("No stored credentials are available");
+  });
+
+  it("leaves the phone out when a login is saved for the site", async () => {
+    resolveBrowserSecretBindings.mockResolvedValue({
+      aliases: ["login_username", "login_password"],
+      bindings: [{ alias: "login_username" }, { alias: "login_password" }],
+    });
+
+    const task = await start({ site: "https://www.ozon.ru" });
+
+    expect(task).not.toContain("+79991234567");
+    expect(task).toContain("login_username");
+  });
+
+  it("leaves the phone out when no phone is known", async () => {
+    readUserProfile.mockResolvedValue(emptyUserProfile);
+
+    const task = await start({ site: "https://www.ozon.ru" });
+
+    expect(task).not.toContain("sign in to the person's own account");
+    expect(task).toContain("No stored credentials are available");
+  });
+
+  it("gives no site the phone when the errand names none", async () => {
+    const task = await start({});
+
+    expect(task).not.toContain("+79991234567");
+  });
+
+  it("gives a scheduled worker's run no phone", async () => {
+    const task = await start({
+      authenticator: "scheduled-worker",
+      site: "https://www.ozon.ru",
+    });
+
+    expect(task).not.toContain("+79991234567");
+  });
+
+  it("keeps it for a report turn continuing the person's errand", async () => {
+    // The errand was started in this same session, by the person.
+    readBrowserRunForScope.mockResolvedValue({
+      ...browserRunRow(new Date(), "Needs: decision"),
+      site: "https://www.ozon.ru",
+    });
+    const report = await resolvedBrowserTask(
+      [],
+      `${backgroundTurnMarker}\nBrowser run ${runId} finished.`
+    );
+
+    await report.execute(
+      { action: "continue", runId, task: "Положи этот корм в корзину" },
+      toolContext("better-auth:alice", "browser-result")
+    );
+
+    expect(String(createBrowserUseRun.mock.calls[0]?.[0].task)).toContain(
+      phoneLine
+    );
+  });
+
+  it("gives no phone to a report turn continuing a worker's errand", async () => {
+    // A scheduled worker's run keeps the worker's own session.
+    readBrowserRunForScope.mockResolvedValue({
+      ...browserRunRow(new Date(), "Needs: decision"),
+      rootSessionId: "worker-session",
+      site: "https://www.ozon.ru",
+    });
+    const report = await resolvedBrowserTask(
+      [],
+      `${backgroundTurnMarker}\nBrowser run ${runId} finished.`
+    );
+
+    await report.execute(
+      { action: "continue", runId, task: "Проверь цену ещё раз" },
+      toolContext("better-auth:alice", "browser-result")
+    );
+
+    expect(String(createBrowserUseRun.mock.calls[0]?.[0].task)).not.toContain(
+      "+79991234567"
+    );
+  });
+
+  it("composes the line only for the errand's own site", async () => {
+    const { composeBrowserContinuation, composeBrowserTask } =
+      await import("@agent/tools/browser_task");
+    const base = {
+      aliases: [],
+      allowPayment: false,
+      collectImages: false,
+      consent: undefined,
+      deliveryAddress: undefined,
+      errand: "Закажи корм",
+      facts: undefined,
+      signInPhone: "+79991234567",
+    };
+
+    expect(
+      composeBrowserTask({
+        ...base,
+        home: undefined,
+        site: "https://www.ozon.ru",
+      })
+    ).toContain(phoneLine);
+    expect(
+      composeBrowserTask({ ...base, home: undefined, site: undefined })
+    ).not.toContain("+79991234567");
+    expect(
+      composeBrowserContinuation({
+        ...base,
+        message: "Человек написал: «оформляй»",
+        searching: false,
+        site: "https://www.ozon.ru",
+      })
+    ).toContain(phoneLine);
+    // A Госуслуги login signs in instead.
+    expect(
+      composeBrowserTask({
+        ...base,
+        aliases: ["gosuslugi_username", "gosuslugi_password"],
+        home: undefined,
+        site: "https://www.mos.ru",
+      })
+    ).not.toContain("+79991234567");
+  });
+});
+
 describe("browser_task delivery address before the card", () => {
   const cottageCard = serializeAddressVaultPayload({
     city: "Истра",
@@ -3743,11 +3920,15 @@ describe("browser_task delivery address before the card", () => {
     expect(task).toContain(
       "Never type the person's name, phone number or email into any site, and their address only where the delivery-address paragraph below allows."
     );
-    // The other saved addresses and everything else wait for the card.
+    // The other saved addresses and everything else wait for the card; the
+    // phone goes only to the site's own sign-in.
     expect(task).not.toContain("Рассвет");
     expect(task).not.toContain("Known details you may type into forms:");
     expect(task).not.toContain("Иван Петров");
-    expect(task).not.toContain("+79991234567");
+    expect(task.split("+79991234567")).toHaveLength(2);
+    expect(task).toContain(
+      "That phone is for signing in on lavka.yandex.ru only"
+    );
     expect(task).not.toContain("ivan@example.com");
   });
 

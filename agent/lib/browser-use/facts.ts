@@ -152,6 +152,18 @@ async function safeAccountPhoneNumber(scope: AccessScope) {
 }
 
 /**
+ * The person's own phone, to sign in with where the site sends a code: the
+ * one in Personal Info, else the one they signed in to Bro with. A vault
+ * contact card's phone may be someone else's, so it never stands in.
+ */
+function ownPhone(profile: Profile, accountPhone: string | null | undefined) {
+  const phone = [profile.phone, accountPhone]
+    .map((value) => value?.replaceAll(/\s+/gu, " ").trim())
+    .find((value) => value !== undefined && value.length > 0);
+  return phone;
+}
+
+/**
  * Where the person's things can be delivered: the profile's street address
  * first, then the vault's address cards, each without the recipient's name.
  * A city and a country alone are not an address — they are the `home` line.
@@ -291,5 +303,6 @@ export async function browserRunFacts(scope: AccessScope) {
     details:
       lines.length === 0 ? undefined : [factsHeader, ...lines].join("\n"),
     home: profileHome(profile),
+    phone: ownPhone(profile, accountPhone),
   };
 }
