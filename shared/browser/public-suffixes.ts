@@ -21,6 +21,7 @@ const publicSuffixes = new Set([
   "com.tr",
   "com.ua",
   "github.io",
+  "gov.ru",
   "msk.ru",
   "myshopify.com",
   "net.ru",
