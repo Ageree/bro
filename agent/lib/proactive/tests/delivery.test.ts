@@ -34,6 +34,7 @@ import { holdProactiveReport } from "@agent/lib/proactive/delivery";
 const report = {
   runId: "00000000-0000-4000-8000-000000000002",
   scope: { userId: "better-auth:alice", workspaceId: "workspace:alice" },
+  timeSensitive: false,
 };
 
 describe("proactive report delivery", () => {
@@ -50,14 +51,24 @@ describe("proactive report delivery", () => {
     expect(reports.defer).not.toHaveBeenCalled();
   });
 
-  it("holds a report that finished at night until the morning", async () => {
+  it("holds a report that finished at night until the morning check has folded it", async () => {
     const now = new Date("2026-09-23T21:10:00.000Z");
     expect(await holdProactiveReport(report, now)).toBe(true);
+    // 08:00 in Moscow is when the first morning check runs; the report waits
+    // ten minutes more, so that check takes it into its own run.
     expect(reports.defer).toHaveBeenCalledExactlyOnceWith(
       report.runId,
-      new Date("2026-09-24T05:00:00.000Z"),
+      new Date("2026-09-24T05:10:00.000Z"),
       now
     );
+  });
+
+  it("lets a handover that cannot wait through at night", async () => {
+    const now = new Date("2026-09-23T21:10:00.000Z");
+    expect(
+      await holdProactiveReport({ ...report, timeSensitive: true }, now)
+    ).toBe(false);
+    expect(reports.defer).not.toHaveBeenCalled();
   });
 
   it("drops the report of someone who opted out meanwhile", async () => {

@@ -373,12 +373,164 @@ describe("proactive watches", { timeout: 30_000 }, () => {
         jobKind: "proactive",
         runId: nextRunId,
         scope: alice,
+        timeSensitive: true,
       },
     ]);
     const morning = new Date(later.getTime() + 8 * 60 * 60_000);
     await jobs.deferScheduledReport(nextRunId, morning, later);
     expect(await jobs.listRecoverableScheduledReports(later)).toEqual([]);
     expect(await jobs.listRecoverableScheduledReports(morning)).toHaveLength(1);
+  });
+
+  it("folds the reports held overnight into the first morning run", async () => {
+    const { db, jobs, proactive } = await openDatabase();
+    await proactive.recordProactiveTarget(alice, telegram, now);
+    const evening = new Date("2026-09-23T18:55:00.000Z");
+    const morning = new Date("2026-09-24T05:00:00.000Z");
+    const [watch] = await proactive.claimDueProactiveWatches({
+      leaseForMs: 15 * 60_000,
+      limit: 10,
+      now: evening,
+    });
+    if (!watch) throw new Error("Expected a due watch.");
+
+    // Two evening runs finish after 22:00; their reports wait for 08:10.
+    const phishing = {
+      dedupeKey: "m2",
+      itemId: "m2",
+      source: "gmail" as const,
+      threadId: "t2",
+    };
+    let at = evening;
+    for (const signal of [bossMail, phishing]) {
+      const runId = queuedRunId(
+        // oxlint-disable-next-line eslint/no-await-in-loop -- Each run waits for the one before it to close.
+        await proactive.queueProactiveRun({
+          jobId: watch.jobId,
+          mailCheckedAt: at,
+          maxRunsPerDay: 12,
+          now: at,
+          signals: [signal],
+          workspaceId: alice.workspaceId,
+        })
+      );
+      // oxlint-disable-next-line eslint/no-await-in-loop -- As above.
+      const [claim] = await jobs.claimReadyScheduledAgentRuns({
+        kind: "proactive",
+        leaseForMs: 60_000,
+        limit: 10,
+        now: at,
+      });
+      if (!runId || !claim?.run.leaseToken) throw new Error("Expected a run.");
+      // oxlint-disable-next-line eslint/no-await-in-loop -- As above.
+      await jobs.completeScheduledAgentRun(
+        runId,
+        claim.run.leaseToken,
+        "turn-1",
+        {
+          kind: "result",
+          summary: `About ${signal.itemId}.`,
+          urgency: "normal",
+        },
+        at
+      );
+      // oxlint-disable-next-line eslint/no-await-in-loop -- As above.
+      await jobs.deferScheduledReport(
+        runId,
+        new Date(morning.getTime() + 10 * 60_000),
+        at
+      );
+      at = new Date(at.getTime() + 60 * 60_000);
+    }
+
+    const [dueInTheMorning] = await proactive.claimDueProactiveWatches({
+      leaseForMs: 15 * 60_000,
+      limit: 10,
+      now: morning,
+    });
+    expect(dueInTheMorning?.heldReports).toBe(2);
+    // The night's news without a single new signal: two held reports
+    // become one run, and so one message.
+    const folded = await proactive.queueProactiveRun({
+      fold: true,
+      jobId: watch.jobId,
+      mailCheckedAt: morning,
+      maxRunsPerDay: 12,
+      now: morning,
+      signals: [],
+      workspaceId: alice.workspaceId,
+    });
+    expect(folded).toMatchObject({ folded: 2, status: "queued" });
+    const foldedRunId = queuedRunId(folded);
+    if (!foldedRunId) throw new Error("Expected the morning run.");
+    expect(
+      (await proactive.listProactiveRunSignals(foldedRunId)).map(
+        (signal) => signal.itemId
+      )
+    ).toEqual(["m1", "m2"]);
+    expect(
+      await jobs.listRecoverableScheduledReports(
+        new Date(morning.getTime() + 20 * 60_000)
+      )
+    ).toEqual([]);
+    const closed = await db.query.scheduledAgentRuns.findMany({
+      columns: { reportStatus: true },
+      where: (runs, { ne }) => ne(runs.id, foldedRunId),
+    });
+    expect(closed.map((run) => run.reportStatus)).toEqual([
+      "not_needed",
+      "not_needed",
+    ]);
+  });
+
+  it("leaves a single held report to go out on its own", async () => {
+    const { jobs, proactive } = await openDatabase();
+    await proactive.recordProactiveTarget(alice, telegram, now);
+    const [watch] = await proactive.claimDueProactiveWatches({
+      leaseForMs: 15 * 60_000,
+      limit: 10,
+      now,
+    });
+    if (!watch) throw new Error("Expected a due watch.");
+    const runId = queuedRunId(
+      await proactive.queueProactiveRun({
+        jobId: watch.jobId,
+        mailCheckedAt: now,
+        maxRunsPerDay: 12,
+        now,
+        signals: [bossMail],
+        workspaceId: alice.workspaceId,
+      })
+    );
+    const [claim] = await jobs.claimReadyScheduledAgentRuns({
+      kind: "proactive",
+      leaseForMs: 60_000,
+      limit: 10,
+      now,
+    });
+    if (!runId || !claim?.run.leaseToken) throw new Error("Expected a run.");
+    await jobs.completeScheduledAgentRun(
+      runId,
+      claim.run.leaseToken,
+      "turn-1",
+      { kind: "result", summary: "Boss asks about Q3.", urgency: "normal" },
+      now
+    );
+    const release = new Date(now.getTime() + 60 * 60_000);
+    await jobs.deferScheduledReport(runId, release, now);
+
+    expect(
+      await proactive.queueProactiveRun({
+        fold: true,
+        jobId: watch.jobId,
+        mailCheckedAt: now,
+        maxRunsPerDay: 12,
+        now,
+        signals: [],
+        workspaceId: alice.workspaceId,
+      })
+    ).toEqual({ status: "nothing" });
+    expect(await jobs.listRecoverableScheduledReports(release)).toHaveLength(1);
   });
 
   it("closes a run parked on a question when its report is dropped", async () => {

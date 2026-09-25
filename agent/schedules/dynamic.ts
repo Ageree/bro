@@ -196,6 +196,7 @@ async function executeScheduledRun(
           userId: claim.job.createdByUserId,
           workspaceId: claim.job.workspaceId,
         },
+        timeSensitive: false,
       });
     }
   }

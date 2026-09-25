@@ -37,14 +37,30 @@ export function reportNeeded(outcome: ScheduledRunOutcome) {
   return !(outcome.kind === "result" && saysNothing(outcome.summary));
 }
 
+/**
+ * How a worker says its handover cannot wait for the morning: the first line
+ * is exactly this. Only Bro's own checks are held overnight, and only a
+ * handover so marked — a flight within hours, a real security alert — goes
+ * out during the person's night.
+ */
+export const urgentHandoverMarker = "[срочно]";
+
+const urgentHandover = /^\s*\[(?:срочно|urgent)\]\s*/iu;
+
 /** The outcome a background worker's final reply records. */
 export function workerOutcome(
   message: string | null | undefined
 ): ScheduledRunOutcome {
-  const summary = message?.trim();
+  const text = message?.trim();
+  const urgent = text !== undefined && urgentHandover.test(text);
+  const summary = urgent ? text.replace(urgentHandover, "").trim() : text;
   return scheduledRunOutcomeSchema.parse(
     summary && !saysNothing(summary)
-      ? { kind: "result", summary: summary.slice(0, 4_000), urgency: "normal" }
+      ? {
+          kind: "result",
+          summary: summary.slice(0, 4_000),
+          urgency: urgent ? "time_sensitive" : "normal",
+        }
       : {
           kind: "nothing_to_report",
           reason: "The scheduled task produced no useful update.",

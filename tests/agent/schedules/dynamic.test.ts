@@ -126,6 +126,7 @@ describe("dynamic schedule dispatch", () => {
         jobKind: "task",
         runId: report.run.id,
         scope: { userId: "user-1", workspaceId: "workspace-1" },
+        timeSensitive: false,
       },
     ]);
     services.claimReports.mockResolvedValue(report);
@@ -154,6 +155,7 @@ describe("dynamic schedule dispatch", () => {
         jobKind: "task",
         runId: report.run.id,
         scope: { userId: "user-1", workspaceId: "workspace-1" },
+        timeSensitive: false,
       },
     ]);
     services.claimReports.mockResolvedValue(report);

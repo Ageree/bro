@@ -3,12 +3,16 @@ import {
   calendarSignals,
   gmailProbeQuery,
   gmailSignals,
+  isNightFlight,
+  isNightSubject,
   mailSearchStart,
   proactiveRunPrompt,
   selectRunSignals,
 } from "@agent/lib/proactive/signals";
+import { emptyUserProfile } from "@shared/user-profile/schema";
 
 const now = new Date("2026-09-23T12:00:00.000Z");
+const noHome = emptyUserProfile;
 
 describe("proactive signals", () => {
   it("overlaps the mail watermark but never looks back more than a day", () => {
@@ -119,6 +123,7 @@ describe("proactive signals", () => {
 
   it("names only the new threads and events and the calendar window", () => {
     const prompt = proactiveRunPrompt({
+      home: noHome,
       scheduledFor: now,
       signals: [
         { itemId: "m1", source: "gmail", threadId: "t1" },
@@ -131,8 +136,107 @@ describe("proactive signals", () => {
       "timeMin 2026-09-23T12:00:00.000Z and timeMax 2026-09-24T14:00:00.000Z"
     );
     expect(prompt).toContain("these ids): flight");
-    expect(proactiveRunPrompt({ scheduledFor: now, signals: [] })).toContain(
-      "No new mail."
+    expect(prompt).not.toContain("quiet hours");
+    expect(
+      proactiveRunPrompt({ home: noHome, scheduledFor: now, signals: [] })
+    ).toContain("No new mail.");
+  });
+
+  it("tells the worker where home is, for the time to leave for a flight", () => {
+    expect(
+      proactiveRunPrompt({
+        home: {
+          ...noHome,
+          addressLine1: "ул. Профсоюзная, 12",
+          city: "Москва",
+        },
+        scheduledFor: now,
+        signals: [],
+      })
+    ).toContain(
+      "Home (Personal Info; count a leave-by time from here): ул. Профсоюзная, 12, Москва"
     );
+    expect(
+      proactiveRunPrompt({ home: noHome, scheduledFor: now, signals: [] })
+    ).toContain("count a leave-by time from the city centre and say so");
+  });
+
+  it("warns a night run that its handover waits unless marked urgent", () => {
+    const prompt = proactiveRunPrompt({
+      home: noHome,
+      quietUntil: "2026-09-24 08:00, Thursday (Europe/Moscow)",
+      scheduledFor: now,
+      signals: [],
+    });
+    expect(prompt).toContain(
+      "quiet hours until 2026-09-24 08:00, Thursday (Europe/Moscow)"
+    );
+    expect(prompt).toContain("unless its first line is [срочно]");
+  });
+});
+
+describe("what may wake the person at night", () => {
+  const evening = new Date("2026-09-23T20:00:00.000Z");
+
+  it("takes a flight leaving within hours, not a morning meeting or a far flight", () => {
+    expect(
+      isNightFlight(
+        {
+          location: "Vnukovo International Airport",
+          start: { dateTime: "2026-09-24T04:05:00Z" },
+          summary: "Москва — Сочи",
+        },
+        evening
+      )
+    ).toBe(true);
+    expect(
+      isNightFlight(
+        {
+          start: { dateTime: "2026-09-24T04:05:00Z" },
+          summary: "Рейс DP 405",
+        },
+        evening
+      )
+    ).toBe(true);
+    expect(
+      isNightFlight(
+        {
+          start: { dateTime: "2026-09-24T06:00:00Z" },
+          summary: "Созвон с командой",
+        },
+        evening
+      )
+    ).toBe(false);
+    expect(
+      isNightFlight(
+        {
+          start: { dateTime: "2026-09-26T04:05:00Z" },
+          summary: "Flight to Sochi (SU 1234)",
+        },
+        evening
+      )
+    ).toBe(false);
+    // An all-day trip has no departure to leave for.
+    expect(
+      isNightFlight({ start: {}, summary: "Перелёт в Сочи" }, evening)
+    ).toBe(false);
+  });
+
+  it("reads a flight change or an account alert in a subject, not a friend or a parcel", () => {
+    for (const subject of [
+      "Изменение выхода на посадку: рейс SU 1234",
+      "Your flight UA 1532 is delayed",
+      "Новый вход в аккаунт Google",
+      "Служба безопасности банка: подтвердите операцию",
+    ]) {
+      expect(isNightSubject(subject)).toBe(true);
+    }
+    for (const subject of [
+      "го в субботу на шашлыки?",
+      "СДЭК: посылка задерживается",
+      "Можешь к утру глянуть цифры по Q3?",
+    ]) {
+      expect(isNightSubject(subject)).toBe(false);
+    }
   });
 });

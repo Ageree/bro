@@ -361,6 +361,38 @@ describe("scheduled run completion hook", () => {
     );
   });
 
+  it("records a handover marked urgent as one that may go out at night", async () => {
+    const completed = completionHook.events?.["message.completed"];
+    await completed?.(
+      {
+        data: {
+          finishReason: "stop",
+          message:
+            "[срочно]\nРейс SU 1234 в 07:05 из Внуково, выход B12; выйти примерно в 04:30.",
+          sequence: 0,
+          stepIndex: 0,
+          turnId: "turn-1",
+        },
+        meta: { at: "2026-09-01T13:01:00.000Z", id: "event-urgent" },
+        type: "message.completed",
+      },
+      context
+    );
+
+    expect(services.complete).toHaveBeenCalledWith(
+      runId,
+      leaseToken,
+      "turn-1",
+      {
+        kind: "result",
+        summary:
+          "Рейс SU 1234 в 07:05 из Внуково, выход B12; выйти примерно в 04:30.",
+        urgency: "time_sensitive",
+      },
+      new Date("2026-09-01T13:01:00.000Z")
+    );
+  });
+
   it("bounds a long final handoff before persisting it", async () => {
     const completed = completionHook.events?.["message.completed"];
     await completed?.(

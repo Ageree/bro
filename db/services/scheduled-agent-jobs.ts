@@ -922,6 +922,11 @@ function sameConversation(
   );
 }
 
+/** A handover the worker marked as unable to wait for the person's morning. */
+function isTimeSensitive(outcome: ScheduledRunOutcome | undefined) {
+  return outcome?.kind === "result" && outcome.urgency === "time_sensitive";
+}
+
 export async function listRecoverableScheduledReports(
   now = new Date(),
   limit = 25
@@ -1000,6 +1005,9 @@ export async function listRecoverableScheduledReports(
         jobKind,
         runId: run.id,
         scope: { userId: createdByUserId, workspaceId },
+        timeSensitive: isTimeSensitive(
+          scheduledRunOutcomeSchema.safeParse(run.outcome).data
+        ),
       })
     );
   });

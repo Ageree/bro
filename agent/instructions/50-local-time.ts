@@ -32,10 +32,13 @@ export default defineDynamic({
     async "turn.started"(_event, context) {
       const caller =
         context.session.auth.current ?? context.session.auth.initiator;
-      // Bro's own checks read the clock but have no profile to write to.
+      // Bro's own checks read the clock but have no profile to write to, and
+      // neither does a report turn, which still has to say «завтра в 07:05»
+      // and «выйти в 04:30» on the person's clock rather than UTC.
       const canSaveTimeZone = resolveModeValue(context, {
         interactive: true,
         "proactive-worker": false,
+        "scheduled-report": false,
         "scheduled-worker": true,
       });
       if (

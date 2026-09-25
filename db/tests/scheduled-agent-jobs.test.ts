@@ -211,6 +211,7 @@ describe("scheduled agent jobs", () => {
         jobKind: "task",
         runId: claim.run.id,
         scope: alice,
+        timeSensitive: false,
       },
     ]);
     const retriedQuestionReport = await jobs.claimScheduledReport(
