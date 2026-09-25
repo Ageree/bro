@@ -130,6 +130,43 @@ describe("the one-time codes a follow-up carries", () => {
     }
   });
 
+  it("lets a word for a code earlier in the clause win over an order or a flight", () => {
+    // An order's SMS reads «Код для подтверждения заказа».
+    for (const text of [
+      "Пользователь прислал код подтверждения заказа 739204, введи его",
+      "Введи код для заказа 739204",
+      "Код из смс для заказа 739204",
+      "Код по заказу 739204",
+    ]) {
+      expect(oneTimeCodesIn(text, { awaitingCode: false })).toEqual(["739204"]);
+    }
+    expect(
+      oneTimeCodesIn("Введи код подтверждения заказа 739204", {
+        awaitingCode: true,
+      })
+    ).toEqual(["739204"]);
+    expect(oneTimeCodesIn("Код от ВТБ 739204", { awaitingCode: true })).toEqual(
+      ["739204"]
+    );
+    // A clause of its own keeps the order and the flight what they are.
+    expect(
+      oneTimeCodesIn("Код 739204, заказ 48213, рейс SU 1234", {
+        awaitingCode: true,
+      })
+    ).toEqual(["739204"]);
+  });
+
+  it("keeps an amount an amount after a word like «SMS»", () => {
+    expect(
+      oneTimeCodesIn("Человек подтвердил оплату по смс из банка 4 890 ₽", {
+        awaitingCode: true,
+      })
+    ).toEqual([]);
+    expect(
+      oneTimeCodesIn("Списали по SMS 1500 руб", { awaitingCode: true })
+    ).toEqual([]);
+  });
+
   it("tells an amount, a year or an id from a code the run waits for", () => {
     expect(
       oneTimeCodesIn(

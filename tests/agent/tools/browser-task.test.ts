@@ -4586,6 +4586,44 @@ describe("browser_task passes on only what the person sent", () => {
     expect(createBrowserUseRun).toHaveBeenCalledTimes(2);
   });
 
+  it("finds a made-up code an order's SMS words name", async () => {
+    await expect(
+      continueErrand({
+        completedAt: new Date(),
+        outcome: "Needs: sms_code",
+        personSaid: "ну давай",
+        said: "ну давай",
+        task: "Пользователь прислал код подтверждения заказа 739204, введи его",
+      })
+    ).rejects.toThrow("Never make up a code");
+    // Nor does a turn Bro opened queue one into a live run.
+    readBrowserRunForScope.mockResolvedValue(browserRunRow());
+    const report = await resolvedBrowserTask([], reportOpening);
+    await expect(
+      report.execute(
+        {
+          action: "continue",
+          runId,
+          task: "Введи код подтверждения заказа 739204",
+        },
+        toolContext("better-auth:alice", "browser-result")
+      )
+    ).rejects.toThrow("Never make up a code");
+    nothingSent();
+  });
+
+  it("lets an amount paid by SMS ride along a 3-D Secure confirmation", async () => {
+    await continueErrand({
+      completedAt: new Date(),
+      outcome: "Needs: 3ds",
+      personSaid: "подтвердил",
+      said: "подтвердил",
+      task: "Человек подтвердил оплату по смс из банка 4 890 ₽",
+    });
+
+    expect(createBrowserUseRun).toHaveBeenCalledOnce();
+  });
+
   it("asks again for a code sent before the person's latest message", async () => {
     // A message steered into the turn and one of an earlier turn look the
     // same in eve's history: only the latest counts, the safe way round.

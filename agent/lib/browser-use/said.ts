@@ -101,12 +101,28 @@ const codeContextPattern =
   /(?<!\p{L})(?:смс|sms|otp|одноразов\p{L}*|one[\s-]time|verification)(?!\p{L})/iu;
 
 /**
- * «код 739204», «код подтверждения: 4821», «СМС 739204», "code is 7392" — a
- * word for a code right before the number, which no other reading of it
- * overrides; «промокод 1234» or «код домофона 4567» is not a one-time code.
+ * «код 739204», «код подтверждения: 4821», «код для заказа 739204», "code
+ * is 7392" — a word for a code right before the number, which no other
+ * reading of it overrides; «промокод 1234» or «код домофона 4567» is not a
+ * one-time code.
  */
 const codeLeadPattern =
-  /(?<!\p{L})(?:код\p{L}*|code\p{L}*|пароль\p{L}*|password|пин|pin|смс|sms|otp)(?:\s+(?:подтверждения|из|с|от|смс|sms|сообщения|письма|почты|сайта|банка|is|from|the))*[\s:—–-]*$/iu;
+  /(?<!\p{L})(?:код\p{L}*|code\p{L}*|пароль\p{L}*|password|пин|pin)(?:\s+(?:подтверждения|для|по|из|с|от|к|смс|sms|сообщения|письма|почты|сайта|банка|заказа|заказу|входа|is|from|for|the))*[\s:—–-]*$/iu;
+
+/**
+ * «СМС 739204», «SMS: 739204», «OTP 739204» — right before the number, where
+ * a capitalised prefix would otherwise read it as a flight or an order; a
+ * unit after it still makes it an amount.
+ */
+const messageLeadPattern = /(?<!\p{L})(?:смс|sms|otp)[\s:—–-]*$/iu;
+
+/**
+ * A word for a code earlier in the same clause, with no number or clause
+ * break since: «код подтверждения заказа 739204», «код от ВТБ 739204». It
+ * names the number a code whatever prefix stands right before it.
+ */
+const codeWordInClausePattern =
+  /(?<!\p{L})(?:код|code|пароль|password|пин|pin|смс|sms|otp)\p{L}*[^\d,.;!?\n]*$/iu;
 
 /** How far from the number a word like «SMS» still describes it. */
 const codeContextReach = 25;
@@ -131,24 +147,33 @@ const unitAfterPattern =
 const namedBeforePattern =
   /(?:[₽$€]|(?<!\p{L})(?:\p{Lu}[\p{Lu}\d]{0,2}|№|#))[\s-]?$/u;
 
-/**
- * A month before a year («15 октября 2026»), or a word naming the number:
- * «рейс su 1234», «поезд 7412», «номер заказа 48213».
- */
-const wordBeforePattern =
-  /(?<!\p{L})(?:(?:январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр)\p{L}*|(?:рейс|поезд|заказ|order|flight|train)\p{L}*(?:\s+[\p{L}\d]{1,3})?)\s*$/iu;
+/** A month before a year: «15 октября 2026». */
+const monthBeforePattern =
+  /(?<!\p{L})(?:январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр)\p{L}*\s+$/iu;
+
+/** A word naming the number: «рейс su 1234», «поезд 7412», «заказ 48213». */
+const idWordBeforePattern =
+  /(?<!\p{L})(?:рейс|поезд|заказ|order|flight|train)\p{L}*(?:\s+[\p{L}\d]{1,3})?\s*$/iu;
 
 /** A date written as digits: «2026-10-15», «15-10-2026». */
 const numericDatePattern = /^(?:\d{4}-\d{2}-\d{2}|\d{2}-\d{2}-\d{4})$/u;
 
-/** Whether the number at this place is plainly an amount, a date or an id. */
-function namedOtherwise(number: string, before: string, after: string) {
+/** Whether the number is plainly an amount or a date, whatever names it. */
+function amountOrDate(number: string, before: string, after: string) {
   return (
     numericDatePattern.test(number) ||
     unitAfterPattern.test(after) ||
-    namedBeforePattern.test(before) ||
-    wordBeforePattern.test(before)
+    monthBeforePattern.test(before)
   );
+}
+
+/** Whether the number at this place is plainly an amount, a date or an id. */
+function namedOtherwise(number: string, before: string, after: string) {
+  if (amountOrDate(number, before, after)) return true;
+  // «код подтверждения заказа 739204»: the code word earlier in the clause
+  // wins over the order or flight word right before the number.
+  if (codeWordInClausePattern.test(before)) return false;
+  return namedBeforePattern.test(before) || idWordBeforePattern.test(before);
 }
 
 function digitGroups(text: string) {
@@ -178,6 +203,8 @@ export function oneTimeCodesIn(
     ];
     const isCode =
       codeLeadPattern.test(before) ||
+      (messageLeadPattern.test(before) &&
+        !amountOrDate(match[0], before, after)) ||
       (!namedOtherwise(match[0], before, after) &&
         (options.awaitingCode ||
           near.some((words) => codeContextPattern.test(words))));
