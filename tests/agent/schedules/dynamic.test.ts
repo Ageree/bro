@@ -3,6 +3,7 @@ import type { ScheduleHandlerArgs, ScheduleToFn } from "eve/schedules";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import type {
+  absorbHeldProactiveReports,
   claimAnsweredScheduledAgentRuns,
   claimReadyScheduledAgentRuns,
   claimScheduledReport,
@@ -18,6 +19,7 @@ import type {
 } from "@db/services/scheduled-agent-jobs";
 
 const services = vi.hoisted(() => ({
+  absorb: vi.fn<typeof absorbHeldProactiveReports>(),
   claimAnswers: vi.fn<typeof claimAnsweredScheduledAgentRuns>(),
   claimReports: vi.fn<typeof claimScheduledReport>(),
   claimRuns: vi.fn<typeof claimReadyScheduledAgentRuns>(),
@@ -33,6 +35,7 @@ const services = vi.hoisted(() => ({
 }));
 
 vi.mock("@db/services/scheduled-agent-jobs", () => ({
+  absorbHeldProactiveReports: services.absorb,
   claimAnsweredScheduledAgentRuns: services.claimAnswers,
   claimReadyScheduledAgentRuns: services.claimRuns,
   claimScheduledReport: services.claimReports,
@@ -45,6 +48,10 @@ vi.mock("@db/services/scheduled-agent-jobs", () => ({
   releaseScheduledAgentRun: services.releaseRun,
   releaseScheduledReport: services.releaseReport,
   setScheduledRunSession: services.setSession,
+}));
+vi.mock("@db/services/user-profile", () => ({
+  readProactiveMessages: () => Promise.resolve(true),
+  readWorkspaceTimeZone: () => Promise.resolve("Europe/Moscow"),
 }));
 vi.mock("@agent/channels/photon", () => ({
   default: { channel: "photon" },
@@ -150,9 +157,12 @@ describe("dynamic schedule dispatch", () => {
     const report = scheduledReport();
     services.listReports.mockResolvedValue([
       {
+        carriesEvent: false,
         conversationChannel: "photon",
+        jobId: report.job.id,
         jobKind: "task",
         runId: report.run.id,
+        scheduledFor: report.run.scheduledFor,
         scope: { userId: "user-1", workspaceId: "workspace-1" },
         timeSensitive: false,
       },
@@ -171,6 +181,61 @@ describe("dynamic schedule dispatch", () => {
     });
   });
 
+  it("sends one morning message for all of Bro's own reports, not one each", async () => {
+    // 09:00 in Moscow: the night is over and two reports are due at once.
+    vi.useFakeTimers({
+      now: new Date("2026-09-24T06:00:00.000Z"),
+      toFake: ["Date"],
+    });
+    const report = scheduledReport();
+    report.job.kind = "proactive";
+    report.run.reportLeaseExpiresAt = new Date("2026-09-24T06:05:00.000Z");
+    const held = {
+      carriesEvent: false,
+      conversationChannel: "photon" as const,
+      jobId: report.job.id,
+      jobKind: "proactive" as const,
+      scheduledFor: new Date("2026-09-23T20:00:00.000Z"),
+      scope: { userId: "user-1", workspaceId: "workspace-1" },
+      timeSensitive: false,
+    };
+    services.listReports.mockResolvedValue([
+      { ...held, runId: report.run.id },
+      { ...held, runId: "00000000-0000-4000-8000-000000000077" },
+    ]);
+    services.claimReports.mockResolvedValue(report);
+    services.absorb.mockResolvedValue([
+      {
+        id: "00000000-0000-4000-8000-000000000077",
+        outcome: {
+          kind: "result",
+          summary: "Фишинг: «служба безопасности банка» просит код.",
+          urgency: "normal",
+        },
+        scheduledFor: held.scheduledFor,
+      },
+    ]);
+    const send = vi
+      .fn<ReturnType<ScheduleToFn>["send"]>()
+      .mockResolvedValue(workerSession("main-session"));
+    const to = vi.fn<ScheduleToFn>(() => ({ send }));
+
+    try {
+      await runSchedule(to);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(services.claimReports).toHaveBeenCalledOnce();
+    expect(services.absorb).toHaveBeenCalledWith(
+      expect.objectContaining({ jobId: report.job.id, runId: report.run.id })
+    );
+    expect(send).toHaveBeenCalledOnce();
+    expect(send.mock.calls[0]?.[0]).toContain(
+      "Earlier outcome, held for the person's morning"
+    );
+  });
+
   it("delivers a web chat report through the schedule's own session handle", async () => {
     // The app's own routes never reach eve on Vercel, so a web chat report
     // must not go through one.
@@ -179,9 +244,12 @@ describe("dynamic schedule dispatch", () => {
     report.delivery.conversationId = "web-session";
     services.listReports.mockResolvedValue([
       {
+        carriesEvent: false,
         conversationChannel: "eve",
+        jobId: report.job.id,
         jobKind: "task",
         runId: report.run.id,
+        scheduledFor: report.run.scheduledFor,
         scope: { userId: "user-1", workspaceId: "workspace-1" },
         timeSensitive: false,
       },

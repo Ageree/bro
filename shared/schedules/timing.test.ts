@@ -410,6 +410,34 @@ describe("holidays, only when the person asked", () => {
     ).toEqual(["2026-03-10T05:00:00.000Z"]);
   });
 
+  it("carries a weekly rule over New Year, when two weeks in a row are off", () => {
+    const weekly = (weekday: number) =>
+      scheduleTimingSchema.parse({
+        frequency: "weekly",
+        kind: "calendar",
+        localTime: "09:00",
+        skipHolidays: true,
+        timezone: moscow,
+        weekdays: [weekday],
+      });
+    // Fridays 1 and 8 January 2027 are holidays: three weeks to the 15th.
+    expect(occurrences(weekly(5), "2026-12-25T07:00:00Z", 1)).toEqual([
+      "2027-01-15T06:00:00.000Z",
+    ]);
+    // Thursday 31 December 2026 is a decree day off, 7 January a holiday.
+    expect(occurrences(weekly(4), "2026-12-24T07:00:00Z", 1)).toEqual([
+      "2027-01-14T06:00:00.000Z",
+    ]);
+    // Mondays 1 and 8 January 2029, with no decree for that year known.
+    expect(occurrences(weekly(1), "2028-12-25T07:00:00Z", 1)).toEqual([
+      "2029-01-15T06:00:00.000Z",
+    ]);
+    // And the last run before the break is found looking back from it.
+    expect(
+      computeLatestRun(weekly(5), new Date("2027-01-10T00:00:00Z"))
+    ).toEqual(new Date("2026-12-25T06:00:00.000Z"));
+  });
+
   it("keeps a daily digest off the holiday itself, weekend or not", () => {
     const daily = scheduleTimingSchema.parse({
       frequency: "daily",

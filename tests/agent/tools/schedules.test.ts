@@ -8,6 +8,7 @@ import { z } from "zod";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   createScheduledAgentJob,
+  getScheduledAgentJob,
   getScheduledAgentRunInput,
   listScheduledAgentJobs,
   submitScheduledAgentRunAnswer,
@@ -17,6 +18,7 @@ import type { readWorkspaceTimeZone } from "@db/services/user-profile";
 
 const services = vi.hoisted(() => ({
   create: vi.fn<typeof createScheduledAgentJob>(),
+  getJob: vi.fn<typeof getScheduledAgentJob>(),
   getInput: vi.fn<typeof getScheduledAgentRunInput>(),
   list: vi.fn<typeof listScheduledAgentJobs>(),
   submitAnswer: vi.fn<typeof submitScheduledAgentRunAnswer>(),
@@ -26,6 +28,7 @@ const services = vi.hoisted(() => ({
 
 vi.mock("@db/services/scheduled-agent-jobs", () => ({
   createScheduledAgentJob: services.create,
+  getScheduledAgentJob: services.getJob,
   getScheduledAgentRunInput: services.getInput,
   listScheduledAgentJobs: services.list,
   submitScheduledAgentRunAnswer: services.submitAnswer,
@@ -401,6 +404,73 @@ describe("schedule tools", () => {
     expect(result).toMatchObject({
       nextRunLocal: "2026-09-26 09:00, Saturday (Asia/Yekaterinburg)",
     });
+  });
+
+  it("keeps a changed rule in its own zone and off holidays", async () => {
+    // «Каждый будний день в 9 по Нью-Йорку, кроме праздников», then
+    // «сдвинь на 9:30» sent without the zone or the flag.
+    const stored = {
+      ...scheduledJob(),
+      timing: {
+        frequency: "weekdays" as const,
+        kind: "calendar" as const,
+        localTime: "09:00",
+        skipHolidays: true,
+        timezone: "America/New_York",
+      },
+    };
+    services.getJob.mockResolvedValue(stored);
+    services.update.mockImplementation((_scope, _id, patch) =>
+      Promise.resolve({ ...stored, timing: patch.timing ?? stored.timing })
+    );
+
+    await updateSchedule.execute(
+      {
+        id: stored.id,
+        timing: { frequency: "weekdays", kind: "calendar", localTime: "09:30" },
+      },
+      toolContext("schedules-update")
+    );
+
+    expect(services.update).toHaveBeenCalledExactlyOnceWith(
+      { userId: "user-1", workspaceId: "workspace-1" },
+      stored.id,
+      {
+        timing: {
+          frequency: "weekdays",
+          kind: "calendar",
+          localTime: "09:30",
+          skipHolidays: true,
+          timezone: "America/New_York",
+        },
+      }
+    );
+
+    // Only an explicit false puts it back on holidays.
+    await updateSchedule.execute(
+      {
+        id: stored.id,
+        timing: {
+          frequency: "weekdays",
+          kind: "calendar",
+          localTime: "09:30",
+          skipHolidays: false,
+        },
+      },
+      toolContext("schedules-update")
+    );
+    expect(services.update).toHaveBeenLastCalledWith(
+      { userId: "user-1", workspaceId: "workspace-1" },
+      stored.id,
+      {
+        timing: {
+          frequency: "weekdays",
+          kind: "calendar",
+          localTime: "09:30",
+          timezone: "America/New_York",
+        },
+      }
+    );
   });
 
   it("lists schedules through a dedicated empty-input tool", async () => {

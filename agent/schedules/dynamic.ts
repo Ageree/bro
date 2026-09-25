@@ -5,7 +5,7 @@ import {
   checkOpenRouterCredits,
   creditCheckDue,
 } from "@agent/lib/model/credits";
-import { holdProactiveReport } from "@agent/lib/proactive/delivery";
+import { proactiveReportTiming } from "@agent/lib/proactive/delivery";
 import { dispatchScheduledReport } from "@agent/lib/schedules/report";
 import {
   claimAnsweredScheduledAgentRuns,
@@ -74,9 +74,28 @@ async function dispatchDueWork(delivery: ReportDelivery) {
   }
   await Promise.all([
     ...runs.map((claim) => executeScheduledRun(delivery, claim)),
-    ...reports.map((report) => dispatchRecoverableReport(delivery, report)),
+    ...onePerProactiveJob(reports).map((report) =>
+      dispatchRecoverableReport(delivery, report)
+    ),
     ...answered.map((claim) => resumeAnsweredRun(delivery, claim)),
   ]);
+}
+
+/**
+ * One report of Bro's own check per tick: the first takes the job's other
+ * finished reports into its message (`absorbHeldProactiveReports`), and two
+ * dispatched side by side would each claim its own and send two.
+ */
+function onePerProactiveJob(
+  reports: Awaited<ReturnType<typeof listRecoverableScheduledReports>>
+) {
+  const proactiveJobs = new Set<string>();
+  return reports.filter((report) => {
+    if (report.jobKind !== "proactive") return true;
+    if (proactiveJobs.has(report.jobId)) return false;
+    proactiveJobs.add(report.jobId);
+    return true;
+  });
 }
 
 /**
@@ -197,9 +216,12 @@ async function executeScheduledRun(
     );
     if (status === "dead_letter") {
       await dispatchRecoverableReport(delivery, {
+        carriesEvent: false,
         conversationChannel: claim.job.conversationChannel,
+        jobId: claim.job.id,
         jobKind: claim.job.kind,
         runId: claim.run.id,
+        scheduledFor: claim.run.scheduledFor,
         scope: {
           userId: claim.job.createdByUserId,
           workspaceId: claim.job.workspaceId,
@@ -214,10 +236,15 @@ async function dispatchRecoverableReport(
   delivery: ReportDelivery,
   report: Awaited<ReturnType<typeof listRecoverableScheduledReports>>[number]
 ) {
-  if (report.jobKind === "proactive" && (await holdProactiveReport(report))) {
-    return;
+  if (report.jobKind !== "proactive") {
+    return dispatchScheduledReport(delivery, report.runId);
   }
-  return dispatchScheduledReport(delivery, report.runId);
+  const timing = await proactiveReportTiming(report);
+  if (timing === "held") return;
+  // An urgent report at night goes alone; the held ones wait for the morning.
+  return dispatchScheduledReport(delivery, report.runId, {
+    absorbHeld: timing === "day",
+  });
 }
 
 function scheduledRunPrompt(

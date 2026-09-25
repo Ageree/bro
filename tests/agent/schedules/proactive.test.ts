@@ -76,7 +76,6 @@ describe("proactive schedule", () => {
       Promise.resolve([...candidates])
     );
     proactive.queue.mockResolvedValue({
-      folded: 0,
       runId: "00000000-0000-4000-8000-000000000002",
       status: "queued",
     });
@@ -109,7 +108,6 @@ describe("proactive schedule", () => {
       }
     );
     expect(proactive.queue).toHaveBeenCalledExactlyOnceWith({
-      fold: false,
       jobId: "00000000-0000-4000-8000-000000000001",
       mailCheckedAt: afternoon,
       maxRunsPerDay: 12,
@@ -120,8 +118,6 @@ describe("proactive schedule", () => {
     expect(proactive.advance).not.toHaveBeenCalled();
     // One line per check says what it came to.
     expect(console.info).toHaveBeenCalledWith("[proactive] check", {
-      folded: 0,
-      heldReports: 0,
       night: false,
       outcome: "queued",
       signalCount: 1,
@@ -177,11 +173,17 @@ describe("proactive schedule", () => {
 
     expect(probe).toHaveBeenCalledExactlyOnceWith(
       { userId: "better-auth:alice", workspaceId: "workspace:alice" },
-      expect.objectContaining({ nightOnly: true, now: night })
+      {
+        // Subjects only of mail since the previous night check, not of
+        // everything since the evening watermark again.
+        mailAfter: new Date("2026-09-23T20:05:00.000Z"),
+        nightOnly: true,
+        now: night,
+        timeZone: "Europe/Moscow",
+      }
     );
     expect(proactive.queue).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({
-        fold: false,
         // The rest of the night's mail is read in the morning as one batch.
         mailCheckedAt: new Date("2026-09-23T11:45:00.000Z"),
         signals: [flight],
@@ -208,18 +210,6 @@ describe("proactive schedule", () => {
     expect(proactive.defer).toHaveBeenCalledExactlyOnceWith(
       leased,
       new Date("2026-09-24T05:00:00.000Z")
-    );
-  });
-
-  it("folds the reports held overnight into the morning run", async () => {
-    proactive.claimWatches.mockResolvedValue([{ ...watch(), heldReports: 2 }]);
-    probe.mockResolvedValue({ signals: [], state: "connected" });
-
-    await runSchedule(vi.fn<ScheduleToFn>());
-
-    // No new signal, but two held reports are worth one message.
-    expect(proactive.queue).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({ fold: true, signals: [] })
     );
   });
 
@@ -318,7 +308,6 @@ function watch(): Awaited<ReturnType<typeof claimDueProactiveWatches>>[number] {
   return {
     createdByUserId: "better-auth:alice",
     googleState: "connected",
-    heldReports: 0,
     jobId: "00000000-0000-4000-8000-000000000001",
     leaseUntil: new Date("2026-09-23T12:15:00.000Z"),
     mailCheckedAt: new Date("2026-09-23T11:45:00.000Z"),

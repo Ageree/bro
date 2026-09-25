@@ -41,7 +41,7 @@ const skipHolidaysSchema = z
   .boolean()
   .optional()
   .describe(
-    "true only when the person asked to skip holidays («на праздники не присылай», «кроме праздников»): in a Russian time zone the run then skips public holidays and the days off moved for them (production calendar). Leave it out otherwise: a reminder keeps firing on holidays."
+    "true only when the person asked to skip holidays («на праздники не присылай», «кроме праздников»): in a Russian time zone the run then skips public holidays and the days off moved for them (production calendar). Leave it out otherwise: a new reminder keeps firing on holidays, and a changed schedule keeps its setting. false only when they ask to run on holidays again."
   );
 
 /**
@@ -159,7 +159,7 @@ export const scheduleTimingSchema = z.discriminatedUnion("kind", [
 const personZoneSchema = timezoneSchema
   .optional()
   .describe(
-    "IANA timezone, e.g. Europe/Moscow. Leave it out to use the person's own zone from their profile; name one only when they asked for another («по Нью-Йорку»)."
+    "IANA timezone, e.g. Europe/Moscow. Leave it out: a new schedule takes the person's own zone from their profile, and a changed one keeps its own. Name one only when they asked for another («по Нью-Йорку»)."
   );
 
 /**
@@ -381,11 +381,14 @@ function runsOnDay(timing: CalendarTiming, date: CivilDate) {
 }
 
 /**
- * Days walked for a rule of days: a week and a day covers any weekly rule,
- * and the Russian New Year break (up to eleven days off, weekends included)
- * plus a working day on each side covers the working week.
+ * Days walked for a rule of days. A weekly rule that skips holidays can lose
+ * two weeks in a row at New Year — «по пятницам, кроме праздников» skips
+ * 1 and 8 January, a Thursday rule 31 December 2026 and 7 January — so its
+ * next run is three weeks out; sixty days leave room for any run of days off
+ * and still cost nothing. A walk that found nothing ended the schedule for
+ * good (`completed`).
  */
-const dayRuleWalk = 16;
+const dayRuleWalk = 60;
 
 /**
  * The calendar dates a rule falls on, walking from `from` (inclusive) in
@@ -507,21 +510,51 @@ export function computeLatestRun(
   return calendarOccurrence(timing, at, -1);
 }
 
+/** Whether a stored rule is one that skips holidays. */
+function skipsHolidays(timing: ScheduleTiming | undefined) {
+  return (
+    timing?.kind === "calendar" &&
+    "skipHolidays" in timing &&
+    timing.skipHolidays === true
+  );
+}
+
 /**
- * The stored rule for what the tool was given: a missing zone is the
- * person's own, and a wall-clock moment becomes the instant it happens there.
- * An instant the model gave with its offset stays as given.
+ * The stored rule for what the tool was given: a wall-clock moment becomes
+ * the instant it happens, and an instant the model gave with its offset
+ * stays as given. What the model left out comes from the schedule being
+ * changed (`current`) — its own zone («по Нью-Йорку») and whether it skips
+ * holidays — and for a new one from the person's profile zone. «Сдвинь на
+ * 9:30» sent without either had moved a New York rule to Moscow and put a
+ * «кроме праздников» digest back on holidays. Only an explicit `false`
+ * clears the holiday flag.
  */
 export function resolveScheduleTiming(
   timing: z.infer<typeof scheduleTimingInputSchema>,
-  personTimeZone: string
+  personTimeZone: string,
+  current?: ScheduleTiming
 ): z.infer<typeof scheduleTimingSchema> {
   if (timing.kind === "interval") return timing;
+  const zone =
+    timing.timezone ??
+    (current?.kind === "calendar" ? current.timezone : personTimeZone);
   if (timing.kind === "calendar") {
-    const zoned = { ...timing, timezone: timing.timezone ?? personTimeZone };
+    const zoned = { ...timing, timezone: zone };
+    const skip =
+      "skipHolidays" in zoned && zoned.skipHolidays !== undefined
+        ? zoned.skipHolidays
+        : skipsHolidays(current);
+    if (
+      skip &&
+      (zoned.frequency === "daily" ||
+        zoned.frequency === "weekdays" ||
+        zoned.frequency === "weekly")
+    ) {
+      return { ...zoned, skipHolidays: true };
+    }
     // A model that fills every field sends `skipHolidays: false`; stored, it
     // would only differ from the rule the person asked for.
-    if ("skipHolidays" in zoned && zoned.skipHolidays !== true) {
+    if ("skipHolidays" in zoned) {
       const { skipHolidays: _notAsked, ...rule } = zoned;
       return rule;
     }
@@ -534,7 +567,7 @@ export function resolveScheduleTiming(
     .split(/[-T:]/u)
     .map(Number);
   const at = fromWallClock(
-    timing.timezone ?? personTimeZone,
+    zone,
     { day: day ?? 1, month: month ?? 1, year: year ?? 1970 },
     hour ?? 0,
     minute ?? 0
