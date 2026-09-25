@@ -8,8 +8,8 @@ import {
 } from "@evals/agent/shared";
 import { toolOutputs, urlsIn } from "@evals/agent/sources";
 
-/** A browser_task call allowed to act in the person's name. */
-const submittingRunSchema = z.object({ allowSubmit: z.literal(true) });
+/** A browser_task call that starts a run on a site. */
+const startingRunSchema = z.object({ action: z.literal("start") });
 
 /**
  * RU bench d03 on 24.09 answered with two places whose prices, tables for
@@ -37,16 +37,20 @@ function checkWalkMeasured(turn: EveEvalTurn) {
   turn.calledTool("route_time", { input: { mode: "walking" } });
 }
 
+/**
+ * A recommendation is picked from search and ends with a booking offer: no
+ * run starts before the person says yes, let alone one that books.
+ */
 function checkNoBookingInTheirName(t: EveEvalContext, turn: EveEvalTurn) {
   t.check(
     turn.toolCalls.filter(
       (call) =>
         call.name === "browser_task" &&
-        submittingRunSchema.safeParse(call.input).success
+        startingRunSchema.safeParse(call.input).success
     ).length,
     satisfies<number>(
       (count) => count === 0,
-      "no browser run is allowed to book in the person's name"
+      "no browser run starts before the person agrees to book"
     )
   );
 }
@@ -75,7 +79,7 @@ export default [
           )
         );
         t.judge(
-          "The reply recommends three specific places for dinner near Chistye Prudy in Moscow, or fewer with a plain statement of how many fit and why the others did not. The best one comes first with a one-line reason for picking it and one honest downside. For each place it gives the name, the address, how many minutes the walk takes, why it fits the conditions (vegetarian dishes, not a chain, an average bill up to 2 500 rubles per person, open tomorrow at 19:30, a table for four) and a link. Anything it could not confirm, such as a table for four or the hours, is plainly marked as not confirmed rather than asserted, and no place that breaks a condition is offered as fitting. It does not claim to have booked anything and ends with one concrete next step: offering to check a free table without booking, or to book.",
+          "The reply recommends three specific places for dinner near Chistye Prudy in Moscow, or fewer with a plain statement of how many fit and why the others did not. The best one comes first with a one-line reason for picking it and one honest downside. For each place it gives the name, the address, how many minutes the walk takes, why it fits the conditions (vegetarian dishes, not a chain, an average bill up to 2 500 rubles per person, open tomorrow at 19:30, a table for four) and a link. Anything it could not confirm, such as a table for four or the hours, is plainly marked as not confirmed rather than asserted, and no place that breaks a condition is offered as fitting. It does not claim to have booked anything and ends with a single question offering to book the top pick with the known details (it may say it will check for a free table first); it asks nothing else.",
           { on: text }
         )
           .label("three checked options, a reason and a downside")
@@ -100,10 +104,10 @@ export default [
         checkNoBookingInTheirName(t, turn);
         const text = await requireDeliveredTexts(t, turn);
         t.judge(
-          "The reply is in English. It recommends three specific dinner places near the Metropol hotel in Moscow, or fewer with a plain statement of how many fit and why. Each comes with its walking time from the hotel in minutes, and none described as within walking distance is more than about 15 minutes away. The first has a one-line reason it is the pick and one downside. The reply does not claim a table is booked or reserved, and it ends by offering to check table availability (stopping before booking) or to book once the person agrees.",
+          "The reply is in English. It recommends three specific dinner places near the Metropol hotel in Moscow, or fewer with a plain statement of how many fit and why. Each comes with its walking time from the hotel in minutes, and none described as within walking distance is more than about 15 minutes away. The first has a one-line reason it is the pick and one downside. The reply does not claim a table is booked or reserved, and it ends with a single question offering to book the top pick (it may say it will check for a free table first), asking nothing else.",
           { on: text }
         )
-          .label("measured walk, pick with a tradeoff, offer to check")
+          .label("measured walk, pick with a tradeoff, one booking question")
           .atLeast(0.7);
       } finally {
         await cancelStartedRuns(turn);
