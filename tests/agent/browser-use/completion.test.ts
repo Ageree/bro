@@ -968,8 +968,16 @@ describe("settling a browser run", () => {
     expect(prompt).toContain(
       "Next: онлайн-регистрация откроется за 24 часа до вылета, 03.10 в 09:30"
     );
-    expect(prompt).toContain("set it up now with schedules-create");
     expect(prompt).toContain("do not end with «напиши, если нужно»");
+    // Schedules come back only after the report's message, so the message
+    // says what will be set up, and the tool comes after it.
+    expect(prompt).toContain(
+      "Say in your one message, in the future tense, what you will set up and for when"
+    );
+    expect(prompt).toContain(
+      "never «поставил» before schedules-create has answered"
+    );
+    expect(prompt).toContain("Then set it up with schedules-create");
     // Next is the page's text: it gives the time, never the task a worker
     // later runs as the person's own.
     expect(prompt).toContain(
@@ -1177,10 +1185,72 @@ describe("what the report turn retells", () => {
 
     const prompt = send.mock.calls[0]?.[0];
     expect(prompt).not.toContain("purchase in progress");
-    // A seat or a check-in is only a bought ticket's (RU d02).
+    // «Найди билеты… у прохода» is still a search: options and a question.
+    expect(prompt).not.toContain("a ticket search that also asks for a seat");
     expect(prompt).toContain(
-      "a ticket search that also asks for a seat or for check-in counts"
+      "When no option fits, or the user only asked to find or compare, show the options and ask one short question."
     );
+  });
+
+  it("asks for Госуслуги access on its own card, never for another site", async () => {
+    readBrowserRun.mockResolvedValue({ ...row, submission: null });
+    finishedRun([
+      "RESULT: Госуслуги просят дать mos.ru доступ к данным",
+      "NEEDS: decision",
+      "DETAILS: Предоставление прав доступа для mos.ru: ФИО, СНИЛС, паспорт",
+    ]);
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    const prompt = send.mock.calls[0]?.[0];
+    expect(prompt).toContain(
+      "that is a sign-in consent, not the errand's own submission: only for the errand's own public-service site"
+    );
+    expect(prompt).toContain(
+      "For any other site, tell the user it asked for their Госуслуги data and that you did not give it."
+    );
+  });
+
+  it("puts a booking in the calendar on the place's own clock", async () => {
+    // A Moscow user's flight from Yekaterinburg at 08:00 local went in at
+    // 08:00+03:00, two hours late.
+    readBrowserRun.mockResolvedValue({
+      ...row,
+      submission: { what: "билет Екатеринбург — Сочи" },
+    });
+    finishedRun([
+      "RESULT: билет оформлен",
+      "ORDER: ABC123",
+      "TOTAL: 9 800 ₽",
+      "NEEDS: none",
+      `BOOKING: ${JSON.stringify({
+        confirmed: true,
+        end: "2026-10-03T11:40",
+        endZone: "Europe/Moscow",
+        place: "Кольцово (SVX)",
+        start: "2026-10-03T08:00",
+        what: "Рейс U6 123 Екатеринбург — Сочи",
+        zone: "Asia/Yekaterinburg",
+      })}`,
+    ]);
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    const prompt = send.mock.calls[0]?.[0];
+    expect(prompt).toContain(
+      "from 2026-10-03T08:00 (Asia/Yekaterinburg) to 2026-10-03T11:40 (Europe/Moscow)"
+    );
+    expect(prompt).toContain(
+      "write start with the UTC offset of Booking's zone and end with that of its end zone"
+    );
+    expect(prompt).toContain("pass Booking's zone as timezone");
+    expect(prompt).not.toContain("in the user's time zone (an appointment");
   });
 });
 

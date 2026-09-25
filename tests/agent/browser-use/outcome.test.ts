@@ -694,4 +694,48 @@ describe("the booking the run made or staged", () => {
       parseBrowserOutcome('BOOKING: {"what": "Приём"').booking
     ).toBeUndefined();
   });
+
+  it("reads the footer after a heading with the same word in the report", () => {
+    // An English report heads its prose «Booking: …» and «Charges: …»;
+    // the first match used to hide the footer's JSON.
+    const outcome = parseBrowserOutcome(
+      [
+        "Booking: Dr. Ivanova, 12 Oct 10:30, room 204",
+        "Charges: one fine",
+        "RESULT: booked",
+        "NEEDS: none",
+        'CHARGES: [{"what":"Speeding fine, art. 12.9","amount":"500 ₽"}]',
+        `BOOKING: ${JSON.stringify({ ...appointment, what: "Therapist" })}`,
+      ].join("\n")
+    );
+
+    expect(outcome.booking?.what).toBe("Therapist");
+    expect(outcome.charges.map((charge) => charge.what)).toEqual([
+      "Speeding fine, art. 12.9",
+    ]);
+  });
+
+  it("takes the first leg of a round trip and the zones of its clocks", () => {
+    const outcome = parseBrowserOutcome(
+      `BOOKING: ${JSON.stringify([
+        {
+          end: "2026-10-03T11:40",
+          endZone: "Europe/Moscow",
+          start: "2026-10-03T08:00",
+          what: "Екатеринбург — Сочи",
+          zone: "Asia/Yekaterinburg",
+        },
+        { start: "2026-10-06T19:00", what: "Сочи — Екатеринбург" },
+      ])}`
+    );
+
+    expect(outcome.booking).toMatchObject({
+      endZone: "Europe/Moscow",
+      what: "Екатеринбург — Сочи",
+      zone: "Asia/Yekaterinburg",
+    });
+    expect(browserOutcomeSummary(outcome, "fallback")).toContain(
+      "from 2026-10-03T08:00 (Asia/Yekaterinburg) to 2026-10-03T11:40 (Europe/Moscow)"
+    );
+  });
 });
