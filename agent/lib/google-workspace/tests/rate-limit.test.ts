@@ -15,7 +15,10 @@ import {
   googleRateLimitMessage,
   isGoogleRateLimit,
 } from "@agent/lib/google-workspace/client";
-import { searchGmail } from "@agent/lib/google-workspace/gmail";
+import {
+  gmailEmptySearchNote,
+  searchGmail,
+} from "@agent/lib/google-workspace/gmail";
 import { ComposioError } from "@shared/composio/api";
 
 function googleError(
@@ -138,5 +141,36 @@ describe("withGoogleAuth under rate limits", () => {
       searchGmail(composioToolContext("ca_google"), "from:bank", 5)
     ).rejects.toThrow("Google answered 404: Not Found");
     expect(composio.proxy).toHaveBeenCalledOnce();
+  });
+});
+
+describe("Gmail search words", () => {
+  it("searches a word with «ё» both ways and leaves operators alone", async () => {
+    composio.proxy.mockResolvedValue({ data: { messages: [] } });
+    const sent = async (query: string) => {
+      composio.proxy.mockClear();
+      await searchGmail(composioToolContext("ca_google"), query, 5);
+      const url = composio.proxy.mock.calls[0]?.[0].url;
+      return new URL(String(url)).searchParams.get("q");
+    };
+
+    expect(await sent("счёт на оплату")).toBe("{счёт счет} на оплату");
+    expect(await sent("from:Лёша Счёт")).toBe("from:Лёша {Счёт Счет}");
+    for (const kept of ['"счёт за сентябрь"', "{счёт счет}", "-счёт"]) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- One query at a time keeps the failure readable.
+      expect(await sent(kept)).toBe(kept);
+    }
+  });
+
+  it("tells the model why a search found nothing and what to try", () => {
+    // RU 25.09, d14: twelve searches for «Счёт за сентябрь».
+    const note = gmailEmptySearchNote("счёт на оплату");
+
+    expect(note).toContain("contain every one of these words");
+    expect(note).toContain("«оплату» does not find «оплатить»");
+    expect(note).toContain("{счёт счета оплата оплатить}");
+    expect(gmailEmptySearchNote("репетитор")).toContain(
+      "Gmail finds only this word"
+    );
   });
 });

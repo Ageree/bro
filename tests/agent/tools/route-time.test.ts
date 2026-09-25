@@ -165,6 +165,55 @@ const places = new Map([
     },
   ],
   [
+    // Live on 25.09 (RU d18): a building of a house the map knows only as
+    // its street, while the house itself is on the map.
+    "Большая Дмитровка, 7/5 с1, Москва",
+    {
+      address: {
+        city: "Москва",
+        country_code: "ru",
+        road: "улица Большая Дмитровка",
+      },
+      addresstype: "road",
+      display_name: "улица Большая Дмитровка, Москва, Россия",
+      lat: "55.7612",
+      lon: "37.6143",
+      place_rank: 26,
+    },
+  ],
+  [
+    "Большая Дмитровка, 7/5, Москва",
+    {
+      address: {
+        city: "Москва",
+        country_code: "ru",
+        house_number: "7/5",
+        road: "улица Большая Дмитровка",
+      },
+      addresstype: "building",
+      display_name: "7/5, улица Большая Дмитровка, Москва, Россия",
+      lat: "55.75953",
+      lon: "37.61508",
+      place_rank: 30,
+    },
+  ],
+  [
+    "Большая Дмитровка 7/5, Москва",
+    {
+      address: {
+        city: "Москва",
+        country_code: "ru",
+        house_number: "7/5",
+        road: "улица Большая Дмитровка",
+      },
+      addresstype: "building",
+      display_name: "7/5, улица Большая Дмитровка, Москва, Россия",
+      lat: "55.75953",
+      lon: "37.61508",
+      place_rank: 30,
+    },
+  ],
+  [
     "Большая Никольская 12 с2, Москва",
     {
       address: {
@@ -625,6 +674,41 @@ describe("route_time", () => {
         .map((url) => url.searchParams.get("q"))
         .slice(1)
     ).toEqual(["Чистопрудный бульвар 12 к2, Москва"]);
+  });
+
+  it("measures to the house when the map does not know its building", async () => {
+    const result = await measure({
+      from: "отель Метрополь, Москва",
+      mode: "driving",
+      to: [
+        "Большая Дмитровка, 7/5, стр. 1, Москва",
+        "Большая Дмитровка 7/5 стр 1, Москва",
+      ],
+    });
+
+    expect(result.routes?.map((route) => route.error)).toEqual([
+      undefined,
+      undefined,
+    ]);
+    expect(result.routes?.[0]?.place).toBe(
+      "улица Большая Дмитровка 7/5, Москва"
+    );
+    expect(result.routes?.every((route) => route.minutes !== undefined)).toBe(
+      true
+    );
+    expect(result.routes?.[0]?.note).toContain(
+      "the map knows the house «7/5» but not its building «7/5 с1»"
+    );
+    expect(
+      requestsTo("nominatim.openstreetmap.org")
+        .map((url) => url.searchParams.get("q"))
+        .slice(1)
+    ).toEqual([
+      "Большая Дмитровка, 7/5 с1, Москва",
+      "Большая Дмитровка, 7/5, Москва",
+      "Большая Дмитровка 7/5 с1, Москва",
+      "Большая Дмитровка 7/5, Москва",
+    ]);
   });
 
   it("gives no time to a house the map knows only as its street", async () => {

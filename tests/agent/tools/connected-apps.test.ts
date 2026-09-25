@@ -1,3 +1,4 @@
+import { ConnectionAuthorizationRequiredError } from "eve/connections";
 import type { DynamicResolveContext, ToolContext } from "eve/tools";
 import type { Approval, ApprovalContext } from "eve/tools/approval";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -6,7 +7,9 @@ import {
   type FakeComposio,
   fakeComposio,
 } from "@tests/helpers/composio";
+import { appsNamedByPerson } from "@agent/lib/connected-apps/mentions";
 import { withApprovalCard } from "@shared/chat/approval-card";
+import { backgroundTurnMarker } from "@shared/chat/background-turn";
 import { accessScopeForUser } from "@shared/identity/access-scope";
 
 import connectAppTools, { connectApp } from "@agent/tools/connect_app";
@@ -811,5 +814,155 @@ describe("app tools exist only where the deployment can connect the app", () => 
       "slack-search",
       "slack-send-message",
     ]);
+  });
+});
+
+/** A turn the person opened with `text`, as eve keeps it in history. */
+function personTurn(text: string, authenticator = "photon-imessage") {
+  return {
+    ...resolveContext(authenticator),
+    messages: [
+      Object.assign({ content: text, role: "user" as const }, { kind: "user" }),
+    ],
+  } satisfies DynamicResolveContext;
+}
+
+/** The error eve's `getToken` throws for an app with no account. */
+function signInRequired(app: string) {
+  const error = new Error("Authorization required.", {
+    cause: new ConnectionAuthorizationRequiredError(`composio-${app}`),
+  });
+  error.name = "ScopedAuthorizationRequiredError";
+  return error;
+}
+
+/** A tool context whose app has no account, as eve reports it. */
+function unconnectedContext(app: string) {
+  const context = composioToolContext(`ca_${app}`);
+  context.getToken.mockRejectedValue(signInRequired(app));
+  return context;
+}
+
+/** The Slack tools a turn's resolver hands out. */
+async function slackToolsFor(context: DynamicResolveContext) {
+  const resolved = await slackTools.events["turn.started"]?.({}, context);
+  if (!resolved) throw new Error("Slack tools were not resolved.");
+  return resolved;
+}
+
+/** The Notion tools a turn's resolver hands out. */
+async function notionToolsFor(context: DynamicResolveContext) {
+  const resolved = await notionTools.events["turn.started"]?.({}, context);
+  if (!resolved) throw new Error("Notion tools were not resolved.");
+  return resolved;
+}
+
+describe("an app the person has not connected", () => {
+  // RU 25.09, d18: «скинь лёше…» went to slack-search, and the whole turn
+  // waited on a Slack sign-in the person never asked for.
+  const d18 =
+    "в пятницу я к стоматологу, запись где-то в почте. поставь в календарь, закажи такси чтобы точно успеть, и скинь лёше, что освобожусь не раньше восьми";
+
+  it("answers not_connected instead of stopping the turn on a sign-in", async () => {
+    const search = (await slackToolsFor(personTurn(d18)))["slack-search"];
+
+    const result = await run(
+      search,
+      { count: 20, query: "from:Лёша" },
+      unconnectedContext("slack")
+    );
+
+    expect(result).toMatchObject({ status: "not_connected" });
+    expect(JSON.stringify(result)).toContain(
+      "Slack is not connected for this person"
+    );
+    expect(composio.proxy).not.toHaveBeenCalled();
+  });
+
+  it("still asks to connect when the person named the app", async () => {
+    const search = (
+      await slackToolsFor(personTurn("найди в слаке, что писал Лёша"))
+    )["slack-search"];
+
+    await expect(
+      run(
+        search,
+        { count: 20, query: "from:Лёша" },
+        unconnectedContext("slack")
+      )
+    ).rejects.toThrow("Authorization required.");
+    // The exported tools are the ones a named app gets.
+    await expect(
+      run(notionSearch, { query: "Q3" }, unconnectedContext("notion"))
+    ).rejects.toThrow("Authorization required.");
+  });
+
+  it("works as usual for an app the person has connected", async () => {
+    composio.proxy.mockResolvedValueOnce({
+      data: { messages: { matches: [] }, ok: true },
+    });
+    const search = (await slackToolsFor(personTurn(d18)))["slack-search"];
+
+    await expect(
+      run(
+        search,
+        { count: 20, query: "from:Лёша" },
+        composioToolContext("ca_slack")
+      )
+    ).resolves.toEqual({ matches: [] });
+  });
+
+  it("refuses a card for an unconnected app nobody named, before it parks the turn", async () => {
+    composio.accounts.splice(0);
+    const send = (await slackToolsFor(personTurn(d18)))["slack-send-message"];
+    const task = (
+      await notionToolsFor(personTurn("добавь задачу позвонить маме"))
+    )["notion-add-task"];
+
+    const sendRefusal = await decide(send, {
+      text: "Освобожусь не раньше восьми",
+      to: "Лёша",
+    });
+    expect(sendRefusal).toMatchObject({ type: "denied" });
+    expect(JSON.stringify(sendRefusal)).toContain(
+      "Slack is not connected for this person"
+    );
+    expect(await decide(task, { title: "Позвонить маме" })).toMatchObject({
+      type: "denied",
+    });
+
+    // Named, the card goes ahead and the sign-in follows it.
+    const named = (
+      await slackToolsFor(
+        personTurn("скинь в слак Лёше, что освобожусь не раньше восьми")
+      )
+    )["slack-send-message"];
+    expect(
+      await decide(named, { text: "Освобожусь не раньше восьми", to: "Лёша" })
+    ).toBe("user-approval");
+  });
+
+  it("names an app the way people write it", () => {
+    const named = (text: string) =>
+      appsNamedByPerson(personTurn(text).messages);
+
+    expect(named("скинь в слак Лёше")).toEqual(["slack"]);
+    expect(named("что в Slack'е нового?")).toEqual(["slack"]);
+    expect(named("добавь в ноушен задачу")).toEqual(["notion"]);
+    expect(named("перенеси карточку в Трелло")).toEqual(["trello"]);
+    expect(named("созвон в зуме в 15:00")).toEqual(["zoom"]);
+    expect(named(d18)).toEqual([]);
+    // A browser report or a prompt Bro writes itself names none.
+    expect(
+      appsNamedByPerson([
+        Object.assign(
+          {
+            content: `${backgroundTurnMarker}\nBrowser run r1 finished. Slack`,
+            role: "user" as const,
+          },
+          { kind: "user" }
+        ),
+      ])
+    ).toEqual([]);
   });
 });

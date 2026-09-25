@@ -141,6 +141,45 @@ function messageUrl(id: string, query?: Parameters<typeof googleUrl>[2]) {
   return googleUrl(gmailApi, `/messages/${encodeURIComponent(id)}`, query);
 }
 
+/** A bare word of a Gmail query with «ё» in it: «счёт», «Лёша». */
+const yoWordPattern = /^(?=[\p{L}-]*[ёЁ])\p{L}[\p{L}-]*$/u;
+
+/**
+ * The query as Gmail gets it: each bare word with «ё» is searched in both
+ * spellings, `{счёт счет}`, since people and mailers write it either way
+ * and Gmail matches words exactly. Operators, quoted phrases and groups the
+ * model wrote stay as they are.
+ */
+function gmailQueryBothSpellings(query: string) {
+  return query
+    .split(/(\s+)/u)
+    .map((token) =>
+      yoWordPattern.test(token)
+        ? `{${token} ${token.replaceAll("ё", "е").replaceAll("Ё", "Е")}}`
+        : token
+    )
+    .join("");
+}
+
+/**
+ * What a search that found nothing tells the model. On 25.09 (RU d14)
+ * «репетитор счёт», «счёт на оплату» and «счёт от преподавателя» each found
+ * nothing, the letter being «Высылаю счёт за сентябрь… Оплатить можно…»:
+ * Gmail wants every word, as written, and twelve searches went by before
+ * «оплатить счёт» matched.
+ */
+export function gmailEmptySearchNote(query: string) {
+  const words = query
+    .replaceAll(/"[^"]*"|\{[^}]*\}|\([^)]*\)|\S+:\S+/gu, " ")
+    .split(/\s+/u)
+    .filter((word) => /\p{L}{2}/u.test(word) && !/^(?:OR|AND)$/u.test(word));
+  const all =
+    words.length > 1
+      ? "Gmail finds only messages that contain every one of these words"
+      : "Gmail finds only this word";
+  return `Nothing found. ${all} exactly as written, with no other endings: «оплату» does not find «оплатить», «репетитор» does not find «репетиторство». Search again with one or two distinctive words, and put word forms and synonyms in braces for OR, e.g. {счёт счета оплата оплатить}; the sender (from:) or the subject (subject:) often finds it at once.`;
+}
+
 export async function searchGmail(
   ctx: ToolContext,
   query: string,
@@ -148,7 +187,10 @@ export async function searchGmail(
 ) {
   return withGoogleAuth(ctx, async (google) => {
     const listed = await google.json(gmailMessageListSchema, {
-      url: googleUrl(gmailApi, "/messages", { maxResults, q: query }),
+      url: googleUrl(gmailApi, "/messages", {
+        maxResults,
+        q: gmailQueryBothSpellings(query),
+      }),
     });
     const ids = (listed.messages ?? []).map(({ id }) => id);
     const messages = [];
