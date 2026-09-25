@@ -71,6 +71,13 @@ const calendarCases = [
       "Каждый будний день в 8 утра присылай: что у меня сегодня в календаре, на какие письма я ещё не ответил, погоду и сколько ехать до работы на машине.",
     timing: { frequency: "weekdays", localTime: "08:00" },
   },
+  {
+    // Holidays are skipped only on request: without it a reminder fires.
+    description: "Keeps a weekday digest off holidays when asked",
+    prompt:
+      "По будням в 9 утра присылай курс доллара и евро, кроме праздников.",
+    timing: { frequency: "weekdays", localTime: "09:00", skipHolidays: true },
+  },
 ] as const;
 
 /**
