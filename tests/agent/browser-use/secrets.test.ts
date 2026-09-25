@@ -338,20 +338,16 @@ describe("browser secret bindings", () => {
       site: "https://www.mos.ru",
     });
 
-    expect(bound.aliases).toEqual([
-      "gosuslugi_username",
-      "gosuslugi_phone_digits",
-      "gosuslugi_password",
-    ]);
+    // ESIA wants the whole number in its one field: no digits alias.
+    expect(bound.aliases).toEqual(["gosuslugi_username", "gosuslugi_password"]);
     // Typeable on the ESIA sign-in page only, never in mos.ru's own form.
     for (const binding of bound.bindings) {
       expect(binding.allowedDomains).toEqual(["gosuslugi.ru"]);
     }
-    expect(
-      bound.bindings.find(
-        (binding) => binding.alias === "gosuslugi_phone_digits"
-      )?.source.value
-    ).toBe("9991234567");
+    expect(bound.bindings.map((binding) => binding.source.value)).toEqual([
+      "+79991234567",
+      esiaPassword,
+    ]);
     const task = composeBrowserTask({
       aliases: bound.aliases,
       allowPayment: false,
@@ -365,11 +361,71 @@ describe("browser secret bindings", () => {
     });
     expect(task).toContain("Войти через Госуслуги");
     expect(task).toContain(
-      "gosuslugi_username is a phone number. If the phone field already shows the country code (+7) or a mask, ask for gosuslugi_phone_digits instead — the same number as only the 10 digits after it (no +7, no 8, no spaces); if the site rejects the format, clear the field and try once with the other one, then stop with NEEDS: info describing what the field expects."
+      "on the gosuslugi.ru page it opens use gosuslugi_username and gosuslugi_password. They are for signing in to this errand's site only"
     );
+    expect(task).not.toContain("10 digits");
     expect(task).not.toContain("9991234567");
     expect(task).not.toContain(esiaPassword);
     expect(task).not.toContain("+79991234567");
+  });
+
+  it("binds a phone login for Госуслуги as it was saved, and nothing else", () => {
+    // RU 25.09, d06: with login_phone_digits bound, ESIA answered «Заполните
+    // поле»; the same login as these two secrets had reached the SMS step.
+    const bound = browserSecretBindings({
+      card: undefined,
+      login: serializeLoginVaultPayload({
+        authentication: { password, type: "password" },
+        identifier: { type: "phone", value: "+79991234567" },
+        kind: "login",
+        origin: "https://www.gosuslugi.ru",
+        version: 2,
+      }),
+      site: "https://www.gosuslugi.ru",
+    });
+
+    expect(bound.bindings).toEqual([
+      {
+        alias: "login_username",
+        allowedDomains: ["gosuslugi.ru"],
+        source: { type: "inline", value: "+79991234567" },
+      },
+      {
+        alias: "login_password",
+        allowedDomains: ["gosuslugi.ru"],
+        source: { type: "inline", value: password },
+      },
+    ]);
+    const task = composeBrowserTask({
+      aliases: bound.aliases,
+      allowPayment: false,
+      collectImages: false,
+      consent: undefined,
+      deliveryAddress: undefined,
+      errand: "Посмотри штрафы и налоги",
+      facts: undefined,
+      home: undefined,
+      site: "https://www.gosuslugi.ru",
+    });
+    expect(task).toContain(
+      "Credentials are attached as secrets: focus the field and ask for the secret by name — login_username, login_password. The server types the values; you never see them."
+    );
+    expect(task).not.toContain("is a phone number");
+    expect(task).not.toContain("10 digits");
+    // Nor on ESIA's own host.
+    expect(
+      browserSecretBindings({
+        card: undefined,
+        login: serializeLoginVaultPayload({
+          authentication: { password, type: "password" },
+          identifier: { type: "phone", value: "+79991234567" },
+          kind: "login",
+          origin: "https://esia.gosuslugi.ru",
+          version: 2,
+        }),
+        site: "https://esia.gosuslugi.ru",
+      }).aliases
+    ).toEqual(["login_username", "login_password"]);
   });
 
   it("binds a phone login also as the 10 digits after +7", () => {
@@ -407,7 +463,7 @@ describe("browser secret bindings", () => {
       site: "https://www.ozon.ru",
     });
     expect(task).toContain(
-      "login_username is a phone number. If the phone field already shows the country code (+7) or a mask, ask for login_phone_digits instead — the same number as only the 10 digits after it (no +7, no 8, no spaces); if the site rejects the format, clear the field and try once with the other one, then stop with NEEDS: info describing what the field expects."
+      "login_username is a phone number. If the phone field already shows the country code (+7) or a mask, ask for login_phone_digits instead — the same number as only the 10 digits after it (no +7, no 8, no spaces); if the site rejects the format, clear the field and try once with the other one, then stop with NEEDS: info describing what the field expects. If the site offers to sign in with a QR code or a confirmation in its app and also with a code by SMS or a call («Войти другим способом», «По номеру телефона», «Получить код в SMS»), choose the code by SMS or call."
     );
     expect(task).not.toContain("9991234567");
   });

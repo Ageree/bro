@@ -37,7 +37,6 @@ export const browserSecretAliases = {
   cardHolder: "card_holder",
   cardNumber: "card_number",
   gosuslugiPassword: "gosuslugi_password",
-  gosuslugiPhoneDigits: "gosuslugi_phone_digits",
   gosuslugiUsername: "gosuslugi_username",
   loginPassword: "login_password",
   loginPhoneDigits: "login_phone_digits",
@@ -83,13 +82,18 @@ export const phoneSignInSentence = `If the site asks you to sign in and offers t
  * The same phone login as its 10 digits, under an alias of its own, for a
  * field that already shows the country code: the run never sees the value,
  * so it cannot drop the +7 itself.
+ *
+ * Never for Госуслуги: ESIA has one field for a phone, an email or a СНИЛС
+ * and wants the whole number. With the digits bound, the run typed them
+ * there and ESIA answered «Заполните поле» (RU 25.09, d06), where the same
+ * login alone had reached the SMS step that morning.
  */
 function phoneDigitsBinding(
   alias: string,
   identifier: { readonly type: string; readonly value: string },
   domains: readonly string[]
 ) {
-  if (identifier.type !== "phone") return [];
+  if (identifier.type !== "phone" || domains.some(isGosuslugi)) return [];
   const digits = nationalPhoneDigits(identifier.value);
   return digits === undefined ? [] : [binding(alias, digits, domains)];
 }
@@ -304,11 +308,6 @@ export function browserSecretBindings(options: {
         binding(
           browserSecretAliases.gosuslugiUsername,
           payload.identifier.value,
-          [gosuslugiDomain]
-        ),
-        ...phoneDigitsBinding(
-          browserSecretAliases.gosuslugiPhoneDigits,
-          payload.identifier,
           [gosuslugiDomain]
         )
       );

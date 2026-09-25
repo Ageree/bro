@@ -239,6 +239,36 @@ function delivery() {
 }
 
 describe("settling a browser run", () => {
+  it("gives the person the live view for a QR code to scan with the app", async () => {
+    // RU 25.09, d04: Bro said «подтвердите в приложении», and the person
+    // had no QR code in front of them to scan.
+    readBrowserUseRun.mockResolvedValue({
+      error: null,
+      id: runId,
+      result: [
+        "RESULT: Ozon просит подтвердить вход в приложении по QR-коду",
+        "NEEDS: push",
+        "DETAILS: подтвердить вход в приложении Ozon по QR-коду на открытой странице",
+      ].join("\n"),
+      sessionId: "session-1",
+      status: "completed",
+      task: "Закажи тот же корм",
+    });
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    const prompt = send.mock.calls[0]?.[0] ?? "";
+    expect(prompt).toContain(
+      `Live view (share only for 3-D Secure, a push approval or a manual sign-in — never for an anti-bot check): ${row.liveViewUrl}`
+    );
+    expect(prompt).toContain(
+      "give them the Live view link that comes with this outcome: it shows the page as it is. For a QR code, tell them to open that link on a computer or another screen and scan the code there with the site's app on their phone. Say too that if they cannot, you will sign in with a code by SMS instead."
+    );
+  });
+
   it("reports a finished run into its originating conversation exactly once", async () => {
     const { settleBrowserRun } =
       await import("@agent/lib/browser-use/completion");
