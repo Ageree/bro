@@ -1,7 +1,7 @@
 /**
- * Russia's production calendar, for schedules that run on working days. A
- * «каждый будний день» digest that arrived on 4 November was a miss in the
- * benchmark: a person there means the working week, not Monday to Friday.
+ * Russia's production calendar, for a schedule the person asked to keep off
+ * holidays («на праздники не присылай», «кроме праздников»: `skipHolidays`).
+ * Only on request: a weekday pill reminder must still fire on 4 November.
  *
  * The zone stands in for the country, since a schedule keeps only its zone.
  */
@@ -58,7 +58,8 @@ const publicHolidays = [
  * a decree here counts only the Labour Code's own rules.
  */
 const decreedDaysOff = new Map([
-  // Saturday 3 and Sunday 4 January moved to 9 January and 31 December.
+  // Постановление Правительства РФ от 24.09.2025 № 1466: Saturday 3 and
+  // Sunday 4 January moved to Friday 9 January and Thursday 31 December.
   [2026, ["2026-01-09", "2026-12-31"]],
 ]);
 
@@ -78,23 +79,20 @@ function weekday(year: number, month: number, day: number) {
 const daysOffByYear = new Map<number, ReadonlySet<string>>();
 
 /**
- * Every weekday of `year` that is not worked: the holidays themselves, plus
- * the next working day for each holiday outside January that falls on a
- * weekend (art. 112), plus the decree's moves.
+ * The public days off of `year` beyond ordinary weekends: the holidays
+ * themselves, the next working day for each holiday outside January that
+ * falls on a weekend (art. 112), and the decree's moves.
  */
-function weekdaysOff(year: number) {
+function daysOff(year: number) {
   const cached = daysOffByYear.get(year);
   if (cached) return cached;
-  const off = new Set<string>();
   const holidays = new Set(
     publicHolidays.map(([month, day]) => isoDate(year, month, day))
   );
+  const off = new Set(holidays);
   for (const [month, day] of publicHolidays) {
     const dayOfWeek = weekday(year, month, day);
-    if (dayOfWeek !== 0 && dayOfWeek !== 6) {
-      off.add(isoDate(year, month, day));
-      continue;
-    }
+    if (dayOfWeek !== 0 && dayOfWeek !== 6) continue;
     if (month === 1) continue;
     // The weekend day moves to the first working day after the holiday.
     for (let next = day + 1; ; next += 1) {
@@ -122,9 +120,9 @@ function weekdaysOff(year: number) {
 }
 
 /**
- * Whether a Monday-to-Friday date (`month` 1-based) is a day off in the
- * person's country, judged by their time zone. Outside Russia nothing is
- * known, so nothing is.
+ * Whether a date (`month` 1-based) is a public holiday or a day off moved
+ * for one in the person's country, judged by their time zone. Outside Russia
+ * nothing is known, so nothing is.
  */
 export function isPublicDayOff(
   timeZone: string,
@@ -134,6 +132,6 @@ export function isPublicDayOff(
 ) {
   return (
     russianTimeZones.has(timeZone) &&
-    weekdaysOff(year).has(isoDate(year, month, day))
+    daysOff(year).has(isoDate(year, month, day))
   );
 }

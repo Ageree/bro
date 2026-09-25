@@ -37,6 +37,13 @@ const dayOfMonthSchema = z
 
 const monthDays = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 
+const skipHolidaysSchema = z
+  .boolean()
+  .optional()
+  .describe(
+    "true only when the person asked to skip holidays («на праздники не присылай», «кроме праздников»): in a Russian time zone the run then skips public holidays and the days off moved for them (production calendar). Leave it out otherwise: a reminder keeps firing on holidays."
+  );
+
 /**
  * The calendar rules over a zone field: a stored rule always names its zone,
  * while the tool lets the model leave it to the person's profile.
@@ -47,12 +54,15 @@ function calendarTimingSchemaFor<Zone extends z.ZodType>(timezone: Zone) {
     localTime: localTimeSchema,
     timezone,
   };
+  // Only a rule of days can step over a holiday; a stored rule without the
+  // flag keeps running on holidays, as it always did.
+  const dayRuleBase = { ...calendarBase, skipHolidays: skipHolidaysSchema };
   return z.discriminatedUnion("frequency", [
-    z.strictObject({ ...calendarBase, frequency: z.literal("daily") }),
-    // Monday to Friday, minus the public days off of a Russian zone.
-    z.strictObject({ ...calendarBase, frequency: z.literal("weekdays") }),
+    z.strictObject({ ...dayRuleBase, frequency: z.literal("daily") }),
+    // Monday to Friday.
+    z.strictObject({ ...dayRuleBase, frequency: z.literal("weekdays") }),
     z.strictObject({
-      ...calendarBase,
+      ...dayRuleBase,
       frequency: z.literal("weekly"),
       weekdays: z
         .array(weekdaySchema)
@@ -350,20 +360,20 @@ function weekdayInMonth(
 }
 
 /**
- * Whether a rule of days runs on `date`. «Каждый будний день» is the working
- * week: in a Russian zone a public day off is skipped the way a Saturday is
- * («на праздники не присылай» is already so). Monday to Friday regardless is
- * weekly with all five days.
+ * Whether a rule of days runs on `date`. A rule the person asked to keep off
+ * holidays (`skipHolidays`) steps over a public day off in a Russian zone the
+ * way a weekday rule steps over Saturday; any other rule runs on holidays.
  */
 function runsOnDay(timing: CalendarTiming, date: CivilDate) {
-  const weekday = weekdayOf(date);
-  if (timing.frequency === "weekdays") {
-    return (
-      weekday >= 1 &&
-      weekday <= 5 &&
-      !isPublicDayOff(timing.timezone, date.year, date.month, date.day)
-    );
+  if (
+    "skipHolidays" in timing &&
+    timing.skipHolidays === true &&
+    isPublicDayOff(timing.timezone, date.year, date.month, date.day)
+  ) {
+    return false;
   }
+  const weekday = weekdayOf(date);
+  if (timing.frequency === "weekdays") return weekday >= 1 && weekday <= 5;
   if (timing.frequency !== "weekly") return true;
   return "weekdays" in timing
     ? timing.weekdays.includes(weekday)
@@ -508,7 +518,14 @@ export function resolveScheduleTiming(
 ): z.infer<typeof scheduleTimingSchema> {
   if (timing.kind === "interval") return timing;
   if (timing.kind === "calendar") {
-    return { ...timing, timezone: timing.timezone ?? personTimeZone };
+    const zoned = { ...timing, timezone: timing.timezone ?? personTimeZone };
+    // A model that fills every field sends `skipHolidays: false`; stored, it
+    // would only differ from the rule the person asked for.
+    if ("skipHolidays" in zoned && zoned.skipHolidays !== true) {
+      const { skipHolidays: _notAsked, ...rule } = zoned;
+      return rule;
+    }
+    return zoned;
   }
   if (instantSchema.safeParse(timing.at).success) {
     return { at: timing.at, kind: "once" };
