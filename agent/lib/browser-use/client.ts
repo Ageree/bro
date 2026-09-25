@@ -370,7 +370,7 @@ export function liveViewUrlFromEvents(
   return undefined;
 }
 
-/** Long enough for a run to be created; a status read takes well under one. */
+/** A status or summary read takes well under a second. */
 const browserUseRequestTimeoutMs = 30_000;
 
 async function request(
@@ -393,14 +393,20 @@ async function request(
   };
   if (body !== undefined) init.body = body;
 
-  // Every call is bounded: an answer that never comes used to hold the
-  // poller's whole tick — and every tick after it that Nitro handed the same
-  // running task — for as long as undici's five-minute timeouts, silently.
+  // A read, a stop or a cancel is bounded: an answer that never came used to
+  // hold the poller's tick for undici's five minutes. A POST is not: Browser
+  // Use takes no idempotency key, so one cut off after it started a run or
+  // queued a message leaves that run acting for the person with no row, no
+  // report and nothing to cancel it, and the retry opens a second browser.
+  // The poller does not wait on it longer than its own deadlines anyway
+  // (`within` in `agent/schedules/browser-runs.ts`).
   const attempt = () =>
-    fetch(url, {
-      ...init,
-      signal: AbortSignal.timeout(browserUseRequestTimeoutMs),
-    });
+    fetch(
+      url,
+      method === "POST"
+        ? init
+        : { ...init, signal: AbortSignal.timeout(browserUseRequestTimeoutMs) }
+    );
   let response = await attempt();
   // One retry only, and only for a read or a request that is safe to repeat.
   // A POST that failed may still have started a run or queued a message, and

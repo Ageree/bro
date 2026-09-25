@@ -627,30 +627,30 @@ export async function releaseBrowserRunReport(runId: string) {
 }
 
 /**
- * How long a report the conversation accepted may wait for its turn to start:
- * a minute after the first hand-over, doubling with each one after it, at
- * most ten minutes. An accepted send is not a turn — on 25.09 reports that
- * eve took never started one, and with a flat ten-minute hold the person
- * waited that long for the next try. A copy sent while the first still waits
- * behind the person's own long turn costs one silent turn: the report turn
- * that finds its report already delivered ends without a word
- * (`staleReportNote` in `agent/agent.ts`).
+ * How long a report the conversation accepted may wait for its turn. With
+ * `turnPolicy: "queue"` it waits behind a turn the person started, which can
+ * run for minutes; sent again after the plain lease, both copies ran. It
+ * stays flat: every hand-over counts in `reportAttempts`, which is also what
+ * `reopenBrowserRunReport` gives up on, and a hold that grew from a minute
+ * spent three attempts behind one long turn of the person's — eve runs the
+ * queued copies as one report turn, and a single failure of that turn then
+ * dropped the report for good.
  */
-const firstHandOverWaitMs = 60_000;
-const maximumHandOverWaitMs = 10 * 60_000;
+const handedOverLeaseMs = 10 * 60_000;
 
 /**
  * The conversation accepted the report and its turn is queued: nobody sends
  * it again until that turn had time to start. Its start renews the lease
- * (`renewBrowserRunReportLease`), and its end settles the report. The wait
- * is written as a lease that lapses then, like `releaseBrowserRunReport`'s.
+ * (`renewBrowserRunReportLease`), and its end settles the report.
  */
 export async function holdBrowserRunReportForTurn(runId: string) {
   const now = new Date();
   await db
     .update(browserRuns)
     .set({
-      reportClaimedAt: sql`${now.toISOString()}::timestamptz - make_interval(secs => ${reportLeaseMs / 1000}) + make_interval(secs => least(${firstHandOverWaitMs / 1000} * power(2, greatest(${browserRuns.reportAttempts} - 1, 0)), ${maximumHandOverWaitMs / 1000}))`,
+      reportClaimedAt: new Date(
+        now.getTime() + handedOverLeaseMs - reportLeaseMs
+      ),
       updatedAt: now,
     })
     .where(

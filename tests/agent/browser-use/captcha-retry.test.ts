@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BrowserUseCreateRunInput } from "@agent/lib/browser-use/client";
+import type * as browserUseClient from "@agent/lib/browser-use/client";
 import type * as browserUseSecrets from "@agent/lib/browser-use/secrets";
 import type { AccessScope } from "@shared/identity/access-scope";
 
@@ -59,7 +60,9 @@ const resolveBrowserSecretBindings = vi.hoisted(() =>
   >(() => Promise.resolve({ aliases: [], bindings: [] }))
 );
 
-vi.mock("@agent/lib/browser-use/client", () => ({
+vi.mock("@agent/lib/browser-use/client", async (importOriginal) => ({
+  BrowserUseError: (await importOriginal<typeof browserUseClient>())
+    .BrowserUseError,
   cancelBrowserUseRun,
   createBrowserUseRun,
   findRecentBrowserUseRunByTaskLine,
@@ -293,13 +296,19 @@ describe("the anti-bot retry policy", () => {
     expect(createBrowserUseRun).not.toHaveBeenCalled();
   });
 
-  it("counts a retry that could not start and parks the errand again", async () => {
-    createBrowserUseRun.mockRejectedValue(new Error("Browser Use is down"));
+  it("counts a retry Browser Use refused and parks the errand again", async () => {
+    const { BrowserUseError } = await import("@agent/lib/browser-use/client");
+    createBrowserUseRun.mockRejectedValue(
+      new BrowserUseError(400, "/runs", "profile is busy")
+    );
     const { startCaptchaRetry } =
       await import("@agent/lib/browser-use/captcha-retry");
     const now = new Date("2026-09-23T12:00:00.000Z");
 
-    const result = await startCaptchaRetry(parkedRow(2), now);
+    const result = await startCaptchaRetry(
+      { ...parkedRow(2), completedAt: new Date("2026-09-23T11:58:00.000Z") },
+      now
+    );
 
     expect(result).toEqual({ status: "parked" });
     expect(parkBrowserRunForRetry).toHaveBeenCalledExactlyOnceWith(runId, {
@@ -309,8 +318,77 @@ describe("the anti-bot retry policy", () => {
     expect(handOffBrowserRunRetry).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["a dropped connection", () => new TypeError("fetch failed")],
+    [
+      "a 502",
+      async () => {
+        const { BrowserUseError } =
+          await import("@agent/lib/browser-use/client");
+        return new BrowserUseError(502, "/runs", "bad gateway");
+      },
+    ],
+  ])(
+    "keeps the attempt's line after %s, so the next claim adopts a run it may have started",
+    async (_label, failure) => {
+      createBrowserUseRun.mockRejectedValue(await failure());
+      vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const { startCaptchaRetry } =
+        await import("@agent/lib/browser-use/captcha-retry");
+      const now = new Date("2026-09-23T12:00:00.000Z");
+      const row = {
+        ...parkedRow(2),
+        completedAt: new Date("2026-09-23T11:58:00.000Z"),
+      };
+
+      expect(await startCaptchaRetry(row, now)).toEqual({ status: "parked" });
+      // The same number: the next claim looks for this attempt's line.
+      expect(parkBrowserRunForRetry).toHaveBeenCalledExactlyOnceWith(runId, {
+        captchaAttempt: 2,
+        retryAt: new Date("2026-09-23T12:01:00.000Z"),
+      });
+
+      // Browser Use did start it: the next claim finds it and hands the
+      // errand over instead of opening a second browser.
+      createBrowserUseRun.mockClear();
+      findRecentBrowserUseRunByTaskLine.mockImplementation((line) =>
+        Promise.resolve(
+          line ===
+            `(Background retry 3 of errand ${runId}; for bookkeeping only.)`
+            ? { id: retryRunId, sessionId: "fresh-session" }
+            : undefined
+        )
+      );
+      expect(
+        await startCaptchaRetry(row, new Date("2026-09-23T12:01:00.000Z"))
+      ).toEqual({ runId: retryRunId, status: "started" });
+      expect(createBrowserUseRun).not.toHaveBeenCalled();
+    }
+  );
+
+  it("counts a start of unknown outcome once the wall is old, so an outage ends the errand", async () => {
+    createBrowserUseRun.mockRejectedValue(new TypeError("fetch failed"));
+    const { startCaptchaRetry } =
+      await import("@agent/lib/browser-use/captcha-retry");
+    const now = new Date("2026-09-23T12:00:00.000Z");
+
+    const result = await startCaptchaRetry(
+      { ...parkedRow(2), completedAt: new Date("2026-09-23T11:20:00.000Z") },
+      now
+    );
+
+    expect(result).toEqual({ status: "parked" });
+    expect(parkBrowserRunForRetry).toHaveBeenCalledExactlyOnceWith(runId, {
+      captchaAttempt: 3,
+      retryAt: new Date("2026-09-23T12:09:00.000Z"),
+    });
+  });
+
   it("gives up when the last attempt cannot start either", async () => {
-    createBrowserUseRun.mockRejectedValue(new Error("Browser Use is down"));
+    const { BrowserUseError } = await import("@agent/lib/browser-use/client");
+    createBrowserUseRun.mockRejectedValue(
+      new BrowserUseError(400, "/runs", "profile is busy")
+    );
     const { startCaptchaRetry } =
       await import("@agent/lib/browser-use/captcha-retry");
 

@@ -384,7 +384,7 @@ describe("browser run persistence", () => {
     expect((await browserRuns.readBrowserRun(runId))?.reportAttempts).toBe(2);
   }, 20_000);
 
-  it("sends an accepted report again within a minute when its turn never starts, then waits longer", async () => {
+  it("holds an accepted report until its queued turn had time to start", async () => {
     const browserRuns = await browserRunsDatabase();
     await browserRuns.createBrowserRun(alice, {
       ...conversation(),
@@ -393,22 +393,14 @@ describe("browser run persistence", () => {
       report: "Browser run finished",
       status: "done",
     });
-    const start = Date.now();
-    const pendingAfter = async (seconds: number) => {
-      vi.useFakeTimers({ now: start + seconds * 1_000, toFake: ["Date"] });
-      try {
-        return (await browserRuns.listPendingBrowserRunReports(10)).length > 0;
-      } finally {
-        vi.useRealTimers();
-      }
-    };
     await browserRuns.claimBrowserRunReport(runId);
     await browserRuns.holdBrowserRunReportForTurn(runId);
+    const start = Date.now();
 
-    // Accepted and waiting for its turn: not sent a second time yet.
-    expect(await pendingAfter(50)).toBe(false);
-    vi.useFakeTimers({ now: start + 50_000, toFake: ["Date"] });
+    vi.useFakeTimers({ now: start + 5 * 60_000, toFake: ["Date"] });
     try {
+      // Queued behind the person's own long turn: not sent a second time.
+      expect(await browserRuns.listPendingBrowserRunReports(10)).toEqual([]);
       expect(
         browserRuns.browserRunReportOwed(
           (await browserRuns.readBrowserRun(runId)) ?? { report: null }
@@ -417,51 +409,61 @@ describe("browser run persistence", () => {
     } finally {
       vi.useRealTimers();
     }
-    // Its turn never started (25.09: eve took the report and ran nothing):
-    // the report goes out again a minute later, not ten.
-    expect(await pendingAfter(61)).toBe(true);
-
-    vi.useFakeTimers({ now: start + 61_000, toFake: ["Date"] });
+    vi.useFakeTimers({ now: start + 11 * 60_000, toFake: ["Date"] });
     try {
-      await browserRuns.claimBrowserRunReport(runId);
-      await browserRuns.holdBrowserRunReportForTurn(runId);
-    } finally {
-      vi.useRealTimers();
-    }
-    // The second copy may only be queued behind a long turn of the
-    // person's: it waits twice as long before a third.
-    expect(await pendingAfter(61 + 115)).toBe(false);
-    expect(await pendingAfter(61 + 121)).toBe(true);
-  }, 20_000);
-
-  it("never waits more than ten minutes for a handed-over report's turn", async () => {
-    const browserRuns = await browserRunsDatabase();
-    await browserRuns.createBrowserRun(alice, {
-      ...conversation(),
-      completedAt: new Date(),
-      id: runId,
-      report: "Browser run finished",
-      reportAttempts: 7,
-      status: "done",
-    });
-    await browserRuns.claimBrowserRunReport(runId);
-    await browserRuns.holdBrowserRunReportForTurn(runId);
-    const start = Date.now();
-
-    vi.useFakeTimers({ now: start + 9 * 60_000, toFake: ["Date"] });
-    try {
-      expect(await browserRuns.listPendingBrowserRunReports(10)).toEqual([]);
-    } finally {
-      vi.useRealTimers();
-    }
-    vi.useFakeTimers({ now: start + 10 * 60_000 + 5_000, toFake: ["Date"] });
-    try {
+      // Its turn never started: the report goes out again.
       expect(await browserRuns.listPendingBrowserRunReports(10)).toEqual([
         { id: runId },
       ]);
     } finally {
       vi.useRealTimers();
     }
+  }, 20_000);
+
+  it("retries a report whose one turn failed after minutes behind a long turn of the person's", async () => {
+    const browserRuns = await browserRunsDatabase();
+    await browserRuns.createBrowserRun(alice, {
+      ...conversation(),
+      completedAt: new Date(),
+      id: runId,
+      report: "Browser run finished",
+      status: "done",
+    });
+    const start = Date.now();
+    const at = async <T>(seconds: number, work: () => Promise<T>) => {
+      vi.useFakeTimers({ now: start + seconds * 1_000, toFake: ["Date"] });
+      try {
+        return await work();
+      } finally {
+        vi.useRealTimers();
+      }
+    };
+    // The poller hands the report over, and keeps coming back while it
+    // waits: a hold that expired early let it send again each time, and
+    // every hand-over counted towards the three failed turns.
+    await at(0, async () => {
+      await browserRuns.claimBrowserRunReport(runId);
+      await browserRuns.holdBrowserRunReportForTurn(runId);
+    });
+    for (const seconds of [65, 190]) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Each poll comes at its own moment on the clock.
+      await at(seconds, async () => {
+        if (await browserRuns.claimBrowserRunReport(runId)) {
+          await browserRuns.holdBrowserRunReportForTurn(runId);
+        }
+      });
+    }
+
+    // The person's turn ends; eve runs the report turn, and it fails once.
+    const reopened = await at(240, async () => {
+      await browserRuns.renewBrowserRunReportLease(runId);
+      return browserRuns.reopenBrowserRunReport(runId);
+    });
+
+    expect(reopened).toEqual({ retried: true });
+    expect(
+      await at(245, () => browserRuns.listPendingBrowserRunReports(10))
+    ).toEqual([{ id: runId }]);
   }, 20_000);
 
   it("keeps the lease of a plain report already sent when the full one is saved", async () => {
