@@ -370,6 +370,8 @@ export function turnActions(
      * yet, write (`approvedPending`).
      */
     approvedPending: approvedPending(turn, appsCalls),
+    /** Whether any call the person approved has yet to show its result. */
+    approvalRunning: approvedWithoutResult(turn).size > 0,
     background: options.background,
     browserPending: browserPending && !options.background,
     calendarRefused,

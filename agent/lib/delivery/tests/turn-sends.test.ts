@@ -1,6 +1,7 @@
 import type { JSONValue, ModelMessage, ToolResultPart } from "ai";
 import { describe, expect, it } from "vitest";
 import {
+  approvedResendOwed,
   repeatsDelivered,
   rewriteSendNotice,
   sendReachedPerson,
@@ -2322,32 +2323,74 @@ describe("sendRefusal right after the person approved a card", () => {
     }
   );
 
+  it("owes the checked message once more after an earlier delivery", () => {
+    // The turn told the person before the card, so only this owed resend
+    // keeps the next step forced (`approvedResendOwed`).
+    const request = "напиши ирине, что приду в пятницу к 15:00";
+    const letter = approved(request, "gmail-send").slice(1);
+    const history = [
+      userMessage(request),
+      ...sendMessage(
+        "draft",
+        "Вот письмо Ирине: «Приду в пятницу к 15:00». Отправляю."
+      ),
+      ...letter,
+    ];
+    const claimed = "Отправил письмо Ирине: приду в пятницу к 15:00.";
+
+    expect(refusal(history, claimed)).toEqual({ rewrite: "approved" });
+    expect(approvedResendOwed(history)).toBe(false);
+
+    const ran = ranWith(history, { type: "json", value: { sent: true } });
+    const owed = [
+      ...ran,
+      ...sendMessage(
+        "claim",
+        claimed,
+        textOutput(rewriteSendNotice("approved"))
+      ),
+    ];
+    expect(approvedResendOwed(owed)).toBe(true);
+    expect(refusal(owed, claimed)).toBeUndefined();
+    expect(
+      approvedResendOwed([...owed, ...sendMessage("resend", claimed)])
+    ).toBe(false);
+  });
+
   it("does not ask to take an approved step again", () => {
     // «Take the step now» would make a second event while the approved one
     // is about to run.
-    const history = [
-      ...approved(
-        "поставь в календарь созвон в пятницу в 15:30",
-        "calendar-create-event"
-      ),
-    ];
+    const request = "поставь в календарь созвон в пятницу в 15:30";
     const told = [
-      ...history,
+      userMessage(request),
       ...sendMessage("told", "Созвон в пятницу в 15:30 — вот что ставлю."),
     ];
+    const pending = [
+      ...told,
+      ...approved(request, "calendar-create-event").slice(1),
+    ];
 
-    const announcing = "Сейчас поставлю в календарь созвон в пятницу в 15:30.";
-    expect(refusal(told, announcing)).toEqual({ skipped: "stale" });
+    // Only a status: held back, and nothing asks for the step again.
+    const announcing =
+      "Сейчас поставлю в календарь созвон в пятницу в 15:30, пока жду.";
+    expect(refusal(pending, announcing)).toEqual({ skipped: "stale" });
     // Without the approval the step is still to take.
+    expect(refusal(told, announcing)).toEqual({ rewrite: "announced" });
+  });
+
+  it("lets the outcome of an approved call follow an earlier message", () => {
+    // Its work is not in this step's history yet, so it is not the message
+    // sent before the card said again.
+    const request = "поставь в календарь созвон в пятницу в 15:30";
+    const pending = [
+      userMessage(request),
+      ...sendMessage("told", "Созвон в пятницу в 15:30 — вот что ставлю."),
+      ...approved(request, "calendar-create-event").slice(1),
+    ];
+
     expect(
-      refusal(
-        [
-          userMessage("поставь в календарь созвон в пятницу в 15:30"),
-          ...sendMessage("told", "Созвон в пятницу в 15:30 — вот что ставлю."),
-        ],
-        announcing
-      )
-    ).toEqual({ rewrite: "announced" });
+      refusal(pending, "Поставил созвон в пятницу в 15:30 в календарь.")
+    ).toEqual({ rewrite: "approved" });
   });
 
   it("still returns what the person declined on the card", () => {

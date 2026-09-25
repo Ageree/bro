@@ -420,6 +420,27 @@ function refusalOf(output: ToolResultPart["output"]) {
 }
 
 /**
+ * Whether the current turn's latest `send_message` came back as `approved`:
+ * a claim about a call the person approved, sent before its result was in.
+ * The model owes that message once more, checked against the result. A turn
+ * that already delivered something would otherwise go on unforced, with
+ * «end the turn without calling any tool» read last, and a model that ends
+ * there leaves a letter that did go out unconfirmed.
+ */
+export function approvedResendOwed(messages: readonly ModelMessage[]) {
+  const sends = currentTurnMessages(messages).flatMap((message) =>
+    message.role === "tool"
+      ? message.content.filter(
+          (part): part is ToolResultPart =>
+            part.type === "tool-result" && part.toolName === "send_message"
+        )
+      : []
+  );
+  const last = sends.at(-1)?.output;
+  return last?.type === "text" && last.value === rewriteSendNotice("approved");
+}
+
+/**
  * Whether a `send_message` result is a message the person received: not a
  * failure, a refusal, or a send this guard dropped or returned.
  */
@@ -656,13 +677,22 @@ export function turnSends(messages: readonly ModelMessage[]) {
     }
   }
   const previousStart = earlier.findLastIndex(startsTurn);
+  const actions = turnActions(turn, earlier, {
+    background: isBackgroundTurnText(opening),
+    previousTurn: previousStart === -1 ? earlier : earlier.slice(previousStart),
+    request: requestText,
+  });
+  // A call the person approved runs after this step's tools were built, so
+  // its result is work this step cannot see yet. Without it, the message
+  // that tells its outcome read as the draft sent before the card said
+  // again, and was dropped as stale.
+  if (actions.approvalRunning) {
+    worked = true;
+    workSinceDelivery = true;
+    otherWorkSinceDelivery = true;
+  }
   return {
-    actions: turnActions(turn, earlier, {
-      background: isBackgroundTurnText(opening),
-      previousTurn:
-        previousStart === -1 ? earlier : earlier.slice(previousStart),
-      request: requestText,
-    }),
+    actions,
     delivered,
     /** Stems on which the person named two people (`distinctStems`). */
     distinct: requestText === undefined ? [] : distinctStems(requestText),

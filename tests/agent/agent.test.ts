@@ -276,6 +276,84 @@ describe("interactive delivery enforcement", () => {
     );
   });
 
+  it("forces the message owed after an approved call, even after a delivery", async () => {
+    // Review of wave 5: a message went out before the card, so nothing forced
+    // the resend, and «иначе закончи ход» read last could end the turn
+    // without the confirmation of a letter that did go out.
+    const history = [
+      humanMessage("напиши ирине, что приду в пятницу к 15:00"),
+      ...sent(
+        "draft",
+        "Вот письмо Ирине: «Приду в пятницу к 15:00». Отправляю.",
+        "submitted"
+      ),
+      {
+        content: [
+          {
+            input: { to: "irina@example.com" },
+            toolCallId: "letter",
+            toolName: "gmail-send",
+            type: "tool-call" as const,
+          },
+          {
+            approvalId: "approval-letter",
+            toolCallId: "letter",
+            type: "tool-approval-request" as const,
+          },
+        ],
+        role: "assistant" as const,
+      },
+      {
+        content: [
+          {
+            approvalId: "approval-letter",
+            approved: true,
+            type: "tool-approval-response" as const,
+          },
+        ],
+        role: "tool" as const,
+      },
+      {
+        content: [
+          {
+            output: { type: "json" as const, value: { sent: true } },
+            toolCallId: "letter",
+            toolName: "gmail-send",
+            type: "tool-result" as const,
+          },
+        ],
+        role: "tool" as const,
+      },
+    ];
+    const claimed = "Отправил письмо Ирине: приду в пятницу к 15:00.";
+    const owed = [
+      ...history,
+      ...sent("claim", claimed, rewriteSendNotice("approved")),
+    ];
+
+    await agent.model.events["step.started"]?.({}, interactiveContext(owed));
+    const [, options] = services.modelSelection.mock.lastCall ?? [];
+    expect(options?.toolChoice).toBe("required");
+    expect(options?.replyNote).toBe(
+      replyDirective({
+        answered: true,
+        formOfAddress: defaultFormOfAddress,
+        language: "ru",
+        stepOwed: true,
+      })
+    );
+    expect(options?.replyNote).not.toContain("закончи ход");
+
+    // Once the resend went out, the turn is free to end as before.
+    await agent.model.events["step.started"]?.(
+      {},
+      interactiveContext([...owed, ...sent("resend", claimed, "submitted")])
+    );
+    const [, after] = services.modelSelection.mock.lastCall ?? [];
+    expect(after?.toolChoice).toBe("auto");
+    expect(after?.replyNote).toContain("закончи ход");
+  });
+
   it("keeps Russian and says why after a stray «Cancel» (d18)", async () => {
     await agent.model.events["step.started"]?.(
       {},
@@ -896,6 +974,34 @@ function messageText(message: { readonly content: string }) {
 function lastReplyNote() {
   const [, options] = services.modelSelection.mock.lastCall ?? [];
   return options?.replyNote;
+}
+
+/** A `send_message` call of the turn and what it returned. */
+function sent(id: string, text: string, value: string) {
+  return [
+    {
+      content: [
+        {
+          input: { kind: "message", text },
+          toolCallId: id,
+          toolName: "send_message",
+          type: "tool-call" as const,
+        },
+      ],
+      role: "assistant" as const,
+    },
+    {
+      content: [
+        {
+          output: { type: "text" as const, value },
+          toolCallId: id,
+          toolName: "send_message",
+          type: "tool-result" as const,
+        },
+      ],
+      role: "tool" as const,
+    },
+  ];
 }
 
 function humanMessage(text: string) {
