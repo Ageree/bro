@@ -7,11 +7,12 @@ import {
   integer,
   jsonb,
   pgTable,
+  primaryKey,
   text,
   timestamp,
 } from "drizzle-orm/pg-core";
 import type { ConfirmedSubmission } from "@shared/browser/submission";
-import { workspaceMemberships } from "./workspaces";
+import { workspaceMemberships, workspaces } from "./workspaces";
 
 export const browserProfiles = pgTable(
   "browser_profiles",
@@ -134,6 +135,20 @@ export const browserRuns = pgTable(
     // run from the revision it read and hands the errand over only while it
     // is still that one; a change that landed in between restarts it.
     queueRevision: integer("queue_revision").notNull().default(0),
+    // When this run stopped holding a live browser: Bro stopped it, which is
+    // what writes its cookies to the profile, or a follow-up took the
+    // browser over, or it was found gone. Null while the run works or its
+    // page waits for the person.
+    browserReleasedAt: timestamp("browser_released_at", {
+      mode: "date",
+      precision: 3,
+      withTimezone: true,
+    }),
+    // The site account a queued errand waits on: another errand of the
+    // workspace holds a browser there, and two sign-ins at once send two
+    // codes that cancel each other. Null for an errand waiting only for a
+    // free browser.
+    waitsForAccount: text("waits_for_account"),
   },
   (table) => [
     foreignKey({
@@ -173,6 +188,59 @@ export const browserRuns = pgTable(
       "browser_runs_captcha_attempt_check",
       sql`${table.captchaAttempt} >= 1`
     ),
+  ]
+);
+
+/**
+ * The sites where the workspace's browser profile is signed in to the
+ * person's account, as the runs and the keep-alive visits last found it. A
+ * run reports the page only a signed-in person sees; the keep-alive visit
+ * opens that page every few days so the site's session stays fresh, and the
+ * errand tool tells Bro not to warn about a code where the sign-in is kept.
+ */
+export const browserSignIns = pgTable(
+  "browser_sign_ins",
+  {
+    workspaceId: text("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    // The registrable domain of the account: `ozon.ru`, `gosuslugi.ru`.
+    domain: text("domain").notNull(),
+    // A page there only a signed-in person sees, as the run reported it,
+    // without its query or fragment.
+    accountUrl: text("account_url"),
+    state: text("state", { enum: ["signed_in", "signed_out"] }).notNull(),
+    // When an errand last found the person signed in there: the keep-alive
+    // visits stop a month after the person stopped using the site.
+    usedAt: timestamp("used_at", {
+      mode: "date",
+      precision: 3,
+      withTimezone: true,
+    }),
+    // When a run or a keep-alive visit last saw the state.
+    checkedAt: timestamp("checked_at", {
+      mode: "date",
+      precision: 3,
+      withTimezone: true,
+    }).notNull(),
+    // When the last keep-alive visit was claimed.
+    refreshedAt: timestamp("refreshed_at", {
+      mode: "date",
+      precision: 3,
+      withTimezone: true,
+    }),
+    // The person told Bro not to open the site on its own: no keep-alive
+    // visit goes there again, whatever later errands find.
+    refreshOptOut: boolean("refresh_opt_out").notNull().default(false),
+  },
+  (table) => [
+    primaryKey({ columns: [table.workspaceId, table.domain] }),
+    check(
+      "browser_sign_ins_state_check",
+      sql`${table.state} IN ('signed_in', 'signed_out')`
+    ),
+    check("browser_sign_ins_domain_check", sql`${table.domain} <> ''`),
+    index("browser_sign_ins_refresh_idx").on(table.state, table.checkedAt),
   ]
 );
 

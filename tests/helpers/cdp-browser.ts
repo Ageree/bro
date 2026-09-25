@@ -26,10 +26,14 @@ const commandSchema = z.object({
   params: z
     .object({
       contextId: z.number().int().optional(),
+      errorReason: z.string().optional(),
       expression: z.string().optional(),
       flatten: z.boolean().optional(),
       format: z.string().optional(),
       frameId: z.string().optional(),
+      requestId: z.string().optional(),
+      url: z.string().optional(),
+      urls: z.array(z.string()).optional(),
     })
     .default({}),
   sessionId: z.string().optional(),
@@ -55,6 +59,20 @@ interface Injection {
 export interface CdpBrowserFixture {
   /** What the injected program answers, per execution context id. */
   readonly injections: Readonly<Record<number, Injection>>;
+  /** Where a page opened with `Page.navigate` ends up, and what it shows. */
+  readonly page?: {
+    readonly password?: boolean;
+    /**
+     * Documents the page asks for after `Page.navigate` — a redirect, an
+     * embedded frame — each paused for the client once `Fetch.enable` is on.
+     * A request without a frame comes from the page itself.
+     */
+    readonly requests?: readonly {
+      readonly frame?: string;
+      readonly url: string;
+    }[];
+    readonly url: string;
+  };
   /** The base64 image `Page.captureScreenshot` answers with. */
   readonly screenshot?: string;
   /** Keyed by session id; the page's own session is the empty string. */
@@ -95,6 +113,7 @@ export async function startFakeCdpBrowser(
   // One context id per frame, handed out as frames are first seen, so a test
   // can address the third frame's field as context three.
   const contextIds = new Map<string, number>();
+  let fetchEnabled = false;
 
   const server = createServer((request, response) => {
     if (!request.url?.startsWith("/json")) {
@@ -171,9 +190,29 @@ export async function startFakeCdpBrowser(
         );
       }
     }
+    if (method === "Fetch.enable") fetchEnabled = true;
     events.push(
       JSON.stringify({ id, result: result(method, params, session) })
     );
+    if (method === "Page.navigate" && fetchEnabled) {
+      const main = fixture.sessions[""]?.frames[0]?.id ?? "";
+      const documents = [
+        { url: params.url ?? "" },
+        ...(fixture.page?.requests ?? []),
+      ];
+      for (const [index, document] of documents.entries()) {
+        events.push(
+          JSON.stringify({
+            method: "Fetch.requestPaused",
+            params: {
+              frameId: document.frame ?? main,
+              request: { url: document.url },
+              requestId: `request-${String(index + 1)}`,
+            },
+          })
+        );
+      }
+    }
     return events;
   }
 
@@ -195,6 +234,20 @@ export async function startFakeCdpBrowser(
     }
     if (method === "Page.captureScreenshot") {
       return { data: fixture.screenshot ?? "" };
+    }
+    if (
+      method === "Runtime.evaluate" &&
+      params.expression?.includes("document.readyState") === true
+    ) {
+      return {
+        result: {
+          value: {
+            password: fixture.page?.password ?? false,
+            readyState: "complete",
+            url: fixture.page?.url ?? "about:blank",
+          },
+        },
+      };
     }
     if (method === "Runtime.evaluate") {
       const contextId = params.contextId ?? 0;

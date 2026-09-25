@@ -157,6 +157,15 @@ export const env = createEnv({
         "BROWSER_USE_PROXY_COUNTRY must be an ISO 3166-1 alpha-2 code"
       )
       .default("ru"),
+    // How often, in days, a site the person signed in to through an errand
+    // is opened again with the same profile so its session stays fresh
+    // (`agent/lib/browser-use/sign-ins.ts`). 0 turns the visits off.
+    BROWSER_USE_SIGN_IN_REFRESH_DAYS: z.coerce
+      .number()
+      .int("BROWSER_USE_SIGN_IN_REFRESH_DAYS must be a whole number of days")
+      .min(0, "BROWSER_USE_SIGN_IN_REFRESH_DAYS must be 0 or more")
+      .max(30, "BROWSER_USE_SIGN_IN_REFRESH_DAYS must be at most 30")
+      .default(3),
     BROWSER_USE_WEBHOOK_SECRET: requiredValue.optional(),
     // Composio keeps each person's Google, Notion and Slack grants and calls
     // those APIs for Bro; without the key every integration is absent. The

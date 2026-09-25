@@ -36,6 +36,12 @@ const isolatedWorldSchema = z.object({
   executionContextId: z.number().int(),
 });
 
+const pausedRequestSchema = z.object({
+  frameId: z.string().optional(),
+  request: z.object({ url: z.string() }),
+  requestId: z.string().min(1),
+});
+
 const attachedTargetSchema = z.object({
   sessionId: z.string().min(1),
   targetInfo: z.object({ type: z.string() }),
@@ -225,6 +231,14 @@ interface CdpCommand {
   readonly frameId?: string;
   readonly quality?: number;
   readonly returnByValue?: boolean;
+  readonly errorReason?: string;
+  readonly patterns?: readonly {
+    readonly requestStage: string;
+    readonly resourceType: string;
+  }[];
+  readonly requestId?: string;
+  readonly url?: string;
+  readonly urls?: readonly string[];
   readonly waitForDebuggerOnStart?: boolean;
   readonly worldName?: string;
 }
@@ -250,6 +264,10 @@ interface CdpConnection {
   readonly close: () => void;
   /** Called with the session id of each embedded frame that attaches. */
   readonly onAttached: (listen: (sessionId: string) => void) => void;
+  /** Called for each request `Fetch.enable` paused, before it is sent. */
+  readonly onPausedRequest: (
+    listen: (request: z.infer<typeof pausedRequestSchema>) => void
+  ) => void;
 }
 
 /**
@@ -352,6 +370,120 @@ export async function captureViewportOverCdp(cdpUrl: string) {
   }
 }
 
+/**
+ * What a keep-alive visit to a signed-in page is not worth downloading: the
+ * managed proxy bills by the gigabyte, and cookies ride on the documents and
+ * the requests the page's scripts make, not on its pictures.
+ */
+const visitBlockedUrls = [
+  "*.avif",
+  "*.gif",
+  "*.jpeg",
+  "*.jpg",
+  "*.mp4",
+  "*.png",
+  "*.svg",
+  "*.webm",
+  "*.webp",
+  "*.woff",
+  "*.woff2",
+];
+/** A document that never finishes loading still gets looked at after this. */
+const visitLoadWaitMs = 20_000;
+/** An account page often checks the session in a script and redirects after
+ *  the load event, so the page is read only once it had a moment to. */
+const visitSettleMs = 3_000;
+const visitPollMs = 500;
+
+const pageStateSchema = z.object({
+  password: z.boolean(),
+  readyState: z.string(),
+  url: z.string(),
+});
+
+/**
+ * Open `url` in the browser behind `cdpUrl` as a person would, and say where
+ * it ended up, whether it shows a password field, and whether the page
+ * tried to go anywhere but `url`. It types nothing and presses nothing: the
+ * visit only lets the site see its session in use, and the clean stop
+ * afterwards writes whatever cookies it renewed to the profile. Every
+ * document request is held before it is sent: the page itself may load only
+ * `url` (its query aside), and an embedded frame only a page on `domain`.
+ * So a redirect to another site's sign-in, or to a page of the same site
+ * that acts when opened, never goes out with the person's profile; the
+ * visit reports it (`leftPage`) and the sign-in counts as lost.
+ */
+export async function visitPageOverCdp(
+  cdpUrl: string,
+  url: string,
+  domain: string
+) {
+  const connection = await connect(cdpUrl);
+  try {
+    const tree = frameTreeSchema.safeParse(
+      await connection.call("Page.getFrameTree", {}).catch(() => undefined)
+    );
+    const mainFrame = tree.data?.frameTree.frame?.id;
+    let leftPage = false;
+    connection.onPausedRequest((paused) => {
+      // Unsure which frame asks, the rule of the page itself applies.
+      const main =
+        mainFrame === undefined ||
+        paused.frameId === undefined ||
+        paused.frameId === mainFrame;
+      const allowed =
+        urlOnDomain(paused.request.url, domain) &&
+        (!main || samePage(paused.request.url, url));
+      if (main && !allowed) leftPage = true;
+      void connection
+        .call(
+          allowed ? "Fetch.continueRequest" : "Fetch.failRequest",
+          allowed
+            ? { requestId: paused.requestId }
+            : { errorReason: "BlockedByClient", requestId: paused.requestId }
+        )
+        .catch(() => undefined);
+    });
+    // Without the hold there is no visit: it would follow any redirect.
+    await connection.call("Fetch.enable", {
+      patterns: [{ requestStage: "Request", resourceType: "Document" }],
+    });
+    await connection.call("Network.enable", {}).catch(() => undefined);
+    await connection
+      .call("Network.setBlockedURLs", { urls: visitBlockedUrls })
+      .catch(() => undefined);
+    await connection.call("Page.enable", {});
+    await connection.call("Page.navigate", { url });
+    const deadline = Date.now() + visitLoadWaitMs;
+    const readPage = async (): Promise<z.infer<typeof pageStateSchema>> => {
+      const reply = evaluationSchema.safeParse(
+        await connection
+          .call("Runtime.evaluate", {
+            expression: `({ password: Array.from(document.querySelectorAll('input[type="password"]')).some((field) => field.offsetParent !== null), readyState: document.readyState, url: location.href })`,
+            returnByValue: true,
+          })
+          .catch(() => undefined)
+      );
+      const state = pageStateSchema.safeParse(reply.data?.result?.value);
+      if (state.success && state.data.readyState === "complete") {
+        return state.data;
+      }
+      if (Date.now() >= deadline) {
+        if (state.success) return state.data;
+        throw new Error("The page never answered.");
+      }
+      await sleep(visitPollMs);
+      return readPage();
+    };
+    await readPage();
+    await sleep(visitSettleMs);
+    const settled = await readPage();
+    return { leftPage, passwordField: settled.password, url: settled.url };
+  } finally {
+    connection.close();
+  }
+}
+
 async function evaluate(
   connection: CdpConnection,
   context: FrameContext,
@@ -374,6 +506,23 @@ async function evaluate(
   if (!parsed.success) return undefined;
   const injection = injectionSchema.safeParse(parsed.data.result?.value);
   return injection.success ? injection.data : undefined;
+}
+
+/** A page's path, without the trailing slash that means nothing. */
+function pagePath(page: URL) {
+  return page.pathname.replace(/\/+$/u, "") || "/";
+}
+
+/** Whether two URLs name one page: origin and path, trailing slash aside. */
+function samePage(left: string, right: string) {
+  const a = URL.parse(left);
+  const b = URL.parse(right);
+  return (
+    a !== null &&
+    b !== null &&
+    a.origin === b.origin &&
+    pagePath(a) === pagePath(b)
+  );
 }
 
 /** Whether a frame's URL is on `domain` or one of its subdomains. */
@@ -522,6 +671,9 @@ async function connect(cdpUrl: string): Promise<CdpConnection> {
   const socket = new WebSocket(await pageSocketUrl(cdpUrl));
   const pending = new Map<number, (reply: CdpResult) => void>();
   const attachedListeners: ((sessionId: string) => void)[] = [];
+  const pausedListeners: ((
+    request: z.infer<typeof pausedRequestSchema>
+  ) => void)[] = [];
   let nextId = 1;
 
   const opened = new Promise<void>((resolve, reject) => {
@@ -546,6 +698,12 @@ async function connect(cdpUrl: string): Promise<CdpConnection> {
       if (!waiting) return;
       pending.delete(message.data.id);
       waiting(message.data.result ?? {});
+      return;
+    }
+    if (message.data.method === "Fetch.requestPaused") {
+      const paused = pausedRequestSchema.safeParse(message.data.params);
+      if (!paused.success) return;
+      for (const listen of pausedListeners) listen(paused.data);
       return;
     }
     // An event rather than a reply. With a flattened auto-attach this is how a
@@ -583,6 +741,9 @@ async function connect(cdpUrl: string): Promise<CdpConnection> {
     },
     onAttached: (listen) => {
       attachedListeners.push(listen);
+    },
+    onPausedRequest: (listen) => {
+      pausedListeners.push(listen);
     },
   };
 }

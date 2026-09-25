@@ -532,6 +532,439 @@ describe("browser run persistence", () => {
   }, 20_000);
 });
 
+const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000);
+
+describe("browsers kept for a sign-in", () => {
+  it("knows which runs may still hold a browser, and takes the idle ones to stop", async () => {
+    const browserRuns = await browserRunsDatabase();
+    // Working now, on Госуслуги.
+    await browserRuns.createBrowserRun(alice, {
+      ...conversation(),
+      id: "working",
+      site: "https://www.gosuslugi.ru",
+      status: "running",
+    });
+    // Settled on a code twenty minutes ago, its page kept for the person.
+    await browserRuns.createBrowserRun(alice, {
+      ...conversation(),
+      completedAt: minutesAgo(20),
+      id: "kept-for-code",
+      sessionId: "session-kept",
+      site: "https://www.ozon.ru",
+      status: "done",
+    });
+    // Settled a minute ago: its page is still the person's to use.
+    await browserRuns.createBrowserRun(alice, {
+      ...conversation(),
+      completedAt: minutesAgo(1),
+      id: "just-settled",
+      sessionId: "session-just",
+      site: "https://market.yandex.ru",
+      status: "done",
+    });
+    // Settled long ago: the cloud has ended that browser itself.
+    await browserRuns.createBrowserRun(alice, {
+      ...conversation(),
+      completedAt: minutesAgo(5 * 60),
+      createdAt: minutesAgo(5 * 60 + 5),
+      id: "long-gone",
+      sessionId: "session-gone",
+      site: "https://www.wildberries.ru",
+      status: "done",
+    });
+    // Another workspace's browser is not this one's business.
+    await browserRuns.createBrowserRun(bob, {
+      ...conversation(),
+      id: "bobs",
+      site: "https://www.gosuslugi.ru",
+      status: "running",
+    });
+
+    expect(
+      (await browserRuns.listBrowserHoldingRuns(alice.workspaceId))
+        .map((run) => run.site)
+        .toSorted((left, right) => String(left).localeCompare(String(right)))
+    ).toEqual([
+      "https://market.yandex.ru",
+      "https://www.gosuslugi.ru",
+      "https://www.ozon.ru",
+    ]);
+    expect(
+      await browserRuns.listWorkspacesHoldingBrowsers([
+        alice.workspaceId,
+        "workspace:nobody",
+      ])
+    ).toEqual([alice.workspaceId]);
+
+    const now = new Date();
+    const idle = await browserRuns.takeIdleBrowserRuns(now, 10);
+    expect(
+      idle.map(({ id, sessionId, workspaceId }) => ({
+        id,
+        sessionId,
+        workspaceId,
+      }))
+    ).toEqual([
+      {
+        id: "kept-for-code",
+        sessionId: "session-kept",
+        workspaceId: alice.workspaceId,
+      },
+    ]);
+    expect(idle[0]?.completedAt).toBeInstanceOf(Date);
+    // Taking it claims the page: a follow-up arriving now opens a fresh
+    // browser instead of typing into the one being stopped.
+    expect(await browserRuns.claimBrowserRunBrowser("kept-for-code")).toBe(
+      false
+    );
+    // A stop that did not happen gives it back for the next tick.
+    await browserRuns.unclaimBrowserRunBrowser("kept-for-code", now);
+    const later = new Date(now.getTime() + 60_000);
+    expect(
+      (await browserRuns.takeIdleBrowserRuns(later, 10)).map((run) => run.id)
+    ).toEqual(["kept-for-code"]);
+
+    await browserRuns.releaseBrowserRunBrowser("kept-for-code");
+    const released = await browserRuns.readBrowserRun("kept-for-code");
+    // Released at the claim, not at the stop that followed it.
+    expect(released?.browserReleasedAt).toEqual(later);
+    // Its live view died with it.
+    expect(released?.liveViewUrl).toBeNull();
+    expect(await browserRuns.takeIdleBrowserRuns(new Date(), 10)).toEqual([]);
+    expect(
+      (await browserRuns.listBrowserHoldingRuns(alice.workspaceId)).map(
+        (run) => run.site
+      )
+    ).not.toContain("https://www.ozon.ru");
+  }, 20_000);
+
+  it("gives a kept page to one taker, and gives back only its own claim", async () => {
+    const browserRuns = await browserRunsDatabase();
+    await browserRuns.createBrowserRun(alice, {
+      ...conversation(),
+      completedAt: minutesAgo(2),
+      id: "kept",
+      sessionId: "session-kept",
+      status: "done",
+    });
+    const first = new Date();
+    const second = new Date(first.getTime() + 1_000);
+
+    expect(await browserRuns.claimBrowserRunBrowser("kept", first)).toBe(true);
+    expect(await browserRuns.claimBrowserRunBrowser("kept", second)).toBe(
+      false
+    );
+    // The second taker cannot undo the first one's claim.
+    await browserRuns.unclaimBrowserRunBrowser("kept", second);
+    expect(
+      (await browserRuns.readBrowserRun("kept"))?.browserReleasedAt
+    ).toEqual(first);
+    await browserRuns.unclaimBrowserRunBrowser("kept", first);
+    expect(
+      (await browserRuns.readBrowserRun("kept"))?.browserReleasedAt
+    ).toBeNull();
+  }, 20_000);
+
+  it("knows when another browser of the workspace is up, and when the profile is in use", async () => {
+    const browserRuns = await browserRunsDatabase();
+    await browserRuns.createBrowserRun(alice, {
+      ...conversation(),
+      completedAt: minutesAgo(16),
+      id: "idle",
+      sessionId: "session-idle",
+      status: "done",
+    });
+    expect(
+      await browserRuns.otherRunHoldsBrowser(alice.workspaceId, "idle")
+    ).toBe(false);
+    expect(
+      await browserRuns.workspaceUsesBrowserProfile(alice.workspaceId)
+    ).toBe(true);
+
+    await browserRuns.createBrowserRun(alice, {
+      ...conversation(),
+      id: "working",
+      sessionId: "session-working",
+      status: "running",
+    });
+    expect(
+      await browserRuns.otherRunHoldsBrowser(alice.workspaceId, "idle")
+    ).toBe(true);
+    // Bob's browser is not Alice's.
+    expect(await browserRuns.otherRunHoldsBrowser(bob.workspaceId, "x")).toBe(
+      false
+    );
+
+    await browserRuns.releaseBrowserRunBrowser("idle");
+    await browserRuns.releaseBrowserRunBrowser("working");
+    expect(
+      await browserRuns.workspaceUsesBrowserProfile(alice.workspaceId)
+    ).toBe(false);
+    // An errand waiting in the queue still starts on the profile.
+    await browserRuns.createQueuedBrowserRun(alice, {
+      ...conversation(),
+      pendingTask: "Закажи корм",
+      retryAt: new Date(),
+      sessionId: null,
+    });
+    expect(
+      await browserRuns.workspaceUsesBrowserProfile(alice.workspaceId)
+    ).toBe(true);
+  }, 20_000);
+
+  it("forgets only the profile Browser Use deleted", async () => {
+    const browserRuns = await browserRunsDatabase();
+    await browserRuns.saveBrowserProfileId(alice, "profile-alice");
+
+    // One created since the delete stays.
+    await browserRuns.forgetBrowserProfile(alice.workspaceId, "profile-old");
+    expect(await browserRuns.readBrowserProfileId(alice)).toBe("profile-alice");
+    await browserRuns.forgetBrowserProfile(alice.workspaceId, "profile-alice");
+    expect(await browserRuns.readBrowserProfileId(alice)).toBeUndefined();
+  }, 20_000);
+
+  it("does not count an errand waiting on its own workspace's sign-in as the service's queue", async () => {
+    const browserRuns = await browserRunsDatabase();
+    const retryAt = new Date(Date.now() + 60_000);
+    const waiting = await browserRuns.createQueuedBrowserRun(alice, {
+      ...conversation(),
+      pendingTask: "Запиши к терапевту",
+      retryAt,
+      sessionId: null,
+      site: "https://emias.info",
+      waitsForAccount: "gosuslugi.ru",
+    });
+    expect(await browserRuns.countQueuedBrowserRuns()).toBe(0);
+
+    // Its account is free: from here it waits for a browser like any other.
+    await browserRuns.parkQueuedBrowserRun(waiting.id, retryAt, {
+      waitsForAccount: null,
+    });
+    expect(await browserRuns.countQueuedBrowserRuns()).toBe(1);
+    expect((await browserRuns.readBrowserRun(waiting.id))?.retryAt).toEqual(
+      retryAt
+    );
+  }, 20_000);
+});
+
+describe("sign-ins kept in the browser profile", () => {
+  async function signInsDatabase() {
+    const browserRuns = await browserRunsDatabase();
+    const signIns = await import("@db/services/browser-sign-ins");
+    return { browserRuns, signIns };
+  }
+
+  it("keeps the page a run was signed in on and forgets it when a run meets a sign-in", async () => {
+    const { signIns } = await signInsDatabase();
+    const first = new Date("2026-09-25T10:00:00.000Z");
+    await signIns.recordBrowserSignIn(alice.workspaceId, {
+      accountUrl: "https://www.ozon.ru/my/main",
+      domain: "ozon.ru",
+      now: first,
+    });
+    // A later run that named no page keeps the one on record.
+    const later = new Date("2026-09-25T11:00:00.000Z");
+    await signIns.recordBrowserSignIn(alice.workspaceId, {
+      accountUrl: undefined,
+      domain: "ozon.ru",
+      now: later,
+    });
+    const [kept] = await signIns.readBrowserSignIns(alice.workspaceId, [
+      "ozon.ru",
+    ]);
+    expect(kept).toMatchObject({
+      accountUrl: "https://www.ozon.ru/my/main",
+      checkedAt: later,
+      state: "signed_in",
+      usedAt: later,
+    });
+
+    await signIns.recordBrowserSignOut(
+      alice.workspaceId,
+      ["ozon.ru", "wildberries.ru"],
+      later
+    );
+    const records = await signIns.readBrowserSignIns(alice.workspaceId, [
+      "ozon.ru",
+      "wildberries.ru",
+    ]);
+    // A site nobody signed in to has nothing to forget.
+    expect(records.map((record) => [record.domain, record.state])).toEqual([
+      ["ozon.ru", "signed_out"],
+    ]);
+    expect(
+      await signIns.readBrowserSignIns(bob.workspaceId, ["ozon.ru"])
+    ).toEqual([]);
+  }, 20_000);
+
+  it("lists the sites on record and forgets them, keeping a site the person opted out of", async () => {
+    const { signIns } = await signInsDatabase();
+    for (const [domain, day] of [
+      ["ozon.ru", "2026-09-24"],
+      ["yandex.ru", "2026-09-25"],
+      ["wildberries.ru", "2026-09-23"],
+    ] as const) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Records in the order a person would earn them.
+      await signIns.recordBrowserSignIn(alice.workspaceId, {
+        accountUrl: `https://www.${domain}/my`,
+        domain,
+        now: new Date(`${day}T10:00:00.000Z`),
+      });
+    }
+    await signIns.recordBrowserSignIn(bob.workspaceId, {
+      accountUrl: "https://www.ozon.ru/my",
+      domain: "ozon.ru",
+      now: new Date("2026-09-25T10:00:00.000Z"),
+    });
+    await signIns.stopBrowserSignInRefresh(
+      alice.workspaceId,
+      "ozon.ru",
+      new Date("2026-09-26T10:00:00.000Z")
+    );
+
+    expect(
+      (await signIns.listBrowserSignIns(alice.workspaceId)).map((record) => [
+        record.domain,
+        record.refreshOptOut,
+      ])
+    ).toEqual([
+      ["yandex.ru", false],
+      ["ozon.ru", true],
+      ["wildberries.ru", false],
+    ]);
+
+    expect(
+      (await signIns.forgetBrowserSignIns(alice.workspaceId)).toSorted()
+    ).toEqual(["ozon.ru", "wildberries.ru", "yandex.ru"]);
+    // «Не заходи в Озон» outlives the forgotten profile.
+    expect(
+      (await signIns.listBrowserSignIns(alice.workspaceId)).map((record) => [
+        record.domain,
+        record.state,
+        record.refreshOptOut,
+      ])
+    ).toEqual([["ozon.ru", "signed_out", true]]);
+    // Bob's are his.
+    expect(await signIns.listBrowserSignIns(bob.workspaceId)).toEqual([
+      expect.objectContaining({ domain: "ozon.ru", refreshOptOut: false }),
+    ]);
+  }, 20_000);
+
+  it("never visits a site again once the person said so, whatever later errands find", async () => {
+    const { browserRuns, signIns } = await signInsDatabase();
+    const dueBefore = new Date("2026-10-10T10:00:00.000Z");
+    const due = () =>
+      signIns.listDueBrowserSignInRefreshes({
+        dueBefore,
+        excludedDomains: [],
+        limit: 10,
+        usedAfter: new Date("2026-09-01T10:00:00.000Z"),
+      });
+    await browserRuns.saveBrowserProfileId(alice, "profile-alice");
+    // Opted out before any sign-in there: the mark waits for one.
+    await signIns.stopBrowserSignInRefresh(
+      alice.workspaceId,
+      "ozon.ru",
+      new Date("2026-09-20T10:00:00.000Z")
+    );
+    // A later errand signs in there again.
+    await signIns.recordBrowserSignIn(alice.workspaceId, {
+      accountUrl: "https://www.ozon.ru/my/main",
+      domain: "ozon.ru",
+      now: new Date("2026-09-25T10:00:00.000Z"),
+    });
+
+    expect(await due()).toEqual([]);
+    expect(
+      await signIns.claimBrowserSignInRefresh(alice.workspaceId, "ozon.ru", {
+        dueBefore,
+        now: new Date("2026-10-11T10:00:00.000Z"),
+      })
+    ).toBe(false);
+    const [record] = await signIns.readBrowserSignIns(alice.workspaceId, [
+      "ozon.ru",
+    ]);
+    // Still signed in, as far as errands go.
+    expect(record).toMatchObject({ refreshOptOut: true, state: "signed_in" });
+  }, 20_000);
+
+  it("claims each keep-alive visit once, and only where a profile exists", async () => {
+    const { browserRuns, signIns } = await signInsDatabase();
+    const now = new Date("2026-09-30T10:00:00.000Z");
+    const dueBefore = new Date("2026-09-27T10:00:00.000Z");
+    const usedAfter = new Date("2026-08-31T10:00:00.000Z");
+    await browserRuns.saveBrowserProfileId(alice, "profile-alice");
+    await signIns.recordBrowserSignIn(alice.workspaceId, {
+      accountUrl: "https://www.ozon.ru/my/main",
+      domain: "ozon.ru",
+      now: new Date("2026-09-25T10:00:00.000Z"),
+    });
+    // Seen yesterday: not due.
+    await signIns.recordBrowserSignIn(alice.workspaceId, {
+      accountUrl: "https://id.yandex.ru/",
+      domain: "yandex.ru",
+      now: new Date("2026-09-29T10:00:00.000Z"),
+    });
+    // Госуслуги is never kept alive.
+    await signIns.recordBrowserSignIn(alice.workspaceId, {
+      accountUrl: "https://lk.gosuslugi.ru/profile",
+      domain: "gosuslugi.ru",
+      now: new Date("2026-09-25T10:00:00.000Z"),
+    });
+    // No profile, so nothing to visit with.
+    await signIns.recordBrowserSignIn(bob.workspaceId, {
+      accountUrl: "https://www.ozon.ru/my/main",
+      domain: "ozon.ru",
+      now: new Date("2026-09-25T10:00:00.000Z"),
+    });
+
+    const due = await signIns.listDueBrowserSignInRefreshes({
+      dueBefore,
+      excludedDomains: ["gosuslugi.ru"],
+      limit: 10,
+      usedAfter,
+    });
+    expect(due).toEqual([
+      {
+        accountUrl: "https://www.ozon.ru/my/main",
+        domain: "ozon.ru",
+        profileId: "profile-alice",
+        workspaceId: alice.workspaceId,
+      },
+    ]);
+    expect(
+      await signIns.claimBrowserSignInRefresh(alice.workspaceId, "ozon.ru", {
+        dueBefore,
+        now,
+      })
+    ).toBe(true);
+    // A second tick finds it claimed.
+    expect(
+      await signIns.claimBrowserSignInRefresh(alice.workspaceId, "ozon.ru", {
+        dueBefore,
+        now,
+      })
+    ).toBe(false);
+    expect(
+      await signIns.listDueBrowserSignInRefreshes({
+        dueBefore,
+        excludedDomains: ["gosuslugi.ru"],
+        limit: 10,
+        usedAfter,
+      })
+    ).toEqual([]);
+
+    await signIns.recordBrowserSignInCheck(alice.workspaceId, "ozon.ru", {
+      now,
+      signedIn: false,
+    });
+    const [checked] = await signIns.readBrowserSignIns(alice.workspaceId, [
+      "ozon.ru",
+    ]);
+    expect(checked?.state).toBe("signed_out");
+  }, 20_000);
+});
+
 async function applyMigrations(database: PGlite) {
   const directory = new URL("../migrations/", import.meta.url);
   const names = (await readdir(directory))

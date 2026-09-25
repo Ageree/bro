@@ -1,3 +1,4 @@
+import { browserUseConfigured } from "@agent/lib/browser-use/client";
 import { composioConfigured } from "@shared/composio/api";
 import { applicationOrigin } from "@shared/environment/origin";
 import { googleWorkspaceConfigured } from "@shared/google-workspace/connection";
@@ -36,6 +37,11 @@ export function removalOutsideMemory() {
       : []),
     "Расписания и напоминания — «покажи мои расписания», затем «удали …» или «останови все расписания».",
     `Сейф — входы, карты, адреса и контакты — в кабинете, ${cabinetPage("/vault", "раздел «Сейф»")}.`,
+    ...(browserUseConfigured()
+      ? [
+          "Входы на сайты в облачном браузере — «забудь мои входы на сайты»: профиль браузера удаляется со всеми куки, и следующее поручение входит заново; «не заходи больше в <сайт>» — Бро больше никогда не открывает этот сайт сам, даже после новых поручений там.",
+        ]
+      : []),
     "Историю чатов, заказы, итоги поручений и сохранённые файлы Бро сам не удаляет.",
   ];
 }

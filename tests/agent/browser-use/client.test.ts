@@ -29,6 +29,11 @@ interface StubbedCall {
   readonly url: string;
 }
 
+/** The live browsers of the test session, one page of them. */
+function sessionBrowsersUrl(page: number) {
+  return `${baseUrl}/browsers?agentSessionId=${sessionId}&filterBy=active&pageNumber=${String(page)}&pageSize=100`;
+}
+
 function stubFetch(...responses: readonly Response[]) {
   const calls: StubbedCall[] = [];
   let index = 0;
@@ -369,7 +374,131 @@ describe("Browser Use client", () => {
       "wss://cdp.browser-use.test/live"
     );
     expect(calls[0]?.method).toBe("GET");
-    expect(calls[0]?.url).toBe(`${baseUrl}/browsers`);
+    // Asked by session and status: the plain list is one page of the whole
+    // project, and a session's browser falls off it.
+    expect(calls[0]?.url).toBe(sessionBrowsersUrl(1));
+  });
+
+  it("stops a settled run's browsers only while that run is the session's latest", async () => {
+    const client = await loadClient();
+    const calls = stubFetch(
+      Response.json({ latestRunId: runId, status: "completed" }),
+      Response.json({
+        items: [
+          {
+            agentSessionId: sessionId,
+            cdpUrl: "wss://cdp.browser-use.test/live",
+            id: "browser-live",
+            status: "active",
+          },
+          {
+            agentSessionId: "99999999-9999-4999-8999-999999999999",
+            cdpUrl: "wss://cdp.browser-use.test/other",
+            id: "browser-other",
+            status: "active",
+          },
+        ],
+      }),
+      new Response(null, { status: 204 })
+    );
+
+    // Stopped cleanly, the browser writes its cookies to the profile.
+    expect(await client.stopBrowserUseSessionBrowsers(sessionId, runId)).toBe(
+      "stopped"
+    );
+    expect(calls.map((call) => `${call.method} ${call.url}`)).toEqual([
+      `GET ${baseUrl}/sessions/${sessionId}`,
+      `GET ${sessionBrowsersUrl(1)}`,
+      `PATCH ${baseUrl}/browsers/browser-live`,
+    ]);
+    expect(JSON.parse(calls[2]?.body ?? "")).toEqual({ action: "stop" });
+
+    // A follow-up owns the browser now; a run still going keeps it.
+    stubFetch(Response.json({ latestRunId: "later-run", status: "running" }));
+    expect(await client.stopBrowserUseSessionBrowsers(sessionId, runId)).toBe(
+      "moved_on"
+    );
+    stubFetch(Response.json({ latestRunId: runId, status: "running" }));
+    expect(await client.stopBrowserUseSessionBrowsers(sessionId, runId)).toBe(
+      "running"
+    );
+  });
+
+  it("pages through the session's browsers, and never calls one it did not see stopped", async () => {
+    const client = await loadClient();
+    const browser = (id: string) => ({
+      agentSessionId: sessionId,
+      cdpUrl: `wss://cdp.browser-use.test/${id}`,
+      id,
+      status: "active",
+    });
+    const fullPage = Array.from({ length: 100 }, (_, index) =>
+      browser(`browser-${String(index)}`)
+    );
+    const calls = stubFetch(
+      Response.json({ latestRunId: runId, status: "completed" }),
+      Response.json({ items: fullPage, totalItems: 101 }),
+      Response.json({ items: [browser("browser-last")], totalItems: 101 }),
+      new Response(null, { status: 204 })
+    );
+
+    expect(await client.stopBrowserUseSessionBrowsers(sessionId, runId)).toBe(
+      "stopped"
+    );
+    expect(calls[2]?.url).toBe(sessionBrowsersUrl(2));
+    expect(
+      calls.filter((call) => call.method === "PATCH").map((call) => call.url)
+    ).toContain(`${baseUrl}/browsers/browser-last`);
+
+    // A list longer than the pages read may hide one still up.
+    const longList = Response.json({ items: fullPage, totalItems: 900 });
+    stubFetch(
+      Response.json({ latestRunId: runId, status: "completed" }),
+      ...Array.from({ length: 5 }, () => longList.clone()),
+      new Response(null, { status: 204 })
+    );
+    expect(await client.stopBrowserUseSessionBrowsers(sessionId, runId)).toBe(
+      "running"
+    );
+  });
+
+  it("starts a browser of its own on the profile, bounded in time", async () => {
+    const client = await loadClient();
+    const calls = stubFetch(
+      Response.json(
+        {
+          cdpUrl: "wss://cdp.browser-use.test/own",
+          id: "browser-own",
+          startedAt: "2026-09-30T10:00:00Z",
+          status: "active",
+          timeoutAt: "2026-09-30T10:03:00Z",
+        },
+        { status: 201 }
+      ),
+      new Response(null, { status: 204 })
+    );
+
+    const browser = await client.createBrowserUseBrowser({
+      customProxy: undefined,
+      profileId: "profile-1",
+      proxyCountryCode: "ru",
+      timeoutMinutes: 3,
+    });
+    await client.stopBrowserUseBrowser(browser.id);
+
+    expect(browser).toEqual({
+      cdpUrl: "wss://cdp.browser-use.test/own",
+      id: "browser-own",
+    });
+    expect(calls.map((call) => `${call.method} ${call.url}`)).toEqual([
+      `POST ${baseUrl}/browsers`,
+      `PATCH ${baseUrl}/browsers/browser-own`,
+    ]);
+    expect(JSON.parse(calls[0]?.body ?? "")).toEqual({
+      profileId: "profile-1",
+      proxyCountryCode: "ru",
+      timeout: 3,
+    });
   });
 
   it("reports no endpoint when this session has no browser up", async () => {

@@ -105,6 +105,7 @@ vi.mock("@db/services/browser-runs", () => ({
     ),
   claimNextQueuedBrowserRun: () => Promise.resolve(undefined),
   listOverdueBrowserRunReports: () => Promise.resolve([]),
+  takeIdleBrowserRuns: () => Promise.resolve([]),
   // One take per poll: the row is checked once, like the real round-robin.
   takeUnsettledBrowserRuns: ({ checkedBefore }: { checkedBefore: Date }) => {
     const row = currentRow();
@@ -115,6 +116,10 @@ vi.mock("@db/services/browser-runs", () => ({
     return Promise.resolve([{ ...row }]);
   },
   readBrowserRun: () => Promise.resolve({ ...currentRow() }),
+  releaseBrowserRunBrowser: () => {
+    currentRow().liveViewUrl = null;
+    return Promise.resolve();
+  },
   releaseBrowserRunReport: () => {
     currentRow().reportClaimedAt = null;
     return Promise.resolve();
@@ -124,6 +129,10 @@ vi.mock("@db/services/browser-runs", () => ({
     currentRow().reportClaimedAt = null;
     return Promise.resolve();
   },
+}));
+vi.mock("@db/services/browser-sign-ins", () => ({
+  recordBrowserSignIn: () => Promise.resolve(),
+  recordBrowserSignOut: () => Promise.resolve(),
 }));
 vi.mock("@db/services/orders", () => ({
   recordOrder: vi.fn<() => Promise<void>>(),
@@ -147,7 +156,7 @@ vi.mock("@agent/lib/browser-use/client", () => ({
       task: "Find a hotel",
     }),
   readBrowserUseRunStatus: () => Promise.resolve("completed"),
-  stopBrowserUseSessionBrowsers: () => Promise.resolve(1),
+  stopBrowserUseSessionBrowsers: () => Promise.resolve("stopped"),
 }));
 vi.mock("@agent/lib/browser-use/images", () => ({
   captureBrowserRunImages: () => Promise.resolve([]),

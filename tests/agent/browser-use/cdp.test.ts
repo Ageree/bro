@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   captureViewportOverCdp,
   typeOneTimeCodeOverCdp,
+  visitPageOverCdp,
 } from "@agent/lib/browser-use/cdp";
 import {
   startFakeCdpBrowser,
@@ -240,4 +241,117 @@ describe("photographing the viewport over CDP", () => {
       "The browser returned no screenshot."
     );
   });
+});
+
+describe("visiting a signed-in page over CDP", () => {
+  it("opens the page without its pictures and says where it ended up", async () => {
+    const fixture = await fake({
+      injections: {},
+      page: { url: "https://www.ozon.ru/my/main" },
+      sessions: { "": { frames: [{ depth: 0, id: "top" }] } },
+    });
+
+    const page = await visitPageOverCdp(
+      fixture.url,
+      "https://www.ozon.ru/my/main",
+      "ozon.ru"
+    );
+
+    expect(page).toEqual({
+      leftPage: false,
+      passwordField: false,
+      url: "https://www.ozon.ru/my/main",
+    });
+    // The page itself is let through, and held until it is checked.
+    expect(
+      fixture.calls.find((call) => call.method === "Fetch.enable")
+    ).toBeDefined();
+    expect(
+      fixture.calls
+        .filter(
+          (call) =>
+            call.method.startsWith("Fetch.") && call.method !== "Fetch.enable"
+        )
+        .map((call) => [call.method, call.params.requestId])
+    ).toEqual([["Fetch.continueRequest", "request-1"]]);
+    const navigate = fixture.calls.find(
+      (call) => call.method === "Page.navigate"
+    );
+    expect(navigate?.params.url).toBe("https://www.ozon.ru/my/main");
+    // The managed proxy bills by the gigabyte; cookies do not ride on images.
+    const blocked = fixture.calls.find(
+      (call) => call.method === "Network.setBlockedURLs"
+    );
+    expect(blocked?.params.urls).toEqual(expect.arrayContaining(["*.jpg"]));
+    // Nothing is typed and nothing is pressed.
+    expect(fixture.applied).toEqual([]);
+  }, 15_000);
+
+  it("reports a sign-in form the page turned into", async () => {
+    const fixture = await fake({
+      injections: {},
+      page: { password: true, url: "https://id.yandex.ru/" },
+      sessions: { "": { frames: [{ depth: 0, id: "top" }] } },
+    });
+
+    await expect(
+      visitPageOverCdp(fixture.url, "https://id.yandex.ru/", "yandex.ru")
+    ).resolves.toEqual({
+      leftPage: false,
+      passwordField: true,
+      url: "https://id.yandex.ru/",
+    });
+  }, 15_000);
+
+  it("blocks the page from going anywhere but the recorded one, and says so", async () => {
+    const fixture = await fake({
+      injections: {},
+      page: {
+        requests: [
+          // A redirect to another site's sign-in, with the profile's cookies.
+          { url: "https://passport.example/auth?retpath=ozon" },
+          // A page of the same site that acts when it is opened.
+          { url: "https://www.ozon.ru/logout" },
+          // The site's own frame loads; a stranger's does not.
+          { frame: "widget", url: "https://pay.ozon.ru/widget" },
+          { frame: "widget", url: "https://ads.example/frame" },
+        ],
+        url: "https://www.ozon.ru/my/main",
+      },
+      sessions: {
+        "": {
+          frames: [
+            { depth: 0, id: "top" },
+            { depth: 1, id: "widget" },
+          ],
+        },
+      },
+    });
+
+    const page = await visitPageOverCdp(
+      fixture.url,
+      "https://www.ozon.ru/my/main",
+      "ozon.ru"
+    );
+
+    expect(page.leftPage).toBe(true);
+    expect(
+      fixture.calls
+        .filter(
+          (call) =>
+            call.method.startsWith("Fetch.") && call.method !== "Fetch.enable"
+        )
+        .map((call) => [
+          call.method,
+          call.params.requestId,
+          call.params.errorReason,
+        ])
+    ).toEqual([
+      ["Fetch.continueRequest", "request-1", undefined],
+      ["Fetch.failRequest", "request-2", "BlockedByClient"],
+      ["Fetch.failRequest", "request-3", "BlockedByClient"],
+      ["Fetch.continueRequest", "request-4", undefined],
+      ["Fetch.failRequest", "request-5", "BlockedByClient"],
+    ]);
+  }, 15_000);
 });

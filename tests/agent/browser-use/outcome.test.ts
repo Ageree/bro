@@ -96,6 +96,7 @@ describe("browser run outcome parsing", () => {
       needs: "none",
       order: "4417",
       result: "такси вызвано к подъезду",
+      signedInNone: false,
       total: "620 ₽",
     });
   });
@@ -118,6 +119,21 @@ describe("browser run outcome parsing", () => {
     expect(parseBrowserOutcome("NEEDS: fingerprint").needs).toBe("none");
     expect(parseBrowserOutcome(null).needs).toBe("none");
     expect(parseBrowserOutcome("NEEDS: 3ds").needs).toBe("3ds");
+  });
+
+  it("reads the pages the run is signed in on, or none", () => {
+    expect(
+      parseBrowserOutcome(
+        "NEEDS: none\n**SIGNED_IN:** https://www.ozon.ru/my/main, https://id.yandex.ru/"
+      ).signedIn
+    ).toBe("https://www.ozon.ru/my/main, https://id.yandex.ru/");
+    const nowhere = parseBrowserOutcome("NEEDS: none\nSIGNED_IN: none");
+    expect(nowhere.signedIn).toBeUndefined();
+    // «Выйди из Озона»: saying so ends the keep-alive visits there.
+    expect(nowhere.signedInNone).toBe(true);
+    const silent = parseBrowserOutcome("NEEDS: none");
+    expect(silent.signedIn).toBeUndefined();
+    expect(silent.signedInNone).toBe(false);
   });
 
   it("summarizes only the facts the run reported", () => {

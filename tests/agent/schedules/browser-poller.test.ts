@@ -47,6 +47,8 @@ const cloud = vi.hoisted(() => ({
   hanging: new Set<string>(),
   // How many times a run's status was asked.
   statusChecks: 0,
+  // The sessions whose browsers Bro stopped, in order.
+  stopped: new Array<string>(),
   // What the next create answers: a new run, or Browser Use's refusal.
   nextCreate: new Array<"busy" | "down" | "no_credits" | "ok">(),
   runs: new Map<string, CloudRun>(),
@@ -201,7 +203,10 @@ vi.mock("@agent/lib/browser-use/client", async (importOriginal) => {
       cloud.statusChecks += 1;
       return Promise.resolve(known(runId).status);
     },
-    stopBrowserUseSessionBrowsers: () => Promise.resolve(0),
+    stopBrowserUseSessionBrowsers: (sessionId: string) => {
+      cloud.stopped.push(sessionId);
+      return Promise.resolve("stopped" as const);
+    },
   };
 });
 
@@ -226,6 +231,7 @@ afterAll(async () => {
 beforeEach(async () => {
   await database.delete(schema.spendEntries);
   await database.delete(schema.browserRuns);
+  await database.delete(schema.browserSignIns);
   cloud.beforeCreate.length = 0;
   cloud.cancelled.length = 0;
   cloud.created.length = 0;
@@ -233,6 +239,7 @@ beforeEach(async () => {
   liveWatch.value = false;
   retriesFail.value = false;
   cloud.statusChecks = 0;
+  cloud.stopped.length = 0;
   vaultFails.value = false;
   cloud.failing.clear();
   cloud.hanging.clear();
@@ -291,6 +298,15 @@ async function tick(attachSession: ScheduleHandlerArgs["attachSession"]) {
 }
 
 const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000);
+
+/** A settled run whose page waits for the person's code. */
+const keptPage = {
+  conversationChannel: "eve" as const,
+  conversationId: "web-session",
+  outcome: "Needs: sms_code",
+  status: "done" as const,
+  task: "Войди на Озон",
+};
 
 async function runningErrand(runId: string, result: string) {
   const { createBrowserRun } = await import("@db/services/browser-runs");
@@ -651,6 +667,108 @@ describe("the browser run poller", () => {
     expect((await readRun("gosuslugi-run"))?.reportClaimedAt).toBeInstanceOf(
       Date
     );
+    // The code goes into that very page: its browser stays up.
+    expect(cloud.stopped).toEqual([]);
+    expect((await readRun("gosuslugi-run"))?.browserReleasedAt).toBeNull();
+  }, 30_000);
+
+  it("keeps a staged checkout open for the card's follow-up", async () => {
+    await runningErrand(
+      "staged-run",
+      [
+        "RESULT: корзина собрана, остановлено перед оплатой",
+        "TOTAL: 1 422 ₽",
+        "NEEDS: payment",
+      ].join("\n")
+    );
+    const { attachSession } = webChat();
+
+    await tick(attachSession);
+
+    // The card's follow-up goes on on that very checkout page; the idle stop
+    // closes it cleanly if nobody answers.
+    expect(cloud.stopped).toEqual([]);
+    expect((await readRun("staged-run"))?.browserReleasedAt).toBeNull();
+  }, 30_000);
+
+  it("stops the browser of a run with nothing left for the person, so its sign-ins are kept", async () => {
+    await runningErrand(
+      "done-run",
+      ["RESULT: такси заказано", "NEEDS: none"].join("\n")
+    );
+    const { attachSession } = webChat();
+
+    await tick(attachSession);
+
+    expect(cloud.stopped).toEqual(["session-done-run"]);
+    const row = await readRun("done-run");
+    expect(row?.browserReleasedAt).toBeInstanceOf(Date);
+    expect(row?.liveViewUrl).toBeNull();
+  }, 30_000);
+
+  it("stops a browser kept for the person once it sat idle, and only once", async () => {
+    // The cloud ends an idle browser about twenty minutes after its last
+    // run and loses what changed in it: a push the person approved without
+    // saying so, a sign-in finished in the live view.
+    const { createBrowserRun } = await import("@db/services/browser-runs");
+    await createBrowserRun(alice, {
+      ...keptPage,
+      completedAt: minutesAgo(16),
+      createdAt: minutesAgo(20),
+      id: "idle-run",
+      liveViewUrl: "https://live.browser-use.test/idle",
+      sessionId: "session-idle",
+      updatedAt: minutesAgo(16),
+    });
+    const { attachSession } = webChat();
+
+    await tick(attachSession);
+    await tick(attachSession);
+
+    expect(cloud.stopped).toEqual(["session-idle"]);
+    const idle = await readRun("idle-run");
+    expect(idle?.browserReleasedAt).toBeInstanceOf(Date);
+    expect(idle?.liveViewUrl).toBeNull();
+  }, 30_000);
+
+  it("lets another browser of the workspace stop first, for a few minutes", async () => {
+    // Whether the cloud merges two browsers' cookies on one profile or keeps
+    // the last one's is not known: the page that waited longest stops last.
+    const { createBrowserRun } = await import("@db/services/browser-runs");
+    await createBrowserRun(alice, {
+      ...keptPage,
+      completedAt: minutesAgo(16),
+      createdAt: minutesAgo(20),
+      id: "idle-run",
+      sessionId: "session-idle",
+      updatedAt: minutesAgo(16),
+    });
+    await createBrowserRun(alice, {
+      ...keptPage,
+      completedAt: minutesAgo(3),
+      createdAt: minutesAgo(6),
+      id: "waiting-run",
+      sessionId: "session-waiting",
+      updatedAt: minutesAgo(3),
+    });
+    const { attachSession } = webChat();
+
+    await tick(attachSession);
+
+    expect(cloud.stopped).toEqual([]);
+    // Given back, not left claimed: a follow-up may still take it.
+    expect((await readRun("idle-run"))?.browserReleasedAt).toBeNull();
+
+    // Short of the cloud's own cleanup it stops whatever else is up.
+    await database
+      .update(schema.browserRuns)
+      .set({ completedAt: minutesAgo(19) })
+      .where(eq(schema.browserRuns.id, "idle-run"));
+
+    await tick(attachSession);
+
+    expect(cloud.stopped).toEqual(["session-idle"]);
+    expect((await readRun("waiting-run"))?.browserReleasedAt).toBeNull();
   }, 30_000);
 
   it("answers a payment stop with one card, not a question in text", async () => {
@@ -939,6 +1057,206 @@ describe("the browser queue", () => {
     // The claim's lease puts the errand back in line later.
     expect((await readRun(queued.id))?.status).toBe("queued");
   }, 30_000);
+
+  it("starts an errand on an account only once the workspace's other browser there is done", async () => {
+    // RU 25.09: d06, d07 and d08 signed in to Госуслуги at once, the person
+    // got three codes, and every sign-in was thrown out.
+    const { countQueuedBrowserRuns, createBrowserRun, createQueuedBrowserRun } =
+      await import("@db/services/browser-runs");
+    cloud.runs.set("esia-run", {
+      result: null,
+      sessionId: "session-esia",
+      status: "running",
+      task: "errand",
+    });
+    await createBrowserRun(alice, {
+      conversationChannel: "eve",
+      conversationId: "web-session",
+      createdAt: minutesAgo(3),
+      id: "esia-run",
+      rootSessionId: "web-session",
+      sessionId: "session-esia",
+      site: "https://www.gosuslugi.ru",
+      status: "running",
+      task: "Проверь штрафы на Госуслугах",
+      updatedAt: minutesAgo(3),
+    });
+    const waiting = await createQueuedBrowserRun(alice, {
+      conversationChannel: "eve",
+      conversationId: "web-session",
+      createdAt: minutesAgo(2),
+      paymentAllowed: false,
+      pendingTask: "Запиши к терапевту через ЕМИАС",
+      profileId: "profile-1",
+      retryAt: minutesAgo(1),
+      rootSessionId: "web-session",
+      site: "https://emias.info",
+      task: "Запиши к терапевту",
+    });
+    const { attachSession } = webChat();
+
+    await tick(attachSession);
+
+    expect(cloud.created).toHaveLength(0);
+    const parked = await readRun(waiting.id);
+    expect(parked?.status).toBe("queued");
+    expect(parked?.waitsForAccount).toBe("gosuslugi.ru");
+    expect(parked?.retryAt?.getTime()).toBeGreaterThan(Date.now());
+    // It waits for its own workspace, not for Browser Use: nobody else's
+    // start queues up behind it.
+    expect(await countQueuedBrowserRuns()).toBe(0);
+
+    // The Госуслуги errand signs in and is done: its browser is stopped,
+    // which is what keeps the sign-in, and the waiting errand starts on it.
+    cloud.runs.set("esia-run", {
+      result: [
+        "RESULT: штрафов нет",
+        "NEEDS: none",
+        "SIGNED_IN: https://lk.gosuslugi.ru/profile?from=main",
+      ].join("\n"),
+      sessionId: "session-esia",
+      status: "completed",
+      task: "errand",
+    });
+    await database
+      .update(schema.browserRuns)
+      .set({ retryAt: minutesAgo(1) })
+      .where(eq(schema.browserRuns.id, waiting.id));
+
+    await tick(attachSession);
+
+    expect(cloud.stopped).toEqual(["session-esia"]);
+    expect(cloud.created).toHaveLength(1);
+    expect(cloud.created[0]?.task).toContain("Запиши к терапевту через ЕМИАС");
+    const started = await readRun(waiting.id);
+    expect(started?.retriedAsRunId).toBe("cloud-run-1");
+    expect(started?.waitsForAccount).toBeNull();
+    const { readBrowserSignIns } =
+      await import("@db/services/browser-sign-ins");
+    expect(
+      await readBrowserSignIns(alice.workspaceId, ["gosuslugi.ru"])
+    ).toEqual([
+      expect.objectContaining({
+        accountUrl: "https://lk.gosuslugi.ru/profile",
+        state: "signed_in",
+      }),
+    ]);
+  }, 30_000);
+
+  it("never holds back a queued follow-up of the errand that holds the account", async () => {
+    const { createBrowserRun, createQueuedBrowserRun } =
+      await import("@db/services/browser-runs");
+    cloud.runs.set("esia-run", {
+      result: null,
+      sessionId: "session-esia",
+      status: "running",
+      task: "errand",
+    });
+    await createBrowserRun(alice, {
+      conversationChannel: "eve",
+      conversationId: "web-session",
+      createdAt: minutesAgo(3),
+      id: "esia-run",
+      sessionId: "session-esia",
+      site: "https://www.gosuslugi.ru",
+      status: "running",
+      task: "Проверь штрафы",
+      updatedAt: minutesAgo(3),
+    });
+    // A follow-up queued for a browser carries its errand's session.
+    const followUp = await createQueuedBrowserRun(alice, {
+      conversationChannel: "eve",
+      conversationId: "web-session",
+      createdAt: minutesAgo(2),
+      paymentAllowed: false,
+      pendingTask: "Код из смс 739204",
+      profileId: "profile-1",
+      retryAt: minutesAgo(1),
+      rootSessionId: "web-session",
+      sessionId: "session-other",
+      site: "https://www.gosuslugi.ru",
+      task: "Код из смс 739204",
+    });
+    const { attachSession } = webChat();
+
+    await tick(attachSession);
+
+    expect(cloud.created).toHaveLength(1);
+    expect((await readRun(followUp.id))?.retriedAsRunId).toBe("cloud-run-1");
+  }, 30_000);
+
+  it("waits behind a page staged on the same account and never closes it", async () => {
+    // Verification of wave 6 (d07/d08): d07's slot waits on its card; d08,
+    // queued for Госуслуги, must not close that page to start.
+    const { createBrowserRun, createQueuedBrowserRun } =
+      await import("@db/services/browser-runs");
+    await createBrowserRun(alice, {
+      ...keptPage,
+      completedAt: minutesAgo(1),
+      createdAt: minutesAgo(8),
+      id: "staged-slot",
+      outcome: "Needs: decision",
+      sessionId: "session-staged",
+      site: "https://www.gosuslugi.ru",
+      updatedAt: minutesAgo(1),
+    });
+    const waiting = await createQueuedBrowserRun(alice, {
+      conversationChannel: "eve",
+      conversationId: "web-session",
+      createdAt: minutesAgo(2),
+      paymentAllowed: false,
+      pendingTask: "Запиши к терапевту через ЕМИАС",
+      profileId: "profile-1",
+      retryAt: minutesAgo(1),
+      rootSessionId: "web-session",
+      site: "https://emias.info",
+      task: "Запиши к терапевту",
+      waitsForAccount: "gosuslugi.ru",
+    });
+    // A follow-up that lost its page signs in anew: it waits as well, its
+    // session notwithstanding.
+    const reopened = await createQueuedBrowserRun(alice, {
+      conversationChannel: "eve",
+      conversationId: "web-session",
+      createdAt: minutesAgo(2),
+      paymentAllowed: false,
+      pendingTask: "Продолжи запись на mos.ru",
+      profileId: "profile-1",
+      retryAt: minutesAgo(1),
+      rootSessionId: "web-session",
+      sessionId: "session-mos",
+      site: "https://www.mos.ru",
+      task: "Продолжи",
+      waitsForAccount: "gosuslugi.ru",
+    });
+    const { attachSession } = webChat();
+
+    await tick(attachSession);
+
+    expect(cloud.stopped).toEqual([]);
+    expect(cloud.created).toHaveLength(0);
+    expect((await readRun("staged-slot"))?.browserReleasedAt).toBeNull();
+    for (const queued of [waiting, reopened]) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Two rows, read in turn.
+      const row = await readRun(queued.id);
+      expect(row?.status).toBe("queued");
+      expect(row?.waitsForAccount).toBe("gosuslugi.ru");
+    }
+  }, 30_000);
+
+  it("tells Bro a Госуслуги errand in the wait may still ask for a code", async () => {
+    const { queuedStatusNote } = await import("@agent/lib/browser-use/queue");
+
+    const note = queuedStatusNote({
+      retryAt: null,
+      waitsForAccount: "gosuslugi.ru",
+    });
+
+    expect(note).not.toContain("starts signed in");
+    expect(note).not.toContain("instead of sending a second code");
+    expect(note).toContain("Госуслуги asks for one in every new browser");
+    expect(note).toContain("do not promise there will be none");
+  });
 
   it("closes a queued errand, tells the person and alerts the owner when credits run out", async () => {
     const queued = await queuedErrand(0);

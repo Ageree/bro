@@ -88,7 +88,55 @@ const browserSessionSchema = z.object({
 
 const browserSessionListSchema = z.object({
   items: z.array(browserSessionSchema),
+  totalItems: z.number().int().nonnegative().optional(),
 });
+
+/** The most a session's browser list is paged through. */
+const maximumBrowserPages = 5;
+const browserPageSize = 100;
+
+/**
+ * The live browsers of one agent session, asked of the API by session and
+ * status and paged through: the unfiltered list is one page of every browser
+ * in the project, and a session's browser falls off it once a few others
+ * have started. `complete` is false when the list ran past the pages read,
+ * so a caller never takes a browser it did not see as stopped.
+ */
+async function listSessionBrowsers(
+  sessionId: string,
+  page = 1,
+  found: readonly z.infer<typeof browserSessionSchema>[] = []
+): Promise<{
+  readonly complete: boolean;
+  readonly live: readonly z.infer<typeof browserSessionSchema>[];
+}> {
+  const query = new URLSearchParams({
+    agentSessionId: sessionId,
+    filterBy: "active",
+    pageNumber: String(page),
+    pageSize: String(browserPageSize),
+  });
+  const listed = browserSessionListSchema.parse(
+    await request("GET", `/browsers?${query.toString()}`)
+  );
+  // Kept as a guard whatever the API filtered.
+  const live = [
+    ...found,
+    ...listed.items.filter(
+      (item) => item.agentSessionId === sessionId && item.status === "active"
+    ),
+  ];
+  // Without a total, a full page may have another behind it.
+  const seen = (page - 1) * browserPageSize + listed.items.length;
+  const more =
+    listed.items.length > 0 &&
+    (listed.totalItems === undefined
+      ? listed.items.length >= browserPageSize
+      : listed.totalItems > seen);
+  if (!more) return { complete: true, live };
+  if (page >= maximumBrowserPages) return { complete: false, live };
+  return listSessionBrowsers(sessionId, page + 1, live);
+}
 
 const secretBindingSchema = z.object({
   /** Bare hostnames; a host covers its own subdomains. Browser Use caps this at ten. */
@@ -170,6 +218,14 @@ export async function createBrowserUseProfile(name: string, userId: string) {
   return profileSchema.parse(
     await request("POST", "/profiles", JSON.stringify({ name, userId }))
   );
+}
+
+/**
+ * Delete a browser profile with everything it keeps: the cookies, the
+ * sign-ins and the local storage of every site it visited.
+ */
+export async function deleteBrowserUseProfile(profileId: string) {
+  await request("DELETE", `/profiles/${encodeURIComponent(profileId)}`);
 }
 
 export async function createBrowserUseRun(input: BrowserUseCreateRunInput) {
@@ -290,13 +346,8 @@ export async function queueBrowserUseSessionMessage(
  * into the page the person is looking at.
  */
 export async function findBrowserUseSessionCdpUrl(sessionId: string) {
-  const { items } = browserSessionListSchema.parse(
-    await request("GET", "/browsers")
-  );
-  const browser = items.find(
-    (item) => item.agentSessionId === sessionId && item.status === "active"
-  );
-  return browser?.cdpUrl ?? undefined;
+  const { live } = await listSessionBrowsers(sessionId);
+  return live.find((item) => item.cdpUrl)?.cdpUrl ?? undefined;
 }
 
 const sessionInfoSchema = z.object({
@@ -308,40 +359,73 @@ const sessionInfoSchema = z.object({
  * Stop every live browser a session holds, once the run that just settled is
  * still the session's latest and it has ended. A profile keeps the cookies of
  * the browsers that ran on it — the sign-ins and the trust a site handed out
- * after a passed check — and stopping the browser is what hands them back to
- * the profile now rather than whenever the idle cleanup gets to it. A
- * follow-up that started in the same session in the meantime owns the browser
- * now, and keeps it.
+ * after a passed check — and only a clean stop writes them there: a browser
+ * the cloud ends itself, at its idle cleanup about twenty minutes after the
+ * last run or at its four-hour cap, loses what changed in it (Browser Use's
+ * own browser-harness notes, `interaction-skills/profile-sync.md`). A
+ * follow-up that started in the same session in the meantime owns the
+ * browser now, and keeps it.
+ *
+ * `moved_on`: a later run of the session owns the browser. `running`: the
+ * session does not say the run ended yet, or its browser list was too long
+ * to read whole, so it cannot be said that nothing is left up. `stopped`:
+ * every live browser of the session was stopped, none at all included.
  */
 export async function stopBrowserUseSessionBrowsers(
   sessionId: string,
   settledRunId: string
-) {
+): Promise<"moved_on" | "running" | "stopped"> {
   const session = sessionInfoSchema.parse(
     await request("GET", `/sessions/${encodeURIComponent(sessionId)}`)
   );
-  if (
-    session.latestRunId !== settledRunId ||
-    !["cancelled", "completed", "failed"].includes(session.status)
-  ) {
-    return 0;
+  if (session.latestRunId !== settledRunId) return "moved_on";
+  if (!["cancelled", "completed", "failed"].includes(session.status)) {
+    return "running";
   }
-  const { items } = browserSessionListSchema.parse(
-    await request("GET", "/browsers")
+  const { complete, live } = await listSessionBrowsers(sessionId);
+  await Promise.all(live.map((item) => stopBrowserUseBrowser(item.id)));
+  // A list that ran past the pages read may hide a browser still up.
+  return complete ? "stopped" : "running";
+}
+
+/** Stop one cloud browser: a clean stop writes its cookies to its profile. */
+export async function stopBrowserUseBrowser(browserId: string) {
+  await request(
+    "PATCH",
+    `/browsers/${encodeURIComponent(browserId)}`,
+    JSON.stringify({ action: "stop" })
   );
-  const live = items.filter(
-    (item) => item.agentSessionId === sessionId && item.status === "active"
-  );
-  await Promise.all(
-    live.map((item) =>
-      request(
-        "PATCH",
-        `/browsers/${encodeURIComponent(item.id)}`,
-        JSON.stringify({ action: "stop" })
-      )
+}
+
+const standaloneBrowserSchema = z.object({
+  cdpUrl: z.string().min(1),
+  id: z.string().min(1),
+});
+
+/**
+ * A browser of its own, with no agent in it, on the workspace profile: a
+ * keep-alive visit drives it over its debugger endpoint and stops it. It is
+ * billed by the minute it runs, and `timeoutMinutes` ends one whose stop
+ * never came.
+ */
+export async function createBrowserUseBrowser(input: {
+  readonly customProxy: BrowserUseCreateRunInput["customProxy"];
+  readonly profileId: string;
+  readonly proxyCountryCode: string;
+  readonly timeoutMinutes: number;
+}) {
+  return standaloneBrowserSchema.parse(
+    await request(
+      "POST",
+      "/browsers",
+      JSON.stringify({
+        customProxy: input.customProxy,
+        profileId: input.profileId,
+        proxyCountryCode: input.proxyCountryCode,
+        timeout: input.timeoutMinutes,
+      })
     )
   );
-  return live.length;
 }
 
 export async function cancelBrowserUseRun(runId: string) {

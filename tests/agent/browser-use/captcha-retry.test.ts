@@ -80,6 +80,8 @@ vi.mock("@agent/lib/browser-use/secrets", async (importOriginal) => ({
 
 function parkedRow(captchaAttempt: number) {
   return {
+    // Stopping the walled browser released it when the run was parked.
+    browserReleasedAt: new Date(),
     captchaAttempt,
     completedAt: new Date(),
     conversationChannel: "photon" as const,
@@ -113,6 +115,7 @@ function parkedRow(captchaAttempt: number) {
     },
     task: "Купи корм",
     updatedAt: new Date(),
+    waitsForAccount: null,
     workspaceId: "workspace:alice",
   };
 }

@@ -17,7 +17,6 @@ import { telegramChatIdFromConversationId } from "@agent/lib/telegram-conversati
 import {
   cancelBrowserUseRun,
   readBrowserUseRun,
-  stopBrowserUseSessionBrowsers,
   type BrowserUseRunStatus,
 } from "./client";
 import {
@@ -55,6 +54,12 @@ import {
   placedOrderInstruction,
 } from "./guidance";
 import { gosuslugiFallback } from "./public-services";
+import {
+  keepsPage,
+  persistProfileCookies,
+  releaseEndedRunBrowser,
+} from "./release";
+import { recordRunSignIns } from "./sign-ins";
 
 /**
  * Both completion paths — the Browser Use webhook and the reconciling poller —
@@ -188,7 +193,7 @@ export async function settleBrowserRun(
         captchaAttempt: claimed.captchaAttempt,
         retryAt,
       });
-      await persistProfileCookies(run.sessionId, run.id);
+      await persistProfileCookies(claimed.id, run.sessionId);
       return { kind: "settled" as const };
     }
   }
@@ -207,15 +212,26 @@ export async function settleBrowserRun(
     ),
     recordBrowserRunOrder(claimed, order),
   ]);
-  // A finished errand and a walled one leave nothing for this browser to do;
-  // a run waiting on a code keeps its page for the code to go into.
-  if (parsed.needs === "none" || parsed.needs === "captcha") {
-    await persistProfileCookies(run.sessionId, run.id);
-  }
+  // A run waiting on the person keeps its page for them (`keepsPage`); a
+  // finished one closes the browser now, which is what keeps its sign-ins.
+  // The idle stop in the poller closes a kept page later, before the cloud
+  // ends it and loses them.
+  const released = keepsPage(parsed.needs)
+    ? false
+    : await persistProfileCookies(claimed.id, run.sessionId);
+  await recordRunSignIns(claimed, {
+    needs: parsed.needs,
+    signedIn: parsed.signedIn,
+    signedInNone: parsed.signedInNone,
+  });
   await reportBrowserRun(
     delivery,
     claimed.id,
-    browserRunReport(claimed, { ...reportFacts, images, spend })
+    browserRunReport(
+      // A stopped browser's live view is dead: the report does not offer it.
+      released ? { ...claimed, liveViewUrl: null } : claimed,
+      { ...reportFacts, images, spend }
+    )
   );
   return { kind: "settled" as const };
 }
@@ -300,23 +316,6 @@ async function couldHaveActed(row: BrowserRunRow, unread: boolean) {
       runId: row.id,
     });
     return unread;
-  }
-}
-
-/**
- * Stop the run's browser so the profile keeps what it earned — the sign-ins,
- * and the cookies a site hands out once a check is passed, which is what
- * makes the next check less likely. Never fatal: the idle cleanup stops the
- * browser anyway, only later.
- */
-async function persistProfileCookies(sessionId: string, runId: string) {
-  try {
-    await stopBrowserUseSessionBrowsers(sessionId, runId);
-  } catch (error) {
-    console.warn("[browser-use] the run's browser could not be stopped", {
-      cause: error,
-      sessionId,
-    });
   }
 }
 
@@ -413,10 +412,14 @@ export async function expireBrowserRun(
   });
   if (!claimed) return;
   await releaseBrowserRunSpend(claimed.id);
+  await releaseEndedRunBrowser(claimed.id, claimed.sessionId);
   await reportBrowserRun(
     delivery,
     claimed.id,
-    browserRunReport(claimed, { failed: true, needs: "none", outcome })
+    browserRunReport(
+      { ...claimed, liveViewUrl: null },
+      { failed: true, needs: "none", outcome }
+    )
   );
 }
 
@@ -520,7 +523,7 @@ function deliveryInstruction(
 ) {
   const { hasItems, hasLinks } = facts;
   const tail =
-    "Answer a follow-up with browser_task continue on this run id instead of a new start: it picks the same browser up where this run left off and hands back the run id to use after that. Omit send_message.replyTo.";
+    "Answer a follow-up with browser_task continue on this run id instead of a new start: it picks the errand up where this run left off and hands back the run id to use after that. Omit send_message.replyTo.";
   if (needs === "captcha") {
     return [walledInstruction(facts.unreachable), facts.stuck, tail]
       .filter((line) => line !== undefined)
