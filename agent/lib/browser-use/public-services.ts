@@ -47,6 +47,50 @@ export function isGosuslugi(host: string) {
   return under(host, [gosuslugiDomain]);
 }
 
+/** The bare lower-case host of a site origin, without `www.`. */
+function siteHost(site: string | undefined) {
+  const host = site === undefined ? undefined : URL.parse(site)?.hostname;
+  const bare = host?.toLowerCase().replace(/^www\./u, "");
+  return bare === undefined || bare === "" ? undefined : bare;
+}
+
+/**
+ * Where a run may sign in through Госуслуги, and what it does on the screen
+ * that hands a site the person's profile. Binding the login only to the
+ * closed list is not enough on its own: once bound, the login can be typed
+ * on esia.gosuslugi.ru whichever site sent the run there, and the browser
+ * profile may already hold a live Госуслуги session from an earlier errand.
+ * So every run hears that the Госуслуги way in is for the errand's own
+ * public-service site only, and that the access screen for anyone else — a
+ * fines aggregator, a bank, a private clinic on a fallback — or for anyone
+ * at all on an errand the person has not confirmed, is where it stops.
+ */
+export function gosuslugiSignInRule(
+  site: string | undefined,
+  confirmed: boolean
+) {
+  const host = siteHost(site);
+  const ownSite =
+    host !== undefined && signsInWithGosuslugi(host) && !isGosuslugi(host)
+      ? host
+      : undefined;
+  const where =
+    host !== undefined && isGosuslugi(host)
+      ? "Sign in through Госуслуги only to gosuslugi.ru itself."
+      : ownSite === undefined
+        ? "Do not sign in to any site through Госуслуги («Войти через Госуслуги», ЕСИА) on this errand."
+        : `Sign in through Госуслуги («Войти через Госуслуги», ЕСИА) only to gosuslugi.ru and to this errand's own site, ${ownSite}.`;
+  const access =
+    confirmed && ownSite !== undefined
+      ? `If Госуслуги shows a screen asking to give an organisation access to the person's data («Предоставление прав доступа», «Разрешить доступ», «Предоставить права»), confirm it only when that organisation is ${ownSite} itself; for any other organisation do not confirm it: stop there with NEEDS: decision and name in DETAILS the organisation and the data it asks for.`
+      : "If Госуслуги shows a screen asking to give an organisation access to the person's data («Предоставление прав доступа», «Разрешить доступ», «Предоставить права»), do not confirm it: stop there with NEEDS: decision and name in DETAILS the organisation and the data it asks for.";
+  return [
+    where,
+    "Never use Госуслуги to sign in on a fallback or any other site that offers that button — a shop, a bank, a private clinic, an aggregator, a fines checker: signing in there hands it the person's Госуслуги profile.",
+    access,
+  ].join(" ");
+}
+
 const chargesPattern =
   /(?<!\p{L})(?:штраф\p{L}*|налог\p{L}*|пошлин\p{L}*|задолженност\p{L}*|начислени\p{L}*|недоимк\p{L}*|долг(?:и|ов|а)?|fines?|tax(?:es)?)(?!\p{L})/iu;
 
@@ -64,7 +108,7 @@ const doctorPattern =
  * «Штрафов нет, но висит 500 ₽ к оплате» said nothing about the 500 ₽.
  */
 const chargesHint =
-  "Fines, taxes and other charges: on Госуслуги they are under «Платежи» (fines, taxes, duties, court debts), and taxes also in the tax service's personal account (lkfl2.nalog.ru, sign-in through Госуслуги) — look there too when Госуслуги shows none or the errand asks about taxes. Open every charge you find and read what it is for before you report it; list each in CHARGES with the discount and its deadline exactly as the decree states them, and say plainly when there are none.";
+  "Fines, taxes and other charges: on Госуслуги they are under «Платежи» (fines, taxes, duties, court debts); the tax service's personal account (lkfl2.nalog.ru) has the taxes too when it is this errand's own site. Open every charge you find and read what it is for before you report it; list each in CHARGES with the discount and its deadline exactly as the decree states them, and say plainly when there are none.";
 
 const documentsHint =
   "Documents: the person's own documents — passports, the driving licence, the OMS policy, СНИЛС — are in their Госуслуги profile («Документы и данные»). For each one the errand asks about, report its kind and the date it expires; never copy its number.";

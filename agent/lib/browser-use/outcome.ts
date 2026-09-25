@@ -47,11 +47,14 @@ function labelledValue(text: string, label: string) {
   return value;
 }
 
-/** The start of a labelled line whose value is JSON, decorated or not. */
+/**
+ * Every line that starts with a label whose value is JSON, decorated or not.
+ * Global: the report before the footer may use the same word as a heading.
+ */
 function jsonLabel(label: string) {
   return new RegExp(
     `^[ \\t]*(?:[-*•]+[ \\t]*)?\\*{0,2}${label}\\*{0,2}[ \\t]*:[ \\t]*`,
-    "imu"
+    "gimu"
   );
 }
 
@@ -71,26 +74,19 @@ const browserResultLinkFields = z.object({
 });
 
 /**
- * The JSON array — or, with `{`, the object — written after a label, cut
- * out by bracket depth.
+ * The JSON array or object written right after one label, cut out by
+ * bracket depth.
  */
-function labelledJson(
-  text: string,
-  labelPattern: RegExp,
-  maxLength = maxLinksJsonLength,
-  opening: "[" | "{" = "["
-) {
-  const closing = opening === "[" ? "]" : "}";
-  const label = labelPattern.exec(text);
-  if (!label) return undefined;
-  const rest = text.slice(label.index + label[0].length);
-  const openingOffset = rest.indexOf(opening);
+function jsonAfterLabel(rest: string, maxLength: number) {
+  const openingOffset = rest.search(/[[{]/u);
   if (openingOffset < 0 || openingOffset > 32) return undefined;
   // Only the label's own bold and a code fence may stand between the label
   // and its value: «BOOKING: none» followed by the ITEMS line is no booking.
   if (!/^[\s`*]*(?:json)?[\s`*]*$/iu.test(rest.slice(0, openingOffset))) {
     return undefined;
   }
+  const opening = rest[openingOffset];
+  const closing = opening === "[" ? "]" : "}";
   const candidate = rest.slice(openingOffset, openingOffset + maxLength);
   let depth = 0;
   let quoted = false;
@@ -114,21 +110,31 @@ function labelledJson(
   return undefined;
 }
 
-/** The parsed JSON after a label, or undefined when it is not there or broken. */
+/**
+ * The parsed JSON of the last labelled line that carries some, or undefined.
+ * The footer comes last, and a heading in the report with the same word —
+ * «Booking: Dr. Ivanova, 12 Oct 10:30» — carries none, so it no longer
+ * hides the footer's value.
+ */
 function labelledJsonValue(
   text: string,
   labelPattern: RegExp,
-  maxLength?: number,
-  opening?: "[" | "{"
+  maxLength = maxLinksJsonLength
 ) {
-  const json = labelledJson(text, labelPattern, maxLength, opening);
-  if (!json) return undefined;
-  try {
-    const value: unknown = JSON.parse(json);
-    return value;
-  } catch {
-    return undefined;
+  let found: unknown;
+  for (const label of text.matchAll(labelPattern)) {
+    const json = jsonAfterLabel(
+      text.slice(label.index + label[0].length),
+      maxLength
+    );
+    if (json === undefined) continue;
+    try {
+      found = JSON.parse(json);
+    } catch {
+      // Broken here; a later line may still carry it.
+    }
   }
+  return found;
 }
 
 function validatedBrowserResultUrl(rawUrl: string) {
@@ -316,27 +322,39 @@ const browserResultBookingFields = z.object({
   cancel: itemText,
   confirmed: flag,
   end: itemText,
+  endZone: itemText,
   place: itemText,
   reference: itemText,
   room: itemText,
   start: itemText,
   what: z.string(),
   who: itemText,
+  zone: itemText,
 });
 
 /**
  * The appointment, table, stay or ticket the run booked or staged, with what
  * the person needs on the day: the address and the room, what to bring, how
  * to cancel. A doctor's appointment reported without «что взять с собой» and
- * never put in the calendar was half an errand (RU 24.09, d07).
+ * never put in the calendar was half an errand (RU 24.09, d07). Its times
+ * are on the place's own clock, so the place's zone comes with them: a
+ * flight from Yekaterinburg at 08:00 written with the person's Moscow offset
+ * went in the calendar two hours late. A round trip written as an array is
+ * its first leg.
  */
 function browserResultBooking(text: string) {
-  const value = labelledJsonValue(text, bookingLabel, 8_000, "{");
-  const fields = browserResultBookingFields.safeParse(value);
+  const value = labelledJsonValue(text, bookingLabel, maxItemsJsonLength);
+  const first: unknown = Array.isArray(value) ? value[0] : value;
+  const fields = browserResultBookingFields.safeParse(first);
   if (!fields.success) return undefined;
   const what = itemText.parse(fields.data.what);
   if (!what) return undefined;
   return { ...fields.data, what };
+}
+
+/** «2026-10-03T08:00 (Asia/Yekaterinburg)», or the time alone. */
+function zonedTime(time: string, zone: string | undefined) {
+  return zone === undefined ? time : `${time} (${zone})`;
 }
 
 function bookingLine(
@@ -346,7 +364,7 @@ function bookingLine(
     booking.what,
     booking.who,
     booking.start
-      ? `from ${booking.start}${booking.end ? ` to ${booking.end}` : ""}`
+      ? `from ${zonedTime(booking.start, booking.zone)}${booking.end ? ` to ${zonedTime(booking.end, booking.endZone ?? booking.zone)}` : ""}`
       : undefined,
     booking.place ? `at ${booking.place}` : undefined,
     booking.room ? `room or seat ${booking.room}` : undefined,

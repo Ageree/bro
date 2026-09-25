@@ -48,11 +48,19 @@ export async function listOrders(scope: AccessScope, limit = 20) {
   return await db
     .select({
       ...getTableColumns(orders),
-      // What the person confirmed names the errand; a run without a card
-      // has only its own instruction.
-      errand: sql<
-        string | null
-      >`coalesce(${browserRuns.submission}->>'what', ${browserRuns.task})`,
+      // What the person confirmed names the errand. A follow-up without a
+      // card — a code, a 3-D Secure confirmation on the spend limit — was
+      // started with the person's message as its task («4821»), so the
+      // errand is the first run in the same browser session, which is the
+      // one the person asked for.
+      errand: sql<string | null>`coalesce(
+        ${browserRuns.submission}->>'what',
+        (select first_run.task from browser_runs first_run
+          where first_run.workspace_id = ${orders.workspaceId}
+            and first_run.session_id = ${browserRuns.sessionId}
+          order by first_run.created_at asc limit 1),
+        ${browserRuns.task}
+      )`,
       site: browserRuns.site,
       where: sql<string | null>`${browserRuns.submission}->>'where'`,
     })

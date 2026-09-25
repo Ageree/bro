@@ -87,7 +87,7 @@ export default [
   }),
   defineEval({
     description:
-      "Treats a ticket search with a seat and check-in as a purchase to stage, not a list",
+      "Starts «найди билеты … у прохода» as a search with the bag and the seat in it, not a purchase",
     tags: [...tags, "browser"],
     async test(t) {
       await skipWithoutBrowser(t);
@@ -98,8 +98,7 @@ export default [
         );
         turn.expectOk();
         checkNoQuestionBeforeCard(t, turn);
-        // The option is still to be found: the search stages it, and the
-        // one card comes with what it found.
+        // «Найди» is a search: no card before the person picks a flight.
         turn.calledTool("browser_task", {
           input: (input: EveEvalToolCall["input"]) =>
             searchStart(

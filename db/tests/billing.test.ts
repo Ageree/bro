@@ -198,8 +198,25 @@ describe("order records", () => {
     await browserRuns.createBrowserRun(alice, {
       ...run,
       id: "run-plain",
+      sessionId: "session-2",
       site: "https://shop.example",
       task: "Купи зарядку",
+    });
+    // A follow-up without a card takes the person's message as its task:
+    // the errand is the first run of its browser session.
+    await browserRuns.createBrowserRun(alice, {
+      ...run,
+      createdAt: new Date("2026-09-24T17:00:00.000Z"),
+      id: "run-root",
+      sessionId: "session-3",
+      task: "Закажи продукты к 20:00",
+    });
+    await browserRuns.createBrowserRun(alice, {
+      ...run,
+      createdAt: new Date("2026-09-24T17:05:00.000Z"),
+      id: "run-code",
+      sessionId: "session-3",
+      task: "4821",
     });
     await orders.recordOrder(alice, {
       ...order,
@@ -212,6 +229,12 @@ describe("order records", () => {
       browserRunId: "run-plain",
       merchant: "other",
       merchantOrderId: "S-1",
+    });
+    await orders.recordOrder(alice, {
+      ...order,
+      browserRunId: "run-code",
+      merchant: "other",
+      merchantOrderId: "C-1",
     });
     // An order without its run, and one whose run id is another workspace's.
     await orders.recordOrder(alice, {
@@ -237,6 +260,9 @@ describe("order records", () => {
       errand: "Купи зарядку",
       site: "https://shop.example",
       where: null,
+    });
+    expect(byNumber.get("C-1")).toMatchObject({
+      errand: "Закажи продукты к 20:00",
     });
     expect(byNumber.get("X-1")).toMatchObject({
       errand: null,
