@@ -348,6 +348,35 @@ describe("sendRefusal on the benchmark of 25.09", () => {
 
   it.each([
     [
+      "Александра after Александр",
+      "Александр подтвердил встречу завтра в 10:00.",
+      "Александра подтвердила встречу завтра в 10:00.",
+    ],
+    [
+      "Евгения after Евгений",
+      "Евгений подтвердил встречу завтра в 10:00.",
+      "Евгения подтвердила встречу завтра в 10:00.",
+    ],
+    [
+      "Александра after Александр, named inside the sentence",
+      "Встречу завтра в 10:00 подтвердил Александр.",
+      "Встречу завтра в 10:00 подтвердила и Александра.",
+    ],
+  ])(
+    "delivers %s from the calendar: the verbs say a man and a woman",
+    (_case, first, second) => {
+      const history = [
+        userMessage("кто подтвердил встречу?"),
+        ...toolStep("calendar-list-events", { events: [] }),
+        ...sendMessage("first", first),
+      ];
+
+      expect(refusal(history, second)).toBeUndefined();
+    }
+  );
+
+  it.each([
+    [
       "Лавку after Лавке",
       "Запустил поручение на Яндекс Лавке.",
       "Поручение передано в Яндекс Лавку, сайт пока ничего не оформлял.",
@@ -600,6 +629,77 @@ describe("sendRefusal on the benchmark of 25.09", () => {
     }
   );
 
+  const dinnerSearch = toolStep("web_search", {
+    results:
+      "1. Авокадо, ресторан, Чистопрудный бул., 12, корп. 2, Москва — Яндекс Карты\nhttps://yandex.ru/maps/org/avokado/1099046369/\nРесторан «Авокадо» специализируется на вегетарианской, веганской и сыроедческой кухне.",
+  });
+  const dinnerBooking = browserStep(
+    "start",
+    { runId: "run-7", status: "running" },
+    {
+      site: "https://yandex.ru/maps/org/avokado/1099046369/",
+      task: "Забронируйте столик в «Авокадо», Чистопрудный бульвар, 12, корп. 2, на 26 сентября, 19:30, на четверых.",
+    }
+  );
+  const barberSearch = toolStep("web_search", {
+    results:
+      "1. Барбершоп The Barber Club | Мужские стрижки\nhttps://thebarberclub.ru/\nг. Москва, ул. Профсоюзная, 11/11, вход с улицы Кржижановского",
+  });
+  const barberBooking = browserStep(
+    "start",
+    { runId: "run-8", status: "running" },
+    {
+      site: "https://thebarberclub.ru/",
+      task: "Запишите на 26 сентября, 19:00, к барберу Артуру в The Barber Club, Профсоюзная улица, 11/11.",
+    }
+  );
+
+  it.each([
+    [
+      "the restaurant, searched and started in two steps",
+      [
+        userMessage(
+          "найди, где поужинать завтра в 19:30 на четверых у чистых прудов, не сетевое, и забронируй"
+        ),
+        ...dinnerSearch,
+        ...dinnerBooking,
+        ...sendMessage(
+          "started",
+          "Запустил бронь, пришлю подтверждение, как будет готово."
+        ),
+      ],
+      "Бронирую «Авокадо», Чистопрудный бульвар, 12, корп. 2: полностью вегетарианское меню.",
+    ],
+    [
+      "the restaurant, searched and started in one step",
+      [
+        userMessage(
+          "найди, где поужинать завтра в 19:30 на четверых у чистых прудов, не сетевое, и забронируй"
+        ),
+        ...inOneStep(dinnerSearch, dinnerBooking),
+        ...sendMessage(
+          "started",
+          "Запустил бронь, пришлю подтверждение, как будет готово."
+        ),
+      ],
+      "Бронирую «Авокадо», Чистопрудный бульвар, 12, корп. 2: полностью вегетарианское меню.",
+    ],
+    [
+      "the barbershop",
+      [
+        userMessage(
+          "запиши меня в барбершоп на профсоюзной к артуру на завтра в 19:00"
+        ),
+        ...barberSearch,
+        ...barberBooking,
+        ...sendMessage("started", "Запустил запись, пришлю подтверждение."),
+      ],
+      "Нашёл The Barber Club: Профсоюзная улица, 11/11. Записываю туда на 19:00.",
+    ],
+  ])("delivers %s the model picked from a search", (_case, history, text) => {
+    expect(refusal(history, text)).toBeUndefined();
+  });
+
   it("still gives the errand one message when other work came with it", () => {
     const history = [
       ticketsAndWeather,
@@ -624,20 +724,26 @@ describe("sendRefusal on the benchmark of 25.09", () => {
     ...sendMessage("started", errandStatus),
   ];
 
+  const deliveryReminder = [
+    userMessage("закажи продукты к восьми и напомни принять доставку"),
+    ...groceriesStart,
+    ...sendMessage("started", errandStatus),
+  ];
+
   it.each([
-    "И ещё сейчас поставлю приём доставки в календарь.",
-    "Сейчас поставлю напоминание принять доставку.",
+    ["И ещё сейчас поставлю приём доставки в календарь.", deliveryInCalendar],
+    ["Сейчас поставлю напоминание принять доставку.", deliveryReminder],
   ])(
-    "returns «%s», a step announced instead of taken, rather than dropping it",
-    (text) => {
-      expect(refusal(deliveryInCalendar, text)).toEqual({
+    "returns «%s», a step the person asked for announced instead of taken",
+    (text, history) => {
+      expect(refusal(history, text)).toEqual({
         rewrite: "announced",
       });
       expect(rewriteSendNotice("announced")).toContain(
         "Take the step now with its tool"
       );
       const entered = [
-        ...deliveryInCalendar,
+        ...history,
         ...sendMessage(
           "announced",
           text,
@@ -651,6 +757,42 @@ describe("sendRefusal on the benchmark of 25.09", () => {
       ).toBeUndefined();
     }
   );
+
+  const deferredSteps = [
+    "Поставлю доставку в календарь, как придёт подтверждение заказа.",
+    "Приём доставки поставлю в календарь после оплаты.",
+    "Как заказ оформится, поставлю доставку в календарь.",
+    "Потом добавлю приём доставки в календарь.",
+    "Поставлю напоминание, как придёт корзина.",
+  ];
+
+  it.each(deferredSteps)(
+    "never has «%s», a step put off until later, taken now",
+    (text) => {
+      const ordered = [
+        userMessage("закажи продукты к восьми"),
+        ...groceriesStart,
+        ...sendMessage("started", errandStatus),
+      ];
+
+      for (const history of [ordered, deliveryInCalendar, deliveryReminder]) {
+        const refused = refusal(history, text);
+        expect(refused && "skipped" in refused).toBe(true);
+      }
+    }
+  );
+
+  it("never has a step nobody asked for taken now", () => {
+    const ordered = [
+      userMessage("закажи продукты к восьми"),
+      ...groceriesStart,
+      ...sendMessage("started", errandStatus),
+    ];
+
+    expect(
+      refusal(ordered, "И ещё сейчас поставлю приём доставки в календарь.")
+    ).toEqual({ skipped: "stale" });
+  });
 
   it("still drops a promise that waits on the person (d18)", () => {
     expect(

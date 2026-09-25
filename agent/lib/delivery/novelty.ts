@@ -212,6 +212,12 @@ function sameWord(word: string, other: string) {
 }
 
 /**
+ * A stem every word starts with: as `distinct`, it has every name compared
+ * as written.
+ */
+const everyStem: readonly string[] = [""];
+
+/**
  * Whether `word` occurs among `words` in some grammatical form. A word on
  * one of `distinct` stems counts only as written: the person named two
  * people on it.
@@ -249,12 +255,38 @@ function wordsOf(messages: readonly SentMessage[]) {
   return new Set(messages.flatMap((sent) => sent.text.split(" ")));
 }
 
+function feminineOf(verb: string) {
+  if (verb.endsWith("ёл") || verb.endsWith("шел")) {
+    return `${verb.slice(0, -2)}ла`;
+  }
+  return verb.endsWith("л") ? `${verb}а` : undefined;
+}
+
+/**
+ * Whether two messages speak of a man and of a woman: one has a past-tense
+ * verb whose feminine form the other has — «подтвердил» and «подтвердила»,
+ * «пришёл» and «пришла». «Александр подтвердил» and «Александра
+ * подтвердила» are two people, though «Александра» is also a case of
+ * «Александр».
+ */
+function differInGender(message: SentMessage, other: SentMessage) {
+  const words = new Set(message.text.split(" "));
+  const otherWords = new Set(other.text.split(" "));
+  const pairs = (from: ReadonlySet<string>, to: ReadonlySet<string>) =>
+    [...from].some((word) => {
+      const feminine = feminineOf(word);
+      return feminine !== undefined && to.has(feminine);
+    });
+  return pairs(words, otherWords) || pairs(otherWords, words);
+}
+
 /**
  * Whether each name of one message also occurs as a word of the other. A
  * sentence opener that only changed case, «Готово! Напомню» after «Готово,
  * напомню», still occurs, and so does a name in another case («Артура» and
  * «Артур»: d15 sent near copies that differed only so); a different person
- * or place does not. On a stem in `distinct` a name counts only as written.
+ * or place does not. On a stem in `distinct` a name counts only as written,
+ * and so does every name when the two speak of a man and a woman.
  */
 export function namesShared(
   message: SentMessage,
@@ -262,7 +294,8 @@ export function namesShared(
   distinct: readonly string[] = []
 ) {
   const words = wordsOf([other]);
-  return message.names.every((name) => knownWord(name, words, distinct));
+  const stems = differInGender(message, other) ? everyStem : distinct;
+  return message.names.every((name) => knownWord(name, words, stems));
 }
 
 /** Two texts at least this similar say the same thing. */
@@ -352,6 +385,38 @@ export function announcesErrand(message: SentMessage) {
     busyWords.test(message.text) ||
     errandWords.test(message.text)
   );
+}
+
+/** A word and its shapes without an ending of one to three letters. */
+function stemKeys(word: string) {
+  const keys = [word];
+  for (let cut = 1; cut <= 3 && word.length - cut >= stemLength; cut += 1) {
+    keys.push(word.slice(0, -cut));
+  }
+  return keys;
+}
+
+/**
+ * `message` without what `found` carries: its numbers, and its words in any
+ * ending. A place, an address or a price a search found and the model then
+ * handed a browser run is news to the person, not something they know.
+ */
+export function withoutFound(
+  message: SentMessage,
+  found: SentMessage
+): SentMessage {
+  const foundKeys = new Set(found.text.split(" ").flatMap(stemKeys));
+  const unfound = (word: string) =>
+    !stemKeys(word).some((key) => foundKeys.has(key));
+  return {
+    ...message,
+    codes: message.codes.filter(
+      (code) => !found.codes.some((known) => sameFact(code, known))
+    ),
+    names: message.names.filter(unfound),
+    properNames: message.properNames.filter(unfound),
+    text: message.text.split(" ").filter(unfound).join(" "),
+  };
 }
 
 /**
@@ -525,11 +590,10 @@ export function addsNothingNew(
     return false;
   }
   const words = wordsOf(delivered);
-  if (
-    message.properNames.some(
-      (name) => !knownWord(name, words, options.distinct)
-    )
-  ) {
+  const distinct = delivered.some((sent) => differInGender(message, sent))
+    ? everyStem
+    : options.distinct;
+  if (message.properNames.some((name) => !knownWord(name, words, distinct))) {
     return false;
   }
   const questions = delivered.flatMap((sent) => sent.questions);
