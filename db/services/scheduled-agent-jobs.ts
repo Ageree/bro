@@ -823,6 +823,156 @@ export async function releaseScheduledAgentRun(
   return released?.status;
 }
 
+/** How a worker parked on a sign-in is told apart when the watchdog finds it. */
+const authorizationParkPrefix = "Worker is waiting for authorization:";
+
+/**
+ * A background worker asked for a sign-in: nobody in its session can give
+ * one, so the turn would stay parked with the run held as `running` for the
+ * rest of its lease. Ending the lease now hands the run to the watchdog on
+ * the next tick (`recoverStuckScheduledAgentRuns`).
+ */
+export async function parkScheduledAgentRunOnAuthorization(
+  runId: string,
+  leaseToken: string,
+  connection: string,
+  now = new Date()
+) {
+  const [run] = await db
+    .update(scheduledAgentRuns)
+    .set({
+      lastError: `${authorizationParkPrefix} ${connection}.`.slice(0, 2_000),
+      leaseExpiresAt: now,
+      updatedAt: now,
+    })
+    .where(
+      and(
+        eq(scheduledAgentRuns.id, runId),
+        eq(scheduledAgentRuns.status, "running"),
+        eq(scheduledAgentRuns.leaseToken, leaseToken)
+      )
+    )
+    .returning({ id: scheduledAgentRuns.id });
+  return run !== undefined;
+}
+
+/** A proactive run older than this is about news nobody needs any more. */
+const staleProactiveRunMs = 2 * 60 * 60_000;
+
+function stuckRunOutcome(lastError: string | null): ScheduledRunOutcome {
+  if (lastError?.startsWith(authorizationParkPrefix)) {
+    const connection = lastError
+      .slice(authorizationParkPrefix.length)
+      .replace(/\.$/u, "")
+      .trim();
+    return {
+      kind: "blocked",
+      summary: `The scheduled task stopped twice on a sign-in (${connection}) that a background run cannot give.`,
+      userActionNeeded:
+        "Reconnect that account in the chat or the workspace; the next run of the schedule will use it.",
+    };
+  }
+  return {
+    kind: "blocked",
+    summary:
+      "The scheduled task got stuck twice without finishing and was stopped.",
+    userActionNeeded: "Try the task again or update the schedule.",
+  };
+}
+
+/**
+ * The watchdog for workers that took their run and went quiet: the lease ran
+ * out while the session never finished — parked on a sign-in, or lost. Such
+ * a run stays `running` for good, and a proactive one would silence every
+ * later check (`queueProactiveRun` sees it busy). The first time it goes back
+ * to the queue and a fresh worker session takes it; the second time it ends
+ * as `dead_letter` with a blocked outcome, reported to the person, or closed
+ * quietly for a proactive check. A proactive run that went stale meanwhile
+ * is closed at once. A run holding an answer for its worker is the answer
+ * hand-off's to retry (`claimAnsweredScheduledAgentRuns`), and one that never
+ * got a session is the dispatcher's (`claimReadyScheduledAgentRuns`).
+ */
+export async function recoverStuckScheduledAgentRuns(options: {
+  readonly limit: number;
+  readonly now: Date;
+}) {
+  return db.transaction(async (transaction) => {
+    const stuck = await transaction
+      .select({
+        attempts: scheduledAgentRuns.attempts,
+        id: scheduledAgentRuns.id,
+        jobKind: scheduledAgentJobs.kind,
+        lastError: scheduledAgentRuns.lastError,
+        scheduledFor: scheduledAgentRuns.scheduledFor,
+      })
+      .from(scheduledAgentRuns)
+      .innerJoin(
+        scheduledAgentJobs,
+        eq(scheduledAgentRuns.jobId, scheduledAgentJobs.id)
+      )
+      .where(
+        and(
+          eq(scheduledAgentRuns.status, "running"),
+          isNotNull(scheduledAgentRuns.workerSessionId),
+          isNull(scheduledAgentRuns.inputResponses),
+          lte(scheduledAgentRuns.leaseExpiresAt, options.now)
+        )
+      )
+      .orderBy(asc(scheduledAgentRuns.leaseExpiresAt))
+      .limit(options.limit)
+      .for("update", { of: scheduledAgentRuns, skipLocked: true });
+    return Promise.all(
+      stuck.map(async (run) => {
+        const stale =
+          run.jobKind === "proactive" &&
+          run.scheduledFor.getTime() <
+            options.now.getTime() - staleProactiveRunMs;
+        const reason = run.lastError?.startsWith(authorizationParkPrefix)
+          ? "authorization"
+          : "lease_expired";
+        const action =
+          run.attempts < 2 && !stale
+            ? ("requeued" as const)
+            : ("closed" as const);
+        await transaction
+          .update(scheduledAgentRuns)
+          .set(
+            action === "requeued"
+              ? {
+                  deferredCompletionTurnId: null,
+                  lastError: `The worker got stuck (${reason}); the run went back to the queue.`,
+                  leaseExpiresAt: null,
+                  leaseToken: null,
+                  retryAt: options.now,
+                  status: "queued",
+                  updatedAt: options.now,
+                }
+              : {
+                  completedAt: options.now,
+                  deferredCompletionTurnId: null,
+                  leaseExpiresAt: null,
+                  leaseToken: null,
+                  outcome: stuckRunOutcome(run.lastError),
+                  reportSequence: sql`${scheduledAgentRuns.reportSequence} + 1`,
+                  reportStatus: exhaustedReportStatus(run.jobKind),
+                  retryAt: null,
+                  status: "dead_letter",
+                  updatedAt: options.now,
+                }
+          )
+          .where(eq(scheduledAgentRuns.id, run.id));
+        return {
+          action,
+          attempts: run.attempts,
+          jobKind: run.jobKind,
+          reason: stale ? ("stale" as const) : reason,
+          runId: run.id,
+        };
+      })
+    );
+  });
+}
+
 export async function claimScheduledReport(runId: string, now = new Date()) {
   const reportLeaseToken = randomUUID();
   const [claimed] = await db
@@ -922,6 +1072,11 @@ function sameConversation(
   );
 }
 
+/** A handover the worker marked as unable to wait for the person's morning. */
+function isTimeSensitive(outcome: ScheduledRunOutcome | undefined) {
+  return outcome?.kind === "result" && outcome.urgency === "time_sensitive";
+}
+
 export async function listRecoverableScheduledReports(
   now = new Date(),
   limit = 25
@@ -1000,6 +1155,9 @@ export async function listRecoverableScheduledReports(
         jobKind,
         runId: run.id,
         scope: { userId: createdByUserId, workspaceId },
+        timeSensitive: isTimeSensitive(
+          scheduledRunOutcomeSchema.safeParse(run.outcome).data
+        ),
       })
     );
   });

@@ -4,6 +4,7 @@ import type {
   completeScheduledAgentRun,
   deferScheduledAgentRunCompletion,
   markScheduledAgentRunStarted,
+  parkScheduledAgentRunOnAuthorization,
   releaseScheduledAgentRun,
   waitForScheduledAgentRunInput,
 } from "@db/services/scheduled-agent-jobs";
@@ -12,6 +13,7 @@ const services = vi.hoisted(() => ({
   complete: vi.fn<typeof completeScheduledAgentRun>(),
   deferCompletion: vi.fn<typeof deferScheduledAgentRunCompletion>(),
   markStarted: vi.fn<typeof markScheduledAgentRunStarted>(),
+  park: vi.fn<typeof parkScheduledAgentRunOnAuthorization>(),
   release: vi.fn<typeof releaseScheduledAgentRun>(),
   waitForInput: vi.fn<typeof waitForScheduledAgentRunInput>(),
 }));
@@ -20,6 +22,7 @@ vi.mock("@db/services/scheduled-agent-jobs", () => ({
   completeScheduledAgentRun: services.complete,
   deferScheduledAgentRunCompletion: services.deferCompletion,
   markScheduledAgentRunStarted: services.markStarted,
+  parkScheduledAgentRunOnAuthorization: services.park,
   releaseScheduledAgentRun: services.release,
   waitForScheduledAgentRunInput: services.waitForInput,
 }));
@@ -358,6 +361,102 @@ describe("scheduled run completion hook", () => {
       "turn-1",
       { kind: "result", summary: message, urgency: "normal" },
       new Date("2026-09-01T13:01:00.000Z")
+    );
+  });
+
+  it("records a handover marked urgent as one that may go out at night", async () => {
+    const completed = completionHook.events?.["message.completed"];
+    await completed?.(
+      {
+        data: {
+          finishReason: "stop",
+          message:
+            "**[срочно]**\nРейс SU 1234 в 07:05 из Внуково, выход B12; выйти примерно в 04:30.",
+          sequence: 0,
+          stepIndex: 0,
+          turnId: "turn-1",
+        },
+        meta: { at: "2026-09-01T13:01:00.000Z", id: "event-urgent" },
+        type: "message.completed",
+      },
+      context
+    );
+
+    expect(services.complete).toHaveBeenCalledWith(
+      runId,
+      leaseToken,
+      "turn-1",
+      {
+        kind: "result",
+        summary:
+          "Рейс SU 1234 в 07:05 из Внуково, выход B12; выйти примерно в 04:30.",
+        urgency: "time_sensitive",
+      },
+      new Date("2026-09-01T13:01:00.000Z")
+    );
+  });
+
+  it("hands a worker parked on a sign-in to the watchdog", async () => {
+    services.park.mockResolvedValue(true);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    await completionHook.events?.["authorization.required"]?.(
+      {
+        data: {
+          description: "Google",
+          name: "google-workspace",
+          sequence: 0,
+          stepIndex: 0,
+          turnId: "turn-1",
+        },
+        meta: { at: "2026-09-01T13:01:00.000Z", id: "event-auth" },
+        type: "authorization.required",
+      },
+      context
+    );
+
+    expect(services.park).toHaveBeenCalledExactlyOnceWith(
+      runId,
+      leaseToken,
+      "google-workspace",
+      new Date("2026-09-01T13:01:00.000Z")
+    );
+  });
+
+  it("gives Bro's own check half an hour, not a worker's six", async () => {
+    services.markStarted.mockResolvedValue(true);
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const proactiveContext = {
+      ...context,
+      session: {
+        ...context.session,
+        auth: {
+          ...context.session.auth,
+          initiator: {
+            ...context.session.auth.initiator,
+            attributes: {
+              ...context.session.auth.initiator.attributes,
+              scheduledRunKind: "proactive",
+            },
+          },
+        },
+      },
+    } satisfies HookContext;
+
+    await completionHook.events?.["turn.started"]?.(
+      {
+        data: { sequence: 0, turnId: "turn-1" },
+        meta: { at: "2026-09-01T13:00:00.000Z", id: "event-started" },
+        type: "turn.started",
+      },
+      proactiveContext
+    );
+
+    expect(services.markStarted).toHaveBeenCalledExactlyOnceWith(
+      runId,
+      leaseToken,
+      "worker-session",
+      30 * 60_000,
+      new Date("2026-09-01T13:00:00.000Z")
     );
   });
 

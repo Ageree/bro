@@ -13,10 +13,12 @@ import {
   finishScheduledAgentRunInput,
   listRecoverableScheduledReports,
   materializeDueScheduledAgentRuns,
+  recoverStuckScheduledAgentRuns,
   releaseScheduledAgentRun,
   restoreScheduledAgentRunInput,
   setScheduledRunSession,
 } from "@db/services/scheduled-agent-jobs";
+import { localRunLabel } from "@shared/schedules/timing";
 
 const workerStartupLimitMs = 5 * 60_000;
 
@@ -40,6 +42,12 @@ export default defineSchedule({
 
 async function dispatchDueWork(delivery: ReportDelivery) {
   const now = new Date();
+  // Stuck workers first: a run sent back to the queue is claimed below, and
+  // one that got stuck twice has its report picked up in the same tick.
+  const recovered = await recoverStuckScheduledAgentRuns({ limit: 25, now });
+  for (const run of recovered) {
+    console.warn("[scheduled-run] watchdog", run);
+  }
   const materializedRunIds = await materializeDueScheduledAgentRuns({
     limit: 25,
     now,
@@ -196,6 +204,7 @@ async function executeScheduledRun(
           userId: claim.job.createdByUserId,
           workspaceId: claim.job.workspaceId,
         },
+        timeSensitive: false,
       });
     }
   }
@@ -214,9 +223,15 @@ async function dispatchRecoverableReport(
 function scheduledRunPrompt(
   claim: Awaited<ReturnType<typeof claimReadyScheduledAgentRuns>>[number]
 ) {
+  // «Сегодня» of a morning digest is the person's day, not the UTC one.
+  const timing = claim.job.timing;
+  const local =
+    timing.kind === "calendar"
+      ? ` (on the person's clock: ${localRunLabel(claim.run.scheduledFor, timing.timezone)})`
+      : "";
   return [
     "Complete this user-owned scheduled task in an isolated background session.",
-    `Scheduled for: ${claim.run.scheduledFor.toISOString()}`,
+    `Scheduled for: ${claim.run.scheduledFor.toISOString()}${local}`,
     `Task: ${claim.job.prompt}`,
   ].join("\n\n");
 }

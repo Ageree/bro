@@ -11,7 +11,10 @@ import {
   scheduleScope,
   scheduleSummary,
 } from "@agent/lib/schedules/tools";
-import { scheduleTimingSchema } from "@shared/schedules/timing";
+import {
+  resolveScheduleTiming,
+  scheduleTimingInputSchema,
+} from "@shared/schedules/timing";
 import {
   createScheduledAgentJob,
   getScheduledAgentRunInput,
@@ -19,6 +22,7 @@ import {
   submitScheduledAgentRunAnswer,
   updateScheduledAgentJob,
 } from "@db/services/scheduled-agent-jobs";
+import { readWorkspaceTimeZone } from "@db/services/user-profile";
 
 /**
  * A schedule's prompt is later run by a worker as the person's own task,
@@ -36,34 +40,39 @@ export function scheduleApproval(
 export const createSchedule = defineTool({
   approval: ({ session }) => scheduleApproval({ session }),
   description:
-    "Create a one-time, fixed-interval, or timezone-aware calendar job for the person. Human recurrence is a calendar rule in the person's timezone, which stays on the same wall-clock time across daylight saving time and months of different length: «каждое 5-е число» is frequency monthly with dayOfMonth 5, «в последний день месяца» dayOfMonth \"last\", «каждое второе воскресенье» monthly_weekday with occurrence 2 and weekday 0, «по понедельникам и средам» weekly with weekdays [1, 3], «каждый будний день» weekdays, «каждый год 12 марта» yearly. Use interval only for a fixed count of minutes or hours, never for months or years. Summarize the exact requested work in prompt. A scheduled run can never act in the user's name or pay — no booking, appointment, application, job application, receipt or order: it only checks, searches and stages up to the final step, and its report asks the user to confirm in the conversation. So for «записывай, как только появится слот» schedule the check and say the booking itself waits for the user's confirmation.",
+    "Create a one-time, fixed-interval, or timezone-aware calendar job for the person. «Напомни в 9», «напомни завтра в 10 позвонить маме», «через час» are one reminder: kind once, with at as the person's wall-clock time YYYY-MM-DDTHH:MM counted from their current local time. Human recurrence is a calendar rule in the person's timezone, which stays on the same wall-clock time across daylight saving time and months of different length: «каждое 5-е число» is frequency monthly with dayOfMonth 5, «в последний день месяца» dayOfMonth \"last\", «каждое второе воскресенье» monthly_weekday with occurrence 2 and weekday 0, «по понедельникам и средам» weekly with weekdays [1, 3], «каждый будний день» weekdays, «каждый год 12 марта» yearly. weekdays is the working week: in a Russian time zone it skips public holidays and days off of the production calendar, so «на праздники не присылай» needs no change; for every Monday to Friday regardless use weekly with weekdays [1, 2, 3, 4, 5]. Leave timezone out: the person's own zone from their profile is used. Use interval only for a fixed count of minutes or hours, never for months or years. Write into prompt, once, the exact requested work and every input each run needs — addresses (home, work, where to go), the city for the weather, which mailbox, calendar or site to look at, names and thresholds — taken from the conversation, Personal Info and memory: a run cannot see this conversation and must never ask for them again. An input found nowhere does not hold the schedule up: create it, ask for that input in the same reply, and put the answer into prompt with schedules-update. The result's nextRunLocal is the first run on the person's clock: name exactly that day and time in the reply. A scheduled run can never act in the user's name or pay — no booking, appointment, application, job application, receipt or order: it only checks, searches and stages up to the final step, and its report asks the user to confirm in the conversation. So for «записывай, как только появится слот» schedule the check and say the booking itself waits for the user's confirmation.",
   inputSchema: z.object({
     missedRunPolicy: z.enum(["run_latest", "catch_up"]).default("run_latest"),
     prompt: z.string().trim().min(1).max(8_000),
-    timing: scheduleTimingSchema,
+    timing: scheduleTimingInputSchema,
   }),
   async execute(input, context) {
     const owner = scheduleOwner(context);
+    const timeZone = await readWorkspaceTimeZone(owner.scope);
     return scheduleSummary(
       await createScheduledAgentJob(owner.scope, {
         ...owner.conversation,
         missedRunPolicy: input.missedRunPolicy,
         prompt: input.prompt,
         replyAnchorMessageId: scheduleReplyAnchor(context),
-        timing: input.timing,
-      })
+        timing: resolveScheduleTiming(input.timing, timeZone),
+      }),
+      timeZone
     );
   },
 });
 
 export const listSchedules = defineTool({
   description:
-    "List all of the authenticated user's one-time and recurring jobs, whichever chat or channel each was made in. Use this before changing a schedule when the target is ambiguous.",
+    "List all of the authenticated user's one-time and recurring jobs, whichever chat or channel each was made in. Use this before changing a schedule when the target is ambiguous. nextRunLocal is each next run on the person's clock.",
   inputSchema: z.object({}),
   async execute(_input, context) {
-    return (await listScheduledAgentJobs(scheduleScope(context))).map(
-      scheduleListSummary
-    );
+    const scope = scheduleScope(context);
+    const [jobs, timeZone] = await Promise.all([
+      listScheduledAgentJobs(scope),
+      readWorkspaceTimeZone(scope),
+    ]);
+    return jobs.map((job) => scheduleListSummary(job, timeZone));
   },
 });
 
@@ -72,7 +81,7 @@ const updateScheduleInputSchema = z
     id: z.uuid(),
     prompt: z.string().trim().min(1).max(8_000).optional(),
     status: z.enum(["active", "paused", "deleted"]).optional(),
-    timing: scheduleTimingSchema.optional(),
+    timing: scheduleTimingInputSchema.optional(),
   })
   .refine(
     ({ prompt, status, timing }) =>
@@ -83,16 +92,17 @@ const updateScheduleInputSchema = z
 export const updateSchedule = defineTool({
   approval: ({ session }) => scheduleApproval({ session }),
   description:
-    "Update, pause, resume, or delete one of the authenticated user's scheduled jobs, whichever chat it was made in. Set status paused or active to pause or resume it. List schedules first when the target is ambiguous.",
+    "Update, pause, resume, or delete one of the authenticated user's scheduled jobs, whichever chat it was made in. Set status paused or active to pause or resume it; «сдвинь на 7:30» is a new timing with the same rule and the new localTime. List schedules first when the target is ambiguous. The result's nextRunLocal is the next run on the person's clock: name exactly that in the reply.",
   inputSchema: updateScheduleInputSchema,
-  async execute({ id, ...patch }, context) {
-    const job = await updateScheduledAgentJob(
-      scheduleScope(context),
-      id,
-      patch
-    );
+  async execute({ id, timing, ...patch }, context) {
+    const scope = scheduleScope(context);
+    const timeZone = await readWorkspaceTimeZone(scope);
+    const job = await updateScheduledAgentJob(scope, id, {
+      ...patch,
+      timing: timing && resolveScheduleTiming(timing, timeZone),
+    });
     if (!job) throw new Error("Schedule not found.");
-    return scheduleSummary(job);
+    return scheduleSummary(job, timeZone);
   },
 });
 

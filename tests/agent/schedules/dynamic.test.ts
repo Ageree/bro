@@ -10,6 +10,7 @@ import type {
   finishScheduledAgentRunInput,
   listRecoverableScheduledReports,
   materializeDueScheduledAgentRuns,
+  recoverStuckScheduledAgentRuns,
   releaseScheduledAgentRun,
   releaseScheduledReport,
   restoreScheduledAgentRunInput,
@@ -25,6 +26,7 @@ const services = vi.hoisted(() => ({
   restoreInput: vi.fn<typeof restoreScheduledAgentRunInput>(),
   listReports: vi.fn<typeof listRecoverableScheduledReports>(),
   materialize: vi.fn<typeof materializeDueScheduledAgentRuns>(),
+  recoverStuck: vi.fn<typeof recoverStuckScheduledAgentRuns>(),
   releaseReport: vi.fn<typeof releaseScheduledReport>(),
   releaseRun: vi.fn<typeof releaseScheduledAgentRun>(),
   setSession: vi.fn<typeof setScheduledRunSession>(),
@@ -39,6 +41,7 @@ vi.mock("@db/services/scheduled-agent-jobs", () => ({
   restoreScheduledAgentRunInput: services.restoreInput,
   listRecoverableScheduledReports: services.listReports,
   materializeDueScheduledAgentRuns: services.materialize,
+  recoverStuckScheduledAgentRuns: services.recoverStuck,
   releaseScheduledAgentRun: services.releaseRun,
   releaseScheduledReport: services.releaseReport,
   setScheduledRunSession: services.setSession,
@@ -65,6 +68,7 @@ describe("dynamic schedule dispatch", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     services.materialize.mockResolvedValue([]);
+    services.recoverStuck.mockResolvedValue([]);
     services.listReports.mockResolvedValue([]);
     services.claimRuns.mockResolvedValue([]);
     services.claimAnswers.mockResolvedValue([]);
@@ -88,6 +92,10 @@ describe("dynamic schedule dispatch", () => {
       runId: claim.run.id,
     });
     expect(send.mock.calls[0]?.[0]).toContain("Task: Watch the price.");
+    // The worker's «сегодня» is the person's day.
+    expect(send.mock.calls[0]?.[0]).toContain(
+      "on the person's clock: 2026-09-02 09:00, Wednesday (America/New_York)"
+    );
     expect(send.mock.calls[0]?.[1].auth?.authenticator).toBe(
       "scheduled-worker"
     );
@@ -99,6 +107,26 @@ describe("dynamic schedule dispatch", () => {
     expect(services.claimRuns).toHaveBeenCalledWith(
       expect.objectContaining({ leaseForMs: 300_000 })
     );
+  });
+
+  it("sweeps stuck workers before it claims work, one log line each", async () => {
+    const stuck = {
+      action: "requeued" as const,
+      attempts: 1,
+      jobKind: "task" as const,
+      reason: "authorization" as const,
+      runId: "00000000-0000-4000-8000-000000000042",
+    };
+    services.recoverStuck.mockResolvedValue([stuck]);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    await runSchedule(vi.fn<ScheduleToFn>());
+
+    expect(services.recoverStuck).toHaveBeenCalledOnce();
+    expect(
+      services.recoverStuck.mock.invocationCallOrder[0] ?? Infinity
+    ).toBeLessThan(services.claimRuns.mock.invocationCallOrder[0] ?? -Infinity);
+    expect(warn).toHaveBeenCalledWith("[scheduled-run] watchdog", stuck);
   });
 
   it("requests a clean restart for a reclaimed interrupted worker", async () => {
@@ -126,6 +154,7 @@ describe("dynamic schedule dispatch", () => {
         jobKind: "task",
         runId: report.run.id,
         scope: { userId: "user-1", workspaceId: "workspace-1" },
+        timeSensitive: false,
       },
     ]);
     services.claimReports.mockResolvedValue(report);
@@ -154,6 +183,7 @@ describe("dynamic schedule dispatch", () => {
         jobKind: "task",
         runId: report.run.id,
         scope: { userId: "user-1", workspaceId: "workspace-1" },
+        timeSensitive: false,
       },
     ]);
     services.claimReports.mockResolvedValue(report);

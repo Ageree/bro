@@ -69,8 +69,14 @@ describe("local time context", () => {
     } satisfies DynamicResolveContext;
 
     expect(await resolve({}, anonymous)).toBeNull();
-    expect(await resolve({}, dynamicContext("scheduled-result"))).toBeNull();
     expect(mocks.readWorkspaceTimeZone).not.toHaveBeenCalled();
+  });
+
+  it("gives a report turn the person's clock, so it names times as they live them", async () => {
+    const selected = await resolve({}, dynamicContext("scheduled-result"));
+
+    expect(selected?.content).toContain("Asia/Vladivostok");
+    expect(selected?.content).not.toContain("personal_info__update");
   });
 });
 

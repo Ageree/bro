@@ -211,6 +211,7 @@ describe("scheduled agent jobs", () => {
         jobKind: "task",
         runId: claim.run.id,
         scope: alice,
+        timeSensitive: false,
       },
     ]);
     const retriedQuestionReport = await jobs.claimScheduledReport(
@@ -705,6 +706,142 @@ describe("handing an answer to a waiting worker", { timeout: 30_000 }, () => {
     if (!submitted) throw new Error("Expected the answer to be stored.");
     return { id: claim.run.id, leaseToken };
   }
+});
+
+/** A run taken by a worker that started its turn under a six-hour lease. */
+async function startedRun(
+  jobs: Awaited<ReturnType<typeof openDatabase>>["jobs"],
+  at: Date
+) {
+  const [claim] = await jobs.claimReadyScheduledAgentRuns({
+    leaseForMs: 5 * 60_000,
+    limit: 25,
+    now: at,
+  });
+  const leaseToken = claim?.run.leaseToken;
+  if (!claim || !leaseToken) throw new Error("Expected one leased run.");
+  await jobs.setScheduledRunSession(claim.run.id, leaseToken, "worker");
+  await jobs.markScheduledAgentRunStarted(
+    claim.run.id,
+    leaseToken,
+    "worker",
+    21_600_000,
+    at
+  );
+  return { id: claim.run.id, leaseToken };
+}
+
+describe("the watchdog for stuck workers", { timeout: 30_000 }, () => {
+  const alice = { userId: "alice", workspaceId: "workspace:alice" };
+  const dueAt = new Date("2026-09-01T05:00:00.000Z");
+
+  it("sends a worker parked on a sign-in back once, then tells the person", async () => {
+    const { db, jobs } = await openDatabase();
+    const scope = await import("@db/services/scope");
+    await scope.ensureScope(alice);
+    await jobs.createScheduledAgentJob(
+      alice,
+      {
+        conversationChannel: "telegram",
+        conversationId: "100::",
+        missedRunPolicy: "run_latest",
+        prompt: "Утренняя сводка.",
+        timing: { at: dueAt.toISOString(), kind: "once" },
+      },
+      new Date("2026-08-31T12:00:00.000Z")
+    );
+    await jobs.materializeDueScheduledAgentRuns({ limit: 25, now: dueAt });
+    const first = await startedRun(jobs, dueAt);
+
+    // Nothing is stuck while the lease holds.
+    expect(
+      await jobs.recoverStuckScheduledAgentRuns({ limit: 25, now: dueAt })
+    ).toEqual([]);
+    const parkedAt = new Date("2026-09-01T05:01:00.000Z");
+    expect(
+      await jobs.parkScheduledAgentRunOnAuthorization(
+        first.id,
+        first.leaseToken,
+        "google-workspace",
+        parkedAt
+      )
+    ).toBe(true);
+    expect(
+      await jobs.recoverStuckScheduledAgentRuns({ limit: 25, now: parkedAt })
+    ).toEqual([
+      {
+        action: "requeued",
+        attempts: 1,
+        jobKind: "task",
+        reason: "authorization",
+        runId: first.id,
+      },
+    ]);
+
+    // A fresh worker takes it and parks again: the second time it ends,
+    // and the report says which sign-in is missing.
+    const second = await startedRun(jobs, parkedAt);
+    expect(second.id).toBe(first.id);
+    const parkedAgainAt = new Date("2026-09-01T05:02:00.000Z");
+    await jobs.parkScheduledAgentRunOnAuthorization(
+      second.id,
+      second.leaseToken,
+      "google-workspace",
+      parkedAgainAt
+    );
+    expect(
+      await jobs.recoverStuckScheduledAgentRuns({
+        limit: 25,
+        now: parkedAgainAt,
+      })
+    ).toMatchObject([{ action: "closed", reason: "authorization" }]);
+    const closed = await db.query.scheduledAgentRuns.findFirst({
+      where: (runs, { eq }) => eq(runs.id, first.id),
+    });
+    expect(closed).toMatchObject({
+      outcome: { kind: "blocked" },
+      reportStatus: "pending",
+      status: "dead_letter",
+    });
+    expect(JSON.stringify(closed?.outcome)).toContain("google-workspace");
+    expect(
+      await jobs.listRecoverableScheduledReports(parkedAgainAt)
+    ).toMatchObject([{ runId: first.id }]);
+  });
+
+  it("frees the lease of a worker that went quiet and leaves a live one", async () => {
+    const { jobs } = await openDatabase();
+    const scope = await import("@db/services/scope");
+    await scope.ensureScope(alice);
+    await jobs.createScheduledAgentJob(
+      alice,
+      {
+        conversationChannel: "telegram",
+        conversationId: "100::",
+        missedRunPolicy: "run_latest",
+        prompt: "Утренняя сводка.",
+        timing: { at: dueAt.toISOString(), kind: "once" },
+      },
+      new Date("2026-08-31T12:00:00.000Z")
+    );
+    await jobs.materializeDueScheduledAgentRuns({ limit: 25, now: dueAt });
+    const run = await startedRun(jobs, dueAt);
+
+    expect(
+      await jobs.recoverStuckScheduledAgentRuns({
+        limit: 25,
+        now: new Date("2026-09-01T10:59:00.000Z"),
+      })
+    ).toEqual([]);
+    expect(
+      await jobs.recoverStuckScheduledAgentRuns({
+        limit: 25,
+        now: new Date("2026-09-01T11:00:00.000Z"),
+      })
+    ).toMatchObject([
+      { action: "requeued", reason: "lease_expired", runId: run.id },
+    ]);
+  });
 });
 
 describe("following the person's timezone", { timeout: 30_000 }, () => {
