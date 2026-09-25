@@ -174,10 +174,33 @@ describe("web_search tool selection", () => {
       "купе Москва Питер пятница",
       "отель рядом с Красной площадью 3 октября",
       "авиабилеты Москва Сочи 12.10",
+      // A train or a flight outweighs the dinner asked for with it (d13).
+      "найди мне поезд до казани на следующие выходные и где там поужинать в субботу",
+      "поезд Москва Питер 3 октября вагон-ресторан",
+      // A stay's own dinner, rating or landmark is still a stay.
+      "отель в Сочи с завтраком и ужином на 3–10 октября",
+      "отель в Казани 3–5 октября рейтинг от 8",
+      "отель рядом с Большим театром 3-5 октября",
+      "отель у метро Театральная 3 октября",
+      // Days and berths said as adjectives.
+      "билеты на завтрашний рейс Москва Сочи",
+      "поезд Москва Казань сегодняшний вечер",
+      "купейный вагон Москва Казань 3 октября",
     ]) {
       // oxlint-disable-next-line eslint/no-await-in-loop -- One query at a time keeps the failure readable.
       expect(await search(query)).toContain("start browser_task now");
     }
+    // A search held to a seller of tickets or rooms is one whatever else it
+    // says.
+    expect(
+      await search(
+        "поезд до Казани на следующие выходные и где поужинать в субботу",
+        ["rzd.ru", "tutu.ru"]
+      )
+    ).toContain("start browser_task now");
+    expect(
+      await search("отель Сочи полупансион ужин 3-10 октября", ["ostrovok.ru"])
+    ).toContain("start browser_task now");
 
     // A dinner, a timetable in general and a flight's status are not it,
     // and neither is a pick of a place or a master with a hotel as a
@@ -198,6 +221,9 @@ describe("web_search tool selection", () => {
       "книжные полки наличие в магазине",
       "отели Казани с рейтингом 4.5 и выше",
       "restaurants near the hotel Metropol on Saturday",
+      "шкаф купе сборка завтра",
+      "билеты в театр на субботу",
+      "отель с завтраком",
     ]) {
       // oxlint-disable-next-line eslint/no-await-in-loop -- One query at a time keeps the failure readable.
       expect(await search(query)).not.toContain("browser_task");

@@ -474,8 +474,13 @@ describe("route_time", () => {
     expect(result.routes?.[0]?.error).toContain("not on the map");
     // The two left for another call stay candidates; the two the map does
     // not know leave one to find.
-    expect(result.pick).toContain("2 of them went unmeasured");
-    expect(result.pick).toContain("1 more is needed");
+    expect(result.pick).toContain(
+      "2 of them went unmeasured because of a one-off map error or this call's lookup limit, not because of where they are: keep them as candidates and measure them again in one more call"
+    );
+    // The map works: the one to find is measured as usual.
+    expect(result.pick).toContain(
+      "1 more is needed: before you reply, find other candidates near the start that fit the rest of the conditions (web_search with sites yandex.ru/maps or 2gis.ru) and measure them here in one more call"
+    );
   });
 
   it("answers a place and a route it already measured without asking again", async () => {
@@ -785,13 +790,42 @@ describe("route_time", () => {
     // The place stays a candidate, and the two a pick still lacks are not
     // to be measured against a router that refuses.
     expect(result.pick).toContain(
-      "1 of them went unmeasured because the map service refused or this call ran out of lookups: keep it as a candidate with the walk named as not checked"
+      "1 of them went unmeasured because the map service is refusing now: keep it as a candidate with the walk named as not checked"
     );
     expect(result.pick).toContain("2 more are needed");
     expect(result.pick).toContain(
       "while the map service refuses give their walk as not checked instead of measuring them"
     );
     expect(result.pick).not.toContain("measure them here in one more call");
+  });
+
+  it("measures as usual after a one-off map error", async () => {
+    fetchMock.mockImplementation(async (url) => {
+      if (url.host !== "nominatim.openstreetmap.org") return routerAnswer(url);
+      return url.searchParams.get("q") === "Покровский бульвар 8 с1, Москва"
+        ? new Response("oops", { status: 500 })
+        : geocoderAnswer(url);
+    });
+
+    const result = await measure({
+      from: "отель Метрополь, Москва",
+      mode: "walking",
+      // 21 and 10 minutes away, and one lookup that failed once.
+      to: [
+        "метро Чистые пруды, Москва",
+        "Hedonist, Покровский бульвар, 8с1, Москва",
+        "Чистопрудный бульвар 12, Москва",
+      ],
+    });
+
+    expect(result.routes?.[1]?.error).toContain("answered HTTP 500");
+    expect(result.pick).toContain(
+      "1 of them went unmeasured because of a one-off map error or this call's lookup limit"
+    );
+    expect(result.pick).toContain(
+      "1 more is needed: before you reply, find other candidates near the start that fit the rest of the conditions (web_search with sites yandex.ru/maps or 2gis.ru) and measure them here in one more call"
+    );
+    expect(result.pick).not.toContain("instead of measuring them");
   });
 
   it("keeps the places a refusing geocoder left unmeasured as candidates", async () => {
@@ -828,7 +862,7 @@ describe("route_time", () => {
       "0 of 3 places are within a 15-minute walk and 3 not measured"
     );
     expect(refused.pick).toContain(
-      "3 of them went unmeasured because the map service refused"
+      "3 of them went unmeasured because the map service is refusing now"
     );
     expect(refused.pick).not.toContain("more are needed");
     expect(refused.pick).not.toContain("find other candidates");
