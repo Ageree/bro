@@ -66,21 +66,33 @@ export async function readComposioTool(slug: string) {
 const writeHints = new Set(["createHint", "destructiveHint", "updateHint"]);
 
 /**
- * Verbs in a tool's slug that change something. A tool tagged read-only
- * whose name says otherwise is still asked about.
+ * Verbs a tool that only reads is named by, as a word of its slug in any
+ * inflection Composio uses (`GET`, `LISTS`, `SEARCHES`).
  */
-const writeVerb =
-  /(?:^|_)(?:ADD|APPEND|ARCHIVE|ASSIGN|CANCEL|CLEAR|CLOSE|COMMENT|COMPLETE|COPY|CREATE|DELETE|DRAFT|EDIT|FORWARD|IMPORT|INSERT|INVITE|MERGE|MODIFY|MOVE|PATCH|PIN|POST|PUBLISH|REACT|REMOVE|RENAME|REOPEN|REPLY|SCHEDULE|SEND|SET|SHARE|STAR|TRASH|UNPIN|UNSTAR|UPDATE|UPLOAD|WRITE)(?:_|$)/u;
+const readVerb =
+  /(?:^|_)(?:COUNT|DESCRIBE|DOWNLOAD|FETCH|FIND|GET|LIST|LOOKUP|QUERY|READ|RETRIEVE|SEARCH|VIEW)(?:E?S)?(?:_|$)/u;
 
 /**
- * Whether a tool only reads: tagged `readOnlyHint`, with no hint of a change
- * and no changing verb in its name. Anything else counts as a write.
+ * Verbs in a tool's slug that change something, inflected too
+ * (`DELETES_A_MESSAGE`, `UPDATED`). A tool named by a read verb and one of
+ * these (`FIND_AND_REPLACE`) is still asked about.
+ */
+const writeVerb =
+  /(?:^|_)(?:ACCEPT|ADD|APPEND|APPROVE|ARCHIVE|ASSIGN|BAN|BLOCK|CANCEL|CLEAR|CLOSE|COMMENT|COMPLETE|CONVERT|COPY|COPIE|CREATE|DECLINE|DELETE|DISABLE|DRAFT|DUPLICATE|EDIT|ENABLE|EXECUTE|FORWARD|GENERATE|IMPORT|INSERT|INVITE|JOIN|KICK|LEAVE|LOCK|MARK|MERGE|MODIFY|MOVE|PATCH|PIN|POST|PUBLISH|PUT|REACT|REJECT|REMOVE|RENAME|REOPEN|REPLACE|REPLY|RERUN|RESET|RESTORE|RUN|SAVE|SCHEDULE|SEND|SET|SHARE|STAR|START|STOP|SUBMIT|SUBSCRIBE|TRANSFER|TRASH|TRIGGER|UNARCHIVE|UNBLOCK|UNLOCK|UNPIN|UNSTAR|UNSUBSCRIBE|UPDATE|UPLOAD|UPSERT|WRITE)(?:E?S|E?D|ING)?(?:_|$)/u;
+
+/**
+ * Whether a tool only reads, failing closed: it has to be tagged
+ * `readOnlyHint` with no hint of a change, and its name has to say it reads
+ * (`GET_`, `LIST_`, `SEARCH_`…) with no changing verb in it. Composio's tags
+ * are sometimes wrong, and a name like `SHEET_FROM_JSON` or `UPSERT_ROWS`
+ * says nothing a reader could trust, so everything else counts as a write.
  */
 export function composioToolReadsOnly(tool: ComposioTool) {
   const action = tool.slug.slice(tool.toolkit.slug.length + 1);
   return (
     tool.tags.includes("readOnlyHint") &&
     !tool.tags.some((tag) => writeHints.has(tag)) &&
+    readVerb.test(action) &&
     !writeVerb.test(action)
   );
 }
