@@ -294,6 +294,9 @@ describe("Google requests through Composio", () => {
   it("moves a Calendar event in place and tells its attendees", async () => {
     composio.proxy.mockImplementation(
       answer({
+        [`GET ${calendarApi}/calendars/primary/events/event-1`]: {
+          data: { id: "event-1", summary: "Созвон с командой" },
+        },
         [`PATCH ${calendarApi}/calendars/primary/events/event-1`]: {
           data: { id: "event-1" },
         },
@@ -305,6 +308,7 @@ describe("Google requests through Composio", () => {
         calendarId: "primary",
         end: "2026-09-25T11:00:00+03:00",
         eventId: "event-1",
+        eventTitle: "Созвон",
         start: "2026-09-25T10:00:00+03:00",
         timezone: "Europe/Moscow",
       })
@@ -339,10 +343,17 @@ describe("Google requests through Composio", () => {
           },
           { data: { error: { message: "Forbidden" } }, status: 403 },
         ],
+        [`GET ${calendarApi}/calendars/primary/events/event-1`]: {
+          data: { id: "event-1", summary: "Тестовое событие" },
+        },
       })
     );
     const ctx = composioToolContext("ca_google");
-    const input = { calendarId: "primary", eventId: "event-1" };
+    const input = {
+      calendarId: "primary",
+      eventId: "event-1",
+      eventTitle: "Тестовое событие",
+    };
 
     await expect(deleteCalendarEvent(ctx, input)).resolves.toEqual({
       alreadyDeleted: false,
