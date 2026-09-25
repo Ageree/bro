@@ -48,14 +48,16 @@ const kindOfPlace =
   /^(?:(?:отель|гостиница|хостел|ресторан|кафе|кофейня|бар|паб|бистро|пиццерия|столовая|станция|метро|м\.|hotel|hostel|restaurant|cafe|café|coffee shop|bar|pub|bistro|station|metro|subway|the)\s+)+/iu;
 
 /**
- * «12 корп. 2», «11 стр 1», «д. 5» as OpenStreetMap writes Russian houses:
+ * «12 корп. 2», «11, стр 1», «д. 5» as OpenStreetMap writes Russian houses:
  * «12 к2», «11 с1», «5». The eval on 25.09 asked for «Чистопрудный бульвар
- * 12 корп 2», which the map does not know, while «12 к2» it does.
+ * 12, корп 2», which the map does not know, while «12 к2» it does.
  */
 function withHouseShorthand(query: string) {
   return query
-    .replaceAll(/(\d+)\s*(?:корпус|корп\.?|к\.?)\s*(\d+)/giu, "$1 к$2")
-    .replaceAll(/(\d+)\s*(?:строение|стр\.?|с\.?)\s*(\d+)/giu, "$1 с$2")
+    .replaceAll(/(\d+)\s*(?:,\s*)?(?:корпус|корп\.?)\s*(\d+)/giu, "$1 к$2")
+    .replaceAll(/(\d+)\s*(?:,\s*)?(?:строение|стр\.?)\s*(\d+)/giu, "$1 с$2")
+    .replaceAll(/(\d+)\s*к\.?\s*(\d+)/giu, "$1 к$2")
+    .replaceAll(/(\d+)\s*с\.?\s*(\d+)/giu, "$1 с$2")
     .replaceAll(/(?<!\p{L})(?:дом|д\.)\s*(?=\d)/giu, "");
 }
 
@@ -67,9 +69,26 @@ function askedNumbers(query: string): readonly string[] {
   return query.match(/(?<!\p{L})\d+(?![-‐]\p{L})/gu) ?? [];
 }
 
-/** The map found the street but not the house the query names. */
-function missesHouse(query: string, place: MapPlace) {
-  return place.streetOnly && askedNumbers(query).length > 0;
+/**
+ * Why the place the map matched is not the house the query names, or
+ * nothing when it is. On 25.09 «Большая Никольская 12 стр 2» came back as
+ * the street (18 minutes away instead of 8), «Покровка 17» as «Покровка
+ * 50/2 с17» and «Тверская 7» as «Тверская 12 с7»: a time to such a point is
+ * wrong, so it is not given.
+ */
+function missedHouse(query: string, place: MapPlace) {
+  const asked = askedNumbers(query);
+  if (asked.length === 0) return undefined;
+  if (place.streetOnly) {
+    return `the map knows only the street «${place.label}», not this house`;
+  }
+  const matched = /^\d+/u.exec(place.houseNumber ?? "")?.[0];
+  if (matched === undefined || asked.includes(matched)) return undefined;
+  return `the map matched another building, «${place.label}»`;
+}
+
+function missedHouseNote(reason: string) {
+  return `${reason}, and a time to it would be wrong: call again with the place's name and city, or «lat, lon»`;
 }
 
 /**
@@ -99,48 +118,23 @@ function queryVariants(query: string) {
 }
 
 /**
- * Finds a place by the first variant of the query the map knows. A match on
- * the street alone is kept only when no variant finds the house: in the
- * eval «Большая Никольская 12 стр 2» came back as the street, 18 minutes
- * away instead of 8.
+ * Finds a place by the first variant of the query the map knows. A match
+ * that misses the house is kept only when no variant finds the house.
  */
 async function locate(
   query: string,
   near: MapPlace | undefined,
   signal: AbortSignal
 ) {
-  let streetMatch: MapPlace | undefined;
+  let houseMissed: MapPlace | undefined;
   /* oxlint-disable eslint/no-await-in-loop -- Each variant is asked only when the one before found nothing, a second apart. */
   for (const variant of queryVariants(query)) {
     const place = await findPlace(variant, near, signal);
-    if (place && !missesHouse(query, place)) return place;
-    streetMatch ??= place;
+    if (place && missedHouse(query, place) === undefined) return place;
+    houseMissed ??= place;
   }
   /* oxlint-enable eslint/no-await-in-loop */
-  return streetMatch;
-}
-
-/**
- * Whether the map matched another building of the street: «Тверская улица
- * 7» came back as «Тверская улица 12 с7» in the live probe. The route is
- * then measured to that building, and the reply must not pass it off as the
- * address asked for.
- */
-function otherBuilding(query: string, place: MapPlace) {
-  const matched = /^\d+/u.exec(place.houseNumber ?? "")?.[0];
-  if (matched === undefined) return false;
-  const asked = askedNumbers(query);
-  return asked.length > 0 && !asked.includes(matched);
-}
-
-function streetOnlyNote(place: MapPlace) {
-  return `the map knows only the street «${place.label}», not this house, and a time to some point of the street would be wrong: call again with the place's name and city, or «lat, lon»`;
-}
-
-function buildingWarning(query: string, place: MapPlace) {
-  return otherBuilding(query, place)
-    ? `the map matched «${place.label}», not the building asked for: say the time is to that building, or ask for a nearby landmark`
-    : undefined;
+  return houseMissed;
 }
 
 async function measure(
@@ -165,9 +159,10 @@ async function measure(
       status: "not_found" as const,
     };
   }
-  if (missesHouse(input.from, from)) {
+  const startMissed = missedHouse(input.from, from);
+  if (startMissed !== undefined) {
     return {
-      note: `For the start, ${streetOnlyNote(from)}.`,
+      note: `For the start «${input.from}», ${missedHouseNote(startMissed)}.`,
       status: "not_found" as const,
     };
   }
@@ -188,7 +183,9 @@ async function measure(
   }
   /* oxlint-enable eslint/no-await-in-loop */
   const found = places.flatMap((entry) =>
-    entry.place && !missesHouse(entry.query, entry.place) ? [entry.place] : []
+    entry.place && missedHouse(entry.query, entry.place) === undefined
+      ? [entry.place]
+      : []
   );
 
   let measured: Awaited<ReturnType<typeof measureRoutes>> = [];
@@ -212,8 +209,9 @@ async function measure(
         to: entry.query,
       };
     }
-    if (missesHouse(entry.query, place)) {
-      return { error: streetOnlyNote(place), to: entry.query };
+    const missed = missedHouse(entry.query, place);
+    if (missed !== undefined) {
+      return { error: missedHouseNote(missed), to: entry.query };
     }
     const route = measured[foundIndex];
     foundIndex += 1;
@@ -242,14 +240,12 @@ async function measure(
       minutes: route.minutes,
       place: place.label,
       to: entry.query,
-      warning: buildingWarning(entry.query, place),
     };
   });
 
   return {
     basis,
     from: from.label,
-    fromWarning: buildingWarning(input.from, from),
     mode: input.mode,
     routes,
     source,

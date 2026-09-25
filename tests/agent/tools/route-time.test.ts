@@ -193,7 +193,6 @@ function routerAnswer(url: URL) {
 const outputSchema = z.object({
   basis: z.string().optional(),
   from: z.string().optional(),
-  fromWarning: z.string().optional(),
   note: z.string().optional(),
   routes: z
     .array(
@@ -205,7 +204,6 @@ const outputSchema = z.object({
         place: z.string().optional(),
         straightKm: z.number().optional(),
         to: z.string(),
-        warning: z.string().optional(),
       })
     )
     .optional(),
@@ -370,15 +368,24 @@ describe("route_time", () => {
     const result = await measure({
       from: "отель Метрополь, Москва",
       mode: "walking",
-      to: ["Чистопрудный бульвар д. 12 корп. 2, Москва"],
+      to: [
+        "Чистопрудный бульвар д. 12 корп. 2, Москва",
+        "Чистопрудный бульвар 12, корп 2, Москва",
+      ],
     });
 
-    expect(result.routes?.[0]).toMatchObject({ km: 1.6, minutes: 21 });
+    expect(result.routes?.map((route) => route.place)).toEqual([
+      "Чистопрудный бульвар 12 к2, Москва",
+      "Чистопрудный бульвар 12 к2, Москва",
+    ]);
+    expect(result.routes?.every((route) => route.minutes !== undefined)).toBe(
+      true
+    );
     expect(
       requestsTo("nominatim.openstreetmap.org")
         .map((url) => url.searchParams.get("q"))
-        .at(-1)
-    ).toBe("Чистопрудный бульвар 12 к2, Москва");
+        .slice(1)
+    ).toEqual(["Чистопрудный бульвар 12 к2, Москва"]);
   });
 
   it("gives no time to a house the map knows only as its street", async () => {
@@ -424,19 +431,28 @@ describe("route_time", () => {
     ).toEqual(["гостиница «Метрополь», Москва", "Метрополь, Москва"]);
   });
 
-  it("warns when the map matched another building of the street", async () => {
-    const result = await measure({
+  it("gives no time to another building the map matched", async () => {
+    // Live on 25.09 «Тверская улица 7» came back as «Тверская улица 12 с7».
+    const fromOther = await measure({
       from: "Тверская улица 7, Москва",
       mode: "driving",
-      to: ["метро Чистые пруды, Москва", "Чистопрудный бульвар 12, Москва"],
+      to: ["метро Чистые пруды, Москва"],
     });
 
-    expect(result.fromWarning).toContain("«Тверская улица 12 с7, Москва»");
-    expect(result.fromWarning).toContain("not the building asked for");
-    expect(result.routes?.map((route) => route.warning)).toEqual([
-      undefined,
-      undefined,
-    ]);
+    expect(fromOther.status).toBe("not_found");
+    expect(fromOther.note).toContain(
+      "the map matched another building, «Тверская улица 12 с7, Москва»"
+    );
+    expect(requestsTo("routing.openstreetmap.de")).toEqual([]);
+
+    const toOther = await measure({
+      from: "отель Метрополь, Москва",
+      mode: "walking",
+      to: ["Тверская улица 7, Москва", "Чистопрудный бульвар 12, Москва"],
+    });
+    expect(toOther.routes?.[0]?.error).toContain("another building");
+    expect(toOther.routes?.[0]?.minutes).toBeUndefined();
+    expect(toOther.routes?.[1]).toMatchObject({ minutes: 21 });
   });
 
   it("says the start is not on the map instead of measuring from somewhere else", async () => {
