@@ -12,6 +12,7 @@ import { z } from "zod";
 import type * as browserUseClient from "@agent/lib/browser-use/client";
 import type * as browserUseSecrets from "@agent/lib/browser-use/secrets";
 import type * as browserUseCredits from "@agent/lib/browser-use/credits";
+import type * as browserRunsService from "@db/services/browser-runs";
 import {
   BrowserUseError,
   type BrowserUseCreateRunInput,
@@ -225,7 +226,9 @@ const reportBrowserUseOutOfCredits = vi.hoisted(() =>
 
 type Unused = () => never;
 
-vi.mock("@db/services/browser-runs", () => ({
+vi.mock("@db/services/browser-runs", async (importOriginal) => ({
+  browserRunReportOwed: (await importOriginal<typeof browserRunsService>())
+    .browserRunReportOwed,
   claimBrowserRunCompletion,
   closeQueuedBrowserRun,
   countQueuedBrowserRuns,
@@ -3415,7 +3418,7 @@ describe("browser_task finds the option before the one card", () => {
       allowPayment: false,
       collectImages: false,
       consent: undefined,
-      deliveryAddresses: [],
+      deliveryAddress: undefined,
       errand: "Возьми сапсан в питер на пятницу после 18:00",
       facts: undefined,
       home: undefined,
@@ -3441,7 +3444,7 @@ describe("browser_task finds the option before the one card", () => {
       allowPayment: false,
       collectImages: false,
       consent: undefined,
-      deliveryAddresses: [],
+      deliveryAddress: undefined,
       errand: "Посмотри штрафы и налоги в личном кабинете",
       facts: undefined,
       home: "Москва, Россия",
@@ -3464,7 +3467,7 @@ describe("browser_task finds the option before the one card", () => {
       allowPayment: false,
       collectImages: false,
       consent: undefined,
-      deliveryAddresses: [],
+      deliveryAddress: undefined,
       errand: "Посмотри штрафы",
       facts: undefined,
       message: "Код истёк. Запроси новый код.",
@@ -3478,14 +3481,14 @@ describe("browser_task finds the option before the one card", () => {
 });
 
 describe("browser_task delivery address before the card", () => {
-  const homeCard = serializeAddressVaultPayload({
-    city: "Москва",
+  const cottageCard = serializeAddressVaultPayload({
+    city: "Истра",
     countryCode: "RU",
     kind: "address",
-    line1: "ул. Ленина, 1",
-    postalCode: "101000",
+    line1: "СНТ «Рассвет», участок 12",
+    postalCode: "143500",
     recipientName: "Иван Петров",
-    region: "Москва",
+    region: "Московская область",
     version: 1,
   });
 
@@ -3507,10 +3510,10 @@ describe("browser_task delivery address before the card", () => {
         hasSecret: true,
         id: "address-1",
         kind: "address",
-        label: "Домашний адрес",
+        label: "Дача",
       },
     ]);
-    readVaultSecret.mockResolvedValue(homeCard);
+    readVaultSecret.mockResolvedValue(cottageCard);
   });
 
   async function startSearch(task: string, deliveryAddress?: boolean) {
@@ -3534,17 +3537,15 @@ describe("browser_task delivery address before the card", () => {
     return String(createBrowserUseRun.mock.calls[0]?.[0].task);
   }
 
-  it("gives a delivery errand the saved address for the site's address picker only", async () => {
+  it("gives a delivery errand one saved address, for the site's address picker only", async () => {
     // RU 24.09, d05: the first grocery run had no address, so it could not
     // say what would come by 20:00, and a second run was needed.
     const task = await startSearch(
       "Собери корзину с доставкой к 20:00: молоко 3,2%, десяток яиц, 2 авокадо"
     );
 
-    expect(task).toContain("Delivery addresses on file:");
-    expect(task).toContain("- ул. Тверская, 7, кв. 12, 125009, Москва, RU");
     expect(task).toContain(
-      "- Домашний адрес: ул. Ленина, 1, 101000, Москва, Москва, RU"
+      "Delivery address: ул. Тверская, 7, кв. 12, 125009, Москва, RU"
     );
     expect(task).toContain("the site's own address or delivery-zone picker");
     expect(task).toContain(
@@ -3553,11 +3554,23 @@ describe("browser_task delivery address before the card", () => {
     expect(task).toContain(
       "Never type the person's name, phone number or email into any site, and their address only where the delivery-address paragraph below allows."
     );
-    // Everything else about the person still waits for the card.
+    // The other saved addresses and everything else wait for the card.
+    expect(task).not.toContain("Рассвет");
     expect(task).not.toContain("Known details you may type into forms:");
     expect(task).not.toContain("Иван Петров");
     expect(task).not.toContain("+79991234567");
     expect(task).not.toContain("ivan@example.com");
+  });
+
+  it("takes the saved address the errand names by its label", async () => {
+    const task = await startSearch(
+      "Собери корзину с доставкой на дачу к субботе"
+    );
+
+    expect(task).toContain(
+      "Delivery address: СНТ «Рассвет», участок 12, 143500, Истра, Московская область, RU"
+    );
+    expect(task).not.toContain("ул. Тверская");
   });
 
   it("takes the call's word for a delivery errand that does not say so", async () => {
@@ -3566,15 +3579,20 @@ describe("browser_task delivery address before the card", () => {
       true
     );
 
-    expect(task).toContain("Delivery addresses on file:");
+    expect(task).toContain("Delivery address:");
   });
 
-  it("keeps the address out of an errand that is not about delivery", async () => {
-    const task = await startSearch(
-      "Найди ресторан на четверых в четверг в 19:30"
-    );
+  it.each([
+    "Найди ресторан на четверых в четверг в 19:30",
+    "Найди отель в Купертино на выходные",
+    "Найди вакансии курьера на hh.ru",
+    "Подбери курс по продуктивности",
+    "Найди книги Лавкрафта подешевле",
+    "Найди отзывы о таксидермистах",
+  ])("keeps the address out of «%s»", async (errand) => {
+    const task = await startSearch(errand);
 
-    expect(task).not.toContain("Delivery addresses on file:");
+    expect(task).not.toContain("Delivery address:");
     expect(task).not.toContain("ул. Тверская");
     expect(task).toContain(
       "Never type the person's name, phone number, email or address into any site."
@@ -3591,7 +3609,7 @@ describe("browser_task delivery address before the card", () => {
 
     const task = await startSearch("Закажи продукты с доставкой к восьми");
 
-    expect(task).not.toContain("Delivery addresses on file:");
+    expect(task).not.toContain("Delivery address:");
     expect(task).toContain(
       "Never type the person's name, phone number, email or address into any site."
     );
@@ -3606,7 +3624,7 @@ describe("browser_task delivery address before the card", () => {
         allowPayment: false,
         collectImages: false,
         consent: undefined,
-        deliveryAddresses: ["ул. Ленина, 1"],
+        deliveryAddress: "ул. Ленина, 1",
         done,
         errand: "Закажи такси домой",
         facts: undefined,
@@ -3615,8 +3633,8 @@ describe("browser_task delivery address before the card", () => {
         site: "https://taxi.yandex.ru",
       });
 
-    expect(followUp(false)).toContain("Delivery addresses on file:");
-    expect(followUp(true)).not.toContain("Delivery addresses on file:");
+    expect(followUp(false)).toContain("Delivery address: ул. Ленина, 1");
+    expect(followUp(true)).not.toContain("Delivery address:");
   });
 
   it("leaves a confirmed errand with the details the card allowed", async () => {
@@ -3624,7 +3642,7 @@ describe("browser_task delivery address before the card", () => {
 
     const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
     expect(task).toContain("Known details you may type into forms:");
-    expect(task).not.toContain("Delivery addresses on file:");
+    expect(task).not.toContain("Delivery address:");
   });
 });
 
@@ -3636,7 +3654,7 @@ async function composed(errand: string) {
     allowPayment: false,
     collectImages: false,
     consent: undefined,
-    deliveryAddresses: [],
+    deliveryAddress: undefined,
     errand,
     facts: undefined,
     home: undefined,
@@ -3697,7 +3715,7 @@ describe("browser_task errand text", () => {
           where: "Ozon (ozon.ru)",
         },
       },
-      deliveryAddresses: ["ул. Ленина, 1"],
+      deliveryAddress: "ул. Ленина, 1",
       errand: "Закажи корм",
       facts: undefined,
       home: undefined,
@@ -3714,7 +3732,7 @@ describe("browser_task errand text", () => {
       ].join("\n")
     );
     // A confirmed errand has its details already: no address paragraph.
-    expect(task).not.toContain("Delivery addresses on file:");
+    expect(task).not.toContain("Delivery address:");
   });
 
   it("asks again when the basket on the card changes, not when it is reordered", async () => {
@@ -3757,17 +3775,32 @@ describe("browser_task errand text", () => {
 
 describe("browser_task on a finished errand the person has not heard about", () => {
   const outcome = "Result: Сапсан №781, пт 19:10, 4 200 ₽\nNeeds: decision";
+  const keptReport = [
+    "Browser run finished.",
+    "Images this run saved, ready to send.",
+    "- artifact-1: Сапсан №781, место 34",
+    "The run paid 4 200 ₽ within the approved total.",
+  ].join("\n");
 
+  /**
+   * A run that settled with its report kept for the conversation. `queued`:
+   * its report turn waits behind the person's own turn and holds the lease;
+   * `settling`: the settle is still putting the full report together;
+   * `owed`: nobody is delivering it now.
+   */
   function finishedRow(options: {
-    readonly delivered: boolean;
+    readonly delivered?: boolean;
     readonly outcome?: string;
+    readonly report?: "owed" | "queued" | "settling";
   }) {
+    const report = options.report ?? "queued";
     return {
       ...browserRunRow(new Date(), options.outcome ?? outcome),
-      report: "Browser run finished.",
-      // A report turn queued behind the person's own turn holds the lease.
-      reportClaimedAt: new Date(),
-      reportDeliveredAt: options.delivered ? new Date() : null,
+      report: keptReport,
+      reportAttempts: report === "settling" ? 0 : 1,
+      reportClaimedAt:
+        report === "owed" ? new Date(Date.now() - 10 * 60_000) : new Date(),
+      reportDeliveredAt: options.delivered === true ? new Date() : null,
     };
   }
 
@@ -3779,25 +3812,57 @@ describe("browser_task on a finished errand the person has not heard about", () 
     );
   }
 
-  it("answers «ну что там?» with the outcome instead of a new run", async () => {
-    // RU 24.09, d01 and d02: the model continued the finished run to ask
-    // how it went, and the person heard nothing for minutes more.
-    readBrowserRunForScope.mockResolvedValue(finishedRow({ delivered: false }));
+  it.each(["queued", "owed"] as const)(
+    "answers «ну что там?» with the whole kept report instead of a new run (%s)",
+    async (report) => {
+      // RU 24.09, d01 and d02: the model continued the finished run to ask
+      // how it went, and the person heard nothing for minutes more.
+      readBrowserRunForScope.mockResolvedValue(finishedRow({ report }));
+
+      const result = await follow("Пользователь спрашивает, что с поручением");
+
+      expect(createBrowserUseRun).not.toHaveBeenCalled();
+      expect(queueBrowserUseSessionMessage).not.toHaveBeenCalled();
+      expect(stopBrowserRunErrand).not.toHaveBeenCalled();
+      // Marked delivered only once a turn actually told the person: a turn
+      // that fails before its message leaves the report to its own turn.
+      expect(finishBrowserRunReport).not.toHaveBeenCalled();
+      expect(result).toMatchObject({
+        outcome,
+        report: keptReport,
+        runId,
+        status: "done",
+      });
+      expect(continuationNote(result)).toContain(
+        "Nothing was sent to the site"
+      );
+      // The pictures and the payment note live only in the kept report.
+      expect(continuationNote(result)).toContain(
+        "attach the pictures it lists"
+      );
+      expect(continuationNote(result)).toContain(
+        "call continue again once your message has told them the outcome"
+      );
+      // What the run stopped on still decides the answer: one card, no question.
+      expect(continuationNote(result)).toContain(
+        "continue this run now with allowSubmit"
+      );
+    }
+  );
+
+  it("waits for a report still being put together instead of taking it over", async () => {
+    readBrowserRunForScope.mockResolvedValue(
+      finishedRow({ report: "settling" })
+    );
 
     const result = await follow("Пользователь спрашивает, что с поручением");
 
     expect(createBrowserUseRun).not.toHaveBeenCalled();
-    expect(queueBrowserUseSessionMessage).not.toHaveBeenCalled();
-    expect(stopBrowserRunErrand).not.toHaveBeenCalled();
-    expect(finishBrowserRunReport).toHaveBeenCalledExactlyOnceWith(runId);
-    expect(result).toMatchObject({ outcome, runId, status: "done" });
-    expect(continuationNote(result)).toContain("Nothing was sent to the site");
+    expect(finishBrowserRunReport).not.toHaveBeenCalled();
+    // No outcome to retell yet: the full report arrives by itself.
+    expect(result).not.toHaveProperty("outcome");
     expect(continuationNote(result)).toContain(
-      "call continue again after telling them"
-    );
-    // What the run stopped on still decides the answer: one card, no question.
-    expect(continuationNote(result)).toContain(
-      "continue this run now with allowSubmit"
+      "is being put together and reaches the conversation by itself"
     );
   });
 
@@ -3807,30 +3872,48 @@ describe("browser_task on a finished errand the person has not heard about", () 
     await follow("Поищи ещё на субботу");
 
     expect(createBrowserUseRun).toHaveBeenCalledOnce();
-    expect(finishBrowserRunReport).not.toHaveBeenCalled();
+  });
+
+  it("goes through once a message told them, before the report turn came", async () => {
+    readBrowserRunForScope.mockResolvedValue(finishedRow({}));
+    const tool = await resolvedBrowserTask([
+      toolResult("browser_task", {
+        outcome,
+        report: keptReport,
+        runId,
+        status: "done",
+      }),
+      toolResult("send_message", { delivered: true, messageId: "m-1" }),
+    ]);
+
+    await tool.execute(
+      { action: "continue", runId, task: "Бери первый, но с местом у окна" },
+      toolContext("better-auth:alice")
+    );
+
+    expect(createBrowserUseRun).toHaveBeenCalledOnce();
   });
 
   it("passes a code on at once, heard or not", async () => {
     readBrowserRunForScope.mockResolvedValue(
-      finishedRow({ delivered: false, outcome: "Needs: sms_code" })
+      finishedRow({ outcome: "Needs: sms_code" })
     );
 
     await follow("992130");
 
     expect(createBrowserUseRun).toHaveBeenCalledOnce();
-    expect(finishBrowserRunReport).not.toHaveBeenCalled();
   });
 
   it("lets the run's own report turn continue it", async () => {
-    readBrowserRunForScope.mockResolvedValue(finishedRow({ delivered: false }));
+    readBrowserRunForScope.mockResolvedValue(finishedRow({}));
 
     await follow("Collect the actual links of the options", "browser-result");
 
     expect(createBrowserUseRun).toHaveBeenCalledOnce();
   });
 
-  it("hands the outcome over on status and says to retell it", async () => {
-    readBrowserRunForScope.mockResolvedValue(finishedRow({ delivered: false }));
+  it("hands the kept report over on status without marking it told", async () => {
+    readBrowserRunForScope.mockResolvedValue(finishedRow({}));
     const { browserTask } = await import("@agent/tools/browser_task");
 
     const result = await browserTask.execute(
@@ -3838,11 +3921,15 @@ describe("browser_task on a finished errand the person has not heard about", () 
       toolContext("better-auth:alice")
     );
 
-    expect(finishBrowserRunReport).toHaveBeenCalledExactlyOnceWith(runId);
+    expect(finishBrowserRunReport).not.toHaveBeenCalled();
     expect(readBrowserUseRunStatus).not.toHaveBeenCalled();
-    expect(result).toMatchObject({ outcome, status: "done" });
+    expect(result).toMatchObject({
+      outcome,
+      report: keptReport,
+      status: "done",
+    });
     expect(continuationNote(result)).toContain(
-      "never reached the conversation"
+      "This outcome has not reached the user yet"
     );
     expect(continuationNote(result)).toContain("Answer the user from it");
     expect(continuationNote(result)).toContain(
@@ -3850,8 +3937,23 @@ describe("browser_task on a finished errand the person has not heard about", () 
     );
   });
 
+  it("gives no outcome on status while the report is being put together", async () => {
+    readBrowserRunForScope.mockResolvedValue(
+      finishedRow({ report: "settling" })
+    );
+    const { browserTask } = await import("@agent/tools/browser_task");
+
+    const result = await browserTask.execute(
+      { action: "status", runId },
+      toolContext("better-auth:alice")
+    );
+
+    expect(result).not.toHaveProperty("outcome");
+    expect(continuationNote(result)).toContain("the details are on their way");
+  });
+
   it("leaves the report to its own turn when a scheduled worker looks", async () => {
-    readBrowserRunForScope.mockResolvedValue(finishedRow({ delivered: false }));
+    readBrowserRunForScope.mockResolvedValue(finishedRow({}));
     const { browserTask } = await import("@agent/tools/browser_task");
 
     const result = await browserTask.execute(
@@ -3859,9 +3961,48 @@ describe("browser_task on a finished errand the person has not heard about", () 
       toolContext("better-auth:alice", "scheduled-worker")
     );
 
-    expect(finishBrowserRunReport).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ report: undefined });
     expect(continuationNote(result)).not.toContain(
-      "never reached the conversation"
+      "has not reached the user yet"
     );
   });
 });
+
+/** A tool result of an earlier step, as eve keeps it in the history. */
+function toolResult(
+  toolName: string,
+  value: Readonly<Record<string, boolean | string>>
+) {
+  return {
+    content: [
+      {
+        output: { type: "json" as const, value },
+        toolCallId: `${toolName}-call`,
+        toolName,
+        type: "tool-result" as const,
+      },
+    ],
+    role: "tool" as const,
+  };
+}
+
+/** The tool as its per-step resolver hands it out after these messages. */
+async function resolvedBrowserTask(
+  messages: readonly ReturnType<typeof toolResult>[]
+) {
+  const { default: dynamic } = await import("@agent/tools/browser_task");
+  const resolve = dynamic.events["step.started"];
+  if (!resolve) throw new Error("browser_task resolves per step.");
+  const context = toolContext("better-auth:alice");
+  const tools = await resolve({}, {
+    channel: { kind: "channel:photon", metadata: {} },
+    messages: [{ content: "ну что там?", role: "user" }, ...messages],
+    model: null,
+    session: { auth: context.session.auth, id: context.session.id },
+  } satisfies DynamicResolveContext);
+  const tool = tools && !("execute" in tools) ? tools.browser_task : undefined;
+  if (!tool || !("execute" in tool)) {
+    throw new Error("browser_task must resolve for a conversation.");
+  }
+  return tool;
+}

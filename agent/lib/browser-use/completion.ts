@@ -31,6 +31,7 @@ import {
   settleBrowserRunSpend,
 } from "./spend";
 import { recordOrder } from "@db/services/orders";
+import { readSpendEntryForRun } from "@db/services/spending";
 import { captureBrowserRunImages, type BrowserRunImage } from "./images";
 import {
   browserOutcomeSummary,
@@ -97,13 +98,16 @@ export async function settleBrowserRun(
     parsed.needs === "captcha"
       ? captchaRetryAt(row.captchaAttempt, new Date())
       : undefined;
-  const order = mayPlaceOrder(row)
-    ? parseBrowserOrder(parsed, {
-        result: run.result,
-        site: row.site,
-        task: row.task,
-      })
-    : null;
+  // Only a finished run has an order to record; one still waiting on the
+  // person has bought nothing yet.
+  const order =
+    parsed.needs === "none" && (await mayPlaceOrder(row))
+      ? parseBrowserOrder(parsed, {
+          result: run.result,
+          site: row.site,
+          task: row.task,
+        })
+      : null;
   const reportFacts = {
     hasItems: parsed.items.length > 0,
     hasLinks,
@@ -163,10 +167,22 @@ export async function settleBrowserRun(
  * Whether the run could have placed an order at all: only one that acted in
  * the person's name or paid. A run that only looked — reading the site's
  * order history for «закажи то же, что в прошлый раз» — reports the old
- * order's number, and that is not an order Bro placed.
+ * order's number, and that is not an order Bro placed. A follow-up that
+ * finishes a payment on the spend limit — the person confirmed 3-D Secure
+ * or sent the code — is started with neither, but holds the errand's
+ * reservation, which only a paying errand has and its follow-ups carry.
  */
-function mayPlaceOrder(row: BrowserRunRow) {
-  return row.paymentAllowed || row.submission !== null;
+async function mayPlaceOrder(row: BrowserRunRow) {
+  if (row.paymentAllowed || row.submission !== null) return true;
+  try {
+    return (await readSpendEntryForRun(row.id)) !== undefined;
+  } catch (error) {
+    console.warn("[browser-use] the run's reservation could not be read", {
+      cause: error,
+      runId: row.id,
+    });
+    return false;
+  }
 }
 
 /**

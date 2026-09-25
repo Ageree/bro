@@ -63,6 +63,14 @@ const cardText = {
     permissionSet:
       "Standing permission — such errands go ahead without asking from now on:",
     personalData: "Details sent",
+    scheduleCreate: "Set up a scheduled task:",
+    scheduleStatus: "Status",
+    scheduleStatuses: {
+      active: "resume",
+      deleted: "delete",
+      paused: "pause",
+    },
+    scheduleUpdate: "Change a scheduled task:",
     site: "Site",
     slackMessage: "Send a Slack message:",
     slackRead: "Read Slack messages:",
@@ -108,6 +116,14 @@ const cardText = {
     permissionSet:
       "Постоянное разрешение — такие поручения дальше без подтверждения:",
     personalData: "Какие данные уйдут",
+    scheduleCreate: "Поставить задачу по расписанию:",
+    scheduleStatus: "Статус",
+    scheduleStatuses: {
+      active: "возобновить",
+      deleted: "удалить",
+      paused: "поставить на паузу",
+    },
+    scheduleUpdate: "Изменить задачу по расписанию:",
     site: "Сайт",
     slackMessage: "Отправить сообщение в Slack:",
     slackRead: "Прочитать сообщения в Slack:",
@@ -478,6 +494,69 @@ function connectedAppReadPrompt(
   return undefined;
 }
 
+const scheduleCallSchema = z.object({
+  prompt: z.string().optional(),
+  status: z.enum(["active", "paused", "deleted"]).optional(),
+  timing: z
+    .object({
+      at: z.string().optional(),
+      everyMinutes: z.number().optional(),
+      kind: z.string(),
+    })
+    .catchall(z.unknown())
+    .optional(),
+});
+
+/** When a schedule runs, as plainly as its timing says it. */
+function scheduleWhen(
+  timing: NonNullable<z.infer<typeof scheduleCallSchema>["timing"]>
+) {
+  if (timing.kind === "once" && timing.at !== undefined) {
+    const moment =
+      /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})(?::\d{2}(?:\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/u.exec(
+        timing.at
+      );
+    return moment
+      ? `${moment[1] ?? ""} ${moment[2] ?? ""} (UTC${moment[3] === "Z" ? "" : (moment[3] ?? "")})`
+      : oneLine(timing.at);
+  }
+  if (timing.kind === "interval" && timing.everyMinutes !== undefined) {
+    return `${String(timing.everyMinutes)} min`;
+  }
+  return oneLine(
+    Object.entries(timing)
+      .filter(([key]) => key !== "kind")
+      .map(([key, value]) => `${key} ${JSON.stringify(value)}`)
+      .join(", ")
+  );
+}
+
+/**
+ * The card for a schedule set up or changed in a turn the person did not
+ * start — a browser run's report: what the task will do, word for word, and
+ * when, since a worker later runs it as the person's own.
+ */
+function schedulePrompt(
+  call: z.infer<typeof scheduleCallSchema>,
+  text: CardText,
+  created: boolean
+) {
+  return [
+    created ? text.scheduleCreate : text.scheduleUpdate,
+    call.prompt === undefined
+      ? undefined
+      : `${text.what}: ${oneLine(call.prompt)}`,
+    call.timing === undefined
+      ? undefined
+      : `${text.when}: ${scheduleWhen(call.timing)}`,
+    call.status === undefined
+      ? undefined
+      : `${text.scheduleStatus}: ${text.scheduleStatuses[call.status]}`,
+  ]
+    .filter((line) => line !== undefined)
+    .join("\n");
+}
+
 /** The approval card's text for the call, read from its input, or none. */
 function cardPrompt(
   action: { readonly input: unknown; readonly toolName: string },
@@ -514,6 +593,15 @@ function cardPrompt(
   }
   const read = connectedAppReadPrompt(action, text);
   if (read !== undefined) return read;
+  if (
+    action.toolName === "schedules-create" ||
+    action.toolName === "schedules-update"
+  ) {
+    const call = scheduleCallSchema.safeParse(action.input);
+    return call.success
+      ? schedulePrompt(call.data, text, action.toolName === "schedules-create")
+      : undefined;
+  }
   // Forgetting what another conversation saved: the record as it reads.
   if (action.toolName === "profile__remove_memory") {
     const call = z.object({ text: z.string() }).safeParse(action.input);
