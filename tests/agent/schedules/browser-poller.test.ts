@@ -466,7 +466,12 @@ describe("the browser run poller", () => {
     expect(report.startsWith(backgroundTurnMarker)).toBe(true);
     expect(report).toContain("+7 *** ***-12-34");
     expect(report).toContain(
-      "The site is waiting for a one-time code it sent by SMS: first thing, in one short line, ask the user for that code"
+      "The site is waiting for a one-time code it sent by SMS: open your one message with a short line asking the user for that code"
+    );
+    // The request opens the one message, and the result goes in it too: a
+    // second message would be dropped as a repeat of the report.
+    expect(report).toContain(
+      "what the run did and found so far follows in that same message"
     );
     expect((await readRun("gosuslugi-run"))?.reportClaimedAt).toBeInstanceOf(
       Date

@@ -18,6 +18,7 @@ import {
   standingActionOverridden,
 } from "@shared/spending/limit";
 import autonomy from "./content/autonomy.md?raw";
+import followThrough from "./content/follow-through.md?raw";
 
 /**
  * The person's standing spend limit as it stands this month. Without it the
@@ -123,8 +124,15 @@ export default defineDynamic({
         z.string().safeParse(caller.attributes.workspaceId).success
           ? await currentSpendLimit(scopeFromPrincipal(caller), new Date())
           : undefined;
+      // Setting up the later step of an errand is the conversation's: a
+      // scheduled worker has no schedule tools and must not say it set one.
+      const followThroughRules = resolveModeValue(context, {
+        interactive: followThrough,
+      });
       return defineInstructions({
-        content: limit === undefined ? autonomy : `${autonomy}\n${limit}`,
+        content: [autonomy, followThroughRules, limit]
+          .filter((part) => part !== null && part !== undefined)
+          .join("\n"),
       });
     },
   },
