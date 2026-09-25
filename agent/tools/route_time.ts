@@ -254,7 +254,7 @@ async function measure(
   }
 
   const places: {
-    readonly failure?: string;
+    readonly failure?: MapServiceError;
     readonly place: MapPlace | undefined;
     readonly query: string;
   }[] = [];
@@ -264,7 +264,7 @@ async function measure(
       places.push({ place: await locate(query, from, budget, signal), query });
     } catch (error) {
       if (!(error instanceof MapServiceError)) throw error;
-      places.push({ failure: error.message, place: undefined, query });
+      places.push({ failure: error, place: undefined, query });
     }
   }
   /* oxlint-enable eslint/no-await-in-loop */
@@ -275,12 +275,12 @@ async function measure(
   );
 
   let measured: Awaited<ReturnType<typeof measureRoutes>> = [];
-  let routerFailure: string | undefined;
+  let routerFailure: MapServiceError | undefined;
   try {
     measured = await measureRoutes(input.mode, from, found, signal);
   } catch (error) {
     if (!(error instanceof MapServiceError)) throw error;
-    routerFailure = error.message;
+    routerFailure = error;
   }
 
   let foundIndex = 0;
@@ -291,7 +291,7 @@ async function measure(
         error:
           entry.failure === undefined
             ? "not on the map: add the street and city, or pass «lat, lon»"
-            : `${entry.failure}; this destination was not measured`,
+            : `${entry.failure.message}; this destination was not measured`,
         to: entry.query,
       };
     }
@@ -304,7 +304,7 @@ async function measure(
     const link = routeLink(input.mode, from, place);
     if (routerFailure !== undefined) {
       return {
-        error: `${routerFailure}: only the straight-line distance is known, so state no travel time`,
+        error: `${routerFailure.message}: only the straight-line distance is known, so state no travel time`,
         link,
         place: place.label,
         straightKm: straightKm(from, place),
@@ -338,12 +338,15 @@ async function measure(
     mode: input.mode,
     pick:
       input.mode === "walking"
-        ? pickNote(
-            routes,
+        ? pickNote(routes, {
             // Places the map service or this call's lookups left unmeasured.
-            places.filter((entry) => entry.failure !== undefined).length +
-              (routerFailure === undefined ? 0 : found.length)
-          )
+            count:
+              places.filter((entry) => entry.failure !== undefined).length +
+              (routerFailure === undefined ? 0 : found.length),
+            refusing:
+              routerFailure?.refusing === true ||
+              places.some((entry) => entry.failure?.refusing === true),
+          })
         : undefined,
     routes,
     status: "ok" as const,
@@ -360,30 +363,37 @@ const pickSize = 3;
  * still lacks. The rule of three verified options lived only in the prompt,
  * and on 25.09 (RU d03) gpt-6-luna answered a dinner pick with one place
  * after one round of searches: the tool result the model reads last is
- * where it takes its next step from. A place the map service could not
- * measure — the geocoder or the router down or asking to slow down, or this
- * call out of lookups — stays a candidate with its walk unchecked: asking
+ * where it takes its next step from. A place the map service left
+ * unmeasured stays a candidate rather than a place to replace. While the
+ * service itself refuses — it asked to slow down, is left alone after that,
+ * timed out or the router is down — nothing more is to be measured: asking
  * for replacements then sent the model to search and measure again against
- * a service that was still refusing.
+ * a service that was still refusing. After a one-off error or a call out
+ * of lookups the next call measures as usual.
  */
 function pickNote(
   routes: readonly { readonly minutes?: number }[],
-  serviceUnmeasured: number
+  unmeasuredByService: { readonly count: number; readonly refusing: boolean }
 ) {
   const measured = routes.flatMap((route) =>
     route.minutes === undefined ? [] : [route.minutes]
   );
   const near = measured.filter((minutes) => minutes <= walkLimitMinutes);
   const unmeasured = routes.length - measured.length;
-  const lacking = pickSize - near.length - serviceUnmeasured;
+  const { count, refusing } = unmeasuredByService;
+  const lacking = pickSize - near.length - count;
   const counted = `${String(near.length)} of ${String(routes.length)} ${routes.length === 1 ? "place is" : "places are"} within a ${String(walkLimitMinutes)}-minute walk${unmeasured > 0 ? ` and ${String(unmeasured)} not measured` : ""}`;
+  const them = count === 1 ? "it" : "them";
+  const candidates = count === 1 ? "a candidate" : "candidates";
   const service =
-    serviceUnmeasured > 0
-      ? ` ${String(serviceUnmeasured)} of them went unmeasured because the map service refused or this call ran out of lookups: keep ${serviceUnmeasured === 1 ? "it" : "them"} as ${serviceUnmeasured === 1 ? "a candidate" : "candidates"} with the walk named as not checked, never guess minutes and look for no replacement for ${serviceUnmeasured === 1 ? "it" : "them"}. Call route_time again only for a place whose error says to measure the rest in another call.`
-      : "";
+    count === 0
+      ? ""
+      : refusing
+        ? ` ${String(count)} of them went unmeasured because the map service is refusing now: keep ${them} as ${candidates} with the walk named as not checked, never guess minutes, look for no replacement for ${them} and do not measure ${them} again in this turn.`
+        : ` ${String(count)} of them went unmeasured because of a one-off map error or this call's lookup limit, not because of where ${count === 1 ? "it is" : "they are"}: keep ${them} as ${candidates} and measure ${them} again in one more call; never guess minutes.`;
   const next =
     lacking > 0
-      ? `${String(lacking)} more ${lacking === 1 ? "is" : "are"} needed: before you reply, find other candidates near the start that fit the rest of the conditions (web_search with sites yandex.ru/maps or 2gis.ru)${serviceUnmeasured > 0 ? ", and while the map service refuses give their walk as not checked instead of measuring them" : " and measure them here in one more call"}. Reply with fewer only when that search found none, and say how many fit and why`
+      ? `${String(lacking)} more ${lacking === 1 ? "is" : "are"} needed: before you reply, find other candidates near the start that fit the rest of the conditions (web_search with sites yandex.ru/maps or 2gis.ru)${refusing ? ", and while the map service refuses give their walk as not checked instead of measuring them" : " and measure them here in one more call"}. Reply with fewer only when that search found none, and say how many fit and why`
       : "Before you reply, check each of them against the rest of the conditions";
   return `If these are candidates for a pick of places («где поужинать пешком от…»): ${counted}. A pick aims at ${String(pickSize)} options that each pass every condition the person named, the walk included (${String(walkLimitMinutes)} minutes unless they named their own limit).${service} ${next}; name whatever you could not check as not checked.`;
 }

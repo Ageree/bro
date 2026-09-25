@@ -102,9 +102,18 @@ interface MeasuredRoute {
 
 /** A map service that did not answer or refused; the model hears the reason. */
 export class MapServiceError extends Error {
-  constructor(message: string) {
+  /**
+   * Whether the service itself is refusing or out of reach — it asked to
+   * slow down, is left alone after that, timed out or could not be reached —
+   * so another lookup now would fail too. A one-off error, an answer it
+   * could not read and a call out of lookups say nothing about the next one.
+   */
+  readonly refusing: boolean;
+
+  constructor(message: string, refusing = false) {
     super(message);
     this.name = "MapServiceError";
+    this.refusing = refusing;
   }
 }
 
@@ -285,7 +294,8 @@ async function fetchOnce(url: URL, service: string, signal: AbortSignal) {
     throw new MapServiceError(
       error instanceof Error && error.name === "TimeoutError"
         ? `${service} did not answer in time`
-        : `${service} could not be reached`
+        : `${service} could not be reached`,
+      true
     );
   }
 }
@@ -305,7 +315,8 @@ async function request<Schema extends z.ZodType>(
 ): Promise<z.infer<Schema>> {
   if (Date.now() < (coolingUntil.get(url.host) ?? 0)) {
     throw new MapServiceError(
-      `${service} asked to slow down a few minutes ago and is not asked again yet`
+      `${service} asked to slow down a few minutes ago and is not asked again yet`,
+      true
     );
   }
   let response = await fetchOnce(url, service, signal);
@@ -326,7 +337,8 @@ async function request<Schema extends z.ZodType>(
   const text = await response.text();
   if (!response.ok && response.status !== 400) {
     throw new MapServiceError(
-      `${service} answered HTTP ${String(response.status)}`
+      `${service} answered HTTP ${String(response.status)}`,
+      slowDown(response.status)
     );
   }
   let body: unknown;

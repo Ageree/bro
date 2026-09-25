@@ -33,31 +33,47 @@ function failureReason(cause: unknown) {
 }
 
 /**
- * A train, a flight, a ticket or a stay: something sold for given dates.
- * Whole words where a stem would catch something else: «поездка», «шкаф-купе»,
- * book shelves («полки» only as a berth), «Барнаул».
+ * A train or a flight and its seats: what only a seller's site shows on
+ * sale. Whole words where a stem would catch something else: «поездка»,
+ * «шкаф-купе» and «шкаф купе» (but «купейный вагон»), book shelves
+ * («полки» only as a berth), «Барнаул».
  */
-const tripWords =
-  /(?<!\p{L})(?:поезд(?:а|е|ом|у|ов|ами|ах)?(?!\p{L})|(?:жд|ж\/д|ржд)(?!\p{L})|сапсан|ласточк|электричк|билет|авиабилет|рейс|перел[её]т|самол[её]т|(?<![\p{L}-])купе(?!\p{L})|плацкарт|(?:нижн|верхн|боков)\p{L}*\s+полк|отел|гостиниц|хостел|(?:trains?|flights?|tickets?|fares?|hotels?|hostels?)(?!\p{L}))/iu;
+const transportWords =
+  /(?<!\p{L})(?:поезд(?:а|е|ом|у|ов|ами|ах)?(?!\p{L})|(?:жд|ж\/д|ржд)(?!\p{L})|сапсан|ласточк|электричк|авиабилет|рейс|перел[её]т|самол[её]т|(?<![\p{L}-])(?<!шкаф\p{L}{0,3}\s+)купе(?:йн\p{L}*)?(?!\p{L})|плацкарт|(?:нижн|верхн|боков)\p{L}*\s+полк|(?:trains?|flights?)(?!\p{L}))/iu;
+
+/** A stay: a room sold for given dates. */
+const stayWords =
+  /(?<!\p{L})(?:отел|гостиниц|хостел|(?:hotels?|hostels?)(?!\p{L}))/iu;
+
+/** A ticket or a fare that names no train or flight. */
+const ticketWords = /(?<!\p{L})(?:билет|(?:tickets?|fares?)(?!\p{L}))/iu;
 
 /**
  * A date, a day or a seat: what is on sale then, not a timetable. A date in
  * digits has a two-digit month («03.10», «3.10.2026»), so a rating «4.5» is
- * none; «завтра» is not «завтрак».
+ * none; «завтрашний» and «сегодняшний» are days, «завтрак» is not.
  */
 const onDatesWords =
-  /\d{1,2}\s*(?:январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)|(?<![\d.])\d{1,2}\.\d{2}(?!\d)|(?<!\p{L})(?:(?:завтра|послезавтра|сегодня)(?!\p{L})|выходн|понедельник|вторник|сред[ау](?!\p{L})|четверг|пятниц|суббот|воскресен|недел|наличи|свободн|мест[ао]?(?!\p{L})|нижн|верхн|(?:tomorrow|tonight|weekend|monday|tuesday|wednesday|thursday|friday|saturday|sunday|week|available|availability|seats?)(?!\p{L}))/iu;
+  /\d{1,2}\s*(?:январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)|(?<![\d.])\d{1,2}\.\d{2}(?!\d)|(?<!\p{L})(?:(?:завтра|послезавтра)(?!к)|сегодня|выходн|понедельник|вторник|сред[ау](?!\p{L})|четверг|пятниц|суббот|воскресен|недел|наличи|свободн|мест[ао]?(?!\p{L})|нижн|верхн|(?:tomorrow|tonight|weekend|monday|tuesday|wednesday|thursday|friday|saturday|sunday|week|available|availability|seats?)(?!\p{L}))/iu;
+
+/** A flight's status is news, not a fare. */
+const statusWords =
+  /(?<!\p{L})(?:статус|задерж|табло|опаздыва|(?:status|delay|delayed)(?!\p{L}))/iu;
 
 /**
- * Searches that are no fare: a flight's status, and a pick of a place or a
- * person where a hotel is only a landmark or a day is only when — «где
- * поужинать рядом с отелем в субботу», «сборка шкафа-купе завтра», «отели
- * Казани с рейтингом 4.5». Recommending a place or a master is done
- * without a browser (recommendations.md), and a run nobody asked for costs
- * money.
+ * A pick of a place or a person where a hotel is only a landmark or a day is
+ * only when: «где поужинать рядом с отелем в субботу», «сборка шкафа-купе
+ * завтра». Recommending a place or a master is done without a browser
+ * (recommendations.md), and a run nobody asked for costs money. It does not
+ * outweigh a train or a flight («поезд до Казани и где поужинать в
+ * субботу»), nor a stay's own dinner («отель с завтраком и ужином»).
  */
-const notTicketWords =
-  /(?<!\p{L})(?:статус|задерж|табло|опаздыва|(?:рядом|возле|около|недалеко|пешком|напротив)(?:\s+(?:с|со|от|до))?\s+(?:отел|гостиниц|хостел)|ресторан|кафе|кофейн|бар(?:а|ы|ов)?(?!\p{L})|ужин|поужин|обед|пообед|мастер|сборк|шкаф|мебел|рейтинг|театр|концерт|спектакл|кино|выставк|музе|(?:near|by|around|close\s+to)\s+(?:the\s+)?hotel|(?:status|delay|delayed|restaurants?|cafes?|bars?|dinner|lunch|concerts?|theatre|theater|museum)(?!\p{L}))/iu;
+const pickWords =
+  /(?<!\p{L})(?:(?:рядом|возле|около|недалеко|пешком|напротив)(?:\s+(?:с|со|от|до))?\s+(?:отел|гостиниц|хостел)|ресторан|кафе|кофейн|бар(?:а|ы|ов)?(?!\p{L})|поужин|пообед|мастер|сборк|шкаф|мебел|(?:near|by|around|close\s+to)\s+(?:the\s+)?hotel|(?:restaurants?|cafes?|bars?|dinner|lunch)(?!\p{L}))/iu;
+
+/** Tickets to a show, not to a train, a flight or a room. */
+const eventWords =
+  /(?<!\p{L})(?:театр(?:а|е|у|ом|ы|ов|ах)?(?!\p{L})|концерт|спектакл|кино(?!\p{L})|кинотеатр|выставк|музе[йяюе]|матч|фестивал|(?:concerts?|theatre|theater|museums?|match|festival|show)(?!\p{L}))/iu;
 
 /** Sellers and searches of tickets and stays. */
 const ticketSites =
@@ -69,13 +85,21 @@ const ticketSites =
  * what is on sale. On 25.09 (RU d13) «найди мне поезд до казани на
  * следующие выходные» went to two searches of rzd.ru and tutu.ru, and the
  * person got a timetable link and «наличие нижней полки не подтверждено»
- * while their saved rule was «в поезде только нижняя полка».
+ * while their saved rule was «в поезде только нижняя полка». A search held
+ * to a seller of tickets or rooms is one whatever else it says; a train or
+ * a flight on a date is one too; a stay or a bare ticket only when the
+ * search is not a pick of a place, a master or a show.
  */
 function ticketSearch(input: WebSearchInput) {
-  if (notTicketWords.test(input.query)) return false;
+  const query = input.query;
+  if (statusWords.test(query)) return false;
+  if ((input.sites ?? []).some((site) => ticketSites.test(site))) return true;
+  if (!onDatesWords.test(query)) return false;
+  if (transportWords.test(query)) return true;
+  if (pickWords.test(query)) return false;
   return (
-    (tripWords.test(input.query) && onDatesWords.test(input.query)) ||
-    (input.sites ?? []).some((site) => ticketSites.test(site))
+    stayWords.test(query) ||
+    (ticketWords.test(query) && !eventWords.test(query))
   );
 }
 
