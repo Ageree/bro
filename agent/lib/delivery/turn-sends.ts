@@ -138,13 +138,14 @@ const skipNotices = {
 } as const satisfies Record<SkipReason, string>;
 
 const rewriteNotices = {
+  approved: `${rewritePrefix} the call the person approved on its card ran right before this message, and this check was made before its result came in, so it cannot tell whether what the message says was done. Look at that result: if it went through, send this same message again unchanged; if it failed or was refused, say plainly it was not done and why. Do not call that tool again.`,
   announced: `${rewritePrefix} it adds nothing to what this turn already sent except the announcement of a step you have not taken — a calendar entry, a reminder. Take the step now with its tool instead of writing about it; its result is what you tell the person. If the step waits for the person's answer or a card, do not write again: end the turn now without calling any tool.`,
   browser: `${rewritePrefix} it says something already happened on the site — a code entered, a page opened, a new code requested, a slot confirmed, a booking or an order made — but the browser run in this turn was only handed the errand and has done nothing yet (status running). Say that you started it or passed the message on and that you will send what it finds; claim only what a tool result in this turn shows.`,
   declined: `${rewritePrefix} it says something was done — a reminder, task or schedule set or changed, an event added, a letter or a Slack message sent, something remembered or forgotten, an order placed — but its tool call was declined on its card, refused or failed, so it was not done. Say plainly that it was not done and why — the person declined the card, or the call was refused or failed — and keep the rest of the message. Do not present it as done, and do not try it again unless the person asks.`,
   undone: `${rewritePrefix} it says something was done — a reminder or schedule set or changed, a letter or a Slack message sent, something remembered or forgotten — but no tool result of this turn shows it. If you called its tool in this same step, its result is in now: send again and say what it shows, without calling that tool again. If an earlier conversation or turn did it, say so plainly («уже стоит с прошлого раза»). Otherwise do it with its tool first and tell what the result shows, or say it is not done yet.`,
   calendar: `${rewritePrefix} it says the calendar is being or has been changed, but no calendar event was created, changed or deleted in this turn. Make the change with the calendar tool first and report its result, or say you will add it once the person confirms the details; never present a slot you picked yourself as booked.`,
   "calendar-later": `${rewritePrefix} it says the calendar is being or has been changed, but no calendar event was created, changed or deleted in this turn, and in a browser report's turn the calendar tool comes back only once this message has reached the person. Keep the outcome and say the calendar step in the future tense — «добавлю в календарь», once they confirm the card — never «добавляю» or «добавил»; then call the calendar tool right after this message.`,
-  found: `${rewritePrefix} it says you picked or found options — «подобрал три места», «вот варианты» — but names none of them, and no search, read or report of this turn has returned any yet, so the list would follow as a second message. If a search you called in this same step has returned, send what it found now: each option with the facts that matter and its link, in this one message. Otherwise search first, then send the options in one message; until then say only what you started, never that options are picked. Keep the rest of the message.`,
+  found: `${rewritePrefix} it says you picked or found several options — «подобрал три места», «нашёл пять вариантов» — but names none of them, and no search, read or report of this turn has returned any yet, so the list would follow as a second message. Put the options themselves in this one message, each with the facts that matter and its link. If they have to be looked up, look them up first — a search you called in this same step has returned by now — and until then say only what you started, never that options are picked. Keep the rest of the message.`,
   report: `${rewritePrefix} it only announces what you are about to tell, and the browser report is already in front of you. Tell the person now, in this one message, what the run found or where the errand stands, with the facts the report names.`,
   restated: `${rewritePrefix} around its question it tells again the answer the person already got in this turn — the same places, numbers and links — and a second telling in other words reads as a different answer. Send the question alone, in one short sentence, without restating or changing the answer; if nothing needs asking, end the turn now without calling any tool.`,
   status: `${rewritePrefix} it only says you are on it or will write later, and no tool result of this turn backs it yet, so the answer would follow as a second message. If a tool you called in this same step is doing that work (a browser errand you started, a search), its result is in now: send again and say what it shows. Never start the same errand twice. Otherwise do the work with the tools it needs first, then send what you found in one message.`,
@@ -375,7 +376,9 @@ export function sendRefusal(
 
 /**
  * Whether a message shows the options it says it found: a picture, two lines
- * or more after the line that claims them — a list, bulleted or not — or a
+ * or more after the line that claims them — a list, bulleted or not — two
+ * items or more after a colon or a dash that follows the claim on its line
+ * («Подобрал три варианта: курица в сливочном соусе, терияки, …»), or a
  * number, a link or a name that neither the person's message nor the turn's
  * tool inputs — the errand handed to a browser, the queries — already carry.
  */
@@ -391,7 +394,21 @@ function showsOptions(
   return (
     message.attachments.length > 0 ||
     lines.length - claimed - 1 >= 2 ||
+    listsAfterClaim(lines[claimed] ?? "", turn) ||
     tellsBeyond(message, [turn.given])
+  );
+}
+
+/** Whether a claim's own line goes on, past a colon or a dash, to a list. */
+function listsAfterClaim(line: string, turn: ReturnType<typeof turnSends>) {
+  const parts = line.split(/:(?!\d)|\s[—–-]\s/u);
+  const at = parts.findIndex((part) => claimsResultsInHand(part, turn.actions));
+  const after = at === -1 ? undefined : parts.slice(at + 1).join(" ");
+  return (
+    after !== undefined &&
+    after
+      .split(/[,;]|\s(?:или|и|or|and)\s/u)
+      .filter((item) => /\p{L}{3}/u.test(item)).length >= 2
   );
 }
 

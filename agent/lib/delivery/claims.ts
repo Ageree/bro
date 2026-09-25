@@ -20,6 +20,7 @@ import { requestsOf } from "./novelty";
  * turns is left alone.
  */
 export const unperformedClaims = [
+  "approved",
   "browser",
   "calendar",
   "declined",
@@ -139,8 +140,8 @@ const actTools: Record<Act, readonly string[]> = {
  * model already reads. In RU d15 (25.09) «Созвон с Петровым — добавил в
  * календарь» went back as unperformed right after the person approved the
  * event, and the model, told a true message was false, later opened a report
- * with «Прошу прощения, ошибся в прошлом сообщении». Such a call counts as
- * gone through: had it failed, the model would be reading that failure.
+ * with «Прошу прощения, ошибся в прошлом сообщении». Such a call is neither
+ * done nor undone here: it may have failed just as well (`approvedPending`).
  */
 function approvedWithoutResult(messages: readonly ModelMessage[]) {
   const tools = new Map<string, string>();
@@ -246,14 +247,33 @@ function actOutcomes(
       else outcomes[act].refused = true;
     }
   }
-  for (const toolName of approvedWithoutResult(turn).values()) {
+  return outcomes;
+}
+
+/**
+ * What the calls the person approved in `turn`, still without a result,
+ * write: the actions, the calendar and a reminder. A claim of one of them
+ * goes back once with `approved`, which asks the model to check the result
+ * it is reading, rather than being judged true or false without it.
+ */
+function approvedPending(
+  turn: readonly ModelMessage[],
+  appsCalls: Set<string>
+) {
+  const pending = new Set<Act | "calendar" | "reminder">();
+  for (const [call, toolName] of approvedWithoutResult(turn)) {
+    if (calendarWriteTools.has(toolName) || appsCalls.has(call)) {
+      pending.add("calendar");
+    }
+    if (toolName === "schedules-create") pending.add("reminder");
     for (const act of acts) {
       if (toolName === "apps" || actTools[act].includes(toolName)) {
-        outcomes[act].done = true;
+        pending.add(act);
       }
     }
   }
-  return outcomes;
+  // Plain JSON: it rides in the durable closure of `send_message`.
+  return [...pending].toSorted();
 }
 
 /** Tools whose result tells the person nothing found: the reply itself. */
@@ -343,14 +363,13 @@ export function turnActions(
       codeTyped = true;
     }
   }
-  for (const [call, toolName] of approvedWithoutResult(turn)) {
-    if (calendarWriteTools.has(toolName) || appsCalls.has(call)) {
-      calendarWritten = true;
-    }
-    if (toolName === "schedules-create") reminderSet = true;
-  }
   return {
     acts: actOutcomes(turn, earlier, options.previousTurn),
+    /**
+     * What calls the person approved, whose results this step does not see
+     * yet, write (`approvedPending`).
+     */
+    approvedPending: approvedPending(turn, appsCalls),
     background: options.background,
     browserPending: browserPending && !options.background,
     calendarRefused,
@@ -611,8 +630,16 @@ export function promisesUntakenStep(
   actions: ReturnType<typeof turnActions>,
   request: string
 ) {
-  const calendar = !actions.calendarWritten && calendarAsked.test(request);
-  const reminder = !actions.reminderSet && reminderAsked.test(request);
+  // An approved call about to run has taken the step: taking it «now»
+  // again would make a second event.
+  const calendar =
+    !actions.calendarWritten &&
+    !actions.approvedPending.includes("calendar") &&
+    calendarAsked.test(request);
+  const reminder =
+    !actions.reminderSet &&
+    !actions.approvedPending.includes("reminder") &&
+    reminderAsked.test(request);
   return sentencesOf(text).some(
     (sentence) =>
       !onCondition.test(sentence) &&
@@ -815,7 +842,9 @@ function saysAct(
  * declined on its card, refused or failed in this turn; or it was the last
  * call of the action, made in the turn right before, and no call of it ever
  * went through; or, in a turn the person opened and asking for the action,
- * no call of it was made at all. A claim is left alone once a call of it
+ * no call of it was made at all. A call the person just approved whose
+ * result this step cannot see yet makes it `approved`: neither true nor
+ * false until the model checks that result. A claim is left alone once a call of it
  * went through in this turn, or an earlier one did: the message may recap
  * that. An order is checked only against a card the person declined in
  * their own turn: a report's turn tells what the run did, whatever a later
@@ -833,6 +862,7 @@ function actClaim(text: string, actions: ReturnType<typeof turnActions>) {
     }
     // «Остановил задачу» after a browser run was stopped in this turn.
     if (!asked && actions.acts.order.done) continue;
+    if (actions.approvedPending.includes(act)) return "approved";
     if (
       outcome.declined ||
       outcome.refused ||
@@ -852,40 +882,44 @@ function actClaim(text: string, actions: ReturnType<typeof turnActions>) {
 }
 
 /**
- * Verbs that say options were picked, with or without the options named
- * after them: «подобрал три места», «отобрал пару вариантов».
+ * Verbs Bro says he has searched out options with: «подобрал три места»,
+ * «нашёл пять вариантов», «отобрал пару отелей».
  */
-const pickedVerbs = new Set([
+const pickVerbs = new Set([
   "подобрал",
   "отобрал",
   "подыскал",
   "присмотрел",
+  "нашел",
+  "нашлось",
+  "нашлись",
   "picked",
   "shortlisted",
+  "found",
 ]);
 
 /**
- * Verbs that say options were found only when options follow them: «нашёл
- * три места», not «нашёл письмо» or «нашёл Сапсан на 2 октября».
+ * How many options: two and more. One option picked is a choice, often
+ * among what the person named («отобрал вариант на 9:30»), not a list.
  */
-const foundVerbs = new Set(["нашел", "нашлось", "нашлись", "found"]);
+const optionCount =
+  /^(?:\d+|два|две|три|четыре|пять|шесть|семь|восемь|девять|десять|пар[ау]|несколько|пяток|two|three|four|five|six|seven|eight|nine|ten|several|few|couple)$/u;
 
 /** What a pick of places, trips or people is made of. */
 const optionNoun =
   /^(?:вариант\p{L}*|мест\p{L}*|ресторан\p{L}*|кафе|бар\p{L}*|отел\p{L}*|гостиниц\p{L}*|рейс\p{L}*|поезд\p{L}*|билет\p{L}*|квартир\p{L}*|салон\p{L}*|барбершоп\p{L}*|клиник\p{L}*|врач\p{L}*|мастер\p{L}*|options?|places?|restaurants?|hotels?|flights?|trains?|spots?)$/u;
 
-/** «Вот варианты», «вот что нашёл», said with nothing after them. */
-const hereAre =
-  /(?:^|[^\p{L}])(?:вот (?:варианты|подборка|список|что нашел|что подобрал|что нашлось)|here are (?:the |some |a few )?(?:options|picks|places))(?![\p{L}])/u;
-
 /**
  * Words that make a verb after them not Bro's claim: a negation, another
- * person, a condition, a clause about something already named — «не
- * подобрал», «ты нашёл», «если нашлось», «из тех, что подобрал».
+ * person, a condition, advice, a clause about something already named — «не
+ * подобрал», «ты нашёл», «если нашлось», «я бы подобрал», «из тех, что
+ * подобрал».
  */
 const notAClaim = new Set([
   "не",
   "ни",
+  "бы",
+  "would",
   "что",
   "которые",
   "which",
@@ -913,39 +947,56 @@ const notAClaim = new Set([
 const claimVerbReach = 4;
 
 /**
- * Whether a clause says Bro has options in hand: one of the picked verbs, or
- * a found verb with an option within four words after it, among the first
- * words of the clause and after nothing that negates it or makes it someone
- * else's.
+ * Whether a clause says Bro has searched out several concrete options: one
+ * of the pick verbs among its first words, after nothing that negates it or
+ * makes it someone else's or advice, and a count of two or more with an
+ * option noun right after it («три места», «пару отелей», «три отличных
+ * места»).
  */
 function saysResultsInHand(clause: string) {
-  if (hereAre.test(clause)) return true;
   const words = wordsOf(clause);
   return words.slice(0, claimVerbReach).some((verb, at) => {
+    if (!pickVerbs.has(verb) || words[at + 1] === "бы") return false;
     if (words.slice(0, at).some((word) => notAClaim.has(word))) return false;
-    if (pickedVerbs.has(verb)) return true;
-    return (
-      foundVerbs.has(verb) &&
-      words.slice(at + 1, at + 5).some((word) => optionNoun.test(word))
+    const after = words.slice(at + 1, at + 5);
+    return after.some(
+      (word, index) =>
+        optionCount.test(word) &&
+        after.slice(index + 1, index + 3).some((next) => optionNoun.test(next))
     );
   });
 }
 
 /**
- * Whether a message of the person's turn says Bro has picked or found
- * options — «По ужину: подобрал три места в Казани» — while nothing this turn
- * or the one before could have found them: no search, read or report yet,
- * only an errand just handed to a browser (RU d13, 25.09: the places came 70
- * seconds later, in a second message). Whether the message names the options
- * after all is for the caller to judge: it knows what the person and the
- * turn's tools already named. A sentence about another time («вчера нашёл»)
- * and a promise («подберу», «ищу») claim nothing.
+ * A person asking to choose or compare: the answer picks among what they
+ * named («выбери между Пушкиным и Турандот» → «Подобрал Турандот»).
+ */
+const choiceAsked =
+  /(?<!\p{L})(?:выбер\p{L}*|выбрать|сравн\p{L}*|между|или|какой|какая|какое|какие|что лучше|choose|compare|which|or)(?!\p{L})/u;
+
+/**
+ * Whether a message of the person's turn says Bro has searched out several
+ * options — «По ужину: подобрал три места в Казани» — while nothing this
+ * turn or the one before could have found them: no search, read or report
+ * yet, only an errand just handed to a browser (RU d13, 25.09: the places
+ * came 70 seconds later, in a second message). A turn where the person asked
+ * to choose or compare is left alone: its answer picks among what they
+ * named. Whether the message names the options after all is for the caller
+ * to judge: it knows what the person and the turn's tools already named. A
+ * sentence about another time («вчера нашёл»), a promise («подберу», «ищу»),
+ * advice («я бы подобрал») and a single pick («отобрал вариант на 9:30»)
+ * claim nothing.
  */
 export function claimsResultsInHand(
   text: string,
   actions: ReturnType<typeof turnActions>
 ) {
-  if (actions.request === undefined || actions.background || actions.found) {
+  if (
+    actions.request === undefined ||
+    actions.background ||
+    actions.found ||
+    choiceAsked.test(actions.request)
+  ) {
     return false;
   }
   return clausesOf(text).some(saysResultsInHand);
@@ -981,7 +1032,10 @@ export function unperformedClaim(
           says(sentence, calendarPastVerbs))
       );
     });
-    if (claimed) return actions.calendarRefused ? "declined" : "calendar";
+    if (claimed) {
+      if (actions.approvedPending.includes("calendar")) return "approved";
+      return actions.calendarRefused ? "declined" : "calendar";
+    }
   }
   return actClaim(text, actions);
 }
