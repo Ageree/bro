@@ -734,6 +734,70 @@ async function startedRun(
   return { id: claim.run.id, leaseToken };
 }
 
+/**
+ * RU d12 (25.09): a morning summary set up on Friday could not be tried
+ * before Monday. One run now goes beside the regular ones.
+ */
+describe("a run now, beside the schedule", { timeout: 30_000 }, () => {
+  const alice = { userId: "alice", workspaceId: "workspace:alice" };
+  const bob = { userId: "bob", workspaceId: "workspace:bob" };
+
+  it("queues one run for now, keeps the next run, and never a second while it is on its way", async () => {
+    const { jobs } = await openDatabase();
+    const scope = await import("@db/services/scope");
+    await scope.ensureScope(alice);
+    await scope.ensureScope(bob);
+    const createdAt = new Date("2026-09-25T08:08:00.000Z");
+    const job = await jobs.createScheduledAgentJob(
+      alice,
+      {
+        conversationChannel: "telegram",
+        conversationId: "100::",
+        missedRunPolicy: "run_latest",
+        prompt: "Утренняя сводка.",
+        timing: {
+          frequency: "weekdays",
+          kind: "calendar",
+          localTime: "08:00",
+          timezone: "Europe/Moscow",
+        },
+      },
+      createdAt
+    );
+
+    // Only the person's own schedule.
+    expect(
+      await jobs.queueScheduledAgentRunNow(bob, job.id, createdAt)
+    ).toBeUndefined();
+
+    const trialAt = new Date("2026-09-25T08:10:00.000Z");
+    const trial = await jobs.queueScheduledAgentRunNow(alice, job.id, trialAt);
+    expect(trial).toMatchObject({ queued: true });
+    expect(
+      await jobs.queueScheduledAgentRunNow(
+        alice,
+        job.id,
+        new Date("2026-09-25T08:10:30.000Z")
+      )
+    ).toEqual({ queued: false, runId: trial?.runId });
+
+    const [claim] = await jobs.claimReadyScheduledAgentRuns({
+      leaseForMs: 5 * 60_000,
+      limit: 25,
+      now: trialAt,
+    });
+    expect(claim).toMatchObject({
+      job: { id: job.id },
+      run: { id: trial?.runId, scheduledFor: trialAt },
+    });
+    // Monday 08:00 in Moscow stays the next regular run.
+    expect(await jobs.getScheduledAgentJob(alice, job.id)).toMatchObject({
+      lastRunAt: null,
+      nextRunAt: new Date("2026-09-28T05:00:00.000Z"),
+    });
+  });
+});
+
 describe("the watchdog for stuck workers", { timeout: 30_000 }, () => {
   const alice = { userId: "alice", workspaceId: "workspace:alice" };
   const dueAt = new Date("2026-09-01T05:00:00.000Z");

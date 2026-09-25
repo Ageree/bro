@@ -33,6 +33,7 @@ import googleConnect, {
   connectGoogle,
   googleAccessAbilities,
 } from "@agent/tools/google_connect";
+import { googleAccessOptions } from "@agent/lib/privacy/google-access";
 
 const scope = accessScopeForUser("better-auth:user-1");
 
@@ -112,23 +113,23 @@ describe("connect_google execution", () => {
       toolkit: "googlesuper",
     });
 
-    await expect(
-      connectGoogle.execute(connectInput, toolContext())
-    ).resolves.toEqual({
+    const result = await connectGoogle.execute(connectInput, toolContext());
+    expect(result).toMatchObject({
       abilities: googleAccessAbilities.full,
       access: "full",
       account: "ada@example.com",
+      options: googleAccessOptions("full"),
       status: "connected",
     });
+    expect(result).toHaveProperty("reply", expect.stringContaining("options"));
     expect(linkRequests()).toEqual([]);
     // Bro's own checks, parked on the missing grant, resume right away.
     expect(proactive.wake).toHaveBeenCalledExactlyOnceWith(scope);
   });
 
   it("mints an authorization link that returns to the workspace page", async () => {
-    await expect(
-      connectGoogle.execute(connectInput, toolContext())
-    ).resolves.toEqual({
+    const result = await connectGoogle.execute(connectInput, toolContext());
+    expect(result).toMatchObject({
       abilities: googleAccessAbilities.full,
       access: "full",
       expiresInMinutes: 10,
@@ -136,6 +137,11 @@ describe("connect_google execution", () => {
       status: "authorize",
       url: "https://connect.composio.dev/link/lk_1",
     });
+    // RU d14: a first connection names the read-only level too.
+    expect(result).toHaveProperty(
+      "options",
+      expect.stringContaining("только на чтение")
+    );
     expect(revokes()).toEqual([]);
     expect(settings.select).not.toHaveBeenCalled();
     expect(linkRequests()).toEqual([
@@ -156,25 +162,27 @@ describe("connect_google execution", () => {
 
     await expect(
       connectGoogle.execute(connectInput, toolContext())
-    ).resolves.toEqual({
+    ).resolves.toMatchObject({
       abilities: googleAccessAbilities.read_only,
       access: "read_only",
       account: null,
+      options: googleAccessOptions("read_only"),
       status: "connected",
     });
   });
 
   it("connects read-only when asked, storing the level before the link", async () => {
-    await expect(
-      connectGoogle.execute(
-        { access: "read_only", action: "connect" },
-        toolContext()
-      )
-    ).resolves.toMatchObject({
+    const result = await connectGoogle.execute(
+      { access: "read_only", action: "connect" },
+      toolContext()
+    );
+    expect(result).toMatchObject({
       access: "read_only",
       previousGrantRevoked: false,
       status: "authorize",
     });
+    // The level the person picked is not argued with.
+    expect(result).not.toHaveProperty("options");
     expect(revokes()).toEqual([]);
     expect(settings.select).toHaveBeenCalledExactlyOnceWith(scope, "read_only");
     expect(linkRequests()).toEqual([
@@ -225,15 +233,31 @@ describe("connect_google execution", () => {
       toolkit: "googlesuper",
     });
 
-    await expect(
-      connectGoogle.execute({ action: "status" }, toolContext())
-    ).resolves.toEqual({
+    const status = await connectGoogle.execute(
+      { action: "status" },
+      toolContext()
+    );
+    expect(status).toMatchObject({
       abilities: googleAccessAbilities.full,
       access: "full",
       account: "ada@example.com",
+      options: googleAccessOptions("full"),
       status: "connected",
     });
+    expect(status).toHaveProperty(
+      "reply",
+      expect.stringContaining("Keep the options in the reply")
+    );
     expect(linkRequests()).toEqual([]);
+    // RU d14 (25.09): the person heard only «подключён с полным доступом».
+    // The narrower level and the way out are told as the person's options.
+    expect(googleAccessOptions("full")).toContain("«только чтение»");
+    expect(googleAccessOptions("full")).toContain("«отключи Google»");
+    expect(googleAccessOptions("full")).toContain("в кабинете");
+    // The sign-in link is the only address this tool hands over.
+    expect(googleAccessOptions("full")).not.toMatch(/https?:\/\//u);
+    expect(googleAccessOptions("read_only")).toContain("«отключи Google»");
+    expect(googleAccessAbilities.full).not.toContain("connect_google");
     // Read-only is Bro's own rule, said as such, whatever Google showed.
     expect(googleAccessAbilities.read_only).toContain("держит сам Бро");
     expect(googleAccessAbilities.full).toContain("карточки подтверждения");

@@ -9,6 +9,7 @@ import { z } from "zod";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { resolveModeValue } from "@agent/lib/mode";
 import { comparableMemoryText } from "@agent/lib/memory/profile";
+import { afterForgetting } from "@agent/lib/privacy/removal";
 import { forgetAllCardFits } from "@shared/chat/approval-card";
 import {
   findWorkstreams,
@@ -204,6 +205,7 @@ export default defineMemory({
                 note: "The workstreams in changed were renamed after the card and were not forgotten.",
               }),
               ...(missing.length > 0 && { missing }),
+              ...afterForgetting(),
             };
           },
         }),

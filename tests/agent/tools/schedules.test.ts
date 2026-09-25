@@ -11,6 +11,8 @@ import type {
   getScheduledAgentJob,
   getScheduledAgentRunInput,
   listScheduledAgentJobs,
+  queueScheduledAgentRunNow,
+  reportConversations,
   submitScheduledAgentRunAnswer,
   updateScheduledAgentJob,
 } from "@db/services/scheduled-agent-jobs";
@@ -21,6 +23,8 @@ const services = vi.hoisted(() => ({
   getJob: vi.fn<typeof getScheduledAgentJob>(),
   getInput: vi.fn<typeof getScheduledAgentRunInput>(),
   list: vi.fn<typeof listScheduledAgentJobs>(),
+  report: vi.fn<typeof reportConversations>(),
+  runNow: vi.fn<typeof queueScheduledAgentRunNow>(),
   submitAnswer: vi.fn<typeof submitScheduledAgentRunAnswer>(),
   timeZone: vi.fn<typeof readWorkspaceTimeZone>(),
   update: vi.fn<typeof updateScheduledAgentJob>(),
@@ -31,6 +35,8 @@ vi.mock("@db/services/scheduled-agent-jobs", () => ({
   getScheduledAgentJob: services.getJob,
   getScheduledAgentRunInput: services.getInput,
   listScheduledAgentJobs: services.list,
+  queueScheduledAgentRunNow: services.runNow,
+  reportConversations: services.report,
   submitScheduledAgentRunAnswer: services.submitAnswer,
   updateScheduledAgentJob: services.update,
 }));
@@ -65,6 +71,18 @@ describe("schedule tools", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null)));
     services.submitAnswer.mockResolvedValue(true);
     services.timeZone.mockResolvedValue("Asia/Yekaterinburg");
+    // Reports go back to the chat the schedule was made in, unless a test
+    // says the person writes from a messenger elsewhere.
+    services.report.mockImplementation((job) =>
+      Promise.resolve({
+        delivery: {
+          conversationChannel: job.conversationChannel,
+          conversationId: job.conversationId,
+          replyAnchorMessageId: null,
+        },
+        fallbacks: [],
+      })
+    );
   });
 
   // RU d12 (25.09): «сколько ехать до работы на машине» became «во сколько
@@ -336,6 +354,7 @@ describe("schedule tools", () => {
 
     expect(inputProperties(createSchedule.inputSchema)).toEqual([
       "missedRunPolicy",
+      "missingInputs",
       "prompt",
       "timing",
     ]);
@@ -355,7 +374,14 @@ describe("schedule tools", () => {
         },
       }
     );
-    expect(result).toEqual(scheduleSummary(job));
+    expect(result).toMatchObject({
+      ...scheduleSummary(job),
+      deliversTo: "iMessage, this chat",
+    });
+    expect(result).toHaveProperty(
+      "reply",
+      expect.stringContaining("iMessage, this chat")
+    );
   });
 
   it("sets a recurring schedule in the person's profile zone when the model names none", async () => {
@@ -489,6 +515,144 @@ describe("schedule tools", () => {
     );
   });
 
+  // RU d12 (25.09): the confirmation of a morning summary said neither where
+  // it would arrive, nor how to move or pause it, nor that the drive would be
+  // missing until the work address came, and offered no trial run.
+  it("tells where a summary arrives, how to change it, and what it lacks", async () => {
+    const job = {
+      ...scheduledJob({
+        conversationChannel: "eve",
+        conversationId: "session-1",
+      }),
+      prompt:
+        "Утренняя сводка: события календаря, письма, на которые я не ответил, погода и сколько ехать до работы на машине.",
+    };
+    services.create.mockResolvedValue(job);
+    services.report.mockResolvedValue({
+      delivery: {
+        conversationChannel: "telegram",
+        conversationId: "telegram:dm:42",
+        replyAnchorMessageId: null,
+      },
+      fallbacks: [],
+    });
+
+    const result = await createSchedule.execute(
+      {
+        missedRunPolicy: "run_latest",
+        missingInputs: ["адрес работы", ""],
+        prompt: job.prompt,
+        timing: { frequency: "weekdays", kind: "calendar", localTime: "08:00" },
+      },
+      toolContext("schedules-create", "test", "eve")
+    );
+
+    expect(result).toMatchObject({
+      deliversTo:
+        "Telegram, the messenger the person last wrote from, not this chat",
+    });
+    const reply = "reply" in result ? result.reply : "";
+    expect(reply).toContain("«сдвинь на 7:30»");
+    expect(reply).toContain("«на праздники не присылай»");
+    expect(reply).toContain("«поставь на паузу»");
+    expect(reply).toContain("schedules-update with runNow true");
+    expect(reply).toContain("never «с учётом пробок»");
+    expect(reply).toContain("Until the person gives «адрес работы»");
+    // An empty entry a model filled in names nothing missing.
+    expect(reply).not.toContain("«»");
+  });
+
+  it("offers no trial run and no traffic promise for a one-time reminder", async () => {
+    const job = {
+      ...scheduledJob(),
+      prompt: "Напомнить позвонить маме.",
+      timing: { at: "2026-09-26T04:00:00.000Z", kind: "once" as const },
+    };
+    services.create.mockResolvedValue(job);
+
+    const result = await createSchedule.execute(
+      {
+        missedRunPolicy: "run_latest",
+        prompt: job.prompt,
+        timing: { at: "2026-09-26T09:00", kind: "once" },
+      },
+      toolContext("schedules-create")
+    );
+
+    const reply = "reply" in result ? result.reply : "";
+    expect(reply).toContain("iMessage, this chat");
+    expect(reply).not.toContain("runNow");
+    expect(reply).not.toContain("сдвинь");
+    expect(reply).not.toContain("пробок");
+  });
+
+  it("names the web chat when the person has no messenger", async () => {
+    const job = scheduledJob({
+      conversationChannel: "eve",
+      conversationId: "session-1",
+    });
+    services.create.mockResolvedValue(job);
+
+    const result = await createSchedule.execute(
+      {
+        missedRunPolicy: "run_latest",
+        prompt: job.prompt,
+        timing: { frequency: "daily", kind: "calendar", localTime: "09:00" },
+      },
+      toolContext("schedules-create", "test", "eve")
+    );
+
+    expect(result).toHaveProperty(
+      "deliversTo",
+      expect.stringContaining("this web chat")
+    );
+  });
+
+  it("runs a schedule once now on the person's yes to a trial", async () => {
+    const job = scheduledJob();
+    services.getJob.mockResolvedValue(job);
+    services.runNow.mockResolvedValue({ queued: true, runId: "run-trial" });
+
+    const result = await updateSchedule.execute(
+      { id: job.id, runNow: true },
+      toolContext("schedules-update")
+    );
+
+    // Its regular runs stay as they are: nothing about the schedule changes.
+    expect(services.update).not.toHaveBeenCalled();
+    expect(services.runNow).toHaveBeenCalledExactlyOnceWith(
+      { userId: "user-1", workspaceId: "workspace-1" },
+      job.id
+    );
+    expect(result).toMatchObject(scheduleSummary(job));
+    expect(result).toHaveProperty(
+      "runNow",
+      expect.stringContaining("iMessage, this chat")
+    );
+
+    // Asked again while that run is on its way: nothing new starts.
+    services.runNow.mockResolvedValue({ queued: false, runId: "run-trial" });
+    expect(
+      await updateSchedule.execute(
+        { id: job.id, runNow: true },
+        toolContext("schedules-update")
+      )
+    ).toHaveProperty("runNow", expect.stringContaining("already on its way"));
+  });
+
+  it("runs nothing when the same call pauses or deletes the schedule", async () => {
+    const job = { ...scheduledJob(), status: "paused" as const };
+    services.update.mockResolvedValue(job);
+
+    const result = await updateSchedule.execute(
+      { id: job.id, runNow: true, status: "paused" },
+      toolContext("schedules-update")
+    );
+
+    expect(services.runNow).not.toHaveBeenCalled();
+    expect(result).not.toHaveProperty("runNow");
+  });
+
   it("lists schedules through a dedicated empty-input tool", async () => {
     const job = scheduledJob();
     services.list.mockResolvedValue([job]);
@@ -522,6 +686,7 @@ describe("schedule tools", () => {
     expect(inputProperties(updateSchedule.inputSchema)).toEqual([
       "id",
       "prompt",
+      "runNow",
       "status",
       "timing",
     ]);

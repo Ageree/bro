@@ -31,6 +31,8 @@ import {
 } from "@agent/lib/memory/profile";
 import { withApprovalCard } from "@shared/chat/approval-card";
 import { memoryContentSchema } from "@shared/memory/schema";
+import { fakeComposio } from "@tests/helpers/composio";
+import { afterForgetting } from "@agent/lib/privacy/removal";
 import {
   claimMemorySyncJobs,
   completeMemorySyncJob,
@@ -544,12 +546,21 @@ describe("forgetting everything at once", () => {
     const tools = await profileMemory.provider.tools(session);
     if (!tools) throw new Error("Expected profile tools.");
 
-    expect(
-      await tools.forget_all.execute(
-        { records: everything },
-        { ...session, callId: "forget-all", toolName: "profile__forget_all" }
-      )
-    ).toMatchObject({ changed: [2], forgotten: [0, 1] });
+    const result = await tools.forget_all.execute(
+      { records: everything },
+      { ...session, callId: "forget-all", toolName: "profile__forget_all" }
+    );
+    expect(result).toMatchObject({ changed: [2], forgotten: [0, 1] });
+    // RU d14 (25.09): what stays outside memory, and how each part goes, is
+    // told in the same message, without asking whether to remove it.
+    expect(result).toMatchObject(afterForgetting());
+    const outside = afterForgetting().outsideMemory.join("\n");
+    expect(outside).toContain("«удали мой адрес»");
+    expect(outside).toContain("«отключи Google»");
+    expect(outside).toContain("«останови все расписания»");
+    expect(outside).toContain("https://example.com/vault");
+    expect(outside).toContain("Историю чатов");
+    expect(afterForgetting().reply).toContain("Do not ask whether to remove");
     expect(
       (await listCurrentMemories(alice, "scope-a")).map(
         (record) => record.content?.text
@@ -595,6 +606,39 @@ describe("the person's rules in the profile", () => {
       expect.stringContaining("name in the reply the ones you applied"),
       "0 (revision 1, preference): Любит суши.",
     ]);
+  });
+
+  // RU d14 (25.09): after «никому не пиши без моего ок» Bro never said that
+  // Google itself could be narrowed to read-only.
+  it("offers read-only Google on a rule against sending, not on other rules", async () => {
+    const composio = fakeComposio();
+    composio.connect({ toolkit: "googlesuper", userId: alice.userId });
+    const session = profileToolsContext("this-session");
+    const tools = await profileMemory.provider.tools(session);
+    if (!tools) throw new Error("Expected profile tools.");
+    const save = (text: string, callId: string) =>
+      tools.save_memory.execute(
+        memoryContentSchema.parse({ category: "rule", text }),
+        {
+          ...session,
+          callId,
+          toolName: "profile__save_memory",
+        }
+      );
+
+    try {
+      expect(
+        await save(
+          "Никогда ничего не оплачивать и никому не писать без моего ок.",
+          "save-rule"
+        )
+      ).toHaveProperty("note", expect.stringContaining("«только чтение»"));
+      expect(
+        await save("Ничего не оплачивать без моего ок.", "save-payment-rule")
+      ).not.toHaveProperty("note");
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("reads as it always did while the person has set no rule or preference", () => {

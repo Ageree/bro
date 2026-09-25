@@ -26,6 +26,7 @@ import {
   saveWorkstream,
 } from "@db/services/workstreams";
 import workstreamMemory from "@agent/memory/workstreams";
+import { afterForgetting } from "@agent/lib/privacy/removal";
 import { withApprovalCard } from "@shared/chat/approval-card";
 import {
   saveWorkstreamSchema,
@@ -297,14 +298,17 @@ describe("workstream memory", () => {
         callId: "forget-all",
         toolName: "workstreams__forget_all",
       })
-    ).toEqual({ forgotten: ["autumn-trip", "uk-visa"] });
+    ).toEqual({
+      forgotten: ["autumn-trip", "uk-visa"],
+      ...afterForgetting(),
+    });
     // Nothing saved under an id: nothing reported as forgotten.
     expect(
       await laterTools.forget_all.execute(
         { workstreams: [{ id: "none", title: "none" }] },
         { ...later, callId: "forget-none", toolName: "workstreams__forget_all" }
       )
-    ).toEqual({ forgotten: [], missing: ["none"] });
+    ).toMatchObject({ forgotten: [], missing: ["none"] });
     expect(await readWorkstream(alice, "key-a", "autumn-trip")).toBeNull();
     expect(await readWorkstream(alice, "key-a", "uk-visa")).toBeNull();
   });

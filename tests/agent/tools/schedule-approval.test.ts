@@ -82,4 +82,25 @@ describe("a schedule set up outside the person's own turn", () => {
       )
     );
   });
+
+  it("names a run now on the card, so it does not read as an empty change", () => {
+    const card = withApprovalCard(
+      {
+        action: {
+          input: { id: "job-1", runNow: true },
+          toolName: "schedules-update",
+        },
+        kind: "tool-approval",
+        prompt: "Approve tool call: schedules-update",
+      },
+      "ru"
+    );
+
+    expect(card.prompt).toBe(
+      [
+        "Изменить задачу по расписанию:",
+        "Запустить один раз сейчас, вне расписания",
+      ].join("\n")
+    );
+  });
 });

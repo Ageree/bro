@@ -89,6 +89,7 @@ const cardText = {
       "Standing permission — such errands go ahead without asking from now on:",
     personalData: "Details sent",
     scheduleCreate: "Set up a scheduled task:",
+    scheduleRunNow: "Run it once now, beside its regular runs",
     scheduleStatus: "Status",
     scheduleStatuses: {
       active: "resume",
@@ -170,6 +171,7 @@ const cardText = {
       "Постоянное разрешение — такие поручения дальше без подтверждения:",
     personalData: "Какие данные уйдут",
     scheduleCreate: "Поставить задачу по расписанию:",
+    scheduleRunNow: "Запустить один раз сейчас, вне расписания",
     scheduleStatus: "Статус",
     scheduleStatuses: {
       active: "возобновить",
@@ -867,6 +869,7 @@ function connectedAppReadPrompt(
 
 const scheduleCallSchema = z.object({
   prompt: z.string().optional(),
+  runNow: z.boolean().optional(),
   status: z.enum(["active", "paused", "deleted"]).optional(),
   timing: z
     .object({
@@ -923,6 +926,7 @@ function schedulePrompt(
     call.status === undefined
       ? undefined
       : `${text.scheduleStatus}: ${text.scheduleStatuses[call.status]}`,
+    call.runNow === true ? text.scheduleRunNow : undefined,
   ]
     .filter((line) => line !== undefined)
     .join("\n");

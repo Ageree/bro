@@ -11,6 +11,8 @@ import { z } from "zod";
 import { resolveModeValue, startedByPerson } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { searchIndexedMemories } from "@agent/lib/memory/supermemory";
+import { ruleAccessNote } from "@agent/lib/privacy/google-access";
+import { afterForgetting } from "@agent/lib/privacy/removal";
 import { forgetAllCardFits } from "@shared/chat/approval-card";
 import {
   findMemories,
@@ -269,6 +271,7 @@ async function forgetNamedMemories(
       note: "The memories in changed were corrected after the card and were not forgotten.",
     }),
     ...(missing.length > 0 && { missing }),
+    ...afterForgetting(),
   };
 }
 
@@ -350,13 +353,19 @@ export function createProfileMemoryProvider(
               { category: input.category }
             );
             if (refusal !== undefined) return { note: refusal, saved: false };
-            return saveMemory(
+            const saved = await saveMemory(
               scope,
               scopeKey,
               input,
               `${toolContext.session.id}:${toolContext.callId}`,
               source
             );
+            // A rule against sending can be made binding at the Google grant.
+            const note =
+              input.category === "rule"
+                ? await ruleAccessNote(scope, input.text)
+                : undefined;
+            return note === undefined ? saved : { ...saved, note };
           },
         }),
         semantic_find: defineTool({

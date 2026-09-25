@@ -201,6 +201,56 @@ export async function updateScheduledAgentJob(
 }
 
 /**
+ * Queues one run of the person's schedule for now, beside its regular runs:
+ * a trial of a morning summary before its first morning (RU d12, 25.09), or
+ * «пришли сводку ещё раз». The schedule's next run stays as it was. While an
+ * earlier run of it is still on its way nothing more is queued, so asking
+ * twice sends one; `queued` false then names that run.
+ */
+export async function queueScheduledAgentRunNow(
+  scope: AccessScope,
+  id: string,
+  now = new Date()
+) {
+  return db.transaction(async (transaction) => {
+    const [job] = await transaction
+      .select({ id: scheduledAgentJobs.id })
+      .from(scheduledAgentJobs)
+      .where(and(eq(scheduledAgentJobs.id, id), ownedTasks(scope)))
+      .for("update");
+    if (!job) return undefined;
+    const [open] = await transaction
+      .select({ id: scheduledAgentRuns.id })
+      .from(scheduledAgentRuns)
+      .where(
+        and(
+          eq(scheduledAgentRuns.jobId, job.id),
+          inArray(scheduledAgentRuns.status, [
+            "queued",
+            "running",
+            "waiting_for_input",
+          ])
+        )
+      )
+      .limit(1);
+    if (open) return { queued: false, runId: open.id };
+    const [run] = await transaction
+      .insert(scheduledAgentRuns)
+      .values({
+        createdAt: now,
+        jobId: job.id,
+        scheduledFor: now,
+        updatedAt: now,
+      })
+      .onConflictDoNothing({
+        target: [scheduledAgentRuns.jobId, scheduledAgentRuns.scheduledFor],
+      })
+      .returning({ id: scheduledAgentRuns.id });
+    return { queued: run !== undefined, runId: run?.id ?? null };
+  });
+}
+
+/**
  * Moves the person's calendar schedules kept in their old timezone to the new
  * one, so «в 10 утра» stays 10:00 where they live now. A schedule set in
  * another zone on purpose («по Нью-Йорку») keeps its zone, and a one-time
@@ -1101,8 +1151,14 @@ export async function absorbHeldProactiveReports(
  * The reply anchor points into the schedule's own chat and goes along only
  * when the report lands there.
  */
-async function reportConversations(
-  job: typeof scheduledAgentJobs.$inferSelect
+export async function reportConversations(
+  job: Pick<
+    typeof scheduledAgentJobs.$inferSelect,
+    | "conversationChannel"
+    | "conversationId"
+    | "replyAnchorMessageId"
+    | "workspaceId"
+  >
 ) {
   const own = {
     conversationChannel: job.conversationChannel,
