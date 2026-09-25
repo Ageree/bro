@@ -1615,6 +1615,37 @@ describe("browser_task scoping", () => {
     warn.mockRestore();
   });
 
+  /**
+   * RU d15 (25.09): «скинь адрес того барбера» ten minutes into the search
+   * got only «ещё ищу», and the address came with the outcome 20 minutes on.
+   */
+  it("has what can be found now answered from a quick search while the run works", async () => {
+    readBrowserRunForScope.mockResolvedValue(browserRunRow());
+    const { browserTask } = await import("@agent/tools/browser_task");
+
+    const running = await browserTask.execute(
+      { action: "status", runId },
+      toolContext("better-auth:alice")
+    );
+
+    expect(running).toMatchObject({ status: "running" });
+    expect(continuationNote(running)).toContain(
+      "answer now what the person asked that you can find yourself — an address, a name, a phone, a few candidates — from a quick web_search"
+    );
+    expect(continuationNote(running)).toContain(
+      "never answer only that it is still searching"
+    );
+
+    readBrowserRunForScope.mockResolvedValue(
+      browserRunRow(new Date(), "Записал на 19:00.")
+    );
+    const done = await browserTask.execute(
+      { action: "status", runId },
+      toolContext("better-auth:alice")
+    );
+    expect(continuationNote(done)).not.toContain("quick web_search");
+  });
+
   it("requires an authenticated conversation", async () => {
     const { browserTask } = await import("@agent/tools/browser_task");
     const context = toolContext("better-auth:bob");

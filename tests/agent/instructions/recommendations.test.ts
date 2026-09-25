@@ -54,6 +54,40 @@ describe("recommendation instructions", () => {
   });
 
   /**
+   * RU 25.09: in d03 a headline over an option nobody checked, a walk nobody
+   * measured, hours for one place of three, restoran.cafe's «мы не
+   * бронируем» taken for the cafe's, and a chain kept as the third; in d13
+   * the saved «свинину не ем» never applied; in d15 only «ещё ищу» while a
+   * run searched.
+   */
+  it("keeps each option's facts its own, applies saved preferences and answers while a run searches", async () => {
+    const content = await resolveContent("photon-imessage");
+
+    expect(content).toContain(
+      "Факт варианта — только из результата про этот вариант"
+    );
+    expect(content).toContain(
+      "у каждого варианта — минуты его строки, кого не измерил, тому минут не пиши"
+    );
+    expect(content).toContain("Результат с `uncertain` фактом не выдавай");
+    expect(content).toContain("Часы — на день и час просьбы");
+    expect(content).toContain(
+      "Фраза обо всех сразу («все с вегетарианским меню и чеком до 2500») — только если это подтверждено у каждого"
+    );
+    expect(content).toContain(
+      "«Мы не бронируем» на агрегаторе (restoran.cafe и т. п.) — про сам агрегатор, а не про место"
+    );
+    expect(content).toContain(
+      "ищи вместо него дальше, а не ставь третьим с оговоркой"
+    );
+    expect(content).toContain(
+      "отсей по ним и назови в ответе, что учёл («учёл: без свинины»)"
+    );
+    expect(content).toContain("пометив «пока не проверено»");
+    expect(content).toContain("Одного «ещё ищу» мало");
+  });
+
+  /**
    * One question, then one card: «Проверить стол?» and then «бронируй?»
    * would be two questions before the card, against the one-question rule.
    */

@@ -591,18 +591,41 @@ describe("the person's rules in the profile", () => {
       "## Rules the user set",
       expect.stringContaining("a rule only holds you back"),
       "1 (revision 1, rule): Никогда ничего не оплачивать и никому не писать без моего ок.",
-      "## Other records",
+      "## The user's preferences",
+      expect.stringContaining("name in the reply the ones you applied"),
       "0 (revision 1, preference): Любит суши.",
     ]);
   });
 
-  it("reads as it always did while the person has set no rule", () => {
+  it("reads as it always did while the person has set no rule or preference", () => {
     const profile = renderProfile([
       currentRecord(0, { text: "Живёт в Казани." }),
     ]);
 
     expect(profile).not.toContain("##");
     expect(profile).toContain("0 (revision 1, fact): Живёт в Казани.");
+  });
+
+  /**
+   * RU d13 (25.09): «свинину не ем» was in memory, and neither dinner pick
+   * a week later filtered by it or said so.
+   */
+  it("shows preferences apart, as conditions of every pick they bear on", () => {
+    const profile = renderProfile([
+      currentRecord(0, { text: "Живёт в Казани." }),
+      currentRecord(1, {
+        category: "preference",
+        text: "В поезде только нижняя полка, в самолёте у прохода, свинину не ест.",
+      }),
+    ]).split("\n");
+
+    expect(profile.slice(2)).toEqual([
+      "## The user's preferences",
+      "When you recommend, search, book or buy for the user (food, places, trips, seats, gifts), each preference that bears on it is a condition like one named in the message: filter by it, put it into a browser errand, and name in the reply the ones you applied («учёл: без свинины»).",
+      "1 (revision 1, preference): В поезде только нижняя полка, в самолёте у прохода, свинину не ест.",
+      "## Other records",
+      "0 (revision 1, fact): Живёт в Казани.",
+    ]);
   });
 
   it("keeps the rules when the facts no longer fit", () => {

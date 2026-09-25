@@ -79,14 +79,20 @@ type PlaceKind = "area" | "place" | "point" | "street";
 /** A place found on the map, with the name that says which one it is. */
 export interface MapPlace {
   readonly countryCode: string | undefined;
+  /** The district it lies in, such as «Юдино, Кировский район». */
+  readonly district: string | undefined;
   /** The building the map matched, such as «12 с7», when it has one. */
   readonly houseNumber: string | undefined;
+  /** How well known the map takes it to be, 0 to 1. */
+  readonly importance: number | undefined;
   readonly kind: PlaceKind;
   readonly label: string;
   readonly lat: number;
   readonly lon: number;
   /** The place's own name, such as «Городская поликлиника № 2». */
   readonly name: string | undefined;
+  /** What it is on the map, as an OSM tag: «railway:station», «amenity:cafe». */
+  readonly tag: string | undefined;
 }
 
 /** Geocoder requests one call may still make; shared by all its places. */
@@ -126,20 +132,25 @@ const nominatimResultsSchema = z.array(
     address: z
       .object({
         city: z.string().optional(),
+        city_district: z.string().optional(),
         country_code: z.string().optional(),
         house_number: z.string().optional(),
         road: z.string().optional(),
         state: z.string().optional(),
+        suburb: z.string().optional(),
         town: z.string().optional(),
         village: z.string().optional(),
       })
       .optional(),
     addresstype: z.string().optional(),
+    category: z.string().optional(),
     display_name: z.string(),
+    importance: z.coerce.number().optional(),
     lat: z.coerce.number(),
     lon: z.coerce.number(),
     name: z.string().optional(),
     place_rank: z.coerce.number().optional(),
+    type: z.string().optional(),
   })
 );
 
@@ -197,7 +208,7 @@ const nextRequestAt = new Map<string, number>();
 const coolingUntil = new Map<string, number>();
 const rememberedPlaces = new Map<
   string,
-  { readonly place: MapPlace | undefined; readonly until: number }
+  { readonly places: readonly MapPlace[]; readonly until: number }
 >();
 const rememberedRoutes = new Map<
   string,
@@ -370,12 +381,15 @@ function coordinates(text: string): MapPlace | undefined {
   if (Math.abs(lat) > 90 || Math.abs(lon) > 180) return undefined;
   return {
     countryCode: undefined,
+    district: undefined,
     houseNumber: undefined,
+    importance: undefined,
     kind: "point",
     label: `${lat.toFixed(5)}, ${lon.toFixed(5)}`,
     lat,
     lon,
     name: undefined,
+    tag: undefined,
   };
 }
 
@@ -394,25 +408,82 @@ function placeLabel(result: NominatimResult) {
   return [...new Set(parts)].join(", ") || result.display_name;
 }
 
+/** «Юдино, Кировский район»: where in the city a place lies. */
+function districtOf(result: NominatimResult) {
+  const parts = [result.address?.suburb, result.address?.city_district].filter(
+    (part): part is string => part !== undefined && part.length > 0
+  );
+  return parts.length > 0 ? [...new Set(parts)].join(", ") : undefined;
+}
+
+function mapPlace(result: NominatimResult): MapPlace {
+  return {
+    countryCode: result.address?.country_code?.toLowerCase(),
+    district: districtOf(result),
+    houseNumber: result.address?.house_number,
+    importance: result.importance,
+    kind: placeKind(result),
+    label: placeLabel(result),
+    lat: result.lat,
+    lon: result.lon,
+    name: result.name === "" ? undefined : result.name,
+    tag:
+      result.category && result.type
+        ? `${result.category}:${result.type}`
+        : undefined,
+  };
+}
+
+/** OSM tags whose own words would mislead: «aeroway:aerodrome» is an airport. */
+const tagNames: ReadonlyMap<string, string> = new Map([
+  ["aeroway:aerodrome", "airport"],
+  ["aeroway:terminal", "airport terminal"],
+  ["amenity:bus_station", "bus station"],
+  ["amenity:ferry_terminal", "ferry terminal"],
+  ["building:train_station", "railway station building"],
+  ["highway:bus_stop", "bus stop"],
+  ["public_transport:platform", "public transport stop"],
+  ["public_transport:stop_position", "public transport stop"],
+  ["railway:halt", "railway halt"],
+  ["railway:platform", "railway platform"],
+  ["railway:station", "railway station"],
+  ["railway:stop", "railway stop"],
+  ["railway:subway_entrance", "metro entrance"],
+  ["railway:tram_stop", "tram stop"],
+]);
+
+/** What the place is, in words: «railway station», «cafe», «building». */
+export function placeType(place: MapPlace) {
+  if (place.tag === undefined) return undefined;
+  const known = tagNames.get(place.tag);
+  if (known !== undefined) return known;
+  const [category = "", type = ""] = place.tag.split(":");
+  return type === "yes" || type.length === 0
+    ? category
+    : type.replaceAll("_", " ");
+}
+
 /**
- * Finds one place by address, name or «lat, lon». With `near`, a place
- * around it ranks first, so «Кафе Пушкинъ» is looked for in the start's city
- * before the rest of the world. `undefined` means the map has no such place.
- * A lookup that has to go to the geocoder spends one of `budget`.
+ * Finds places by address, name or «lat, lon», best first as the map ranks
+ * them, at most `limit`. With `near`, a place around it ranks first, so
+ * «Кафе Пушкинъ» is looked for in the start's city before the rest of the
+ * world. An empty list means the map has no such place. A lookup that has
+ * to go to the geocoder spends one of `budget`.
  */
-export async function findPlace(
+export async function findPlaces(
   query: string,
   near: MapPlace | undefined,
   budget: LookupBudget,
-  signal: AbortSignal
-) {
+  signal: AbortSignal,
+  limit = 1
+): Promise<readonly MapPlace[]> {
   const given = coordinates(query);
-  if (given) return given;
+  if (given) return [given];
   const text = query.trim().replaceAll(/\s+/gu, " ");
   const url = new URL(geocoderUrl);
   url.searchParams.set("q", text);
   url.searchParams.set("format", "jsonv2");
-  url.searchParams.set("limit", "1");
+  url.searchParams.set("limit", String(limit));
   url.searchParams.set("addressdetails", "1");
   // Names come back in the language the place was asked in, so an English
   // reply is not handed «Таймс-сквер».
@@ -435,7 +506,7 @@ export async function findPlace(
   }
   const key = url.search.toLowerCase();
   const known = recall(rememberedPlaces, key);
-  if (known) return known.place;
+  if (known) return known.places;
   if (budget.remaining <= 0) {
     throw new MapServiceError(
       `This call already made ${String(lookupsPerCall)} map lookups; measure the rest in another call`,
@@ -444,26 +515,19 @@ export async function findPlace(
   }
   budget.remaining -= 1;
 
-  const [result] = await request(
+  const results = await request(
     url,
     "The OpenStreetMap geocoder",
     nominatimResultsSchema,
     signal
   );
-  const place: MapPlace | undefined = result && {
-    countryCode: result.address?.country_code?.toLowerCase(),
-    houseNumber: result.address?.house_number,
-    kind: placeKind(result),
-    label: placeLabel(result),
-    lat: result.lat,
-    lon: result.lon,
-    name: result.name,
-  };
+  const places = results.slice(0, limit).map(mapPlace);
   remember(rememberedPlaces, key, {
-    place,
-    until: Date.now() + (place ? placeMemoryMs : missingPlaceMemoryMs),
+    places,
+    until:
+      Date.now() + (places.length > 0 ? placeMemoryMs : missingPlaceMemoryMs),
   });
-  return place;
+  return places;
 }
 
 function routePoint(place: MapPlace) {

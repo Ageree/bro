@@ -2,13 +2,14 @@ import { defineDynamic, defineTool } from "eve/tools";
 import { z } from "zod";
 import { resolveModeValue } from "@agent/lib/mode";
 import {
-  findPlace,
+  findPlaces,
   type LookupBudget,
   lookupsPerCall,
   type MapPlace,
   MapServiceError,
   measureRoutes,
   openStreetMapAttribution,
+  placeType,
   routeLink,
   straightKm,
   travelModes,
@@ -27,7 +28,7 @@ const basisByMode = {
 
 const inputSchema = z.object({
   from: placeSchema.describe(
-    "The start: a street address or a named place with its city («отель Метрополь, Москва», «метро Чистые пруды, Москва», «Tverskaya 7, Moscow»), or «lat, lon». Only places and addresses, never a person's name or phone."
+    "The start: a street address or a named place with its city («отель Метрополь, Москва», «метро Чистые пруды, Москва», «Tverskaya 7, Moscow»), or «lat, lon». A station, an airport or a landmark goes by its own name and city («вокзал, Казань», «аэропорт Шереметьево», «Казанский кремль, Казань»), never by an address you composed for it: a guessed street is often another place. Only places and addresses, never a person's name or phone."
   ),
   mode: z
     .enum(travelModes)
@@ -39,7 +40,7 @@ const inputSchema = z.object({
     .min(1)
     .max(5)
     .describe(
-      "Destinations in the same form as from, each with its street or city; up to five are measured from the same start in one call."
+      "Destinations in the same form as from, each with its street or city and the place's name first when it has one («Флер, Чистопрудный бульвар 19 с1, Москва»), so each result says whose time it is; up to five are measured from the same start in one call."
     ),
 });
 
@@ -176,15 +177,9 @@ function addressAfterName(address: readonly string[]) {
  * the turn.
  */
 function queryVariants(query: string) {
-  const parts = withHouseShorthand(query)
-    .split(",")
-    .map((part) => part.trim())
-    .filter((part) => part.length > 0);
+  const parts = queryParts(withHouseShorthand(query));
   const [name = "", ...address] = parts;
-  const bareName = name
-    .replace(kindOfPlace, "")
-    .replaceAll(/[«»"“”„]/gu, "")
-    .trim();
+  const bare = bareName(name);
   const addressOnly = /\d/u.test(name) ? undefined : addressAfterName(address);
   const first = addressOnly ?? parts.join(", ");
   const variants = [
@@ -192,8 +187,23 @@ function queryVariants(query: string) {
     first.replaceAll(buildingPattern, "$1"),
     parts.join(", "),
   ];
-  if (bareName.length > 0) variants.push([bareName, ...address].join(", "));
+  if (bare.length > 0) variants.push([bare, ...address].join(", "));
   return [...new Set(variants)];
+}
+
+function queryParts(query: string) {
+  return query
+    .split(",")
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+}
+
+/** A place's name without its kind and quotes: «Метрополь» of «гостиница «Метрополь»». */
+function bareName(name: string) {
+  return name
+    .replace(kindOfPlace, "")
+    .replaceAll(/[«»"“”„]/gu, "")
+    .trim();
 }
 
 /**
@@ -216,6 +226,228 @@ function buildingNote(query: string, place: MapPlace) {
   return `the map knows the house «${place.houseNumber ?? place.label}» but not its building «${asked}»; the time is to that house`;
 }
 
+/** Words of a name as they are compared: «Казанский кремль» → казанский, кремль. */
+function nameWords(text: string) {
+  return (
+    text
+      .toLowerCase()
+      .replaceAll("ё", "е")
+      .match(/[\p{L}\p{N}]+/gu) ?? []
+  );
+}
+
+/** Whether the place's own name has every one of these words. */
+function namedAs(place: MapPlace, words: readonly string[]) {
+  if (words.length === 0) return false;
+  const own = new Set(nameWords(place.name ?? ""));
+  return words.every((word) => own.has(word));
+}
+
+/** Stops named after what they serve: «Казанский вокзал» is a bus stop too. */
+const stopTags: ReadonlySet<string> = new Set([
+  "highway:bus_stop",
+  "public_transport:platform",
+  "public_transport:stop_position",
+  "railway:platform",
+  "railway:stop",
+  "railway:subway_entrance",
+  "railway:tram_stop",
+]);
+
+/** A place itself, not a street, an area or a stop named after it. */
+function standsAlone(place: MapPlace) {
+  return place.kind === "place" && !stopTags.has(place.tag ?? "");
+}
+
+/**
+ * Places people name by what they are more than by an address. The map
+ * ranks by words, not by what a place is: live on 25.09 «вокзал, Казань»
+ * came back as «Северный вокзал» first and the city's main station second,
+ * «аэропорт, Казань» as a garage cooperative called «Аэропорт», and
+ * «Казанский вокзал, Казань» as nothing at all — after which the model asked
+ * for «улица Привокзальная 1, Казань», a halt in Юдино 15 km out, and told
+ * the person (RU d13) that every restaurant in the centre was a taxi ride
+ * from the station. A kind named inside another is listed first.
+ */
+const landmarkKinds = [
+  {
+    generic: { en: "bus station", ru: "автовокзал" },
+    name: "bus station",
+    tags: new Set(["amenity:bus_station"]),
+    words:
+      /(?<!\p{L})автовокзал(?:а|е|у|ом|ы|ов)?(?!\p{L})|(?<!\p{L})(?:bus|coach)\s+station(?!\p{L})/iu,
+  },
+  {
+    generic: { en: "ferry terminal", ru: "речной вокзал" },
+    name: "river or sea port",
+    tags: new Set(["amenity:ferry_terminal"]),
+    words:
+      /(?<!\p{L})(?:речн|морск)\p{L}*\s+(?:вокзал|порт)(?:а|е|у|ом|ы|ов)?(?!\p{L})|(?<!\p{L})ferry\s+terminal(?!\p{L})/iu,
+  },
+  {
+    generic: { en: "railway station", ru: "вокзал" },
+    name: "railway station",
+    tags: new Set([
+      "building:train_station",
+      "railway:halt",
+      "railway:station",
+    ]),
+    words:
+      /(?<!\p{L})(?:(?:ж\/д|жд|железнодорожн\p{L}*)\s+)?вокзал(?:а|е|у|ом|ы|ов)?(?!\p{L})|(?<!\p{L})(?:railway|train)\s+station(?!\p{L})/iu,
+  },
+  {
+    generic: { en: "airport", ru: "аэропорт" },
+    name: "airport",
+    tags: new Set(["aeroway:aerodrome", "aeroway:terminal"]),
+    words: /(?<!\p{L})(?:аэропорт(?:а|е|у|ом|ы|ов)?|airport)(?!\p{L})/iu,
+  },
+] as const;
+
+type LandmarkKind = (typeof landmarkKinds)[number];
+
+/**
+ * «кафе Вокзал», «метро Аэропорт», «площадь Казанского вокзала»: a place
+ * named after a landmark, or a street.
+ */
+const namedAfterLandmark =
+  /^(?:отель|гостиница|хостел|ресторан|кафе|кофейня|бар|паб|бистро|пиццерия|столовая|метро|м\.|станция метро|hotel|hostel|restaurant|cafe|café|bar|pub|bistro|metro|subway)(?!\p{L})|(?<!\p{L})(?:улиц|ул\.|проспект|переул|площад|шоссе|бульвар|проезд|набережн|street|avenue|road|square)/iu;
+
+/** Words that name no particular station: «главный», «центральный». */
+const kindQualifiers =
+  /(?<!\p{L})(?:главн|центральн|пассажирск|main|central)\p{L}*/giu;
+
+/**
+ * The landmark a query names, when it names one rather than an address:
+ * its kind, the words of its own name besides the kind («казанский» of
+ * «Казанский вокзал»; none for «вокзал»), and where it is.
+ */
+function landmarkIn(query: string) {
+  if (/\d/u.test(query)) return undefined;
+  const [name = "", ...around] = queryParts(query);
+  if (namedAfterLandmark.test(name)) return undefined;
+  const kind = landmarkKinds.find((candidate) => candidate.words.test(name));
+  if (!kind) return undefined;
+  return {
+    around,
+    kind,
+    name,
+    ownWords: nameWords(
+      name.replace(kind.words, " ").replaceAll(kindQualifiers, " ")
+    ),
+  };
+}
+
+type Landmark = NonNullable<ReturnType<typeof landmarkIn>>;
+
+function servesAs(kind: LandmarkKind, place: MapPlace) {
+  return kind.tags.has(place.tag ?? "");
+}
+
+/**
+ * The landmark among the map's candidates: one of its kind with its name,
+ * then another place with its name (Moscow's «Казанский вокзал» is a
+ * tourist attraction on the map), then one of its kind. Asked for the kind
+ * alone («вокзал, Казань»), the best known of that kind. Last, a place named
+ * after the kind: the tram stop «Железнодорожный вокзал» at the station.
+ */
+function chooseLandmark(
+  landmark: Landmark,
+  candidates: readonly MapPlace[],
+  ownWords = landmark.ownWords
+) {
+  const { kind } = landmark;
+  const ofKind = candidates.filter((place) => servesAs(kind, place));
+  const chosen =
+    ownWords.length === 0
+      ? ofKind.toSorted(
+          (left, right) => (right.importance ?? 0) - (left.importance ?? 0)
+        )[0]
+      : (ofKind.find((place) => namedAs(place, ownWords)) ??
+        candidates.find(
+          (place) => standsAlone(place) && namedAs(place, ownWords)
+        ) ??
+        ofKind[0]);
+  return (
+    chosen ??
+    candidates.find(
+      (place) => place.kind === "place" && kind.words.test(place.name ?? "")
+    )
+  );
+}
+
+/**
+ * The place a query without a house means among the map's candidates. The
+ * map's first is kept unless it lacks a word of the name and another place
+ * has them all: live on 25.09 «Кремль, Казань» came back as the metro
+ * station «Кремлёвская» first and «Казанский кремль» third.
+ */
+function choosePlace(query: string, candidates: readonly MapPlace[]) {
+  const [first] = candidates;
+  const words = nameWords(bareName(queryParts(query)[0] ?? ""));
+  if (first === undefined || namedAs(first, words)) return first;
+  return (
+    candidates.find((place) => standsAlone(place) && namedAs(place, words)) ??
+    first
+  );
+}
+
+/** Candidates asked for a landmark, and for a name without a house. */
+const landmarkCandidates = 10;
+const namedCandidates = 5;
+
+/** A place found, with why it may not be the one meant. */
+interface Located {
+  readonly place: MapPlace;
+  readonly uncertain?: string;
+}
+
+/**
+ * Whether the landmark's own name only says which city it is in:
+ * «Казанский» of «Казанский вокзал, Казань», «Курский» in Kursk — not
+ * «Ленинградский» in Moscow, which is a station of its own.
+ */
+function namedForTheCity(landmark: Landmark) {
+  const cityWords = landmark.around.flatMap(nameWords);
+  return landmark.ownWords.every((word) =>
+    cityWords.some(
+      (city) => city.length >= 4 && word.startsWith(city.slice(0, 4))
+    )
+  );
+}
+
+/**
+ * When a landmark named for its city is not on the map by that name, the
+ * best-known one of its kind in that city: «Казанский вокзал, Казань» is
+ * what people call the station of Kazan, which the map knows as
+ * «Казань-Пассажирская». The time is to that one, and the result says so.
+ */
+async function locateKindOf(
+  landmark: Landmark,
+  near: MapPlace | undefined,
+  budget: LookupBudget,
+  signal: AbortSignal
+): Promise<Located | undefined> {
+  if (landmark.ownWords.length === 0 || !namedForTheCity(landmark)) {
+    return undefined;
+  }
+  const generic = /\p{Script=Cyrillic}/u.test(landmark.name)
+    ? landmark.kind.generic.ru
+    : landmark.kind.generic.en;
+  const candidates = await findPlaces(
+    [generic, ...landmark.around].join(", "),
+    near,
+    budget,
+    signal,
+    landmarkCandidates
+  );
+  const place = chooseLandmark(landmark, candidates, []);
+  if (!place || !servesAs(landmark.kind, place)) return undefined;
+  return {
+    place,
+    uncertain: `the map has no «${landmark.name}» in «${landmark.around.join(", ")}»; this is the best-known ${landmark.kind.name} there, «${place.name ?? place.label}». Give its time only naming that place, and if another one was meant, ask which`,
+  };
+}
+
 /**
  * Finds a place by the first variant of the query the map knows. A match
  * that is not the place asked for is kept only when no variant finds it, and
@@ -226,16 +458,37 @@ async function locate(
   near: MapPlace | undefined,
   budget: LookupBudget,
   signal: AbortSignal
-) {
+): Promise<Located | undefined> {
+  const landmark = landmarkIn(query);
+  const limit = landmark
+    ? landmarkCandidates
+    : /\d/u.test(query)
+      ? 1
+      : namedCandidates;
   let fallback: MapPlace | undefined;
   /* oxlint-disable eslint/no-await-in-loop -- Each variant is asked only when the one before found nothing, two seconds apart. */
   for (const variant of queryVariants(query)) {
-    const place = await findPlace(variant, near, budget, signal);
-    if (place && mismatch(query, place) === undefined) return place;
-    fallback ??= place;
+    const candidates = await findPlaces(variant, near, budget, signal, limit);
+    const place = landmark
+      ? chooseLandmark(landmark, candidates)
+      : choosePlace(query, candidates);
+    if (place && mismatch(query, place) === undefined) return { place };
+    fallback ??= place ?? candidates[0];
   }
   /* oxlint-enable eslint/no-await-in-loop */
-  return fallback;
+  if (landmark) {
+    const kindOf = await locateKindOf(landmark, near, budget, signal);
+    if (kindOf) return kindOf;
+  }
+  if (fallback === undefined) return undefined;
+  if (!landmark || mismatch(query, fallback) !== undefined) {
+    return { place: fallback };
+  }
+  const type = placeType(fallback);
+  return {
+    place: fallback,
+    uncertain: `the map found «${fallback.label}»${type === undefined ? "" : ` (${type})`}, not the ${landmark.kind.name} itself: its name or street only resembles «${landmark.name}». Call again with the ${landmark.kind.name}'s own name and city, or «lat, lon» from a source`,
+  };
 }
 
 /** An area the person named on purpose is measured to its centre, and says so. */
@@ -245,15 +498,54 @@ function areaNote(place: MapPlace) {
     : undefined;
 }
 
+/** What the map matched, so the reply can say where a time is to. */
+function matchedAs(place: MapPlace) {
+  const precision = {
+    area: "area: its centre",
+    place: place.name
+      ? "named place"
+      : place.houseNumber
+        ? "building"
+        : "place",
+    point: "coordinates as given",
+    street: "street: some point along it",
+  }[place.kind];
+  return { district: place.district, precision, type: placeType(place) };
+}
+
+/** Farther than this in a straight line is well over an hour on foot. */
+const farWalkKm = 5;
+
+/**
+ * Why the start may be another place than the one meant: every destination
+ * of a walk lies hours away from it. On 25.09 (RU d13) the start was
+ * «улица Привокзальная 1, Казань», a halt in Юдино, and the person heard that
+ * the three restaurants by the Kremlin were 15 km from the station — they
+ * are 2 km from it. A start the person gave as coordinates, or a city, is
+ * taken as meant.
+ */
+function farStart(
+  mode: z.infer<typeof inputSchema>["mode"],
+  from: MapPlace,
+  found: readonly MapPlace[]
+) {
+  if (mode !== "walking" || found.length === 0) return undefined;
+  if (from.kind === "point" || from.kind === "area") return undefined;
+  const nearest = Math.min(...found.map((place) => straightKm(from, place)));
+  if (nearest <= farWalkKm) return undefined;
+  const where = from.district ? ` in ${from.district}` : "";
+  return `every destination is at least ${String(nearest)} km in a straight line from where the start was matched, «${from.label}»${where}: hours on foot. If the start meant is near them (a station, a hotel or a landmark in the centre), the map matched another place with a similar name or address: call again with the landmark's own name and city («вокзал, Казань», «Казанский кремль, Казань») or «lat, lon» from a source. Until then do not tell the person the places are far and state none of these distances or times as fact; if you answer now, say which place you measured from`;
+}
+
 async function measure(
   input: z.infer<typeof inputSchema>,
   signal: AbortSignal
 ) {
   const basis = basisByMode[input.mode];
   const budget: LookupBudget = { remaining: lookupsPerCall };
-  let from: MapPlace | undefined;
+  let start: Located | undefined;
   try {
-    from = await locate(input.from, undefined, budget, signal);
+    start = await locate(input.from, undefined, budget, signal);
   } catch (error) {
     if (!(error instanceof MapServiceError)) throw error;
     return {
@@ -261,12 +553,13 @@ async function measure(
       status: "unavailable" as const,
     };
   }
-  if (!from) {
+  if (!start) {
     return {
-      note: `The start «${input.from}» is not on the map. Call again with its street and city, or ask the person where exactly they start from.`,
+      note: `The start «${input.from}» is not on the map. Call again with its own name and city as a map knows it, or with an address or «lat, lon» from a source — never an address you composed, which is often another place — or ask the person where exactly they start from.`,
       status: "not_found" as const,
     };
   }
+  const from = start.place;
   const startMismatch = mismatch(input.from, from);
   if (startMismatch !== undefined) {
     return {
@@ -277,22 +570,25 @@ async function measure(
 
   const places: {
     readonly failure?: MapServiceError;
-    readonly place: MapPlace | undefined;
+    readonly located: Located | undefined;
     readonly query: string;
   }[] = [];
   /* oxlint-disable eslint/no-await-in-loop -- One at a time on purpose: the geocoder allows one request a second for the whole application. */
   for (const query of input.to) {
     try {
-      places.push({ place: await locate(query, from, budget, signal), query });
+      places.push({
+        located: await locate(query, from, budget, signal),
+        query,
+      });
     } catch (error) {
       if (!(error instanceof MapServiceError)) throw error;
-      places.push({ failure: error, place: undefined, query });
+      places.push({ failure: error, located: undefined, query });
     }
   }
   /* oxlint-enable eslint/no-await-in-loop */
   const found = places.flatMap((entry) =>
-    entry.place && mismatch(entry.query, entry.place) === undefined
-      ? [entry.place]
+    entry.located && mismatch(entry.query, entry.located.place) === undefined
+      ? [entry.located.place]
       : []
   );
 
@@ -307,16 +603,16 @@ async function measure(
 
   let foundIndex = 0;
   const routes = places.map((entry) => {
-    const place = entry.place;
-    if (!place) {
+    if (!entry.located) {
       return {
         error:
           entry.failure === undefined
-            ? "not on the map: add the street and city, or pass «lat, lon»"
+            ? "not on the map: add the street and city from a source, or pass «lat, lon»"
             : `${entry.failure.message}; this destination was not measured`,
         to: entry.query,
       };
     }
+    const { place, uncertain } = entry.located;
     const missed = mismatch(entry.query, place);
     if (missed !== undefined) {
       return { error: mismatchNote(missed), to: entry.query };
@@ -324,55 +620,72 @@ async function measure(
     const route = measured[foundIndex];
     foundIndex += 1;
     const link = routeLink(input.mode, from, place);
+    const matched = matchedAs(place);
     if (routerFailure !== undefined) {
       return {
         error: `${routerFailure.message}: only the straight-line distance is known, so state no travel time`,
         link,
+        matched,
         place: place.label,
         straightKm: straightKm(from, place),
         to: entry.query,
+        uncertain,
       };
     }
     if (!route) {
       return {
         error: "no route between these places on the map",
         link,
+        matched,
         place: place.label,
         straightKm: straightKm(from, place),
         to: entry.query,
+        uncertain,
       };
     }
     return {
       km: route.km,
       link,
+      matched,
       minutes: route.minutes,
       note: areaNote(place) ?? buildingNote(entry.query, place),
       place: place.label,
       to: entry.query,
+      uncertain,
     };
   });
 
+  const startFar = farStart(input.mode, from, found);
+  const fromUncertain = [start.uncertain, startFar]
+    .filter((reason) => reason !== undefined)
+    .join("; also, ");
   return {
     attribution: openStreetMapAttribution,
     basis,
     from: from.label,
+    fromMatched: matchedAs(from),
     fromNote: areaNote(from),
+    fromUncertain: fromUncertain.length > 0 ? fromUncertain : undefined,
     mode: input.mode,
     pick:
       input.mode === "walking"
-        ? pickNote(routes, {
-            // Places the map service or this call's lookups left unmeasured.
-            count:
-              places.filter((entry) => entry.failure !== undefined).length +
-              (routerFailure === undefined ? 0 : found.length),
-            refusing: mapRefusing(
-              places.flatMap((entry) =>
-                entry.failure === undefined ? [] : [entry.failure]
+        ? pickNote(
+            routes,
+            {
+              // Places the map service or this call's lookups left unmeasured.
+              count:
+                places.filter((entry) => entry.failure !== undefined).length +
+                (routerFailure === undefined ? 0 : found.length),
+              refusing: mapRefusing(
+                places.flatMap((entry) =>
+                  entry.failure === undefined ? [] : [entry.failure]
+                ),
+                routerFailure !== undefined,
+                routes.some((route) => "minutes" in route)
               ),
-              routerFailure !== undefined,
-              routes.some((route) => "minutes" in route)
-            ),
-          })
+            },
+            startFar !== undefined
+          )
         : undefined,
     routes,
     status: "ok" as const,
@@ -417,12 +730,19 @@ const pickSize = 3;
  * service refuses (`mapRefusing`) nothing more is to be measured: asking for
  * replacements then sent the model to search and measure again against a
  * service that was still refusing. After a one-off error or a call out of
- * lookups the next call measures as usual.
+ * lookups the next call measures as usual. A start that may be another
+ * place (`farStart`) counts nothing: in RU d13 «0 of 3 within a walk, find
+ * others near the start» would have sent the model to look for dinner in
+ * Юдино.
  */
 function pickNote(
   routes: readonly { readonly minutes?: number }[],
-  unmeasuredByService: { readonly count: number; readonly refusing: boolean }
+  unmeasuredByService: { readonly count: number; readonly refusing: boolean },
+  startDoubtful: boolean
 ) {
+  if (startDoubtful) {
+    return "If these are candidates for a pick of places: the start may be another place than the one meant (fromUncertain), so count no walks from it and look for no candidates near it — settle the start first.";
+  }
   const measured = routes.flatMap((route) =>
     route.minutes === undefined ? [] : [route.minutes]
   );
@@ -443,12 +763,12 @@ function pickNote(
     lacking > 0
       ? `${String(lacking)} more ${lacking === 1 ? "is" : "are"} needed: before you reply, find other candidates near the start that fit the rest of the conditions (web_search with sites yandex.ru/maps or 2gis.ru)${refusing ? ", and while the map service refuses give their walk as not checked instead of measuring them" : " and measure them here in one more call"}. Reply with fewer only when that search found none, and say how many fit and why`
       : "Before you reply, check each of them against the rest of the conditions";
-  return `If these are candidates for a pick of places («где поужинать пешком от…»): ${counted}. A pick aims at ${String(pickSize)} options that each pass every condition the person named, the walk included (${String(walkLimitMinutes)} minutes unless they named their own limit).${service} ${next}; name whatever you could not check as not checked.`;
+  return `If these are candidates for a pick of places («где поужинать пешком от…»): ${counted}. A pick aims at ${String(pickSize)} options that each pass every condition the person named, the walk included (${String(walkLimitMinutes)} minutes unless they named their own limit).${service} ${next}; give each option only the minutes of its own row — one not measured here has no walk to state — and name whatever you could not check as not checked.`;
 }
 
 export const routeTime = defineTool({
   description:
-    "Measure how long it takes to walk, cycle or drive between places, and how far it is, on OpenStreetMap with no key: «пешком от отеля», «сколько идти от метро», «далеко ли от дома», commute time for a morning digest. Compare up to five destinations from one start in one call. Each result names the place it matched (`place`): check that it is the one meant, in the right city. A destination the map found only as a street, a district or another building comes back with an error instead of minutes: never fill in a time for it. `link` opens the route on Yandex Maps or Google Maps; for a car it shows the live time with traffic, which this tool does not know. Use the minutes and km as returned instead of estimating from the map, and wherever you give them credit the map briefly with `attribution`, for example «(по данным © OpenStreetMap)».",
+    "Measure how long it takes to walk, cycle or drive between places, and how far it is, on OpenStreetMap with no key: «пешком от отеля», «сколько идти от метро», «далеко ли от дома», commute time for a morning digest. Compare up to five destinations from one start in one call. Each result names the place it matched (`place`, and in `matched` what it is, how precise and in which district; `from` and `fromMatched` for the start): check that it is the one meant, in the right city, and name it with the time. A result with `uncertain` (`fromUncertain` for the start) may be another place: state none of its times or distances as fact and do what it says. A destination the map found only as a street, a district or another building comes back with an error instead of minutes: never fill in a time for it. `link` opens the route on Yandex Maps or Google Maps; for a car it shows the live time with traffic, which this tool does not know. Use the minutes and km as returned instead of estimating from the map, and wherever you give them credit the map briefly with `attribution`, for example «(по данным © OpenStreetMap)».",
   inputSchema,
   async execute(input, ctx) {
     return measure(input, ctx.abortSignal);

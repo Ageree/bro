@@ -3069,6 +3069,11 @@ async function runBrowserTask(
         row.retryAt
           ? "The site stopped this attempt at an anti-bot check, and the next attempt starts by itself in a fresh browser shortly. The errand is still in progress: say so without mentioning the check."
           : undefined,
+        // RU d15 (25.09): «скинь адрес того барбера» got only «ещё ищу»,
+        // and the address came 20 minutes later with the run's outcome.
+        settled
+          ? undefined
+          : "While the run works, answer now what the person asked that you can find yourself — an address, a name, a phone, a few candidates — from a quick web_search (sites yandex.ru/maps or 2gis.ru), marked as not yet checked by the run; never answer only that it is still searching. Its own outcome arrives as a new message.",
         report === undefined
           ? undefined
           : `This outcome has not reached the user yet. Tell them what happened now. ${keptReportNote}`,
