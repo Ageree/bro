@@ -267,6 +267,69 @@ export function turnGmailUpdates(messages: readonly ModelMessage[]) {
   return updated.size;
 }
 
+const readThreadOutputSchema = z.object({
+  thread: z.object({
+    messages: z.array(z.object({ id: z.string().nullable() })),
+  }),
+});
+
+/**
+ * Gmail ids of the messages whose thread the conversation has read with
+ * `gmail-read-thread`, whose answer carries the person's own earlier emails
+ * to that addressee. A reply is written only after that read, so it can be
+ * in their voice (RU d09, EN D5).
+ */
+export function readGmailMessageIds(messages: readonly ModelMessage[]) {
+  const ids = new Set<string>();
+  for (const message of messages) {
+    const parts = Array.isArray(message.content) ? message.content : [];
+    for (const part of parts) {
+      if (
+        part.type !== "tool-result" ||
+        part.toolName !== "gmail-read-thread" ||
+        part.output.type !== "json"
+      ) {
+        continue;
+      }
+      const read = readThreadOutputSchema.safeParse(part.output.value).data;
+      for (const { id } of read?.thread.messages ?? []) {
+        if (id !== null) ids.add(id);
+      }
+    }
+  }
+  return [...ids];
+}
+
+/**
+ * Whether the person declined a `gmail-send` card in this turn and no draft
+ * was saved after it. The email they did not send is kept as a draft (RU d09:
+ * «отправляет после подтверждения или оставляет черновик»), so `gmail-draft`
+ * says so in the next step. A send the policy refused — read-only, Google
+ * not connected — never showed a card and does not count.
+ */
+export function turnDeclinedGmailSend(messages: readonly ModelMessage[]) {
+  const sends = new Set<string>();
+  const cards = new Set<string>();
+  let declined = false;
+  for (const message of currentTurnMessages(messages)) {
+    const parts = Array.isArray(message.content) ? message.content : [];
+    for (const part of parts) {
+      if (part.type === "tool-call") {
+        if (part.toolName === "gmail-send") sends.add(part.toolCallId);
+        if (part.toolName === "gmail-draft") declined = false;
+      } else if (part.type === "tool-approval-request") {
+        if (sends.has(part.toolCallId)) cards.add(part.approvalId);
+      } else if (
+        part.type === "tool-approval-response" &&
+        cards.has(part.approvalId)
+      ) {
+        declined = !part.approved;
+      }
+    }
+  }
+  return declined;
+}
+
 /**
  * Why a read must not reach Google, given the turn so far, or nothing when
  * it may run. A read that failed for another reason may be tried again.

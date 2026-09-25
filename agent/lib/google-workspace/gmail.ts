@@ -1,7 +1,12 @@
 import { createHash } from "node:crypto";
 import type { ToolContext } from "eve/tools";
 import { z } from "zod";
-import { type GoogleClient, googleUrl, withGoogleAuth } from "./client";
+import {
+  type GoogleClient,
+  googleApiErrorStatus,
+  googleUrl,
+  withGoogleAuth,
+} from "./client";
 import { emailAddressSchema } from "./email";
 
 /** The person's own mailbox in the Gmail REST API. */
@@ -104,7 +109,7 @@ export const gmailComposeSchema = z
       .max(998)
       .optional()
       .describe(
-        "Required for a new email. Ignored for a reply, which keeps the thread's subject so Gmail threads it."
+        "Required for a new email. For a reply, pass the thread's subject too so the approval card names the thread; the reply itself keeps the thread's own subject so Gmail threads it."
       ),
     to: z.array(emailAddressSchema).min(1).max(20),
   })
@@ -148,7 +153,14 @@ export async function searchGmail(
           google.json(gmailMessageSchema, {
             url: messageUrl(id, {
               format: "metadata",
-              metadataHeaders: ["From", "To", "Subject", "Date", "Message-ID"],
+              metadataHeaders: [
+                "From",
+                "To",
+                "Cc",
+                "Subject",
+                "Date",
+                "Message-ID",
+              ],
             }),
           })
         )
@@ -159,23 +171,205 @@ export async function searchGmail(
   });
 }
 
-export async function readGmailThread(ctx: ToolContext, threadId: string) {
+/**
+ * Reads one thread. With `voice`, it also brings the person's own latest
+ * emails to the other side of the thread (`yourEarlierEmails`): a reply
+ * written without them came out as a template on «ты» to someone the person
+ * had written «Ирина Павловна, добрый день!» for years (RU d09, EN D5).
+ */
+export async function readGmailThread(
+  ctx: ToolContext,
+  threadId: string,
+  options: { readonly voice?: boolean } = {}
+) {
   return withGoogleAuth(ctx, async (google) => {
     const thread = await google.json(gmailThreadSchema, {
       url: googleUrl(gmailApi, `/threads/${encodeURIComponent(threadId)}`, {
         format: "full",
       }),
     });
-    return {
+    const messages = (thread.messages ?? []).slice(-20);
+    const read = {
       id: thread.id ?? threadId,
-      messages: (thread.messages ?? []).slice(-20).map((message) =>
-        Object.assign({}, minimizeMessage(message), {
+      messages: messages.map((message) => {
+        const sentByYou = message.labelIds?.includes("SENT") ?? false;
+        return Object.assign({}, minimizeMessage(message), {
           attachments: collectAttachments(message.payload),
           body: redactGoogleText(plainText(message.payload)),
-        })
-      ),
+          senderUtcOffset: sentByYou
+            ? null
+            : dateHeaderOffset(header(message.payload, "Date")),
+          sentByYou,
+        });
+      }),
     };
+    const addressee = options.voice ? threadAddressee(messages) : null;
+    if (!addressee) return read;
+    // The voice only helps the reply: a failed look at the sent mail leaves
+    // the thread itself readable.
+    let voice;
+    try {
+      voice = await earlierEmailsTo(google, addressee);
+    } catch (error) {
+      console.warn("[gmail] could not read the person's earlier emails", {
+        status: googleApiErrorStatus(error),
+      });
+      return read;
+    }
+    return { ...read, yourEarlierEmails: voice };
   });
+}
+
+/** Sent emails a thread read brings as the person's voice. */
+const voiceSampleCount = 3;
+
+/** An address Gmail search may take inside quotes, nothing that could end them. */
+const searchableAddress = /^[\w.%+'-]+@[\w-]+(?:\.[\w-]+)+$/u;
+
+/**
+ * The address a reply in this thread goes to: whoever last wrote to the
+ * person (their Reply-To, else From), or, in a thread only the person wrote
+ * in, whom they wrote to.
+ */
+function threadAddressee(messages: readonly GmailMessage[]) {
+  const theirs = messages.findLast(
+    (message) => !(message.labelIds?.includes("SENT") ?? false)
+  );
+  const address = theirs
+    ? headerAddress(
+        header(theirs.payload, "Reply-To") ?? header(theirs.payload, "From")
+      )
+    : headerAddress(header(messages.at(-1)?.payload, "To"));
+  return address && searchableAddress.test(address) ? address : null;
+}
+
+/** The first address in a From, To or Reply-To header, lower-cased. */
+export function headerAddress(value: string | null | undefined) {
+  if (!value) return null;
+  const address =
+    /<([^<>\s]+@[^<>\s]+)>/u.exec(value)?.[1] ??
+    /[^\s<>,;"]+@[^\s<>,;"]+/u.exec(value)?.[0];
+  return address ? address.toLowerCase() : null;
+}
+
+/**
+ * The UTC offset a Date header was written in, `+05:00`: mail clients stamp
+ * the sender's own clock, so it hints at their time zone when the letter
+ * names no city.
+ */
+export function dateHeaderOffset(value: string | null) {
+  if (!value) return null;
+  const numeric = /([+-])(\d{2}):?(\d{2})(?:\s*\([^)]*\))?\s*$/u.exec(value);
+  if (numeric)
+    return `${numeric[1] ?? "+"}${numeric[2] ?? "00"}:${numeric[3] ?? "00"}`;
+  return /\s(?:GMT|UTC|UT|Z)(?:\s*\([^)]*\))?\s*$/u.test(value)
+    ? "+00:00"
+    : null;
+}
+
+/**
+ * The person's latest sent emails to `address`, reduced to what makes their
+ * voice: greeting, sign-off and the text before any quote. With none to this
+ * address, their latest sent emails at all, marked as such.
+ */
+async function earlierEmailsTo(google: GoogleClient, address: string) {
+  const toAddressee = await sentMessages(google, `in:sent to:"${address}"`);
+  const sameAddressee = toAddressee.length > 0;
+  const emails = sameAddressee
+    ? toAddressee
+    : await sentMessages(google, "in:sent");
+  return {
+    emails: emails.map((message) =>
+      Object.assign(
+        {
+          date: header(message.payload, "Date"),
+          subject: header(message.payload, "Subject"),
+          to: header(message.payload, "To"),
+        },
+        voiceSample(redactGoogleText(plainText(message.payload)))
+      )
+    ),
+    sameAddressee,
+    to: address,
+  };
+}
+
+async function sentMessages(google: GoogleClient, query: string) {
+  const listed = await google.json(gmailMessageListSchema, {
+    url: googleUrl(gmailApi, "/messages", {
+      maxResults: voiceSampleCount,
+      q: query,
+    }),
+  });
+  return Promise.all(
+    (listed.messages ?? []).slice(0, voiceSampleCount).map(({ id }) =>
+      google.json(gmailMessageSchema, {
+        url: messageUrl(id, { format: "full" }),
+      })
+    )
+  );
+}
+
+/**
+ * Where the quote of the answered letter begins in a reply: a `>` line, a
+ * forwarded or original-message rule, or the attribution line clients put
+ * above the quote («On … wrote:», «… написал:», Gmail's Russian
+ * «чт, 24 сент. 2026 г. в 16:40, Ирина <irina@…>:»).
+ */
+const quoteStart =
+  /^(?:>|-{2,}\s*(?:original message|forwarded message|исходное сообщение|пересылаемое сообщение)|on\s.{1,200}\swrote:$|.{1,200}\s(?:писал|написал|написала|пишет)(?:\(а\))?:$|.{1,200}<[^<>\s]+@[^<>\s]+>:$)/iu;
+
+/** Lines short enough to be a greeting or a sign-off rather than a paragraph. */
+const formulaMaxLength = 60;
+
+/**
+ * An email's own words and the formulas that frame them: the first line as
+ * the greeting and the last as the sign-off, when they are short enough to
+ * be formulas («Ирина Павловна, добрый день!», «Спасибо! Хорошего дня.»,
+ * «Best,» with the name under it). The quote of an earlier letter and a
+ * `-- ` signature are left out.
+ */
+export function voiceSample(body: string) {
+  const own: string[] = [];
+  for (const line of body.replaceAll(/\r\n?/gu, "\n").split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed === "--" || quoteStart.test(trimmed)) break;
+    own.push(line.trimEnd());
+  }
+  const text = own
+    .join("\n")
+    .replaceAll(/\n{3,}/gu, "\n\n")
+    .trim();
+  const lines = text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  const first = lines[0];
+  const last = lines.at(-1);
+  const beforeLast = lines.at(-2);
+  const signOff =
+    lines.length > 2 &&
+    last !== undefined &&
+    beforeLast !== undefined &&
+    beforeLast.length <= 30 &&
+    beforeLast.endsWith(",")
+      ? `${beforeLast}\n${last}`
+      : last;
+  return {
+    greeting:
+      first !== undefined &&
+      lines.length > 1 &&
+      first.length <= formulaMaxLength
+        ? first
+        : null,
+    signOff:
+      signOff !== undefined &&
+      lines.length > 1 &&
+      signOff.length <= formulaMaxLength
+        ? signOff
+        : null,
+    text: text.slice(0, 600),
+  };
 }
 
 /**
@@ -466,6 +660,7 @@ function plainText(part: GmailPart | undefined): string {
 
 function minimizeMessage(message: GmailMessage) {
   return {
+    cc: header(message.payload, "Cc"),
     date: header(message.payload, "Date"),
     from: header(message.payload, "From"),
     id: message.id ?? null,
