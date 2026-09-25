@@ -599,6 +599,8 @@ export function turnSends(messages: readonly ModelMessage[]) {
   return {
     actions: turnActions(turn, earlier, {
       background: isBackgroundTurnText(opening),
+      previousTurn: currentTurnMessages(earlier),
+      request: requestText,
     }),
     delivered,
     /** Stems on which the person named two people (`distinctStems`). */
