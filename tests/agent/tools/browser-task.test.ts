@@ -3832,8 +3832,9 @@ describe("browser_task sign-in by the person's phone", () => {
     expect(task).toContain(
       "No saved password is available for www.ozon.ru. If the site asks you to sign in and offers to sign in by phone number with a code sent by SMS or a push, sign in to the person's own account there with their phone: focus the phone field and ask for the secret signin_phone. If the phone field already shows the country code (+7) or a mask, ask for signin_phone_digits instead — the same number as only the 10 digits after it (no +7, no 8, no spaces); if the site rejects the format, clear the field and try once with the other one, then stop with NEEDS: info describing what the field expects."
     );
+    // RU 25.09, d04: Ozon offered a QR code the person could not scan.
     expect(task).toContain(
-      "It works only on ozon.ru and its own sign-in pages; never try it on another site, and no other personal detail goes with it."
+      "describing what the field expects. If the site offers to sign in with a QR code or a confirmation in its app and also with a code by SMS or a call («Войти другим способом», «По номеру телефона», «Получить код в SMS»), choose the code by SMS or call. It works only on ozon.ru and its own sign-in pages; never try it on another site, and no other personal detail goes with it."
     );
     expect(task).toContain(
       "Stop right after the site sends the code, with NEEDS: sms_code (or push)"
