@@ -473,6 +473,14 @@ describe("the browser run poller", () => {
     expect(report).toContain(
       "what the run did and found so far follows in that same message"
     );
+    // RU 25.09: the report turn filled the masked phone in and then made the
+    // code up itself. The phone is quoted as masked, and the turn ends there.
+    expect(report).toContain(
+      "naming the phone it went to exactly as Details masks it — «***-**-76» stays «***-**-76», never with digits filled in"
+    );
+    expect(report).toContain(
+      "Then end this turn: only the user's own reply with the code continues the run"
+    );
     expect((await readRun("gosuslugi-run"))?.reportClaimedAt).toBeInstanceOf(
       Date
     );
