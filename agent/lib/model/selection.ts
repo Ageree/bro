@@ -15,14 +15,16 @@ import { openRouterSelection, type StepToolChoice } from "./openrouter";
  * with the direct model; a Gateway id relies on the instructions, which carry
  * the same voice and the person's stored form of address. So does
  * `delivered`, which lets a step that says nothing after the turn's reply end
- * the turn instead of failing it, and `withheldTools`, which a Gateway id
- * keeps offering.
+ * the turn instead of failing it, `silent`, which keeps any text of the
+ * step from the person, and `withheldTools`, which a Gateway id keeps
+ * offering.
  */
 export function modelSelection(
   modelId: string,
   options: {
     readonly delivered?: boolean;
     readonly replyNote?: string;
+    readonly silent?: boolean;
     readonly toolChoice?: StepToolChoice;
     readonly withheldTools?: readonly string[];
   } = {}
@@ -31,6 +33,7 @@ export function modelSelection(
     ? openRouterSelection(modelId, {
         delivered: options.delivered,
         replyNote: options.replyNote,
+        silent: options.silent,
         toolChoice: options.toolChoice ?? "auto",
         withheldTools: options.withheldTools,
       })

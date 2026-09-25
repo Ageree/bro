@@ -1,4 +1,5 @@
 import type { DynamicResolveContext, ToolContext } from "eve/tools";
+import type { Approval, ApprovalContext } from "eve/tools/approval";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   composioToolContext,
@@ -134,16 +135,92 @@ describe("approvals", () => {
     );
   });
 
-  it("asks before every write and lets reads run", () => {
-    expect(notionAddTask.approval).toBeTypeOf("function");
-    expect(slackSendMessage.approval).toBeTypeOf("function");
-    expect(notionSearch.approval).toBeUndefined();
-    expect(notionRead.approval).toBeUndefined();
-    expect(slackRead.approval).toBeUndefined();
-    expect(slackSearch.approval).toBeUndefined();
+  it("asks before every write, and before a read outside the person's own turn", async () => {
+    const decisions = await Promise.all(
+      ["photon-imessage", "browser-result"].map(async (authenticator) => [
+        await decide(notionSearch, { query: "Пароли" }, authenticator),
+        await decide(notionRead, { id: "page-1", kind: "page" }, authenticator),
+        await decide(slackRead, { from: "#general", limit: 30 }, authenticator),
+        await decide(slackSearch, { count: 20, query: "inv" }, authenticator),
+      ])
+    );
+
+    expect(decisions).toEqual([
+      Array.from({ length: 4 }, () => "not-applicable"),
+      Array.from({ length: 4 }, () => "user-approval"),
+    ]);
+    expect(await decide(notionAddTask, { title: "Q3 planning" })).toBe(
+      "user-approval"
+    );
+    expect(await decide(slackSendMessage, { text: "Hi", to: "Sam" })).toBe(
+      "user-approval"
+    );
+  });
+
+  it("refuses a Slack message to a bare ID the card could not name", async () => {
+    const bare = await Promise.all(
+      ["C07ABCDEF", " U0SAMPARK ", "D0SAMPARK"].map(async (to) =>
+        decide(slackSendMessage, { text: "Hi", to })
+      )
+    );
+
+    expect(bare).toMatchObject([
+      { type: "denied" },
+      { type: "denied" },
+      { type: "denied" },
+    ]);
+    expect(await decide(slackSendMessage, { text: "Hi", to: "#general" })).toBe(
+      "user-approval"
+    );
+  });
+
+  it("shows what a read would open on its card", () => {
+    expect(readCard("notion-search", { query: "Пароли" })).toBe(
+      "Найти в Notion: «Пароли»"
+    );
+    expect(readCard("notion-search", {})).toBe(
+      "Найти в Notion: недавно изменённые страницы"
+    );
+    expect(readCard("notion-read", { id: "page-1" })).toBe(
+      "Открыть в Notion: page-1"
+    );
+    expect(readCard("slack-read", { from: "#general", threadTs: "17.1" })).toBe(
+      "Прочитать сообщения в Slack: #general (ветка 17.1)"
+    );
+    expect(readCard("slack-search", { query: "invoice" })).toBe(
+      "Найти в Slack: «invoice»"
+    );
   });
 });
 
+/** A read's approval card as the person sees it in Russian. */
+function readCard(toolName: string, input: Record<string, string>) {
+  return withApprovalCard(
+    {
+      action: { input, toolName },
+      kind: "tool-approval",
+      options: cardOptions,
+      prompt: `Approve tool call: ${toolName}`,
+    },
+    "ru"
+  ).prompt;
+}
+
+/** What a tool's approval policy decides for a call in a turn. */
+async function decide<TInput>(
+  tool: { readonly approval?: Approval<TInput> | undefined },
+  toolInput: ApprovalContext<TInput>["toolInput"],
+  authenticator = "photon-imessage"
+) {
+  const approval = tool.approval;
+  if (approval === undefined) throw new Error("The tool has no policy.");
+  const policy = "request" in approval ? approval.request : approval;
+  return policy({
+    ...composioToolContext("ca_slack", { authenticator }),
+    approvedTools: new Set(),
+    toolInput,
+  });
+}
 const tasksSource = {
   database_type: "tasks",
   id: "ds-tasks",
@@ -676,18 +753,12 @@ describe("connect_app", () => {
   });
 
   it("asks only before disconnecting", async () => {
-    const approval = connectApp.approval;
-    if (approval === undefined) throw new Error("No approval policy.");
-    const policy = "request" in approval ? approval.request : approval;
-    const context = composioToolContext("ca_slack");
-    const decide = async (action: "connect" | "disconnect") =>
-      policy({
-        ...context,
-        approvedTools: new Set(),
-        toolInput: { action, app: "slack" },
-      });
-    expect(await decide("connect")).toBe("not-applicable");
-    expect(await decide("disconnect")).toBe("user-approval");
+    expect(await decide(connectApp, { action: "connect", app: "slack" })).toBe(
+      "not-applicable"
+    );
+    expect(
+      await decide(connectApp, { action: "disconnect", app: "slack" })
+    ).toBe("user-approval");
   });
 });
 
@@ -704,6 +775,20 @@ describe("app tools exist only where the deployment can connect the app", () => 
       "slack-send-message",
     ]);
     expect(await resolvedNames(connectAppTools)).toEqual(["connect_app"]);
+  });
+
+  it("keeps them in a browser report, where every read asks first", async () => {
+    const report = resolveContext("browser-result");
+    expect(await resolvedNames(notionTools, report)).toEqual([
+      "notion-add-task",
+      "notion-read",
+      "notion-search",
+    ]);
+    expect(await resolvedNames(slackTools, report)).toEqual([
+      "slack-read",
+      "slack-search",
+      "slack-send-message",
+    ]);
   });
 
   it("leaves them out of Bro's own background work", async () => {

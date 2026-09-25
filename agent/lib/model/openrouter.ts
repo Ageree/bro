@@ -42,20 +42,32 @@ const keyOrderedHosts = ["alibaba", "morph", "wafer"];
  */
 const brokenHosts = ["sail-research"];
 
-const skippedHosts = [...keyOrderedHosts, ...brokenHosts];
+/**
+ * The hosts above were measured on DeepSeek only. Another model a workspace
+ * picks may be served by one of them alone, and ignoring it there would
+ * leave no endpoint at all.
+ */
+function skippedHosts(modelId: string) {
+  return modelId.startsWith("deepseek/")
+    ? [...keyOrderedHosts, ...brokenHosts]
+    : [];
+}
 
 /**
  * `OPENROUTER_PROVIDER_ORDER=baseten,fireworks` pins the upstream hosts. Left
  * unset, OpenRouter keeps its own sticky routing, which preserves the prompt
- * cache across turns. Either way the hosts above are skipped.
+ * cache across turns. A DeepSeek model skips the hosts above either way; a
+ * pinned host stays pinned.
  */
-function providerRouting() {
-  const order = env.OPENROUTER_PROVIDER_ORDER?.split(",")
-    .map((slug) => slug.trim().toLowerCase())
-    .filter((slug) => slug.length > 0);
-  return order && order.length > 0
-    ? { ignore: skippedHosts, order }
-    : { ignore: skippedHosts };
+function providerRouting(modelId: string) {
+  const order =
+    env.OPENROUTER_PROVIDER_ORDER?.split(",")
+      .map((slug) => slug.trim().toLowerCase())
+      .filter((slug) => slug.length > 0) ?? [];
+  const ignore = skippedHosts(modelId).filter((slug) => !order.includes(slug));
+  if (order.length > 0 && ignore.length > 0) return { ignore, order };
+  if (order.length > 0) return { order };
+  return ignore.length > 0 ? { ignore } : undefined;
 }
 
 /**
@@ -313,6 +325,74 @@ function quietEndMiddleware(): LanguageModelMiddleware {
   };
 }
 
+/**
+ * A step that must say nothing to the person whatever the model writes: a
+ * browser report the person already heard, or one whose turn ended the
+ * errand in a quiet `continue`. Such a turn delivered no message of its own,
+ * so Telegram and iMessage would post its final text as a fallback, and
+ * DeepSeek does write one («Отчёт уже доставлен, завершаю.») where
+ * gpt-6-luna stayed empty. Any text of a step without a tool call becomes
+ * eve's empty-delivery marker, which ends the turn with `message: null`.
+ */
+function silentEndMiddleware(): LanguageModelMiddleware {
+  return {
+    async wrapGenerate({ doGenerate, params }) {
+      const result = await doGenerate();
+      if (
+        !params.tools?.length ||
+        result.content.some((part) => part.type === "tool-call") ||
+        result.finishReason.unified === "content-filter"
+      ) {
+        return result;
+      }
+      return {
+        ...result,
+        content: [
+          ...result.content.filter((part) => part.type !== "text"),
+          { text: emptyDeliveryMarker, type: "text" as const },
+        ],
+      };
+    },
+    async wrapStream({ doStream, params }) {
+      const result = await doStream();
+      if (!params.tools?.length) return result;
+      let acted = false;
+      const stream = result.stream.pipeThrough(
+        new TransformStream<StreamPart, StreamPart>({
+          transform(part, controller) {
+            if (part.type === "tool-call" || part.type === "tool-input-start") {
+              acted = true;
+            }
+            if (
+              part.type === "text-start" ||
+              part.type === "text-delta" ||
+              part.type === "text-end"
+            ) {
+              return;
+            }
+            if (
+              part.type === "finish" &&
+              !acted &&
+              part.finishReason.unified !== "content-filter"
+            ) {
+              const id = "silent-end";
+              controller.enqueue({ id, type: "text-start" });
+              controller.enqueue({
+                delta: emptyDeliveryMarker,
+                id,
+                type: "text-delta",
+              });
+              controller.enqueue({ id, type: "text-end" });
+            }
+            controller.enqueue(part);
+          },
+        })
+      );
+      return { ...result, stream };
+    },
+  };
+}
+
 /** eve model selection that calls OpenRouter directly instead of the Gateway. */
 export function openRouterSelection(
   modelId: string,
@@ -323,6 +403,8 @@ export function openRouterSelection(
      */
     readonly delivered?: boolean;
     readonly replyNote?: string;
+    /** No text of this step may reach the person, empty or not. */
+    readonly silent?: boolean;
     readonly toolChoice: StepToolChoice;
     /** Tools this step may not call, though the turn has them. */
     readonly withheldTools?: readonly string[];
@@ -332,7 +414,9 @@ export function openRouterSelection(
     apiKey: env.OPENROUTER_API_KEY,
     headers: attributionHeaders(),
   });
-  const model = openrouter.chat(modelId, { provider: providerRouting() });
+  const model = openrouter.chat(modelId, {
+    provider: providerRouting(modelId),
+  });
   // OpenRouter sends `required` to Anthropic as a forced tool call, which
   // Anthropic rejects while extended thinking is on. `none` is accepted.
   const forcedToolAllowed =
@@ -349,7 +433,11 @@ export function openRouterSelection(
     ...(withheld.length > 0 ? [withheldToolsMiddleware(withheld)] : []),
     ...(toolChoice === "auto" ? [] : [toolChoiceMiddleware(toolChoice)]),
     ...(options.replyNote ? [replyNoteMiddleware(options.replyNote)] : []),
-    ...(options.delivered ? [quietEndMiddleware()] : []),
+    ...(options.silent
+      ? [silentEndMiddleware()]
+      : options.delivered
+        ? [quietEndMiddleware()]
+        : []),
   ];
 
   return {

@@ -1,4 +1,5 @@
 import type { ModelMessage, ToolResultPart } from "ai";
+import { z } from "zod";
 import { browserAnswer } from "./browser-report";
 
 /**
@@ -38,6 +39,51 @@ function toolResults(messages: readonly ModelMessage[]) {
   );
 }
 
+const appsRunSchema = z.object({ action: z.literal("run"), tool: z.string() });
+
+const appsDoneSchema = z.object({ status: z.literal("done") });
+
+/** A Composio calendar tool: Outlook, Calendly, Google through `apps`. */
+const appsCalendarTool = /CALENDAR|EVENT|MEETING/u;
+
+/**
+ * The calendar tools the `apps` tool ran in `messages`, by call id: the call
+ * names the tool, its result only says whether it went through.
+ */
+function appsCalendarCalls(messages: readonly ModelMessage[]) {
+  return new Set(
+    messages.flatMap((message) =>
+      message.role === "assistant" && Array.isArray(message.content)
+        ? message.content.flatMap((part) =>
+            part.type === "tool-call" &&
+            part.toolName === "apps" &&
+            appsCalendarTool.test(
+              appsRunSchema.safeParse(part.input).data?.tool ?? ""
+            )
+              ? [part.toolCallId]
+              : []
+          )
+        : []
+    )
+  );
+}
+
+/**
+ * Whether a tool result is a calendar event created, changed or deleted: by
+ * Bro's own calendar tools, or by a calendar tool of another app through
+ * `apps` («поставь в мой Outlook»).
+ */
+function wroteCalendar(part: ToolResultPart, appsCalls: Set<string>) {
+  if (!succeeded(part.output)) return false;
+  if (calendarWriteTools.has(part.toolName)) return true;
+  return (
+    part.toolName === "apps" &&
+    appsCalls.has(part.toolCallId) &&
+    part.output.type === "json" &&
+    appsDoneSchema.safeParse(part.output.value).success
+  );
+}
+
 /**
  * What the current turn has done that a message could claim. `turn` is the
  * turn after its opening message, `earlier` everything before that message.
@@ -53,9 +99,10 @@ export function turnActions(
   let browserPending = false;
   let codeTyped = false;
   let calendarWritten = false;
+  const appsCalls = appsCalendarCalls([...earlier, ...turn]);
   for (const part of toolResults(turn)) {
     if (!succeeded(part.output)) continue;
-    if (calendarWriteTools.has(part.toolName)) calendarWritten = true;
+    if (wroteCalendar(part, appsCalls)) calendarWritten = true;
     if (part.toolName !== "browser_task") continue;
     const answer = browserAnswer(part.output);
     if (answer?.status && pendingRunStatuses.has(answer.status)) {
@@ -68,8 +115,8 @@ export function turnActions(
   return {
     browserPending: browserPending && !options.background,
     calendarWritten,
-    calendarWrittenEarlier: toolResults(earlier).some(
-      (part) => calendarWriteTools.has(part.toolName) && succeeded(part.output)
+    calendarWrittenEarlier: toolResults(earlier).some((part) =>
+      wroteCalendar(part, appsCalls)
     ),
     codeTyped,
   };
@@ -179,14 +226,32 @@ function sentencesOf(text: string) {
     .filter((sentence) => !otherTime.test(sentence));
 }
 
+/** Words that negate a verb or make it the person's: «не ставлю», «ты добавил». */
+const notMine = new Set(["не", "ты", "not", "you"]);
+
 /**
- * The parts of a sentence between commas, colons and dashes. A calendar
- * claim puts the verb and the calendar in one of them («ставлю в календарь
- * слот 11:00»); a list of what Bro does only has them side by side
- * («разбираю почту, календарь и Диск, ставлю напоминания»).
+ * Whether a sentence says one of the one-word phrases within `distance` words
+ * of the calendar. A claim in the present puts them together («ставлю в
+ * календарь слот 11:00»); a list of what Bro does only has them in one
+ * sentence («разбираю почту, календарь и Диск, ставлю напоминания»).
  */
-function clausesOf(sentence: string) {
-  return sentence.split(/[,:—–()]/u);
+function saysNearCalendar(
+  sentence: string,
+  phrases: readonly string[],
+  distance = 3
+) {
+  const words = sentence.split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+  const nouns = words.flatMap((word, index) =>
+    calendarNoun.test(word) ? [index] : []
+  );
+  return words.some(
+    (word, index) =>
+      phrases.includes(word) &&
+      !words
+        .slice(Math.max(0, index - 2), index)
+        .some((before) => notMine.has(before)) &&
+      nouns.some((noun) => Math.abs(noun - index) <= distance)
+  );
 }
 
 function escaped(phrase: string) {
@@ -223,17 +288,17 @@ export function unperformedClaim(
   }
   if (!actions.calendarWritten) {
     // A past tense after an earlier turn wrote to the calendar may well be
-    // about that write.
-    const verbs = actions.calendarWrittenEarlier
-      ? calendarPresentVerbs
-      : [...calendarPresentVerbs, ...calendarPastVerbs];
-    const claimed = sentences
-      .flatMap(clausesOf)
-      .some(
-        (clause) =>
-          calendarNoun.test(clause.replaceAll(theirCalendar, "")) &&
-          says(clause, verbs)
+    // about that write. A past tense anywhere in the sentence claims a write
+    // («Записал: встреча в пятницу в календаре»); a present one only next to
+    // the calendar.
+    const claimed = sentences.some((sentence) => {
+      const own = sentence.replaceAll(theirCalendar, "");
+      if (!calendarNoun.test(own)) return false;
+      return (
+        saysNearCalendar(own, calendarPresentVerbs) ||
+        (!actions.calendarWrittenEarlier && says(sentence, calendarPastVerbs))
       );
+    });
     if (claimed) return "calendar";
   }
   return undefined;

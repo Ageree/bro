@@ -153,9 +153,8 @@ async function safeAccountPhoneNumber(scope: AccessScope) {
 
 /**
  * Where the person's things can be delivered: the profile's street address
- * and the vault's address cards, each without the recipient's name. A city
- * and a country alone are not an address — they are the `home` line. The
- * card's label goes first, so «Домашний адрес» can win over «Работа».
+ * first, then the vault's address cards, each without the recipient's name.
+ * A city and a country alone are not an address — they are the `home` line.
  */
 function deliveryAddresses(profile: Profile, cards: readonly VaultCard[]) {
   const addresses = [
@@ -187,14 +186,50 @@ function deliveryAddresses(profile: Profile, cards: readonly VaultCard[]) {
       seen.add(key);
       return true;
     })
-    .map((entry) => {
-      // Free text from a form, and each address is one line of the run's
+    .map((entry) => ({
+      label: entry.label,
+      // Free text from a form, and the address is one line of the run's
       // instructions: a line break would start a paragraph of its own.
-      const value = entry.value.replaceAll(/\s+/gu, " ");
-      return entry.label
-        ? `${entry.label.replaceAll(/\s+/gu, " ")}: ${value}`
-        : value;
-    });
+      value: entry.value.replaceAll(/\s+/gu, " "),
+    }));
+}
+
+/**
+ * The one delivery address an errand without a card may type: the saved
+ * one the errand names by its label («на дачу» with a card «Дача»), or else
+ * the first — the profile's own, then the vault's. The person's other
+ * addresses are theirs to hand over on a card, not all at once to a search.
+ */
+export function deliveryAddressFor(
+  addresses: readonly { readonly label?: string; readonly value: string }[],
+  ...texts: readonly (string | null | undefined)[]
+) {
+  const said = texts.join("\n").toLocaleLowerCase();
+  const named = addresses.find(
+    (address) => address.label !== undefined && labelNamed(address.label, said)
+  );
+  return (named ?? addresses[0])?.value;
+}
+
+/**
+ * Whether the text names a card by its label, in any case form: «на дачу»
+ * names «Дача», «на работу» names «Работа». Every word of the label counts,
+ * without its last letter once it is long enough to have an ending.
+ */
+function labelNamed(label: string, said: string) {
+  const words = label
+    .toLocaleLowerCase()
+    .split(/[^\p{L}\d]+/u)
+    .filter((word) => word.length > 0);
+  return (
+    words.length > 0 &&
+    words.every((word) =>
+      new RegExp(
+        `(?<![\\p{L}\\d])${word.length >= 4 ? word.slice(0, -1) : word}`,
+        "u"
+      ).test(said)
+    )
+  );
 }
 
 const regionNames = new Intl.DisplayNames(["en"], { type: "region" });
@@ -224,9 +259,9 @@ function profileHome(profile: Profile) {
  * supplied one — the errand that stalls on «номер телефона для входа» is the
  * case this last line exists for. `home` is the profile's city and country,
  * which decide which sites can serve the errand at all. `addresses` are the
- * delivery addresses alone, with no name, phone or email: what a delivery
- * errand may type into a site's address picker before anyone confirmed an
- * order.
+ * delivery addresses alone, with no name, phone or email: one of them
+ * (`deliveryAddressFor`) is what a delivery errand may type into a site's
+ * address picker before anyone confirmed an order.
  */
 export async function browserRunFacts(scope: AccessScope) {
   const [profile, cards, accountPhone] = await Promise.all([

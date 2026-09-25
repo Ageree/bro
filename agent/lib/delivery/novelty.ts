@@ -236,6 +236,42 @@ export function announcesWork(message: SentMessage) {
   );
 }
 
+/** Whether a message carries a picture, a number, a code, a link or a name. */
+export function carriesFacts(message: SentMessage) {
+  return (
+    message.attachments.length > 0 ||
+    message.codes.some((code) => isFact(code)) ||
+    message.properNames.length > 0
+  );
+}
+
+/**
+ * Whether a message tells something rather than announcing it. «Вот что
+ * нашёл:», «Какой вариант берём?» or «Секунду, смотрю» tell nothing yet.
+ */
+export function tellsFacts(message: SentMessage) {
+  return !announcesWork(message) && carriesFacts(message);
+}
+
+/**
+ * Verbs a person gives Bro a task with, which a bare reaction does not
+ * answer: «посчитай чаевые», «переведи», «find me …».
+ */
+const taskVerbs =
+  /(?<!\p{L})(?:посчитай|посчитайте|сосчитай|переведи|переведите|найди|найдите|подскажи|подскажите|расскажи|расскажите|объясни|объясните|покажи|покажите|проверь|проверьте|сделай|сделайте|напомни|напомните|поставь|поставьте|добавь|добавьте|запиши|запишите|закажи|закажите|купи|купите|забронируй|забронируйте|отмени|отмените|calculate|translate|find|explain|show|check|remind|book|order)(?!\p{L})/iu;
+
+/**
+ * Whether a person's message wants something back — a question, a request
+ * or a task — rather than only acknowledging, as «спасибо!» or «ок» do.
+ */
+export function asksForSomething(text: string) {
+  return (
+    questionsOf(text).length > 0 ||
+    requestsOf(text).length > 0 ||
+    taskVerbs.test(text)
+  );
+}
+
 function isLink(code: string) {
   return code.includes("://") || code.includes("/artifacts/");
 }

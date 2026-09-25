@@ -393,6 +393,51 @@ describe("model selection", () => {
 
       expect(generated.text).toBe("");
     });
+
+    it("turns any text of a silent step into eve's empty delivery (review #1)", async () => {
+      // DeepSeek ends a stale report turn with a line the channel would post.
+      const closingLine = "Отчёт уже доставлен, завершаю.";
+      const talkative = new MockLanguageModelV4({
+        doGenerate: async () => ({
+          content: [{ text: closingLine, type: "text" as const }],
+          finishReason: stop,
+          usage,
+          warnings: [],
+        }),
+        doStream: async () => ({
+          stream: convertArrayToReadableStream([
+            { type: "stream-start" as const, warnings: [] },
+            { id: "t", type: "text-start" as const },
+            { delta: closingLine, id: "t", type: "text-delta" as const },
+            { id: "t", type: "text-end" as const },
+            { finishReason: stop, type: "finish" as const, usage },
+          ]),
+        }),
+      });
+      vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
+      openRouter.chat.mockReturnValue(talkative);
+      const { openRouterSelection } =
+        await import("@agent/lib/model/openrouter");
+      const selection = openRouterSelection("deepseek/deepseek-v4.1-flash", {
+        delivered: true,
+        silent: true,
+        toolChoice: "none",
+      });
+
+      const generated = await generateText({
+        model: selection.model,
+        prompt: "report",
+        tools,
+      });
+      const streamed = streamText({
+        model: selection.model,
+        prompt: "report",
+        tools,
+      });
+
+      expect(generated.text).toBe("<eve-empty-delivery/>");
+      expect(await streamed.text).toBe("<eve-empty-delivery/>");
+    });
   });
 
   it.each([
@@ -486,6 +531,24 @@ describe("model selection", () => {
     ).toEqual(["kind", "text", "replyTo"]);
   });
 
+  it("keeps a host pinned for DeepSeek even when it is on the skip list", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
+    vi.stubEnv("OPENROUTER_PROVIDER_ORDER", "alibaba");
+
+    const { modelSelection } = await import("@agent/lib/model/selection");
+    modelSelection("deepseek/deepseek-v4.1-flash");
+
+    expect(openRouter.chat).toHaveBeenCalledExactlyOnceWith(
+      "deepseek/deepseek-v4.1-flash",
+      {
+        provider: {
+          ignore: ["morph", "wafer", "sail-research"],
+          order: ["alibaba"],
+        },
+      }
+    );
+  });
+
   it("pins the configured provider order and reasoning effort", async () => {
     vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
     vi.stubEnv("OPENROUTER_PROVIDER_ORDER", " Baseten , fireworks ,, ");
@@ -494,14 +557,11 @@ describe("model selection", () => {
     const { modelSelection } = await import("@agent/lib/model/selection");
     const selection = modelSelection("anthropic/claude-sonnet-4.5");
 
+    // The skipped hosts were measured on DeepSeek; another model may be
+    // served by one of them alone.
     expect(openRouter.chat).toHaveBeenCalledExactlyOnceWith(
       "anthropic/claude-sonnet-4.5",
-      {
-        provider: {
-          ignore: ["alibaba", "morph", "wafer", "sail-research"],
-          order: ["baseten", "fireworks"],
-        },
-      }
+      { provider: { order: ["baseten", "fireworks"] } }
     );
     expect(selection).toMatchObject({
       modelOptions: {

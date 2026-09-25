@@ -1,5 +1,6 @@
 import { parseInputResponses, resolveTextToResponses } from "eve/client";
 import { defineDynamic, defineTool, type ToolContext } from "eve/tools";
+import type { ApprovalStatus } from "eve/tools/approval";
 import { z } from "zod";
 import { resolveModeValue, startedByPerson } from "@agent/lib/mode";
 import { answerableScheduledQuestions } from "@agent/lib/schedules/question";
@@ -19,7 +20,21 @@ import {
   updateScheduledAgentJob,
 } from "@db/services/scheduled-agent-jobs";
 
+/**
+ * A schedule's prompt is later run by a worker as the person's own task,
+ * with their mail and the web at hand. In a turn the person did not start —
+ * a browser run's report, whose text the page writes — a schedule could carry
+ * the page's words into that task, so it waits for the person's card showing
+ * what it will do and when. In their own turn it goes ahead as asked.
+ */
+export function scheduleApproval(
+  context: Parameters<typeof startedByPerson>[0]
+): ApprovalStatus {
+  return startedByPerson(context) ? "not-applicable" : "user-approval";
+}
+
 export const createSchedule = defineTool({
+  approval: ({ session }) => scheduleApproval({ session }),
   description:
     "Create a one-time, fixed-interval, or timezone-aware calendar job for the person. Human recurrence is a calendar rule in the person's timezone, which stays on the same wall-clock time across daylight saving time and months of different length: «каждое 5-е число» is frequency monthly with dayOfMonth 5, «в последний день месяца» dayOfMonth \"last\", «каждое второе воскресенье» monthly_weekday with occurrence 2 and weekday 0, «по понедельникам и средам» weekly with weekdays [1, 3], «каждый будний день» weekdays, «каждый год 12 марта» yearly. Use interval only for a fixed count of minutes or hours, never for months or years. Summarize the exact requested work in prompt. A scheduled run can never act in the user's name or pay — no booking, appointment, application, job application, receipt or order: it only checks, searches and stages up to the final step, and its report asks the user to confirm in the conversation. So for «записывай, как только появится слот» schedule the check and say the booking itself waits for the user's confirmation.",
   inputSchema: z.object({
@@ -66,6 +81,7 @@ const updateScheduleInputSchema = z
   );
 
 export const updateSchedule = defineTool({
+  approval: ({ session }) => scheduleApproval({ session }),
   description:
     "Update, pause, resume, or delete one of the authenticated user's scheduled jobs, whichever chat it was made in. Set status paused or active to pause or resume it. List schedules first when the target is ambiguous.",
   inputSchema: updateScheduleInputSchema,

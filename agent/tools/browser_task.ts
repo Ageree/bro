@@ -30,10 +30,10 @@ import {
   resolveBrowserSecretBindings,
 } from "@agent/lib/browser-use/secrets";
 import {
+  browserRunReportOwed,
   claimBrowserRunCompletion,
   closeQueuedBrowserRun,
   createBrowserRun,
-  finishBrowserRunReport,
   readBrowserProfileId,
   readLatestBrowserRunForScope,
   recordBrowserRunSubmission,
@@ -70,7 +70,10 @@ import {
   wholeRubles,
 } from "@shared/spending/limit";
 import type { AccessScope } from "@shared/identity/access-scope";
-import { browserRunFacts } from "@agent/lib/browser-use/facts";
+import {
+  browserRunFacts,
+  deliveryAddressFor,
+} from "@agent/lib/browser-use/facts";
 import {
   browserRunFinalScreenshotStem,
   browserRunImagePrefix,
@@ -79,6 +82,7 @@ import { maximumDeliveredImageArtifacts } from "@agent/lib/image-artifact/delive
 import { env } from "@shared/environment";
 import { browserRunNeeds } from "@agent/lib/browser-use/outcome";
 import { browserRunNeedGuidance } from "@agent/lib/browser-use/guidance";
+import { outcomesHeard } from "@agent/lib/browser-use/heard";
 import { customProxy } from "@agent/lib/browser-use/proxy";
 import { mentionsRecurringCharge } from "@agent/lib/browser-use/spend";
 import { browserRunQuotaGate } from "@agent/lib/billing/quota";
@@ -430,9 +434,12 @@ function commitmentLine(
 /**
  * Errands whose options hang on where they are delivered or picked up:
  * groceries and food by a time, a courier, a pickup point, a taxi from home.
+ * Each word is held to its own endings: a bare stem sent the home address
+ * to «отель в Купертино», «вакансии курьера», «курс по продуктивности»,
+ * «книги Лавкрафта» and «таксидермист».
  */
 const deliveryErrandPattern =
-  /(?<!\p{L})(?:доставк|достав(?:ить|ят|ит|им|ьте)|привез|привоз|курьер|самовывоз|пункт\p{L}*\s+выдачи|пвз|продукт|лавк|самокат|купер|kuper|вкусвилл|впрок|такси|taxi|deliver|courier|grocer|pickup\s+point)/iu;
+  /(?<!\p{L})(?:доставк\p{L}*|достав(?:ить|ят|ит|им|ьте)|привез\p{L}*|привёз\p{L}*|привоз(?:а|у|ом)?|курьер(?:ом|ск\p{L}+)?|самовывоз\p{L}*|пункт\p{L}*\s+выдачи|пвз|продукт(?:ы|ов|ами|ах)|лавк(?:а|и|е|у|ой)|самокат(?:а|е|у|ом)?|kuper|вкусвилл\p{L}*|такси|taxi|deliver(?:y|ies|ed|s)?|couriers?|grocer(?:y|ies)|pickup\s+points?)(?!\p{L})/iu;
 
 /** Whether the errand is about delivery, by the call's flag or its words. */
 function aboutDelivery(
@@ -454,13 +461,12 @@ function aboutDelivery(
  * submits nothing in the person's name. Their name, phone and email still
  * wait for the card, and the rest of the profile with them.
  */
-function deliveryAddressLine(addresses: readonly string[]) {
-  if (addresses.length === 0) return undefined;
+function deliveryAddressLine(address: string | undefined) {
+  if (address === undefined) return undefined;
   return [
-    "Where this is delivered decides what the site can offer: what is in stock, the delivery slots, the minimum order and the fees. You may type the delivery address into the site's own address or delivery-zone picker — where a shopper sets where to deliver before choosing anything — so that everything you report is for that address: the one the errand names, or else the first one below.",
+    "Where this is delivered decides what the site can offer: what is in stock, the delivery slots, the minimum order and the fees. You may type the delivery address into the site's own address or delivery-zone picker — where a shopper sets where to deliver before choosing anything — so that everything you report is for that address: the one the errand names, or else the saved one below.",
     "That picker is the only place the address may go, and the address is the only personal detail you may type: never into a checkout, a sign-up, a request or a message, and never together with a name, a phone number or an email.",
-    "Delivery addresses on file:",
-    ...addresses.map((address) => `- ${address}`),
+    `Delivery address: ${address}`,
   ].join("\n");
 }
 
@@ -554,8 +560,8 @@ export function composeBrowserTask(options: {
   readonly allowPayment: boolean;
   readonly collectImages: boolean;
   readonly consent: SubmissionConsent | undefined;
-  /** The saved delivery addresses, for an errand about delivery. */
-  readonly deliveryAddresses: readonly string[];
+  /** The one saved delivery address, for an errand about delivery. */
+  readonly deliveryAddress: string | undefined;
   readonly errand: string;
   readonly facts: string | undefined;
   readonly home: string | undefined;
@@ -565,7 +571,7 @@ export function composeBrowserTask(options: {
   // only for an errand that has none yet.
   const address = options.consent
     ? undefined
-    : deliveryAddressLine(options.deliveryAddresses);
+    : deliveryAddressLine(options.deliveryAddress);
   return [
     options.site
       ? `${options.errand}\n\nSite: ${options.site}`
@@ -602,8 +608,8 @@ export function composeBrowserContinuation(options: {
   readonly allowPayment: boolean;
   readonly collectImages: boolean;
   readonly consent: SubmissionConsent | undefined;
-  /** The saved delivery addresses, for an errand about delivery. */
-  readonly deliveryAddresses: readonly string[];
+  /** The one saved delivery address, for an errand about delivery. */
+  readonly deliveryAddress: string | undefined;
   /** What the person allowed on this errand went through already. */
   readonly done?: boolean;
   readonly errand: string;
@@ -616,7 +622,7 @@ export function composeBrowserContinuation(options: {
   const address =
     options.consent || options.done === true
       ? undefined
-      : deliveryAddressLine(options.deliveryAddresses);
+      : deliveryAddressLine(options.deliveryAddress);
   return [
     options.message,
     [
@@ -1069,9 +1075,19 @@ function errandActsForPerson(row: ErrandRow) {
   return row.submission !== null || row.paymentAllowed;
 }
 
-/** Whether the settled run's report has not reached the person yet. */
-function outcomeUnheard(row: ErrandRow) {
-  return row.report !== null && row.reportDeliveredAt === null;
+/**
+ * Where a settled run's report stands when the person asks about the errand
+ * before hearing it: `settling` while the settle still puts the full report
+ * together — its pictures and payment note come after the plain outcome —
+ * `queued` while a report turn holds it and speaks right after this turn,
+ * `owed` when nothing is delivering it now. Undefined when the person heard
+ * it, or the run has not settled.
+ */
+function unheardReport(row: ErrandRow, now = new Date()) {
+  if (row.completedAt === null || row.retryAt !== null) return undefined;
+  if (row.report === null || row.reportDeliveredAt !== null) return undefined;
+  if (browserRunReportOwed(row, now)) return "owed" as const;
+  return row.reportAttempts === 0 ? ("settling" as const) : ("queued" as const);
 }
 
 /** Stops a follow-up answers in place: a code, an approval, a sign-in. */
@@ -1089,7 +1105,8 @@ const answeredInPlaceNeeds = new Set<string>([
  * run — a new run on the site, asked how the errand went — instead of telling
  * the person what it had found, and they heard nothing for minutes more (RU
  * 24.09, d01, d02). In the person's own turn, a plain follow-up on a settled
- * errand whose report is still on its way is answered with that report. A
+ * errand whose report has not reached them is answered with that report,
+ * once: after a message told them, the next follow-up is theirs to give. A
  * code, an approval in the app or a sign-in the run stopped for goes straight
  * through: the person has it on their phone, and it expires. So does a call
  * that brings a card or a payment, which is the person's word by itself.
@@ -1098,14 +1115,26 @@ function outcomeFirst(
   row: ErrandRow,
   input: BrowserTaskInput,
   message: string,
-  byPerson: boolean
+  byPerson: boolean,
+  heard: readonly string[]
 ) {
-  if (!byPerson || actsForPerson(input)) return false;
-  if (row.completedAt === null || row.retryAt !== null) return false;
-  if (!outcomeUnheard(row)) return false;
-  if (answeredInPlaceNeeds.has(endedNeeding(row.outcome) ?? "")) return false;
-  return oneTimeCodeFromMessage(message) === undefined;
+  if (!byPerson || actsForPerson(input) || heard.includes(row.id)) {
+    return undefined;
+  }
+  const report = unheardReport(row);
+  if (report === undefined) return undefined;
+  if (answeredInPlaceNeeds.has(endedNeeding(row.outcome) ?? "")) {
+    return undefined;
+  }
+  return oneTimeCodeFromMessage(message) === undefined ? report : undefined;
 }
+
+/**
+ * The run has just finished and its report is still being put together:
+ * its outcome, pictures and payment note arrive by themselves in a moment.
+ */
+const settlingNote =
+  "This errand has just finished, and its full report — the outcome, with any pictures and payment note — is being put together and reaches the conversation by itself in a moment. Tell the user it is done and that the details are on their way; do not continue the run to ask how it went.";
 
 /**
  * The answer to «ну что там?» about a settled errand is its outcome, retold,
@@ -1121,10 +1150,19 @@ function settledOutcomeNote(row: ErrandRow) {
     .join(" ");
 }
 
+/**
+ * The report its own turn would have given, handed over whole: the pictures
+ * the run saved and the payment note live only there, and the report turn
+ * that follows stays quiet once a message told the person.
+ */
+const keptReportNote =
+  "Report is the kept report this run's own turn would have given: follow it as that turn would — attach the pictures it lists as ![caption](/artifacts/<id>) when the user asked for them or the outcome is easier to show, and tell them any payment note — in the one message you send now. Its own turn stays quiet once that message reached them.";
+
 function unheardOutcomeNote(row: ErrandRow) {
   return [
-    "Nothing was sent to the site: this errand has already finished, and the user has not heard its outcome yet. It is below, and it now counts as told: tell the user this outcome now in your own words — what was found or done, with the prices, links, order number and anything still needed from them.",
-    "If the user's message also asks for something new — another constraint, a further search, going ahead with an option — call continue again after telling them, and it goes through.",
+    "Nothing was sent to the site: this errand has already finished, and the user has not heard its outcome yet. It is below: tell the user this outcome now in your own words — what was found or done, with the prices, links, order number and anything still needed from them.",
+    keptReportNote,
+    "If the user's message also asks for something new — another constraint, a further search, going ahead with an option — call continue again once your message has told them the outcome, and it goes through.",
     browserRunNeedGuidance(endedNeeding(row.outcome)),
   ]
     .filter((line) => line !== undefined)
@@ -1659,683 +1697,709 @@ async function continueQueuedErrand(
   };
 }
 
-export const browserTask = defineTool({
-  approval: ({ session, toolInput }) =>
-    browserTaskApproval(toolInput, { session }),
-  description:
-    "Run one errand on a website through a hosted cloud browser that can sign in, fill forms, and complete a checkout. Use it when the user wants something done on a site; use web_search and web_fetch instead for reading public pages. Start exactly one run per errand and pass the site's origin so saved credentials can be bound to it; pick a site that serves the user's country and address, preferring local marketplaces over a global brand site that does not ship there. Write the errand short: the cloud browser is itself an agent, so give it the goal, the hard constraints in the user's own words, the saved preferences that bear on it, two or three fallback sites, and what to report back — not a click-by-click script. The run is told the user's city and country from Personal Info and asked to report its best partial results after about 15 minutes of searching. Searching and comparing need no card and no approval: start such an errand right away. Doing anything in the user's name — booking or reserving (even free and freely cancelled), making an appointment, signing up, ordering, filing an application, applying to a job, issuing a receipt, or sending a request, message or contact form, or typing their name, phone, email or address into a site — needs allowSubmit: true with submission, which you set only when the user explicitly asked for exactly that; a request to find or recommend options ends at the recommendation, so leave it unset and offer the booking as the next step. allowSubmit puts one native approval card in front of the user that shows submission — what, where, for whom, which of their details go, the date or slot and the cost — so it has to name the one option they confirm. When the user named it exactly (a table at a place and hour), start with it straight away. When it still has to be found (a train after 18:00 under a budget, the usual item, a doctor next week), start without allowSubmit: the run picks the best fit, stages it up to the final step and reports it; once that report arrives, continue that run with allowSubmit and a submission naming exactly that option and its real total in chargeRub — the one card. Never ask in text first, and take what you do not know from the profile, memory and the vault, or a sensible default you name afterwards. When the user declines the card, nothing is lost: show the options the run found with their prices and links and ask what to change, rather than saying only that nothing was booked. When the errand is paid, put its rouble total in submission.chargeRub: that one card then also approves paying up to it with a small margin, so there is no second question about the payment. Once confirmed, the run submits exactly that and nothing else. When a standing permission the user gave (standing_permission) covers this kind of errand on this site at this cost, the tool shows no card at all in a turn the user's own message started; the run is then held to that site and that kind of errand, with no fallback site for the submission, so pass the errand's site — a permission covers no errand started without one. In the turn that reports a browser run neither a standing permission nor an earlier confirmation acts: pass the submission and the user confirms it on a card. A confirmed errand keeps its confirmation, payment included, through its follow-ups, background retries and a start from the queue until what it allowed is done: once the booking, order or payment went through, a follow-up («где машина?») only looks and checks, and a new errand, another kind, slot or organisation, or a total above what was approved needs its own card. A scheduled or background run is refused allowSubmit and allowPayment, standing permission or not, and cannot steer an errand that acts in the user's name: there it only searches and stages. A run with no payment allowed stops before the final step of anything that charges or commits money (prepayment, binding a card, pay on delivery or at the property, a non-refundable rate, a cancellation fee) with NEEDS: payment and the TOTAL. For an errand the user asked you to do, continue it then with allowSubmit and a submission naming the option it staged with the real chargeRub — the card shows the total, so do not ask in text first; or, with no card at all, with allowPayment: true and withinSpendLimit when the payment may fit the user's standing spend limit: the tool decides, reserves the amount and caps the run; when it answers needs_approval, ask the user once. Every follow-up for that errand — an answer, a code the user typed, a changed constraint — goes through continue with the same runId, never a second start: continue works in the same browser, on the tab and the signed-in account the run already has. When the previous run has already finished, continue starts a follow-up run in that same browser and returns a NEW runId; use that one from then on. «Привяжи карту» is approval to bind the saved card, not to buy anything: pass allowPayment: true with submission naming it, and the user confirms it on the card. With allowSubmit, the person's name, phone, email and addresses from the profile and from the vault are typed into forms automatically, so never ask for a phone number or an address the user said is saved: start the errand and let the run use it. Without it the run types none of them, except that an errand about delivery (deliveryAddress, or one that names delivery) gets the saved delivery address alone for the site's own address picker, so stock, slots and fees are for the user's address from the first run. The run signs in with vault credentials the models involved never see, so never ask the user for a password: when none is stored, call request_vault_setup. The run solves CAPTCHAs and anti-bot checks itself as it goes, and they are never the user's to solve: never tell the user you cannot pass one, never ask them to pass it, and never hand them the live view for one. A run the site stops at an anti-bot check is retried in the background by itself — a fresh browser on another address, on the same profile, up to five attempts over about half an hour — and its result reaches you only once the errand is done or the site stayed blocked; status and continue on the old runId follow the errand to its newest run. Give the user the live-view link only when the run is blocked on something only they can do — 3-D Secure, a push approval, a sign-in you cannot complete — and never forward a one-time code back to the user. Pass collectImages: true when the user asked for photos or pictures of what the errand finds; the run always saves a screenshot of the page with the outcome, and with the flag it saves pictures of the items too. Every saved image comes back with the outcome as an artifact id you attach in send_message as ![caption](/artifacts/id) — that is how the person gets the real picture rather than a link. When the cloud browser service is at capacity, start answers status queued with a queued: run id: the errand starts by itself within minutes, so tell the user it is queued and never start it again; status unavailable means the service is out of credits, and nothing starts until the owner tops it up. The run continues in the background and its result arrives later as a new message, so do not wait on it. When the user asks how an errand went («ну что там?»), answer from its outcome if they already heard it, or call status: for a finished run it returns the outcome to retell. continue is for something new from the user, never to ask the run how it went; on a finished run whose outcome the user has not heard yet, it only hands that outcome back.",
-  inputSchema,
-  async execute(input, context) {
-    const { conversation, scope } = conversationTarget(context);
+/**
+ * What a `browser_task` call does. `heard` names the runs whose settled
+ * outcome this conversation already told the person (`outcomesHeard`): a
+ * follow-up on one of them is theirs to give, not a «ну что там?» to answer
+ * with the outcome again.
+ */
+async function runBrowserTask(
+  input: z.infer<typeof inputSchema>,
+  context: ToolContext,
+  heard: readonly string[]
+) {
+  const { conversation, scope } = conversationTarget(context);
 
-    if (input.action === "start") {
-      const errand = z
-        .string()
-        .min(1, "A start action needs the errand text.")
-        .parse(input.task);
-      // Paying for an errand is asking for it to be done in one's name.
-      const consent = await consentFromInput(input, context, scope);
-      // The card or the standing permission that named the cost is the
-      // permission to pay it: nobody is asked a second time at checkout.
-      const allowPayment = input.allowPayment === true || consentPays(consent);
-      // A payment on the standing limit is decided first: a refusal must not
-      // count against the month's errands or provision anything.
-      const spend =
-        input.allowPayment === true && input.withinSpendLimit
-          ? await reserveSpendForRun(scope, input.withinSpendLimit, {
-              site: input.site,
-              texts: [errand],
-            })
-          : undefined;
-      if (spend && !spend.decision.allowed) {
-        return {
-          note: spendRefusalNote(spend.decision),
-          status: "needs_approval",
-        };
-      }
-      // What the card or the standing permission allowed to pay is held too,
-      // so the charge the run reports is checked against it.
-      const held = spend
-        ? undefined
-        : await reserveConsentForRun(scope, consent, { site: input.site });
-      if (held?.allowed === false) {
-        return { note: standingMonthRefusal, status: "needs_approval" };
-      }
-      const placeholder = spend?.decision.allowed
-        ? spend.placeholder
-        : held?.placeholder;
-      const started = await releasedOnFailure(placeholder, async () => {
-        // The monthly ceiling is checked before anything is provisioned: a
-        // refused errand must not cost a remote profile or a bound secret.
-        const quota = await browserRunQuotaGate(scope);
-        if (!quota.allowed) {
-          return { kind: "quota_exhausted" as const, note: quota.note };
-        }
-        const [profileId, secrets, facts] = await Promise.all([
-          workspaceProfileId(scope),
-          resolveBrowserSecretBindings(scope, {
-            allowPayment,
+  if (input.action === "start") {
+    const errand = z
+      .string()
+      .min(1, "A start action needs the errand text.")
+      .parse(input.task);
+    // Paying for an errand is asking for it to be done in one's name.
+    const consent = await consentFromInput(input, context, scope);
+    // The card or the standing permission that named the cost is the
+    // permission to pay it: nobody is asked a second time at checkout.
+    const allowPayment = input.allowPayment === true || consentPays(consent);
+    // A payment on the standing limit is decided first: a refusal must not
+    // count against the month's errands or provision anything.
+    const spend =
+      input.allowPayment === true && input.withinSpendLimit
+        ? await reserveSpendForRun(scope, input.withinSpendLimit, {
             site: input.site,
-          }),
-          browserRunFacts(scope),
-        ]);
-        const task = composeBrowserTask({
-          aliases: secrets.aliases,
-          allowPayment,
-          consent,
-          collectImages: input.collectImages === true,
-          deliveryAddresses: aboutDelivery(input.deliveryAddress, errand)
-            ? facts.addresses
-            : [],
-          errand:
-            spend?.decision.allowed && input.withinSpendLimit
-              ? `${errand}\n\n${spendCapLine(input.withinSpendLimit, spend.decision)}`
-              : errand,
-          facts: facts.details,
-          home: facts.home,
-          site: input.site,
-        });
-        // While errands wait for a browser, the cap was full a minute ago:
-        // this one joins the back of the line instead of taking the slot
-        // the first in line is about to get.
-        if (await browserQueueOccupied()) {
-          return { kind: "queued" as const, profileId, task };
-        }
-        try {
-          const run = await createBrowserUseRun({
-            customProxy: customProxy(),
-            maxCostUsd: env.BROWSER_USE_MAX_COST_USD,
-            model: env.BROWSER_USE_MODEL,
-            profileId,
-            proxyCountryCode: env.BROWSER_USE_PROXY_COUNTRY,
-            secretBindings: secrets.bindings,
-            task,
-          });
-          return { kind: "started" as const, profileId, run, secrets };
-        } catch (error) {
-          if (browserUseBusy(error)) {
-            return {
-              kind: "queued" as const,
-              profileId,
-              retryAfterMs: error.retryAfterMs,
-              task,
-            };
-          }
-          if (browserUseOutOfCredits(error)) {
-            await reportBrowserUseOutOfCredits(error);
-            return { kind: "no_credits" as const };
-          }
-          throw error;
-        }
-      });
-      if (started.kind === "quota_exhausted") {
-        if (placeholder) await releaseReservation(placeholder);
-        return { note: started.note, status: "quota_exhausted" };
-      }
-      if (started.kind === "no_credits") {
-        if (placeholder) await releaseReservation(placeholder);
-        return { note: browserUseOutOfCreditsNote, status: "unavailable" };
-      }
-      if (started.kind === "queued") {
-        // The errand waits with everything the person decided for it: the
-        // card they confirmed and the payment they allowed start with it.
-        const queued = await releasedOnFailure(placeholder, () =>
-          queueBrowserErrand(scope, {
-            ...conversation,
-            composedTask: started.task,
-            paymentAllowed: allowPayment,
-            profileId: started.profileId,
-            retryAfterMs: started.retryAfterMs,
-            site: input.site ?? null,
-            submission: confirmedSubmission(consent),
-            task: errand,
+            texts: [errand],
           })
-        );
-        if (placeholder) await moveSpendReservation(placeholder, queued.runId);
-        return {
-          note: [queued.note, standingNote(consent)]
-            .filter((line) => line !== undefined)
-            .join(" "),
-          runId: queued.runId,
-          startsInMinutes: queued.minutes,
-          status: "queued",
-        };
+        : undefined;
+    if (spend && !spend.decision.allowed) {
+      return {
+        note: spendRefusalNote(spend.decision),
+        status: "needs_approval",
+      };
+    }
+    // What the card or the standing permission allowed to pay is held too,
+    // so the charge the run reports is checked against it.
+    const held = spend
+      ? undefined
+      : await reserveConsentForRun(scope, consent, { site: input.site });
+    if (held?.allowed === false) {
+      return { note: standingMonthRefusal, status: "needs_approval" };
+    }
+    const placeholder = spend?.decision.allowed
+      ? spend.placeholder
+      : held?.placeholder;
+    const started = await releasedOnFailure(placeholder, async () => {
+      // The monthly ceiling is checked before anything is provisioned: a
+      // refused errand must not cost a remote profile or a bound secret.
+      const quota = await browserRunQuotaGate(scope);
+      if (!quota.allowed) {
+        return { kind: "quota_exhausted" as const, note: quota.note };
       }
-      const { profileId, run, secrets } = started;
-      await browserUseCreditsRestored();
-      if (placeholder) await moveSpendReservation(placeholder, run.id);
-      await recordStartedRun(run.id, () =>
-        createBrowserRun(scope, {
-          ...conversation,
-          id: run.id,
-          paymentAllowed: allowPayment,
+      const [profileId, secrets, facts] = await Promise.all([
+        workspaceProfileId(scope),
+        resolveBrowserSecretBindings(scope, {
+          allowPayment,
+          site: input.site,
+        }),
+        browserRunFacts(scope),
+      ]);
+      const task = composeBrowserTask({
+        aliases: secrets.aliases,
+        allowPayment,
+        consent,
+        collectImages: input.collectImages === true,
+        deliveryAddress: aboutDelivery(input.deliveryAddress, errand)
+          ? deliveryAddressFor(facts.addresses, errand)
+          : undefined,
+        errand:
+          spend?.decision.allowed && input.withinSpendLimit
+            ? `${errand}\n\n${spendCapLine(input.withinSpendLimit, spend.decision)}`
+            : errand,
+        facts: facts.details,
+        home: facts.home,
+        site: input.site,
+      });
+      // While errands wait for a browser, the cap was full a minute ago:
+      // this one joins the back of the line instead of taking the slot
+      // the first in line is about to get.
+      if (await browserQueueOccupied()) {
+        return { kind: "queued" as const, profileId, task };
+      }
+      try {
+        const run = await createBrowserUseRun({
+          customProxy: customProxy(),
+          maxCostUsd: env.BROWSER_USE_MAX_COST_USD,
+          model: env.BROWSER_USE_MODEL,
           profileId,
-          sessionId: run.sessionId,
+          proxyCountryCode: env.BROWSER_USE_PROXY_COUNTRY,
+          secretBindings: secrets.bindings,
+          task,
+        });
+        return { kind: "started" as const, profileId, run, secrets };
+      } catch (error) {
+        if (browserUseBusy(error)) {
+          return {
+            kind: "queued" as const,
+            profileId,
+            retryAfterMs: error.retryAfterMs,
+            task,
+          };
+        }
+        if (browserUseOutOfCredits(error)) {
+          await reportBrowserUseOutOfCredits(error);
+          return { kind: "no_credits" as const };
+        }
+        throw error;
+      }
+    });
+    if (started.kind === "quota_exhausted") {
+      if (placeholder) await releaseReservation(placeholder);
+      return { note: started.note, status: "quota_exhausted" };
+    }
+    if (started.kind === "no_credits") {
+      if (placeholder) await releaseReservation(placeholder);
+      return { note: browserUseOutOfCreditsNote, status: "unavailable" };
+    }
+    if (started.kind === "queued") {
+      // The errand waits with everything the person decided for it: the
+      // card they confirmed and the payment they allowed start with it.
+      const queued = await releasedOnFailure(placeholder, () =>
+        queueBrowserErrand(scope, {
+          ...conversation,
+          composedTask: started.task,
+          paymentAllowed: allowPayment,
+          profileId: started.profileId,
+          retryAfterMs: started.retryAfterMs,
           site: input.site ?? null,
-          status: "running",
           submission: confirmedSubmission(consent),
           task: errand,
         })
       );
-      const liveViewUrl = await waitForLiveViewUrl(run.id);
-      if (liveViewUrl) {
-        await updateBrowserRunProgress(run.id, { liveViewUrl });
-      }
+      if (placeholder) await moveSpendReservation(placeholder, queued.runId);
       return {
-        boundSecrets: secrets.aliases,
-        liveViewUrl,
-        note: [
-          "The run continues in the background. Its outcome arrives as a new message; do not poll for it.",
-          nothingDoneYetNote(),
-          boundSignInNote(secrets.aliases),
-          spend?.decision.allowed
-            ? `The payment fits the standing spend limit the user set (${formatRub(spend.decision.exposureRub)} reserved, ${formatRub(spend.decision.remainingAfterRub)} left this month), so do not ask them about it: report the receipt once the outcome arrives.`
-            : undefined,
-          standingNote(consent),
-        ]
+        note: [queued.note, standingNote(consent)]
           .filter((line) => line !== undefined)
           .join(" "),
-        runId: run.id,
-        status: "running",
+        runId: queued.runId,
+        startsInMinutes: queued.minutes,
+        status: "queued",
       };
     }
+    const { profileId, run, secrets } = started;
+    await browserUseCreditsRestored();
+    if (placeholder) await moveSpendReservation(placeholder, run.id);
+    await recordStartedRun(run.id, () =>
+      createBrowserRun(scope, {
+        ...conversation,
+        id: run.id,
+        paymentAllowed: allowPayment,
+        profileId,
+        sessionId: run.sessionId,
+        site: input.site ?? null,
+        status: "running",
+        submission: confirmedSubmission(consent),
+        task: errand,
+      })
+    );
+    const liveViewUrl = await waitForLiveViewUrl(run.id);
+    if (liveViewUrl) {
+      await updateBrowserRunProgress(run.id, { liveViewUrl });
+    }
+    return {
+      boundSecrets: secrets.aliases,
+      liveViewUrl,
+      note: [
+        "The run continues in the background. Its outcome arrives as a new message; do not poll for it.",
+        nothingDoneYetNote(),
+        boundSignInNote(secrets.aliases),
+        spend?.decision.allowed
+          ? `The payment fits the standing spend limit the user set (${formatRub(spend.decision.exposureRub)} reserved, ${formatRub(spend.decision.remainingAfterRub)} left this month), so do not ask them about it: report the receipt once the outcome arrives.`
+          : undefined,
+        standingNote(consent),
+      ]
+        .filter((line) => line !== undefined)
+        .join(" "),
+      runId: run.id,
+      status: "running",
+    };
+  }
 
-    const requestedRunId = z
+  const requestedRunId = z
+    .string()
+    .min(1, "This action needs the runId returned by start.")
+    .parse(input.runId);
+  // A background retry may have taken the errand over since the
+  // conversation last saw it; the newest run of the chain is the errand.
+  const row = await readLatestBrowserRunForScope(scope, requestedRunId);
+  if (!row) throw new Error("That browser run is not part of this workspace.");
+  const runId = row.id;
+
+  if (input.action === "continue") {
+    const message = z
       .string()
-      .min(1, "This action needs the runId returned by start.")
-      .parse(input.runId);
-    // A background retry may have taken the errand over since the
-    // conversation last saw it; the newest run of the chain is the errand.
-    const row = await readLatestBrowserRunForScope(scope, requestedRunId);
-    if (!row)
-      throw new Error("That browser run is not part of this workspace.");
-    const runId = row.id;
-
-    if (input.action === "continue") {
-      const message = z
-        .string()
-        .min(1, "A continue action needs the message to pass into the run.")
-        .parse(input.task);
-      const byPerson = startedByPerson(context);
-      // The outcome comes first: a follow-up on an errand the person has not
-      // heard the result of is answered with that result, not a new run.
-      if (outcomeFirst(row, input, message, byPerson)) {
-        await finishBrowserRunReport(runId);
+      .min(1, "A continue action needs the message to pass into the run.")
+      .parse(input.task);
+    const byPerson = startedByPerson(context);
+    // The outcome comes first: a follow-up on an errand the person has not
+    // heard the result of is answered with that result, not a new run.
+    const unheard = outcomeFirst(row, input, message, byPerson, heard);
+    if (unheard === "settling") {
+      return { note: settlingNote, runId, status: row.status };
+    }
+    if (unheard !== undefined) {
+      // Not marked delivered here: if this turn fails before a message
+      // reaches the person, the report still goes out on its own.
+      return {
+        note: unheardOutcomeNote(row),
+        outcome: row.outcome ?? undefined,
+        report: row.report ?? undefined,
+        runId,
+        status: row.status,
+      };
+    }
+    // A confirmation stays with its errand: a code, an answer or the
+    // payment its card already named needs no second card. A background
+    // worker never acts on it, and a changed submission is confirmed afresh.
+    const confirmedNow = await consentFromInput(input, context, scope, row);
+    const stillAllowed = errandStillAllowed(row);
+    // A browser report or a scheduled worker never steers an errand that
+    // acts in the person's name: whatever it appended would be carried out
+    // on their confirmation. Only a new card, answered by the person, does.
+    if (
+      !byPerson &&
+      confirmedNow === undefined &&
+      errandActsForPerson(row) &&
+      stillAllowed
+    ) {
+      return { note: steeringRefusal, runId, status: "needs_approval" };
+    }
+    const confirmedBefore: SubmissionConsent | undefined =
+      row.submission && byPerson && stillAllowed
+        ? { by: "errand", kind: "confirmed", submission: row.submission }
+        : undefined;
+    // What the person allowed went through already: this follow-up looks.
+    const done =
+      errandActsForPerson(row) && !stillAllowed && confirmedNow === undefined;
+    const consent =
+      confirmedNow?.kind === "confirmed"
+        ? confirmedNow
+        : (confirmedBefore ?? confirmedNow);
+    // Paying is allowed on every follow-up of an errand whose consent named
+    // what it costs, not only on the call that brings it.
+    const allowPayment = input.allowPayment === true || consentPays(consent);
+    // A run already started with the card bound keeps it; only a payment
+    // that run was not started with needs a run of its own.
+    const bindsCardNow =
+      (input.allowPayment === true && input.withinSpendLimit !== undefined) ||
+      (allowPayment && !row.paymentAllowed);
+    // The errand's origin is fixed when it starts: the browser is already on
+    // that site, signed in, and the run's secrets are bound to it. A site the
+    // model passes on a follow-up can only be a mix-up with another errand in
+    // the same conversation — one that would point the run at the wrong shop
+    // and attach another site's credentials to it — so the row wins.
+    const site = row.site ?? input.site ?? undefined;
+    if (row.status === "queued") {
+      const heldForQueue = await reserveConsentForRun(scope, confirmedNow, {
+        replacingRunId: row.id,
+        site,
+      });
+      if (heldForQueue?.allowed === false) {
         return {
-          note: unheardOutcomeNote(row),
-          outcome: row.outcome ?? undefined,
-          runId,
-          status: row.status,
-        };
-      }
-      // A confirmation stays with its errand: a code, an answer or the
-      // payment its card already named needs no second card. A background
-      // worker never acts on it, and a changed submission is confirmed afresh.
-      const confirmedNow = await consentFromInput(input, context, scope, row);
-      const stillAllowed = errandStillAllowed(row);
-      // A browser report or a scheduled worker never steers an errand that
-      // acts in the person's name: whatever it appended would be carried out
-      // on their confirmation. Only a new card, answered by the person, does.
-      if (
-        !byPerson &&
-        confirmedNow === undefined &&
-        errandActsForPerson(row) &&
-        stillAllowed
-      ) {
-        return { note: steeringRefusal, runId, status: "needs_approval" };
-      }
-      const confirmedBefore: SubmissionConsent | undefined =
-        row.submission && byPerson && stillAllowed
-          ? { by: "errand", kind: "confirmed", submission: row.submission }
-          : undefined;
-      // What the person allowed went through already: this follow-up looks.
-      const done =
-        errandActsForPerson(row) && !stillAllowed && confirmedNow === undefined;
-      const consent =
-        confirmedNow?.kind === "confirmed"
-          ? confirmedNow
-          : (confirmedBefore ?? confirmedNow);
-      // Paying is allowed on every follow-up of an errand whose consent named
-      // what it costs, not only on the call that brings it.
-      const allowPayment = input.allowPayment === true || consentPays(consent);
-      // A run already started with the card bound keeps it; only a payment
-      // that run was not started with needs a run of its own.
-      const bindsCardNow =
-        (input.allowPayment === true && input.withinSpendLimit !== undefined) ||
-        (allowPayment && !row.paymentAllowed);
-      // The errand's origin is fixed when it starts: the browser is already on
-      // that site, signed in, and the run's secrets are bound to it. A site the
-      // model passes on a follow-up can only be a mix-up with another errand in
-      // the same conversation — one that would point the run at the wrong shop
-      // and attach another site's credentials to it — so the row wins.
-      const site = row.site ?? input.site ?? undefined;
-      if (row.status === "queued") {
-        const heldForQueue = await reserveConsentForRun(scope, confirmedNow, {
-          replacingRunId: row.id,
-          site,
-        });
-        if (heldForQueue?.allowed === false) {
-          return {
-            note: standingMonthRefusal,
-            runId,
-            status: "needs_approval",
-          };
-        }
-        return continueQueuedErrand(row, {
-          allowPayment,
-          confirmedNow,
-          consent,
-          heldPlaceholder: heldForQueue?.placeholder,
-          message,
-          scope,
-        });
-      }
-      // A fresh decision on the standing limit is made with whatever this
-      // errand already holds still counted, and replaces it only once a run
-      // carries the new one: a refusal leaves the old reservation in place.
-      const spend =
-        input.allowPayment === true && input.withinSpendLimit
-          ? await reserveSpendForRun(scope, input.withinSpendLimit, {
-              replacingRunId: runId,
-              site,
-              texts: [row.task, row.outcome, message],
-            })
-          : undefined;
-      if (spend && !spend.decision.allowed) {
-        return {
-          note: spendRefusalNote(spend.decision),
+          note: standingMonthRefusal,
           runId,
           status: "needs_approval",
         };
       }
-      // A card or a standing permission given on this call holds its own
-      // payment, which replaces whatever the errand held once it is granted.
-      const held = spend
-        ? undefined
-        : await reserveConsentForRun(scope, confirmedNow, {
+      return continueQueuedErrand(row, {
+        allowPayment,
+        confirmedNow,
+        consent,
+        heldPlaceholder: heldForQueue?.placeholder,
+        message,
+        scope,
+      });
+    }
+    // A fresh decision on the standing limit is made with whatever this
+    // errand already holds still counted, and replaces it only once a run
+    // carries the new one: a refusal leaves the old reservation in place.
+    const spend =
+      input.allowPayment === true && input.withinSpendLimit
+        ? await reserveSpendForRun(scope, input.withinSpendLimit, {
             replacingRunId: runId,
             site,
-          });
-      if (held?.allowed === false) {
-        return { note: standingMonthRefusal, runId, status: "needs_approval" };
-      }
-      const placeholder = spend?.decision.allowed
-        ? spend.placeholder
-        : held?.placeholder;
-      const instruction =
-        spend?.decision.allowed && input.withinSpendLimit
-          ? `${message}\n\n${spendCapLine(input.withinSpendLimit, spend.decision)}`
-          : message;
-      const continued = await releasedOnFailure(placeholder, async () => {
-        // Both are round trips to the cloud and neither needs the other's answer.
-        // A one-time code waiting its turn is a code closer to expiring, and the
-        // entry is worth attempting whether or not a run is still on the page:
-        // the browser outlives its run, and the field is where the code belongs.
-        const [live, codeEntry] = await Promise.all([
-          trackedRunIsLive(runId, row.completedAt),
-          row.sessionId === null
-            ? undefined
-            : typeCodeIntoRunBrowser(row.sessionId, message),
-        ]);
-
-        // A live run already carries the secrets it was created with, so a plain
-        // follow-up is just a message on its queue. Bindings exist per run only:
-        // a card the person has only now approved needs a run of its own. A
-        // submission confirmed on this call rides on the message with the
-        // details it may type, and stays with the errand for its follow-ups;
-        // one confirmed earlier is already in the run's own instructions.
-        if (live && !bindsCardNow && row.sessionId !== null) {
-          const details = confirmedNow
-            ? (await browserRunFacts(scope)).details
-            : undefined;
-          await queueBrowserUseSessionMessage(
-            row.sessionId,
-            [
-              withCodeEntry(message, codeEntry),
-              confirmedNow ? commitmentLine(consent) : undefined,
-              details,
-            ]
-              .filter((part) => part !== undefined)
-              .join("\n\n")
-          );
-          if (confirmedNow?.kind === "confirmed") {
-            await recordBrowserRunSubmission(runId, confirmedNow.submission);
-          }
-          return {
-            // The run was started with the card bound, so what this call
-            // allowed it to pay is its to pay.
-            carriesPayment: true,
-            kind: "replied" as const,
-            reply: {
-              note: [
-                codeEntryNote(codeEntry) === undefined
-                  ? "The message was queued into the running errand. Its outcome still arrives as a new message."
-                  : "The code went straight into the page, and the message was queued into the running errand as well. Its outcome still arrives as a new message.",
-                nothingDoneYetNote(codeEntryNote(codeEntry) !== undefined),
-              ].join(" "),
-              runId,
-              status: row.status,
-            },
-          };
-        }
-        if (live) {
-          try {
-            await cancelBrowserUseRun(runId);
-          } catch (error) {
-            console.warn(
-              "[browser-use] the replaced run could not be cancelled",
-              {
-                cause: error,
-                runId,
-              }
-            );
-          }
-          // Claiming the completion here is what keeps the webhook and the
-          // poller from reporting the replaced run as an outcome of its own.
-          await claimBrowserRunCompletion(runId, {
-            outcome: "Заменён продолжением с привязанной картой",
-            status: "stopped",
-          });
-        } else {
-          // The person is steering a settled errand now: a background retry
-          // waiting for it, or being started, would only race this follow-up.
-          await stopBrowserRunErrand(runId);
-        }
-
-        // No quota gate: `browserRunQuotaGate` counts as it reads, and a
-        // continuation is the same errand the month was already charged for.
-        const [secrets, facts] = await Promise.all([
-          resolveBrowserSecretBindings(scope, { allowPayment, site }),
-          browserRunFacts(scope),
-        ]);
-        const profileId = row.profileId ?? (await workspaceProfileId(scope));
-        // A browser that lost to an anti-bot wall keeps losing: the shop has
-        // already judged that address and that browser, and a follow-up queued
-        // into it meets the same verdict however well it is written. The profile
-        // carries the sign-in, so dropping the session keeps the account and
-        // gets a fresh browser on a fresh address.
-        const sessionId =
-          endedNeeding(row.outcome) === "captcha"
-            ? undefined
-            : (row.sessionId ?? undefined);
-        const continuation = composeBrowserContinuation({
-          aliases: secrets.aliases,
-          allowPayment,
-          consent,
-          collectImages: input.collectImages === true,
-          deliveryAddresses: aboutDelivery(
-            input.deliveryAddress,
-            row.task,
-            message
-          )
-            ? facts.addresses
-            : [],
-          done,
-          errand: row.task,
-          facts: facts.details,
-          message: withCodeEntry(instruction, codeEntry),
-          searching: followUpSearches(message, row.outcome),
+            texts: [row.task, row.outcome, message],
+          })
+        : undefined;
+    if (spend && !spend.decision.allowed) {
+      return {
+        note: spendRefusalNote(spend.decision),
+        runId,
+        status: "needs_approval",
+      };
+    }
+    // A card or a standing permission given on this call holds its own
+    // payment, which replaces whatever the errand held once it is granted.
+    const held = spend
+      ? undefined
+      : await reserveConsentForRun(scope, confirmedNow, {
+          replacingRunId: runId,
           site,
         });
-        let followUp: Awaited<ReturnType<typeof createFollowUpRun>>;
-        try {
-          followUp = await createFollowUpRun({
-            customProxy: customProxy(),
-            maxCostUsd: env.BROWSER_USE_MAX_COST_USD,
-            model: env.BROWSER_USE_MODEL,
-            profileId,
-            proxyCountryCode: env.BROWSER_USE_PROXY_COUNTRY,
-            secretBindings: secrets.bindings,
-            sessionId,
-            task: continuation,
-          });
-        } catch (error) {
-          // The follow-up waits for a browser like any errand, with its
-          // session remembered so it lands in the same tab if it still can.
-          if (browserUseBusy(error)) {
-            return {
-              continuation,
-              kind: "queued" as const,
-              profileId,
-              retryAfterMs: error.retryAfterMs,
-              sessionId,
-            };
-          }
-          if (browserUseOutOfCredits(error)) {
-            await reportBrowserUseOutOfCredits(error);
-            return { kind: "no_credits" as const };
-          }
-          throw error;
+    if (held?.allowed === false) {
+      return { note: standingMonthRefusal, runId, status: "needs_approval" };
+    }
+    const placeholder = spend?.decision.allowed
+      ? spend.placeholder
+      : held?.placeholder;
+    const instruction =
+      spend?.decision.allowed && input.withinSpendLimit
+        ? `${message}\n\n${spendCapLine(input.withinSpendLimit, spend.decision)}`
+        : message;
+    const continued = await releasedOnFailure(placeholder, async () => {
+      // Both are round trips to the cloud and neither needs the other's answer.
+      // A one-time code waiting its turn is a code closer to expiring, and the
+      // entry is worth attempting whether or not a run is still on the page:
+      // the browser outlives its run, and the field is where the code belongs.
+      const [live, codeEntry] = await Promise.all([
+        trackedRunIsLive(runId, row.completedAt),
+        row.sessionId === null
+          ? undefined
+          : typeCodeIntoRunBrowser(row.sessionId, message),
+      ]);
+
+      // A live run already carries the secrets it was created with, so a plain
+      // follow-up is just a message on its queue. Bindings exist per run only:
+      // a card the person has only now approved needs a run of its own. A
+      // submission confirmed on this call rides on the message with the
+      // details it may type, and stays with the errand for its follow-ups;
+      // one confirmed earlier is already in the run's own instructions.
+      if (live && !bindsCardNow && row.sessionId !== null) {
+        const details = confirmedNow
+          ? (await browserRunFacts(scope)).details
+          : undefined;
+        await queueBrowserUseSessionMessage(
+          row.sessionId,
+          [
+            withCodeEntry(message, codeEntry),
+            confirmedNow ? commitmentLine(consent) : undefined,
+            details,
+          ]
+            .filter((part) => part !== undefined)
+            .join("\n\n")
+        );
+        if (confirmedNow?.kind === "confirmed") {
+          await recordBrowserRunSubmission(runId, confirmedNow.submission);
         }
-        if (!followUp.run) {
-          if (row.sessionId === null) {
-            throw new Error("A busy browser session needs its session id.");
-          }
-          // Bindings exist per run, so a busy session takes the message but
-          // not the card: whatever was reserved for it is not going to be paid.
-          await queueBrowserUseSessionMessage(
-            row.sessionId,
-            withCodeEntry(instruction, codeEntry)
-          );
-          return {
-            carriesPayment: false,
-            kind: "replied" as const,
-            reply: {
-              note: "The browser session was busy with another run, so the message was queued onto it instead. Keep using this run id; the outcome arrives as a new message.",
+        return {
+          // The run was started with the card bound, so what this call
+          // allowed it to pay is its to pay.
+          carriesPayment: true,
+          kind: "replied" as const,
+          reply: {
+            note: [
+              codeEntryNote(codeEntry) === undefined
+                ? "The message was queued into the running errand. Its outcome still arrives as a new message."
+                : "The code went straight into the page, and the message was queued into the running errand as well. Its outcome still arrives as a new message.",
+              nothingDoneYetNote(codeEntryNote(codeEntry) !== undefined),
+            ].join(" "),
+            runId,
+            status: row.status,
+          },
+        };
+      }
+      if (live) {
+        try {
+          await cancelBrowserUseRun(runId);
+        } catch (error) {
+          console.warn(
+            "[browser-use] the replaced run could not be cancelled",
+            {
+              cause: error,
               runId,
-              status: row.status,
-            },
+            }
+          );
+        }
+        // Claiming the completion here is what keeps the webhook and the
+        // poller from reporting the replaced run as an outcome of its own.
+        await claimBrowserRunCompletion(runId, {
+          outcome: "Заменён продолжением с привязанной картой",
+          status: "stopped",
+        });
+      } else {
+        // The person is steering a settled errand now: a background retry
+        // waiting for it, or being started, would only race this follow-up.
+        await stopBrowserRunErrand(runId);
+      }
+
+      // No quota gate: `browserRunQuotaGate` counts as it reads, and a
+      // continuation is the same errand the month was already charged for.
+      const [secrets, facts] = await Promise.all([
+        resolveBrowserSecretBindings(scope, { allowPayment, site }),
+        browserRunFacts(scope),
+      ]);
+      const profileId = row.profileId ?? (await workspaceProfileId(scope));
+      // A browser that lost to an anti-bot wall keeps losing: the shop has
+      // already judged that address and that browser, and a follow-up queued
+      // into it meets the same verdict however well it is written. The profile
+      // carries the sign-in, so dropping the session keeps the account and
+      // gets a fresh browser on a fresh address.
+      const sessionId =
+        endedNeeding(row.outcome) === "captcha"
+          ? undefined
+          : (row.sessionId ?? undefined);
+      const continuation = composeBrowserContinuation({
+        aliases: secrets.aliases,
+        allowPayment,
+        consent,
+        collectImages: input.collectImages === true,
+        deliveryAddress: aboutDelivery(input.deliveryAddress, row.task, message)
+          ? deliveryAddressFor(facts.addresses, row.task, message)
+          : undefined,
+        done,
+        errand: row.task,
+        facts: facts.details,
+        message: withCodeEntry(instruction, codeEntry),
+        searching: followUpSearches(message, row.outcome),
+        site,
+      });
+      let followUp: Awaited<ReturnType<typeof createFollowUpRun>>;
+      try {
+        followUp = await createFollowUpRun({
+          customProxy: customProxy(),
+          maxCostUsd: env.BROWSER_USE_MAX_COST_USD,
+          model: env.BROWSER_USE_MODEL,
+          profileId,
+          proxyCountryCode: env.BROWSER_USE_PROXY_COUNTRY,
+          secretBindings: secrets.bindings,
+          sessionId,
+          task: continuation,
+        });
+      } catch (error) {
+        // The follow-up waits for a browser like any errand, with its
+        // session remembered so it lands in the same tab if it still can.
+        if (browserUseBusy(error)) {
+          return {
+            continuation,
+            kind: "queued" as const,
+            profileId,
+            retryAfterMs: error.retryAfterMs,
+            sessionId,
           };
         }
-        return {
-          followUp: followUp.run,
-          kind: "continued" as const,
-          profileId,
-          reusedSession: followUp.reusedSession,
-          secrets,
-        };
-      });
-      if (continued.kind === "replied" || continued.kind === "no_credits") {
-        if (
-          continued.kind === "replied" &&
-          continued.carriesPayment &&
-          held?.placeholder
-        ) {
-          // The live run keeps its card and now pays within what this call
-          // allowed; the decision already released what it held before.
-          await moveSpendReservation(held.placeholder, runId);
-        } else if (placeholder) {
-          await releaseReservation(placeholder);
+        if (browserUseOutOfCredits(error)) {
+          await reportBrowserUseOutOfCredits(error);
+          return { kind: "no_credits" as const };
         }
-        return continued.kind === "replied"
-          ? continued.reply
-          : { note: browserUseOutOfCreditsNote, runId, status: "unavailable" };
+        throw error;
       }
-      const carrySpend = async (toRunId: string) => {
-        if (placeholder) {
-          // The decision already released what this errand held before.
-          await moveSpendReservation(placeholder, toRunId);
-        } else if (confirmedNow?.kind === "confirmed") {
-          // The person allowed this follow-up afresh, and nothing it may pay
-          // is held: whatever the errand held before no longer applies.
-          await releaseReservation(runId);
-        } else {
-          // Whatever this errand still had reserved travels with it: a code
-          // that completes a payment on the limit is still that payment.
-          await moveSpendReservation(runId, toRunId);
+      if (!followUp.run) {
+        if (row.sessionId === null) {
+          throw new Error("A busy browser session needs its session id.");
         }
-      };
-      if (continued.kind === "queued") {
-        const queued = await releasedOnFailure(placeholder, () =>
-          queueBrowserErrand(scope, {
-            ...conversation,
-            composedTask: continued.continuation,
-            paymentAllowed: allowPayment,
-            profileId: continued.profileId,
-            retryAfterMs: continued.retryAfterMs,
-            sessionId: continued.sessionId ?? null,
-            site: site ?? null,
-            submission: confirmedSubmission(consent),
-            task: message,
-          })
+        // Bindings exist per run, so a busy session takes the message but
+        // not the card: whatever was reserved for it is not going to be paid.
+        await queueBrowserUseSessionMessage(
+          row.sessionId,
+          withCodeEntry(instruction, codeEntry)
         );
-        await carrySpend(queued.runId);
         return {
-          note: `${queued.note} This follow-up replaces run ${runId}, which takes no further follow-up: use the new run id from here on.`,
-          previousRunId: runId,
-          runId: queued.runId,
-          startsInMinutes: queued.minutes,
-          status: "queued",
+          carriesPayment: false,
+          kind: "replied" as const,
+          reply: {
+            note: "The browser session was busy with another run, so the message was queued onto it instead. Keep using this run id; the outcome arrives as a new message.",
+            runId,
+            status: row.status,
+          },
         };
       }
-      const { followUp, profileId, reusedSession, secrets } = continued;
-      await browserUseCreditsRestored();
-      await carrySpend(followUp.id);
-      await recordStartedRun(followUp.id, () =>
-        createBrowserRun(scope, {
+      return {
+        followUp: followUp.run,
+        kind: "continued" as const,
+        profileId,
+        reusedSession: followUp.reusedSession,
+        secrets,
+      };
+    });
+    if (continued.kind === "replied" || continued.kind === "no_credits") {
+      if (
+        continued.kind === "replied" &&
+        continued.carriesPayment &&
+        held?.placeholder
+      ) {
+        // The live run keeps its card and now pays within what this call
+        // allowed; the decision already released what it held before.
+        await moveSpendReservation(held.placeholder, runId);
+      } else if (placeholder) {
+        await releaseReservation(placeholder);
+      }
+      return continued.kind === "replied"
+        ? continued.reply
+        : { note: browserUseOutOfCreditsNote, runId, status: "unavailable" };
+    }
+    const carrySpend = async (toRunId: string) => {
+      if (placeholder) {
+        // The decision already released what this errand held before.
+        await moveSpendReservation(placeholder, toRunId);
+      } else if (confirmedNow?.kind === "confirmed") {
+        // The person allowed this follow-up afresh, and nothing it may pay
+        // is held: whatever the errand held before no longer applies.
+        await releaseReservation(runId);
+      } else {
+        // Whatever this errand still had reserved travels with it: a code
+        // that completes a payment on the limit is still that payment.
+        await moveSpendReservation(runId, toRunId);
+      }
+    };
+    if (continued.kind === "queued") {
+      const queued = await releasedOnFailure(placeholder, () =>
+        queueBrowserErrand(scope, {
           ...conversation,
-          id: followUp.id,
-          liveViewUrl: reusedSession ? row.liveViewUrl : null,
+          composedTask: continued.continuation,
           paymentAllowed: allowPayment,
-          profileId,
-          sessionId: followUp.sessionId,
+          profileId: continued.profileId,
+          retryAfterMs: continued.retryAfterMs,
+          sessionId: continued.sessionId ?? null,
           site: site ?? null,
-          status: "running",
           submission: confirmedSubmission(consent),
           task: message,
         })
       );
-      const inheritedLiveViewUrl = reusedSession ? row.liveViewUrl : null;
-      const liveViewUrl =
-        inheritedLiveViewUrl ?? (await waitForLiveViewUrl(followUp.id));
-      if (liveViewUrl && liveViewUrl !== row.liveViewUrl) {
-        await updateBrowserRunProgress(followUp.id, { liveViewUrl });
-      }
+      await carrySpend(queued.runId);
       return {
-        boundSecrets: secrets.aliases,
-        liveViewUrl,
-        note: [
-          `This errand now continues as run ${followUp.id}${reusedSession ? " in the same browser" : ""}. Use that run id from here on: ${runId} is finished and takes no further follow-up.`,
-          reusedSession
-            ? undefined
-            : "The previous browser session was not reused — it was gone, or it had ended against an anti-bot check — so the follow-up opened a fresh browser on the same profile, on a new address; the signed-in cookies came with it.",
-          "The outcome arrives as a new message; do not poll for it.",
-          nothingDoneYetNote(),
-          boundSignInNote(secrets.aliases),
-        ]
-          .filter((line) => line !== undefined)
-          .join(" "),
+        note: `${queued.note} This follow-up replaces run ${runId}, which takes no further follow-up: use the new run id from here on.`,
         previousRunId: runId,
-        runId: followUp.id,
-        status: "running",
+        runId: queued.runId,
+        startsInMinutes: queued.minutes,
+        status: "queued",
       };
     }
-
-    if (input.action === "cancel") {
-      if (row.status === "queued") {
-        const closed = await closeQueuedBrowserRun(runId, {
-          outcome: "The user cancelled this errand before it started.",
-          status: "stopped",
-        });
-        if (closed) {
-          await releaseReservation(runId);
-          return { runId, status: "stopped" };
-        }
-        // It started in the meantime: cancel the run that carries it now.
-        const started = await readLatestBrowserRunForScope(scope, runId);
-        if (!started || started.id === runId)
-          return { runId, status: "stopped" };
-        await cancelBrowserUseRun(started.id);
-        await claimBrowserRunCompletion(started.id, {
-          outcome: "The user cancelled this browser run.",
-          status: "stopped",
-        });
-        await releaseReservation(started.id);
-        return { runId: started.id, status: "stopped" };
-      }
-      // A settled run has nothing left to cancel in the cloud; stopping its
-      // row is what keeps a background retry from starting for it, including
-      // one the poller is starting right now.
-      if (!row.completedAt) {
-        await cancelBrowserUseRun(runId);
-        await claimBrowserRunCompletion(runId, {
-          outcome: "The user cancelled this browser run.",
-          status: "stopped",
-        });
-      }
-      await stopBrowserRunErrand(runId);
-      await releaseReservation(runId);
-      return { runId, status: "stopped" };
+    const { followUp, profileId, reusedSession, secrets } = continued;
+    await browserUseCreditsRestored();
+    await carrySpend(followUp.id);
+    await recordStartedRun(followUp.id, () =>
+      createBrowserRun(scope, {
+        ...conversation,
+        id: followUp.id,
+        liveViewUrl: reusedSession ? row.liveViewUrl : null,
+        paymentAllowed: allowPayment,
+        profileId,
+        sessionId: followUp.sessionId,
+        site: site ?? null,
+        status: "running",
+        submission: confirmedSubmission(consent),
+        task: message,
+      })
+    );
+    const inheritedLiveViewUrl = reusedSession ? row.liveViewUrl : null;
+    const liveViewUrl =
+      inheritedLiveViewUrl ?? (await waitForLiveViewUrl(followUp.id));
+    if (liveViewUrl && liveViewUrl !== row.liveViewUrl) {
+      await updateBrowserRunProgress(followUp.id, { liveViewUrl });
     }
+    return {
+      boundSecrets: secrets.aliases,
+      liveViewUrl,
+      note: [
+        `This errand now continues as run ${followUp.id}${reusedSession ? " in the same browser" : ""}. Use that run id from here on: ${runId} is finished and takes no further follow-up.`,
+        reusedSession
+          ? undefined
+          : "The previous browser session was not reused — it was gone, or it had ended against an anti-bot check — so the follow-up opened a fresh browser on the same profile, on a new address; the signed-in cookies came with it.",
+        "The outcome arrives as a new message; do not poll for it.",
+        nothingDoneYetNote(),
+        boundSignInNote(secrets.aliases),
+      ]
+        .filter((line) => line !== undefined)
+        .join(" "),
+      previousRunId: runId,
+      runId: followUp.id,
+      status: "running",
+    };
+  }
 
+  if (input.action === "cancel") {
     if (row.status === "queued") {
-      return { note: queuedStatusNote(row), runId, status: "queued" };
+      const closed = await closeQueuedBrowserRun(runId, {
+        outcome: "The user cancelled this errand before it started.",
+        status: "stopped",
+      });
+      if (closed) {
+        await releaseReservation(runId);
+        return { runId, status: "stopped" };
+      }
+      // It started in the meantime: cancel the run that carries it now.
+      const started = await readLatestBrowserRunForScope(scope, runId);
+      if (!started || started.id === runId) return { runId, status: "stopped" };
+      await cancelBrowserUseRun(started.id);
+      await claimBrowserRunCompletion(started.id, {
+        outcome: "The user cancelled this browser run.",
+        status: "stopped",
+      });
+      await releaseReservation(started.id);
+      return { runId: started.id, status: "stopped" };
     }
-    const status = row.completedAt
-      ? row.status
-      : await readBrowserUseRunStatus(runId);
-    const settled = row.completedAt !== null && row.retryAt === null;
-    // A report that has not reached the person is handed over here, and
-    // counts as delivered: the poller must not repeat what this turn says,
-    // and a report turn still queued behind it ends without a word
-    // (`agent/agent.ts`). Only a turn that writes to the person takes it
-    // over; a scheduled worker looking at the errand is not the person
-    // hearing it.
-    const undelivered =
-      settled && outcomeUnheard(row) && inConversation(context);
-    if (undelivered) await finishBrowserRunReport(runId);
+    // A settled run has nothing left to cancel in the cloud; stopping its
+    // row is what keeps a background retry from starting for it, including
+    // one the poller is starting right now.
+    if (!row.completedAt) {
+      await cancelBrowserUseRun(runId);
+      await claimBrowserRunCompletion(runId, {
+        outcome: "The user cancelled this browser run.",
+        status: "stopped",
+      });
+    }
+    await stopBrowserRunErrand(runId);
+    await releaseReservation(runId);
+    return { runId, status: "stopped" };
+  }
+
+  if (row.status === "queued") {
+    return { note: queuedStatusNote(row), runId, status: "queued" };
+  }
+  const status = row.completedAt
+    ? row.status
+    : await readBrowserUseRunStatus(runId);
+  const settled = row.completedAt !== null && row.retryAt === null;
+  // A report the person has not heard is handed over whole, and is not
+  // marked delivered here: its own turn stays quiet once a message of this
+  // one told them (`outcomeToldEarlier` in `agent/agent.ts`), and speaks
+  // if this turn fails before any did. While the settle still puts it
+  // together, its pictures and payment note are not in it yet. Only a
+  // turn that writes to the person takes it; a scheduled worker looking
+  // at the errand is not the person hearing it.
+  const report =
+    settled && inConversation(context) && !heard.includes(row.id)
+      ? unheardReport(row)
+      : undefined;
+  const chainNote =
+    runId === requestedRunId
+      ? undefined
+      : `The errand ${requestedRunId.startsWith("queued:") ? "waited in the queue for a free browser and has started" : "was retried in the background after an anti-bot check"}; it now lives in run ${runId}. Use that id from here on.`;
+  if (report === "settling") {
     return {
       liveViewUrl: row.liveViewUrl ?? undefined,
-      note:
-        [
-          runId === requestedRunId
-            ? undefined
-            : `The errand ${requestedRunId.startsWith("queued:") ? "waited in the queue for a free browser and has started" : "was retried in the background after an anti-bot check"}; it now lives in run ${runId}. Use that id from here on.`,
-          row.retryAt
-            ? "The site stopped this attempt at an anti-bot check, and the next attempt starts by itself in a fresh browser shortly. The errand is still in progress: say so without mentioning the check."
-            : undefined,
-          undelivered
-            ? "This outcome never reached the conversation as its own message. Tell the user what happened now."
-            : undefined,
-          settled ? settledOutcomeNote(row) : undefined,
-        ]
-          .filter((line) => line !== undefined)
-          .join(" ") || undefined,
-      outcome: row.outcome ?? undefined,
+      note: [chainNote, settlingNote]
+        .filter((line) => line !== undefined)
+        .join(" "),
       runId,
       status,
     };
-  },
-});
+  }
+  return {
+    liveViewUrl: row.liveViewUrl ?? undefined,
+    note:
+      [
+        chainNote,
+        row.retryAt
+          ? "The site stopped this attempt at an anti-bot check, and the next attempt starts by itself in a fresh browser shortly. The errand is still in progress: say so without mentioning the check."
+          : undefined,
+        report === undefined
+          ? undefined
+          : `This outcome has not reached the user yet. Tell them what happened now. ${keptReportNote}`,
+        settled ? settledOutcomeNote(row) : undefined,
+      ]
+        .filter((line) => line !== undefined)
+        .join(" ") || undefined,
+    outcome: row.outcome ?? undefined,
+    report: report === undefined ? undefined : (row.report ?? undefined),
+    runId,
+    status,
+  };
+}
 
-/**
- * The same tool once the turn has started as many errands as one reply may:
- * a further start is answered without reaching Browser Use, and everything
- * else still works on the errands the turn has.
- */
-const browserTaskAfterStartLimit = defineTool({
+const browserTaskDescription =
+  "Run one errand on a website through a hosted cloud browser that can sign in, fill forms, and complete a checkout. Use it when the user wants something done on a site; use web_search and web_fetch instead for reading public pages. Start exactly one run per errand and pass the site's origin so saved credentials can be bound to it; pick a site that serves the user's country and address, preferring local marketplaces over a global brand site that does not ship there. Write the errand short: the cloud browser is itself an agent, so give it the goal, the hard constraints in the user's own words, the saved preferences that bear on it, two or three fallback sites, and what to report back — not a click-by-click script. The run is told the user's city and country from Personal Info and asked to report its best partial results after about 15 minutes of searching. Searching and comparing need no card and no approval: start such an errand right away. Doing anything in the user's name — booking or reserving (even free and freely cancelled), making an appointment, signing up, ordering, filing an application, applying to a job, issuing a receipt, or sending a request, message or contact form, or typing their name, phone, email or address into a site — needs allowSubmit: true with submission, which you set only when the user explicitly asked for exactly that; a request to find or recommend options ends at the recommendation, so leave it unset and offer the booking as the next step. allowSubmit puts one native approval card in front of the user that shows submission — what, where, for whom, which of their details go, the date or slot and the cost — so it has to name the one option they confirm. When the user named it exactly (a table at a place and hour), start with it straight away. When it still has to be found (a train after 18:00 under a budget, the usual item, a doctor next week), start without allowSubmit: the run picks the best fit, stages it up to the final step and reports it; once that report arrives, continue that run with allowSubmit and a submission naming exactly that option and its real total in chargeRub — the one card. Never ask in text first, and take what you do not know from the profile, memory and the vault, or a sensible default you name afterwards. When the user declines the card, nothing is lost: show the options the run found with their prices and links and ask what to change, rather than saying only that nothing was booked. When the errand is paid, put its rouble total in submission.chargeRub: that one card then also approves paying up to it with a small margin, so there is no second question about the payment. Once confirmed, the run submits exactly that and nothing else. When a standing permission the user gave (standing_permission) covers this kind of errand on this site at this cost, the tool shows no card at all in a turn the user's own message started; the run is then held to that site and that kind of errand, with no fallback site for the submission, so pass the errand's site — a permission covers no errand started without one. In the turn that reports a browser run neither a standing permission nor an earlier confirmation acts: pass the submission and the user confirms it on a card. A confirmed errand keeps its confirmation, payment included, through its follow-ups, background retries and a start from the queue until what it allowed is done: once the booking, order or payment went through, a follow-up («где машина?») only looks and checks, and a new errand, another kind, slot or organisation, or a total above what was approved needs its own card. A scheduled or background run is refused allowSubmit and allowPayment, standing permission or not, and cannot steer an errand that acts in the user's name: there it only searches and stages. A run with no payment allowed stops before the final step of anything that charges or commits money (prepayment, binding a card, pay on delivery or at the property, a non-refundable rate, a cancellation fee) with NEEDS: payment and the TOTAL. For an errand the user asked you to do, continue it then with allowSubmit and a submission naming the option it staged with the real chargeRub — the card shows the total, so do not ask in text first; or, with no card at all, with allowPayment: true and withinSpendLimit when the payment may fit the user's standing spend limit: the tool decides, reserves the amount and caps the run; when it answers needs_approval, ask the user once. Every follow-up for that errand — an answer, a code the user typed, a changed constraint — goes through continue with the same runId, never a second start: continue works in the same browser, on the tab and the signed-in account the run already has. When the previous run has already finished, continue starts a follow-up run in that same browser and returns a NEW runId; use that one from then on. «Привяжи карту» is approval to bind the saved card, not to buy anything: pass allowPayment: true with submission naming it, and the user confirms it on the card. With allowSubmit, the person's name, phone, email and addresses from the profile and from the vault are typed into forms automatically, so never ask for a phone number or an address the user said is saved: start the errand and let the run use it. Without it the run types none of them, except that an errand about delivery (deliveryAddress, or one that names delivery) gets the saved delivery address alone for the site's own address picker, so stock, slots and fees are for the user's address from the first run. The run signs in with vault credentials the models involved never see, so never ask the user for a password: when none is stored, call request_vault_setup. The run solves CAPTCHAs and anti-bot checks itself as it goes, and they are never the user's to solve: never tell the user you cannot pass one, never ask them to pass it, and never hand them the live view for one. A run the site stops at an anti-bot check is retried in the background by itself — a fresh browser on another address, on the same profile, up to five attempts over about half an hour — and its result reaches you only once the errand is done or the site stayed blocked; status and continue on the old runId follow the errand to its newest run. Give the user the live-view link only when the run is blocked on something only they can do — 3-D Secure, a push approval, a sign-in you cannot complete — and never forward a one-time code back to the user. Pass collectImages: true when the user asked for photos or pictures of what the errand finds; the run always saves a screenshot of the page with the outcome, and with the flag it saves pictures of the items too. Every saved image comes back with the outcome as an artifact id you attach in send_message as ![caption](/artifacts/id) — that is how the person gets the real picture rather than a link. When the cloud browser service is at capacity, start answers status queued with a queued: run id: the errand starts by itself within minutes, so tell the user it is queued and never start it again; status unavailable means the service is out of credits, and nothing starts until the owner tops it up. The run continues in the background and its result arrives later as a new message, so do not wait on it. When the user asks how an errand went («ну что там?»), answer from its outcome if they already heard it, or call status: for a finished run it returns the outcome to retell. continue is for something new from the user, never to ask the run how it went; on a finished run whose outcome the user has not heard yet, it only hands that outcome back.";
+
+export const browserTask = defineTool({
   approval: ({ session, toolInput }) =>
     browserTaskApproval(toolInput, { session }),
-  description: browserTask.description,
+  description: browserTaskDescription,
   inputSchema,
-  async execute(input, context) {
-    if (input.action === "start") {
-      return { note: turnStartLimitNotice, status: "start_limit" };
-    }
-    return browserTask.execute(input, context);
-  },
+  execute: (input, context) => runBrowserTask(input, context, []),
 });
 
 export default defineDynamic({
   events: {
     // Resolved before every model step, so a turn that keeps starting
     // errands meets the limit instead of Browser Use's concurrency cap.
+    //
+    // It also carries which settled outcomes the conversation has told the
+    // person: the tool itself sees no messages, and a follow-up on one of
+    // them goes through instead of being answered with it once more.
     "step.started": (_event, context) => {
       if (!browserUseConfigured()) return null;
-      const tool =
-        turnBrowserStarts(context.messages) >= turnStartLimit
-          ? browserTaskAfterStartLimit
-          : browserTask;
+      const startsUsed = turnBrowserStarts(context.messages) >= turnStartLimit;
+      const heard = outcomesHeard(context.messages);
+      const tool = defineTool({
+        approval: ({ session, toolInput }) =>
+          browserTaskApproval(toolInput, { session }),
+        description: browserTaskDescription,
+        inputSchema,
+        execute: (input, toolContext) =>
+          startsUsed && input.action === "start"
+            ? Promise.resolve({
+                note: turnStartLimitNotice,
+                status: "start_limit",
+              })
+            : runBrowserTask(input, toolContext, heard),
+      });
       return resolveModeValue(context, {
         interactive: { browser_task: tool },
         "scheduled-worker": { browser_task: tool },

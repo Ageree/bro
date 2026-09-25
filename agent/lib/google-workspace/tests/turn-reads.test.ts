@@ -120,6 +120,37 @@ describe("the per-turn Google read guard", () => {
     }
   });
 
+  it("reads again only after an apps run changed a Google file", () => {
+    const edited = turnReads([
+      person("добавь платёж в таблицу и проверь почту"),
+      ...search("call-1"),
+      ...appsCall("call-2", { action: "run", app: "google" }, true),
+    ]);
+
+    expect(readRefusalReason(searchKey(inbox.query), edited)).toBeUndefined();
+  });
+
+  it("keeps the duplicate guard across apps calls that changed no Google file", () => {
+    const calls = [
+      appsCall("call-2", { action: "search", app: "notion" }),
+      appsCall("call-2", { action: "run", app: "google" }, false),
+      appsCall("call-2", { action: "run", app: "todoist" }, true),
+      appsCall("call-2", { action: "run", app: "google" }, true, "failed"),
+      appsCall("call-2", { action: "run", app: "google" }, true, "refused"),
+    ];
+    for (const call of calls) {
+      const reads = turnReads([
+        person("разбери почту"),
+        ...search("call-1"),
+        ...call,
+      ]);
+
+      expect(readRefusalReason(searchKey(inbox.query), reads)).toBe(
+        "duplicate"
+      );
+    }
+  });
+
   it("keeps the result when the mailbox change was refused", () => {
     const reads = turnReads([
       person("архивируй рассылки"),
@@ -422,6 +453,38 @@ function calendarWrite(toolCallId: string, toolName: string): ModelMessage[] {
           output: { type: "json", value: { eventId: "event-1" } },
           toolCallId,
           toolName,
+          type: "tool-result",
+        },
+      ],
+      role: "tool",
+    },
+  ];
+}
+
+/** One `apps` call and its result, as a turn's history holds them. */
+function appsCall(
+  toolCallId: string,
+  input: { readonly action: "run" | "search"; readonly app: string },
+  wrote?: boolean,
+  status = "done"
+): ModelMessage[] {
+  return [
+    {
+      content: [{ input, toolCallId, toolName: "apps", type: "tool-call" }],
+      role: "assistant",
+    },
+    {
+      content: [
+        {
+          output: {
+            type: "json",
+            value:
+              wrote === undefined
+                ? { tools: [] }
+                : { result: {}, status, wrote },
+          },
+          toolCallId,
+          toolName: "apps",
           type: "tool-result",
         },
       ],

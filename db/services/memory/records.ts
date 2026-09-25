@@ -149,7 +149,11 @@ export async function readMemorySource(
     )
     .limit(1);
   return row?.content
-    ? { sourceSessionId: row.sourceSessionId, text: row.content.text }
+    ? {
+        category: row.content.category,
+        sourceSessionId: row.sourceSessionId,
+        text: row.content.text,
+      }
     : null;
 }
 

@@ -520,6 +520,51 @@ export function sameActionScope(
   return rule.kind === scope.kind && rule.merchant === scope.merchant;
 }
 
+/**
+ * Whether a permission lies wholly inside a scope the person named: of that
+ * kind (any, when none is named) and on that site or a site under it (any,
+ * when none is named). Taking back `yandex.ru` takes back a permission for
+ * `lavka.yandex.ru` too; a broader permission is not inside and stays.
+ */
+export function standingActionWithin(
+  rule: StandingAction,
+  scope: Pick<StandingAction, "kind" | "merchant">
+) {
+  return (
+    (scope.kind === null || rule.kind === scope.kind) &&
+    (scope.merchant === null ||
+      (rule.merchant !== null && merchantCovers(scope.merchant, rule.merchant)))
+  );
+}
+
+/**
+ * The permissions that still let some errand inside a named scope go without
+ * a card, judged as `decideStandingAction` judges an errand: a permission
+ * for every kind or every site, or for a parent site, reaches into it, and
+ * so does one on a site under it. A permission whose site is excluded, or
+ * any on a named site that is itself excluded, reaches nothing.
+ */
+export function standingActionsReaching(
+  policy: SpendLimitPolicy | undefined,
+  scope: Pick<StandingAction, "kind" | "merchant">
+) {
+  if (!policy) return [];
+  if (
+    scope.merchant !== null &&
+    isExcluded(policy, { category: null, merchant: scope.merchant })
+  ) {
+    return [];
+  }
+  return (policy.actions ?? []).filter(
+    (rule) =>
+      !standingActionOverridden(policy, rule) &&
+      (scope.kind === null || actionKindCovers(rule, scope.kind)) &&
+      (scope.merchant === null ||
+        actionMerchantCovers(rule, scope.merchant) ||
+        standingActionWithin(rule, { kind: null, merchant: scope.merchant }))
+  );
+}
+
 /** How each kind of errand reads to the person. */
 const standingActionLabels: Record<StandingActionKind, string> = {
   appointment: "записи к врачам и на услуги",

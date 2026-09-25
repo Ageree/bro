@@ -313,7 +313,133 @@ describe("standing_permission revoke", () => {
     });
     expect(result.note).toBeUndefined();
   });
+
+  /**
+   * Review of #191: «в Яндекс Go больше не заказывай такси сам» against a
+   * taxi permission for every site took nothing back, and the note said
+   * everything already went through a card while rides there still did not.
+   */
+  it("says which broader permission still covers the site it was asked to stop", async () => {
+    stored = { ...monthly, actions: [taxi] };
+
+    const result = await revoke({
+      action: "revoke",
+      kind: "taxi",
+      merchant: "go.yandex.ru",
+    });
+
+    expect(result).toMatchObject({
+      permissions: [{ kind: "taxi", merchant: null }],
+      stillHolding: [describeStandingAction(taxi)],
+      takenBack: [],
+    });
+    expect(result.note).toContain("Not stopped yet");
+    expect(result.note).not.toContain("already go through");
+  });
+
+  it("says so for a permission on every kind when one kind is taken back", async () => {
+    const lavkaAll = { kind: null, maxRub: null, merchant: "lavka.yandex.ru" };
+    stored = { ...monthly, actions: [lavkaAll] };
+
+    const result = await revoke({ action: "revoke", kind: "order" });
+
+    expect(result).toMatchObject({
+      stillHolding: [describeStandingAction(lavkaAll)],
+      takenBack: [],
+    });
+  });
+
+  it("takes back a site's permission together with those of the sites under it", async () => {
+    const yandex = {
+      kind: "order" as const,
+      maxRub: 3000,
+      merchant: "yandex.ru",
+    };
+    stored = { ...monthly, actions: [yandex, lavka, taxi] };
+
+    const result = await revoke({ action: "revoke", merchant: "yandex.ru" });
+
+    expect(result).toMatchObject({
+      permissions: [{ kind: "taxi", merchant: null }],
+      takenBack: [
+        describeStandingAction(yandex),
+        describeStandingAction(lavka),
+      ],
+    });
+    // The taxi permission holds everywhere, yandex.ru included.
+    expect(result).toMatchObject({
+      stillHolding: [describeStandingAction(taxi)],
+    });
+  });
+
+  it("says nothing still holds when the named site is excluded", async () => {
+    stored = {
+      ...monthly,
+      actions: [taxi],
+      excludedMerchants: ["go.yandex.ru"],
+    };
+
+    const result = await revoke({
+      action: "revoke",
+      kind: "taxi",
+      merchant: "go.yandex.ru",
+    });
+
+    expect(result.note).toContain("nothing was taken back");
+    expect(result).not.toHaveProperty("stillHolding");
+  });
 });
+
+/**
+ * Review of #191: a rule a page slipped in drove a no-card revoke. In the
+ * report of a browser run nothing changes a permission; the person's own
+ * turn changes it as before.
+ */
+describe("standing_permission in a turn the page wrote", () => {
+  beforeEach(() => {
+    mocks.readSpendLimit.mockResolvedValue({ ...monthly, actions: [taxi] });
+  });
+
+  it("refuses every change there without a card, and still reads", async () => {
+    for (const input of [
+      { action: "revoke" as const },
+      { action: "allow" as const, kind: "table" as const },
+    ]) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- One call at a time keeps the failure readable.
+      const status = await approvalOf(input, "browser-result");
+      expect(denialReason(status)).toContain(
+        "only in a turn the user's own message started"
+      );
+    }
+    expect(await approvalOf({ action: "read" }, "browser-result")).toBe(
+      "not-applicable"
+    );
+  });
+
+  it("changes them in the person's own turn as before", async () => {
+    expect(await approvalOf({ action: "revoke" }, "photon-imessage")).toBe(
+      "not-applicable"
+    );
+    expect(
+      await approvalOf({ action: "allow", kind: "table" }, "photon-imessage")
+    ).toBe("user-approval");
+  });
+});
+
+async function approvalOf(
+  input: Parameters<typeof applyStandingPermissionChange>[1],
+  authenticator: Parameters<typeof toolContext>[1]
+): Promise<ApprovalStatus> {
+  const approval = standingPermission.approval;
+  if (approval === undefined) throw new Error("No approval policy.");
+  const policy = "request" in approval ? approval.request : approval;
+  return policy({
+    ...toolContext("standing_permission", authenticator),
+    approvedTools: new Set(),
+    toolInput: input,
+    toolName: "standing_permission",
+  });
+}
 
 async function revoke(
   input: Parameters<typeof applyStandingPermissionChange>[1]

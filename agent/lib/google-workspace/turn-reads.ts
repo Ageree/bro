@@ -33,8 +33,6 @@ type TurnReadLimits = (typeof turnReadLimits)[keyof typeof turnReadLimits];
  * calendar change mails invitations or cancellations.
  */
 const googleWriteTools = new Set([
-  // A Sheets or Docs edit through `apps` changes what drive-read returns.
-  "apps",
   "calendar-create-event",
   "calendar-delete-event",
   "calendar-update-event",
@@ -42,6 +40,30 @@ const googleWriteTools = new Set([
   "gmail-send",
   "gmail-update",
 ]);
+
+/**
+ * An `apps` call that could change a Google file: a `run` on the person's
+ * Google connection. Searches and other apps never touch Google.
+ */
+const googleAppsRunSchema = z.object({
+  input: z.object({ action: z.literal("run"), app: z.literal("google") }),
+  toolName: z.literal("apps"),
+});
+
+/**
+ * An `apps` result that changed something: a Sheets or Docs edit changes
+ * what drive-read returns. A read, a refusal or a failure changes nothing.
+ */
+const appsWroteSchema = z.object({
+  status: z.literal("done"),
+  wrote: z.literal(true),
+});
+
+function appsWrote(output: ToolResultPart["output"]) {
+  return (
+    output.type === "json" && appsWroteSchema.safeParse(output.value).success
+  );
+}
 
 /**
  * Reads a turn may have refused before it is ended. The model gets told it
@@ -170,6 +192,7 @@ export function turnReads(
   limits: TurnReadLimits = turnReadLimits.interactive
 ): TurnReads {
   const keys = new Map<string, string>();
+  const googleAppsRuns = new Set<string>();
   const done = new Set<string>();
   let count = 0;
   let emptySearches = 0;
@@ -181,10 +204,16 @@ export function turnReads(
       if (part.type === "tool-call") {
         const call = googleReadCallSchema.safeParse(part).data;
         if (call) keys.set(part.toolCallId, googleReadKey(call));
+        if (googleAppsRunSchema.safeParse(part).success) {
+          googleAppsRuns.add(part.toolCallId);
+        }
         continue;
       }
       if (part.type !== "tool-result") continue;
-      if (googleWriteTools.has(part.toolName) && succeeded(part.output)) {
+      const changedGoogle = googleWriteTools.has(part.toolName)
+        ? succeeded(part.output)
+        : googleAppsRuns.has(part.toolCallId) && appsWrote(part.output);
+      if (changedGoogle) {
         done.clear();
         continue;
       }

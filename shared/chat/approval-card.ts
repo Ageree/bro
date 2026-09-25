@@ -53,6 +53,9 @@ const cardText = {
     notionDatabase: "Database",
     notionDue: "Due",
     notionNotes: "Notes",
+    notionRead: "Open in Notion:",
+    notionRecent: "recently edited pages",
+    notionSearch: "Search Notion:",
     notionTask: "Add a task to Notion:",
     permissionFooter:
       "It holds in the conversation until it is taken back; each errand stays on its own site, and background work never uses it.",
@@ -60,9 +63,20 @@ const cardText = {
     permissionSet:
       "Standing permission — such errands go ahead without asking from now on:",
     personalData: "Details sent",
+    scheduleCreate: "Set up a scheduled task:",
+    scheduleStatus: "Status",
+    scheduleStatuses: {
+      active: "resume",
+      deleted: "delete",
+      paused: "pause",
+    },
+    scheduleUpdate: "Change a scheduled task:",
     site: "Site",
     slackMessage: "Send a Slack message:",
+    slackRead: "Read Slack messages:",
+    slackSearch: "Search Slack:",
     slackText: "Text",
+    slackThread: "thread",
     slackTo: "To",
     title: "Confirm before this is done in your name:",
     when: "When",
@@ -92,6 +106,9 @@ const cardText = {
     notionDatabase: "База",
     notionDue: "Срок",
     notionNotes: "Заметки",
+    notionRead: "Открыть в Notion:",
+    notionRecent: "недавно изменённые страницы",
+    notionSearch: "Найти в Notion:",
     notionTask: "Добавить задачу в Notion:",
     permissionFooter:
       "Действует в разговоре, пока его не снимут; каждое поручение остаётся на своём сайте, фоновая работа им не пользуется.",
@@ -99,9 +116,20 @@ const cardText = {
     permissionSet:
       "Постоянное разрешение — такие поручения дальше без подтверждения:",
     personalData: "Какие данные уйдут",
+    scheduleCreate: "Поставить задачу по расписанию:",
+    scheduleStatus: "Статус",
+    scheduleStatuses: {
+      active: "возобновить",
+      deleted: "удалить",
+      paused: "поставить на паузу",
+    },
+    scheduleUpdate: "Изменить задачу по расписанию:",
     site: "Сайт",
     slackMessage: "Отправить сообщение в Slack:",
+    slackRead: "Прочитать сообщения в Slack:",
+    slackSearch: "Найти в Slack:",
     slackText: "Текст",
+    slackThread: "ветка",
     slackTo: "Кому",
     title: "Подтверждение действия:",
     when: "Когда",
@@ -330,9 +358,7 @@ function notionTaskPrompt(
     call.database
       ? `${text.notionDatabase}: ${oneLine(call.database)}`
       : undefined,
-    call.notes
-      ? `${text.notionNotes}: ${clipped(oneLine(call.notes))}`
-      : undefined,
+    call.notes ? `${text.notionNotes}: ${oneLine(call.notes)}` : undefined,
   ]
     .filter((line) => line !== undefined)
     .join("\n");
@@ -352,17 +378,12 @@ function slackMessagePrompt(
   ].join("\n");
 }
 
-/** Longest value a card line shows; the rest is cut with an ellipsis. */
-const cardValueLength = 200;
-
-function clipped(value: string) {
-  return value.length > cardValueLength
-    ? `${value.slice(0, cardValueLength)}…`
-    : value;
-}
-
-/** Argument lines one `apps` card lists before cutting the rest. */
-const cardArgumentLines = 12;
+/**
+ * Longest card text a channel shows whole: Telegram cuts an approval card
+ * at 4,000 characters, so a card that would run longer is not shown at all
+ * and the call is refused instead (`appsCardFits`).
+ */
+const approvalCardMaxLength = 3_500;
 
 const appsCallSchema = z.object({
   action: z.literal("run"),
@@ -379,41 +400,158 @@ function appName(app: string) {
   return known.success ? connectedAppNames[known.data] : oneLine(app);
 }
 
-/** One argument line of an `apps` card: the name and the value as JSON. */
+/**
+ * The argument lines of an `apps` card: every argument by name with its
+ * whole value, text as it is and anything else as JSON. Nothing is cut: a
+ * card that would be too long refuses the call rather than hide its tail.
+ */
 function argumentLines(argumentsJson: string | undefined) {
   let value: unknown;
   try {
     value = JSON.parse(argumentsJson ?? "{}");
   } catch {
-    return [clipped(oneLine(argumentsJson ?? ""))];
+    return [oneLine(argumentsJson ?? "")];
   }
   const entries = Object.entries(
     z.record(z.string(), z.json()).safeParse(value).data ?? {}
   );
-  const lines = entries
-    .slice(0, cardArgumentLines)
-    .map(
-      ([name, item]) =>
-        `  ${oneLine(name)}: ${clipped(oneLine(z.string().safeParse(item).data ?? JSON.stringify(item)))}`
-    );
-  return entries.length > cardArgumentLines ? [...lines, "  …"] : lines;
+  return entries.map(
+    ([name, item]) =>
+      `  ${oneLine(name)}: ${oneLine(z.string().safeParse(item).data ?? JSON.stringify(item))}`
+  );
 }
 
 /**
- * The card for an `apps` call that writes: which app, what the call does in
- * the model's own words, the exact tool, and every argument it sends, so
- * the words cannot promise less than the call does.
+ * The card for an `apps` call: which app, what the call does in the model's
+ * own words, the exact tool, and every argument it sends in full, so the
+ * words cannot promise less than the call does.
  */
 function appsPrompt(call: z.infer<typeof appsCallSchema>, text: CardText) {
   return [
     text.title,
     `${text.app}: ${appName(call.app)}`,
-    call.summary
-      ? `${text.appAction}: ${clipped(oneLine(call.summary))}`
-      : undefined,
+    call.summary ? `${text.appAction}: ${oneLine(call.summary)}` : undefined,
     `${text.appTool}: ${oneLine(call.tool)}`,
     `${text.appArguments}:`,
     ...argumentLines(call.arguments),
+  ]
+    .filter((line) => line !== undefined)
+    .join("\n");
+}
+
+/**
+ * Whether the card of an `apps` call shows all of it in every language and
+ * channel. The approval policy refuses a call whose card would not.
+ */
+export function appsCardFits(
+  call: Omit<z.infer<typeof appsCallSchema>, "action">
+) {
+  const run = { ...call, action: "run" as const };
+  return Object.values(cardText).every(
+    (text) => appsPrompt(run, text).length <= approvalCardMaxLength
+  );
+}
+
+/**
+ * The card for a Notion or Slack read, shown only in a turn the person did
+ * not start (the report of a browser run, whose text a page writes): what
+ * would be read, so a page cannot quietly send Bro through their workspace.
+ */
+function connectedAppReadPrompt(
+  action: { readonly input: unknown; readonly toolName: string },
+  text: CardText
+) {
+  if (action.toolName === "notion-search") {
+    const call = z
+      .object({ query: z.string().optional() })
+      .safeParse(action.input);
+    if (!call.success) return undefined;
+    const { query } = call.data;
+    return `${text.notionSearch} ${query ? `«${oneLine(query)}»` : text.notionRecent}`;
+  }
+  if (action.toolName === "notion-read") {
+    const call = z.object({ id: z.string() }).safeParse(action.input);
+    return call.success
+      ? `${text.notionRead} ${oneLine(call.data.id)}`
+      : undefined;
+  }
+  if (action.toolName === "slack-read") {
+    const call = z
+      .object({ from: z.string(), threadTs: z.string().optional() })
+      .safeParse(action.input);
+    if (!call.success) return undefined;
+    const thread = call.data.threadTs
+      ? ` (${text.slackThread} ${oneLine(call.data.threadTs)})`
+      : "";
+    return `${text.slackRead} ${oneLine(call.data.from)}${thread}`;
+  }
+  if (action.toolName === "slack-search") {
+    const call = z.object({ query: z.string() }).safeParse(action.input);
+    return call.success
+      ? `${text.slackSearch} «${oneLine(call.data.query)}»`
+      : undefined;
+  }
+  return undefined;
+}
+
+const scheduleCallSchema = z.object({
+  prompt: z.string().optional(),
+  status: z.enum(["active", "paused", "deleted"]).optional(),
+  timing: z
+    .object({
+      at: z.string().optional(),
+      everyMinutes: z.number().optional(),
+      kind: z.string(),
+    })
+    .catchall(z.unknown())
+    .optional(),
+});
+
+/** When a schedule runs, as plainly as its timing says it. */
+function scheduleWhen(
+  timing: NonNullable<z.infer<typeof scheduleCallSchema>["timing"]>
+) {
+  if (timing.kind === "once" && timing.at !== undefined) {
+    const moment =
+      /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})(?::\d{2}(?:\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/u.exec(
+        timing.at
+      );
+    return moment
+      ? `${moment[1] ?? ""} ${moment[2] ?? ""} (UTC${moment[3] === "Z" ? "" : (moment[3] ?? "")})`
+      : oneLine(timing.at);
+  }
+  if (timing.kind === "interval" && timing.everyMinutes !== undefined) {
+    return `${String(timing.everyMinutes)} min`;
+  }
+  return oneLine(
+    Object.entries(timing)
+      .filter(([key]) => key !== "kind")
+      .map(([key, value]) => `${key} ${JSON.stringify(value)}`)
+      .join(", ")
+  );
+}
+
+/**
+ * The card for a schedule set up or changed in a turn the person did not
+ * start — a browser run's report: what the task will do, word for word, and
+ * when, since a worker later runs it as the person's own.
+ */
+function schedulePrompt(
+  call: z.infer<typeof scheduleCallSchema>,
+  text: CardText,
+  created: boolean
+) {
+  return [
+    created ? text.scheduleCreate : text.scheduleUpdate,
+    call.prompt === undefined
+      ? undefined
+      : `${text.what}: ${oneLine(call.prompt)}`,
+    call.timing === undefined
+      ? undefined
+      : `${text.when}: ${scheduleWhen(call.timing)}`,
+    call.status === undefined
+      ? undefined
+      : `${text.scheduleStatus}: ${text.scheduleStatuses[call.status]}`,
   ]
     .filter((line) => line !== undefined)
     .join("\n");
@@ -452,6 +590,17 @@ function cardPrompt(
   if (action.toolName === "apps") {
     const call = appsCallSchema.safeParse(action.input);
     return call.success ? appsPrompt(call.data, text) : undefined;
+  }
+  const read = connectedAppReadPrompt(action, text);
+  if (read !== undefined) return read;
+  if (
+    action.toolName === "schedules-create" ||
+    action.toolName === "schedules-update"
+  ) {
+    const call = scheduleCallSchema.safeParse(action.input);
+    return call.success
+      ? schedulePrompt(call.data, text, action.toolName === "schedules-create")
+      : undefined;
   }
   // Forgetting what another conversation saved: the record as it reads.
   if (action.toolName === "profile__remove_memory") {

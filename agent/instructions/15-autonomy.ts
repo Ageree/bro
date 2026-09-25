@@ -18,6 +18,7 @@ import {
   standingActionOverridden,
 } from "@shared/spending/limit";
 import autonomy from "./content/autonomy.md?raw";
+import followThrough from "./content/follow-through.md?raw";
 
 /**
  * The person's standing spend limit as it stands this month. Without it the
@@ -39,10 +40,18 @@ export function spendLimitInstructions(
       ? `По лимиту без спроса не оплачивай: ${categories.map((category) => `«${category}»`).join(", ")}.`
       : undefined,
   ];
+  // «Снимать нечего» holds only with nothing that pays on its own: a paid
+  // standing permission is spending without asking too, and `clear` is what
+  // takes it back when the person says «не плати без моего ок».
+  const paidPermissions = (policy?.actions ?? []).some(
+    (rule) => rule.maxRub !== null
+  );
   const limit =
     !policy || policy.rules.length === 0
       ? [
-          "Лимит трат без спроса не задан: платить без разрешения человека можно только то, что бесплатно, и снимать нечего.",
+          paidPermissions
+            ? "Лимита трат без спроса нет, но платные постоянные разрешения ниже платят сами. Запрет платить без ок («ничего не оплачивай без моего ок») снимает их одним `spend_limit` с `clear` без магазина и категории."
+            : "Лимит трат без спроса не задан и платных постоянных разрешений нет: платить без разрешения человека можно только то, что бесплатно, и снимать нечего.",
         ]
       : [
           "Лимит трат без спроса на этот месяц:",
@@ -123,8 +132,15 @@ export default defineDynamic({
         z.string().safeParse(caller.attributes.workspaceId).success
           ? await currentSpendLimit(scopeFromPrincipal(caller), new Date())
           : undefined;
+      // Setting up the later step of an errand is the conversation's: a
+      // scheduled worker has no schedule tools and must not say it set one.
+      const followThroughRules = resolveModeValue(context, {
+        interactive: followThrough,
+      });
       return defineInstructions({
-        content: limit === undefined ? autonomy : `${autonomy}\n${limit}`,
+        content: [autonomy, followThroughRules, limit]
+          .filter((part) => part !== null && part !== undefined)
+          .join("\n"),
       });
     },
   },

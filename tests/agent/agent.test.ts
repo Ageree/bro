@@ -123,6 +123,7 @@ describe("interactive delivery enforcement", () => {
       {
         delivered: false,
         replyNote: note("ru"),
+        silent: false,
         toolChoice: "required",
         withheldTools: [],
       }
@@ -142,6 +143,7 @@ describe("interactive delivery enforcement", () => {
       {
         delivered: true,
         replyNote: note("ru", true),
+        silent: false,
         toolChoice: "auto",
         withheldTools: [],
       }
@@ -159,6 +161,7 @@ describe("interactive delivery enforcement", () => {
       {
         delivered: true,
         replyNote: note("ru", true),
+        silent: false,
         toolChoice: "none",
         withheldTools: [],
       }
@@ -218,6 +221,7 @@ describe("interactive delivery enforcement", () => {
       {
         delivered: false,
         replyNote: note("en"),
+        silent: false,
         toolChoice: "required",
         withheldTools: [],
       }
@@ -284,6 +288,7 @@ describe("interactive delivery enforcement", () => {
       {
         delivered: false,
         replyNote: note("ru"),
+        silent: false,
         toolChoice: "required",
         withheldTools: ["ask_question"],
       }
@@ -330,6 +335,7 @@ describe("interactive delivery enforcement", () => {
       {
         delivered: true,
         replyNote: note("ru"),
+        silent: true,
         toolChoice: "auto",
         withheldTools: ["ask_question"],
       }
@@ -350,6 +356,10 @@ describe("interactive delivery enforcement", () => {
     const [, options] = services.modelSelection.mock.lastCall ?? [];
     expect(options?.toolChoice).toBe("none");
     expect(options?.delivered).toBe(true);
+    // Nothing this turn writes may reach Telegram or iMessage: DeepSeek ends
+    // it with a line, and the channel posts a turn's text when it sent no
+    // message (review #1).
+    expect(options?.silent).toBe(true);
     expect(options?.replyNote).toContain(
       "This browser report already reached the person in an earlier turn"
     );
@@ -418,6 +428,22 @@ describe("interactive delivery enforcement", () => {
       "react_to_message",
       "send_message",
     ]);
+
+    // Once it has called a tool after the dropped send, it ends (review #3).
+    await agent.model.events["step.started"]?.(
+      {},
+      interactiveContext(
+        [
+          ...delivered,
+          ...skippedRepeat("call-2"),
+          toolCallStep("browser_task", "call-3", { action: "status" }),
+          toolResultStep("browser_task", "call-3", { status: "running" }),
+        ],
+        "browser-result",
+        reportAttributes
+      )
+    );
+    expect(services.modelSelection.mock.lastCall?.[1]?.toolChoice).toBe("none");
   });
 
   it("never forces a tool on a scheduled report, which may stay suppressed", async () => {
@@ -434,6 +460,7 @@ describe("interactive delivery enforcement", () => {
       {
         delivered: false,
         replyNote: note("ru"),
+        silent: false,
         toolChoice: "auto",
         withheldTools: ["ask_question"],
       }
@@ -456,6 +483,7 @@ describe("interactive delivery enforcement", () => {
       {
         delivered: false,
         replyNote: undefined,
+        silent: false,
         toolChoice: "auto",
         withheldTools: [],
       }

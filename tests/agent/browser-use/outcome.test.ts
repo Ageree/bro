@@ -392,6 +392,24 @@ describe("order parsing", () => {
     ).toMatchObject({ status: "placed" });
   });
 
+  it("does not read a follow-up message that says «отмени» as a cancellation", () => {
+    // A follow-up run's task is the person's message, not the errand.
+    const result = purchase([
+      "RESULT: заказ оформлен на завтра к 10:00",
+      "ORDER: 46000123456782",
+      "TOTAL: 1 337,10 ₽",
+      "NEEDS: none",
+    ]);
+
+    expect(
+      parseBrowserOrder(parseBrowserOutcome(result), {
+        result,
+        site: "https://lavka.yandex.ru",
+        task: "Отмени доставку на сегодня, пусть привезут завтра к 10, и оформи заказ",
+      })
+    ).toMatchObject({ status: "placed" });
+  });
+
   it("keeps the basket's lines with the order", () => {
     const result = purchase([
       "RESULT: заказ оплачен",
