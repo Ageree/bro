@@ -154,13 +154,71 @@ export interface SentMessage {
 }
 
 /**
+ * Endings a name or a noun takes as it declines: «Артур», «Артура»,
+ * «Артуром»; «Лавка», «Лавке», «Лавку»; «Профсоюзная», «Профсоюзной» — and
+ * an English plural.
+ */
+const endings = new Set(
+  [
+    "",
+    "а е и й о у ы ь ю я",
+    "ам ах ая ев её ее ей ем ею ие ий им их ию ия ии",
+    "ов ое ой ом ою ую ые ый ым ых ью юю ям ях яя",
+    "ами его ему ими ого ому ыми ями",
+    "es s",
+  ].flatMap((line) => line.split(" "))
+);
+
+/** Letters two forms of one word share at least. */
+const stemLength = 3;
+
+/**
+ * Whether two normalized words are one word in two grammatical forms: they
+ * differ only in endings after a common stem. In RU d15 (25.09) the same
+ * address went out twice because the second message named «Артур» where
+ * the first had «Артура». «Мария» and «Марина» share «мари», but «на» is no
+ * ending, so they stay two people.
+ */
+function sameWord(word: string, other: string) {
+  if (word === other) return true;
+  let shared = 0;
+  while (
+    shared < word.length &&
+    shared < other.length &&
+    word[shared] === other[shared]
+  ) {
+    shared += 1;
+  }
+  for (let stem = shared; stem >= stemLength; stem -= 1) {
+    if (endings.has(word.slice(stem)) && endings.has(other.slice(stem))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Whether `word` occurs among `words` in some grammatical form. */
+function knownWord(word: string, words: ReadonlySet<string>) {
+  if (words.has(word)) return true;
+  for (const known of words) {
+    if (sameWord(word, known)) return true;
+  }
+  return false;
+}
+
+function wordsOf(messages: readonly SentMessage[]) {
+  return new Set(messages.flatMap((sent) => sent.text.split(" ")));
+}
+
+/**
  * Whether each name of one message also occurs as a word of the other. A
  * sentence opener that only changed case, «Готово! Напомню» after «Готово,
- * напомню», still occurs; a different person or place does not.
+ * напомню», still occurs, and so does a name in another case; a different
+ * person or place does not.
  */
 export function namesShared(message: SentMessage, other: SentMessage) {
-  const words = new Set(other.text.split(" "));
-  return message.names.every((name) => words.has(name));
+  const words = wordsOf([other]);
+  return message.names.every((name) => knownWord(name, words));
 }
 
 /** Two texts at least this similar say the same thing. */
@@ -314,18 +372,64 @@ export function asksOrShowsNew(
   );
 }
 
+const cyrillicWord = /^\p{Script=Cyrillic}+$/u;
+const latinWord = /^\p{Script=Latin}+$/u;
+
+/** The alphabet most letters of a normalized text are written in. */
+function alphabetOf(text: string) {
+  const cyrillic = text.match(/\p{Script=Cyrillic}/gu)?.length ?? 0;
+  const latin = text.match(/\p{Script=Latin}/gu)?.length ?? 0;
+  if (cyrillic === latin) return undefined;
+  return cyrillic > latin ? cyrillicWord : latinWord;
+}
+
+/** A translation has at least this many words in the other alphabet. */
+const translationWords = 3;
+
+/**
+ * Whether a message is mostly words in the other alphabet than the turn's
+ * own — the person's request, or else the first message sent — that no
+ * delivered message has used: a translation, or a text the person asked for
+ * in another language. It is new text rather than the answer rephrased,
+ * though it carries no number or name of its own.
+ */
+function writesAnotherLanguage(
+  message: SentMessage,
+  delivered: readonly SentMessage[],
+  request: SentMessage | undefined
+) {
+  const own = alphabetOf(request?.text ?? delivered[0]?.text ?? "");
+  if (!own) return false;
+  const words = message.text.split(" ").filter((word) => /\p{L}/u.test(word));
+  const foreign = words.filter(
+    (word) => word.length > 1 && !own.test(word) && /^\p{L}+$/u.test(word)
+  );
+  const known = wordsOf(delivered);
+  const unsent = foreign.filter((word) => !knownWord(word, known));
+  return (
+    foreign.length >= translationWords &&
+    foreign.length * 2 >= words.length &&
+    unsent.length * 3 >= foreign.length * 2
+  );
+}
+
 /**
  * Whether a message tells the person nothing the turn has not already told
- * them: no new attachment, number, date, code or link, no new name, no
- * question not asked yet, and it is not the next item of a list sent one
- * message at a time («Анна придёт…», then «Мария придёт…»). A message that
- * follows other work since the last delivery may report what that work
- * found in words alone, so it counts as nothing new only when it is status.
+ * them: no new attachment, number, date, code or link, no new name in any
+ * of its forms, no question not asked yet, it is not the next item of a
+ * list sent one message at a time («Анна придёт…», then «Мария придёт…»),
+ * and it is no translation into another language. A message that follows
+ * other work since the last delivery may report what that work found in
+ * words alone, so it counts as nothing new only when it is status.
  */
 export function addsNothingNew(
   message: SentMessage,
   delivered: readonly SentMessage[],
-  options: { readonly afterWork: boolean }
+  options: {
+    readonly afterWork: boolean;
+    /** The person's own message that opened the turn, if they opened it. */
+    readonly request?: SentMessage;
+  }
 ) {
   if (delivered.length === 0) return false;
   const attachments = new Set(delivered.flatMap((sent) => sent.attachments));
@@ -340,8 +444,10 @@ export function addsNothingNew(
   ) {
     return false;
   }
-  const words = new Set(delivered.flatMap((sent) => sent.text.split(" ")));
-  if (message.properNames.some((name) => !words.has(name))) return false;
+  const words = wordsOf(delivered);
+  if (message.properNames.some((name) => !knownWord(name, words))) {
+    return false;
+  }
   const questions = delivered.flatMap((sent) => sent.questions);
   if (
     message.questions.some(
@@ -359,5 +465,62 @@ export function addsNothingNew(
       similarity(message.text, sent.text) >= nearDuplicateSimilarity
   );
   if (nextItem) return false;
+  if (writesAnotherLanguage(message, delivered, options.request)) return false;
   return options.afterWork ? statusWords.test(message.text) : true;
+}
+
+/**
+ * The sentences of a message that tell rather than ask: neither a question
+ * nor a request to the person.
+ */
+function statementsOf(text: string) {
+  return sentencesOf(text).filter(
+    (sentence) =>
+      questionsOf(sentence).length === 0 && requestsOf(sentence).length === 0
+  );
+}
+
+/**
+ * Whether a message that asks the person something wraps its question in the
+ * answer told again: its other sentences name numbers, links, places or
+ * people, and each of them is one a delivered message or the person's own
+ * request already named. In RU d03 (25.09) the answer named two restaurants,
+ * and the offer to book came wrapped in «Авокадо — единственный найденный
+ * вариант… бюджет до 2 500 ₽ подтвердить не получилось»: a second telling
+ * that contradicted the first. The question alone would have been news.
+ */
+export function retellsAroundQuestion(
+  text: string,
+  message: SentMessage,
+  delivered: readonly SentMessage[],
+  request: SentMessage | undefined
+) {
+  if (delivered.length === 0) return false;
+  if (message.questions.length === 0 && message.requests.length === 0) {
+    return false;
+  }
+  const attachments = new Set(delivered.flatMap((sent) => sent.attachments));
+  if (message.attachments.some((attachment) => !attachments.has(attachment))) {
+    return false;
+  }
+  const told = request ? [...delivered, request] : delivered;
+  const toldCodes = told.flatMap((sent) => sent.codes);
+  const toldWords = wordsOf(told);
+  const toldNames = new Set(delivered.flatMap((sent) => sent.properNames));
+  const statements = statementsOf(text);
+  const facts = statements.flatMap((statement) =>
+    codesOf(statement).filter(isFact)
+  );
+  // A capital opening the sentence names a place too once a delivered
+  // message named it: «Авокадо» — единственный вариант».
+  const names = statements.flatMap((statement) =>
+    properNamesOf(statement).concat(
+      namesOf(statement).filter((name) => knownWord(name, toldNames))
+    )
+  );
+  return (
+    facts.length + names.length > 0 &&
+    facts.every((code) => toldCodes.some((known) => sameFact(code, known))) &&
+    names.every((name) => knownWord(name, toldWords))
+  );
 }

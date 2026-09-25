@@ -22,6 +22,7 @@ import {
   properNamesOf,
   questionsOf,
   requestsOf,
+  retellsAroundQuestion,
   type SentMessage,
   similarity,
   tellsFacts,
@@ -52,22 +53,30 @@ const rewritesBeforeYield = 2;
 /** A `send_message` call after its input passed the tool's schema. */
 type OutgoingMessage = z.infer<typeof sendMessageOutputSchema>;
 
-const skipReasonSchema = z.enum(["duplicate", "limit", "reported", "stale"]);
+const skipReasonSchema = z.enum([
+  "duplicate",
+  "limit",
+  "reported",
+  "stale",
+  "started",
+]);
 
 type SkipReason = z.infer<typeof skipReasonSchema>;
 
 /**
  * Why a send goes back to be rewritten: it claims what no tool did, it only
  * announces work that has not started, so the answer would follow as a
- * second message, or it only announces a browser report's result. A calendar
- * claim in a browser report's turn before its message has its own notice:
- * the calendar tool is held back there until that message goes out
- * (`cardToolsBeforeOutcome`), so the only way on is the future tense.
+ * second message, it only announces a browser report's result, or it wraps
+ * a question in the answer told again. A calendar claim in a browser
+ * report's turn before its message has its own notice: the calendar tool is
+ * held back there until that message goes out (`cardToolsBeforeOutcome`),
+ * so the only way on is the future tense.
  */
 const rewriteReasons = [
   ...unperformedClaims,
   "calendar-later",
   "report",
+  "restated",
   "status",
 ] as const;
 
@@ -91,6 +100,7 @@ const skipNotices = {
   limit: `${skippedPrefix} this turn already delivered ${String(turnMessageLimit)} messages, the most one reply may take. End the turn now without calling any tool.`,
   reported: `${skippedPrefix} this browser result already reached the person in this turn, as one message, and this one tells the same result again — restated, with a detail added, or corrected. The person gets a browser result once. Another message goes out only when it asks them for something new — a code, a confirmation, a choice — or brings a picture or a link they need. If the report still asks you to act — browser_task continue on the errand, the calendar entry for a booking, a schedule for a later step — do that without writing again; otherwise end the turn now without calling any tool.`,
   stale: `${skippedPrefix} it adds nothing to what this turn already sent — no new result, number, link, name, option or question, only the same status in other words. The person already has your answer and knows the outcome will follow. End the turn now without calling any tool.`,
+  started: `${skippedPrefix} the person already has this turn's message about the errand you handed the browser, and an errand gets one such message: what the run finds reaches them in its own report, as a new turn. Where it runs, what it was asked to do and that nothing is done yet are no news to them. End the turn now without calling any tool.`,
 } as const satisfies Record<SkipReason, string>;
 
 const rewriteNotices = {
@@ -98,6 +108,7 @@ const rewriteNotices = {
   calendar: `${rewritePrefix} it says the calendar is being or has been changed, but no calendar event was created, changed or deleted in this turn. Make the change with the calendar tool first and report its result, or say you will add it once the person confirms the details; never present a slot you picked yourself as booked.`,
   "calendar-later": `${rewritePrefix} it says the calendar is being or has been changed, but no calendar event was created, changed or deleted in this turn, and in a browser report's turn the calendar tool comes back only once this message has reached the person. Keep the outcome and say the calendar step in the future tense — «добавлю в календарь», once they confirm the card — never «добавляю» or «добавил»; then call the calendar tool right after this message.`,
   report: `${rewritePrefix} it only announces what you are about to tell, and the browser report is already in front of you. Tell the person now, in this one message, what the run found or where the errand stands, with the facts the report names.`,
+  restated: `${rewritePrefix} around its question it tells again the answer the person already got in this turn — the same places, numbers and links — and a second telling in other words reads as a different answer. Send the question alone, in one short sentence, without restating or changing the answer; if nothing needs asking, end the turn now without calling any tool.`,
   status: `${rewritePrefix} it only says you are on it or will write later, and no tool result of this turn backs it yet, so the answer would follow as a second message. If a tool you called in this same step is doing that work (a browser errand you started, a search), its result is in now: send again and say what it shows. Never start the same errand twice. Otherwise do the work with the tools it needs first, then send what you found in one message.`,
 } as const satisfies Record<RewriteReason, string>;
 
@@ -214,6 +225,12 @@ function announcesReport(
  * unless the turn did other work since (a calendar entry, a reminder, an
  * errand that failed to go on), whose result is news of its own. A heading or
  * a question sent before the result does not count as telling it.
+ *
+ * So does a browser errand the person's turn started or continued: the
+ * message after it says it is under way, and the run's own report tells what
+ * it found. In RU d05 (25.09) three messages in a row said the order had
+ * been handed to Лавка, each with a detail of the errand the one before left
+ * out.
  */
 export function sendRefusal(
   outgoing: OutgoingMessage,
@@ -223,24 +240,33 @@ export function sendRefusal(
   if (delivered.length >= turnMessageLimit) return { skipped: "limit" };
   if (repeatsDelivered(outgoing, delivered)) return { skipped: "duplicate" };
   const message = sentMessageOf(outgoing);
-  if (
-    turn.report &&
-    delivered.some((sent) => tellsFacts(sent)) &&
-    !turn.otherWorkSinceDelivery &&
-    !asksOrShowsNew(message, delivered)
-  ) {
+  const toldSoFar =
+    !turn.otherWorkSinceDelivery && !asksOrShowsNew(message, delivered);
+  if (turn.report && delivered.some((sent) => tellsFacts(sent)) && toldSoFar) {
     return { skipped: "reported" };
   }
   if (
-    addsNothingNew(message, delivered, { afterWork: turn.workSinceDelivery })
+    addsNothingNew(message, delivered, {
+      afterWork: turn.workSinceDelivery,
+      request: turn.request,
+    })
   ) {
     return { skipped: "stale" };
+  }
+  if (turn.request && turn.errandTold && toldSoFar) {
+    return { skipped: "started" };
   }
   if (turn.rewrites >= rewritesBeforeYield || outgoing.kind !== "message") {
     return undefined;
   }
   if (announcesReport(message, turn)) return { rewrite: "report" };
   if (announcesUnstartedWork(message, turn)) return { rewrite: "status" };
+  if (
+    !turn.workSinceDelivery &&
+    retellsAroundQuestion(outgoing.text ?? "", message, delivered, turn.request)
+  ) {
+    return { rewrite: "restated" };
+  }
   const claim = unperformedClaim(outgoing.text ?? "", turn.actions);
   if (claim === "calendar" && turn.report && delivered.length === 0) {
     return { rewrite: "calendar-later" };
@@ -328,14 +354,20 @@ function newsForReport(part: ToolResultPart, reportedRun: string | undefined) {
   return handedOver === undefined || handedOver !== reportedRun;
 }
 
+const browserCallSchema = z.object({ action: z.string() });
+
+/** `browser_task` actions that hand a run the errand, anew or further. */
+const errandHandovers = new Set(["continue", "start"]);
+
 /**
  * What `send_message` did so far in the current turn: the messages that
  * reached the person, how many sends were dropped or sent back for a
  * rewrite, whether the turn did any work and whether it did more since the
- * last delivery or since a dropped send, what the turn did that a message
- * could claim, who opened it — the person's own message, or a browser run's
- * report — and whether an earlier turn left an errand at work. It rides in
- * the durable closure of `send_message`, so it stays plain JSON.
+ * last delivery or since a dropped send, whether a message went out since
+ * the turn last handed a browser run its errand, what the turn did that a
+ * message could claim, who opened it — the person's own message, or a
+ * browser run's report — and whether an earlier turn left an errand at work.
+ * It rides in the durable closure of `send_message`, so it stays plain JSON.
  */
 export function turnSends(messages: readonly ModelMessage[]) {
   const start = messages.findLastIndex(startsTurn);
@@ -344,6 +376,7 @@ export function turnSends(messages: readonly ModelMessage[]) {
   const opening = openingText(messages[start]);
   const reportedRun = reportedRunOf(opening);
   const inputs = new Map<string, OutgoingMessage>();
+  const browserActions = new Map<string, string>();
   const delivered: SentMessage[] = [];
   let skipped = 0;
   let rewrites = 0;
@@ -351,6 +384,8 @@ export function turnSends(messages: readonly ModelMessage[]) {
   let workSinceDelivery = false;
   let otherWorkSinceDelivery = false;
   let workAfterSkip = false;
+  let errandHandedOver = false;
+  let errandTold = false;
   for (const message of turn) {
     const parts = Array.isArray(message.content) ? message.content : [];
     for (const part of parts) {
@@ -358,12 +393,24 @@ export function turnSends(messages: readonly ModelMessage[]) {
         const input = sendMessageOutputSchema.safeParse(part.input).data;
         if (input) inputs.set(part.toolCallId, input);
       }
+      if (part.type === "tool-call" && part.toolName === "browser_task") {
+        const action = browserCallSchema.safeParse(part.input).data?.action;
+        if (action) browserActions.set(part.toolCallId, action);
+      }
       if (part.type !== "tool-result") continue;
       if (!deliveryTools.has(part.toolName)) {
         worked = true;
         workSinceDelivery = true;
         if (skipped > 0) workAfterSkip = true;
         if (newsForReport(part, reportedRun)) otherWorkSinceDelivery = true;
+        if (
+          part.toolName === "browser_task" &&
+          errandHandovers.has(browserActions.get(part.toolCallId) ?? "") &&
+          leavesRunAtWork(part.output)
+        ) {
+          errandHandedOver = true;
+          errandTold = false;
+        }
         continue;
       }
       if (part.toolName !== "send_message") continue;
@@ -376,6 +423,7 @@ export function turnSends(messages: readonly ModelMessage[]) {
       delivered.push(sentMessageOf(input));
       workSinceDelivery = false;
       otherWorkSinceDelivery = false;
+      if (errandHandedOver) errandTold = true;
     }
   }
   return {
@@ -384,6 +432,11 @@ export function turnSends(messages: readonly ModelMessage[]) {
     }),
     delivered,
     errandAtWork: errandAtWork(earlier),
+    /**
+     * Whether a message reached the person after the turn last handed a
+     * browser run its errand — a `start` or `continue` that left it at work.
+     */
+    errandTold,
     otherWorkSinceDelivery,
     /** Whether a finished browser run's report opened the turn. */
     report: reportedRun !== undefined,

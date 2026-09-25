@@ -261,6 +261,215 @@ describe("sendRefusal on rephrased replies from the benchmark", () => {
 });
 
 /**
+ * Turns from the production benchmark of 25.09.2026 (gpt-6-luna): what went
+ * out after the first message still passed as news — a name in another case,
+ * a detail of the errand the first message left out, a question wrapped in
+ * the answer told again.
+ */
+describe("sendRefusal on the benchmark of 25.09", () => {
+  const barberRequest = userMessage(
+    "скинь адрес того барбера плз, я забыл кк он называеца"
+  );
+  const barberAnswer =
+    "Похоже, это The Barber Club: Профсоюзная улица, 11/11, вход с улицы Кржижановского. Но имя Артура там не подтвердилось — нашёл только отдельного барбера Артура в Мытищах, так что это может быть не тот мастер.\nhttps://thebarberclub.ru/";
+
+  it.each([
+    "Похоже, это The Barber Club: Профсоюзная улица, 11/11, вход с улицы Кржижановского. Но подтвердить, что там работает Артур, не удалось. https://thebarberclub.ru/",
+    "Похоже, барбершоп называется The Barber Club: Профсоюзная улица, 11/11, вход с улицы Кржижановского. Но что там работает Артур, подтвердить не удалось. https://thebarberclub.ru/",
+  ])("drops the address said again with «Артур» for «Артура» (d15)", (text) => {
+    const history = [
+      barberRequest,
+      ...toolStep("web_search", { results: [] }),
+      ...sendMessage("address", barberAnswer),
+    ];
+
+    expect(refusal(history, text)).toEqual({ skipped: "stale" });
+  });
+
+  it("keeps two names that share only their first letters apart", () => {
+    const history = [
+      userMessage("кто завтра придёт?"),
+      ...sendMessage("first", "Мария придёт завтра в 10:00."),
+    ];
+
+    expect(refusal(history, "Марина придёт завтра в 10:00.")).toBeUndefined();
+  });
+
+  const groceries = userMessage(
+    "закажи продукты к восьми вечера: молоко 3,2, десяток яиц, 2 авокадо, куриное филе около кило и чего-нибудь к чаю. если чего-то нет, замени похожим, но скажи что заменил"
+  );
+  const errandStarted = [
+    groceries,
+    ...browserStep("start", { runId: "run-1", status: "running" }),
+  ];
+  const errandStatus =
+    "Запустил заказ продуктов с доставкой к 20:00 на сохранённый адрес. Когда соберу корзину, пришлю точный состав, цену и все замены на подтверждение; пока ничего не оформлено.";
+
+  it("delivers one message about the errand it started (d05)", () => {
+    expect(refusal(errandStarted, errandStatus)).toBeUndefined();
+  });
+
+  it.each([
+    "Запустил поручение на Яндекс Лавке; заказ ещё не оформлен. Уточню: назвал доставку к 20:00 сегодня, 25 сентября, на сохранённый адрес в Москве.",
+    "Заказал не я: Яндекс Лавка ещё ничего не получила — браузерный запуск только поставлен в очередь. Как только соберу корзину и узнаю цену и замены, пришлю её вам на подтверждение.",
+    "Поручение на заказ передано в Яндекс Лавку; сайт пока ничего не оформлял. Пришлю найденную корзину, цену и замены, когда запуск вернёт результат.",
+  ])("drops a second message about the same errand (d05)", (text) => {
+    const told = [...errandStarted, ...sendMessage("started", errandStatus)];
+
+    expect(refusal(told, text)).toEqual({ skipped: "started" });
+    expect(skippedSendNotice("started")).toContain("End the turn now");
+  });
+
+  it("drops it after a status check that found the run still at work", () => {
+    const polled = [
+      ...errandStarted,
+      ...sendMessage("started", errandStatus),
+      ...browserStep("status", { runId: "run-1", status: "running" }),
+    ];
+
+    expect(
+      refusal(
+        polled,
+        "Запуск ещё собирает корзину в Яндекс Лавке, заказ не оформлен."
+      )
+    ).toEqual({ skipped: "started" });
+  });
+
+  it.each([
+    [
+      "a question the first message did not ask",
+      [],
+      "Если молока 3,2 не будет, взять 2,5 или 3,5?",
+    ],
+    [
+      "what other work of the turn did",
+      toolStep("schedules-create", { id: "job-1", status: "active" }),
+      "И напоминание разобрать пакеты поставил на 20:30.",
+    ],
+    [
+      "another errand the turn started since",
+      browserStep("start", { runId: "run-2", status: "running" }),
+      "Столик в «Пушкине» на 21:00 тоже ищу — пришлю, что найду.",
+    ],
+    [
+      "an errand that failed to go on",
+      browserStep("continue", { status: "unavailable" }),
+      "Браузерный сервис сейчас недоступен, заказ не оформится — попробую позже.",
+    ],
+  ])("still delivers %s after the errand's message", (_case, work, text) => {
+    const told = [
+      ...errandStarted,
+      ...sendMessage("started", errandStatus),
+      ...work,
+    ];
+
+    expect(refusal(told, text)).toBeUndefined();
+  });
+
+  it("leaves a turn a browser report opened to its own rule", () => {
+    const report = [
+      userMessage(`${backgroundTurnMarker}\n\nBrowser run run-1 finished.`),
+      ...browserStep("continue", { runId: "run-2", status: "running" }),
+      ...sendMessage("heading", "Вот что нашёл:"),
+    ];
+
+    expect(
+      refusal(report, "Сапсан 18:40 за 5 200 ₽ и Ласточка 19:10 за 3 100 ₽.")
+    ).toBeUndefined();
+  });
+
+  const dinner = [
+    userMessage(
+      "нужно где поужинать завтра в 19:30 на четверых, пешком от чистых прудов. один вегетарианец, не сетевое, до 2500 на человека"
+    ),
+    ...toolStep("web_search", { results: [] }),
+    ...toolStep("route_time", { routes: [] }),
+  ];
+  const twoPlaces =
+    "Лучший вариант — «Авокадо», Чистопрудный бульвар, 12, корп. 2: полностью вегетарианское меню, так что гостю-вегетарианцу будет проще всего; блюдо найдётся и для остальных. Второй вариант — «Циники», Богословский пер., 3/15с1: веганское бистро с рейтингом 4,8; карточка 2ГИС показывает два филиала, поэтому условие «не сетевое» не проходит. «Авокадо» выглядит отдельным рестораном, но средний чек и часы именно на завтра в 19:30 не удалось надёжно подтвердить. Свободный стол на четверых тоже не проверял; пешее время маршрутный сервис не нашёл, поэтому минуты не буду выдумывать.\nhttps://yandex.ru/maps/org/avokado/1099046369/";
+  const offer =
+    "Забронировать на завтра, 26 сентября, на 19:30, на четверых в «Авокадо»?";
+  const retold = `«Авокадо» — единственный найденный вариант, который подходит по типу кухни и адресу, но подтвердить бюджет до 2 500 ₽ на человека не получилось. ${offer}`;
+
+  it("returns a question wrapped in the answer told again (d03)", () => {
+    const answered = [...dinner, ...sendMessage("places", twoPlaces)];
+
+    expect(refusal(answered, retold)).toEqual({ rewrite: "restated" });
+    expect(rewriteSendNotice("restated")).toContain("Send the question alone");
+    // The question alone is news.
+    const returned = [
+      ...answered,
+      ...sendMessage(
+        "retold",
+        retold,
+        textOutput(rewriteSendNotice("restated"))
+      ),
+    ];
+    expect(refusal(returned, offer)).toBeUndefined();
+  });
+
+  it("drops the answer sent again after it went out in one message (d03)", () => {
+    const answered = [
+      ...dinner,
+      ...sendMessage("places", `${twoPlaces}\n\n${retold}`),
+    ];
+
+    expect(
+      refusal(
+        answered,
+        "Лучший вариант — «Авокадо», Чистопрудный бульвар, 12, корп. 2: полностью вегетарианское меню, удобно для всей компании. Но я не подтвердил ни чек до 2 500 ₽ на человека, ни пешее время; «Циники» исключил — у них два филиала. Свободный стол тоже не проверял.\nhttps://yandex.ru/maps/org/avokado/1099046369/\n\nЗабронировать «Авокадо» на завтра, 26 сентября, в 19:30 на четверых?"
+      )
+    ).toEqual({ skipped: "stale" });
+  });
+
+  it.each([
+    [
+      "a lead-in that names nothing",
+      "Уточни одну вещь: бронировать на 19:30 или на 20:00? Как скажешь — займусь.",
+    ],
+    [
+      "a new fact next to the question",
+      "У «Авокадо» есть веранда на 8 мест с видом на пруд. Бронировать там?",
+    ],
+  ])("delivers a question with %s", (_case, text) => {
+    const answered = [...dinner, ...sendMessage("places", twoPlaces)];
+
+    expect(refusal(answered, text)).toBeUndefined();
+  });
+
+  it("delivers a retold question once the turn did more work", () => {
+    const checked = [
+      ...dinner,
+      ...sendMessage("places", twoPlaces),
+      ...toolStep("web_fetch", { text: "…" }),
+    ];
+
+    expect(refusal(checked, retold)).toBeUndefined();
+  });
+
+  it("delivers the translation the person asked for as its own message", () => {
+    const history = [
+      userMessage("переведи «я опоздаю на 10 минут» на английский и немецкий"),
+      ...sendMessage(
+        "english",
+        "По-английски: I'll be 10 minutes late, sorry."
+      ),
+    ];
+
+    expect(
+      refusal(
+        history,
+        "По-немецки: Ich komme 10 Minuten zu spät, tut mir leid."
+      )
+    ).toBeUndefined();
+    // The same translation in another word order is no news.
+    expect(
+      refusal(history, "Sorry, I'll be late by 10 minutes — это по-английски.")
+    ).toEqual({ skipped: "stale" });
+  });
+});
+
+/**
  * A browser run's result, as its report turn opens (RU 24.09: the result
  * came twice in d05, d06, d08 and d18, and d08 corrected itself).
  */
@@ -1015,6 +1224,38 @@ function toolStep(
           output: { type: "json", value },
           toolCallId,
           toolName,
+          type: "tool-result",
+        },
+      ],
+      role: "tool",
+    },
+  ];
+}
+
+function browserStep(
+  action: string,
+  value: Extract<ToolResultPart["output"], { type: "json" }>["value"]
+): ModelMessage[] {
+  toolSteps += 1;
+  const toolCallId = `browser_task-${String(toolSteps)}`;
+  return [
+    {
+      content: [
+        {
+          input: { action },
+          toolCallId,
+          toolName: "browser_task",
+          type: "tool-call",
+        },
+      ],
+      role: "assistant",
+    },
+    {
+      content: [
+        {
+          output: { type: "json", value },
+          toolCallId,
+          toolName: "browser_task",
           type: "tool-result",
         },
       ],
