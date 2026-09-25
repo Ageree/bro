@@ -9,14 +9,18 @@ import {
   recordBrowserSignIn,
   recordBrowserSignInCheck,
   recordBrowserSignOut,
+  stopBrowserSignInRefresh,
 } from "@db/services/browser-sign-ins";
 import {
   forgetBrowserProfile,
   listBrowserHoldingRuns,
   listWorkspacesHoldingBrowsers,
+  readBrowserProfileId,
   workspaceUsesBrowserProfile,
 } from "@db/services/browser-runs";
+import type { AccessScope } from "@shared/identity/access-scope";
 import {
+  BrowserUseError,
   browserUseBusy,
   browserUseOutOfCredits,
   createBrowserUseBrowser,
@@ -26,11 +30,6 @@ import {
 import { visitPageOverCdp } from "./cdp";
 import type { BrowserRunNeed } from "./outcome";
 import { customProxy } from "./proxy";
-import {
-  persistProfileCookies,
-  personStepNeeds,
-  recordedNeed,
-} from "./release";
 import {
   gosuslugiDomain,
   isGosuslugi,
@@ -98,14 +97,14 @@ function servingDomains(site: string | null | undefined) {
  * two codes, and each cancels the other: on 25.09 three errands signed in to
  * Госуслуги together (RU d06, d07, d08), the person sent code after code, and
  * every sign-in was thrown out. The errand waits instead, and starts from the
- * profile the first one leaves — signed in.
+ * profile the first one leaves.
  *
- * It waits only for a run still working or a page waiting on the person's
- * code or approval. A settled page kept for anything else — a staged option,
- * a question — is past its sign-in: it is stopped now, which writes that
- * sign-in to the profile this errand starts from, and a follow-up to it
- * reopens the site (`closedPageLine`). Waiting for its idle stop would hold
- * the new errand a quarter of an hour.
+ * Every run of the account that may still hold a browser holds it: one
+ * working, and a settled page kept for the person — a code, a staged option
+ * waiting on its card, a question. Closing a kept page for a new errand would
+ * send its follow-up to sign in again in a new browser, beside that errand.
+ * The account frees when the follow-up settles, when the idle stop closes an
+ * unanswered page, or at once when the person cancels the errand.
  */
 export async function accountInUse(
   workspaceId: string,
@@ -114,24 +113,18 @@ export async function accountInUse(
 ) {
   const account = signInAccount(site);
   if (account === undefined) return undefined;
-  const holding = (await listBrowserHoldingRuns(workspaceId, now)).filter(
-    (run) => signInAccount(run.site) === account
-  );
-  const stillHeld = await Promise.all(
-    holding.map(async (run) => {
-      const need = recordedNeed(run.outcome);
-      if (
-        run.completedAt === null ||
-        run.sessionId === null ||
-        need === undefined ||
-        personStepNeeds.has(need)
-      ) {
-        return true;
-      }
-      return !(await persistProfileCookies(run.id, run.sessionId));
-    })
-  );
-  return stillHeld.some(Boolean) ? account : undefined;
+  const holding = await listBrowserHoldingRuns(workspaceId, now);
+  return holding.some((run) => signInAccount(run.site) === account)
+    ? account
+    : undefined;
+}
+
+/**
+ * Whether an errand on `site` signs in through Госуслуги: a new browser
+ * there asks for a code whatever the profile keeps.
+ */
+export function signsInThroughGosuslugi(site: string | null | undefined) {
+  return signInAccount(site) === gosuslugiDomain;
 }
 
 /**
@@ -275,11 +268,13 @@ export async function keptSignInNote(
 
 /**
  * The sites on record for the workspace, as the person can be told them:
- * where Bro's browser was last seen signed in, and where it was not.
+ * where Bro's browser was last seen signed in, where it was not, and whether
+ * Bro opens the site on its own to keep the sign-in fresh.
  */
 export async function listKeptSignIns(workspaceId: string) {
   const records = await listBrowserSignIns(workspaceId);
   return records.map((record) => ({
+    keptAlive: !record.refreshOptOut,
     lastSeen: record.checkedAt.toISOString().slice(0, 10),
     site: record.domain,
     state: record.state,
@@ -287,44 +282,53 @@ export async function listKeptSignIns(workspaceId: string) {
 }
 
 /**
- * Forget the person's sign-ins on sites. For one site its record goes, so
- * Bro stops opening it on its own and stops expecting to be signed in there;
- * the cookies stay in the profile. For every site the Browser Use profile is
- * deleted with all its cookies and the next errand starts a new, empty one —
- * signed out everywhere. That waits while an errand still uses the profile:
- * a run or a queued start would be left on a profile that is gone.
+ * Forget the person's sign-ins on sites.
+ *
+ * One site: Bro never opens it on its own again — the opt-out stays on
+ * record, and a later errand that signs in there does not undo it. The
+ * browser may stay signed in there: its cookies are in the profile.
+ *
+ * Every site: the Browser Use profile is deleted with all its cookies, and
+ * only then forgotten here, so a delete the cloud refused leaves everything
+ * as it was and can be asked for again. The next errand starts a new, empty
+ * profile, and a follow-up of an earlier errand moves to it too
+ * (`browser_task`). That waits while an errand still uses the profile: a run
+ * or a queued start would be left on a profile that is gone. Sites the
+ * person told Bro not to open stay so.
  */
 export async function forgetSignIns(
-  workspaceId: string,
+  scope: AccessScope,
   site: string | undefined,
   now = new Date()
 ) {
-  const host = hostOf(
-    site?.includes("://") === true ? site : `https://${site ?? ""}`
-  );
+  const { workspaceId } = scope;
   if (site !== undefined) {
+    const host = hostOf(site.includes("://") ? site : `https://${site}`);
     const domain = host === undefined ? undefined : ownDomain(host);
     if (domain === undefined) return { kind: "unknown_site" as const };
-    const forgotten = await forgetBrowserSignIns(workspaceId, [domain]);
-    return { domains: forgotten, kind: "site" as const, site: domain };
+    await stopBrowserSignInRefresh(workspaceId, domain, now);
+    return { kind: "site" as const, site: domain };
   }
   if (await workspaceUsesBrowserProfile(workspaceId, now)) {
     return { kind: "busy" as const };
   }
-  const forgotten = await forgetBrowserSignIns(workspaceId);
-  const profileId = await forgetBrowserProfile(workspaceId);
-  let profileDeleted = profileId === undefined;
+  const profileId = await readBrowserProfileId(scope);
   if (profileId !== undefined) {
     try {
       await deleteBrowserUseProfile(profileId);
-      profileDeleted = true;
     } catch (error) {
-      console.warn("[browser-use] the forgotten profile could not be deleted", {
-        cause: error,
-      });
+      // A profile the cloud no longer has is as good as deleted.
+      if (!(error instanceof BrowserUseError && error.status === 404)) {
+        console.warn("[browser-use] the profile could not be deleted", {
+          cause: error,
+        });
+        return { kind: "failed" as const };
+      }
     }
+    await forgetBrowserProfile(workspaceId, profileId);
   }
-  return { domains: forgotten, kind: "all" as const, profileDeleted };
+  const domains = await forgetBrowserSignIns(workspaceId);
+  return { domains, kind: "all" as const };
 }
 
 /**

@@ -6,6 +6,7 @@ CREATE TABLE "browser_sign_ins" (
 	"used_at" timestamp (3) with time zone,
 	"checked_at" timestamp (3) with time zone NOT NULL,
 	"refreshed_at" timestamp (3) with time zone,
+	"refresh_opt_out" boolean DEFAULT false NOT NULL,
 	CONSTRAINT "browser_sign_ins_workspace_id_domain_pk" PRIMARY KEY("workspace_id","domain"),
 	CONSTRAINT "browser_sign_ins_state_check" CHECK ("browser_sign_ins"."state" IN ('signed_in', 'signed_out')),
 	CONSTRAINT "browser_sign_ins_domain_check" CHECK ("browser_sign_ins"."domain" <> '')

@@ -1010,15 +1010,22 @@ export async function workspaceUsesBrowserProfile(
 }
 
 /**
- * Forget the workspace's browser profile: the next errand creates a new,
- * empty one. Returns the id that was forgotten, for Browser Use to delete.
+ * Forget the workspace's browser profile once Browser Use deleted it: the
+ * next errand creates a new, empty one. Only that profile: one created since
+ * stays.
  */
-export async function forgetBrowserProfile(workspaceId: string) {
-  const rows = await db
+export async function forgetBrowserProfile(
+  workspaceId: string,
+  profileId: string
+) {
+  await db
     .delete(browserProfiles)
-    .where(eq(browserProfiles.workspaceId, workspaceId))
-    .returning({ profileId: browserProfiles.profileId });
-  return rows[0]?.profileId;
+    .where(
+      and(
+        eq(browserProfiles.workspaceId, workspaceId),
+        eq(browserProfiles.profileId, profileId)
+      )
+    );
 }
 
 function idleBrowser(now: Date) {

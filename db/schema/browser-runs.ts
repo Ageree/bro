@@ -229,6 +229,9 @@ export const browserSignIns = pgTable(
       precision: 3,
       withTimezone: true,
     }),
+    // The person told Bro not to open the site on its own: no keep-alive
+    // visit goes there again, whatever later errands find.
+    refreshOptOut: boolean("refresh_opt_out").notNull().default(false),
   },
   (table) => [
     primaryKey({ columns: [table.workspaceId, table.domain] }),

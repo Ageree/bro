@@ -14,12 +14,12 @@ function keepAliveNote() {
   const days = env.BROWSER_USE_SIGN_IN_REFRESH_DAYS;
   return days === 0
     ? "Bro does not open these sites on its own on this deployment."
-    : `Every ${String(days)} days Bro's browser opens the account page of each site marked signed_in that an errand used in the last month (never Госуслуги), clicks nothing there and closes it, so the sign-in does not expire.`;
+    : `Every ${String(days)} days Bro's browser opens the account page of each site marked signed_in and keptAlive that an errand used in the last month (never Госуслуги), clicks nothing there and closes it, so the sign-in does not expire. A site with keptAlive false is never opened on its own.`;
 }
 
 export const siteSignIns = defineTool({
   description:
-    "The sites where Bro's cloud browser keeps the person signed in from earlier errands, and forgetting them. action list: when the person asks where Bro is signed in on their behalf or which of their accounts it opens. action forget: when they ask Bro to forget their sign-ins on sites, to sign its browser out, or to stop opening their accounts on its own («забудь мои входы на сайты», «не заходи больше в мой Озон»). With site, only that site is forgotten: Bro stops opening it on its own, while its browser may stay signed in there. Without site, the browser profile is deleted with every cookie and sign-in: the next errand starts signed out everywhere. It never touches the vault's saved passwords.",
+    "The sites where Bro's cloud browser keeps the person signed in from earlier errands, and forgetting them. action list: when the person asks where Bro is signed in on their behalf or which of their accounts it opens. action forget: when they ask Bro to forget their sign-ins on sites, to sign its browser out, or to stop opening their accounts on its own («забудь мои входы на сайты», «не заходи больше в мой Озон»). With site, Bro never opens that site on its own again, even after later errands there, while its browser may stay signed in there. Without site, the browser profile is deleted with every cookie and sign-in: the next errand, and any follow-up of an earlier one, starts signed out everywhere. It never touches the vault's saved passwords.",
   inputSchema: z.object({
     action: z.enum(["list", "forget"]),
     site: z
@@ -36,9 +36,9 @@ export const siteSignIns = defineTool({
     if (auth?.principalType !== "user") {
       throw new Error("An authenticated user is required.");
     }
-    const { workspaceId } = scopeFromPrincipal(auth);
+    const scope = scopeFromPrincipal(auth);
     if (input.action === "list") {
-      const sites = await listKeptSignIns(workspaceId);
+      const sites = await listKeptSignIns(scope.workspaceId);
       return {
         keepAlive: keepAliveNote(),
         note:
@@ -48,7 +48,7 @@ export const siteSignIns = defineTool({
         sites,
       };
     }
-    const forgotten = await forgetSignIns(workspaceId, input.site);
+    const forgotten = await forgetSignIns(scope, input.site);
     if (forgotten.kind === "unknown_site") {
       return {
         note: "That is not a site Bro can name: ask which site they mean.",
@@ -61,17 +61,21 @@ export const siteSignIns = defineTool({
         status: "not_forgotten",
       };
     }
+    if (forgotten.kind === "failed") {
+      return {
+        note: "Nothing was forgotten: the cloud browser service did not delete the browser profile just now, so every sign-in stays as it was. Tell the person so plainly and that they can ask again a little later.",
+        status: "not_forgotten",
+      };
+    }
     if (forgotten.kind === "site") {
       return {
-        note: `Bro no longer opens ${forgotten.site} on its own and no longer counts on being signed in there. Its browser may still be signed in to that site until the person asks to forget every sign-in, or an errand there signs out. Say both plainly.`,
+        note: `Bro no longer opens ${forgotten.site} on its own, now or after later errands there. Its browser may still be signed in to that site: an errand the person asks for there can use that sign-in, and forgetting every sign-in signs the browser out. Say both plainly.`,
         site: forgotten.site,
         status: "forgotten",
       };
     }
     return {
-      note: forgotten.profileDeleted
-        ? "Bro's browser profile was deleted with every cookie and sign-in, and nothing is on record any more: the next errand starts signed out everywhere and signs in anew, asking for codes as a first sign-in does. Passwords saved in the vault stay. Say so plainly."
-        : "Bro forgot every sign-in on record and will use a new, empty browser profile from the next errand, which signs in anew; the old profile could not be deleted in the cloud right now, and Bro no longer uses it. Passwords saved in the vault stay. Say so plainly.",
+      note: "Bro's browser profile was deleted with every cookie and sign-in: the next errand, and any follow-up of an earlier one, starts signed out everywhere and signs in anew, asking for codes as a first sign-in does. Sites the person told Bro not to open stay so. Passwords saved in the vault stay. Say so plainly.",
       sites: forgotten.domains,
       status: "forgotten",
     };

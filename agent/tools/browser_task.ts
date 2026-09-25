@@ -87,7 +87,10 @@ import {
 } from "@agent/lib/browser-use/images";
 import { maximumDeliveredImageArtifacts } from "@agent/lib/image-artifact/delivery";
 import { env } from "@shared/environment";
-import { browserRunNeeds } from "@agent/lib/browser-use/outcome";
+import {
+  browserRunNeeds,
+  type BrowserRunNeed,
+} from "@agent/lib/browser-use/outcome";
 import { browserRunNeedGuidance } from "@agent/lib/browser-use/guidance";
 import { outcomesHeard } from "@agent/lib/browser-use/heard";
 import {
@@ -127,7 +130,11 @@ import {
   queueBrowserErrand,
   queuedStatusNote,
 } from "@agent/lib/browser-use/queue";
-import { accountInUse, keptSignInNote } from "@agent/lib/browser-use/sign-ins";
+import {
+  accountInUse,
+  keptSignInNote,
+  signsInThroughGosuslugi,
+} from "@agent/lib/browser-use/sign-ins";
 import {
   keepsPage,
   personStepNeeds,
@@ -1031,13 +1038,14 @@ export function composeBrowserTask(options: {
     .join("\n\n");
 }
 
-type ClosedPage = "asked" | "done" | "staged" | "step";
+type ClosedPage = "asked" | "done" | "forgotten" | "staged" | "step";
 
 /**
  * Why the last run's page is gone: it finished (`done`), or it was kept for
- * the person and closed after sitting idle, or for a new errand on the same
- * account — on a code or an approval (`step`), on a staged option
- * (`staged`), or on a question (`asked`).
+ * the person and closed after sitting idle — on a code or an approval
+ * (`step`), on a staged option (`staged`), or on a question (`asked`). A
+ * follow-up after the person had Bro forget its sign-ins (`forgotten`) is
+ * told so apart from these.
  */
 function closedPage(outcome: string | null): ClosedPage {
   const need = recordedNeed(outcome);
@@ -1053,6 +1061,9 @@ function closedPage(outcome: string | null): ClosedPage {
  * fails (RU review of wave 6).
  */
 function closedPageLine(errand: string, closed: ClosedPage) {
+  if (closed === "forgotten") {
+    return `This continues the errand «${errand}» in a new browser on a new, empty profile: the person had Bro forget its sign-ins, so nothing of the last run's page or sign-in is left. Open the Site again and sign in anew with what is bound to this run, stopping at any code or approval step as the first rule says. Get back to where the errand stopped without redoing what is already done on the site; if what the last run found is gone or changed, stop with NEEDS: decision and say what changed.`;
+  }
   if (closed === "step") {
     return `This continues the errand «${errand}» in a fresh browser: the page the last run stopped on, waiting for the person's code or approval, was closed after sitting idle, so that step did not finish there. Open the Site again. If a payment was waiting for 3-D Secure, first check whether it went through, and never pay twice. If the site asks you to sign in, sign in again. A code in the message above belonged to the closed page and does not work in a new sign-in: do not type it, and stop at the new code step as the first rule says.`;
   }
@@ -1067,19 +1078,58 @@ function closedPageLine(errand: string, closed: ClosedPage) {
 
 /**
  * What Bro is told about a follow-up that could not continue on the last
- * run's page.
+ * run's page, by what that page waited for. A code step says only that the
+ * site will likely ask again — never that a new code was sent, which
+ * `nothingDoneYetNote` forbids until the outcome says so. `gosuslugi`, for an
+ * errand that signs in through Госуслуги, replaces «the sign-in was kept»:
+ * a new browser there asks for a code whatever the profile keeps.
  */
-function closedPageNote(closed: ClosedPage) {
+function closedPageNote(
+  closed: ClosedPage,
+  need: BrowserRunNeed | undefined,
+  gosuslugi: string | undefined
+) {
+  const kept = gosuslugi ?? "The sign-in was kept in the browser profile.";
+  if (closed === "forgotten") {
+    return "The user had Bro forget its sign-ins, so this follow-up runs in a new, signed-out browser: it signs in anew, and the site will likely ask for a code — tell the user so; do not say one was already sent.";
+  }
   if (closed === "step") {
-    return "The page that was waiting for the user's code or approval closed after sitting idle for a quarter of an hour, so the run goes through that step again and the site will likely send a new code (for 3-D Secure, it first checks whether the payment went through). Tell the user their code came too late and that a new one is on its way; do not say they are still signed in.";
+    const idle =
+      "sat idle for a quarter of an hour and was closed, so the follow-up opens the site again in a fresh browser.";
+    if (need === "3ds") {
+      return `The page that waited for 3-D Secure ${idle} It first checks on the site whether the payment went through, and never pays twice: tell the user you are checking that — not that it failed, and not that it went through.`;
+    }
+    if (need === "password") {
+      return `The page that waited for a password ${idle} It signs in again with the password from the vault or the user's words; say nothing about a code, and do not say they are signed in yet.`;
+    }
+    if (need === "push") {
+      return `The page that waited for the user's approval in the app ${idle} When it reaches the sign-in again, the site will likely ask for a new approval: tell the user so, and that you will say when to approve; do not say one was already sent, and do not say they are still signed in.`;
+    }
+    return `The page that waited for the user's code ${idle} That code no longer fits: when the run reaches the sign-in again, the site will likely send a new one. Tell the user their code no longer fits and that you will ask for the new one when it comes; do not say one was already sent, and do not say they are still signed in.`;
   }
   if (closed === "staged") {
-    return "The page the last run staged was closed while it waited (after a quarter of an hour idle, or for another errand on the same account), which kept its sign-in; the follow-up reopens the site and finds the same option again — it may have changed or gone, and then the run stops to say so.";
+    return `The page the last run staged sat idle for a quarter of an hour and was closed; the follow-up reopens the site in a fresh browser and finds the same option again — it may have changed or gone, and then the run stops to say so. ${kept}`;
   }
   if (closed === "asked") {
-    return "The page the last run stopped on was closed while it waited for the user's answer (after a quarter of an hour idle, or for another errand on the same account), which kept its sign-in; the follow-up reopens the site and gets back to where the errand stopped.";
+    return `The page the last run stopped on sat idle for a quarter of an hour waiting for the user's answer and was closed; the follow-up reopens the site in a fresh browser and gets back to where the errand stopped. ${kept}`;
   }
-  return "The page the last run stopped on was closed to keep the user's sign-ins in the browser profile, so the follow-up reopens the site in a fresh browser on that profile.";
+  return `The page the last run stopped on was closed when it finished, so the follow-up reopens the site in a fresh browser on the same profile. ${kept}`;
+}
+
+/**
+ * What Bro hears about Госуслуги when a follow-up opens a new browser on an
+ * errand that signs in through it: the wave-5 code warning where a login is
+ * bound, and never «the sign-in was kept».
+ */
+function freshGosuslugiNote(
+  site: string | undefined,
+  aliases: readonly string[]
+) {
+  if (!signsInThroughGosuslugi(site)) return undefined;
+  return (
+    gosuslugiCodeNote(site, boundLogins(aliases)) ??
+    "It signs in through Госуслуги, which asks for a code in every new browser: do not say the sign-in was kept."
+  );
 }
 
 /**
@@ -2060,6 +2110,9 @@ function mailCodeMissingNote(why: string) {
   return `Nothing was sent: ${why}. Ask the user for the code the site emailed instead: open your one message with a short line naming where it was sent exactly as Details masks it (and to look in spam too), and saying you will type it in yourself; their own reply with the code continues the run. If they cannot find it, continue with their words, and the run has the site send a new one.`;
 }
 
+const closedPageMailCodeRefusal =
+  'Nothing was sent: the page that waited for this code sat idle and was closed, so the code in the mail no longer fits. Continue without codeFrom; once the run stops for the new code, codeFrom "mail" takes that one.';
+
 /**
  * What the model says once the code from the site's letter went to the run:
  * where it came from, and never the code, which it does not have.
@@ -2093,6 +2146,11 @@ async function codeFromMail(
     throw new Error(
       `Nothing was sent: this run is not waiting for a code the site sent by email (${row.completedAt === null ? "it has not finished yet" : `it stopped with Needs: ${needs ?? "none"}`}), and codeFrom "mail" only continues one that is.`
     );
+  }
+  // The page that waited for this code is gone: a new sign-in sends a new
+  // code, and the letter holds the old one.
+  if (row.browserReleasedAt instanceof Date) {
+    throw new Error(closedPageMailCodeRefusal);
   }
   // One look in the mail per stop: a run that was itself handed a code from
   // the mail and stopped for another goes to the person, unless they ask
@@ -3158,12 +3216,22 @@ async function runBrowserTask(
       spend?.decision.allowed && input.withinSpendLimit
         ? `${message}\n\n${spendCapLine(input.withinSpendLimit, spend.decision)}`
         : message;
-    const page = await takeKeptPage(row);
+    // After «забудь мои входы» the errand's profile is gone: its follow-up
+    // moves to the workspace's new one, in a new browser.
+    const forgotten =
+      row.profileId !== null &&
+      row.profileId !== (await readBrowserProfileId(scope));
+    const page = forgotten
+      ? { claimedAt: undefined, closing: false, held: false }
+      : await takeKeptPage(row);
     // A page the idle stop closed: why decides what the follow-up is told.
-    const closed =
-      page.held || endedNeeding(row.outcome) === "captcha"
+    const closed: ClosedPage | undefined = forgotten
+      ? "forgotten"
+      : page.held || endedNeeding(row.outcome) === "captcha"
         ? undefined
         : closedPage(row.outcome);
+    // The code in the mail belonged to that page.
+    if (mail && !page.held) throw new Error(closedPageMailCodeRefusal);
     const giveBackPage = async () => {
       if (page.claimedAt === undefined) return;
       try {
@@ -3199,6 +3267,7 @@ async function runBrowserTask(
         // that belonged to a page closed since goes nowhere.
         const carriesCode =
           closed !== "step" &&
+          closed !== "forgotten" &&
           (mail !== undefined ||
             oneTimeCodesIn(said, { awaitingCode: codeAwaited(row) }).length >
               0);
@@ -3298,14 +3367,17 @@ async function runBrowserTask(
               ],
             }
           : bound;
-        const profileId = row.profileId ?? (await workspaceProfileId(scope));
+        const profileId =
+          forgotten || row.profileId === null
+            ? await workspaceProfileId(scope)
+            : row.profileId;
         // A browser that lost to an anti-bot wall keeps losing: the shop has
         // already judged that address and that browser, and a follow-up queued
         // into it meets the same verdict however well it is written. The profile
         // carries the sign-in, so dropping the session keeps the account and
         // gets a fresh browser on a fresh address.
         const sessionId =
-          endedNeeding(row.outcome) === "captcha" || page.closing
+          endedNeeding(row.outcome) === "captcha" || page.closing || forgotten
             ? undefined
             : (row.sessionId ?? undefined);
         const continuation = composeBrowserContinuation({
@@ -3331,6 +3403,22 @@ async function runBrowserTask(
           // otherwise; a search stays a search.
           staging: acting.asked || (stagesErrand(replaced) && !acting.declined),
         });
+        // A follow-up in a new browser signs in anew: like a new errand, it
+        // waits while another errand holds a browser on the same account.
+        const waitsForAccount =
+          closed !== undefined || sessionId === undefined
+            ? await accountInUse(scope.workspaceId, site)
+            : undefined;
+        if (waitsForAccount !== undefined) {
+          return {
+            continuation,
+            kind: "queued" as const,
+            profileId,
+            retryAfterMs: undefined,
+            sessionId,
+            waitsForAccount,
+          };
+        }
         let followUp: Awaited<ReturnType<typeof createFollowUpRun>>;
         try {
           followUp = await createFollowUpRun({
@@ -3353,6 +3441,7 @@ async function runBrowserTask(
               profileId,
               retryAfterMs: error.retryAfterMs,
               sessionId,
+              waitsForAccount: undefined,
             };
           }
           if (browserUseOutOfCredits(error)) {
@@ -3445,6 +3534,7 @@ async function runBrowserTask(
           site: site ?? null,
           submission: confirmedSubmission(consent),
           task: message,
+          waitsForAccount: continued.waitsForAccount ?? null,
         })
       );
       await carrySpend(queued.runId);
@@ -3500,8 +3590,12 @@ async function runBrowserTask(
         closed === undefined
           ? reusedSession
             ? undefined
-            : "The previous browser session was not reused — it was gone, or it had ended against an anti-bot check — so the follow-up opened a fresh browser on the same profile, on a new address; the signed-in cookies came with it."
-          : closedPageNote(closed),
+            : `The previous browser session was not reused — it was gone, or it had ended against an anti-bot check — so the follow-up opened a fresh browser on the same profile, on a new address. ${freshGosuslugiNote(site, secrets.aliases) ?? "The signed-in cookies came with it."}`
+          : closedPageNote(
+              closed,
+              recordedNeed(row.outcome),
+              freshGosuslugiNote(site, secrets.aliases)
+            ),
         "The outcome arrives as a new message; do not poll for it.",
         mail ? mailCodeTakenNote(mail.domain) : undefined,
         nothingDoneYetNote(),

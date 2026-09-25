@@ -117,6 +117,7 @@ export async function listDueBrowserSignInRefreshes(options: {
     .where(
       and(
         eq(browserSignIns.state, "signed_in"),
+        eq(browserSignIns.refreshOptOut, false),
         isNotNull(browserSignIns.accountUrl),
         gt(browserSignIns.usedAt, options.usedAfter),
         lookedAtBefore(options.dueBefore),
@@ -147,6 +148,7 @@ export async function claimBrowserSignInRefresh(
         eq(browserSignIns.workspaceId, workspaceId),
         eq(browserSignIns.domain, domain),
         eq(browserSignIns.state, "signed_in"),
+        eq(browserSignIns.refreshOptOut, false),
         lookedAtBefore(options.dueBefore)
       )
     )
@@ -174,23 +176,60 @@ export async function recordBrowserSignInCheck(
     );
 }
 
-/** Forget where the person is signed in: every site, or the ones named. */
-export async function forgetBrowserSignIns(
+/**
+ * The person told Bro not to open `domain` on its own: the keep-alive visits
+ * end there for good. The mark outlives later errands on the site
+ * (`recordBrowserSignIn` leaves it alone) and a forgotten profile
+ * (`forgetBrowserSignIns`); a site with nothing on record gets a row that
+ * only carries it.
+ */
+export async function stopBrowserSignInRefresh(
   workspaceId: string,
-  domains?: readonly string[]
+  domain: string,
+  now: Date
 ) {
-  const rows = await db
+  await db
+    .insert(browserSignIns)
+    .values({
+      accountUrl: null,
+      checkedAt: now,
+      domain,
+      refreshOptOut: true,
+      state: "signed_out",
+      workspaceId,
+    })
+    .onConflictDoUpdate({
+      set: { accountUrl: null, refreshOptOut: true },
+      target: [browserSignIns.workspaceId, browserSignIns.domain],
+    });
+}
+
+/**
+ * Forget where the person is signed in, once their browser profile is gone:
+ * the records go, and a site they told Bro not to open keeps only that mark.
+ * Returns the domains that were on record.
+ */
+export async function forgetBrowserSignIns(workspaceId: string) {
+  const kept = await db
+    .update(browserSignIns)
+    .set({ accountUrl: null, state: "signed_out", usedAt: null })
+    .where(
+      and(
+        eq(browserSignIns.workspaceId, workspaceId),
+        eq(browserSignIns.refreshOptOut, true)
+      )
+    )
+    .returning({ domain: browserSignIns.domain });
+  const removed = await db
     .delete(browserSignIns)
     .where(
       and(
         eq(browserSignIns.workspaceId, workspaceId),
-        domains === undefined
-          ? undefined
-          : inArray(browserSignIns.domain, [...domains])
+        eq(browserSignIns.refreshOptOut, false)
       )
     )
     .returning({ domain: browserSignIns.domain });
-  return rows.map((row) => row.domain);
+  return [...removed, ...kept].map((row) => row.domain);
 }
 
 /** Every site on record for the workspace, most recently seen first. */
@@ -199,6 +238,7 @@ export async function listBrowserSignIns(workspaceId: string) {
     .select({
       checkedAt: browserSignIns.checkedAt,
       domain: browserSignIns.domain,
+      refreshOptOut: browserSignIns.refreshOptOut,
       state: browserSignIns.state,
     })
     .from(browserSignIns)

@@ -51,43 +51,57 @@ describe("site_sign_ins", () => {
 
   it("lists the sites on record and says how the visits stand", async () => {
     signIns.list.mockResolvedValue([
-      { lastSeen: "2026-09-24", site: "ozon.ru", state: "signed_in" },
+      {
+        keptAlive: true,
+        lastSeen: "2026-09-24",
+        site: "ozon.ru",
+        state: "signed_in",
+      },
+      {
+        keptAlive: false,
+        lastSeen: "2026-09-20",
+        site: "wildberries.ru",
+        state: "signed_in",
+      },
     ]);
 
     const result = await run({ action: "list" });
 
     expect(signIns.list).toHaveBeenCalledExactlyOnceWith(scope.workspaceId);
     expect(result).toMatchObject({
-      sites: [{ site: "ozon.ru", state: "signed_in" }],
+      sites: [
+        { keptAlive: true, site: "ozon.ru" },
+        { keptAlive: false, site: "wildberries.ru" },
+      ],
     });
-    expect(
-      z.object({ keepAlive: z.string() }).parse(result).keepAlive
-    ).toContain("clicks nothing there");
+    const { keepAlive } = z.object({ keepAlive: z.string() }).parse(result);
+    expect(keepAlive).toContain("clicks nothing there");
+    expect(keepAlive).toContain("keptAlive false is never opened on its own");
   });
 
-  it("forgets every sign-in, or one site, or waits for a running errand", async () => {
-    signIns.forget.mockResolvedValueOnce({
-      domains: ["ozon.ru"],
-      kind: "all",
-      profileDeleted: true,
-    });
+  it("forgets every sign-in, or one site for good, or says plainly it could not", async () => {
+    signIns.forget.mockResolvedValueOnce({ domains: ["ozon.ru"], kind: "all" });
     expect(answer(await run({ action: "forget" }))).toEqual([
       "forgotten",
-      expect.stringContaining("deleted with every cookie and sign-in"),
+      expect.stringContaining("and any follow-up of an earlier one"),
     ]);
-    expect(signIns.forget).toHaveBeenLastCalledWith(
-      scope.workspaceId,
-      undefined
-    );
-
-    signIns.forget.mockResolvedValueOnce({
-      domains: ["ozon.ru"],
-      kind: "site",
-      site: "ozon.ru",
+    expect(signIns.forget.mock.calls[0]?.[0]).toMatchObject({
+      workspaceId: scope.workspaceId,
     });
+
+    signIns.forget.mockResolvedValueOnce({ kind: "site", site: "ozon.ru" });
     expect(answer(await run({ action: "forget", site: "ozon.ru" }))).toEqual([
       "forgotten",
-      expect.stringContaining("no longer opens ozon.ru on its own"),
+      expect.stringContaining(
+        "no longer opens ozon.ru on its own, now or after later errands there"
+      ),
+    ]);
+
+    // The cloud kept the profile: nothing changed, and Bro says so.
+    signIns.forget.mockResolvedValueOnce({ kind: "failed" });
+    expect(answer(await run({ action: "forget" }))).toEqual([
+      "not_forgotten",
+      expect.stringContaining("Nothing was forgotten"),
     ]);
 
     signIns.forget.mockResolvedValueOnce({ kind: "busy" });

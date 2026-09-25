@@ -1185,6 +1185,79 @@ describe("the browser queue", () => {
     expect((await readRun(followUp.id))?.retriedAsRunId).toBe("cloud-run-1");
   }, 30_000);
 
+  it("waits behind a page staged on the same account and never closes it", async () => {
+    // Verification of wave 6 (d07/d08): d07's slot waits on its card; d08,
+    // queued for Госуслуги, must not close that page to start.
+    const { createBrowserRun, createQueuedBrowserRun } =
+      await import("@db/services/browser-runs");
+    await createBrowserRun(alice, {
+      ...keptPage,
+      completedAt: minutesAgo(1),
+      createdAt: minutesAgo(8),
+      id: "staged-slot",
+      outcome: "Needs: decision",
+      sessionId: "session-staged",
+      site: "https://www.gosuslugi.ru",
+      updatedAt: minutesAgo(1),
+    });
+    const waiting = await createQueuedBrowserRun(alice, {
+      conversationChannel: "eve",
+      conversationId: "web-session",
+      createdAt: minutesAgo(2),
+      paymentAllowed: false,
+      pendingTask: "Запиши к терапевту через ЕМИАС",
+      profileId: "profile-1",
+      retryAt: minutesAgo(1),
+      rootSessionId: "web-session",
+      site: "https://emias.info",
+      task: "Запиши к терапевту",
+      waitsForAccount: "gosuslugi.ru",
+    });
+    // A follow-up that lost its page signs in anew: it waits as well, its
+    // session notwithstanding.
+    const reopened = await createQueuedBrowserRun(alice, {
+      conversationChannel: "eve",
+      conversationId: "web-session",
+      createdAt: minutesAgo(2),
+      paymentAllowed: false,
+      pendingTask: "Продолжи запись на mos.ru",
+      profileId: "profile-1",
+      retryAt: minutesAgo(1),
+      rootSessionId: "web-session",
+      sessionId: "session-mos",
+      site: "https://www.mos.ru",
+      task: "Продолжи",
+      waitsForAccount: "gosuslugi.ru",
+    });
+    const { attachSession } = webChat();
+
+    await tick(attachSession);
+
+    expect(cloud.stopped).toEqual([]);
+    expect(cloud.created).toHaveLength(0);
+    expect((await readRun("staged-slot"))?.browserReleasedAt).toBeNull();
+    for (const queued of [waiting, reopened]) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Two rows, read in turn.
+      const row = await readRun(queued.id);
+      expect(row?.status).toBe("queued");
+      expect(row?.waitsForAccount).toBe("gosuslugi.ru");
+    }
+  }, 30_000);
+
+  it("tells Bro a Госуслуги errand in the wait may still ask for a code", async () => {
+    const { queuedStatusNote } = await import("@agent/lib/browser-use/queue");
+
+    const note = queuedStatusNote({
+      retryAt: null,
+      waitsForAccount: "gosuslugi.ru",
+    });
+
+    expect(note).not.toContain("starts signed in");
+    expect(note).not.toContain("instead of sending a second code");
+    expect(note).toContain("Госуслуги asks for one in every new browser");
+    expect(note).toContain("do not promise there will be none");
+  });
+
   it("closes a queued errand, tells the person and alerts the owner when credits run out", async () => {
     const queued = await queuedErrand(0);
     await queuedErrand(1);

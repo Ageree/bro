@@ -40,8 +40,8 @@ export const personStepNeeds: ReadonlySet<BrowserRunNeed> = new Set([
  * answered where the run stopped. A finished errand and a wall close the
  * browser at once: that clean stop is what writes the sign-in to the
  * profile. A kept page is closed the same clean way by the poller's idle
- * stop if nobody follows it up (`closeIdleBrowsers`), or as soon as a new
- * errand on the same account needs the sign-in it holds (`accountInUse`).
+ * stop if nobody follows it up (`closeIdleBrowsers`); until then it holds its
+ * account (`accountInUse`).
  */
 export function keepsPage(need: BrowserRunNeed) {
   return need !== "none" && need !== "captcha";

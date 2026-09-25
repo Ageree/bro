@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type * as browserUseClient from "@agent/lib/browser-use/client";
-import type * as browserUseRelease from "@agent/lib/browser-use/release";
 
 const workspaceId = "workspace:alice";
 
@@ -71,11 +70,6 @@ const listBrowserHoldingRuns = vi.hoisted(() =>
     Promise.resolve([])
   )
 );
-const persistProfileCookies = vi.hoisted(() =>
-  vi.fn<(runId: string, sessionId: string) => Promise<boolean>>(() =>
-    Promise.resolve(true)
-  )
-);
 const createBrowserUseBrowser = vi.hoisted(() =>
   vi.fn<
     (input: {
@@ -99,12 +93,20 @@ const visitPageOverCdp = vi.hoisted(() =>
   >()
 );
 const forgetBrowserSignIns = vi.hoisted(() =>
-  vi.fn<
-    (workspaceId: string, domains?: readonly string[]) => Promise<string[]>
-  >(() => Promise.resolve([]))
+  vi.fn<(workspaceId: string) => Promise<string[]>>(() => Promise.resolve([]))
+);
+const stopBrowserSignInRefresh = vi.hoisted(() =>
+  vi.fn<(workspaceId: string, domain: string, now: Date) => Promise<void>>(() =>
+    Promise.resolve()
+  )
 );
 const forgetBrowserProfile = vi.hoisted(() =>
-  vi.fn<(workspaceId: string) => Promise<string | undefined>>(() =>
+  vi.fn<(workspaceId: string, profileId: string) => Promise<void>>(() =>
+    Promise.resolve()
+  )
+);
+const readBrowserProfileId = vi.hoisted(() =>
+  vi.fn<(scope: { workspaceId: string }) => Promise<string | undefined>>(() =>
     Promise.resolve("profile-1")
   )
 );
@@ -132,11 +134,13 @@ vi.mock("@db/services/browser-sign-ins", () => ({
   recordBrowserSignIn,
   recordBrowserSignInCheck,
   recordBrowserSignOut: () => Promise.resolve(),
+  stopBrowserSignInRefresh,
 }));
 vi.mock("@db/services/browser-runs", () => ({
   forgetBrowserProfile,
   listBrowserHoldingRuns,
   listWorkspacesHoldingBrowsers,
+  readBrowserProfileId,
   workspaceUsesBrowserProfile,
 }));
 vi.mock("@agent/lib/browser-use/client", async (importOriginal) => ({
@@ -146,10 +150,6 @@ vi.mock("@agent/lib/browser-use/client", async (importOriginal) => ({
   stopBrowserUseBrowser,
 }));
 vi.mock("@agent/lib/browser-use/cdp", () => ({ visitPageOverCdp }));
-vi.mock("@agent/lib/browser-use/release", async (importOriginal) => ({
-  ...(await importOriginal<typeof browserUseRelease>()),
-  persistProfileCookies,
-}));
 
 function due(domain: string, accountUrl: string, workspace = workspaceId) {
   return { accountUrl, domain, profileId: "profile-1", workspaceId: workspace };
@@ -218,53 +218,28 @@ describe("the account a sign-in belongs to", () => {
     expect(await accountInUse(workspaceId, undefined)).toBeUndefined();
   });
 
-  it("stops a page kept past its sign-in instead of waiting a quarter of an hour for it", async () => {
-    // «Нет, давай другой корм» as a new errand, while the last one waits on
-    // its card at the checkout: its clean stop saves the sign-in the new
-    // errand starts from.
+  it("waits for every page kept on the account, a staged one too", async () => {
+    // Verification of wave 6: closing d07's staged slot for d08 sent the
+    // confirmed follow-up to sign in to Госуслуги again, beside d08.
     const { accountInUse } = await import("@agent/lib/browser-use/sign-ins");
-    const settled = (id: string, outcome: string): HoldingRun => ({
-      ...working("https://www.ozon.ru", id),
+    const settled = (outcome: string): HoldingRun => ({
+      ...working("https://www.gosuslugi.ru", outcome),
       completedAt: new Date(),
       outcome,
     });
-    listBrowserHoldingRuns.mockResolvedValue([
-      settled("staged", "Result: корзина собрана\nNeeds: payment"),
-      settled("asked", "Needs: address"),
-    ]);
-
-    expect(
-      await accountInUse(workspaceId, "https://www.ozon.ru")
-    ).toBeUndefined();
-    expect(persistProfileCookies.mock.calls).toEqual([
-      ["staged", "session-staged"],
-      ["asked", "session-asked"],
-    ]);
-
-    // A stop that did not land leaves the account held.
-    persistProfileCookies.mockResolvedValueOnce(false);
-    listBrowserHoldingRuns.mockResolvedValue([
-      settled("staged", "Needs: decision"),
-    ]);
-    expect(await accountInUse(workspaceId, "https://www.ozon.ru")).toBe(
-      "ozon.ru"
-    );
-  });
-
-  it("waits for a page on the person's code, and never takes it from them", async () => {
-    const { accountInUse } = await import("@agent/lib/browser-use/sign-ins");
-    listBrowserHoldingRuns.mockResolvedValue([
-      {
-        ...working("https://www.gosuslugi.ru", "code"),
-        completedAt: new Date(),
-        outcome: "Needs: sms_code",
-      },
-    ]);
-
-    expect(await accountInUse(workspaceId, "https://emias.info")).toBe(
-      "gosuslugi.ru"
-    );
-    expect(persistProfileCookies).not.toHaveBeenCalled();
+    for (const outcome of [
+      "Needs: decision",
+      "Needs: payment",
+      "Needs: address",
+      "Needs: info",
+      "Needs: sms_code",
+    ]) {
+      listBrowserHoldingRuns.mockResolvedValue([settled(outcome)]);
+      // oxlint-disable-next-line eslint/no-await-in-loop -- One holding run per case.
+      expect(await accountInUse(workspaceId, "https://emias.info")).toBe(
+        "gosuslugi.ru"
+      );
+    }
   });
 });
 
@@ -453,45 +428,70 @@ describe("recording where a run is signed in", () => {
 });
 
 describe("forgetting sign-ins", () => {
-  it("deletes the whole browser profile when the person forgets every sign-in", async () => {
+  const scope = { userId: "better-auth:alice", workspaceId };
+
+  it("deletes the browser profile in the cloud first, then forgets it and every sign-in", async () => {
     forgetBrowserSignIns.mockResolvedValue(["ozon.ru", "yandex.ru"]);
     const { forgetSignIns } = await import("@agent/lib/browser-use/sign-ins");
 
-    expect(await forgetSignIns(workspaceId, undefined)).toEqual({
+    expect(await forgetSignIns(scope, undefined)).toEqual({
       domains: ["ozon.ru", "yandex.ru"],
       kind: "all",
-      profileDeleted: true,
     });
-    expect(forgetBrowserSignIns).toHaveBeenCalledExactlyOnceWith(workspaceId);
-    expect(forgetBrowserProfile).toHaveBeenCalledExactlyOnceWith(workspaceId);
     expect(deleteBrowserUseProfile).toHaveBeenCalledExactlyOnceWith(
       "profile-1"
     );
+    expect(forgetBrowserProfile).toHaveBeenCalledExactlyOnceWith(
+      workspaceId,
+      "profile-1"
+    );
+    expect(forgetBrowserSignIns).toHaveBeenCalledExactlyOnceWith(workspaceId);
+  });
+
+  it("forgets nothing when the cloud keeps the profile, and takes a missing one as gone", async () => {
+    const { BrowserUseError } = await import("@agent/lib/browser-use/client");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    deleteBrowserUseProfile.mockRejectedValueOnce(
+      new BrowserUseError(503, "/profiles/profile-1", "unavailable")
+    );
+    const { forgetSignIns } = await import("@agent/lib/browser-use/sign-ins");
+
+    expect(await forgetSignIns(scope, undefined)).toEqual({ kind: "failed" });
+    expect(forgetBrowserProfile).not.toHaveBeenCalled();
+    expect(forgetBrowserSignIns).not.toHaveBeenCalled();
+
+    deleteBrowserUseProfile.mockRejectedValueOnce(
+      new BrowserUseError(404, "/profiles/profile-1", "not found")
+    );
+    expect(await forgetSignIns(scope, undefined)).toMatchObject({
+      kind: "all",
+    });
+    expect(forgetBrowserProfile).toHaveBeenCalledOnce();
+    warn.mockRestore();
   });
 
   it("waits while an errand still uses the profile", async () => {
     workspaceUsesBrowserProfile.mockResolvedValueOnce(true);
     const { forgetSignIns } = await import("@agent/lib/browser-use/sign-ins");
 
-    expect(await forgetSignIns(workspaceId, undefined)).toEqual({
-      kind: "busy",
-    });
+    expect(await forgetSignIns(scope, undefined)).toEqual({ kind: "busy" });
     expect(forgetBrowserProfile).not.toHaveBeenCalled();
     expect(deleteBrowserUseProfile).not.toHaveBeenCalled();
   });
 
-  it("forgets one site by its domain and leaves the profile alone", async () => {
-    forgetBrowserSignIns.mockResolvedValue(["ozon.ru"]);
+  it("stops the visits to one site for good and leaves the profile alone", async () => {
     const { forgetSignIns } = await import("@agent/lib/browser-use/sign-ins");
 
-    expect(await forgetSignIns(workspaceId, "www.ozon.ru")).toEqual({
-      domains: ["ozon.ru"],
+    expect(await forgetSignIns(scope, "www.ozon.ru")).toEqual({
       kind: "site",
       site: "ozon.ru",
     });
-    expect(forgetBrowserSignIns).toHaveBeenCalledExactlyOnceWith(workspaceId, [
+    expect(stopBrowserSignInRefresh).toHaveBeenCalledExactlyOnceWith(
+      workspaceId,
       "ozon.ru",
-    ]);
+      expect.any(Date)
+    );
+    expect(forgetBrowserSignIns).not.toHaveBeenCalled();
     expect(deleteBrowserUseProfile).not.toHaveBeenCalled();
   });
 });

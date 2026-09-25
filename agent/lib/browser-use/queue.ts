@@ -23,6 +23,7 @@ import {
 } from "./credits";
 import { customProxy } from "./proxy";
 import { resolveBrowserSecretBindings, signsInByPhone } from "./secrets";
+import { gosuslugiDomain } from "./public-services";
 import { accountInUse } from "./sign-ins";
 import { releaseBrowserRunSpend } from "./spend";
 
@@ -136,7 +137,7 @@ export function queuedStatusNote(
 ) {
   const account = row.waitsForAccount ?? undefined;
   if (account !== undefined) {
-    return `The errand is still waiting for another errand of the user to finish in Bro's browser on ${account}, so that it starts signed in instead of sending a second code; it starts by itself right after. Say so in one short line; do not start it again.`;
+    return `The errand is still waiting for another errand of the user to finish in Bro's browser on ${account}, so that the two never ask for codes at once; it starts by itself right after. The site may still ask for a code then${account === gosuslugiDomain ? " (Госуслуги asks for one in every new browser)" : ""}, so do not promise there will be none. Say so in one short line; do not start it again.`;
   }
   const next = row.retryAt
     ? ` The next try is at ${row.retryAt.toISOString()}.`
@@ -275,9 +276,11 @@ export async function startQueuedBrowserRun(
     if (!run && !expired) {
       // A new errand waits while another errand of its workspace holds a
       // browser on the same account; a queued follow-up carries its errand's
-      // session and is that errand itself, so it never waits on it.
+      // session and is that errand itself, so it never waits on it — unless
+      // its page was closed and it signs in anew in a fresh browser, which
+      // `browser_task continue` marks by queuing it with the account.
       const account =
-        current.sessionId === null
+        current.sessionId === null || waitedFor !== undefined
           ? await accountInUse(current.workspaceId, current.site, now)
           : undefined;
       if (account !== undefined) {

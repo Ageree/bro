@@ -129,6 +129,10 @@ const findBrowserUseSessionCdpUrl = vi.hoisted(() =>
     Promise.resolve(undefined)
   )
 );
+// The workspace's current browser profile; «забудь мои входы» replaces it.
+const readBrowserProfileId = vi.hoisted(() =>
+  vi.fn<() => Promise<string | undefined>>(() => Promise.resolve("profile-1"))
+);
 const resolveBrowserSecretBindings = vi.hoisted(() =>
   vi.fn<
     (
@@ -345,9 +349,7 @@ vi.mock("@db/services/browser-runs", async (importOriginal) => ({
   unclaimBrowserRunBrowser,
   createQueuedBrowserRun,
   finishBrowserRunReport,
-  readBrowserProfileId: vi.fn<() => Promise<string>>(() =>
-    Promise.resolve("profile-1")
-  ),
+  readBrowserProfileId,
   readBrowserRunForScope,
   // No retry chains here: the latest run is the one asked for.
   readLatestBrowserRunForScope: (scope: AccessScope, id: string) =>
@@ -6674,8 +6676,154 @@ describe("browser_task keeps sign-ins", () => {
     expect(followUp?.task).not.toContain("Enter this one-time code first");
     expect(followUp?.task).not.toContain("still signed in");
     const note = continuationNote(result);
-    expect(note).toContain("Tell the user their code came too late");
+    expect(note).toContain("That code no longer fits");
+    // Nothing says a new code was sent: the wave-5 rule forbids it until
+    // the outcome says so.
+    expect(note).toContain("do not say one was already sent");
     expect(note).toContain("do not say they are still signed in");
+    expect(note).not.toContain("on its way");
+  });
+
+  it("speaks of a closed password or 3-D Secure page without any code", async () => {
+    readBrowserUseRunStatus.mockResolvedValue("completed");
+    const closedOn = async (outcome: string, said: string) => {
+      createBrowserUseRun.mockClear();
+      readBrowserRunForScope.mockResolvedValue({
+        ...browserRunRow(new Date(), outcome),
+        browserReleasedAt: new Date(),
+        liveViewUrl: null,
+      });
+      const tool = await resolvedBrowserTask([], said);
+      return continuationNote(
+        await tool.execute(
+          { action: "continue", personSaid: said, runId, task: said },
+          toolContext("better-auth:alice")
+        )
+      );
+    };
+
+    const password = await closedOn(
+      "Needs: password",
+      "сохранил пароль в сейф, продолжай"
+    );
+    expect(password).toContain("It signs in again with the password");
+    expect(password).not.toContain("no longer fits");
+
+    const threeDs = await closedOn("Needs: 3ds", "подтвердил в банке");
+    expect(threeDs).toContain(
+      "tell the user you are checking that — not that it failed"
+    );
+    expect(threeDs).not.toContain("no longer fits");
+  });
+
+  it("does not take a mailed code for a page that was already closed", async () => {
+    readBrowserRunForScope.mockResolvedValue({
+      ...browserRunRow(
+        new Date(),
+        "Result: остановлено на проверке по email\nNeeds: email_code"
+      ),
+      browserReleasedAt: new Date(),
+      liveViewUrl: null,
+      site: "https://www.ozon.ru",
+    });
+    const tool = await resolvedBrowserTask(
+      [],
+      `${backgroundTurnMarker}\nBrowser run ${runId} finished.`
+    );
+
+    await expect(
+      tool.execute(
+        { action: "continue", codeFrom: "mail", runId },
+        toolContext("better-auth:alice", "browser-result")
+      )
+    ).rejects.toThrow(
+      "the page that waited for this code sat idle and was closed"
+    );
+    expect(mailCodeFromSite).not.toHaveBeenCalled();
+    expect(createBrowserUseRun).not.toHaveBeenCalled();
+  });
+
+  it("moves a follow-up to the new profile once the person had Bro forget its sign-ins", async () => {
+    readBrowserUseRunStatus.mockResolvedValue("completed");
+    readBrowserProfileId.mockResolvedValue("profile-2");
+    readBrowserRunForScope.mockResolvedValue({
+      ...browserRunRow(new Date(), "Needs: none"),
+      browserReleasedAt: new Date(),
+      liveViewUrl: null,
+    });
+    const tool = await resolvedBrowserTask([], "а закажи ещё такое же");
+
+    const result = await tool.execute(
+      {
+        action: "continue",
+        personSaid: "а закажи ещё такое же",
+        runId,
+        task: "а закажи ещё такое же",
+      },
+      toolContext("better-auth:alice")
+    );
+    readBrowserProfileId.mockResolvedValue("profile-1");
+
+    const followUp = createBrowserUseRun.mock.calls[0]?.[0];
+    expect(followUp?.profileId).toBe("profile-2");
+    expect(followUp?.sessionId).toBeUndefined();
+    expect(followUp?.task).toContain("the person had Bro forget its sign-ins");
+    expect(claimBrowserRunBrowser).not.toHaveBeenCalled();
+    expect(continuationNote(result)).toContain("new, signed-out browser");
+  });
+
+  it("queues a confirmed follow-up in a new browser behind another errand on Госуслуги, and warns of the code", async () => {
+    // Verification of wave 6: d07's slot waited on its card, its page closed
+    // after 15 idle minutes, and d08 was signing in to Госуслуги meanwhile.
+    readBrowserUseRunStatus.mockResolvedValue("completed");
+    resolveBrowserSecretBindings.mockResolvedValue({
+      aliases: ["gosuslugi_username", "gosuslugi_password"],
+      bindings: [{ alias: "gosuslugi_username" }],
+    });
+    readBrowserRunForScope.mockResolvedValue({
+      ...browserRunRow(new Date(), "Needs: decision"),
+      browserReleasedAt: new Date(),
+      liveViewUrl: null,
+      site: "https://emias.info",
+    });
+    listBrowserHoldingRuns.mockResolvedValue([working("https://www.mos.ru")]);
+    const continueWith = async () => {
+      const tool = await resolvedBrowserTask([], "бери этот слот");
+      return tool.execute(
+        {
+          action: "continue",
+          personSaid: "бери этот слот",
+          runId,
+          task: "бери этот слот",
+        },
+        toolContext("better-auth:alice")
+      );
+    };
+
+    await continueWith();
+
+    expect(createBrowserUseRun).not.toHaveBeenCalled();
+    expect(createQueuedBrowserRun).toHaveBeenCalledWith(
+      accessScopeForUser("better-auth:alice"),
+      expect.objectContaining({
+        sessionId,
+        waitsForAccount: "gosuslugi.ru",
+      })
+    );
+
+    // With the account free it starts, and Bro warns of the code rather
+    // than saying the sign-in was kept.
+    listBrowserHoldingRuns.mockResolvedValue([]);
+    const note = continuationNote(await continueWith());
+    expect(createBrowserUseRun).toHaveBeenCalledOnce();
+    expect(note).toContain(
+      "Signing in through Госуслуги asks for a one-time code"
+    );
+    expect(note).not.toContain("The sign-in was kept");
+    resolveBrowserSecretBindings.mockResolvedValue({
+      aliases: [],
+      bindings: [],
+    });
   });
 
   it("leaves a page the idle stop is closing right now to it", async () => {
