@@ -145,6 +145,26 @@ describe("replyDirective", () => {
     ).not.toContain("уже доставлен");
   });
 
+  it("does not end a turn that still owes a card step (review #22)", () => {
+    // A booked report's calendar card comes after its message; «end the
+    // turn», read last, left it uncreated.
+    for (const language of ["en", "ru"] as const) {
+      const ends = replyDirective({
+        answered: true,
+        formOfAddress: formal,
+        language,
+      });
+      const owes = replyDirective({
+        answered: true,
+        formOfAddress: formal,
+        language,
+        stepOwed: true,
+      });
+      expect(ends).toMatch(/end the turn|закончи ход/u);
+      expect(owes).not.toMatch(/end the turn|закончи ход/u);
+    }
+  });
+
   it("gives an English reply no Russian grammar rules", () => {
     const note = replyDirective({ formOfAddress: formal, language: "en" });
     expect(note).toMatch(/^Reply language for this turn: English\./u);
