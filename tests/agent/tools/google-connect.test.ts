@@ -5,7 +5,10 @@ import type {
   getGoogleWorkspaceAccess,
   selectGoogleWorkspaceAccess,
 } from "@db/services/settings";
-import { googleWorkspaceDisconnectNotice } from "@shared/google-workspace/connection";
+import {
+  googleWorkspaceDisconnectNotice,
+  googleWorkspaceRetainedData,
+} from "@shared/google-workspace/connection";
 import { accessScopeForUser } from "@shared/identity/access-scope";
 import { type FakeComposio, fakeComposio } from "@tests/helpers/composio";
 
@@ -251,6 +254,14 @@ describe("connect_google execution", () => {
     expect(result).toHaveProperty(
       "detail",
       expect.stringMatching(/Google не подключён/u)
+    );
+    // «Что у тебя осталось?» after a disconnect: what stays and where, and a
+    // link only for someone who wants Google back.
+    expect(result).toHaveProperty("keeps", googleWorkspaceRetainedData);
+    expect(googleWorkspaceRetainedData).toMatch(/^У Бро остаётся.*Neon/u);
+    expect(result).toHaveProperty(
+      "detail",
+      expect.stringMatching(/только если человек сам хочет/u)
     );
     expect(linkRequests()).toEqual([]);
     expect(revokes()).toEqual([]);

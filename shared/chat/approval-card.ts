@@ -40,6 +40,7 @@ const cardText = {
     approve: "Approve",
     calendarCreate: "Create a calendar event:",
     calendarDelete: "Delete the calendar event",
+    calendarDeleteSeries: "Delete the whole recurring series",
     calendarDeleteFooter:
       "If the event has guests, Google emails them the cancellation.",
     calendarGuests: "Guests",
@@ -48,6 +49,7 @@ const cardText = {
     calendarNewTitle: "New title",
     calendarNotes: "Notes",
     calendarUpdate: "Change the calendar event",
+    calendarUpdateSeries: "Change the whole recurring series",
     calendarUpdateFooter:
       "If the event has guests, Google emails them the change.",
     cancel: "Cancel",
@@ -115,6 +117,8 @@ const cardText = {
     approve: "Подтвердить",
     calendarCreate: "Создать событие в календаре:",
     calendarDelete: "Удалить событие из календаря",
+    calendarDeleteSeries:
+      "Удалить из календаря всю серию повторяющихся событий",
     calendarDeleteFooter:
       "Если в событии есть гости, Google пришлёт им отмену.",
     calendarGuests: "Гости",
@@ -123,6 +127,8 @@ const cardText = {
     calendarNewTitle: "Новое название",
     calendarNotes: "Заметки",
     calendarUpdate: "Изменить событие в календаре",
+    calendarUpdateSeries:
+      "Изменить в календаре всю серию повторяющихся событий",
     calendarUpdateFooter:
       "Если в событии есть гости, Google сообщит им об изменении.",
     cancel: "Отмена",
@@ -522,11 +528,77 @@ function offsetLabel(offset: string) {
   return `UTC${sign}${String(Number(hours))}${minutes === "00" ? "" : `:${minutes}`}`;
 }
 
+/** An offset such as `+03:00` or `Z`, in minutes east of UTC. */
+function offsetMinutes(offset: string) {
+  if (offset === "Z") return 0;
+  const [hours = "0", minutes = "0"] = offset.slice(1).split(":");
+  const total = Number(hours) * 60 + Number(minutes);
+  return offset.startsWith("-") ? -total : total;
+}
+
+/**
+ * How far `timeZone` is ahead of UTC at `at`, in minutes, or nothing when
+ * the zone is unknown to this browser or server.
+ */
+function zoneOffsetAt(at: number, timeZone: string) {
+  try {
+    const name = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      timeZoneName: "longOffset",
+    })
+      .formatToParts(new Date(at))
+      .find((part) => part.type === "timeZoneName")?.value;
+    const offset = /^GMT(?:([+-]\d{2}):?(\d{2}))?$/u.exec(name ?? "");
+    if (!offset) return undefined;
+    const [, hours, minutes = "00"] = offset;
+    return hours === undefined ? 0 : offsetMinutes(`${hours}:${minutes}`);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The zone's name for a time written in `offset`, only when that zone's
+ * clock shows this offset then: «11:30 (Europe/Moscow)» next to a UTC time
+ * would read as Moscow time for an event Google books three hours later.
+ */
+function zoneName(
+  timeZone: string | undefined,
+  moment: NonNullable<ReturnType<typeof parsedMoment>>,
+  at: number
+) {
+  if (!timeZone || /^(?:utc|etc\/utc|gmt|etc\/gmt)$/iu.test(timeZone.trim())) {
+    return "";
+  }
+  return zoneOffsetAt(at, timeZone.trim()) === offsetMinutes(moment.offset)
+    ? `${oneLine(timeZone)}, `
+    : "";
+}
+
+/** The weekday and date of a moment, as the card language writes it. */
+function dayLabel(day: Date, language: CardLanguage) {
+  return new Intl.DateTimeFormat(language === "ru" ? "ru-RU" : "en-US", {
+    day: "numeric",
+    month: "short",
+    timeZone: "UTC",
+    weekday: "short",
+  }).format(day);
+}
+
+/** One moment on the clock it was written in: «чт, 1 окт., 10:00 (UTC+3)». */
+function momentLabel(value: string, language: CardLanguage) {
+  const moment = parsedMoment(value);
+  return moment
+    ? `${dayLabel(moment.day, language)}, ${moment.time} (${offsetLabel(moment.offset)})`
+    : oneLine(value);
+}
+
 /**
  * When an event happens, on the clock its times were written in: the
  * weekday and date, the hours, and the zone — «чт, 1 окт., 14:30–15:00
  * (Europe/Moscow, UTC+3)». The card shows the times exactly as the call
- * carries them, never converted, so it cannot drift from what Google gets.
+ * carries them, never converted, so it cannot drift from what Google gets;
+ * the zone's name joins them only when its clock agrees.
  */
 function eventWhen(
   start: string,
@@ -537,23 +609,11 @@ function eventWhen(
   const from = parsedMoment(start);
   const to = parsedMoment(end);
   if (!from || !to) return `${oneLine(start)} – ${oneLine(end)}`;
-  const format = new Intl.DateTimeFormat(
-    language === "ru" ? "ru-RU" : "en-US",
-    {
-      day: "numeric",
-      month: "short",
-      timeZone: "UTC",
-      weekday: "short",
-    }
-  );
   const span =
     from.date === to.date
-      ? `${format.format(from.day)}, ${from.time}–${to.time}`
-      : `${format.format(from.day)}, ${from.time} – ${format.format(to.day)}, ${to.time}`;
-  const named =
-    timeZone && !/^(?:utc|etc\/utc|gmt)$/iu.test(timeZone.trim())
-      ? `${oneLine(timeZone)}, `
-      : "";
+      ? `${dayLabel(from.day, language)}, ${from.time}–${to.time}`
+      : `${dayLabel(from.day, language)}, ${from.time} – ${dayLabel(to.day, language)}, ${to.time}`;
+  const named = zoneName(timeZone, from, Date.parse(start));
   return `${span} (${named}${offsetLabel(from.offset)})`;
 }
 
@@ -603,16 +663,36 @@ function calendarCreatePrompt(
 const calendarUpdateCallSchema = z.object({
   description: z.string().optional(),
   end: z.string().optional(),
+  eventStart: z.string().optional(),
   eventTitle: z.string().optional(),
+  series: z.boolean().optional(),
   location: z.string().optional(),
   start: z.string().optional(),
   summary: z.string().optional(),
   timezone: z.string().optional(),
 });
 
-/** The event a change names, or none for a call parked before titles. */
-function eventName(title: string | undefined) {
-  return title ? ` «${oneLine(title)}»` : "";
+/**
+ * The event a change or deletion names: its title (none for a call parked
+ * before titles) and, for one event, when it starts; a whole recurring
+ * series is said to be one.
+ */
+function eventHeading(
+  call: {
+    readonly eventStart?: string | undefined;
+    readonly eventTitle?: string | undefined;
+    readonly series?: boolean | undefined;
+  },
+  single: string,
+  series: string,
+  language: CardLanguage
+) {
+  const title = call.eventTitle ? ` «${oneLine(call.eventTitle)}»` : "";
+  if (call.series === true) return `${series}${title}`;
+  const when = call.eventStart
+    ? ` (${momentLabel(call.eventStart, language)})`
+    : "";
+  return `${single}${title}${when}`;
 }
 
 /** The card for moving or changing an event: which one, and what changes. */
@@ -622,7 +702,7 @@ function calendarUpdatePrompt(
   language: CardLanguage
 ) {
   return [
-    `${text.calendarUpdate}${eventName(call.eventTitle)}:`,
+    `${eventHeading(call, text.calendarUpdate, text.calendarUpdateSeries, language)}:`,
     call.start !== undefined && call.end !== undefined
       ? `${text.calendarNewTime}: ${eventWhen(call.start, call.end, call.timezone, language)}`
       : undefined,
@@ -872,10 +952,14 @@ function cardPrompt(
   }
   if (action.toolName === "calendar-delete-event") {
     const call = z
-      .object({ eventTitle: z.string().optional() })
+      .object({
+        eventStart: z.string().optional(),
+        eventTitle: z.string().optional(),
+        series: z.boolean().optional(),
+      })
       .safeParse(action.input);
     return call.success
-      ? `${text.calendarDelete}${eventName(call.data.eventTitle)}.\n${text.calendarDeleteFooter}`
+      ? `${eventHeading(call.data, text.calendarDelete, text.calendarDeleteSeries, language)}.\n${text.calendarDeleteFooter}`
       : undefined;
   }
   const read = connectedAppReadPrompt(action, text);

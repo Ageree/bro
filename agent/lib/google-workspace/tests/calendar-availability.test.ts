@@ -30,6 +30,8 @@ import {
 import {
   CalendarEventMismatchError,
   calendarAvailabilityInputSchema,
+  calendarEventDeleteSchema,
+  calendarEventSchema,
   calendarOverlaps,
   checkCalendarAvailability,
   deleteCalendarEvent,
@@ -302,6 +304,71 @@ describe("calendar-check-availability", () => {
         timeMin: "2026-10-01T00:00:00+03:00",
       }).success
     ).toBe(true);
+    // The person's zone goes to Google, which takes IANA names only.
+    expect(
+      calendarAvailabilityInputSchema.safeParse({
+        timeMax: "2026-10-02T00:00:00+03:00",
+        timeMin: "2026-10-01T00:00:00+03:00",
+        timezone: "+03:00",
+      }).success
+    ).toBe(false);
+  });
+
+  it("says when free windows are more than one answer lists", async () => {
+    composio.proxy.mockImplementation((request) =>
+      request.url.pathname.endsWith("/freeBusy")
+        ? { data: { calendars: { primary: { busy: [] } } } }
+        : { data: { items: [] } }
+    );
+
+    const result = await checkCalendarAvailability(
+      composioToolContext("ca_google"),
+      calendarAvailabilityInputSchema.parse({
+        timeMax: "2026-11-01T00:00:00+03:00",
+        timeMin: "2026-10-01T00:00:00+03:00",
+      })
+    );
+
+    expect(result.free).toHaveLength(30);
+    expect(result.free.at(-1)?.date).toBe("2026-10-30");
+    expect(result.unlistedFree).toBe(1);
+    expect(result.note).toContain(
+      "Only the first 30 of 31 free windows are listed; later ones exist from 2026-10-31 on"
+    );
+  });
+});
+
+describe("an event's time zone", () => {
+  const event = {
+    end: "2026-10-01T12:00:00Z",
+    start: "2026-10-01T11:30:00Z",
+    summary: "Q3 planning",
+  };
+
+  it("is an IANA name Google accepts, never an offset", () => {
+    expect(
+      calendarEventSchema.safeParse({ ...event, timezone: "+05:00" }).success
+    ).toBe(false);
+    expect(
+      calendarEventSchema.safeParse({ ...event, timezone: "Etc/UTC" }).success
+    ).toBe(true);
+  });
+
+  it("agrees with the offset the times are written in", () => {
+    // 11:30 UTC next to «Europe/Moscow» would read as Moscow time on the card.
+    expect(
+      calendarEventSchema.safeParse({ ...event, timezone: "Europe/Moscow" })
+        .success
+    ).toBe(false);
+    expect(
+      calendarEventSchema.safeParse({
+        end: "2026-10-01T15:00:00+03:00",
+        start: "2026-10-01T14:30:00+03:00",
+        summary: "Q3 planning",
+        timezone: "Europe/Moscow",
+      }).success
+    ).toBe(true);
+    expect(calendarEventSchema.safeParse(event).success).toBe(true);
   });
 });
 
@@ -391,6 +458,90 @@ describe("a calendar write", () => {
         timeZone: "Europe/Moscow",
       },
     });
+  });
+});
+
+describe("a recurring event", () => {
+  const series = {
+    id: "standup",
+    recurrence: ["RRULE:FREQ=WEEKLY;BYDAY=TH"],
+    start: { dateTime: "2026-09-03T10:00:00+03:00" },
+    summary: "Планёрка",
+  };
+  const occurrence = {
+    id: "standup_20261001T070000Z",
+    recurringEventId: "standup",
+    start: { dateTime: "2026-10-01T10:00:00+03:00" },
+    summary: "Планёрка",
+  };
+
+  function serve(event: typeof series | typeof occurrence) {
+    composio.proxy.mockImplementation((request) =>
+      request.method === "GET" ? { data: event } : { data: null, status: 204 }
+    );
+  }
+
+  function deletes() {
+    return composio.proxy.mock.calls.filter(
+      ([request]) => request.method === "DELETE"
+    );
+  }
+
+  it("is deleted whole only when the card said the series", async () => {
+    serve(series);
+    const input = calendarEventDeleteSchema.parse({
+      eventId: "standup",
+      eventTitle: "Планёрка",
+    });
+
+    await expect(
+      deleteCalendarEvent(composioToolContext("ca_google"), input)
+    ).rejects.toThrow(/whole recurring series/u);
+    expect(deletes()).toEqual([]);
+
+    await expect(
+      deleteCalendarEvent(composioToolContext("ca_google"), {
+        ...input,
+        series: true,
+      })
+    ).resolves.toEqual({ alreadyDeleted: false });
+    expect(deletes()).toHaveLength(1);
+  });
+
+  it("names the series of an occurrence the card called a series", async () => {
+    serve(occurrence);
+
+    await expect(
+      deleteCalendarEvent(composioToolContext("ca_google"), {
+        calendarId: "primary",
+        eventId: "standup_20261001T070000Z",
+        eventTitle: "Планёрка",
+        series: true,
+      })
+    ).rejects.toThrow(/The series id is standup\./u);
+    expect(deletes()).toEqual([]);
+  });
+
+  it("changes one occurrence only when it starts when the card said", async () => {
+    serve(occurrence);
+    const ctx = composioToolContext("ca_google");
+
+    await expect(
+      deleteCalendarEvent(ctx, {
+        calendarId: "primary",
+        eventId: "standup_20261001T070000Z",
+        eventStart: "2026-10-08T10:00:00+03:00",
+        eventTitle: "Планёрка",
+      })
+    ).rejects.toBeInstanceOf(CalendarEventMismatchError);
+    await expect(
+      deleteCalendarEvent(ctx, {
+        calendarId: "primary",
+        eventId: "standup_20261001T070000Z",
+        eventStart: "2026-10-01T07:00:00Z",
+        eventTitle: "Планёрка",
+      })
+    ).resolves.toEqual({ alreadyDeleted: false });
   });
 });
 

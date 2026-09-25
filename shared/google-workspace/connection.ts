@@ -60,6 +60,15 @@ export function googleWorkspaceConfigured() {
 export const googleWorkspaceDisconnectNotice =
   "Отключение отзывает доступ Бро к Google и удаляет ключ доступа из Composio, где он хранился: Бро больше не читает почту, календарь, контакты и Диск и ничего в них не меняет. В самом Google ничего не удаляется: письма, черновики и события остаются как были. У Бро остаётся то, что уже сохранено в его облаке (база Postgres в Neon, файлы в Vercel Blob): память о тебе, история чатов (в том числе пересказы писем), заказы и файлы из писем, которые он уже переслал. Память стирается по просьбе («забудь …»); историю чатов, заказы и пересланные файлы Бро сам не удаляет. Проверить, что доступа не осталось, можно в настройках аккаунта Google, раздел «Сторонние приложения и сервисы».";
 
+/**
+ * What Bro keeps once Google is off, as the notice says it: asked «что у
+ * тебя осталось?» after a disconnect, Bro retells this, not a new link.
+ */
+export const googleWorkspaceRetainedData =
+  googleWorkspaceDisconnectNotice.slice(
+    googleWorkspaceDisconnectNotice.indexOf("У Бро остаётся")
+  );
+
 /** How long a minted Google authorization link stays valid. */
 export const googleWorkspaceAuthorizationLifetimeMs = connectionLinkLifetimeMs;
 
