@@ -437,5 +437,11 @@ describe("route_time", () => {
     expect(requestsTo("routing.openstreetmap.de")[0]?.pathname).toMatch(
       /^\/routed-car\//u
     );
+    // An English query gets English names back.
+    expect(
+      requestsTo("nominatim.openstreetmap.org").map((url) =>
+        url.searchParams.get("accept-language")
+      )
+    ).toEqual(["en,ru", "en,ru"]);
   });
 });

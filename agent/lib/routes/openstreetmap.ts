@@ -271,7 +271,12 @@ export async function findPlace(
   url.searchParams.set("format", "jsonv2");
   url.searchParams.set("limit", "1");
   url.searchParams.set("addressdetails", "1");
-  url.searchParams.set("accept-language", "ru,en");
+  // Names come back in the language the place was asked in, so an English
+  // reply is not handed «Таймс-сквер».
+  url.searchParams.set(
+    "accept-language",
+    /\p{Script=Cyrillic}/u.test(text) ? "ru,en" : "en,ru"
+  );
   if (near) {
     url.searchParams.set(
       "viewbox",
