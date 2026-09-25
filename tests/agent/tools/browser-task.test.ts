@@ -3416,6 +3416,23 @@ describe("browser_task finds the option before the one card", () => {
       { open: false, where: "Профсоюзная ул., 56, Москва" },
       { open: false, where: "Островок (ostrovok.ru)" },
       { open: false, where: "Салон красоты «Лотос», Москва" },
+      // Real places named after their kind, on a building, or in a hotel;
+      // a note in parentheses is about the slot, not the place (review of
+      // 25.09: these were cards before the check).
+      { open: false, where: "Ресторан Горький (restoran-gorky.ru)" },
+      { open: false, where: "Гостиница Советская (sovietsky.ru)" },
+      { open: false, where: "Отель Центральный, Ярославль" },
+      { open: false, where: "Гостиница Ленинградская (Hilton), Москва" },
+      { open: false, where: "Спа в Four Seasons Москва" },
+      { open: false, where: "Бар в Метрополе" },
+      { open: false, where: "Bar at the Ritz-Carlton Moscow" },
+      { open: false, where: "У Палыча, Москва" },
+      {
+        open: false,
+        where: "Клиника «Медси» на Белорусской (любой свободный терапевт)",
+      },
+      { open: false, where: "Салон «Персона» (ближайший к метро Тверская)" },
+      { open: false, where: "Кафе Жуковский (любой столик у окна)" },
       // A kind of place and where it is.
       { open: true, where: "Барбершоп на Профсоюзной, Москва" },
       { open: true, where: "барбершоп у метро Профсоюзная" },
@@ -3424,7 +3441,10 @@ describe("browser_task finds the option before the one card", () => {
       { open: true, where: "Ресторан, Казань" },
       { open: true, where: "Салон красоты на Тверской" },
       { open: true, where: "м. Профсоюзная, Москва" },
-      { open: true, where: "«Чоп-Чоп», любой филиал" },
+      { open: true, where: "Любой барбершоп на Профсоюзной" },
+      { open: true, where: "Ресторан с верандой в Казани" },
+      { open: true, where: "у метро Профсоюзная" },
+      { open: true, where: "restaurant in the city centre" },
       { open: true, where: "Barbershop near Profsoyuznaya, Moscow" },
     ];
 

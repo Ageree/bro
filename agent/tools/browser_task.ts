@@ -1026,12 +1026,12 @@ const placedKinds = new Set<BrowserSubmission["kind"]>([
  * A kind of place, which says what but not which: «барбершоп»,
  * «парикмахерская», «клиника», «ресторан», «отель».
  */
-const placeKindWords = [
+const placeKinds: ReadonlySet<string> = new Set([
   "барбершоп",
   "барбер-шоп",
   "барбер",
   "парикмахерская",
-  "салон(?:\\s+красоты)?",
+  "салон",
   "студия",
   "клиника",
   "поликлиника",
@@ -1073,33 +1073,124 @@ const placeKindWords = [
   "apartment",
   "gym",
   "spa",
-].join("|");
+]);
+
+/** A Russian adjective, as in «мужская парикмахерская», «хороший отель». */
+const adjectivePattern = /(?:ый|ий|ой|ая|яя|ое|ее|ые|ие)$/u;
+
+/** Words before a kind of place that say nothing of which one. */
+const fillerWords: ReadonlySet<string> = new Set([
+  "a",
+  "an",
+  "any",
+  "good",
+  "local",
+  "nearby",
+  "some",
+  "the",
+]);
 
 /**
- * The head of a card's `where` that is only a kind of place and where it
- * is: «Барбершоп на Профсоюзной», «Ресторан с верандой в Казани», «хороший
- * отель в центре», «Кафе, Москва». A name after the kind — «ресторан
- * «Пушкин»», «барбершоп Chop-Chop», «поликлиника по прикреплению» — names
- * one place, and so does a house number anywhere.
+ * Words after which comes where a place is, not which place: a street
+ * («на Профсоюзной»), a landmark («рядом с домом», «near Profsoyuznaya»),
+ * a feature («с верандой»).
  */
-const unnamedPlacePattern = new RegExp(
-  String.raw`^(?:[\p{L}-]+(?:ый|ий|ой|ая|яя|ое|ее|ые|ие)\s+|(?:a|an|the|any|some|good|nearby|local)\s+){0,2}(?:${placeKindWords})(?:\s+[\p{L}-]+(?:ый|ий|ой|ая|яя|ое|ее))?(?:\s*(?:$|[,(;])|\s+(?:на|у|в|во|возле|около|рядом|недалеко|поблизости|напротив|с|со|near|on|at|in|by|around|with)(?!\p{L}))`,
-  "iu"
-);
+const whereWords: ReadonlySet<string> = new Set([
+  "around",
+  "by",
+  "near",
+  "next",
+  "on",
+  "with",
+  "возле",
+  "на",
+  "напротив",
+  "недалеко",
+  "около",
+  "поблизости",
+  "рядом",
+  "с",
+  "со",
+]);
 
 /**
- * A `where` that is only an area: «м. Профсоюзная», «у метро Профсоюзная»,
- * «в центре Казани», «рядом с домом».
+ * Words after which comes either an area («в центре», «у метро», «in the
+ * city centre») or a named place («в Метрополе», «У Палыча», «at the
+ * Ritz-Carlton»): the next word tells which.
  */
-const areaOnlyPattern =
-  /^(?:м\.|метро|ст\.\s*м\.|у|на|в|во|возле|около|рядом|недалеко|поблизости|в\s+районе|район|near|around|by)(?!\p{L})/iu;
+const withinWords: ReadonlySet<string> = new Set(["at", "in", "в", "во", "у"]);
+
+/** Words a `where` that is only an area begins with: «м. Профсоюзная». */
+const areaWords: ReadonlySet<string> = new Set([
+  "district",
+  "м",
+  "метро",
+  "район",
+  "ст",
+]);
 
 /**
- * Words that say the place is not chosen yet: «ближайший подходящий салон»,
- * «любой филиал», «где-нибудь», «какой-нибудь».
+ * Words that say the place is not chosen yet: «ближайший барбершоп»,
+ * «любой салон», «где-нибудь», «какой-нибудь».
  */
 const unchosenPlaceWords =
   /(?<!\p{L})(?:ближайш\p{L}*|подходящ\p{L}*|люб(?:ой|ом|ая|ую|ое|ые|ых)|как(?:ой|ая|ое|ие|ую|ом)-(?:нибудь|то|либо)|где-(?:нибудь|то|либо)|nearest|any|suitable)(?!\p{L})/iu;
+
+/** A word that begins a name: «Горький», «Метрополе», «Four», «Ritz-Carlton». */
+function nameWord(word: string | undefined) {
+  return word !== undefined && /^\p{Lu}/u.test(word);
+}
+
+/**
+ * Whether what follows «в», «у», «at» or «in» is an area: a word in lower
+ * case is — «в центре», «у метро», «in the city centre» — and a capitalised
+ * one is a name — «в Метрополе», «У Палыча», «at the Ritz-Carlton».
+ */
+function areaAfter(words: readonly string[], start: number) {
+  const next = words[start]?.toLowerCase() === "the" ? start + 1 : start;
+  return !nameWord(words[next]);
+}
+
+/**
+ * Reads the first part of a card's `where` word by word: a kind of place
+ * with nothing after it or with where it is, or a bare area, names no one
+ * place; a kind followed by a name («Ресторан Горький», «Бар в Метрополе»,
+ * «Bar at the Ritz-Carlton») or by anything else names one.
+ */
+function unnamedHead(head: string) {
+  const words = (head.split(",")[0] ?? "")
+    .replaceAll(/салон\s+красоты/giu, "салон")
+    .split(/\s+/u)
+    .filter((word) => word.length > 0);
+  const lower = words.map((word) =>
+    word.toLowerCase().replace(/(?<=\p{L})[.;:!?]+$/u, "")
+  );
+  const first = lower[0] ?? "";
+  if (areaWords.has(first) || whereWords.has(first)) return true;
+  if (withinWords.has(first)) return areaAfter(words, 1);
+  let kind = -1;
+  for (const [index, word] of lower.slice(0, 3).entries()) {
+    if (placeKinds.has(word)) {
+      kind = index;
+      break;
+    }
+    if (!fillerWords.has(word) && !adjectivePattern.test(word)) return false;
+  }
+  if (kind === -1) return false;
+  // A lower-case adjective after the kind: «салон мужской на …».
+  let next = kind + 1;
+  while (
+    next < words.length &&
+    !nameWord(words[next]) &&
+    adjectivePattern.test(lower[next] ?? "")
+  ) {
+    next += 1;
+  }
+  const after = lower[next];
+  if (after === undefined) return true;
+  if (withinWords.has(after)) return areaAfter(words, next + 1);
+  return whereWords.has(after);
+}
 
 /**
  * Whether a card's `where` names no one place — no name and no address,
@@ -1107,13 +1198,14 @@ const unchosenPlaceWords =
  * барбершоп на профсоюзной, к артуру, часов на семь» went straight to a card
  * reading «Барбершоп на Профсоюзной, Москва (ближайший подходящий салон на
  * Профсоюзной)»: the person was asked to confirm a place nobody had found.
+ * What is in parentheses is a site or a note on the slot («любой свободный
+ * терапевт», «ближайший к метро»), not the place, and a quoted name or a
+ * house number names one.
  */
 function unnamedPlace(where: string) {
   const head = where.replaceAll(/\([^)]*\)/gu, " ").trim();
-  if (/\d/u.test(head)) return false;
-  if (unchosenPlaceWords.test(where)) return true;
-  if (/[«"“„]/u.test(head)) return false;
-  return unnamedPlacePattern.test(head) || areaOnlyPattern.test(head);
+  if (/\d/u.test(head) || /[«"“„]/u.test(head)) return false;
+  return unchosenPlaceWords.test(head) || unnamedHead(head);
 }
 
 /**
