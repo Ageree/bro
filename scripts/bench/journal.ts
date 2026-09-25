@@ -13,6 +13,7 @@ import {
   type MessageStreamEvent,
 } from "eve/client";
 import { z } from "zod";
+import { withApprovalCard } from "@shared/chat/approval-card";
 import { sendMessageToolResultSchema } from "@shared/chat/message-delivery";
 import { maskPersonalData } from "./personal-data.ts";
 
@@ -300,7 +301,11 @@ export function describeEvent(event: MessageStreamEvent) {
     }
     case "input.requested": {
       return event.data.requests
-        .map((request) => {
+        .map((eveRequest) => {
+          // The card as the person reads it in Telegram, iMessage and the web
+          // chat, not eve's «Approve tool call: <tool>»: a reviewer who saw
+          // only that scored letters as approved unseen (RU d09, 25.09).
+          const request = withApprovalCard(eveRequest, "ru");
           const options = (request.options ?? [])
             .map((option) => `${option.id} «${option.label}»`)
             .join(", ");

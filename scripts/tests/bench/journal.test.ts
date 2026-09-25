@@ -115,11 +115,18 @@ describe("describeEvent on recorded turns", () => {
     expect(
       lines.some((line) => line.includes("[вложения: event-poster.png]"))
     ).toBe(true);
-    expect(
-      lines.filter((line) =>
-        line.startsWith("?? КАРТОЧКА tool-approval calendar-create-event")
-      )
-    ).toHaveLength(2);
+    const cards = lines.filter((line) =>
+      line.startsWith("?? КАРТОЧКА tool-approval calendar-create-event")
+    );
+    expect(cards).toHaveLength(2);
+    // The card reads as the person sees it, not as eve titles it.
+    for (const card of cards) {
+      expect(card).toContain(
+        "calendar-create-event: Создать событие в календаре:"
+      );
+      expect(card).toContain("approve «Подтвердить»");
+      expect(card).not.toContain("Approve tool call");
+    }
     expect(
       lines.some(
         (line) => line.startsWith("   карточка ") && line.endsWith(": approved")

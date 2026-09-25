@@ -1,5 +1,6 @@
 import type { DynamicResolveContext, ToolContext } from "eve/tools";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import type * as GmailModule from "@agent/lib/google-workspace/gmail";
 import type {
   GmailCompose,
@@ -382,7 +383,7 @@ describe("a thread read and the person's voice", () => {
                   messages: [],
                   yourEarlierEmails: {
                     emails: [],
-                    sameAddressee: true,
+                    note: "The person has never emailed irina@example.com themselves…",
                     to: "irina@example.com",
                   },
                 },
@@ -448,6 +449,119 @@ describe("an email the person declined on its card", () => {
       },
     ]);
     expect(draft.description).not.toContain("just declined");
+  });
+});
+
+describe("a reply in the person's usual voice", () => {
+  const asked = Object.assign(
+    {
+      content:
+        "ответь Ирине Павловне про встречу в четверг: в четверг не могу. на вы, как обычно",
+      role: "user" as const,
+    },
+    { kind: "user" }
+  );
+  /** The read for a reply, with the formulas the person keeps using. */
+  const voiceRead = [
+    {
+      content: [
+        {
+          input: { forReply: true, threadId: "thread-thursday" },
+          toolCallId: "call-read",
+          toolName: "gmail-read-thread",
+          type: "tool-call" as const,
+        },
+      ],
+      role: "assistant" as const,
+    },
+    {
+      content: [
+        {
+          output: {
+            type: "json" as const,
+            value: {
+              thread: {
+                id: "thread-thursday",
+                messages: [{ id: "m-thursday", threadId: "thread-thursday" }],
+                yourEarlierEmails: {
+                  emails: [],
+                  note: "These are the person's own emails…",
+                  to: "irina@example.com",
+                  usual: {
+                    greeting: "Ирина Павловна, добрый день!",
+                    signOff: "Спасибо! Хорошего дня.",
+                  },
+                },
+              },
+            },
+          },
+          toolCallId: "call-read",
+          toolName: "gmail-read-thread",
+          type: "tool-result" as const,
+        },
+      ],
+      role: "tool" as const,
+    },
+  ];
+  const reply = {
+    bcc: [],
+    cc: [],
+    replyToMessageId: "m-thursday",
+    subject: "Встреча в четверг",
+    to: ["Irina@example.com"],
+  };
+  const stock = {
+    ...reply,
+    body: "Добрый день, Ирина Павловна!\n\nВ четверг, к сожалению, не смогу.\n\nС уважением,\nСавелий",
+  };
+
+  it("sends a stock greeting and sign-off back to be written as the person writes", async () => {
+    const approval = z
+      .object({ reason: z.string(), type: z.literal("denied") })
+      .parse(await sendApproval([asked, ...voiceRead], stock));
+    expect(approval.reason).toContain(
+      "«Ирина Павловна, добрый день!» и «Спасибо! Хорошего дня.»"
+    );
+  });
+
+  it("shows the card for a reply that opens and closes as the person does", async () => {
+    const approval = await sendApproval([asked, ...voiceRead], {
+      ...reply,
+      body: "Ирина Павловна, добрый день.\n\nВ четверг не смогу, могу в понедельник в 12:30.\n\nСпасибо, хорошего дня!\nСавелий",
+    });
+    expect(approval).toBe("user-approval");
+  });
+
+  it("reminds once a turn: the same letter again is what the person wants", async () => {
+    const approval = await sendApproval(
+      [
+        asked,
+        ...voiceRead,
+        {
+          content: [
+            {
+              input: stock,
+              toolCallId: "call-send",
+              toolName: "gmail-send",
+              type: "tool-call" as const,
+            },
+          ],
+          role: "assistant" as const,
+        },
+      ],
+      stock
+    );
+    expect(approval).toBe("user-approval");
+  });
+
+  it("holds no letter to someone else to that voice", async () => {
+    const approval = await sendApproval([asked, ...voiceRead], {
+      ...stock,
+      replyToMessageId: undefined,
+      subject: "Отчёт",
+      to: ["sam@example.com"],
+    });
+    expect(approval).toBe("user-approval");
   });
 });
 
