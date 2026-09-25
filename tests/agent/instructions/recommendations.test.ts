@@ -32,6 +32,13 @@ describe("recommendation instructions", () => {
     expect(content).toContain("почему выбрал его, и один честный минус");
     expect(content).toContain('`route_time` (`mode: "walking"`)');
     expect(content).toContain("«Пешком» — до 15 минут");
+    expect(content).toContain("вариант дальше в три не входит");
+    expect(content).toContain("минуты не выдумывай");
+    // «Джаганнат» passed as «не сетевое» in two runs out of three.
+    expect(content).toContain("два адреса под одним названием — это сеть");
+    expect(content).toContain(
+      "та страница, которую вернул инструмент, как есть"
+    );
     expect(content).toContain("предложи проверить наличие без брони");
     expect(content).toContain("`browser_task start` без `allowSubmit`");
     expect(content).toContain("Без его согласия браузер не запускай");
