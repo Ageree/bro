@@ -71,52 +71,29 @@ function answersThisTurn(messages: readonly ModelMessage[]) {
   return answers;
 }
 
-/** A message the person wrote, not one Bro opened a turn with. */
-function isPersonMessage(message: ModelMessage) {
-  if (message.role !== "user") return false;
-  const kind = taggedMessageSchema.safeParse(message).data?.kind ?? "user";
-  return kind === "user" && !isBackgroundTurnText(messageText(message));
-}
-
 /**
- * Whether the message at `index` came into a turn already under way. eve
- * steers a message the person sends mid-turn in as one more user message:
- * after a tool result, or right after the message whose step it cut off. A
- * new turn follows a finished reply, and a turn Bro opens — a report, a
- * worker's result — is queued, so it always opens its own.
- */
-function steeredIn(messages: readonly ModelMessage[], index: number) {
-  const message = messages[index];
-  if (message === undefined || !isPersonMessage(message)) return false;
-  const before = messages
-    .slice(0, index)
-    .findLast((earlier) => earlier.role !== "user" || startsTurn(earlier));
-  return before !== undefined && (before.role === "tool" || startsTurn(before));
-}
-
-/**
- * What the person wrote in this turn: the message that opened it, any they
- * sent while it ran, and their answers to its questions. Null when the
- * person said nothing in it — a turn Bro opened for a browser report, a
- * scheduled result or a wakeup, whose text a page or a worker wrote, and
- * which the person joins only by answering its approval card. A follow-up
- * acts on these words only.
+ * What the person wrote in this turn: their latest message and their answers
+ * to questions asked after it. Null when that latest message is Bro's own —
+ * a browser report, a scheduled result, a wakeup, whose text a page or a
+ * worker wrote — which the person joins only by answering its approval card.
+ * A follow-up acts on these words only.
+ *
+ * Only the latest message: eve's history has no turn id, and the messages
+ * before it cannot be told apart from an earlier turn's — luna's delivered
+ * turns keep no closing step (`<eve-empty-delivery/>`), a failed model call
+ * leaves the person's message last. Walking back handed an old code or an
+ * earlier «можно дороже» to a later «ну что там?». A code the person sent
+ * just before a second message is asked for again instead.
  */
 export function personWordsThisTurn(messages: readonly ModelMessage[]) {
-  let opening = messages.findLastIndex(startsTurn);
-  let first = opening;
-  const said: string[] = [];
-  while (opening !== -1) {
-    const message = messages[opening];
-    if (message !== undefined && isPersonMessage(message)) {
-      said.unshift(messageText(message));
-    }
-    first = opening;
-    if (!steeredIn(messages, opening)) break;
-    opening = messages.slice(0, opening).findLastIndex(startsTurn);
-  }
-  if (said.length === 0) return null;
-  return [...said, ...answersThisTurn(messages.slice(first + 1))];
+  const opening = messages.findLastIndex(startsTurn);
+  const message = opening === -1 ? undefined : messages[opening];
+  if (message?.role !== "user") return null;
+  const kind = taggedMessageSchema.safeParse(message).data?.kind ?? "user";
+  if (kind !== "user") return null;
+  const text = messageText(message);
+  if (isBackgroundTurnText(text)) return null;
+  return [text, ...answersThisTurn(messages.slice(opening + 1))];
 }
 
 /** A word that makes a number next to it a one-time code: «SMS», "OTP". */
@@ -124,12 +101,12 @@ const codeContextPattern =
   /(?<!\p{L})(?:смс|sms|otp|одноразов\p{L}*|one[\s-]time|verification)(?!\p{L})/iu;
 
 /**
- * «код 739204», «код подтверждения: 4821», "code is 7392" — a word for a
- * code right before the number, so «промокод 1234» or «код домофона 4567»
- * is not a one-time code.
+ * «код 739204», «код подтверждения: 4821», «СМС 739204», "code is 7392" — a
+ * word for a code right before the number, which no other reading of it
+ * overrides; «промокод 1234» or «код домофона 4567» is not a one-time code.
  */
 const codeLeadPattern =
-  /(?<!\p{L})(?:код\p{L}*|code\p{L}*|пароль\p{L}*|password|пин|pin)(?:\s+(?:подтверждения|из|с|от|смс|sms|сообщения|письма|почты|сайта|банка|is|from|the))*[\s:—–-]*$/iu;
+  /(?<!\p{L})(?:код\p{L}*|code\p{L}*|пароль\p{L}*|password|пин|pin|смс|sms|otp)(?:\s+(?:подтверждения|из|с|от|смс|sms|сообщения|письма|почты|сайта|банка|is|from|the))*[\s:—–-]*$/iu;
 
 /** How far from the number a word like «SMS» still describes it. */
 const codeContextReach = 25;
@@ -154,16 +131,23 @@ const unitAfterPattern =
 const namedBeforePattern =
   /(?:[₽$€]|(?<!\p{L})(?:\p{Lu}[\p{Lu}\d]{0,2}|№|#))[\s-]?$/u;
 
-/** A month before a year: «15 октября 2026». */
-const monthBeforePattern =
-  /(?:январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр)\p{L}*\s+$/iu;
+/**
+ * A month before a year («15 октября 2026»), or a word naming the number:
+ * «рейс su 1234», «поезд 7412», «номер заказа 48213».
+ */
+const wordBeforePattern =
+  /(?<!\p{L})(?:(?:январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр)\p{L}*|(?:рейс|поезд|заказ|order|flight|train)\p{L}*(?:\s+[\p{L}\d]{1,3})?)\s*$/iu;
 
-/** Whether the number at this place is plainly an amount, a year or an id. */
-function namedOtherwise(before: string, after: string) {
+/** A date written as digits: «2026-10-15», «15-10-2026». */
+const numericDatePattern = /^(?:\d{4}-\d{2}-\d{2}|\d{2}-\d{2}-\d{4})$/u;
+
+/** Whether the number at this place is plainly an amount, a date or an id. */
+function namedOtherwise(number: string, before: string, after: string) {
   return (
+    numericDatePattern.test(number) ||
     unitAfterPattern.test(after) ||
     namedBeforePattern.test(before) ||
-    monthBeforePattern.test(before)
+    wordBeforePattern.test(before)
   );
 }
 
@@ -194,7 +178,7 @@ export function oneTimeCodesIn(
     ];
     const isCode =
       codeLeadPattern.test(before) ||
-      (!namedOtherwise(before, after) &&
+      (!namedOtherwise(match[0], before, after) &&
         (options.awaitingCode ||
           near.some((words) => codeContextPattern.test(words))));
     return isCode ? [match[0].replaceAll(/\D/gu, "")] : [];
