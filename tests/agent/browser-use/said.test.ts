@@ -1,7 +1,7 @@
 import type { ModelMessage } from "ai";
 import { describe, expect, it } from "vitest";
 import {
-  codesFromPerson,
+  codesNotFromPerson,
   oneTimeCodesIn,
   onlyAsksHowItStands,
   personWordsThisTurn,
@@ -115,6 +115,9 @@ describe("the one-time codes a follow-up carries", () => {
       "Пользователь прислал SMS 739204 введи его",
       "Введи СМС 739204",
       "Вот OTP 739204",
+      // Only an amount after it takes the code back, not any word.
+      "SMS 739204 годен 5 минут",
+      "СМС 739204 минуту назад пришла",
     ]) {
       expect(oneTimeCodesIn(text, { awaitingCode: false })).toEqual(["739204"]);
     }
@@ -130,30 +133,53 @@ describe("the one-time codes a follow-up carries", () => {
     }
   });
 
-  it("lets a word for a code earlier in the clause win over an order or a flight", () => {
+  it("lets a word for a code naming the number win over an order or a flight", () => {
     // An order's SMS reads «Код для подтверждения заказа».
     for (const text of [
       "Пользователь прислал код подтверждения заказа 739204, введи его",
       "Введи код для заказа 739204",
       "Код из смс для заказа 739204",
       "Код по заказу 739204",
+      "Введи код подтверждения заказа 739204",
+      "Код от ВТБ 739204",
+      "Введи код, пришедший для заказа 739204",
     ]) {
-      expect(oneTimeCodesIn(text, { awaitingCode: false })).toEqual(["739204"]);
+      expect(oneTimeCodesIn(text, { awaitingCode: true })).toEqual(["739204"]);
     }
-    expect(
-      oneTimeCodesIn("Введи код подтверждения заказа 739204", {
-        awaitingCode: true,
-      })
-    ).toEqual(["739204"]);
-    expect(oneTimeCodesIn("Код от ВТБ 739204", { awaitingCode: true })).toEqual(
-      ["739204"]
-    );
     // A clause of its own keeps the order and the flight what they are.
     expect(
       oneTimeCodesIn("Код 739204, заказ 48213, рейс SU 1234", {
         awaitingCode: true,
       })
     ).toEqual(["739204"]);
+  });
+
+  it("reads an order or a flight number before the code as its label", () => {
+    // The person sent 739204: their own code is the only one here.
+    for (const text of [
+      "Код подтверждения заказа 48213: 739204",
+      "Код для заказа №48213: 739204",
+      "Код от Ozon для заказа 48213: 739204",
+      "Код подтверждения брони на рейс SU 1234: 739204",
+    ]) {
+      expect(oneTimeCodesIn(text, { awaitingCode: true })).toEqual(["739204"]);
+    }
+  });
+
+  it("finds no code where a code is only mentioned", () => {
+    for (const text of [
+      "Код не пришёл — оформи заказ 48213 без SMS-подтверждения",
+      "Не жди SMS-код и оформи заказ 48213",
+    ]) {
+      expect(oneTimeCodesIn(text, { awaitingCode: true })).toEqual([]);
+    }
+    for (const text of [
+      "Проверь статус. Код для заказа 48213 не нужен",
+      "Доставка на Ленина 5, кв. 12, код для входа 4567",
+      "Код домофона 4567",
+    ]) {
+      expect(oneTimeCodesIn(text, { awaitingCode: false })).toEqual([]);
+    }
   });
 
   it("keeps an amount an amount after a word like «SMS»", () => {
@@ -185,18 +211,22 @@ describe("the one-time codes a follow-up carries", () => {
   });
 
   it("accepts a code only when the person wrote those very digits", () => {
-    expect(codesFromPerson(["482913"], ["код 482 913"])).toBe(true);
+    expect(codesNotFromPerson(["482913"], ["код 482 913"])).toEqual([]);
     // Pasted from the SMS or typed with a full stop.
     expect(
-      codesFromPerson(
+      codesNotFromPerson(
         ["739204"],
         ["Код для входа на Госуслуги: 739204. Никому не сообщайте его"]
       )
-    ).toBe(true);
-    expect(codesFromPerson(["739204"], ["739204, вводи"])).toBe(true);
-    expect(codesFromPerson(["739204"], ["код:739204"])).toBe(true);
-    expect(codesFromPerson(["482914"], ["код 482913"])).toBe(false);
-    expect(codesFromPerson(["482913"], [])).toBe(false);
+    ).toEqual([]);
+    expect(codesNotFromPerson(["739204"], ["739204, вводи"])).toEqual([]);
+    expect(codesNotFromPerson(["739204"], ["код:739204"])).toEqual([]);
+    expect(codesNotFromPerson(["482914"], ["код 482913"])).toEqual(["482914"]);
+    expect(codesNotFromPerson(["482913"], [])).toEqual(["482913"]);
+    // Only what the person did not write is named, never their own code.
+    expect(
+      codesNotFromPerson(["48213", "739204", "739204"], ["739204"])
+    ).toEqual(["48213"]);
   });
 });
 

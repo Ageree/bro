@@ -101,28 +101,36 @@ const codeContextPattern =
   /(?<!\p{L})(?:смс|sms|otp|одноразов\p{L}*|one[\s-]time|verification)(?!\p{L})/iu;
 
 /**
- * «код 739204», «код подтверждения: 4821», «код для заказа 739204», "code
- * is 7392" — a word for a code right before the number, which no other
- * reading of it overrides; «промокод 1234» or «код домофона 4567» is not a
+ * «код 739204», «код подтверждения: 4821», "code is 7392" — a word for a code
+ * right before the number, which no other reading of it overrides;
+ * «промокод 1234», «код домофона 4567» or «код для входа 4567» is not a
  * one-time code.
  */
 const codeLeadPattern =
-  /(?<!\p{L})(?:код\p{L}*|code\p{L}*|пароль\p{L}*|password|пин|pin)(?:\s+(?:подтверждения|для|по|из|с|от|к|смс|sms|сообщения|письма|почты|сайта|банка|заказа|заказу|входа|is|from|for|the))*[\s:—–-]*$/iu;
+  /(?<!\p{L})(?:код\p{L}*|code\p{L}*|пароль\p{L}*|password|пин|pin)(?:\s+(?:подтверждения|для|по|из|с|от|к|смс|sms|сообщения|письма|почты|сайта|банка|is|from|for|the))*[\s:—–-]*$/iu;
 
 /**
  * «СМС 739204», «SMS: 739204», «OTP 739204» — right before the number, where
- * a capitalised prefix would otherwise read it as a flight or an order; a
- * unit after it still makes it an amount.
+ * a capitalised prefix would otherwise read it as a flight or an order; an
+ * amount after it («по SMS 1500 руб») stays an amount.
  */
 const messageLeadPattern = /(?<!\p{L})(?:смс|sms|otp)[\s:—–-]*$/iu;
 
 /**
- * A word for a code earlier in the same clause, with no number or clause
- * break since: «код подтверждения заказа 739204», «код от ВТБ 739204». It
- * names the number a code whatever prefix stands right before it.
+ * A word for a code that names the number through an order, a flight or a
+ * sender, with only such connecting words between: «код подтверждения
+ * заказа 739204», «код от ВТБ 739204», «код, пришедший для заказа 739204».
+ * Any other word breaks it: «код не пришёл — оформи заказ 48213», «не жди
+ * SMS-код и оформи заказ 48213» name no code.
  */
-const codeWordInClausePattern =
-  /(?<!\p{L})(?:код|code|пароль|password|пин|pin|смс|sms|otp)\p{L}*[^\d,.;!?\n]*$/iu;
+const codeNamesNumberPattern =
+  /(?<!\p{L})(?:[Кк]од|КОД|[Cc]ode|[Пп]арол|[Pp]assword|[Пп]ин|PIN|[Pp]in|SMS|[Ss]ms|СМС|[Сс]мс|OTP|[Oo]tp)\p{Ll}*(?:(?:\s*,\s*|\s+|-)(?:подтверждения|для|по|из|с|от|к|на|смс|sms|SMS|СМС|сообщения|письма|почты|сайта|банка|брони|бронирования|оплаты|заказа|заказу|заказ|рейса|рейсу|рейс|поезда|поезд|order|flight|train|for|from|пришедш\p{Ll}*|присланн\p{Ll}*|полученн\p{Ll}*|отправленн\p{Ll}*|\p{Lu}[\p{L}\d]*))*\s*[№#]?\s*$/u;
+
+/**
+ * A code right after the number, which makes the number its label: «заказ
+ * 48213: 739204», «рейс SU 1234 — 739204».
+ */
+const codeAfterPattern = /^\s*[:—–-]\s*\d(?:[  -]?\d){3,7}(?!\d)/u;
 
 /** How far from the number a word like «SMS» still describes it. */
 const codeContextReach = 25;
@@ -133,12 +141,15 @@ const codeContextReach = 25;
  * number, a date, a time or a decimal: punctuation counts as part of the
  * number only with a digit on its far side.
  */
-const digitGroupPattern =
-  /(?<!\d|\d[.,:])\d(?:[ \u00a0-]?\d){3,7}(?!\d|[.,:]\d)/gu;
+const digitGroupPattern = /(?<!\d|\d[.,:])\d(?:[  -]?\d){3,7}(?!\d|[.,:]\d)/gu;
 
-/** A unit or a currency after a number: «4 890 ₽», «2026 год», «15 %». */
+/** A currency after a number: «4 890 ₽», «1500 руб», «15 %». */
+const currencyAfterPattern =
+  /^\s*(?:₽|\$|€|%|руб\p{L}*|р\.|р(?!\p{L})|rub|usd|eur|тыс\p{L}*)/iu;
+
+/** Any other unit after a number: «2 шт», «2026 год», «5 минут». */
 const unitAfterPattern =
-  /^\s*(?:₽|\$|€|%|руб\p{L}*|р\.|р(?!\p{L})|rub|usd|eur|тыс\p{L}*|шт|км|мин\p{L}*|год\p{L}*|г\.|г(?!\p{L}))/iu;
+  /^\s*(?:шт|км|мин(?:ут[аыу]?)?\.?(?!\p{L})|год(?:а|у|ом)?(?!\p{L})|лет(?!\p{L})|г\.|г(?!\p{L}))/iu;
 
 /**
  * What names a number as something other than a code: a currency sign, or
@@ -162,18 +173,25 @@ const numericDatePattern = /^(?:\d{4}-\d{2}-\d{2}|\d{2}-\d{2}-\d{4})$/u;
 function amountOrDate(number: string, before: string, after: string) {
   return (
     numericDatePattern.test(number) ||
-    unitAfterPattern.test(after) ||
+    currencyAfterPattern.test(after) ||
     monthBeforePattern.test(before)
   );
 }
 
+/** Whether an order, a flight or a prefix names the number. */
+function idBefore(before: string) {
+  return namedBeforePattern.test(before) || idWordBeforePattern.test(before);
+}
+
 /** Whether the number at this place is plainly an amount, a date or an id. */
 function namedOtherwise(number: string, before: string, after: string) {
-  if (amountOrDate(number, before, after)) return true;
-  // «код подтверждения заказа 739204»: the code word earlier in the clause
-  // wins over the order or flight word right before the number.
-  if (codeWordInClausePattern.test(before)) return false;
-  return namedBeforePattern.test(before) || idWordBeforePattern.test(before);
+  if (amountOrDate(number, before, after) || unitAfterPattern.test(after)) {
+    return true;
+  }
+  // «код подтверждения заказа 739204»: a word for the code naming the number
+  // wins over the order or flight word right before it.
+  if (codeNamesNumberPattern.test(before)) return false;
+  return idBefore(before);
 }
 
 function digitGroups(text: string) {
@@ -186,7 +204,9 @@ function digitGroups(text: string) {
  * The one-time codes a text carries: a four-to-eight digit group a word for
  * a code leads, or one a word like «SMS» stands next to, or — when the run
  * may be waiting for a code, where a bare number is how a code is passed on
- * — any such group that is not plainly an amount, a year or an id.
+ * — any such group that is not plainly an amount, a date or an id. An order
+ * or a flight number followed by the code («заказ 48213: 739204») is the
+ * code's label, not a code.
  */
 export function oneTimeCodesIn(
   text: string,
@@ -197,6 +217,7 @@ export function oneTimeCodesIn(
     const end = start + match[0].length;
     const before = text.slice(0, start);
     const after = text.slice(end);
+    if (idBefore(before) && codeAfterPattern.test(after)) return [];
     const near = [
       before.slice(-codeContextReach),
       after.slice(0, codeContextReach),
@@ -212,13 +233,13 @@ export function oneTimeCodesIn(
   });
 }
 
-/** Whether every code in `codes` is one the person wrote themselves. */
-export function codesFromPerson(
+/** The codes among `codes` that the person did not write themselves. */
+export function codesNotFromPerson(
   codes: readonly string[],
   personWords: readonly string[]
 ) {
   const written = new Set(personWords.flatMap(digitGroups));
-  return codes.every((code) => written.has(code));
+  return [...new Set(codes)].filter((code) => !written.has(code));
 }
 
 /** Text compared word for word: case, «ё», spacing and punctuation aside. */

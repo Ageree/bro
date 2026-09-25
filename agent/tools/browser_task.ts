@@ -84,7 +84,7 @@ import { browserRunNeeds } from "@agent/lib/browser-use/outcome";
 import { browserRunNeedGuidance } from "@agent/lib/browser-use/guidance";
 import { outcomesHeard } from "@agent/lib/browser-use/heard";
 import {
-  codesFromPerson,
+  codesNotFromPerson,
   oneTimeCodesIn,
   onlyAsksHowItStands,
   personWordsThisTurn,
@@ -1397,9 +1397,11 @@ function inventedCodeRefusal(
       ...(whole === undefined ? [] : [whole]),
     ];
   });
-  if (codes.length === 0) return undefined;
-  if (words !== null && codesFromPerson(codes, words)) return undefined;
-  return `Nothing was sent: ${[...new Set(codes)].join(", ")} reads as a one-time code, and the user did not send it in their own message this turn. Never make up a code, reuse an old one or fill in its digits. When the site waits for a code, ask the user for it in your one message, naming the phone or address exactly as the report masks it, and wait: their reply is what continues the run. A number that is not a code — an amount, a date — leave out of task, or give it with its unit.`;
+  // Only what the person did not write is named: calling their own code
+  // unsent would have the model ask them for it again.
+  const unsent = codesNotFromPerson(codes, words ?? []);
+  if (unsent.length === 0) return undefined;
+  return `Nothing was sent: ${unsent.join(", ")} reads as a one-time code, and the user did not send it in their own message this turn. Never make up a code, reuse an old one or fill in its digits. When the site waits for a code, ask the user for it in your one message, naming the phone or address exactly as the report masks it, and wait: their reply is what continues the run. A number that is not a code — an amount, a date — leave out of task, or give it with its unit.`;
 }
 
 /**
@@ -1483,7 +1485,11 @@ function turnWords(
 /** Whether `said` is a code the person sent, to type straight into the page. */
 function personCodeToType(said: string, words: readonly string[] | null) {
   const code = oneTimeCodeFromMessage(said);
-  return code !== undefined && words !== null && codesFromPerson([code], words);
+  return (
+    code !== undefined &&
+    words !== null &&
+    codesNotFromPerson([code], words).length === 0
+  );
 }
 
 /**
