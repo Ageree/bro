@@ -36,10 +36,11 @@ import { captureBrowserRunImages, type BrowserRunImage } from "./images";
 import { within } from "./deadline";
 import {
   browserOutcomeSummary,
-  networkErrorIn,
   parseBrowserOrder,
   parseBrowserOutcome,
-  unreachableSite,
+  summaryUnreachableCause,
+  unreachableCause,
+  unreachableRun,
   type BrowserRunNeed,
 } from "./outcome";
 import {
@@ -111,12 +112,15 @@ export async function settleBrowserRun(
   }
 
   const asReported = parseBrowserOutcome(run.result);
-  // A site the network or the proxy never delivered is walled off as surely
-  // as by an anti-bot check, and gets the same retry: on 25.09 the Госуслуги
-  // errand (d06) ended at «ERR_TUNNEL_CONNECTION_FAILED» with NEEDS: none.
-  const parsed = unreachableSite(asReported, [run.result, run.error])
-    ? { ...asReported, needs: "captcha" as const }
-    : asReported;
+  // A run that failed on the browser's network error with no report at all
+  // is walled off as surely as by an anti-bot check, and gets the same retry
+  // (RU 25.09, d06: «ERR_TUNNEL_CONNECTION_FAILED» on Госуслуги). Never one
+  // that could have acted: allowed to submit or pay, it may have done so
+  // before the connection dropped, and a retry would do it again.
+  const parsed =
+    unreachableRun(run) && !(await mightHaveActed(row))
+      ? { ...asReported, needs: "captcha" as const }
+      : asReported;
   const outcome = browserOutcomeSummary(
     parsed,
     run.error ?? `The run ended as ${status}.`,
@@ -144,6 +148,10 @@ export async function settleBrowserRun(
         })
       : null;
   const reportFacts = {
+    unreachable:
+      parsed.needs === "captcha"
+        ? unreachableCause(parsed, run.error)
+        : undefined,
     booking: bookingState(row, parsed),
     confirmed: row.submission !== null,
     hasCharges: parsed.charges.length > 0,
@@ -252,6 +260,19 @@ function bookingState(
  * or sent the code — is started with neither, but holds the errand's
  * reservation, which only a paying errand has and its follow-ups carry.
  */
+/**
+ * Whether the run may have acted in the person's name: allowed to submit or
+ * pay, or holding a reservation. Unread, it may have.
+ */
+async function mightHaveActed(row: BrowserRunRow) {
+  if (row.paymentAllowed || row.submission !== null) return true;
+  try {
+    return (await readSpendEntryForRun(row.id)) !== undefined;
+  } catch {
+    return true;
+  }
+}
+
 async function mayPlaceOrder(row: BrowserRunRow) {
   if (row.paymentAllowed || row.submission !== null) return true;
   try {
@@ -401,6 +422,7 @@ export async function reportWalledBrowserRun(
       needs: "captcha",
       outcome:
         row.outcome ?? "The site kept the errand behind an anti-bot check.",
+      unreachable: summaryUnreachableCause(row.outcome),
     })
   );
 }
@@ -524,6 +546,8 @@ function browserRunReport(
     readonly ordered?: boolean;
     readonly outcome: string;
     readonly spend?: string;
+    /** The network error a walled run named as its own outcome. */
+    readonly unreachable?: string;
   }
 ) {
   const { images = [], needs, outcome } = options;
@@ -550,7 +574,7 @@ function browserRunReport(
       hasLinks: options.hasLinks === true,
       next: options.next !== undefined,
       ordered: options.ordered === true,
-      unreachable: needs === "captcha" ? networkErrorIn(outcome) : undefined,
+      unreachable: needs === "captcha" ? options.unreachable : undefined,
     }),
   ]
     .filter((line) => line !== undefined)

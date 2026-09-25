@@ -431,26 +431,46 @@ export function networkErrorIn(text: string | null | undefined) {
 }
 
 /**
- * Whether a run the network or the proxy kept off its site reported that
- * instead of a result: no NEEDS but none or info, nothing found, and the
- * browser's error in its report. It is walled as surely as by an anti-bot
- * check, and a fresh browser on another address is what gets past it.
+ * Whether a run ended on the browser's network error and nothing else: no
+ * report at all, only a failed run's error naming it. A report — «nothing
+ * found», a question, a finished order — is the run's own word and reaches
+ * the person as written, whatever fallback site's error it mentions: a run
+ * that could not reach the errand's own site says so with NEEDS: captcha.
  */
-export function unreachableSite(
+export function unreachableRun(run: {
+  readonly error?: string | null;
+  readonly result?: string | null;
+}) {
+  return (
+    (run.result ?? "").trim() === "" && networkErrorIn(run.error) !== undefined
+  );
+}
+
+/**
+ * The network error a walled run names as its own outcome — in RESULT or
+ * DETAILS, or a failed run's error with no report — never one a skipped
+ * fallback site gave somewhere in the prose.
+ */
+export function unreachableCause(
   outcome: ReturnType<typeof parseBrowserOutcome>,
-  texts: readonly (string | null | undefined)[]
+  error: string | null | undefined
 ) {
-  if (outcome.needs !== "none" && outcome.needs !== "info") return false;
-  if (
-    outcome.order !== undefined ||
-    outcome.booking !== undefined ||
-    outcome.items.length > 0 ||
-    outcome.charges.length > 0 ||
-    outcome.links.length > 0
-  ) {
-    return false;
-  }
-  return texts.some((text) => networkErrorIn(text) !== undefined);
+  return (
+    networkErrorIn(outcome.details) ??
+    networkErrorIn(outcome.result) ??
+    (outcome.result === undefined ? networkErrorIn(error) : undefined)
+  );
+}
+
+/**
+ * The same, read back from a kept outcome summary: its Result and Details
+ * lines, or the error a failed run left in their place.
+ */
+export function summaryUnreachableCause(summary: string | null) {
+  const own = (summary ?? "")
+    .split("\n")
+    .filter((line) => /^(?:Result|Details): |^net::ERR_/u.test(line));
+  return networkErrorIn(own.join("\n"));
 }
 
 /** One compact line per fact, for the coordinator's own reading. */

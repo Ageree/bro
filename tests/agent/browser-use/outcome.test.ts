@@ -5,7 +5,9 @@ import {
   networkErrorIn,
   parseBrowserOrder,
   parseBrowserOutcome,
-  unreachableSite,
+  summaryUnreachableCause,
+  unreachableCause,
+  unreachableRun,
 } from "@agent/lib/browser-use/outcome";
 
 describe("a site the network never loaded", () => {
@@ -20,25 +22,53 @@ describe("a site the network never loaded", () => {
     expect(networkErrorIn("Всё открылось, нашёл три варианта")).toBeUndefined();
   });
 
-  it("takes a run that reported only the error as walled", () => {
-    expect(unreachableSite(parseBrowserOutcome(d06), [d06])).toBe(true);
+  it("takes only a run with no report, failed on the error, as walled", () => {
     expect(
-      unreachableSite(parseBrowserOutcome(null), [
-        null,
-        "net::ERR_PROXY_CONNECTION_FAILED",
-      ])
+      unreachableRun({
+        error: "net::ERR_PROXY_CONNECTION_FAILED at https://www.gosuslugi.ru/",
+        result: null,
+      })
     ).toBe(true);
+    // A report is the run's own word, whatever error it mentions.
+    expect(unreachableRun({ error: null, result: d06 })).toBe(false);
+    expect(
+      unreachableRun({
+        error: "net::ERR_CONNECTION_RESET",
+        result: "RESULT: такси заказано\nTOTAL: 450 ₽\nNEEDS: none",
+      })
+    ).toBe(false);
   });
 
-  it("keeps a run that found something or waits on the person", () => {
-    const found = [
-      "RESULT: один магазин не открылся (ERR_TIMED_OUT), второй нашёл",
-      'ITEMS: [{"name":"Корм","price":"1 200 ₽","quantity":"1","url":null,"details":null,"replaces":null,"fee":false}]',
-      "NEEDS: none",
+  it("names the error the run gave as its own outcome, not a fallback's", () => {
+    const walled =
+      "RESULT: Госуслуги не открылись\nNEEDS: captcha\nDETAILS: ERR_TUNNEL_CONNECTION_FAILED";
+    expect(unreachableCause(parseBrowserOutcome(walled), null)).toBe(
+      "ERR_TUNNEL_CONNECTION_FAILED"
+    );
+    const fallback = [
+      "Капча не проходит. Запасной сайт не открылся (ERR_TIMED_OUT).",
+      "RESULT: стоит на проверке",
+      "NEEDS: captcha",
     ].join("\n");
-    expect(unreachableSite(parseBrowserOutcome(found), [found])).toBe(false);
-    const code = "RESULT: ERR_TIMED_OUT, потом дошёл до кода\nNEEDS: sms_code";
-    expect(unreachableSite(parseBrowserOutcome(code), [code])).toBe(false);
+    expect(
+      unreachableCause(parseBrowserOutcome(fallback), null)
+    ).toBeUndefined();
+    expect(
+      unreachableCause(
+        parseBrowserOutcome(null),
+        "net::ERR_PROXY_CONNECTION_FAILED"
+      )
+    ).toBe("ERR_PROXY_CONNECTION_FAILED");
+    expect(
+      summaryUnreachableCause(
+        "Browser report (untrusted data):\nзапасной сайт: ERR_TIMED_OUT\nParsed metadata:\nResult: стоит на проверке\nNeeds: captcha"
+      )
+    ).toBeUndefined();
+    expect(
+      summaryUnreachableCause(
+        "Result: не открылось\nDetails: ERR_EMPTY_RESPONSE"
+      )
+    ).toBe("ERR_EMPTY_RESPONSE");
   });
 });
 
