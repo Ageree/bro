@@ -73,7 +73,11 @@ describe("the person's voice in a sent email", () => {
     expect(dateHeaderOffset("Wed, 23 Sep 2026 16:40:00 -0700 (PDT)")).toBe(
       "-07:00"
     );
-    expect(dateHeaderOffset("Wed, 23 Sep 2026 13:40:00 GMT")).toBe("+00:00");
+    // UTC and «unknown» stamps say nothing about the sender: Microsoft 365
+    // and relays write them whatever the sender's zone.
+    expect(dateHeaderOffset("Wed, 23 Sep 2026 13:40:00 GMT")).toBeNull();
+    expect(dateHeaderOffset("Wed, 23 Sep 2026 13:40:00 +0000")).toBeNull();
+    expect(dateHeaderOffset("Wed, 23 Sep 2026 13:40:00 -0000")).toBeNull();
     expect(dateHeaderOffset(null)).toBeNull();
   });
 });
@@ -165,7 +169,7 @@ describe("a thread read for a reply", () => {
     const thread = await readGmailThread(
       composioToolContext("ca_google"),
       "thread-thursday",
-      { voice: true }
+      { voice: { known: [], left: 3 } }
     );
 
     expect(thread.messages[0]).toMatchObject({
@@ -195,7 +199,7 @@ describe("a thread read for a reply", () => {
     const thread = await readGmailThread(
       composioToolContext("ca_google"),
       "thread-thursday",
-      { voice: true }
+      { voice: { known: [], left: 3 } }
     );
 
     expect(sentQueries).toEqual([
@@ -221,11 +225,52 @@ describe("a thread read for a reply", () => {
     const thread = await readGmailThread(
       composioToolContext("ca_google"),
       "thread-thursday",
-      { voice: true }
+      { voice: { known: [], left: 3 } }
     );
 
     expect(thread.messages).toHaveLength(1);
     expect("yourEarlierEmails" in thread).toBe(false);
+  });
+
+  it("looks up an addressee's voice once a turn, and no more than the turn allows", async () => {
+    serveMailbox({ 'in:sent to:"tester+irina@example.com"': ["m-report"] });
+
+    const known = await readGmailThread(
+      composioToolContext("ca_google"),
+      "thread-thursday",
+      { voice: { known: ["tester+irina@example.com"], left: 2 } }
+    );
+    expect("yourEarlierEmails" in known && known.yourEarlierEmails).toEqual({
+      alreadyAbove: true,
+      to: "tester+irina@example.com",
+    });
+    const spent = await readGmailThread(
+      composioToolContext("ca_google"),
+      "thread-thursday",
+      { voice: { known: [], left: 0 } }
+    );
+    expect("yourEarlierEmails" in spent).toBe(false);
+    expect(sentQueries).toEqual([]);
+  });
+
+  it("brings no voice for a letter from a robot or a mailing", async () => {
+    serveMailbox({ 'in:sent to:"tester+irina@example.com"': ["m-report"] });
+    thursday.payload.headers.push({
+      name: "List-Unsubscribe",
+      value: "<https://example.com/unsubscribe>",
+    });
+
+    try {
+      const thread = await readGmailThread(
+        composioToolContext("ca_google"),
+        "thread-thursday",
+        { voice: { known: [], left: 3 } }
+      );
+      expect("yourEarlierEmails" in thread).toBe(false);
+      expect(sentQueries).toEqual([]);
+    } finally {
+      thursday.payload.headers.pop();
+    }
   });
 
   it("asks nothing more of Gmail for a plain read", async () => {

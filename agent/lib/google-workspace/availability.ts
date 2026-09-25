@@ -62,6 +62,11 @@ function offsetAt(at: number, timeZone: string) {
   );
 }
 
+/** How far `timeZone` is ahead of UTC at `at`, in minutes. */
+export function zoneOffsetMinutes(at: number, timeZone: string) {
+  return Math.round(offsetAt(at, timeZone) / minute);
+}
+
 /** Whether `timeZone` is an IANA zone or a `+05:00` offset Intl understands. */
 export function knownTimeZone(timeZone: string) {
   try {
@@ -219,9 +224,6 @@ function subtract(windows: readonly Interval[], busy: readonly Interval[]) {
 /** A window starts on a quarter hour, as a person would propose it. */
 const startStepMs = 15 * minute;
 
-/** The most windows one answer lists: enough for a week of proposals. */
-const maximumWindows = 30;
-
 /**
  * Free windows at least `slotMinutes` long within `range`: inside the
  * person's day hours in their zone, inside the attendee's working day in
@@ -256,8 +258,7 @@ export function freeWindows(options: {
     }))
     .filter(
       (window) => window.end - window.start >= options.slotMinutes * minute
-    )
-    .slice(0, maximumWindows);
+    );
 }
 
 /**

@@ -82,6 +82,12 @@ export const gmailSearchInputSchema = z.object({
 });
 
 export const gmailReadThreadInputSchema = z.object({
+  forReply: z
+    .boolean()
+    .optional()
+    .describe(
+      "true when you are about to answer in this thread (reply or draft): the read then also brings the person's own earlier emails to this addressee (`yourEarlierEmails`) for their voice. Leave it out for plain reading."
+    ),
   threadId: z.string().min(1).max(200),
 });
 
@@ -172,15 +178,23 @@ export async function searchGmail(
 }
 
 /**
- * Reads one thread. With `voice`, it also brings the person's own latest
- * emails to the other side of the thread (`yourEarlierEmails`): a reply
- * written without them came out as a template on «ты» to someone the person
- * had written «Ирина Павловна, добрый день!» for years (RU d09, EN D5).
+ * Reads one thread. With `voice`, a read for a reply also brings the
+ * person's own latest emails to the other side of the thread
+ * (`yourEarlierEmails`): a reply written without them came out as a template
+ * on «ты» to someone the person had written «Ирина Павловна, добрый день!»
+ * for years (RU d09, EN D5). The lookup costs a search and three full
+ * messages, so it runs only for a reply, never for a mailing or a robot,
+ * once per addressee in a turn (`known`) and at most `left` more times.
  */
 export async function readGmailThread(
   ctx: ToolContext,
   threadId: string,
-  options: { readonly voice?: boolean } = {}
+  options: {
+    readonly voice?: {
+      readonly known: readonly string[];
+      readonly left: number;
+    } | null;
+  } = {}
 ) {
   return withGoogleAuth(ctx, async (google) => {
     const thread = await google.json(gmailThreadSchema, {
@@ -204,7 +218,14 @@ export async function readGmailThread(
       }),
     };
     const addressee = options.voice ? threadAddressee(messages) : null;
-    if (!addressee) return read;
+    if (!addressee || !options.voice) return read;
+    if (options.voice.known.includes(addressee)) {
+      return {
+        ...read,
+        yourEarlierEmails: { alreadyAbove: true, to: addressee },
+      };
+    }
+    if (options.voice.left <= 0) return read;
     // The voice only helps the reply: a failed look at the sent mail leaves
     // the thread itself readable.
     let voice;
@@ -226,15 +247,45 @@ const voiceSampleCount = 3;
 /** An address Gmail search may take inside quotes, nothing that could end them. */
 const searchableAddress = /^[\w.%+'-]+@[\w-]+(?:\.[\w-]+)+$/u;
 
+/** Gmail's tabs for mail no person wrote by hand. */
+const automatedCategories = new Set([
+  "CATEGORY_FORUMS",
+  "CATEGORY_PROMOTIONS",
+  "CATEGORY_SOCIAL",
+  "CATEGORY_UPDATES",
+]);
+
+/**
+ * Whether a letter came from a robot or a mailing, whose «voice» the person
+ * never answers in: a list or auto-submitted header, a no-reply sender, or
+ * one of Gmail's automated tabs.
+ */
+function automatedLetter(message: GmailMessage) {
+  const autoSubmitted = header(message.payload, "Auto-Submitted");
+  const precedence = header(message.payload, "Precedence");
+  const sender = headerAddress(header(message.payload, "From")) ?? "";
+  return (
+    header(message.payload, "List-Unsubscribe") !== null ||
+    header(message.payload, "List-Id") !== null ||
+    (autoSubmitted !== null && autoSubmitted.trim().toLowerCase() !== "no") ||
+    (precedence !== null && /bulk|list|junk/iu.test(precedence)) ||
+    /^(?:no-?reply|do-?not-?reply|mailer-daemon|notifications?)[@+]/iu.test(
+      sender
+    ) ||
+    (message.labelIds ?? []).some((label) => automatedCategories.has(label))
+  );
+}
+
 /**
  * The address a reply in this thread goes to: whoever last wrote to the
  * person (their Reply-To, else From), or, in a thread only the person wrote
- * in, whom they wrote to.
+ * in, whom they wrote to. None for a robot or a mailing.
  */
 function threadAddressee(messages: readonly GmailMessage[]) {
   const theirs = messages.findLast(
     (message) => !(message.labelIds?.includes("SENT") ?? false)
   );
+  if (theirs && automatedLetter(theirs)) return null;
   const address = theirs
     ? headerAddress(
         header(theirs.payload, "Reply-To") ?? header(theirs.payload, "From")
@@ -253,18 +304,18 @@ export function headerAddress(value: string | null | undefined) {
 }
 
 /**
- * The UTC offset a Date header was written in, `+05:00`: mail clients stamp
- * the sender's own clock, so it hints at their time zone when the letter
- * names no city.
+ * The UTC offset a Date header was stamped in, `+05:00`: many clients stamp
+ * the sender's own clock, so a non-zero offset hints at their time zone
+ * when the letter names no city. A zero offset or a zone name says nothing:
+ * Microsoft 365 and relays stamp UTC whatever the sender's zone, and
+ * RFC 5322 reads `-0000` as «unknown».
  */
 export function dateHeaderOffset(value: string | null) {
   if (!value) return null;
   const numeric = /([+-])(\d{2}):?(\d{2})(?:\s*\([^)]*\))?\s*$/u.exec(value);
-  if (numeric)
-    return `${numeric[1] ?? "+"}${numeric[2] ?? "00"}:${numeric[3] ?? "00"}`;
-  return /\s(?:GMT|UTC|UT|Z)(?:\s*\([^)]*\))?\s*$/u.test(value)
-    ? "+00:00"
-    : null;
+  const [, sign = "+", hours = "00", minutes = "00"] = numeric ?? [];
+  if (!numeric || (hours === "00" && minutes === "00")) return null;
+  return `${sign}${hours}:${minutes}`;
 }
 
 /**
@@ -489,6 +540,33 @@ export async function draftGmail(ctx: ToolContext, payload: GmailCompose) {
   );
 }
 
+/** A subject as a person compares it: reply and forward marks, quotes and case aside. */
+function comparableSubject(subject: string) {
+  return subject
+    .toLowerCase()
+    .replace(
+      /^(?:\s*(?:re|fwd?|aw|wg|отв|ответ|пересл)\s*(?:\[\d+\])?\s*:\s*)+/iu,
+      ""
+    )
+    .replaceAll(/[«»"“”„']/gu, "")
+    .replaceAll(/\s+/gu, " ")
+    .trim();
+}
+
+/**
+ * Whether the subject a reply's card showed names the thread it goes into:
+ * the same subject or one inside the other («Встреча» for «Re: Встреча в
+ * четверг»). A thread with no subject matches any.
+ */
+export function subjectNamesThread(cardSubject: string, threadSubject: string) {
+  const card = comparableSubject(cardSubject);
+  const thread = comparableSubject(threadSubject);
+  if (thread.length === 0 || card === thread) return true;
+  const shorter = card.length < thread.length ? card : thread;
+  const longer = shorter === card ? thread : card;
+  return shorter.length >= 3 && longer.includes(shorter);
+}
+
 async function composeRequest(
   ctx: ToolContext,
   google: GoogleClient,
@@ -497,6 +575,17 @@ async function composeRequest(
   const replyTo = payload.replyToMessageId
     ? await readReplyTarget(google, payload.replyToMessageId)
     : undefined;
+  // The card named the thread by the subject in the call; the reply goes
+  // into the thread of the answered message, so the two must agree.
+  if (
+    replyTo?.subject &&
+    payload.subject &&
+    !subjectNamesThread(payload.subject, replyTo.subject)
+  ) {
+    throw new Error(
+      `Nothing sent: the approval card named the thread «${payload.subject}», but the message being answered is in «${replyTo.subject}». Find the right email and call again with its Gmail id and that thread's subject.`
+    );
+  }
   const stableId = createHash("sha256")
     .update(`${ctx.session.id}:${ctx.callId}`)
     .digest("hex")

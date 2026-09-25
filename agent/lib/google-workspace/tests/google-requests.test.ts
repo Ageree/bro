@@ -249,6 +249,40 @@ describe("Google requests through Composio", () => {
     );
   });
 
+  it("sends a reply only into the thread its card named", async () => {
+    composio.proxy.mockImplementation(
+      answer({
+        [`GET ${mailbox}/messages/gmail-message-1`]: answeredMessage,
+        [`POST ${mailbox}/messages/send`]: {
+          data: { id: "sent-1", threadId: "thread-ranepa" },
+        },
+      })
+    );
+    const reply = {
+      bcc: [],
+      body: "Подойдёт вторник в 11:00.",
+      cc: [],
+      replyToMessageId: "gmail-message-1",
+      to: ["admissions@ranepa.ru"],
+    };
+
+    // The card said «Счёт за сентябрь»; the message is in «Собеседование».
+    await expect(
+      sendGmail(composioToolContext("ca_google"), {
+        ...reply,
+        subject: "Счёт за сентябрь",
+      })
+    ).rejects.toThrow(/Nothing sent.*«Собеседование»/u);
+    expect(requestTo("POST", `${mailbox}/messages/send`)).toBeUndefined();
+
+    await expect(
+      sendGmail(composioToolContext("ca_google"), {
+        ...reply,
+        subject: "Re: «Собеседование»",
+      })
+    ).resolves.toMatchObject({ id: "sent-1" });
+  });
+
   it("recovers a duplicate Calendar insert using the stable event ID", async () => {
     const eventId = createHash("sha256")
       .update("session-1:call-1")

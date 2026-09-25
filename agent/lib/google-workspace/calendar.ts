@@ -11,6 +11,7 @@ import {
   type Interval,
   knownTimeZone,
   mergeIntervals,
+  zoneOffsetMinutes,
 } from "./availability";
 import {
   type GoogleClient,
@@ -23,26 +24,88 @@ import { emailAddressSchema } from "./email";
 /** The Google Calendar REST API. */
 export const calendarApi = "https://www.googleapis.com/calendar/v3";
 
-/** A time zone Intl knows: an IANA name, or a `+05:00` offset. */
-const timeZoneSchema = z.string().min(1).max(64).refine(knownTimeZone, {
+/**
+ * A time zone only for Bro's own clock math: an IANA name, or a `+05:00`
+ * offset (a colleague's zone taken from their letters).
+ */
+const localTimeZoneSchema = z.string().min(1).max(64).refine(knownTimeZone, {
   message:
     "Use an IANA time zone such as Europe/Moscow, or a UTC offset such as +05:00.",
 });
 
-export const calendarEventSchema = z.object({
-  attendees: z.array(emailAddressSchema).max(50).default([]),
-  calendarId: z.string().default("primary"),
-  description: z.string().max(8_000).optional(),
-  end: z.iso.datetime({ offset: true }),
-  location: z.string().max(1_000).optional(),
-  start: z.iso.datetime({ offset: true }),
-  summary: z.string().min(1).max(1_000),
-  timezone: timeZoneSchema
-    .optional()
-    .describe(
-      "IANA time zone of the event, e.g. Europe/Moscow. Omit to use the person's own."
-    ),
-});
+/**
+ * A time zone that goes to Google: IANA names only. Google refuses an offset
+ * such as `+05:00` with a 400 — after the person approved the card.
+ */
+const googleTimeZoneSchema = z
+  .string()
+  .min(1)
+  .max(64)
+  .refine((value) => !/^[+-]/u.test(value.trim()) && knownTimeZone(value), {
+    message:
+      "Use an IANA time zone such as Europe/Moscow or Asia/Yekaterinburg, not an offset.",
+  });
+
+/** Zone names that assert no local clock: the card leaves them out. */
+const utcNames = /^(?:utc|etc\/utc|gmt|etc\/gmt|z)$/iu;
+
+/** The UTC offset, in minutes, an ISO instant is written in. */
+function writtenOffsetMinutes(iso: string) {
+  const match = /(?:Z|([+-])(\d{2}):(\d{2}))$/u.exec(iso);
+  if (!match) return undefined;
+  const [, sign, hours, minutes] = match;
+  if (sign === undefined) return 0;
+  const total = Number(hours) * 60 + Number(minutes);
+  return sign === "-" ? -total : total;
+}
+
+/**
+ * Whether times written with an offset are on the clock of the zone named
+ * with them. The card shows the time as written next to the zone's name, so
+ * «11:30 (Europe/Moscow)» must not mean 11:30 UTC, which Google would book
+ * at 14:30 in Moscow.
+ */
+function writtenInZone(
+  times: readonly (string | undefined)[],
+  timeZone: string | undefined
+) {
+  if (
+    timeZone === undefined ||
+    utcNames.test(timeZone.trim()) ||
+    !knownTimeZone(timeZone)
+  ) {
+    return true;
+  }
+  return times.every(
+    (time) =>
+      time === undefined ||
+      writtenOffsetMinutes(time) ===
+        zoneOffsetMinutes(Date.parse(time), timeZone)
+  );
+}
+
+const writtenInZoneMessage =
+  "start and end must be written in the offset `timezone` has on that date (Europe/Moscow is +03:00): the approval card shows the time as written, next to the zone. Write them in that zone's offset, or leave timezone out.";
+
+export const calendarEventSchema = z
+  .object({
+    attendees: z.array(emailAddressSchema).max(50).default([]),
+    calendarId: z.string().default("primary"),
+    description: z.string().max(8_000).optional(),
+    end: z.iso.datetime({ offset: true }),
+    location: z.string().max(1_000).optional(),
+    start: z.iso.datetime({ offset: true }),
+    summary: z.string().min(1).max(1_000),
+    timezone: googleTimeZoneSchema
+      .optional()
+      .describe(
+        "IANA time zone of the event, e.g. Europe/Moscow; start and end are written in its offset. Omit to use the person's own."
+      ),
+  })
+  .refine((input) => writtenInZone([input.start, input.end], input.timezone), {
+    message: writtenInZoneMessage,
+    path: ["timezone"],
+  });
 
 /**
  * The event a change or deletion is about, by the title the approval card
@@ -56,6 +119,22 @@ const eventTitleSchema = z
     "The event's current title as calendar-list-events shows it. The approval card names the event by it, and nothing changes if the id belongs to an event with another title."
   );
 
+/** Which event of a recurring series a change or deletion is about. */
+const eventOccurrenceFields = {
+  eventStart: z.iso
+    .datetime({ offset: true })
+    .optional()
+    .describe(
+      "When the event (or this occurrence) starts, as calendar-list-events shows it: the card shows the date, and nothing changes if the event starts at another time."
+    ),
+  series: z
+    .boolean()
+    .optional()
+    .describe(
+      "true only when the person asked to change or delete a whole recurring series and eventId is the series itself; the card then says so. calendar-list-events lists single occurrences, each with its own id: without series, only that occurrence changes."
+    ),
+};
+
 /**
  * A change to one existing event: any of its title, notes, place, or time.
  * A new time names both ends, so the event never ends before it starts.
@@ -67,6 +146,7 @@ export const calendarEventUpdateSchema = z
     end: z.iso.datetime({ offset: true }).optional(),
     eventId: z.string().min(1),
     eventTitle: eventTitleSchema,
+    ...eventOccurrenceFields,
     location: z.string().max(1_000).optional(),
     start: z.iso.datetime({ offset: true }).optional(),
     summary: z
@@ -75,7 +155,7 @@ export const calendarEventUpdateSchema = z
       .max(1_000)
       .optional()
       .describe("A new title, only when renaming."),
-    timezone: timeZoneSchema.optional(),
+    timezone: googleTimeZoneSchema.optional(),
   })
   .refine(
     (input) => (input.start === undefined) === (input.end === undefined),
@@ -89,13 +169,21 @@ export const calendarEventUpdateSchema = z
         (value) => value !== undefined
       ),
     { message: "Pass at least one field to change." }
-  );
+  )
+  .refine((input) => writtenInZone([input.start, input.end], input.timezone), {
+    message: writtenInZoneMessage,
+    path: ["timezone"],
+  });
 
 export const calendarEventDeleteSchema = z.object({
   calendarId: z.string().default("primary"),
   eventId: z.string().min(1),
   eventTitle: eventTitleSchema,
+  ...eventOccurrenceFields,
 });
+
+/** The most free windows one answer lists: enough for a week of proposals. */
+const maximumWindows = 30;
 
 /** The longest stretch one availability check may cover. */
 const maximumAvailabilityDays = 31;
@@ -107,7 +195,7 @@ const attendeeWorkingHours = { from: 9, to: 19 } as const;
 
 export const calendarAvailabilityInputSchema = z
   .object({
-    attendeeTimeZone: timeZoneSchema
+    attendeeTimeZone: localTimeZoneSchema
       .optional()
       .describe(
         "Time zone of the person you are finding a time with, when their clock differs from the person's: an IANA name such as Asia/Yekaterinburg, or a UTC offset such as +05:00. Free windows then also fit their working day (9:00–19:00 their time), and each shows their local time under `attendee`."
@@ -142,10 +230,10 @@ export const calendarAvailabilityInputSchema = z
       ),
     timeMax: z.iso.datetime({ offset: true }),
     timeMin: z.iso.datetime({ offset: true }),
-    timezone: timeZoneSchema
+    timezone: googleTimeZoneSchema
       .optional()
       .describe(
-        "The person's time zone. Omit to use the one in their profile."
+        "The person's IANA time zone. Omit to use the one in their profile."
       ),
   })
   .refine((input) => input.dayEndHour > input.dayStartHour, {
@@ -184,6 +272,8 @@ const googleEventSchema = z.object({
   htmlLink: z.string().optional(),
   id: z.string().optional(),
   location: z.string().optional(),
+  recurrence: z.array(z.string()).optional(),
+  recurringEventId: z.string().optional(),
   start: eventTimeSchema.optional(),
   status: z.string().optional(),
   summary: z.string().optional(),
@@ -229,7 +319,7 @@ export async function listCalendarEvents(
     const listed = await google.json(calendarEventListSchema, {
       url: eventsUrl(input.calendarId, "", {
         fields:
-          "items(id,status,summary,description,location,start,end,attendees(email,responseStatus),htmlLink)",
+          "items(id,recurringEventId,status,summary,description,location,start,end,attendees(email,responseStatus),htmlLink)",
         maxResults: input.maxResults,
         orderBy: "startTime",
         singleEvents: true,
@@ -354,6 +444,12 @@ export async function checkCalendarAvailability(
       slotMinutes: input.slotMinutes,
       timeZone,
     });
+    const shown = free.slice(0, maximumWindows);
+    const firstUnlisted = free[shown.length];
+    const cut =
+      firstUnlisted === undefined
+        ? ""
+        : ` Only the first ${String(shown.length)} of ${String(free.length)} free windows are listed; later ones exist from ${describeSpan(firstUnlisted, timeZone).date} on — check again from there before saying the rest of the range is busy.`;
     return {
       attendeeTimeZone: attendee?.timeZone ?? null,
       busy: busy.map((span) =>
@@ -363,11 +459,12 @@ export async function checkCalendarAvailability(
             .map((event) => event.title),
         })
       ),
-      free: free.map((span) =>
+      free: shown.map((span) =>
         describeSpan(span, timeZone, attendee?.timeZone)
       ),
-      note: `Free windows are within ${String(input.dayStartHour)}:00–${String(input.dayEndHour)}:00 of the person's day in ${timeZone}${attendee ? ` and within 9:00–19:00 in ${attendee.timeZone}` : ""}, at least ${String(input.slotMinutes)} minutes long. Offer or book only these; name a busy event by its title when a time the person named is taken.`,
+      note: `Free windows are within ${String(input.dayStartHour)}:00–${String(input.dayEndHour)}:00 of the person's day in ${timeZone}${attendee ? ` and within 9:00–19:00 in ${attendee.timeZone}` : ""}, at least ${String(input.slotMinutes)} minutes long. Offer or book only these; name a busy event by its title when a time the person named is taken.${cut}`,
       timeZone,
+      unlistedFree: free.length - shown.length,
     };
   });
 }
@@ -493,39 +590,67 @@ export function titleNamesEvent(cardTitle: string, eventTitle: string) {
   return shorter.length >= 3 && longer.includes(shorter);
 }
 
-/** A change refused because the id and the title on the card disagree. */
+/** A change refused because the event and what the card said disagree. */
 export class CalendarEventMismatchError extends Error {
   override readonly name = "CalendarEventMismatchError";
 
-  constructor(cardTitle: string, eventTitle: string) {
+  constructor(detail: string) {
     super(
-      `Nothing changed: the event with this id is «${eventTitle}», not «${cardTitle}» as the approval card said. Find the right event with calendar-list-events and call again with its id and title.`
+      `Nothing changed: ${detail} Find the right event with calendar-list-events and call again with its id, title and start.`
     );
   }
 }
 
 /**
- * Reads the event about to change and refuses when its title is not the one
- * the approval card showed. A call parked before titles were passed carries
- * none and is not checked.
+ * Reads the event about to change and refuses when it is not the one the
+ * approval card showed: another title, another start, or a whole recurring
+ * series where the card named one event (a series id with its occurrence
+ * suffix dropped deletes every occurrence and mails every guest).
  */
 async function requireNamedEvent(
   google: GoogleClient,
   input: {
     readonly calendarId: string;
     readonly eventId: string;
+    readonly eventStart?: string | undefined;
     readonly eventTitle?: string | undefined;
+    readonly series?: boolean | undefined;
   }
 ) {
-  if (!input.eventTitle) return;
   const event = await google.json(googleEventSchema, {
     url: eventsUrl(input.calendarId, `/${encodeURIComponent(input.eventId)}`, {
-      fields: "id,summary",
+      fields: "id,summary,start,recurrence,recurringEventId",
     }),
   });
   const title = event.summary ?? "";
-  if (!titleNamesEvent(input.eventTitle, title)) {
-    throw new CalendarEventMismatchError(input.eventTitle, title);
+  if (input.eventTitle && !titleNamesEvent(input.eventTitle, title)) {
+    throw new CalendarEventMismatchError(
+      `the event with this id is «${title}», not «${input.eventTitle}» as the approval card said.`
+    );
+  }
+  const wholeSeries = (event.recurrence ?? []).length > 0;
+  if (wholeSeries && input.series !== true) {
+    throw new CalendarEventMismatchError(
+      `this id is the whole recurring series «${title}», and the card named one event. For one occurrence take its own id from calendar-list-events; for the whole series call again with series: true, only if the person asked for all of them.`
+    );
+  }
+  if (input.series === true && !wholeSeries) {
+    throw new CalendarEventMismatchError(
+      event.recurringEventId
+        ? `this id is one occurrence, and the card named the whole series. The series id is ${event.recurringEventId}.`
+        : "this event does not repeat, and the card named a whole series: call again without series."
+    );
+  }
+  const start = event.start?.dateTime;
+  if (
+    input.series !== true &&
+    input.eventStart !== undefined &&
+    start !== undefined &&
+    Date.parse(start) !== Date.parse(input.eventStart)
+  ) {
+    throw new CalendarEventMismatchError(
+      `«${title}» with this id starts at ${start}, not at ${input.eventStart} as the approval card said.`
+    );
   }
 }
 

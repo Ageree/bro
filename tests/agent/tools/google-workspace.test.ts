@@ -3,11 +3,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type * as GmailModule from "@agent/lib/google-workspace/gmail";
 import type {
   GmailCompose,
+  readGmailThread,
   searchGmail,
   updateGmail,
 } from "@agent/lib/google-workspace/gmail";
 
 const gmail = vi.hoisted(() => ({
+  readThread: vi
+    .fn<typeof readGmailThread>()
+    .mockResolvedValue({ id: "thread-1", messages: [] }),
   search: vi.fn<typeof searchGmail>().mockResolvedValue([]),
   update: vi.fn<typeof updateGmail>().mockResolvedValue({
     action: "archive",
@@ -22,6 +26,7 @@ vi.mock("@db/services/settings", () => ({
 
 vi.mock("@agent/lib/google-workspace/gmail", async (importOriginal) => ({
   ...(await importOriginal<typeof GmailModule>()),
+  readGmailThread: gmail.readThread,
   searchGmail: gmail.search,
   updateGmail: gmail.update,
 }));
@@ -165,7 +170,7 @@ describe("Gmail changes in one turn", () => {
 });
 
 /** A turn where the person asked for a reply and declined its card. */
-function declinedSendTurn(approved: boolean) {
+function declinedSendTurn(approved: boolean, isAutomatic = false) {
   return [
     Object.assign(
       {
@@ -188,6 +193,7 @@ function declinedSendTurn(approved: boolean) {
         },
         {
           approvalId: "approval-send",
+          isAutomatic,
           toolCallId: "call-send",
           type: "tool-approval-request" as const,
         },
@@ -200,6 +206,49 @@ function declinedSendTurn(approved: boolean) {
           approvalId: "approval-send",
           approved,
           type: "tool-approval-response" as const,
+        },
+      ],
+      role: "tool" as const,
+    },
+  ];
+}
+
+/** A `gmail-read-thread` call and its answer: the thread and its messages. */
+function threadRead(
+  callId: string,
+  input: { readonly forReply?: boolean; readonly threadId: string },
+  messageIds: readonly string[]
+) {
+  return [
+    {
+      content: [
+        {
+          input,
+          toolCallId: callId,
+          toolName: "gmail-read-thread",
+          type: "tool-call" as const,
+        },
+      ],
+      role: "assistant" as const,
+    },
+    {
+      content: [
+        {
+          output: {
+            type: "json" as const,
+            value: {
+              thread: {
+                id: input.threadId,
+                messages: messageIds.map((id) => ({
+                  id,
+                  threadId: input.threadId,
+                })),
+              },
+            },
+          },
+          toolCallId: callId,
+          toolName: "gmail-read-thread",
+          type: "tool-result" as const,
         },
       ],
       role: "tool" as const,
@@ -231,33 +280,111 @@ describe("a reply before its thread was read", () => {
     ).toBe("user-approval");
   });
 
-  it("shows the card once the thread was read, in this turn or before", async () => {
+  it("shows the card once the thread was read for a reply, in this turn or before", async () => {
     const approval = await sendApproval(
       [
+        ...threadRead(
+          "call-read",
+          { forReply: true, threadId: "thread-thursday" },
+          ["m-earlier", "m-thursday"]
+        ),
+        asked,
+      ],
+      reply
+    );
+    expect(approval).toBe("user-approval");
+  });
+
+  it("does not count a plain read, which brought no voice", async () => {
+    const approval = await sendApproval(
+      [
+        asked,
+        ...threadRead("call-read", { threadId: "thread-thursday" }, [
+          "m-thursday",
+        ]),
+      ],
+      reply
+    );
+    expect(approval).toEqual({
+      reason: replyBeforeReadRefusal,
+      type: "denied",
+    });
+  });
+
+  it("answers an old message of a long thread the read cut off", async () => {
+    const approval = await sendApproval(
+      [
+        asked,
         {
           content: [
             {
               output: {
                 type: "json" as const,
                 value: {
-                  thread: {
-                    id: "thread-thursday",
-                    messages: [{ id: "m-thursday" }, { id: null }],
-                  },
+                  messages: [{ id: "m-old", threadId: "thread-long" }],
                 },
               },
-              toolCallId: "call-read",
-              toolName: "gmail-read-thread",
+              toolCallId: "call-search",
+              toolName: "gmail-search",
               type: "tool-result" as const,
             },
           ],
           role: "tool" as const,
         },
-        asked,
+        // The read lists only the last messages of the thread.
+        ...threadRead(
+          "call-read",
+          { forReply: true, threadId: "thread-long" },
+          ["m-late"]
+        ),
       ],
-      reply
+      { ...reply, replyToMessageId: "m-old" }
     );
     expect(approval).toBe("user-approval");
+  });
+});
+
+describe("a thread read and the person's voice", () => {
+  it("looks up the voice only for a reply, once per addressee and a few times a turn", async () => {
+    const read = await resolveGmailTool("gmail-read-thread", [
+      Object.assign(
+        { content: "ответь Ирине и Саше", role: "user" as const },
+        { kind: "user" }
+      ),
+      {
+        content: [
+          {
+            output: {
+              type: "json" as const,
+              value: {
+                thread: {
+                  id: "thread-irina",
+                  messages: [],
+                  yourEarlierEmails: {
+                    emails: [],
+                    sameAddressee: true,
+                    to: "irina@example.com",
+                  },
+                },
+              },
+            },
+            toolCallId: "call-read",
+            toolName: "gmail-read-thread",
+            type: "tool-result" as const,
+          },
+        ],
+        role: "tool" as const,
+      },
+    ]);
+    const context = toolContext();
+
+    await read.execute({ forReply: true, threadId: "thread-sasha" }, context);
+    await read.execute({ threadId: "thread-plain" }, context);
+
+    expect(gmail.readThread.mock.calls.map((call) => call[2])).toEqual([
+      { voice: { known: ["irina@example.com"], left: 2 } },
+      { voice: null },
+    ]);
   });
 });
 
@@ -270,6 +397,14 @@ describe("an email the person declined on its card", () => {
     expect(draft.description).toMatch(
       /^The person just declined the gmail-send card: save that same email now/u
     );
+  });
+
+  it("is not a policy's own refusal, which showed no card", async () => {
+    const draft = await resolveGmailTool(
+      "gmail-draft",
+      declinedSendTurn(false, true)
+    );
+    expect(draft.description).not.toContain("just declined");
   });
 
   it("changes nothing once sent", async () => {
@@ -331,6 +466,7 @@ async function resolveGmailSearch(messages: DynamicResolveContext["messages"]) {
 async function resolveGmailTool<
   const TName extends
     | "gmail-draft"
+    | "gmail-read-thread"
     | "gmail-search"
     | "gmail-send"
     | "gmail-update",

@@ -104,7 +104,8 @@ export function googleReadKey(call: GoogleReadCall) {
       : call.toolName === "drive-search"
         ? `${String(call.input.maxResults)}\u0000${call.input.kind ?? ""}\u0000${call.input.query ?? ""}`
         : call.toolName === "gmail-read-thread"
-          ? call.input.threadId.trim()
+          ? // A read for a reply brings more than a plain one: it may follow it.
+            `${call.input.threadId.trim()}\u0000${call.input.forReply === true ? "reply" : ""}`
           : call.input.fileId;
   return `${call.toolName}\u0000${target}`;
 }
@@ -267,21 +268,29 @@ export function turnGmailUpdates(messages: readonly ModelMessage[]) {
   return updated.size;
 }
 
-const readThreadOutputSchema = z.object({
+/**
+ * Voice lookups — the person's sent mail to an addressee — one turn may
+ * make. Each costs a search and three full messages; a turn answering many
+ * letters gets the voice for the first few addressees only.
+ */
+const voiceLookupsPerTurn = 3;
+
+const voiceReadSchema = z.object({
   thread: z.object({
-    messages: z.array(z.object({ id: z.string().nullable() })),
+    yourEarlierEmails: z.object({
+      emails: z.array(z.unknown()),
+      to: z.string(),
+    }),
   }),
 });
 
 /**
- * Gmail ids of the messages whose thread the conversation has read with
- * `gmail-read-thread`, whose answer carries the person's own earlier emails
- * to that addressee. A reply is written only after that read, so it can be
- * in their voice (RU d09, EN D5).
+ * The voice lookups this turn's thread reads already made: the addressees
+ * whose earlier emails the model holds, and how many more may run.
  */
-export function readGmailMessageIds(messages: readonly ModelMessage[]) {
-  const ids = new Set<string>();
-  for (const message of messages) {
+export function turnVoice(messages: readonly ModelMessage[]) {
+  const known = new Set<string>();
+  for (const message of currentTurnMessages(messages)) {
     const parts = Array.isArray(message.content) ? message.content : [];
     for (const part of parts) {
       if (
@@ -291,13 +300,75 @@ export function readGmailMessageIds(messages: readonly ModelMessage[]) {
       ) {
         continue;
       }
-      const read = readThreadOutputSchema.safeParse(part.output.value).data;
-      for (const { id } of read?.thread.messages ?? []) {
-        if (id !== null) ids.add(id);
+      const read = voiceReadSchema.safeParse(part.output.value).data;
+      if (read) known.add(read.thread.yourEarlierEmails.to);
+    }
+  }
+  return {
+    known: [...known],
+    left: Math.max(0, voiceLookupsPerTurn - known.size),
+  };
+}
+
+/** The messages of a Gmail search or thread read, each in its thread. */
+const listedMessagesSchema = z.object({
+  messages: z.array(
+    z.object({ id: z.string().nullable(), threadId: z.string().nullable() })
+  ),
+});
+
+const readThreadOutputSchema = z.object({
+  thread: listedMessagesSchema.extend({ id: z.string() }),
+});
+
+const forReplyInputSchema = z.object({ forReply: z.literal(true) });
+
+/**
+ * Gmail ids of the messages the person may be answered on: every message of
+ * a thread the conversation read with `gmail-read-thread` `forReply`, whose
+ * answer carries the person's own earlier emails to that addressee. A reply
+ * is written only after that read, so it can be in their voice (RU d09, EN
+ * D5). An older message of a long thread, which the read cuts off at the
+ * last 20, counts by its thread, as a search or read listed it.
+ */
+export function repliableGmailMessageIds(messages: readonly ModelMessage[]) {
+  const forReply = new Set<string>();
+  const readThreads = new Set<string>();
+  const threadOf = new Map<string, string>();
+  const note = (listed: z.infer<typeof listedMessagesSchema>) => {
+    for (const { id, threadId } of listed.messages) {
+      if (id !== null && threadId !== null) threadOf.set(id, threadId);
+    }
+  };
+  for (const message of messages) {
+    const parts = Array.isArray(message.content) ? message.content : [];
+    for (const part of parts) {
+      if (part.type === "tool-call") {
+        if (
+          part.toolName === "gmail-read-thread" &&
+          forReplyInputSchema.safeParse(part.input).success
+        ) {
+          forReply.add(part.toolCallId);
+        }
+        continue;
+      }
+      if (part.type !== "tool-result" || part.output.type !== "json") {
+        continue;
+      }
+      if (part.toolName === "gmail-search") {
+        const found = listedMessagesSchema.safeParse(part.output.value).data;
+        if (found) note(found);
+      } else if (part.toolName === "gmail-read-thread") {
+        const read = readThreadOutputSchema.safeParse(part.output.value).data;
+        if (!read) continue;
+        note(read.thread);
+        if (forReply.has(part.toolCallId)) readThreads.add(read.thread.id);
       }
     }
   }
-  return [...ids];
+  return [...threadOf]
+    .filter(([, threadId]) => readThreads.has(threadId))
+    .map(([id]) => id);
 }
 
 /**
@@ -318,7 +389,11 @@ export function turnDeclinedGmailSend(messages: readonly ModelMessage[]) {
         if (part.toolName === "gmail-send") sends.add(part.toolCallId);
         if (part.toolName === "gmail-draft") declined = false;
       } else if (part.type === "tool-approval-request") {
-        if (sends.has(part.toolCallId)) cards.add(part.approvalId);
+        // A policy's own refusal is written as an automatic request and
+        // response: nobody saw a card, so nobody declined one.
+        if (sends.has(part.toolCallId) && part.isAutomatic !== true) {
+          cards.add(part.approvalId);
+        }
       } else if (
         part.type === "tool-approval-response" &&
         cards.has(part.approvalId)

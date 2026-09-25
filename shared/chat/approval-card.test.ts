@@ -187,6 +187,52 @@ describe("the approval card of a calendar event", () => {
     expect(card.prompt).not.toContain("invitation");
   });
 
+  it("names the zone only when its clock shows the time as written", () => {
+    // 11:30 UTC is 14:30 in Moscow: «11:30 (Europe/Moscow)» would mislead.
+    const card = withApprovalCard(
+      googleWrite("calendar-create-event", {
+        end: "2026-10-01T12:00:00Z",
+        start: "2026-10-01T11:30:00Z",
+        summary: "Q3 planning",
+        timezone: "Europe/Moscow",
+      }),
+      "ru"
+    );
+
+    expect(card.prompt).toContain("Когда: чт, 1 окт., 11:30–12:00 (UTC)");
+    expect(card.prompt).not.toContain("Europe/Moscow");
+  });
+
+  it("says when the one event starts, or that a whole series goes", () => {
+    const occurrence = withApprovalCard(
+      googleWrite("calendar-delete-event", {
+        eventId: "standup_20261001T070000Z",
+        eventStart: "2026-10-01T10:00:00+03:00",
+        eventTitle: "Планёрка",
+      }),
+      "ru"
+    );
+    expect(occurrence.prompt).toBe(
+      [
+        "Удалить событие из календаря «Планёрка» (чт, 1 окт., 10:00 (UTC+3)).",
+        "Если в событии есть гости, Google пришлёт им отмену.",
+      ].join("\n")
+    );
+
+    const series = withApprovalCard(
+      googleWrite("calendar-update-event", {
+        eventId: "standup",
+        eventTitle: "Планёрка",
+        series: true,
+        summary: "Планёрка команды",
+      }),
+      "en"
+    );
+    expect(series.prompt).toContain(
+      "Change the whole recurring series «Планёрка»:"
+    );
+  });
+
   it("names the event a change or a deletion is about", () => {
     const moved = withApprovalCard(
       googleWrite("calendar-update-event", {
