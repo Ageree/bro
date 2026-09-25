@@ -100,11 +100,24 @@ interface MeasuredRoute {
   readonly minutes: number;
 }
 
+/**
+ * How a map request failed: the service refusing or out of reach (it asked
+ * to slow down or is left alone after that, forbade access, timed out or
+ * could not be reached), so the next request fails too; any other failure —
+ * a 5xx, an answer that cannot be read, a route the router cannot measure —
+ * which may or may not be one-off; or a call that used up its lookups, while
+ * the service itself works.
+ */
+type MapFailure = "budget" | "failed" | "refusing";
+
 /** A map service that did not answer or refused; the model hears the reason. */
 export class MapServiceError extends Error {
-  constructor(message: string) {
+  readonly failure: MapFailure;
+
+  constructor(message: string, failure: MapFailure) {
     super(message);
     this.name = "MapServiceError";
+    this.failure = failure;
   }
 }
 
@@ -285,7 +298,8 @@ async function fetchOnce(url: URL, service: string, signal: AbortSignal) {
     throw new MapServiceError(
       error instanceof Error && error.name === "TimeoutError"
         ? `${service} did not answer in time`
-        : `${service} could not be reached`
+        : `${service} could not be reached`,
+      "refusing"
     );
   }
 }
@@ -305,7 +319,8 @@ async function request<Schema extends z.ZodType>(
 ): Promise<z.infer<Schema>> {
   if (Date.now() < (coolingUntil.get(url.host) ?? 0)) {
     throw new MapServiceError(
-      `${service} asked to slow down a few minutes ago and is not asked again yet`
+      `${service} asked to slow down a few minutes ago and is not asked again yet`,
+      "refusing"
     );
   }
   let response = await fetchOnce(url, service, signal);
@@ -326,18 +341,21 @@ async function request<Schema extends z.ZodType>(
   const text = await response.text();
   if (!response.ok && response.status !== 400) {
     throw new MapServiceError(
-      `${service} answered HTTP ${String(response.status)}`
+      `${service} answered HTTP ${String(response.status)}`,
+      slowDown(response.status) || response.status === 403
+        ? "refusing"
+        : "failed"
     );
   }
   let body: unknown;
   try {
     body = JSON.parse(text);
   } catch {
-    throw new MapServiceError(`${service} sent an unreadable answer`);
+    throw new MapServiceError(`${service} sent an unreadable answer`, "failed");
   }
   const parsed = schema.safeParse(body);
   if (!parsed.success) {
-    throw new MapServiceError(`${service} sent an unexpected answer`);
+    throw new MapServiceError(`${service} sent an unexpected answer`, "failed");
   }
   return parsed.data;
 }
@@ -420,7 +438,8 @@ export async function findPlace(
   if (known) return known.place;
   if (budget.remaining <= 0) {
     throw new MapServiceError(
-      `This call already made ${String(lookupsPerCall)} map lookups; measure the rest in another call`
+      `This call already made ${String(lookupsPerCall)} map lookups; measure the rest in another call`,
+      "budget"
     );
   }
   budget.remaining -= 1;
@@ -494,7 +513,8 @@ export async function measureRoutes(
     );
     if (table.code !== "Ok") {
       throw new MapServiceError(
-        `The OpenStreetMap router could not measure the route: ${table.message ?? table.code}`
+        `The OpenStreetMap router could not measure the route: ${table.message ?? table.code}`,
+        "failed"
       );
     }
     const durations = table.durations?.[0] ?? [];

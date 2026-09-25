@@ -120,8 +120,12 @@ describe("model selection", () => {
     const { modelSelection } = await import("@agent/lib/model/selection");
     const selection = modelSelection("deepseek/deepseek-v4.1-flash");
 
+    const { watchedModelFetch } =
+      await import("@agent/lib/model/stream-watchdog");
     expect(openRouter.createOpenRouter).toHaveBeenCalledExactlyOnceWith({
       apiKey: "openrouter-test-key",
+      // Every call goes through the stall watchdog.
+      fetch: watchedModelFetch,
       headers: {
         "HTTP-Referer": "https://openinstinct.example",
         "X-Title": "Bro",

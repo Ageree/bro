@@ -138,14 +138,42 @@ function mismatchNote(reason: string) {
   return `${reason}, and a time to it would be wrong: call again with the place's name and city, or «lat, lon»`;
 }
 
+/** A part of the query that is a house alone: «12 к2», «7/15 с1», «26А». */
+function housePart(part: string) {
+  return /^\d/u.test(part) && !/\p{L}{3}/u.test(part);
+}
+
 /**
- * What to ask the geocoder, best first: the query as given, then the
- * address alone when a name comes before an address with a house («Кафе
- * Авокадо, Чистопрудный бульвар 12к2, Москва» is found only so), then the
- * name without the kind of place and quotes. A street with its house first
- * («Тверская 7, Москва, Россия») or a name before only a city is never cut
- * down to «Москва, Россия»: the map would answer with the city. Each miss
- * costs a lookup and two seconds of the turn.
+ * The address after a place's name, with its house and city, as the map
+ * finds it: «Чистопрудный бульвар 12 к2, Москва» from «Чистопрудный
+ * бульвар 12 к2, Москва» or «Чистопрудный бульвар, 12 к2, Москва». Nothing
+ * when there is no street with a house and something after it: a name
+ * before only a city must not be cut down to «Москва».
+ */
+function addressAfterName(address: readonly string[]) {
+  const [street = "", house = "", ...rest] = address;
+  if (!/\p{L}{3}/u.test(street)) return undefined;
+  if (/\d/u.test(street)) {
+    return address.length >= 2 ? address.join(", ") : undefined;
+  }
+  return housePart(house) && rest.length > 0
+    ? [`${street} ${house}`, ...rest].join(", ")
+    : undefined;
+}
+
+/**
+ * What to ask the geocoder, best first. When a name comes before an address
+ * with a house, the address alone goes first: the map finds a building by
+ * its address but almost never a name and an address together. Live on
+ * 25.09 «Авокадо, Чистопрудный бульвар, 12 к2, Москва», «Hedonist,
+ * Покровский бульвар, 8 с1, Москва» and even «Кафе Пушкинъ, Тверской
+ * бульвар 26А, Москва» were not on the map, while each address alone was;
+ * in the benchmark all three places of one pick came back unmeasured so.
+ * Then the query as given, then the name without the kind of place and
+ * quotes. A street with its house first («Тверская 7, Москва, Россия») or a
+ * name before only a city is never cut down to «Москва, Россия»: the map
+ * would answer with the city. Each miss costs a lookup and two seconds of
+ * the turn.
  */
 function queryVariants(query: string) {
   const parts = withHouseShorthand(query)
@@ -157,15 +185,11 @@ function queryVariants(query: string) {
     .replace(kindOfPlace, "")
     .replaceAll(/[«»"“”„]/gu, "")
     .trim();
-  const variants = [parts.join(", ")];
-  if (
-    !/\d/u.test(name) &&
-    address.length >= 2 &&
-    /\p{L}{3}/u.test(address[0] ?? "") &&
-    /\d/u.test(address[0] ?? "")
-  ) {
-    variants.push(address.join(", "));
-  }
+  const addressOnly = /\d/u.test(name) ? undefined : addressAfterName(address);
+  const variants = [
+    ...(addressOnly === undefined ? [] : [addressOnly]),
+    parts.join(", "),
+  ];
   if (bareName.length > 0) variants.push([bareName, ...address].join(", "));
   return [...new Set(variants)];
 }
@@ -230,7 +254,7 @@ async function measure(
   }
 
   const places: {
-    readonly failure?: string;
+    readonly failure?: MapServiceError;
     readonly place: MapPlace | undefined;
     readonly query: string;
   }[] = [];
@@ -240,7 +264,7 @@ async function measure(
       places.push({ place: await locate(query, from, budget, signal), query });
     } catch (error) {
       if (!(error instanceof MapServiceError)) throw error;
-      places.push({ failure: error.message, place: undefined, query });
+      places.push({ failure: error, place: undefined, query });
     }
   }
   /* oxlint-enable eslint/no-await-in-loop */
@@ -251,12 +275,12 @@ async function measure(
   );
 
   let measured: Awaited<ReturnType<typeof measureRoutes>> = [];
-  let routerFailure: string | undefined;
+  let routerFailure: MapServiceError | undefined;
   try {
     measured = await measureRoutes(input.mode, from, found, signal);
   } catch (error) {
     if (!(error instanceof MapServiceError)) throw error;
-    routerFailure = error.message;
+    routerFailure = error;
   }
 
   let foundIndex = 0;
@@ -267,7 +291,7 @@ async function measure(
         error:
           entry.failure === undefined
             ? "not on the map: add the street and city, or pass «lat, lon»"
-            : `${entry.failure}; this destination was not measured`,
+            : `${entry.failure.message}; this destination was not measured`,
         to: entry.query,
       };
     }
@@ -280,7 +304,7 @@ async function measure(
     const link = routeLink(input.mode, from, place);
     if (routerFailure !== undefined) {
       return {
-        error: `${routerFailure}: only the straight-line distance is known, so state no travel time`,
+        error: `${routerFailure.message}: only the straight-line distance is known, so state no travel time`,
         link,
         place: place.label,
         straightKm: straightKm(from, place),
@@ -312,9 +336,92 @@ async function measure(
     from: from.label,
     fromNote: areaNote(from),
     mode: input.mode,
+    pick:
+      input.mode === "walking"
+        ? pickNote(routes, {
+            // Places the map service or this call's lookups left unmeasured.
+            count:
+              places.filter((entry) => entry.failure !== undefined).length +
+              (routerFailure === undefined ? 0 : found.length),
+            refusing: mapRefusing(
+              places.flatMap((entry) =>
+                entry.failure === undefined ? [] : [entry.failure]
+              ),
+              routerFailure !== undefined,
+              routes.some((route) => "minutes" in route)
+            ),
+          })
+        : undefined,
     routes,
     status: "ok" as const,
   };
+}
+
+/**
+ * Whether the map service is to be taken as refusing for the rest of the
+ * turn, so the pick asks for nothing more to be measured. Any router failure
+ * is: its one request covers every place. So is a geocoder that refused, or
+ * failed more than once, or failed where nothing was measured. Only a single
+ * failed lookup among measured places, or a call out of lookups, leaves the
+ * next call to measure as usual: when the router answered 502 on every call,
+ * «a one-off error, measure again» sent the model round and round.
+ */
+function mapRefusing(
+  failures: readonly MapServiceError[],
+  routerFailed: boolean,
+  anyMeasured: boolean
+) {
+  if (routerFailed) return true;
+  const lookups = failures.filter((failure) => failure.failure !== "budget");
+  return (
+    lookups.some((failure) => failure.failure === "refusing") ||
+    lookups.length > 1 ||
+    (lookups.length === 1 && !anyMeasured)
+  );
+}
+
+/** «Пешком» when the person named no limit of their own (recommendations.md). */
+const walkLimitMinutes = 15;
+/** Options a pick of places aims at, each passing every condition. */
+const pickSize = 3;
+
+/**
+ * How many of the places measured are within a walk, and how many a pick
+ * still lacks. The rule of three verified options lived only in the prompt,
+ * and on 25.09 (RU d03) gpt-6-luna answered a dinner pick with one place
+ * after one round of searches: the tool result the model reads last is
+ * where it takes its next step from. A place the map service left
+ * unmeasured stays a candidate rather than a place to replace. While the
+ * service refuses (`mapRefusing`) nothing more is to be measured: asking for
+ * replacements then sent the model to search and measure again against a
+ * service that was still refusing. After a one-off error or a call out of
+ * lookups the next call measures as usual.
+ */
+function pickNote(
+  routes: readonly { readonly minutes?: number }[],
+  unmeasuredByService: { readonly count: number; readonly refusing: boolean }
+) {
+  const measured = routes.flatMap((route) =>
+    route.minutes === undefined ? [] : [route.minutes]
+  );
+  const near = measured.filter((minutes) => minutes <= walkLimitMinutes);
+  const unmeasured = routes.length - measured.length;
+  const { count, refusing } = unmeasuredByService;
+  const lacking = pickSize - near.length - count;
+  const counted = `${String(near.length)} of ${String(routes.length)} ${routes.length === 1 ? "place is" : "places are"} within a ${String(walkLimitMinutes)}-minute walk${unmeasured > 0 ? ` and ${String(unmeasured)} not measured` : ""}`;
+  const them = count === 1 ? "it" : "them";
+  const candidates = count === 1 ? "a candidate" : "candidates";
+  const service =
+    count === 0
+      ? ""
+      : refusing
+        ? ` ${String(count)} of them went unmeasured because the map service is refusing now: keep ${them} as ${candidates} with the walk named as not checked, never guess minutes, look for no replacement for ${them} and do not measure ${them} again in this turn.`
+        : ` ${String(count)} of them went unmeasured because of a one-off map error or this call's lookup limit, not because of where ${count === 1 ? "it is" : "they are"}: keep ${them} as ${candidates} and measure ${them} again in one more call; never guess minutes.`;
+  const next =
+    lacking > 0
+      ? `${String(lacking)} more ${lacking === 1 ? "is" : "are"} needed: before you reply, find other candidates near the start that fit the rest of the conditions (web_search with sites yandex.ru/maps or 2gis.ru)${refusing ? ", and while the map service refuses give their walk as not checked instead of measuring them" : " and measure them here in one more call"}. Reply with fewer only when that search found none, and say how many fit and why`
+      : "Before you reply, check each of them against the rest of the conditions";
+  return `If these are candidates for a pick of places («где поужинать пешком от…»): ${counted}. A pick aims at ${String(pickSize)} options that each pass every condition the person named, the walk included (${String(walkLimitMinutes)} minutes unless they named their own limit).${service} ${next}; name whatever you could not check as not checked.`;
 }
 
 export const routeTime = defineTool({

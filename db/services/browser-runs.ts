@@ -588,14 +588,17 @@ export async function claimBrowserRunReport(runId: string) {
   return row;
 }
 
+/** Mark the report delivered; true when this call was the one that did. */
 export async function finishBrowserRunReport(runId: string) {
   const now = new Date();
-  await db
+  const rows = await db
     .update(browserRuns)
     .set({ reportClaimedAt: null, reportDeliveredAt: now, updatedAt: now })
     .where(
       and(eq(browserRuns.id, runId), isNull(browserRuns.reportDeliveredAt))
-    );
+    )
+    .returning({ id: browserRuns.id });
+  return rows.length > 0;
 }
 
 /** The wait after a failed delivery: 30 s, doubling, at most 15 minutes. */
@@ -626,7 +629,12 @@ export async function releaseBrowserRunReport(runId: string) {
 /**
  * How long a report the conversation accepted may wait for its turn. With
  * `turnPolicy: "queue"` it waits behind a turn the person started, which can
- * run for minutes; sent again after the plain lease, both copies ran.
+ * run for minutes; sent again after the plain lease, both copies ran. It
+ * stays flat: every hand-over counts in `reportAttempts`, which is also what
+ * `reopenBrowserRunReport` gives up on, and a hold that grew from a minute
+ * spent three attempts behind one long turn of the person's — eve runs the
+ * queued copies as one report turn, and a single failure of that turn then
+ * dropped the report for good.
  */
 const handedOverLeaseMs = 10 * 60_000;
 

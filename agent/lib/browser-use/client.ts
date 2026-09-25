@@ -370,6 +370,9 @@ export function liveViewUrlFromEvents(
   return undefined;
 }
 
+/** A status or summary read takes well under a second. */
+const browserUseRequestTimeoutMs = 30_000;
+
 async function request(
   method: "DELETE" | "GET" | "PATCH" | "POST",
   path: string,
@@ -390,7 +393,25 @@ async function request(
   };
   if (body !== undefined) init.body = body;
 
-  let response = await fetch(url, init);
+  // A read, a stop, a cancel or a new profile is bounded: an answer that never
+  // came used to hold the poller's tick, or the person's turn, for undici's
+  // five minutes, and cutting one off leaves at worst an empty profile. A
+  // request that sets a browser to work is not: Browser Use takes no
+  // idempotency key, so a new run or a queued message cut off after it landed
+  // leaves that run acting for the person with no row, no report and nothing
+  // to cancel it, and the retry opens a second browser. The poller does not
+  // wait on one longer than its own deadlines anyway (`within` in
+  // `agent/schedules/browser-runs.ts`).
+  const setsBrowserToWork =
+    method === "POST" && (path === "/runs" || path.endsWith("/queue"));
+  const attempt = () =>
+    fetch(
+      url,
+      setsBrowserToWork
+        ? init
+        : { ...init, signal: AbortSignal.timeout(browserUseRequestTimeoutMs) }
+    );
+  let response = await attempt();
   // One retry only, and only for a read or a request that is safe to repeat.
   // A POST that failed may still have started a run or queued a message, and
   // a 429 on one is the concurrent-session cap, which the next second does
@@ -399,7 +420,7 @@ async function request(
     method !== "POST" &&
     (response.status === 429 || response.status >= 500)
   ) {
-    response = await fetch(url, init);
+    response = await attempt();
   }
   const text = await response.text();
   if (!response.ok) {

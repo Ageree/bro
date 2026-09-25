@@ -1,4 +1,4 @@
-import type { ModelMessage, ToolResultPart } from "ai";
+import type { JSONValue, ModelMessage, ToolResultPart } from "ai";
 import { describe, expect, it } from "vitest";
 import {
   repeatsDelivered,
@@ -256,6 +256,995 @@ describe("sendRefusal on rephrased replies from the benchmark", () => {
         history,
         "Продолжаю в том же браузере: сейчас проверяю слот к 20:00 и добираю корзину. Как только сайт даст точный состав — напишу вам сразу."
       )
+    ).toEqual({ skipped: "stale" });
+  });
+});
+
+/**
+ * Turns from the production benchmark of 25.09.2026 (gpt-6-luna): what went
+ * out after the first message still passed as news — a name in another case,
+ * a detail of the errand the first message left out, a question wrapped in
+ * the answer told again.
+ */
+describe("sendRefusal on the benchmark of 25.09", () => {
+  const barberRequest = userMessage(
+    "скинь адрес того барбера плз, я забыл кк он называеца"
+  );
+  const barberAnswer =
+    "Похоже, это The Barber Club: Профсоюзная улица, 11/11, вход с улицы Кржижановского. Но имя Артура там не подтвердилось — нашёл только отдельного барбера Артура в Мытищах, так что это может быть не тот мастер.\nhttps://thebarberclub.ru/";
+
+  it.each([
+    "Похоже, это The Barber Club: Профсоюзная улица, 11/11, вход с улицы Кржижановского. Но подтвердить, что там работает Артур, не удалось. https://thebarberclub.ru/",
+    "Похоже, барбершоп называется The Barber Club: Профсоюзная улица, 11/11, вход с улицы Кржижановского. Но что там работает Артур, подтвердить не удалось. https://thebarberclub.ru/",
+  ])("drops the address said again with «Артур» for «Артура» (d15)", (text) => {
+    const history = [
+      barberRequest,
+      ...toolStep("web_search", { results: [] }),
+      ...sendMessage("address", barberAnswer),
+    ];
+
+    expect(refusal(history, text)).toEqual({ skipped: "stale" });
+  });
+
+  it("keeps two names that share only their first letters apart", () => {
+    const history = [
+      userMessage("кто завтра придёт?"),
+      ...sendMessage("first", "Мария придёт завтра в 10:00."),
+    ];
+
+    expect(refusal(history, "Марина придёт завтра в 10:00.")).toBeUndefined();
+  });
+
+  it.each([
+    [
+      "Виктории after Виктору",
+      "Напиши Виктору и Виктории, что встреча в 15:00",
+      "Письмо Виктору отправлено: встреча в 15:00.",
+      "Письмо Виктории отправлено: встреча в 15:00.",
+    ],
+    [
+      "Виктория after Виктор",
+      "кто подтвердил встречу?",
+      "Виктор подтвердил встречу завтра в 10:00.",
+      "Виктория подтвердила встречу завтра в 10:00.",
+    ],
+    [
+      "Виктория named inside the sentence",
+      "кто подтвердил встречу?",
+      "Виктор подтвердил встречу завтра в 10:00.",
+      "Также подтвердила Виктория.",
+    ],
+    [
+      "Валентина after Валентин, both named by the person",
+      "Предупреди охрану, что завтра в 10:00 придут Валентин и Валентина",
+      "Валентин придёт завтра в 10:00, я предупредил охрану.",
+      "Валентина придёт завтра в 10:00, я предупредил охрану.",
+    ],
+    [
+      "Эмилия after Эмиль",
+      "кто завтра придёт?",
+      "Эмиль придёт завтра в 10:00, я предупредил охрану.",
+      "Эмилия придёт завтра в 10:00, я предупредил охрану.",
+    ],
+    [
+      "Леня after Лена",
+      "кто завтра придёт?",
+      "Лена придёт завтра в 10:00, я предупредил охрану.",
+      "Леня придёт завтра в 10:00, я предупредил охрану.",
+    ],
+  ])(
+    "delivers %s: another person, not another case",
+    (_case, ask, first, second) => {
+      const history = [
+        userMessage(ask),
+        ...toolStep("gmail-send", { id: "m-1" }),
+        ...toolStep("gmail-send", { id: "m-2" }),
+        ...sendMessage("first", first),
+      ];
+
+      expect(refusal(history, second)).toBeUndefined();
+    }
+  );
+
+  it.each([
+    [
+      "Александра after Александр",
+      "Александр подтвердил встречу завтра в 10:00.",
+      "Александра подтвердила встречу завтра в 10:00.",
+    ],
+    [
+      "Евгения after Евгений",
+      "Евгений подтвердил встречу завтра в 10:00.",
+      "Евгения подтвердила встречу завтра в 10:00.",
+    ],
+    [
+      "Александра after Александр, named inside the sentence",
+      "Встречу завтра в 10:00 подтвердил Александр.",
+      "Встречу завтра в 10:00 подтвердила и Александра.",
+    ],
+  ])(
+    "delivers %s from the calendar: the verbs say a man and a woman",
+    (_case, first, second) => {
+      const history = [
+        userMessage("кто подтвердил встречу?"),
+        ...toolStep("calendar-list-events", { events: [] }),
+        ...sendMessage("first", first),
+      ];
+
+      expect(refusal(history, second)).toBeUndefined();
+    }
+  );
+
+  it.each([
+    [
+      "Лавку after Лавке",
+      "Запустил поручение на Яндекс Лавке.",
+      "Поручение передано в Яндекс Лавку, сайт пока ничего не оформлял.",
+    ],
+    [
+      "Профсоюзная after Профсоюзной",
+      "Барбершоп на Профсоюзной улице, 11/11.",
+      "Это барбершоп на улице Профсоюзная, 11/11, рядом с метро.",
+    ],
+    [
+      "Шереметьеве after Шереметьево",
+      "Вылет из Шереметьево в 08:40, терминал B.",
+      "Вылетаете в 08:40 из Шереметьеве, терминал B.",
+    ],
+    [
+      "Иванов after Ивановым",
+      "Договорился с Ивановым о встрече в 15:00.",
+      "Встречу в 15:00 подтвердил Иванов.",
+    ],
+  ])("still reads %s as the same name", (_case, first, second) => {
+    const history = [
+      userMessage("что там?"),
+      ...toolStep("web_search", { results: [] }),
+      ...sendMessage("first", first),
+    ];
+
+    expect(refusal(history, second)).toEqual({ skipped: "stale" });
+  });
+
+  it.each([
+    [
+      "the name in another case",
+      "Похоже, это The Barber Club: Профсоюзная улица, 11/11, вход с улицы Кржижановского. Но имя Артура там не подтвердилось.",
+      "Похоже, это The Barber Club: Профсоюзная улица, 11/11, вход с улицы Кржижановского. Но мастер Артур там не подтвердился.",
+    ],
+    [
+      "the name moved and declined",
+      "Записал вас к Артуру на завтра, 26 сентября, в 19:00: барбершоп The Barber Club, Профсоюзная улица, 11/11.",
+      "Записал вас на завтра, 26 сентября, в 19:00 у Артура: барбершоп The Barber Club, Профсоюзная улица, 11/11.",
+    ],
+  ])("drops a near copy with %s (d15)", (_case, first, second) => {
+    const history = [
+      barberRequest,
+      // The search luna made in d15.
+      ...toolStep(
+        "web_search",
+        { results: [] },
+        { query: "барбершоп Артур Профсоюзная Москва адрес", sites: [] }
+      ),
+      ...sendMessage("address", first),
+    ];
+
+    expect(refusal(history, second)).toEqual({ skipped: "duplicate" });
+  });
+
+  it.each([
+    [
+      "Ивановой after Иванову",
+      "Отправил письмо Иванову: встреча переносится на пятницу.",
+      "Отправил письмо Ивановой: встреча переносится на пятницу.",
+    ],
+    [
+      "Александре after Александру",
+      "Отправил письмо Александру: встреча переносится на пятницу.",
+      "Отправил письмо Александре: встреча переносится на пятницу.",
+    ],
+    [
+      "Евгении after Евгению",
+      "Отправил письмо Евгению: встреча переносится на пятницу.",
+      "Отправил письмо Евгении: встреча переносится на пятницу.",
+    ],
+    [
+      "на Тверском after на Тверской",
+      "Встреча в кафе на Тверской в 15:00, адрес отправил всем.",
+      "Встреча в кафе на Тверском в 15:00, адрес отправил всем.",
+    ],
+  ])(
+    "delivers %s: names the turn never used are compared as written",
+    (_case, first, second) => {
+      const history = [
+        userMessage(
+          "Разошли всем из вчерашнего письма, что встреча переносится на пятницу"
+        ),
+        ...toolStep("gmail-send", { id: "m-1" }),
+        ...sendMessage("first", first),
+        ...toolStep("gmail-send", { id: "m-2" }),
+      ];
+
+      expect(refusal(history, second)).toBeUndefined();
+      // Without the second letter in between, too.
+      expect(refusal(history.slice(0, -2), second)).toBeUndefined();
+    }
+  );
+
+  const groceries = userMessage(
+    "закажи продукты к восьми вечера: молоко 3,2, десяток яиц, 2 авокадо, куриное филе около кило и чего-нибудь к чаю. если чего-то нет, замени похожим, но скажи что заменил"
+  );
+  /** The call luna made in d05, as the event log kept it. */
+  const groceriesErrand = {
+    allowPayment: false,
+    allowSubmit: false,
+    collectImages: false,
+    deliveryAddress: true,
+    site: "https://lavka.yandex.ru",
+    submission: {
+      amount: "Итог пока не найден",
+      chargeRub: 0,
+      forWhom: "Савелий Соловьев",
+      items: [
+        "Молоко 3,2%",
+        "Яйца, 10 шт.",
+        "Авокадо × 2",
+        "Куриное филе, около 1 кг",
+        "Что-нибудь к чаю",
+      ],
+      kind: "order",
+      personalData: [],
+      what: "Заказ продуктов с доставкой к 20:00: молоко 3,2%, десяток яиц, 2 авокадо, около 1 кг куриного филе и что-нибудь к чаю; если чего-то нет, заменить похожим и сообщить замены",
+      when: "25 сентября 2026, к 20:00",
+      where: "Яндекс Лавка (lavka.yandex.ru)",
+    },
+    task: "Закажите доставкой к 20:00 сегодня в Москве по сохранённому адресу: молоко 3,2%, десяток яиц, 2 авокадо, куриное филе около 1 кг и что-нибудь к чаю. Если чего-то нет, выберите похожую замену и сообщите, что именно заменили. Подберите товары и доведите до финального шага, сообщите полный состав, замены, слот, сборы и общую стоимость; не оформляйте и не оплачивайте без моей карточки. Если в Лавке недоступно, проверьте Самокат или Перекрёсток.",
+  };
+  const groceriesStart = browserStep(
+    "start",
+    { runId: "run-1", status: "running" },
+    groceriesErrand
+  );
+  const errandStarted = [groceries, ...groceriesStart];
+  const errandStatus =
+    "Запустил заказ продуктов с доставкой к 20:00 на сохранённый адрес. Когда соберу корзину, пришлю точный состав, цену и все замены на подтверждение; пока ничего не оформлено.";
+
+  it("delivers one message about the errand it started (d05)", () => {
+    expect(refusal(errandStarted, errandStatus)).toBeUndefined();
+  });
+
+  const secondStatuses = [
+    "Запустил поручение на Яндекс Лавке; заказ ещё не оформлен. Уточню: назвал доставку к 20:00 сегодня, 25 сентября, на сохранённый адрес в Москве.",
+    "Заказал не я: Яндекс Лавка ещё ничего не получила — браузерный запуск только поставлен в очередь. Как только соберу корзину и узнаю цену и замены, пришлю её вам на подтверждение.",
+    "Поручение на заказ передано в Яндекс Лавку; сайт пока ничего не оформлял. Пришлю найденную корзину, цену и замены, когда запуск вернёт результат.",
+  ];
+
+  it.each(secondStatuses)(
+    "drops a second message about the same errand (d05)",
+    (text) => {
+      const told = [...errandStarted, ...sendMessage("started", errandStatus)];
+
+      expect(refusal(told, text)).toEqual({ skipped: "started" });
+      expect(skippedSendNotice("started")).toContain("end the turn now");
+    }
+  );
+
+  it.each([
+    ["list_orders", { orders: [] }],
+    ["web_search", { results: [] }],
+    ["workstreams__read", { id: "groceries", revision: 1 }],
+  ])(
+    "drops it when %s ran before the errand started (d02, d04, d15)",
+    (toolName, value) => {
+      const told = [
+        groceries,
+        ...toolStep(toolName, value),
+        ...groceriesStart,
+        ...sendMessage("started", errandStatus),
+      ];
+
+      for (const text of secondStatuses) {
+        expect(refusal(told, text)).toEqual({ skipped: "started" });
+      }
+    }
+  );
+
+  it("drops it after a status check that found the run still at work", () => {
+    const polled = [
+      ...errandStarted,
+      ...sendMessage("started", errandStatus),
+      ...browserStep("status", { runId: "run-1", status: "running" }),
+    ];
+
+    expect(
+      refusal(
+        polled,
+        "Запуск ещё собирает корзину в Яндекс Лавке, заказ не оформлен."
+      )
+    ).toEqual({ skipped: "started" });
+  });
+
+  it.each([
+    [
+      "a question the first message did not ask",
+      [],
+      "Если молока 3,2 не будет, взять 2,5 или 3,5?",
+    ],
+    [
+      "what other work of the turn did",
+      toolStep("schedules-create", { id: "job-1", status: "active" }),
+      "И напоминание разобрать пакеты поставил на 20:30.",
+    ],
+    [
+      "another errand the turn started since",
+      browserStep("start", { runId: "run-2", status: "running" }),
+      "Столик в «Пушкине» на 21:00 тоже ищу — пришлю, что найду.",
+    ],
+    [
+      "an errand that failed to go on",
+      browserStep("continue", { status: "unavailable" }),
+      "Браузерный сервис сейчас недоступен, заказ не оформится — попробую позже.",
+    ],
+  ])("still delivers %s after the errand's message", (_case, work, text) => {
+    const told = [
+      ...errandStarted,
+      ...sendMessage("started", errandStatus),
+      ...work,
+    ];
+
+    expect(refusal(told, text)).toBeUndefined();
+  });
+
+  const ticketsAndWeather = userMessage(
+    "Найди билеты в Сочи на выходные и скажи, какая там погода"
+  );
+  const ticketsStart = browserStep(
+    "start",
+    { runId: "run-1", status: "running" },
+    {
+      site: "https://www.tutu.ru",
+      task: "Найдите билеты Москва — Сочи на выходные, 27–28 сентября, на Туту: поезд или самолёт, пришлите варианты с ценами.",
+    }
+  );
+  const ticketsStatus =
+    "Запустил поиск билетов в Сочи на выходные — пришлю варианты, как найду.";
+  const weather =
+    "Погода в Сочи на выходных: днём до +24, солнечно, вечером +17.";
+
+  it.each([
+    [
+      "the weather after the errand's message",
+      [
+        ticketsAndWeather,
+        ...inOneStep(ticketsStart, toolStep("web_search", { results: [] })),
+        ...sendMessage("tickets", ticketsStatus),
+      ],
+      weather,
+    ],
+    [
+      "the errand's message after the weather",
+      [
+        ticketsAndWeather,
+        ...inOneStep(ticketsStart, toolStep("web_search", { results: [] })),
+        ...sendMessage("weather", weather),
+      ],
+      "Билеты Москва — Сочи на 27–28 сентября ищу в браузере, пришлю варианты.",
+    ],
+    [
+      "the weather found a step before the errand started",
+      [
+        ticketsAndWeather,
+        ...toolStep("web_search", { results: [] }),
+        ...ticketsStart,
+        ...sendMessage("tickets", ticketsStatus),
+      ],
+      weather,
+    ],
+    [
+      "the answer to a question asked with a steer",
+      [
+        userMessage("Поменяй на 20:00. А Пушкин работает до скольки?"),
+        ...inOneStep(
+          browserStep("continue", { runId: "run-2", status: "running" }),
+          toolStep("web_search", { results: [] })
+        ),
+        ...sendMessage("steer", "Передал: переносим бронь на 20:00."),
+      ],
+      "«Пушкин» работает до 00:00, кухня — до 23:00.",
+    ],
+    [
+      "a calendar entry made with the errand's start",
+      [
+        userMessage(
+          "закажи продукты к восьми и поставь в календарь принять доставку"
+        ),
+        ...inOneStep(
+          browserStep("start", { runId: "run-1", status: "running" }),
+          toolStep("calendar-create-event", { id: "event-1" })
+        ),
+        ...sendMessage("started", errandStatus),
+      ],
+      "В календарь поставил «Принять доставку» на 19:50.",
+    ],
+  ])(
+    "delivers %s: other work of the turn is news of its own",
+    (_case, history, text) => {
+      expect(refusal(history, text)).toBeUndefined();
+    }
+  );
+
+  const dinnerSearch = toolStep("web_search", {
+    results:
+      "1. Авокадо, ресторан, Чистопрудный бул., 12, корп. 2, Москва — Яндекс Карты\nhttps://yandex.ru/maps/org/avokado/1099046369/\nРесторан «Авокадо» специализируется на вегетарианской, веганской и сыроедческой кухне.",
+  });
+  const dinnerBooking = browserStep(
+    "start",
+    { runId: "run-7", status: "running" },
+    {
+      site: "https://yandex.ru/maps/org/avokado/1099046369/",
+      task: "Забронируйте столик в «Авокадо», Чистопрудный бульвар, 12, корп. 2, на 26 сентября, 19:30, на четверых.",
+    }
+  );
+  const barberSearch = toolStep("web_search", {
+    results:
+      "1. Барбершоп The Barber Club | Мужские стрижки\nhttps://thebarberclub.ru/\nг. Москва, ул. Профсоюзная, 11/11, вход с улицы Кржижановского",
+  });
+  const barberBooking = browserStep(
+    "start",
+    { runId: "run-8", status: "running" },
+    {
+      site: "https://thebarberclub.ru/",
+      task: "Запишите на 26 сентября, 19:00, к барберу Артуру в The Barber Club, Профсоюзная улица, 11/11.",
+    }
+  );
+
+  it.each([
+    [
+      "the restaurant, searched and started in two steps",
+      [
+        userMessage(
+          "найди, где поужинать завтра в 19:30 на четверых у чистых прудов, не сетевое, и забронируй"
+        ),
+        ...dinnerSearch,
+        ...dinnerBooking,
+        ...sendMessage(
+          "started",
+          "Запустил бронь, пришлю подтверждение, как будет готово."
+        ),
+      ],
+      "Бронирую «Авокадо», Чистопрудный бульвар, 12, корп. 2: полностью вегетарианское меню.",
+    ],
+    [
+      "the restaurant, searched and started in one step",
+      [
+        userMessage(
+          "найди, где поужинать завтра в 19:30 на четверых у чистых прудов, не сетевое, и забронируй"
+        ),
+        ...inOneStep(dinnerSearch, dinnerBooking),
+        ...sendMessage(
+          "started",
+          "Запустил бронь, пришлю подтверждение, как будет готово."
+        ),
+      ],
+      "Бронирую «Авокадо», Чистопрудный бульвар, 12, корп. 2: полностью вегетарианское меню.",
+    ],
+    [
+      "the barbershop",
+      [
+        userMessage(
+          "запиши меня в барбершоп на профсоюзной к артуру на завтра в 19:00"
+        ),
+        ...barberSearch,
+        ...barberBooking,
+        ...sendMessage("started", "Запустил запись, пришлю подтверждение."),
+      ],
+      "Нашёл The Barber Club: Профсоюзная улица, 11/11. Записываю туда на 19:00.",
+    ],
+  ])("delivers %s the model picked from a search", (_case, history, text) => {
+    expect(refusal(history, text)).toBeUndefined();
+  });
+
+  const taxiStart = browserStep(
+    "start",
+    { runId: "run-9", status: "running" },
+    {
+      site: "https://taxi.yandex.ru",
+      task: "Закажите такси до офиса на 9:00 утра и пришлите машину и цену.",
+    }
+  );
+  const taxiStatus =
+    "Запустил заказ такси до офиса на 9:00, пришлю машину и цену.";
+
+  it.each([
+    [
+      "the letter the person asked to check",
+      [
+        userMessage(
+          "Закажи такси до офиса на 9 утра и проверь, пришло ли письмо от Иванова"
+        ),
+        ...inOneStep(taxiStart, toolStep("gmail-search", { messages: [] })),
+        ...sendMessage("taxi", taxiStatus),
+      ],
+      "Письмо от Иванова есть: просит перенести встречу на четверг.",
+    ],
+    [
+      "a gift idea the person asked for",
+      [
+        userMessage(
+          "Закажи такси до офиса на 9 утра и подскажи, что подарить Маше"
+        ),
+        ...taxiStart,
+        ...sendMessage("taxi", taxiStatus),
+      ],
+      "А Маше можно подарить сертификат в спа или хорошие наушники.",
+    ],
+    [
+      "whether the person makes it in time",
+      [
+        userMessage(
+          "Закажи такси до офиса на 9 утра и скажи, успею ли я к 10:00 в Шереметьево"
+        ),
+        ...taxiStart,
+        ...sendMessage("taxi", taxiStatus),
+      ],
+      "К 10:00 в Шереметьево успеешь, запас есть.",
+    ],
+    [
+      "the answer to a question asked with a steer",
+      [
+        userMessage("Поменяй на 20:00. А Пушкин работает до полуночи?"),
+        ...browserStep(
+          "continue",
+          { runId: "run-2", status: "running" },
+          { task: "Поменяй на 20:00. А Пушкин работает до полуночи?" }
+        ),
+        ...sendMessage("steer", "Передал: переносим бронь на 20:00."),
+      ],
+      "Да, «Пушкин» открыт до полуночи.",
+    ],
+  ])(
+    "delivers %s after the errand's message: it is not about the errand",
+    (_case, history, text) => {
+      expect(refusal(history, text)).toBeUndefined();
+    }
+  );
+
+  it("delivers the second errand's message after the first's (two starts in one step)", () => {
+    const both = [
+      userMessage(
+        "Закажи такси до Шереметьево на 18:00 и забронируй столик в Пушкине на 21:00 на двоих"
+      ),
+      ...inOneStep(
+        browserStep(
+          "start",
+          { runId: "run-12", status: "running" },
+          { task: "Закажите такси до Шереметьево на 18:00." }
+        ),
+        browserStep(
+          "start",
+          { runId: "run-13", status: "running" },
+          { task: "Забронируйте столик в «Пушкине» на 21:00 на двоих." }
+        )
+      ),
+      ...sendMessage(
+        "taxi",
+        "Такси до Шереметьево на 18:00 заказываю, пришлю машину."
+      ),
+    ];
+
+    expect(
+      refusal(
+        both,
+        "Столик в «Пушкине» на 21:00 на двоих тоже ищу, пришлю подтверждение."
+      )
+    ).toBeUndefined();
+  });
+
+  it("delivers the saved address the model gave the errand", () => {
+    const taxi = [
+      userMessage("Закажи такси на работу к 9 утра"),
+      ...browserStep(
+        "start",
+        { runId: "run-14", status: "running" },
+        {
+          task: "Закажите такси от Тверской, 7 до Профсоюзной, 11, тариф Комфорт, подача к 9:00.",
+        }
+      ),
+      ...sendMessage("taxi", "Запустил заказ такси к 9:00, пришлю машину."),
+    ];
+
+    expect(
+      refusal(
+        taxi,
+        "Уточню: еду от Тверской, 7 до Профсоюзной, 11, тариф Комфорт."
+      )
+    ).toBeUndefined();
+  });
+
+  it("gives each errand started in one step its own message", () => {
+    const both = [
+      userMessage(
+        "Закажи такси до офиса на 9 утра и забронируй столик в Пушкине на 20:00"
+      ),
+      ...inOneStep(
+        taxiStart,
+        browserStep(
+          "start",
+          { runId: "run-10", status: "running" },
+          {
+            site: "https://cafe-pushkin.ru",
+            task: "Забронируйте столик в «Пушкине» на 20:00 на двоих.",
+          }
+        )
+      ),
+      ...sendMessage("taxi", taxiStatus),
+    ];
+    const table =
+      "И запустил бронь столика в «Пушкине» на 20:00 — пришлю подтверждение.";
+
+    expect(refusal(both, table)).toBeUndefined();
+    // Both have had their message, so a third is dropped.
+    const third = refusal(
+      [...both, ...sendMessage("table", table)],
+      "Оба поручения переданы в браузер: такси и столик в «Пушкине»."
+    );
+    expect(third && "skipped" in third).toBe(true);
+  });
+
+  it("still gives the errand one message when other work came with it", () => {
+    const history = [
+      ticketsAndWeather,
+      ...inOneStep(ticketsStart, toolStep("web_search", { results: [] })),
+      ...sendMessage("tickets", ticketsStatus),
+      ...sendMessage("weather", weather),
+    ];
+
+    expect(
+      refusal(
+        history,
+        "Поиск билетов в Сочи идёт в браузере на Туту, пришлю варианты с ценами."
+      )
+    ).toEqual({ skipped: "started" });
+  });
+
+  const deliveryInCalendar = [
+    userMessage(
+      "закажи продукты к восьми и поставь в календарь принять доставку"
+    ),
+    ...groceriesStart,
+    ...sendMessage("started", errandStatus),
+  ];
+
+  const deliveryReminder = [
+    userMessage("закажи продукты к восьми и напомни принять доставку"),
+    ...groceriesStart,
+    ...sendMessage("started", errandStatus),
+  ];
+
+  const rateSearch = toolStep("web_search", {
+    results: "Официальный курс доллара ЦБ РФ на 26 сентября — 92,4 ₽.",
+  });
+
+  it.each([
+    [
+      "поставь в календарь приём доставки на 19:50 и скажи курс доллара",
+      "И ещё сейчас поставлю приём доставки в календарь.",
+      "calendar-create-event",
+      "В календарь поставил приём доставки на 19:50.",
+    ],
+    [
+      "напомни в 20:00 позвонить маме и скажи курс доллара",
+      "Сейчас поставлю напоминание позвонить маме.",
+      "schedules-create",
+      "Напоминание позвонить маме поставил на 20:00.",
+    ],
+  ])(
+    "returns a step the person asked for (%s), announced instead of taken",
+    (request, text, toolName, result) => {
+      const history = [
+        userMessage(request),
+        ...rateSearch,
+        ...sendMessage("rate", "Курс доллара — 92,4 ₽."),
+      ];
+
+      expect(refusal(history, text)).toEqual({ rewrite: "announced" });
+      expect(rewriteSendNotice("announced")).toContain(
+        "Take the step now with its tool"
+      );
+      const entered = [
+        ...history,
+        ...sendMessage(
+          "announced",
+          text,
+          textOutput(rewriteSendNotice("announced"))
+        ),
+        ...toolStep(toolName, { id: "step-1" }),
+      ];
+      expect(turnMustEnd(entered)).toBe(false);
+      expect(refusal(entered, result)).toBeUndefined();
+    }
+  );
+
+  it("never has a step taken now that waits on the run the turn started", () => {
+    const dentist = [
+      userMessage("Запиши меня к стоматологу на пятницу и поставь в календарь"),
+      ...browserStep(
+        "start",
+        { runId: "run-11", status: "running" },
+        { task: "Запишите к стоматологу на пятницу, 2 октября." }
+      ),
+      ...sendMessage(
+        "started",
+        "Запустил запись к стоматологу на пятницу. Пришлю, на какое время записали."
+      ),
+    ];
+    const refused = refusal(
+      dentist,
+      "Время пока не знаю. Поставлю в календарь визит к стоматологу."
+    );
+
+    expect(refused && "skipped" in refused).toBe(true);
+    for (const text of [
+      "И ещё сейчас поставлю приём доставки в календарь.",
+      "Сейчас поставлю напоминание принять доставку.",
+    ]) {
+      for (const history of [deliveryInCalendar, deliveryReminder]) {
+        const held = refusal(history, text);
+        expect(held && "skipped" in held).toBe(true);
+      }
+    }
+  });
+
+  const deferredSteps = [
+    "Поставлю доставку в календарь, как придёт подтверждение заказа.",
+    "Приём доставки поставлю в календарь после оплаты.",
+    "Как заказ оформится, поставлю доставку в календарь.",
+    "Потом добавлю приём доставки в календарь.",
+    "Поставлю напоминание, как придёт корзина.",
+  ];
+
+  it.each(deferredSteps)(
+    "never has «%s», a step put off until later, taken now",
+    (text) => {
+      const ordered = [
+        userMessage("закажи продукты к восьми"),
+        ...groceriesStart,
+        ...sendMessage("started", errandStatus),
+      ];
+
+      for (const history of [ordered, deliveryInCalendar, deliveryReminder]) {
+        const refused = refusal(history, text);
+        expect(refused && "skipped" in refused).toBe(true);
+      }
+    }
+  );
+
+  it("never has a step nobody asked for taken now", () => {
+    const ordered = [
+      userMessage("закажи продукты к восьми"),
+      ...groceriesStart,
+      ...sendMessage("started", errandStatus),
+    ];
+
+    expect(
+      refusal(ordered, "И ещё сейчас поставлю приём доставки в календарь.")
+    ).toEqual({ skipped: "stale" });
+  });
+
+  it("still drops a promise that waits on the person (d18)", () => {
+    expect(
+      refusal(
+        deliveryInCalendar,
+        "Назовите время доставки — поставлю приём в календарь."
+      )
+    ).toEqual({ skipped: "stale" });
+  });
+
+  it("leaves the turn open after the first message dropped about the errand", () => {
+    const dropped = [
+      ...deliveryInCalendar,
+      ...sendMessage(
+        "again",
+        "Заказ в Лавке собирается, пришлю корзину.",
+        textOutput(skippedSendNotice("started"))
+      ),
+    ];
+
+    expect(skippedSendNotice("started")).toContain("do it now with its tool");
+    expect(turnMustEnd(dropped)).toBe(false);
+    // A second one ends the turn.
+    expect(
+      turnMustEnd([
+        ...dropped,
+        ...sendMessage(
+          "once-more",
+          "Заказ в Лавке собирается, корзину пришлю.",
+          textOutput(skippedSendNotice("started"))
+        ),
+      ])
+    ).toBe(true);
+  });
+
+  it("leaves a turn a browser report opened to its own rule", () => {
+    const report = [
+      userMessage(`${backgroundTurnMarker}\n\nBrowser run run-1 finished.`),
+      ...browserStep("continue", { runId: "run-2", status: "running" }),
+      ...sendMessage("heading", "Вот что нашёл:"),
+    ];
+
+    expect(
+      refusal(report, "Сапсан 18:40 за 5 200 ₽ и Ласточка 19:10 за 3 100 ₽.")
+    ).toBeUndefined();
+  });
+
+  const dinner = [
+    userMessage(
+      "нужно где поужинать завтра в 19:30 на четверых, пешком от чистых прудов. один вегетарианец, не сетевое, до 2500 на человека"
+    ),
+    ...toolStep("web_search", { results: [] }),
+    ...toolStep("route_time", { routes: [] }),
+  ];
+  const twoPlaces =
+    "Лучший вариант — «Авокадо», Чистопрудный бульвар, 12, корп. 2: полностью вегетарианское меню, так что гостю-вегетарианцу будет проще всего; блюдо найдётся и для остальных. Второй вариант — «Циники», Богословский пер., 3/15с1: веганское бистро с рейтингом 4,8; карточка 2ГИС показывает два филиала, поэтому условие «не сетевое» не проходит. «Авокадо» выглядит отдельным рестораном, но средний чек и часы именно на завтра в 19:30 не удалось надёжно подтвердить. Свободный стол на четверых тоже не проверял; пешее время маршрутный сервис не нашёл, поэтому минуты не буду выдумывать.\nhttps://yandex.ru/maps/org/avokado/1099046369/";
+  const offer =
+    "Забронировать на завтра, 26 сентября, на 19:30, на четверых в «Авокадо»?";
+  const retold = `«Авокадо» — единственный найденный вариант, который подходит по типу кухни и адресу, но подтвердить бюджет до 2 500 ₽ на человека не получилось. ${offer}`;
+
+  const retoldAsIs = `«Авокадо», Чистопрудный бульвар, 12, корп. 2: полностью вегетарианское меню, средний чек до 2 500 ₽. ${offer}`;
+
+  it("returns a question wrapped in the answer told again (d03)", () => {
+    const answered = [...dinner, ...sendMessage("places", twoPlaces)];
+
+    expect(refusal(answered, retoldAsIs)).toEqual({ rewrite: "restated" });
+    expect(rewriteSendNotice("restated")).toContain("Send the question alone");
+    // The question alone is news.
+    const returned = [
+      ...answered,
+      ...sendMessage(
+        "retold",
+        retoldAsIs,
+        textOutput(rewriteSendNotice("restated"))
+      ),
+    ];
+    expect(refusal(returned, offer)).toBeUndefined();
+  });
+
+  it("delivers a question next to what it says anew about a place", () => {
+    const found = [
+      userMessage("Где поужинать сегодня у Чистых прудов?"),
+      ...toolStep("web_search", { results: [] }),
+      ...sendMessage(
+        "places",
+        "Нашёл два места: «Пушкин» на Тверском бульваре, 26 и «Авокадо» на Чистопрудном бульваре, 12."
+      ),
+    ];
+
+    expect(
+      refusal(
+        found,
+        "«Пушкин» сегодня закрыт на спецобслуживание, так что остаётся «Авокадо». Бронировать?"
+      )
+    ).toBeUndefined();
+    // The d03 retelling in other words is delivered too, as it was before.
+    const answered = [...dinner, ...sendMessage("places", twoPlaces)];
+    expect(refusal(answered, retold)).toBeUndefined();
+  });
+
+  it("returns it when the person asked their question with limits in it (d03)", () => {
+    const asked = [
+      userMessage(
+        "где поужинать завтра в 19:30 на четверых пешком от чистых прудов, чтобы не сетевое и до 2500 на человека?"
+      ),
+      ...toolStep("web_search", { results: [] }),
+      ...toolStep("route_time", { routes: [] }),
+      ...sendMessage("places", twoPlaces),
+    ];
+
+    expect(refusal(asked, retoldAsIs)).toEqual({ rewrite: "restated" });
+  });
+
+  it("drops the answer sent again after it went out in one message (d03)", () => {
+    const answered = [
+      ...dinner,
+      ...sendMessage("places", `${twoPlaces}\n\n${retold}`),
+    ];
+
+    expect(
+      refusal(
+        answered,
+        "Лучший вариант — «Авокадо», Чистопрудный бульвар, 12, корп. 2: полностью вегетарианское меню, удобно для всей компании. Но я не подтвердил ни чек до 2 500 ₽ на человека, ни пешее время; «Циники» исключил — у них два филиала. Свободный стол тоже не проверял.\nhttps://yandex.ru/maps/org/avokado/1099046369/\n\nЗабронировать «Авокадо» на завтра, 26 сентября, в 19:30 на четверых?"
+      )
+    ).toEqual({ skipped: "stale" });
+  });
+
+  it.each([
+    [
+      "a lead-in that names nothing",
+      "Уточни одну вещь: бронировать на 19:30 или на 20:00? Как скажешь — займусь.",
+    ],
+    [
+      "a new fact next to the question",
+      "У «Авокадо» есть веранда на 8 мест с видом на пруд. Бронировать там?",
+    ],
+  ])("delivers a question with %s", (_case, text) => {
+    const answered = [...dinner, ...sendMessage("places", twoPlaces)];
+
+    expect(refusal(answered, text)).toBeUndefined();
+  });
+
+  it("delivers a correction around the question", () => {
+    const answered = [...dinner, ...sendMessage("places", twoPlaces)];
+
+    expect(
+      refusal(
+        answered,
+        "Поправлю: у «Авокадо» средний чек до 2 500 ₽ на человека, я ошибся. Забронировать на завтра в 19:30?"
+      )
+    ).toBeUndefined();
+  });
+
+  it("delivers a retold question once the turn did more work", () => {
+    const checked = [
+      ...dinner,
+      ...sendMessage("places", twoPlaces),
+      ...toolStep("web_fetch", { text: "…" }),
+    ];
+
+    expect(refusal(checked, retold)).toBeUndefined();
+  });
+
+  it("delivers the answer to what the person asked about, around an offer", () => {
+    const hermitage = [
+      userMessage(
+        "Сколько стоит билет в Эрмитаж и успею ли я к 18:00? Если да — купи"
+      ),
+      ...toolStep("web_search", { results: [] }),
+      ...sendMessage("price", "Билет в Эрмитаж стоит 500 ₽."),
+    ];
+
+    expect(
+      refusal(hermitage, "В 18:00 Эрмитаж ещё открыт, успеете. Купить билет?")
+    ).toBeUndefined();
+  });
+
+  it.each([
+    ["a status", "Секунду, сравниваю меню и отзывы."],
+    ["a heading", "Сравнил оба места, вот что вышло:"],
+  ])("delivers a comparison the person asked for after %s", (_case, first) => {
+    const compared = [
+      userMessage(
+        "Где лучше поужинать вчетвером — в Пушкине или в Кофемании? Забронируй на 19:00"
+      ),
+      ...toolStep("web_search", { results: [] }),
+      ...sendMessage("first", first),
+    ];
+
+    expect(
+      refusal(
+        compared,
+        "В «Пушкине» тише и есть отдельный зал, в «Кофемании» шумно, зато кухня разнообразнее. Бронировать «Пушкин» на 19:00?"
+      )
+    ).toBeUndefined();
+  });
+
+  it("delivers the translation the person asked for as its own message", () => {
+    const history = [
+      userMessage("переведи «я опоздаю на 10 минут» на английский и немецкий"),
+      ...sendMessage(
+        "english",
+        "По-английски: I'll be 10 minutes late, sorry."
+      ),
+    ];
+
+    expect(
+      refusal(
+        history,
+        "По-немецки: Ich komme 10 Minuten zu spät, tut mir leid."
+      )
+    ).toBeUndefined();
+    // The same translation in another word order is no news.
+    expect(
+      refusal(history, "Sorry, I'll be late by 10 minutes — это по-английски.")
     ).toEqual({ skipped: "stale" });
   });
 });
@@ -1000,13 +1989,14 @@ let toolSteps = 0;
 
 function toolStep(
   toolName: string,
-  value: Extract<ToolResultPart["output"], { type: "json" }>["value"]
+  value: Extract<ToolResultPart["output"], { type: "json" }>["value"],
+  input: Readonly<Record<string, JSONValue>> = {}
 ): ModelMessage[] {
   toolSteps += 1;
   const toolCallId = `${toolName}-${String(toolSteps)}`;
   return [
     {
-      content: [{ input: {}, toolCallId, toolName, type: "tool-call" }],
+      content: [{ input, toolCallId, toolName, type: "tool-call" }],
       role: "assistant",
     },
     {
@@ -1015,6 +2005,61 @@ function toolStep(
           output: { type: "json", value },
           toolCallId,
           toolName,
+          type: "tool-result",
+        },
+      ],
+      role: "tool",
+    },
+  ];
+}
+
+/**
+ * Tool steps whose calls the model made in one step: one assistant message
+ * with every call, then one tool message with every result.
+ */
+function inOneStep(...steps: readonly ModelMessage[][]): ModelMessage[] {
+  const stepMessages = steps.flat();
+  const calls = stepMessages.flatMap((stepMessage) =>
+    stepMessage.role === "assistant" && Array.isArray(stepMessage.content)
+      ? stepMessage.content.filter((part) => part.type === "tool-call")
+      : []
+  );
+  const results = stepMessages.flatMap((stepMessage) =>
+    stepMessage.role === "tool"
+      ? stepMessage.content.filter((part) => part.type === "tool-result")
+      : []
+  );
+  return [
+    { content: calls, role: "assistant" },
+    { content: results, role: "tool" },
+  ];
+}
+
+function browserStep(
+  action: string,
+  value: Extract<ToolResultPart["output"], { type: "json" }>["value"],
+  input: Readonly<Record<string, JSONValue>> = {}
+): ModelMessage[] {
+  toolSteps += 1;
+  const toolCallId = `browser_task-${String(toolSteps)}`;
+  return [
+    {
+      content: [
+        {
+          input: { ...input, action },
+          toolCallId,
+          toolName: "browser_task",
+          type: "tool-call",
+        },
+      ],
+      role: "assistant",
+    },
+    {
+      content: [
+        {
+          output: { type: "json", value },
+          toolCallId,
+          toolName: "browser_task",
           type: "tool-result",
         },
       ],

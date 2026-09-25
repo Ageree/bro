@@ -1,3 +1,4 @@
+import type { ModelMessage } from "ai";
 import type { DynamicResolveContext, ToolContext } from "eve/tools";
 import {
   afterEach,
@@ -28,6 +29,7 @@ import {
   type ConfirmedSubmission,
   paymentCeilingRub,
 } from "@shared/browser/submission";
+import { backgroundTurnMarker } from "@shared/chat/background-turn";
 import {
   accessScopeForUser,
   type AccessScope,
@@ -104,6 +106,12 @@ const queueBrowserUseSessionMessage = vi.hoisted(() =>
 );
 const readBrowserUseRunStatus = vi.hoisted(() =>
   vi.fn<() => Promise<string>>(() => Promise.resolve("running"))
+);
+// The page is never reached here: a code to type ends at the lookup.
+const findBrowserUseSessionCdpUrl = vi.hoisted(() =>
+  vi.fn<(sessionId: string) => Promise<string | undefined>>(() =>
+    Promise.resolve(undefined)
+  )
 );
 const resolveBrowserSecretBindings = vi.hoisted(() =>
   vi.fn<() => Promise<{ aliases: string[]; bindings: { alias: string }[] }>>(
@@ -287,6 +295,7 @@ vi.mock("@agent/lib/browser-use/client", async (importOriginal) => ({
   cancelBrowserUseRun,
   createBrowserUseProfile: vi.fn<Unused>(),
   createBrowserUseRun,
+  findBrowserUseSessionCdpUrl,
   // The live-view lookup gives up on the first failure, which keeps the start
   // path from waiting out its full poll budget here.
   listBrowserUseRunEvents: vi.fn<() => Promise<never>>(() =>
@@ -443,6 +452,10 @@ function continuationNote(
   return "note" in result ? (result.note ?? "") : "";
 }
 
+/**
+ * A follow-up on the errand, by default in a turn the person opened with
+ * `said` (the task itself unless given) and quoting it as `personSaid`.
+ */
 async function continueErrand(input: {
   readonly allowPayment?: boolean;
   readonly allowSubmit?: boolean;
@@ -450,6 +463,8 @@ async function continueErrand(input: {
   readonly completedAt?: Date;
   readonly confirmed?: ConfirmedSubmission;
   readonly outcome?: string;
+  readonly personSaid?: string | null;
+  readonly said?: string;
   readonly site?: string;
   readonly submission?: BrowserSubmission;
   readonly task?: string;
@@ -461,12 +476,15 @@ async function continueErrand(input: {
       input.confirmed ?? null
     )
   );
-  const { browserTask } = await import("@agent/tools/browser_task");
-  return browserTask.execute(
+  const task = input.task ?? "Код из смс 992130";
+  const tool = await resolvedBrowserTask([], input.said ?? task);
+  return tool.execute(
     {
       action: "continue",
       allowPayment: input.allowPayment,
       allowSubmit: input.allowSubmit,
+      personSaid:
+        input.personSaid === undefined ? task : (input.personSaid ?? undefined),
       runId,
       site: input.site,
       submission:
@@ -474,7 +492,7 @@ async function continueErrand(input: {
         (input.allowSubmit === true || input.allowPayment === true
           ? cardSubmission
           : undefined),
-      task: input.task ?? "Код из смс 992130",
+      task,
     },
     toolContext("better-auth:alice", input.authenticator)
   );
@@ -534,7 +552,7 @@ describe("browser_task continuation", () => {
 
     expect(queueBrowserUseSessionMessage).toHaveBeenCalledExactlyOnceWith(
       sessionId,
-      "Код из смс 992130"
+      "Человек написал: «Код из смс 992130»"
     );
     expect(createBrowserUseRun).not.toHaveBeenCalled();
     expect(result).toMatchObject({ runId, status: "running" });
@@ -546,7 +564,7 @@ describe("browser_task continuation", () => {
     await continueErrand({ allowSubmit: true, task: "Да, записывай" });
 
     const queued = String(queueBrowserUseSessionMessage.mock.calls[0]?.[1]);
-    expect(queued.startsWith("Да, записывай")).toBe(true);
+    expect(queued.startsWith("Человек написал: «Да, записывай»")).toBe(true);
     expect(queued).toContain(
       "The person confirmed on an approval card this one submission in their name."
     );
@@ -565,7 +583,7 @@ describe("browser_task continuation", () => {
 
     expect(queueBrowserUseSessionMessage).toHaveBeenCalledExactlyOnceWith(
       sessionId,
-      "Код из смс 992130"
+      "Человек написал: «Код из смс 992130»"
     );
     expect(recordBrowserRunSubmission).not.toHaveBeenCalled();
   });
@@ -597,7 +615,7 @@ describe("browser_task continuation", () => {
         sessionId,
         site: "https://taxi.yandex.ru",
         status: "running",
-        task: "Код из смс 992130",
+        task: "Человек написал: «Код из смс 992130»",
       })
     );
     expect(result).toMatchObject({
@@ -665,7 +683,7 @@ describe("browser_task continuation", () => {
 
     expect(queueBrowserUseSessionMessage).toHaveBeenCalledExactlyOnceWith(
       sessionId,
-      "Код из смс 992130"
+      "Человек написал: «Код из смс 992130»"
     );
     expect(createBrowserRun).not.toHaveBeenCalled();
     expect(result).toMatchObject({ runId });
@@ -766,12 +784,13 @@ describe("browser_task pictures", () => {
 
   it("carries a later request for pictures into the follow-up run", async () => {
     readBrowserRunForScope.mockResolvedValue(browserRunRow(new Date()));
-    const { browserTask } = await import("@agent/tools/browser_task");
+    const tool = await resolvedBrowserTask([], "скинь фотки");
 
-    await browserTask.execute(
+    await tool.execute(
       {
         action: "continue",
         collectImages: true,
+        personSaid: "скинь фотки",
         runId,
         task: "скинь фотки",
       },
@@ -779,7 +798,7 @@ describe("browser_task pictures", () => {
     );
 
     const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
-    expect(task.startsWith("скинь фотки")).toBe(true);
+    expect(task.startsWith("Человек написал: «скинь фотки»")).toBe(true);
     expect(task).toContain("also save up to 3 pictures of what you found");
   });
 });
@@ -1435,12 +1454,13 @@ describe("browser_task one question per errand", () => {
       sessionId: null,
       status: "queued",
     });
-    const { browserTask } = await import("@agent/tools/browser_task");
+    const tool = await resolvedBrowserTask([], "Оплачивай картой");
 
-    const result = await browserTask.execute(
+    const result = await tool.execute(
       {
         action: "continue",
         allowPayment: true,
+        personSaid: "Оплачивай картой",
         runId: "queued:errand-1",
         submission: taxi,
         task: "Оплачивай картой",
@@ -1479,6 +1499,28 @@ describe("browser_task scoping", () => {
       accessScopeForUser("better-auth:bob"),
       runId
     );
+  });
+
+  it("says in the logs when the person finds an ended run the poller left open", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    readBrowserRunForScope.mockResolvedValue({
+      ...browserRunRow(),
+      updatedAt: new Date(Date.now() - 90_000),
+    });
+    readBrowserUseRunStatus.mockResolvedValue("completed");
+    const { browserTask } = await import("@agent/tools/browser_task");
+
+    const result = await browserTask.execute(
+      { action: "status", runId },
+      toolContext("better-auth:alice")
+    );
+
+    expect(result).toMatchObject({ status: "completed" });
+    expect(warn).toHaveBeenCalledWith(
+      "[browser-use] status found an ended run still open",
+      { lastCheckedSecondsAgo: 90, runId, status: "completed" }
+    );
+    warn.mockRestore();
   });
 
   it("requires an authenticated conversation", async () => {
@@ -1806,10 +1848,15 @@ describe("browser_task standing spend limit", () => {
       ...browserRunRow(new Date(), "Needs: captcha"),
       retryAt: new Date(Date.now() + 60_000),
     });
-    const { browserTask } = await import("@agent/tools/browser_task");
+    const tool = await resolvedBrowserTask([], "Возьми другой корм");
 
-    await browserTask.execute(
-      { action: "continue", runId, task: "Возьми другой корм" },
+    await tool.execute(
+      {
+        action: "continue",
+        personSaid: "Возьми другой корм",
+        runId,
+        task: "Возьми другой корм",
+      },
       toolContext("better-auth:alice")
     );
 
@@ -1844,11 +1891,12 @@ describe("browser_task standing spend limit", () => {
 describe("browser_task spend limit on a follow-up", () => {
   async function continueOnLimit(totalRub: number) {
     readBrowserRunForScope.mockResolvedValue(browserRunRow(new Date()));
-    const { browserTask } = await import("@agent/tools/browser_task");
-    return browserTask.execute(
+    const tool = await resolvedBrowserTask([], "Оформляй");
+    return tool.execute(
       {
         action: "continue",
         allowPayment: true,
+        personSaid: "Оформляй",
         runId,
         task: "Оформляй",
         withinSpendLimit: {
@@ -2539,7 +2587,7 @@ describe("browser_task when Browser Use is at its cap or out of credits", () => 
     const [, queued] = createQueuedBrowserRun.mock.calls[0] ?? [];
     expect(queued).toMatchObject({
       sessionId,
-      task: "Возьми второй вариант",
+      task: "Человек написал: «Возьми второй вариант»",
     });
   });
 
@@ -3257,6 +3305,11 @@ describe("browser_task finds the option before the one card", () => {
       { open: true, when: "на следующей неделе, до обеда" },
       { open: true, when: "в выходные" },
       { open: true, when: "ближайший свободный слот" },
+      // An hour said as a guess (RU 25.09, d15).
+      { open: true, when: "завтра, часов на семь" },
+      { open: true, when: "часа в три" },
+      { open: true, when: "завтра в районе 19:00" },
+      { open: true, when: "завтра ~19:00" },
       // One price, words after it included.
       { amount: "2 490 ₽ с доставкой до двери", open: false },
       { amount: "3 100 ₽, от продавца Ozon", open: false },
@@ -3279,6 +3332,142 @@ describe("browser_task finds the option before the one card", () => {
         open,
       });
     }
+  });
+
+  it("sends a card for a kind of place near somewhere to a search first", async () => {
+    const { browserTask, browserTaskApproval } =
+      await import("@agent/tools/browser_task");
+    // RU 25.09, d15: «запиши меня завтра в барбершоп на профсоюзной, к
+    // артуру, часов на семь», as the card read before any search.
+    const barber: BrowserSubmission = {
+      amount: "уточняется на сайте; бесплатная запись",
+      chargeRub: 0,
+      forWhom: "Алиса",
+      kind: "appointment",
+      personalData: ["имя", "телефон"],
+      what: "Стрижка у барбера Артура",
+      when: "суббота, 26 сентября 2026, 19:00",
+      where:
+        "Барбершоп на Профсоюзной, Москва (ближайший подходящий салон на Профсоюзной)",
+    };
+
+    const refusal = await browserTaskApproval(
+      submitStart(barber, "https://yclients.com"),
+      conversation
+    );
+
+    expect(refusal).toMatchObject({ type: "denied" });
+    expect(JSON.stringify(refusal)).toContain(
+      "the place «Барбершоп на Профсоюзной, Москва (ближайший подходящий салон на Профсоюзной)», a kind of place and an area rather than one place by its name and address"
+    );
+    expect(JSON.stringify(refusal)).toContain(
+      "start the errand without allowSubmit"
+    );
+    expect(JSON.stringify(refusal)).toContain(
+      "the place by its name and address, the master"
+    );
+    await expect(
+      browserTask.execute(
+        submitStart(barber, "https://yclients.com"),
+        toolContext("better-auth:alice")
+      )
+    ).rejects.toThrow("a kind of place and an area");
+    expect(createBrowserUseRun).not.toHaveBeenCalled();
+
+    // The barbershop the search found, with Artur's slot, goes on the card.
+    expect(
+      await browserTaskApproval(
+        submitStart(
+          {
+            ...barber,
+            what: "Стрижка у барбера Артура",
+            when: "суббота, 26 сентября, 19:00",
+            where: "Барбершоп «Чоп-Чоп», Профсоюзная ул., 56 (yclients.com)",
+          },
+          "https://yclients.com"
+        ),
+        conversation
+      )
+    ).toBe("user-approval");
+    // A table «где-нибудь с верандой» is no place either (RU 25.09, d13).
+    expect(
+      await browserTaskApproval(
+        submitStart(
+          {
+            ...pushkinTable,
+            where: "Ресторан с верандой в Казани",
+          },
+          "https://restoclub.ru"
+        ),
+        conversation
+      )
+    ).toMatchObject({ type: "denied" });
+  });
+
+  it("tells one place from a kind of place and an area", async () => {
+    const { openSubmissionTerms } = await import("@agent/tools/browser_task");
+    const cases: readonly { open: boolean; where: string }[] = [
+      // One place, by name or by address.
+      { open: false, where: "ресторан «Пушкин» (cafe-pushkin.ru)" },
+      { open: false, where: "Pushkin (cafe-pushkin.ru)" },
+      { open: false, where: "поликлиника №12 через ЕМИАС (emias.info)" },
+      { open: false, where: "поликлиника по прикреплению через ЕМИАС" },
+      { open: false, where: "Барбершоп Chop-Chop на Профсоюзной" },
+      { open: false, where: "Профсоюзная ул., 56, Москва" },
+      { open: false, where: "Островок (ostrovok.ru)" },
+      { open: false, where: "Салон красоты «Лотос», Москва" },
+      // Real places named after their kind, on a building, or in a hotel;
+      // a note in parentheses is about the slot, not the place (review of
+      // 25.09: these were cards before the check).
+      { open: false, where: "Ресторан Горький (restoran-gorky.ru)" },
+      { open: false, where: "Гостиница Советская (sovietsky.ru)" },
+      { open: false, where: "Отель Центральный, Ярославль" },
+      { open: false, where: "Гостиница Ленинградская (Hilton), Москва" },
+      { open: false, where: "Спа в Four Seasons Москва" },
+      { open: false, where: "Бар в Метрополе" },
+      { open: false, where: "Bar at the Ritz-Carlton Moscow" },
+      { open: false, where: "У Палыча, Москва" },
+      {
+        open: false,
+        where: "Клиника «Медси» на Белорусской (любой свободный терапевт)",
+      },
+      { open: false, where: "Салон «Персона» (ближайший к метро Тверская)" },
+      { open: false, where: "Кафе Жуковский (любой столик у окна)" },
+      // A kind of place and where it is.
+      { open: true, where: "Барбершоп на Профсоюзной, Москва" },
+      { open: true, where: "барбершоп у метро Профсоюзная" },
+      { open: true, where: "Мужская парикмахерская рядом с домом" },
+      { open: true, where: "Отель в центре Казани (ostrovok.ru)" },
+      { open: true, where: "Ресторан, Казань" },
+      { open: true, where: "Салон красоты на Тверской" },
+      { open: true, where: "м. Профсоюзная, Москва" },
+      { open: true, where: "Любой барбершоп на Профсоюзной" },
+      { open: true, where: "Ресторан с верандой в Казани" },
+      { open: true, where: "у метро Профсоюзная" },
+      { open: true, where: "restaurant in the city centre" },
+      { open: true, where: "Barbershop near Profsoyuznaya, Moscow" },
+    ];
+
+    for (const { open, where } of cases) {
+      const terms = openSubmissionTerms({ ...cardSubmission, where });
+      expect({ open: terms.length > 0, where }).toEqual({ open, where });
+    }
+    // A message names no place to find, and an order's place is its shop.
+    expect(
+      openSubmissionTerms({
+        ...cardSubmission,
+        kind: "message",
+        where: "Барбершоп на Профсоюзной",
+      })
+    ).toEqual([]);
+    expect(
+      openSubmissionTerms({
+        ...cardSubmission,
+        chargeRub: 640,
+        kind: "order",
+        where: "Аптека (apteka.ru)",
+      })
+    ).toEqual([]);
   });
 
   it("lets a standing permission start without a card, found or not", async () => {
@@ -4057,9 +4246,9 @@ describe("browser_task on a finished errand the person has not heard about", () 
   }
 
   async function follow(task: string, authenticator?: string) {
-    const { browserTask } = await import("@agent/tools/browser_task");
-    return browserTask.execute(
-      { action: "continue", runId, task },
+    const tool = await resolvedBrowserTask([], task);
+    return tool.execute(
+      { action: "continue", personSaid: task, runId, task },
       toolContext("better-auth:alice", authenticator)
     );
   }
@@ -4136,10 +4325,16 @@ describe("browser_task on a finished errand the person has not heard about", () 
         status: "done",
       }),
       toolResult("send_message", { delivered: true, messageId: "m-1" }),
+      { content: "Бери первый, но с местом у окна", role: "user" },
     ]);
 
     await tool.execute(
-      { action: "continue", runId, task: "Бери первый, но с местом у окна" },
+      {
+        action: "continue",
+        personSaid: "Бери первый, но с местом у окна",
+        runId,
+        task: "Бери первый, но с местом у окна",
+      },
       toolContext("better-auth:alice")
     );
 
@@ -4220,6 +4415,800 @@ describe("browser_task on a finished errand the person has not heard about", () 
   });
 });
 
+describe("browser_task passes on only what the person sent", () => {
+  const reportOpening = `${backgroundTurnMarker}\nBrowser run ${runId} finished.`;
+
+  async function inReportTurn(
+    outcome: string,
+    input: { readonly action?: "continue" | "start"; readonly task: string }
+  ) {
+    readBrowserRunForScope.mockResolvedValue(
+      browserRunRow(new Date(), outcome)
+    );
+    const tool = await resolvedBrowserTask([], reportOpening);
+    return tool.execute(
+      {
+        action: input.action ?? "continue",
+        runId,
+        site: "https://www.gosuslugi.ru",
+        task: input.task,
+      },
+      toolContext("better-auth:alice", "browser-result")
+    );
+  }
+
+  function nothingSent() {
+    expect(createBrowserUseRun).not.toHaveBeenCalled();
+    expect(queueBrowserUseSessionMessage).not.toHaveBeenCalled();
+    expect(createBrowserRun).not.toHaveBeenCalled();
+  }
+
+  it("refuses the code a report turn made up after asking for it", async () => {
+    // RU 25.09: the report turn asked for the Госуслуги SMS code, then
+    // continued twice with «Пользователь прислал действующий SMS-код… 739204».
+    await expect(
+      inReportTurn("Needs: sms_code", {
+        task: "Пользователь прислал действующий SMS-код из сообщения: 739204. Введи его.",
+      })
+    ).rejects.toThrow("Nothing was sent");
+    nothingSent();
+  });
+
+  it("refuses a code in any turn Bro opened, whatever the run stopped on", async () => {
+    await expect(
+      inReportTurn("Needs: decision", { task: "Введи код из смс 739204" })
+    ).rejects.toThrow("Never make up a code");
+    nothingSent();
+
+    await expect(
+      continueErrand({
+        authenticator: "scheduled-worker",
+        completedAt: new Date(),
+        task: "Код из смс 739204",
+      })
+    ).rejects.toThrow("Never make up a code");
+    nothingSent();
+  });
+
+  it("refuses a start in a turn Bro opened that carries a code", async () => {
+    await expect(
+      inReportTurn("Needs: none", {
+        action: "start",
+        task: "Войди на Госуслуги, код из смс 739204",
+      })
+    ).rejects.toThrow("Never make up a code");
+    nothingSent();
+  });
+
+  it("lets no report turn continue a run that waits for the person's code", async () => {
+    await expect(
+      inReportTurn("Needs: sms_code", {
+        task: "Проверь, не пришёл ли код, и продолжай вход",
+      })
+    ).rejects.toThrow("only the user can give");
+    nothingSent();
+  });
+
+  it("passes on the code the person sent in their message", async () => {
+    await continueErrand({
+      completedAt: new Date(),
+      outcome: "Needs: sms_code",
+      personSaid: "482913",
+      said: "код 482913",
+      task: "Код из смс 482913",
+    });
+
+    expect(createBrowserUseRun).toHaveBeenCalledOnce();
+    expect(String(createBrowserUseRun.mock.calls[0]?.[0].task)).toContain(
+      "Человек написал: «482913»"
+    );
+  });
+
+  it("passes on the code the person answered a question with", async () => {
+    readBrowserRunForScope.mockResolvedValue(
+      browserRunRow(new Date(), "Needs: sms_code")
+    );
+    const tool = await resolvedBrowserTask([
+      {
+        content: [
+          {
+            input: { prompt: "Какой код пришёл?" },
+            toolCallId: "ask-1",
+            toolName: "ask_question",
+            type: "tool-call",
+          },
+        ],
+        role: "assistant",
+      },
+      {
+        content: [
+          {
+            output: {
+              type: "json",
+              value: { status: "answered", text: "739204" },
+            },
+            toolCallId: "ask-1",
+            toolName: "ask_question",
+            type: "tool-result",
+          },
+        ],
+        role: "tool",
+      },
+    ]);
+
+    await tool.execute(
+      { action: "continue", personSaid: "739204", runId, task: "Код 739204" },
+      toolContext("better-auth:alice")
+    );
+
+    expect(createBrowserUseRun).toHaveBeenCalledOnce();
+  });
+
+  it("refuses a code other than the one the person sent", async () => {
+    await expect(
+      continueErrand({
+        completedAt: new Date(),
+        outcome: "Needs: sms_code",
+        personSaid: "482913",
+        said: "код 482913",
+        task: "Код из смс 482914",
+      })
+    ).rejects.toThrow("Never make up a code");
+    // A bare number is a code once the run waits for one.
+    await expect(
+      continueErrand({
+        completedAt: new Date(),
+        outcome: "Needs: sms_code",
+        personSaid: "вводи",
+        said: "вводи",
+        task: "Вводи 739204",
+      })
+    ).rejects.toThrow("Never make up a code");
+    nothingSent();
+  });
+
+  it.each(["ну что там?", "разрешает более высокий бюджет", null])(
+    "refuses consent the person never gave when they only asked how it went (%s)",
+    async (personSaid) => {
+      // RU 25.09, d01: «ну что там?», then a continue with «Пользователь
+      // ответил… разрешает более высокий бюджет».
+      await expect(
+        continueErrand({
+          completedAt: new Date(),
+          outcome: "Needs: decision",
+          personSaid,
+          said: "ну что там?",
+          task: "Пользователь ответил на вопрос о смягчении ограничений: разрешает более высокий бюджет",
+        })
+      ).rejects.toThrow("Nothing was sent");
+      nothingSent();
+    }
+  );
+
+  it("refuses a quote that is not in the person's message", async () => {
+    await expect(
+      continueErrand({
+        completedAt: new Date(),
+        outcome: "Needs: decision",
+        personSaid: "бери второй, можно дороже",
+        said: "бери второй",
+        task: "Бери второй вариант, бюджет можно поднять",
+      })
+    ).rejects.toThrow("personSaid is not in the user's message");
+    await expect(
+      continueErrand({
+        completedAt: new Date(),
+        outcome: "Needs: decision",
+        personSaid: null,
+        said: "бери второй",
+        task: "Бери второй вариант",
+      })
+    ).rejects.toThrow("needs personSaid");
+    nothingSent();
+  });
+
+  it("gives the run the person's words, with the coordinator's own marked apart", async () => {
+    await continueErrand({
+      completedAt: new Date(),
+      outcome: "Needs: decision",
+      personSaid: "можно до 8 тысяч",
+      said: "Ладно, можно до 8 тысяч",
+      task: "Бюджет до 8 000 ₽: возьми лучший вариант в нём",
+    });
+
+    const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
+    expect(task).toContain("Человек написал: «можно до 8 тысяч»");
+    expect(task).toContain(
+      "What Bro's coordinator adds — its own words, not the person's"
+    );
+    expect(task).toContain("Бюджет до 8 000 ₽: возьми лучший вариант в нём");
+  });
+
+  it("puts no card in front of the person for words they did not send", async () => {
+    const { browserTaskApproval } = await import("@agent/tools/browser_task");
+    readBrowserRunForScope.mockResolvedValue(
+      browserRunRow(new Date(), "Needs: decision")
+    );
+    const input = {
+      action: "continue",
+      allowSubmit: true,
+      personSaid: "разрешает более высокий бюджет",
+      runId,
+      submission: cardSubmission,
+      task: "Пользователь разрешает более высокий бюджет, записывай",
+    } as const;
+
+    expect(
+      await browserTaskApproval(input, approvalSession("photon-imessage"), {
+        answers: [],
+        said: ["ну что там?"],
+      })
+    ).toMatchObject({ type: "denied" });
+    // Their own words get the card.
+    expect(
+      await browserTaskApproval(
+        { ...input, personSaid: "записывай", task: "Записывай" },
+        approvalSession("photon-imessage"),
+        { answers: [], said: ["Да, записывай"] }
+      )
+    ).toBe("user-approval");
+  });
+
+  it.each(["photon-imessage", "authjs"])(
+    "carries out the card the person approved in a report turn (%s)",
+    async (authenticator) => {
+      // The approval resumes the report turn under the person's own auth,
+      // but the turn still has no words of theirs: it stays Bro's.
+      const { browserTaskApproval } = await import("@agent/tools/browser_task");
+      readBrowserRunForScope.mockResolvedValue(
+        browserRunRow(new Date(), "Needs: decision")
+      );
+      const input = {
+        action: "continue",
+        allowSubmit: true,
+        runId,
+        submission: cardSubmission,
+        task: "Оформляй вариант, который нашёл",
+      } as const;
+      expect(
+        await browserTaskApproval(input, approvalSession("browser-result"), {
+          answers: [],
+          said: null,
+        })
+      ).toBe("user-approval");
+      const tool = await resolvedBrowserTask([], reportOpening);
+
+      await tool.execute(
+        input,
+        toolContext("better-auth:alice", authenticator)
+      );
+
+      expect(createBrowserUseRun).toHaveBeenCalledOnce();
+      const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
+      expect(task).toContain("Follow-up from Bro's coordinator");
+      expect(task).not.toContain("Человек написал");
+    }
+  );
+
+  it("takes the code the person pasted with its full stop", async () => {
+    await continueErrand({
+      completedAt: new Date(),
+      outcome: "Needs: sms_code",
+      personSaid: "Код для входа на Госуслуги: 739204.",
+      said: "Код для входа на Госуслуги: 739204. Никому не сообщайте его",
+      task: "Код из СМС: 739204",
+    });
+
+    expect(createBrowserUseRun).toHaveBeenCalledOnce();
+  });
+
+  it("finds a made-up code behind a full stop", async () => {
+    await expect(
+      continueErrand({
+        completedAt: new Date(),
+        outcome: "Needs: sms_code",
+        personSaid: "ну давай",
+        said: "ну давай",
+        task: "Пользователь прислал SMS-код: 739204.",
+      })
+    ).rejects.toThrow("Never make up a code");
+    nothingSent();
+  });
+
+  it.each(["Needs: push", "Needs: 3ds"])(
+    "continues on «Готово» after the person confirmed in the app (%s)",
+    async (outcome) => {
+      await continueErrand({
+        completedAt: new Date(),
+        outcome,
+        personSaid: "Готово",
+        said: "Готово",
+        task: "Человек подтвердил вход в приложении, продолжай",
+      });
+
+      expect(createBrowserUseRun).toHaveBeenCalledOnce();
+    }
+  );
+
+  it("lets an amount, a date or a flight ride along a code the run waits for", async () => {
+    await continueErrand({
+      completedAt: new Date(),
+      outcome: "Needs: 3ds",
+      personSaid: "подтвердил",
+      said: "подтвердил",
+      task: "Человек подтвердил оплату 4 890 ₽ в приложении банка, проверь",
+    });
+    await continueErrand({
+      completedAt: new Date(),
+      outcome: "Needs: sms_code",
+      personSaid: "739204",
+      said: "739204",
+      task: "Код 739204, заверши запись на 15 октября 2026, рейс SU 1234",
+    });
+
+    expect(createBrowserUseRun).toHaveBeenCalledTimes(2);
+  });
+
+  it("finds a made-up code an order's SMS words name", async () => {
+    await expect(
+      continueErrand({
+        completedAt: new Date(),
+        outcome: "Needs: sms_code",
+        personSaid: "ну давай",
+        said: "ну давай",
+        task: "Пользователь прислал код подтверждения заказа 739204, введи его",
+      })
+    ).rejects.toThrow("Never make up a code");
+    // Nor does a turn Bro opened queue one into a live run.
+    readBrowserRunForScope.mockResolvedValue(browserRunRow());
+    const report = await resolvedBrowserTask([], reportOpening);
+    await expect(
+      report.execute(
+        {
+          action: "continue",
+          runId,
+          task: "Введи код подтверждения заказа 739204",
+        },
+        toolContext("better-auth:alice", "browser-result")
+      )
+    ).rejects.toThrow("Never make up a code");
+    nothingSent();
+  });
+
+  it.each([
+    "Код подтверждения заказа 48213: 739204",
+    "Код для заказа №48213: 739204",
+    "Код от Ozon для заказа 48213: 739204",
+    "Код подтверждения брони на рейс SU 1234: 739204",
+  ])(
+    "passes on the person's code with the order it is for («%s»)",
+    async (task) => {
+      await continueErrand({
+        completedAt: new Date(),
+        outcome: "Needs: sms_code",
+        personSaid: "739204",
+        said: "739204",
+        task,
+      });
+
+      expect(createBrowserUseRun).toHaveBeenCalledOnce();
+    }
+  );
+
+  it.each([
+    "Код не пришёл — оформи заказ 48213 без SMS-подтверждения",
+    "Не жди SMS-код и оформи заказ 48213",
+  ])(
+    "passes an order number on where a code is only mentioned («%s»)",
+    async (task) => {
+      await continueErrand({
+        completedAt: new Date(),
+        outcome: "Needs: sms_code",
+        personSaid: "код не пришёл",
+        said: "код не пришёл, оформи без него",
+        task,
+      });
+
+      expect(createBrowserUseRun).toHaveBeenCalledOnce();
+    }
+  );
+
+  it("starts a delivery with the door code from memory", async () => {
+    const tool = await resolvedBrowserTask([], "Закажи продукты домой");
+
+    await tool.execute(
+      {
+        action: "start",
+        site: "https://www.vprok.ru",
+        task: "Закажи продукты с доставкой на Ленина 5, кв. 12, код для входа 4567",
+      },
+      toolContext("better-auth:alice")
+    );
+
+    expect(createBrowserUseRun).toHaveBeenCalledOnce();
+  });
+
+  it("names only the code the person did not send", async () => {
+    await expect(
+      continueErrand({
+        completedAt: new Date(),
+        outcome: "Needs: sms_code",
+        personSaid: "739204",
+        said: "739204",
+        task: "Код 48213, потом 739204",
+      })
+    ).rejects.toThrow(/^Nothing was sent: 48213 reads as/u);
+  });
+
+  it("lets an amount paid by SMS ride along a 3-D Secure confirmation", async () => {
+    await continueErrand({
+      completedAt: new Date(),
+      outcome: "Needs: 3ds",
+      personSaid: "подтвердил",
+      said: "подтвердил",
+      task: "Человек подтвердил оплату по смс из банка 4 890 ₽",
+    });
+
+    expect(createBrowserUseRun).toHaveBeenCalledOnce();
+  });
+
+  it("passes on a code the person followed with a second message at once", async () => {
+    // «739204», then «это код» a second later: eve steers both into one turn.
+    readBrowserRunForScope.mockResolvedValue(
+      browserRunRow(new Date(), "Needs: sms_code")
+    );
+    const tool = await resolvedBrowserTask(
+      [{ content: "это код", role: "user" }],
+      "739204"
+    );
+
+    await tool.execute(
+      { action: "continue", personSaid: "739204", runId, task: "Код 739204" },
+      toolContext("better-auth:alice")
+    );
+
+    expect(createBrowserUseRun).toHaveBeenCalledOnce();
+  });
+
+  it("asks again for a code sent before the person's latest message", async () => {
+    // A message steered into the turn and one of an earlier turn look the
+    // same in eve's history: only the latest counts, the safe way round.
+    readBrowserRunForScope.mockResolvedValue(
+      browserRunRow(new Date(), "Needs: sms_code")
+    );
+    const tool = await resolvedBrowserTask(
+      [
+        toolResult("send_message", { delivered: true, messageId: "m-1" }),
+        { content: "это код из смс, вводи быстрее", role: "user" },
+      ],
+      "739204"
+    );
+
+    await expect(
+      tool.execute(
+        { action: "continue", personSaid: "739204", runId, task: "Код 739204" },
+        toolContext("better-auth:alice")
+      )
+    ).rejects.toThrow("Never make up a code");
+    nothingSent();
+  });
+
+  it.each([
+    ["a live run", null, "попробуй ещё раз", "Введи 739204 ещё раз"],
+    ["a live run", null, "739204", "739204"],
+    [
+      "a run stopped for the code",
+      new Date(),
+      "попробуй ещё раз",
+      "Введи 739204 ещё раз",
+    ],
+    ["a run stopped for the code", new Date(), "739204", "739204"],
+  ] as const)(
+    "gives no earlier turn's code to «попробуй ещё раз» on %s («%s», «%s»)",
+    async (_label, completedAt, personSaid, task) => {
+      // The earlier turn ended on its send_message result: luna's closing
+      // step (<eve-empty-delivery/>) is not kept in the history.
+      readBrowserRunForScope.mockResolvedValue(
+        browserRunRow(completedAt, completedAt ? "Needs: sms_code" : null)
+      );
+      const tool = await resolvedBrowserTask(
+        [
+          toolResult("send_message", { delivered: true, messageId: "m-1" }),
+          { content: "попробуй ещё раз", role: "user" },
+        ],
+        "739204"
+      );
+
+      await expect(
+        tool.execute(
+          { action: "continue", personSaid, runId, task },
+          toolContext("better-auth:alice")
+        )
+      ).rejects.toThrow("Nothing was sent");
+      nothingSent();
+      expect(findBrowserUseSessionCdpUrl).not.toHaveBeenCalled();
+    }
+  );
+
+  it("gives no earlier turn's words to a later «ну что там?»", async () => {
+    readBrowserRunForScope.mockResolvedValue(
+      browserRunRow(new Date(), "Needs: decision")
+    );
+    const tool = await resolvedBrowserTask(
+      [
+        toolResult("send_message", { delivered: true, messageId: "m-1" }),
+        { content: "ну что там?", role: "user" },
+      ],
+      "Найди билеты в Сочи, бюджет можно поднять"
+    );
+
+    await expect(
+      tool.execute(
+        {
+          action: "continue",
+          personSaid: "бюджет можно поднять",
+          runId,
+          task: "Человек разрешил поднять бюджет, бери дороже",
+        },
+        toolContext("better-auth:alice")
+      )
+    ).rejects.toThrow("only asked how the errand stands");
+    nothingSent();
+  });
+
+  it("gives no earlier turn's answer to a question to a later turn", async () => {
+    readBrowserRunForScope.mockResolvedValue(
+      browserRunRow(new Date(), "Needs: sms_code")
+    );
+    const tool = await resolvedBrowserTask(
+      [
+        {
+          content: [
+            {
+              input: { prompt: "Какой код пришёл?" },
+              toolCallId: "ask-1",
+              toolName: "ask_question",
+              type: "tool-call",
+            },
+          ],
+          role: "assistant",
+        },
+        {
+          content: [
+            {
+              output: {
+                type: "json",
+                value: { status: "answered", text: "739204" },
+              },
+              toolCallId: "ask-1",
+              toolName: "ask_question",
+              type: "tool-result",
+            },
+          ],
+          role: "tool",
+        },
+        toolResult("send_message", { delivered: true, messageId: "m-1" }),
+        { content: "ну что там?", role: "user" },
+      ],
+      "войди на госуслуги"
+    );
+
+    await expect(
+      tool.execute(
+        { action: "continue", personSaid: "739204", runId, task: "Код 739204" },
+        toolContext("better-auth:alice")
+      )
+    ).rejects.toThrow("Never make up a code");
+    nothingSent();
+  });
+
+  it.each(["739204", "Код: 739204."])(
+    "passes no code into a live run from a turn Bro opened (%s)",
+    async (task) => {
+      readBrowserRunForScope.mockResolvedValue(browserRunRow());
+      const report = await resolvedBrowserTask([], reportOpening);
+
+      await expect(
+        report.execute(
+          { action: "continue", runId, task },
+          toolContext("better-auth:alice", "browser-result")
+        )
+      ).rejects.toThrow("Never make up a code");
+      await expect(
+        continueErrand({ authenticator: "scheduled-worker", task })
+      ).rejects.toThrow("Never make up a code");
+      nothingSent();
+      expect(findBrowserUseSessionCdpUrl).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each([
+    ["попробуй ещё раз", "Введи 739204 ещё раз", null],
+    ["продолжай", "739204", null],
+    ["давай", "Введи 739204.", "Needs: sms_code"],
+  ] as const)(
+    "passes no code the person did not send («%s», «%s»)",
+    async (personSaid, task, outcome) => {
+      // A live run may be sitting on the code page: Browser Use has no
+      // status for waiting on input.
+      await expect(
+        continueErrand({
+          completedAt: outcome === null ? undefined : new Date(),
+          outcome: outcome ?? undefined,
+          personSaid,
+          said: personSaid,
+          task,
+        })
+      ).rejects.toThrow("Never make up a code");
+      nothingSent();
+      expect(findBrowserUseSessionCdpUrl).not.toHaveBeenCalled();
+    }
+  );
+
+  it("types into the page only the code the person sent", async () => {
+    await continueErrand({
+      personSaid: "739204",
+      said: "739204",
+      task: "739204",
+    });
+
+    expect(findBrowserUseSessionCdpUrl).toHaveBeenCalledExactlyOnceWith(
+      sessionId
+    );
+  });
+
+  describe("an answer to a question in a report turn", () => {
+    function answeredInReport(answer: string) {
+      return resolvedBrowserTask(
+        [
+          {
+            content: [
+              {
+                input: { prompt: "Какой код пришёл?" },
+                toolCallId: "ask-1",
+                toolName: "ask_question",
+                type: "tool-call",
+              },
+            ],
+            role: "assistant",
+          },
+          {
+            content: [
+              {
+                output: {
+                  type: "json",
+                  value: { status: "answered", text: answer },
+                },
+                toolCallId: "ask-1",
+                toolName: "ask_question",
+                type: "tool-result",
+              },
+            ],
+            role: "tool",
+          },
+        ],
+        reportOpening
+      );
+    }
+
+    it("passes on the code the person answered, and only it", async () => {
+      // A live run on the code page: the code goes straight into the page.
+      readBrowserRunForScope.mockResolvedValue(browserRunRow());
+      const tool = await answeredInReport("739204");
+
+      await tool.execute(
+        { action: "continue", personSaid: "739204", runId, task: "739204" },
+        toolContext("better-auth:alice", "browser-result")
+      );
+
+      expect(findBrowserUseSessionCdpUrl).toHaveBeenCalledExactlyOnceWith(
+        sessionId
+      );
+      expect(queueBrowserUseSessionMessage).toHaveBeenCalledExactlyOnceWith(
+        sessionId,
+        "Человек написал: «739204»"
+      );
+      // Any other code is still made up.
+      await expect(
+        tool.execute(
+          {
+            action: "continue",
+            personSaid: "739204",
+            runId,
+            task: "Код 482913",
+          },
+          toolContext("better-auth:alice", "browser-result")
+        )
+      ).rejects.toThrow("Nothing was sent: 482913 reads as");
+    });
+
+    it("passes on the code answered after the run stopped for it", async () => {
+      readBrowserRunForScope.mockResolvedValue(
+        browserRunRow(new Date(), "Needs: sms_code")
+      );
+      const tool = await answeredInReport("739204");
+
+      await tool.execute(
+        { action: "continue", personSaid: "739204", runId, task: "Код 739204" },
+        toolContext("better-auth:alice", "browser-result")
+      );
+
+      expect(createBrowserUseRun).toHaveBeenCalledOnce();
+    });
+
+    it("steers a confirmed errand by the answer, without its confirmation", async () => {
+      readBrowserRunForScope.mockResolvedValue(
+        browserRunRow(new Date(), "Needs: decision", cardSubmission)
+      );
+      const tool = await answeredInReport("19:30");
+
+      await tool.execute(
+        {
+          action: "continue",
+          personSaid: "19:30",
+          runId,
+          task: "Бери слот на 19:30",
+        },
+        toolContext("better-auth:alice", "browser-result")
+      );
+
+      const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
+      expect(task).toContain("Человек написал: «19:30»");
+      // A report turn is not the person's: the earlier card does not act.
+      expect(task).toContain(
+        "The person has not approved acting in their name on this errand."
+      );
+    });
+
+    it("still refuses without an answer", async () => {
+      readBrowserRunForScope.mockResolvedValue(
+        browserRunRow(new Date(), "Needs: sms_code")
+      );
+      const report = await resolvedBrowserTask([], reportOpening);
+
+      await expect(
+        report.execute(
+          {
+            action: "continue",
+            personSaid: "739204",
+            runId,
+            task: "Код 739204",
+          },
+          toolContext("better-auth:alice", "browser-result")
+        )
+      ).rejects.toThrow("Nothing was sent");
+      nothingSent();
+    });
+  });
+
+  it.each(["👍", "+", "ок"])(
+    "continues on «%s» after the person confirmed in the app",
+    async (reply) => {
+      await continueErrand({
+        completedAt: new Date(),
+        outcome: "Needs: push",
+        personSaid: reply,
+        said: reply,
+        task: "Человек подтвердил вход в приложении, продолжай",
+      });
+
+      expect(createBrowserUseRun).toHaveBeenCalledOnce();
+    }
+  );
+
+  it("tells the run a report turn's follow-up is not the person's word", async () => {
+    await inReportTurn("Needs: none", {
+      task: "Collect the actual links of the options",
+    });
+
+    const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
+    expect(task).toContain(
+      "Follow-up from Bro's coordinator, not words from the person"
+    );
+    expect(task).not.toContain("Человек написал");
+  });
+});
+
 /** A tool result of an earlier step, as eve keeps it in the history. */
 function toolResult(
   toolName: string,
@@ -4238,9 +5227,13 @@ function toolResult(
   };
 }
 
-/** The tool as its per-step resolver hands it out after these messages. */
+/**
+ * The tool as its per-step resolver hands it out in a turn the person opened
+ * with `said`, after these messages.
+ */
 async function resolvedBrowserTask(
-  messages: readonly ReturnType<typeof toolResult>[]
+  messages: readonly ModelMessage[],
+  said = "ну что там?"
 ) {
   const { default: dynamic } = await import("@agent/tools/browser_task");
   const resolve = dynamic.events["step.started"];
@@ -4248,7 +5241,7 @@ async function resolvedBrowserTask(
   const context = toolContext("better-auth:alice");
   const tools = await resolve({}, {
     channel: { kind: "channel:photon", metadata: {} },
-    messages: [{ content: "ну что там?", role: "user" }, ...messages],
+    messages: [{ content: said, role: "user" }, ...messages],
     model: null,
     session: { auth: context.session.auth, id: context.session.id },
   } satisfies DynamicResolveContext);

@@ -44,7 +44,7 @@ const personStepInstructions: Partial<Record<BrowserRunNeed, string>> = {
   "3ds":
     "The payment is waiting for the user's 3-D Secure confirmation: open your one message with a short line asking them to confirm it in their bank app, or giving them the live view to enter the bank's code, and saying you will carry on once they are done; what the run did so far follows in that same message.",
   email_code:
-    "The site is waiting for a one-time code it sent by email: open your one message with a short line asking the user for that code, naming where it was sent if Details says, and saying you will type it in yourself; what the run did and found so far follows in that same message. When they send it, pass it with browser_task continue on this run id.",
+    "The site is waiting for a one-time code it sent by email: open your one message with a short line asking the user for that code, naming where it was sent exactly as Details masks it, and saying you will type it in yourself; what the run did and found so far follows in that same message. Then end this turn: only the user's own reply with the code continues the run, with browser_task continue on this run id — never make up a code or continue without theirs.",
   password:
     "The site asks for a sign-in the run has no password for: call request_vault_setup so the user can save the password, and open your one message with a short line naming the site and giving that link; never ask for the password in chat.",
   // A run that searched first stops here with the option it picked: one card
@@ -54,9 +54,9 @@ const personStepInstructions: Partial<Record<BrowserRunNeed, string>> = {
   // out above what was: one card with the real total answers it, never a
   // question in text and a card after it.
   payment: `The run stopped before paying, with the total in Total. When ${purchaseRequest} and not only found or compared, do not ask in text: continue this run now with allowSubmit and a submission naming exactly the option it staged (${concreteOptionTerms}), so the user confirms it on one card, or with allowPayment and withinSpendLimit when it fits their standing spend limit. When they only asked to find or compare, give them the total and offer to order. ${declinedCardLine}`,
-  push: "The site is waiting for the user to approve the sign-in in their app: open your one message with a short line asking them to confirm it there and tell you when they have; what the run did so far follows in that same message. Then pass their word on with browser_task continue on this run id.",
+  push: "The site is waiting for the user to approve the sign-in in their app: open your one message with a short line asking them to confirm it there and tell you when they have; what the run did so far follows in that same message. Then end this turn: their own reply that they have done it continues the run, with browser_task continue on this run id.",
   sms_code:
-    "The site is waiting for a one-time code it sent by SMS: open your one message with a short line asking the user for that code, naming the phone it went to if Details says, and saying you will type it in yourself; what the run did and found so far follows in that same message. When they send it, pass it with browser_task continue on this run id.",
+    "The site is waiting for a one-time code it sent by SMS: open your one message with a short line asking the user for that code, naming the phone it went to exactly as Details masks it — «***-**-76» stays «***-**-76», never with digits filled in — and saying you will type it in yourself; what the run did and found so far follows in that same message. Then end this turn: only the user's own reply with the code continues the run, with browser_task continue on this run id — never make up a code or continue without theirs.",
 };
 
 /**

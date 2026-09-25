@@ -54,6 +54,51 @@ function stubFetch(...responses: readonly Response[]) {
   return calls;
 }
 
+describe("Browser Use client deadlines", () => {
+  it("bounds a read, a cancel and a new profile, but never cuts off a start or a queued message", async () => {
+    const client = await loadClient();
+    const answers = [
+      Response.json({ status: "running" }),
+      Response.json({ id: runId, model: "m", sessionId, status: "running" }),
+      Response.json({ id: 7, sessionId, status: "pending" }),
+      Response.json({ id: runId, sessionId, status: "cancelled", task: "t" }),
+      Response.json({ id: "profile-1" }),
+    ];
+    const requests: [string, string, boolean][] = [];
+    vi.stubGlobal(
+      "fetch",
+      (url: URL, init: { method: string; signal?: AbortSignal }) => {
+        requests.push([
+          init.method,
+          url.pathname.replace("/api/v4", ""),
+          init.signal !== undefined,
+        ]);
+        const answer = answers[requests.length - 1];
+        if (!answer) throw new Error("The test ran out of stubbed responses.");
+        return Promise.resolve(answer);
+      }
+    );
+
+    await client.readBrowserUseRunStatus(runId);
+    // Browser Use takes no idempotency key: a start cut off after it began
+    // would leave a run acting for the person with nothing tracking it.
+    await client.createBrowserUseRun({ task: "Найди отель" });
+    await client.queueBrowserUseSessionMessage(sessionId, "123456");
+    // A cancel is safe to cut off and to repeat, and a person saying
+    // «отмени» should not wait five minutes on a slow Browser Use.
+    await client.cancelBrowserUseRun(runId);
+    await client.createBrowserUseProfile("Bro workspace", "better-auth:alice");
+
+    expect(requests).toEqual([
+      ["GET", `/runs/${runId}/status`, true],
+      ["POST", "/runs", false],
+      ["POST", `/sessions/${sessionId}/queue`, false],
+      ["POST", `/runs/${runId}/cancel`, true],
+      ["POST", "/profiles", true],
+    ]);
+  });
+});
+
 describe("Browser Use client", () => {
   it("creates a run with the v4 field names and a whitespace-free key", async () => {
     const client = await loadClient();

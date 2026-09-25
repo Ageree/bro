@@ -6,6 +6,7 @@ import {
   readBrowserRun,
 } from "@db/services/browser-runs";
 import {
+  BrowserUseError,
   cancelBrowserUseRun,
   createBrowserUseRun,
   findRecentBrowserUseRunByTaskLine,
@@ -77,6 +78,22 @@ function retryReference(runId: string, attempt: number) {
   return `(Background retry ${String(attempt)} of errand ${runId}; for bookkeeping only.)`;
 }
 
+const uncertainStartRetryMs = 60_000;
+/** Past this an outage counts against the attempts, so the errand ends. */
+const uncertainStartWindowMs = 30 * 60_000;
+
+/**
+ * Whether the attempt that hit the wall did so recently enough for a start
+ * of unknown outcome to keep its number. An errand walled longer ago counts
+ * it as a failed attempt, so an outage cannot keep it retrying forever.
+ */
+function recentlyWalled(row: Pick<BrowserRunRow, "completedAt">, now: Date) {
+  return (
+    row.completedAt !== null &&
+    now.getTime() - row.completedAt.getTime() < uncertainStartWindowMs
+  );
+}
+
 /**
  * Stop a run that was started but could not be handed the errand. Never
  * fatal: the caller is already on its way out with a better error.
@@ -100,10 +117,13 @@ async function abandonRetryRun(runId: string) {
  * The person may stop the errand at any moment, so the row is read again
  * before anything starts, and the handoff to the new run only lands while the
  * old row is still waiting; a run started for an errand that was stopped
- * meanwhile is cancelled at once. A start that fails counts as a failed
- * attempt and is parked again, until the attempts run out and the caller
- * reports the wall. A run this attempt already started before its poller
- * died is found by its reference line and adopted, not started again.
+ * meanwhile is cancelled at once. A start Browser Use refused counts as a
+ * failed attempt and is parked again, until the attempts run out and the
+ * caller reports the wall. A run this attempt already started before its
+ * poller died is found by its reference line and adopted, not started again;
+ * any other failure up to and including the start keeps the attempt's
+ * number while the wall is recent, so the next claim looks for that very
+ * line.
  */
 export async function startCaptchaRetry(row: BrowserRunRow, now = new Date()) {
   if (row.captchaAttempt >= maximumCaptchaAttempts) {
@@ -111,29 +131,67 @@ export async function startCaptchaRetry(row: BrowserRunRow, now = new Date()) {
   }
   const attempt = row.captchaAttempt + 1;
   try {
-    const current = await readBrowserRun(row.id);
-    if (current?.status !== "waiting" || current.retriedAsRunId) {
-      return { status: "stopped" as const };
-    }
-    const scope = { userId: row.createdByUserId, workspaceId: row.workspaceId };
-    const [previous, secrets] = await Promise.all([
-      readBrowserUseRun(row.id),
-      resolveBrowserSecretBindings(scope, {
-        allowPayment: row.paymentAllowed,
-        site: row.site ?? undefined,
-      }),
-    ]);
     const reference = retryReference(row.id, attempt);
-    const run =
-      (await findRecentBrowserUseRunByTaskLine(reference)) ??
-      (await createBrowserUseRun({
-        ...retryProxySettings(attempt, randomUUID().replaceAll("-", "")),
-        maxCostUsd: env.BROWSER_USE_MAX_COST_USD,
-        model: env.BROWSER_USE_MODEL,
-        profileId: row.profileId ?? undefined,
-        secretBindings: secrets.bindings,
-        task: captchaRetryTask(previous.task, attempt, reference),
-      }));
+    let run: Pick<
+      Awaited<ReturnType<typeof createBrowserUseRun>>,
+      "id" | "sessionId"
+    >;
+    let starting = false;
+    try {
+      const current = await readBrowserRun(row.id);
+      if (current?.status !== "waiting" || current.retriedAsRunId) {
+        return { status: "stopped" as const };
+      }
+      const adopted = await findRecentBrowserUseRunByTaskLine(reference);
+      if (adopted) {
+        run = adopted;
+      } else {
+        const scope = {
+          userId: row.createdByUserId,
+          workspaceId: row.workspaceId,
+        };
+        const [previous, secrets] = await Promise.all([
+          readBrowserUseRun(row.id),
+          resolveBrowserSecretBindings(scope, {
+            allowPayment: row.paymentAllowed,
+            site: row.site ?? undefined,
+          }),
+        ]);
+        starting = true;
+        run = await createBrowserUseRun({
+          ...retryProxySettings(attempt, randomUUID().replaceAll("-", "")),
+          maxCostUsd: env.BROWSER_USE_MAX_COST_USD,
+          model: env.BROWSER_USE_MODEL,
+          profileId: row.profileId ?? undefined,
+          secretBindings: secrets.bindings,
+          task: captchaRetryTask(previous.task, attempt, reference),
+        });
+      }
+    } catch (error) {
+      // Only a clear refusal (4xx) of the start is a failed attempt. A
+      // timeout, a dropped connection or a 5xx on the start says nothing
+      // about what Browser Use did, and it takes no idempotency key. Nor
+      // does any failure before the start: the last claim's start may have
+      // been cut off, the outage that cut it off usually fails this claim's
+      // reads as well, and the next number would miss the run it started.
+      const refused =
+        starting && error instanceof BrowserUseError && error.status < 500;
+      if (refused || !recentlyWalled(row, now)) throw error;
+      // The next claim looks for this very attempt's line and adopts what it
+      // finds, instead of taking the next number and opening a second
+      // browser beside it.
+      console.warn("[browser-use] the anti-bot retry keeps its attempt", {
+        attempt,
+        cause: error,
+        runId: row.id,
+        stage: starting ? "start" : "before start",
+      });
+      await parkBrowserRunForRetry(row.id, {
+        captchaAttempt: row.captchaAttempt,
+        retryAt: new Date(now.getTime() + uncertainStartRetryMs),
+      });
+      return { status: "parked" as const };
+    }
     let handedOff = false;
     try {
       handedOff = await handOffBrowserRunRetry(row.id, {

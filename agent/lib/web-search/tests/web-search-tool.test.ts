@@ -124,6 +124,120 @@ describe("web_search tool selection", () => {
     );
   });
 
+  it("sends a search for tickets on given dates to a browser run", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
+    vi.stubEnv("BROWSER_USE_API_KEY", "browser-use-test-key");
+    fetchMock.mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  annotations: [
+                    {
+                      type: "url_citation",
+                      url_citation: {
+                        content: "На этом направлении курсирует 13 поездов.",
+                        title: "Расписание поездов: Москва — Казань",
+                        url: "https://www.tutu.ru/poezda/Moskva/Kazan/",
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          })
+        )
+    );
+    const search = async (query: string, sites?: string[]) => {
+      const { openRouterWebSearch } = await loadTool();
+      return await openRouterWebSearch.execute({ query, sites }, toolContext());
+    };
+
+    // RU 25.09, d13: «найди мне поезд до казани на следующие выходные».
+    const trains = await search(
+      "поезд Москва Казань расписание билеты следующие выходные 2 октября 2026 4 октября 2026",
+      ["rzd.ru", "tutu.ru"]
+    );
+    expect(trains).toMatch(/^1\. Расписание поездов: Москва — Казань\n/u);
+    expect(trains).toContain(
+      "start browser_task now without allowSubmit on the seller's site"
+    );
+    expect(trains).toContain("«в поезде только нижняя полка»");
+    expect(
+      await search("поезд Москва Казань 3 октября нижняя полка наличие мест")
+    ).toContain("start browser_task now");
+    for (const query of [
+      "hotel in Kazan for the weekend",
+      "отель Казань 3-5 октября",
+      "купе Москва Питер пятница",
+      "отель рядом с Красной площадью 3 октября",
+      "авиабилеты Москва Сочи 12.10",
+      // A train or a flight outweighs the dinner asked for with it (d13).
+      "найди мне поезд до казани на следующие выходные и где там поужинать в субботу",
+      "поезд Москва Питер 3 октября вагон-ресторан",
+      // A stay's own dinner, rating or landmark is still a stay.
+      "отель в Сочи с завтраком и ужином на 3–10 октября",
+      "отель в Казани 3–5 октября рейтинг от 8",
+      "отель рядом с Большим театром 3-5 октября",
+      "отель у метро Театральная 3 октября",
+      // Days and berths said as adjectives.
+      "билеты на завтрашний рейс Москва Сочи",
+      "поезд Москва Казань сегодняшний вечер",
+      "купейный вагон Москва Казань 3 октября",
+    ]) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- One query at a time keeps the failure readable.
+      expect(await search(query)).toContain("start browser_task now");
+    }
+    // A search held to a seller of tickets or rooms is one whatever else it
+    // says.
+    expect(
+      await search(
+        "поезд до Казани на следующие выходные и где поужинать в субботу",
+        ["rzd.ru", "tutu.ru"]
+      )
+    ).toContain("start browser_task now");
+    expect(
+      await search("отель Сочи полупансион ужин 3-10 октября", ["ostrovok.ru"])
+    ).toContain("start browser_task now");
+
+    // A dinner, a timetable in general and a flight's status are not it,
+    // and neither is a pick of a place or a master with a hotel as a
+    // landmark or a day as when (review of 25.09).
+    for (const query of [
+      "Казань ресторан ужин суббота центр средний чек меню ресторан 2026",
+      "сколько идёт поезд из Москвы в Казань",
+      "поездка в Казань на выходные что посмотреть",
+      "рейс SU 1234 статус сегодня",
+      "training schedule tomorrow",
+      "где поужинать рядом с отелем Метрополь в субботу",
+      "ресторан ужин Казань суббота рядом с отелем",
+      "кафе рядом с отелем Radisson завтрак сегодня",
+      "интересные места рядом с отелем Азимут Москва",
+      "ресторан рядом с гостиницей Космос в пятницу",
+      "бар возле отеля Four Seasons на выходных",
+      "сборка шкафа-купе Москва мастер завтра",
+      "книжные полки наличие в магазине",
+      "отели Казани с рейтингом 4.5 и выше",
+      "restaurants near the hotel Metropol on Saturday",
+      "шкаф купе сборка завтра",
+      "билеты в театр на субботу",
+      "отель с завтраком",
+    ]) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- One query at a time keeps the failure readable.
+      expect(await search(query)).not.toContain("browser_task");
+    }
+
+    // Without browser runs there is nothing to send it to. The environment
+    // is read once, when its module loads.
+    vi.stubEnv("BROWSER_USE_API_KEY", undefined);
+    vi.resetModules();
+    expect(
+      await search("поезд Москва Казань 3 октября нижняя полка")
+    ).not.toContain("browser_task");
+  });
+
   it("surfaces a failed search as tool result text", async () => {
     vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
     fetchMock.mockImplementation(
