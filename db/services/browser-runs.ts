@@ -588,14 +588,17 @@ export async function claimBrowserRunReport(runId: string) {
   return row;
 }
 
+/** Mark the report delivered; true when this call was the one that did. */
 export async function finishBrowserRunReport(runId: string) {
   const now = new Date();
-  await db
+  const rows = await db
     .update(browserRuns)
     .set({ reportClaimedAt: null, reportDeliveredAt: now, updatedAt: now })
     .where(
       and(eq(browserRuns.id, runId), isNull(browserRuns.reportDeliveredAt))
-    );
+    )
+    .returning({ id: browserRuns.id });
+  return rows.length > 0;
 }
 
 /** The wait after a failed delivery: 30 s, doubling, at most 15 minutes. */
@@ -624,25 +627,30 @@ export async function releaseBrowserRunReport(runId: string) {
 }
 
 /**
- * How long a report the conversation accepted may wait for its turn. With
- * `turnPolicy: "queue"` it waits behind a turn the person started, which can
- * run for minutes; sent again after the plain lease, both copies ran.
+ * How long a report the conversation accepted may wait for its turn to start:
+ * a minute after the first hand-over, doubling with each one after it, at
+ * most ten minutes. An accepted send is not a turn — on 25.09 reports that
+ * eve took never started one, and with a flat ten-minute hold the person
+ * waited that long for the next try. A copy sent while the first still waits
+ * behind the person's own long turn costs one silent turn: the report turn
+ * that finds its report already delivered ends without a word
+ * (`staleReportNote` in `agent/agent.ts`).
  */
-const handedOverLeaseMs = 10 * 60_000;
+const firstHandOverWaitMs = 60_000;
+const maximumHandOverWaitMs = 10 * 60_000;
 
 /**
  * The conversation accepted the report and its turn is queued: nobody sends
  * it again until that turn had time to start. Its start renews the lease
- * (`renewBrowserRunReportLease`), and its end settles the report.
+ * (`renewBrowserRunReportLease`), and its end settles the report. The wait
+ * is written as a lease that lapses then, like `releaseBrowserRunReport`'s.
  */
 export async function holdBrowserRunReportForTurn(runId: string) {
   const now = new Date();
   await db
     .update(browserRuns)
     .set({
-      reportClaimedAt: new Date(
-        now.getTime() + handedOverLeaseMs - reportLeaseMs
-      ),
+      reportClaimedAt: sql`${now.toISOString()}::timestamptz - make_interval(secs => ${reportLeaseMs / 1000}) + make_interval(secs => least(${firstHandOverWaitMs / 1000} * power(2, greatest(${browserRuns.reportAttempts} - 1, 0)), ${maximumHandOverWaitMs / 1000}))`,
       updatedAt: now,
     })
     .where(

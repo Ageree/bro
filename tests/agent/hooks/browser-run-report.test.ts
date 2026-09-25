@@ -2,7 +2,7 @@ import type { HookContext } from "eve/hooks";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const finishBrowserRunReport = vi.hoisted(() =>
-  vi.fn<(runId: string) => Promise<void>>(() => Promise.resolve())
+  vi.fn<(runId: string) => Promise<boolean>>(() => Promise.resolve(true))
 );
 const renewBrowserRunReportLease = vi.hoisted(() =>
   vi.fn<(runId: string) => Promise<void>>(() => Promise.resolve())
@@ -105,9 +105,17 @@ describe("the browser report hook", () => {
   });
 
   it("keeps the report's lease while its turn works on it", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+
     await emit("turn.started", {});
 
     expect(renewBrowserRunReportLease).toHaveBeenCalledExactlyOnceWith(runId);
+    // The report's path shows in the logs: its turn did start.
+    expect(info).toHaveBeenCalledWith("[browser-use] report turn started", {
+      runId,
+      sessionId: "session-1",
+    });
+    info.mockRestore();
   });
 
   it("counts the report delivered once a message reached the person", async () => {
@@ -152,10 +160,23 @@ describe("the browser report hook", () => {
     expect(finishBrowserRunReport).not.toHaveBeenCalled();
   });
 
-  it("closes the report when its turn ends", async () => {
+  it("closes the report when its turn ends, and says when that turn said nothing", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+
     await emit("turn.completed", {});
 
     expect(finishBrowserRunReport).toHaveBeenCalledExactlyOnceWith(runId);
+    expect(info).toHaveBeenCalledWith(
+      "[browser-use] report turn ended without a message",
+      { runId, sessionId: "session-1" }
+    );
+
+    // A turn whose message already settled the report ends without a line.
+    info.mockClear();
+    finishBrowserRunReport.mockResolvedValueOnce(false);
+    await emit("turn.completed", {});
+    expect(info).not.toHaveBeenCalled();
+    info.mockRestore();
   });
 
   it("leaves turns that no report started alone", async () => {

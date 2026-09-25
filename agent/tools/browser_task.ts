@@ -2730,9 +2730,23 @@ async function runBrowserTask(
   if (row.status === "queued") {
     return { note: queuedStatusNote(row), runId, status: "queued" };
   }
-  const status = row.completedAt
-    ? row.status
+  const cloudStatus = row.completedAt
+    ? undefined
     : await readBrowserUseRunStatus(runId);
+  const status = cloudStatus ?? row.status;
+  if (cloudStatus !== undefined && terminalRunStatuses.has(cloudStatus)) {
+    // The poller settles an ended run within seconds; one the person finds
+    // still open means it is not getting to it. When it last took the row
+    // tells whether it looked at all (25.09: three reports never came, and
+    // nothing said why).
+    console.warn("[browser-use] status found an ended run still open", {
+      lastCheckedSecondsAgo: Math.round(
+        (Date.now() - row.updatedAt.getTime()) / 1000
+      ),
+      runId,
+      status: cloudStatus,
+    });
+  }
   const settled = row.completedAt !== null && row.retryAt === null;
   // A report the person has not heard is handed over whole, and is not
   // marked delivered here: its own turn stays quiet once a message of this

@@ -420,6 +420,71 @@ describe("settling a browser run", () => {
     expect(send).not.toHaveBeenCalled();
   });
 
+  it("settles on the status endpoint's word when the summary lags but carries the result", async () => {
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    readBrowserUseRun.mockResolvedValue({
+      error: null,
+      id: runId,
+      result: "RESULT: ordered\nORDER: 4417\nNEEDS: none",
+      sessionId: "session-1",
+      status: "running",
+      task: "Order the usual",
+    });
+    const { send, to } = delivery();
+
+    await expect(settleBrowserRun({ to }, runId, "completed")).resolves.toEqual(
+      { kind: "settled" }
+    );
+
+    expect(claimBrowserRunCompletion.mock.calls[0]?.[1].status).toBe("done");
+    expect(send).toHaveBeenCalledOnce();
+    expect(send.mock.calls[0]?.[0]).toContain("Result: ordered");
+  });
+
+  it("leaves a lagging summary with nothing in it for the next poll, and says so", async () => {
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    readBrowserUseRun.mockResolvedValue({
+      error: null,
+      id: runId,
+      result: null,
+      sessionId: "session-1",
+      status: "running",
+      task: "Order the usual",
+    });
+    const { send, to } = delivery();
+
+    await expect(settleBrowserRun({ to }, runId, "completed")).resolves.toEqual(
+      { kind: "open", summaryStatus: "running" }
+    );
+
+    expect(claimBrowserRunCompletion).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("logs the settle without the messenger conversation it belongs to", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { to } = delivery();
+
+    await settleBrowserRun({ to }, runId, "completed");
+
+    expect(info).toHaveBeenCalledWith("[browser-use] run settled", {
+      channel: "photon",
+      needs: "none",
+      retryAt: undefined,
+      runId,
+      sessionId: undefined,
+      status: "completed",
+      summaryStatus: undefined,
+    });
+    // An iMessage thread id is a phone number: it never goes in the logs.
+    expect(JSON.stringify(info.mock.calls)).not.toContain("imessage:chat-1");
+    info.mockRestore();
+  });
+
   it("never settles a run that was already reported", async () => {
     const { settleBrowserRun } =
       await import("@agent/lib/browser-use/completion");
@@ -1321,6 +1386,70 @@ describe("reporting into an eve chat", () => {
     expect(finishBrowserRunReport).not.toHaveBeenCalled();
     expect(releaseBrowserRunReport).toHaveBeenCalledExactlyOnceWith(runId);
     expect(ledger.delivered).toBe(false);
+  });
+
+  it("leaves one line per delivery attempt with its outcome and session", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { deliverBrowserRunReport, settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { to } = delivery();
+
+    const refused = sessionHandle("session_not_active");
+    await settleBrowserRun({ attachSession: refused.attachSession, to }, runId);
+    expect(warn).toHaveBeenCalledWith("[browser-use] report delivery", {
+      attempt: 1,
+      channel: "eve",
+      result: "not_accepted",
+      retryable: true,
+      runId,
+      sessionId: "eve-session-1",
+      status: "session_not_active",
+    });
+
+    const accepted = sessionHandle("accepted");
+    await deliverBrowserRunReport(
+      { attachSession: accepted.attachSession, to },
+      runId
+    );
+    expect(info).toHaveBeenCalledWith("[browser-use] report delivery", {
+      attempt: 1,
+      channel: "eve",
+      result: "accepted",
+      runId,
+      sessionId: "eve-session-1",
+    });
+    info.mockRestore();
+    warn.mockRestore();
+  });
+
+  it("gives a send that never answers up after 20 seconds and keeps the report", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { deliverBrowserRunReport } =
+      await import("@agent/lib/browser-use/completion");
+    ledger.report = "Browser run finished";
+    const { attachSession, send } = sessionHandle("accepted");
+    send.mockImplementation(() => new Promise(() => undefined));
+    const { to } = delivery();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const delivering = deliverBrowserRunReport({ attachSession, to }, runId);
+      await vi.advanceTimersByTimeAsync(20_000);
+      await delivering;
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(warn).toHaveBeenCalledWith("[browser-use] report delivery", {
+      attempt: 1,
+      channel: "eve",
+      result: "timed_out",
+      runId,
+      sessionId: "eve-session-1",
+    });
+    expect(releaseBrowserRunReport).toHaveBeenCalledExactlyOnceWith(runId);
+    expect(ledger.delivered).toBe(false);
+    warn.mockRestore();
   });
 });
 

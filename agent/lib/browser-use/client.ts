@@ -370,6 +370,9 @@ export function liveViewUrlFromEvents(
   return undefined;
 }
 
+/** Long enough for a run to be created; a status read takes well under one. */
+const browserUseRequestTimeoutMs = 30_000;
+
 async function request(
   method: "DELETE" | "GET" | "PATCH" | "POST",
   path: string,
@@ -390,7 +393,15 @@ async function request(
   };
   if (body !== undefined) init.body = body;
 
-  let response = await fetch(url, init);
+  // Every call is bounded: an answer that never comes used to hold the
+  // poller's whole tick — and every tick after it that Nitro handed the same
+  // running task — for as long as undici's five-minute timeouts, silently.
+  const attempt = () =>
+    fetch(url, {
+      ...init,
+      signal: AbortSignal.timeout(browserUseRequestTimeoutMs),
+    });
+  let response = await attempt();
   // One retry only, and only for a read or a request that is safe to repeat.
   // A POST that failed may still have started a run or queued a message, and
   // a 429 on one is the concurrent-session cap, which the next second does
@@ -399,7 +410,7 @@ async function request(
     method !== "POST" &&
     (response.status === 429 || response.status >= 500)
   ) {
-    response = await fetch(url, init);
+    response = await attempt();
   }
   const text = await response.text();
   if (!response.ok) {

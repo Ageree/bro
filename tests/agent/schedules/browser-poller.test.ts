@@ -31,6 +31,8 @@ interface CloudRun {
   result: string | null;
   sessionId: string;
   status: "completed" | "failed" | "running";
+  // What the full run summary says, when it lags behind the status endpoint.
+  summaryStatus?: "running";
   task: string;
 }
 
@@ -41,6 +43,8 @@ const cloud = vi.hoisted(() => ({
   created: new Array<{ sessionId?: string; task: string }>(),
   // Runs whose status Browser Use keeps failing to answer.
   failing: new Set<string>(),
+  // Runs whose summary Browser Use never answers at all.
+  hanging: new Set<string>(),
   // How many times a run's status was asked.
   statusChecks: 0,
   // What the next create answers: a new run, or Browser Use's refusal.
@@ -83,10 +87,18 @@ vi.mock("@db/services/orders", () => ({
 // the case that drives the clock can wait it out.
 const parkFails = vi.hoisted(() => ({ value: false }));
 const liveWatch = vi.hoisted(() => ({ value: false }));
+// The retry queue's claim can be made to fail, the way a dropped connection does.
+const retriesFail = vi.hoisted(() => ({ value: false }));
 vi.mock("@db/services/browser-runs", async (importOriginal) => {
   const original = await importOriginal<typeof browserRunsService>();
   return {
     ...original,
+    claimDueBrowserRunRetries: (
+      ...args: Parameters<typeof original.claimDueBrowserRunRetries>
+    ) =>
+      retriesFail.value
+        ? Promise.reject(new Error("connection terminated"))
+        : original.claimDueBrowserRunRetries(...args),
     hasLiveBrowserRuns: () =>
       liveWatch.value ? original.hasLiveBrowserRuns() : Promise.resolve(false),
     parkQueuedBrowserRun: (
@@ -175,13 +187,14 @@ vi.mock("@agent/lib/browser-use/client", async (importOriginal) => {
       );
     },
     readBrowserUseRun: (runId: string) => {
+      if (cloud.hanging.has(runId)) return new Promise(() => undefined);
       const run = known(runId);
       return Promise.resolve({
         error: null,
         id: runId,
         result: run.result,
         sessionId: run.sessionId,
-        status: run.status,
+        status: run.summaryStatus ?? run.status,
         task: run.task,
       });
     },
@@ -219,9 +232,11 @@ beforeEach(async () => {
   cloud.created.length = 0;
   parkFails.value = false;
   liveWatch.value = false;
+  retriesFail.value = false;
   cloud.statusChecks = 0;
   vaultFails.value = false;
   cloud.failing.clear();
+  cloud.hanging.clear();
   cloud.nextCreate.length = 0;
   cloud.runs.clear();
   alertOwner.mockClear();
@@ -363,6 +378,159 @@ describe("the browser run poller", () => {
     expect(send).toHaveBeenCalledOnce();
     expect(sentText(send.mock.calls[0]?.[0])).toContain("finished-run");
   }, 60_000);
+
+  it("delivers a finished run and ends the tick while another run's settle never answers", async () => {
+    await import("@agent/schedules/browser-runs");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.useFakeTimers({
+      now: new Date(),
+      toFake: ["Date", "setTimeout", "clearTimeout"],
+    });
+    await runningErrand("stuck-run", "RESULT: нашёл отели\nNEEDS: none");
+    cloud.hanging.add("stuck-run");
+    await runningErrand("done-run", "RESULT: нашёл два отеля\nNEEDS: none");
+    const { attachSession, send } = webChat();
+
+    const finished = { value: false };
+    const ticking = tick(attachSession).then(() => {
+      finished.value = true;
+      return finished.value;
+    });
+    async function runClock(stepsLeft: number): Promise<void> {
+      if (finished.value || stepsLeft === 0) return;
+      await vi.advanceTimersByTimeAsync(1_000);
+      await new Promise((resolve) => setImmediate(resolve));
+      return runClock(stepsLeft - 1);
+    }
+    await runClock(120);
+    await ticking;
+
+    // The tick waited half a minute on the run that never answered, not
+    // forever: the next tick is its own, not this one handed on by Nitro.
+    expect(finished.value).toBe(true);
+    expect(send).toHaveBeenCalledOnce();
+    expect(sentText(send.mock.calls[0]?.[0])).toContain("done-run");
+    expect(warn).toHaveBeenCalledWith(
+      "[browser-use] run reconciliation is still going",
+      { runId: "stuck-run", waitedMs: 30_000 }
+    );
+    warn.mockRestore();
+  }, 60_000);
+
+  it("keeps redelivering and watching overdue reports when an earlier stage fails", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    retriesFail.value = true;
+    const { createBrowserRun } = await import("@db/services/browser-runs");
+    // Settled three minutes ago; its first delivery never landed.
+    await createBrowserRun(alice, {
+      completedAt: minutesAgo(3),
+      conversationChannel: "eve",
+      conversationId: "web-session",
+      id: "owed-run",
+      report: "Browser run owed-run finished.",
+      sessionId: "session-owed",
+      status: "done",
+      task: "Найди отель",
+    });
+    const { attachSession, send } = webChat();
+
+    await tick(attachSession);
+
+    expect(warn).toHaveBeenCalledWith("[browser-use] poll stage failed", {
+      cause: new Error("connection terminated"),
+      stage: "retry",
+    });
+    expect(send).toHaveBeenCalledExactlyOnceWith(
+      "Browser run owed-run finished.",
+      expect.anything()
+    );
+    // The overdue watch still ran after the failed stage.
+    expect(alertOwner).toHaveBeenCalledOnce();
+    warn.mockRestore();
+  }, 30_000);
+
+  it("settles a run whose summary lags behind its status once the summary has the result", async () => {
+    await runningErrand("lagging-run", "RESULT: нашёл отели\nNEEDS: none");
+    const lagging = cloud.runs.get("lagging-run");
+    if (!lagging) throw new Error("The cloud run is missing.");
+    lagging.summaryStatus = "running";
+    const { attachSession, send } = webChat();
+
+    await tick(attachSession);
+
+    expect(send).toHaveBeenCalledOnce();
+    expect(sentText(send.mock.calls[0]?.[0])).toContain("lagging-run");
+    expect((await readRun("lagging-run"))?.status).toBe("done");
+  }, 30_000);
+
+  it("closes a run whose summary never catches up once its time is out, and says why", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { createBrowserRun } = await import("@db/services/browser-runs");
+    cloud.runs.set("silent-run", {
+      result: null,
+      sessionId: "session-silent",
+      status: "completed",
+      summaryStatus: "running",
+      task: "errand",
+    });
+    await createBrowserRun(alice, {
+      conversationChannel: "eve",
+      conversationId: "web-session",
+      createdAt: minutesAgo(50),
+      id: "silent-run",
+      sessionId: "session-silent",
+      status: "running",
+      task: "Найди отель",
+      updatedAt: minutesAgo(1),
+    });
+    const { attachSession, send } = webChat();
+
+    await tick(attachSession);
+
+    // Before, a finished status with a summary that disagreed left the run
+    // open for good: never settled, and never expired either.
+    expect(warn).toHaveBeenCalledWith(
+      "[browser-use] the run ended but its summary has not",
+      {
+        overdue: true,
+        runId: "silent-run",
+        status: "completed",
+        summaryStatus: "running",
+      }
+    );
+    expect(send).toHaveBeenCalledOnce();
+    expect(sentText(send.mock.calls[0]?.[0])).toContain(
+      "reports this run as finished but never handed back its result"
+    );
+    expect((await readRun("silent-run"))?.completedAt).toBeInstanceOf(Date);
+    warn.mockRestore();
+  }, 30_000);
+
+  it("waits for a lagging summary with no result while the errand still has time", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    await runningErrand("early-run", "RESULT: —\nNEEDS: none");
+    const early = cloud.runs.get("early-run");
+    if (!early) throw new Error("The cloud run is missing.");
+    early.result = null;
+    early.summaryStatus = "running";
+    const { attachSession, send } = webChat();
+
+    await tick(attachSession);
+
+    expect(send).not.toHaveBeenCalled();
+    expect(cloud.cancelled).toEqual([]);
+    expect((await readRun("early-run"))?.completedAt).toBeNull();
+    expect(warn).toHaveBeenCalledWith(
+      "[browser-use] the run ended but its summary has not",
+      {
+        overdue: false,
+        runId: "early-run",
+        status: "completed",
+        summaryStatus: "running",
+      }
+    );
+    warn.mockRestore();
+  }, 30_000);
 
   it("reports a run that finishes between ticks within seconds", async () => {
     await import("@agent/schedules/browser-runs");
