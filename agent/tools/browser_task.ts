@@ -3304,10 +3304,17 @@ async function runBrowserTask(
           ? "The site stopped this attempt at an anti-bot check, and the next attempt starts by itself in a fresh browser shortly. The errand is still in progress: say so without mentioning the check."
           : undefined,
         // RU d15 (25.09): «скинь адрес того барбера» got only «ещё ищу»,
-        // and the address came 20 minutes later with the run's outcome.
-        settled
+        // and the address came 20 minutes later with the run's outcome. A
+        // plain «ну что там?» keeps its short status.
+        settled ||
+        !byPerson ||
+        !words?.some((said) =>
+          /(?<!\p{L})(?:адрес\p{L}*|телефон\p{L}*|называ\p{L}*|назван\p{L}*|где\s+(?:он|она|оно|это|находит\p{L}*)|часы\s+работ\p{L}*|address|phone|where\s+is|called)(?!\p{L})/iu.test(
+            said
+          )
+        )
           ? undefined
-          : "While the run works, answer now what the person asked that you can find yourself — an address, a name, a phone, a few candidates — from a quick web_search (sites yandex.ru/maps or 2gis.ru), marked as not yet checked by the run; never answer only that it is still searching. Its own outcome arrives as a new message.",
+          : "The run is still working. You may answer the fact the person asked for (an address, a phone, a name, opening hours) now, from a quick web_search with sites yandex.ru/maps or 2gis.ru, marked as not yet checked by the run. Tickets, seats, rooms, goods and prices come only from the run. Its own outcome arrives as a new message.",
         report === undefined
           ? undefined
           : `This outcome has not reached the user yet. Tell them what happened now. ${keptReportNote}`,

@@ -310,6 +310,47 @@ const places = new Map([
       place_rank: 30,
     },
   ],
+  [
+    "Казань",
+    {
+      address: { city: "Казань", country_code: "ru" },
+      addresstype: "city",
+      display_name: "Казань, городской округ Казань, Татарстан, Россия",
+      lat: "55.7887",
+      lon: "49.1221",
+      name: "Казань",
+      place_rank: 16,
+    },
+  ],
+  [
+    "Большой театр, Москва",
+    {
+      address: {
+        city: "Москва",
+        country_code: "ru",
+        house_number: "1",
+        road: "Театральная площадь",
+      },
+      addresstype: "amenity",
+      display_name: "Большой театр, 1, Театральная площадь, Москва, Россия",
+      lat: "55.7601",
+      lon: "37.6186",
+      name: "Большой театр",
+      place_rank: 30,
+    },
+  ],
+  [
+    "ВДНХ, Москва",
+    {
+      address: { city: "Москва", country_code: "ru" },
+      addresstype: "tourism",
+      display_name: "ВДНХ, Москва, Россия",
+      lat: "55.8262",
+      lon: "37.6377",
+      name: "ВДНХ",
+      place_rank: 30,
+    },
+  ],
   // Where the three restaurants of RU d13 (25.09) are, as the map gave them.
   [
     "Большая Красная улица 6, Казань",
@@ -603,6 +644,7 @@ const outputSchema = z.object({
   attribution: z.string().optional(),
   basis: z.string().optional(),
   from: z.string().optional(),
+  fromFar: z.string().optional(),
   fromMatched: matchedSchema.optional(),
   fromNote: z.string().optional(),
   fromUncertain: z.string().optional(),
@@ -1430,7 +1472,7 @@ describe("route_time with stations, airports and landmarks", () => {
     }
   });
 
-  it("doubts a start that is hours on foot from every place of a walk", async () => {
+  it("asks to check a start out of town when every place of a walk lies towards the centre", async () => {
     const walk = await measure({
       from: "улица Привокзальная 1, Казань",
       mode: "walking",
@@ -1443,16 +1485,29 @@ describe("route_time with stations, airports and landmarks", () => {
       precision: "building",
       type: "railway station building",
     });
-    expect(walk.fromUncertain).toContain(
-      "every destination is at least 13.4 km in a straight line from where the start was matched, «Привокзальная улица 1, Казань» in Юдино, Кировский район"
+    // The house is the one asked for; only where it lies is in doubt.
+    expect(walk.fromUncertain).toBeUndefined();
+    expect(walk.fromFar).toContain(
+      "every destination is at least 13.4 km in a straight line from «Привокзальная улица 1, Казань» in Юдино, Кировский район: over an hour on foot. If the person starts there, these times stand: give them as they are."
     );
-    expect(walk.fromUncertain).toContain(
-      "do not tell the person the places are far and state none of these distances or times as fact"
+    expect(walk.fromFar).toContain(
+      "until then state none of these times as fact and do not tell the person the places are far"
     );
-    expect(walk.fromUncertain).toContain("«вокзал, Казань»");
-    // Nothing is counted from it, and no dinner is looked for in Юдино.
-    expect(walk.pick).toContain("the start may be another place");
+    expect(walk.fromFar).toContain("«вокзал, Казань»");
+    expect(walk.routes?.every((route) => route.minutes !== undefined)).toBe(
+      true
+    );
+    // No dinner is looked for in Юдино.
+    expect(walk.pick).toContain(
+      "if the start meant is near these places, count no walks from it and look for no candidates near it"
+    );
     expect(walk.pick).not.toContain("more are needed");
+    // The city was asked for once, to see where its centre is.
+    expect(
+      requestsTo("nominatim.openstreetmap.org").map((url) =>
+        url.searchParams.get("q")
+      )
+    ).toEqual(["улица Привокзальная 1, Казань", ...dinner, "Казань"]);
 
     // A drive across the city is no reason for doubt.
     const drive = await measure({
@@ -1460,7 +1515,25 @@ describe("route_time with stations, airports and landmarks", () => {
       mode: "driving",
       to: dinner,
     });
-    expect(drive.fromUncertain).toBeUndefined();
+    expect(drive.fromFar).toBeUndefined();
+  });
+
+  it("gives a long walk from a start matched well as it is", async () => {
+    // Review of wave 5: from the Bolshoi to ВДНХ is 8 km on foot, and the
+    // time stands.
+    const result = await measure({
+      from: "Большой театр, Москва",
+      mode: "walking",
+      to: ["ВДНХ, Москва"],
+    });
+
+    expect(result.fromUncertain).toBeUndefined();
+    expect(result.fromFar).toBeUndefined();
+    expect(result.routes?.[0]).toMatchObject({
+      minutes: 21,
+      place: "ВДНХ, Москва",
+    });
+    expect(result.pick).toContain("0 of 1 place is within a 15-minute walk");
   });
 
   it("takes the airport for «аэропорт» and the Kremlin for «Кремль», not what is named like them", async () => {

@@ -84,7 +84,7 @@ describe("recommendation instructions", () => {
       "отсей по ним и назови в ответе, что учёл («учёл: без свинины»)"
     );
     expect(content).toContain("пометив «пока не проверено»");
-    expect(content).toContain("Одного «ещё ищу» мало");
+    expect(content).toContain("на «ну что там?» хватит короткого статуса");
   });
 
   /**

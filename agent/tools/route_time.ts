@@ -305,12 +305,13 @@ const landmarkKinds = [
 
 type LandmarkKind = (typeof landmarkKinds)[number];
 
-/**
- * «кафе Вокзал», «метро Аэропорт», «площадь Казанского вокзала»: a place
- * named after a landmark, or a street.
- */
+/** «кафе Вокзал», «метро Аэропорт»: a place named after a landmark. */
 const namedAfterLandmark =
-  /^(?:отель|гостиница|хостел|ресторан|кафе|кофейня|бар|паб|бистро|пиццерия|столовая|метро|м\.|станция метро|hotel|hostel|restaurant|cafe|café|bar|pub|bistro|metro|subway)(?!\p{L})|(?<!\p{L})(?:улиц|ул\.|проспект|переул|площад|шоссе|бульвар|проезд|набережн|street|avenue|road|square)/iu;
+  /^(?:отель|гостиница|хостел|ресторан|кафе|кофейня|бар|паб|бистро|пиццерия|столовая|метро|м\.|станция метро|hotel|hostel|restaurant|cafe|café|bar|pub|bistro|metro|subway)(?!\p{L})/iu;
+
+/** «улица Ленина», «пр-т Мира»: a part of a query that names a street. */
+const streetPart =
+  /(?<!\p{L})(?:улиц|ул\.|проспект|пр-т|переул|пер\.|площад|шоссе|бульвар|проезд|набережн|street|avenue|road|square)/iu;
 
 /** Words that name no particular station: «главный», «центральный». */
 const kindQualifiers =
@@ -324,7 +325,8 @@ const kindQualifiers =
 function landmarkIn(query: string) {
   if (/\d/u.test(query)) return undefined;
   const [name = "", ...around] = queryParts(query);
-  if (namedAfterLandmark.test(name)) return undefined;
+  // «площадь Казанского вокзала» is a street.
+  if (namedAfterLandmark.test(name) || streetPart.test(name)) return undefined;
   const kind = landmarkKinds.find((candidate) => candidate.words.test(name));
   if (!kind) return undefined;
   return {
@@ -517,24 +519,78 @@ function matchedAs(place: MapPlace) {
 const farWalkKm = 5;
 
 /**
- * Why the start may be another place than the one meant: every destination
- * of a walk lies hours away from it. On 25.09 (RU d13) the start was
- * «улица Привокзальная 1, Казань», a halt in Юдино, and the person heard that
- * the three restaurants by the Kremlin were 15 km from the station — they
- * are 2 km from it. A start the person gave as coordinates, or a city, is
- * taken as meant.
+ * The city a query names after its first part: «Казань» of «улица
+ * Привокзальная 1, Казань», «Москва, Россия» of «Тверская 7, Москва,
+ * Россия». Nothing when the query names none.
  */
-function farStart(
-  mode: z.infer<typeof inputSchema>["mode"],
+function namedCity(query: string) {
+  const city = queryParts(query)
+    .slice(1)
+    .filter((part) => !/\d/u.test(part) && !streetPart.test(part));
+  return city.length > 0 ? city.join(", ") : undefined;
+}
+
+/**
+ * Whether the start lies out of the city the query named, while a
+ * destination lies in towards its centre: a start in Юдино for a dinner by
+ * the Kremlin. Asks the map for the city once, and only for a walk that is
+ * long already. A city the map does not find, or a failed lookup, is no
+ * doubt.
+ */
+async function outOfTown(
+  query: string,
   from: MapPlace,
-  found: readonly MapPlace[]
+  found: readonly MapPlace[],
+  budget: LookupBudget,
+  signal: AbortSignal
 ) {
-  if (mode !== "walking" || found.length === 0) return undefined;
+  const city = namedCity(query);
+  if (city === undefined) return false;
+  let centre: MapPlace | undefined;
+  try {
+    [centre] = await findPlaces(city, undefined, budget, signal);
+  } catch (error) {
+    if (!(error instanceof MapServiceError)) throw error;
+    return false;
+  }
+  if (centre?.kind !== "area") return false;
+  const startKm = straightKm(centre, from);
+  return (
+    startKm > farWalkKm &&
+    found.some((place) => straightKm(centre, place) < startKm / 2)
+  );
+}
+
+/**
+ * What to check when every destination of a walk is hours away from a
+ * start that may be another place: one the map matched uncertainly, or one
+ * far out of the city the query named while the destinations lie towards
+ * its centre. On 25.09 (RU d13) the start was «улица Привокзальная 1,
+ * Казань», a halt in Юдино, and the person heard that the three restaurants
+ * by the Kremlin were 15 km from the station — they are 2 km from it. A
+ * long walk from a start matched well (from the Bolshoi to ВДНХ) is left
+ * alone, and a start given as coordinates or a city is taken as meant.
+ */
+async function farStart(
+  input: z.infer<typeof inputSchema>,
+  start: Located,
+  found: readonly MapPlace[],
+  budget: LookupBudget,
+  signal: AbortSignal
+) {
+  const from = start.place;
+  if (input.mode !== "walking" || found.length === 0) return undefined;
   if (from.kind === "point" || from.kind === "area") return undefined;
   const nearest = Math.min(...found.map((place) => straightKm(from, place)));
   if (nearest <= farWalkKm) return undefined;
+  if (
+    start.uncertain === undefined &&
+    !(await outOfTown(input.from, from, found, budget, signal))
+  ) {
+    return undefined;
+  }
   const where = from.district ? ` in ${from.district}` : "";
-  return `every destination is at least ${String(nearest)} km in a straight line from where the start was matched, «${from.label}»${where}: hours on foot. If the start meant is near them (a station, a hotel or a landmark in the centre), the map matched another place with a similar name or address: call again with the landmark's own name and city («вокзал, Казань», «Казанский кремль, Казань») or «lat, lon» from a source. Until then do not tell the person the places are far and state none of these distances or times as fact; if you answer now, say which place you measured from`;
+  return `every destination is at least ${String(nearest)} km in a straight line from «${from.label}»${where}: over an hour on foot. If the person starts there, these times stand: give them as they are. If the start they meant is near the destinations (a station, a hotel or a landmark in the centre), the map matched another place with a similar name or address: call again with that place's own name and city («вокзал, Казань», «Казанский кремль, Казань») or «lat, lon» from a source, and until then state none of these times as fact and do not tell the person the places are far`;
 }
 
 async function measure(
@@ -655,17 +711,15 @@ async function measure(
     };
   });
 
-  const startFar = farStart(input.mode, from, found);
-  const fromUncertain = [start.uncertain, startFar]
-    .filter((reason) => reason !== undefined)
-    .join("; also, ");
+  const startFar = await farStart(input, start, found, budget, signal);
   return {
     attribution: openStreetMapAttribution,
     basis,
     from: from.label,
+    fromFar: startFar,
     fromMatched: matchedAs(from),
     fromNote: areaNote(from),
-    fromUncertain: fromUncertain.length > 0 ? fromUncertain : undefined,
+    fromUncertain: start.uncertain,
     mode: input.mode,
     pick:
       input.mode === "walking"
@@ -730,18 +784,18 @@ const pickSize = 3;
  * service refuses (`mapRefusing`) nothing more is to be measured: asking for
  * replacements then sent the model to search and measure again against a
  * service that was still refusing. After a one-off error or a call out of
- * lookups the next call measures as usual. A start that may be another
- * place (`farStart`) counts nothing: in RU d13 «0 of 3 within a walk, find
- * others near the start» would have sent the model to look for dinner in
- * Юдино.
+ * lookups the next call measures as usual. From a start that may be
+ * another place (`farStart`) it looks for no candidates near it: in RU d13
+ * «0 of 3 within a walk, find others near the start» would have sent the
+ * model to look for dinner in Юдино.
  */
 function pickNote(
   routes: readonly { readonly minutes?: number }[],
   unmeasuredByService: { readonly count: number; readonly refusing: boolean },
-  startDoubtful: boolean
+  startFar: boolean
 ) {
-  if (startDoubtful) {
-    return "If these are candidates for a pick of places: the start may be another place than the one meant (fromUncertain), so count no walks from it and look for no candidates near it — settle the start first.";
+  if (startFar) {
+    return "If these are candidates for a pick of places: if the start meant is near these places, count no walks from it and look for no candidates near it — settle the start first (fromFar); if the start is right, none of them is within a walk.";
   }
   const measured = routes.flatMap((route) =>
     route.minutes === undefined ? [] : [route.minutes]
@@ -768,7 +822,7 @@ function pickNote(
 
 export const routeTime = defineTool({
   description:
-    "Measure how long it takes to walk, cycle or drive between places, and how far it is, on OpenStreetMap with no key: «пешком от отеля», «сколько идти от метро», «далеко ли от дома», commute time for a morning digest. Compare up to five destinations from one start in one call. Each result names the place it matched (`place`, and in `matched` what it is, how precise and in which district; `from` and `fromMatched` for the start): check that it is the one meant, in the right city, and name it with the time. A result with `uncertain` (`fromUncertain` for the start) may be another place: state none of its times or distances as fact and do what it says. A destination the map found only as a street, a district or another building comes back with an error instead of minutes: never fill in a time for it. `link` opens the route on Yandex Maps or Google Maps; for a car it shows the live time with traffic, which this tool does not know. Use the minutes and km as returned instead of estimating from the map, and wherever you give them credit the map briefly with `attribution`, for example «(по данным © OpenStreetMap)».",
+    "Measure how long it takes to walk, cycle or drive between places, and how far it is, on OpenStreetMap with no key: «пешком от отеля», «сколько идти от метро», «далеко ли от дома», commute time for a morning digest. Compare up to five destinations from one start in one call. Each result names the place it matched (`place`, and in `matched` what it is, how precise and in which district; `from` and `fromMatched` for the start): check that it is the one meant, in the right city, and name it with the time. A result with `uncertain` (`fromUncertain` for the start) may be another place: state none of its times or distances as fact and do what it says. `fromFar` says what to check when every walk is long. A destination the map found only as a street, a district or another building comes back with an error instead of minutes: never fill in a time for it. `link` opens the route on Yandex Maps or Google Maps; for a car it shows the live time with traffic, which this tool does not know. Use the minutes and km as returned instead of estimating from the map, and wherever you give them credit the map briefly with `attribution`, for example «(по данным © OpenStreetMap)».",
   inputSchema,
   async execute(input, ctx) {
     return measure(input, ctx.abortSignal);
