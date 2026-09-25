@@ -6,7 +6,7 @@ regenerating the patch below against the new dist.
 
 ## Remaining patches
 
-`eve@0.62.0.patch` carries six independent hunks:
+`eve@0.62.0.patch` carries seven independent hunks:
 
 - The declaration bridge redirects Eve's incomplete bundled Chat SDK
   declaration exports to the explicitly installed `chat` package. Eve's runtime
@@ -71,6 +71,22 @@ regenerating the patch below against the new dist.
   and `context/build-dynamic-tools.js` `missingCallbackError` tells the model
   that the call did not run. `tests/agent/dynamic-tool-rebind.test.ts` covers
   it. Drop the hunk once eve restores or fails closed per call on its own.
+- Memory tools survive a photo in the conversation. `context/memory-tools.js`
+  `createProviderToolCallbacks` put the whole memory tools context, history
+  (`messages`) and turn input (`turn.input`) included, into the durable
+  closure of every memory provider tool through `parseJsonObject`. eve stages
+  every inbound attachment in the sandbox before the turn starts, and the
+  history then holds its `eve-sandbox:` reference as a `URL` instance, which is
+  not JSON: each memory slot's `turn.started` resolver failed with
+  `Expected a JSON-serializable value.`, and `profile__*`,
+  `personal_info__update` and `workstreams__*` were gone on every turn whose
+  history still held a photo, in every channel. The added
+  `durableMemoryToolsContext` keeps both lists empty in the closure, so the
+  provider's `tools()` gets them empty when a call rebuilds its tool; Bro's
+  providers read neither. The closure no longer copies the whole conversation
+  into each memory tool's persisted metadata either.
+  `tests/agent/memory-tools-attachments.test.ts` covers it. Drop the hunk once
+  eve keeps non-JSON history out of that closure on its own.
 
 To change the patch, run `pnpm patch eve@0.62.0`, edit the files in the
 reported directory, and `pnpm patch-commit <dir>` so every hunk and the
@@ -80,8 +96,9 @@ own, the override once `TelegramInboundResult` and `PhotonInboundResult`
 declare `message` themselves, the schedule handle once
 `ScheduleHandlerArgs` declares `attachSession`, the approval hunks once
 `tests/agent/approval-memory-recall.test.ts` and the approval eval in
-`evals/agent/integrations.eval.ts` pass without them, and the rebind hunk once
-`tests/agent/dynamic-tool-rebind.test.ts` passes without it.
+`evals/agent/integrations.eval.ts` pass without them, the rebind hunk once
+`tests/agent/dynamic-tool-rebind.test.ts` passes without it, and the memory
+tools hunk once `tests/agent/memory-tools-attachments.test.ts` does.
 
 Photon's iMessage adapter posts into a conversation without a reply anchor, so
 no provider reply option is patched in any more.

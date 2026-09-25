@@ -112,11 +112,16 @@
   Промпт, который Бро пишет сам себе, начинается с `backgroundTurnMarker`
   (`shared/chat/background-turn.ts`): по нему веб его прячет, а
   `personLanguage` не берёт из него язык ответа.
-- Всё, что попадает в историю сообщений, должно сериализоваться в JSON. Сырой
-  `Uint8Array` в `FilePart` ломал durable-замыкание динамических инструментов:
-  `save_memory`, `update` и `workstreams` молча пропадали до конца сессии
-  («Dynamic tool resolver failed — Expected a JSON-serializable value»). Байты
-  файлов кладутся base64-строкой (коммит `2ed484c`).
+- История сообщений не бывает чистым JSON: eve до первого шага кладёт каждое
+  вложение в песочницу, и в истории остаётся `URL` `eve-sandbox:` (base64 от
+  канала это не меняет). Замыкание инструментов памяти копировало контекст
+  вместе с `messages` и `turn.input`, и с фото в истории `profile__*`,
+  `personal_info__update` и `workstreams__*` пропадали на каждом ходе в любом
+  канале («Dynamic tool resolver (turn.started) failed … Expected a
+  JSON-serializable value», по строке на слот). Хунк патча
+  `durableMemoryToolsContext` оставляет их в замыкании пустыми, поэтому
+  `tools()` провайдера памяти историю читать не должен
+  (`tests/agent/memory-tools-attachments.test.ts`).
 - Текст поручения Browser Use собирается в `agent/tools/browser_task.ts`
   (`composeBrowserTask`) и проверяется юнит-тестами по дословным фразам. Evals
   на `browser_task` нет: инструмент появляется только с `BROWSER_USE_API_KEY`,
