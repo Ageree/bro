@@ -36,8 +36,10 @@ import { captureBrowserRunImages, type BrowserRunImage } from "./images";
 import { within } from "./deadline";
 import {
   browserOutcomeSummary,
+  networkErrorIn,
   parseBrowserOrder,
   parseBrowserOutcome,
+  unreachableSite,
   type BrowserRunNeed,
 } from "./outcome";
 import {
@@ -108,7 +110,13 @@ export async function settleBrowserRun(
     return { kind: "open" as const, summaryStatus: run.status };
   }
 
-  const parsed = parseBrowserOutcome(run.result);
+  const asReported = parseBrowserOutcome(run.result);
+  // A site the network or the proxy never delivered is walled off as surely
+  // as by an anti-bot check, and gets the same retry: on 25.09 the Госуслуги
+  // errand (d06) ended at «ERR_TUNNEL_CONNECTION_FAILED» with NEEDS: none.
+  const parsed = unreachableSite(asReported, [run.result, run.error])
+    ? { ...asReported, needs: "captcha" as const }
+    : asReported;
   const outcome = browserOutcomeSummary(
     parsed,
     run.error ?? `The run ended as ${status}.`,
@@ -415,6 +423,29 @@ export async function reportClosedBrowserRun(
 }
 
 /**
+ * What the coordinator is told once the background retries against a wall
+ * are spent: an anti-bot check, or a site the network or the proxy never
+ * delivered (`unreachable`, the browser's error) — which is not the site
+ * refusing the errand, and is not told as one.
+ */
+function walledInstruction(unreachable: string | undefined) {
+  const attempts = `through ${String(maximumCaptchaAttempts)} attempts over about ${String(captchaRetryWindowMinutes)} minutes, each in a fresh browser on a different address; retrying it again now will not help.`;
+  const cause =
+    unreachable === undefined
+      ? `The site kept this errand behind an anti-bot check ${attempts} Never ask the user to solve the check and never hand them the live view for one.`
+      : `The site did not load at all — the connection to it failed (${unreachable}) — ${attempts} It did not refuse the errand: nothing was done there yet.`;
+  const blocked =
+    unreachable === undefined
+      ? "the original site would not let you in"
+      : "the original site could not be reached";
+  const plainly =
+    unreachable === undefined
+      ? "the site is not letting the errand through"
+      : "the site could not be reached, not that it blocked the errand";
+  return `This is a background result, not a user message. ${cause} If the user asked for the thing rather than for that shop, and another well-known site that serves them can do the same errand, start it there now with browser_task start — a new errand with the same constraints and that site's origin — and tell the user in one short line that ${blocked} and where you went instead. Acting and paying on the new site need their own permission, because an approval for the original shop does not carry over: a booking, order or application there is a new errand, so pass allowSubmit with its own submission (chargeRub when it is paid) and the user confirms it on one new approval card — this report is not their message, so no standing permission stands in for it here — or pay with a fresh withinSpendLimit decision. When the user named that shop, or no such site exists, tell the user plainly that ${plainly}, name the alternative you would try, and ask before going there.`;
+}
+
+/**
  * What the coordinator is asked to do with the run it just got back. An
  * anti-bot wall only reaches it once the background retries are spent, and
  * even then the person is never asked to solve the check: the errand moves to
@@ -431,13 +462,15 @@ function deliveryInstruction(
     readonly hasLinks: boolean;
     readonly next: boolean;
     readonly ordered: boolean;
+    /** The network error that kept the site from loading, when that did. */
+    readonly unreachable?: string;
   }
 ) {
   const { hasItems, hasLinks } = facts;
   const tail =
     "Answer a follow-up with browser_task continue on this run id instead of a new start: it picks the same browser up where this run left off and hands back the run id to use after that. Omit send_message.replyTo.";
   if (needs === "captcha") {
-    return `This is a background result, not a user message. The site kept this errand behind an anti-bot check through ${String(maximumCaptchaAttempts)} attempts over about ${String(captchaRetryWindowMinutes)} minutes, each in a fresh browser on a different address; retrying it again now will not help. Never ask the user to solve the check and never hand them the live view for one. If the user asked for the thing rather than for that shop, and another well-known site that serves them can do the same errand, start it there now with browser_task start — a new errand with the same constraints and that site's origin — and tell the user in one short line that the original site would not let you in and where you went instead. Acting and paying on the new site need their own permission, because an approval for the original shop does not carry over: a booking, order or application there is a new errand, so pass allowSubmit with its own submission (chargeRub when it is paid) and the user confirms it on one new approval card — this report is not their message, so no standing permission stands in for it here — or pay with a fresh withinSpendLimit decision. When the user named that shop, or no such site exists, tell the user plainly that the site is not letting the errand through, name the alternative you would try, and ask before going there. ${tail}`;
+    return `${walledInstruction(facts.unreachable)} ${tail}`;
   }
   const links = hasLinks
     ? "Include every relevant returned link with its human-readable name. Use labelled Markdown links in web and Telegram text; the existing iMessage compiler will keep each name and URL human-readable."
@@ -517,6 +550,7 @@ function browserRunReport(
       hasLinks: options.hasLinks === true,
       next: options.next !== undefined,
       ordered: options.ordered === true,
+      unreachable: needs === "captcha" ? networkErrorIn(outcome) : undefined,
     }),
   ]
     .filter((line) => line !== undefined)

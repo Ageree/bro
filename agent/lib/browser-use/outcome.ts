@@ -417,6 +417,42 @@ export function parseBrowserOutcome(result: string | null | undefined) {
   };
 }
 
+/**
+ * Chrome's own words for a page the network or the proxy never delivered:
+ * «ERR_TUNNEL_CONNECTION_FAILED» ended the Госуслуги errand of RU 25.09
+ * (d06) with nothing done and no retry.
+ */
+const networkErrorPattern =
+  /ERR_(?:TUNNEL_CONNECTION_FAILED|PROXY_CONNECTION_FAILED|CONNECTION_RESET|CONNECTION_REFUSED|CONNECTION_TIMED_OUT|TIMED_OUT|EMPTY_RESPONSE)|This site can(?:'|’)t be reached/iu;
+
+/** The network error a text names, when it names one. */
+export function networkErrorIn(text: string | null | undefined) {
+  return networkErrorPattern.exec(text ?? "")?.[0];
+}
+
+/**
+ * Whether a run the network or the proxy kept off its site reported that
+ * instead of a result: no NEEDS but none or info, nothing found, and the
+ * browser's error in its report. It is walled as surely as by an anti-bot
+ * check, and a fresh browser on another address is what gets past it.
+ */
+export function unreachableSite(
+  outcome: ReturnType<typeof parseBrowserOutcome>,
+  texts: readonly (string | null | undefined)[]
+) {
+  if (outcome.needs !== "none" && outcome.needs !== "info") return false;
+  if (
+    outcome.order !== undefined ||
+    outcome.booking !== undefined ||
+    outcome.items.length > 0 ||
+    outcome.charges.length > 0 ||
+    outcome.links.length > 0
+  ) {
+    return false;
+  }
+  return texts.some((text) => networkErrorIn(text) !== undefined);
+}
+
 /** One compact line per fact, for the coordinator's own reading. */
 export function browserOutcomeSummary(
   outcome: ReturnType<typeof parseBrowserOutcome>,

@@ -2,9 +2,45 @@ import { describe, expect, it } from "vitest";
 import {
   browserOutcomeSummary,
   merchantFromText,
+  networkErrorIn,
   parseBrowserOrder,
   parseBrowserOutcome,
+  unreachableSite,
 } from "@agent/lib/browser-use/outcome";
+
+describe("a site the network never loaded", () => {
+  const d06 =
+    "RESULT: Госуслуги недоступны из-за `ERR_TUNNEL_CONNECTION_FAILED`. Вход и просмотр данных не начались.\nNEEDS: none";
+
+  it("reads the browser's error in the report", () => {
+    expect(networkErrorIn(d06)).toBe("ERR_TUNNEL_CONNECTION_FAILED");
+    expect(networkErrorIn("This site can’t be reached")).toBe(
+      "This site can’t be reached"
+    );
+    expect(networkErrorIn("Всё открылось, нашёл три варианта")).toBeUndefined();
+  });
+
+  it("takes a run that reported only the error as walled", () => {
+    expect(unreachableSite(parseBrowserOutcome(d06), [d06])).toBe(true);
+    expect(
+      unreachableSite(parseBrowserOutcome(null), [
+        null,
+        "net::ERR_PROXY_CONNECTION_FAILED",
+      ])
+    ).toBe(true);
+  });
+
+  it("keeps a run that found something or waits on the person", () => {
+    const found = [
+      "RESULT: один магазин не открылся (ERR_TIMED_OUT), второй нашёл",
+      'ITEMS: [{"name":"Корм","price":"1 200 ₽","quantity":"1","url":null,"details":null,"replaces":null,"fee":false}]',
+      "NEEDS: none",
+    ].join("\n");
+    expect(unreachableSite(parseBrowserOutcome(found), [found])).toBe(false);
+    const code = "RESULT: ERR_TIMED_OUT, потом дошёл до кода\nNEEDS: sms_code";
+    expect(unreachableSite(parseBrowserOutcome(code), [code])).toBe(false);
+  });
+});
 
 describe("browser run outcome parsing", () => {
   it("reads the labelled block whatever language its values are in", () => {

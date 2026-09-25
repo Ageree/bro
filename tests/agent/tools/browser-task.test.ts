@@ -806,6 +806,33 @@ describe("browser_task pictures", () => {
   });
 });
 
+describe("browser_task round trips and delivery times", () => {
+  it("searches both directions of a round trip in the one run", async () => {
+    // RU 25.09, d01: only the outbound Сапсан was searched.
+    const task = await composed(
+      "Сапсан Москва — Санкт-Петербург на пятницу после 18:00, обратно в воскресенье вечером"
+    );
+
+    expect(task).toContain(
+      "When the errand asks for a return too, it is one errand: search the outbound and the return in this same run, each on its own date and time window, and report both, rather than leaving the return for later."
+    );
+  });
+
+  it("takes the delivery time the person named, or says it cannot be had", async () => {
+    // RU 25.09, d05: «к восьми вечера», and a basket of «5–10 минут».
+    const task = await composed(
+      "Собери корзину продуктов с доставкой к восьми вечера"
+    );
+
+    expect(task).toContain(
+      "When the errand names a time for the delivery («к 20:00», «к восьми вечера», «на завтра к обеду»), choose the delivery slot for that time. When the site offers only immediate delivery («5–10 минут», «через час») or no slot at that time, do not pick another time: say in DETAILS that the requested time cannot be chosen and what the site offers instead."
+    );
+    expect(await composed("Найди отель в Казани на выходные")).not.toContain(
+      "choose the delivery slot"
+    );
+  });
+});
+
 describe("browser_task anti-bot checks", () => {
   it("tells a started errand to solve a CAPTCHA and carry on", async () => {
     await startErrand("");
@@ -817,6 +844,10 @@ describe("browser_task anti-bot checks", () => {
     expect(task).toContain("This is never the person's job");
     expect(task).toContain(
       "Stop with NEEDS: captcha only once the page still blocks you"
+    );
+    // A site the network never loads goes to the same background retry.
+    expect(task).toContain(
+      "If this errand's Site does not load at all because of a network or proxy error — ERR_TUNNEL_CONNECTION_FAILED, ERR_PROXY_CONNECTION_FAILED, ERR_CONNECTION_RESET, ERR_CONNECTION_REFUSED, ERR_CONNECTION_TIMED_OUT, ERR_TIMED_OUT, ERR_EMPTY_RESPONSE or «This site can't be reached» — reload it once; if it still does not load, stop with NEEDS: captcha and name the error in DETAILS"
     );
   });
 
