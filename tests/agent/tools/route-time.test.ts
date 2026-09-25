@@ -119,6 +119,35 @@ const places = new Map([
     },
   ],
   [
+    "Чистопрудный бульвар 12 к2, Москва",
+    {
+      address: {
+        city: "Москва",
+        country_code: "ru",
+        house_number: "12 к2",
+        road: "Чистопрудный бульвар",
+      },
+      addresstype: "building",
+      display_name: "12 к2, Чистопрудный бульвар, Москва, Россия",
+      lat: "55.76056",
+      lon: "37.64255",
+    },
+  ],
+  [
+    "Большая Никольская 12 с2, Москва",
+    {
+      address: {
+        city: "Москва",
+        country_code: "ru",
+        road: "Большая Никольская улица",
+      },
+      addresstype: "road",
+      display_name: "Большая Никольская улица, Москва, Россия",
+      lat: "55.7532",
+      lon: "37.6178",
+    },
+  ],
+  [
     "Times Square, New York",
     {
       address: { city: "New York", country_code: "us" },
@@ -335,6 +364,49 @@ describe("route_time", () => {
       "Кафе Авокадо, Чистопрудный бульвар 12, Москва",
       "Чистопрудный бульвар 12, Москва",
     ]);
+  });
+
+  it("writes Russian houses the way the map knows them", async () => {
+    const result = await measure({
+      from: "отель Метрополь, Москва",
+      mode: "walking",
+      to: ["Чистопрудный бульвар д. 12 корп. 2, Москва"],
+    });
+
+    expect(result.routes?.[0]).toMatchObject({ km: 1.6, minutes: 21 });
+    expect(
+      requestsTo("nominatim.openstreetmap.org")
+        .map((url) => url.searchParams.get("q"))
+        .at(-1)
+    ).toBe("Чистопрудный бульвар 12 к2, Москва");
+  });
+
+  it("gives no time to a house the map knows only as its street", async () => {
+    const result = await measure({
+      from: "отель Метрополь, Москва",
+      mode: "walking",
+      to: ["Большая Никольская 12 стр 2, Москва", "метро Чистые пруды, Москва"],
+    });
+
+    expect(result.routes?.[0]?.error).toContain(
+      "knows only the street «Большая Никольская улица, Москва»"
+    );
+    expect(result.routes?.[0]?.minutes).toBeUndefined();
+    expect(result.routes?.[1]).toMatchObject({ km: 1.6, minutes: 21 });
+    // Only the house it found is measured.
+    expect(
+      requestsTo("routing.openstreetmap.de")[0]?.searchParams.get(
+        "destinations"
+      )
+    ).toBe("1");
+
+    const fromStreet = await measure({
+      from: "Большая Никольская 12 стр 2, Москва",
+      mode: "walking",
+      to: ["метро Чистые пруды, Москва"],
+    });
+    expect(fromStreet.status).toBe("not_found");
+    expect(fromStreet.note).toContain("knows only the street");
   });
 
   it("drops the kind of place and quotes that the map reads as part of the name", async () => {

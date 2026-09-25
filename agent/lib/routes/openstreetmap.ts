@@ -57,6 +57,11 @@ export interface MapPlace {
   readonly label: string;
   readonly lat: number;
   readonly lon: number;
+  /**
+   * The map knows only the street, not the house: its point is somewhere
+   * along a street that may run for kilometres.
+   */
+  readonly streetOnly: boolean;
 }
 
 /** One route: the distance on roads or paths and the time it takes. */
@@ -86,6 +91,7 @@ const nominatimResultsSchema = z.array(
         village: z.string().optional(),
       })
       .optional(),
+    addresstype: z.string().optional(),
     display_name: z.string(),
     lat: z.coerce.number(),
     lon: z.coerce.number(),
@@ -235,6 +241,7 @@ function coordinates(text: string): MapPlace | undefined {
     label: `${lat.toFixed(5)}, ${lon.toFixed(5)}`,
     lat,
     lon,
+    streetOnly: false,
   };
 }
 
@@ -306,6 +313,7 @@ export async function findPlace(
     label: placeLabel(result),
     lat: result.lat,
     lon: result.lon,
+    streetOnly: result.addresstype === "road",
   };
   remember(rememberedPlaces, key, {
     place,

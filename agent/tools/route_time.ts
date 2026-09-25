@@ -48,13 +48,38 @@ const kindOfPlace =
   /^(?:(?:отель|гостиница|хостел|ресторан|кафе|кофейня|бар|паб|бистро|пиццерия|столовая|станция|метро|м\.|hotel|hostel|restaurant|cafe|café|coffee shop|bar|pub|bistro|station|metro|subway|the)\s+)+/iu;
 
 /**
+ * «12 корп. 2», «11 стр 1», «д. 5» as OpenStreetMap writes Russian houses:
+ * «12 к2», «11 с1», «5». The eval on 25.09 asked for «Чистопрудный бульвар
+ * 12 корп 2», which the map does not know, while «12 к2» it does.
+ */
+function withHouseShorthand(query: string) {
+  return query
+    .replaceAll(/(\d+)\s*(?:корпус|корп\.?|к\.?)\s*(\d+)/giu, "$1 к$2")
+    .replaceAll(/(\d+)\s*(?:строение|стр\.?|с\.?)\s*(\d+)/giu, "$1 с$2")
+    .replaceAll(/(?<!\p{L})(?:дом|д\.)\s*(?=\d)/giu, "");
+}
+
+/**
+ * House numbers a query names. «1-я Тверская-Ямская» is a street's name,
+ * not a house.
+ */
+function askedNumbers(query: string): readonly string[] {
+  return query.match(/(?<!\p{L})\d+(?![-‐]\p{L})/gu) ?? [];
+}
+
+/** The map found the street but not the house the query names. */
+function missesHouse(query: string, place: MapPlace) {
+  return place.streetOnly && askedNumbers(query).length > 0;
+}
+
+/**
  * What to ask the geocoder, best first: the query as given, then the
  * address alone when a name comes before it («Кафе Авокадо, Чистопрудный
  * бульвар 12к2, Москва» is found only so), then the name without the kind of
  * place and quotes. Each miss costs a second of the turn.
  */
 function queryVariants(query: string) {
-  const parts = query
+  const parts = withHouseShorthand(query)
     .split(",")
     .map((part) => part.trim())
     .filter((part) => part.length > 0);
@@ -63,25 +88,36 @@ function queryVariants(query: string) {
     .replace(kindOfPlace, "")
     .replaceAll(/[«»"“”„]/gu, "")
     .trim();
-  const variants = [query];
-  if (address.length >= 2) variants.push(address.join(", "));
+  const variants = [parts.join(", ")];
+  // «Улица, 12 к2, Москва» is no name before an address: «12 к2, Москва»
+  // alone would find any such house in the city.
+  if (address.length >= 2 && /\p{L}{3}/u.test(address[0] ?? "")) {
+    variants.push(address.join(", "));
+  }
   if (bareName.length > 0) variants.push([bareName, ...address].join(", "));
   return [...new Set(variants)];
 }
 
-/** Finds a place by the first variant of the query the map knows. */
+/**
+ * Finds a place by the first variant of the query the map knows. A match on
+ * the street alone is kept only when no variant finds the house: in the
+ * eval «Большая Никольская 12 стр 2» came back as the street, 18 minutes
+ * away instead of 8.
+ */
 async function locate(
   query: string,
   near: MapPlace | undefined,
   signal: AbortSignal
 ) {
+  let streetMatch: MapPlace | undefined;
   /* oxlint-disable eslint/no-await-in-loop -- Each variant is asked only when the one before found nothing, a second apart. */
   for (const variant of queryVariants(query)) {
     const place = await findPlace(variant, near, signal);
-    if (place) return place;
+    if (place && !missesHouse(query, place)) return place;
+    streetMatch ??= place;
   }
   /* oxlint-enable eslint/no-await-in-loop */
-  return undefined;
+  return streetMatch;
 }
 
 /**
@@ -93,8 +129,12 @@ async function locate(
 function otherBuilding(query: string, place: MapPlace) {
   const matched = /^\d+/u.exec(place.houseNumber ?? "")?.[0];
   if (matched === undefined) return false;
-  const asked: readonly string[] = query.match(/(?<!\p{L})\d+/gu) ?? [];
+  const asked = askedNumbers(query);
   return asked.length > 0 && !asked.includes(matched);
+}
+
+function streetOnlyNote(place: MapPlace) {
+  return `the map knows only the street «${place.label}», not this house, and a time to some point of the street would be wrong: call again with the place's name and city, or «lat, lon»`;
 }
 
 function buildingWarning(query: string, place: MapPlace) {
@@ -125,6 +165,12 @@ async function measure(
       status: "not_found" as const,
     };
   }
+  if (missesHouse(input.from, from)) {
+    return {
+      note: `For the start, ${streetOnlyNote(from)}.`,
+      status: "not_found" as const,
+    };
+  }
 
   const places: {
     readonly failure?: string;
@@ -141,7 +187,9 @@ async function measure(
     }
   }
   /* oxlint-enable eslint/no-await-in-loop */
-  const found = places.flatMap((entry) => (entry.place ? [entry.place] : []));
+  const found = places.flatMap((entry) =>
+    entry.place && !missesHouse(entry.query, entry.place) ? [entry.place] : []
+  );
 
   let measured: Awaited<ReturnType<typeof measureRoutes>> = [];
   let routerFailure: string | undefined;
@@ -163,6 +211,9 @@ async function measure(
             : `${entry.failure}; this destination was not measured`,
         to: entry.query,
       };
+    }
+    if (missesHouse(entry.query, place)) {
+      return { error: streetOnlyNote(place), to: entry.query };
     }
     const route = measured[foundIndex];
     foundIndex += 1;
