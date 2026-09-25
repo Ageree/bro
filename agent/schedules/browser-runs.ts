@@ -17,12 +17,12 @@ import { within } from "@agent/lib/browser-use/deadline";
 import {
   deliverBrowserRunReport,
   expireBrowserRun,
-  persistProfileCookies,
   reportClosedBrowserRun,
   reportWalledBrowserRun,
   settleBrowserRun,
   type BrowserRunDelivery,
 } from "@agent/lib/browser-use/completion";
+import { stopClaimedBrowser } from "@agent/lib/browser-use/release";
 import { alertOwner, clearOwnerAlert } from "@agent/lib/owner-alert";
 import {
   claimDueBrowserRunRetries,
@@ -31,9 +31,11 @@ import {
   listOverdueBrowserRunReports,
   listPendingBrowserRunReports,
   parkBrowserRunForRetry,
+  otherRunHoldsBrowser,
   parkQueuedBrowserRun,
   takeIdleBrowserRuns,
   takeUnsettledBrowserRuns,
+  unclaimBrowserRunBrowser,
 } from "@db/services/browser-runs";
 
 // Browser Use sends no webhook for a v4 run ("for V4 run monitoring, poll"),
@@ -53,6 +55,12 @@ const maximumPollBatches = 8;
 const maximumQueueStartsPerPoll = 5;
 /** Pages kept for the person are few; each stop is two reads and a stop. */
 const idleClosesPerPoll = 10;
+/**
+ * While another browser of the workspace is up, a kept page waits for it up
+ * to here: short of the cloud's own cleanup at about twenty minutes, and
+ * long enough that the other one usually stops first.
+ */
+const idleCloseLatestMs = 18 * 60_000;
 /** A settled run's report should be in the chat within the minute. */
 const reportOverdueAfterMs = 2 * 60_000;
 const overdueAlertKey = "browser-use-undelivered-reports";
@@ -145,20 +153,35 @@ async function pollStage(stage: string, work: () => Promise<void>) {
 }
 
 /**
- * Stop the browsers of settled runs whose page was kept for the person —
- * a code, an approval, 3-D Secure, a manual sign-in — and has sat idle a
- * quarter of an hour. The cloud's own idle cleanup comes a few minutes
- * later and loses what changed in the browser: a push the person approved
- * without saying so, a sign-in they finished in the live view.
+ * Stop the browsers of settled runs whose page was kept for the person — a
+ * code, an approval, 3-D Secure, a manual sign-in, an option staged for
+ * their card — and has sat idle a quarter of an hour. The cloud's own idle
+ * cleanup comes a few minutes later and loses what changed in the browser:
+ * a push the person approved without saying so, a sign-in finished before
+ * a card nobody answered. Taking a run claims its page, so a follow-up that
+ * arrives meanwhile opens a fresh browser instead of one being stopped.
+ *
+ * Whether Browser Use merges the cookies of two browsers on one profile or
+ * keeps those of the one that stops last is not known. So while another
+ * browser of the workspace is up, the kept page waits for it a few minutes
+ * (`idleCloseLatestMs`): stopping last is what keeps its sign-in if the
+ * last one wins. The stop at settle does not wait (dev-notes).
  */
 async function closeIdleBrowsers(now: Date) {
   const idle = await takeIdleBrowserRuns(now, idleClosesPerPoll);
   const closed = await Promise.all(
-    idle.map((run) =>
-      run.sessionId === null
-        ? Promise.resolve(false)
-        : persistProfileCookies(run.id, run.sessionId)
-    )
+    idle.map(async (run) => {
+      if (run.sessionId === null) return false;
+      const settledAgo = now.getTime() - (run.completedAt ?? now).getTime();
+      if (
+        settledAgo < idleCloseLatestMs &&
+        (await otherRunHoldsBrowser(run.workspaceId, run.id, now))
+      ) {
+        await unclaimBrowserRunBrowser(run.id, now);
+        return false;
+      }
+      return stopClaimedBrowser(run.id, run.sessionId, now);
+    })
   );
   if (idle.length > 0) {
     console.info("[browser-use] idle browsers stopped", {

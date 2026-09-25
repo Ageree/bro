@@ -249,14 +249,48 @@ const updateQueuedBrowserRun = vi.hoisted(() =>
     ) => Promise<boolean>
   >(() => Promise.resolve(true))
 );
-// The sites of the workspace's other runs that may still hold a browser.
-const listBrowserHoldingSites = vi.hoisted(() =>
-  vi.fn<(workspaceId: string) => Promise<(string | null)[]>>(() =>
+interface HoldingRun {
+  completedAt: Date | null;
+  id: string;
+  outcome: string | null;
+  sessionId: string | null;
+  site: string | null;
+}
+
+/** A run of the workspace still working in a browser on `site`. */
+function working(
+  site: string | null,
+  id = `run-on-${String(site)}`
+): HoldingRun {
+  return {
+    completedAt: null,
+    id,
+    outcome: null,
+    sessionId: `session-${id}`,
+    site,
+  };
+}
+
+// The workspace's other runs that may still hold a browser.
+const listBrowserHoldingRuns = vi.hoisted(() =>
+  vi.fn<(workspaceId: string) => Promise<HoldingRun[]>>(() =>
     Promise.resolve([])
   )
 );
 const releaseBrowserRunBrowser = vi.hoisted(() =>
   vi.fn<(runId: string) => Promise<void>>(() => Promise.resolve())
+);
+// A follow-up takes the page its run left before typing into it; the idle
+// stop may have taken it first.
+const claimBrowserRunBrowser = vi.hoisted(() =>
+  vi.fn<(runId: string, now: Date) => Promise<boolean>>(() =>
+    Promise.resolve(true)
+  )
+);
+const unclaimBrowserRunBrowser = vi.hoisted(() =>
+  vi.fn<(runId: string, claimedAt: Date) => Promise<void>>(() =>
+    Promise.resolve()
+  )
 );
 interface SignInRecord {
   accountUrl: string | null;
@@ -305,8 +339,10 @@ vi.mock("@db/services/browser-runs", async (importOriginal) => ({
   closeQueuedBrowserRun,
   countQueuedBrowserRuns,
   createBrowserRun,
-  listBrowserHoldingSites,
+  claimBrowserRunBrowser,
+  listBrowserHoldingRuns,
   releaseBrowserRunBrowser,
+  unclaimBrowserRunBrowser,
   createQueuedBrowserRun,
   finishBrowserRunReport,
   readBrowserProfileId: vi.fn<() => Promise<string>>(() =>
@@ -378,6 +414,10 @@ vi.mock("@agent/lib/browser-use/client", async (importOriginal) => ({
   queueBrowserUseSessionMessage,
   readBrowserUseRun,
   readBrowserUseRunStatus,
+  // A cancelled errand's browser is stopped; never the real cloud here.
+  stopBrowserUseSessionBrowsers: vi.fn<
+    () => Promise<"moved_on" | "running" | "stopped">
+  >(() => Promise.resolve("stopped")),
 }));
 
 // The first import of the tool transforms its whole module graph, which under
@@ -388,7 +428,8 @@ beforeAll(async () => {
 }, 60_000);
 
 beforeEach(() => {
-  listBrowserHoldingSites.mockResolvedValue([]);
+  claimBrowserRunBrowser.mockResolvedValue(true);
+  listBrowserHoldingRuns.mockResolvedValue([]);
   readBrowserSignIns.mockResolvedValue([]);
   readSpendLimit.mockResolvedValue(undefined);
   listSpendEntries.mockResolvedValue([]);
@@ -6425,7 +6466,29 @@ describe("browser_task on Госуслуги", () => {
     ).not.toContain("Госуслуги");
   });
 
-  it("warns of no code where the sign-in is kept in the browser", async () => {
+  it("says a code is unlikely where the sign-in is kept, without promising", async () => {
+    readBrowserSignIns.mockResolvedValue([
+      {
+        accountUrl: "https://www.ozon.ru/my/main",
+        checkedAt: new Date(Date.now() - 20 * 60_000),
+        domain: "ozon.ru",
+        refreshedAt: null,
+        state: "signed_in",
+        usedAt: new Date(Date.now() - 20 * 60_000),
+        workspaceId: accessScopeForUser("better-auth:alice").workspaceId,
+      },
+    ]);
+
+    const note = await startOn("https://www.ozon.ru", ["signin_phone"]);
+
+    expect(note).toContain("Bro's browser kept the user's sign-in at ozon.ru");
+    expect(note).toContain("the run will likely get in without a code");
+    expect(note).toContain("do not promise them there will be none");
+  });
+
+  it("keeps the Госуслуги code warning whatever sign-in is on record", async () => {
+    // Every errand opens a new browser on a new address, and Госуслуги asks
+    // for a code there whatever the cookies say (RU review of wave 6).
     readBrowserSignIns.mockResolvedValue([
       {
         accountUrl: "https://lk.gosuslugi.ru/profile",
@@ -6438,49 +6501,27 @@ describe("browser_task on Госуслуги", () => {
       },
     ]);
 
-    const note = await startOn("https://emias.info", [
-      "gosuslugi_username",
-      "gosuslugi_password",
-    ]);
-
-    expect(note).toContain(
-      "Bro's browser kept the user's sign-in at gosuslugi.ru"
-    );
-    expect(note).toContain(
-      "Do not warn the user about signing in or a code up front"
-    );
-    expect(note).not.toContain("Signing in through Госуслуги asks");
-    expect(readBrowserSignIns).toHaveBeenCalledWith(
-      accessScopeForUser("better-auth:alice").workspaceId,
-      ["emias.info", "gosuslugi.ru"]
-    );
-  });
-
-  it("does not trust a Госуслуги sign-in from hours ago", async () => {
-    readBrowserSignIns.mockResolvedValue([
-      {
-        accountUrl: "https://lk.gosuslugi.ru/profile",
-        checkedAt: new Date(Date.now() - 5 * 60 * 60_000),
-        domain: "gosuslugi.ru",
-        refreshedAt: null,
-        state: "signed_in",
-        usedAt: null,
-        workspaceId: accessScopeForUser("better-auth:alice").workspaceId,
-      },
-    ]);
-
-    expect(
-      await startOn("https://www.gosuslugi.ru", [
+    for (const site of ["https://emias.info", "https://www.gosuslugi.ru"]) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- One errand at a time, like the person's.
+      const note = await startOn(site, [
+        "gosuslugi_username",
+        "gosuslugi_password",
         "login_username",
         "login_password",
-      ])
-    ).toContain("Signing in through Госуслуги asks for a one-time code");
+      ]);
+      expect(note).toContain(
+        "Signing in through Госуслуги asks for a one-time code"
+      );
+      expect(note).not.toContain("kept the user's sign-in");
+    }
   });
 
   it("waits for another errand signing in to the same account instead of sending a second code", async () => {
     // RU 25.09: d06, d07 and d08 signed in to Госуслуги at once, each sent
     // its own SMS, and every sign-in was thrown out.
-    listBrowserHoldingSites.mockResolvedValue(["https://www.gosuslugi.ru"]);
+    listBrowserHoldingRuns.mockResolvedValue([
+      working("https://www.gosuslugi.ru"),
+    ]);
 
     const note = await startOn("https://www.mos.ru", [
       "gosuslugi_username",
@@ -6502,7 +6543,7 @@ describe("browser_task on Госуслуги", () => {
   });
 
   it("starts at once beside an errand on another account", async () => {
-    listBrowserHoldingSites.mockResolvedValue(["https://www.ozon.ru"]);
+    listBrowserHoldingRuns.mockResolvedValue([working("https://www.ozon.ru")]);
 
     await startOn("https://www.gosuslugi.ru", [
       "login_username",
@@ -6537,11 +6578,12 @@ describe("browser_task keeps sign-ins", () => {
     );
   });
 
-  it("reopens the site from the profile after the last run's browser was stopped", async () => {
+  it("finds a staged option again after the idle stop closed its page", async () => {
     readBrowserUseRunStatus.mockResolvedValue("completed");
     readBrowserRunForScope.mockResolvedValue({
       ...browserRunRow(new Date(), "Needs: decision"),
-      // Stopped at settle to keep its sign-in; its live view died with it.
+      // The idle stop closed the checkout nobody answered; its live view
+      // died with it.
       browserReleasedAt: new Date(),
       liveViewUrl: null,
     });
@@ -6559,17 +6601,152 @@ describe("browser_task keeps sign-ins", () => {
 
     const followUp = createBrowserUseRun.mock.calls[0]?.[0];
     expect(followUp?.sessionId).toBe(sessionId);
-    expect(followUp?.task).toContain("in a fresh browser");
     expect(followUp?.task).toContain(
-      "the account is still signed in through this browser's profile"
+      "the page the last run left at its final step was closed while it waited"
     );
-    // The follow-up holds the errand's browser from here.
+    expect(followUp?.task).toContain(
+      "If it is gone or changed (another price, time or seat), stop with NEEDS: decision"
+    );
+    // A page already released is not claimed again.
+    expect(claimBrowserRunBrowser).not.toHaveBeenCalled();
     expect(releaseBrowserRunBrowser).toHaveBeenCalledExactlyOnceWith(runId);
     const note = continuationNote(result);
     expect(note).not.toContain("in the same browser");
-    expect(note).toContain(
-      "reopens the site in a fresh browser on that profile, still signed in"
+    expect(note).toContain("finds the same option again");
+  });
+
+  it("goes back to where a question stopped once its page was closed", async () => {
+    readBrowserUseRunStatus.mockResolvedValue("completed");
+    readBrowserRunForScope.mockResolvedValue({
+      ...browserRunRow(new Date(), "Needs: address"),
+      browserReleasedAt: new Date(),
+      liveViewUrl: null,
+    });
+    const tool = await resolvedBrowserTask([], "на Ленина 5");
+
+    const result = await tool.execute(
+      {
+        action: "continue",
+        personSaid: "на Ленина 5",
+        runId,
+        task: "на Ленина 5",
+      },
+      toolContext("better-auth:alice")
     );
+
+    const followUp = createBrowserUseRun.mock.calls[0]?.[0];
+    expect(followUp?.task).toContain(
+      "the page the last run stopped on to ask the person was closed while it waited"
+    );
+    expect(followUp?.task).toContain("go on with the person's answer");
+    expect(continuationNote(result)).toContain(
+      "gets back to where the errand stopped"
+    );
+  });
+
+  it("does not hand a code to a sign-in page the idle stop already closed", async () => {
+    // A code the person sent 16 minutes later belongs to the closed page: a
+    // new sign-in sends a new one (RU review of wave 6).
+    readBrowserUseRunStatus.mockResolvedValue("completed");
+    findBrowserUseSessionCdpUrl.mockResolvedValue("wss://cdp.example/page");
+    readBrowserRunForScope.mockResolvedValue({
+      ...browserRunRow(new Date(), "Needs: sms_code"),
+      browserReleasedAt: new Date(),
+      liveViewUrl: null,
+    });
+    const tool = await resolvedBrowserTask([], "Код из смс 992130");
+
+    const result = await tool.execute(
+      {
+        action: "continue",
+        personSaid: "Код из смс 992130",
+        runId,
+        task: "Код из смс 992130",
+      },
+      toolContext("better-auth:alice")
+    );
+
+    expect(typeOneTimeCodeOverCdp).not.toHaveBeenCalled();
+    const followUp = createBrowserUseRun.mock.calls[0]?.[0];
+    expect(followUp?.task).toContain(
+      "A code in the message above belonged to the closed page and does not work in a new sign-in: do not type it"
+    );
+    expect(followUp?.task).not.toContain("Enter this one-time code first");
+    expect(followUp?.task).not.toContain("still signed in");
+    const note = continuationNote(result);
+    expect(note).toContain("Tell the user their code came too late");
+    expect(note).toContain("do not say they are still signed in");
+  });
+
+  it("leaves a page the idle stop is closing right now to it", async () => {
+    // The idle stop took the page between this follow-up reading the row
+    // and claiming it: nothing is typed into it, and the follow-up does not
+    // land in a session whose browser is being stopped.
+    readBrowserUseRunStatus.mockResolvedValue("completed");
+    claimBrowserRunBrowser.mockResolvedValue(false);
+    readBrowserRunForScope.mockResolvedValue(
+      browserRunRow(new Date(), "Needs: push")
+    );
+    const tool = await resolvedBrowserTask([], "подтвердил в приложении");
+
+    await tool.execute(
+      {
+        action: "continue",
+        personSaid: "подтвердил в приложении",
+        runId,
+        task: "подтвердил в приложении",
+      },
+      toolContext("better-auth:alice")
+    );
+
+    const followUp = createBrowserUseRun.mock.calls[0]?.[0];
+    expect(followUp?.sessionId).toBeUndefined();
+    expect(followUp?.task).toContain("was closed after sitting idle");
+  });
+
+  it("gives the page back when the follow-up does not start", async () => {
+    readBrowserUseRunStatus.mockResolvedValue("completed");
+    createBrowserUseRun.mockRejectedValueOnce(
+      new BrowserUseError(500, "/runs", "internal error")
+    );
+    readBrowserRunForScope.mockResolvedValue(
+      browserRunRow(new Date(), "Needs: decision")
+    );
+    const tool = await resolvedBrowserTask([], "бери первый");
+
+    await expect(
+      tool.execute(
+        {
+          action: "continue",
+          personSaid: "бери первый",
+          runId,
+          task: "бери первый",
+        },
+        toolContext("better-auth:alice")
+      )
+    ).rejects.toThrow("internal error");
+
+    expect(claimBrowserRunBrowser).toHaveBeenCalledOnce();
+    expect(unclaimBrowserRunBrowser).toHaveBeenCalledOnce();
+    expect(unclaimBrowserRunBrowser.mock.calls[0]?.[0]).toBe(runId);
+  });
+
+  it("frees the account of a cancelled errand at once", async () => {
+    // «Отмени, лучше найди колонку»: the cancelled errand must not hold its
+    // site for a quarter of an hour (RU review of wave 6).
+    readBrowserRunForScope.mockResolvedValue(
+      browserRunRow(new Date(), "Needs: sms_code")
+    );
+    const { browserTask } = await import("@agent/tools/browser_task");
+
+    const result = await browserTask.execute(
+      { action: "cancel", runId },
+      toolContext("better-auth:alice")
+    );
+
+    expect(result).toMatchObject({ runId, status: "stopped" });
+    expect(claimBrowserRunBrowser).toHaveBeenCalledOnce();
+    expect(releaseBrowserRunBrowser).toHaveBeenCalledWith(runId);
   });
 
   it("stays in the same tab while the last run's page was kept", async () => {

@@ -417,6 +417,8 @@ export function parseBrowserOutcome(result: string | null | undefined) {
     // the run reported them: `sign-ins.ts` keeps the ones on the errand's
     // own domains.
     signedIn: labelledValue(text, "SIGNED_IN"),
+    // «SIGNED_IN: none»: the run said it is signed in nowhere.
+    signedInNone: emptyValue.test(rawLabelledValue(text, "SIGNED_IN") ?? ""),
     total: labelledValue(text, "TOTAL"),
   };
 }

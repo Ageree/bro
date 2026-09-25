@@ -2,6 +2,8 @@ import { env } from "@shared/environment";
 import { isPublicSuffix } from "@shared/browser/public-suffixes";
 import {
   claimBrowserSignInRefresh,
+  forgetBrowserSignIns,
+  listBrowserSignIns,
   listDueBrowserSignInRefreshes,
   readBrowserSignIns,
   recordBrowserSignIn,
@@ -9,18 +11,26 @@ import {
   recordBrowserSignOut,
 } from "@db/services/browser-sign-ins";
 import {
-  listBrowserHoldingSites,
+  forgetBrowserProfile,
+  listBrowserHoldingRuns,
   listWorkspacesHoldingBrowsers,
+  workspaceUsesBrowserProfile,
 } from "@db/services/browser-runs";
 import {
   browserUseBusy,
   browserUseOutOfCredits,
   createBrowserUseBrowser,
+  deleteBrowserUseProfile,
   stopBrowserUseBrowser,
 } from "./client";
 import { visitPageOverCdp } from "./cdp";
 import type { BrowserRunNeed } from "./outcome";
 import { customProxy } from "./proxy";
+import {
+  persistProfileCookies,
+  personStepNeeds,
+  recordedNeed,
+} from "./release";
 import {
   gosuslugiDomain,
   isGosuslugi,
@@ -89,6 +99,13 @@ function servingDomains(site: string | null | undefined) {
  * Госуслуги together (RU d06, d07, d08), the person sent code after code, and
  * every sign-in was thrown out. The errand waits instead, and starts from the
  * profile the first one leaves — signed in.
+ *
+ * It waits only for a run still working or a page waiting on the person's
+ * code or approval. A settled page kept for anything else — a staged option,
+ * a question — is past its sign-in: it is stopped now, which writes that
+ * sign-in to the profile this errand starts from, and a follow-up to it
+ * reopens the site (`closedPageLine`). Waiting for its idle stop would hold
+ * the new errand a quarter of an hour.
  */
 export async function accountInUse(
   workspaceId: string,
@@ -97,25 +114,57 @@ export async function accountInUse(
 ) {
   const account = signInAccount(site);
   if (account === undefined) return undefined;
-  const holding = await listBrowserHoldingSites(workspaceId, now);
-  return holding.some((other) => signInAccount(other) === account)
-    ? account
-    : undefined;
+  const holding = (await listBrowserHoldingRuns(workspaceId, now)).filter(
+    (run) => signInAccount(run.site) === account
+  );
+  const stillHeld = await Promise.all(
+    holding.map(async (run) => {
+      const need = recordedNeed(run.outcome);
+      if (
+        run.completedAt === null ||
+        run.sessionId === null ||
+        need === undefined ||
+        personStepNeeds.has(need)
+      ) {
+        return true;
+      }
+      return !(await persistProfileCookies(run.id, run.sessionId));
+    })
+  );
+  return stillHeld.some(Boolean) ? account : undefined;
 }
 
 /**
- * A path the keep-alive visit must never open, whatever the run named: it
- * signs out, confirms, pays or deletes on a plain visit, or is a sign-in
- * page rather than the account.
+ * Words of a link that acts when it is opened, or of a sign-in rather than
+ * an account page, anywhere in its host, path or query: «/logout»,
+ * «/logoutAll», «/api/doLogout», «/logoff», «/sessions/terminate»,
+ * «/orders/1/cancelOrder», «logout.site.ru». The page names the link, not
+ * Bro, so a real account page rejected by mistake only goes without its
+ * keep-alive visit.
  */
-const unsafeAccountPath =
-  /(?:^|[/_.-])(?:auth|cancel|checkout|confirm|delete|exit|log-?in|log-?out|oauth|pay|payment|remove|sign-?in|sign-?out|token|unsubscribe)(?:$|[/_.-])/iu;
+const actingWord =
+  /auth|cancel|checkout|confirm|delete|exit|log[-_]?(?:in|off|on|out)|oauth|order[-_]?(?:create|new)|pay|purchase|remove|revoke|session|sign[-_]?(?:in|off|on|out|up)|subscri|terminate|token|unsubscribe|verif/iu;
+
+/**
+ * An account page the keep-alive visit may open: https on the errand's own
+ * domain, nothing escaped or hidden in its path (Chrome would read
+ * «/%6Cogout» as «/logout»), and no acting word anywhere in it.
+ */
+function safeAccountPage(url: URL) {
+  if (url.protocol !== "https:" || url.username !== "" || url.password !== "") {
+    return false;
+  }
+  if (/[%;@\\]/u.test(url.pathname) || url.port !== "") return false;
+  return ![url.hostname, url.pathname, url.search].some((part) =>
+    actingWord.test(part)
+  );
+}
 
 /**
  * The pages a run reported it is signed in on (`SIGNED_IN:`), one per
- * domain, kept only on the domains that serve its errand: the line is the
- * page's word as much as the run's, and must not put a stranger's site on
- * record, nor a link that acts when opened. Query and fragment are dropped.
+ * domain, kept only on the domains that serve its errand and only when
+ * opening them is safe (`safeAccountPage`): the line is the page's word as
+ * much as the run's. Query and fragment are dropped.
  */
 function signedInPages(
   reported: string | undefined,
@@ -124,13 +173,13 @@ function signedInPages(
   const serving = servingDomains(site);
   const pages = new Map<string, string>();
   for (const [raw] of (reported ?? "").matchAll(
-    /https:\/\/[^\s,;"'<>()[\]]+/gu
+    /https:\/\/[^\s,"'<>()[\]]+/gu
   )) {
     const url = URL.parse(raw);
     const host = hostOf(raw);
     const domain = host === undefined ? undefined : ownDomain(host);
     if (!url || domain === undefined || !serving.includes(domain)) continue;
-    if (pages.has(domain) || unsafeAccountPath.test(url.pathname)) continue;
+    if (pages.has(domain) || !safeAccountPage(url)) continue;
     pages.set(domain, `${url.origin}${url.pathname}`);
   }
   return pages;
@@ -145,31 +194,32 @@ const signInSteps = new Set<BrowserRunNeed>([
 ]);
 
 /**
- * Keep what a settled run found about the person's sign-ins. A sign-in is on
- * record only once its browser was stopped cleanly (`persisted`): until then
- * the profile does not have it, and a note saying it does would be a lie. A
- * run that stopped on a sign-in step marks the errand's domains signed out.
- * Never fatal: the report matters more than the record.
+ * Keep what a settled run found about the person's sign-ins. A page the run
+ * is signed in on goes on record even while its browser is still up for the
+ * person: until that browser is stopped cleanly the account stays held
+ * (`accountInUse`) and no keep-alive visit touches the workspace, so nothing
+ * uses the record before the sign-in is in the profile. A run that stopped
+ * on a sign-in step, or said it is signed in nowhere, marks the errand's
+ * domains signed out — «выйди из Озона» ends the visits there. Never fatal:
+ * the report matters more than the record.
  */
 export async function recordRunSignIns(
   row: { readonly site: string | null; readonly workspaceId: string },
   outcome: {
     readonly needs: BrowserRunNeed;
-    readonly persisted: boolean;
     readonly signedIn: string | undefined;
+    readonly signedInNone: boolean;
   },
   now = new Date()
 ) {
   try {
     const pages = signedInPages(outcome.signedIn, row.site);
-    if (outcome.persisted) {
-      await Promise.all(
-        [...pages].map(([domain, accountUrl]) =>
-          recordBrowserSignIn(row.workspaceId, { accountUrl, domain, now })
-        )
-      );
-    }
-    if (signInSteps.has(outcome.needs)) {
+    await Promise.all(
+      [...pages].map(([domain, accountUrl]) =>
+        recordBrowserSignIn(row.workspaceId, { accountUrl, domain, now })
+      )
+    );
+    if (signInSteps.has(outcome.needs) || outcome.signedInNone) {
       await recordBrowserSignOut(
         row.workspaceId,
         servingDomains(row.site).filter((domain) => !pages.has(domain)),
@@ -183,31 +233,31 @@ export async function recordRunSignIns(
   }
 }
 
-/**
- * How long a sign-in seen by a run or a keep-alive visit is trusted. A
- * Госуслуги session is short and is not kept alive (`noRefreshDomains`), so
- * it counts only for the errands right after the one that signed in.
- */
-function trustedFor(domain: string) {
-  return domain === gosuslugiDomain ? 2 * 60 * 60_000 : 14 * 24 * 60 * 60_000;
-}
+/** How long a sign-in seen by a run or a keep-alive visit is trusted. */
+const trustedForMs = 14 * 24 * 60 * 60_000;
 
 /**
  * What Bro is told when an errand starts where the person's sign-in is
- * kept: that the run should get in without a code, so the person is not
- * warned about one up front. Undefined when nothing fresh is on record.
+ * kept: that the run will likely get in without a code, so the person is
+ * not warned about one up front — never a promise. Never for Госуслуги or a
+ * site that signs in through it: each errand opens a new browser on a new
+ * address, and Госуслуги asks for a code there whatever the cookies say, so
+ * the wave-5 warning (`gosuslugiCodeNote`) stands. Undefined when nothing
+ * fresh is on record.
  */
 export async function keptSignInNote(
   workspaceId: string,
   site: string | undefined,
   now = new Date()
 ) {
+  if (signInAccount(site) === gosuslugiDomain) return undefined;
   try {
     const records = await readBrowserSignIns(workspaceId, servingDomains(site));
     const fresh = records.filter(
       (record) =>
         record.state === "signed_in" &&
-        now.getTime() - record.checkedAt.getTime() < trustedFor(record.domain)
+        record.domain !== gosuslugiDomain &&
+        now.getTime() - record.checkedAt.getTime() < trustedForMs
     );
     if (fresh.length === 0) return undefined;
     const seen = fresh
@@ -216,11 +266,65 @@ export async function keptSignInNote(
           `${record.domain} (last seen signed in ${record.checkedAt.toISOString().slice(0, 10)})`
       )
       .join(", ");
-    return `Bro's browser kept the user's sign-in at ${seen} from an earlier errand, so the run should get in without asking them for a code. Do not warn the user about signing in or a code up front; if the site asks for one after all, the run stops and its outcome says so.`;
+    return `Bro's browser kept the user's sign-in at ${seen} from an earlier errand, so the run will likely get in without a code. There is no need to warn the user about a code up front, but do not promise them there will be none: if the site asks for one after all, the run stops and you ask then.`;
   } catch (error) {
     console.warn("[browser-use] sign-ins could not be read", { cause: error });
     return undefined;
   }
+}
+
+/**
+ * The sites on record for the workspace, as the person can be told them:
+ * where Bro's browser was last seen signed in, and where it was not.
+ */
+export async function listKeptSignIns(workspaceId: string) {
+  const records = await listBrowserSignIns(workspaceId);
+  return records.map((record) => ({
+    lastSeen: record.checkedAt.toISOString().slice(0, 10),
+    site: record.domain,
+    state: record.state,
+  }));
+}
+
+/**
+ * Forget the person's sign-ins on sites. For one site its record goes, so
+ * Bro stops opening it on its own and stops expecting to be signed in there;
+ * the cookies stay in the profile. For every site the Browser Use profile is
+ * deleted with all its cookies and the next errand starts a new, empty one —
+ * signed out everywhere. That waits while an errand still uses the profile:
+ * a run or a queued start would be left on a profile that is gone.
+ */
+export async function forgetSignIns(
+  workspaceId: string,
+  site: string | undefined,
+  now = new Date()
+) {
+  const host = hostOf(
+    site?.includes("://") === true ? site : `https://${site ?? ""}`
+  );
+  if (site !== undefined) {
+    const domain = host === undefined ? undefined : ownDomain(host);
+    if (domain === undefined) return { kind: "unknown_site" as const };
+    const forgotten = await forgetBrowserSignIns(workspaceId, [domain]);
+    return { domains: forgotten, kind: "site" as const, site: domain };
+  }
+  if (await workspaceUsesBrowserProfile(workspaceId, now)) {
+    return { kind: "busy" as const };
+  }
+  const forgotten = await forgetBrowserSignIns(workspaceId);
+  const profileId = await forgetBrowserProfile(workspaceId);
+  let profileDeleted = profileId === undefined;
+  if (profileId !== undefined) {
+    try {
+      await deleteBrowserUseProfile(profileId);
+      profileDeleted = true;
+    } catch (error) {
+      console.warn("[browser-use] the forgotten profile could not be deleted", {
+        cause: error,
+      });
+    }
+  }
+  return { domains: forgotten, kind: "all" as const, profileDeleted };
 }
 
 /**
@@ -311,7 +415,7 @@ async function refreshSignIn(
   }
   let page: Awaited<ReturnType<typeof visitPageOverCdp>> | undefined;
   try {
-    page = await visitPageOverCdp(browser.cdpUrl, accountUrl);
+    page = await visitPageOverCdp(browser.cdpUrl, accountUrl, domain);
   } catch (error) {
     console.warn("[browser-use] keep-alive visit failed", {
       cause: error,
@@ -329,7 +433,7 @@ async function refreshSignIn(
     }
   }
   if (page === undefined) return "failed" as const;
-  const signedIn = stillSignedIn(accountUrl, page);
+  const signedIn = stillSignedIn(page);
   await recordBrowserSignInCheck(workspaceId, domain, {
     now: new Date(),
     signedIn,
@@ -338,33 +442,17 @@ async function refreshSignIn(
   return "visited" as const;
 }
 
-/** A host or path that is a sign-in page rather than an account page. */
-const signInHostPattern =
-  /^(?:auth|esia|id|login|oauth|passport|signin|sso)\./u;
-const signInPathPattern =
-  /(?:^|\/)(?:auth|authorize|login|oauth|passport|sign-?in|sign_in|sso)(?:\/|$|\.)/iu;
-
-function signInPage(url: URL) {
-  return (
-    signInHostPattern.test(url.hostname) || signInPathPattern.test(url.pathname)
-  );
-}
-
 /**
- * Whether the account page still showed the account: not a password field,
- * not sent to another site, and not sent to a sign-in page when the account
- * page itself was not one.
+ * Whether the account page still showed the account: it stayed on the page
+ * on record (the visit blocks and reports any other, `leftPage`) and shows
+ * no password field. Anything else — a redirect to the home page after the
+ * session ended, a sign-in form, another site's sign-in — counts as signed
+ * out, which also ends the visits: a page that is not the recorded one is
+ * never opened again.
  */
-function stillSignedIn(
-  accountUrl: string,
-  page: { readonly passwordField: boolean; readonly url: string }
-) {
-  if (page.passwordField) return false;
-  const expected = URL.parse(accountUrl);
-  const landed = URL.parse(page.url);
-  if (!expected || !landed) return false;
-  const expectedDomain = ownDomain(expected.hostname);
-  if (expectedDomain !== ownDomain(landed.hostname)) return false;
-  if (!signInPage(landed)) return true;
-  return signInPage(expected) && landed.hostname === expected.hostname;
+function stillSignedIn(page: {
+  readonly leftPage: boolean;
+  readonly passwordField: boolean;
+}) {
+  return !page.leftPage && !page.passwordField;
 }

@@ -17,7 +17,10 @@ const testEnvironment = {
 
 // Optional provider configuration must not leak in from the host shell: tests
 // opt into OpenRouter explicitly and otherwise exercise the AI Gateway path.
+// A Browser Use key in the shell would let a test that forgot a mock stop or
+// delete a real browser or profile, so tests stub their own.
 const unsetEnvironment = [
+  "BROWSER_USE_API_KEY",
   "OPENROUTER_API_KEY",
   "OPENROUTER_CREDITS_ALERT_USD",
   "OPENROUTER_IMAGE_MODEL",

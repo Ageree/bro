@@ -860,17 +860,22 @@ function holdsBrowser(now: Date) {
   );
 }
 
-/** The sites of the workspace's runs that may still hold a browser. */
-export async function listBrowserHoldingSites(
+/** The workspace's runs that may still hold a browser, and on which site. */
+export async function listBrowserHoldingRuns(
   workspaceId: string,
   now = new Date()
 ) {
-  const rows = await db
-    .select({ site: browserRuns.site })
+  return db
+    .select({
+      completedAt: browserRuns.completedAt,
+      id: browserRuns.id,
+      outcome: browserRuns.outcome,
+      sessionId: browserRuns.sessionId,
+      site: browserRuns.site,
+    })
     .from(browserRuns)
     .where(and(eq(browserRuns.workspaceId, workspaceId), holdsBrowser(now)))
     .limit(20);
-  return rows.map((row) => row.site);
 }
 
 /**
@@ -896,9 +901,45 @@ export async function listWorkspacesHoldingBrowsers(
 }
 
 /**
+ * Take the page a settled run left, for whoever comes first: a follow-up
+ * that is about to type a code into it or run in it, the poller's idle stop,
+ * or the stop at settle. The mark is `browser_released_at`, set only while it
+ * is empty, so exactly one of them gets the page and the others leave it
+ * alone. True when this call took it.
+ */
+export async function claimBrowserRunBrowser(runId: string, now = new Date()) {
+  const rows = await db
+    .update(browserRuns)
+    .set({ browserReleasedAt: now, updatedAt: now })
+    .where(
+      and(eq(browserRuns.id, runId), isNull(browserRuns.browserReleasedAt))
+    )
+    .returning({ id: browserRuns.id });
+  return rows.length > 0;
+}
+
+/**
+ * Give the page back when the one who took it could not use it: the stop
+ * did not happen, or the follow-up did not start. Only the claim made at
+ * `claimedAt` is undone, never a later one.
+ */
+export async function unclaimBrowserRunBrowser(runId: string, claimedAt: Date) {
+  await db
+    .update(browserRuns)
+    .set({ browserReleasedAt: null, updatedAt: new Date() })
+    .where(
+      and(
+        eq(browserRuns.id, runId),
+        eq(browserRuns.browserReleasedAt, claimedAt)
+      )
+    );
+}
+
+/**
  * The run no longer holds a live browser: Bro stopped it, a follow-up took
  * it over, or it is gone. Its live view is dead with it, so it is cleared:
- * a follow-up must not inherit it, and a report must not hand it out.
+ * a follow-up must not inherit it, and a report must not hand it out. A
+ * claim already on the row stays as the moment it was released.
  */
 export async function releaseBrowserRunBrowser(
   runId: string,
@@ -906,10 +947,78 @@ export async function releaseBrowserRunBrowser(
 ) {
   await db
     .update(browserRuns)
-    .set({ browserReleasedAt: now, liveViewUrl: null, updatedAt: now })
+    .set({
+      browserReleasedAt: sql`coalesce(${browserRuns.browserReleasedAt}, ${now.toISOString()}::timestamptz)`,
+      liveViewUrl: null,
+      updatedAt: now,
+    })
+    .where(eq(browserRuns.id, runId));
+}
+
+/**
+ * Whether another run of the workspace may still hold a browser on its
+ * profile. The idle stop waits for it a little: if the cloud keeps only the
+ * cookies of the browser that stops last, this one stopping last is what
+ * keeps its sign-in.
+ */
+export async function otherRunHoldsBrowser(
+  workspaceId: string,
+  runId: string,
+  now = new Date()
+) {
+  const rows = await db
+    .select({ id: browserRuns.id })
+    .from(browserRuns)
     .where(
-      and(eq(browserRuns.id, runId), isNull(browserRuns.browserReleasedAt))
-    );
+      and(
+        eq(browserRuns.workspaceId, workspaceId),
+        ne(browserRuns.id, runId),
+        holdsBrowser(now)
+      )
+    )
+    .limit(1);
+  return rows.length > 0;
+}
+
+/**
+ * Whether anything of the workspace may still use its browser profile: a
+ * browser up, an errand waiting in the queue, or one parked for a retry
+ * after an anti-bot wall. Forgetting the profile waits for them.
+ */
+export async function workspaceUsesBrowserProfile(
+  workspaceId: string,
+  now = new Date()
+) {
+  if ((await listBrowserHoldingRuns(workspaceId, now)).length > 0) {
+    return true;
+  }
+  const waiting = await db
+    .select({ id: browserRuns.id })
+    .from(browserRuns)
+    .where(
+      and(
+        eq(browserRuns.workspaceId, workspaceId),
+        isNull(browserRuns.retriedAsRunId),
+        or(
+          eq(browserRuns.status, "queued"),
+          and(eq(browserRuns.status, "waiting"), isNotNull(browserRuns.retryAt))
+        )
+      )
+    )
+    .limit(1);
+  return waiting.length > 0;
+}
+
+/**
+ * Forget the workspace's browser profile: the next errand creates a new,
+ * empty one. Returns the id that was forgotten, for Browser Use to delete.
+ */
+export async function forgetBrowserProfile(workspaceId: string) {
+  const rows = await db
+    .delete(browserProfiles)
+    .where(eq(browserProfiles.workspaceId, workspaceId))
+    .returning({ profileId: browserProfiles.profileId });
+  return rows[0]?.profileId;
 }
 
 function idleBrowser(now: Date) {
@@ -925,9 +1034,10 @@ function idleBrowser(now: Date) {
 /**
  * Take the settled runs whose page was kept for the person and has sat idle
  * long enough to be stopped by Bro before the cloud ends it, the ones looked
- * at longest ago first. Each take marks what it returns as looked at, so a
- * browser whose stop keeps failing goes to the back of the line instead of
- * holding the front of it.
+ * at longest ago first. Taking one claims its page (`claimBrowserRunBrowser`
+ * with `now`), so a follow-up arriving meanwhile does not type into a page
+ * being stopped; one whose stop does not happen is given back and goes to the
+ * back of the line.
  */
 export async function takeIdleBrowserRuns(now: Date, limit: number) {
   const next = db
@@ -938,7 +1048,12 @@ export async function takeIdleBrowserRuns(now: Date, limit: number) {
     .limit(limit);
   return db
     .update(browserRuns)
-    .set({ updatedAt: now })
+    .set({ browserReleasedAt: now, updatedAt: now })
     .where(and(inArray(browserRuns.id, next), idleBrowser(now)))
-    .returning({ id: browserRuns.id, sessionId: browserRuns.sessionId });
+    .returning({
+      completedAt: browserRuns.completedAt,
+      id: browserRuns.id,
+      sessionId: browserRuns.sessionId,
+      workspaceId: browserRuns.workspaceId,
+    });
 }

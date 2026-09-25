@@ -46,6 +46,7 @@ const optionalServices = [
   "BROWSER_USE_API_KEY",
   "BROWSER_USE_PROXY_HOST",
   "BROWSER_USE_PROXY_PORT",
+  "BROWSER_USE_SIGN_IN_REFRESH_DAYS",
   "IMESSAGE_PROJECT_ID",
   "IMESSAGE_PROJECT_SECRET",
   "OPENROUTER_API_KEY",
@@ -119,6 +120,29 @@ describe("privacy", () => {
     expect(remove).toContain("https://example.com/vault");
     expect(remove).toContain("«останови все расписания»");
     expect(result.reply).toContain("Do not ask whether to delete");
+    // The sign-ins Bro keeps, the visits it makes on its own, and how both
+    // end (review of wave 6).
+    expect(result.kept.join("\n")).toContain(
+      "сайты, где облачный браузер держит вход, со ссылкой на страницу аккаунта на каждом"
+    );
+    expect(processors).toContain(
+      "Чтобы вход не пропадал, раз в 3 дн. облачный браузер сам, без поручения, открывает страницу аккаунта"
+    );
+    expect(remove).toContain("«забудь мои входы на сайты»");
+    expect(remove).toContain("«не заходи больше в <сайт>»");
+  });
+
+  it("says nothing of visits the deployment does not make", async () => {
+    const { facts } = await withServices({
+      BROWSER_USE_API_KEY: "browser-use-test-key",
+      BROWSER_USE_SIGN_IN_REFRESH_DAYS: "0",
+    });
+
+    expect(
+      facts.dataProcessors("deepseek/deepseek-v4.1-flash").join("\n")
+    ).not.toContain("без поручения");
+    // The sign-ins themselves are still kept, and still said.
+    expect(facts.keptData().join("\n")).toContain("держит вход");
   });
 
   it("tells what stays once Google is off, and that nothing in Google was deleted", async () => {
@@ -144,6 +168,7 @@ describe("privacy", () => {
     expect(processors).not.toContain("Photon");
     expect(processors).not.toContain("Telegram");
     expect(facts.keptData().join("\n")).not.toContain("оплат");
+    expect(facts.keptData().join("\n")).not.toContain("держит вход");
   });
 
   // Review of wave 5: with billing on, the payment processor was missing

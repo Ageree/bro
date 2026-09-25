@@ -39,11 +39,13 @@ import {
   closeQueuedBrowserRun,
   createBrowserRun,
   readBrowserProfileId,
+  claimBrowserRunBrowser,
   readLatestBrowserRunForScope,
   recordBrowserRunSubmission,
   releaseBrowserRunBrowser,
   saveBrowserProfileId,
   stopBrowserRunErrand,
+  unclaimBrowserRunBrowser,
   updateBrowserRunProgress,
   updateQueuedBrowserRun,
 } from "@db/services/browser-runs";
@@ -126,6 +128,12 @@ import {
   queuedStatusNote,
 } from "@agent/lib/browser-use/queue";
 import { accountInUse, keptSignInNote } from "@agent/lib/browser-use/sign-ins";
+import {
+  keepsPage,
+  personStepNeeds,
+  recordedNeed,
+  releaseEndedRunBrowser,
+} from "@agent/lib/browser-use/release";
 
 const inputSchema = z.object({
   action: z.enum(["start", "continue", "cancel", "status"]),
@@ -1023,8 +1031,81 @@ export function composeBrowserTask(options: {
     .join("\n\n");
 }
 
+type ClosedPage = "asked" | "done" | "staged" | "step";
+
 /**
- * A follow-up run in the browser the errand already lives in. The person's own
+ * Why the last run's page is gone: it finished (`done`), or it was kept for
+ * the person and closed after sitting idle, or for a new errand on the same
+ * account — on a code or an approval (`step`), on a staged option
+ * (`staged`), or on a question (`asked`).
+ */
+function closedPage(outcome: string | null): ClosedPage {
+  const need = recordedNeed(outcome);
+  if (need === undefined || !keepsPage(need)) return "done";
+  if (personStepNeeds.has(need)) return "step";
+  return need === "decision" || need === "payment" ? "staged" : "asked";
+}
+
+/**
+ * What a follow-up in a fresh browser is told about the page it cannot
+ * continue on. A code or an approval belonged to the closed page: after 15
+ * idle minutes a new sign-in sends a new code, and typing the old one only
+ * fails (RU review of wave 6).
+ */
+function closedPageLine(errand: string, closed: ClosedPage) {
+  if (closed === "step") {
+    return `This continues the errand «${errand}» in a fresh browser: the page the last run stopped on, waiting for the person's code or approval, was closed after sitting idle, so that step did not finish there. Open the Site again. If a payment was waiting for 3-D Secure, first check whether it went through, and never pay twice. If the site asks you to sign in, sign in again. A code in the message above belonged to the closed page and does not work in a new sign-in: do not type it, and stop at the new code step as the first rule says.`;
+  }
+  if (closed === "staged") {
+    return `This continues the errand «${errand}» in a fresh browser: the page the last run left at its final step was closed while it waited. Open the Site again — the sign-in the last run had is kept in this browser's profile, and a basket the site keeps for the account still holds what was put in it — find the same option again and take it back to that step. If it is gone or changed (another price, time or seat), stop with NEEDS: decision and say what changed, rather than taking another.`;
+  }
+  if (closed === "asked") {
+    return `This continues the errand «${errand}» in a fresh browser: the page the last run stopped on to ask the person was closed while it waited. Open the Site again — the sign-in the last run had is kept in this browser's profile, and a basket the site keeps for the account still holds what was put in it — get back to where the errand stopped, without redoing what is already done, and go on with the person's answer. If what the last run found is gone or changed, stop with NEEDS: decision and say what changed.`;
+  }
+  return `This continues the errand «${errand}» in a fresh browser: the page the last run stopped on was closed so that the person's sign-ins are kept in this browser's profile. Open the Site again and pick up where the errand left off, without redoing what is already done.`;
+}
+
+/**
+ * What Bro is told about a follow-up that could not continue on the last
+ * run's page.
+ */
+function closedPageNote(closed: ClosedPage) {
+  if (closed === "step") {
+    return "The page that was waiting for the user's code or approval closed after sitting idle for a quarter of an hour, so the run goes through that step again and the site will likely send a new code (for 3-D Secure, it first checks whether the payment went through). Tell the user their code came too late and that a new one is on its way; do not say they are still signed in.";
+  }
+  if (closed === "staged") {
+    return "The page the last run staged was closed while it waited (after a quarter of an hour idle, or for another errand on the same account), which kept its sign-in; the follow-up reopens the site and finds the same option again — it may have changed or gone, and then the run stops to say so.";
+  }
+  if (closed === "asked") {
+    return "The page the last run stopped on was closed while it waited for the user's answer (after a quarter of an hour idle, or for another errand on the same account), which kept its sign-in; the follow-up reopens the site and gets back to where the errand stopped.";
+  }
+  return "The page the last run stopped on was closed to keep the user's sign-ins in the browser profile, so the follow-up reopens the site in a fresh browser on that profile.";
+}
+
+/**
+ * The page a settled run left, taken for this follow-up before anything goes
+ * into it (`claimBrowserRunBrowser`), so the poller's idle stop cannot close
+ * it under the code or the new run; the idle stop takes it the same way,
+ * and whichever comes first has it. A run still working holds its own page.
+ * `closing`: the idle stop took it a moment ago and may still be stopping it,
+ * so the follow-up must not land in that session's browser either.
+ */
+async function takeKeptPage(row: ErrandRow) {
+  if (row.completedAt === null) return { closing: false, held: true };
+  if (row.sessionId === null) return { closing: false, held: false };
+  if (row.browserReleasedAt instanceof Date) {
+    // A finished release clears the live view; a stop under way has not yet.
+    return { closing: row.liveViewUrl !== null, held: false };
+  }
+  const claimedAt = new Date();
+  return (await claimBrowserRunBrowser(row.id, claimedAt))
+    ? { claimedAt, closing: false, held: true }
+    : { closing: true, held: false };
+}
+
+/**
+ * A follow-up run in the browser the errand already lives in, or in a fresh
+ * one on its profile once that page was closed (`freshBrowser`). The person's own
  * message leads, because it is the instruction; everything after it only says
  * where that instruction lands. The tab, the cookies and the agent's memory of
  * the errand are still there, so telling it to start over would undo the
@@ -1044,10 +1125,10 @@ export function composeBrowserContinuation(options: {
   readonly errand: string;
   readonly facts: string | undefined;
   /**
-   * The last run's browser was stopped to keep its sign-ins: the follow-up
-   * opens a fresh one on the same profile and finds its way back.
+   * The last run's page was closed, and why: the follow-up opens a fresh
+   * browser on the same profile and finds its way back (`closedPageLine`).
    */
-  readonly freshBrowser?: boolean;
+  readonly freshBrowser?: ClosedPage;
   readonly message: string;
   readonly searching: boolean;
   readonly site: string | undefined;
@@ -1065,9 +1146,9 @@ export function composeBrowserContinuation(options: {
   return [
     options.message,
     [
-      options.freshBrowser === true
-        ? `This continues the errand «${options.errand}» in a fresh browser: the page the last run stopped on was closed so that the person's sign-ins are kept. Open the Site again — the account is still signed in through this browser's profile, and a basket the site keeps for the account still holds what was put in it — and pick up where the errand left off, without redoing what is already done.`
-        : `This continues the errand «${options.errand}» in this same browser session. Keep the tab that is open and the account already signed in: do not start over and do not navigate again unless the page is gone.`,
+      options.freshBrowser === undefined
+        ? `This continues the errand «${options.errand}» in this same browser session. Keep the tab that is open and the account already signed in: do not start over and do not navigate again unless the page is gone.`
+        : closedPageLine(options.errand, options.freshBrowser),
       options.site ? `Site: ${options.site}` : undefined,
     ]
       .filter((line) => line !== undefined)
@@ -2834,7 +2915,8 @@ async function runBrowserTask(
       if (placeholder) await releaseReservation(placeholder);
       return { note: browserUseOutOfCreditsNote, status: "unavailable" };
     }
-    // Where the person's sign-in is kept, nobody is warned about a code.
+    // Where the person's sign-in is kept, a code is said to be unlikely,
+    // never ruled out; Госуслуги keeps its warning (`keptSignInNote`).
     const kept = await keptSignInNote(scope.workspaceId, input.site);
     if (started.kind === "queued") {
       // The errand waits with everything the person decided for it: the
@@ -3076,215 +3158,251 @@ async function runBrowserTask(
       spend?.decision.allowed && input.withinSpendLimit
         ? `${message}\n\n${spendCapLine(input.withinSpendLimit, spend.decision)}`
         : message;
-    const continued = await releasedOnFailure(placeholder, async () => {
-      // Both are round trips to the cloud and neither needs the other's answer.
-      // A one-time code waiting its turn is a code closer to expiring, and the
-      // entry is worth attempting whether or not a run is still on the page:
-      // the browser outlives its run, and the field is where the code belongs.
-      // Only a code the person sent in this turn, or the one the site's own
-      // letter carries, goes into the page.
-      const typed =
-        mail?.code ??
-        (personCodeToType(said, words)
-          ? oneTimeCodeFromMessage(said)
-          : undefined);
-      const [live, codeEntry] = await Promise.all([
-        trackedRunIsLive(runId, row.completedAt),
-        row.sessionId === null || typed === undefined
-          ? undefined
-          : typeCodeIntoRunBrowser(row.sessionId, typed, mail?.domain),
-      ]);
-      // Any code the follow-up hands over, typed straight in or not: the
-      // person's own, checked above, or the one from the site's letter.
-      const carriesCode =
-        mail !== undefined ||
-        oneTimeCodesIn(said, { awaitingCode: codeAwaited(row) }).length > 0;
-
-      // A live run already carries the secrets it was created with, so a plain
-      // follow-up is just a message on its queue. Bindings exist per run only:
-      // a card the person has only now approved needs a run of its own. A
-      // submission confirmed on this call rides on the message with the
-      // details it may type, and stays with the errand for its follow-ups;
-      // one confirmed earlier is already in the run's own instructions.
-      if (live && !bindsCardNow && row.sessionId !== null) {
-        const details = confirmedNow
-          ? (await browserRunFacts(scope)).details
-          : undefined;
-        await queueBrowserUseSessionMessage(
-          row.sessionId,
-          [
-            withCodeEntry(message, codeEntry, carriesCode),
-            confirmedNow ? commitmentLine(consent) : undefined,
-            confirmedNow?.kind === "confirmed"
-              ? gosuslugiSignInRule(site, true)
-              : undefined,
-            details,
-          ]
-            .filter((part) => part !== undefined)
-            .join("\n\n")
-        );
-        if (confirmedNow?.kind === "confirmed") {
-          await recordBrowserRunSubmission(runId, confirmedNow.submission);
-        }
-        return {
-          // The run was started with the card bound, so what this call
-          // allowed it to pay is its to pay.
-          carriesPayment: true,
-          kind: "replied" as const,
-          reply: {
-            note: [
-              codeEntryNote(codeEntry) === undefined
-                ? "The message was queued into the running errand. Its outcome still arrives as a new message."
-                : "The code went straight into the page, and the message was queued into the running errand as well. Its outcome still arrives as a new message.",
-              nothingDoneYetNote(codeEntryNote(codeEntry) !== undefined),
-            ].join(" "),
-            runId,
-            status: row.status,
-          },
-        };
-      }
-      if (live) {
-        try {
-          await cancelBrowserUseRun(runId);
-        } catch (error) {
-          console.warn(
-            "[browser-use] the replaced run could not be cancelled",
-            {
-              cause: error,
-              runId,
-            }
-          );
-        }
-        // Claiming the completion here is what keeps the webhook and the
-        // poller from reporting the replaced run as an outcome of its own.
-        await claimBrowserRunCompletion(runId, {
-          outcome: "Заменён продолжением с привязанной картой",
-          status: "stopped",
-        });
-      } else {
-        // The person is steering a settled errand now: a background retry
-        // waiting for it, or being started, would only race this follow-up.
-        await stopBrowserRunErrand(runId);
-      }
-
-      // What the run this follow-up replaces was told: whether its errand
-      // signs in by phone and is to be done carries on from there.
-      const replaced = await replacedRunTask(row.id);
-      // No quota gate: `browserRunQuotaGate` counts as it reads, and a
-      // continuation is the same errand the month was already charged for.
-      const [bound, facts] = await Promise.all([
-        resolveBrowserSecretBindings(scope, {
-          allowPayment,
-          // Only where the errand's start bound it: a follow-up never brings
-          // a host for the phone, even one an earlier follow-up recorded.
-          phoneSignIn:
-            row.site !== null &&
-            phoneSignInAllowed(context, byPerson, row) &&
-            replaced !== undefined &&
-            signsInByPhone(replaced),
-          site,
-        }),
-        browserRunFacts(scope),
-      ]);
-      const secrets = mail
-        ? {
-            aliases: [...bound.aliases, browserSecretAliases.emailCode],
-            bindings: [
-              ...bound.bindings,
-              mailCodeBinding(mail.code, mail.domain),
-            ],
-          }
-        : bound;
-      const profileId = row.profileId ?? (await workspaceProfileId(scope));
-      // A browser that lost to an anti-bot wall keeps losing: the shop has
-      // already judged that address and that browser, and a follow-up queued
-      // into it meets the same verdict however well it is written. The profile
-      // carries the sign-in, so dropping the session keeps the account and
-      // gets a fresh browser on a fresh address.
-      const sessionId =
-        endedNeeding(row.outcome) === "captcha"
-          ? undefined
-          : (row.sessionId ?? undefined);
-      const continuation = composeBrowserContinuation({
-        aliases: secrets.aliases,
-        allowPayment,
-        consent,
-        collectImages: input.collectImages === true,
-        deliveryAddress: aboutDelivery(input.deliveryAddress, row.task, message)
-          ? deliveryAddressFor(facts.addresses, row.task, message)
-          : undefined,
-        done,
-        errand: row.task,
-        facts: facts.details,
-        // Only a follow-up in the errand's own session: one after a wall
-        // starts a session of its own anyway.
-        freshBrowser:
-          sessionId !== undefined && row.browserReleasedAt instanceof Date,
-        message: withCodeEntry(instruction, codeEntry, carriesCode),
-        searching: mail ? false : followUpSearches(said, row.outcome),
-        site,
-        // An errand the person asked to be done stays so until they say
-        // otherwise; a search stays a search.
-        staging: acting.asked || (stagesErrand(replaced) && !acting.declined),
-      });
-      let followUp: Awaited<ReturnType<typeof createFollowUpRun>>;
+    const page = await takeKeptPage(row);
+    // A page the idle stop closed: why decides what the follow-up is told.
+    const closed =
+      page.held || endedNeeding(row.outcome) === "captcha"
+        ? undefined
+        : closedPage(row.outcome);
+    const giveBackPage = async () => {
+      if (page.claimedAt === undefined) return;
       try {
-        followUp = await createFollowUpRun({
-          customProxy: customProxy(),
-          maxCostUsd: env.BROWSER_USE_MAX_COST_USD,
-          model: env.BROWSER_USE_MODEL,
-          profileId,
-          proxyCountryCode: env.BROWSER_USE_PROXY_COUNTRY,
-          secretBindings: secrets.bindings,
-          sessionId,
-          task: continuation,
-        });
+        await unclaimBrowserRunBrowser(row.id, page.claimedAt);
       } catch (error) {
-        // The follow-up waits for a browser like any errand, with its
-        // session remembered so it lands in the same tab if it still can.
-        if (browserUseBusy(error)) {
+        console.warn("[browser-use] the kept page could not be given back", {
+          cause: error,
+          runId: row.id,
+        });
+      }
+    };
+    const continueErrandRun = () =>
+      releasedOnFailure(placeholder, async () => {
+        // Both are round trips to the cloud and neither needs the other's answer.
+        // A one-time code waiting its turn is a code closer to expiring, and the
+        // entry is worth attempting whether or not a run is still on the page:
+        // the browser outlives its run, and the field is where the code belongs.
+        // Only a code the person sent in this turn, or the one the site's own
+        // letter carries, goes into the page.
+        const typed =
+          mail?.code ??
+          (personCodeToType(said, words)
+            ? oneTimeCodeFromMessage(said)
+            : undefined);
+        const [live, codeEntry] = await Promise.all([
+          trackedRunIsLive(runId, row.completedAt),
+          row.sessionId === null || typed === undefined || !page.held
+            ? undefined
+            : typeCodeIntoRunBrowser(row.sessionId, typed, mail?.domain),
+        ]);
+        // Any code the follow-up hands over, typed straight in or not: the
+        // person's own, checked above, or the one from the site's letter. One
+        // that belonged to a page closed since goes nowhere.
+        const carriesCode =
+          closed !== "step" &&
+          (mail !== undefined ||
+            oneTimeCodesIn(said, { awaitingCode: codeAwaited(row) }).length >
+              0);
+
+        // A live run already carries the secrets it was created with, so a plain
+        // follow-up is just a message on its queue. Bindings exist per run only:
+        // a card the person has only now approved needs a run of its own. A
+        // submission confirmed on this call rides on the message with the
+        // details it may type, and stays with the errand for its follow-ups;
+        // one confirmed earlier is already in the run's own instructions.
+        if (live && !bindsCardNow && row.sessionId !== null) {
+          const details = confirmedNow
+            ? (await browserRunFacts(scope)).details
+            : undefined;
+          await queueBrowserUseSessionMessage(
+            row.sessionId,
+            [
+              withCodeEntry(message, codeEntry, carriesCode),
+              confirmedNow ? commitmentLine(consent) : undefined,
+              confirmedNow?.kind === "confirmed"
+                ? gosuslugiSignInRule(site, true)
+                : undefined,
+              details,
+            ]
+              .filter((part) => part !== undefined)
+              .join("\n\n")
+          );
+          if (confirmedNow?.kind === "confirmed") {
+            await recordBrowserRunSubmission(runId, confirmedNow.submission);
+          }
           return {
-            continuation,
-            kind: "queued" as const,
-            profileId,
-            retryAfterMs: error.retryAfterMs,
-            sessionId,
+            // The run was started with the card bound, so what this call
+            // allowed it to pay is its to pay.
+            carriesPayment: true,
+            kind: "replied" as const,
+            reply: {
+              note: [
+                codeEntryNote(codeEntry) === undefined
+                  ? "The message was queued into the running errand. Its outcome still arrives as a new message."
+                  : "The code went straight into the page, and the message was queued into the running errand as well. Its outcome still arrives as a new message.",
+                nothingDoneYetNote(codeEntryNote(codeEntry) !== undefined),
+              ].join(" "),
+              runId,
+              status: row.status,
+            },
           };
         }
-        if (browserUseOutOfCredits(error)) {
-          await reportBrowserUseOutOfCredits(error);
-          return { kind: "no_credits" as const };
+        if (live) {
+          try {
+            await cancelBrowserUseRun(runId);
+          } catch (error) {
+            console.warn(
+              "[browser-use] the replaced run could not be cancelled",
+              {
+                cause: error,
+                runId,
+              }
+            );
+          }
+          // Claiming the completion here is what keeps the webhook and the
+          // poller from reporting the replaced run as an outcome of its own.
+          await claimBrowserRunCompletion(runId, {
+            outcome: "Заменён продолжением с привязанной картой",
+            status: "stopped",
+          });
+        } else {
+          // The person is steering a settled errand now: a background retry
+          // waiting for it, or being started, would only race this follow-up.
+          await stopBrowserRunErrand(runId);
         }
-        throw error;
-      }
-      if (!followUp.run) {
-        if (row.sessionId === null) {
-          throw new Error("A busy browser session needs its session id.");
+
+        // What the run this follow-up replaces was told: whether its errand
+        // signs in by phone and is to be done carries on from there.
+        const replaced = await replacedRunTask(row.id);
+        // No quota gate: `browserRunQuotaGate` counts as it reads, and a
+        // continuation is the same errand the month was already charged for.
+        const [bound, facts] = await Promise.all([
+          resolveBrowserSecretBindings(scope, {
+            allowPayment,
+            // Only where the errand's start bound it: a follow-up never brings
+            // a host for the phone, even one an earlier follow-up recorded.
+            phoneSignIn:
+              row.site !== null &&
+              phoneSignInAllowed(context, byPerson, row) &&
+              replaced !== undefined &&
+              signsInByPhone(replaced),
+            site,
+          }),
+          browserRunFacts(scope),
+        ]);
+        const secrets = mail
+          ? {
+              aliases: [...bound.aliases, browserSecretAliases.emailCode],
+              bindings: [
+                ...bound.bindings,
+                mailCodeBinding(mail.code, mail.domain),
+              ],
+            }
+          : bound;
+        const profileId = row.profileId ?? (await workspaceProfileId(scope));
+        // A browser that lost to an anti-bot wall keeps losing: the shop has
+        // already judged that address and that browser, and a follow-up queued
+        // into it meets the same verdict however well it is written. The profile
+        // carries the sign-in, so dropping the session keeps the account and
+        // gets a fresh browser on a fresh address.
+        const sessionId =
+          endedNeeding(row.outcome) === "captcha" || page.closing
+            ? undefined
+            : (row.sessionId ?? undefined);
+        const continuation = composeBrowserContinuation({
+          aliases: secrets.aliases,
+          allowPayment,
+          consent,
+          collectImages: input.collectImages === true,
+          deliveryAddress: aboutDelivery(
+            input.deliveryAddress,
+            row.task,
+            message
+          )
+            ? deliveryAddressFor(facts.addresses, row.task, message)
+            : undefined,
+          done,
+          errand: row.task,
+          facts: facts.details,
+          freshBrowser: closed,
+          message: withCodeEntry(instruction, codeEntry, carriesCode),
+          searching: mail ? false : followUpSearches(said, row.outcome),
+          site,
+          // An errand the person asked to be done stays so until they say
+          // otherwise; a search stays a search.
+          staging: acting.asked || (stagesErrand(replaced) && !acting.declined),
+        });
+        let followUp: Awaited<ReturnType<typeof createFollowUpRun>>;
+        try {
+          followUp = await createFollowUpRun({
+            customProxy: customProxy(),
+            maxCostUsd: env.BROWSER_USE_MAX_COST_USD,
+            model: env.BROWSER_USE_MODEL,
+            profileId,
+            proxyCountryCode: env.BROWSER_USE_PROXY_COUNTRY,
+            secretBindings: secrets.bindings,
+            sessionId,
+            task: continuation,
+          });
+        } catch (error) {
+          // The follow-up waits for a browser like any errand, with its
+          // session remembered so it lands in the same tab if it still can.
+          if (browserUseBusy(error)) {
+            return {
+              continuation,
+              kind: "queued" as const,
+              profileId,
+              retryAfterMs: error.retryAfterMs,
+              sessionId,
+            };
+          }
+          if (browserUseOutOfCredits(error)) {
+            await reportBrowserUseOutOfCredits(error);
+            return { kind: "no_credits" as const };
+          }
+          throw error;
         }
-        // Bindings exist per run, so a busy session takes the message but
-        // not the card: whatever was reserved for it is not going to be paid.
-        await queueBrowserUseSessionMessage(
-          row.sessionId,
-          withCodeEntry(instruction, codeEntry, carriesCode)
-        );
+        if (!followUp.run) {
+          if (row.sessionId === null) {
+            throw new Error("A busy browser session needs its session id.");
+          }
+          // Bindings exist per run, so a busy session takes the message but
+          // not the card: whatever was reserved for it is not going to be paid.
+          await queueBrowserUseSessionMessage(
+            row.sessionId,
+            withCodeEntry(instruction, codeEntry, carriesCode)
+          );
+          return {
+            carriesPayment: false,
+            kind: "replied" as const,
+            reply: {
+              note: "The browser session was busy with another run, so the message was queued onto it instead. Keep using this run id; the outcome arrives as a new message.",
+              runId,
+              status: row.status,
+            },
+          };
+        }
         return {
-          carriesPayment: false,
-          kind: "replied" as const,
-          reply: {
-            note: "The browser session was busy with another run, so the message was queued onto it instead. Keep using this run id; the outcome arrives as a new message.",
-            runId,
-            status: row.status,
-          },
+          followUp: followUp.run,
+          kind: "continued" as const,
+          profileId,
+          reusedSession: followUp.reusedSession,
+          secrets,
         };
-      }
-      return {
-        followUp: followUp.run,
-        kind: "continued" as const,
-        profileId,
-        reusedSession: followUp.reusedSession,
-        secrets,
-      };
-    });
+      });
+    let continued: Awaited<ReturnType<typeof continueErrandRun>>;
+    // The follow-up that took the kept page gives it back when it does not
+    // start: the idle stop then closes it cleanly.
+    try {
+      continued = await continueErrandRun();
+    } catch (error) {
+      await giveBackPage();
+      throw error;
+    }
+    // No run took the page over: the message went into the live run, or
+    // nothing started.
+    if (continued.kind === "no_credits" || continued.kind === "replied") {
+      await giveBackPage();
+    }
     if (continued.kind === "replied" || continued.kind === "no_credits") {
       if (
         continued.kind === "replied" &&
@@ -3341,8 +3459,7 @@ async function runBrowserTask(
     const { followUp, profileId, reusedSession, secrets } = continued;
     // The same browser only while the last run's page was kept: a browser
     // Bro stopped to keep the sign-ins is gone, and so is its live view.
-    const sameBrowser =
-      reusedSession && !(row.browserReleasedAt instanceof Date);
+    const sameBrowser = reusedSession && page.held;
     await browserUseCreditsRestored();
     await carrySpend(followUp.id);
     await recordStartedRun(followUp.id, () =>
@@ -3380,11 +3497,11 @@ async function runBrowserTask(
       liveViewUrl,
       note: [
         `This errand now continues as run ${followUp.id}${sameBrowser ? " in the same browser" : ""}. Use that run id from here on: ${runId} is finished and takes no further follow-up.`,
-        reusedSession
-          ? sameBrowser
+        closed === undefined
+          ? reusedSession
             ? undefined
-            : "The page the last run stopped on was closed to keep the user's sign-ins in the browser profile, so the follow-up reopens the site in a fresh browser on that profile, still signed in."
-          : "The previous browser session was not reused — it was gone, or it had ended against an anti-bot check — so the follow-up opened a fresh browser on the same profile, on a new address; the signed-in cookies came with it.",
+            : "The previous browser session was not reused — it was gone, or it had ended against an anti-bot check — so the follow-up opened a fresh browser on the same profile, on a new address; the signed-in cookies came with it."
+          : closedPageNote(closed),
         "The outcome arrives as a new message; do not poll for it.",
         mail ? mailCodeTakenNote(mail.domain) : undefined,
         nothingDoneYetNote(),
@@ -3417,6 +3534,8 @@ async function runBrowserTask(
         status: "stopped",
       });
       await releaseReservation(started.id);
+      // A cancelled errand holds no account for the next one on its site.
+      await releaseEndedRunBrowser(started.id, started.sessionId);
       return { runId: started.id, status: "stopped" };
     }
     // A settled run has nothing left to cancel in the cloud; stopping its
@@ -3431,6 +3550,8 @@ async function runBrowserTask(
     }
     await stopBrowserRunErrand(runId);
     await releaseReservation(runId);
+    // A cancelled errand holds no account for the next one on its site.
+    await releaseEndedRunBrowser(runId, row.sessionId);
     return { runId, status: "stopped" };
   }
 

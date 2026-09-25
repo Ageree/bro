@@ -581,9 +581,9 @@ describe("browsers kept for a sign-in", () => {
     });
 
     expect(
-      (await browserRuns.listBrowserHoldingSites(alice.workspaceId)).toSorted(
-        (left, right) => String(left).localeCompare(String(right))
-      )
+      (await browserRuns.listBrowserHoldingRuns(alice.workspaceId))
+        .map((run) => run.site)
+        .toSorted((left, right) => String(left).localeCompare(String(right)))
     ).toEqual([
       "https://market.yandex.ru",
       "https://www.gosuslugi.ru",
@@ -598,17 +598,131 @@ describe("browsers kept for a sign-in", () => {
 
     const now = new Date();
     const idle = await browserRuns.takeIdleBrowserRuns(now, 10);
-    expect(idle).toEqual([{ id: "kept-for-code", sessionId: "session-kept" }]);
+    expect(
+      idle.map(({ id, sessionId, workspaceId }) => ({
+        id,
+        sessionId,
+        workspaceId,
+      }))
+    ).toEqual([
+      {
+        id: "kept-for-code",
+        sessionId: "session-kept",
+        workspaceId: alice.workspaceId,
+      },
+    ]);
+    expect(idle[0]?.completedAt).toBeInstanceOf(Date);
+    // Taking it claims the page: a follow-up arriving now opens a fresh
+    // browser instead of typing into the one being stopped.
+    expect(await browserRuns.claimBrowserRunBrowser("kept-for-code")).toBe(
+      false
+    );
+    // A stop that did not happen gives it back for the next tick.
+    await browserRuns.unclaimBrowserRunBrowser("kept-for-code", now);
+    const later = new Date(now.getTime() + 60_000);
+    expect(
+      (await browserRuns.takeIdleBrowserRuns(later, 10)).map((run) => run.id)
+    ).toEqual(["kept-for-code"]);
 
     await browserRuns.releaseBrowserRunBrowser("kept-for-code");
     const released = await browserRuns.readBrowserRun("kept-for-code");
-    expect(released?.browserReleasedAt).toBeInstanceOf(Date);
+    // Released at the claim, not at the stop that followed it.
+    expect(released?.browserReleasedAt).toEqual(later);
     // Its live view died with it.
     expect(released?.liveViewUrl).toBeNull();
     expect(await browserRuns.takeIdleBrowserRuns(new Date(), 10)).toEqual([]);
     expect(
-      await browserRuns.listBrowserHoldingSites(alice.workspaceId)
+      (await browserRuns.listBrowserHoldingRuns(alice.workspaceId)).map(
+        (run) => run.site
+      )
     ).not.toContain("https://www.ozon.ru");
+  }, 20_000);
+
+  it("gives a kept page to one taker, and gives back only its own claim", async () => {
+    const browserRuns = await browserRunsDatabase();
+    await browserRuns.createBrowserRun(alice, {
+      ...conversation(),
+      completedAt: minutesAgo(2),
+      id: "kept",
+      sessionId: "session-kept",
+      status: "done",
+    });
+    const first = new Date();
+    const second = new Date(first.getTime() + 1_000);
+
+    expect(await browserRuns.claimBrowserRunBrowser("kept", first)).toBe(true);
+    expect(await browserRuns.claimBrowserRunBrowser("kept", second)).toBe(
+      false
+    );
+    // The second taker cannot undo the first one's claim.
+    await browserRuns.unclaimBrowserRunBrowser("kept", second);
+    expect(
+      (await browserRuns.readBrowserRun("kept"))?.browserReleasedAt
+    ).toEqual(first);
+    await browserRuns.unclaimBrowserRunBrowser("kept", first);
+    expect(
+      (await browserRuns.readBrowserRun("kept"))?.browserReleasedAt
+    ).toBeNull();
+  }, 20_000);
+
+  it("knows when another browser of the workspace is up, and when the profile is in use", async () => {
+    const browserRuns = await browserRunsDatabase();
+    await browserRuns.createBrowserRun(alice, {
+      ...conversation(),
+      completedAt: minutesAgo(16),
+      id: "idle",
+      sessionId: "session-idle",
+      status: "done",
+    });
+    expect(
+      await browserRuns.otherRunHoldsBrowser(alice.workspaceId, "idle")
+    ).toBe(false);
+    expect(
+      await browserRuns.workspaceUsesBrowserProfile(alice.workspaceId)
+    ).toBe(true);
+
+    await browserRuns.createBrowserRun(alice, {
+      ...conversation(),
+      id: "working",
+      sessionId: "session-working",
+      status: "running",
+    });
+    expect(
+      await browserRuns.otherRunHoldsBrowser(alice.workspaceId, "idle")
+    ).toBe(true);
+    // Bob's browser is not Alice's.
+    expect(await browserRuns.otherRunHoldsBrowser(bob.workspaceId, "x")).toBe(
+      false
+    );
+
+    await browserRuns.releaseBrowserRunBrowser("idle");
+    await browserRuns.releaseBrowserRunBrowser("working");
+    expect(
+      await browserRuns.workspaceUsesBrowserProfile(alice.workspaceId)
+    ).toBe(false);
+    // An errand waiting in the queue still starts on the profile.
+    await browserRuns.createQueuedBrowserRun(alice, {
+      ...conversation(),
+      pendingTask: "Закажи корм",
+      retryAt: new Date(),
+      sessionId: null,
+    });
+    expect(
+      await browserRuns.workspaceUsesBrowserProfile(alice.workspaceId)
+    ).toBe(true);
+  }, 20_000);
+
+  it("forgets a workspace's profile and says which one it was", async () => {
+    const browserRuns = await browserRunsDatabase();
+    await browserRuns.saveBrowserProfileId(alice, "profile-alice");
+
+    expect(await browserRuns.forgetBrowserProfile(alice.workspaceId)).toBe(
+      "profile-alice"
+    );
+    expect(await browserRuns.readBrowserProfileId(alice)).toBeUndefined();
+    expect(
+      await browserRuns.forgetBrowserProfile(alice.workspaceId)
+    ).toBeUndefined();
   }, 20_000);
 
   it("does not count an errand waiting on its own workspace's sign-in as the service's queue", async () => {
@@ -683,6 +797,43 @@ describe("sign-ins kept in the browser profile", () => {
     expect(
       await signIns.readBrowserSignIns(bob.workspaceId, ["ozon.ru"])
     ).toEqual([]);
+  }, 20_000);
+
+  it("lists the sites on record and forgets one or all of them", async () => {
+    const { signIns } = await signInsDatabase();
+    for (const [domain, day] of [
+      ["ozon.ru", "2026-09-24"],
+      ["yandex.ru", "2026-09-25"],
+      ["wildberries.ru", "2026-09-23"],
+    ] as const) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Records in the order a person would earn them.
+      await signIns.recordBrowserSignIn(alice.workspaceId, {
+        accountUrl: `https://www.${domain}/my`,
+        domain,
+        now: new Date(`${day}T10:00:00.000Z`),
+      });
+    }
+    await signIns.recordBrowserSignIn(bob.workspaceId, {
+      accountUrl: "https://www.ozon.ru/my",
+      domain: "ozon.ru",
+      now: new Date("2026-09-25T10:00:00.000Z"),
+    });
+
+    expect(
+      (await signIns.listBrowserSignIns(alice.workspaceId)).map(
+        (record) => record.domain
+      )
+    ).toEqual(["yandex.ru", "ozon.ru", "wildberries.ru"]);
+
+    expect(
+      await signIns.forgetBrowserSignIns(alice.workspaceId, ["ozon.ru"])
+    ).toEqual(["ozon.ru"]);
+    expect(
+      (await signIns.forgetBrowserSignIns(alice.workspaceId)).toSorted()
+    ).toEqual(["wildberries.ru", "yandex.ru"]);
+    expect(await signIns.listBrowserSignIns(alice.workspaceId)).toEqual([]);
+    // Bob's are his.
+    expect(await signIns.listBrowserSignIns(bob.workspaceId)).toHaveLength(1);
   }, 20_000);
 
   it("claims each keep-alive visit once, and only where a profile exists", async () => {

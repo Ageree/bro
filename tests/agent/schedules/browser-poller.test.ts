@@ -299,6 +299,15 @@ async function tick(attachSession: ScheduleHandlerArgs["attachSession"]) {
 
 const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000);
 
+/** A settled run whose page waits for the person's code. */
+const keptPage = {
+  conversationChannel: "eve" as const,
+  conversationId: "web-session",
+  outcome: "Needs: sms_code",
+  status: "done" as const,
+  task: "Войди на Озон",
+};
+
 async function runningErrand(runId: string, result: string) {
   const { createBrowserRun } = await import("@db/services/browser-runs");
   cloud.runs.set(runId, {
@@ -663,7 +672,7 @@ describe("the browser run poller", () => {
     expect((await readRun("gosuslugi-run"))?.browserReleasedAt).toBeNull();
   }, 30_000);
 
-  it("stops the browser of a run with nothing left for the person, so its sign-ins are kept", async () => {
+  it("keeps a staged checkout open for the card's follow-up", async () => {
     await runningErrand(
       "staged-run",
       [
@@ -676,8 +685,23 @@ describe("the browser run poller", () => {
 
     await tick(attachSession);
 
-    expect(cloud.stopped).toEqual(["session-staged-run"]);
-    const row = await readRun("staged-run");
+    // The card's follow-up goes on on that very checkout page; the idle stop
+    // closes it cleanly if nobody answers.
+    expect(cloud.stopped).toEqual([]);
+    expect((await readRun("staged-run"))?.browserReleasedAt).toBeNull();
+  }, 30_000);
+
+  it("stops the browser of a run with nothing left for the person, so its sign-ins are kept", async () => {
+    await runningErrand(
+      "done-run",
+      ["RESULT: такси заказано", "NEEDS: none"].join("\n")
+    );
+    const { attachSession } = webChat();
+
+    await tick(attachSession);
+
+    expect(cloud.stopped).toEqual(["session-done-run"]);
+    const row = await readRun("done-run");
     expect(row?.browserReleasedAt).toBeInstanceOf(Date);
     expect(row?.liveViewUrl).toBeNull();
   }, 30_000);
@@ -687,29 +711,14 @@ describe("the browser run poller", () => {
     // run and loses what changed in it: a push the person approved without
     // saying so, a sign-in finished in the live view.
     const { createBrowserRun } = await import("@db/services/browser-runs");
-    const kept = {
-      conversationChannel: "eve" as const,
-      conversationId: "web-session",
-      outcome: "Needs: sms_code",
-      status: "done" as const,
-      task: "Войди на Озон",
-    };
     await createBrowserRun(alice, {
-      ...kept,
+      ...keptPage,
       completedAt: minutesAgo(16),
       createdAt: minutesAgo(20),
       id: "idle-run",
       liveViewUrl: "https://live.browser-use.test/idle",
       sessionId: "session-idle",
       updatedAt: minutesAgo(16),
-    });
-    await createBrowserRun(alice, {
-      ...kept,
-      completedAt: minutesAgo(3),
-      createdAt: minutesAgo(6),
-      id: "waiting-run",
-      sessionId: "session-waiting",
-      updatedAt: minutesAgo(3),
     });
     const { attachSession } = webChat();
 
@@ -720,6 +729,45 @@ describe("the browser run poller", () => {
     const idle = await readRun("idle-run");
     expect(idle?.browserReleasedAt).toBeInstanceOf(Date);
     expect(idle?.liveViewUrl).toBeNull();
+  }, 30_000);
+
+  it("lets another browser of the workspace stop first, for a few minutes", async () => {
+    // Whether the cloud merges two browsers' cookies on one profile or keeps
+    // the last one's is not known: the page that waited longest stops last.
+    const { createBrowserRun } = await import("@db/services/browser-runs");
+    await createBrowserRun(alice, {
+      ...keptPage,
+      completedAt: minutesAgo(16),
+      createdAt: minutesAgo(20),
+      id: "idle-run",
+      sessionId: "session-idle",
+      updatedAt: minutesAgo(16),
+    });
+    await createBrowserRun(alice, {
+      ...keptPage,
+      completedAt: minutesAgo(3),
+      createdAt: minutesAgo(6),
+      id: "waiting-run",
+      sessionId: "session-waiting",
+      updatedAt: minutesAgo(3),
+    });
+    const { attachSession } = webChat();
+
+    await tick(attachSession);
+
+    expect(cloud.stopped).toEqual([]);
+    // Given back, not left claimed: a follow-up may still take it.
+    expect((await readRun("idle-run"))?.browserReleasedAt).toBeNull();
+
+    // Short of the cloud's own cleanup it stops whatever else is up.
+    await database
+      .update(schema.browserRuns)
+      .set({ completedAt: minutesAgo(19) })
+      .where(eq(schema.browserRuns.id, "idle-run"));
+
+    await tick(attachSession);
+
+    expect(cloud.stopped).toEqual(["session-idle"]);
     expect((await readRun("waiting-run"))?.browserReleasedAt).toBeNull();
   }, 30_000);
 

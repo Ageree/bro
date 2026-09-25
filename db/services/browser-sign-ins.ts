@@ -1,6 +1,7 @@
 import {
   and,
   asc,
+  desc,
   eq,
   gt,
   inArray,
@@ -171,4 +172,36 @@ export async function recordBrowserSignInCheck(
         eq(browserSignIns.domain, domain)
       )
     );
+}
+
+/** Forget where the person is signed in: every site, or the ones named. */
+export async function forgetBrowserSignIns(
+  workspaceId: string,
+  domains?: readonly string[]
+) {
+  const rows = await db
+    .delete(browserSignIns)
+    .where(
+      and(
+        eq(browserSignIns.workspaceId, workspaceId),
+        domains === undefined
+          ? undefined
+          : inArray(browserSignIns.domain, [...domains])
+      )
+    )
+    .returning({ domain: browserSignIns.domain });
+  return rows.map((row) => row.domain);
+}
+
+/** Every site on record for the workspace, most recently seen first. */
+export async function listBrowserSignIns(workspaceId: string) {
+  return db
+    .select({
+      checkedAt: browserSignIns.checkedAt,
+      domain: browserSignIns.domain,
+      state: browserSignIns.state,
+    })
+    .from(browserSignIns)
+    .where(eq(browserSignIns.workspaceId, workspaceId))
+    .orderBy(desc(browserSignIns.checkedAt));
 }

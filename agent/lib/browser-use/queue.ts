@@ -116,7 +116,7 @@ const queuedErrandRules =
  */
 function signInWaitNote(account: string) {
   return [
-    `Another errand of the user is working in Bro's browser on ${account} right now, and may be signing in there: a second sign-in at the same time would send the user a second code that cancels the first. So this errand waits and starts by itself as soon as that browser is done — on the same browser profile, signed in if the other errand signed in, so the user is not asked for a code again.`,
+    `Another errand of the user is working in Bro's browser on ${account} right now, or waiting there for the user's code or approval: a second sign-in at the same time would send the user a second code that cancels the first. So this errand waits and starts by itself as soon as that browser is done, on the same browser profile, so that the two never ask for codes at once. Do not promise the user that no code will be needed: the site may still ask for one, and then the run stops and you ask.`,
     "Tell the user in one short line that it starts right after the other one; the outcome arrives as a new message like any other.",
     queuedErrandRules,
   ].join(" ");
