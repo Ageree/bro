@@ -2,7 +2,11 @@ import { defineAgent, defineDynamic } from "eve";
 import { scheduledRunIdentity } from "@agent/lib/schedules/identity";
 import { isScheduledAgentRunLeaseActive } from "@db/services/scheduled-agent-run-leases";
 import { getFormOfAddress, getWorkspaceModelId } from "@db/services/settings";
-import { personLanguage, replyDirective } from "@agent/lib/delivery/language";
+import {
+  personLanguage,
+  replyDirective,
+  wordlessLatestMessage,
+} from "@agent/lib/delivery/language";
 import {
   actionsHeldForAnswer,
   heldForAnswerNote,
@@ -31,7 +35,11 @@ import {
   turnDeclinedErrand,
 } from "@agent/lib/delivery/declined-cards";
 import { browserRunReportDelivered } from "@db/services/browser-runs";
-import { turnMustEnd, turnSends } from "@agent/lib/delivery/turn-sends";
+import {
+  approvedResendOwed,
+  turnMustEnd,
+  turnSends,
+} from "@agent/lib/delivery/turn-sends";
 import { readsMustEnd } from "@agent/lib/google-workspace/turn-reads";
 import { resolveModeValue } from "@agent/lib/mode";
 import { modelSelection } from "@agent/lib/model/selection";
@@ -132,16 +140,22 @@ export default defineAgent({
         // failed call again: from then on the model writes the reply itself.
         const sendFailed =
           sends.delivered.length === 0 && turnSendFailed(ctx.messages);
+        // A claim about a call the person just approved went back to be
+        // checked against its result: the message is owed once more, even
+        // in a turn that already delivered one before the card, where the
+        // step would otherwise go unforced and could end without it.
+        const resendOwed = approvedResendOwed(ctx.messages);
         const requireToolCall =
           !staleReport &&
           !sendFailed &&
-          (resolveModeValue(ctx, {
-            interactive:
-              reportRunId === undefined
-                ? awaitsDelivery(ctx.messages)
-                : reportFirstStep,
-          }) ??
-            false);
+          (resendOwed ||
+            (resolveModeValue(ctx, {
+              interactive:
+                reportRunId === undefined
+                  ? awaitsDelivery(ctx.messages)
+                  : reportFirstStep,
+            }) ??
+              false));
         // The reply follows the language of the person's latest message,
         // which the long Russian prompt otherwise outweighs, and so do Bro's
         // own gender and the form of address the person chose, which hold in
@@ -173,7 +187,9 @@ export default defineAgent({
                 answered: sends.delivered.length > 0,
                 formOfAddress,
                 language: replyLanguage,
-                stepOwed: owedSteps.length > 0,
+                // Nor while the message about an approved call is owed.
+                stepOwed: owedSteps.length > 0 || resendOwed,
+                wordlessLatest: wordlessLatestMessage(ctx.messages),
               })
             : undefined,
           staleReport ? staleReportNote : undefined,

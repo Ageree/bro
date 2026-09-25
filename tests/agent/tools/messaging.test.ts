@@ -25,6 +25,18 @@ describe("send_message channel notes", () => {
     }
   );
 
+  it("keeps each fact with its option (RU d03, 25.09)", async () => {
+    // «все с вегетарианским меню и чеком до 2500», one of three checked.
+    const sendMessage = await resolveSendMessage("channel:telegram");
+
+    expect(sendMessage.description).toContain(
+      "keep each price and fact with the option it was found for"
+    );
+    expect(sendMessage.description).toContain(
+      "«все» or «ни один» only of the options you checked"
+    );
+  });
+
   it("still explains that a quoted reply is delivered unquoted", async () => {
     const sendMessage = await resolveSendMessage("channel:telegram");
 
@@ -139,6 +151,25 @@ describe("send_message in a looping turn", () => {
     expect(await sendMessage.execute(repeated, toolContext())).toEqual(
       repeated
     );
+  });
+
+  it("groups a rouble sum in thousands on its way out", async () => {
+    const sendMessage = await resolveSendMessage("channel:telegram");
+
+    expect(
+      await sendMessage.execute(
+        {
+          kind: "message",
+          replyTo: { kind: "current" },
+          text: "Стрижка 2000 ₽, код 739204.",
+        },
+        toolContext()
+      )
+    ).toEqual({
+      kind: "message",
+      replyTo: { kind: "current" },
+      text: "Стрижка 2 000 ₽, код 739204.",
+    });
   });
 });
 

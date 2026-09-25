@@ -1,6 +1,7 @@
 import type { JSONValue, ModelMessage, ToolResultPart } from "ai";
 import { describe, expect, it } from "vitest";
 import {
+  approvedResendOwed,
   repeatsDelivered,
   rewriteSendNotice,
   sendReachedPerson,
@@ -2209,6 +2210,359 @@ describe("sendRefusal on claims no tool made", () => {
   });
 });
 
+describe("sendRefusal right after the person approved a card", () => {
+  /**
+   * The AI SDK runs an approved call when the next model call starts, after
+   * `step.started` built `send_message`, so its result is not there yet.
+   */
+  function approved(
+    request: string,
+    toolName: string,
+    answer: { approved: boolean; isAutomatic?: boolean } = { approved: true }
+  ): ModelMessage[] {
+    toolSteps += 1;
+    const toolCallId = `${toolName}-${String(toolSteps)}`;
+    const approvalId = `approval-${toolCallId}`;
+    return [
+      userMessage(request),
+      {
+        content: [
+          { input: {}, toolCallId, toolName, type: "tool-call" },
+          {
+            approvalId,
+            isAutomatic: answer.isAutomatic ?? false,
+            toolCallId,
+            type: "tool-approval-request",
+          },
+        ],
+        role: "assistant",
+      },
+      {
+        content: [
+          {
+            approvalId,
+            approved: answer.approved,
+            type: "tool-approval-response",
+          },
+        ],
+        role: "tool",
+      },
+    ];
+  }
+
+  const petrov = approved(
+    "в пятницу созвон с петровым в 15:30, поставь",
+    "calendar-create-event"
+  );
+  const added =
+    "Созвон с Петровым в пятницу, 2 октября, 15:30–16:30 — добавил в календарь.";
+
+  it("asks the model to check the result it reads, not to retract (d15)", () => {
+    // The approved call runs after this step's send_message was built: the
+    // message may be true, and it may be false.
+    expect(refusal(petrov, added)).toEqual({ rewrite: "approved" });
+    const notice = rewriteSendNotice("approved");
+    expect(notice).toContain("send this same message again unchanged");
+    expect(notice).toContain("if it failed or was refused, say plainly");
+    expect(notice).not.toContain("never present");
+  });
+
+  it("delivers the same message once the approved call's result is in", () => {
+    expect(
+      refusal(
+        ranWith(petrov, { type: "json", value: { created: true } }),
+        added
+      )
+    ).toBeUndefined();
+  });
+
+  it("returns the claim once the approved call failed", () => {
+    expect(
+      refusal(
+        ranWith(petrov, { type: "error-text", value: "Google 400: bad time" }),
+        added
+      )
+    ).toEqual({ rewrite: "declined" });
+  });
+
+  it.each([
+    [
+      "a letter",
+      "отправь иванову, что встреча в пятницу",
+      "gmail-send",
+      "Отправил письмо Иванову: встреча в пятницу.",
+      "declined",
+    ],
+    [
+      "a reminder",
+      "напомни в 20:00 позвонить маме",
+      "schedules-create",
+      "Поставил напоминание позвонить маме на 20:00.",
+      "declined",
+    ],
+    [
+      // A failed `apps` call is no Slack call: as before, «undone».
+      "an app's action",
+      "отправь в slack команде, что опоздаю",
+      "apps",
+      "Отправил сообщение в Slack команде.",
+      "undone",
+    ],
+  ] as const)(
+    "judges %s the person just approved by its result",
+    (_case, request, tool, text, failed) => {
+      const history = approved(request, tool);
+
+      expect(refusal(history, text)).toEqual({ rewrite: "approved" });
+      expect(
+        refusal(ranWith(history, { type: "json", value: { ok: true } }), text)
+      ).toBeUndefined();
+      expect(
+        refusal(ranWith(history, { type: "error-text", value: "failed" }), text)
+      ).toEqual({ rewrite: failed });
+    }
+  );
+
+  it("owes the checked message once more after an earlier delivery", () => {
+    // The turn told the person before the card, so only this owed resend
+    // keeps the next step forced (`approvedResendOwed`).
+    const request = "напиши ирине, что приду в пятницу к 15:00";
+    const letter = approved(request, "gmail-send").slice(1);
+    const history = [
+      userMessage(request),
+      ...sendMessage(
+        "draft",
+        "Вот письмо Ирине: «Приду в пятницу к 15:00». Отправляю."
+      ),
+      ...letter,
+    ];
+    const claimed = "Отправил письмо Ирине: приду в пятницу к 15:00.";
+
+    expect(refusal(history, claimed)).toEqual({ rewrite: "approved" });
+    expect(approvedResendOwed(history)).toBe(false);
+
+    const ran = ranWith(history, { type: "json", value: { sent: true } });
+    const owed = [
+      ...ran,
+      ...sendMessage(
+        "claim",
+        claimed,
+        textOutput(rewriteSendNotice("approved"))
+      ),
+    ];
+    expect(approvedResendOwed(owed)).toBe(true);
+    expect(refusal(owed, claimed)).toBeUndefined();
+    expect(
+      approvedResendOwed([...owed, ...sendMessage("resend", claimed)])
+    ).toBe(false);
+  });
+
+  it("does not ask to take an approved step again", () => {
+    // «Take the step now» would make a second event while the approved one
+    // is about to run.
+    const request = "поставь в календарь созвон в пятницу в 15:30";
+    const told = [
+      userMessage(request),
+      ...sendMessage("told", "Созвон в пятницу в 15:30 — вот что ставлю."),
+    ];
+    const pending = [
+      ...told,
+      ...approved(request, "calendar-create-event").slice(1),
+    ];
+
+    // Only a status: held back, and nothing asks for the step again.
+    const announcing =
+      "Сейчас поставлю в календарь созвон в пятницу в 15:30, пока жду.";
+    expect(refusal(pending, announcing)).toEqual({ skipped: "stale" });
+    // Without the approval the step is still to take.
+    expect(refusal(told, announcing)).toEqual({ rewrite: "announced" });
+  });
+
+  it("lets the outcome of an approved call follow an earlier message", () => {
+    // Its work is not in this step's history yet, so it is not the message
+    // sent before the card said again.
+    const request = "поставь в календарь созвон в пятницу в 15:30";
+    const pending = [
+      userMessage(request),
+      ...sendMessage("told", "Созвон в пятницу в 15:30 — вот что ставлю."),
+      ...approved(request, "calendar-create-event").slice(1),
+    ];
+
+    expect(
+      refusal(pending, "Поставил созвон в пятницу в 15:30 в календарь.")
+    ).toEqual({ rewrite: "approved" });
+  });
+
+  it("still returns what the person declined on the card", () => {
+    expect(
+      refusal(
+        approved("поставь созвон в пятницу", "calendar-create-event", {
+          approved: false,
+        }),
+        "Добавил в календарь созвон на пятницу."
+      )
+    ).toEqual({ rewrite: "calendar" });
+  });
+
+  it("tells the model the rewritten draft was never seen", () => {
+    for (const reason of ["approved", "calendar", "found", "undone"] as const) {
+      expect(rewriteSendNotice(reason)).toContain(
+        "The person never saw this draft"
+      );
+      expect(rewriteSendNotice(reason)).toContain("no apology");
+    }
+  });
+});
+
+describe("sendRefusal on options claimed before any search", () => {
+  const request = userMessage(
+    "найди мне поезд до казани на следующие выходные и где там поужинать в субботу"
+  );
+  const errandStarted = browserStep(
+    "start",
+    {
+      note: "The run continues in the background.",
+      runId: "run-trains",
+      status: "running",
+    },
+    {
+      site: "https://ticket.rzd.ru",
+      task: "Найти поезда Москва — Казань на следующие выходные: выезд в субботу 3 октября 2026. В поезде беру только нижнюю полку.",
+    }
+  );
+  const announced =
+    "Запустил поиск поездов Москва — Казань на субботу 3 октября, нижняя полка. Результат пришлю, как найду.\n\nПо ужину: подобрал три места в Казани, все не сетевые.";
+
+  it("returns «подобрал три места» with no search behind it (d13)", () => {
+    expect(refusal([request, ...errandStarted], announced)).toEqual({
+      rewrite: "found",
+    });
+    expect(rewriteSendNotice("found")).toContain(
+      "Put the options themselves in this one message"
+    );
+  });
+
+  it.each([
+    "Нашёл три варианта, пришлю списком.",
+    "Отобрал пару мест у вокзала, все не сетевые.",
+    "Подобрал три отличных места в центре.",
+    "I found three places near the station.",
+    "Запустил поиск поездов.\nПо ужину подобрал три места.",
+  ])("returns «%s» with nothing found yet", (text) => {
+    expect(refusal([request, ...errandStarted], text)).toEqual({
+      rewrite: "found",
+    });
+  });
+
+  it("delivers the same claim once a search of the turn returned", () => {
+    expect(
+      refusal(
+        [
+          request,
+          ...errandStarted,
+          ...toolStep("web_search", "1. Чирэм, татарский ресторан — 2ГИС", {
+            query: "где поужинать в Казани",
+          }),
+        ],
+        announced
+      )
+    ).toBeUndefined();
+  });
+
+  it.each([
+    [
+      "the options listed",
+      "По ужину подобрал три места:\n• чирэм — татарская кухня, чек 3500\n• умай — у кремля",
+    ],
+    ["the options named", "Подобрал три места: Чирэм, Умай и Мархаба."],
+    [
+      "the options on lines of their own",
+      "Подобрал три места:\n«Чирэм», у кремля\n«Умай», на Большой Красной",
+    ],
+    ["a link to them", "Подобрал три места: https://yandex.ru/maps/org/umay"],
+    ["a future tense", "По ужину подберу три места и пришлю вместе с поездом."],
+    ["a present tense", "Ищу, где поужинать, и запустил поиск поездов."],
+    ["another time", "Вчера нашёл три места в Казани — их и пришлю."],
+    ["a negation", "Мест пока не подобрал: сейчас поищу."],
+    ["a clause about them", "Из тех, что подобрал, ближе первый."],
+    ["a letter found", "Нашёл письмо от РЖД с билетом на субботу."],
+    ["a single pick", "Отобрал вариант на 9:30, он удобнее."],
+    ["places with no count", "Подобрал места у кремля, пришлю списком."],
+    ["advice", "Я бы подобрал три места у кремля."],
+    [
+      "the options after a dash",
+      "Подобрал три места — у кремля, на баумана и у вокзала.",
+    ],
+  ])("delivers %s", (_case, text) => {
+    expect(refusal([request, ...errandStarted], text)).toBeUndefined();
+  });
+
+  // Wave 5 review: an answer that picks among what the person named, or
+  // gives ideas from general knowledge, is no claim of a search.
+  it.each([
+    [
+      "Выбери между Пушкиным и Турандот",
+      "Подобрал Турандот: там тише и есть веранда.",
+    ],
+    [
+      "Вот три отеля: Мариотт, Хилтон, Рэдиссон. Какой лучше?",
+      "Я бы подобрал Хилтон: ближе к центру.",
+    ],
+    ["Сравни эти два билета: 7:00 и 9:30", "Отобрал вариант на 9:30."],
+    [
+      "Сравни эти три отеля: Мариотт, Хилтон, Рэдиссон",
+      "Отобрал два варианта, Рэдиссон дороже.",
+    ],
+    [
+      "Что приготовить на ужин из курицы?",
+      "Подобрал три варианта: курица в сливочном соусе, терияки, запечённая с овощами.",
+    ],
+    [
+      "Что приготовить на ужин из курицы?",
+      "Подобрал несколько идей, начнём с простой.",
+    ],
+  ])("delivers the answer to «%s»", (asked, text) => {
+    expect(refusal([userMessage(asked)], text)).toBeUndefined();
+  });
+
+  it("delivers a claim about what the previous turn found", () => {
+    const history = [
+      userMessage("где поужинать в Казани?"),
+      ...toolStep("web_search", "1. Чирэм\n2. Умай\n3. Мархаба", {
+        query: "ужин Казань",
+      }),
+      ...sendMessage("list", "Чирэм, Умай или Мархаба — все в центре."),
+      userMessage("а почему эти?"),
+    ];
+
+    expect(
+      refusal(history, "Подобрал их по отзывам и близости к вокзалу.")
+    ).toBeUndefined();
+  });
+
+  it("delivers a browser report's retelling", () => {
+    const report = userMessage(
+      `${backgroundTurnMarker}\n\nBrowser run run-7 finished.\n\nResult: three places.`
+    );
+
+    expect(refusal([report], "Подобрал три места в Казани.")).toBeUndefined();
+  });
+
+  it("delivers the same answer the turn after a browser report", () => {
+    const history = [
+      userMessage(
+        `${backgroundTurnMarker}\n\nBrowser run run-7 finished.\n\nResult: three places.`
+      ),
+      ...sendMessage("told", "Чирэм, Умай, Мархаба — брать?"),
+      userMessage("а почему эти?"),
+    ];
+
+    expect(
+      refusal(history, "Подобрал их по отзывам и чеку до 2500.")
+    ).toBeUndefined();
+  });
+});
+
 describe("turnSends", () => {
   it("counts only what the current turn delivered", () => {
     const history = [
@@ -2520,6 +2874,35 @@ function browserStep(
           output: { type: "json", value },
           toolCallId,
           toolName: "browser_task",
+          type: "tool-result",
+        },
+      ],
+      role: "tool",
+    },
+  ];
+}
+
+/** The result of the approved call at the end of `history`, once it ran. */
+function ranWith(
+  history: readonly ModelMessage[],
+  output: ToolResultPart["output"]
+): ModelMessage[] {
+  const call = history
+    .flatMap((step) =>
+      step.role === "assistant" && Array.isArray(step.content)
+        ? step.content.filter((part) => part.type === "tool-call")
+        : []
+    )
+    .at(-1);
+  if (!call) throw new Error("The history must hold the approved call.");
+  return [
+    ...history,
+    {
+      content: [
+        {
+          output,
+          toolCallId: call.toolCallId,
+          toolName: call.toolName,
           type: "tool-result",
         },
       ],

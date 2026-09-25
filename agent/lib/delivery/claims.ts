@@ -1,5 +1,6 @@
 import type { ModelMessage, ToolResultPart } from "ai";
 import { z } from "zod";
+import { isBackgroundTurnText } from "@shared/chat/background-turn";
 import { browserAnswer } from "./browser-report";
 import { requestsOf } from "./novelty";
 
@@ -19,6 +20,7 @@ import { requestsOf } from "./novelty";
  * turns is left alone.
  */
 export const unperformedClaims = [
+  "approved",
   "browser",
   "calendar",
   "declined",
@@ -131,6 +133,40 @@ const actTools: Record<Act, readonly string[]> = {
 };
 
 /**
+ * Calls in `messages` the person approved on a card that have no result yet,
+ * by call id, with their tool. The AI SDK runs an approved call when the next
+ * model call starts, after `step.started` has built this step's tools, so a
+ * send in the step that resumes the turn is judged without the result the
+ * model already reads. In RU d15 (25.09) «Созвон с Петровым — добавил в
+ * календарь» went back as unperformed right after the person approved the
+ * event, and the model, told a true message was false, later opened a report
+ * with «Прошу прощения, ошибся в прошлом сообщении». Such a call is neither
+ * done nor undone here: it may have failed just as well (`approvedPending`).
+ */
+function approvedWithoutResult(messages: readonly ModelMessage[]) {
+  const tools = new Map<string, string>();
+  const cards = new Map<string, string>();
+  const approved = new Map<string, string>();
+  for (const message of messages) {
+    if (!Array.isArray(message.content)) continue;
+    for (const part of message.content) {
+      if (part.type === "tool-call") tools.set(part.toolCallId, part.toolName);
+      if (part.type === "tool-approval-request") {
+        cards.set(part.approvalId, part.toolCallId);
+      }
+      const call =
+        part.type === "tool-approval-response" && part.approved
+          ? cards.get(part.approvalId)
+          : undefined;
+      const tool = call === undefined ? undefined : tools.get(call);
+      if (call !== undefined && tool !== undefined) approved.set(call, tool);
+    }
+  }
+  for (const part of toolResults(messages)) approved.delete(part.toolCallId);
+  return approved;
+}
+
+/**
  * The calls in `messages` the person declined on an approval card. A
  * policy's own refusal is written as an automatic request: nobody saw a card.
  */
@@ -215,13 +251,86 @@ function actOutcomes(
 }
 
 /**
+ * What the calls the person approved in `turn`, still without a result,
+ * write: the actions, the calendar and a reminder. A claim of one of them
+ * goes back once with `approved`, which asks the model to check the result
+ * it is reading, rather than being judged true or false without it.
+ */
+function approvedPending(
+  turn: readonly ModelMessage[],
+  appsCalls: Set<string>
+) {
+  const pending = new Set<Act | "calendar" | "reminder">();
+  for (const [call, toolName] of approvedWithoutResult(turn)) {
+    if (calendarWriteTools.has(toolName) || appsCalls.has(call)) {
+      pending.add("calendar");
+    }
+    if (toolName === "schedules-create") pending.add("reminder");
+    for (const act of acts) {
+      if (toolName === "apps" || actTools[act].includes(toolName)) {
+        pending.add(act);
+      }
+    }
+  }
+  // Plain JSON: it rides in the durable closure of `send_message`.
+  return [...pending].toSorted();
+}
+
+/** Tools whose result tells the person nothing found: the reply itself. */
+const deliveryTools = new Set(["react_to_message", "send_message"]);
+
+/** Tools that only change something, whatever their result says. */
+const writeTools = new Set([...Object.values(actTools).flat(), "apps"]);
+
+/**
+ * Whether a tool result may be where a list of options came from: a search,
+ * a read, a route, an outcome `browser_task` handed over. A run that was only
+ * handed its errand has found nothing yet, and a write finds nothing at all.
+ * `apps` reads as much as it writes, so one that went through counts.
+ */
+function foundSomething(part: ToolResultPart) {
+  if (!succeeded(part.output) || deliveryTools.has(part.toolName)) {
+    return false;
+  }
+  if (part.toolName === "apps") return true;
+  if (part.toolName === "browser_task") {
+    return Boolean(browserAnswer(part.output)?.outcome?.trim());
+  }
+  return !writeTools.has(part.toolName);
+}
+
+function userText(message: ModelMessage) {
+  if (message.role !== "user") return "";
+  if (!Array.isArray(message.content)) return message.content;
+  return message.content
+    .flatMap((part) => (part.type === "text" ? [part.text] : []))
+    .join("\n");
+}
+
+/**
+ * Whether `messages` hold a result a list of options may come from — a
+ * browser run's or a schedule's report among them — or a read the person
+ * approved whose result the model is about to read.
+ */
+function holdsFindings(messages: readonly ModelMessage[]) {
+  return (
+    messages.some((message) => isBackgroundTurnText(userText(message))) ||
+    toolResults(messages).some(foundSomething) ||
+    [...approvedWithoutResult(messages).values()].some(
+      (toolName) => !writeTools.has(toolName) || toolName === "apps"
+    )
+  );
+}
+
+/**
  * What the current turn has done that a message could claim. `turn` is the
  * turn after its opening message, `earlier` everything before that message.
  * A turn a background prompt opened — a browser run's report, a scheduled
  * result — relays what happened elsewhere, so its browser claims and its
  * claims of actions no call made are not checked; a call it declined or
- * failed still is. `previousTurn` is the turn right before this one, and
- * `request` the person's own message that opened this turn, if they did.
+ * failed still is. `previousTurn` is the turn right before this one, its
+ * opening message included, and `request` the person's own message that
+ * opened this turn, if they did.
  */
 export function turnActions(
   turn: readonly ModelMessage[],
@@ -256,6 +365,13 @@ export function turnActions(
   }
   return {
     acts: actOutcomes(turn, earlier, options.previousTurn),
+    /**
+     * What calls the person approved, whose results this step does not see
+     * yet, write (`approvedPending`).
+     */
+    approvedPending: approvedPending(turn, appsCalls),
+    /** Whether any call the person approved has yet to show its result. */
+    approvalRunning: approvedWithoutResult(turn).size > 0,
     background: options.background,
     browserPending: browserPending && !options.background,
     calendarRefused,
@@ -264,6 +380,11 @@ export function turnActions(
       wroteCalendar(part, appsCalls)
     ),
     codeTyped,
+    /**
+     * Whether this turn, or the one right before it, holds a result a list
+     * of options may come from (`foundSomething`).
+     */
+    found: holdsFindings(turn) || holdsFindings(options.previousTurn),
     reminderSet,
     request: options.request
       ?.normalize("NFKC")
@@ -511,8 +632,16 @@ export function promisesUntakenStep(
   actions: ReturnType<typeof turnActions>,
   request: string
 ) {
-  const calendar = !actions.calendarWritten && calendarAsked.test(request);
-  const reminder = !actions.reminderSet && reminderAsked.test(request);
+  // An approved call about to run has taken the step: taking it «now»
+  // again would make a second event.
+  const calendar =
+    !actions.calendarWritten &&
+    !actions.approvedPending.includes("calendar") &&
+    calendarAsked.test(request);
+  const reminder =
+    !actions.reminderSet &&
+    !actions.approvedPending.includes("reminder") &&
+    reminderAsked.test(request);
   return sentencesOf(text).some(
     (sentence) =>
       !onCondition.test(sentence) &&
@@ -715,7 +844,9 @@ function saysAct(
  * declined on its card, refused or failed in this turn; or it was the last
  * call of the action, made in the turn right before, and no call of it ever
  * went through; or, in a turn the person opened and asking for the action,
- * no call of it was made at all. A claim is left alone once a call of it
+ * no call of it was made at all. A call the person just approved whose
+ * result this step cannot see yet makes it `approved`: neither true nor
+ * false until the model checks that result. A claim is left alone once a call of it
  * went through in this turn, or an earlier one did: the message may recap
  * that. An order is checked only against a card the person declined in
  * their own turn: a report's turn tells what the run did, whatever a later
@@ -733,6 +864,7 @@ function actClaim(text: string, actions: ReturnType<typeof turnActions>) {
     }
     // «Остановил задачу» after a browser run was stopped in this turn.
     if (!asked && actions.acts.order.done) continue;
+    if (actions.approvedPending.includes(act)) return "approved";
     if (
       outcome.declined ||
       outcome.refused ||
@@ -749,6 +881,127 @@ function actClaim(text: string, actions: ReturnType<typeof turnActions>) {
     }
   }
   return undefined;
+}
+
+/**
+ * Verbs Bro says he has searched out options with: «подобрал три места»,
+ * «нашёл пять вариантов», «отобрал пару отелей».
+ */
+const pickVerbs = new Set([
+  "подобрал",
+  "отобрал",
+  "подыскал",
+  "присмотрел",
+  "нашел",
+  "нашлось",
+  "нашлись",
+  "picked",
+  "shortlisted",
+  "found",
+]);
+
+/**
+ * How many options: two and more. One option picked is a choice, often
+ * among what the person named («отобрал вариант на 9:30»), not a list.
+ */
+const optionCount =
+  /^(?:\d+|два|две|три|четыре|пять|шесть|семь|восемь|девять|десять|пар[ау]|несколько|пяток|two|three|four|five|six|seven|eight|nine|ten|several|few|couple)$/u;
+
+/** What a pick of places, trips or people is made of. */
+const optionNoun =
+  /^(?:вариант\p{L}*|мест\p{L}*|ресторан\p{L}*|кафе|бар\p{L}*|отел\p{L}*|гостиниц\p{L}*|рейс\p{L}*|поезд\p{L}*|билет\p{L}*|квартир\p{L}*|салон\p{L}*|барбершоп\p{L}*|клиник\p{L}*|врач\p{L}*|мастер\p{L}*|options?|places?|restaurants?|hotels?|flights?|trains?|spots?)$/u;
+
+/**
+ * Words that make a verb after them not Bro's claim: a negation, another
+ * person, a condition, advice, a clause about something already named — «не
+ * подобрал», «ты нашёл», «если нашлось», «я бы подобрал», «из тех, что
+ * подобрал».
+ */
+const notAClaim = new Set([
+  "не",
+  "ни",
+  "бы",
+  "would",
+  "что",
+  "которые",
+  "which",
+  "that",
+  "ты",
+  "вы",
+  "он",
+  "она",
+  "они",
+  "мы",
+  "если",
+  "когда",
+  "как",
+  "not",
+  "you",
+  "he",
+  "she",
+  "they",
+  "we",
+  "if",
+  "when",
+]);
+
+/** How far into a clause Bro's verb may stand: «По ужину подобрал…». */
+const claimVerbReach = 4;
+
+/**
+ * Whether a clause says Bro has searched out several concrete options: one
+ * of the pick verbs among its first words, after nothing that negates it or
+ * makes it someone else's or advice, and a count of two or more with an
+ * option noun right after it («три места», «пару отелей», «три отличных
+ * места»).
+ */
+function saysResultsInHand(clause: string) {
+  const words = wordsOf(clause);
+  return words.slice(0, claimVerbReach).some((verb, at) => {
+    if (!pickVerbs.has(verb) || words[at + 1] === "бы") return false;
+    if (words.slice(0, at).some((word) => notAClaim.has(word))) return false;
+    const after = words.slice(at + 1, at + 5);
+    return after.some(
+      (word, index) =>
+        optionCount.test(word) &&
+        after.slice(index + 1, index + 3).some((next) => optionNoun.test(next))
+    );
+  });
+}
+
+/**
+ * A person asking to choose or compare: the answer picks among what they
+ * named («выбери между Пушкиным и Турандот» → «Подобрал Турандот»).
+ */
+const choiceAsked =
+  /(?<!\p{L})(?:выбер\p{L}*|выбрать|сравн\p{L}*|между|или|какой|какая|какое|какие|что лучше|choose|compare|which|or)(?!\p{L})/u;
+
+/**
+ * Whether a message of the person's turn says Bro has searched out several
+ * options — «По ужину: подобрал три места в Казани» — while nothing this
+ * turn or the one before could have found them: no search, read or report
+ * yet, only an errand just handed to a browser (RU d13, 25.09: the places
+ * came 70 seconds later, in a second message). A turn where the person asked
+ * to choose or compare is left alone: its answer picks among what they
+ * named. Whether the message names the options after all is for the caller
+ * to judge: it knows what the person and the turn's tools already named. A
+ * sentence about another time («вчера нашёл»), a promise («подберу», «ищу»),
+ * advice («я бы подобрал») and a single pick («отобрал вариант на 9:30»)
+ * claim nothing.
+ */
+export function claimsResultsInHand(
+  text: string,
+  actions: ReturnType<typeof turnActions>
+) {
+  if (
+    actions.request === undefined ||
+    actions.background ||
+    actions.found ||
+    choiceAsked.test(actions.request)
+  ) {
+    return false;
+  }
+  return clausesOf(text).some(saysResultsInHand);
 }
 
 /**
@@ -781,7 +1034,10 @@ export function unperformedClaim(
           says(sentence, calendarPastVerbs))
       );
     });
-    if (claimed) return actions.calendarRefused ? "declined" : "calendar";
+    if (claimed) {
+      if (actions.approvedPending.includes("calendar")) return "approved";
+      return actions.calendarRefused ? "declined" : "calendar";
+    }
   }
   return actClaim(text, actions);
 }

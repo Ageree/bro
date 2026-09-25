@@ -26,7 +26,7 @@ function signInRequired(cause: unknown) {
 /** What the model hears for an app the person has not connected nor named. */
 function notConnectedNote(app: ConnectedApp) {
   const name = connectedAppNames[app];
-  return `${name} is not connected for this person, and they did not ask for ${name} in this message. Nothing was done in ${name}. Do not ask them to connect it and do not wait for it: reach the person or the information another way you have (contacts, phone, email, Telegram), or say plainly which part you could not do and how.`;
+  return `${name} is not connected for this person, and they did not ask for ${name} in this message. Nothing was done in ${name}. Do not ask them to connect it and do not wait for it: find the information another way you have (mail, contacts, calendar), or write to someone the way contacts-search lists for them (\`canMessageVia\`: email through gmail-send). You cannot send an SMS or a Telegram or WhatsApp message, so do not offer those: give the ready text for the person to forward, and say plainly which part you could not do.`;
 }
 
 /**

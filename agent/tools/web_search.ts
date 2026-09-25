@@ -17,8 +17,13 @@ export const openRouterWebSearch = defineTool({
   async execute(input, ctx) {
     try {
       const results = formatResults(await searchWeb(input, ctx.abortSignal));
-      return ticketSearch(input) && browserUseConfigured()
-        ? `${results}\n\n${ticketSearchNote}`
+      if (ticketSearch(input)) {
+        return browserUseConfigured()
+          ? `${results}\n\n${ticketSearchNote}`
+          : results;
+      }
+      return pickWords.test(input.query)
+        ? `${results}\n\n${pickSearchNote}`
         : results;
     } catch (error) {
       if (ctx.abortSignal.aborted) throw error;
@@ -111,11 +116,39 @@ function ticketSearch(input: WebSearchInput) {
 const ticketSearchNote =
   "Note: these pages show timetables and typical fares, not what is on sale on those dates. When the person wants a train, a flight or a room on given dates — what is on sale, the fare, a lower berth, an aisle seat — start browser_task now without allowSubmit on the seller's site (ticket.rzd.ru or tutu.ru for trains, the airline's site for flights, ostrovok.ru for hotels), with the dates, the route and their saved preferences in the task (for example «в поезде только нижняя полка»). It needs no card and no approval: the run searches, picks the best fit and reports it with its price. Do not hand the person a timetable link instead of that search.";
 
+/**
+ * How a pick of places is put together, in the result the model reads just
+ * before it writes. On 25.09 (RU d03) the reply opened with «все с
+ * вегетарианским меню и чеком до 2500» while one place's menu and bill were
+ * never checked, gave that place a walk nobody measured and hours for one
+ * place of three, and kept a chain as the third option; in RU d13 the saved
+ * «свинину не ем» shaped neither dinner pick. The rules in
+ * recommendations.md alone did not hold.
+ */
+const pickSearchNote =
+  "Note for a pick of places: give each option only facts that a result about that very option shows (its bill, menu, hours on the day asked, its own route_time walk); write «все …» about the options only when every one of them has it confirmed; an option that breaks a condition is replaced by searching on, not kept with a caveat; saved preferences in memory (diet, budget, seats) are conditions too — filter by them and name the ones you applied («учёл: без свинины»).";
+
+/**
+ * A site saying in its own voice that it takes no bookings: «Мы не бронируем
+ * столики в этом заведении» on restoran.cafe. On 25.09 (RU d03) the model
+ * read it as the cafe taking no bookings, while the cafe's own site offered
+ * «бронь столов». A bare «бронирование недоступно» may be the place's own
+ * word, so it is left as it is.
+ */
+const siteTakesNoBookings =
+  /(?<!\p{L})мы\s+не\s+(?:бронируем|принимаем\s+брон)|(?<!\p{L})бронирование\s+через\s+(?:наш\s+)?сайт\s+(?:недоступно|не\s+доступно)/iu;
+
+const siteTakesNoBookingsNote =
+  "(this site says it does not take the booking itself; it says nothing about whether the place does — see the place's own site or map card)";
+
 function formatResults(results: readonly WebSearchResult[]) {
   return results
     .map((result, index) => {
       const heading = `${String(index + 1)}. ${result.title}\n${result.url}`;
-      return result.snippet ? `${heading}\n${result.snippet}` : heading;
+      if (!result.snippet) return heading;
+      return siteTakesNoBookings.test(result.snippet)
+        ? `${heading}\n${result.snippet}\n${siteTakesNoBookingsNote}`
+        : `${heading}\n${result.snippet}`;
     })
     .join("\n\n");
 }

@@ -134,6 +134,33 @@ describe("agent instructions", () => {
     expect(rules).toContain("Снятие идёт без карточки");
     expect(rules).toContain("эти инструменты не вызывай: снимать нечего");
     expect(rules).toContain("«Rules the user set»");
+    // RU d14 (25.09): no deletion question, but the ways out are told when
+    // a tool result names them — read-only Google above all.
+    expect(rules).toContain("несёт `note`");
+    expect(safetyContent).toContain(
+      "Но скажи, как это сделать самому, когда об этом говорит результат инструмента"
+    );
+  });
+
+  // RU d12 (25.09): the summary's schedule defined unanswered mail as
+  // «непрочитанные или последние входящие», which takes in GitHub and Vercel
+  // notices and misses read threads that wait for a reply. A person who asked
+  // for unread mail in so many words still gets it.
+  it("collects unanswered mail by its own rule unless the person asked for unread", async () => {
+    const resolve = roleInstructions.events["turn.started"];
+    if (!resolve) throw new Error("Role instructions resolve per turn.");
+
+    const worker =
+      (await resolve({}, dynamicContext("scheduled-worker")))?.content ?? "";
+    // The person's own choice of unread mail still stands.
+    expect(worker).toContain(
+      "когда задача называет их так или никак не определяет"
+    );
+    expect(worker).toContain("Если задача прямо просит непрочитанные письма");
+    expect(worker).toContain("Прочитано оно или нет — неважно");
+    expect(worker).toContain("Уведомления сервисов (GitHub, Vercel");
+    expect(worker).toContain("явный запас на час пик");
+    expect(worker).toContain("а не временем с пробками");
   });
 
   it("computes numbers with a tool and takes changing facts from a fresh search", async () => {
@@ -159,6 +186,8 @@ describe("agent instructions", () => {
     expect(selected?.content).not.toMatch(/(?:его|собственн\S*) сервер/u);
     expect(selected?.content).toContain("Ты облачный сервис");
     expect(selected?.content).toContain("AES-256-GCM");
+    // RU d14 (25.09): the storage answer is built from the privacy facts.
+    expect(selected?.content).toContain("сначала вызови `privacy`");
     expect(selected?.content).toContain(
       "Нет среди инструментов `connect_google` — значит, Google на этом деплое не настроен, нет `notion-add-task` — не настроен Notion"
     );
@@ -250,6 +279,10 @@ describe("agent instructions", () => {
     );
     expect(selected?.content).toContain(
       "то, что правила написаны по-русски, не значит, что отвечать надо по-русски"
+    );
+    // RU d18 (25.09): a stray «Cancel» got a whole reply in English.
+    expect(selected?.content).toContain(
+      "Слово кнопки («Cancel», «Подтвердить»), число, код или «ok» языка не задают"
     );
     expect(selected?.content).toContain(
       "Отказ, уточняющий вопрос, сообщение о сбое"

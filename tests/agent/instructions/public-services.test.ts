@@ -59,6 +59,22 @@ describe("public-service instructions", () => {
     expect(content).toContain("https://xn--90adear.xn--p1ai/check/fines");
   });
 
+  it("does without Госуслуги what it can, and warns of the code up front", async () => {
+    // RU 25.09, d06: Bro offered to look in the mail «если хотите», and the
+    // code request came a quarter of an hour after the start, unannounced.
+    const content = await resolveContent("telegram-webhook", "bu-key");
+
+    expect(content).toContain(
+      "срок документа сам ищи в почте и на Диске (`gmail-search`, `drive-search`), а не предлагай поискать"
+    );
+    expect(content).toContain(
+      "Если вход Госуслуг сохранён в сейфе, запуская, сразу скажи, что для входа придёт код по SMS или в Max"
+    );
+    expect(content).toContain(
+      "по его собственному входу (ИНН и пароль) — кнопка «Войти через Госуслуги» там упрётся в тот же вход"
+    );
+  });
+
   it("keeps «найди билеты» a search, on the seller's own site", () => {
     expect(browser).toContain(
       "«найди» остаётся поиском, даже если человек назвал место («у прохода») или регистрацию"

@@ -5,6 +5,7 @@ import {
   messageLanguage,
   personLanguage,
   replyDirective,
+  wordlessLatestMessage,
 } from "@agent/lib/delivery/language";
 import { backgroundTurnMarker } from "@shared/chat/background-turn";
 import { defaultFormOfAddress } from "@shared/chat/form-of-address";
@@ -26,6 +27,18 @@ describe("messageLanguage", () => {
       expect(messageLanguage(text)).toBeUndefined();
     }
   );
+
+  it.each(["Cancel", "Approve", "Подтвердить", "Отмена", " отменить. ", "2"])(
+    "finds no language in the card answer %j",
+    (text) => {
+      expect(messageLanguage(text)).toBeUndefined();
+    }
+  );
+
+  it("still reads a sentence that opens with a card word", () => {
+    expect(messageLanguage("Cancel the taxi please")).toBe("en");
+    expect(messageLanguage("Подтвердить можешь сам")).toBe("ru");
+  });
 });
 
 describe("personLanguage", () => {
@@ -66,6 +79,57 @@ describe("personLanguage", () => {
     expect(personLanguage([person("find me a flight"), person("ok")])).toBe(
       "en"
     );
+  });
+
+  it("keeps Russian through a stray card answer (d18)", () => {
+    // RU 25.09: «Cancel» arrived as text after the card was settled.
+    expect(
+      personLanguage([
+        person("в пятницу я к стоматологу, поставь в календарь"),
+        person("320792"),
+        person(
+          `${backgroundTurnMarker}\n\nBrowser run run_1 finished.\n\nThe site is waiting for the user.`
+        ),
+        person("Cancel"),
+      ])
+    ).toBe("ru");
+    expect(
+      personLanguage([person("book me a table for two"), person("Подтвердить")])
+    ).toBe("en");
+  });
+});
+
+describe("wordlessLatestMessage", () => {
+  it("quotes the latest message when it names no language", () => {
+    expect(
+      wordlessLatestMessage([person("закажи такси"), person("Cancel")])
+    ).toBe("Cancel");
+    expect(wordlessLatestMessage([person("закажи такси"), person("1")])).toBe(
+      "1"
+    );
+  });
+
+  it("skips what Bro wrote to itself", () => {
+    expect(
+      wordlessLatestMessage([
+        person("ok"),
+        person(`${backgroundTurnMarker}\n\nBrowser run run_1 finished.`),
+      ])
+    ).toBe("ok");
+  });
+
+  it("says nothing when the latest message names a language", () => {
+    expect(
+      wordlessLatestMessage([person("ok"), person("а что с такси?")])
+    ).toBeUndefined();
+    expect(wordlessLatestMessage([])).toBeUndefined();
+  });
+
+  it("shortens a long one", () => {
+    const link = `https://example.com/${"a".repeat(80)}`;
+    const quoted = wordlessLatestMessage([person(link)]);
+
+    expect(quoted).toBe(`${link.slice(0, 40)}…`);
   });
 });
 
@@ -163,6 +227,27 @@ describe("replyDirective", () => {
       expect(ends).toMatch(/end the turn|закончи ход/u);
       expect(owes).not.toMatch(/end the turn|закончи ход/u);
     }
+  });
+
+  it("says why a wordless latest message keeps the language (d18)", () => {
+    const note = replyDirective({
+      formOfAddress: formal,
+      language: "ru",
+      wordlessLatest: "Cancel",
+    });
+    expect(note).toMatch(/^Язык ответа в этом ходе — русский/u);
+    expect(note).toContain("последнее сообщение «Cancel»");
+    expect(note).toContain("язык разговора оно не меняет");
+    // It no longer calls «Cancel» a Russian message.
+    expect(note).not.toContain("последнее сообщение человека написано");
+
+    const english = replyDirective({
+      formOfAddress: formal,
+      language: "en",
+      wordlessLatest: "2",
+    });
+    expect(english).toContain("their latest message «2»");
+    expect(english).toContain("does not change that");
   });
 
   it("gives an English reply no Russian grammar rules", () => {

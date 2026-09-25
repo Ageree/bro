@@ -36,6 +36,8 @@ type GmailPart = z.infer<typeof gmailPartSchema>;
 
 const gmailMessageSchema = z.object({
   id: z.string().optional(),
+  /** When Gmail received the message, in epoch milliseconds. */
+  internalDate: z.string().optional(),
   labelIds: z.array(z.string()).optional(),
   payload: gmailPartSchema.optional(),
   snippet: z.string().optional(),
@@ -224,9 +226,17 @@ export async function searchGmail(
  * person's own latest emails to the other side of the thread
  * (`yourEarlierEmails`): a reply written without them came out as a template
  * on «ты» to someone the person had written «Ирина Павловна, добрый день!»
- * for years (RU d09, EN D5). The lookup costs a search and three full
+ * for years (RU d09, EN D5). The lookup costs a search and a few full
  * messages, so it runs only for a reply, never for a mailing or a robot,
  * once per addressee in a turn (`known`) and at most `left` more times.
+ *
+ * In a read for a reply, a letter is the person's only when Gmail filed it
+ * as sent and it comes from one of their own addresses (the mailbox and its
+ * send-as aliases): Gmail puts the SENT label on mail from a plus-address of
+ * the mailbox too, and anyone can write the person's address into From. On
+ * 25.09 (RU d09) Irina's letter from `…+irina@` read as the person's own,
+ * the voice was looked up for the person's own address, and a tutor's
+ * invoice and a colleague's «Привет!» came back as their voice.
  */
 export async function readGmailThread(
   ctx: ToolContext,
@@ -239,16 +249,19 @@ export async function readGmailThread(
   } = {}
 ) {
   return withGoogleAuth(ctx, async (google) => {
-    const thread = await google.json(gmailThreadSchema, {
-      url: googleUrl(gmailApi, `/threads/${encodeURIComponent(threadId)}`, {
-        format: "full",
+    const [thread, own] = await Promise.all([
+      google.json(gmailThreadSchema, {
+        url: googleUrl(gmailApi, `/threads/${encodeURIComponent(threadId)}`, {
+          format: "full",
+        }),
       }),
-    });
+      options.voice ? ownAddresses(google) : null,
+    ]);
     const messages = (thread.messages ?? []).slice(-20);
     const read = {
       id: thread.id ?? threadId,
       messages: messages.map((message) => {
-        const sentByYou = message.labelIds?.includes("SENT") ?? false;
+        const sentByYou = sentByPerson(message, own);
         return Object.assign({}, minimizeMessage(message), {
           attachments: collectAttachments(message.payload),
           body: redactGoogleText(plainText(message.payload)),
@@ -259,7 +272,7 @@ export async function readGmailThread(
         });
       }),
     };
-    const addressee = options.voice ? threadAddressee(messages) : null;
+    const addressee = options.voice ? threadAddressee(messages, own) : null;
     if (!addressee || !options.voice) return read;
     if (options.voice.known.includes(addressee)) {
       return {
@@ -272,7 +285,7 @@ export async function readGmailThread(
     // the thread itself readable.
     let voice;
     try {
-      voice = await earlierEmailsTo(google, addressee);
+      voice = await earlierEmailsTo(google, addressee, own);
     } catch (error) {
       console.warn("[gmail] could not read the person's earlier emails", {
         status: googleApiErrorStatus(error),
@@ -283,8 +296,66 @@ export async function readGmailThread(
   });
 }
 
-/** Sent emails a thread read brings as the person's voice. */
+const gmailSendAsSchema = z.object({
+  sendAs: z.array(z.object({ sendAsEmail: z.string().optional() })).optional(),
+});
+
+/**
+ * The addresses the person sends from, lower-cased: the mailbox itself and
+ * each send-as alias, as Gmail lists them. Null when Gmail would not say;
+ * whose letter is whose then falls back to the SENT label.
+ */
+async function ownAddresses(google: GoogleClient) {
+  try {
+    const listed = await google.json(gmailSendAsSchema, {
+      url: googleUrl(gmailApi, "/settings/sendAs"),
+    });
+    const addresses = (listed.sendAs ?? []).flatMap(({ sendAsEmail }) => {
+      const address = headerAddress(sendAsEmail);
+      return address === null ? [] : [address];
+    });
+    return addresses.length > 0 ? addresses : null;
+  } catch (error) {
+    console.warn("[gmail] could not read the person's own addresses", {
+      status: googleApiErrorStatus(error),
+    });
+    return null;
+  }
+}
+
+/**
+ * Whether a letter's From is one of the person's own addresses, or, when
+ * those are unknown, Gmail filed it as sent. Only for picking whom a reply
+ * goes to: a draft or a letter that merely claims the person's address is
+ * not the other side either.
+ */
+function fromPerson(message: GmailMessage, own: readonly string[] | null) {
+  if (own === null) return message.labelIds?.includes("SENT") ?? false;
+  const sender = headerAddress(header(message.payload, "From"));
+  return sender !== null && own.includes(sender);
+}
+
+/**
+ * Whether the person really sent this letter: Gmail filed it as sent, and
+ * it comes from one of their own addresses. Neither alone will do: Gmail
+ * files mail from a plus-address of the mailbox as sent too, and anyone
+ * can write the person's address into From.
+ */
+function sentByPerson(message: GmailMessage, own: readonly string[] | null) {
+  return (
+    (message.labelIds?.includes("SENT") ?? false) && fromPerson(message, own)
+  );
+}
+
+/** The person's letters to an addressee a thread read brings as their voice. */
 const voiceSampleCount = 3;
+
+/**
+ * Sent emails a voice lookup reads at most to find those letters: Gmail's
+ * `to:` search may bring letters the person did not write or wrote to
+ * another address, and those are passed over.
+ */
+const voiceCandidateCount = 9;
 
 /** An address Gmail search may take inside quotes, nothing that could end them. */
 const searchableAddress = /^[\w.%+'-]+@[\w-]+(?:\.[\w-]+)+$/u;
@@ -321,19 +392,26 @@ function automatedLetter(message: GmailMessage) {
 /**
  * The address a reply in this thread goes to: whoever last wrote to the
  * person (their Reply-To, else From), or, in a thread only the person wrote
- * in, whom they wrote to. None for a robot or a mailing.
+ * in, whom they wrote to. Never one of the person's own addresses, and none
+ * for a robot or a mailing.
  */
-function threadAddressee(messages: readonly GmailMessage[]) {
-  const theirs = messages.findLast(
-    (message) => !(message.labelIds?.includes("SENT") ?? false)
-  );
+function threadAddressee(
+  messages: readonly GmailMessage[],
+  own: readonly string[] | null
+) {
+  const theirs = messages.findLast((message) => !fromPerson(message, own));
   if (theirs && automatedLetter(theirs)) return null;
-  const address = theirs
-    ? headerAddress(
-        header(theirs.payload, "Reply-To") ?? header(theirs.payload, "From")
-      )
-    : headerAddress(header(messages.at(-1)?.payload, "To"));
-  return address && searchableAddress.test(address) ? address : null;
+  const candidates = headerAddresses(
+    theirs
+      ? (header(theirs.payload, "Reply-To") ?? header(theirs.payload, "From"))
+      : header(messages.at(-1)?.payload, "To")
+  );
+  const address = candidates.find(
+    (candidate) => !(own?.includes(candidate) ?? false)
+  );
+  return address !== undefined && searchableAddress.test(address)
+    ? address
+    : null;
 }
 
 /** The first address in a From, To or Reply-To header, lower-cased. */
@@ -343,6 +421,19 @@ export function headerAddress(value: string | null | undefined) {
     /<([^<>\s]+@[^<>\s]+)>/u.exec(value)?.[1] ??
     /[^\s<>,;"]+@[^\s<>,;"]+/u.exec(value)?.[0];
   return address ? address.toLowerCase() : null;
+}
+
+/**
+ * Every address of a To, Cc or Reply-To header, lower-cased, in order:
+ * «Ирина <irina@…>, "Петров, Саша" <sasha@…>» — a quoted name with a comma
+ * in it stays one person.
+ */
+export function headerAddresses(value: string | null | undefined) {
+  if (!value) return [];
+  return (value.match(/(?:"[^"]*"|[^,"])+/gu) ?? []).flatMap((part) => {
+    const address = headerAddress(part);
+    return address === null ? [] : [address];
+  });
 }
 
 /**
@@ -361,46 +452,136 @@ export function dateHeaderOffset(value: string | null) {
 }
 
 /**
- * The person's latest sent emails to `address`, reduced to what makes their
- * voice: greeting, sign-off and the text before any quote. With none to this
- * address, their latest sent emails at all, marked as such.
+ * The person's latest emails to `address`, reduced to what makes their
+ * voice: greeting, sign-off and the text before any quote; the greeting and
+ * sign-off they keep using (`usual`); and a note telling the model to open
+ * and close the reply with them. Only letters the person wrote to this very
+ * address count. With none, the note says there is no voice to copy: their
+ * letters to anyone else, offered before, carried a «Привет!» into a reply
+ * on «вы», and letters that were not theirs at all into the rest (RU d09).
  */
-async function earlierEmailsTo(google: GoogleClient, address: string) {
-  const toAddressee = await sentMessages(google, `in:sent to:"${address}"`);
-  const sameAddressee = toAddressee.length > 0;
-  const emails = sameAddressee
-    ? toAddressee
-    : await sentMessages(google, "in:sent");
-  return {
-    emails: emails.map((message) =>
-      Object.assign(
-        {
-          date: header(message.payload, "Date"),
-          subject: header(message.payload, "Subject"),
-          to: header(message.payload, "To"),
-        },
-        voiceSample(redactGoogleText(plainText(message.payload)))
+async function earlierEmailsTo(
+  google: GoogleClient,
+  address: string,
+  own: readonly string[] | null
+) {
+  const listed = await google.json(gmailMessageListSchema, {
+    url: googleUrl(gmailApi, "/messages", {
+      maxResults: voiceCandidateCount,
+      q: `in:sent to:"${address}"`,
+    }),
+  });
+  const ids = (listed.messages ?? []).map(({ id }) => id);
+  const letters: GmailMessage[] = [];
+  for (
+    let start = 0;
+    start < ids.length && letters.length < voiceSampleCount;
+    start += voiceSampleCount
+  ) {
+    // oxlint-disable-next-line eslint/no-await-in-loop -- Stops once enough of the person's own letters are in.
+    const batch = await Promise.all(
+      ids.slice(start, start + voiceSampleCount).map((id) =>
+        google.json(gmailMessageSchema, {
+          url: messageUrl(id, { format: "full" }),
+        })
       )
-    ),
-    sameAddressee,
+    );
+    letters.push(
+      ...batch.filter((message) => personWroteTo(message, address, own))
+    );
+  }
+  const emails = letters.slice(0, voiceSampleCount).map((message) =>
+    Object.assign(
+      {
+        date: header(message.payload, "Date"),
+        subject: header(message.payload, "Subject"),
+        to: header(message.payload, "To"),
+      },
+      voiceSample(redactGoogleText(plainText(message.payload)))
+    )
+  );
+  const usual = usualFormulas(emails);
+  return {
+    emails,
+    note: voiceNote(address, emails.length, usual),
     to: address,
+    usual,
   };
 }
 
-async function sentMessages(google: GoogleClient, query: string) {
-  const listed = await google.json(gmailMessageListSchema, {
-    url: googleUrl(gmailApi, "/messages", {
-      maxResults: voiceSampleCount,
-      q: query,
-    }),
-  });
-  return Promise.all(
-    (listed.messages ?? []).slice(0, voiceSampleCount).map(({ id }) =>
-      google.json(gmailMessageSchema, {
-        url: messageUrl(id, { format: "full" }),
-      })
-    )
+/**
+ * Whether the person sent this letter to `address` themselves: filed as
+ * sent and from one of their own addresses (when those are unknown: filed
+ * as sent and not from the addressee), with the addressee among its To and
+ * Cc.
+ */
+function personWroteTo(
+  message: GmailMessage,
+  address: string,
+  own: readonly string[] | null
+) {
+  const sentByThem =
+    sentByPerson(message, own) &&
+    headerAddress(header(message.payload, "From")) !== address;
+  return (
+    sentByThem &&
+    [
+      ...headerAddresses(header(message.payload, "To")),
+      ...headerAddresses(header(message.payload, "Cc")),
+    ].includes(address)
   );
+}
+
+/**
+ * The greeting and the sign-off the person keeps using with an addressee:
+ * the one at least two and at least half of their letters share, or none.
+ * A single letter's first and last lines may be its news rather than a
+ * formula («Жду ответа до пятницы.»), so one letter makes no habit.
+ */
+export function usualFormulas(
+  emails: readonly {
+    readonly greeting: string | null;
+    readonly signOff: string | null;
+  }[]
+) {
+  return {
+    greeting: sharedFormula(emails.map((email) => email.greeting)),
+    signOff: sharedFormula(emails.map((email) => email.signOff)),
+  };
+}
+
+/** The formula at least two and at least half of the letters share. */
+function sharedFormula(formulas: readonly (string | null)[]) {
+  const counts = new Map<string, number>();
+  for (const formula of formulas) {
+    if (formula !== null) counts.set(formula, (counts.get(formula) ?? 0) + 1);
+  }
+  const [top] = [...counts].toSorted((a, b) => b[1] - a[1]);
+  return top !== undefined && top[1] >= 2 && top[1] * 2 >= formulas.length
+    ? top[0]
+    : null;
+}
+
+/**
+ * What the model reads with the person's earlier emails: their greeting and
+ * sign-off to copy word for word or, with no letter of theirs to this
+ * address, that there is no voice to copy and nobody else's letters are it.
+ */
+function voiceNote(
+  address: string,
+  count: number,
+  usual: ReturnType<typeof usualFormulas>
+) {
+  if (count === 0) {
+    return `The person has never emailed ${address} themselves, so there is no usual greeting or sign-off to copy. Take no wording, greeting or signature from anyone else's letters, the other side's included: write a short, plain reply in the thread's language, in the person's name, on the «вы» or «ты» they asked for (without that, as the other side writes).`;
+  }
+  const opening = usual.greeting
+    ? `open with «${usual.greeting}»`
+    : "open as these emails open";
+  const closing = usual.signOff
+    ? `close with «${usual.signOff}»`
+    : "close as these emails close";
+  return `These are the person's own emails to ${address}, newest first: this is how they write to this person. Write the reply in that voice: ${opening} and ${closing}, word for word, on the same «вы» or «ты» and about as long. Do not swap them for a stock greeting or sign-off («Добрый день, …!», «С уважением») the person does not use with them.`;
 }
 
 /**
@@ -463,6 +644,39 @@ export function voiceSample(body: string) {
         : null,
     text: text.slice(0, 600),
   };
+}
+
+/** A formula as two can be compared: its letters and digits, lower-cased. */
+function formulaKey(text: string) {
+  return text
+    .toLowerCase()
+    .replaceAll("ё", "е")
+    .replaceAll(/[^\p{L}\p{N}]+/gu, "");
+}
+
+/**
+ * The person's usual greeting and sign-off an email leaves out: the
+ * greeting belongs in its first two lines and the sign-off in its last
+ * three (a name may follow it), with case, punctuation and «ё» aside.
+ */
+export function unusedFormulas(
+  body: string,
+  usual: { readonly greeting: string | null; readonly signOff: string | null }
+) {
+  const lines = body
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  const opening = formulaKey(lines.slice(0, 2).join(" "));
+  const closing = formulaKey(lines.slice(-3).join(" "));
+  return [
+    usual.greeting !== null && !opening.includes(formulaKey(usual.greeting))
+      ? usual.greeting
+      : undefined,
+    usual.signOff !== null && !closing.includes(formulaKey(usual.signOff))
+      ? usual.signOff
+      : undefined,
+  ].filter((formula) => formula !== undefined);
 }
 
 /**
@@ -924,4 +1138,49 @@ function redactGoogleText(value: string, maxLength = 12_000) {
     redacted = redacted.replace(pattern, replacement);
   }
   return redacted;
+}
+
+/**
+ * The newest letters a query finds, whole and unredacted: when Gmail got
+ * each, its sender, subject, `Authentication-Results` and plain text. Only
+ * for Bro's own reads that never reach the model as they are — the sign-in
+ * code a site sent for an errand is read here and typed into that site
+ * (`agent/lib/browser-use/mail-code.ts`). A model-facing read goes through
+ * `searchGmail` or `readGmailThread`, which redact codes and keys.
+ */
+export async function readGmailLetters(
+  google: GoogleClient,
+  query: string,
+  maxResults: number
+) {
+  const listed = await google.json(gmailMessageListSchema, {
+    url: googleUrl(gmailApi, "/messages", { maxResults, q: query }),
+  });
+  const ids = (listed.messages ?? []).map(({ id }) => id);
+  const letters = [];
+  for (let start = 0; start < ids.length; start += searchReadConcurrency) {
+    // oxlint-disable-next-line eslint/no-await-in-loop -- Batches bound the requests in flight.
+    const batch = await Promise.all(
+      ids.slice(start, start + searchReadConcurrency).map((id) =>
+        google.json(gmailMessageSchema, {
+          url: messageUrl(id, { format: "full" }),
+        })
+      )
+    );
+    letters.push(
+      ...batch.map((message) => ({
+        authenticationResults: (message.payload?.headers ?? [])
+          .filter(
+            (item) => item.name.toLowerCase() === "authentication-results"
+          )
+          .map((item) => item.value),
+        from: header(message.payload, "From"),
+        id: message.id ?? null,
+        receivedAt: Number(message.internalDate ?? Number.NaN),
+        subject: header(message.payload, "Subject"),
+        text: plainText(message.payload),
+      }))
+    );
+  }
+  return letters;
 }

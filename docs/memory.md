@@ -27,6 +27,11 @@ Bro more careful. Where a rule takes away what the spend limit or a standing
 permission allows, Bro narrows that policy in the same turn; narrowing never
 needs an approval card. A rule is forgotten like any other record.
 
+Records with the category `preference` («свинину не ем», «в поезде только
+нижняя полка») come next, under their own heading, as conditions of every pick,
+booking and purchase they bear on: Bro filters by them and names the ones it
+applied («учёл: без свинины»).
+
 Profile records are partitioned by both authenticated workspace and Eve's
 deployment-aware memory scope key. Updates use optimistic revisions. Forgetting
 tombstones local content immediately and queues permanent deletion of every

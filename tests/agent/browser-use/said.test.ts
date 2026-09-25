@@ -210,6 +210,47 @@ describe("the one-time codes a follow-up carries", () => {
     ).toEqual(["739204"]);
   });
 
+  // RU 25.09, d04: a follow-up naming the pickup point by the person's
+  // address was refused as carrying the code «119192».
+  it("reads a postal index in an address as no code", () => {
+    const waiting = { awaitingCode: true };
+    expect(
+      oneTimeCodesIn(
+        "пункт выдачи (прошлый, иначе ближайший к адресу Мичуринский проспект, ***, Москва, 119192), дойти до страницы оплаты",
+        waiting
+      )
+    ).toEqual([]);
+    expect(
+      oneTimeCodesIn("Доставка: 119192, Москва, ул. Лобачевского, 5", waiting)
+    ).toEqual([]);
+    expect(oneTimeCodesIn("почтовый индекс 119192", waiting)).toEqual([]);
+    expect(
+      oneTimeCodesIn("адрес: г. Казань, Баумана, 7, 420111", waiting)
+    ).toEqual([]);
+  });
+
+  it("still finds a code that only looks like a postal index", () => {
+    const waiting = { awaitingCode: true };
+    expect(oneTimeCodesIn("119192", waiting)).toEqual(["119192"]);
+    expect(oneTimeCodesIn("Код: 119192", { awaitingCode: false })).toEqual([
+      "119192",
+    ]);
+    expect(oneTimeCodesIn("SMS 119192", { awaitingCode: false })).toEqual([
+      "119192",
+    ]);
+    expect(
+      oneTimeCodesIn("Введи код, 119192, и заверши вход", waiting)
+    ).toEqual(["119192"]);
+    // A comma alone is no address: nothing around it names a street or city.
+    expect(
+      oneTimeCodesIn("Человек прислал, 119192, продолжай", waiting)
+    ).toEqual(["119192"]);
+    // Code words win over an address after them.
+    expect(
+      oneTimeCodesIn("Код из смс 119192, Москва, ул. Лобачевского", waiting)
+    ).toEqual(["119192"]);
+  });
+
   it("accepts a code only when the person wrote those very digits", () => {
     expect(codesNotFromPerson(["482913"], ["код 482 913"])).toEqual([]);
     // Pasted from the SMS or typed with a full stop.

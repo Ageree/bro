@@ -238,6 +238,75 @@ describe("web_search tool selection", () => {
     ).not.toContain("browser_task");
   });
 
+  /**
+   * RU d03 (25.09): «все с вегетарианским меню и чеком до 2500» over an
+   * option whose menu and bill were never checked, and restoran.cafe's «Мы
+   * не бронируем столики» retold as «Авокадо не бронирует». RU d13: the
+   * saved «свинину не ем» shaped no dinner pick.
+   */
+  it("reminds a pick of places how its facts go together, and whose «мы не бронируем» it is", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
+    fetchMock.mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  annotations: [
+                    {
+                      type: "url_citation",
+                      url_citation: {
+                        content:
+                          "Кафе Авокадо … Мы не бронируем столики в этом заведении :( … Чистопрудный бул., д. 12, к. 2",
+                        title: "Кафе Авокадо на Чистых Прудах — Restoran.Cafe",
+                        url: "https://restoran.cafe/moskva/restaurants/avokado-na-chistykh-prudakh",
+                      },
+                    },
+                    {
+                      type: "url_citation",
+                      url_citation: {
+                        content: "Вегетарианское кафе. Бронь столов.",
+                        title: "Авокадо",
+                        url: "https://avocadocafe.ru/",
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          })
+        )
+    );
+    const { openRouterWebSearch } = await loadTool();
+    const search = (query: string) =>
+      openRouterWebSearch.execute({ query }, toolContext());
+
+    const pick = await search(
+      "где поужинать Чистые пруды ресторан вегетарианское меню"
+    );
+    expect(pick).toContain(
+      "Мы не бронируем столики в этом заведении :( … Чистопрудный бул., д. 12, к. 2\n(this site says it does not take the booking itself; it says nothing about whether the place does"
+    );
+    // Only the aggregator's own words get the note.
+    expect(pick).toContain(
+      "Вегетарианское кафе. Бронь столов.\n\nNote for a pick of places"
+    );
+    expect(pick).toContain(
+      "give each option only facts that a result about that very option shows"
+    );
+    expect(pick).toContain(
+      "write «все …» about the options only when every one of them has it confirmed"
+    );
+    expect(pick).toContain("replaced by searching on, not kept with a caveat");
+    expect(pick).toContain("(«учёл: без свинины»)");
+
+    // A search that picks nothing gets no such note.
+    expect(await search("ключевая ставка ЦБ сегодня")).not.toContain(
+      "Note for a pick"
+    );
+  });
+
   it("surfaces a failed search as tool result text", async () => {
     vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
     fetchMock.mockImplementation(

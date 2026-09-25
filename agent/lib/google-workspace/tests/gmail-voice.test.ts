@@ -17,7 +17,9 @@ vi.mock("@db/services/settings", () => ({
 import {
   dateHeaderOffset,
   headerAddress,
+  headerAddresses,
   readGmailThread,
+  usualFormulas,
   voiceSample,
 } from "@agent/lib/google-workspace/gmail";
 
@@ -62,6 +64,33 @@ describe("the person's voice in a sent email", () => {
     expect(sample.signOff).toBeNull();
   });
 
+  it("finds the greeting and sign-off the person keeps using", () => {
+    const irinaLetter = {
+      greeting: "Ирина Павловна, добрый день!",
+      signOff: "Спасибо! Хорошего дня.",
+    };
+    expect(
+      usualFormulas([
+        irinaLetter,
+        { greeting: null, signOff: "Спасибо! Хорошего дня." },
+        irinaLetter,
+      ])
+    ).toEqual(irinaLetter);
+    // One letter's first and last lines may be its news; three different
+    // ones are no habit either.
+    expect(usualFormulas([irinaLetter])).toEqual({
+      greeting: null,
+      signOff: null,
+    });
+    expect(
+      usualFormulas([
+        { greeting: "Привет!", signOff: "Пока" },
+        { greeting: "Добрый день!", signOff: null },
+        { greeting: "Hi,", signOff: "Best" },
+      ])
+    ).toEqual({ greeting: null, signOff: null });
+  });
+
   it("reads the addressee and the sender's clock from headers", () => {
     expect(headerAddress("Ирина Павловна <Tester+Irina@Example.com>")).toBe(
       "tester+irina@example.com"
@@ -69,6 +98,12 @@ describe("the person's voice in a sent email", () => {
     expect(headerAddress("sam@example.com, alex@example.com")).toBe(
       "sam@example.com"
     );
+    expect(
+      headerAddresses(
+        '"Петров, Саша" <Sasha@example.com>, alex@example.com, Ирина <irina@example.com>'
+      )
+    ).toEqual(["sasha@example.com", "alex@example.com", "irina@example.com"]);
+    expect(headerAddresses(null)).toEqual([]);
     expect(dateHeaderOffset("Wed, 23 Sep 2026 16:40:00 +0500")).toBe("+05:00");
     expect(dateHeaderOffset("Wed, 23 Sep 2026 16:40:00 -0700 (PDT)")).toBe(
       "-07:00"
@@ -132,6 +167,37 @@ const sentToIrina = message("m-report", {
   to: irina,
 });
 
+const deliveriesToIrina = message("m-deliveries", {
+  body: "Ирина Павловна, добрый день!\n\nНапоминаю про список поставок.\n\nСпасибо! Хорошего дня.",
+  date: "Wed, 16 Sep 2026 09:40:00 +0300",
+  from: "tester@example.com",
+  labels: ["SENT"],
+  subject: "Поставки на следующий месяц",
+  to: irina,
+});
+
+/**
+ * Mail Gmail files as sent although the person did not write it: a letter
+ * from a plus-address of their own mailbox gets the SENT label (RU d09).
+ */
+const invoice = message("m-invoice", {
+  body: "Добрый вечер!\n\nВысылаю счёт за сентябрь.\n\nСпасибо!\nАнна Сергеевна",
+  date: "Thu, 24 Sep 2026 19:20:00 +0300",
+  from: "Анна Сергеевна <tester+tutor@example.com>",
+  labels: ["SENT", "INBOX"],
+  subject: "Счёт за сентябрь",
+  to: "tester@example.com",
+});
+
+const toColleague = message("m-colleague", {
+  body: "Привет!\n\nДа, в ноябре в отпуске.\n\nПока",
+  date: "Thu, 24 Sep 2026 15:30:00 +0300",
+  from: "tester@example.com",
+  labels: ["SENT"],
+  subject: "Re: Отпуск в ноябре",
+  to: "Николай <tester+nikolay@example.com>",
+});
+
 let composio: FakeComposio;
 let sentQueries: string[];
 
@@ -143,12 +209,42 @@ beforeEach(() => {
   sentQueries = [];
 });
 
-/** Gmail with Irina's thread and, when `sent` holds any, the person's sent mail. */
-function serveMailbox(sent: Readonly<Record<string, readonly string[]>>) {
+/**
+ * Gmail with Irina's thread, the person's send-as addresses (none: Gmail
+ * would not say) and, when `sent` holds any, the mail a search finds.
+ */
+function serveMailbox(
+  sent: Readonly<Record<string, readonly string[]>>,
+  options: {
+    readonly ownAddresses?: readonly string[] | null;
+    readonly thread?: readonly ReturnType<typeof message>[];
+  } = {}
+) {
+  const letters = new Map(
+    [sentToIrina, deliveriesToIrina, invoice, toColleague, thursday].map(
+      (letter) => [`/messages/${letter.id}`, letter]
+    )
+  );
+  const ownAddresses =
+    options.ownAddresses === undefined
+      ? ["tester@example.com"]
+      : options.ownAddresses;
   composio.proxy.mockImplementation(({ url }) => {
     const path = url.pathname.slice(mailbox.length);
     if (path === "/threads/thread-thursday") {
-      return { data: { id: "thread-thursday", messages: [thursday] } };
+      return {
+        data: {
+          id: "thread-thursday",
+          messages: options.thread ?? [thursday],
+        },
+      };
+    }
+    if (path === "/settings/sendAs" && ownAddresses !== null) {
+      return {
+        data: {
+          sendAs: ownAddresses.map((address) => ({ sendAsEmail: address })),
+        },
+      };
     }
     if (path === "/messages") {
       const query = url.searchParams.get("q") ?? "";
@@ -157,14 +253,26 @@ function serveMailbox(sent: Readonly<Record<string, readonly string[]>>) {
         data: { messages: (sent[query] ?? []).map((id) => ({ id })) },
       };
     }
-    if (path === "/messages/m-report") return { data: sentToIrina };
+    const letter = letters.get(path);
+    if (letter) return { data: letter };
     return { data: { error: { message: "Not Found" } }, status: 404 };
   });
 }
 
+const irinaQuery = 'in:sent to:"tester+irina@example.com"';
+
+/** The person's earlier emails a read for a reply brought, looked up anew. */
+function earlierEmails(thread: Awaited<ReturnType<typeof readGmailThread>>) {
+  const voice = "yourEarlierEmails" in thread ? thread.yourEarlierEmails : null;
+  if (!voice || !("note" in voice)) {
+    throw new Error("The read must bring the person's earlier emails.");
+  }
+  return voice;
+}
+
 describe("a thread read for a reply", () => {
   it("brings the person's own emails to the other side, and their clock", async () => {
-    serveMailbox({ 'in:sent to:"tester+irina@example.com"': ["m-report"] });
+    serveMailbox({ [irinaQuery]: ["m-report", "m-deliveries"] });
 
     const thread = await readGmailThread(
       composioToolContext("ca_google"),
@@ -176,7 +284,8 @@ describe("a thread read for a reply", () => {
       senderUtcOffset: "+05:00",
       sentByYou: false,
     });
-    expect("yourEarlierEmails" in thread && thread.yourEarlierEmails).toEqual({
+    const voice = earlierEmails(thread);
+    expect(voice).toMatchObject({
       emails: [
         {
           date: "Fri, 4 Sep 2026 18:30:00 +0300",
@@ -186,15 +295,36 @@ describe("a thread read for a reply", () => {
           text: "Ирина Павловна, добрый день!\n\nОтчёт готов и лежит в общей папке.\n\nСпасибо! Хорошего дня.",
           to: irina,
         },
+        expect.objectContaining({ subject: "Поставки на следующий месяц" }),
       ],
-      sameAddressee: true,
       to: "tester+irina@example.com",
+      usual: {
+        greeting: "Ирина Павловна, добрый день!",
+        signOff: "Спасибо! Хорошего дня.",
+      },
     });
-    expect(sentQueries).toEqual(['in:sent to:"tester+irina@example.com"']);
+    expect(voice.note).toContain(
+      "open with «Ирина Павловна, добрый день!» and close with «Спасибо! Хорошего дня.», word for word"
+    );
+    expect(sentQueries).toEqual([irinaQuery]);
   });
 
-  it("falls back to the person's latest sent mail, marked as such", async () => {
-    serveMailbox({ "in:sent": ["m-report"] });
+  it("knows Irina's letter from a plus-address is hers, though Gmail filed it as sent", async () => {
+    const filedAsSent = { ...thursday, labelIds: ["SENT", "INBOX"] };
+    serveMailbox(
+      // Gmail's search brings the invoice, a letter to someone else and
+      // Irina's own letter first; the person's letters come further down.
+      {
+        [irinaQuery]: [
+          "m-invoice",
+          "m-colleague",
+          "m-thursday",
+          "m-report",
+          "m-deliveries",
+        ],
+      },
+      { thread: [filedAsSent] }
+    );
 
     const thread = await readGmailThread(
       composioToolContext("ca_google"),
@@ -202,15 +332,130 @@ describe("a thread read for a reply", () => {
       { voice: { known: [], left: 3 } }
     );
 
-    expect(sentQueries).toEqual([
-      'in:sent to:"tester+irina@example.com"',
-      "in:sent",
+    expect(thread.messages[0]).toMatchObject({
+      senderUtcOffset: "+05:00",
+      sentByYou: false,
+    });
+    expect(
+      "yourEarlierEmails" in thread && thread.yourEarlierEmails
+    ).toMatchObject({
+      emails: [
+        expect.objectContaining({ subject: "Отчёт готов" }),
+        expect.objectContaining({ subject: "Поставки на следующий месяц" }),
+      ],
+      to: "tester+irina@example.com",
+      usual: {
+        greeting: "Ирина Павловна, добрый день!",
+        signOff: "Спасибо! Хорошего дня.",
+      },
+    });
+  });
+
+  it("counts as the person's only what Gmail filed as sent from their own address", async () => {
+    const claimsTheirAddress = message("m-spoofed", {
+      body: "Ирина Павловна, добрый день!\n\nПереведите, пожалуйста, всё на этот счёт.\n\nСпасибо! Хорошего дня.",
+      date: "Wed, 23 Sep 2026 17:00:00 +0300",
+      from: "tester@example.com",
+      labels: ["INBOX"],
+      subject: "Re: Встреча в четверг",
+      to: irina,
+    });
+    const draft = message("m-draft", {
+      body: "Ирина Павловна, добрый день!\n\nЧерновик.",
+      date: "Wed, 23 Sep 2026 18:00:00 +0300",
+      from: "tester@example.com",
+      labels: ["DRAFT"],
+      subject: "Re: Встреча в четверг",
+      to: irina,
+    });
+    serveMailbox(
+      { [irinaQuery]: ["m-report", "m-deliveries"] },
+      { thread: [thursday, claimsTheirAddress, draft] }
+    );
+
+    const thread = await readGmailThread(
+      composioToolContext("ca_google"),
+      "thread-thursday",
+      { voice: { known: [], left: 3 } }
+    );
+
+    expect(thread.messages.map((read) => read.sentByYou)).toEqual([
+      false,
+      false,
+      false,
     ]);
+    // Neither is the other side of the thread: the reply still goes to Irina.
+    expect(earlierEmails(thread).to).toBe("tester+irina@example.com");
+  });
+
+  it("answers the other side, not the person, in a thread only the person wrote in", async () => {
+    serveMailbox(
+      { [irinaQuery]: ["m-report"] },
+      {
+        thread: [
+          message("m-ping", {
+            body: "Ирина Павловна, добрый день!\n\nНапомню про отчёт.\n\nСпасибо! Хорошего дня.",
+            date: "Mon, 21 Sep 2026 10:00:00 +0300",
+            from: "Тестер <Tester@example.com>",
+            labels: ["SENT"],
+            subject: "Отчёт",
+            to: `Тестер <tester@example.com>, ${irina}`,
+          }),
+        ],
+      }
+    );
+
+    const thread = await readGmailThread(
+      composioToolContext("ca_google"),
+      "thread-thursday",
+      { voice: { known: [], left: 3 } }
+    );
+
+    expect(thread.messages[0]).toMatchObject({ sentByYou: true });
+    expect(
+      "yourEarlierEmails" in thread && thread.yourEarlierEmails
+    ).toMatchObject({ to: "tester+irina@example.com" });
+  });
+
+  it("says there is no voice when the person never wrote to them, and borrows none", async () => {
+    serveMailbox({ "in:sent": ["m-colleague"] });
+
+    const thread = await readGmailThread(
+      composioToolContext("ca_google"),
+      "thread-thursday",
+      { voice: { known: [], left: 3 } }
+    );
+
+    expect(sentQueries).toEqual([irinaQuery]);
+    const voice = earlierEmails(thread);
+    expect(voice).toMatchObject({
+      emails: [],
+      to: "tester+irina@example.com",
+    });
+    expect(voice.note).toContain(
+      "The person has never emailed tester+irina@example.com themselves"
+    );
+  });
+
+  it("goes by the SENT label when Gmail does not list the person's addresses", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    serveMailbox(
+      { [irinaQuery]: ["m-report", "m-thursday"] },
+      { ownAddresses: null }
+    );
+
+    const thread = await readGmailThread(
+      composioToolContext("ca_google"),
+      "thread-thursday",
+      { voice: { known: [], left: 3 } }
+    );
+
+    expect(thread.messages[0]).toMatchObject({ sentByYou: false });
     expect(
       "yourEarlierEmails" in thread && thread.yourEarlierEmails
     ).toMatchObject({
       emails: [expect.objectContaining({ subject: "Отчёт готов" })],
-      sameAddressee: false,
+      to: "tester+irina@example.com",
     });
   });
 
@@ -233,7 +478,7 @@ describe("a thread read for a reply", () => {
   });
 
   it("looks up an addressee's voice once a turn, and no more than the turn allows", async () => {
-    serveMailbox({ 'in:sent to:"tester+irina@example.com"': ["m-report"] });
+    serveMailbox({ [irinaQuery]: ["m-report"] });
 
     const known = await readGmailThread(
       composioToolContext("ca_google"),
@@ -254,7 +499,7 @@ describe("a thread read for a reply", () => {
   });
 
   it("brings no voice for a letter from a robot or a mailing", async () => {
-    serveMailbox({ 'in:sent to:"tester+irina@example.com"': ["m-report"] });
+    serveMailbox({ [irinaQuery]: ["m-report"] });
     thursday.payload.headers.push({
       name: "List-Unsubscribe",
       value: "<https://example.com/unsubscribe>",

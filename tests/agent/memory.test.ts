@@ -31,6 +31,8 @@ import {
 } from "@agent/lib/memory/profile";
 import { withApprovalCard } from "@shared/chat/approval-card";
 import { memoryContentSchema } from "@shared/memory/schema";
+import { fakeComposio } from "@tests/helpers/composio";
+import { afterForgetting } from "@agent/lib/privacy/removal";
 import {
   claimMemorySyncJobs,
   completeMemorySyncJob,
@@ -544,17 +546,50 @@ describe("forgetting everything at once", () => {
     const tools = await profileMemory.provider.tools(session);
     if (!tools) throw new Error("Expected profile tools.");
 
-    expect(
-      await tools.forget_all.execute(
-        { records: everything },
-        { ...session, callId: "forget-all", toolName: "profile__forget_all" }
-      )
-    ).toMatchObject({ changed: [2], forgotten: [0, 1] });
+    const result = await tools.forget_all.execute(
+      { records: everything },
+      { ...session, callId: "forget-all", toolName: "profile__forget_all" }
+    );
+    expect(result).toMatchObject({ changed: [2], forgotten: [0, 1] });
+    // RU d14 (25.09): what stays outside memory, and how each part goes, is
+    // told in the same message, without asking whether to remove it.
+    expect(result).toMatchObject(afterForgetting());
+    const outside = afterForgetting().outsideMemory.join("\n");
+    expect(outside).toContain("«удали мой адрес»");
+    expect(outside).toContain("«отключи Google»");
+    expect(outside).toContain("«останови все расписания»");
+    expect(outside).toContain("https://example.com/vault");
+    expect(outside).toContain("Историю чатов");
+    expect(afterForgetting().reply).toContain("Do not ask whether to remove");
     expect(
       (await listCurrentMemories(alice, "scope-a")).map(
         (record) => record.content?.text
       )
     ).toEqual(["Живёт в Самаре."]);
+  });
+
+  // Review of wave 5: «забудь, что я люблю суши и живу в Казани» is not
+  // «удали всё», and its reply stays short.
+  it("adds the guide to what stays outside memory only once nothing is left", async () => {
+    await saveEverything();
+    const session = profileToolsContext("this-session");
+    const tools = await profileMemory.provider.tools(session);
+    if (!tools) throw new Error("Expected profile tools.");
+
+    const partial = await tools.forget_all.execute(
+      { records: everything.filter(({ index }) => index !== 1) },
+      { ...session, callId: "forget-two", toolName: "profile__forget_all" }
+    );
+    expect(partial).toMatchObject({ forgotten: [0, 2] });
+    expect(partial).not.toHaveProperty("outsideMemory");
+    expect(partial).not.toHaveProperty("reply");
+
+    // The last one gone, the store is empty: now the guide comes.
+    const rest = await tools.forget_all.execute(
+      { records: everything.slice(1, 2) },
+      { ...session, callId: "forget-rest", toolName: "profile__forget_all" }
+    );
+    expect(rest).toMatchObject({ forgotten: [1], ...afterForgetting() });
   });
 });
 
@@ -591,18 +626,74 @@ describe("the person's rules in the profile", () => {
       "## Rules the user set",
       expect.stringContaining("a rule only holds you back"),
       "1 (revision 1, rule): Никогда ничего не оплачивать и никому не писать без моего ок.",
-      "## Other records",
+      "## The user's preferences",
+      expect.stringContaining("name in the reply the ones you applied"),
       "0 (revision 1, preference): Любит суши.",
     ]);
   });
 
-  it("reads as it always did while the person has set no rule", () => {
+  // RU d14 (25.09): after «никому не пиши без моего ок» Bro never said that
+  // Google itself could be narrowed to read-only.
+  it("offers read-only Google on a rule against sending, not on other rules", async () => {
+    const composio = fakeComposio();
+    composio.connect({ toolkit: "googlesuper", userId: alice.userId });
+    const session = profileToolsContext("this-session");
+    const tools = await profileMemory.provider.tools(session);
+    if (!tools) throw new Error("Expected profile tools.");
+    const save = (text: string, callId: string) =>
+      tools.save_memory.execute(
+        memoryContentSchema.parse({ category: "rule", text }),
+        {
+          ...session,
+          callId,
+          toolName: "profile__save_memory",
+        }
+      );
+
+    try {
+      expect(
+        await save(
+          "Никогда ничего не оплачивать и никому не писать без моего ок.",
+          "save-rule"
+        )
+      ).toHaveProperty("note", expect.stringContaining("«только чтение»"));
+      expect(
+        await save("Ничего не оплачивать без моего ок.", "save-payment-rule")
+      ).not.toHaveProperty("note");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("reads as it always did while the person has set no rule or preference", () => {
     const profile = renderProfile([
       currentRecord(0, { text: "Живёт в Казани." }),
     ]);
 
     expect(profile).not.toContain("##");
     expect(profile).toContain("0 (revision 1, fact): Живёт в Казани.");
+  });
+
+  /**
+   * RU d13 (25.09): «свинину не ем» was in memory, and neither dinner pick
+   * a week later filtered by it or said so.
+   */
+  it("shows preferences apart, as conditions of every pick they bear on", () => {
+    const profile = renderProfile([
+      currentRecord(0, { text: "Живёт в Казани." }),
+      currentRecord(1, {
+        category: "preference",
+        text: "В поезде только нижняя полка, в самолёте у прохода, свинину не ест.",
+      }),
+    ]).split("\n");
+
+    expect(profile.slice(2)).toEqual([
+      "## The user's preferences",
+      "When you recommend, search, book or buy for the user (food, places, trips, seats, gifts), each preference that bears on it is a condition like one named in the message: filter by it, put it into a browser errand, and name in the reply the ones you applied («учёл: без свинины»).",
+      "1 (revision 1, preference): В поезде только нижняя полка, в самолёте у прохода, свинину не ест.",
+      "## Other records",
+      "0 (revision 1, fact): Живёт в Казани.",
+    ]);
   });
 
   it("keeps the rules when the facts no longer fit", () => {

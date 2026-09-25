@@ -372,6 +372,65 @@ export function repliableGmailMessageIds(messages: readonly ModelMessage[]) {
     .map(([id]) => id);
 }
 
+const usualVoiceReadSchema = z.object({
+  thread: z.object({
+    yourEarlierEmails: z.object({
+      to: z.string(),
+      usual: z.object({
+        greeting: z.string().nullable(),
+        signOff: z.string().nullable(),
+      }),
+    }),
+  }),
+});
+
+/**
+ * The greeting and sign-off the person keeps using with each addressee, as
+ * the conversation's reads for a reply found them in their sent mail; the
+ * latest read of an addressee counts. Only addressees with one of the two.
+ */
+export function usualVoices(messages: readonly ModelMessage[]) {
+  const voices = new Map<
+    string,
+    { greeting: string | null; signOff: string | null; to: string }
+  >();
+  for (const message of messages) {
+    const parts = Array.isArray(message.content) ? message.content : [];
+    for (const part of parts) {
+      if (
+        part.type !== "tool-result" ||
+        part.toolName !== "gmail-read-thread" ||
+        part.output.type !== "json"
+      ) {
+        continue;
+      }
+      const read = usualVoiceReadSchema.safeParse(part.output.value).data;
+      if (!read) continue;
+      const { to, usual } = read.thread.yourEarlierEmails;
+      if (usual.greeting === null && usual.signOff === null) continue;
+      voices.set(to, { ...usual, to });
+    }
+  }
+  return [...voices.values()];
+}
+
+/**
+ * Whether this turn already wrote an email (`gmail-send` or `gmail-draft`
+ * called, whatever came of it): the voice check reminds the model once, and
+ * a letter it wrote again the same way is what the person asked for.
+ */
+export function turnComposedEmail(messages: readonly ModelMessage[]) {
+  return currentTurnMessages(messages).some(
+    (message) =>
+      Array.isArray(message.content) &&
+      message.content.some(
+        (part) =>
+          part.type === "tool-call" &&
+          (part.toolName === "gmail-send" || part.toolName === "gmail-draft")
+      )
+  );
+}
+
 /**
  * Whether the person declined a `gmail-send` card in this turn and no draft
  * was saved after it. The email they did not send is kept as a draft (RU d09:

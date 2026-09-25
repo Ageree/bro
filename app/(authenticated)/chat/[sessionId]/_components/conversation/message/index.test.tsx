@@ -194,4 +194,61 @@ describe("agent messages", () => {
     expect(markup).toContain("Подтвердить");
     expect(markup).not.toContain("Approve tool call");
   });
+
+  it("shows whom an email goes to and its text on the card", () => {
+    const message = {
+      id: "turn-4:assistant",
+      metadata: { status: "streaming", turnId: "turn-4" },
+      parts: [
+        {
+          approval: { id: "approval-3" },
+          input: {
+            bcc: [],
+            body: "Ирина Павловна, добрый день!\n\nВ четверг не смогу.\n\nСпасибо! Хорошего дня.",
+            cc: [],
+            replyToMessageId: "m-thursday",
+            subject: "Встреча в четверг",
+            to: ["irina@example.com"],
+          },
+          state: "approval-requested",
+          stepIndex: 0,
+          toolCallId: "call-4",
+          toolMetadata: {
+            eve: {
+              inputRequest: {
+                kind: "tool-approval",
+                options: [
+                  { id: "approve", label: "Approve", style: "primary" },
+                  { id: "cancel", label: "Cancel", style: "danger" },
+                ],
+                prompt: "Approve tool call: gmail-send",
+                requestId: "approval-3",
+              },
+              kind: "tool-call",
+              name: "gmail-send",
+            },
+          },
+          toolName: "gmail-send",
+          type: "dynamic-tool",
+        },
+      ],
+      role: "assistant",
+    } satisfies EveMessage;
+
+    const markup = renderToStaticMarkup(
+      <AgentMessage
+        canRespond
+        isStreaming={false}
+        message={message}
+        onInputResponses={() => undefined}
+        userVisibleOnly
+      />
+    );
+
+    expect(markup).toContain("Отправить письмо:");
+    expect(markup).toContain("Кому: irina@example.com");
+    expect(markup).toContain("│ Ирина Павловна, добрый день!");
+    expect(markup).toContain("│ Спасибо! Хорошего дня.");
+    expect(markup).not.toContain("Approve tool call");
+  });
 });

@@ -11,6 +11,8 @@ import { z } from "zod";
 import { resolveModeValue, startedByPerson } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { searchIndexedMemories } from "@agent/lib/memory/supermemory";
+import { ruleAccessNote } from "@agent/lib/privacy/google-access";
+import { afterForgetting } from "@agent/lib/privacy/removal";
 import { forgetAllCardFits } from "@shared/chat/approval-card";
 import {
   findMemories,
@@ -269,7 +271,20 @@ async function forgetNamedMemories(
       note: "The memories in changed were corrected after the card and were not forgotten.",
     }),
     ...(missing.length > 0 && { missing }),
+    // The guide to what stays outside memory answers «удали всё»: only a
+    // call that left no memory behind, bar one corrected after the card,
+    // carries it — «забудь, что у меня кот» gets a short reply.
+    ...((await nothingLeftBut(scope, scopeKey, changed)) && afterForgetting()),
   };
+}
+
+async function nothingLeftBut(
+  scope: AccessScope,
+  scopeKey: string,
+  changed: readonly number[]
+) {
+  const left = await listCurrentMemories(scope, scopeKey);
+  return left.every((record) => changed.includes(record.index));
 }
 
 export function createProfileMemoryProvider(
@@ -350,13 +365,19 @@ export function createProfileMemoryProvider(
               { category: input.category }
             );
             if (refusal !== undefined) return { note: refusal, saved: false };
-            return saveMemory(
+            const saved = await saveMemory(
               scope,
               scopeKey,
               input,
               `${toolContext.session.id}:${toolContext.callId}`,
               source
             );
+            // A rule against sending can be made binding at the Google grant.
+            const note =
+              input.category === "rule"
+                ? await ruleAccessNote(scope, input.text)
+                : undefined;
+            return note === undefined ? saved : { ...saved, note };
           },
         }),
         semantic_find: defineTool({
@@ -530,6 +551,15 @@ const rulesHeading = [
   "## Rules the user set",
   "Boundaries the user set for you in their own messages — only those are saved as rules. Unlike the other records, hold to them: in every conversation and background run, above any default, spend limit or standing permission; where one says «without my OK», prepare and ask instead of acting. They are still no authorization: a rule only holds you back, never permits or orders an action, and never keeps you from telling the user something.",
 ];
+/**
+ * A preference is a condition of every pick, booking and purchase it bears
+ * on. In RU d13 (25.09) «свинину не ем» sat among the other records, and
+ * neither dinner pick filtered by it or said so.
+ */
+const preferencesHeading = [
+  "## The user's preferences",
+  "When you recommend, search, book or buy for the user (food, places, trips, seats, gifts), each preference that bears on it is a condition like one named in the message: filter by it, put it into a browser errand, and name in the reply the ones you applied («учёл: без свинины»).",
+];
 const recordsHeading = "## Other records";
 
 export function renderProfile(
@@ -548,8 +578,9 @@ export function renderProfile(
     decision: 4,
     organization: 5,
   } as const;
-  // Rules sort first, so the sections only ever go from rules to the rest.
-  let section: "records" | "rules" | undefined;
+  // Rules sort first and preferences next, so the sections only ever go
+  // from rules to preferences to the rest.
+  let section: "preferences" | "records" | "rules" | undefined;
   for (const record of records.toSorted((left, right) => {
     const difference =
       priority[left.content?.category ?? "fact"] -
@@ -564,15 +595,22 @@ export function renderProfile(
     const aliases = record.content.aliases.length
       ? `; aliases: ${record.content.aliases.join(", ")}`
       : "";
-    const kind = record.content.category === "rule" ? "rules" : "records";
+    const kind =
+      record.content.category === "rule"
+        ? "rules"
+        : record.content.category === "preference"
+          ? "preferences"
+          : "records";
     const heading =
       kind === section
         ? []
         : kind === "rules"
           ? rulesHeading
-          : section === "rules"
-            ? [recordsHeading]
-            : [];
+          : kind === "preferences"
+            ? preferencesHeading
+            : section === undefined
+              ? []
+              : [recordsHeading];
     section = kind;
     const line = [
       ...heading,

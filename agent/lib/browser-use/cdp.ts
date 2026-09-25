@@ -270,14 +270,30 @@ interface CdpConnection {
  */
 export async function typeOneTimeCodeOverCdp(
   cdpUrl: string,
-  code: string
+  code: string,
+  options: {
+    /**
+     * The registrable domain the code belongs to, for a code Bro took from
+     * the site's own letter: it goes only into a page on that domain, and
+     * only into that domain's own frames.
+     */
+    readonly domain?: string;
+  } = {}
 ): Promise<OneTimeCodeEntry> {
   const value = code.trim();
   if (!value) return nothingTyped;
   const connection = await connect(cdpUrl);
   try {
-    const contexts = await collectContexts(connection);
-    if (contexts.length === 0) return nothingTyped;
+    const found = await collectContexts(connection);
+    const contexts =
+      options.domain === undefined
+        ? found
+        : contextsOnDomain(found, options.domain);
+    if (contexts.length === 0) {
+      return found.length === 0
+        ? nothingTyped
+        : { ...nothingTyped, searched: found.length };
+    }
     const scored = await Promise.all(
       contexts.map(async (context) => ({
         context,
@@ -358,6 +374,34 @@ async function evaluate(
   if (!parsed.success) return undefined;
   const injection = injectionSchema.safeParse(parsed.data.result?.value);
   return injection.success ? injection.data : undefined;
+}
+
+/** Whether a frame's URL is on `domain` or one of its subdomains. */
+function urlOnDomain(url: string | undefined, domain: string) {
+  const host = URL.parse(url ?? "")
+    ?.hostname.toLowerCase()
+    .replace(/\.$/u, "");
+  return (
+    host !== undefined &&
+    host !== "" &&
+    (host === domain || host.endsWith(`.${domain}`))
+  );
+}
+
+/**
+ * The contexts a code for `domain` may go into: none unless the page itself
+ * is on that domain — a run that ended on a lookalike or a fallback site
+ * gets nothing — and then only that domain's own frames.
+ */
+function contextsOnDomain(
+  contexts: readonly FrameContext[],
+  domain: string
+): readonly FrameContext[] {
+  const pageOnDomain = contexts.some(
+    (context) => context.depth === 0 && urlOnDomain(context.url, domain)
+  );
+  if (!pageOnDomain) return [];
+  return contexts.filter((context) => urlOnDomain(context.url, domain));
 }
 
 /** Every context worth searching, top document first. */

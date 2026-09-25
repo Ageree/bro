@@ -154,6 +154,50 @@ describe("typing a one-time code over CDP", () => {
     expect(entry).toMatchObject({ partial: true, typed: true });
   });
 
+  it("puts a code from a site's letter only into that site's own frames", async () => {
+    // The page is https://top.test/, its ad frame and the bank's are not.
+    const fixture = await fake({
+      injections: {
+        1: { ok: true, score: 50 },
+        2: { ok: true, score: 90 },
+        3: { ok: true, score: 90 },
+      },
+      sessions: bankInsideAds,
+    });
+
+    const entry = await typeOneTimeCodeOverCdp(fixture.url, code, {
+      domain: "top.test",
+    });
+
+    expect(entry).toMatchObject({ inFrame: false, typed: true });
+    expect(fixture.applied).toEqual([1]);
+  });
+
+  it("types a code from a site's letter nowhere when the page is another site", async () => {
+    // A run that ended on a lookalike or a fallback site.
+    const fixture = await fake({
+      injections: { 1: { ok: true, score: 90 }, 2: { ok: true, score: 90 } },
+      sessions: {
+        "": {
+          frames: [
+            { depth: 0, id: "top" },
+            { depth: 1, id: "ozon" },
+          ],
+        },
+      },
+    });
+
+    const entry = await typeOneTimeCodeOverCdp(fixture.url, code, {
+      domain: "ozon.test",
+    });
+
+    expect(entry.typed).toBe(false);
+    expect(fixture.applied).toEqual([]);
+    expect(
+      fixture.calls.some((call) => call.method === "Runtime.evaluate")
+    ).toBe(false);
+  });
+
   it("does nothing at all for an empty code", async () => {
     const fixture = await fake({
       injections: { 1: { ok: true, score: 80 } },

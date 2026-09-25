@@ -916,6 +916,41 @@ describe("Photon approval cards", () => {
     expect(JSON.stringify(message)).toContain("Reply with the number: 1 or 2.");
   });
 
+  it("says whom an email goes to and its whole text", async () => {
+    const { context, post } = handlerContext();
+
+    await handleInputRequested(
+      approval("gmail-send", {
+        bcc: [],
+        body: "Ирина Павловна, добрый день!\n\nВ четверг не смогу.\n\nСпасибо! Хорошего дня.",
+        cc: [],
+        replyToMessageId: "m-thursday",
+        subject: "Встреча в четверг",
+        to: ["irina@example.com"],
+      }),
+      context,
+      sessionContext()
+    );
+
+    expect(post).toHaveBeenCalledExactlyOnceWith({
+      raw: [
+        [
+          "Отправить письмо:",
+          "Кому: irina@example.com",
+          "Ответ в ветке: «Встреча в четверг»",
+          "Текст:",
+          "│ Ирина Павловна, добрый день!",
+          "│",
+          "│ В четверг не смогу.",
+          "│",
+          "│ Спасибо! Хорошего дня.",
+        ].join("\n"),
+        "1 — Подтвердить\n2 — Отмена",
+        "Ответ — цифрой: 1 или 2.",
+      ].join("\n\n"),
+    });
+  });
+
   it("numbers the options of every other request as well", async () => {
     const { context, post } = handlerContext();
 

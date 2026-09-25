@@ -408,6 +408,15 @@ describe("settling a browser run", () => {
     expect(prompt).not.toContain(unsafeUrl);
     expect(prompt).toContain("material per-option facts the user requested");
     expect(prompt).toContain("Include every relevant returned link");
+    // RU 25.09 (d01, d15): a price moved to other trains, «ни в одном»
+    // after two of five barbershops were checked.
+    expect(prompt).toContain(
+      "Keep every price and fact with the exact option the report gives it for"
+    );
+    expect(prompt).toContain(
+      "Say which options the run checked and which it did not"
+    );
+    expect(prompt).toContain("attach the screenshot the run saved");
   });
 
   it("does not let a names-only option search masquerade as complete", async () => {
@@ -1451,6 +1460,143 @@ describe("what the report turn retells", () => {
       "continue this run once to open that charge and read it instead of guessing"
     );
     expect(prompt).not.toContain("calendar-create-event");
+  });
+
+  it("does what it can without Госуслуги once they would not let the errand in", async () => {
+    // RU 25.09, d06: Bro only offered to look in the mail «если хотите».
+    const gosuslugi = {
+      ...row,
+      captchaAttempt: 5,
+      paymentAllowed: false,
+      site: "https://www.gosuslugi.ru",
+      submission: null,
+      task: "Проверь на Госуслугах штрафы и налоги и когда кончается загранпаспорт",
+    };
+    readBrowserRun.mockResolvedValue(gosuslugi);
+    claimBrowserRunCompletion
+      .mockReset()
+      .mockResolvedValueOnce({ ...gosuslugi, completedAt: new Date() });
+    finishedRun([
+      "RESULT: Госуслуги недоступны из-за `ERR_TUNNEL_CONNECTION_FAILED`.",
+      "NEEDS: captcha",
+      "DETAILS: ERR_TUNNEL_CONNECTION_FAILED",
+    ]);
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    const prompt = send.mock.calls[0]?.[0] ?? "";
+    expect(prompt).toContain(
+      "Госуслуги did not let this errand in, and no other site stands in for them: do not start it anywhere else."
+    );
+    expect(prompt).toContain(
+      "search the user's mail and Drive yourself, before your message, for the document's expiry date"
+    );
+    expect(prompt).toContain("https://xn--90adear.xn--p1ai/check/fines");
+    expect(prompt).toContain("https://lkfl2.nalog.ru");
+  });
+
+  it("asks the run's own question when it signed in to Госуслуги", async () => {
+    // RU review: a signed-in run asking for the СТС heard «Госуслуги did not
+    // let this errand in».
+    const gosuslugi = {
+      ...row,
+      paymentAllowed: false,
+      site: "https://www.gosuslugi.ru",
+      submission: null,
+      task: "Проверь на Госуслугах штрафы и когда кончается загранпаспорт",
+    };
+    readBrowserRun.mockResolvedValue(gosuslugi);
+    claimBrowserRunCompletion
+      .mockReset()
+      .mockResolvedValueOnce({ ...gosuslugi, completedAt: new Date() });
+    finishedRun([
+      "RESULT: вход выполнен, в профиле нет транспортного средства",
+      "NEEDS: info",
+      "DETAILS: нужен номер СТС",
+      "CHARGES: []",
+    ]);
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    expect(send.mock.calls[0]?.[0]).not.toContain(
+      "Госуслуги did not let this errand in"
+    );
+  });
+
+  it("offers the tax cabinet only with its own login once Госуслуги fail", async () => {
+    const gosuslugi = {
+      ...row,
+      paymentAllowed: false,
+      site: "https://www.gosuslugi.ru",
+      submission: null,
+      task: "Проверь на Госуслугах налоги",
+    };
+    readBrowserRun.mockResolvedValue(gosuslugi);
+    claimBrowserRunCompletion
+      .mockReset()
+      .mockResolvedValueOnce({ ...gosuslugi, completedAt: new Date() });
+    finishedRun(["RESULT: нет пароля Госуслуг", "NEEDS: password"]);
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    expect(send.mock.calls[0]?.[0]).toContain(
+      "which the user can open with its own login (ИНН and password) — its «Войти через Госуслуги» button meets the same Госуслуги sign-in"
+    );
+  });
+
+  it("asks for the code as usual when Госуслуги only wait for it", async () => {
+    const gosuslugi = {
+      ...row,
+      site: "https://www.gosuslugi.ru",
+      task: "Проверь на Госуслугах штрафы",
+    };
+    readBrowserRun.mockResolvedValue(gosuslugi);
+    claimBrowserRunCompletion
+      .mockReset()
+      .mockResolvedValueOnce({ ...gosuslugi, completedAt: new Date() });
+    finishedRun([
+      "RESULT: вход остановился на SMS-коде",
+      "NEEDS: sms_code",
+      "DETAILS: код отправлен на `+****** ***-**-76`",
+    ]);
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    const prompt = send.mock.calls[0]?.[0] ?? "";
+    expect(prompt).toContain(
+      "The site is waiting for a one-time code it sent by SMS"
+    );
+    expect(prompt).not.toContain("Госуслуги did not let this errand in");
+  });
+
+  it("takes a code the site emailed from the person's mailbox first", async () => {
+    // RU 25.09, d04: the person could not find Ozon's letter themselves.
+    finishedRun([
+      "RESULT: остановлено на дополнительной проверке по email",
+      "NEEDS: email_code",
+      "DETAILS: ввести код из письма, отправленного на `n******6@gmail.com`",
+    ]);
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    expect(send.mock.calls[0]?.[0]).toContain(
+      'Before any message, call browser_task continue on this run id with codeFrom: "mail" and nothing else'
+    );
   });
 
   it("names substitutes and fees in a basket", async () => {

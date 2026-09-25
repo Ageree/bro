@@ -311,6 +311,92 @@ const places = new Map([
     },
   ],
   [
+    "Казань",
+    {
+      address: { city: "Казань", country_code: "ru" },
+      addresstype: "city",
+      display_name: "Казань, городской округ Казань, Татарстан, Россия",
+      lat: "55.7887",
+      lon: "49.1221",
+      name: "Казань",
+      place_rank: 16,
+    },
+  ],
+  [
+    "Большой театр, Москва",
+    {
+      address: {
+        city: "Москва",
+        country_code: "ru",
+        house_number: "1",
+        road: "Театральная площадь",
+      },
+      addresstype: "amenity",
+      display_name: "Большой театр, 1, Театральная площадь, Москва, Россия",
+      lat: "55.7601",
+      lon: "37.6186",
+      name: "Большой театр",
+      place_rank: 30,
+    },
+  ],
+  [
+    "ВДНХ, Москва",
+    {
+      address: { city: "Москва", country_code: "ru" },
+      addresstype: "tourism",
+      display_name: "ВДНХ, Москва, Россия",
+      lat: "55.8262",
+      lon: "37.6377",
+      name: "ВДНХ",
+      place_rank: 30,
+    },
+  ],
+  // Where the three restaurants of RU d13 (25.09) are, as the map gave them.
+  [
+    "Большая Красная улица 6, Казань",
+    {
+      address: {
+        city: "Казань",
+        country_code: "ru",
+        house_number: "6",
+        road: "Большая Красная улица",
+      },
+      display_name: "6, Большая Красная улица, Казань, Россия",
+      lat: "55.798685",
+      lon: "49.110377",
+    },
+  ],
+  [
+    "проезд Шейнкмана 10, Казань",
+    {
+      address: {
+        city: "Казань",
+        country_code: "ru",
+        house_number: "10",
+        road: "проезд Шейнкмана",
+      },
+      display_name:
+        "Здание присутственных мест, 10, проезд Шейнкмана, Казань, Россия",
+      lat: "55.797986",
+      lon: "49.107291",
+      name: "Здание присутственных мест",
+    },
+  ],
+  [
+    "улица Баумана 58, Казань",
+    {
+      address: {
+        city: "Казань",
+        country_code: "ru",
+        house_number: "58",
+        road: "улица Баумана",
+      },
+      display_name: "58, улица Баумана, Казань, Россия",
+      lat: "55.793430",
+      lon: "49.109811",
+    },
+  ],
+  [
     "Times Square, New York",
     {
       address: { city: "New York", country_code: "us" },
@@ -332,12 +418,207 @@ const places = new Map([
   ],
 ]);
 
+/** One place of a recorded answer, with the fields the tool reads. */
+function recorded(
+  name: string,
+  [category, type]: readonly [string, string],
+  [lat, lon]: readonly [string, string],
+  address: Readonly<Record<string, string>>,
+  importance = 0,
+  rank = 30
+) {
+  return {
+    address: { country_code: "ru", ...address },
+    addresstype: category === "place" ? type : category,
+    category,
+    display_name: [name, address.house_number, address.road, address.city]
+      .filter((part) => part !== undefined && part.length > 0)
+      .join(", "),
+    importance,
+    lat,
+    lon,
+    name,
+    place_rank: rank,
+    type,
+  };
+}
+
+const kazanCentre = {
+  city: "Казань",
+  city_district: "Вахитовский район",
+  suburb: "Старо-Татарская слобода",
+};
+const yudino = {
+  city: "Казань",
+  city_district: "Кировский район",
+  house_number: "1",
+  road: "Привокзальная улица",
+  suburb: "Юдино",
+};
+const moscowKomsomolskaya = { city: "Москва", suburb: "Красносельский район" };
+
+/**
+ * What Nominatim answered live on 25.09 for landmarks, by the exact query,
+ * several places each in its own order: which of them is meant is the
+ * tool's to choose.
+ */
+const recordedAnswers = new Map<string, readonly unknown[]>([
+  ["Казанский вокзал, Казань", []],
+  // Not a live answer: a station of its own the map would lack.
+  ["Ленинградский вокзал, Москва", []],
+  [
+    "вокзал, Казань",
+    [
+      recorded(
+        "Северный вокзал",
+        ["railway", "station"],
+        ["55.8419884", "49.0822239"],
+        {
+          city: "Казань",
+          city_district: "Московский район",
+          road: "улица Декабристов",
+        },
+        0.301
+      ),
+      recorded(
+        "Казань-Пассажирская",
+        ["railway", "station"],
+        ["55.7886328", "49.0997021"],
+        { ...kazanCentre, road: "Привокзальная площадь" },
+        0.385
+      ),
+      recorded(
+        "Привокзальная площадь",
+        ["place", "square"],
+        ["55.7881613", "49.1017134"],
+        kazanCentre,
+        0.261,
+        25
+      ),
+      recorded(
+        "Железнодорожный вокзал",
+        ["highway", "bus_stop"],
+        ["55.7887114", "49.1017281"],
+        { ...kazanCentre, road: "улица Бурхана Шахиди" }
+      ),
+      recorded(
+        "Речной вокзал Казань",
+        ["amenity", "ferry_terminal"],
+        ["55.7743901", "49.0927854"],
+        { ...kazanCentre, house_number: "1", road: "улица Девятаева" }
+      ),
+    ],
+  ],
+  [
+    // The address the model composed for the station in RU d13: a halt
+    // 15 km out of the centre.
+    "улица Привокзальная 1, Казань",
+    [
+      recorded(
+        "",
+        ["building", "train_station"],
+        ["55.8149532", "48.8954114"],
+        yudino
+      ),
+      recorded("", ["building", "yes"], ["55.8147015", "48.8944222"], yudino),
+    ],
+  ],
+  [
+    "аэропорт, Казань",
+    [
+      recorded(
+        "Аэропорт",
+        ["landuse", "garages"],
+        ["55.7920476", "49.1809693"],
+        {
+          city: "Казань",
+          city_district: "Советский район",
+          suburb: "Клыковка",
+        },
+        0.08,
+        24
+      ),
+      recorded(
+        "Казань",
+        ["aeroway", "aerodrome"],
+        ["55.6074098", "49.2855138"],
+        { road: "Аэропорт — Столбище", state: "Татарстан" },
+        0.498
+      ),
+    ],
+  ],
+  [
+    "Кремль, Казань",
+    [
+      recorded(
+        "Кремлёвская",
+        ["railway", "stop"],
+        ["55.7950882", "49.1072063"],
+        { ...kazanCentre, road: "улица Баумана" },
+        0.284
+      ),
+      recorded(
+        "Кремлёвская",
+        ["railway", "station"],
+        ["55.7951768", "49.1070089"],
+        { ...kazanCentre, road: "улица Баумана" },
+        0.284
+      ),
+      recorded(
+        "Казанский кремль",
+        ["historic", "castle"],
+        ["55.7990218", "49.1061691"],
+        {
+          city: "Казань",
+          city_district: "Вахитовский район",
+          road: "проезд Шейнкмана",
+        },
+        0.499
+      ),
+    ],
+  ],
+  [
+    "Казанский вокзал, Москва",
+    [
+      recorded(
+        "Казанский вокзал",
+        ["tourism", "attraction"],
+        ["55.7735299", "37.6564348"],
+        {
+          ...moscowKomsomolskaya,
+          house_number: "2",
+          road: "Комсомольская площадь",
+        }
+      ),
+      recorded(
+        "Казанский вокзал",
+        ["highway", "bus_stop"],
+        ["55.7739552", "37.6540387"],
+        { ...moscowKomsomolskaya, road: "Рязанский проезд" }
+      ),
+      recorded(
+        "Москва-Пассажирская-Казанская",
+        ["railway", "station"],
+        ["55.7742335", "37.6599154"],
+        { ...moscowKomsomolskaya, road: "Ольховский тупик" }
+      ),
+    ],
+  ],
+]);
+
 const fetchMock = vi.fn<(url: URL, init: RequestInit) => Promise<Response>>();
 /** When each request reached the network, by the fake clock. */
 const requestTimes: { readonly at: number; readonly host: string }[] = [];
 
 function geocoderAnswer(url: URL) {
-  const place = places.get(url.searchParams.get("q") ?? "");
+  const query = url.searchParams.get("q") ?? "";
+  const answer = recordedAnswers.get(query);
+  if (answer) {
+    return Response.json(
+      answer.slice(0, Number(url.searchParams.get("limit") ?? "1"))
+    );
+  }
+  const place = places.get(query);
   return Response.json(place ? [place] : []);
 }
 
@@ -353,11 +634,20 @@ function routerAnswer(url: URL) {
   });
 }
 
+const matchedSchema = z.object({
+  district: z.string().optional(),
+  precision: z.string(),
+  type: z.string().optional(),
+});
+
 const outputSchema = z.object({
   attribution: z.string().optional(),
   basis: z.string().optional(),
   from: z.string().optional(),
+  fromFar: z.string().optional(),
+  fromMatched: matchedSchema.optional(),
   fromNote: z.string().optional(),
+  fromUncertain: z.string().optional(),
   note: z.string().optional(),
   pick: z.string().optional(),
   routes: z
@@ -366,11 +656,13 @@ const outputSchema = z.object({
         error: z.string().optional(),
         km: z.number().optional(),
         link: z.string().optional(),
+        matched: matchedSchema.optional(),
         minutes: z.number().optional(),
         note: z.string().optional(),
         place: z.string().optional(),
         straightKm: z.number().optional(),
         to: z.string(),
+        uncertain: z.string().optional(),
       })
     )
     .optional(),
@@ -457,6 +749,10 @@ describe("route_time", () => {
       status: "ok",
     });
     expect(result.basis).toContain("Walking");
+    // Each end says what the map took it for.
+    expect(result.fromMatched).toEqual({ precision: "named place" });
+    expect(result.routes?.[1]?.matched).toEqual({ precision: "building" });
+    expect(result.fromUncertain).toBeUndefined();
     // The services' terms ask for the credit wherever their data is shown.
     expect(result.attribution).toBe("© OpenStreetMap");
     expect(result.routes?.[0]?.link).toBe(
@@ -1082,5 +1378,222 @@ describe("route_time", () => {
         url.searchParams.get("accept-language")
       )
     ).toEqual(["en,ru", "en,ru"]);
+  });
+});
+
+/**
+ * RU d13 (25.09): «Казанский вокзал, Казань» was not on the map, the model
+ * composed «улица Привокзальная 1, Казань» — a halt in Юдино — and the
+ * person heard that three restaurants by the Kremlin were 15 km and «only
+ * a taxi» from the station, which is 2 km from them.
+ */
+describe("route_time with stations, airports and landmarks", () => {
+  const dinner = [
+    "Большая Красная улица 6, Казань",
+    "проезд Шейнкмана 10, Казань",
+    "улица Баумана 58, Казань",
+  ];
+
+  it("finds the city's station by its kind when the map does not know the name people use", async () => {
+    const result = await measure({
+      from: "Казанский вокзал, Казань",
+      mode: "walking",
+      to: dinner,
+    });
+
+    expect(result.status).toBe("ok");
+    expect(result.from).toBe(
+      "Казань-Пассажирская, Привокзальная площадь, Казань"
+    );
+    expect(result.fromMatched).toEqual({
+      district: "Старо-Татарская слобода, Вахитовский район",
+      precision: "named place",
+      type: "railway station",
+    });
+    // The best-known station, not the first the map listed, and named so.
+    expect(result.fromUncertain).toContain(
+      "the map has no «Казанский вокзал» in «Казань»; this is the best-known railway station there, «Казань-Пассажирская»"
+    );
+    expect(result.fromUncertain).toContain(
+      "Give its time only naming that place"
+    );
+    expect(result.routes?.every((route) => route.minutes !== undefined)).toBe(
+      true
+    );
+    expect(result.pick).toContain("within a 15-minute walk");
+
+    const lookups = requestsTo("nominatim.openstreetmap.org").slice(0, 2);
+    expect(lookups.map((url) => url.searchParams.get("q"))).toEqual([
+      "Казанский вокзал, Казань",
+      "вокзал, Казань",
+    ]);
+    expect(lookups.map((url) => url.searchParams.get("limit"))).toEqual([
+      "10",
+      "10",
+    ]);
+  });
+
+  it("never swaps a station of its own for another in the same city", async () => {
+    const result = await measure({
+      from: "Ленинградский вокзал, Москва",
+      mode: "walking",
+      to: ["метро Чистые пруды, Москва"],
+    });
+
+    expect(result.status).toBe("not_found");
+    expect(result.note).toContain("never an address you composed");
+    expect(
+      requestsTo("nominatim.openstreetmap.org").map((url) =>
+        url.searchParams.get("q")
+      )
+    ).toEqual(["Ленинградский вокзал, Москва"]);
+  });
+
+  it("reads a street named after a station as a street", async () => {
+    for (const from of [
+      "Вокзальная улица, Казань",
+      "площадь Казанского вокзала, Москва",
+    ]) {
+      fetchMock.mockClear();
+      // oxlint-disable-next-line eslint/no-await-in-loop -- One start at a time keeps the requests apart.
+      const result = await measure({
+        from,
+        mode: "walking",
+        to: ["метро Чистые пруды, Москва"],
+      });
+
+      expect(result.status).toBe("not_found");
+      expect(
+        requestsTo("nominatim.openstreetmap.org").map((url) => [
+          url.searchParams.get("q"),
+          url.searchParams.get("limit"),
+        ])
+      ).toEqual([[from, "5"]]);
+    }
+  });
+
+  it("asks to check a start out of town when every place of a walk lies towards the centre", async () => {
+    const walk = await measure({
+      from: "улица Привокзальная 1, Казань",
+      mode: "walking",
+      to: dinner,
+    });
+
+    expect(walk.from).toBe("Привокзальная улица 1, Казань");
+    expect(walk.fromMatched).toEqual({
+      district: "Юдино, Кировский район",
+      precision: "building",
+      type: "railway station building",
+    });
+    // The house is the one asked for; only where it lies is in doubt.
+    expect(walk.fromUncertain).toBeUndefined();
+    expect(walk.fromFar).toContain(
+      "every destination is at least 13.4 km in a straight line from «Привокзальная улица 1, Казань» in Юдино, Кировский район: over an hour on foot. If the person starts there, these times stand: give them as they are."
+    );
+    expect(walk.fromFar).toContain(
+      "until then state none of these times as fact and do not tell the person the places are far"
+    );
+    expect(walk.fromFar).toContain("«вокзал, Казань»");
+    expect(walk.routes?.every((route) => route.minutes !== undefined)).toBe(
+      true
+    );
+    // No dinner is looked for in Юдино.
+    expect(walk.pick).toContain(
+      "if the start meant is near these places, count no walks from it and look for no candidates near it"
+    );
+    expect(walk.pick).not.toContain("more are needed");
+    // The city was asked for once, to see where its centre is.
+    expect(
+      requestsTo("nominatim.openstreetmap.org").map((url) =>
+        url.searchParams.get("q")
+      )
+    ).toEqual(["улица Привокзальная 1, Казань", ...dinner, "Казань"]);
+
+    // A drive across the city is no reason for doubt.
+    const drive = await measure({
+      from: "улица Привокзальная 1, Казань",
+      mode: "driving",
+      to: dinner,
+    });
+    expect(drive.fromFar).toBeUndefined();
+  });
+
+  it("gives a long walk from a start matched well as it is", async () => {
+    // Review of wave 5: from the Bolshoi to ВДНХ is 8 km on foot, and the
+    // time stands.
+    const result = await measure({
+      from: "Большой театр, Москва",
+      mode: "walking",
+      to: ["ВДНХ, Москва"],
+    });
+
+    expect(result.fromUncertain).toBeUndefined();
+    expect(result.fromFar).toBeUndefined();
+    expect(result.routes?.[0]).toMatchObject({
+      minutes: 21,
+      place: "ВДНХ, Москва",
+    });
+    expect(result.pick).toContain("0 of 1 place is within a 15-minute walk");
+  });
+
+  it("takes the airport for «аэропорт» and the Kremlin for «Кремль», not what is named like them", async () => {
+    const result = await measure({
+      from: "аэропорт, Казань",
+      mode: "driving",
+      to: ["Кремль, Казань", "кафе Вокзал, Казань"],
+    });
+
+    // Live the map listed a garage cooperative «Аэропорт» first.
+    expect(result.from).toBe("Казань, Аэропорт — Столбище, Татарстан");
+    expect(result.fromMatched).toMatchObject({
+      precision: "named place",
+      type: "airport",
+    });
+    expect(result.fromUncertain).toBeUndefined();
+    // And the metro station «Кремлёвская» before the Kremlin itself.
+    expect(result.routes?.[0]).toMatchObject({
+      matched: {
+        district: "Вахитовский район",
+        precision: "named place",
+        type: "castle",
+      },
+      place: "Казанский кремль, проезд Шейнкмана, Казань",
+    });
+    expect(result.routes?.[0]?.minutes).toBeDefined();
+    // A cafe named after a station is looked up as a cafe.
+    expect(result.routes?.[1]?.error).toContain("not on the map");
+    expect(
+      requestsTo("nominatim.openstreetmap.org").map((url) => [
+        url.searchParams.get("q"),
+        url.searchParams.get("limit"),
+      ])
+    ).toEqual([
+      ["аэропорт, Казань", "10"],
+      ["Кремль, Казань", "5"],
+      ["кафе Вокзал, Казань", "5"],
+      ["Вокзал, Казань", "5"],
+    ]);
+  });
+
+  it("measures from Moscow's Казанский вокзал itself, not a bus stop named after it", async () => {
+    const result = await measure({
+      from: "Казанский вокзал, Москва",
+      mode: "walking",
+      to: ["метро Чистые пруды, Москва"],
+    });
+
+    expect(result.from).toBe(
+      "Казанский вокзал, Комсомольская площадь 2, Москва"
+    );
+    expect(result.fromMatched).toMatchObject({
+      district: "Красносельский район",
+      type: "attraction",
+    });
+    expect(result.fromUncertain).toBeUndefined();
+    expect(
+      requestsTo("nominatim.openstreetmap.org").map((url) =>
+        url.searchParams.get("q")
+      )
+    ).toEqual(["Казанский вокзал, Москва", "метро Чистые пруды, Москва"]);
   });
 });
