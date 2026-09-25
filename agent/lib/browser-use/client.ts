@@ -393,17 +393,21 @@ async function request(
   };
   if (body !== undefined) init.body = body;
 
-  // A read, a stop or a cancel is bounded: an answer that never came used to
-  // hold the poller's tick for undici's five minutes. A POST is not: Browser
-  // Use takes no idempotency key, so one cut off after it started a run or
-  // queued a message leaves that run acting for the person with no row, no
-  // report and nothing to cancel it, and the retry opens a second browser.
-  // The poller does not wait on it longer than its own deadlines anyway
-  // (`within` in `agent/schedules/browser-runs.ts`).
+  // A read, a stop, a cancel or a new profile is bounded: an answer that never
+  // came used to hold the poller's tick, or the person's turn, for undici's
+  // five minutes, and cutting one off leaves at worst an empty profile. A
+  // request that sets a browser to work is not: Browser Use takes no
+  // idempotency key, so a new run or a queued message cut off after it landed
+  // leaves that run acting for the person with no row, no report and nothing
+  // to cancel it, and the retry opens a second browser. The poller does not
+  // wait on one longer than its own deadlines anyway (`within` in
+  // `agent/schedules/browser-runs.ts`).
+  const setsBrowserToWork =
+    method === "POST" && (path === "/runs" || path.endsWith("/queue"));
   const attempt = () =>
     fetch(
       url,
-      method === "POST"
+      setsBrowserToWork
         ? init
         : { ...init, signal: AbortSignal.timeout(browserUseRequestTimeoutMs) }
     );

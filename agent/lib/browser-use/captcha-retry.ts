@@ -117,10 +117,12 @@ async function abandonRetryRun(runId: string) {
  * The person may stop the errand at any moment, so the row is read again
  * before anything starts, and the handoff to the new run only lands while the
  * old row is still waiting; a run started for an errand that was stopped
- * meanwhile is cancelled at once. A start that fails counts as a failed
- * attempt and is parked again, until the attempts run out and the caller
- * reports the wall. A run this attempt already started before its poller
- * died is found by its reference line and adopted, not started again.
+ * meanwhile is cancelled at once. A start Browser Use refused counts as a
+ * failed attempt and is parked again, until the attempts run out and the
+ * caller reports the wall. A run this attempt already started before its
+ * poller died is found by its reference line and adopted, not started again;
+ * a start or a lookup with no clear outcome keeps the attempt's number, so
+ * the next claim looks for that very line.
  */
 export async function startCaptchaRetry(row: BrowserRunRow, now = new Date()) {
   if (row.captchaAttempt >= maximumCaptchaAttempts) {
@@ -141,9 +143,14 @@ export async function startCaptchaRetry(row: BrowserRunRow, now = new Date()) {
       }),
     ]);
     const reference = retryReference(row.id, attempt);
-    const adopted = await findRecentBrowserUseRunByTaskLine(reference);
-    let run: Pick<NonNullable<typeof adopted>, "id" | "sessionId">;
+    let run: Pick<
+      Awaited<ReturnType<typeof createBrowserUseRun>>,
+      "id" | "sessionId"
+    >;
+    let lookedUp = false;
     try {
+      const adopted = await findRecentBrowserUseRunByTaskLine(reference);
+      lookedUp = true;
       run =
         adopted ??
         (await createBrowserUseRun({
@@ -157,8 +164,12 @@ export async function startCaptchaRetry(row: BrowserRunRow, now = new Date()) {
     } catch (error) {
       // A timeout, a dropped connection or a 5xx says nothing about what
       // Browser Use did, and it takes no idempotency key; only a clear
-      // refusal (4xx) is a failed attempt.
-      const refused = error instanceof BrowserUseError && error.status < 500;
+      // refusal (4xx) of the create is a failed attempt. A lookup that did
+      // not finish, whatever the reason, cannot rule out the run an earlier
+      // cut-off create of this attempt started: the outage that cut it off
+      // usually fails the lookup too, and the next number would miss it.
+      const refused =
+        lookedUp && error instanceof BrowserUseError && error.status < 500;
       if (refused || !recentlyWalled(row, now)) throw error;
       // Browser Use may have started the run all the same: the next claim
       // looks for this very attempt's line and adopts it, instead of taking
