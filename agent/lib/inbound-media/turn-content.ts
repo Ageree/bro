@@ -46,10 +46,10 @@ const photoNote = "[фото]";
 const documentNote = "[документ]";
 
 /**
- * Encodes attachment bytes as base64 so a `FilePart` stays plain,
- * JSON-serializable data — a raw `Uint8Array` is not a plain object and
- * breaks eve's durable dynamic-tool closures (e.g. its memory tools), which
- * validate the whole turn, including this message, as JSON.
+ * Encodes attachment bytes as base64 so the channel hands eve plain string
+ * data. eve then stages the file into the sandbox and keeps an `eve-sandbox:`
+ * URL in history; the memory tools' closures leave history out (see the
+ * memory-tools hunk in `patches/eve@0.62.0.patch`).
  */
 function toBase64(data: Uint8Array) {
   return Buffer.from(data.buffer, data.byteOffset, data.byteLength).toString(
