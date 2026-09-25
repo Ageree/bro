@@ -36,6 +36,13 @@ const maxRunsPerDay = 12;
 const disconnectedRetryMs = 6 * 60 * 60_000;
 const signalRetentionMs = 14 * 24 * 60 * 60_000;
 const workerStartupLimitMs = 5 * 60_000;
+/**
+ * How far back a night check reads subjects: one check's worth, plus the
+ * cron's spread and mail dated a little before it arrives. What the previous
+ * check read is not read again; a missed check leaves its mail to the
+ * morning, which reads everything since the evening.
+ */
+const nightMailWindowMs = checkEveryMs + 10 * 60_000;
 
 type ClaimedWatch = Awaited<
   ReturnType<typeof claimDueProactiveWatches>
@@ -74,7 +81,6 @@ async function checkWorkspace(watch: ClaimedWatch, now: Date) {
   const timeZone = resolveTimeZone(watch.timezone);
   const quietUntil = quietHoursEnd(now, timeZone);
   const logged = {
-    heldReports: watch.heldReports,
     night: quietUntil !== undefined,
     workspaceId: watch.workspaceId,
   };
@@ -94,8 +100,9 @@ async function checkWorkspace(watch: ClaimedWatch, now: Date) {
 }
 
 /**
- * A daytime check hands every new signal to one run. The first one after the
- * night also folds in the reports held overnight (`queueProactiveRun`).
+ * A daytime check hands every new signal to one run. The reports held over
+ * the night go out with the first report of the morning, as one message
+ * (`absorbHeldProactiveReports`).
  */
 async function checkByDay(watch: ClaimedWatch, now: Date, timeZone: string) {
   const probe = await probeGoogleSignals(
@@ -107,7 +114,7 @@ async function checkByDay(watch: ClaimedWatch, now: Date, timeZone: string) {
     watch.workspaceId,
     probe.signals
   );
-  if (unseen.length === 0 && watch.heldReports < 2) {
+  if (unseen.length === 0) {
     await advanceProactiveWatermark(watch.workspaceId, now);
     return { outcome: "nothing_new", signalCount: 0 };
   }
@@ -116,7 +123,6 @@ async function checkByDay(watch: ClaimedWatch, now: Date, timeZone: string) {
   // items; the watermark moves past the rest instead of queuing batch after
   // batch of old mail.
   const queued = await queueProactiveRun({
-    fold: watch.heldReports > 0,
     jobId: watch.jobId,
     mailCheckedAt: now,
     maxRunsPerDay,
@@ -124,21 +130,16 @@ async function checkByDay(watch: ClaimedWatch, now: Date, timeZone: string) {
     signals: selectRunSignals(unseen),
     workspaceId: watch.workspaceId,
   });
-  if (queued.status === "nothing") {
-    await advanceProactiveWatermark(watch.workspaceId, now);
-  }
-  return {
-    folded: queued.status === "queued" ? queued.folded : 0,
-    outcome: queued.status,
-    signalCount: unseen.length,
-  };
+  return { outcome: queued.status, signalCount: unseen.length };
 }
 
 /**
  * At night only what cannot wait starts a run: a flight leaving within hours,
  * mail about a flight or an account's security. The watermark stays, so the
  * morning check reads the rest of the night's mail as one batch, and the
- * check after the last night one runs right when the night ends.
+ * check after the last night one runs right when the night ends. Subjects are
+ * read only for mail since the previous night check (`nightMailWindowMs`):
+ * with the watermark still, every check re-read the evening's mail again.
  */
 async function checkAtNight(
   watch: ClaimedWatch,
@@ -149,7 +150,12 @@ async function checkAtNight(
   const probe = await probeGoogleSignals(
     { userId: watch.createdByUserId, workspaceId: watch.workspaceId },
     {
-      mailAfter: mailSearchStart(watch.mailCheckedAt, now),
+      mailAfter: new Date(
+        Math.max(
+          mailSearchStart(watch.mailCheckedAt, now).getTime(),
+          now.getTime() - nightMailWindowMs
+        )
+      ),
       nightOnly: true,
       now,
       timeZone,
@@ -163,7 +169,6 @@ async function checkAtNight(
   const queued =
     unseen.length > 0
       ? await queueProactiveRun({
-          fold: false,
           jobId: watch.jobId,
           mailCheckedAt: watch.mailCheckedAt,
           maxRunsPerDay,

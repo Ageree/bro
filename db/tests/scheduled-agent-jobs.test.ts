@@ -207,9 +207,12 @@ describe("scheduled agent jobs", () => {
       )
     ).toEqual([
       {
+        carriesEvent: false,
         conversationChannel: "photon",
+        jobId: created.id,
         jobKind: "task",
         runId: claim.run.id,
+        scheduledFor: claim.run.scheduledFor,
         scope: alice,
         timeSensitive: false,
       },
@@ -841,6 +844,49 @@ describe("the watchdog for stuck workers", { timeout: 30_000 }, () => {
     ).toMatchObject([
       { action: "requeued", reason: "lease_expired", runId: run.id },
     ]);
+  });
+
+  it("waits for a dispatched worker still queued for its first turn", async () => {
+    const { jobs } = await openDatabase();
+    const scope = await import("@db/services/scope");
+    await scope.ensureScope(alice);
+    await jobs.createScheduledAgentJob(
+      alice,
+      {
+        conversationChannel: "telegram",
+        conversationId: "100::",
+        missedRunPolicy: "run_latest",
+        prompt: "Утренняя сводка.",
+        timing: { at: dueAt.toISOString(), kind: "once" },
+      },
+      new Date("2026-08-31T12:00:00.000Z")
+    );
+    await jobs.materializeDueScheduledAgentRuns({ limit: 25, now: dueAt });
+    const [claim] = await jobs.claimReadyScheduledAgentRuns({
+      leaseForMs: 5 * 60_000,
+      limit: 25,
+      now: dueAt,
+    });
+    if (!claim?.run.leaseToken) throw new Error("Expected one leased run.");
+    // Handed its session, but Workflow has not started the turn yet.
+    await jobs.setScheduledRunSession(
+      claim.run.id,
+      claim.run.leaseToken,
+      "worker"
+    );
+
+    expect(
+      await jobs.recoverStuckScheduledAgentRuns({
+        limit: 25,
+        now: new Date("2026-09-01T05:24:00.000Z"),
+      })
+    ).toEqual([]);
+    expect(
+      await jobs.recoverStuckScheduledAgentRuns({
+        limit: 25,
+        now: new Date("2026-09-01T05:25:00.000Z"),
+      })
+    ).toMatchObject([{ action: "requeued", runId: claim.run.id }]);
   });
 });
 

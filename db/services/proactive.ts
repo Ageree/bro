@@ -1,4 +1,4 @@
-import { and, eq, gt, inArray, isNotNull, lt, lte, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, lt, lte, sql } from "drizzle-orm";
 import type { AccessScope } from "@shared/identity/access-scope";
 import {
   db,
@@ -230,17 +230,6 @@ export async function recordProactiveTarget(
 }
 
 /**
- * A finished run whose report is held for the morning: a held report keeps
- * its release time in `retry_at` (`deferScheduledReport`), which a finished
- * run no longer needs for itself.
- */
-const heldReport = and(
-  eq(scheduledAgentRuns.status, "completed"),
-  eq(scheduledAgentRuns.reportStatus, "pending"),
-  isNotNull(scheduledAgentRuns.retryAt)
-);
-
-/**
  * Leases the watches due for a check. The lease is the next check time
  * itself, so a crashed tick simply retries after `leaseForMs`; each claim
  * carries it as `leaseUntil`, which the check's own deferral must still find
@@ -256,8 +245,6 @@ export async function claimDueProactiveWatches(options: {
       .select({
         createdByUserId: proactiveWatches.createdByUserId,
         googleState: proactiveWatches.googleState,
-        // Finished runs whose reports wait out the night (`heldReport`).
-        heldReports: sql<number>`(SELECT count(*)::int FROM ${scheduledAgentRuns} WHERE ${scheduledAgentRuns.jobId} = ${proactiveWatches.jobId} AND ${heldReport})`,
         jobId: proactiveWatches.jobId,
         mailCheckedAt: proactiveWatches.mailCheckedAt,
         timezone: userProfiles.timezone,
@@ -402,16 +389,8 @@ export async function filterUnseenProactiveSignals<
  * last 24 hours (a busy inbox never turns into a model run per check). A run
  * carrying a calendar event passes the cap: events are few, and one that
  * waited for the cap to reset could start before anyone heard of it.
- *
- * The first check of the morning (`fold`) also takes over the reports held
- * for the night: their signals move to the new run and their reports close,
- * so the person reads one morning message instead of one per evening run. A
- * report some tick already claimed is left to go out on its own. With no new
- * signals it takes two held reports to be worth a fresh run (`nothing`
- * otherwise); one goes out as it is.
  */
 export async function queueProactiveRun(input: {
-  readonly fold?: boolean;
   readonly jobId: string;
   readonly mailCheckedAt: Date;
   readonly maxRunsPerDay: number;
@@ -433,17 +412,6 @@ export async function queueProactiveRun(input: {
       )
       .limit(1);
     if (open) return { status: "busy" as const };
-    const held =
-      input.fold === true
-        ? await transaction
-            .select({ id: scheduledAgentRuns.id })
-            .from(scheduledAgentRuns)
-            .where(and(eq(scheduledAgentRuns.jobId, input.jobId), heldReport))
-            .for("update", { skipLocked: true })
-        : [];
-    if (input.signals.length === 0 && held.length < 2) {
-      return { status: "nothing" as const };
-    }
     const [recent] = await transaction
       .select({ count: sql<number>`count(*)::int` })
       .from(scheduledAgentRuns)
@@ -459,12 +427,7 @@ export async function queueProactiveRun(input: {
     const carriesEvent = input.signals.some(
       (signal) => signal.source === "calendar"
     );
-    // Held reports go out either way; folded, they are one message.
-    if (
-      !carriesEvent &&
-      held.length === 0 &&
-      (recent?.count ?? 0) >= input.maxRunsPerDay
-    ) {
+    if (!carriesEvent && (recent?.count ?? 0) >= input.maxRunsPerDay) {
       return { status: "capped" as const };
     }
     const [run] = await transaction
@@ -480,35 +443,17 @@ export async function queueProactiveRun(input: {
       })
       .returning({ id: scheduledAgentRuns.id });
     if (!run) return { status: "busy" as const };
-    const heldIds = held.map((heldRun) => heldRun.id);
-    if (heldIds.length > 0) {
-      await transaction
-        .update(proactiveSignals)
-        .set({ runId: run.id })
-        .where(inArray(proactiveSignals.runId, heldIds));
-      await transaction
-        .update(scheduledAgentRuns)
-        .set({
-          lastError: `Folded into the morning check ${run.id}.`,
-          reportStatus: "not_needed",
-          retryAt: null,
-          updatedAt: input.now,
-        })
-        .where(inArray(scheduledAgentRuns.id, heldIds));
-    }
-    if (input.signals.length > 0) {
-      await transaction
-        .insert(proactiveSignals)
-        .values(
-          input.signals.map((signal) => ({
-            ...signal,
-            createdAt: input.now,
-            runId: run.id,
-            workspaceId: input.workspaceId,
-          }))
-        )
-        .onConflictDoNothing();
-    }
+    await transaction
+      .insert(proactiveSignals)
+      .values(
+        input.signals.map((signal) => ({
+          ...signal,
+          createdAt: input.now,
+          runId: run.id,
+          workspaceId: input.workspaceId,
+        }))
+      )
+      .onConflictDoNothing();
     await transaction
       .update(proactiveWatches)
       .set({
@@ -521,11 +466,7 @@ export async function queueProactiveRun(input: {
       .update(scheduledAgentJobs)
       .set({ lastRunAt: input.now, updatedAt: input.now })
       .where(eq(scheduledAgentJobs.id, input.jobId));
-    return {
-      folded: heldIds.length,
-      runId: run.id,
-      status: "queued" as const,
-    };
+    return { runId: run.id, status: "queued" as const };
   });
 }
 

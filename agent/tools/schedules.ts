@@ -17,6 +17,7 @@ import {
 } from "@shared/schedules/timing";
 import {
   createScheduledAgentJob,
+  getScheduledAgentJob,
   getScheduledAgentRunInput,
   listScheduledAgentJobs,
   submitScheduledAgentRunAnswer,
@@ -96,10 +97,17 @@ export const updateSchedule = defineTool({
   inputSchema: updateScheduleInputSchema,
   async execute({ id, timing, ...patch }, context) {
     const scope = scheduleScope(context);
-    const timeZone = await readWorkspaceTimeZone(scope);
+    const [timeZone, current] = await Promise.all([
+      readWorkspaceTimeZone(scope),
+      timing ? getScheduledAgentJob(scope, id) : undefined,
+    ]);
+    if (timing && !current) throw new Error("Schedule not found.");
+    // The new timing keeps what it leaves out: the rule's zone and its
+    // holiday setting, not the profile's.
     const job = await updateScheduledAgentJob(scope, id, {
       ...patch,
-      timing: timing && resolveScheduleTiming(timing, timeZone),
+      timing:
+        timing && resolveScheduleTiming(timing, timeZone, current?.timing),
     });
     if (!job) throw new Error("Schedule not found.");
     return scheduleSummary(job, timeZone);
