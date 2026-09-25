@@ -121,8 +121,9 @@ async function abandonRetryRun(runId: string) {
  * failed attempt and is parked again, until the attempts run out and the
  * caller reports the wall. A run this attempt already started before its
  * poller died is found by its reference line and adopted, not started again;
- * a start or a lookup with no clear outcome keeps the attempt's number, so
- * the next claim looks for that very line.
+ * any other failure up to and including the start keeps the attempt's
+ * number while the wall is recent, so the next claim looks for that very
+ * line.
  */
 export async function startCaptchaRetry(row: BrowserRunRow, now = new Date()) {
   if (row.captchaAttempt >= maximumCaptchaAttempts) {
@@ -130,54 +131,60 @@ export async function startCaptchaRetry(row: BrowserRunRow, now = new Date()) {
   }
   const attempt = row.captchaAttempt + 1;
   try {
-    const current = await readBrowserRun(row.id);
-    if (current?.status !== "waiting" || current.retriedAsRunId) {
-      return { status: "stopped" as const };
-    }
-    const scope = { userId: row.createdByUserId, workspaceId: row.workspaceId };
-    const [previous, secrets] = await Promise.all([
-      readBrowserUseRun(row.id),
-      resolveBrowserSecretBindings(scope, {
-        allowPayment: row.paymentAllowed,
-        site: row.site ?? undefined,
-      }),
-    ]);
     const reference = retryReference(row.id, attempt);
     let run: Pick<
       Awaited<ReturnType<typeof createBrowserUseRun>>,
       "id" | "sessionId"
     >;
-    let lookedUp = false;
+    let starting = false;
     try {
+      const current = await readBrowserRun(row.id);
+      if (current?.status !== "waiting" || current.retriedAsRunId) {
+        return { status: "stopped" as const };
+      }
       const adopted = await findRecentBrowserUseRunByTaskLine(reference);
-      lookedUp = true;
-      run =
-        adopted ??
-        (await createBrowserUseRun({
+      if (adopted) {
+        run = adopted;
+      } else {
+        const scope = {
+          userId: row.createdByUserId,
+          workspaceId: row.workspaceId,
+        };
+        const [previous, secrets] = await Promise.all([
+          readBrowserUseRun(row.id),
+          resolveBrowserSecretBindings(scope, {
+            allowPayment: row.paymentAllowed,
+            site: row.site ?? undefined,
+          }),
+        ]);
+        starting = true;
+        run = await createBrowserUseRun({
           ...retryProxySettings(attempt, randomUUID().replaceAll("-", "")),
           maxCostUsd: env.BROWSER_USE_MAX_COST_USD,
           model: env.BROWSER_USE_MODEL,
           profileId: row.profileId ?? undefined,
           secretBindings: secrets.bindings,
           task: captchaRetryTask(previous.task, attempt, reference),
-        }));
+        });
+      }
     } catch (error) {
-      // A timeout, a dropped connection or a 5xx says nothing about what
-      // Browser Use did, and it takes no idempotency key; only a clear
-      // refusal (4xx) of the create is a failed attempt. A lookup that did
-      // not finish, whatever the reason, cannot rule out the run an earlier
-      // cut-off create of this attempt started: the outage that cut it off
-      // usually fails the lookup too, and the next number would miss it.
+      // Only a clear refusal (4xx) of the start is a failed attempt. A
+      // timeout, a dropped connection or a 5xx on the start says nothing
+      // about what Browser Use did, and it takes no idempotency key. Nor
+      // does any failure before the start: the last claim's start may have
+      // been cut off, the outage that cut it off usually fails this claim's
+      // reads as well, and the next number would miss the run it started.
       const refused =
-        lookedUp && error instanceof BrowserUseError && error.status < 500;
+        starting && error instanceof BrowserUseError && error.status < 500;
       if (refused || !recentlyWalled(row, now)) throw error;
-      // Browser Use may have started the run all the same: the next claim
-      // looks for this very attempt's line and adopts it, instead of taking
-      // the next number, missing it and opening a second browser.
-      console.warn("[browser-use] the anti-bot retry may have started", {
+      // The next claim looks for this very attempt's line and adopts what it
+      // finds, instead of taking the next number and opening a second
+      // browser beside it.
+      console.warn("[browser-use] the anti-bot retry keeps its attempt", {
         attempt,
         cause: error,
         runId: row.id,
+        stage: starting ? "start" : "before start",
       });
       await parkBrowserRunForRetry(row.id, {
         captchaAttempt: row.captchaAttempt,
