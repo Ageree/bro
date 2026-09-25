@@ -594,16 +594,16 @@ function browserRunReport(
   }
 ) {
   const { images = [], needs, outcome } = options;
-  // A site that would not let the run in — not loading, a sign-in with no
-  // password or one that stalled with nothing read — is where a
-  // public-service errand falls back to what can be done without it.
+  // A site that would not let the run in — it did not load, the sign-in
+  // has no password, or the run failed or ran out of time — is where a
+  // public-service errand falls back to what can be done without it. A run
+  // that stops with a question signed in and asks it; one that may have
+  // acted is checked before anything else is done.
   const stuck =
-    options.failed === true ||
-    needs === "captcha" ||
-    needs === "password" ||
-    (needs === "info" &&
-      options.hasCharges !== true &&
-      options.hasItems !== true)
+    options.interrupted === undefined &&
+    row.submission === null &&
+    !row.paymentAllowed &&
+    (options.failed === true || needs === "captcha" || needs === "password")
       ? gosuslugiFallback(row.site, row.task)
       : undefined;
   return [

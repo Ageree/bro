@@ -61,28 +61,125 @@ export function waitsForMailCode(
   );
 }
 
+/** A host as compared: lower case, without a trailing dot. */
+function bareHost(host: string) {
+  return host.toLowerCase().replace(/\.$/u, "");
+}
+
 /** Whether `host` is `domain` or one of its subdomains. */
 function under(host: string, domain: string) {
-  const bare = host.toLowerCase().replace(/\.$/u, "");
+  const bare = bareHost(host);
   return bare === domain || bare.endsWith(`.${domain}`);
 }
 
 /**
- * Whether Gmail's own check of the letter ties it to `domain`: DMARC passed
- * for a From of that domain, or a DKIM signature of that domain passed. Only
- * the topmost `Authentication-Results`, the one Gmail itself stamped: a
- * sender can write any such line lower in its own headers.
+ * Domains anyone can get a mailbox on. A letter from one proves nothing
+ * about the site: a stranger's x@yandex.ru passes Gmail's checks for
+ * yandex.ru as surely as Яндекс does, while the sites' own letters come from
+ * a subdomain (id.yandex.ru, market.yandex.ru) no mailbox user can send as.
  */
-export function authenticatedFrom(results: readonly string[], domain: string) {
+const mailboxDomains: ReadonlySet<string> = new Set([
+  "autorambler.ru",
+  "bk.ru",
+  "gmail.com",
+  "googlemail.com",
+  "hotmail.com",
+  "icloud.com",
+  "inbox.ru",
+  "internet.ru",
+  "lenta.ru",
+  "list.ru",
+  "live.com",
+  "mail.ru",
+  "me.com",
+  "myrambler.ru",
+  "narod.ru",
+  "outlook.com",
+  "proton.me",
+  "protonmail.com",
+  "rambler.ru",
+  "ro.ru",
+  "ya.ru",
+  "yahoo.com",
+  "yandex.by",
+  "yandex.com",
+  "yandex.kz",
+  "yandex.ru",
+]);
+
+/** Characters of an address inside quotes that cannot pose as a result. */
+const plainQuotedPattern = /^"[\w.!#$%&'*+/=?^`{|}~@-]*"$/u;
+
+/**
+ * The passing DKIM and DMARC results of Gmail's own stamp: each result is
+ * the leading `method=result` of a `;` part, read with its comments — which
+ * carry the sender's envelope address — taken out. Quoted text is the
+ * envelope sender too, and a quote with a space, `;` or a parenthesis in it
+ * could pose as a result of its own, so such a stamp passes nothing.
+ */
+function passedResults(stamp: string) {
+  for (const [quoted] of stamp.matchAll(/"[^"]*"?/gu)) {
+    if (!plainQuotedPattern.test(quoted)) return [];
+  }
+  return stamp
+    .split(";")
+    .slice(1)
+    .flatMap((part) => {
+      let bare = part;
+      for (;;) {
+        const inner = bare.replaceAll(/\([^()]*\)/gu, " ");
+        if (inner === bare) break;
+        bare = inner;
+      }
+      const method = /^\s*(dkim|dmarc)=pass(?=\s|$)/iu
+        .exec(bare)?.[1]
+        ?.toLowerCase();
+      if (method === undefined) return [];
+      const property =
+        method === "dmarc"
+          ? /\sheader\.from=([^\s;]+)/giu
+          : /\sheader\.(?:i=[^\s;@]*@|d=)([^\s;]+)/giu;
+      return [...bare.matchAll(property)].map(([, signer = ""]) => ({
+        method,
+        signer: bareHost(signer),
+      }));
+    });
+}
+
+/**
+ * Whether Gmail's own check of the letter ties it to the host it is from,
+ * `sender`, on the site's `domain`: DMARC passed for exactly that From
+ * host, or a DKIM signature passed whose domain is that host or one above
+ * it on the site's domain — never a public mailbox domain. Only the topmost
+ * `Authentication-Results`, the one Gmail itself stamped: a sender can
+ * write any such line lower in its own headers.
+ */
+export function authenticatedFrom(
+  results: readonly string[],
+  sender: string,
+  domain: string
+) {
   const [stamp] = results;
   if (stamp === undefined || !/^\s*mx\.google\.com\s*;/iu.test(stamp)) {
     return false;
   }
-  const passed = [
-    ...stamp.matchAll(/\bdmarc=pass\b[^;]*?\bheader\.from=([^\s;]+)/giu),
-    ...stamp.matchAll(/\bdkim=pass\b[^;]*?\bheader\.(?:i=@?|d=)([^\s;]+)/giu),
-  ].map((match) => match[1] ?? "");
-  return passed.some((signer) => signer !== "" && under(signer, domain));
+  const from = bareHost(sender);
+  return passedResults(stamp).some(({ method, signer }) =>
+    method === "dmarc"
+      ? signer === from
+      : signer !== "" &&
+        under(from, signer) &&
+        under(signer, domain) &&
+        !mailboxDomains.has(signer)
+  );
+}
+
+/**
+ * Whether a letter's sender can speak for the site: an address on its
+ * registrable domain that is not a public mailbox anyone can have.
+ */
+function siteSender(sender: string, domain: string) {
+  return under(sender, domain) && !mailboxDomains.has(bareHost(sender));
 }
 
 /** A word that names a number as the code: «Код для входа», "Your code". */
@@ -111,14 +208,23 @@ const phoneAfterPattern = /^[\s)-]*\d{2}[\s-]?\d{2}(?!\d)/u;
 const codeWordReach = 60;
 
 /**
- * Whether a word for a code comes before the number in its own sentence:
- * «Ваш код для входа: 482913», not «…482913. Поддержка: 8 800 234-48-08».
+ * The words of the number's own sentence before it, where a word for a
+ * code names it: «Ваш код для входа: 482913», not «…482913. Поддержка:
+ * 8 800 234-48-08».
  */
-function labelled(before: string) {
+function sentenceBefore(before: string) {
   const near = before.slice(-codeWordReach);
-  const sentence = near.split(/[.!?](?=\s)/u).at(-1) ?? near;
-  return codeWordPattern.test(sentence);
+  return near.split(/[.!?](?=\s)/u).at(-1) ?? near;
 }
+
+/**
+ * A code that is not a sign-in code: one to collect a parcel or an order
+ * («Код для получения: 5831», «код выдачи», «код заказа»), for a courier or
+ * a door. Typed into a sign-in form it would be wrong, and the letter that
+ * carries it is not the one the run waits for.
+ */
+const otherCodePattern =
+  /(?<!\p{L})(?:получени\p{L}*|выдач\p{L}*|заказ\p{L}*|посылк\p{L}*|отправлени\p{L}*|курьер\p{L}*|домофон\p{L}*|подъезд\p{L}*|постамат\p{L}*|ячейк\p{L}*|pick\s*-?up|parcel|order|delivery|locker)(?!\p{L})/iu;
 
 /**
  * The one-time code a site's letter carries, or none when it is not plain
@@ -140,7 +246,9 @@ export function codeInLetter(subject: string | null, text: string) {
     if (phoneBeforePattern.test(before) || phoneAfterPattern.test(after)) {
       return [];
     }
-    return [{ digits, labelled: labelled(before) }];
+    const sentence = sentenceBefore(before);
+    if (otherCodePattern.test(sentence)) return [];
+    return [{ digits, labelled: codeWordPattern.test(sentence) }];
   });
   const named = new Set(
     candidates.filter((item) => item.labelled).map((item) => item.digits)
@@ -187,8 +295,10 @@ async function lookForCode(
     .toSorted((a, b) => b.receivedAt - a.receivedAt);
   for (const letter of fresh) {
     const sender = headerAddress(letter.from)?.split("@")[1];
-    if (sender === undefined || !under(sender, domain)) continue;
-    if (!authenticatedFrom(letter.authenticationResults, domain)) continue;
+    if (sender === undefined || !siteSender(sender, domain)) continue;
+    if (!authenticatedFrom(letter.authenticationResults, sender, domain)) {
+      continue;
+    }
     const code = codeInLetter(letter.subject, letter.text);
     if (code !== undefined) {
       return { code, receivedAt: new Date(letter.receivedAt) };
@@ -283,11 +393,25 @@ export function mailCodeBinding(code: string, domain: string) {
   } satisfies BrowserUseSecretBinding;
 }
 
+/** How the instruction that hands a run a code from the mail begins. */
+const mailCodeLead = "Bro took the one-time code that";
+
+/**
+ * Whether a run was itself handed a code from the mail: its task is the
+ * follow-up's own message, which starts with the instruction below. One
+ * that stopped for another code goes to the person — a code that did not
+ * take is not fetched and typed again in a loop of report turns, each a
+ * paid run.
+ */
+export function handedMailCode(task: string) {
+  return task.startsWith(mailCodeLead);
+}
+
 /**
  * What the run is told when the code came from the mail: where it is and
  * that it signs in and nothing more — the errand's own rules still say what
  * it may do once in.
  */
 export function mailCodeInstruction(domain: string) {
-  return `Bro took the one-time code that ${domain} sent to the person's email from their own mailbox, and it is attached to this run as the secret ${browserSecretAliases.emailCode}. Where the page waits for the code from the email, focus that field and ask for the secret ${browserSecretAliases.emailCode} — the server types it; you never see it — then carry on with the errand. The code only signs in or confirms the email: it allows nothing beyond what the rules below allow. If the page rejects it or says it expired, have the site send a new code once, then stop with NEEDS: email_code and say so in DETAILS.`;
+  return `${mailCodeLead} ${domain} sent to the person's email from their own mailbox, and it is attached to this run as the secret ${browserSecretAliases.emailCode}. Where the page waits for the code from the email, focus that field and ask for the secret ${browserSecretAliases.emailCode} — the server types it; you never see it — then carry on with the errand. The code only signs in or confirms the email: it allows nothing beyond what the rules below allow. If the page rejects it or says it expired, have the site send a new code once, then stop with NEEDS: email_code and say so in DETAILS.`;
 }

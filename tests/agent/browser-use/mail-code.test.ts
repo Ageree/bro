@@ -107,6 +107,17 @@ describe("the code a site's letter carries", () => {
     expect(
       codeInLetter("Ваш заказ", "Заказ 48213 доставят завтра, сумма 1 590 ₽")
     ).toBeUndefined();
+    // A code to collect a parcel or an order is no sign-in code.
+    expect(
+      codeInLetter(
+        "Заказ ждёт вас",
+        "Ваш заказ в пункте выдачи. Код для получения: 5831"
+      )
+    ).toBeUndefined();
+    expect(
+      codeInLetter("Код выдачи", "Код выдачи заказа 5831")
+    ).toBeUndefined();
+    expect(codeInLetter("Ozon", "Код заказа: 482913")).toBeUndefined();
     // A year, an amount and an order number are not codes.
     expect(
       codeInLetter("Код", "© 2026 Ozon. Скидка 1500 ₽ на заказ № 482913")
@@ -115,11 +126,33 @@ describe("the code a site's letter carries", () => {
 });
 
 describe("Gmail's word on who sent a letter", () => {
-  it("trusts a DMARC or DKIM pass of the site's domain", () => {
-    expect(authenticatedFrom([passed("ozon.ru")], "ozon.ru")).toBe(true);
+  it("trusts DMARC for the very From host, or DKIM of the site's domain above it", () => {
+    expect(authenticatedFrom([passed("ozon.ru")], "ozon.ru", "ozon.ru")).toBe(
+      true
+    );
     expect(
       authenticatedFrom(
-        ["mx.google.com; dkim=pass header.i=@sender.ozon.ru; dmarc=none"],
+        ["mx.google.com; dkim=pass header.i=@ozon.ru; dmarc=none"],
+        "sender.ozon.ru",
+        "ozon.ru"
+      )
+    ).toBe(true);
+    expect(
+      authenticatedFrom(
+        [
+          "mx.google.com; dkim=pass header.i=@yandex.ru; dmarc=pass (p=REJECT) header.from=id.yandex.ru",
+        ],
+        "id.yandex.ru",
+        "yandex.ru"
+      )
+    ).toBe(true);
+    // A mailing service's quoted envelope sender is plain text, no result.
+    expect(
+      authenticatedFrom(
+        [
+          'mx.google.com; dkim=pass header.i=@em.ozon.ru header.s=s1; spf=pass (google.com: domain of "bounces+1=gmail.com@em.ozon.ru" designates 1.2.3.4 as permitted sender) smtp.mailfrom="bounces+1=gmail.com@em.ozon.ru"; dmarc=pass (p=REJECT) header.from=em.ozon.ru',
+        ],
+        "em.ozon.ru",
         "ozon.ru"
       )
     ).toBe(true);
@@ -127,13 +160,16 @@ describe("Gmail's word on who sent a letter", () => {
 
   it("trusts nothing else", () => {
     // Another domain that only ends the same way.
-    expect(authenticatedFrom([passed("notozon.ru")], "ozon.ru")).toBe(false);
+    expect(
+      authenticatedFrom([passed("notozon.ru")], "ozon.ru", "ozon.ru")
+    ).toBe(false);
     // A pass of the sending service's own domain, not the site's.
     expect(
       authenticatedFrom(
         [
           "mx.google.com; dkim=pass header.i=@mailer.example; spf=pass smtp.mailfrom=bounce@mailer.example; dmarc=fail header.from=ozon.ru",
         ],
+        "ozon.ru",
         "ozon.ru"
       )
     ).toBe(false);
@@ -144,10 +180,46 @@ describe("Gmail's word on who sent a letter", () => {
           "mx.google.com; dkim=fail header.i=@ozon.ru; dmarc=fail header.from=ozon.ru",
           passed("ozon.ru"),
         ],
+        "ozon.ru",
         "ozon.ru"
       )
     ).toBe(false);
-    expect(authenticatedFrom([], "ozon.ru")).toBe(false);
+    // A result spelled inside a comment or a quoted envelope sender.
+    expect(
+      authenticatedFrom(
+        [
+          'mx.google.com; spf=pass (google.com: domain of "x dkim=pass header.i=@ozon.ru "@attacker.example designates 1.2.3.4 as permitted sender) smtp.mailfrom="x dkim=pass header.i=@ozon.ru "@attacker.example; dmarc=fail (p=NONE sp=NONE dis=NONE) header.from=ozon.ru',
+        ],
+        "ozon.ru",
+        "ozon.ru"
+      )
+    ).toBe(false);
+    expect(
+      authenticatedFrom(
+        [
+          "mx.google.com; spf=pass (google.com: domain of dkim=pass.header.i=@ozon.ru@shop.example designates 1.2.3.4) smtp.mailfrom=dkim=pass.header.i=@ozon.ru@shop.example; dmarc=fail header.from=ozon.ru",
+        ],
+        "ozon.ru",
+        "ozon.ru"
+      )
+    ).toBe(false);
+    // DMARC of the parent domain does not vouch for a subdomain sender.
+    expect(
+      authenticatedFrom(
+        ["mx.google.com; dkim=fail; dmarc=pass header.from=ozon.ru"],
+        "promo.ozon.ru",
+        "ozon.ru"
+      )
+    ).toBe(false);
+    // A public mailbox's own signature vouches for nobody.
+    expect(
+      authenticatedFrom(
+        ["mx.google.com; dkim=pass header.i=@yandex.ru; dmarc=none"],
+        "id.yandex.ru",
+        "yandex.ru"
+      )
+    ).toBe(false);
+    expect(authenticatedFrom([], "ozon.ru", "ozon.ru")).toBe(false);
   });
 });
 
@@ -228,6 +300,47 @@ describe("taking the code from the person's mailbox", () => {
     await expect(look()).resolves.toEqual({
       domain: "ozon.ru",
       kind: "not_found",
+    });
+  });
+
+  it("never takes a code from a stranger's mailbox on the site's domain", async () => {
+    // yandex.ru is also a free mail service: anyone can write from it.
+    composio.connect({ toolkit: "googlesuper" });
+    mailbox(composio, [
+      {
+        authenticationResults: [passed("yandex.ru")],
+        from: "Незнакомец <stranger@yandex.ru>",
+        id: "stranger",
+        receivedAt: new Date(),
+        subject: "Код для входа",
+        text: "Код для входа: 111111",
+      },
+    ]);
+
+    await expect(look("https://market.yandex.ru")).resolves.toEqual({
+      domain: "yandex.ru",
+      kind: "not_found",
+    });
+  });
+
+  it("takes the code from the site's own service mailbox on a mail domain", async () => {
+    composio.connect({ toolkit: "googlesuper" });
+    mailbox(composio, [
+      {
+        authenticationResults: [
+          "mx.google.com; dkim=pass header.i=@id.yandex.ru; dmarc=pass (p=REJECT) header.from=id.yandex.ru",
+        ],
+        from: "Яндекс ID <noreply@id.yandex.ru>",
+        id: "yandex-id",
+        receivedAt: new Date(),
+        subject: "Код подтверждения",
+        text: "Код подтверждения: 482913",
+      },
+    ]);
+
+    await expect(look("https://market.yandex.ru")).resolves.toMatchObject({
+      code: "482913",
+      kind: "found",
     });
   });
 

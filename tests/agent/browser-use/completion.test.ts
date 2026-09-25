@@ -1498,6 +1498,61 @@ describe("what the report turn retells", () => {
     expect(prompt).toContain("https://lkfl2.nalog.ru");
   });
 
+  it("asks the run's own question when it signed in to Госуслуги", async () => {
+    // RU review: a signed-in run asking for the СТС heard «Госуслуги did not
+    // let this errand in».
+    const gosuslugi = {
+      ...row,
+      paymentAllowed: false,
+      site: "https://www.gosuslugi.ru",
+      submission: null,
+      task: "Проверь на Госуслугах штрафы и когда кончается загранпаспорт",
+    };
+    readBrowserRun.mockResolvedValue(gosuslugi);
+    claimBrowserRunCompletion
+      .mockReset()
+      .mockResolvedValueOnce({ ...gosuslugi, completedAt: new Date() });
+    finishedRun([
+      "RESULT: вход выполнен, в профиле нет транспортного средства",
+      "NEEDS: info",
+      "DETAILS: нужен номер СТС",
+      "CHARGES: []",
+    ]);
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    expect(send.mock.calls[0]?.[0]).not.toContain(
+      "Госуслуги did not let this errand in"
+    );
+  });
+
+  it("offers the tax cabinet only with its own login once Госуслуги fail", async () => {
+    const gosuslugi = {
+      ...row,
+      paymentAllowed: false,
+      site: "https://www.gosuslugi.ru",
+      submission: null,
+      task: "Проверь на Госуслугах налоги",
+    };
+    readBrowserRun.mockResolvedValue(gosuslugi);
+    claimBrowserRunCompletion
+      .mockReset()
+      .mockResolvedValueOnce({ ...gosuslugi, completedAt: new Date() });
+    finishedRun(["RESULT: нет пароля Госуслуг", "NEEDS: password"]);
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    expect(send.mock.calls[0]?.[0]).toContain(
+      "which the user can open with its own login (ИНН and password) — its «Войти через Госуслуги» button meets the same Госуслуги sign-in"
+    );
+  });
+
   it("asks for the code as usual when Госуслуги only wait for it", async () => {
     const gosuslugi = {
       ...row,

@@ -95,12 +95,27 @@ export function gosuslugiSignInRule(
  * What the coordinator tells the person as an errand that signs in through
  * Госуслуги starts: the code comes by SMS or in Max, and a person who knows
  * it is coming has the phone at hand. On 25.09 (RU d06, d07) the request for
- * it came a quarter of an hour later, out of nowhere.
+ * it came a quarter of an hour later, out of nowhere. Only when the run will
+ * sign in through Госуслуги: with the login saved for gosuslugi.ru itself,
+ * or the Госуслуги login bound for a site that signs in through it — not
+ * for a public page of mos.ru, and not without a login, where the run stops
+ * for a password instead.
  */
-export function gosuslugiCodeNote(site: string | undefined) {
+export function gosuslugiCodeNote(
+  site: string | undefined,
+  bound: {
+    /** A login saved for the errand's own site is bound to the run. */
+    readonly ownLogin: boolean;
+    /** The Госуслуги login is bound for a site that signs in through it. */
+    readonly gosuslugiLogin: boolean;
+  }
+) {
   const host = siteHost(site);
   if (host === undefined) return undefined;
-  if (!isGosuslugi(host) && !signsInWithGosuslugi(host)) return undefined;
+  const signsIn = isGosuslugi(host)
+    ? bound.ownLogin
+    : signsInWithGosuslugi(host) && bound.gosuslugiLogin;
+  if (!signsIn) return undefined;
   return "Signing in through Госуслуги asks for a one-time code by SMS or in the Max app. Say so in your message now, in one line, so the user keeps the phone at hand and sends you the code as soon as you ask for it.";
 }
 
@@ -175,7 +190,7 @@ export function gosuslugiFallback(site: string | null, errand: string) {
       ? "for fines, give the check by the car's СТС and the driving licence on the ГИБДД site, https://xn--90adear.xn--p1ai/check/fines, where the user types the numbers themselves, and say it shows fines only"
       : undefined,
     taxesPattern.test(errand)
-      ? "for taxes, name the tax service's personal account, https://lkfl2.nalog.ru, and offer to check there"
+      ? "for taxes, say they are also in the tax service's personal account, https://lkfl2.nalog.ru, which the user can open with its own login (ИНН and password) — its «Войти через Госуслуги» button meets the same Госуслуги sign-in, so do not offer to check there through Госуслуги now"
       : undefined,
   ].filter((step) => step !== undefined);
   return [

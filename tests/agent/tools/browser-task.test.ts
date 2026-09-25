@@ -10,6 +10,7 @@ import {
   vi,
 } from "vitest";
 import { z } from "zod";
+import type * as browserUseCdp from "@agent/lib/browser-use/cdp";
 import type * as browserUseClient from "@agent/lib/browser-use/client";
 import type * as browserUseMailCode from "@agent/lib/browser-use/mail-code";
 import type * as browserUseSecrets from "@agent/lib/browser-use/secrets";
@@ -251,6 +252,18 @@ const updateQueuedBrowserRun = vi.hoisted(() =>
 const reportBrowserUseOutOfCredits = vi.hoisted(() =>
   vi.fn<(cause: unknown) => Promise<void>>(() => Promise.resolve())
 );
+// The page behind a browser a test hands a CDP address for: nothing typed.
+const typeOneTimeCodeOverCdp = vi.hoisted(() =>
+  vi.fn<typeof browserUseCdp.typeOneTimeCodeOverCdp>(() =>
+    Promise.resolve({
+      inFrame: false,
+      partial: false,
+      searched: 0,
+      submitted: false,
+      typed: false,
+    })
+  )
+);
 // The person's mailbox: no letter from the site unless a test puts one in.
 const mailCodeFromSite = vi.hoisted(() =>
   vi.fn<typeof browserUseMailCode.mailCodeFromSite>(() =>
@@ -311,6 +324,10 @@ vi.mock("@agent/lib/billing/quota", () => ({ browserRunQuotaGate }));
 vi.mock("@agent/lib/browser-use/secrets", async (importOriginal) => ({
   ...(await importOriginal<typeof browserUseSecrets>()),
   resolveBrowserSecretBindings,
+}));
+vi.mock("@agent/lib/browser-use/cdp", async (importOriginal) => ({
+  ...(await importOriginal<typeof browserUseCdp>()),
+  typeOneTimeCodeOverCdp,
 }));
 vi.mock("@agent/lib/browser-use/mail-code", async (importOriginal) => ({
   ...(await importOriginal<typeof browserUseMailCode>()),
@@ -5720,6 +5737,45 @@ describe("browser_task takes a code the site emailed from the person's mailbox",
     expect(JSON.stringify(result)).not.toContain("482913");
   });
 
+  it("types the code from the letter only into the letter's own site", async () => {
+    stoppedFor();
+    mailCodeFromSite.mockResolvedValue(letter);
+    findBrowserUseSessionCdpUrl.mockResolvedValueOnce("ws://browser");
+
+    await fromMail();
+
+    expect(typeOneTimeCodeOverCdp).toHaveBeenCalledExactlyOnceWith(
+      "ws://browser",
+      "482913",
+      { domain: "ozon.ru" }
+    );
+  });
+
+  it("looks in the mail once per stop, then asks the person", async () => {
+    // RU review: a code that did not take was fetched again every report.
+    const { mailCodeInstruction } =
+      await import("@agent/lib/browser-use/mail-code");
+    readBrowserRunForScope.mockResolvedValue({
+      ...browserRunRow(new Date(), emailed),
+      site: "https://www.ozon.ru",
+      task: mailCodeInstruction("ozon.ru"),
+    });
+    mailCodeFromSite.mockResolvedValue(letter);
+
+    await expect(fromMail()).rejects.toThrow(
+      "a code from the user's mail already went to this errand"
+    );
+    expect(mailCodeFromSite).not.toHaveBeenCalled();
+
+    // The person can still ask for another look themselves.
+    const tool = await resolvedBrowserTask([], "посмотри код в почте ещё раз");
+    await tool.execute(
+      { action: "continue", codeFrom: "mail", runId },
+      toolContext("better-auth:alice")
+    );
+    expect(mailCodeFromSite).toHaveBeenCalledOnce();
+  });
+
   it("keeps the confirmation of the errand it signs in to", async () => {
     stoppedFor(emailed, cardSubmission);
     mailCodeFromSite.mockResolvedValue(letter);
@@ -5833,6 +5889,25 @@ describe("browser_task passes on a code to enter first", () => {
     const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
     expect(task.startsWith(`Человек написал: «739204»\n\n${codeTyping}`)).toBe(
       true
+    );
+  });
+
+  it("types the person's own code into the page as before", async () => {
+    readBrowserRunForScope.mockResolvedValue(
+      browserRunRow(new Date(), "Needs: sms_code")
+    );
+    findBrowserUseSessionCdpUrl.mockResolvedValueOnce("ws://browser");
+    const tool = await resolvedBrowserTask([], "739204");
+
+    await tool.execute(
+      { action: "continue", personSaid: "739204", runId, task: "739204" },
+      toolContext("better-auth:alice")
+    );
+
+    expect(typeOneTimeCodeOverCdp).toHaveBeenCalledExactlyOnceWith(
+      "ws://browser",
+      "739204",
+      { domain: undefined }
     );
   });
 
@@ -5977,6 +6052,104 @@ describe("browser_task takes an errand the person asked to be done to its last s
     expect(task).not.toContain("The person asked for this to be done");
   });
 
+  // RU review: each of these read as «do it», and a price question became
+  // a run that edited the person's basket and asked for an SMS code.
+  it.each([
+    [
+      "Найди билеты в Сочи на выходные, бронировать пока не надо",
+      "Найти билеты в Сочи на выходные",
+    ],
+    [
+      "Посмотри цены на Сапсан, не надо ничего бронировать",
+      "Найти цены на Сапсан",
+    ],
+    ["Не хочу пока бронировать, просто сравни отели", "Сравнить отели"],
+    ["Бронировать не будем, только цены", "Найти отели и их цены"],
+    ["Найди, где дешевле купить AirPods", "Найди, где дешевле купить AirPods"],
+    [
+      "Узнай, сколько стоит продлить ОСАГО",
+      "Узнай, сколько стоит продлить ОСАГО",
+    ],
+    ["не бронируй пока, просто найди столик", "Найди столик на двоих"],
+    [
+      "пока не заказывай, только посмотри, что есть",
+      "Собери корзину продуктов",
+    ],
+    ["ничего не покупай, только сравни цены", "Сравни цены на iPhone 16"],
+    [
+      "где дешевле купить айфон 16? просто сравни цены",
+      "Найди, где выгоднее купить iPhone 16 на Ozon и WB",
+    ],
+    // The purchase is not this errand, whose message also asks to look.
+    [
+      "Купи молоко по дороге и найди билеты в кино",
+      "Найти билеты в кино на вечер",
+    ],
+  ])("leaves «%s» a search", async (said, errand) => {
+    expect(await startFor(said, errand)).not.toContain(
+      "The person asked for this to be done"
+    );
+  });
+
+  it.each([
+    "Find the cheapest price for this book",
+    "Compare prices in order to pick the cheapest",
+    "Sort the options by price in ascending order",
+    "Найди, где выгоднее купить iPhone 16",
+  ])("leaves the errand «%s» a search in a report turn", async (errand) => {
+    const task = await startFor(
+      `${backgroundTurnMarker}\nBrowser run ${runId} finished.`,
+      errand,
+      "browser-result"
+    );
+
+    expect(task).not.toContain("The person asked for this to be done");
+  });
+
+  it.each([
+    ["возьми мне сапсан в питер на пятницу", "Найти Сапсан на пятницу"],
+    [
+      "запиши меня завтра в барбершоп к Артуру",
+      "Найти барбершоп на Профсоюзной",
+    ],
+    ["Book a table for two at 7 tonight", "Find a table for two at 7"],
+  ])("stages «%s»", async (said, errand) => {
+    expect(await startFor(said, errand)).toContain(staged);
+  });
+
+  it("drops the rule once the person says not to book", async () => {
+    const { composeBrowserTask } = await import("@agent/tools/browser_task");
+    readBrowserRunForScope.mockResolvedValue({
+      ...browserRunRow(new Date(), "Needs: decision"),
+      site: "https://www.ozon.ru",
+    });
+    readBrowserUseRun.mockResolvedValue({
+      task: composeBrowserTask({
+        aliases: [],
+        allowPayment: false,
+        collectImages: false,
+        consent: undefined,
+        deliveryAddress: undefined,
+        errand: "Забронируй столик",
+        facts: undefined,
+        home: undefined,
+        site: "https://www.ozon.ru",
+        staging: true,
+      }),
+    });
+    const said = "Не бронируй, лучше покажи ещё варианты";
+    const tool = await resolvedBrowserTask([], said);
+
+    await tool.execute(
+      { action: "continue", personSaid: said, runId, task: said },
+      toolContext("better-auth:alice")
+    );
+
+    expect(String(createBrowserUseRun.mock.calls[0]?.[0].task)).not.toContain(
+      "The person asked for this to be done"
+    );
+  });
+
   it("carries the rule into the follow-up that brings the code", async () => {
     const { composeBrowserTask } = await import("@agent/tools/browser_task");
     readBrowserRunForScope.mockResolvedValue({
@@ -6033,36 +6206,56 @@ describe("browser_task takes an errand the person asked to be done to its last s
 });
 
 describe("browser_task on Госуслуги", () => {
-  it("has the person told up front that the sign-in sends a code", async () => {
-    // RU 25.09, d06 and d07: the code was asked for a quarter of an hour
-    // later, out of nowhere.
+  async function startOn(site: string, aliases: string[]) {
+    resolveBrowserSecretBindings.mockResolvedValue({
+      aliases,
+      bindings: aliases.map((alias) => ({ alias })),
+    });
     const tool = await resolvedBrowserTask(
       [],
       "глянь на госуслугах, нет ли у меня штрафов"
     );
-
-    const result = await tool.execute(
-      {
-        action: "start",
-        site: "https://www.gosuslugi.ru",
-        task: "Проверь штрафы на Госуслугах",
-      },
-      toolContext("better-auth:alice")
+    return continuationNote(
+      await tool.execute(
+        { action: "start", site, task: "Проверь штрафы на Госуслугах" },
+        toolContext("better-auth:alice")
+      )
     );
+  }
 
-    expect(continuationNote(result)).toContain(
+  it("has the person told up front that the sign-in sends a code", async () => {
+    // RU 25.09, d06 and d07: the code was asked for a quarter of an hour
+    // later, out of nowhere.
+    expect(
+      await startOn("https://www.gosuslugi.ru", [
+        "login_username",
+        "login_password",
+      ])
+    ).toContain(
       "Signing in through Госуслуги asks for a one-time code by SMS or in the Max app. Say so in your message now"
+    );
+    expect(
+      await startOn("https://www.mos.ru", [
+        "gosuslugi_username",
+        "gosuslugi_password",
+      ])
+    ).toContain("Signing in through Госуслуги asks for a one-time code");
+  });
+
+  it("promises no code for a run that will not sign in through Госуслуги", async () => {
+    // With no login the run stops for a password; a public page of mos.ru
+    // is read without signing in at all.
+    expect(await startOn("https://www.gosuslugi.ru", [])).not.toContain(
+      "Signing in through Госуслуги"
+    );
+    expect(await startOn("https://www.mos.ru", [])).not.toContain(
+      "Signing in through Госуслуги"
     );
   });
 
   it("says nothing of Госуслуги on another site", async () => {
-    const tool = await resolvedBrowserTask([], "найди корм на озоне");
-
-    const result = await tool.execute(
-      { action: "start", site: "https://www.ozon.ru", task: "Найди корм" },
-      toolContext("better-auth:alice")
-    );
-
-    expect(continuationNote(result)).not.toContain("Госуслуги");
+    expect(
+      await startOn("https://www.ozon.ru", ["login_username"])
+    ).not.toContain("Госуслуги");
   });
 });

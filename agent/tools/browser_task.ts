@@ -96,6 +96,7 @@ import {
 } from "@agent/lib/browser-use/said";
 import { customProxy } from "@agent/lib/browser-use/proxy";
 import {
+  handedMailCode,
   mailCodeBinding,
   mailCodeFromSite,
   mailCodeInstruction,
@@ -264,6 +265,17 @@ function boundSignInNote(aliases: readonly string[]) {
     ? "The user's saved sign-in for this site is in the vault and bound to this run"
     : "The user's saved Госуслуги login is bound to this run, and this site signs people in through Госуслуги («Войти через Госуслуги»)";
   return `${which}${password ? "" : " (the login without a password: the site sends its own code)"}; the run signs in with it by itself. Nothing is missing: do not tell the user their login is not saved, and do not call request_vault_setup for this site unless the run's outcome reports Needs: password.`;
+}
+
+/**
+ * Which saved logins the run's secrets carry: whether it will sign in
+ * through Госуслуги, and so whether the person should expect its code.
+ */
+function boundLogins(aliases: readonly string[]) {
+  return {
+    gosuslugiLogin: aliases.includes(browserSecretAliases.gosuslugiUsername),
+    ownLogin: aliases.includes(browserSecretAliases.loginUsername),
+  };
 }
 
 const liveViewPollMs = 1_000;
@@ -557,39 +569,102 @@ function commitmentLine(
 }
 
 /**
- * Words that ask for the errand to be done, not only found: «закажи»,
- * «забронируй», «возьми сапсан», «запиши меня», «оформи», «book», «buy».
+ * A request to Bro to act in the person's name, in the imperative:
+ * «закажи», «забронируй», «возьми сапсан», «купи», «оформи», «запиши меня»,
+ * «оплати», and a clause that opens with «book», «buy» or «order». A verb in
+ * the infinitive — «где купить», «сколько стоит заказать» — asks about the
+ * thing, not for it, and «this book», «in order to» are no requests.
  */
-const actionWordPattern =
-  /(?<!\p{L})(?:закаж(?:и|ите)|заказать|оформ(?:и|ите|ить)|забронир(?:уй|уйте|овать)|бронир(?:уй|уйте|овать)|куп(?:и|ите|ить)|возьм(?:и|ите)|бери(?:те)?|запиш(?:и|ите)|записать(?:ся)?|зарегистрир(?:уй|уйте|овать)(?:ся)?|подай(?:те)?|подать|продл(?:и|ите|ить)|оплат(?:и|ите|ить)|book|buy|order|reserve|purchase|sign\s+(?:me|us)\s+up)(?!\p{L})/giu;
+const requestPattern =
+  /(?<!\p{L})(?:закаж(?:и|ите)|оформ(?:и|ите)|забронир(?:уй|уйте)|бронир(?:уй|уйте)|куп(?:и|ите)|возьм(?:и|ите)|бер(?:и|ите)|запиш(?:и|ите)(?=\s+(?:меня|нас|его|её|ее|маму|папу|к|на)(?!\p{L}))|зарегистрир(?:уй|уйте)|подай(?:те)?|продл(?:и|ите)|оплат(?:и|ите))(?!\p{L})|(?:^|\n|[.!?;:]\s*|(?<!\p{L})(?:please|pls|then|and|just)\s+)(?:book|buy|order|reserve|purchase)(?!\p{L})/giu;
+
+/**
+ * The same in the voice of an errand the model wrote, which gives the run
+ * instructions in the imperative or the infinitive: «Закажи…»,
+ * «Забронировать столик…», «Записаться…».
+ */
+const instructionPattern =
+  /(?<!\p{L})(?:закаж(?:и|ите)|заказать|оформ(?:и|ите|ить)|забронир(?:уй|уйте|овать)|куп(?:и|ите|ить)|возьм(?:и|ите)|запиш(?:и|ите)|записать(?:ся)?|зарегистрир(?:уй|уйте|овать)(?:ся)?|оплат(?:и|ите|ить))(?!\p{L})|(?:^|\n|[.!?;:]\s*)(?:book|buy|order|reserve|purchase)(?!\p{L})/giu;
 
 /** An errand text that already asks for the last step: «дойди до оплаты». */
 const stagedErrandPattern =
   /(?<!\p{L})(?:подготов\p{L}*\s+к\s+(?:покупке|оформлению|бронированию|заказу|записи|оплате)|до\s+(?:последнего\s+шага|оформления|страницы\s+оплаты|оплаты))(?!\p{L})/iu;
 
-/** A word that turns the action after it around: «ничего не бронировать». */
+/**
+ * A negation up to two words before the action: «не бронируй», «ничего не
+ * покупай», «не надо ничего бронировать», «don't book».
+ */
 const negationBeforePattern =
-  /(?<!\p{L})(?:не|ни|без|нельзя|don't|dont|not|never|without)\s+$/iu;
+  /(?<!\p{L})(?:не|ни|без|нельзя|don't|dont|not|never|without)(?:\s+\p{L}+){0,2}\s+$/iu;
 
-/** Words after the action that turn it around: «покупать не нужно». */
+/** Words after the action that turn it around: «бронировать пока не надо». */
 const negationAfterPattern =
-  /^\s+(?:не\s+(?:нужно|надо|стоит|требуется|буду)|нельзя)(?!\p{L})/iu;
+  /^(?:\s+\p{L}+)?\s+(?:не\s+(?:нужно|надо|стоит|требуется|буду|будем|хочу)|пока\s+не|нельзя)(?!\p{L})/iu;
 
 /**
- * Whether the text asks for the errand to be done in the person's name —
- * booked, bought, ordered, signed up for — rather than only found. A word
- * for acting counts only unnegated: «ничего не бронировать, только
- * собрать варианты» asks for a search.
+ * A question about the thing, before the verb: «где дешевле купить»,
+ * «какой телефон купить», «сколько стоит продлить», "where to buy".
  */
-function asksToAct(text: string) {
-  if (stagedErrandPattern.test(text)) return true;
-  return [...text.matchAll(actionWordPattern)].some((match) => {
+const askedAboutPattern =
+  /(?<!\p{L})(?:где|куда|что|как|какой|какую|какое|какие|каких|сколько|стоит\s+ли|выгодн\p{L}*|дешевле|where|what|which|how)(?:\s+\p{L}+)?\s+$/iu;
+
+/** «просто сравни цены», «только посмотри», «just compare». */
+const onlyLookingPattern =
+  /(?<!\p{L})(?:(?:просто|только)\s+(?:сравн|найд|найт|посмотр|подбер|подобр|узна|глян|провер)\p{L}*|(?:just|only)\s+(?:compare|find|look|check|see)|compare\s+only)(?!\p{L})/iu;
+
+/** A word that asks to look for something rather than to do it. */
+const searchWordPattern =
+  /(?<!\p{L})(?:найд\p{L}*|найти|поищ\p{L}*|ищи|посмотр\p{L}*|сравн\p{L}*|подбер\p{L}*|подобра\p{L}*|узна\p{L}*|провер\p{L}*|глян\p{L}*|find|search|look|compare|check)(?!\p{L})/iu;
+
+/**
+ * Words that say not to act: a negation before any word for booking,
+ * buying, ordering, signing up or paying, in any form («не бронируй»,
+ * «пока не заказывай», «ничего не покупай»), or such a word followed by
+ * «не надо», «не будем», «пока не».
+ */
+const declinePattern =
+  /(?<!\p{L})(?:не|ни|без|don't|dont|never)(?:\s+\p{L}+){0,2}\s+(?:брон|заказ|закаж|покуп|куп|оформ|запис|запиш|оплат|оплач|бери|брать|возьм|book|buy|order|reserve|purchase)\p{L}*|(?<!\p{L})(?:брон|заказ|покуп|куп|оформ|запис|оплат|оплач|брать)\p{L}*(?:\s+\p{L}+)?\s+(?:не\s+(?:нужно|надо|стоит|будем|буду|хочу)|пока\s+не|нельзя)(?!\p{L})/iu;
+
+/** Whether one of the pattern's action words stands unnegated, and not asked about. */
+function actsIn(text: string, pattern: RegExp) {
+  return [...text.matchAll(pattern)].some((match) => {
     const before = text.slice(0, match.index);
     const after = text.slice(match.index + match[0].length);
     return (
-      !negationBeforePattern.test(before) && !negationAfterPattern.test(after)
+      !negationBeforePattern.test(before) &&
+      !negationAfterPattern.test(after) &&
+      !askedAboutPattern.test(before)
     );
   });
+}
+
+/**
+ * What the person's own words this turn say about acting. `asked`: a
+ * message of theirs asks Bro, in the imperative, to book, buy, order or
+ * sign them up, and asks it to look for nothing else — «купи молоко и найди
+ * билеты в кино» does not say which errand the purchase is. `declined`: a
+ * message says not to act yet, or only to look.
+ */
+function personOnActing(words: readonly string[] | null) {
+  const said = words ?? [];
+  const declined = said.some(
+    (text) => declinePattern.test(text) || onlyLookingPattern.test(text)
+  );
+  const asked = said.some(
+    (text) => actsIn(text, requestPattern) && !searchWordPattern.test(text)
+  );
+  return { asked: asked && !declined, declined };
+}
+
+/**
+ * Whether the errand the model wrote itself asks for the thing to be done,
+ * not only found: «Закажи на Ozon тот же корм», «дойди до страницы оплаты»,
+ * but not «Найди, где дешевле купить» or «ничего не бронировать».
+ */
+function errandAsksToAct(errand: string) {
+  if (stagedErrandPattern.test(errand)) return true;
+  if (onlyLookingPattern.test(errand)) return false;
+  return actsIn(errand, instructionPattern);
 }
 
 /**
@@ -1047,11 +1122,16 @@ function withCodeEntry(
  * cannot be identified with confidence, the code travels on to the cloud agent
  * exactly as it did before any of this existed.
  */
-async function typeCodeIntoRunBrowser(sessionId: string, code: string) {
+async function typeCodeIntoRunBrowser(
+  sessionId: string,
+  code: string,
+  /** For a code from the site's letter: the domain it may go to. */
+  domain?: string
+) {
   try {
     const cdpUrl = await findBrowserUseSessionCdpUrl(sessionId);
     if (cdpUrl === undefined) return undefined;
-    const entry = await typeOneTimeCodeOverCdp(cdpUrl, code);
+    const entry = await typeOneTimeCodeOverCdp(cdpUrl, code, { domain });
     console.info("[browser-use] one-time code entry", {
       // Never the code itself, and never the challenge URL: it carries tokens.
       inFrame: entry.inFrame,
@@ -1873,7 +1953,8 @@ async function codeFromMail(
   row: ErrandRow,
   input: BrowserTaskInput,
   context: ToolContext,
-  scope: AccessScope
+  scope: AccessScope,
+  byPerson: boolean
 ) {
   if (actsForPerson(input)) throw new Error(mailCodeWithConsentRefusal);
   if (!inConversation(context)) {
@@ -1885,6 +1966,16 @@ async function codeFromMail(
   if (row.completedAt === null || !waitsForMailCode(needs, row.outcome)) {
     throw new Error(
       `Nothing was sent: this run is not waiting for a code the site sent by email (${row.completedAt === null ? "it has not finished yet" : `it stopped with Needs: ${needs ?? "none"}`}), and codeFrom "mail" only continues one that is.`
+    );
+  }
+  // One look in the mail per stop: a run that was itself handed a code from
+  // the mail and stopped for another goes to the person, unless they ask
+  // for another look themselves.
+  if (!byPerson && handedMailCode(row.task)) {
+    throw new Error(
+      mailCodeMissingNote(
+        "a code from the user's mail already went to this errand and the site asked for another, so it is not taken again without them"
+      )
     );
   }
   const found = await mailCodeFromSite(scope, {
@@ -2557,6 +2648,8 @@ async function runBrowserTask(
 ) {
   const { conversation, scope } = conversationTarget(context);
   const { personTurn: byPerson, words } = turnWords(context, turn);
+  // Whether the person asked for the errand to be done, or said not yet.
+  const acting = personOnActing(words);
 
   if (input.action === "start") {
     const errand = z
@@ -2630,14 +2723,20 @@ async function runBrowserTask(
         home: facts.home,
         site: input.site,
         // The person's own words decide it before the errand the model
-        // wrote, which on 25.09 said «ничего не бронировать» to «забронируй».
-        staging: [...(words ?? []), errand].some(asksToAct),
+        // wrote, which on 25.09 said «ничего не бронировать» to «забронируй»;
+        // the errand's own words count only where theirs say nothing.
+        staging: acting.asked || (!acting.declined && errandAsksToAct(errand)),
       });
       // While errands wait for a browser, the cap was full a minute ago:
       // this one joins the back of the line instead of taking the slot
       // the first in line is about to get.
       if (await browserQueueOccupied()) {
-        return { kind: "queued" as const, profileId, task };
+        return {
+          aliases: secrets.aliases,
+          kind: "queued" as const,
+          profileId,
+          task,
+        };
       }
       try {
         const run = await createBrowserUseRun({
@@ -2653,6 +2752,7 @@ async function runBrowserTask(
       } catch (error) {
         if (browserUseBusy(error)) {
           return {
+            aliases: secrets.aliases,
             kind: "queued" as const,
             profileId,
             retryAfterMs: error.retryAfterMs,
@@ -2694,7 +2794,7 @@ async function runBrowserTask(
         note: [
           queued.note,
           standingNote(consent),
-          gosuslugiCodeNote(input.site),
+          gosuslugiCodeNote(input.site, boundLogins(started.aliases)),
         ]
           .filter((line) => line !== undefined)
           .join(" "),
@@ -2734,7 +2834,7 @@ async function runBrowserTask(
           ? `The payment fits the standing spend limit the user set (${formatRub(spend.decision.exposureRub)} reserved, ${formatRub(spend.decision.remainingAfterRub)} left this month), so do not ask them about it: report the receipt once the outcome arrives.`
           : undefined,
         standingNote(consent),
-        gosuslugiCodeNote(input.site),
+        gosuslugiCodeNote(input.site, boundLogins(secrets.aliases)),
       ]
         .filter((line) => line !== undefined)
         .join(" "),
@@ -2770,7 +2870,7 @@ async function runBrowserTask(
       inventedCodeRefusal([task, input.personSaid], codeAwaited(row), words);
     if (refusal) throw new Error(refusal);
     const mail = fromMail
-      ? await codeFromMail(row, input, context, scope)
+      ? await codeFromMail(row, input, context, scope, byPerson)
       : undefined;
     // What the person wrote, and only that, is what the run hears from them.
     const said = mail
@@ -2929,7 +3029,7 @@ async function runBrowserTask(
         trackedRunIsLive(runId, row.completedAt),
         row.sessionId === null || typed === undefined
           ? undefined
-          : typeCodeIntoRunBrowser(row.sessionId, typed),
+          : typeCodeIntoRunBrowser(row.sessionId, typed, mail?.domain),
       ]);
       // Any code the follow-up hands over, typed straight in or not: the
       // person's own, checked above, or the one from the site's letter.
@@ -3056,7 +3156,9 @@ async function runBrowserTask(
         message: withCodeEntry(instruction, codeEntry, carriesCode),
         searching: mail ? false : followUpSearches(said, row.outcome),
         site,
-        staging: stagesErrand(replaced) || (words ?? []).some(asksToAct),
+        // An errand the person asked to be done stays so until they say
+        // otherwise; a search stays a search.
+        staging: acting.asked || (stagesErrand(replaced) && !acting.declined),
       });
       let followUp: Awaited<ReturnType<typeof createFollowUpRun>>;
       try {
