@@ -1481,6 +1481,28 @@ describe("browser_task scoping", () => {
     );
   });
 
+  it("says in the logs when the person finds an ended run the poller left open", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    readBrowserRunForScope.mockResolvedValue({
+      ...browserRunRow(),
+      updatedAt: new Date(Date.now() - 90_000),
+    });
+    readBrowserUseRunStatus.mockResolvedValue("completed");
+    const { browserTask } = await import("@agent/tools/browser_task");
+
+    const result = await browserTask.execute(
+      { action: "status", runId },
+      toolContext("better-auth:alice")
+    );
+
+    expect(result).toMatchObject({ status: "completed" });
+    expect(warn).toHaveBeenCalledWith(
+      "[browser-use] status found an ended run still open",
+      { lastCheckedSecondsAgo: 90, runId, status: "completed" }
+    );
+    warn.mockRestore();
+  });
+
   it("requires an authenticated conversation", async () => {
     const { browserTask } = await import("@agent/tools/browser_task");
     const context = toolContext("better-auth:bob");

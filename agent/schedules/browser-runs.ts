@@ -13,6 +13,7 @@ import {
   startQueuedBrowserRun,
 } from "@agent/lib/browser-use/queue";
 import { reconcileSpendReservations } from "@agent/lib/browser-use/spend";
+import { within } from "@agent/lib/browser-use/deadline";
 import {
   deliverBrowserRunReport,
   expireBrowserRun,
@@ -66,31 +67,73 @@ const livePollIntervalMs = 4_000;
  */
 const liveWatchMs = 45_000;
 
+/**
+ * How long a tick waits on one open run, and on one stage, before it moves
+ * on. Settling a run reads Browser Use, captures its pictures, stops its
+ * browser and hands the report over; the work goes on past this, but the
+ * other runs, the redelivery and the overdue watch no longer wait for it.
+ * Nothing bounded a tick before: one call that never answered held it, and
+ * Nitro handed every later tick of the instance the same stuck promise.
+ */
+const runReconcileWaitMs = 30_000;
+const stageWaitMs = 40_000;
+
 export default defineSchedule({
   cron: "* * * * *",
   run({ attachSession, to, waitUntil }) {
     if (!browserUseConfigured()) return;
-    waitUntil(reconcileBrowserRuns({ attachSession, to }));
+    waitUntil(pollBrowserRuns({ attachSession, to }));
   },
 });
+
+/**
+ * eve settles a schedule's background work without looking at the result, so
+ * a tick that failed would otherwise leave no trace at all.
+ */
+async function pollBrowserRuns(delivery: BrowserRunDelivery) {
+  try {
+    await reconcileBrowserRuns(delivery);
+  } catch (error) {
+    console.error("[browser-use] poll failed", { cause: error });
+  }
+}
 
 async function reconcileBrowserRuns(delivery: BrowserRunDelivery) {
   const now = new Date();
   const watchUntil = now.getTime() + liveWatchMs;
-  await reconcileUnsettledBrowserRuns(delivery, now);
+  // Each stage stands on its own: one that throws must not cost the rest of
+  // the tick — the redelivery, the overdue watch and the live watch least of
+  // all, which are what gets a report out when something upstream went wrong.
+  await pollStage("settle", () => reconcileUnsettledBrowserRuns(delivery, now));
   // Errands parked on an anti-bot wall get their next attempt when it is due.
-  const retries = await claimDueBrowserRunRetries(now, pollLimit);
-  await Promise.all(
-    retries.map((retry) => retryWalledBrowserRun(delivery, retry, now))
-  );
+  await pollStage("retry", async () => {
+    const retries = await claimDueBrowserRunRetries(now, pollLimit);
+    await Promise.all(
+      retries.map((retry) => retryWalledBrowserRun(delivery, retry, now))
+    );
+  });
   // Settling above freed browsers; errands waiting for one start now.
-  await drainBrowserQueue(delivery, now);
-  await safeReconcileSpend(now);
+  await pollStage("queue", () => drainBrowserQueue(delivery, now));
+  await pollStage("spend", () => reconcileSpendReservations(now));
   // A report still pending here is one whose delivery failed; it is retried
   // every poll until it lands or runs out of attempts.
-  await redeliverPendingReports(delivery);
-  await watchOverdueReports(new Date());
+  await pollStage("redeliver", () => redeliverPendingReports(delivery));
+  await pollStage("overdue", () => watchOverdueReports(new Date()));
   await watchLiveBrowserRuns(delivery, watchUntil);
+}
+
+async function pollStage(stage: string, work: () => Promise<void>) {
+  try {
+    const done = await within(work(), stageWaitMs);
+    if (done.timedOut) {
+      console.warn("[browser-use] poll stage is still going", {
+        stage,
+        waitedMs: stageWaitMs,
+      });
+    }
+  } catch (error) {
+    console.warn("[browser-use] poll stage failed", { cause: error, stage });
+  }
 }
 
 async function redeliverPendingReports(delivery: BrowserRunDelivery) {
@@ -112,18 +155,17 @@ async function watchLiveBrowserRuns(
   if (Date.now() + livePollIntervalMs > until) return;
   if (!(await safeHasLiveBrowserRuns())) return;
   await new Promise((resolve) => setTimeout(resolve, livePollIntervalMs));
-  try {
+  await pollStage("watch", async () => {
     await reconcileUnsettledBrowserRuns(delivery, new Date());
     await redeliverPendingReports(delivery);
-  } catch (error) {
-    console.warn("[browser-use] live run watch failed", { cause: error });
-  }
+  });
   return watchLiveBrowserRuns(delivery, until);
 }
 
 async function safeHasLiveBrowserRuns() {
   try {
-    return await hasLiveBrowserRuns();
+    const live = await within(hasLiveBrowserRuns(), stageWaitMs);
+    return !live.timedOut && live.value;
   } catch (error) {
     console.warn("[browser-use] open runs could not be read", {
       cause: error,
@@ -148,9 +190,28 @@ async function reconcileUnsettledBrowserRuns(
     limit: pollLimit,
     staleBefore: new Date(now.getTime() - settleAfterMs),
   });
-  await Promise.all(runs.map((run) => reconcileBrowserRun(delivery, run, now)));
+  await Promise.all(
+    runs.map((run) => reconcileBrowserRunWithin(delivery, run, now))
+  );
   if (runs.length < pollLimit) return;
   return reconcileUnsettledBrowserRuns(delivery, now, batchesLeft - 1);
+}
+
+async function reconcileBrowserRunWithin(
+  delivery: BrowserRunDelivery,
+  run: Awaited<ReturnType<typeof takeUnsettledBrowserRuns>>[number],
+  now: Date
+) {
+  const reconciled = await within(
+    reconcileBrowserRun(delivery, run, now),
+    runReconcileWaitMs
+  );
+  if (reconciled.timedOut) {
+    console.warn("[browser-use] run reconciliation is still going", {
+      runId: run.id,
+      waitedMs: runReconcileWaitMs,
+    });
+  }
 }
 
 async function reconcileBrowserRun(
@@ -166,7 +227,24 @@ async function reconcileBrowserRun(
       status === "failed" ||
       status === "cancelled"
     ) {
-      await settleBrowserRun(delivery, run.id);
+      const settled = await settleBrowserRun(delivery, run.id, status);
+      if (settled.kind !== "open") return;
+      // The status says the run ended, its summary does not, and it has no
+      // result yet: the next poll looks again. Past the errand's time it is
+      // closed all the same, so the person hears something.
+      console.warn("[browser-use] the run ended but its summary has not", {
+        overdue,
+        runId: run.id,
+        status,
+        summaryStatus: settled.summaryStatus,
+      });
+      if (overdue) {
+        await expireBrowserRun(
+          delivery,
+          run.id,
+          "The cloud browser service reports this run as finished but never handed back its result, so its outcome is lost. Tell the user plainly and offer to run the errand again."
+        );
+      }
       return;
     }
     if (overdue) await expireBrowserRun(delivery, run.id);
@@ -282,16 +360,6 @@ async function drainBrowserQueue(
   }
   if (result.status === "busy" || result.status === "no_credits") return;
   return drainBrowserQueue(delivery, now, startsLeft - 1);
-}
-
-async function safeReconcileSpend(now: Date) {
-  try {
-    await reconcileSpendReservations(now);
-  } catch (error) {
-    console.warn("[browser-use] spend reservations could not be reconciled", {
-      cause: error,
-    });
-  }
 }
 
 async function redeliverBrowserRunReport(

@@ -28,7 +28,15 @@ export default defineHook({
   events: {
     async "turn.started"(_event, ctx) {
       const runId = reportedRunId(ctx);
-      if (runId) await renewBrowserRunReportLease(runId);
+      if (!runId) return;
+      // With the poller's settle and delivery lines, these draw the whole
+      // path of a report in the logs: on 25.09 nothing showed where three
+      // reports stopped.
+      console.info("[browser-use] report turn started", {
+        runId,
+        sessionId: ctx.session.id,
+      });
+      await renewBrowserRunReportLease(runId);
     },
     async "action.result"(event, ctx) {
       const runId = reportedRunId(ctx);
@@ -52,7 +60,16 @@ export default defineHook({
     },
     async "turn.completed"(_event, ctx) {
       const runId = reportedRunId(ctx);
-      if (runId) await finishBrowserRunReport(runId);
+      if (!runId) return;
+      // A turn that got a message through or acted has settled the report
+      // already; one that ends here said nothing — its report had reached
+      // the person before, or the model ended it without a word.
+      if (await finishBrowserRunReport(runId)) {
+        console.info("[browser-use] report turn ended without a message", {
+          runId,
+          sessionId: ctx.session.id,
+        });
+      }
     },
     // Someone stopped the turn on purpose; it is not sent again.
     async "turn.cancelled"(_event, ctx) {

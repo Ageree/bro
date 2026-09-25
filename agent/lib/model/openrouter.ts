@@ -7,6 +7,7 @@ import {
 import type { AgentModelOptionsDefinition } from "eve";
 import { env } from "@shared/environment";
 import { applicationOrigin } from "@shared/environment/origin";
+import { watchedModelFetch } from "./stream-watchdog";
 
 const applicationName = "Bro";
 
@@ -414,6 +415,9 @@ export function openRouterSelection(
 ) {
   const openrouter = createOpenRouter({
     apiKey: env.OPENROUTER_API_KEY,
+    // A call the provider stopped answering is sent again after a minute
+    // instead of holding the turn for undici's five (`stream-watchdog.ts`).
+    fetch: watchedModelFetch,
     headers: attributionHeaders(),
   });
   const model = openrouter.chat(modelId, {
