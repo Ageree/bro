@@ -38,13 +38,27 @@ export function scheduleApproval(
   return startedByPerson(context) ? "not-applicable" : "user-approval";
 }
 
+/**
+ * The task each run does. RU d12 (25.09): «сколько ехать до работы на
+ * машине» became «во сколько выезжать, чтобы быть к 10:00» — a time the
+ * person never named, which every morning's run would have held to.
+ */
+const schedulePromptSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(8_000)
+  .describe(
+    "The task each run does, as the person asked it, with every input it needs. No condition the person did not state: no arrival time, deadline, threshold or filter you made up."
+  );
+
 export const createSchedule = defineTool({
   approval: ({ session }) => scheduleApproval({ session }),
   description:
-    "Create a one-time, fixed-interval, or timezone-aware calendar job for the person. «Напомни в 9», «напомни завтра в 10 позвонить маме», «через час» are one reminder: kind once, with at as the person's wall-clock time YYYY-MM-DDTHH:MM counted from their current local time. Human recurrence is a calendar rule in the person's timezone, which stays on the same wall-clock time across daylight saving time and months of different length: «каждое 5-е число» is frequency monthly with dayOfMonth 5, «в последний день месяца» dayOfMonth \"last\", «каждое второе воскресенье» monthly_weekday with occurrence 2 and weekday 0, «по понедельникам и средам» weekly with weekdays [1, 3], «каждый будний день» weekdays, «каждый год 12 марта» yearly. A daily, weekdays or weekly rule runs on public holidays too; only when the person asks to skip them («на праздники не присылай», «кроме праздников») set skipHolidays true, and in a Russian time zone the runs then skip the holidays and days off of the production calendar. Leave timezone out: the person's own zone from their profile is used. Use interval only for a fixed count of minutes or hours, never for months or years. Write into prompt, once, the exact requested work and every input each run needs — addresses (home, work, where to go), the city for the weather, which mailbox, calendar or site to look at, names and thresholds — taken from the conversation, Personal Info and memory: a run cannot see this conversation and must never ask for them again. An input found nowhere does not hold the schedule up: create it, ask for that input in the same reply, and put the answer into prompt with schedules-update. The result's nextRunLocal is the first run on the person's clock: name exactly that day and time in the reply. A scheduled run can never act in the user's name or pay — no booking, appointment, application, job application, receipt or order: it only checks, searches and stages up to the final step, and its report asks the user to confirm in the conversation. So for «записывай, как только появится слот» schedule the check and say the booking itself waits for the user's confirmation.",
+    "Create a one-time, fixed-interval, or timezone-aware calendar job for the person. «Напомни в 9», «напомни завтра в 10 позвонить маме», «через час» are one reminder: kind once, with at as the person's wall-clock time YYYY-MM-DDTHH:MM counted from their current local time. Human recurrence is a calendar rule in the person's timezone, which stays on the same wall-clock time across daylight saving time and months of different length: «каждое 5-е число» is frequency monthly with dayOfMonth 5, «в последний день месяца» dayOfMonth \"last\", «каждое второе воскресенье» monthly_weekday with occurrence 2 and weekday 0, «по понедельникам и средам» weekly with weekdays [1, 3], «каждый будний день» weekdays, «каждый год 12 марта» yearly. A daily, weekdays or weekly rule runs on public holidays too; only when the person asks to skip them («на праздники не присылай», «кроме праздников») set skipHolidays true, and in a Russian time zone the runs then skip the holidays and days off of the production calendar. Leave timezone out: the person's own zone from their profile is used. Use interval only for a fixed count of minutes or hours, never for months or years. Write into prompt, once, the exact requested work and every input each run needs — addresses (home, work, where to go), the city for the weather, which mailbox, calendar or site to look at, names and thresholds — taken from the conversation, Personal Info and memory: a run cannot see this conversation and must never ask for them again. Add nothing the person did not state: no arrival time («быть к 10:00»), deadline, threshold, filter or extra step of your own — a run treats every line of prompt as the person's wish. An input found nowhere does not hold the schedule up: create it, ask for that input in the same reply, and put the answer into prompt with schedules-update. The result's nextRunLocal is the first run on the person's clock: name exactly that day and time in the reply. A scheduled run can never act in the user's name or pay — no booking, appointment, application, job application, receipt or order: it only checks, searches and stages up to the final step, and its report asks the user to confirm in the conversation. So for «записывай, как только появится слот» schedule the check and say the booking itself waits for the user's confirmation.",
   inputSchema: z.object({
     missedRunPolicy: z.enum(["run_latest", "catch_up"]).default("run_latest"),
-    prompt: z.string().trim().min(1).max(8_000),
+    prompt: schedulePromptSchema,
     timing: scheduleTimingInputSchema,
   }),
   async execute(input, context) {
@@ -80,7 +94,7 @@ export const listSchedules = defineTool({
 const updateScheduleInputSchema = z
   .object({
     id: z.uuid(),
-    prompt: z.string().trim().min(1).max(8_000).optional(),
+    prompt: schedulePromptSchema.optional(),
     status: z.enum(["active", "paused", "deleted"]).optional(),
     timing: scheduleTimingInputSchema.optional(),
   })

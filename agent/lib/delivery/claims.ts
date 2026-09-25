@@ -12,10 +12,18 @@ import { requestsOf } from "./novelty";
  *
  * The check stays narrow on purpose: it reads only the first person's past
  * and present of a few verbs, and only when the turn itself shows the action
- * has not happened — a browser run it just handed work to, or no calendar
- * write where one is claimed. What Bro did in earlier turns is left alone.
+ * has not happened — a browser run it just handed work to, no calendar write
+ * where one is claimed, a call the person declined on its card, a policy
+ * refused or that failed, or, in the person's own turn, no call at all of the
+ * reminder, letter, Slack message or memory claimed. What Bro did in earlier
+ * turns is left alone.
  */
-export const unperformedClaims = ["browser", "calendar"] as const;
+export const unperformedClaims = [
+  "browser",
+  "calendar",
+  "declined",
+  "undone",
+] as const;
 
 export type UnperformedClaim = (typeof unperformedClaims)[number];
 
@@ -86,11 +94,125 @@ function wroteCalendar(part: ToolResultPart, appsCalls: Set<string>) {
 }
 
 /**
+ * Actions a message may claim as done, by the tools that do them. In RU d02
+ * (25.09) the person declined the `schedules-update` card, and the turn it
+ * resumed wrote «Я перенастроил вашу задачу на 8 октября, 09:20». A setting
+ * Bro keeps outside memory — the form of address, the spend limit, Personal
+ * Info — is remembered too («Запомнил: на «вы»»), and a reminder of an event
+ * is set with the event.
+ */
+const acts = ["email", "memory", "message", "order", "schedule"] as const;
+
+type Act = (typeof acts)[number];
+
+const actTools: Record<Act, readonly string[]> = {
+  email: ["gmail-draft", "gmail-send"],
+  memory: [
+    "form_of_address",
+    "personal_info__update",
+    "profile__forget_all",
+    "profile__remove_memory",
+    "profile__save_memory",
+    "profile__update",
+    "spend_limit",
+    "standing_permission",
+    "workstreams__forget",
+    "workstreams__forget_all",
+    "workstreams__save",
+  ],
+  message: ["slack-send-message"],
+  order: ["browser_task"],
+  schedule: [
+    ...calendarWriteTools,
+    "proactive_messages",
+    "schedules-create",
+    "schedules-update",
+  ],
+};
+
+/**
+ * The calls in `messages` the person declined on an approval card. A
+ * policy's own refusal is written as an automatic request: nobody saw a card.
+ */
+function declinedCards(messages: readonly ModelMessage[]) {
+  const cards = new Map<string, string>();
+  const declined = new Set<string>();
+  for (const message of messages) {
+    if (!Array.isArray(message.content)) continue;
+    for (const part of message.content) {
+      if (part.type === "tool-approval-request" && part.isAutomatic !== true) {
+        cards.set(part.approvalId, part.toolCallId);
+      }
+      const call =
+        part.type === "tool-approval-response" && !part.approved
+          ? cards.get(part.approvalId)
+          : undefined;
+      if (call) declined.add(call);
+    }
+  }
+  return declined;
+}
+
+/**
+ * No call of an action yet: none went through, was declined on its card or
+ * refused otherwise in this turn, and none was made before it.
+ */
+function noCalls() {
+  return {
+    declined: false,
+    done: false,
+    earlierCall: false,
+    earlierRefused: false,
+    refused: false,
+  };
+}
+
+/**
+ * What came of the calls of each action: whether one went through in this
+ * turn, whether one was declined on its card, or refused by a policy or
+ * failed, in this turn, and whether one was made before it and the last of
+ * those did not go through. The `apps` tool runs any app's action, so one
+ * that went through counts for every action.
+ */
+function actOutcomes(
+  turn: readonly ModelMessage[],
+  earlier: readonly ModelMessage[]
+) {
+  const outcomes: Record<Act, ReturnType<typeof noCalls>> = {
+    email: noCalls(),
+    memory: noCalls(),
+    message: noCalls(),
+    order: noCalls(),
+    schedule: noCalls(),
+  };
+  for (const part of toolResults(earlier)) {
+    for (const act of acts) {
+      if (!actTools[act].includes(part.toolName)) continue;
+      outcomes[act].earlierCall = true;
+      outcomes[act].earlierRefused = !succeeded(part.output);
+    }
+  }
+  const declined = declinedCards(turn);
+  for (const part of toolResults(turn)) {
+    const ran = part.toolName === "apps" && succeeded(part.output);
+    for (const act of acts) {
+      if (ran) outcomes[act].done = true;
+      if (!actTools[act].includes(part.toolName)) continue;
+      if (succeeded(part.output)) outcomes[act].done = true;
+      else if (declined.has(part.toolCallId)) outcomes[act].declined = true;
+      else outcomes[act].refused = true;
+    }
+  }
+  return outcomes;
+}
+
+/**
  * What the current turn has done that a message could claim. `turn` is the
  * turn after its opening message, `earlier` everything before that message.
  * A turn a background prompt opened — a browser run's report, a scheduled
- * result — relays what happened elsewhere, so its browser claims are not
- * checked.
+ * result — relays what happened elsewhere, so its browser claims and its
+ * claims of actions no call made are not checked; a call it declined or
+ * failed still is.
  */
 export function turnActions(
   turn: readonly ModelMessage[],
@@ -100,10 +222,14 @@ export function turnActions(
   let browserPending = false;
   let codeTyped = false;
   let calendarWritten = false;
+  let calendarRefused = false;
   let reminderSet = false;
   const appsCalls = appsCalendarCalls([...earlier, ...turn]);
   for (const part of toolResults(turn)) {
-    if (!succeeded(part.output)) continue;
+    if (!succeeded(part.output)) {
+      if (calendarWriteTools.has(part.toolName)) calendarRefused = true;
+      continue;
+    }
     if (wroteCalendar(part, appsCalls)) calendarWritten = true;
     if (part.toolName === "schedules-create") reminderSet = true;
     if (part.toolName !== "browser_task") continue;
@@ -116,7 +242,10 @@ export function turnActions(
     }
   }
   return {
+    acts: actOutcomes(turn, earlier),
+    background: options.background,
     browserPending: browserPending && !options.background,
+    calendarRefused,
     calendarWritten,
     calendarWrittenEarlier: toolResults(earlier).some((part) =>
       wroteCalendar(part, appsCalls)
@@ -245,6 +374,20 @@ function sentencesOf(text: string) {
     .filter((sentence) => !otherTime.test(sentence));
 }
 
+/**
+ * A message's clauses, for a claim of an action: its sentences split again
+ * at a dash or a colon («Готово: отправил письмо», «перенастроил задачу на
+ * 09:20 — тогда открою регистрацию»), without those about another time.
+ */
+function clausesOf(text: string) {
+  return text
+    .normalize("NFKC")
+    .toLocaleLowerCase()
+    .replaceAll("ё", "е")
+    .split(/[.!?…;:\n]+|\s[—–-]\s/u)
+    .filter((clause) => !otherTime.test(clause));
+}
+
 function wordsOf(sentence: string) {
   return sentence.split(/[^\p{L}\p{N}]+/u).filter(Boolean);
 }
@@ -363,6 +506,213 @@ export function promisesUntakenStep(
 }
 
 /**
+ * How each action is said as done: one of its verbs in the past, opening a
+ * clause, with one of its nouns within three words after it — «перенастроил
+ * вашу задачу», «отправил письмо Иванову» — or on its own where the verb
+ * names the action. `undone` checks the claim even with no call of it at
+ * all; the rest only against a call that did not go through, since «задача»
+ * is also a browser run's or Notion's, and an order is the run's to report.
+ */
+const actClaims: readonly {
+  readonly act: Act;
+  readonly noun?: RegExp;
+  readonly undone: boolean;
+  readonly verbs: readonly string[];
+}[] = [
+  {
+    act: "schedule",
+    noun: /напоминани|расписани|reminder|schedule/u,
+    undone: true,
+    verbs: [
+      "поставил",
+      "настроил",
+      "перенастроил",
+      "перенес",
+      "сдвинул",
+      "создал",
+      "завел",
+      "изменил",
+      "поменял",
+      "удалил",
+      "отменил",
+      "остановил",
+      "выключил",
+      "убрал",
+      "set",
+      "scheduled",
+      "moved",
+      "changed",
+      "updated",
+      "deleted",
+      "cancelled",
+      "canceled",
+    ],
+  },
+  {
+    act: "schedule",
+    noun: /задач/u,
+    undone: false,
+    verbs: [
+      "перенастроил",
+      "перенес",
+      "сдвинул",
+      "изменил",
+      "поменял",
+      "удалил",
+      "отменил",
+      "остановил",
+      "выключил",
+    ],
+  },
+  {
+    // «Написал письмо Иванову: …» is as often a draft in the chat.
+    act: "email",
+    noun: /письм|email|e-mail/u,
+    undone: true,
+    verbs: ["отправил", "ответил", "переслал", "sent", "replied", "forwarded"],
+  },
+  {
+    act: "message",
+    noun: /slack|слак/u,
+    undone: true,
+    verbs: ["отправил", "написал", "sent", "posted"],
+  },
+  {
+    act: "memory",
+    noun: /памят|memory/u,
+    undone: true,
+    verbs: [
+      "сохранил",
+      "записал",
+      "удалил",
+      "стер",
+      "убрал",
+      "очистил",
+      "saved",
+      "deleted",
+      "erased",
+      "cleared",
+    ],
+  },
+  { act: "memory", undone: true, verbs: ["запомнил", "remembered"] },
+  {
+    act: "order",
+    undone: false,
+    verbs: [
+      "заказал",
+      "оформил заказ",
+      "забронировал",
+      "оплатил",
+      "купил",
+      "записал вас",
+      "записал тебя",
+      "booked",
+      "ordered",
+      "paid",
+      "bought",
+    ],
+  },
+];
+
+/**
+ * Words a clause may open with before Bro's own verb. Russian says the past
+ * alike for everyone, so «Иванов отправил письмо» from the inbox is somebody
+ * else's act: only a clause that opens with the verb, or with «я» and words
+ * like these, says what Bro did.
+ */
+const leadWords = new Set([
+  "я",
+  "i",
+  "и",
+  "а",
+  "да",
+  "вот",
+  "так",
+  "итак",
+  "уже",
+  "только",
+  "что",
+  "сейчас",
+  "сразу",
+  "заодно",
+  "также",
+  "тоже",
+  "еще",
+  "все",
+  "готово",
+  "ок",
+  "окей",
+  "хорошо",
+  "отлично",
+  "кстати",
+  "and",
+  "also",
+  "already",
+  "have",
+  "ve",
+  "just",
+  "now",
+  "ok",
+  "okay",
+  "done",
+  "yes",
+]);
+
+/**
+ * Whether a clause opens with one of `verbs` as Bro's own act, with a `noun`
+ * within three words after it when the action has one.
+ */
+function saysAct(
+  clause: string,
+  verbs: readonly string[],
+  noun: RegExp | undefined
+) {
+  const words = wordsOf(clause);
+  const start = words.findIndex((word) => !leadWords.has(word));
+  if (start === -1) return false;
+  return verbs.some((verb) => {
+    const phrase = wordsOf(verb);
+    if (!phrase.every((word, offset) => words[start + offset] === word)) {
+      return false;
+    }
+    const end = start + phrase.length - 1;
+    return (
+      noun === undefined ||
+      words.some((word, at) => at > end && at - end <= 3 && noun.test(word))
+    );
+  });
+}
+
+/**
+ * Why a message's claim of an action is untrue, or nothing: its call was
+ * declined on its card, refused or failed — in this turn, or as the last
+ * call before it — or, in a turn the person opened, no call of it was made
+ * at all. A claim is left alone once a call of it went through in this
+ * turn, or an earlier one did (the message may be about that). An order is
+ * checked only against a card the person declined in their own turn: a
+ * report's turn tells what the run did, whatever a later call there met.
+ */
+function actClaim(text: string, actions: ReturnType<typeof turnActions>) {
+  const clauses = clausesOf(text);
+  for (const { act, noun, undone, verbs } of actClaims) {
+    if (!clauses.some((clause) => saysAct(clause, verbs, noun))) continue;
+    const outcome = actions.acts[act];
+    if (outcome.done) continue;
+    if (act === "order") {
+      if (outcome.declined && !actions.background) return "declined";
+      continue;
+    }
+    if (outcome.declined || outcome.refused || outcome.earlierRefused) {
+      return "declined";
+    }
+    if (undone && !actions.background && !outcome.earlierCall) {
+      return "undone";
+    }
+  }
+  return undefined;
+}
+
+/**
  * What a message claims as done that this turn has not done, or nothing.
  * `actions` is what `turnActions` found.
  */
@@ -379,20 +729,21 @@ export function unperformedClaim(
   }
   if (!actions.calendarWritten) {
     // A past tense after an earlier turn wrote to the calendar may well be
-    // about that write. A past tense anywhere in the sentence claims a write
-    // («Записал: встреча в пятницу в календаре»), unless the calendar there
-    // is only promised; a present one only next to the calendar.
+    // about that write, unless a write of this turn was declined or failed.
+    // A past tense anywhere in the sentence claims a write («Записал: встреча
+    // в пятницу в календаре»), unless the calendar there is only promised; a
+    // present one only next to the calendar.
     const claimed = sentences.some((sentence) => {
       const own = sentence.replaceAll(theirCalendar, "");
       if (!calendarNoun.test(own)) return false;
       return (
         saysNearCalendar(own, calendarPresentVerbs) ||
-        (!actions.calendarWrittenEarlier &&
+        ((actions.calendarRefused || !actions.calendarWrittenEarlier) &&
           !promisesStep(own) &&
           says(sentence, calendarPastVerbs))
       );
     });
-    if (claimed) return "calendar";
+    if (claimed) return actions.calendarRefused ? "declined" : "calendar";
   }
-  return undefined;
+  return actClaim(text, actions);
 }

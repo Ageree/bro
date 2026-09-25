@@ -133,6 +133,7 @@ export const cardToolsBeforeOutcome = [
   "notion-add-task",
   "notion-read",
   "notion-search",
+  "profile__forget_all",
   "profile__remove_memory",
   "schedules-create",
   "schedules-update",
@@ -142,6 +143,7 @@ export const cardToolsBeforeOutcome = [
   "spend_limit",
   "standing_permission",
   "workstreams__forget",
+  "workstreams__forget_all",
 ] as const;
 
 /**

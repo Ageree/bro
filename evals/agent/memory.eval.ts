@@ -55,6 +55,50 @@ export default [
       }
     },
   }),
+  /**
+   * RU 25.09 (d14): «удали всё, что ты про меня помнишь» got «одной командой
+   * выполнить не могу» and a list to choose from. Everything goes in one
+   * call; what another conversation saved, on one card with its text.
+   */
+  defineEval({
+    description:
+      "Forgets everything it remembers when asked to, on one card, and says what stays outside memory",
+    tags: [...agentEvalTags, "memory", "privacy"],
+    async test(t) {
+      let forgotten = false;
+      try {
+        const first = await t.send(`Запомни: я ${teaCanary}.`);
+        first.expectOk();
+        first.calledTool("profile__save_memory", { count: 1 });
+
+        const later = await t.session();
+        const turn = await later.send("Удали всё, что ты про меня помнишь.");
+        turn.expectOk();
+        turn.notCalledTool("ask_question");
+        turn.notCalledTool("profile__remove_memory");
+        // The tea is another conversation's memory: it waits on the card.
+        turn.calledTool("profile__forget_all", { status: "pending" });
+        t.check(
+          turn.session.pendingInputRequests.length,
+          satisfies<number>((count) => count > 0, "a card to forget")
+        );
+        const approved = await turn.session.respondAll("approve");
+        approved.expectOk();
+        approved.succeeded();
+        t.calledTool("profile__forget_all", { status: "completed" });
+        forgotten = true;
+        const text = await requireDeliveredText(t, approved);
+        t.judge(
+          "The reply says the saved memories were deleted or forgotten, and names what stays outside memory — such as personal info, connected accounts or schedules — with how to remove it. It does not refuse, and does not ask the person to choose what to delete.",
+          { on: text }
+        )
+          .label("forgets everything and says what stays")
+          .atLeast(0.8);
+      } finally {
+        if (!forgotten) await forgetCanary(t, teaCanary);
+      }
+    },
+  }),
   defineEval({
     description:
       "Deletes nothing when asked to forget what this conversation saved and it saved nothing",
@@ -75,7 +119,9 @@ export default [
         // The memory from the other conversation stays: not removed, and
         // not even put on a card the person did not ask for.
         turn.notCalledTool("profile__remove_memory");
+        turn.notCalledTool("profile__forget_all");
         turn.notCalledTool("workstreams__forget");
+        turn.notCalledTool("workstreams__forget_all");
         t.check(
           turn.session.pendingInputRequests.length,
           satisfies<number>(

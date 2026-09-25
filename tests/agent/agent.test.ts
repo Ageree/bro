@@ -280,9 +280,11 @@ describe("interactive delivery enforcement", () => {
     expect(options?.withheldTools).toEqual([
       "calendar-delete-event",
       "calendar-update-event",
+      "profile__forget_all",
       "profile__remove_memory",
       "schedules-update",
       "workstreams__forget",
+      "workstreams__forget_all",
     ]);
     // The model learns why they are gone, so it does not claim it used them.
     expect(options?.replyNote).toContain("are not available");

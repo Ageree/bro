@@ -21,7 +21,9 @@ import {
   saveMemory,
   updateMemory,
 } from "@db/services/memory/records";
+import profileMemory from "@agent/memory/profile";
 import {
+  memoryBulkRemovalApproval,
   memoryRemovalApproval,
   parseLegacyRecall,
   renderProfile,
@@ -378,6 +380,185 @@ describe("forgetting a memory without the person's word", () => {
 });
 
 /**
+ * RU 25.09 (d14): «удали всё, что ты про меня помнишь» got «одной командой
+ * выполнить не могу» and a list to choose from. Every record goes in one
+ * call, and what other conversations saved goes on one card with each text.
+ */
+describe("forgetting everything at once", () => {
+  const everything = [
+    { index: 0, text: "Любит суши." },
+    { index: 1, text: "Без моего ок ничего не оплачивать и никому не писать." },
+    { index: 2, text: "Живёт в Казани." },
+  ];
+
+  async function saveEverything() {
+    await saveMemory(
+      alice,
+      "scope-a",
+      { text: "Любит суши." },
+      "earlier:sushi",
+      { sessionId: "earlier-session", turnId: "turn" }
+    );
+    await saveMemory(
+      alice,
+      "scope-a",
+      {
+        category: "rule",
+        text: "Без моего ок ничего не оплачивать и никому не писать.",
+      },
+      "earlier:rule",
+      { sessionId: "earlier-session", turnId: "turn" }
+    );
+    await saveMemory(
+      alice,
+      "scope-a",
+      { text: "Живёт в Казани." },
+      "this:city",
+      { sessionId: "this-session", turnId: "turn" }
+    );
+  }
+
+  it("asks for one card listing every record another conversation saved", async () => {
+    await saveEverything();
+
+    expect(
+      await memoryBulkRemovalApproval(
+        alice,
+        "scope-a",
+        personTurn("this-session"),
+        { records: everything }
+      )
+    ).toBe("user-approval");
+    // What this conversation saved goes at once, as one record would.
+    expect(
+      await memoryBulkRemovalApproval(
+        alice,
+        "scope-a",
+        personTurn("this-session"),
+        { records: [{ index: 2, text: "Живёт в Казани." }] }
+      )
+    ).toBe("not-applicable");
+    // The card never shows a text the record does not have.
+    const misnamed = await memoryBulkRemovalApproval(
+      alice,
+      "scope-a",
+      personTurn("this-session"),
+      {
+        records: [
+          { index: 0, text: "Любит роллы." },
+          { index: 2, text: "Живёт в Казани." },
+        ],
+      }
+    );
+    expect(misnamed).toMatchObject({ type: "denied" });
+    expect(JSON.stringify(misnamed)).toContain("0: «Любит суши.»");
+    // A report turn takes no rule away, all at once or one by one.
+    const fromReport = await memoryBulkRemovalApproval(
+      alice,
+      "scope-a",
+      reportTurn("this-session"),
+      { records: everything }
+    );
+    expect(fromReport).toMatchObject({ type: "denied" });
+    expect(JSON.stringify(fromReport)).toContain(
+      "only in a turn the user's own message started"
+    );
+
+    const card = withApprovalCard(
+      {
+        action: {
+          input: { records: everything },
+          toolName: "profile__forget_all",
+        },
+        kind: "tool-approval",
+        options: [
+          { id: "approve", label: "Approve" },
+          { id: "cancel", label: "Cancel" },
+        ],
+        prompt: "Approve tool call: profile__forget_all",
+      },
+      "ru"
+    );
+    expect(card.prompt).toBe(
+      [
+        "Забыть из памяти эти записи:",
+        "• «Любит суши.»",
+        "• «Без моего ок ничего не оплачивать и никому не писать.»",
+        "• «Живёт в Казани.»",
+      ].join("\n")
+    );
+  });
+
+  it("sends a card too long for a messenger back to be split", async () => {
+    const records = Array.from({ length: 40 }, (_, index) => ({
+      index,
+      text: `Запись номер ${String(index)}: ${"поезд, нижняя полка, место у окна. ".repeat(3)}`.trim(),
+    }));
+    for (const { text } of records) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Each save takes the next index, and the records name theirs in order.
+      await saveMemory(alice, "scope-a", { text }, `earlier:${text}`, {
+        sessionId: "earlier-session",
+        turnId: "turn",
+      });
+    }
+
+    const decision = await memoryBulkRemovalApproval(
+      alice,
+      "scope-a",
+      personTurn("this-session"),
+      { records }
+    );
+    expect(decision).toMatchObject({ type: "denied" });
+    expect(JSON.stringify(decision)).toContain("Split the records");
+    expect(
+      await memoryBulkRemovalApproval(
+        alice,
+        "scope-a",
+        personTurn("this-session"),
+        { records: records.slice(0, 20) }
+      )
+    ).toBe("user-approval");
+  });
+
+  it("forgets every record that still reads as the card showed it", async () => {
+    await saveEverything();
+    // Corrected after the card: the person did not see its new text.
+    await updateMemory(
+      alice,
+      "scope-a",
+      {
+        content: {
+          aliases: [],
+          category: "fact",
+          localOnly: false,
+          relatedIndexes: [],
+          text: "Живёт в Самаре.",
+          validUntil: null,
+        },
+        expectedRevision: 1,
+        index: 2,
+      },
+      "this:correct"
+    );
+    const session = profileToolsContext("this-session");
+    const tools = await profileMemory.provider.tools(session);
+    if (!tools) throw new Error("Expected profile tools.");
+
+    expect(
+      await tools.forget_all.execute(
+        { records: everything },
+        { ...session, callId: "forget-all", toolName: "profile__forget_all" }
+      )
+    ).toMatchObject({ changed: [2], forgotten: [0, 1] });
+    expect(
+      (await listCurrentMemories(alice, "scope-a")).map(
+        (record) => record.content?.text
+      )
+    ).toEqual(["Живёт в Самаре."]);
+  });
+});
+
+/**
  * In the RU benchmark (d14) «никогда ничего не оплачивай и никому не пиши
  * без моего ок» was not kept anywhere. A rule is saved as one and read back
  * first, as a boundary that only restricts.
@@ -528,6 +709,37 @@ function personTurn(id: string) {
       initiator: null,
     },
     id,
+  };
+}
+
+/** What the profile provider's tools run with, in a person's turn. */
+function profileToolsContext(sessionId: string) {
+  return {
+    abortSignal: new AbortController().signal,
+    channel: {},
+    getSandbox() {
+      throw new Error("Sandbox access is outside this test.");
+    },
+    getSkill() {
+      throw new Error("Skill access is outside this test.");
+    },
+    getToken() {
+      throw new Error("Token access is outside this test.");
+    },
+    memory: {
+      scope: { key: "scope-a", namespace: "test-profile", value: "alice" },
+      slot: "profile",
+    },
+    messages: [],
+    model: null,
+    requireAuth() {
+      throw new Error("Auth access is outside this test.");
+    },
+    session: {
+      ...personTurn(sessionId),
+      turn: { id: "turn", sequence: 1 },
+    },
+    turn: { id: "turn", input: [], sequence: 1 },
   };
 }
 

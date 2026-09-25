@@ -11,6 +11,7 @@ import { z } from "zod";
 import { resolveModeValue, startedByPerson } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { searchIndexedMemories } from "@agent/lib/memory/supermemory";
+import { forgetAllCardFits } from "@shared/chat/approval-card";
 import {
   findMemories,
   forgetMemory,
@@ -45,6 +46,28 @@ const removeMemoryInputSchema = forgetMemorySchema.extend({
     .optional()
     .describe(
       "The memory's text exactly as the profile lists it. The confirmation card shows it to the user; required for a memory another conversation saved."
+    ),
+});
+
+const forgetAllInputSchema = z.strictObject({
+  records: z
+    .array(
+      z.strictObject({
+        index: memoryIndexSchema,
+        text: z
+          .string()
+          .trim()
+          .min(1)
+          .max(2_048)
+          .describe(
+            "The memory's text exactly as the profile lists it, without its aliases."
+          ),
+      })
+    )
+    .min(1)
+    .max(60)
+    .describe(
+      "Every memory to forget, each by its index and its text exactly as the profile or profile__find lists it. The confirmation card shows these texts."
     ),
 });
 
@@ -134,6 +157,121 @@ export async function memoryRemovalApproval(
   return "user-approval";
 }
 
+/**
+ * Whether forgetting several memories at once needs the person's word, on
+ * one card. «Удали всё, что ты про меня помнишь» asks for every record, and
+ * on 25.09 (RU d14) Bro answered it with «одной командой выполнить не могу»
+ * and a list to choose from. The rule of `memoryRemovalApproval` holds for
+ * each record: one another conversation saved goes only on the person's
+ * confirmation of its own text, so the one card lists every text, and a
+ * call that names a record differently is sent back with the texts to show.
+ * A card too long for a messenger is sent back to be split.
+ */
+export async function memoryBulkRemovalApproval(
+  scope: AccessScope,
+  scopeKey: string,
+  session: TurnSession,
+  input: z.infer<typeof forgetAllInputSchema> | undefined
+): Promise<ApprovalStatus> {
+  if (input === undefined) return "user-approval";
+  const named = await Promise.all(
+    input.records.map(async ({ index, text }) => ({
+      index,
+      record: await readMemorySource(scope, scopeKey, index),
+      text,
+    }))
+  );
+  const current = named.flatMap(({ index, record, text }) =>
+    record === null ? [] : [{ index, record, text }]
+  );
+  if (
+    !startedByPerson({ session }) &&
+    current.some(({ record }) => record.category === "rule")
+  ) {
+    return { reason: ruleOutsidePersonTurn, type: "denied" };
+  }
+  const misnamed = current.filter(
+    ({ record, text }) =>
+      comparableMemoryText(text) !== comparableMemoryText(record.text)
+  );
+  if (misnamed.length > 0) {
+    const texts = misnamed
+      .map(({ index, record }) => `${String(index)}: «${record.text}»`)
+      .join("; ");
+    return {
+      reason: `Nothing was forgotten. The confirmation card shows each memory's own text, and these read differently: ${texts}. Call again with each text exactly as it reads there.`,
+      type: "denied",
+    };
+  }
+  if (current.every(({ record }) => record.sourceSessionId === session.id)) {
+    return "not-applicable";
+  }
+  if (
+    !forgetAllCardFits(
+      "memory",
+      input.records.map(({ text }) => text)
+    )
+  ) {
+    return {
+      reason:
+        "Nothing was forgotten: the card listing all these texts would be too long for a messenger. Split the records into two or more calls; each gets its own card.",
+      type: "denied",
+    };
+  }
+  return "user-approval";
+}
+
+/**
+ * Forgets each named memory that still reads as the card showed it. One
+ * corrected since stays, and the result names it.
+ */
+async function forgetNamedMemories(
+  scope: AccessScope,
+  scopeKey: string,
+  records: z.infer<typeof forgetAllInputSchema>["records"],
+  operationId: string
+) {
+  const current = await Promise.all(
+    records.map(async ({ index, text }) => ({
+      index,
+      record: await readMemory(scope, scopeKey, index),
+      text,
+    }))
+  );
+  const forgotten: number[] = [];
+  const changed: number[] = [];
+  const missing: number[] = [];
+  for (const { index, record, text } of current) {
+    if (!record) {
+      missing.push(index);
+      continue;
+    }
+    if (
+      record.content &&
+      comparableMemoryText(record.content.text) !== comparableMemoryText(text)
+    ) {
+      changed.push(index);
+      continue;
+    }
+    // oxlint-disable-next-line eslint/no-await-in-loop -- Each forget locks the memory scope: one at a time, a long list takes one connection, not the pool.
+    await forgetMemory(
+      scope,
+      scopeKey,
+      { expectedRevision: record.revision, index },
+      `${operationId}:${String(index)}`
+    );
+    forgotten.push(index);
+  }
+  return {
+    forgotten,
+    ...(changed.length > 0 && {
+      changed,
+      note: "The memories in changed were corrected after the card and were not forgotten.",
+    }),
+    ...(missing.length > 0 && { missing }),
+  };
+}
+
 export function createProfileMemoryProvider(
   legacyProvider: MemoryProvider,
   legacyBackend: MemoryDocumentBackend | null = null
@@ -166,6 +304,20 @@ export function createProfileMemoryProvider(
           inputSchema: findMemorySchema,
           execute: (input) => findMemories(scope, scopeKey, input),
         }),
+        forget_all: defineTool({
+          approval: ({ session, toolInput }) =>
+            memoryBulkRemovalApproval(scope, scopeKey, session, toolInput),
+          description:
+            "Forget several durable memories in one call: everything the user asked to forget. «Удали всё, что ты про меня помнишь» or «забудь всё обо мне» is clear, not broad: pass every record, rules included — do not ask which ones. List each by its index and its text exactly as the profile lists it, without the aliases; when the profile says more memories exist, page through profile__find with an empty query and include those too. Memories this conversation saved go at once; if any was saved in another conversation, the user confirms the whole list on one card that shows every text. Personal Info, schedules, connected accounts and the conversation history are not memory records and stay as they are.",
+          inputSchema: forgetAllInputSchema,
+          execute: ({ records }, toolContext) =>
+            forgetNamedMemories(
+              scope,
+              scopeKey,
+              records,
+              `${toolContext.session.id}:${toolContext.callId}`
+            ),
+        }),
         read: defineTool({
           description:
             "Read one durable memory and its current revision. A null result means it is absent, expired, or forgotten.",
@@ -176,7 +328,7 @@ export function createProfileMemoryProvider(
           approval: ({ session, toolInput }) =>
             memoryRemovalApproval(scope, scopeKey, session, toolInput),
           description:
-            "Forget one durable memory the user named themselves, or one this conversation just saved wrong. When the request is broad or unclear («удали всё про меня», «забудь, что запомнил в этом разговоре» with nothing saved here), forget nothing: ask one short question and end the turn, then act only on the answer. A memory saved in another conversation is forgotten only after the user confirms it on a card that shows its text, so pass that text exactly as the profile lists it. Existing conversation history and external retention are unchanged.",
+            "Forget one durable memory the user named themselves, or one this conversation just saved wrong; to forget several, or everything («удали всё, что ты про меня помнишь»), use profile__forget_all. When the request is unclear («забудь, что запомнил в этом разговоре» with nothing saved here), forget nothing: ask one short question and end the turn, then act only on the answer. A memory saved in another conversation is forgotten only after the user confirms it on a card that shows its text, so pass that text exactly as the profile lists it. Existing conversation history and external retention are unchanged.",
           inputSchema: removeMemoryInputSchema,
           execute: ({ expectedRevision, index }, toolContext) =>
             forgetMemory(

@@ -67,6 +67,22 @@ describe("schedule tools", () => {
     services.timeZone.mockResolvedValue("Asia/Yekaterinburg");
   });
 
+  // RU d12 (25.09): «сколько ехать до работы на машине» became «во сколько
+  // выезжать, чтобы быть к 10:00» in the prompt every morning's run follows.
+  it("keeps conditions the person never stated out of a schedule's prompt", () => {
+    expect(createSchedule.description).toContain(
+      "Add nothing the person did not state: no arrival time («быть к 10:00»)"
+    );
+    for (const { inputSchema } of [createSchedule, updateSchedule]) {
+      if (!(inputSchema instanceof z.ZodType)) {
+        throw new TypeError("Expected an authored Zod input schema.");
+      }
+      expect(JSON.stringify(z.toJSONSchema(inputSchema))).toContain(
+        "No condition the person did not state: no arrival time"
+      );
+    }
+  });
+
   it("resumes a run with the person's answer to the question this chat showed", async () => {
     const answer = await answerTool(
       dynamicContext("photon-imessage", "channel:photon", [

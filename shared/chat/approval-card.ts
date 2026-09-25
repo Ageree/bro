@@ -74,6 +74,7 @@ const cardText = {
     limitSet:
       "Spend limit — payments within it go through without asking from now on:",
     memoryForget: "Forget this from memory:",
+    memoryForgetAll: "Forget these records from memory:",
     notionDatabase: "Database",
     notionDue: "Due",
     notionNotes: "Notes",
@@ -107,6 +108,7 @@ const cardText = {
     what: "What",
     where: "Where",
     workstreamForget: "Forget the saved work on",
+    workstreamForgetAll: "Forget this saved work:",
   },
   ru: {
     amount: "Стоимость",
@@ -153,6 +155,7 @@ const cardText = {
     limitSet:
       "Лимит трат без спроса — в этих пределах оплата дальше без подтверждения:",
     memoryForget: "Забыть из памяти:",
+    memoryForgetAll: "Забыть из памяти эти записи:",
     notionDatabase: "База",
     notionDue: "Срок",
     notionNotes: "Заметки",
@@ -186,6 +189,7 @@ const cardText = {
     what: "Что",
     where: "Где",
     workstreamForget: "Забыть сохранённое дело",
+    workstreamForgetAll: "Забыть сохранённые дела:",
   },
 } as const;
 
@@ -726,6 +730,32 @@ function calendarUpdatePrompt(
  */
 const approvalCardMaxLength = 3_500;
 
+/**
+ * What forgetting several records at once shows: every record by its own
+ * text, or every saved work by its title, one per line.
+ */
+function forgetAllPrompt(heading: string, names: readonly string[]) {
+  return [heading, ...names.map((name) => `• «${oneLine(name)}»`)].join("\n");
+}
+
+/**
+ * Whether the card of forgetting these records, or this saved work, at once
+ * shows every one of them in every language and channel. The approval
+ * policy sends a longer call back to be split.
+ */
+export function forgetAllCardFits(
+  kind: "memory" | "workstreams",
+  names: readonly string[]
+) {
+  return Object.values(cardText).every(
+    (text) =>
+      forgetAllPrompt(
+        kind === "memory" ? text.memoryForgetAll : text.workstreamForgetAll,
+        names
+      ).length <= approvalCardMaxLength
+  );
+}
+
 const appsCallSchema = z.object({
   action: z.literal("run"),
   app: z.string(),
@@ -978,6 +1008,28 @@ function cardPrompt(
     const call = z.object({ text: z.string() }).safeParse(action.input);
     return call.success
       ? `${text.memoryForget}\n«${oneLine(call.data.text)}»`
+      : undefined;
+  }
+  if (action.toolName === "profile__forget_all") {
+    const call = z
+      .object({ records: z.array(z.object({ text: z.string() })) })
+      .safeParse(action.input);
+    return call.success
+      ? forgetAllPrompt(
+          text.memoryForgetAll,
+          call.data.records.map((record) => record.text)
+        )
+      : undefined;
+  }
+  if (action.toolName === "workstreams__forget_all") {
+    const call = z
+      .object({ workstreams: z.array(z.object({ title: z.string() })) })
+      .safeParse(action.input);
+    return call.success
+      ? forgetAllPrompt(
+          text.workstreamForgetAll,
+          call.data.workstreams.map((workstream) => workstream.title)
+        )
       : undefined;
   }
   // The saved work by the title its policy checked against the record; a

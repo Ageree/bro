@@ -235,6 +235,80 @@ describe("workstream memory", () => {
     expect(await readWorkstream(alice, "key-a", "autumn-trip")).toBeNull();
   });
 
+  // RU 25.09 (d14): «удали всё, что ты про меня помнишь» takes all the
+  // saved work, on one card with the title of each.
+  it("forgets all the saved work at once, on one card listing other conversations' titles", async () => {
+    const first = context("first");
+    const later = context("later");
+    const firstTools = await workstreamMemory.provider.tools(first);
+    const laterTools = await workstreamMemory.provider.tools(later);
+    if (!firstTools || !laterTools) throw new Error("Expected tools.");
+    await firstTools.save.execute(
+      { id: "autumn-trip", expectedRevision: 0, content },
+      { ...first, callId: "save", toolName: "workstreams__save" }
+    );
+    await laterTools.save.execute(
+      {
+        id: "uk-visa",
+        expectedRevision: 0,
+        content: { ...content, title: "UK visa" },
+      },
+      { ...later, callId: "save", toolName: "workstreams__save" }
+    );
+    const everything = {
+      workstreams: [
+        { id: "autumn-trip", title: "Autumn trip" },
+        { id: "uk-visa", title: "UK visa" },
+      ],
+    };
+
+    expect(await forgetAllDecision("later", everything)).toBe("user-approval");
+    // This conversation's own work goes at once.
+    expect(
+      await forgetAllDecision("later", {
+        workstreams: [{ id: "uk-visa", title: "UK visa" }],
+      })
+    ).toBe("not-applicable");
+    const misnamed = await forgetAllDecision("later", {
+      workstreams: [{ id: "autumn-trip", title: "Old test data" }],
+    });
+    expect(misnamed).toMatchObject({ type: "denied" });
+    expect(JSON.stringify(misnamed)).toContain("autumn-trip: «Autumn trip»");
+
+    const card = withApprovalCard(
+      {
+        action: { input: everything, toolName: "workstreams__forget_all" },
+        kind: "tool-approval",
+        options: [
+          { id: "approve", label: "Approve" },
+          { id: "cancel", label: "Cancel" },
+        ],
+        prompt: "Approve tool call: workstreams__forget_all",
+      },
+      "ru"
+    );
+    expect(card.prompt).toBe(
+      "Забыть сохранённые дела:\n• «Autumn trip»\n• «UK visa»"
+    );
+
+    expect(
+      await laterTools.forget_all.execute(everything, {
+        ...later,
+        callId: "forget-all",
+        toolName: "workstreams__forget_all",
+      })
+    ).toEqual({ forgotten: ["autumn-trip", "uk-visa"] });
+    // Nothing saved under an id: nothing reported as forgotten.
+    expect(
+      await laterTools.forget_all.execute(
+        { workstreams: [{ id: "none", title: "none" }] },
+        { ...later, callId: "forget-none", toolName: "workstreams__forget_all" }
+      )
+    ).toEqual({ forgotten: [], missing: ["none"] });
+    expect(await readWorkstream(alice, "key-a", "autumn-trip")).toBeNull();
+    expect(await readWorkstream(alice, "key-a", "uk-visa")).toBeNull();
+  });
+
   it("isolates records by both authenticated workspace and Eve memory scope", async () => {
     await saveWorkstream(
       alice,
@@ -540,6 +614,25 @@ describe("workstream memory", () => {
     ).rejects.toBe(reason);
   });
 });
+
+/** What the `workstreams__forget_all` policy decides in a session. */
+async function forgetAllDecision(
+  sessionId: string,
+  toolInput: { workstreams: { id: string; title: string }[] }
+) {
+  const session = context(sessionId);
+  const approval = (await workstreamMemory.provider.tools(session))?.forget_all
+    .approval;
+  if (approval === undefined) throw new Error("Expected a forget_all policy.");
+  const policy = "request" in approval ? approval.request : approval;
+  return policy({
+    ...session,
+    approvedTools: new Set(),
+    callId: "forget-all",
+    toolInput,
+    toolName: "workstreams__forget_all",
+  });
+}
 
 /** What the `workstreams__forget` policy decides for a call in a session. */
 async function forgetDecision(

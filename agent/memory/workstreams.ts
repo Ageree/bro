@@ -9,6 +9,7 @@ import { z } from "zod";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { resolveModeValue } from "@agent/lib/mode";
 import { comparableMemoryText } from "@agent/lib/memory/profile";
+import { forgetAllCardFits } from "@shared/chat/approval-card";
 import {
   findWorkstreams,
   forgetWorkstream,
@@ -31,6 +32,26 @@ const forgetWorkstreamInputSchema = forgetWorkstreamSchema.extend({
     .max(100)
     .describe(
       "The workstream's title exactly as saved. The confirmation card shows it to the user when another conversation saved the work."
+    ),
+});
+
+const forgetAllInputSchema = z.strictObject({
+  workstreams: z
+    .array(
+      z.strictObject({
+        id: workstreamIdSchema,
+        title: z
+          .string()
+          .trim()
+          .min(1)
+          .max(100)
+          .describe("The workstream's title exactly as saved."),
+      })
+    )
+    .min(1)
+    .max(40)
+    .describe(
+      "Every workstream to forget, each by its id and its title exactly as saved. The confirmation card shows these titles."
     ),
 });
 
@@ -91,6 +112,101 @@ export default defineMemory({
           inputSchema: findWorkstreamsSchema,
           execute: (input) => findWorkstreams(scope, key, input),
         }),
+        // «Удали всё, что ты про меня помнишь» (RU d14, 25.09) takes all the
+        // saved work with it: one call, and one card listing every title
+        // another conversation saved, as each would have on its own.
+        forget_all: defineTool({
+          approval: async ({ session, toolInput }) => {
+            if (toolInput === undefined) return "user-approval";
+            const named = await Promise.all(
+              toolInput.workstreams.map(async ({ id, title }) => ({
+                id,
+                saved: await readWorkstream(scope, key, id),
+                title,
+              }))
+            );
+            const current = named.flatMap(({ id, saved, title }) =>
+              saved?.content
+                ? [{ id, saved, content: saved.content, title }]
+                : []
+            );
+            const misnamed = current.filter(
+              ({ content, title }) =>
+                comparableMemoryText(title) !==
+                comparableMemoryText(content.title)
+            );
+            if (misnamed.length > 0) {
+              const titles = misnamed
+                .map(({ content, id }) => `${id}: «${content.title}»`)
+                .join("; ");
+              return {
+                reason: `Nothing was forgotten. The confirmation card shows each workstream's saved title, and these read differently: ${titles}. Call again with each title exactly as saved.`,
+                type: "denied",
+              };
+            }
+            if (current.every(({ saved }) => saved.sessionId === session.id)) {
+              return "not-applicable";
+            }
+            if (
+              !forgetAllCardFits(
+                "workstreams",
+                toolInput.workstreams.map(({ title }) => title)
+              )
+            ) {
+              return {
+                reason:
+                  "Nothing was forgotten: the card listing all these titles would be too long for a messenger. Split them into two or more calls; each gets its own card.",
+                type: "denied",
+              };
+            }
+            return "user-approval";
+          },
+          description:
+            "Forget several saved workstreams in one call: everything the user asked to forget, including all of them when they ask you to forget everything you know about them — do not ask which ones. List each by its id and its title exactly as saved: the index names current and elsewhere work, and workstreams__find with an empty query lists the rest, completed work included. Call it only for saved work: with none saved, there is nothing to forget. Work this conversation started goes at once; if any was saved in another conversation, the user confirms the whole list on one card that shows every title. Erases saved content and source references; does not cancel any running job or schedule.",
+          inputSchema: forgetAllInputSchema,
+          async execute({ workstreams: named }, ctx) {
+            const current = await Promise.all(
+              named.map(async ({ id, title }) => ({
+                id,
+                saved: await readWorkstream(scope, key, id),
+                title,
+              }))
+            );
+            const forgotten: string[] = [];
+            const changed: string[] = [];
+            const missing: string[] = [];
+            for (const { id, saved, title } of current) {
+              if (!saved) {
+                missing.push(id);
+                continue;
+              }
+              if (
+                saved.content &&
+                comparableMemoryText(saved.content.title) !==
+                  comparableMemoryText(title)
+              ) {
+                changed.push(id);
+                continue;
+              }
+              // oxlint-disable-next-line eslint/no-await-in-loop -- Each forget locks the workspace row: one at a time, a long list takes one connection, not the pool.
+              await forgetWorkstream(
+                scope,
+                key,
+                { expectedRevision: saved.revision, id },
+                `${ctx.session.id}:${ctx.callId}:${id}`
+              );
+              forgotten.push(id);
+            }
+            return {
+              forgotten,
+              ...(changed.length > 0 && {
+                changed,
+                note: "The workstreams in changed were renamed after the card and were not forgotten.",
+              }),
+              ...(missing.length > 0 && { missing }),
+            };
+          },
+        }),
         read: defineTool({
           description:
             "Read a workstream's current notes, sources, and revision before continuing work or making a correction. A null result means it is missing or forgotten.",
@@ -132,7 +248,7 @@ export default defineMemory({
             return "user-approval";
           },
           description:
-            "Forget a workstream the user named themselves. When the request is broad or unclear, forget nothing: ask one short question and wait for the answer. Read it first and pass its current revision and its title exactly as saved; one saved in another conversation is forgotten only after the user confirms it on a card that shows that title. Erases saved content and source references; existing conversation history is unchanged. Does not cancel any running job or schedule.",
+            "Forget a workstream the user named themselves; to forget several, or everything you know about the user, use workstreams__forget_all. When the request is unclear, forget nothing: ask one short question and wait for the answer. Read it first and pass its current revision and its title exactly as saved; one saved in another conversation is forgotten only after the user confirms it on a card that shows that title. Erases saved content and source references; existing conversation history is unchanged. Does not cancel any running job or schedule.",
           inputSchema: forgetWorkstreamInputSchema,
           execute: ({ expectedRevision, id }, ctx) =>
             forgetWorkstream(
