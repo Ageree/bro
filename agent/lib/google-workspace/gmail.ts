@@ -230,12 +230,13 @@ export async function searchGmail(
  * messages, so it runs only for a reply, never for a mailing or a robot,
  * once per addressee in a turn (`known`) and at most `left` more times.
  *
- * In a read for a reply, whose letter is whose comes from the person's own
- * addresses (the mailbox and its send-as aliases), not from Gmail's SENT
- * label: Gmail puts that label on mail from a plus-address of the mailbox
- * too. On 25.09 (RU d09) Irina's letter from `…+irina@` read as the
- * person's own, the voice was looked up for the person's own address, and
- * a tutor's invoice and a colleague's «Привет!» came back as their voice.
+ * In a read for a reply, a letter is the person's only when Gmail filed it
+ * as sent and it comes from one of their own addresses (the mailbox and its
+ * send-as aliases): Gmail puts the SENT label on mail from a plus-address of
+ * the mailbox too, and anyone can write the person's address into From. On
+ * 25.09 (RU d09) Irina's letter from `…+irina@` read as the person's own,
+ * the voice was looked up for the person's own address, and a tutor's
+ * invoice and a colleague's «Привет!» came back as their voice.
  */
 export async function readGmailThread(
   ctx: ToolContext,
@@ -260,7 +261,7 @@ export async function readGmailThread(
     const read = {
       id: thread.id ?? threadId,
       messages: messages.map((message) => {
-        const sentByYou = writtenByPerson(message, own);
+        const sentByYou = sentByPerson(message, own);
         return Object.assign({}, minimizeMessage(message), {
           attachments: collectAttachments(message.payload),
           body: redactGoogleText(plainText(message.payload)),
@@ -323,13 +324,27 @@ async function ownAddresses(google: GoogleClient) {
 }
 
 /**
- * Whether the person wrote this letter: it comes from one of their own
- * addresses, or, when those are unknown, Gmail filed it as sent.
+ * Whether a letter's From is one of the person's own addresses, or, when
+ * those are unknown, Gmail filed it as sent. Only for picking whom a reply
+ * goes to: a draft or a letter that merely claims the person's address is
+ * not the other side either.
  */
-function writtenByPerson(message: GmailMessage, own: readonly string[] | null) {
+function fromPerson(message: GmailMessage, own: readonly string[] | null) {
   if (own === null) return message.labelIds?.includes("SENT") ?? false;
   const sender = headerAddress(header(message.payload, "From"));
   return sender !== null && own.includes(sender);
+}
+
+/**
+ * Whether the person really sent this letter: Gmail filed it as sent, and
+ * it comes from one of their own addresses. Neither alone will do: Gmail
+ * files mail from a plus-address of the mailbox as sent too, and anyone
+ * can write the person's address into From.
+ */
+function sentByPerson(message: GmailMessage, own: readonly string[] | null) {
+  return (
+    (message.labelIds?.includes("SENT") ?? false) && fromPerson(message, own)
+  );
 }
 
 /** The person's letters to an addressee a thread read brings as their voice. */
@@ -384,7 +399,7 @@ function threadAddressee(
   messages: readonly GmailMessage[],
   own: readonly string[] | null
 ) {
-  const theirs = messages.findLast((message) => !writtenByPerson(message, own));
+  const theirs = messages.findLast((message) => !fromPerson(message, own));
   if (theirs && automatedLetter(theirs)) return null;
   const candidates = headerAddresses(
     theirs
@@ -495,20 +510,21 @@ async function earlierEmailsTo(
 }
 
 /**
- * Whether the person wrote this letter to `address` themselves: from one of
- * their own addresses (when those are unknown: filed as sent and not from
- * the addressee), with the addressee among its To and Cc.
+ * Whether the person sent this letter to `address` themselves: filed as
+ * sent and from one of their own addresses (when those are unknown: filed
+ * as sent and not from the addressee), with the addressee among its To and
+ * Cc.
  */
 function personWroteTo(
   message: GmailMessage,
   address: string,
   own: readonly string[] | null
 ) {
-  const fromPerson =
-    writtenByPerson(message, own) &&
+  const sentByThem =
+    sentByPerson(message, own) &&
     headerAddress(header(message.payload, "From")) !== address;
   return (
-    fromPerson &&
+    sentByThem &&
     [
       ...headerAddresses(header(message.payload, "To")),
       ...headerAddresses(header(message.payload, "Cc")),

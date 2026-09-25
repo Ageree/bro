@@ -28,6 +28,11 @@ describe("whose «вы» the person means", () => {
       "Ирина Павловна — начальница, с ней на вы",
       "напиши Саше, что я перезвоню",
       "reply to Sam: Tuesday works",
+      // «мне» here belongs to the letter, not to Bro.
+      "напиши Лёше, что мне нужно опоздать, на ты",
+      "ответь Ирине, что мне неудобно, на вы",
+      "напиши ей, что меня не будет, на вы",
+      "напиши ей и пиши ей на вы",
     ]) {
       expect({ about: aboutSomeoneElse([said]), said }).toEqual({
         about: true,
@@ -52,6 +57,17 @@ describe("whose «вы» the person means", () => {
       "мне на ты привычнее. и напиши Лёше",
       "call me Alex and reply to Sam",
       "be formal with me, and email Sam",
+      // Bro's own manner in the same turn as a letter, with a comma, a dash
+      // or «пожалуйста» between «со мной/мне» and the form.
+      "ответь Ирине, и давай со мной на ты",
+      "Ответь Ирине. Со мной — на вы",
+      "Со мной, пожалуйста, на вы. Ответь Ирине на письмо",
+      "ответь Ирине на вы, а мне пиши на ты",
+      "Мне — на вы, пожалуйста. И напиши Лёше, что опоздаю",
+      "В сообщениях ко мне — на вы, пожалуйста",
+      "Лучше на вы. Кстати, ответь Ирине на письмо",
+      "Прочитай последнее письмо от Ирины. И можешь на ты, кстати.",
+      "Ответь на письмо Петрова. И ещё: не надо на вы, пиши на ты",
     ]) {
       expect({ about: aboutSomeoneElse([said]), said }).toEqual({
         about: false,

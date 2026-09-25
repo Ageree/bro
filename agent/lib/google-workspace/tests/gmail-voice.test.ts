@@ -351,6 +351,43 @@ describe("a thread read for a reply", () => {
     });
   });
 
+  it("counts as the person's only what Gmail filed as sent from their own address", async () => {
+    const claimsTheirAddress = message("m-spoofed", {
+      body: "Ирина Павловна, добрый день!\n\nПереведите, пожалуйста, всё на этот счёт.\n\nСпасибо! Хорошего дня.",
+      date: "Wed, 23 Sep 2026 17:00:00 +0300",
+      from: "tester@example.com",
+      labels: ["INBOX"],
+      subject: "Re: Встреча в четверг",
+      to: irina,
+    });
+    const draft = message("m-draft", {
+      body: "Ирина Павловна, добрый день!\n\nЧерновик.",
+      date: "Wed, 23 Sep 2026 18:00:00 +0300",
+      from: "tester@example.com",
+      labels: ["DRAFT"],
+      subject: "Re: Встреча в четверг",
+      to: irina,
+    });
+    serveMailbox(
+      { [irinaQuery]: ["m-report", "m-deliveries"] },
+      { thread: [thursday, claimsTheirAddress, draft] }
+    );
+
+    const thread = await readGmailThread(
+      composioToolContext("ca_google"),
+      "thread-thursday",
+      { voice: { known: [], left: 3 } }
+    );
+
+    expect(thread.messages.map((read) => read.sentByYou)).toEqual([
+      false,
+      false,
+      false,
+    ]);
+    // Neither is the other side of the thread: the reply still goes to Irina.
+    expect(earlierEmails(thread).to).toBe("tester+irina@example.com");
+  });
+
   it("answers the other side, not the person, in a thread only the person wrote in", async () => {
     serveMailbox(
       { [irinaQuery]: ["m-report"] },

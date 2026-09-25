@@ -13,11 +13,21 @@ const addressForm =
 
 /**
  * The person asking Bro itself to switch: «давай на вы», «можно на ты»,
- * «давайте перейдём на ты», «давай уже общаться на вы». Only these words
- * may stand between, so «давай ответь ей на вы» is about the letter.
+ * «можешь на ты», «не надо на вы, пиши на ты», «давай со мной на ты».
+ * Only these words may stand between, so «давай ответь ей на вы» is about
+ * the letter.
  */
 const switchRequest =
-  /(?<!\p{L})(?:давай(?:те)?|можно|перейд\p{L}*|переход\p{L}*|перейти|будем|общ\p{L}*)(?:-ка)?(?:\s+(?:ли|бы|уже|лучше|тогда|теперь|сразу|снова|опять|ещё|еще|всё|все|мы|пожалуйста|с\s+тобой|с\s+вами|перейд\p{L}*|будем|общаться|говорить|обращаться|друг\s+к\s+другу))*\s+на\s*[«"„“]?\s*(?:вы|ты)(?!\p{L})/u;
+  /(?<!\p{L})(?:давай(?:те)?|можно|можешь|можете|лучше|пиши(?:те)?|не\s+надо|перейд\p{L}*|переход\p{L}*|перейти|будем|общ\p{L}*)(?:-ка)?(?:\s+(?:ли|бы|уже|лучше|тогда|теперь|сразу|снова|опять|ещё|еще|всё|все|мы|пожалуйста|со\s+мной|ко\s+мне|мне|с\s+тобой|с\s+вами|перейд\p{L}*|будем|общаться|говорить|обращаться|друг\s+к\s+другу))*\s+на\s*[«"„“]?\s*(?:вы|ты)(?!\p{L})/u;
+
+/**
+ * «со мной, пожалуйста, на вы», «мне — на ты», «а мне пиши на ты»: the
+ * person's own «мне» right before the form, with only a comma, a dash, a
+ * filler word or a verb of addressing between, which splitting the message
+ * into clauses would cut apart. «что мне неудобно, на вы» stays the letter's.
+ */
+const selfForm =
+  /(?<!\p{L})(?:со\s+мной|ко\s+мне|мне|меня)(?:[\s,—–-]+(?:пожалуйста|лучше|уже|тоже|теперь|впредь|дальше|отныне|всегда|только|просто|всё-таки|все-таки|пиши|пишите|обращайся|обращайтесь|говори|говорите|можно|давай|давайте))*[\s,—–-]+на\s*[«"„“]?\s*(?:вы|ты)(?!\p{L})/u;
 
 /**
  * A verb of addressing or naming with no one else as its object: «зови
@@ -37,10 +47,11 @@ const selfNaming =
 
 /**
  * Asking Bro to write or pass on something to someone: «ответь Ирине»,
- * «напиши Лёше», «письмо», "reply to Sam".
+ * «напиши Лёше», "reply to Sam". Only verbs: a letter named as a noun
+ * («прочитай письмо от Ирины») asks Bro to write to no one.
  */
 const writingRequest =
-  /(?<!\p{L})(?:ответь(?:те)?|ответить|напиши(?:те)?|написать|отправь(?:те)?|отправить|составь(?:те)?|составить|перешли(?:те)?|переслать|передай(?:те)?|передать|скинь(?:те)?|черновик\p{L}*|письм\p{L}*|сообщени\p{L}*|reply|respond|write|draft|e-?mail\p{L}*|message)(?!\p{L})/u;
+  /(?<!\p{L})(?:ответь(?:те)?|ответить|напиши(?:те)?|написать|отправь(?:те)?|отправить|составь(?:те)?|составить|перешли(?:те)?|переслать|передай(?:те)?|передать|скинь(?:те)?|reply|respond|write|draft|e-?mail)(?!\p{L})/u;
 
 /** «с ней на вы», «ему на ты»: someone else, next to a form of address. */
 const thirdPerson =
@@ -65,6 +76,7 @@ export function aboutSomeoneElse(
   const clauses = lower.split(/[.!?;:,\n—–]+/u);
   const meansBro =
     switchRequest.test(lower) ||
+    selfForm.test(lower) ||
     namingVerb.test(text) ||
     selfNaming.test(text) ||
     clauses.some(
