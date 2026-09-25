@@ -185,6 +185,33 @@ describe("agent instructions", () => {
     );
   });
 
+  it("answers mail in the person's voice on free time, and says what memory changed", async () => {
+    const resolve = roleInstructions.events["turn.started"];
+    if (!resolve) throw new Error("Role instructions resolve per turn.");
+
+    const selected = await resolve({}, dynamicContext("photon-imessage"));
+    // RU d09, EN D5: the person's own greeting and sign-off, one card.
+    expect(selected?.content).toContain("в `yourEarlierEmails`");
+    expect(selected?.content).toContain(
+      "Карточка `gmail-send` — единственный вопрос"
+    );
+    expect(selected?.content).toContain(
+      "сохрани то же письмо через `gmail-draft`"
+    );
+    // RU d09, EN D8: free time first, in both clocks.
+    expect(selected?.content).toContain("передай его в `attendeeTimeZone`");
+    expect(selected?.content).toContain("ставь в первое свободное окно");
+    // EN D9: status, and no card without a grant.
+    expect(selected?.content).toContain(
+      '`connect_google` с `action: "status"`'
+    );
+    expect(selected?.content).toContain(
+      "Отказал, потому что Google не подключён"
+    );
+    // RU d13: a remembered fact that changes the answer is said.
+    expect(selected?.content).toContain("«в субботу вы в Казани — ищу там»");
+  });
+
   it("forwards mail attachments as private artifacts", async () => {
     const resolve = roleInstructions.events["turn.started"];
     expect(resolve).toBeDefined();
