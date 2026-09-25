@@ -3,6 +3,8 @@ import {
   browserSecretBindings,
   loginAllowedDomains,
   nationalPhoneDigits,
+  phoneSignInSentence,
+  signsInByPhone,
   paymentAllowedDomains,
   registrableDomain,
   selectBrowserVaultItems,
@@ -227,6 +229,16 @@ describe("browser vault selection", () => {
   });
 });
 
+/** What an Ozon errand's phone secrets hold for a profile phone as written. */
+function phoneValues(signInPhone: string) {
+  return browserSecretBindings({
+    card: undefined,
+    login: undefined,
+    signInPhone,
+    site: "https://www.ozon.ru",
+  }).bindings.map((binding) => binding.source.value);
+}
+
 describe("browser secret bindings", () => {
   it("keeps every secret value inside the run request body", () => {
     const bound = browserSecretBindings({
@@ -414,6 +426,10 @@ describe("browser secret bindings", () => {
     expect(nationalPhoneDigits("+79991234567")).toBe("9991234567");
     expect(nationalPhoneDigits("8 (999) 123-45-67")).toBe("9991234567");
     expect(nationalPhoneDigits("7 495 123-45-67")).toBe("4951234567");
+    // Profile phones are free text: any separator, and a note beside them.
+    expect(nationalPhoneDigits("+7 (916) 123–45–67")).toBe("9161234567");
+    expect(nationalPhoneDigits("8 916 123 45 67 (моб.)")).toBe("9161234567");
+    expect(nationalPhoneDigits("моб.: +7 916 123 45 67")).toBe("9161234567");
     for (const foreign of [
       "999 123 45 67",
       "+1 555 123 4567",
@@ -473,7 +489,33 @@ describe("browser secret bindings", () => {
         signInPhone: "+852 9123 4567",
         site: "https://www.ozon.ru",
       }).bindings.map((binding) => binding.source.value)
-    ).toEqual(["+852 9123 4567"]);
+    ).toEqual(["+85291234567"]);
+  });
+
+  it("binds the number alone, never the note written beside it", () => {
+    // RU 25.09, d04: a field that shows «+7» takes the ten digits alone.
+    expect(phoneValues("+7 (916) 123–45–67")).toEqual([
+      "+79161234567",
+      "9161234567",
+    ]);
+    expect(phoneValues("8 916 123 45 67 (моб.)")).toEqual([
+      "+79161234567",
+      "9161234567",
+    ]);
+    expect(phoneValues("+84 912 345 678 (Вьетнам)")).toEqual(["+84912345678"]);
+    expect(phoneValues("нет")).toEqual([]);
+  });
+
+  it("knows a run signs in by phone only from the tool's own sentence", () => {
+    expect(
+      signsInByPhone(
+        `Закажи корм\n\nNo saved password is available for ozon.ru. ${phoneSignInSentence}`
+      )
+    ).toBe(true);
+    // A model can write the alias into an errand it composes.
+    expect(signsInByPhone("Войди через signin_phone и закажи корм")).toBe(
+      false
+    );
   });
 
   it("binds nothing when no vault item was selected", () => {

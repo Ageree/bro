@@ -47,18 +47,37 @@ export const browserSecretAliases = {
 } as const;
 
 /**
+ * A phone as people write it — «+7 (916) 123–45–67», «8 916 123 45 67
+ * (моб.)» — as its digits alone, with a plus only when one comes before
+ * them. Undefined when there are no digits at all.
+ */
+function compactPhone(phone: string) {
+  const digits = phone.replaceAll(/\D/gu, "");
+  if (digits === "") return undefined;
+  return /^\D*\+/u.test(phone) ? `+${digits}` : digits;
+}
+
+/**
  * A Russian phone number as the 10 digits after +7 — what a field that
  * already shows «+7» or a mask «+7 (___) ___-__-__» takes: Ozon rejected a
  * saved «+7…» login typed into such a field as a malformed phone (RU 25.09,
  * d04). Undefined for any other number.
  */
 export function nationalPhoneDigits(phone: string) {
-  const compact = phone.replaceAll(/[\s().-]/gu, "");
+  const compact = compactPhone(phone) ?? "";
   // +7, or 7 or 8 without a plus, then ten digits of a Russian area or mobile
   // code — never +84, +852 or any other country's number.
   const match = /^(?:\+7|7|8)([3489]\d{9})$/u.exec(compact);
   return match?.[1];
 }
+
+/**
+ * The sentence, word for word, that tells a run to sign in with the
+ * person's phone. It is also how a queued start, a background retry and a
+ * follow-up know the errand's start bound the phone: the bare alias can turn
+ * up in errand text a model wrote, this sentence only where the tool put it.
+ */
+export const phoneSignInSentence = `If the site asks you to sign in and offers to sign in by phone number with a code sent by SMS or a push, sign in to the person's own account there with their phone: focus the phone field and ask for the secret ${browserSecretAliases.signinPhone}.`;
 
 /**
  * The same phone login as its 10 digits, under an alias of its own, for a
@@ -119,12 +138,15 @@ export function phoneSignInDomains(site: string) {
  */
 function phoneSignInBindings(phone: string, site: string) {
   const domains = phoneSignInDomains(site);
-  if (domains.length === 0) return [];
-  const digits = nationalPhoneDigits(phone);
+  const compact = compactPhone(phone);
+  if (domains.length === 0 || compact === undefined) return [];
+  const digits = nationalPhoneDigits(compact);
   return [
+    // The number alone: a note written next to it in the profile is never
+    // typed into a site.
     binding(
       browserSecretAliases.signinPhone,
-      digits === undefined ? phone : `+7${digits}`,
+      digits === undefined ? compact : `+7${digits}`,
       domains
     ),
     ...(digits === undefined
@@ -395,9 +417,10 @@ export async function resolveBrowserSecretBindings(
 }
 
 /**
- * Whether a composed errand was given the person's phone to sign in with: a
- * queued start or a background retry binds it again only then.
+ * Whether a composed run was told to sign in with the person's phone, which
+ * only an errand whose start bound it carries on: a queued start, a
+ * background retry and a follow-up bind the phone again only then.
  */
 export function signsInByPhone(task: string) {
-  return task.includes(browserSecretAliases.signinPhone);
+  return task.includes(phoneSignInSentence);
 }

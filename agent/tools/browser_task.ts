@@ -17,6 +17,7 @@ import {
   listBrowserUseRunEvents,
   liveViewUrlFromEvents,
   queueBrowserUseSessionMessage,
+  readBrowserUseRun,
   readBrowserUseRunStatus,
   type BrowserUseCreateRunInput,
   type BrowserUseRunStatus,
@@ -28,7 +29,9 @@ import {
 import {
   browserSecretAliases,
   phoneSignInDomains,
+  phoneSignInSentence,
   resolveBrowserSecretBindings,
+  signsInByPhone,
 } from "@agent/lib/browser-use/secrets";
 import {
   browserRunReportOwed,
@@ -310,15 +313,26 @@ function captchaLine() {
   ].join(" ");
 }
 
+const networkErrorNames =
+  "ERR_TUNNEL_CONNECTION_FAILED, ERR_PROXY_CONNECTION_FAILED, ERR_CONNECTION_RESET, ERR_CONNECTION_REFUSED, ERR_CONNECTION_TIMED_OUT, ERR_TIMED_OUT, ERR_EMPTY_RESPONSE or «This site can't be reached»";
+
 /**
  * A site the network or the proxy never delivers is not the errand's end:
  * on 25.09 the Госуслуги errand (d06) stopped at «ERR_TUNNEL_CONNECTION_FAILED»
  * with NEEDS: none, and nobody tried again. Stopping as walled sends it to
  * the same background retry as an anti-bot check — a fresh browser on
  * another address. A fallback site that does not load is only skipped.
+ *
+ * Only for a run that cannot act. One allowed to submit or pay may have
+ * clicked «Заказать» or «Оплатить» before the next page failed, and a retry
+ * would do it again: it reloads nothing, clicks nothing again, and reports
+ * what it clicked for the person to check.
  */
-function unreachableLine() {
-  return "If this errand's Site does not load at all because of a network or proxy error — ERR_TUNNEL_CONNECTION_FAILED, ERR_PROXY_CONNECTION_FAILED, ERR_CONNECTION_RESET, ERR_CONNECTION_REFUSED, ERR_CONNECTION_TIMED_OUT, ERR_TIMED_OUT, ERR_EMPTY_RESPONSE or «This site can't be reached» — reload it once; if it still does not load, stop with NEEDS: captcha and name the error in DETAILS: the errand is then retried by itself in a fresh browser on another network address. A fallback site that does not load you simply skip for the next one.";
+function unreachableLine(canAct: boolean) {
+  if (canAct) {
+    return `If a page does not load because of a network or proxy error — ${networkErrorNames} — do not reload it, go back or click anything again: a submission, order, booking or payment you already clicked may have gone through. Stop with NEEDS: info and say in DETAILS the error, the last thing you clicked and whether it submits, orders, books or pays, and what the page showed before it failed.`;
+  }
+  return `If this errand's Site does not load at all because of a network or proxy error — ${networkErrorNames} — reload it once; if it still does not load, stop with NEEDS: captcha and name the error in DETAILS: the errand is then retried by itself in a fresh browser on another network address. A fallback site that does not load you simply skip for the next one.`;
 }
 
 /**
@@ -728,7 +742,7 @@ function phoneSignInLine(aliases: readonly string[], site: string | undefined) {
   const digits = aliases.includes(browserSecretAliases.signinPhoneDigits)
     ? ` If the phone field already shows the country code (+7) or a mask, ask for ${browserSecretAliases.signinPhoneDigits} instead — the same number as only the 10 digits after it (no +7, no 8, no spaces); if the site rejects the format, clear the field and try once with the other one, then stop with NEEDS: info describing what the field expects.`
     : "";
-  return `No saved password is available for ${where}. If ${where} asks you to sign in and offers to sign in by phone number with a code sent by SMS or a push, sign in to the person's own account there with their phone: focus the phone field and ask for the secret ${browserSecretAliases.signinPhone}.${digits} It works only on ${domain ?? where} and its own sign-in pages; never try it on another site, and no other personal detail goes with it. Stop right after the site sends the code, with NEEDS: sms_code (or push), and put the masked phone the page shows in DETAILS. If ${where} offers only a password sign-in, stop with NEEDS: password instead of guessing one.`;
+  return `No saved password is available for ${where}. ${phoneSignInSentence}${digits} It works only on ${domain ?? where} and its own sign-in pages; never try it on another site, and no other personal detail goes with it. Stop right after the site sends the code, with NEEDS: sms_code (or push), and put the masked phone the page shows in DETAILS. If ${where} offers only a password sign-in, stop with NEEDS: password instead of guessing one.`;
 }
 
 /** How to type a saved phone login, which the run types by its alias. */
@@ -794,7 +808,7 @@ export function composeBrowserTask(options: {
     credentialsLine(options.aliases, options.site),
     gosuslugiSignInRule(options.site, options.consent?.kind === "confirmed"),
     captchaLine(),
-    unreachableLine(),
+    unreachableLine(options.consent !== undefined || options.allowPayment),
     imagesContract(options.collectImages),
     outcomeContract(),
   ]
@@ -854,7 +868,7 @@ export function composeBrowserContinuation(options: {
     credentialsLine(options.aliases, options.site),
     gosuslugiSignInRule(options.site, options.consent?.kind === "confirmed"),
     captchaLine(),
-    unreachableLine(),
+    unreachableLine(options.consent !== undefined || options.allowPayment),
     imagesContract(options.collectImages),
     outcomeContract(),
   ]
@@ -1681,6 +1695,24 @@ function phoneSignInAllowed(
     resolveModeValue(context, { interactive: true }) === true &&
     row.rootSessionId === context.session.id
   );
+}
+
+/**
+ * Whether the run a follow-up replaces was itself told to sign in with the
+ * person's phone, which only an errand whose start bound it carries on. The
+ * row's site says less: a follow-up of an errand started without one
+ * records the site it brought.
+ */
+async function ranWithPhoneSignIn(runId: string) {
+  try {
+    return signsInByPhone((await readBrowserUseRun(runId)).task);
+  } catch (error) {
+    console.warn("[browser-use] the replaced run's task could not be read", {
+      cause: error,
+      runId,
+    });
+    return false;
+  }
 }
 
 /** Whether `said` is a code the person sent, to type straight into the page. */
@@ -2751,10 +2783,12 @@ async function runBrowserTask(
       const [secrets, facts] = await Promise.all([
         resolveBrowserSecretBindings(scope, {
           allowPayment,
-          // Only on the site the errand started with: a follow-up never
-          // brings a new host for the phone.
+          // Only where the errand's start bound it: a follow-up never brings
+          // a host for the phone, even one an earlier follow-up recorded.
           phoneSignIn:
-            row.site !== null && phoneSignInAllowed(context, byPerson, row),
+            row.site !== null &&
+            phoneSignInAllowed(context, byPerson, row) &&
+            (await ranWithPhoneSignIn(row.id)),
           site,
         }),
         browserRunFacts(scope),
