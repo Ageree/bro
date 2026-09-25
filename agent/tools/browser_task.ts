@@ -576,15 +576,25 @@ function commitmentLine(
  * thing, not for it, and «this book», «in order to» are no requests.
  */
 const requestPattern =
-  /(?<!\p{L})(?:закаж(?:и|ите)|оформ(?:и|ите)|забронир(?:уй|уйте)|бронир(?:уй|уйте)|куп(?:и|ите)|возьм(?:и|ите)|бер(?:и|ите)|запиш(?:и|ите)(?=\s+(?:меня|нас|его|её|ее|маму|папу|к|на)(?!\p{L}))|зарегистрир(?:уй|уйте)|подай(?:те)?|продл(?:и|ите)|оплат(?:и|ите))(?!\p{L})|(?:^|\n|[.!?;:]\s*|(?<!\p{L})(?:please|pls|then|and|just)\s+)(?:book|buy|order|reserve|purchase)(?!\p{L})/giu;
+  /(?<!\p{L})(?:закаж(?:и|ите)|оформ(?:и|ите)(?!\s+(?:списк|таблиц|табличк|ответ|результат|в\s+виде))|забронир(?:уй|уйте)|бронир(?:уй|уйте)|куп(?:и|ите)|(?:возьм(?:и|ите)|бер(?:и|ите))(?!\s+(?:(?:только|с|со|без)(?!\p{L})|в\s+расч|на\s+заметку|за\s+основу|самы|\d))|запиш(?:и|ите)(?=\s+(?:меня|нас|его|её|ее|маму|папу|к|на)(?!\p{L}))|зарегистрир(?:уй|уйте)|подай(?:те)?|продл(?:и|ите)|оплат(?:и|ите))(?!\p{L})|(?:^|\n|[.!?;:]\s*|(?<!\p{L})(?:please|pls|then|and|just)\s+)(?:book|buy|order|reserve|purchase)(?!\p{L})/giu;
 
 /**
  * The same in the voice of an errand the model wrote, which gives the run
  * instructions in the imperative or the infinitive: «Закажи…»,
- * «Забронировать столик…», «Записаться…».
+ * «Забронировать столик…», «Записаться…». «Возьми» and «оформи» count
+ * only with what is bought or ordered right after them («оформи заказ»,
+ * «возьми билеты»): «возьми 3 самых дешёвых», «оформи результат
+ * списком» and «для каждого запиши цену» are how a search reports.
  */
 const instructionPattern =
-  /(?<!\p{L})(?:закаж(?:и|ите)|заказать|оформ(?:и|ите|ить)|забронир(?:уй|уйте|овать)|куп(?:и|ите|ить)|возьм(?:и|ите)|запиш(?:и|ите)|записать(?:ся)?|зарегистрир(?:уй|уйте|овать)(?:ся)?|оплат(?:и|ите|ить))(?!\p{L})|(?:^|\n|[.!?;:]\s*)(?:book|buy|order|reserve|purchase)(?!\p{L})/giu;
+  /(?<!\p{L})(?:закаж(?:и|ите)|заказать|забронир(?:уй|уйте|овать)|куп(?:и|ите|ить)|(?:возьм(?:и|ите)|оформ(?:и|ите|ить))(?=(?:\s+[\p{L}\d-]+){0,2}?\s+(?:заказ|покупк|брон|билет|подписк|полис|доставк))|запиш(?:и|ите)(?=\s+(?:меня|нас|его|её|ее|маму|папу|к|на)(?!\p{L}))|записаться|зарегистрир(?:уй|уйте|овать)(?:ся)?|оплат(?:и|ите|ить))(?!\p{L})|(?:^|\n|[.!?;:]\s*)(?:book|buy|order|reserve|purchase)(?!\p{L})/giu;
+
+/**
+ * An errand that says in so many words that nothing is bought:
+ * «Ничего не покупать», «ничего не оплачивать».
+ */
+const errandDeclinesPattern =
+  /(?<!\p{L})ничего\s+не\s+(?:покуп|заказ|оплач|оплат|брон|оформл)\p{L}*/iu;
 
 /** An errand text that already asks for the last step: «дойди до оплаты». */
 const stagedErrandPattern =
@@ -602,19 +612,24 @@ const negationAfterPattern =
   /^(?:\s+\p{L}+)?\s+(?:не\s+(?:нужно|надо|стоит|требуется|буду|будем|хочу)|пока\s+не|нельзя)(?!\p{L})/iu;
 
 /**
- * A question about the thing, before the verb: «где дешевле купить»,
- * «какой телефон купить», «сколько стоит продлить», "where to buy".
+ * A question about the thing, up to two words before the verb: «где
+ * дешевле купить», «какой телефон купить», «сколько стоит продлить», «до
+ * какого числа нужно оплатить», «можно ли оплатить», "where to buy".
  */
 const askedAboutPattern =
-  /(?<!\p{L})(?:где|куда|что|как|какой|какую|какое|какие|каких|сколько|стоит\s+ли|выгодн\p{L}*|дешевле|where|what|which|how)(?:\s+\p{L}+)?\s+$/iu;
+  /(?<!\p{L})(?:где|куда|что|как|какой|какую|какое|какие|каких|какого|каком|когда|сколько|стоит\s+ли|можно\s+ли|нужно\s+ли|есть\s+ли|выгодн\p{L}*|дешевле|where|what|which|how|when)(?:\s+\p{L}+){0,2}\s+$/iu;
 
 /** «просто сравни цены», «только посмотри», «just compare». */
 const onlyLookingPattern =
   /(?<!\p{L})(?:(?:просто|только)\s+(?:сравн|найд|найт|посмотр|подбер|подобр|узна|глян|провер)\p{L}*|(?:just|only)\s+(?:compare|find|look|check|see)|compare\s+only)(?!\p{L})/iu;
 
-/** A word that asks to look for something rather than to do it. */
+/**
+ * A word that asks to look for something rather than to do it: «найди»,
+ * «покажи», «подскажи», «скинь варианты» — but not «скинь Лёше», which
+ * sends a message.
+ */
 const searchWordPattern =
-  /(?<!\p{L})(?:найд\p{L}*|найти|поищ\p{L}*|ищи|посмотр\p{L}*|сравн\p{L}*|подбер\p{L}*|подобра\p{L}*|узна\p{L}*|провер\p{L}*|глян\p{L}*|find|search|look|compare|check)(?!\p{L})/iu;
+  /(?<!\p{L})(?:найд\p{L}*|найти|поищ\p{L}*|ищи|посмотр\p{L}*|сравн\p{L}*|подбер\p{L}*|подобра\p{L}*|узна\p{L}*|провер\p{L}*|глян\p{L}*|покаж\p{L}*|подскаж\p{L}*|скин(?:ь|ьте)\s+(?:мне|нам|варианты|ссылк\p{L}*|список)|дай(?:те)?\s+(?:мне\s+)?(?:варианты|ссылк\p{L}*|список)|find|search|look|compare|check|show)(?!\p{L})/iu;
 
 /**
  * Words that say not to act: a negation before any word for booking,
@@ -658,12 +673,20 @@ function personOnActing(words: readonly string[] | null) {
 
 /**
  * Whether the errand the model wrote itself asks for the thing to be done,
- * not only found: «Закажи на Ozon тот же корм», «дойди до страницы оплаты»,
- * but not «Найди, где дешевле купить» or «ничего не бронировать».
+ * not only found. Its explicit «доведи до последнего шага», «дойди до
+ * страницы оплаты» always does. Its verbs — «Закажи на Ozon тот же корм» —
+ * count only in a turn the person did not open (`byVerbs`): there the
+ * errand is all there is, while in the person's turn their own words have
+ * already said whether to act, and the errand's «возьми», «оформи»,
+ * «запиши» are more often how a search reports. «Найди, где дешевле
+ * купить» and «ничего не покупать» never do.
  */
-function errandAsksToAct(errand: string) {
+function errandAsksToAct(errand: string, byVerbs: boolean) {
   if (stagedErrandPattern.test(errand)) return true;
-  if (onlyLookingPattern.test(errand)) return false;
+  if (!byVerbs) return false;
+  if (onlyLookingPattern.test(errand) || errandDeclinesPattern.test(errand)) {
+    return false;
+  }
   return actsIn(errand, instructionPattern);
 }
 
@@ -2725,7 +2748,9 @@ async function runBrowserTask(
         // The person's own words decide it before the errand the model
         // wrote, which on 25.09 said «ничего не бронировать» to «забронируй»;
         // the errand's own words count only where theirs say nothing.
-        staging: acting.asked || (!acting.declined && errandAsksToAct(errand)),
+        staging:
+          acting.asked ||
+          (!acting.declined && errandAsksToAct(errand, words === null)),
       });
       // While errands wait for a browser, the cap was full a minute ago:
       // this one joins the back of the line instead of taking the slot
