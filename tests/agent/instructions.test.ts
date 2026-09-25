@@ -251,6 +251,10 @@ describe("agent instructions", () => {
     expect(selected?.content).toContain(
       "то, что правила написаны по-русски, не значит, что отвечать надо по-русски"
     );
+    // RU d18 (25.09): a stray «Cancel» got a whole reply in English.
+    expect(selected?.content).toContain(
+      "Слово кнопки («Cancel», «Подтвердить»), число, код или «ok» языка не задают"
+    );
     expect(selected?.content).toContain(
       "Отказ, уточняющий вопрос, сообщение о сбое"
     );

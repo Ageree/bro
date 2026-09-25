@@ -408,6 +408,15 @@ describe("settling a browser run", () => {
     expect(prompt).not.toContain(unsafeUrl);
     expect(prompt).toContain("material per-option facts the user requested");
     expect(prompt).toContain("Include every relevant returned link");
+    // RU 25.09 (d01, d15): a price moved to other trains, «ни в одном»
+    // after two of five barbershops were checked.
+    expect(prompt).toContain(
+      "Keep every price and fact with the exact option the report gives it for"
+    );
+    expect(prompt).toContain(
+      "Say which options the run checked and which it did not"
+    );
+    expect(prompt).toContain("attach the screenshot the run saved");
   });
 
   it("does not let a names-only option search masquerade as complete", async () => {

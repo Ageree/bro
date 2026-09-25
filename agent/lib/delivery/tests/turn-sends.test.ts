@@ -2209,6 +2209,216 @@ describe("sendRefusal on claims no tool made", () => {
   });
 });
 
+describe("sendRefusal right after the person approved a card", () => {
+  /**
+   * The AI SDK runs an approved call when the next model call starts, after
+   * `step.started` built `send_message`, so its result is not there yet.
+   */
+  function approved(
+    request: string,
+    toolName: string,
+    answer: { approved: boolean; isAutomatic?: boolean } = { approved: true }
+  ): ModelMessage[] {
+    toolSteps += 1;
+    const toolCallId = `${toolName}-${String(toolSteps)}`;
+    const approvalId = `approval-${toolCallId}`;
+    return [
+      userMessage(request),
+      {
+        content: [
+          { input: {}, toolCallId, toolName, type: "tool-call" },
+          {
+            approvalId,
+            isAutomatic: answer.isAutomatic ?? false,
+            toolCallId,
+            type: "tool-approval-request",
+          },
+        ],
+        role: "assistant",
+      },
+      {
+        content: [
+          {
+            approvalId,
+            approved: answer.approved,
+            type: "tool-approval-response",
+          },
+        ],
+        role: "tool",
+      },
+    ];
+  }
+
+  it("delivers the event the person just approved (d15)", () => {
+    const history = approved(
+      "в пятницу созвон с петровым в 15:30, поставь",
+      "calendar-create-event"
+    );
+
+    expect(
+      refusal(
+        history,
+        "Созвон с Петровым в пятницу, 2 октября, 15:30–16:30 — добавил в календарь."
+      )
+    ).toBeUndefined();
+  });
+
+  it.each([
+    [
+      "a letter",
+      "отправь иванову, что встреча в пятницу",
+      "gmail-send",
+      "Отправил письмо Иванову: встреча в пятницу.",
+    ],
+    [
+      "a reminder",
+      "напомни в 20:00 позвонить маме",
+      "schedules-create",
+      "Поставил напоминание позвонить маме на 20:00.",
+    ],
+    [
+      "an app's action",
+      "отправь в slack команде, что опоздаю",
+      "apps",
+      "Отправил сообщение в Slack команде.",
+    ],
+  ])("delivers %s the person just approved", (_case, request, tool, text) => {
+    expect(refusal(approved(request, tool), text)).toBeUndefined();
+  });
+
+  it("still returns what the person declined on the card", () => {
+    expect(
+      refusal(
+        approved("поставь созвон в пятницу", "calendar-create-event", {
+          approved: false,
+        }),
+        "Добавил в календарь созвон на пятницу."
+      )
+    ).toEqual({ rewrite: "calendar" });
+  });
+
+  it("tells the model the rewritten draft was never seen", () => {
+    for (const reason of ["calendar", "found", "undone"] as const) {
+      expect(rewriteSendNotice(reason)).toContain(
+        "The person never saw this draft"
+      );
+      expect(rewriteSendNotice(reason)).toContain("no apology");
+    }
+  });
+});
+
+describe("sendRefusal on options claimed before any search", () => {
+  const request = userMessage(
+    "найди мне поезд до казани на следующие выходные и где там поужинать в субботу"
+  );
+  const errandStarted = browserStep(
+    "start",
+    {
+      note: "The run continues in the background.",
+      runId: "run-trains",
+      status: "running",
+    },
+    {
+      site: "https://ticket.rzd.ru",
+      task: "Найти поезда Москва — Казань на следующие выходные: выезд в субботу 3 октября 2026. В поезде беру только нижнюю полку.",
+    }
+  );
+  const announced =
+    "Запустил поиск поездов Москва — Казань на субботу 3 октября, нижняя полка. Результат пришлю, как найду.\n\nПо ужину: подобрал три места в Казани, все не сетевые.";
+
+  it("returns «подобрал три места» with no search behind it (d13)", () => {
+    expect(refusal([request, ...errandStarted], announced)).toEqual({
+      rewrite: "found",
+    });
+    expect(rewriteSendNotice("found")).toContain("search first");
+  });
+
+  it.each([
+    "Нашёл три варианта, пришлю списком.",
+    "Вот варианты.",
+    "Отобрал пару мест у вокзала, все не сетевые.",
+    "I found three places near the station.",
+    "Запустил поиск поездов.\nПо ужину подобрал три места.",
+  ])("returns «%s» with nothing found yet", (text) => {
+    expect(refusal([request, ...errandStarted], text)).toEqual({
+      rewrite: "found",
+    });
+  });
+
+  it("delivers the same claim once a search of the turn returned", () => {
+    expect(
+      refusal(
+        [
+          request,
+          ...errandStarted,
+          ...toolStep("web_search", "1. Чирэм, татарский ресторан — 2ГИС", {
+            query: "где поужинать в Казани",
+          }),
+        ],
+        announced
+      )
+    ).toBeUndefined();
+  });
+
+  it.each([
+    [
+      "the options listed",
+      "По ужину подобрал три места:\n• чирэм — татарская кухня, чек 3500\n• умай — у кремля",
+    ],
+    ["the options named", "Подобрал три места: Чирэм, Умай и Мархаба."],
+    [
+      "the options on lines of their own",
+      "Подобрал три места:\n«Чирэм», у кремля\n«Умай», на Большой Красной",
+    ],
+    ["a link to them", "Подобрал три места: https://yandex.ru/maps/org/umay"],
+    ["a future tense", "По ужину подберу три места и пришлю вместе с поездом."],
+    ["a present tense", "Ищу, где поужинать, и запустил поиск поездов."],
+    ["another time", "Вчера нашёл три места в Казани — их и пришлю."],
+    ["a negation", "Мест пока не подобрал: сейчас поищу."],
+    ["a clause about them", "Из тех, что подобрал, ближе первый."],
+    ["a letter found", "Нашёл письмо от РЖД с билетом на субботу."],
+  ])("delivers %s", (_case, text) => {
+    expect(refusal([request, ...errandStarted], text)).toBeUndefined();
+  });
+
+  it("delivers a claim about what the previous turn found", () => {
+    const history = [
+      userMessage("где поужинать в Казани?"),
+      ...toolStep("web_search", "1. Чирэм\n2. Умай\n3. Мархаба", {
+        query: "ужин Казань",
+      }),
+      ...sendMessage("list", "Чирэм, Умай или Мархаба — все в центре."),
+      userMessage("а почему эти?"),
+    ];
+
+    expect(
+      refusal(history, "Подобрал их по отзывам и близости к вокзалу.")
+    ).toBeUndefined();
+  });
+
+  it("delivers a browser report's retelling", () => {
+    const report = userMessage(
+      `${backgroundTurnMarker}\n\nBrowser run run-7 finished.\n\nResult: three places.`
+    );
+
+    expect(refusal([report], "Подобрал три места в Казани.")).toBeUndefined();
+  });
+
+  it("delivers the same answer the turn after a browser report", () => {
+    const history = [
+      userMessage(
+        `${backgroundTurnMarker}\n\nBrowser run run-7 finished.\n\nResult: three places.`
+      ),
+      ...sendMessage("told", "Чирэм, Умай, Мархаба — брать?"),
+      userMessage("а почему эти?"),
+    ];
+
+    expect(
+      refusal(history, "Подобрал их по отзывам и чеку до 2500.")
+    ).toBeUndefined();
+  });
+});
+
 describe("turnSends", () => {
   it("counts only what the current turn delivered", () => {
     const history = [

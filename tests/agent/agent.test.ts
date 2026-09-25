@@ -276,6 +276,24 @@ describe("interactive delivery enforcement", () => {
     );
   });
 
+  it("keeps Russian and says why after a stray «Cancel» (d18)", async () => {
+    await agent.model.events["step.started"]?.(
+      {},
+      interactiveContext([
+        humanMessage("в пятницу к стоматологу, закажи такси"),
+        humanMessage("Cancel"),
+      ])
+    );
+
+    expect(lastReplyNote()).toBe(
+      replyDirective({
+        formOfAddress: defaultFormOfAddress,
+        language: "ru",
+        wordlessLatest: "Cancel",
+      })
+    );
+  });
+
   it("holds what a question asked about until the person answers", async () => {
     await agent.model.events["step.started"]?.(
       {},

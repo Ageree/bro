@@ -534,7 +534,10 @@ function deliveryInstruction(
       ? undefined
       : interruptedInstruction(facts.interrupted),
     stillBuying ? confirmedErrandInstruction : undefined,
-    "Tell the user what happened in your own words. Include the material per-option facts the user requested, not only names and URLs.",
+    // RU 25.09: «такие рейсы от 15 225 ₽» for a price the report gave other
+    // trains (d01); «Артура нет ни в одном» after two of five were checked
+    // (d15).
+    "Tell the user what happened in your own words. Include the material per-option facts the user requested, not only names and URLs. Keep every price and fact with the exact option the report gives it for: a price it names for other trains, dates or places is not this option's price, so call that option's price unknown. Say which options the run checked and which it did not, and never widen a finding to «все» or «ни в одном» beyond the checked ones. When no link lets the user check an option themselves, attach the screenshot the run saved, if any.",
     facts.ordered ? placedOrderInstruction : undefined,
     hasItems ? itemsInstruction : undefined,
     facts.hasCharges ? chargesInstruction : undefined,

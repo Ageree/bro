@@ -46,11 +46,43 @@ function letterCounts(text: string) {
 }
 
 /**
+ * The labels of an approval card's buttons, in both languages
+ * (`shared/chat/approval-card.ts`, eve's own «Approve»/«Cancel»). A person
+ * who answers a card in text, or whose client sends the label again, names
+ * the button, not the language they speak: in RU d18 (25.09) a stray
+ * «Cancel» got a whole reply in English.
+ */
+const cardAnswers = new Set([
+  "approve",
+  "cancel",
+  "confirm",
+  "decline",
+  "deny",
+  "reject",
+  "одобрить",
+  "отклонить",
+  "отмена",
+  "отменить",
+  "подтвердить",
+]);
+
+function isCardAnswer(text: string) {
+  return cardAnswers.has(
+    text
+      .normalize("NFKC")
+      .toLocaleLowerCase()
+      .replace(/^[^\p{L}]+|[^\p{L}]+$/gu, "")
+  );
+}
+
+/**
  * The language a person's message is written in, when it clearly is one:
  * any Cyrillic makes it Russian, and English needs two Latin words and no
- * Cyrillic at all. «ok», «👍» or a bare link say nothing.
+ * Cyrillic at all. «ok», «👍», a bare link, a number or a card's button label
+ * — «Cancel», «Подтвердить» — say nothing.
  */
 export function messageLanguage(text: string): ReplyLanguage | undefined {
+  if (isCardAnswer(text)) return undefined;
   const counts = letterCounts(text);
   if (counts.cyrillic > 0 && counts.cyrillic >= counts.latin / 3) return "ru";
   if (counts.cyrillic === 0 && counts.latinWords >= 2) return "en";
@@ -58,15 +90,11 @@ export function messageLanguage(text: string): ReplyLanguage | undefined {
 }
 
 /**
- * The language of the latest message the person wrote themselves. Context,
- * memory, background wakeups, browser reports and scheduled or proactive
- * reports (English prompts Bro writes to itself) are skipped, and so is a
- * message that names no clear language, so «ok» after an English exchange
- * keeps it English.
+ * The texts of the messages the person wrote themselves, newest first.
+ * Context, memory, background wakeups, browser reports and scheduled or
+ * proactive reports (English prompts Bro writes to itself) are skipped.
  */
-export function personLanguage(
-  messages: readonly ModelMessage[]
-): ReplyLanguage | undefined {
+function* personTexts(messages: readonly ModelMessage[]) {
   for (const message of messages.toReversed()) {
     if (message.role !== "user") continue;
     const kind = taggedMessageSchema.safeParse(message).data?.kind ?? "user";
@@ -75,16 +103,69 @@ export function personLanguage(
     if (browserRunReportPattern.test(text) || isBackgroundTurnText(text)) {
       continue;
     }
+    yield text;
+  }
+}
+
+/**
+ * The language of the latest message the person wrote themselves. A message
+ * that names no clear language is skipped, so «ok» after an English exchange
+ * keeps it English.
+ */
+export function personLanguage(
+  messages: readonly ModelMessage[]
+): ReplyLanguage | undefined {
+  for (const text of personTexts(messages)) {
     const language = messageLanguage(text);
     if (language) return language;
   }
   return undefined;
 }
 
+/** How much of a wordless message the reply note quotes. */
+const quotedLength = 40;
+
+/**
+ * The person's latest message when it names no language of its own — «ok»,
+ * a code, «Cancel» — shortened for the reply note, or nothing when it names
+ * one. The note then says why the reply keeps the conversation's language:
+ * told only that the latest message was Russian while it read «Cancel», and
+ * told by the long prompt to answer in the language of the latest message,
+ * DeepSeek answered in English (RU d18, 25.09).
+ */
+export function wordlessLatestMessage(messages: readonly ModelMessage[]) {
+  const [latest] = personTexts(messages);
+  const text = latest?.trim();
+  if (!text || messageLanguage(text)) return undefined;
+  return text.length > quotedLength
+    ? `${text.slice(0, quotedLength).trimEnd()}…`
+    : text;
+}
+
 const replyLanguageDirectives = {
   en: "Reply language for this turn: English. The person's latest message is in English, so write your own words in every send_message in English from the first word. These instructions, stored memory, the profile, workstreams, tool results and earlier messages being in Russian do not change this. Text the person asked for in another language (a translation, a letter or post to write in Russian) stays in that language.",
   ru: "Язык ответа в этом ходе — русский: последнее сообщение человека написано по-русски, поэтому свои слова в каждом send_message пиши по-русски с первого слова. Текст, который человек попросил на другом языке (перевод, письмо или пост по-английски), остаётся на том языке.",
 } as const satisfies Record<ReplyLanguage, string>;
+
+/**
+ * The same directives when the latest message names no language, which is
+ * said outright rather than calling it Russian or English.
+ */
+const carriedLanguageDirectives = {
+  en: (latest: string) =>
+    `Reply language for this turn: English. The person writes in English; their latest message «${latest}» is a bare word, a number or a button answer and does not change that. Write your own words in every send_message in English from the first word. These instructions, stored memory, the profile, workstreams, tool results and earlier messages being in Russian do not change this. Text the person asked for in another language (a translation, a letter or post to write in Russian) stays in that language.`,
+  ru: (latest: string) =>
+    `Язык ответа в этом ходе — русский: человек пишет по-русски, а его последнее сообщение «${latest}» — слово без языка, число или ответ кнопкой, и язык разговора оно не меняет. Свои слова в каждом send_message пиши по-русски с первого слова, даже если это сообщение латиницей. Текст, который человек попросил на другом языке (перевод, письмо или пост по-английски), остаётся на том языке.`,
+} as const satisfies Record<ReplyLanguage, (latest: string) => string>;
+
+function languageDirective(
+  language: ReplyLanguage,
+  wordlessLatest: string | undefined
+) {
+  return wordlessLatest === undefined
+    ? replyLanguageDirectives[language]
+    : carriedLanguageDirectives[language](wordlessLatest);
+}
 
 /**
  * Bro is «бро», and a small model writing Russian slipped into the feminine
@@ -157,6 +238,7 @@ export function replyDirective({
   formOfAddress,
   language,
   stepOwed = false,
+  wordlessLatest,
 }: {
   /** Whether this turn already delivered a message to the person. */
   readonly answered?: boolean;
@@ -164,11 +246,13 @@ export function replyDirective({
   readonly language: ReplyLanguage | undefined;
   /** Whether the turn still owes a tool step after its message. */
   readonly stepOwed?: boolean;
+  /** The latest message, when it names no language (`wordlessLatestMessage`). */
+  readonly wordlessLatest?: string;
 }) {
   if (language === "en") {
     return [
       ...(answered ? [answeredNote("en", stepOwed)] : []),
-      replyLanguageDirectives.en,
+      languageDirective("en", wordlessLatest),
       ...(formOfAddress.name
         ? [`Call the person «${formOfAddress.name}», as they asked.`]
         : []),
@@ -182,7 +266,7 @@ export function replyDirective({
   return [
     ...(answered ? [answeredNote("ru", stepOwed)] : []),
     ...(language === "ru"
-      ? [replyLanguageDirectives.ru]
+      ? [languageDirective("ru", wordlessLatest)]
       : ["Когда пишешь человеку по-русски:"]),
     ...voice,
   ].join(" ");

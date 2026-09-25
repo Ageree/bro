@@ -2,7 +2,11 @@ import { defineAgent, defineDynamic } from "eve";
 import { scheduledRunIdentity } from "@agent/lib/schedules/identity";
 import { isScheduledAgentRunLeaseActive } from "@db/services/scheduled-agent-run-leases";
 import { getFormOfAddress, getWorkspaceModelId } from "@db/services/settings";
-import { personLanguage, replyDirective } from "@agent/lib/delivery/language";
+import {
+  personLanguage,
+  replyDirective,
+  wordlessLatestMessage,
+} from "@agent/lib/delivery/language";
 import {
   actionsHeldForAnswer,
   heldForAnswerNote,
@@ -174,6 +178,7 @@ export default defineAgent({
                 formOfAddress,
                 language: replyLanguage,
                 stepOwed: owedSteps.length > 0,
+                wordlessLatest: wordlessLatestMessage(ctx.messages),
               })
             : undefined,
           staleReport ? staleReportNote : undefined,
