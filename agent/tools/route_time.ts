@@ -343,14 +343,41 @@ async function measure(
             count:
               places.filter((entry) => entry.failure !== undefined).length +
               (routerFailure === undefined ? 0 : found.length),
-            refusing:
-              routerFailure?.refusing === true ||
-              places.some((entry) => entry.failure?.refusing === true),
+            refusing: mapRefusing(
+              places.flatMap((entry) =>
+                entry.failure === undefined ? [] : [entry.failure]
+              ),
+              routerFailure !== undefined,
+              routes.some((route) => "minutes" in route)
+            ),
           })
         : undefined,
     routes,
     status: "ok" as const,
   };
+}
+
+/**
+ * Whether the map service is to be taken as refusing for the rest of the
+ * turn, so the pick asks for nothing more to be measured. Any router failure
+ * is: its one request covers every place. So is a geocoder that refused, or
+ * failed more than once, or failed where nothing was measured. Only a single
+ * failed lookup among measured places, or a call out of lookups, leaves the
+ * next call to measure as usual: when the router answered 502 on every call,
+ * «a one-off error, measure again» sent the model round and round.
+ */
+function mapRefusing(
+  failures: readonly MapServiceError[],
+  routerFailed: boolean,
+  anyMeasured: boolean
+) {
+  if (routerFailed) return true;
+  const lookups = failures.filter((failure) => failure.failure !== "budget");
+  return (
+    lookups.some((failure) => failure.failure === "refusing") ||
+    lookups.length > 1 ||
+    (lookups.length === 1 && !anyMeasured)
+  );
 }
 
 /** «Пешком» when the person named no limit of their own (recommendations.md). */
@@ -365,11 +392,10 @@ const pickSize = 3;
  * after one round of searches: the tool result the model reads last is
  * where it takes its next step from. A place the map service left
  * unmeasured stays a candidate rather than a place to replace. While the
- * service itself refuses — it asked to slow down, is left alone after that,
- * timed out or the router is down — nothing more is to be measured: asking
- * for replacements then sent the model to search and measure again against
- * a service that was still refusing. After a one-off error or a call out
- * of lookups the next call measures as usual.
+ * service refuses (`mapRefusing`) nothing more is to be measured: asking for
+ * replacements then sent the model to search and measure again against a
+ * service that was still refusing. After a one-off error or a call out of
+ * lookups the next call measures as usual.
  */
 function pickNote(
   routes: readonly { readonly minutes?: number }[],

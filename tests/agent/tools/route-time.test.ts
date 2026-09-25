@@ -828,6 +828,56 @@ describe("route_time", () => {
     expect(result.pick).not.toContain("instead of measuring them");
   });
 
+  it("asks for nothing more to be measured while the router keeps failing", async () => {
+    fetchMock.mockImplementation(async (url) =>
+      url.host === "nominatim.openstreetmap.org"
+        ? geocoderAnswer(url)
+        : new Response("bad gateway", { status: 502 })
+    );
+    const pick = {
+      from: "отель Метрополь, Москва",
+      mode: "walking",
+      to: ["метро Чистые пруды, Москва", "Чистопрудный бульвар 12, Москва"],
+    } as const;
+
+    for (let call = 0; call < 3; call += 1) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- The same pick asked again, as a looping model would.
+      const result = await measure(pick);
+      expect(result.routes?.[0]?.error).toContain("answered HTTP 502");
+      expect(result.pick).toContain(
+        "2 of them went unmeasured because the map service is refusing now"
+      );
+      expect(result.pick).toContain("do not measure them again in this turn");
+      expect(result.pick).not.toContain("measure them again in one more call");
+      expect(result.pick).not.toContain("measure them here in one more call");
+    }
+  });
+
+  it("takes a geocoder failing on every place for a refusing one", async () => {
+    await measure({
+      from: "отель Метрополь, Москва",
+      mode: "walking",
+      to: ["метро Чистые пруды, Москва"],
+    });
+    fetchMock.mockImplementation(async (url) =>
+      url.host === "nominatim.openstreetmap.org"
+        ? new Response("oops", { status: 500 })
+        : routerAnswer(url)
+    );
+
+    const result = await measure({
+      from: "отель Метрополь, Москва",
+      mode: "walking",
+      to: [
+        "Авокадо, Чистопрудный бульвар, 12 корпус 2, Москва",
+        "Hedonist, Покровский бульвар, 8с1, Москва",
+      ],
+    });
+
+    expect(result.pick).toContain("the map service is refusing now");
+    expect(result.pick).not.toContain("measure them here in one more call");
+  });
+
   it("keeps the places a refusing geocoder left unmeasured as candidates", async () => {
     // The start is known from an earlier call; then the geocoder refuses.
     await measure({
