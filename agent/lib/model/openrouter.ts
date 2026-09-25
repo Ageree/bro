@@ -415,8 +415,8 @@ export function openRouterSelection(
 ) {
   const openrouter = createOpenRouter({
     apiKey: env.OPENROUTER_API_KEY,
-    // A call the provider stopped answering is sent again after a minute
-    // instead of holding the turn for undici's five (`stream-watchdog.ts`).
+    // A connection that went silent is sent again after 90 s instead of
+    // holding the turn for undici's five minutes (`stream-watchdog.ts`).
     fetch: watchedModelFetch,
     headers: attributionHeaders(),
   });

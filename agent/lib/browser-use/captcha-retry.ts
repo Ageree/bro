@@ -6,6 +6,7 @@ import {
   readBrowserRun,
 } from "@db/services/browser-runs";
 import {
+  BrowserUseError,
   cancelBrowserUseRun,
   createBrowserUseRun,
   findRecentBrowserUseRunByTaskLine,
@@ -77,6 +78,22 @@ function retryReference(runId: string, attempt: number) {
   return `(Background retry ${String(attempt)} of errand ${runId}; for bookkeeping only.)`;
 }
 
+const uncertainStartRetryMs = 60_000;
+/** Past this an outage counts against the attempts, so the errand ends. */
+const uncertainStartWindowMs = 30 * 60_000;
+
+/**
+ * Whether the attempt that hit the wall did so recently enough for a start
+ * of unknown outcome to keep its number. An errand walled longer ago counts
+ * it as a failed attempt, so an outage cannot keep it retrying forever.
+ */
+function recentlyWalled(row: Pick<BrowserRunRow, "completedAt">, now: Date) {
+  return (
+    row.completedAt !== null &&
+    now.getTime() - row.completedAt.getTime() < uncertainStartWindowMs
+  );
+}
+
 /**
  * Stop a run that was started but could not be handed the errand. Never
  * fatal: the caller is already on its way out with a better error.
@@ -124,16 +141,39 @@ export async function startCaptchaRetry(row: BrowserRunRow, now = new Date()) {
       }),
     ]);
     const reference = retryReference(row.id, attempt);
-    const run =
-      (await findRecentBrowserUseRunByTaskLine(reference)) ??
-      (await createBrowserUseRun({
-        ...retryProxySettings(attempt, randomUUID().replaceAll("-", "")),
-        maxCostUsd: env.BROWSER_USE_MAX_COST_USD,
-        model: env.BROWSER_USE_MODEL,
-        profileId: row.profileId ?? undefined,
-        secretBindings: secrets.bindings,
-        task: captchaRetryTask(previous.task, attempt, reference),
-      }));
+    const adopted = await findRecentBrowserUseRunByTaskLine(reference);
+    let run: Pick<NonNullable<typeof adopted>, "id" | "sessionId">;
+    try {
+      run =
+        adopted ??
+        (await createBrowserUseRun({
+          ...retryProxySettings(attempt, randomUUID().replaceAll("-", "")),
+          maxCostUsd: env.BROWSER_USE_MAX_COST_USD,
+          model: env.BROWSER_USE_MODEL,
+          profileId: row.profileId ?? undefined,
+          secretBindings: secrets.bindings,
+          task: captchaRetryTask(previous.task, attempt, reference),
+        }));
+    } catch (error) {
+      // A timeout, a dropped connection or a 5xx says nothing about what
+      // Browser Use did, and it takes no idempotency key; only a clear
+      // refusal (4xx) is a failed attempt.
+      const refused = error instanceof BrowserUseError && error.status < 500;
+      if (refused || !recentlyWalled(row, now)) throw error;
+      // Browser Use may have started the run all the same: the next claim
+      // looks for this very attempt's line and adopts it, instead of taking
+      // the next number, missing it and opening a second browser.
+      console.warn("[browser-use] the anti-bot retry may have started", {
+        attempt,
+        cause: error,
+        runId: row.id,
+      });
+      await parkBrowserRunForRetry(row.id, {
+        captchaAttempt: row.captchaAttempt,
+        retryAt: new Date(now.getTime() + uncertainStartRetryMs),
+      });
+      return { status: "parked" as const };
+    }
     let handedOff = false;
     try {
       handedOff = await handOffBrowserRunRetry(row.id, {

@@ -1,4 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// The reasoning effort decides how long a working model may go without an
+// answer; each case sets it.
+const environment = vi.hoisted(() => ({ OPENROUTER_REASONING_EFFORT: "off" }));
+vi.mock("@shared/environment", () => ({ env: environment }));
+
 import { watchedModelFetch } from "../stream-watchdog";
 
 // OpenRouter as the provider sees it: a server-sent event stream the test
@@ -11,7 +17,10 @@ function eventStream(signal: AbortSignal | undefined) {
       writer = controller;
     },
   });
+  // An aborted request takes nothing more from the server.
+  let aborted = false;
   signal?.addEventListener("abort", () => {
+    aborted = true;
     writer?.error(signal.reason);
   });
   return {
@@ -20,7 +29,9 @@ function eventStream(signal: AbortSignal | undefined) {
       headers: { "content-type": "text/event-stream" },
       status: 200,
     }),
-    write: (text: string) => writer?.enqueue(encoder.encode(text)),
+    write: (text: string) => {
+      if (!aborted) writer?.enqueue(encoder.encode(text));
+    },
   };
 }
 
@@ -41,6 +52,8 @@ const request = {
   method: "POST",
 };
 
+const comment = ": OPENROUTER PROCESSING\n\n";
+
 async function readAll(response: Response) {
   return new Response(response.body).text();
 }
@@ -58,8 +71,25 @@ async function settled(promise: Promise<Response | string>) {
   }
 }
 
+/** OpenRouter's keep-alive while the model works: a comment every 10 s. */
+async function keepAlive(stream: Stream | undefined, seconds: number) {
+  for (let elapsed = 0; elapsed < seconds; elapsed += 10) {
+    stream?.write(comment);
+    // oxlint-disable-next-line eslint/no-await-in-loop -- The fake clock moves one keep-alive at a time.
+    await vi.advanceTimersByTimeAsync(10_000);
+  }
+}
+
+async function firstCall() {
+  await vi.waitFor(() => {
+    expect(calls).toHaveLength(1);
+  });
+  return calls[0]?.stream;
+}
+
 beforeEach(() => {
   calls.length = 0;
+  environment.OPENROUTER_REASONING_EFFORT = "off";
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   vi.spyOn(console, "warn").mockImplementation(() => undefined);
 });
@@ -76,23 +106,17 @@ describe("the OpenRouter stall watchdog", () => {
     vi.stubGlobal("fetch", fetch);
 
     const answer = watchedModelFetch("https://openrouter.test", request);
-    await vi.waitFor(() => {
-      expect(calls).toHaveLength(1);
-    });
-    calls[0]?.stream.write(": OPENROUTER PROCESSING\n\n");
-    calls[0]?.stream.write(
-      'data: {"choices":[{"delta":{"content":"При"}}]}\n\n'
-    );
+    const stream = await firstCall();
+    stream?.write(comment);
+    stream?.write('data: {"choices":[{"delta":{"content":"При"}}]}\n\n');
     const response = await answer;
-    calls[0]?.stream.write(
-      'data: {"choices":[{"delta":{"content":"вет"}}]}\n\n'
-    );
-    calls[0]?.stream.write("data: [DONE]\n\n");
-    calls[0]?.stream.close();
+    stream?.write('data: {"choices":[{"delta":{"content":"вет"}}]}\n\n');
+    stream?.write("data: [DONE]\n\n");
+    stream?.close();
 
     await expect(readAll(response)).resolves.toBe(
       [
-        ": OPENROUTER PROCESSING\n\n",
+        comment,
         'data: {"choices":[{"delta":{"content":"При"}}]}\n\n',
         'data: {"choices":[{"delta":{"content":"вет"}}]}\n\n',
         "data: [DONE]\n\n",
@@ -102,19 +126,59 @@ describe("the OpenRouter stall watchdog", () => {
     expect(console.warn).not.toHaveBeenCalled();
   });
 
-  it("sends a call again when only keep-alive comments came for a minute", async () => {
+  it("lets a slow but working model take minutes to its first answer, once", async () => {
+    // A long prefill or hidden reasoning: OpenRouter only sends comments.
+    const fetch = openRouterFetch();
+    vi.stubGlobal("fetch", fetch);
+
+    const answer = watchedModelFetch("https://openrouter.test", request);
+    const stream = await firstCall();
+    await keepAlive(stream, 200);
+    stream?.write("data: [DONE]\n\n");
+    stream?.close();
+
+    await expect(readAll(await answer)).resolves.toContain("data: [DONE]");
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(console.warn).not.toHaveBeenCalled();
+  });
+
+  it("gives a model that reasons longer still", async () => {
+    environment.OPENROUTER_REASONING_EFFORT = "high";
+    const fetch = openRouterFetch();
+    vi.stubGlobal("fetch", fetch);
+
+    const answer = watchedModelFetch("https://openrouter.test", request);
+    const stream = await firstCall();
+    await keepAlive(stream, 400);
+    stream?.write("data: [DONE]\n\n");
+    stream?.close();
+
+    await expect(readAll(await answer)).resolves.toContain("data: [DONE]");
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it("fails without a second billed call when comments come long past any healthy answer", async () => {
+    vi.stubGlobal("fetch", openRouterFetch());
+
+    const answer = settled(
+      watchedModelFetch("https://openrouter.test", request)
+    );
+    await keepAlive(await firstCall(), 250);
+
+    expect(await answer).toMatchObject({
+      idle: false,
+      name: "ModelStreamStalledError",
+    });
+    expect(calls).toHaveLength(1);
+  });
+
+  it("sends a call again when the connection went silent before any answer", async () => {
     vi.stubGlobal("fetch", openRouterFetch());
 
     const answer = watchedModelFetch("https://openrouter.test", request);
-    await vi.waitFor(() => {
-      expect(calls).toHaveLength(1);
-    });
-    // The provider behind OpenRouter went silent; OpenRouter keeps the
-    // connection open with comments.
-    calls[0]?.stream.write(": OPENROUTER PROCESSING\n\n");
-    await vi.advanceTimersByTimeAsync(30_000);
-    calls[0]?.stream.write(": OPENROUTER PROCESSING\n\n");
-    await vi.advanceTimersByTimeAsync(30_000);
+    // A comment or two, then nothing at all: the connection is gone.
+    await keepAlive(await firstCall(), 20);
+    await vi.advanceTimersByTimeAsync(90_000);
 
     await vi.waitFor(() => {
       expect(calls).toHaveLength(2);
@@ -125,12 +189,8 @@ describe("the OpenRouter stall watchdog", () => {
 
     await expect(readAll(await answer)).resolves.toBe("data: [DONE]\n\n");
     expect(console.warn).toHaveBeenCalledWith(
-      "[model] OpenRouter stream stalled before its first event",
-      {
-        attempt: 1,
-        model: "deepseek/deepseek-v4.1-flash",
-        waitedMs: 60_000,
-      }
+      "[model] OpenRouter call stalled before its answer",
+      { attempt: 1, idle: true, model: "deepseek/deepseek-v4.1-flash" }
     );
   });
 
@@ -140,36 +200,40 @@ describe("the OpenRouter stall watchdog", () => {
     const answer = settled(
       watchedModelFetch("https://openrouter.test", request)
     );
-    await vi.advanceTimersByTimeAsync(60_000);
+    await vi.advanceTimersByTimeAsync(90_000);
     await vi.waitFor(() => {
       expect(calls).toHaveLength(2);
     });
-    await vi.advanceTimersByTimeAsync(60_000);
+    await vi.advanceTimersByTimeAsync(90_000);
 
-    expect(await answer).toMatchObject({ name: "ModelStreamStalledError" });
+    expect(await answer).toMatchObject({
+      idle: true,
+      name: "ModelStreamStalledError",
+    });
     expect(calls).toHaveLength(2);
   });
 
-  it("fails a stream that goes silent halfway, so the step fails instead of hanging", async () => {
+  it("keeps a stream alive through comments mid-answer and fails it once it goes silent", async () => {
     vi.stubGlobal("fetch", openRouterFetch());
 
     const answer = watchedModelFetch("https://openrouter.test", request);
-    await vi.waitFor(() => {
-      expect(calls).toHaveLength(1);
-    });
-    calls[0]?.stream.write(
-      'data: {"choices":[{"delta":{"content":"При"}}]}\n\n'
-    );
+    const stream = await firstCall();
+    stream?.write('data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n');
     const reading = settled(readAll(await answer));
-    // Comments alone do not keep it alive.
-    calls[0]?.stream.write(": OPENROUTER PROCESSING\n\n");
-    await vi.advanceTimersByTimeAsync(60_000);
+    // The model thinks after its role chunk; the comments keep it alive.
+    await keepAlive(stream, 150);
+    stream?.write('data: {"choices":[{"delta":{"content":"Да"}}]}\n\n');
+    // Then the connection dies.
+    await vi.advanceTimersByTimeAsync(90_000);
 
-    expect(await reading).toMatchObject({ name: "ModelStreamStalledError" });
+    expect(await reading).toMatchObject({
+      idle: true,
+      name: "ModelStreamStalledError",
+    });
     expect(calls).toHaveLength(1);
     expect(console.warn).toHaveBeenCalledWith(
       "[model] OpenRouter stream stalled mid-answer",
-      { waitedMs: 60_000 }
+      { idle: true }
     );
   });
 
@@ -177,13 +241,11 @@ describe("the OpenRouter stall watchdog", () => {
     vi.stubGlobal("fetch", openRouterFetch());
 
     const answer = watchedModelFetch("https://openrouter.test", request);
-    await vi.waitFor(() => {
-      expect(calls).toHaveLength(1);
-    });
-    calls[0]?.stream.write("da");
-    calls[0]?.stream.write('ta: {"choices":[]}\n\n');
+    const stream = await firstCall();
+    stream?.write("da");
+    stream?.write('ta: {"choices":[]}\n\n');
     const response = await answer;
-    calls[0]?.stream.close();
+    stream?.close();
 
     await expect(readAll(response)).resolves.toBe('data: {"choices":[]}\n\n');
   });
@@ -196,30 +258,36 @@ describe("the OpenRouter stall watchdog", () => {
       ...request,
       signal: caller.signal,
     });
-    await vi.waitFor(() => {
-      expect(calls).toHaveLength(1);
-    });
+    await firstCall();
     caller.abort(new Error("turn cancelled"));
 
     await expect(answer).rejects.toThrow("turn cancelled");
-    await vi.advanceTimersByTimeAsync(120_000);
+    await vi.advanceTimersByTimeAsync(300_000);
     expect(calls).toHaveLength(1);
   });
 
-  it("passes a plain JSON answer through without watching it", async () => {
+  it("lets a call that does not stream hold its headers until the answer is ready", async () => {
     const json = new Response('{"id":"gen-1"}', {
       headers: { "content-type": "application/json" },
     });
-    const fetch = vi.fn<typeof globalThis.fetch>(() => Promise.resolve(json));
+    const fetch = vi.fn<typeof globalThis.fetch>(
+      () =>
+        new Promise((resolve) => {
+          setTimeout(() => {
+            resolve(json);
+          }, 150_000);
+        })
+    );
     vi.stubGlobal("fetch", fetch);
 
-    const response = await watchedModelFetch("https://openrouter.test", {
-      body: "{}",
+    const response = watchedModelFetch("https://openrouter.test", {
+      body: JSON.stringify({ model: "deepseek/deepseek-v4.1-flash" }),
       method: "POST",
     });
+    await vi.advanceTimersByTimeAsync(150_000);
 
-    expect(response).toBe(json);
-    await vi.advanceTimersByTimeAsync(120_000);
+    await expect(response).resolves.toBe(json);
+    await vi.advanceTimersByTimeAsync(300_000);
     expect(fetch).toHaveBeenCalledOnce();
   });
 });

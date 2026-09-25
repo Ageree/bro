@@ -54,6 +54,45 @@ function stubFetch(...responses: readonly Response[]) {
   return calls;
 }
 
+describe("Browser Use client deadlines", () => {
+  it("bounds a read but never cuts off a start or a queued message", async () => {
+    const client = await loadClient();
+    const signals: { method: string; signal: AbortSignal | undefined }[] = [];
+    vi.stubGlobal(
+      "fetch",
+      (_url: URL, init: { method: string; signal?: AbortSignal }) => {
+        signals.push({ method: init.method, signal: init.signal });
+        return Promise.resolve(
+          init.method === "GET"
+            ? Response.json({ status: "running" })
+            : init.method === "POST" && signals.length === 2
+              ? Response.json({
+                  id: runId,
+                  model: "m",
+                  sessionId,
+                  status: "running",
+                })
+              : Response.json({ id: 7, sessionId, status: "pending" })
+        );
+      }
+    );
+
+    await client.readBrowserUseRunStatus(runId);
+    // Browser Use takes no idempotency key: a start cut off after it began
+    // would leave a run acting for the person with nothing tracking it.
+    await client.createBrowserUseRun({ task: "Найди отель" });
+    await client.queueBrowserUseSessionMessage(sessionId, "123456");
+
+    expect(
+      signals.map(({ method, signal }) => [method, signal !== undefined])
+    ).toEqual([
+      ["GET", true],
+      ["POST", false],
+      ["POST", false],
+    ]);
+  });
+});
+
 describe("Browser Use client", () => {
   it("creates a run with the v4 field names and a whitespace-free key", async () => {
     const client = await loadClient();

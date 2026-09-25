@@ -1,24 +1,46 @@
 import { z } from "zod";
+import { env } from "@shared/environment";
 
 /**
- * OpenRouter calls that go quiet are cut short and tried again. Nothing bounded
- * a model call before: on 25.09 two turns sat on one step for 6 and 8.5
- * minutes after `browser_task start`, and each went on only when the step ran
- * again in a fresh process — the shape of a call that waited out undici's
- * five-minute timeouts and a workflow step retry.
+ * OpenRouter calls that go silent are cut short. Nothing bounded a model call
+ * before: on 25.09 two turns sat on one step for 6 and 8.5 minutes after
+ * `browser_task start`, and each went on only when the step ran again in a
+ * fresh process — the shape of a connection that stopped sending anything
+ * and waited out undici's five-minute timeouts.
  *
- * A stream counts as alive only while it carries `data:` events; the
- * `: OPENROUTER PROCESSING` comments OpenRouter sends while it waits do not
- * count. A call with no event yet has streamed nothing to eve, so it is sent
- * again in place; one that stalls halfway fails its stream, and eve's step
- * fails with it instead of hanging.
+ * Two limits, because a dead connection and a slow model look different:
+ *
+ * - Idle: no byte at all for `idleTimeoutMs`. OpenRouter keeps a live call
+ *   talking with `: OPENROUTER PROCESSING` comments while the model prefills
+ *   or thinks, so silence means the connection is gone. Before the first
+ *   `data:` event nothing has reached eve, so the call is sent again once.
+ * - Slow: no `data:` event for `dataCeilingMs()` although comments keep
+ *   coming. The model is working; a second call would be as slow and billed
+ *   twice, so the call fails instead, and only long past any healthy answer.
+ *
+ * Mid-answer the same two limits fail the stream, and eve's step fails with
+ * it instead of hanging.
  */
-const firstEventTimeoutMs = 60_000;
-const eventGapTimeoutMs = 60_000;
+const idleTimeoutMs = 90_000;
 const maximumAttempts = 2;
+
+/** Hidden reasoning streams nothing but comments, for minutes at high effort. */
+function dataCeilingMs() {
+  return env.OPENROUTER_REASONING_EFFORT === "off" ? 240_000 : 480_000;
+}
 
 class ModelStreamStalledError extends Error {
   override readonly name = "ModelStreamStalledError";
+  readonly idle: boolean;
+
+  constructor(idle: boolean, waitedMs: number) {
+    super(
+      idle
+        ? `OpenRouter sent nothing for ${String(waitedMs / 1000)} s.`
+        : `OpenRouter sent no answer for ${String(waitedMs / 1000)} s.`
+    );
+    this.idle = idle;
+  }
 }
 
 /** A `fetch` for the OpenRouter provider that bounds every silence. */
@@ -44,28 +66,28 @@ async function attemptModelFetch(
   const release = () => {
     caller?.removeEventListener("abort", followCaller);
   };
-  const stalled = new ModelStreamStalledError(
-    `OpenRouter sent no event for ${String(firstEventTimeoutMs / 1000)} s.`
-  );
-  const timer = setTimeout(() => {
-    controller.abort(stalled);
-  }, firstEventTimeoutMs);
+  const request = modelRequest(init);
+  // A call that does not stream may hold its headers until the whole answer
+  // is ready: only the ceiling applies to it.
+  const timers = stallTimers(controller, request?.stream === true);
+  timers.start();
   try {
     const response = await fetch(input, {
       ...init,
       signal: controller.signal,
     });
     if (!response.body || !isEventStream(response)) {
-      clearTimeout(timer);
+      timers.stop();
       release();
       return response;
     }
+    timers.bytes();
     const reader = response.body.getReader();
     const events = eventLines();
-    const head = await readUntilFirstEvent(reader, events, []);
-    clearTimeout(timer);
+    const head = await readUntilFirstEvent(reader, events, timers, []);
+    timers.data();
     return new Response(
-      watchedBody({ controller, events, head, reader, release }),
+      watchedBody({ controller, events, head, reader, release, timers }),
       {
         headers: response.headers,
         status: response.status,
@@ -73,18 +95,63 @@ async function attemptModelFetch(
       }
     );
   } catch (error) {
-    clearTimeout(timer);
+    timers.stop();
     release();
-    if (controller.signal.reason !== stalled || caller?.aborted) throw error;
-    console.warn("[model] OpenRouter stream stalled before its first event", {
+    const stalled = stallOf(controller);
+    if (!stalled || caller?.aborted) throw error;
+    console.warn("[model] OpenRouter call stalled before its answer", {
       attempt,
-      model: requestedModel(init),
-      waitedMs: firstEventTimeoutMs,
+      idle: stalled.idle,
+      model: request?.model,
     });
-    if (attempt >= maximumAttempts || !resendable(init)) throw stalled;
+    // Only a silent connection is sent again: nothing reached eve yet, and a
+    // model that was still working would only be as slow a second time.
+    if (!stalled.idle || attempt >= maximumAttempts || !resendable(init)) {
+      throw stalled;
+    }
     return attemptModelFetch(input, init, attempt + 1);
   }
 }
+
+function stallOf(controller: AbortController) {
+  const reason: unknown = controller.signal.reason;
+  return reason instanceof ModelStreamStalledError ? reason : undefined;
+}
+
+/**
+ * The idle timer restarts on every byte, comments included; the ceiling only
+ * on a `data:` event. Either one firing aborts the call with its reason.
+ */
+function stallTimers(controller: AbortController, watchIdle: boolean) {
+  const ceilingMs = dataCeilingMs();
+  let idle: ReturnType<typeof setTimeout> | undefined;
+  let ceiling: ReturnType<typeof setTimeout> | undefined;
+  const bytes = () => {
+    if (!watchIdle) return;
+    clearTimeout(idle);
+    idle = setTimeout(() => {
+      controller.abort(new ModelStreamStalledError(true, idleTimeoutMs));
+    }, idleTimeoutMs);
+  };
+  const data = () => {
+    bytes();
+    clearTimeout(ceiling);
+    ceiling = setTimeout(() => {
+      controller.abort(new ModelStreamStalledError(false, ceilingMs));
+    }, ceilingMs);
+  };
+  return {
+    bytes,
+    data,
+    start: data,
+    stop: () => {
+      clearTimeout(idle);
+      clearTimeout(ceiling);
+    },
+  };
+}
+
+type StallTimers = ReturnType<typeof stallTimers>;
 
 function isEventStream(response: Response) {
   return (
@@ -97,14 +164,17 @@ function resendable(init: RequestInit | undefined) {
   return init?.body === undefined || z.string().safeParse(init.body).success;
 }
 
-const modelRequestSchema = z.object({ model: z.string() });
+const modelRequestSchema = z.object({
+  model: z.string().optional(),
+  stream: z.boolean().optional(),
+});
 
-/** The model the call asked for, for the log line; nothing when unreadable. */
-function requestedModel(init: RequestInit | undefined) {
+/** What the call asked for: the model, and whether it streams. */
+function modelRequest(init: RequestInit | undefined) {
   const body = z.string().safeParse(init?.body);
   if (!body.success) return undefined;
   try {
-    return modelRequestSchema.safeParse(JSON.parse(body.data)).data?.model;
+    return modelRequestSchema.safeParse(JSON.parse(body.data)).data;
   } catch {
     return undefined;
   }
@@ -133,12 +203,16 @@ function eventLines() {
 async function readUntilFirstEvent(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   sawEvent: (chunk: Uint8Array) => boolean,
+  timers: StallTimers,
   head: Uint8Array[]
 ): Promise<Uint8Array[]> {
   const { done, value } = await reader.read();
   if (done) return head;
+  timers.bytes();
   const read = [...head, value];
-  return sawEvent(value) ? read : readUntilFirstEvent(reader, sawEvent, read);
+  return sawEvent(value)
+    ? read
+    : readUntilFirstEvent(reader, sawEvent, timers, read);
 }
 
 function watchedBody(options: {
@@ -147,20 +221,11 @@ function watchedBody(options: {
   readonly head: readonly Uint8Array[];
   readonly reader: ReadableStreamDefaultReader<Uint8Array>;
   readonly release: () => void;
+  readonly timers: StallTimers;
 }) {
-  const { controller, events, head, reader, release } = options;
-  const stalled = new ModelStreamStalledError(
-    `OpenRouter stream went ${String(eventGapTimeoutMs / 1000)} s without an event.`
-  );
-  let gap: ReturnType<typeof setTimeout> | undefined;
-  const arm = () => {
-    clearTimeout(gap);
-    gap = setTimeout(() => {
-      controller.abort(stalled);
-    }, eventGapTimeoutMs);
-  };
+  const { controller, events, head, reader, release, timers } = options;
   const finish = () => {
-    clearTimeout(gap);
+    timers.stop();
     release();
   };
   return new ReadableStream<Uint8Array>({
@@ -176,13 +241,15 @@ function watchedBody(options: {
           stream.close();
           return;
         }
-        if (events(value)) arm();
+        if (events(value)) timers.data();
+        else timers.bytes();
         stream.enqueue(value);
       } catch (error) {
         finish();
-        if (controller.signal.reason === stalled) {
+        const stalled = stallOf(controller);
+        if (stalled) {
           console.warn("[model] OpenRouter stream stalled mid-answer", {
-            waitedMs: eventGapTimeoutMs,
+            idle: stalled.idle,
           });
           stream.error(stalled);
           return;
@@ -192,7 +259,6 @@ function watchedBody(options: {
     },
     start(stream) {
       for (const chunk of head) stream.enqueue(chunk);
-      arm();
     },
   });
 }
