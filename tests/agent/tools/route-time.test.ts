@@ -148,6 +148,89 @@ const places = new Map([
     },
   ],
   [
+    // Nominatim answers a query that ends in a city with the city itself.
+    "Москва, Россия",
+    {
+      address: { city: "Москва", country_code: "ru" },
+      addresstype: "city",
+      display_name: "Москва, Центральный федеральный округ, Россия",
+      lat: "55.7505",
+      lon: "37.6175",
+      name: "Москва",
+      place_rank: 16,
+    },
+  ],
+  [
+    "Кафе Призрак, Москва",
+    {
+      address: { city: "Москва", country_code: "ru" },
+      addresstype: "city",
+      display_name: "Москва, Центральный федеральный округ, Россия",
+      lat: "55.7505",
+      lon: "37.6175",
+      name: "Москва",
+      place_rank: 16,
+    },
+  ],
+  [
+    "Москва",
+    {
+      address: { city: "Москва", country_code: "ru" },
+      addresstype: "city",
+      display_name: "Москва, Центральный федеральный округ, Россия",
+      lat: "55.7505",
+      lon: "37.6175",
+      name: "Москва",
+      place_rank: 16,
+    },
+  ],
+  [
+    "Тверь",
+    {
+      address: { city: "Тверь", country_code: "ru" },
+      addresstype: "city",
+      display_name: "Тверь, Тверская область, Россия",
+      lat: "56.8587",
+      lon: "35.9176",
+      name: "Тверь",
+      place_rank: 16,
+    },
+  ],
+  [
+    "Городская поликлиника 2, Москва",
+    {
+      address: {
+        city: "Москва",
+        country_code: "ru",
+        house_number: "15",
+        road: "Сретенка",
+      },
+      addresstype: "amenity",
+      display_name: "Городская поликлиника № 2, 15, Сретенка, Москва, Россия",
+      lat: "55.7702",
+      lon: "37.6325",
+      name: "Городская поликлиника № 2",
+      place_rank: 30,
+    },
+  ],
+  [
+    "Школа 57, Москва",
+    {
+      address: {
+        city: "Москва",
+        country_code: "ru",
+        house_number: "7/10 с5",
+        road: "Малый Знаменский переулок",
+      },
+      addresstype: "amenity",
+      display_name: "Школа № 57, 7/10 с5, Малый Знаменский переулок, Москва",
+      lat: "55.7478",
+      lon: "37.6035",
+      name: "Школа № 57",
+      place_rank: 30,
+    },
+  ],
+  [
     "Times Square, New York",
     {
       address: { city: "New York", country_code: "us" },
@@ -191,8 +274,10 @@ function routerAnswer(url: URL) {
 }
 
 const outputSchema = z.object({
+  attribution: z.string().optional(),
   basis: z.string().optional(),
   from: z.string().optional(),
+  fromNote: z.string().optional(),
   note: z.string().optional(),
   routes: z
     .array(
@@ -201,6 +286,7 @@ const outputSchema = z.object({
         km: z.number().optional(),
         link: z.string().optional(),
         minutes: z.number().optional(),
+        note: z.string().optional(),
         place: z.string().optional(),
         straightKm: z.number().optional(),
         to: z.string(),
@@ -290,6 +376,8 @@ describe("route_time", () => {
       status: "ok",
     });
     expect(result.basis).toContain("Walking");
+    // The services' terms ask for the credit wherever their data is shown.
+    expect(result.attribution).toBe("© OpenStreetMap");
     expect(result.routes?.[0]?.link).toBe(
       "https://yandex.ru/maps/?rtext=55.758426,37.621488~55.764880,37.638020&rtt=pd"
     );
@@ -311,7 +399,7 @@ describe("route_time", () => {
     ]);
   });
 
-  it("identifies itself and asks each map service at most once a second", async () => {
+  it("identifies itself with a contact and keeps each instance to half the allowed rate", async () => {
     await measure({
       from: "отель Метрополь, Москва",
       mode: "walking",
@@ -319,8 +407,8 @@ describe("route_time", () => {
     });
 
     for (const [, init] of fetchMock.mock.calls) {
-      expect(new Headers(init.headers).get("user-agent")).toMatch(
-        /^Bro\/1\.0/u
+      expect(new Headers(init.headers).get("user-agent")).toBe(
+        "Bro/1.0 (personal assistant, route times; contact: https://example.com)"
       );
     }
     const geocoder = requestTimes.filter(
@@ -330,7 +418,28 @@ describe("route_time", () => {
     const gaps = geocoder
       .slice(1)
       .map((request, index) => request.at - (geocoder[index]?.at ?? 0));
-    expect(gaps.every((gap) => gap >= 1000)).toBe(true);
+    expect(gaps.every((gap) => gap >= 2000)).toBe(true);
+  });
+
+  it("stops looking places up after eight lookups in one call", async () => {
+    const result = await measure({
+      from: "Метрополь, Москва",
+      mode: "walking",
+      to: [
+        "Кафе Один, Улица Первая 1, Москва",
+        "Кафе Два, Улица Вторая 2, Москва",
+        "Кафе Три, Улица Третья 3, Москва",
+        "Кафе Четыре, Улица Четвёртая 4, Москва",
+      ],
+    });
+
+    expect(requestsTo("nominatim.openstreetmap.org")).toHaveLength(8);
+    expect(
+      result.routes?.map((route) =>
+        route.error?.includes("already made 8 map lookups")
+      )
+    ).toEqual([false, false, true, true]);
+    expect(result.routes?.[0]?.error).toContain("not on the map");
   });
 
   it("answers a place and a route it already measured without asking again", async () => {
@@ -396,7 +505,7 @@ describe("route_time", () => {
     });
 
     expect(result.routes?.[0]?.error).toContain(
-      "knows only the street «Большая Никольская улица, Москва»"
+      "found only the street «Большая Никольская улица, Москва»"
     );
     expect(result.routes?.[0]?.minutes).toBeUndefined();
     expect(result.routes?.[1]).toMatchObject({ km: 1.6, minutes: 21 });
@@ -413,7 +522,60 @@ describe("route_time", () => {
       to: ["метро Чистые пруды, Москва"],
     });
     expect(fromStreet.status).toBe("not_found");
-    expect(fromStreet.note).toContain("knows only the street");
+    expect(fromStreet.note).toContain("found only the street");
+  });
+
+  it("never measures to a city when the query named a place in it", async () => {
+    // «Тверская 7, Москва, Россия» must not be cut down to «Москва, Россия».
+    const street = await measure({
+      from: "отель Метрополь, Москва",
+      mode: "walking",
+      to: ["Тверская 7, Москва, Россия"],
+    });
+    expect(
+      requestsTo("nominatim.openstreetmap.org").map((url) =>
+        url.searchParams.get("q")
+      )
+    ).not.toContain("Москва, Россия");
+    expect(street.routes?.[0]?.error).toContain("not on the map");
+
+    // The map answering a place with its city gets no time either.
+    const cafe = await measure({
+      from: "отель Метрополь, Москва",
+      mode: "walking",
+      to: ["Кафе Призрак, Москва"],
+    });
+    expect(cafe.routes?.[0]?.error).toContain("found only the area «Москва»");
+    expect(cafe.routes?.[0]?.minutes).toBeUndefined();
+  });
+
+  it("measures between cities the person named, to their centres", async () => {
+    const result = await measure({
+      from: "Москва",
+      mode: "driving",
+      to: ["Тверь"],
+    });
+
+    expect(result.status).toBe("ok");
+    expect(result.fromNote).toContain("centre of «Москва»");
+    expect(result.routes?.[0]?.note).toContain("centre of «Тверь»");
+    expect(result.routes?.[0]?.minutes).toBeDefined();
+  });
+
+  it("does not take a number in a place's name for a house", async () => {
+    const result = await measure({
+      from: "отель Метрополь, Москва",
+      mode: "walking",
+      to: ["Городская поликлиника 2, Москва", "Школа 57, Москва"],
+    });
+
+    expect(result.routes?.map((route) => route.error)).toEqual([
+      undefined,
+      undefined,
+    ]);
+    expect(result.routes?.[0]?.place).toBe(
+      "Городская поликлиника № 2, Сретенка 15, Москва"
+    );
   });
 
   it("drops the kind of place and quotes that the map reads as part of the name", async () => {
@@ -497,8 +659,11 @@ describe("route_time", () => {
     expect(result.routes?.[0]?.minutes).toBeUndefined();
   });
 
-  it("says the map is unavailable when the geocoder refuses", async () => {
-    fetchMock.mockResolvedValue(new Response("slow down", { status: 429 }));
+  it("backs off once on a 429 and then leaves the host alone for a while", async () => {
+    fetchMock.mockImplementation(async (url) => {
+      requestTimes.push({ at: Date.now(), host: url.host });
+      return new Response("slow down", { status: 429 });
+    });
 
     const result = await measure({
       from: "отель Метрополь, Москва",
@@ -509,6 +674,44 @@ describe("route_time", () => {
     expect(result).toMatchObject({ status: "unavailable" });
     expect(result.note).toContain("HTTP 429");
     expect(result.note).toContain("do not guess");
+    // One retry, after at least the base pause.
+    expect(requestTimes).toHaveLength(2);
+    expect(
+      (requestTimes[1]?.at ?? 0) - (requestTimes[0]?.at ?? 0)
+    ).toBeGreaterThanOrEqual(1500);
+
+    const again = await measure({
+      from: "гостиница Националь, Москва",
+      mode: "walking",
+      to: ["метро Чистые пруды, Москва"],
+    });
+    expect(again.note).toContain("asked to slow down");
+    expect(requestTimes).toHaveLength(2);
+  });
+
+  it("measures after one 429 when the retry succeeds", async () => {
+    let refused = false;
+    fetchMock.mockImplementation(async (url) => {
+      if (url.host === "nominatim.openstreetmap.org" && !refused) {
+        refused = true;
+        return new Response("slow down", {
+          headers: { "retry-after": "3" },
+          status: 429,
+        });
+      }
+      return url.host === "nominatim.openstreetmap.org"
+        ? geocoderAnswer(url)
+        : routerAnswer(url);
+    });
+
+    const result = await measure({
+      from: "отель Метрополь, Москва",
+      mode: "walking",
+      to: ["метро Чистые пруды, Москва"],
+    });
+
+    expect(result.status).toBe("ok");
+    expect(result.routes?.[0]?.minutes).toBe(21);
   });
 
   it("warns that a drive has no traffic and links the live route abroad on Google Maps", async () => {

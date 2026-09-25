@@ -2,11 +2,14 @@
  * Travel time and distance between places, with no API key: OpenStreetMap's
  * Nominatim finds the places and the OSRM servers FOSSGIS runs for
  * openstreetmap.org measure the route on foot, by bike or by car. Both ask
- * for an identifying User-Agent, at most one request per second and cached
- * results (operations.osmfoundation.org/policies/nominatim,
- * routing.openstreetmap.de/about.html), so every request here waits its turn
- * per host and a place or a route already measured is answered from memory.
- * The car time is free-flow: no live traffic.
+ * for an identifying User-Agent, at most one request per second for the whole
+ * application, cached results and the attribution «© OpenStreetMap»
+ * (operations.osmfoundation.org/policies/nominatim,
+ * routing.openstreetmap.de/about.html). The spacing and the cache here live
+ * in one instance, and several instances may run at once (morning digests
+ * start together), so each instance keeps to half the allowed rate, a call
+ * makes a bounded number of lookups, and a host that says «slow down» is left
+ * alone for a while. The car time is free-flow: no live traffic.
  */
 
 import { z } from "zod";
@@ -25,8 +28,22 @@ const routerProfiles: Readonly<Record<TravelMode, string>> = {
   walking: "routed-foot",
 };
 
-/** Both policies allow one request per second at most; a little over is safe. */
-const requestSpacingMs = 1100;
+/**
+ * Both policies allow one request per second for the whole application. One
+ * instance keeps to one every two seconds, so two instances at once still
+ * stay within it.
+ */
+const requestSpacingMs = 2000;
+/** A 429 or 503 is tried once more after this pause plus up to the jitter. */
+const backoffMs = 1500;
+const backoffJitterMs = 1500;
+/** A longer Retry-After is not waited out inside a turn. */
+const longestRetryAfterMs = 5000;
+/** A host that refused twice in a row is not asked again for this long. */
+const coolDownMs = 2 * 60_000;
+const longestCoolDownMs = 20 * 60_000;
+/** Geocoder requests one call may make; the rest of its places go unmeasured. */
+export const lookupsPerCall = 8;
 /** A turn waits on these calls; a slow service is given up on, not waited out. */
 const requestTimeoutMs = 8000;
 /** A place stays where it is; one that was not found may be added to the map. */
@@ -39,6 +56,9 @@ const maximumRemembered = 500;
 const nearbyLatitude = 0.3;
 const nearbyLongitude = 0.5;
 
+/** Credit the services' terms ask for wherever their data is shown. */
+export const openStreetMapAttribution = "© OpenStreetMap";
+
 /** Countries where people open Yandex Maps rather than Google Maps. */
 const yandexCountries: ReadonlySet<string> = new Set([
   "am",
@@ -49,19 +69,29 @@ const yandexCountries: ReadonlySet<string> = new Set([
   "uz",
 ]);
 
+/**
+ * What the map matched: a building or a named place, a whole street (its
+ * point is somewhere along it), an area such as a city or a district (its
+ * point is the centre), or coordinates as given.
+ */
+type PlaceKind = "area" | "place" | "point" | "street";
+
 /** A place found on the map, with the name that says which one it is. */
 export interface MapPlace {
   readonly countryCode: string | undefined;
   /** The building the map matched, such as «12 с7», when it has one. */
   readonly houseNumber: string | undefined;
+  readonly kind: PlaceKind;
   readonly label: string;
   readonly lat: number;
   readonly lon: number;
-  /**
-   * The map knows only the street, not the house: its point is somewhere
-   * along a street that may run for kilometres.
-   */
-  readonly streetOnly: boolean;
+  /** The place's own name, such as «Городская поликлиника № 2». */
+  readonly name: string | undefined;
+}
+
+/** Geocoder requests one call may still make; shared by all its places. */
+export interface LookupBudget {
+  remaining: number;
 }
 
 /** One route: the distance on roads or paths and the time it takes. */
@@ -96,8 +126,51 @@ const nominatimResultsSchema = z.array(
     lat: z.coerce.number(),
     lon: z.coerce.number(),
     name: z.string().optional(),
+    place_rank: z.coerce.number().optional(),
   })
 );
+
+type NominatimResult = z.infer<typeof nominatimResultsSchema>[number];
+
+/**
+ * Nominatim's `addresstype` for areas; a `place_rank` below 26 says the same
+ * (4 a country, 16 a city, 20 a neighbourhood, 25 a postcode), 26–27 is a
+ * street and 30 a building or a named place.
+ */
+const areaTypes: ReadonlySet<string> = new Set([
+  "borough",
+  "city",
+  "city_block",
+  "city_district",
+  "country",
+  "county",
+  "district",
+  "hamlet",
+  "municipality",
+  "neighbourhood",
+  "postcode",
+  "province",
+  "quarter",
+  "region",
+  "state",
+  "suburb",
+  "town",
+  "village",
+]);
+
+function placeKind(result: NominatimResult): PlaceKind {
+  const rank = result.place_rank;
+  if (result.addresstype === "road" || rank === 26 || rank === 27) {
+    return "street";
+  }
+  if (
+    (rank !== undefined && rank < 26) ||
+    areaTypes.has(result.addresstype ?? "")
+  ) {
+    return "area";
+  }
+  return "place";
+}
 
 const tableSchema = z.object({
   code: z.string(),
@@ -107,6 +180,8 @@ const tableSchema = z.object({
 });
 
 const nextRequestAt = new Map<string, number>();
+/** Hosts that asked to slow down, until when. */
+const coolingUntil = new Map<string, number>();
 const rememberedPlaces = new Map<
   string,
   { readonly place: MapPlace | undefined; readonly until: number }
@@ -116,11 +191,12 @@ const rememberedRoutes = new Map<
   { readonly route: MeasuredRoute | undefined; readonly until: number }
 >();
 
+/** Names the application and where to reach whoever runs it. */
 function userAgent() {
   try {
-    return `Bro/1.0 (personal assistant; +${applicationOrigin()})`;
+    return `Bro/1.0 (personal assistant, route times; contact: ${applicationOrigin()})`;
   } catch {
-    return "Bro/1.0 (personal assistant)";
+    return "Bro/1.0 (personal assistant, route times)";
   }
 }
 
@@ -148,7 +224,7 @@ function pause(ms: number, signal: AbortSignal) {
 
 /**
  * Waits until this host may be asked again. The slot is taken before the
- * wait, so calls made at once line up a second apart instead of all going.
+ * wait, so calls made at once line up two seconds apart instead of all going.
  */
 async function waitForTurn(host: string, signal: AbortSignal) {
   const now = Date.now();
@@ -183,20 +259,24 @@ function remember<T>(
   }
 }
 
-/**
- * One GET to a map service, parsed with `schema`. OSRM explains a route it
- * cannot measure in a 400 body, so that body is read like any other.
- */
-async function request<Schema extends z.ZodType>(
-  url: URL,
-  service: string,
-  schema: Schema,
-  signal: AbortSignal
-): Promise<z.infer<Schema>> {
+/** The Retry-After a host sent, in milliseconds, when it sent one. */
+function retryAfterMs(response: Response) {
+  const header = response.headers.get("retry-after")?.trim();
+  if (!header) return undefined;
+  const seconds = Number(header);
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
+  const at = Date.parse(header);
+  return Number.isNaN(at) ? undefined : Math.max(0, at - Date.now());
+}
+
+function slowDown(status: number) {
+  return status === 429 || status === 503;
+}
+
+async function fetchOnce(url: URL, service: string, signal: AbortSignal) {
   await waitForTurn(url.host, signal);
-  let response: Response;
   try {
-    response = await fetch(url, {
+    return await fetch(url, {
       headers: { accept: "application/json", "user-agent": userAgent() },
       signal: AbortSignal.any([signal, AbortSignal.timeout(requestTimeoutMs)]),
     });
@@ -207,6 +287,41 @@ async function request<Schema extends z.ZodType>(
         ? `${service} did not answer in time`
         : `${service} could not be reached`
     );
+  }
+}
+
+/**
+ * One GET to a map service, parsed with `schema`. A 429 or 503 is tried once
+ * more after a jittered pause, or after the host's own Retry-After when it is
+ * short; a second refusal or a long Retry-After leaves the host alone for a
+ * while. OSRM explains a route it cannot measure in a 400 body, so that body
+ * is read like any other.
+ */
+async function request<Schema extends z.ZodType>(
+  url: URL,
+  service: string,
+  schema: Schema,
+  signal: AbortSignal
+): Promise<z.infer<Schema>> {
+  if (Date.now() < (coolingUntil.get(url.host) ?? 0)) {
+    throw new MapServiceError(
+      `${service} asked to slow down a few minutes ago and is not asked again yet`
+    );
+  }
+  let response = await fetchOnce(url, service, signal);
+  if (slowDown(response.status)) {
+    const asked = retryAfterMs(response);
+    if (asked === undefined || asked <= longestRetryAfterMs) {
+      await pause(asked ?? backoffMs + Math.random() * backoffJitterMs, signal);
+      response = await fetchOnce(url, service, signal);
+    }
+    if (slowDown(response.status)) {
+      const wait = Math.min(
+        Math.max(coolDownMs, asked ?? 0),
+        longestCoolDownMs
+      );
+      coolingUntil.set(url.host, Date.now() + wait);
+    }
   }
   const text = await response.text();
   if (!response.ok && response.status !== 400) {
@@ -238,15 +353,16 @@ function coordinates(text: string): MapPlace | undefined {
   return {
     countryCode: undefined,
     houseNumber: undefined,
+    kind: "point",
     label: `${lat.toFixed(5)}, ${lon.toFixed(5)}`,
     lat,
     lon,
-    streetOnly: false,
+    name: undefined,
   };
 }
 
 /** «Metropol, Театральный проезд 2, Москва»: enough to tell which place it is. */
-function placeLabel(result: z.infer<typeof nominatimResultsSchema>[number]) {
+function placeLabel(result: NominatimResult) {
   const address = result.address;
   if (!address) return result.display_name.split(", ").slice(0, 4).join(", ");
   const street = [address.road, address.house_number]
@@ -264,10 +380,12 @@ function placeLabel(result: z.infer<typeof nominatimResultsSchema>[number]) {
  * Finds one place by address, name or «lat, lon». With `near`, a place
  * around it ranks first, so «Кафе Пушкинъ» is looked for in the start's city
  * before the rest of the world. `undefined` means the map has no such place.
+ * A lookup that has to go to the geocoder spends one of `budget`.
  */
 export async function findPlace(
   query: string,
   near: MapPlace | undefined,
+  budget: LookupBudget,
   signal: AbortSignal
 ) {
   const given = coordinates(query);
@@ -300,6 +418,12 @@ export async function findPlace(
   const key = url.search.toLowerCase();
   const known = recall(rememberedPlaces, key);
   if (known) return known.place;
+  if (budget.remaining <= 0) {
+    throw new MapServiceError(
+      `This call already made ${String(lookupsPerCall)} map lookups; measure the rest in another call`
+    );
+  }
+  budget.remaining -= 1;
 
   const [result] = await request(
     url,
@@ -310,10 +434,11 @@ export async function findPlace(
   const place: MapPlace | undefined = result && {
     countryCode: result.address?.country_code?.toLowerCase(),
     houseNumber: result.address?.house_number,
+    kind: placeKind(result),
     label: placeLabel(result),
     lat: result.lat,
     lon: result.lon,
-    streetOnly: result.addresstype === "road",
+    name: result.name,
   };
   remember(rememberedPlaces, key, {
     place,
