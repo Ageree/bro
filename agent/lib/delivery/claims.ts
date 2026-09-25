@@ -325,29 +325,40 @@ function says(sentence: string, phrases: readonly string[]) {
 }
 
 /**
- * A promise that waits on the person: «назовите время — поставлю в
- * календарь», «добавлю, как подтвердите», «if you confirm».
+ * A promise that waits on something: the person («назовите время —
+ * поставлю», «как подтвердите»), the run («как придёт корзина», «как заказ
+ * оформится», «после оплаты») or a later moment («потом добавлю»).
  */
 const onCondition =
-  /(?<!\p{L})(?:если|когда|как только|как (?:подтверд|скаж|назов|пришл|ответ|выбер)\p{L}*|once|if|when)(?!\p{L})/u;
+  /(?<!\p{L})(?:если|когда|как только|как\s+\p{L}+|после|потом|позже|затем|once|if|when|after|later|then)(?!\p{L})/u;
+
+/** What the person asked to have put in their calendar or reminded of. */
+const calendarAsked = /календар|calendar/u;
+const reminderAsked = /напомн|напоминан|remind/u;
 
 /**
- * Whether a message promises a step of this turn that no tool has taken yet
- * and that waits on nobody: «сейчас поставлю приём доставки в календарь»,
- * «поставлю напоминание на 19:30». A message that only announces it would
- * be dropped as adding nothing, and the turn would end before the step was
- * taken.
+ * Whether a message promises, for right now, a step the person asked for in
+ * this turn that no tool has taken yet: «сейчас поставлю приём доставки в
+ * календарь» after «…и поставь в календарь». A message that only announces
+ * it would be dropped as adding nothing, and the turn would end before the
+ * step was taken. A step nobody asked for, or one that waits on the person,
+ * the run or a later moment, is left alone: sent back, the model would make
+ * it now, at a time it guessed. `request` is the person's message, as a
+ * sent message's normalized text.
  */
 export function promisesUntakenStep(
   text: string,
-  actions: ReturnType<typeof turnActions>
+  actions: ReturnType<typeof turnActions>,
+  request: string
 ) {
+  const calendar = !actions.calendarWritten && calendarAsked.test(request);
+  const reminder = !actions.reminderSet && reminderAsked.test(request);
   return sentencesOf(text).some(
     (sentence) =>
       !onCondition.test(sentence) &&
       requestsOf(sentence).length === 0 &&
-      ((!actions.calendarWritten && promisesStep(sentence)) ||
-        (!actions.reminderSet && promisesStep(sentence, reminderNoun)))
+      ((calendar && promisesStep(sentence)) ||
+        (reminder && promisesStep(sentence, reminderNoun)))
   );
 }
 

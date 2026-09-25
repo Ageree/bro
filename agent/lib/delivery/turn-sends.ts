@@ -35,6 +35,7 @@ import {
   statedIn,
   tellsBeyond,
   tellsFacts,
+  withoutFound,
 } from "./novelty";
 
 /**
@@ -318,7 +319,12 @@ export function sendRefusal(
   const held = heldBack(message, turn);
   if (held) {
     // Dropped, it would end the turn before the step it announces is taken.
-    return !yields && promisesUntakenStep(outgoing.text ?? "", turn.actions)
+    return !yields &&
+      promisesUntakenStep(
+        outgoing.text ?? "",
+        turn.actions,
+        turn.request?.text ?? ""
+      )
       ? { rewrite: "announced" }
       : { skipped: held };
   }
@@ -427,19 +433,29 @@ function errandSent(texts: readonly string[]) {
   return sentMessageOf({ kind: "message", text: texts.join("\n") });
 }
 
-const jsonTextSchema = z.string();
+const jsonTextSchema = z.union([z.string(), z.number()]);
 const jsonListSchema = z.array(jsonSchema);
 const jsonRecordSchema = z.record(z.string(), jsonSchema);
 
-/** Every string in a tool call's input, wherever it sits. */
+/** Every string and number in a tool's input or output, wherever it sits. */
 function stringsOf(value: z.infer<typeof jsonSchema>): string[] {
   const text = jsonTextSchema.safeParse(value);
-  if (text.success) return [text.data];
+  if (text.success) return [String(text.data)];
   const list = jsonListSchema.safeParse(value);
   if (list.success) return list.data.flatMap(stringsOf);
   const record = jsonRecordSchema.safeParse(value);
   if (record.success) return Object.values(record.data).flatMap(stringsOf);
   return [];
+}
+
+/** The text a tool's result carries, as JSON or as text. */
+function resultTexts(output: ToolResultPart["output"]) {
+  if (output.type === "text" || output.type === "error-text") {
+    return [output.value];
+  }
+  if (output.type !== "json" && output.type !== "error-json") return [];
+  const value = jsonSchema.safeParse(output.value);
+  return value.success ? stringsOf(value.data) : [];
 }
 
 /** `browser_task` actions that hand a run the errand, anew or further. */
@@ -470,6 +486,13 @@ export function turnSends(messages: readonly ModelMessage[]) {
   const browserActions = new Map<string, string>();
   const browserTexts = new Map<string, string[]>();
   const errandTexts: string[] = [];
+  // What the turn's other tools found: a search, a route, the orders.
+  const foundTexts: string[] = [];
+  // What the person may be taken to know of the errand: what the turn
+  // handed its browser runs, less what its other tools found and the model
+  // only passed on.
+  const errandKnown = () =>
+    withoutFound(errandSent(errandTexts), errandSent(foundTexts));
   const delivered: SentMessage[] = [];
   let skipped = 0;
   let errandSkips = 0;
@@ -501,6 +524,9 @@ export function turnSends(messages: readonly ModelMessage[]) {
         workSinceDelivery = true;
         if (skipped > 0) workAfterSkip = true;
         if (newsForReport(part, reportedRun)) otherWorkSinceDelivery = true;
+        if (part.toolName !== "browser_task") {
+          foundTexts.push(...resultTexts(part.output));
+        }
         if (
           part.toolName === "browser_task" &&
           errandHandovers.has(browserActions.get(part.toolCallId) ?? "") &&
@@ -535,10 +561,7 @@ export function turnSends(messages: readonly ModelMessage[]) {
         errandHandedOver &&
         (!otherWorkSinceDelivery ||
           (announcesErrand(sent) &&
-            !tellsBeyond(sent, [
-              ...(request ? [request] : []),
-              errandSent(errandTexts),
-            ])))
+            !tellsBeyond(sent, [...(request ? [request] : []), errandKnown()])))
       ) {
         errandTold = true;
       }
@@ -555,7 +578,7 @@ export function turnSends(messages: readonly ModelMessage[]) {
     distinct: requestText === undefined ? [] : distinctStems(requestText),
     errandAtWork: errandAtWork(earlier),
     /** What the turn handed its browser runs: task, site, submission. */
-    errandInput: errandTexts.length > 0 ? errandSent(errandTexts) : undefined,
+    errandInput: errandTexts.length > 0 ? errandKnown() : undefined,
     /** How many messages about the errand were dropped as `started`. */
     errandSkips,
     /**
