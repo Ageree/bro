@@ -18,6 +18,7 @@ import {
   restoreScheduledAgentRunInput,
   setScheduledRunSession,
 } from "@db/services/scheduled-agent-jobs";
+import { localRunLabel } from "@shared/schedules/timing";
 
 const workerStartupLimitMs = 5 * 60_000;
 
@@ -222,9 +223,15 @@ async function dispatchRecoverableReport(
 function scheduledRunPrompt(
   claim: Awaited<ReturnType<typeof claimReadyScheduledAgentRuns>>[number]
 ) {
+  // «Сегодня» of a morning digest is the person's day, not the UTC one.
+  const timing = claim.job.timing;
+  const local =
+    timing.kind === "calendar"
+      ? ` (on the person's clock: ${localRunLabel(claim.run.scheduledFor, timing.timezone)})`
+      : "";
   return [
     "Complete this user-owned scheduled task in an isolated background session.",
-    `Scheduled for: ${claim.run.scheduledFor.toISOString()}`,
+    `Scheduled for: ${claim.run.scheduledFor.toISOString()}${local}`,
     `Task: ${claim.job.prompt}`,
   ].join("\n\n");
 }

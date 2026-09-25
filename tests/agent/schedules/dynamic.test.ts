@@ -92,6 +92,10 @@ describe("dynamic schedule dispatch", () => {
       runId: claim.run.id,
     });
     expect(send.mock.calls[0]?.[0]).toContain("Task: Watch the price.");
+    // The worker's «сегодня» is the person's day.
+    expect(send.mock.calls[0]?.[0]).toContain(
+      "on the person's clock: 2026-09-02 09:00, Wednesday (America/New_York)"
+    );
     expect(send.mock.calls[0]?.[1].auth?.authenticator).toBe(
       "scheduled-worker"
     );
