@@ -25,6 +25,7 @@ import {
   retellsAroundQuestion,
   type SentMessage,
   similarity,
+  statementsOf,
   tellsFacts,
 } from "./novelty";
 
@@ -42,6 +43,14 @@ export const turnMessageLimit = 3;
  * write the closing text.
  */
 const skipsBeforeEnd = 1;
+
+/**
+ * Messages about an errand the turn may have dropped before it is ended. The
+ * first leaves the turn open: the person may have asked for more than the
+ * errand, and a model that announced that step («сейчас поставлю в
+ * календарь») instead of taking it would otherwise never take it.
+ */
+const errandSkipsBeforeEnd = 2;
 
 /**
  * Sends returned for a rewrite before one goes through as written. A model
@@ -100,7 +109,7 @@ const skipNotices = {
   limit: `${skippedPrefix} this turn already delivered ${String(turnMessageLimit)} messages, the most one reply may take. End the turn now without calling any tool.`,
   reported: `${skippedPrefix} this browser result already reached the person in this turn, as one message, and this one tells the same result again — restated, with a detail added, or corrected. The person gets a browser result once. Another message goes out only when it asks them for something new — a code, a confirmation, a choice — or brings a picture or a link they need. If the report still asks you to act — browser_task continue on the errand, the calendar entry for a booking, a schedule for a later step — do that without writing again; otherwise end the turn now without calling any tool.`,
   stale: `${skippedPrefix} it adds nothing to what this turn already sent — no new result, number, link, name, option or question, only the same status in other words. The person already has your answer and knows the outcome will follow. End the turn now without calling any tool.`,
-  started: `${skippedPrefix} the person already has this turn's message about the errand you handed the browser, and an errand gets one such message: what the run finds reaches them in its own report, as a new turn. Where it runs, what it was asked to do and that nothing is done yet are no news to them. End the turn now without calling any tool.`,
+  started: `${skippedPrefix} the person already has this turn's message about the errand you handed the browser, and an errand gets one such message: what the run finds reaches them in its own report, as a new turn. Where it runs, what it was asked to do and that nothing is done yet are no news to them. If the person asked in this turn for something else you have not done yet — a calendar entry, a reminder — do it now with its tool, without announcing it first; otherwise end the turn now without calling any tool.`,
 } as const satisfies Record<SkipReason, string>;
 
 const rewriteNotices = {
@@ -263,7 +272,7 @@ export function sendRefusal(
   if (announcesUnstartedWork(message, turn)) return { rewrite: "status" };
   if (
     !turn.workSinceDelivery &&
-    retellsAroundQuestion(outgoing.text ?? "", message, delivered, turn.request)
+    retellsAroundQuestion(outgoing.text ?? "", message, delivered, turn.stated)
   ) {
     return { rewrite: "restated" };
   }
@@ -327,16 +336,16 @@ function openingText(message: ModelMessage | undefined) {
 const deliveryTools = new Set(["react_to_message", "send_message"]);
 
 /**
- * The person's own message that opened the turn, as a message a send is
- * compared with, or nothing when Bro opened it: a browser report, a
- * scheduled result, a background wakeup.
+ * The text of the person's own message that opened the turn, or nothing
+ * when Bro opened it: a browser report, a scheduled result, a background
+ * wakeup.
  */
-function personRequest(opening: ModelMessage | undefined) {
+function personRequestText(opening: ModelMessage | undefined) {
   if (opening?.role !== "user") return undefined;
   const kind = taggedMessageSchema.safeParse(opening).data?.kind ?? "user";
   const text = openingText(opening);
   if (kind !== "user" || isBackgroundTurnText(text)) return undefined;
-  return sentMessageOf({ kind: "message", text });
+  return text;
 }
 
 /**
@@ -375,10 +384,12 @@ export function turnSends(messages: readonly ModelMessage[]) {
   const earlier = start === -1 ? [] : messages.slice(0, start);
   const opening = openingText(messages[start]);
   const reportedRun = reportedRunOf(opening);
+  const requestText = personRequestText(messages[start]);
   const inputs = new Map<string, OutgoingMessage>();
   const browserActions = new Map<string, string>();
   const delivered: SentMessage[] = [];
   let skipped = 0;
+  let errandSkips = 0;
   let rewrites = 0;
   let worked = false;
   let workSinceDelivery = false;
@@ -417,13 +428,22 @@ export function turnSends(messages: readonly ModelMessage[]) {
       const refusal = refusalOf(part.output);
       if (refusal === "skipped") skipped += 1;
       if (refusal === "rewrite") rewrites += 1;
+      if (
+        part.output.type === "text" &&
+        part.output.value === skipNotices.started
+      ) {
+        errandSkips += 1;
+      }
       if (!sendReachedPerson(part.output)) continue;
       const input = inputs.get(part.toolCallId);
       if (!input) continue;
       delivered.push(sentMessageOf(input));
+      // A message that follows other work — a search in the same step as the
+      // errand, a calendar entry — may tell that work's result rather than
+      // the errand, so it does not use up the errand's one message.
+      if (errandHandedOver && !otherWorkSinceDelivery) errandTold = true;
       workSinceDelivery = false;
       otherWorkSinceDelivery = false;
-      if (errandHandedOver) errandTold = true;
     }
   }
   return {
@@ -432,17 +452,32 @@ export function turnSends(messages: readonly ModelMessage[]) {
     }),
     delivered,
     errandAtWork: errandAtWork(earlier),
+    /** How many messages about the errand were dropped as `started`. */
+    errandSkips,
     /**
-     * Whether a message reached the person after the turn last handed a
-     * browser run its errand — a `start` or `continue` that left it at work.
+     * Whether a message that had no other work to tell reached the person
+     * after the turn last handed a browser run its errand — a `start` or
+     * `continue` that left it at work.
      */
     errandTold,
     otherWorkSinceDelivery,
     /** Whether a finished browser run's report opened the turn. */
     report: reportedRun !== undefined,
-    request: personRequest(messages[start]),
+    /** The person's own message that opened the turn, if they opened it. */
+    request:
+      requestText === undefined
+        ? undefined
+        : sentMessageOf({ kind: "message", text: requestText }),
     rewrites,
     skipped,
+    /** What that message states, without what it asks or asks for. */
+    stated:
+      requestText === undefined
+        ? undefined
+        : sentMessageOf({
+            kind: "message",
+            text: statementsOf(requestText).join("\n"),
+          }),
     workAfterSkip,
     workSinceDelivery,
     worked,
@@ -452,9 +487,14 @@ export function turnSends(messages: readonly ModelMessage[]) {
 /**
  * Whether the turn has to end now: the model sent something that added
  * nothing, or used up the limit, so another step may only write the closing
- * text.
+ * text. A first message about the errand dropped as `started` leaves one
+ * more step for what else the person asked for.
  */
 export function turnMustEnd(messages: readonly ModelMessage[]) {
-  const { delivered, skipped } = turnSends(messages);
-  return skipped >= skipsBeforeEnd || delivered.length >= turnMessageLimit;
+  const { delivered, errandSkips, skipped } = turnSends(messages);
+  return (
+    skipped - errandSkips >= skipsBeforeEnd ||
+    errandSkips >= errandSkipsBeforeEnd ||
+    delivered.length >= turnMessageLimit
+  );
 }
