@@ -4476,16 +4476,17 @@ describe("browser_task passes on only what the person sent", () => {
     } as const;
 
     expect(
-      await browserTaskApproval(input, approvalSession("photon-imessage"), [
-        "ну что там?",
-      ])
+      await browserTaskApproval(input, approvalSession("photon-imessage"), {
+        answers: [],
+        said: ["ну что там?"],
+      })
     ).toMatchObject({ type: "denied" });
     // Their own words get the card.
     expect(
       await browserTaskApproval(
         { ...input, personSaid: "записывай", task: "Записывай" },
         approvalSession("photon-imessage"),
-        ["Да, записывай"]
+        { answers: [], said: ["Да, записывай"] }
       )
     ).toBe("user-approval");
   });
@@ -4507,11 +4508,10 @@ describe("browser_task passes on only what the person sent", () => {
         task: "Оформляй вариант, который нашёл",
       } as const;
       expect(
-        await browserTaskApproval(
-          input,
-          approvalSession("browser-result"),
-          null
-        )
+        await browserTaskApproval(input, approvalSession("browser-result"), {
+          answers: [],
+          said: null,
+        })
       ).toBe("user-approval");
       const tool = await resolvedBrowserTask([], reportOpening);
 
@@ -4685,6 +4685,24 @@ describe("browser_task passes on only what the person sent", () => {
       said: "подтвердил",
       task: "Человек подтвердил оплату по смс из банка 4 890 ₽",
     });
+
+    expect(createBrowserUseRun).toHaveBeenCalledOnce();
+  });
+
+  it("passes on a code the person followed with a second message at once", async () => {
+    // «739204», then «это код» a second later: eve steers both into one turn.
+    readBrowserRunForScope.mockResolvedValue(
+      browserRunRow(new Date(), "Needs: sms_code")
+    );
+    const tool = await resolvedBrowserTask(
+      [{ content: "это код", role: "user" }],
+      "739204"
+    );
+
+    await tool.execute(
+      { action: "continue", personSaid: "739204", runId, task: "Код 739204" },
+      toolContext("better-auth:alice")
+    );
 
     expect(createBrowserUseRun).toHaveBeenCalledOnce();
   });
@@ -4875,6 +4893,145 @@ describe("browser_task passes on only what the person sent", () => {
       sessionId
     );
   });
+
+  describe("an answer to a question in a report turn", () => {
+    function answeredInReport(answer: string) {
+      return resolvedBrowserTask(
+        [
+          {
+            content: [
+              {
+                input: { prompt: "Какой код пришёл?" },
+                toolCallId: "ask-1",
+                toolName: "ask_question",
+                type: "tool-call",
+              },
+            ],
+            role: "assistant",
+          },
+          {
+            content: [
+              {
+                output: {
+                  type: "json",
+                  value: { status: "answered", text: answer },
+                },
+                toolCallId: "ask-1",
+                toolName: "ask_question",
+                type: "tool-result",
+              },
+            ],
+            role: "tool",
+          },
+        ],
+        reportOpening
+      );
+    }
+
+    it("passes on the code the person answered, and only it", async () => {
+      // A live run on the code page: the code goes straight into the page.
+      readBrowserRunForScope.mockResolvedValue(browserRunRow());
+      const tool = await answeredInReport("739204");
+
+      await tool.execute(
+        { action: "continue", personSaid: "739204", runId, task: "739204" },
+        toolContext("better-auth:alice", "browser-result")
+      );
+
+      expect(findBrowserUseSessionCdpUrl).toHaveBeenCalledExactlyOnceWith(
+        sessionId
+      );
+      expect(queueBrowserUseSessionMessage).toHaveBeenCalledExactlyOnceWith(
+        sessionId,
+        "Человек написал: «739204»"
+      );
+      // Any other code is still made up.
+      await expect(
+        tool.execute(
+          {
+            action: "continue",
+            personSaid: "739204",
+            runId,
+            task: "Код 482913",
+          },
+          toolContext("better-auth:alice", "browser-result")
+        )
+      ).rejects.toThrow("Nothing was sent: 482913 reads as");
+    });
+
+    it("passes on the code answered after the run stopped for it", async () => {
+      readBrowserRunForScope.mockResolvedValue(
+        browserRunRow(new Date(), "Needs: sms_code")
+      );
+      const tool = await answeredInReport("739204");
+
+      await tool.execute(
+        { action: "continue", personSaid: "739204", runId, task: "Код 739204" },
+        toolContext("better-auth:alice", "browser-result")
+      );
+
+      expect(createBrowserUseRun).toHaveBeenCalledOnce();
+    });
+
+    it("steers a confirmed errand by the answer, without its confirmation", async () => {
+      readBrowserRunForScope.mockResolvedValue(
+        browserRunRow(new Date(), "Needs: decision", cardSubmission)
+      );
+      const tool = await answeredInReport("19:30");
+
+      await tool.execute(
+        {
+          action: "continue",
+          personSaid: "19:30",
+          runId,
+          task: "Бери слот на 19:30",
+        },
+        toolContext("better-auth:alice", "browser-result")
+      );
+
+      const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
+      expect(task).toContain("Человек написал: «19:30»");
+      // A report turn is not the person's: the earlier card does not act.
+      expect(task).toContain(
+        "The person has not approved acting in their name on this errand."
+      );
+    });
+
+    it("still refuses without an answer", async () => {
+      readBrowserRunForScope.mockResolvedValue(
+        browserRunRow(new Date(), "Needs: sms_code")
+      );
+      const report = await resolvedBrowserTask([], reportOpening);
+
+      await expect(
+        report.execute(
+          {
+            action: "continue",
+            personSaid: "739204",
+            runId,
+            task: "Код 739204",
+          },
+          toolContext("better-auth:alice", "browser-result")
+        )
+      ).rejects.toThrow("Nothing was sent");
+      nothingSent();
+    });
+  });
+
+  it.each(["👍", "+", "ок"])(
+    "continues on «%s» after the person confirmed in the app",
+    async (reply) => {
+      await continueErrand({
+        completedAt: new Date(),
+        outcome: "Needs: push",
+        personSaid: reply,
+        said: reply,
+        task: "Человек подтвердил вход в приложении, продолжай",
+      });
+
+      expect(createBrowserUseRun).toHaveBeenCalledOnce();
+    }
+  );
 
   it("tells the run a report turn's follow-up is not the person's word", async () => {
     await inReportTurn("Needs: none", {

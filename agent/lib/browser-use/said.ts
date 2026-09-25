@@ -71,29 +71,49 @@ function answersThisTurn(messages: readonly ModelMessage[]) {
   return answers;
 }
 
+/** A message the person wrote, not one Bro opened a turn with. */
+function isPersonMessage(message: ModelMessage) {
+  if (message.role !== "user") return false;
+  const kind = taggedMessageSchema.safeParse(message).data?.kind ?? "user";
+  return kind === "user" && !isBackgroundTurnText(messageText(message));
+}
+
 /**
- * What the person wrote in this turn: their latest message and their answers
- * to questions asked after it. Null when that latest message is Bro's own —
- * a browser report, a scheduled result, a wakeup, whose text a page or a
- * worker wrote — which the person joins only by answering its approval card.
- * A follow-up acts on these words only.
+ * The person's messages that end at `opening`: it, and any they sent right
+ * before it with nothing of Bro's between — «739204» and a second later
+ * «это код», which eve steers into one turn. Null when Bro opened the turn.
  *
- * Only the latest message: eve's history has no turn id, and the messages
- * before it cannot be told apart from an earlier turn's — luna's delivered
- * turns keep no closing step (`<eve-empty-delivery/>`), a failed model call
- * leaves the person's message last. Walking back handed an old code or an
- * earlier «можно дороже» to a later «ну что там?». A code the person sent
- * just before a second message is asked for again instead.
+ * A reply of Bro's or a tool result stops the walk: eve's history has no turn
+ * id, but a turn Bro answered always leaves one, so an earlier turn's code or
+ * «можно дороже» never reaches a later «ну что там?».
+ */
+function personBurst(messages: readonly ModelMessage[], opening: number) {
+  const message = messages[opening];
+  if (message === undefined || !isPersonMessage(message)) return null;
+  const before = messages.slice(0, opening);
+  const stop = before.findLastIndex(
+    (earlier) =>
+      earlier.role !== "user" ||
+      (startsTurn(earlier) && !isPersonMessage(earlier))
+  );
+  return [...before.slice(stop + 1), message]
+    .filter((said) => startsTurn(said) && isPersonMessage(said))
+    .map((said) => messageText(said));
+}
+
+/**
+ * What the person wrote in this turn. `said`: the messages they opened it
+ * with, null when Bro opened it — a browser report, a scheduled result, a
+ * wakeup, whose text a page or a worker wrote. `answers`: what they answered
+ * to its questions, in either kind of turn. A follow-up acts on these words
+ * only; only a turn they opened is theirs for consent.
  */
 export function personWordsThisTurn(messages: readonly ModelMessage[]) {
   const opening = messages.findLastIndex(startsTurn);
-  const message = opening === -1 ? undefined : messages[opening];
-  if (message?.role !== "user") return null;
-  const kind = taggedMessageSchema.safeParse(message).data?.kind ?? "user";
-  if (kind !== "user") return null;
-  const text = messageText(message);
-  if (isBackgroundTurnText(text)) return null;
-  return [text, ...answersThisTurn(messages.slice(opening + 1))];
+  return {
+    answers: opening === -1 ? [] : answersThisTurn(messages.slice(opening + 1)),
+    said: personBurst(messages, opening),
+  };
 }
 
 /** A word that makes a number next to it a one-time code: «SMS», "OTP". */
@@ -252,15 +272,23 @@ function comparable(text: string) {
     .trim();
 }
 
-/** Whether the quote is the person's own words, from this turn's message. */
+/**
+ * Whether the quote is the person's own words, from this turn's message. A
+ * message with no words at all — «👍», «+» — is quoted whole.
+ */
 export function quotedFromPerson(
   quote: string,
   personWords: readonly string[]
 ) {
   const said = comparable(quote);
-  return (
-    said.length > 0 &&
-    personWords.some((words) => ` ${comparable(words)} `.includes(` ${said} `))
+  if (said.length === 0) {
+    const whole = quote.trim();
+    return (
+      whole.length > 0 && personWords.some((words) => words.trim() === whole)
+    );
+  }
+  return personWords.some((words) =>
+    ` ${comparable(words)} `.includes(` ${said} `)
   );
 }
 

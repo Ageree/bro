@@ -1352,15 +1352,29 @@ function unsentWordsRefusal(
 }
 
 /**
- * The person's words this turn, or null when the turn is not theirs: Bro
- * opened it, or they said nothing in it. A card they answer in a turn Bro
- * opened resumes it on their behalf, but gives it no words of theirs.
+ * Whose turn it is, and what the person wrote in it.
+ *
+ * `personTurn`: they opened it. A card they answer in a turn Bro opened
+ * resumes it on their behalf but does not make it theirs, so neither a
+ * standing permission nor an errand's earlier confirmation acts there.
+ *
+ * `words`: what a code, a quote or a step only they can take must come from
+ * — their messages in their own turn, and their answers to its questions in
+ * any conversation turn, a browser report's included. Null when there are
+ * none. A scheduled worker's answers are relayed by the model from another
+ * turn, so they are not the person's words here.
  */
 function turnWords(
   context: ModeContext,
-  personWords: readonly string[] | null
+  turn: ReturnType<typeof personWordsThisTurn>
 ) {
-  return startedByPerson(context) ? personWords : null;
+  const personTurn = startedByPerson(context) && turn.said !== null;
+  const answers =
+    resolveModeValue(context, { interactive: true }) === true
+      ? turn.answers
+      : [];
+  const words = [...(personTurn ? (turn.said ?? []) : []), ...answers];
+  return { personTurn, words: words.length > 0 ? words : null };
 }
 
 /** Whether `said` is a code the person sent, to type straight into the page. */
@@ -1622,7 +1636,7 @@ function approvalScope(context: ModeContext) {
 export async function browserTaskApproval(
   input: BrowserTaskInput | undefined,
   context: ModeContext,
-  personWords?: readonly string[] | null
+  turn?: ReturnType<typeof personWordsThisTurn>
 ): Promise<ApprovalStatus> {
   if (input?.action !== "start" && input?.action !== "continue") {
     return "not-applicable";
@@ -1653,18 +1667,19 @@ export async function browserTaskApproval(
       : undefined;
   // Whose turn it is, decided as the tool decides it once the card is
   // answered: by what the person wrote in it, not by who answers the card.
-  const words =
-    personWords === undefined ? undefined : turnWords(context, personWords);
+  const words = turn === undefined ? undefined : turnWords(context, turn);
   // A card for a call the tool would refuse anyway — a code or words the
   // person did not send — would ask them to confirm what they never said.
   const unsent =
-    words === undefined ? undefined : unsentWordsRefusal(input, errand, words);
+    words === undefined
+      ? undefined
+      : unsentWordsRefusal(input, errand, words.words);
   if (unsent) return { reason: unsent, type: "denied" };
   const consent = await consentFor(
     input,
     scope,
     errand,
-    words === undefined ? startedByPerson(context) : words !== null
+    words?.personTurn ?? startedByPerson(context)
   );
   if (!consent) return { reason: missingSubmissionRefusal, type: "denied" };
   const unchosen = unchosenOption(input, consent, errand);
@@ -2000,20 +2015,20 @@ async function continueQueuedErrand(
  * What a `browser_task` call does. `heard` names the runs whose settled
  * outcome this conversation already told the person (`outcomesHeard`): a
  * follow-up on one of them is theirs to give, not a «ну что там?» to answer
- * with the outcome again. `personWords` is what the person wrote this turn
- * (`personWordsThisTurn`), null when they said nothing in it: a code, a
- * quote or a consent the call carries must come from there, and only such a
- * turn is theirs — answering a card in a turn Bro opened does not make it so.
+ * with the outcome again. `turn` is what the person wrote this turn
+ * (`personWordsThisTurn`): a code, a quote or a step only they can take must
+ * come from there (`words`), and only a turn they opened is theirs for
+ * consent (`byPerson`) — answering a card or a question in a turn Bro opened
+ * does not make it so.
  */
 async function runBrowserTask(
   input: z.infer<typeof inputSchema>,
   context: ToolContext,
   heard: readonly string[],
-  personWords: readonly string[] | null
+  turn: ReturnType<typeof personWordsThisTurn>
 ) {
   const { conversation, scope } = conversationTarget(context);
-  const words = turnWords(context, personWords);
-  const byPerson = words !== null;
+  const { personTurn: byPerson, words } = turnWords(context, turn);
 
   if (input.action === "start") {
     const errand = z
@@ -2211,7 +2226,7 @@ async function runBrowserTask(
       inventedCodeRefusal([task, input.personSaid], codeAwaited(row), words);
     if (refusal) throw new Error(refusal);
     // What the person wrote, and only that, is what the run hears from them.
-    const said = (byPerson ? input.personSaid : undefined) ?? task;
+    const said = (words === null ? undefined : input.personSaid) ?? task;
     // The outcome comes first: a follow-up on an errand the person has not
     // heard the result of is answered with that result, not a new run.
     const unheard = outcomeFirst(row, input, said, byPerson, heard);
@@ -2233,9 +2248,10 @@ async function runBrowserTask(
       const unsaid = unsaidRefusal(input.personSaid, words);
       if (unsaid) throw new Error(unsaid);
     }
-    const message = byPerson
-      ? personInstruction(said, task)
-      : coordinatorInstruction(task);
+    const message =
+      words === null
+        ? coordinatorInstruction(task)
+        : personInstruction(said, task);
     // A confirmation stays with its errand: a code, an answer or the
     // payment its card already named needs no second card. A background
     // worker never acts on it, and a changed submission is confirmed afresh.
@@ -2249,9 +2265,10 @@ async function runBrowserTask(
     const stillAllowed = errandStillAllowed(row);
     // A browser report or a scheduled worker never steers an errand that
     // acts in the person's name: whatever it appended would be carried out
-    // on their confirmation. Only a new card, answered by the person, does.
+    // on their confirmation. Only a new card, or the person's own answer to
+    // a question in this turn, quoted, does.
     if (
-      !byPerson &&
+      words === null &&
       confirmedNow === undefined &&
       errandActsForPerson(row) &&
       stillAllowed
@@ -2703,7 +2720,8 @@ export const browserTask = defineTool({
     browserTaskApproval(toolInput, { session }),
   description: browserTaskDescription,
   inputSchema,
-  execute: (input, context) => runBrowserTask(input, context, [], []),
+  execute: (input, context) =>
+    runBrowserTask(input, context, [], { answers: [], said: [] }),
 });
 
 export default defineDynamic({
@@ -2720,10 +2738,10 @@ export default defineDynamic({
       const heard = outcomesHeard(context.messages);
       // The person's own words this turn, which the tool cannot read: the
       // one source of a code, a quote or a consent it passes on as theirs.
-      const personWords = personWordsThisTurn(context.messages);
+      const turn = personWordsThisTurn(context.messages);
       const tool = defineTool({
         approval: ({ session, toolInput }) =>
-          browserTaskApproval(toolInput, { session }, personWords),
+          browserTaskApproval(toolInput, { session }, turn),
         description: browserTaskDescription,
         inputSchema,
         execute: (input, toolContext) =>
@@ -2732,7 +2750,7 @@ export default defineDynamic({
                 note: turnStartLimitNotice,
                 status: "start_limit",
               })
-            : runBrowserTask(input, toolContext, heard, personWords),
+            : runBrowserTask(input, toolContext, heard, turn),
       });
       return resolveModeValue(context, {
         interactive: { browser_task: tool },
