@@ -41,6 +41,7 @@ import {
   readBrowserProfileId,
   readLatestBrowserRunForScope,
   recordBrowserRunSubmission,
+  releaseBrowserRunBrowser,
   saveBrowserProfileId,
   stopBrowserRunErrand,
   updateBrowserRunProgress,
@@ -124,6 +125,7 @@ import {
   queueBrowserErrand,
   queuedStatusNote,
 } from "@agent/lib/browser-use/queue";
+import { accountInUse, keptSignInNote } from "@agent/lib/browser-use/sign-ins";
 
 const inputSchema = z.object({
   action: z.enum(["start", "continue", "cancel", "status"]),
@@ -319,6 +321,7 @@ function outcomeContract() {
     "For a basket, a cart or an order, ITEMS lists every line in it with its price and quantity, each substitute with what it replaces, and every fee as a line of its own, not only the TOTAL; for a search, every option you report.",
     'CHARGES: a JSON array with one object per fine, tax, duty, bill or other charge you found — {"what":"what it is for: for a fine the offence and the article, for a tax its kind, object and period, for a bill the service and the month","amount":"…","date":"the date of the decree or the accrual","due":"the date it has to be paid by","discount":"the reduced amount and the date it lasts until, or null","reference":"the decree, bill or payment number (УИН), or null"} — or []',
     'BOOKING: for an appointment, a table, a stay or a ticket this run booked or took up to its final step, one JSON object — {"what":"…","who":"the doctor, specialist or carrier, or null","start":"its date and time on the place\'s own clock (for a ticket, the departure point\'s) as YYYY-MM-DDTHH:MM","zone":"the IANA time zone of that place, such as Europe/Moscow or Asia/Yekaterinburg","end":"the same for its end (for a ticket, the arrival on the arrival point\'s clock), or null","endZone":"the IANA time zone of the arrival point when it differs, or null","place":"the address","room":"the room, cabinet, hall or seat, or null","bring":"what to bring or have ready, as the site says, or null","cancel":"how and until when it can be cancelled or moved, or null","reference":"the booking or ticket number, or null","confirmed":true only once the site confirmed the booking} — or none',
+    "SIGNED_IN: for every site where this browser is signed in to the person's account when you finish — whether you signed in on this run or it already was — the https:// address of a page there that only a signed-in person sees (the profile, «Мои заказы», the personal account), comma-separated; or none",
     "For every concrete option you recommend or report — product, article, hotel, ticket, restaurant, listing, or anything similar — include its actual observed destination URL in LINKS. Open the option's detail page or extract its actual anchor href from the page. Never guess or construct an ID or URL, and never substitute a live-view URL or a generic search, results, or category URL for an option link.",
   ].join("\n");
 }
@@ -497,12 +500,6 @@ function boundSubmissionLines(submission: ConfirmedSubmission) {
 }
 
 /**
- * A confirmed errand that stops on the way is still the purchase the person
- * confirmed: the basket, the seat or the slot stays held on the page, so the
- * card for what changed is followed up in this same tab rather than searched
- * for again.
- */
-/**
  * The number of a document is the person's detail as much as their name:
  * a fines check «по СТС и ВУ» without a card would have typed both into
  * whichever site the search reached (review of RU d06).
@@ -510,8 +507,15 @@ function boundSubmissionLines(submission: ConfirmedSubmission) {
 const documentNumbersLine =
   "Never type the number of any of their documents either — a passport, СНИЛС, the OMS policy, a vehicle registration (СТС) or a driving licence — even when the errand text gives one.";
 
+/**
+ * A confirmed errand that stops on the way is still the purchase the person
+ * confirmed: the basket, the seat or the slot stays held for the account, so
+ * the card for what changed is followed up from there rather than searched
+ * for again. The browser itself is stopped once the run ends, which is what
+ * keeps its sign-in (`completion.ts`), and the follow-up reopens the site.
+ */
 const confirmedStopLine =
-  "If you stop before the final button, leave the page as it is — the basket filled, the seat or the slot held — and put the option as it now stands first in ITEMS with its real total, so the person confirms the change once and the follow-up finishes it in this same tab.";
+  "If you stop before the final button, leave the page as it is — the basket filled, the seat or the slot held — and put the option as it now stands first in ITEMS with its real total, so the person confirms the change once and the follow-up finishes it from there.";
 
 /**
  * Acting in the person's name is theirs to confirm, even when it is free: a
@@ -957,6 +961,15 @@ function credentialsLine(aliases: readonly string[], site: string | undefined) {
     .join(" ");
 }
 
+/**
+ * A sign-in the site offers to remember is one the profile keeps: «Запомнить
+ * меня» turns a session cookie, which dies with the browser, into one that
+ * outlives it, and «доверять этому устройству» spares the next code. The
+ * owner: «войдя куда-то раз, агент сохранял куки, чтобы не дёргать меня».
+ */
+const rememberSignInLine =
+  "When a sign-in form offers to keep you signed in — «Запомнить меня», «Не выходить», «Доверять этому устройству», «Запомнить устройство», «Не запрашивать код на этом устройстве» — tick it before you sign in or confirm the code: this browser keeps the sign-in for the person's next errands, so they are not asked for a code again.";
+
 export function composeBrowserTask(options: {
   readonly aliases: readonly string[];
   readonly allowPayment: boolean;
@@ -999,6 +1012,7 @@ export function composeBrowserTask(options: {
     budgetLine(options.allowPayment),
     options.consent ? options.facts : undefined,
     credentialsLine(options.aliases, options.site),
+    rememberSignInLine,
     gosuslugiSignInRule(options.site, options.consent?.kind === "confirmed"),
     captchaLine(),
     unreachableLine(options.consent !== undefined || options.allowPayment),
@@ -1029,6 +1043,11 @@ export function composeBrowserContinuation(options: {
   readonly done?: boolean;
   readonly errand: string;
   readonly facts: string | undefined;
+  /**
+   * The last run's browser was stopped to keep its sign-ins: the follow-up
+   * opens a fresh one on the same profile and finds its way back.
+   */
+  readonly freshBrowser?: boolean;
   readonly message: string;
   readonly searching: boolean;
   readonly site: string | undefined;
@@ -1046,7 +1065,9 @@ export function composeBrowserContinuation(options: {
   return [
     options.message,
     [
-      `This continues the errand «${options.errand}» in this same browser session. Keep the tab that is open and the account already signed in: do not start over and do not navigate again unless the page is gone.`,
+      options.freshBrowser === true
+        ? `This continues the errand «${options.errand}» in a fresh browser: the page the last run stopped on was closed so that the person's sign-ins are kept. Open the Site again — the account is still signed in through this browser's profile, and a basket the site keeps for the account still holds what was put in it — and pick up where the errand left off, without redoing what is already done.`
+        : `This continues the errand «${options.errand}» in this same browser session. Keep the tab that is open and the account already signed in: do not start over and do not navigate again unless the page is gone.`,
       options.site ? `Site: ${options.site}` : undefined,
     ]
       .filter((line) => line !== undefined)
@@ -1066,6 +1087,7 @@ export function composeBrowserContinuation(options: {
     options.searching ? budgetLine(options.allowPayment) : undefined,
     options.consent ? options.facts : undefined,
     credentialsLine(options.aliases, options.site),
+    rememberSignInLine,
     gosuslugiSignInRule(options.site, options.consent?.kind === "confirmed"),
     captchaLine(),
     unreachableLine(options.consent !== undefined || options.allowPayment),
@@ -2752,6 +2774,19 @@ async function runBrowserTask(
           acting.asked ||
           (!acting.declined && errandAsksToAct(errand, words === null)),
       });
+      // Another errand of the workspace in a browser on the same account
+      // may be signing in: this one waits for it and starts signed in,
+      // rather than sending a second code that cancels the first.
+      const waitsForAccount = await accountInUse(scope.workspaceId, input.site);
+      if (waitsForAccount !== undefined) {
+        return {
+          aliases: secrets.aliases,
+          kind: "queued" as const,
+          profileId,
+          task,
+          waitsForAccount,
+        };
+      }
       // While errands wait for a browser, the cap was full a minute ago:
       // this one joins the back of the line instead of taking the slot
       // the first in line is about to get.
@@ -2799,6 +2834,8 @@ async function runBrowserTask(
       if (placeholder) await releaseReservation(placeholder);
       return { note: browserUseOutOfCreditsNote, status: "unavailable" };
     }
+    // Where the person's sign-in is kept, nobody is warned about a code.
+    const kept = await keptSignInNote(scope.workspaceId, input.site);
     if (started.kind === "queued") {
       // The errand waits with everything the person decided for it: the
       // card they confirmed and the payment they allowed start with it.
@@ -2812,6 +2849,7 @@ async function runBrowserTask(
           site: input.site ?? null,
           submission: confirmedSubmission(consent),
           task: errand,
+          waitsForAccount: started.waitsForAccount ?? null,
         })
       );
       if (placeholder) await moveSpendReservation(placeholder, queued.runId);
@@ -2819,7 +2857,7 @@ async function runBrowserTask(
         note: [
           queued.note,
           standingNote(consent),
-          gosuslugiCodeNote(input.site, boundLogins(started.aliases)),
+          kept ?? gosuslugiCodeNote(input.site, boundLogins(started.aliases)),
         ]
           .filter((line) => line !== undefined)
           .join(" "),
@@ -2859,7 +2897,7 @@ async function runBrowserTask(
           ? `The payment fits the standing spend limit the user set (${formatRub(spend.decision.exposureRub)} reserved, ${formatRub(spend.decision.remainingAfterRub)} left this month), so do not ask them about it: report the receipt once the outcome arrives.`
           : undefined,
         standingNote(consent),
-        gosuslugiCodeNote(input.site, boundLogins(secrets.aliases)),
+        kept ?? gosuslugiCodeNote(input.site, boundLogins(secrets.aliases)),
       ]
         .filter((line) => line !== undefined)
         .join(" "),
@@ -3178,6 +3216,10 @@ async function runBrowserTask(
         done,
         errand: row.task,
         facts: facts.details,
+        // Only a follow-up in the errand's own session: one after a wall
+        // starts a session of its own anyway.
+        freshBrowser:
+          sessionId !== undefined && row.browserReleasedAt instanceof Date,
         message: withCodeEntry(instruction, codeEntry, carriesCode),
         searching: mail ? false : followUpSearches(said, row.outcome),
         site,
@@ -3297,13 +3339,17 @@ async function runBrowserTask(
       };
     }
     const { followUp, profileId, reusedSession, secrets } = continued;
+    // The same browser only while the last run's page was kept: a browser
+    // Bro stopped to keep the sign-ins is gone, and so is its live view.
+    const sameBrowser =
+      reusedSession && !(row.browserReleasedAt instanceof Date);
     await browserUseCreditsRestored();
     await carrySpend(followUp.id);
     await recordStartedRun(followUp.id, () =>
       createBrowserRun(scope, {
         ...conversation,
         id: followUp.id,
-        liveViewUrl: reusedSession ? row.liveViewUrl : null,
+        liveViewUrl: sameBrowser ? row.liveViewUrl : null,
         paymentAllowed: allowPayment,
         profileId,
         sessionId: followUp.sessionId,
@@ -3313,7 +3359,17 @@ async function runBrowserTask(
         task: message,
       })
     );
-    const inheritedLiveViewUrl = reusedSession ? row.liveViewUrl : null;
+    // The follow-up holds the errand's browser now, a fresh one or the same.
+    // Never fatal: the run is already going.
+    try {
+      await releaseBrowserRunBrowser(row.id);
+    } catch (error) {
+      console.warn("[browser-use] the replaced run could not be released", {
+        cause: error,
+        runId: row.id,
+      });
+    }
+    const inheritedLiveViewUrl = sameBrowser ? row.liveViewUrl : null;
     const liveViewUrl =
       inheritedLiveViewUrl ?? (await waitForLiveViewUrl(followUp.id));
     if (liveViewUrl && liveViewUrl !== row.liveViewUrl) {
@@ -3323,9 +3379,11 @@ async function runBrowserTask(
       boundSecrets: secrets.aliases,
       liveViewUrl,
       note: [
-        `This errand now continues as run ${followUp.id}${reusedSession ? " in the same browser" : ""}. Use that run id from here on: ${runId} is finished and takes no further follow-up.`,
+        `This errand now continues as run ${followUp.id}${sameBrowser ? " in the same browser" : ""}. Use that run id from here on: ${runId} is finished and takes no further follow-up.`,
         reusedSession
-          ? undefined
+          ? sameBrowser
+            ? undefined
+            : "The page the last run stopped on was closed to keep the user's sign-ins in the browser profile, so the follow-up reopens the site in a fresh browser on that profile, still signed in."
           : "The previous browser session was not reused — it was gone, or it had ended against an anti-bot check — so the follow-up opened a fresh browser on the same profile, on a new address; the signed-in cookies came with it.",
         "The outcome arrives as a new message; do not poll for it.",
         mail ? mailCodeTakenNote(mail.domain) : undefined,

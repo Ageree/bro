@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   captureViewportOverCdp,
   typeOneTimeCodeOverCdp,
+  visitPageOverCdp,
 } from "@agent/lib/browser-use/cdp";
 import {
   startFakeCdpBrowser,
@@ -240,4 +241,50 @@ describe("photographing the viewport over CDP", () => {
       "The browser returned no screenshot."
     );
   });
+});
+
+describe("visiting a signed-in page over CDP", () => {
+  it("opens the page without its pictures and says where it ended up", async () => {
+    const fixture = await fake({
+      injections: {},
+      page: { url: "https://www.ozon.ru/my/main" },
+      sessions: { "": { frames: [{ depth: 0, id: "top" }] } },
+    });
+
+    const page = await visitPageOverCdp(
+      fixture.url,
+      "https://www.ozon.ru/my/main"
+    );
+
+    expect(page).toEqual({
+      passwordField: false,
+      url: "https://www.ozon.ru/my/main",
+    });
+    const navigate = fixture.calls.find(
+      (call) => call.method === "Page.navigate"
+    );
+    expect(navigate?.params.url).toBe("https://www.ozon.ru/my/main");
+    // The managed proxy bills by the gigabyte; cookies do not ride on images.
+    const blocked = fixture.calls.find(
+      (call) => call.method === "Network.setBlockedURLs"
+    );
+    expect(blocked?.params.urls).toEqual(expect.arrayContaining(["*.jpg"]));
+    // Nothing is typed and nothing is pressed.
+    expect(fixture.applied).toEqual([]);
+  }, 15_000);
+
+  it("reports a sign-in form the page turned into", async () => {
+    const fixture = await fake({
+      injections: {},
+      page: { password: true, url: "https://passport.yandex.ru/auth" },
+      sessions: { "": { frames: [{ depth: 0, id: "top" }] } },
+    });
+
+    await expect(
+      visitPageOverCdp(fixture.url, "https://id.yandex.ru/")
+    ).resolves.toEqual({
+      passwordField: true,
+      url: "https://passport.yandex.ru/auth",
+    });
+  }, 15_000);
 });

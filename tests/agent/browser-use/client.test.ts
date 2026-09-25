@@ -372,6 +372,90 @@ describe("Browser Use client", () => {
     expect(calls[0]?.url).toBe(`${baseUrl}/browsers`);
   });
 
+  it("stops a settled run's browsers only while that run is the session's latest", async () => {
+    const client = await loadClient();
+    const calls = stubFetch(
+      Response.json({ latestRunId: runId, status: "completed" }),
+      Response.json({
+        items: [
+          {
+            agentSessionId: sessionId,
+            cdpUrl: "wss://cdp.browser-use.test/live",
+            id: "browser-live",
+            status: "active",
+          },
+          {
+            agentSessionId: "99999999-9999-4999-8999-999999999999",
+            cdpUrl: "wss://cdp.browser-use.test/other",
+            id: "browser-other",
+            status: "active",
+          },
+        ],
+      }),
+      new Response(null, { status: 204 })
+    );
+
+    // Stopped cleanly, the browser writes its cookies to the profile.
+    expect(await client.stopBrowserUseSessionBrowsers(sessionId, runId)).toBe(
+      "stopped"
+    );
+    expect(calls.map((call) => `${call.method} ${call.url}`)).toEqual([
+      `GET ${baseUrl}/sessions/${sessionId}`,
+      `GET ${baseUrl}/browsers`,
+      `PATCH ${baseUrl}/browsers/browser-live`,
+    ]);
+    expect(JSON.parse(calls[2]?.body ?? "")).toEqual({ action: "stop" });
+
+    // A follow-up owns the browser now; a run still going keeps it.
+    stubFetch(Response.json({ latestRunId: "later-run", status: "running" }));
+    expect(await client.stopBrowserUseSessionBrowsers(sessionId, runId)).toBe(
+      "moved_on"
+    );
+    stubFetch(Response.json({ latestRunId: runId, status: "running" }));
+    expect(await client.stopBrowserUseSessionBrowsers(sessionId, runId)).toBe(
+      "running"
+    );
+  });
+
+  it("starts a browser of its own on the profile, bounded in time", async () => {
+    const client = await loadClient();
+    const calls = stubFetch(
+      Response.json(
+        {
+          cdpUrl: "wss://cdp.browser-use.test/own",
+          id: "browser-own",
+          startedAt: "2026-09-30T10:00:00Z",
+          status: "active",
+          timeoutAt: "2026-09-30T10:03:00Z",
+        },
+        { status: 201 }
+      ),
+      new Response(null, { status: 204 })
+    );
+
+    const browser = await client.createBrowserUseBrowser({
+      customProxy: undefined,
+      profileId: "profile-1",
+      proxyCountryCode: "ru",
+      timeoutMinutes: 3,
+    });
+    await client.stopBrowserUseBrowser(browser.id);
+
+    expect(browser).toEqual({
+      cdpUrl: "wss://cdp.browser-use.test/own",
+      id: "browser-own",
+    });
+    expect(calls.map((call) => `${call.method} ${call.url}`)).toEqual([
+      `POST ${baseUrl}/browsers`,
+      `PATCH ${baseUrl}/browsers/browser-own`,
+    ]);
+    expect(JSON.parse(calls[0]?.body ?? "")).toEqual({
+      profileId: "profile-1",
+      proxyCountryCode: "ru",
+      timeout: 3,
+    });
+  });
+
   it("reports no endpoint when this session has no browser up", async () => {
     const client = await loadClient();
     stubFetch(Response.json({ items: [] }));

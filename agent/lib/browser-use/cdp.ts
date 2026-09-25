@@ -225,6 +225,8 @@ interface CdpCommand {
   readonly frameId?: string;
   readonly quality?: number;
   readonly returnByValue?: boolean;
+  readonly url?: string;
+  readonly urls?: readonly string[];
   readonly waitForDebuggerOnStart?: boolean;
   readonly worldName?: string;
 }
@@ -347,6 +349,83 @@ export async function captureViewportOverCdp(cdpUrl: string) {
     );
     if (!shot.success) throw new Error("The browser returned no screenshot.");
     return new Uint8Array(Buffer.from(shot.data.data, "base64"));
+  } finally {
+    connection.close();
+  }
+}
+
+/**
+ * What a keep-alive visit to a signed-in page is not worth downloading: the
+ * managed proxy bills by the gigabyte, and cookies ride on the documents and
+ * the requests the page's scripts make, not on its pictures.
+ */
+const visitBlockedUrls = [
+  "*.avif",
+  "*.gif",
+  "*.jpeg",
+  "*.jpg",
+  "*.mp4",
+  "*.png",
+  "*.svg",
+  "*.webm",
+  "*.webp",
+  "*.woff",
+  "*.woff2",
+];
+/** A document that never finishes loading still gets looked at after this. */
+const visitLoadWaitMs = 20_000;
+/** An account page often checks the session in a script and redirects after
+ *  the load event, so the page is read only once it had a moment to. */
+const visitSettleMs = 3_000;
+const visitPollMs = 500;
+
+const pageStateSchema = z.object({
+  password: z.boolean(),
+  readyState: z.string(),
+  url: z.string(),
+});
+
+/**
+ * Open `url` in the browser behind `cdpUrl` as a person would, and say where
+ * it ended up and whether it shows a password field. It types nothing and
+ * presses nothing: the visit only lets the site see its session in use, and
+ * the clean stop afterwards writes whatever cookies it renewed to the
+ * profile.
+ */
+export async function visitPageOverCdp(cdpUrl: string, url: string) {
+  const connection = await connect(cdpUrl);
+  try {
+    await connection.call("Network.enable", {}).catch(() => undefined);
+    await connection
+      .call("Network.setBlockedURLs", { urls: visitBlockedUrls })
+      .catch(() => undefined);
+    await connection.call("Page.enable", {});
+    await connection.call("Page.navigate", { url });
+    const deadline = Date.now() + visitLoadWaitMs;
+    const readPage = async (): Promise<z.infer<typeof pageStateSchema>> => {
+      const reply = evaluationSchema.safeParse(
+        await connection
+          .call("Runtime.evaluate", {
+            expression: `({ password: Array.from(document.querySelectorAll('input[type="password"]')).some((field) => field.offsetParent !== null), readyState: document.readyState, url: location.href })`,
+            returnByValue: true,
+          })
+          .catch(() => undefined)
+      );
+      const state = pageStateSchema.safeParse(reply.data?.result?.value);
+      if (state.success && state.data.readyState === "complete") {
+        return state.data;
+      }
+      if (Date.now() >= deadline) {
+        if (state.success) return state.data;
+        throw new Error("The page never answered.");
+      }
+      await sleep(visitPollMs);
+      return readPage();
+    };
+    await readPage();
+    await sleep(visitSettleMs);
+    const settled = await readPage();
+    return { passwordField: settled.password, url: settled.url };
   } finally {
     connection.close();
   }

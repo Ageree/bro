@@ -23,6 +23,7 @@ import {
 } from "./credits";
 import { customProxy } from "./proxy";
 import { resolveBrowserSecretBindings, signsInByPhone } from "./secrets";
+import { accountInUse } from "./sign-ins";
 import { releaseBrowserRunSpend } from "./spend";
 
 type BrowserRunRow = NonNullable<Awaited<ReturnType<typeof readBrowserRun>>>;
@@ -83,13 +84,21 @@ export async function queueBrowserErrand(
   },
   now = new Date()
 ) {
-  const ahead = await countQueuedBrowserRuns();
   const { composedTask, retryAfterMs, ...row } = input;
+  const account = row.waitsForAccount ?? undefined;
+  const ahead = account === undefined ? await countQueuedBrowserRuns() : 0;
   const queued = await createQueuedBrowserRun(scope, {
     ...row,
     pendingTask: composedTask,
     retryAt: queueRetryAt(now, retryAfterMs),
   });
+  if (account !== undefined) {
+    return {
+      minutes: undefined,
+      note: signInWaitNote(account),
+      runId: queued.id,
+    };
+  }
   const minutes = expectedStartMinutes(ahead);
   return {
     minutes,
@@ -98,16 +107,37 @@ export async function queueBrowserErrand(
   };
 }
 
+const queuedErrandRules =
+  "Do not call browser_task start again for this errand: it would only queue a second copy. status, continue and cancel work on this run id, and follow the errand to its run once it starts.";
+
+/**
+ * What Bro is told about an errand that waits for another errand's browser
+ * on the same account (`accountInUse`): not a busy service, and not a time.
+ */
+function signInWaitNote(account: string) {
+  return [
+    `Another errand of the user is working in Bro's browser on ${account} right now, and may be signing in there: a second sign-in at the same time would send the user a second code that cancels the first. So this errand waits and starts by itself as soon as that browser is done — on the same browser profile, signed in if the other errand signed in, so the user is not asked for a code again.`,
+    "Tell the user in one short line that it starts right after the other one; the outcome arrives as a new message like any other.",
+    queuedErrandRules,
+  ].join(" ");
+}
+
 function queuedErrandNote(ahead: number, minutes: number) {
   return [
     `The cloud browser service has no free browser right now${ahead > 0 ? ` and ${String(ahead)} other errand${ahead === 1 ? " is" : "s are"} waiting` : ""}, so this errand is queued and starts by itself as soon as one frees up — in about ${String(minutes)} minutes.`,
     `Tell the user in one short line that you queued it and will start in about ${String(minutes)} minutes; the outcome arrives as a new message like any other.`,
-    "Do not call browser_task start again for this errand: it would only queue a second copy. status, continue and cancel work on this run id, and follow the errand to its run once it starts.",
+    queuedErrandRules,
   ].join(" ");
 }
 
 /** The model-facing note for `status` on an errand still in the queue. */
-export function queuedStatusNote(row: Pick<BrowserRunRow, "retryAt">) {
+export function queuedStatusNote(
+  row: Pick<BrowserRunRow, "retryAt" | "waitsForAccount">
+) {
+  const account = row.waitsForAccount ?? undefined;
+  if (account !== undefined) {
+    return `The errand is still waiting for another errand of the user to finish in Bro's browser on ${account}, so that it starts signed in instead of sending a second code; it starts by itself right after. Say so in one short line; do not start it again.`;
+  }
   const next = row.retryAt
     ? ` The next try is at ${row.retryAt.toISOString()}.`
     : "";
@@ -218,7 +248,9 @@ export async function startQueuedBrowserRun(
   row: BrowserRunRow,
   now = new Date()
 ): Promise<
-  | { readonly status: "busy" | "changed" | "started" | "stopped" }
+  | {
+      readonly status: "busy" | "changed" | "started" | "stopped" | "waiting";
+    }
   | {
       readonly closed: BrowserRunRow | undefined;
       readonly outcome: string;
@@ -231,11 +263,39 @@ export async function startQueuedBrowserRun(
   }
   const expired = now.getTime() - current.createdAt.getTime() > queueWindowMs;
   const reference = queueReference(current);
+  const waitedFor = current.waitsForAccount ?? undefined;
   let run: { readonly id: string; readonly sessionId: string } | undefined;
   try {
+    // An errand marked as waiting was not started since the mark was set:
+    // it is cleared before a start, so there is no run of it to adopt.
     run =
-      (await findRecentBrowserUseRunByTaskLine(reference)) ??
-      (expired ? undefined : await createQueuedRun(current, reference));
+      waitedFor === undefined
+        ? await findRecentBrowserUseRunByTaskLine(reference)
+        : undefined;
+    if (!run && !expired) {
+      // A new errand waits while another errand of its workspace holds a
+      // browser on the same account; a queued follow-up carries its errand's
+      // session and is that errand itself, so it never waits on it.
+      const account =
+        current.sessionId === null
+          ? await accountInUse(current.workspaceId, current.site, now)
+          : undefined;
+      if (account !== undefined) {
+        await parkQueuedBrowserRun(current.id, queueRetryAt(now), {
+          waitsForAccount: account,
+        });
+        return { status: "waiting" };
+      }
+      if (waitedFor !== undefined) {
+        // From here it waits only for a browser, like any queued errand.
+        await parkQueuedBrowserRun(
+          current.id,
+          current.retryAt ?? queueRetryAt(now),
+          { waitsForAccount: null }
+        );
+      }
+      run = await createQueuedRun(current, reference);
+    }
   } catch (error) {
     if (browserUseBusy(error)) {
       await parkQueuedBrowserRun(
@@ -257,7 +317,11 @@ export async function startQueuedBrowserRun(
     throw error;
   }
   if (!run) {
-    const outcome = `The errand never started: the cloud browser service had no free browser for it for ${String(Math.round(queueWindowMs / 60_000))} minutes. Nothing was done on the site. Tell the user so plainly and offer to start it again.`;
+    const waited = `${String(Math.round(queueWindowMs / 60_000))} minutes`;
+    const outcome =
+      waitedFor === undefined
+        ? `The errand never started: the cloud browser service had no free browser for it for ${waited}. Nothing was done on the site. Tell the user so plainly and offer to start it again.`
+        : `The errand never started: it waited ${waited} for another errand of the user on ${waitedFor} to finish in Bro's browser, which never did. Nothing was done on the site. Tell the user so plainly and offer to start it again.`;
     return {
       closed: await giveUpQueuedErrand(current, outcome),
       outcome,

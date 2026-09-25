@@ -413,6 +413,10 @@ export function parseBrowserOutcome(result: string | null | undefined) {
     next: labelledValue(text, "NEXT"),
     order: labelledValue(text, "ORDER"),
     result: labelledValue(text, "RESULT"),
+    // The pages where the browser is signed in to the person's account, as
+    // the run reported them: `sign-ins.ts` keeps the ones on the errand's
+    // own domains.
+    signedIn: labelledValue(text, "SIGNED_IN"),
     total: labelledValue(text, "TOTAL"),
   };
 }

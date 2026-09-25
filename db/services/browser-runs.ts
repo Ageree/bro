@@ -423,13 +423,21 @@ function queuedAndDue(now: Date) {
   );
 }
 
-/** How many errands wait for a browser, across every workspace. */
+/**
+ * How many errands wait for a browser, across every workspace. One that waits
+ * for its own workspace's sign-in elsewhere (`waits_for_account`) is not
+ * waiting for Browser Use and holds nobody else's start back.
+ */
 export async function countQueuedBrowserRuns() {
   const [row] = await db
     .select({ count: sql<number>`count(*)::int` })
     .from(browserRuns)
     .where(
-      and(eq(browserRuns.status, "queued"), isNull(browserRuns.retriedAsRunId))
+      and(
+        eq(browserRuns.status, "queued"),
+        isNull(browserRuns.retriedAsRunId),
+        isNull(browserRuns.waitsForAccount)
+      )
     );
   return row?.count ?? 0;
 }
@@ -458,11 +466,22 @@ export async function claimNextQueuedBrowserRun(now: Date) {
   return row;
 }
 
-/** Put a queued errand back in line until `retryAt`, unless it was stopped. */
-export async function parkQueuedBrowserRun(runId: string, retryAt: Date) {
+/**
+ * Put a queued errand back in line until `retryAt`, unless it was stopped.
+ * `waitsForAccount` records, or with null clears, the sign-in it waits on.
+ */
+export async function parkQueuedBrowserRun(
+  runId: string,
+  retryAt: Date,
+  options: { readonly waitsForAccount?: string | null } = {}
+) {
   const rows = await db
     .update(browserRuns)
-    .set({ retryAt, updatedAt: new Date() })
+    .set({
+      retryAt,
+      updatedAt: new Date(),
+      waitsForAccount: options.waitsForAccount,
+    })
     .where(
       and(
         eq(browserRuns.id, runId),
@@ -797,4 +816,129 @@ export async function listOpenBrowserRunIdsInSession(sessionId: string) {
     .orderBy(desc(browserRuns.createdAt))
     .limit(5);
   return rows.map((row) => row.id);
+}
+
+/**
+ * How long a page left open for the person — a code, an approval in their
+ * app, 3-D Secure, a manual sign-in — is kept before Bro stops its browser
+ * itself. The cloud ends an idle browser about twenty minutes after its last
+ * run, and a browser it ends loses what changed in it; stopped by Bro, it
+ * writes its cookies to the profile. A code has expired by then anyway.
+ */
+const idleBrowserCloseMs = 15 * 60_000;
+/** Past this the cloud has stopped the browser itself, whatever Bro did. */
+const browserLifetimeMs = 4 * 60 * 60_000;
+/** A settled run's browser is gone this long after it, stopped or not. */
+const settledBrowserWindowMs = 30 * 60_000;
+/** An open run is expired by the poller before this. */
+const workingBrowserWindowMs = 60 * 60_000;
+
+/**
+ * The runs that may still hold a live browser on the workspace profile: one
+ * Browser Use is working on, or one settled with its page kept for the
+ * person and not yet released. A queued errand has no browser yet.
+ */
+function holdsBrowser(now: Date) {
+  return and(
+    isNull(browserRuns.browserReleasedAt),
+    isNull(browserRuns.retriedAsRunId),
+    sql`${browserRuns.id} NOT LIKE 'queued:%'`,
+    or(
+      and(
+        isNull(browserRuns.completedAt),
+        inArray(browserRuns.status, activeBrowserRunStatuses),
+        gt(
+          browserRuns.createdAt,
+          new Date(now.getTime() - workingBrowserWindowMs)
+        )
+      ),
+      gt(
+        browserRuns.completedAt,
+        new Date(now.getTime() - settledBrowserWindowMs)
+      )
+    )
+  );
+}
+
+/** The sites of the workspace's runs that may still hold a browser. */
+export async function listBrowserHoldingSites(
+  workspaceId: string,
+  now = new Date()
+) {
+  const rows = await db
+    .select({ site: browserRuns.site })
+    .from(browserRuns)
+    .where(and(eq(browserRuns.workspaceId, workspaceId), holdsBrowser(now)))
+    .limit(20);
+  return rows.map((row) => row.site);
+}
+
+/**
+ * The workspaces with a run that may still hold a browser, among `ids`: a
+ * keep-alive visit on the same profile then waits, since whichever browser
+ * stops last is what the profile keeps.
+ */
+export async function listWorkspacesHoldingBrowsers(
+  workspaceIds: readonly string[],
+  now = new Date()
+) {
+  if (workspaceIds.length === 0) return [];
+  const rows = await db
+    .selectDistinct({ workspaceId: browserRuns.workspaceId })
+    .from(browserRuns)
+    .where(
+      and(
+        inArray(browserRuns.workspaceId, [...workspaceIds]),
+        holdsBrowser(now)
+      )
+    );
+  return rows.map((row) => row.workspaceId);
+}
+
+/**
+ * The run no longer holds a live browser: Bro stopped it, a follow-up took
+ * it over, or it is gone. Its live view is dead with it, so it is cleared:
+ * a follow-up must not inherit it, and a report must not hand it out.
+ */
+export async function releaseBrowserRunBrowser(
+  runId: string,
+  now = new Date()
+) {
+  await db
+    .update(browserRuns)
+    .set({ browserReleasedAt: now, liveViewUrl: null, updatedAt: now })
+    .where(
+      and(eq(browserRuns.id, runId), isNull(browserRuns.browserReleasedAt))
+    );
+}
+
+function idleBrowser(now: Date) {
+  return and(
+    isNull(browserRuns.browserReleasedAt),
+    isNotNull(browserRuns.sessionId),
+    sql`${browserRuns.id} NOT LIKE 'queued:%'`,
+    lte(browserRuns.completedAt, new Date(now.getTime() - idleBrowserCloseMs)),
+    gt(browserRuns.completedAt, new Date(now.getTime() - browserLifetimeMs))
+  );
+}
+
+/**
+ * Take the settled runs whose page was kept for the person and has sat idle
+ * long enough to be stopped by Bro before the cloud ends it, the ones looked
+ * at longest ago first. Each take marks what it returns as looked at, so a
+ * browser whose stop keeps failing goes to the back of the line instead of
+ * holding the front of it.
+ */
+export async function takeIdleBrowserRuns(now: Date, limit: number) {
+  const next = db
+    .select({ id: browserRuns.id })
+    .from(browserRuns)
+    .where(idleBrowser(now))
+    .orderBy(asc(browserRuns.updatedAt))
+    .limit(limit);
+  return db
+    .update(browserRuns)
+    .set({ updatedAt: now })
+    .where(and(inArray(browserRuns.id, next), idleBrowser(now)))
+    .returning({ id: browserRuns.id, sessionId: browserRuns.sessionId });
 }

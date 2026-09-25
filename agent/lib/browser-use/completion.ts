@@ -7,6 +7,7 @@ import {
   holdBrowserRunReportForTurn,
   parkBrowserRunForRetry,
   readBrowserRun,
+  releaseBrowserRunBrowser,
   releaseBrowserRunReport,
   saveBrowserRunReport,
 } from "@db/services/browser-runs";
@@ -15,6 +16,7 @@ import photon from "@agent/channels/photon";
 import telegram from "@agent/channels/telegram";
 import { telegramChatIdFromConversationId } from "@agent/lib/telegram-conversation";
 import {
+  BrowserUseError,
   cancelBrowserUseRun,
   readBrowserUseRun,
   stopBrowserUseSessionBrowsers,
@@ -55,6 +57,7 @@ import {
   placedOrderInstruction,
 } from "./guidance";
 import { gosuslugiFallback } from "./public-services";
+import { recordRunSignIns } from "./sign-ins";
 
 /**
  * Both completion paths — the Browser Use webhook and the reconciling poller —
@@ -74,6 +77,23 @@ const terminalRunStatuses = new Set<BrowserUseRunStatus>([
   "completed",
   "failed",
   "cancelled",
+]);
+
+/**
+ * What a run can stop on with its page waiting for the person: a code goes
+ * into that very page, an approval in their app or 3-D Secure completes it,
+ * and a manual sign-in happens in it through the live view. Every other stop
+ * — done, a question, a basket staged at checkout — closes the browser at
+ * once: that clean stop is what writes the sign-in to the profile, and a
+ * follow-up reopens the site from the profile, signed in, with the basket
+ * the site keeps for the account.
+ */
+const personStepNeeds = new Set<BrowserRunNeed>([
+  "3ds",
+  "email_code",
+  "password",
+  "push",
+  "sms_code",
 ]);
 
 function settledStatus(status: BrowserUseRunStatus) {
@@ -188,7 +208,7 @@ export async function settleBrowserRun(
         captchaAttempt: claimed.captchaAttempt,
         retryAt,
       });
-      await persistProfileCookies(run.sessionId, run.id);
+      await persistProfileCookies(claimed.id, run.sessionId);
       return { kind: "settled" as const };
     }
   }
@@ -207,15 +227,26 @@ export async function settleBrowserRun(
     ),
     recordBrowserRunOrder(claimed, order),
   ]);
-  // A finished errand and a walled one leave nothing for this browser to do;
-  // a run waiting on a code keeps its page for the code to go into.
-  if (parsed.needs === "none" || parsed.needs === "captcha") {
-    await persistProfileCookies(run.sessionId, run.id);
-  }
+  // A run waiting on the person keeps its page for them; any other stop
+  // closes the browser now, which is what keeps its sign-ins
+  // (`personStepNeeds`). The idle stop in the poller closes a kept page
+  // later, before the cloud ends it and loses them.
+  const released = personStepNeeds.has(parsed.needs)
+    ? false
+    : await persistProfileCookies(claimed.id, run.sessionId);
+  await recordRunSignIns(claimed, {
+    needs: parsed.needs,
+    persisted: released,
+    signedIn: parsed.signedIn,
+  });
   await reportBrowserRun(
     delivery,
     claimed.id,
-    browserRunReport(claimed, { ...reportFacts, images, spend })
+    browserRunReport(
+      // A stopped browser's live view is dead: the report does not offer it.
+      released ? { ...claimed, liveViewUrl: null } : claimed,
+      { ...reportFacts, images, spend }
+    )
   );
   return { kind: "settled" as const };
 }
@@ -306,17 +337,27 @@ async function couldHaveActed(row: BrowserRunRow, unread: boolean) {
 /**
  * Stop the run's browser so the profile keeps what it earned — the sign-ins,
  * and the cookies a site hands out once a check is passed, which is what
- * makes the next check less likely. Never fatal: the idle cleanup stops the
- * browser anyway, only later.
+ * makes the next check less likely. True when the run holds no browser any
+ * more, which the row then records. Never fatal: a browser left up is
+ * stopped by the poller's idle stop instead.
  */
-async function persistProfileCookies(sessionId: string, runId: string) {
+export async function persistProfileCookies(runId: string, sessionId: string) {
   try {
-    await stopBrowserUseSessionBrowsers(sessionId, runId);
+    const stopped = await stopBrowserUseSessionBrowsers(sessionId, runId);
+    if (stopped === "running") return false;
+    await releaseBrowserRunBrowser(runId);
+    return true;
   } catch (error) {
+    // A session Browser Use no longer has holds no browser either.
+    if (error instanceof BrowserUseError && error.status === 404) {
+      await releaseBrowserRunBrowser(runId).catch(() => undefined);
+      return true;
+    }
     console.warn("[browser-use] the run's browser could not be stopped", {
       cause: error,
       sessionId,
     });
+    return false;
   }
 }
 
@@ -520,7 +561,7 @@ function deliveryInstruction(
 ) {
   const { hasItems, hasLinks } = facts;
   const tail =
-    "Answer a follow-up with browser_task continue on this run id instead of a new start: it picks the same browser up where this run left off and hands back the run id to use after that. Omit send_message.replyTo.";
+    "Answer a follow-up with browser_task continue on this run id instead of a new start: it picks the errand up where this run left off, signed in on the same browser profile, and hands back the run id to use after that. Omit send_message.replyTo.";
   if (needs === "captcha") {
     return [walledInstruction(facts.unreachable), facts.stuck, tail]
       .filter((line) => line !== undefined)

@@ -1,6 +1,7 @@
 import type { Session } from "eve/channels";
 import type { ScheduleToFn } from "eve/schedules";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import type * as browserUseClient from "@agent/lib/browser-use/client";
 import { formatRub } from "@shared/spending/limit";
 
 const runId = "11111111-1111-4111-8111-111111111111";
@@ -61,9 +62,32 @@ const cancelBrowserUseRun = vi.hoisted(() =>
   vi.fn<(runId: string) => Promise<void>>()
 );
 const stopBrowserUseSessionBrowsers = vi.hoisted(() =>
-  vi.fn<(sessionId: string, runId: string) => Promise<number>>(() =>
-    Promise.resolve(1)
-  )
+  vi.fn<
+    (
+      sessionId: string,
+      runId: string
+    ) => Promise<"moved_on" | "running" | "stopped">
+  >(() => Promise.resolve("stopped"))
+);
+const releaseBrowserRunBrowser = vi.hoisted(() =>
+  vi.fn<(runId: string) => Promise<void>>(() => Promise.resolve())
+);
+const recordBrowserSignIn = vi.hoisted(() =>
+  vi.fn<
+    (
+      workspaceId: string,
+      input: { accountUrl: string | undefined; domain: string; now: Date }
+    ) => Promise<void>
+  >(() => Promise.resolve())
+);
+const recordBrowserSignOut = vi.hoisted(() =>
+  vi.fn<
+    (
+      workspaceId: string,
+      domains: readonly string[],
+      now: Date
+    ) => Promise<void>
+  >(() => Promise.resolve())
 );
 const parkBrowserRunForRetry = vi.hoisted(() =>
   vi.fn<
@@ -164,8 +188,13 @@ vi.mock("@db/services/browser-runs", () => ({
   claimBrowserRunReport,
   finishBrowserRunReport,
   readBrowserRun,
+  releaseBrowserRunBrowser,
   releaseBrowserRunReport,
   saveBrowserRunReport,
+}));
+vi.mock("@db/services/browser-sign-ins", () => ({
+  recordBrowserSignIn,
+  recordBrowserSignOut,
 }));
 vi.mock("@db/services/spending", () => ({
   listSpendEntries: () =>
@@ -191,7 +220,10 @@ const recordOrder = vi.hoisted(() =>
   >(() => Promise.resolve())
 );
 vi.mock("@db/services/orders", () => ({ recordOrder }));
-vi.mock("@agent/lib/browser-use/client", () => ({
+// The error class travels from the real module: a stop that meets a session
+// Browser Use no longer has is told apart by it.
+vi.mock("@agent/lib/browser-use/client", async (importOriginal) => ({
+  ...(await importOriginal<typeof browserUseClient>()),
   cancelBrowserUseRun,
   stopBrowserUseSessionBrowsers,
   readBrowserUseRun,
@@ -1198,8 +1230,133 @@ describe("settling a browser run", () => {
       "If the user declines that card, nothing is lost: show them the options this run found, each with its price and link"
     );
     expect(prompt).toContain("Сапсан №783");
-    // The page stays open on the checkout for the card's follow-up.
+    // The browser is stopped at once, which is what keeps its sign-in: the
+    // card's follow-up reopens the site from the profile, signed in. Its
+    // live view is dead with it, and the report does not hand it out.
+    expect(stopBrowserUseSessionBrowsers).toHaveBeenCalledExactlyOnceWith(
+      "session-1",
+      runId
+    );
+    expect(releaseBrowserRunBrowser).toHaveBeenCalledExactlyOnceWith(runId);
+    expect(prompt).not.toContain(row.liveViewUrl);
+  });
+
+  it("keeps a sign-in the run reports once its browser is stopped", async () => {
+    // RU 25.09, d18: Яндекс Go signed in on the person's push, the run
+    // stopped at the payment step with its browser left open, and the cloud
+    // ended that browser later without writing the sign-in to the profile.
+    readBrowserRun.mockResolvedValue({
+      ...row,
+      site: "https://taxi.yandex.ru",
+    });
+    claimBrowserRunCompletion
+      .mockReset()
+      .mockResolvedValueOnce({
+        ...row,
+        completedAt: new Date(),
+        site: "https://taxi.yandex.ru",
+      })
+      .mockResolvedValue(undefined);
+    readBrowserUseRun.mockResolvedValue({
+      error: null,
+      id: runId,
+      result: [
+        "Вход в Яндекс Go выполнен. Маршрут и тариф на открытой вкладке.",
+        "RESULT: заказ не создан, оставлен на шаге оплаты",
+        "TOTAL: 1 422 ₽",
+        "NEEDS: payment",
+        "SIGNED_IN: https://taxi.yandex.ru/logout, https://taxi.yandex.ru/order?utm=1#top, https://id.yandex.ru/, https://evil.example/profile",
+      ].join("\n"),
+      sessionId: "session-1",
+      status: "completed",
+      task: "Закажи такси",
+    });
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    expect(stopBrowserUseSessionBrowsers).toHaveBeenCalledExactlyOnceWith(
+      "session-1",
+      runId
+    );
+    // One page per domain of the errand, without its query; a stranger's
+    // site the page talked the run into naming is not kept, nor a link that
+    // acts when a keep-alive visit opens it.
+    expect(recordBrowserSignIn).toHaveBeenCalledExactlyOnceWith(
+      row.workspaceId,
+      expect.objectContaining({
+        accountUrl: "https://taxi.yandex.ru/order",
+        domain: "yandex.ru",
+      })
+    );
+    expect(recordBrowserSignOut).not.toHaveBeenCalled();
+  });
+
+  it("keeps the page for a code and records no sign-in it could not keep", async () => {
+    readBrowserRun.mockResolvedValue({ ...row, site: "https://www.mos.ru" });
+    claimBrowserRunCompletion
+      .mockReset()
+      .mockResolvedValueOnce({
+        ...row,
+        completedAt: new Date(),
+        site: "https://www.mos.ru",
+      })
+      .mockResolvedValue(undefined);
+    readBrowserUseRun.mockResolvedValue({
+      error: null,
+      id: runId,
+      result: [
+        "RESULT: вход остановлен на SMS",
+        "NEEDS: sms_code",
+        "DETAILS: код на +7 921 ***-**-76",
+        "SIGNED_IN: https://www.mos.ru/services/",
+      ].join("\n"),
+      sessionId: "session-1",
+      status: "completed",
+      task: "Передай показания",
+    });
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
     expect(stopBrowserUseSessionBrowsers).not.toHaveBeenCalled();
+    expect(releaseBrowserRunBrowser).not.toHaveBeenCalled();
+    // The sign-in is not in the profile until that browser stops.
+    expect(recordBrowserSignIn).not.toHaveBeenCalled();
+    // The Госуслуги sign-in behind mos.ru asked for a code: whatever was
+    // kept there no longer lets the errand in.
+    expect(recordBrowserSignOut).toHaveBeenCalledExactlyOnceWith(
+      row.workspaceId,
+      ["gosuslugi.ru"],
+      expect.any(Date)
+    );
+    expect(send.mock.calls[0]?.[0]).toContain(row.liveViewUrl);
+  });
+
+  it("releases a run whose session Browser Use no longer has", async () => {
+    const { BrowserUseError } = await import("@agent/lib/browser-use/client");
+    stopBrowserUseSessionBrowsers.mockRejectedValueOnce(
+      new BrowserUseError(404, "/sessions/session-1", "not found")
+    );
+    const { persistProfileCookies } =
+      await import("@agent/lib/browser-use/completion");
+
+    expect(await persistProfileCookies(runId, "session-1")).toBe(true);
+    expect(releaseBrowserRunBrowser).toHaveBeenCalledExactlyOnceWith(runId);
+
+    stopBrowserUseSessionBrowsers.mockRejectedValueOnce(new Error("timeout"));
+    releaseBrowserRunBrowser.mockClear();
+    expect(await persistProfileCookies(runId, "session-1")).toBe(false);
+    expect(releaseBrowserRunBrowser).not.toHaveBeenCalled();
+
+    // A session whose run the cloud still counts as working keeps its row.
+    stopBrowserUseSessionBrowsers.mockResolvedValueOnce("running");
+    expect(await persistProfileCookies(runId, "session-1")).toBe(false);
+    expect(releaseBrowserRunBrowser).not.toHaveBeenCalled();
   });
 
   it("keeps the reservation while the payment waits on a code", async () => {

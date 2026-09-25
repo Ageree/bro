@@ -30,6 +30,8 @@ const commandSchema = z.object({
       flatten: z.boolean().optional(),
       format: z.string().optional(),
       frameId: z.string().optional(),
+      url: z.string().optional(),
+      urls: z.array(z.string()).optional(),
     })
     .default({}),
   sessionId: z.string().optional(),
@@ -55,6 +57,8 @@ interface Injection {
 export interface CdpBrowserFixture {
   /** What the injected program answers, per execution context id. */
   readonly injections: Readonly<Record<number, Injection>>;
+  /** Where a page opened with `Page.navigate` ends up, and what it shows. */
+  readonly page?: { readonly password?: boolean; readonly url: string };
   /** The base64 image `Page.captureScreenshot` answers with. */
   readonly screenshot?: string;
   /** Keyed by session id; the page's own session is the empty string. */
@@ -195,6 +199,20 @@ export async function startFakeCdpBrowser(
     }
     if (method === "Page.captureScreenshot") {
       return { data: fixture.screenshot ?? "" };
+    }
+    if (
+      method === "Runtime.evaluate" &&
+      params.expression?.includes("document.readyState") === true
+    ) {
+      return {
+        result: {
+          value: {
+            password: fixture.page?.password ?? false,
+            readyState: "complete",
+            url: fixture.page?.url ?? "about:blank",
+          },
+        },
+      };
     }
     if (method === "Runtime.evaluate") {
       const contextId = params.contextId ?? 0;

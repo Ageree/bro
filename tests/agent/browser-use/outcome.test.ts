@@ -120,6 +120,18 @@ describe("browser run outcome parsing", () => {
     expect(parseBrowserOutcome("NEEDS: 3ds").needs).toBe("3ds");
   });
 
+  it("reads the pages the run is signed in on, or none", () => {
+    expect(
+      parseBrowserOutcome(
+        "NEEDS: none\n**SIGNED_IN:** https://www.ozon.ru/my/main, https://id.yandex.ru/"
+      ).signedIn
+    ).toBe("https://www.ozon.ru/my/main, https://id.yandex.ru/");
+    expect(parseBrowserOutcome("NEEDS: none\nSIGNED_IN: none").signedIn).toBe(
+      undefined
+    );
+    expect(parseBrowserOutcome("NEEDS: none").signedIn).toBeUndefined();
+  });
+
   it("summarizes only the facts the run reported", () => {
     const outcome = parseBrowserOutcome(
       [
