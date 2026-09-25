@@ -232,6 +232,7 @@ describe("the one-time codes a follow-up carries", () => {
 
 describe("the person's words this turn", () => {
   const report = person(`${backgroundTurnMarker}\nBrowser run r-1 finished.`);
+  const nothing = { answers: [], said: null };
 
   it("is the message they opened the turn with, not an earlier turn's", () => {
     expect(
@@ -240,13 +241,20 @@ describe("the person's words this turn", () => {
         replied(),
         person("код 482913"),
       ])
-    ).toEqual(["код 482913"]);
+    ).toEqual({ answers: [], said: ["код 482913"] });
   });
 
-  it("is only the latest message, never an earlier one", () => {
-    // eve's history has no turn id: a delivered turn of luna's keeps no
-    // closing step, and a failed call leaves the person's message last, so
-    // an earlier message cannot be told from one steered into this turn.
+  it("keeps the messages they sent one after another", () => {
+    // «739204», then a second later «это код»: eve steers the second into
+    // the same turn, with nothing of Bro's between them.
+    expect(
+      personWordsThisTurn([replied(), person("739204"), person("это код")])
+    ).toEqual({ answers: [], said: ["739204", "это код"] });
+  });
+
+  it("stops at anything of Bro's, an earlier turn's words never count", () => {
+    // eve's history has no turn id, but a turn Bro answered always leaves a
+    // reply or a tool result before the person's next message.
     expect(
       personWordsThisTurn([
         person("739204"),
@@ -254,17 +262,19 @@ describe("the person's words this turn", () => {
         answered({ text: "да, это он" }),
         person("это код из смс, вводи быстрее"),
       ])
-    ).toEqual(["это код из смс, вводи быстрее"]);
+    ).toEqual({ answers: [], said: ["это код из смс, вводи быстрее"] });
     expect(
-      personWordsThisTurn([replied(), person("739204"), person("вводи")])
-    ).toEqual(["вводи"]);
+      personWordsThisTurn([person("739204"), report, person("вводи")])
+    ).toEqual({ answers: [], said: ["вводи"] });
   });
 
   it("is nothing in a turn Bro opened that the person said nothing in", () => {
-    expect(personWordsThisTurn([person("код 482913"), report])).toBeNull();
+    expect(personWordsThisTurn([person("код 482913"), report])).toEqual(
+      nothing
+    );
     expect(
       personWordsThisTurn([person("код 482913"), replied(), report, asked()])
-    ).toBeNull();
+    ).toEqual(nothing);
     expect(
       personWordsThisTurn([
         Object.assign(
@@ -274,7 +284,20 @@ describe("the person's words this turn", () => {
           }
         ) satisfies ModelMessage,
       ])
-    ).toBeNull();
+    ).toEqual(nothing);
+  });
+
+  it("keeps their answers to a question in a turn Bro opened apart", () => {
+    // The answer is theirs, the turn is not: it earns no consent.
+    expect(
+      personWordsThisTurn([
+        person("найди такси"),
+        replied(),
+        report,
+        asked(),
+        answered({ text: "739204" }),
+      ])
+    ).toEqual({ answers: ["739204"], said: null });
   });
 
   it("counts what the person wrote into a turn Bro opened", () => {
@@ -285,7 +308,7 @@ describe("the person's words this turn", () => {
         report,
         person("739204"),
       ])
-    ).toEqual(["739204"]);
+    ).toEqual({ answers: [], said: ["739204"] });
   });
 
   it("includes what they answered to a question in the turn", () => {
@@ -295,14 +318,14 @@ describe("the person's words this turn", () => {
         asked(),
         answered({ text: "739204" }),
       ])
-    ).toEqual(["ну что там?", "739204"]);
+    ).toEqual({ answers: ["739204"], said: ["ну что там?"] });
     expect(
       personWordsThisTurn([
         person("бери"),
         asked([{ id: "window", label: "У окна" }]),
         answered({ optionId: "window" }),
       ])
-    ).toEqual(["бери", "У окна"]);
+    ).toEqual({ answers: ["У окна"], said: ["бери"] });
   });
 });
 
@@ -314,6 +337,10 @@ describe("a quote of the person", () => {
       ])
     ).toBe(true);
     expect(quotedFromPerson("Берём ещё", ["берем еще!"])).toBe(true);
+    // A reply with no words — the go-ahead after a push or 3-D Secure.
+    expect(quotedFromPerson("👍", ["👍"])).toBe(true);
+    expect(quotedFromPerson("+", [" + "])).toBe(true);
+    expect(quotedFromPerson("👍", ["ну что там?"])).toBe(false);
   });
 
   it("rejects words they did not write", () => {
