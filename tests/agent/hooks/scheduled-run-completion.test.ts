@@ -371,7 +371,7 @@ describe("scheduled run completion hook", () => {
         data: {
           finishReason: "stop",
           message:
-            "[срочно]\nРейс SU 1234 в 07:05 из Внуково, выход B12; выйти примерно в 04:30.",
+            "**[срочно]**\nРейс SU 1234 в 07:05 из Внуково, выход B12; выйти примерно в 04:30.",
           sequence: 0,
           stepIndex: 0,
           turnId: "turn-1",

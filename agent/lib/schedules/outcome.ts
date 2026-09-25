@@ -45,7 +45,8 @@ export function reportNeeded(outcome: ScheduledRunOutcome) {
  */
 export const urgentHandoverMarker = "[срочно]";
 
-const urgentHandover = /^\s*\[(?:срочно|urgent)\]\s*/iu;
+// Bold or italic around the marker still counts: «**[срочно]**».
+const urgentHandover = /^\s*[*_]*\[(?:срочно|urgent)\][*_]*\s*/iu;
 
 /** The outcome a background worker's final reply records. */
 export function workerOutcome(

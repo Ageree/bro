@@ -16,7 +16,7 @@ import type { AccessScope } from "@shared/identity/access-scope";
  * night's held reports into its own run, so the person gets one morning
  * message; this is the check's head start, not a delay anyone waits out.
  */
-export const morningFoldWindowMs = 10 * 60_000;
+const morningFoldWindowMs = 10 * 60_000;
 
 /**
  * Decides whether a finished proactive run may write now. A person who turned
