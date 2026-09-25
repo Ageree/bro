@@ -138,14 +138,42 @@ function mismatchNote(reason: string) {
   return `${reason}, and a time to it would be wrong: call again with the place's name and city, or «lat, lon»`;
 }
 
+/** A part of the query that is a house alone: «12 к2», «7/15 с1», «26А». */
+function housePart(part: string) {
+  return /^\d/u.test(part) && !/\p{L}{3}/u.test(part);
+}
+
 /**
- * What to ask the geocoder, best first: the query as given, then the
- * address alone when a name comes before an address with a house («Кафе
- * Авокадо, Чистопрудный бульвар 12к2, Москва» is found only so), then the
- * name without the kind of place and quotes. A street with its house first
- * («Тверская 7, Москва, Россия») or a name before only a city is never cut
- * down to «Москва, Россия»: the map would answer with the city. Each miss
- * costs a lookup and two seconds of the turn.
+ * The address after a place's name, with its house and city, as the map
+ * finds it: «Чистопрудный бульвар 12 к2, Москва» from «Чистопрудный
+ * бульвар 12 к2, Москва» or «Чистопрудный бульвар, 12 к2, Москва». Nothing
+ * when there is no street with a house and something after it: a name
+ * before only a city must not be cut down to «Москва».
+ */
+function addressAfterName(address: readonly string[]) {
+  const [street = "", house = "", ...rest] = address;
+  if (!/\p{L}{3}/u.test(street)) return undefined;
+  if (/\d/u.test(street)) {
+    return address.length >= 2 ? address.join(", ") : undefined;
+  }
+  return housePart(house) && rest.length > 0
+    ? [`${street} ${house}`, ...rest].join(", ")
+    : undefined;
+}
+
+/**
+ * What to ask the geocoder, best first. When a name comes before an address
+ * with a house, the address alone goes first: the map finds a building by
+ * its address but almost never a name and an address together. Live on
+ * 25.09 «Авокадо, Чистопрудный бульвар, 12 к2, Москва», «Hedonist,
+ * Покровский бульвар, 8 с1, Москва» and even «Кафе Пушкинъ, Тверской
+ * бульвар 26А, Москва» were not on the map, while each address alone was;
+ * in the benchmark all three places of one pick came back unmeasured so.
+ * Then the query as given, then the name without the kind of place and
+ * quotes. A street with its house first («Тверская 7, Москва, Россия») or a
+ * name before only a city is never cut down to «Москва, Россия»: the map
+ * would answer with the city. Each miss costs a lookup and two seconds of
+ * the turn.
  */
 function queryVariants(query: string) {
   const parts = withHouseShorthand(query)
@@ -157,15 +185,11 @@ function queryVariants(query: string) {
     .replace(kindOfPlace, "")
     .replaceAll(/[«»"“”„]/gu, "")
     .trim();
-  const variants = [parts.join(", ")];
-  if (
-    !/\d/u.test(name) &&
-    address.length >= 2 &&
-    /\p{L}{3}/u.test(address[0] ?? "") &&
-    /\d/u.test(address[0] ?? "")
-  ) {
-    variants.push(address.join(", "));
-  }
+  const addressOnly = /\d/u.test(name) ? undefined : addressAfterName(address);
+  const variants = [
+    ...(addressOnly === undefined ? [] : [addressOnly]),
+    parts.join(", "),
+  ];
   if (bareName.length > 0) variants.push([bareName, ...address].join(", "));
   return [...new Set(variants)];
 }
@@ -312,9 +336,37 @@ async function measure(
     from: from.label,
     fromNote: areaNote(from),
     mode: input.mode,
+    pick: input.mode === "walking" ? pickNote(routes) : undefined,
     routes,
     status: "ok" as const,
   };
+}
+
+/** «Пешком» when the person named no limit of their own (recommendations.md). */
+const walkLimitMinutes = 15;
+/** Options a pick of places aims at, each passing every condition. */
+const pickSize = 3;
+
+/**
+ * How many of the places measured are within a walk, and how many a pick
+ * still lacks. The rule of three verified options lived only in the prompt,
+ * and on 25.09 (RU d03) gpt-6-luna answered a dinner pick with one place
+ * after one round of searches: the tool result the model reads last is
+ * where it takes its next step from.
+ */
+function pickNote(routes: readonly { readonly minutes?: number }[]) {
+  const measured = routes.flatMap((route) =>
+    route.minutes === undefined ? [] : [route.minutes]
+  );
+  const near = measured.filter((minutes) => minutes <= walkLimitMinutes);
+  const unmeasured = routes.length - measured.length;
+  const lacking = pickSize - near.length;
+  const counted = `${String(near.length)} of ${String(routes.length)} ${routes.length === 1 ? "place is" : "places are"} within a ${String(walkLimitMinutes)}-minute walk${unmeasured > 0 ? ` and ${String(unmeasured)} not measured` : ""}`;
+  const next =
+    lacking > 0
+      ? `${String(lacking)} more ${lacking === 1 ? "is" : "are"} needed: before you reply, find other candidates near the start that fit the rest of the conditions (web_search with sites yandex.ru/maps or 2gis.ru) and measure them here in one more call. Reply with fewer only when that search found none, and say how many fit and why`
+      : "Before you reply, check each of them against the rest of the conditions";
+  return `If these are candidates for a pick of places («где поужинать пешком от…»): ${counted}. A pick aims at ${String(pickSize)} options that each pass every condition the person named, the walk included (${String(walkLimitMinutes)} minutes unless they named their own limit). ${next}; name whatever you could not check as not checked.`;
 }
 
 export const routeTime = defineTool({

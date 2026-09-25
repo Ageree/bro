@@ -24,6 +24,10 @@ import {
   cardToolsBeforeOutcomeNote,
   owedStepsNote,
 } from "@agent/lib/delivery/browser-report";
+import {
+  declinedErrandNote,
+  turnDeclinedErrand,
+} from "@agent/lib/delivery/declined-cards";
 import { browserRunReportDelivered } from "@db/services/browser-runs";
 import { turnMustEnd, turnSends } from "@agent/lib/delivery/turn-sends";
 import { readsMustEnd } from "@agent/lib/google-workspace/turn-reads";
@@ -170,6 +174,11 @@ export default defineAgent({
           // A tool that vanished without a word is one the model says it
           // used anyway.
           heldForAnswer ? heldForAnswerNote : undefined,
+          // eve answers a declined card with «Tool execution was denied»,
+          // which the reply retold as a failure.
+          writesToPerson && turnDeclinedErrand(ctx.messages)
+            ? declinedErrandNote
+            : undefined,
           owedSteps.length > 0 ? owedStepsNote(owedSteps) : undefined,
         ].filter((note) => note !== undefined);
         return modelSelection(modelId, {

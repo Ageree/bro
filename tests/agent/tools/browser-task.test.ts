@@ -3276,6 +3276,11 @@ describe("browser_task finds the option before the one card", () => {
       { open: true, when: "на следующей неделе, до обеда" },
       { open: true, when: "в выходные" },
       { open: true, when: "ближайший свободный слот" },
+      // An hour said as a guess (RU 25.09, d15).
+      { open: true, when: "завтра, часов на семь" },
+      { open: true, when: "часа в три" },
+      { open: true, when: "завтра в районе 19:00" },
+      { open: true, when: "завтра ~19:00" },
       // One price, words after it included.
       { amount: "2 490 ₽ с доставкой до двери", open: false },
       { amount: "3 100 ₽, от продавца Ozon", open: false },
@@ -3298,6 +3303,122 @@ describe("browser_task finds the option before the one card", () => {
         open,
       });
     }
+  });
+
+  it("sends a card for a kind of place near somewhere to a search first", async () => {
+    const { browserTask, browserTaskApproval } =
+      await import("@agent/tools/browser_task");
+    // RU 25.09, d15: «запиши меня завтра в барбершоп на профсоюзной, к
+    // артуру, часов на семь», as the card read before any search.
+    const barber: BrowserSubmission = {
+      amount: "уточняется на сайте; бесплатная запись",
+      chargeRub: 0,
+      forWhom: "Алиса",
+      kind: "appointment",
+      personalData: ["имя", "телефон"],
+      what: "Стрижка у барбера Артура",
+      when: "суббота, 26 сентября 2026, 19:00",
+      where:
+        "Барбершоп на Профсоюзной, Москва (ближайший подходящий салон на Профсоюзной)",
+    };
+
+    const refusal = await browserTaskApproval(
+      submitStart(barber, "https://yclients.com"),
+      conversation
+    );
+
+    expect(refusal).toMatchObject({ type: "denied" });
+    expect(JSON.stringify(refusal)).toContain(
+      "the place «Барбершоп на Профсоюзной, Москва (ближайший подходящий салон на Профсоюзной)», a kind of place and an area rather than one place by its name and address"
+    );
+    expect(JSON.stringify(refusal)).toContain(
+      "start the errand without allowSubmit"
+    );
+    expect(JSON.stringify(refusal)).toContain(
+      "the place by its name and address, the master"
+    );
+    await expect(
+      browserTask.execute(
+        submitStart(barber, "https://yclients.com"),
+        toolContext("better-auth:alice")
+      )
+    ).rejects.toThrow("a kind of place and an area");
+    expect(createBrowserUseRun).not.toHaveBeenCalled();
+
+    // The barbershop the search found, with Artur's slot, goes on the card.
+    expect(
+      await browserTaskApproval(
+        submitStart(
+          {
+            ...barber,
+            what: "Стрижка у барбера Артура",
+            when: "суббота, 26 сентября, 19:00",
+            where: "Барбершоп «Чоп-Чоп», Профсоюзная ул., 56 (yclients.com)",
+          },
+          "https://yclients.com"
+        ),
+        conversation
+      )
+    ).toBe("user-approval");
+    // A table «где-нибудь с верандой» is no place either (RU 25.09, d13).
+    expect(
+      await browserTaskApproval(
+        submitStart(
+          {
+            ...pushkinTable,
+            where: "Ресторан с верандой в Казани",
+          },
+          "https://restoclub.ru"
+        ),
+        conversation
+      )
+    ).toMatchObject({ type: "denied" });
+  });
+
+  it("tells one place from a kind of place and an area", async () => {
+    const { openSubmissionTerms } = await import("@agent/tools/browser_task");
+    const cases: readonly { open: boolean; where: string }[] = [
+      // One place, by name or by address.
+      { open: false, where: "ресторан «Пушкин» (cafe-pushkin.ru)" },
+      { open: false, where: "Pushkin (cafe-pushkin.ru)" },
+      { open: false, where: "поликлиника №12 через ЕМИАС (emias.info)" },
+      { open: false, where: "поликлиника по прикреплению через ЕМИАС" },
+      { open: false, where: "Барбершоп Chop-Chop на Профсоюзной" },
+      { open: false, where: "Профсоюзная ул., 56, Москва" },
+      { open: false, where: "Островок (ostrovok.ru)" },
+      { open: false, where: "Салон красоты «Лотос», Москва" },
+      // A kind of place and where it is.
+      { open: true, where: "Барбершоп на Профсоюзной, Москва" },
+      { open: true, where: "барбершоп у метро Профсоюзная" },
+      { open: true, where: "Мужская парикмахерская рядом с домом" },
+      { open: true, where: "Отель в центре Казани (ostrovok.ru)" },
+      { open: true, where: "Ресторан, Казань" },
+      { open: true, where: "Салон красоты на Тверской" },
+      { open: true, where: "м. Профсоюзная, Москва" },
+      { open: true, where: "«Чоп-Чоп», любой филиал" },
+      { open: true, where: "Barbershop near Profsoyuznaya, Moscow" },
+    ];
+
+    for (const { open, where } of cases) {
+      const terms = openSubmissionTerms({ ...cardSubmission, where });
+      expect({ open: terms.length > 0, where }).toEqual({ open, where });
+    }
+    // A message names no place to find, and an order's place is its shop.
+    expect(
+      openSubmissionTerms({
+        ...cardSubmission,
+        kind: "message",
+        where: "Барбершоп на Профсоюзной",
+      })
+    ).toEqual([]);
+    expect(
+      openSubmissionTerms({
+        ...cardSubmission,
+        chargeRub: 640,
+        kind: "order",
+        where: "Аптека (apteka.ru)",
+      })
+    ).toEqual([]);
   });
 
   it("lets a standing permission start without a card, found or not", async () => {

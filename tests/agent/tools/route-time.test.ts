@@ -134,6 +134,37 @@ const places = new Map([
     },
   ],
   [
+    // Live on 25.09 the house as its own part was found just the same.
+    "Чистопрудный бульвар, 12 к2, Москва",
+    {
+      address: {
+        city: "Москва",
+        country_code: "ru",
+        house_number: "12 к2",
+        road: "Чистопрудный бульвар",
+      },
+      addresstype: "building",
+      display_name: "12 к2, Чистопрудный бульвар, Москва, Россия",
+      lat: "55.76056",
+      lon: "37.64255",
+    },
+  ],
+  [
+    "Покровский бульвар 8 с1, Москва",
+    {
+      address: {
+        city: "Москва",
+        country_code: "ru",
+        house_number: "8 с1",
+        road: "Покровский бульвар",
+      },
+      addresstype: "building",
+      display_name: "8 с1, Покровский бульвар, Москва, Россия",
+      lat: "55.75788",
+      lon: "37.64712",
+    },
+  ],
+  [
     "Большая Никольская 12 с2, Москва",
     {
       address: {
@@ -279,6 +310,7 @@ const outputSchema = z.object({
   from: z.string().optional(),
   fromNote: z.string().optional(),
   note: z.string().optional(),
+  pick: z.string().optional(),
   routes: z
     .array(
       z.object({
@@ -455,7 +487,7 @@ describe("route_time", () => {
     expect(fetchMock.mock.calls).toHaveLength(calls);
   });
 
-  it("takes coordinates as they are and tries a named place by its address", async () => {
+  it("takes coordinates as they are and looks a named place up by its address", async () => {
     const result = await measure({
       from: "55.7584, 37.6215",
       mode: "walking",
@@ -463,14 +495,103 @@ describe("route_time", () => {
     });
 
     expect(result.routes?.[0]).toMatchObject({ km: 1.6, minutes: 21 });
+    // The map finds a building by its address, not a name with one.
+    expect(
+      requestsTo("nominatim.openstreetmap.org").map((url) =>
+        url.searchParams.get("q")
+      )
+    ).toEqual(["Чистопрудный бульвар 12, Москва"]);
+  });
+
+  it("finds a named place whose house is a part of its own", async () => {
+    // RU 25.09, d03: all three places of the pick came back «not on the map».
+    const result = await measure({
+      from: "метро Чистые пруды, Москва",
+      mode: "walking",
+      to: [
+        "Авокадо, Чистопрудный бульвар, 12 корпус 2, Москва",
+        "Hedonist, Покровский бульвар, 8с1, Москва",
+        "Чистопрудный бульвар, 12 к2, Москва",
+      ],
+    });
+
+    expect(result.routes?.map((route) => route.error)).toEqual([
+      undefined,
+      undefined,
+      undefined,
+    ]);
+    expect(result.routes?.map((route) => route.place)).toEqual([
+      "Чистопрудный бульвар 12 к2, Москва",
+      "Покровский бульвар 8 с1, Москва",
+      "Чистопрудный бульвар 12 к2, Москва",
+    ]);
+    // One lookup a place: the address alone goes first, and an address
+    // without a name is asked as it is, never cut down to «12 к2, Москва».
     expect(
       requestsTo("nominatim.openstreetmap.org").map((url) =>
         url.searchParams.get("q")
       )
     ).toEqual([
-      "Кафе Авокадо, Чистопрудный бульвар 12, Москва",
-      "Чистопрудный бульвар 12, Москва",
+      "метро Чистые пруды, Москва",
+      "Чистопрудный бульвар 12 к2, Москва",
+      "Покровский бульвар 8 с1, Москва",
+      "Чистопрудный бульвар, 12 к2, Москва",
     ]);
+  });
+
+  it("falls back to the name when the map does not know the address", async () => {
+    const result = await measure({
+      from: "отель Метрополь, Москва",
+      mode: "walking",
+      to: ["Метрополь, Неглинная улица, 99, Москва"],
+    });
+
+    expect(
+      requestsTo("nominatim.openstreetmap.org")
+        .map((url) => url.searchParams.get("q"))
+        .slice(1)
+    ).toEqual([
+      "Неглинная улица 99, Москва",
+      "Метрополь, Неглинная улица, 99, Москва",
+    ]);
+    expect(result.routes?.[0]?.error).toContain("not on the map");
+  });
+
+  it("counts how many candidates are within a walk and how many a pick lacks", async () => {
+    const pick = await measure({
+      from: "отель Метрополь, Москва",
+      mode: "walking",
+      // 21 and 10 minutes away.
+      to: ["метро Чистые пруды, Москва", "Чистопрудный бульвар 12, Москва"],
+    });
+
+    expect(pick.pick).toContain("1 of 2 places are within a 15-minute walk");
+    expect(pick.pick).toContain("2 more are needed");
+    expect(pick.pick).toContain("measure them here in one more call");
+
+    const three = await measure({
+      from: "метро Чистые пруды, Москва",
+      mode: "walking",
+      // 21, 10 and 15 minutes away, and one the map does not know.
+      to: [
+        "Авокадо, Чистопрудный бульвар, 12 корпус 2, Москва",
+        "Hedonist, Покровский бульвар, 8с1, Москва",
+        "Метрополь, Москва",
+        "Несуществующее кафе, Москва",
+      ],
+    });
+    expect(three.pick).toContain(
+      "2 of 4 places are within a 15-minute walk and 1 not measured"
+    );
+    expect(three.pick).toContain("1 more is needed");
+
+    // A drive is no walk to count.
+    const drive = await measure({
+      from: "отель Метрополь, Москва",
+      mode: "driving",
+      to: ["метро Чистые пруды, Москва"],
+    });
+    expect(drive.pick).toBeUndefined();
   });
 
   it("writes Russian houses the way the map knows them", async () => {
