@@ -92,4 +92,30 @@ describe("request_vault_setup", () => {
     );
     expect(result).not.toHaveProperty("message");
   });
+
+  it("counts the Госуслуги login for a site that signs in through it", async () => {
+    // RU 24.09, d07: «нет пароля mos.ru» with the Госуслуги login saved.
+    readVaultItems.mockResolvedValue([
+      {
+        account: "www.gosuslugi.ru · +7•••76",
+        id: "login-1",
+        kind: "login",
+      },
+    ]);
+    const mos = { ...gosuslugi, label: "mos.ru", origin: "https://www.mos.ru" };
+
+    const result = await requestVaultSetup.execute(mos, toolContext());
+
+    expect(result).toHaveProperty("alreadySaved", true);
+    expect(JSON.stringify(result)).toContain(
+      "The vault holds the user's Госуслуги login, and this site signs people in through Госуслуги"
+    );
+
+    // A shop is not a public service: its own login is what it needs.
+    const shop = await requestVaultSetup.execute(
+      { ...gosuslugi, label: "Ozon", origin: "https://www.ozon.ru" },
+      toolContext()
+    );
+    expect(shop).not.toHaveProperty("alreadySaved");
+  });
 });

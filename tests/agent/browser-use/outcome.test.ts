@@ -20,6 +20,8 @@ describe("browser run outcome parsing", () => {
     );
 
     expect(outcome).toEqual({
+      booking: undefined,
+      charges: [],
       details: undefined,
       hasReportLinks: false,
       items: [],
@@ -470,16 +472,20 @@ describe("browser run items", () => {
     expect(outcome.items).toEqual([
       {
         details: undefined,
+        fee: false,
         name: "Молоко 2,5%",
         price: "89,90 ₽",
         quantity: "2",
+        replaces: undefined,
         url: "https://www.ozon.ru/product/1",
       },
       {
         details: undefined,
+        fee: false,
         name: "Хлеб",
         price: "57,30 ₽",
         quantity: "1",
+        replaces: undefined,
         url: undefined,
       },
     ]);
@@ -514,5 +520,178 @@ describe("browser run items", () => {
     expect(
       parseBrowserOutcome('RESULT: done\nITEMS: [{"name": "Отель"').items
     ).toEqual([]);
+  });
+
+  it("names each substitute with what it replaces and keeps fees as their own lines", () => {
+    // RU 24.09, d05: the basket came back without its substitutions, fees
+    // or slot.
+    const outcome = parseBrowserOutcome(
+      [
+        "RESULT: корзина собрана, доставка сегодня 19:30–20:00",
+        "TOTAL: 1 512 ₽",
+        "NEEDS: payment",
+        `ITEMS: ${JSON.stringify([
+          {
+            name: "Молоко «Простоквашино» 3,2%, 930 мл",
+            price: "109 ₽",
+            quantity: "1",
+          },
+          {
+            name: "Яйца С0, 10 шт",
+            price: "139 ₽",
+            quantity: "1",
+            replaces: "десяток яиц С1",
+          },
+          { fee: true, name: "Доставка", price: "99 ₽" },
+          { fee: "true", name: "Сервисный сбор", price: "29 ₽" },
+        ])}`,
+      ].join("\n")
+    );
+
+    expect(
+      outcome.items.map(({ fee, replaces }) => ({ fee, replaces }))
+    ).toEqual([
+      { fee: false, replaces: undefined },
+      { fee: false, replaces: "десяток яиц С1" },
+      { fee: true, replaces: undefined },
+      { fee: true, replaces: undefined },
+    ]);
+    const summary = browserOutcomeSummary(outcome, "fallback");
+    expect(summary).toContain(
+      "2. Яйца С0, 10 шт — 139 ₽ — qty 1 — substitutes «десяток яиц С1»"
+    );
+    expect(summary).toContain("3. [fee] Доставка — 99 ₽");
+    expect(summary).toContain("4. [fee] Сервисный сбор — 29 ₽");
+  });
+});
+
+describe("charges the run found", () => {
+  it("keeps what each charge is for with its dates and discount", () => {
+    // RU 24.09, d06: «штрафов нет, но висит 500 ₽ к оплате», with nothing
+    // on what the 500 ₽ was.
+    const outcome = parseBrowserOutcome(
+      [
+        "RESULT: найдены штраф и налог",
+        "NEEDS: none",
+        "- **CHARGES:**",
+        "```json",
+        JSON.stringify([
+          {
+            amount: "500 ₽",
+            date: "12.09.2026",
+            discount: "250 ₽ до 02.10.2026",
+            due: "21.11.2026",
+            reference: "18810177260912345678",
+            what: "Штраф ГИБДД: превышение скорости на 20–40 км/ч, ст. 12.9 ч. 2 КоАП",
+          },
+          {
+            amount: "1 830 ₽",
+            due: "01.12.2026",
+            what: "Транспортный налог за 2025 год",
+          },
+          { amount: "100 ₽" },
+          { what: "   " },
+        ]),
+        "```",
+      ].join("\n")
+    );
+
+    expect(outcome.charges).toEqual([
+      {
+        amount: "500 ₽",
+        date: "12.09.2026",
+        discount: "250 ₽ до 02.10.2026",
+        due: "21.11.2026",
+        reference: "18810177260912345678",
+        what: "Штраф ГИБДД: превышение скорости на 20–40 км/ч, ст. 12.9 ч. 2 КоАП",
+      },
+      {
+        amount: "1 830 ₽",
+        date: undefined,
+        discount: undefined,
+        due: "01.12.2026",
+        reference: undefined,
+        what: "Транспортный налог за 2025 год",
+      },
+    ]);
+    const summary = browserOutcomeSummary(outcome, "fallback");
+    expect(summary).toContain(
+      "Charges:\n1. Штраф ГИБДД: превышение скорости на 20–40 км/ч, ст. 12.9 ч. 2 КоАП — 500 ₽ — dated 12.09.2026 — due 21.11.2026 — discount 250 ₽ до 02.10.2026 — ref 18810177260912345678"
+    );
+    expect(summary).toContain(
+      "2. Транспортный налог за 2025 год — 1 830 ₽ — due 01.12.2026"
+    );
+  });
+
+  it("reads none from a report without charges", () => {
+    expect(
+      parseBrowserOutcome("RESULT: штрафов нет\nCHARGES: []").charges
+    ).toEqual([]);
+    expect(parseBrowserOutcome("CHARGES: none").charges).toEqual([]);
+  });
+});
+
+describe("the booking the run made or staged", () => {
+  const appointment = {
+    bring: "полис ОМС, паспорт",
+    cancel: "отменить можно в ЕМИАС до начала приёма",
+    confirmed: true,
+    end: null,
+    place: "ГП № 219, ул. Демьяна Бедного, 8",
+    reference: "4417-22",
+    room: "каб. 312",
+    start: "2026-10-01T18:20",
+    what: "Приём терапевта",
+    who: "Иванова А. П., терапевт",
+  };
+
+  it("reads what the person needs on the day, and whether the site confirmed it", () => {
+    const outcome = parseBrowserOutcome(
+      [
+        "RESULT: записал к терапевту",
+        "NEEDS: none",
+        `BOOKING: ${JSON.stringify(appointment)}`,
+      ].join("\n")
+    );
+
+    expect(outcome.booking).toMatchObject({
+      bring: "полис ОМС, паспорт",
+      confirmed: true,
+      end: undefined,
+      place: "ГП № 219, ул. Демьяна Бедного, 8",
+      room: "каб. 312",
+      start: "2026-10-01T18:20",
+      what: "Приём терапевта",
+    });
+    expect(browserOutcomeSummary(outcome, "fallback")).toContain(
+      "Booking: Приём терапевта — Иванова А. П., терапевт — from 2026-10-01T18:20 — at ГП № 219, ул. Демьяна Бедного, 8 — room or seat каб. 312 — bring: полис ОМС, паспорт — cancelling: отменить можно в ЕМИАС до начала приёма — ref 4417-22 — confirmed by the site"
+    );
+  });
+
+  it("takes a staged slot as not confirmed", () => {
+    const outcome = parseBrowserOutcome(
+      `NEEDS: decision\nBOOKING: ${JSON.stringify({ ...appointment, confirmed: false })}`
+    );
+
+    expect(outcome.booking?.confirmed).toBe(false);
+    expect(browserOutcomeSummary(outcome, "fallback")).toContain(
+      "not confirmed yet"
+    );
+  });
+
+  it("does not mistake the next labelled line for a booking", () => {
+    const outcome = parseBrowserOutcome(
+      [
+        "BOOKING: none",
+        `ITEMS: [${JSON.stringify({ name: "Слот", what: "Приём" })}]`,
+      ].join("\n")
+    );
+
+    expect(outcome.booking).toBeUndefined();
+    expect(outcome.items).toHaveLength(1);
+    // A broken object is none too.
+    expect(
+      parseBrowserOutcome('BOOKING: {"what": "Приём"').booking
+    ).toBeUndefined();
   });
 });

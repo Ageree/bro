@@ -31,33 +31,50 @@ export const requestVaultImport = defineTool({
  */
 async function savedLoginFor(context: ToolContext, origin: string) {
   const caller = context.session.auth.current ?? context.session.auth.initiator;
-  if (caller?.principalType !== "user") return false;
+  if (caller?.principalType !== "user") return undefined;
   try {
     const items = await readVaultItems(scopeFromPrincipal(caller));
-    return (
-      selectBrowserVaultItems(items, { allowPayment: false, site: origin })
-        .loginId !== undefined
-    );
+    const selected = selectBrowserVaultItems(items, {
+      allowPayment: false,
+      site: origin,
+    });
+    if (selected.loginId !== undefined) return "site" as const;
+    return selected.gosuslugiLoginId === undefined
+      ? undefined
+      : ("gosuslugi" as const);
   } catch (error) {
     console.warn("[vault] saved logins could not be read", { cause: error });
-    return false;
+    return undefined;
   }
 }
 
 const savedLoginNote =
   "The vault already holds a login for this site, and a browser run on it signs in with it by itself. Do not send this link and do not tell the user their login is missing. Send it only when a run reported the saved password was rejected (Needs: password on a run that had it bound) or the user asked to replace it — and then say it replaces the saved one.";
 
+/**
+ * mos.ru, the tax service, Мосэнергосбыт and ЕМИАС let a person in with
+ * their Госуслуги account, and a run on them gets the Госуслуги login from
+ * the vault: a separate password for them is not missing (RU 24.09, d07).
+ */
+const gosuslugiLoginNote =
+  "The vault holds the user's Госуслуги login, and this site signs people in through Госуслуги («Войти через Госуслуги»): a browser run on it signs in with that login by itself. Do not send this link and do not tell the user a login for this site is missing. Send it only when a run on this site reported Needs: password although the Госуслуги login was bound, or the user asked to save this site's own password.";
+
 export const requestVaultSetup = defineTool({
   description:
-    "Create a safe link for adding one supported item to the encrypted vault. Supported kinds are login (email, phone, or username with a password or one-time-code method), payment (card details), address (structured delivery or billing address), and contact (name, email, and phone). A login setup requires a descriptive label, identifierType, and the exact current website origin; the user enters the actual identifier and secret on the vault page. Other kinds accept only kind and an optional label. Never put an email address, phone number, username, or secret in this setup request. Use ordinary non-secret contact details directly when the user supplied them in chat. A browser_task result whose boundSecrets include login_username already signs in with the saved login: do not ask for it again.",
+    "Create a safe link for adding one supported item to the encrypted vault. Supported kinds are login (email, phone, or username with a password or one-time-code method), payment (card details), address (structured delivery or billing address), and contact (name, email, and phone). A login setup requires a descriptive label, identifierType, and the exact current website origin; the user enters the actual identifier and secret on the vault page. Other kinds accept only kind and an optional label. Never put an email address, phone number, username, or secret in this setup request. Use ordinary non-secret contact details directly when the user supplied them in chat. A browser_task result whose boundSecrets include login_username already signs in with the saved login, and one with gosuslugi_username signs in through Госуслуги: do not ask for it again. A saved Госуслуги login also opens mos.ru, ЕМИАС, the tax service's personal account, Мосэнергосбыт and other public-service sites with «Войти через Госуслуги».",
   inputSchema: vaultSetupRequestSchema,
   async execute(request, context) {
     const url = createVaultSetupUrl(applicationOrigin(), request);
-    if (
-      request.kind === "login" &&
-      (await savedLoginFor(context, request.origin))
-    ) {
-      return { alreadySaved: true, note: savedLoginNote, url };
+    const saved =
+      request.kind === "login"
+        ? await savedLoginFor(context, request.origin)
+        : undefined;
+    if (saved !== undefined) {
+      return {
+        alreadySaved: true,
+        note: saved === "site" ? savedLoginNote : gosuslugiLoginNote,
+        url,
+      };
     }
     return {
       message:
