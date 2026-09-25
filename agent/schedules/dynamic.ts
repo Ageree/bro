@@ -13,6 +13,7 @@ import {
   finishScheduledAgentRunInput,
   listRecoverableScheduledReports,
   materializeDueScheduledAgentRuns,
+  recoverStuckScheduledAgentRuns,
   releaseScheduledAgentRun,
   restoreScheduledAgentRunInput,
   setScheduledRunSession,
@@ -40,6 +41,12 @@ export default defineSchedule({
 
 async function dispatchDueWork(delivery: ReportDelivery) {
   const now = new Date();
+  // Stuck workers first: a run sent back to the queue is claimed below, and
+  // one that got stuck twice has its report picked up in the same tick.
+  const recovered = await recoverStuckScheduledAgentRuns({ limit: 25, now });
+  for (const run of recovered) {
+    console.warn("[scheduled-run] watchdog", run);
+  }
   const materializedRunIds = await materializeDueScheduledAgentRuns({
     limit: 25,
     now,

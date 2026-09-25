@@ -483,6 +483,67 @@ describe("proactive watches", { timeout: 30_000 }, () => {
     ]);
   });
 
+  it("closes a stuck check quietly and lets the next one start", async () => {
+    const { db, jobs, proactive } = await openDatabase();
+    await proactive.recordProactiveTarget(alice, telegram, now);
+    const [watch] = await proactive.claimDueProactiveWatches({
+      leaseForMs: 15 * 60_000,
+      limit: 10,
+      now,
+    });
+    if (!watch) throw new Error("Expected a due watch.");
+    const runId = queuedRunId(
+      await proactive.queueProactiveRun({
+        jobId: watch.jobId,
+        mailCheckedAt: now,
+        maxRunsPerDay: 12,
+        now,
+        signals: [bossMail],
+        workspaceId: alice.workspaceId,
+      })
+    );
+    const [claim] = await jobs.claimReadyScheduledAgentRuns({
+      kind: "proactive",
+      leaseForMs: 5 * 60_000,
+      limit: 10,
+      now,
+    });
+    if (!runId || !claim?.run.leaseToken) throw new Error("Expected a run.");
+    await jobs.setScheduledRunSession(runId, claim.run.leaseToken, "worker");
+    await jobs.markScheduledAgentRunStarted(
+      runId,
+      claim.run.leaseToken,
+      "worker",
+      30 * 60_000,
+      now
+    );
+    const later = new Date(now.getTime() + 3 * 60 * 60_000);
+    const queueLater = () =>
+      proactive.queueProactiveRun({
+        jobId: watch.jobId,
+        mailCheckedAt: later,
+        maxRunsPerDay: 12,
+        now: later,
+        signals: [flight],
+        workspaceId: alice.workspaceId,
+      });
+
+    // The hung worker holds every later check back…
+    expect(await queueLater()).toEqual({ status: "busy" });
+    // …until the watchdog finds its news three hours old and closes it
+    // without a word to the person.
+    expect(
+      await jobs.recoverStuckScheduledAgentRuns({ limit: 25, now: later })
+    ).toMatchObject([{ action: "closed", reason: "stale", runId }]);
+    expect(
+      await db.query.scheduledAgentRuns.findFirst({
+        columns: { reportStatus: true, status: true },
+        where: (runs, { eq }) => eq(runs.id, runId),
+      })
+    ).toEqual({ reportStatus: "not_needed", status: "dead_letter" });
+    expect(await queueLater()).toMatchObject({ status: "queued" });
+  });
+
   it("leaves a single held report to go out on its own", async () => {
     const { jobs, proactive } = await openDatabase();
     await proactive.recordProactiveTarget(alice, telegram, now);
