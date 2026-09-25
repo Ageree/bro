@@ -920,14 +920,17 @@ describe("Photon approval cards", () => {
     const { context, post } = handlerContext();
 
     await handleInputRequested(
-      approval("gmail-send", { subject: "Привет", to: ["a@b.c"] }),
+      approval("gmail-update", {
+        messageIds: ["a", "b", "c", "d"],
+        update: "archive",
+      }),
       context,
       sessionContext()
     );
 
     expect(post).toHaveBeenCalledExactlyOnceWith({
       raw: [
-        "Approve tool call: gmail-send",
+        "Approve tool call: gmail-update",
         "1 — Approve\n2 — Cancel",
         "Ответ — цифрой: 1 или 2.",
       ].join("\n\n"),

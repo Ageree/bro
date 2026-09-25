@@ -190,6 +190,129 @@ describe("generate_image", () => {
     ).toBeNull();
   });
 
+  it("reaches a picture drawn before a quiz when the message names the change", async () => {
+    // EN D16 on 24.09: after five quiz answers «make the text English» found
+    // no generate_image and the edit never happened.
+    const drawCall = {
+      content: [
+        {
+          input: { prompt: "A birthday card for Sam with a corgi" },
+          toolCallId: "call-0",
+          toolName: "generate_image",
+          type: "tool-call" as const,
+        },
+      ],
+      role: "assistant" as const,
+    };
+    const answers = ["B", "Titanic", "C", "не знаю", "A"].flatMap((answer) => [
+      personText(answer),
+      { content: "Верно! Следующий вопрос…", role: "assistant" as const },
+    ]);
+    const quiz = [request, drawCall, drawnResult(earlierId), ...answers];
+
+    const { pictureRequested } =
+      await import("@agent/lib/image-artifact/generation");
+    const reaches = (text: string) =>
+      pictureRequested([...quiz, personText(text)]);
+
+    expect(
+      [
+        "make the text English",
+        "put Sam's name on the cake",
+        "поменяй надпись на английскую",
+        "добавь имя на торт",
+        // Style changes are edits too.
+        "а теперь в стиле аниме",
+        "другой стиль",
+        "сделай ярче",
+        "do it in a watercolor style",
+      ].map(reaches)
+    ).toEqual([true, true, true, true, true, true, true, true]);
+    // Errands that share the verbs are not edits of the picture.
+    expect(
+      [
+        "B",
+        "next question",
+        "что у меня завтра?",
+        "добавь встречу с Петей завтра в 15:00",
+        "измени напоминание на 9 утра",
+        "верни деньги за заказ",
+        "напиши текст письма Ивану",
+        "переведи деньги в фонд",
+        "отмени подписку на кино",
+        "can you add lunch to my calendar",
+        "fix the reply to Anna",
+        "remove the reminder",
+      ].map(reaches)
+    ).toEqual(Array.from({ length: 12 }, () => false));
+    // A call that drew nothing does not open the long reach.
+    expect(
+      pictureRequested([
+        request,
+        drawCall,
+        ...answers,
+        personText("make the text English"),
+      ])
+    ).toBe(false);
+    expect(
+      await resolve(
+        dynamicContext([...quiz, personText("make the text English")])
+      )
+    ).not.toBeNull();
+
+    // A meter photo a few turns back is no picture to edit.
+    expect(
+      pictureRequested([
+        photoMessage("показания", Buffer.from(dogPhoto).toString("base64")),
+        personText("спасибо"),
+        personText("а ещё что?"),
+        personText("добавь встречу в календарь"),
+      ])
+    ).toBe(false);
+  });
+
+  it("names the pictures this conversation drew so an edit passes the right one", async () => {
+    const tool = await resolveTool(
+      dynamicContext([
+        request,
+        {
+          content: [
+            {
+              input: { prompt: "A birthday card" },
+              toolCallId: "call-0",
+              toolName: "generate_image",
+              type: "tool-call" as const,
+            },
+          ],
+          role: "assistant" as const,
+        },
+        {
+          content: [
+            {
+              output: {
+                type: "json" as const,
+                value: {
+                  artifact: `/artifacts/${earlierId}`,
+                  markdown: `![картинка](/artifacts/${earlierId})`,
+                  status: "ready",
+                },
+              },
+              toolCallId: "call-0",
+              toolName: "generate_image",
+              type: "tool-result" as const,
+            },
+          ],
+          role: "tool" as const,
+        },
+        personText("make the text English"),
+      ])
+    );
+
+    expect(tool.description).toContain(
+      `Pictures drawn earlier in this conversation, newest first: /artifacts/${earlierId}; to change one, pass it in images.`
+    );
+  });
+
   it.each([
     ["сделай открытку маме на др", true],
     ["нарисуй кота в шляпе", true],
@@ -468,6 +591,28 @@ async function execute(
     throw new Error("generate_image returns one result, not a stream.");
   }
   return result;
+}
+
+/** The tool message with a picture generate_image drew. */
+function drawnResult(artifactId: string) {
+  return {
+    content: [
+      {
+        output: {
+          type: "json" as const,
+          value: {
+            artifact: `/artifacts/${artifactId}`,
+            markdown: `![картинка](/artifacts/${artifactId})`,
+            status: "ready",
+          },
+        },
+        toolCallId: "call-0",
+        toolName: "generate_image",
+        type: "tool-result" as const,
+      },
+    ],
+    role: "tool" as const,
+  };
 }
 
 function personText(text: string, kind = "user") {

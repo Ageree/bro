@@ -130,7 +130,19 @@ describe("model selection", () => {
     // Hosts that decode tool calls in schema key order, or break them.
     expect(openRouter.chat).toHaveBeenCalledExactlyOnceWith(
       "deepseek/deepseek-v4.1-flash",
-      { provider: { ignore: ["alibaba", "morph", "wafer", "sail-research"] } }
+      {
+        provider: {
+          ignore: [
+            "alibaba",
+            "morph",
+            "wafer",
+            "sail-research",
+            "modal",
+            "parasail",
+            "phala",
+          ],
+        },
+      }
     );
     expect(selection).toMatchObject({
       model: { modelId: "deepseek/deepseek-v4.1-flash" },
@@ -542,7 +554,14 @@ describe("model selection", () => {
       "deepseek/deepseek-v4.1-flash",
       {
         provider: {
-          ignore: ["morph", "wafer", "sail-research"],
+          ignore: [
+            "morph",
+            "wafer",
+            "sail-research",
+            "modal",
+            "parasail",
+            "phala",
+          ],
           order: ["alibaba"],
         },
       }

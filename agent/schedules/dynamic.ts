@@ -5,7 +5,7 @@ import {
   checkOpenRouterCredits,
   creditCheckDue,
 } from "@agent/lib/model/credits";
-import { holdProactiveReport } from "@agent/lib/proactive/delivery";
+import { proactiveReportTiming } from "@agent/lib/proactive/delivery";
 import { dispatchScheduledReport } from "@agent/lib/schedules/report";
 import {
   claimAnsweredScheduledAgentRuns,
@@ -13,10 +13,12 @@ import {
   finishScheduledAgentRunInput,
   listRecoverableScheduledReports,
   materializeDueScheduledAgentRuns,
+  recoverStuckScheduledAgentRuns,
   releaseScheduledAgentRun,
   restoreScheduledAgentRunInput,
   setScheduledRunSession,
 } from "@db/services/scheduled-agent-jobs";
+import { localRunLabel } from "@shared/schedules/timing";
 
 const workerStartupLimitMs = 5 * 60_000;
 
@@ -40,6 +42,12 @@ export default defineSchedule({
 
 async function dispatchDueWork(delivery: ReportDelivery) {
   const now = new Date();
+  // Stuck workers first: a run sent back to the queue is claimed below, and
+  // one that got stuck twice has its report picked up in the same tick.
+  const recovered = await recoverStuckScheduledAgentRuns({ limit: 25, now });
+  for (const run of recovered) {
+    console.warn("[scheduled-run] watchdog", run);
+  }
   const materializedRunIds = await materializeDueScheduledAgentRuns({
     limit: 25,
     now,
@@ -66,9 +74,28 @@ async function dispatchDueWork(delivery: ReportDelivery) {
   }
   await Promise.all([
     ...runs.map((claim) => executeScheduledRun(delivery, claim)),
-    ...reports.map((report) => dispatchRecoverableReport(delivery, report)),
+    ...onePerProactiveJob(reports).map((report) =>
+      dispatchRecoverableReport(delivery, report)
+    ),
     ...answered.map((claim) => resumeAnsweredRun(delivery, claim)),
   ]);
+}
+
+/**
+ * One report of Bro's own check per tick: the first takes the job's other
+ * finished reports into its message (`absorbHeldProactiveReports`), and two
+ * dispatched side by side would each claim its own and send two.
+ */
+function onePerProactiveJob(
+  reports: Awaited<ReturnType<typeof listRecoverableScheduledReports>>
+) {
+  const proactiveJobs = new Set<string>();
+  return reports.filter((report) => {
+    if (report.jobKind !== "proactive") return true;
+    if (proactiveJobs.has(report.jobId)) return false;
+    proactiveJobs.add(report.jobId);
+    return true;
+  });
 }
 
 /**
@@ -189,13 +216,17 @@ async function executeScheduledRun(
     );
     if (status === "dead_letter") {
       await dispatchRecoverableReport(delivery, {
+        carriesEvent: false,
         conversationChannel: claim.job.conversationChannel,
+        jobId: claim.job.id,
         jobKind: claim.job.kind,
         runId: claim.run.id,
+        scheduledFor: claim.run.scheduledFor,
         scope: {
           userId: claim.job.createdByUserId,
           workspaceId: claim.job.workspaceId,
         },
+        timeSensitive: false,
       });
     }
   }
@@ -205,18 +236,29 @@ async function dispatchRecoverableReport(
   delivery: ReportDelivery,
   report: Awaited<ReturnType<typeof listRecoverableScheduledReports>>[number]
 ) {
-  if (report.jobKind === "proactive" && (await holdProactiveReport(report))) {
-    return;
+  if (report.jobKind !== "proactive") {
+    return dispatchScheduledReport(delivery, report.runId);
   }
-  return dispatchScheduledReport(delivery, report.runId);
+  const timing = await proactiveReportTiming(report);
+  if (timing === "held") return;
+  // An urgent report at night goes alone; the held ones wait for the morning.
+  return dispatchScheduledReport(delivery, report.runId, {
+    absorbHeld: timing === "day",
+  });
 }
 
 function scheduledRunPrompt(
   claim: Awaited<ReturnType<typeof claimReadyScheduledAgentRuns>>[number]
 ) {
+  // «Сегодня» of a morning digest is the person's day, not the UTC one.
+  const timing = claim.job.timing;
+  const local =
+    timing.kind === "calendar"
+      ? ` (on the person's clock: ${localRunLabel(claim.run.scheduledFor, timing.timezone)})`
+      : "";
   return [
     "Complete this user-owned scheduled task in an isolated background session.",
-    `Scheduled for: ${claim.run.scheduledFor.toISOString()}`,
+    `Scheduled for: ${claim.run.scheduledFor.toISOString()}${local}`,
     `Task: ${claim.job.prompt}`,
   ].join("\n\n");
 }

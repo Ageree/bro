@@ -369,16 +369,206 @@ describe("proactive watches", { timeout: 30_000 }, () => {
     );
     expect(await jobs.listRecoverableScheduledReports(later)).toEqual([
       {
+        carriesEvent: false,
         conversationChannel: "telegram",
+        jobId: watch.jobId,
         jobKind: "proactive",
         runId: nextRunId,
+        scheduledFor: later,
         scope: alice,
+        timeSensitive: true,
       },
     ]);
     const morning = new Date(later.getTime() + 8 * 60 * 60_000);
     await jobs.deferScheduledReport(nextRunId, morning, later);
     expect(await jobs.listRecoverableScheduledReports(later)).toEqual([]);
     expect(await jobs.listRecoverableScheduledReports(morning)).toHaveLength(1);
+  });
+
+  it("sends the reports held overnight with the first one of the morning, and keeps them if it fails", async () => {
+    const { db, jobs, proactive } = await openDatabase();
+    await proactive.recordProactiveTarget(alice, telegram, now);
+    const [watch] = await proactive.claimDueProactiveWatches({
+      leaseForMs: 15 * 60_000,
+      limit: 10,
+      now,
+    });
+    if (!watch) throw new Error("Expected a due watch.");
+    const phishing = {
+      dedupeKey: "m2",
+      itemId: "m2",
+      source: "gmail" as const,
+      threadId: "t2",
+    };
+    const morning = new Date("2026-09-24T05:10:00.000Z");
+    /** A finished run whose report waits: held (night) or due now. */
+    const finishedRun = async (
+      signal: typeof bossMail | typeof flight,
+      at: Date,
+      held: boolean
+    ) => {
+      const runId = queuedRunId(
+        await proactive.queueProactiveRun({
+          jobId: watch.jobId,
+          mailCheckedAt: at,
+          maxRunsPerDay: 12,
+          now: at,
+          signals: [signal],
+          workspaceId: alice.workspaceId,
+        })
+      );
+      const [claim] = await jobs.claimReadyScheduledAgentRuns({
+        kind: "proactive",
+        leaseForMs: 60_000,
+        limit: 10,
+        now: at,
+      });
+      if (!runId || !claim?.run.leaseToken) throw new Error("Expected a run.");
+      await jobs.completeScheduledAgentRun(
+        runId,
+        claim.run.leaseToken,
+        "turn-1",
+        {
+          kind: "result",
+          summary: `About ${signal.itemId}.`,
+          urgency: "normal",
+        },
+        at
+      );
+      if (held) await jobs.deferScheduledReport(runId, morning, at);
+      return runId;
+    };
+    const night = await finishedRun(
+      bossMail,
+      new Date("2026-09-23T19:05:00.000Z"),
+      true
+    );
+    const lateNight = await finishedRun(
+      phishing,
+      new Date("2026-09-23T20:20:00.000Z"),
+      true
+    );
+    // The first check of the morning finds a flight; its report is due now.
+    const first = await finishedRun(
+      flight,
+      new Date("2026-09-24T05:03:00.000Z"),
+      false
+    );
+    const reportAt = new Date("2026-09-24T05:04:00.000Z");
+
+    const claimed = await jobs.claimScheduledReport(first, reportAt);
+    const leaseToken = claimed?.run.reportLeaseToken;
+    const leaseExpiresAt = claimed?.run.reportLeaseExpiresAt;
+    if (!leaseToken || !leaseExpiresAt) throw new Error("Expected a claim.");
+    const absorbed = await jobs.absorbHeldProactiveReports(
+      {
+        jobId: watch.jobId,
+        reportLeaseExpiresAt: leaseExpiresAt,
+        reportLeaseToken: leaseToken,
+        runId: first,
+      },
+      reportAt
+    );
+    expect(absorbed.map((run) => run.id)).toEqual([night, lateNight]);
+    expect(absorbed.map((run) => run.outcome?.kind)).toEqual([
+      "result",
+      "result",
+    ]);
+
+    // The report turn fails: every report it carried goes back, none lost.
+    expect(
+      await jobs.releaseScheduledReport(first, leaseToken, "turn failed")
+    ).toBe(true);
+    const statuses = async () =>
+      (
+        await db.query.scheduledAgentRuns.findMany({
+          columns: { id: true, reportStatus: true },
+        })
+      )
+        .filter((run) => [night, lateNight, first].includes(run.id))
+        .map((run) => run.reportStatus);
+    expect(await statuses()).toEqual(["pending", "pending", "pending"]);
+
+    // Taken again, the one message that reaches the person closes all three.
+    const retried = await jobs.claimScheduledReport(first, reportAt);
+    const retryToken = retried?.run.reportLeaseToken;
+    const retryExpiresAt = retried?.run.reportLeaseExpiresAt;
+    if (!retryToken || !retryExpiresAt) throw new Error("Expected a claim.");
+    await jobs.absorbHeldProactiveReports(
+      {
+        jobId: watch.jobId,
+        reportLeaseExpiresAt: retryExpiresAt,
+        reportLeaseToken: retryToken,
+        runId: first,
+      },
+      reportAt
+    );
+    expect(
+      await jobs.finalizeScheduledReport(first, retryToken, "delivered")
+    ).toBe(true);
+    expect(await statuses()).toEqual(["delivered", "delivered", "delivered"]);
+    expect(await jobs.listRecoverableScheduledReports(morning)).toEqual([]);
+  });
+
+  it("closes a stuck check quietly and lets the next one start", async () => {
+    const { db, jobs, proactive } = await openDatabase();
+    await proactive.recordProactiveTarget(alice, telegram, now);
+    const [watch] = await proactive.claimDueProactiveWatches({
+      leaseForMs: 15 * 60_000,
+      limit: 10,
+      now,
+    });
+    if (!watch) throw new Error("Expected a due watch.");
+    const runId = queuedRunId(
+      await proactive.queueProactiveRun({
+        jobId: watch.jobId,
+        mailCheckedAt: now,
+        maxRunsPerDay: 12,
+        now,
+        signals: [bossMail],
+        workspaceId: alice.workspaceId,
+      })
+    );
+    const [claim] = await jobs.claimReadyScheduledAgentRuns({
+      kind: "proactive",
+      leaseForMs: 5 * 60_000,
+      limit: 10,
+      now,
+    });
+    if (!runId || !claim?.run.leaseToken) throw new Error("Expected a run.");
+    await jobs.setScheduledRunSession(runId, claim.run.leaseToken, "worker");
+    await jobs.markScheduledAgentRunStarted(
+      runId,
+      claim.run.leaseToken,
+      "worker",
+      30 * 60_000,
+      now
+    );
+    const later = new Date(now.getTime() + 3 * 60 * 60_000);
+    const queueLater = () =>
+      proactive.queueProactiveRun({
+        jobId: watch.jobId,
+        mailCheckedAt: later,
+        maxRunsPerDay: 12,
+        now: later,
+        signals: [flight],
+        workspaceId: alice.workspaceId,
+      });
+
+    // The hung worker holds every later check back…
+    expect(await queueLater()).toEqual({ status: "busy" });
+    // …until the watchdog finds its news three hours old and closes it
+    // without a word to the person.
+    expect(
+      await jobs.recoverStuckScheduledAgentRuns({ limit: 25, now: later })
+    ).toMatchObject([{ action: "closed", reason: "stale", runId }]);
+    expect(
+      await db.query.scheduledAgentRuns.findFirst({
+        columns: { reportStatus: true, status: true },
+        where: (runs, { eq }) => eq(runs.id, runId),
+      })
+    ).toEqual({ reportStatus: "not_needed", status: "dead_letter" });
+    expect(await queueLater()).toMatchObject({ status: "queued" });
   });
 
   it("closes a run parked on a question when its report is dropped", async () => {

@@ -14,6 +14,8 @@ import {
   calendarSignals,
   gmailProbeQuery,
   gmailSignals,
+  isNightFlight,
+  isNightSubject,
 } from "@agent/lib/proactive/signals";
 import { getGoogleWorkspaceAccess } from "@db/services/settings";
 import { activeConnectedAccount } from "@shared/composio/accounts";
@@ -37,15 +39,38 @@ const mailPageSchema = z.object({
 });
 
 /**
+ * A night check reads the subjects of this many of the newest messages; the
+ * night's mail is little, and whatever is past the cap waits for the morning.
+ */
+const maxNightSubjects = 20;
+/** Gmail's per-user limit counts parallel calls; five at a time stays under. */
+const subjectReadBatch = 5;
+
+const mailMetadataSchema = z.object({
+  id: z.string().optional(),
+  payload: z
+    .object({
+      headers: z
+        .array(z.object({ name: z.string(), value: z.string() }))
+        .optional(),
+    })
+    .optional(),
+  threadId: z.string().optional(),
+});
+
+/**
  * The cheap look that decides whether a model run is worth starting: message
  * and event ids only, two Google requests through Composio, no model call. A
  * workspace without a Google account reports that instead of failing the
- * tick.
+ * tick. A night check (`nightOnly`) keeps only what may not wait for the
+ * morning: a flight leaving within hours, and mail whose subject is about a
+ * flight or an account's security; that costs a subject read per message.
  */
 export async function probeGoogleSignals(
   scope: AccessScope,
   window: {
     readonly mailAfter: Date;
+    readonly nightOnly?: boolean;
     readonly now: Date;
     readonly timeZone: string;
   }
@@ -69,7 +94,7 @@ export async function probeGoogleSignals(
       listMailIds(google, gmailProbeQuery(window.mailAfter)),
       google.json(calendarEventListSchema, {
         url: googleUrl(calendarApi, "/calendars/primary/events", {
-          fields: "items(id,status,start)",
+          fields: "items(id,status,start,summary,location)",
           maxResults: 25,
           orderBy: "startTime",
           singleEvents: true,
@@ -80,10 +105,26 @@ export async function probeGoogleSignals(
         }),
       }),
     ]);
+    const items = events.items ?? [];
+    if (!window.nightOnly) {
+      return {
+        signals: [
+          ...calendarSignals(items, window.now, window.timeZone),
+          ...gmailSignals(messages),
+        ],
+        state: "connected" as const,
+      };
+    }
     return {
       signals: [
-        ...calendarSignals(events.items ?? [], window.now, window.timeZone),
-        ...gmailSignals(messages),
+        ...calendarSignals(
+          items.filter((event) => isNightFlight(event, window.now)),
+          window.now,
+          window.timeZone
+        ),
+        ...gmailSignals(
+          await nightMail(google, messages.slice(0, maxNightSubjects))
+        ),
       ],
       state: "connected" as const,
     };
@@ -98,6 +139,47 @@ export async function probeGoogleSignals(
     }
     throw error;
   }
+}
+
+/** The messages among `messages` whose subject may not wait for the morning. */
+async function nightMail(
+  google: GoogleClient,
+  messages: readonly { readonly id: string; readonly threadId?: string }[]
+) {
+  const urgent = [];
+  for (let start = 0; start < messages.length; start += subjectReadBatch) {
+    // oxlint-disable-next-line eslint/no-await-in-loop -- Batches keep Gmail's per-user rate.
+    const described = await Promise.all(
+      messages.slice(start, start + subjectReadBatch).map(async (message) => {
+        try {
+          return await google.json(mailMetadataSchema, {
+            url: googleUrl(
+              "https://gmail.googleapis.com/gmail/v1/users/me",
+              `/messages/${encodeURIComponent(message.id)}`,
+              {
+                fields: "id,threadId,payload/headers",
+                format: "metadata",
+                metadataHeaders: ["Subject"],
+              }
+            ),
+          });
+        } catch (error) {
+          // Deleted since it was listed: nothing to wake anyone for.
+          if (googleApiErrorStatus(error) === 404) return undefined;
+          throw error;
+        }
+      })
+    );
+    for (const [index, metadata] of described.entries()) {
+      const subject =
+        metadata?.payload?.headers?.find(
+          (header) => header.name.toLowerCase() === "subject"
+        )?.value ?? "";
+      const message = messages[start + index];
+      if (message && isNightSubject(subject)) urgent.push(message);
+    }
+  }
+  return urgent;
 }
 
 async function listMailIds(google: GoogleClient, query: string) {

@@ -12,12 +12,18 @@ import {
 import {
   awaitsDelivery,
   outcomeToldEarlier,
+  reportOwedSteps,
   turnActed,
   turnDelivered,
   turnHandedErrandOn,
   turnTookNoStep,
 } from "@agent/lib/delivery/pending";
 import { reportedBrowserRunId } from "@agent/lib/browser-use/report-caller";
+import {
+  cardToolsBeforeOutcome,
+  cardToolsBeforeOutcomeNote,
+  owedStepsNote,
+} from "@agent/lib/delivery/browser-report";
 import { browserRunReportDelivered } from "@db/services/browser-runs";
 import { turnMustEnd, turnSends } from "@agent/lib/delivery/turn-sends";
 import { readsMustEnd } from "@agent/lib/google-workspace/turn-reads";
@@ -93,6 +99,21 @@ export default defineAgent({
           (reportRunId !== undefined &&
             !turnDelivered(ctx.messages) &&
             turnHandedErrandOn(ctx.messages));
+        // A card in a browser report's turn comes after the outcome, never
+        // before it: the calendar entry for a confirmed booking follows the
+        // message that tells the booking.
+        const cardsHeld =
+          reportRunId !== undefined &&
+          !staleReport &&
+          sends.delivered.length === 0;
+        // Once the message is out, the card step the report asks for is
+        // still to come: nothing may tell the turn to end before it.
+        const owedSteps =
+          reportRunId !== undefined &&
+          !staleReport &&
+          sends.delivered.length > 0
+            ? reportOwedSteps(ctx.messages)
+            : [];
         // A report — a browser run's or a schedule's — is Bro's own turn.
         // Its question goes out as a message, so the person's reply starts a
         // turn of their own: only there does `schedules-answer` resume a
@@ -141,12 +162,15 @@ export default defineAgent({
                 answered: sends.delivered.length > 0,
                 formOfAddress,
                 language: replyLanguage,
+                stepOwed: owedSteps.length > 0,
               })
             : undefined,
           staleReport ? staleReportNote : undefined,
+          cardsHeld && !silent ? cardToolsBeforeOutcomeNote : undefined,
           // A tool that vanished without a word is one the model says it
           // used anyway.
           heldForAnswer ? heldForAnswerNote : undefined,
+          owedSteps.length > 0 ? owedStepsNote(owedSteps) : undefined,
         ].filter((note) => note !== undefined);
         return modelSelection(modelId, {
           // After the reply, a step with nothing to add may come back empty
@@ -170,7 +194,8 @@ export default defineAgent({
                 : "auto",
           // One question per request, then Bro acts on the answer: a second
           // `ask_question` in the same turn is how a helper becomes an
-          // interrogation. Approval cards stay, each is its action's consent.
+          // interrogation. Approval cards stay, each is its action's consent,
+          // except before a browser report's message.
           // A question sent as a message is answered in the person's next
           // message, so until then nothing it asked about is undone.
           withheldTools: [
@@ -179,6 +204,7 @@ export default defineAgent({
               : []),
             ...(reportPastAnswer ? ["react_to_message", "send_message"] : []),
             ...(heldForAnswer ? actionsHeldForAnswer : []),
+            ...(cardsHeld ? cardToolsBeforeOutcome : []),
           ],
         });
       },

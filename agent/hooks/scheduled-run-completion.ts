@@ -5,11 +5,19 @@ import {
   completeScheduledAgentRun,
   deferScheduledAgentRunCompletion,
   markScheduledAgentRunStarted,
+  parkScheduledAgentRunOnAuthorization,
   releaseScheduledAgentRun,
   waitForScheduledAgentRunInput,
 } from "@db/services/scheduled-agent-jobs";
 
 const workerRuntimeLimitMs = 6 * 60 * 60_000;
+/**
+ * Bro's own check reads a dozen messages and a calendar: minutes, not hours.
+ * While its run is open no later check starts, so one that hangs is handed to
+ * the watchdog after this long instead of silencing the person's mail for
+ * six hours.
+ */
+const proactiveRuntimeLimitMs = 30 * 60_000;
 
 export default defineHook({
   events: {
@@ -20,7 +28,7 @@ export default defineHook({
         identity.runId,
         identity.leaseToken,
         ctx.session.id,
-        workerRuntimeLimitMs,
+        identity.proactive ? proactiveRuntimeLimitMs : workerRuntimeLimitMs,
         new Date(event.meta.at)
       );
       if (!started) {
@@ -31,6 +39,25 @@ export default defineHook({
         return;
       }
       console.info("[scheduled-run] worker turn started", {
+        runId: identity.runId,
+        sessionId: ctx.session.id,
+      });
+    },
+    // A sign-in card in a background session reaches nobody, so the worker
+    // would wait for it until its lease ran out. The watchdog takes the run
+    // on the next tick instead: once more from the start, then a report.
+    async "authorization.required"(event, ctx) {
+      const identity = scheduledRunIdentity(ctx.session.auth);
+      if (!identity) return;
+      const parked = await parkScheduledAgentRunOnAuthorization(
+        identity.runId,
+        identity.leaseToken,
+        event.data.name,
+        new Date(event.meta.at)
+      );
+      console.warn("[scheduled-run] worker parked on authorization", {
+        connection: event.data.name,
+        parked,
         runId: identity.runId,
         sessionId: ctx.session.id,
       });

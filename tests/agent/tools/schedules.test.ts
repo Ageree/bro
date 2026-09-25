@@ -8,26 +8,34 @@ import { z } from "zod";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   createScheduledAgentJob,
+  getScheduledAgentJob,
   getScheduledAgentRunInput,
   listScheduledAgentJobs,
   submitScheduledAgentRunAnswer,
   updateScheduledAgentJob,
 } from "@db/services/scheduled-agent-jobs";
+import type { readWorkspaceTimeZone } from "@db/services/user-profile";
 
 const services = vi.hoisted(() => ({
   create: vi.fn<typeof createScheduledAgentJob>(),
+  getJob: vi.fn<typeof getScheduledAgentJob>(),
   getInput: vi.fn<typeof getScheduledAgentRunInput>(),
   list: vi.fn<typeof listScheduledAgentJobs>(),
   submitAnswer: vi.fn<typeof submitScheduledAgentRunAnswer>(),
+  timeZone: vi.fn<typeof readWorkspaceTimeZone>(),
   update: vi.fn<typeof updateScheduledAgentJob>(),
 }));
 
 vi.mock("@db/services/scheduled-agent-jobs", () => ({
   createScheduledAgentJob: services.create,
+  getScheduledAgentJob: services.getJob,
   getScheduledAgentRunInput: services.getInput,
   listScheduledAgentJobs: services.list,
   submitScheduledAgentRunAnswer: services.submitAnswer,
   updateScheduledAgentJob: services.update,
+}));
+vi.mock("@db/services/user-profile", () => ({
+  readWorkspaceTimeZone: services.timeZone,
 }));
 
 import { backgroundTurnMarker } from "@shared/chat/background-turn";
@@ -56,6 +64,7 @@ describe("schedule tools", () => {
     vi.clearAllMocks();
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null)));
     services.submitAnswer.mockResolvedValue(true);
+    services.timeZone.mockResolvedValue("Asia/Yekaterinburg");
   });
 
   it("resumes a run with the person's answer to the question this chat showed", async () => {
@@ -331,6 +340,137 @@ describe("schedule tools", () => {
       }
     );
     expect(result).toEqual(scheduleSummary(job));
+  });
+
+  it("sets a recurring schedule in the person's profile zone when the model names none", async () => {
+    services.create.mockImplementation((_scope, input) =>
+      Promise.resolve({
+        ...scheduledJob(),
+        nextRunAt: new Date("2026-09-28T03:00:00.000Z"),
+        timing: input.timing,
+      })
+    );
+
+    const result = await createSchedule.execute(
+      {
+        missedRunPolicy: "run_latest",
+        prompt: "Утренняя сводка.",
+        timing: { frequency: "weekdays", kind: "calendar", localTime: "08:00" },
+      },
+      toolContext("schedules-create")
+    );
+
+    expect(services.create).toHaveBeenCalledWith(
+      { userId: "user-1", workspaceId: "workspace-1" },
+      expect.objectContaining({
+        timing: {
+          frequency: "weekdays",
+          kind: "calendar",
+          localTime: "08:00",
+          timezone: "Asia/Yekaterinburg",
+        },
+      })
+    );
+    // The reply names Monday 08:00 in Yekaterinburg, not a UTC instant.
+    expect(result).toMatchObject({
+      nextRunLocal: "2026-09-28 08:00, Monday (Asia/Yekaterinburg)",
+    });
+  });
+
+  it("turns «напомни завтра в 9» on the person's clock into one instant", async () => {
+    services.create.mockImplementation((_scope, input) =>
+      Promise.resolve({
+        ...scheduledJob(),
+        nextRunAt: new Date("2026-09-26T04:00:00.000Z"),
+        timing: input.timing,
+      })
+    );
+
+    const result = await createSchedule.execute(
+      {
+        missedRunPolicy: "run_latest",
+        prompt: "Напомнить позвонить маме.",
+        timing: { at: "2026-09-26T09:00", kind: "once" },
+      },
+      toolContext("schedules-create")
+    );
+
+    expect(services.create).toHaveBeenCalledWith(
+      { userId: "user-1", workspaceId: "workspace-1" },
+      expect.objectContaining({
+        timing: { at: "2026-09-26T04:00:00.000Z", kind: "once" },
+      })
+    );
+    expect(result).toMatchObject({
+      nextRunLocal: "2026-09-26 09:00, Saturday (Asia/Yekaterinburg)",
+    });
+  });
+
+  it("keeps a changed rule in its own zone and off holidays", async () => {
+    // «Каждый будний день в 9 по Нью-Йорку, кроме праздников», then
+    // «сдвинь на 9:30» sent without the zone or the flag.
+    const stored = {
+      ...scheduledJob(),
+      timing: {
+        frequency: "weekdays" as const,
+        kind: "calendar" as const,
+        localTime: "09:00",
+        skipHolidays: true,
+        timezone: "America/New_York",
+      },
+    };
+    services.getJob.mockResolvedValue(stored);
+    services.update.mockImplementation((_scope, _id, patch) =>
+      Promise.resolve({ ...stored, timing: patch.timing ?? stored.timing })
+    );
+
+    await updateSchedule.execute(
+      {
+        id: stored.id,
+        timing: { frequency: "weekdays", kind: "calendar", localTime: "09:30" },
+      },
+      toolContext("schedules-update")
+    );
+
+    expect(services.update).toHaveBeenCalledExactlyOnceWith(
+      { userId: "user-1", workspaceId: "workspace-1" },
+      stored.id,
+      {
+        timing: {
+          frequency: "weekdays",
+          kind: "calendar",
+          localTime: "09:30",
+          skipHolidays: true,
+          timezone: "America/New_York",
+        },
+      }
+    );
+
+    // Only an explicit false puts it back on holidays.
+    await updateSchedule.execute(
+      {
+        id: stored.id,
+        timing: {
+          frequency: "weekdays",
+          kind: "calendar",
+          localTime: "09:30",
+          skipHolidays: false,
+        },
+      },
+      toolContext("schedules-update")
+    );
+    expect(services.update).toHaveBeenLastCalledWith(
+      { userId: "user-1", workspaceId: "workspace-1" },
+      stored.id,
+      {
+        timing: {
+          frequency: "weekdays",
+          kind: "calendar",
+          localTime: "09:30",
+          timezone: "America/New_York",
+        },
+      }
+    );
   });
 
   it("lists schedules through a dedicated empty-input tool", async () => {
@@ -703,6 +843,8 @@ function scheduleSummary(job: ReturnType<typeof scheduledJob>) {
     lastError: job.lastError,
     lastRunAt: job.lastRunAt?.toISOString() ?? null,
     nextRunAt: job.nextRunAt?.toISOString() ?? null,
+    // 13:00 UTC is 09:00 in New York, the rule's own zone.
+    nextRunLocal: "2026-09-02 09:00, Wednesday (America/New_York)",
     prompt: job.prompt,
     status: job.status,
     timing: job.timing,

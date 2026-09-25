@@ -12,6 +12,7 @@ const scheduledReportIdentitySchema = z.object({
 });
 const scheduledRunIdentitySchema = z.object({
   scheduledRunId: z.uuid(),
+  scheduledRunKind: z.literal("proactive").optional(),
   scheduledRunLeaseToken: z.uuid(),
 });
 
@@ -27,6 +28,7 @@ export function scheduledRunIdentity(auth: SessionContext["session"]["auth"]) {
   return identity.success
     ? {
         leaseToken: identity.data.scheduledRunLeaseToken,
+        proactive: identity.data.scheduledRunKind === "proactive",
         runId: identity.data.scheduledRunId,
       }
     : undefined;

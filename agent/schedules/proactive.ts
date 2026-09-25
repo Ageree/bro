@@ -21,6 +21,8 @@ import {
   releaseScheduledAgentRun,
   setScheduledRunSession,
 } from "@db/services/scheduled-agent-jobs";
+import { readUserProfile } from "@db/services/user-profile";
+import { localRunLabel } from "@shared/schedules/timing";
 import { resolveTimeZone } from "@shared/user-profile/schema";
 
 // Each workspace is looked at every 15 minutes; the cron only spreads the
@@ -34,6 +36,17 @@ const maxRunsPerDay = 12;
 const disconnectedRetryMs = 6 * 60 * 60_000;
 const signalRetentionMs = 14 * 24 * 60 * 60_000;
 const workerStartupLimitMs = 5 * 60_000;
+/**
+ * How far back a night check reads subjects: one check's worth, plus the
+ * cron's spread and mail dated a little before it arrives. What the previous
+ * check read is not read again; a missed check leaves its mail to the
+ * morning, which reads everything since the evening.
+ */
+const nightMailWindowMs = checkEveryMs + 10 * 60_000;
+
+type ClaimedWatch = Awaited<
+  ReturnType<typeof claimDueProactiveWatches>
+>[number];
 
 export default defineSchedule({
   cron: "*/5 * * * *",
@@ -60,68 +73,132 @@ async function runProactiveChecks(to: ScheduleToFn) {
   await Promise.all(runs.map((claim) => dispatchProactiveRun(to, claim)));
 }
 
-async function checkWorkspace(
-  watch: Awaited<ReturnType<typeof claimDueProactiveWatches>>[number],
-  now: Date
-) {
+/**
+ * One check, logged as one line with its outcome: in production that line is
+ * how to tell a quiet inbox from a check that never ran.
+ */
+async function checkWorkspace(watch: ClaimedWatch, now: Date) {
   const timeZone = resolveTimeZone(watch.timezone);
   const quietUntil = quietHoursEnd(now, timeZone);
-  if (quietUntil) {
-    // The watermark stays put, so the morning check picks up the night's mail.
-    await deferProactiveWatch(watch, quietUntil);
-    return;
-  }
+  const logged = {
+    night: quietUntil !== undefined,
+    workspaceId: watch.workspaceId,
+  };
   try {
-    const probe = await probeGoogleSignals(
-      { userId: watch.createdByUserId, workspaceId: watch.workspaceId },
-      {
-        mailAfter: mailSearchStart(watch.mailCheckedAt, now),
-        now,
-        timeZone,
-      }
-    );
-    if (probe.state !== "connected") {
-      // A connection completed during the probe woke the watch; then this
-      // deferral misses and the next tick looks again.
-      await deferProactiveWatch(
-        watch,
-        new Date(now.getTime() + disconnectedRetryMs),
-        "disconnected"
-      );
-      return;
-    }
-    const unseen = await filterUnseenProactiveSignals(
-      watch.workspaceId,
-      probe.signals
-    );
-    if (unseen.length === 0) {
-      await advanceProactiveWatermark(watch.workspaceId, now);
-      return;
-    }
-    // After a pause (a reconnect, the end of quiet hours, turning proactive
-    // messages back on) the backlog becomes one catch-up run with the newest
-    // items; the watermark moves past the rest instead of queuing batch after
-    // batch of old mail.
-    const queued = await queueProactiveRun({
-      jobId: watch.jobId,
-      mailCheckedAt: now,
-      maxRunsPerDay,
-      now,
-      signals: selectRunSignals(unseen),
-      workspaceId: watch.workspaceId,
-    });
-    console.info("[proactive] check found new signals", {
-      signalCount: unseen.length,
-      status: queued.status,
-      workspaceId: watch.workspaceId,
-    });
+    const result = await (quietUntil
+      ? checkAtNight(watch, now, timeZone, quietUntil)
+      : checkByDay(watch, now, timeZone));
+    console.info("[proactive] check", { ...logged, ...result });
   } catch (error) {
     // The claim already moved the next check out; a Google hiccup waits for it.
-    console.warn("[proactive] workspace check failed", {
+    console.warn("[proactive] check", {
+      ...logged,
       cause: error,
-      workspaceId: watch.workspaceId,
+      outcome: "failed",
     });
   }
+}
+
+/**
+ * A daytime check hands every new signal to one run. The reports held over
+ * the night go out with the first report of the morning, as one message
+ * (`absorbHeldProactiveReports`).
+ */
+async function checkByDay(watch: ClaimedWatch, now: Date, timeZone: string) {
+  const probe = await probeGoogleSignals(
+    { userId: watch.createdByUserId, workspaceId: watch.workspaceId },
+    { mailAfter: mailSearchStart(watch.mailCheckedAt, now), now, timeZone }
+  );
+  if (probe.state !== "connected") return disconnect(watch, now, probe.state);
+  const unseen = await filterUnseenProactiveSignals(
+    watch.workspaceId,
+    probe.signals
+  );
+  if (unseen.length === 0) {
+    await advanceProactiveWatermark(watch.workspaceId, now);
+    return { outcome: "nothing_new", signalCount: 0 };
+  }
+  // After a pause (a reconnect, the end of quiet hours, turning proactive
+  // messages back on) the backlog becomes one catch-up run with the newest
+  // items; the watermark moves past the rest instead of queuing batch after
+  // batch of old mail.
+  const queued = await queueProactiveRun({
+    jobId: watch.jobId,
+    mailCheckedAt: now,
+    maxRunsPerDay,
+    now,
+    signals: selectRunSignals(unseen),
+    workspaceId: watch.workspaceId,
+  });
+  return { outcome: queued.status, signalCount: unseen.length };
+}
+
+/**
+ * At night only what cannot wait starts a run: a flight leaving within hours,
+ * mail about a flight or an account's security. The watermark stays, so the
+ * morning check reads the rest of the night's mail as one batch, and the
+ * check after the last night one runs right when the night ends. Subjects are
+ * read only for mail since the previous night check (`nightMailWindowMs`):
+ * with the watermark still, every check re-read the evening's mail again.
+ */
+async function checkAtNight(
+  watch: ClaimedWatch,
+  now: Date,
+  timeZone: string,
+  quietUntil: Date
+) {
+  const probe = await probeGoogleSignals(
+    { userId: watch.createdByUserId, workspaceId: watch.workspaceId },
+    {
+      mailAfter: new Date(
+        Math.max(
+          mailSearchStart(watch.mailCheckedAt, now).getTime(),
+          now.getTime() - nightMailWindowMs
+        )
+      ),
+      nightOnly: true,
+      now,
+      timeZone,
+    }
+  );
+  if (probe.state !== "connected") return disconnect(watch, now, probe.state);
+  const unseen = await filterUnseenProactiveSignals(
+    watch.workspaceId,
+    probe.signals
+  );
+  const queued =
+    unseen.length > 0
+      ? await queueProactiveRun({
+          jobId: watch.jobId,
+          mailCheckedAt: watch.mailCheckedAt,
+          maxRunsPerDay,
+          now,
+          signals: selectRunSignals(unseen),
+          workspaceId: watch.workspaceId,
+        })
+      : undefined;
+  if (quietUntil < watch.leaseUntil) {
+    await deferProactiveWatch(watch, quietUntil);
+  }
+  return {
+    outcome: `night_${queued?.status ?? "quiet"}`,
+    signalCount: unseen.length,
+  };
+}
+
+async function disconnect(
+  watch: ClaimedWatch,
+  now: Date,
+  state: "disconnected" | "unavailable"
+) {
+  // A connection completed during the probe woke the watch; then this
+  // deferral misses and the next tick looks again.
+  const deferred = await deferProactiveWatch(
+    watch,
+    new Date(now.getTime() + disconnectedRetryMs),
+    "disconnected"
+  );
+  return { deferred, outcome: state, signalCount: 0 };
 }
 
 async function dispatchProactiveRun(
@@ -131,12 +208,26 @@ async function dispatchProactiveRun(
   const leaseToken = claim.run.leaseToken;
   if (!leaseToken) throw new Error("A scheduled run claim requires a lease.");
   try {
-    const signals = await listProactiveRunSignals(claim.run.id);
+    const scope = {
+      userId: claim.job.createdByUserId,
+      workspaceId: claim.job.workspaceId,
+    };
+    const [signals, profile] = await Promise.all([
+      listProactiveRunSignals(claim.run.id),
+      readUserProfile(scope),
+    ]);
+    const timeZone = resolveTimeZone(profile.timezone);
+    const quietUntil = quietHoursEnd(new Date(), timeZone);
     const session = await to(scheduledRunChannel, {
       restart: claim.run.workerSessionId !== null,
       runId: claim.run.id,
     }).send(
-      proactiveRunPrompt({ scheduledFor: claim.run.scheduledFor, signals }),
+      proactiveRunPrompt({
+        home: profile,
+        quietUntil: quietUntil && localRunLabel(quietUntil, timeZone),
+        scheduledFor: claim.run.scheduledFor,
+        signals,
+      }),
       {
         auth: {
           attributes: {

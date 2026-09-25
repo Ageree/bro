@@ -38,9 +38,11 @@ const keyOrderedHosts = ["alibaba", "morph", "wafer"];
  * Sail Research broke `deepseek/deepseek-v4.1-flash` tool calls on 24.09:
  * «invalid or incomplete DSML tool-call block» and «reasoning marker while
  * reasoning was disabled», 36 failed calls in one eval run, whose turns then
- * timed out.
+ * timed out. Modal and Parasail answered a forced tool call with empty `{}`
+ * arguments in 3 of 3 tries on 25.09, Phala in 1 of 2, with or without an
+ * image; under `auto` they were right, so a forced step there fails.
  */
-const brokenHosts = ["sail-research"];
+const brokenHosts = ["sail-research", "modal", "parasail", "phala"];
 
 /**
  * The hosts above were measured on DeepSeek only. Another model a workspace

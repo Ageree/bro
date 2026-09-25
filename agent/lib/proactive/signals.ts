@@ -1,4 +1,6 @@
+import { urgentHandoverMarker } from "@agent/lib/schedules/outcome";
 import type { ProactiveSignal } from "@db/services/proactive";
+import type { UserProfile } from "@shared/user-profile/schema";
 
 /** How far ahead a check looks for events: tomorrow's flight plus slack. */
 export const calendarHorizonMs = 26 * 60 * 60_000;
@@ -106,6 +108,47 @@ export function calendarSignals(
   });
 }
 
+/** A flight this close is worth a message at night: the gate, the leave time. */
+const nightFlightHorizonMs = 12 * 60 * 60_000;
+
+const flightWords =
+  /рейс|вылет|перел[её]т|аэропорт|аэроэкспресс|шереметьев|внуков|домодедов|пулков|кольцов|толмач[её]в|flight|airport|boarding|✈/iu;
+// «SU 1234», «DP405»: an airline code and a number.
+const flightNumber = /\b[A-Z]{2} ?\d{2,4}\b/u;
+
+/**
+ * Whether a night check may wake the person for an event: a flight, by its
+ * title or place, leaving within hours — they may have to leave for it before
+ * the quiet hours end. A meeting in the morning waits for the morning check.
+ */
+export function isNightFlight(
+  event: {
+    readonly location?: string | null;
+    readonly start?: { readonly dateTime?: string | null } | null;
+    readonly summary?: string | null;
+  },
+  now: Date
+) {
+  const text = [event.summary, event.location].filter(Boolean).join(" ");
+  const flight =
+    flightWords.test(text) || flightNumber.test(event.summary ?? "");
+  const start = Date.parse(event.start?.dateTime ?? "");
+  return flight && start - now.getTime() <= nightFlightHorizonMs;
+}
+
+/**
+ * Mail worth a message at night, by its subject: a flight's change, gate or
+ * boarding, and an account's security. The worker then decides; a phishing
+ * «служба безопасности банка» reads the same here and waits for the morning
+ * once the worker says so.
+ */
+const nightSubject =
+  /рейс|вылет|посадк|flight|boarding|\bgate\b|безопасност|подозрительн|вход в|новый вход|парол|security|sign-?in|suspicious|unusual activity|password/iu;
+
+export function isNightSubject(subject: string) {
+  return nightSubject.test(subject);
+}
+
 /**
  * Keeps a run small: calendar events first, since they are few and
  * time-bound, then the newest mail (Gmail lists newest first).
@@ -117,8 +160,26 @@ export function selectRunSignals(signals: readonly ProactiveSignal[]) {
   ].slice(0, maxSignalsPerRun);
 }
 
+/**
+ * Where the person lives, from Personal Info: a flight's leave-by time is
+ * counted from there, and a guess from the city centre says so.
+ */
+function homeLine(
+  home: Pick<UserProfile, "addressLine1" | "addressLine2" | "city" | "region">
+) {
+  const address = [home.addressLine1, home.addressLine2, home.city, home.region]
+    .filter(Boolean)
+    .join(", ");
+  return address
+    ? `Home (Personal Info; count a leave-by time from here): ${address}`
+    : "Home address: not in Personal Info; take it from memory if it is there, otherwise count a leave-by time from the city centre and say so.";
+}
+
 /** The worker's task: exactly which items are new, and how to read them. */
 export function proactiveRunPrompt(input: {
+  readonly home: Parameters<typeof homeLine>[0];
+  /** When the person's night ends, if the check runs during it. */
+  readonly quietUntil?: string;
   readonly scheduledFor: Date;
   readonly signals: readonly Pick<
     ProactiveSignal,
@@ -132,18 +193,28 @@ export function proactiveRunPrompt(input: {
       )
     ),
   ];
-  const events = input.signals.flatMap((signal) =>
-    signal.source === "calendar" ? [signal.itemId] : []
-  );
+  const events = [
+    ...new Set(
+      input.signals.flatMap((signal) =>
+        signal.source === "calendar" ? [signal.itemId] : []
+      )
+    ),
+  ];
   const horizon = new Date(input.scheduledFor.getTime() + calendarHorizonMs);
   return [
     "Proactive check of the person's mail and calendar. Nobody asked for it; decide what, if anything, is worth writing first about.",
     `Checked at: ${input.scheduledFor.toISOString()}`,
+    homeLine(input.home),
+    input.quietUntil
+      ? `It is night for the person: quiet hours until ${input.quietUntil}. Your handover waits for the morning and goes out then together with the rest, unless its first line is ${urgentHandoverMarker} — only for what cannot wait until then.`
+      : undefined,
     threads.length > 0
       ? `New Gmail threads (read each with gmail-read-thread): ${threads.join(", ")}`
       : "No new mail.",
     events.length > 0
       ? `New calendar events (call calendar-list-events once with timeMin ${input.scheduledFor.toISOString()} and timeMax ${horizon.toISOString()}, then look only at these ids): ${events.join(", ")}`
       : "No new calendar events.",
-  ].join("\n\n");
+  ]
+    .filter((part) => part !== undefined)
+    .join("\n\n");
 }

@@ -17,6 +17,53 @@ describe("recommendation instructions", () => {
     }
   });
 
+  /**
+   * RU d03 and EN D3 on 24.09: two options where the anchor wants three,
+   * «пешком» for a 20-minute walk guessed from the map, and a booking run
+   * nobody asked for.
+   */
+  it("aims for three checked options, measures the walk and credits the map", async () => {
+    const content = await resolveContent("photon-imessage");
+
+    expect(content).toContain(
+      "Цель — три варианта, у которых каждое условие подтверждено источником"
+    );
+    expect(content).toContain("Набралось меньше — скажи, сколько и почему");
+    expect(content).toContain("почему выбрал его, и один честный минус");
+    expect(content).toContain('`route_time` (`mode: "walking"`)');
+    expect(content).toContain("«Пешком» — до 15 минут");
+    expect(content).toContain("вариант дальше в три не входит");
+    expect(content).toContain("минуты не выдумывай");
+    // «Джаганнат» passed as «не сетевое» in two runs out of three.
+    expect(content).toContain("два адреса под одним названием — это сеть");
+    expect(content).toContain(
+      "та страница, которую вернул инструмент, как есть"
+    );
+    expect(content).toContain("по данным © OpenStreetMap");
+  });
+
+  /**
+   * One question, then one card: «Проверить стол?» and then «бронируй?»
+   * would be two questions before the card, against the one-question rule.
+   */
+  it("ends with one booking question and books through one card", async () => {
+    const content = await resolveContent("photon-imessage");
+
+    expect(content).toContain(
+      "Подбирай через `web_search`, `web_fetch` и `route_time`, без браузера"
+    );
+    expect(content).toContain("Закончи одним вопросом");
+    expect(content).toContain("Других вопросов в этом сообщении нет");
+    expect(content).toContain(
+      "`browser_task start` без `allowSubmit` найдёт слот и остановится"
+    );
+    expect(content).toContain(
+      "единственная карточка, второго вопроса текстом нет"
+    );
+    expect(content).toContain("До его «да» браузер не запускай");
+    expect(content).not.toContain("Проверить свободный стол");
+  });
+
   it("sends map lookups through site search instead of fetching the map", async () => {
     const content = await resolveContent("photon-imessage");
 

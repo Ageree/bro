@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, getTableColumns, sql } from "drizzle-orm";
 import type { AccessScope } from "@shared/identity/access-scope";
-import { db, orders } from "@db";
+import { browserRuns, db, orders } from "@db";
 import { ensureScope } from "./scope";
 
 type OrderInsert = typeof orders.$inferInsert;
@@ -38,10 +38,40 @@ export async function recordOrder(
   return row;
 }
 
+/**
+ * The newest orders, each with the errand that placed it: the site the run
+ * was on and what the person confirmed. Ozon and Wildberries have a merchant
+ * of their own; every other shop is `other`, and without the errand
+ * `list_orders` could only call it «другой магазин» (EN D4).
+ */
 export async function listOrders(scope: AccessScope, limit = 20) {
   return await db
-    .select()
+    .select({
+      ...getTableColumns(orders),
+      // What the person confirmed names the errand. A follow-up without a
+      // card — a code, a 3-D Secure confirmation on the spend limit — was
+      // started with the person's message as its task («4821»), so the
+      // errand is the first run in the same browser session, which is the
+      // one the person asked for.
+      errand: sql<string | null>`coalesce(
+        ${browserRuns.submission}->>'what',
+        (select first_run.task from browser_runs first_run
+          where first_run.workspace_id = ${orders.workspaceId}
+            and first_run.session_id = ${browserRuns.sessionId}
+          order by first_run.created_at asc limit 1),
+        ${browserRuns.task}
+      )`,
+      site: browserRuns.site,
+      where: sql<string | null>`${browserRuns.submission}->>'where'`,
+    })
     .from(orders)
+    .leftJoin(
+      browserRuns,
+      and(
+        eq(browserRuns.id, orders.browserRunId),
+        eq(browserRuns.workspaceId, orders.workspaceId)
+      )
+    )
     .where(eq(orders.workspaceId, scope.workspaceId))
     .orderBy(desc(orders.createdAt))
     .limit(limit);

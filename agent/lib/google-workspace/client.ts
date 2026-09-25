@@ -13,6 +13,7 @@ import { ComposioError, isMissingConnectedAccount } from "@shared/composio/api";
 import {
   type GoogleWorkspaceAccess,
   googleWorkspaceAuthConfigId,
+  readGoogleWorkspaceConnection,
 } from "@shared/google-workspace/connection";
 
 /**
@@ -100,9 +101,22 @@ export const googleReadOnlyWriteRefusal =
   "Не сделано: Google подключён только на чтение, и в этом режиме Бро ничего не отправляет, не сохраняет черновики и не меняет в почте, календаре, контактах и документах. Скажи человеку прямо, что в режиме только чтения это действие недоступно, и сделай то, что можно без записи (например, дай готовый текст, чтобы он отправил сам). Не предлагай и не уговаривай перейти на полный доступ: человек сам выбрал «только чтение». Полный доступ подключай (connect_google с access `full`), только если человек сам об этом попросит.";
 
 /**
+ * What the model reads when a Google write would have shown its card while
+ * the person has no Google connected. Approving such a card only led to a
+ * second one, the sign-in, and a person who had disconnected Google on
+ * purpose was asked to confirm an email Bro could not send.
+ */
+export const googleNotConnectedWriteRefusal =
+  "Не сделано и карточку не показываю: Google у человека сейчас не подключён (или отключён), поэтому Бро не может ничего отправить или изменить в почте, календаре и документах. Скажи прямо, что Google не подключён, и не делай вид, что действие выполнено. Вызови connect_google (action `connect`) и отдай ссылку на подключение; после подключения повтори это действие — карточка появится снова. Если человек сам отключил Google, ссылку не навязывай: предложи подключить, когда захочет, и дай готовый текст, чтобы он сделал это сам.";
+
+/**
  * Approval decision for a Google write. A read-only workspace is refused
- * before any prompt, with a reason the model relays; otherwise the write
- * asks the person (`user-approval`) or runs (`not-applicable`) as given.
+ * before any prompt, with a reason the model relays; so is a card for a
+ * person with no live Google grant, whose approval could run nothing.
+ * Otherwise the write asks the person (`user-approval`) or runs
+ * (`not-applicable`) as given; a write that runs without a card and meets
+ * no grant shows eve's sign-in card instead. When Composio cannot say just
+ * now whether the grant is there, the card is shown as before.
  * Tools call it from an inline `approval` arrow: eve stamps a durable
  * descriptor only on callbacks authored inline in `defineTool()`, and a
  * dynamic tool with a returned closure fails to resolve.
@@ -111,8 +125,19 @@ export async function googleWriteApproval(
   ctx: Pick<SessionContext, "session">,
   whenWritable: "not-applicable" | "user-approval"
 ): Promise<ApprovalStatus> {
-  return (await googleWorkspaceAccess(ctx)) === "read_only"
-    ? { reason: googleReadOnlyWriteRefusal, type: "denied" }
+  const access = await googleWorkspaceAccess(ctx);
+  if (access === "read_only") {
+    return { reason: googleReadOnlyWriteRefusal, type: "denied" };
+  }
+  if (whenWritable === "not-applicable") return whenWritable;
+  const caller = ctx.session.auth.current ?? ctx.session.auth.initiator;
+  if (!caller) return whenWritable;
+  const connection = await readGoogleWorkspaceConnection(
+    scopeFromPrincipal(caller).userId,
+    access
+  );
+  return connection.state === "disconnected"
+    ? { reason: googleNotConnectedWriteRefusal, type: "denied" }
     : whenWritable;
 }
 

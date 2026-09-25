@@ -6,6 +6,7 @@ import type {
 } from "@db/services/scheduled-agent-jobs";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { telegramConversationIdSchema } from "@agent/lib/telegram-conversation";
+import { localRunLabel } from "@shared/schedules/timing";
 
 function scheduleCaller(context: ToolContext) {
   const auth = context.session.auth.current;
@@ -60,9 +61,17 @@ const createdInLabel = {
   telegram: "Telegram",
 } as const;
 
+/**
+ * A schedule as the model sees it. `nextRunLocal` is the next run on the
+ * person's clock — the rule's own zone, or their profile zone for a one-off
+ * or an interval — so the reply names the right day and hour.
+ */
 export function scheduleSummary(
-  job: Awaited<ReturnType<typeof createScheduledAgentJob>>
+  job: Awaited<ReturnType<typeof createScheduledAgentJob>>,
+  personTimeZone: string
 ) {
+  const timeZone =
+    job.timing.kind === "calendar" ? job.timing.timezone : personTimeZone;
   return {
     createdAt: job.createdAt.toISOString(),
     createdIn: createdInLabel[job.conversationChannel],
@@ -70,6 +79,7 @@ export function scheduleSummary(
     lastError: job.lastError,
     lastRunAt: job.lastRunAt?.toISOString() ?? null,
     nextRunAt: job.nextRunAt?.toISOString() ?? null,
+    nextRunLocal: job.nextRunAt ? localRunLabel(job.nextRunAt, timeZone) : null,
     prompt: job.prompt,
     status: job.status,
     timing: job.timing,
@@ -77,11 +87,12 @@ export function scheduleSummary(
 }
 
 export function scheduleListSummary(
-  job: Awaited<ReturnType<typeof listScheduledAgentJobs>>[number]
+  job: Awaited<ReturnType<typeof listScheduledAgentJobs>>[number],
+  personTimeZone: string
 ) {
   const latestRun = job.latestRun;
   return {
-    ...scheduleSummary(job),
+    ...scheduleSummary(job, personTimeZone),
     latestRun: latestRun
       ? {
           completedAt: latestRun.completedAt?.toISOString() ?? null,

@@ -120,9 +120,24 @@ const ownWordsOnly =
  * поправлюсь». After a delivery the note says it is neither.
  */
 const answeredNotes = {
-  en: "Your reply to the person's latest message has already been delivered in this turn. This note is not a new message and not a remark on what you sent: do not answer it, repeat, restate or correct what was sent. It only sets the style of a further message, which you send only with something new; otherwise end the turn without calling any tool.",
-  ru: "Ответ на последнее сообщение человека в этом ходе уже доставлен. Эта пометка — не новое сообщение и не замечание к отправленному: не отвечай на неё, не повторяй, не пересказывай и не поправляй отправленное. Она лишь задаёт стиль следующего сообщения, а его шли, только если есть что-то новое; иначе закончи ход без вызова инструментов.",
+  en: "Your reply to the person's latest message has already been delivered in this turn. This note is not a new message and not a remark on what you sent: do not answer it, repeat, restate or correct what was sent. It only sets the style of a further message, which you send only with something new",
+  ru: "Ответ на последнее сообщение человека в этом ходе уже доставлен. Эта пометка — не новое сообщение и не замечание к отправленному: не отвечай на неё, не повторяй, не пересказывай и не поправляй отправленное. Она лишь задаёт стиль следующего сообщения, а его шли, только если есть что-то новое",
 } as const satisfies Record<ReplyLanguage, string>;
+
+/**
+ * How the answered note ends: with nothing new, the turn is over. Not while
+ * a browser report still owes the card step it asks for after its message
+ * (`reportOwedSteps`): read last, «end the turn» left the calendar entry of
+ * a confirmed booking uncreated.
+ */
+const answeredEnds = {
+  en: "; otherwise end the turn without calling any tool.",
+  ru: "; иначе закончи ход без вызова инструментов.",
+} as const satisfies Record<ReplyLanguage, string>;
+
+function answeredNote(language: ReplyLanguage, stepOwed: boolean) {
+  return `${answeredNotes[language]}${stepOwed ? "." : answeredEnds[language]}`;
+}
 
 /**
  * The note the model reads last on every step that may write to the person.
@@ -141,15 +156,18 @@ export function replyDirective({
   answered = false,
   formOfAddress,
   language,
+  stepOwed = false,
 }: {
   /** Whether this turn already delivered a message to the person. */
   readonly answered?: boolean;
   readonly formOfAddress: FormOfAddress;
   readonly language: ReplyLanguage | undefined;
+  /** Whether the turn still owes a tool step after its message. */
+  readonly stepOwed?: boolean;
 }) {
   if (language === "en") {
     return [
-      ...(answered ? [answeredNotes.en] : []),
+      ...(answered ? [answeredNote("en", stepOwed)] : []),
       replyLanguageDirectives.en,
       ...(formOfAddress.name
         ? [`Call the person «${formOfAddress.name}», as they asked.`]
@@ -162,7 +180,7 @@ export function replyDirective({
     ownWordsOnly,
   ];
   return [
-    ...(answered ? [answeredNotes.ru] : []),
+    ...(answered ? [answeredNote("ru", stepOwed)] : []),
     ...(language === "ru"
       ? [replyLanguageDirectives.ru]
       : ["Когда пишешь человеку по-русски:"]),

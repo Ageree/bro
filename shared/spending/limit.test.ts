@@ -659,7 +659,13 @@ describe("standing permissions", () => {
   });
 
   it("refuses a permission or a limit for a shared hosting suffix", () => {
-    for (const host of ["tilda.ws", "spb.ru", "pages.dev", "github.io"]) {
+    for (const host of [
+      "tilda.ws",
+      "spb.ru",
+      "pages.dev",
+      "github.io",
+      "gov.ru",
+    ]) {
       expect(normalizeMerchant(`https://${host}/`)).toBeNull();
       expect(
         spendLimitPolicySchema.safeParse(
@@ -676,6 +682,9 @@ describe("standing permissions", () => {
     }
     // A site under the suffix is one owner, and one merchant.
     expect(normalizeMerchant("https://cafe.tilda.ws")).toBe("cafe.tilda.ws");
+    expect(normalizeMerchant("https://lkfl2.nalog.gov.ru/")).toBe(
+      "lkfl2.nalog.gov.ru"
+    );
   });
 
   it("caps what one permission may cost", () => {

@@ -38,9 +38,33 @@ const cardText = {
     appArguments: "Data",
     appTool: "Tool",
     approve: "Approve",
+    calendarCreate: "Create a calendar event:",
+    calendarDelete: "Delete the calendar event",
+    calendarDeleteSeries: "Delete the whole recurring series",
+    calendarDeleteFooter:
+      "If the event has guests, Google emails them the cancellation.",
+    calendarGuests: "Guests",
+    calendarInvitation: "Google emails the guests an invitation.",
+    calendarNewTime: "New time",
+    calendarNewTitle: "New title",
+    calendarNotes: "Notes",
+    calendarUpdate: "Change the calendar event",
+    calendarUpdateSeries: "Change the whole recurring series",
+    calendarUpdateFooter:
+      "If the event has guests, Google emails them the change.",
     cancel: "Cancel",
     card: "Pays with the saved card",
     cardUpTo: "Pays with the saved card, up to",
+    emailBcc: "Bcc",
+    emailBody: "Text",
+    emailCc: "Cc",
+    emailDraft: "Save a draft in Gmail (nothing is sent):",
+    emailMore: (count: number) => `… (${String(count)} more characters)`,
+    emailReply: "Reply in the thread",
+    emailReplyUnnamed: "Reply in the thread of the email",
+    emailSend: "Send an email:",
+    emailSubject: "Subject",
+    emailTo: "To",
     forWhom: "In the name of",
     guarantee: "The saved card as a guarantee only, nothing charged",
     items: "Items",
@@ -91,9 +115,35 @@ const cardText = {
     appArguments: "Данные",
     appTool: "Инструмент",
     approve: "Подтвердить",
+    calendarCreate: "Создать событие в календаре:",
+    calendarDelete: "Удалить событие из календаря",
+    calendarDeleteSeries:
+      "Удалить из календаря всю серию повторяющихся событий",
+    calendarDeleteFooter:
+      "Если в событии есть гости, Google пришлёт им отмену.",
+    calendarGuests: "Гости",
+    calendarInvitation: "Гостям уйдёт приглашение от Google.",
+    calendarNewTime: "Новое время",
+    calendarNewTitle: "Новое название",
+    calendarNotes: "Заметки",
+    calendarUpdate: "Изменить событие в календаре",
+    calendarUpdateSeries:
+      "Изменить в календаре всю серию повторяющихся событий",
+    calendarUpdateFooter:
+      "Если в событии есть гости, Google сообщит им об изменении.",
     cancel: "Отмена",
     card: "Оплата сохранённой картой",
     cardUpTo: "Оплата сохранённой картой, не больше",
+    emailBcc: "Скрытая копия",
+    emailBody: "Текст",
+    emailCc: "Копия",
+    emailDraft: "Сохранить черновик в Gmail (ничего не отправляется):",
+    emailMore: (count: number) => `… (ещё ${String(count)} зн.)`,
+    emailReply: "Ответ в ветке",
+    emailReplyUnnamed: "Ответ в ветке письма",
+    emailSend: "Отправить письмо:",
+    emailSubject: "Тема",
+    emailTo: "Кому",
     forWhom: "От чьего имени",
     guarantee: "Сохранённая карта только в гарантию, без списания",
     items: "Состав",
@@ -378,6 +428,297 @@ function slackMessagePrompt(
   ].join("\n");
 }
 
+const emailCallSchema = z.object({
+  bcc: z.array(z.string()).default([]),
+  body: z.string(),
+  cc: z.array(z.string()).default([]),
+  replyToMessageId: z.string().optional(),
+  subject: z.string().optional(),
+  to: z.array(z.string()).min(1),
+});
+
+/** The part of an email's text a card shows: enough for any usual reply. */
+const emailBodyMaxLength = 2_500;
+const emailBodyMaxLines = 40;
+
+/**
+ * The email's text as the card quotes it: line by line under a rule, so no
+ * line of the text can pass for a field of the card («Кому: …»), and cut
+ * with a note of how much is left when it is longer than a card holds.
+ */
+function quotedBody(body: string, text: CardText) {
+  const normalized = body
+    .replaceAll(/\r\n?/gu, "\n")
+    .replaceAll(/[^\S\n]+$/gmu, "")
+    .replaceAll(/\n{3,}/gu, "\n\n")
+    .trim();
+  const lines = normalized.split("\n").slice(0, emailBodyMaxLines);
+  let shown = "";
+  for (const line of lines) {
+    const next = shown ? `${shown}\n${line}` : line;
+    if (next.length > emailBodyMaxLength) {
+      shown = next.slice(0, emailBodyMaxLength);
+      break;
+    }
+    shown = next;
+  }
+  const quoted = shown
+    .split("\n")
+    .map((line) => `│ ${oneLine(line)}`.trimEnd());
+  const rest = normalized.length - shown.length;
+  return rest > 0 ? [...quoted, text.emailMore(rest)] : quoted;
+}
+
+/**
+ * The card for an email Bro sends or drafts in the person's name: who gets
+ * it, in which thread or under which subject, and the text itself.
+ */
+function emailPrompt(
+  call: z.infer<typeof emailCallSchema>,
+  text: CardText,
+  draft: boolean
+) {
+  const list = (addresses: readonly string[]) =>
+    addresses.map(oneLine).join(", ");
+  const subject = call.subject ? oneLine(call.subject) : undefined;
+  let topic: string | undefined;
+  if (call.replyToMessageId !== undefined) {
+    topic = subject
+      ? `${text.emailReply}: «${subject}»`
+      : text.emailReplyUnnamed;
+  } else if (subject) {
+    topic = `${text.emailSubject}: ${subject}`;
+  }
+  return [
+    draft ? text.emailDraft : text.emailSend,
+    `${text.emailTo}: ${list(call.to)}`,
+    call.cc.length > 0 ? `${text.emailCc}: ${list(call.cc)}` : undefined,
+    call.bcc.length > 0 ? `${text.emailBcc}: ${list(call.bcc)}` : undefined,
+    topic,
+    `${text.emailBody}:`,
+    ...quotedBody(call.body, text),
+  ]
+    .filter((line) => line !== undefined)
+    .join("\n");
+}
+
+/** A moment as the tool received it: wall clock and the offset it is in. */
+const isoMomentPattern =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/u;
+
+function parsedMoment(value: string) {
+  const match = isoMomentPattern.exec(value);
+  if (!match) return undefined;
+  const [, year, month, day, hour, minute, offset] = match;
+  return {
+    date: `${year ?? ""}-${month ?? ""}-${day ?? ""}`,
+    day: new Date(Date.UTC(Number(year), Number(month) - 1, Number(day))),
+    offset: offset ?? "Z",
+    time: `${hour ?? ""}:${minute ?? ""}`,
+  };
+}
+
+/** `UTC+3`, `UTC+5:30`, `UTC−4`: the offset as people read it. */
+function offsetLabel(offset: string) {
+  if (offset === "Z" || offset === "+00:00" || offset === "-00:00") {
+    return "UTC";
+  }
+  const [hours = "00", minutes = "00"] = offset.slice(1).split(":");
+  const sign = offset.startsWith("-") ? "−" : "+";
+  return `UTC${sign}${String(Number(hours))}${minutes === "00" ? "" : `:${minutes}`}`;
+}
+
+/** An offset such as `+03:00` or `Z`, in minutes east of UTC. */
+function offsetMinutes(offset: string) {
+  if (offset === "Z") return 0;
+  const [hours = "0", minutes = "0"] = offset.slice(1).split(":");
+  const total = Number(hours) * 60 + Number(minutes);
+  return offset.startsWith("-") ? -total : total;
+}
+
+/**
+ * How far `timeZone` is ahead of UTC at `at`, in minutes, or nothing when
+ * the zone is unknown to this browser or server.
+ */
+function zoneOffsetAt(at: number, timeZone: string) {
+  try {
+    const name = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      timeZoneName: "longOffset",
+    })
+      .formatToParts(new Date(at))
+      .find((part) => part.type === "timeZoneName")?.value;
+    const offset = /^GMT(?:([+-]\d{2}):?(\d{2}))?$/u.exec(name ?? "");
+    if (!offset) return undefined;
+    const [, hours, minutes = "00"] = offset;
+    return hours === undefined ? 0 : offsetMinutes(`${hours}:${minutes}`);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The zone's name for a time written in `offset`, only when that zone's
+ * clock shows this offset then: «11:30 (Europe/Moscow)» next to a UTC time
+ * would read as Moscow time for an event Google books three hours later.
+ */
+function zoneName(
+  timeZone: string | undefined,
+  moment: NonNullable<ReturnType<typeof parsedMoment>>,
+  at: number
+) {
+  if (!timeZone || /^(?:utc|etc\/utc|gmt|etc\/gmt)$/iu.test(timeZone.trim())) {
+    return "";
+  }
+  return zoneOffsetAt(at, timeZone.trim()) === offsetMinutes(moment.offset)
+    ? `${oneLine(timeZone)}, `
+    : "";
+}
+
+/** The weekday and date of a moment, as the card language writes it. */
+function dayLabel(day: Date, language: CardLanguage) {
+  return new Intl.DateTimeFormat(language === "ru" ? "ru-RU" : "en-US", {
+    day: "numeric",
+    month: "short",
+    timeZone: "UTC",
+    weekday: "short",
+  }).format(day);
+}
+
+/** One moment on the clock it was written in: «чт, 1 окт., 10:00 (UTC+3)». */
+function momentLabel(value: string, language: CardLanguage) {
+  const moment = parsedMoment(value);
+  return moment
+    ? `${dayLabel(moment.day, language)}, ${moment.time} (${offsetLabel(moment.offset)})`
+    : oneLine(value);
+}
+
+/**
+ * When an event happens, on the clock its times were written in: the
+ * weekday and date, the hours, and the zone — «чт, 1 окт., 14:30–15:00
+ * (Europe/Moscow, UTC+3)». The card shows the times exactly as the call
+ * carries them, never converted, so it cannot drift from what Google gets;
+ * the zone's name joins them only when its clock agrees.
+ */
+function eventWhen(
+  start: string,
+  end: string,
+  timeZone: string | undefined,
+  language: CardLanguage
+) {
+  const from = parsedMoment(start);
+  const to = parsedMoment(end);
+  if (!from || !to) return `${oneLine(start)} – ${oneLine(end)}`;
+  const span =
+    from.date === to.date
+      ? `${dayLabel(from.day, language)}, ${from.time}–${to.time}`
+      : `${dayLabel(from.day, language)}, ${from.time} – ${dayLabel(to.day, language)}, ${to.time}`;
+  const named = zoneName(timeZone, from, Date.parse(start));
+  return `${span} (${named}${offsetLabel(from.offset)})`;
+}
+
+const calendarCreateCallSchema = z.object({
+  attendees: z.array(z.string()).default([]),
+  description: z.string().optional(),
+  end: z.string(),
+  location: z.string().optional(),
+  start: z.string(),
+  summary: z.string(),
+  timezone: z.string().optional(),
+});
+
+/** Notes on a card: one line, cut where a card would get long. */
+function notesLine(notes: string) {
+  const line = oneLine(notes);
+  return line.length > 300 ? `${line.slice(0, 300)}…` : line;
+}
+
+/**
+ * The card for a new event: its title, when on which clock, where, who is
+ * invited — and that Google mails the guests, since that is what reaches
+ * other people.
+ */
+function calendarCreatePrompt(
+  call: z.infer<typeof calendarCreateCallSchema>,
+  text: CardText,
+  language: CardLanguage
+) {
+  return [
+    text.calendarCreate,
+    `«${oneLine(call.summary)}»`,
+    `${text.when}: ${eventWhen(call.start, call.end, call.timezone, language)}`,
+    call.location ? `${text.where}: ${oneLine(call.location)}` : undefined,
+    call.attendees.length > 0
+      ? `${text.calendarGuests}: ${call.attendees.map(oneLine).join(", ")}`
+      : undefined,
+    call.description
+      ? `${text.calendarNotes}: ${notesLine(call.description)}`
+      : undefined,
+    call.attendees.length > 0 ? text.calendarInvitation : undefined,
+  ]
+    .filter((line) => line !== undefined)
+    .join("\n");
+}
+
+const calendarUpdateCallSchema = z.object({
+  description: z.string().optional(),
+  end: z.string().optional(),
+  eventStart: z.string().optional(),
+  eventTitle: z.string().optional(),
+  series: z.boolean().optional(),
+  location: z.string().optional(),
+  start: z.string().optional(),
+  summary: z.string().optional(),
+  timezone: z.string().optional(),
+});
+
+/**
+ * The event a change or deletion names: its title (none for a call parked
+ * before titles) and, for one event, when it starts; a whole recurring
+ * series is said to be one.
+ */
+function eventHeading(
+  call: {
+    readonly eventStart?: string | undefined;
+    readonly eventTitle?: string | undefined;
+    readonly series?: boolean | undefined;
+  },
+  single: string,
+  series: string,
+  language: CardLanguage
+) {
+  const title = call.eventTitle ? ` «${oneLine(call.eventTitle)}»` : "";
+  if (call.series === true) return `${series}${title}`;
+  const when = call.eventStart
+    ? ` (${momentLabel(call.eventStart, language)})`
+    : "";
+  return `${single}${title}${when}`;
+}
+
+/** The card for moving or changing an event: which one, and what changes. */
+function calendarUpdatePrompt(
+  call: z.infer<typeof calendarUpdateCallSchema>,
+  text: CardText,
+  language: CardLanguage
+) {
+  return [
+    `${eventHeading(call, text.calendarUpdate, text.calendarUpdateSeries, language)}:`,
+    call.start !== undefined && call.end !== undefined
+      ? `${text.calendarNewTime}: ${eventWhen(call.start, call.end, call.timezone, language)}`
+      : undefined,
+    call.summary
+      ? `${text.calendarNewTitle}: «${oneLine(call.summary)}»`
+      : undefined,
+    call.location ? `${text.where}: ${oneLine(call.location)}` : undefined,
+    call.description
+      ? `${text.calendarNotes}: ${notesLine(call.description)}`
+      : undefined,
+    text.calendarUpdateFooter,
+  ]
+    .filter((line) => line !== undefined)
+    .join("\n");
+}
+
 /**
  * Longest card text a channel shows whole: Telegram cuts an approval card
  * at 4,000 characters, so a card that would run longer is not shown at all
@@ -590,6 +931,36 @@ function cardPrompt(
   if (action.toolName === "apps") {
     const call = appsCallSchema.safeParse(action.input);
     return call.success ? appsPrompt(call.data, text) : undefined;
+  }
+  if (action.toolName === "gmail-send" || action.toolName === "gmail-draft") {
+    const call = emailCallSchema.safeParse(action.input);
+    return call.success
+      ? emailPrompt(call.data, text, action.toolName === "gmail-draft")
+      : undefined;
+  }
+  if (action.toolName === "calendar-create-event") {
+    const call = calendarCreateCallSchema.safeParse(action.input);
+    return call.success
+      ? calendarCreatePrompt(call.data, text, language)
+      : undefined;
+  }
+  if (action.toolName === "calendar-update-event") {
+    const call = calendarUpdateCallSchema.safeParse(action.input);
+    return call.success
+      ? calendarUpdatePrompt(call.data, text, language)
+      : undefined;
+  }
+  if (action.toolName === "calendar-delete-event") {
+    const call = z
+      .object({
+        eventStart: z.string().optional(),
+        eventTitle: z.string().optional(),
+        series: z.boolean().optional(),
+      })
+      .safeParse(action.input);
+    return call.success
+      ? `${eventHeading(call.data, text.calendarDelete, text.calendarDeleteSeries, language)}.\n${text.calendarDeleteFooter}`
+      : undefined;
   }
   const read = connectedAppReadPrompt(action, text);
   if (read !== undefined) return read;

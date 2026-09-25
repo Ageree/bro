@@ -59,9 +59,17 @@ type SkipReason = z.infer<typeof skipReasonSchema>;
 /**
  * Why a send goes back to be rewritten: it claims what no tool did, it only
  * announces work that has not started, so the answer would follow as a
- * second message, or it only announces a browser report's result.
+ * second message, or it only announces a browser report's result. A calendar
+ * claim in a browser report's turn before its message has its own notice:
+ * the calendar tool is held back there until that message goes out
+ * (`cardToolsBeforeOutcome`), so the only way on is the future tense.
  */
-const rewriteReasons = [...unperformedClaims, "report", "status"] as const;
+const rewriteReasons = [
+  ...unperformedClaims,
+  "calendar-later",
+  "report",
+  "status",
+] as const;
 
 type RewriteReason = (typeof rewriteReasons)[number];
 
@@ -81,13 +89,14 @@ const rewritePrefix = "Not delivered, rewrite it:";
 const skipNotices = {
   duplicate: `${skippedPrefix} the person already received this message in this turn. Do not send it again: the reply is complete, so end the turn now without calling any tool.`,
   limit: `${skippedPrefix} this turn already delivered ${String(turnMessageLimit)} messages, the most one reply may take. End the turn now without calling any tool.`,
-  reported: `${skippedPrefix} this browser result already reached the person in this turn, as one message, and this one tells the same result again — restated, with a detail added, or corrected. The person gets a browser result once. Another message goes out only when it asks them for something new — a code, a confirmation, a choice — or brings a picture or a link they need. If the report still asks you to act on the errand (browser_task continue), do that without writing again; otherwise end the turn now without calling any tool.`,
+  reported: `${skippedPrefix} this browser result already reached the person in this turn, as one message, and this one tells the same result again — restated, with a detail added, or corrected. The person gets a browser result once. Another message goes out only when it asks them for something new — a code, a confirmation, a choice — or brings a picture or a link they need. If the report still asks you to act — browser_task continue on the errand, the calendar entry for a booking, a schedule for a later step — do that without writing again; otherwise end the turn now without calling any tool.`,
   stale: `${skippedPrefix} it adds nothing to what this turn already sent — no new result, number, link, name, option or question, only the same status in other words. The person already has your answer and knows the outcome will follow. End the turn now without calling any tool.`,
 } as const satisfies Record<SkipReason, string>;
 
 const rewriteNotices = {
   browser: `${rewritePrefix} it says something already happened on the site — a code entered, a page opened, a new code requested, a slot confirmed, a booking or an order made — but the browser run in this turn was only handed the errand and has done nothing yet (status running). Say that you started it or passed the message on and that you will send what it finds; claim only what a tool result in this turn shows.`,
   calendar: `${rewritePrefix} it says the calendar is being or has been changed, but no calendar event was created, changed or deleted in this turn. Make the change with the calendar tool first and report its result, or say you will add it once the person confirms the details; never present a slot you picked yourself as booked.`,
+  "calendar-later": `${rewritePrefix} it says the calendar is being or has been changed, but no calendar event was created, changed or deleted in this turn, and in a browser report's turn the calendar tool comes back only once this message has reached the person. Keep the outcome and say the calendar step in the future tense — «добавлю в календарь», once they confirm the card — never «добавляю» or «добавил»; then call the calendar tool right after this message.`,
   report: `${rewritePrefix} it only announces what you are about to tell, and the browser report is already in front of you. Tell the person now, in this one message, what the run found or where the errand stands, with the facts the report names.`,
   status: `${rewritePrefix} it only says you are on it or will write later, and no tool result of this turn backs it yet, so the answer would follow as a second message. If a tool you called in this same step is doing that work (a browser errand you started, a search), its result is in now: send again and say what it shows. Never start the same errand twice. Otherwise do the work with the tools it needs first, then send what you found in one message.`,
 } as const satisfies Record<RewriteReason, string>;
@@ -233,6 +242,9 @@ export function sendRefusal(
   if (announcesReport(message, turn)) return { rewrite: "report" };
   if (announcesUnstartedWork(message, turn)) return { rewrite: "status" };
   const claim = unperformedClaim(outgoing.text ?? "", turn.actions);
+  if (claim === "calendar" && turn.report && delivered.length === 0) {
+    return { rewrite: "calendar-later" };
+  }
   return claim ? { rewrite: claim } : undefined;
 }
 

@@ -40,7 +40,12 @@ import {
   type BrowserRunNeed,
 } from "./outcome";
 import {
+  bookingInstruction,
   browserRunNeedGuidance,
+  calendarInstruction,
+  chargesInstruction,
+  confirmedErrandInstruction,
+  itemsInstruction,
   laterStepInstruction,
   placedOrderInstruction,
 } from "./guidance";
@@ -109,6 +114,9 @@ export async function settleBrowserRun(
         })
       : null;
   const reportFacts = {
+    booking: bookingState(row, parsed),
+    confirmed: row.submission !== null,
+    hasCharges: parsed.charges.length > 0,
     hasItems: parsed.items.length > 0,
     hasLinks,
     needs: parsed.needs,
@@ -161,6 +169,26 @@ export async function settleBrowserRun(
     claimed.id,
     browserRunReport(claimed, { ...reportFacts, images, spend })
   );
+}
+
+/**
+ * What the run reported about a booking: `booked` only when the site
+ * confirmed one that this run was allowed to make in the person's name and
+ * the run asks for nothing more — that is what goes in their calendar. A
+ * run that only looked can report a «confirmed» booking all the same (a page
+ * of the person's existing appointments), and it is not a new one.
+ */
+function bookingState(
+  row: BrowserRunRow,
+  parsed: ReturnType<typeof parseBrowserOutcome>
+) {
+  if (!parsed.booking) return undefined;
+  return parsed.booking.confirmed &&
+    parsed.booking.start !== undefined &&
+    parsed.needs === "none" &&
+    row.submission !== null
+    ? ("booked" as const)
+    : ("reported" as const);
 }
 
 /**
@@ -352,6 +380,9 @@ export async function reportClosedBrowserRun(
 function deliveryInstruction(
   needs: BrowserRunNeed,
   facts: {
+    readonly booking?: "booked" | "reported";
+    readonly confirmed: boolean;
+    readonly hasCharges: boolean;
     readonly hasItems: boolean;
     readonly hasLinks: boolean;
     readonly next: boolean;
@@ -367,15 +398,20 @@ function deliveryInstruction(
   const links = hasLinks
     ? "Include every relevant returned link with its human-readable name. Use labelled Markdown links in web and Telegram text; the existing iMessage compiler will keep each name and URL human-readable."
     : "If this errand searched for concrete options and the result names options without their destination links, do not present a names-only list as a completed result. Continue this run once to collect the actual observed links when that can complete the errand; otherwise tell the user clearly that the links could not be obtained. Do not retry in a loop.";
-  const items = hasItems
-    ? "The Items list in the Parsed metadata is what the run found: give the user every item as a list, one line each with its name, price and quantity, the details that matter for choosing (dates or slot, cancellation terms, delivery) and its link — never only a total or a count."
-    : undefined;
+  // A confirmed errand that stopped on the way is still the purchase the
+  // person asked for: the stop is a change to confirm, not a search result.
+  const stillBuying =
+    facts.confirmed && (needs === "decision" || needs === "payment");
   return [
     "This is a background result, not a user message.",
     browserRunNeedGuidance(needs),
+    stillBuying ? confirmedErrandInstruction : undefined,
     "Tell the user what happened in your own words. Include the material per-option facts the user requested, not only names and URLs.",
     facts.ordered ? placedOrderInstruction : undefined,
-    items,
+    hasItems ? itemsInstruction : undefined,
+    facts.hasCharges ? chargesInstruction : undefined,
+    facts.booking === undefined ? undefined : bookingInstruction,
+    facts.booking === "booked" ? calendarInstruction : undefined,
     links,
     facts.next ? laterStepInstruction : undefined,
     tail,
@@ -400,6 +436,9 @@ function imagesBlock(images: readonly BrowserRunImage[]) {
 function browserRunReport(
   row: BrowserRunRow,
   options: {
+    readonly booking?: "booked" | "reported";
+    readonly confirmed?: boolean;
+    readonly hasCharges?: boolean;
     readonly hasItems?: boolean;
     readonly hasLinks?: boolean;
     readonly images?: readonly BrowserRunImage[];
@@ -427,6 +466,9 @@ function browserRunReport(
     imagesBlock(images),
     options.spend,
     deliveryInstruction(needs, {
+      booking: options.booking,
+      confirmed: options.confirmed === true,
+      hasCharges: options.hasCharges === true,
       hasItems: options.hasItems === true,
       hasLinks: options.hasLinks === true,
       next: options.next !== undefined,

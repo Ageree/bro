@@ -24,7 +24,7 @@ async function billingDatabase() {
   // SAFETY: PGlite implements the query-builder surface these services use despite using a different Drizzle driver.
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- This test swaps only the driver while retaining the shared Drizzle schema and query-builder contract.
   const database = pgliteDatabase as never;
-  const [Database, scope, billing, orders, usage, userProfile] =
+  const [Database, scope, billing, orders, usage, userProfile, browserRuns] =
     await Promise.all([
       import("@db"),
       import("@db/services/scope"),
@@ -32,11 +32,12 @@ async function billingDatabase() {
       import("@db/services/orders"),
       import("@db/services/usage"),
       import("@db/services/user-profile"),
+      import("@db/services/browser-runs"),
     ]);
   vi.spyOn(Database, "db", "get").mockReturnValue(database);
   await scope.ensureScope(alice);
   await scope.ensureScope(bob);
-  return { billing, orders, scope, usage, userProfile };
+  return { billing, browserRuns, orders, scope, usage, userProfile };
 }
 
 describe("billing persistence", () => {
@@ -170,6 +171,107 @@ describe("order records", () => {
 
     expect(confirmed.items).toEqual(items);
     expect((await orders.listOrders(alice))[0]?.items).toEqual(items);
+  }, 30_000);
+
+  it("lists each order with the site and the errand that placed it", async () => {
+    // EN D4: «другой магазин» told the person nothing about the shop.
+    const { browserRuns, orders } = await billingDatabase();
+    const run = {
+      conversationChannel: "telegram" as const,
+      conversationId: "telegram:1",
+      sessionId: "session-1",
+      site: "https://lavka.yandex.ru",
+      status: "done" as const,
+    };
+    await browserRuns.createBrowserRun(alice, {
+      ...run,
+      id: "run-lavka",
+      submission: {
+        forWhom: "Алиса",
+        kind: "order",
+        personalData: ["имя", "адрес"],
+        what: "заказ продуктов к 20:00",
+        where: "Яндекс Лавка (lavka.yandex.ru)",
+      },
+      task: "Оформи заказ по карточке",
+    });
+    await browserRuns.createBrowserRun(alice, {
+      ...run,
+      id: "run-plain",
+      sessionId: "session-2",
+      site: "https://shop.example",
+      task: "Купи зарядку",
+    });
+    // A follow-up without a card takes the person's message as its task:
+    // the errand is the first run of its browser session.
+    await browserRuns.createBrowserRun(alice, {
+      ...run,
+      createdAt: new Date("2026-09-24T17:00:00.000Z"),
+      id: "run-root",
+      sessionId: "session-3",
+      task: "Закажи продукты к 20:00",
+    });
+    await browserRuns.createBrowserRun(alice, {
+      ...run,
+      createdAt: new Date("2026-09-24T17:05:00.000Z"),
+      id: "run-code",
+      sessionId: "session-3",
+      task: "4821",
+    });
+    await orders.recordOrder(alice, {
+      ...order,
+      browserRunId: "run-lavka",
+      merchant: "other",
+      merchantOrderId: "L-1",
+    });
+    await orders.recordOrder(alice, {
+      ...order,
+      browserRunId: "run-plain",
+      merchant: "other",
+      merchantOrderId: "S-1",
+    });
+    await orders.recordOrder(alice, {
+      ...order,
+      browserRunId: "run-code",
+      merchant: "other",
+      merchantOrderId: "C-1",
+    });
+    // An order without its run, and one whose run id is another workspace's.
+    await orders.recordOrder(alice, {
+      ...order,
+      merchant: "other",
+      merchantOrderId: "X-1",
+    });
+    await orders.recordOrder(bob, {
+      ...order,
+      browserRunId: "run-lavka",
+      merchant: "other",
+      merchantOrderId: "B-1",
+    });
+
+    const listed = await orders.listOrders(alice);
+    const byNumber = new Map(listed.map((row) => [row.merchantOrderId, row]));
+    expect(byNumber.get("L-1")).toMatchObject({
+      errand: "заказ продуктов к 20:00",
+      site: "https://lavka.yandex.ru",
+      where: "Яндекс Лавка (lavka.yandex.ru)",
+    });
+    expect(byNumber.get("S-1")).toMatchObject({
+      errand: "Купи зарядку",
+      site: "https://shop.example",
+      where: null,
+    });
+    expect(byNumber.get("C-1")).toMatchObject({
+      errand: "Закажи продукты к 20:00",
+    });
+    expect(byNumber.get("X-1")).toMatchObject({
+      errand: null,
+      site: null,
+    });
+    expect((await orders.listOrders(bob))[0]).toMatchObject({
+      errand: null,
+      site: null,
+    });
   }, 30_000);
 });
 

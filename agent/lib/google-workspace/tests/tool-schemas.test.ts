@@ -43,7 +43,7 @@ describe("Google Workspace tool input schemas", () => {
   });
 
   it("moves an event only with both ends and never changes nothing", () => {
-    const event = { eventId: "event-1" };
+    const event = { eventId: "event-1", eventTitle: "Созвон" };
     const start = "2026-09-25T10:00:00+03:00";
     const end = "2026-09-25T11:00:00+03:00";
     expect(
@@ -57,5 +57,10 @@ describe("Google Workspace tool input schemas", () => {
       calendarEventUpdateSchema.safeParse({ ...event, start }).success
     ).toBe(false);
     expect(calendarEventUpdateSchema.safeParse(event).success).toBe(false);
+    // The card names the event by its title, so a change always carries it.
+    expect(
+      calendarEventUpdateSchema.safeParse({ eventId: "event-1", end, start })
+        .success
+    ).toBe(false);
   });
 });

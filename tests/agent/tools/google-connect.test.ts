@@ -5,7 +5,10 @@ import type {
   getGoogleWorkspaceAccess,
   selectGoogleWorkspaceAccess,
 } from "@db/services/settings";
-import { googleWorkspaceDisconnectNotice } from "@shared/google-workspace/connection";
+import {
+  googleWorkspaceDisconnectNotice,
+  googleWorkspaceRetainedData,
+} from "@shared/google-workspace/connection";
 import { accessScopeForUser } from "@shared/identity/access-scope";
 import { type FakeComposio, fakeComposio } from "@tests/helpers/composio";
 
@@ -26,7 +29,10 @@ vi.mock("@db/services/proactive", () => ({
   wakeProactiveWatch: proactive.wake,
 }));
 
-import googleConnect, { connectGoogle } from "@agent/tools/google_connect";
+import googleConnect, {
+  connectGoogle,
+  googleAccessAbilities,
+} from "@agent/tools/google_connect";
 
 const scope = accessScopeForUser("better-auth:user-1");
 
@@ -109,6 +115,7 @@ describe("connect_google execution", () => {
     await expect(
       connectGoogle.execute(connectInput, toolContext())
     ).resolves.toEqual({
+      abilities: googleAccessAbilities.full,
       access: "full",
       account: "ada@example.com",
       status: "connected",
@@ -122,6 +129,7 @@ describe("connect_google execution", () => {
     await expect(
       connectGoogle.execute(connectInput, toolContext())
     ).resolves.toEqual({
+      abilities: googleAccessAbilities.full,
       access: "full",
       expiresInMinutes: 10,
       previousGrantRevoked: false,
@@ -149,6 +157,7 @@ describe("connect_google execution", () => {
     await expect(
       connectGoogle.execute(connectInput, toolContext())
     ).resolves.toEqual({
+      abilities: googleAccessAbilities.read_only,
       access: "read_only",
       account: null,
       status: "connected",
@@ -210,6 +219,55 @@ describe("connect_google execution", () => {
     expect(linkRequests()).toEqual([]);
   });
 
+  it("reports the account, level and abilities on a status read", async () => {
+    composio.connect({
+      displayName: "ada@example.com",
+      toolkit: "googlesuper",
+    });
+
+    await expect(
+      connectGoogle.execute({ action: "status" }, toolContext())
+    ).resolves.toEqual({
+      abilities: googleAccessAbilities.full,
+      access: "full",
+      account: "ada@example.com",
+      status: "connected",
+    });
+    expect(linkRequests()).toEqual([]);
+    // Read-only is Bro's own rule, said as such, whatever Google showed.
+    expect(googleAccessAbilities.read_only).toContain("держит сам Бро");
+    expect(googleAccessAbilities.full).toContain("карточки подтверждения");
+  });
+
+  it("says Google is not connected on a status read without minting a link or changing the level", async () => {
+    settings.access.mockResolvedValue("read_only");
+
+    const result = await connectGoogle.execute(
+      { access: "full", action: "status" },
+      toolContext()
+    );
+
+    expect(result).toMatchObject({
+      access: "read_only",
+      status: "not_connected",
+    });
+    expect(result).toHaveProperty(
+      "detail",
+      expect.stringMatching(/Google не подключён/u)
+    );
+    // «Что у тебя осталось?» after a disconnect: what stays and where, and a
+    // link only for someone who wants Google back.
+    expect(result).toHaveProperty("keeps", googleWorkspaceRetainedData);
+    expect(googleWorkspaceRetainedData).toMatch(/^У Бро остаётся.*Neon/u);
+    expect(result).toHaveProperty(
+      "detail",
+      expect.stringMatching(/только если человек сам хочет/u)
+    );
+    expect(linkRequests()).toEqual([]);
+    expect(revokes()).toEqual([]);
+    expect(settings.select).not.toHaveBeenCalled();
+  });
+
   it("disconnects by revoking the account and says what Bro keeps", async () => {
     composio.connect({ id: "ca_full", toolkit: "googlesuper" });
 
@@ -223,6 +281,10 @@ describe("connect_google execution", () => {
     expect(revokes()).toHaveLength(1);
     expect(googleWorkspaceDisconnectNotice).toMatch(/память/u);
     expect(googleWorkspaceDisconnectNotice).toMatch(/заказы/u);
+    // What was deleted, what stays and where it is stored (RU d14, EN D9).
+    expect(googleWorkspaceDisconnectNotice).toMatch(/удаляет ключ доступа/u);
+    expect(googleWorkspaceDisconnectNotice).toMatch(/Neon/u);
+    expect(googleWorkspaceDisconnectNotice).toMatch(/стирается по просьбе/u);
   });
 
   it("asks before disconnecting or changing the level, not before connecting", async () => {
@@ -234,7 +296,7 @@ describe("connect_google execution", () => {
     const context = toolContext();
     const decide = async (toolInput: {
       readonly access?: "full" | "read_only";
-      readonly action: "connect" | "disconnect";
+      readonly action: "connect" | "disconnect" | "status";
     }) => policy({ ...context, approvedTools: new Set(), toolInput });
 
     expect(await decide({ action: "disconnect" })).toBe("user-approval");
@@ -245,6 +307,9 @@ describe("connect_google execution", () => {
       "not-applicable"
     );
     expect(await decide({ action: "connect" })).toBe("not-applicable");
+    expect(await decide({ access: "read_only", action: "status" })).toBe(
+      "not-applicable"
+    );
     expect(settings.access).toHaveBeenCalledWith(scope);
   });
 

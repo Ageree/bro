@@ -6,6 +6,10 @@ import {
   assertPlainTextDelivery,
   requireDeliveredText,
 } from "@evals/agent/shared";
+import {
+  resolveScheduleTiming,
+  scheduleTimingInputSchema,
+} from "@shared/schedules/timing";
 
 const cases = [
   {
@@ -60,7 +64,44 @@ const calendarCases = [
       weekday: 0,
     },
   },
+  {
+    // RU d12, EN D7: the zone is the profile's, so the model names none.
+    description: "Runs the morning digest on working days at 08:00",
+    prompt:
+      "Каждый будний день в 8 утра присылай: что у меня сегодня в календаре, на какие письма я ещё не ответил, погоду и сколько ехать до работы на машине.",
+    timing: { frequency: "weekdays", localTime: "08:00" },
+  },
+  {
+    // Holidays are skipped only on request: without it a reminder fires.
+    description: "Keeps a weekday digest off holidays when asked",
+    prompt:
+      "По будням в 9 утра присылай курс доллара и евро, кроме праздников.",
+    timing: { frequency: "weekdays", localTime: "09:00", skipHolidays: true },
+  },
 ] as const;
+
+/**
+ * A zone no case asks for: a timing that leaves out the zone its request
+ * named resolves here and misses the expected instant.
+ */
+const unrelatedZone = "Asia/Kamchatka";
+
+/**
+ * Whether the tool input, once stored, is the expected timing. A one-off may
+ * name its moment on the wall clock or as an instant; what counts is when.
+ */
+function sameStoredTiming(
+  input: z.infer<typeof scheduleTimingInputSchema> | undefined,
+  expected: z.infer<typeof scheduleTimingInputSchema>
+) {
+  if (!input) return false;
+  const stored = resolveScheduleTiming(input, unrelatedZone);
+  const target = resolveScheduleTiming(expected, unrelatedZone);
+  if (stored.kind === "once" && target.kind === "once") {
+    return Date.parse(stored.at) === Date.parse(target.at);
+  }
+  return isDeepStrictEqual(stored, target);
+}
 
 const createdTimingSchema = z.object({
   timing: z.record(z.string(), z.unknown()),
@@ -78,15 +119,19 @@ const exactEvals = cases.map((testCase) =>
       turn.succeeded();
       // The task is the reminder text, word for word; a model may frame it
       // as an instruction («Send the reminder: …») around it.
-      const { prompt, ...expected } = testCase.expected;
+      const { prompt, timing, ...expected } = testCase.expected;
       turn.calledTool("schedules-create", {
         input: (input) => {
-          const { prompt: _created, ...rest } = input;
+          const { prompt: _created, timing: createdTiming, ...rest } = input;
           return (
             createdPromptSchema
               .safeParse(input)
               .data?.prompt.includes(prompt) === true &&
-            isDeepStrictEqual(rest, expected)
+            isDeepStrictEqual(rest, expected) &&
+            sameStoredTiming(
+              scheduleTimingInputSchema.safeParse(createdTiming).data,
+              scheduleTimingInputSchema.parse(timing)
+            )
           );
         },
         status: "completed",

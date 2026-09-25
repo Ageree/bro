@@ -3,6 +3,7 @@ import { defineEval, type EveEvalContext, type EveEvalTurn } from "eve/evals";
 import { satisfies } from "eve/evals/expect";
 import { z } from "zod";
 import { agentEvalTags } from "@evals/agent/shared";
+import { sendMessageOutputSchema } from "@shared/chat/message-delivery";
 import { env } from "@shared/environment";
 
 const tags = [...agentEvalTags, "content"] as const;
@@ -54,12 +55,46 @@ const pictureCases = [
       turn.calledTool("generate_image");
       const artifact = requireArtifact(turn);
       await requirePictureDelivered(t, turn, artifact);
+      t.check(
+        deliveredCount(turn),
+        satisfies<number>(
+          (count) => count <= 3,
+          "the picture and the first question fit in three messages"
+        )
+      );
       t.judge(
         "The assistant delivers a birthday picture for Sam and starts hosting a 1990s movie trivia game by asking exactly one question, without listing several questions at once or revealing the answer.",
         { on: turn.session.transcript }
       )
         .label("picture and hosted game")
         .atLeast(0.8);
+    },
+  }),
+  defineEval({
+    description: "Edits the birthday picture after a few quiz answers",
+    tags,
+    async test(t) {
+      // EN D16 on 24.09: the picture and the quiz worked, then «English
+      // text, Sam's name on the cake» after the quiz answers never happened.
+      const first = await t.send(
+        "Make a birthday image for Sam with a cake on it, then a quick trivia game about 90s movies for the group chat."
+      );
+      first.expectOk();
+      const artifact = requireArtifact(first);
+      let last = first;
+      for (const answer of ["B", "C"]) {
+        // oxlint-disable-next-line eslint/no-await-in-loop -- The quiz goes one answer at a time.
+        last = await last.session.send(answer);
+        last.expectOk();
+      }
+
+      const edit = await last.session.send(
+        "Make the text on the picture English and put Sam's name on the cake"
+      );
+      edit.expectOk();
+      edit.calledTool("generate_image");
+      checkEditsPicture(t, edit, artifact);
+      await requirePictureDelivered(t, edit, requireArtifact(edit));
     },
   }),
   defineEval({
@@ -80,21 +115,7 @@ const pictureCases = [
       const edit = await first.session.send("сделай поярче");
       edit.expectOk();
       edit.calledTool("generate_image");
-      const editInputs = edit.toolCalls
-        .filter((call) => call.name === "generate_image")
-        .map((call) => imagesInputSchema.safeParse(call.input));
-      t.check(
-        editInputs,
-        satisfies<typeof editInputs>(
-          (inputs) =>
-            inputs.some(
-              (input) =>
-                input.success &&
-                input.data.images.some((image) => image.includes(artifact))
-            ),
-          "the edit passes the earlier picture back as a reference"
-        )
-      );
+      checkEditsPicture(t, edit, artifact);
       await requirePictureDelivered(t, edit, requireArtifact(edit));
     },
   }),
@@ -109,6 +130,39 @@ function requireArtifact(turn: EveEvalTurn) {
     throw new Error("generate_image did not return an artifact.");
   }
   return parsed.data.artifact;
+}
+
+/** An edit draws from the earlier picture, not from scratch. */
+function checkEditsPicture(
+  t: EveEvalContext,
+  edit: EveEvalTurn,
+  artifact: string
+) {
+  const editInputs = edit.toolCalls
+    .filter((call) => call.name === "generate_image")
+    .map((call) => imagesInputSchema.safeParse(call.input));
+  t.check(
+    editInputs,
+    satisfies<typeof editInputs>(
+      (inputs) =>
+        inputs.some(
+          (input) =>
+            input.success &&
+            input.data.images.some((image) => image.includes(artifact))
+        ),
+      "the edit passes the earlier picture back as a reference"
+    )
+  );
+}
+
+/** Messages that reached the person; a dropped or returned send did not. */
+function deliveredCount(turn: EveEvalTurn) {
+  return turn.toolCalls.filter(
+    (call) =>
+      call.name === "send_message" &&
+      call.status === "completed" &&
+      sendMessageOutputSchema.safeParse(call.output).success
+  ).length;
 }
 
 async function requirePictureDelivered(

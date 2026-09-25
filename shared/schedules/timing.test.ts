@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   computeLatestRun,
   computeNextRun,
+  localRunLabel,
+  resolveScheduleTiming,
+  scheduleTimingInputSchema,
   scheduleTimingSchema,
   storedScheduleTimingSchema,
   type ScheduleTiming,
@@ -355,5 +358,197 @@ describe("monthly and yearly calendar rules", () => {
         kind: "interval",
       }).success
     ).toBe(true);
+  });
+});
+
+function weekdays(timezone: string, skipHolidays?: true) {
+  return scheduleTimingSchema.parse({
+    frequency: "weekdays",
+    kind: "calendar",
+    localTime: "08:00",
+    skipHolidays,
+    timezone,
+  });
+}
+
+describe("holidays, only when the person asked", () => {
+  it("keeps a weekday rule firing on a holiday unless told otherwise", () => {
+    // 4 November 2026, День народного единства, is a Wednesday. A weekday
+    // pill reminder stored before the flag existed still fires on it.
+    expect(
+      occurrences(weekdays("Asia/Yekaterinburg"), "2026-11-03T04:00:00Z", 1)
+    ).toEqual(["2026-11-04T03:00:00.000Z"]);
+    expect(
+      occurrences(
+        weekdays("Asia/Yekaterinburg", true),
+        "2026-11-02T04:00:00Z",
+        3
+      )
+    ).toEqual([
+      "2026-11-03T03:00:00.000Z",
+      "2026-11-05T03:00:00.000Z",
+      "2026-11-06T03:00:00.000Z",
+    ]);
+    // Outside Russia nothing is known, so a Wednesday is a Wednesday.
+    expect(
+      occurrences(weekdays("America/New_York", true), "2026-11-03T14:00:00Z", 1)
+    ).toEqual(["2026-11-04T13:00:00.000Z"]);
+  });
+
+  it("waits out the New Year break and the decree's moved days", () => {
+    // 31 December 2026 and 1–8 January 2027 are off; Monday the 11th works.
+    expect(
+      occurrences(weekdays(moscow, true), "2026-12-30T06:00:00Z", 1)
+    ).toEqual(["2027-01-11T05:00:00.000Z"]);
+    // 9 January 2026 was moved off by decree No. 1466; the first run is the 12th.
+    expect(
+      occurrences(weekdays(moscow, true), "2025-12-31T06:00:00Z", 1)
+    ).toEqual(["2026-01-12T05:00:00.000Z"]);
+    // 8 March 2026 is a Sunday, so Monday the 9th is off instead.
+    expect(
+      occurrences(weekdays(moscow, true), "2026-03-06T06:00:00Z", 1)
+    ).toEqual(["2026-03-10T05:00:00.000Z"]);
+  });
+
+  it("carries a weekly rule over New Year, when two weeks in a row are off", () => {
+    const weekly = (weekday: number) =>
+      scheduleTimingSchema.parse({
+        frequency: "weekly",
+        kind: "calendar",
+        localTime: "09:00",
+        skipHolidays: true,
+        timezone: moscow,
+        weekdays: [weekday],
+      });
+    // Fridays 1 and 8 January 2027 are holidays: three weeks to the 15th.
+    expect(occurrences(weekly(5), "2026-12-25T07:00:00Z", 1)).toEqual([
+      "2027-01-15T06:00:00.000Z",
+    ]);
+    // Thursday 31 December 2026 is a decree day off, 7 January a holiday.
+    expect(occurrences(weekly(4), "2026-12-24T07:00:00Z", 1)).toEqual([
+      "2027-01-14T06:00:00.000Z",
+    ]);
+    // Mondays 1 and 8 January 2029, with no decree for that year known.
+    expect(occurrences(weekly(1), "2028-12-25T07:00:00Z", 1)).toEqual([
+      "2029-01-15T06:00:00.000Z",
+    ]);
+    // And the last run before the break is found looking back from it.
+    expect(
+      computeLatestRun(weekly(5), new Date("2027-01-10T00:00:00Z"))
+    ).toEqual(new Date("2026-12-25T06:00:00.000Z"));
+  });
+
+  it("keeps a daily digest off the holiday itself, weekend or not", () => {
+    const daily = scheduleTimingSchema.parse({
+      frequency: "daily",
+      kind: "calendar",
+      localTime: "08:00",
+      skipHolidays: true,
+      timezone: moscow,
+    });
+    // Saturday 7 March runs; Sunday the 8th and the moved Monday do not.
+    expect(occurrences(daily, "2026-03-06T06:00:00Z", 2)).toEqual([
+      "2026-03-07T05:00:00.000Z",
+      "2026-03-10T05:00:00.000Z",
+    ]);
+  });
+});
+
+describe("what the schedule tools accept", () => {
+  it("fills a missing zone from the person's profile", () => {
+    const input = scheduleTimingInputSchema.parse({
+      frequency: "daily",
+      kind: "calendar",
+      localTime: "07:30",
+    });
+    expect(resolveScheduleTiming(input, "Asia/Yekaterinburg")).toEqual({
+      frequency: "daily",
+      kind: "calendar",
+      localTime: "07:30",
+      timezone: "Asia/Yekaterinburg",
+    });
+    // A zone the person asked for stays.
+    expect(
+      resolveScheduleTiming(
+        scheduleTimingInputSchema.parse({
+          frequency: "daily",
+          kind: "calendar",
+          localTime: "07:30",
+          timezone: "America/New_York",
+        }),
+        moscow
+      )
+    ).toMatchObject({ timezone: "America/New_York" });
+  });
+
+  it("stores skipHolidays only when the person asked for it", () => {
+    const rule = {
+      frequency: "weekdays",
+      kind: "calendar",
+      localTime: "08:00",
+    };
+    expect(
+      resolveScheduleTiming(
+        scheduleTimingInputSchema.parse({ ...rule, skipHolidays: false }),
+        moscow
+      )
+    ).toEqual({ ...rule, timezone: moscow });
+    expect(
+      resolveScheduleTiming(
+        scheduleTimingInputSchema.parse({ ...rule, skipHolidays: true }),
+        moscow
+      )
+    ).toEqual({ ...rule, skipHolidays: true, timezone: moscow });
+    // A monthly rule has no holidays to step over.
+    expect(
+      scheduleTimingInputSchema.safeParse({
+        dayOfMonth: 5,
+        frequency: "monthly",
+        kind: "calendar",
+        localTime: "10:00",
+        skipHolidays: true,
+      }).success
+    ).toBe(false);
+  });
+
+  it("reads a one-off wall-clock time in the zone and keeps an exact instant", () => {
+    expect(
+      resolveScheduleTiming(
+        scheduleTimingInputSchema.parse({
+          at: "2026-09-26T09:00",
+          kind: "once",
+        }),
+        moscow
+      )
+    ).toEqual({ at: "2026-09-26T06:00:00.000Z", kind: "once" });
+    expect(
+      resolveScheduleTiming(
+        scheduleTimingInputSchema.parse({
+          at: "2026-09-26T09:00",
+          kind: "once",
+          timezone: "Europe/Berlin",
+        }),
+        moscow
+      )
+    ).toEqual({ at: "2026-09-26T07:00:00.000Z", kind: "once" });
+    expect(
+      resolveScheduleTiming(
+        scheduleTimingInputSchema.parse({
+          at: "2099-01-15T15:00:00Z",
+          kind: "once",
+        }),
+        moscow
+      )
+    ).toEqual({ at: "2099-01-15T15:00:00Z", kind: "once" });
+    expect(
+      scheduleTimingInputSchema.safeParse({ at: "завтра в 9", kind: "once" })
+        .success
+    ).toBe(false);
+  });
+
+  it("names a run on the person's clock", () => {
+    expect(
+      localRunLabel(new Date("2026-09-28T03:00:00.000Z"), "Asia/Yekaterinburg")
+    ).toBe("2026-09-28 08:00, Monday (Asia/Yekaterinburg)");
   });
 });

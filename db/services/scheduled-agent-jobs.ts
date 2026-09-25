@@ -29,7 +29,12 @@ import {
   scheduledRunOutcomeSchema,
   type ScheduledRunOutcome,
 } from "@shared/schedules/outcome";
-import { db, scheduledAgentJobs, scheduledAgentRuns } from "@db";
+import {
+  db,
+  proactiveSignals,
+  scheduledAgentJobs,
+  scheduledAgentRuns,
+} from "@db";
 import { readRememberedConversations, rememberedMessenger } from "./proactive";
 
 const exhaustedRunOutcome = {
@@ -146,6 +151,14 @@ export async function listScheduledAgentJobs(scope: AccessScope) {
       latestRun: runs[0] ? parseRun(runs[0]) : null,
     });
   });
+}
+
+/** One of the person's schedules, which a change to its timing starts from. */
+export async function getScheduledAgentJob(scope: AccessScope, id: string) {
+  const job = await db.query.scheduledAgentJobs.findFirst({
+    where: and(eq(scheduledAgentJobs.id, id), ownedTasks(scope)),
+  });
+  return job ? parseJob(job) : undefined;
 }
 
 export async function updateScheduledAgentJob(
@@ -823,6 +836,172 @@ export async function releaseScheduledAgentRun(
   return released?.status;
 }
 
+/** How a worker parked on a sign-in is told apart when the watchdog finds it. */
+const authorizationParkPrefix = "Worker is waiting for authorization:";
+
+/**
+ * A background worker asked for a sign-in: nobody in its session can give
+ * one, so the turn would stay parked with the run held as `running` for the
+ * rest of its lease. Ending the lease now hands the run to the watchdog on
+ * the next tick (`recoverStuckScheduledAgentRuns`).
+ */
+export async function parkScheduledAgentRunOnAuthorization(
+  runId: string,
+  leaseToken: string,
+  connection: string,
+  now = new Date()
+) {
+  const [run] = await db
+    .update(scheduledAgentRuns)
+    .set({
+      lastError: `${authorizationParkPrefix} ${connection}.`.slice(0, 2_000),
+      leaseExpiresAt: now,
+      updatedAt: now,
+    })
+    .where(
+      and(
+        eq(scheduledAgentRuns.id, runId),
+        eq(scheduledAgentRuns.status, "running"),
+        eq(scheduledAgentRuns.leaseToken, leaseToken)
+      )
+    )
+    .returning({ id: scheduledAgentRuns.id });
+  return run !== undefined;
+}
+
+/** A proactive run older than this is about news nobody needs any more. */
+const staleProactiveRunMs = 2 * 60 * 60_000;
+/**
+ * How long past its startup lease a dispatched worker that has not begun its
+ * turn is still waited for: Vercel Workflow can queue the first turn behind
+ * a backlog or a cold start, and a restart would reset a session about to run.
+ */
+const workerStartupGraceMs = 20 * 60_000;
+
+function stuckRunOutcome(lastError: string | null): ScheduledRunOutcome {
+  if (lastError?.startsWith(authorizationParkPrefix)) {
+    const connection = lastError
+      .slice(authorizationParkPrefix.length)
+      .replace(/\.$/u, "")
+      .trim();
+    return {
+      kind: "blocked",
+      summary: `The scheduled task stopped twice on a sign-in (${connection}) that a background run cannot give.`,
+      userActionNeeded:
+        "Reconnect that account in the chat or the workspace; the next run of the schedule will use it.",
+    };
+  }
+  return {
+    kind: "blocked",
+    summary:
+      "The scheduled task got stuck twice without finishing and was stopped.",
+    userActionNeeded: "Try the task again or update the schedule.",
+  };
+}
+
+/**
+ * The watchdog for workers that took their run and went quiet: the lease ran
+ * out while the session never finished — parked on a sign-in, or lost. Such
+ * a run stays `running` for good, and a proactive one would silence every
+ * later check (`queueProactiveRun` sees it busy). The first time it goes back
+ * to the queue and a fresh worker session takes it; the second time it ends
+ * as `dead_letter` with a blocked outcome, reported to the person, or closed
+ * quietly for a proactive check. A proactive run that went stale meanwhile
+ * is closed at once. A run holding an answer for its worker is the answer
+ * hand-off's to retry (`claimAnsweredScheduledAgentRuns`), and one that never
+ * got a session is the dispatcher's (`claimReadyScheduledAgentRuns`).
+ */
+export async function recoverStuckScheduledAgentRuns(options: {
+  readonly limit: number;
+  readonly now: Date;
+}) {
+  return db.transaction(async (transaction) => {
+    const stuck = await transaction
+      .select({
+        attempts: scheduledAgentRuns.attempts,
+        id: scheduledAgentRuns.id,
+        jobKind: scheduledAgentJobs.kind,
+        lastError: scheduledAgentRuns.lastError,
+        scheduledFor: scheduledAgentRuns.scheduledFor,
+      })
+      .from(scheduledAgentRuns)
+      .innerJoin(
+        scheduledAgentJobs,
+        eq(scheduledAgentRuns.jobId, scheduledAgentJobs.id)
+      )
+      .where(
+        and(
+          eq(scheduledAgentRuns.status, "running"),
+          isNotNull(scheduledAgentRuns.workerSessionId),
+          isNull(scheduledAgentRuns.inputResponses),
+          lte(scheduledAgentRuns.leaseExpiresAt, options.now),
+          // A worker handed its session but not yet in its first turn may
+          // just be queued behind others: only its startup lease plus a
+          // grace makes it stuck, not the five minutes alone.
+          or(
+            isNotNull(scheduledAgentRuns.startedAt),
+            lte(
+              scheduledAgentRuns.leaseExpiresAt,
+              new Date(options.now.getTime() - workerStartupGraceMs)
+            )
+          )
+        )
+      )
+      .orderBy(asc(scheduledAgentRuns.leaseExpiresAt))
+      .limit(options.limit)
+      .for("update", { of: scheduledAgentRuns, skipLocked: true });
+    return Promise.all(
+      stuck.map(async (run) => {
+        const stale =
+          run.jobKind === "proactive" &&
+          run.scheduledFor.getTime() <
+            options.now.getTime() - staleProactiveRunMs;
+        const reason = run.lastError?.startsWith(authorizationParkPrefix)
+          ? "authorization"
+          : "lease_expired";
+        const action =
+          run.attempts < 2 && !stale
+            ? ("requeued" as const)
+            : ("closed" as const);
+        await transaction
+          .update(scheduledAgentRuns)
+          .set(
+            action === "requeued"
+              ? {
+                  deferredCompletionTurnId: null,
+                  lastError: `The worker got stuck (${reason}); the run went back to the queue.`,
+                  leaseExpiresAt: null,
+                  leaseToken: null,
+                  retryAt: options.now,
+                  status: "queued",
+                  updatedAt: options.now,
+                }
+              : {
+                  completedAt: options.now,
+                  deferredCompletionTurnId: null,
+                  leaseExpiresAt: null,
+                  leaseToken: null,
+                  outcome: stuckRunOutcome(run.lastError),
+                  reportSequence: sql`${scheduledAgentRuns.reportSequence} + 1`,
+                  reportStatus: exhaustedReportStatus(run.jobKind),
+                  retryAt: null,
+                  status: "dead_letter",
+                  updatedAt: options.now,
+                }
+          )
+          .where(eq(scheduledAgentRuns.id, run.id));
+        return {
+          action,
+          attempts: run.attempts,
+          jobKind: run.jobKind,
+          reason: stale ? ("stale" as const) : reason,
+          runId: run.id,
+        };
+      })
+    );
+  });
+}
+
 export async function claimScheduledReport(runId: string, now = new Date()) {
   const reportLeaseToken = randomUUID();
   const [claimed] = await db
@@ -857,6 +1036,57 @@ export async function claimScheduledReport(runId: string, now = new Date()) {
     job: parseJob(job),
     run: parseRun(run),
   };
+}
+
+/**
+ * Takes the other finished reports of a proactive job into a claimed report,
+ * under its lease: the reports held over the night go out as one morning
+ * message with the first report of the day. They share the claim's fate —
+ * delivered, released or dropped together (`finalizeScheduledReport`,
+ * `releaseScheduledReport`, `dropScheduledReport` act on the lease) — so a
+ * report turn that fails puts every one of them back rather than losing any.
+ * Returns the absorbed runs' outcomes, oldest first.
+ */
+export async function absorbHeldProactiveReports(
+  claim: {
+    readonly jobId: string;
+    readonly reportLeaseExpiresAt: Date;
+    readonly reportLeaseToken: string;
+    readonly runId: string;
+  },
+  now = new Date()
+) {
+  const absorbed = await db
+    .update(scheduledAgentRuns)
+    .set({
+      reportLeaseExpiresAt: claim.reportLeaseExpiresAt,
+      reportLeaseToken: claim.reportLeaseToken,
+      reportStatus: "queued",
+      updatedAt: now,
+    })
+    .where(
+      and(
+        eq(scheduledAgentRuns.jobId, claim.jobId),
+        ne(scheduledAgentRuns.id, claim.runId),
+        eq(scheduledAgentRuns.status, "completed"),
+        eq(scheduledAgentRuns.reportStatus, "pending")
+      )
+    )
+    .returning({
+      id: scheduledAgentRuns.id,
+      outcome: scheduledAgentRuns.outcome,
+      scheduledFor: scheduledAgentRuns.scheduledFor,
+    });
+  return absorbed
+    .map((run) => ({
+      id: run.id,
+      outcome: scheduledRunOutcomeSchema.safeParse(run.outcome).data,
+      scheduledFor: run.scheduledFor,
+    }))
+    .toSorted(
+      (left, right) =>
+        left.scheduledFor.getTime() - right.scheduledFor.getTime()
+    );
 }
 
 /**
@@ -922,6 +1152,11 @@ function sameConversation(
   );
 }
 
+/** A handover the worker marked as unable to wait for the person's morning. */
+function isTimeSensitive(outcome: ScheduledRunOutcome | undefined) {
+  return outcome?.kind === "result" && outcome.urgency === "time_sensitive";
+}
+
 export async function listRecoverableScheduledReports(
   now = new Date(),
   limit = 25
@@ -929,6 +1164,9 @@ export async function listRecoverableScheduledReports(
   return db.transaction(async (transaction) => {
     const reports = await transaction
       .select({
+        // Whether a proactive run was handed an event: a flight is the one
+        // thing Bro's own check may wake the person for (`proactiveReportTiming`).
+        carriesEvent: sql<boolean>`EXISTS (SELECT 1 FROM ${proactiveSignals} WHERE ${proactiveSignals.runId} = ${scheduledAgentRuns.id} AND ${proactiveSignals.source} = 'calendar')`,
         conversationChannel: scheduledAgentJobs.conversationChannel,
         createdByUserId: scheduledAgentJobs.createdByUserId,
         jobKind: scheduledAgentJobs.kind,
@@ -990,16 +1228,23 @@ export async function listRecoverableScheduledReports(
     }
     return reports.map(
       ({
+        carriesEvent,
         conversationChannel,
         createdByUserId,
         jobKind,
         run,
         workspaceId,
       }) => ({
+        carriesEvent,
         conversationChannel,
+        jobId: run.jobId,
         jobKind,
         runId: run.id,
+        scheduledFor: run.scheduledFor,
         scope: { userId: createdByUserId, workspaceId },
+        timeSensitive: isTimeSensitive(
+          scheduledRunOutcomeSchema.safeParse(run.outcome).data
+        ),
       })
     );
   });
@@ -1037,7 +1282,8 @@ export async function dropScheduledReport(
   now = new Date(),
   reportStatus: "not_needed" | "suppressed" = "suppressed"
 ) {
-  const [run] = await db
+  // Reports absorbed into this one share its lease and its end.
+  const dropped = await db
     .update(scheduledAgentRuns)
     .set({
       completedAt: sql`coalesce(${scheduledAgentRuns.completedAt}, ${now})`,
@@ -1052,13 +1298,12 @@ export async function dropScheduledReport(
     })
     .where(
       and(
-        eq(scheduledAgentRuns.id, runId),
         eq(scheduledAgentRuns.reportLeaseToken, reportLeaseToken),
         eq(scheduledAgentRuns.reportStatus, "queued")
       )
     )
     .returning({ id: scheduledAgentRuns.id });
-  return run !== undefined;
+  return dropped.some((run) => run.id === runId);
 }
 
 export async function releaseScheduledReport(
@@ -1066,7 +1311,8 @@ export async function releaseScheduledReport(
   leaseToken: string,
   errorMessage: string
 ) {
-  const [run] = await db
+  // A failed report turn puts back every report it carried.
+  const released = await db
     .update(scheduledAgentRuns)
     .set({
       lastError: errorMessage.slice(0, 2_000),
@@ -1075,14 +1321,9 @@ export async function releaseScheduledReport(
       reportStatus: "pending",
       updatedAt: new Date(),
     })
-    .where(
-      and(
-        eq(scheduledAgentRuns.id, runId),
-        eq(scheduledAgentRuns.reportLeaseToken, leaseToken)
-      )
-    )
+    .where(eq(scheduledAgentRuns.reportLeaseToken, leaseToken))
     .returning({ id: scheduledAgentRuns.id });
-  return run !== undefined;
+  return released.some((run) => run.id === runId);
 }
 
 export async function finalizeScheduledReport(
@@ -1098,7 +1339,8 @@ export async function finalizeScheduledReport(
           "dead_letter",
           "waiting_for_input",
         ]);
-  const [run] = await db
+  // The reports absorbed into this one went out in the same message.
+  const finalized = await db
     .update(scheduledAgentRuns)
     .set({
       reportLeaseExpiresAt: null,
@@ -1108,12 +1350,11 @@ export async function finalizeScheduledReport(
     })
     .where(
       and(
-        eq(scheduledAgentRuns.id, runId),
         eq(scheduledAgentRuns.reportLeaseToken, leaseToken),
         eq(scheduledAgentRuns.reportStatus, "queued"),
         reportableRunStatus
       )
     )
     .returning({ id: scheduledAgentRuns.id });
-  return run !== undefined;
+  return finalized.some((run) => run.id === runId);
 }

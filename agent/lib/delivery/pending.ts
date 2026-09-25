@@ -1,6 +1,11 @@
 import type { ModelMessage } from "ai";
 import { z } from "zod";
-import { leavesRunAtWork, settledOutcomeRun } from "./browser-report";
+import {
+  leavesRunAtWork,
+  reportedRunOf,
+  settledOutcomeRun,
+  stepsAskedBy,
+} from "./browser-report";
 import { asksForSomething } from "./novelty";
 import {
   currentTurnMessages,
@@ -185,4 +190,30 @@ export function turnTookNoStep(messages: readonly ModelMessage[]) {
   return !currentTurnMessages(messages).some(
     (message) => message.role === "assistant"
   );
+}
+
+/**
+ * The card steps a browser report's turn still owes after its message: those
+ * its report asks for (`stepsAskedBy`) whose tool the turn has not called
+ * yet. A call settles its step whatever came of it — done, failed, or
+ * declined on its card.
+ */
+export function reportOwedSteps(messages: readonly ModelMessage[]) {
+  const start = messages.findLastIndex(startsTurn);
+  const opening = messages.at(start);
+  if (start === -1 || !opening) return [];
+  const report = messageText(opening);
+  if (reportedRunOf(report) === undefined) return [];
+  const called = new Set(
+    messages
+      .slice(start + 1)
+      .flatMap((message) =>
+        message.role === "assistant" && Array.isArray(message.content)
+          ? message.content.flatMap((part) =>
+              part.type === "tool-call" ? [part.toolName] : []
+            )
+          : []
+      )
+  );
+  return stepsAskedBy(report).filter(({ tool }) => !called.has(tool));
 }

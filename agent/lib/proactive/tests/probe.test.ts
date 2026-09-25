@@ -80,6 +80,78 @@ describe("probeGoogleSignals", () => {
     ).toContain("in:inbox after:");
   });
 
+  it("keeps only what may not wait for the morning at night", async () => {
+    composio.connect({ id: "ca_google", toolkit: "googlesuper" });
+    const subjects = new Map([
+      ["m1", "го в субботу на шашлыки?"],
+      ["m2", "Изменение выхода на посадку: рейс SU 1234"],
+    ]);
+    composio.proxy.mockImplementation(({ url }) => {
+      if (url.hostname !== "gmail.googleapis.com") {
+        return {
+          data: {
+            items: [
+              {
+                id: "flight",
+                location: "Шереметьево",
+                start: { dateTime: "2026-09-24T14:00:00.000Z" },
+                status: "confirmed",
+                summary: "Рейс SU 1234",
+              },
+              {
+                id: "standup",
+                start: { dateTime: "2026-09-24T12:00:00.000Z" },
+                status: "confirmed",
+                summary: "Планёрка",
+              },
+            ],
+          },
+        };
+      }
+      const id = url.pathname.split("/").at(-1) ?? "";
+      return subjects.has(id)
+        ? {
+            data: {
+              id,
+              payload: {
+                headers: [{ name: "Subject", value: subjects.get(id) }],
+              },
+              threadId: `t-${id}`,
+            },
+          }
+        : {
+            data: {
+              messages: [
+                { id: "m1", threadId: "t-m1" },
+                { id: "m2", threadId: "t-m2" },
+              ],
+            },
+          };
+    });
+
+    await expect(
+      probeGoogleSignals(scope, { ...window, nightOnly: true })
+    ).resolves.toEqual({
+      signals: [
+        {
+          dedupeKey: "flight@2026-09-24T14:00:00.000Z",
+          itemId: "flight",
+          source: "calendar",
+          threadId: null,
+        },
+        { dedupeKey: "m2", itemId: "m2", source: "gmail", threadId: "t-m2" },
+      ],
+      state: "connected",
+    });
+    const subjectRead = composio.proxy.mock.calls
+      .map(([request]) => request.url)
+      .find((url) => url.pathname.endsWith("/messages/m2"));
+    expect(subjectRead?.searchParams.get("format")).toBe("metadata");
+    expect(subjectRead?.searchParams.getAll("metadataHeaders")).toEqual([
+      "Subject",
+    ]);
+  });
+
   it("looks under the read-only level's account for a read-only workspace", async () => {
     settings.access.mockResolvedValue("read_only");
     composio.connect({ id: "ca_full", toolkit: "googlesuper" });

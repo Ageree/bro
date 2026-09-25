@@ -17,6 +17,8 @@ import { defineDynamic, defineTool, type ToolContext } from "eve/tools";
 import { z } from "zod";
 import { imageGenerationQuotaGate } from "@agent/lib/billing/quota";
 import {
+  artifactIdPattern,
+  drawnPictures,
   imageGenerationScope,
   pictureRequested,
 } from "@agent/lib/image-artifact/generation";
@@ -43,10 +45,10 @@ const imagesUrl = "https://openrouter.ai/api/v1/images";
 const generationTimeoutMs = 120_000;
 /** The newest photos the person sent that the model may pick from. */
 const maximumPhotos = 4;
+/** The newest pictures of this conversation named in the description. */
+const maximumDrawnPictures = 3;
 const captionLength = 80;
 const sandboxScheme = "eve-sandbox:";
-const artifactIdPattern =
-  /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/iu;
 
 /** A photo from the history, reduced to what the executor needs to read it. */
 type PersonPhoto = {
@@ -86,7 +88,7 @@ export default defineDynamic({
       }
       const photos = await collectPersonPhotos(scope, context.messages);
       return defineTool({
-        description: `Draw a new picture, or change one, and get it back as a private artifact: birthday and holiday cards, invitations, posters, stickers, memes, illustrations, a pet or a person from the person's photos placed into a scene. Put the returned markdown line, exactly as returned, into the text of one send_message call and the chat receives a real photo. To change a picture («brighter», «add a hat», «bigger letters») call again with a prompt describing the whole result and pass that picture's artifact in images; never start over from scratch for an edit. ${describePhotos(photos)}`,
+        description: `Draw a new picture, or change one, and get it back as a private artifact: birthday and holiday cards, invitations, posters, stickers, memes, illustrations, a pet or a person from the person's photos placed into a scene. Put the returned markdown line, exactly as returned, into the text of one send_message call and the chat receives a real photo. To change a picture («brighter», «add a hat», «bigger letters») call again with a prompt describing the whole result and pass that picture's artifact in images; never start over from scratch for an edit. ${describeDrawnPictures(context.messages)}${describePhotos(photos)}`,
         inputSchema: z.object({
           aspectRatio: z
             .enum(["1:1", "4:5", "3:4", "2:3", "9:16", "16:9", "3:2", "4:3"])
@@ -124,6 +126,13 @@ export default defineDynamic({
     },
   },
 });
+
+/** The newest pictures of this conversation, so an edit passes the right one. */
+function describeDrawnPictures(messages: readonly ModelMessage[]) {
+  const drawn = drawnPictures(messages).slice(0, maximumDrawnPictures);
+  if (drawn.length === 0) return "";
+  return `Pictures drawn earlier in this conversation, newest first: ${drawn.join(", ")}; to change one, pass it in images. `;
+}
 
 function describePhotos(photos: readonly PersonPhoto[]) {
   if (photos.length === 0) {

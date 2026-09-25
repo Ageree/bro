@@ -208,6 +208,19 @@ const calendarPastVerbs = [
   "created",
 ];
 
+/** The same, said as still to come. */
+const calendarFutureVerbs = [
+  "поставлю",
+  "добавлю",
+  "внесу",
+  "занесу",
+  "создам",
+  "запишу",
+  "перенесу",
+  "will",
+  "ll",
+];
+
 const calendarNoun = /календар|событи|calendar/u;
 
 /**
@@ -226,6 +239,43 @@ function sentencesOf(text: string) {
     .filter((sentence) => !otherTime.test(sentence));
 }
 
+function wordsOf(sentence: string) {
+  return sentence.split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+}
+
+function calendarNounsOf(words: readonly string[]) {
+  return words.flatMap((word, index) =>
+    calendarNoun.test(word) ? [index] : []
+  );
+}
+
+const calendarVerbs = new Set([
+  ...calendarFutureVerbs,
+  ...calendarPastVerbs,
+  ...calendarPresentVerbs,
+]);
+
+/**
+ * Whether every mention of the calendar in a sentence is what a promise puts
+ * there: «записал тебя к терапевту на пт 10:00 — добавлю в календарь, как
+ * подтвердишь» tells the booking a site made and the calendar entry still to
+ * come, and claims no write. The verb nearest before each mention decides,
+ * so «добавил в календарь и поставлю напоминание» still claims one.
+ */
+function promisesCalendar(sentence: string) {
+  const words = wordsOf(sentence);
+  const nouns = calendarNounsOf(words);
+  return (
+    nouns.length > 0 &&
+    nouns.every((noun) => {
+      const verb = words
+        .slice(Math.max(0, noun - 5), noun)
+        .findLast((word) => calendarVerbs.has(word));
+      return verb !== undefined && calendarFutureVerbs.includes(verb);
+    })
+  );
+}
+
 /** Words that negate a verb or make it the person's: «не ставлю», «ты добавил». */
 const notMine = new Set(["не", "ты", "not", "you"]);
 
@@ -240,10 +290,8 @@ function saysNearCalendar(
   phrases: readonly string[],
   distance = 3
 ) {
-  const words = sentence.split(/[^\p{L}\p{N}]+/u).filter(Boolean);
-  const nouns = words.flatMap((word, index) =>
-    calendarNoun.test(word) ? [index] : []
-  );
+  const words = wordsOf(sentence);
+  const nouns = calendarNounsOf(words);
   return words.some(
     (word, index) =>
       phrases.includes(word) &&
@@ -289,14 +337,16 @@ export function unperformedClaim(
   if (!actions.calendarWritten) {
     // A past tense after an earlier turn wrote to the calendar may well be
     // about that write. A past tense anywhere in the sentence claims a write
-    // («Записал: встреча в пятницу в календаре»); a present one only next to
-    // the calendar.
+    // («Записал: встреча в пятницу в календаре»), unless the calendar there
+    // is only promised; a present one only next to the calendar.
     const claimed = sentences.some((sentence) => {
       const own = sentence.replaceAll(theirCalendar, "");
       if (!calendarNoun.test(own)) return false;
       return (
         saysNearCalendar(own, calendarPresentVerbs) ||
-        (!actions.calendarWrittenEarlier && says(sentence, calendarPastVerbs))
+        (!actions.calendarWrittenEarlier &&
+          !promisesCalendar(own) &&
+          says(sentence, calendarPastVerbs))
       );
     });
     if (claimed) return "calendar";

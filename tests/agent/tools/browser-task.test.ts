@@ -3771,6 +3771,258 @@ describe("browser_task errand text", () => {
       "user-approval"
     );
   });
+
+  it("asks every run for the facts the person acts on, and to look for missing ones", async () => {
+    // RU 24.09: «висит 500 ₽ к оплате» (d06), a basket without its
+    // substitutions and fees (d05), a slot without what to bring (d07).
+    const task = await composed("Собери корзину продуктов к 20:00");
+
+    expect(task).toContain(
+      "An amount alone («500 ₽ к оплате») is not a finding: open the charge and read what it is for."
+    );
+    expect(task).toContain(
+      "every substitute together with what the errand asked for that it replaces, every fee (delivery, service, packaging, small order) as a line of its own"
+    );
+    expect(task).toContain(
+      "what to bring or have ready as the site says (a passport, the OMS policy, a referral)"
+    );
+    expect(task).toContain("look for it on the site before you finish");
+    expect(task).toContain('"replaces":"for a substitute');
+    expect(task).toContain("CHARGES: a JSON array with one object per fine");
+    expect(task).toContain("BOOKING: for an appointment, a table, a stay");
+    expect(task).toContain('"confirmed":true only once the site confirmed');
+    // The same contract comes with a follow-up run.
+    const { composeBrowserContinuation } =
+      await import("@agent/tools/browser_task");
+    expect(
+      composeBrowserContinuation({
+        aliases: [],
+        allowPayment: false,
+        collectImages: false,
+        consent: undefined,
+        deliveryAddress: undefined,
+        errand: "Собери корзину",
+        facts: undefined,
+        message: "Поищи ещё",
+        searching: true,
+        site: "https://lavka.yandex.ru",
+      })
+    ).toContain("CHARGES: a JSON array");
+  });
+
+  it("gives a ticket errand the seat, bag, fee and check-in rules", async () => {
+    // RU 24.09, d02: flights came back with no seat, no bag in the price and
+    // no word on when check-in opens.
+    const flight = await composed(
+      "Найди билеты в Сочи на пятницу утром, обратно в понедельник вечером, с багажом, место у прохода. И зарегистрируй меня, как откроется"
+    );
+    expect(flight).toContain("from the seat map itself");
+    expect(flight).toContain(
+      "«С багажом» means a checked bag in the fare (20–23 kg), not only hand luggage"
+    );
+    expect(flight).toContain(
+      "The price that counts is the final one at checkout with every agency or service fee"
+    );
+    expect(flight).toContain(
+      "when online check-in opens for this flight — its rules, not a guess — and give it in NEXT"
+    );
+    // The card and the sign-in are bound to the errand's site: a purchase is
+    // staged there, never on the carrier a metasearch pointed at.
+    expect(flight).toContain(
+      "take the ticket up to its final step only on this errand's Site, where the saved card and sign-in work"
+    );
+    expect(flight).toContain(
+      "When a better fare is sold only by another seller, put it in ITEMS with its link and price and stop there with NEEDS: decision"
+    );
+    expect(flight).not.toContain("buy on the carrier's own site");
+    // A seat map behind the passenger details waits for the person's word.
+    expect(flight).toContain(
+      "When the site shows the seat map only after the passenger details, which you may not type without the person's confirmation, stop before them"
+    );
+    // «Найди билеты… у прохода» stays a search.
+    expect(flight).not.toContain("A ticket search that also asks for a seat");
+
+    const train = await composed("Возьми сапсан в Питер на пятницу, у окна");
+    expect(train).toContain("from the seat map itself");
+    expect(train).not.toContain("checked bag");
+    expect(train).not.toContain("online check-in opens");
+
+    expect(await composed("Закажи корм коту")).not.toContain("Tickets:");
+  });
+
+  it("keeps the page of a confirmed errand that stops on the way", async () => {
+    const { composeBrowserTask } = await import("@agent/tools/browser_task");
+
+    const task = composeBrowserTask({
+      aliases: [],
+      allowPayment: true,
+      collectImages: false,
+      consent: { by: "card", kind: "confirmed", submission: cardSubmission },
+      deliveryAddress: undefined,
+      errand: "Запиши к терапевту",
+      facts: undefined,
+      home: undefined,
+      site: "https://emias.info",
+    });
+
+    expect(task).toContain(
+      "If you stop before the final button, leave the page as it is — the basket filled, the seat or the slot held"
+    );
+  });
+
+  it("tells a public-service errand where its charges, documents, readings and doctors are", async () => {
+    const gosuslugi = await composed(
+      "Глянь на госуслугах, нет ли штрафов и налогов, и когда кончается загранпаспорт"
+    );
+    expect(gosuslugi).toContain("under «Платежи»");
+    expect(gosuslugi).toContain("lkfl2.nalog.ru");
+    expect(gosuslugi).toContain(
+      "Open every charge you find and read what it is for"
+    );
+    expect(gosuslugi).toContain("«Документы и данные»");
+    expect(gosuslugi).toContain("never copy its number");
+
+    const readings = await composed(
+      "Передай показания счётчиков воды: ХВС №12345678 — 123, ГВС №87654321 — 45"
+    );
+    expect(readings).toContain(
+      "match each meter on the page by its serial number"
+    );
+    expect(readings).toContain(
+      "without their confirmation, stop before the button that passes them with NEEDS: decision"
+    );
+    expect(readings).toContain("give the window it states in NEXT");
+
+    const doctor = await composed(
+      "Запиши к терапевту на следующей неделе после 18"
+    );
+    expect(doctor).toContain("in Moscow through ЕМИАС");
+    expect(doctor).toContain("in BOOKING");
+
+    const shop = await composed("Закажи корм коту");
+    expect(shop).not.toContain("«Платежи»");
+    expect(shop).not.toContain("ЕМИАС");
+    expect(shop).not.toContain("match each meter");
+  });
+
+  it("signs in through Госуслуги with the saved login where the site allows it", async () => {
+    const { composeBrowserTask } = await import("@agent/tools/browser_task");
+    const compose = (aliases: string[]) =>
+      composeBrowserTask({
+        aliases,
+        allowPayment: false,
+        collectImages: false,
+        consent: undefined,
+        deliveryAddress: undefined,
+        errand: "Запиши к терапевту",
+        facts: undefined,
+        home: undefined,
+        site: "https://www.mos.ru",
+      });
+
+    const esia = compose(["gosuslugi_username", "gosuslugi_password"]);
+    expect(esia).toContain(
+      "This errand's site (www.mos.ru) signs people in through Госуслуги: choose «Войти через Госуслуги» (or «Госуслуги», «ЕСИА») on its own sign-in page, and on the gosuslugi.ru page it opens use gosuslugi_username and gosuslugi_password. They are for signing in to this errand's site only, never to another site that sends you to Госуслуги"
+    );
+    expect(esia).not.toContain("Try the site's own sign-in first");
+    expect(
+      compose([
+        "gosuslugi_username",
+        "gosuslugi_password",
+        "login_username",
+        "login_password",
+      ])
+    ).toContain("Try the site's own sign-in first");
+    expect(compose(["login_username", "login_password"])).not.toContain(
+      "choose «Войти через Госуслуги»"
+    );
+  });
+
+  it("keeps the Госуслуги way in to the errand's own public-service site", async () => {
+    // Review: once bound, the login could be typed on esia.gosuslugi.ru from
+    // any site with the button — a fallback aggregator, a bank, a clinic —
+    // and the access screen handed it the person's profile without a card.
+    const { composeBrowserTask } = await import("@agent/tools/browser_task");
+    const compose = (
+      site: string,
+      consent?: Parameters<typeof composeBrowserTask>[0]["consent"]
+    ) =>
+      composeBrowserTask({
+        aliases: [],
+        allowPayment: false,
+        collectImages: false,
+        consent,
+        deliveryAddress: undefined,
+        errand: "Проверь штрафы",
+        facts: undefined,
+        home: undefined,
+        site,
+      });
+    const accessScreen =
+      "If Госуслуги shows a screen asking to give an organisation access to the person's data («Предоставление прав доступа», «Разрешить доступ», «Предоставить права»)";
+
+    const gosuslugi = compose("https://www.gosuslugi.ru");
+    expect(gosuslugi).toContain(
+      "Sign in through Госуслуги only to gosuslugi.ru itself."
+    );
+    expect(gosuslugi).toContain(
+      "Never use Госуслуги to sign in on a fallback or any other site that offers that button — a shop, a bank, a private clinic, an aggregator, a fines checker"
+    );
+    expect(gosuslugi).toContain(
+      `${accessScreen}, do not confirm it: stop there with NEEDS: decision and name in DETAILS the organisation and the data it asks for.`
+    );
+    // The old exception to «sign-ins only for the errand's own site» is gone.
+    expect(gosuslugi).not.toContain("the one exception is a Госуслуги login");
+
+    const mos = compose("https://www.mos.ru");
+    expect(mos).toContain(
+      "only to gosuslugi.ru and to this errand's own site, mos.ru."
+    );
+    // Without the person's confirmation the access screen is where it stops.
+    expect(mos).toContain(`${accessScreen}, do not confirm it`);
+    expect(
+      compose("https://www.mos.ru", {
+        by: "card",
+        kind: "confirmed",
+        submission: cardSubmission,
+      })
+    ).toContain(
+      `${accessScreen}, confirm it only when that organisation is mos.ru itself; for any other organisation do not confirm it`
+    );
+
+    const shop = compose("https://www.ozon.ru");
+    expect(shop).toContain(
+      "Do not sign in to any site through Госуслуги («Войти через Госуслуги», ЕСИА) on this errand."
+    );
+    expect(shop).toContain(`${accessScreen}, do not confirm it`);
+  });
+
+  it("types no document number into a site without the person's confirmation", async () => {
+    // Review: a fines check «по СТС и ВУ» put both numbers into a run with
+    // no card, headed for whatever site the search reached.
+    expect(await composed("Проверь штрафы по СТС 77 00 123456")).toContain(
+      "Never type the number of any of their documents either — a passport, СНИЛС, the OMS policy, a vehicle registration (СТС) or a driving licence — even when the errand text gives one."
+    );
+  });
+
+  it("tells the coordinator the Госуслуги login is bound, not missing", async () => {
+    resolveBrowserSecretBindings.mockResolvedValue({
+      aliases: ["gosuslugi_username", "gosuslugi_password"],
+      bindings: [
+        { alias: "gosuslugi_username" },
+        { alias: "gosuslugi_password" },
+      ],
+    });
+
+    const result = await startErrand("");
+
+    expect(continuationNote(result)).toContain(
+      "The user's saved Госуслуги login is bound to this run"
+    );
+    expect(continuationNote(result)).toContain(
+      "do not call request_vault_setup for this site unless the run's outcome reports Needs: password"
+    );
+  });
 });
 
 describe("browser_task on a finished errand the person has not heard about", () => {

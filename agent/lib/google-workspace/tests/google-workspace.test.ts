@@ -27,6 +27,7 @@ vi.mock("@db/services/proactive", () => ({
 
 import { parseCalendarAvailability } from "@agent/lib/google-workspace/calendar";
 import {
+  googleNotConnectedWriteRefusal,
   googleReadOnlyWriteRefusal,
   googleWorkspaceProvider,
   googleWriteApproval,
@@ -195,6 +196,7 @@ describe("Google Workspace", () => {
 
   it("asks before sending or creating and lets drafts and inbox tidying run", async () => {
     settings.access.mockResolvedValue("full");
+    composio.connect({ toolkit: "googlesuper", userId });
 
     expect(await approvalOf(gmailSend)).toBe("user-approval");
     expect(await approvalOf(calendarCreateEvent)).toBe("user-approval");
@@ -209,6 +211,7 @@ describe("Google Workspace", () => {
 
   it("asks before changing more than three emails at once", async () => {
     settings.access.mockResolvedValue("full");
+    composio.connect({ toolkit: "googlesuper", userId });
 
     expect(
       await approvalOf(gmailUpdate, { messageIds: ids(3), update: "archive" })
@@ -232,6 +235,39 @@ describe("Google Workspace", () => {
         update: "mark_read",
       })
     ).toBe("not-applicable");
+  });
+
+  it("shows no write card while Google is not connected, and says so", async () => {
+    settings.access.mockResolvedValue("full");
+    // Someone else's grant and a link never finished are not the person's.
+    composio.connect({
+      toolkit: "googlesuper",
+      userId: "better-auth:someone-else",
+    });
+    composio.connect({ status: "INITIATED", toolkit: "googlesuper", userId });
+
+    const refusal = { reason: googleNotConnectedWriteRefusal, type: "denied" };
+    expect(await approvalOf(gmailSend)).toEqual(refusal);
+    expect(await approvalOf(calendarCreateEvent)).toEqual(refusal);
+    expect(await approvalOf(calendarUpdateEvent)).toEqual(refusal);
+    expect(await approvalOf(calendarDeleteEvent)).toEqual(refusal);
+    expect(
+      await approvalOf(gmailUpdate, { messageIds: ids(4), update: "archive" })
+    ).toEqual(refusal);
+    // No card to show: a draft or a small tidy-up meets eve's sign-in card.
+    expect(await approvalOf(gmailDraft)).toBe("not-applicable");
+    expect(googleNotConnectedWriteRefusal).toContain("connect_google");
+    expect(googleNotConnectedWriteRefusal).toContain("не подключён");
+  });
+
+  it("still shows the card when Composio cannot say just now", async () => {
+    settings.access.mockResolvedValue("full");
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    composio.fetch.mockResolvedValue(
+      Response.json({ error: { message: "down" } }, { status: 502 })
+    );
+
+    expect(await approvalOf(gmailSend)).toBe("user-approval");
   });
 
   it("refuses every write in a read-only workspace before any prompt", async () => {

@@ -16,6 +16,8 @@ import type {
   releaseScheduledAgentRun,
   setScheduledRunSession,
 } from "@db/services/scheduled-agent-jobs";
+import type { readUserProfile } from "@db/services/user-profile";
+import { emptyUserProfile } from "@shared/user-profile/schema";
 
 const proactive = vi.hoisted(() => ({
   advance: vi.fn<typeof advanceProactiveWatermark>(),
@@ -32,6 +34,7 @@ const jobs = vi.hoisted(() => ({
   setSession: vi.fn<typeof setScheduledRunSession>(),
 }));
 const probe = vi.hoisted(() => vi.fn<typeof probeGoogleSignals>());
+const profile = vi.hoisted(() => vi.fn<typeof readUserProfile>());
 
 vi.mock("@db/services/proactive", () => ({
   advanceProactiveWatermark: proactive.advance,
@@ -48,6 +51,7 @@ vi.mock("@db/services/scheduled-agent-jobs", () => ({
   setScheduledRunSession: jobs.setSession,
 }));
 vi.mock("@agent/lib/proactive/probe", () => ({ probeGoogleSignals: probe }));
+vi.mock("@db/services/user-profile", () => ({ readUserProfile: profile }));
 vi.mock("@agent/channels/scheduled-run", () => ({
   default: { channel: "scheduled-run" },
 }));
@@ -77,6 +81,13 @@ describe("proactive schedule", () => {
     });
     jobs.claimRuns.mockResolvedValue([]);
     jobs.setSession.mockResolvedValue(true);
+    profile.mockResolvedValue({
+      ...emptyUserProfile,
+      addressLine1: "ул. Профсоюзная, 12",
+      city: "Москва",
+      timezone: "Europe/Moscow",
+    });
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
   });
 
   afterEach(() => {
@@ -105,6 +116,13 @@ describe("proactive schedule", () => {
       workspaceId: "workspace:alice",
     });
     expect(proactive.advance).not.toHaveBeenCalled();
+    // One line per check says what it came to.
+    expect(console.info).toHaveBeenCalledWith("[proactive] check", {
+      night: false,
+      outcome: "queued",
+      signalCount: 1,
+      workspaceId: "workspace:alice",
+    });
     expect(jobs.claimRuns).toHaveBeenCalledWith(
       expect.objectContaining({ kind: "proactive" })
     );
@@ -142,15 +160,55 @@ describe("proactive schedule", () => {
     );
   });
 
-  it("does not even look at Google during quiet hours", async () => {
+  it("looks only for what cannot wait at night and keeps the watermark", async () => {
     // 23:30 in Moscow.
-    vi.setSystemTime(new Date("2026-09-23T20:30:00.000Z"));
+    const night = new Date("2026-09-23T20:30:00.000Z");
+    vi.setSystemTime(night);
+    proactive.claimWatches.mockResolvedValue([
+      { ...watch(), leaseUntil: new Date("2026-09-23T20:45:00.000Z") },
+    ]);
+    probe.mockResolvedValue({ signals: [flight], state: "connected" });
 
     await runSchedule(vi.fn<ScheduleToFn>());
 
-    expect(probe).not.toHaveBeenCalled();
+    expect(probe).toHaveBeenCalledExactlyOnceWith(
+      { userId: "better-auth:alice", workspaceId: "workspace:alice" },
+      {
+        // Subjects only of mail since the previous night check, not of
+        // everything since the evening watermark again.
+        mailAfter: new Date("2026-09-23T20:05:00.000Z"),
+        nightOnly: true,
+        now: night,
+        timeZone: "Europe/Moscow",
+      }
+    );
+    expect(proactive.queue).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        // The rest of the night's mail is read in the morning as one batch.
+        mailCheckedAt: new Date("2026-09-23T11:45:00.000Z"),
+        signals: [flight],
+      })
+    );
+    expect(proactive.advance).not.toHaveBeenCalled();
+    // The lease already ends before the morning, so the check keeps it.
+    expect(proactive.defer).not.toHaveBeenCalled();
+  });
+
+  it("runs the last night check into the first morning one", async () => {
+    // 07:50 in Moscow; the lease would end at 08:05.
+    vi.setSystemTime(new Date("2026-09-24T04:50:00.000Z"));
+    const leased = {
+      ...watch(),
+      leaseUntil: new Date("2026-09-24T05:05:00.000Z"),
+    };
+    proactive.claimWatches.mockResolvedValue([leased]);
+    probe.mockResolvedValue({ signals: [], state: "connected" });
+
+    await runSchedule(vi.fn<ScheduleToFn>());
+
+    expect(proactive.queue).not.toHaveBeenCalled();
     expect(proactive.defer).toHaveBeenCalledExactlyOnceWith(
-      watch(),
+      leased,
       new Date("2026-09-24T05:00:00.000Z")
     );
   });
@@ -204,6 +262,10 @@ describe("proactive schedule", () => {
       runId: claim.run.id,
     });
     expect(send.mock.calls[0]?.[0]).toContain("these ids): flight");
+    expect(send.mock.calls[0]?.[0]).toContain(
+      "count a leave-by time from here): ул. Профсоюзная, 12, Москва"
+    );
+    expect(send.mock.calls[0]?.[0]).not.toContain("quiet hours");
     expect(send.mock.calls[0]?.[1].auth).toMatchObject({
       attributes: {
         conversationChannel: "telegram",
