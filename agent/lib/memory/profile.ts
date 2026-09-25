@@ -271,8 +271,20 @@ async function forgetNamedMemories(
       note: "The memories in changed were corrected after the card and were not forgotten.",
     }),
     ...(missing.length > 0 && { missing }),
-    ...afterForgetting(),
+    // The guide to what stays outside memory answers «удали всё»: only a
+    // call that left no memory behind, bar one corrected after the card,
+    // carries it — «забудь, что у меня кот» gets a short reply.
+    ...((await nothingLeftBut(scope, scopeKey, changed)) && afterForgetting()),
   };
+}
+
+async function nothingLeftBut(
+  scope: AccessScope,
+  scopeKey: string,
+  changed: readonly number[]
+) {
+  const left = await listCurrentMemories(scope, scopeKey);
+  return left.every((record) => changed.includes(record.index));
 }
 
 export function createProfileMemoryProvider(

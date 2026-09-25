@@ -586,6 +586,35 @@ describe("schedule tools", () => {
     expect(reply).not.toContain("пробок");
   });
 
+  it.each([
+    [
+      "Каждый понедельник присылай список новых файлов на моём Google Drive.",
+      false,
+    ],
+    ["Check My Drive for new files every Monday.", false],
+    ["Напоминай продлить driver's licence.", false],
+    ["Tell me how long the drive to work takes.", true],
+    ["Сколько ехать до работы на машине.", true],
+  ])(
+    "promises map time without traffic only for travel: «%s»",
+    async (prompt, travel) => {
+      const job = { ...scheduledJob(), prompt };
+      services.create.mockResolvedValue(job);
+
+      const result = await createSchedule.execute(
+        {
+          missedRunPolicy: "run_latest",
+          prompt,
+          timing: { frequency: "daily", kind: "calendar", localTime: "09:00" },
+        },
+        toolContext("schedules-create")
+      );
+
+      const reply = "reply" in result ? result.reply : "";
+      expect(reply.includes("с учётом пробок")).toBe(travel);
+    }
+  );
+
   it("names the web chat when the person has no messenger", async () => {
     const job = scheduledJob({
       conversationChannel: "eve",

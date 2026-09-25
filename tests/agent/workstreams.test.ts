@@ -313,6 +313,37 @@ describe("workstream memory", () => {
     expect(await readWorkstream(alice, "key-a", "uk-visa")).toBeNull();
   });
 
+  // Review of wave 5: forgetting one piece of work is not «удали всё», and
+  // its reply carries no guide to everything else.
+  it("adds the guide to what stays outside memory only once no work is left", async () => {
+    const later = context("later");
+    const tools = await workstreamMemory.provider.tools(later);
+    if (!tools) throw new Error("Expected tools.");
+    for (const [id, title] of [
+      ["autumn-trip", "Autumn trip"],
+      ["uk-visa", "UK visa"],
+    ] as const) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Saved one after the other, as a conversation would.
+      await tools.save.execute(
+        { id, expectedRevision: 0, content: { ...content, title } },
+        { ...later, callId: `save-${id}`, toolName: "workstreams__save" }
+      );
+    }
+
+    const partial = await tools.forget_all.execute(
+      { workstreams: [{ id: "uk-visa", title: "UK visa" }] },
+      { ...later, callId: "forget-one", toolName: "workstreams__forget_all" }
+    );
+    expect(partial).toEqual({ forgotten: ["uk-visa"] });
+
+    expect(
+      await tools.forget_all.execute(
+        { workstreams: [{ id: "autumn-trip", title: "Autumn trip" }] },
+        { ...later, callId: "forget-rest", toolName: "workstreams__forget_all" }
+      )
+    ).toEqual({ forgotten: ["autumn-trip"], ...afterForgetting() });
+  });
+
   it("isolates records by both authenticated workspace and Eve memory scope", async () => {
     await saveWorkstream(
       alice,

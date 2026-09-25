@@ -140,9 +140,13 @@ export async function scheduleDelivery(job: ScheduledJob) {
   };
 }
 
-/** A run that measures the way somewhere: the map knows no traffic. */
+/**
+ * A run that measures the way somewhere: the map knows no traffic. Travel
+ * words only: «Google Drive», «My Drive» and a «driver's licence» are not a
+ * drive to work.
+ */
 const travelTask =
-  /(?:ехать|езды|в пути|пробк|маршрут|до работы|на работу|до офиса|commute|driv|traffic)/iu;
+  /(?:ехать|езды|в пути|пробк|маршрут|до работы|на работу|до офиса|commute|(?<!(?:google|my)\s)\bdriv(?:e|es|ing)\b|traffic)/iu;
 
 /**
  * What the confirmation of a new schedule tells the person besides its first

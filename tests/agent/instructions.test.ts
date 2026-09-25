@@ -144,16 +144,19 @@ describe("agent instructions", () => {
 
   // RU d12 (25.09): the summary's schedule defined unanswered mail as
   // «непрочитанные или последние входящие», which takes in GitHub and Vercel
-  // notices and misses read threads that wait for a reply.
-  it("collects a daily summary by its own rules, whatever the task words", async () => {
+  // notices and misses read threads that wait for a reply. A person who asked
+  // for unread mail in so many words still gets it.
+  it("collects unanswered mail by its own rule unless the person asked for unread", async () => {
     const resolve = roleInstructions.events["turn.started"];
     if (!resolve) throw new Error("Role instructions resolve per turn.");
 
     const worker =
       (await resolve({}, dynamicContext("scheduled-worker")))?.content ?? "";
+    // The person's own choice of unread mail still stands.
     expect(worker).toContain(
-      "Эти правила сильнее того, как раздел описан в тексте задачи"
+      "когда задача называет их так или никак не определяет"
     );
+    expect(worker).toContain("Если задача прямо просит непрочитанные письма");
     expect(worker).toContain("Прочитано оно или нет — неважно");
     expect(worker).toContain("Уведомления сервисов (GitHub, Vercel");
     expect(worker).toContain("явный запас на час пик");

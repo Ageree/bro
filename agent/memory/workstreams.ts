@@ -205,7 +205,11 @@ export default defineMemory({
                 note: "The workstreams in changed were renamed after the card and were not forgotten.",
               }),
               ...(missing.length > 0 && { missing }),
-              ...afterForgetting(),
+              // Only a call that left no saved work behind answers «удали
+              // всё» and carries the guide to what stays outside memory.
+              ...((await findWorkstreams(scope, key, {})).items.every(
+                ({ id }) => changed.includes(id)
+              ) && afterForgetting()),
             };
           },
         }),

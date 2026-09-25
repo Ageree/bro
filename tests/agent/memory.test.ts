@@ -567,6 +567,30 @@ describe("forgetting everything at once", () => {
       )
     ).toEqual(["Живёт в Самаре."]);
   });
+
+  // Review of wave 5: «забудь, что я люблю суши и живу в Казани» is not
+  // «удали всё», and its reply stays short.
+  it("adds the guide to what stays outside memory only once nothing is left", async () => {
+    await saveEverything();
+    const session = profileToolsContext("this-session");
+    const tools = await profileMemory.provider.tools(session);
+    if (!tools) throw new Error("Expected profile tools.");
+
+    const partial = await tools.forget_all.execute(
+      { records: everything.filter(({ index }) => index !== 1) },
+      { ...session, callId: "forget-two", toolName: "profile__forget_all" }
+    );
+    expect(partial).toMatchObject({ forgotten: [0, 2] });
+    expect(partial).not.toHaveProperty("outsideMemory");
+    expect(partial).not.toHaveProperty("reply");
+
+    // The last one gone, the store is empty: now the guide comes.
+    const rest = await tools.forget_all.execute(
+      { records: everything.slice(1, 2) },
+      { ...session, callId: "forget-rest", toolName: "profile__forget_all" }
+    );
+    expect(rest).toMatchObject({ forgotten: [1], ...afterForgetting() });
+  });
 });
 
 /**

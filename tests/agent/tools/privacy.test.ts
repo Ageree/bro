@@ -44,8 +44,15 @@ afterEach(() => {
 
 const optionalServices = [
   "BROWSER_USE_API_KEY",
+  "BROWSER_USE_PROXY_HOST",
+  "BROWSER_USE_PROXY_PORT",
+  "IMESSAGE_PROJECT_ID",
+  "IMESSAGE_PROJECT_SECRET",
   "OPENROUTER_API_KEY",
   "SUPERMEMORY_API_KEY",
+  "TELEGRAM_BOT_TOKEN",
+  "YOOKASSA_SECRET_KEY",
+  "YOOKASSA_SHOP_ID",
 ] as const;
 
 /**
@@ -132,6 +139,38 @@ describe("privacy", () => {
     expect(processors).toContain("Vercel AI Gateway");
     expect(processors).not.toContain("Browser Use");
     expect(processors).not.toContain("Supermemory");
+    expect(processors).not.toContain("ЮKassa");
+    expect(processors).not.toContain("прокси");
+    expect(processors).not.toContain("Photon");
+    expect(processors).not.toContain("Telegram");
+    expect(facts.keptData().join("\n")).not.toContain("оплат");
+  });
+
+  // Review of wave 5: with billing on, the payment processor was missing
+  // from a list the model is told to retell as complete.
+  it("names every configured processor: payments, the browser's proxy, the messengers and the sign-in code", async () => {
+    const { facts } = await withServices({
+      BROWSER_USE_API_KEY: "browser-use-test-key",
+      BROWSER_USE_PROXY_HOST: "proxy.example",
+      BROWSER_USE_PROXY_PORT: "8080",
+      IMESSAGE_PROJECT_ID: "photon-project",
+      IMESSAGE_PROJECT_SECRET: "photon-secret",
+      OPENROUTER_API_KEY: "openrouter-test-key",
+      TELEGRAM_BOT_TOKEN: "telegram-token",
+      YOOKASSA_SECRET_KEY: "yookassa-secret",
+      YOOKASSA_SHOP_ID: "yookassa-shop",
+    });
+    const processors = facts
+      .dataProcessors("deepseek/deepseek-v4.1-flash")
+      .join("\n");
+
+    expect(processors).toContain("ЮKassa");
+    expect(processors).toContain("данные карты Бро не видит");
+    expect(processors).toContain("прокси-сервер деплоя");
+    expect(processors).toContain("Exa и Perplexity");
+    expect(processors).toContain("Telegram и iMessage (через сервис Photon)");
+    expect(processors).toContain("Код для входа по номеру телефона");
+    expect(facts.keptData().join("\n")).toContain("история оплат подписки");
   });
 });
 
