@@ -1,5 +1,6 @@
 import type { ModelMessage, ToolResultPart } from "ai";
 import { z } from "zod";
+import { turnDeclinedCard } from "@agent/lib/delivery/declined-cards";
 import { currentTurnMessages } from "@agent/lib/delivery/turn-sends";
 import { googleRateLimitMessage } from "./client";
 import { driveReadInputSchema, driveSearchInputSchema } from "./drive";
@@ -379,30 +380,11 @@ export function repliableGmailMessageIds(messages: readonly ModelMessage[]) {
  * not connected — never showed a card and does not count.
  */
 export function turnDeclinedGmailSend(messages: readonly ModelMessage[]) {
-  const sends = new Set<string>();
-  const cards = new Set<string>();
-  let declined = false;
-  for (const message of currentTurnMessages(messages)) {
-    const parts = Array.isArray(message.content) ? message.content : [];
-    for (const part of parts) {
-      if (part.type === "tool-call") {
-        if (part.toolName === "gmail-send") sends.add(part.toolCallId);
-        if (part.toolName === "gmail-draft") declined = false;
-      } else if (part.type === "tool-approval-request") {
-        // A policy's own refusal is written as an automatic request and
-        // response: nobody saw a card, so nobody declined one.
-        if (sends.has(part.toolCallId) && part.isAutomatic !== true) {
-          cards.add(part.approvalId);
-        }
-      } else if (
-        part.type === "tool-approval-response" &&
-        cards.has(part.approvalId)
-      ) {
-        declined = !part.approved;
-      }
-    }
-  }
-  return declined;
+  return turnDeclinedCard(
+    messages,
+    "gmail-send",
+    (part) => part.type === "tool-call" && part.toolName === "gmail-draft"
+  );
 }
 
 /**

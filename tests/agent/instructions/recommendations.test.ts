@@ -28,7 +28,14 @@ describe("recommendation instructions", () => {
     expect(content).toContain(
       "Цель — три варианта, у которых каждое условие подтверждено источником"
     );
-    expect(content).toContain("Набралось меньше — скажи, сколько и почему");
+    // RU 25.09, d03: one place after one round of searches.
+    expect(content).toContain(
+      "Ответ с одним-двумя — только если ещё один поиск новых кандидатов рядом ничего не дал; тогда скажи, сколько и почему"
+    );
+    expect(content).toContain(
+      "Его `pick` считает, сколько кандидатов в пешей доступности и скольких не хватает до трёх"
+    );
+    expect(content).toContain("повтори с адресом без названия");
     expect(content).toContain("почему выбрал его, и один честный минус");
     expect(content).toContain('`route_time` (`mode: "walking"`)');
     expect(content).toContain("«Пешком» — до 15 минут");
@@ -51,6 +58,11 @@ describe("recommendation instructions", () => {
 
     expect(content).toContain(
       "Подбирай через `web_search`, `web_fetch` и `route_time`, без браузера"
+    );
+    // RU 25.09, d13: «поезд до казани и где поужинать» went to web_search
+    // for the train too.
+    expect(content).toContain(
+      "билеты, места в поезде и номера на даты, даже в одной просьбе с ужином, ищет `browser_task` без `allowSubmit`"
     );
     expect(content).toContain("Закончи одним вопросом");
     expect(content).toContain("Других вопросов в этом сообщении нет");

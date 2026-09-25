@@ -42,6 +42,7 @@ import {
   owedStepsNote,
   stepsAskedBy,
 } from "@agent/lib/delivery/browser-report";
+import { declinedErrandNote } from "@agent/lib/delivery/declined-cards";
 import { replyDirective } from "@agent/lib/delivery/language";
 import {
   rewriteSendNotice,
@@ -285,6 +286,85 @@ describe("interactive delivery enforcement", () => {
     ]);
     // The model learns why they are gone, so it does not claim it used them.
     expect(options?.replyNote).toContain("are not available");
+  });
+
+  it("leads a declined errand card to the options, not to «не удалось»", async () => {
+    // RU 25.09, d15: «Заявку в барбершоп тоже не удалось запустить:
+    // операция была отклонена».
+    const declined = (isAutomatic?: boolean) => [
+      humanMessage("запиши меня завтра в барбершоп к артуру"),
+      {
+        content: [
+          {
+            input: { action: "start", allowSubmit: true },
+            toolCallId: "call-errand",
+            toolName: "browser_task",
+            type: "tool-call" as const,
+          },
+          {
+            approvalId: "approval-errand",
+            isAutomatic,
+            toolCallId: "call-errand",
+            type: "tool-approval-request" as const,
+          },
+        ],
+        role: "assistant" as const,
+      },
+      {
+        content: [
+          {
+            approvalId: "approval-errand",
+            approved: false,
+            type: "tool-approval-response" as const,
+          },
+        ],
+        role: "tool" as const,
+      },
+    ];
+
+    await agent.model.events["step.started"]?.(
+      {},
+      interactiveContext(declined())
+    );
+    expect(lastReplyNote()).toContain(declinedErrandNote);
+
+    // A policy's own refusal showed no card, and nobody declined one.
+    await agent.model.events["step.started"]?.(
+      {},
+      interactiveContext(declined(true))
+    );
+    expect(lastReplyNote()).not.toContain(declinedErrandNote);
+
+    // Once the person heard back, the note has done its work.
+    await agent.model.events["step.started"]?.(
+      {},
+      interactiveContext([
+        ...declined(),
+        {
+          content: [
+            {
+              input: { kind: "message", text: "Не записал. Найти слоты?" },
+              toolCallId: "call-reply",
+              toolName: "send_message",
+              type: "tool-call" as const,
+            },
+          ],
+          role: "assistant" as const,
+        },
+        {
+          content: [
+            {
+              output: { type: "text" as const, value: "submitted" },
+              toolCallId: "call-reply",
+              toolName: "send_message",
+              type: "tool-result" as const,
+            },
+          ],
+          role: "tool" as const,
+        },
+      ])
+    );
+    expect(lastReplyNote()).not.toContain(declinedErrandNote);
   });
 
   it("makes a browser run's result act on its first step, then leaves it free", async () => {
@@ -757,6 +837,12 @@ function bookedReport(outcome: string, instructions: string) {
 
 function messageText(message: { readonly content: string }) {
   return message.content;
+}
+
+/** The note the last model step was given to read last. */
+function lastReplyNote() {
+  const [, options] = services.modelSelection.mock.lastCall ?? [];
+  return options?.replyNote;
 }
 
 function humanMessage(text: string) {
