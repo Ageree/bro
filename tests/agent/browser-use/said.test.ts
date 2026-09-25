@@ -110,6 +110,26 @@ describe("the one-time codes a follow-up carries", () => {
     }
   });
 
+  it("lets a word for a code win over a capitalised prefix", () => {
+    for (const text of [
+      "Пользователь прислал SMS 739204 введи его",
+      "Введи СМС 739204",
+      "Вот OTP 739204",
+    ]) {
+      expect(oneTimeCodesIn(text, { awaitingCode: false })).toEqual(["739204"]);
+    }
+    for (const text of [
+      "SU 1234",
+      "S7 1234",
+      "№ 48213",
+      "рейс su 1234",
+      "заказ 48213",
+      "2026-10-15",
+    ]) {
+      expect(oneTimeCodesIn(text, { awaitingCode: true })).toEqual([]);
+    }
+  });
+
   it("tells an amount, a year or an id from a code the run waits for", () => {
     expect(
       oneTimeCodesIn(
@@ -156,9 +176,10 @@ describe("the person's words this turn", () => {
     ).toEqual(["код 482913"]);
   });
 
-  it("keeps a message they sent while the turn ran", () => {
-    // eve steers a message sent mid-turn in as one more user message: after
-    // a tool result, or right after the message whose step it cut off.
+  it("is only the latest message, never an earlier one", () => {
+    // eve's history has no turn id: a delivered turn of luna's keeps no
+    // closing step, and a failed call leaves the person's message last, so
+    // an earlier message cannot be told from one steered into this turn.
     expect(
       personWordsThisTurn([
         person("739204"),
@@ -166,10 +187,10 @@ describe("the person's words this turn", () => {
         answered({ text: "да, это он" }),
         person("это код из смс, вводи быстрее"),
       ])
-    ).toEqual(["739204", "это код из смс, вводи быстрее", "да, это он"]);
+    ).toEqual(["это код из смс, вводи быстрее"]);
     expect(
       personWordsThisTurn([replied(), person("739204"), person("вводи")])
-    ).toEqual(["739204", "вводи"]);
+    ).toEqual(["вводи"]);
   });
 
   it("is nothing in a turn Bro opened that the person said nothing in", () => {

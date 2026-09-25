@@ -4729,7 +4729,9 @@ describe("browser_task passes on only what the person sent", () => {
     expect(createBrowserUseRun).toHaveBeenCalledTimes(2);
   });
 
-  it("keeps a code the person sent before a message steered into the turn", async () => {
+  it("asks again for a code sent before the person's latest message", async () => {
+    // A message steered into the turn and one of an earlier turn look the
+    // same in eve's history: only the latest counts, the safe way round.
     readBrowserRunForScope.mockResolvedValue(
       browserRunRow(new Date(), "Needs: sms_code")
     );
@@ -4741,12 +4743,122 @@ describe("browser_task passes on only what the person sent", () => {
       "739204"
     );
 
-    await tool.execute(
-      { action: "continue", personSaid: "739204", runId, task: "Код 739204" },
-      toolContext("better-auth:alice")
+    await expect(
+      tool.execute(
+        { action: "continue", personSaid: "739204", runId, task: "Код 739204" },
+        toolContext("better-auth:alice")
+      )
+    ).rejects.toThrow("Never make up a code");
+    nothingSent();
+  });
+
+  it.each([
+    ["a live run", null, "попробуй ещё раз", "Введи 739204 ещё раз"],
+    ["a live run", null, "739204", "739204"],
+    [
+      "a run stopped for the code",
+      new Date(),
+      "попробуй ещё раз",
+      "Введи 739204 ещё раз",
+    ],
+    ["a run stopped for the code", new Date(), "739204", "739204"],
+  ] as const)(
+    "gives no earlier turn's code to «попробуй ещё раз» on %s («%s», «%s»)",
+    async (_label, completedAt, personSaid, task) => {
+      // The earlier turn ended on its send_message result: luna's closing
+      // step (<eve-empty-delivery/>) is not kept in the history.
+      readBrowserRunForScope.mockResolvedValue(
+        browserRunRow(completedAt, completedAt ? "Needs: sms_code" : null)
+      );
+      const tool = await resolvedBrowserTask(
+        [
+          toolResult("send_message", { delivered: true, messageId: "m-1" }),
+          { content: "попробуй ещё раз", role: "user" },
+        ],
+        "739204"
+      );
+
+      await expect(
+        tool.execute(
+          { action: "continue", personSaid, runId, task },
+          toolContext("better-auth:alice")
+        )
+      ).rejects.toThrow("Nothing was sent");
+      nothingSent();
+      expect(findBrowserUseSessionCdpUrl).not.toHaveBeenCalled();
+    }
+  );
+
+  it("gives no earlier turn's words to a later «ну что там?»", async () => {
+    readBrowserRunForScope.mockResolvedValue(
+      browserRunRow(new Date(), "Needs: decision")
+    );
+    const tool = await resolvedBrowserTask(
+      [
+        toolResult("send_message", { delivered: true, messageId: "m-1" }),
+        { content: "ну что там?", role: "user" },
+      ],
+      "Найди билеты в Сочи, бюджет можно поднять"
     );
 
-    expect(createBrowserUseRun).toHaveBeenCalledOnce();
+    await expect(
+      tool.execute(
+        {
+          action: "continue",
+          personSaid: "бюджет можно поднять",
+          runId,
+          task: "Человек разрешил поднять бюджет, бери дороже",
+        },
+        toolContext("better-auth:alice")
+      )
+    ).rejects.toThrow("only asked how the errand stands");
+    nothingSent();
+  });
+
+  it("gives no earlier turn's answer to a question to a later turn", async () => {
+    readBrowserRunForScope.mockResolvedValue(
+      browserRunRow(new Date(), "Needs: sms_code")
+    );
+    const tool = await resolvedBrowserTask(
+      [
+        {
+          content: [
+            {
+              input: { prompt: "Какой код пришёл?" },
+              toolCallId: "ask-1",
+              toolName: "ask_question",
+              type: "tool-call",
+            },
+          ],
+          role: "assistant",
+        },
+        {
+          content: [
+            {
+              output: {
+                type: "json",
+                value: { status: "answered", text: "739204" },
+              },
+              toolCallId: "ask-1",
+              toolName: "ask_question",
+              type: "tool-result",
+            },
+          ],
+          role: "tool",
+        },
+        toolResult("send_message", { delivered: true, messageId: "m-1" }),
+        { content: "ну что там?", role: "user" },
+      ],
+      "войди на госуслуги"
+    );
+
+    await expect(
+      tool.execute(
+        { action: "continue", personSaid: "739204", runId, task: "Код 739204" },
+        toolContext("better-auth:alice")
+      )
+    ).rejects.toThrow("Never make up a code");
+    nothingSent();
   });
 
   it.each(["739204", "Код: 739204."])(
