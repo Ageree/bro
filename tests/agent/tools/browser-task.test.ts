@@ -107,6 +107,12 @@ const queueBrowserUseSessionMessage = vi.hoisted(() =>
 const readBrowserUseRunStatus = vi.hoisted(() =>
   vi.fn<() => Promise<string>>(() => Promise.resolve("running"))
 );
+// The page is never reached here: a code to type ends at the lookup.
+const findBrowserUseSessionCdpUrl = vi.hoisted(() =>
+  vi.fn<(sessionId: string) => Promise<string | undefined>>(() =>
+    Promise.resolve(undefined)
+  )
+);
 const resolveBrowserSecretBindings = vi.hoisted(() =>
   vi.fn<() => Promise<{ aliases: string[]; bindings: { alias: string }[] }>>(
     () => Promise.resolve({ aliases: [], bindings: [] })
@@ -289,6 +295,7 @@ vi.mock("@agent/lib/browser-use/client", async (importOriginal) => ({
   cancelBrowserUseRun,
   createBrowserUseProfile: vi.fn<Unused>(),
   createBrowserUseRun,
+  findBrowserUseSessionCdpUrl,
   // The live-view lookup gives up on the first failure, which keeps the start
   // path from waiting out its full poll budget here.
   listBrowserUseRunEvents: vi.fn<() => Promise<never>>(() =>
@@ -4624,6 +4631,177 @@ describe("browser_task passes on only what the person sent", () => {
         ["Да, записывай"]
       )
     ).toBe("user-approval");
+  });
+
+  it.each(["photon-imessage", "authjs"])(
+    "carries out the card the person approved in a report turn (%s)",
+    async (authenticator) => {
+      // The approval resumes the report turn under the person's own auth,
+      // but the turn still has no words of theirs: it stays Bro's.
+      const { browserTaskApproval } = await import("@agent/tools/browser_task");
+      readBrowserRunForScope.mockResolvedValue(
+        browserRunRow(new Date(), "Needs: decision")
+      );
+      const input = {
+        action: "continue",
+        allowSubmit: true,
+        runId,
+        submission: cardSubmission,
+        task: "Оформляй вариант, который нашёл",
+      } as const;
+      expect(
+        await browserTaskApproval(
+          input,
+          approvalSession("browser-result"),
+          null
+        )
+      ).toBe("user-approval");
+      const tool = await resolvedBrowserTask([], reportOpening);
+
+      await tool.execute(
+        input,
+        toolContext("better-auth:alice", authenticator)
+      );
+
+      expect(createBrowserUseRun).toHaveBeenCalledOnce();
+      const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
+      expect(task).toContain("Follow-up from Bro's coordinator");
+      expect(task).not.toContain("Человек написал");
+    }
+  );
+
+  it("takes the code the person pasted with its full stop", async () => {
+    await continueErrand({
+      completedAt: new Date(),
+      outcome: "Needs: sms_code",
+      personSaid: "Код для входа на Госуслуги: 739204.",
+      said: "Код для входа на Госуслуги: 739204. Никому не сообщайте его",
+      task: "Код из СМС: 739204",
+    });
+
+    expect(createBrowserUseRun).toHaveBeenCalledOnce();
+  });
+
+  it("finds a made-up code behind a full stop", async () => {
+    await expect(
+      continueErrand({
+        completedAt: new Date(),
+        outcome: "Needs: sms_code",
+        personSaid: "ну давай",
+        said: "ну давай",
+        task: "Пользователь прислал SMS-код: 739204.",
+      })
+    ).rejects.toThrow("Never make up a code");
+    nothingSent();
+  });
+
+  it.each(["Needs: push", "Needs: 3ds"])(
+    "continues on «Готово» after the person confirmed in the app (%s)",
+    async (outcome) => {
+      await continueErrand({
+        completedAt: new Date(),
+        outcome,
+        personSaid: "Готово",
+        said: "Готово",
+        task: "Человек подтвердил вход в приложении, продолжай",
+      });
+
+      expect(createBrowserUseRun).toHaveBeenCalledOnce();
+    }
+  );
+
+  it("lets an amount, a date or a flight ride along a code the run waits for", async () => {
+    await continueErrand({
+      completedAt: new Date(),
+      outcome: "Needs: 3ds",
+      personSaid: "подтвердил",
+      said: "подтвердил",
+      task: "Человек подтвердил оплату 4 890 ₽ в приложении банка, проверь",
+    });
+    await continueErrand({
+      completedAt: new Date(),
+      outcome: "Needs: sms_code",
+      personSaid: "739204",
+      said: "739204",
+      task: "Код 739204, заверши запись на 15 октября 2026, рейс SU 1234",
+    });
+
+    expect(createBrowserUseRun).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a code the person sent before a message steered into the turn", async () => {
+    readBrowserRunForScope.mockResolvedValue(
+      browserRunRow(new Date(), "Needs: sms_code")
+    );
+    const tool = await resolvedBrowserTask(
+      [
+        toolResult("send_message", { delivered: true, messageId: "m-1" }),
+        { content: "это код из смс, вводи быстрее", role: "user" },
+      ],
+      "739204"
+    );
+
+    await tool.execute(
+      { action: "continue", personSaid: "739204", runId, task: "Код 739204" },
+      toolContext("better-auth:alice")
+    );
+
+    expect(createBrowserUseRun).toHaveBeenCalledOnce();
+  });
+
+  it.each(["739204", "Код: 739204."])(
+    "passes no code into a live run from a turn Bro opened (%s)",
+    async (task) => {
+      readBrowserRunForScope.mockResolvedValue(browserRunRow());
+      const report = await resolvedBrowserTask([], reportOpening);
+
+      await expect(
+        report.execute(
+          { action: "continue", runId, task },
+          toolContext("better-auth:alice", "browser-result")
+        )
+      ).rejects.toThrow("Never make up a code");
+      await expect(
+        continueErrand({ authenticator: "scheduled-worker", task })
+      ).rejects.toThrow("Never make up a code");
+      nothingSent();
+      expect(findBrowserUseSessionCdpUrl).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each([
+    ["попробуй ещё раз", "Введи 739204 ещё раз", null],
+    ["продолжай", "739204", null],
+    ["давай", "Введи 739204.", "Needs: sms_code"],
+  ] as const)(
+    "passes no code the person did not send («%s», «%s»)",
+    async (personSaid, task, outcome) => {
+      // A live run may be sitting on the code page: Browser Use has no
+      // status for waiting on input.
+      await expect(
+        continueErrand({
+          completedAt: outcome === null ? undefined : new Date(),
+          outcome: outcome ?? undefined,
+          personSaid,
+          said: personSaid,
+          task,
+        })
+      ).rejects.toThrow("Never make up a code");
+      nothingSent();
+      expect(findBrowserUseSessionCdpUrl).not.toHaveBeenCalled();
+    }
+  );
+
+  it("types into the page only the code the person sent", async () => {
+    await continueErrand({
+      personSaid: "739204",
+      said: "739204",
+      task: "739204",
+    });
+
+    expect(findBrowserUseSessionCdpUrl).toHaveBeenCalledExactlyOnceWith(
+      sessionId
+    );
   });
 
   it("tells the run a report turn's follow-up is not the person's word", async () => {
