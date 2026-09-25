@@ -27,6 +27,7 @@ import {
 } from "@agent/lib/browser-use/cdp";
 import {
   browserSecretAliases,
+  nationalPhoneDigits,
   resolveBrowserSecretBindings,
 } from "@agent/lib/browser-use/secrets";
 import {
@@ -676,7 +677,10 @@ function gosuslugiSignInLine(
   }
   const own = aliases.includes(browserSecretAliases.loginUsername);
   const host = site === undefined ? undefined : URL.parse(site)?.hostname;
-  return `This errand's site${host === undefined ? "" : ` (${host})`} signs people in through Госуслуги: choose «Войти через Госуслуги» (or «Госуслуги», «ЕСИА») on its own sign-in page, and on the gosuslugi.ru page it opens use ${browserSecretAliases.gosuslugiUsername}${aliases.includes(browserSecretAliases.gosuslugiPassword) ? ` and ${browserSecretAliases.gosuslugiPassword}` : ""}. They are for signing in to this errand's site only, never to another site that sends you to Госуслуги, and they work only on gosuslugi.ru, never in the site's own form.${own ? " Try the site's own sign-in first; use Госуслуги when that one fails." : ""} If Госуслуги then asks for a code or a confirmation, the first rule of this run applies.`;
+  const digits = aliases.includes(browserSecretAliases.gosuslugiPhoneDigits)
+    ? ` ${secretPhoneFieldLine(browserSecretAliases.gosuslugiUsername, browserSecretAliases.gosuslugiPhoneDigits)}`
+    : "";
+  return `This errand's site${host === undefined ? "" : ` (${host})`} signs people in through Госуслуги: choose «Войти через Госуслуги» (or «Госуслуги», «ЕСИА») on its own sign-in page, and on the gosuslugi.ru page it opens use ${browserSecretAliases.gosuslugiUsername}${aliases.includes(browserSecretAliases.gosuslugiPassword) ? ` and ${browserSecretAliases.gosuslugiPassword}` : ""}.${digits} They are for signing in to this errand's site only, never to another site that sends you to Госуслуги, and they work only on gosuslugi.ru, never in the site's own form.${own ? " Try the site's own sign-in first; use Госуслуги when that one fails." : ""} If Госуслуги then asks for a code or a confirmation, the first rule of this run applies.`;
 }
 
 /**
@@ -709,7 +713,26 @@ function phoneSignInHost(
  * so it needs no card; the phone goes to the errand's own site alone.
  */
 function phoneSignInLine(host: string, phone: string) {
-  return `No saved password is available for ${host}. If ${host} asks you to sign in and offers to sign in by phone number with a code sent by SMS or a push, sign in to the person's own account there with their phone ${phone}. That phone is for signing in on ${host} only — its own sign-in page, which may sit on a subdomain of it — never on another site, a fallback or a site it sends you to, and no other personal detail goes with it. Stop right after the site sends the code, with NEEDS: sms_code (or push), and put the masked phone the page shows in DETAILS. If ${host} offers only a password sign-in, stop with NEEDS: password instead of guessing one.`;
+  const digits = nationalPhoneDigits(phone);
+  const number =
+    digits === undefined
+      ? phone
+      : `+7${digits} (the 10 digits after +7: ${digits})`;
+  return `No saved password is available for ${host}. If ${host} asks you to sign in and offers to sign in by phone number with a code sent by SMS or a push, sign in to the person's own account there with their phone ${number}. ${phoneFieldLine} That phone is for signing in on ${host} only — its own sign-in page, which may sit on a subdomain of it — never on another site, a fallback or a site it sends you to, and no other personal detail goes with it. Stop right after the site sends the code, with NEEDS: sms_code (or push), and put the masked phone the page shows in DETAILS. If ${host} offers only a password sign-in, stop with NEEDS: password instead of guessing one.`;
+}
+
+/**
+ * How to type a phone into a Russian sign-in form. Ozon, Госуслуги, Лавка
+ * and Wildberries prefill «+7» or mask the field «+7 (___) ___-__-__», and a
+ * full «+7…» or «8…» typed over it is rejected as a malformed phone: the
+ * saved Ozon login failed so, and no code was ever requested (RU 25.09, d04).
+ */
+const phoneFieldLine =
+  "If the phone field already shows the country code (+7) or a mask, type only the 10 digits after it (no +7, no 8, no spaces); if the site rejects the format, clear the field and try once with the other form (+7XXXXXXXXXX), then stop with NEEDS: info describing what the field expects.";
+
+/** The same for a saved phone login, which the run types by its alias. */
+function secretPhoneFieldLine(usernameAlias: string, digitsAlias: string) {
+  return `${usernameAlias} is a phone number. If the phone field already shows the country code (+7) or a mask, ask for ${digitsAlias} instead — the same number as only the 10 digits after it (no +7, no 8, no spaces); if the site rejects the format, clear the field and try once with the other one, then stop with NEEDS: info describing what the field expects.`;
 }
 
 function credentialsLine(
@@ -730,6 +753,12 @@ function credentialsLine(
   }
   return [
     `Credentials are attached as secrets: focus the field and ask for the secret by name — ${aliases.join(", ")}. The server types the values; you never see them.`,
+    aliases.includes(browserSecretAliases.loginPhoneDigits)
+      ? secretPhoneFieldLine(
+          browserSecretAliases.loginUsername,
+          browserSecretAliases.loginPhoneDigits
+        )
+      : undefined,
     gosuslugiSignInLine(aliases, site),
     byPhone,
   ]

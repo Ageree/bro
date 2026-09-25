@@ -36,10 +36,40 @@ export const browserSecretAliases = {
   cardHolder: "card_holder",
   cardNumber: "card_number",
   gosuslugiPassword: "gosuslugi_password",
+  gosuslugiPhoneDigits: "gosuslugi_phone_digits",
   gosuslugiUsername: "gosuslugi_username",
   loginPassword: "login_password",
+  loginPhoneDigits: "login_phone_digits",
   loginUsername: "login_username",
 } as const;
+
+/**
+ * A Russian phone number as the 10 digits after +7 — what a field that
+ * already shows «+7» or a mask «+7 (___) ___-__-__» takes: Ozon rejected a
+ * saved «+7…» login typed into such a field as a malformed phone (RU 25.09,
+ * d04). Undefined for any other number.
+ */
+export function nationalPhoneDigits(phone: string) {
+  const digits = phone.replaceAll(/\D/gu, "");
+  if (digits.length === 11 && /^[78]/u.test(digits)) return digits.slice(1);
+  if (digits.length === 10 && digits.startsWith("9")) return digits;
+  return undefined;
+}
+
+/**
+ * The same phone login as its 10 digits, under an alias of its own, for a
+ * field that already shows the country code: the run never sees the value,
+ * so it cannot drop the +7 itself.
+ */
+function phoneDigitsBinding(
+  alias: string,
+  identifier: { readonly type: string; readonly value: string },
+  domains: readonly string[]
+) {
+  if (identifier.type !== "phone") return [];
+  const digits = nationalPhoneDigits(identifier.value);
+  return digits === undefined ? [] : [binding(alias, digits, domains)];
+}
 
 export interface BrowserVaultEntry {
   readonly account: string;
@@ -211,6 +241,11 @@ export function browserSecretBindings(options: {
           browserSecretAliases.gosuslugiUsername,
           payload.identifier.value,
           [gosuslugiDomain]
+        ),
+        ...phoneDigitsBinding(
+          browserSecretAliases.gosuslugiPhoneDigits,
+          payload.identifier,
+          [gosuslugiDomain]
         )
       );
       if (payload.authentication.type === "password") {
@@ -235,6 +270,11 @@ export function browserSecretBindings(options: {
         binding(
           browserSecretAliases.loginUsername,
           payload.identifier.value,
+          domains
+        ),
+        ...phoneDigitsBinding(
+          browserSecretAliases.loginPhoneDigits,
+          payload.identifier,
           domains
         )
       );

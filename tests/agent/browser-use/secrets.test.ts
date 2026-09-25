@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   browserSecretBindings,
   loginAllowedDomains,
+  nationalPhoneDigits,
   paymentAllowedDomains,
   registrableDomain,
   selectBrowserVaultItems,
@@ -325,11 +326,20 @@ describe("browser secret bindings", () => {
       site: "https://www.mos.ru",
     });
 
-    expect(bound.aliases).toEqual(["gosuslugi_username", "gosuslugi_password"]);
+    expect(bound.aliases).toEqual([
+      "gosuslugi_username",
+      "gosuslugi_phone_digits",
+      "gosuslugi_password",
+    ]);
     // Typeable on the ESIA sign-in page only, never in mos.ru's own form.
     for (const binding of bound.bindings) {
       expect(binding.allowedDomains).toEqual(["gosuslugi.ru"]);
     }
+    expect(
+      bound.bindings.find(
+        (binding) => binding.alias === "gosuslugi_phone_digits"
+      )?.source.value
+    ).toBe("9991234567");
     const task = composeBrowserTask({
       aliases: bound.aliases,
       allowPayment: false,
@@ -342,8 +352,70 @@ describe("browser secret bindings", () => {
       site: "https://www.mos.ru",
     });
     expect(task).toContain("Войти через Госуслуги");
+    expect(task).toContain(
+      "gosuslugi_username is a phone number. If the phone field already shows the country code (+7) or a mask, ask for gosuslugi_phone_digits instead — the same number as only the 10 digits after it (no +7, no 8, no spaces); if the site rejects the format, clear the field and try once with the other one, then stop with NEEDS: info describing what the field expects."
+    );
+    expect(task).not.toContain("9991234567");
     expect(task).not.toContain(esiaPassword);
     expect(task).not.toContain("+79991234567");
+  });
+
+  it("binds a phone login also as the 10 digits after +7", () => {
+    // RU 25.09, d04: Ozon prefills «+7», and the saved «+7…» login typed
+    // over it was rejected as a malformed phone before any code was sent.
+    const bound = browserSecretBindings({
+      card: undefined,
+      login: serializeLoginVaultPayload({
+        authentication: { password, type: "password" },
+        identifier: { type: "phone", value: "+7 999 123-45-67" },
+        kind: "login",
+        origin: "https://www.ozon.ru",
+        version: 2,
+      }),
+      site: "https://www.ozon.ru",
+    });
+
+    expect(bound.aliases).toEqual([
+      "login_username",
+      "login_phone_digits",
+      "login_password",
+    ]);
+    const [username, digits] = bound.bindings;
+    expect(digits?.source.value).toBe("9991234567");
+    expect(digits?.allowedDomains).toEqual(username?.allowedDomains);
+    const task = composeBrowserTask({
+      aliases: bound.aliases,
+      allowPayment: false,
+      collectImages: false,
+      consent: undefined,
+      deliveryAddress: undefined,
+      errand: "Закажи тот же корм",
+      facts: undefined,
+      home: undefined,
+      site: "https://www.ozon.ru",
+    });
+    expect(task).toContain(
+      "login_username is a phone number. If the phone field already shows the country code (+7) or a mask, ask for login_phone_digits instead — the same number as only the 10 digits after it (no +7, no 8, no spaces); if the site rejects the format, clear the field and try once with the other one, then stop with NEEDS: info describing what the field expects."
+    );
+    expect(task).not.toContain("9991234567");
+  });
+
+  it("binds an email login as it is", () => {
+    const bound = browserSecretBindings({
+      card: undefined,
+      login,
+      site: "https://taxi.yandex.ru",
+    });
+
+    expect(bound.aliases).toEqual(["login_username", "login_password"]);
+  });
+
+  it("reads a Russian phone as the 10 digits after +7", () => {
+    expect(nationalPhoneDigits("+79991234567")).toBe("9991234567");
+    expect(nationalPhoneDigits("8 (999) 123-45-67")).toBe("9991234567");
+    expect(nationalPhoneDigits("999 123 45 67")).toBe("9991234567");
+    expect(nationalPhoneDigits("+1 555 123 4567")).toBeUndefined();
+    expect(nationalPhoneDigits("+44 20 7946 0958")).toBeUndefined();
   });
 
   it("binds nothing when no vault item was selected", () => {

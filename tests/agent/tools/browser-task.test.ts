@@ -282,11 +282,14 @@ vi.mock("@db/services/user-profile", () => ({
 vi.mock("@db/services/users", () => ({ readAccountPhoneNumber }));
 vi.mock("@db/services/vault", () => ({ readVaultItems, readVaultSecret }));
 vi.mock("@agent/lib/billing/quota", () => ({ browserRunQuotaGate }));
-vi.mock("@agent/lib/browser-use/secrets", async (importOriginal) => ({
-  browserSecretAliases: (await importOriginal<typeof browserUseSecrets>())
-    .browserSecretAliases,
-  resolveBrowserSecretBindings,
-}));
+vi.mock("@agent/lib/browser-use/secrets", async (importOriginal) => {
+  const original = await importOriginal<typeof browserUseSecrets>();
+  return {
+    browserSecretAliases: original.browserSecretAliases,
+    nationalPhoneDigits: original.nationalPhoneDigits,
+    resolveBrowserSecretBindings,
+  };
+});
 // The error class travels from the real module: the tool decides what to do
 // with a 409 or a 404 by testing against it.
 vi.mock("@agent/lib/browser-use/client", async (importOriginal) => ({
@@ -3708,6 +3711,9 @@ describe("browser_task sign-in by the person's phone", () => {
 
     expect(task).toContain(phoneLine);
     expect(task).toContain(
+      "with their phone +79991234567 (the 10 digits after +7: 9991234567). If the phone field already shows the country code (+7) or a mask, type only the 10 digits after it (no +7, no 8, no spaces); if the site rejects the format, clear the field and try once with the other form (+7XXXXXXXXXX), then stop with NEEDS: info describing what the field expects."
+    );
+    expect(task).toContain(
       "That phone is for signing in on www.ozon.ru only — its own sign-in page, which may sit on a subdomain of it — never on another site, a fallback or a site it sends you to, and no other personal detail goes with it."
     );
     expect(task).toContain(
@@ -3733,6 +3739,19 @@ describe("browser_task sign-in by the person's phone", () => {
 
     expect(task).not.toContain("+79991234567");
     expect(task).toContain("login_username");
+  });
+
+  it("writes a phone saved with an 8 as +7 and its 10 digits", async () => {
+    readUserProfile.mockResolvedValue({
+      ...emptyUserProfile,
+      phone: "8 (999) 123-45-67",
+    });
+
+    const task = await start({ site: "https://www.ozon.ru" });
+
+    expect(task).toContain(
+      "with their phone +79991234567 (the 10 digits after +7: 9991234567)."
+    );
   });
 
   it("leaves the phone out when no phone is known", async () => {
