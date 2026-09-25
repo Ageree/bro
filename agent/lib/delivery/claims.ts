@@ -1,6 +1,7 @@
 import type { ModelMessage, ToolResultPart } from "ai";
 import { z } from "zod";
 import { browserAnswer } from "./browser-report";
+import { requestsOf } from "./novelty";
 
 /**
  * A message that reports as done what no tool did. In the benchmark Bro wrote
@@ -99,10 +100,12 @@ export function turnActions(
   let browserPending = false;
   let codeTyped = false;
   let calendarWritten = false;
+  let reminderSet = false;
   const appsCalls = appsCalendarCalls([...earlier, ...turn]);
   for (const part of toolResults(turn)) {
     if (!succeeded(part.output)) continue;
     if (wroteCalendar(part, appsCalls)) calendarWritten = true;
+    if (part.toolName === "schedules-create") reminderSet = true;
     if (part.toolName !== "browser_task") continue;
     const answer = browserAnswer(part.output);
     if (answer?.status && pendingRunStatuses.has(answer.status)) {
@@ -119,6 +122,7 @@ export function turnActions(
       wroteCalendar(part, appsCalls)
     ),
     codeTyped,
+    reminderSet,
   };
 }
 
@@ -223,6 +227,8 @@ const calendarFutureVerbs = [
 
 const calendarNoun = /календар|событи|calendar/u;
 
+const reminderNoun = /напоминани|reminder/u;
+
 /**
  * Where the person's events already are: «записал: по пятницам у тебя в
  * календаре зал» describes the calendar, it does not change it.
@@ -243,10 +249,8 @@ function wordsOf(sentence: string) {
   return sentence.split(/[^\p{L}\p{N}]+/u).filter(Boolean);
 }
 
-function calendarNounsOf(words: readonly string[]) {
-  return words.flatMap((word, index) =>
-    calendarNoun.test(word) ? [index] : []
-  );
+function nounsOf(words: readonly string[], noun = calendarNoun) {
+  return words.flatMap((word, index) => (noun.test(word) ? [index] : []));
 }
 
 const calendarVerbs = new Set([
@@ -260,11 +264,12 @@ const calendarVerbs = new Set([
  * there: «записал тебя к терапевту на пт 10:00 — добавлю в календарь, как
  * подтвердишь» tells the booking a site made and the calendar entry still to
  * come, and claims no write. The verb nearest before each mention decides,
- * so «добавил в календарь и поставлю напоминание» still claims one.
+ * so «добавил в календарь и поставлю напоминание» still claims one. The same
+ * reads a reminder promised by its own noun.
  */
-function promisesCalendar(sentence: string) {
+function promisesStep(sentence: string, nounPattern = calendarNoun) {
   const words = wordsOf(sentence);
-  const nouns = calendarNounsOf(words);
+  const nouns = nounsOf(words, nounPattern);
   return (
     nouns.length > 0 &&
     nouns.every((noun) => {
@@ -291,7 +296,7 @@ function saysNearCalendar(
   distance = 3
 ) {
   const words = wordsOf(sentence);
-  const nouns = calendarNounsOf(words);
+  const nouns = nounsOf(words);
   return words.some(
     (word, index) =>
       phrases.includes(word) &&
@@ -316,6 +321,33 @@ function says(sentence: string, phrases: readonly string[]) {
       `(?<!(?:^|[^\\p{L}])(?:не|ты|not|you)\\s+(?:\\p{L}+\\s+)?)(?<![\\p{L}])${escaped(phrase)}(?![\\p{L}])`,
       "u"
     ).test(sentence)
+  );
+}
+
+/**
+ * A promise that waits on the person: «назовите время — поставлю в
+ * календарь», «добавлю, как подтвердите», «if you confirm».
+ */
+const onCondition =
+  /(?<!\p{L})(?:если|когда|как только|как (?:подтверд|скаж|назов|пришл|ответ|выбер)\p{L}*|once|if|when)(?!\p{L})/u;
+
+/**
+ * Whether a message promises a step of this turn that no tool has taken yet
+ * and that waits on nobody: «сейчас поставлю приём доставки в календарь»,
+ * «поставлю напоминание на 19:30». A message that only announces it would
+ * be dropped as adding nothing, and the turn would end before the step was
+ * taken.
+ */
+export function promisesUntakenStep(
+  text: string,
+  actions: ReturnType<typeof turnActions>
+) {
+  return sentencesOf(text).some(
+    (sentence) =>
+      !onCondition.test(sentence) &&
+      requestsOf(sentence).length === 0 &&
+      ((!actions.calendarWritten && promisesStep(sentence)) ||
+        (!actions.reminderSet && promisesStep(sentence, reminderNoun)))
   );
 }
 
@@ -345,7 +377,7 @@ export function unperformedClaim(
       return (
         saysNearCalendar(own, calendarPresentVerbs) ||
         (!actions.calendarWrittenEarlier &&
-          !promisesCalendar(own) &&
+          !promisesStep(own) &&
           says(sentence, calendarPastVerbs))
       );
     });

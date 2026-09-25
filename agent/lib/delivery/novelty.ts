@@ -155,15 +155,16 @@ export interface SentMessage {
 
 /**
  * The endings one word takes as it declines, a set per declension: «Артур»,
- * «Артура», «Артуром» and «Лавка», «Лавке», «Лавку»; «Игорь», «Игоря» and
- * «Таня», «Тане»; «Мария», «Марии»; «Профсоюзная», «Профсоюзной»; an English
- * plural. Two forms of one word take endings of one declension, so
- * «Виктор» and «Виктория», «Лена» and «Леня», «Эмиль» and «Эмилия» stay two
- * people. «Валентина» is also a case of «Валентин», and only the exact
- * comparison of `namesShared` keeps those two apart.
+ * «Артура», «Артуром», «Лавка», «Лавке», «Лавку», «Шереметьево»,
+ * «Шереметьеве» and «Иванов», «Ивановым»; «Игорь», «Игоря» and «Таня»,
+ * «Тане»; «Мария», «Марии»; «Профсоюзная», «Профсоюзной»; an English plural.
+ * Two forms of one word take endings of one declension, so «Виктор» and
+ * «Виктория», «Лена» and «Леня», «Эмиль» and «Эмилия» stay two people.
+ * «Валентина» is also a case of «Валентин»: only the person naming both
+ * keeps those two apart (`distinctStems`).
  */
 const declensions = [
-  "- а у ом е ы ов ам ами ах и ой ою",
+  "- а у о ом е ы ов ам ами ах и ой ою ым",
   "- ь й я ю ем е и ей ею ям ями ях ев",
   "ия ии ию ией ий ие ием иям иями иях",
   "ая ой ую ое ый ые ых ым ыми ого ому ий ее яя юю его ему ими их им ей ью",
@@ -181,10 +182,10 @@ const stemLength = 3;
  * a common stem they differ only in endings of one declension. In RU d15
  * (25.09) the same address went out twice because the second message named
  * «Артур» where the first had «Артура». «Мария» and «Марина» share «мари»,
- * but «на» is no ending, so they stay two people.
+ * but «на» is no ending, so they stay two people. The stem the two forms
+ * share, or nothing when they are two words.
  */
-function sameWord(word: string, other: string) {
-  if (word === other) return true;
+function sharedStem(word: string, other: string) {
   let shared = 0;
   while (
     shared < word.length &&
@@ -200,19 +201,48 @@ function sameWord(word: string, other: string) {
         (endings) => endings.has(ending) && endings.has(otherEnding)
       )
     ) {
-      return true;
+      return word.slice(0, stem);
     }
   }
-  return false;
+  return undefined;
 }
 
-/** Whether `word` occurs among `words` in some grammatical form. */
-function knownWord(word: string, words: ReadonlySet<string>) {
+function sameWord(word: string, other: string) {
+  return word === other || sharedStem(word, other) !== undefined;
+}
+
+/**
+ * Whether `word` occurs among `words` in some grammatical form. A word on
+ * one of `distinct` stems counts only as written: the person named two
+ * people on it.
+ */
+function knownWord(
+  word: string,
+  words: ReadonlySet<string>,
+  distinct: readonly string[] = []
+) {
   if (words.has(word)) return true;
+  if (distinct.some((stem) => word.startsWith(stem))) return false;
   for (const known of words) {
     if (sameWord(word, known)) return true;
   }
   return false;
+}
+
+/**
+ * The stems the person's own message uses for two different words: «Валентин
+ * и Валентина придут» names two people whose names differ only as a case
+ * ending would. Names on these stems are compared as written.
+ */
+export function distinctStems(text: string) {
+  const words = [...new Set(normalizedText(text).split(" "))];
+  return [
+    ...new Set(
+      words.flatMap((word, index) =>
+        words.slice(index + 1).flatMap((other) => sharedStem(word, other) ?? [])
+      )
+    ),
+  ];
 }
 
 function wordsOf(messages: readonly SentMessage[]) {
@@ -222,13 +252,17 @@ function wordsOf(messages: readonly SentMessage[]) {
 /**
  * Whether each name of one message also occurs as a word of the other. A
  * sentence opener that only changed case, «Готово! Напомню» after «Готово,
- * напомню», still occurs; a different person or place does not. The names
- * are compared as written: two messages of one template that differ in a
- * name, «Валентин придёт…» and «Валентина придёт…», are two list items.
+ * напомню», still occurs, and so does a name in another case («Артура» and
+ * «Артур»: d15 sent near copies that differed only so); a different person
+ * or place does not. On a stem in `distinct` a name counts only as written.
  */
-export function namesShared(message: SentMessage, other: SentMessage) {
+export function namesShared(
+  message: SentMessage,
+  other: SentMessage,
+  distinct: readonly string[] = []
+) {
   const words = wordsOf([other]);
-  return message.names.every((name) => words.has(name));
+  return message.names.every((name) => knownWord(name, words, distinct));
 }
 
 /** Two texts at least this similar say the same thing. */
@@ -301,6 +335,40 @@ export function announcesWork(message: SentMessage) {
   return (
     laterWords.test(message.text) ||
     (message.text.length <= busyLineLength && busyWords.test(message.text))
+  );
+}
+
+/**
+ * Words a message about a browser errand is made of: the run was started or
+ * handed the message, it is looking, the result will follow.
+ */
+const errandWords =
+  /(?:^| )(?:запустил\p{L}*|запущен\p{L}*|передал\p{L}*|поручени\p{L}*|started|handed)(?= |$)/u;
+
+/** Whether a message talks about an errand at work rather than a result. */
+export function announcesErrand(message: SentMessage) {
+  return (
+    laterWords.test(message.text) ||
+    busyWords.test(message.text) ||
+    errandWords.test(message.text)
+  );
+}
+
+/**
+ * Whether a message carries a number, a link or a name that none of `known`
+ * carries in any form.
+ */
+export function tellsBeyond(
+  message: SentMessage,
+  known: readonly SentMessage[]
+) {
+  const codes = known.flatMap((sent) => sent.codes);
+  const words = wordsOf(known);
+  return (
+    message.codes
+      .filter(isFact)
+      .some((code) => !codes.some((sent) => sameFact(code, sent))) ||
+    message.properNames.some((name) => !knownWord(name, words))
   );
 }
 
@@ -437,6 +505,8 @@ export function addsNothingNew(
   delivered: readonly SentMessage[],
   options: {
     readonly afterWork: boolean;
+    /** Stems on which the person named two people (`distinctStems`). */
+    readonly distinct?: readonly string[];
     /** The person's own message that opened the turn, if they opened it. */
     readonly request?: SentMessage;
   }
@@ -455,7 +525,11 @@ export function addsNothingNew(
     return false;
   }
   const words = wordsOf(delivered);
-  if (message.properNames.some((name) => !knownWord(name, words))) {
+  if (
+    message.properNames.some(
+      (name) => !knownWord(name, words, options.distinct)
+    )
+  ) {
     return false;
   }
   const questions = delivered.flatMap((sent) => sent.questions);
@@ -471,7 +545,7 @@ export function addsNothingNew(
   }
   const nextItem = delivered.some(
     (sent) =>
-      !namesShared(message, sent) &&
+      !namesShared(message, sent, options.distinct) &&
       similarity(message.text, sent.text) >= nearDuplicateSimilarity
   );
   if (nextItem) return false;
@@ -483,11 +557,31 @@ export function addsNothingNew(
  * The sentences of a message that tell rather than ask: neither a question
  * nor a request to the person.
  */
-export function statementsOf(text: string) {
+function statementsOf(text: string) {
   return sentencesOf(text).filter(
     (sentence) =>
       questionsOf(sentence).length === 0 && requestsOf(sentence).length === 0
   );
+}
+
+/**
+ * A limit a person sets on what they ask for, even inside their question: «до
+ * 2500 на человека», «не дороже 5 000 ₽», «на четверых». A time is not one:
+ * «успею ли я к 18:00?» asks about it.
+ */
+const personLimit =
+  /(?<!\p{L})(?:до|не дороже|не больше|не более|максимум|в пределах|бюджет\p{L}*|на)\s+(?:\d[\d \u00A0]*(?:[.,]\d+)?(?![\d:.,])(?:\s*(?:₽|руб\p{L}*|тыс\p{L}*|человек\p{L}*|чел\.?|персон\p{L}*))?|(?:двоих|троих|четверых|пятерых|шестерых)(?!\p{L}))/giu;
+
+/**
+ * What the person's own message states rather than asks: its statements, and
+ * the limits it sets inside a question. «Где поужинать до 2500 на человека?»
+ * asks for a place and states the budget.
+ */
+export function statedIn(text: string) {
+  const limits = sentencesOf(text)
+    .filter((sentence) => questionsOf(sentence).length > 0)
+    .flatMap((sentence) => sentence.match(personLimit) ?? []);
+  return [...statementsOf(text), ...limits].join("\n");
 }
 
 /**
@@ -500,9 +594,9 @@ export function statementsOf(text: string) {
  * подтвердить не получилось»: a second telling that contradicted the first.
  * The question alone would have been news.
  *
- * `stated` is what the person's message states, without what it asks: the
- * place or time they ask about («успею ли я к 18:00?») is what the answer
- * has to tell, not something they already heard.
+ * `stated` is what the person's message states, without what it asks
+ * (`statedIn`): the place or time they ask about («успею ли я к 18:00?») is
+ * what the answer has to tell, not something they already heard.
  */
 export function retellsAroundQuestion(
   text: string,
